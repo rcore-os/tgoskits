@@ -20,7 +20,7 @@ use super::memfd::{
 use crate::{
     Errno, StarryError, StarryResult,
     file::{
-        Directory, File, FileLike, Pipe, get_file_like,
+        Directory, File, FileLike, MountTableFile, Pipe, get_file_like,
         memfd::{F_SEAL_ANY_WRITE, F_SEAL_GROW, Memfd},
     },
     ipc::mqueue::MqDescriptor,
@@ -62,6 +62,26 @@ fn file_or_espipe_write(fd: c_int) -> StarryResult<Arc<File>> {
     Ok(f)
 }
 
+/// Resolve the regular-file backend for a positioned write.
+///
+/// Linux rejects nonseekable objects with `ESPIPE`, but a seekable file that
+/// is not open for writing must report `EBADF` before user-buffer import.
+fn positioned_write_file(file_like: &Arc<dyn FileLike>) -> StarryResult<&File> {
+    let file = if let Some(file) = file_like.downcast_ref::<File>() {
+        file
+    } else if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
+        memfd.inner().as_ref()
+    } else if let Some(mount_table) = file_like.downcast_ref::<MountTableFile>() {
+        mount_table.inner().as_ref()
+    } else if file_like.is::<Directory>() {
+        return Err(StarryError::BadFileDescriptor);
+    } else {
+        return Err(StarryError::from(Errno::ESPIPE));
+    };
+    file.validate_write_access()?;
+    Ok(file)
+}
+
 fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
     #[cfg(target_pointer_width = "32")]
     {
@@ -77,6 +97,10 @@ fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
 
 struct DummyFd;
 impl FileLike for DummyFd {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "anon_inode:[dummy]".into()
     }
@@ -130,6 +154,7 @@ pub fn sys_readv(
 pub fn sys_write(current: &UserTaskRef, fd: i32, buf: *mut u8, len: usize) -> StarryResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
     let file_like = get_file_like(fd)?;
+    file_like.validate_write_access()?;
     file_like.validate_write_len(len)?;
     if len != 0 {
         check_access(buf as usize, len)?;
@@ -146,6 +171,7 @@ pub fn sys_writev(
 ) -> StarryResult<isize> {
     debug!("sys_writev <= fd: {fd}, iovcnt: {iovcnt}");
     let file_like = get_file_like(fd)?;
+    file_like.validate_write_access()?;
     // Check length invariants (e.g. eventfd count) before importing segment
     // data, so a count error (EINVAL) takes precedence over a bad segment
     // pointer (EFAULT), matching Linux vfs_writev / eventfd_write ordering.
@@ -625,31 +651,25 @@ pub fn sys_pwritev2(
     if offset == -1 {
         // offset == -1: use current file position (like writev)
         let file_like = get_file_like(fd)?;
+        file_like.validate_write_access()?;
         let source = IoVectorBuf::new_with_len_validator(current, iov, iovcnt, |len| {
             file_like.validate_write_len(len)
         })?;
         memfd_checks_before_stream_write(&file_like, source.byte_len() as u64)?;
         let data = copy_user_iov_read_buf(source)?;
         file_like.write(&mut data.as_slice()).map(|n| n as _)
-    } else if let Ok(memfd) = Memfd::from_fd(fd) {
-        // Route memfd offset writes through the seal-aware path.
-        let source = IoVectorBuf::new(current, iov, iovcnt)?;
-        if source.byte_len() != 0 {
-            memfd.check_write_seal()?;
-        }
-        let data = copy_user_iov_read_buf(source)?;
-        memfd
-            .write_at(data.as_slice(), offset as u64)
-            .map(|n| n as _)
     } else {
-        let source = IoVectorBuf::new(current, iov, iovcnt)?;
-        let f = file_or_espipe_write(fd)?;
         let file_like = get_file_like(fd)?;
-        memfd_checks_before_write_at(&file_like, offset as u64, source.byte_len() as u64)?;
+        let file = positioned_write_file(&file_like)?;
+        let source = IoVectorBuf::new(current, iov, iovcnt)?;
         let data = copy_user_iov_read_buf(source)?;
-        Ok(f.inner()
-            .write_at(data.as_slice(), offset as _)
-            .map(|n| n as _)?)
+        if let Some(memfd) = file_like.downcast_ref::<Memfd>() {
+            // Route memfd offset writes through the seal-aware path.
+            Ok(memfd.write_at(data.as_slice(), offset as u64)? as _)
+        } else {
+            memfd_checks_before_write_at(&file_like, offset as u64, data.len() as u64)?;
+            Ok(file.inner().write_at(data.as_slice(), offset as _)? as _)
+        }
     }
 }
 

@@ -514,6 +514,10 @@ fn task_base_addr_is_valid(address: u64, dma_range_valid: bool) -> bool {
 }
 
 impl FileLike for Card1File {
+    fn validate_write_access(&self) -> StarryResult {
+        self.base.validate_write_access()
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         self.base.read(dst)
     }
@@ -970,6 +974,10 @@ impl ExportedGemBuffer {
 }
 
 impl FileLike for ExportedGemBuffer {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn path(&self) -> Cow<'_, str> {
         "anon_inode:[rknpu-gem]".into()
     }

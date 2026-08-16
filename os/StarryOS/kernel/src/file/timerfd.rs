@@ -413,6 +413,10 @@ async fn run_timer(weak: alloc::sync::Weak<Timerfd>) {
 }
 
 impl FileLike for Timerfd {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if dst.remaining_mut() < core::mem::size_of::<u64>() {
             return Err(StarryError::InvalidInput);

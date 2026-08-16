@@ -1004,6 +1004,10 @@ fn notify_thread_teardown(n: &Notification) {
 }
 
 impl FileLike for MessageQueue {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::InvalidInput)
+    }
+
     fn read(&self, _dst: &mut IoDst) -> StarryResult<usize> {
         // Message queues are not read via read(2); mq_timedreceive is used.
         Err(StarryError::InvalidInput)
@@ -1107,6 +1111,14 @@ impl MqDescriptor {
         self.flags.load(Ordering::Acquire) & O_ACCMODE
     }
 
+    fn stream_write_error(&self) -> StarryError {
+        if self.access() == O_RDONLY {
+            Errno::EBADF.into()
+        } else {
+            Errno::EINVAL.into()
+        }
+    }
+
     /// Whether this descriptor is in non-blocking mode (`O_NONBLOCK`).
     pub fn is_nonblocking(&self) -> bool {
         self.flags.load(Ordering::Acquire) & O_NONBLOCK != 0
@@ -1155,6 +1167,10 @@ impl MqDescriptor {
 }
 
 impl FileLike for MqDescriptor {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(self.stream_write_error())
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         // The VFS rejects reads through an O_WRONLY file before dispatching to
         // `mqueue_read_file`; StarryOS's generic `sys_read` dispatches directly
@@ -1182,6 +1198,10 @@ impl FileLike for MqDescriptor {
             self.queue.touch_status_read();
         }
         Ok(copied)
+    }
+
+    fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
+        Err(self.stream_write_error())
     }
 
     fn stat(&self) -> StarryResult<Kstat> {

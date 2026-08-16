@@ -600,6 +600,10 @@ impl Deref for Socket {
 }
 
 impl FileLike for Socket {
+    fn validate_write_access(&self) -> StarryResult {
+        Ok(())
+    }
+
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         self.recv_to_user(dst, RecvOptions::default())
     }

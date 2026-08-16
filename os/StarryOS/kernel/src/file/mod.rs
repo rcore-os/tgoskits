@@ -192,6 +192,14 @@ pub trait FileLike: Pollable + DowncastSync {
         true
     }
 
+    /// Validate write access before importing a user buffer.
+    ///
+    /// Every file type must declare this capability explicitly so a newly
+    /// added implementation cannot silently import user memory before
+    /// reporting an object-level write error. This hook must not perform
+    /// operation-specific checks such as memfd seals.
+    fn validate_write_access(&self) -> StarryResult;
+
     /// Validate a scalar write length before importing the user buffer.
     ///
     /// File types with count errors that take precedence over `EFAULT` can

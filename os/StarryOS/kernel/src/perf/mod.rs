@@ -375,6 +375,10 @@ impl Pollable for PerfEvent {
 }
 
 impl FileLike for PerfEvent {
+    fn validate_write_access(&self) -> StarryResult {
+        Err(StarryError::Unsupported)
+    }
+
     fn read(&self, dst: &mut crate::file::IoDst) -> StarryResult<usize> {
         // A hardware-PMU event reads as a sequence of native-endian `u64`s in
         // Linux's strict `read_format` order: always `value`; then
