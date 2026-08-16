@@ -590,7 +590,9 @@ impl CowBackend {
             return Err(err.into());
         }
         if let Some(acct) = acct {
-            acct.record_charge(vaddr, kind)?;
+            // A THP 2 MiB block is one charge accounting for its 512 resident pages,
+            // so VmRSS/VmHWM reflect the whole block, not a single page.
+            acct.record_charge(vaddr, kind, (self.size / PAGE_SIZE_4K) as u32)?;
         }
         Ok(())
     }
@@ -638,7 +640,7 @@ impl CowBackend {
                 return Err(err.into());
             }
             if let Some(acct) = acct {
-                acct.record_charge(addr, kind)?;
+                acct.record_charge(addr, kind, (self.size / PAGE_SIZE_4K) as u32)?;
             }
         }
         Ok(n)
