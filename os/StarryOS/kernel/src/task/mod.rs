@@ -3,7 +3,9 @@
 mod cred;
 pub mod futex;
 mod ops;
+mod pid;
 pub mod posix_timer;
+mod process;
 mod process_identity;
 mod resources;
 mod seccomp;
@@ -30,25 +32,25 @@ use axpoll::{IoEvents, PollSet};
 use extern_trait::extern_trait;
 use kernel_elf_parser::AuxEntry;
 use scope_local::{ActiveScope, Scope};
-use starry_process::{Pid, Process};
 use starry_signal::{
     SignalInfo, SignalSet, Signo,
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
-pub(crate) use self::process_identity::*;
 pub use self::{
-    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, seccomp::*, signal::*,
-    stat::*, timer::*, user::*,
+    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, process::*, resources::*, seccomp::*,
+    signal::*, stat::*, timer::*, user::*,
 };
 #[cfg(axtest)]
 pub(crate) use self::{
     ops::decode_wait_status_rules_hold_for_test,
+    pid::pid_identity_state_machine_rules_hold_for_test,
     posix_timer::posix_timer_clock_validation_rules_hold_for_test,
     seccomp::seccomp_action_and_precedence_rules_hold_for_test,
     seccomp::seccomp_bpf_constants_hold_for_test,
     timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
 };
+pub(crate) use self::{pid::*, process_identity::*};
 use crate::{
     StarryResult,
     sync::{ContextSwitchRwLock, IrqMutex, Mutex, PreemptIrqSaveGuard, RwLock, SpinLock},
@@ -79,12 +81,29 @@ struct PtraceStopRecord {
     syscall_no: Option<usize>,
     reported: bool,
     event: u32,
-    event_msg: usize,
+    event_msg: PtraceEventMessage,
 }
 
 struct PtracePendingEvent {
     event: u32,
-    msg: usize,
+    msg: PtraceEventMessage,
+}
+
+#[derive(Clone)]
+enum PtraceEventMessage {
+    Value(usize),
+    Pid(PidSnapshot),
+}
+
+impl PtraceEventMessage {
+    fn visible_value(&self, observer: &PidView) -> usize {
+        match self {
+            Self::Value(value) => *value,
+            Self::Pid(snapshot) => observer
+                .visible_snapshot_number(snapshot)
+                .map_or(0, |number| number.get() as usize),
+        }
+    }
 }
 use crate::mm::AddrSpace;
 
@@ -120,18 +139,14 @@ impl NextSignalCheckBlock {
 }
 
 /// The inner data of a thread.
+struct ThreadPidOwnership {
+    identity: Arc<PidIdentity>,
+    tid_lease: Option<PidRoleLease<Tid>>,
+}
+
 pub struct Thread {
-    /// User-visible thread ID (the `Pid` returned by `gettid`).
-    ///
-    /// Initially equal to the underlying scheduler `TaskInner::id()`. The two
-    /// diverge after a successful non-leader `execve`: Linux's `de_thread`
-    /// step transfers the leader's TID/TGID to the calling thread so that
-    /// `gettid() == getpid()` holds in the new image. We model that by
-    /// updating this field while leaving the immutable scheduler ID alone.
-    /// All user-facing TID lookups (`sys_gettid`, `set_tid_address`, signal
-    /// child registration, `do_exit`'s thread-group bookkeeping, etc.) read
-    /// this rather than the scheduler ID.
-    tid: AtomicU32,
+    /// Stable Linux TID generation and its unique role ownership.
+    pid: IrqMutex<ThreadPidOwnership>,
 
     /// The process data shared by all threads in the process.
     pub proc_data: Arc<ProcessData>,
@@ -227,7 +242,7 @@ pub struct Thread {
     /// the real fault terminated silently.
     pub fault_dump_signo: AtomicU8,
 
-    pub kretprobe_stack: IrqMutex<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
+    pub(crate) kretprobe_stack: IrqMutex<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
 
     /// Whether uid_map has been written for this thread's user namespace.
     uid_map_written: AtomicBool,
@@ -253,15 +268,23 @@ impl Thread {
     /// If `parent_cred` is `Some`, the thread inherits the parent's credentials;
     /// otherwise it starts with root credentials (used for the init process).
     pub fn new(
-        tid: u32,
+        identity: Arc<PidIdentity>,
+        tid_lease: PidRoleLease<Tid>,
         proc_data: Arc<ProcessData>,
         parent_cred: Option<Arc<Cred>>,
         signal_mask: SignalSet,
         scope: Scope,
     ) -> Box<Self> {
         let cred = parent_cred.unwrap_or_else(|| Arc::new(Cred::root()));
+        let tid = identity
+            .visible_number(&ROOT_PID_NS)
+            .expect("every Starry PID identity is visible from the root namespace")
+            .get();
         Box::new(Thread {
-            tid: AtomicU32::new(tid),
+            pid: IrqMutex::new(ThreadPidOwnership {
+                identity,
+                tid_lease: Some(tid_lease),
+            }),
             signal: ThreadSignalManager::new_with_blocked(
                 tid,
                 proc_data.signal.clone(),
@@ -320,18 +343,81 @@ impl Thread {
         ret
     }
 
-    /// Returns the user-visible TID for this thread.
+    /// Returns the root-namespace TID for this thread.
     ///
     /// See the field doc on [`Thread::tid`] for why this can differ from
     /// the underlying scheduler `TaskInner::id()`.
-    pub fn tid(&self) -> u32 {
-        self.tid.load(Ordering::Acquire)
+    pub fn tid(&self) -> TidNumber {
+        self.tid_number()
     }
 
-    /// Updates the user-visible TID. Called only by `execve`'s de_thread
-    /// step to transfer the leader's TID to a non-leader caller.
-    pub(crate) fn set_tid(&self, tid: u32) {
-        self.tid.store(tid, Ordering::Release);
+    /// Returns the root-namespace TID with its role preserved in the type.
+    pub(crate) fn tid_number(&self) -> TidNumber {
+        TidNumber::from(
+            self.pid
+                .lock()
+                .identity
+                .visible_number(&ROOT_PID_NS)
+                .expect("live thread lost its root PID binding"),
+        )
+    }
+
+    /// Returns this thread's stable PID generation.
+    pub(crate) fn pid_identity(&self) -> Arc<PidIdentity> {
+        self.pid.lock().identity.clone()
+    }
+
+    /// Returns the active PID namespace derived from the identity itself.
+    pub(crate) fn active_pid_namespace(&self) -> PidNamespaceRef {
+        self.pid.lock().identity.active_namespace()
+    }
+
+    /// Returns the TID as seen from this thread's active namespace.
+    pub(crate) fn user_tid(&self) -> TidNumber {
+        let pid = self.pid.lock();
+        let active = pid.identity.active_namespace();
+        TidNumber::from(
+            pid.identity
+                .visible_number(&active)
+                .expect("thread identity is not visible from its active namespace"),
+        )
+    }
+
+    /// Publishes this thread's runtime link immediately before scheduling.
+    pub(crate) fn attach_pid_task(&self, task: &ax_task::AxTaskRef) {
+        self.pid.lock().identity.attach_task(task);
+    }
+
+    /// Releases the runtime link and TID role after scheduler-visible exit.
+    pub(crate) fn retire_pid(&self) {
+        let (identity, lease) = {
+            let mut pid = self.pid.lock();
+            (pid.identity.clone(), pid.tid_lease.take())
+        };
+        identity.mark_task_exited();
+        drop(lease);
+    }
+
+    /// Atomically transfers the leader identity to this runtime task at exec.
+    pub(crate) fn transfer_pid_identity(
+        &self,
+        task: &ax_task::AxTaskRef,
+        identity: Arc<PidIdentity>,
+        tid_lease: PidRoleLease<Tid>,
+    ) {
+        let old = {
+            let mut pid = self.pid.lock();
+            core::mem::replace(
+                &mut *pid,
+                ThreadPidOwnership {
+                    identity: identity.clone(),
+                    tid_lease: Some(tid_lease),
+                },
+            )
+        };
+        old.identity.mark_task_exited();
+        drop(old);
+        identity.transfer_task(task);
     }
 
     /// Get the clear child tid field.
@@ -516,7 +602,7 @@ impl Thread {
         tids.sort_unstable();
 
         for tid in &tids {
-            if let Ok(task) = ops::get_task(*tid)
+            if let Ok(task) = ops::get_task_by_number(*tid)
                 && let Some(thr) = task.try_as_thread()
             {
                 thr.set_cred_single(new_arc.clone());
@@ -537,13 +623,17 @@ impl Thread {
         tids.sort_unstable();
 
         for tid in &tids {
-            if let Ok(task) = ops::get_task(*tid)
-                && let Some(thread) = task.try_as_thread()
-                && !core::ptr::eq(thread, self)
-            {
-                let old_cred = thread.cred();
-                thread.set_cred_single(Arc::new(update(&old_cred)));
+            let Ok(task) = ops::get_task_by_number(*tid) else {
+                continue;
+            };
+            let Some(thread) = task.try_as_thread() else {
+                continue;
+            };
+            if core::ptr::eq(thread, self) {
+                continue;
             }
+            let old_cred = thread.cred();
+            thread.set_cred_single(Arc::new(update(&old_cred)));
         }
     }
 
@@ -743,7 +833,7 @@ struct JobControl {
     /// TID of the thread currently parked in `do_job_stop`. The implementation
     /// currently parks only the thread that dequeues the stop signal, so ptrace
     /// must distinguish that waiter from running or syscall-blocked siblings.
-    waiter_tid: Option<Pid>,
+    waiter_tid: Option<TidNumber>,
 }
 
 /// [`Process`]-shared data.
@@ -776,11 +866,23 @@ impl ProcessImage {
     }
 }
 
+/// Fallible resources and ABI metadata prepared before publishing a process.
+pub struct ProcessDataInit {
+    pub image: ProcessImage,
+    pub aspace: Arc<Mutex<AddrSpace>>,
+    pub signal_actions: Arc<SpinLock<SignalActions>>,
+    pub exit_signal: Option<Signo>,
+    pub wait_parent_tid: TidNumber,
+    pub vm_aspace_shared: bool,
+}
+
 pub struct ProcessData {
     /// The process.
     pub proc: Arc<Process>,
     /// Stable generation identity shared by the registry and pidfds.
-    identity: Arc<ProcessIdentity>,
+    identity: Arc<PidIdentity>,
+    /// TGID number ownership transferred into the zombie at final exit.
+    tgid_lease: IrqMutex<Option<PidRoleLease<Tgid>>>,
     /// The executable path
     pub exe_path: RwLock<String>,
     /// The command line arguments
@@ -802,7 +904,7 @@ pub struct ProcessData {
     /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
     pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
     /// The namespace proxy — aggregates all namespace types for this process.
-    pub nsproxy: IrqMutex<axnsproxy::NsProxy>,
+    pub(crate) nsproxy: IrqMutex<crate::namespace::NsProxy>,
     /// Authoritative cgroup membership shared by every thread in the process.
     pub cgroup: RwLock<Arc<ax_cgroup::CgroupNode>>,
     /// The user heap top
@@ -829,7 +931,7 @@ pub struct ProcessData {
     /// Linux's `__WNOTHREAD` wait option restricts child selection to children
     /// created by the calling thread, while the default wait may reap children
     /// created by any thread in the same thread group.
-    pub wait_parent_tid: Pid,
+    pub wait_parent_tid: TidNumber,
 
     /// The process signal manager
     pub signal: Arc<ProcessSignalManager>,
@@ -868,15 +970,15 @@ pub struct ProcessData {
     /// Updated when wait() reaps a child.
     children_cpu_time: IrqMutex<(TimeValue, TimeValue)>,
 
-    /// Pid of the process currently tracing this process, if any.
-    ptrace_tracer_pid: AtomicU32,
+    /// Stable generation of the process currently tracing this process.
+    ptrace_tracer: IrqMutex<alloc::sync::Weak<PidIdentity>>,
 
     /// Set by `ptrace(PTRACE_TRACEME)` to let the parent observe debugger-style
     /// stops from this process.
     ptrace_traceme: AtomicBool,
 
     /// Current ptrace stop records, keyed by stopped TID.
-    ptrace_stop: IrqMutex<BTreeMap<u32, PtraceStopRecord>>,
+    ptrace_stop: IrqMutex<BTreeMap<TidNumber, PtraceStopRecord>>,
 
     /// TID selected by the most recent ptrace request.
     ptrace_stop_tid: AtomicU32,
@@ -886,16 +988,15 @@ pub struct ProcessData {
 
     /// Signal number to deliver on resume, keyed by resumed TID.
     /// 0 means suppress the signal; non-zero means deliver that signal.
-    ptrace_resume_signo: IrqMutex<BTreeMap<u32, u32>>,
+    ptrace_resume_signo: IrqMutex<BTreeMap<TidNumber, u32>>,
 
     /// One-shot signal number that came from ptrace resume injection.
     /// The signal subsystem still handles disposition and handlers, but the
     /// next matching signal delivery must not stop for ptrace again.
-    ptrace_resume_signal_bypass: IrqMutex<BTreeMap<u32, u32>>,
+    ptrace_resume_signal_bypass: IrqMutex<BTreeMap<TidNumber, u32>>,
 
-    /// Set by `execve` when the calling thread was `PTRACE_TRACEME`.
-    /// Cleared after the exec-stop is delivered in the user-return loop.
-    ptrace_exec_stop_pending: AtomicBool,
+    /// Former caller TID retained until the exec-stop is delivered.
+    ptrace_exec_stop_pending: IrqMutex<Option<PidSnapshot>>,
 
     /// Attachment mode established by `PTRACE_ATTACH` or `PTRACE_SEIZE`.
     ptrace_attach_mode: AtomicU8,
@@ -904,19 +1005,19 @@ pub struct ProcessData {
     ptrace_singlestep_tid: AtomicU32,
 
     /// Set by `PTRACE_SYSCALL`; causes syscall-entry/exit stops, keyed by TID.
-    ptrace_syscall_trace: IrqMutex<BTreeMap<u32, SyscallTraceState>>,
+    ptrace_syscall_trace: IrqMutex<BTreeMap<TidNumber, SyscallTraceState>>,
 
     /// Bitmask of PTRACE_O_* options set via `PTRACE_SETOPTIONS`.
     ptrace_options: AtomicUsize,
 
     /// Pending ptrace events that have not yet been bound to their owner TID stops.
-    ptrace_pending_event: IrqMutex<BTreeMap<u32, PtracePendingEvent>>,
+    ptrace_pending_event: IrqMutex<BTreeMap<TidNumber, PtracePendingEvent>>,
 
     /// Saved instruction overwritten by single-step EBREAK, keyed by TID.
-    ptrace_ss_saved_insn: IrqMutex<BTreeMap<u32, (usize, usize)>>,
+    ptrace_ss_saved_insn: IrqMutex<BTreeMap<TidNumber, (usize, usize)>>,
 
     /// FP register snapshot captured when entering ptrace stop, keyed by TID.
-    ptrace_stop_fp_data: IrqMutex<BTreeMap<u32, PtraceStopFpData>>,
+    ptrace_stop_fp_data: IrqMutex<BTreeMap<TidNumber, PtraceStopFpData>>,
 
     /// Linux process personality flags. Starry does not randomize userspace
     /// mappings yet, but debuggers still probe and set ADDR_NO_RANDOMIZE.
@@ -989,86 +1090,90 @@ impl ProcessData {
     /// Create a new [`ProcessData`].
     pub fn new(
         proc: Arc<Process>,
-        image: ProcessImage,
-        aspace: Arc<Mutex<AddrSpace>>,
-        signal_actions: Arc<SpinLock<SignalActions>>,
-        exit_signal: Option<Signo>,
-        wait_parent_tid: Pid,
-        vm_aspace_shared: bool,
+        identity: Arc<PidIdentity>,
+        tgid_lease: PidRoleLease<Tgid>,
+        init: ProcessDataInit,
     ) -> Arc<Self> {
-        let this = Arc::new_cyclic(|weak| {
-            let exit_event: Arc<PollSet> = Arc::default();
-            let identity = ProcessIdentity::new(proc.clone(), exit_event.clone(), weak.clone());
-            Self {
-                proc,
-                identity,
-                exe_path: RwLock::new(image.exe_path),
-                cmdline: RwLock::new(image.cmdline),
-                envp: RwLock::new(image.envp),
-                auxv: RwLock::new(image.auxv),
-                root_path: RwLock::new(image.root_path),
-                cwd_path: RwLock::new(image.cwd_path),
-                aspace: IrqMutex::new(aspace),
-                uprobe_manager: crate::kprobe::KprobeManager::new(),
-                uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
-                heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
+        let ProcessDataInit {
+            image,
+            aspace,
+            signal_actions,
+            exit_signal,
+            wait_parent_tid,
+            vm_aspace_shared,
+        } = init;
+        let exit_event: Arc<PollSet> = Arc::default();
+        let this = Arc::new(Self {
+            proc: proc.clone(),
+            identity: identity.clone(),
+            tgid_lease: IrqMutex::new(Some(tgid_lease)),
+            exe_path: RwLock::new(image.exe_path),
+            cmdline: RwLock::new(image.cmdline),
+            envp: RwLock::new(image.envp),
+            auxv: RwLock::new(image.auxv),
+            root_path: RwLock::new(image.root_path),
+            cwd_path: RwLock::new(image.cwd_path),
+            aspace: IrqMutex::new(aspace),
+            uprobe_manager: crate::kprobe::KprobeManager::new(),
+            uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
+            heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
-                rlim: RwLock::default(),
+            rlim: RwLock::default(),
 
-                child_exit_event: Arc::default(),
-                exit_event,
-                thread_exit_event: Arc::default(),
-                exec_lock: Mutex::new(()),
-                exit_signal,
-                wait_parent_tid,
+            child_exit_event: Arc::default(),
+            exit_event: exit_event.clone(),
+            thread_exit_event: Arc::default(),
+            exec_lock: Mutex::new(()),
+            exit_signal,
+            wait_parent_tid,
 
-                signal: Arc::new(ProcessSignalManager::new(
-                    signal_actions,
-                    crate::config::SIGNAL_TRAMPOLINE,
-                )),
+            signal: Arc::new(ProcessSignalManager::new(
+                signal_actions,
+                crate::config::SIGNAL_TRAMPOLINE,
+            )),
 
-                futex_table: Arc::new(FutexTable::new()),
+            futex_table: Arc::new(FutexTable::new()),
 
-                nsproxy: IrqMutex::new(axnsproxy::NsProxy::new_root()),
-                cgroup: RwLock::new(crate::cgroup::root()),
+            nsproxy: IrqMutex::new(crate::namespace::NsProxy::new_root()),
+            cgroup: RwLock::new(crate::cgroup::root()),
 
-                vfork_done: IrqMutex::new(None),
+            vfork_done: IrqMutex::new(None),
 
-                umask: AtomicU32::new(0o022),
-                nice: AtomicI32::new(0),
-                membarrier_state: AtomicU32::new(0),
-                dumpable: AtomicI32::new(1),
-                thp_disable: AtomicU32::new(0),
+            umask: AtomicU32::new(0o022),
+            nice: AtomicI32::new(0),
+            membarrier_state: AtomicU32::new(0),
+            dumpable: AtomicI32::new(1),
+            thp_disable: AtomicU32::new(0),
 
-                children_cpu_time: IrqMutex::new((TimeValue::ZERO, TimeValue::ZERO)),
+            children_cpu_time: IrqMutex::new((TimeValue::ZERO, TimeValue::ZERO)),
 
-                ptrace_tracer_pid: AtomicU32::new(0),
-                ptrace_traceme: AtomicBool::new(false),
-                ptrace_stop: IrqMutex::new(BTreeMap::new()),
-                ptrace_stop_tid: AtomicU32::new(0),
-                ptrace_stop_event: Arc::default(),
-                ptrace_resume_signo: IrqMutex::new(BTreeMap::new()),
-                ptrace_resume_signal_bypass: IrqMutex::new(BTreeMap::new()),
-                ptrace_exec_stop_pending: AtomicBool::new(false),
-                ptrace_attach_mode: AtomicU8::new(PtraceAttachMode::None as u8),
-                ptrace_singlestep_tid: AtomicU32::new(0),
-                ptrace_syscall_trace: IrqMutex::new(BTreeMap::new()),
-                ptrace_options: AtomicUsize::new(0),
-                ptrace_pending_event: IrqMutex::new(BTreeMap::new()),
-                ptrace_ss_saved_insn: IrqMutex::new(BTreeMap::new()),
-                ptrace_stop_fp_data: IrqMutex::new(BTreeMap::new()),
+            ptrace_tracer: IrqMutex::new(alloc::sync::Weak::new()),
+            ptrace_traceme: AtomicBool::new(false),
+            ptrace_stop: IrqMutex::new(BTreeMap::new()),
+            ptrace_stop_tid: AtomicU32::new(0),
+            ptrace_stop_event: Arc::default(),
+            ptrace_resume_signo: IrqMutex::new(BTreeMap::new()),
+            ptrace_resume_signal_bypass: IrqMutex::new(BTreeMap::new()),
+            ptrace_exec_stop_pending: IrqMutex::new(None),
+            ptrace_attach_mode: AtomicU8::new(PtraceAttachMode::None as u8),
+            ptrace_singlestep_tid: AtomicU32::new(0),
+            ptrace_syscall_trace: IrqMutex::new(BTreeMap::new()),
+            ptrace_options: AtomicUsize::new(0),
+            ptrace_pending_event: IrqMutex::new(BTreeMap::new()),
+            ptrace_ss_saved_insn: IrqMutex::new(BTreeMap::new()),
+            ptrace_stop_fp_data: IrqMutex::new(BTreeMap::new()),
 
-                personality: AtomicUsize::new(0),
+            personality: AtomicUsize::new(0),
 
-                posix_timers: Arc::new(PosixTimerTable::default()),
+            posix_timers: Arc::new(PosixTimerTable::default()),
 
-                vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
-                aspace_slot_released: AtomicBool::new(false),
+            vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
+            aspace_slot_released: AtomicBool::new(false),
 
-                job_control: IrqMutex::new(JobControl::default()),
-                cont_event: Arc::default(),
-            }
+            job_control: IrqMutex::new(JobControl::default()),
+            cont_event: Arc::default(),
         });
+        identity.bind_process(proc, exit_event, Arc::downgrade(&this));
         // Clone the Arc in a separate statement: a temporary `IrqMutex` guard
         // from `lock()` lives until the end of the statement, so calling
         // `attach_process_slot` (which locks `Mutex<AddrSpace>`) in the same
@@ -1079,8 +1184,16 @@ impl ProcessData {
     }
 
     /// Returns this process generation's stable PID identity.
-    pub(crate) fn identity(&self) -> Arc<ProcessIdentity> {
+    pub(crate) fn identity(&self) -> Arc<PidIdentity> {
         self.identity.clone()
+    }
+
+    /// Transfers the process-owned TGID lease into its immutable zombie.
+    pub(crate) fn take_tgid_lease(&self) -> PidRoleLease<Tgid> {
+        self.tgid_lease
+            .lock()
+            .take()
+            .expect("process TGID lease transferred twice")
     }
 
     /// Whether this process shares its VM address space (`CLONE_VM`).
@@ -1201,7 +1314,7 @@ impl ProcessData {
         &self,
         signo: Signo,
         continue_gen_snapshot: u64,
-        waiter_tid: Pid,
+        waiter_tid: TidNumber,
     ) -> bool {
         let mut jc = self.job_control.lock();
         if jc.continue_generation != continue_gen_snapshot {
@@ -1216,7 +1329,7 @@ impl ProcessData {
     }
 
     /// Returns true when `tid` is the thread parked for the active job stop.
-    pub fn is_job_stop_waiter(&self, tid: Pid) -> bool {
+    pub fn is_job_stop_waiter(&self, tid: TidNumber) -> bool {
         let jc = self.job_control.lock();
         jc.stopped.is_some() && jc.waiter_tid == Some(tid)
     }
@@ -1324,7 +1437,7 @@ impl ProcessData {
     /// Mark this process as traceable by its parent.
     pub fn set_ptrace_traceme(&self) {
         if let Some(parent) = self.proc.parent() {
-            self.set_ptrace_tracer_pid(parent.pid());
+            self.set_ptrace_tracer(&parent.identity());
         }
         self.ptrace_traceme.store(true, Ordering::Release);
     }
@@ -1337,21 +1450,20 @@ impl ProcessData {
         self.ptrace_traceme.load(Ordering::Acquire)
     }
 
-    pub fn set_ptrace_tracer_pid(&self, pid: starry_process::Pid) {
-        self.ptrace_tracer_pid.store(pid, Ordering::Release);
+    pub fn set_ptrace_tracer(&self, identity: &Arc<PidIdentity>) {
+        *self.ptrace_tracer.lock() = Arc::downgrade(identity);
     }
 
-    pub fn clear_ptrace_tracer_pid(&self) {
-        self.ptrace_tracer_pid.store(0, Ordering::Release);
+    pub fn clear_ptrace_tracer(&self) {
+        *self.ptrace_tracer.lock() = alloc::sync::Weak::new();
     }
 
-    pub fn ptrace_tracer_pid(&self) -> Option<starry_process::Pid> {
-        let pid = self.ptrace_tracer_pid.load(Ordering::Acquire);
-        if pid == 0 { None } else { Some(pid) }
+    pub fn ptrace_tracer_identity(&self) -> Option<Arc<PidIdentity>> {
+        self.ptrace_tracer.lock().upgrade()
     }
 
     /// Record that this tracee is stopped by `signo`.
-    pub fn set_ptrace_stop(&self, tid: u32, signo: Signo, uctx: &UserContext) {
+    pub fn set_ptrace_stop(&self, tid: TidNumber, signo: Signo, uctx: &UserContext) {
         let pending_event = self.ptrace_pending_event.lock().remove(&tid);
         self.ptrace_stop.lock().insert(
             tid,
@@ -1363,16 +1475,18 @@ impl ProcessData {
                 syscall_no: None,
                 reported: false,
                 event: pending_event.as_ref().map_or(0, |event| event.event),
-                event_msg: pending_event.as_ref().map_or(0, |event| event.msg),
+                event_msg: pending_event
+                    .as_ref()
+                    .map_or(PtraceEventMessage::Value(0), |event| event.msg.clone()),
             },
         );
-        self.ptrace_stop_tid.store(tid, Ordering::Release);
+        self.ptrace_stop_tid.store(tid.get(), Ordering::Release);
     }
 
     /// Record that this tracee is stopped at a syscall entry or exit boundary.
     pub fn set_ptrace_syscall_stop(
         &self,
-        tid: u32,
+        tid: TidNumber,
         signo: Signo,
         uctx: &UserContext,
         syscall_no: usize,
@@ -1384,7 +1498,7 @@ impl ProcessData {
         }
     }
 
-    pub fn ptrace_stop_tid(&self) -> Option<u32> {
+    pub fn ptrace_stop_tid(&self) -> Option<TidNumber> {
         let stops = self.ptrace_stop.lock();
         stops
             .iter()
@@ -1392,24 +1506,20 @@ impl ProcessData {
             .or_else(|| stops.keys().next().copied())
     }
 
-    pub fn select_ptrace_stop(&self, tid: u32) -> bool {
+    pub fn select_ptrace_stop(&self, tid: TidNumber) -> bool {
         if self.ptrace_stop.lock().contains_key(&tid) {
-            self.ptrace_stop_tid.store(tid, Ordering::Release);
+            self.ptrace_stop_tid.store(tid.get(), Ordering::Release);
             true
         } else {
             false
         }
     }
 
-    pub fn selected_ptrace_stop_tid(&self) -> Option<u32> {
-        let selected = self.ptrace_stop_tid.load(Ordering::Acquire);
+    pub fn selected_ptrace_stop_tid(&self) -> Option<TidNumber> {
+        let selected = TidNumber::try_from(self.ptrace_stop_tid.load(Ordering::Acquire)).ok();
         let stops = self.ptrace_stop.lock();
-        if selected != 0
-            && stops
-                .get(&selected)
-                .is_some_and(|stop| stop.signo.is_some())
-        {
-            Some(selected)
+        if selected.is_some_and(|tid| stops.get(&tid).is_some_and(|stop| stop.signo.is_some())) {
+            selected
         } else {
             stops
                 .iter()
@@ -1417,11 +1527,11 @@ impl ProcessData {
         }
     }
 
-    pub fn has_ptrace_stop(&self, tid: u32) -> bool {
+    pub fn has_ptrace_stop(&self, tid: TidNumber) -> bool {
         self.ptrace_stop.lock().contains_key(&tid)
     }
 
-    pub fn ptrace_stop_signo_for(&self, tid: u32) -> Option<Signo> {
+    pub fn ptrace_stop_signo_for(&self, tid: TidNumber) -> Option<Signo> {
         self.ptrace_stop
             .lock()
             .get(&tid)
@@ -1429,7 +1539,7 @@ impl ProcessData {
     }
 
     /// Return whether the selected stop was produced at a syscall boundary.
-    pub fn ptrace_stop_is_syscall_for(&self, tid: u32) -> bool {
+    pub fn ptrace_stop_is_syscall_for(&self, tid: TidNumber) -> bool {
         self.ptrace_stop
             .lock()
             .get(&tid)
@@ -1437,11 +1547,14 @@ impl ProcessData {
     }
 
     /// Return the original syscall number associated with a syscall stop.
-    pub fn ptrace_stop_syscall_number_for(&self, tid: u32) -> Option<usize> {
+    pub fn ptrace_stop_syscall_number_for(&self, tid: TidNumber) -> Option<usize> {
         self.ptrace_stop.lock().get(&tid)?.syscall_no
     }
 
-    pub fn ptrace_unreported_stop(&self, preferred_tid: Option<u32>) -> Option<(u32, Signo)> {
+    pub fn ptrace_unreported_stop(
+        &self,
+        preferred_tid: Option<TidNumber>,
+    ) -> Option<(TidNumber, Signo)> {
         {
             let stops = self.ptrace_stop.lock();
             if let Some(tid) = preferred_tid
@@ -1471,7 +1584,7 @@ impl ProcessData {
         })
     }
 
-    pub fn ptrace_unreported_stop_for(&self, tid: u32) -> Option<(u32, Signo)> {
+    pub fn ptrace_unreported_stop_for(&self, tid: TidNumber) -> Option<(TidNumber, Signo)> {
         self.ptrace_stop.lock().get(&tid).and_then(|stop| {
             (!stop.reported)
                 .then_some(stop.signo)
@@ -1487,7 +1600,7 @@ impl ProcessData {
         self.is_ptrace_syscall_stop_for(tid)
     }
 
-    pub fn is_ptrace_syscall_stop_for(&self, tid: u32) -> bool {
+    pub fn is_ptrace_syscall_stop_for(&self, tid: TidNumber) -> bool {
         self.ptrace_stop
             .lock()
             .get(&tid)
@@ -1500,7 +1613,7 @@ impl ProcessData {
         self.ptrace_stop_siginfo_for(tid)
     }
 
-    pub fn ptrace_stop_siginfo_for(&self, tid: u32) -> Option<SignalInfo> {
+    pub fn ptrace_stop_siginfo_for(&self, tid: TidNumber) -> Option<SignalInfo> {
         self.ptrace_stop
             .lock()
             .get(&tid)
@@ -1515,7 +1628,12 @@ impl ProcessData {
         self.set_ptrace_stop_siginfo_for(tid, signo, siginfo)
     }
 
-    pub fn set_ptrace_stop_siginfo_for(&self, tid: u32, signo: Signo, siginfo: SignalInfo) -> bool {
+    pub fn set_ptrace_stop_siginfo_for(
+        &self,
+        tid: TidNumber,
+        signo: Signo,
+        siginfo: SignalInfo,
+    ) -> bool {
         let mut stops = self.ptrace_stop.lock();
         let Some(stop) = stops.get_mut(&tid) else {
             return false;
@@ -1534,7 +1652,7 @@ impl ProcessData {
             .or_else(|| stops.values().find_map(|stop| stop.signo))
     }
 
-    pub fn claim_ptrace_stop(&self, tid: u32) -> bool {
+    pub fn claim_ptrace_stop(&self, tid: TidNumber) -> bool {
         !self.ptrace_stop.lock().contains_key(&tid)
     }
 
@@ -1544,7 +1662,7 @@ impl ProcessData {
         self.ptrace_stop_user_context_for(tid)
     }
 
-    pub fn ptrace_stop_user_context_for(&self, tid: u32) -> Option<UserContext> {
+    pub fn ptrace_stop_user_context_for(&self, tid: TidNumber) -> Option<UserContext> {
         self.ptrace_stop.lock().get(&tid).map(|stop| stop.uctx)
     }
 
@@ -1565,7 +1683,7 @@ impl ProcessData {
         }
     }
 
-    pub fn mark_ptrace_stop_reported_for(&self, tid: u32) {
+    pub fn mark_ptrace_stop_reported_for(&self, tid: TidNumber) {
         if let Some(stop) = self.ptrace_stop.lock().get_mut(&tid) {
             stop.reported = true;
         }
@@ -1579,7 +1697,7 @@ impl ProcessData {
         self.set_ptrace_stop_user_context_for(tid, uctx)
     }
 
-    pub fn set_ptrace_stop_user_context_for(&self, tid: u32, uctx: UserContext) -> bool {
+    pub fn set_ptrace_stop_user_context_for(&self, tid: TidNumber, uctx: UserContext) -> bool {
         let mut stops = self.ptrace_stop.lock();
         let Some(stop) = stops.get_mut(&tid) else {
             return false;
@@ -1589,7 +1707,7 @@ impl ProcessData {
     }
 
     /// Replace the original syscall number held for a stopped tracee.
-    pub fn set_ptrace_stop_syscall_number_for(&self, tid: u32, syscall_no: usize) -> bool {
+    pub fn set_ptrace_stop_syscall_number_for(&self, tid: TidNumber, syscall_no: usize) -> bool {
         let mut stops = self.ptrace_stop.lock();
         let Some(stop) = stops.get_mut(&tid) else {
             return false;
@@ -1608,7 +1726,7 @@ impl ProcessData {
         }
     }
 
-    pub fn resume_ptrace_stop_with_signal_for(&self, tid: u32, signo: u32) {
+    pub fn resume_ptrace_stop_with_signal_for(&self, tid: TidNumber, signo: u32) {
         if let Some(stop) = self.ptrace_stop.lock().get_mut(&tid) {
             self.ptrace_resume_signo.lock().insert(tid, signo);
             stop.signo = None;
@@ -1616,7 +1734,7 @@ impl ProcessData {
             stop.is_syscall = false;
             stop.reported = false;
             stop.event = 0;
-            stop.event_msg = 0;
+            stop.event_msg = PtraceEventMessage::Value(0);
         }
         // Ptrace stop state is updated before waking waiters.
         unsafe { self.ptrace_stop_event.wake(IoEvents::IN) };
@@ -1628,18 +1746,18 @@ impl ProcessData {
     }
 
     /// Consume the signal chosen by the tracer on resume.
-    pub fn take_ptrace_resume_signo_for(&self, tid: u32) -> Option<Signo> {
+    pub fn take_ptrace_resume_signo_for(&self, tid: TidNumber) -> Option<Signo> {
         let signo = self.ptrace_resume_signo.lock().remove(&tid).unwrap_or(0);
         Signo::from_repr(signo as u8)
     }
 
-    pub fn set_ptrace_resume_signal_bypass_for(&self, tid: u32, signo: Signo) {
+    pub fn set_ptrace_resume_signal_bypass_for(&self, tid: TidNumber, signo: Signo) {
         self.ptrace_resume_signal_bypass
             .lock()
             .insert(tid, signo as u32);
     }
 
-    pub fn take_ptrace_resume_signal_bypass_for(&self, tid: u32, signo: Signo) -> bool {
+    pub fn take_ptrace_resume_signal_bypass_for(&self, tid: TidNumber, signo: Signo) -> bool {
         let mut bypass = self.ptrace_resume_signal_bypass.lock();
         if bypass.get(&tid).copied() == Some(signo as u32) {
             bypass.remove(&tid);
@@ -1655,9 +1773,9 @@ impl ProcessData {
         self.take_ptrace_stop_user_context_for(tid)
     }
 
-    pub fn take_ptrace_stop_user_context_for(&self, tid: u32) -> Option<UserContext> {
+    pub fn take_ptrace_stop_user_context_for(&self, tid: TidNumber) -> Option<UserContext> {
         let uctx = self.ptrace_stop.lock().remove(&tid).map(|stop| stop.uctx);
-        if uctx.is_some() && self.ptrace_stop_tid.load(Ordering::Acquire) == tid {
+        if uctx.is_some() && self.ptrace_stop_tid.load(Ordering::Acquire) == tid.get() {
             self.ptrace_stop_tid.store(0, Ordering::Release);
         }
         uctx
@@ -1678,14 +1796,12 @@ impl ProcessData {
         unsafe { self.ptrace_stop_event.wake(IoEvents::IN) };
     }
 
-    pub fn set_ptrace_exec_stop_pending(&self) {
-        self.ptrace_exec_stop_pending
-            .store(true, core::sync::atomic::Ordering::Release);
+    pub fn set_ptrace_exec_stop_pending(&self, former_tid: PidSnapshot) {
+        *self.ptrace_exec_stop_pending.lock() = Some(former_tid);
     }
 
-    pub fn take_ptrace_exec_stop_pending(&self) -> bool {
-        self.ptrace_exec_stop_pending
-            .swap(false, core::sync::atomic::Ordering::AcqRel)
+    pub fn take_ptrace_exec_stop_pending(&self) -> Option<PidSnapshot> {
+        self.ptrace_exec_stop_pending.lock().take()
     }
 
     /// Register a waiter for changes to this process's ptrace stop state.
@@ -1722,21 +1838,22 @@ impl ProcessData {
         if !val {
             self.ptrace_singlestep_tid.store(0, Ordering::Release);
         } else if let Some(tid) = self.selected_ptrace_stop_tid() {
-            self.ptrace_singlestep_tid.store(tid, Ordering::Release);
+            self.ptrace_singlestep_tid
+                .store(tid.get(), Ordering::Release);
         }
     }
 
-    pub fn set_ptrace_singlestep_for(&self, tid: u32, val: bool) {
+    pub fn set_ptrace_singlestep_for(&self, tid: TidNumber, val: bool) {
         self.ptrace_singlestep_tid
-            .store(if val { tid } else { 0 }, Ordering::Release);
+            .store(if val { tid.get() } else { 0 }, Ordering::Release);
     }
 
     pub fn is_ptrace_singlestep(&self) -> bool {
         self.ptrace_singlestep_tid.load(Ordering::Acquire) != 0
     }
 
-    pub fn is_ptrace_singlestep_for(&self, tid: u32) -> bool {
-        self.ptrace_singlestep_tid.load(Ordering::Acquire) == tid
+    pub fn is_ptrace_singlestep_for(&self, tid: TidNumber) -> bool {
+        self.ptrace_singlestep_tid.load(Ordering::Acquire) == tid.get()
     }
 
     pub fn set_ptrace_syscall_trace(&self, trace: bool) {
@@ -1745,7 +1862,7 @@ impl ProcessData {
         }
     }
 
-    pub fn set_ptrace_syscall_trace_for(&self, tid: u32, trace: bool) {
+    pub fn set_ptrace_syscall_trace_for(&self, tid: TidNumber, trace: bool) {
         self.set_ptrace_syscall_trace_state_for(
             tid,
             if trace {
@@ -1756,7 +1873,7 @@ impl ProcessData {
         );
     }
 
-    pub fn set_ptrace_syscall_trace_state_for(&self, tid: u32, state: SyscallTraceState) {
+    pub fn set_ptrace_syscall_trace_state_for(&self, tid: TidNumber, state: SyscallTraceState) {
         let mut traces = self.ptrace_syscall_trace.lock();
         if matches!(state, SyscallTraceState::None) {
             traces.remove(&tid);
@@ -1766,7 +1883,7 @@ impl ProcessData {
     }
 
     /// Return the next syscall boundary that a `PTRACE_SYSCALL` tracee stops at.
-    pub fn ptrace_syscall_trace_state_for(&self, tid: u32) -> SyscallTraceState {
+    pub fn ptrace_syscall_trace_state_for(&self, tid: TidNumber) -> SyscallTraceState {
         self.ptrace_syscall_trace
             .lock()
             .get(&tid)
@@ -1778,7 +1895,7 @@ impl ProcessData {
     ///
     /// This is used only when `PTRACE_SYSCALL` resumes a syscall stop. Resuming
     /// an event, group, or signal-delivery stop begins with the next entry.
-    pub fn advance_ptrace_syscall_trace_for(&self, tid: u32) {
+    pub fn advance_ptrace_syscall_trace_for(&self, tid: TidNumber) {
         let mut traces = self.ptrace_syscall_trace.lock();
         let next = match traces.get(&tid).copied() {
             Some(SyscallTraceState::Entry) => SyscallTraceState::Exit,
@@ -1789,7 +1906,7 @@ impl ProcessData {
         traces.insert(tid, next);
     }
 
-    pub fn take_ptrace_syscall_trace_for(&self, tid: u32) -> SyscallTraceState {
+    pub fn take_ptrace_syscall_trace_for(&self, tid: TidNumber) -> SyscallTraceState {
         self.ptrace_syscall_trace
             .lock()
             .remove(&tid)
@@ -1804,27 +1921,34 @@ impl ProcessData {
         self.ptrace_options.load(Ordering::Acquire)
     }
 
-    pub fn ptrace_event_msg(&self) -> usize {
-        if let Some(tid) = self.selected_ptrace_stop_tid() {
-            return self.ptrace_event_msg_for(tid);
-        }
-        0
-    }
-
-    pub fn ptrace_event_msg_for(&self, tid: u32) -> usize {
+    pub fn ptrace_event_msg_for(&self, tid: TidNumber, observer: &PidView) -> usize {
         self.ptrace_stop
             .lock()
             .get(&tid)
-            .map_or(0, |stop| stop.event_msg)
+            .map_or(0, |stop| stop.event_msg.visible_value(observer))
     }
 
-    pub fn set_ptrace_pending_event(&self, tid: u32, event: u32, msg: usize) {
-        self.ptrace_pending_event
-            .lock()
-            .insert(tid, PtracePendingEvent { event, msg });
+    pub fn set_ptrace_pending_event(&self, tid: TidNumber, event: u32, msg: usize) {
+        self.ptrace_pending_event.lock().insert(
+            tid,
+            PtracePendingEvent {
+                event,
+                msg: PtraceEventMessage::Value(msg),
+            },
+        );
     }
 
-    pub fn has_ptrace_pending_event_for(&self, tid: u32) -> bool {
+    pub fn set_ptrace_pending_pid_event(&self, tid: TidNumber, event: u32, pid: PidSnapshot) {
+        self.ptrace_pending_event.lock().insert(
+            tid,
+            PtracePendingEvent {
+                event,
+                msg: PtraceEventMessage::Pid(pid),
+            },
+        );
+    }
+
+    pub fn has_ptrace_pending_event_for(&self, tid: TidNumber) -> bool {
         self.ptrace_pending_event.lock().contains_key(&tid)
     }
 
@@ -1845,7 +1969,7 @@ impl ProcessData {
         if event == 0 { None } else { Some(event) }
     }
 
-    pub fn ptrace_event_for(&self, tid: u32) -> Option<u32> {
+    pub fn ptrace_event_for(&self, tid: TidNumber) -> Option<u32> {
         let event = self
             .ptrace_stop
             .lock()
@@ -1859,17 +1983,17 @@ impl ProcessData {
         self.take_ptrace_event_for(tid)
     }
 
-    pub fn take_ptrace_event_for(&self, tid: u32) -> Option<u32> {
+    pub fn take_ptrace_event_for(&self, tid: TidNumber) -> Option<u32> {
         let event = self.ptrace_stop.lock().get_mut(&tid).map_or(0, |stop| {
             let event = stop.event;
             stop.event = 0;
-            stop.event_msg = 0;
+            stop.event_msg = PtraceEventMessage::Value(0);
             event
         });
         if event == 0 { None } else { Some(event) }
     }
 
-    pub fn set_ptrace_ss_saved_insn_for(&self, tid: u32, saved: Option<(usize, usize)>) {
+    pub fn set_ptrace_ss_saved_insn_for(&self, tid: TidNumber, saved: Option<(usize, usize)>) {
         let mut saved_insns = self.ptrace_ss_saved_insn.lock();
         if let Some(saved) = saved {
             saved_insns.insert(tid, saved);
@@ -1878,12 +2002,12 @@ impl ProcessData {
         }
     }
 
-    pub fn take_ptrace_ss_saved_insn_for(&self, tid: u32) -> Option<(usize, usize)> {
+    pub fn take_ptrace_ss_saved_insn_for(&self, tid: TidNumber) -> Option<(usize, usize)> {
         self.ptrace_ss_saved_insn.lock().remove(&tid)
     }
 
     #[cfg(target_arch = "riscv64")]
-    pub fn save_current_fp_for_ptrace(&self, tid: u32) {
+    pub fn save_current_fp_for_ptrace(&self, tid: TidNumber) {
         let mut fp = ax_cpu::FpState::default();
         fp.save();
         fp.fs = riscv::register::sstatus::read().fs();
@@ -1897,7 +2021,7 @@ impl ProcessData {
     }
 
     #[cfg(target_arch = "aarch64")]
-    pub fn save_current_fp_for_ptrace(&self, tid: u32) {
+    pub fn save_current_fp_for_ptrace(&self, tid: TidNumber) {
         let mut fp = ax_cpu::FpState::default();
         fp.save();
         self.ptrace_stop_fp_data.lock().insert(
@@ -1911,7 +2035,7 @@ impl ProcessData {
     }
 
     #[cfg(target_arch = "loongarch64")]
-    pub fn save_current_fp_for_ptrace(&self, tid: u32) {
+    pub fn save_current_fp_for_ptrace(&self, tid: TidNumber) {
         let mut fp = ax_cpu::FpuState::default();
         fp.save();
         self.ptrace_stop_fp_data.lock().insert(
@@ -1933,10 +2057,10 @@ impl ProcessData {
         target_arch = "loongarch64",
         target_arch = "x86_64"
     )))]
-    pub fn save_current_fp_for_ptrace(&self, _tid: u32) {}
+    pub fn save_current_fp_for_ptrace(&self, _tid: TidNumber) {}
 
     #[cfg(target_arch = "x86_64")]
-    pub fn save_current_fp_for_ptrace(&self, tid: u32) {
+    pub fn save_current_fp_for_ptrace(&self, tid: TidNumber) {
         let mut area =
             unsafe { core::mem::MaybeUninit::<ax_cpu::FxsaveArea>::zeroed().assume_init() };
         unsafe {
@@ -1948,7 +2072,7 @@ impl ProcessData {
     }
 
     #[cfg(target_arch = "riscv64")]
-    pub fn restore_current_fp_for_ptrace(&self, tid: u32, uctx: &mut UserContext) {
+    pub fn restore_current_fp_for_ptrace(&self, tid: TidNumber, uctx: &mut UserContext) {
         let Some(fp) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
             return;
         };
@@ -1967,7 +2091,7 @@ impl ProcessData {
     }
 
     #[cfg(target_arch = "aarch64")]
-    pub fn restore_current_fp_for_ptrace(&self, tid: u32, _uctx: &mut UserContext) {
+    pub fn restore_current_fp_for_ptrace(&self, tid: TidNumber, _uctx: &mut UserContext) {
         let Some(fp) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
             return;
         };
@@ -1982,7 +2106,7 @@ impl ProcessData {
     }
 
     #[cfg(target_arch = "loongarch64")]
-    pub fn restore_current_fp_for_ptrace(&self, tid: u32, _uctx: &mut UserContext) {
+    pub fn restore_current_fp_for_ptrace(&self, tid: TidNumber, _uctx: &mut UserContext) {
         let Some(fp) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
             return;
         };
@@ -2005,10 +2129,10 @@ impl ProcessData {
         target_arch = "loongarch64",
         target_arch = "x86_64"
     )))]
-    pub fn restore_current_fp_for_ptrace(&self, _tid: u32, _uctx: &mut UserContext) {}
+    pub fn restore_current_fp_for_ptrace(&self, _tid: TidNumber, _uctx: &mut UserContext) {}
 
     #[cfg(target_arch = "x86_64")]
-    pub fn restore_current_fp_for_ptrace(&self, tid: u32, _uctx: &mut UserContext) {
+    pub fn restore_current_fp_for_ptrace(&self, tid: TidNumber, _uctx: &mut UserContext) {
         let Some(PtraceStopFpData(area)) = self.ptrace_stop_fp_data.lock().remove(&tid) else {
             return;
         };
@@ -2017,11 +2141,11 @@ impl ProcessData {
         }
     }
 
-    pub fn ptrace_stop_fp_data_for(&self, tid: u32) -> Option<PtraceStopFpData> {
+    pub fn ptrace_stop_fp_data_for(&self, tid: TidNumber) -> Option<PtraceStopFpData> {
         self.ptrace_stop_fp_data.lock().get(&tid).copied()
     }
 
-    pub fn set_ptrace_stop_fp_data_for(&self, tid: u32, data: PtraceStopFpData) -> bool {
+    pub fn set_ptrace_stop_fp_data_for(&self, tid: TidNumber, data: PtraceStopFpData) -> bool {
         self.ptrace_stop_fp_data.lock().insert(tid, data).is_some()
     }
 

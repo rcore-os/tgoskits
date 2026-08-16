@@ -106,7 +106,7 @@ The lifecycle split is deliberate:
 
 The patch:
 
-- removes lifecycle flags from `starry-process::Process` and introduces the
+- removes lifecycle flags from `starry-kernel::task::Process` and introduces the
   typed kernel-owned
   `Live -> Zombie -> Reaping -> Reaped` identity state machine;
 - constructs the stable identity together with `ProcessData`, so clone-created
@@ -178,8 +178,8 @@ axtest reported `not ok` alongside the unrelated pre-existing
 
 ## Validation evidence
 
-- `cargo test -p starry-process`: 27 tests passed;
-- `cargo xtask clippy --package starry-process`: 1/1 check passed;
+- the former `starry-process` topology tests are now kernel task tests; the
+  standalone package and its old validation commands no longer exist;
 - `cargo xtask clippy --package starry-kernel`: 22/22 feature checks passed;
 - `reaping_identity_is_not_publicly_resolvable` now reports `ok` under
   `cargo xtask ktest qemu -p starry-kernel --arch x86_64`; the complete local
