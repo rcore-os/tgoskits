@@ -119,11 +119,11 @@ pub fn sys_sched_getaffinity(
     cpusetsize: usize,
     user_mask: *mut u8,
 ) -> StarryResult<isize> {
-    let cpusetsize = sched_affinity_len(cpusetsize);
-    if cpusetsize.wrapping_mul(8) < hal::cpu_num() as u32 {
+    let cpusetsize = sched_affinity_len(cpusetsize) as usize;
+    if cpusetsize < hal::cpu_num().div_ceil(8) {
         return Err(StarryError::InvalidInput);
     }
-    if cpusetsize & (size_of::<usize>() as u32 - 1) != 0 {
+    if cpusetsize & (size_of::<usize>() - 1) != 0 {
         return Err(StarryError::InvalidInput);
     }
 

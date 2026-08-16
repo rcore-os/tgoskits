@@ -107,6 +107,13 @@ int main(void)
                       "raw sched_getaffinity truncates oversized cpusetsize to EINVAL");
             CHECK_ERR(syscall(SYS_SCHED_SETAFFINITY, 0, oversized_cpusetsize, &mask), EINVAL,
                       "raw sched_setaffinity truncates oversized cpusetsize to EINVAL");
+
+            // This is a valid unsigned-int length. The implementation must
+            // compare it in bytes, rather than overflow it while converting
+            // to a number of CPU bits.
+            size_t large_cpusetsize = (size_t)1 << 29;
+            CHECK(syscall(SYS_SCHED_GETAFFINITY, 0, large_cpusetsize, &mask) > 0,
+                  "raw sched_getaffinity accepts a large valid cpusetsize");
         }
 #endif
 
