@@ -122,8 +122,9 @@ pub fn tick_cpu_time(task: &TaskInner) {
     let Some(thr) = task.try_as_thread() else {
         return;
     };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // Reentrant borrow means the task is mid-state-transition; skip.
+    let Some(mut time) = thr.time.try_lock() else {
+        // Lock contended (mid state-transition, or a cross-CPU reader/alarm);
+        // skip. Runs from IRQ context, so it must never block.
         return;
     };
     time.tick();
@@ -134,7 +135,9 @@ pub fn task_cpu_time(task: &TaskInner) -> (TimeValue, TimeValue) {
     let Some(thr) = task.try_as_thread() else {
         return (TimeValue::ZERO, TimeValue::ZERO);
     };
-    let Ok(time) = thr.time.try_borrow() else {
+    let Some(time) = thr.time.try_lock() else {
+        // Contended snapshot (the task is mid-accounting on its own CPU); report
+        // zero rather than block a `/proc` reader, matching the prior behavior.
         return (TimeValue::ZERO, TimeValue::ZERO);
     };
     time.output()
@@ -145,14 +148,14 @@ pub fn poll_timer(task: &TaskInner) {
     let Some(thr) = task.try_as_thread() else {
         return;
     };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // reentrant borrow, likely IRQ
-        return;
-    };
-    let emitter = |signo| {
+    // Called from the alarm task (a normal task context, possibly a different
+    // CPU than the target). Hold the lock only for the poll; emit the returned
+    // itimer signals after releasing it — signal delivery must not run under the
+    // IRQ-disabling time lock.
+    let fired = thr.time.lock().poll();
+    for signo in fired.into_iter().flatten() {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    };
-    time.poll(emitter);
+    }
 }
 
 /// Poll the process-level POSIX timers.
@@ -169,15 +172,20 @@ pub fn set_timer_state(task: &TaskInner, state: TimerState) {
     let Some(thr) = task.try_as_thread() else {
         return;
     };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // reentrant borrow, likely IRQ
-        return;
+    // Hold the (IRQ-disabling) lock only for the accounting update + state flip;
+    // collect any itimer signals and emit them after unlocking — signal delivery
+    // must not run under the time lock. Called at syscall boundaries (task
+    // context, the thread's own CPU), so it can block briefly on the rare
+    // cross-CPU contention without reentrancy.
+    let fired = {
+        let mut time = thr.time.lock();
+        let fired = time.poll();
+        time.set_state(state);
+        fired
     };
-    let emitter = |signo| {
+    for signo in fired.into_iter().flatten() {
         send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    };
-    time.poll(emitter);
-    time.set_state(state);
+    }
 }
 
 #[repr(C)]

@@ -19,9 +19,7 @@ mod user;
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::{
-    cell::RefCell,
     future::poll_fn,
-    ops::Deref,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
     task::Poll,
 };
@@ -107,20 +105,6 @@ impl PtraceEventMessage {
 }
 use crate::mm::AddrSpace;
 
-///  A wrapper type that assumes the inner type is `Sync`.
-#[repr(transparent)]
-pub struct AssumeSync<T>(pub T);
-
-unsafe impl<T> Sync for AssumeSync<T> {}
-
-impl<T> Deref for AssumeSync<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 /// A one-shot flag that suppresses exactly one signal check.
 struct NextSignalCheckBlock(AtomicBool);
 
@@ -172,11 +156,16 @@ pub struct Thread {
     /// The thread-level signal manager
     pub signal: Arc<ThreadSignalManager>,
 
-    /// Time manager
+    /// Time manager.
     ///
-    /// This is assumed to be `Sync` because it's only borrowed mutably during
-    /// context switches, which is exclusive to the current thread.
-    pub time: AssumeSync<RefCell<TimeManager>>,
+    /// An IRQ-disabling spinlock (not a `RefCell`): CPU-time accounting
+    /// borrows this from the timer IRQ / context switch on the thread's own
+    /// CPU, while cross-CPU readers (`getrusage`, `/proc`) and the alarm task
+    /// borrow it from other CPUs. The lock is only ever held for a handful of
+    /// short field updates with no nested lock (itimer signals are returned
+    /// from `poll()` and emitted after unlocking), so it cannot deadlock. IRQ
+    /// / context-switch paths use `try_lock` and skip on contention.
+    pub time: IrqMutex<TimeManager>,
 
     /// The OOM score adjustment value.
     oom_score_adj: AtomicI32,
@@ -294,7 +283,7 @@ impl Thread {
             scope: ContextSwitchRwLock::new(scope),
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
-            time: AssumeSync(RefCell::new(TimeManager::new())),
+            time: IrqMutex::new(TimeManager::new()),
             exit: Arc::new(AtomicBool::new(false)),
             exit_started: AtomicBool::new(false),
             oom_score_adj: AtomicI32::new(200),
