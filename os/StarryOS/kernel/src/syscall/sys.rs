@@ -909,6 +909,13 @@ fn validate_seccomp_filter_len(prog: SockFprog) -> StarryResult<()> {
     Ok(())
 }
 
+fn validate_seccomp_filter_pointer(prog: SockFprog) -> StarryResult<()> {
+    if prog.filter.is_null() {
+        return Err(StarryError::InvalidInput);
+    }
+    Ok(())
+}
+
 fn read_seccomp_filter_instructions(prog: SockFprog) -> StarryResult<Vec<SockFilter>> {
     let mut raw = vec![MaybeUninit::<SockFilter>::uninit(); prog.len as usize];
     vm_read_slice(prog.filter, &mut raw)?;
@@ -968,6 +975,7 @@ pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> StarryResult<isize> 
             let prog = read_seccomp_filter_header(args)?;
             validate_seccomp_filter_len(prog)?;
             check_seccomp_install_permission()?;
+            validate_seccomp_filter_pointer(prog)?;
             let filter = read_seccomp_filter_instructions(prog)?;
             let curr = current();
             let thread = curr.as_thread();

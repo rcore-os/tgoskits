@@ -5,6 +5,7 @@
 #include <sched.h>
 #include <signal.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/prctl.h>
@@ -257,11 +258,15 @@ static void check_invalid_seccomp_args(void)
                        EINVAL, "strict mode rejects non-NULL args");
 }
 
-static void check_filter_validation_before_permission(void)
+static void check_filter_header_validation_before_permission(void)
 {
     struct sock_filter allow = BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
     struct sock_fprog empty = {
         .len = 0,
+        .filter = NULL,
+    };
+    struct sock_fprog null_filter = {
+        .len = 1,
         .filter = NULL,
     };
     struct sock_fprog valid = {
@@ -283,15 +288,23 @@ static void check_filter_validation_before_permission(void)
                        EINVAL, "filter mode validates an empty program before permission");
 
     errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &null_filter), -1,
+                       EACCES, "filter mode checks permission before a NULL instruction pointer");
+
+    errno = 0;
     expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &valid), -1,
                        EACCES, "filter mode reports EACCES for an unauthorized valid program");
 }
 
 static void check_filter_pointer_after_permission(void)
 {
-    struct sock_fprog invalid = {
+    struct sock_fprog null_filter = {
         .len = 1,
         .filter = NULL,
+    };
+    struct sock_fprog unreadable_filter = {
+        .len = 1,
+        .filter = (struct sock_filter *)(uintptr_t)1,
     };
 
     if (set_no_new_privs() != 0) {
@@ -300,8 +313,12 @@ static void check_filter_pointer_after_permission(void)
     }
 
     errno = 0;
-    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &invalid), -1,
-                       EFAULT, "filter mode reads instructions after permission succeeds");
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &null_filter), -1,
+                       EINVAL, "filter mode rejects a NULL instruction pointer after permission");
+
+    errno = 0;
+    expect_syscall_ret(seccomp_raw(SECCOMP_SET_MODE_FILTER, 0, &unreadable_filter), -1,
+                       EFAULT, "filter mode reads non-NULL instructions after permission succeeds");
 }
 
 static void check_errno_filter(void)
@@ -729,8 +746,8 @@ int main(void)
 
     check_action_availability();
     check_invalid_seccomp_args();
-    run_isolated(check_filter_validation_before_permission,
-                 "filter validation before permission isolated test");
+    run_isolated(check_filter_header_validation_before_permission,
+                 "filter header validation before permission isolated test");
     run_isolated(check_filter_pointer_after_permission,
                  "filter pointer after permission isolated test");
     run_isolated(check_errno_filter, "ERRNO filter isolated test");
