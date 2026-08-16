@@ -2,13 +2,15 @@ extern crate alloc;
 
 use alloc::format;
 
-use rdif_display::{DisplayError, DisplayInfo, Event, FrameBuffer, PixelFormat};
+use rdif_display::{
+    CapsetInfo, DisplayError, DisplayInfo, Event, FrameBuffer, PixelFormat, TransferBox,
+};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 #[cfg(feature = "pci")]
 use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
-    device::gpu::VirtIOGpu,
+    device::gpu::{GpuBox, Rect, VirtIOGpu},
     transport::{InterruptStatus, Transport},
 };
 
@@ -60,6 +62,7 @@ struct VirtIoDisplay<T: Transport + 'static> {
     fb_base: *mut u8,
     irq_num: Option<usize>,
     irq_enabled: bool,
+    next_fence_id: u64,
 }
 
 unsafe impl<T: Transport + 'static> Send for VirtIoDisplay<T> {}
@@ -85,6 +88,7 @@ impl<T: Transport + 'static> VirtIoDisplay<T> {
             fb_base,
             irq_num,
             irq_enabled: false,
+            next_fence_id: 1,
         })
     }
 }
@@ -132,6 +136,294 @@ impl<T: Transport + 'static> rdif_display::Interface for VirtIoDisplay<T> {
         let status = self.raw.ack_interrupt();
         display_irq_event(self.irq_enabled, status)
     }
+
+    // --- 2D resource / scanout primitives ---
+
+    fn resource_create_2d(
+        &mut self,
+        resource_id: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), DisplayError> {
+        self.raw
+            .resource_create_2d(resource_id, width, height)
+            .map_err(map_gpu3d_err)
+    }
+
+    fn resource_attach_backing(
+        &mut self,
+        resource_id: u32,
+        paddr: u64,
+        length: u32,
+    ) -> Result<(), DisplayError> {
+        self.raw
+            .resource_attach_backing(resource_id, paddr, length)
+            .map_err(map_gpu3d_err)
+    }
+
+    fn set_scanout(
+        &mut self,
+        scanout_id: u32,
+        resource_id: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+    ) -> Result<(), DisplayError> {
+        self.raw
+            .set_scanout(
+                Rect {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                },
+                scanout_id,
+                resource_id,
+            )
+            .map_err(map_gpu3d_err)
+    }
+
+    fn transfer_to_host_2d(
+        &mut self,
+        resource_id: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+    ) -> Result<(), DisplayError> {
+        self.raw
+            .transfer_to_host_2d(
+                Rect {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                },
+                0,
+                resource_id,
+            )
+            .map_err(map_gpu3d_err)
+    }
+
+    fn resource_flush(
+        &mut self,
+        resource_id: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+    ) -> Result<(), DisplayError> {
+        self.raw
+            .resource_flush(
+                Rect {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                },
+                resource_id,
+            )
+            .map_err(map_gpu3d_err)
+    }
+
+    // --- 3D methods ---
+
+    fn has_virgl(&self) -> bool {
+        self.raw.has_virgl()
+    }
+
+    fn has_resource_blob(&self) -> bool {
+        self.raw.has_resource_blob()
+    }
+
+    fn ctx_create(
+        &mut self,
+        ctx_id: u32,
+        name: &str,
+        context_init: u32,
+    ) -> Result<(), DisplayError> {
+        self.raw
+            .ctx_create(ctx_id, name, context_init)
+            .map_err(map_gpu3d_err)
+    }
+
+    fn ctx_destroy(&mut self, ctx_id: u32) -> Result<(), DisplayError> {
+        self.raw.ctx_destroy(ctx_id).map_err(map_gpu3d_err)
+    }
+
+    fn ctx_attach_resource(&mut self, ctx_id: u32, resource_id: u32) -> Result<(), DisplayError> {
+        self.raw
+            .ctx_attach_resource(ctx_id, resource_id)
+            .map_err(map_gpu3d_err)
+    }
+
+    fn ctx_detach_resource(&mut self, ctx_id: u32, resource_id: u32) -> Result<(), DisplayError> {
+        self.raw
+            .ctx_detach_resource(ctx_id, resource_id)
+            .map_err(map_gpu3d_err)
+    }
+
+    fn resource_create_3d(
+        &mut self,
+        ctx_id: u32,
+        resource_id: u32,
+        target: u32,
+        format: u32,
+        bind: u32,
+        width: u32,
+        height: u32,
+        depth: u32,
+        array_size: u32,
+        last_level: u32,
+        nr_samples: u32,
+        flags: u32,
+    ) -> Result<(), DisplayError> {
+        self.raw
+            .resource_create_3d(
+                ctx_id,
+                resource_id,
+                target,
+                format,
+                bind,
+                width,
+                height,
+                depth,
+                array_size,
+                last_level,
+                nr_samples,
+                flags,
+            )
+            .map_err(map_gpu3d_err)
+    }
+
+    fn resource_unref(&mut self, resource_id: u32) -> Result<(), DisplayError> {
+        self.raw.resource_unref(resource_id).map_err(map_gpu3d_err)
+    }
+
+    fn resource_create_blob(
+        &mut self,
+        ctx_id: u32,
+        resource_id: u32,
+        blob_mem: u32,
+        blob_flags: u32,
+        size: u64,
+        blob_id: u64,
+        cmd: &[u8],
+    ) -> Result<(), DisplayError> {
+        // Linux order (`virtio_gpu_resource_create_blob_ioctl`, virtgpu_ioctl.c):
+        // submit the virgl cmd stream first, then send RESOURCE_CREATE_BLOB —
+        // both go on the same virtqueue and execute in order on the host.
+        if !cmd.is_empty() {
+            self.submit_cmd(ctx_id, cmd)?;
+        }
+        // Guest backing (mem_entries) is handled by the caller at the DRM
+        // layer; the HOST3D blobs used by the present path carry none.
+        // SAFETY: HOST3D path passes an empty `mem_entries` slice, so the
+        // device is not given any guest memory range to read/write; the
+        // contract (valid, allocated, non-aliased backing covering `size`)
+        // is trivially satisfied. Guest-backed blobs are created by the DRM
+        // layer, which owns their backing.
+        unsafe {
+            self.raw.resource_create_blob(
+                ctx_id,
+                resource_id,
+                blob_mem,
+                blob_flags,
+                size,
+                blob_id,
+                &[],
+            )
+        }
+        .map_err(map_gpu3d_err)
+    }
+
+    fn transfer_to_host_3d(
+        &mut self,
+        ctx_id: u32,
+        resource_id: u32,
+        box_: TransferBox,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), DisplayError> {
+        self.raw
+            .transfer_to_host_3d(
+                ctx_id,
+                resource_id,
+                GpuBox {
+                    x: box_.x,
+                    y: box_.y,
+                    z: box_.z,
+                    w: box_.w,
+                    h: box_.h,
+                    d: box_.d,
+                },
+                offset,
+                level,
+                stride,
+                layer_stride,
+            )
+            .map_err(map_gpu3d_err)
+    }
+
+    fn transfer_from_host_3d(
+        &mut self,
+        ctx_id: u32,
+        resource_id: u32,
+        box_: TransferBox,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), DisplayError> {
+        self.raw
+            .transfer_from_host_3d(
+                ctx_id,
+                resource_id,
+                GpuBox {
+                    x: box_.x,
+                    y: box_.y,
+                    z: box_.z,
+                    w: box_.w,
+                    h: box_.h,
+                    d: box_.d,
+                },
+                offset,
+                level,
+                stride,
+                layer_stride,
+            )
+            .map_err(map_gpu3d_err)
+    }
+
+    fn submit_cmd(&mut self, ctx_id: u32, cmds: &[u8]) -> Result<u64, DisplayError> {
+        let fence_id = self.next_fence_id;
+        self.next_fence_id = self.next_fence_id.wrapping_add(1).max(1);
+        self.raw
+            .submit_3d(ctx_id, fence_id, cmds)
+            .map_err(map_gpu3d_err)?;
+        Ok(fence_id)
+    }
+
+    fn get_capset_info(&mut self, index: u32) -> Result<CapsetInfo, DisplayError> {
+        let resp = self.raw.get_capset_info(index).map_err(map_gpu3d_err)?;
+        Ok(CapsetInfo {
+            capset_id: resp.capset_id,
+            max_version: resp.capset_max_version,
+            max_size: resp.capset_max_size,
+        })
+    }
+
+    fn get_capset(
+        &mut self,
+        id: u32,
+        ver: u32,
+        size: u32,
+    ) -> Result<alloc::vec::Vec<u8>, DisplayError> {
+        self.raw.get_capset(id, ver, size).map_err(map_gpu3d_err)
+    }
 }
 
 fn display_irq_event(irq_enabled: bool, status: InterruptStatus) -> Event {
@@ -150,6 +442,18 @@ fn map_display_err(err: VirtIoError) -> DisplayError {
         VirtIoError::NotReady => DisplayError::NotAvailable,
         _ => DisplayError::Other(alloc::boxed::Box::new(err)),
     }
+}
+
+fn map_gpu3d_err(err: VirtIoError) -> DisplayError {
+    use rdif_display::Gpu3dErrorKind;
+    let kind = match err {
+        VirtIoError::IoError => Gpu3dErrorKind::IoError,
+        VirtIoError::Unsupported => Gpu3dErrorKind::Unsupported,
+        VirtIoError::NotReady => Gpu3dErrorKind::NotReady,
+        VirtIoError::InvalidParam => Gpu3dErrorKind::InvalidParam,
+        _ => Gpu3dErrorKind::Other,
+    };
+    DisplayError::Gpu3dError(kind)
 }
 
 #[cfg(test)]

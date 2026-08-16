@@ -63,7 +63,11 @@ pub const fn has_static_mmio_drivers() -> bool {
 }
 
 unsafe impl VirtIoHal for VirtIoHalImpl {
-    fn dma_alloc(pages: usize, _direction: BufferDirection) -> (VirtIoPhysAddr, NonNull<u8>) {
+    fn dma_alloc(
+        pages: usize,
+        _direction: BufferDirection,
+        _access_platform: bool,
+    ) -> (VirtIoPhysAddr, NonNull<u8>) {
         let Ok(vaddr) = global_allocator().alloc_pages(pages, 0x1000, UsageKind::Dma) else {
             return (0, NonNull::dangling());
         };
@@ -75,7 +79,12 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
         (paddr, ptr)
     }
 
-    unsafe fn dma_dealloc(_paddr: VirtIoPhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
+    unsafe fn dma_dealloc(
+        _paddr: VirtIoPhysAddr,
+        vaddr: NonNull<u8>,
+        pages: usize,
+        _access_platform: bool,
+    ) -> i32 {
         global_allocator().dealloc_pages(vaddr.as_ptr() as usize, pages, UsageKind::Dma);
         0
     }
@@ -86,12 +95,21 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
             .expect("failed to map VirtIO MMIO")
     }
 
-    unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> VirtIoPhysAddr {
+    unsafe fn share(
+        buffer: NonNull<[u8]>,
+        _direction: BufferDirection,
+        _access_platform: bool,
+    ) -> VirtIoPhysAddr {
         let vaddr = buffer.as_ptr() as *mut u8 as usize;
         axklib::mem::virt_to_phys(vaddr.into()).as_usize() as VirtIoPhysAddr
     }
 
-    unsafe fn unshare(_paddr: VirtIoPhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {
+    unsafe fn unshare(
+        _paddr: VirtIoPhysAddr,
+        _buffer: NonNull<[u8]>,
+        _direction: BufferDirection,
+        _access_platform: bool,
+    ) {
     }
 }
 

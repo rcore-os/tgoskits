@@ -46,5 +46,6 @@ apps/starry/py-sci
 apps/starry/py-tui
 apps/starry/python-net
 apps/starry/qt-calc
+apps/starry/virgl-test
 apps/starry/openssh
 apps/starry/qemu/ltp-hackbench
