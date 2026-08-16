@@ -38,7 +38,8 @@ mod publisher {
         IvcMessageReceiver, IvcMessageSender, IvcPeerEventWaiter, IvcRegion, record_peer_event,
     };
 
-    const ACK_BODY: &[u8] = b"ack from arceos subscriber";
+    const ARCEOS_ACK_BODY: &[u8] = b"ack from arceos subscriber";
+    const LINUX_ACK_BODY: &[u8] = b"ack from linux subscriber";
     const APP_HEADER_LEN: usize = 11;
     const APP_MAX_MESSAGE_LEN: usize = 700;
     const REQUEST_MESSAGE_LENGTHS: [usize; 5] = [39, 40, 41, 640, 700];
@@ -162,7 +163,8 @@ mod publisher {
                         match message.kind {
                             AppMessageKind::Ack => {
                                 if message.sequence != expected_ack_sequence
-                                    || message.body != ACK_BODY
+                                    || (message.body != ARCEOS_ACK_BODY
+                                        && message.body != LINUX_ACK_BODY)
                                 {
                                     println!(
                                         "ivc validation failed: ack expected={} actual={} len={}",
