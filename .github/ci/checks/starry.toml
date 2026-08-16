@@ -1,0 +1,110 @@
+schema_version = 1
+phase = "test"
+group = "Starry"
+
+# Visual and stress checks remain disabled until their prerequisites and
+# verified golden outputs are available. The rock-4d board check also remains
+# disabled, matching the previous workflow matrix.
+
+[[check]]
+id = "test-starry-riscv64-qemu"
+name = "Test starry riscv64 qemu"
+runs_on = ["ubuntu-latest"]
+environment = "base"
+cache_key = "test-starry-riscv64"
+apk_region = "us"
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry test qemu --arch riscv64
+'''
+
+[[check]]
+id = "test-starry-aarch64-qemu"
+name = "Test starry aarch64 qemu"
+runs_on = ["ubuntu-latest"]
+environment = "base"
+cache_key = "test-starry-aarch64"
+apk_region = "us"
+download_xtask_bin_artifact = true
+command = '''
+echo "==> starry aarch64 GICv2 SMP4 boot"
+target/debug/tg-xtask starry qemu --arch aarch64 --smp 4 \
+  --qemu-config os/StarryOS/configs/qemu/qemu-aarch64-gicv2-boot.toml
+echo "==> starry aarch64 test suites"
+target/debug/tg-xtask starry test qemu --arch aarch64
+'''
+
+[[check]]
+id = "test-starry-loongarch64-qemu"
+name = "Test starry loongarch64 qemu"
+runs_on = ["ubuntu-latest"]
+environment = "base"
+cache_key = "test-starry-loongarch64"
+apk_region = "us"
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry test qemu --arch loongarch64
+'''
+
+[[check]]
+id = "test-starry-x86-64-qemu"
+name = "Test starry x86_64 qemu"
+runs_on = ["ubuntu-latest"]
+environment = "base"
+cache_key = "test-starry-x86_64"
+apk_region = "us"
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask starry test qemu --arch x86_64
+'''
+
+[[check]]
+id = "test-starry-self-hosted-board-orangepi-5-plus"
+name = "Test starry self-hosted board orangepi-5-plus"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+command = '''
+cargo xtask starry test board --board orangepi-5-plus
+'''
+
+[[check]]
+id = "test-orangepi-5-plus-robot-native-starryos"
+name = "Test OrangePi 5 Plus robot native StarryOS"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+timeout_minutes = 90
+command = '''
+cargo xtask starry test board --board orangepi-5-plus-robot
+'''
+
+[[check]]
+id = "test-starry-self-hosted-board-aka-00-sg2002"
+name = "Test starry self-hosted board aka-00-sg2002"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+command = '''
+cargo xtask starry test board --board aka-00-sg2002
+'''
+
+[[check]]
+id = "test-starry-self-hosted-board-visionfive2"
+name = "Test starry self-hosted board visionfive2"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+command = '''
+cargo xtask starry test board --board visionfive2
+'''
+
+[[check]]
+id = "test-starry-self-hosted-board-jl-lsgd2k10"
+name = "Test starry self-hosted board jl-lsgd2k10"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+command = '''
+cargo xtask starry test board --board jl-lsgd2k10
+'''
