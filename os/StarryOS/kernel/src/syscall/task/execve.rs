@@ -8,6 +8,7 @@ use core::{
     ffi::{c_char, c_int},
     future::poll_fn,
     iter,
+    mem::size_of,
     task::Poll,
 };
 
@@ -16,16 +17,66 @@ use ax_task::{current, future::block_on, yield_now};
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
-use starry_vm::vm_load_until_nul;
+use starry_vm::{VmError, vm_load_until_nul};
 
 use crate::{
     StarryError, StarryResult,
     config::USER_HEAP_BASE,
     file::{ResolveAtResult, memfd::Memfd, resolve_at},
-    mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
+    mm::{
+        MAX_EXEC_ARG_BYTES, copy_from_kernel, load_user_app, new_user_aspace_empty,
+        validate_exec_arg_size, vm_load_string,
+    },
     sync::Mutex,
     task::{AsThread, Tid, TidNumber, zap_thread},
 };
+
+fn charge_exec_arg_bytes(total: &mut usize, bytes: usize) -> StarryResult {
+    *total = total
+        .checked_add(bytes)
+        .ok_or(StarryError::ArgumentListTooLong)?;
+    if *total > MAX_EXEC_ARG_BYTES {
+        return Err(StarryError::ArgumentListTooLong);
+    }
+    Ok(())
+}
+
+fn exec_arg_vm_error(error: VmError) -> StarryError {
+    match error {
+        VmError::TooLong => StarryError::ArgumentListTooLong,
+        error => error.into(),
+    }
+}
+
+/// Copy one user-provided argv or envp vector while enforcing a shared budget.
+fn load_exec_vec(ptr: *const *const c_char, total: &mut usize) -> StarryResult<Vec<String>> {
+    if ptr.is_null() {
+        return Ok(Vec::new());
+    }
+
+    let pointers = vm_load_until_nul(ptr).map_err(exec_arg_vm_error)?;
+    let pointer_bytes = pointers
+        .len()
+        .checked_add(1)
+        .and_then(|count| count.checked_mul(size_of::<*const c_char>()))
+        .ok_or(StarryError::ArgumentListTooLong)?;
+    charge_exec_arg_bytes(total, pointer_bytes)?;
+
+    let mut values = Vec::with_capacity(pointers.len());
+    for ptr in pointers {
+        let value = vm_load_string(ptr).map_err(|error| match error {
+            StarryError::Vm(error) => exec_arg_vm_error(error),
+            error => error,
+        })?;
+        let string_bytes = value
+            .len()
+            .checked_add(1)
+            .ok_or(StarryError::ArgumentListTooLong)?;
+        charge_exec_arg_bytes(total, string_bytes)?;
+        values.push(value);
+    }
+    Ok(values)
+}
 
 pub fn sys_execve(
     uctx: &mut UserContext,
@@ -100,24 +151,17 @@ fn do_execve(
     // `execl(path, NULL)` passes NULL to mean "no arguments", and Linux's
     // `count_strings_kernel` short-circuits NULL to an empty list rather
     // than returning EFAULT.
-    let load_vec = |ptr: *const *const c_char| -> StarryResult<Vec<String>> {
-        if ptr.is_null() {
-            Ok(Vec::new())
-        } else {
-            vm_load_until_nul(ptr)?
-                .into_iter()
-                .map(vm_load_string)
-                .collect::<Result<Vec<_>, _>>()
-        }
-    };
-    let mut args = load_vec(argv)?;
-    let envs = load_vec(envp)?;
+    let mut arg_bytes = 0;
+    let mut args = load_exec_vec(argv, &mut arg_bytes)?;
+    let envs = load_exec_vec(envp, &mut arg_bytes)?;
 
     // Linux still supplies an empty string as argv[0] to the new image, so
     // normalize an empty argv here.
     if args.is_empty() {
+        charge_exec_arg_bytes(&mut arg_bytes, 1)?;
         args.push(String::new());
     }
+    validate_exec_arg_size(&args, &envs)?;
 
     debug!("do_execve <= path: {path:?}, args: {args:?}, envs: {envs:?}");
 
