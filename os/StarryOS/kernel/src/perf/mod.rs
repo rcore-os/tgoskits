@@ -54,7 +54,36 @@ use crate::{
     mm::{VmBytes, VmBytesMut},
     pseudofs::DeviceMmap,
     sync::{IrqMutex, Mutex},
+    task::TidNumber,
 };
+
+/// Typed interpretation of `perf_event_open(2)`'s overloaded `pid` argument.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PerfEventTarget {
+    AllTasks,
+    Current,
+    Thread(TidNumber),
+}
+
+impl PerfEventTarget {
+    fn parse(pid: i32) -> StarryResult<Self> {
+        match pid {
+            -1 => Ok(Self::AllTasks),
+            0 => Ok(Self::Current),
+            1.. => Ok(Self::Thread(TidNumber::try_from(pid as u32)?)),
+            _ => Err(StarryError::InvalidInput),
+        }
+    }
+
+    /// Converts back only for the external `kbpf_basic::PerfProbeArgs` wire adapter.
+    const fn external_pid(self) -> i32 {
+        match self {
+            Self::AllTasks => -1,
+            Self::Current => 0,
+            Self::Thread(tid) => tid.get() as i32,
+        }
+    }
+}
 
 /// Monotonic source of per-event `perf` ids (`PERF_EVENT_IOC_ID`,
 /// `PERF_SAMPLE_ID`, `read_format`'s `PERF_FORMAT_ID`). Linux assigns every
@@ -434,16 +463,22 @@ pub fn sys_perf_event_open(
     // SAFETY: perf_event_attr is a `repr(C)` POD; the user buffer is copied
     // bytewise above and we treat the result as the structure.
     let attr = unsafe { &*(buf.as_ptr() as *const perf_event_attr) };
-    perf_event_open(attr, pid, cpu, group_fd, flags as u32)
+    perf_event_open(
+        attr,
+        PerfEventTarget::parse(pid)?,
+        cpu,
+        group_fd,
+        flags as u32,
+    )
 }
 
 /// Dispatcher entry point for `perf_event_open(2)`. Reads the user-supplied
 /// `perf_event_attr`, selects the per-type implementation, registers a
 /// file-like in the current fd table and remembers a weak handle so the
 /// ringbuf output path can locate the event by fd later.
-pub fn perf_event_open(
+pub(crate) fn perf_event_open(
     attr: &perf_event_attr,
-    pid: i32,
+    target: PerfEventTarget,
     cpu: i32,
     group_fd: i32,
     flags: u32,
@@ -457,14 +492,18 @@ pub fn perf_event_open(
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
         || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
     {
-        // Thread `pid` into the hardware path so it can choose between the
-        // system-wide M1 path (`pid <= 0`) and per-task counting (`pid > 0`).
+        // Thread the typed target into the hardware path so task identities
+        // cannot be confused with a system-wide selector.
         // `cpu` / `group_fd` / `flags` are not consumed by the hardware path
         // (single-CPU, no event groups), so they are intentionally dropped.
-        Box::new(hw::perf_event_open_hw(attr, pid)?)
+        Box::new(hw::perf_event_open_hw(attr, target)?)
     } else {
         let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
-            attr, pid, cpu, group_fd, flags,
+            attr,
+            target.external_pid(),
+            cpu,
+            group_fd,
+            flags,
         )
         .into_starry_result()?;
         match args.type_ {
@@ -473,7 +512,7 @@ pub fn perf_event_open(
             PerfTypeId::PERF_TYPE_TRACEPOINT => {
                 Box::new(tracepoint::perf_event_open_tracepoint(args)?)
             }
-            PerfTypeId::PERF_TYPE_UPROBE => Box::new(uprobe::perf_event_open_uprobe(args)?),
+            PerfTypeId::PERF_TYPE_UPROBE => Box::new(uprobe::perf_event_open_uprobe(args, target)?),
             _ => {
                 warn!("perf_event_open: unsupported type {:?}", args.type_);
                 return Err(StarryError::Unsupported);

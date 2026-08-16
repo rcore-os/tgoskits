@@ -150,7 +150,6 @@ rdrive.workspace = true
 
 axbacktrace = { workspace = true }
 ax-cgroup = { workspace = true }
-axnsproxy = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 rdif-block = { workspace = true }
 rdif-pinctrl = { workspace = true, optional = true }
@@ -192,7 +191,6 @@ rand = { version = "0.10", default-features = false, features = ["alloc", "chach
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local = { workspace = true }
 slab = { version = "0.4.9", default-features = false }
-starry-process = { workspace = true }
 starry-signal = { workspace = true }
 starry-vm = { workspace = true }
 strum = { version = "0.28", default-features = false, features = ["derive"] }

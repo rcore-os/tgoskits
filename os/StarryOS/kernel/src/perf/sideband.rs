@@ -26,6 +26,8 @@
 
 use alloc::vec::Vec;
 
+use crate::task::{TgidNumber, TidNumber};
+
 /// `PERF_RECORD_COMM`.
 const PERF_RECORD_COMM: u32 = 3;
 /// `PERF_RECORD_EXIT`.
@@ -63,10 +65,10 @@ pub struct SidebandTarget {
     pub sample_id_all: bool,
     /// Event id (for the trailer's `ID` / `IDENTIFIER` fields).
     pub id: u64,
-    /// Process id of the monitored task.
-    pub pid: u32,
-    /// Thread id of the monitored task.
-    pub tid: u32,
+    /// Process id of the monitored task in the event's captured view.
+    pub pid: TgidNumber,
+    /// Thread id of the monitored task in the event's captured view.
+    pub tid: TidNumber,
 }
 
 /// One executable mapping, for [`emit_mmap2`].
@@ -114,8 +116,8 @@ fn push_trailer(b: &mut Vec<u8>, t: &SidebandTarget) {
     }
     let st = t.sample_type;
     if st & PERF_SAMPLE_TID != 0 {
-        push_u32(b, t.pid);
-        push_u32(b, t.tid);
+        push_u32(b, t.pid.get());
+        push_u32(b, t.tid.get());
     }
     if st & PERF_SAMPLE_TIME != 0 {
         push_u64(b, ax_runtime::hal::time::monotonic_time_nanos());
@@ -159,8 +161,8 @@ fn finish_and_write(mut b: Vec<u8>, t: &SidebandTarget, type_: u32, misc: u16) {
 pub fn emit_comm(t: &SidebandTarget, comm: &str, exec: bool) {
     let mut b = Vec::with_capacity(64);
     b.extend_from_slice(&[0u8; 8]); // header placeholder
-    push_u32(&mut b, t.pid);
-    push_u32(&mut b, t.tid);
+    push_u32(&mut b, t.pid.get());
+    push_u32(&mut b, t.tid.get());
     let name = comm.as_bytes();
     push_cstr_padded(&mut b, &name[..name.len().min(COMM_MAX)]);
     push_trailer(&mut b, t);
@@ -175,13 +177,20 @@ pub fn emit_comm(t: &SidebandTarget, comm: &str, exec: bool) {
 /// The `sample_id_all` trailer reflects the task whose context emits the record
 /// (the *parent* for `FORK`, the *exiting task* for `EXIT`) — encoded by the
 /// caller in `t.pid`/`t.tid` — matching Linux's `perf_event_header__init_id`.
-fn emit_task(t: &SidebandTarget, type_: u32, pid: u32, ppid: u32, tid: u32, ptid: u32) {
+fn emit_task(
+    t: &SidebandTarget,
+    type_: u32,
+    pid: TgidNumber,
+    ppid: Option<TgidNumber>,
+    tid: TidNumber,
+    ptid: Option<TidNumber>,
+) {
     let mut b = Vec::with_capacity(64);
     b.extend_from_slice(&[0u8; 8]); // header placeholder
-    push_u32(&mut b, pid);
-    push_u32(&mut b, ppid);
-    push_u32(&mut b, tid);
-    push_u32(&mut b, ptid);
+    push_u32(&mut b, pid.get());
+    push_u32(&mut b, ppid.map_or(0, TgidNumber::get));
+    push_u32(&mut b, tid.get());
+    push_u32(&mut b, ptid.map_or(0, TidNumber::get));
     push_u64(&mut b, ax_runtime::hal::time::monotonic_time_nanos());
     push_trailer(&mut b, t);
     // FORK/EXIT carry no cpu-mode misc bits (the task, not a sampled IP).
@@ -190,13 +199,25 @@ fn emit_task(t: &SidebandTarget, type_: u32, pid: u32, ppid: u32, tid: u32, ptid
 
 /// Emit a `PERF_RECORD_FORK` describing a newly-cloned child (`pid`/`tid`) of the
 /// monitored parent (`ppid`/`ptid`). `t` is built in the parent's context.
-pub fn emit_fork(t: &SidebandTarget, pid: u32, ppid: u32, tid: u32, ptid: u32) {
-    emit_task(t, PERF_RECORD_FORK, pid, ppid, tid, ptid);
+pub fn emit_fork(
+    t: &SidebandTarget,
+    pid: TgidNumber,
+    ppid: TgidNumber,
+    tid: TidNumber,
+    ptid: TidNumber,
+) {
+    emit_task(t, PERF_RECORD_FORK, pid, Some(ppid), tid, Some(ptid));
 }
 
 /// Emit a `PERF_RECORD_EXIT` for the exiting task (`pid`/`tid`) and its parent
 /// (`ppid`/`ptid`). `t` is built in the exiting task's context.
-pub fn emit_exit(t: &SidebandTarget, pid: u32, ppid: u32, tid: u32, ptid: u32) {
+pub fn emit_exit(
+    t: &SidebandTarget,
+    pid: TgidNumber,
+    ppid: Option<TgidNumber>,
+    tid: TidNumber,
+    ptid: Option<TidNumber>,
+) {
     emit_task(t, PERF_RECORD_EXIT, pid, ppid, tid, ptid);
 }
 
@@ -204,8 +225,8 @@ pub fn emit_exit(t: &SidebandTarget, pid: u32, ppid: u32, tid: u32, ptid: u32) {
 pub fn emit_mmap2(t: &SidebandTarget, m: &Mmap2Info) {
     let mut b = Vec::with_capacity(128);
     b.extend_from_slice(&[0u8; 8]); // header placeholder
-    push_u32(&mut b, t.pid);
-    push_u32(&mut b, t.tid);
+    push_u32(&mut b, t.pid.get());
+    push_u32(&mut b, t.tid.get());
     push_u64(&mut b, m.addr);
     push_u64(&mut b, m.len);
     push_u64(&mut b, m.pgoff);

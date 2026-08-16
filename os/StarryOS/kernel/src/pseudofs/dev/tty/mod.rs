@@ -21,7 +21,6 @@ use core::{
 use ax_task::current;
 use axfs_ng_vfs::{Location, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
-use starry_process::Process;
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -42,7 +41,9 @@ use crate::{
     StarryError, StarryResult,
     pseudofs::{Device, DeviceOps},
     sync::{IrqMutex, Mutex},
-    task::{AsThread, get_process_group, send_signal_to_process_group},
+    task::{
+        AsThread, PgidNumber, Process, get_process_group_by_number, send_signal_to_process_group,
+    },
 };
 
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
@@ -124,7 +125,7 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
         location: Option<Location>,
     ) -> StarryResult<()> {
         let pg = proc.group();
-        if pg.session().sid() != proc.pid() {
+        if pg.session().sid().pid_number() != proc.pid().pid_number() {
             return Err(StarryError::OperationNotPermitted);
         }
         if !pg.session().try_set_terminal_with(|| {
@@ -260,11 +261,11 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                         .job_control
                         .foreground()
                         .ok_or(StarryError::NoSuchProcess)?;
-                    (arg as *mut u32).vm_write(foreground.pgid())?;
+                    (arg as *mut u32).vm_write(foreground.pgid().get())?;
                 }
                 TIOCSPGRP => {
                     let pgid: u32 = (arg as *const u32).vm_read()?;
-                    let pg = get_process_group(pgid)?;
+                    let pg = get_process_group_by_number(PgidNumber::try_from(pgid)?)?;
                     self.terminal.job_control.set_foreground(&pg)?;
                 }
                 TIOCGWINSZ => {
@@ -286,7 +287,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                         old.ws_row != window_size.ws_row || old.ws_col != window_size.ws_col;
                     if changed && let Some(pg) = self.terminal.job_control.foreground() {
                         let _ = send_signal_to_process_group(
-                            pg.pgid(),
+                            pg.pgid_number(),
                             Some(SignalInfo::new_kernel(Signo::SIGWINCH)),
                         );
                     }
