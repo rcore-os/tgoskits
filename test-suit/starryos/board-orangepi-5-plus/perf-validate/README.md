@@ -1,8 +1,8 @@
 # perf-validate — RK3588 SMP + big.LITTLE hardware-PMU board validation
 
-One self-contained C binary (`src/perf_validate.c`) that validates the StarryOS
-SMP per-CPU + big.LITTLE `perf` implementation on a real Orange Pi 5 Plus
-(RK3588: 4× Cortex-A55 cpu0-3 + 4× Cortex-A76 cpu4-7). It auto-discovers
+One self-contained C binary (`c/src/perf_validate.c`) that validates the
+StarryOS SMP per-CPU + big.LITTLE `perf` implementation on a real Orange Pi 5
+Plus (RK3588: 4× Cortex-A55 cpu0-3 + 4× Cortex-A76 cpu4-7). It auto-discovers
 topology and runs every applicable check, then prints a verdict. The full
 validation matrix, expected values, and interpretation live in
 `docs/superpowers/perf-board-validation-plan.md`.
@@ -38,54 +38,50 @@ case: a minimal `max_cpu_num=8` kernel (drops USB/NPU/PCIe/net, whose
 secondary-core IRQ storm causes the smp8 boot hang) that runs the SAME binary and
 accepts **ONLY FULL**. PROVEN on real 4×A55+4×A76 silicon (39 pass / 0 fail →
 FULL). Splitting the two keeps the anchor stable while ensuring a skipped SMP
-path can never pass unnoticed.
+path can never pass unnoticed. The smp8 case's `c/CMakeLists.txt` compiles this
+directory's `c/src/perf_validate.c`, so both cases build the identical validator
+from a single board-side source.
 
-## Deploy + run (board)
+## How the validator reaches the board (session assets, per run)
 
-The xtask deploys the KERNEL only. Like every other orangepi board case (e.g.
-npu-yolov8's `/guest/npu_demo`), the userspace binary is provisioned **once,
-out-of-band** onto the board's persistent ext4 — NOT rebuilt/redeployed per CI
-run. The board case just execs the pre-staged `/usr/local/bin/perf-validate`; if
-it is absent, the `not found` fail_regex fails the run fast instead of hanging.
+There is NO manual pre-staging. The validator is built and delivered by the
+standard board **session-asset** flow (see `test-suit/starryos/GUIDE.md`), the
+same mechanism `native-network-smoke` and the `iperf3` app use:
 
-Pre-stage it once (and again only when `src/perf_validate.c` changes):
+1. On every `cargo xtask starry test board` run, xtask cross-compiles
+   `c/CMakeLists.txt` with the shared musl toolchain (from THIS commit's
+   `c/src/perf_validate.c`).
+2. The CMake `install(TARGETS perf-validate RUNTIME DESTINATION bin)` product is
+   uploaded to a per-run session directory and served to the board as
+   `${sessionFile:bin/perf-validate}`.
+3. The board `shell_init_cmd` downloads it into `/tmp`, `chmod +x`es it, and
+   executes it. A download/chmod/exec failure prints
+   `BOARD_PERF_VALIDATE_SETUP_FAILED` and fails the case fast instead of hanging.
+
+So the board always runs the current commit's validator; the self-hosted CI board
+runner needs no out-of-band provisioning, and there is no stale-binary risk.
+
+## Run it
 
 ```sh
-# 1. Cross-compile a static aarch64 binary (host). Uses the container toolchain
-#    if Docker is present, else falls back to a native aarch64-linux-*-gcc:
-./deploy.sh build                 # -> ./perf-validate
-
-# 2. With the board in OrangePi Linux (cabled NIC up), deploy it:
-./deploy.sh deploy   # stages to /tmp, sudo-installs to /usr/local/bin/perf-validate + sync
-#    (override BOARD_USER / BOARD_IP / BOARD_DEST / BOARD_PW as needed)
-#    — or scp it yourself, then `sync` on the board (see the commit=600 note below).
-
-# 3. Power-cycle into StarryOS and run the board test from the ostool-server host
-#    (board OFF at launch, powered ON at the "waiting for power on" cue):
-cargo xtask starry test board -c perf-validate \
-  -b OrangePi-5-Plus --server localhost --port 2999
+# Board case (self-hosted runner / local board). Board OFF at launch, powered ON
+# at the "waiting for power on" cue. The kernel is built + deployed and the
+# validator is built + uploaded automatically.
+cargo xtask starry test board -c perf-validate --board orangepi-5-plus
+cargo xtask starry test board -c perf-validate-smp8 --board orangepi-5-plus
 ```
 
-Success matches `BOARD_PERF_VALIDATE_VERDICT (FULL|PARTIAL)`; the unique final
-line `BOARD_PERF_VALIDATE_DONE` lets a hang time out instead of matching early.
-The self-hosted CI board runner needs this binary pre-staged the same way (a
-one-time step for the runner owner) — the CI job does not build or deploy it.
+Success matches `BOARD_PERF_VALIDATE_VERDICT (FULL|PARTIAL)` (anchor) /
+`... FULL` (smp8); the unique final line `BOARD_PERF_VALIDATE_DONE` lets a hang
+time out instead of matching early.
 
-### First-run caveats (see board-run-mechanics)
+### Board caveats (see board-run-mechanics)
 
-- `BOARD_DEST` is `/usr/local/bin/perf-validate` — on the SD ext4 (mmcblk1p2)
-  that StarryOS mounts as `/`, so StarryOS runs it by full path. `/root` is
-  700-root and not orangepi-writable; `/usr/local/bin` is the proven shared path
-  (the perf 6.6 binary lives there too).
 - The board's cabled NIC drifts between the two 2.5G ports (`enP4p65s0` /
-  `enP3p49s0`); whichever is UP but only has a `169.254.x` link-local address is
-  the live one — add the static IP to it: `sudo ip addr add 192.168.50.2/24 dev
-  <live-nic>`. The host NIC `en5` needs `sudo ifconfig en5 192.168.50.1 …`.
-- The board's ext4 is mounted `commit=600` (dirty pages flush to the SD only
-  every 10 min). After any scp/install you MUST `sync` on the board before
-  power-cycling into StarryOS, or the fresh binary lives only in Linux's page
-  cache and StarryOS mounts the SD without it → `perf-validate: not found`.
-  `deploy.sh deploy` does this sync for you.
+  `enP3p49s0`); the session HTTP download needs board networking up. Whichever
+  port is UP but only has a `169.254.x` link-local address is the live one — add
+  the static IP: `sudo ip addr add 192.168.50.2/24 dev <live-nic>` (host `en5`
+  side: `sudo ifconfig en5 192.168.50.1 …`).
 - If Linux boot reports ext4 corruption, run a U-Boot fsck repair first (prior
   board tests have left the rootfs needing repair).
 - The binary writes `perf_test_force_clusters=0` on exit; in board mode it never
