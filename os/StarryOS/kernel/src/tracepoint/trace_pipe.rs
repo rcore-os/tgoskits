@@ -2,8 +2,8 @@ use core::{future::poll_fn, task::Poll};
 
 use ax_task::future::{block_on, interruptible};
 use axfs_ng_vfs::{VfsError, VfsResult};
-use ktracepoint::TracePipeOps;
 
+use super::IdentityTraceBuffer;
 use crate::{pseudofs::DirectRwFsFileOps, sync::Mutex};
 
 /// File representing the trace pipe.

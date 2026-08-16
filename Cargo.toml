@@ -81,9 +81,7 @@ members = [
     "drivers/usb/usb-serial",
     "drivers/usb/utils/*",
 
-    "os/StarryOS/axnsproxy",
     "os/StarryOS/kernel",
-    "os/StarryOS/process",
     "os/StarryOS/signal",
     "os/StarryOS/starryos",
     "os/StarryOS/vm",
@@ -259,9 +257,7 @@ sdhci-host = { version = "0.4.4", path = "drivers/blk/sdhci-host", default-featu
 sdmmc-protocol = { version = "0.4.4", path = "drivers/blk/sdmmc-protocol", default-features = false }
 starfive-jh7110-dwmmc = { version = "0.1.5", path = "drivers/blk/starfive-jh7110-dwmmc", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
-axnsproxy = { version = "0.3.4", path = "os/StarryOS/axnsproxy" }
 starry-kernel = { version = "0.7.7", path = "os/StarryOS/kernel" }
-starry-process = { version = "0.4.16", path = "os/StarryOS/process" }
 starry-signal = { version = "0.8.13", path = "os/StarryOS/signal" }
 starry-vm = { version = "0.5.13", path = "os/StarryOS/vm" }
 starryos = { version = "0.5.28", path = "os/StarryOS/starryos" }

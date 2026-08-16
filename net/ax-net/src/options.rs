@@ -12,8 +12,8 @@
 //! conservatively in the socket implementation, with defaults documented near
 //! the protocol that reports them.
 
-use alloc::boxed::Box;
-use core::time::Duration;
+use alloc::{boxed::Box, sync::Arc};
+use core::{any::Any, fmt, time::Duration};
 
 use enum_dispatch::enum_dispatch;
 
@@ -144,9 +144,12 @@ macro_rules! define_options {
     };
 }
 
-/// Corresponds to `struct ucred` in Linux.
-#[repr(C)]
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+/// Transport-owned Unix credentials plus an optional OS identity generation.
+///
+/// `pid`, `uid`, and `gid` are ABI-compatible fallback values. OS layers with
+/// PID namespaces can attach their generation object opaquely so queued
+/// messages and peer sockets do not depend on a reusable numeric PID.
+#[derive(Default, Clone)]
 pub struct UnixCredentials {
     /// Process ID.
     pub pid: u32,
@@ -154,6 +157,7 @@ pub struct UnixCredentials {
     pub uid: u32,
     /// Group ID.
     pub gid: u32,
+    identity: Option<Arc<dyn Any + Send + Sync>>,
 }
 impl UnixCredentials {
     /// Create a new `UnixCredentials` with the given PID and default UID/GID.
@@ -162,7 +166,58 @@ impl UnixCredentials {
             pid,
             uid: 0,
             gid: 0,
+            identity: None,
         }
+    }
+
+    /// Creates credentials with explicit numeric fallback values.
+    pub fn from_parts(pid: u32, uid: u32, gid: u32) -> Self {
+        Self {
+            pid,
+            uid,
+            gid,
+            identity: None,
+        }
+    }
+
+    /// Attaches an OS-specific stable process generation.
+    pub fn with_identity<T>(mut self, identity: Arc<T>) -> Self
+    where
+        T: Any + Send + Sync,
+    {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// Borrows the attached process generation when it has the requested type.
+    pub fn identity<T: Any + Send + Sync>(&self) -> Option<&T> {
+        self.identity.as_deref()?.downcast_ref()
+    }
+}
+
+impl fmt::Debug for UnixCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UnixCredentials")
+            .field("pid", &self.pid)
+            .field("uid", &self.uid)
+            .field("gid", &self.gid)
+            .field("has_identity", &self.identity.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for UnixCredentials {
+    fn eq(&self, other: &Self) -> bool {
+        self.pid == other.pid && self.uid == other.uid && self.gid == other.gid
+    }
+}
+
+impl Eq for UnixCredentials {}
+
+impl From<u32> for UnixCredentials {
+    fn from(pid: u32) -> Self {
+        Self::new(pid)
     }
 }
 

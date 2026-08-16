@@ -3,8 +3,6 @@ use core::ops::DerefMut;
 
 use ax_fs_ng::{FS_CONTEXT, FsContext};
 use ax_task::current;
-use axnsproxy::NsProxy;
-use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
     CLONE_FILES, CLONE_FS, CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID,
     CLONE_NEWUSER, CLONE_NEWUTS,
@@ -12,9 +10,10 @@ use linux_raw_sys::general::{
 
 use crate::{
     StarryError, StarryResult,
-    file::{FD_TABLE, FileDescriptor, NsFd, PidFd, get_file_like},
+    file::{FD_TABLE, FileTable, NsFd, PidFd, get_file_like},
+    namespace::NsProxy,
     sync::{FsMutex, RwLock},
-    task::{AX_FILE_LIMIT, AsThread, Thread, get_task},
+    task::{AsThread, Thread},
 };
 
 const UNSHARE_NAMESPACE_FLAGS: u32 = CLONE_NEWUTS
@@ -29,7 +28,7 @@ const SUPPORTED_NS_FLAGS: u32 = UNSHARE_NAMESPACE_FLAGS | CLONE_FS | CLONE_FILES
 
 const SUPPORTED_SETNS_FLAGS: u32 = SUPPORTED_NS_FLAGS & !CLONE_FILES;
 
-type SharedFileTable = Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>>;
+type SharedFileTable = Arc<RwLock<FileTable>>;
 
 struct PreparedUnshare {
     file_table: Option<SharedFileTable>,
@@ -49,7 +48,7 @@ impl PreparedUnshare {
                 nsproxy.unshare_uts();
             }
             if flags & CLONE_NEWPID != 0 {
-                nsproxy.prepare_child_pid_ns();
+                nsproxy.prepare_pid_ns_for_children(thread.active_pid_namespace());
             }
             if flags & CLONE_NEWNET != 0 {
                 nsproxy.unshare_net();
@@ -186,8 +185,8 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> StarryResult<isize> {
     }
 
     // PID namespace: calling process stays in its current PID ns;
-    // the target ns is staged to child_pid_ns and consumed by the
-    // next fork/clone. Must be single-threaded (Linux check).
+    // the target ns replaces the persistent pid_ns_for_children selection.
+    // Must be single-threaded (Linux check).
     if fd_type == CLONE_NEWPID {
         let thread_count = proc_data.proc.threads().len();
         if thread_count > 1 {
@@ -253,7 +252,10 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> StarryResult<isize> {
 
     let target_proc = pidfd.process_data()?;
     let target_mnt_fs_ns = if nstype & CLONE_NEWNS != 0 {
-        let task = get_task(target_proc.proc.pid())?;
+        let task = pidfd
+            .process_identity()
+            .live_task()
+            .ok_or(StarryError::NoSuchProcess)?;
         let scope = task.as_thread().scope.read();
         let fs_context = FS_CONTEXT.scope(&scope).clone();
         drop(scope);
@@ -304,7 +306,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> StarryResult<isize> {
         nsproxy.set_ns_mnt(target_nsproxy.mnt_ns);
     }
     if nstype & CLONE_NEWPID != 0 {
-        nsproxy.set_ns_pid(target_nsproxy.pid_ns);
+        nsproxy.set_ns_pid(target_proc.identity().active_namespace());
     }
     if nstype & CLONE_NEWNET != 0 {
         nsproxy.set_ns_net(target_nsproxy.net_ns);
