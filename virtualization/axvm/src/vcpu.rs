@@ -93,6 +93,7 @@ struct AxVCpuInnerConst {
     vm_id: VMId,
     vcpu_id: VCpuId,
     phys_cpu_set: Option<usize>,
+    priority: Option<isize>,
     guest_mpidr: Option<u64>,
 }
 
@@ -157,6 +158,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         vm_id: VMId,
         vcpu_id: VCpuId,
         phys_cpu_set: Option<usize>,
+        priority: Option<isize>,
         arch_config: A::CreateConfig,
     ) -> AxVmResult<Self> {
         let guest_mpidr = A::guest_mpidr_from_create_config(&arch_config);
@@ -165,6 +167,7 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
                 vm_id,
                 vcpu_id,
                 phys_cpu_set,
+                priority,
                 guest_mpidr,
             },
             inner_mut: Mutex::new(AxVCpuInnerMut {
@@ -211,6 +214,11 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     /// Returns the allowed physical CPU mask.
     pub const fn phys_cpu_set(&self) -> Option<usize> {
         self.inner_const.phys_cpu_set
+    }
+
+    /// Returns the real-time scheduling priority of this vCPU, when configured.
+    pub const fn priority(&self) -> Option<isize> {
+        self.inner_const.priority
     }
 
     /// Returns the guest-visible MPIDR affinity for this vCPU, when the architecture has one.

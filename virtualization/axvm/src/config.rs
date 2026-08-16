@@ -176,7 +176,7 @@ impl AxVMConfig {
         Self::new(AxVMConfigParams {
             id,
             name: String::from(name),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, None),
             ..Default::default()
         })
     }
@@ -475,6 +475,7 @@ pub struct PhysCpuList {
     cpu_num: usize,
     phys_cpu_ids: Option<Vec<usize>>,
     phys_cpu_sets: Option<Vec<usize>>,
+    phys_cpu_priorities: Option<Vec<isize>>,
 }
 
 impl PhysCpuList {
@@ -483,11 +484,13 @@ impl PhysCpuList {
         cpu_num: usize,
         phys_cpu_ids: Option<Vec<usize>>,
         phys_cpu_sets: Option<Vec<usize>>,
+        phys_cpu_priorities: Option<Vec<isize>>,
     ) -> Self {
         Self {
             cpu_num,
             phys_cpu_ids,
             phys_cpu_sets,
+            phys_cpu_priorities,
         }
     }
 
@@ -528,6 +531,23 @@ impl PhysCpuList {
     /// Returns the physical CPU sets.
     pub fn phys_cpu_sets(&self) -> &Option<Vec<usize>> {
         &self.phys_cpu_sets
+    }
+
+    /// Returns the vCPU scheduling priorities, indexed by vCPU id.
+    ///
+    /// Returns `None` if the priorities are not set, or if the number of vCPUs
+    /// does not match the length of the configured priority list.
+    pub fn vcpu_priorities(&self) -> Option<Vec<isize>> {
+        if let Some(priorities) = &self.phys_cpu_priorities
+            && self.cpu_num != priorities.len()
+        {
+            error!(
+                "ERROR!!!: cpu_num: {}, phys_cpu_priorities: {:?}",
+                self.cpu_num, self.phys_cpu_priorities
+            );
+            return None;
+        }
+        self.phys_cpu_priorities.clone()
     }
 
     /// Sets the guest CPU sets.
@@ -578,7 +598,7 @@ mod tests {
     #[test]
     fn controller_replacements_require_machine_capabilities() {
         let mut config = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, None),
             ..Default::default()
         });
         let gic = GuestGicProfile {

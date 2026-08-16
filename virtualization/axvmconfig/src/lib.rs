@@ -288,6 +288,14 @@ pub struct VMBaseConfig {
     ///
     ///   It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
     pub phys_cpu_sets: Option<Vec<usize>>,
+    /// The real-time scheduling priorities of vCPUs.
+    ///
+    /// - If `None`, all vCPUs use the default scheduler priority.
+    /// - If set, each vCPU is assigned the specified scheduling priority.
+    ///   Higher numbers mean higher priority (FreeRTOS convention).
+    ///
+    ///   It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_priorities` array.
+    pub phys_cpu_priorities: Option<Vec<isize>>,
 }
 
 /// The configuration structure for the guest VM kernel.

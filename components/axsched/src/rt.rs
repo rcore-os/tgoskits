@@ -55,7 +55,7 @@ impl<T> RTTask<T> {
         self.priority.load(Ordering::Acquire)
     }
 
-    fn set_priority(&self, prio: isize) {
+    pub fn set_priority(&self, prio: isize) {
         self.priority.store(prio, Ordering::Release);
     }
 

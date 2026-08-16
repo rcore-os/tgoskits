@@ -22,6 +22,10 @@ pub(crate) fn spawn_task_with(task: TaskInner, initialize: impl FnOnce(&AxTaskRe
     arceos::spawn_task_with(task, initialize)
 }
 
+pub(crate) fn set_task_priority(task: &AxTaskRef, prio: isize) -> bool {
+    arceos::set_task_priority(task, prio)
+}
+
 pub(crate) fn yield_now() {
     arceos::yield_now();
 }

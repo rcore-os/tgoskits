@@ -296,7 +296,13 @@ pub(crate) fn vcpu_on(
             .map_err(|_| VcpuOnError::StartFailed)?;
 
         let vcpu_task = build_vcpu_task(&vm, vcpu.clone());
-        spawn_registered_vcpu_task(vm.id(), vcpu_id, runtime.clone(), vcpu_task);
+        spawn_registered_vcpu_task(
+            vm.id(),
+            vcpu_id,
+            runtime.clone(),
+            vcpu_task,
+            vcpu.priority(),
+        );
         runtime.notify_all();
 
         runtime.wait_until(|| ack.is_complete() || !vm.running());
@@ -342,8 +348,17 @@ pub(crate) fn spawn_registered_vcpu_task(
     vcpu_id: usize,
     runtime: std::sync::Arc<VmRuntimeHandle>,
     task: crate::TaskInner,
+    priority: Option<isize>,
 ) -> crate::AxTaskRef {
     crate::host::task::spawn_task_with(task, |task_ref| {
+        if let Some(prio) = priority {
+            if !crate::host::task::set_task_priority(task_ref, prio) {
+                debug!(
+                    "VM[{vm_id}] vCPU[{vcpu_id}] requested priority {prio} is not supported \
+                     by the current scheduler; using default"
+                );
+            }
+        }
         runtime
             .add_vcpu_task(vcpu_id, task_ref.clone())
             .unwrap_or_else(|error| {

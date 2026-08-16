@@ -142,6 +142,10 @@ pub(crate) fn spawn_task_with(
     modules::ax_task::spawn_task_with(task, initialize)
 }
 
+pub(crate) fn set_task_priority(task: &ArceOsAxTaskRef, prio: isize) -> bool {
+    modules::ax_task::set_task_priority(task, prio)
+}
+
 pub(crate) fn yield_now() {
     thread::yield_now();
 }

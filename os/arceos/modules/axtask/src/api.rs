@@ -361,6 +361,35 @@ pub fn set_priority(prio: isize) -> bool {
     current_run_queue::<PreemptIrqSaveState>().set_current_priority(prio)
 }
 
+/// Sets the scheduling priority for a specific task.
+///
+/// Unlike [`set_priority`], which only affects the current task, this targets
+/// an arbitrary task reference. It is primarily used by the `initialize`
+/// callback of [`spawn_task_with`] to publish a real-time priority before the
+/// task is added to the run queue.
+///
+/// The priority semantics follow the underlying scheduler:
+/// - **RT**: higher numbers mean higher priority (FreeRTOS convention).
+///
+/// Returns `true` if the priority is set successfully. With schedulers that do
+/// not support per-task priorities (e.g. the default FIFO scheduler), this
+/// function logs a warning and returns `false`.
+pub fn set_task_priority(task: &AxTaskRef, prio: isize) -> bool {
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "sched-rt")] {
+            task.set_priority(prio);
+            true
+        } else {
+            warn!(
+                "set_task_priority is not supported by the current scheduler (task {}, requested priority {})",
+                task.id_name(),
+                prio
+            );
+            false
+        }
+    }
+}
+
 /// Set the affinity for the current task.
 /// [`AxCpuMask`] is used to specify the CPU affinity.
 /// Returns `true` if the affinity is set successfully.

@@ -93,6 +93,8 @@ pub struct VcpuSnapshot {
     pub state: VmVcpuState,
     /// Optional physical CPU affinity mask.
     pub phys_cpu_set: Option<usize>,
+    /// Optional real-time scheduling priority.
+    pub priority: Option<isize>,
 }
 
 pub(crate) fn width_mask(width: AccessWidth) -> usize {
@@ -1195,6 +1197,7 @@ impl AxVM {
                 id: vcpu.id(),
                 state: vcpu.state(),
                 phys_cpu_set: vcpu.phys_cpu_set(),
+                priority: vcpu.priority(),
             })
             .collect()
     }
@@ -1322,7 +1325,7 @@ impl AxVM {
         let primary_vcpu = self
             .vcpu(0)
             .ok_or_else(|| ax_err_type!(BadState, "VM primary vCPU is not prepared"))?;
-        let primary_task = crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu);
+        let primary_task = crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu.clone());
         let runtime = Arc::new(VmRuntimeHandle::new());
 
         self.with_resources(|resources| {
@@ -1355,6 +1358,7 @@ impl AxVM {
             0,
             runtime.clone(),
             primary_task,
+            primary_vcpu.priority(),
         );
         Ok(())
     }
