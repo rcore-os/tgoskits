@@ -70,9 +70,17 @@ const BPF_FUNC_PROBE_READ_KERNEL: u32 = 113;
 /// currently running task, matching the Linux kernel helper ABI.
 fn bpf_get_current_pid_tgid(_a: u64, _b: u64, _c: u64, _d: u64, _e: u64) -> u64 {
     let task = current();
-    let tgid = task.as_thread().proc_data.proc.pid() as u64;
-    let pid = task.as_thread().tid() as u64;
-    (tgid << 32) | pid
+    let thread = task.as_thread();
+    let view = crate::task::PidView::new(thread.active_pid_namespace());
+    let tgid = view
+        .visible_process_number(&thread.proc_data.identity())
+        .expect("current process is visible in its active PID namespace")
+        .get() as u64;
+    let tid = view
+        .visible_thread_number(&thread.pid_identity())
+        .expect("current thread is visible in its active PID namespace")
+        .get() as u64;
+    (tgid << 32) | tid
 }
 
 /// `bpf_get_current_comm(char *buf, u32 size_of_buf)` — copies the current
