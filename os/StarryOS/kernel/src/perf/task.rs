@@ -872,6 +872,18 @@ pub fn perf_sched_out(thr: &Thread) {
         if ptc.running.load(Ordering::Acquire) {
             disarm_slice(ptc, now, !dead);
         }
+        // A non-sampling counter that has left this CPU no longer owns a live HW
+        // slot, so its userspace rdpmc page must stop advertising one: republish
+        // an inactive snapshot (`index=0`) carrying the just-folded total in
+        // `offset`. This mirrors dev's single-slice `perf_sched_out`; the Tier-2
+        // rotation only republishes counters still inside its window, so a counter
+        // that dropped out of the eligible set (e.g. after `ioctl(DISABLE)`) would
+        // otherwise keep exposing a stale active `index`. `dead` counters are being
+        // torn down — `detach` republishes and releases their page — so leave them
+        // alone. `publish_rdpmc_page` no-ops when no page is mapped.
+        if !dead && !ptc.is_sampling {
+            ptc.publish_rdpmc_page(false);
+        }
         ptc.on_cpu.store(false, Ordering::Release);
     }
 }
