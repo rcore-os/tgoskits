@@ -51,3 +51,8 @@ fn perf_kernel_task_sample_ids_are_empty() {
 fn stop_machine_runs_action_and_sync_on_each_cpu() {
     ax_assert!(axtest_exports::stop_machine_runs_action_and_sync_on_each_cpu());
 }
+
+#[axtest]
+fn rdrive_exit_reclaim_frees_dead_holder_device() {
+    ax_assert!(axtest_exports::exit_reclaim_frees_dead_holder_device());
+}

@@ -21,6 +21,12 @@ use crate::{
 
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
+    // Install the rdrive OS-abstraction adapter first, before any process can
+    // acquire a device lock. It teaches rdrive the current process pid so a
+    // lock-holder that later dies has its device locks reclaimed at exit
+    // (see `crate::rdrive_osal` and the `do_exit` reclaim hook).
+    crate::rdrive_osal::init();
+
     static_keys::global_init();
     crate::cgroup::init();
 
