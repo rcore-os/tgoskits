@@ -61,22 +61,30 @@
 //! `attr.inherit` (following `fork`/`clone` children) is deferred: the counter
 //! follows the single attached task only.
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{
+    string::String,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
     any::Any,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence},
 };
 
 use ax_alloc::GlobalPage;
 use ax_runtime::hal::paging::MappingFlags;
 use ax_task::IrqNotify;
+use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 use super::{
     hw,
     sampling::{self, SampleSlot},
     sideband::{self, Mmap2Info, SidebandTarget},
 };
-use crate::{sync::IrqMutex, task::Thread};
+use crate::{
+    sync::IrqMutex,
+    task::{PidIdentity, PidNamespaceId, TgidNumber, Thread, TidNumber},
+};
 
 // `PROT_*` / `MAP_*` values for the `prot`/`flags` fields of MMAP2 records.
 const PROT_READ: u32 = 1;
@@ -180,6 +188,15 @@ pub struct PerTaskCounter {
     /// `attr.inherit`: clone this event onto `fork`/`clone` children (writing into
     /// the same ring) so `perf record` follows them. Driven by [`on_clone_inherit`].
     inherit: bool,
+    /// PID namespace view captured when this event was opened.
+    observer: PidNamespaceId,
+
+    // --- Per-task counting mmap (`rdpmc`) ---
+    /// Weak event-side reference to the VMA-owned metadata page. Scheduler
+    /// hooks upgrade it only for a bounded publication; after `munmap`, a stale
+    /// weak reference no longer blocks a replacement mapping. The IRQ-safe lock
+    /// also serializes scheduler and fd-teardown writers.
+    rdpmc_page: IrqMutex<Option<Weak<GlobalPage>>>,
 
     /// Kernel virtual address of the ring's first page (`perf_event_mmap_page`),
     /// or `0` until `mmap(perf_fd)` runs ([`set_ring`](Self::set_ring)). Read by
@@ -283,6 +300,8 @@ pub struct PerTaskConfig {
     pub sample_id_all: bool,
     /// `attr.inherit`: clone this event onto `fork`/`clone` children.
     pub inherit: bool,
+    /// PID namespace view captured when the root event was opened.
+    pub observer: PidNamespaceId,
 }
 
 impl PerTaskCounter {
@@ -319,6 +338,8 @@ impl PerTaskCounter {
             want_task: cfg.want_task,
             sample_id_all: cfg.sample_id_all,
             inherit: cfg.inherit,
+            observer: cfg.observer,
+            rdpmc_page: IrqMutex::new(None),
             ring_vaddr: AtomicUsize::new(0),
             ring_len: AtomicUsize::new(0),
             notify_ptr: AtomicUsize::new(0),
@@ -357,6 +378,83 @@ impl PerTaskCounter {
     /// Mirrors Linux's `PERF_EVENT_IOC_RESET`, which resets the count only.
     pub fn reset(&self) {
         self.accumulated.store(0, Ordering::Release);
+        let active = self.running.load(Ordering::Acquire);
+        if active {
+            if self.is_sampling {
+                ax_cpu::pmu::counter::preload(self.n, self.sample_period);
+            } else {
+                ax_cpu::pmu::counter::reset(self.n);
+            }
+        }
+        if !self.is_sampling {
+            self.publish_rdpmc_page(active);
+        }
+    }
+
+    /// Whether a counting event already owns an mmap metadata page.
+    pub fn rdpmc_page_mapped(&self) -> bool {
+        self.rdpmc_page
+            .lock()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some()
+    }
+
+    /// Install and publish a counting event's mmap metadata page.
+    ///
+    /// The strong page anchor is installed before the address becomes visible
+    /// to scheduler hooks. Returns `false` if this event already has a page.
+    pub fn install_rdpmc_page(&self, pages: Arc<GlobalPage>) -> bool {
+        let mut slot = self.rdpmc_page.lock();
+        if slot.as_ref().and_then(Weak::upgrade).is_some() {
+            return false;
+        }
+        self.write_rdpmc_snapshot(&pages, self.running.load(Ordering::Acquire));
+        *slot = Some(Arc::downgrade(&pages));
+        true
+    }
+
+    /// Publish one Linux `perf_event_mmap_page` snapshot.
+    ///
+    /// Active snapshots expose the reserved 1-based hardware index and put the
+    /// completed-slice total in `offset`; inactive snapshots expose `index=0`
+    /// and retain the full count in `offset`. The odd/even `lock` sequence lets
+    /// userspace retry rather than combining fields from different slices.
+    fn publish_rdpmc_page(&self, active: bool) {
+        let page = self.rdpmc_page.lock();
+        let Some(page) = page.as_ref().and_then(Weak::upgrade) else {
+            return;
+        };
+        self.write_rdpmc_snapshot(&page, active);
+    }
+
+    fn write_rdpmc_snapshot(&self, page: &GlobalPage, active: bool) {
+        let header = page.start_vaddr().as_usize() as *mut perf_event_mmap_page;
+        let index = if active { self.n as u32 + 1 } else { 0 };
+        let offset = self.accumulated.load(Ordering::Acquire) as i64;
+        let time_enabled = self.time_enabled_ns.load(Ordering::Acquire);
+        let time_running = self.time_running_ns.load(Ordering::Acquire);
+
+        // SAFETY: `page` pins a zeroed, page-sized allocation and `lock` is a
+        // naturally aligned u32 in `perf_event_mmap_page`. The `rdpmc_page`
+        // lock serializes writers. Atomic odd/even publication plus volatile
+        // metadata stores implement the userspace seqlock contract.
+        unsafe {
+            let sequence = AtomicU32::from_ptr(core::ptr::addr_of_mut!((*header).lock));
+            let odd = sequence.load(Ordering::Relaxed).wrapping_add(1) | 1;
+            sequence.store(odd, Ordering::SeqCst);
+            core::ptr::addr_of_mut!((*header).index).write_volatile(index);
+            core::ptr::addr_of_mut!((*header).offset).write_volatile(offset);
+            core::ptr::addr_of_mut!((*header).time_enabled).write_volatile(time_enabled);
+            core::ptr::addr_of_mut!((*header).time_running).write_volatile(time_running);
+            fence(Ordering::Release);
+            sequence.store(odd.wrapping_add(1), Ordering::Release);
+        }
+    }
+
+    /// Stop scheduler updates after publishing the final inactive snapshot.
+    fn release_rdpmc_page(&self) {
+        *self.rdpmc_page.lock() = None;
     }
 
     /// Whether this is a sampling event (`sample_period > 0`).
@@ -587,6 +685,7 @@ pub fn perf_sched_in(thr: &Thread) {
                     period: ptc.sample_period,
                     sample_type: ptc.sample_type,
                     id: ptc.sample_id.load(Ordering::Relaxed),
+                    observer: ptc.observer,
                     notify: ptc.notify_ptr.load(Ordering::Acquire) as *const (),
                     // Frequency mode adapts the period within each slice; the slot
                     // starts at the initial estimate with no prior timestamp.
@@ -605,6 +704,9 @@ pub fn perf_sched_in(thr: &Thread) {
         }
         ptc.last_in_ns.store(now, Ordering::Release);
         ptc.running.store(true, Ordering::Release);
+        if !ptc.is_sampling {
+            ptc.publish_rdpmc_page(true);
+        }
     }
 }
 
@@ -656,6 +758,9 @@ pub fn perf_sched_out(thr: &Thread) {
         let dt = now.saturating_sub(last_in);
         ptc.time_enabled_ns.fetch_add(dt, Ordering::AcqRel);
         ptc.time_running_ns.fetch_add(dt, Ordering::AcqRel);
+        if !ptc.is_sampling {
+            ptc.publish_rdpmc_page(false);
+        }
     }
 }
 
@@ -688,11 +793,25 @@ pub fn on_exec(thr: &Thread) {
 
 /// Build a side-band write target for `ptc` if it has a mapped ring and requested
 /// any side-band record (`attr.comm`/`mmap2`/`task`); else `None`.
-fn sideband_target(ptc: &PerTaskCounter, pid: u32, tid: u32) -> Option<SidebandTarget> {
+fn visible_tgid(ptc: &PerTaskCounter, identity: &PidIdentity) -> Option<TgidNumber> {
+    identity
+        .visible_number_in(ptc.observer)
+        .map(TgidNumber::from)
+}
+
+fn visible_tid(ptc: &PerTaskCounter, identity: &PidIdentity) -> Option<TidNumber> {
+    identity
+        .visible_number_in(ptc.observer)
+        .map(TidNumber::from)
+}
+
+fn sideband_target(ptc: &PerTaskCounter, thread: &Thread) -> Option<SidebandTarget> {
     let ring_vaddr = ptc.ring_vaddr.load(Ordering::Acquire);
     if ring_vaddr == 0 || !(ptc.want_comm || ptc.want_mmap2 || ptc.want_task) {
         return None;
     }
+    let pid = visible_tgid(ptc, &thread.proc_data.identity())?;
+    let tid = visible_tid(ptc, &thread.pid_identity())?;
     Some(SidebandTarget {
         ring_vaddr,
         ring_len: ptc.ring_len.load(Ordering::Acquire),
@@ -755,9 +874,6 @@ pub fn on_exec_sideband(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let pid = thr.proc_data.proc.pid();
-    let tid = thr.tid();
-
     /// A target plus which record kinds it wants (so the COMM/MMAP2 loops below
     /// can each skip non-subscribers without re-walking the counter list).
     struct WantTarget {
@@ -771,7 +887,7 @@ pub fn on_exec_sideband(thr: &Thread) {
         counters
             .iter()
             .filter_map(|ptc| {
-                sideband_target(ptc, pid, tid).map(|target| WantTarget {
+                sideband_target(ptc, thr).map(|target| WantTarget {
                     target,
                     comm: ptc.want_comm,
                     mmap2: ptc.want_mmap2,
@@ -822,14 +938,12 @@ pub fn on_mmap_sideband(
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let pid = thr.proc_data.proc.pid();
-    let tid = thr.tid();
     let targets: Vec<SidebandTarget> = {
         let counters = thr.perf_counters.lock();
         counters
             .iter()
             .filter(|ptc| ptc.want_mmap2)
-            .filter_map(|ptc| sideband_target(ptc, pid, tid))
+            .filter_map(|ptc| sideband_target(ptc, thr))
             .collect()
     };
     if targets.is_empty() {
@@ -858,23 +972,33 @@ pub fn on_mmap_sideband(
 /// child task is spawned. The record's body describes the child (`child_pid` /
 /// `child_tid`) with the parent as `ppid`/`ptid`; its `sample_id_all` trailer is
 /// the parent's id (the event's monitored task), so `t.pid`/`t.tid` = parent.
-pub fn on_clone_sideband(parent_thr: &Thread, child_pid: u32, child_tid: u32) {
+pub fn on_clone_sideband(
+    parent_thr: &Thread,
+    child_process: &PidIdentity,
+    child_thread: &PidIdentity,
+) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let ppid = parent_thr.proc_data.proc.pid();
-    let ptid = parent_thr.tid();
     // Snapshot want_task targets, then drop the counter lock before any ring write.
-    let targets: Vec<SidebandTarget> = {
+    let targets: Vec<(SidebandTarget, TgidNumber, TidNumber, TgidNumber, TidNumber)> = {
         let counters = parent_thr.perf_counters.lock();
         counters
             .iter()
             .filter(|ptc| ptc.want_task)
-            .filter_map(|ptc| sideband_target(ptc, ppid, ptid))
+            .filter_map(|ptc| {
+                Some((
+                    sideband_target(ptc, parent_thr)?,
+                    visible_tgid(ptc, child_process)?,
+                    visible_tid(ptc, child_thread)?,
+                    visible_tgid(ptc, &parent_thr.proc_data.identity())?,
+                    visible_tid(ptc, &parent_thr.pid_identity())?,
+                ))
+            })
             .collect()
     };
-    for t in &targets {
-        sideband::emit_fork(t, child_pid, ppid, child_tid, ptid);
+    for (target, child_pid, child_tid, parent_pid, parent_tid) in &targets {
+        sideband::emit_fork(target, *child_pid, *parent_pid, *child_tid, *parent_tid);
     }
 }
 
@@ -929,6 +1053,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
                     want_task: p.want_task,
                     sample_id_all: p.sample_id_all,
                     inherit: true,
+                    observer: p.observer,
                 },
                 sample_id: p.sample_id.load(Ordering::Relaxed),
                 ring: p.inherit_ring(),
@@ -974,22 +1099,24 @@ pub fn on_task_exit(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let pid = thr.proc_data.proc.pid();
-    let tid = thr.tid();
-    let (ppid, ptid) = match thr.proc_data.proc.parent() {
-        // The parent process's tgid; its main-thread tid equals that tgid.
-        Some(p) => {
-            let ppid = p.pid();
-            (ppid, ppid)
-        }
-        None => (0, 0),
-    };
     let counters = thr.perf_counters.lock();
     for ptc in counters.iter() {
         if ptc.want_task
-            && let Some(t) = sideband_target(ptc, pid, tid)
+            && let Some(target) = sideband_target(ptc, thr)
         {
-            sideband::emit_exit(&t, pid, ppid, tid, ptid);
+            let pid = target.pid;
+            let tid = target.tid;
+            let parent = thr.proc_data.proc.parent().and_then(|parent| {
+                let number = parent.identity().visible_number_in(ptc.observer)?;
+                Some((TgidNumber::from(number), TidNumber::from(number)))
+            });
+            sideband::emit_exit(
+                &target,
+                pid,
+                parent.map(|(pid, _)| pid),
+                tid,
+                parent.map(|(_, tid)| tid),
+            );
         }
         free_hw(ptc);
     }
@@ -1048,8 +1175,17 @@ pub fn free_hw(ptc: &PerTaskCounter) {
         // Zero the published geometry so no later hook can re-arm a stale ring.
         ptc.ring_vaddr.store(0, Ordering::Release);
         ptc.notify_ptr.store(0, Ordering::Release);
-    } else if was_running {
-        ax_cpu::pmu::counter::disable(ptc.n);
+    } else {
+        if was_running {
+            let delta = ax_cpu::pmu::counter::read(ptc.n);
+            ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
+            ax_cpu::pmu::counter::disable(ptc.n);
+            let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
+            ptc.time_enabled_ns.fetch_add(dt, Ordering::AcqRel);
+            ptc.time_running_ns.fetch_add(dt, Ordering::AcqRel);
+        }
+        ptc.publish_rdpmc_page(false);
+        ptc.release_rdpmc_page();
     }
     hw::free_programmable_counter(ptc.n);
     PERF_TASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);

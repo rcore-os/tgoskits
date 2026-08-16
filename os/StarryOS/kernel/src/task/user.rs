@@ -4,7 +4,6 @@ use ax_runtime::hal::cpu::{
     uspace::{ExceptionKind, ReturnReason, UserContext},
 };
 use ax_task::TaskInner;
-use starry_process::Pid;
 use starry_signal::{FPE_INTDIV, SEGV_ACCERR, SEGV_MAPERR, SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 use syscalls::Sysno;
@@ -63,25 +62,30 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
         move || {
             let curr = ax_task::current();
 
-            if let Some(tid) = (set_child_tid as *mut Pid).nullable() {
-                tid.vm_write(curr.as_thread().tid() as Pid).ok();
+            if let Some(tid) = (set_child_tid as *mut u32).nullable() {
+                // CLONE_CHILD_SETTID is observed by the child in its active
+                // PID namespace, matching gettid() and the clone return ABI.
+                tid.vm_write(curr.as_thread().user_tid().get()).ok();
             }
 
             info!("Enter user space: ip={:#x}, sp={:#x}", uctx.ip(), uctx.sp());
 
             let thr = curr.as_thread();
-            let resumed_from_initial_ptrace_stop =
-                if thr.proc_data.ptrace_stop_signo_for(thr.tid()).is_some() {
-                    wait_existing_ptrace_stop_current(thr, &mut uctx);
-                    true
-                } else if thr.tid() == thr.proc_data.proc.pid()
-                    && thr.proc_data.ptrace_stop_signo().is_some()
-                {
-                    let _ = ptrace_stop_current(thr, Signo::SIGSTOP, &mut uctx);
-                    true
-                } else {
-                    false
-                };
+            let resumed_from_initial_ptrace_stop = if thr
+                .proc_data
+                .ptrace_stop_signo_for(thr.tid_number())
+                .is_some()
+            {
+                wait_existing_ptrace_stop_current(thr, &mut uctx);
+                true
+            } else if thr.tid().pid_number() == thr.proc_data.proc.pid().pid_number()
+                && thr.proc_data.ptrace_stop_signo().is_some()
+            {
+                let _ = ptrace_stop_current(thr, Signo::SIGSTOP, &mut uctx);
+                true
+            } else {
+                false
+            };
             if resumed_from_initial_ptrace_stop {
                 // `block_on_user` consumes the interruption that aborted the
                 // stop. Re-scan pending signals before the first user
@@ -90,7 +94,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                 while check_signals(thr, &mut uctx, None, None) {}
             }
             while !thr.pending_exit() {
-                let tid = thr.tid();
+                let tid = thr.tid_number();
                 let is_ptraced =
                     thr.proc_data.is_ptrace_traceme() || thr.proc_data.is_ptrace_attached();
                 if thr.proc_data.is_ptrace_singlestep_for(tid) && is_ptraced {
@@ -146,10 +150,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         let syscall_no = uctx.sysno();
                         let syscall_arg0 = uctx.arg0();
                         if let Some(exit_code) = ptrace_exit_event_code(syscall_no, syscall_arg0)
-                            && crate::syscall::ptrace_notify_exit(
-                                thr.proc_data.proc.pid(),
-                                exit_code,
-                            )
+                            && crate::syscall::ptrace_notify_exit(tid, exit_code)
                         {
                             let _ = ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx);
                         }
@@ -158,9 +159,8 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         if stop_for_pending_ptrace_event(thr, &mut uctx) {
                             continue;
                         }
-                        if thr.proc_data.take_ptrace_exec_stop_pending() {
-                            let _is_event =
-                                crate::syscall::ptrace_notify_exec(thr.proc_data.proc.pid());
+                        if let Some(former_tid) = thr.proc_data.take_ptrace_exec_stop_pending() {
+                            let _is_event = crate::syscall::ptrace_notify_exec(tid, former_tid);
                             if let Some(_resume_sig) =
                                 ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
                             {
@@ -250,7 +250,8 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             // not always honour this.  Clearing explicitly
                             // prevents an unwanted extra single-step on resume.
                             let _ = uctx.clear_single_step_after_debug();
-                            thr.proc_data.set_ptrace_singlestep_for(thr.tid(), false);
+                            thr.proc_data
+                                .set_ptrace_singlestep_for(thr.tid_number(), false);
                             if let Some(_resume_sig) =
                                 ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx)
                             {
@@ -362,7 +363,7 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                             // POSIX timers are also driven by the alarm task, but polling
                             // here closes the window where an expired timer is only noticed
                             // after the current syscall returns to userspace.
-                            poll_process_timer(thr.proc_data.proc.pid());
+                            poll_process_timer(&thr.proc_data.identity());
                             poll_timer = false;
                         }
                         while check_signals(thr, &mut uctx, None, pending_restart) {
@@ -391,7 +392,7 @@ fn ptrace_exit_event_code(sysno: usize, arg0: usize) -> Option<i32> {
 }
 
 fn stop_for_pending_ptrace_event(thr: &super::Thread, uctx: &mut UserContext) -> bool {
-    thr.proc_data.has_ptrace_pending_event_for(thr.tid())
+    thr.proc_data.has_ptrace_pending_event_for(thr.tid_number())
         && ptrace_stop_current(thr, Signo::SIGTRAP, uctx).is_some()
 }
 

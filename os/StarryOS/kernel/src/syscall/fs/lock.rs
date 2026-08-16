@@ -37,14 +37,13 @@ use linux_raw_sys::general::{
     LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY, SEEK_CUR, SEEK_END,
     SEEK_SET, flock64,
 };
-use starry_process::Pid;
 
 use crate::{
     Errno, StarryError, StarryResult,
     file::{File, FileLike, get_file_like},
     mm::UserPtr,
     sync::RwLock,
-    task::{AsThread, futex::WaitQueue},
+    task::{AsThread, PidIdentityId, PidNamespaceId, PidSnapshot, futex::WaitQueue},
 };
 
 type InodeKey = (u64, u64); // (device, inode_no)
@@ -60,10 +59,10 @@ enum LockKind {
 }
 
 /// Owner of an entry in the fcntl POSIX/OFD lock table.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum FOwner {
     Posix {
-        pid: Pid,
+        owner: PidSnapshot,
     },
     Ofd {
         addr: OfdAddr,
@@ -76,16 +75,20 @@ impl FOwner {
     /// the same lock holder, so they merge / don't conflict".
     fn same_as(&self, other: &FOwner) -> bool {
         match (self, other) {
-            (FOwner::Posix { pid: a }, FOwner::Posix { pid: b }) => a == b,
+            (FOwner::Posix { owner: a }, FOwner::Posix { owner: b }) => {
+                a.identity_id() == b.identity_id()
+            }
             (FOwner::Ofd { addr: a, .. }, FOwner::Ofd { addr: b, .. }) => a == b,
             _ => false,
         }
     }
 
     /// pid value to report back via `F_GETLK`.
-    fn report_pid(&self) -> i32 {
+    fn report_pid(&self, observer: PidNamespaceId) -> i32 {
         match self {
-            FOwner::Posix { pid } => *pid as i32,
+            FOwner::Posix { owner } => owner
+                .visible_number(observer)
+                .map_or(0, |number| number.get() as i32),
             FOwner::Ofd { .. } => OFD_PID_REPORTED,
         }
     }
@@ -123,7 +126,8 @@ static LOCK_WAITERS: RwLock<BTreeMap<InodeKey, Arc<WaitQueue>>> = RwLock::new(BT
 /// These entries form the dynamic wait-for graph used for Linux-compatible
 /// `EDEADLK` detection. OFD waits are excluded because they are not owned by
 /// a process pid.
-static POSIX_LOCK_WAITS: RwLock<BTreeMap<Pid, Vec<WaitingLock>>> = RwLock::new(BTreeMap::new());
+static POSIX_LOCK_WAITS: RwLock<BTreeMap<PidIdentityId, Vec<WaitingLock>>> =
+    RwLock::new(BTreeMap::new());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WaitingLock {
@@ -132,15 +136,19 @@ struct WaitingLock {
     end: i64,
     kind: LockKind,
 }
-type PosixLockWaitTable = BTreeMap<Pid, Vec<WaitingLock>>;
+type PosixLockWaitTable = BTreeMap<PidIdentityId, Vec<WaitingLock>>;
 
 struct PosixLockWaitGuard {
-    pid: Pid,
+    owner: PidIdentityId,
     request: WaitingLock,
 }
 
 impl PosixLockWaitGuard {
-    fn try_new(pid: Pid, request: WaitingLock, owner: &FOwner) -> Result<Option<Self>, Errno> {
+    fn try_new(
+        waiter: PidIdentityId,
+        request: WaitingLock,
+        owner: &FOwner,
+    ) -> Result<Option<Self>, Errno> {
         let mut table = FCNTL_LOCKS.write();
         let Some(entries) = table.get_mut(&request.key) else {
             return Ok(None);
@@ -156,25 +164,28 @@ impl PosixLockWaitGuard {
         }
 
         let mut waits = POSIX_LOCK_WAITS.write();
-        if posix_lock_deadlock_would_occur(&table, &waits, pid, request) {
+        if posix_lock_deadlock_would_occur(&table, &waits, waiter, request) {
             return Err(Errno::EDEADLK);
         }
-        waits.entry(pid).or_default().push(request);
-        Ok(Some(Self { pid, request }))
+        waits.entry(waiter).or_default().push(request);
+        Ok(Some(Self {
+            owner: waiter,
+            request,
+        }))
     }
 }
 
 impl Drop for PosixLockWaitGuard {
     fn drop(&mut self) {
         let mut waits = POSIX_LOCK_WAITS.write();
-        let Some(requests) = waits.get_mut(&self.pid) else {
+        let Some(requests) = waits.get_mut(&self.owner) else {
             return;
         };
         if let Some(index) = requests.iter().position(|request| *request == self.request) {
             requests.swap_remove(index);
         }
         if requests.is_empty() {
-            waits.remove(&self.pid);
+            waits.remove(&self.owner);
         }
     }
 }
@@ -186,7 +197,7 @@ struct FlockEntry {
     /// pid that created this entry. Used to detect and prune stale
     /// same-pid entries whose OFD is dead (weak.strong_count() <= 1)
     /// but a residual fd-table reference masks the release.
-    owner_pid: Pid,
+    owner: PidIdentityId,
 }
 
 /// flock(2) entries: at most one entry per (inode, OFD).
@@ -206,8 +217,12 @@ fn ofd_addr(arc: &Arc<dyn FileLike>) -> OfdAddr {
     Arc::as_ptr(arc) as *const () as usize
 }
 
-fn current_pid() -> Pid {
-    current().as_thread().proc_data.proc.pid()
+fn current_process_identity_id() -> PidIdentityId {
+    current().as_thread().proc_data.identity().id()
+}
+
+fn current_process_pid_snapshot() -> PidSnapshot {
+    current().as_thread().proc_data.identity().snapshot()
 }
 
 /// Resolve `fd` to an inode-keyed lockable file. Returns `EBADF` for fds
@@ -337,15 +352,7 @@ fn clear_owner_overlap(
         }
         changed = true;
         let (es, ee, ek) = (e.start, e.end, e.kind);
-        // Snapshot owner via the per-arm clone — Posix is trivially Copy
-        // semantics, OFD must clone its Weak.
-        let snap_owner = match &e.owner {
-            FOwner::Posix { pid } => FOwner::Posix { pid: *pid },
-            FOwner::Ofd { addr, weak } => FOwner::Ofd {
-                addr: *addr,
-                weak: weak.clone(),
-            },
-        };
+        let snap_owner = e.owner.clone();
         entries.swap_remove(i);
         // Re-insert the head fragment [es, start) if any.
         if es < start {
@@ -353,13 +360,7 @@ fn clear_owner_overlap(
                 start: es,
                 end: start,
                 kind: ek,
-                owner: match &snap_owner {
-                    FOwner::Posix { pid } => FOwner::Posix { pid: *pid },
-                    FOwner::Ofd { addr, weak } => FOwner::Ofd {
-                        addr: *addr,
-                        weak: weak.clone(),
-                    },
-                },
+                owner: snap_owner.clone(),
             });
         }
         // Re-insert the tail fragment [end, ee) if any.
@@ -396,23 +397,23 @@ fn find_conflict<'a>(
 
 fn push_posix_conflict_pids(
     entries: &[FLockEntry],
-    requester: Pid,
+    requester: PidIdentityId,
     start: i64,
     end: i64,
     kind: LockKind,
-    out: &mut Vec<Pid>,
+    out: &mut Vec<PidIdentityId>,
 ) {
     for entry in entries {
         if !ranges_overlap(entry.start, entry.end, start, end) || !kinds_conflict(entry.kind, kind)
         {
             continue;
         }
-        let FOwner::Posix { pid } = &entry.owner else {
+        let FOwner::Posix { owner } = &entry.owner else {
             continue;
         };
-        let pid = *pid;
-        if pid != requester && !out.contains(&pid) {
-            out.push(pid);
+        let blocker = owner.identity_id();
+        if blocker != requester && !out.contains(&blocker) {
+            out.push(blocker);
         }
     }
 }
@@ -420,7 +421,7 @@ fn push_posix_conflict_pids(
 fn posix_lock_deadlock_would_occur(
     table: &BTreeMap<InodeKey, Vec<FLockEntry>>,
     waits: &PosixLockWaitTable,
-    requester: Pid,
+    requester: PidIdentityId,
     request: WaitingLock,
 ) -> bool {
     let mut stack = Vec::new();
@@ -526,7 +527,9 @@ fn make_owner(ofd: bool, file: &Arc<dyn FileLike>) -> FOwner {
             weak: Arc::downgrade(file),
         }
     } else {
-        FOwner::Posix { pid: current_pid() }
+        FOwner::Posix {
+            owner: current_process_pid_snapshot(),
+        }
     }
 }
 
@@ -625,7 +628,7 @@ pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> StarryResult
                     end,
                     kind: want,
                 };
-                let waiter_pid = (!ofd).then(current_pid);
+                let waiter = (!ofd).then(current_process_identity_id);
                 let mut wait_guard = None;
                 let mut deadlock = false;
 
@@ -639,8 +642,8 @@ pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> StarryResult
                 let wq = lock_waiters(key);
                 wq.wait_if(!0u32, None, || {
                     let owner = make_owner(ofd, &file);
-                    if let Some(pid) = waiter_pid {
-                        match PosixLockWaitGuard::try_new(pid, waiting, &owner) {
+                    if let Some(waiter) = waiter {
+                        match PosixLockWaitGuard::try_new(waiter, waiting, &owner) {
                             Ok(Some(guard)) => wait_guard = Some(guard),
                             Ok(None) => return false,
                             Err(Errno::EDEADLK) => {
@@ -700,8 +703,12 @@ pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> StarryResult<isize> {
             weak: Arc::downgrade(&file),
         }
     } else {
-        FOwner::Posix { pid: current_pid() }
+        FOwner::Posix {
+            owner: current_process_pid_snapshot(),
+        }
     };
+
+    let observer = current().as_thread().active_pid_namespace().id();
 
     let mut table = FCNTL_LOCKS.write();
     let (report, empty_after) = {
@@ -709,7 +716,7 @@ pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> StarryResult<isize> {
         let report = find_conflict(entries, &requester, start, end, req_kind).map(|e| {
             (
                 e.kind,
-                e.owner.report_pid(),
+                e.owner.report_pid(observer),
                 e.start,
                 if e.end == i64::MAX {
                     0
@@ -762,14 +769,14 @@ pub fn dispatch_fcntl(fd: c_int, cmd: c_int, arg: usize) -> Option<StarryResult<
 /// `FCNTL_LOCKS`. OFD entries are untouched: their owner is the open
 /// file description, which is already cleaned up by `close_all_fds`
 /// dropping the underlying `Arc<dyn FileLike>`.
-pub fn release_pid_locks(pid: Pid) {
+pub fn release_pid_locks(owner: PidIdentityId) {
     let mut affected: Vec<InodeKey> = Vec::new();
     {
         let mut table = FCNTL_LOCKS.write();
         table.retain(|inode, entries| {
             let before = entries.len();
             entries.retain(|e| match &e.owner {
-                FOwner::Posix { pid: p } => *p != pid,
+                FOwner::Posix { owner: candidate } => candidate.identity_id() != owner,
                 FOwner::Ofd { .. } => true,
             });
             if entries.len() != before {
@@ -794,7 +801,7 @@ pub fn release_pid_locks(pid: Pid) {
 /// OFD entries are owned by the open file description, not the pid, so
 /// they are deliberately left in place — they age out via
 /// `Weak::strong_count` once the underlying `Arc<dyn FileLike>` is gone.
-pub fn release_inode_posix_locks(pid: Pid, key: (u64, u64)) {
+pub fn release_inode_posix_locks(owner: PidIdentityId, key: (u64, u64)) {
     let woke_someone = {
         let mut table = FCNTL_LOCKS.write();
         let Some(entries) = table.get_mut(&key) else {
@@ -802,7 +809,7 @@ pub fn release_inode_posix_locks(pid: Pid, key: (u64, u64)) {
         };
         let before = entries.len();
         entries.retain(|e| match &e.owner {
-            FOwner::Posix { pid: p } => *p != pid,
+            FOwner::Posix { owner: candidate } => candidate.identity_id() != owner,
             FOwner::Ofd { .. } => true,
         });
         let changed = entries.len() != before;
@@ -852,8 +859,8 @@ fn try_flock_once(
     // Cross-pid entries are NOT pruned — only the owning pid can declare
     // its own entry stale, to avoid a racy process freeing another
     // process's still-valid lock.
-    let pid = current_pid();
-    entries.retain(|e| !(e.owner_pid == pid && e.weak.strong_count() < 1));
+    let owner = current_process_identity_id();
+    entries.retain(|entry| !(entry.owner == owner && entry.weak.strong_count() < 1));
     let outcome = match kind {
         None => {
             // LOCK_UN: drop any entry held by this OFD.
@@ -875,7 +882,7 @@ fn try_flock_once(
                     addr,
                     weak: Arc::downgrade(file),
                     kind: want,
-                    owner_pid: current_pid(),
+                    owner: current_process_identity_id(),
                 });
                 FlockAttempt::Done
             }
@@ -919,13 +926,13 @@ pub fn release_flock_lock(key: InodeKey, file: &Arc<dyn FileLike>) {
 /// A process that exits without explicit `LOCK_UN` must not leave its flock
 /// entries pinned in [`FLOCK_LOCKS`], because those entries would block
 /// future lock attempts by other processes (or by the same pid reused).
-pub fn release_pid_flock_locks(pid: Pid) {
+pub fn release_pid_flock_locks(owner: PidIdentityId) {
     let mut affected: Vec<InodeKey> = Vec::new();
     {
         let mut table = FLOCK_LOCKS.write();
         table.retain(|inode, entries| {
             let before = entries.len();
-            entries.retain(|e| e.owner_pid != pid);
+            entries.retain(|entry| entry.owner != owner);
             if entries.len() != before {
                 affected.push(*inode);
             }

@@ -35,54 +35,7 @@ args = [
 uefi = true
 to_bin = true
 shell_prefix = "root@starry:"
-test_commands = [
-    '''
-total=0
-passed=0
-failed=0
-system_fail_marker=STARRY_SYSTEM_TEST_FAILED
-group_fail_marker=STARRY_GROUPED_TEST_FAILED
-suite_start=$(date +%s 2>/dev/null || printf 0)
-for bin in /usr/bin/starry-test-suit/*; do
-    [ -f "$bin" ] && [ -x "$bin" ] || continue
-    total=$((total + 1))
-    start=$(date +%s 2>/dev/null || printf 0)
-    echo "STARRY_SYSTEM_TEST_BEGIN: $bin"
-    if "$bin"; then
-        exit_status=0
-    else
-        exit_status=$?
-    fi
-    end=$(date +%s 2>/dev/null || printf 0)
-    elapsed_s=$((end - start))
-    if [ "$elapsed_s" -lt 0 ]; then
-        elapsed_s=0
-    fi
-    if [ "$exit_status" -eq 0 ]; then
-        passed=$((passed + 1))
-        echo "STARRY_SYSTEM_TEST_PASSED: $bin elapsed_s=$elapsed_s"
-    else
-        failed=$((failed + 1))
-        echo "$system_fail_marker: $bin status=$exit_status elapsed_s=$elapsed_s"
-    fi
-done
-suite_end=$(date +%s 2>/dev/null || printf 0)
-suite_elapsed_s=$((suite_end - suite_start))
-if [ "$suite_elapsed_s" -lt 0 ]; then
-    suite_elapsed_s=0
-fi
-echo "STARRY_SYSTEM_TEST_SUMMARY: total=$total passed=$passed failed=$failed elapsed_s=$suite_elapsed_s"
-if [ "$total" -eq 0 ]; then
-    echo "$group_fail_marker: no SMP system tests found"
-    exit 1
-fi
-if [ "$failed" -ne 0 ]; then
-    echo "$group_fail_marker: one or more SMP system tests failed"
-    exit 1
-fi
-echo "STARRY_GROUPED_TESTS_PASSED"
-''',
-]
+test_commands = ["exec /usr/bin/starry-run-system-tests"]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
 timeout = 1800

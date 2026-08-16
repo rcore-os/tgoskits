@@ -13,7 +13,6 @@ use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::paging::MappingFlags;
 use ax_task::current;
-use starry_process::Pid;
 use starry_signal::Signo;
 use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 
@@ -28,7 +27,11 @@ use crate::task::PtraceStopFpData;
 use crate::{
     Errno, StarryError, StarryResult,
     mm::{AddrSpace, IoVec},
-    task::{AsThread, Cred, ProcessData, get_process_cred, get_process_data, get_task},
+    task::{
+        AsThread, Cred, PidIdentity, PidNumber, PidSnapshot, ProcessData, Tgid, TgidNumber,
+        TidNumber, current_pid_view, get_process_data_by_number, get_task_by_number,
+        get_user_task_by_number, send_signal_to_process_data,
+    },
 };
 
 const PTRACE_TRACEME: u32 = 0;
@@ -242,35 +245,70 @@ struct X8664UserRegs {
 #[derive(Clone, Copy)]
 struct X8664FpRegs(ax_cpu::FxsaveArea);
 
+#[derive(Clone, Copy)]
+struct PtraceTarget(PidNumber);
+
+impl TryFrom<usize> for PtraceTarget {
+    type Error = StarryError;
+
+    fn try_from(pid: usize) -> Result<Self, Self::Error> {
+        let pid = u32::try_from(pid).map_err(|_| StarryError::from(Errno::ESRCH))?;
+        Ok(Self(
+            PidNumber::try_from(pid).map_err(|_| StarryError::from(Errno::ESRCH))?,
+        ))
+    }
+}
+
+impl PtraceTarget {
+    const fn number(self) -> PidNumber {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ProcessVmTarget(TidNumber);
+
+impl TryFrom<usize> for ProcessVmTarget {
+    type Error = StarryError;
+
+    fn try_from(pid: usize) -> Result<Self, Self::Error> {
+        let pid = u32::try_from(pid).map_err(|_| StarryError::from(Errno::ESRCH))?;
+        Ok(Self(
+            TidNumber::try_from(pid).map_err(|_| StarryError::from(Errno::ESRCH))?,
+        ))
+    }
+}
+
 pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> StarryResult<isize> {
     info!("sys_ptrace <= request: {request}, pid: {pid}, addr: {addr:#x}, data: {data:#x}");
 
+    let target = || PtraceTarget::try_from(pid);
     match request {
         PTRACE_TRACEME => ptrace_traceme(),
-        PTRACE_PEEKTEXT | PTRACE_PEEKDATA => ptrace_peekdata(pid, addr, data),
-        PTRACE_POKETEXT | PTRACE_POKEDATA => ptrace_pokedata(pid, addr, data),
-        PTRACE_CONT => ptrace_cont(pid, data),
-        PTRACE_KILL => ptrace_kill(pid),
-        PTRACE_SINGLESTEP => ptrace_singlestep(pid, data),
-        PTRACE_GETREGS => ptrace_getregs(pid, data),
-        PTRACE_SETREGS => ptrace_setregs(pid, data),
-        PTRACE_GETFPREGS => ptrace_getfpregs(pid, data),
-        PTRACE_SETFPREGS => ptrace_setfpregs(pid, data),
-        PTRACE_GETFPXREGS => ptrace_getfpregs(pid, data),
-        PTRACE_SETFPXREGS => ptrace_setfpregs(pid, data),
-        PTRACE_PEEKUSER => ptrace_peekuser(pid, addr, data),
-        PTRACE_POKEUSER => ptrace_pokeuser(pid, addr, data),
-        PTRACE_ATTACH => ptrace_attach(pid),
-        PTRACE_DETACH => ptrace_detach(pid, data),
-        PTRACE_SYSCALL => ptrace_syscall(pid, data),
-        PTRACE_SETOPTIONS => ptrace_setoptions(pid, data),
-        PTRACE_GETEVENTMSG => ptrace_geteventmsg(pid, data),
-        PTRACE_GETSIGINFO => ptrace_getsiginfo(pid, data),
-        PTRACE_SETSIGINFO => ptrace_setsiginfo(pid, data),
-        PTRACE_GETREGSET => ptrace_getregset(pid, addr, data),
-        PTRACE_SETREGSET => ptrace_setregset(pid, addr, data),
-        PTRACE_SEIZE => ptrace_seize(pid, addr, data),
-        PTRACE_INTERRUPT => ptrace_interrupt(pid),
+        PTRACE_PEEKTEXT | PTRACE_PEEKDATA => ptrace_peekdata(target()?, addr, data),
+        PTRACE_POKETEXT | PTRACE_POKEDATA => ptrace_pokedata(target()?, addr, data),
+        PTRACE_CONT => ptrace_cont(target()?, data),
+        PTRACE_KILL => ptrace_kill(target()?),
+        PTRACE_SINGLESTEP => ptrace_singlestep(target()?, data),
+        PTRACE_GETREGS => ptrace_getregs(target()?, data),
+        PTRACE_SETREGS => ptrace_setregs(target()?, data),
+        PTRACE_GETFPREGS => ptrace_getfpregs(target()?, data),
+        PTRACE_SETFPREGS => ptrace_setfpregs(target()?, data),
+        PTRACE_GETFPXREGS => ptrace_getfpregs(target()?, data),
+        PTRACE_SETFPXREGS => ptrace_setfpregs(target()?, data),
+        PTRACE_PEEKUSER => ptrace_peekuser(target()?, addr, data),
+        PTRACE_POKEUSER => ptrace_pokeuser(target()?, addr, data),
+        PTRACE_ATTACH => ptrace_attach(target()?),
+        PTRACE_DETACH => ptrace_detach(target()?, data),
+        PTRACE_SYSCALL => ptrace_syscall(target()?, data),
+        PTRACE_SETOPTIONS => ptrace_setoptions(target()?, data),
+        PTRACE_GETEVENTMSG => ptrace_geteventmsg(target()?, data),
+        PTRACE_GETSIGINFO => ptrace_getsiginfo(target()?, data),
+        PTRACE_SETSIGINFO => ptrace_setsiginfo(target()?, data),
+        PTRACE_GETREGSET => ptrace_getregset(target()?, addr, data),
+        PTRACE_SETREGSET => ptrace_setregset(target()?, addr, data),
+        PTRACE_SEIZE => ptrace_seize(target()?, addr, data),
+        PTRACE_INTERRUPT => ptrace_interrupt(target()?),
         _ => Err(StarryError::Unsupported),
     }
 }
@@ -281,7 +319,7 @@ fn ptrace_traceme() -> StarryResult<isize> {
     if proc_data.proc.parent().is_none()
         || proc_data.is_ptrace_traceme()
         || proc_data.is_ptrace_attached()
-        || proc_data.ptrace_tracer_pid().is_some()
+        || proc_data.ptrace_tracer_identity().is_some()
     {
         return Err(StarryError::from(Errno::EPERM));
     }
@@ -298,7 +336,7 @@ fn ptrace_resume_signo(data: usize) -> StarryResult<u32> {
     Ok(signo as u32)
 }
 
-fn ptrace_cont(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_cont(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let signo = ptrace_resume_signo(data)?;
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     tracee.set_ptrace_singlestep_for(tid, false);
@@ -308,9 +346,8 @@ fn ptrace_cont(pid: usize, data: usize) -> StarryResult<isize> {
     Ok(0)
 }
 
-fn ptrace_kill(pid: usize) -> StarryResult<isize> {
-    let tracee_pid = Pid::try_from(pid).map_err(|_| StarryError::from(Errno::ESRCH))?;
-    let tracee = get_process_data(tracee_pid).map_err(|_| StarryError::from(Errno::ESRCH))?;
+fn ptrace_kill(pid: PtraceTarget) -> StarryResult<isize> {
+    let (tracee, _) = ptrace_tracee_by_pid_or_tid(pid)?;
     if tracee.is_ptrace_traceme() || tracee.is_ptrace_attached() {
         tracee.clear_ptrace_stop();
         tracee.clear_ptrace_traceme();
@@ -318,12 +355,11 @@ fn ptrace_kill(pid: usize) -> StarryResult<isize> {
     }
     use starry_signal::SignalInfo;
 
-    use crate::task::send_signal_to_process;
-    let _ = send_signal_to_process(tracee_pid, Some(SignalInfo::new_kernel(Signo::SIGKILL)));
+    let _ = send_signal_to_process_data(&tracee, Some(SignalInfo::new_kernel(Signo::SIGKILL)));
     Ok(0)
 }
 
-fn ptrace_singlestep(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_singlestep(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let signo = ptrace_resume_signo(data)?;
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     tracee.set_ptrace_singlestep_for(tid, true);
@@ -332,35 +368,32 @@ fn ptrace_singlestep(pid: usize, data: usize) -> StarryResult<isize> {
     Ok(0)
 }
 
-fn ptrace_attach(pid: usize) -> StarryResult<isize> {
-    let tracer_pid = current().as_thread().proc_data.proc.pid();
-    let tracee_pid = Pid::try_from(pid).map_err(|_| StarryError::from(Errno::ESRCH))?;
-    if tracee_pid == tracer_pid {
+fn ptrace_attach(pid: PtraceTarget) -> StarryResult<isize> {
+    let tracer_identity = current().as_thread().proc_data.identity();
+    let tracer = current().as_thread().proc_data.clone();
+    let (tracee, _) = ptrace_tracee_by_pid_or_tid(pid)?;
+    if Arc::ptr_eq(&tracee.identity(), &tracer_identity) {
         return Err(StarryError::from(Errno::EPERM));
     }
-    let tracee = get_process_data(tracee_pid).map_err(|_| StarryError::from(Errno::ESRCH))?;
     if tracee.is_ptrace_traceme() || tracee.is_ptrace_attached() {
         return Err(StarryError::from(Errno::EPERM));
     }
-    if !ptrace_may_attach(tracer_pid, tracee_pid, &tracee)? {
+    if !ptrace_may_attach(&tracer, &tracee) {
         return Err(StarryError::from(Errno::EPERM));
     }
-    tracee.set_ptrace_tracer_pid(tracer_pid);
+    tracee.set_ptrace_tracer(&tracer_identity);
     tracee.set_ptrace_attach_mode(crate::task::PtraceAttachMode::Attach);
     use starry_signal::SignalInfo;
-    let _ = crate::task::send_signal_to_process(
-        tracee_pid,
-        Some(SignalInfo::new_kernel(Signo::SIGSTOP)),
-    );
+    let _ = send_signal_to_process_data(&tracee, Some(SignalInfo::new_kernel(Signo::SIGSTOP)));
     Ok(0)
 }
 
-fn ptrace_detach(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_detach(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let signo = ptrace_resume_signo(data)?;
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     tracee.clear_ptrace_traceme();
     tracee.clear_ptrace_attached();
-    tracee.clear_ptrace_tracer_pid();
+    tracee.clear_ptrace_tracer();
     tracee.set_ptrace_singlestep_for(tid, false);
     tracee.set_ptrace_syscall_trace_for(tid, false);
     tracee.set_ptrace_options(0);
@@ -368,7 +401,7 @@ fn ptrace_detach(pid: usize, data: usize) -> StarryResult<isize> {
     Ok(0)
 }
 
-fn ptrace_syscall(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_syscall(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let signo = ptrace_resume_signo(data)?;
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     tracee.set_ptrace_singlestep_for(tid, false);
@@ -381,21 +414,21 @@ fn ptrace_syscall(pid: usize, data: usize) -> StarryResult<isize> {
     Ok(0)
 }
 
-fn ptrace_setoptions(pid: usize, options: usize) -> StarryResult<isize> {
+fn ptrace_setoptions(pid: PtraceTarget, options: usize) -> StarryResult<isize> {
     let tracee = ptrace_stopped_tracee(pid)?;
     ptrace_validate_options(options)?;
     tracee.set_ptrace_options(options);
     Ok(0)
 }
 
-fn ptrace_geteventmsg(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_geteventmsg(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
-    let msg = tracee.ptrace_event_msg_for(tid);
+    let msg = tracee.ptrace_event_msg_for(tid, &current_pid_view());
     (data as *mut usize).vm_write(msg)?;
     Ok(0)
 }
 
-fn ptrace_getsiginfo(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_getsiginfo(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let siginfo = tracee
         .ptrace_stop_siginfo_for(tid)
@@ -436,7 +469,7 @@ fn ptrace_getsiginfo(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_setsiginfo(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_setsiginfo(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     if data == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -455,12 +488,12 @@ fn ptrace_setsiginfo(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_setsiginfo(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_setsiginfo(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
     Err(StarryError::Unsupported)
 }
 
-fn ptrace_getregset(pid: usize, addr: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_getregset(pid: PtraceTarget, addr: usize, data: usize) -> StarryResult<isize> {
     match addr {
         NT_PRSTATUS => ptrace_getregset_prstatus(pid, data),
         #[cfg(any(
@@ -474,7 +507,7 @@ fn ptrace_getregset(pid: usize, addr: usize, data: usize) -> StarryResult<isize>
     }
 }
 
-fn ptrace_setregset(pid: usize, addr: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_setregset(pid: PtraceTarget, addr: usize, data: usize) -> StarryResult<isize> {
     match addr {
         NT_PRSTATUS => ptrace_setregset_prstatus(pid, data),
         #[cfg(any(
@@ -494,7 +527,7 @@ fn ptrace_setregset(pid: usize, addr: usize, data: usize) -> StarryResult<isize>
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_getregs(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_getregs(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     if data == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -515,7 +548,7 @@ fn ptrace_getregs(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_getregs(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_getregs(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
     Err(StarryError::Unsupported)
 }
@@ -526,7 +559,7 @@ fn ptrace_getregs(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_setregs(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_setregs(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     if data == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -540,7 +573,7 @@ fn ptrace_setregs(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_setregs(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_setregs(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
     Err(StarryError::Unsupported)
 }
@@ -551,7 +584,7 @@ fn ptrace_setregs(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_getfpregs(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_getfpregs(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     if data == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -572,7 +605,7 @@ fn ptrace_getfpregs(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_getfpregs(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_getfpregs(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
     Err(StarryError::Unsupported)
 }
@@ -583,7 +616,7 @@ fn ptrace_getfpregs(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_setfpregs(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_setfpregs(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     if data == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -597,31 +630,30 @@ fn ptrace_setfpregs(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_setfpregs(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_setfpregs(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
     Err(StarryError::Unsupported)
 }
 
-fn ptrace_seize(pid: usize, addr: usize, options: usize) -> StarryResult<isize> {
+fn ptrace_seize(pid: PtraceTarget, addr: usize, options: usize) -> StarryResult<isize> {
     if addr != 0 {
         return Err(StarryError::from(Errno::EIO));
     }
     ptrace_validate_options(options)?;
 
-    let tracer_pid = current().as_thread().proc_data.proc.pid();
-    let tracee_tid = Pid::try_from(pid).map_err(|_| StarryError::from(Errno::ESRCH))?;
-    let tracee = ptrace_tracee_by_pid_or_tid(tracee_tid)?;
-    let tracee_pid = tracee.proc.pid();
-    if tracee_pid == tracer_pid {
+    let tracer_identity = current().as_thread().proc_data.identity();
+    let tracer = current().as_thread().proc_data.clone();
+    let (tracee, _tracee_tid) = ptrace_tracee_by_pid_or_tid(pid)?;
+    if Arc::ptr_eq(&tracee.identity(), &tracer_identity) {
         return Err(StarryError::from(Errno::EPERM));
     }
     if tracee.is_ptrace_traceme() || tracee.is_ptrace_attached() {
         return Err(StarryError::from(Errno::EPERM));
     }
-    if !ptrace_may_attach(tracer_pid, tracee_pid, &tracee)? {
+    if !ptrace_may_attach(&tracer, &tracee) {
         return Err(StarryError::from(Errno::EPERM));
     }
-    tracee.set_ptrace_tracer_pid(tracer_pid);
+    tracee.set_ptrace_tracer(&tracer_identity);
     tracee.set_ptrace_options(options);
     tracee.set_ptrace_attach_mode(crate::task::PtraceAttachMode::Seize);
     Ok(0)
@@ -634,22 +666,29 @@ fn ptrace_validate_options(options: usize) -> StarryResult {
     Ok(())
 }
 
-fn ptrace_may_attach(tracer_pid: Pid, tracee_pid: Pid, tracee: &ProcessData) -> StarryResult<bool> {
-    if tracee.proc.parent().is_some_and(|p| p.pid() == tracer_pid) {
-        return Ok(true);
+fn ptrace_may_attach(tracer: &ProcessData, tracee: &ProcessData) -> bool {
+    if tracee
+        .proc
+        .parent()
+        .is_some_and(|parent| Arc::ptr_eq(&parent, &tracer.proc))
+    {
+        return true;
     }
 
-    let tracer_cred = get_process_cred(tracer_pid)?;
+    let tracer_cred = current().as_thread().cred();
     if tracer_cred.has_cap_sys_ptrace() {
-        return Ok(true);
+        return true;
     }
 
     if tracee.dumpable() != 1 {
-        return Ok(false);
+        return false;
     }
 
-    let tracee_cred = get_process_cred(tracee_pid)?;
-    Ok(ptrace_creds_match_for_attach(&tracer_cred, &tracee_cred))
+    let Some(tracee_task) = tracee.identity().live_task() else {
+        return false;
+    };
+    let tracee_cred = tracee_task.as_thread().cred();
+    ptrace_creds_match_for_attach(&tracer_cred, &tracee_cred)
 }
 
 fn ptrace_creds_match_for_attach(tracer: &Cred, tracee: &Cred) -> bool {
@@ -662,11 +701,13 @@ fn ptrace_creds_match_for_attach(tracer: &Cred, tracee: &Cred) -> bool {
         && tracer.uid == tracer.fsuid
 }
 
-fn ptrace_interrupt(pid: usize) -> StarryResult<isize> {
-    let tracee_tid = Pid::try_from(pid).map_err(|_| StarryError::from(Errno::ESRCH))?;
-    let tracee = ptrace_tracee_by_pid_or_tid(tracee_tid)?;
-    let tracer_pid = current().as_thread().proc_data.proc.pid();
-    if tracee.ptrace_tracer_pid() != Some(tracer_pid) {
+fn ptrace_interrupt(pid: PtraceTarget) -> StarryResult<isize> {
+    let (tracee, tracee_tid) = ptrace_tracee_by_pid_or_tid(pid)?;
+    let tracer = current().as_thread().proc_data.identity();
+    if !tracee
+        .ptrace_tracer_identity()
+        .is_some_and(|registered| Arc::ptr_eq(&registered, &tracer))
+    {
         return Err(StarryError::from(Errno::ESRCH));
     }
     if !tracee.is_ptrace_seized() {
@@ -687,7 +728,7 @@ fn ptrace_interrupt(pid: usize) -> StarryResult<isize> {
     if tracee.is_job_stop_waiter(tracee_tid) {
         tracee.wake_job_stop_waiter();
     } else {
-        get_task(tracee_tid)?.interrupt();
+        get_task_by_number(tracee_tid)?.interrupt();
     }
     Ok(0)
 }
@@ -698,7 +739,7 @@ fn ptrace_interrupt(pid: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_getregset_prstatus(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_getregset_prstatus(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     if data == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -728,7 +769,7 @@ fn ptrace_getregset_prstatus(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_getregset_prstatus(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_getregset_prstatus(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
     Err(StarryError::Unsupported)
 }
@@ -739,7 +780,7 @@ fn ptrace_getregset_prstatus(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_setregset_prstatus(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_setregset_prstatus(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     if data == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -761,7 +802,7 @@ fn ptrace_setregset_prstatus(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 )))]
-fn ptrace_setregset_prstatus(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_setregset_prstatus(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     let _ = (pid, data);
     Err(StarryError::Unsupported)
 }
@@ -772,7 +813,7 @@ fn ptrace_setregset_prstatus(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_read_stopped_user_regs(pid: usize) -> StarryResult<ArchUserRegs> {
+fn ptrace_read_stopped_user_regs(pid: PtraceTarget) -> StarryResult<ArchUserRegs> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let uctx = tracee
         .ptrace_stop_user_context_for(tid)
@@ -823,7 +864,7 @@ fn ptrace_read_user_regs(data: usize) -> StarryResult<ArchUserRegs> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_write_stopped_user_regs(pid: usize, regs: ArchUserRegs) -> StarryResult<isize> {
+fn ptrace_write_stopped_user_regs(pid: PtraceTarget, regs: ArchUserRegs) -> StarryResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let mut uctx = tracee
         .ptrace_stop_user_context_for(tid)
@@ -855,7 +896,7 @@ fn ptrace_write_stopped_user_regs(pid: usize, regs: ArchUserRegs) -> StarryResul
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_getregset_fpregset(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_getregset_fpregset(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     if data == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -883,7 +924,7 @@ fn ptrace_getregset_fpregset(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_setregset_fpregset(pid: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_setregset_fpregset(pid: PtraceTarget, data: usize) -> StarryResult<isize> {
     if data == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -901,7 +942,7 @@ fn ptrace_setregset_fpregset(pid: usize, data: usize) -> StarryResult<isize> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_read_stopped_fp_regs(pid: usize) -> StarryResult<ArchFpRegs> {
+fn ptrace_read_stopped_fp_regs(pid: PtraceTarget) -> StarryResult<ArchFpRegs> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let fp_data = tracee
         .ptrace_stop_fp_data_for(tid)
@@ -962,7 +1003,7 @@ fn ptrace_siginfo_signo(siginfo: &linux_raw_sys::general::siginfo_t) -> StarryRe
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_write_stopped_fp_regs(pid: usize, regs: ArchFpRegs) -> StarryResult<isize> {
+fn ptrace_write_stopped_fp_regs(pid: PtraceTarget, regs: ArchFpRegs) -> StarryResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     #[cfg(target_arch = "loongarch64")]
     let fp_data = {
@@ -983,7 +1024,7 @@ fn ptrace_write_stopped_fp_regs(pid: usize, regs: ArchFpRegs) -> StarryResult<is
     Ok(0)
 }
 
-fn ptrace_peekdata(pid: usize, addr: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_peekdata(pid: PtraceTarget, addr: usize, data: usize) -> StarryResult<isize> {
     if data == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -992,7 +1033,7 @@ fn ptrace_peekdata(pid: usize, addr: usize, data: usize) -> StarryResult<isize> 
     Ok(0)
 }
 
-fn ptrace_pokedata(pid: usize, addr: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_pokedata(pid: PtraceTarget, addr: usize, data: usize) -> StarryResult<isize> {
     let tracee = ptrace_stopped_tracee(pid)?;
     ptrace_write_word(&tracee, addr, data)?;
     Ok(0)
@@ -1041,7 +1082,14 @@ pub fn sys_process_vm_readv(
         return Err(StarryError::InvalidInput);
     }
 
-    process_vm_copy(pid, local_iov, liovcnt, remote_iov, riovcnt, false)
+    process_vm_copy(
+        ProcessVmTarget::try_from(pid)?,
+        local_iov,
+        liovcnt,
+        remote_iov,
+        riovcnt,
+        false,
+    )
 }
 
 pub fn sys_process_vm_writev(
@@ -1056,11 +1104,18 @@ pub fn sys_process_vm_writev(
         return Err(StarryError::InvalidInput);
     }
 
-    process_vm_copy(pid, local_iov, liovcnt, remote_iov, riovcnt, true)
+    process_vm_copy(
+        ProcessVmTarget::try_from(pid)?,
+        local_iov,
+        liovcnt,
+        remote_iov,
+        riovcnt,
+        true,
+    )
 }
 
 fn process_vm_copy(
-    pid: usize,
+    pid: ProcessVmTarget,
     local_iov: *const IoVec,
     liovcnt: usize,
     remote_iov: *const IoVec,
@@ -1129,20 +1184,29 @@ fn process_vm_copy(
     Ok(copied as isize)
 }
 
-fn process_vm_tracee(pid: usize) -> StarryResult<Arc<ProcessData>> {
-    let tracee_pid = Pid::try_from(pid).map_err(|_| StarryError::from(Errno::ESRCH))?;
-    let current_pid = current().as_thread().proc_data.proc.pid();
-    if tracee_pid == current_pid {
-        get_process_data(tracee_pid).map_err(|_| StarryError::from(Errno::ESRCH))
-    } else {
-        ptrace_stopped_tracee(pid)
+fn process_vm_tracee(target: ProcessVmTarget) -> StarryResult<Arc<ProcessData>> {
+    let task = get_user_task_by_number(target.0).map_err(|_| StarryError::from(Errno::ESRCH))?;
+    let tracee = task.as_thread().proc_data.clone();
+    if Arc::ptr_eq(&tracee, &current().as_thread().proc_data) {
+        return Ok(tracee);
     }
+    ptrace_stopped_tracee(PtraceTarget(target.0.pid_number()))
 }
 
-fn ptrace_tracee_by_pid_or_tid(pid: Pid) -> StarryResult<Arc<ProcessData>> {
-    get_process_data(pid)
-        .or_else(|_| get_task(pid).map(|task| task.as_thread().proc_data.clone()))
-        .map_err(|_| StarryError::from(Errno::ESRCH))
+fn ptrace_tracee_by_pid_or_tid(pid: PtraceTarget) -> StarryResult<(Arc<ProcessData>, TidNumber)> {
+    let identity = current_pid_view()
+        .resolve_identity(pid.number())
+        .map_err(|_| StarryError::from(Errno::ESRCH))?;
+    let root_tid = TidNumber::from(identity.root_number());
+    let proc_data = if identity.has_role::<Tgid>() {
+        identity.live_data()
+    } else {
+        identity
+            .live_task()
+            .map(|task| task.as_thread().proc_data.clone())
+    }
+    .ok_or_else(|| StarryError::from(Errno::ESRCH))?;
+    Ok((proc_data, root_tid))
 }
 
 fn read_iovecs(iov: *const IoVec, iovcnt: usize) -> StarryResult<Vec<IoVec>> {
@@ -1191,22 +1255,23 @@ fn remote_write(tracee: &ProcessData, addr: usize, data: &[u8]) -> StarryResult 
     Ok(())
 }
 
-fn ptrace_stopped_tracee(pid: usize) -> StarryResult<Arc<ProcessData>> {
+fn ptrace_stopped_tracee(pid: PtraceTarget) -> StarryResult<Arc<ProcessData>> {
     ptrace_stopped_tracee_with_tid(pid).map(|(tracee, _tid)| tracee)
 }
 
-fn ptrace_stopped_tracee_with_tid(pid: usize) -> StarryResult<(Arc<ProcessData>, u32)> {
-    let pid = Pid::try_from(pid).map_err(|_| StarryError::from(Errno::ESRCH))?;
-    let tracer_pid = current().as_thread().proc_data.proc.pid();
-    let tracee = ptrace_tracee_by_pid_or_tid(pid)?;
+fn ptrace_stopped_tracee_with_tid(
+    pid: PtraceTarget,
+) -> StarryResult<(Arc<ProcessData>, TidNumber)> {
+    let tracer = current().as_thread().proc_data.identity();
+    let (tracee, pid) = ptrace_tracee_by_pid_or_tid(pid)?;
     let is_tracer = (tracee.is_ptrace_traceme() || tracee.is_ptrace_attached())
         && tracee
-            .ptrace_tracer_pid()
-            .is_some_and(|pid| pid == tracer_pid);
+            .ptrace_tracer_identity()
+            .is_some_and(|registered| Arc::ptr_eq(&registered, &tracer));
     if !is_tracer || tracee.ptrace_stop_signo().is_none() {
         return Err(StarryError::from(Errno::ESRCH));
     }
-    if pid == tracee.proc.pid() {
+    if pid.pid_number() == tracee.proc.pid().pid_number() {
         if tracee.ptrace_stop_signo_for(pid).is_some() {
             tracee.select_ptrace_stop(pid);
         }
@@ -1222,7 +1287,7 @@ fn ptrace_stopped_tracee_with_tid(pid: usize) -> StarryResult<(Arc<ProcessData>,
 #[cfg(target_arch = "x86_64")]
 pub fn ptrace_setup_singlestep(
     _tracee: &ProcessData,
-    _tid: Pid,
+    _tid: TidNumber,
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
 ) {
     // Set Trap Flag (TF, bit 8) in RFLAGS.
@@ -1238,7 +1303,7 @@ pub fn ptrace_setup_singlestep(
 #[cfg(target_arch = "riscv64")]
 pub fn ptrace_setup_singlestep(
     tracee: &ProcessData,
-    tid: Pid,
+    tid: TidNumber,
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
 ) {
     let pc = uctx.ip();
@@ -1299,7 +1364,7 @@ pub fn ptrace_setup_singlestep(
 #[cfg(target_arch = "aarch64")]
 pub fn ptrace_setup_singlestep(
     tracee: &ProcessData,
-    tid: Pid,
+    tid: TidNumber,
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
 ) {
     let pc = uctx.ip();
@@ -1344,7 +1409,7 @@ pub fn ptrace_setup_singlestep(
 #[cfg(target_arch = "loongarch64")]
 pub fn ptrace_setup_singlestep(
     tracee: &ProcessData,
-    tid: Pid,
+    tid: TidNumber,
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
 ) {
     let pc = uctx.ip();
@@ -1388,7 +1453,7 @@ pub fn ptrace_setup_singlestep(
 #[cfg(target_arch = "riscv64")]
 pub fn ptrace_restore_singlestep_insn(
     tracee: &ProcessData,
-    tid: Pid,
+    tid: TidNumber,
     addr: usize,
     insn: usize,
 ) -> bool {
@@ -1407,7 +1472,7 @@ pub fn ptrace_restore_singlestep_insn(
 #[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
 pub fn ptrace_restore_singlestep_insn(
     tracee: &ProcessData,
-    tid: Pid,
+    tid: TidNumber,
     addr: usize,
     insn: usize,
 ) -> bool {
@@ -1432,7 +1497,7 @@ pub fn ptrace_restore_singlestep_insn(
 ))]
 pub fn ptrace_complete_singlestep_breakpoint_if_at_ip(
     tracee: &ProcessData,
-    tid: Pid,
+    tid: TidNumber,
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
 ) -> bool {
     let Some((addr, insn)) = tracee.take_ptrace_ss_saved_insn_for(tid) else {
@@ -1870,8 +1935,13 @@ fn ptrace_write_u32_unlocked(aspace: &mut AddrSpace, addr: usize, data: u32) -> 
     Ok(())
 }
 
-pub fn ptrace_notify_clone(parent_pid: Pid, parent_tid: Pid, child_pid: Pid, event: u32) -> bool {
-    let Ok(parent) = get_process_data(parent_pid) else {
+pub fn ptrace_notify_clone(
+    parent_tgid: TgidNumber,
+    parent_tid: TidNumber,
+    child_identity: &PidIdentity,
+    event: u32,
+) -> bool {
+    let Ok(parent) = get_process_data_by_number(parent_tgid) else {
         return false;
     };
     if !parent.is_ptrace_traceme() && !parent.is_ptrace_attached() {
@@ -1887,26 +1957,28 @@ pub fn ptrace_notify_clone(parent_pid: Pid, parent_tid: Pid, child_pid: Pid, eve
     if options & option_flag == 0 {
         return false;
     }
-    parent.set_ptrace_pending_event(parent_tid, event, child_pid as usize);
+    parent.set_ptrace_pending_pid_event(parent_tid, event, child_identity.snapshot());
     true
 }
 
-pub fn ptrace_notify_exec(tracee_pid: Pid) -> bool {
-    let Ok(tracee) = get_process_data(tracee_pid) else {
+pub fn ptrace_notify_exec(tracee_tid: TidNumber, former_tid: PidSnapshot) -> bool {
+    let Ok(task) = get_task_by_number(tracee_tid) else {
         return false;
     };
+    let tracee = &task.as_thread().proc_data;
     let options = tracee.ptrace_options();
     if options & PTRACE_O_TRACEEXEC == 0 {
         return false;
     }
-    tracee.set_ptrace_pending_event(tracee_pid, PTRACE_EVENT_EXEC, tracee_pid as usize);
+    tracee.set_ptrace_pending_pid_event(tracee_tid, PTRACE_EVENT_EXEC, former_tid);
     true
 }
 
-pub fn ptrace_notify_exit(tracee_pid: Pid, exit_code: i32) -> bool {
-    let Ok(tracee) = get_process_data(tracee_pid) else {
+pub fn ptrace_notify_exit(tracee_tid: TidNumber, exit_code: i32) -> bool {
+    let Ok(task) = get_task_by_number(tracee_tid) else {
         return false;
     };
+    let tracee = &task.as_thread().proc_data;
     if !tracee.is_ptrace_traceme() && !tracee.is_ptrace_attached() {
         return false;
     }
@@ -1914,12 +1986,16 @@ pub fn ptrace_notify_exit(tracee_pid: Pid, exit_code: i32) -> bool {
     if options & PTRACE_O_TRACEEXIT == 0 {
         return false;
     }
-    tracee.set_ptrace_pending_event(tracee_pid, PTRACE_EVENT_EXIT, exit_code as usize);
+    tracee.set_ptrace_pending_event(tracee_tid, PTRACE_EVENT_EXIT, exit_code as usize);
     true
 }
 
-pub fn ptrace_notify_vfork_done(parent_pid: Pid, parent_tid: Pid, child_pid: Pid) -> bool {
-    let Ok(parent) = get_process_data(parent_pid) else {
+pub fn ptrace_notify_vfork_done(
+    parent_tgid: TgidNumber,
+    parent_tid: TidNumber,
+    child_identity: &PidIdentity,
+) -> bool {
+    let Ok(parent) = get_process_data_by_number(parent_tgid) else {
         return false;
     };
     if !parent.is_ptrace_traceme() && !parent.is_ptrace_attached() {
@@ -1929,7 +2005,11 @@ pub fn ptrace_notify_vfork_done(parent_pid: Pid, parent_tid: Pid, child_pid: Pid
     if options & PTRACE_O_TRACEVFORKDONE == 0 {
         return false;
     }
-    parent.set_ptrace_pending_event(parent_tid, PTRACE_EVENT_VFORK_DONE, child_pid as usize);
+    parent.set_ptrace_pending_pid_event(
+        parent_tid,
+        PTRACE_EVENT_VFORK_DONE,
+        child_identity.snapshot(),
+    );
     true
 }
 
@@ -2280,7 +2360,7 @@ fn ptrace_user_word_range_x86_64(offset: usize) -> StarryResult<core::ops::Range
 }
 
 #[cfg(target_arch = "x86_64")]
-fn ptrace_peekuser(pid: usize, addr: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_peekuser(pid: PtraceTarget, addr: usize, data: usize) -> StarryResult<isize> {
     if data == 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -2292,7 +2372,7 @@ fn ptrace_peekuser(pid: usize, addr: usize, data: usize) -> StarryResult<isize> 
 }
 
 #[cfg(target_arch = "x86_64")]
-fn ptrace_pokeuser(pid: usize, addr: usize, data: usize) -> StarryResult<isize> {
+fn ptrace_pokeuser(pid: PtraceTarget, addr: usize, data: usize) -> StarryResult<isize> {
     let range = ptrace_user_word_range_x86_64(addr)?;
     if range.start >= X86_64_USER_DEBUGREG_OFFSET && range.end <= X86_64_USER_DEBUGREG_END {
         let _ = (pid, data);
@@ -2313,7 +2393,9 @@ fn ptrace_pokeuser(pid: usize, addr: usize, data: usize) -> StarryResult<isize> 
 }
 
 #[cfg(target_arch = "x86_64")]
-fn ptrace_read_stopped_user_area_x86_64(pid: usize) -> StarryResult<[u8; X86_64_USER_AREA_SIZE]> {
+fn ptrace_read_stopped_user_area_x86_64(
+    pid: PtraceTarget,
+) -> StarryResult<[u8; X86_64_USER_AREA_SIZE]> {
     let regs = ptrace_read_stopped_user_regs(pid)?;
     let (tracee, _tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let mut user = [0u8; X86_64_USER_AREA_SIZE];
@@ -2406,7 +2488,7 @@ fn ptrace_read_stopped_user_area_x86_64(pid: usize) -> StarryResult<[u8; X86_64_
     write_u64(&mut user, X86_64_USER_SIGNAL_OFFSET, 0);
 
     if let Some(tid) = tracee.proc.threads().into_iter().next()
-        && let Ok(task) = crate::task::get_task(tid)
+        && let Ok(task) = crate::task::get_task_by_number(tid)
     {
         let name = task.name();
         let copy_len = name.len().min(X86_64_USER_COMM_SIZE.saturating_sub(1));
@@ -2418,12 +2500,12 @@ fn ptrace_read_stopped_user_area_x86_64(pid: usize) -> StarryResult<[u8; X86_64_
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn ptrace_peekuser(_pid: usize, _addr: usize, _data: usize) -> StarryResult<isize> {
+fn ptrace_peekuser(_pid: PtraceTarget, _addr: usize, _data: usize) -> StarryResult<isize> {
     Err(StarryError::Unsupported)
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn ptrace_pokeuser(_pid: usize, _addr: usize, _data: usize) -> StarryResult<isize> {
+fn ptrace_pokeuser(_pid: PtraceTarget, _addr: usize, _data: usize) -> StarryResult<isize> {
     Err(StarryError::Unsupported)
 }
 
