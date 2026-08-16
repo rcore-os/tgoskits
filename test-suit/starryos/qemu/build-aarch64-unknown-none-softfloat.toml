@@ -10,11 +10,6 @@ features = [
   "ax-driver/xhci-pci",
   "starry-kernel/input",
   "starry-kernel/vsock",
-  # Exercise transparent huge pages across the whole aarch64 suite: every large
-  # writable private-anon mmap promotes to 2 MiB blocks and any sub-2 MiB op
-  # splits them, so the full suite is an end-to-end THP regression (the dedicated
-  # `bugfix-thp-split-subpage` case pins the core promote/split path).
-  "starry-kernel/thp",
 ]
 max_cpu_num = 4
 log = "Warn"

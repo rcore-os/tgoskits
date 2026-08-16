@@ -249,15 +249,30 @@ pub(crate) fn abort_huge_split_2m(pt: &PageTable, plan: HugeSplitPlan) {
     dealloc_split_target(plan.target);
 }
 
+/// Where a commit sources the 512 4 KiB sub-frames — computed allocation-free so the
+/// commit never builds a `Vec` that could `handle_alloc_error`-abort mid-split.
+#[cfg(feature = "thp")]
+enum SubFrames {
+    /// A retagged-in-place or freshly-copied contiguous 2 MiB frame: the `i`-th
+    /// sub-frame is `base + i * 4 KiB`.
+    Contiguous(PhysAddr),
+    /// The scattered 4 KiB frames pre-allocated in [`prepare_huge_split_2m`] (phase 1),
+    /// so holding them here is not a phase-2 allocation.
+    Scattered(alloc::vec::Vec<PhysAddr>),
+}
+
 /// Phase 2 (commit): apply a prepared split — splice the 2 MiB block PTE into 512
 /// leaf PTEs, convert the [`FRAME_TABLE`] refcount and RSS charge to 4 KiB, and (for
 /// a COW break) drop this address space's reference to the shared frame. Preserves
 /// the block's current PTE permissions on the 512 leaf PTEs, so COW write-protection
 /// (lazy first-write copy) is not broken by the split.
 ///
-/// Infallible: both the COW-break copy and the leaf page table were reserved in
-/// [`prepare_huge_split_2m`], so this performs no *recoverable* allocation and cannot
-/// leave a half-split (torn) mapping. Must be called with the owning
+/// Never leaves a *torn* (half-split) mapping: the COW-break copy and the leaf page
+/// table were reserved in [`prepare_huge_split_2m`], and the 512 sub-frame paddrs are
+/// derived allocation-free (base + index, or the pre-reserved scattered frames), so
+/// there is no *recoverable* allocation to fail. The `FRAME_TABLE` / RSS book-keeping
+/// inserts do use the infallible global allocator, which *aborts* (never tears) on
+/// true OOM, as everywhere else in the kernel. Must be called with the owning
 /// [`super::AddrSpace`] locked.
 #[cfg(feature = "thp")]
 pub(crate) fn commit_huge_split_2m(
@@ -281,43 +296,51 @@ pub(crate) fn commit_huge_split_2m(
     pt.split_huge_block_to_empty_table(block_va, table)
         .expect("prepared 2 MiB block is no longer a huge mapping at commit");
 
-    // Establish the 512 target sub-frame physical addresses + buddy state.
-    let sub_paddrs: alloc::vec::Vec<PhysAddr> = match target {
+    // Establish where the 512 target sub-frames come from + fix up buddy state.
+    // Deriving each sub-frame paddr allocation-free (base + index, or the phase-1
+    // pre-reserved scattered frames) keeps the commit torn-free: no `Vec` is built
+    // here, so nothing in this phase can `handle_alloc_error`-abort mid-split.
+    let sub_frames = match target {
         HugeSplitTarget::InPlace => {
             // Retag the same buddy block. Remove the single 2 MiB refcount entry
             // first; it is re-registered as 512 4 KiB entries below.
             FRAME_TABLE.lock().remove_frame(old_paddr);
             super::split_frame(old_paddr);
-            (0..HUGE_2M_SUBPAGES)
-                .map(|i| old_paddr + i * PAGE_SIZE_4K)
-                .collect()
+            SubFrames::Contiguous(old_paddr)
         }
         HugeSplitTarget::CopiedContiguous(new_paddr) => {
             drop_shared_huge_ref(old_paddr);
             super::split_frame(new_paddr);
-            (0..HUGE_2M_SUBPAGES)
-                .map(|i| new_paddr + i * PAGE_SIZE_4K)
-                .collect()
+            SubFrames::Contiguous(new_paddr)
         }
         HugeSplitTarget::CopiedScattered(frames) => {
             drop_shared_huge_ref(old_paddr);
-            frames
+            SubFrames::Scattered(frames)
         }
+    };
+    let sub_paddr = |i: usize| match &sub_frames {
+        SubFrames::Contiguous(base) => *base + i * PAGE_SIZE_4K,
+        SubFrames::Scattered(frames) => frames[i],
     };
 
     {
         let mut frame_table = FRAME_TABLE.lock();
-        for &pa in &sub_paddrs {
-            frame_table.init_frame(pa);
+        for i in 0..HUGE_2M_SUBPAGES {
+            frame_table.init_frame(sub_paddr(i));
         }
     }
 
     // Install the 512 leaf PTEs into the pre-reserved table, preserving the block's
     // permissions. These cannot allocate (the table already exists) and the slots are
     // freshly zeroed, so none of these `map`s can fail.
-    for (i, &pa) in sub_paddrs.iter().enumerate() {
-        pt.map_page(block_va + i * PAGE_SIZE_4K, pa, PAGE_SIZE_4K, flags)
-            .expect("leaf map into the pre-reserved split table cannot fail");
+    for i in 0..HUGE_2M_SUBPAGES {
+        pt.map_page(
+            block_va + i * PAGE_SIZE_4K,
+            sub_paddr(i),
+            PAGE_SIZE_4K,
+            flags,
+        )
+        .expect("leaf map into the pre-reserved split table cannot fail");
     }
 
     // Convert the single 2 MiB RSS charge into 512 4 KiB charges so a per-4 KiB
