@@ -227,7 +227,6 @@ rdif-serial = { version = "0.9.3", path = "drivers/interface/rdif-serial" }
 rdif-systick = { version = "0.6.5", path = "drivers/interface/rdif-systick" }
 rdif-timer = { version = "0.6.5", path = "drivers/interface/rdif-timer" }
 rdif-vsock = { version = "0.1.4", path = "drivers/interface/rdif-vsock" }
-device-relations = { version = "0.5.14", path = "drivers/interface/device-relations" }
 rk3588-pci = { version = "0.2.6", path = "drivers/pci/rk3588-pci" }
 rockchip-npu = { version = "0.2.13", path = "drivers/npu/rockchip-npu" }
 rockchip-rga = { version = "0.1.8", path = "drivers/gpu/rockchip-rga" }

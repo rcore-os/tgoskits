@@ -153,7 +153,6 @@ axklib.workspace = true
 crab-usb = { workspace = true, optional = true }
 cv181x-sdhci = { workspace = true, optional = true }
 dma-api.workspace = true
-device-relations.workspace = true
 dwmmc-host = { workspace = true, optional = true }
 eth-intel = { workspace = true, optional = true }
 fdt-edit = { workspace = true }

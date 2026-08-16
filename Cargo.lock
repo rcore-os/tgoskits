@@ -835,7 +835,6 @@ dependencies = [
  "axtest",
  "crab-usb",
  "cv181x-sdhci",
- "device-relations",
  "dma-api",
  "dwmmc-host",
  "eth-intel",
@@ -2920,13 +2919,6 @@ dependencies = [
  "rustc_version",
  "syn 2.0.119",
  "unicode-xid",
-]
-
-[[package]]
-name = "device-relations"
-version = "0.5.14"
-dependencies = [
- "rdrive",
 ]
 
 [[package]]
