@@ -4,7 +4,7 @@ group = "ArceOS"
 
 [[check]]
 id = "test-arceos-x86-64-qemu"
-name = "Test arceos x86_64 qemu"
+name = "x86_64 QEMU · Suites"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
@@ -15,7 +15,7 @@ cargo xtask arceos test qemu --arch x86_64
 
 [[check]]
 id = "test-arceos-riscv64-qemu"
-name = "Test arceos riscv64 qemu"
+name = "riscv64 QEMU · Suites + task IPI"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
@@ -28,7 +28,7 @@ taskset -c 0 cargo xtask arceos test qemu --arch riscv64 \
 
 [[check]]
 id = "test-arceos-aarch64-qemu-app-suites"
-name = "Test arceos aarch64 qemu (app + suites)"
+name = "aarch64 QEMU · GICv2 SMP4 boot + suites"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
@@ -43,7 +43,7 @@ cargo xtask arceos test qemu --arch aarch64
 
 [[check]]
 id = "test-arceos-loongarch64-qemu"
-name = "Test arceos loongarch64 qemu"
+name = "loongarch64 QEMU · Suites"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"

@@ -4,7 +4,7 @@ group = "Static"
 
 [[check]]
 id = "check-formatting"
-name = "Check formatting"
+name = "Formatting + publish dry-run"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
@@ -16,7 +16,7 @@ cargo publish --workspace --dry-run --no-verify
 
 [[check]]
 id = "run-sync-lint"
-name = "Run sync-lint"
+name = "Incremental synchronization lint"
 runs_on = ["ubuntu-latest"]
 environment = "base"
 fetch_depth = "full"
@@ -27,7 +27,7 @@ cargo xtask sync-lint --since "$SINCE_REF"
 
 [[check]]
 id = "run-lock-lint"
-name = "Run lock-lint"
+name = "Locking policy"
 runs_on = ["ubuntu-latest"]
 environment = "base"
 command = '''

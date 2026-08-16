@@ -57,7 +57,7 @@ jobs:
           python3 scripts/test/ci_plan.py "${args[@]}"
 
   checks:
-    name: Starry Apps checks
+    name: Starry Apps
     needs: plan
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:

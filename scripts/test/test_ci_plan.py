@@ -31,6 +31,34 @@ class CiPlanTests(unittest.TestCase):
             all(" / " in row["name"] for row in plan["test_matrix"]["include"])
         )
 
+    def test_display_names_expose_target_and_purpose(self) -> None:
+        plan = ci_plan.build_main_plan(self.upstream)
+        static_rows = {
+            row["id"]: row["name"] for row in plan["static_matrix"]["include"]
+        }
+        test_rows = {
+            row["id"]: row["name"] for row in plan["test_matrix"]["include"]
+        }
+
+        self.assertEqual(
+            static_rows["check-formatting"], "Formatting + publish dry-run"
+        )
+        self.assertEqual(
+            test_rows["run-clippy"], "Workspace / Incremental Clippy"
+        )
+        self.assertEqual(
+            test_rows["test-arceos-aarch64-qemu-app-suites"],
+            "ArceOS / aarch64 QEMU · GICv2 SMP4 boot + suites",
+        )
+        self.assertEqual(
+            test_rows["test-axvisor-aarch64-qemu-panic-modes"],
+            "AxVisor / aarch64 QEMU · Panic modes",
+        )
+        self.assertEqual(
+            test_rows["test-starry-self-hosted-board-visionfive2"],
+            "Starry / VisionFive 2 board · Suites",
+        )
+
     def test_fork_filters_owner_checks_and_falls_back_from_qcs(self) -> None:
         context = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",
@@ -226,6 +254,48 @@ class CiPlanTests(unittest.TestCase):
             with self.subTest(error=error):
                 with self.assertRaisesRegex(ci_plan.PlanError, error):
                     ci_plan._validate_check(check, "test")
+
+    def test_redundant_display_names_are_rejected(self) -> None:
+        valid = {
+            "id": "invalid-name",
+            "name": "aarch64 QEMU · Suites",
+            "runs_on": ["ubuntu-latest"],
+            "environment": "base",
+            "command": "true",
+        }
+        invalid_cases = (
+            ("Test aarch64 QEMU", "must not start"),
+            ("Run Clippy", "must not start"),
+            ("Check formatting", "must not start"),
+            ("Scheduled Clippy", "must not start"),
+            ("Board self-hosted suites", "must not expose"),
+            ("aarch64 AxVisor suites", "must not repeat group"),
+        )
+
+        for name, error in invalid_cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ci_plan.PlanError, error):
+                    ci_plan._validate_check(
+                        {**valid, "name": name}, "test", "AxVisor"
+                    )
+
+    def test_starry_apps_display_names_are_leaf_labels(self) -> None:
+        scheduled = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="schedule",
+        )
+        rows = {
+            row["id"]: row["name"]
+            for row in ci_plan.build_starry_apps_plan(scheduled)[
+                "starry_apps_matrix"
+            ]["include"]
+        }
+
+        self.assertEqual(rows["starry-apps-clippy-all"], "Workspace · Full Clippy")
+        self.assertEqual(
+            rows["starry-app-smoke-x86-64"], "x86_64 QEMU · App smoke"
+        )
 
     def test_empty_main_matrix_is_rejected(self) -> None:
         with mock.patch.object(

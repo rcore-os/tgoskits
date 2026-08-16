@@ -4,7 +4,7 @@ group = "Starry Apps"
 
 [[check]]
 id = "starry-apps-clippy-all"
-name = "Scheduled clippy all"
+name = "Workspace · Full Clippy"
 runs_on = ["ubuntu-latest"]
 environment = "base"
 cache_key = "starry-apps-clippy-all"
@@ -17,7 +17,7 @@ cargo xtask clippy --all
 
 [[check]]
 id = "starry-app-smoke-x86-64"
-name = "Starry app smoke x86_64"
+name = "x86_64 QEMU · App smoke"
 runs_on = ["ubuntu-latest"]
 environment = "base"
 cache_key = "starry-apps-x86_64"
@@ -30,7 +30,7 @@ cargo xtask starry app qemu --all --arch x86_64
 
 [[check]]
 id = "starry-app-smoke-aarch64"
-name = "Starry app smoke aarch64"
+name = "aarch64 QEMU · App smoke"
 runs_on = ["ubuntu-latest"]
 environment = "base"
 cache_key = "starry-apps-aarch64"
@@ -43,7 +43,7 @@ cargo xtask starry app qemu --all --arch aarch64
 
 [[check]]
 id = "starry-app-smoke-riscv64"
-name = "Starry app smoke riscv64"
+name = "riscv64 QEMU · App smoke"
 runs_on = ["ubuntu-latest"]
 environment = "base"
 cache_key = "starry-apps-riscv64"
@@ -56,7 +56,7 @@ cargo xtask starry app qemu --all --arch riscv64
 
 [[check]]
 id = "starry-app-smoke-loongarch64"
-name = "Starry app smoke loongarch64"
+name = "loongarch64 QEMU · App smoke"
 runs_on = ["ubuntu-latest"]
 environment = "base"
 cache_key = "starry-apps-loongarch64"

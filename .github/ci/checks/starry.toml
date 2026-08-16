@@ -8,7 +8,7 @@ group = "Starry"
 
 [[check]]
 id = "test-starry-riscv64-qemu"
-name = "Test starry riscv64 qemu"
+name = "riscv64 QEMU · Suites"
 runs_on = ["ubuntu-latest"]
 environment = "base"
 cache_key = "test-starry-riscv64"
@@ -20,7 +20,7 @@ target/debug/tg-xtask starry test qemu --arch riscv64
 
 [[check]]
 id = "test-starry-aarch64-qemu"
-name = "Test starry aarch64 qemu"
+name = "aarch64 QEMU · GICv2 SMP4 boot + suites"
 runs_on = ["ubuntu-latest"]
 environment = "base"
 cache_key = "test-starry-aarch64"
@@ -36,7 +36,7 @@ target/debug/tg-xtask starry test qemu --arch aarch64
 
 [[check]]
 id = "test-starry-loongarch64-qemu"
-name = "Test starry loongarch64 qemu"
+name = "loongarch64 QEMU · Suites"
 runs_on = ["ubuntu-latest"]
 environment = "base"
 cache_key = "test-starry-loongarch64"
@@ -48,7 +48,7 @@ target/debug/tg-xtask starry test qemu --arch loongarch64
 
 [[check]]
 id = "test-starry-x86-64-qemu"
-name = "Test starry x86_64 qemu"
+name = "x86_64 QEMU · Suites"
 runs_on = ["ubuntu-latest"]
 environment = "base"
 cache_key = "test-starry-x86_64"
@@ -60,7 +60,7 @@ target/debug/tg-xtask starry test qemu --arch x86_64
 
 [[check]]
 id = "test-starry-self-hosted-board-orangepi-5-plus"
-name = "Test starry self-hosted board orangepi-5-plus"
+name = "OrangePi 5 Plus board · Suites"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"
@@ -70,7 +70,7 @@ cargo xtask starry test board --board orangepi-5-plus
 
 [[check]]
 id = "test-orangepi-5-plus-robot-native-starryos"
-name = "Test OrangePi 5 Plus robot native StarryOS"
+name = "OrangePi 5 Plus robot board · Native suites"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"
@@ -81,7 +81,7 @@ cargo xtask starry test board --board orangepi-5-plus-robot
 
 [[check]]
 id = "test-starry-self-hosted-board-aka-00-sg2002"
-name = "Test starry self-hosted board aka-00-sg2002"
+name = "AKA-00 SG2002 board · Suites"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"
@@ -91,7 +91,7 @@ cargo xtask starry test board --board aka-00-sg2002
 
 [[check]]
 id = "test-starry-self-hosted-board-visionfive2"
-name = "Test starry self-hosted board visionfive2"
+name = "VisionFive 2 board · Suites"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"
@@ -101,7 +101,7 @@ cargo xtask starry test board --board visionfive2
 
 [[check]]
 id = "test-starry-self-hosted-board-jl-lsgd2k10"
-name = "Test starry self-hosted board jl-lsgd2k10"
+name = "JL LSGD2K10 board · Suites"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"

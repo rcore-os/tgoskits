@@ -4,7 +4,7 @@ group = "Workspace"
 
 [[check]]
 id = "run-clippy"
-name = "Run clippy"
+name = "Incremental Clippy"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
@@ -17,7 +17,7 @@ cargo xtask clippy --since "$SINCE_REF"
 
 [[check]]
 id = "test-with-std"
-name = "Test with std"
+name = "std tests"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"

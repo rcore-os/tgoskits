@@ -4,7 +4,7 @@ group = "AxVisor"
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-smoke-axtest-timer-stress"
-name = "Test axvisor aarch64 qemu (smoke + axtest + timer stress)"
+name = "aarch64 QEMU · Smoke + virtio-blk guest + axtest + timer stress"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
@@ -27,7 +27,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-panic-modes"
-name = "Test axvisor aarch64 qemu (panic modes)"
+name = "aarch64 QEMU · Panic modes"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
@@ -42,7 +42,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
 
 [[check]]
 id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
-name = "Test axvisor riscv64 qemu (smoke + panic modes)"
+name = "riscv64 QEMU · Smoke + IPI + panic modes"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
@@ -63,7 +63,7 @@ cargo xtask axvisor test qemu --arch riscv64 --test-case no-backtrace
 
 [[check]]
 id = "test-axvisor-loongarch64-qemu"
-name = "Test axvisor loongarch64 qemu"
+name = "loongarch64 QEMU · Suites"
 runs_on = ["ubuntu-latest"]
 environment = "axvisor-lvz"
 cache_key = "test-axvisor-loongarch64"
@@ -74,7 +74,7 @@ target/debug/tg-xtask axvisor test qemu --arch loongarch64
 
 [[check]]
 id = "test-axvisor-qemu-ivc"
-name = "Test axvisor qemu ivc"
+name = "aarch64 QEMU · IVC"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
@@ -85,7 +85,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qem
 
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-svm-smoke-acpi"
-name = "Test axvisor self-hosted x86_64 (svm smoke + ACPI)"
+name = "x86_64 SVM · Smoke + direct/OVMF ACPI"
 runs_on = ["self-hosted", "linux", "amd", "kvm"]
 environment = "host"
 required_owner = "rcore-os"
@@ -104,7 +104,7 @@ cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-svm
 
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-vmx"
-name = "Test axvisor self-hosted x86_64(vmx)"
+name = "x86_64 VMX · Smoke"
 runs_on = ["self-hosted", "linux", "intel", "kvm"]
 environment = "host"
 required_owner = "rcore-os"
@@ -115,7 +115,7 @@ cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
 
 [[check]]
 id = "test-axloader-http-smoke"
-name = "Test axloader HTTP smoke"
+name = "x86_64 UEFI · AxLoader HTTP boot"
 runs_on = ["self-hosted", "linux", "intel", "kvm"]
 environment = "host"
 required_owner = "rcore-os"
@@ -128,7 +128,7 @@ cargo xtask axloader test qemu --target x86_64-unknown-uefi
 
 [[check]]
 id = "test-axvisor-x86-64-acpi-direct-and-ovmf-boot-vmx"
-name = "Test axvisor x86_64 ACPI direct and OVMF boot (vmx)"
+name = "x86_64 VMX · Direct + MP fallback + OVMF ACPI"
 runs_on = ["self-hosted", "linux", "intel", "kvm"]
 environment = "host"
 required_owner = "rcore-os"
@@ -143,7 +143,7 @@ cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux"
-name = "Test axvisor self-hosted board orangepi-5-plus-linux"
+name = "OrangePi 5 Plus board · Linux guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"
@@ -153,7 +153,7 @@ cargo xtask axvisor test board --board orangepi-5-plus-linux
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-starry"
-name = "Test axvisor self-hosted board orangepi-5-plus-starry"
+name = "OrangePi 5 Plus board · StarryOS guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"
@@ -163,7 +163,7 @@ cargo xtask axvisor test board --board orangepi-5-plus-starry
 
 [[check]]
 id = "test-axvisor-self-hosted-board-roc-rk3568-pc-linux"
-name = "Test axvisor self-hosted board roc-rk3568-pc-linux"
+name = "ROC-RK3568-PC board · Linux guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"
@@ -173,7 +173,7 @@ cargo xtask axvisor test board --board roc-rk3568-pc-linux
 
 [[check]]
 id = "test-axvisor-self-hosted-board-phytiumpi-linux"
-name = "Test axvisor self-hosted board phytiumpi-linux"
+name = "Phytium Pi board · Linux guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"
@@ -183,7 +183,7 @@ cargo xtask axvisor test board --board phytiumpi-linux
 
 [[check]]
 id = "test-axvisor-self-hosted-board-asus-nuc15crh-linux"
-name = "Test axvisor self-hosted board asus-nuc15crh-linux"
+name = "ASUS NUC15CRH board · Linux guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"
@@ -200,7 +200,7 @@ cargo xtask axvisor test board --board asus-nuc15crh-linux
 
 [[check]]
 id = "test-orangepi-5-plus-robot-axvisor-starryos-guest"
-name = "Test OrangePi 5 Plus robot AxVisor StarryOS guest"
+name = "OrangePi 5 Plus robot board · StarryOS guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"
@@ -211,7 +211,7 @@ cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
 
 [[check]]
 id = "test-orangepi-5-plus-robot-axvisor-linux-guest"
-name = "Test OrangePi 5 Plus robot AxVisor Linux guest"
+name = "OrangePi 5 Plus robot board · Linux guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
 required_owner = "rcore-os"

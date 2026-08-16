@@ -215,7 +215,7 @@ jobs:
             --output-file "$GITHUB_OUTPUT"
 
   static_checks:
-    name: Static checks
+    name: Static
     needs: plan_ci
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
@@ -227,7 +227,7 @@ jobs:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
 
   test_checks:
-    name: Test checks
+    name: Tests
     needs:
       - plan_ci
       - static_checks

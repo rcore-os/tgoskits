@@ -26,6 +26,9 @@ SUPPORTED_PHASES = {"static", "test", "starry_apps"}
 SUPPORTED_ENVIRONMENTS = {"host", "base", "axvisor-lvz"}
 SUPPORTED_PREFLIGHTS = {"none", "qemu-user", "full"}
 CHECK_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+REDUNDANT_NAME_PREFIX_PATTERN = re.compile(
+    r"^(?:check|run|scheduled|tests?)\b", re.IGNORECASE
+)
 TOP_LEVEL_FIELDS = {"schema_version", "phase", "group", "check"}
 CHECK_FIELDS = {
     "id",
@@ -80,7 +83,7 @@ def load_catalog(manifests: Iterable[Path]) -> list[dict[str, Any]]:
         group = document["group"]
         for index, raw_check in enumerate(document["check"], start=1):
             location = f"{manifest}:{index}"
-            check = _validate_check(raw_check, location)
+            check = _validate_check(raw_check, location, group)
             check_id = check["id"]
             if check_id in seen_ids:
                 raise PlanError(f"duplicate check id '{check_id}' at {location}")
@@ -145,7 +148,9 @@ def _load_manifest(manifest: Path) -> dict[str, Any]:
     return document
 
 
-def _validate_check(raw_check: Any, location: str) -> dict[str, Any]:
+def _validate_check(
+    raw_check: Any, location: str, group: str = ""
+) -> dict[str, Any]:
     if not isinstance(raw_check, dict):
         raise PlanError(f"{location} check entry must be a table")
     unknown_fields = set(raw_check) - CHECK_FIELDS
@@ -159,6 +164,8 @@ def _validate_check(raw_check: Any, location: str) -> dict[str, Any]:
     for field in ("id", "name", "environment", "command"):
         if not isinstance(check[field], str) or not check[field].strip():
             raise PlanError(f"{location} field '{field}' must be a non-empty string")
+    check["name"] = check["name"].strip()
+    _validate_display_name(check["name"], group, location)
     if CHECK_ID_PATTERN.fullmatch(check["id"]) is None:
         raise PlanError(f"{location} field 'id' must use lowercase kebab-case")
     if check["environment"] not in SUPPORTED_ENVIRONMENTS:
@@ -239,6 +246,22 @@ def _validate_check(raw_check: Any, location: str) -> dict[str, Any]:
         raise PlanError(f"{location} cannot both upload and download the artifact")
 
     return check
+
+
+def _validate_display_name(name: str, group: str, location: str) -> None:
+    if REDUNDANT_NAME_PREFIX_PATTERN.search(name):
+        raise PlanError(
+            f"{location} name must not start with Test/Run/Check/Scheduled"
+        )
+    if "self-hosted" in name.casefold():
+        raise PlanError(f"{location} name must not expose the self-hosted runner")
+    if group:
+        group_pattern = re.compile(
+            rf"(?<![A-Za-z0-9]){re.escape(group)}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+        if group_pattern.search(name):
+            raise PlanError(f"{location} name must not repeat group '{group}'")
 
 
 def _validate_artifact_contract(checks: list[dict[str, Any]]) -> None:

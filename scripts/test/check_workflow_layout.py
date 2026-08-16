@@ -43,8 +43,8 @@ def main() -> int:
 
     ci = texts.get("ci.yml", "")
     for required_call in (
-        "name: Static checks",
-        "name: Test checks",
+        "name: Static",
+        "name: Tests",
         "uses: ./.github/workflows/reusable-check-matrix.yml",
     ):
         if required_call not in ci:
@@ -55,6 +55,8 @@ def main() -> int:
     starry_apps = texts.get("starry-apps.yml", "")
     if "scheduled_clippy_all:" in starry_apps:
         errors.append("Starry Apps must select clippy through its planned matrix")
+    if "  checks:\n    name: Starry Apps\n" not in starry_apps:
+        errors.append("Starry Apps reusable call must use the concise display name")
 
     container = texts.get("container-publish.yml", "")
     if count_jobs(container) != 1:
