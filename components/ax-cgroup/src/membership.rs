@@ -165,6 +165,10 @@ mod tests {
     static INIT: Once = Once::new();
     static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+    fn process_id(id: u64) -> ProcessId {
+        ProcessId::new(id).expect("test process generation must be non-zero")
+    }
+
     fn setup() -> MutexGuard<'static, ()> {
         let guard = TEST_LOCK.lock().unwrap();
         INIT.call_once(|| {
@@ -181,7 +185,7 @@ mod tests {
         let _guard = setup();
         let root = crate::root();
         let target = root.create_child("migration-target").unwrap();
-        let pid = 1001;
+        let pid = process_id(1001);
         root.add_member(pid);
         PROVIDER
             .memberships
@@ -201,7 +205,7 @@ mod tests {
     fn same_target_migration_preserves_membership() {
         let _guard = setup();
         let root = crate::root();
-        let pid = 1002;
+        let pid = process_id(1002);
         root.add_member(pid);
         PROVIDER
             .memberships
@@ -221,14 +225,15 @@ mod tests {
         let target = root.create_child("invalid-target").unwrap();
 
         assert_eq!(
-            migrate_process(1003, target.clone()),
+            migrate_process(process_id(1003), target.clone()),
             Err(CgroupError::NoSuchProcess)
         );
 
-        PROVIDER.memberships.lock().unwrap().insert(1004, root);
-        PROVIDER.zombies.lock().unwrap().insert(1004);
+        let zombie = process_id(1004);
+        PROVIDER.memberships.lock().unwrap().insert(zombie, root);
+        PROVIDER.zombies.lock().unwrap().insert(zombie);
         assert_eq!(
-            migrate_process(1004, target),
+            migrate_process(zombie, target),
             Err(CgroupError::NoSuchProcess)
         );
     }
@@ -237,7 +242,7 @@ mod tests {
     fn fork_guard_rolls_back_or_commits_before_exit() {
         let _guard = setup();
         let root = crate::root();
-        let pid = 1005;
+        let pid = process_id(1005);
         PROVIDER
             .memberships
             .lock()

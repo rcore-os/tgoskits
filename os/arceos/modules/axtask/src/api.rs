@@ -623,20 +623,16 @@ pub fn register_task(task: &AxTaskRef) {
 
 /// Finds a task by its scheduler task id.
 #[cfg(feature = "multitask")]
-pub fn task_by_id(task_id: u64) -> Option<AxTaskRef> {
-    if task_id == 0 {
-        return current_may_uninit().map(|curr| curr.clone());
-    }
-
+pub fn task_by_id(task_id: TaskId) -> Option<AxTaskRef> {
     TASK_REGISTRY
         .read()
-        .get(&task_id)
+        .get(&task_id.as_u64())
         .and_then(|task| task.upgrade())
 }
 
 /// Wakes a task by its scheduler task id.
 #[cfg(feature = "multitask")]
-pub fn wake_task_by_id(task_id: u64) -> bool {
+pub fn wake_task_by_id(task_id: TaskId) -> bool {
     let Some(task) = task_by_id(task_id) else {
         return false;
     };
@@ -648,12 +644,12 @@ pub fn wake_task_by_id(task_id: u64) -> bool {
 pub fn register_task(_task: &AxTaskRef) {}
 
 #[cfg(not(feature = "multitask"))]
-pub fn task_by_id(_task_id: u64) -> Option<AxTaskRef> {
+pub fn task_by_id(_task_id: TaskId) -> Option<AxTaskRef> {
     None
 }
 
 #[cfg(not(feature = "multitask"))]
-pub fn wake_task_by_id(_task_id: u64) -> bool {
+pub fn wake_task_by_id(_task_id: TaskId) -> bool {
     false
 }
 
@@ -749,22 +745,8 @@ pub(crate) fn axtask_api_scheduler_name_hold_for_test() -> bool {
 
 #[cfg(axtest)]
 pub(crate) fn axtask_api_task_registry_functions_exist_hold_for_test() -> bool {
-    // Verify task registry functions exist (multitask feature)
-    // These are no-op when multitask is disabled, but should compile
-
-    #[cfg(feature = "multitask")]
-    {
-        // In multitask mode, task_by_id(0) returns current task
-        let result = super::task_by_id(0);
-        assert!(result.is_some() || result.is_none()); // Either is valid
-    }
-
-    #[cfg(not(feature = "multitask"))]
-    {
-        // Without multitask, task_by_id always returns None
-        let result = super::task_by_id(42);
-        assert!(result.is_none());
-    }
+    let _lookup: fn(super::TaskId) -> Option<super::AxTaskRef> = super::task_by_id;
+    let _wake: fn(super::TaskId) -> bool = super::wake_task_by_id;
 
     true
 }

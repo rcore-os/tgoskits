@@ -1,5 +1,5 @@
 use axfs_ng_vfs::VfsResult;
-use ktracepoint::{TraceCmdLineCacheSnapshot, TracePipeSnapshot};
+use ktracepoint::TraceCmdLineCacheSnapshot;
 
 use crate::{pseudofs::DirectRwFsFileOps, sync::Mutex};
 
@@ -7,7 +7,7 @@ use crate::{pseudofs::DirectRwFsFileOps, sync::Mutex};
 pub struct TraceFile(Mutex<TraceFileState>);
 
 struct TraceFileState {
-    snapshot: Option<TracePipeSnapshot>,
+    snapshot: Option<super::IdentityTraceSnapshot>,
     drain: super::TextDrain,
 }
 
@@ -19,7 +19,7 @@ impl TraceFileState {
         }
     }
 
-    fn reset(&mut self, snapshot: TracePipeSnapshot) {
+    fn reset(&mut self, snapshot: super::IdentityTraceSnapshot) {
         self.snapshot = Some(snapshot);
         self.drain.reset();
     }

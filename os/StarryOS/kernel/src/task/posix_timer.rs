@@ -1,6 +1,6 @@
 //! POSIX per-process interval timers (timer_create, timer_settime, etc.)
 
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
     sync::atomic::{AtomicI32, Ordering},
     time::Duration,
@@ -12,10 +12,12 @@ use linux_raw_sys::general::{
     CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID,
     SIGEV_NONE, SIGEV_SIGNAL,
 };
-use starry_process::Pid;
 use starry_signal::{SignalInfo, Signo};
 
-use super::timer::{AlarmTarget, register_alarm_for};
+use super::{
+    PidIdentity,
+    timer::{AlarmTarget, register_alarm_for},
+};
 use crate::{StarryError, StarryResult, sync::IrqMutex as Mutex};
 
 /// Kernel-side representation of a POSIX timer.
@@ -140,7 +142,7 @@ impl PosixTimerTable {
     /// Set (arm/disarm) a timer. Returns the old (interval, remaining) in nanos.
     pub fn settime(
         &self,
-        pid: Pid,
+        owner: &Arc<PidIdentity>,
         id: i32,
         flags: i32,
         spec: TimerSpec,
@@ -207,7 +209,7 @@ impl PosixTimerTable {
                 // so that poll_expired runs on the next tick.
                 register_alarm_for(
                     wall_time() + Duration::from_nanos(remaining),
-                    AlarmTarget::Process(pid),
+                    AlarmTarget::Process(Arc::downgrade(owner)),
                 );
             }
         }
@@ -234,7 +236,7 @@ impl PosixTimerTable {
     /// Called from the alarm_task via poll_timer.
     /// `task` is the user task that owns these timers (needed to
     /// re-register alarms for periodic timers).
-    pub fn poll_expired(&self, pid: Pid, mut emitter: impl FnMut(SignalInfo)) {
+    pub fn poll_expired(&self, owner: &Arc<PidIdentity>, mut emitter: impl FnMut(SignalInfo)) {
         let mut timers = self.timers.lock();
         for timer in timers.values_mut() {
             if timer.deadline_ns == 0 {
@@ -256,7 +258,7 @@ impl PosixTimerTable {
                         .saturating_sub(clock_now_ns(timer.clock_id));
                     register_alarm_for(
                         wall_time() + Duration::from_nanos(remaining),
-                        AlarmTarget::Process(pid),
+                        AlarmTarget::Process(Arc::downgrade(owner)),
                     );
                 } else {
                     // One-shot: disarm

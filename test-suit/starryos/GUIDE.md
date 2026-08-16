@@ -109,6 +109,12 @@ qemu/system/<subcase>/
 STARRY_GROUPED_TESTS_PASSED
 ```
 
+system runner 会为每个 binary 单独创建 PID namespace 和 mount namespace。namespace
+中的 PID 1 先把挂载传播设为 private，重新挂载该 namespace 独有的 procfs，再 fork
+普通测试进程；这样测试不会受到 PID 1 特殊信号语义影响。测试进程结束或超时后，退出
+namespace init 会统一终止并回收该 namespace 中的全部后代，包括调用 `setsid()` 逃离
+原进程组的进程。不得把跨 binary 的清理建立在 process group 或 session 上。
+
 日志为每个 binary 保留一条开始标记和一条带耗时的完成结果，失败结果还包含退出码；
 suite 结束时只打印一条总数、成功数、失败数和总耗时汇总，不再重复输出一份逐项
 timing 列表。例如：
@@ -313,6 +319,17 @@ STARRY_GROUPED_TEST_PASSED: step=1/2 epoch=... status=0 command=/usr/bin/test-a
 ```
 
 如果 grouped case 超时，CI 日志中最后一个 `STARRY_GROUPED_TEST_BEGIN` 通常就是卡住的子命令。
+`qemu/system` 使用独立的 `starry-run-system-tests`，日志标记为
+`STARRY_SYSTEM_TEST_BEGIN/PASSED/FAILED`，但仍只在全部 binary 通过后打印既有的
+`STARRY_GROUPED_TESTS_PASSED`，失败时仍打印 `STARRY_GROUPED_TEST_FAILED`。
+共享 runner 默认限制每个 binary 最多运行 120 秒；同步写入密集型的
+`test-ext4-inode-unique` 和完成 1400 个磁盘文件清理的 `test-pagecache-cap` 通过显式名称表
+取得 240 秒预算。慢用例例外必须保留在共享 runner 中并由静态契约测试覆盖，不能放宽所有
+binary 的默认预算。TOML `timeout` 约束整个 QEMU case，不替代上述单 binary 超时。
+单 binary 超时后的 PID namespace 清理另有 30 秒硬上限；清理失败必须打印
+`STARRY_SYSTEM_TEST_CLEANUP_TIMEOUT` 并立即中止 suite，不能继续运行下一个 binary，也不能
+阻塞到外层 QEMU timeout。隔离回归会让持锁后代停在 raw pipe wait，确保 namespace SIGKILL
+路径确实强制唤醒并回收这类任务。
 目前 grouped Rust subcase 还不支持。
 
 ## Shell 和 Python 用例
