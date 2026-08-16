@@ -163,7 +163,12 @@ pub fn sys_sched_setaffinity(
         return Err(StarryError::InvalidInput);
     }
     if task.id() == current().id() {
-        ax_task::set_current_affinity(cpu_mask);
+        // `set_current_affinity` refuses a mask that names no usable (online) CPU;
+        // surface that as `EINVAL`, matching Linux `sched_setaffinity`, instead of
+        // silently leaving the task on its previous affinity.
+        if !ax_task::set_current_affinity(cpu_mask) {
+            return Err(StarryError::InvalidInput);
+        }
     } else {
         task.set_cpumask(cpu_mask);
         task.interrupt();

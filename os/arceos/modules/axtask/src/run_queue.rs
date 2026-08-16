@@ -106,6 +106,26 @@ fn is_cpu_online(cpu: usize) -> bool {
             & (1 << (cpu % usize::BITS as usize))
             != 0
 }
+
+/// Returns whether `cpumask` names at least one CPU whose run queue is online.
+///
+/// [`set_current_affinity`](crate::set_current_affinity) uses this to reject an
+/// affinity update that names no usable (online) CPU, mirroring Linux
+/// `sched_setaffinity`, which returns `EINVAL` when the requested mask does not
+/// intersect the set of usable CPUs. This is required for correctness rather
+/// than a mere optimization: when the mask has no online CPU,
+/// [`select_run_queue_index`]'s availability fallback returns the current CPU,
+/// but the current CPU is itself online, so the failed online sweep means the
+/// current CPU is necessarily *excluded* by the mask. Accepting such a mask
+/// would strand the task on a disallowed CPU with no deferred re-migration once
+/// the requested CPU later comes online. CPUs only ever transition
+/// offline→online during boot (there is no hot-unplug), so a CPU observed online
+/// here stays online, making the decision stable for the migration that follows.
+#[cfg(feature = "smp")]
+pub(crate) fn affinity_mask_has_online_cpu(cpumask: &AxCpuMask) -> bool {
+    (0..crate::build_info::CPU_CAPACITY).any(|cpu| cpumask.get(cpu) && is_cpu_online(cpu))
+}
+
 /// Per-CPU count of scheduler ticks during which a non-idle task was running, for
 /// the ondemand cpufreq governor's load metric. Bumped once per timer tick in
 /// [`AxRunQueue::scheduler_timer_tick`] when the current task is not the idle task
@@ -177,18 +197,18 @@ fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
             return index;
         }
     }
-    // No allowed-and-online CPU in a full sweep: either very early boot, or a task
-    // pinned to a not-yet-online CPU. Fall back to the current CPU, whose run queue
-    // is necessarily initialized. This is availability-over-affinity, matching
-    // Linux's `select_fallback_rq`: the scheduler runs the task on an available CPU
-    // rather than block when its affinity target is offline, which avoids a
-    // boot-time deadlock (a permanently-blocked task on the only CPU that could
-    // later bring its affinity target online). Affinity is then restored by
-    // `migrate_current_to_affinity` — the pending-migration equivalent — which
-    // re-homes the task to an allowed CPU on the next reschedule once one is
-    // online. `AxCpuMask` is bounded to `CPU_CAPACITY`, so a non-empty mask always
-    // names a configured CPU that comes online during boot; the fallback never
-    // permanently strands a task off its affinity.
+    // No allowed-and-online CPU in a full sweep. Because the current CPU is
+    // itself online, a failed sweep means the mask does not name the current CPU
+    // either, so returning `this_cpu_id()` here is an affinity *violation*, not a
+    // benign availability fallback. Affinity updates that would reach this state
+    // are rejected up front by `set_current_affinity` (see
+    // `affinity_mask_has_online_cpu`), mirroring Linux `sched_setaffinity`'s
+    // `EINVAL`, so a task is never *deliberately* placed on an excluded CPU.
+    // The current-CPU return is retained only as a last-resort guard for the
+    // spawn/clone path (a fresh task always inherits a mask that includes its
+    // spawning CPU, which is online), keeping the scheduler live instead of
+    // panicking; `migrate_current_to_affinity` still re-homes such a task on the
+    // next reschedule once an allowed CPU is online.
     this_cpu_id()
 }
 
@@ -405,6 +425,11 @@ mod tests {
     fn remote_reschedule_request_is_coalesced_and_forced() {
         const REMOTE_CPU: usize = 1;
 
+        // Serialize against other tests that touch the process-global remote
+        // reschedule counters (notably `rr_tests`, whose `cpu_id: 1` queue
+        // force-kicks the modeled remote CPU through `unblock_task`).
+        let _serialized = super::serialize_host_scheduler_test();
+
         super::REMOTE_RESCHEDULE_REQUESTS.store(0, Ordering::Release);
         super::REMOTE_RESCHEDULE_PENDING.store(false, Ordering::Release);
 
@@ -531,6 +556,22 @@ mod tests {
     }
 }
 
+/// Serializes host-side scheduler tests that mutate process-global state.
+///
+/// The test binary runs tests on multiple threads, but several host tests touch
+/// process-global scheduler state — the [`RUN_QUEUE_ONLINE`] online bitmap and,
+/// in the `ipi` build, the `REMOTE_RESCHEDULE_REQUESTS`/`REMOTE_RESCHEDULE_PENDING`
+/// counters (`rr_tests` force-kicks a modeled remote CPU through `unblock_task`).
+/// A single shared lock keeps every such test mutually exclusive; poison is
+/// recovered so a failing test does not cascade into spurious failures.
+#[cfg(all(test, feature = "smp", feature = "host-test"))]
+fn serialize_host_scheduler_test() -> std::sync::MutexGuard<'static, ()> {
+    static HOST_SCHEDULER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    HOST_SCHEDULER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(all(test, feature = "smp", feature = "host-test"))]
 mod online_bitmap_tests {
     use core::sync::atomic::Ordering;
@@ -545,6 +586,7 @@ mod online_bitmap_tests {
 
     #[test]
     fn mark_cpu_online_is_visible_only_for_marked_cpu() {
+        let _serialized = super::serialize_host_scheduler_test();
         reset_online_bitmap();
 
         super::mark_cpu_online(0);
@@ -570,6 +612,7 @@ mod online_bitmap_tests {
     // discussion / commit message).
     #[test]
     fn cross_word_cpu_does_not_alias_low_word() {
+        let _serialized = super::serialize_host_scheduler_test();
         reset_online_bitmap();
 
         super::mark_cpu_online(0);
@@ -588,13 +631,15 @@ mod online_bitmap_tests {
         reset_online_bitmap();
     }
 
-    // Boot-time affinity/migration interleave (the reviewer's requested case): a
-    // task whose only allowed CPU is still offline must fall back to an online CPU
-    // (availability over affinity, like Linux `select_fallback_rq`) — never a hang
-    // and never an offline/uninitialized queue — and must honor the affinity once
-    // that CPU comes online.
+    // The raw `select_run_queue_index` contract when a task's only allowed CPU is
+    // still offline: the selector cannot honor the affinity, so its last-resort
+    // fallback returns the current (online) CPU — which is exactly why that CPU is
+    // *not* in the mask, and why the affinity update must be rejected up front
+    // (see `set_current_affinity_rejects_mask_with_no_online_cpu`). Once the
+    // requested CPU comes online the selector honors the affinity.
     #[test]
     fn offline_affinity_target_falls_back_then_honors_when_online() {
+        let _serialized = super::serialize_host_scheduler_test();
         // Install this host-test thread's per-CPU area before any `this_cpu_id()`
         // (mirrors `rr_tests`); otherwise the percpu read panics `AreaNotInstalled`.
         ax_hal::percpu::initialize_host_test_cpu();
@@ -610,12 +655,52 @@ mod online_bitmap_tests {
         }
         let only_other = super::AxCpuMask::one_shot(other);
 
-        // Allowed CPU offline -> availability fallback to the current (online) CPU.
+        // Allowed CPU offline -> last-resort fallback to the current (online,
+        // therefore excluded) CPU. This return is an affinity violation the
+        // caller-level guard must prevent, not honor.
         assert_eq!(super::select_run_queue_index(only_other), this);
 
         // Allowed CPU online -> affinity is honored.
         super::mark_cpu_online(other);
         assert_eq!(super::select_run_queue_index(only_other), other);
+
+        reset_online_bitmap();
+    }
+
+    // Regression for the deferred-migration affinity bug (run_queue.rs:192): an
+    // affinity update whose only allowed CPU is still offline must be rejected
+    // (Linux `sched_setaffinity` `EINVAL`) rather than silently placed on the
+    // current — excluded — CPU with no re-migration path once the requested CPU
+    // comes online. On the pre-fix code `set_current_affinity` accepted the mask
+    // and drove the migration onto the current CPU (here it would panic in
+    // `current()` after the online sweep failed), so this asserts the rejection.
+    #[test]
+    fn set_current_affinity_rejects_mask_with_no_online_cpu() {
+        let _serialized = super::serialize_host_scheduler_test();
+        ax_hal::percpu::initialize_host_test_cpu();
+        reset_online_bitmap();
+        let this = super::this_cpu_id();
+        super::mark_cpu_online(this);
+
+        // An allowed CPU distinct from `this`, kept offline for the rejection.
+        let other = if this == 1 { 2 } else { 1 };
+        if other >= crate::build_info::CPU_CAPACITY {
+            reset_online_bitmap();
+            return; // too few configured CPUs in this test build to exercise it
+        }
+        let only_other = super::AxCpuMask::one_shot(other);
+
+        // No online CPU in the mask -> the admissibility predicate says reject,
+        // and the full `set_current_affinity` entry point honors that rejection.
+        assert!(!super::affinity_mask_has_online_cpu(&only_other));
+        assert!(
+            !crate::api::set_current_affinity(only_other),
+            "an affinity update naming only offline CPUs must be rejected",
+        );
+
+        // Once the requested CPU is online the same mask becomes admissible.
+        super::mark_cpu_online(other);
+        assert!(super::affinity_mask_has_online_cpu(&only_other));
 
         reset_online_bitmap();
     }
@@ -640,6 +725,11 @@ mod rr_tests {
 
     #[test]
     fn unblock_resched_does_not_front_insert_rr_task() {
+        // Unblocking on this `cpu_id: 1` queue force-kicks the modeled remote CPU,
+        // bumping the process-global remote reschedule counters; serialize against
+        // the tests that assert on those counters.
+        #[cfg(all(feature = "smp", feature = "ipi"))]
+        let _serialized = super::serialize_host_scheduler_test();
         ax_hal::percpu::initialize_host_test_cpu();
         let mut run_queue = AxRunQueue {
             cpu_id: 1,
