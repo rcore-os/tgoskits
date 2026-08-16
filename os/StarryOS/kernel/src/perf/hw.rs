@@ -1464,7 +1464,7 @@ pub fn perf_event_open_hw(
                 "perf_event_open: unsupported HW_CACHE config {:#x}",
                 attr.config
             );
-            return Err(AxError::Unsupported);
+            return Err(StarryError::Unsupported);
         };
         alloc_programmable(event, exclude_user, exclude_kernel)?
     } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32

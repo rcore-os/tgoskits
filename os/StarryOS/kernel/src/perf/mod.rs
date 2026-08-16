@@ -584,7 +584,7 @@ pub(crate) fn perf_event_open(
             // BPF/ring path.
             PerfTypeId::PERF_TYPE_SOFTWARE => match &args.config {
                 PerfProbeConfig::PerfSwIds(sw_id) if sw::is_counting_sw(*sw_id) => {
-                    Box::new(sw::perf_event_open_sw(attr, *sw_id, pid)?)
+                    Box::new(sw::perf_event_open_sw(attr, *sw_id, target)?)
                 }
                 _ => Box::new(bpf::perf_event_open_bpf(args)),
             },

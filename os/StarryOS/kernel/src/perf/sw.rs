@@ -32,12 +32,14 @@ use core::{
     task::Context,
 };
 
-use ax_errno::{AxError, AxResult};
 use axpoll::{IoEvents, Pollable};
 use kbpf_basic::linux_bpf::{perf_event_attr, perf_sw_ids};
 
-use super::{PerfEventOps, PerfReadValues};
-use crate::task::{AsThread, Thread};
+use super::{PerfEventOps, PerfEventTarget, PerfReadValues};
+use crate::{
+    StarryError, StarryResult,
+    task::{AsThread, Thread},
+};
 
 /// Number of live software counters process-wide. The scheduler + fault hooks
 /// early-out when this is zero, so there is no cost on those hot paths when no
@@ -194,7 +196,7 @@ impl SwPerTaskCounter {
         let curr = ax_task::current();
         let is_current = curr
             .try_as_thread()
-            .is_some_and(|t| t.tid() == self.owner_tid.load(Ordering::Acquire));
+            .is_some_and(|t| u32::from(t.tid()) == self.owner_tid.load(Ordering::Acquire));
         if is_current {
             self.open_live_slice(now_ns(), ax_hal::percpu::this_cpu_id() as u32);
         }
@@ -277,12 +279,12 @@ impl Drop for SwPerfEvent {
 }
 
 impl PerfEventOps for SwPerfEvent {
-    fn enable(&mut self) -> AxResult<()> {
+    fn enable(&mut self) -> StarryResult<()> {
         self.ctr.enable();
         Ok(())
     }
 
-    fn disable(&mut self) -> AxResult<()> {
+    fn disable(&mut self) -> StarryResult<()> {
         self.ctr.disable();
         Ok(())
     }
@@ -291,11 +293,11 @@ impl PerfEventOps for SwPerfEvent {
         self
     }
 
-    fn read_values(&mut self) -> AxResult<PerfReadValues> {
+    fn read_values(&mut self) -> StarryResult<PerfReadValues> {
         Ok(self.ctr.snapshot())
     }
 
-    fn reset(&mut self) -> AxResult<()> {
+    fn reset(&mut self) -> StarryResult<()> {
         self.ctr.reset();
         Ok(())
     }
@@ -316,34 +318,38 @@ impl Pollable for SwPerfEvent {
 /// Attach `ctr` to `thr`'s software-counter list, reaping any dead entries left
 /// by closed fds, and bump the global gate.
 fn attach(thr: &Thread, ctr: Arc<SwPerTaskCounter>) {
-    ctr.owner_tid.store(thr.tid(), Ordering::Release);
+    ctr.owner_tid.store(thr.tid().into(), Ordering::Release);
     let mut list = thr.perf_sw_counters.lock();
     list.retain(|c| !c.dead.load(Ordering::Acquire));
     list.push(ctr);
     PERF_SW_ACTIVE.fetch_add(1, Ordering::AcqRel);
 }
 
-/// Open a `PERF_TYPE_SOFTWARE` counting event on the task selected by `pid`
-/// (`pid > 0` a specific tid, `pid == 0` the caller). System-wide software
-/// counters (`pid < 0`) are not supported.
+/// Open a `PERF_TYPE_SOFTWARE` counting event on the task selected by `target`
+/// (`Thread(tid)` a specific tid, `Current` the caller). System-wide software
+/// counters (`AllTasks`) are not supported.
 pub fn perf_event_open_sw(
     attr: &perf_event_attr,
     sw_id: perf_sw_ids,
-    pid: i32,
-) -> AxResult<SwPerfEvent> {
-    let kind = SwId::from_raw(sw_id).ok_or(AxError::Unsupported)?;
+    target: PerfEventTarget,
+) -> StarryResult<SwPerfEvent> {
+    let kind = SwId::from_raw(sw_id).ok_or(StarryError::Unsupported)?;
     let ctr = Arc::new(SwPerTaskCounter::new(kind, attr));
 
-    if pid > 0 {
-        let task = crate::task::get_task(pid as u32)?;
-        let thr = task.try_as_thread().ok_or(AxError::NoSuchProcess)?;
-        attach(thr, ctr.clone());
-    } else if pid == 0 {
-        let curr = ax_task::current();
-        let thr = curr.try_as_thread().ok_or(AxError::NoSuchProcess)?;
-        attach(thr, ctr.clone());
-    } else {
-        return Err(AxError::Unsupported);
+    match target {
+        PerfEventTarget::Thread(tid) => {
+            let task = crate::task::get_user_task_by_number(tid)?;
+            let thr = task.try_as_thread().ok_or(StarryError::NoSuchProcess)?;
+            attach(thr, ctr.clone());
+        }
+        PerfEventTarget::Current => {
+            let curr = ax_task::current();
+            let thr = curr.try_as_thread().ok_or(StarryError::NoSuchProcess)?;
+            attach(thr, ctr.clone());
+        }
+        PerfEventTarget::AllTasks => {
+            return Err(StarryError::Unsupported);
+        }
     }
 
     // If the event opened enabled (`disabled == 0`) on the calling task, open its
