@@ -193,17 +193,11 @@ impl_task_runtime! {
         }
 
         fn hardirq_enter() {
-            #[cfg(not(test))]
-            if !cfg!(feature = "host-test") {
-                crate::irq_time::enter();
-            }
+            crate::irq_time::enter();
         }
 
         fn hardirq_exit() {
-            #[cfg(not(test))]
-            if !cfg!(feature = "host-test") {
-                crate::irq_time::exit();
-            }
+            crate::irq_time::exit();
         }
 
         fn publish_local_scheduler_work() -> bool {
