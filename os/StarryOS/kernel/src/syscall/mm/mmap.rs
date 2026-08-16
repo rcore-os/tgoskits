@@ -68,6 +68,93 @@ impl From<MmapProt> for MappingFlags {
     }
 }
 
+/// THP-lite: is this mmap a candidate for transparent 2 MiB huge-page promotion?
+/// Gated on a writable mapping of at least one 2 MiB block that does not opt out
+/// via `MAP_NORESERVE` (sparse touch would inflate RSS/VA) or a per-process
+/// `PR_SET_THP_DISABLE`.
+#[cfg(feature = "thp")]
+fn thp_eligible(
+    map_flags: MmapFlags,
+    mapping_flags: MappingFlags,
+    length: usize,
+    thp_disabled: bool,
+) -> bool {
+    length >= PAGE_SIZE_2M
+        && mapping_flags.contains(MappingFlags::WRITE)
+        && !map_flags.contains(MmapFlags::NORESERVE)
+        && !thp_disabled
+}
+
+/// THP-lite: back the interior of a large private-anonymous mapping with 2 MiB
+/// blocks. The region is carved into `[4 KiB head][2 MiB body][4 KiB tail]` — only
+/// the 2 MiB-aligned interior gets a `Size2M` backend; the unaligned edges stay
+/// `Size4K`. The area is never rounded up to 2 MiB (that would break `/proc/*/maps`
+/// and the mmap return length).
+///
+/// Returns `Ok(true)` when installed, `Ok(false)` when alignment leaves no full
+/// 2 MiB block (caller falls back to a plain 4 KiB mapping). On a mid-carve error
+/// the whole region is unmapped so no partial mapping leaks.
+#[cfg(feature = "thp")]
+fn thp_map_promoted_anon(
+    aspace: &mut crate::mm::AddrSpace,
+    start: VirtAddr,
+    length: usize,
+    flags: MappingFlags,
+    reported_flags: MappingFlags,
+    populate: bool,
+) -> StarryResult<bool> {
+    let region_end = start + length;
+    let body_start = start.align_up(PAGE_SIZE_2M);
+    let body_end = region_end.align_down(PAGE_SIZE_2M);
+    if body_start >= body_end {
+        // Misalignment leaves no full 2 MiB block; use the plain 4 KiB path.
+        return Ok(false);
+    }
+
+    let carve = |aspace: &mut crate::mm::AddrSpace| -> StarryResult {
+        if start < body_start {
+            aspace.map_with_reported_flags(
+                start,
+                body_start - start,
+                flags,
+                reported_flags,
+                populate,
+                Backend::new_alloc(start, PAGE_SIZE_4K, ""),
+            )?;
+        }
+        aspace.map_with_reported_flags(
+            body_start,
+            body_end - body_start,
+            flags,
+            reported_flags,
+            populate,
+            Backend::new_alloc(body_start, PAGE_SIZE_2M, ""),
+        )?;
+        if body_end < region_end {
+            aspace.map_with_reported_flags(
+                body_end,
+                region_end - body_end,
+                flags,
+                reported_flags,
+                populate,
+                Backend::new_alloc(body_end, PAGE_SIZE_4K, ""),
+            )?;
+        }
+        Ok(())
+    };
+
+    match carve(aspace) {
+        Ok(()) => Ok(true),
+        Err(err) => {
+            // Roll back any sub-area already mapped so the mmap fails atomically.
+            if let Err(e) = aspace.unmap(start, length) {
+                warn!("THP promote rollback unmap failed: {e:?}");
+            }
+            Err(err)
+        }
+    }
+}
+
 fn reported_mapping_flags_from_prot(value: MmapProt) -> MappingFlags {
     let mut flags = MappingFlags::empty();
     if value.contains(MmapProt::READ) {
@@ -355,6 +442,32 @@ pub fn sys_mmap(
 
     let mut mapping_flags: MappingFlags = permission_flags.into();
     let reported_mapping_flags = reported_mapping_flags_from_prot(permission_flags);
+
+    // THP-lite: promote an eligible writable private-anonymous mapping to 2 MiB
+    // blocks before the plain 4 KiB backend path. `page_size == PAGE_SIZE_4K`
+    // excludes explicit hugetlb (`MAP_HUGE_*`) requests.
+    #[cfg(feature = "thp")]
+    if anonymous
+        && matches!(map_type, MmapFlags::PRIVATE)
+        && page_size == PAGE_SIZE_4K
+        && thp_eligible(
+            map_flags,
+            mapping_flags,
+            length,
+            current().as_thread().proc_data.thp_disable() != 0,
+        )
+        && thp_map_promoted_anon(
+            &mut aspace,
+            start,
+            length,
+            mapping_flags,
+            reported_mapping_flags,
+            map_flags.contains(MmapFlags::POPULATE),
+        )?
+    {
+        drop(aspace);
+        return Ok(start.as_usize() as _);
+    }
 
     let backend = match map_type {
         MmapFlags::SHARED => {
@@ -1053,6 +1166,14 @@ pub fn sys_madvise(addr: usize, length: usize, advice: i32) -> StarryResult<isiz
                 }
             }
             aspace.discard_range(start_va, length)?;
+            None
+        }
+        MADV_NOHUGEPAGE => {
+            // Split any transparent huge pages in the range back to 4 KiB. THP-lite
+            // promotes only at mmap time and never re-promotes, so MADV_HUGEPAGE is
+            // accepted as a no-op (handled by the accepted-advice list above), and
+            // this call is a validate-only no-op without the `thp` feature.
+            aspace.split_huge_pages(start_va, align_up_4k(length))?;
             None
         }
         MADV_REMOVE => {
