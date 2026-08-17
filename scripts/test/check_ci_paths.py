@@ -34,10 +34,10 @@ def workspace_source_roots() -> set[str]:
 
 def ci_check_paths() -> set[str]:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-    ci_checks = workflow.split("            ci_checks:\n", maxsplit=1)[1].split(
-        "            base_container_publish:\n", maxsplit=1
+    pull_request = workflow.split("  pull_request:\n", maxsplit=1)[1].split(
+        "  workflow_dispatch:\n", maxsplit=1
     )[0]
-    return set(re.findall(r'^\s+- "([^"]+)"$', ci_checks, flags=re.MULTILINE))
+    return set(re.findall(r'^\s{6}- "([^"]+)"$', pull_request, flags=re.MULTILINE))
 
 
 if __name__ == "__main__":
