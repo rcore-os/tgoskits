@@ -15,6 +15,7 @@ task-yield = ["ax-std", "ax-std/multitask"]
 sched-rr = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/sched-rr"]
 sched-cfs = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/sched-cfs"]
 task-affinity = ["ax-std", "ax-std/multitask"]
+task-cyclictest = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/sched-rt"]
 task-wait-queue = ["ax-std", "ax-std/multitask", "ax-std/irq"]
 task-wait-queue-remote-wake = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
 task-ipi = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
@@ -46,6 +47,7 @@ all = [
     "memtest",
     "task-yield",
     "task-affinity",
+    "task-cyclictest",
     "task-wait-queue",
     "task-wait-queue-remote-wake",
     "task-ipi",

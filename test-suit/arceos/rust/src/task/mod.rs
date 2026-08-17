@@ -1,5 +1,7 @@
 #[cfg(feature = "task-affinity")]
 pub mod affinity;
+#[cfg(feature = "task-cyclictest")]
+pub mod cyclictest;
 #[cfg(feature = "task-ipi")]
 pub mod ipi;
 #[cfg(feature = "task-irq")]

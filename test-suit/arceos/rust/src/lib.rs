@@ -54,6 +54,7 @@ pub mod net;
         feature = "sched-cfs",
         feature = "sched-rr",
         feature = "task-affinity",
+        feature = "task-cyclictest",
         feature = "task-ipi",
         feature = "task-irq",
         feature = "task-parallel",
@@ -117,6 +118,11 @@ test_runner!("net-loopback", run_net_loopback, net::loopback::run);
 test_runner!("sched-cfs", run_sched_cfs, task::priority::run);
 test_runner!("sched-rr", run_sched_rr, task::priority::run);
 test_runner!("task-affinity", run_task_affinity, task::affinity::run);
+test_runner!(
+    "task-cyclictest",
+    run_task_cyclictest,
+    task::cyclictest::run
+);
 test_runner!("task-ipi", run_task_ipi, task::ipi::run);
 test_runner!("task-irq", run_task_irq, task::irq::run);
 test_runner!("task-parallel", run_task_parallel, task::parallel::run);
@@ -210,6 +216,12 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "task-affinity")]
     TestCase::new("task-affinity", "task CPU affinity", run_task_affinity),
+    #[cfg(feature = "task-cyclictest")]
+    TestCase::new(
+        "task-cyclictest",
+        "periodic task wake-up jitter",
+        run_task_cyclictest,
+    ),
     #[cfg(feature = "task-ipi")]
     TestCase::new("task-ipi", "IPI callback delivery", run_task_ipi),
     #[cfg(feature = "task-irq")]
