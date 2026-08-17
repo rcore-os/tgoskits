@@ -85,7 +85,10 @@ fn uart_binding_info(fdt: &Fdt, uart_path: &str) -> Result<BindingInfo, OnProbeE
             ))
         })?;
     Ok(BindingInfo::with_binding_irq(Some(
-        BindingIrq::fdt_interrupt_with_controller(interrupt_parent, interrupt.specifier),
+        crate::binding_resolver::binding_irq_from_fdt_interrupt(
+            interrupt_parent,
+            interrupt.specifier,
+        )?,
     )))
 }
 

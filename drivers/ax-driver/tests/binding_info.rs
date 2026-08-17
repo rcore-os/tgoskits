@@ -192,7 +192,7 @@ fn named_fdt_interrupt_binding_selects_matching_specifier() {
     *CAPTURED_IRQ.lock().unwrap() = None;
     *SETUP_SPECIFIER.lock().unwrap() = None;
 
-    ensure_rdrive_fdt_initialized();
+    ensure_rdrive_test_intc();
 
     let irq = rdrive::with_fdt(|fdt| {
         let node = fdt.find_compatible(&["test,binding-info"]).pop().unwrap();

@@ -3,7 +3,7 @@
 use core::{ptr::NonNull, time::Duration};
 use std::sync::Mutex;
 
-use ax_driver::binding_info_from_fdt;
+use ax_driver::{binding_info_from_fdt, binding_irq_from_named_fdt_interrupt};
 use axklib::{
     BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, Klib, KlibError,
     KlibResult, PhysAddr, VirtAddr, impl_trait,
@@ -16,6 +16,7 @@ use rdrive::{
 };
 
 static CAPTURED_ERROR: Mutex<Option<String>> = Mutex::new(None);
+static RDRIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct KlibImpl;
 
@@ -118,12 +119,8 @@ fn validate_binding(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
 #[test]
 fn fdt_irq_parent_requires_registered_intc_capability() {
-    let encoded = fdt_with_unregistered_interrupt_parent().encode();
-    let dtb = Box::leak(encoded.as_ref().to_vec().into_boxed_slice());
-    rdrive::init(Platform::Fdt {
-        addr: NonNull::new(dtb.as_mut_ptr()).unwrap(),
-    })
-    .unwrap();
+    let _guard = RDRIVE_TEST_LOCK.lock().unwrap();
+    ensure_rdrive_fdt_initialized();
     rdrive::register_add(DEVICE_REGISTER.clone());
     rdrive::probe_all(true).unwrap();
 
@@ -135,6 +132,41 @@ fn fdt_irq_parent_requires_registered_intc_capability() {
             .unwrap()
             .contains("not an available interrupt-controller provider")
     );
+}
+
+#[test]
+fn named_fdt_irq_requires_registered_intc_capability() {
+    let _guard = RDRIVE_TEST_LOCK.lock().unwrap();
+    ensure_rdrive_fdt_initialized();
+
+    let error = rdrive::with_fdt(|fdt| {
+        let node = fdt
+            .find_compatible(&["test,fdt-irq-capability-device"])
+            .pop()
+            .unwrap();
+        binding_irq_from_named_fdt_interrupt(&node, "main")
+    })
+    .unwrap()
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("not an available interrupt-controller provider")
+    );
+}
+
+fn ensure_rdrive_fdt_initialized() {
+    if rdrive::is_initialized() {
+        return;
+    }
+
+    let encoded = fdt_with_unregistered_interrupt_parent().encode();
+    let dtb = Box::leak(encoded.as_ref().to_vec().into_boxed_slice());
+    rdrive::init(Platform::Fdt {
+        addr: NonNull::new(dtb.as_mut_ptr()).unwrap(),
+    })
+    .unwrap();
 }
 
 fn fdt_with_unregistered_interrupt_parent() -> Fdt {
@@ -169,6 +201,9 @@ fn fdt_with_unregistered_interrupt_parent() -> Fdt {
     fdt.node_mut(device)
         .unwrap()
         .set_property(prop_u32s("interrupts", &[0, 42, 4]));
+    fdt.node_mut(device)
+        .unwrap()
+        .set_property(prop_strs("interrupt-names", &["main"]));
     fdt
 }
 
