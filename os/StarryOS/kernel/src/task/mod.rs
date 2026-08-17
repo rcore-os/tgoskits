@@ -1026,6 +1026,9 @@ pub struct ProcessData {
     /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
     pub posix_timers: Arc<PosixTimerTable>,
 
+    /// Process-wide `ITIMER_REAL` state shared by all threads.
+    real_timer: IrqMutex<ProcessRealTimer>,
+
     /// `true` when this process shares its [`AddrSpace`] with a parent/sibling
     /// (`CLONE_VM`, e.g. vfork / posix_spawn). In that case the last thread must
     /// **not** clear the address space on exit — the co-owner may still be
@@ -1166,6 +1169,7 @@ impl ProcessData {
             personality: AtomicUsize::new(0),
 
             posix_timers: Arc::new(PosixTimerTable::default()),
+            real_timer: IrqMutex::new(ProcessRealTimer::default()),
 
             vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
             aspace_slot_released: AtomicBool::new(false),
@@ -1181,6 +1185,27 @@ impl ProcessData {
         let aspace_arc = this.aspace.lock().clone();
         crate::mm::attach_process_slot(&aspace_arc);
         this
+    }
+
+    /// Replaces this process's `ITIMER_REAL` timer.
+    pub fn set_real_timer(
+        &self,
+        interval_ns: usize,
+        remaining_ns: usize,
+    ) -> (TimeValue, TimeValue) {
+        self.real_timer
+            .lock()
+            .set(&self.identity, interval_ns, remaining_ns)
+    }
+
+    /// Returns this process's `ITIMER_REAL` interval and remaining time.
+    pub fn get_real_timer(&self) -> (TimeValue, TimeValue) {
+        self.real_timer.lock().get()
+    }
+
+    /// Polls this process's `ITIMER_REAL` timer.
+    pub fn poll_real_timer(&self) -> bool {
+        self.real_timer.lock().poll_expired(&self.identity)
     }
 
     /// Returns this process generation's stable PID identity.
@@ -1464,6 +1489,16 @@ impl ProcessData {
 
     /// Record that this tracee is stopped by `signo`.
     pub fn set_ptrace_stop(&self, tid: TidNumber, signo: Signo, uctx: &UserContext) {
+        self.set_ptrace_stop_record(tid, signo, uctx, None);
+    }
+
+    fn set_ptrace_stop_record(
+        &self,
+        tid: TidNumber,
+        signo: Signo,
+        uctx: &UserContext,
+        syscall_no: Option<usize>,
+    ) {
         let pending_event = self.ptrace_pending_event.lock().remove(&tid);
         self.ptrace_stop.lock().insert(
             tid,
@@ -1471,8 +1506,8 @@ impl ProcessData {
                 signo: Some(signo),
                 uctx: *uctx,
                 siginfo: Some(SignalInfo::new_kernel(signo)),
-                is_syscall: false,
-                syscall_no: None,
+                is_syscall: syscall_no.is_some(),
+                syscall_no,
                 reported: false,
                 event: pending_event.as_ref().map_or(0, |event| event.event),
                 event_msg: pending_event
@@ -1491,11 +1526,7 @@ impl ProcessData {
         uctx: &UserContext,
         syscall_no: usize,
     ) {
-        self.set_ptrace_stop(tid, signo, uctx);
-        if let Some(stop) = self.ptrace_stop.lock().get_mut(&tid) {
-            stop.is_syscall = true;
-            stop.syscall_no = Some(syscall_no);
-        }
+        self.set_ptrace_stop_record(tid, signo, uctx, Some(syscall_no));
     }
 
     pub fn ptrace_stop_tid(&self) -> Option<TidNumber> {

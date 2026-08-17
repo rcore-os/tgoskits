@@ -56,13 +56,6 @@ fn wake_sleep_queue_after_waiter_enqueued() {
     panic!("sleeper did not enter wait queue");
 }
 
-#[cfg(target_arch = "aarch64")]
-pub fn run() -> crate::TestResult {
-    println!("task_wait_queue_remote_wake: skipped on aarch64");
-    Ok(())
-}
-
-#[cfg(not(target_arch = "aarch64"))]
 pub fn run() -> crate::TestResult {
     let cpu_num = thread::available_parallelism().unwrap().get();
     if cpu_num < 2 {

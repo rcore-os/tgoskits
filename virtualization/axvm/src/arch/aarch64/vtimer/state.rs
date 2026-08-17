@@ -165,11 +165,26 @@ impl Aarch64TimerBinding {
                     return;
                 }
                 binding.scheduled.lock().take();
-                if let Err(error) =
-                    crate::runtime::vcpus::notify_vcpu(binding.vm_id, binding.vcpu.raw())
-                {
+                if let Err(error) = crate::timer::publish_before_wake(
+                    || {
+                        binding
+                            .publish_levels(snapshot, physical_counter())
+                            .map(|_| ())
+                    },
+                    || {
+                        if let Err(error) =
+                            crate::runtime::vcpus::notify_vcpu(binding.vm_id, binding.vcpu.raw())
+                        {
+                            warn!(
+                                "failed to wake VM[{}] vCPU {} for architectural timer: {error:?}",
+                                binding.vm_id,
+                                binding.vcpu.raw()
+                            );
+                        }
+                    },
+                ) {
                     warn!(
-                        "failed to wake VM[{}] vCPU {} for architectural timer: {error:?}",
+                        "failed to publish VM[{}] vCPU {} architectural timer deadline: {error}",
                         binding.vm_id,
                         binding.vcpu.raw()
                     );
