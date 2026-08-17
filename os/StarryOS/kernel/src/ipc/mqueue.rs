@@ -1068,7 +1068,7 @@ pub struct MqDescriptor {
     /// The status-file read offset carried by this open file description. Linux
     /// backs `mqd_t` with an mqueuefs file, whose `read(2)` and `lseek(2)` share
     /// `file->f_pos`; sibling `mq_open` descriptors must not share it.
-    read_offset: Mutex<u64>,
+    read_offset: PiMutex<u64>,
 }
 
 impl MqDescriptor {
@@ -1076,7 +1076,7 @@ impl MqDescriptor {
         Self {
             queue,
             flags: AtomicU32::new(flags),
-            read_offset: Mutex::new(0),
+            read_offset: PiMutex::new(0),
         }
     }
 

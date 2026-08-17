@@ -25,7 +25,6 @@ use crate::{
     },
     ipc::mqueue::MqDescriptor,
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, VmMutPtr, VmPtr, vm_load_path_string},
-    task::AsThread,
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
