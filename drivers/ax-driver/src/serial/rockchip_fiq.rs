@@ -9,7 +9,7 @@ use some_serial::ns16550::rockchip_fiq::{
 };
 
 use super::{PlatformSerialDevice, erase_uart, prop_u32};
-use crate::{BindingInfo, BindingIrq};
+use crate::BindingInfo;
 
 model_register!(
     name: "rockchip fiq debugger serial",
