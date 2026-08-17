@@ -8,7 +8,7 @@ publish = false
 default = []
 std = []
 ax-std = ["dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
-runtime = ["ax-std", "ax-std/multitask", "dep:ax-net", "ax-net/axtest", "ax-net/vsock"]
+runtime = ["ax-std", "ax-std/multitask", "ax-std/net", "dep:ax-net", "ax-net/axtest", "ax-net/vsock"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
