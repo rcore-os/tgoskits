@@ -482,23 +482,31 @@ fn zombie_bugfix_commands_are_in_system_grouped_qemu_case() {
 }
 
 #[test]
-fn tty_bugfix_commands_are_in_system_grouped_qemu_case() {
+fn tty_regressions_are_in_system_grouped_qemu_case() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
-    let tty_commands = [
-        "/usr/bin/bug-raw-terminal-polling",
-        "/usr/bin/bug-tty-cursor-report",
+    let tty_cases = [
+        (
+            "tty-bugfix-bug-raw-terminal-polling",
+            "bug-raw-terminal-polling",
+        ),
+        ("tty-bugfix-bug-tty-cursor-report", "bug-tty-cursor-report"),
+        ("test-tty-flush", "test-tty-flush"),
+        (
+            "test-tty-termios-transaction",
+            "test-tty-termios-transaction",
+        ),
     ];
 
-    for command in tty_commands {
-        let name = command.trim_start_matches("/usr/bin/");
+    for (directory, binary) in tty_cases {
+        let cmake_path = system_dir.join(directory).join("CMakeLists.txt");
+        let cmake = fs::read_to_string(&cmake_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", cmake_path.display()));
         assert!(
-            system_dir
-                .join(format!("tty-bugfix-{name}"))
-                .join("CMakeLists.txt")
-                .is_file(),
-            "{} must be built in the system grouped case",
-            command
+            cmake.contains(&format!("install(TARGETS {binary}"))
+                && cmake.contains("RUNTIME DESTINATION usr/bin/starry-test-suit"),
+            "{} must install {binary} into the grouped runner directory",
+            cmake_path.display()
         );
     }
 
@@ -507,6 +515,33 @@ fn tty_bugfix_commands_are_in_system_grouped_qemu_case() {
         assert_system_runner_config(&system_path);
     }
     assert_system_runner_contract(&system_dir);
+}
+
+#[test]
+fn serial_mailbox_kernel_tests_keep_four_cpu_qemu_configs() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let config_dir = workspace_root.join("os/StarryOS/kernel/tests");
+
+    for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+        let path = config_dir.join(format!("qemu-{arch}-smp.toml"));
+        let content = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+        let config: toml::Value = toml::from_str(&content).unwrap();
+        let args = config
+            .get("args")
+            .and_then(toml::Value::as_array)
+            .unwrap_or_else(|| panic!("{} must define QEMU args", path.display()));
+        let smp_index = args
+            .iter()
+            .position(|arg| arg.as_str() == Some("-smp"))
+            .unwrap_or_else(|| panic!("{} must select SMP explicitly", path.display()));
+        assert_eq!(
+            args.get(smp_index + 1).and_then(toml::Value::as_str),
+            Some("4"),
+            "{} must exercise all four mailbox producer CPUs",
+            path.display()
+        );
+    }
 }
 
 #[test]

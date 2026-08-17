@@ -200,6 +200,19 @@ owner worker 在普通状态下有界交替服务 TTY frame 与日志 record。d
 `READY`、拒绝覆盖 `READING/WRITING`、sequence gap、每 CPU FIFO、跨 CPU round-robin、
 递归发布、UTF-8 截断、日志 flood 与 TTY 容量隔离。
 
+mailbox 状态机的 host 确定性测试位于
+`os/arceos/modules/axruntime/src/serial/log_mailbox.rs`，日志与 TTY 容量隔离的旧实现失败
+回归位于同目录的 `ingress.rs`。真实 SMP 探针由 Starry `axtest_kernel` 调用，只在
+`cfg(axtest)` 下编译：四个固定 CPU 的 producer 同时发布包含 CPU、本核 sequence 和
+checksum 的 record，测试 reader 验证 round-robin、核内 FIFO、完整性、零 gap 与零丢失，
+并确认日志 ring 已占用时独立 TTY ingress 仍可接受完整容量。四架构都通过
+`os/StarryOS/kernel/tests/qemu-<arch>-smp.toml` 明确使用 SMP=4，例如：
+
+```bash
+cargo xtask ktest qemu -p starry-kernel --test axtest_kernel \
+  --arch aarch64 --qemu-config os/StarryOS/kernel/tests/qemu-aarch64-smp.toml
+```
+
 Starry grouped 回归新增 `test-tty-termios-transaction`，并保留
 `tty-bugfix-bug-raw-terminal-polling`、`test-tty-flush` 与
 `tty-console-input-burst` 的原有断言。最终在 x86_64、riscv64、aarch64、loongarch64 上

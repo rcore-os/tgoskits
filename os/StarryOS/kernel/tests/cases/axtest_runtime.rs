@@ -66,3 +66,8 @@ fn perf_kernel_task_sample_ids_are_empty() {
 fn stop_machine_runs_action_and_sync_on_each_cpu() {
     ax_assert!(axtest_exports::stop_machine_runs_action_and_sync_on_each_cpu());
 }
+
+#[axtest]
+fn smp_log_mailbox_preserves_local_fifo_and_tty_capacity() {
+    ax_assert!(axtest_exports::smp_log_mailbox_contract_holds());
+}
