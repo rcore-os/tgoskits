@@ -9,7 +9,9 @@ use rdif_serial::{Config, RxErrorFlags, RxFlag, RxSample, SerialEventSet};
 use super::{
     RuntimeIrqBridge, RuntimeShared, RxItem,
     control::{CONTROL_QUEUE_CAPACITY, ControlOp},
+    deactivate_console,
     ingress::TxFrameCursor,
+    log_mailbox::{LogReader, LogRecordCursor, LogRecordKind},
     spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
 };
 use crate::{RuntimeError, RuntimeResult};
@@ -24,6 +26,9 @@ pub(super) struct SerialWorker {
     pending_rx: Option<PendingRx>,
     port_rx_ready: bool,
     pending_frame: Option<TxFrameCursor>,
+    log_reader: LogReader,
+    pending_log: Option<LogRecordCursor>,
+    prefer_log: bool,
     pending_rearm: SerialEventSet,
     immediate_events: SerialEventSet,
     latched_rx_errors: RxErrorFlags,
@@ -35,6 +40,7 @@ impl SerialWorker {
         irq_rx: SpscConsumer<RxSample>,
         rx_output: SpscProducer<RxItem>,
     ) -> Self {
+        let log_reader = shared.log_mailbox.reader();
         Self {
             shared,
             irq_rx,
@@ -42,6 +48,9 @@ impl SerialWorker {
             pending_rx: None,
             port_rx_ready: false,
             pending_frame: None,
+            log_reader,
+            pending_log: None,
+            prefer_log: false,
             pending_rearm: SerialEventSet::empty(),
             immediate_events: SerialEventSet::empty(),
             latched_rx_errors: RxErrorFlags::empty(),
@@ -98,7 +107,9 @@ impl SerialWorker {
             }
 
             let tx_needed = self.pending_frame.is_some()
+                || self.pending_log.is_some()
                 || self.shared.ingress.has_pending()
+                || self.logs_serviceable()
                 || events.has_tx()
                 || self.pending_rearm.has_tx();
             let mut budget_exhausted = false;
@@ -127,7 +138,10 @@ impl SerialWorker {
             if self.shared.bridge.latch.has_pending()
                 || self.shared.control.has_pending()
                 || (!tx_blocked
-                    && (self.pending_frame.is_some() || self.shared.ingress.has_pending()))
+                    && (self.pending_frame.is_some()
+                        || self.pending_log.is_some()
+                        || self.shared.ingress.has_pending()
+                        || self.logs_serviceable()))
                 || (!rx_blocked
                     && (self.pending_rx.is_some()
                         || (!self.shared.polling && !self.irq_rx.is_empty())))
@@ -202,6 +216,7 @@ impl SerialWorker {
         self.shared.set_started(false);
         self.shared.ingress.stop_and_discard();
         self.pending_frame = None;
+        self.pending_log = None;
         self.pending_rearm = SerialEventSet::empty();
         self.immediate_events = SerialEventSet::empty();
         self.latched_rx_errors = RxErrorFlags::empty();
@@ -223,7 +238,11 @@ impl SerialWorker {
             port.set_config(config).map_err(RuntimeError::from)
         });
         self.pending_rearm |= SerialEventSet::RX;
-        if self.pending_frame.is_some() || self.shared.ingress.has_pending() {
+        if self.pending_frame.is_some()
+            || self.pending_log.is_some()
+            || self.shared.ingress.has_pending()
+            || self.logs_serviceable()
+        {
             self.pending_rearm |= SerialEventSet::TX_SPACE;
         }
         result
@@ -231,6 +250,7 @@ impl SerialWorker {
 
     fn stop_faulted_port(&mut self) {
         self.shutdown_port();
+        deactivate_console(&self.shared);
         // SAFETY: the maintenance task is task context and publishes the
         // stopped state before waking poll waiters.
         unsafe {
@@ -381,34 +401,42 @@ impl SerialWorker {
     fn service_tx(&mut self) -> TxServiceOutcome {
         let mut remaining_budget = TX_BUDGET;
         let mut woke_space = false;
-        let shared = self.shared.clone();
-        let blocked = shared.with_port(|port| {
-            while remaining_budget > 0 {
-                if self.pending_frame.is_none() {
-                    let Some(frame) = self.shared.ingress.pop() else {
-                        break;
-                    };
-                    self.pending_frame = Some(TxFrameCursor::new(frame));
-                    woke_space = true;
+        let mut blocked = false;
+        while remaining_budget > 0 {
+            let Some(source) = self.select_tx_source(&mut woke_space) else {
+                break;
+            };
+            let remaining = match source {
+                PendingTxSource::Tty => self.pending_frame.as_ref().unwrap().remaining(),
+                PendingTxSource::Log => self.pending_log.as_ref().unwrap().remaining(),
+            };
+            let limit = remaining.len().min(remaining_budget);
+            let shared = self.shared.clone();
+            let written = shared.with_port(|port| port.write_tx(&remaining[..limit]));
+            if written == 0 {
+                self.pending_rearm |= SerialEventSet::TX_SPACE;
+                blocked = true;
+                break;
+            }
+            match source {
+                PendingTxSource::Tty => {
+                    let cursor = self.pending_frame.as_mut().unwrap();
+                    cursor.advance(written);
+                    if cursor.is_complete() {
+                        self.pending_frame = None;
+                    }
                 }
-
-                let cursor = self.pending_frame.as_mut().unwrap();
-                let remaining = cursor.remaining();
-                let limit = remaining.len().min(remaining_budget);
-                let written = port.write_tx(&remaining[..limit]);
-                if written == 0 {
-                    self.pending_rearm |= SerialEventSet::TX_SPACE;
-                    return true;
-                }
-                cursor.advance(written);
-                remaining_budget -= written;
-                self.shared.stats.add_tx_bytes(written);
-                if cursor.is_complete() {
-                    self.pending_frame = None;
+                PendingTxSource::Log => {
+                    let cursor = self.pending_log.as_mut().unwrap();
+                    cursor.advance(written);
+                    if cursor.is_complete() {
+                        self.pending_log = None;
+                    }
                 }
             }
-            false
-        });
+            remaining_budget -= written;
+            self.shared.stats.add_tx_bytes(written);
+        }
         if woke_space {
             self.shared.publish_tx_space();
         }
@@ -417,12 +445,79 @@ impl SerialWorker {
             blocked,
             budget_exhausted: !blocked
                 && remaining_budget == 0
-                && (self.pending_frame.is_some() || self.shared.ingress.has_pending()),
+                && (self.pending_frame.is_some()
+                    || self.pending_log.is_some()
+                    || self.shared.ingress.has_pending()
+                    || self.logs_serviceable()),
         }
     }
 
+    fn select_tx_source(&mut self, woke_space: &mut bool) -> Option<PendingTxSource> {
+        if self.pending_frame.is_some() {
+            return Some(PendingTxSource::Tty);
+        }
+        if self.pending_log.is_some() {
+            return Some(PendingTxSource::Log);
+        }
+        if self.prefer_log && self.try_load_log() {
+            self.prefer_log = false;
+            return Some(PendingTxSource::Log);
+        }
+        if let Some(frame) = self.shared.ingress.pop() {
+            self.pending_frame = Some(TxFrameCursor::new(frame));
+            self.prefer_log = true;
+            *woke_space = true;
+            return Some(PendingTxSource::Tty);
+        }
+        if self.try_load_log() {
+            self.prefer_log = false;
+            return Some(PendingTxSource::Log);
+        }
+        None
+    }
+
+    fn try_load_log(&mut self) -> bool {
+        if self
+            .shared
+            .tty_drain_waiters
+            .load(core::sync::atomic::Ordering::Acquire)
+            != 0
+        {
+            return false;
+        }
+        let Some(consumed) = self.log_reader.take(self.shared.index) else {
+            return false;
+        };
+        self.shared
+            .stats
+            .add_log_sequence_gaps(consumed.sequence_gap);
+        self.shared.stats.observe_log_record(
+            consumed.record.cpu_id(),
+            consumed.record.timestamp_nanos(),
+            consumed.record.task_id().is_some(),
+            consumed.record.kind() == LogRecordKind::Log,
+            consumed.record.is_truncated(),
+        );
+        self.pending_log = Some(LogRecordCursor::new(consumed.record));
+        true
+    }
+
+    fn logs_serviceable(&self) -> bool {
+        self.shared
+            .tty_drain_waiters
+            .load(core::sync::atomic::Ordering::Acquire)
+            == 0
+            && self.shared.log_mailbox.has_pending_for(self.shared.index)
+    }
+
     fn update_tx_idle(&mut self) {
-        let worker_empty = self.pending_frame.is_none();
+        let drain_active = self
+            .shared
+            .tty_drain_waiters
+            .load(core::sync::atomic::Ordering::Acquire)
+            != 0;
+        let worker_empty =
+            self.pending_frame.is_none() && (!drain_active || self.pending_log.is_none());
         let hardware_idle = if !self.shared.started() {
             true
         } else {
@@ -443,7 +538,9 @@ impl SerialWorker {
     fn rearm_sources(&mut self) {
         let mut sources = core::mem::take(&mut self.pending_rearm);
         if self.pending_frame.is_none()
+            && self.pending_log.is_none()
             && !self.shared.ingress.has_pending()
+            && !self.logs_serviceable()
             && self.shared.ingress.is_idle()
         {
             sources.remove(SerialEventSet::TX_SPACE);
@@ -456,6 +553,12 @@ impl SerialWorker {
         self.pending_rearm |= ready;
         self.immediate_events |= ready;
     }
+}
+
+#[derive(Clone, Copy)]
+enum PendingTxSource {
+    Tty,
+    Log,
 }
 
 fn discard_rx_sources(

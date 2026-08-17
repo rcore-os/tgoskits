@@ -134,7 +134,7 @@ fn runtime_page_fault_handler(
 impl ax_log::LogIf for LogIfImpl {
     fn console_write_str(s: &str) {
         #[cfg(feature = "serial")]
-        if serial::route_console_bytes(s.as_bytes()).is_some() {
+        if serial::route_console_text(s).is_some() {
             return;
         }
         ax_hal::console::write_text_bytes(s.as_bytes());

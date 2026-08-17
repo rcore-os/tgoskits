@@ -5,6 +5,7 @@
 
 mod control;
 mod ingress;
+mod log_mailbox;
 mod spsc;
 mod state;
 mod worker;
@@ -23,6 +24,7 @@ pub use state::SerialStats;
 use self::{
     control::{ControlOp, ControlQueue},
     ingress::TxIngress,
+    log_mailbox::{LogMailbox, LogRecordMeta},
     spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
     state::{SerialIrqLatch, SerialStatsAtomic},
     worker::SerialWorker,
@@ -34,6 +36,7 @@ const IRQ_RX_CAPACITY: usize = 16_384;
 const SUBSCRIPTION_RX_CAPACITY: usize = 4_096;
 
 static SERIAL_RUNTIMES: OnceLock<Box<[SerialRuntimeHandle]>> = OnceLock::new();
+static LOG_MAILBOX: OnceLock<Arc<LogMailbox>> = OnceLock::new();
 static ACTIVE_CONSOLE: AtomicUsize = AtomicUsize::new(NO_ACTIVE_CONSOLE);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +78,7 @@ struct RuntimeShared {
     port: SpinLock<Box<dyn rdif_serial::UartPort>>,
     register_gate: Arc<rdif_serial::UartRegisterGate<dyn rdif_serial::UartEmergencyTx>>,
     ingress: TxIngress,
+    log_mailbox: Arc<LogMailbox>,
     rx_subscription: SpinLock<Option<SpscConsumer<RxItem>>>,
     control: ControlQueue,
     bridge: Arc<RuntimeIrqBridge>,
@@ -83,6 +87,7 @@ struct RuntimeShared {
     tx_source: Arc<PollSet>,
     rx_progress: WaitQueue,
     tx_progress: WaitQueue,
+    tty_drain_waiters: AtomicUsize,
     started: AtomicBool,
     irq_handle: OnceLock<ax_hal::irq::IrqHandle>,
 }
@@ -199,12 +204,7 @@ impl SerialRuntimeHandle {
             .control
             .submit(ControlOp::Shutdown, &self.shared.bridge.notify);
         if result.is_ok() {
-            let _ = ACTIVE_CONSOLE.compare_exchange(
-                self.shared.index,
-                NO_ACTIVE_CONSOLE,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
+            deactivate_console(&self.shared);
         }
         result
     }
@@ -263,9 +263,26 @@ impl SerialRuntimeHandle {
             return Err(RuntimeError::SerialConsoleBusy);
         }
         if let Err(error) = ax_hal::console::commit_runtime_handoff() {
+            let _ = ACTIVE_CONSOLE.compare_exchange(
+                self.shared.index,
+                NO_ACTIVE_CONSOLE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
             ax_hal::console::fail_runtime_handoff_closed();
             return Err(error.into());
         }
+        if !self.shared.log_mailbox.claim(self.shared.index) {
+            let _ = ACTIVE_CONSOLE.compare_exchange(
+                self.shared.index,
+                NO_ACTIVE_CONSOLE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            ax_hal::console::fail_runtime_handoff_closed();
+            return Err(RuntimeError::SerialConsoleBusy);
+        }
+        self.shared.bridge.notify.notify();
         Ok(())
     }
 
@@ -355,6 +372,7 @@ impl SerialTxSender {
 
     pub fn wait_idle(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
+        let _drain = TtyDrainGuard::new(&self.shared);
         self.shared
             .tx_progress
             .wait_until(|| self.shared.ingress.is_idle() || !self.shared.started());
@@ -374,6 +392,26 @@ impl SerialTxSender {
 
     pub fn poll_source(&self) -> Arc<PollSet> {
         self.shared.tx_source.clone()
+    }
+}
+
+struct TtyDrainGuard<'a> {
+    shared: &'a RuntimeShared,
+}
+
+impl<'a> TtyDrainGuard<'a> {
+    fn new(shared: &'a RuntimeShared) -> Self {
+        shared.ingress.begin_drain();
+        shared.tty_drain_waiters.fetch_add(1, Ordering::AcqRel);
+        shared.bridge.notify.notify();
+        Self { shared }
+    }
+}
+
+impl Drop for TtyDrainGuard<'_> {
+    fn drop(&mut self) {
+        self.shared.tty_drain_waiters.fetch_sub(1, Ordering::AcqRel);
+        self.shared.bridge.notify.notify();
     }
 }
 
@@ -467,9 +505,12 @@ pub fn runtimes() -> &'static [SerialRuntimeHandle] {
 }
 
 pub(crate) fn init(primary_cpu: usize) {
+    let log_mailbox = LOG_MAILBOX
+        .call_once(|| Arc::new(LogMailbox::new(ax_hal::cpu_num().max(1))))
+        .clone();
     let mut handles = Vec::new();
     for serial in ax_driver::serial::take_serial_devices() {
-        match build_runtime(handles.len(), primary_cpu, serial) {
+        match build_runtime(handles.len(), primary_cpu, serial, log_mailbox.clone()) {
             Ok(handle) => handles.push(handle),
             Err(err) => warn!("failed to initialize serial runtime: {err:?}"),
         }
@@ -481,6 +522,7 @@ fn build_runtime(
     index: usize,
     primary_cpu: usize,
     serial: SerialDevice,
+    log_mailbox: Arc<LogMailbox>,
 ) -> RuntimeResult<SerialRuntimeHandle> {
     let SerialDevice {
         info,
@@ -505,6 +547,7 @@ fn build_runtime(
         port: SpinLock::new(port),
         register_gate: register_gate.clone(),
         ingress: TxIngress::new(),
+        log_mailbox,
         rx_subscription: SpinLock::new(Some(rx_output_consumer)),
         control: ControlQueue::new(),
         bridge: bridge.clone(),
@@ -513,6 +556,7 @@ fn build_runtime(
         tx_source: Arc::new(PollSet::new()),
         rx_progress: WaitQueue::new(),
         tx_progress: WaitQueue::new(),
+        tty_drain_waiters: AtomicUsize::new(0),
         started: AtomicBool::new(false),
         irq_handle: OnceLock::new(),
     });
@@ -615,27 +659,64 @@ fn mask_deferred_irq_rx(irq: &mut dyn rdif_serial::UartIrq, event: rdif_serial::
     }
 }
 
-/// Routes normal logs through the bounded TX channel. Panic output uses only
+/// Routes normal output through a per-CPU record ring. Panic output uses only
 /// the bounded emergency endpoint after a successful non-blocking gate entry.
-pub(crate) fn route_console_bytes(bytes: &[u8]) -> Option<usize> {
+pub(crate) fn route_console_text(text: &str) -> Option<usize> {
     let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
     let runtime = runtimes().get(index)?;
     if axpanic::oops_in_progress() {
         let Some(register_access) = runtime.shared.register_gate.try_enter() else {
-            runtime.shared.stats.add_log_dropped(bytes.len());
+            runtime.shared.stats.add_log_dropped(text.len());
             return Some(0);
         };
-        let written = register_access.try_write(bytes);
-        runtime.shared.stats.add_log_dropped(bytes.len() - written);
+        let written = register_access.try_write(text.as_bytes());
+        runtime.shared.stats.add_log_dropped(text.len() - written);
         return Some(written);
     }
 
-    let accepted = runtime
+    let guard = ax_task::sync::PreemptIrqSaveGuard::new();
+    // SAFETY: `guard` prevents task migration and local IRQ re-entry for the
+    // whole callback; runtime CPU-local state is installed before handoff.
+    let outcome = unsafe {
+        ax_hal::percpu::with_cpu_pin(|pin| {
+            let cpu_id = ax_hal::percpu::this_cpu_id_pinned(pin);
+            let task_id = ax_task::current_may_uninit().map(|task| task.id().as_u64());
+            runtime.shared.log_mailbox.try_publish(
+                cpu_id,
+                LogRecordMeta::print(ax_hal::time::monotonic_time().as_nanos() as u64, task_id),
+                text,
+            )
+        })
+    }
+    .unwrap_or_else(|_| log_mailbox::PublishOutcome::dropped(text.len()));
+    drop(guard);
+    runtime
         .shared
-        .ingress
-        .try_write_log(bytes, &runtime.shared.bridge.notify);
-    runtime.shared.stats.add_log_dropped(bytes.len() - accepted);
-    Some(accepted)
+        .stats
+        .add_log_dropped(outcome.dropped_source_bytes());
+    if outcome.published() {
+        if ax_hal::irq::in_irq_context() {
+            runtime.shared.bridge.notify.notify_irq();
+        } else {
+            runtime.shared.bridge.notify.notify();
+        }
+    }
+    Some(outcome.accepted_source_bytes())
+}
+
+fn deactivate_console(shared: &RuntimeShared) {
+    if ACTIVE_CONSOLE
+        .compare_exchange(
+            shared.index,
+            NO_ACTIVE_CONSOLE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        shared.log_mailbox.release(shared.index);
+        shared.bridge.notify.notify();
+    }
 }
 
 /// Writes text through the active runtime console, if one has claimed output.
@@ -753,6 +834,6 @@ mod tests {
     #[test]
     fn absent_runtime_console_preserves_platform_fallback() {
         ACTIVE_CONSOLE.store(NO_ACTIVE_CONSOLE, Ordering::Release);
-        assert_eq!(route_console_bytes(b"fallback"), None);
+        assert_eq!(route_console_text("fallback"), None);
     }
 }
