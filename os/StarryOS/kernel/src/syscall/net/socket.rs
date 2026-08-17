@@ -31,7 +31,9 @@ use crate::{
 };
 
 const SOCK_TYPE_MASK: u32 = 0xf;
+
 const SOCK_MAX: u32 = 11;
+
 const SOCK_FLAGS_MASK: u32 = O_NONBLOCK | O_CLOEXEC;
 
 pub fn sys_socket(
@@ -104,7 +106,7 @@ pub fn sys_socket(
             if proto == NETLINK_KOBJECT_UEVENT && ty != SOCK_RAW {
                 return Err(StarryError::from(Errno::ESOCKTNOSUPPORT));
             }
-            let socket = NetlinkSocket::new(proto);
+            let socket = NetlinkSocket::new(proto, ty);
             if raw_ty & O_NONBLOCK != 0 {
                 socket.set_nonblocking(true)?;
             }

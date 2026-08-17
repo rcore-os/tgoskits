@@ -15,6 +15,7 @@ version = "0.5.28"
 
 [features]
 default = []
+nixos = []
 qemu = [
   "ax-runtime/irq",
   "ax-runtime/rtc",

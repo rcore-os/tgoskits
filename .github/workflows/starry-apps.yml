@@ -1,6 +1,10 @@
 name: Starry Apps
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/starry-apps.yml"
+      - "apps/starry/nixos/**"
   schedule:
     # GitHub cron uses UTC. This runs at 02:00 Beijing time (UTC+8).
     - cron: "0 18 * * *"
@@ -54,6 +58,7 @@ jobs:
 
   starry_apps:
     name: ${{ matrix.name }}
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/rcore-os/tgoskits-container:latest
@@ -120,3 +125,26 @@ jobs:
         run: |
           set -euxo pipefail
           cargo xtask starry app qemu --all --arch "${{ matrix.arch }}"
+
+  starry_nixos:
+    name: StarryNixOS x86_64 QEMU
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Build and run StarryNixOS
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run --rm \
+            --env NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = false' \
+            --volume "$PWD:/workspace" \
+            --workdir /workspace \
+            docker.io/nixos/nix:2.33.1 \
+            sh -lc '
+              git config --global --add safe.directory /workspace
+              nix develop --accept-flake-config -c \
+                cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
+            '

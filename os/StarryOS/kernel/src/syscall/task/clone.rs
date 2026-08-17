@@ -204,6 +204,15 @@ impl CloneArgs {
         current: &crate::task::UserTaskRef,
         uctx: &UserContext,
     ) -> crate::StarryResult<isize> {
+        self.do_clone_in_cgroup(current, uctx, None)
+    }
+
+    pub(super) fn do_clone_in_cgroup(
+        self,
+        current: &crate::task::UserTaskRef,
+        uctx: &UserContext,
+        requested_cgroup: Option<Arc<ax_cgroup::CgroupNode>>,
+    ) -> StarryResult<isize> {
         self.validate()?;
 
         let Self {
@@ -399,7 +408,11 @@ impl CloneArgs {
                 exit_signal,
                 curr_thread.tid_number(),
             )
-            .with_cgroup(inherited_cgroup.clone());
+            .with_cgroup(
+                requested_cgroup
+                    .clone()
+                    .unwrap_or_else(|| inherited_cgroup.clone()),
+            );
             if flags.contains(CloneFlags::VM) {
                 process_init = process_init.with_shared_memory(old_proc_data);
             }

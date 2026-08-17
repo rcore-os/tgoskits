@@ -100,8 +100,29 @@ pub fn sys_execve(
     envp: *const *const c_char,
 ) -> crate::StarryResult<isize> {
     let path = vm_load_string(current, path)?;
-    let loc = current_fs_context().lock().resolve(&path)?;
+    let loc = if let Some(fd) = self_fd_number(&path) {
+        match resolve_at(fd, Some(""), AT_EMPTY_PATH)? {
+            ResolveAtResult::File(loc) => loc,
+            ResolveAtResult::Other(file) => file
+                .downcast_ref::<Memfd>()
+                .ok_or(StarryError::PermissionDenied)?
+                .inner()
+                .inner()
+                .location()
+                .clone(),
+        }
+    } else {
+        current_fs_context().lock().resolve(&path)?
+    };
     do_execve(current, uctx, loc, path, argv, envp)
+}
+
+fn self_fd_number(path: &str) -> Option<c_int> {
+    ["/proc/self/fd/", "/dev/fd/"]
+        .into_iter()
+        .find_map(|prefix| path.strip_prefix(prefix))?
+        .parse()
+        .ok()
 }
 
 /// execveat(2) — like execve, but the program is identified by `dirfd` plus

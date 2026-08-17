@@ -24,6 +24,16 @@ use crate::{
 
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
+/// Publish the architectural timer level before making the blocked vCPU runnable.
+fn publish_before_wake<E>(
+    publish: impl FnOnce() -> Result<(), E>,
+    wake: impl FnOnce(),
+) -> Result<(), E> {
+    publish()?;
+    wake();
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 struct HostTimerActivation {
     token: usize,
@@ -168,11 +178,26 @@ impl Aarch64TimerBinding {
                     return;
                 }
                 binding.scheduled.lock().take();
-                if let Err(error) =
-                    crate::runtime::vcpus::notify_vcpu(binding.vm_id, binding.vcpu.raw())
-                {
+                if let Err(error) = publish_before_wake(
+                    || {
+                        binding
+                            .publish_levels(snapshot, physical_counter())
+                            .map(|_| ())
+                    },
+                    || {
+                        if let Err(error) =
+                            crate::runtime::vcpus::notify_vcpu(binding.vm_id, binding.vcpu.raw())
+                        {
+                            warn!(
+                                "failed to wake VM[{}] vCPU {} for architectural timer: {error:?}",
+                                binding.vm_id,
+                                binding.vcpu.raw()
+                            );
+                        }
+                    },
+                ) {
                     warn!(
-                        "failed to wake VM[{}] vCPU {} for architectural timer: {error:?}",
+                        "failed to publish VM[{}] vCPU {} architectural timer deadline: {error}",
                         binding.vm_id,
                         binding.vcpu.raw()
                     );

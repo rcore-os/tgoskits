@@ -171,6 +171,25 @@ pub fn sys_time(
     Ok(secs)
 }
 
+#[cfg(target_arch = "x86_64")]
+pub fn sys_alarm(current: &crate::task::UserTaskRef, seconds: u32) -> crate::StarryResult<isize> {
+    let proc_data = &current.as_thread().proc_data;
+    let outcome = proc_data.set_interval_timer(
+        ITimerType::Real,
+        TimeValue::ZERO,
+        TimeValue::from_secs(u64::from(seconds)),
+    );
+    let (_, old_remaining) = outcome.apply(crate::task::AlarmTarget::Process(
+        alloc::sync::Arc::downgrade(&proc_data.identity()),
+    ));
+
+    let mut old_seconds = old_remaining.as_secs();
+    if old_remaining.subsec_nanos() != 0 {
+        old_seconds = old_seconds.saturating_add(1);
+    }
+    Ok(old_seconds as isize)
+}
+
 pub fn sys_clock_getres(
     current: &crate::task::UserTaskRef,
     clock_id: __kernel_clockid_t,

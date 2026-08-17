@@ -11,20 +11,29 @@ use linux_raw_sys::general::{
 };
 
 use crate::{
-    StarryError, StarryResult,
-    file::{Directory, File, get_file_like, memfd::Memfd, resolve_at},
+    Errno, StarryError, StarryResult,
+    file::{Directory, File, ResolveAtResult, get_file_like, memfd::Memfd, resolve_at},
     mm::{UserPtr, VmMutPtr, VmPtr, vm_load_path_string},
 };
 
 const FILE_HANDLE_BYTES: usize = size_of::<u64>() * 2;
+
 const FILE_HANDLE_TYPE_DEV_INO: i32 = 1;
+
 const MS_NOSUID: u32 = 1 << 1;
+
 const MS_NODEV: u32 = 1 << 2;
+
 const MS_NOEXEC: u32 = 1 << 3;
+
 const MS_NOATIME: u32 = 1 << 10;
+
 const MS_RELATIME: u32 = 1 << 21;
+
 const ST_RDONLY: u32 = 1;
+
 const ST_RELATIME: u32 = 1 << 12;
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct FileHandleHeader {
@@ -153,11 +162,16 @@ pub fn sys_statx(
         .transpose()?;
     debug!("sys_statx <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
-    write_statx(
-        current,
-        statxbuf,
-        resolve_at(dirfd, path.as_deref(), flags)?.stat()?.into(),
-    )?;
+    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
+    let mut status: statx = resolved.stat()?.into();
+    if let ResolveAtResult::File(location) = &resolved {
+        status.stx_mask |= linux_raw_sys::general::STATX_MNT_ID;
+        status.stx_mnt_id = location.mountpoint().mount_id();
+        if location.is_root_of_mount() {
+            status.stx_attributes |= linux_raw_sys::general::STATX_ATTR_MOUNT_ROOT as u64;
+        }
+    }
+    write_statx(current, statxbuf, status)?;
 
     Ok(0)
 }
@@ -548,7 +562,9 @@ pub fn sys_name_to_handle_at(
         .ok_or(crate::StarryError::InvalidInput)? as *mut u8;
     UserPtr::<u8>::from(data_ptr).write_slice(current, &bytes)?;
 
-    (mount_id as *mut c_int).vm_write(current, loc.mountpoint().device() as c_int)?;
+    let resolved_mount_id = c_int::try_from(loc.mountpoint().mount_id())
+        .map_err(|_| StarryError::from(Errno::EOVERFLOW))?;
+    (mount_id as *mut c_int).vm_write(current, resolved_mount_id)?;
     Ok(0)
 }
 

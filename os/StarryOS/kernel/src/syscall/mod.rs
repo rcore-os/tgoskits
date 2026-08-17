@@ -240,6 +240,15 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
         ),
+        Sysno::getxattrat => sys_getxattrat(
+            current,
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
+        ),
         Sysno::setxattr => sys_setxattr(
             current,
             uctx.arg0() as _,
@@ -263,6 +272,15 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) {
             uctx.arg2() as _,
             uctx.arg3() as _,
             uctx.arg4() as _,
+        ),
+        Sysno::setxattrat => sys_setxattrat(
+            current,
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+            uctx.arg5() as _,
         ),
         Sysno::removexattr => sys_removexattr(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::lremovexattr => sys_lremovexattr(current, uctx.arg0() as _, uctx.arg1() as _),
@@ -1198,6 +1216,8 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) {
         // time
         #[cfg(target_arch = "x86_64")]
         Sysno::time => sys_time(current, uctx.arg0() as _),
+        #[cfg(target_arch = "x86_64")]
+        Sysno::alarm => sys_alarm(current, uctx.arg0() as _),
         Sysno::gettimeofday => sys_gettimeofday(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::times => sys_times(current, uctx.arg0() as _),
         Sysno::clock_gettime => sys_clock_gettime(current, uctx.arg0() as _, uctx.arg1() as _),
