@@ -351,7 +351,7 @@ fn align_up_4k(size: usize) -> usize {
     (size + MASK) & !MASK
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "pci")))]
 mod tests {
     use alloc::{vec, vec::Vec};
 
@@ -467,7 +467,7 @@ mod tests {
 
         FdtPinctrl::apply_state_from_consumer(
             &mut controller,
-            fdt,
+            &fdt,
             fdt.node(consumer).unwrap(),
             0,
             &RockchipFdtPinctrlParser,
@@ -541,7 +541,7 @@ mod tests {
 
         FdtPinctrl::apply_fixed_regulator(
             &mut controller,
-            fdt,
+            &fdt,
             fdt.node(regulator).unwrap(),
             &RockchipFdtPinctrlParser,
             "test-sd-regulator",

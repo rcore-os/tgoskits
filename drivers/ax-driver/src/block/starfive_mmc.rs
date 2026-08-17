@@ -216,7 +216,7 @@ fn prepared_reference_clock_hz(clock_rate: Option<u64>) -> u32 {
     reference_clock_hz
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "pci")))]
 mod tests {
     #[cfg(not(feature = "pci"))]
     use axklib::{

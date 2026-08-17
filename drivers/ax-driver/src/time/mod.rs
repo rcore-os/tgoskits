@@ -50,7 +50,7 @@ fn init_epoch_offset(node_name: &str, unix_timestamp: u64) -> Result<(), OnProbe
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "pci")))]
 mod tests {
     use axklib::{
         BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, Klib, KlibError,

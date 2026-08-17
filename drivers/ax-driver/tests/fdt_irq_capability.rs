@@ -1,3 +1,5 @@
+#![cfg(not(feature = "pci"))]
+
 use core::ptr::NonNull;
 use std::sync::Mutex;
 

@@ -100,7 +100,7 @@ fn phytium_block_config(dma: &dma_api::DeviceDma) -> BlockConfig {
         .with_max_segment_size(IDMAC_MAX_TRANSFER_SIZE)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "pci")))]
 mod tests {
     use axklib::{
         BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, Klib, KlibError,
