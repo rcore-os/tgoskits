@@ -415,6 +415,11 @@ pub fn futex_nofault_failure_is_transactional() -> bool {
     super::task::futex_nofault_failure_is_transactional_for_test()
 }
 
+pub fn page_fault_completion_updates_only_success() -> bool {
+    super::mm::page_fault_completion_updates_only_success_for_test()
+        && ax_runtime::hal::cache::update_mmu_cache_alignment_for_test()
+}
+
 pub fn mmap_capped_device_map_len_rules_hold() -> bool {
     super::syscall::mmap_capped_device_map_len_rules_hold_for_test()
 }
