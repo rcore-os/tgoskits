@@ -9,6 +9,9 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
+#[cfg(test)]
+extern crate std;
+
 mod boot_console;
 pub mod cache;
 pub(crate) mod common;
@@ -25,7 +28,8 @@ pub use page_table_generic::{PagingError, PagingResult};
 pub use platform::platform_name;
 pub use setup::KernelOp;
 pub use someboot::{
-    bootargs, console, entry, fdt_addr, fdt_addr_phys, mem, power, rsdp_addr_phys, smp, timer,
+    boot_entropy, bootargs, console, entry, fdt_addr, fdt_addr_phys, mem, power, rsdp_addr_phys,
+    smp, timer,
 };
 pub use somehal_macros::somehal_secondary_entry as secondary_entry;
 

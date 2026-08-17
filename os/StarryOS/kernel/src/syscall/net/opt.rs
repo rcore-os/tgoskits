@@ -404,15 +404,19 @@ pub fn sys_getsockopt(
     }
 
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
-        use linux_raw_sys::net::{SO_REUSEADDR, SOL_SOCKET};
+        use linux_raw_sys::net::{
+            AF_NETLINK, SO_DOMAIN, SO_PROTOCOL, SO_REUSEADDR, SO_TYPE, SOL_SOCKET,
+        };
 
-        if (level, optname) == (SOL_SOCKET, SO_REUSEADDR) {
-            write_fixed(
-                optval,
-                optlen_ptr,
-                initial_optlen,
-                i32::from(socket.reuse_address()),
-            )?;
+        let value = match (level, optname) {
+            (SOL_SOCKET, SO_REUSEADDR) => Some(i32::from(socket.reuse_address())),
+            (SOL_SOCKET, SO_TYPE) => Some(socket.socket_type() as i32),
+            (SOL_SOCKET, SO_DOMAIN) => Some(AF_NETLINK as i32),
+            (SOL_SOCKET, SO_PROTOCOL) => Some(socket.protocol() as i32),
+            _ => None,
+        };
+        if let Some(value) = value {
+            write_fixed(optval, optlen_ptr, initial_optlen, value)?;
             return Ok(0);
         }
     }
