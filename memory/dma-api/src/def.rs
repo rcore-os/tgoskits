@@ -85,6 +85,20 @@ pub struct DmaConstraints {
     pub max_segment_size: Option<usize>,
 }
 
+/// Cache-coherency relationship between one DMA device and the CPU.
+///
+/// This is a device property supplied by firmware or the platform bus. It is
+/// independent from address-mask and segment-layout constraints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DmaCoherency {
+    /// CPU and device observe the same cacheable mapping without explicit
+    /// cache maintenance.
+    Coherent,
+    /// CPU ownership transitions require cache maintenance or a coherent CPU
+    /// mapping supplied by the DMA backend.
+    NonCoherent,
+}
+
 impl DmaConstraints {
     pub const fn new(addr_mask: u64) -> Self {
         Self {

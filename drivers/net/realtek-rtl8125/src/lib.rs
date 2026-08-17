@@ -6,7 +6,7 @@ use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 
 use ax_sync::SpinLock as Mutex;
 use descriptor::{RING_END, RxDesc, TxDesc};
-use dma_api::{DeviceDma, DmaOp};
+use dma_api::DeviceDma;
 use log::info;
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 use queue::{QueueStart, QueueStartState, Rtl8125RxQueue, Rtl8125TxQueue};
@@ -105,14 +105,12 @@ impl Rtl8125 {
     pub fn new(
         bar_addr: impl Into<MmioAddr>,
         bar_size: usize,
-        dma_mask: u64,
-        dma_op: &'static dyn DmaOp,
+        dma: DeviceDma,
         mmio_op: &'static dyn MmioOp,
     ) -> Result<Self> {
         mmio_api::init(mmio_op);
         let mmio = mmio_api::ioremap(bar_addr.into(), bar_size.max(RTL8125_REGS_SIZE))?;
         let regs = Regs::new(mmio.as_nonnull_ptr());
-        let dma = DeviceDma::new_legacy(dma_mask, dma_op);
         let xid = rtl8125_xid(regs);
         let chip = chip_version(xid);
 

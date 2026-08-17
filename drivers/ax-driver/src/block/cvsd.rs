@@ -83,7 +83,10 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     );
 
     let mut host = unsafe { Cv181xSdhci::new(Cv181xMmio::new(core, syscon), config) };
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device_with_mask(
+        u32::MAX as u64,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+    );
     let block_config = sdhci_rdif::dma_config(DEVICE_NAME, 0, &dma);
     host.configure_dma(dma)
         .map_err(|err| OnProbeError::other(format!("cvsd ADMA2 configuration failed: {err:?}")))?;

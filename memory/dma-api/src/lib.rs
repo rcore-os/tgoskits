@@ -32,19 +32,26 @@ pub struct DeviceDma {
     op: &'static dyn DmaOp,
     constraints: DmaConstraints,
     domain: DmaDomainId,
+    coherency: DmaCoherency,
 }
 
 impl DeviceDma {
-    pub fn new(domain: DmaDomainId, dma_mask: u64, op: &'static dyn DmaOp) -> Self {
+    pub fn new(
+        domain: DmaDomainId,
+        dma_mask: u64,
+        coherency: DmaCoherency,
+        op: &'static dyn DmaOp,
+    ) -> Self {
         Self {
             constraints: DmaConstraints::new(dma_mask),
             domain,
+            coherency,
             op,
         }
     }
 
-    pub fn new_legacy(dma_mask: u64, op: &'static dyn DmaOp) -> Self {
-        Self::new(DmaDomainId::legacy_global(), dma_mask, op)
+    pub fn new_legacy(dma_mask: u64, coherency: DmaCoherency, op: &'static dyn DmaOp) -> Self {
+        Self::new(DmaDomainId::legacy_global(), dma_mask, coherency, op)
     }
 
     pub fn with_constraints(&self, constraints: DmaConstraints) -> Self {
@@ -52,6 +59,7 @@ impl DeviceDma {
             op: self.op,
             constraints,
             domain: self.domain,
+            coherency: self.coherency,
         }
     }
 
@@ -67,16 +75,26 @@ impl DeviceDma {
         self.domain
     }
 
+    pub fn coherency(&self) -> DmaCoherency {
+        self.coherency
+    }
+
     pub fn flush(&self, addr: NonNull<u8>, size: usize) {
-        self.op.flush(addr, size)
+        if self.coherency == DmaCoherency::NonCoherent {
+            self.op.flush(addr, size)
+        }
     }
 
     pub fn invalidate(&self, addr: NonNull<u8>, size: usize) {
-        self.op.invalidate(addr, size)
+        if self.coherency == DmaCoherency::NonCoherent {
+            self.op.invalidate(addr, size)
+        }
     }
 
     pub fn flush_invalidate(&self, addr: NonNull<u8>, size: usize) {
-        self.op.flush_invalidate(addr, size)
+        if self.coherency == DmaCoherency::NonCoherent {
+            self.op.flush_invalidate(addr, size)
+        }
     }
 
     pub fn page_size(&self) -> usize {
@@ -108,16 +126,24 @@ impl DeviceDma {
         layout: core::alloc::Layout,
     ) -> Result<DmaAllocHandle, DmaError> {
         let constraints = self.constraints.with_align(layout.align());
-        let res =
-            unsafe { self.op.alloc_coherent(constraints, layout) }.ok_or(DmaError::NoMemory)?;
+        let res = match self.coherency {
+            DmaCoherency::Coherent => unsafe { self.op.alloc_contiguous(constraints, layout) },
+            DmaCoherency::NonCoherent => unsafe { self.op.alloc_coherent(constraints, layout) },
+        }
+        .ok_or(DmaError::NoMemory)?;
         match self.check_alloc_handle(&res, constraints) {
             Ok(()) => Ok(res),
             Err(e) => {
-                if let Err(release_err) = unsafe { self.op.dealloc_coherent(res) } {
-                    log::error!(
-                        "failed to release invalid coherent DMA allocation; allocation \
-                         quarantined: {release_err}"
-                    );
+                match self.coherency {
+                    DmaCoherency::Coherent => unsafe { self.op.dealloc_contiguous(res) },
+                    DmaCoherency::NonCoherent => {
+                        if let Err(release_err) = unsafe { self.op.dealloc_coherent(res) } {
+                            log::error!(
+                                "failed to release invalid coherent DMA allocation; allocation \
+                                 quarantined: {release_err}"
+                            );
+                        }
+                    }
                 }
                 Err(e)
             }
@@ -125,7 +151,13 @@ impl DeviceDma {
     }
 
     pub(crate) unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
-        unsafe { self.op.dealloc_coherent(handle) }
+        match self.coherency {
+            DmaCoherency::Coherent => {
+                unsafe { self.op.dealloc_contiguous(handle) };
+                Ok(())
+            }
+            DmaCoherency::NonCoherent => unsafe { self.op.dealloc_coherent(handle) },
+        }
     }
 
     pub(crate) unsafe fn map_streaming(
@@ -157,8 +189,10 @@ impl DeviceDma {
         size: usize,
         direction: DmaDirection,
     ) {
-        self.op
-            .sync_alloc_for_device(handle, offset, size, direction);
+        if self.coherency == DmaCoherency::NonCoherent {
+            self.op
+                .sync_alloc_for_device(handle, offset, size, direction);
+        }
     }
 
     pub(crate) fn sync_alloc_for_cpu(
@@ -168,7 +202,9 @@ impl DeviceDma {
         size: usize,
         direction: DmaDirection,
     ) {
-        self.op.sync_alloc_for_cpu(handle, offset, size, direction);
+        if self.coherency == DmaCoherency::NonCoherent {
+            self.op.sync_alloc_for_cpu(handle, offset, size, direction);
+        }
     }
 
     pub(crate) fn sync_map_for_device(
@@ -178,7 +214,8 @@ impl DeviceDma {
         size: usize,
         direction: DmaDirection,
     ) {
-        self.op.sync_map_for_device(handle, offset, size, direction);
+        self.op
+            .sync_map_for_device(handle, offset, size, direction, self.coherency);
     }
 
     pub(crate) fn sync_map_for_cpu(
@@ -188,7 +225,8 @@ impl DeviceDma {
         size: usize,
         direction: DmaDirection,
     ) {
-        self.op.sync_map_for_cpu(handle, offset, size, direction);
+        self.op
+            .sync_map_for_cpu(handle, offset, size, direction, self.coherency);
     }
 
     pub fn coherent_array_zero<T: DmaPod>(&self, len: usize) -> Result<CoherentArray<T>, DmaError> {

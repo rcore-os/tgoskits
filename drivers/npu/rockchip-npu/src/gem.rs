@@ -309,7 +309,11 @@ mod tests {
 
     fn import_only_pool() -> GemPool {
         static OP: NoAllocOp = NoAllocOp;
-        GemPool::new(DeviceDma::new_legacy(u32::MAX as u64, &OP))
+        GemPool::new(DeviceDma::new_legacy(
+            u32::MAX as u64,
+            dma_api::DmaCoherency::NonCoherent,
+            &OP,
+        ))
     }
 
     /// A retainer whose drop is observable, standing in for an exporter's backing

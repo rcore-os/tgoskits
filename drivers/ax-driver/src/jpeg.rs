@@ -63,7 +63,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     bring_up_clocks_and_resets(&clocks, &resets);
     bypass_iommu(base);
 
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device_with_mask(
+        u32::MAX as u64,
+        crate::binding_resolver::dma_coherency_from_fdt(&info),
+    );
     let jpeg = RockchipJpeg::new(base, dma);
 
     info!(

@@ -36,7 +36,7 @@ fn rdif_block_device_queue_info_and_error_mapping_rules_hold() {
     device.vendor = Some("qemu");
     device.model = Some("nvme");
 
-    let limits = QueueLimits::simple(512, 0xffff_ffff);
+    let limits = QueueLimits::simple(512, 0xffff_ffff, dma_api::DmaCoherency::NonCoherent);
     let info = QueueInfo {
         id: 3,
         device,
@@ -139,7 +139,7 @@ fn rdif_block_owned_request_validation_rejects_invalid_shapes_and_flags() {
         max_blocks_per_request: 8,
         supports_flush: true,
         supported_flags: RequestFlags::FUA | RequestFlags::PREFLUSH,
-        ..QueueLimits::simple(512, u64::MAX)
+        ..QueueLimits::simple(512, u64::MAX, dma_api::DmaCoherency::NonCoherent)
     };
 
     let flush = flush_request();
@@ -176,7 +176,11 @@ fn rdif_block_owned_request_validation_rejects_invalid_shapes_and_flags() {
     };
     ax_assert_eq!(
         validate_owned_request(
-            queue_info_with(QueueLimits::simple(512, u64::MAX)),
+            queue_info_with(QueueLimits::simple(
+                512,
+                u64::MAX,
+                dma_api::DmaCoherency::NonCoherent,
+            )),
             &unsupported_preflush
         ),
         Err(BlkError::NotSupported)
@@ -246,7 +250,7 @@ impl HardwareQueue for BatchQueue {
             supports_flush: true,
             max_inflight: 2,
             max_submit_batch: 2,
-            ..QueueLimits::simple(512, u64::MAX)
+            ..QueueLimits::simple(512, u64::MAX, dma_api::DmaCoherency::NonCoherent)
         };
         queue_info_with(limits)
     }
@@ -321,7 +325,7 @@ fn rdif_block_transfer_planner_splits_chunks_and_segments() {
         max_blocks_per_request: 4,
         max_segments: 2,
         max_segment_size: 512,
-        ..QueueLimits::simple(512, u64::MAX)
+        ..QueueLimits::simple(512, u64::MAX, dma_api::DmaCoherency::NonCoherent)
     };
     let caps = TransferRuntimeCaps::new(4096, 2);
     let planner = TransferPlanner::new(device, limits, caps).unwrap();
@@ -356,7 +360,7 @@ fn rdif_block_transfer_planner_splits_chunks_and_segments() {
     ax_assert!(matches!(
         TransferPlanner::new(
             DeviceInfo::new(64, 0),
-            QueueLimits::simple(512, u64::MAX),
+            QueueLimits::simple(512, u64::MAX, dma_api::DmaCoherency::NonCoherent),
             caps
         ),
         Err(BlkError::InvalidRequest)

@@ -96,8 +96,11 @@ mod tests {
                     E1000::new(
                         bar.start as u64,
                         bar.count(),
-                        u64::MAX,
-                        kernel_dma_op(),
+                        dma_api::DeviceDma::new_legacy(
+                            u64::MAX,
+                            dma_api::DmaCoherency::NonCoherent,
+                            kernel_dma_op(),
+                        ),
                         kernel_mmio_op(),
                     )
                     .expect("create e1000"),

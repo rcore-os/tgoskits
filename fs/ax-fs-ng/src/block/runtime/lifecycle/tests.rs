@@ -630,7 +630,7 @@ impl BlockIrqRegistrar for TestIrqRegistrar {
 }
 
 fn test_queue_info() -> QueueInfo {
-    let mut limits = QueueLimits::simple(512, u64::MAX);
+    let mut limits = QueueLimits::simple(512, u64::MAX, dma_api::DmaCoherency::NonCoherent);
     limits.max_inflight = 1;
     limits.supports_flush = true;
     QueueInfo {
@@ -641,7 +641,7 @@ fn test_queue_info() -> QueueInfo {
 }
 
 fn batching_queue_info() -> QueueInfo {
-    let mut limits = QueueLimits::simple(512, u64::MAX);
+    let mut limits = QueueLimits::simple(512, u64::MAX, dma_api::DmaCoherency::NonCoherent);
     limits.max_blocks_per_request = 1;
     limits.max_inflight = 4;
     limits.max_submit_batch = 4;

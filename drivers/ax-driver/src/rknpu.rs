@@ -63,7 +63,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         base_regs.push(unsafe { iomap(start, size)?.add(offset) });
     }
 
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device_with_mask(
+        u32::MAX as u64,
+        crate::binding_resolver::dma_coherency_from_fdt(&info),
+    );
     let npu = Rknpu::new(&base_regs, config, dma);
     plat_dev.register(npu);
     info!("NPU registered successfully");

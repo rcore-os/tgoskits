@@ -58,7 +58,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device_with_mask(
+        u32::MAX as u64,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+    );
     let config = sdhci_rdif::dma_config("k230-sdhci", 0, &dma);
     host.configure_dma(dma).map_err(|err| {
         OnProbeError::other(format!("k230-sdhci ADMA2 configuration failed: {err:?}"))

@@ -481,7 +481,9 @@ impl dma_api::DmaOp for TestDmaOp {
 fn test_device_dma() -> &'static dma_api::DeviceDma {
     static DEVICE: OnceLock<dma_api::DeviceDma> = OnceLock::new();
     static OP: TestDmaOp = TestDmaOp;
-    DEVICE.get_or_init(|| dma_api::DeviceDma::new_legacy(u64::MAX, &OP))
+    DEVICE.get_or_init(|| {
+        dma_api::DeviceDma::new_legacy(u64::MAX, dma_api::DmaCoherency::NonCoherent, &OP)
+    })
 }
 
 fn protocol_error_to_host(error: Error) -> sdio_host2::Error {

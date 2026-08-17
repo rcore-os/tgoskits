@@ -3,6 +3,23 @@ use alloc::format;
 use alloc::sync::Arc;
 
 use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
+#[cfg(any(
+    feature = "ahci",
+    feature = "intel-net",
+    feature = "nvme",
+    feature = "realtek-rtl8125",
+    all(feature = "net", feature = "pci")
+))]
+use dma_api::DeviceDma;
+#[cfg(any(
+    feature = "ahci",
+    feature = "intel-net",
+    feature = "nvme",
+    feature = "realtek-rtl8125",
+    feature = "xhci-pci",
+    all(feature = "net", feature = "pci")
+))]
+use dma_api::DmaCoherency;
 use heapless::Vec as ArrayVec;
 use mmio_api::MmioOp;
 #[cfg(any(test, virtio_dev))]
@@ -47,6 +64,33 @@ fn raw_lock<T>(lock: &Mutex<T>) -> RawSpinLockGuard<'_, T> {
     unsafe { lock.lock_raw() }
 }
 const PCI_INTX_LINES: usize = 4;
+
+#[cfg(any(
+    feature = "ahci",
+    feature = "intel-net",
+    feature = "nvme",
+    feature = "realtek-rtl8125",
+    all(feature = "net", feature = "pci")
+))]
+pub(crate) fn device_dma(info: PciInfo, dma_mask: u64) -> DeviceDma {
+    axklib::dma::device_with_mask(dma_mask, dma_coherency(info))
+}
+
+#[cfg(any(
+    feature = "ahci",
+    feature = "intel-net",
+    feature = "nvme",
+    feature = "realtek-rtl8125",
+    feature = "xhci-pci",
+    all(feature = "net", feature = "pci")
+))]
+pub(crate) const fn dma_coherency(info: PciInfo) -> DmaCoherency {
+    if info.dma_coherent {
+        DmaCoherency::Coherent
+    } else {
+        DmaCoherency::NonCoherent
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct LegacyIrq {
@@ -235,6 +279,7 @@ pub fn register_ecam_controller(
     ecam_size: usize,
     mem32: Option<PciMem32>,
     mem64: Option<PciMem64>,
+    dma_coherent: bool,
 ) -> Result<(), OnProbeError> {
     register_ecam_controller_with_mmio_op(
         plat_dev,
@@ -242,6 +287,7 @@ pub fn register_ecam_controller(
         ecam_size,
         mem32,
         mem64,
+        dma_coherent,
         axklib::mmio::op(),
     )
 }
@@ -252,6 +298,7 @@ pub fn register_ecam_controller_with_mmio_op(
     ecam_size: usize,
     mem32: Option<PciMem32>,
     mem64: Option<PciMem64>,
+    dma_coherent: bool,
     mmio_op: &'static dyn MmioOp,
 ) -> Result<(), OnProbeError> {
     if !has_pci_endpoint_drivers() {
@@ -264,6 +311,7 @@ pub fn register_ecam_controller_with_mmio_op(
 
     let mut controller = rdrive::probe::pci::new_driver_generic(ecam_base, ecam_size, mmio_op)
         .map_err(|err| OnProbeError::other(format!("failed to create PCIe controller: {err:?}")))?;
+    controller.set_dma_coherent(dma_coherent);
 
     if let Some(mem32) = mem32 {
         controller.set_mem32(mem32, false);
@@ -478,6 +526,7 @@ pub fn legacy_irq_for_address(address: PciAddress) -> Option<usize> {
         address,
         interrupt_pin: 1,
         interrupt_line: 0,
+        dma_coherent: false,
         intx_route: Some(rdrive::probe::pci::PciIntxRoute {
             root_device: address.device(),
             root_function: address.function(),
@@ -629,6 +678,7 @@ mod tests {
             address: PciAddress::new(0, 2, 7, 0),
             interrupt_pin: 1,
             interrupt_line: 0,
+            dma_coherent: false,
             intx_route: Some(PciIntxRoute {
                 root_device: 2,
                 root_function: 0,
@@ -646,6 +696,7 @@ mod tests {
             address: PciAddress::new(0, 2, 7, 0),
             interrupt_pin: 1,
             interrupt_line: 0,
+            dma_coherent: false,
             intx_route: None,
         };
 
@@ -1034,6 +1085,7 @@ mod tests {
             address: PciAddress::new(0, 2, 7, 0),
             interrupt_pin: 1,
             interrupt_line: 9,
+            dma_coherent: false,
             intx_route: Some(PciIntxRoute {
                 root_device: 2,
                 root_function: 0,

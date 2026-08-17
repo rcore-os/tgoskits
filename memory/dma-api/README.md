@@ -42,15 +42,25 @@ pub struct DmaConstraints {
 }
 ```
 
-`DeviceDma::new_legacy(dma_mask, op)` is shorthand for
-`DmaConstraints::new(dma_mask)`. Use `with_constraints` when a specific queue
-or transfer has stronger alignment, boundary, or segment-size requirements.
+`DeviceDma::new_legacy(dma_mask, coherency, op)` is shorthand for a device in
+the legacy global DMA domain with `DmaConstraints::new(dma_mask)`. `coherency`
+is a required device property obtained from firmware or the bus; it is separate
+from address and layout constraints. Use `with_constraints` when a specific
+queue or transfer has stronger alignment, boundary, or segment-size
+requirements.
 
 Backends must never hand a driver a DMA address outside the requested mask. For
-example, a device created with `DeviceDma::new_legacy(u32::MAX as u64, op)` must only
-return 32-bit reachable DMA addresses. Streaming mappings may use a fast path
-when the original buffer already satisfies the constraints; otherwise they
-should allocate an in-mask bounce buffer.
+example, a device created with
+`DeviceDma::new_legacy(u32::MAX as u64, coherency, op)` must only return 32-bit
+reachable DMA addresses. Streaming mappings may use a fast path when the
+original buffer already satisfies the constraints; otherwise they should
+allocate an in-mask bounce buffer.
+
+For `DmaCoherency::Coherent`, coherent allocations retain the normal contiguous
+CPU mapping and explicit cache synchronization is skipped. For
+`DmaCoherency::NonCoherent`, the backend creates and later removes the coherent
+CPU mapping. Bounce-buffer copies occur for either property; only non-coherent
+devices perform cache maintenance around those copies.
 
 ## Backend Contract
 
@@ -59,7 +69,7 @@ Implement `DmaOp` once for the platform:
 ```rust,ignore
 use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
 use dma_api::{
-    DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
+    DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
 };
 
 struct MyDma;
@@ -86,10 +96,10 @@ impl DmaOp for MyDma {
         constraints: DmaConstraints,
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
-        todo!("allocate the same constrained memory and apply coherent policy")
+        todo!("create the coherent CPU mapping required by a non-coherent device")
     }
 
-    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
         todo!("restore mapping policy and free alloc_coherent memory")
     }
 
@@ -109,9 +119,10 @@ impl DmaOp for MyDma {
 }
 ```
 
-The default sync methods perform cache maintenance and handle bounce-buffer
-copying. Platforms can override them if the architecture needs a different
-policy.
+The default streaming sync methods accept the device coherency property,
+perform cache maintenance only for non-coherent devices, and handle
+bounce-buffer copying for both. Platforms can override them if the architecture
+needs a different policy.
 
 ## Driver Usage
 

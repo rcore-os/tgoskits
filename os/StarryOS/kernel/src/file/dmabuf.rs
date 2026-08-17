@@ -35,7 +35,10 @@ pub struct DmaBufFile {
 impl DmaBufFile {
     /// Allocate a page-aligned contiguous buffer of at least `len` bytes.
     pub fn alloc(len: usize) -> StarryResult<Self> {
-        Self::alloc_with_device(len, &axklib::dma::device_with_mask(DMA_BUF_MASK))
+        Self::alloc_with_device(
+            len,
+            &axklib::dma::device_with_mask(DMA_BUF_MASK, dma_api::DmaCoherency::NonCoherent),
+        )
     }
 
     fn alloc_with_device(len: usize, dma: &dma_api::DeviceDma) -> StarryResult<Self> {
@@ -242,7 +245,8 @@ mod tests {
     fn dma_buf_preserves_dma32_size_address_and_arc_lifetime() {
         RELEASES.store(0, Ordering::SeqCst);
         ALLOC_MASK.store(0, Ordering::SeqCst);
-        let device = DeviceDma::new_legacy(DMA_BUF_MASK, &TEST_DMA);
+        let device =
+            DeviceDma::new_legacy(DMA_BUF_MASK, dma_api::DmaCoherency::NonCoherent, &TEST_DMA);
         let file = DmaBufFile::alloc_with_device(1, &device).unwrap();
 
         assert_eq!(file.alloc.size, PAGE_SIZE_4K);

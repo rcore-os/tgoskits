@@ -438,7 +438,7 @@ impl HardIrqHandler for QueueZeroControlIrq {
 }
 
 fn test_queue_info(depth: usize) -> QueueInfo {
-    let mut limits = QueueLimits::simple(512, u64::MAX);
+    let mut limits = QueueLimits::simple(512, u64::MAX, dma_api::DmaCoherency::NonCoherent);
     limits.max_inflight = depth;
     limits.max_submit_batch = depth;
     limits.supports_flush = true;

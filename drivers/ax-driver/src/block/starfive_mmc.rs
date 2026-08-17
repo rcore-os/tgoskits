@@ -63,7 +63,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Jh7110DwMmc::new(mmio_base, profile.host_config) };
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device_with_mask(
+        u32::MAX as u64,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+    );
     let block_config = starfive_block_config(&dma);
     host.inner_mut().configure_dma(dma).map_err(|err| {
         OnProbeError::other(format!(

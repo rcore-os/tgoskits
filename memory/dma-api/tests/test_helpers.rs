@@ -320,6 +320,7 @@ impl DmaOp for TrackingDmaOp {
         offset: usize,
         size: usize,
         direction: DmaDirection,
+        _coherency: DmaCoherency,
     ) {
         self.operations
             .lock()
@@ -345,6 +346,7 @@ impl DmaOp for TrackingDmaOp {
         offset: usize,
         size: usize,
         direction: DmaDirection,
+        _coherency: DmaCoherency,
     ) {
         self.operations
             .lock()

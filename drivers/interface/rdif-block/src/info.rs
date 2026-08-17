@@ -1,4 +1,4 @@
-use dma_api::DmaDomainId;
+use dma_api::{DmaCoherency, DmaDomainId};
 
 use crate::request::RequestFlags;
 
@@ -29,6 +29,8 @@ impl DeviceInfo {
 pub struct QueueLimits {
     pub dma_mask: u64,
     pub dma_domain: DmaDomainId,
+    /// Cache coherency of the physical device served by this queue.
+    pub dma_coherency: DmaCoherency,
     /// Required alignment of every device-visible segment start address.
     pub dma_alignment: usize,
     /// Required alignment of every device-visible segment length.
@@ -46,10 +48,15 @@ pub struct QueueLimits {
 }
 
 impl QueueLimits {
-    pub const fn simple(logical_block_size: usize, dma_mask: u64) -> Self {
+    pub const fn simple(
+        logical_block_size: usize,
+        dma_mask: u64,
+        dma_coherency: DmaCoherency,
+    ) -> Self {
         Self {
             dma_mask,
             dma_domain: DmaDomainId::legacy_global(),
+            dma_coherency,
             dma_alignment: logical_block_size,
             dma_length_alignment: logical_block_size,
             segment_boundary: None,

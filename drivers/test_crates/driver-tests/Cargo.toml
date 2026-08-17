@@ -14,6 +14,7 @@ ax-driver = { workspace = true, features = ["serial"] }
 ax-lazyinit.workspace = true
 ax-sync = { workspace = true, features = ["host-test"] }
 axklib.workspace = true
+dma-api.workspace = true
 eth-intel.workspace = true
 fdt-edit.workspace = true
 pcie.workspace = true

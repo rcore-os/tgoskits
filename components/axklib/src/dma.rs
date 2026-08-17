@@ -2,8 +2,8 @@ use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
 
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 use dma_api::{
-    DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaDomainId, DmaError, DmaMapHandle,
-    DmaOp,
+    DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDirection, DmaDomainId, DmaError,
+    DmaMapHandle, DmaOp,
 };
 use mbarrier::mb;
 
@@ -21,8 +21,8 @@ pub const fn domain_id() -> DmaDomainId {
     DmaDomainId::legacy_global()
 }
 
-pub fn device_with_mask(dma_mask: u64) -> DeviceDma {
-    DeviceDma::new(domain_id(), dma_mask, op())
+pub fn device_with_mask(dma_mask: u64, coherency: DmaCoherency) -> DeviceDma {
+    DeviceDma::new(domain_id(), dma_mask, coherency, op())
 }
 
 struct DmaPages {

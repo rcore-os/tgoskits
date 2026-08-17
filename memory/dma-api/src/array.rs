@@ -1,7 +1,7 @@
 use core::{alloc::Layout, marker::PhantomData, ptr::NonNull};
 
 use crate::{
-    DeviceDma, DmaAddr, DmaDirection, DmaDomainId, DmaError, DmaPod,
+    DeviceDma, DmaAddr, DmaCoherency, DmaDirection, DmaDomainId, DmaError, DmaPod,
     common::{AllocationKind, DmaAllocation},
 };
 
@@ -147,6 +147,10 @@ impl<T: DmaPod> ContiguousArray<T> {
 
     pub fn domain_id(&self) -> DmaDomainId {
         self.data.device.domain_id()
+    }
+
+    pub fn coherency(&self) -> DmaCoherency {
+        self.data.device.coherency()
     }
 
     pub fn direction(&self) -> DmaDirection {

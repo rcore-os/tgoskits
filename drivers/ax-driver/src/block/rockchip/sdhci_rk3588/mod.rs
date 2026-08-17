@@ -195,7 +195,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     }
     host.set_reset_hook(RockchipSdhciResetHook { resets });
     host.set_timer(&HOST_TIMER);
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device_with_mask(
+        u32::MAX as u64,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+    );
     let config = rockchip_sdhci_rdif_config(0, &dma);
     host.configure_dma(dma).map_err(|err| {
         OnProbeError::other(alloc::format!(
@@ -505,7 +508,11 @@ mod tests {
     }
 
     fn test_dma() -> dma_api::DeviceDma {
-        dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA)
+        dma_api::DeviceDma::new_legacy(
+            u32::MAX as u64,
+            dma_api::DmaCoherency::NonCoherent,
+            &TEST_DMA,
+        )
     }
 
     struct TestDma;
