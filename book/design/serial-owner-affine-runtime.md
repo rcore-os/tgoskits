@@ -17,9 +17,11 @@ hard IRQ、日志生产者和 TTY 之间传递数据。但寄存器能力仍只�
 endpoint，hard IRQ 工作有固定上限，runtime 接管可回滚，TTY 配置失败对用户态返回
 稳定 errno，并由确定性测试覆盖关键并发窗口。
 
-本次明确不引入公共 channel、lock-free MPSC、自适应高低水位、串口专用调度类或 RT
-priority。现有 RX SPSC、TX 有界 `SpinLock` 队列、控制队列和 `IrqNotify` 足以承载所需
-语义；扩大调度器或通用通信抽象不能直接修复寄存器所有权问题。
+本次明确不引入公共 channel、全局 lock-free MPSC、自适应高低水位、串口专用调度类或
+RT priority。RX SPSC、TTY 有界 `SpinLock` 队列、控制队列和 `IrqNotify` 继续承担原有
+职责；普通内核日志改用 runtime 私有的每 CPU 有界 record ring，避免日志生产者争用同一
+TX ingress，并使日志背压不再占用 TTY 容量。扩大调度器或通用通信抽象不能直接修复
+寄存器所有权问题。
 
 ## 依据与方案选择
 
@@ -42,7 +44,7 @@ throttle、软件缓冲压力、overrun 或设备错误才 mask 对应 RX source
 | 保持两个 endpoint 和布尔 handoff | 无法表达 panic/FIQ 与 early/runtime 的互斥和失败回滚。 |
 | 所有寄存器访问共用 blocking/spin lock | hard IRQ 或 panic 可能等待被中断上下文持有的锁。 |
 | 每次 worker 运行都关闭整个 controller IRQ line | shared IRQ 会影响其他设备，且把 source ownership 放错层。 |
-| 新建公共 lock-free channel 与 RT 调度 | 增加无关并发模型，当前有界队列已经满足数据传递。 |
+| 新建公共 lock-free channel 与 RT 调度 | 增加无关并发模型；日志 record ring 只属于 runtime。 |
 | endpoint 拆分、非阻塞 gate、source-level mask/rearm | 以最小公共边界表达所有权，并复用现有 runtime。采用。 |
 
 ## 所有权模型
@@ -122,8 +124,47 @@ TX ingress、控制队列和 RX subscription 访问 runtime，不能访问 UART 
 
 这些 CPU 间队列运行在 x86_64、AArch64、RISC-V 和 LoongArch 的 coherent SMP 内存上；
 发布 head/state 使用 Release，观察 tail/state 使用 Acquire，合并门铃使用 AcqRel。不需要
-对普通 CPU 内存做显式 cache flush。将来若 UART 使用 DMA，buffer ownership 与 cache
-方向必须改由 `dma-api` 表达，不能套用本段结论。
+对普通 CPU 内存做显式 cache flush。平台必须在启动 secondary CPU 前明确承诺普通
+cacheable RAM 对所有 online CPU coherent；无法建立该契约的平台不得进入通用 SMP
+runtime。仅给串口队列增加 clean/invalidate 不能修复 scheduler、锁、引用计数和 IPI
+共享状态，因此本设计不提供所谓 non-coherent mailbox fallback。
+
+`dma-api` 只表达 CPU 与设备之间的 DMA ownership、方向和 cache maintenance。CPU 间
+mailbox 不伪装成 DMA mapping，也不使用 `DmaDirection`。将来若 UART 使用 DMA，buffer
+ownership 与 cache 方向必须另由 `dma-api` 表达，不能套用普通 SMP record ring 的结论。
+
+## RT 日志 mailbox
+
+本设计借鉴 PREEMPT_RT 的 producer/console-worker 分工，而不引入 RT 调度优先级：普通
+`ax_print!` 和 `log` 调用只完成固定容量 record 的有界发布，UART owner worker 是 runtime
+阶段唯一执行 TX FIFO MMIO 的上下文。TTY 的显式 write/drain 仍可睡眠，但使用独立 TX
+ingress；日志 backlog、覆盖或 reservation failure 不消耗 TTY 队列空间。
+
+每个配置 CPU 拥有一个 64-slot record ring，每个 record 最多携带 1024 字节。task 与 IRQ
+虽然可能在同一 CPU 上交替成为 producer，但发布期间禁止迁移和本地 IRQ，所以从 ring
+角度仍是单 writer；FIQ/NMI 和 panic 不进入该路径。owner worker 是所有 ring 的唯一
+reader，并在 CPU 之间 round-robin：保证每个 CPU 内的 sequence 顺序，不承诺不同 CPU
+调用之间的全局时间顺序。IPI/`IrqNotify` 只是可合并 doorbell，不能承载 payload 或定义
+record 顺序。
+
+每个 slot 把 generation 与以下状态一起原子发布：
+
+```text
+FREE -> WRITING -> READY -> READING -> FREE
+          ^          |
+          +----------+  producer 仅可回收尚未被 reader 取得的 READY
+```
+
+producer 可以像 Linux printk ring 一样复用最旧的 `READY` record；若目标 slot 已是
+`READING` 或 `WRITING`，本次 reservation 立即失败。reader 必须先 CAS 取得 `READING`
+ownership，复制完成后才释放，禁止 producer 与 reader 同时访问 record payload。每 CPU
+单调 sequence 既用于 generation，也让 reader 统计覆盖或 reservation failure 形成的 gap。
+超长 UTF-8 消息在 record 边界内截断并标记；递归 publish、runtime 未就绪或 slot busy
+均只更新有界统计并返回，不能等待 worker、分配内存或进入 TTY。
+
+early 阶段仍可通过 early endpoint 做有界直接输出；`Preparing` 阻止新访问，`Runtime`
+提交后普通日志只能进 mailbox，`FailedClosed` 丢弃普通日志。panic/FIQ 只尝试 emergency
+endpoint，不能排空 record ring 或等待 owner worker。
 
 ## TTY 事务与锁顺序
 
@@ -144,12 +185,20 @@ termios-update -> output -> terminal-termios
 硬件配置失败时不发布新 termios。无效参数返回 `EINVAL`，有界硬件等待超时返回
 `ETIMEDOUT`，其他寄存器/设备错误返回 `EIO`。用户内存复制必须在上述锁外完成。
 
+owner worker 在普通状态下有界交替服务 TTY frame 与日志 record。drain 或 termios barrier
+进入后，worker 先完成已经取得的 pending record，随后暂停取得新日志；只有 TTY ingress
+为空、pending TTY frame 为空且 UART FIFO/shift register 报告 idle 后，才确认 barrier。
+因此持续日志流不能饿死 `TCSETSW`/`TCSETSF`，而 barrier 也不会丢弃已经接受的 TTY
+输出。配置发布或失败回滚完成后，worker 恢复日志 round-robin。
+
 ## 验证与回滚
 
 最低层确定性测试覆盖 gate contention、worker/IRQ/emergency MMIO 互斥、固定 report
 容量、TX mask/rearm、正常 RX 不 mask、RX budget/queue-full/overrun mask/rearm、rearm
 窗口 immediate event、shared IRQ 不关闭 controller line、PL011 配置 timeout/寄存器回滚，
-以及 termios 并发 writer 和错误传播。
+以及 termios 并发 writer 和错误传播。日志 mailbox 另外覆盖 slot generation/state、回收
+`READY`、拒绝覆盖 `READING/WRITING`、sequence gap、每 CPU FIFO、跨 CPU round-robin、
+递归发布、UTF-8 截断、日志 flood 与 TTY 容量隔离。
 
 Starry grouped 回归新增 `test-tty-termios-transaction`，并保留
 `tty-bugfix-bug-raw-terminal-polling`、`test-tty-flush` 与
