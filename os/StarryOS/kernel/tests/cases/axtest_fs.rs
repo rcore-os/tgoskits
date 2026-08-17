@@ -20,7 +20,6 @@ fn pipe_linux_io_semantics_hold() {
 fn interrupted_pipe_write_preserves_partial_progress() {
     ax_assert!(axtest_exports::interrupted_pipe_write_preserves_partial_progress());
 }
-
 #[axtest]
 fn fcntl_setpipe_size_returns_capacity() {
     ax_assert!(axtest_exports::fcntl_setpipe_size_returns_capacity());
@@ -52,8 +51,18 @@ fn epoll_edge_callback_does_not_reenter_target() {
 }
 
 #[axtest]
+fn epoll_level_callback_does_not_reenter_target() {
+    ax_assert!(axtest_exports::epoll_level_callback_does_not_reenter_target());
+}
+
+#[axtest]
 fn epoll_hup_does_not_synthesize_readable() {
     ax_assert!(axtest_exports::epoll_hup_does_not_synthesize_readable());
+}
+
+#[axtest]
+fn epoll_requeues_readiness_observed_during_rearm() {
+    ax_assert!(axtest_exports::epoll_requeues_readiness_observed_during_rearm());
 }
 
 #[axtest]
