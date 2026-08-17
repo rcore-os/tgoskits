@@ -306,6 +306,12 @@ impl SerialWorker {
                     Ok(normalized) => normalized,
                     Err(sample) => {
                         self.pending_rx = Some(PendingRx { path, sample });
+                        let shared = self.shared.clone();
+                        defer_rx_for_output_pressure(
+                            self.shared.polling,
+                            &mut self.pending_rearm,
+                            |sources| shared.with_port(|port| port.mask(sources)),
+                        );
                         blocked = true;
                         break;
                     }
@@ -550,6 +556,18 @@ fn rearm_drained_rx(
     ready
 }
 
+fn defer_rx_for_output_pressure(
+    polling: bool,
+    pending_rearm: &mut SerialEventSet,
+    mask: impl FnOnce(SerialEventSet),
+) {
+    if polling {
+        return;
+    }
+    mask(SerialEventSet::RX);
+    *pending_rearm |= SerialEventSet::RX;
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::boxed::Box;
@@ -596,6 +614,8 @@ mod tests {
         fn tx_idle(&mut self) -> bool {
             true
         }
+
+        fn mask(&mut self, _sources: SerialEventSet) {}
 
         fn mask_all(&mut self) {}
 
@@ -666,6 +686,19 @@ mod tests {
         assert_eq!(subscription.pop(), Some(RxItem::Overrun));
         let prepared = prepare_rx_output(&output, sample, RxErrorFlags::empty()).unwrap();
         assert_eq!(prepared.byte, Some(b'x'));
+    }
+
+    #[test]
+    fn full_subscription_ring_masks_rx_until_space_is_released() {
+        let mut pending_rearm = SerialEventSet::empty();
+        let mut masked = SerialEventSet::empty();
+
+        defer_rx_for_output_pressure(false, &mut pending_rearm, |sources| {
+            masked |= sources;
+        });
+
+        assert_eq!(masked, SerialEventSet::RX);
+        assert_eq!(pending_rearm, SerialEventSet::RX);
     }
 
     #[test]

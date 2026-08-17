@@ -120,6 +120,10 @@ impl UartPort for MockPort {
         self.tx_len == 0
     }
 
+    fn mask(&mut self, _sources: SerialEventSet) {
+        self.masked = true;
+    }
+
     fn mask_all(&mut self) {
         self.masked = true;
     }
@@ -136,6 +140,8 @@ struct MockIrq {
 }
 
 impl UartIrq for MockIrq {
+    fn mask(&mut self, _sources: SerialEventSet) {}
+
     fn handle(&mut self) -> Option<SerialIrqReport> {
         let event = self.pending.take()?;
         let mut rx = IrqRxBatch::new();

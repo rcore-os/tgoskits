@@ -129,6 +129,9 @@ pub trait UartPort: Send + 'static {
     /// Returns whether both the FIFO and transmitter shift register are empty.
     fn tx_idle(&mut self) -> bool;
 
+    /// Masks only the requested device-local interrupt sources.
+    fn mask(&mut self, sources: SerialEventSet);
+
     fn mask_all(&mut self);
 
     /// Rearms `sources` and closes the enable/readiness race.
@@ -141,6 +144,13 @@ pub trait UartPort: Send + 'static {
 
 /// UART hard-IRQ endpoint owned by the registered IRQ callback.
 pub trait UartIrq: Send + 'static {
+    /// Masks only the requested device-local interrupt sources.
+    ///
+    /// This must not disable or otherwise modify a shared interrupt-controller
+    /// line. It is used when the runtime queue becomes full after the driver
+    /// has already returned a report.
+    fn mask(&mut self, sources: SerialEventSet);
+
     /// Handles the current hardware event and returns a bounded value report.
     ///
     /// `None` means the shared interrupt was not raised by this UART. The

@@ -684,6 +684,13 @@ impl Pl011Irq {
 }
 
 impl UartIrq for Pl011Irq {
+    fn mask(&mut self, sources: SerialEventSet) {
+        let enabled = self.registers().uartimsc.get();
+        self.registers()
+            .uartimsc
+            .set(enabled & !imsc_for_events(sources));
+    }
+
     fn handle(&mut self) -> Option<SerialIrqReport> {
         let mis = self.registers().uartmis.extract();
         let active = mis.get();
@@ -712,14 +719,14 @@ impl UartIrq for Pl011Irq {
             }
         }
 
-        let rearm = events & SerialEventSet::TX_SPACE;
+        let mut rearm = events & SerialEventSet::TX_SPACE;
+        if rx.len() == IRQ_RX_BATCH_CAPACITY || rx_errors.contains(RxErrorFlags::OVERRUN) {
+            rearm |= SerialEventSet::RX;
+        }
         if events.contains(SerialEventSet::FAULT) {
             self.registers().uartimsc.set(0);
         } else if !rearm.is_empty() {
-            let enabled = self.registers().uartimsc.get();
-            self.registers()
-                .uartimsc
-                .set(enabled & !imsc_for_events(rearm));
+            self.mask(rearm);
         }
         self.registers().uarticr.set(active);
 
@@ -826,6 +833,13 @@ impl UartPort for Pl011 {
     fn tx_idle(&mut self) -> bool {
         let fr = self.registers().uartfr.extract();
         !fr.is_set(UARTFR::BUSY) && !fr.is_set(UARTFR::TXFF)
+    }
+
+    fn mask(&mut self, sources: SerialEventSet) {
+        let enabled = self.registers().uartimsc.get();
+        self.registers()
+            .uartimsc
+            .set(enabled & !imsc_for_events(sources));
     }
 
     fn mask_all(&mut self) {
@@ -1119,7 +1133,7 @@ mod tests {
     }
 
     #[test]
-    fn rx_irq_keeps_source_enabled_after_bounded_fifo_drain() {
+    fn rx_irq_masks_source_after_bounded_fifo_drain() {
         let (mut regs, uart) = pl011_with_registers();
         let mut irq = uart.split().irq;
         let rx_mask = imsc_for_events(SerialEventSet::RX);
@@ -1132,9 +1146,9 @@ mod tests {
         let event = event.unwrap();
 
         assert!(event.events.contains(SerialEventSet::RX_DATA));
-        assert!(!event.rearm.intersects(SerialEventSet::RX));
+        assert!(event.rearm.contains(SerialEventSet::RX));
         assert_eq!(samples.len(), IRQ_RX_BATCH_CAPACITY);
-        assert_eq!(read_test_reg(&regs, 0x038) & rx_mask, rx_mask);
+        assert_eq!(read_test_reg(&regs, 0x038) & rx_mask, 0);
     }
 
     #[test]
@@ -1261,6 +1275,38 @@ mod tests {
         );
         assert_eq!(read_test_reg(&regs, 0x038) & UARTIS::TX::SET.value, 0);
         assert_eq!(read_test_reg(&regs, 0x000), 0x5a);
+    }
+
+    #[test]
+    fn overrun_irq_masks_receive_sources_until_worker_rearm() {
+        let (mut regs, uart) = pl011_with_registers();
+        let mut irq = uart.split().irq;
+        let rx_sources = imsc_for_events(SerialEventSet::RX);
+        write_test_reg(&mut regs, 0x018, UARTFR::RXFE::SET.value);
+        write_test_reg(&mut regs, 0x038, rx_sources);
+        write_test_reg(&mut regs, 0x040, UARTIS::OE::SET.value);
+
+        let report = irq.handle().expect("PL011 overrun interrupt report");
+
+        assert!(report.event.rx_errors.contains(RxErrorFlags::OVERRUN));
+        assert!(report.event.rearm.contains(SerialEventSet::RX));
+        assert_eq!(read_test_reg(&regs, 0x038) & rx_sources, 0);
+    }
+
+    #[test]
+    fn drained_rx_irq_keeps_receive_sources_enabled() {
+        let (mut regs, uart) = pl011_with_registers();
+        let mut irq = uart.split().irq;
+        let rx_sources = imsc_for_events(SerialEventSet::RX);
+        write_test_reg(&mut regs, 0x018, UARTFR::RXFE::SET.value);
+        write_test_reg(&mut regs, 0x038, rx_sources);
+        write_test_reg(&mut regs, 0x040, UARTIS::RX::SET.value);
+
+        let report = irq.handle().expect("PL011 drained RX interrupt report");
+
+        assert!(report.rx.is_empty());
+        assert!(!report.event.rearm.intersects(SerialEventSet::RX));
+        assert_eq!(read_test_reg(&regs, 0x038) & rx_sources, rx_sources);
     }
 
     #[test]

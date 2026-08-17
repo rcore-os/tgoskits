@@ -494,6 +494,7 @@ fn build_runtime(
                     return ax_hal::irq::IrqReturn::Unhandled;
                 };
                 let event = callback_rx.publish(report);
+                mask_deferred_irq_rx(&mut *irq, event);
                 callback_stats.handled_irq(event);
                 callback_bridge.latch.publish(event);
                 callback_bridge.notify.notify_irq();
@@ -538,14 +539,22 @@ struct RuntimeIrqPublisher {
 }
 
 impl RuntimeIrqPublisher {
-    fn publish(&mut self, report: rdif_serial::SerialIrqReport) -> rdif_serial::SerialIrqEvent {
+    fn publish(&mut self, mut report: rdif_serial::SerialIrqReport) -> rdif_serial::SerialIrqEvent {
         for &sample in report.rx.as_slice() {
             if self.producer.push(sample).is_err() {
                 self.stats.add_rx_dropped(1);
                 self.bridge.rx_overflow.store(true, Ordering::Release);
+                report.event.rx_errors |= rdif_serial::RxErrorFlags::OVERRUN;
+                report.event.rearm |= rdif_serial::SerialEventSet::RX;
             }
         }
         report.event
+    }
+}
+
+fn mask_deferred_irq_rx(irq: &mut dyn rdif_serial::UartIrq, event: rdif_serial::SerialIrqEvent) {
+    if event.rearm.intersects(rdif_serial::SerialEventSet::RX) {
+        irq.mask(rdif_serial::SerialEventSet::RX);
     }
 }
 
@@ -583,6 +592,20 @@ pub fn write_active_console_text(bytes: &[u8]) -> Option<RuntimeResult<usize>> {
 mod tests {
     use super::*;
 
+    struct RecordingIrq {
+        masked: rdif_serial::SerialEventSet,
+    }
+
+    impl rdif_serial::UartIrq for RecordingIrq {
+        fn mask(&mut self, sources: rdif_serial::SerialEventSet) {
+            self.masked |= sources;
+        }
+
+        fn handle(&mut self) -> Option<rdif_serial::SerialIrqReport> {
+            None
+        }
+    }
+
     #[test]
     fn irq_report_drops_only_after_the_preallocated_ring_is_full() {
         let bridge = Arc::new(RuntimeIrqBridge::new());
@@ -611,7 +634,7 @@ mod tests {
         for sample in samples {
             batch.try_push(sample).unwrap();
         }
-        publisher.publish(rdif_serial::SerialIrqReport::new(
+        let event = publisher.publish(rdif_serial::SerialIrqReport::new(
             rdif_serial::SerialIrqEvent::default(),
             batch,
         ));
@@ -621,6 +644,24 @@ mod tests {
         assert!(consumer.pop().is_none());
         assert_eq!(stats.snapshot().rx_dropped, 1);
         assert!(bridge.rx_overflow.load(Ordering::Acquire));
+        assert!(event.rx_errors.contains(rdif_serial::RxErrorFlags::OVERRUN));
+        assert!(event.rearm.contains(rdif_serial::SerialEventSet::RX));
+    }
+
+    #[test]
+    fn deferred_rx_masks_only_the_uart_source() {
+        let mut irq = RecordingIrq {
+            masked: rdif_serial::SerialEventSet::empty(),
+        };
+        mask_deferred_irq_rx(
+            &mut irq,
+            rdif_serial::SerialIrqEvent {
+                rearm: rdif_serial::SerialEventSet::RX | rdif_serial::SerialEventSet::TX_SPACE,
+                ..rdif_serial::SerialIrqEvent::default()
+            },
+        );
+
+        assert_eq!(irq.masked, rdif_serial::SerialEventSet::RX);
     }
 
     #[test]

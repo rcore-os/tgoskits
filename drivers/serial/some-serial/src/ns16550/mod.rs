@@ -198,7 +198,7 @@ impl<T: Kind> Ns16550Irq<T> {
         self.base.ack_busy_detect();
     }
 
-    fn mask(&self, events: SerialEventSet) {
+    fn mask_sources(&self, events: SerialEventSet) {
         let mut ier: InterruptEnableFlags = self.base.read_flags(UART_IER);
         ier.remove(interrupt_enable_for_events(events));
         self.base.write_flags(UART_IER, ier);
@@ -206,16 +206,22 @@ impl<T: Kind> Ns16550Irq<T> {
 }
 
 impl<T: Kind> UartIrq for Ns16550Irq<T> {
+    fn mask(&mut self, sources: SerialEventSet) {
+        self.mask_sources(sources);
+    }
+
     fn handle(&mut self) -> Option<SerialIrqReport> {
         const IRQ_PASS_BUDGET: usize = 32;
 
         let mut event = SerialIrqEvent::default();
         let mut rx = IrqRxBatch::new();
         let mut rx_samples = 0;
-        for _ in 0..IRQ_PASS_BUDGET {
+        let mut pass_budget_exhausted = false;
+        for pass in 0..IRQ_PASS_BUDGET {
             let Some(current) = self.next_event() else {
                 break;
             };
+            pass_budget_exhausted = pass + 1 == IRQ_PASS_BUDGET;
             event.events |= current;
             if current.intersects(SerialEventSet::RX) {
                 let before = rx_samples;
@@ -246,9 +252,17 @@ impl<T: Kind> UartIrq for Ns16550Irq<T> {
 
             let rearm = current & SerialEventSet::TX_SPACE;
             if !rearm.is_empty() {
-                self.mask(rearm);
+                self.mask_sources(rearm);
                 event.rearm |= rearm;
             }
+        }
+
+        let defer_rx = rx.len() == IRQ_RX_BATCH_CAPACITY
+            || event.rx_errors.contains(RxErrorFlags::OVERRUN)
+            || (pass_budget_exhausted && event.events.has_rx());
+        if defer_rx && !event.events.contains(SerialEventSet::FAULT) {
+            self.mask_sources(SerialEventSet::RX);
+            event.rearm |= SerialEventSet::RX;
         }
 
         (!event.events.is_empty()).then_some(SerialIrqReport::new(event, rx))
@@ -332,6 +346,12 @@ impl<T: Kind> UartPort for Ns16550<T> {
         lsr.contains(
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY | LineStatusFlags::TRANSMITTER_EMPTY,
         )
+    }
+
+    fn mask(&mut self, sources: SerialEventSet) {
+        let mut ier: InterruptEnableFlags = self.read_flags(UART_IER);
+        ier.remove(interrupt_enable_for_events(sources));
+        self.write_flags(UART_IER, ier);
     }
 
     fn mask_all(&mut self) {
@@ -1507,6 +1527,25 @@ mod tests {
         );
         assert_eq!(RBR_READS.load(Ordering::SeqCst), 1);
         assert_eq!(samples[0].byte, Some(b'q'));
+    }
+
+    #[test]
+    fn irq_overrun_masks_rx_source_until_worker_rearm() {
+        let (_guard, uart) = serial();
+        let mut parts = started_parts(uart);
+        REGS[UART_IER as usize].store(UART_IER_RDI | UART_IER_RLSI, Ordering::SeqCst);
+        REGS[UART_IIR as usize].store(UART_IIR_RLSI, Ordering::SeqCst);
+        REGS[UART_LSR as usize].store(
+            (LineStatusFlags::DATA_READY | LineStatusFlags::OVERRUN_ERROR).bits(),
+            Ordering::SeqCst,
+        );
+        REGS[UART_RBR as usize].store(b'o', Ordering::SeqCst);
+
+        let event = handle_irq(&mut parts.irq).0.unwrap();
+
+        assert!(event.rx_errors.contains(RxErrorFlags::OVERRUN));
+        assert!(event.rearm.contains(SerialEventSet::RX));
+        assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), 0);
     }
 
     #[test]
