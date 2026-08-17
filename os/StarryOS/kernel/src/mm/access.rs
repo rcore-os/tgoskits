@@ -141,6 +141,33 @@ impl<T> UserPtr<T> {
     }
 }
 
+/// Atomically read a naturally-aligned `u32` from user memory as a single load,
+/// so a concurrent userspace atomic store cannot be observed torn.
+///
+/// `vm_read::<u32>()` goes through the byte-wise `user_copy` memcpy (four `ldrb` on
+/// aarch64), which is NOT single-copy-atomic — under SMP a racing userspace store to
+/// the word can interleave the byte reads and yield a value that never existed. The
+/// futex value-compare (FUTEX_WAIT and the race-closing re-check) must read the word
+/// atomically, exactly like Linux's `get_user`, or it can spuriously match/mismatch
+/// and — at the re-check — block through a concurrent wake (lost wakeup). This mirrors
+/// [`atomic_update_user_u32`]: `check_region` validates a present, EL0-readable,
+/// aligned word, then the access happens through an `AtomicU32` inside the
+/// user-memory-access window, lowering to one atomic load on every architecture.
+pub fn atomic_read_user_u32(ptr: *const u32) -> StarryResult<u32> {
+    check_region(
+        VirtAddr::from_ptr_of(ptr),
+        Layout::new::<u32>(),
+        MappingFlags::READ,
+    )?;
+
+    let ptr = ptr.cast::<AtomicU32>();
+    Ok(access_user_memory(|| {
+        // SAFETY: check_region() validated that the user address is a readable,
+        // properly aligned u32 in the current address space.
+        unsafe { &*ptr }.load(Ordering::Acquire)
+    }))
+}
+
 pub fn atomic_update_user_u32(
     ptr: *mut u32,
     mut update: impl FnMut(u32) -> StarryResult<u32>,
