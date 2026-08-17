@@ -8,9 +8,10 @@
 //! The read side (history replay) is not implemented yet; `read_at` returns
 //! EOF.
 
-use core::any::Any;
+use core::{any::Any, task::Context};
 
 use axfs_ng_vfs::{NodeFlags, VfsResult};
+use axpoll::{IoEvents, Pollable};
 
 use crate::pseudofs::DeviceOps;
 
@@ -77,7 +78,29 @@ impl DeviceOps for Kmsg {
         self
     }
 
+    fn as_pollable(&self) -> Option<&dyn Pollable> {
+        Some(self)
+    }
+
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
     }
+}
+
+impl Pollable for Kmsg {
+    fn poll(&self) -> IoEvents {
+        // Linux reports /dev/kmsg readiness only when a log record can be
+        // read. Starry has no read-history implementation yet, so publishing
+        // any readiness would make pollers spin on an event they cannot consume.
+        IoEvents::empty()
+    }
+
+    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+}
+
+#[cfg(axtest)]
+pub(super) fn reports_no_readiness_without_read_side_for_test() -> bool {
+    let kmsg = Kmsg;
+    kmsg.as_pollable()
+        .is_some_and(|pollable| pollable.poll().is_empty())
 }
