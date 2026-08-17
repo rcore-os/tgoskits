@@ -15,6 +15,7 @@ use super::{
 use crate::{StarryError, sync::IrqMutex};
 
 static EPOLL_ADD_TEST_BARRIER_ENABLED: AtomicBool = AtomicBool::new(false);
+
 static EPOLL_ADD_TEST_BARRIER_ARRIVALS: AtomicUsize = AtomicUsize::new(0);
 
 pub(super) fn epoll_add_test_barrier() {
@@ -251,6 +252,20 @@ pub(crate) fn edge_callback_does_not_reenter_target_for_test() -> bool {
     !target.callback_reentered_file()
 }
 
+pub(crate) fn level_callback_does_not_reenter_target_for_test() -> bool {
+    let epoll = Epoll::new();
+    let target = CallbackBoundaryFile::new();
+    let target_file: Arc<dyn FileLike> = target.clone();
+
+    epoll
+        .add_file_for_test(1, target_file, 0x45, EpollFlags::empty())
+        .expect("level-triggered test interest must be added");
+
+    target.make_ready();
+
+    !target.callback_reentered_file()
+}
+
 fn collect_one_event(epoll: &Epoll) -> Result<(usize, Option<u64>), StarryError> {
     let mut user_data = None;
     let count = epoll.poll_events_with(1, |_index, event| {
@@ -258,4 +273,79 @@ fn collect_one_event(epoll: &Epoll) -> Result<(usize, Option<u64>), StarryError>
         Ok(())
     })?;
     Ok((count, user_data))
+}
+
+struct ReadyDuringRegisterFile {
+    ready: AtomicBool,
+}
+
+impl ReadyDuringRegisterFile {
+    fn new() -> Self {
+        Self {
+            ready: AtomicBool::new(true),
+        }
+    }
+
+    fn clear_ready(&self) {
+        self.ready.store(false, Ordering::Release);
+    }
+}
+
+impl FileLike for ReadyDuringRegisterFile {
+    fn path(&self) -> Cow<'_, str> {
+        "axtest:[epoll-rearm-race]".into()
+    }
+}
+
+impl Pollable for ReadyDuringRegisterFile {
+    fn poll(&self) -> IoEvents {
+        if self.ready.load(Ordering::Acquire) {
+            IoEvents::IN
+        } else {
+            IoEvents::empty()
+        }
+    }
+
+    fn register(&self, _context: &mut Context<'_>, events: IoEvents) {
+        if events.contains(IoEvents::IN) {
+            // Model readiness becoming visible after the old wake was consumed
+            // but before the replacement waker can observe a new transition.
+            self.ready.store(true, Ordering::Release);
+        }
+    }
+}
+
+pub(crate) fn epoll_requeues_readiness_observed_during_rearm_for_test() -> bool {
+    let epoll = Epoll::new();
+    let file = Arc::new(ReadyDuringRegisterFile::new());
+    let file_like: Arc<dyn FileLike> = file.clone();
+
+    if epoll
+        .add_file_for_test(17, file_like, 17, EpollFlags::empty())
+        .is_err()
+    {
+        return false;
+    }
+    file.clear_ready();
+
+    if !matches!(
+        epoll.poll_events_with(1, |_, _| Ok(())).err(),
+        Some(StarryError::WouldBlock)
+    ) {
+        return false;
+    }
+
+    let mut observed = None;
+    epoll
+        .poll_events_with(1, |_, event| {
+            observed = Some(event);
+            Ok(())
+        })
+        .is_ok_and(|count| {
+            count == 1
+                && observed.is_some_and(|event| {
+                    event.data == 17
+                        && IoEvents::from_bits_retain(event.events).contains(IoEvents::IN)
+                })
+        })
 }
