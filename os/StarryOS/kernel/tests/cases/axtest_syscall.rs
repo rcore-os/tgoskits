@@ -127,6 +127,11 @@ fn futex_op_and_compare_rules_hold() {
 }
 
 #[axtest]
+fn futex_nofault_failure_is_transactional() {
+    ax_assert!(axtest_exports::futex_nofault_failure_is_transactional());
+}
+
+#[axtest]
 fn mmap_capped_device_map_len_rules_hold() {
     ax_assert!(axtest_exports::mmap_capped_device_map_len_rules_hold());
 }
