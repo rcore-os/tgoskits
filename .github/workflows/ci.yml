@@ -454,8 +454,6 @@ jobs:
               timeout 240s apps/arceos/virtio-blk-test/run.sh
               echo "==> axvisor aarch64 axtest"
               cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
-              echo "==> pull qemu-aarch64 image"
-              cargo xtask image pull qemu-aarch64 --output-dir tmp/axbuild/images
               echo "==> axvisor aarch64 gicv2 timer stress"
               cargo xtask axvisor test qemu --arch aarch64 --test-case gicv2-timer-stress
               echo "==> axvisor aarch64 gicv3 timer stress"
@@ -697,8 +695,6 @@ jobs:
             command: |
               echo "==> axvisor x86_64 svm smoke"
               cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
-              echo "==> pull qemu-x86_64 image"
-              cargo xtask image pull qemu-x86_64 --output-dir tmp/axbuild/images
               echo "==> axvisor x86_64 svm direct ACPI boot"
               cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-svm
               echo "==> axvisor x86_64 svm nested OVMF ACPI boot"
@@ -734,7 +730,6 @@ jobs:
             require_kvm: true
             timeout_minutes: 45
             command: |
-              cargo xtask image pull qemu-x86_64 --output-dir tmp/axbuild/images
               cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
               cargo xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
               cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
