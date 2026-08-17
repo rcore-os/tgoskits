@@ -67,8 +67,6 @@ jobs:
           gh workflow run ci.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref "$REF_NAME" \
-            -f run_target=ci \
-            -f container_target=both \
             -f since_sha="$BEFORE_SHA"
 
           {

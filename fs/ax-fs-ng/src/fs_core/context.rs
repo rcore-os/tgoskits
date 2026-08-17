@@ -40,6 +40,7 @@ pub static ROOT_FS_CONTEXT: OnceLock<FsContext> = OnceLock::new();
 /// filesystem context and apply the same root / cwd fixup that Linux
 /// performs in `chroot_fs_refs()` after `pivot_root(2)`.
 static FS_REGISTRY: IrqMutex<Vec<Weak<Mutex<FsContext>>>> = IrqMutex::new(Vec::new());
+
 #[cfg(feature = "vfs")]
 static MOUNT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -500,7 +501,6 @@ impl FsContext {
     }
 
     /// Creates a new, empty directory at the provided path.
-    /// Creates a new, empty directory at the provided path.
     pub fn create_dir(
         &self,
         path: impl AsRef<Path>,
@@ -512,19 +512,14 @@ impl FsContext {
         if path.as_str().is_empty() {
             return Err(VfsError::NotFound);
         }
-        let (dir, name) = match self.resolve_nonexistent(path) {
-            Ok(pair) => pair,
-            Err(VfsError::InvalidInput) => {
-                return match self.resolve(path) {
-                    Ok(loc) if loc.node_type() == NodeType::Directory => {
-                        Err(VfsError::AlreadyExists)
-                    }
-                    Ok(_) => Err(VfsError::NotADirectory),
-                    Err(e) => Err(e),
-                };
-            }
-            Err(e) => return Err(e),
-        };
+        // Check through the visible mount tree before asking the parent
+        // filesystem to create the entry. A static pseudo-filesystem may
+        // reject mutations with EPERM even though the mounted or generated
+        // destination already exists; mkdir(2) must report EEXIST instead.
+        if self.resolve_no_follow(path).is_ok() {
+            return Err(VfsError::AlreadyExists);
+        }
+        let (dir, name) = self.resolve_nonexistent(path)?;
         dir.create(name, NodeType::Directory, mode, uid, gid)
     }
 

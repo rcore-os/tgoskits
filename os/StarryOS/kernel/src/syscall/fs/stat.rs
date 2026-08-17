@@ -13,20 +13,29 @@ use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     Errno, StarryError, StarryResult,
-    file::{Directory, File, get_file_like, memfd::Memfd, resolve_at},
+    file::{Directory, File, ResolveAtResult, get_file_like, memfd::Memfd, resolve_at},
     mm::{UserPtr, vm_load_path_string},
     task::AsThread,
 };
 
 const FILE_HANDLE_BYTES: usize = size_of::<u64>() * 2;
+
 const FILE_HANDLE_TYPE_DEV_INO: i32 = 1;
+
 const MS_NOSUID: u32 = 1 << 1;
+
 const MS_NODEV: u32 = 1 << 2;
+
 const MS_NOEXEC: u32 = 1 << 3;
+
 const MS_NOATIME: u32 = 1 << 10;
+
 const MS_RELATIME: u32 = 1 << 21;
+
 const ST_RDONLY: u32 = 1;
+
 const ST_RELATIME: u32 = 1 << 12;
+
 #[repr(C)]
 pub struct FileHandleHeader {
     handle_bytes: u32,
@@ -134,7 +143,16 @@ pub fn sys_statx(
     let path = path.nullable().map(vm_load_path_string).transpose()?;
     debug!("sys_statx <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
-    statxbuf.vm_write(resolve_at(dirfd, path.as_deref(), flags)?.stat()?.into())?;
+    let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
+    let mut status: statx = resolved.stat()?.into();
+    if let ResolveAtResult::File(location) = &resolved {
+        status.stx_mask |= linux_raw_sys::general::STATX_MNT_ID;
+        status.stx_mnt_id = location.mountpoint().mount_id();
+        if location.is_root_of_mount() {
+            status.stx_attributes |= linux_raw_sys::general::STATX_ATTR_MOUNT_ROOT as u64;
+        }
+    }
+    statxbuf.vm_write(status)?;
 
     Ok(0)
 }
@@ -250,6 +268,7 @@ fn statfs_mount_flags(loc: &Location) -> u32 {
     }
     statfs_flags
 }
+
 pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> StarryResult<isize> {
     let path = vm_load_path_string(path)?;
     debug!("sys_statfs <= path: {path:?}");
@@ -324,7 +343,9 @@ pub fn sys_name_to_handle_at(
         .get_as_mut_slice(FILE_HANDLE_BYTES)?
         .copy_from_slice(&bytes);
 
-    (mount_id as *mut c_int).vm_write(loc.mountpoint().device() as c_int)?;
+    let resolved_mount_id = c_int::try_from(loc.mountpoint().mount_id())
+        .map_err(|_| StarryError::from(Errno::EOVERFLOW))?;
+    (mount_id as *mut c_int).vm_write(resolved_mount_id)?;
     Ok(0)
 }
 
