@@ -363,6 +363,13 @@ fn serial_config_from_termios(termios: &Termios2) -> Config {
     config
 }
 
+fn termios_requires_reconfigure(old: &Termios2, new: &Termios2) -> bool {
+    old.baudrate() != new.baudrate()
+        || old.data_bits() != new.data_bits()
+        || old.stop_bits() != new.stop_bits()
+        || old.parity() != new.parity()
+}
+
 impl TtyRead for SerialReader {
     fn read(&mut self, buf: &mut [u8]) -> usize {
         if !self.backend.started.load(Ordering::Acquire) {
@@ -456,11 +463,7 @@ impl TtyWrite for SerialWriter {
     }
 
     fn termios_changed(&self, old: &Termios2, new: &Termios2) -> StarryResult<()> {
-        if old.baudrate() == new.baudrate()
-            && old.data_bits() == new.data_bits()
-            && old.stop_bits() == new.stop_bits()
-            && old.parity() == new.parity()
-        {
+        if !termios_requires_reconfigure(old, new) {
             return Ok(());
         }
         self.backend.ensure_started()?;
@@ -479,10 +482,13 @@ impl TtyWrite for SerialWriter {
     ) -> StarryResult<()> {
         self.backend.ensure_started()?;
         let _guard = self.backend.output_lock.lock();
+        let barrier = self.backend.runtime.output_barrier()?;
         if drain {
-            self.backend.tx.wait_idle()?;
+            barrier.wait_idle()?;
         }
-        self.termios_changed(old, new)?;
+        if termios_requires_reconfigure(old, new) {
+            barrier.set_config(serial_config_from_termios(new))?;
+        }
         publish();
         Ok(())
     }

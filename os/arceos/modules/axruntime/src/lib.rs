@@ -132,40 +132,45 @@ fn runtime_page_fault_handler(
 
 #[ax_crate_interface::impl_interface]
 impl ax_log::LogIf for LogIfImpl {
-    fn console_write_str(s: &str) {
+    fn try_publish(
+        meta: ax_log::RecordMeta,
+        args: core::fmt::Arguments<'_>,
+    ) -> ax_log::PublishStatus {
+        #[cfg(not(feature = "serial"))]
+        let _ = meta;
         #[cfg(feature = "serial")]
-        if serial::route_console_text(s).is_some() {
-            return;
+        if let Some(status) = serial::try_publish_record(meta, args) {
+            return status;
         }
-        ax_hal::console::write_text_bytes(s.as_bytes());
-    }
-
-    fn current_time() -> core::time::Duration {
-        ax_hal::time::monotonic_time()
-    }
-
-    fn current_cpu_id() -> Option<usize> {
-        #[cfg(feature = "smp")]
-        if is_init_ok() {
-            Some(ax_hal::percpu::this_cpu_id())
+        let mut writer = PlatformConsoleWriter::default();
+        if core::fmt::write(&mut writer, args).is_ok() {
+            ax_log::PublishStatus::Published
         } else {
-            None
+            ax_log::PublishStatus::Dropped
         }
-        #[cfg(not(feature = "smp"))]
-        Some(0)
     }
 
-    fn current_task_id() -> Option<u64> {
-        if is_init_ok() {
-            #[cfg(feature = "multitask")]
-            {
-                ax_task::current_may_uninit().map(|curr| curr.id().as_u64())
-            }
-            #[cfg(not(feature = "multitask"))]
-            None
-        } else {
-            None
+    fn emergency_write(args: core::fmt::Arguments<'_>) -> usize {
+        #[cfg(feature = "serial")]
+        if let Some(written) = serial::emergency_write(args) {
+            return written;
         }
+        let mut writer = PlatformConsoleWriter::default();
+        let _ = core::fmt::write(&mut writer, args);
+        writer.written
+    }
+}
+
+#[derive(Default)]
+struct PlatformConsoleWriter {
+    written: usize,
+}
+
+impl core::fmt::Write for PlatformConsoleWriter {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        ax_hal::console::write_text_bytes(text.as_bytes());
+        self.written = self.written.saturating_add(text.len());
+        Ok(())
     }
 }
 

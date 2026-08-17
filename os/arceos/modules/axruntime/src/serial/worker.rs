@@ -8,7 +8,7 @@ use rdif_serial::{Config, RxErrorFlags, RxFlag, RxSample, SerialEventSet};
 
 use super::{
     RuntimeIrqBridge, RuntimeShared, RxItem,
-    control::{CONTROL_QUEUE_CAPACITY, ControlOp},
+    control::{CONTROL_QUEUE_CAPACITY, ControlCommand, ControlOp},
     deactivate_console,
     ingress::TxFrameCursor,
     log_mailbox::{LogReader, LogRecordCursor, LogRecordKind},
@@ -28,6 +28,7 @@ pub(super) struct SerialWorker {
     pending_frame: Option<TxFrameCursor>,
     log_reader: LogReader,
     pending_log: Option<LogRecordCursor>,
+    pending_control: Option<ControlCommand>,
     prefer_log: bool,
     pending_rearm: SerialEventSet,
     immediate_events: SerialEventSet,
@@ -50,6 +51,7 @@ impl SerialWorker {
             pending_frame: None,
             log_reader,
             pending_log: None,
+            pending_control: None,
             prefer_log: false,
             pending_rearm: SerialEventSet::empty(),
             immediate_events: SerialEventSet::empty(),
@@ -137,6 +139,7 @@ impl SerialWorker {
 
             if self.shared.bridge.latch.has_pending()
                 || self.shared.control.has_pending()
+                || (self.pending_control.is_some() && !tx_blocked)
                 || (!tx_blocked
                     && (self.pending_frame.is_some()
                         || self.pending_log.is_some()
@@ -159,33 +162,51 @@ impl SerialWorker {
 
     fn process_control_commands(&mut self) -> bool {
         let mut force_service = false;
+        if let Some(command) = self.pending_control.take() {
+            if self.pending_log.is_some() {
+                self.pending_control = Some(command);
+                return true;
+            }
+            force_service |= self.execute_control(command);
+        }
         for _ in 0..CONTROL_QUEUE_CAPACITY {
             let Some(command) = self.shared.control.try_pop() else {
                 break;
             };
-            let result = match &command.op {
-                ControlOp::Start(config) => {
-                    let result = self.start_port(config);
-                    force_service |= result.is_ok();
-                    result
-                }
-                ControlOp::Shutdown => {
-                    self.shutdown_port();
-                    Ok(())
-                }
-                ControlOp::SetConfig(config) => {
-                    let result = self.set_config(config);
-                    force_service |= result.is_ok();
-                    result
-                }
-                ControlOp::DiscardRx => {
-                    self.discard_rx();
-                    Ok(())
-                }
-                ControlOp::DiscardTx => self.discard_tx(),
-            };
-            command.complete(result);
+            if config_must_wait_for_pending_log(&command.op, self.pending_log.is_some()) {
+                self.pending_control = Some(command);
+                force_service = true;
+                break;
+            }
+            force_service |= self.execute_control(command);
         }
+        force_service
+    }
+
+    fn execute_control(&mut self, command: ControlCommand) -> bool {
+        let mut force_service = false;
+        let result = match &command.op {
+            ControlOp::Start(config) => {
+                let result = self.start_port(config);
+                force_service |= result.is_ok();
+                result
+            }
+            ControlOp::Shutdown => {
+                self.shutdown_port();
+                Ok(())
+            }
+            ControlOp::SetConfig(config) => {
+                let result = self.set_config(config);
+                force_service |= result.is_ok();
+                result
+            }
+            ControlOp::DiscardRx => {
+                self.discard_rx();
+                Ok(())
+            }
+            ControlOp::DiscardTx => self.discard_tx(),
+        };
+        command.complete(result);
         force_service
     }
 
@@ -477,12 +498,12 @@ impl SerialWorker {
     }
 
     fn try_load_log(&mut self) -> bool {
-        if self
-            .shared
-            .tty_drain_waiters
-            .load(core::sync::atomic::Ordering::Acquire)
-            != 0
-        {
+        if !log_extraction_allowed(
+            self.shared
+                .log_barriers
+                .load(core::sync::atomic::Ordering::Acquire),
+            self.pending_control.is_some(),
+        ) {
             return false;
         }
         let Some(consumed) = self.log_reader.take(self.shared.index) else {
@@ -503,17 +524,18 @@ impl SerialWorker {
     }
 
     fn logs_serviceable(&self) -> bool {
-        self.shared
-            .tty_drain_waiters
-            .load(core::sync::atomic::Ordering::Acquire)
-            == 0
-            && self.shared.log_mailbox.has_pending_for(self.shared.index)
+        log_extraction_allowed(
+            self.shared
+                .log_barriers
+                .load(core::sync::atomic::Ordering::Acquire),
+            self.pending_control.is_some(),
+        ) && self.shared.log_mailbox.has_pending_for(self.shared.index)
     }
 
     fn update_tx_idle(&mut self) {
         let drain_active = self
             .shared
-            .tty_drain_waiters
+            .log_barriers
             .load(core::sync::atomic::Ordering::Acquire)
             != 0;
         let worker_empty =
@@ -559,6 +581,14 @@ impl SerialWorker {
 enum PendingTxSource {
     Tty,
     Log,
+}
+
+fn config_must_wait_for_pending_log(op: &ControlOp, pending_log: bool) -> bool {
+    pending_log && matches!(op, ControlOp::SetConfig(_))
+}
+
+const fn log_extraction_allowed(active_barriers: usize, pending_control: bool) -> bool {
+    active_barriers == 0 && !pending_control
 }
 
 fn discard_rx_sources(
@@ -840,5 +870,28 @@ mod tests {
         assert!(ready.is_empty());
         assert!(!called);
         assert_eq!(pending, SerialEventSet::RX);
+    }
+
+    #[test]
+    fn configuration_waits_for_the_current_log_record() {
+        assert!(config_must_wait_for_pending_log(
+            &ControlOp::SetConfig(Config::new()),
+            true
+        ));
+        assert!(!config_must_wait_for_pending_log(
+            &ControlOp::SetConfig(Config::new()),
+            false
+        ));
+        assert!(!config_must_wait_for_pending_log(
+            &ControlOp::DiscardRx,
+            true
+        ));
+    }
+
+    #[test]
+    fn termios_barrier_blocks_new_log_extraction_until_drop() {
+        assert!(log_extraction_allowed(0, false));
+        assert!(!log_extraction_allowed(1, false));
+        assert!(!log_extraction_allowed(0, true));
     }
 }

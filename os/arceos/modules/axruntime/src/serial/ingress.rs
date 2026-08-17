@@ -267,7 +267,7 @@ mod tests {
                     .try_publish(
                         0,
                         crate::serial::log_mailbox::LogRecordMeta::print(0, None),
-                        "log backlog"
+                        format_args!("log backlog")
                     )
                     .published()
             );

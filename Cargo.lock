@@ -1006,7 +1006,6 @@ name = "ax-log"
 version = "0.5.20"
 dependencies = [
  "ax-crate-interface",
- "ax-task",
  "axpanic",
  "cfg-if",
  "chrono",

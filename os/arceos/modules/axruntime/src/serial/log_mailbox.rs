@@ -1,6 +1,7 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
+    fmt::{self, Write},
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
@@ -14,7 +15,7 @@ const SEQUENCE_MASK: u64 = u64::MAX >> STATE_BITS;
 const SEQUENCE_HALF_RANGE: u64 = SEQUENCE_MASK.div_ceil(2);
 const TRUNCATED: u8 = 1 << 0;
 const TASK_ID_VALID: u8 = 1 << 1;
-const TRUNCATION_MARKER: &[u8] = "...[truncated]".as_bytes();
+const TRUNCATION_MARKER: &[u8] = "\u{1b}[m...[truncated]\r\n".as_bytes();
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +45,14 @@ impl LogRecordMeta {
             timestamp_nanos,
             task_id,
             kind: LogRecordKind::Print,
+        }
+    }
+
+    pub(super) const fn log(timestamp_nanos: u64, task_id: Option<u64>) -> Self {
+        Self {
+            timestamp_nanos,
+            task_id,
+            kind: LogRecordKind::Log,
         }
     }
 }
@@ -78,13 +87,18 @@ impl LogRecord {
         }
     }
 
-    fn encode(cpu_id: usize, sequence: u64, meta: LogRecordMeta, text: &str) -> Self {
+    fn format(
+        cpu_id: usize,
+        sequence: u64,
+        meta: LogRecordMeta,
+        args: fmt::Arguments<'_>,
+    ) -> Result<Self, fmt::Error> {
         let mut record = Self {
             cpu_id: cpu_id as u32,
             sequence,
             timestamp_nanos: meta.timestamp_nanos,
             task_id: meta.task_id.unwrap_or(0),
-            source_len: text.len().min(u32::MAX as usize) as u32,
+            source_len: 0,
             accepted_source_len: 0,
             len: 0,
             flags: if meta.task_id.is_some() {
@@ -95,42 +109,24 @@ impl LogRecord {
             kind: meta.kind,
             bytes: [0; LOG_RECORD_BYTES],
         };
-
-        let encoded_len = text
-            .chars()
-            .map(|character| character.len_utf8() + usize::from(character == '\n'))
-            .sum::<usize>();
-        let truncated = encoded_len > LOG_RECORD_BYTES;
-        let content_limit = if truncated {
-            LOG_RECORD_BYTES - TRUNCATION_MARKER.len()
-        } else {
-            LOG_RECORD_BYTES
-        };
-        let mut encoded = 0;
-        let mut accepted = 0;
-        for character in text.chars() {
-            let required = character.len_utf8() + usize::from(character == '\n');
-            if encoded + required > content_limit {
-                break;
+        {
+            let mut formatter = RecordFormatter {
+                record: &mut record,
+                truncated: false,
+            };
+            if meta.kind == LogRecordKind::Log {
+                let seconds = meta.timestamp_nanos / 1_000_000_000;
+                let micros = meta.timestamp_nanos % 1_000_000_000 / 1_000;
+                if let Some(task_id) = meta.task_id {
+                    write!(formatter, "[{seconds:>3}.{micros:06} {cpu_id}:{task_id} ")?;
+                } else {
+                    write!(formatter, "[{seconds:>3}.{micros:06} {cpu_id} ")?;
+                }
             }
-            if character == '\n' {
-                record.bytes[encoded] = b'\r';
-                encoded += 1;
-            }
-            let end = encoded + character.len_utf8();
-            character.encode_utf8(&mut record.bytes[encoded..end]);
-            encoded = end;
-            accepted += character.len_utf8();
+            formatter.write_fmt(args)?;
+            formatter.finish();
         }
-        if truncated {
-            let end = encoded + TRUNCATION_MARKER.len();
-            record.bytes[encoded..end].copy_from_slice(TRUNCATION_MARKER);
-            encoded = end;
-            record.flags |= TRUNCATED;
-        }
-        record.accepted_source_len = accepted.min(u32::MAX as usize) as u32;
-        record.len = encoded as u16;
-        record
+        Ok(record)
     }
 
     pub(super) fn cpu_id(&self) -> usize {
@@ -170,22 +166,94 @@ impl LogRecord {
     }
 }
 
+struct RecordFormatter<'a> {
+    record: &'a mut LogRecord,
+    truncated: bool,
+}
+
+impl RecordFormatter<'_> {
+    fn finish(&mut self) {
+        if !self.truncated {
+            self.record.accepted_source_len = self.record.source_len;
+            return;
+        }
+
+        let mut keep = (self.record.len as usize).min(LOG_RECORD_BYTES - TRUNCATION_MARKER.len());
+        while keep > 0 && !core::str::from_utf8(&self.record.bytes[..keep]).is_ok() {
+            keep -= 1;
+        }
+        if keep > 0
+            && self.record.bytes[keep - 1] == b'\r'
+            && self.record.bytes.get(keep) == Some(&b'\n')
+        {
+            keep -= 1;
+        }
+        let accepted = keep
+            - self.record.bytes[..keep]
+                .iter()
+                .filter(|&&byte| byte == b'\n')
+                .count();
+        let end = keep + TRUNCATION_MARKER.len();
+        self.record.bytes[keep..end].copy_from_slice(TRUNCATION_MARKER);
+        self.record.len = end as u16;
+        self.record.accepted_source_len = accepted.min(u32::MAX as usize) as u32;
+        self.record.flags |= TRUNCATED;
+    }
+}
+
+impl Write for RecordFormatter<'_> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.record.source_len = self
+            .record
+            .source_len
+            .saturating_add(text.len().min(u32::MAX as usize) as u32);
+        if self.truncated {
+            return Ok(());
+        }
+
+        for character in text.chars() {
+            let required = character.len_utf8() + usize::from(character == '\n');
+            let encoded = self.record.len as usize;
+            if encoded + required > LOG_RECORD_BYTES {
+                self.truncated = true;
+                break;
+            }
+            let mut next = encoded;
+            if character == '\n' {
+                self.record.bytes[next] = b'\r';
+                next += 1;
+            }
+            let end = next + character.len_utf8();
+            character.encode_utf8(&mut self.record.bytes[next..end]);
+            self.record.len = end as u16;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct PublishOutcome {
+    #[cfg(test)]
     accepted_source_bytes: usize,
     dropped_source_bytes: usize,
+    dropped_records: usize,
     published: bool,
+    truncated: bool,
 }
 
 impl PublishOutcome {
     pub(super) fn dropped(source_len: usize) -> Self {
         Self {
+            #[cfg(test)]
             accepted_source_bytes: 0,
             dropped_source_bytes: source_len,
+            dropped_records: 1,
             published: false,
+            truncated: false,
         }
     }
 
+    #[cfg(test)]
     pub(super) fn accepted_source_bytes(self) -> usize {
         self.accepted_source_bytes
     }
@@ -194,8 +262,16 @@ impl PublishOutcome {
         self.dropped_source_bytes
     }
 
+    pub(super) fn dropped_records(self) -> usize {
+        self.dropped_records
+    }
+
     pub(super) fn published(self) -> bool {
         self.published
+    }
+
+    pub(super) fn truncated(self) -> bool {
+        self.truncated
     }
 }
 
@@ -242,16 +318,16 @@ impl CpuLogRing {
         expected_owner: usize,
         cpu_id: usize,
         meta: LogRecordMeta,
-        text: &str,
+        args: fmt::Arguments<'_>,
     ) -> PublishOutcome {
         let Some(_producer) = ProducerReservation::try_enter(&self.producer_active) else {
-            return PublishOutcome::dropped(text.len());
+            return PublishOutcome::dropped(0);
         };
         let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed) & SEQUENCE_MASK;
         let slot = &self.slots[sequence as usize % self.slots.len()];
         let observed = slot.state.load(Ordering::Acquire);
         match unpack_state(observed) {
-            SlotState::Reading | SlotState::Writing => return PublishOutcome::dropped(text.len()),
+            SlotState::Reading | SlotState::Writing => return PublishOutcome::dropped(0),
             SlotState::Free | SlotState::Ready => {}
         }
 
@@ -261,32 +337,45 @@ impl CpuLogRing {
             .compare_exchange(observed, writing, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return PublishOutcome::dropped(text.len());
+            return PublishOutcome::dropped(0);
         }
 
-        let reclaimed_bytes = if unpack_state(observed) == SlotState::Ready {
+        let reclaimed = unpack_state(observed) == SlotState::Ready;
+        let reclaimed_bytes = if reclaimed {
             // SAFETY: the READY-to-WRITING CAS won exclusive ownership over
             // both the consumer and any lifecycle discard transition.
             unsafe { (&*slot.record.get()).source_len() }
         } else {
             0
         };
-        let record = LogRecord::encode(cpu_id, sequence, meta, text);
+        let Ok(record) = LogRecord::format(cpu_id, sequence, meta, args) else {
+            slot.state
+                .store(pack_state(sequence, SlotState::Free), Ordering::Release);
+            let mut outcome = PublishOutcome::dropped(reclaimed_bytes);
+            outcome.dropped_records += usize::from(reclaimed);
+            return outcome;
+        };
         let accepted = record.accepted_source_len();
+        let source_len = record.source_len();
         // SAFETY: WRITING ownership is exclusive until READY is published.
         unsafe { slot.record.get().write(record) };
 
         if owner.load(Ordering::Acquire) != expected_owner {
             slot.state
                 .store(pack_state(sequence, SlotState::Free), Ordering::Release);
-            return PublishOutcome::dropped(text.len() + reclaimed_bytes);
+            let mut outcome = PublishOutcome::dropped(source_len + reclaimed_bytes);
+            outcome.dropped_records += usize::from(reclaimed);
+            return outcome;
         }
         slot.state
             .store(pack_state(sequence, SlotState::Ready), Ordering::Release);
         PublishOutcome {
+            #[cfg(test)]
             accepted_source_bytes: accepted,
-            dropped_source_bytes: text.len() - accepted + reclaimed_bytes,
+            dropped_source_bytes: source_len - accepted + reclaimed_bytes,
+            dropped_records: usize::from(reclaimed),
             published: true,
+            truncated: record.is_truncated(),
         }
     }
 
@@ -418,16 +507,16 @@ impl LogMailbox {
         &self,
         cpu_id: usize,
         meta: LogRecordMeta,
-        text: &str,
+        args: fmt::Arguments<'_>,
     ) -> PublishOutcome {
         let owner = self.owner.load(Ordering::Acquire);
         if owner == NO_OWNER {
-            return PublishOutcome::dropped(text.len());
+            return PublishOutcome::dropped(0);
         }
         let Some(ring) = self.rings.get(cpu_id) else {
-            return PublishOutcome::dropped(text.len());
+            return PublishOutcome::dropped(0);
         };
-        ring.try_publish(&self.owner, owner, cpu_id, meta, text)
+        ring.try_publish(&self.owner, owner, cpu_id, meta, args)
     }
 
     pub(super) fn has_pending_for(&self, runtime_index: usize) -> bool {
@@ -553,14 +642,23 @@ mod tests {
         LogRecordMeta::print(123, Some(456))
     }
 
+    fn publish(
+        mailbox: &LogMailbox,
+        cpu_id: usize,
+        meta: LogRecordMeta,
+        text: &str,
+    ) -> PublishOutcome {
+        mailbox.try_publish(cpu_id, meta, format_args!("{text}"))
+    }
+
     #[test]
     fn oldest_ready_slot_is_reclaimed_without_touching_tty_storage() {
         let mailbox = Arc::new(LogMailbox::with_slot_count(1, 2));
         assert!(mailbox.claim(OWNER));
-        assert!(mailbox.try_publish(0, meta(), "first").published());
-        assert!(mailbox.try_publish(0, meta(), "second").published());
+        assert!(publish(&mailbox, 0, meta(), "first").published());
+        assert!(publish(&mailbox, 0, meta(), "second").published());
 
-        let outcome = mailbox.try_publish(0, meta(), "third");
+        let outcome = publish(&mailbox, 0, meta(), "third");
         assert!(outcome.published());
         assert_eq!(outcome.dropped_source_bytes(), "first".len());
 
@@ -584,9 +682,10 @@ mod tests {
                 .state
                 .store(pack_state(0, busy), Ordering::Release);
 
-            let outcome = mailbox.try_publish(0, meta(), "busy");
+            let outcome = publish(&mailbox, 0, meta(), "busy");
             assert!(!outcome.published());
-            assert_eq!(outcome.dropped_source_bytes(), 4);
+            assert_eq!(outcome.dropped_source_bytes(), 0);
+            assert_eq!(outcome.dropped_records(), 1);
         }
     }
 
@@ -597,8 +696,8 @@ mod tests {
         mailbox.rings[0]
             .next_sequence
             .store(SEQUENCE_MASK, Ordering::Relaxed);
-        mailbox.try_publish(0, meta(), "last");
-        mailbox.try_publish(0, meta(), "wrapped");
+        publish(&mailbox, 0, meta(), "last");
+        publish(&mailbox, 0, meta(), "wrapped");
 
         let mut reader = mailbox.reader();
         let first = reader.take(OWNER).unwrap().record;
@@ -613,7 +712,7 @@ mod tests {
     fn sequence_gap_reports_a_failed_reservation_exactly() {
         let mailbox = Arc::new(LogMailbox::with_slot_count(1, 2));
         assert!(mailbox.claim(OWNER));
-        mailbox.try_publish(0, meta(), "zero");
+        publish(&mailbox, 0, meta(), "zero");
         let mut reader = mailbox.reader();
         let first = reader.take(OWNER).unwrap();
         assert_eq!(first.sequence_gap, 0);
@@ -621,11 +720,11 @@ mod tests {
         mailbox.rings[0].slots[1]
             .state
             .store(pack_state(1, SlotState::Reading), Ordering::Release);
-        assert!(!mailbox.try_publish(0, meta(), "lost").published());
+        assert!(!publish(&mailbox, 0, meta(), "lost").published());
         mailbox.rings[0].slots[1]
             .state
             .store(pack_state(1, SlotState::Free), Ordering::Release);
-        mailbox.try_publish(0, meta(), "two");
+        publish(&mailbox, 0, meta(), "two");
 
         let second = reader.take(OWNER).unwrap();
         assert_eq!(second.record.sequence(), 2);
@@ -636,10 +735,10 @@ mod tests {
     fn reader_round_robins_cpus_while_preserving_local_fifo() {
         let mailbox = Arc::new(LogMailbox::with_slot_count(2, 4));
         assert!(mailbox.claim(OWNER));
-        mailbox.try_publish(0, meta(), "0a");
-        mailbox.try_publish(0, meta(), "0b");
-        mailbox.try_publish(1, meta(), "1a");
-        mailbox.try_publish(1, meta(), "1b");
+        publish(&mailbox, 0, meta(), "0a");
+        publish(&mailbox, 0, meta(), "0b");
+        publish(&mailbox, 1, meta(), "1a");
+        publish(&mailbox, 1, meta(), "1b");
 
         let mut reader = mailbox.reader();
         reader.reset_round_robin(0);
@@ -671,7 +770,7 @@ mod tests {
                 start.wait();
                 for sequence in 0..RECORDS {
                     let text = alloc::format!("record-{sequence:02}-checksum-{sequence:02}");
-                    assert!(mailbox.try_publish(0, meta(), &text).published());
+                    assert!(publish(&mailbox, 0, meta(), &text).published());
                 }
             })
         };
@@ -703,8 +802,9 @@ mod tests {
             .producer_active
             .store(true, Ordering::Release);
 
-        let outcome = mailbox.try_publish(0, meta(), "recursive");
-        assert_eq!(outcome, PublishOutcome::dropped("recursive".len()));
+        let outcome = publish(&mailbox, 0, meta(), "recursive");
+        assert_eq!(outcome, PublishOutcome::dropped(0));
+        assert_eq!(outcome.dropped_records(), 1);
         assert!(!mailbox.has_pending_for(OWNER));
     }
 
@@ -714,7 +814,7 @@ mod tests {
         assert!(mailbox.claim(OWNER));
         let text = "界".repeat(LOG_RECORD_BYTES);
 
-        let outcome = mailbox.try_publish(0, meta(), &text);
+        let outcome = publish(&mailbox, 0, meta(), &text);
         assert!(outcome.published());
         assert!(outcome.accepted_source_bytes() < text.len());
         assert_eq!(
@@ -736,14 +836,28 @@ mod tests {
     fn release_stops_publication_and_discards_ready_records() {
         let mailbox = Arc::new(LogMailbox::with_slot_count(1, 2));
         assert!(mailbox.claim(OWNER));
-        mailbox.try_publish(0, meta(), "stale");
+        publish(&mailbox, 0, meta(), "stale");
 
         mailbox.release(OWNER);
 
         assert!(!mailbox.has_pending_for(OWNER));
         assert_eq!(
-            mailbox.try_publish(0, meta(), "closed"),
-            PublishOutcome::dropped("closed".len())
+            publish(&mailbox, 0, meta(), "closed"),
+            PublishOutcome::dropped(0)
         );
+    }
+
+    #[test]
+    fn structured_record_formats_runtime_metadata_once() {
+        let mailbox = Arc::new(LogMailbox::with_slot_count(1, 1));
+        assert!(mailbox.claim(OWNER));
+        let meta = LogRecordMeta::log(12_345_678_901, Some(42));
+
+        assert!(publish(&mailbox, 0, meta, "module:7] message\n").published());
+
+        let mut reader = mailbox.reader();
+        let record = reader.take(OWNER).unwrap().record;
+        assert_eq!(record.bytes(), b"[ 12.345678 0:42 module:7] message\r\n");
+        assert_eq!(record.kind(), LogRecordKind::Log);
     }
 }

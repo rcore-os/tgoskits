@@ -67,6 +67,7 @@ pub(super) struct SerialStatsAtomic {
     rx_dropped: AtomicU64,
     tx_bytes: AtomicU64,
     log_dropped: AtomicU64,
+    log_dropped_records: AtomicU64,
     log_sequence_gaps: AtomicU64,
     log_records: AtomicU64,
     structured_log_records: AtomicU64,
@@ -87,6 +88,7 @@ impl SerialStatsAtomic {
             rx_dropped: AtomicU64::new(0),
             tx_bytes: AtomicU64::new(0),
             log_dropped: AtomicU64::new(0),
+            log_dropped_records: AtomicU64::new(0),
             log_sequence_gaps: AtomicU64::new(0),
             log_records: AtomicU64::new(0),
             structured_log_records: AtomicU64::new(0),
@@ -129,6 +131,11 @@ impl SerialStatsAtomic {
         self.log_dropped.fetch_add(count as u64, Ordering::Relaxed);
     }
 
+    pub(super) fn add_log_dropped_records(&self, count: usize) {
+        self.log_dropped_records
+            .fetch_add(count as u64, Ordering::Relaxed);
+    }
+
     pub(super) fn add_log_sequence_gaps(&self, count: u64) {
         self.log_sequence_gaps.fetch_add(count, Ordering::Relaxed);
     }
@@ -163,6 +170,7 @@ impl SerialStatsAtomic {
             rx_dropped: self.rx_dropped.load(Ordering::Relaxed),
             tx_bytes: self.tx_bytes.load(Ordering::Relaxed),
             log_dropped: self.log_dropped.load(Ordering::Relaxed),
+            log_dropped_records: self.log_dropped_records.load(Ordering::Relaxed),
             log_sequence_gaps: self.log_sequence_gaps.load(Ordering::Relaxed),
             log_records: self.log_records.load(Ordering::Relaxed),
             structured_log_records: self.structured_log_records.load(Ordering::Relaxed),
@@ -184,6 +192,7 @@ pub struct SerialStats {
     pub rx_dropped: u64,
     pub tx_bytes: u64,
     pub log_dropped: u64,
+    pub log_dropped_records: u64,
     pub log_sequence_gaps: u64,
     pub log_records: u64,
     pub structured_log_records: u64,
