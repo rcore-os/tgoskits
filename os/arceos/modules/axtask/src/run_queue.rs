@@ -3,7 +3,7 @@ use alloc::{collections::VecDeque, sync::Arc};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{mem::MaybeUninit, ops::Deref, ptr::NonNull};
 
-use ax_hal::percpu::{PreviousThreadBinding, this_cpu_id};
+use ax_hal::percpu::{PreviousContextBinding, this_cpu_id};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_sched::BaseScheduler;
@@ -24,7 +24,7 @@ use crate::{
 
 struct PreviousTask {
     task: NonNull<crate::AxTask>,
-    binding: PreviousThreadBinding,
+    binding: PreviousContextBinding,
 }
 
 macro_rules! percpu_static {
@@ -1213,15 +1213,15 @@ impl AxRunQueue {
 
             // The enclosing run-queue guard has already disabled migration and
             // local IRQs for the complete switch lifetime.
-            let prev_header_pointer = prev_task.current_header().as_non_null();
-            let next_header_pointer = next_task.current_header().as_non_null();
+            let prev_header_pointer = prev_task.context_header().as_non_null();
+            let next_header_pointer = next_task.context_header().as_non_null();
             ax_hal::percpu::with_cpu_pin(|pin| {
                 // SAFETY: both Arc allocations remain alive across the raw
                 // switch; the header fields are permanently pinned within them.
                 let prev_header = core::pin::Pin::new_unchecked(prev_header_pointer.as_ref());
                 let next_header = core::pin::Pin::new_unchecked(next_header_pointer.as_ref());
                 let (prepared, previous_binding) =
-                    ax_hal::percpu::prepare_thread_switch(pin, prev_header, next_header)
+                    ax_hal::percpu::prepare_context_switch(pin, prev_header, next_header)
                         .expect("scheduler thread switch must validate before publication");
 
                 // FP, address-space, Arc, and PREV_TASK work all remain before
@@ -1362,7 +1362,7 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
     let prev = unsafe { previous.task.as_ref() };
     // SAFETY: current publication and architecture registers already identify
     // the incoming task, and this is the sole owner of the recorded epoch.
-    unsafe { previous.binding.finish(prev.current_header()) }
+    unsafe { previous.binding.finish(prev.context_header()) }
         .expect("incoming switch tail must withdraw prev_task CPU binding");
     // Publish that the context is fully saved. The SeqCst store pairs with the
     // waker's `on_cpu()`/`take_wake()` handshake in `put_task_with_state`.

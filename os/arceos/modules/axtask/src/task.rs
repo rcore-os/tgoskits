@@ -3,14 +3,13 @@ use alloc::{boxed::Box, string::String, sync::Arc};
 use core::alloc::Layout;
 #[cfg(feature = "smp")]
 use core::sync::atomic::AtomicPtr;
-#[cfg(feature = "preempt")]
-use core::sync::atomic::AtomicUsize;
 use core::{
     cell::{Cell, UnsafeCell},
     fmt,
-    mem::ManuallyDrop,
+    mem::{ManuallyDrop, offset_of},
     ops::Deref,
     pin::Pin,
+    ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering},
     task::{Context, Poll},
 };
@@ -19,7 +18,7 @@ use core::{
 use ax_hal::tls::TlsArea;
 use ax_hal::{
     context::{KernelTlsBase, TaskContext},
-    percpu::{CurrentContext, CurrentThreadHeader},
+    percpu::ExecutionContextHeader,
 };
 use ax_lazyinit::LazyInit;
 #[cfg(feature = "stack-guard-page")]
@@ -62,6 +61,41 @@ pub enum TaskState {
     /// Task is exited and waiting for being dropped.
     Exited  = 4,
 }
+
+/// Task-owned wrapper around the scheduler-neutral architecture header.
+///
+/// The header is the first field so the architecture `current` identity can
+/// be converted directly to this wrapper without a second publication slot.
+#[repr(C)]
+struct TaskExecutionContext {
+    header: ExecutionContextHeader,
+    owner: NonNull<AxTask>,
+}
+
+impl TaskExecutionContext {
+    fn new(owner: NonNull<AxTask>, bootstrap: bool) -> Self {
+        Self {
+            header: if bootstrap {
+                ExecutionContextHeader::new_bootstrap()
+            } else {
+                ExecutionContextHeader::new()
+            },
+            owner,
+        }
+    }
+
+    /// Reconstructs the task wrapper whose offset-zero header is current.
+    ///
+    /// # Safety
+    ///
+    /// `header` must point to the header of a live `TaskExecutionContext`, and
+    /// the scheduler must retain the raw current-task reference while used.
+    unsafe fn from_header(header: NonNull<ExecutionContextHeader>) -> &'static Self {
+        unsafe { &*header.as_ptr().cast::<Self>() }
+    }
+}
+
+const _: () = assert!(offset_of!(TaskExecutionContext, header) == 0);
 
 /// User-defined task extended data.
 #[cfg(feature = "task-ext")]
@@ -126,8 +160,6 @@ pub struct TaskInner {
     need_resched: AtomicBool,
     #[cfg(feature = "preempt")]
     force_resched: AtomicBool,
-    #[cfg(feature = "preempt")]
-    preempt_disable_count: AtomicUsize,
 
     interrupted: InterruptState,
     interrupt_waker: AtomicWaker,
@@ -138,7 +170,7 @@ pub struct TaskInner {
     kstack: TaskStack,
     ctx: UnsafeCell<TaskContext>,
     /// Pinned identity and CPU-binding state published by the switch tail.
-    current_header: LazyInit<CurrentThreadHeader>,
+    execution_context: LazyInit<TaskExecutionContext>,
     #[cfg(feature = "lockdep")]
     held_locks: UnsafeCell<HeldLockStack>,
 
@@ -403,15 +435,13 @@ impl TaskInner {
             need_resched: AtomicBool::new(false),
             #[cfg(feature = "preempt")]
             force_resched: AtomicBool::new(false),
-            #[cfg(feature = "preempt")]
-            preempt_disable_count: AtomicUsize::new(0),
             interrupted: InterruptState::new(),
             interrupt_waker: AtomicWaker::new(),
             exit_code: AtomicI32::new(0),
             wait_for_exit: WaitQueue::new(),
             kstack,
             ctx: UnsafeCell::new(TaskContext::new()),
-            current_header: LazyInit::new(),
+            execution_context: LazyInit::new(),
             #[cfg(feature = "lockdep")]
             held_locks: UnsafeCell::new(HeldLockStack::new()),
             #[cfg(feature = "task-ext")]
@@ -442,28 +472,27 @@ impl TaskInner {
 
     pub(crate) fn into_arc(self) -> AxTaskRef {
         let task = Arc::new(AxTask::new(self));
-        let current_context = CurrentContext::from_raw(Arc::as_ptr(&task) as usize)
-            .expect("Arc task pointer must be non-null");
-        let header = task
-            .current_header
-            .init_once(CurrentThreadHeader::new(current_context));
-        // SAFETY: `header` is stored inside the Arc allocation that owns the
-        // task. That allocation is stable until the last task reference drops.
-        let header = unsafe { Pin::new_unchecked(header) };
+        let owner = NonNull::from(Arc::as_ref(&task));
+        let execution_context = task
+            .execution_context
+            .init_once(TaskExecutionContext::new(owner, task.is_init()));
+        // SAFETY: the header is stored in the Arc-owned task and never moves
+        // after this task becomes visible to a scheduler.
+        let header = unsafe { Pin::new_unchecked(&execution_context.header) };
         // SAFETY: the Arc is not visible to any scheduler yet, so this is the
         // only access to its architecture context.
-        unsafe { (*task.ctx_mut_ptr()).set_current_header(header.as_non_null()) };
+        unsafe { (*task.ctx_mut_ptr()).set_context_header(header.as_non_null()) };
         task
     }
 
-    pub(crate) fn current_header(&self) -> Pin<&CurrentThreadHeader> {
-        let header = self
-            .current_header
+    pub(crate) fn context_header(&self) -> Pin<&ExecutionContextHeader> {
+        let execution_context = self
+            .execution_context
             .get()
-            .expect("task header must be initialized after Arc allocation");
+            .expect("task execution context must be initialized after Arc allocation");
         // SAFETY: `into_arc` initializes this field only after the containing
         // scheduler task reaches its permanent Arc allocation.
-        unsafe { Pin::new_unchecked(header) }
+        unsafe { Pin::new_unchecked(&execution_context.header) }
     }
 
     /// Returns the current state of the task.
@@ -567,6 +596,12 @@ impl TaskInner {
     }
 
     #[inline]
+    #[cfg(feature = "preempt")]
+    pub(crate) fn preemption_pending(&self) -> bool {
+        self.force_resched_pending() || self.need_resched.load(Ordering::Acquire)
+    }
+
+    #[inline]
     #[cfg(all(
         test,
         feature = "preempt",
@@ -599,41 +634,25 @@ impl TaskInner {
     #[inline]
     #[cfg(feature = "preempt")]
     pub(crate) fn preempt_count(&self) -> usize {
-        self.preempt_disable_count.load(Ordering::Acquire)
+        #[cfg(feature = "host-test")]
+        return 0;
+        #[cfg(not(feature = "host-test"))]
+        crate::runtime_preempt::depth()
     }
 
     #[inline]
     #[cfg(feature = "preempt")]
     pub(crate) fn can_preempt(&self, current_disable_count: usize) -> bool {
-        self.preempt_disable_count.load(Ordering::Acquire) == current_disable_count
-    }
-
-    #[inline]
-    #[cfg(feature = "preempt")]
-    pub(crate) fn disable_preempt(&self) {
-        self.preempt_disable_count.fetch_add(1, Ordering::Release);
-    }
-
-    #[inline]
-    #[cfg(feature = "preempt")]
-    pub(crate) fn enable_preempt(&self, resched: bool) {
-        if self.preempt_disable_count.fetch_sub(1, Ordering::Release) == 1 && resched {
-            // Keep local IRQs masked until the preemption check has completely
-            // unwound. A device IRQ may wake a pinned maintenance task and
-            // immediately become pending again when that task rearms the
-            // source. If IRQs are restored by the scheduler's inner guard
-            // before this frame returns, every pending IRQ can recursively
-            // enter another preemption check on the interrupted task's stack.
-            // The outer IRQ guard turns that chain into successive IRQ exits
-            // instead of unbounded scheduler-stack growth.
-            let _irq_guard = crate::sync::IrqSaveGuard::new();
-            // If current task is pending to be preempted, do rescheduling.
-            Self::current_check_preempt_pending();
+        #[cfg(feature = "host-test")]
+        return crate::sync::host_preempt_depth() == current_disable_count;
+        #[cfg(not(feature = "host-test"))]
+        {
+            crate::runtime_preempt::depth() == current_disable_count
         }
     }
 
     #[cfg(feature = "preempt")]
-    fn current_check_preempt_pending() {
+    pub(crate) fn current_check_preempt_pending() {
         use crate::sync::PreemptIrqSaveState;
         let curr = crate::current();
         if (curr.force_resched_pending() || curr.need_resched.load(Ordering::Acquire))
@@ -1047,13 +1066,16 @@ impl CurrentTask {
         // task until `set_current` transfers ownership to the next task. This
         // bootstrap read is also used by the preemption guard implementation,
         // so it cannot require that same guard to have been acquired already.
-        let header = unsafe { ax_hal::percpu::current_thread_raw().as_ref()? };
-        let ptr = header.current_context()?.as_usize() as *const super::AxTask;
-        if !ptr.is_null() {
-            Some(Self(unsafe { ManuallyDrop::new(AxTaskRef::from_raw(ptr)) }))
-        } else {
-            None
+        let header = NonNull::new(unsafe { ax_hal::percpu::current_context_raw() }.cast_mut())?;
+        if ax_hal::percpu::is_permanent_boot_context(header) {
+            return None;
         }
+        // SAFETY: scheduler publication accepts only the offset-zero header of
+        // a live task wrapper and retains a raw strong reference while current.
+        let context = unsafe { TaskExecutionContext::from_header(header) };
+        Some(Self(unsafe {
+            ManuallyDrop::new(AxTaskRef::from_raw(context.owner.as_ptr()))
+        }))
     }
 
     pub(crate) fn get() -> Self {
@@ -1075,7 +1097,7 @@ impl CurrentTask {
         assert!(init_task.is_init());
         // SAFETY: scheduler initialization runs on an offline CPU before any
         // task switch or migration can occur.
-        let header = init_task.current_header();
+        let header = init_task.context_header();
         unsafe {
             ax_hal::percpu::with_cpu_pin(|pin| {
                 #[cfg(feature = "tls")]
@@ -1083,11 +1105,11 @@ impl CurrentTask {
                     pin,
                     KernelTlsBase::new(init_task.tls.tls_ptr() as usize),
                 );
-                ax_hal::percpu::install_bootstrap_thread(pin, header)
+                ax_hal::percpu::install_bootstrap_context(pin, header)
             })
         }
         .expect("CPU-local area must precede task initialization")
-        .expect("bootstrap current-thread state must install");
+        .expect("bootstrap current-context state must install");
         let _ = Arc::into_raw(init_task);
     }
 
@@ -1095,6 +1117,19 @@ impl CurrentTask {
         let Self(arc) = prev;
         ManuallyDrop::into_inner(arc); // `call Arc::drop()` to decrease prev task reference count.
         let _ = Arc::into_raw(next);
+    }
+}
+
+#[cfg(all(test, feature = "host-test", feature = "multitask"))]
+mod current_task_tests {
+    #[test]
+    fn permanent_boot_context_is_not_a_published_task() {
+        std::thread::spawn(|| {
+            ax_hal::percpu::initialize_host_test_cpu();
+            assert!(super::CurrentTask::try_get().is_none());
+        })
+        .join()
+        .expect("boot-context probe panicked");
     }
 }
 
@@ -1111,6 +1146,10 @@ extern "C" fn task_entry() -> ! {
         // Clear the prev task on CPU before running the task entry function.
         crate::run_queue::clear_prev_task_on_cpu();
     }
+    // A CPU-owned preemption word carries the switch guard across the raw
+    // transfer. Unlike a resumed task, a new task has no suspended caller to
+    // finish that guard, so its first-entry tail completes the handoff here.
+    crate::runtime_preempt::finish_initial_context_switch();
     // Enable irq (if feature "irq" is enabled) before running the task entry function.
     #[cfg(all(feature = "irq", not(feature = "host-test")))]
     ax_hal::asm::enable_irqs();

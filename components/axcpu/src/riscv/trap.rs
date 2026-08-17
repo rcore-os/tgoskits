@@ -1,7 +1,7 @@
 use core::mem::size_of;
 
 #[cfg(not(feature = "tls"))]
-use cpu_local::CURRENT_THREAD_CPU_BASE_OFFSET;
+use cpu_local::EXECUTION_CONTEXT_CPU_BASE_OFFSET;
 #[cfg(feature = "fp-simd")]
 use riscv::register::sstatus;
 use riscv::{
@@ -102,7 +102,7 @@ core::arch::global_asm!(
     trapframe_size = const size_of::<RawTrapFrame>(),
     kernel_stack_pointer_index = const CPU_KERNEL_STACK_POINTER_OFFSET / size_of::<usize>(),
     user_trap_frame_index = const CPU_USER_TRAP_FRAME_OFFSET / size_of::<usize>(),
-    thread_cpu_base_index = const CURRENT_THREAD_CPU_BASE_OFFSET / size_of::<usize>(),
+    thread_cpu_base_index = const EXECUTION_CONTEXT_CPU_BASE_OFFSET / size_of::<usize>(),
     thread_scratch0_index = const THREAD_SCRATCH0_OFFSET / size_of::<usize>(),
     thread_scratch1_index = const THREAD_SCRATCH1_OFFSET / size_of::<usize>(),
 );

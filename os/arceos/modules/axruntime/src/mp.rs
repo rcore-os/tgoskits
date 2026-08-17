@@ -87,6 +87,7 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     {
         let (stack_ptr, stack_size) = secondary_boot_stack_bounds(cpu_id);
         ax_task::init_scheduler_secondary(stack_ptr, stack_size);
+        super::preempt::release_bootstrap();
     }
 
     #[cfg(feature = "ipi")]

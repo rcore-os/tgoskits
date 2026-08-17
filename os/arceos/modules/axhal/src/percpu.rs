@@ -8,9 +8,8 @@ pub use ax_plat::percpu::{
     init_primary, this_cpu_id, this_cpu_id_pinned, this_cpu_is_bsp, this_cpu_is_bsp_pinned,
 };
 pub use cpu_local::{
-    CpuAreaRef, CpuLocalError, CpuPin, CurrentContext, CurrentThreadHeader, ExclusiveCpu,
-    PreparedThreadSwitch, PreviousThreadBinding, ThreadSwitchError, with_cpu_pin,
-    with_exclusive_cpu,
+    ContextSwitchError, CpuAreaRef, CpuLocalError, CpuPin, ExclusiveCpu, ExecutionContextHeader,
+    PreparedContextSwitch, PreviousContextBinding, with_cpu_pin, with_exclusive_cpu,
 };
 
 /// Returns the direct current CPU-area base under an explicit pin.
@@ -25,33 +24,42 @@ pub const fn current_cpu_area(pin: &CpuPin<'_>) -> CpuAreaRef {
 }
 
 /// Returns the pinned current execution-context header.
-pub fn current_thread(pin: &CpuPin<'_>) -> Result<NonNull<CurrentThreadHeader>, CpuLocalError> {
-    cpu_local::current_thread(pin)
+pub fn current_context(pin: &CpuPin<'_>) -> Result<NonNull<ExecutionContextHeader>, CpuLocalError> {
+    cpu_local::current_context(pin)
 }
 
-/// Reads current-thread identity before constructing a scheduler guard.
+/// Reads the current context before constructing a migration guard.
 ///
 /// # Safety
 ///
-/// The caller must keep the scheduler-owned current task alive and must not
+/// The caller must keep the owning execution context alive and must not
 /// dereference the result after a context switch.
-pub unsafe fn current_thread_raw() -> *const CurrentThreadHeader {
-    unsafe { cpu_local::scheduler_current_thread() }
+pub unsafe fn current_context_raw() -> *const ExecutionContextHeader {
+    unsafe { cpu_local::current_context_unpinned() }
         .map_or(core::ptr::null(), |pointer| pointer.as_ptr().cast_const())
 }
 
-/// Prepares a complete current-thread switch transaction.
+/// Reports whether a raw context is the permanent pre-runtime boot context.
+///
+/// Returns `false` for a null or invalid pointer. Callers must still satisfy
+/// the lifetime requirements of [`current_context_raw`].
+#[doc(hidden)]
+pub fn is_permanent_boot_context(context: NonNull<ExecutionContextHeader>) -> bool {
+    cpu_local::is_permanent_boot_context(context).unwrap_or(false)
+}
+
+/// Prepares a complete execution-context switch transaction.
 ///
 /// # Safety
 ///
 /// The caller must own the IRQ-disabled scheduler path and keep both task
 /// allocations pinned through the raw switch and incoming tail.
-pub unsafe fn prepare_thread_switch<'switch>(
+pub unsafe fn prepare_context_switch<'switch>(
     pin: &'switch CpuPin<'_>,
-    previous: Pin<&CurrentThreadHeader>,
-    next: Pin<&CurrentThreadHeader>,
-) -> Result<(PreparedThreadSwitch<'switch>, PreviousThreadBinding), ThreadSwitchError> {
-    unsafe { cpu_local::prepare_thread_switch(pin, previous, next) }
+    previous: Pin<&ExecutionContextHeader>,
+    next: Pin<&ExecutionContextHeader>,
+) -> Result<(PreparedContextSwitch<'switch>, PreviousContextBinding), ContextSwitchError> {
+    unsafe { cpu_local::prepare_context_switch(pin, previous, next) }
 }
 
 /// Installs the scheduler bootstrap task on an offline CPU.
@@ -59,11 +67,11 @@ pub unsafe fn prepare_thread_switch<'switch>(
 /// # Safety
 ///
 /// The CPU must be offline and trap-free, and `header` must remain pinned.
-pub unsafe fn install_bootstrap_thread(
+pub unsafe fn install_bootstrap_context(
     pin: &CpuPin<'_>,
-    header: Pin<&CurrentThreadHeader>,
-) -> Result<(), ThreadSwitchError> {
-    unsafe { cpu_local::install_bootstrap_thread(pin, header) }
+    header: Pin<&ExecutionContextHeader>,
+) -> Result<(), ContextSwitchError> {
+    unsafe { cpu_local::install_bootstrap_context(pin, header) }
 }
 
 /// Reads the current task-owned kernel TLS base.

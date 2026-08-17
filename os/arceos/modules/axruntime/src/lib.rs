@@ -53,6 +53,8 @@ mod mp;
 #[cfg(feature = "paging")]
 mod kernel_mapping;
 mod klib;
+#[cfg(feature = "multitask")]
+mod preempt;
 
 mod devices;
 mod error;
@@ -286,7 +288,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 
     #[cfg(feature = "multitask")]
-    ax_task::init_scheduler();
+    {
+        ax_task::init_scheduler();
+        preempt::release_bootstrap();
+    }
 
     #[cfg(feature = "ipi")]
     {

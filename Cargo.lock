@@ -1176,6 +1176,7 @@ dependencies = [
  "axpoll",
  "cfg-if",
  "chrono",
+ "cpu-local",
  "dma-api",
  "indoc",
  "irq-framework",
