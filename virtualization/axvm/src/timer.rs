@@ -24,6 +24,17 @@ static TOKEN: AtomicUsize = AtomicUsize::new(0);
 const TIMER_WORKER_STACK_SIZE: usize = 0x20_000;
 const NO_PUBLISHED_DEADLINE: u64 = 0;
 
+/// Publishes a VM timer's interrupt state before making its vCPU runnable.
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) fn publish_before_wake<E>(
+    publish: impl FnOnce() -> Result<(), E>,
+    wake: impl FnOnce(),
+) -> Result<(), E> {
+    publish()?;
+    wake();
+    Ok(())
+}
+
 /// Lock-free publication of one CPU's earliest AxVM timer deadline.
 ///
 /// The host timer IRQ reads this value while selecting the next shared
@@ -625,5 +636,19 @@ mod tests {
 
         assert_eq!(lock_test_mutex(&TEST_REMOTE_REARMS).as_slice(), &[2]);
         assert_eq!(lock_test_mutex(&TEST_REARMS).as_slice(), &[(2, None)]);
+    }
+
+    #[test]
+    fn timer_deadline_is_published_before_vcpu_wake() {
+        let events = core::cell::RefCell::new(Vec::new());
+        publish_before_wake(
+            || {
+                events.borrow_mut().push("publish");
+                Ok::<_, ()>(())
+            },
+            || events.borrow_mut().push("wake"),
+        )
+        .unwrap();
+        assert_eq!(*events.borrow(), ["publish", "wake"]);
     }
 }

@@ -34,6 +34,18 @@ pub fn random_write_mixes_entropy() -> bool {
     super::pseudofs::dev::random_write_mixes_entropy_for_test()
 }
 
+pub fn boot_id_formats_firmware_entropy() -> bool {
+    super::pseudofs::proc::boot_id_formats_firmware_entropy_for_test()
+}
+
+pub fn boot_id_is_omitted_without_trusted_entropy() -> bool {
+    super::pseudofs::proc::boot_id_is_omitted_without_trusted_entropy_for_test()
+}
+
+pub fn kmsg_reports_no_readiness_without_read_side() -> bool {
+    super::pseudofs::dev::kmsg_reports_no_readiness_without_read_side_for_test()
+}
+
 pub fn pipe_peer_close_with_multiple_readers_is_visible() -> bool {
     super::file::peer_close_with_multiple_readers_is_visible_for_test()
 }
@@ -82,8 +94,16 @@ pub fn epoll_edge_callback_does_not_reenter_target() -> bool {
     super::file::edge_callback_does_not_reenter_target_for_test()
 }
 
+pub fn epoll_level_callback_does_not_reenter_target() -> bool {
+    super::file::level_callback_does_not_reenter_target_for_test()
+}
+
 pub fn epoll_hup_does_not_synthesize_readable() -> bool {
     super::file::epoll_hup_does_not_synthesize_readable_for_test()
+}
+
+pub fn epoll_requeues_readiness_observed_during_rearm() -> bool {
+    super::file::epoll_requeues_readiness_observed_during_rearm_for_test()
 }
 
 pub fn process_mem_stats_formats_linux_fields() -> bool {
