@@ -872,8 +872,8 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
         if show_config {
             println!();
             println!("Configuration:");
-            // Copy configuration values while holding the machine lock, then
-            // print after releasing it to avoid nested IRQ-safe locks.
+            // Snapshot configuration values and release the config lock before
+            // console output, keeping the lock scope independent of formatting.
             let (bsp_entry, ap_entry, address_space_policy, dtb_load_gpa) = vm.with_config(|cfg| {
                 (
                     cfg.bsp_entry().as_usize(),
@@ -1046,8 +1046,8 @@ fn show_vm_full_details(vm_id: usize) {
         // Configuration
         println!();
         println!("Configuration:");
-        // Snapshot values that are needed for output, because `with_config`
-        // holds the IRQ-safe machine lock and console output takes another lock.
+        // Snapshot the values needed for output, then release the config lock
+        // before taking console locks while formatting the details.
         let (
             bsp_entry,
             ap_entry,
