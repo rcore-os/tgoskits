@@ -15,9 +15,6 @@ pub trait CgroupProvider: Send + Sync {
     /// Snapshot the process's authoritative cgroup membership.
     fn membership(&self, pid: ProcessId) -> Option<Arc<CgroupNode>>;
 
-    /// Return all live task IDs in the process.
-    fn task_ids(&self, pid: ProcessId) -> Vec<ProcessId>;
-
     /// Replace the process's authoritative cgroup membership.
     fn set_membership(&self, pid: ProcessId, cgroup: Arc<CgroupNode>);
 }
@@ -38,7 +35,12 @@ pub enum CgroupTaskExit {
 
 struct MembershipState {
     pending_tasks: BTreeMap<ProcessId, ProcessId>,
-    tasks: BTreeMap<ProcessId, Arc<CgroupNode>>,
+    tasks: BTreeMap<ProcessId, TaskMembership>,
+}
+
+struct TaskMembership {
+    process_id: ProcessId,
+    cgroup: Arc<CgroupNode>,
 }
 
 static STATE: LazyInit<SpinLock<MembershipState>> = LazyInit::new();
@@ -72,7 +74,13 @@ pub(crate) fn attach_initial_process(root: Arc<CgroupNode>, pid: ProcessId) -> C
 
     charge_path_unchecked(&ancestry(&root), 1);
     root.add_member(pid);
-    state.tasks.insert(pid, root);
+    state.tasks.insert(
+        pid,
+        TaskMembership {
+            process_id: pid,
+            cgroup: root,
+        },
+    );
     Ok(())
 }
 
@@ -85,6 +93,7 @@ enum ForkState {
 pub struct CgroupForkGuard {
     cgroup: Arc<CgroupNode>,
     task_id: ProcessId,
+    task_process_id: ProcessId,
     child_kind: CgroupChildKind,
     charged_path: Vec<Arc<CgroupNode>>,
     state: ForkState,
@@ -111,7 +120,13 @@ impl CgroupForkGuard {
         if matches!(self.child_kind, CgroupChildKind::Process) {
             self.cgroup.add_member(self.task_id);
         }
-        state.tasks.insert(self.task_id, Arc::clone(&self.cgroup));
+        state.tasks.insert(
+            self.task_id,
+            TaskMembership {
+                process_id: self.task_process_id,
+                cgroup: Arc::clone(&self.cgroup),
+            },
+        );
         self.state = ForkState::Committed;
     }
 }
@@ -168,9 +183,14 @@ fn reserve_task(
     let charged_path = ancestry(&parent);
     charge_path(&charged_path)?;
     state.pending_tasks.insert(task_id, process_id);
+    let task_process_id = match child_kind {
+        CgroupChildKind::Process => task_id,
+        CgroupChildKind::Thread => process_id,
+    };
     Ok(CgroupForkGuard {
         cgroup: parent,
         task_id,
+        task_process_id,
         child_kind,
         charged_path,
         state: ForkState::Pending,
@@ -200,16 +220,19 @@ pub(crate) fn migrate_process(pid: ProcessId, target: Arc<CgroupNode>) -> Cgroup
         return Err(CgroupError::ResourceBusy);
     }
 
-    let task_ids = provider.task_ids(pid);
+    let task_ids: Vec<_> = state
+        .tasks
+        .iter()
+        .filter_map(|(task_id, membership)| (membership.process_id == pid).then_some(*task_id))
+        .collect();
     if task_ids.is_empty() {
         return Err(CgroupError::NoSuchProcess);
     }
     for task_id in &task_ids {
-        if state.pending_tasks.contains_key(task_id)
-            || !state
-                .tasks
-                .get(task_id)
-                .is_some_and(|cgroup| Arc::ptr_eq(cgroup, &old))
+        if !state
+            .tasks
+            .get(task_id)
+            .is_some_and(|membership| Arc::ptr_eq(&membership.cgroup, &old))
         {
             return Err(CgroupError::ResourceBusy);
         }
@@ -229,7 +252,11 @@ pub(crate) fn migrate_process(pid: ProcessId, target: Arc<CgroupNode>) -> Cgroup
     target.add_member(pid);
     provider.set_membership(pid, Arc::clone(&target));
     for task_id in task_ids {
-        state.tasks.insert(task_id, Arc::clone(&target));
+        state
+            .tasks
+            .get_mut(&task_id)
+            .expect("cgroup task ledger changed while locked")
+            .cgroup = Arc::clone(&target);
     }
     uncharge_path(old_unique, task_count);
     Ok(())
@@ -242,31 +269,50 @@ pub(crate) fn exit_task(
     exit_kind: CgroupTaskExit,
 ) -> CgroupResult<()> {
     let mut state = state()?.lock_irqsave();
-    let Some(cgroup) = state.tasks.remove(&task_tid) else {
+    let Some(membership) = state.tasks.get(&task_tid) else {
         // Teardown is intentionally idempotent: a repeated exit notification
         // must not decrement the pids ledger twice.
         return Ok(());
     };
+    if membership.process_id != process_pid {
+        return Err(CgroupError::NoSuchProcess);
+    }
+    let membership = state
+        .tasks
+        .remove(&task_tid)
+        .expect("validated cgroup task disappeared while locked");
 
     if matches!(exit_kind, CgroupTaskExit::LastProcessTask) {
-        cgroup.remove_member(process_pid);
+        membership.cgroup.remove_member(process_pid);
     }
-    uncharge_path(&ancestry(&cgroup), 1);
+    uncharge_path(&ancestry(&membership.cgroup), 1);
     Ok(())
 }
 
 /// Rename a live task identity after `execve` de-threading.
-pub(crate) fn rename_task(old_tid: ProcessId, new_tid: ProcessId) -> CgroupResult<()> {
+pub(crate) fn rename_task(
+    process_id: ProcessId,
+    old_tid: ProcessId,
+    new_tid: ProcessId,
+) -> CgroupResult<()> {
     let mut state = state()?.lock_irqsave();
-    let cgroup = state
+    let membership = state
         .tasks
-        .remove(&old_tid)
+        .get(&old_tid)
         .ok_or(CgroupError::NoSuchProcess)?;
-    if state.tasks.contains_key(&new_tid) {
-        state.tasks.insert(old_tid, cgroup);
+    if membership.process_id != process_id {
+        return Err(CgroupError::NoSuchProcess);
+    }
+    if old_tid != new_tid
+        && (state.pending_tasks.contains_key(&new_tid) || state.tasks.contains_key(&new_tid))
+    {
         return Err(CgroupError::ResourceBusy);
     }
-    state.tasks.insert(new_tid, cgroup);
+    let membership = state
+        .tasks
+        .remove(&old_tid)
+        .expect("validated cgroup task disappeared while locked");
+    state.tasks.insert(new_tid, membership);
     Ok(())
 }
 
@@ -329,17 +375,13 @@ fn unique_paths<'a>(
 
 #[cfg(test)]
 mod tests {
-    use alloc::{
-        collections::{BTreeMap, BTreeSet},
-        vec,
-    };
+    use alloc::collections::{BTreeMap, BTreeSet};
     use std::sync::{LazyLock, Mutex, MutexGuard, Once};
 
     use super::*;
 
     struct MockProvider {
         memberships: Mutex<BTreeMap<ProcessId, Arc<CgroupNode>>>,
-        task_groups: Mutex<BTreeMap<ProcessId, Vec<ProcessId>>>,
         zombies: Mutex<BTreeSet<ProcessId>>,
     }
 
@@ -352,15 +394,6 @@ mod tests {
             self.memberships.lock().unwrap().get(&pid).cloned()
         }
 
-        fn task_ids(&self, pid: ProcessId) -> Vec<ProcessId> {
-            self.task_groups
-                .lock()
-                .unwrap()
-                .get(&pid)
-                .cloned()
-                .unwrap_or_default()
-        }
-
         fn set_membership(&self, pid: ProcessId, cgroup: Arc<CgroupNode>) {
             self.memberships.lock().unwrap().insert(pid, cgroup);
         }
@@ -368,7 +401,6 @@ mod tests {
 
     static PROVIDER: MockProvider = MockProvider {
         memberships: Mutex::new(BTreeMap::new()),
-        task_groups: Mutex::new(BTreeMap::new()),
         zombies: Mutex::new(BTreeSet::new()),
     };
     static INIT: Once = Once::new();
@@ -385,7 +417,6 @@ mod tests {
             register_provider(&PROVIDER);
         });
         PROVIDER.memberships.lock().unwrap().clear();
-        PROVIDER.task_groups.lock().unwrap().clear();
         PROVIDER.zombies.lock().unwrap().clear();
         guard
     }
@@ -399,7 +430,6 @@ mod tests {
             .lock()
             .unwrap()
             .insert(pid, Arc::clone(root));
-        PROVIDER.task_groups.lock().unwrap().insert(pid, vec![pid]);
     }
 
     #[test]
@@ -526,13 +556,6 @@ mod tests {
         let mut thread =
             begin_task_at(Arc::clone(&source), pid, tid, CgroupChildKind::Thread).unwrap();
         thread.commit();
-        PROVIDER
-            .task_groups
-            .lock()
-            .unwrap()
-            .get_mut(&pid)
-            .unwrap()
-            .push(tid);
         target.write_pids_max("0").unwrap();
 
         assert_eq!(source.pids_current_text().unwrap(), "2\n");
@@ -581,6 +604,80 @@ mod tests {
     }
 
     #[test]
+    fn migration_tracks_multiple_pending_tasks_by_process_owner() {
+        let _guard = setup();
+        let root = crate::root();
+        let source = root.create_child("multiple-pending-source").unwrap();
+        let target = root.create_child("multiple-pending-target").unwrap();
+        let pid = process_id(1021);
+        let tid1 = process_id(1022);
+        let tid2 = process_id(1023);
+        root.write_subtree_control("+pids").unwrap();
+        commit_process(&source, pid);
+
+        let pending1 = begin_task(pid, tid1, CgroupChildKind::Thread).unwrap();
+        let pending2 = begin_task(pid, tid2, CgroupChildKind::Thread).unwrap();
+        assert_eq!(
+            migrate_process(pid, Arc::clone(&target)),
+            Err(CgroupError::ResourceBusy)
+        );
+
+        drop(pending1);
+        assert_eq!(
+            migrate_process(pid, Arc::clone(&target)),
+            Err(CgroupError::ResourceBusy)
+        );
+        drop(pending2);
+        migrate_process(pid, Arc::clone(&target)).unwrap();
+        assert_eq!(target.pids_current_text().unwrap(), "1\n");
+        exit_task(pid, pid, CgroupTaskExit::LastProcessTask).unwrap();
+    }
+
+    #[test]
+    fn unrelated_pending_task_does_not_block_process_migration() {
+        let _guard = setup();
+        let root = crate::root();
+        let source = root.create_child("unrelated-pending-source").unwrap();
+        let target = root.create_child("unrelated-pending-target").unwrap();
+        let first = process_id(1024);
+        let second = process_id(1025);
+        let pending_tid = process_id(1026);
+        root.write_subtree_control("+pids").unwrap();
+        commit_process(&source, first);
+        commit_process(&source, second);
+
+        let pending = begin_task(second, pending_tid, CgroupChildKind::Thread).unwrap();
+        migrate_process(first, Arc::clone(&target)).unwrap();
+        assert_eq!(target.pids_current_text().unwrap(), "1\n");
+
+        drop(pending);
+        exit_task(second, second, CgroupTaskExit::LastProcessTask).unwrap();
+        exit_task(first, first, CgroupTaskExit::LastProcessTask).unwrap();
+    }
+
+    #[test]
+    fn committed_task_migrates_without_provider_thread_publication() {
+        let _guard = setup();
+        let root = crate::root();
+        let source = root.create_child("ledger-only-source").unwrap();
+        let target = root.create_child("ledger-only-target").unwrap();
+        let pid = process_id(1027);
+        let tid = process_id(1028);
+        root.write_subtree_control("+pids").unwrap();
+        commit_process(&source, pid);
+
+        let mut thread =
+            begin_task_at(Arc::clone(&source), pid, tid, CgroupChildKind::Thread).unwrap();
+        thread.commit();
+        // The mock provider intentionally exposes only the process leader.
+        migrate_process(pid, Arc::clone(&target)).unwrap();
+        assert_eq!(target.pids_current_text().unwrap(), "2\n");
+
+        exit_task(pid, tid, CgroupTaskExit::Thread).unwrap();
+        exit_task(pid, pid, CgroupTaskExit::LastProcessTask).unwrap();
+    }
+
+    #[test]
     fn leaf_limit_event_is_visible_in_ancestor_events() {
         let _guard = setup();
         let root = crate::root();
@@ -619,7 +716,17 @@ mod tests {
         exit_task(pid, pid, CgroupTaskExit::Thread).unwrap();
         assert!(cgroup.has_member(pid));
         assert_eq!(cgroup.pids_current_text().unwrap(), "1\n");
-        rename_task(tid, pid).unwrap();
+        assert_eq!(
+            rename_task(process_id(1099), tid, pid),
+            Err(CgroupError::NoSuchProcess)
+        );
+        assert_eq!(cgroup.pids_current_text().unwrap(), "1\n");
+        rename_task(pid, tid, pid).unwrap();
+        assert_eq!(
+            exit_task(process_id(1099), pid, CgroupTaskExit::LastProcessTask),
+            Err(CgroupError::NoSuchProcess)
+        );
+        assert_eq!(cgroup.pids_current_text().unwrap(), "1\n");
         exit_task(pid, pid, CgroupTaskExit::LastProcessTask).unwrap();
 
         assert!(!cgroup.has_member(pid));
@@ -638,7 +745,7 @@ mod tests {
             begin_task_at(Arc::clone(&cgroup), pid, tid, CgroupChildKind::Thread).unwrap();
         thread.commit();
 
-        assert_eq!(rename_task(tid, pid), Err(CgroupError::ResourceBusy));
+        assert_eq!(rename_task(pid, tid, pid), Err(CgroupError::ResourceBusy));
         exit_task(pid, tid, CgroupTaskExit::Thread).unwrap();
         exit_task(pid, pid, CgroupTaskExit::LastProcessTask).unwrap();
     }
@@ -663,5 +770,26 @@ mod tests {
         task.commit();
         exit_task(pid, tid, CgroupTaskExit::Thread).unwrap();
         exit_task(pid, pid, CgroupTaskExit::LastProcessTask).unwrap();
+    }
+
+    #[test]
+    fn process_task_commits_under_the_child_process_owner() {
+        let _guard = setup();
+        let root = crate::root();
+        let cgroup = root.create_child("process-owner-target").unwrap();
+        let parent = process_id(1030);
+        let child = process_id(1031);
+
+        let mut process =
+            begin_task_at(Arc::clone(&cgroup), parent, child, CgroupChildKind::Process).unwrap();
+        process.commit();
+
+        assert_eq!(
+            exit_task(parent, child, CgroupTaskExit::LastProcessTask),
+            Err(CgroupError::NoSuchProcess)
+        );
+        assert!(cgroup.has_member(child));
+        exit_task(child, child, CgroupTaskExit::LastProcessTask).unwrap();
+        assert!(!cgroup.has_member(child));
     }
 }

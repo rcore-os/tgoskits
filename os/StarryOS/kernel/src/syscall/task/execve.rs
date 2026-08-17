@@ -451,7 +451,8 @@ fn do_execve(
     if my_tid != leader_tid {
         let old_task_identity = thr.pid_identity();
         let leader_identity = proc_data.identity();
-        crate::cgroup::rename_task(&old_task_identity, &leader_identity)?;
+        crate::cgroup::rename_task(&leader_identity, &old_task_identity, &leader_identity)
+            .expect("de-threaded task must own the process's sole cgroup charge");
         let leader_tid_lease = leader_identity
             .acquire_role::<Tid>()
             .expect("exited exec leader retained its TID role");

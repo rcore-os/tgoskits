@@ -36,21 +36,6 @@ impl ax_cgroup::CgroupProvider for KernelCgroupProvider {
             .map(|process| process.cgroup.read().clone())
     }
 
-    fn task_ids(&self, process: ProcessId) -> alloc::vec::Vec<ProcessId> {
-        process_identity(process)
-            .and_then(|identity| identity.live_data())
-            .map(|process| {
-                process
-                    .proc
-                    .threads()
-                    .into_iter()
-                    .filter_map(|tid| crate::task::ROOT_PID_NS.lookup(tid.pid_number()))
-                    .map(|identity| process_id(&identity))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     fn set_membership(&self, process: ProcessId, cgroup: Arc<CgroupNode>) {
         if let Some(process) = process_identity(process).and_then(|identity| identity.live_data()) {
             *process.cgroup.write() = cgroup;
@@ -92,10 +77,15 @@ pub fn exit_task(
 
 /// Rename one exact task generation after execve de-threading.
 pub fn rename_task(
+    process: &Arc<PidIdentity>,
     old_task: &Arc<PidIdentity>,
     new_task: &Arc<PidIdentity>,
 ) -> Result<(), CgroupError> {
-    ax_cgroup::rename_task(process_id(old_task), process_id(new_task))
+    ax_cgroup::rename_task(
+        process_id(process),
+        process_id(old_task),
+        process_id(new_task),
+    )
 }
 
 /// Initialize the cgroup hierarchy and kernel process provider.

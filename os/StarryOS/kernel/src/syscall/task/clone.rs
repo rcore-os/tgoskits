@@ -264,8 +264,8 @@ impl CloneArgs {
             0
         };
 
-        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid != 0 {
-            crate::mm::prepare_user_write(parent_tid, size_of::<u32>())?;
+        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0 {
+            crate::mm::prepare_user_write(parent_tid_ptr, size_of::<u32>())?;
         }
         if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
             crate::mm::prepare_user_write(pidfd, size_of::<i32>())?;
@@ -530,10 +530,10 @@ impl CloneArgs {
         if let Some(pidfd) = prepared_pidfd.take() {
             pidfd.install();
         }
-        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid != 0 {
+        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0 {
             // Linux performs this copyout after the child is visible and does
             // not roll the child back if a concurrent unmap makes it fail.
-            let _ = (parent_tid as *mut u32).vm_write(parent_visible_tid.get());
+            let _ = (parent_tid_ptr as *mut u32).vm_write(parent_visible_tid.get());
         }
 
         let parent_pid = curr.as_thread().proc_data.proc.pid_number();

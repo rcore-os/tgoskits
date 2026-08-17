@@ -137,8 +137,12 @@ pub fn exit_task(
 }
 
 /// Rename a task identity after Linux de-threading during execve.
-pub fn rename_task(old_tid: ProcessId, new_tid: ProcessId) -> CgroupResult<()> {
-    membership::rename_task(old_tid, new_tid)
+pub fn rename_task(
+    process_pid: ProcessId,
+    old_tid: ProcessId,
+    new_tid: ProcessId,
+) -> CgroupResult<()> {
+    membership::rename_task(process_pid, old_tid, new_tid)
 }
 
 /// Render `target` relative to an arbitrary cgroup namespace root.
