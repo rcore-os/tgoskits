@@ -932,7 +932,7 @@ fn read_seccomp_filter_header(args: *const ()) -> StarryResult<SockFprog> {
 }
 
 fn validate_seccomp_filter_len(prog: SockFprog) -> StarryResult<()> {
-    if prog.len == 0 || prog.filter.is_null() || usize::from(prog.len) > SECCOMP_BPF_MAX_INSNS {
+    if prog.len == 0 || usize::from(prog.len) > SECCOMP_BPF_MAX_INSNS {
         return Err(StarryError::InvalidInput);
     }
     Ok(())
