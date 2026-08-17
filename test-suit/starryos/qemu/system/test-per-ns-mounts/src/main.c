@@ -54,6 +54,14 @@ int main(void) {
             _exit(1);
         }
 
+        /* Tear the private mount down explicitly before process exit. This
+         * keeps namespace teardown from carrying a live tmpfs into the child
+         * reaper path exercised by later system-test processes. */
+        if (umount("/mnt") < 0) {
+            perror("umount /mnt");
+            _exit(1);
+        }
+
         _exit(0);
     }
 
