@@ -243,6 +243,74 @@ fn mount_table_namespace(result: &OpenResult) -> Option<Arc<MountNamespace>> {
     Some(fs_context.lock().mount_namespace().clone())
 }
 
+fn self_fd_number(path: &str) -> Option<c_int> {
+    ["/proc/self/fd/", "/dev/fd/"]
+        .into_iter()
+        .find_map(|prefix| path.strip_prefix(prefix))?
+        .parse()
+        .ok()
+}
+
+/// Reopens anonymous pipe endpoints reached through the current process's
+/// descriptor namespace.
+///
+/// Procfs represents pipe links as `pipe:[inode]`, which is descriptive rather
+/// than a pathname that the regular VFS resolver can follow. Linux handles
+/// these entries as procfs magic links and creates a new file description for
+/// the same pipe endpoint. Keep ordinary filesystem-backed descriptors on the
+/// normal resolver path so reopening them still applies pathname permissions
+/// and filesystem open semantics.
+fn try_reopen_self_pipe(path: &str, flags: u32) -> Option<StarryResult<isize>> {
+    let fd = self_fd_number(path)?;
+    let file = match get_file_like(fd) {
+        Ok(file) => file,
+        Err(_) => return Some(Err(StarryError::NotFound)),
+    };
+    let pipe = file.downcast_ref::<Pipe>()?;
+
+    let requested_access = flags & O_ACCMODE;
+    let expected_access = if pipe.is_read() { O_RDONLY } else { O_WRONLY };
+    if requested_access != expected_access {
+        return Some(Err(StarryError::PermissionDenied));
+    }
+
+    let pipe = Arc::new(pipe.reopen(flags & O_NONBLOCK != 0));
+    Some(add_file_like(pipe, flags & O_CLOEXEC != 0).map(|fd| fd as isize))
+}
+
+/// Reopens a filesystem-backed regular file through `/proc/self/fd/<n>`.
+///
+/// Proc fd entries are magic links to the referenced inode, not ordinary
+/// pathname symlinks. Reopening must therefore keep working after unlink or
+/// mount-tree changes make the file's former pathname unresolvable.
+fn try_reopen_self_regular_file(path: &str, flags: u32) -> Option<StarryResult<isize>> {
+    if flags & O_NOFOLLOW != 0 {
+        return None;
+    }
+
+    let fd = self_fd_number(path)?;
+    let file_like = match get_file_like(fd) {
+        Ok(file) => file,
+        Err(_) => return Some(Err(StarryError::NotFound)),
+    };
+    let file = file_like.downcast_ref::<File>()?;
+    let location = file.inner().location();
+    if location.node_type() != NodeType::RegularFile {
+        return None;
+    }
+
+    let thread = current();
+    let cred = thread.as_thread().cred();
+    let options = flags_to_options(flags as i32, 0, (cred.fsuid, cred.fsgid));
+    Some(
+        options
+            .open_loc(location.clone())
+            .map_err(StarryError::from)
+            .and_then(|result| add_to_fd(result, flags, None))
+            .map(|fd| fd as isize),
+    )
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct OpenHow {
@@ -433,6 +501,13 @@ pub fn sys_openat(
     // is accepted as an O_PATH handle (TMPFILE/access bits ignored), not EINVAL.
     if uflags & O_TMPFILE == O_TMPFILE && uflags & 0b11 == O_RDONLY && uflags & O_PATH == 0 {
         return Err(StarryError::InvalidInput);
+    }
+
+    if let Some(result) = try_reopen_self_pipe(&path, uflags) {
+        return result;
+    }
+    if let Some(result) = try_reopen_self_regular_file(&path, uflags) {
+        return result;
     }
 
     // Absolute path: man "If pathname is absolute, then dirfd is ignored."

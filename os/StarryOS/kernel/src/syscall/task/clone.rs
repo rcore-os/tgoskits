@@ -204,6 +204,14 @@ impl CloneArgs {
     }
 
     pub fn do_clone(self, uctx: &UserContext) -> StarryResult<isize> {
+        self.do_clone_in_cgroup(uctx, None)
+    }
+
+    pub(super) fn do_clone_in_cgroup(
+        self,
+        uctx: &UserContext,
+        requested_cgroup: Option<Arc<ax_cgroup::CgroupNode>>,
+    ) -> StarryResult<isize> {
         self.validate()?;
 
         let Self {
@@ -404,7 +412,9 @@ impl CloneArgs {
             );
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
-            *proc_data.cgroup.write() = inherited_cgroup.clone();
+            *proc_data.cgroup.write() = requested_cgroup
+                .clone()
+                .unwrap_or_else(|| inherited_cgroup.clone());
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
