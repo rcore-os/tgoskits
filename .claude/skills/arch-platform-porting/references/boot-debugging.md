@@ -127,8 +127,9 @@ load/store architectures use the current context header. A final pending exit re
 until the runtime has claimed its per-CPU scheduler baton. `cpu-local` must not contain the baton,
 task pending policy, a runtime owner cookie, or any `scheduler_*` API.
 On CPU-owned preemption architectures, verify that a newly entered context explicitly finishes
-the switch depth; resumed contexts finish it through their suspended guard, while context-owned
-architectures begin the new header at depth zero.
+the switch depth. A suspended guard resuming on another CPU must consume its old proof and adopt
+the equivalent switch depth left by the destination CPU's outgoing context. Context-owned
+architectures retain the token owner across migration and begin a new header at depth zero.
 
 For boot debugging, verify the typed per-CPU layout is finalized and frozen before CPU binding.
 Check both the architectural register and its defined mirror (RISC-V sscratch or LoongArch KS3)

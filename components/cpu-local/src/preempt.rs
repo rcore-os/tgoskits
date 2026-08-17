@@ -214,6 +214,18 @@ impl PreemptionToken {
         // owner to remain live through this token's single finish operation.
         unsafe { self.owner.as_ref() }
     }
+
+    #[cfg(any(all(target_arch = "x86_64", not(feature = "host-test")), test))]
+    fn handoff_after_context_switch(self, resumed_owner: &PreemptionState) -> Self {
+        if self.owner == NonNull::from(resumed_owner) {
+            self
+        } else {
+            // The old CPU's incoming context consumed the depth represented by
+            // this proof. Consume the proof itself and adopt the equivalent
+            // depth left by the outgoing context on the resumed CPU.
+            Self::new(resumed_owner)
+        }
+    }
 }
 
 impl PendingPreemption {
@@ -281,6 +293,43 @@ pub fn clear_preemption_pending(pin: &CpuPin<'_>) -> Result<(), CpuLocalError> {
 /// Finishes the exact owner captured by [`enter_preemption`].
 pub fn finish_preemption(token: PreemptionToken) -> PreemptionExit {
     token.state().finish()
+}
+
+/// Transfers a CPU-owned switch exclusion to the CPU where its context resumed.
+///
+/// Context-owned tokens keep their original owner across migration. A CPU-owned
+/// token is replaced only when a context switch resumes it on another CPU: the
+/// old CPU's incoming context has already consumed the old switch depth, while
+/// this CPU's outgoing context left the matching depth for the resumed guard.
+///
+/// # Errors
+///
+/// Returns an error when the pinned CPU has no valid selected preemption owner.
+///
+/// # Panics
+///
+/// Panics when a context-owned architecture observes a different owner after
+/// the context switch. Such architectures migrate the owner with the context.
+#[doc(hidden)]
+pub fn handoff_preemption_after_context_switch(
+    pin: &CpuPin<'_>,
+    token: PreemptionToken,
+) -> Result<PreemptionToken, CpuLocalError> {
+    let owner = selected_state(pin)?;
+    #[cfg(all(target_arch = "x86_64", not(feature = "host-test")))]
+    {
+        Ok(token.handoff_after_context_switch(owner))
+    }
+
+    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
+    {
+        assert_eq!(
+            token.owner,
+            NonNull::from(owner),
+            "context-owned preemption token changed owner across a context switch"
+        );
+        Ok(token)
+    }
 }
 
 /// Releases the single preemption depth inherited by a bootstrap context.
@@ -431,6 +480,28 @@ mod tests {
         assert_eq!(original_cpu.snapshot().depth(), 0);
         assert_eq!(migrated_context.snapshot().depth(), 1);
         assert_eq!(migrated_cpu.snapshot().depth(), 1);
+    }
+
+    #[test]
+    fn cpu_owned_switch_token_handoff_follows_the_resumed_cpu() {
+        let original_cpu = PreemptionState::new();
+        let resumed_cpu = PreemptionState::new();
+
+        let suspended_switch = enter_on(&original_cpu);
+        // Another incoming context consumes the switch depth left on the old
+        // CPU while this context is suspended.
+        assert!(original_cpu.release_initial_switch());
+        // The outgoing context on the destination CPU leaves the equivalent
+        // switch depth for the context that is about to resume there.
+        resumed_cpu.enter();
+
+        let resumed_switch = suspended_switch.handoff_after_context_switch(&resumed_cpu);
+        assert!(matches!(
+            finish_preemption(resumed_switch),
+            PreemptionExit::Enabled
+        ));
+        assert_eq!(original_cpu.snapshot().depth(), 0);
+        assert_eq!(resumed_cpu.snapshot().depth(), 0);
     }
 
     #[test]

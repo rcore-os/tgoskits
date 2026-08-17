@@ -75,6 +75,7 @@ fn preemption_handoff_is_linear_and_scheduler_neutral() {
         "pub struct PendingPreemption",
         "pub enum PreemptionExit",
         "pub fn enter_preemption() -> PreemptionToken",
+        "pub fn handoff_preemption_after_context_switch(",
         "pub fn finish_preemption(token: PreemptionToken) -> PreemptionExit",
         "pub fn release_initial_context_preemption(",
     ] {

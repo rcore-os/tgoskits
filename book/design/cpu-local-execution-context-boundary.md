@@ -29,8 +29,9 @@ The boundary succeeds when:
   wrapper without a second identity publication;
 - switch preparation rolls back when abandoned and stale previous bindings
   cannot be consumed twice;
-- preemption entry and pending exit are linear and retain their exact state
-  owner across suspension or modeled migration;
+- preemption entry and pending exit are linear; context-owned tokens retain
+  their exact state owner, while a CPU-owned switch token can transfer only at
+  the context-switch resume boundary;
 - existing ArceOS consumers build and run without changing scheduling policy.
 
 ## Non-goals
@@ -85,7 +86,8 @@ at commit. No fallible or ownership-sensitive Rust work follows commit.
 The preemption word uses an inverted pending bit and a nesting depth. x86_64
 stores it in the fixed CPU anchor, while load/store architectures store it in
 the execution-context header. `PreemptionToken` captures the selected word at
-entry, so exit never re-resolves a possibly migrated owner.
+entry. Ordinary exit finishes that exact owner; only the explicit x86_64
+context-switch resume handoff may replace a CPU-owned switch token.
 
 `finish_preemption` consumes a nested or non-pending final depth. A final
 pending exit returns `PendingPreemption` while depth one remains published.
@@ -97,11 +99,17 @@ then invokes the task safe point. The task layer never manipulates the word and
 Bootstrap contexts start at depth one. The runtime releases that exact depth
 once, after current context and local run-queue state are published.
 
-On x86_64, a scheduler guard's CPU-owned depth crosses the raw context switch.
-A resumed context finishes that depth through its suspended guard. A context
-running for the first time has no suspended caller, so its first-entry runtime
-tail invokes `release_initial_context_preemption`; load/store architectures
-start the new context-owned word at depth zero and take no action.
+On x86_64, a runtime guard's CPU-owned exclusion covers the raw context switch.
+If the suspended context resumes on the same CPU, its token retains the same
+owner. If it resumes on another CPU, the old CPU's incoming context has consumed
+the old switch depth and the destination CPU's outgoing context has left an
+equivalent depth. The incoming runtime tail therefore consumes the old linear
+proof and uses `handoff_preemption_after_context_switch` to adopt the destination
+CPU's depth before finishing the guard. A context running for the first time has
+no suspended caller, so its first-entry runtime tail invokes
+`release_initial_context_preemption`. Load/store architectures migrate the
+context-owned word itself, reject any owner change, and start a new context at
+depth zero.
 
 ## Alternatives rejected
 

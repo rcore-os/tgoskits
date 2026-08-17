@@ -52,10 +52,14 @@ first claim its scheduler baton, then call `release` and enter its safe point.
 Task policy and baton state never enter this crate.
 
 On a CPU-owned preemption architecture, the exclusion covering a raw context
-switch is normally finished by the suspended incoming caller. A context running
-for the first time has no such caller, so its first-entry tail uses the hidden
-`release_initial_context_preemption` handoff. Context-owned architectures start
-the new header enabled and perform no release.
+switch belongs to the CPU where each side executes. If a suspended context
+resumes on another CPU, the runtime uses the hidden
+`handoff_preemption_after_context_switch` operation to consume its old linear
+proof and adopt the equivalent switch depth left on the resumed CPU. A context
+running for the first time has no suspended caller, so its first-entry tail uses
+the hidden `release_initial_context_preemption` operation. Context-owned
+architectures keep the original token owner, start the new header enabled, and
+perform neither CPU-owner transfer nor initial release.
 
 `CpuPin` can only be created by the higher-ranked `with_cpu_pin` boundary and
 cannot escape its migration guard. `ExclusiveCpu` additionally represents

@@ -50,13 +50,14 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   objects additionally require `ExclusiveCpu` after excluding IRQ/re-entry and conflicting remote
   access. Context switches keep IRQs off and consume prepared/previous transaction tokens.
   AArch64 may lend SP_EL0 to userspace only after spilling the sole current header in the pinned
-  kernel stack and must restore it before returning to Rust. Preemption tokens are linear and
-  retain their entry owner: x86_64 uses the CPU anchor, while load/store architectures use the
-  current context header. A runtime must claim its scheduler baton before releasing a final
-  pending preemption depth; task policy and baton state do not belong in `cpu-local`. On a
-  CPU-owned preemption architecture, a context's first-entry tail must finish the switch depth
-  because it has no suspended incoming guard; context-owned architectures start that header at
-  depth zero.
+  kernel stack and must restore it before returning to Rust. Preemption tokens are linear.
+  Load/store architectures retain the current-context owner across migration. x86_64 uses the
+  CPU anchor, so a suspended switch guard resuming on another CPU must consume its old proof and
+  adopt the equivalent depth left by the destination CPU's outgoing context. A runtime must claim
+  its scheduler baton before releasing a final pending preemption depth; task policy and baton
+  state do not belong in `cpu-local`. On a CPU-owned preemption architecture, a context's
+  first-entry tail must finish the switch depth because it has no suspended incoming guard;
+  context-owned architectures start that header at depth zero.
 - **Build system**: wire arch/target mapping in `scripts/axbuild`, dynamic platform defaults, feature propagation, kernel format conversion, UEFI/to-bin behavior, rootfs handling, and per-OS test discovery.
 - **QEMU and firmware**: verify QEMU binary, machine type, CPU, SMP count, pflash/OVMF files, serial console, disk/rootfs device, `-snapshot`, debug flags, timeout, and success/fail regexes.
   Obtain OVMF CODE/VARS through `cargo xtask ovmf --arch <arch>`, which reuses Ostool's pinned

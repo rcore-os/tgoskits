@@ -51,6 +51,9 @@ fn exit_preemption(raw: usize) {
     let irqs_were_enabled = ax_hal::asm::irqs_enabled();
     ax_hal::asm::disable_irqs();
 
+    let token = with_cpu_pin(|pin| cpu_local::handoff_preemption_after_context_switch(pin, token))
+        .unwrap_or_else(|error| panic!("context-switch preemption handoff failed: {error}"));
+
     let pending = ax_task::runtime_preemption_pending();
     with_cpu_pin(|pin| {
         if pending {
