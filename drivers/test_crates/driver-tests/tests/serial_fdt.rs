@@ -39,14 +39,14 @@ impl_trait! {
             PhysAddr::from_usize(addr.as_usize())
         }
 
-        fn mem_make_dma_coherent_uncached(
+        fn mem_map_dma_coherent_uncached(
             _addr: VirtAddr,
             _size: usize,
         ) -> axklib::DmaCoherentMappingOutcome {
             axklib::DmaCoherentMappingOutcome::NotStarted(KlibError::Unsupported)
         }
 
-        fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> KlibResult {
+        fn mem_unmap_dma_coherent(_addr: VirtAddr, _size: usize) -> KlibResult {
             Err(KlibError::Unsupported)
         }
 

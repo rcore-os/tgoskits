@@ -48,7 +48,9 @@ pub trait DmaOp: Sync + Send + 'static {
     ///
     /// Implementations must return a live allocation described by `layout`,
     /// with a DMA address range satisfying `constraints`, and with the backend's
-    /// coherent mapping policy applied until `dealloc_coherent`.
+    /// coherent mapping policy applied until `dealloc_coherent`. When the CPU
+    /// mapping is an alias, the handle must retain the original allocation
+    /// address privately for release.
     unsafe fn alloc_coherent(
         &self,
         constraints: DmaConstraints,

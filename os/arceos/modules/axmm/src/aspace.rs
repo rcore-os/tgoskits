@@ -178,6 +178,44 @@ impl AddrSpace {
         )
     }
 
+    /// Maps contiguous pages through a new uncached kernel alias.
+    ///
+    /// The existing direct mapping is deliberately left unchanged. The caller
+    /// owns the returned alias and must remove it with
+    /// [`Self::unmap_dma_coherent_alias`] before releasing the physical pages.
+    pub fn map_dma_coherent_alias(
+        &mut self,
+        start_paddr: PhysAddr,
+        size: usize,
+    ) -> MmResult<VirtAddr> {
+        if !start_paddr.is_aligned_4k() || !is_aligned_4k(size) || size == 0 {
+            return Err(MmError::InvalidInput(
+                "DMA coherent range is not page aligned",
+            ));
+        }
+        start_paddr
+            .as_usize()
+            .checked_add(size)
+            .ok_or(MmError::InvalidInput("DMA coherent range overflows"))?;
+
+        let range = VirtAddrRange::new(self.base(), self.end());
+        let alias = self
+            .find_free_area(self.base(), size, range)
+            .ok_or(MmError::NoMemory)?;
+        self.map_linear(
+            alias,
+            start_paddr,
+            size,
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::UNCACHED,
+        )?;
+        Ok(alias)
+    }
+
+    /// Removes a DMA-coherent alias without releasing its physical pages.
+    pub fn unmap_dma_coherent_alias(&mut self, alias: VirtAddr, size: usize) -> MmResult {
+        self.unmap(alias, size)
+    }
+
     /// Add or replace a linear mapping.
     ///
     /// This is intended for idempotent kernel MMIO mappings where multiple

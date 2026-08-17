@@ -1,16 +1,20 @@
+#[cfg(feature = "multitask")]
 use ax_hal::paging::MappingFlags;
-use ax_memory_addr::VirtAddr;
+use ax_memory_addr::{PhysAddr, VirtAddr};
 
-use crate::RuntimeResult;
+use crate::{RuntimeError, RuntimeResult};
 
+pub(crate) enum MappingTransactionError {
+    NotStarted(RuntimeError),
+    StateUncertain(RuntimeError),
+}
+
+#[cfg(feature = "multitask")]
 pub(crate) fn protect_kernel_range(
     start: VirtAddr,
     size: usize,
     flags: MappingFlags,
 ) -> RuntimeResult {
-    // A shootdown error happens after the PTE update. Callers must treat any
-    // associated storage as quarantined: rollback would itself require the
-    // cross-CPU synchronization that just failed.
     update_mapping_transaction(
         || {
             let mut kernel_aspace = ax_mm::kernel_aspace().lock();
@@ -22,6 +26,49 @@ pub(crate) fn protect_kernel_range(
             Ok(())
         },
     )
+}
+
+pub(crate) fn map_dma_coherent_alias(
+    paddr: PhysAddr,
+    size: usize,
+) -> Result<VirtAddr, MappingTransactionError> {
+    let mut kernel_aspace = ax_mm::kernel_aspace().lock();
+    map_alias_transaction(
+        || {
+            kernel_aspace
+                .map_dma_coherent_alias(paddr, size)
+                .map_err(Into::into)
+        },
+        |alias| {
+            ax_hal::cache::flush_tlb_range_all_cpus(alias, size)?;
+            Ok(())
+        },
+    )
+}
+
+pub(crate) fn unmap_dma_coherent_alias(alias: VirtAddr, size: usize) -> RuntimeResult {
+    // Keep the address-space lock across the shootdown so another allocation
+    // cannot reuse this VA while any CPU may retain its old translation.
+    let mut kernel_aspace = ax_mm::kernel_aspace().lock();
+    update_mapping_transaction(
+        || {
+            kernel_aspace.unmap_dma_coherent_alias(alias, size)?;
+            Ok(())
+        },
+        || {
+            ax_hal::cache::flush_tlb_range_all_cpus(alias, size)?;
+            Ok(())
+        },
+    )
+}
+
+fn map_alias_transaction(
+    map: impl FnOnce() -> RuntimeResult<VirtAddr>,
+    shootdown: impl FnOnce(VirtAddr) -> RuntimeResult,
+) -> Result<VirtAddr, MappingTransactionError> {
+    let alias = map().map_err(MappingTransactionError::NotStarted)?;
+    shootdown(alias).map_err(MappingTransactionError::StateUncertain)?;
+    Ok(alias)
 }
 
 fn update_mapping_transaction(
@@ -43,14 +90,14 @@ mod tests {
     use crate::RuntimeError;
 
     #[test]
-    fn mapping_transaction_protects_before_shootdown() {
+    fn mapping_transaction_updates_before_shootdown() {
         let events = Rc::new(RefCell::new(Vec::new()));
-        let protect_events = events.clone();
+        let update_events = events.clone();
         let shootdown_events = events.clone();
 
         let result = update_mapping_transaction(
             move || {
-                protect_events.borrow_mut().push("protect");
+                update_events.borrow_mut().push("update");
                 Ok(())
             },
             move || {
@@ -60,18 +107,18 @@ mod tests {
         );
 
         assert_eq!(result, Ok(()));
-        assert_eq!(*events.borrow(), vec!["protect", "shootdown"]);
+        assert_eq!(*events.borrow(), vec!["update", "shootdown"]);
     }
 
     #[test]
-    fn mapping_transaction_stops_when_protect_fails() {
+    fn mapping_transaction_stops_when_update_fails() {
         let events = Rc::new(RefCell::new(Vec::new()));
-        let protect_events = events.clone();
+        let update_events = events.clone();
         let shootdown_events = events.clone();
 
         let result = update_mapping_transaction(
             move || {
-                protect_events.borrow_mut().push("protect");
+                update_events.borrow_mut().push("update");
                 Err(RuntimeError::from(ax_mm::MmError::BadState("test")))
             },
             move || {
@@ -84,7 +131,7 @@ mod tests {
             result,
             Err(RuntimeError::from(ax_mm::MmError::BadState("test")))
         );
-        assert_eq!(*events.borrow(), vec!["protect"]);
+        assert_eq!(*events.borrow(), vec!["update"]);
     }
 
     #[test]
@@ -95,5 +142,31 @@ mod tests {
         );
 
         assert_eq!(result, Err(RuntimeError::from(TlbShootdownError::Timeout)));
+    }
+
+    #[test]
+    fn alias_mapping_distinguishes_not_started_from_uncertain_state() {
+        let not_started = map_alias_transaction(
+            || Err(RuntimeError::from(ax_mm::MmError::NoMemory)),
+            |_| Ok(()),
+        );
+        assert!(matches!(
+            not_started,
+            Err(MappingTransactionError::NotStarted(RuntimeError::Mm(
+                ax_mm::MmError::NoMemory
+            )))
+        ));
+
+        let alias = VirtAddr::from_usize(0x4000);
+        let uncertain = map_alias_transaction(
+            || Ok(alias),
+            |_| Err(RuntimeError::from(TlbShootdownError::Timeout)),
+        );
+        assert!(matches!(
+            uncertain,
+            Err(MappingTransactionError::StateUncertain(
+                RuntimeError::TlbShootdown(TlbShootdownError::Timeout)
+            ))
+        ));
     }
 }

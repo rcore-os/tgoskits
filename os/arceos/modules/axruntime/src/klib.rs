@@ -44,14 +44,6 @@ fn dma_coherent_range(addr: VirtAddr, size: usize) -> Option<(VirtAddr, usize)> 
     Some((start, end - start))
 }
 
-#[cfg(feature = "paging")]
-fn coherent_mapping_outcome(result: KlibResult) -> DmaCoherentMappingOutcome {
-    match result {
-        Ok(()) => DmaCoherentMappingOutcome::Updated,
-        Err(err) => DmaCoherentMappingOutcome::StateUncertain(err),
-    }
-}
-
 #[cfg(feature = "irq")]
 fn map_irq_error(err: IrqError) -> KlibError {
     match err {
@@ -103,32 +95,33 @@ impl_trait! {
             dma_cache_range(ax_hal::mem::DCacheOp::CleanInvalidate, addr, size);
         }
 
-        fn mem_make_dma_coherent_uncached(
+        fn mem_map_dma_coherent_uncached(
             addr: VirtAddr,
             size: usize,
         ) -> DmaCoherentMappingOutcome {
             #[cfg(feature = "paging")]
             {
                 let Some((start, size)) = dma_coherent_range(addr, size) else {
-                    return DmaCoherentMappingOutcome::Updated;
+                    return DmaCoherentMappingOutcome::Mapped(addr);
                 };
 
-                ax_hal::mem::dma_coherent_before_make_uncached(start, size);
-                let outcome = coherent_mapping_outcome(
-                    crate::kernel_mapping::protect_kernel_range(
-                        start,
-                        size,
-                        ax_hal::paging::MappingFlags::READ
-                            | ax_hal::paging::MappingFlags::WRITE
-                            | ax_hal::paging::MappingFlags::UNCACHED,
-                    )
-                    .map_err(crate::error::runtime_error_to_klib_error),
-                );
-                if outcome != DmaCoherentMappingOutcome::Updated {
-                    return outcome;
-                }
+                ax_hal::mem::dma_coherent_before_map_uncached(start, size);
+                let paddr = ax_hal::mem::virt_to_phys(start);
+                let alias = match crate::kernel_mapping::map_dma_coherent_alias(paddr, size) {
+                    Ok(alias) => alias,
+                    Err(crate::kernel_mapping::MappingTransactionError::NotStarted(err)) => {
+                        return DmaCoherentMappingOutcome::NotStarted(
+                            crate::error::runtime_error_to_klib_error(err),
+                        );
+                    }
+                    Err(crate::kernel_mapping::MappingTransactionError::StateUncertain(err)) => {
+                        return DmaCoherentMappingOutcome::StateUncertain(
+                            crate::error::runtime_error_to_klib_error(err),
+                        );
+                    }
+                };
                 ax_hal::mem::dma_coherent_after_mapping_update();
-                DmaCoherentMappingOutcome::Updated
+                DmaCoherentMappingOutcome::Mapped(alias)
             }
             #[cfg(not(feature = "paging"))]
             {
@@ -137,19 +130,15 @@ impl_trait! {
             }
         }
 
-        fn mem_restore_dma_cached(addr: VirtAddr, size: usize) -> KlibResult {
+        fn mem_unmap_dma_coherent(addr: VirtAddr, size: usize) -> KlibResult {
             #[cfg(feature = "paging")]
             {
                 let Some((start, size)) = dma_coherent_range(addr, size) else {
                     return Ok(());
                 };
 
-                ax_hal::mem::dma_coherent_before_restore_cached(start, size);
-                crate::kernel_mapping::protect_kernel_range(
-                    start,
-                    size,
-                    ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE,
-                )
+                ax_hal::mem::dma_coherent_before_unmap_uncached(start, size);
+                crate::kernel_mapping::unmap_dma_coherent_alias(start, size)
                 .map_err(crate::error::runtime_error_to_klib_error)?;
                 ax_hal::mem::dma_coherent_after_mapping_update();
                 Ok(())
@@ -322,25 +311,15 @@ impl_trait! {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "paging")))]
 mod tests {
     use super::*;
 
-    #[cfg(not(feature = "paging"))]
     #[test]
     fn coherent_mapping_reports_not_started_without_paging() {
         assert_eq!(
-            KlibImpl::mem_make_dma_coherent_uncached(VirtAddr::from_usize(0x1000), 0x1000),
+            KlibImpl::mem_map_dma_coherent_uncached(VirtAddr::from_usize(0x1000), 0x1000),
             DmaCoherentMappingOutcome::NotStarted(KlibError::Unsupported)
-        );
-    }
-
-    #[cfg(feature = "paging")]
-    #[test]
-    fn coherent_mapping_failure_reports_uncertain_state() {
-        assert_eq!(
-            coherent_mapping_outcome(Err(KlibError::TimedOut)),
-            DmaCoherentMappingOutcome::StateUncertain(KlibError::TimedOut)
         );
     }
 }

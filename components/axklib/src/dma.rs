@@ -97,39 +97,38 @@ impl DmaPages {
 struct CoherentDmaPolicy;
 
 impl CoherentDmaPolicy {
-    fn make_uncached(pages: &DmaPages, layout: Layout) -> DmaCoherentMappingOutcome {
+    fn map_uncached(pages: &DmaPages, layout: Layout) -> DmaCoherentMappingOutcome {
         if pages.num_pages == 0 {
-            return DmaCoherentMappingOutcome::Updated;
+            return DmaCoherentMappingOutcome::Mapped(VirtAddr::from_usize(
+                pages.cpu_addr.as_ptr() as usize,
+            ));
         }
 
         let range_size = pages.num_pages * PAGE_SIZE_4K;
         let start = VirtAddr::from_usize(pages.cpu_addr.as_ptr() as usize).align_down_4k();
-        let outcome = crate::klib::mem_make_dma_coherent_uncached(start, range_size);
-        if outcome != DmaCoherentMappingOutcome::Updated {
-            return outcome;
+        let outcome = crate::klib::mem_map_dma_coherent_uncached(start, range_size);
+        if let DmaCoherentMappingOutcome::Mapped(alias) = outcome {
+            unsafe { alias.as_mut_ptr().write_bytes(0, layout.size()) };
         }
-        unsafe {
-            pages.cpu_addr.as_ptr().write_bytes(0, layout.size());
-        }
-        DmaCoherentMappingOutcome::Updated
+        outcome
     }
 
-    fn restore_cached(pages: NonNull<u8>, num_pages: usize) -> Result<(), DmaError> {
+    fn unmap_alias(alias: NonNull<u8>, num_pages: usize) -> Result<(), DmaError> {
         if num_pages == 0 {
             return Ok(());
         }
 
-        let start = VirtAddr::from_usize(pages.as_ptr() as usize).align_down_4k();
-        crate::klib::mem_restore_dma_cached(start, num_pages * PAGE_SIZE_4K)
+        let start = VirtAddr::from_usize(alias.as_ptr() as usize).align_down_4k();
+        crate::klib::mem_unmap_dma_coherent(start, num_pages * PAGE_SIZE_4K)
             .map_err(|_| DmaError::NoMemory)
     }
 }
 
 fn release_coherent_pages(
-    restore_cached: impl FnOnce() -> Result<(), DmaError>,
+    unmap_alias: impl FnOnce() -> Result<(), DmaError>,
     dealloc_pages: impl FnOnce(),
 ) -> Result<(), DmaError> {
-    restore_cached()?;
+    unmap_alias()?;
     dealloc_pages();
     Ok(())
 }
@@ -137,9 +136,9 @@ fn release_coherent_pages(
 fn finish_coherent_mapping(
     outcome: DmaCoherentMappingOutcome,
     dealloc_pages: impl FnOnce(),
-) -> Option<()> {
+) -> Option<VirtAddr> {
     match outcome {
-        DmaCoherentMappingOutcome::Updated => Some(()),
+        DmaCoherentMappingOutcome::Mapped(alias) => Some(alias),
         DmaCoherentMappingOutcome::NotStarted(_) => {
             dealloc_pages();
             None
@@ -176,22 +175,30 @@ impl DmaOp for KlibDma {
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
         let pages = unsafe { DmaPages::alloc_for_layout(constraints, layout).ok()? };
-        finish_coherent_mapping(
-            CoherentDmaPolicy::make_uncached(&pages, layout),
-            || unsafe { DmaPages::dealloc_pages(pages.cpu_addr, pages.num_pages) },
-        )?;
+        let alias =
+            finish_coherent_mapping(CoherentDmaPolicy::map_uncached(&pages, layout), || unsafe {
+                DmaPages::dealloc_pages(pages.cpu_addr, pages.num_pages)
+            })?;
+        let alias = NonNull::new(alias.as_mut_ptr())?;
 
-        Some(unsafe { DmaAllocHandle::new(pages.cpu_addr, pages.dma_addr.into(), layout) })
+        Some(unsafe {
+            DmaAllocHandle::new_with_allocation(
+                alias,
+                pages.cpu_addr,
+                pages.dma_addr.into(),
+                layout,
+            )
+        })
     }
 
     unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
         let num_pages = DmaPages::layout_pages(handle.layout());
         release_coherent_pages(
             || {
-                CoherentDmaPolicy::restore_cached(handle.as_ptr(), num_pages)
+                CoherentDmaPolicy::unmap_alias(handle.as_ptr(), num_pages)
                     .map_err(|_| DmaError::CoherentReleaseFailed)
             },
-            || unsafe { DmaPages::dealloc_pages(handle.as_ptr(), num_pages) },
+            || unsafe { DmaPages::dealloc_pages(handle.allocation_ptr(), num_pages) },
         )
     }
 
@@ -286,39 +293,39 @@ mod tests {
     use crate::KlibError;
 
     #[test]
-    fn coherent_release_restores_mapping_before_free() {
+    fn coherent_release_unmaps_alias_before_freeing_original_pages() {
         let events = Rc::new(RefCell::new(Vec::new()));
-        let restore_events = events.clone();
+        let unmap_events = events.clone();
         let free_events = events.clone();
 
         let result = release_coherent_pages(
             move || {
-                restore_events.borrow_mut().push("restore");
+                unmap_events.borrow_mut().push("unmap_alias");
                 Ok(())
             },
             move || free_events.borrow_mut().push("free"),
         );
 
         assert_eq!(result, Ok(()));
-        assert_eq!(*events.borrow(), ["restore", "free"]);
+        assert_eq!(*events.borrow(), ["unmap_alias", "free"]);
     }
 
     #[test]
-    fn coherent_release_quarantines_pages_when_restore_fails() {
+    fn coherent_release_quarantines_pages_when_alias_unmap_fails() {
         let events = Rc::new(RefCell::new(Vec::new()));
-        let restore_events = events.clone();
+        let unmap_events = events.clone();
         let free_events = events.clone();
 
         let result = release_coherent_pages(
             move || {
-                restore_events.borrow_mut().push("restore");
+                unmap_events.borrow_mut().push("unmap_alias");
                 Err(DmaError::CoherentReleaseFailed)
             },
             move || free_events.borrow_mut().push("free"),
         );
 
         assert_eq!(result, Err(DmaError::CoherentReleaseFailed));
-        assert_eq!(*events.borrow(), ["restore"]);
+        assert_eq!(*events.borrow(), ["unmap_alias"]);
     }
 
     #[test]
@@ -346,6 +353,20 @@ mod tests {
         );
 
         assert_eq!(result, None);
+        assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn coherent_allocation_publishes_the_independent_cpu_alias() {
+        let alias = VirtAddr::from_usize(0x8000);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let free_events = events.clone();
+
+        let mapped = finish_coherent_mapping(DmaCoherentMappingOutcome::Mapped(alias), move || {
+            free_events.borrow_mut().push("free")
+        });
+
+        assert_eq!(mapped, Some(alias));
         assert!(events.borrow().is_empty());
     }
 
