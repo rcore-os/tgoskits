@@ -744,6 +744,30 @@ fn leaf_errno_mappings_hold() -> bool {
             Errno::EBUSY,
         ),
         (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::InvalidBaudrate)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::UnsupportedDataBits)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::UnsupportedStopBits)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::UnsupportedParity)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::Timeout)),
+            Errno::ETIMEDOUT,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::RegisterError)),
+            Errno::EIO,
+        ),
+        (
             StarryError::Runtime(RuntimeError::WouldBlock),
             Errno::EAGAIN,
         ),

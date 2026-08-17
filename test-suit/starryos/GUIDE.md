@@ -134,6 +134,15 @@ STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=1
 install(TARGETS mytest RUNTIME DESTINATION usr/bin/starry-test-suit)
 ```
 
+串口/TTY 事务回归由 `qemu/system/test-tty-termios-transaction` 覆盖。它在真实
+`/dev/ttyS0` 上验证配置错误不会发布新 termios，并让普通输出与
+`TCSETSW2`/`TCSETSF2` 并发；同时通过 PTY 验证 `TCSETSF2` 在配置事务完成后清理旧输入。
+单独运行某一架构时使用：
+
+```bash
+cargo xtask starry test qemu --arch <arch> -c qemu/system/test-tty-termios-transaction
+```
+
 如果某个 C 子测例只支持部分架构，优先使用 `system/common/starry_arch_filter.cmake`
 生成 skip 二进制。skip 输出要清楚说明目标和原因，并返回 0。
 
