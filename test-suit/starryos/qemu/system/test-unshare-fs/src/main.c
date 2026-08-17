@@ -11,7 +11,8 @@
  *   4. a pending CLONE_NEWPID survives a later namespace unshare.
  *   5. clone(CLONE_FS) → share cwd → child unshare(CLONE_FS) → cwd
  *      isolation: child chdir must not affect parent cwd.
- *   6. Low- and high-word unknown unshare flags → EINVAL.
+ *   6. Unknown low-word unshare flags → EINVAL; syscall arguments narrow
+ *      to the kernel's 32-bit int ABI.
  *
  * Note: uses clone(CLONE_FS | SIGCHLD), NOT fork().  In this kernel
  * fork() does NOT share FS_CONTEXT, so a fork-based test would pass
@@ -325,8 +326,8 @@ static void test_unshare_invalid_flags(void) {
 
     errno = 0;
     long raw_rc = syscall(SYS_unshare, 1ULL << 32);
-    check(raw_rc == -1 && errno == EINVAL,
-          "raw unshare high-word unknown flag returns EINVAL (rc=%ld, errno=%d)",
+    check(raw_rc == 0,
+          "raw unshare ignores a high-word-only flag per the 32-bit ABI (rc=%ld, errno=%d)",
           raw_rc, errno);
     printf("UNSHARE_FS_INVALID_PASSED\n");
 }
