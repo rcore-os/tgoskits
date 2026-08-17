@@ -14,7 +14,6 @@ const DOWNLOAD_DIR_ENV: &str = "TGOS_IMAGE_DOWNLOAD_DIR";
 const EXTRACT_DIR_ENV: &str = "TGOS_IMAGE_EXTRACT_DIR";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct ImageConfig {
     pub registry: String,
     pub download_dir: PathBuf,
@@ -44,15 +43,35 @@ impl ImageConfig {
         env_value: impl Fn(&str) -> Option<String>,
     ) -> anyhow::Result<Self> {
         let path = Self::get_config_file_path(base_dir);
-
-        let mut config = if !path.exists() {
-            let config = Self::new_default(base_dir);
-            Self::write_config(base_dir, &config)?;
-            config
-        } else {
-            let s = fs::read_to_string(&path)?;
-            toml::from_str(&s).map_err(|e| anyhow!("Invalid image config file: {e}"))?
+        let default_config = || Self::new_default(base_dir);
+        let (mut config, original) = match fs::read_to_string(&path) {
+            Ok(contents) => {
+                let config = match toml::from_str(&contents) {
+                    Ok(config) => config,
+                    Err(error) => {
+                        eprintln!(
+                            "image config at {} does not match the current format; regenerating \
+                             defaults: {error}",
+                            path.display()
+                        );
+                        default_config()
+                    }
+                };
+                (config, Some(contents))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (default_config(), None),
+            Err(error) => {
+                return Err(anyhow!(
+                    "Failed to read image config file {}: {error}",
+                    path.display()
+                ));
+            }
         };
+
+        let normalized = toml::to_string(&config)?;
+        if original.as_deref() != Some(normalized.as_str()) {
+            Self::write_config_contents(&path, &normalized)?;
+        }
 
         if let Some(download_dir) = env_value(DOWNLOAD_DIR_ENV) {
             config.download_dir = PathBuf::from(download_dir);
@@ -66,12 +85,15 @@ impl ImageConfig {
 
     pub fn write_config(base_dir: &Path, config: &Self) -> anyhow::Result<()> {
         let path = Self::get_config_file_path(base_dir);
+        Self::write_config_contents(&path, &toml::to_string(config)?)
+    }
+
+    fn write_config_contents(path: &Path, contents: &str) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| anyhow!("Failed to create image config directory: {e}"))?;
         }
-        fs::write(path, toml::to_string(config)?)
-            .map_err(|e| anyhow!("Failed to write image config file: {e}"))
+        fs::write(path, contents).map_err(|e| anyhow!("Failed to write image config file: {e}"))
     }
 }
 
@@ -146,23 +168,101 @@ extract_dir = "{}"
     }
 
     #[test]
-    fn read_config_rejects_removed_storage_fields() {
+    fn read_config_recreates_old_format_without_migrating_removed_fields() {
         let dir = tempdir().unwrap();
         let config_path = ImageConfig::get_config_file_path(dir.path());
         fs::create_dir_all(config_path.parent().unwrap()).unwrap();
         fs::write(
-            config_path,
+            &config_path,
             r#"
 registry = "https://example.com/registry.toml"
-download_dir = "/tmp/downloads"
-extract_dir = "/tmp/rootfs"
 local_storage = "/tmp/legacy"
+auto_sync = true
+auto_sync_threshold = 604800
 "#,
         )
         .unwrap();
 
-        let err = ImageConfig::read_config_with_env(dir.path(), |_| None).unwrap_err();
+        let config = ImageConfig::read_config_with_env(dir.path(), |_| None).unwrap();
 
-        assert!(err.to_string().contains("unknown field `local_storage`"));
+        assert_eq!(config, ImageConfig::new_default(dir.path()));
+
+        let normalized = fs::read_to_string(config_path).unwrap();
+        assert!(!normalized.contains("local_storage"));
+        assert!(!normalized.contains("auto_sync"));
+        assert_eq!(toml::from_str::<ImageConfig>(&normalized).unwrap(), config);
+    }
+
+    #[test]
+    fn read_config_removes_unknown_fields() {
+        let dir = tempdir().unwrap();
+        let config_path = ImageConfig::get_config_file_path(dir.path());
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &config_path,
+            r#"
+registry = "https://example.com/registry.toml"
+download_dir = "/tmp/downloads"
+extract_dir = "/tmp/rootfs"
+custom_field = "ignored"
+"#,
+        )
+        .unwrap();
+
+        let config = ImageConfig::read_config_with_env(dir.path(), |_| None).unwrap();
+
+        assert_eq!(config.registry, "https://example.com/registry.toml");
+        assert_eq!(config.download_dir, PathBuf::from("/tmp/downloads"));
+        assert_eq!(config.extract_dir, PathBuf::from("/tmp/rootfs"));
+        assert!(
+            !fs::read_to_string(config_path)
+                .unwrap()
+                .contains("custom_field")
+        );
+    }
+
+    #[test]
+    fn read_config_recreates_file_missing_current_fields() {
+        let dir = tempdir().unwrap();
+        let config_path = ImageConfig::get_config_file_path(dir.path());
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &config_path,
+            r#"registry = "https://example.com/registry.toml"
+"#,
+        )
+        .unwrap();
+
+        let config = ImageConfig::read_config_with_env(dir.path(), |_| None).unwrap();
+
+        assert_eq!(config, ImageConfig::new_default(dir.path()));
+        assert_eq!(
+            toml::from_str::<ImageConfig>(&fs::read_to_string(config_path).unwrap()).unwrap(),
+            config
+        );
+    }
+
+    #[test]
+    fn read_config_recreates_file_with_invalid_current_values() {
+        let dir = tempdir().unwrap();
+        let config_path = ImageConfig::get_config_file_path(dir.path());
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &config_path,
+            r#"
+registry = 42
+download_dir = "/tmp/downloads"
+extract_dir = "/tmp/rootfs"
+"#,
+        )
+        .unwrap();
+
+        let config = ImageConfig::read_config_with_env(dir.path(), |_| None).unwrap();
+
+        assert_eq!(config, ImageConfig::new_default(dir.path()));
+        assert_eq!(
+            toml::from_str::<ImageConfig>(&fs::read_to_string(config_path).unwrap()).unwrap(),
+            config
+        );
     }
 }

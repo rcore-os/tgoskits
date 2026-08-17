@@ -17,7 +17,7 @@ extract_dir = "<workspace>/tmp/axbuild/rootfs"
 
 下载目录取系统临时目录；Linux 上默认为 `/tmp/tgosimages`。解压目录仍位于当前 workspace，避免不同源码工作区共享可修改的 rootfs。
 
-配置文件是本机配置，已被 `.gitignore` 忽略。三个字段均为必填项，不读取旧版 `local_storage`、`auto_sync` 或 `auto_sync_threshold` 配置。
+配置文件是由 axbuild 管理的本机配置，已被 `.gitignore` 忽略。读取时只关心 `registry`、`download_dir` 和 `extract_dir`，其他字段不解释也不迁移。三个当前字段必须完整且类型正确；字段缺失、类型无效或文件不是有效 TOML 时，axbuild 使用全部默认值重新生成。读取后配置会被回写为只包含三个当前字段的规范格式，因此旧字段和任意额外字段都会被删除。需要固定镜像版本时，应提供完整的当前格式配置。
 
 也可以使用环境变量或命令行覆盖目录：
 
