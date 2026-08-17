@@ -89,9 +89,10 @@ int main(void) {
     close(release_pipe[0]);
 
     char ready = 0;
-    int parent_ok = read(ready_pipe[0], &ready, 1) == 1 && ready == 'R';
+    int child_ready = read(ready_pipe[0], &ready, 1) == 1 && ready == 'R';
     close(ready_pipe[0]);
-    if (!parent_ok) {
+    int parent_ok = child_ready;
+    if (!child_ready) {
         fputs("FAIL: child did not finish its private mount setup\n", stderr);
     }
 
@@ -107,7 +108,12 @@ int main(void) {
         }
     }
 
-    if (parent_ok && write(release_pipe[1], "R", 1) != 1) {
+    /*
+     * Once the ready byte has arrived, the child is blocked on release_pipe.
+     * Always release it, even when the parent-side assertion failed, so a
+     * diagnostic failure cannot turn into an unbounded waitpid hang.
+     */
+    if (child_ready && write(release_pipe[1], "R", 1) != 1) {
         perror("write mount-release");
         parent_ok = 0;
     }
