@@ -1,10 +1,6 @@
 name: Starry Apps
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/starry-apps.yml"
-      - "apps/starry/nixos/**"
   schedule:
     # GitHub cron uses UTC. This runs at 02:00 Beijing time (UTC+8).
     - cron: "0 18 * * *"

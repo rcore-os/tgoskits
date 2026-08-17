@@ -57,6 +57,11 @@ def main() -> int:
         errors.append("Starry Apps must select clippy through its planned matrix")
     if "  checks:\n    name: Starry Apps\n" not in starry_apps:
         errors.append("Starry Apps reusable call must use the concise display name")
+    if re.search(r"^  pull_request:", starry_apps, flags=re.MULTILINE):
+        errors.append("Starry Apps must not run on pull requests")
+    for required_event in ("schedule", "workflow_dispatch"):
+        if not re.search(rf"^  {required_event}:", starry_apps, flags=re.MULTILINE):
+            errors.append(f"Starry Apps must run on {required_event}")
 
     container = texts.get("container-publish.yml", "")
     if count_jobs(container) != 1:

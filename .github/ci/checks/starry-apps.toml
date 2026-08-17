@@ -23,7 +23,6 @@ environment = "base"
 cache_key = "starry-apps-x86_64"
 apk_region = "us"
 container_preflight = "qemu-user"
-events = ["schedule", "workflow_dispatch"]
 command = '''
 cargo xtask starry app qemu --all --arch x86_64
 '''
@@ -36,7 +35,6 @@ environment = "base"
 cache_key = "starry-apps-aarch64"
 apk_region = "us"
 container_preflight = "qemu-user"
-events = ["schedule", "workflow_dispatch"]
 command = '''
 cargo xtask starry app qemu --all --arch aarch64
 '''
@@ -49,7 +47,6 @@ environment = "base"
 cache_key = "starry-apps-riscv64"
 apk_region = "us"
 container_preflight = "qemu-user"
-events = ["schedule", "workflow_dispatch"]
 command = '''
 cargo xtask starry app qemu --all --arch riscv64
 '''
@@ -62,7 +59,6 @@ environment = "base"
 cache_key = "starry-apps-loongarch64"
 apk_region = "us"
 container_preflight = "qemu-user"
-events = ["schedule", "workflow_dispatch"]
 command = '''
 cargo xtask starry app qemu --all --arch loongarch64
 '''

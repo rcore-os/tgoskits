@@ -190,20 +190,17 @@ class CiPlanTests(unittest.TestCase):
             6,
         )
 
-    def test_starry_apps_pull_request_selects_only_nixos(self) -> None:
-        pull_request = ci_plan.PlanContext(
+    def test_starry_apps_manual_nixos_uses_app_runner(self) -> None:
+        manual = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",
             repository_owner="rcore-os",
-            event_name="pull_request",
-            base_ref="dev",
+            event_name="workflow_dispatch",
         )
 
-        rows = ci_plan.build_starry_apps_plan(pull_request)["starry_apps_matrix"][
-            "include"
-        ]
+        rows = ci_plan.build_starry_apps_plan(manual)["starry_apps_matrix"]["include"]
+        rows_by_id = {row["id"]: row for row in rows}
 
-        self.assertEqual([row["id"] for row in rows], ["starry-nixos-x86-64-qemu"])
-        nixos = rows[0]
+        nixos = rows_by_id["starry-nixos-x86-64-qemu"]
         self.assertEqual(nixos["container_image"], "")
         self.assertEqual(nixos["timeout_minutes"], 45)
         self.assertIn("starry app qemu -t nixos", nixos["command"])
