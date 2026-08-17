@@ -12,6 +12,12 @@ use ax_memory_set::{MemoryArea, MemorySet};
 
 use crate::{MmError, MmResult, backend::Backend};
 
+#[derive(Clone, Copy)]
+enum LinearMappingKind {
+    Mutable,
+    Boot,
+}
+
 /// The virtual memory address space.
 pub struct AddrSpace {
     va_range: VirtAddrRange,
@@ -117,6 +123,7 @@ impl AddrSpace {
         size: usize,
         flags: MappingFlags,
         unmap_overlap: bool,
+        kind: LinearMappingKind,
     ) -> MmResult {
         if !self.contains_range(start_vaddr, size) {
             return Err(MmError::InvalidInput(
@@ -128,9 +135,30 @@ impl AddrSpace {
         }
 
         let offset = start_vaddr.as_usize() - start_paddr.as_usize();
-        let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset));
+        let backend = match kind {
+            LinearMappingKind::Mutable => Backend::new_linear(offset),
+            LinearMappingKind::Boot => Backend::new_boot_linear(offset),
+        };
+        let area = MemoryArea::new(start_vaddr, size, flags, backend);
         self.areas.map(area, &mut self.pt, unmap_overlap)?;
         Ok(())
+    }
+
+    pub(crate) fn map_boot_linear(
+        &mut self,
+        start_vaddr: VirtAddr,
+        start_paddr: PhysAddr,
+        size: usize,
+        flags: MappingFlags,
+    ) -> MmResult {
+        self.map_linear_with_overlap(
+            start_vaddr,
+            start_paddr,
+            size,
+            flags,
+            false,
+            LinearMappingKind::Boot,
+        )
     }
 
     pub fn map_linear(
@@ -140,7 +168,14 @@ impl AddrSpace {
         size: usize,
         flags: MappingFlags,
     ) -> MmResult {
-        self.map_linear_with_overlap(start_vaddr, start_paddr, size, flags, false)
+        self.map_linear_with_overlap(
+            start_vaddr,
+            start_paddr,
+            size,
+            flags,
+            false,
+            LinearMappingKind::Mutable,
+        )
     }
 
     /// Add or replace a linear mapping.
@@ -154,7 +189,14 @@ impl AddrSpace {
         size: usize,
         flags: MappingFlags,
     ) -> MmResult {
-        self.map_linear_with_overlap(start_vaddr, start_paddr, size, flags, true)
+        self.map_linear_with_overlap(
+            start_vaddr,
+            start_paddr,
+            size,
+            flags,
+            true,
+            LinearMappingKind::Mutable,
+        )
     }
 
     /// Add a new allocation mapping.
