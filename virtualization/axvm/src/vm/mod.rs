@@ -30,7 +30,7 @@ use std::{
 
 use ax_cpumask::CpuMask;
 use ax_memory_addr::align_up_4k;
-use ax_std::os::arceos::sync::IrqSafeMutex as Mutex;
+use ax_std::os::arceos::sync::IrqSafeMutex;
 use axaddrspace::{AddrSpace, NestedPageTableOps};
 use axdevice::*;
 use axdevice_base::*;
@@ -153,11 +153,11 @@ fn write_guest_bytes_to_chunks(chunks: &mut [&mut [u8]], data: &[u8]) -> AxVmRes
 }
 
 pub(crate) struct AxVMResources {
+    vm_id: VMId,
     // Todo: use more efficient lock.
     pub(crate) address_space: AddrSpace<ArchNestedPageTable>,
     nested_paging: NestedPagingConfig,
     memory_regions: Vec<VMMemoryRegion>,
-    config: AxVMConfig,
     phys_cpu_ls: PhysCpuList,
     vcpu_list: Option<Box<[AxVCpuRef]>>,
     devices: Option<Arc<DeviceRuntime>>,
@@ -174,7 +174,7 @@ unsafe impl Sync for AxVMResources {}
 pub(crate) struct VmRuntimeHandle {
     wait_queue: crate::WaitQueue,
     notification_generation: AtomicUsize,
-    vcpu_threads: Mutex<VcpuThreadRegistry>,
+    vcpu_threads: IrqSafeMutex<VcpuThreadRegistry>,
     cpu_on_start_acks: StdMutex<BTreeMap<usize, Arc<crate::runtime::vcpus::CpuOnStartAck>>>,
     cpu_off_exit_reservations: StdMutex<BTreeSet<usize>>,
     irq_dispatcher: crate::runtime::VcpuIrqDispatcher,
@@ -243,7 +243,7 @@ impl VmRuntimeHandle {
         Self {
             wait_queue: crate::WaitQueue::new(),
             notification_generation: AtomicUsize::new(0),
-            vcpu_threads: Mutex::new(VcpuThreadRegistry::default()),
+            vcpu_threads: IrqSafeMutex::new(VcpuThreadRegistry::default()),
             cpu_on_start_acks: StdMutex::new(BTreeMap::new()),
             cpu_off_exit_reservations: StdMutex::new(BTreeSet::new()),
             irq_dispatcher: crate::runtime::VcpuIrqDispatcher::new(),
@@ -694,7 +694,7 @@ mod runtime_handle_tests {
 
 impl AxVMResources {
     pub(crate) fn from_page_table(
-        config: AxVMConfig,
+        vm_id: VMId,
         page_table: ArchNestedPageTable,
         device_plan: crate::arch::ArchVmPlan,
         build_nested_paging: impl FnOnce(HostPhysAddr) -> AxVmResult<NestedPagingConfig>,
@@ -707,10 +707,10 @@ impl AxVMResources {
         .map_err(|error| AxVmError::from_addrspace("create guest address space", error))?;
         let nested_paging = build_nested_paging(address_space.page_table_root())?;
         Ok(Self {
+            vm_id,
             address_space,
             nested_paging,
             memory_regions: Vec::new(),
-            config,
             phys_cpu_ls: PhysCpuList::default(),
             vcpu_list: None,
             devices: None,
@@ -719,11 +719,6 @@ impl AxVMResources {
             boot_description: GuestBootDescription::none(),
             device_plan,
         })
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    pub(crate) const fn config(&self) -> &AxVMConfig {
-        &self.config
     }
 
     pub(crate) fn planned_devices(&self) -> &crate::vm::prepare::device_plan::VmDevicePlan {
@@ -788,7 +783,7 @@ impl AxVMResources {
     }
 
     fn teardown_ivc_bindings(&mut self) -> AxVmResult {
-        let vm_id = self.config.id();
+        let vm_id = self.vm_id;
         let teardowns = crate::runtime::ivc::teardown_vm(vm_id);
         release_ivc_teardowns(vm_id, teardowns, self)
     }
@@ -1122,7 +1117,10 @@ const TEMP_MAX_VCPU_NUM: usize = 64;
 pub struct AxVM {
     id: usize,
     name: String,
-    machine: Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
+    /// Task-context configuration, intentionally independent of IRQ/runtime state.
+    config: StdMutex<AxVMConfig>,
+    /// Lifecycle and runtime state reached from both task and interrupt context.
+    machine: IrqSafeMutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
     fw_cfg_payload: Arc<FwCfgPayloadSlot>,
 }
 
@@ -1135,16 +1133,17 @@ impl AxVM {
     ///
     /// Returns an error if nested paging is unsupported for the selected host
     /// CPUs or if the initial stage-2 address space cannot be allocated.
-    pub fn new(config: AxVMConfig) -> AxVmResult<AxVMRef> {
+    pub fn new(mut config: AxVMConfig) -> AxVmResult<AxVMRef> {
         let id = config.id();
         let name = config.name();
         let fw_cfg_payload = Arc::new(FwCfgPayloadSlot::new());
         let resources =
-            crate::arch::CurrentArch::create_vm_resources(config, fw_cfg_payload.clone())?;
+            crate::arch::CurrentArch::create_vm_resources(&mut config, fw_cfg_payload.clone())?;
         let result = Arc::new(Self {
             id,
             name,
-            machine: Mutex::new(Machine::Ready(resources)),
+            config: StdMutex::new(config),
+            machine: IrqSafeMutex::new(Machine::Ready(resources)),
             fw_cfg_payload,
         });
 
@@ -1171,8 +1170,7 @@ impl AxVM {
 
     /// Returns whether the guest address space starts from host identity mappings.
     pub fn uses_passthrough_address_space(&self) -> bool {
-        self.with_resources(|resources| Ok(resources.config.uses_passthrough_address_space()))
-            .unwrap_or(false)
+        self.with_config(|config| config.uses_passthrough_address_space())
     }
 
     fn with_resources<F, R>(&self, f: F) -> AxVmResult<R>
@@ -1281,16 +1279,23 @@ impl AxVM {
         self.with_resources(|resources| Ok(resources.address_space.page_table_root()))
     }
 
-    /// Returns to the VM's configuration.
+    /// Executes an operation with mutable access to the VM's configuration.
+    ///
+    /// Configuration uses a task-context standard-library mutex and is intentionally
+    /// independent of the IRQ-safe machine lock. Keep the closure short and
+    /// return owned values before doing console I/O or other blocking work.
+    /// Callers must not invoke this method from interrupt context or recursively
+    /// access the same config. If an internal operation needs both locks, it must
+    /// acquire `config` before `machine`.
+    ///
+    /// Mutations update `AxVMConfig` only; they do not rebuild already-created
+    /// vCPUs, address spaces, or devices.
     pub fn with_config<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut AxVMConfig) -> R,
     {
-        let mut machine = self.machine.lock();
-        let resources = machine
-            .resources_mut()
-            .expect("VM resources are not available for config access");
-        f(&mut resources.config)
+        let mut config = self.config.lock_unpoisoned();
+        f(&mut config)
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -1311,11 +1316,11 @@ impl AxVM {
 
     /// Stores a guest DTB as VM-owned boot-description state.
     pub fn set_guest_device_tree(&self, load_gpa: GuestPhysAddr, bytes: Vec<u8>) -> AxVmResult {
+        let guest_dtb = GuestFdtBuilder::from_bytes(bytes).build(load_gpa);
+        let mut config = self.config.lock_unpoisoned();
         self.with_resources_mut(|resources| {
-            resources.config.set_dtb_load_gpa(load_gpa);
-            resources
-                .boot_description
-                .set_device_tree(GuestFdtBuilder::from_bytes(bytes).build(load_gpa));
+            config.set_dtb_load_gpa(load_gpa);
+            resources.boot_description.set_device_tree(guest_dtb);
             Ok(())
         })
     }
@@ -2022,8 +2027,7 @@ impl AxVM {
 
     /// Prepares all memory regions configured for this VM.
     pub fn prepare_memory_layout(&self) -> AxVmResult<PreparedMemoryLayout> {
-        let memory_regions =
-            self.with_resources(|resources| Ok(resources.config.memory_regions().to_vec()))?;
+        let memory_regions = self.with_config(|config| config.memory_regions().to_vec());
         let layout = memory::MemoryLayoutBuilder::new(self, &memory_regions).prepare()?;
         let main_memory = layout.main_memory();
         let boot_plan = boot::BootImagePlan::new(main_memory.gpa, main_memory.is_identical());
@@ -2466,3 +2470,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "host-test"))]
+mod config_lock_tests;
