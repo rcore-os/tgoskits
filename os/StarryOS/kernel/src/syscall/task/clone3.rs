@@ -5,7 +5,10 @@ use bytemuck::AnyBitPattern;
 use starry_vm::vm_read_slice;
 
 use super::clone::{CloneArgs, CloneFlags};
-use crate::{StarryError, StarryResult};
+use crate::{
+    StarryError, StarryResult,
+    file::{ResolveAtResult, resolve_at},
+};
 
 /// Structure passed to clone3() system call.
 #[repr(C)]
@@ -33,10 +36,6 @@ impl TryFrom<Clone3Args> for CloneArgs {
         if args.set_tid != 0 || args.set_tid_size != 0 {
             warn!("sys_clone3: set_tid/set_tid_size not supported, ignoring");
         }
-        if args.cgroup != 0 {
-            warn!("sys_clone3: cgroup parameter not supported, ignoring");
-        }
-
         let flags = CloneFlags::from_bits_truncate(args.flags);
 
         if args.exit_signal > 0 && flags.intersects(CloneFlags::THREAD | CloneFlags::PARENT) {
@@ -91,7 +90,23 @@ pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> StarryRes
         bytemuck::try_pod_read_unaligned(&buffer).map_err(|_| StarryError::InvalidInput)?;
 
     let clone_args = CloneArgs::try_from(clone3_args)?;
-    clone_args.do_clone(uctx)
+    let requested_cgroup = if clone_args.flags.contains(CloneFlags::INTO_CGROUP) {
+        let cgroup_fd = i32::try_from(clone3_args.cgroup).map_err(|_| StarryError::InvalidInput)?;
+        let location = match resolve_at(cgroup_fd, None, linux_raw_sys::general::AT_EMPTY_PATH)? {
+            ResolveAtResult::File(location) => location,
+            ResolveAtResult::Other(_) => return Err(StarryError::InvalidInput),
+        };
+        Some(
+            crate::pseudofs::cgroup::node_from_location(&location)
+                .ok_or(StarryError::InvalidInput)?,
+        )
+    } else {
+        if clone3_args.cgroup != 0 {
+            return Err(StarryError::InvalidInput);
+        }
+        None
+    };
+    clone_args.do_clone_in_cgroup(uctx, requested_cgroup)
 }
 
 #[cfg(axtest)]

@@ -53,7 +53,6 @@ use crate::{
 /// Maximum number of queued receive messages per socket.  Matches
 /// libudev's default monitor buffer expectation (~32 messages × 4 KiB).
 const MAX_QUEUED: usize = 128;
-
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 const NLM_F_MULTI: u16 = 2;
@@ -66,6 +65,7 @@ const NLM_F_DUMP: u16 = NLM_F_ROOT | NLM_F_MATCH;
 /// the controller and only the controller; family ID assignment for
 /// other families starts above this.
 const GENL_ID_CTRL: u16 = 0x10;
+
 const CTRL_CMD_NEWFAMILY: u8 = 1;
 const CTRL_CMD_GETFAMILY: u8 = 3;
 const CTRL_ATTR_FAMILY_ID: u16 = 1;
@@ -73,6 +73,7 @@ const CTRL_ATTR_FAMILY_NAME: u16 = 2;
 const CTRL_ATTR_VERSION: u16 = 3;
 const CTRL_ATTR_HDRSIZE: u16 = 4;
 const CTRL_ATTR_MAXATTR: u16 = 5;
+
 /// Linux's max length of a family name, including the NUL terminator.
 const GENL_NAMSIZ: usize = 16;
 const CTRL_VERSION: u32 = 2;
@@ -88,6 +89,7 @@ const RTM_GETROUTE: u16 = 26;
 
 const AF_UNSPEC: u8 = 0;
 const AF_INET: u8 = 2;
+
 const ARPHRD_ETHER: u16 = 1;
 const ARPHRD_LOOPBACK: u16 = 772;
 
@@ -124,7 +126,9 @@ const RT_SCOPE_HOST: u8 = 254;
 
 const RT_TABLE_UNSPEC: u8 = 0;
 const RT_TABLE_MAIN: u8 = 254;
+
 const RTPROT_BOOT: u8 = 3;
+
 const RTN_UNICAST: u8 = 1;
 
 #[repr(C)]
@@ -150,6 +154,7 @@ struct GenlMsgHdr {
 /// errno table.
 #[allow(non_upper_case_globals)]
 const libc_ENOENT: i32 = 2;
+
 #[allow(non_upper_case_globals)]
 const libc_EOPNOTSUPP: i32 = 95;
 
@@ -269,6 +274,7 @@ struct NetlinkState {
 
 pub struct NetlinkSocket {
     protocol: u32,
+    socket_type: u32,
     non_blocking: AtomicBool,
     poll_rx: PollSet,
     state: Mutex<NetlinkState>,
@@ -282,9 +288,10 @@ static NETLINK_SOCKETS: LazyLock<Mutex<Vec<Weak<NetlinkSocket>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
 impl NetlinkSocket {
-    pub fn new(protocol: u32) -> Arc<Self> {
+    pub fn new(protocol: u32, socket_type: u32) -> Arc<Self> {
         Arc::new(Self {
             protocol,
+            socket_type,
             non_blocking: AtomicBool::new(false),
             poll_rx: PollSet::new(),
             state: Mutex::new(NetlinkState::default()),
@@ -303,8 +310,6 @@ impl NetlinkSocket {
             }
             state.addr = Some(addr);
         }
-        // Register self in the global broadcast registry so kernel-side
-        // `broadcast()` calls can reach this socket.
         NETLINK_SOCKETS.lock().push(Arc::downgrade(self));
         Ok(())
     }
@@ -330,36 +335,28 @@ impl NetlinkSocket {
     pub fn set_receive_buffer_size(&self, size: usize) {
         self.state.lock().receive_buffer_size = size;
     }
-
     pub fn set_passcred(&self, enabled: bool) {
         self.state.lock().passcred = enabled;
     }
-
     pub fn reuse_address(&self) -> bool {
         self.state.lock().reuse_address
     }
-
     pub fn set_reuse_address(&self, enabled: bool) {
         self.state.lock().reuse_address = enabled;
     }
-
-    #[allow(dead_code)]
     pub fn protocol(&self) -> u32 {
         self.protocol
     }
+    pub fn socket_type(&self) -> u32 {
+        self.socket_type
+    }
 
-    /// Enqueue a kernel-originated datagram into this socket's receive queue
-    /// and wake readers, exactly as [`broadcast`] does for a single socket.
-    /// Drops silently when the queue is full (Linux `netlink_unicast` under
-    /// buffer pressure). Used by `mq_notify(SIGEV_THREAD)` to hand the
-    /// notification cookie to the glibc/musl helper thread that reads this
-    /// netlink socket (`netlink_sendskb` in ipc/mqueue.c `__do_notify`).
+    /// Enqueue a kernel-originated datagram and wake readers.
     pub fn deliver_datagram(&self, payload: Vec<u8>) {
         let mut queue = self.queue.lock();
         if queue.len() < MAX_QUEUED {
             queue.push_back(payload);
             drop(queue);
-            // Datagram is queued before readers are woken.
             unsafe { self.poll_rx.wake(IoEvents::IN) };
         }
     }
@@ -437,7 +434,6 @@ impl NetlinkSocket {
             push_nlmsg_error(&mut response, request, pid, -libc_ENOENT);
             return Ok(response);
         }
-
         let is_dump = want_name.is_none();
         push_ctrl_family(&mut response, header.seq, pid, is_dump);
         if is_dump {
