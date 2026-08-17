@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a non-escaping current-CPU area capability for future low-level owners;
+  there is no runtime caller yet.
+
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/cpu-local-v0.1.1...cpu-local-v0.1.2) - 2026-08-03
 
 ### Fixed

@@ -40,6 +40,14 @@ cannot escape its migration guard. `ExclusiveCpu` additionally represents
 excluded local IRQ/re-entry and conflicting remote access. This crate validates
 those capabilities but does not itself disable preemption or interrupts.
 
+Low-level owner code that must select CPU-owned state before constructing a
+`CpuPin` can use the hidden, non-escaping `CurrentCpuArea` boundary. This path
+reads the architecture CPU-area base directly and deliberately does not validate
+current execution-context publication. The caller must keep the selected CPU
+fixed; mutable access additionally excludes IRQ/re-entry and remote conflicts.
+No runtime path uses this boundary yet; it is reserved for future low-level
+execution-context owners and offline CPU bootstrap integration.
+
 The exact initialized `CpuAreaRef` address is the layout identity. There is no
 ABI version, generation, or cookie inside one final image. The task binding
 epoch is intentionally retained because it rejects an obsolete incoming switch
@@ -50,6 +58,7 @@ tail after the same task has been rebound.
 | Atomic per-CPU scalar | Migration disabled; local IRQs may remain enabled |
 | Shared `T: Sync` object | Migration disabled; object-owned synchronization |
 | Local mutable object | Migration, IRQ/re-entry, and remote conflicts excluded |
+| Pre-pin CPU-owner object | Migration and context switches excluded; mutable access also excludes IRQ/re-entry and remote conflicts |
 | Scheduler switch | IRQs and migration disabled; prepared/previous tokens consumed |
 | vCPU execution | Migration disabled; host registers restored before host Rust |
 | CPU-area installation | CPU offline, traps disabled, area exclusively owned |

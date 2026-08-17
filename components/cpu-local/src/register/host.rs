@@ -9,6 +9,9 @@ pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentMo
 std::thread_local! {
     static CPU_BASE: Cell<usize> = const { Cell::new(0) };
     static KERNEL_TLS: Cell<usize> = const { Cell::new(0) };
+    static CPU_BASE_READS: Cell<usize> = const { Cell::new(0) };
+    static CURRENT_THREAD_READS: Cell<usize> = const { Cell::new(0) };
+    static INITIALIZED_AREA_VALIDATIONS: Cell<usize> = const { Cell::new(0) };
     #[cfg(test)]
     static MIGRATION_TARGET: Cell<usize> = const { Cell::new(0) };
 }
@@ -22,10 +25,12 @@ pub(super) unsafe fn install_cpu_base(area_base: usize, _boot_thread: usize) {
 }
 
 pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
+    CPU_BASE_READS.set(CPU_BASE_READS.get().wrapping_add(1));
     Ok(CPU_BASE.get())
 }
 
 pub(super) unsafe fn read_current_thread(_area_base: usize) -> usize {
+    CURRENT_THREAD_READS.set(CURRENT_THREAD_READS.get().wrapping_add(1));
     #[cfg(test)]
     MIGRATION_TARGET.with(|target| {
         let target = target.replace(0);
@@ -53,6 +58,24 @@ pub(super) unsafe fn read_kernel_tls() -> usize {
 #[cfg(feature = "tls")]
 pub(super) unsafe fn write_kernel_tls(value: usize) {
     KERNEL_TLS.set(value);
+}
+
+pub(super) fn reset_register_read_counts() {
+    CPU_BASE_READS.set(0);
+    CURRENT_THREAD_READS.set(0);
+    INITIALIZED_AREA_VALIDATIONS.set(0);
+}
+
+pub(super) fn register_read_counts() -> super::host_test::RegisterReadCounts {
+    super::host_test::RegisterReadCounts {
+        cpu_base: CPU_BASE_READS.get(),
+        current_thread: CURRENT_THREAD_READS.get(),
+        initialized_area_validations: INITIALIZED_AREA_VALIDATIONS.get(),
+    }
+}
+
+pub(super) fn record_initialized_area_validation() {
+    INITIALIZED_AREA_VALIDATIONS.set(INITIALIZED_AREA_VALIDATIONS.get().wrapping_add(1));
 }
 
 unsafe fn area_runtime_anchor(area_base: usize) -> &'static crate::CpuRuntimeAnchor {

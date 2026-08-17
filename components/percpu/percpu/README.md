@@ -58,11 +58,21 @@ additionally requires `ExclusiveCpu`; only the unsafe guard integration can
 create that stronger capability after excluding IRQ/re-entry and conflicting
 remote access.
 
+Low-level scheduler and offline-bootstrap code can use the hidden
+`with_scheduler_cpu` and `with_scheduler_cpu_mut` callbacks before a `CpuPin`
+exists. These callbacks select the architecture-owned CPU area directly instead
+of routing CPU-owned state through current execution-context publication. The
+caller retains the complete migration, context-switch, IRQ/re-entry, and remote
+aliasing contract.
+No runtime path uses these callbacks yet; they are reserved for future scheduler
+guard and offline CPU bootstrap integration.
+
 | Operation | Required protection |
 | --- | --- |
 | Atomic scalar | Migration disabled; local IRQs may remain enabled |
 | Shared `T: Sync` object | Migration disabled; the object synchronizes itself |
 | Local mutable object | Migration, IRQ/re-entry, and conflicting remote access excluded |
+| Pre-pin scheduler object | Migration and context switches excluded; mutable access also excludes IRQ/re-entry and remote conflicts |
 | Scheduler switch | IRQs and migration disabled; transactional tokens consumed |
 | vCPU run | Migration disabled; exit assembly restores host registers before Rust |
 | CPU-area initialization | CPU offline and raw area exclusively owned |
