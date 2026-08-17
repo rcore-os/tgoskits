@@ -24,14 +24,19 @@ use crate::{
 };
 
 mod propagation;
+
 mod unmount;
 
 pub use unmount::*;
 
 static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 static MOUNT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 static PEER_GROUP_COUNTER: AtomicU64 = AtomicU64::new(1);
+
 static SYNTHETIC_MOUNT_INODE_COUNTER: AtomicU64 = AtomicU64::new(1_u64 << 63);
+
 static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
 /// Serializes mount-tree and propagation-graph mutations.
 ///
@@ -769,7 +774,11 @@ impl Location {
         let mut components = vec![];
         let mut cur = self.clone();
         loop {
-            cur.entry.collect_absolute_path(&mut components);
+            while !cur.is_root_of_mount() {
+                components.push(cur.entry.name().to_owned());
+                let parent = cur.entry.parent().ok_or(VfsError::InvalidInput)?;
+                cur = cur.wrap(parent);
+            }
             cur = match cur.mountpoint.location() {
                 Some(loc) => loc,
                 None => break,
@@ -1250,6 +1259,25 @@ mod tests {
 
         let cloned = root.clone_tree();
         assert_eq!(cloned.source(), "/dev/vda");
+    }
+
+    #[test]
+    fn absolute_path_rebases_bind_mount_source_at_mountpoint() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let root_location = root.root_location();
+        let nix_entry = make_child_dir_entry(Some(root_location.entry().clone()), "nix");
+        let store_entry = make_child_dir_entry(Some(nix_entry.clone()), "store");
+        let store = Location::new(root.clone(), store_entry.clone());
+
+        let bound_store = Mountpoint::bind(&store, store.clone(), false);
+        let executable_entry = make_child_dir_entry(Some(store_entry), "systemd");
+        let executable = Location::new(bound_store, executable_entry);
+
+        assert_eq!(
+            executable.absolute_path().unwrap().as_str(),
+            "/nix/store/systemd"
+        );
     }
 
     #[test]

@@ -1,0 +1,84 @@
+schema_version = 1
+phase = "starry_apps"
+group = "Starry Apps"
+
+[[check]]
+id = "starry-apps-clippy-all"
+name = "Workspace · Full Clippy"
+runs_on = ["ubuntu-latest"]
+environment = "base"
+cache_key = "starry-apps-clippy-all"
+container_preflight = "none"
+events = ["schedule"]
+enable_boolean_input = "run_clippy_all"
+command = '''
+cargo xtask clippy --all
+'''
+
+[[check]]
+id = "starry-app-smoke-x86-64"
+name = "x86_64 QEMU · App smoke"
+runs_on = ["ubuntu-latest"]
+environment = "base"
+cache_key = "starry-apps-x86_64"
+apk_region = "us"
+container_preflight = "qemu-user"
+command = '''
+cargo xtask starry app qemu --all --arch x86_64
+'''
+
+[[check]]
+id = "starry-app-smoke-aarch64"
+name = "aarch64 QEMU · App smoke"
+runs_on = ["ubuntu-latest"]
+environment = "base"
+cache_key = "starry-apps-aarch64"
+apk_region = "us"
+container_preflight = "qemu-user"
+command = '''
+cargo xtask starry app qemu --all --arch aarch64
+'''
+
+[[check]]
+id = "starry-app-smoke-riscv64"
+name = "riscv64 QEMU · App smoke"
+runs_on = ["ubuntu-latest"]
+environment = "base"
+cache_key = "starry-apps-riscv64"
+apk_region = "us"
+container_preflight = "qemu-user"
+command = '''
+cargo xtask starry app qemu --all --arch riscv64
+'''
+
+[[check]]
+id = "starry-app-smoke-loongarch64"
+name = "loongarch64 QEMU · App smoke"
+runs_on = ["ubuntu-latest"]
+environment = "base"
+cache_key = "starry-apps-loongarch64"
+apk_region = "us"
+container_preflight = "qemu-user"
+command = '''
+cargo xtask starry app qemu --all --arch loongarch64
+'''
+
+[[check]]
+id = "starry-nixos-x86-64-qemu"
+name = "x86_64 QEMU · NixOS Stage-2"
+runs_on = ["ubuntu-latest"]
+environment = "host"
+timeout_minutes = 45
+container_preflight = "none"
+command = '''
+docker run --rm \
+  --env NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = false' \
+  --volume "$PWD:/workspace" \
+  --workdir /workspace \
+  docker.io/nixos/nix:2.33.1 \
+  sh -lc '
+    git config --global --add safe.directory /workspace
+    nix develop --accept-flake-config -c \
+      cargo xtask starry app qemu -t nixos --arch x86_64 --cap nix
+  '
+'''
