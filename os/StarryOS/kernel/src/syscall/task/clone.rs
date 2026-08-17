@@ -199,7 +199,18 @@ impl CloneArgs {
         if flags.contains(CloneFlags::NEWPID | CloneFlags::THREAD) {
             return Err(StarryError::InvalidInput);
         }
+        if flags.contains(CloneFlags::INTO_CGROUP | CloneFlags::THREAD) {
+            return Err(StarryError::InvalidInput);
+        }
 
+        Ok(())
+    }
+
+    fn validate_cgroup_target(&self, has_requested_cgroup: bool) -> StarryResult<()> {
+        self.validate()?;
+        if self.flags.contains(CloneFlags::INTO_CGROUP) != has_requested_cgroup {
+            return Err(StarryError::InvalidInput);
+        }
         Ok(())
     }
 
@@ -212,7 +223,7 @@ impl CloneArgs {
         uctx: &UserContext,
         requested_cgroup: Option<Arc<ax_cgroup::CgroupNode>>,
     ) -> StarryResult<isize> {
-        self.validate()?;
+        self.validate_cgroup_target(requested_cgroup.is_some())?;
 
         let Self {
             flags,
@@ -323,9 +334,16 @@ impl CloneArgs {
         } else {
             ax_cgroup::CgroupChildKind::Process
         };
-        let mut cgroup_guard =
-            crate::cgroup::begin_task(&old_proc_data.identity(), &identity, child_kind)?;
-        let inherited_cgroup = cgroup_guard.cgroup();
+        let mut cgroup_guard = match (child_kind, requested_cgroup) {
+            (ax_cgroup::CgroupChildKind::Process, Some(target)) => {
+                crate::cgroup::begin_process_at(target, &identity)?
+            }
+            (kind, None) => crate::cgroup::begin_task(&old_proc_data.identity(), &identity, kind)?,
+            (ax_cgroup::CgroupChildKind::Thread, Some(_)) => {
+                unreachable!("CLONE_INTO_CGROUP with CLONE_THREAD passed validation")
+            }
+        };
+        let child_cgroup = cgroup_guard.cgroup();
         let mut prepared_nsproxy = (!flags.contains(CloneFlags::THREAD)).then(|| {
             let mut nsproxy = old_proc_data.nsproxy.lock().clone_all();
             if flags.contains(CloneFlags::NEWUTS) {
@@ -344,7 +362,7 @@ impl CloneArgs {
                 nsproxy.unshare_user();
             }
             if flags.contains(CloneFlags::NEWCGROUP) {
-                nsproxy.unshare_cgroup(inherited_cgroup.clone());
+                nsproxy.unshare_cgroup(child_cgroup.clone());
             }
             if flags.contains(CloneFlags::NEWPID) {
                 nsproxy.pid_ns_for_children = target_pid_ns.clone();
@@ -420,9 +438,7 @@ impl CloneArgs {
             );
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
-            *proc_data.cgroup.write() = requested_cgroup
-                .clone()
-                .unwrap_or_else(|| inherited_cgroup.clone());
+            *proc_data.cgroup.write() = child_cgroup.clone();
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
@@ -707,6 +723,25 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
     }
     .validate()
     .is_err();
+    let thread_with_into_cgroup_rejected = CloneArgs {
+        flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND | CloneFlags::INTO_CGROUP,
+        ..Default::default()
+    }
+    .validate_cgroup_target(true)
+    .is_err();
+    let into_cgroup_without_target_rejected = CloneArgs {
+        flags: CloneFlags::INTO_CGROUP,
+        ..Default::default()
+    }
+    .validate_cgroup_target(false)
+    .is_err();
+    let unexpected_target_rejected = CloneArgs::default().validate_cgroup_target(true).is_err();
+    let into_cgroup_with_target_allowed = CloneArgs {
+        flags: CloneFlags::INTO_CGROUP,
+        ..Default::default()
+    }
+    .validate_cgroup_target(true)
+    .is_ok();
     let legacy_parent_newpid_allowed = CloneArgs {
         flags: CloneFlags::PARENT | CloneFlags::NEWPID,
         exit_signal: SIGCHLD as u64,
@@ -764,6 +799,10 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
         && sighand_without_vm_rejected
         && newns_with_fs_rejected
         && thread_with_newpid_rejected
+        && thread_with_into_cgroup_rejected
+        && into_cgroup_without_target_rejected
+        && unexpected_target_rejected
+        && into_cgroup_with_target_allowed
         && legacy_parent_newpid_allowed
         && thread_without_vm_sighand_rejected
         && vfork_with_thread_rejected
@@ -820,5 +859,30 @@ mod tests {
         };
 
         assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn clone_thread_rejects_into_cgroup() {
+        let args = CloneArgs {
+            flags: CloneFlags::THREAD
+                | CloneFlags::VM
+                | CloneFlags::SIGHAND
+                | CloneFlags::INTO_CGROUP,
+            ..Default::default()
+        };
+
+        assert!(args.validate_cgroup_target(true).is_err());
+    }
+
+    #[test]
+    fn clone_into_cgroup_requires_exactly_one_resolved_target() {
+        let args = CloneArgs {
+            flags: CloneFlags::INTO_CGROUP,
+            ..Default::default()
+        };
+        assert!(args.validate_cgroup_target(false).is_err());
+        assert!(args.validate_cgroup_target(true).is_ok());
+
+        assert!(CloneArgs::default().validate_cgroup_target(true).is_err());
     }
 }

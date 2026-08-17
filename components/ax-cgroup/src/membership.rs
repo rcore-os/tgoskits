@@ -100,12 +100,12 @@ pub struct CgroupForkGuard {
 }
 
 impl CgroupForkGuard {
-    /// Return the cgroup inherited by the reserved task.
+    /// Return the cgroup selected for the reserved task.
     pub fn cgroup(&self) -> Arc<CgroupNode> {
         Arc::clone(&self.cgroup)
     }
 
-    /// Publish inherited membership before the child becomes runnable.
+    /// Publish the reserved membership before the child becomes runnable.
     pub fn commit(&mut self) {
         if matches!(self.state, ForkState::Committed) {
             return;
@@ -146,13 +146,13 @@ impl Drop for CgroupForkGuard {
 
 /// Reserve a pids charge for a process or thread that is not runnable yet.
 pub(crate) fn begin_task_at(
-    parent: Arc<CgroupNode>,
+    target: Arc<CgroupNode>,
     process_id: ProcessId,
     task_id: ProcessId,
     child_kind: CgroupChildKind,
 ) -> CgroupResult<CgroupForkGuard> {
     let mut state = state()?.lock_irqsave();
-    reserve_task(&mut state, parent, process_id, task_id, child_kind)
+    reserve_task(&mut state, target, process_id, task_id, child_kind)
 }
 
 /// Resolve the process's current cgroup and reserve a task charge atomically
@@ -171,7 +171,7 @@ pub(crate) fn begin_task(
 
 fn reserve_task(
     state: &mut MembershipState,
-    parent: Arc<CgroupNode>,
+    target: Arc<CgroupNode>,
     process_id: ProcessId,
     task_id: ProcessId,
     child_kind: CgroupChildKind,
@@ -180,7 +180,7 @@ fn reserve_task(
         return Err(CgroupError::ResourceBusy);
     }
 
-    let charged_path = ancestry(&parent);
+    let charged_path = ancestry(&target);
     charge_path(&charged_path)?;
     state.pending_tasks.insert(task_id, process_id);
     let task_process_id = match child_kind {
@@ -188,7 +188,7 @@ fn reserve_task(
         CgroupChildKind::Thread => process_id,
     };
     Ok(CgroupForkGuard {
-        cgroup: parent,
+        cgroup: target,
         task_id,
         task_process_id,
         child_kind,
@@ -515,6 +515,50 @@ mod tests {
         assert_eq!(exit_task(pid, pid, CgroupTaskExit::LastProcessTask), Ok(()));
         assert_eq!(exit_task(pid, pid, CgroupTaskExit::LastProcessTask), Ok(()));
         assert!(!root.has_member(pid));
+    }
+
+    #[test]
+    fn explicit_process_reservation_charges_only_the_target_path() {
+        let _guard = setup();
+        let root = crate::root();
+        let source = root.create_child("explicit-process-source").unwrap();
+        let target = root.create_child("explicit-process-target").unwrap();
+        let parent = process_id(1032);
+        let child = process_id(1033);
+        root.write_subtree_control("+pids").unwrap();
+        commit_process(&source, parent);
+        target.write_pids_max("1").unwrap();
+
+        let pending = crate::begin_process_at(Arc::clone(&target), child).unwrap();
+        assert!(Arc::ptr_eq(&pending.cgroup(), &target));
+        assert_eq!(source.pids_current_text().unwrap(), "1\n");
+        assert_eq!(target.pids_current_text().unwrap(), "1\n");
+
+        drop(pending);
+        assert_eq!(source.pids_current_text().unwrap(), "1\n");
+        assert_eq!(target.pids_current_text().unwrap(), "0\n");
+
+        let mut pending = crate::begin_process_at(Arc::clone(&target), child).unwrap();
+        pending.commit();
+        assert!(target.has_member(child));
+        assert_eq!(source.pids_current_text().unwrap(), "1\n");
+        assert_eq!(target.pids_current_text().unwrap(), "1\n");
+
+        exit_task(child, child, CgroupTaskExit::LastProcessTask).unwrap();
+        assert!(!target.has_member(child));
+        assert_eq!(source.pids_current_text().unwrap(), "1\n");
+        assert_eq!(target.pids_current_text().unwrap(), "0\n");
+
+        target.write_pids_max("0").unwrap();
+        assert!(matches!(
+            crate::begin_process_at(Arc::clone(&target), child),
+            Err(CgroupError::LimitExceeded)
+        ));
+        assert_eq!(source.pids_current_text().unwrap(), "1\n");
+        assert_eq!(target.pids_current_text().unwrap(), "0\n");
+        assert_eq!(target.pids_events_text().unwrap(), "max 1\n");
+
+        exit_task(parent, parent, CgroupTaskExit::LastProcessTask).unwrap();
     }
 
     #[test]

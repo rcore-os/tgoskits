@@ -66,6 +66,14 @@ pub fn begin_task(
     ax_cgroup::begin_task(process_id(process), process_id(child), child_kind)
 }
 
+/// Reserve a process task in an explicit target cgroup.
+pub fn begin_process_at(
+    target: Arc<CgroupNode>,
+    child: &Arc<PidIdentity>,
+) -> Result<CgroupForkGuard, CgroupError> {
+    ax_cgroup::begin_process_at(target, process_id(child))
+}
+
 /// Release one exact task generation and optionally its process membership.
 pub fn exit_task(
     process: &Arc<PidIdentity>,

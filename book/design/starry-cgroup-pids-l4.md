@@ -64,12 +64,17 @@ exist only in non-root cgroups whose parent enabled pids in
 
 `MembershipState` is the serialization boundary for task lifecycle changes. It
 owns pending task reservations and the committed task-to-cgroup mapping. A
-fork guard charges the source cgroup path before the child is runnable and
-either commits the mapping or releases every charge on drop. A task exit
+fork guard charges the selected cgroup path before the child is runnable and
+either commits the mapping or releases every charge on drop. Ordinary process
+and thread clones resolve the owning process's current cgroup while holding the
+membership lock. `clone3(CLONE_INTO_CGROUP)` instead reserves a process child
+directly in the validated target cgroup. A task exit
 removes exactly one committed mapping before uncharging its path. Process
-migration receives all live TIDs from `CgroupProvider`, moves their mappings
-as one membership transaction, charges the target-only path without checking
-limits, and releases the source-only path after publication.
+migration enumerates all committed TIDs for the process from the same ledger,
+moves their mappings as one membership transaction, charges the target-only
+path without checking limits, and releases the source-only path after
+publication. A pending reservation owned by that process makes migration
+return busy, so migration cannot split a thread group across two cgroups.
 
 The per-node pids counter uses compare-and-exchange for limit-checked fork
 charges. The membership lock orders multi-node lifecycle operations and
@@ -79,9 +84,10 @@ being updated.
 
 ## Interfaces and errors
 
-`CgroupProvider` gains a live-task query so migration can move a complete
-thread group. The kernel implementation obtains that snapshot from
-`starry-process::Process::threads()`; test providers model it explicitly.
+`CgroupProvider` supplies the process's authoritative cgroup pointer, updates
+that pointer during migration, and reports zombie state. It does not enumerate
+threads: provider visibility is not the reservation commit boundary, so the
+owner-aware committed ledger is the authoritative task set for migration.
 
 The domain API distinguishes a process child from a thread child. Both reserve
 a pids task charge, while only a process child is added to `cgroup.procs`.
@@ -103,7 +109,7 @@ existing entry points:
 | Syscall | Impact and compatibility basis |
 | --- | --- |
 | `clone` | `CloneArgs::do_clone` reserves one pids charge before publishing the TID and returns `EAGAIN` on a hierarchical limit, matching [`clone(2)`](https://man7.org/linux/man-pages/man2/clone.2.html) and Linux [`pids_can_fork()`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/kernel/cgroup/pids.c#L273-L284). A `CLONE_PARENT_SETTID` pointer is written only after the reservation succeeds, so a rejected clone has no parent-TID side effect. |
-| `clone3` | Uses the same `CloneArgs::do_clone` path after existing ABI validation, so the pids result is identical to `clone`; argument parsing is unchanged. |
+| `clone3` | Uses the same `CloneArgs::do_clone` path after existing ABI validation. Ordinary clones inherit through the owner-aware path. With `CLONE_INTO_CGROUP`, the process child is reserved and charged directly in the requested target; its `ProcessData.cgroup`, cgroup-namespace root, committed task ledger, and pids charge all derive from that same selected cgroup. `CLONE_INTO_CGROUP | CLONE_THREAD` and a flag/target mismatch return `EINVAL`. A target limit failure returns `EAGAIN` without publishing a child or writing `CLONE_PARENT_SETTID`. |
 | `fork` | The architecture wrapper uses the clone path with `SIGCHLD`; the pids rejection is therefore `EAGAIN`, matching [`fork(2)`](https://man7.org/linux/man-pages/man2/fork.2.html). |
 | `vfork` | The architecture wrapper uses the clone path with `CLONE_VFORK | CLONE_VM`; the charge is committed before publication and before the parent waits, matching [`vfork(2)`](https://man7.org/linux/man-pages/man2/vfork.2.html). |
 | `execve` | Successful de-threading renames the surviving task ledger entry without changing the charge; executable loading, argument handling, and errno ordering are unchanged. See [`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html). |
@@ -124,47 +130,40 @@ races, rollback, thread accounting, idempotent exit, and migration above a
 limit. The Starry QEMU system test performs the user-visible sequence of
 enabling pids, migration, `pids.max` update, successful first fork, failed
 second fork with `EAGAIN`, a rejected raw `clone(CLONE_PARENT_SETTID)`,
-hierarchical event observation, and counter recovery after exit. It must fail
-if the clone-path limit check, parent-TID ordering, or event propagation is
+hierarchical event observation, and counter recovery after exit. The grouped
+`cgroup-basic` case also verifies that a successful
+`clone3(CLONE_INTO_CGROUP)` publishes the child in the target cgroup. The pids
+case verifies that a target with `pids.max=0` rejects that clone3 request,
+increments the target's `pids.events`, leaves `pids.current` at zero, and does
+not write the parent-TID pointer. These tests fail if target selection, the
+clone-path limit check, parent-TID ordering, rollback, or event propagation is
 removed.
 
-Full validation of the patch completed on base
-`106bede3070da3c44fd1cc61190aa95e96149ca6` on 2026-08-13
-(Asia/Shanghai). Before the ordering fix, the new aarch64 test produced
-56 passes and 2 failures: the rejected clone changed the parent-TID pointer,
-and the existing event expectation did not account for the additional valid
-rejection. Moving the write after the cgroup reservation commit and updating
-the event expectation produced 58 passes and 0 failures.
+The initial implementation received a four-architecture focused QEMU run on
+2026-08-13. That historical matrix remains useful reuse evidence, including the
+red/green `CLONE_PARENT_SETTID` ordering result, but it does not replace
+validation of later membership-ledger or clone3 target-selection repairs.
+
+The current repair was validated on `origin/dev` at
+`6bca19eb0a6e2488f38a8302df5647d4e2f06180` on 2026-08-17
+(Asia/Shanghai):
 
 | Gate | Result |
 | --- | --- |
 | `cargo fmt --all -- --check` | passed |
-| `cargo xtask lock-lint` | passed |
-| `cargo test -p ax-cgroup` | 20 passed |
-| `cargo xtask clippy --package ax-cgroup` | passed |
-| `cargo check -p ax-cgroup` | passed |
+| `git diff --check` | passed |
+| `cargo test --manifest-path components/ax-cgroup/Cargo.toml --all-features` | 25 passed |
+| `cargo clippy --manifest-path components/ax-cgroup/Cargo.toml --all-features -- -D warnings` | passed |
 | `cargo check -p starry-kernel` | passed |
-| `cargo xtask clippy --package starry-kernel` | 25 configurations passed with the full cross-toolchain `PATH` |
-| `cargo xtask starry build --arch aarch64` | passed on final worktree |
-| `cargo xtask starry build --arch riscv64` | passed on final worktree |
-| `cargo xtask starry build --arch loongarch64` | passed on final worktree |
-| `cargo xtask starry build --arch x86_64` | passed on final worktree |
-| aarch64 `qemu/system/cgroup-pids` | 58 passed, 0 failed |
-| riscv64 `qemu/system/cgroup-pids` | 58 passed, 0 failed |
-| loongarch64 `qemu/system/cgroup-pids` | passed the same focused binary |
-| x86_64 `qemu/system/cgroup-pids` | 58 passed, 0 failed |
+| loongarch64 `qemu/system/cgroup-basic` | passed, 1/1; successful `CLONE_INTO_CGROUP` observed in the target |
+| loongarch64 `qemu/system/cgroup-pids` | passed, 1/1; target rejection, rollback, event, and parent-TID checks passed |
 
-The host regression also covers rejecting migration while a pending task is
-unpublished and resolving a reservation from the process's current cgroup.
-All four supported QEMU architectures were rebuilt and rerun after the final
-API convergence. Existing Cargo artifacts, rootfs archives, and grouped-case
-assets were reused; no `cargo clean` was run.
-
-The branch was then rebased without conflicts onto
-`9063198d91d0fbf42be575c02f5e2bf9e94f2c58`, whose only change from the
-validated base adds files under `apps/starry/aka-rk3588`. It does not touch
-cgroup, clone, the focused test, Cargo metadata, or the build/test tooling.
-The committed patches were checked with `git range-diff`, and the full
-cross-build/QEMU evidence was reused rather than rebuilt for this unrelated
-baseline-only change. Fast host and kernel gates were rerun on the rebased
-worktree before the final local commit.
+A diagnostic loongarch64 grouped-system run also passed both cgroup binaries in
+their real order. It was stopped after the unrelated I/O-heavy
+`test-ext4-inode-unique` and `test-pagecache-cap` cases each reached their
+existing 240-second per-binary budget; it is not recorded as a full-suite pass.
+A direct `starry-kernel` lib-test attempt is currently blocked before test
+execution by pre-existing `pseudofs/proc.rs` fixtures that still initialize
+`TgidNumber`, `TidNumber`, and optional parent identities with raw integers;
+the normal kernel check above succeeds. Existing Cargo and rootfs artifacts
+were reused, and no `cargo clean` was run.

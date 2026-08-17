@@ -5,11 +5,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -30,9 +32,25 @@ static int fail_count;
 #define CGROUP2_PATH "/tmp/cg-pids"
 #define PRE_ENABLE_PATH CGROUP2_PATH "/before-enable"
 #define CHILD_PATH CGROUP2_PATH "/limited"
+#define CLONE_INTO_PATH CGROUP2_PATH "/clone-into"
 #define NESTED_PARENT_PATH CGROUP2_PATH "/nested-parent"
 #define NESTED_CHILD_PATH NESTED_PARENT_PATH "/nested-child"
 #define CLONE_STACK_SIZE (64 * 1024)
+#define CLONE_INTO_CGROUP (1ULL << 33)
+
+struct clone_args {
+    unsigned long long flags;
+    unsigned long long pidfd;
+    unsigned long long child_tid;
+    unsigned long long parent_tid;
+    unsigned long long exit_signal;
+    unsigned long long stack;
+    unsigned long long stack_size;
+    unsigned long long tls;
+    unsigned long long set_tid;
+    unsigned long long set_tid_size;
+    unsigned long long cgroup;
+};
 
 static int clone_child(void *arg)
 {
@@ -270,6 +288,43 @@ int main(void)
           "echo 0 returns current process to root");
     CHECK(read_number(CHILD_PATH "/pids.current") == 0,
           "migration back to root releases child charge");
+
+    CHECK(mkdir(CLONE_INTO_PATH, 0755) == 0 || errno == EEXIST,
+          "create clone3 target cgroup");
+    CHECK(write_text(CLONE_INTO_PATH "/pids.max", "0") == 0,
+          "set clone3 target pids.max to zero");
+    int clone_into_fd = open(CLONE_INTO_PATH, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    CHECK(clone_into_fd >= 0, "open clone3 target cgroup");
+    if (clone_into_fd >= 0) {
+        pid_t clone_into_parent_tid = -1;
+        struct clone_args args = {
+            .flags = CLONE_INTO_CGROUP | CLONE_PARENT_SETTID,
+            .parent_tid = (unsigned long long)&clone_into_parent_tid,
+            .exit_signal = SIGCHLD,
+            .cgroup = (unsigned long long)clone_into_fd,
+        };
+        errno = 0;
+        pid_t clone_into = (pid_t)syscall(SYS_clone3, &args, sizeof(args));
+        int clone_into_errno = errno;
+        if (clone_into == 0) {
+            _exit(0);
+        }
+        if (clone_into > 0) {
+            (void)waitpid(clone_into, NULL, 0);
+        }
+        close(clone_into_fd);
+        errno = clone_into_errno;
+        CHECK(clone_into == -1 && clone_into_errno == EAGAIN,
+              "clone3 target pids.max rejects child with EAGAIN");
+        CHECK(clone_into_parent_tid == -1,
+              "denied clone3 leaves the parent TID pointer unchanged");
+    }
+    CHECK(read_number(CLONE_INTO_PATH "/pids.current") == 0,
+          "denied clone3 leaves target pids.current unchanged");
+    expect_text(CLONE_INTO_PATH "/pids.events", "max 1\n",
+                "clone3 target records its own limit failure");
+    CHECK(rmdir(CLONE_INTO_PATH) == 0,
+          "remove empty clone3 target cgroup");
 
     CHECK(mkdir(NESTED_PARENT_PATH, 0755) == 0 || errno == EEXIST,
           "create nested pids parent");

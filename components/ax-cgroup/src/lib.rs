@@ -103,9 +103,12 @@ pub fn attach_initial_process(pid: ProcessId) -> CgroupResult<()> {
     membership::attach_initial_process(root(), pid)
 }
 
-/// Prepare inherited membership for a non-thread child.
-pub fn begin_fork(parent: Arc<CgroupNode>, child_pid: ProcessId) -> CgroupResult<CgroupForkGuard> {
-    membership::begin_task_at(parent, child_pid, child_pid, CgroupChildKind::Process)
+/// Reserve a non-thread child directly in an explicit target cgroup.
+pub fn begin_process_at(
+    target: Arc<CgroupNode>,
+    child_pid: ProcessId,
+) -> CgroupResult<CgroupForkGuard> {
+    membership::begin_task_at(target, child_pid, child_pid, CgroupChildKind::Process)
 }
 
 /// Resolve a process's current cgroup and reserve a task charge atomically.
