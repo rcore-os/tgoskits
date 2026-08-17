@@ -151,7 +151,7 @@ pub fn memory_accounting_tracks_cow_charge_transitions() -> bool {
     let file_page = VirtAddr::from(0x1000usize);
     let moved_page = VirtAddr::from(0x2000usize);
 
-    acct.record_charge(file_page, RssKind::File).is_ok()
+    acct.record_charge(file_page, RssKind::File, 1).is_ok()
         && acct.rss_file_pages() == 1
         && acct.cow_file_write_to_anon(file_page)
         && acct.rss_file_pages() == 0
@@ -172,9 +172,9 @@ pub fn memory_accounting_rejects_duplicate_and_conflicting_charges() -> bool {
     let dst = VirtAddr::from(0x4000usize);
     let orphan = VirtAddr::from(0x5000usize);
 
-    acct.record_charge(src, RssKind::File).is_ok()
-        && acct.record_charge(src, RssKind::Anon).is_err()
-        && acct.record_charge(dst, RssKind::Shmem).is_ok()
+    acct.record_charge(src, RssKind::File, 1).is_ok()
+        && acct.record_charge(src, RssKind::Anon, 1).is_err()
+        && acct.record_charge(dst, RssKind::Shmem, 1).is_ok()
         && acct.move_charge(src, dst).is_err()
         && acct.charge_entries().contains(&(src, RssKind::File))
         && acct.charge_entries().contains(&(dst, RssKind::Shmem))

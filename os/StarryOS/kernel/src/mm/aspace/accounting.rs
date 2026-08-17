@@ -29,6 +29,16 @@ pub enum RssKind {
     Shmem,
 }
 
+/// One Cow charge entry: its kind and the number of 4 KiB resident pages it
+/// accounts for. Almost always 1 (a 4 KiB page); a transparent-huge-page 2 MiB
+/// block is a single entry accounting for its 512 resident pages, so VmRSS/VmHWM
+/// reflect the whole block rather than one page.
+#[derive(Debug, Clone, Copy)]
+struct RssCharge {
+    kind: RssKind,
+    pages: u32,
+}
+
 /// Incremental RSS counters for one [`super::AddrSpace`].
 ///
 /// Cow-backend per-VA charges live in `charges` and are mutated only while the
@@ -40,8 +50,10 @@ pub struct MemoryAccounting {
     hiwater_rss: AtomicU64,
     /// Monotonic generation counter, incremented on every charge map mutation.
     generation: AtomicU64,
-    /// Cow resident pages keyed by user VA (4 KiB granularity today).
-    charges: UnsafeCell<BTreeMap<VirtAddr, RssKind>>,
+    /// Cow resident charges keyed by user VA. Each entry accounts for its
+    /// [`RssCharge::pages`] resident 4 KiB pages (1 for a 4 KiB page, 512 for a THP
+    /// 2 MiB block).
+    charges: UnsafeCell<BTreeMap<VirtAddr, RssCharge>>,
 }
 
 // SAFETY: `charges` is only accessed while `AddrSpace` is locked.
@@ -131,32 +143,58 @@ impl MemoryAccounting {
     pub(crate) fn charge_kind(&self, vaddr: VirtAddr) -> Option<RssKind> {
         // SAFETY: `AddrSpace` lock held by all callers.
         let charges = unsafe { &*self.charges.get() };
+        charges.get(&vaddr).map(|c| c.kind)
+    }
+
+    /// The full charge entry (kind + resident page count) at `vaddr`, if any.
+    fn charge_at(&self, vaddr: VirtAddr) -> Option<RssCharge> {
+        // SAFETY: `AddrSpace` lock held by all callers.
+        let charges = unsafe { &*self.charges.get() };
         charges.get(&vaddr).copied()
     }
 
-    /// Record a Cow resident page after PTE mapping succeeds.
-    pub fn record_charge(&self, vaddr: VirtAddr, kind: RssKind) -> StarryResult<()> {
+    /// Record a Cow resident charge of `pages` 4 KiB pages after PTE mapping
+    /// succeeds. `pages` is 1 for a 4 KiB page, 512 for a THP 2 MiB block.
+    pub fn record_charge(&self, vaddr: VirtAddr, kind: RssKind, pages: u32) -> StarryResult<()> {
         // SAFETY: `AddrSpace` lock held by all callers.
         let charges = unsafe { &mut *self.charges.get() };
         if charges.contains_key(&vaddr) {
             return Err(StarryError::InvalidInput);
         }
-        charges.insert(vaddr, kind);
-        self.inc(kind, 1);
+        charges.insert(vaddr, RssCharge { kind, pages });
+        self.inc(kind, pages as u64);
         self.generation.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    /// Remove charge after PTE unmap. Debug builds assert the entry exists.
+    /// Infallible per-VA charge insert for a freshly-uncharged page. Used by a THP
+    /// 2 MiB -> 4 KiB split to expand one 2 MiB charge into 512 4 KiB charges: the
+    /// sub-page VAs were never charged (only the 2 MiB VA was), so the insert cannot
+    /// collide and must not fail partway through the 512. Debug builds assert the
+    /// freshness invariant.
+    #[cfg(feature = "thp")]
+    pub fn record_charge_fresh(&self, vaddr: VirtAddr, kind: RssKind) {
+        // SAFETY: `AddrSpace` lock held by all callers.
+        let charges = unsafe { &mut *self.charges.get() };
+        debug_assert!(
+            !charges.contains_key(&vaddr),
+            "record_charge_fresh: duplicate charge for {vaddr:?}"
+        );
+        charges.insert(vaddr, RssCharge { kind, pages: 1 });
+        self.inc(kind, 1);
+        self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Remove the charge after PTE unmap, decrementing by its resident page count
+    /// (512 for a THP 2 MiB block). Debug builds assert the entry exists.
     pub fn remove_charge(&self, vaddr: VirtAddr) -> Option<RssKind> {
         // SAFETY: `AddrSpace` lock held by all callers.
         let charges = unsafe { &mut *self.charges.get() };
-        let kind = charges.remove(&vaddr);
-        match kind {
-            Some(k) => {
-                self.dec(k, 1);
+        match charges.remove(&vaddr) {
+            Some(c) => {
+                self.dec(c.kind, c.pages as u64);
                 self.generation.fetch_add(1, Ordering::Relaxed);
-                Some(k)
+                Some(c.kind)
             }
             None => {
                 debug_assert!(false, "remove_charge: missing entry for {vaddr:?}");
@@ -196,7 +234,7 @@ impl MemoryAccounting {
             }
             Some(RssKind::File) => {
                 self.remove_charge(vaddr);
-                if self.record_charge(vaddr, RssKind::Anon).is_err() {
+                if self.record_charge(vaddr, RssKind::Anon, 1).is_err() {
                     return false;
                 }
                 self.sync_rss_atomics_from_charges();
@@ -213,7 +251,7 @@ impl MemoryAccounting {
     /// Establish an Anon charge after a file-backed COW write when no File
     /// charge exists at `vaddr` (accounting drift recovery).
     pub fn adopt_cow_write_as_anon(&self, vaddr: VirtAddr) -> StarryResult<()> {
-        self.record_charge(vaddr, RssKind::Anon)?;
+        self.record_charge(vaddr, RssKind::Anon, 1)?;
         if self.rss_file_pages() > 0 {
             self.dec(RssKind::File, 1);
         }
@@ -225,30 +263,33 @@ impl MemoryAccounting {
     pub fn charge_entries(&self) -> alloc::vec::Vec<(VirtAddr, RssKind)> {
         // SAFETY: `AddrSpace` lock held by all callers.
         let charges = unsafe { &*self.charges.get() };
-        charges.iter().map(|(&va, &kind)| (va, kind)).collect()
+        charges.iter().map(|(&va, c)| (va, c.kind)).collect()
     }
 
-    /// Count resident Cow charges by kind. Only valid while [`super::AddrSpace`] is locked.
+    /// Count resident Cow pages by kind (a THP block counts its 512 pages). Only
+    /// valid while [`super::AddrSpace`] is locked.
     pub fn snapshot_resident_charges(&self) -> (u64, u64, u64) {
         // SAFETY: `AddrSpace` lock held by all callers.
         let charges = unsafe { &*self.charges.get() };
         let mut anon = 0u64;
         let mut file = 0u64;
         let mut shmem = 0u64;
-        for kind in charges.values() {
-            match kind {
-                RssKind::Anon => anon += 1,
-                RssKind::File => file += 1,
-                RssKind::Shmem => shmem += 1,
+        for c in charges.values() {
+            let pages = c.pages as u64;
+            match c.kind {
+                RssKind::Anon => anon += pages,
+                RssKind::File => file += pages,
+                RssKind::Shmem => shmem += pages,
             }
         }
         (anon, file, shmem)
     }
 
-    /// Fork: copy parent's bucket after child PTE maps the shared page.
+    /// Fork: copy parent's bucket after child PTE maps the shared page, preserving
+    /// the page count (a shared THP block stays a 512-page charge in the child).
     pub fn copy_charge_from(&self, parent: &Self, vaddr: VirtAddr) -> StarryResult<()> {
-        let kind = parent.charge_kind(vaddr).ok_or(StarryError::InvalidInput)?;
-        self.record_charge(vaddr, kind)?;
+        let charge = parent.charge_at(vaddr).ok_or(StarryError::InvalidInput)?;
+        self.record_charge(vaddr, charge.kind, charge.pages)?;
         Ok(())
     }
 
@@ -300,15 +341,15 @@ impl MemoryAccounting {
     pub fn move_charge(&self, src: VirtAddr, dst: VirtAddr) -> StarryResult<()> {
         // SAFETY: `AddrSpace` lock held by all callers.
         let charges = unsafe { &mut *self.charges.get() };
-        let Some(kind) = charges.remove(&src) else {
+        let Some(charge) = charges.remove(&src) else {
             return Ok(());
         };
         if charges.contains_key(&dst) {
             debug_assert!(false, "move_charge: dst {dst:?} already charged");
-            charges.insert(src, kind);
+            charges.insert(src, charge);
             return Err(StarryError::InvalidInput);
         }
-        charges.insert(dst, kind);
+        charges.insert(dst, charge);
         Ok(())
     }
 }
@@ -316,10 +357,10 @@ impl MemoryAccounting {
 impl Drop for MemoryAccounting {
     fn drop(&mut self) {
         let charges = self.charges.get_mut();
-        let kinds: alloc::vec::Vec<_> = charges.values().copied().collect();
+        let entries: alloc::vec::Vec<_> = charges.values().copied().collect();
         charges.clear();
-        for kind in kinds {
-            self.dec(kind, 1);
+        for c in entries {
+            self.dec(c.kind, c.pages as u64);
         }
     }
 }
@@ -388,9 +429,9 @@ pub(crate) fn accounting_edge_cases_and_snapshot_rules_hold_for_test() -> bool {
     let va1 = VirtAddr::from(0x1000usize);
     let va2 = VirtAddr::from(0x2000usize);
     let va3 = VirtAddr::from(0x3000usize);
-    acct.record_charge(va1, RssKind::Anon).unwrap();
-    acct.record_charge(va2, RssKind::File).unwrap();
-    acct.record_charge(va3, RssKind::File).unwrap();
+    acct.record_charge(va1, RssKind::Anon, 1).unwrap();
+    acct.record_charge(va2, RssKind::File, 1).unwrap();
+    acct.record_charge(va3, RssKind::File, 1).unwrap();
     let (anon, file, shmem) = acct.snapshot_resident_charges();
     assert_eq!(anon, 1); // va1
     assert_eq!(file, 2); // va2 + va3
@@ -406,6 +447,40 @@ pub(crate) fn accounting_edge_cases_and_snapshot_rules_hold_for_test() -> bool {
     let ghost = VirtAddr::from(0xDEADusize);
     assert!(acct.move_charge(ghost, VirtAddr::from(0xBEEFusize)).is_ok());
     assert!(acct.charge_kind(ghost).is_none());
+
+    // A transparent-huge-page 2 MiB block is a single charge entry that accounts
+    // for its 512 resident 4 KiB pages, so VmRSS/VmHWM reflect the whole block.
+    // Regression: a resident 2 MiB block previously counted as 1 page, so touching
+    // a THP-promoted mmap under-grew VmHWM (`proc-test-vmpeak-hwm`). This asserts
+    // the block charge counts, peaks, and decrements as 512 pages.
+    let huge = MemoryAccounting::new();
+    let hva = VirtAddr::from(0x20_0000usize);
+    huge.record_charge(hva, RssKind::Anon, 512).unwrap();
+    assert_eq!(huge.rss_anon_pages(), 512);
+    assert_eq!(huge.rss_total_pages(), 512);
+    assert_eq!(huge.hiwater_rss_pages(), 512);
+    let (ha, hf, hs) = huge.snapshot_resident_charges();
+    assert_eq!(ha, 512);
+    assert_eq!(hf, 0);
+    assert_eq!(hs, 0);
+    huge.remove_charge(hva);
+    assert_eq!(huge.rss_total_pages(), 0);
+    // hiwater keeps the 512 peak even after the block is unmapped.
+    assert_eq!(huge.hiwater_rss_pages(), 512);
+
+    // 2 MiB -> 4 KiB split conservation: replacing one 512-page block charge with
+    // 512 single-page charges leaves VmRSS unchanged (-512 + 512 * 1 == 0).
+    let split = MemoryAccounting::new();
+    let base = VirtAddr::from(0x40_0000usize);
+    split.record_charge(base, RssKind::Anon, 512).unwrap();
+    assert_eq!(split.rss_total_pages(), 512);
+    split.remove_charge(base);
+    for i in 0..512usize {
+        split
+            .record_charge(base + i * 0x1000, RssKind::Anon, 1)
+            .unwrap();
+    }
+    assert_eq!(split.rss_total_pages(), 512);
 
     true
 }
@@ -431,7 +506,7 @@ mod tests {
     fn record_remove_and_reclassify() {
         let acct = MemoryAccounting::new();
         let va = VirtAddr::from(0x1000usize);
-        acct.record_charge(va, RssKind::File).unwrap();
+        acct.record_charge(va, RssKind::File, 1).unwrap();
         assert_eq!(acct.rss_file_pages(), 1);
         assert!(acct.cow_file_write_to_anon(va));
         assert_eq!(acct.rss_file_pages(), 0);
@@ -445,7 +520,7 @@ mod tests {
         let acct = MemoryAccounting::new();
         let src = VirtAddr::from(0x1000usize);
         let dst = VirtAddr::from(0x2000usize);
-        acct.record_charge(src, RssKind::File).unwrap();
+        acct.record_charge(src, RssKind::File, 1).unwrap();
         acct.move_charge(src, dst).unwrap();
         assert!(acct.charge_kind(src).is_none());
         assert_eq!(acct.charge_kind(dst), Some(RssKind::File));
@@ -457,7 +532,7 @@ mod tests {
         let parent = MemoryAccounting::new();
         let child = MemoryAccounting::new();
         let va = VirtAddr::from(0x3000usize);
-        parent.record_charge(va, RssKind::File).unwrap();
+        parent.record_charge(va, RssKind::File, 1).unwrap();
         child.copy_charge_from(&parent, va).unwrap();
         assert_eq!(parent.rss_file_pages(), 1);
         assert_eq!(child.rss_file_pages(), 1);
@@ -473,7 +548,7 @@ mod tests {
             (VirtAddr::from(0x9000usize), RssKind::File),
         ];
         for (va, kind) in pages {
-            parent.record_charge(va, kind).unwrap();
+            parent.record_charge(va, kind, 1).unwrap();
         }
         for (va, _) in pages {
             child.copy_charge_from(&parent, va).unwrap();
@@ -493,7 +568,7 @@ mod tests {
         let parent = MemoryAccounting::new();
         let child = MemoryAccounting::new();
         let va = VirtAddr::from(0x9000usize);
-        parent.record_charge(va, RssKind::File).unwrap();
+        parent.record_charge(va, RssKind::File, 1).unwrap();
         child.copy_charge_from(&parent, va).unwrap();
         let (parent_anon, ..) = parent.snapshot_resident_charges();
         assert!(child.cow_file_write_to_anon(va));

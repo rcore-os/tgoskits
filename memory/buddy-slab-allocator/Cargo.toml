@@ -42,6 +42,9 @@ log = "0.4"
 
 [features]
 axtest = ["dep:axtest"]
+# Pull ax-sync's std `SpinOps` implementation so the crate's host tests
+# (which exercise `GlobalAllocator`) link off-target under `cargo xtask test`.
+host-test = ["ax-sync/host-test"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
