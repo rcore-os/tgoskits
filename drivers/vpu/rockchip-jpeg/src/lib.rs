@@ -78,14 +78,17 @@ impl JpuMmio for RawMmio {
 }
 
 /// Errors from the JPEG decoder runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum JpuError {
     /// Soft-reset did not complete within the timeout.
+    #[error("JPEG decoder reset timed out")]
     ResetTimeout,
     /// Decode did not signal completion within the timeout.
+    #[error("JPEG decode timed out")]
     DecodeTimeout,
     /// Hardware reported a decode error.
-    Decode(DecodeError),
+    #[error("JPEG hardware decode failed: {0}")]
+    Decode(#[source] DecodeError),
 }
 
 /// Physical (or device-visible) base addresses for one decode.
@@ -269,14 +272,17 @@ impl<M: JpuMmio> JpuCore<M> {
 }
 
 /// Errors from the JPEG decode self-test path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SelftestError {
     /// The JPEG header could not be parsed.
-    Parse(parser::ParseError),
+    #[error("self-test JPEG parsing failed: {0}")]
+    Parse(#[source] parser::ParseError),
     /// A DMA buffer allocation failed.
+    #[error("self-test DMA allocation failed")]
     Alloc,
     /// The hardware decode failed.
-    Decode(JpuError),
+    #[error("self-test JPEG decode failed: {0}")]
+    Decode(#[source] JpuError),
 }
 
 /// A probed RK3588 JPEG decoder device: the hardware engine plus a DMA

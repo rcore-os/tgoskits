@@ -16,6 +16,8 @@ pub enum IpiNotification {
     /// This publication sent a physical IPI.
     Sent,
     /// An already armed physical IPI covers this publication.
+    ///
+    /// This does not mean that the publisher's logical work has completed.
     Coalesced,
 }
 

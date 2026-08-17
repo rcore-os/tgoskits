@@ -12,12 +12,11 @@ license = "Apache-2.0"
 
 [dependencies]
 axtest = { workspace = true, optional = true }
-ax-errno = { workspace = true, optional = true }
 ax-memory-addr = { workspace = true }
+thiserror.workspace = true
 
 [features]
 axtest = ["dep:axtest"]
-ax-errno = ["dep:ax-errno"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

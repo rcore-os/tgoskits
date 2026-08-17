@@ -20,11 +20,11 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use ax_task::future::{block_on, poll_io, timeout};
 use axpoll::{IoEvents, Pollable};
 
 use crate::{
+    NetError, NetResult,
     config::{DeviceBinding, InterfaceId},
     get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
@@ -168,9 +168,9 @@ impl GeneralOptions {
 
     /// Updates the IP_MTU_DISCOVER mode. Rejects modes Linux does not define so a
     /// probing client sees the same EINVAL, then stores the mode for readback.
-    pub fn set_ip_mtu_discover(&self, mode: u8) -> AxResult<()> {
+    pub fn set_ip_mtu_discover(&self, mode: u8) -> NetResult<()> {
         if mode > IP_PMTUDISC_MAX {
-            return Err(AxError::from(LinuxError::EINVAL));
+            return Err(NetError::InvalidInput);
         }
         self.ip_mtu_discover.store(mode, Ordering::Relaxed);
         Ok(())
@@ -202,9 +202,9 @@ impl GeneralOptions {
     }
 
     /// Updates SO_PRIORITY using Linux's ordinary unprivileged range.
-    pub fn set_priority(&self, priority: i32) -> AxResult<()> {
+    pub fn set_priority(&self, priority: i32) -> NetResult<()> {
         if !(0..=SO_PRIORITY_UNPRIVILEGED_MAX).contains(&priority) {
-            return Err(AxError::from(LinuxError::EPERM));
+            return Err(NetError::OperationNotPermitted);
         }
         self.priority.store(priority, Ordering::Relaxed);
         Ok(())
@@ -216,20 +216,20 @@ impl GeneralOptions {
     }
 
     /// Runs a send operation through the standard blocking/nonblocking poller.
-    pub fn send_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+    pub fn send_poller<P: Pollable, F: FnMut() -> NetResult<T>, T>(
         &self,
         pollable: &P,
         f: F,
-    ) -> AxResult<T> {
+    ) -> NetResult<T> {
         self.send_poller_with(pollable, false, f)
     }
 
     /// Runs a receive operation through the standard blocking/nonblocking poller.
-    pub fn recv_poller<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+    pub fn recv_poller<P: Pollable, F: FnMut() -> NetResult<T>, T>(
         &self,
         pollable: &P,
         f: F,
-    ) -> AxResult<T> {
+    ) -> NetResult<T> {
         self.recv_poller_with(pollable, false, f)
     }
 
@@ -237,12 +237,12 @@ impl GeneralOptions {
     /// behavior for this call only (e.g. `MSG_DONTWAIT`). The effective
     /// non-blocking state is the OR of the socket's own `nonblocking()`
     /// and `extra_nonblocking`.
-    pub fn send_poller_with<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+    pub fn send_poller_with<P: Pollable, F: FnMut() -> NetResult<T>, T>(
         &self,
         pollable: &P,
         extra_nonblocking: bool,
         f: F,
-    ) -> AxResult<T> {
+    ) -> NetResult<T> {
         block_on(timeout(
             self.send_timeout(),
             poll_io(
@@ -256,12 +256,12 @@ impl GeneralOptions {
 
     /// Like [`recv_poller`] but lets the caller force non-blocking
     /// behavior for this call only (e.g. `MSG_DONTWAIT`).
-    pub fn recv_poller_with<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+    pub fn recv_poller_with<P: Pollable, F: FnMut() -> NetResult<T>, T>(
         &self,
         pollable: &P,
         extra_nonblocking: bool,
         f: F,
-    ) -> AxResult<T> {
+    ) -> NetResult<T> {
         block_on(timeout(
             self.recv_timeout(),
             poll_io(
@@ -274,7 +274,7 @@ impl GeneralOptions {
     }
 }
 impl Configurable for GeneralOptions {
-    fn get_option_inner(&self, option: &mut GetSocketOption) -> AxResult<bool> {
+    fn get_option_inner(&self, option: &mut GetSocketOption) -> NetResult<bool> {
         use GetSocketOption as O;
         match option {
             O::Error(error) => {
@@ -331,7 +331,7 @@ impl Configurable for GeneralOptions {
         Ok(true)
     }
 
-    fn set_option_inner(&self, option: SetSocketOption) -> AxResult<bool> {
+    fn set_option_inner(&self, option: SetSocketOption) -> NetResult<bool> {
         use SetSocketOption as O;
 
         match option {
@@ -359,7 +359,7 @@ impl Configurable for GeneralOptions {
                 if let Some(id) = *interface_id
                     && interface_by_id(id).is_none()
                 {
-                    return Err(AxError::NoSuchDevice);
+                    return Err(NetError::NoSuchDevice);
                 }
                 self.set_device_binding(DeviceBinding {
                     bound_if: *interface_id,
@@ -385,7 +385,7 @@ impl Configurable for GeneralOptions {
             }
             O::SocketType(_) | O::SocketProtocol(_) | O::SocketDomain(_) => {
                 // Read-only options
-                return Err(AxError::from(LinuxError::ENOPROTOOPT));
+                return Err(NetError::ProtocolOptionUnsupported);
             }
             _ => return Ok(false),
         }
@@ -452,11 +452,11 @@ mod tests {
 
         assert_eq!(
             options.set_priority(7).unwrap_err(),
-            AxError::from(LinuxError::EPERM)
+            NetError::OperationNotPermitted
         );
         assert_eq!(
             options.set_priority(-1).unwrap_err(),
-            AxError::from(LinuxError::EPERM)
+            NetError::OperationNotPermitted
         );
         assert_eq!(options.priority(), 6);
     }

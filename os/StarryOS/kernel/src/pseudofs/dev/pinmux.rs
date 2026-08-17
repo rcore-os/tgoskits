@@ -1,12 +1,11 @@
 use core::{any::Any, str};
 
-use ax_errno::AxError;
 use ax_hal::mem::{PhysAddr, phys_to_virt};
-use axfs_ng_vfs::{NodeFlags, VfsResult};
+use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use bytemuck::AnyBitPattern;
 use starry_vm::VmPtr;
 
-use crate::pseudofs::DeviceOps;
+use crate::{StarryError, pseudofs::DeviceOps};
 
 const FMUX_PBASE: usize = 0x0300_1000;
 const FMUX_SIZE: usize = 0x1D8;
@@ -23,18 +22,18 @@ struct PinmuxOp {
 pub struct PinmuxDev;
 
 impl PinmuxDev {
-    fn parse_u32(text: &str) -> Result<u32, AxError> {
+    fn parse_u32(text: &str) -> VfsResult<u32> {
         let text = text.trim();
         if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-            u32::from_str_radix(hex, 16).map_err(|_| AxError::InvalidInput)
+            u32::from_str_radix(hex, 16).map_err(|_| VfsError::InvalidInput)
         } else {
-            text.parse::<u32>().map_err(|_| AxError::InvalidInput)
+            text.parse::<u32>().map_err(|_| VfsError::InvalidInput)
         }
     }
 
     fn write_fmux(offset: usize, value: u32) -> VfsResult<()> {
         if offset >= FMUX_SIZE || !offset.is_multiple_of(4) {
-            return Err(AxError::InvalidInput);
+            return Err(VfsError::InvalidInput);
         }
         let vaddr = phys_to_virt(PhysAddr::from_usize(FMUX_PBASE + offset)).as_usize();
         unsafe {
@@ -56,12 +55,12 @@ impl DeviceOps for PinmuxDev {
         if buf.is_empty() || buf.iter().all(|b| b.is_ascii_whitespace()) {
             return Ok(0);
         }
-        let input = str::from_utf8(buf).map_err(|_| AxError::InvalidInput)?;
+        let input = str::from_utf8(buf).map_err(|_| VfsError::InvalidInput)?;
         let mut parts = input.split_whitespace();
-        let offset = Self::parse_u32(parts.next().ok_or(AxError::InvalidInput)?)? as usize;
-        let value = Self::parse_u32(parts.next().ok_or(AxError::InvalidInput)?)?;
+        let offset = Self::parse_u32(parts.next().ok_or(VfsError::InvalidInput)?)? as usize;
+        let value = Self::parse_u32(parts.next().ok_or(VfsError::InvalidInput)?)?;
         if parts.next().is_some() {
-            return Err(AxError::InvalidInput);
+            return Err(VfsError::InvalidInput);
         }
         Self::write_fmux(offset, value)?;
         Ok(buf.len())
@@ -70,9 +69,11 @@ impl DeviceOps for PinmuxDev {
     /// Binary IOCTL interface: `ioctl(fd, PINMUX_SET, &PinmuxOp{offset, value})`
     fn ioctl(&self, cmd: u32, arg: usize) -> VfsResult<usize> {
         if cmd != PINMUX_SET {
-            return Err(AxError::InvalidInput);
+            return Err(VfsError::InvalidInput);
         }
-        let op: PinmuxOp = (arg as *const PinmuxOp).vm_read()?;
+        let op: PinmuxOp = (arg as *const PinmuxOp)
+            .vm_read()
+            .map_err(StarryError::from)?;
         Self::write_fmux(op.offset as usize, op.value)?;
         Ok(0)
     }

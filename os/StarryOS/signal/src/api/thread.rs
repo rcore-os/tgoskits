@@ -6,14 +6,13 @@ use core::{
 };
 
 use ax_cpu::uspace::UserContext;
-use ax_errno::AxResult;
 use ax_runtime::sync::SpinLock;
 use starry_vm::{VmMutPtr, VmPtr};
 
 use super::ProcessSignalManager;
 use crate::{
     DefaultSignalAction, PendingSignals, SignalAction, SignalActionFlags, SignalDisposition,
-    SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo, arch::UContext,
+    SignalInfo, SignalOSAction, SignalResult, SignalSet, SignalStack, Signo, arch::UContext,
 };
 
 struct SignalFrame {
@@ -321,7 +320,7 @@ impl ThreadSignalManager {
     }
 
     /// Restores the signal frame. Called by `sigreturn`.
-    pub fn restore(&self, uctx: &mut UserContext) -> AxResult<isize> {
+    pub fn restore(&self, uctx: &mut UserContext) -> SignalResult<isize> {
         let frame_ptr = uctx.sp() as *const SignalFrame;
         // copy the saved frame back from uspace
         let frame: SignalFrame = unsafe { frame_ptr.vm_read_uninit()?.assume_init() };

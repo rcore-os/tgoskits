@@ -6,7 +6,7 @@
 //! (`tansform`), corrected here to `transform.rs`. The behavioral changes
 //! are limited to:
 //! * package-name imports (`axhal` → `ax_runtime::hal`, `axalloc` → `ax_alloc`, etc.);
-//! * `AxError`/`AxResult` ↔ `kbpf_basic::BpfError`/`BpfResult` boundary;
+//! * `StarryError`/`StarryResult` ↔ `kbpf_basic::BpfError`/`BpfResult` boundary;
 //! * use of tgoskits' `mm::{VmBytes, VmBytesMut, vm_load_string}` and the
 //!   in-tree frame allocator instead of the source `alloc_frame` helper.
 

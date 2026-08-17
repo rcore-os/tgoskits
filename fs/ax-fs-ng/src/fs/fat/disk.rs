@@ -1,9 +1,8 @@
 use alloc::{boxed::Box, sync::Arc, vec};
 use core::mem;
 
-use ax_errno::{AxError as FsBlockError, AxResult as FsBlockResult};
-
 use crate::{
+    BlockError as FsBlockError, BlockResult as FsBlockResult,
     block::{BlockRegion, FsBlockDevice, RegionBlockDevice},
     os::sync::SleepMutex,
 };
@@ -191,7 +190,7 @@ impl SeekableDiskState {
             self.block_id = self
                 .block_id
                 .checked_add(blocks as u64)
-                .ok_or(FsBlockError::BadState)?;
+                .ok_or(FsBlockError::InvalidState)?;
         }
         if !buf.is_empty() {
             read += self.read_partial(&mut buf)?;
@@ -239,7 +238,7 @@ impl SeekableDiskState {
             self.block_id = self
                 .block_id
                 .checked_add(blocks as u64)
-                .ok_or(FsBlockError::BadState)?;
+                .ok_or(FsBlockError::InvalidState)?;
         }
         if !buf.is_empty() {
             written += self.write_partial(&mut buf)?;

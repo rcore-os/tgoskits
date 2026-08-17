@@ -2,13 +2,10 @@
 
 use alloc::{sync::Arc, task::Wake};
 use core::{
-    fmt,
     future::poll_fn,
     pin::pin,
     task::{Context, Poll, Waker},
 };
-
-use ax_errno::AxError;
 
 use crate::{
     AxTaskRef, WeakAxTaskRef, current, current_run_queue, select_wake_run_queue,
@@ -20,6 +17,49 @@ pub use poll::*;
 
 mod time;
 pub use time::*;
+
+/// Errors owned by task waiting and notification operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum TaskError {
+    /// A signal or explicit task notification interrupted the wait.
+    #[error(transparent)]
+    Interrupted(#[from] Interrupted),
+    /// A task wait exceeded its deadline.
+    #[error(transparent)]
+    Elapsed(#[from] Elapsed),
+    /// A nonblocking task operation cannot currently make progress.
+    #[error("task operation would block")]
+    WouldBlock,
+    /// An IRQ operation used by a task-owned waker failed.
+    #[cfg(feature = "irq")]
+    #[error(transparent)]
+    Irq(#[from] ax_hal::irq::IrqError),
+}
+
+/// A result returned by a task-domain operation.
+pub type TaskResult<T = ()> = Result<T, TaskError>;
+
+/// Error capability required by [`poll_io`].
+///
+/// The caller keeps ownership of its domain error while the task layer only
+/// asks how to recognize retryable I/O and how to publish an interruption.
+pub trait PollIoError {
+    /// Returns whether this error means the I/O operation should be retried.
+    fn is_would_block(&self) -> bool;
+
+    /// Creates the caller's domain error for an interrupted blocking wait.
+    fn interrupted(error: Interrupted) -> Self;
+}
+
+impl PollIoError for TaskError {
+    fn is_would_block(&self) -> bool {
+        matches!(self, Self::WouldBlock)
+    }
+
+    fn interrupted(error: Interrupted) -> Self {
+        error.into()
+    }
+}
 
 struct AxWaker {
     task: WeakAxTaskRef,
@@ -100,22 +140,9 @@ pub fn block_on<F: IntoFuture>(f: F) -> F::Output {
 }
 
 /// Error returned by [`interruptible`].
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("task wait was interrupted")]
 pub struct Interrupted;
-
-impl fmt::Display for Interrupted {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "interrupted")
-    }
-}
-
-impl core::error::Error for Interrupted {}
-
-impl From<Interrupted> for AxError {
-    fn from(_: Interrupted) -> Self {
-        AxError::Interrupted
-    }
-}
 
 /// Makes a future interruptible.
 pub async fn interruptible<F: IntoFuture>(f: F) -> Result<F::Output, Interrupted> {

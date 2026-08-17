@@ -32,11 +32,13 @@ pub enum IomapDecision {
 }
 
 /// Platform error for an MMIO mapping request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum IomapError {
     /// The requested address range or attributes are invalid.
+    #[error("invalid I/O mapping request")]
     InvalidInput,
     /// The requested mapping attributes are not supported.
+    #[error("I/O mapping attributes are not supported")]
     Unsupported,
 }
 

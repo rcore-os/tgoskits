@@ -1,7 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, ops::Deref};
 
-use ax_errno::AxResult;
 use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 
@@ -9,7 +8,7 @@ use super::{
     AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, RssKind, alloc_frame,
     dealloc_frame, divide_page, pages_in,
 };
-use crate::{mm::paging_error_to_ax_error, sync::Mutex};
+use crate::{StarryResult, sync::Mutex};
 
 enum SharedPagesOwner {
     Allocated,
@@ -22,7 +21,7 @@ pub struct SharedPages {
     owner: SharedPagesOwner,
 }
 impl SharedPages {
-    pub fn new(size: usize, page_size: usize) -> AxResult<Self> {
+    pub fn new(size: usize, page_size: usize) -> StarryResult<Self> {
         let num_pages = divide_page(size, page_size);
         let mut result = Self {
             phys_pages: Vec::with_capacity(num_pages),
@@ -39,9 +38,9 @@ impl SharedPages {
         phys_pages: Vec<PhysAddr>,
         page_size: usize,
         retain: Option<Arc<dyn Any + Send + Sync>>,
-    ) -> AxResult<Self> {
+    ) -> StarryResult<Self> {
         if phys_pages.is_empty() {
-            return Err(ax_errno::AxError::InvalidInput);
+            return Err(crate::StarryError::InvalidInput);
         }
         Ok(Self {
             phys_pages,
@@ -119,14 +118,13 @@ impl BackendOps for SharedBackend {
         flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult {
+    ) -> StarryResult {
         debug!("Shared::map: {:?} {:?}", range, flags);
         for (vaddr, paddr) in
             pages_in(range, self.pages.size)?.zip(self.pages_starting_from(range.start))
         {
             let newly_mapped = pt.query(vaddr).is_err();
-            pt.map_page(vaddr, *paddr, self.pages.size, flags)
-                .map_err(paging_error_to_ax_error)?;
+            pt.map_page(vaddr, *paddr, self.pages.size, flags)?;
             if newly_mapped && let Some(acct) = acct {
                 acct.inc(RssKind::Shmem, 1);
             }
@@ -139,7 +137,7 @@ impl BackendOps for SharedBackend {
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult {
+    ) -> StarryResult {
         debug!("Shared::unmap: {:?}", range);
         for vaddr in pages_in(range, self.pages.size)? {
             match pt.unmap_page(vaddr) {
@@ -150,7 +148,7 @@ impl BackendOps for SharedBackend {
                     }
                 }
                 Err(PagingError::NotMapped) => {}
-                Err(err) => return Err(paging_error_to_ax_error(err)),
+                Err(err) => return Err(err.into()),
             }
         }
         Ok(())
@@ -164,7 +162,7 @@ impl BackendOps for SharedBackend {
         _new_pt: &mut PageTable,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
         _acct: CloneMapAccounting<'_>,
-    ) -> AxResult<Backend> {
+    ) -> StarryResult<Backend> {
         Ok(Backend::Shared(self.clone()))
     }
 

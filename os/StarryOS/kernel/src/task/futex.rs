@@ -15,7 +15,6 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::AxResult;
 use ax_memory_addr::VirtAddr;
 use ax_task::{
     current,
@@ -24,6 +23,7 @@ use ax_task::{
 use hashbrown::HashMap;
 
 use crate::{
+    StarryResult,
     mm::{AddrSpace, Backend, SharedPages},
     sync::{LockdepMutexExt, Mutex},
     task::{AsThread, ProcessData},
@@ -95,7 +95,7 @@ struct WaitIfFuture<'a, F> {
 }
 
 impl<F: FnOnce() -> bool + Unpin> Future for WaitIfFuture<'_, F> {
-    type Output = AxResult<bool>;
+    type Output = StarryResult<bool>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -170,7 +170,7 @@ impl WaitQueue {
         bitset: u32,
         timeout: Option<Duration>,
         condition: impl FnOnce() -> bool + Unpin,
-    ) -> AxResult<bool> {
+    ) -> StarryResult<bool> {
         self.wait_if_with_cleanup(bitset, timeout, None, condition)
     }
 
@@ -184,7 +184,7 @@ impl WaitQueue {
         timeout: Option<Duration>,
         cleanup: Option<FutexWaitCleanup>,
         condition: impl FnOnce() -> bool + Unpin,
-    ) -> AxResult<bool> {
+    ) -> StarryResult<bool> {
         block_on(interruptible(future::timeout(
             timeout,
             WaitIfFuture {
@@ -234,8 +234,8 @@ impl WaitQueue {
         wake_count: usize,
         target: &WaitQueue,
         wake2_count: usize,
-        condition: impl FnOnce() -> AxResult<bool>,
-    ) -> AxResult<usize> {
+        condition: impl FnOnce() -> StarryResult<bool>,
+    ) -> StarryResult<usize> {
         let mut condition = Some(condition);
         let mut wakers = Vec::new();
 
@@ -324,8 +324,8 @@ impl WaitQueue {
         requeue_count: usize,
         target_cleanup: FutexWaitCleanup,
         target: &WaitQueue,
-        condition: impl FnOnce() -> AxResult<bool>,
-    ) -> AxResult<Option<usize>> {
+        condition: impl FnOnce() -> StarryResult<bool>,
+    ) -> StarryResult<Option<usize>> {
         let mut condition = Some(condition);
         let mut wakers = Vec::new();
 

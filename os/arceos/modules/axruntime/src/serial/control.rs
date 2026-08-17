@@ -1,10 +1,9 @@
 use alloc::{collections::VecDeque, sync::Arc};
 
-use ax_errno::{AxError, AxResult};
 use ax_task::{IrqNotify, WaitQueue};
 use rdif_serial::Config;
 
-use crate::sync::SpinLock;
+use crate::{RuntimeError, RuntimeResult, sync::SpinLock};
 
 pub(super) const CONTROL_QUEUE_CAPACITY: usize = 32;
 
@@ -22,7 +21,7 @@ pub(super) struct ControlCommand {
 }
 
 impl ControlCommand {
-    pub(super) fn complete(self, result: AxResult) {
+    pub(super) fn complete(self, result: RuntimeResult) {
         self.completion.complete(result);
     }
 }
@@ -38,12 +37,12 @@ impl ControlQueue {
         }
     }
 
-    pub(super) fn submit(&self, op: ControlOp, notify: &IrqNotify) -> AxResult {
+    pub(super) fn submit(&self, op: ControlOp, notify: &IrqNotify) -> RuntimeResult {
         let completion = Arc::new(CommandCompletion::new());
         {
             let mut commands = self.commands.lock_irqsave();
             if commands.len() == CONTROL_QUEUE_CAPACITY {
-                return Err(AxError::ResourceBusy);
+                return Err(RuntimeError::SerialControlBusy);
             }
             commands.push_back(ControlCommand {
                 op,
@@ -64,7 +63,7 @@ impl ControlQueue {
 }
 
 struct CommandCompletion {
-    result: SpinLock<Option<AxResult>>,
+    result: SpinLock<Option<RuntimeResult>>,
     wait: WaitQueue,
 }
 
@@ -76,12 +75,12 @@ impl CommandCompletion {
         }
     }
 
-    fn complete(&self, result: AxResult) {
+    fn complete(&self, result: RuntimeResult) {
         *self.result.lock_irqsave() = Some(result);
         self.wait.notify_all(true);
     }
 
-    fn wait(&self) -> AxResult {
+    fn wait(&self) -> RuntimeResult {
         self.wait
             .wait_until(|| self.result.lock_irqsave().is_some());
         self.result

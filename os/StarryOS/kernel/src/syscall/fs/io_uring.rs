@@ -1,6 +1,5 @@
 use core::{ffi::c_int, mem::size_of};
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use linux_raw_sys::io_uring::{
     IORING_ENTER_GETEVENTS, IORING_SETUP_CLAMP, IORING_SETUP_CQSIZE, io_uring_params,
 };
@@ -11,6 +10,7 @@ use super::io::{
     sys_write,
 };
 use crate::{
+    StarryError, StarryResult,
     file::{FileLike, IoUring, io_uring::IoUringSqe},
     mm::IoVec,
 };
@@ -74,18 +74,18 @@ struct KernelTimespec {
 const _: () = assert!(size_of::<IoUringProbeHeader>() == 16);
 const _: () = assert!(size_of::<IoUringProbeOp>() == 8);
 
-fn round_ring_entries(requested: u32, max: u32, clamp: bool) -> AxResult<u32> {
+fn round_ring_entries(requested: u32, max: u32, clamp: bool) -> StarryResult<u32> {
     if requested == 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let rounded = requested
         .checked_next_power_of_two()
-        .ok_or(AxError::InvalidInput)?;
+        .ok_or(StarryError::InvalidInput)?;
     if rounded > max {
         if clamp {
             Ok(max)
         } else {
-            Err(AxError::InvalidInput)
+            Err(StarryError::InvalidInput)
         }
     } else {
         Ok(rounded)
@@ -105,28 +105,28 @@ fn offset_hi(offset: i64) -> usize {
     }
 }
 
-fn result_to_cqe_res(result: AxResult<isize>) -> i32 {
+fn result_to_cqe_res(result: StarryResult<isize>) -> i32 {
     match result {
         Ok(value) => value.try_into().unwrap_or(i32::MAX),
-        Err(err) => -LinuxError::from(err).code(),
+        Err(err) => -err.linux_errno().into_raw(),
     }
 }
 
-fn execute_timeout(sqe: &IoUringSqe) -> AxResult<isize> {
+fn execute_timeout(sqe: &IoUringSqe) -> StarryResult<isize> {
     let ts = unsafe {
         (sqe.addr as *const KernelTimespec)
             .vm_read_uninit()?
             .assume_init()
     };
     if ts.tv_sec < 0 || !(0..1_000_000_000).contains(&ts.tv_nsec) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     Ok(0)
 }
 
 fn execute_sqe(sqe: &IoUringSqe) -> i32 {
     if sqe.flags != 0 {
-        return result_to_cqe_res(Err(AxError::OperationNotSupported));
+        return result_to_cqe_res(Err(StarryError::OperationNotSupported));
     }
 
     let offset = sqe.off as i64;
@@ -151,12 +151,12 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
         IORING_OP_FSYNC => match sqe.rw_flags {
             0 => sys_fsync(sqe.fd),
             IORING_FSYNC_DATASYNC => sys_fdatasync(sqe.fd),
-            _ => Err(AxError::InvalidInput),
+            _ => Err(StarryError::InvalidInput),
         },
         IORING_OP_TIMEOUT => execute_timeout(sqe),
         IORING_OP_READ => {
             if sqe.rw_flags != 0 {
-                Err(AxError::OperationNotSupported)
+                Err(StarryError::OperationNotSupported)
             } else if offset == -1 {
                 sys_read(sqe.fd, sqe.addr as *mut u8, sqe.len as usize)
             } else {
@@ -165,28 +165,28 @@ fn execute_sqe(sqe: &IoUringSqe) -> i32 {
         }
         IORING_OP_WRITE => {
             if sqe.rw_flags != 0 {
-                Err(AxError::OperationNotSupported)
+                Err(StarryError::OperationNotSupported)
             } else if offset == -1 {
                 sys_write(sqe.fd, sqe.addr as *mut u8, sqe.len as usize)
             } else {
                 sys_pwrite64(sqe.fd, sqe.addr as *const u8, sqe.len as usize, offset)
             }
         }
-        _ => Err(AxError::OperationNotSupported),
+        _ => Err(StarryError::OperationNotSupported),
     };
 
     result_to_cqe_res(result)
 }
 
-fn setup_entries(entries: u32, params: &io_uring_params) -> AxResult<(u32, u32)> {
+fn setup_entries(entries: u32, params: &io_uring_params) -> StarryResult<(u32, u32)> {
     if params.flags & !SUPPORTED_SETUP_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let clamp = params.flags & IORING_SETUP_CLAMP != 0;
     let sq_entries = round_ring_entries(entries, MAX_SQ_ENTRIES, clamp)?;
     let cq_entries = if params.flags & IORING_SETUP_CQSIZE != 0 {
         if params.cq_entries < entries {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         round_ring_entries(params.cq_entries, MAX_CQ_ENTRIES, clamp)?
     } else {
@@ -198,7 +198,7 @@ fn setup_entries(entries: u32, params: &io_uring_params) -> AxResult<(u32, u32)>
     Ok((sq_entries, cq_entries))
 }
 
-pub fn sys_io_uring_setup(entries: u32, params: *mut io_uring_params) -> AxResult<isize> {
+pub fn sys_io_uring_setup(entries: u32, params: *mut io_uring_params) -> StarryResult<isize> {
     debug!("sys_io_uring_setup <= entries: {entries}, params: {params:p}");
     let mut params_value = unsafe { params.vm_read_uninit()?.assume_init() };
     let (sq_entries, cq_entries) = setup_entries(entries, &params_value)?;
@@ -216,18 +216,18 @@ pub fn sys_io_uring_enter(
     flags: u32,
     _sig: usize,
     _sigsz: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_io_uring_enter <= fd: {fd}, to_submit: {to_submit}, flags: {flags:#x}");
     if flags & !SUPPORTED_ENTER_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
-    let to_submit = u32::try_from(to_submit).map_err(|_| AxError::InvalidInput)?;
+    let to_submit = u32::try_from(to_submit).map_err(|_| StarryError::InvalidInput)?;
     let ring = IoUring::from_fd(fd)?;
     ring.submit(to_submit, execute_sqe)
         .map(|submitted| submitted as isize)
 }
 
-fn write_probe(arg: *mut u8, nr_args: usize) -> AxResult<isize> {
+fn write_probe(arg: *mut u8, nr_args: usize) -> StarryResult<isize> {
     let last_op = IORING_OP_WRITE;
     let ops_len = (last_op as usize + 1).min(nr_args).min(u8::MAX as usize);
     let header = IoUringProbeHeader {
@@ -263,15 +263,15 @@ pub fn sys_io_uring_register(
     opcode: u32,
     arg: usize,
     nr_args: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_io_uring_register <= fd: {fd}, opcode: {opcode}, nr_args: {nr_args}");
     let _ring = IoUring::from_fd(fd)?;
     match opcode {
         IORING_REGISTER_PROBE => write_probe(arg as *mut u8, nr_args),
         IORING_REGISTER_EVENTFD | IORING_UNREGISTER_EVENTFD | IORING_REGISTER_EVENTFD_ASYNC => {
-            Err(AxError::OperationNotSupported)
+            Err(StarryError::OperationNotSupported)
         }
-        _ => Err(AxError::OperationNotSupported),
+        _ => Err(StarryError::OperationNotSupported),
     }
 }
 

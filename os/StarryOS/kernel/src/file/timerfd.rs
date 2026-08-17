@@ -28,20 +28,20 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
 use ax_task::future::{block_on, poll_io, timeout_at_wall};
 use axpoll::{IoEvents, PollSet, Pollable};
 use event_listener::{Event, listener};
 
 use crate::{
+    StarryError, StarryResult,
     file::{FileLike, IoDst, IoSrc},
     sync::Mutex,
 };
 
 /// `clockid_t` values recognized by `timerfd_create`. Kept narrow for now —
 /// musl and glibc both pass `CLOCK_REALTIME` or `CLOCK_MONOTONIC`. Other
-/// values return `AxError::InvalidInput`.
+/// values return `StarryError::InvalidInput`.
 pub const CLOCK_REALTIME: u32 = 0;
 pub const CLOCK_MONOTONIC: u32 = 1;
 pub const CLOCK_BOOTTIME: u32 = 7;
@@ -85,11 +85,11 @@ pub struct Timerfd {
 impl Timerfd {
     /// Create a disarmed timerfd for the given clock. A single long-lived
     /// background task is spawned to serve all future arms of this fd.
-    pub fn new(clockid: u32) -> AxResult<Arc<Self>> {
+    pub fn new(clockid: u32) -> StarryResult<Arc<Self>> {
         match clockid {
             CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME | CLOCK_REALTIME_ALARM
             | CLOCK_BOOTTIME_ALARM => {}
-            _ => return Err(AxError::InvalidInput),
+            _ => return Err(StarryError::InvalidInput),
         }
         let this = Arc::new(Self {
             clockid,
@@ -116,7 +116,7 @@ impl Timerfd {
         abstime: bool,
         new_value: Duration,
         new_interval: Duration,
-    ) -> AxResult<(Duration, Duration)> {
+    ) -> StarryResult<(Duration, Duration)> {
         let now = wall_time();
 
         let mut state = self.state.lock();
@@ -304,9 +304,9 @@ async fn run_timer(weak: alloc::sync::Weak<Timerfd>) {
 }
 
 impl FileLike for Timerfd {
-    fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
+    fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         if dst.remaining_mut() < core::mem::size_of::<u64>() {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
             // Race-free read: atomically claim the entire `expire_count`
@@ -320,7 +320,7 @@ impl FileLike for Timerfd {
             let n = loop {
                 let observed = self.expire_count.load(Ordering::Acquire);
                 if observed == 0 {
-                    return Err(AxError::WouldBlock);
+                    return Err(StarryError::WouldBlock);
                 }
                 if self
                     .expire_count
@@ -339,21 +339,21 @@ impl FileLike for Timerfd {
                 self.expire_count.fetch_add(n, Ordering::AcqRel);
                 // Restored expire_count is visible before re-waking readers.
                 unsafe { self.poll_rx.wake(IoEvents::IN) };
-                return Err(e);
+                return Err(e.into());
             }
             Ok(core::mem::size_of::<u64>())
         }))
     }
 
-    fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
-        Err(AxError::InvalidInput)
+    fn write(&self, _src: &mut IoSrc) -> StarryResult<usize> {
+        Err(StarryError::InvalidInput)
     }
 
     fn nonblocking(&self) -> bool {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn set_nonblocking(&self, non_blocking: bool) -> AxResult {
+    fn set_nonblocking(&self, non_blocking: bool) -> StarryResult {
         self.non_blocking.store(non_blocking, Ordering::Release);
         Ok(())
     }

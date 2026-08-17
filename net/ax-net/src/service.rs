@@ -56,13 +56,12 @@
 //! waker.wake();  // WRONG: potential self-deadlock
 //! ```
 
-use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 use core::{
     pin::Pin,
     task::{Context, Waker},
 };
 
-use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_hal::time::{NANOS_PER_MICROS, TimeValue, monotonic_time_nanos, wall_time_nanos};
 use ax_sync::SpinRwLock as RwLock;
 use ax_task::future::sleep_until;
@@ -78,7 +77,7 @@ use smoltcp::{
 };
 
 use crate::{
-    SOCKET_SET,
+    NetError, NetResult, SOCKET_SET,
     addr::mask_from_prefix,
     config::{
         DeviceBinding, DnsServerEntry, DnsSource, InterfaceFlags, InterfaceId, InterfaceInfo,
@@ -175,7 +174,7 @@ impl NetControl {
         self.routes.read().default_routes()
     }
 
-    pub fn local_binding_for(&self, endpoint: &IpListenEndpoint) -> AxResult<DeviceBinding> {
+    pub fn local_binding_for(&self, endpoint: &IpListenEndpoint) -> NetResult<DeviceBinding> {
         match endpoint.addr {
             Some(addr) => {
                 let state = self.state.read();
@@ -189,18 +188,13 @@ impl NetControl {
                     .map(|interface_id| DeviceBinding {
                         bound_if: Some(interface_id),
                     })
-                    .ok_or_else(|| {
-                        ax_err_type!(
-                            NoSuchDeviceOrAddress,
-                            format!("local address {addr} is not assigned to any interface")
-                        )
-                    })
+                    .ok_or(NetError::NoSuchDeviceOrAddress)
             }
             None => Ok(DeviceBinding::default()),
         }
     }
 
-    pub fn select_route(&self, dst_addr: &IpAddress) -> AxResult<RouteDecision> {
+    pub fn select_route(&self, dst_addr: &IpAddress) -> NetResult<RouteDecision> {
         self.select_route_with_binding(dst_addr, DeviceBinding::default())
     }
 
@@ -208,7 +202,7 @@ impl NetControl {
         &self,
         dst_addr: &IpAddress,
         binding: DeviceBinding,
-    ) -> AxResult<RouteDecision> {
+    ) -> NetResult<RouteDecision> {
         let state = self.state.read();
         let routes = self.routes.read();
         let route = routes
@@ -225,12 +219,7 @@ impl NetControl {
                     .find(|interface| interface.id == interface_id)
                     .is_some_and(|interface| interface.flags.contains(InterfaceFlags::UP))
             })
-            .ok_or_else(|| {
-                ax_err_type!(
-                    NoSuchDeviceOrAddress,
-                    format!("no route to destination {dst_addr}")
-                )
-            })?;
+            .ok_or(NetError::NoSuchDeviceOrAddress)?;
         if let Some(interface) = state
             .interfaces
             .iter()
@@ -647,21 +636,21 @@ impl Service {
         interface_id: InterfaceId,
         address: Ipv4Address,
         prefix_len: u8,
-    ) -> AxResult {
+    ) -> NetResult {
         if prefix_len > 32 {
-            return Err(AxError::InvalidInput);
+            return Err(NetError::InvalidInput);
         }
 
         let dev = self
             .router
             .device_index_for_interface_id(interface_id)
-            .ok_or(AxError::NoSuchDevice)?;
-        let interface = self.interface_for_dev(dev).ok_or(AxError::NoSuchDevice)?;
+            .ok_or(NetError::NoSuchDevice)?;
+        let interface = self.interface_for_dev(dev).ok_or(NetError::NoSuchDevice)?;
         if interface.kind != InterfaceKind::Ethernet {
-            return Err(AxError::OperationNotSupported);
+            return Err(NetError::OperationNotSupported);
         }
         if interface.ipv4.is_some() {
-            return Err(AxError::AlreadyExists);
+            return Err(NetError::AlreadyExists);
         }
 
         self.dhcp.retain(|state| state.dev != dev);
@@ -684,21 +673,21 @@ impl Service {
         interface_id: InterfaceId,
         address: Ipv4Address,
         prefix_len: u8,
-    ) -> AxResult {
+    ) -> NetResult {
         if prefix_len > 32 {
-            return Err(AxError::InvalidInput);
+            return Err(NetError::InvalidInput);
         }
 
         let dev = self
             .router
             .device_index_for_interface_id(interface_id)
-            .ok_or(AxError::NoSuchDevice)?;
-        let interface = self.interface_for_dev(dev).ok_or(AxError::NoSuchDevice)?;
+            .ok_or(NetError::NoSuchDevice)?;
+        let interface = self.interface_for_dev(dev).ok_or(NetError::NoSuchDevice)?;
         // Runtime deletion is intentionally exact: with one IPv4 address per
         // interface, a mismatched address or prefix must not clear the current
         // configuration.
         if interface.ipv4 != Some(Ipv4Cidr::new(address, prefix_len)) {
-            return Err(AxError::NotFound);
+            return Err(NetError::NotFound);
         }
 
         self.dhcp.retain(|state| state.dev != dev);

@@ -1,11 +1,10 @@
 use alloc::{boxed::Box, string::String};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_errno::{AxError, AxResult};
 use ax_sync::SpinRwLock as RwLock;
 use irq_framework::IrqId;
 
-use crate::block::runtime::BlockIrqAction;
+use crate::{BlockError, BlockResult, block::runtime::BlockIrqAction};
 
 /// Result returned from the runtime-independent hard IRQ action.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,10 +20,10 @@ pub enum BlockIrqOutcome {
 /// Owned IRQ registration and boxed hard-handler lifetime token.
 pub trait BlockIrqRegistration: Send + Sync {
     /// Enables the registered action after all runtime state is published.
-    fn enable(&self) -> AxResult;
+    fn enable(&self) -> BlockResult;
 
     /// Disables the action and waits for every in-flight callback to return.
-    fn disable_and_synchronize(&self) -> AxResult;
+    fn disable_and_synchronize(&self) -> BlockResult;
 }
 
 /// Registers fixed-affinity non-reentrant block hard IRQ actions.
@@ -41,7 +40,7 @@ pub trait BlockIrqRegistrar: Send + Sync {
         irq: IrqId,
         cpu: usize,
         action: BlockIrqAction,
-    ) -> AxResult<Box<dyn BlockIrqRegistration>>;
+    ) -> BlockResult<Box<dyn BlockIrqRegistration>>;
 }
 
 static IRQ_REGISTRAR: RwLock<Option<&'static dyn BlockIrqRegistrar>> = RwLock::new(None);
@@ -57,19 +56,19 @@ pub fn set_irq_registrar(registrar: &'static dyn BlockIrqRegistrar) {
 ///
 /// # Errors
 ///
-/// Returns [`AxError::BadState`] before the runtime installs an IRQ registrar,
+/// Returns [`BlockError::RuntimeUnavailable`] before the runtime installs an IRQ registrar,
 /// or propagates registration failures.
 pub fn register_block_irq(
     name: String,
     irq: IrqId,
     cpu: usize,
     action: BlockIrqAction,
-) -> AxResult<Box<dyn BlockIrqRegistration>> {
+) -> BlockResult<Box<dyn BlockIrqRegistration>> {
     IRQ_REGISTRAR
         .read()
         .as_ref()
         .copied()
-        .ok_or(AxError::BadState)?
+        .ok_or(BlockError::RuntimeUnavailable)?
         .register(name, irq, cpu, action)
 }
 

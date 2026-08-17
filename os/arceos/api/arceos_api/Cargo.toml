@@ -33,7 +33,6 @@ dummy-if-not-enabled = []
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 ax-display = { workspace = true, optional = true }
-ax-errno.workspace = true
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
 ax-io.workspace = true
@@ -46,3 +45,4 @@ ax-runtime.workspace = true
 ax-task = { workspace = true, optional = true }
 axklib.workspace = true
 dma-api.workspace = true
+thiserror.workspace = true

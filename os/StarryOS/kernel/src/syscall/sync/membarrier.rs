@@ -1,10 +1,9 @@
 use core::sync::atomic::{Ordering, fence};
 
-use ax_errno::{AxError, AxResult};
 use ax_task::current;
 use linux_raw_sys::general::membarrier_cmd;
 
-use crate::task::AsThread;
+use crate::{StarryError, StarryResult, task::AsThread};
 
 /// Memory barrier commands
 const MEMBARRIER_CMD_QUERY: i32 = membarrier_cmd::MEMBARRIER_CMD_QUERY as i32;
@@ -31,9 +30,9 @@ fn smp_mb() {
     fence(Ordering::SeqCst);
 }
 
-pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> AxResult<isize> {
+pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> StarryResult<isize> {
     if flags != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     match cmd {
@@ -52,7 +51,7 @@ pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> AxResult<isize> {
         MEMBARRIER_CMD_GLOBAL_EXPEDITED => {
             let proc_data = current().as_thread().proc_data.clone();
             if proc_data.membarrier_state() & MEMBARRIER_STATE_GLOBAL_EXPEDITED == 0 {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             smp_mb();
             Ok(0)
@@ -67,19 +66,23 @@ pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> AxResult<isize> {
         MEMBARRIER_CMD_PRIVATE_EXPEDITED => {
             let proc_data = current().as_thread().proc_data.clone();
             if proc_data.membarrier_state() & MEMBARRIER_STATE_PRIVATE_EXPEDITED == 0 {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             smp_mb();
             Ok(0)
         }
-        _ => Err(AxError::InvalidInput),
+        _ => Err(StarryError::InvalidInput),
     }
 }
 
 #[cfg(axtest)]
 pub(crate) fn membarrier_query_and_global_rules_hold_for_test() -> bool {
-    sys_membarrier(MEMBARRIER_CMD_QUERY, 0, 0) == Ok(SUPPORTED_COMMANDS as isize)
-        && sys_membarrier(MEMBARRIER_CMD_QUERY, 1, 0) == Err(AxError::InvalidInput)
-        && sys_membarrier(-1, 0, 0) == Err(AxError::InvalidInput)
-        && sys_membarrier(MEMBARRIER_CMD_GLOBAL, 0, 0) == Ok(0)
+    matches!(
+        sys_membarrier(MEMBARRIER_CMD_QUERY, 0, 0),
+        Ok(value) if value == SUPPORTED_COMMANDS as isize
+    ) && matches!(
+        sys_membarrier(MEMBARRIER_CMD_QUERY, 1, 0),
+        Err(StarryError::InvalidInput)
+    ) && matches!(sys_membarrier(-1, 0, 0), Err(StarryError::InvalidInput))
+        && matches!(sys_membarrier(MEMBARRIER_CMD_GLOBAL, 0, 0), Ok(0))
 }

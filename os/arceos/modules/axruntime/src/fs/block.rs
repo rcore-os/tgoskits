@@ -6,6 +6,7 @@ use core::{
 
 use ax_alloc::UsageKind;
 use ax_fs_ng::{
+    BlockError, BlockResult,
     block::runtime::{BlockIrqAction, BlockIrqSource, RdifBlockDevice, RdifBlockGroup},
     os::{
         BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, BlockNotification,
@@ -24,10 +25,10 @@ impl BlockTimeProvider for RuntimeTimeProvider {
 struct RuntimePageProvider;
 
 impl FsPageProvider for RuntimePageProvider {
-    fn alloc_page(&self) -> ax_errno::AxResult<FsPage> {
+    fn alloc_page(&self) -> axfs_ng_vfs::VfsResult<FsPage> {
         let addr = ax_alloc::global_allocator()
             .alloc_pages(1, ax_fs_ng::os::memory::PAGE_SIZE, UsageKind::PageCache)
-            .map_err(|_| ax_errno::AxError::NoMemory)?;
+            .map_err(|_| axfs_ng_vfs::VfsError::NoMemory)?;
         Ok(unsafe { FsPage::from_raw(addr) })
     }
 
@@ -108,9 +109,9 @@ impl BlockRuntimeOps for RuntimeTaskOps {
         name: String,
         cpu: usize,
         entry: Box<dyn FnOnce() + Send + 'static>,
-    ) -> ax_errno::AxResult<Box<dyn BlockThread>> {
+    ) -> BlockResult<Box<dyn BlockThread>> {
         if cpu >= ax_hal::cpu_num() {
-            return Err(ax_errno::AxError::InvalidInput);
+            return Err(BlockError::InvalidRequest);
         }
         let task = ax_task::spawn_raw(
             move || {
@@ -139,18 +140,19 @@ struct RuntimeBlockIrqRegistration {
 
 #[cfg(feature = "irq")]
 impl BlockIrqRegistration for RuntimeBlockIrqRegistration {
-    fn enable(&self) -> ax_errno::AxResult {
-        ax_hal::irq::enable_irq(self.handle).map_err(map_block_irq_error)
+    fn enable(&self) -> BlockResult {
+        ax_hal::irq::enable_irq(self.handle)?;
+        Ok(())
     }
 
-    fn disable_and_synchronize(&self) -> ax_errno::AxResult {
+    fn disable_and_synchronize(&self) -> BlockResult {
         match ax_hal::irq::disable_irq(self.handle) {
             Ok(()) | Err(ax_hal::irq::IrqError::NotFound) => {}
-            Err(error) => return Err(map_block_irq_error(error)),
+            Err(error) => return Err(error.into()),
         }
         match ax_hal::irq::synchronize_irq(self.handle) {
             Ok(()) | Err(ax_hal::irq::IrqError::NotFound) => Ok(()),
-            Err(error) => Err(map_block_irq_error(error)),
+            Err(error) => Err(error.into()),
         }
     }
 }
@@ -167,24 +169,6 @@ impl Drop for RuntimeBlockIrqRegistration {
     }
 }
 
-fn map_block_irq_error(err: ax_hal::irq::IrqError) -> ax_errno::AxError {
-    match err {
-        ax_hal::irq::IrqError::InvalidIrq | ax_hal::irq::IrqError::InvalidCpu => {
-            ax_errno::AxError::InvalidInput
-        }
-        ax_hal::irq::IrqError::CpuOffline | ax_hal::irq::IrqError::Unsupported => {
-            ax_errno::AxError::Unsupported
-        }
-        ax_hal::irq::IrqError::Busy | ax_hal::irq::IrqError::InIrqContext => {
-            ax_errno::AxError::ResourceBusy
-        }
-        ax_hal::irq::IrqError::Timeout => ax_errno::AxError::TimedOut,
-        ax_hal::irq::IrqError::NoMemory => ax_errno::AxError::NoMemory,
-        ax_hal::irq::IrqError::NotFound => ax_errno::AxError::NotFound,
-        ax_hal::irq::IrqError::Controller => ax_errno::AxError::Io,
-    }
-}
-
 #[cfg(feature = "irq")]
 impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
     fn register(
@@ -193,7 +177,7 @@ impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
         irq: irq_framework::IrqId,
         cpu: usize,
         mut action: BlockIrqAction,
-    ) -> ax_errno::AxResult<Box<dyn BlockIrqRegistration>> {
+    ) -> BlockResult<Box<dyn BlockIrqRegistration>> {
         let request = ax_hal::irq::IrqRequest::new(move |_context| match action.run() {
             BlockIrqOutcome::Unhandled => ax_hal::irq::IrqReturn::Unhandled,
             BlockIrqOutcome::Handled => ax_hal::irq::IrqReturn::Handled,
@@ -203,7 +187,7 @@ impl BlockIrqRegistrar for RuntimeBlockIrqRegistrar {
         .share_mode(ax_hal::irq::ShareMode::Shared)
         .auto_enable(ax_hal::irq::AutoEnable::No)
         .affinity(ax_hal::irq::IrqAffinity::Fixed(ax_hal::irq::CpuId(cpu)));
-        let handle = ax_hal::irq::request_irq(irq, request).map_err(map_block_irq_error)?;
+        let handle = ax_hal::irq::request_irq(irq, request)?;
         Ok(Box::new(RuntimeBlockIrqRegistration { name, handle }))
     }
 }

@@ -37,7 +37,7 @@ impl TtyRead for PtyReader {
         self.0.lock().pop_slice(buf)
     }
 
-    fn discard_input(&mut self) -> ax_errno::AxResult<()> {
+    fn discard_input(&mut self) -> crate::StarryResult<()> {
         self.0.lock().clear();
         Ok(())
     }
@@ -86,7 +86,7 @@ impl TtyWrite for PtyWriter {
         read
     }
 
-    fn discard_output(&self) -> ax_errno::AxResult<()> {
+    fn discard_output(&self) -> crate::StarryResult<()> {
         let _producer = self.0.lock();
         self.1.lock().clear();
         Ok(())

@@ -16,9 +16,10 @@ extern crate alloc;
 
 #[macro_use]
 mod macros;
+mod error;
 mod imp;
 
-pub use ax_errno::{AxError, AxResult};
+pub use error::{ApiError, ApiResult};
 
 /// Platform-specific constants and parameters.
 pub mod config {
@@ -82,9 +83,9 @@ pub mod stdio {
     use core::fmt;
     define_api! {
         /// Reads a slice of bytes from the console, returns the number of bytes read.
-        pub fn ax_console_read_bytes(buf: &mut [u8]) -> crate::AxResult<usize>;
+        pub fn ax_console_read_bytes(buf: &mut [u8]) -> crate::ApiResult<usize>;
         /// Writes a slice of bytes to the console, returns the number of bytes written.
-        pub fn ax_console_write_bytes(buf: &[u8]) -> crate::AxResult<usize>;
+        pub fn ax_console_write_bytes(buf: &[u8]) -> crate::ApiResult<usize>;
         /// Writes a formatted string to the console.
         pub fn ax_console_write_fmt(args: fmt::Arguments) -> fmt::Result;
     }
@@ -135,10 +136,10 @@ pub mod task {
         #[track_caller]
         pub fn ax_wait_for_exit(task: AxTaskHandle) -> i32;
         /// Sets the priority of the current task.
-        pub fn ax_set_current_priority(prio: isize) -> crate::AxResult;
+        pub fn ax_set_current_priority(prio: isize) -> crate::ApiResult;
         /// Sets the cpu affinity of the current task.
         #[track_caller]
-        pub fn ax_set_current_affinity(cpumask: AxCpuMask) -> crate::AxResult;
+        pub fn ax_set_current_affinity(cpumask: AxCpuMask) -> crate::ApiResult;
         /// Blocks the current task and put it into the wait queue, until
         /// other tasks notify the wait queue, or the given duration has
         /// elapsed (if specified).
@@ -170,7 +171,7 @@ pub mod task {
 
 /// Filesystem manipulation operations.
 pub mod fs {
-    use crate::AxResult;
+    use crate::ApiResult;
 
     define_api_type! {
         @cfg "fs";
@@ -191,63 +192,63 @@ pub mod fs {
 
         /// Opens a file at the path relative to the current directory with the
         /// options specified by `opts`.
-        pub fn ax_open_file(path: &str, opts: &AxOpenOptions) -> AxResult<AxFileHandle>;
+        pub fn ax_open_file(path: &str, opts: &AxOpenOptions) -> ApiResult<AxFileHandle>;
         /// Opens a directory at the path relative to the current directory with
         /// the options specified by `opts`.
-        pub fn ax_open_dir(path: &str, opts: &AxOpenOptions) -> AxResult<AxDirHandle>;
+        pub fn ax_open_dir(path: &str, opts: &AxOpenOptions) -> ApiResult<AxDirHandle>;
 
         /// Reads the file at the current position, returns the number of bytes read.
         ///
         /// After the read, the cursor will be advanced by the number of bytes read.
-        pub fn ax_read_file(file: &mut AxFileHandle, buf: &mut [u8]) -> AxResult<usize>;
+        pub fn ax_read_file(file: &mut AxFileHandle, buf: &mut [u8]) -> ApiResult<usize>;
         /// Reads the file at the given position, returns the number of bytes read.
         ///
         /// It does not update the file cursor.
-        pub fn ax_read_file_at(file: &AxFileHandle, offset: u64, buf: &mut [u8]) -> AxResult<usize>;
+        pub fn ax_read_file_at(file: &AxFileHandle, offset: u64, buf: &mut [u8]) -> ApiResult<usize>;
         /// Writes the file at the current position, returns the number of bytes
         /// written.
         ///
         /// After the write, the cursor will be advanced by the number of bytes
         /// written.
-        pub fn ax_write_file(file: &mut AxFileHandle, buf: &[u8]) -> AxResult<usize>;
+        pub fn ax_write_file(file: &mut AxFileHandle, buf: &[u8]) -> ApiResult<usize>;
         /// Writes the file at the given position, returns the number of bytes
         /// written.
         ///
         /// It does not update the file cursor.
-        pub fn ax_write_file_at(file: &AxFileHandle, offset: u64, buf: &[u8]) -> AxResult<usize>;
+        pub fn ax_write_file_at(file: &AxFileHandle, offset: u64, buf: &[u8]) -> ApiResult<usize>;
         /// Truncates the file to the specified size.
-        pub fn ax_truncate_file(file: &AxFileHandle, size: u64) -> AxResult;
+        pub fn ax_truncate_file(file: &AxFileHandle, size: u64) -> ApiResult;
         /// Flushes the file, writes all buffered data to the underlying device.
-        pub fn ax_flush_file(file: &AxFileHandle) -> AxResult;
+        pub fn ax_flush_file(file: &AxFileHandle) -> ApiResult;
         /// Sets the cursor of the file to the specified offset. Returns the new
         /// position after the seek.
-        pub fn ax_seek_file(file: &mut AxFileHandle, pos: AxSeekFrom) -> AxResult<u64>;
+        pub fn ax_seek_file(file: &mut AxFileHandle, pos: AxSeekFrom) -> ApiResult<u64>;
         /// Returns attributes of the file.
-        pub fn ax_file_attr(file: &AxFileHandle) -> AxResult<AxFileAttr>;
+        pub fn ax_file_attr(file: &AxFileHandle) -> ApiResult<AxFileAttr>;
 
         /// Reads directory entries starts from the current position into the
         /// given buffer, returns the number of entries read.
         ///
         /// After the read, the cursor of the directory will be advanced by the
         /// number of entries read.
-        pub fn ax_read_dir(dir: &mut AxDirHandle, dirents: &mut [AxDirEntry]) -> AxResult<usize>;
+        pub fn ax_read_dir(dir: &mut AxDirHandle, dirents: &mut [AxDirEntry]) -> ApiResult<usize>;
         /// Creates a new, empty directory at the provided path.
-        pub fn ax_create_dir(path: &str) -> AxResult;
+        pub fn ax_create_dir(path: &str) -> ApiResult;
         /// Removes an empty directory.
         ///
         /// If the directory is not empty, it will return an error.
-        pub fn ax_remove_dir(path: &str) -> AxResult;
+        pub fn ax_remove_dir(path: &str) -> ApiResult;
         /// Removes a file from the filesystem.
-        pub fn ax_remove_file(path: &str) -> AxResult;
+        pub fn ax_remove_file(path: &str) -> ApiResult;
         /// Rename a file or directory to a new name.
         ///
         /// It will delete the original file if `new` already exists.
-        pub fn ax_rename(old: &str, new: &str) -> AxResult;
+        pub fn ax_rename(old: &str, new: &str) -> ApiResult;
 
         /// Returns the current working directory.
-        pub fn ax_current_dir() -> AxResult<alloc::string::String>;
+        pub fn ax_current_dir() -> ApiResult<alloc::string::String>;
         /// Changes the current working directory to the specified path.
-        pub fn ax_set_current_dir(path: &str) -> AxResult;
+        pub fn ax_set_current_dir(path: &str) -> ApiResult;
     }
 }
 
@@ -255,7 +256,7 @@ pub mod fs {
 pub mod net {
     use core::net::{IpAddr, SocketAddr};
 
-    use crate::{AxResult, io::AxPollState};
+    use crate::{ApiResult, io::AxPollState};
 
     define_api_type! {
         @cfg "net";
@@ -271,79 +272,79 @@ pub mod net {
         /// Creates a new TCP socket.
         pub fn ax_tcp_socket() -> AxTcpSocketHandle;
         /// Returns the local address and port of the TCP socket.
-        pub fn ax_tcp_socket_addr(socket: &AxTcpSocketHandle) -> AxResult<SocketAddr>;
+        pub fn ax_tcp_socket_addr(socket: &AxTcpSocketHandle) -> ApiResult<SocketAddr>;
         /// Returns the remote address and port of the TCP socket.
-        pub fn ax_tcp_peer_addr(socket: &AxTcpSocketHandle) -> AxResult<SocketAddr>;
+        pub fn ax_tcp_peer_addr(socket: &AxTcpSocketHandle) -> ApiResult<SocketAddr>;
         /// Moves this TCP socket into or out of nonblocking mode.
-        pub fn ax_tcp_set_nonblocking(socket: &AxTcpSocketHandle, nonblocking: bool) -> AxResult;
+        pub fn ax_tcp_set_nonblocking(socket: &AxTcpSocketHandle, nonblocking: bool) -> ApiResult;
 
         /// Connects the TCP socket to the given address and port.
-        pub fn ax_tcp_connect(handle: &AxTcpSocketHandle, addr: SocketAddr) -> AxResult;
+        pub fn ax_tcp_connect(handle: &AxTcpSocketHandle, addr: SocketAddr) -> ApiResult;
         /// Binds the TCP socket to the given address and port.
-        pub fn ax_tcp_bind(socket: &AxTcpSocketHandle, addr: SocketAddr) -> AxResult;
+        pub fn ax_tcp_bind(socket: &AxTcpSocketHandle, addr: SocketAddr) -> ApiResult;
         /// Starts listening on the bound address and port.
-        pub fn ax_tcp_listen(socket: &AxTcpSocketHandle, _backlog: usize) -> AxResult;
+        pub fn ax_tcp_listen(socket: &AxTcpSocketHandle, _backlog: usize) -> ApiResult;
         /// Accepts a new connection on the TCP socket.
         ///
         /// This function will block the calling thread until a new TCP connection
         /// is established. When established, a new TCP socket is returned.
-        pub fn ax_tcp_accept(socket: &AxTcpSocketHandle) -> AxResult<(AxTcpSocketHandle, SocketAddr)>;
+        pub fn ax_tcp_accept(socket: &AxTcpSocketHandle) -> ApiResult<(AxTcpSocketHandle, SocketAddr)>;
 
         /// Transmits data in the given buffer on the TCP socket.
-        pub fn ax_tcp_send(socket: &AxTcpSocketHandle, buf: &[u8]) -> AxResult<usize>;
+        pub fn ax_tcp_send(socket: &AxTcpSocketHandle, buf: &[u8]) -> ApiResult<usize>;
         /// Receives data on the TCP socket, and stores it in the given buffer.
         /// On success, returns the number of bytes read.
-        pub fn ax_tcp_recv(socket: &AxTcpSocketHandle, buf: &mut [u8]) -> AxResult<usize>;
+        pub fn ax_tcp_recv(socket: &AxTcpSocketHandle, buf: &mut [u8]) -> ApiResult<usize>;
         /// Returns whether the TCP socket is readable or writable.
-        pub fn ax_tcp_poll(socket: &AxTcpSocketHandle) -> AxResult<AxPollState>;
+        pub fn ax_tcp_poll(socket: &AxTcpSocketHandle) -> ApiResult<AxPollState>;
         /// Closes the connection on the TCP socket.
-        pub fn ax_tcp_shutdown(socket: &AxTcpSocketHandle) -> AxResult;
+        pub fn ax_tcp_shutdown(socket: &AxTcpSocketHandle) -> ApiResult;
 
         // UDP socket
 
         /// Creates a new UDP socket.
         pub fn ax_udp_socket() -> AxUdpSocketHandle;
         /// Returns the local address and port of the UDP socket.
-        pub fn ax_udp_socket_addr(socket: &AxUdpSocketHandle) -> AxResult<SocketAddr>;
+        pub fn ax_udp_socket_addr(socket: &AxUdpSocketHandle) -> ApiResult<SocketAddr>;
         /// Returns the remote address and port of the UDP socket.
-        pub fn ax_udp_peer_addr(socket: &AxUdpSocketHandle) -> AxResult<SocketAddr>;
+        pub fn ax_udp_peer_addr(socket: &AxUdpSocketHandle) -> ApiResult<SocketAddr>;
         /// Moves this UDP socket into or out of nonblocking mode.
-        pub fn ax_udp_set_nonblocking(socket: &AxUdpSocketHandle, nonblocking: bool) -> AxResult;
+        pub fn ax_udp_set_nonblocking(socket: &AxUdpSocketHandle, nonblocking: bool) -> ApiResult;
 
         /// Binds the UDP socket to the given address and port.
-        pub fn ax_udp_bind(socket: &AxUdpSocketHandle, addr: SocketAddr) -> AxResult;
+        pub fn ax_udp_bind(socket: &AxUdpSocketHandle, addr: SocketAddr) -> ApiResult;
         /// Receives a single datagram message on the UDP socket.
-        pub fn ax_udp_recv_from(socket: &AxUdpSocketHandle, buf: &mut [u8]) -> AxResult<(usize, SocketAddr)>;
+        pub fn ax_udp_recv_from(socket: &AxUdpSocketHandle, buf: &mut [u8]) -> ApiResult<(usize, SocketAddr)>;
         /// Receives a single datagram message on the UDP socket, without
         /// removing it from the queue.
-        pub fn ax_udp_peek_from(socket: &AxUdpSocketHandle, buf: &mut [u8]) -> AxResult<(usize, SocketAddr)>;
+        pub fn ax_udp_peek_from(socket: &AxUdpSocketHandle, buf: &mut [u8]) -> ApiResult<(usize, SocketAddr)>;
         /// Sends data on the UDP socket to the given address. On success,
         /// returns the number of bytes written.
-        pub fn ax_udp_send_to(socket: &AxUdpSocketHandle, buf: &[u8], addr: SocketAddr) -> AxResult<usize>;
+        pub fn ax_udp_send_to(socket: &AxUdpSocketHandle, buf: &[u8], addr: SocketAddr) -> ApiResult<usize>;
 
         /// Connects this UDP socket to a remote address, allowing the `send` and
         /// `recv` to be used to send data and also applies filters to only receive
         /// data from the specified address.
-        pub fn ax_udp_connect(socket: &AxUdpSocketHandle, addr: SocketAddr) -> AxResult;
+        pub fn ax_udp_connect(socket: &AxUdpSocketHandle, addr: SocketAddr) -> ApiResult;
         /// Sends data on the UDP socket to the remote address to which it is
         /// connected.
-        pub fn ax_udp_send(socket: &AxUdpSocketHandle, buf: &[u8]) -> AxResult<usize>;
+        pub fn ax_udp_send(socket: &AxUdpSocketHandle, buf: &[u8]) -> ApiResult<usize>;
         /// Receives a single datagram message on the UDP socket from the remote
         /// address to which it is connected. On success, returns the number of
         /// bytes read.
-        pub fn ax_udp_recv(socket: &AxUdpSocketHandle, buf: &mut [u8]) -> AxResult<usize>;
+        pub fn ax_udp_recv(socket: &AxUdpSocketHandle, buf: &mut [u8]) -> ApiResult<usize>;
         /// Returns whether the UDP socket is readable or writable.
-        pub fn ax_udp_poll(socket: &AxUdpSocketHandle) -> AxResult<AxPollState>;
+        pub fn ax_udp_poll(socket: &AxUdpSocketHandle) -> ApiResult<AxPollState>;
 
         // Miscellaneous
 
         /// Resolves the host name to a list of IP addresses.
-        pub fn ax_dns_query(domain_name: &str) -> AxResult<alloc::vec::Vec<IpAddr>>;
+        pub fn ax_dns_query(domain_name: &str) -> ApiResult<alloc::vec::Vec<IpAddr>>;
         /// Poll the network stack.
         ///
         /// It may receive packets from the NIC and process them, and transmit queued
         /// packets to the NIC.
-        pub fn ax_poll_interfaces() -> AxResult;
+        pub fn ax_poll_interfaces() -> ApiResult;
     }
 }
 

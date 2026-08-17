@@ -1,7 +1,9 @@
 use alloc::vec::Vec;
 use core::{mem::MaybeUninit, ptr::NonNull};
 
+use axfs_ng_vfs::VfsError;
 use axtest::prelude::*;
+use starry_kernel::{Errno, StarryError};
 use starry_vm::{
     VmError, VmMutPtr, VmPtr, vm_load, vm_load_until_nul, vm_read_slice, vm_write_slice,
 };
@@ -17,17 +19,36 @@ fn starry_vm_pointer_and_error_mapping_rules_hold() {
     ax_assert_eq!(dangling.vm_write(42), Err(VmError::AccessDenied));
 
     ax_assert_eq!(
-        ax_errno::AxError::from(VmError::BadAddress),
-        ax_errno::AxError::BadAddress
+        StarryError::from(VmError::BadAddress).linux_errno(),
+        Errno::EFAULT
     );
     ax_assert_eq!(
-        ax_errno::AxError::from(VmError::AccessDenied),
-        ax_errno::AxError::BadAddress
+        StarryError::from(VmError::AccessDenied).linux_errno(),
+        Errno::EFAULT
     );
     ax_assert_eq!(
-        ax_errno::AxError::from(VmError::TooLong),
-        ax_errno::AxError::NameTooLong
+        StarryError::from(VmError::TooLong).linux_errno(),
+        Errno::ENAMETOOLONG
     );
+}
+
+#[axtest]
+fn starry_errno_boundary_preserves_domain_and_raw_codes() {
+    let cases = [
+        (StarryError::from(VmError::BadAddress), Errno::EFAULT),
+        (StarryError::from(VmError::TooLong), Errno::ENAMETOOLONG),
+        (
+            StarryError::from(VfsError::OperationNotSupported),
+            Errno::EOPNOTSUPP,
+        ),
+        (StarryError::from(VfsError::Unsupported), Errno::ENOSYS),
+    ];
+    for (error, expected) in cases {
+        ax_assert_eq!(error.linux_errno(), expected);
+    }
+
+    let raw_errno = StarryError::from(Errno::new(4094)).linux_errno();
+    ax_assert_eq!(raw_errno.into_raw(), 4094);
 }
 
 #[axtest]

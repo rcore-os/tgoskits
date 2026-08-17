@@ -15,10 +15,10 @@ axtest = ["dep:axtest", "alloc"]
 default = []
 
 [dependencies]
-ax-errno = { workspace = true }
 axtest = { workspace = true, optional = true }
 heapless = "0.9"
 memchr = { version = "2", default-features = false }
+thiserror.workspace = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

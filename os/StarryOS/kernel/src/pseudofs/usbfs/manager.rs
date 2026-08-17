@@ -5,7 +5,6 @@ use core::{
     task::{Context, Poll},
 };
 
-use ax_errno::{AxError, AxResult, LinuxError};
 use ax_runtime::hal::irq::IrqId;
 use ax_task::IrqNotify;
 use crab_usb::{
@@ -32,7 +31,10 @@ use super::{
     },
     irq::{self, PendingUsbIrqSlot},
 };
-use crate::sync::{IrqMutex as Mutex, Mutex as BlockingMutex};
+use crate::{
+    Errno, StarryError, StarryResult,
+    sync::{IrqMutex as Mutex, Mutex as BlockingMutex},
+};
 
 const ROOT_HUB_STABLE_DEVICE_ID: usize = usize::MAX;
 const USB_REQ_GET_DESCRIPTOR: u8 = 0x06;
@@ -143,7 +145,7 @@ impl SubmittedTransfer {
         }
     }
 
-    pub(super) fn try_reclaim(&self) -> AxResult<Option<TransferCompletion>> {
+    pub(super) fn try_reclaim(&self) -> StarryResult<Option<TransferCompletion>> {
         match &self.inner {
             SubmittedTransferInner::Endpoint {
                 endpoint,
@@ -161,7 +163,10 @@ impl SubmittedTransfer {
         }
     }
 
-    pub(super) fn poll_reclaim(&self, cx: &mut Context<'_>) -> Poll<AxResult<TransferCompletion>> {
+    pub(super) fn poll_reclaim(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<StarryResult<TransferCompletion>> {
         let result = match &self.inner {
             SubmittedTransferInner::Endpoint {
                 endpoint,
@@ -182,7 +187,7 @@ impl SubmittedTransfer {
         }
     }
 
-    pub(super) fn cancel(&self) -> AxResult<()> {
+    pub(super) fn cancel(&self) -> StarryResult<()> {
         match &self.inner {
             SubmittedTransferInner::Endpoint {
                 endpoint,
@@ -204,7 +209,7 @@ impl SubmittedTransfer {
 fn wait_endpoint(
     endpoint: EndpointHandle,
     request: TransferRequest,
-) -> AxResult<TransferCompletion> {
+) -> StarryResult<TransferCompletion> {
     let request_id = endpoint.submit(request).map_err(map_transfer_error)?;
     ax_task::future::block_on(poll_fn(|cx| match endpoint.poll_request(request_id, cx) {
         Poll::Ready(result) => Poll::Ready(result.map_err(map_transfer_error)),
@@ -215,7 +220,7 @@ fn wait_endpoint(
 fn wait_control(
     live_device: Arc<LiveDeviceState>,
     request: TransferRequest,
-) -> AxResult<TransferCompletion> {
+) -> StarryResult<TransferCompletion> {
     let request_id = live_device
         .device
         .lock()
@@ -263,36 +268,36 @@ pub(super) struct UsbDeviceLease {
 }
 
 impl UsbDeviceLease {
-    pub(super) fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+    pub(super) fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
         self.manager.opened_device_ioctl(self.stable_id, cmd, arg)
     }
 
-    pub(super) fn claim_interface(&self, interface: u8, alternate: u8) -> AxResult<()> {
+    pub(super) fn claim_interface(&self, interface: u8, alternate: u8) -> StarryResult<()> {
         self.manager
             .live_claim_interface(self.stable_id, self.session_id, interface, alternate)
     }
 
-    pub(super) fn set_configuration(&self, configuration: u8) -> AxResult<()> {
+    pub(super) fn set_configuration(&self, configuration: u8) -> StarryResult<()> {
         self.manager
             .live_set_configuration(self.stable_id, configuration)
     }
 
-    pub(super) fn bulk_in(&self, endpoint: u8, data: &mut [u8]) -> AxResult<usize> {
+    pub(super) fn bulk_in(&self, endpoint: u8, data: &mut [u8]) -> StarryResult<usize> {
         self.manager
             .live_bulk_in(self.stable_id, self.session_id, endpoint, data)
     }
 
-    pub(super) fn bulk_out(&self, endpoint: u8, data: &[u8]) -> AxResult<usize> {
+    pub(super) fn bulk_out(&self, endpoint: u8, data: &[u8]) -> StarryResult<usize> {
         self.manager
             .live_bulk_out(self.stable_id, self.session_id, endpoint, data)
     }
 
-    pub(super) fn interrupt_in(&self, endpoint: u8, data: &mut [u8]) -> AxResult<usize> {
+    pub(super) fn interrupt_in(&self, endpoint: u8, data: &mut [u8]) -> StarryResult<usize> {
         self.manager
             .live_interrupt_in(self.stable_id, self.session_id, endpoint, data)
     }
 
-    pub(super) fn interrupt_out(&self, endpoint: u8, data: &[u8]) -> AxResult<usize> {
+    pub(super) fn interrupt_out(&self, endpoint: u8, data: &[u8]) -> StarryResult<usize> {
         self.manager
             .live_interrupt_out(self.stable_id, self.session_id, endpoint, data)
     }
@@ -302,7 +307,7 @@ impl UsbDeviceLease {
         endpoint: u8,
         data: &mut [u8],
         packet_lengths: &[usize],
-    ) -> AxResult<IsoTransferResult> {
+    ) -> StarryResult<IsoTransferResult> {
         self.manager.live_iso_in(
             self.stable_id,
             self.session_id,
@@ -317,7 +322,7 @@ impl UsbDeviceLease {
         endpoint: u8,
         data: &[u8],
         packet_lengths: &[usize],
-    ) -> AxResult<usize> {
+    ) -> StarryResult<usize> {
         self.manager.live_iso_out(
             self.stable_id,
             self.session_id,
@@ -331,7 +336,7 @@ impl UsbDeviceLease {
         &self,
         endpoint: u8,
         request: TransferRequest,
-    ) -> AxResult<SubmittedTransfer> {
+    ) -> StarryResult<SubmittedTransfer> {
         self.manager.live_submit_endpoint_transfer(
             self.stable_id,
             self.session_id,
@@ -343,7 +348,7 @@ impl UsbDeviceLease {
     pub(super) fn submit_control_transfer(
         &self,
         request: TransferRequest,
-    ) -> AxResult<SubmittedTransfer> {
+    ) -> StarryResult<SubmittedTransfer> {
         self.manager
             .live_submit_control_transfer(self.stable_id, request)
     }
@@ -355,7 +360,7 @@ impl UsbDeviceLease {
         w_value: u16,
         w_index: u16,
         data: &mut [u8],
-    ) -> AxResult<usize> {
+    ) -> StarryResult<usize> {
         self.manager.live_control_transfer(
             self.stable_id,
             b_request_type,
@@ -366,12 +371,12 @@ impl UsbDeviceLease {
         )
     }
 
-    pub(super) fn release_interface(&self, interface: u8) -> AxResult<()> {
+    pub(super) fn release_interface(&self, interface: u8) -> StarryResult<()> {
         self.manager
             .live_release_interface(self.stable_id, self.session_id, interface)
     }
 
-    pub(super) fn clear_halt(&self, endpoint: u8) -> AxResult<()> {
+    pub(super) fn clear_halt(&self, endpoint: u8) -> StarryResult<()> {
         self.manager
             .live_clear_halt(self.stable_id, self.session_id, endpoint)
     }
@@ -527,7 +532,7 @@ impl UsbFsManager {
         self: &Arc<Self>,
         bus_num: u8,
         device_num: u8,
-    ) -> AxResult<UsbDeviceLease> {
+    ) -> StarryResult<UsbDeviceLease> {
         let _open_guard = self.open_lock.lock();
         let stable_id = {
             let state = self.state.lock();
@@ -540,13 +545,16 @@ impl UsbFsManager {
                         && record.snapshot.device_num == device_num)
                         .then_some(*stable_id)
                 })
-                .ok_or(AxError::NotFound)?
+                .ok_or(StarryError::NotFound)?
         };
 
         self.ensure_live_device(stable_id)?;
 
         let mut state = self.state.lock();
-        let record = state.devices.get_mut(&stable_id).ok_or(AxError::NotFound)?;
+        let record = state
+            .devices
+            .get_mut(&stable_id)
+            .ok_or(StarryError::NotFound)?;
         let session_id = record.next_session_id;
         record.next_session_id = record.next_session_id.saturating_add(1).max(1);
         record.open_count = record.open_count.saturating_add(1);
@@ -557,7 +565,12 @@ impl UsbFsManager {
         })
     }
 
-    fn opened_device_ioctl(&self, stable_id: UsbStableId, cmd: u32, arg: usize) -> AxResult<usize> {
+    fn opened_device_ioctl(
+        &self,
+        stable_id: UsbStableId,
+        cmd: u32,
+        arg: usize,
+    ) -> StarryResult<usize> {
         match cmd {
             USBDEVFS_CONTROL => self.handle_control(stable_id, arg),
             USBDEVFS_CONNECTINFO => {
@@ -575,11 +588,11 @@ impl UsbFsManager {
             }
             USBDEVFS_CLAIMINTERFACE | USBDEVFS_RELEASEINTERFACE => {
                 let _ = read_usbdevfs_u32(arg)?;
-                Err(AxError::Unsupported)
+                Err(StarryError::Unsupported)
             }
             USBDEVFS_SETINTERFACE => {
                 let _ = read_usbdevfs_setinterface(arg)?;
-                Err(AxError::Unsupported)
+                Err(StarryError::Unsupported)
             }
             USBDEVFS_BULK => {
                 let bulk = read_usbdevfs_bulktransfer(arg)?;
@@ -587,14 +600,14 @@ impl UsbFsManager {
                 if len > 0 {
                     crate::mm::check_access(bulk.data as usize, len)?;
                 }
-                Err(AxError::Unsupported)
+                Err(StarryError::Unsupported)
             }
             USBDEVFS_SETCONFIGURATION | USBDEVFS_CLEAR_HALT => {
                 let _ = read_usbdevfs_u32(arg)?;
-                Err(AxError::Unsupported)
+                Err(StarryError::Unsupported)
             }
-            USBDEVFS_RESET => Err(AxError::Unsupported),
-            _ => Err(AxError::Unsupported),
+            USBDEVFS_RESET => Err(StarryError::Unsupported),
+            _ => Err(StarryError::Unsupported),
         }
     }
 
@@ -604,10 +617,10 @@ impl UsbFsManager {
         device_num: u8,
         cmd: u32,
         arg: usize,
-    ) -> AxResult<usize> {
+    ) -> StarryResult<usize> {
         let snapshot = self
             .device_snapshot(bus_num, device_num)
-            .ok_or(AxError::NotFound)?;
+            .ok_or(StarryError::NotFound)?;
         match cmd {
             USBDEVFS_CONTROL => snapshot_control_ioctl(&snapshot, arg),
             USBDEVFS_CONNECTINFO => {
@@ -622,7 +635,7 @@ impl UsbFsManager {
                 (arg as *mut u32).vm_write(USBDEVFS_CAP_BULK_CONTINUATION)?;
                 Ok(0)
             }
-            _ => Err(AxError::Unsupported),
+            _ => Err(StarryError::Unsupported),
         }
     }
 
@@ -706,7 +719,7 @@ impl UsbFsManager {
         }
     }
 
-    fn ensure_live_device(&self, stable_id: UsbStableId) -> AxResult<()> {
+    fn ensure_live_device(&self, stable_id: UsbStableId) -> StarryResult<()> {
         loop {
             enum OpenAction {
                 Ready,
@@ -722,7 +735,10 @@ impl UsbFsManager {
 
             let action = {
                 let mut state = self.state.lock();
-                let record = state.devices.get_mut(&stable_id).ok_or(AxError::NotFound)?;
+                let record = state
+                    .devices
+                    .get_mut(&stable_id)
+                    .ok_or(StarryError::NotFound)?;
                 if record.live_device.is_some() {
                     OpenAction::Ready
                 } else if let Some(info) = record.unopened_info.take() {
@@ -731,14 +747,14 @@ impl UsbFsManager {
                         info,
                     }
                 } else if record.synthetic || !record.openable {
-                    return Err(AxError::Unsupported);
+                    return Err(StarryError::Unsupported);
                 } else if record.present {
                     OpenAction::Refresh {
                         host_device_id: record.host_device_id,
                         bus_num: record.snapshot.bus_num,
                     }
                 } else {
-                    return Err(AxError::NoSuchDevice);
+                    return Err(StarryError::NoSuchDevice);
                 }
             };
 
@@ -750,7 +766,10 @@ impl UsbFsManager {
                 } => {
                     let live_device = self.open_device(host_device_id, &info)?;
                     let mut state = self.state.lock();
-                    let record = state.devices.get_mut(&stable_id).ok_or(AxError::NotFound)?;
+                    let record = state
+                        .devices
+                        .get_mut(&stable_id)
+                        .ok_or(StarryError::NotFound)?;
                     record.live_device = Some(Arc::new(LiveDeviceState {
                         device: BlockingMutex::new(live_device),
                         interfaces: BlockingMutex::new(BTreeMap::new()),
@@ -767,10 +786,14 @@ impl UsbFsManager {
         }
     }
 
-    fn open_device(&self, host_device_id: RDriveDeviceId, info: &DeviceInfo) -> AxResult<Device> {
+    fn open_device(
+        &self,
+        host_device_id: RDriveDeviceId,
+        info: &DeviceInfo,
+    ) -> StarryResult<Device> {
         let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
-            .map_err(|_| AxError::NoSuchDevice)?;
-        let mut guard = host.lock().map_err(|_| AxError::ResourceBusy)?;
+            .map_err(|_| StarryError::NoSuchDevice)?;
+        let mut guard = host.lock().map_err(|_| StarryError::ResourceBusy)?;
         ax_task::future::block_on(guard.host_mut().open_device(info)).map_err(|err| {
             warn!(
                 "usbfs: failed to open live device on host {:?} for USB device id {}: {:?}",
@@ -782,10 +805,10 @@ impl UsbFsManager {
         })
     }
 
-    fn refresh_host(&self, host_device_id: RDriveDeviceId, bus_num: u8) -> AxResult<()> {
+    fn refresh_host(&self, host_device_id: RDriveDeviceId, bus_num: u8) -> StarryResult<()> {
         let host = rdrive::get::<ax_driver::usb::PlatformUsbHost>(host_device_id)
-            .map_err(|_| AxError::NoSuchDevice)?;
-        let mut guard = host.lock().map_err(|_| AxError::ResourceBusy)?;
+            .map_err(|_| StarryError::NoSuchDevice)?;
+        let mut guard = host.lock().map_err(|_| StarryError::ResourceBusy)?;
         let devices =
             ax_task::future::block_on(guard.host_mut().probe_devices()).map_err(map_usb_error)?;
         drop(guard);
@@ -793,22 +816,22 @@ impl UsbFsManager {
         Ok(())
     }
 
-    fn snapshot_by_id(&self, stable_id: UsbStableId) -> AxResult<UsbDeviceSnapshot> {
+    fn snapshot_by_id(&self, stable_id: UsbStableId) -> StarryResult<UsbDeviceSnapshot> {
         self.state
             .lock()
             .devices
             .get(&stable_id)
             .map(|record| record.snapshot.clone())
-            .ok_or(AxError::NotFound)
+            .ok_or(StarryError::NotFound)
     }
 
-    fn live_device_by_id(&self, stable_id: UsbStableId) -> AxResult<Arc<LiveDeviceState>> {
+    fn live_device_by_id(&self, stable_id: UsbStableId) -> StarryResult<Arc<LiveDeviceState>> {
         self.state
             .lock()
             .devices
             .get(&stable_id)
             .and_then(|record| record.live_device.as_ref().cloned())
-            .ok_or(AxError::NoSuchDevice)
+            .ok_or(StarryError::NoSuchDevice)
     }
 
     fn live_endpoint(
@@ -816,7 +839,7 @@ impl UsbFsManager {
         stable_id: UsbStableId,
         session_id: u64,
         endpoint: u8,
-    ) -> AxResult<EndpointHandle> {
+    ) -> StarryResult<EndpointHandle> {
         let live_device = self.live_device_by_id(stable_id)?;
         live_device
             .interfaces
@@ -824,7 +847,7 @@ impl UsbFsManager {
             .values()
             .filter(|claimed| claimed.owner == session_id)
             .find_map(|claimed| claimed.session.endpoint(endpoint).ok())
-            .ok_or(AxError::NotFound)
+            .ok_or(StarryError::NotFound)
     }
 
     fn live_control_transfer(
@@ -835,7 +858,7 @@ impl UsbFsManager {
         w_value: u16,
         w_index: u16,
         data: &mut [u8],
-    ) -> AxResult<usize> {
+    ) -> StarryResult<usize> {
         self.live_ensure_configured(stable_id)?;
         let setup = control_setup_from_raw(b_request_type, b_request, w_value, w_index);
         let live_device = self.live_device_by_id(stable_id)?;
@@ -852,7 +875,7 @@ impl UsbFsManager {
         stable_id: UsbStableId,
         session_id: u64,
         endpoint: u8,
-    ) -> AxResult<()> {
+    ) -> StarryResult<()> {
         self.live_ensure_configured(stable_id)?;
         let live_device = self.live_device_by_id(stable_id)?;
         let endpoint_handle = self.live_endpoint(stable_id, session_id, endpoint)?;
@@ -878,14 +901,14 @@ impl UsbFsManager {
         session_id: u64,
         interface: u8,
         alternate: u8,
-    ) -> AxResult<()> {
+    ) -> StarryResult<()> {
         self.live_ensure_configured(stable_id)?;
         let live_device = self.live_device_by_id(stable_id)?;
         let mut interfaces = live_device.interfaces.lock();
         let mut device = live_device.device.lock();
         if let Some(claimed) = interfaces.get_mut(&interface) {
             if claimed.owner != session_id {
-                return Err(AxError::ResourceBusy);
+                return Err(StarryError::ResourceBusy);
             }
             return ax_task::future::block_on(
                 claimed.session.set_alternate(&mut device, alternate),
@@ -904,7 +927,7 @@ impl UsbFsManager {
         Ok(())
     }
 
-    fn live_ensure_configured(&self, stable_id: UsbStableId) -> AxResult<()> {
+    fn live_ensure_configured(&self, stable_id: UsbStableId) -> StarryResult<()> {
         let live_device = self.live_device_by_id(stable_id)?;
         let mut device = live_device.device.lock();
         if ax_task::future::block_on(device.current_configuration_descriptor()).is_ok() {
@@ -915,12 +938,16 @@ impl UsbFsManager {
             .configurations()
             .first()
             .map(|config| config.configuration_value)
-            .ok_or(AxError::NotFound)?;
+            .ok_or(StarryError::NotFound)?;
         ax_task::future::block_on(device.set_configuration(configuration_value))
             .map_err(map_usb_error)
     }
 
-    fn live_set_configuration(&self, stable_id: UsbStableId, configuration: u8) -> AxResult<()> {
+    fn live_set_configuration(
+        &self,
+        stable_id: UsbStableId,
+        configuration: u8,
+    ) -> StarryResult<()> {
         let live_device = self.live_device_by_id(stable_id)?;
         let mut interfaces = live_device.interfaces.lock();
         let mut device = live_device.device.lock();
@@ -936,7 +963,7 @@ impl UsbFsManager {
         session_id: u64,
         endpoint: u8,
         data: &mut [u8],
-    ) -> AxResult<usize> {
+    ) -> StarryResult<usize> {
         let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::bulk_in(data))
             .map(|completion| completion.actual_length)
@@ -948,7 +975,7 @@ impl UsbFsManager {
         session_id: u64,
         endpoint: u8,
         data: &[u8],
-    ) -> AxResult<usize> {
+    ) -> StarryResult<usize> {
         let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::bulk_out(data))
             .map(|completion| completion.actual_length)
@@ -960,7 +987,7 @@ impl UsbFsManager {
         session_id: u64,
         endpoint: u8,
         data: &mut [u8],
-    ) -> AxResult<usize> {
+    ) -> StarryResult<usize> {
         let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::interrupt_in(data))
             .map(|completion| completion.actual_length)
@@ -972,7 +999,7 @@ impl UsbFsManager {
         session_id: u64,
         endpoint: u8,
         data: &[u8],
-    ) -> AxResult<usize> {
+    ) -> StarryResult<usize> {
         let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::interrupt_out(data))
             .map(|completion| completion.actual_length)
@@ -985,7 +1012,7 @@ impl UsbFsManager {
         endpoint: u8,
         data: &mut [u8],
         packet_lengths: &[usize],
-    ) -> AxResult<IsoTransferResult> {
+    ) -> StarryResult<IsoTransferResult> {
         let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::iso_in(data, packet_lengths)).map(|completion| {
             IsoTransferResult {
@@ -1001,7 +1028,7 @@ impl UsbFsManager {
         endpoint: u8,
         data: &[u8],
         packet_lengths: &[usize],
-    ) -> AxResult<usize> {
+    ) -> StarryResult<usize> {
         let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         wait_endpoint(endpoint, TransferRequest::iso_out(data, packet_lengths))
             .map(|completion| completion.actual_length)
@@ -1013,7 +1040,7 @@ impl UsbFsManager {
         session_id: u64,
         endpoint: u8,
         request: TransferRequest,
-    ) -> AxResult<SubmittedTransfer> {
+    ) -> StarryResult<SubmittedTransfer> {
         let endpoint = self.live_endpoint(stable_id, session_id, endpoint)?;
         let request_id = endpoint.submit(request).map_err(map_transfer_error)?;
         Ok(SubmittedTransfer {
@@ -1028,7 +1055,7 @@ impl UsbFsManager {
         &self,
         stable_id: UsbStableId,
         request: TransferRequest,
-    ) -> AxResult<SubmittedTransfer> {
+    ) -> StarryResult<SubmittedTransfer> {
         self.live_ensure_configured(stable_id)?;
         let live_device = self.live_device_by_id(stable_id)?;
         let request_id = live_device
@@ -1050,22 +1077,22 @@ impl UsbFsManager {
         stable_id: UsbStableId,
         session_id: u64,
         interface: u8,
-    ) -> AxResult<()> {
+    ) -> StarryResult<()> {
         let live_device = self.live_device_by_id(stable_id)?;
         let mut interfaces = live_device.interfaces.lock();
         let mut device = live_device.device.lock();
         let claimed = interfaces
             .get_mut(&interface)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
         if claimed.owner != session_id {
-            return Err(AxError::ResourceBusy);
+            return Err(StarryError::ResourceBusy);
         }
         ax_task::future::block_on(claimed.session.release(&mut device)).map_err(map_usb_error)?;
         interfaces.remove(&interface);
         Ok(())
     }
 
-    fn handle_control(&self, stable_id: UsbStableId, arg: usize) -> AxResult<usize> {
+    fn handle_control(&self, stable_id: UsbStableId, arg: usize) -> StarryResult<usize> {
         let ctrl = read_usbdevfs_ctrltransfer(arg)?;
         match direction_from_raw(ctrl.b_request_type) {
             Direction::In => {
@@ -1111,7 +1138,7 @@ impl UsbFsManager {
     }
 }
 
-pub(super) fn is_snapshot_control_ioctl(arg: usize) -> AxResult<bool> {
+pub(super) fn is_snapshot_control_ioctl(arg: usize) -> StarryResult<bool> {
     let ctrl = read_usbdevfs_ctrltransfer(arg)?;
     Ok(matches!(
         (ctrl.b_request_type, ctrl.b_request, ctrl.w_value >> 8),
@@ -1121,7 +1148,7 @@ pub(super) fn is_snapshot_control_ioctl(arg: usize) -> AxResult<bool> {
     ))
 }
 
-fn snapshot_control_ioctl(snapshot: &UsbDeviceSnapshot, arg: usize) -> AxResult<usize> {
+fn snapshot_control_ioctl(snapshot: &UsbDeviceSnapshot, arg: usize) -> StarryResult<usize> {
     let ctrl = read_usbdevfs_ctrltransfer(arg)?;
     match (ctrl.b_request_type, ctrl.b_request, ctrl.w_value >> 8) {
         (0x80, USB_REQ_GET_DESCRIPTOR, USB_DT_DEVICE) => {
@@ -1131,7 +1158,7 @@ fn snapshot_control_ioctl(snapshot: &UsbDeviceSnapshot, arg: usize) -> AxResult<
         (0x80, USB_REQ_GET_DESCRIPTOR, USB_DT_CONFIG) => {
             let config_index = (ctrl.w_value & 0xff) as usize;
             let config =
-                snapshot_config_blob(snapshot, config_index).ok_or(AxError::Unsupported)?;
+                snapshot_config_blob(snapshot, config_index).ok_or(StarryError::Unsupported)?;
             write_control_data(ctrl.data, ctrl.w_length as usize, config)
         }
         (0x80, USB_REQ_GET_CONFIGURATION, _) => {
@@ -1142,11 +1169,11 @@ fn snapshot_control_ioctl(snapshot: &UsbDeviceSnapshot, arg: usize) -> AxResult<
                 .vm_write(snapshot_active_configuration(snapshot))?;
             Ok(1)
         }
-        _ => Err(AxError::Unsupported),
+        _ => Err(StarryError::Unsupported),
     }
 }
 
-fn write_control_data(data: *mut u8, requested_len: usize, source: &[u8]) -> AxResult<usize> {
+fn write_control_data(data: *mut u8, requested_len: usize, source: &[u8]) -> StarryResult<usize> {
     let len = source.len().min(requested_len);
     if len == 0 {
         return Ok(0);
@@ -1310,33 +1337,33 @@ pub(super) fn initialize_hosts(manager: &UsbFsManager) -> usize {
     initialized
 }
 
-fn map_transfer_error(err: TransferError) -> AxError {
+fn map_transfer_error(err: TransferError) -> StarryError {
     match err {
-        TransferError::Timeout => AxError::TimedOut,
+        TransferError::Timeout => StarryError::TimedOut,
         TransferError::Cancelled | TransferError::EndpointRevoked => {
-            AxError::from(LinuxError::ENOENT)
+            StarryError::from(Errno::ENOENT)
         }
-        TransferError::Stall => AxError::BrokenPipe,
-        TransferError::QueueFull => AxError::ResourceBusy,
-        TransferError::InvalidEndpoint => AxError::InvalidInput,
-        TransferError::NoDevice | TransferError::Disconnected => AxError::NoSuchDevice,
-        TransferError::NotSupported => AxError::Unsupported,
-        TransferError::Other(_) => AxError::Io,
+        TransferError::Stall => StarryError::BrokenPipe,
+        TransferError::QueueFull => StarryError::ResourceBusy,
+        TransferError::InvalidEndpoint => StarryError::InvalidInput,
+        TransferError::NoDevice | TransferError::Disconnected => StarryError::NoSuchDevice,
+        TransferError::NotSupported => StarryError::Unsupported,
+        TransferError::Other(_) => StarryError::Io,
     }
 }
 
-fn map_usb_error(err: USBError) -> AxError {
+fn map_usb_error(err: USBError) -> StarryError {
     match err {
-        USBError::Timeout => AxError::TimedOut,
-        USBError::NoMemory => AxError::NoMemory,
+        USBError::Timeout => StarryError::TimedOut,
+        USBError::NoMemory => StarryError::NoMemory,
         USBError::TransferError(err) => map_transfer_error(err),
-        USBError::NotInitialized | USBError::ConfigurationNotSet => AxError::BadState,
-        USBError::InterfaceBroken => AxError::Io,
-        USBError::NotFound => AxError::NoSuchDevice,
-        USBError::InvalidParameter => AxError::InvalidInput,
-        USBError::SlotLimitReached => AxError::ResourceBusy,
-        USBError::NotSupported => AxError::Unsupported,
-        USBError::Other(_) => AxError::Io,
+        USBError::NotInitialized | USBError::ConfigurationNotSet => StarryError::BadState,
+        USBError::InterfaceBroken => StarryError::Io,
+        USBError::NotFound => StarryError::NoSuchDevice,
+        USBError::InvalidParameter => StarryError::InvalidInput,
+        USBError::SlotLimitReached => StarryError::ResourceBusy,
+        USBError::NotSupported => StarryError::Unsupported,
+        USBError::Other(_) => StarryError::Io,
     }
 }
 

@@ -16,13 +16,13 @@ alloc = []
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
-ax-errno = { workspace = true }
 bytemuck = { version = "1.24", features = [
     "align_offset",
     "const_zeroed",
     "zeroable_maybe_uninit",
 ] }
 extern-trait = { workspace = true }
+thiserror.workspace = true
 
 [dev-dependencies]
 bytemuck = { version = "1.24", features = ["derive"] }

@@ -89,7 +89,7 @@ Clippy 的代码按选择、展开、执行和报告划分，避免参数解析�
 1. **target** 来自 `docs_rs_targets(package)`，从 docs.rs metadata 读取包声明支持的 target；为空时取单个 `None`（host target）。
 2. **feature** 取包 `Cargo.toml` 中除 `default` 外的全部 feature；`ax-std` 额外注入一个名为 `default` 的特殊 feature。
 3. 每个 (target, base) 组合产生一个 base check；`NoDeps` 模式下再为每个该 target 支持的 feature 产生一个 feature check。
-4. feature check 使用对应 feature 名执行；普通包不额外注入构建环境变量。
+4. feature check 使用对应 feature 名执行；`host-test` 是 workspace 的宿主测试约定，不参与 docs.rs target 矩阵，而是在 host target 上单独检查一次并加上 `--tests`，让 Clippy 编译单元测试和集成测试目标。普通包不额外注入构建环境变量。
 5. `NoDeps` 模式下，包还可以通过 `[package.metadata.clippy]` 声明命名配置；每条配置按一个明确 target、完整 feature 集和环境变量额外生成 check。`WithDeps` 仍只运行 base check，避免增量反向依赖扫描膨胀成完整配置矩阵。
 
 命名配置用于 docs.rs target × 单 feature 矩阵无法表达的正式构建组合。它保留包的默认 feature，再额外启用配置中的完整 feature 集：
@@ -144,7 +144,7 @@ targets = ["aarch64-unknown-linux-gnu", "riscv64gc-unknown-none-elf"]
 `ClippyCheck::cargo_args()` 构造命令行：
 
 - Base check：`clippy -p <pkg>`
-- Feature check：`clippy -p <pkg> --no-default-features --features <feature>`
+- Feature check：`clippy -p <pkg> --no-default-features --features <feature>`；当 feature 为 `host-test` 时额外传入 `--tests`
 - Named configuration check：`clippy -p <pkg> --features <feature-a>,<feature-b> --target <target>`，并注入配置声明的环境变量
 - `ax-std` default 特判：替换为 `--features std-compat,fs,multitask,irq,net`
 - `NoDeps`：在 `clippy` 后插入 `--no-deps`，避免依赖 crate 的告警污染结果
