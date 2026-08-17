@@ -783,7 +783,7 @@ impl UsbDeviceFile {
         }
     }
 
-    fn collect_submitted_urbs(&self, mut cx: Option<&mut Context<'_>>) -> bool {
+    fn collect_submitted_urbs(&self, mut cx: Option<&mut Context<'_>>) {
         let mut ready = Vec::new();
         {
             let mut submitted_urbs = self.submitted_urbs.lock();
@@ -821,11 +821,9 @@ impl UsbDeviceFile {
             }
         }
 
-        let found_ready = !ready.is_empty();
         for (submitted, result) in ready {
             self.complete_submitted_urb(submitted, result);
         }
-        found_ready
     }
 
     fn ensure_urb_worker(&self) {
@@ -1269,28 +1267,34 @@ impl UsbDeviceFile {
         arg: usize,
         nonblocking: bool,
     ) -> crate::StarryResult<usize> {
-        self.collect_submitted_urbs(None);
-        if !nonblocking && self.pending_urbs.lock().is_empty() {
-            crate::task::future::block_on(poll_fn(|cx| {
-                if self.collect_submitted_urbs(None) || !self.pending_urbs.lock().is_empty() {
-                    Poll::Ready(())
-                } else {
+        let completed = if nonblocking {
+            self.collect_submitted_urbs(None);
+            self.pending_urbs
+                .lock()
+                .pop_front()
+                .ok_or(crate::StarryError::WouldBlock)?
+        } else {
+            crate::task::future::block_on_user(
+                current,
+                poll_fn(|cx| {
+                    self.collect_submitted_urbs(None);
+                    if let Some(completed) = self.pending_urbs.lock().pop_front() {
+                        return Poll::Ready(completed);
+                    }
+
                     // Registration happens from usbfs reap task context.
                     unsafe {
                         self.poll_urbs
                             .register(cx.waker(), IoEvents::IN | IoEvents::OUT)
                     };
-                    if self.collect_submitted_urbs(Some(cx)) || !self.pending_urbs.lock().is_empty()
-                    {
-                        Poll::Ready(())
-                    } else {
-                        Poll::Pending
-                    }
-                }
-            }));
-        }
-        let Some(completed) = self.pending_urbs.lock().pop_front() else {
-            return Err(crate::StarryError::WouldBlock);
+                    self.collect_submitted_urbs(Some(cx));
+                    self.pending_urbs
+                        .lock()
+                        .pop_front()
+                        .map_or(Poll::Pending, Poll::Ready)
+                }),
+            )
+            .into_result()?
         };
         let user_urb_ptr = completed.user_urb_ptr;
         self.write_completed_urb(current, completed)?;
@@ -1466,7 +1470,8 @@ impl Pollable for UsbDeviceFile {
                 self.poll_urbs
                     .register(context.waker(), events & (IoEvents::IN | IoEvents::OUT))
             };
-            if self.collect_submitted_urbs(Some(context)) || !self.pending_urbs.lock().is_empty() {
+            self.collect_submitted_urbs(Some(context));
+            if !self.pending_urbs.lock().is_empty() {
                 context.waker().wake_by_ref();
             }
         }
