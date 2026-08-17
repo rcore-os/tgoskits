@@ -146,9 +146,8 @@ impl core::fmt::Debug for KernelTrapFrame<'_> {
 core::arch::global_asm!(
     include_str!("trap.S"),
     trapframe_size = const core::mem::size_of::<TrapFrame>(),
-    user_fs_base_offset = const core::mem::size_of::<TrapFrame>(),
-    user_gs_base_offset = const core::mem::size_of::<TrapFrame>() + core::mem::size_of::<u64>(),
-    kernel_fs_base_offset = const core::mem::size_of::<TrapFrame>() + 2 * core::mem::size_of::<u64>(),
+    kernel_stack_pointer_offset = const core::mem::size_of::<TrapFrame>()
+        + 2 * core::mem::size_of::<u64>(),
     UDATA = const gdt::UDATA.0,
     UCODE64 = const gdt::UCODE64.0,
     SYSCALL_VECTOR = const LEGACY_SYSCALL_VECTOR,
