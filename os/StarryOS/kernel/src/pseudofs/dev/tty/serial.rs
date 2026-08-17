@@ -141,9 +141,16 @@ pub fn bind_console_to(proc: &Process) -> StarryResult<()> {
     if let Some(index) = SERIAL_REGISTRY.console_index
         && let Some(entry) = SERIAL_REGISTRY.entries.get(index)
     {
-        entry.backend.ensure_started()?;
-        entry.backend.runtime.claim_console_output()?;
-        return entry.tty.bind_to(proc);
+        entry.backend.runtime.begin_console_handoff()?;
+        if let Err(error) = entry.tty.bind_to(proc) {
+            if entry.backend.runtime.rollback_console_handoff().is_err() {
+                entry.backend.runtime.fail_console_handoff_closed();
+            }
+            return Err(error);
+        }
+        entry.backend.ensure_started_for_console()?;
+        entry.backend.runtime.commit_console_handoff()?;
+        return Ok(());
     }
     Err(StarryError::NoSuchDevice)
 }
@@ -281,6 +288,28 @@ impl SerialBackend {
         if let Err(err) = result {
             warn!(
                 "{} failed to start serial port {}: {:?}",
+                self.tty_name, self.name, err
+            );
+            return Err(err.into());
+        }
+        self.started.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn ensure_started_for_console(&self) -> StarryResult<()> {
+        if self.started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let _lifecycle = self.lifecycle_lock.lock();
+        if self.started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let result = self.runtime.start_prepared_console(
+            Config::new().baudrate(startup_baudrate(self.runtime.info().initial_baudrate)),
+        );
+        if let Err(err) = result {
+            warn!(
+                "{} failed to prepare console serial port {}: {:?}",
                 self.tty_name, self.name, err
             );
             return Err(err.into());

@@ -215,12 +215,69 @@ impl SerialRuntimeHandle {
             .submit(ControlOp::SetConfig(config), &self.shared.bridge.notify)
     }
 
-    /// Claims both runtime log routing and the underlying platform UART output.
-    pub fn claim_console_output(&self) -> RuntimeResult {
-        self.shared.ensure_started()?;
-        ACTIVE_CONSOLE.store(self.shared.index, Ordering::Release);
-        ax_hal::console::claim_runtime_output();
+    /// Blocks new early-console register access before runtime configuration.
+    pub fn begin_console_handoff(&self) -> RuntimeResult {
+        ax_hal::console::begin_runtime_handoff()?;
         Ok(())
+    }
+
+    /// Starts a console whose low-level path is already in `Preparing`.
+    ///
+    /// Configuration failures are recoverable because UART `startup()` must
+    /// restore its pre-call register state. Failures after successful hardware
+    /// configuration fail closed because the former early state is uncertain.
+    pub fn start_prepared_console(&self, config: Config) -> RuntimeResult {
+        match self.start(config) {
+            Ok(()) => Ok(()),
+            Err(error @ RuntimeError::SerialConfig(ConfigError::RegisterError)) => {
+                ax_hal::console::fail_runtime_handoff_closed();
+                Err(error)
+            }
+            Err(error @ RuntimeError::SerialConfig(_))
+            | Err(error @ RuntimeError::SerialControlBusy) => {
+                if ax_hal::console::rollback_runtime_handoff().is_err() {
+                    ax_hal::console::fail_runtime_handoff_closed();
+                }
+                Err(error)
+            }
+            Err(error) => {
+                ax_hal::console::fail_runtime_handoff_closed();
+                Err(error)
+            }
+        }
+    }
+
+    /// Publishes runtime log routing and completes the platform handoff.
+    pub fn commit_console_handoff(&self) -> RuntimeResult {
+        self.shared.ensure_started()?;
+        if ACTIVE_CONSOLE
+            .compare_exchange(
+                NO_ACTIVE_CONSOLE,
+                self.shared.index,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            ax_hal::console::fail_runtime_handoff_closed();
+            return Err(RuntimeError::SerialConsoleBusy);
+        }
+        if let Err(error) = ax_hal::console::commit_runtime_handoff() {
+            ax_hal::console::fail_runtime_handoff_closed();
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    /// Restores early ownership before runtime hardware configuration begins.
+    pub fn rollback_console_handoff(&self) -> RuntimeResult {
+        ax_hal::console::rollback_runtime_handoff()?;
+        Ok(())
+    }
+
+    /// Prevents further early access after an ownership failure.
+    pub fn fail_console_handoff_closed(&self) {
+        ax_hal::console::fail_runtime_handoff_closed();
     }
 
     pub fn stats(&self) -> SerialStats {
@@ -691,5 +748,11 @@ mod tests {
             ax_hal::irq::AutoEnable::No,
             "the IRQ action must not run before the worker has configured the UART"
         );
+    }
+
+    #[test]
+    fn absent_runtime_console_preserves_platform_fallback() {
+        ACTIVE_CONSOLE.store(NO_ACTIVE_CONSOLE, Ordering::Release);
+        assert_eq!(route_console_bytes(b"fallback"), None);
     }
 }

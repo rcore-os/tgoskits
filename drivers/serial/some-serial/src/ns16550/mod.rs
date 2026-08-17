@@ -37,6 +37,8 @@ pub trait Kind: Clone + Send + Sync + 'static {
 
     fn ack_busy_detect(&self) {}
 
+    /// Programs the divisor after validating all fallible parameters.
+    /// Implementations must not modify registers when returning `Err`.
     fn set_baudrate(&self, clock_freq: u32, baudrate: u32) -> Result<(), ConfigError> {
         if baudrate == 0 || clock_freq == 0 {
             return Err(ConfigError::InvalidBaudrate);
@@ -271,8 +273,15 @@ impl<T: Kind> UartIrq for Ns16550Irq<T> {
 
 impl<T: Kind> UartPort for Ns16550<T> {
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
+        let original_ier: InterruptEnableFlags = self.read_flags(UART_IER);
         self.write_flags(UART_IER, InterruptEnableFlags::empty());
-        self.set_config(config)?;
+        if let Err(error) = self.set_config(config) {
+            // Every current `Kind::set_baudrate` validates before its first
+            // register write, while the remaining typed settings are
+            // infallible. Restore the only register changed before config.
+            self.write_flags(UART_IER, original_ier);
+            return Err(error);
+        }
         self.enable_fifo(true);
 
         let mut mcr: ModemControlFlags = self.read_flags(UART_MCR);
@@ -1096,6 +1105,18 @@ mod tests {
         );
         assert!(iir.contains(InterruptIdentificationFlags::FIFO_ENABLE_MASK));
         assert_eq!(THR_WRITES.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn failed_startup_restores_the_early_interrupt_mask() {
+        let (_guard, mut uart) = serial();
+        let early_mask = UART_IER_RDI | UART_IER_RLSI;
+        REGS[UART_IER as usize].store(early_mask, Ordering::SeqCst);
+
+        let result = uart.startup(&Config::new().baudrate(0));
+
+        assert_eq!(result, Err(ConfigError::InvalidBaudrate));
+        assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), early_mask);
     }
 
     #[test]

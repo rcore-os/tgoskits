@@ -3,7 +3,7 @@
 #[cfg(feature = "irq")]
 use ax_plat::irq::{HwIrq, IpiTarget, IrqError, IrqId, IrqIf, IrqNumber, IrqSource, TrapVector};
 use ax_plat::{
-    console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
+    console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleHandoffResult, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
     mem::{DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
@@ -46,7 +46,19 @@ impl ConsoleIf for DummyConsole {
         Err(ConsoleDeviceIdError::NotSpecified)
     }
 
-    fn claim_runtime_output() {}
+    fn begin_runtime_handoff() -> ConsoleHandoffResult {
+        Ok(())
+    }
+
+    fn commit_runtime_handoff() -> ConsoleHandoffResult {
+        Ok(())
+    }
+
+    fn rollback_runtime_handoff() -> ConsoleHandoffResult {
+        Ok(())
+    }
+
+    fn fail_runtime_handoff_closed() {}
 
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<IrqId> {

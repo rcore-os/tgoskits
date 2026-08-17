@@ -176,6 +176,15 @@ fn is_stdio_fd(fd: c_int) -> bool {
     matches!(fd, libc::STDOUT_FILENO | libc::STDERR_FILENO)
 }
 
+fn write_early_stdio_text(bytes: &[u8]) -> Result<(), Errno> {
+    #[cfg(feature = "serial")]
+    if let Some(result) = ax_runtime::serial::write_active_console_text(bytes) {
+        return result.map(|_| ()).map_err(|_| Errno::EIO);
+    }
+    ax_hal::console::write_text_bytes(bytes);
+    Ok(())
+}
+
 fn early_stdio_write(fd: c_int, buf: *const c_void, count: SizeT) -> Option<SSizeT> {
     if !is_stdio_fd(fd) || FD_LAYER_READY.load(Ordering::Acquire) {
         return None;
@@ -193,7 +202,10 @@ fn early_stdio_write(fd: c_int, buf: *const c_void, count: SizeT) -> Option<SSiz
     }
 
     let bytes = unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), count) };
-    ax_hal::console::write_text_bytes(bytes);
+    if let Err(error) = write_early_stdio_text(bytes) {
+        set_errno(error.into_raw());
+        return Some(-1);
+    }
     Some(count as SSizeT)
 }
 
@@ -233,7 +245,10 @@ fn early_stdio_writev(fd: c_int, iov: *const libc::iovec, iocnt: c_int) -> Optio
         }
 
         let bytes = unsafe { core::slice::from_raw_parts(iov.iov_base.cast::<u8>(), iov.iov_len) };
-        ax_hal::console::write_text_bytes(bytes);
+        if let Err(error) = write_early_stdio_text(bytes) {
+            set_errno(error.into_raw());
+            return Some(-1);
+        }
         written = next;
     }
     Some(written as SSizeT)

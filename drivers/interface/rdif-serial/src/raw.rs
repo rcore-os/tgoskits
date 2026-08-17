@@ -106,6 +106,11 @@ pub trait SplitUart: Sized {
 /// a memory-safety precondition.
 pub trait UartPort: Send + 'static {
     /// Initializes the UART while leaving every device interrupt source masked.
+    ///
+    /// On error, implementations must restore the configuration registers they
+    /// changed so a transactional early-console handoff can safely roll back.
+    /// [`ConfigError::RegisterError`] is reserved for failures where hardware
+    /// state cannot be proven restored and the caller must fail closed.
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError>;
 
     fn shutdown(&mut self);

@@ -151,6 +151,46 @@ pub struct Pl011 {
     saved_rx_status: Pl011RxStatus,
 }
 
+#[derive(Clone, Copy)]
+struct Pl011ConfigSnapshot {
+    ilpr: u32,
+    ibrd: u32,
+    fbrd: u32,
+    lcr_h: u32,
+    cr: u32,
+    ifls: u32,
+    imsc: u32,
+    dmacr: u32,
+}
+
+impl Pl011ConfigSnapshot {
+    fn capture(registers: &Pl011Registers) -> Self {
+        Self {
+            ilpr: registers.uartilpr.get(),
+            ibrd: registers.uartibrd.get(),
+            fbrd: registers.uartfbrd.get(),
+            lcr_h: registers.uartlcr_h.get(),
+            cr: registers.uartcr.get(),
+            ifls: registers.uartifls.get(),
+            imsc: registers.uartimsc.get(),
+            dmacr: registers.uartdmacr.get(),
+        }
+    }
+
+    fn restore(self, registers: &Pl011Registers) {
+        registers.uartilpr.set(self.ilpr);
+        registers.uartibrd.set(self.ibrd);
+        registers.uartfbrd.set(self.fbrd);
+        registers.uartlcr_h.set(self.lcr_h);
+        registers.uartifls.set(self.ifls);
+        registers.uartimsc.set(self.imsc);
+        registers.uartdmacr.set(self.dmacr);
+        // Restore CR last so the original enable state is not published until
+        // every dependent configuration register is back in place.
+        registers.uartcr.set(self.cr);
+    }
+}
+
 impl Pl011 {
     /// 创建新的 PL011 实例（仅基地址，使用默认配置）
     ///
@@ -228,9 +268,13 @@ impl Pl011 {
         // IBRD = integer(BAUDDIV)
         // FBRD = integer((BAUDDIV - IBRD) * 64 + 0.5)
 
-        let bauddiv = self.clock_freq / (16 * baudrate);
-        let remainder = self.clock_freq % (16 * baudrate);
-        let fbrd = (remainder * 64 + (16 * baudrate / 2)) / (16 * baudrate);
+        let scaled_baudrate = baudrate
+            .checked_mul(16)
+            .filter(|scaled| *scaled != 0)
+            .ok_or(ConfigError::InvalidBaudrate)?;
+        let bauddiv = self.clock_freq / scaled_baudrate;
+        let remainder = self.clock_freq % scaled_baudrate;
+        let fbrd = (remainder * 64 + scaled_baudrate / 2) / scaled_baudrate;
 
         if bauddiv == 0 || bauddiv > 0xFFFF {
             return Err(ConfigError::InvalidBaudrate);
@@ -307,14 +351,14 @@ impl Pl011 {
     /// Returns [`ConfigError::Timeout`] if an in-flight transfer does not
     /// finish within the fixed early-boot polling budget.
     pub fn open(&mut self) -> Result<(), ConfigError> {
-        let original_uartcr = self.registers().uartcr.get();
+        let snapshot = Pl011ConfigSnapshot::capture(self.registers());
 
         // 禁用 UART
         self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
 
         // 等待当前传输完成
         if !self.wait_until_idle() {
-            self.registers().uartcr.set(original_uartcr);
+            snapshot.restore(self.registers());
             return Err(ConfigError::Timeout);
         }
 
@@ -743,8 +787,11 @@ impl UartIrq for Pl011Irq {
 
 impl UartPort for Pl011 {
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
-        self.open()?;
-        self.set_config(config)?;
+        let snapshot = Pl011ConfigSnapshot::capture(self.registers());
+        if let Err(error) = self.open().and_then(|()| self.set_config(config)) {
+            snapshot.restore(self.registers());
+            return Err(error);
+        }
         self.mask_all();
         Ok(())
     }
@@ -755,48 +802,35 @@ impl UartPort for Pl011 {
     }
 
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        use tock_registers::interfaces::Readable;
+        let snapshot = Pl011ConfigSnapshot::capture(self.registers());
+        let result = (|| {
+            self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
+            if !self.wait_until_idle() {
+                return Err(ConfigError::Timeout);
+            }
 
-        // 根据ARM文档的建议配置流程：
-        // 1. 禁用UART
-        let original_cr = self.registers().uartcr.extract(); // 保存原始使能状态
-        self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR); // 禁用UART
+            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
+            if let Some(baudrate) = config.baudrate {
+                self.set_baudrate_internal(baudrate)?;
+            }
+            if let Some(data_bits) = config.data_bits {
+                self.set_data_bits_internal(data_bits)?;
+            }
+            if let Some(stop_bits) = config.stop_bits {
+                self.set_stop_bits_internal(stop_bits)?;
+            }
+            if let Some(parity) = config.parity {
+                self.set_parity_internal(parity)?;
+            }
+            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
+            self.registers().uartcr.set(snapshot.cr);
+            Ok(())
+        })();
 
-        // 2. 等待当前字符传输完成
-        while self.registers().uartfr.is_set(UARTFR::BUSY) {
-            core::hint::spin_loop();
+        if result.is_err() {
+            snapshot.restore(self.registers());
         }
-
-        // 3. 刷新发送FIFO（通过设置FEN=0）
-        self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
-
-        // 4. 配置各项参数
-        if let Some(baudrate) = config.baudrate {
-            self.set_baudrate_internal(baudrate)?;
-        }
-        if let Some(data_bits) = config.data_bits {
-            self.set_data_bits_internal(data_bits)?;
-        }
-        if let Some(stop_bits) = config.stop_bits {
-            self.set_stop_bits_internal(stop_bits)?;
-        }
-        if let Some(parity) = config.parity {
-            self.set_parity_internal(parity)?;
-        }
-
-        // 5. 重新启用FIFO
-        self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
-
-        // 6. 恢复UART使能状态
-        if original_cr.is_set(UARTCR::UARTEN) {
-            self.registers().uartcr.modify(
-                UARTCR::UARTEN.val(original_cr.read(UARTCR::UARTEN))
-                    + UARTCR::TXE.val(original_cr.read(UARTCR::TXE))
-                    + UARTCR::RXE.val(original_cr.read(UARTCR::RXE)),
-            );
-        }
-
-        Ok(())
+        result
     }
 
     fn read_rx(&mut self) -> Option<RxSample> {
@@ -1072,6 +1106,19 @@ mod tests {
         }
     }
 
+    const CONFIG_REGISTER_OFFSETS: [usize; 8] =
+        [0x020, 0x024, 0x028, 0x02c, 0x030, 0x034, 0x038, 0x048];
+
+    fn config_register_snapshot(regs: &Pl011Registers) -> [u32; 8] {
+        CONFIG_REGISTER_OFFSETS.map(|offset| read_test_reg(regs, offset))
+    }
+
+    fn seed_config_registers(regs: &mut Pl011Registers) {
+        for (index, offset) in CONFIG_REGISTER_OFFSETS.into_iter().enumerate() {
+            write_test_reg(regs, offset, 0x10 + index as u32);
+        }
+    }
+
     fn started_parts(uart: Pl011) -> SerialParts<Pl011, Pl011Irq, Pl011EmergencyTx> {
         let mut parts = uart.split();
         parts.control.startup(&Config::new()).unwrap();
@@ -1321,6 +1368,32 @@ mod tests {
         assert!(cr.is_set(UARTCR::UARTEN));
         assert!(cr.is_set(UARTCR::TXE));
         assert!(cr.is_set(UARTCR::RXE));
+    }
+
+    #[test]
+    fn set_config_busy_timeout_restores_every_configuration_register() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        seed_config_registers(&mut regs);
+        let before = config_register_snapshot(&regs);
+        write_test_reg(&mut regs, 0x018, UARTFR::BUSY::SET.value);
+
+        let result = uart.set_config(&Config::new().baudrate(115_200));
+
+        assert_eq!(result, Err(ConfigError::Timeout));
+        assert_eq!(config_register_snapshot(&regs), before);
+    }
+
+    #[test]
+    fn invalid_config_restores_every_configuration_register() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        seed_config_registers(&mut regs);
+        write_test_reg(&mut regs, 0x018, 0);
+        let before = config_register_snapshot(&regs);
+
+        let result = uart.set_config(&Config::new().baudrate(2_000_000));
+
+        assert_eq!(result, Err(ConfigError::InvalidBaudrate));
+        assert_eq!(config_register_snapshot(&regs), before);
     }
 
     #[test]
