@@ -25,7 +25,9 @@ use crate::{
 };
 
 const FUTEX_OWNER_DIED: u32 = 0x40000000;
+
 const FUTEX_TID_MASK: u32 = 0x3fffffff;
+
 const FUTEX_WAITERS: u32 = 0x80000000;
 
 /// Decode the Linux wait-status encoding into (si_code, si_status).
@@ -158,6 +160,12 @@ pub fn poll_timer(task: &TaskInner) {
 /// Poll the process-level POSIX timers.
 pub fn poll_process_timer(identity: &Arc<crate::task::PidIdentity>) {
     if let Some(proc_data) = identity.live_data() {
+        if proc_data.poll_real_timer() {
+            let _ = super::send_signal_to_process_data(
+                &proc_data,
+                Some(SignalInfo::new_kernel(Signo::SIGALRM)),
+            );
+        }
         proc_data.posix_timers.poll_expired(identity, |sig| {
             let _ = super::send_signal_to_process_data(&proc_data, Some(sig));
         });

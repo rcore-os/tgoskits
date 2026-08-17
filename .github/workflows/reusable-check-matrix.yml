@@ -1,102 +1,58 @@
-name: Reusable Command
+name: Reusable Check Matrix
 
 on:
   workflow_call:
     inputs:
-      runs_on:
-        description: JSON-encoded runner labels for runs-on.
-        required: false
-        type: string
-        default: '["ubuntu-latest"]'
-      use_container:
-        description: Whether to execute the command inside the CI container.
-        required: false
-        type: boolean
-        default: false
-      command:
-        description: Shell command to execute.
+      matrix_json:
+        description: JSON matrix emitted by scripts/test/ci_plan.py.
         required: true
         type: string
-      cache_key:
-        description: Shared cache key for rust-cache. Leave empty to disable cache.
+      fail_fast:
+        description: Cancel sibling matrix entries after a failure.
+        required: false
+        type: boolean
+        default: true
+      save_cache:
+        description: Allow rust-cache to save updated entries.
+        required: false
+        type: boolean
+        default: false
+      since_ref:
+        description: Base revision exposed to incremental check commands.
         required: false
         type: string
         default: ""
-      container_image:
-        description: Container image used for the job when use_container is true.
-        required: false
-        type: string
-        default: ""
-      apk_region:
-        description: APK mirror region passed through to Starry prebuild flows.
-        required: false
-        type: string
-        default: china
-      limit_to_owner:
-        description: Only run for this repository owner. Leave empty to run everywhere.
-        required: false
-        type: string
-        default: ""
-      main_pr_only:
-        description: Only run for pull requests targeting the main branch.
-        required: false
-        type: boolean
-        default: false
-      fetch_depth:
-        description: Checkout fetch depth. Use 0 when the command needs full git history.
-        required: false
-        type: string
-        default: "1"
-      timeout_minutes:
-        description: Maximum minutes to allow the command job to run.
-        required: false
-        type: number
-        default: 360
-      require_kvm:
-        description: Require readable and writable /dev/kvm on self-hosted host jobs.
-        required: false
-        type: boolean
-        default: false
-      upload_xtask_bin_artifact:
-        description: Upload the tg-xtask binary as a workflow artifact after the command succeeds.
-        required: false
-        type: boolean
-        default: false
-      download_xtask_bin_artifact:
-        description: Download and restore the tg-xtask binary artifact before running the command.
-        required: false
-        type: boolean
-        default: false
-      xtask_bin_artifact_name:
-        description: Artifact name used for the tarred tg-xtask binary.
-        required: false
-        type: string
-        default: tg-xtask-bin
     secrets:
       CLAW_API_KEY:
         required: false
+
 jobs:
-  run_host:
-    if: >-
-      ${{
-        !inputs.use_container
-        && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
-        && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
-      }}
-    runs-on: ${{ fromJson(inputs.runs_on) }}
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+  run:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: ${{ inputs.fail_fast }}
+      matrix: ${{ fromJSON(inputs.matrix_json) }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    container:
+      image: ${{ matrix.container_image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          fetch-depth: ${{ inputs.fetch_depth }}
+          fetch-depth: ${{ matrix.fetch_depth }}
 
       - name: Preflight self-hosted host runner
-        if: contains(inputs.runs_on, 'self-hosted')
-        shell: bash
+        if: contains(toJSON(matrix.runs_on), 'self-hosted')
         env:
-          REQUIRED_RUNNER_LABELS: ${{ inputs.runs_on }}
-          REQUIRE_KVM: ${{ inputs.require_kvm }}
+          REQUIRED_RUNNER_LABELS: ${{ toJSON(matrix.runs_on) }}
+          REQUIRE_KVM: ${{ matrix.require_kvm }}
         run: |
           set -euo pipefail
 
@@ -173,95 +129,8 @@ jobs:
             exit 1
           fi
 
-      - name: Restore Rust cache
-        if: inputs.cache_key != ''
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ inputs.cache_key }}
-          save-if: ${{ github.event_name == 'push' }}
-
-      - name: Download tg-xtask binary artifact
-        if: inputs.download_xtask_bin_artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ inputs.xtask_bin_artifact_name }}
-          path: ${{ runner.temp }}/xtask-bin
-
-      - name: Restore tg-xtask binary artifact
-        if: inputs.download_xtask_bin_artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifact_path="${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar"
-          xtask_path="${GITHUB_WORKSPACE}/target/debug/tg-xtask"
-          if ! tar -xf "${artifact_path}" -C "${GITHUB_WORKSPACE}"; then
-            echo "::error::failed to extract tg-xtask artifact: ${artifact_path}"
-            exit 1
-          fi
-          if [ ! -f "${xtask_path}" ]; then
-            echo "::error::tg-xtask artifact did not contain the expected binary: ${xtask_path}"
-            exit 1
-          fi
-          if ! chmod +x "${xtask_path}" || [ ! -x "${xtask_path}" ]; then
-            echo "::error::restored tg-xtask binary could not be made executable: ${xtask_path}"
-            exit 1
-          fi
-
-      - name: Show Rust version
-        run: rustc --version
-
-      - name: Run command
-        shell: bash
-        env:
-          STARRY_APK_REGION: ${{ inputs.apk_region }}
-          TGOS_IMAGE_LOCAL_STORAGE: >-
-            ${{ contains(inputs.runs_on, 'self-hosted') && format('/tmp/tgoskits-images-{0}-{1}', github.repository_id, runner.name) || '' }}
-          CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
-          REUSABLE_COMMAND: ${{ inputs.command }}
-          USE_XTASK_BIN: ${{ inputs.download_xtask_bin_artifact }}
-        run: |
-          set -eo pipefail
-
-          command_text="${REUSABLE_COMMAND}"
-          if [ "${USE_XTASK_BIN}" = "true" ] && [[ "${command_text}" != *$'\n'* ]]; then
-            if [[ "${command_text}" == "cargo xtask" || "${command_text}" == cargo\ xtask\ * ]]; then
-              command_text="target/debug/tg-xtask${command_text#cargo xtask}"
-            fi
-          fi
-
-          command_file="${RUNNER_TEMP}/reusable-command.sh"
-          printf '%s\n' "${command_text}" > "${command_file}"
-          if bash -e -o pipefail "${command_file}"; then
-            :
-          else
-            status=$?
-            echo "Command failed; resolved command:"
-            sed 's/^/+ /' "${command_file}"
-            exit "${status}"
-          fi
-
-  run_container:
-    if: >-
-      ${{
-        inputs.use_container
-        && (inputs.limit_to_owner == '' || github.repository_owner == inputs.limit_to_owner)
-        && (!inputs.main_pr_only || (github.event_name == 'pull_request' && github.base_ref == 'main'))
-      }}
-    runs-on: ${{ fromJson(inputs.runs_on) }}
-    timeout-minutes: ${{ inputs.timeout_minutes }}
-    container:
-      image: ${{ inputs.container_image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: ${{ inputs.fetch_depth }}
-
-      - name: Show checkout state
-        shell: bash
+      - name: Show container checkout state
+        if: matrix.container_preflight != 'none'
         run: |
           set -euo pipefail
           command -v git
@@ -269,7 +138,7 @@ jobs:
           git -c safe.directory="${GITHUB_WORKSPACE}" rev-parse --is-inside-work-tree
 
       - name: Ensure qemu user emulators
-        shell: bash
+        if: matrix.container_preflight == 'qemu-user' || matrix.container_preflight == 'full'
         run: |
           set -euo pipefail
           for emulator in \
@@ -285,7 +154,7 @@ jobs:
           done
 
       - name: Ensure musl cross toolchains
-        shell: bash
+        if: matrix.container_preflight == 'full'
         run: |
           set -euo pipefail
           for arch in aarch64 riscv64 x86_64 loongarch64; do
@@ -297,22 +166,21 @@ jobs:
           done
 
       - name: Restore Rust cache
-        if: inputs.cache_key != ''
+        if: matrix.cache_key != ''
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ inputs.cache_key }}
-          save-if: ${{ github.event_name == 'push' }}
+          shared-key: ${{ matrix.cache_key }}
+          save-if: ${{ inputs.save_cache }}
 
       - name: Download tg-xtask binary artifact
-        if: inputs.download_xtask_bin_artifact
+        if: matrix.download_xtask_bin_artifact
         uses: actions/download-artifact@v8
         with:
-          name: ${{ inputs.xtask_bin_artifact_name }}
+          name: ${{ matrix.xtask_bin_artifact_name }}
           path: ${{ runner.temp }}/xtask-bin
 
       - name: Restore tg-xtask binary artifact
-        if: inputs.download_xtask_bin_artifact
-        shell: bash
+        if: matrix.download_xtask_bin_artifact
         run: |
           set -euo pipefail
           artifact_path="${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar"
@@ -334,12 +202,14 @@ jobs:
         run: rustc --version
 
       - name: Run command
-        shell: bash
         env:
-          STARRY_APK_REGION: ${{ inputs.apk_region }}
+          STARRY_APK_REGION: ${{ matrix.apk_region }}
+          SINCE_REF: ${{ inputs.since_ref }}
+          TGOS_IMAGE_LOCAL_STORAGE: >-
+            ${{ contains(toJSON(matrix.runs_on), 'self-hosted') && format('/tmp/tgoskits-images-{0}-{1}', github.repository_id, runner.name) || '' }}
           CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
-          REUSABLE_COMMAND: ${{ inputs.command }}
-          USE_XTASK_BIN: ${{ inputs.download_xtask_bin_artifact }}
+          REUSABLE_COMMAND: ${{ matrix.command }}
+          USE_XTASK_BIN: ${{ matrix.download_xtask_bin_artifact }}
         run: |
           set -eo pipefail
 
@@ -362,8 +232,7 @@ jobs:
           fi
 
       - name: Package tg-xtask binary artifact
-        if: success() && inputs.upload_xtask_bin_artifact
-        shell: bash
+        if: success() && matrix.upload_xtask_bin_artifact
         run: |
           set -euo pipefail
           if [ ! -x target/debug/tg-xtask ]; then
@@ -373,10 +242,10 @@ jobs:
           tar -cf "${RUNNER_TEMP}/tg-xtask-bin.tar" target/debug/tg-xtask
 
       - name: Upload tg-xtask binary artifact
-        if: success() && inputs.upload_xtask_bin_artifact
+        if: success() && matrix.upload_xtask_bin_artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ inputs.xtask_bin_artifact_name }}
+          name: ${{ matrix.xtask_bin_artifact_name }}
           path: ${{ runner.temp }}/tg-xtask-bin.tar
           if-no-files-found: error
           retention-days: 1
