@@ -400,6 +400,26 @@ pub fn futex_op_and_compare_rules_hold() -> bool {
     super::syscall::futex_op_and_compare_rules_hold_for_test()
 }
 
+pub fn nofault_user_read_recovers_unmapped_address() -> bool {
+    // SAFETY: the address is aligned and belongs to the configured user range.
+    // The test intentionally leaves it unmapped to exercise exception fixup.
+    matches!(
+        unsafe {
+            ax_runtime::hal::cpu::user_read_u32(super::config::USER_SPACE_BASE as *const u32)
+        },
+        Err(ax_runtime::hal::cpu::UserAccessError::Fault)
+    )
+}
+
+pub fn futex_nofault_failure_is_transactional() -> bool {
+    super::task::futex_nofault_failure_is_transactional_for_test()
+}
+
+pub fn page_fault_completion_updates_only_success() -> bool {
+    super::mm::page_fault_completion_updates_only_success_for_test()
+        && ax_runtime::hal::cache::update_mmu_cache_alignment_for_test()
+}
+
 pub fn mmap_capped_device_map_len_rules_hold() -> bool {
     super::syscall::mmap_capped_device_map_len_rules_hold_for_test()
 }

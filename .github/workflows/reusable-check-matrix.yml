@@ -205,8 +205,6 @@ jobs:
         env:
           STARRY_APK_REGION: ${{ matrix.apk_region }}
           SINCE_REF: ${{ inputs.since_ref }}
-          TGOS_IMAGE_LOCAL_STORAGE: >-
-            ${{ contains(toJSON(matrix.runs_on), 'self-hosted') && format('/tmp/tgoskits-images-{0}-{1}', github.repository_id, runner.name) || '' }}
           CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
           REUSABLE_COMMAND: ${{ matrix.command }}
           USE_XTASK_BIN: ${{ matrix.download_xtask_bin_artifact }}

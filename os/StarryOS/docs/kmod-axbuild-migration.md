@@ -235,7 +235,7 @@ cargo xtask starry rootfs --arch <arch>
 ```sh
 cargo xtask starry kmod build --arch riscv64 \
     -m os/StarryOS/lkm/hello \
-    --rootfs tmp/axbuild/rootfs/rootfs-riscv64-alpine.img/rootfs-riscv64-alpine.img
+    --rootfs tmp/axbuild/rootfs/rootfs-riscv64-alpine.img
 ```
 
 3. Build and boot the kernel with QEMU and the injected rootfs:

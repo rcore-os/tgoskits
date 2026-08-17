@@ -1,6 +1,6 @@
 //! Cache, TLB, and modified-text synchronization helpers.
 
-use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 
 /// Failure while synchronously invalidating a kernel TLB range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -24,6 +24,33 @@ pub fn flush_tlb_range(start: VirtAddr, size: usize) {
     for offset in (0..size).step_by(PAGE_SIZE_4K) {
         ax_cpu::asm::flush_tlb(Some(start + offset));
     }
+}
+
+fn update_mmu_cache_with(vaddr: VirtAddr, update: impl FnOnce(VirtAddr)) {
+    update(vaddr.align_down_4k());
+}
+
+/// Synchronizes a page-table update performed by the local page-fault handler.
+///
+/// This boundary corresponds to Linux's `update_mmu_cache()`. It is local to
+/// the faulting CPU and must not be replaced by a cross-CPU shootdown.
+#[inline]
+pub fn update_mmu_cache(vaddr: VirtAddr) {
+    update_mmu_cache_with(vaddr, ax_cpu::asm::update_mmu_cache);
+}
+
+#[cfg(axtest)]
+/// Verifies page alignment at the local page-fault completion boundary.
+pub fn update_mmu_cache_alignment_for_test() -> bool {
+    use core::cell::Cell;
+
+    let calls = Cell::new(0);
+    let observed = Cell::new(VirtAddr::from(0));
+    update_mmu_cache_with(VirtAddr::from(0x4567), |vaddr| {
+        calls.set(calls.get() + 1);
+        observed.set(vaddr);
+    });
+    calls.get() == 1 && observed.get() == VirtAddr::from(0x4000)
 }
 
 /// Flushes the TLB entries covering a virtual-address range on all available CPUs.

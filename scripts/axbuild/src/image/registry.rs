@@ -1,6 +1,6 @@
-use std::{collections::BTreeMap, fs, path::Path};
+use std::collections::BTreeMap;
 
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -37,39 +37,6 @@ struct RawRegistry {
     images: Vec<ImageEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegistrySource {
-    pub url: String,
-    pub kind: &'static str,
-}
-
-fn parse_registry_version(url: &str) -> Option<(u64, u64, u64)> {
-    let file_name = url.rsplit('/').next()?;
-    let version = file_name.strip_prefix('v')?.strip_suffix(".toml")?;
-    let mut parts = version.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((major, minor, patch))
-}
-
-fn preferred_include(includes: &[IncludeEntry]) -> Option<&IncludeEntry> {
-    let mut best: Option<(&IncludeEntry, (u64, u64, u64))> = None;
-    for include in includes {
-        let Some(version) = parse_registry_version(&include.url) else {
-            continue;
-        };
-        if best.is_none_or(|(_, best_version)| version > best_version) {
-            best = Some((include, version));
-        }
-    }
-
-    best.map(|(include, _)| include).or_else(|| includes.last())
-}
-
 impl ImageRegistry {
     pub async fn fetch_with_includes(
         client: &reqwest::Client,
@@ -99,49 +66,6 @@ impl ImageRegistry {
         Ok(ImageRegistry {
             images: merge_entries(all_sources),
         })
-    }
-
-    pub async fn resolve_bootstrap_source(
-        client: &reqwest::Client,
-        default_url: &str,
-        fallback_url: &str,
-    ) -> anyhow::Result<RegistrySource> {
-        match fetch_text(client, default_url).await {
-            Ok(body) => {
-                let raw: RawRegistry = toml::from_str(&body)
-                    .map_err(|e| anyhow!("Invalid registry format at {}: {e}", default_url))?;
-                if let Some(include) = preferred_include(&raw.includes) {
-                    Ok(RegistrySource {
-                        url: include.url.clone(),
-                        kind: "included registry from default.toml",
-                    })
-                } else {
-                    Ok(RegistrySource {
-                        url: default_url.to_string(),
-                        kind: "default registry",
-                    })
-                }
-            }
-            Err(default_err) => {
-                fetch_text(client, fallback_url).await.with_context(|| {
-                    format!(
-                        "failed to fetch default registry {default_url} and fallback registry \
-                         {fallback_url}"
-                    )
-                })?;
-                eprintln!("warning: failed to fetch default registry {default_url}: {default_err}");
-                Ok(RegistrySource {
-                    url: fallback_url.to_string(),
-                    kind: "fallback registry",
-                })
-            }
-        }
-    }
-
-    pub fn load_from_file(path: &Path) -> anyhow::Result<ImageRegistry> {
-        let s = fs::read_to_string(path)
-            .map_err(|e| anyhow!("Failed to read image registry from {}: {e}", path.display()))?;
-        toml::from_str(&s).map_err(|e| anyhow!("Invalid image list format: {e}"))
     }
 
     pub fn print(&self, verbose: bool, pattern: Option<&str>) {
@@ -406,38 +330,5 @@ mod tests {
 
         let exact = images.find(ImageSpecRef::parse("linux:0.0.1")).unwrap();
         assert_eq!(exact.version, "0.0.1");
-    }
-
-    #[test]
-    fn preferred_include_uses_highest_registry_version() {
-        let includes = vec![
-            IncludeEntry {
-                url: "https://example.com/registry/v0.0.20.toml".to_string(),
-            },
-            IncludeEntry {
-                url: "https://example.com/registry/v0.0.22.toml".to_string(),
-            },
-            IncludeEntry {
-                url: "https://example.com/registry/v0.0.25.toml".to_string(),
-            },
-        ];
-
-        let include = preferred_include(&includes).unwrap();
-        assert_eq!(include.url, "https://example.com/registry/v0.0.25.toml");
-    }
-
-    #[test]
-    fn preferred_include_falls_back_to_last_when_versions_are_unparseable() {
-        let includes = vec![
-            IncludeEntry {
-                url: "https://example.com/registry/alpha.toml".to_string(),
-            },
-            IncludeEntry {
-                url: "https://example.com/registry/beta.toml".to_string(),
-            },
-        ];
-
-        let include = preferred_include(&includes).unwrap();
-        assert_eq!(include.url, "https://example.com/registry/beta.toml");
     }
 }

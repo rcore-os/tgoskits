@@ -152,6 +152,15 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     }
 }
 
+/// Makes a page-table entry installed by the local page-fault handler visible
+/// before retrying the faulting instruction.
+///
+/// AArch64 page-table updates are coherent with the hardware walker. A rare
+/// spurious refault is safe to handle again, so no unconditional barrier is
+/// needed on the minor-fault fast path.
+#[inline]
+pub fn update_mmu_cache(_vaddr: VirtAddr) {}
+
 /// Flushes the entire instruction cache.
 #[inline]
 pub fn flush_icache_all() {
@@ -263,7 +272,7 @@ pub fn enable_fp() {
 }
 
 #[cfg(feature = "uspace")]
-core::arch::global_asm!(include_str!("user_copy.S"));
+core::arch::global_asm!(include_str!("user_copy.S"), include_str!("user_atomic.S"),);
 
 #[cfg(feature = "uspace")]
 unsafe extern "C" {

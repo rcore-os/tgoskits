@@ -3,7 +3,7 @@ use core::{
     alloc::Layout,
     ffi::c_char,
     hint::{spin_loop, unlikely},
-    mem::{MaybeUninit, transmute},
+    mem::{MaybeUninit, size_of, transmute},
     ptr, slice,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
@@ -12,8 +12,10 @@ use ax_io::{IoError, prelude::*};
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
     cpu::{
+        UserAccessError, UserAtomicError, UserAtomicU32Op,
         asm::user_copy,
         trap::{PageFaultFlags, page_fault_handler},
+        user_atomic_u32, user_read_u32,
     },
     paging::MappingFlags,
 };
@@ -169,6 +171,63 @@ pub fn atomic_update_user_u32(
             }
         }
     })
+}
+
+/// Atomically updates a futex word without invoking the page-fault handler.
+pub fn atomic_update_user_u32_nofault(
+    ptr: *mut u32,
+    operation: UserAtomicU32Op,
+    argument: u32,
+) -> Result<u32, UserAtomicError> {
+    if ax_runtime::hal::irq::in_irq_context()
+        || !ptr.addr().is_multiple_of(size_of::<u32>())
+        || check_access(ptr.addr(), size_of::<u32>()).is_err()
+    {
+        return Err(UserAtomicError::Fault);
+    }
+
+    // SAFETY: the checks above establish alignment and the architecture user
+    // range contract. A concurrent mapping change is redirected through the
+    // dedicated nofault exception table.
+    unsafe { user_atomic_u32(ptr, operation, argument) }
+}
+
+/// Reads a futex word without invoking the page-fault handler.
+pub fn read_user_u32_nofault(ptr: *const u32) -> Result<u32, UserAccessError> {
+    if ax_runtime::hal::irq::in_irq_context()
+        || !ptr.addr().is_multiple_of(size_of::<u32>())
+        || check_access(ptr.addr(), size_of::<u32>()).is_err()
+    {
+        return Err(UserAccessError::Fault);
+    }
+
+    // SAFETY: the checks above establish alignment and the architecture user
+    // range contract. A concurrent mapping change is redirected through the
+    // dedicated nofault exception table.
+    unsafe { user_read_u32(ptr) }
+}
+
+/// Resolves and validates a readable futex word outside futex queue locks.
+pub fn fault_in_user_u32_read(ptr: *const u32) -> StarryResult<()> {
+    fault_in_user_u32(ptr.addr(), MappingFlags::READ)
+}
+
+/// Resolves and validates a writable futex word outside futex queue locks.
+pub fn fault_in_user_u32_write(ptr: *mut u32) -> StarryResult<()> {
+    fault_in_user_u32(ptr.addr(), MappingFlags::READ.union(MappingFlags::WRITE))
+}
+
+fn fault_in_user_u32(address: usize, access_flags: MappingFlags) -> StarryResult<()> {
+    if !address.is_multiple_of(size_of::<u32>()) {
+        return Err(StarryError::InvalidInput);
+    }
+    prepare_user_memory(
+        "fault in futex word",
+        address,
+        size_of::<u32>(),
+        access_flags,
+    )
+    .map_err(Into::into)
 }
 
 /// An immutable pointer to user space memory.

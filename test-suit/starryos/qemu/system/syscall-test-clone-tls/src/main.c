@@ -45,6 +45,7 @@
 
 #define STK (64 * 1024)
 #define NTHREAD 8
+#define TLS_SWITCH_ROUNDS 64
 
 static long my_gettid(void) { return syscall(SYS_gettid); }
 static long my_set_tid_address(int *p) { return syscall(SYS_set_tid_address, p); }
@@ -166,8 +167,17 @@ static int test_pthread_join(void)
 
 /* ===== E. __thread 隔离 = CLONE_SETTLS per-thread TLS ===== */
 static __thread int tls_var = 42;
+static __thread unsigned long tls_switch_value;
 static volatile int child_tls_after_set;
 static volatile int child_saw_parent_write;
+static int tls_switch_ready;
+static int tls_switch_start;
+
+struct tls_switch_arg {
+    unsigned long expected;
+    int failures;
+};
+
 static void *tls_thr(void *a)
 {
     (void)a;
@@ -176,6 +186,21 @@ static void *tls_thr(void *a)
     child_tls_after_set = tls_var;
     return NULL;
 }
+
+static void *tls_switch_thr(void *opaque)
+{
+    struct tls_switch_arg *arg = opaque;
+    tls_switch_value = arg->expected;
+    __atomic_add_fetch(&tls_switch_ready, 1, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&tls_switch_start, __ATOMIC_ACQUIRE)) sched_yield();
+    for (int round = 0; round < TLS_SWITCH_ROUNDS; round++) {
+        if (tls_switch_value != arg->expected) arg->failures++;
+        sched_yield();
+        if (tls_switch_value != arg->expected) arg->failures++;
+    }
+    return NULL;
+}
+
 static int test_pthread_tls(void)
 {
     TEST_START("E. __thread 隔离(CLONE_SETTLS per-thread TLS)");
@@ -191,6 +216,25 @@ static int test_pthread_tls(void)
         CHECK(child_tls_after_set == 99, "子线程改自己 __thread 为 99");
         CHECK(tls_var == 7, "主线程 __thread 不受子影响(SETTLS 隔离)");
     }
+
+    pthread_t workers[NTHREAD];
+    struct tls_switch_arg args[NTHREAD];
+    __atomic_store_n(&tls_switch_ready, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&tls_switch_start, 0, __ATOMIC_RELAXED);
+    int created = 0;
+    for (int i = 0; i < NTHREAD; i++) {
+        args[i].expected = 0x10000UL + (unsigned long)i;
+        args[i].failures = 0;
+        if (pthread_create(&workers[i], NULL, tls_switch_thr, &args[i]) != 0) break;
+        created++;
+    }
+    CHECK(created == NTHREAD, "创建多线程 TLS 切换压力任务成功");
+    while (__atomic_load_n(&tls_switch_ready, __ATOMIC_ACQUIRE) != created) sched_yield();
+    __atomic_store_n(&tls_switch_start, 1, __ATOMIC_RELEASE);
+    for (int i = 0; i < created; i++) pthread_join(workers[i], NULL);
+    int failures = 0;
+    for (int i = 0; i < created; i++) failures += args[i].failures;
+    CHECK(failures == 0, "反复 sched_yield 后每线程 TLS 仍保持隔离");
     TEST_DONE();
 }
 

@@ -115,6 +115,16 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     }
 }
 
+/// Makes a page-table entry installed by the local page-fault handler visible
+/// before retrying the faulting instruction.
+///
+/// RISC-V permits implementations to cache invalid entries, so an `SFENCE.VMA`
+/// is required after turning an invalid entry into a valid one.
+#[inline]
+pub fn update_mmu_cache(vaddr: VirtAddr) {
+    flush_tlb(Some(vaddr));
+}
+
 /// Writes the Supervisor Trap Vector Base Address register (`stvec`).
 ///
 /// # Safety
@@ -157,7 +167,11 @@ pub unsafe fn write_thread_pointer(tls_base: KernelTlsBase) {
 }
 
 #[cfg(feature = "uspace")]
-core::arch::global_asm!(include_asm_macros!(), include_str!("user_copy.S"));
+core::arch::global_asm!(
+    include_asm_macros!(),
+    include_str!("user_copy.S"),
+    include_str!("user_atomic.S"),
+);
 
 #[cfg(feature = "uspace")]
 unsafe extern "C" {
