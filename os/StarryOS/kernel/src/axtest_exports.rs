@@ -503,10 +503,6 @@ pub fn nofault_user_read_recovers_unmapped_address() -> bool {
     )
 }
 
-pub fn futex_nofault_failure_is_transactional() -> bool {
-    super::task::futex_nofault_failure_is_transactional_for_test()
-}
-
 pub fn page_fault_completion_updates_only_success() -> bool {
     super::mm::page_fault_completion_updates_only_success_for_test()
         && ax_runtime::hal::cache::update_mmu_cache_alignment_for_test()

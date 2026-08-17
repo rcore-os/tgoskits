@@ -9,13 +9,14 @@ extern crate std;
 mod membership;
 mod namespace;
 mod node;
+mod pids;
 mod sync;
 
 use alloc::sync::Arc;
 use core::{fmt, num::NonZeroU64};
 
 use ax_lazyinit::LazyInit;
-pub use membership::{CgroupForkGuard, ProcessMembership};
+pub use membership::{CgroupChildKind, CgroupForkGuard, CgroupTaskExit, ProcessMembership};
 pub use namespace::CgroupNamespace;
 pub use node::{CgroupNode, CgroupPin};
 
@@ -60,6 +61,9 @@ pub enum CgroupError {
     /// The cgroup is still referenced, populated, or has a conflicting member.
     #[error("cgroup is busy")]
     ResourceBusy,
+    /// A task creation would exceed a pids limit in this cgroup hierarchy.
+    #[error("cgroup pids limit exceeded")]
+    LimitExceeded,
     /// The supplied name, PID, or file content is invalid.
     #[error("invalid cgroup input")]
     InvalidInput,
@@ -79,6 +83,7 @@ static ROOT: LazyInit<Arc<CgroupNode>> = LazyInit::new();
 /// Initialize the global cgroup hierarchy.
 pub fn init() {
     ROOT.init_once(CgroupNode::new_root());
+    membership::init();
 }
 
 /// Return a strong handle to the global cgroup root.
@@ -94,11 +99,13 @@ pub fn attach_initial_process(pid: ProcessId) -> CgroupResult<()> {
     membership::attach_initial_process(root(), pid)
 }
 
-/// Prepare inherited membership for a non-thread child.
-pub fn begin_fork(parent: Arc<CgroupNode>, child_pid: ProcessId) -> CgroupResult<CgroupForkGuard> {
-    membership::begin_fork(parent, child_pid)
+/// Reserve a non-thread child directly in an explicit target cgroup.
+pub fn begin_process_at(
+    target: Arc<CgroupNode>,
+    child_pid: ProcessId,
+) -> CgroupResult<CgroupForkGuard> {
+    membership::begin_task_at(target, child_pid, child_pid, CgroupChildKind::Process)
 }
-
 /// Render `target` relative to an arbitrary cgroup namespace root.
 pub fn relative_path(root: &Arc<CgroupNode>, target: &Arc<CgroupNode>) -> alloc::string::String {
     node::relative_path(root, target)

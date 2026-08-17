@@ -678,11 +678,11 @@ pub fn sys_getgroups(
 }
 
 /// Linux limits supplementary groups to 65536 (`NGROUPS_MAX`).
-const NGROUPS_MAX: usize = 65536;
+const NGROUPS_MAX: u32 = 65536;
 
 pub fn sys_setgroups(
     current: &crate::task::UserTaskRef,
-    size: usize,
+    size: i32,
     list: *const u32,
 ) -> crate::StarryResult<isize> {
     debug!("sys_setgroups <= size: {size}");
@@ -697,9 +697,13 @@ pub fn sys_setgroups(
     if thread.setgroups_deny() {
         return Err(StarryError::OperationNotPermitted);
     }
-    if size > NGROUPS_MAX {
+    // Linux declares this syscall argument as `int`. Its generated syscall
+    // wrapper narrows the raw register before the implementation checks the
+    // value as unsigned, rejecting both negative and oversized counts.
+    if size as u32 > NGROUPS_MAX {
         return Err(StarryError::InvalidInput);
     }
+    let size = size as usize;
 
     let groups = if size > 0 {
         let mut buf: Vec<MaybeUninit<u32>> = vec![MaybeUninit::uninit(); size];
@@ -759,15 +763,16 @@ fn write_utsname(
 pub fn sys_sethostname(
     current: &crate::task::UserTaskRef,
     name: *const c_char,
-    len: usize,
+    len: i32,
 ) -> crate::StarryResult<isize> {
-    if len > 64 {
-        return Err(StarryError::InvalidInput);
-    }
     let curr = current;
-    if curr.as_thread().cred().euid != 0 {
+    if !curr.as_thread().cred().has_cap_sys_admin() {
         return Err(StarryError::OperationNotPermitted);
     }
+    if !(0..=64).contains(&len) {
+        return Err(StarryError::InvalidInput);
+    }
+    let len = len as usize;
     let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
     vm_read_slice(current, name.cast::<u8>(), &mut buf)?;
     let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
@@ -784,15 +789,16 @@ pub fn sys_sethostname(
 pub fn sys_setdomainname(
     current: &crate::task::UserTaskRef,
     name: *const c_char,
-    len: usize,
+    len: i32,
 ) -> crate::StarryResult<isize> {
-    if len > 64 {
-        return Err(StarryError::InvalidInput);
-    }
     let curr = current;
-    if curr.as_thread().cred().euid != 0 {
+    if !curr.as_thread().cred().has_cap_sys_admin() {
         return Err(StarryError::OperationNotPermitted);
     }
+    if !(0..=64).contains(&len) {
+        return Err(StarryError::InvalidInput);
+    }
+    let len = len as usize;
     let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
     vm_read_slice(current, name.cast::<u8>(), &mut buf)?;
     let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };

@@ -2787,7 +2787,7 @@ mod tests {
 
     #[test]
     fn task_status_reports_supplementary_groups() {
-        let cpu_presence = collect_cpu_presence([0usize], 1);
+        let cpu_presence = test_cpu_presence([0usize], 1);
         let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
         let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
         let mut cred = Cred::root();
@@ -2796,10 +2796,10 @@ mod tests {
             base: TaskStatusBase {
                 name: "proc-status-test",
                 state: "S (sleeping)",
-                tgid: 1,
-                pid: 1,
-                ppid: 0,
-                tracer_pid: 0,
+                tgid: TgidNumber::try_from(1).unwrap(),
+                pid: TidNumber::try_from(1).unwrap(),
+                ppid: None,
+                tracer_pid: None,
                 cred: &cred,
                 num_threads: 1,
             },

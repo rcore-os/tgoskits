@@ -420,14 +420,26 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     }
     thr.account_cpu_time_now();
     let (utime, stime) = task_cpu_time(&curr);
+    let task_identity = thr.pid_identity();
     let thread_exit = process.exit_thread(
         thr.tid_number(),
         exit_code,
         ProcessCpuTime::new(utime, stime),
     );
+    let cgroup_exit = match &thread_exit {
+        ThreadExit::AlreadyExited => None,
+        ThreadExit::Remaining => Some(ax_cgroup::CgroupTaskExit::Thread),
+        ThreadExit::Last(_) => Some(ax_cgroup::CgroupTaskExit::LastProcessTask),
+    };
+    if let Some(exit_kind) = cgroup_exit {
+        super::cgroup_exit_invariant::enforce(crate::cgroup::exit_task(
+            &thr.proc_data,
+            &task_identity,
+            exit_kind,
+        ));
+    }
     if let ThreadExit::Last(exit_owner) = thread_exit {
         debug_assert!(Arc::ptr_eq(exit_owner.process(), process));
-        crate::cgroup::exit_process(&thr.proc_data);
         thr.proc_data.release_cgroup_namespace();
         thr.proc_data
             .cancel_interval_timer_alarm()

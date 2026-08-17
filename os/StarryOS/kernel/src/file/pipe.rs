@@ -238,17 +238,6 @@ impl Pipe {
         Ok(())
     }
 
-    #[cfg(axtest)]
-    pub(crate) fn duplicate_read_end_for_test(&self) -> Pipe {
-        assert!(self.is_read());
-        self.shared.state.lock().readers += 1;
-        Pipe {
-            read_side: true,
-            shared: self.shared.clone(),
-            non_blocking: AtomicBool::new(self.nonblocking()),
-        }
-    }
-
     fn write_with_broken_pipe_handler(
         &self,
         src: &mut IoSrc,
@@ -347,25 +336,6 @@ impl Pipe {
         self.shared.state.lock().readers += 1;
         Pipe {
             read_side: true,
-            shared: self.shared.clone(),
-            non_blocking: AtomicBool::new(self.nonblocking()),
-        }
-    }
-
-    #[cfg(axtest)]
-    fn write_without_sigpipe_for_test(&self, src: &mut IoSrc) -> StarryResult<usize> {
-        // Axtests run in a kernel task without Starry process signal state. The
-        // write transition is identical, but SIGPIPE delivery is outside this
-        // direct pipe test and cannot be requested from that task.
-        self.write_with_broken_pipe_handler(src, || {})
-    }
-
-    #[cfg(axtest)]
-    pub(crate) fn duplicate_write_end_for_test(&self) -> Pipe {
-        assert!(self.is_write());
-        self.shared.state.lock().writers += 1;
-        Pipe {
-            read_side: false,
             shared: self.shared.clone(),
             non_blocking: AtomicBool::new(self.nonblocking()),
         }

@@ -1,6 +1,7 @@
 //! User task management.
 
 mod bounded_stack;
+mod cgroup_exit_invariant;
 mod cred;
 pub mod futex;
 pub mod future;
@@ -246,9 +247,31 @@ impl ProcessData {
         self.cgroup.migrate(target)
     }
 
-    /// Removes this process generation from cgroup membership exactly once.
-    pub(crate) fn exit_cgroup(&self) {
-        self.cgroup.exit();
+    /// Reserve one child task charge under this process transaction.
+    pub(crate) fn begin_cgroup_task(
+        &self,
+        child: ax_cgroup::ProcessId,
+        child_kind: ax_cgroup::CgroupChildKind,
+    ) -> ax_cgroup::CgroupResult<ax_cgroup::CgroupForkGuard> {
+        self.cgroup.begin_task(child, child_kind)
+    }
+
+    /// Release one exact child task charge under this process transaction.
+    pub(crate) fn exit_cgroup_task(
+        &self,
+        task: ax_cgroup::ProcessId,
+        exit_kind: ax_cgroup::CgroupTaskExit,
+    ) -> ax_cgroup::CgroupResult<()> {
+        self.cgroup.exit_task(task, exit_kind)
+    }
+
+    /// Rename one exact task charge after Linux de-threading.
+    pub(crate) fn rename_cgroup_task(
+        &self,
+        old_task: ax_cgroup::ProcessId,
+        new_task: ax_cgroup::ProcessId,
+    ) -> ax_cgroup::CgroupResult<()> {
+        self.cgroup.rename_task(old_task, new_task)
     }
 
     /// Returns a stable namespace aggregate without retaining the raw lock.
