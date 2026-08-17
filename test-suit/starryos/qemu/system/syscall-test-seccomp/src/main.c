@@ -265,10 +265,6 @@ static void check_filter_header_validation_before_permission(void)
         .len = 0,
         .filter = NULL,
     };
-    struct sock_fprog null_filter = {
-        .len = 1,
-        .filter = NULL,
-    };
     struct sock_fprog valid = {
         .len = 1,
         .filter = &allow,
