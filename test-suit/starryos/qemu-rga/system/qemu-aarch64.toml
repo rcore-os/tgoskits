@@ -21,7 +21,7 @@ uefi = false
 to_bin = true
 shell_prefix = "root@starry:"
 test_commands = [
-    "/usr/bin/starry-run-system-tests",
+    "exec /usr/bin/starry-run-system-tests",
 ]
 grouped_command_selection = "preserve_all"
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]

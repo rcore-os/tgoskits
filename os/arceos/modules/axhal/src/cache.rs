@@ -64,6 +64,10 @@ pub fn flush_tlb_range(start: VirtAddr, size: usize) {
     }
 }
 
+fn update_mmu_cache_with(vaddr: VirtAddr, update: impl FnOnce(VirtAddr)) {
+    update(vaddr.align_down_4k());
+}
+
 /// Synchronizes a page-table update performed by the local page-fault handler.
 ///
 /// This is the architecture boundary corresponding to Linux's
@@ -72,7 +76,21 @@ pub fn flush_tlb_range(start: VirtAddr, size: usize) {
 /// implement it as a no-op.
 #[inline]
 pub fn update_mmu_cache(vaddr: VirtAddr) {
-    ax_cpu::asm::update_mmu_cache(vaddr.align_down_4k());
+    update_mmu_cache_with(vaddr, ax_cpu::asm::update_mmu_cache);
+}
+
+#[cfg(axtest)]
+/// Verifies page alignment at the local page-fault completion boundary.
+pub fn update_mmu_cache_alignment_for_test() -> bool {
+    use core::cell::Cell;
+
+    let calls = Cell::new(0);
+    let observed = Cell::new(VirtAddr::from(0));
+    update_mmu_cache_with(VirtAddr::from(0x4567), |vaddr| {
+        calls.set(calls.get() + 1);
+        observed.set(vaddr);
+    });
+    calls.get() == 1 && observed.get() == VirtAddr::from(0x4000)
 }
 
 /// Flushes the TLB entries covering a virtual-address range on all available CPUs.

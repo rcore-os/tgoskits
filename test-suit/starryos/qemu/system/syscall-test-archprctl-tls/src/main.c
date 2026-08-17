@@ -99,9 +99,11 @@ static int test_arch_prctl_fs(void)
 
     syscall(SYS_arch_prctl, ARCH_GET_FS, &orig); /* 存原 musl TLS */
     syscall(SYS_arch_prctl, ARCH_SET_FS, testv);
+    long repeat_r = syscall(SYS_arch_prctl, ARCH_SET_FS, testv);
     syscall(SYS_arch_prctl, ARCH_GET_FS, &got);
     syscall(SYS_arch_prctl, ARCH_SET_FS, orig); /* 恢复! 之后才可 CHECK/printf */
 
+    CHECK(repeat_r == 0, "重复 ARCH_SET_FS 同值成功(懒安装零额外写路径)");
     CHECK(got == testv, "ARCH_SET_FS 后 GET_FS 读回同值");
     CHECK(read_tls_reg() == orig, "ARCH_SET_FS 恢复原 TLS 成功");
     if (page != MAP_FAILED) munmap(page, 4096);
@@ -115,6 +117,8 @@ static int test_arch_prctl_gs_errno(void)
     unsigned long gv = 0xdead000;
     long r = syscall(SYS_arch_prctl, ARCH_SET_GS, gv);
     CHECK(r == 0, "ARCH_SET_GS 成功(恒不返错)");
+    r = syscall(SYS_arch_prctl, ARCH_SET_GS, gv);
+    CHECK(r == 0, "重复 ARCH_SET_GS 同值成功(懒安装零额外写路径)");
     unsigned long got = 0;
     r = syscall(SYS_arch_prctl, ARCH_GET_GS, &got);
     CHECK(r == 0 && got == gv, "ARCH_GET_GS 读回同值");

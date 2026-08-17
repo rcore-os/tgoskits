@@ -212,6 +212,20 @@ mod tests {
                 gs_base: false,
             }
         );
+        assert_eq!(
+            changed_user_tls(
+                previous,
+                UserTlsValues {
+                    fs_base: previous.fs_base,
+                    gs_base: 0x4000,
+                },
+                true,
+            ),
+            UserTlsWrites {
+                fs_base: false,
+                gs_base: true,
+            }
+        );
     }
 
     #[test]
@@ -223,6 +237,10 @@ mod tests {
                 gs_base: true,
             }
         );
+    }
+
+    #[test]
+    fn user_tls_generation_remains_a_nonzero_initialized_marker() {
         assert_eq!(next_generation(usize::MAX), 1);
     }
 }

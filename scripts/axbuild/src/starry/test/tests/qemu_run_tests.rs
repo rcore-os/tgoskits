@@ -29,9 +29,7 @@ fn qemu_case_requirements_default_to_single_cpu() {
 fn qemu_case_rootfs_uses_drive_file_arg() {
     let root = tempdir().unwrap();
     write_test_image_config(root.path());
-    let managed_rootfs = root
-        .path()
-        .join(".tgos-images/rootfs-riscv64-debian.img/rootfs-riscv64-debian.img");
+    let managed_rootfs = root.path().join(".tgos-images/rootfs-riscv64-debian.img");
     let qemu = QemuConfig {
         args: vec![
             "-device".to_string(),
@@ -57,9 +55,7 @@ fn qemu_case_rootfs_uses_drive_file_arg() {
 fn qemu_case_rootfs_accepts_drive_file_with_additional_options() {
     let root = tempdir().unwrap();
     write_test_image_config(root.path());
-    let managed_rootfs = root
-        .path()
-        .join(".tgos-images/rootfs-aarch64-busybox.img/rootfs-aarch64-busybox.img");
+    let managed_rootfs = root.path().join(".tgos-images/rootfs-aarch64-busybox.img");
     let qemu = QemuConfig {
         args: vec![
             "-drive".to_string(),
@@ -81,12 +77,8 @@ fn qemu_case_rootfs_accepts_drive_file_with_additional_options() {
 fn qemu_case_rootfs_collects_all_managed_drive_files() {
     let root = tempdir().unwrap();
     write_test_image_config(root.path());
-    let boot_rootfs = root
-        .path()
-        .join(".tgos-images/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img");
-    let usb_rootfs = root
-        .path()
-        .join(".tgos-images/rootfs-aarch64-busybox.img/rootfs-aarch64-busybox.img");
+    let boot_rootfs = root.path().join(".tgos-images/rootfs-aarch64-alpine.img");
+    let usb_rootfs = root.path().join(".tgos-images/rootfs-aarch64-busybox.img");
     let qemu = QemuConfig {
         args: vec![
             "-drive".to_string(),
@@ -106,22 +98,18 @@ fn qemu_case_rootfs_collects_all_managed_drive_files() {
 }
 
 #[test]
-fn qemu_case_rewrites_legacy_tmp_rootfs_drive_files() {
+fn qemu_case_rewrites_default_rootfs_references() {
     let root = tempdir().unwrap();
     write_test_image_config(root.path());
     let image_name = "rootfs-aarch64-busybox.img";
-    let legacy_rootfs = root.path().join("tmp/axbuild/rootfs").join(image_name);
-    let managed_rootfs = root
-        .path()
-        .join(".tgos-images")
-        .join(image_name)
-        .join(image_name);
+    let default_rootfs = root.path().join("tmp/axbuild/rootfs").join(image_name);
+    let managed_rootfs = root.path().join(".tgos-images").join(image_name);
     let mut qemu = QemuConfig {
         args: vec![
             "-drive".to_string(),
             format!(
                 "id=usbdisk,if=none,format=raw,snapshot=on,file={}",
-                legacy_rootfs.display()
+                default_rootfs.display()
             ),
         ],
         ..Default::default()

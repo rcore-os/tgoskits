@@ -24,6 +24,17 @@ use crate::{
     sync::{LockdepMutexExt, PiMutex},
 };
 
+fn complete_page_fault_with(
+    handled: bool,
+    vaddr: VirtAddr,
+    update_mmu_cache: impl FnOnce(VirtAddr),
+) -> bool {
+    if handled {
+        update_mmu_cache(vaddr);
+    }
+    handled
+}
+
 mod accounting;
 mod backend;
 mod tlb;
@@ -665,11 +676,9 @@ impl AddrSpace {
         match self.mutate_with_tlb_gather(&[], |aspace| {
             aspace.handle_page_fault_inner(vaddr, access_flags)
         }) {
-            Ok(true) => {
-                ax_runtime::hal::cache::update_mmu_cache(vaddr);
-                true
+            Ok(handled) => {
+                complete_page_fault_with(handled, vaddr, ax_runtime::hal::cache::update_mmu_cache)
             }
-            Ok(false) => false,
             Err(error) => {
                 warn!("Failed to finish page-fault TLB transaction: {error}");
                 false
@@ -825,6 +834,23 @@ impl AddrSpace {
         }
         result
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn page_fault_completion_updates_only_success_for_test() -> bool {
+    use core::cell::Cell;
+
+    let calls = Cell::new(0);
+    let observed = Cell::new(VirtAddr::from(0));
+    let success = complete_page_fault_with(true, VirtAddr::from(0x4567), |vaddr| {
+        calls.set(calls.get() + 1);
+        observed.set(vaddr);
+    });
+    let rejected = complete_page_fault_with(false, VirtAddr::from(0x89ab), |_| {
+        calls.set(calls.get() + 1);
+    });
+
+    success && !rejected && calls.get() == 1 && observed.get() == VirtAddr::from(0x4567)
 }
 
 /// Increment how many [`crate::task::ProcessData`] slots refer to `aspace`.

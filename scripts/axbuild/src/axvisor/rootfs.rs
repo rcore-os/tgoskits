@@ -131,9 +131,14 @@ async fn ensure_guest_image_bundles(
         return Ok(());
     }
 
-    let config = ImageConfig::read_config(workspace_root)?;
-    let storage = Storage::new_from_config(&config).await?;
     let output_dir = crate::context::axbuild_tmp_dir(workspace_root).join("images");
+    let mut config = ImageConfig::read_config(workspace_root)?;
+    // Guest VM configs use a stable workspace-relative path, while the new
+    // image architecture keeps download and extraction ownership separate.
+    // Reuse the configured archive cache but bind this operation's extracted
+    // bundle output to the path referenced by the VM configs.
+    config.extract_dir = output_dir.clone();
+    let storage = Storage::new_from_config(&config).await?;
     for (image_name, references) in references {
         let spec = ImageSpecRef::parse(&image_name);
         let image = storage.resolve_image(spec).with_context(|| {
@@ -147,7 +152,7 @@ async fn ensure_guest_image_bundles(
             );
         }
         let extracted = storage
-            .pull_image(spec, Some(&output_dir), true)
+            .pull_image(spec, true)
             .await
             .with_context(|| format!("failed to prepare Axvisor guest image `{image_name}`"))?;
         let expected_dir = output_dir.join(crate::image::storage::image_extract_dir_name(spec));
@@ -345,10 +350,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::{
-        image::{registry::ImageEntry, storage::REGISTRY_FILENAME},
-        support::download::test_support,
-    };
+    use crate::{image::registry::ImageEntry, support::download::test_support};
 
     fn make_tar_gz(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut tar_data = Vec::new();
@@ -377,15 +379,14 @@ mod tests {
     }
 
     fn managed_rootfs_path_for_test(root: &Path, image_name: &str) -> PathBuf {
-        root.join(".tgos-images").join(image_name).join(image_name)
+        root.join(".tgos-images").join(image_name)
     }
 
     fn write_test_image_config(root: &Path) {
         let config = crate::image::config::ImageConfig {
-            local_storage: root.join(".tgos-images"),
             registry: crate::image::config::DEFAULT_REGISTRY_URL.to_string(),
-            auto_sync: true,
-            auto_sync_threshold: 60,
+            download_dir: root.join(".tgos-downloads"),
+            extract_dir: root.join(".tgos-images"),
         };
         crate::image::config::ImageConfig::write_config(root, &config).unwrap();
     }
@@ -410,8 +411,6 @@ mod tests {
         let root = tempdir().unwrap();
         let archive = make_tar_gz(&[("linux/linux-qemu", b"kernel")]);
         let archive_url = test_support::register_bytes("qemu-aarch64.tar.gz", archive.clone());
-        let image_storage = root.path().join(".tgos-images");
-        fs::create_dir_all(&image_storage).unwrap();
         let registry = crate::image::registry::ImageRegistry {
             images: vec![ImageEntry {
                 name: "qemu-aarch64".to_string(),
@@ -423,18 +422,16 @@ mod tests {
                 url: archive_url.url().to_string(),
             }],
         };
-        fs::write(
-            image_storage.join(REGISTRY_FILENAME),
-            toml::to_string(&registry).unwrap(),
-        )
-        .unwrap();
+        let registry_url = test_support::register_text(
+            "images.toml",
+            toml::to_string(&registry).unwrap().into_bytes(),
+        );
         crate::image::config::ImageConfig::write_config(
             root.path(),
             &crate::image::config::ImageConfig {
-                local_storage: image_storage,
-                registry: "https://unused.invalid/images.toml".to_string(),
-                auto_sync: false,
-                auto_sync_threshold: 0,
+                registry: registry_url.url().to_string(),
+                download_dir: root.path().join(".tgos-downloads"),
+                extract_dir: root.path().join(".tgos-images"),
             },
         )
         .unwrap();

@@ -116,76 +116,6 @@ fn assert_system_runner_contract(system_dir: &Path) {
     );
 }
 
-fn assert_inline_grouped_runner_reports_each_result_once(path: &Path) {
-    let content = fs::read_to_string(path).unwrap();
-    let config: toml::Value = toml::from_str(&content).unwrap();
-    let test_commands = config
-        .get("test_commands")
-        .and_then(toml::Value::as_array)
-        .unwrap();
-    let command = test_commands
-        .iter()
-        .filter_map(toml::Value::as_str)
-        .next()
-        .unwrap_or_default();
-
-    assert!(
-        command.contains("STARRY_SYSTEM_TEST_BEGIN: $bin"),
-        "{} must identify each test before it starts",
-        path.display()
-    );
-    assert!(
-        command.contains("STARRY_SYSTEM_TEST_PASSED: $bin elapsed_s=$elapsed_s"),
-        "{} must report one traceable duration for each passing test",
-        path.display()
-    );
-    assert!(
-        command.contains("$system_fail_marker: $bin status=$exit_status elapsed_s=$elapsed_s"),
-        "{} must report the status and duration of each failing test",
-        path.display()
-    );
-    assert!(
-        command.contains(
-            "STARRY_SYSTEM_TEST_SUMMARY: total=$total passed=$passed failed=$failed \
-             elapsed_s=$suite_elapsed_s"
-        ),
-        "{} must report one compact suite timing summary",
-        path.display()
-    );
-    assert!(
-        !command.contains("STARRY_SYSTEM_TEST_TIMING") && !command.contains("timing_file="),
-        "{} must not duplicate per-test durations in a trailing timing block",
-        path.display()
-    );
-    let failure_branch = command.find("else\n").unwrap_or_else(|| {
-        panic!(
-            "{} must contain a failure branch for grouped subcases",
-            path.display()
-        )
-    });
-    let failure_command = &command[failure_branch..];
-    let exit_status_position = failure_command.find("exit_status=$?").unwrap_or_else(|| {
-        panic!(
-            "{} must preserve grouped subcase exit status",
-            path.display()
-        )
-    });
-    let failed_count_position = failure_command
-        .find("failed=$((failed + 1))")
-        .unwrap_or_else(|| panic!("{} must mark failed grouped subcases", path.display()));
-    assert!(
-        exit_status_position < failed_count_position,
-        "{} must capture `$?` before assigning shell variables in the failure branch",
-        path.display()
-    );
-    assert!(
-        command.contains("STARRY_GROUPED_TESTS_PASSED")
-            && command.contains("STARRY_GROUPED_TEST_FAILED"),
-        "{} must keep existing grouped success/fail markers",
-        path.display()
-    );
-}
-
 #[test]
 fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -214,7 +144,7 @@ fn starry_system_grouped_qemu_configs_reuse_isolated_runner() {
     assert_system_runner_contract(&system_dir);
 
     let rga_path = workspace_root.join("test-suit/starryos/qemu-rga/system/qemu-aarch64.toml");
-    assert_inline_grouped_runner_reports_each_result_once(&rga_path);
+    assert_system_runner_config(&rga_path);
 }
 
 #[test]
@@ -313,7 +243,7 @@ fn starry_system_runner_bounds_each_pid_namespace() {
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", runner_path.display()));
 
     assert!(
-        runner.contains("CASE_TIMEOUT_SECONDS")
+        runner.contains("DEFAULT_CASE_TIMEOUT_SECONDS")
             && runner.contains("RUNNER_TIMEOUT_STATUS")
             && runner.contains("waitpid(namespace_init, status, WNOHANG)")
             && runner.contains("kill(namespace_init, SIGKILL)"),
@@ -324,14 +254,14 @@ fn starry_system_runner_bounds_each_pid_namespace() {
     let case_timeout_seconds = runner
         .lines()
         .find_map(|line| {
-            line.strip_prefix("#define CASE_TIMEOUT_SECONDS ")
+            line.strip_prefix("#define DEFAULT_CASE_TIMEOUT_SECONDS ")
                 .and_then(|value| value.parse::<u64>().ok())
         })
         .expect("the shared system runner must define a numeric per-case timeout");
     assert_eq!(
         case_timeout_seconds,
-        180,
-        "{} must preserve the measured 1.5x-bounded case budget",
+        120,
+        "{} must preserve the bounded default while slow cases use explicit overrides",
         runner_path.display()
     );
 }
