@@ -9,7 +9,8 @@ use tempfile::tempdir;
 use walkdir::WalkDir;
 
 use super::{
-    app_qemu_test_case, load_qemu_app_case_fields, prepare_qemu_app_case, resolve_qemu_config,
+    app_qemu_test_case, load_qemu_app_case_fields, prepare_qemu_app_case,
+    qemu_app_managed_rootfs_paths, read_qemu_app_config, resolve_qemu_config,
 };
 use crate::{
     rootfs::qemu::RootfsWritePolicy,
@@ -189,6 +190,42 @@ fail_regex = []
 
     assert_eq!(fields.rootfs_path, Some(rootfs_path));
     assert_eq!(fields.write_policy, RootfsWritePolicy::Discard);
+}
+
+#[test]
+fn apk_equivalence_qemu_configs_resolve_with_default_image_config() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let workspace = tempdir().unwrap();
+
+    for (case, arch) in [
+        ("apk-add-fs-equivalence", "riscv64"),
+        ("apk-add-fs-equivalence", "x86_64"),
+        ("apk-net-equivalence", "riscv64"),
+        ("apk-net-equivalence", "x86_64"),
+    ] {
+        let config_path = repo
+            .join("apps/starry/qemu")
+            .join(case)
+            .join(format!("qemu-{arch}.toml"));
+        let qemu = read_qemu_app_config(&config_path).unwrap();
+
+        let rootfs_paths = qemu_app_managed_rootfs_paths(workspace.path(), &qemu).unwrap();
+
+        assert_eq!(
+            rootfs_paths,
+            vec![
+                workspace
+                    .path()
+                    .join(format!("tmp/axbuild/rootfs/rootfs-{arch}-alpine.img"))
+            ],
+            "{} must use the default managed rootfs directory",
+            config_path.display()
+        );
+    }
 }
 
 #[test]
