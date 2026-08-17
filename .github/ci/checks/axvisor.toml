@@ -1,0 +1,221 @@
+schema_version = 1
+phase = "test"
+group = "AxVisor"
+
+[[check]]
+id = "test-axvisor-aarch64-qemu-smoke-axtest-timer-stress"
+name = "aarch64 QEMU · Smoke + virtio-blk guest + axtest + timer stress"
+runs_on = ["self-hosted", "linux", "qcs"]
+environment = "host"
+self_hosted_owner = "rcore-os"
+fallback_environment = "base"
+timeout_minutes = 30
+command = '''
+echo "==> axvisor aarch64 smoke"
+cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
+echo "==> axvisor aarch64 virtio-blk ArceOS guest"
+timeout 240s apps/arceos/virtio-blk-test/run.sh
+echo "==> axvisor aarch64 axtest"
+cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
+echo "==> pull qemu-aarch64 image"
+cargo xtask image pull qemu-aarch64 --output-dir tmp/axbuild/images
+echo "==> axvisor aarch64 gicv2 timer stress"
+cargo xtask axvisor test qemu --arch aarch64 --test-case gicv2-timer-stress
+echo "==> axvisor aarch64 gicv3 timer stress"
+cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
+'''
+
+[[check]]
+id = "test-axvisor-aarch64-qemu-panic-modes"
+name = "aarch64 QEMU · Panic modes"
+runs_on = ["self-hosted", "linux", "qcs"]
+environment = "host"
+self_hosted_owner = "rcore-os"
+fallback_environment = "base"
+timeout_minutes = 30
+command = '''
+echo "==> axvisor aarch64 backtrace panic"
+cargo xtask axvisor test qemu --arch aarch64 --test-case backtrace-panic
+echo "==> axvisor aarch64 no-backtrace panic"
+cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
+'''
+
+[[check]]
+id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
+name = "riscv64 QEMU · Smoke + IPI + panic modes"
+runs_on = ["self-hosted", "linux", "qcs"]
+environment = "host"
+self_hosted_owner = "rcore-os"
+fallback_environment = "base"
+timeout_minutes = 30
+command = '''
+echo "==> axvisor riscv64 smoke"
+cargo xtask axvisor test qemu --arch riscv64 --test-case smoke
+echo "==> axvisor riscv64 IPI cross-test"
+cargo xtask cross-test --arch riscv64 \
+  --package riscv_vcpu --package axvm \
+  --features axvm/host-test --no-default-features --lib ipi
+echo "==> axvisor riscv64 backtrace panic"
+cargo xtask axvisor test qemu --arch riscv64 --test-case backtrace-panic
+echo "==> axvisor riscv64 no-backtrace panic"
+cargo xtask axvisor test qemu --arch riscv64 --test-case no-backtrace
+'''
+
+[[check]]
+id = "test-axvisor-loongarch64-qemu"
+name = "loongarch64 QEMU · Suites"
+runs_on = ["ubuntu-latest"]
+environment = "axvisor-lvz"
+cache_key = "test-axvisor-loongarch64"
+download_xtask_bin_artifact = true
+command = '''
+target/debug/tg-xtask axvisor test qemu --arch loongarch64
+'''
+
+[[check]]
+id = "test-axvisor-qemu-ivc"
+name = "aarch64 QEMU · IVC"
+runs_on = ["self-hosted", "linux", "qcs"]
+environment = "host"
+self_hosted_owner = "rcore-os"
+fallback_environment = "base"
+command = '''
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
+'''
+
+[[check]]
+id = "test-axvisor-self-hosted-x86-64-svm-smoke-acpi"
+name = "x86_64 SVM · Smoke + direct/OVMF ACPI"
+runs_on = ["self-hosted", "linux", "amd", "kvm"]
+environment = "host"
+required_owner = "rcore-os"
+timeout_minutes = 30
+require_kvm = true
+command = '''
+echo "==> axvisor x86_64 svm smoke"
+cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
+echo "==> pull qemu-x86_64 image"
+cargo xtask image pull qemu-x86_64 --output-dir tmp/axbuild/images
+echo "==> axvisor x86_64 svm direct ACPI boot"
+cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-svm
+echo "==> axvisor x86_64 svm nested OVMF ACPI boot"
+cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-svm
+'''
+
+[[check]]
+id = "test-axvisor-self-hosted-x86-64-vmx"
+name = "x86_64 VMX · Smoke"
+runs_on = ["self-hosted", "linux", "intel", "kvm"]
+environment = "host"
+required_owner = "rcore-os"
+require_kvm = true
+command = '''
+cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
+'''
+
+[[check]]
+id = "test-axloader-http-smoke"
+name = "x86_64 UEFI · AxLoader HTTP boot"
+runs_on = ["self-hosted", "linux", "intel", "kvm"]
+environment = "host"
+required_owner = "rcore-os"
+timeout_minutes = 25
+require_kvm = true
+command = '''
+rustup target add x86_64-unknown-uefi
+cargo xtask axloader test qemu --target x86_64-unknown-uefi
+'''
+
+[[check]]
+id = "test-axvisor-x86-64-acpi-direct-and-ovmf-boot-vmx"
+name = "x86_64 VMX · Direct + MP fallback + OVMF ACPI"
+runs_on = ["self-hosted", "linux", "intel", "kvm"]
+environment = "host"
+required_owner = "rcore-os"
+timeout_minutes = 45
+require_kvm = true
+command = '''
+cargo xtask image pull qemu-x86_64 --output-dir tmp/axbuild/images
+cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
+cargo xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
+cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
+'''
+
+[[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux"
+name = "OrangePi 5 Plus board · Linux guest"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-linux
+'''
+
+[[check]]
+id = "test-axvisor-self-hosted-board-orangepi-5-plus-starry"
+name = "OrangePi 5 Plus board · StarryOS guest"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-starry
+'''
+
+[[check]]
+id = "test-axvisor-self-hosted-board-roc-rk3568-pc-linux"
+name = "ROC-RK3568-PC board · Linux guest"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+command = '''
+cargo xtask axvisor test board --board roc-rk3568-pc-linux
+'''
+
+[[check]]
+id = "test-axvisor-self-hosted-board-phytiumpi-linux"
+name = "Phytium Pi board · Linux guest"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+command = '''
+cargo xtask axvisor test board --board phytiumpi-linux
+'''
+
+[[check]]
+id = "test-axvisor-self-hosted-board-asus-nuc15crh-linux"
+name = "ASUS NUC15CRH board · Linux guest"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+timeout_minutes = 20
+command = '''
+mkdir -p tmp
+cargo xtask image pull qemu-x86_64 --output-dir tmp
+cargo xtask image pull initramfs-x86_64-busybox.cpio.gz --output-dir tmp
+gzip -dc \
+  tmp/initramfs-x86_64-busybox.cpio.gz/initramfs-x86_64-busybox.cpio.gz \
+  > tmp/initramfs-x86_64-busybox.cpio
+cargo xtask axvisor test board --board asus-nuc15crh-linux
+'''
+
+[[check]]
+id = "test-orangepi-5-plus-robot-axvisor-starryos-guest"
+name = "OrangePi 5 Plus robot board · StarryOS guest"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
+'''
+
+[[check]]
+id = "test-orangepi-5-plus-robot-axvisor-linux-guest"
+name = "OrangePi 5 Plus robot board · Linux guest"
+runs_on = ["self-hosted", "linux", "board"]
+environment = "host"
+required_owner = "rcore-os"
+timeout_minutes = 90
+command = '''
+cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
+'''

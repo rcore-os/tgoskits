@@ -21,6 +21,9 @@ const CAPABILITY_VERSION_3: u32 = 0x20080522;
 const CAP_U32S_3: usize = 2;
 const PERSONALITY_GET: u32 = 0xffff_ffff;
 const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
+const SECUREBITS_VALID_MASK: u32 = 0xff;
+const SECUREBITS_LOCK_MASK: u32 = 0xaa;
+const SECBIT_NO_CAP_AMBIENT_RAISE: u32 = 1 << 6;
 const MPOL_DEFAULT: i32 = 0;
 const MPOL_PREFERRED: i32 = 1;
 const MPOL_BIND: i32 = 2;
@@ -479,7 +482,10 @@ pub fn sys_prctl(
                         return Err(StarryError::InvalidInput);
                     }
                     let bit = cap_bit(arg3 as u32)?;
-                    if old.cap_permitted & bit == 0 || old.cap_inheritable & bit == 0 {
+                    if old.securebits & SECBIT_NO_CAP_AMBIENT_RAISE != 0
+                        || old.cap_permitted & bit == 0
+                        || old.cap_inheritable & bit == 0
+                    {
                         return Err(StarryError::OperationNotPermitted);
                     }
                     let mut new = (*old).clone();
@@ -506,6 +512,34 @@ pub fn sys_prctl(
                 }
                 _ => return Err(StarryError::InvalidInput),
             }
+        }
+        PR_GET_SECUREBITS => {
+            return Ok(current().as_thread().cred().securebits as isize);
+        }
+        PR_SET_SECUREBITS => {
+            // Linux only consumes arg2 for this option. Variadic libc prctl
+            // callers do not have to initialize the unused argument slots.
+            if arg2 > SECUREBITS_VALID_MASK as usize {
+                return Err(StarryError::InvalidInput);
+            }
+
+            let thread_ref = current();
+            let thread = thread_ref.as_thread();
+            let old = thread.cred();
+            if !old.has_cap_setpcap() {
+                return Err(StarryError::OperationNotPermitted);
+            }
+
+            let requested = arg2 as u32;
+            let locked = old.securebits & SECUREBITS_LOCK_MASK;
+            let locked_values = locked >> 1;
+            if requested & locked != locked || (requested ^ old.securebits) & locked_values != 0 {
+                return Err(StarryError::OperationNotPermitted);
+            }
+
+            let mut new = (*old).clone();
+            new.securebits = requested;
+            thread.set_cred(new);
         }
         PR_GET_DUMPABLE => {
             // man 2 prctl PR_GET_DUMPABLE: returns current dumpable value
