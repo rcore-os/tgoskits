@@ -190,6 +190,10 @@ static void test_tgkill_errors(void)
           "tgkill zero tgid returns EINVAL");
     CHECK(raw_tgkill(getpid(), 0, 0) == -1 && errno == EINVAL,
           "tgkill zero tid returns EINVAL");
+    CHECK(raw_tgkill_words(-1, tid, 0) == -1 && errno == EINVAL,
+          "tgkill rejects a negative tgid before process lookup");
+    CHECK(raw_tgkill_words(getpid(), -1, 0) == -1 && errno == EINVAL,
+          "tgkill rejects a negative tid before thread lookup");
     CHECK(raw_tgkill_words(1ULL << 32, tid, 0) == -1 && errno == EINVAL,
           "tgkill rejects an upper-word tgid that narrows to zero");
     CHECK(raw_tgkill_words(getpid(), 1ULL << 32, 0) == -1 && errno == EINVAL,
