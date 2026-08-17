@@ -6,7 +6,7 @@ use ax_plat::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleHandoffResult, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
-    mem::{DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
+    mem::{CpuSharedMemoryModel, DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
     power::PowerIf,
     time::TimeIf,
 };
@@ -76,6 +76,10 @@ impl ConsoleIf for DummyConsole {
 
 #[impl_plat_interface]
 impl MemIf for DummyMem {
+    fn cpu_shared_memory_model() -> CpuSharedMemoryModel {
+        CpuSharedMemoryModel::Coherent
+    }
+
     fn phys_ram_ranges() -> &'static [RawRange] {
         &[]
     }

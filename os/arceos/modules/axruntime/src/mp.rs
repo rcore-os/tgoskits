@@ -35,6 +35,11 @@ fn prepare_secondary_boot_stack(slot: usize, cpu_id: usize) {
 pub fn start_secondary_cpus(primary_cpu_id: usize) {
     let mut slot = 0;
     let cpu_num = ax_hal::cpu_num();
+    assert_eq!(
+        ax_hal::mem::cpu_shared_memory_model(),
+        ax_hal::mem::CpuSharedMemoryModel::Coherent,
+        "SMP requires coherent cacheable memory shared by all CPUs"
+    );
     for i in 0..cpu_num {
         if i != primary_cpu_id && slot < cpu_num - 1 {
             prepare_secondary_boot_stack(slot, i);
