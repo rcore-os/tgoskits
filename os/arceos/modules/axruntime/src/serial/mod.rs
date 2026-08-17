@@ -30,7 +30,6 @@ use self::{
 use crate::{RuntimeError, RuntimeResult, sync::SpinLock};
 
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
-const PANIC_TX_READY_SPINS: usize = 100_000;
 const IRQ_RX_CAPACITY: usize = 16_384;
 const SUBSCRIPTION_RX_CAPACITY: usize = 4_096;
 
@@ -74,6 +73,7 @@ struct RuntimeShared {
     owner_cpu: usize,
     polling: bool,
     port: SpinLock<Box<dyn rdif_serial::UartPort>>,
+    register_gate: Arc<rdif_serial::UartRegisterGate<dyn rdif_serial::UartEmergencyTx>>,
     ingress: TxIngress,
     rx_subscription: SpinLock<Option<SpscConsumer<RxItem>>>,
     control: ControlQueue,
@@ -88,6 +88,19 @@ struct RuntimeShared {
 }
 
 impl RuntimeShared {
+    /// Runs one task-context register transaction with local IRQ delivery
+    /// excluded and all cross-CPU aliases serialized by the UART gate.
+    fn with_port<R>(&self, access: impl FnOnce(&mut dyn rdif_serial::UartPort) -> R) -> R {
+        let mut port = self.port.lock_irqsave();
+        let _register_access = loop {
+            if let Some(access) = self.register_gate.try_enter() {
+                break access;
+            }
+            core::hint::spin_loop();
+        };
+        access(&mut **port)
+    }
+
     fn started(&self) -> bool {
         self.started.load(Ordering::Acquire)
     }
@@ -416,12 +429,15 @@ fn build_runtime(
         info,
         mut port,
         mut irq,
+        register_gate,
     } = serial;
     port.mask_all();
 
     let polling = info.irq.is_none();
     let bridge = Arc::new(RuntimeIrqBridge::new());
     let stats = Arc::new(SerialStatsAtomic::new());
+    let register_gate: Arc<rdif_serial::UartRegisterGate<dyn rdif_serial::UartEmergencyTx>> =
+        Arc::from(register_gate);
     let (irq_rx_producer, irq_rx_consumer) = spsc::channel(IRQ_RX_CAPACITY);
     let (rx_output_producer, rx_output_consumer) = spsc::channel(SUBSCRIPTION_RX_CAPACITY);
     let shared = Arc::new(RuntimeShared {
@@ -430,6 +446,7 @@ fn build_runtime(
         owner_cpu: primary_cpu,
         polling,
         port: SpinLock::new(port),
+        register_gate: register_gate.clone(),
         ingress: TxIngress::new(),
         rx_subscription: SpinLock::new(Some(rx_output_consumer)),
         control: ControlQueue::new(),
@@ -461,17 +478,22 @@ fn build_runtime(
         })?;
         let callback_bridge = bridge;
         let callback_stats = stats;
-        let mut callback_rx = RuntimeIrqRxSink {
+        let mut callback_rx = RuntimeIrqPublisher {
             producer: irq_rx_producer,
             bridge: callback_bridge.clone(),
             stats: callback_stats.clone(),
         };
+        let callback_gate = register_gate;
         let request = serial_irq_request(
             ax_hal::irq::IrqRequest::new(move |_| {
-                let Some(event) = irq.handle(&mut callback_rx) else {
+                let Some(_register_access) = callback_gate.try_enter() else {
+                    return ax_hal::irq::IrqReturn::Unhandled;
+                };
+                let Some(report) = irq.handle() else {
                     callback_stats.spurious_irq();
                     return ax_hal::irq::IrqReturn::Unhandled;
                 };
+                let event = callback_rx.publish(report);
                 callback_stats.handled_irq(event);
                 callback_bridge.latch.publish(event);
                 callback_bridge.notify.notify_irq();
@@ -509,44 +531,35 @@ fn serial_irq_request(
         .auto_enable(ax_hal::irq::AutoEnable::No)
 }
 
-struct RuntimeIrqRxSink {
+struct RuntimeIrqPublisher {
     producer: SpscProducer<rdif_serial::RxSample>,
     bridge: Arc<RuntimeIrqBridge>,
     stats: Arc<SerialStatsAtomic>,
 }
 
-impl rdif_serial::IrqRxSink for RuntimeIrqRxSink {
-    fn push(&mut self, sample: rdif_serial::RxSample) {
-        if self.producer.push(sample).is_err() {
-            self.stats.add_rx_dropped(1);
-            self.bridge.rx_overflow.store(true, Ordering::Release);
+impl RuntimeIrqPublisher {
+    fn publish(&mut self, report: rdif_serial::SerialIrqReport) -> rdif_serial::SerialIrqEvent {
+        for &sample in report.rx.as_slice() {
+            if self.producer.push(sample).is_err() {
+                self.stats.add_rx_dropped(1);
+                self.bridge.rx_overflow.store(true, Ordering::Release);
+            }
         }
+        report.event
     }
 }
 
-/// Routes normal logs through the bounded TX channel. Panic output only takes
-/// the port after a successful non-blocking gate acquisition.
+/// Routes normal logs through the bounded TX channel. Panic output uses only
+/// the bounded emergency endpoint after a successful non-blocking gate entry.
 pub(crate) fn route_console_bytes(bytes: &[u8]) -> Option<usize> {
     let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
     let runtime = runtimes().get(index)?;
     if axpanic::oops_in_progress() {
-        let Some(mut port) = runtime.shared.port.try_lock_irqsave() else {
+        let Some(register_access) = runtime.shared.register_gate.try_enter() else {
             runtime.shared.stats.add_log_dropped(bytes.len());
             return Some(0);
         };
-        port.mask_all();
-        let mut written = 0;
-        let mut spins = 0;
-        while written < bytes.len() && spins < PANIC_TX_READY_SPINS {
-            let count = port.write_tx(&bytes[written..]);
-            if count == 0 {
-                spins += 1;
-                core::hint::spin_loop();
-            } else {
-                written += count;
-                spins = 0;
-            }
-        }
+        let written = register_access.try_write(bytes);
         runtime.shared.stats.add_log_dropped(bytes.len() - written);
         return Some(written);
     }
@@ -571,11 +584,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn irq_sink_drops_only_after_the_preallocated_ring_is_full() {
+    fn irq_report_drops_only_after_the_preallocated_ring_is_full() {
         let bridge = Arc::new(RuntimeIrqBridge::new());
         let stats = Arc::new(SerialStatsAtomic::new());
         let (producer, mut consumer) = spsc::channel(2);
-        let mut sink = RuntimeIrqRxSink {
+        let mut publisher = RuntimeIrqPublisher {
             producer,
             bridge: bridge.clone(),
             stats: stats.clone(),
@@ -594,9 +607,14 @@ mod tests {
                 ..rdif_serial::RxSample::default()
             },
         ];
+        let mut batch = rdif_serial::IrqRxBatch::new();
         for sample in samples {
-            rdif_serial::IrqRxSink::push(&mut sink, sample);
+            batch.try_push(sample).unwrap();
         }
+        publisher.publish(rdif_serial::SerialIrqReport::new(
+            rdif_serial::SerialIrqEvent::default(),
+            batch,
+        ));
 
         assert_eq!(consumer.pop().and_then(|sample| sample.byte), Some(1));
         assert_eq!(consumer.pop().and_then(|sample| sample.byte), Some(2));

@@ -147,23 +147,23 @@ let mut uart = some_serial::ns16550::Ns16550::new_mmio(
 use rdif_serial::{Config, SplitUart as _, UartIrq as _, UartPort as _};
 use some_serial::pl011::Pl011;
 
-// 运行时取得两个不可克隆、职责互斥的端点。
+// 运行时取得三个不可克隆、职责互斥的端点。
 let uart = Pl011::new(base_addr, clock_freq);
 let parts = uart.split();
-let mut port = parts.port;
+let mut port = parts.control;
 let mut irq = parts.irq;
 port.startup(&Config::new().baudrate(115200)).unwrap();
 
 // IRQ callback 只 ACK/mask 并发布事件，不读写 FIFO。
-if let Some(event) = irq.handle() {
-    // 维护线程根据 event 通过 port 处理数据，完成后调用 port.rearm(event.rearm)。
+if let Some(report) = irq.handle() {
+    // IRQ 只返回固定容量的值报告；运行时发布 report.rx，并让维护线程处理 report.event。
 }
 ```
 
 #### 平台检测与适配
 
 需要运行时动态分发的 rdrive/Starry 路径应在驱动探测层调用 `SplitUart::split()`，并且
-仅在那里把两个端点分别擦除为 `Box<dyn UartPort>` 与 `Box<dyn UartIrq>`。软件队列、
+仅在那里擦除 control、IRQ 和 emergency TX 端点。软件队列、
 维护线程、IRQ 注册、wait queue 和 poll source 均由 OS runtime 提供；`some-serial`
 不包含这些调度策略。
 
@@ -178,7 +178,7 @@ let uart = Ns16550::new_mmio(
     1,
 );
 let parts = uart.split();
-let mut port = parts.port;
+let mut port = parts.control;
 port.startup(&Config::new().baudrate(115200)).unwrap();
 
 let accepted = port.write_tx(b"runtime serial\n");

@@ -228,15 +228,9 @@ mod tests {
         },
     };
 
-    use rdif_serial::{IrqRxSink, RxSample, SplitUart as _, UartIrq as _};
+    use rdif_serial::{SplitUart as _, UartIrq as _};
 
     use super::*;
-
-    struct DiscardRx;
-
-    impl IrqRxSink for DiscardRx {
-        fn push(&mut self, _sample: RxSample) {}
-    }
 
     #[test]
     fn busy_detect_interrupt_is_claimed_by_irq_endpoint() {
@@ -247,7 +241,7 @@ mod tests {
         let uart = DwApbUart::new(regs.as_ptr() as usize);
         let mut parts = uart.split();
 
-        let event = parts.irq.handle(&mut DiscardRx).unwrap();
+        let event = parts.irq.handle().unwrap().event;
         assert!(
             event
                 .events
