@@ -176,12 +176,12 @@ int main(void)
     int status;
     if (waitpid(child, &status, 0) != child)
         fail("waitpid");
+    child_to_cleanup = -1;
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         errno = ECHILD;
         fail("child-status");
     }
 
-    child_to_cleanup = -1;
     close(master);
     alarm(0);
     puts("TEST_NIX_BUILDER_INIT_PASSED");
