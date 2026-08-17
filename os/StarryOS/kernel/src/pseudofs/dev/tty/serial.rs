@@ -455,27 +455,36 @@ impl TtyWrite for SerialWriter {
         Ok(self.backend.tx.discard_pending()?)
     }
 
-    fn termios_changed(&self, old: &Termios2, new: &Termios2) {
+    fn termios_changed(&self, old: &Termios2, new: &Termios2) -> StarryResult<()> {
         if old.baudrate() == new.baudrate()
             && old.data_bits() == new.data_bits()
             && old.stop_bits() == new.stop_bits()
             && old.parity() == new.parity()
         {
-            return;
+            return Ok(());
         }
-        if self.backend.ensure_started().is_err() {
-            return;
-        }
-        if let Err(err) = self
+        self.backend.ensure_started()?;
+        Ok(self
             .backend
             .runtime
-            .set_config(serial_config_from_termios(new))
-        {
-            warn!(
-                "{} failed to apply termios on {}: {:?}",
-                self.backend.tty_name, self.backend.name, err
-            );
+            .set_config(serial_config_from_termios(new))?)
+    }
+
+    fn update_termios(
+        &self,
+        old: &Termios2,
+        new: &Termios2,
+        drain: bool,
+        publish: &mut dyn FnMut(),
+    ) -> StarryResult<()> {
+        self.backend.ensure_started()?;
+        let _guard = self.backend.output_lock.lock();
+        if drain {
+            self.backend.tx.wait_idle()?;
         }
+        self.termios_changed(old, new)?;
+        publish();
+        Ok(())
     }
 }
 

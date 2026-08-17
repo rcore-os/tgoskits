@@ -103,7 +103,29 @@ pub trait TtyWrite: Send + Sync + 'static {
         Err(StarryError::Unsupported)
     }
 
-    fn termios_changed(&self, _old: &Termios2, _new: &Termios2) {}
+    fn termios_changed(&self, _old: &Termios2, _new: &Termios2) -> StarryResult<()> {
+        Ok(())
+    }
+
+    /// Applies an output-side termios transaction and publishes it last.
+    ///
+    /// Serial backends override this to hold their shared output lock across
+    /// drain, hardware configuration, and publication. The callback must only
+    /// publish the already-validated terminal state.
+    fn update_termios(
+        &self,
+        old: &Termios2,
+        new: &Termios2,
+        drain: bool,
+        publish: &mut dyn FnMut(),
+    ) -> StarryResult<()> {
+        if drain {
+            self.drain()?;
+        }
+        self.termios_changed(old, new)?;
+        publish();
+        Ok(())
+    }
 }
 
 pub fn write_output_bytes<W: TtyWrite + ?Sized>(writer: &W, term: &Termios2, buf: &[u8]) {

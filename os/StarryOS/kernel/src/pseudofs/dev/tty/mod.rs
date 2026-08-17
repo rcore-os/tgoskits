@@ -92,6 +92,7 @@ pub struct Tty<R, W> {
     terminal: Arc<Terminal>,
     ldisc: Mutex<LineDiscipline<R, W>>,
     writer: W,
+    termios_update: Mutex<()>,
     is_ptm: bool,
     open_count: AtomicUsize,
     binding: IrqMutex<Option<Weak<dyn Any + Send + Sync>>>,
@@ -107,6 +108,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             terminal,
             ldisc,
             writer,
+            termios_update: Mutex::new(()),
             is_ptm,
             open_count: AtomicUsize::new(0),
             binding: IrqMutex::new(None),
@@ -225,32 +227,26 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     // Faultable user memory access inside an atomic context (preemption
                     // disabled) will call might_sleep() in handle_page_fault and panic.
                     let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
-                    if matches!(cmd, TCSETSF | TCSETSW) {
-                        self.writer.drain()?;
-                    }
-                    let old = {
-                        let mut guard = self.terminal.termios.lock();
-                        let old = guard.clone();
-                        *guard = termios.clone();
-                        old
-                    };
-                    self.writer.termios_changed(old.as_ref(), termios.as_ref());
+                    let _update = self.termios_update.lock();
+                    apply_termios_update(
+                        &self.writer,
+                        &self.terminal,
+                        termios,
+                        matches!(cmd, TCSETSF | TCSETSW),
+                    )?;
                     if cmd == TCSETSF {
                         self.ldisc.lock().drain_input()?;
                     }
                 }
                 TCSETS2 | TCSETSF2 | TCSETSW2 => {
                     let termios = Arc::new((arg as *const Termios2).vm_read()?);
-                    if matches!(cmd, TCSETSF2 | TCSETSW2) {
-                        self.writer.drain()?;
-                    }
-                    let old = {
-                        let mut guard = self.terminal.termios.lock();
-                        let old = guard.clone();
-                        *guard = termios.clone();
-                        old
-                    };
-                    self.writer.termios_changed(old.as_ref(), termios.as_ref());
+                    let _update = self.termios_update.lock();
+                    apply_termios_update(
+                        &self.writer,
+                        &self.terminal,
+                        termios,
+                        matches!(cmd, TCSETSF2 | TCSETSW2),
+                    )?;
                     if cmd == TCSETSF2 {
                         self.ldisc.lock().drain_input()?;
                     }
@@ -370,6 +366,18 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     }
 }
 
+fn apply_termios_update<W: TtyWrite>(
+    writer: &W,
+    terminal: &Terminal,
+    termios: Arc<Termios2>,
+    drain: bool,
+) -> StarryResult<()> {
+    let old = terminal.load_termios();
+    writer.update_termios(old.as_ref(), termios.as_ref(), drain, &mut || {
+        *terminal.termios.lock() = termios.clone();
+    })
+}
+
 fn filter_cursor_position_requests(bytes: &[u8]) -> (Vec<u8>, usize) {
     let mut output = Vec::with_capacity(bytes.len());
     let mut count = 0;
@@ -430,9 +438,85 @@ impl DeviceOps for CurrentTty {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::{sync::Arc, vec, vec::Vec};
 
-    use super::filter_cursor_position_requests;
+    use super::{
+        Terminal, Termios2, TtyWrite, apply_termios_update, filter_cursor_position_requests,
+    };
+    use crate::{StarryResult, sync::Mutex};
+
+    struct TermiosOrderWriter {
+        terminal: Arc<Terminal>,
+        events: Arc<Mutex<Vec<&'static str>>>,
+        fail_configuration: bool,
+    }
+
+    impl TtyWrite for TermiosOrderWriter {
+        fn write(&self, _buf: &[u8]) {}
+
+        fn drain(&self) -> StarryResult<()> {
+            self.events.lock().push("drain");
+            Ok(())
+        }
+
+        fn termios_changed(&self, _old: &Termios2, new: &Termios2) -> StarryResult<()> {
+            let event = if self.terminal.load_termios().baudrate() == new.baudrate() {
+                "configure_after_publish"
+            } else {
+                "configure_before_publish"
+            };
+            self.events.lock().push(event);
+            if self.fail_configuration {
+                return Err(crate::StarryError::InvalidInput);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn termios_hardware_update_precedes_publication() {
+        let terminal = Arc::new(Terminal::default());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let writer = TermiosOrderWriter {
+            terminal: terminal.clone(),
+            events: events.clone(),
+            fail_configuration: false,
+        };
+
+        apply_termios_update(
+            &writer,
+            &terminal,
+            Arc::new(Termios2::default_b115200()),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(*events.lock(), vec!["drain", "configure_before_publish"]);
+        assert_eq!(terminal.load_termios().baudrate(), Some(115_200));
+    }
+
+    #[test]
+    fn failed_termios_hardware_update_preserves_published_state() {
+        let terminal = Arc::new(Terminal::default());
+        let old_baudrate = terminal.load_termios().baudrate();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let writer = TermiosOrderWriter {
+            terminal: terminal.clone(),
+            events,
+            fail_configuration: true,
+        };
+
+        assert!(
+            apply_termios_update(
+                &writer,
+                &terminal,
+                Arc::new(Termios2::default_b115200()),
+                false,
+            )
+            .is_err()
+        );
+        assert_eq!(terminal.load_termios().baudrate(), old_baudrate);
+    }
 
     #[test]
     fn cursor_position_request_matcher_does_not_buffer_partial_writes() {
