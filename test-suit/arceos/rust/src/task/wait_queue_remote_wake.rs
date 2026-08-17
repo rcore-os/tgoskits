@@ -2,6 +2,7 @@ use core::{hint, sync::atomic::AtomicUsize};
 use std::{
     os::arceos::{
         api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        guard::PreemptGuard,
         modules::{
             ax_hal::percpu::this_cpu_id,
             ax_task::{
@@ -25,11 +26,14 @@ static MAY_SLEEP: AtomicBool = AtomicBool::new(false);
 static GO: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(false);
 static OCCUPIER_READY: AtomicBool = AtomicBool::new(false);
+static OCCUPIER_HOLD_CURRENT: AtomicBool = AtomicBool::new(false);
+static OCCUPIER_CURRENT_HELD: AtomicBool = AtomicBool::new(false);
+static REMOTE_WAKE_FINISHED: AtomicBool = AtomicBool::new(false);
 static STOP_OCCUPIER: AtomicBool = AtomicBool::new(false);
 static SLEEPER_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 const REMOTE_WAKE_PROGRESS_TIMEOUT: Duration = Duration::from_secs(1);
-const OCCUPIER_MAX_RUNTIME: Duration = Duration::from_secs(2);
+const OCCUPIER_CURRENT_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
 const WAITER_BLOCK_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -104,9 +108,19 @@ impl TargetOccupier {
             set_current_fair_idle_policy();
             OCCUPIER_READY.store(true, Ordering::Release);
             api::ax_wait_queue_wake(&OCCUPIER_READY_WQ, 1);
-            let started = Instant::now();
-            while !STOP_OCCUPIER.load(Ordering::Acquire) && started.elapsed() < OCCUPIER_MAX_RUNTIME
-            {
+            while !STOP_OCCUPIER.load(Ordering::Acquire) {
+                if OCCUPIER_HOLD_CURRENT.load(Ordering::Acquire) {
+                    let _preempt = PreemptGuard::new();
+                    // Publish the barrier only after this task is the
+                    // non-preemptible current entity on the target CPU.
+                    OCCUPIER_CURRENT_HELD.store(true, Ordering::Release);
+                    while !REMOTE_WAKE_FINISHED.load(Ordering::Acquire)
+                        && !STOP_OCCUPIER.load(Ordering::Acquire)
+                    {
+                        hint::spin_loop();
+                    }
+                    break;
+                }
                 hint::spin_loop();
             }
         });
@@ -125,6 +139,7 @@ impl TargetOccupier {
     }
 
     fn stop(mut self) {
+        REMOTE_WAKE_FINISHED.store(true, Ordering::Release);
         STOP_OCCUPIER.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
             worker.join().unwrap();
@@ -134,6 +149,7 @@ impl TargetOccupier {
 
 impl Drop for TargetOccupier {
     fn drop(&mut self) {
+        REMOTE_WAKE_FINISHED.store(true, Ordering::Release);
         STOP_OCCUPIER.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -169,13 +185,27 @@ fn wake_sleep_queue_after_waiter_enqueued(sleeper: u64) {
     let started = Instant::now();
     while started.elapsed() < WAITER_BLOCK_TIMEOUT {
         if task_test_hooks::thread_is_blocked(sleeper) {
+            OCCUPIER_HOLD_CURRENT.store(true, Ordering::Release);
+            let occupier_started = Instant::now();
+            while !OCCUPIER_CURRENT_HELD.load(Ordering::Acquire)
+                && occupier_started.elapsed() < OCCUPIER_CURRENT_TIMEOUT
+            {
+                thread::yield_now();
+            }
+            assert!(
+                OCCUPIER_CURRENT_HELD.load(Ordering::Acquire),
+                "target occupier did not retain the target CPU for remote wake"
+            );
             task_test_hooks::arm_wake_irq_owner_probe(sleeper);
             task_test_hooks::arm_wake_entity_read_copy_probe(sleeper);
             task_test_hooks::arm_wake_owner_deadline_refresh_probe(sleeper);
             GO.store(true, Ordering::Release);
-            assert_eq!(api::ax_wait_queue_wake(&SLEEP_WQ, 1), 1);
+            let woken = api::ax_wait_queue_wake(&SLEEP_WQ, 1);
+            let deadline_refresh = task_test_hooks::take_wake_owner_deadline_refresh_required();
+            REMOTE_WAKE_FINISHED.store(true, Ordering::Release);
+            assert_eq!(woken, 1);
             assert_eq!(
-                task_test_hooks::take_wake_owner_deadline_refresh_required(),
+                deadline_refresh,
                 Some(true),
                 "the first Fair contender must publish owner deadline refresh work",
             );
@@ -200,6 +230,9 @@ pub fn run() -> crate::TestResult {
     GO.store(false, Ordering::Release);
     DONE.store(false, Ordering::Release);
     OCCUPIER_READY.store(false, Ordering::Release);
+    OCCUPIER_HOLD_CURRENT.store(false, Ordering::Release);
+    OCCUPIER_CURRENT_HELD.store(false, Ordering::Release);
+    REMOTE_WAKE_FINISHED.store(false, Ordering::Release);
     STOP_OCCUPIER.store(false, Ordering::Release);
     SLEEPER_CPU.store(usize::MAX, Ordering::Release);
 
