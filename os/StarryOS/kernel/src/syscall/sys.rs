@@ -692,15 +692,14 @@ pub fn sys_uname(name: *mut new_utsname) -> StarryResult<isize> {
     Ok(0)
 }
 
-pub fn sys_sethostname(name: *const c_char, len: i32) -> StarryResult<isize> {
+pub fn sys_sethostname(name: *const c_char, len: usize) -> StarryResult<isize> {
     let curr = current();
     if curr.as_thread().cred().euid != 0 {
         return Err(StarryError::OperationNotPermitted);
     }
-    if !(0..=64).contains(&len) {
+    if len > 64 {
         return Err(StarryError::InvalidInput);
     }
-    let len = len as usize;
     let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
     vm_read_slice(name.cast::<u8>(), &mut buf)?;
     let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
@@ -713,15 +712,14 @@ pub fn sys_sethostname(name: *const c_char, len: i32) -> StarryResult<isize> {
     Ok(0)
 }
 
-pub fn sys_setdomainname(name: *const c_char, len: i32) -> StarryResult<isize> {
+pub fn sys_setdomainname(name: *const c_char, len: usize) -> StarryResult<isize> {
     let curr = current();
     if curr.as_thread().cred().euid != 0 {
         return Err(StarryError::OperationNotPermitted);
     }
-    if !(0..=64).contains(&len) {
+    if len > 64 {
         return Err(StarryError::InvalidInput);
     }
-    let len = len as usize;
     let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
     vm_read_slice(name.cast::<u8>(), &mut buf)?;
     let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };

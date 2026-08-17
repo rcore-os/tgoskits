@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,36 +27,53 @@ static long raw_setdomainname(unsigned long len)
     return syscall(__NR_setdomainname, NULL, len);
 }
 
-static int check_permission_error(const char *name, long result)
+static int check_error(const char *name, long result, int expected_errno)
 {
-    if (result == -1 && errno == EPERM) {
+    if (result == -1 && errno == expected_errno) {
         return 0;
     }
-    fprintf(stderr, "FAIL: %s with an upper-word-only length returned %ld errno=%d (%s)\n", name,
-            result, errno, strerror(errno));
+    fprintf(stderr, "FAIL: %s returned %ld errno=%d (%s), expected errno=%d\n", name, result,
+            errno, strerror(errno), expected_errno);
     return 1;
 }
 
 static int child_test(void)
 {
-    if (geteuid() == 0 && setuid(1000) != 0) {
-        fprintf(stderr, "FAIL: setuid: errno=%d (%s)\n", errno, strerror(errno));
+#if ULONG_MAX <= UINT32_MAX
+    puts("SKIP: this regression requires a syscall argument wider than 32 bits");
+    return 0;
+#else
+    const unsigned long oversized_len = (1UL << 32) | 1UL;
+
+    if (geteuid() != 0) {
+        fputs("SKIP: UTS setter length validation requires root\n", stderr);
+        return 0;
+    }
+
+    errno = 0;
+    if (check_error("sethostname oversized length", raw_sethostname(oversized_len), EINVAL) != 0) {
         return 1;
     }
-    if (geteuid() == 0) {
-        fputs("FAIL: could not enter a nonprivileged credential state\n", stderr);
+    errno = 0;
+    if (check_error("setdomainname oversized length", raw_setdomainname(oversized_len), EINVAL) != 0) {
+        return 1;
+    }
+
+    if (setuid(1000) != 0) {
+        fprintf(stderr, "FAIL: setuid: errno=%d (%s)\n", errno, strerror(errno));
         return 1;
     }
 
     errno = 0;
-    if (check_permission_error("sethostname", raw_sethostname(1UL << 32)) != 0) {
+    if (check_error("sethostname permission check", raw_sethostname(oversized_len), EPERM) != 0) {
         return 1;
     }
     errno = 0;
-    if (check_permission_error("setdomainname", raw_setdomainname(1UL << 32)) != 0) {
+    if (check_error("setdomainname permission check", raw_setdomainname(oversized_len), EPERM) != 0) {
         return 1;
     }
     return 0;
+#endif
 }
 
 int main(void)
@@ -79,6 +97,6 @@ int main(void)
         return 1;
     }
 
-    puts("PASS: UTS setters preserve the signed-int syscall ABI and error order");
+    puts("PASS: UTS setters preserve the size_t ABI and error order");
     return 0;
 }
