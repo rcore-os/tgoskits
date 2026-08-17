@@ -2,42 +2,42 @@
 
 use super::*;
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static WAKE_BEFORE_THREAD_LOCK_RACE_ARMED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static WAKE_BEFORE_THREAD_LOCK_RACE_SYSTEM: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static WAKE_BEFORE_THREAD_LOCK_RACE_THREAD: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static WAKE_BEFORE_THREAD_LOCK_RACE_ENTERED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static WAKE_BEFORE_THREAD_LOCK_RACE_COMPLETED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static WAKE_DURING_FINAL_PARK_PUBLICATION_ARMED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static WAKE_DURING_FINAL_PARK_PUBLICATION_SYSTEM: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static WAKE_DURING_FINAL_PARK_PUBLICATION_THREAD: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static WAKE_DURING_FINAL_PARK_PUBLICATION_ENTERED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static WAKE_DURING_FINAL_PARK_PUBLICATION_COMPLETED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 #[derive(Clone, Copy)]
 enum WakerCpuSource {
     Current,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     Explicit(Option<CpuId>),
 }
 
@@ -51,13 +51,13 @@ impl WakerCpuSource {
                 let runtime_cpu = unsafe { task_runtime::current_cpu_id() };
                 Some(CpuId::new(runtime_cpu.as_u32()))
             }
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             Self::Explicit(waker) => waker,
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(in crate::system::task_system) fn arm_wake_before_thread_lock_race(
     system: &TaskSystem,
     thread: ThreadId,
@@ -77,17 +77,17 @@ pub(in crate::system::task_system) fn arm_wake_before_thread_lock_race(
     WAKE_BEFORE_THREAD_LOCK_RACE_THREAD.store(thread.as_u64(), Ordering::Release);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(in crate::system::task_system) fn wake_before_thread_lock_race_entered() -> bool {
     WAKE_BEFORE_THREAD_LOCK_RACE_ENTERED.load(core::sync::atomic::Ordering::Acquire)
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(in crate::system::task_system) fn complete_wake_before_thread_lock_race() {
     WAKE_BEFORE_THREAD_LOCK_RACE_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn wake_before_thread_lock_race_hook(system: &TaskSystem, thread: ThreadId) {
     use core::sync::atomic::Ordering;
 
@@ -106,7 +106,7 @@ fn wake_before_thread_lock_race_hook(system: &TaskSystem, thread: ThreadId) {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(in crate::system::task_system) fn arm_wake_during_final_park_publication(
     system: &TaskSystem,
     thread: ThreadId,
@@ -126,17 +126,17 @@ pub(in crate::system::task_system) fn arm_wake_during_final_park_publication(
     WAKE_DURING_FINAL_PARK_PUBLICATION_THREAD.store(thread.as_u64(), Ordering::Release);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(in crate::system::task_system) fn wake_during_final_park_publication_entered() -> bool {
     WAKE_DURING_FINAL_PARK_PUBLICATION_ENTERED.load(core::sync::atomic::Ordering::Acquire)
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(in crate::system::task_system) fn complete_wake_during_final_park_publication() {
     WAKE_DURING_FINAL_PARK_PUBLICATION_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn wake_during_final_park_publication_hook(system: &TaskSystem, thread: ThreadId) {
     use core::sync::atomic::Ordering;
 
@@ -186,7 +186,7 @@ impl TaskSystem {
         waker: Option<CpuId>,
         previous: Option<CpuId>,
     ) -> Option<CpuId> {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         WAKE_TARGET_SELECTIONS.set(WAKE_TARGET_SELECTIONS.get().saturating_add(1));
         if matches!(policy, SchedulePolicy::Fair { .. }) {
             return self.select_fair_wake_cpu(&sched.affinity.affinity, waker, previous);
@@ -247,7 +247,7 @@ impl TaskSystem {
     /// Lock order is thread scheduler state, then target runqueue. This is the
     /// active PREEMPT_RT wakeup model: no owner inbox or later safe point owns
     /// the transition from blocked to physically queued.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn wake_thread_direct(
         &self,
         core: Arc<ThreadCore>,
@@ -270,9 +270,9 @@ impl TaskSystem {
             return WakeResult::Exited;
         };
         let waker = waker.resolve(&activity);
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         wake_during_final_park_publication_hook(self, core.id());
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         wake_before_thread_lock_race_hook(self, core.id());
         let wake_publication = core.publish_wake();
         if wake_publication.already_pending() {

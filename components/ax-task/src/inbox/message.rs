@@ -66,7 +66,7 @@ impl InboxMessage {
     };
 
     /// Creates an owner-to-owner migration transfer for deterministic fixtures.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub const fn migration(
         thread_id: ThreadId,
         source_cpu: CpuId,

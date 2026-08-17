@@ -67,13 +67,14 @@ impl IrqWorkerWaiter {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use core::mem::size_of;
 
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn fixed_irq_waiter_has_no_detached_task_wait_queue() {
         assert_eq!(
             size_of::<IrqWorkerWaiter>(),

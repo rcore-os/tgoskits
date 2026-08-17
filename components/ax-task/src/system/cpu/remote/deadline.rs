@@ -34,7 +34,7 @@ pub(crate) enum DeadlineBaseGuardSource {
     HardExpiry,
     SoftExpiry,
     Lifecycle,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     TestInspection,
 }
 
@@ -47,7 +47,7 @@ impl DeadlineBaseGuardSource {
             Self::HardExpiry => crate::runtime::IrqGuardSource::CpuDeadlineHardExpiryTicket,
             Self::SoftExpiry => crate::runtime::IrqGuardSource::CpuDeadlineSoftExpiryTicket,
             Self::Lifecycle => crate::runtime::IrqGuardSource::CpuDeadlineLifecycleTicket,
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             Self::TestInspection => crate::runtime::IrqGuardSource::CpuDeadlineLifecycleTicket,
         }
     }
@@ -289,7 +289,7 @@ pub(crate) struct CpuDeadlineState {
     pub(crate) softirq_activated: bool,
     pub(crate) generation: u64,
     pub(crate) publication: Option<SchedulerDeadlinePublicationState>,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) expire_passes: usize,
 }
 
@@ -311,7 +311,7 @@ impl CpuDeadlineState {
             softirq_activated: false,
             generation: 0,
             publication: None,
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             expire_passes: 0,
         }
     }
@@ -465,12 +465,13 @@ impl CpuRemote {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
     use crate::timer::{TaskDeadlineKind, TaskDeadlineNode};
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn claimed_task_expiration_remains_cancel_visible_until_completion() {
         let mut state = CpuDeadlineState::new(TaskSystemConfig::new(1).with_batch_limit(1));
         let node = TaskDeadlineNode::for_thread(ThreadId::from_parts(1, 1));
@@ -495,7 +496,8 @@ mod tests {
         assert!(!state.has_claimed_task_expiration());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn task_and_kernel_claims_alternate_when_both_remain_pending() {
         let mut state = CpuDeadlineState::new(TaskSystemConfig::new(1));
 

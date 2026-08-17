@@ -27,19 +27,19 @@ pub(crate) use run_queue::{
 };
 pub(crate) use scheduler::SchedulerRequestClaim;
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 std::thread_local! {
     static RT_BANDWIDTH_LOCK_ACQUISITIONS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(crate) fn reset_rt_bandwidth_lock_acquisitions() {
     RT_BANDWIDTH_LOCK_ACQUISITIONS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(crate) fn rt_bandwidth_lock_acquisitions() -> usize {
     RT_BANDWIDTH_LOCK_ACQUISITIONS.get()
 }
@@ -64,15 +64,15 @@ pub struct CpuRemote {
     load: load_summary::RemoteLoadState,
     idle_pull: idle_pull::IdlePullState,
     delivery: delivery::RemoteDeliveryState,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     timer_deadline_rq_observations: AtomicU64,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     owner_current_core_rq_observations: AtomicU64,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     owner_current_thread_rq_observations: AtomicU64,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     owner_runnable_rq_observations: AtomicU64,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     scheduler_deadline_derivations: AtomicU64,
 }
 
@@ -93,15 +93,15 @@ impl CpuRemote {
             load: load_summary::RemoteLoadState::new(),
             idle_pull: idle_pull::IdlePullState::new(),
             delivery: delivery::RemoteDeliveryState::new(),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             timer_deadline_rq_observations: AtomicU64::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             owner_current_core_rq_observations: AtomicU64::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             owner_current_thread_rq_observations: AtomicU64::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             owner_runnable_rq_observations: AtomicU64::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             scheduler_deadline_derivations: AtomicU64::new(0),
         })
     }
@@ -115,7 +115,7 @@ impl CpuRemote {
         &self,
         source: RunQueueGuardSource,
     ) -> IrqTicketGuard<'_, CpuRunQueueState> {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         match source {
             RunQueueGuardSource::TimerDeadlineDerivationObservation => {
                 self.timer_deadline_rq_observations
@@ -146,35 +146,35 @@ impl CpuRemote {
         self.run_queue.lock_nested(owner)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn timer_deadline_rq_observations(&self) -> u64 {
         self.timer_deadline_rq_observations.load(Ordering::Relaxed)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn owner_current_core_rq_observations(&self) -> u64 {
         self.owner_current_core_rq_observations
             .load(Ordering::Relaxed)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn owner_current_thread_rq_observations(&self) -> u64 {
         self.owner_current_thread_rq_observations
             .load(Ordering::Relaxed)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn owner_runnable_rq_observations(&self) -> u64 {
         self.owner_runnable_rq_observations.load(Ordering::Relaxed)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn record_scheduler_deadline_derivation_for_test(&self) {
         self.scheduler_deadline_derivations
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn scheduler_deadline_derivations(&self) -> u64 {
         self.scheduler_deadline_derivations.load(Ordering::Relaxed)
     }
@@ -275,7 +275,7 @@ impl CpuRemote {
     /// Locks Linux `rt_rq::rt_runtime_lock` after the owner rq lock when both
     /// are required. Fair-only rq transactions never enter this ledger.
     pub(crate) fn lock_rt_bandwidth(&self) -> IrqTicketGuard<'_, RtRunQueueBandwidth> {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         RT_BANDWIDTH_LOCK_ACQUISITIONS.set(RT_BANDWIDTH_LOCK_ACQUISITIONS.get().saturating_add(1));
         self.rt_bandwidth
             .lock(crate::runtime::IrqGuardSource::CpuRtBandwidthTicket)

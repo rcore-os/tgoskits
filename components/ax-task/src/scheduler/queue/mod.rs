@@ -22,14 +22,14 @@ pub(crate) use task::{
 };
 
 use super::fair_queue::FairRunQueue;
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 use crate::ActiveSchedulingState;
 use crate::{
     CurrentDispatch, DispatchCharge, FairEntity, FairMode, SchedulePolicy, SchedulingClass,
     SchedulingEntity, TaskError, ThreadCore, ThreadId,
 };
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 std::thread_local! {
     static FAIR_RUNQUEUE_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
@@ -42,42 +42,42 @@ std::thread_local! {
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn reset_fair_runqueue_visits() {
     FAIR_RUNQUEUE_VISITS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn fair_runqueue_visits() -> usize {
     FAIR_RUNQUEUE_VISITS.get()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn record_fair_runqueue_visit() {
     FAIR_RUNQUEUE_VISITS.set(FAIR_RUNQUEUE_VISITS.get().saturating_add(1));
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn reset_runqueue_membership_lookups() {
     RUNQUEUE_MEMBERSHIP_LOOKUPS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn runqueue_membership_lookups() -> usize {
     RUNQUEUE_MEMBERSHIP_LOOKUPS.get()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn reset_deadline_runqueue_visits() {
     DEADLINE_RUNQUEUE_VISITS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn deadline_runqueue_visits() -> usize {
     DEADLINE_RUNQUEUE_VISITS.get()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn record_deadline_runqueue_visit() {
     DEADLINE_RUNQUEUE_VISITS.set(DEADLINE_RUNQUEUE_VISITS.get().saturating_add(1));
 }
@@ -207,7 +207,7 @@ impl RunQueue {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn new() -> Self {
         Self::configured(u64::MAX, 64)
     }
@@ -241,5 +241,5 @@ impl RunQueue {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests;

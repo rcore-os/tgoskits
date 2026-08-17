@@ -113,7 +113,7 @@ impl RunQueue {
             .expect("rq->curr runnable state must be included in rq->nr_running")
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn len(&self) -> usize {
         self.nr_queued()
     }
@@ -142,12 +142,12 @@ impl RunQueue {
             .saturating_add(self.fixed_placement_demand)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) const fn virtual_time(&self) -> u64 {
         self.fair.virtual_time()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn set_virtual_time_for_test(&mut self, virtual_time: u64) {
         self.fair.set_virtual_time_for_test(virtual_time);
     }

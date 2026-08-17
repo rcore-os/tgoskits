@@ -56,7 +56,7 @@ enum FairPlacement {
 }
 
 impl FairEntity {
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) const fn test_state(
         nice: Nice,
         mode: FairMode,
@@ -286,7 +286,7 @@ impl FairEntity {
     }
 
     /// Returns the entity's nice value.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub const fn nice(self) -> Nice {
         self.nice
     }
@@ -322,7 +322,7 @@ impl FairEntity {
     }
 
     /// Returns the physical service request used for this EEVDF slice.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub const fn service_request_ns(self) -> u64 {
         self.service_request_ns
     }
@@ -332,7 +332,7 @@ impl FairEntity {
         self.remaining_request_ns
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) const fn saved_sleep_lag(self) -> Option<i64> {
         match self.placement {
             FairPlacement::Sleeping { virtual_lag } => Some(virtual_lag),
@@ -342,7 +342,7 @@ impl FairEntity {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) const fn saved_migration(self) -> Option<(i64, u64)> {
         match self.placement {
             FairPlacement::Migrating {
@@ -359,11 +359,12 @@ fn weighted_delta(runtime_ns: u64, weight: u32) -> u64 {
         .min(MAX_VIRTUAL_DELTA as u128) as u64
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn higher_weight_accumulates_less_vruntime() {
         let mut favored = FairEntity::new(Nice::new(-5).unwrap(), FairMode::Normal, 1_000, 0);
         let mut default = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 0);
@@ -372,7 +373,8 @@ mod tests {
         assert!(favored.vruntime() < default.vruntime());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn virtual_deadline_stays_fixed_until_the_service_request_finishes() {
         let mut entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 10_000);
         let deadline = entity.virtual_deadline();
@@ -382,7 +384,8 @@ mod tests {
         assert_eq!(entity.virtual_deadline(), deadline);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn initial_entity_enters_competition_with_half_a_service_request() {
         let mut entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 0);
 
@@ -393,7 +396,8 @@ mod tests {
         assert_eq!(entity.virtual_deadline(), 10_500);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn initial_entity_transferred_to_another_owner_keeps_initial_placement() {
         let mut entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 0);
 
@@ -403,14 +407,16 @@ mod tests {
         assert_eq!(entity.virtual_deadline(), 10_500);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn sched_idle_always_uses_the_lowest_fair_weight() {
         let entity = FairEntity::new(Nice::new(-20).unwrap(), FairMode::Idle, 1_000, 0);
 
         assert_eq!(entity.nice(), Nice::new(19).unwrap());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn virtual_time_comparison_survives_wrap() {
         let before_wrap = u64::MAX - 10;
         let after_wrap = 20;
@@ -421,7 +427,8 @@ mod tests {
         assert_eq!(virtual_max(before_wrap, after_wrap), after_wrap);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn reconfigure_preserves_lag_across_virtual_time_wrap() {
         let entity =
             FairEntity::test_state(Nice::ZERO, FairMode::Normal, u64::MAX - 50, u64::MAX - 49);
@@ -432,7 +439,8 @@ mod tests {
         assert_eq!(reconfigured.virtual_deadline(), 30);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn wakeup_deadline_comparison_survives_virtual_time_wrap() {
         let woken =
             FairEntity::test_state(Nice::ZERO, FairMode::Normal, u64::MAX - 30, u64::MAX - 20);
@@ -441,7 +449,8 @@ mod tests {
         assert!(woken.deadline_precedes(current));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn earlier_eevdf_deadline_is_not_hidden_by_legacy_wakeup_granularity() {
         let woken = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 1_000, 1_500);
         let current = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 2_000, 3_000);
@@ -449,7 +458,8 @@ mod tests {
         assert!(woken.deadline_precedes(current));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn forwarded_wake_keeps_sleep_placement_instead_of_an_active_deadline() {
         let mut entity = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 900, 950);
         entity.capture_sleep_lag(1_000, 1_000);

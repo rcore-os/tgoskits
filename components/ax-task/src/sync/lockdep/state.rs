@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 use core::ptr;
 use core::{
     cell::UnsafeCell,
@@ -7,7 +7,10 @@ use core::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
 };
 
-#[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
+#[cfg(all(
+    feature = "lockdep",
+    not(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))
+))]
 use crate::runtime::task_runtime;
 use crate::sync::context::IrqSaveGuard;
 
@@ -348,7 +351,7 @@ impl LockdepMap {
         Self::new_with_class_key(Location::caller() as *const Location<'static>)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub const fn new_dynamic() -> Self {
         Self::new_with_class_key(ptr::null())
     }
@@ -380,7 +383,7 @@ pub struct PreparedAcquire {
 }
 
 impl PreparedAcquire {
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub fn class_id(self) -> u32 {
         self.state.class_id
     }
@@ -511,7 +514,7 @@ impl LockGraph {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn record_acquire(
         &mut self,
         held_before: &HeldLockSnapshot,
@@ -687,7 +690,10 @@ fn pop_current_task_held_lock(lock_addr: usize) {
     crate::facade::pop_current_task_held_lock(lock_addr);
 }
 
-#[cfg(not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))))]
+#[cfg(all(
+    feature = "lockdep",
+    not(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))
+))]
 fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
     let _oops_guard = axpanic::enter_oops();
 
@@ -708,6 +714,7 @@ fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
 }
 
 #[cfg(all(
+    feature = "lockdep",
     not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))),
     target_arch = "riscv64"
 ))]
@@ -721,6 +728,7 @@ fn emergency_write_str(s: &str) {
 }
 
 #[cfg(all(
+    feature = "lockdep",
     not(any(test, doctest, all(feature = "host-test", not(target_os = "none")))),
     not(target_arch = "riscv64")
 ))]
@@ -728,7 +736,12 @@ fn emergency_write_str(s: &str) {
     task_runtime::emergency_console_write(s);
 }
 
-#[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
+#[cfg(any(
+    not(feature = "lockdep"),
+    test,
+    doctest,
+    all(feature = "host-test", not(target_os = "none"))
+))]
 fn lockdep_fatal(message: fmt::Arguments<'_>) -> ! {
     panic!("{message}")
 }
@@ -762,7 +775,7 @@ pub(crate) fn prepare_acquire_with_snapshot_view_nested_with_sleep(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub fn prepare_acquire_with_snapshot_checked(
     map: &LockdepMap,
     _lock_kind: &'static str,
@@ -780,7 +793,7 @@ pub fn prepare_acquire_with_snapshot_checked(
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub fn prepare_acquire_with_snapshot_checked_nested(
     map: &LockdepMap,
     _lock_kind: &'static str,
@@ -902,7 +915,7 @@ fn conflicting_held_lock(
     lockdep_fatal(format_args!("{empty_message}"))
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub fn finish_acquire_with_stack(
     prepared: PreparedAcquire,
     addr: usize,
@@ -922,7 +935,7 @@ pub fn finish_acquire_task(prepared: PreparedAcquire, addr: usize) {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub fn release_from_stack(lock_addr: usize, held_locks: &mut HeldLockStack) {
     held_locks.pop_checked(lock_addr);
 }
@@ -935,13 +948,14 @@ pub fn force_release_task(lock_addr: usize) {
     release_task(lock_addr);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use alloc::{string::ToString, vec::Vec};
 
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn held_lock_display_includes_class_addr_and_location() {
         let held = HeldLock {
             class_id: 3,
@@ -959,7 +973,8 @@ mod tests {
     }
 
     #[cfg(target_pointer_width = "64")]
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn subclass_support_does_not_increase_held_lock_state_size() {
         assert_eq!(core::mem::size_of::<HeldLock>(), 24);
         assert_eq!(core::mem::size_of::<HeldLockStack>(), 776);
@@ -967,7 +982,8 @@ mod tests {
         assert_eq!(core::mem::size_of::<PreparedAcquire>(), 800);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn held_stack_display_marks_top_entry() {
         let caller = Location::caller();
         let mut snapshot = HeldLockSnapshot::new();
@@ -997,7 +1013,8 @@ mod tests {
         assert!(rendered.contains("[1] top: kind=mutex sleep_forbidden=false class=3"));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn dynamic_lock_instances_do_not_consume_class_slots() {
         let locks: Vec<_> = (0..(MAX_LOCK_CLASSES + 128))
             .map(|_| LockdepMap::new_dynamic())
@@ -1016,7 +1033,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn external_views_share_native_class_registration_state() {
         let class_id = AtomicU32::new(0);
         let class_key = AtomicPtr::new(ptr::null_mut());
@@ -1045,7 +1063,8 @@ mod tests {
         assert!(!class_key.load(Ordering::Acquire).is_null());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn subclass_tracks_same_base_class_nesting() {
         fn prepare_with_subclass(
             map: &LockdepMap,

@@ -53,7 +53,7 @@ pub struct SchedulerInbox {
     publication: EpochMpscQueue<InboxNode>,
     pending: AtomicPtr<InboxNode>,
     draining: AtomicBool,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     drain_attempts: core::sync::atomic::AtomicUsize,
 }
 
@@ -65,7 +65,7 @@ impl SchedulerInbox {
             publication: EpochMpscQueue::new(),
             pending: AtomicPtr::new(ptr::null_mut()),
             draining: AtomicBool::new(false),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             drain_attempts: core::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -109,7 +109,7 @@ impl SchedulerInbox {
     /// Concurrent drain attempts return immediately with `pending = true`; the
     /// owner CPU remains the only logical consumer.
     pub fn drain(&self, limit: usize, output: &mut [InboxMessage]) -> DrainBatch {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         self.drain_attempts.fetch_add(1, Ordering::Relaxed);
         if self
             .draining
@@ -151,7 +151,7 @@ impl SchedulerInbox {
         !self.pending.load(Ordering::Acquire).is_null() || !self.publication.is_empty()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn drain_attempts(&self) -> usize {
         self.drain_attempts.load(Ordering::Relaxed)
     }
@@ -173,32 +173,32 @@ impl SchedulerInbox {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn arm_test_publisher_pause(&self) {
         self.publication.arm_test_publisher_pause();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn wait_for_test_publisher_pause(&self) {
         self.publication.wait_for_test_publisher_pause();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn resume_test_publisher(&self) {
         self.publication.resume_test_publisher();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn arm_test_generation_pause(&self) {
         self.publication.arm_test_generation_pause();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn wait_for_test_generation_pause(&self) {
         self.publication.wait_for_test_generation_pause();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn resume_test_generation_publisher(&self) {
         self.publication.resume_test_generation_publisher();
     }
@@ -227,5 +227,5 @@ unsafe fn reverse(mut cursor: *mut InboxNode) -> *mut InboxNode {
     reversed
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests;

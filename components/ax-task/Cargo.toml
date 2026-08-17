@@ -12,6 +12,7 @@ test = false
 
 [features]
 default = []
+axtest = ["dep:axtest"]
 qperf-metrics = []
 host-test = ["smp"]
 lockdep = ["dep:axpanic"]
@@ -20,6 +21,7 @@ task-test-hooks = []
 
 [dependencies]
 axpanic = { workspace = true, optional = true }
+axtest = { workspace = true, optional = true }
 cfg-if.workspace = true
 lock_api.workspace = true
 thiserror.workspace = true
@@ -30,3 +32,6 @@ sbi-rt = { workspace = true, features = ["legacy"] }
 
 [dev-dependencies]
 loom.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

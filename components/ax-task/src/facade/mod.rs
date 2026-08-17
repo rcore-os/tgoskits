@@ -28,7 +28,7 @@ mod deadline;
 mod irq_worker;
 mod kernel_timer;
 mod ktimer;
-#[cfg(feature = "lockdep")]
+#[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
 mod lockdep;
 mod membarrier;
 mod pi;
@@ -40,7 +40,7 @@ pub use deadline::{
     CurrentParkResume, CurrentParkStart, PreparedCurrentPark, SchedulerTickStamp,
     TaskClockEventOutcome, begin_current_park, on_clock_event, publish_scheduler_tick,
 };
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 use deadline::{arm_current_park_deadline, cancel_current_park_deadline, prepare_current_park};
 pub(crate) use deadline::{
     begin_current_park_with_permit, cancel_current_park, commit_current_park,
@@ -50,7 +50,7 @@ pub use kernel_timer::{
     cancel_kernel_timer, register_kernel_timer, register_restartable_kernel_timer,
 };
 pub use ktimer::start_current_ktimer_service;
-#[cfg(feature = "lockdep")]
+#[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
 pub(crate) use lockdep::{
     collect_current_task_held_locks, pop_current_task_held_lock, push_current_task_held_lock,
 };
@@ -63,7 +63,7 @@ pub use pi::{
     pi_mutex_release_owned, pi_park_current_once, pi_wait_cancel, pi_wait_try_cancel,
     pi_waiter_is_granted, pi_waiter_is_top,
 };
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(crate) use runtime_cpu::wake_thread_direct;
 use runtime_cpu::{
     RuntimeCpuPin, RuntimeSchedulerFrameGuard, runtime_current_cpu, validate_schedule_context,
@@ -73,7 +73,7 @@ pub(crate) use runtime_cpu::{
     RuntimeIrqGuard, current_cpu_remote, runtime_current_cpu_mut, runtime_task_system,
     wake_thread_from_current_cpu, wake_wait_claim_from_task,
 };
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 use scheduling::prepare_next_address_space;
 pub use scheduling::{
     ExitPermit, commit_current_exit, exit_current_thread, prepare_current_exit,
@@ -82,7 +82,7 @@ pub use scheduling::{
 };
 use scheduling::{complete_current_context_switch_tail, execute_switch_plan};
 pub(crate) use task_work::publish_deferred_coroutine_reclaim;
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 use task_work::{TaskWorkServiceAction, service_task_work_pass, task_work_service_action};
 pub use task_work::{
     notify_address_space_reclaim, quiesce_irq_wait, start_deferred_task_work_service,

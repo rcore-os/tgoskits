@@ -80,17 +80,17 @@ impl IntrusiveInbox {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn arm_test_publisher_pause(&self) {
         self.publication.arm_test_publisher_pause();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn wait_for_test_publisher_pause(&self) {
         self.publication.wait_for_test_publisher_pause();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn resume_test_publisher(&self) {
         self.publication.resume_test_publisher();
     }

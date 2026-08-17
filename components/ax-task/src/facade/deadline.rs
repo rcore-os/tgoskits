@@ -223,7 +223,7 @@ pub fn publish_scheduler_tick(stamp: SchedulerTickStamp) -> Result<(), TaskError
     system.publish_current_scheduler_tick_work(&cpu, stamp.thread, stamp.observed_ns)
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(crate) fn prepare_current_park(
     _permit: &BlockingPermit,
 ) -> Result<(ThreadHandle, ParkPrepare), TaskError> {

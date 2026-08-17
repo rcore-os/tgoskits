@@ -99,7 +99,7 @@ impl SchedulerPlacement {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(in crate::system) fn task_cpu(&self) -> Option<CpuId> {
         self.snapshot().task_cpu
     }
@@ -339,13 +339,13 @@ impl SchedulerPlacement {
         self.requested_cpu.store(0, Ordering::Release);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(in crate::system) fn inject_missing_on_cpu(&self) {
         self.state
             .fetch_and(!(CPU_MASK << ON_CPU_SHIFT), Ordering::AcqRel);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(in crate::system) fn inject_exiting_on_cpu(&self, cpu: CpuId) {
         self.state.store(
             encode(PlacementSnapshot {
@@ -456,7 +456,7 @@ fn placement_invariant(valid: bool, code: u32, detail: usize) {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
@@ -470,7 +470,8 @@ mod tests {
         placement
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn current_remains_on_rq_across_put_prev() {
         let placement = running_placement();
         placement.put_prev(CPU0);
@@ -482,7 +483,8 @@ mod tests {
         assert_eq!(placement.on_cpu(), None);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn migration_and_execution_release_remain_orthogonal() {
         let placement = running_placement();
         placement.begin_migration(CPU0, CPU1);
@@ -497,7 +499,8 @@ mod tests {
         assert_eq!(placement.on_cpu(), None);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn blocked_task_retains_task_cpu_after_switch_tail() {
         let placement = running_placement();
         placement.block_current(CPU0);
@@ -508,7 +511,8 @@ mod tests {
         assert_eq!(placement.on_cpu(), None);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn committed_carrier_is_not_retargeted_by_a_later_request() {
         let placement = SchedulerPlacement::new(CPU0);
         placement.begin_remote_wakeup(CPU1);

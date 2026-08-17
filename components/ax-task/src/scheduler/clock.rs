@@ -119,11 +119,12 @@ pub(crate) fn scheduler_clock_event(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn scheduler_deadline_maps_by_delta_across_wrap() {
         let monotonic_now = MonotonicInstant::from_nanos(100).unwrap();
 
@@ -133,7 +134,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn elapsed_scheduler_deadline_is_not_armed_in_the_past() {
         let monotonic_now = MonotonicInstant::from_nanos(100).unwrap();
 

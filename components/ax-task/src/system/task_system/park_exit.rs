@@ -1,44 +1,44 @@
 //! Park, current-thread exit, and physical switch-tail completion.
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 use core::sync::atomic::Ordering;
 
 use super::*;
 use crate::ParkPublication;
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static PARK_COMMIT_WAKE_RACE_ARMED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static PARK_COMMIT_WAKE_RACE_SYSTEM: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static PARK_COMMIT_WAKE_RACE_THREAD: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static PARK_COMMIT_WAKE_RACE_ENTERED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static PARK_COMMIT_WAKE_RACE_COMPLETED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static PARK_AFTER_FINAL_WAKE_CHECK_ARMED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static PARK_AFTER_FINAL_WAKE_CHECK_SYSTEM: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static PARK_AFTER_FINAL_WAKE_CHECK_THREAD: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static PARK_AFTER_FINAL_WAKE_CHECK_ENTERED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 static PARK_AFTER_FINAL_WAKE_CHECK_COMPLETED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn arm_park_commit_wake_race(system: &TaskSystem, thread: ThreadId) {
     PARK_COMMIT_WAKE_RACE_ENTERED.store(false, Ordering::Release);
     PARK_COMMIT_WAKE_RACE_COMPLETED.store(false, Ordering::Release);
@@ -53,17 +53,17 @@ pub(super) fn arm_park_commit_wake_race(system: &TaskSystem, thread: ThreadId) {
     PARK_COMMIT_WAKE_RACE_THREAD.store(thread.as_u64(), Ordering::Release);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn park_commit_wake_race_entered() -> bool {
     PARK_COMMIT_WAKE_RACE_ENTERED.load(Ordering::Acquire)
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn complete_park_commit_wake_race() {
     PARK_COMMIT_WAKE_RACE_COMPLETED.store(true, Ordering::Release);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn park_commit_wake_race_hook(system: &TaskSystem, thread: ThreadId) {
     if PARK_COMMIT_WAKE_RACE_SYSTEM.load(Ordering::Acquire)
         != (system as *const TaskSystem).expose_provenance()
@@ -80,7 +80,7 @@ fn park_commit_wake_race_hook(system: &TaskSystem, thread: ThreadId) {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn arm_park_after_final_wake_check(system: &TaskSystem, thread: ThreadId) {
     PARK_AFTER_FINAL_WAKE_CHECK_ENTERED.store(false, Ordering::Release);
     PARK_AFTER_FINAL_WAKE_CHECK_COMPLETED.store(false, Ordering::Release);
@@ -95,17 +95,17 @@ pub(super) fn arm_park_after_final_wake_check(system: &TaskSystem, thread: Threa
     PARK_AFTER_FINAL_WAKE_CHECK_THREAD.store(thread.as_u64(), Ordering::Release);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn park_after_final_wake_check_entered() -> bool {
     PARK_AFTER_FINAL_WAKE_CHECK_ENTERED.load(Ordering::Acquire)
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn complete_park_after_final_wake_check() {
     PARK_AFTER_FINAL_WAKE_CHECK_COMPLETED.store(true, Ordering::Release);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn park_after_final_wake_check_hook(system: &TaskSystem, thread: ThreadId) {
     if PARK_AFTER_FINAL_WAKE_CHECK_SYSTEM.load(Ordering::Acquire)
         != (system as *const TaskSystem).expose_provenance()
@@ -215,7 +215,7 @@ impl TaskSystem {
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let previous_core_hint = Arc::clone(current.runtime_core_arc());
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         park_commit_wake_race_hook(self, previous_core_hint.id());
         // SAFETY: propagated from the selected entry contract.
         let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
@@ -268,7 +268,7 @@ impl TaskSystem {
         let resumed = {
             let placement = previous_core.sched().placement();
             let sched = &mut *previous_sched;
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             park_after_final_wake_check_hook(self, previous_core.id());
             // Lifecycle and wake publication share one atomic word. A wake
             // that observes Parking sets PARK_NOTIFIED in that word; this CAS

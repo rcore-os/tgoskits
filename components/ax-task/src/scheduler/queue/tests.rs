@@ -1,4 +1,4 @@
-use super::*;
+use super::{membership::SequenceAllocationError, *};
 use crate::{
     CurrentClassState, CurrentDispatch, CurrentDispatchState, CurrentSchedule, DeadlineFlags,
     DeadlinePolicy, FairEntity, FairMode, Nice, RqTaskTime, RtPriority,
@@ -36,7 +36,8 @@ fn pick_linked_current(queue: &mut RunQueue) -> ThreadId {
     thread
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn fair_wakeup_preemption_requires_the_wakee_to_be_the_eevdf_pick() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
@@ -80,7 +81,8 @@ fn fair_wakeup_preemption_requires_the_wakee_to_be_the_eevdf_pick() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn deadline_precedes_rt_and_fair() {
     let mut queue = RunQueue::new();
     let fair = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
@@ -122,7 +124,8 @@ fn deadline_precedes_rt_and_fair() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn deadline_runqueue_orders_across_linux_rq_clock_wrap() {
     let mut queue = RunQueue::new();
     let earlier_policy =
@@ -147,7 +150,8 @@ fn deadline_runqueue_orders_across_linux_rq_clock_wrap() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn kernel_stopper_runs_before_deadline_even_when_rt_is_throttled() {
     let mut queue = RunQueue::new();
     let stopper = SchedulePolicy::kernel_stop();
@@ -181,7 +185,8 @@ fn kernel_stopper_runs_before_deadline_even_when_rt_is_throttled() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn kernel_stopper_does_not_enter_the_realtime_priority_array() {
     let mut queue = RunQueue::new();
     let stopper = SchedulePolicy::kernel_stop();
@@ -199,7 +204,8 @@ fn kernel_stopper_does_not_enter_the_realtime_priority_array() {
     assert_eq!(queue.placement_demand(), 0);
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn kernel_stopper_preempts_all_user_sched_classes() {
     let stopper = SchedulePolicy::kernel_stop();
     let stopper_entity = SchedulingEntity::new(stopper, 1, 0);
@@ -222,7 +228,8 @@ fn kernel_stopper_preempts_all_user_sched_classes() {
     ));
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn fifo_preemption_preserves_the_head_position() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fifo(RtPriority::new(10).unwrap());
@@ -252,7 +259,8 @@ fn fifo_preemption_preserves_the_head_position() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn lone_round_robin_quantum_does_not_request_reschedule() {
     let mut queue = RunQueue::new();
     let priority = RtPriority::new(10).unwrap();
@@ -287,7 +295,8 @@ fn lone_round_robin_quantum_does_not_request_reschedule() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn competing_round_robin_quantum_rotates_the_active_queue() {
     let mut queue = RunQueue::new();
     let priority = RtPriority::new(10).unwrap();
@@ -318,7 +327,8 @@ fn competing_round_robin_quantum_rotates_the_active_queue() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn first_fair_placement_cannot_start_behind_runqueue_virtual_time() {
     let mut queue = RunQueue::new();
     queue.set_virtual_time_for_test(10_000);
@@ -340,7 +350,8 @@ fn first_fair_placement_cannot_start_behind_runqueue_virtual_time() {
     assert_eq!(entity.virtual_deadline(), 10_500);
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn fair_preemption_preserves_positive_lag_and_active_deadline() {
     let mut queue = RunQueue::new();
     queue.set_virtual_time_for_test(1_000);
@@ -370,7 +381,8 @@ fn fair_preemption_preserves_positive_lag_and_active_deadline() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn fair_migration_preserves_positive_lag_and_active_deadline() {
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
     let migrating = ThreadId::from_parts(0, 1);
@@ -441,7 +453,8 @@ fn fair_migration_preserves_positive_lag_and_active_deadline() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn fair_yield_forfeits_request_before_positive_lag_peer() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
@@ -474,7 +487,8 @@ fn fair_yield_forfeits_request_before_positive_lag_peer() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn weighted_virtual_time_makes_every_non_negative_lag_entity_eligible() {
     let mut queue = RunQueue::new();
     let low_weight = SchedulePolicy::fair(Nice::new(19).unwrap(), FairMode::Normal);
@@ -505,7 +519,8 @@ fn weighted_virtual_time_makes_every_non_negative_lag_entity_eligible() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn fair_deadline_order_survives_virtual_time_wrap() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
@@ -540,7 +555,8 @@ fn fair_deadline_order_survives_virtual_time_wrap() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn fair_weighted_virtual_time_includes_current_across_wrap() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
@@ -573,7 +589,8 @@ fn fair_weighted_virtual_time_includes_current_across_wrap() {
     queue.fair.assert_invariants();
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn fair_pushable_summary_uses_wrapped_runqueue_order() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
@@ -608,7 +625,8 @@ fn fair_pushable_summary_uses_wrapped_runqueue_order() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn deadline_preemption_does_not_reapply_the_cbs_wake_rule() {
     let mut queue = RunQueue::new();
     let policy =
@@ -629,7 +647,8 @@ fn deadline_preemption_does_not_reapply_the_cbs_wake_rule() {
     assert_eq!(deadline.remaining_runtime_ns(), 3);
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn pushable_membership_tracks_each_non_idle_scheduler_class() {
     let mut queue = RunQueue::new();
     let idle = SchedulePolicy::fair(Nice::ZERO, FairMode::Idle);
@@ -678,7 +697,8 @@ fn pushable_membership_tracks_each_non_idle_scheduler_class() {
     assert_eq!(queue.dequeue(idle_id).unwrap().id, idle_id);
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn realtime_pushable_selection_does_not_rescan_the_active_fifo() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
@@ -713,7 +733,8 @@ fn realtime_pushable_selection_does_not_rescan_the_active_fifo() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn balance_scan_does_not_expand_past_its_entry_candidate_set() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
@@ -753,7 +774,8 @@ fn balance_scan_does_not_expand_past_its_entry_candidate_set() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn rt_and_deadline_pushable_membership_tracks_migration_capability() {
     let mut queue = RunQueue::new();
     let rt = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
@@ -810,7 +832,8 @@ fn rt_and_deadline_pushable_membership_tracks_migration_capability() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn realtime_put_prev_restores_a_box_stable_pushable_link() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
@@ -839,7 +862,8 @@ fn realtime_put_prev_restores_a_box_stable_pushable_link() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn realtime_pushable_storage_is_reusable_after_dequeue() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
@@ -864,7 +888,8 @@ fn realtime_pushable_storage_is_reusable_after_dequeue() {
     assert!(!queue.has_pushable_realtime());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn fair_virtual_time_and_pick_do_not_scan_the_runnable_set() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
@@ -921,7 +946,8 @@ fn fair_virtual_time_and_pick_do_not_scan_the_runnable_set() {
     }
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn fair_enqueue_uses_direct_runqueue_membership() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
@@ -952,7 +978,8 @@ fn fair_enqueue_uses_direct_runqueue_membership() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn direct_membership_rejects_a_retired_thread_generation() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
@@ -983,7 +1010,8 @@ fn direct_membership_rejects_a_retired_thread_generation() {
     assert_eq!(queue.dequeue(replacement).unwrap().id, replacement);
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn realtime_bitmap_tracks_the_highest_nonempty_priority() {
     let mut queue = RunQueue::new();
     let low = SchedulePolicy::fifo(RtPriority::new(1).unwrap());
@@ -1014,7 +1042,8 @@ fn realtime_bitmap_tracks_the_highest_nonempty_priority() {
     assert!(!queue.has_rt());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn realtime_running_entity_remains_linked_in_the_active_array() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fifo(RtPriority::new(10).unwrap());
@@ -1038,7 +1067,8 @@ fn realtime_running_entity_remains_linked_in_the_active_array() {
     assert!(!queue.has_pushable_realtime());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn deadline_running_entity_remains_linked_in_the_active_tree() {
     let mut queue = RunQueue::new();
     let policy =
@@ -1059,7 +1089,8 @@ fn deadline_running_entity_remains_linked_in_the_active_tree() {
     assert!(!queue.has_pushable_deadline());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn rt_class_throttle_is_all_or_nothing() {
     let mut queue = RunQueue::new();
     let ordinary = ThreadId::from_parts(0, 1);
@@ -1098,7 +1129,8 @@ fn rt_class_throttle_is_all_or_nothing() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn deadline_pick_does_not_scan_the_runnable_set() {
     let mut queue = RunQueue::new();
     let policy =
@@ -1127,11 +1159,16 @@ fn deadline_pick_does_not_scan_the_runnable_set() {
     );
 }
 
-#[test]
-#[should_panic(expected = "runqueue sequence exhausted")]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn runqueue_sequence_exhaustion_is_not_reused() {
     let mut queue = RunQueue::new();
-    queue.next_sequence = u64::MAX;
+    queue.next_sequence = u64::MAX - 1;
 
-    let _ = queue.allocate_sequence();
+    assert_eq!(queue.try_allocate_sequence(), Ok(u64::MAX - 1));
+    assert_eq!(
+        queue.try_allocate_sequence(),
+        Err(SequenceAllocationError::Exhausted)
+    );
+    assert_eq!(queue.next_sequence, u64::MAX);
 }

@@ -10,7 +10,7 @@ pub(super) struct PolicyGenerationCommit {
     pub(super) committed_deadline_reservation: u64,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 std::thread_local! {
     static WAKE_TARGET_SELECTIONS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
@@ -20,22 +20,22 @@ std::thread_local! {
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reset_wake_target_selections() {
     WAKE_TARGET_SELECTIONS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn wake_target_selections() -> usize {
     WAKE_TARGET_SELECTIONS.get()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reset_owner_dispatch_constructions() {
     OWNER_DISPATCH_CONSTRUCTIONS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn owner_dispatch_constructions() -> usize {
     OWNER_DISPATCH_CONSTRUCTIONS.get()
 }
@@ -72,7 +72,7 @@ mod current;
 mod policy;
 mod wake;
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) use wake::{
     arm_wake_before_thread_lock_race, arm_wake_during_final_park_publication,
     complete_wake_before_thread_lock_race, complete_wake_during_final_park_publication,

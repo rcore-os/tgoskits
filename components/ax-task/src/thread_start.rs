@@ -563,7 +563,7 @@ const fn error_code(error: TaskError) -> usize {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -577,7 +577,8 @@ mod tests {
         drop: test_extension_drop,
     };
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn dropping_unspawned_builder_releases_owned_extension() {
         let drops = AtomicUsize::new(0);
         let extension = unsafe {
@@ -597,7 +598,8 @@ mod tests {
         assert_eq!(drops.load(Ordering::Acquire), 1);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn invalid_spec_releases_extension_before_runtime_lookup() {
         let drops = AtomicUsize::new(0);
         let extension = unsafe {

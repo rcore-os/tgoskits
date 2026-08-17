@@ -165,7 +165,7 @@ impl CpuLocal {
         scheduler_due || fair_balance_due
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn next_oneshot_deadline(
         mut self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
@@ -175,7 +175,7 @@ impl CpuLocal {
             .next_oneshot_deadline_from_rq_observation(monotonic_now, rq_observation)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn next_oneshot_deadline_from_rq_observation(
         self: Pin<&mut Self>,
         monotonic_now: MonotonicInstant,
@@ -330,7 +330,7 @@ impl CpuLocal {
     fn record_scheduler_deadline_derivation(&self, source: SchedulerDeadlineDerivationSource) {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_scheduler_deadline_derivation(source);
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         self.remote.record_scheduler_deadline_derivation_for_test();
         #[cfg(not(feature = "qperf-metrics"))]
         let _ = source;
@@ -409,7 +409,7 @@ impl CpuLocal {
             })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn set_scheduler_deadline_generation_for_test(
         self: Pin<&mut Self>,
         generation: u64,
@@ -480,7 +480,7 @@ impl CpuLocal {
         self.remote.queued_summary()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn publish_fair_balance_due(self: Pin<&mut Self>, now: MonotonicInstant) -> bool {
         // SAFETY: this owner-only timer transition does not move CpuLocal.
         let this = unsafe { self.get_unchecked_mut() };
@@ -501,7 +501,7 @@ impl CpuLocal {
         self.dispatch.fair_balance_pending()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn fair_balance_deadline_for_test(&self) -> Option<MonotonicDeadline> {
         self.dispatch.fair_balance_deadline()
     }
@@ -648,7 +648,7 @@ impl CpuLocal {
         now: MonotonicInstant,
         budget: usize,
     ) -> TaskDeadlineExpireBatch {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         {
             task_deadlines.expire_passes += 1;
         }
@@ -687,7 +687,7 @@ impl CpuLocal {
         ((batch.expired() == 1).then_some(event[0]), batch.pending())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn deadline_expire_passes_for_test(&self) -> usize {
         self.remote
             .read_deadline_base(DeadlineBaseGuardSource::SoftExpiry)
@@ -698,7 +698,7 @@ impl CpuLocal {
     ///
     /// Events that do not fit in `output` remain buffered for the next
     /// task-context drain.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn take_expired_task_deadlines(
         self: Pin<&mut Self>,
         output: &mut [ExpiredTaskDeadline],

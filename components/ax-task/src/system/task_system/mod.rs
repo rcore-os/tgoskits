@@ -52,7 +52,7 @@ use super::thread_sched::{
     PiScheduleUpdate, ThreadDeadlineInit, ThreadPlacementInit, ThreadPolicyInit, ThreadRuntimeInit,
     ThreadSchedCell, ThreadSchedInit, ThreadSchedState,
 };
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 use crate::runtime::ExecutionContextHandle;
 #[cfg(feature = "qperf-metrics")]
 use crate::system::cpu::WakePreemptionDecision;

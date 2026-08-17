@@ -8,13 +8,13 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReleaseOperation {
     StoreIssuedTicket,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 const RELEASE_OPERATION: ReleaseOperation = ReleaseOperation::StoreIssuedTicket;
 
 /// A FIFO raw ticket lock used only inside `ax-task`.
@@ -112,13 +112,14 @@ impl<T> Drop for RawTicketGuard<'_, T> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use alloc::sync::Arc;
 
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn try_lock_does_not_consume_a_ticket_on_failure() {
         let lock = RawTicketLock::new(0usize);
         let first = lock.lock();
@@ -129,7 +130,8 @@ mod tests {
         assert_eq!(*second, 1);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn uncontended_unlock_uses_issued_ticket_release_store() {
         let lock = RawTicketLock::new(());
 
@@ -143,7 +145,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn serializes_concurrent_writers() {
         let lock = Arc::new(RawTicketLock::new(0usize));
         let workers: alloc::vec::Vec<_> = (0..4)

@@ -429,7 +429,7 @@ impl DeadlineRunQueue {
     }
 
     pub(super) fn select_first(&self) -> Option<QueuedThreadSnapshot> {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         super::record_deadline_runqueue_visit();
         self.first().map(QueuedThreadSnapshot::from)
     }
@@ -476,7 +476,7 @@ impl DeadlineRunQueue {
         thread
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn assert_invariants(&self) {
         let mut previous = None;
         let summary = validate_node(self.root.as_deref(), &mut previous);
@@ -639,14 +639,14 @@ fn find_node_mut(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 #[derive(Clone, Copy)]
 struct ValidationSummary {
     count: usize,
     height: usize,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn validate_node(
     node: Option<&DeadlineNode>,
     previous: &mut Option<DeadlineQueueKey>,

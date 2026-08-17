@@ -109,7 +109,7 @@ impl ThreadSchedCell {
         self.deadline_server.clone()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn new_test(id: ThreadId, policy: SchedulePolicy) -> Self {
         let deadline_server = DeadlineServer::unbound();
         let entity =

@@ -120,7 +120,7 @@ impl ThreadPolicyState {
         );
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(in crate::system) const fn owns_active(&self) -> bool {
         self.active.is_some()
     }

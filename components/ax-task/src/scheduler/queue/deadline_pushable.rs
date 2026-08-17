@@ -139,7 +139,7 @@ impl DeadlinePushableTasks {
         find_first_matching(self.root.as_deref(), &mut predicate)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn assert_invariants(&self) {
         let mut previous = None;
         let summary = validate_node(self.root.as_deref(), &mut previous);
@@ -287,14 +287,14 @@ fn find_first_matching(
         .or_else(|| find_first_matching(node.right.as_deref(), predicate))
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 #[derive(Clone, Copy)]
 struct ValidationSummary {
     count: usize,
     height: usize,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn validate_node(
     node: Option<&DeadlinePushableNode>,
     previous: &mut Option<DeadlineQueueKey>,

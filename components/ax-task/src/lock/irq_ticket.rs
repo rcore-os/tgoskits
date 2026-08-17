@@ -77,7 +77,7 @@ impl<T> IrqTicketLock<T> {
     }
 
     /// Attempts acquisition and restores local IRQ state on failure.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn try_lock(&self, source: IrqGuardSource) -> Option<IrqTicketGuard<'_, T>> {
         let irq = IrqScope::enter_ticket_lock(source);
         self.raw.try_lock().map(|raw| IrqTicketGuard {

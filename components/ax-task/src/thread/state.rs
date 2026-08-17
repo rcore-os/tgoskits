@@ -113,7 +113,7 @@ impl ThreadLifecycle {
             .fetch_and(!WAKE_STATE_PUBLISHED, Ordering::AcqRel);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn wake_is_pending(&self) -> bool {
         self.state.load(Ordering::Acquire) & WAKE_PENDING != 0
     }
@@ -206,11 +206,12 @@ pub(crate) const fn transition_is_valid(from: ThreadState, to: ThreadState) -> b
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn accepts_the_documented_wake_transition() {
         let lifecycle = ThreadLifecycle::new();
         lifecycle.transition(ThreadState::Ready).unwrap();
@@ -221,7 +222,8 @@ mod tests {
         assert_eq!(lifecycle.state(), ThreadState::Ready);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn rejects_ready_to_blocked_shortcut() {
         assert!(!transition_is_valid(
             ThreadState::Ready,
@@ -229,7 +231,8 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn wake_publication_atomically_defeats_blocked_publication() {
         let lifecycle = ThreadLifecycle::new();
         lifecycle.transition(ThreadState::Ready).unwrap();
@@ -244,7 +247,8 @@ mod tests {
         assert!(!lifecycle.wake_is_pending());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn blocked_publication_wins_before_late_wake() {
         let lifecycle = ThreadLifecycle::new();
         lifecycle.transition(ThreadState::Ready).unwrap();

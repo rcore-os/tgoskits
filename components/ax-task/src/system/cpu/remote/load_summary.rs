@@ -193,7 +193,7 @@ impl CpuRemote {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn set_load_summary_sequence_for_test(&self, sequence: u64) {
         self.load.sequence.store(sequence, Ordering::Release);
     }

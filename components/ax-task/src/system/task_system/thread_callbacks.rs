@@ -94,11 +94,12 @@ impl ThreadCallbackState {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn exit_claim_has_one_pending_to_claimed_to_absent_path() {
         let mut callbacks = ThreadCallbackState::new();
         callbacks.prepare_exit(true).unwrap();
@@ -114,7 +115,8 @@ mod tests {
         assert!(!callbacks.blocks_reap());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn missing_exit_callback_never_blocks_reap() {
         let mut callbacks = ThreadCallbackState::new();
         callbacks.prepare_exit(false).unwrap();
@@ -122,7 +124,8 @@ mod tests {
         assert!(!callbacks.blocks_reap());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn deadline_claim_blocks_reap_until_exactly_one_finish() {
         let mut callbacks = ThreadCallbackState::new();
         callbacks.claim_deadline().unwrap();
@@ -136,7 +139,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn deadline_claim_has_one_idle_to_claimed_to_idle_path() {
         let mut callbacks = ThreadCallbackState::new();
         callbacks.claim_deadline().unwrap();

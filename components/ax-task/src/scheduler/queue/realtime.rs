@@ -10,7 +10,7 @@ const RT_PRIORITY_LEVELS: usize = 99;
 const FIXED_PRIORITY_LEVELS: usize = RT_PRIORITY_LEVELS;
 const RT_PRIORITY_BITMAP: u128 = (1_u128 << RT_PRIORITY_LEVELS) - 1;
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 std::thread_local! {
     static REALTIME_ACTIVE_ITER_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
@@ -20,18 +20,18 @@ std::thread_local! {
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reset_realtime_queue_visits() {
     REALTIME_ACTIVE_ITER_VISITS.set(0);
     REALTIME_PUSHABLE_ITER_VISITS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn realtime_active_iter_visits() -> usize {
     REALTIME_ACTIVE_ITER_VISITS.get()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn realtime_pushable_iter_visits() -> usize {
     REALTIME_PUSHABLE_ITER_VISITS.get()
 }
@@ -296,7 +296,7 @@ impl<'queue> Iterator for RealtimePushableIter<'queue> {
     fn next(&mut self) -> Option<Self::Item> {
         let node = self.next?;
         self.next = node.next.as_deref();
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         REALTIME_PUSHABLE_ITER_VISITS.set(REALTIME_PUSHABLE_ITER_VISITS.get().saturating_add(1));
         Some(node)
     }
@@ -308,7 +308,7 @@ impl<'queue> Iterator for RealtimeIter<'queue> {
     fn next(&mut self) -> Option<Self::Item> {
         let node = self.next?;
         self.next = node.next.as_deref();
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         REALTIME_ACTIVE_ITER_VISITS.set(REALTIME_ACTIVE_ITER_VISITS.get().saturating_add(1));
         Some(node.thread())
     }

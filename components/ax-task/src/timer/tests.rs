@@ -2,7 +2,8 @@ use alloc::boxed::Box;
 
 use super::*;
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn expires_in_deadline_order_without_exceeding_the_batch() {
     let first = timer(1);
     let second = timer(2);
@@ -23,7 +24,8 @@ fn expires_in_deadline_order_without_exceeding_the_batch() {
     assert_eq!(expired[1].thread(), Some(thread(2)));
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn reports_capacity_without_growing_the_heap() {
     let first = timer(1);
     let second = timer(2);
@@ -37,12 +39,14 @@ fn reports_capacity_without_growing_the_heap() {
     assert_eq!(timers.capacity(), 1);
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn values_outside_linux_ktime_are_unrepresentable_at_the_typed_queue_boundary() {
     assert!(MonotonicDeadline::from_nanos(u64::MAX).is_none());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn zero_is_an_immediately_due_logical_deadline() {
     let node = timer(5);
     let mut timers = TaskDeadlineQueue::new(1);
@@ -57,7 +61,8 @@ fn zero_is_an_immediately_due_logical_deadline() {
     assert!(timers.is_empty());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn logical_deadline_is_not_shifted_by_physical_timer_resolution() {
     let node = timer(6);
     let mut timers = TaskDeadlineQueue::new(1);
@@ -66,7 +71,8 @@ fn logical_deadline_is_not_shifted_by_physical_timer_resolution() {
     assert_eq!(timers.next_deadline(), Some(deadline(2)));
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn rearm_replaces_the_existing_entry_without_consuming_capacity() {
     let node = timer(7);
     let mut timers = TaskDeadlineQueue::new(1);
@@ -90,7 +96,8 @@ fn rearm_replaces_the_existing_entry_without_consuming_capacity() {
     assert_eq!(expired[0].token(), second.token());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn preparing_a_timer_batch_does_not_partially_replace_live_entries() {
     let old_cbs_node = Box::new(TaskDeadlineNode::deadline_cbs_for_thread(thread(70)));
     let occupied_zero_lag = Box::new(TaskDeadlineNode::deadline_zero_lag_for_thread(thread(71)));
@@ -136,7 +143,8 @@ fn preparing_a_timer_batch_does_not_partially_replace_live_entries() {
     assert_eq!(expired[1].deadline(), Some(deadline(15)));
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn one_thread_can_own_independent_park_cbs_and_zero_lag_entries() {
     let park_node = timer(8);
     let cbs_node = Box::new(TaskDeadlineNode::deadline_cbs_for_thread(thread(8)));
@@ -172,7 +180,8 @@ fn one_thread_can_own_independent_park_cbs_and_zero_lag_entries() {
     assert_eq!(expired[2].kind(), Some(park(1)));
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn rearm_replaces_only_the_matching_typed_slot() {
     let park_node = timer(9);
     let cbs_node = Box::new(TaskDeadlineNode::deadline_cbs_for_thread(thread(9)));
@@ -203,7 +212,8 @@ fn rearm_replaces_only_the_matching_typed_slot() {
     assert!(timers.is_empty());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn node_rejects_a_deadline_kind_from_another_slot() {
     let node = timer(10);
     let mut timers = TaskDeadlineQueue::new(1);
@@ -215,7 +225,8 @@ fn node_rejects_a_deadline_kind_from_another_slot() {
     assert!(timers.is_empty());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn cancellation_removes_entry_and_reclaims_capacity_immediately() {
     let first = timer(11);
     let second = timer(22);
@@ -227,7 +238,8 @@ fn cancellation_removes_entry_and_reclaims_capacity_immediately() {
     assert!(timers.arm(second.as_ref(), deadline(20), park(2)).is_ok());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn cancellation_wins_once_before_expiration() {
     let node = timer(35);
     let mut timers = TaskDeadlineQueue::new(1);
@@ -243,7 +255,8 @@ fn cancellation_wins_once_before_expiration() {
     assert!(timers.is_empty());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn expiration_wins_once_before_cancellation() {
     let node = timer(36);
     let mut timers = TaskDeadlineQueue::new(1);
@@ -262,7 +275,8 @@ fn expiration_wins_once_before_cancellation() {
     assert!(timers.is_empty());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn cancellation_transaction_restores_the_exact_registration_and_capacity() {
     let first = timer(12);
     let second = timer(24);
@@ -298,7 +312,8 @@ fn cancellation_transaction_restores_the_exact_registration_and_capacity() {
     assert!(timers.is_empty());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn cancellation_rejects_the_non_arm_token() {
     let node = timer(23);
     let mut timers = TaskDeadlineQueue::new(1);
@@ -324,7 +339,8 @@ fn cancellation_rejects_the_non_arm_token() {
     )));
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn stale_generation_cancel_cannot_remove_the_rearmed_entry() {
     let node = timer(33);
     let mut timers = TaskDeadlineQueue::new(1);
@@ -337,7 +353,8 @@ fn stale_generation_cancel_cannot_remove_the_rearmed_entry() {
     assert!(timers.is_empty());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn distinct_nodes_for_one_thread_keep_independent_registration_identity() {
     let first_node = timer(34);
     let second_node = timer(34);
@@ -360,7 +377,8 @@ fn distinct_nodes_for_one_thread_keep_independent_registration_identity() {
     assert!(timers.is_empty());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn queued_deadline_owns_expiry_identity_by_value() {
     let node = timer(44);
     let mut timers = TaskDeadlineQueue::new(1);

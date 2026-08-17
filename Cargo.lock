@@ -340,6 +340,7 @@ dependencies = [
  "ax-hal",
  "ax-net",
  "ax-std",
+ "ax-task",
  "axtest",
  "scope-local",
 ]
@@ -1234,6 +1235,7 @@ name = "ax-task"
 version = "0.7.0"
 dependencies = [
  "axpanic",
+ "axtest",
  "cfg-if",
  "lock_api",
  "loom",

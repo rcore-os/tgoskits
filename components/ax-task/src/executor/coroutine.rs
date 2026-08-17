@@ -390,7 +390,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) unsafe fn force_reference_count(header: *mut CoroutineHeader, references: usize) {
     unsafe {
         // Unit tests retain the permanent owner reference and serialize mutation.

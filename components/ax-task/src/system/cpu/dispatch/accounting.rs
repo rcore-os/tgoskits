@@ -197,16 +197,18 @@ pub(crate) struct DispatchCharge {
     pub(crate) deadline_replenished: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::{dispatch_runtime_delta, grub_charge_ns};
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn dispatch_runtime_survives_scheduler_clock_wrap() {
         assert_eq!(dispatch_runtime_delta(2, u64::MAX - 2), 5);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn grub_charge_uses_linux_fixed_point_truncation() {
         assert_eq!(grub_charge_ns(1, 1, 1, 0, 2), 0);
     }

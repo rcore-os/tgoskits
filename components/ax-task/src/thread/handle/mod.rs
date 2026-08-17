@@ -1,7 +1,7 @@
 //! Strong, weak, and direct IRQ-wake handles.
 
 use alloc::sync::{Arc, Weak};
-#[cfg(feature = "lockdep")]
+#[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
 use core::cell::UnsafeCell;
 use core::{
     marker::PhantomData,
@@ -29,12 +29,12 @@ const REAP_MAX_UPGRADE_READERS: usize = REAP_CLAIMED - 1;
 const SCHEDULER_ACTIVITY_CLOSED: usize = 1 << (usize::BITS - 1);
 const SCHEDULER_ACTIVITY_MAX_READERS: usize = SCHEDULER_ACTIVITY_CLOSED - 1;
 
-#[cfg(feature = "lockdep")]
+#[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
 struct ThreadHeldLocks {
     stack: UnsafeCell<crate::sync::lockdep::HeldLockStack>,
 }
 
-#[cfg(feature = "lockdep")]
+#[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
 impl ThreadHeldLocks {
     const fn new() -> Self {
         Self {
@@ -52,7 +52,7 @@ impl ThreadHeldLocks {
     }
 }
 
-#[cfg(feature = "lockdep")]
+#[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
 impl core::fmt::Debug for ThreadHeldLocks {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("ThreadHeldLocks(..)")
@@ -62,7 +62,7 @@ impl core::fmt::Debug for ThreadHeldLocks {
 // SAFETY: the stack is accessed only by its currently executing task while
 // local IRQ exclusion prevents migration and scheduler replacement. Other
 // threads may retain `ThreadCore` references but cannot access this field.
-#[cfg(feature = "lockdep")]
+#[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
 unsafe impl Sync for ThreadHeldLocks {}
 
 /// A strong reference used to inspect and control a live thread.
@@ -258,7 +258,7 @@ impl ThreadWakeHandle {
         self.core.wake()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn wake_from_cpu_hint_for_test(&self, target: CpuId) -> WakeResult {
         crate::facade::wake_thread_direct(&self.core, Some(target))
     }
@@ -469,7 +469,7 @@ pub(crate) struct ThreadCore {
     charged_runtime_ns: AtomicU64,
     runtime_accounted_until_ns: AtomicU64,
     runtime_running: AtomicBool,
-    #[cfg(feature = "lockdep")]
+    #[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
     held_locks: ThreadHeldLocks,
     pi_wait_state: PiWaitState,
 }
@@ -524,7 +524,7 @@ impl ThreadCore {
             charged_runtime_ns: AtomicU64::new(0),
             runtime_accounted_until_ns: AtomicU64::new(0),
             runtime_running: AtomicBool::new(false),
-            #[cfg(feature = "lockdep")]
+            #[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
             held_locks: ThreadHeldLocks::new(),
             pi_wait_state: PiWaitState::new(),
         }
@@ -544,7 +544,7 @@ impl ThreadCore {
     ///
     /// The caller must prove that this is the current thread and prevent local
     /// IRQ entry, migration, and scheduler replacement for the complete call.
-    #[cfg(feature = "lockdep")]
+    #[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
     pub(crate) unsafe fn with_held_locks<R>(
         &self,
         operation: impl FnOnce(&mut crate::sync::lockdep::HeldLockStack) -> R,
@@ -560,7 +560,7 @@ mod wake_state;
 
 use policy::AtomicPolicy;
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use alloc::sync::Arc;
 
@@ -571,8 +571,9 @@ mod tests {
         Arc::new(ThreadCore::new(id, policy, sched, None, None, None))
     }
 
-    #[cfg(feature = "lockdep")]
-    #[test]
+    #[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn held_lock_stacks_are_owned_by_their_threads() {
         let first = test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default());
         let second = test_core(ThreadId::from_parts(1, 1), SchedulePolicy::default());
@@ -599,7 +600,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn wake_cpu_hint_is_not_scheduler_placement() {
         let core = test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default());
         core.set_wake_cpu_hint(CpuId::new(1));
@@ -608,18 +610,20 @@ mod tests {
         assert_eq!(core.assigned_cpu(), Some(CpuId::new(0)));
     }
 
-    #[test]
-    fn unavailable_wake_without_placement_can_be_retried() {
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn new_thread_wake_without_placement_uses_the_runtime_notification_path() {
         let wake = ThreadWakeHandle::from_core(test_core(
             ThreadId::from_parts(0, 1),
             SchedulePolicy::default(),
         ));
 
-        assert_eq!(wake.wake(), WakeResult::Unavailable);
-        assert_eq!(wake.wake(), WakeResult::Unavailable);
+        assert_eq!(wake.wake(), WakeResult::Notified);
+        assert_eq!(wake.wake(), WakeResult::AlreadyPending);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn wake_batch_is_intrusive_and_coalesces_duplicate_threads() {
         let first = test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default());
         let second = test_core(ThreadId::from_parts(1, 1), SchedulePolicy::default());
@@ -637,7 +641,8 @@ mod tests {
         assert_eq!(second.reap_signal.external_lease_count(), 0);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn reaper_claim_closes_and_reopens_weak_upgrade_on_retry() {
         let handle = ThreadHandle::from_core(test_core(
             ThreadId::from_parts(0, 1),
@@ -651,7 +656,8 @@ mod tests {
         assert!(weak.upgrade().is_some());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn scheduler_exit_closes_before_waiting_for_inflight_activity() {
         let core = test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default());
         let activity = core
@@ -700,7 +706,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn exhausted_park_generation_is_rejected_without_wrapping() {
         let core = test_core(ThreadId::from_parts(0, 1), SchedulePolicy::default());
         core.park_generation.store(u64::MAX, Ordering::Release);

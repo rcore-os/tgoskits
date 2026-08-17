@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 use crate::lock::IrqTicketGuard;
 use crate::{
     CpuId, TaskSystemConfig,
@@ -26,7 +26,7 @@ pub(crate) struct RtRunQueueBandwidth {
 }
 
 impl RtRunQueueBandwidth {
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) const fn new(period_ns: u64, runtime_ns: u64) -> Self {
         Self {
             enabled: runtime_ns < period_ns,
@@ -330,7 +330,7 @@ impl RootRtBandwidth {
         true
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn state(&self) -> IrqTicketGuard<'_, RootRtBandwidthState> {
         self.state
             .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket)

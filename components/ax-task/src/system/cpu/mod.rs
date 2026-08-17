@@ -18,7 +18,7 @@ use core::{
 };
 
 pub(crate) use clock::{RqTaskTime, RunQueueClock, RunQueueClockSnapshot};
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(crate) use dispatch::CurrentSchedule;
 pub(crate) use dispatch::{
     CurrentClassState, CurrentDispatch, CurrentDispatchState, DispatchCharge, DispatchRole,
@@ -37,7 +37,7 @@ pub(crate) use remote::{
     KtimerClaimClass, OwnerRqEnqueue, PreparedMigrationDelivery, RunQueueGuardSource,
     SchedulerRequestClaim, WakePreemptionDecision,
 };
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(crate) use remote::{reset_rt_bandwidth_lock_acquisitions, rt_bandwidth_lock_acquisitions};
 pub use snapshot::CpuSnapshot;
 pub(crate) use transaction::{OwnerRqEntry, OwnerRqTxn};

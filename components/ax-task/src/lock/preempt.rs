@@ -34,7 +34,7 @@ impl<T> PreemptTicketLock<T> {
     }
 
     /// Attempts acquisition and restores preemption state on failure.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn try_lock(&self) -> Option<PreemptTicketGuard<'_, T>> {
         let scope = PreemptScope::enter_ticket_lock();
         match self.raw.try_lock() {

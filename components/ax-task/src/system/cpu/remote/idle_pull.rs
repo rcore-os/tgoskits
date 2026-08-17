@@ -222,7 +222,7 @@ impl CpuRemote {
             == IDLE_PULL_IDLE
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn set_idle_pull_generation_exhausted_for_test(&self) {
         self.idle_pull
             .state

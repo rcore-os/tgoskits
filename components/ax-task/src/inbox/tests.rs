@@ -4,7 +4,8 @@ use core::pin::Pin;
 use super::*;
 use crate::{CpuId, ThreadId};
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn coalesces_duplicate_publication_and_preserves_fifo_order() {
     let inbox = SchedulerInbox::new(InboxKind::OwnerControl);
     let first = node(InboxKind::OwnerControl);
@@ -34,7 +35,8 @@ fn coalesces_duplicate_publication_and_preserves_fifo_order() {
     assert_eq!(output[1].thread_id(), thread(2));
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn bounds_each_drain_and_reports_remaining_work() {
     let inbox = SchedulerInbox::new(InboxKind::OwnerControl);
     let nodes = [
@@ -57,7 +59,8 @@ fn bounds_each_drain_and_reports_remaining_work() {
     assert!(!second.pending());
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn rejects_a_node_from_a_different_inbox_class() {
     let inbox = SchedulerInbox::new(InboxKind::Reclaim);
     let wake_node = node(InboxKind::OwnerControl);
@@ -69,7 +72,8 @@ fn rejects_a_node_from_a_different_inbox_class() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn defers_detach_while_a_publisher_retains_the_observed_head() {
     let inbox = Arc::new(SchedulerInbox::new(InboxKind::OwnerControl));
     let first = node(InboxKind::OwnerControl);
@@ -108,7 +112,8 @@ fn defers_detach_while_a_publisher_retains_the_observed_head() {
     );
 }
 
-#[test]
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn new_generation_entrant_does_not_delay_retired_head_grace() {
     let inbox = Arc::new(SchedulerInbox::new(InboxKind::OwnerControl));
     let first = node(InboxKind::OwnerControl);

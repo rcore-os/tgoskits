@@ -184,21 +184,24 @@ const fn linux_logarithmic_cpu_factor(cpu_count: usize) -> u64 {
     1 + capped.ilog2() as u64
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn default_rr_quantum_matches_linux_v71() {
         assert_eq!(TaskSystemConfig::new(1).rr_quantum_ns(), 100_000_000);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn single_cpu_fair_request_uses_the_normalized_linux_v71_base_slice() {
         assert_eq!(TaskSystemConfig::new(1).fair_slice_ns(), 700_000);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn default_fair_request_scales_with_the_linux_v71_cpu_factor() {
         assert_eq!(TaskSystemConfig::new(2).fair_slice_ns(), 1_400_000);
         assert_eq!(TaskSystemConfig::new(4).fair_slice_ns(), 2_100_000);

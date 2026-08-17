@@ -10,7 +10,7 @@ impl TaskSystem {
         rt_quota_exempt: bool,
         task_now: RqTaskTime,
     ) -> CurrentDispatch {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         OWNER_DISPATCH_CONSTRUCTIONS.set(OWNER_DISPATCH_CONSTRUCTIONS.get().saturating_add(1));
         CurrentDispatch::new(
             CurrentDispatchState {

@@ -16,7 +16,7 @@ pub(crate) struct RqTaskMetadata {
     pub(crate) runtime_binding: crate::runtime::ThreadRuntimeBinding,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 impl RqTaskMetadata {
     pub(crate) fn test(cpu_count: usize) -> Self {
         Self {

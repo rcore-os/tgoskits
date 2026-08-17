@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::cmp::Ordering;
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 use super::queue::record_fair_runqueue_visit;
 use super::{
     queue::{QueuedThread, QueuedThreadSnapshot},
@@ -159,7 +159,7 @@ impl FairRunQueue {
         self.zero_vruntime
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn set_virtual_time_for_test(&mut self, virtual_time: u64) {
         let delta = virtual_delta(virtual_time, self.zero_vruntime);
         self.rebase(delta);
@@ -315,7 +315,7 @@ impl FairRunQueue {
         thread
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn assert_invariants(&self) {
         let mut previous = None;
         let summary = validate_node(self.root.as_deref(), &mut previous, self.zero_vruntime);
@@ -461,7 +461,7 @@ fn take_min(mut root: Box<FairNode>) -> (FairLink, Box<FairNode>) {
 
 fn earliest_eligible_key(node: Option<&FairNode>, virtual_time: u64) -> Option<FairQueueKey> {
     let node = node?;
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     record_fair_runqueue_visit();
     if node
         .left
@@ -493,7 +493,7 @@ fn find_first_matching<'queue>(
         .or_else(|| find_first_matching(node.right.as_deref(), predicate))
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 #[derive(Clone, Copy)]
 struct ValidationSummary {
     count: usize,
@@ -503,7 +503,7 @@ struct ValidationSummary {
     total_weight: i128,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn validate_node(
     node: Option<&FairNode>,
     previous: &mut Option<FairQueueKey>,

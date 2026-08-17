@@ -644,11 +644,12 @@ pub(crate) fn record_context_switch(reason: SwitchReason) {
     QPERF_SCHEDULER_METRICS.record_context_switch(reason);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn counters_distinguish_direct_activation_from_preemption() {
         let metrics = QperfSchedulerMetrics::new();
 
@@ -671,7 +672,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn context_switches_are_classified_by_reason() {
         let metrics = QperfSchedulerMetrics::new();
 
@@ -695,7 +697,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn scheduler_deadline_derivations_are_classified_by_trigger() {
         let metrics = QperfSchedulerMetrics::new();
 
@@ -733,7 +736,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn runtime_guard_and_owner_rq_entries_are_classified() {
         let metrics = QperfSchedulerMetrics::new();
 

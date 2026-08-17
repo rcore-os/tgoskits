@@ -121,7 +121,7 @@ pub(crate) enum SchedulingEntity {
 
 impl SchedulingEntity {
     /// Creates class-specific state for a base policy.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub fn new(policy: SchedulePolicy, fair_slice_ns: u64, virtual_time: u64) -> Self {
         Self::new_with_deadline_server(
             policy,
@@ -228,7 +228,7 @@ impl SchedulingEntity {
     }
 
     /// Reports whether this accounting representation matches a policy class.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub const fn matches_policy(&self, policy: SchedulePolicy) -> bool {
         matches!(
             (self, policy),
@@ -286,12 +286,13 @@ impl SchedulingEntity {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
     use crate::{DeadlineFlags, DeadlinePolicy, FairMode, Nice};
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn fair_service_request_expires_after_cumulative_small_charges() {
         let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
         let mut entity = SchedulingEntity::new(policy, 100, 0);
@@ -301,7 +302,8 @@ mod tests {
         assert!(entity.charge(20, 0, 0));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn deadline_urgency_uses_the_active_absolute_deadline() {
         let policy =
             SchedulePolicy::deadline(DeadlinePolicy::new(1, 10, 20, DeadlineFlags::NONE).unwrap());
@@ -313,7 +315,8 @@ mod tests {
         assert!(earlier.scheduling_urgency(policy) < later.scheduling_urgency(policy));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn deadline_urgency_orders_across_linux_rq_clock_wrap() {
         let earlier_policy =
             SchedulePolicy::deadline(DeadlinePolicy::new(1, 4, 20, DeadlineFlags::NONE).unwrap());

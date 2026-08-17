@@ -359,7 +359,7 @@ impl fmt::Debug for KernelTimerQueue {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use alloc::{boxed::Box, sync::Arc};
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -374,7 +374,8 @@ mod tests {
         MonotonicInstant::from_nanos(nanos).unwrap()
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn restartable_timer_reuses_identity_until_cancelled() {
         let invocations = Arc::new(AtomicUsize::new(0));
         let callback_invocations = Arc::clone(&invocations);
@@ -406,7 +407,8 @@ mod tests {
         assert!(!queue.has_active_work());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn cancellation_during_callback_prevents_restart() {
         let entry = KernelTimerEntry::new_restartable(
             deadline(10),

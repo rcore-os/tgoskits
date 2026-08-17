@@ -2,19 +2,19 @@
 
 use super::*;
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 std::thread_local! {
     static DRAIN_MIGRATION_CPUS_BEFORE_PUBLICATION: core::cell::Cell<bool> = const {
         core::cell::Cell::new(false)
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn drain_next_migration_cpus_before_publication() {
     DRAIN_MIGRATION_CPUS_BEFORE_PUBLICATION.set(true);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn inject_migration_publication_race(system: &TaskSystem, target: CpuId) {
     if !DRAIN_MIGRATION_CPUS_BEFORE_PUBLICATION.replace(false) {
         return;

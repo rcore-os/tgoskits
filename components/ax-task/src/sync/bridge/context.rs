@@ -116,7 +116,7 @@ pub fn hardirq_exit(operations: &ContextOperations) {
     (operations.hardirq_exit)();
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use std::{sync::Mutex, vec::Vec};
 
@@ -178,7 +178,8 @@ mod tests {
         core::mem::take(&mut *EVENTS.lock().unwrap())
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn combined_bridge_preserves_tokens_and_restores_irq_before_preempt() {
         let _serial = TEST_LOCK.lock().unwrap();
         take_events();
@@ -197,7 +198,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn raw_bridge_does_not_invoke_callbacks() {
         let _serial = TEST_LOCK.lock().unwrap();
         take_events();

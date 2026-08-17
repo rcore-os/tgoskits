@@ -380,5 +380,5 @@ impl TaskDeadlineQueue {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests;

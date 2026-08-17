@@ -311,14 +311,14 @@ impl CpuRemote {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn take_preempt_requested(&self) -> bool {
         let claim = self.claim_scheduler_request();
         self.acknowledge_scheduler_request(claim);
         claim.preempt_requested()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn scheduler_request_state_for_test(&self) -> (u64, u64, u64) {
         let request = self.scheduler_request.request.load(Ordering::Acquire);
         (

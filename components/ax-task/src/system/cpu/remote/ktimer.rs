@@ -196,11 +196,12 @@ impl CpuRemote {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn work_published_before_worker_install_remains_pending() {
         let state = KtimerWorkerState::new();
         let worker = ThreadId::from_parts(1, 1);
@@ -223,7 +224,8 @@ mod tests {
         assert!(!state.is_quiescent_for_offline());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn worker_install_state_gates_cpu_offline() {
         let state = KtimerWorkerState::new();
         assert!(state.is_quiescent_for_offline());
@@ -240,7 +242,8 @@ mod tests {
         assert!(!state.is_quiescent_for_offline());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn publication_during_service_remains_a_new_generation() {
         let state = KtimerWorkerState::new();
         state.begin_install().unwrap();
@@ -263,7 +266,8 @@ mod tests {
         assert!(!state.in_service.load(Ordering::Acquire));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn completed_generation_is_the_work_authority() {
         let state = KtimerWorkerState::new();
         assert!(state.claim().is_none());

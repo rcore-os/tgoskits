@@ -30,7 +30,7 @@ impl RqTaskTime {
         self.0.as_nanos()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) const fn test(nanos: u64) -> Self {
         Self(SchedulerTimestamp::from_nanos(nanos))
     }
@@ -111,11 +111,12 @@ impl RunQueueClock {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn negative_source_delta_does_not_move_the_runqueue_clock_backwards() {
         let mut clock = RunQueueClock::new();
 
@@ -135,7 +136,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn scheduler_counter_wrap_advances_the_runqueue_clock() {
         let mut clock = RunQueueClock::new();
 
@@ -153,7 +155,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn task_clock_excludes_hard_irq_time() {
         let mut clock = RunQueueClock::new();
 
@@ -164,7 +167,8 @@ mod tests {
         assert_eq!(snapshot.task().as_nanos(), 140);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn irq_time_larger_than_one_wall_delta_is_consumed_by_later_updates() {
         let mut clock = RunQueueClock::new();
 
@@ -178,7 +182,8 @@ mod tests {
         assert_eq!(third.task().as_nanos(), 105);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn wall_and_irq_counter_wraps_preserve_task_runtime() {
         let mut clock = RunQueueClock::new();
 

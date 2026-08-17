@@ -47,7 +47,7 @@ impl ExitedThreadWork {
         self.candidates.retain(|candidate| *candidate != thread);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn capacity(&self) -> usize {
         self.candidates.capacity()
     }

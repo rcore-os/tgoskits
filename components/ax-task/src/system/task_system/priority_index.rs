@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use super::*;
 use crate::RtPriority;
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 std::thread_local! {
     static PRIORITY_INDEX_LOOKUPS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
@@ -16,22 +16,22 @@ std::thread_local! {
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reset_priority_index_lookups() {
     PRIORITY_INDEX_LOOKUPS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn priority_index_lookups() -> usize {
     PRIORITY_INDEX_LOOKUPS.get()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reset_deadline_index_publications() {
     DEADLINE_INDEX_PUBLICATIONS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn deadline_index_publications() -> usize {
     DEADLINE_INDEX_PUBLICATIONS.get()
 }
@@ -102,7 +102,7 @@ impl RootDomainPriorityIndex {
             .lock(crate::runtime::IrqGuardSource::RootDeadlineIndexTicket)
             .publish(cpu, online, earliest_deadline);
         published.record(online, earliest_deadline);
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         DEADLINE_INDEX_PUBLICATIONS.set(DEADLINE_INDEX_PUBLICATIONS.get().saturating_add(1));
     }
 
@@ -123,7 +123,7 @@ impl RootDomainPriorityIndex {
         preferred: Option<CpuId>,
         mut accepts: impl FnMut(CpuId) -> bool,
     ) -> Option<CpuId> {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         PRIORITY_INDEX_LOOKUPS.set(PRIORITY_INDEX_LOOKUPS.get().saturating_add(1));
         self.rt
             .find_lower(priority.get(), affinity, preferred, &mut accepts)
@@ -136,7 +136,7 @@ impl RootDomainPriorityIndex {
         preferred: Option<CpuId>,
         accepts: impl FnMut(CpuId) -> bool,
     ) -> Option<CpuId> {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         PRIORITY_INDEX_LOOKUPS.set(PRIORITY_INDEX_LOOKUPS.get().saturating_add(1));
         self.deadline
             .lock(crate::runtime::IrqGuardSource::RootDeadlineIndexTicket)
@@ -497,13 +497,14 @@ impl DeadlineCpuHeap {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use core::cell::Cell;
 
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn deadline_work_occupies_the_cpupri_higher_bucket() {
         let index = RtCpuPriorityIndex::new(1);
         let cpu = CpuId::new(0);
@@ -524,7 +525,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn cpudl_publication_only_locks_for_state_transitions() {
         let index = RootDomainPriorityIndex::new(1);
         let cpu = CpuId::new(0);
@@ -548,7 +550,8 @@ mod tests {
         assert_eq!(deadline_index_publications(), 4);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn nonfree_deadline_lookup_reads_only_the_max_heap_root() {
         let mut heap = DeadlineCpuHeap::new(4);
         let affinity = CpuSet::all(4);

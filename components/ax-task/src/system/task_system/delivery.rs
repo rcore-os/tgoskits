@@ -249,9 +249,9 @@ impl TaskSystem {
             }
         };
         if let Some((carrier, target)) = migration {
-            #[cfg(not(test))]
+            #[cfg(not(any(test, all(axtest, feature = "axtest"))))]
             let _ = target;
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             placement::inject_migration_publication_race(self, target);
             carrier.commit();
             return Ok(());

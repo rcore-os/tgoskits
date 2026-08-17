@@ -868,11 +868,12 @@ fn owner_from_word(state: u64) -> Option<PiTaskId> {
     PiTaskId::new(state & OWNER_ID_MASK)
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn borrowed_core_view_keeps_external_fields_authoritative() {
         let owner = AtomicU64::new(0);
         let generation = AtomicU64::new(0);

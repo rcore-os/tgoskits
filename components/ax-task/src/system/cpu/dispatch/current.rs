@@ -67,14 +67,14 @@ pub(crate) enum DispatchRole {
 
 /// Test-only value used to exercise class preemption without constructing a
 /// runtime-owning dispatch. Production rq state stores only `CurrentDispatch`.
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 #[derive(Clone, Debug)]
 pub(crate) struct CurrentSchedule {
     policy: SchedulePolicy,
     entity: SchedulingEntity,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 impl CurrentSchedule {
     pub(crate) const fn test_state(policy: SchedulePolicy, entity: SchedulingEntity) -> Self {
         Self { policy, entity }
@@ -130,7 +130,7 @@ impl CurrentDispatch {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn owns_active_schedule(&self) -> bool {
         matches!(self.schedule(), CurrentClassState::Owned(_))
     }

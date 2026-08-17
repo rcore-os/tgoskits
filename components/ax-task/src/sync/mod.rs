@@ -8,7 +8,7 @@ pub mod api;
 #[doc(hidden)]
 pub mod bridge;
 mod context;
-#[cfg(feature = "lockdep")]
+#[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
 pub(crate) mod lockdep;
 mod mutex;
 mod spin;

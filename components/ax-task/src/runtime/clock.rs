@@ -116,11 +116,12 @@ impl RqClockSample {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod monotonic_time_tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn zero_is_a_finite_already_due_deadline_not_an_absence_sentinel() {
         let deadline = MonotonicDeadline::from_nanos(0).unwrap();
 
@@ -128,7 +129,8 @@ mod monotonic_time_tests {
         assert!(MonotonicInstant::from_nanos(1).unwrap().reached(deadline));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn option_not_ktime_max_represents_no_deadline() {
         assert!(MonotonicInstant::from_nanos(KTIME_MAX_NANOS - 1).is_some());
         assert!(MonotonicDeadline::from_nanos(KTIME_MAX_NANOS - 1).is_some());
@@ -140,7 +142,8 @@ mod monotonic_time_tests {
         assert!(MonotonicDeadline::from_nanos(KTIME_MAX_NANOS + 1).is_none());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn duration_conversion_matches_linux_ktime_saturation() {
         assert_eq!(
             MonotonicDeadline::from_duration(core::time::Duration::MAX),
@@ -148,7 +151,8 @@ mod monotonic_time_tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn relative_timeout_uses_linux_ktime_add_safe_saturation() {
         let now = MonotonicInstant::from_nanos(KTIME_MAX_NANOS - 2).unwrap();
 

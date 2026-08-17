@@ -29,7 +29,7 @@ struct OwnerDeadlineReconcile<'a> {
 }
 
 pub(crate) struct KtimerServiceBatch {
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     processed: usize,
     pending: bool,
     update: Option<SchedulerDeadlineUpdate>,
@@ -53,7 +53,7 @@ impl KernelTimerCompletionBatch {
 }
 
 impl KtimerServiceBatch {
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) const fn processed(&self) -> usize {
         self.processed
     }
@@ -646,7 +646,7 @@ impl TaskSystem {
                 .map(|execution| execution.handle(cpu.owner())),
         );
         Ok(KtimerServiceBatch {
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             processed: usize::from(kernel_timer.is_some() || task_timer.is_some()),
             pending,
             update,

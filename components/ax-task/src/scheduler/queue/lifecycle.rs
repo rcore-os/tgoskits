@@ -170,7 +170,7 @@ impl RunQueue {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn enqueue_test(
         &mut self,
         id: ThreadId,
@@ -208,7 +208,7 @@ impl RunQueue {
         Ok(entity)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn enqueue_rt_test(
         &mut self,
         id: ThreadId,
@@ -280,7 +280,7 @@ impl RunQueue {
         Some(thread)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn dequeue(&mut self, id: ThreadId) -> Option<QueuedThread> {
         self.deactivate_task(id)
     }
@@ -385,7 +385,7 @@ impl RunQueue {
             .map(|thread| (thread.policy, thread.entity))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn debug_owns_schedule_state(&self, id: ThreadId) -> bool {
         self.queued_thread_including_current(id).is_some()
     }

@@ -137,12 +137,13 @@ pub(crate) fn rw_force_read_decrement(state: &AtomicUsize) -> bool {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
     #[cfg(feature = "smp")]
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn spin_state_uses_one_shared_acquire_release_algorithm() {
         let locked = AtomicBool::new(false);
 
@@ -155,7 +156,8 @@ mod tests {
         assert!(spin_try_acquire_weak(&locked));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn rw_force_decrement_does_not_underflow_empty_or_writer_state() {
         let state = AtomicUsize::new(0);
         assert!(!rw_force_read_decrement(&state));
@@ -166,7 +168,8 @@ mod tests {
         assert_eq!(state.load(Ordering::Relaxed), WRITER);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn rw_writer_waits_until_the_last_reader_releases() {
         let state = AtomicUsize::new(0);
         assert!(rw_try_acquire_read(&state));

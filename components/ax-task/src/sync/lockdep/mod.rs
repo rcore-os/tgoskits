@@ -1,7 +1,7 @@
 mod state;
 mod trace;
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub use self::state::HeldLockKind;
 pub(crate) use self::state::{
     LockdepMapView, prepare_acquire_with_snapshot_view_nested_with_sleep,

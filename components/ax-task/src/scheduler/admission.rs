@@ -33,7 +33,7 @@ impl DeadlineAdmission {
     ///
     /// Returns [`TaskError::DeadlineAdmission`] if the reservation exceeds the
     /// configured root-domain cap.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn reserve(&mut self, policy: DeadlinePolicy) -> Result<u64, TaskError> {
         let utilization = Self::utilization(policy);
         self.reserve_utilization(utilization)?;
@@ -68,7 +68,7 @@ impl DeadlineAdmission {
     }
 
     /// Releases a value returned by [`Self::reserve`].
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn release(&mut self, utilization: u64) -> Result<(), TaskError> {
         self.replace_utilization(utilization, 0)
     }
@@ -91,12 +91,13 @@ fn scaled_utilization(policy: DeadlinePolicy) -> u64 {
         .expect("a validated Deadline reservation cannot exceed one CPU")
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
     use crate::DeadlineFlags;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn enforces_the_root_domain_cap() {
         let mut admission = DeadlineAdmission::new(95);
         admission.set_online_cpus(1);
@@ -106,7 +107,8 @@ mod tests {
         assert_eq!(admission.reserve(half), Err(TaskError::DeadlineAdmission));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn rejects_release_that_has_no_matching_reservation() {
         let mut admission = DeadlineAdmission::new(95);
         admission.set_online_cpus(1);

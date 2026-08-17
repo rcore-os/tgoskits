@@ -197,7 +197,7 @@ impl CpuLocal {
         &self.drain
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn deadline_members_are_empty_for_test(&self) -> bool {
         self.remote
             .lock_run_queue(RunQueueGuardSource::DeadlineAccounting)

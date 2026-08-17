@@ -365,7 +365,7 @@ impl DeadlineServer {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn bound(policy: DeadlinePolicy) -> Self {
         let server = Self::unbound();
         server.bind(policy);
@@ -454,7 +454,7 @@ enum DeadlineThrottleReason {
 
 impl DeadlineEntity {
     /// Creates inactive CBS state for a validated reservation.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub fn new(policy: DeadlinePolicy) -> Self {
         let server = DeadlineServer::bound(policy);
         Self {
@@ -536,7 +536,7 @@ impl DeadlineEntity {
             .with_execution(DeadlineServerState::remaining_runtime_ns)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub fn next_period_ns(&self) -> Option<u64> {
         self.local
             .with_execution(DeadlineServerState::next_period_ns)
@@ -915,18 +915,20 @@ const NICE_WEIGHTS: [u32; 40] = [
     70, 56, 45, 36, 29, 23, 18, 15,
 ];
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn uses_linux_nice_weights() {
         assert_eq!(Nice::new(-20).unwrap().weight(), 88_761);
         assert_eq!(Nice::ZERO.weight(), 1_024);
         assert_eq!(Nice::new(19).unwrap().weight(), 15);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn kernel_stopper_outranks_deadline_rt_and_fair_work() {
         let stopper = SchedulePolicy::kernel_stop();
         let deadline =
@@ -939,7 +941,8 @@ mod tests {
         assert!(realtime.scheduling_key(0) < fair.scheduling_key(0));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn deadline_cbs_throttles_and_replenishes() {
         let policy = DeadlinePolicy::new(10, 20, 30, DeadlineFlags::NONE).unwrap();
         let entity = DeadlineEntity::new(policy);
@@ -952,7 +955,8 @@ mod tests {
         assert!(!entity.is_throttled());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn reclaim_reduces_the_cbs_charge() {
         let policy = DeadlinePolicy::new(10, 20, 30, DeadlineFlags::RECLAIM).unwrap();
         let entity = DeadlineEntity::new(policy);
@@ -961,7 +965,8 @@ mod tests {
         assert_eq!(entity.remaining_runtime_ns(), 5);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn deadline_wake_resets_an_overcommitted_density() {
         let policy = DeadlinePolicy::new(4, 8, 10, DeadlineFlags::NONE).unwrap();
         let entity = DeadlineEntity::new(policy);
@@ -974,7 +979,8 @@ mod tests {
         assert_eq!(entity.remaining_runtime_ns(), 2);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn deadline_wake_keeps_an_equal_reserved_density() {
         let policy = DeadlinePolicy::new(4, 8, 10, DeadlineFlags::NONE).unwrap();
         let entity = DeadlineEntity::new(policy);
@@ -987,7 +993,8 @@ mod tests {
         assert_eq!(entity.remaining_runtime_ns(), 2);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn constrained_deadline_wake_waits_until_the_next_release() {
         let policy = DeadlinePolicy::new(4, 8, 10, DeadlineFlags::NONE).unwrap();
         let entity = DeadlineEntity::new(policy);
@@ -1008,7 +1015,8 @@ mod tests {
         assert_eq!(entity.remaining_runtime_ns(), 4);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn deadline_overrun_is_counted_only_on_budget_depletion_edge() {
         let policy = DeadlinePolicy::new(4, 8, 10, DeadlineFlags::NONE).unwrap();
         let entity = DeadlineEntity::new(policy);
@@ -1020,7 +1028,8 @@ mod tests {
         assert_eq!(entity.overruns(), 1);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn exhausted_cbs_replenishes_at_next_release_with_overrun_carry() {
         let policy = DeadlinePolicy::new(5, 10, 20, DeadlineFlags::NONE).unwrap();
         let entity = DeadlineEntity::new(policy);
@@ -1034,7 +1043,8 @@ mod tests {
         assert!(!entity.is_throttled());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn constrained_deadline_budget_waits_for_the_next_release() {
         let policy = DeadlinePolicy::new(2, 5, 10, DeadlineFlags::NONE).unwrap();
         let entity = DeadlineEntity::new(policy);
@@ -1052,7 +1062,8 @@ mod tests {
         assert_eq!(entity.remaining_runtime_ns(), 2);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn late_cbs_replenishment_does_not_accumulate_skipped_budgets() {
         let policy = DeadlinePolicy::new(2, 5, 10, DeadlineFlags::NONE).unwrap();
         let entity = DeadlineEntity::new(policy);
@@ -1067,7 +1078,8 @@ mod tests {
         assert_eq!(entity.remaining_runtime_ns(), 2);
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn deadline_parameters_reserve_the_msb_for_linux_wrap_ordering() {
         let half_range = 1_u64 << 63;
 
@@ -1076,7 +1088,8 @@ mod tests {
         assert!(DeadlinePolicy::new(1, half_range, half_range, DeadlineFlags::NONE).is_err());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn deadline_entity_uses_linux_rq_clock_wrap_semantics() {
         let policy = DeadlinePolicy::new(1, 10, 20, DeadlineFlags::NONE).unwrap();
         let entity = DeadlineEntity::new(policy);

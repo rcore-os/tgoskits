@@ -18,7 +18,7 @@ pub(crate) enum RunQueueGuardSource {
     DeadlineAccounting,
     Membarrier,
     Lifecycle,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     TestInspection,
 }
 
@@ -44,7 +44,7 @@ impl RunQueueGuardSource {
             }
             Self::Membarrier => crate::runtime::IrqGuardSource::CpuRunQueueMembarrierTicket,
             Self::Lifecycle => crate::runtime::IrqGuardSource::CpuRunQueueLifecycleTicket,
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             Self::TestInspection => crate::runtime::IrqGuardSource::CpuRunQueueLifecycleTicket,
         }
     }
@@ -184,12 +184,12 @@ impl CpuRunQueueState {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn set_virtual_time_for_test(&mut self, virtual_time: u64) {
         self.queue.set_virtual_time_for_test(virtual_time);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn update_fair_virtual_time(&mut self, current: Option<FairEntity>) {
         self.queue.update_fair_virtual_time(current);
     }
@@ -582,7 +582,7 @@ impl CpuRunQueueState {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn debug_schedule_owner_count(&self, thread: ThreadId) -> usize {
         usize::from(
             self.queue.current().is_some_and(|dispatch| {

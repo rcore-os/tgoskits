@@ -6,6 +6,8 @@ extern crate ax_std as std;
 
 #[cfg(feature = "runtime")]
 use ax_net as _;
+#[cfg(feature = "runtime")]
+use ax_task as _;
 
 #[cfg(all(feature = "ax-std", axtest))]
 #[axtest::tests]

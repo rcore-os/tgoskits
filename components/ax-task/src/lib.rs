@@ -8,7 +8,11 @@
 extern crate alloc;
 extern crate self as ax_task;
 
-#[cfg(any(test, all(feature = "host-test", not(target_os = "none"))))]
+#[cfg(any(
+    test,
+    all(axtest, feature = "axtest"),
+    all(feature = "host-test", not(target_os = "none"))
+))]
 extern crate std;
 
 mod config;
@@ -19,7 +23,7 @@ mod facade;
 mod inbox;
 mod irq_wait;
 mod lock;
-#[cfg(feature = "qperf-metrics")]
+#[cfg(any(feature = "qperf-metrics", all(axtest, feature = "axtest")))]
 mod metrics;
 pub mod runtime;
 mod scheduler;

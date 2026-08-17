@@ -30,9 +30,9 @@ pub(crate) struct EpochMpscQueue<Node> {
     active_generation: AtomicUsize,
     slot_publishers: [AtomicUsize; SLOT_COUNT],
     retiring_generation: AtomicUsize,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     head_publish_test_stage: AtomicUsize,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     generation_publish_test_stage: AtomicUsize,
 }
 
@@ -46,9 +46,9 @@ impl<Node> EpochMpscQueue<Node> {
             active_generation: AtomicUsize::new(0),
             slot_publishers: [AtomicUsize::new(0), AtomicUsize::new(0)],
             retiring_generation: AtomicUsize::new(NO_RETIRING_GENERATION),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             head_publish_test_stage: AtomicUsize::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             generation_publish_test_stage: AtomicUsize::new(0),
         }
     }
@@ -72,7 +72,7 @@ impl<Node> EpochMpscQueue<Node> {
         let publisher = GenerationPublisher::enter_stable(self);
         let head = &self.heads[publisher.slot];
         let mut observed = head.load(Ordering::Acquire);
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         self.pause_test_publisher_after_head_load();
 
         loop {
@@ -132,42 +132,42 @@ impl<Node> EpochMpscQueue<Node> {
         stack
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn arm_test_publisher_pause(&self) {
         arm_test_pause(&self.head_publish_test_stage, "publication");
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn wait_for_test_publisher_pause(&self) {
         wait_for_test_pause(&self.head_publish_test_stage);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn resume_test_publisher(&self) {
         resume_test_pause(&self.head_publish_test_stage, "publisher");
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn pause_test_publisher_after_head_load(&self) {
         pause_test_point(&self.head_publish_test_stage);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn arm_test_generation_pause(&self) {
         arm_test_pause(&self.generation_publish_test_stage, "generation");
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn wait_for_test_generation_pause(&self) {
         wait_for_test_pause(&self.generation_publish_test_stage);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn resume_test_generation_publisher(&self) {
         resume_test_pause(&self.generation_publish_test_stage, "generation publisher");
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn pause_test_publisher_after_generation_load(&self) {
         pause_test_point(&self.generation_publish_test_stage);
     }
@@ -184,7 +184,7 @@ impl<'queue, Node> GenerationPublisher<'queue, Node> {
     fn enter_stable(queue: &'queue EpochMpscQueue<Node>) -> Self {
         loop {
             let generation = queue.active_generation.load(Ordering::SeqCst);
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             queue.pause_test_publisher_after_generation_load();
             let slot = generation_slot(generation);
             increment_counter(
@@ -227,7 +227,7 @@ fn increment_counter(counter: &AtomicUsize, invariant: u32, argument: usize) {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn arm_test_pause(stage: &AtomicUsize, name: &str) {
     assert_eq!(
         stage.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst),
@@ -236,14 +236,14 @@ fn arm_test_pause(stage: &AtomicUsize, name: &str) {
     );
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn wait_for_test_pause(stage: &AtomicUsize) {
     while stage.load(Ordering::SeqCst) != 2 {
         std::thread::yield_now();
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn resume_test_pause(stage: &AtomicUsize, name: &str) {
     assert_eq!(
         stage.compare_exchange(2, 3, Ordering::SeqCst, Ordering::SeqCst),
@@ -252,7 +252,7 @@ fn resume_test_pause(stage: &AtomicUsize, name: &str) {
     );
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn pause_test_point(stage: &AtomicUsize) {
     if stage
         .compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst)

@@ -4,7 +4,7 @@
 //! that thread performs any wait-queue fan-out in ordinary task context.
 
 use alloc::sync::Arc;
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 use core::sync::atomic::AtomicUsize;
 use core::{
     ptr,
@@ -76,12 +76,12 @@ fn registration_phase(state: u64) -> RegistrationPhase {
 
 /// Test-only direct wake injection for deterministic in-flight notification
 /// coverage.
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 struct IrqWakeHandle {
     wake: Arc<dyn Fn() -> crate::WakeResult + Send + Sync>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 impl IrqWakeHandle {
     fn from_fn(wake: impl Fn() -> crate::WakeResult + Send + Sync + 'static) -> Self {
         Self {
@@ -94,7 +94,7 @@ impl IrqWakeHandle {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 impl core::fmt::Debug for IrqWakeHandle {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
@@ -106,7 +106,7 @@ impl core::fmt::Debug for IrqWakeHandle {
 #[derive(Debug)]
 enum IrqWaitWake {
     Thread(ThreadWakeHandle),
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     Test(IrqWakeHandle),
 }
 
@@ -123,7 +123,7 @@ impl IrqWaitWake {
                 WakeContext::HardIrq => wake.wake(),
                 WakeContext::Task => wake.wake_from_task(),
             },
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             Self::Test(wake) => wake.wake(),
         }
     }
@@ -135,7 +135,7 @@ struct IrqWaitNode {
     wake: IrqWaitWake,
     state: AtomicU64,
     drain_wake_requested: AtomicBool,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     drain_observed_in_flight: AtomicBool,
 }
 
@@ -145,7 +145,7 @@ impl IrqWaitNode {
             wake,
             state: AtomicU64::new(registration_state(0, RegistrationPhase::Detached)),
             drain_wake_requested: AtomicBool::new(false),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             drain_observed_in_flight: AtomicBool::new(false),
         }
     }
@@ -240,7 +240,7 @@ impl IrqWaitNode {
             match registration_phase(state) {
                 RegistrationPhase::Detached => return true,
                 RegistrationPhase::Attached | RegistrationPhase::Notifying => {
-                    #[cfg(test)]
+                    #[cfg(any(test, all(axtest, feature = "axtest")))]
                     self.drain_observed_in_flight.store(true, Ordering::Release);
                     return false;
                 }
@@ -298,7 +298,7 @@ impl IrqWaitRegistration {
         Self::from_wake(IrqWaitWake::Thread(wake))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn new_test(wake: IrqWakeHandle) -> Self {
         Self::from_wake(IrqWaitWake::Test(wake))
     }
@@ -450,19 +450,19 @@ pub enum IrqNotifyResult {
 #[derive(Debug)]
 pub struct IrqWaitCell {
     waiter: AtomicPtr<IrqWaitNode>,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     register_published: AtomicBool,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pause_after_register_publish: AtomicBool,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     detach_generation_checked: AtomicBool,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pause_after_detach_generation_check: AtomicBool,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     notification_wake_returned: AtomicBool,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pause_after_notification_wake: AtomicBool,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     forced_notify_contention: AtomicUsize,
 }
 
@@ -471,19 +471,19 @@ impl IrqWaitCell {
     pub const fn new() -> Self {
         Self {
             waiter: AtomicPtr::new(ptr::null_mut()),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             register_published: AtomicBool::new(false),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             pause_after_register_publish: AtomicBool::new(false),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             detach_generation_checked: AtomicBool::new(false),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             pause_after_detach_generation_check: AtomicBool::new(false),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             notification_wake_returned: AtomicBool::new(false),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             pause_after_notification_wake: AtomicBool::new(false),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             forced_notify_contention: AtomicUsize::new(0),
         }
     }
@@ -544,7 +544,7 @@ impl IrqWaitCell {
             }
         }
 
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         {
             self.register_published.store(true, Ordering::Release);
             while self.pause_after_register_publish.load(Ordering::Acquire) {
@@ -568,7 +568,7 @@ impl IrqWaitCell {
         let registration = token.registration;
         let state = registration.state.load(Ordering::Acquire);
         if registration_generation(state) == token.generation {
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             {
                 self.detach_generation_checked
                     .store(true, Ordering::Release);
@@ -619,7 +619,7 @@ impl IrqWaitCell {
         let notifying_pending = notifying_pending_waiter();
         let mut observed = self.waiter.load(Ordering::Acquire);
         for _ in 0..IRQ_NOTIFY_CAS_BUDGET {
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             if self
                 .forced_notify_contention
                 .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
@@ -686,7 +686,7 @@ impl IrqWaitCell {
                     // raw reference to this notifier.
                     let registration = unsafe { take_cell_owner(waiter) };
                     let (generation, result) = Self::wake_registration(&registration, context);
-                    #[cfg(test)]
+                    #[cfg(any(test, all(axtest, feature = "axtest")))]
                     self.pause_after_notification_wake();
                     // The direct wake may make the service thread runnable
                     // immediately. Keep its registration in Notifying until
@@ -711,7 +711,7 @@ impl IrqWaitCell {
         // this notifier; null and the sentinel were rejected above.
         let registration = unsafe { take_cell_owner(waiter) };
         let (generation, result) = Self::wake_registration(&registration, context);
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         self.pause_after_notification_wake();
         registration.finish_notification(generation, context);
         Self::notification_result(result)
@@ -753,7 +753,7 @@ impl IrqWaitCell {
         (generation, result)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn pause_after_notification_wake(&self) {
         self.notification_wake_returned
             .store(true, Ordering::Release);

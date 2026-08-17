@@ -581,17 +581,19 @@ impl<T: ?Sized> InterruptibleMutexExt<T> for Mutex<T> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::{RawMutex, owner_spin_eligible};
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn raw_mutex_guard_is_not_send() {
         fn assert_marker<R: lock_api::RawMutex<GuardMarker = lock_api::GuardNoSend>>() {}
         assert_marker::<RawMutex>();
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn owner_spin_requires_every_linux_progress_gate() {
         assert!(owner_spin_eligible(true, true, true, false));
         assert!(!owner_spin_eligible(false, true, true, false));
@@ -600,7 +602,8 @@ mod tests {
         assert!(!owner_spin_eligible(true, true, true, true));
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn raw_mutex_remains_const_constructible() {
         static RAW: RawMutex = RawMutex::new();
         assert!(!lock_api::RawMutex::is_locked(&RAW));

@@ -47,7 +47,7 @@ fn fair_migration_imbalance(
     (imbalance_after < imbalance_before).then_some(imbalance_after)
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 std::thread_local! {
     static BALANCE_CANDIDATE_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
@@ -66,42 +66,42 @@ std::thread_local! {
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reset_balance_candidate_visits() {
     BALANCE_CANDIDATE_VISITS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn balance_candidate_visits() -> usize {
     BALANCE_CANDIDATE_VISITS.get()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reset_load_summary_publications() {
     LOAD_SUMMARY_PUBLICATIONS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn load_summary_publications() -> usize {
     LOAD_SUMMARY_PUBLICATIONS.get()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reset_owner_balance_passes() {
     OWNER_BALANCE_PASSES.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn owner_balance_passes() -> usize {
     OWNER_BALANCE_PASSES.get()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn fail_next_balance_transfer_publication_reservation() {
     FAIL_BALANCE_TRANSFER_PUBLICATION_RESERVATION.set(true);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn fail_next_balance_transfer_after_prepare() {
     FAIL_BALANCE_TRANSFER_AFTER_PREPARE.set(true);
 }
@@ -127,7 +127,7 @@ impl TaskSystem {
     /// scheduling state changes. Timer and owner-work callers that need only a
     /// timestamp therefore cannot mutate `rq->clock` outside the rq commit
     /// protocol.
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn sample_owner_rq_clock(&self, cpu: &CpuLocal) -> RunQueueClockSnapshot {
         let transaction = OwnerRqTxn::begin(self, cpu.remote());
         let clock = transaction.clock();
@@ -140,11 +140,11 @@ impl TaskSystem {
         remote: &CpuRemote,
         run_queue: &CpuRunQueueState,
     ) {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         if remote.publish_run_queue_load_summary(run_queue) {
             LOAD_SUMMARY_PUBLICATIONS.set(LOAD_SUMMARY_PUBLICATIONS.get().saturating_add(1));
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, all(axtest, feature = "axtest"))))]
         let _ = remote.publish_run_queue_load_summary(run_queue);
         self.root_domain
             .publish_run_queue(remote.owner(), run_queue, remote.accepts_placement());
@@ -214,7 +214,7 @@ impl TaskSystem {
                 let top_rt_count =
                     queued_top_rt.map_or(0, |priority| transaction.rt_count_at_priority(priority));
                 let candidate = transaction.next_balance_candidate(&mut scan, |candidate| {
-                    #[cfg(test)]
+                    #[cfg(any(test, all(axtest, feature = "axtest")))]
                     BALANCE_CANDIDATE_VISITS.set(BALANCE_CANDIDATE_VISITS.get().saturating_add(1));
                     let class_allowed = match reason {
                         BalanceReason::IdlePull => !matches!(
@@ -402,7 +402,7 @@ impl TaskSystem {
         {
             return Ok(BalanceTransferOutcome::Retry);
         }
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         let publication_exit = FAIL_BALANCE_TRANSFER_PUBLICATION_RESERVATION
             .replace(false)
             .then(|| {
@@ -412,14 +412,14 @@ impl TaskSystem {
         let carrier = match self.prepare_owner_migration(&core, source, target) {
             Ok(carrier) => carrier,
             Err(_) => {
-                #[cfg(test)]
+                #[cfg(any(test, all(axtest, feature = "axtest")))]
                 drop(publication_exit);
                 return Ok(BalanceTransferOutcome::Retry);
             }
         };
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         drop(publication_exit);
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         if FAIL_BALANCE_TRANSFER_AFTER_PREPARE.replace(false) {
             drop(carrier);
             return Ok(BalanceTransferOutcome::Retry);
@@ -504,7 +504,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         next: ThreadId,
     ) -> Result<OwnerBalanceOutcome, TaskError> {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         OWNER_BALANCE_PASSES.set(OWNER_BALANCE_PASSES.get().saturating_add(1));
         let idle = cpu.remote().idle_thread() == Some(next);
         let class_pull_required = idle

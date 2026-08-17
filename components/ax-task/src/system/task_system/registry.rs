@@ -2,7 +2,7 @@
 
 use super::*;
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 std::thread_local! {
     static PI_DONOR_RECORD_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
@@ -15,32 +15,32 @@ std::thread_local! {
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reset_pi_donor_record_visits() {
     PI_DONOR_RECORD_VISITS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn pi_donor_record_visits() -> usize {
     PI_DONOR_RECORD_VISITS.get()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reset_reaper_record_visits() {
     REAPER_RECORD_VISITS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reaper_record_visits() -> usize {
     REAPER_RECORD_VISITS.get()
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn reset_deadline_callback_record_visits() {
     DEADLINE_CALLBACK_RECORD_VISITS.set(0);
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn deadline_callback_record_visits() -> usize {
     DEADLINE_CALLBACK_RECORD_VISITS.get()
 }
@@ -71,7 +71,7 @@ impl TaskSystemState {
         &mut self,
         thread: ThreadId,
     ) -> Result<DeadlineCallbackClaim, TaskError> {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         DEADLINE_CALLBACK_RECORD_VISITS
             .set(DEADLINE_CALLBACK_RECORD_VISITS.get().saturating_add(1));
         let record = self.thread_record_mut(thread)?;
@@ -341,7 +341,7 @@ impl TaskSystemState {
                 .exited_work
                 .next_candidate()
                 .expect("exit candidate count must match the queue");
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             REAPER_RECORD_VISITS.set(REAPER_RECORD_VISITS.get().saturating_add(1));
             match self.remove_exited_thread_with_lease_count(thread, 0, None) {
                 Ok(record) => return Ok(Some(record)),

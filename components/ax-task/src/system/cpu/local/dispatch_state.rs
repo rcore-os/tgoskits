@@ -87,11 +87,12 @@ impl OwnerDispatchState {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn idle_pull_is_one_shot_until_the_next_idle_entry() {
         let mut state = OwnerDispatchState::new(TaskSystemConfig::new(1));
 

@@ -1,4 +1,12 @@
 use super::*;
+use crate::runtime::task_runtime;
+
+const RUNQUEUE_SEQUENCE_EXHAUSTED_INVARIANT: u32 = 0x5251_0001;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SequenceAllocationError {
+    Exhausted,
+}
 
 impl RunQueue {
     pub(super) fn queued_thread_including_current(
@@ -30,7 +38,7 @@ impl RunQueue {
     }
 
     pub(super) fn membership_class(&self, id: ThreadId) -> Option<QueueMembershipClass> {
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         RUNQUEUE_MEMBERSHIP_LOOKUPS.set(RUNQUEUE_MEMBERSHIP_LOOKUPS.get().saturating_add(1));
         self.membership
             .get(id.slot() as usize)
@@ -76,11 +84,21 @@ impl RunQueue {
     }
 
     pub(super) fn allocate_sequence(&mut self) -> u64 {
+        self.try_allocate_sequence()
+            .unwrap_or_else(|error| match error {
+                SequenceAllocationError::Exhausted => task_runtime::fatal_invariant(
+                    RUNQUEUE_SEQUENCE_EXHAUSTED_INVARIANT,
+                    self.next_sequence as usize,
+                ),
+            })
+    }
+
+    pub(super) fn try_allocate_sequence(&mut self) -> Result<u64, SequenceAllocationError> {
         let sequence = self.next_sequence;
-        self.next_sequence = self
-            .next_sequence
+        let next = sequence
             .checked_add(1)
-            .expect("runqueue sequence exhausted");
-        sequence
+            .ok_or(SequenceAllocationError::Exhausted)?;
+        self.next_sequence = next;
+        Ok(sequence)
     }
 }

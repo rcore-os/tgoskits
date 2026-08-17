@@ -307,7 +307,7 @@ impl PiWaitTree {
         removed
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn assert_invariants(&self) {
         let mut previous = None;
         let (count, _) = validate_node(self.root.as_deref(), &mut previous);
@@ -463,7 +463,7 @@ fn find_first_excluding(
         .or_else(|| find_first_excluding(node.right.as_deref(), excluded))
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 fn validate_node(node: Option<&PiWaitNode>, previous: &mut Option<PiWaitKey>) -> (usize, usize) {
     let Some(node) = node else {
         return (0, 0);
@@ -478,10 +478,16 @@ fn validate_node(node: Option<&PiWaitNode>, previous: &mut Option<PiWaitKey>) ->
     (left_count + right_count + 1, height)
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::*;
-    use crate::{TaskSystem, TaskSystemConfig, ThreadSpec};
+    use crate::ThreadSchedCell;
+
+    fn test_core(id: ThreadId) -> Arc<ThreadCore> {
+        let policy = SchedulePolicy::default();
+        let sched = Arc::new(ThreadSchedCell::new_test(id, policy));
+        Arc::new(ThreadCore::new(id, policy, sched, None, None, None))
+    }
 
     fn key(primary: u64) -> PiWaitKey {
         PiWaitKey::new(
@@ -501,17 +507,15 @@ mod tests {
         )
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn cached_first_and_avl_links_survive_reordering_removals() {
-        let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
-        let thread = system
-            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
-            .unwrap();
+        let thread = test_core(ThreadId::from_parts(0, 1));
         let mut tree = PiWaitTree::new();
         for primary in [30, 10, 50, 20, 40, 60] {
             tree.insert(
                 key(primary),
-                donation(primary, &thread.core),
+                donation(primary, &thread),
                 PiWaitNode::empty(),
             );
             tree.assert_invariants();

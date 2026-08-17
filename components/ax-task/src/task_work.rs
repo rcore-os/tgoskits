@@ -1,6 +1,6 @@
 //! Sticky notification and single-consumer ownership for deferred task work.
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
@@ -18,7 +18,7 @@ pub(crate) struct TaskWorkDoorbell {
     claimed_epoch: AtomicU64,
     consumer_active: AtomicBool,
     worker_state: AtomicU8,
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     publish_barrier: AtomicPtr<TestPublishBarrier>,
 }
 
@@ -30,7 +30,7 @@ impl TaskWorkDoorbell {
             claimed_epoch: AtomicU64::new(0),
             consumer_active: AtomicBool::new(false),
             worker_state: AtomicU8::new(WORKER_UNINSTALLED),
-            #[cfg(test)]
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
             publish_barrier: AtomicPtr::new(core::ptr::null_mut()),
         }
     }
@@ -45,18 +45,18 @@ impl TaskWorkDoorbell {
         }
         #[cfg(not(feature = "qperf-metrics"))]
         let _ = previous;
-        #[cfg(test)]
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
         self.wait_at_test_publish_barrier();
         let _notified = self.event.notify();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn install_test_publish_barrier(&self, barrier: &'static TestPublishBarrier) {
         self.publish_barrier
             .store(core::ptr::from_ref(barrier).cast_mut(), Ordering::Release);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn wait_at_test_publish_barrier(&self) {
         let barrier = self.publish_barrier.load(Ordering::Acquire);
         if !barrier.is_null() {
@@ -159,13 +159,13 @@ impl TaskWorkClaim {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(crate) struct TestPublishBarrier {
     entered: AtomicBool,
     released: AtomicBool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 impl TestPublishBarrier {
     pub(crate) const fn new() -> Self {
         Self {
@@ -205,11 +205,12 @@ impl Drop for TaskWorkConsumerGuard<'_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use super::TaskWorkDoorbell;
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn one_claim_covers_every_generation_published_before_it() {
         let doorbell = TaskWorkDoorbell::new();
         doorbell.publish();
@@ -219,7 +220,8 @@ mod tests {
         assert!(doorbell.claim_pending().is_none());
     }
 
-    #[test]
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn publication_after_claim_owns_a_fresh_generation() {
         let doorbell = TaskWorkDoorbell::new();
         doorbell.publish();

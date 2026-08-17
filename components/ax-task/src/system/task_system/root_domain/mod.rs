@@ -498,7 +498,7 @@ impl RootDomainOverloadIndex {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn for_each_source(&self, excluded: CpuId, mut visit: impl FnMut(CpuId)) {
         self.deadline.for_each(|cpu| {
             if cpu != excluded {
@@ -598,7 +598,7 @@ impl RootDomainOverloadMask {
         None
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn for_each(&self, mut visit: impl FnMut(CpuId)) {
         if self.count.load(Ordering::Acquire) == 0 {
             return;
