@@ -19,6 +19,7 @@ use core::{hint::spin_loop, ptr::null};
 
 pub(crate) use entry::_secondary_entry;
 use loongArch64::{
+    cpu::get_valen,
     register::*,
     time::{Time, get_timer_freq},
 };
@@ -324,7 +325,9 @@ impl ArchTrait for Arch {
     }
 
     fn kernel_space() -> core::ops::Range<usize> {
-        addrspace::PAGE_OFFSET..usize::MAX
+        let base = addrspace::vm_map_base(get_valen())
+            .expect("LoongArch CPU reported an invalid virtual-address length");
+        base..usize::MAX
     }
 
     fn is_mmu_enabled() -> bool {

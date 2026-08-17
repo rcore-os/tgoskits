@@ -233,3 +233,22 @@ fn empty_pending_state_is_a_spurious_interrupt_not_an_exception() {
         "ecode zero with no pending line is a consumed spurious interrupt"
     );
 }
+
+#[test]
+fn targeted_tlb_flush_covers_global_page_pairs() {
+    let flush = section(
+        ARCH_ASM,
+        "pub fn flush_tlb(vaddr: Option<VirtAddr>)",
+        "pub fn update_mmu_cache(vaddr: VirtAddr)",
+    );
+    assert!(
+        flush.contains("INVTLB_ADDR_GTRUE_OR_ASID")
+            && flush.contains("vaddr.as_usize() & !(TLB_PAIR_SIZE - 1)"),
+        "a targeted LoongArch flush must invalidate global or current-ASID entries at the \
+         paired-page address"
+    );
+    assert!(
+        !flush.contains("invtlb 0x05"),
+        "the user-only INVTLB operation leaves stale global kernel translations"
+    );
+}

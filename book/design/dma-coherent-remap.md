@@ -31,6 +31,14 @@ page-attribute updates (`arch/arm64/mm/pageattr.c`). Thus the generic page-table
 contract must split block mappings crossed by protection boundaries even though
 coherent DMA no longer depends on direct-map protection.
 
+On LoongArch, Linux derives `vm_map_base` from the raw CPUCFG VABITS sign-bit
+index and keeps `vmalloc` in XKVRANGE, separate from the DMW direct map that
+bypasses page-table walking. LoongArch TLB entries cover even/odd page pairs;
+Linux aligns kernel range invalidations to the pair and uses
+`INVTLB_ADDR_GTRUE_OR_ASID`, which includes global kernel translations. The
+runtime alias path must preserve both rules or a valid PTE can remain hidden by
+a stale paired TLB entry.
+
 ## Chosen design
 
 One coherent allocation has four distinct values and owners:
@@ -81,6 +89,9 @@ This deliberately avoids a fallback to in-place direct-map attribute changes.
 
 - deterministic page-table test: protecting one base page inside a huge leaf
   changes only that page and preserves neighbor attributes;
+- LoongArch regressions: the page-table allocation window excludes every DMW
+  direct-map address, targeted invalidation includes global paired entries, and
+  the full NVMe-backed QEMU suite exercises consecutive coherent aliases;
 - coherent lifecycle tests: the returned CPU alias is distinct from the stored
   allocator address; release unmaps the alias before freeing original pages;
   failure after mapping begins never frees the pages;
