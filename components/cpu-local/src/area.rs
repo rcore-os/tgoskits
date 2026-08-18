@@ -176,6 +176,8 @@ impl CpuAreaRef {
     /// remains mapped until shutdown. No caller may mutate its identity fields.
     #[doc(hidden)]
     pub unsafe fn from_initialized_base(area_base: usize) -> Result<Self, CpuLocalError> {
+        #[cfg(feature = "host-test")]
+        crate::register::host_test::record_initialized_area_validation();
         validate_area_base(area_base)?;
         let prefix = NonNull::new(area_base as *mut CpuAreaPrefix)
             .ok_or(CpuLocalError::InvalidAreaBase { base: area_base })?;

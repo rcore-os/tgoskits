@@ -97,6 +97,24 @@ pub(crate) fn current_area() -> Result<CpuAreaRef, CpuLocalError> {
     unsafe { CpuAreaRef::from_initialized_base(area_base) }
 }
 
+/// Reads the architecture CPU-area base without validating current context.
+///
+/// # Safety
+///
+/// The caller must prevent migration and context switches while using the
+/// selected CPU. The installed area must remain mapped until shutdown.
+#[inline(always)]
+pub(crate) unsafe fn current_cpu_area_base() -> Result<usize, CpuLocalError> {
+    let area_base = unsafe { imp::read_cpu_base()? };
+    if area_base == 0 {
+        return Err(CpuLocalError::AreaNotInstalled);
+    }
+    if !area_base.is_multiple_of(core::mem::align_of::<crate::CpuAreaPrefix>()) {
+        return Err(CpuLocalError::InvalidAreaBase { base: area_base });
+    }
+    Ok(area_base)
+}
+
 /// Commits the current-context source before the architecture switch tail.
 ///
 /// # Safety
@@ -198,21 +216,29 @@ fn validated_context_pointer(raw: usize) -> Result<NonNull<ExecutionContextHeade
 
 #[cfg(feature = "host-test")]
 pub(crate) mod host_test {
-    /// Number of modeled architecture register reads since the last reset.
+    /// Number of modeled architecture-register operations since the last reset.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct RegisterReadCounts {
-        /// Reads of the architecture current-context pointer.
+        /// Reads of the architecture CPU-area base.
+        pub cpu_base: usize,
+        /// Reads of the selected architecture current-context source.
         pub current_context: usize,
+        /// Complete reconstructions and identity checks of an initialized area.
+        pub initialized_area_validations: usize,
     }
 
-    /// Resets the current host thread's modeled register read counters.
+    /// Resets the current host thread's modeled register-operation counters.
     pub fn reset_register_read_counts() {
         super::imp::reset_register_read_counts();
     }
 
-    /// Returns the current host thread's modeled register read counters.
+    /// Returns the current host thread's modeled register-operation counters.
     pub fn register_read_counts() -> RegisterReadCounts {
         super::imp::register_read_counts()
+    }
+
+    pub(crate) fn record_initialized_area_validation() {
+        super::imp::record_initialized_area_validation();
     }
 }
 

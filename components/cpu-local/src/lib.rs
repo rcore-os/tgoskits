@@ -37,7 +37,7 @@ pub use switch::{PreparedContextSwitch, PreviousContextBinding, prepare_context_
 pub use symbol::{cpu_area_template_base, cpu_area_template_size};
 pub use thread::*;
 
-/// Host-only observations of the modeled architecture register boundary.
+/// Host-only observations of the modeled architecture-register boundary.
 #[cfg(feature = "host-test")]
 #[doc(hidden)]
 pub mod host_test {
