@@ -245,7 +245,7 @@ fn handle_riscv_mmio_write(
     vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>,
     exit: MmioWriteExit,
 ) -> AxVmResult<BoundVcpuExit<RiscvDeferredRunWork>> {
-    let result = super::handle_mmio_write::<Riscv64Arch>(vm, exit)?;
+    let result = super::handle_mmio_write::<Riscv64Arch>(vm, vcpu, exit)?;
     sync_vplic_vseip(vm, vcpu)?;
     Ok(result)
 }
@@ -291,6 +291,7 @@ fn handle_riscv_nested_page_fault(
             RiscvVmExit::MmioWrite { addr, width, data } => {
                 super::try_handle_mmio_write::<Riscv64Arch>(
                     vm,
+                    vcpu,
                     MmioWriteExit {
                         addr: riscv_guest_phys_addr_to_ax(addr),
                         width: riscv_access_width_to_ax(width),

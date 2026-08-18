@@ -630,7 +630,7 @@ fn poll_vm_dma_devices(vm: &VMRef) {
         return;
     };
     let now_ns = ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos();
-    let mut memory = crate::vm::VmDmaAccess::new(vm);
+    let mut memory = crate::vm::VmGuestMemoryAccess::new(vm);
     devices.poll_dma_devices(now_ns, &mut memory, |result| {
         if let Err(error) = result {
             warn!("VM[{}] failed to poll DMA virtual device: {error}", vm.id());

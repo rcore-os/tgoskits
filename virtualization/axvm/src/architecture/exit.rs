@@ -1,5 +1,6 @@
 //! Architecture-neutral handlers for exits shared by every guest architecture.
 
+use axdevice_base::{BusKind, DeviceAccess, DeviceVcpuId};
 use axvm_types::VmArchVcpuOps;
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
@@ -21,14 +22,20 @@ pub(crate) fn try_handle_mmio_read<V: VmArchVcpuOps>(
     vcpu: &crate::vm::AxVCpuRef<V>,
     exit: MmioReadExit,
 ) -> AxVmResult<bool> {
+    let access = DeviceAccess::new(
+        DeviceVcpuId::new(vcpu.id()),
+        BusKind::Mmio,
+        exit.addr.as_usize() as u64,
+        exit.width,
+    );
     let Some(raw) = vm
         .get_devices()?
-        .try_handle_mmio_read(exit.addr, exit.width)
+        .try_read(&access)
         .map_err(|error| AxVmError::device("read guest MMIO", error))?
     else {
         return Ok(false);
     };
-    let masked = raw & crate::vm::width_mask(exit.width);
+    let masked = raw as usize & crate::vm::width_mask(exit.width);
     let val = if exit.signed_ext {
         crate::vm::sign_extend_value(masked, exit.width)
     } else {
@@ -40,9 +47,10 @@ pub(crate) fn try_handle_mmio_read<V: VmArchVcpuOps>(
 
 pub(crate) fn handle_mmio_write<A: ArchOps>(
     vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
     exit: MmioWriteExit,
 ) -> AxVmResult<BoundVcpuExit<A::DeferredRunWork>> {
-    if !try_handle_mmio_write::<A>(vm, exit)? {
+    if !try_handle_mmio_write::<A>(vm, vcpu, exit)? {
         return Err(missing_mmio_error("write", exit.addr, exit.width));
     }
     Ok(BoundVcpuExit::Continue)
@@ -50,9 +58,16 @@ pub(crate) fn handle_mmio_write<A: ArchOps>(
 
 pub(crate) fn try_handle_mmio_write<A: ArchOps>(
     vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
     exit: MmioWriteExit,
 ) -> AxVmResult<bool> {
-    let handled = vm.try_handle_mmio_write(exit.addr, exit.width, exit.data as usize)?;
+    let access = DeviceAccess::new(
+        DeviceVcpuId::new(vcpu.id()),
+        BusKind::Mmio,
+        exit.addr.as_usize() as u64,
+        exit.width,
+    );
+    let handled = vm.try_write_device(&access, exit.data)?;
     if handled {
         A::after_mmio_write(vm);
     }
