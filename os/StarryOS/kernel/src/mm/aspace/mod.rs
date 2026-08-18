@@ -49,6 +49,41 @@ pub use self::{
 type MovedPage = (VirtAddr, VirtAddr, PhysAddr, MappingFlags, usize, bool);
 const CLONED_ADDR_SPACE_LOCK_SUBCLASS: u32 = 1;
 
+/// Pages a file-backed COW read/exec fault reads ahead beyond the faulting page.
+const FAULT_READAHEAD_PAGES: usize = 32;
+
+/// Fault-in window for a page fault at page-aligned `fault_page`.
+///
+/// When `widen` is set (a file-backed COW read/exec fault), the window extends
+/// forward to at most [`FAULT_READAHEAD_PAGES`] pages, clamped so it never
+/// crosses `area_end` — the VMA tail. This lets `CowBackend::populate` coalesce
+/// the run of absent pages into a single backing read instead of one read per
+/// fault, which is what makes demand-paged ELF/`.so` exec + dynamic linking
+/// fast.
+///
+/// Every other fault (`widen` clear: write fault, anonymous area, or non-4K
+/// page size) stays a single page: anonymous pages must stay lazily reserved
+/// (RSS), and a widened *write* fault would map the readahead pages
+/// writable/dirty (breaking COW + RSS classification), because `alloc_file_run`
+/// applies the fault's access to the whole run.
+///
+/// The window feeds `CowBackend::populate`, which splits it at already-resident
+/// pages, so a resident page inside the window yields separate backing reads
+/// rather than one read spanning it.
+fn fault_readahead_window(
+    fault_page: VirtAddr,
+    page_size: usize,
+    area_end: VirtAddr,
+    widen: bool,
+) -> VirtAddrRange {
+    if !widen {
+        return VirtAddrRange::from_start_size(fault_page, page_size);
+    }
+    let to_area_end = area_end.as_usize().saturating_sub(fault_page.as_usize());
+    let size = (PAGE_SIZE_4K * FAULT_READAHEAD_PAGES).min(to_area_end);
+    VirtAddrRange::from_start_size(fault_page, size)
+}
+
 fn rollback_moved_pages(cursor: &mut PageTable, moved_pages: &[MovedPage]) {
     for &(src_va, dst_va, paddr, flags, page_size, dst_newly_mapped) in moved_pages.iter().rev() {
         if dst_newly_mapped {
@@ -611,8 +646,16 @@ impl AddrSpace {
             let flags = area.flags();
             if flags.contains(access_flags) {
                 let page_size = area.backend().page_size();
+                let fault_page = vaddr.align_down(page_size);
+                // File-backed COW read/exec faults widen into a forward readahead
+                // window (see [`fault_readahead_window`]); every other fault stays a
+                // single page.
+                let widen = page_size == PAGE_SIZE_4K
+                    && !access_flags.contains(MappingFlags::WRITE)
+                    && area.backend().wants_fault_readahead();
+                let range = fault_readahead_window(fault_page, page_size, area.end(), widen);
                 let populate_result = area.backend().populate(
-                    VirtAddrRange::from_start_size(vaddr.align_down(page_size), page_size as _),
+                    range,
                     flags,
                     access_flags,
                     Some(&self.rss),

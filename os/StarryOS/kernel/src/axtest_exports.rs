@@ -78,6 +78,10 @@ pub fn cow_file_max_read_len_boundary_rules_hold() -> bool {
     super::mm::cow_file_max_read_len_boundary_rules_hold_for_test()
 }
 
+pub fn readahead_window_batches_absent_runs() -> bool {
+    super::mm::readahead_window_batches_absent_runs_for_test()
+}
+
 pub fn concurrent_epoll_reverse_add_is_serialized() -> bool {
     super::file::concurrent_reverse_add_is_serialized_for_test()
 }

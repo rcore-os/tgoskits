@@ -57,6 +57,11 @@ fn cow_file_max_read_len_boundary_rules_hold() {
 }
 
 #[axtest]
+fn readahead_window_batches_absent_runs() {
+    ax_assert!(axtest_exports::readahead_window_batches_absent_runs());
+}
+
+#[axtest]
 fn stats_classify_and_accumulate_rules_hold() {
     ax_assert!(axtest_exports::stats_classify_and_accumulate_rules_hold());
 }
