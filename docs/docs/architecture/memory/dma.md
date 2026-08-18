@@ -288,7 +288,7 @@ flowchart LR
 
 ### 8.1 源码检查点
 
-Unsafe 修改必须遵循 `book/guideline/code-quality.md` 的 Safety contract 要求。
+Unsafe 修改必须遵循 `docs/guideline/code-quality.md` 的 Safety contract 要求。
 
 | 源码 | 审计重点 |
 | --- | --- |

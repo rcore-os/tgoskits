@@ -198,7 +198,7 @@ Use this order when auditing an early boot port:
     publishes one per-CPU `KICKED` state before that hook, waits for the secondary to report
     `ALIVE` at the common entry, and then releases exactly that CPU as `SHOULD_ONLINE`. Keep this
     handshake outside immutable trampoline metadata and separate from the later OS scheduler,
-    IRQ, and timer online publication. See `book/design/someboot-secondary-cpu-startup.md`.
+    IRQ, and timer online publication. See `docs/design/someboot-secondary-cpu-startup.md`.
 
 ## RISC-V FDT SMP Notes
 
