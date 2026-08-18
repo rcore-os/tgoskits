@@ -3,54 +3,106 @@ sidebar_position: 5
 sidebar_label: "Axvisor 客户机 Machine"
 ---
 
-# Axvisor 客户机配置与 Machine 设备模型
+# Axvisor 客户机配置与 Machine 设计
 
-本文定义 Axvisor 客户机配置、物理设备选择、虚拟平台设备和宿主控制台的所有权边界。
-它是配置格式与虚拟硬件行为的设计依据，可以脱离具体实现 diff 独立评审。
+Axvisor 客户机 Machine 设计把用户可持久化的 VM 配置、架构固定的平台设备、物理设备直通、虚拟设备图和宿主控制台复用拆成几个明确边界。用户 TOML 只描述客户机身份、启动镜像、内存、物理设备选择器和虚拟设备语义参数；地址、端口、中断控制器输入、固件节点和运行时设备注册由 `axvmconfig`、`os/axvisor/src/config.rs`、`virtualization/axvm` 与 `virtualization/axdevice` 在 VM 创建路径中解析和规划。
 
-## 问题与目标
+这个设计的核心约束是单一事实来源。`GuestConfig` 是持久化输入，`AxVMConfig` 是 AxVM 内部运行配置，`MachineProfile` 提供架构默认平台资源，`ResolvedDeviceGraph` 是设备地址和中断规划结果，`DeviceRuntime` 是 VM 运行时唯一的设备派发表。
 
-旧客户机配置同时暴露了设备型号、客户机地址、宿主地址、IRQ、数字设备类型和
-`cfg_list`。这些字段把 machine 固有资源、物理设备发现结果和用户策略混在一个
-持久化格式中，导致同一种串口在不同配置里重复描述，也使默认透传很容易把宿主
-控制台映射给客户机。
+## 1. 设计范围
 
-本设计的目标是：
+客户机 Machine 不等同于某个架构的 QEMU machine type，也不等同于一份 VM TOML。它是 Axvisor 在创建一个 VM 时形成的 guest-visible 平台契约，覆盖 vCPU 拓扑、stage-2 地址空间策略、machine-owned 控制器、默认虚拟串口、普通虚拟设备、物理设备直通和 guest firmware 描述。
 
-- 用户描述客户机类型、需要选择或禁用的物理设备，以及开放式的虚拟设备语义选项。
-- machine profile 独占虚拟串口、中断控制器、定时器和固件接口等平台事实。
-- 普通虚拟设备只声明所需资源数量，地址和中断由设备图确定性自动分配。
-- 全虚拟化客户机从空物理地址空间开始；设备直通客户机从可分配物理资源全集开始。
-- 宿主物理 UART 永远由宿主持有；每个客户机总有一个虚拟串口。
-- 所有虚拟设备只使用客户机本地 IRQ 线，不接收宿主裸 IRQ 编号。
-- Axvisor 应用层是宿主控制台输入的唯一读取者，并按 VM ID 路由字符。
+### 1.1 入口边界
 
-非目标包括 IRQ 直达、用户填写串口地址/IRQ、关闭默认串口、自动改写客户机内核命令行，
-以及兼容旧客户机配置。用户可以通过普通 `devices.virtual` 请求覆盖 `console0` 的型号和
-语义参数，或增加其他串口。
+当前入口从 `os/axvisor/src/config.rs::init_guest_vm()` 开始，配置先经 `axvmconfig::GuestConfig::from_toml()` 解析，再由 `build_axvm_config()` 转为 `AxVMConfig`。随后 `prepare_guest_boot()` 补齐镜像、DTB/FDT 或 ACPI 相关资源，`AxVM::new()` 创建 VM 对象，`vm.prepare()` 进入各架构的 VM 资源准备路径。
 
-## 配置格式
+```mermaid
+flowchart TD
+    toml["Guest TOML"]
+    guestConfig["axvmconfig::GuestConfig"]
+    axvisorConfig["build_axvm_config()"]
+    axvmConfig["axvm::config::AxVMConfig"]
+    boot["prepare_guest_boot()"]
+    vm["AxVM::new()"]
+    plan["CurrentArch::create_vm_resources()"]
+    prepare["AxVM::prepare()"]
 
-持久化入口是 `GuestConfig`。所有配置类型直接派生 Serde 与 JSON Schema，并拒绝
-未知字段。配置没有版本号，也不接受旧字段别名。
+    toml --> guestConfig
+    guestConfig --> axvisorConfig
+    axvisorConfig --> axvmConfig
+    axvmConfig --> boot
+    boot --> vm
+    vm --> plan
+    vm --> prepare
+```
+
+这条链路把“解析配置”和“构造硬件平台”分开。`axvmconfig` 不知道具体架构的 GIC、PLIC、IOAPIC 或 PCH-PIC；架构 VM plan 不重新解析 TOML，只读取 `AxVMConfig` 中已经规范化的字段。
+
+### 1.2 所有权原则
+
+Machine 设计中的每一类信息只有一个 owner。文档、配置和代码维护时应先判断要改的是持久化 schema、AxVM 内部配置、架构 machine profile、设备模型，还是宿主应用层控制台策略。
+
+| 信息 | Owner | 主要代码锚点 |
+| --- | --- | --- |
+| 用户 TOML schema | `axvmconfig` | `GuestConfig`、`VMBaseConfig`、`VMKernelConfig`、`GuestDevices` |
+| VM 内部运行配置 | `axvm` | `AxVMConfig`、`AxVMConfigParams`、`PhysCpuList` |
+| 架构固定平台资源 | `axvm::machine` | `MachineProfile`、`GuestSerialProfile`、`GuestGicProfile`、`GuestPlicProfile` |
+| 虚拟设备声明和资源规划 | `axdevice` / `axvm::configured` | `DeviceModel`、`ConfiguredDeviceCatalog`、`VmDevicePlan` |
+| 物理设备选择与 FDT 解析 | `axvm::boot::fdt` | `find_all_passthrough_devices()`、`parse_passthrough_devices_address()`、`parse_vm_interrupt()` |
+| VM 设备运行时 | `axdevice` | `DeviceRuntimeBuilder`、`DeviceBundle`、`DeviceRuntime` |
+| 宿主控制台输入复用 | Axvisor app | `GuestConsoleMux`、`serial_backend_factory()` |
+
+这个拆分避免用户配置直接携带裸 MMIO、PIO 或 IRQ 数字。数字资源可以存在于 machine profile 或设备模型的 `requirements()` 里，但普通 TOML 只保留稳定 ID、model 和设备语义参数。
+
+## 2. 配置模型
+
+Axvisor VM 配置由 `GuestConfig` 承载，包含 `[base]`、`[kernel]` 和 `[devices]` 三个段落。所有公开配置结构都使用 Serde 解析并开启 `deny_unknown_fields`，因此新字段必须先进入 schema，旧字段或拼写错误不会被静默忽略。
+
+### 2.1 基础配置
+
+`VMBaseConfig` 定义 VM 身份和 CPU 拓扑。`id` 和 `name` 用于 VM 管理与日志；`cpu_num` 决定 vCPU 数量；`phys_cpu_ids` 表示暴露给 guest 的物理 CPU ID；`phys_cpu_sets` 表示每个 vCPU 可运行的 host CPU mask。
+
+| 字段 | 语义 | 转换目标 |
+| --- | --- | --- |
+| `id` | VM ID | `AxVMConfig::id` |
+| `name` | VM 名称 | `AxVMConfig::name` |
+| `guest_type` | 地址空间和物理设备分配策略 | `AddressSpacePolicy` |
+| `cpu_num` | vCPU 数量 | `PhysCpuList::cpu_num` |
+| `phys_cpu_ids` | guest 看到的 CPU 硬件 ID | `PhysCpuList::phys_cpu_ids` |
+| `phys_cpu_sets` | vCPU 到 host CPU 的亲和性 mask | `PhysCpuList::phys_cpu_sets` |
+
+`VMBaseConfig` 仍接受 `vm_type` 作为反序列化 alias，并把旧数值 `0`、`1` 映射到 `GuestType::Passthrough`，把 `2` 映射到 `GuestType::Virtualized`。序列化和 schema 只暴露 `guest_type`，因此新配置不应继续写旧 `vm_type`。
+
+### 2.2 启动配置
+
+`VMKernelConfig` 保存入口地址、镜像路径、加载地址、DTB、ramdisk、命令行和内存区域。`effective_boot_protocol()` 以 `boot_protocol` 为优先级，缺省时根据 `enable_bios` 选择 `VMBootProtocol::Multiboot` 或 `Direct`。
+
+| boot protocol | 支持架构 | 固件输入规则 |
+| --- | --- | --- |
+| `direct` | `x86_64`、`aarch64`、`riscv64`、`loongarch64` | 不需要 firmware path 或 firmware load address |
+| `multiboot` | `x86_64` | `bios_path` 可选；若提供则必须提供 `bios_load_addr` |
+| `uefi` | `x86_64`、`loongarch64` | 必须提供 `uefi_firmware_path` 或兼容的 `bios_path`，并提供 `bios_load_addr` |
+
+`validate_boot_config()` 在配置解析阶段检查协议和 `enable_bios` 是否冲突。`os/axvisor/src/config.rs::boot_firmware_load_gpa()` 和 boot preparation 路径再把这些字段转为 `VMImageConfig` 和 `GuestBootPolicy`，必要时会调整 kernel load address 以容纳 firmware boot 所需区域。
+
+### 2.3 内存配置
+
+`kernel.memory_regions` 使用 `VmMemConfig` 表示 guest RAM 或保留区。每个条目携带 `gpa`、`size`、`flags` 和 `map_type`，其中 `map_type` 经 `VmMemMappingTypeSerde` 从 TOML 数字映射到 `MapAlloc`、`MapIdentical` 或 `MapReserved`。
+
+| map type | 数值 | 运行时含义 |
+| --- | ---: | --- |
+| `MapAlloc` | `0` | VM monitor 分配 host 内存并映射到 guest GPA |
+| `MapIdentical` | `1` | guest GPA 与 host PA 做 identity mapping，常用于直通 DMA 场景 |
+| `MapReserved` | `2` | 作为 guest-owned/reserved 区域参与地址空间打洞，不作为普通 guest RAM |
+
+FDT boot 路径还会通过 `parse_reserved_memory_regions()` 把 DTB `/reserved-memory` 中未与显式 memory region 重叠的区域追加为 `MapReserved`。`sync_axvm_config_from_crate_config()` 随后把补齐后的 memory list 写回 `AxVMConfig`，避免 AxVM 准备阶段仍看到旧快照。
+
+### 2.4 设备配置
+
+`GuestDevices` 把物理设备选择和虚拟设备请求分开。`passthrough` 与 `disabled` 只接受 `PhysicalDeviceRef { path }`，当前 selector 必须是绝对 FDT 路径且不能是 `/`；`virtual` 则解析为 `VirtualDeviceRequest { id, model, options }`。
 
 ```toml
-[base]
-id = 1
-name = "linux"
-guest_type = "passthrough"
-cpu_num = 1
-phys_cpu_sets = [1]
-
-[kernel]
-entry_point = 0x4008_0000
-kernel_path = "/guest/linux/Image"
-kernel_load_addr = 0x4008_0000
-image_location = "fs"
-memory_regions = [
-  [0x4000_0000, 0x4000_0000, 0x7, 0],
-]
-
 [devices]
 passthrough = [
   { path = "/soc/virtio_mmio@10001000" },
@@ -60,183 +112,251 @@ disabled = [
 ]
 
 [[devices.virtual]]
-id = "sensor0"
-model = "demo-mmio"
-sample_rate = 1000
+id = "net0"
+model = "virtio-net"
+guest_mac = [2, 0, 0, 0, 0, 1]
 ```
 
-`GuestType` 只有两个值：
+`VirtualDeviceRequest::validate()` 限制 ID 和 model 的字符集，并拒绝 `irq_id`、`mmio_base`、`pio_base`、`msi_device_id`、`lpi_id` 等 framework-owned 数字资源字段。设备可以在 `options` 中定义容量、MAC、backend 等语义参数，但不能绕过资源规划器指定地址或中断线。
 
-- `virtualized`：初始没有物理映射，只解析 `devices.passthrough` 中显式选择的设备。
-- `passthrough`：初始选择平台发现的全部 guest-assignable 物理设备，再移除
-  `devices.disabled`、宿主拥有的设备和 machine profile 的虚拟资源。
+## 3. 配置转换
 
-`PhysicalDeviceRef` 是物理设备身份，不是资源描述。第一阶段支持设备树路径；
-后续增加 PCI BDF 或 ACPI 身份时必须继续由平台发现层解析，不能重新暴露裸地址或 IRQ。
+配置转换由 Axvisor app 层完成，目标是把持久化 schema 转成 AxVM 能直接消费的 `AxVMConfig`。这个阶段不会构建设备，也不会注册 VM；它只选择 machine 默认值、注册 app 侧 virtual-device catalog，并把 guest type 映射到地址空间策略。
 
-`devices.virtual` 使用稳定 `id`、规范 `model` 和设备私有 options。配置 catalog 把
-options 解析为类型化模型；未知 model 或未知字段明确失败。普通设备不能在 TOML 中
-指定 MMIO、PIO、IRQ、MSI 或 LPI 数字。
+### 3.1 AxVM 配置生成
 
-以下字段被永久移除并应在解析时失败：
+`build_axvm_config()` 是 TOML schema 和 AxVM runtime config 之间的主要边界。它从 `GuestConfig` 提取 VM ID、CPU 列表、entry point、镜像加载地址、memory regions、物理设备 selector 和 virtual device requests，同时注入 machine serial profile 和 Axvisor 的串口 backend factory。
 
-- `vm_type`、`address_space_policy`、`interrupt_mode`
-- `emu_devices`、数字设备类型和 `cfg_list`
-- `irq_id`、`kernel.disk_path` 及其他裸虚拟设备资源
-- `passthrough_devices`、`excluded_devices`
-- `passthrough_addresses`、`passthrough_ports`
-- 顶层 `serial`、配置版本、串口裸地址/IRQ/controller 和 `enabled = false`
-
-## Machine profile
-
-machine profile 只提供 host 固件未选择控制台时的最后兜底。有效的 host FDT/ACPI
-snapshot 优先；用户同 ID 请求随后覆盖 model/options。固定地址和 IRQ 始终是内部 binding，
-不进入 TOML。
-
-| 架构 | 虚拟串口 | 资源来源 |
+| `GuestConfig` 来源 | `AxVMConfigParams` 目标 | 说明 |
 | --- | --- | --- |
-| x86_64 | SPCR 选择的 16550/PL011；否则 16550 COM1 | host ACPI 地址空间、range、GSI、clock 和 namespace；否则 PIO `0x3f8..=0x3ff`、GSI 4 |
-| AArch64 | PL011 或 16550 | 复用 host FDT `stdout-path` 的地址、跨度、IRQ 与节点身份；QEMU `virt` 回退为 PL011 `0x0900_0000/0x1000`、INTID 33、24 MHz |
-| RISC-V | host FDT 选择的 PL011/NS16550；否则 NS16550 | host `stdout-path`；否则 MMIO `0x1000_0000/0x100`、PLIC source 10、3.6864 MHz |
-| LoongArch | SPCR 选择的 MMIO 16550/PL011；否则 NS16550 | host ACPI range、GSI、clock 和 namespace；否则 MMIO `0x1fe0_01e0/0x100`、PCH-PIC line 2、100 MHz |
+| `base.id` / `base.name` | `id` / `name` | 保持用户配置身份 |
+| `base.cpu_num`、`phys_cpu_ids`、`phys_cpu_sets` | `PhysCpuList::new()` | 架构后续按该列表创建 vCPU |
+| `kernel.entry_point` | `AxVCpuConfig` | BSP/AP 入口当前都取同一 entry |
+| `kernel.kernel_load_addr` | `VMImageConfig::kernel_load_gpa` | boot preparation 可能后续 relocation |
+| `devices.passthrough` | `pass_through_devices` | 先保存 unresolved FDT path |
+| `devices.disabled` | `excluded_devices` | 后续 FDT parser 用于打洞和 IRQ 排除 |
+| `base.guest_type` | `address_space_policy` | `Virtualized` 或 `Passthrough` |
+| `devices.virtual` | `virtual_device_requests` | 交给 configured catalog 实例化 |
 
-在 FDT 固件平台上，machine 根据 host 控制台节点的 compatible 选择模型：
-`arm,pl011` 创建虚拟 PL011，`ns16550(a)` 或 DW APB UART 创建虚拟 16550。虚拟节点
-保留 host 的节点路径、phandle、`reg`、`interrupt-parent`、interrupt specifier、
-`reg-shift` 和 `reg-io-width`；原硬件时钟依赖替换为虚拟 fixed-clock。ACPI 平台把
-SPCR 先转为拥有所有权的结构化 snapshot，不复制任意 host AML。
+当 `guest_type = "passthrough"` 且用户没有显式 `devices.passthrough` 时，`build_axvm_config()` 会使用当前 `MachineProfile::default_passthrough_device_path`。AArch64、RISC-V 和 LoongArch 的默认值是 `/`，表示后续 FDT 发现路径负责展开可直通设备；x86_64 当前为 `None`。
 
-默认请求规范化为稳定 ID `console0`。用户不提供该 ID 时行为不变；同 ID 请求完整替换
-model/options，不做逐字段 TOML merge。model/transport 兼容时保留 host fixed binding 与
-firmware identity，不兼容时自动分配新地址和 IRQ。其他 ID 表示新增串口。每 VM 只能有
-一个 `host-console` backend owner。
+### 3.2 Catalog 装配
 
-stage-2 GPA 位宽同样由 machine plan 决定。若一个 VM 的 vCPU 可以运行在多个物理
-CPU 上，规划器必须对这些 CPU 的真实能力取最小支持位宽，不能按启动 CPU 的能力
-扩大地址空间。
+`ConfiguredDeviceCatalog::new()` 内置串口 model 和 `ivc-channel` model。Axvisor app 额外在 `build_axvm_config()` 注册 `os/axvisor/src/virtio_blk.rs::REGISTRATION` 和 `os/axvisor/src/virtio_net.rs::REGISTRATION`，因此当前可由 TOML 请求的普通 model 包括串口、IVC、virtio-blk 和 virtio-net。
 
-地址规划顺序固定为：
+| model | 注册位置 | 当前资源策略 |
+| --- | --- | --- |
+| `pl011-mmio` | `axvm::machine::factory` | 默认 `console0` 可使用 machine fixed binding；额外实例可自动分配 |
+| `uart16550-mmio` | `axvm::machine::factory` | 默认 `console0` 可使用 machine fixed binding；额外实例可自动分配 |
+| `uart16550-pio` | `axvm::machine::factory` | x86 默认 COM1 使用 fixed PIO；额外实例可自动分配 |
+| `ivc-channel` | `axvm::configured::ivc` | MMIO aperture 和 notify IRQ 默认自动规划 |
+| `virtio-net` | `os/axvisor/src/virtio_net.rs` | 当前固定 MMIO `0x0a00_0000/0x200`、wired IRQ input `48` |
+| `virtio-blk` | `os/axvisor/src/virtio_blk.rs` | 当前固定 MMIO `0x0a00_0200/0x200`、wired IRQ input `49` |
 
-1. 根据 `GuestType` 建立空映射或默认 identity-passthrough window。
-2. 保留客户机 RAM 与启动描述区。
-3. 保留宿主物理控制台 UART 等 host-owned 设备。
-4. 解析完整设备图并保留 machine、host replacement 和配置虚拟设备资源。
-5. 应用 `disabled` 设备形成的保留区。
-6. 解析并加入最终允许的物理设备映射。
+这里的“固定”是设备模型对资源规划器的请求，不是用户 TOML 字段。`VmDevicePlan` 会把 fixed requirements 加入 allowlist，并仍然检查它们不能与 guest RAM、host replacement 或其他固定范围冲突。
 
-因此虚拟串口的陷入区总是 stage-2 hole；相同地址上的宿主 UART 不可能透传。
-显式选择 host-owned UART 必须返回 `host-owned device` 错误，不能静默忽略。
-x86 的 local APIC window `0xfee0_0000/0x1000` 同样由架构层永久保留：VMX 在该
-hole 上安装 APIC-access backing page，SVM 保持未映射并通过 nested page fault
-进入软件 vLAPIC，任何客户机类型都不能把宿主 LAPIC 恒等映射给客户机。
+### 3.3 Boot 补齐
 
-## 设备 runtime
+`init_guest_vm()` 在 `build_axvm_config()` 后调用 `prepare_guest_boot()`，让 boot pipeline 根据架构和镜像来源补齐配置。FDT 路径会解析 host DTB、保留 excluded device range、展开 passthrough device 地址和 IRQ；UEFI 或 multiboot 路径会处理 firmware image 与 boot policy。
 
-普通设备遵循统一的 `ConfiguredModelRegistration -> Arc<dyn DeviceModel> ->
-ResolvedDeviceGraph -> DeviceBundle -> DeviceRuntime` 路径。registration 的普通函数只负责把
-options 转为类型化 model；同一个 model 实例执行纯 `requirements()`、`firmware()` 与受限 `build()`。
-架构层创建中断控制器、host replacement 和不可变 machine plan，并决定自己的注册顺序。
-bundle 注册资源、typed service、grant、controller 和 interrupt endpoint 是一个事务，
-任一步失败都必须完整回滚。拓扑 seal 后不能再增加资源或服务，不保留设备类型 enum、
-中心 factory lookup 或 legacy fallback。
+这一步会修改 `AxVMConfig` 和 `GuestConfig` 的派生字段，因此 `sync_axvm_config_from_crate_config()` 必须在 boot preparation 后再次同步 memory regions。典型例子是 DTB `/reserved-memory` 追加了 `MapReserved` 区域，如果不写回 AxVMConfig，后续 stage-2 地址规划会把这些保留区当作可直通窗口。
 
-## 串口与中断所有权
+## 4. Machine Profile
 
-`axdevice` 拥有协议状态机：
+`MachineProfile` 是架构默认 guest-visible 平台资源。它包含强制虚拟串口、FDT interrupt encoding、AArch64 timer、AArch64 GIC、RISC-V PLIC 和默认 passthrough discovery root。`AxVMConfig::new()` 会根据 `CurrentArch::MACHINE_ARCHITECTURE` 和 vCPU 数调用 `current_machine_profile()`。
 
-- 可复用 16550 核心负责 FIFO、LSR/IIR/IER/FCR/LCR 和 DLAB。
-- x86 使用 PIO adapter；RISC-V 与 LoongArch 使用 machine profile 指定的 MMIO layout。
-- PL011 使用独立的寄存器模型，负责 FIFO、FR、CR、IMSC、RIS/MIS、ICR 和 PrimeCell ID。
-- `SerialBackend` 只传递字节，不读取宿主硬件，也不知道 shell 状态。
-- UART 只持有控制器签发的 `WiredIrqInput`，并根据当前未屏蔽中断条件断言或撤销
-  level IRQ。
+### 4.1 架构默认资源
 
-虚拟中断控制器拥有 pending/active/routing 状态。UART 保持中断条件时，客户机 EOI
-之后控制器必须再次投递；UART 不直接向 vCPU 写入架构 IRQ 编号。
+各架构 profile 的默认串口和控制器是 VM 没有 host firmware replacement 时的兜底。AArch64 的 GIC redistributor 大小会随 `cpu_num` 扩展；RISC-V 的 PLIC profile 固定描述 `/soc/plic@c000000`；x86_64 和 LoongArch 由各自架构 plan 创建 IOAPIC/PCH-PIC 等控制器。
 
-固件描述与 runtime 使用同一个 resolved graph：
+| 架构 | 默认串口 | 默认控制器资源 | 默认 passthrough root |
+| --- | --- | --- | --- |
+| `x86_64` | 16550 PIO `0x3f8..0x400`，IRQ `4`，`1_843_200` Hz | `plan_devices()` 创建 IOAPIC、PIC、PIT、CMOS、fw-cfg、PCI config、ACPI PM timer | `None` |
+| `aarch64` | PL011 MMIO `0x0900_0000/0x1000`，SPI input `33`，`24_000_000` Hz | `GuestGicProfile` 描述 GICv3 distributor 和 redistributor；`GuestTimerProfile` 描述 arch timer | `/` |
+| `riscv64` | NS16550 MMIO `0x1000_0000/0x100`，PLIC source `10`，`3_686_400` Hz | `GuestPlicProfile` 描述 PLIC window `0x0c00_0000/0x60_0000` | `/` |
+| `loongarch64` | NS16550 MMIO `0x1fe0_01e0/0x100`，PCH-PIC input `2`，`100_000_000` Hz | `plan_devices()` 创建 host replacement PCH-PIC 和 fw-cfg | `/` |
 
-- AArch64 FDT 按 host compatible 设置 PL011 或 16550 节点、fixed-clock 和
-  `/chosen/stdout-path`。
-- RISC-V FDT 设置 `ns16550a`、时钟和 PLIC source。
-- LoongArch FDT、SPCR 与 DSDT 从最终 `console0` 节点解析资源，不在启动后重新选择 host UART。
-- x86 MP table/ACPI 使用同一串口计划；无 host/用户覆盖时仍保持 COM1 与 GSI 4 的约定。
+Profile 不暴露给 TOML 逐字段配置。需要更改默认平台资源时，应改 `virtualization/axvm/src/machine/mod.rs` 和对应架构的 `plan_devices()`，并同步固件 composer 和资源池。
 
-物理设备直通不等于 IRQ 直达。AArch64 SPI 由 vGIC 作为 backing source 分阶段管理：
+### 4.2 Host Firmware 替换
 
-1. prepare 只 claim host IRQ，VM start 前不接管设备；
-2. start 激活固定的 host INTID 到同号 guest INTID binding；
-3. host top half 只完成 acknowledge/priority drop，并把 pending 写入 vGIC 状态；
-4. guest EOI/DIR 后，vGIC 在锁外完成 host deactivate 和 level resample；
-5. VM stop/teardown 撤销 binding，并拒绝 stale generation 的迟到事件。
+FDT 和 ACPI 平台可以用 host firmware 选择的 console UART 替换默认串口 profile。FDT 路径由 `host_selected_serial()` 从 `/chosen/stdout-path` 找到 UART 节点并解析 compatible、`reg`、interrupt、`reg-shift`、`reg-io-width` 和 clock；ACPI 路径由 `host_serial_from_acpi()` 解析 SPCR 中的接口类型、地址空间、寄存器范围、IRQ 和 clock。
 
-guest 始终只看到虚拟控制器，不能访问 host GIC 寄存器或修改物理 trigger/route。
-缺少 deferred-deactivate 能力的平台返回 `Unsupported`，不采用 mask 延迟模拟。
+替换结果存入 `AxVMConfig::replace_machine_serial(profile, identity)`。后续 `append_configured_devices()` 创建默认 `console0` 时，如果用户没有覆盖 model，或者覆盖 model 与默认 model 兼容，就会保留 fixed binding 和 `GuestSerialFirmwareIdentity`，从而在 guest firmware 中替换同一个 FDT node 或 ACPI device。
 
-跨层 channel 不保存 IRQ 事件或 pending 状态。hard IRQ 路径只向每 VM 预分配的原子
-vCPU 位图发布 kick，并唤醒 `IrqNotify` worker；VM 查找、runtime notify/IPI 和其他
-可能获取普通锁的工作都在 task context 执行。
+### 4.3 默认串口
 
-## 宿主控制台复用
+`console0` 是每个 VM 的强制默认虚拟串口 ID。`append_configured_devices()` 先生成 machine-derived default intent，再查找用户是否提供同 ID 请求；如果没有，默认请求会按 machine profile 创建 `pl011-mmio`、`uart16550-mmio` 或 `uart16550-pio`。
 
-`GuestConsoleMux` 位于 Axvisor 应用层，是宿主控制台输入的唯一逻辑读取者。对于固件选定
-的硬件 UART，`RuntimeHostConsole` 通过准确匹配的串口 runtime 独占 RX subscription，
-启动中断驱动收发并接管日志输出；只有 SBI 等没有硬件 UART runtime 的控制台保留平台
-轮询路径。设备层通过带 VM ID 和运行代次的后端接口访问各客户机 RX/TX 队列。
+```toml
+[[devices.virtual]]
+id = "console0"
+model = "uart16550-mmio"
+backend = { type = "host-console" }
+
+[[devices.virtual]]
+id = "serial1"
+model = "pl011-mmio"
+backend = { type = "null" }
+```
+
+如果用户用 `console0` 覆盖默认串口，model 必须仍是已注册串口 model。model 与 machine default 相同则继承 fixed binding 和 firmware identity；model 不同则变成普通 virtual node，由资源池自动规划地址和 IRQ，也不再绑定 host firmware identity。
+
+## 5. 设备图
+
+AxVM 使用 `DeviceNodeSpec`、`DeviceModel` 和 `ResolvedDeviceGraph` 管理普通虚拟设备、host replacement 和 host passthrough mapping。架构先把控制器和内部设备放入 graph，再调用 `append_configured_devices()` 合并默认串口和用户配置设备。
+
+### 5.1 Model 注册
+
+`ConfiguredModelRegistration` 是 model catalog 的显式注册单元，包含 model 名称、构造函数和可选的默认 fixed resources 函数。构造函数只负责把 `VirtualDeviceRequest` 解析成类型化 model，并返回携带 `Arc<dyn DeviceModel>` 的 `DeviceNodeSpec`。
+
+| 接口 | 责任 |
+| --- | --- |
+| `ConfiguredDeviceCatalog::register()` | 校验 model 名称并拒绝重复注册 |
+| `instantiate_node()` | 按 `request.model` 查找 registration，并创建 graph node |
+| `DeviceModel::requirements()` | 声明 MMIO、PIO、wired IRQ、host IRQ 或 MSI slot |
+| `DeviceModel::firmware()` | 声明普通设备的 guest firmware 元数据 |
+| `DeviceModel::build()` | 消费规划后的 slot，并返回 `DeviceBundle` |
+
+`DeviceInstantiationContext` 只向 model 暴露 VM ID、默认 wired controller、fixed bindings、firmware binding 和串口 backend factory。普通设备不接触架构 enum，也不直接访问 GIC/PLIC/IOAPIC/PCH-PIC 的内部对象。
+
+### 5.2 资源规划
+
+`VmDevicePlan::with_pools_for_vm()` 把 architecture nodes、configured virtual nodes 和 passthrough host nodes 放进同一个 `DeviceGraphBuilder`。它先收集 fixed MMIO ranges，保留 guest memory，再加入 host passthrough mapping，最后 declare/resolve 设备图。
 
 ```mermaid
-flowchart LR
-    hostUart["宿主 UART"]
-    mux["GuestConsoleMux"]
-    shell["Axvisor shell"]
-    vm1["VM 1 virtual UART"]
-    vm2["VM 2 virtual UART"]
+flowchart TD
+    archNodes["architecture nodes"]
+    configured["append_configured_devices()"]
+    builder["DeviceGraphBuilder"]
+    fixed["fixed_mmio_ranges()"]
+    memory["reserve_guest_memory()"]
+    host["passthrough::add_host_nodes()"]
+    declared["builder.declare()"]
+    allow["allow_fixed_requirements()"]
+    resolved["ResolvedDeviceGraph"]
 
-    hostUart --> mux
-    mux --> shell
-    mux --> vm1
-    mux --> vm2
-    vm1 --> mux
-    vm2 --> mux
-    mux --> hostUart
+    archNodes --> builder
+    configured --> builder
+    builder --> fixed
+    fixed --> memory
+    memory --> host
+    host --> declared
+    declared --> allow
+    allow --> resolved
 ```
 
-默认前台是 ID 最小的运行中客户机。`Ctrl+Alt+H` 返回 Axvisor shell，
-`Ctrl+Alt+[` 与 `Ctrl+Alt+]` 按 VM ID 循环切换到前一个或后一个运行中客户机。
-串口字节流分别以 `ESC Ctrl-H`、`ESC ESC` 与 `ESC Ctrl-]` 表示这些组合键；其他
-`ESC` 序列保持原顺序交给当前客户机或 shell，因此方向键不会被快捷键解析吞掉。
-`vm console <id>` 和 `vm start --console <id>` 只允许附着运行中客户机。前台 VM
-停止或删除时自动返回 shell，并使旧虚拟串口 backend 代次失效；reset 重建设备图时
-由 machine serial model 创建新代次，旧 backend 不能读写替代实例。
+`ResourcePools` 负责判断 fixed 请求是否允许、auto 请求是否有可用窗口、不同 device 的 slot 是否冲突。host passthrough mapping 会扣除 replacement ranges 和 fixed internal ranges，确保被虚拟设备占用的 GPA 不再被默认 passthrough identity map 覆盖。
 
-单 VM 输出不加前缀；多个 VM 同时运行时，复用器按完整行串行写出
-`[VM <id>] ` 前缀。另一个 VM 在当前未换行片段后输出时，复用器先补换行再切换，
-不会等待原 VM 的 prompt 结束。前缀是宿主显示信息，不进入任何客户机输入队列。
+### 5.3 Runtime 封装
 
-## 方案比较
+VM prepare 阶段调用 `PreparedDevices::build_planned()`，按 resolved graph 的节点顺序构建 `DeviceRuntime`。每个 model 的 `build()` 通过 `DeviceBuildContext` 消费规划好的 slot；`DeviceRuntimeBuilder::finish()` 会检查所有 claim 被消费，然后 seal runtime。
 
-| 方案 | 结果 |
+`DeviceBundle` 是原子注册单元。一个 bundle 可以贡献 `Device`、pollable capability、DMA pollable capability、lifecycle capability、interrupt controller、typed service 和 planned endpoint/lease。`DeviceRuntime::register_bundle()` 若在同一 bundle 内注册失败，会回滚本次 bundle 已插入的 device index 和资源索引。
+
+## 6. 地址空间
+
+客户机 stage-2 地址空间由 `AxVMResources::prepare_guest_address_space()` 构建。它读取 memory regions、boot description 占用区、reserved ranges、architecture-owned regions、resolved virtual MMIO ranges 和 resolved host passthrough mappings，再调用 `build_address_layout()` 生成最终映射。
+
+### 6.1 Guest Type 策略
+
+`GuestType::address_space_policy()` 把用户配置映射成 `AddressSpacePolicy`。`Virtualized` 从空 GPA 空间开始，只加入 guest memory、boot description 和显式 passthrough；`Passthrough` 从 host-physical identity mapping 开始，再为 guest-owned region、虚拟设备 MMIO 和 reserved range 打洞。
+
+| `guest_type` | 初始地址空间 | 物理设备来源 |
+| --- | --- | --- |
+| `virtualized` | 空地址空间 | 只使用 `devices.passthrough` 显式选择的设备 |
+| `passthrough` | identity passthrough 地址空间 | 默认 discovery root 加 `devices.passthrough`，再移除 `disabled` 和 host-owned 资源 |
+
+stage-2 可映射 GPA 上限由各架构的 nested paging config 决定。AArch64、RISC-V、x86 和 LoongArch 都会根据目标 CPU 能力选择页表层级；`stage2_guest_address_space_size()` 再用 `nested_paging.gpa_bits` 限制地址布局大小。
+
+### 6.2 FDT 直通解析
+
+FDT 平台上的物理设备 selector 不是最终地址映射。`find_all_passthrough_devices()` 会从初始 path 出发加入 descendant node 和 phandle dependency，再应用 `disabled` 集合；`parse_passthrough_devices_address()` 才把节点 `reg` 或 PCI `ranges` 转为 `HostDeviceAssignment`。
+
+`parse_vm_interrupt()` 使用当前 guest FDT policy 解码 interrupt specifier，并把物理 interrupt source 记录到 `AxVMConfig::pass_through_irqs()`。被 `disabled`、host-owned serial、machine interrupt controller 或 timer 保护的节点不会进入最终 passthrough IRQ 列表。
+
+### 6.3 Host-Owned 资源
+
+`protect_machine_owned_firmware_devices()` 会把 host 物理串口、machine interrupt controller 和 machine timer 加入 excluded paths。如果用户显式选择这些 host-owned path，代码返回 `AxVmError::HostOwnedDevice`，而不是静默忽略。
+
+x86_64 还有独立的 architecture-owned reserved region：`ARCH_OWNED_REGIONS` 保留 local APIC window `0xfee0_0000/0x1000`。VMX 后端可在该 hole 上安装 APIC-access backing page，SVM 路径保持未映射并通过 nested page fault 进入软件 vLAPIC；任何 `guest_type` 都不能把 host LAPIC identity-map 给 guest。
+
+## 7. 固件描述
+
+guest firmware 由 boot pipeline 从 resolved graph 和 machine profile 生成或 patch。普通设备通过 `DeviceFirmwareSpec` 描述节点名、compatible、ACPI HID、register slots、interrupt slots 和简单属性；架构控制器、timer 和 firmware 特殊表仍由对应架构 composer 处理。
+
+### 7.1 FDT 路径
+
+FDT 直通路径先用 `create_guest_fdt()` 从 host FDT 过滤出 guest 需要的 CPU、interrupt provider、PSCI 和 passthrough dependency。运行时再由 `patch_guest_fdt_for_runtime()` 重建 memory node、`/chosen`、machine interrupt controller、IVC nodes、configured virtio nodes、timer 和 serial nodes。
+
+| FDT 内容 | 主要函数 | 数据来源 |
+| --- | --- | --- |
+| `/memory` | `FdtTree::rebuild_memory_nodes()` | VM memory layout |
+| `/chosen` | `FdtTree::patch_chosen()` | cmdline、initrd、create_chosen policy |
+| GIC / PLIC | `install_machine_interrupt_controller()` | `GuestGicProfile` / `GuestPlicProfile` |
+| timer | `install_machine_timer()` | `GuestTimerProfile` |
+| `console0` | `install_machine_serial()` | resolved serial profile 和 firmware identity |
+| extra serial | `install_additional_serial()` | resolved graph 中非 `console0` 串口 |
+| `ivc-channel` | `add_ivc_channel_nodes()` | resolved IVC channel resources |
+| virtio nodes | `install_configured_virtio_net()`、`install_configured_virtio_blk()` | 当前固定 virtio MMIO/IRQ 约定 |
+
+当前 virtio FDT composer 按 model 是否出现在 `config.devices.virtual_devices` 中安装 `virtio,mmio` 节点。它使用代码中的固定 base 和 controller input，而不是通用读取 resolved graph；如果未来把 virtio 改为全自动资源规划，FDT composer 也必须同步改成从 resolved graph 取资源。
+
+### 7.2 ACPI 路径
+
+ACPI 相关代码位于 `virtualization/axvm/src/boot/acpi` 和 x86_64 架构 plan。x86_64 `plan_devices()` 创建 IOAPIC、fw-cfg、PIT、PIC、CMOS、PCI config 和 ACPI PM timer，并用 `DeviceFirmwareBinding::AcpiDevice` 绑定 IOAPIC 和 fw-cfg 的 ACPI identity。
+
+ACPI serial replacement 通过 SPCR 形成 `GuestSerialAcpiIdentity`，不会复制任意 host AML。当前代码已经具备 ACPI table image 和 loader 的基础设施，但普通 configured device 的 ACPI 生成能力仍主要受架构 composer 覆盖范围约束，维护时不能假设 `DeviceFirmwareSpec::acpi_hid()` 已经自动覆盖所有架构。
+
+## 8. 控制台复用
+
+每个 VM 的默认串口 backend 由 Axvisor app 层提供。`build_axvm_config()` 把 `crate::guest_console::serial_backend_factory(vm_id)` 写入 `AxVMConfig`，`append_configured_devices()` 创建 `console0` 时默认使用 host-console backend；其他串口未显式配置 `backend = { type = "host-console" }` 时使用 null backend。
+
+### 8.1 Backend 代次
+
+`GuestConsoleMux` 为每个 VM 创建带 generation 的 `GuestSerialBackend`。VM reset 或 device graph 重建时会生成新的 backend generation；旧 backend 读写时会因为 generation 不匹配而失效，避免旧虚拟串口实例继续操作新 VM 的输入输出队列。
+
+`GuestConsoleMux` 内部有 `state` 和 `output_lock` 两把锁。需要同时访问输出和状态的路径先拿 `output_lock` 再拿 `state`，这个顺序写在 `ConsoleCore` 注释里，用于避免 backend replacement、输出格式化和 attach/detach 之间形成锁顺序反转。
+
+### 8.2 输入路由
+
+宿主控制台输入只由 `GuestConsoleMux` 读取。`route_host_byte()` 根据当前 attached VM 和快捷键前缀把字节分发给 Axvisor shell 或某个 VM 的 bounded RX queue，队列容量由 `INPUT_QUEUE_CAPACITY = 4096` 固定。
+
+| 输入 | 行为 |
 | --- | --- |
-| 独立顶层串口配置 | 重复 machine/host 事实，并允许地址/IRQ 不一致；不采用 |
-| 普通 `devices.virtual` 覆盖 `console0` | 只覆盖型号和语义参数，数字资源仍由内部 binding/规划器决定；采用 |
-| 每架构直接读写宿主 console | 多 VM 竞争输入，设备层反向拥有 UI；不采用 |
-| 为普通串口选择 `host-console`/`null` 后端 | 后端作为设备语义选项，且每 VM 强制单 owner；采用 |
-| machine profile + 字节后端 + 应用层 mux | 资源只有一个来源，依赖方向稳定；采用 |
-| IRQ 直达 | 破坏虚拟控制器 level/EOI 语义，本阶段明确不实现 |
+| 普通字节且无 attached VM | 返回 `ConsoleInputEvent::ShellByte` |
+| 普通字节且有 attached VM | 写入该 VM RX queue，并请求唤醒 VM |
+| `Ctrl-X h` | 从当前 VM detach 回 shell |
+| `Ctrl-X [` | 切到前一个 running VM |
+| `Ctrl-X ]` | 切到后一个 running VM |
+| `Ctrl-X Ctrl-X` | 向当前目标发送字面 `Ctrl-X` |
 
-## 风险与验证
+输出由 `GuestOutputMux` 串行化。单 VM 运行时不加前缀；多个 VM 同时运行时按完整行加 `[VM <id>] ` 前缀，并在不同 VM 输出交错时补换行，避免两个 guest 的片段混成同一行。
 
-主要风险是串口寄存器兼容、level IRQ 重投递、默认透传打洞、固件资源不一致和控制台
-并发输出。对应证据必须包括：
+### 8.3 Host Reader
 
-- 新配置 round-trip、未知/旧字段拒绝及 menuconfig schema 测试。
-- 四种 machine profile 的串口资源与 host-owned UART 地址规划测试。
-- 16550/PL011 FIFO、状态、屏蔽、清除及 level IRQ 测试。
-- AArch64/RISC-V/LoongArch FDT 与 LoongArch ACPI 串口资源测试。
-- controller-owned shared level/edge、enable gate、EOI/DIR、物理 deactivate/resample、
-  teardown 和 stale generation 测试。
-- 控制台前台路由、转义、停止/删除、并发输出和多 VM 行前缀测试。
-- 四架构 Axvisor QEMU smoke；LoongArch 使用仓库规定的 LVZ 容器。
+`configure_host_console_reader()` 会先禁用 host console input IRQ，然后根据 VM vCPU affinity 选择一个没有被任何 vCPU mask 覆盖的 host CPU 放置 polling reader。找不到明确 host-only CPU 时，它不猜测，也不改写 vCPU mask。
 
-这是一条破坏性配置边界，不支持运行时回退旧 descriptor。需要回退提交时必须同时
-恢复配置、设备图、固件与 runtime，不能保留两套事实来源。
+这个策略是当前 cooperative FIFO scheduler 下的隔离措施。注释中明确说明：在 host UART IRQ 能把 RX 字节交给 mux-owned queue 并唤醒唯一 reader 之前，input IRQ 保持禁用，避免物理 UART 有第二个 reader 或 level IRQ 长时间保持 asserted。
+
+## 9. 扩展规则
+
+扩展客户机 Machine 时要保持“配置语义”和“资源事实”分离。新增字段前先判断它是否属于用户策略；如果它只是地址、中断、controller、firmware identity 或 host resource ownership，就应该进入 machine profile、设备 model requirements、资源池或架构 composer，而不是进入 `GuestConfig`。
+
+### 9.1 新虚拟设备
+
+新增普通虚拟设备时，设备模块需要提供类型化 options、`DeviceModel` 实现和一个 `ConfiguredModelRegistration`。`requirements()` 声明资源，`firmware()` 描述 guest firmware，`build()` 只能通过 `DeviceBuildContext` 消费规划后的 slot。
+
+注册点取决于 model 所属层级。通用虚拟化 model 应进入 `axvm::ConfiguredDeviceCatalog::new()` 的内置集合；Axvisor app 私有 model 像 `virtio-blk`、`virtio-net` 一样在 `os/axvisor/src/config.rs::build_axvm_config()` 装配。
+
+### 9.2 新架构资源
+
+新增或修改架构 machine 资源时，需要同步三处：`MachineProfile` 中的默认资源、对应架构的 `plan_devices()` 或 VM plan、以及 FDT/ACPI composer。只改 profile 会让 runtime device graph 和 guest firmware 脱节；只改 composer 会让 guest 看见没有 runtime backing 的设备。
+
+物理直通相关变更还必须检查 `find_all_passthrough_devices()`、`reserve_excluded_device_ranges()`、`parse_passthrough_devices_address()` 和 `parse_vm_interrupt()`。这些函数共同决定 guest FDT 里保留什么节点、stage-2 映射什么 HPA、以及哪些 physical interrupt source 可以送入虚拟控制器。
+
+### 9.3 兼容约束
+
+当前 schema 对未知字段严格失败，但仍对旧 `vm_type` 做有限 alias 映射。除此之外，旧 `emu_devices`、`cfg_list`、裸 `irq_id`、裸地址字段、`passthrough_addresses` 和 `passthrough_ports` 都不属于用户配置入口。
+
+如果确实需要保留旧配置兼容，应在 `axvmconfig` 层显式实现解析和错误语义，并同步 JSON schema、模板和测试。不能在 Axvisor app 或架构 plan 中通过猜默认地址、猜 IRQ 或 fallback 到旧 device enum 的方式绕过配置边界。
