@@ -428,6 +428,10 @@ pub fn mmap_capped_device_map_len_rules_hold() -> bool {
     super::syscall::mmap_capped_device_map_len_rules_hold_for_test()
 }
 
+pub fn mmap_rlimit_as_charge_rules_hold() -> bool {
+    super::syscall::mmap_rlimit_as_charge_rules_hold_for_test()
+}
+
 pub fn aio_iocb_validation_rules_hold() -> bool {
     super::syscall::aio_iocb_validation_rules_hold_for_test()
 }

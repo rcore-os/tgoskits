@@ -137,6 +137,11 @@ fn mmap_capped_device_map_len_rules_hold() {
 }
 
 #[axtest]
+fn mmap_rlimit_as_charge_rules_hold() {
+    ax_assert!(axtest_exports::mmap_rlimit_as_charge_rules_hold());
+}
+
+#[axtest]
 fn aio_iocb_validation_rules_hold() {
     ax_assert!(axtest_exports::aio_iocb_validation_rules_hold());
 }

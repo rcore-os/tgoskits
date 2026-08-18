@@ -3,7 +3,7 @@
 use core::ops::{Index, IndexMut};
 
 use linux_raw_sys::general::{
-    RLIM_NLIMITS, RLIMIT_DATA, RLIMIT_MSGQUEUE, RLIMIT_NOFILE, RLIMIT_STACK,
+    RLIM_NLIMITS, RLIMIT_AS, RLIMIT_DATA, RLIMIT_MSGQUEUE, RLIMIT_NOFILE, RLIMIT_STACK,
 };
 
 /// The maximum number of open files
@@ -56,6 +56,12 @@ impl Default for Rlimits {
         result[RLIMIT_NOFILE] = (AX_FILE_LIMIT as u64).into();
         // Linux default: RLIMIT_DATA is unlimited
         result[RLIMIT_DATA] = Rlimit::new(u64::MAX, u64::MAX);
+        // Linux `INIT_RLIMITS` seeds RLIMIT_AS with RLIM_INFINITY
+        // (`include/asm-generic/resource.h`): the address space is unbounded until
+        // a process lowers it. Without this the array default (0) would read as a
+        // zero-byte cap and the mmap/mremap RLIMIT_AS check would reject every
+        // mapping.
+        result[RLIMIT_AS] = Rlimit::new(u64::MAX, u64::MAX);
         // Linux `INIT_RLIMITS` seeds RLIMIT_MSGQUEUE with MQ_BYTES_MAX
         // (`include/asm-generic/resource.h`, `include/uapi/linux/mqueue.h`):
         // the per-user ceiling on bytes held across all that user's POSIX
@@ -88,6 +94,8 @@ pub(crate) fn resource_limit_defaults_hold_for_test() -> bool {
         && limits[RLIMIT_STACK].max == crate::config::USER_STACK_SIZE as u64
         && limits[RLIMIT_DATA].current == u64::MAX
         && limits[RLIMIT_DATA].max == u64::MAX
+        && limits[RLIMIT_AS].current == u64::MAX
+        && limits[RLIMIT_AS].max == u64::MAX
         && limits[RLIMIT_NOFILE].current == 7
         && limits[RLIMIT_NOFILE].max == 9
         && Rlimit::from(11).current == 11

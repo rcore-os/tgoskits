@@ -128,6 +128,35 @@ bitflags::bitflags! {
     }
 }
 
+/// Whether charging `charge_pages` more pages of address space would push the
+/// process past its `RLIMIT_AS` soft limit.
+///
+/// Mirrors Linux `may_expand_vm()` (mm/mmap.c): the mapping is rejected when
+/// `mm->total_vm + npages > rlimit(RLIMIT_AS) >> PAGE_SHIFT`. `vm_stat` and the
+/// charge are already in 4 KiB pages; the byte limit is converted to the same
+/// unit. `RLIM_INFINITY` (`u64::MAX`) disables the cap.
+fn rlimit_as_would_exceed(vss_pages: u64, charge_pages: u64, rlimit_as_bytes: u64) -> bool {
+    if rlimit_as_bytes == u64::MAX {
+        return false;
+    }
+    let limit_pages = rlimit_as_bytes / PAGE_SIZE_4K as u64;
+    vss_pages.saturating_add(charge_pages) > limit_pages
+}
+
+/// Pages an `mremap` charges against `RLIMIT_AS`, matching Linux
+/// `vrm_calc_charge()` (mm/mremap.c): `MREMAP_DONTUNMAP` keeps the source VMA
+/// and installs a full new mapping, so it charges the entire `new_size`; every
+/// other remap only grows `total_vm` by the positive `new_size - old_size`
+/// delta (a pure move or shrink charges nothing).
+fn mremap_charge_pages(old_size: usize, new_size: usize, dontunmap: bool) -> u64 {
+    let charge_bytes = if dontunmap {
+        new_size
+    } else {
+        new_size.saturating_sub(old_size)
+    };
+    (charge_bytes / PAGE_SIZE_4K) as u64
+}
+
 pub fn sys_mmap(
     addr: usize,
     length: usize,
@@ -294,6 +323,16 @@ pub fn sys_mmap(
             .or(aspace.find_free_area(aspace.base(), length, limit, align))
             .ok_or(StarryError::NoMemory)?
     };
+
+    // RLIMIT_AS: a process may not grow its total mapped address space past the
+    // soft limit. Checked here, after any MAP_FIXED unmap has already shrunk
+    // `total_vm` (matching Linux's do_munmap-then-may_expand_vm ordering in
+    // mmap_region) and before the new mapping is committed.
+    let rlimit_as = curr.as_thread().proc_data.rlim.read()[RLIMIT_AS].current;
+    let npages = (length / PAGE_SIZE_4K) as u64;
+    if rlimit_as_would_exceed(aspace.vm_stat.vss_pages(), npages, rlimit_as) {
+        return Err(AxError::NoMemory);
+    }
 
     // IonBufferFile 特殊处理：直接线性映射物理地址，跳过通用 file_mmap/device_mmap 路径。
     // 这样可以避免通用路径中 `range.start += offset` 对 Ion buffer 的错误偏移。
@@ -849,6 +888,20 @@ pub fn sys_mremap(
     let new_size = new_size.align_up(page_size);
     let src_offset = addr - vma_start;
 
+    // RLIMIT_AS: `MREMAP_DONTUNMAP` keeps the source VMA and installs a full new
+    // mapping, so Linux charges its entire `new_len`; any other remap only charges
+    // the positive growth delta (mm/mremap.c `vrm_calc_charge` + the DONTUNMAP
+    // `may_expand_vm` gate). Without charging DONTUNMAP a process could repeatedly
+    // `mremap(..., MREMAP_MAYMOVE | MREMAP_DONTUNMAP)` under a finite limit and grow
+    // its address space without bound.
+    let charge_pages = mremap_charge_pages(old_size, new_size, dontunmap);
+    if charge_pages != 0 {
+        let rlimit_as = curr.as_thread().proc_data.rlim.read()[RLIMIT_AS].current;
+        if rlimit_as_would_exceed(aspace.vm_stat.vss_pages(), charge_pages, rlimit_as) {
+            return Err(AxError::NoMemory);
+        }
+    }
+
     if dontunmap && !matches!(&src_backend, Backend::Cow(cow) if cow.is_anonymous()) {
         return Err(StarryError::InvalidInput);
     }
@@ -1208,5 +1261,47 @@ pub(crate) fn mmap_capped_device_map_len_rules_hold_for_test() -> bool {
     assert!(capped_device_map_len(8192, 4096, page_size) == 4096); // request > available
     assert!(capped_device_map_len(0, 8192, page_size) == 0); // zero request
     assert!(capped_device_map_len(5000, 4096, page_size) == 4096); // request > available (aligned)
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) fn mmap_rlimit_as_charge_rules_hold_for_test() -> bool {
+    let page = PAGE_SIZE_4K;
+    let mb = 1024 * 1024;
+
+    // RLIM_INFINITY disables the cap regardless of usage/charge.
+    assert!(!rlimit_as_would_exceed(u64::MAX, u64::MAX, u64::MAX));
+    // Exactly at the limit is allowed; one page over is rejected.
+    assert!(!rlimit_as_would_exceed(0, 4, (4 * page) as u64));
+    assert!(rlimit_as_would_exceed(0, 5, (4 * page) as u64));
+    // Current usage counts toward the limit.
+    assert!(!rlimit_as_would_exceed(3, 1, (4 * page) as u64));
+    assert!(rlimit_as_would_exceed(4, 1, (4 * page) as u64));
+
+    // mremap charging: DONTUNMAP charges the whole new_size (source VMA is kept),
+    // so a same-size DONTUNMAP still charges new_size pages. This is exactly the
+    // case the old `new_size > old_size` gate skipped, letting DONTUNMAP bypass
+    // RLIMIT_AS.
+    assert_eq!(
+        mremap_charge_pages(4 * mb, 4 * mb, true),
+        (4 * mb / page) as u64
+    );
+    // A normal remap of the same sizes charges nothing (pure no-op/move).
+    assert_eq!(mremap_charge_pages(4 * mb, 4 * mb, false), 0);
+    // Growth charges only the positive delta; shrink/move charges nothing.
+    assert_eq!(
+        mremap_charge_pages(4 * mb, 6 * mb, false),
+        (2 * mb / page) as u64
+    );
+    assert_eq!(mremap_charge_pages(6 * mb, 4 * mb, false), 0);
+
+    // End to end: a same-size DONTUNMAP that fits in the whole soft limit but not
+    // in the remaining headroom is rejected once its full new_size is charged.
+    let dontunmap_pages = mremap_charge_pages(4 * mb, 4 * mb, true);
+    assert!(rlimit_as_would_exceed(
+        (4 * mb / page) as u64,
+        dontunmap_pages,
+        (6 * mb) as u64,
+    ));
     true
 }
