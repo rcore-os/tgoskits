@@ -206,7 +206,7 @@ mod axtest_support {
         let tgid_lease = identity.acquire_role::<Tgid>().unwrap();
         let process = Process::new_for_axtest(identity.clone());
         let test_tgid = process.pid();
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         tid_lease.release();
         identity.bind_zombie_for_axtest(
             process.clone(),
@@ -269,7 +269,7 @@ mod axtest_support {
         // shutdown wait must still count the member as unexited in that
         // window, mirroring Linux's `pid_allocated` dropping only in
         // `free_pid()` after `do_notify_parent()`.
-        identity.mark_task_exited();
+        let exit_path = identity.mark_task_exited();
         let pending_after_detach = identity.has_unexited_task();
 
         // The PID slot must also stay published while the exit path is
@@ -281,7 +281,7 @@ mod axtest_support {
         let slot_retained_while_pending = ROOT_PID_NS.retains_identity_slot_for_test(identity.id());
         let roles_released_keeps_member = identity.has_unexited_task();
 
-        identity.mark_exit_path_complete();
+        exit_path.complete();
         let complete_after_finish = !identity.has_unexited_task();
         let slot_released_after_finish = !ROOT_PID_NS.retains_identity_slot_for_test(identity.id());
 
@@ -318,7 +318,7 @@ mod tests {
         let tgid = identity.acquire_role::<Tgid>().unwrap();
         let process = Process::new_for_axtest(identity.clone());
 
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         identity.bind_zombie_for_axtest(
             process.clone(),
             Arc::new(PollSet::new()),
@@ -360,10 +360,10 @@ mod tests {
         // namespace, and the dying member panics dereferencing it. Linux
         // drops `pid_allocated` only in `free_pid()`, after
         // `do_notify_parent()`.
-        identity.mark_task_exited();
+        let exit_path = identity.mark_task_exited();
         assert!(identity.has_unexited_task());
 
-        identity.mark_exit_path_complete();
+        exit_path.complete();
         assert!(!identity.has_unexited_task());
     }
 
@@ -379,7 +379,7 @@ mod tests {
         let tgid = identity.acquire_role::<Tgid>().unwrap();
         let process = Process::new_for_axtest(identity.clone());
 
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         identity.bind_zombie_for_axtest(
             process.clone(),
             Arc::new(PollSet::new()),

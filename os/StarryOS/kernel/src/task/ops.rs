@@ -415,15 +415,19 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     thr.account_cpu_time_now();
     let (utime, stime) = task_cpu_time(&curr);
     let task_identity = thr.pid_identity();
-    if is_process_leader {
+    // The lease keeps this identity's exit path pending until the tail of
+    // `do_exit`, covering zombie publication, parent notification, and
+    // relation close the way Linux holds `pid_allocated` until `free_pid()`.
+    let exit_path = if is_process_leader {
         // Publish the complete leader snapshot before dropping the thread-group
         // lock below. A peer may become the final exiting thread immediately
         // after the leader is removed from the group.
-        let tid_lease = thr.retire_pid_retaining_tid();
+        let (tid_lease, exit_path) = thr.retire_pid_retaining_tid();
         thr.proc_data.retire_leader(thr.nice(), tid_lease);
+        exit_path
     } else {
-        thr.retire_pid();
-    }
+        thr.retire_pid()
+    };
     let thread_exit = process.exit_thread(
         thr.tid_number(),
         exit_code,
@@ -630,7 +634,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // notification, and relation close. PID namespace shutdown waits on this
     // completion instead of the early runtime-link detach, mirroring Linux's
     // `pid_allocated` drop in `free_pid()` — never before `do_notify_parent()`.
-    thr.pid_identity().mark_exit_path_complete();
+    exit_path.complete();
 }
 
 /// Request a sibling thread to exit with thread-only semantics.

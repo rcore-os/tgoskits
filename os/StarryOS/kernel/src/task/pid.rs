@@ -825,26 +825,32 @@ impl PidIdentity {
         !matches!(state.runtime, RuntimeTaskLink::Exited) || state.exit_path_pending
     }
 
-    pub fn mark_task_exited(&self) {
-        let mut state = self.state.lock();
-        state.runtime = RuntimeTaskLink::Exited;
-        // The runtime link detaches here, but the PID slot stays published
-        // until the exit path completes: Linux frees a task's PID only in
-        // free_pid(), after its exit path finished, so namespace membership
-        // (and shutdown-wait membership) outlives this transition. Deferred
-        // detach happens in mark_exit_path_complete.
-        state.exit_path_pending = true;
+    pub fn mark_task_exited(self: &Arc<Self>) -> ExitPathLease {
+        {
+            let mut state = self.state.lock();
+            state.runtime = RuntimeTaskLink::Exited;
+            // The runtime link detaches here, but the PID slot stays published
+            // until the exit path completes: Linux frees a task's PID only in
+            // free_pid(), after its exit path finished, so namespace membership
+            // (and shutdown-wait membership) outlives this transition. The
+            // returned lease owns that deferred detach.
+            state.exit_path_pending = true;
+        }
+        ExitPathLease {
+            identity: Some(Arc::downgrade(self)),
+        }
     }
 
     /// Completes the exit path of the task that detached its runtime link.
     ///
-    /// Called at the end of `do_exit`, after zombie publication, parent
-    /// notification, and relation close, so PID namespace shutdown only
-    /// observes the member as exited once it no longer dereferences the
-    /// dying namespace. The wake mirrors the one Linux delivers by dropping
-    /// `pid_allocated` in `free_pid()`, and the deferred detach frees the
-    /// member's namespace slots at the same point Linux frees the PID.
-    pub fn mark_exit_path_complete(&self) {
+    /// Reached only through [`ExitPathLease::complete`] at the end of
+    /// `do_exit`, after zombie publication, parent notification, and relation
+    /// close, so PID namespace shutdown only observes the member as exited
+    /// once it no longer dereferences the dying namespace. The wake mirrors
+    /// the one Linux delivers by dropping `pid_allocated` in `free_pid()`,
+    /// and the deferred detach frees the member's namespace slots at the
+    /// same point Linux frees the PID.
+    fn complete_exit_path(&self) {
         let (pending, should_detach) = {
             let mut state = self.state.lock();
             let pending = core::mem::replace(&mut state.exit_path_pending, false);
@@ -873,7 +879,10 @@ impl PidIdentity {
         ));
         state.runtime = RuntimeTaskLink::Live(task.downgrade());
         // The transferred identity continues under the new task; the retired
-        // leader's exit path no longer owes namespace-visible work.
+        // leader's exit path no longer owes namespace-visible work. This is
+        // the one lease-less cancellation of a pending exit path: the
+        // identity is re-adopted by a live task, so there is no lease holder
+        // left to complete it.
         state.exit_path_pending = false;
     }
 
@@ -1109,7 +1118,7 @@ impl PidIdentity {
             state.roles &= !R::BIT;
             // While an exit path is still pending, the PID slot stays
             // published (Linux frees the PID in free_pid(), after the exit
-            // path); mark_exit_path_complete performs the deferred detach.
+            // path); `ExitPathLease::complete` performs the deferred detach.
             state.roles == 0
                 && !state.exit_path_pending
                 && matches!(state.runtime, RuntimeTaskLink::Exited)
@@ -1167,6 +1176,57 @@ impl PidIdentity {
         }
         for binding in self.bindings.iter().rev() {
             binding.namespace.remove(self.id, binding.number);
+        }
+    }
+}
+
+/// RAII ownership of one identity's remaining namespace-visible exit work,
+/// handed out by [`PidIdentity::mark_task_exited`].
+///
+/// The retiring task detached its runtime link, but zombie publication,
+/// parent notification, and relation close are still ahead — the window
+/// Linux covers by dropping `pid_allocated` only in `free_pid()`. The
+/// holder must call [`Self::complete`] once that work finished: it clears
+/// the pending exit path, wakes PID-namespace shutdown waiters, and detaches
+/// the namespace numbers once the last role is gone.
+///
+/// Losing the lease cannot strand the exit path: `Drop` completes it as a
+/// warned fallback, so a path that marks an identity exited without any
+/// owner left to complete it — the de-thread bug class — degrades into an
+/// immediately visible warning instead of hanging PID namespace shutdown.
+/// [`PidIdentity::transfer_task`] is the one lease-less cancellation: when
+/// `de_thread` re-adopts the identity for the execing task, the retired
+/// task's exit-path debt is cancelled with the identity itself.
+#[must_use = "an uncompleted exit path keeps PID namespace shutdown waiting; call complete() when \
+              the exit path finishes"]
+pub struct ExitPathLease {
+    identity: Option<Weak<PidIdentity>>,
+}
+
+impl ExitPathLease {
+    /// Completes the exit path at a defined point: the end of `do_exit`,
+    /// after zombie publication, parent notification, and relation close.
+    pub fn complete(mut self) {
+        if let Some(identity) = self.take_identity() {
+            identity.complete_exit_path();
+        }
+    }
+
+    fn take_identity(&mut self) -> Option<Arc<PidIdentity>> {
+        // An unreachable identity is already fully gone (for example its
+        // namespace finished shutdown); there is nothing left to complete.
+        self.identity.take().and_then(|identity| identity.upgrade())
+    }
+}
+
+impl Drop for ExitPathLease {
+    fn drop(&mut self) {
+        if let Some(identity) = self.take_identity() {
+            warn!(
+                "PID identity {:?} exit path lease dropped before complete(); completing now",
+                identity.id()
+            );
+            identity.complete_exit_path();
         }
     }
 }
@@ -1415,7 +1475,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     {
         return false;
     }
-    group_only.mark_task_exited();
+    group_only.mark_task_exited().complete();
     group_only_pgid.release();
 
     let shutdown_executor = PidReservation::reserve(&child, PidReservationKind::Thread)
@@ -1436,7 +1496,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
             while !release_descendant_body.load(Ordering::Acquire) {
                 crate::task::yield_now();
             }
-            descendant_body.mark_task_exited();
+            descendant_body.mark_task_exited().complete();
             descendant_tid.release();
         },
         "pid-namespace-descendant".into(),
@@ -1454,12 +1514,12 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     release_descendant.store(true, Ordering::Release);
     shutdown.wait_for_descendants_exit();
     crate::task::join_kernel_thread(descendant_task);
-    shutdown_executor.mark_task_exited();
+    shutdown_executor.mark_task_exited().complete();
     shutdown_executor_tid.release();
     if view.visible_number(&child_init).is_some() || view.nspid_chain(&child_init).is_some() {
         return false;
     }
-    child_init.mark_task_exited();
+    child_init.mark_task_exited().complete();
     drop(group);
     drop(session);
     child_tid.release();
@@ -1476,7 +1536,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     let old_number = old.root_number();
     let old_generation = old.id();
     let old_role = old.acquire_role::<Pgid>().unwrap();
-    old.mark_task_exited();
+    old.mark_task_exited().complete();
     old_role.release();
     if root.lookup_identity(old_generation).is_some() {
         return false;
@@ -1493,7 +1553,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
         && root
             .lookup_identity(replacement.id())
             .is_some_and(|registered| Arc::ptr_eq(&registered, &replacement));
-    replacement.mark_task_exited();
+    replacement.mark_task_exited().complete();
     replacement_role.release();
 
     let failed_reservation = PidReservation::reserve(&root, PidReservationKind::Thread).unwrap();
@@ -1508,7 +1568,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     let failed_publication_was_removed = root.lookup(failed_number).is_none();
     failed_role.release();
 
-    root_init.mark_task_exited();
+    root_init.mark_task_exited().complete();
     root_init_tid.release();
     root_init_tgid.release();
     generation_is_stable && failed_publication_was_removed
@@ -1582,8 +1642,25 @@ mod tests {
         let identity = reservation.publish().unwrap();
         assert!(Arc::ptr_eq(&prepared, &identity));
         assert_eq!(root.lookup(number).unwrap().id(), identity.id());
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         pgid.release();
+    }
+
+    #[test]
+    fn dropped_exit_path_lease_completes_the_exit_path_as_fallback() {
+        let (root, identity, tid, tgid) = root_process();
+        let number = identity.visible_number(&root).unwrap();
+
+        // A path that retires a task and then loses the lease (the de-thread
+        // bug class) must not leave the exit path pending forever: dropping
+        // the lease completes it, so PID namespace shutdown stops waiting and
+        // the roleless identity can detach once its last role is released.
+        drop(identity.mark_task_exited());
+        assert!(!identity.has_unexited_task());
+
+        tid.release();
+        tgid.release();
+        assert!(root.lookup(number).is_none());
     }
 
     #[test]
@@ -1592,7 +1669,7 @@ mod tests {
         let number = identity.visible_number(&root).unwrap();
         let old_identity_id = identity.id();
         let pidfd_identity = identity.clone();
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         tid.release();
         tgid.release();
         assert!(root.lookup(number).is_none());
@@ -1610,7 +1687,7 @@ mod tests {
             &replacement
         ));
         assert!(root.lookup_identity(old_identity_id).is_none());
-        replacement.mark_task_exited();
+        replacement.mark_task_exited().complete();
         replacement_tid.release();
     }
 
@@ -1666,9 +1743,9 @@ mod tests {
         );
         assert_eq!(view.visible_session_number(&identity), None);
 
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         pgid.release();
-        root_identity.mark_task_exited();
+        root_identity.mark_task_exited().complete();
         root_tid.release();
         root_tgid.release();
     }
@@ -1707,7 +1784,7 @@ mod tests {
         assert_eq!(child.lifecycle(), PidNamespaceLifecycle::Dead);
         assert_eq!(child_view.visible_number(&identity), None);
         assert_eq!(child_view.nspid_chain(&identity), None);
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         tid.release();
         tgid.release();
         drop(shutdown);
@@ -1719,7 +1796,7 @@ mod tests {
         let number = identity.visible_number(&root).unwrap();
         let pgid = identity.acquire_role::<Pgid>().unwrap();
         let sid = identity.acquire_role::<Sid>().unwrap();
-        identity.mark_task_exited();
+        identity.mark_task_exited().complete();
         tid.release();
         tgid.release();
         assert!(root.lookup(number).is_some());
@@ -1745,7 +1822,7 @@ mod tests {
             Err(StarryError::NoMemory)
         ));
         shutdown.wait_for_descendants_exit();
-        init.mark_task_exited();
+        init.mark_task_exited().complete();
         tid.release();
         tgid.release();
         drop(shutdown);
@@ -1772,9 +1849,9 @@ mod tests {
         shutdown.wait_for_descendants_exit();
 
         assert_eq!(child.lifecycle(), PidNamespaceLifecycle::Dead);
-        executor.mark_task_exited();
+        executor.mark_task_exited().complete();
         executor_tid.release();
-        init.mark_task_exited();
+        init.mark_task_exited().complete();
         init_tid.release();
         init_tgid.release();
         drop(shutdown);
