@@ -17,6 +17,16 @@ const REGISTER_RETRY_DELAY: core::time::Duration = core::time::Duration::from_mi
 #[repr(align(4))]
 struct FakeMmio<const N: usize>([u8; N]);
 
+struct StaticTimer;
+
+impl sdhci_host::HostTimer for StaticTimer {
+    fn now_ms(&self) -> u64 {
+        0
+    }
+}
+
+static TIMER: StaticTimer = StaticTimer;
+
 impl<const N: usize> FakeMmio<N> {
     fn new() -> Self {
         Self([0; N])
@@ -33,7 +43,9 @@ fn new_host<'a>(
     config: Cv181xConfig,
 ) -> Cv181xSdhci {
     let mmio = Cv181xMmio::new(core.base(), syscon.base());
-    unsafe { Cv181xSdhci::new(mmio, config) }
+    let mut host = unsafe { Cv181xSdhci::new(mmio, config) };
+    host.inner_mut().set_timer(&TIMER);
+    host
 }
 
 fn mark_clock_stable(core: &mut FakeMmio<0x400>) {

@@ -606,6 +606,10 @@ pub trait HostResetHook: Send + Sync {
 /// Platform monotonic-time capability used for specification-defined delays.
 pub trait HostTimer: Sync {
     fn now_ms(&self) -> u64;
+
+    fn now_ns(&self) -> u64 {
+        self.now_ms().saturating_mul(1_000_000)
+    }
 }
 
 #[inline]

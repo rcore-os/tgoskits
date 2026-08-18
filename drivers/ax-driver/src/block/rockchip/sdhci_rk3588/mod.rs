@@ -23,7 +23,7 @@ use rdrive::{
     },
     register::{FdtInfo, ProbeFdt},
 };
-use sdhci_host::{HostClock, HostResetHook, HostTimer, Sdhci, rdif as sdhci_rdif};
+use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
@@ -33,7 +33,10 @@ use sdmmc_protocol::{
 use super::{
     card_init_preference, clock::enable_node_clocks, media_name, supports_block_card_protocol,
 };
-use crate::{block::ProbeFdtBlock, mmio::iomap};
+use crate::{
+    block::{ProbeFdtBlock, sdhci_runtime::install_host_timer},
+    mmio::iomap,
+};
 
 // RK3588 DWCMSHC follows Linux's normal SDHCI completion path: hard IRQ only
 // acknowledges and caches status; the bound hctx advances command/data state.
@@ -82,16 +85,6 @@ const PHY_SDCLKDL_DC_DEFAULT: u8 = 0x32;
 const PHY_SMPLDL_CNFG_BYPASS_EN: u8 = 1 << 1;
 const PHY_DLL_CTRL_ENABLE: u8 = 0x1;
 const PHY_DLL_CNFG2_JUMPSTEP: u8 = 0x0a;
-
-struct AxKlibHostTimer;
-
-static HOST_TIMER: AxKlibHostTimer = AxKlibHostTimer;
-
-impl HostTimer for AxKlibHostTimer {
-    fn now_ms(&self) -> u64 {
-        axklib::time::monotonic_nanos() / 1_000_000
-    }
-}
 
 struct RockchipSdhciClock {
     clock: ClockLine,
@@ -194,7 +187,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         warn!("rockchip-sdhci: no core clock found; using SDHCI internal clock divider");
     }
     host.set_reset_hook(RockchipSdhciResetHook { resets });
-    host.set_timer(&HOST_TIMER);
+    install_host_timer(&mut host);
     let dma = axklib::dma::device_with_mask(
         u32::MAX as u64,
         crate::binding_resolver::dma_coherency_from_fdt(info),

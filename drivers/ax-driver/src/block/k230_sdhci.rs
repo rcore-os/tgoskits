@@ -22,7 +22,10 @@ use rdrive::{
 use sdhci_host::{Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::sdio::{card::SdioSdmmc, init::CardInitPreference};
 
-use crate::{block::ProbeFdtBlock, mmio::iomap};
+use crate::{
+    block::{ProbeFdtBlock, sdhci_runtime::install_host_timer},
+    mmio::iomap,
+};
 
 crate::model_register!(
     name: "K230 SDHCI",
@@ -58,6 +61,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
+    install_host_timer(&mut host);
     let dma = axklib::dma::device_with_mask(
         u32::MAX as u64,
         crate::binding_resolver::dma_coherency_from_fdt(info),

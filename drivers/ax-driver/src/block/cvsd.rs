@@ -21,7 +21,10 @@ use sdmmc_protocol::{
 };
 
 #[cfg(not(test))]
-use crate::{block::ProbeFdtBlock, mmio::iomap};
+use crate::{
+    block::{ProbeFdtBlock, sdhci_runtime::install_host_timer},
+    mmio::iomap,
+};
 
 #[cfg(not(test))]
 pub const DEVICE_NAME: &str = "cvsd";
@@ -83,6 +86,7 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     );
 
     let mut host = unsafe { Cv181xSdhci::new(Cv181xMmio::new(core, syscon), config) };
+    install_host_timer(host.inner_mut());
     let dma = axklib::dma::device_with_mask(
         u32::MAX as u64,
         crate::binding_resolver::dma_coherency_from_fdt(info),
