@@ -1,0 +1,9 @@
+# sched-latency enables axtask's per-CPU wake-to-run statistics, which Axvisor
+# prints after all VMs stop; without it the host-side half of the measurement
+# is silently compiled out.
+features = ["sched-latency"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "os/axvisor/configs/vms/qemu/aarch64/arceos-cyclictest.toml",
+]

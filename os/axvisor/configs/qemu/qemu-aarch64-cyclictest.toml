@@ -1,0 +1,12 @@
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "4",
+  "-m", "4g",
+]
+fail_regex = ["(?i)panic"]
+success_regex = ["cyclictest:"]
+timeout = 300
+to_bin = true
+uefi = false

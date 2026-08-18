@@ -40,6 +40,8 @@ pub(crate) trait ArchOps {
         Ok(())
     }
 
+    fn after_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
+
     fn wait_for_vcpu_event(
         vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -141,22 +143,36 @@ pub(super) fn run_vcpu<A: super::Architecture>(
         }
     }
 
-    let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
-        loop {
+    let run_result = loop {
+        // Host-side exit dispatch (MMIO, hypercalls, GIC interface, ...) may
+        // block on host locks (e.g. the guest console multiplexer), so the
+        // preemption guard is released before dispatch. Only the guest run
+        // itself and its interrupt/timer preparation need the CPU pin and
+        // the current-vCPU publication.
+        let run_outcome = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
             crate::runtime::vcpus::inject_pending_interrupts::<A>(vm.id(), vcpu_id, vcpu);
 
             drain_and_inject_dispatched_interrupts::<A>(vm, vcpu_id, vcpu);
 
             A::before_vcpu_run(vm, vcpu)?;
             let exit = vcpu.run();
-            let exit = exit?;
-            trace!("{exit:#x?}");
-            match A::handle_vcpu_exit_bound(vm, vcpu, exit)? {
-                BoundVcpuExit::Continue => continue,
-                action => break Ok(action),
-            }
+            A::after_vcpu_run(vm, vcpu);
+            exit
+        });
+        let exit = match run_outcome {
+            Ok(exit) => exit,
+            Err(err) => break Err(err),
+        };
+        trace!("{exit:#x?}");
+        let action = match A::handle_vcpu_exit_bound(vm, vcpu, exit) {
+            Ok(action) => action,
+            Err(err) => break Err(err),
+        };
+        match action {
+            BoundVcpuExit::Continue => continue,
+            action => break Ok(action),
         }
-    });
+    };
 
     let unbind_result = vcpu.unbind();
     match run_result {

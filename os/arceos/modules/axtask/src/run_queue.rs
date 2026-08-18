@@ -75,6 +75,22 @@ const ARRAY_REPEAT_VALUE: MaybeUninit<NonNull<AxRunQueue>> = MaybeUninit::uninit
 pub(crate) static BUSY_TICKS: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
     [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
 
+/// Per-CPU scheduler wake-latency statistics (feature "sched-latency"): the
+/// time between a task's `Blocked -> Ready` transition (wake) and the moment it
+/// is actually switched to. Recorded as max / sum / count so an average can be
+/// derived. Each CPU only bumps its own slot while holding the run-queue guard
+/// (or with IRQs disabled in `switch_to`), so `Relaxed` atomics suffice; the
+/// values are read cross-CPU only by `api::print_sched_latency_stats`.
+#[cfg(feature = "sched-latency")]
+pub(crate) static SCHED_LATENCY_MAX_NS: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
+#[cfg(feature = "sched-latency")]
+pub(crate) static SCHED_LATENCY_SUM_NS: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
+#[cfg(feature = "sched-latency")]
+pub(crate) static SCHED_LATENCY_COUNT: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
+
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
     let (stack_ptr, stack_size) = ax_hal::mem::boot_stack_bounds(this_cpu_id());
@@ -1086,6 +1102,14 @@ impl AxRunQueue {
         // If the task's state matches `current_state`, set its state to `Ready` and
         // put it back to the run queue (except idle task).
         if task.transition_state(current_state, TaskState::Ready) && !task.is_idle() {
+            // Wake moment: record the monotonic timestamp so `switch_to` can
+            // measure how long this wake waited in the run queue. Only real
+            // wakes (`Blocked -> Ready`) are stamped; re-queues of a running
+            // task (yield / preempt) keep the previous (already consumed) value.
+            #[cfg(feature = "sched-latency")]
+            if current_state == TaskState::Blocked {
+                task.set_wake_ts(ax_hal::time::monotonic_time_nanos());
+            }
             #[cfg(feature = "smp")]
             let waking_current_task = current_state == TaskState::Blocked
                 && self.cpu_id == this_cpu_id()
@@ -1190,6 +1214,27 @@ impl AxRunQueue {
         next_task.set_state(TaskState::Running);
         if prev_task.ptr_eq(&next_task) {
             return SchedulerFrameResult::Stayed;
+        }
+
+        // Scheduler wake-latency accounting (feature "sched-latency"): the time
+        // from this task's `Blocked -> Ready` transition to it actually running.
+        // IRQs are disabled here (asserted above), so the clock read is stable.
+        #[cfg(feature = "sched-latency")]
+        {
+            let wake_ts = next_task.take_wake_ts();
+            if wake_ts != 0 {
+                let latency = ax_hal::time::monotonic_time_nanos().saturating_sub(wake_ts);
+                let cpu = this_cpu_id();
+                if let (Some(max), Some(sum), Some(count)) = (
+                    SCHED_LATENCY_MAX_NS.get(cpu),
+                    SCHED_LATENCY_SUM_NS.get(cpu),
+                    SCHED_LATENCY_COUNT.get(cpu),
+                ) {
+                    max.fetch_max(latency, core::sync::atomic::Ordering::Relaxed);
+                    sum.fetch_add(latency, core::sync::atomic::Ordering::Relaxed);
+                    count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                }
+            }
         }
 
         // Claim the task as running, we do this before switching to it

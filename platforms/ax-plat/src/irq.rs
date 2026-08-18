@@ -269,6 +269,12 @@ pub fn prepare_irq_context(vector: TrapVector) {
 
 /// Dispatches actions registered in the dynamic IRQ framework on `cpu`.
 pub fn dispatch_irq_on(irq: IrqId, cpu: CpuId) -> IrqOutcome {
+    // Hold preemption across the whole dispatch. Without it, a nested real-IRQ
+    // exit can reschedule a task woken by the handler (e.g. the axvm timer
+    // worker) while this CPU's IRQ-context bit is still set; that task then
+    // observes `in_irq_context() == true` and panics on its next might_sleep
+    // (WaitQueue wait / mutex lock) with a misleading atomic-sleep panic.
+    let _preempt = ax_sync::PreemptGuard::new();
     let context_bit = irq_context_bit(cpu);
     let was_in_irq = context_bit
         .map(|bit| IRQ_CONTEXT_CPUS.fetch_or(bit, Ordering::AcqRel) & bit != 0)

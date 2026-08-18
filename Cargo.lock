@@ -334,6 +334,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-cyclictest"
+version = "0.1.0"
+dependencies = [
+ "ax-std",
+]
+
+[[package]]
 name = "arceos-helloworld"
 version = "0.1.0"
 dependencies = [

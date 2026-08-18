@@ -1,0 +1,24 @@
+[base]
+id = 1
+name = "arceos-cyclictest"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0]
+# Run the vCPU thread on the host at RT priority 10 (higher than the default
+# priority 0, FreeRTOS convention) so host-side scheduling of the vCPU thread
+# is not delayed by lower-priority host tasks.
+phys_cpu_priorities = [10]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-cyclictest.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+memory_regions = [
+  [0x8000_0000, 0x2000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []

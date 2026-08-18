@@ -51,6 +51,10 @@ uspace = ["ax-hal/uspace"]
 sched-cfs = ["multitask", "preempt"]
 sched-rr = ["multitask", "preempt"]
 sched-rt = ["multitask", "preempt"]
+# Per-CPU wake-to-schedule latency statistics (max / sum / count), read at the
+# scheduler's wake and switch_to points. No clock access in ax-sched; all
+# instrumentation lives in this module.
+sched-latency = ["multitask"]
 
 host-test = [
   "ax-hal/host-test",

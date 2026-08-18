@@ -156,6 +156,13 @@ pub struct TaskInner {
     #[cfg(feature = "irq")]
     timer_ticket_id: AtomicU64,
 
+    /// Monotonic timestamp (ns) of this task's last `Blocked -> Ready`
+    /// transition, consumed by `switch_to` for wake-latency statistics
+    /// (feature "sched-latency"). Zero means the task has not been woken
+    /// since it was last scheduled.
+    #[cfg(feature = "sched-latency")]
+    wake_ts_ns: AtomicU64,
+
     #[cfg(feature = "preempt")]
     need_resched: AtomicBool,
     #[cfg(feature = "preempt")]
@@ -428,6 +435,8 @@ impl TaskInner {
             in_wait_queue: AtomicBool::new(false),
             #[cfg(feature = "irq")]
             timer_ticket_id: AtomicU64::new(0),
+            #[cfg(feature = "sched-latency")]
+            wake_ts_ns: AtomicU64::new(0),
             cpu_id: AtomicU32::new(0),
             #[cfg(feature = "smp")]
             on_cpu: AtomicBool::new(false),
@@ -508,6 +517,21 @@ impl TaskInner {
     #[inline]
     pub(crate) fn set_state(&self, state: TaskState) {
         self.state.store(state as u8, Ordering::Release)
+    }
+
+    /// Record the wake timestamp (ns) of this task's `Blocked -> Ready` transition.
+    #[cfg(feature = "sched-latency")]
+    #[inline]
+    pub(crate) fn set_wake_ts(&self, ts: u64) {
+        self.wake_ts_ns.store(ts, Ordering::Release)
+    }
+
+    /// Take and clear the wake timestamp, returning zero if the task has not
+    /// been woken since it was last scheduled.
+    #[cfg(feature = "sched-latency")]
+    #[inline]
+    pub(crate) fn take_wake_ts(&self) -> u64 {
+        self.wake_ts_ns.swap(0, Ordering::Acquire)
     }
 
     /// Transition the task state from `current_state` to `new_state`,

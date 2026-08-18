@@ -1,0 +1,13 @@
+[package]
+name = "arceos-cyclictest"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[features]
+default = ["arceos"]
+arceos = ["dep:ax-std", "ax-std/arceos"]
+sched-rt = ["ax-std/sched-rt"]
+
+[dependencies]
+ax-std = { workspace = true, optional = true, features = ["default"] }
