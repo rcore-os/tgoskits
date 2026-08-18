@@ -351,7 +351,7 @@ fn align_up_4k(size: usize) -> usize {
     (size + MASK) & !MASK
 }
 
-#[cfg(all(test, not(feature = "pci")))]
+#[cfg(test)]
 mod tests {
     use alloc::{vec, vec::Vec};
 

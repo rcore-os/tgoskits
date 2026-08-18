@@ -58,6 +58,9 @@ pub mod mmio;
 ))]
 mod registration;
 
+#[cfg(test)]
+mod test_klib;
+
 #[cfg(feature = "block")]
 pub mod block;
 #[cfg(feature = "display")]
