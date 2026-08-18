@@ -807,7 +807,6 @@ impl ProcessData {
             fp_lasx_hi1: fp.fp_lasx_hi1,
             fcc: fp.fcc,
             fcsr: fp.fcsr,
-            _reserved: 0,
         };
 
         fp_state.restore();

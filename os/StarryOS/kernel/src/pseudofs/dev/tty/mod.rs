@@ -39,7 +39,7 @@ use crate::{
     StarryError, StarryResult,
     mm::{VmMutPtr, VmPtr},
     pseudofs::{Device, DeviceOps},
-    sync::{IrqMutex, PiMutex},
+    sync::{IrqMutex, Mutex, PiMutex},
     task::{
         PgidNumber, Process, current_user_task, get_process_group_by_number,
         send_signal_to_process_group,
