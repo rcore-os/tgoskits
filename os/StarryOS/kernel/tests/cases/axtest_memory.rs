@@ -57,6 +57,11 @@ fn cow_file_max_read_len_boundary_rules_hold() {
 }
 
 #[axtest]
+fn cow_clone_failure_rollback_rules_hold() {
+    ax_assert!(axtest_exports::cow_clone_failure_rollback_rules_hold());
+}
+
+#[axtest]
 fn stats_classify_and_accumulate_rules_hold() {
     ax_assert!(axtest_exports::stats_classify_and_accumulate_rules_hold());
 }

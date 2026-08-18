@@ -475,6 +475,93 @@ impl CowBackend {
     }
 }
 
+trait CowCloneRollbackOps {
+    fn rollback_page(&mut self, vaddr: VirtAddr);
+}
+
+struct CowCloneTransaction<'a, O: CowCloneRollbackOps> {
+    rollback_ops: &'a mut O,
+    start: VirtAddr,
+    cloned_end: VirtAddr,
+    page_size: usize,
+    committed: bool,
+}
+
+impl<'a, O: CowCloneRollbackOps> CowCloneTransaction<'a, O> {
+    fn new(rollback_ops: &'a mut O, start: VirtAddr, page_size: usize) -> Self {
+        Self {
+            rollback_ops,
+            start,
+            cloned_end: start,
+            page_size,
+            committed: false,
+        }
+    }
+
+    fn rollback_ops_mut(&mut self) -> &mut O {
+        self.rollback_ops
+    }
+
+    fn record_cloned_page(&mut self, vaddr: VirtAddr) {
+        self.cloned_end = vaddr + self.page_size;
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl<O: CowCloneRollbackOps> Drop for CowCloneTransaction<'_, O> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        while self.cloned_end > self.start {
+            self.cloned_end -= self.page_size;
+            self.rollback_ops.rollback_page(self.cloned_end);
+        }
+    }
+}
+
+struct PageTableCowCloneRollback<'a> {
+    page_table: &'a mut PageTable,
+    child_acct: Option<&'a MemoryAccounting>,
+    page_size: usize,
+}
+
+impl CowCloneRollbackOps for PageTableCowCloneRollback<'_> {
+    fn rollback_page(&mut self, vaddr: VirtAddr) {
+        if let Some(child) = self.child_acct
+            && child.charge_kind(vaddr).is_some()
+        {
+            child.remove_charge(vaddr);
+        }
+
+        let (paddr, _, page_size) = match self.page_table.query(vaddr) {
+            Ok(mapping) => mapping,
+            Err(PagingError::NotMapped) => return,
+            Err(err) => {
+                warn!("failed to query cloned COW page {vaddr:?} during rollback: {err}");
+                return;
+            }
+        };
+        assert_eq!(page_size, self.page_size);
+        if let Err(err) = self.page_table.unmap_page(vaddr) {
+            warn!("failed to unmap cloned COW page {vaddr:?} during rollback: {err}");
+        }
+
+        // The unpublished child page table is dropped after clone failure, so its
+        // reference must be released even if the explicit PTE removal failed.
+        let Some(frame) = FRAME_TABLE.lock().get_frame_ref(paddr) else {
+            warn!("missing frame reference for cloned COW page {vaddr:?} during rollback");
+            return;
+        };
+        let mut frame = frame.lock();
+        assert!(frame.count > 1, "rolling back unshared COW frame");
+        frame.drop_frame(paddr, self.page_size);
+    }
+}
+
 impl BackendOps for CowBackend {
     fn page_size(&self) -> usize {
         self.size
@@ -583,6 +670,14 @@ impl BackendOps for CowBackend {
         acct: CloneMapAccounting<'_>,
     ) -> StarryResult<Backend> {
         let cow_flags = flags - MappingFlags::WRITE;
+        let parent_acct = acct.parent;
+        let child_acct = acct.child;
+        let mut rollback_ops = PageTableCowCloneRollback {
+            page_table: new_pt,
+            child_acct,
+            page_size: self.size,
+        };
+        let mut transaction = CowCloneTransaction::new(&mut rollback_ops, range.start, self.size);
 
         for vaddr in pages_in(range, self.size)? {
             match old_pt.query(vaddr) {
@@ -598,16 +693,32 @@ impl BackendOps for CowBackend {
                     // if it ever happens report it as ENOMEM (out of a shareable
                     // resource) rather than EFAULT — a fork hitting a real limit
                     // must not look like a bad pointer to userspace.
-                    frame.count = match frame.count.checked_add(1) {
+                    let new_count = match frame.count.checked_add(1) {
                         Some(c) => c,
                         None => {
                             warn!("frame reference count overflow");
+                            drop(frame);
                             return Err(StarryError::NoMemory);
                         }
                     };
-                    old_pt.protect_page(vaddr, cow_flags)?;
-                    new_pt.map_page(vaddr, paddr, self.size, cow_flags)?;
-                    if let (Some(parent), Some(child)) = (acct.parent, acct.child)
+                    if let Err(err) = old_pt.protect_page(vaddr, cow_flags) {
+                        drop(frame);
+                        return Err(err.into());
+                    }
+                    if let Err(err) = transaction
+                        .rollback_ops_mut()
+                        .page_table
+                        .map_page(vaddr, paddr, self.size, cow_flags)
+                    {
+                        drop(frame);
+                        return Err(err.into());
+                    }
+                    // The child page table is not published yet and this frame is
+                    // locked, so publish the extra reference only after its PTE exists.
+                    frame.count = new_count;
+                    transaction.record_cloned_page(vaddr);
+                    drop(frame);
+                    if let (Some(parent), Some(child)) = (parent_acct, child_acct)
                         && let Some(_kind) = parent.charge_kind(vaddr)
                     {
                         child.copy_charge_from(parent, vaddr)?;
@@ -617,6 +728,7 @@ impl BackendOps for CowBackend {
                 Err(_) => return Err(StarryError::BadAddress),
             };
         }
+        transaction.commit();
         Ok(Backend::Cow(self.clone()))
     }
 
@@ -692,4 +804,64 @@ pub(crate) fn cow_file_max_read_len_boundary_rules_hold_for_test() -> bool {
         && matches!(cow_file_max_read_len(8192, Some(4096), 8192, 4096), Ok(0))
         // Explicit end == offset yields zero (EOF reached within bounds).
         && matches!(cow_file_max_read_len(8192, Some(4096), 4096, 4096), Ok(0))
+}
+
+#[cfg(any(test, axtest))]
+fn cow_clone_transaction_rollback_rules_hold() -> bool {
+    struct MockRollback {
+        pages: alloc::vec::Vec<VirtAddr>,
+    }
+
+    impl CowCloneRollbackOps for MockRollback {
+        fn rollback_page(&mut self, vaddr: VirtAddr) {
+            self.pages.push(vaddr);
+        }
+    }
+
+    let start = VirtAddr::from(0x4000_0000);
+    let mut failed_before_current_commit = MockRollback {
+        pages: alloc::vec::Vec::new(),
+    };
+    {
+        let mut transaction =
+            CowCloneTransaction::new(&mut failed_before_current_commit, start, PAGE_SIZE_4K);
+        transaction.record_cloned_page(start);
+    }
+
+    let mut failed = MockRollback {
+        pages: alloc::vec::Vec::new(),
+    };
+    {
+        let mut transaction = CowCloneTransaction::new(&mut failed, start, PAGE_SIZE_4K);
+        transaction.record_cloned_page(start);
+        transaction.record_cloned_page(start + 2 * PAGE_SIZE_4K);
+    }
+
+    let mut committed = MockRollback {
+        pages: alloc::vec::Vec::new(),
+    };
+    {
+        let mut transaction = CowCloneTransaction::new(&mut committed, start, PAGE_SIZE_4K);
+        transaction.record_cloned_page(start);
+        transaction.commit();
+    }
+
+    failed_before_current_commit.pages == alloc::vec![start]
+        && failed.pages == alloc::vec![start + 2 * PAGE_SIZE_4K, start + PAGE_SIZE_4K, start,]
+        && committed.pages.is_empty()
+}
+
+#[cfg(axtest)]
+pub(crate) fn cow_clone_failure_rollback_rules_hold_for_test() -> bool {
+    cow_clone_transaction_rollback_rules_hold()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cow_clone_transaction_rollback_rules_hold;
+
+    #[test]
+    fn cow_clone_failure_rolls_back_unregistered_pages() {
+        assert!(cow_clone_transaction_rollback_rules_hold());
+    }
 }
