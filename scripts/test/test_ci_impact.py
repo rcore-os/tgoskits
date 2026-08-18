@@ -96,6 +96,21 @@ class CiImpactTests(unittest.TestCase):
             self.metadata_by_arch,
         )
 
+        self.assertFalse(impact.full)
+        self.assertEqual(impact.changed_packages, ("shared",))
+        self.assertEqual(
+            impact.affected_packages,
+            ("arceos-test-suit", "axvisor", "shared", "starryos"),
+        )
+        self.assertEqual(
+            set(impact.targets),
+            {
+                f"{os_name}:{arch}"
+                for os_name in ("arceos", "starry", "axvisor")
+                for arch in ci_impact.ARCH_TARGETS
+            },
+        )
+
     def test_markdown_does_not_expand_a_mixed_code_change(self) -> None:
         impact = ci_impact.analyze_changed_paths(
             self.workspace_root,
@@ -112,9 +127,6 @@ class CiImpactTests(unittest.TestCase):
             impact.ignored_markdown,
             ("virtualization/arm-vcpu/README.md",),
         )
-
-        self.assertFalse(impact.full)
-        self.assertEqual(impact.changed_packages, ("shared",))
         self.assertEqual(
             set(impact.targets),
             {
