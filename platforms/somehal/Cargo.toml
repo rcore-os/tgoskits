@@ -53,4 +53,4 @@ x2apic = "0.5"
 x86 = "0.52"
 
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test"] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

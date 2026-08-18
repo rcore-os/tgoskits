@@ -40,14 +40,14 @@ harness = false
 required-features = ["axtest"]
 
 [dev-dependencies.axtest]
-workspace = true
+path = "../axtest/axtest"
 
 [dev-dependencies.ax-std]
-workspace = true
+path = "../../os/arceos/ulib/axstd"
 features = ["default"]
 
 [dev-dependencies.ax-hal]
-workspace = true
+path = "../../os/arceos/modules/axhal"
 
 [package.metadata.docs.rs]
 targets = [

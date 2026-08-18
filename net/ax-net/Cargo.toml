@@ -63,9 +63,9 @@ features = [
 ]
 
 [dev-dependencies]
-ax-hal = { workspace = true, features = ["host-test"] }
-ax-sync = { workspace = true, features = ["host-test"] }
-ax-task = { workspace = true, features = ["host-test"] }
+ax-hal = { path = "../../os/arceos/modules/axhal", features = ["host-test"] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
+ax-task = { path = "../../os/arceos/modules/axtask", features = ["host-test"] }
 
 [[test]]
 name = "std"

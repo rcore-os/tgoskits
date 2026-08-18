@@ -22,7 +22,7 @@ linux-raw-sys = { version = "0.12", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test"] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 tokio = { version = "1.37", features = [
     "rt-multi-thread",
     "macros",

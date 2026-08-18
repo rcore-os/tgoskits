@@ -8,7 +8,7 @@ StarryOS/Axvisor 聚合测试三种发现方式。测试所有权、Cargo featur
 
 本设计把 Cargo metadata 作为唯一事实来源：
 
-- crate 在 `[dev-dependencies]` 中直接依赖 workspace `axtest`，表示参加 workspace axtest；
+- crate 在 `[dev-dependencies]` 中通过相对 path 直接依赖 workspace `axtest`，表示参加 workspace axtest；
 - 每个测试入口都是 `tests/` 下的 `[[test]]`，并设置 `harness = false`；
 - 一个 Cargo test bin 构建一次、启动一次 QEMU；
 - `cargo xtask ktest qemu` 负责 workspace 发现、筛选、构建、运行与汇总；
@@ -48,9 +48,9 @@ adapter 安装所需上下文，则仍属于标准测试，不应仅为复用旧
 axtest = []
 
 [dev-dependencies]
-axtest.workspace = true
-ax-hal.workspace = true
-ax-std.workspace = true
+axtest = { path = "<relative-path>/components/axtest/axtest" }
+ax-hal = { path = "<relative-path>/os/arceos/modules/axhal" }
+ax-std = { path = "<relative-path>/os/arceos/ulib/axstd" }
 
 [[test]]
 name = "axtest"
@@ -58,6 +58,12 @@ path = "tests/axtest.rs"
 harness = false
 required-features = ["axtest"]
 ```
+
+仓库内 dev-dependency 必须使用相对于当前 package 的 path-only 声明，不得写 `version`，
+也不得用 `workspace = true` 间接继承根 workspace 的版本。Cargo 发布时只保留带版本的
+dev-dependency；path-only 依赖会从发布 manifest 中剥离，因此既能让本地集成测试依赖
+workspace crate，又不会把允许的测试依赖环带入 registry 发布图。外部 registry
+dev-dependency 仍按正常方式声明版本。
 
 `axtest` package feature只承载被测代码所需的 alloc、IRQ 等前置能力；测试 target 需要的
 feature 写入 `required-features`。workspace 发现只认可直接、development kind、路径解析到

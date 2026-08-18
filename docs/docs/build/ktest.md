@@ -43,7 +43,13 @@ cargo xtask ktest board -p <PACKAGE> --test <TARGET> -b <BOARD>
 语义。同一 crate 的纯逻辑部分应留在 unit/integration `#[test]` 中，仅把实际需要 QEMU 或
 板卡的部分放入以下 target。
 
-axbuild 从 `cargo metadata` 和 package `Cargo.toml` 读取 target。package 必须在 `[dev-dependencies]` 中直接依赖 workspace `axtest`，可选 target 必须是 `[[test]]` 且 `harness = false`：
+axbuild 从 `cargo metadata` 和 package `Cargo.toml` 读取 target。package 必须在
+`[dev-dependencies]` 中通过相对 path 直接依赖 workspace `axtest`，可选 target 必须是
+`[[test]]` 且 `harness = false`。仓库内 dev-dependency 不得声明 `version`，也不得通过
+`workspace = true` 继承版本；path-only 依赖会在发布时被 Cargo 剥离，避免测试依赖环进入
+registry 发布图。外部 registry dev-dependency 可以继续声明版本。
+
+发现规则如下：
 
 - workspace 选择对没有直接依赖的 package 静默跳过，显式 `-p` 选择则报错；
 - 声明了依赖却没有符合条件 target 的 package 被视为 manifest 错误；

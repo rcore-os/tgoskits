@@ -81,7 +81,7 @@ lock_api = {workspace = true, optional = true}
 sbi-rt = { workspace = true, features = ["legacy"] }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
-ax-hal = { workspace = true, features = ["fp-simd"] }
+ax-hal = { path = "../axhal", features = ["fp-simd"] }
 
 [build-dependencies]
 quote = { workspace = true }
@@ -93,8 +93,8 @@ harness = false
 required-features = ["axtest"]
 
 [dev-dependencies.axtest]
-workspace = true
+path = "../../../../components/axtest/axtest"
 
 [dev-dependencies.ax-std]
-workspace = true
+path = "../../ulib/axstd"
 features = ["default"]

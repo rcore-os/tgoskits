@@ -18,6 +18,6 @@ ax-sync.workspace = true
 cpu-local.workspace = true
 
 [dev-dependencies]
-ax-sync.workspace = true
+ax-sync = { path = "../../os/arceos/modules/axsync" }
 ctor = "0.6"
-ax-percpu = { workspace = true, features = ["host-test"] }
+ax-percpu = { path = "../percpu/percpu", features = ["host-test"] }

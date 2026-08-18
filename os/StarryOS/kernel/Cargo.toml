@@ -228,8 +228,8 @@ kbpf-basic = "0.6"
 rbpf = { version = "0.4", default-features = false }
 
 [dev-dependencies]
-axtest.workspace = true
-ax-std = { workspace = true, default-features = false, features = [
+axtest = { path = "../../../components/axtest/axtest" }
+ax-std = { path = "../../arceos/ulib/axstd", default-features = false, features = [
     "alloc",
     "fd",
     "ext-ld",

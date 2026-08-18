@@ -30,7 +30,7 @@ cargo xtask ktest board -p arceos-axtest-sg2002-usb-msc \
 
 ## Writing Test Cases
 
-After confirming that the case cannot run under the standard Rust harness, add `axtest.workspace = true` as a direct dev-dependency, then declare a
+After confirming that the case cannot run under the standard Rust harness, add a path-only direct `axtest` dev-dependency, then declare a
 `harness = false` Cargo test target. Keep axtest sources under `tests/`:
 
 ```toml
@@ -38,9 +38,9 @@ After confirming that the case cannot run under the standard Rust harness, add `
 axtest = []
 
 [dev-dependencies]
-axtest.workspace = true
-ax-hal.workspace = true
-ax-std.workspace = true
+axtest = { path = "<relative-path>/components/axtest/axtest" }
+ax-hal = { path = "<relative-path>/os/arceos/modules/axhal" }
+ax-std = { path = "<relative-path>/os/arceos/ulib/axstd" }
 
 [[test]]
 name = "axtest"
@@ -48,6 +48,13 @@ path = "tests/axtest.rs"
 harness = false
 required-features = ["axtest"]
 ```
+
+Adjust each path relative to the package manifest. Workspace-internal
+dev-dependencies must not specify `version` or use `workspace = true`, because
+Cargo keeps versioned dev-dependencies in the published manifest and can then
+reject the workspace's test-only dependency cycles. Path-only dev-dependencies
+are stripped during publication. Registry dev-dependencies may still specify a
+version normally.
 
 The test file only needs the axtest module and test cases:
 

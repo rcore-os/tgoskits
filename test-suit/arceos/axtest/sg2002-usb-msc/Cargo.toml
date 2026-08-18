@@ -36,9 +36,9 @@ harness = false
 required-features = ["axtest"]
 
 [dev-dependencies]
-axtest.workspace = true
-ax-hal.workspace = true
-ax-std = { workspace = true, features = ["default"] }
+axtest = { path = "../../../../components/axtest/axtest" }
+ax-hal = { path = "../../../../os/arceos/modules/axhal" }
+ax-std = { path = "../../../../os/arceos/ulib/axstd", features = ["default"] }
 
 [package.metadata.axtest]
 runtime = "board"
