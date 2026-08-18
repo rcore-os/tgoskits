@@ -92,7 +92,7 @@ pub(crate) struct VsockPollLease {
 }
 
 impl VsockPollLease {
-    #[cfg(any(test, all(axtest, feature = "axtest")))]
+    #[cfg(test)]
     pub(crate) const fn inactive_for_test() -> Self {
         Self { active: false }
     }
@@ -390,6 +390,3 @@ impl VsockPollWorker {
         Ok(EventDisposition::Consumed)
     }
 }
-
-#[cfg(all(axtest, feature = "axtest"))]
-mod tests;

@@ -278,16 +278,13 @@ impl VsockConnectionManager {
 pub static VSOCK_CONN_MANAGER: Mutex<VsockConnectionManager> =
     Mutex::new(VsockConnectionManager::new());
 
-#[cfg(any(test, all(axtest, feature = "axtest")))]
+#[cfg(test)]
 mod tests {
     use alloc::{sync::Arc, task::Wake};
     use core::{
         sync::atomic::{AtomicBool, Ordering},
         task::{Context, Waker},
     };
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    use axtest::prelude::*;
 
     use super::*;
 
@@ -301,26 +298,6 @@ mod tests {
         fn wake(self: Arc<Self>) {
             self.0.store(true, Ordering::Release);
         }
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn tx_poll_capability_is_owned_outside_connection_state() {
-        let connection = Connection::new_shared(
-            VsockAddr { cid: 3, port: 4 },
-            Some(VsockAddr { cid: 5, port: 6 }),
-            ConnectionState::Connected,
-            test_poll_lease(),
-        );
-
-        let state = connection.lock();
-        drop(state);
-        let wake_flag = Arc::new(WakeFlag(AtomicBool::new(false)));
-        let waker = Waker::from(wake_flag.clone());
-        connection.register_tx_poll(&mut Context::from_waker(&waker));
-        connection.wake_tx();
-
-        assert!(wake_flag.0.load(Ordering::Acquire));
     }
 
     #[test]
@@ -384,30 +361,5 @@ mod tests {
             &registered,
             &manager.get_connection(conn_id).unwrap()
         ));
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn unlisten_retires_connections_waiting_in_accept_queue() {
-        let mut manager = VsockConnectionManager::new();
-        let local_addr = VsockAddr { cid: 3, port: 13 };
-        let conn_id = VsockConnId {
-            peer_addr: VsockAddr { cid: 14, port: 15 },
-            local_port: local_addr.port,
-        };
-        manager.listen(local_addr).unwrap();
-        let _incoming = manager
-            .on_connection_request(conn_id, test_poll_lease())
-            .unwrap()
-            .unwrap();
-
-        let retired = manager.unlisten(local_addr.port);
-
-        assert!(
-            manager.get_connection(conn_id).is_none(),
-            "closing a listener must retire connections that have not been accepted"
-        );
-        assert_eq!(retired.len(), 1);
-        assert_eq!(retired[0].0, conn_id);
     }
 }

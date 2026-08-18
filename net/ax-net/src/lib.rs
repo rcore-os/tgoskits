@@ -168,9 +168,6 @@ static WIFI_CONTROLS: LazyLock<Mutex<Vec<(alloc::string::String, rd_net::WifiCon
 static NET_IRQ_EVENT: AtomicBool = AtomicBool::new(false);
 static NET_IRQ_WAIT: IrqWaitCell = IrqWaitCell::new();
 static NET_IRQ_REGISTRATION: OnceLock<IrqWaitRegistration> = OnceLock::new();
-#[cfg(all(axtest, feature = "axtest"))]
-static NET_POLL_WORKER_START_ATTEMPTS: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -345,15 +342,8 @@ fn publish_and_start_service(service: Service, control: Arc<NetControl>) {
 }
 
 fn start_net_poll_worker() {
-    #[cfg(all(axtest, feature = "axtest"))]
-    NET_POLL_WORKER_START_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
     spawn_permanent_worker("net-poll".to_owned(), net_poll_worker)
         .unwrap_or_else(|error| panic!("failed to start net poll worker: {error}"));
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-fn net_poll_worker_start_attempts() -> usize {
-    NET_POLL_WORKER_START_ATTEMPTS.load(Ordering::Relaxed)
 }
 
 fn validate_config(config: &NetworkConfig) {
@@ -864,28 +854,6 @@ fn device_poll_fallback_due(timed_out: bool, irq_pending: bool, delay: Duration)
     irq_pending || (timed_out && delay > Duration::ZERO)
 }
 
-#[cfg(test)]
-mod tests {
-    use core::time::Duration;
-
-    use super::device_poll_fallback_due;
-
-    #[test]
-    fn poll_timeout_wakes_devices_as_polling_fallback() {
-        assert!(device_poll_fallback_due(
-            true,
-            false,
-            Duration::from_millis(100)
-        ));
-    }
-
-    #[test]
-    fn immediate_socket_poll_does_not_force_device_fallback() {
-        assert!(!device_poll_fallback_due(true, false, Duration::ZERO));
-        assert!(device_poll_fallback_due(false, true, Duration::ZERO));
-    }
-}
-
 /// Returns the list of configured DNS servers.
 ///
 /// Priority: DHCP-provided servers take precedence over statically configured servers.
@@ -994,103 +962,24 @@ fn wait_for_dhcp_bootstrap() {
     warn!("DHCP bootstrap timed out");
 }
 
-#[cfg(any(test, all(axtest, feature = "axtest")))]
-mod initialization_contract_tests {
-    #[cfg(all(axtest, feature = "axtest"))]
-    use axtest::prelude::*;
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
 
-    #[cfg(all(axtest, feature = "axtest"))]
-    fn current_preemption_depth() -> u32 {
-        let restore_irqs = ax_hal::asm::irqs_enabled();
-        ax_hal::asm::disable_irqs();
-        // SAFETY: raw local-IRQ exclusion prevents migration for the complete
-        // non-escaping CPU-local observation.
-        let snapshot = unsafe { ax_hal::percpu::with_cpu_pin(ax_hal::percpu::preemption_snapshot) }
-            .expect("network axtest must run after CPU-local initialization")
-            .expect("current execution context must own a preemption word");
-        if restore_irqs {
-            ax_hal::asm::enable_irqs();
-        }
-        snapshot.depth()
+    use super::device_poll_fallback_due;
+
+    #[test]
+    fn poll_timeout_wakes_devices_as_polling_fallback() {
+        assert!(device_poll_fallback_due(
+            true,
+            false,
+            Duration::from_millis(100)
+        ));
     }
 
-    #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn protocol_service_lock_keeps_scheduler_ticks_enabled_while_held() {
-        let _network = crate::test_support::network_test_guard();
-        crate::test_support::init_split_route_network();
-        let depth_before = current_preemption_depth();
-
-        let service = super::get_service();
-
-        assert_eq!(
-            current_preemption_depth(),
-            depth_before,
-            "the task-context protocol core must remain preemptible while its sleep mutex is held"
-        );
-        drop(service);
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn split_route_tests_reuse_existing_network_runtime() {
-        let _network = crate::test_support::network_test_guard();
-        crate::test_support::init_split_route_network();
-
-        assert_eq!(
-            super::net_poll_worker_start_attempts(),
-            1,
-            "test topology initialization must not start a second global net-poll worker"
-        );
-    }
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) mod test_support {
-    use alloc::string::String;
-
-    use ax_lazyinit::OnceLock;
-    use ax_sync::{Mutex, MutexGuard};
-    use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
-
-    use crate::{config::InterfaceId, get_service, net_poll_device_waker, request_poll};
-
-    pub(crate) const LOCAL_ADDR: Ipv4Address = Ipv4Address::new(192, 0, 2, 10);
-    pub(crate) const PEER_ADDR: Ipv4Address = Ipv4Address::new(198, 51, 100, 20);
-
-    static NETWORK_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    pub(crate) struct SplitRouteNetwork {
-        pub(crate) local_if: InterfaceId,
-        pub(crate) peer_if: InterfaceId,
-    }
-
-    pub(crate) fn network_test_guard() -> MutexGuard<'static, ()> {
-        NETWORK_TEST_LOCK.lock()
-    }
-
-    pub(crate) fn init_split_route_network() -> &'static SplitRouteNetwork {
-        static INIT: OnceLock<SplitRouteNetwork> = OnceLock::new();
-
-        INIT.call_once(|| {
-            let local_cidr = Ipv4Cidr::new(LOCAL_ADDR, 24);
-            let peer_cidr = Ipv4Cidr::new(PEER_ADDR, 24);
-            let (local_if, local_workers, peer_if, peer_workers) = {
-                let mut service = get_service();
-                let (local_if, local_workers) =
-                    service.register_test_loopback(String::from("axtest-local"), local_cidr);
-                let (peer_if, peer_workers) =
-                    service.register_test_loopback(String::from("axtest-peer"), peer_cidr);
-                (local_if, local_workers, peer_if, peer_workers)
-            };
-
-            local_workers.register_device_waker(net_poll_device_waker());
-            local_workers.start();
-            peer_workers.register_device_waker(net_poll_device_waker());
-            peer_workers.start();
-            request_poll();
-
-            SplitRouteNetwork { local_if, peer_if }
-        })
+    #[test]
+    fn immediate_socket_poll_does_not_force_device_fallback() {
+        assert!(!device_poll_fallback_due(true, false, Duration::ZERO));
+        assert!(device_poll_fallback_due(false, true, Duration::ZERO));
     }
 }

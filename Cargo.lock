@@ -6868,6 +6868,7 @@ dependencies = [
 name = "riscv_vplic"
 version = "0.4.23"
 dependencies = [
+ "ax-runtime",
  "ax-sync",
  "axdevice_base",
  "axvm-types",

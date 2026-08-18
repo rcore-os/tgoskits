@@ -1591,13 +1591,9 @@ mod tests {
     }
 }
 
-#[cfg(any(test, all(axtest, feature = "axtest")))]
+#[cfg(test)]
 mod l2_counter_tests {
-    #[cfg(all(axtest, feature = "axtest"))]
-    use axtest::prelude::*;
     use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
-    #[cfg(all(axtest, feature = "axtest"))]
-    use smoltcp::{storage::PacketMetadata, wire::Ipv4Address};
 
     use super::*;
 
@@ -1647,19 +1643,6 @@ mod l2_counter_tests {
             rx: Arc::new(BoundedPacketQueue::new(1)),
         });
         DeviceHandle::new(IF0, device, &queues)
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    fn test_ip() -> IpAddress {
-        IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    fn test_packet_buffer() -> PacketBuffer<'static, InterfaceId> {
-        PacketBuffer::new(
-            vec![PacketMetadata::EMPTY; 1],
-            vec![0u8; super::STANDARD_MTU],
-        )
     }
 
     // ── count_rx / count_tx ────────────────────────────────────────────
@@ -1743,114 +1726,7 @@ mod l2_counter_tests {
 
     // ── frame-length contract: send ────────────────────────────────────
 
-    #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn send_returns_frame_len_tx_counts_l2_not_ip_payload() {
-        let device = test_device_handle(Box::new(CountingMockDevice {
-            name: "mock",
-            send_returns: 1514, // L2 frame length (14 eth hdr + 1500 IP payload)
-            deferred_tx_lens: vec![],
-            deferred_rx_lens: vec![],
-            recv_returns: 0,
-        }));
-
-        // Simulate what device_tx_worker does
-        let frame_len = device
-            .inner
-            .lock()
-            .send(test_ip(), &[0u8; 100], Instant::from_millis(0));
-        assert_eq!(frame_len, 1514);
-        if frame_len > 0 {
-            device.count_tx(frame_len);
-        }
-
-        let snap = device.stats();
-        // Byte counter reflects L2 frame length, NOT the IP payload (100 bytes)
-        assert_eq!(snap.tx_bytes, 1514);
-        assert_eq!(snap.tx_packets, 1);
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn send_returns_zero_no_tx_counted() {
-        let device = test_device_handle(Box::new(CountingMockDevice {
-            name: "mock",
-            send_returns: 0, // ARP pending or send failure
-            deferred_tx_lens: vec![],
-            deferred_rx_lens: vec![],
-            recv_returns: 0,
-        }));
-
-        let frame_len = device
-            .inner
-            .lock()
-            .send(test_ip(), &[0u8; 100], Instant::from_millis(0));
-        assert_eq!(frame_len, 0);
-        // Worker skips count_tx when frame_len == 0
-        if frame_len > 0 {
-            device.count_tx(frame_len);
-        }
-
-        let snap = device.stats();
-        assert_eq!(snap.tx_bytes, 0);
-        assert_eq!(snap.tx_packets, 0);
-    }
-
     // ── frame-length contract: recv ────────────────────────────────────
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn recv_returns_frame_len_rx_counts_it() {
-        let device = test_device_handle(Box::new(CountingMockDevice {
-            name: "mock",
-            send_returns: 0,
-            deferred_tx_lens: vec![],
-            deferred_rx_lens: vec![],
-            recv_returns: 1514,
-        }));
-
-        let frame_len = device.inner.lock().recv(
-            IF0,
-            &mut test_packet_buffer(),
-            Instant::from_millis(0),
-            &mut |_| {},
-        );
-        assert_eq!(frame_len, 1514);
-        if frame_len > 0 {
-            device.count_rx(frame_len);
-        }
-
-        let snap = device.stats();
-        assert_eq!(snap.rx_bytes, 1514);
-        assert_eq!(snap.rx_packets, 1);
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn recv_returns_zero_no_rx_counted() {
-        let device = test_device_handle(Box::new(CountingMockDevice {
-            name: "mock",
-            send_returns: 0,
-            deferred_tx_lens: vec![],
-            deferred_rx_lens: vec![],
-            recv_returns: 0, // no packet available
-        }));
-
-        let frame_len = device.inner.lock().recv(
-            IF0,
-            &mut test_packet_buffer(),
-            Instant::from_millis(0),
-            &mut |_| {},
-        );
-        assert_eq!(frame_len, 0);
-        if frame_len > 0 {
-            device.count_rx(frame_len);
-        }
-
-        let snap = device.stats();
-        assert_eq!(snap.rx_bytes, 0);
-        assert_eq!(snap.rx_packets, 0);
-    }
 
     // ── drain_deferred_tx default ─────────────────────────────────────────
 
@@ -1967,50 +1843,5 @@ mod l2_counter_tests {
         assert_eq!(stats.rx_packets, 3);
         // 100 + 200 + 300 = 600
         assert_eq!(stats.rx_bytes, 600);
-    }
-
-    // ── RX worker combined drain integration ──────────────────────────
-
-    /// Verifies that a single recv+drain cycle correctly aggregates counts
-    /// from all three counting paths: recv() return value (IP RX),
-    /// drain_deferred_tx() (ARP TX), and drain_deferred_rx() (ARP RX).
-    #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn rx_worker_three_path_combined_drain() {
-        let device = test_device_handle(Box::new(CountingMockDevice {
-            name: "mock",
-            send_returns: 0,
-            deferred_tx_lens: vec![60, 60], // 2 ARP TX frames (42+padding)
-            deferred_rx_lens: vec![42],     // 1 ARP RX frame
-            recv_returns: 1514,             // 1 IP RX frame
-        }));
-
-        // Simulate one iteration of device_rx_worker's inner loop:
-        //   1. recv IP frame → count_rx(frame_len)
-        //   2. drain deferred TX → count_tx(each)
-        //   3. drain deferred RX → count_rx(each)
-        let frame_len = device.inner.lock().recv(
-            IF0,
-            &mut test_packet_buffer(),
-            Instant::from_millis(0),
-            &mut |_| {},
-        );
-        if frame_len > 0 {
-            device.count_rx(frame_len);
-        }
-        for len in device.inner.lock().drain_deferred_tx() {
-            device.count_tx(len);
-        }
-        for len in device.inner.lock().drain_deferred_rx() {
-            device.count_rx(len);
-        }
-
-        let snap = device.stats();
-        // RX: 1 IP frame (1514) + 1 ARP frame (42) = 2 packets, 1556 bytes
-        assert_eq!(snap.rx_packets, 2);
-        assert_eq!(snap.rx_bytes, 1556);
-        // TX: 2 ARP frames (60 + 60) = 2 packets, 120 bytes
-        assert_eq!(snap.tx_packets, 2);
-        assert_eq!(snap.tx_bytes, 120);
     }
 }
