@@ -9,6 +9,7 @@ use super::*;
 use crate::platform::*;
 
 const REG_CLOCK_CONTROL: usize = 0x2c;
+const REG_SOFTWARE_RESET: usize = 0x2f;
 const CLOCK_INTERNAL_ENABLE: u16 = 1;
 const CLOCK_CONTROL_375MHZ_TO_25MHZ: u16 = (8 << 8) | CLOCK_INTERNAL_ENABLE;
 const CLOCK_INTERNAL_STABLE: u16 = 1 << 1;
@@ -53,6 +54,53 @@ fn mark_clock_stable(core: &mut FakeMmio<0x400>) {
     unsafe {
         clock_control.write_volatile(clock_control.read_volatile() | CLOCK_INTERNAL_STABLE);
     }
+}
+
+#[test]
+fn reset_hook_restores_vendor_phy_state() {
+    let mut core = FakeMmio::new();
+    let mut syscon = FakeMmio::new();
+    let mmio = Cv181xMmio::new(core.base(), syscon.base());
+    let mut host = new_host(&mut core, &mut syscon, Cv181xConfig::default());
+    let registers = mmio.core_registers();
+    registers.mshc_ctrl.set(0);
+    registers.phy_tx_rx_dly.set(0);
+    registers.phy_config.set(0);
+
+    let mut request = unsafe {
+        sdio_host2::SdioHost::submit_bus_op(host.inner_mut(), sdio_host2::BusOp::ResetAll)
+    }
+    .unwrap();
+    assert!(matches!(
+        sdio_host2::SdioHost::advance_bus_op(
+            host.inner_mut(),
+            &mut request,
+            ProgressCause::Submitted,
+        )
+        .unwrap(),
+        RequestProgress::RegisterPending { .. }
+    ));
+    unsafe {
+        core.base()
+            .as_ptr()
+            .add(REG_SOFTWARE_RESET)
+            .write_volatile(0);
+    }
+    assert_eq!(
+        sdio_host2::SdioHost::advance_bus_op(
+            host.inner_mut(),
+            &mut request,
+            ProgressCause::RegisterRetry,
+        )
+        .unwrap(),
+        RequestProgress::Complete(Ok(())),
+    );
+
+    assert_eq!(registers.phy_tx_rx_dly.get(), PHY_TX_RX_DLY_DS_HS);
+    assert_eq!(registers.phy_config.get(), PHY_CONFIG_DS_HS);
+    assert!(registers.mshc_ctrl.is_set(MSHC_CTRL::DS_HS_BIT_1));
+    assert!(registers.mshc_ctrl.is_set(MSHC_CTRL::DS_HS_BIT_8));
+    assert!(registers.mshc_ctrl.is_set(MSHC_CTRL::DS_HS_BIT_9));
 }
 
 #[test]

@@ -9,7 +9,7 @@
 use core::num::NonZeroU32;
 
 use dma_api::DeviceDma;
-use sdhci_host::Sdhci;
+use sdhci_host::{HostResetHook, Sdhci};
 use sdmmc_protocol::Error as ProtocolError;
 
 mod board;
@@ -27,6 +27,33 @@ pub struct Cv181xSdhci {
     inner: Sdhci,
     mmio: Cv181xMmio,
     config: Cv181xConfig,
+}
+
+struct Cv181xResetHook {
+    mmio: Cv181xMmio,
+}
+
+impl Cv181xResetHook {
+    const fn new(mmio: Cv181xMmio) -> Self {
+        Self { mmio }
+    }
+}
+
+// SAFETY: The hook is owned by the corresponding `Sdhci` instance and is only
+// invoked while that host is exclusively borrowed for a controller reset. Its
+// MMIO pointer aliases the wrapper's mapping but all accesses are serialized by
+// the host's mutable request path.
+unsafe impl Send for Cv181xResetHook {}
+// SAFETY: See the `Send` implementation. Hook callbacks serialize writes
+// through the exclusively borrowed host even though the callback receiver is
+// shared by the generic capability contract.
+unsafe impl Sync for Cv181xResetHook {}
+
+impl HostResetHook for Cv181xResetHook {
+    fn after_reset(&self, _host: &mut Sdhci) -> Result<(), ProtocolError> {
+        board::restore_ds_hs_phy(self.mmio);
+        Ok(())
+    }
 }
 
 // SAFETY: The wrapper owns exclusive access to one SDHCI register file and the
@@ -49,6 +76,7 @@ impl Cv181xSdhci {
         inner
             .set_fixed_base_clock_hz(source_clock)
             .expect("a newly constructed SDHCI host must be idle");
+        inner.set_reset_hook(Cv181xResetHook::new(mmio));
         let mut this = Self {
             inner,
             mmio,

@@ -110,10 +110,6 @@ impl sdio_host2::SdioHost for Cv181xSdhci {
                 let request = unsafe { sdio_host2::SdioHost::submit_bus_op(&mut self.inner, op)? };
                 Ok(BusRequest::inner(request, AfterBusOp::None))
             }
-            sdio_host2::BusOp::ResetAll => {
-                let request = unsafe { sdio_host2::SdioHost::submit_bus_op(&mut self.inner, op)? };
-                Ok(BusRequest::inner(request, AfterBusOp::ResetAll))
-            }
             sdio_host2::BusOp::SetClock(speed) => {
                 let plan = self.clock_plan(speed)?;
                 let request = unsafe {
@@ -221,5 +217,4 @@ enum BusRequestState {
 pub(super) enum AfterBusOp {
     None,
     PowerOn,
-    ResetAll,
 }
