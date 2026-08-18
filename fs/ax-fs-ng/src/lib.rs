@@ -41,6 +41,11 @@ pub mod axtest_support {
     pub fn block_irq_outcome_and_ready_hold_for_test() -> bool {
         super::os::block_irq_outcome_and_ready_hold_for_test()
     }
+
+    /// Checks that consuming an expired retry cannot hide a completed park oversleep.
+    pub fn controller_park_oversleep_detected_for_test() -> bool {
+        super::block::runtime::controller_park_oversleep_detected_for_test()
+    }
 }
 
 static MOUNTED_FILESYSTEMS: os::sync::Mutex<Vec<Filesystem>> = os::sync::Mutex::new(Vec::new());

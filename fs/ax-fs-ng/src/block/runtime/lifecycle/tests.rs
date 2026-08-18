@@ -659,6 +659,18 @@ fn log_position(log: &[&str], item: &str) -> usize {
 }
 
 #[test]
+fn expired_retry_does_not_hide_a_controller_park_oversleep() {
+    let expected_wake = Duration::from_secs(1);
+    let observed_at = expected_wake + STALL_WARN_MARGIN + Duration::from_millis(1);
+
+    assert_eq!(
+        controller::park_oversleep_lateness(expected_wake, observed_at),
+        Some(observed_at - expected_wake),
+        "the detector must observe the completed park before consuming an expired retry"
+    );
+}
+
+#[test]
 fn read_blocks_queues_the_next_bounded_window_before_waiting() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();

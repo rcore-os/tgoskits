@@ -53,6 +53,13 @@ const CONTROLLER_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
 const STALL_WARN_MARGIN: Duration = Duration::from_millis(500);
 const MAX_RUNTIME_HCTX: usize = u64::BITS as usize;
 
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn controller_park_oversleep_detected_for_test() -> bool {
+    let expected_wake = Duration::from_secs(1);
+    let observed_at = expected_wake + STALL_WARN_MARGIN + Duration::from_millis(1);
+    controller::park_oversleep_lateness(expected_wake, observed_at).is_some()
+}
+
 const DEVICE_STARTING: u8 = 0;
 const DEVICE_READY: u8 = 1;
 const DEVICE_FAILED: u8 = 2;
