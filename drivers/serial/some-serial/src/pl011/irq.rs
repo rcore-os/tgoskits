@@ -15,6 +15,13 @@ impl Pl011Irq {
 }
 
 impl UartIrq for Pl011Irq {
+    fn mask(&mut self, sources: SerialEventSet) {
+        let enabled = self.registers().uartimsc.get();
+        self.registers()
+            .uartimsc
+            .set(enabled & !imsc_for_events(sources));
+    }
+
     fn handle(&mut self) -> Option<SerialIrqReport> {
         let mis = self.registers().uartmis.extract();
         let active = mis.get();
@@ -43,14 +50,14 @@ impl UartIrq for Pl011Irq {
             }
         }
 
-        let rearm = events & SerialEventSet::TX_SPACE;
+        let mut rearm = events & SerialEventSet::TX_SPACE;
+        if rx.len() == IRQ_RX_BATCH_CAPACITY || rx_errors.contains(RxErrorFlags::OVERRUN) {
+            rearm |= SerialEventSet::RX;
+        }
         if events.contains(SerialEventSet::FAULT) {
             self.registers().uartimsc.set(0);
         } else if !rearm.is_empty() {
-            let enabled = self.registers().uartimsc.get();
-            self.registers()
-                .uartimsc
-                .set(enabled & !imsc_for_events(rearm));
+            self.mask(rearm);
         }
         self.registers().uarticr.set(active);
 

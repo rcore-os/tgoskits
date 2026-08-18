@@ -96,7 +96,7 @@ impl Pl011 {
         Ok(())
     }
 
-    fn wait_until_not_busy(&self) -> Result<(), ConfigError> {
+    pub(super) fn wait_until_not_busy(&self) -> Result<(), ConfigError> {
         for _ in 0..BUSY_POLL_BUDGET {
             if !self.registers().uartfr.is_set(UARTFR::BUSY) {
                 return Ok(());

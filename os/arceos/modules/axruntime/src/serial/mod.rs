@@ -1,16 +1,21 @@
 //! UART runtime ownership and task-context data service.
 //!
-//! Each UART has one CPU-affine maintenance task. Other CPUs submit bounded TX
-//! chunks; only the IRQ endpoint and the maintenance task touch UART registers.
+//! Each UART has one CPU-affine maintenance task. Sleepable TTY output and
+//! non-blocking per-CPU log records use separate bounded queues; only the IRQ
+//! endpoint, maintenance task, and emergency endpoint touch UART registers.
 
 mod control;
 mod ingress;
+mod log_mailbox;
 mod spsc;
 mod state;
 mod worker;
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::{
+    fmt::{self, Write},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use ax_driver::serial::SerialDevice;
 pub use ax_driver::serial::SerialDeviceInfo;
@@ -22,13 +27,14 @@ pub use state::SerialStats;
 use self::{
     control::{ControlOp, ControlQueue},
     ingress::TxIngress,
+    log_mailbox::{LogMailbox, LogRecordMeta},
     spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
     state::{SerialIrqLatch, SerialStatsAtomic},
     worker::SerialWorker,
 };
 use crate::{
     RuntimeError, RuntimeResult,
-    sync::PiMutex,
+    sync::{PiMutex, SpinLock},
     task::{CpuId, CpuSet, IrqWaitCell, IrqWorkerWaiter, ThreadHandle, ThreadId, WaitQueue},
 };
 
@@ -37,6 +43,7 @@ const IRQ_RX_CAPACITY: usize = 16_384;
 const SUBSCRIPTION_RX_CAPACITY: usize = 4_096;
 
 static SERIAL_RUNTIMES: OnceLock<Box<[SerialRuntimeHandle]>> = OnceLock::new();
+static LOG_MAILBOX: OnceLock<Arc<LogMailbox>> = OnceLock::new();
 static ACTIVE_CONSOLE: AtomicUsize = AtomicUsize::new(NO_ACTIVE_CONSOLE);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,8 +180,10 @@ struct RuntimeShared {
     info: SerialDeviceInfo,
     owner_cpu: usize,
     polling: bool,
-    register_gate: Arc<UartRegisterGate>,
+    port: SpinLock<Box<dyn rdif_serial::UartPort>>,
+    register_gate: Arc<rdif_serial::UartRegisterGate<dyn rdif_serial::UartEmergencyTx>>,
     ingress: TxIngress,
+    log_mailbox: Arc<LogMailbox>,
     rx_subscription: PiMutex<Option<SpscConsumer<RxItem>>>,
     control: ControlQueue,
     bridge: Arc<RuntimeIrqBridge>,
@@ -183,11 +192,27 @@ struct RuntimeShared {
     tx_source: Arc<PollSet>,
     rx_progress: WaitQueue,
     tx_progress: WaitQueue,
+    tty_output_lock: PiMutex<()>,
+    log_barriers: AtomicUsize,
     started: AtomicBool,
     irq_handle: OnceLock<ax_hal::irq::IrqHandle>,
 }
 
 impl RuntimeShared {
+    /// Runs one task-context register transaction with local IRQ delivery
+    /// excluded and all cross-CPU aliases serialized by the UART gate.
+    fn with_port<R>(&self, access: impl FnOnce(&mut dyn rdif_serial::UartPort) -> R) -> R {
+        let _context = ax_task::sync::PreemptIrqSaveGuard::new();
+        let mut port = self.port.lock_irqsave();
+        let _register_access = loop {
+            if let Some(access) = self.register_gate.try_enter() {
+                break access;
+            }
+            core::hint::spin_loop();
+        };
+        access(&mut **port)
+    }
+
     fn started(&self) -> bool {
         self.started.load(Ordering::Acquire)
     }
@@ -282,30 +307,101 @@ impl SerialRuntimeHandle {
             self.shared.bridge.notify_from_task()
         });
         if result.is_ok() {
+            deactivate_console(&self.shared);
+        }
+        result
+    }
+
+    pub fn set_config(&self, config: Config) -> RuntimeResult {
+        self.output_barrier()?.set_config(config)
+    }
+
+    /// Pauses extraction of new log records until the returned guard drops.
+    pub fn output_barrier(&self) -> RuntimeResult<SerialOutputBarrier> {
+        self.shared.ensure_started()?;
+        Ok(SerialOutputBarrier::new(self.shared.clone()))
+    }
+
+    /// Blocks new early-console register access before runtime configuration.
+    pub fn begin_console_handoff(&self) -> RuntimeResult {
+        ax_hal::console::begin_runtime_handoff()?;
+        Ok(())
+    }
+
+    /// Starts a console whose low-level path is already in `Preparing`.
+    ///
+    /// Configuration failures are recoverable because UART `startup()` must
+    /// restore its pre-call register state. Failures after successful hardware
+    /// configuration fail closed because the former early state is uncertain.
+    pub fn start_prepared_console(&self, config: Config) -> RuntimeResult {
+        match self.start(config) {
+            Ok(()) => Ok(()),
+            Err(error @ RuntimeError::SerialConfig(ConfigError::RegisterError)) => {
+                ax_hal::console::fail_runtime_handoff_closed();
+                Err(error)
+            }
+            Err(error @ RuntimeError::SerialConfig(_))
+            | Err(error @ RuntimeError::SerialControlBusy) => {
+                if ax_hal::console::rollback_runtime_handoff().is_err() {
+                    ax_hal::console::fail_runtime_handoff_closed();
+                }
+                Err(error)
+            }
+            Err(error) => {
+                ax_hal::console::fail_runtime_handoff_closed();
+                Err(error)
+            }
+        }
+    }
+
+    /// Publishes runtime log routing and completes the platform handoff.
+    pub fn commit_console_handoff(&self) -> RuntimeResult {
+        self.shared.ensure_started()?;
+        if ACTIVE_CONSOLE
+            .compare_exchange(
+                NO_ACTIVE_CONSOLE,
+                self.shared.index,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            ax_hal::console::fail_runtime_handoff_closed();
+            return Err(RuntimeError::SerialConsoleBusy);
+        }
+        if let Err(error) = ax_hal::console::commit_runtime_handoff() {
             let _ = ACTIVE_CONSOLE.compare_exchange(
                 self.shared.index,
                 NO_ACTIVE_CONSOLE,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             );
+            ax_hal::console::fail_runtime_handoff_closed();
+            return Err(error.into());
         }
-        result
-    }
-
-    pub fn set_config(&self, config: Config) -> RuntimeResult {
-        self.shared
-            .control
-            .submit(ControlOp::SetConfig(config), || {
-                self.shared.bridge.notify_from_task()
-            })
-    }
-
-    pub fn activate_console_output(&self) -> RuntimeResult {
-        if !self.shared.started() {
-            return Err(RuntimeError::SerialNotStarted);
+        if !self.shared.log_mailbox.claim(self.shared.index) {
+            let _ = ACTIVE_CONSOLE.compare_exchange(
+                self.shared.index,
+                NO_ACTIVE_CONSOLE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            ax_hal::console::fail_runtime_handoff_closed();
+            return Err(RuntimeError::SerialConsoleBusy);
         }
-        ACTIVE_CONSOLE.store(self.shared.index, Ordering::Release);
+        self.shared.bridge.notify_from_task();
         Ok(())
+    }
+
+    /// Restores early ownership before runtime hardware configuration begins.
+    pub fn rollback_console_handoff(&self) -> RuntimeResult {
+        ax_hal::console::rollback_runtime_handoff()?;
+        Ok(())
+    }
+
+    /// Prevents further early access after an ownership failure.
+    pub fn fail_console_handoff_closed(&self) {
+        ax_hal::console::fail_runtime_handoff_closed();
     }
 
     pub fn stats(&self) -> SerialStats {
@@ -371,14 +467,7 @@ impl SerialTxSender {
 
     pub fn wait_idle(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
-        self.shared
-            .tx_progress
-            .wait_until(|| self.shared.ingress.is_idle() || !self.shared.started());
-        if self.shared.ingress.is_idle() {
-            Ok(())
-        } else {
-            Err(RuntimeError::SerialNotStarted)
-        }
+        SerialOutputBarrier::new(self.shared.clone()).wait_idle()
     }
 
     pub fn discard_pending(&self) -> RuntimeResult {
@@ -390,6 +479,52 @@ impl SerialTxSender {
 
     pub fn poll_source(&self) -> Arc<PollSet> {
         self.shared.tx_source.clone()
+    }
+}
+
+/// Sleepable TTY/configuration transaction which excludes new log extraction.
+pub struct SerialOutputBarrier {
+    shared: Arc<RuntimeShared>,
+}
+
+impl SerialOutputBarrier {
+    fn new(shared: Arc<RuntimeShared>) -> Self {
+        shared.log_barriers.fetch_add(1, Ordering::AcqRel);
+        shared.bridge.notify_from_task();
+        Self { shared }
+    }
+
+    /// Waits for queued TTY bytes, the current log record, and UART hardware
+    /// to become idle. New log records remain paused after this method returns.
+    pub fn wait_idle(&self) -> RuntimeResult {
+        self.shared.ensure_started()?;
+        self.shared.ingress.begin_drain();
+        self.shared.bridge.notify_from_task();
+        self.shared
+            .tx_progress
+            .wait_until(|| self.shared.ingress.is_idle() || !self.shared.started());
+        if self.shared.ingress.is_idle() {
+            Ok(())
+        } else {
+            Err(RuntimeError::SerialNotStarted)
+        }
+    }
+
+    /// Applies configuration before allowing worker log extraction to resume.
+    pub fn set_config(&self, config: Config) -> RuntimeResult {
+        self.shared.ensure_started()?;
+        self.shared
+            .control
+            .submit(ControlOp::SetConfig(config), || {
+                self.shared.bridge.notify_from_task()
+            })
+    }
+}
+
+impl Drop for SerialOutputBarrier {
+    fn drop(&mut self) {
+        self.shared.log_barriers.fetch_sub(1, Ordering::AcqRel);
+        self.shared.bridge.notify_from_task();
     }
 }
 
@@ -483,9 +618,12 @@ pub fn active_console_tx() -> Option<SerialTxSender> {
 }
 
 pub(crate) fn init(primary_cpu: usize) {
+    let log_mailbox = LOG_MAILBOX
+        .call_once(|| Arc::new(LogMailbox::new(ax_hal::cpu_num().max(1))))
+        .clone();
     let mut handles = Vec::new();
     for serial in ax_driver::serial::take_serial_devices() {
-        match build_runtime(handles.len(), primary_cpu, serial) {
+        match build_runtime(handles.len(), primary_cpu, serial, log_mailbox.clone()) {
             Ok(handle) => handles.push(handle),
             Err(err) => warn!("failed to initialize serial runtime: {err:?}"),
         }
@@ -497,6 +635,7 @@ fn build_runtime(
     index: usize,
     primary_cpu: usize,
     serial: SerialDevice,
+    log_mailbox: Arc<LogMailbox>,
 ) -> RuntimeResult<SerialRuntimeHandle> {
     let SerialDevice {
         info,
@@ -509,7 +648,8 @@ fn build_runtime(
     let polling = info.irq.is_none();
     let bridge = Arc::new(RuntimeIrqBridge::new());
     let stats = Arc::new(SerialStatsAtomic::new());
-    let register_gate: Arc<UartRegisterGate> = Arc::from(register_gate);
+    let register_gate: Arc<rdif_serial::UartRegisterGate<dyn rdif_serial::UartEmergencyTx>> =
+        Arc::from(register_gate);
     let (irq_rx_producer, irq_rx_consumer) = spsc::channel(IRQ_RX_CAPACITY);
     let (rx_output_producer, rx_output_consumer) = spsc::channel(SUBSCRIPTION_RX_CAPACITY);
     let shared = Arc::new(RuntimeShared {
@@ -517,8 +657,10 @@ fn build_runtime(
         info,
         owner_cpu: primary_cpu,
         polling,
+        port: SpinLock::new(port),
         register_gate: register_gate.clone(),
         ingress: TxIngress::new(),
+        log_mailbox,
         rx_subscription: PiMutex::new(Some(rx_output_consumer)),
         control: ControlQueue::new(),
         bridge: bridge.clone(),
@@ -527,17 +669,13 @@ fn build_runtime(
         tx_source: Arc::new(PollSet::new()),
         rx_progress: WaitQueue::new(),
         tx_progress: WaitQueue::new(),
+        tty_output_lock: PiMutex::new(()),
+        log_barriers: AtomicUsize::new(0),
         started: AtomicBool::new(false),
         irq_handle: OnceLock::new(),
     });
 
-    let worker = SerialWorker::new(
-        shared.clone(),
-        port,
-        register_gate.clone(),
-        irq_rx_consumer,
-        rx_output_producer,
-    );
+    let worker = SerialWorker::new(shared.clone(), irq_rx_consumer, rx_output_producer);
     let owner_cpu =
         u32::try_from(primary_cpu).map_err(|_| RuntimeError::InvalidCpu { cpu: primary_cpu })?;
     let mut affinity = CpuSet::empty(ax_hal::cpu_num());
@@ -554,14 +692,32 @@ fn build_runtime(
             );
             RuntimeError::from(error)
         })?;
-        let mut callback_publisher = RuntimeIrqPublisher {
+        let callback_bridge = bridge.clone();
+        let callback_stats = stats.clone();
+        let mut callback_rx = RuntimeIrqPublisher {
             producer: irq_rx_producer,
-            bridge,
-            stats,
-            register_gate,
+            bridge: bridge.clone(),
+            stats: stats.clone(),
         };
+        let callback_gate = register_gate.clone();
         let request = serial_irq_request(
-            ax_hal::irq::IrqRequest::new(move |_| callback_publisher.handle(irq.as_mut())),
+            ax_hal::irq::IrqRequest::new(move |_| {
+                let Some(_register_access) =
+                    try_enter_irq_registers(&callback_gate, &callback_bridge)
+                else {
+                    return ax_hal::irq::IrqReturn::Handled;
+                };
+                let Some(report) = irq.handle() else {
+                    callback_stats.spurious_irq();
+                    return ax_hal::irq::IrqReturn::Unhandled;
+                };
+                let event = callback_rx.publish(report);
+                mask_deferred_irq_rx(&mut *irq, event);
+                callback_stats.handled_irq(event);
+                callback_bridge.latch.publish(event);
+                callback_bridge.notify_from_irq();
+                ax_hal::irq::IrqReturn::Handled
+            }),
             primary_cpu,
         );
         let handle = ax_hal::irq::request_irq(irq_id, request).map_err(|error| {
@@ -622,86 +778,387 @@ struct RuntimeIrqPublisher {
     producer: SpscProducer<rdif_serial::RxSample>,
     bridge: Arc<RuntimeIrqBridge>,
     stats: Arc<SerialStatsAtomic>,
-    register_gate: Arc<UartRegisterGate>,
 }
 
 impl RuntimeIrqPublisher {
-    fn handle(&mut self, irq: &mut dyn rdif_serial::UartIrq) -> ax_hal::irq::IrqReturn {
-        let report = {
-            let Some(_register_access) = try_enter_irq_registers(&self.register_gate, &self.bridge)
-            else {
-                // Only emergency output can contend with the same-CPU
-                // worker/IRQ serialization. Never wait in hard IRQ.
-                return ax_hal::irq::IrqReturn::Handled;
-            };
-            irq.handle()
-        };
-        let Some(report) = report else {
-            self.stats.spurious_irq();
-            return ax_hal::irq::IrqReturn::Unhandled;
-        };
-
-        self.publish_batch(report.rx);
-        self.stats.handled_irq(report.event);
-        self.bridge.latch.publish(report.event);
-        self.bridge.notify_from_irq();
-        ax_hal::irq::IrqReturn::Handled
-    }
-
-    fn publish_batch(&mut self, batch: rdif_serial::IrqRxBatch) {
-        for &sample in batch.as_slice() {
-            self.publish_sample(sample);
+    fn publish(&mut self, mut report: rdif_serial::SerialIrqReport) -> rdif_serial::SerialIrqEvent {
+        for &sample in report.rx.as_slice() {
+            if self.producer.push(sample).is_err() {
+                self.stats.add_rx_dropped(1);
+                self.bridge.rx_overflow.store(true, Ordering::Release);
+                report.event.rx_errors |= rdif_serial::RxErrorFlags::OVERRUN;
+                report.event.rearm |= rdif_serial::SerialEventSet::RX;
+            }
         }
-    }
-
-    fn publish_sample(&mut self, sample: rdif_serial::RxSample) {
-        if self.producer.push(sample).is_err() {
-            self.stats.add_rx_dropped(1);
-            self.bridge.rx_overflow.store(true, Ordering::Release);
-        }
+        report.event
     }
 }
 
-/// Routes normal logs through the lock-free bounded MPSC ring. Panic output
-/// uses only the restricted emergency endpoint after a non-blocking gate.
-pub(crate) fn route_console_bytes(bytes: &[u8]) -> Option<usize> {
+fn mask_deferred_irq_rx(irq: &mut dyn rdif_serial::UartIrq, event: rdif_serial::SerialIrqEvent) {
+    if event.rearm.intersects(rdif_serial::SerialEventSet::RX) {
+        irq.mask(rdif_serial::SerialEventSet::RX);
+    }
+}
+
+/// Publishes one complete ordinary record without waiting for UART progress.
+pub(crate) fn try_publish_record(
+    meta: ax_log::RecordMeta,
+    args: fmt::Arguments<'_>,
+) -> Option<ax_log::PublishStatus> {
     let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
     let runtime = runtimes().get(index)?;
-    if axpanic::oops_in_progress() {
-        return Some(route_emergency_bytes(
-            &runtime.shared.register_gate,
-            &runtime.shared.stats,
-            bytes,
-            || runtime.shared.bridge.notify_from_irq(),
-        ));
+    let guard = ax_task::sync::PreemptIrqSaveGuard::new();
+    // SAFETY: `guard` prevents task migration and local IRQ re-entry for the
+    // whole callback; runtime CPU-local state is installed before handoff.
+    let outcome = unsafe {
+        ax_hal::percpu::with_cpu_pin(|pin| {
+            let cpu_id = ax_hal::percpu::this_cpu_id_pinned(pin);
+            let task_id = crate::task::current_thread_id()
+                .ok()
+                .map(|thread| thread.as_u64());
+            let timestamp_nanos = ax_hal::time::monotonic_time().as_nanos() as u64;
+            let record_meta = match meta.kind() {
+                ax_log::RecordKind::Print => LogRecordMeta::print(timestamp_nanos, task_id),
+                ax_log::RecordKind::Log => LogRecordMeta::log(timestamp_nanos, task_id),
+            };
+            runtime
+                .shared
+                .log_mailbox
+                .try_publish(cpu_id, record_meta, args)
+        })
     }
-
-    let accepted = runtime
+    .unwrap_or_else(|_| log_mailbox::PublishOutcome::dropped(0));
+    drop(guard);
+    runtime
         .shared
-        .ingress
-        .try_write_text(bytes, || runtime.shared.bridge.notify_from_irq());
-    runtime.shared.stats.add_log_dropped(bytes.len() - accepted);
-    Some(accepted)
+        .stats
+        .add_log_dropped(outcome.dropped_source_bytes());
+    runtime
+        .shared
+        .stats
+        .add_log_dropped_records(outcome.dropped_records());
+    if outcome.published() {
+        if ax_hal::irq::in_irq_context() {
+            runtime.shared.bridge.notify_from_irq();
+        } else {
+            runtime.shared.bridge.notify_from_task();
+        }
+    }
+    Some(if !outcome.published() {
+        ax_log::PublishStatus::Dropped
+    } else if outcome.truncated() {
+        ax_log::PublishStatus::Truncated
+    } else {
+        ax_log::PublishStatus::Published
+    })
 }
 
-fn route_emergency_bytes<E: rdif_serial::UartEmergencyTx + ?Sized>(
+/// Formats and attempts one bounded emergency write without the log mailbox.
+pub(crate) fn emergency_write(args: fmt::Arguments<'_>) -> Option<usize> {
+    let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
+    let runtime = runtimes().get(index)?;
+    let Some(_formatting) = EmergencyFormatting::try_enter() else {
+        runtime.shared.stats.add_log_dropped_records(1);
+        return Some(0);
+    };
+    let mut buffer = EmergencyBuffer::new();
+    if buffer.write_fmt(args).is_err() {
+        runtime.shared.stats.add_log_dropped_records(1);
+        return Some(0);
+    }
+    Some(write_emergency_buffer(
+        &runtime.shared.register_gate,
+        &runtime.shared.stats,
+        &buffer,
+        || {
+            if ax_hal::irq::in_irq_context() {
+                runtime.shared.bridge.notify_from_irq();
+            } else {
+                runtime.shared.bridge.notify_from_task();
+            }
+        },
+    ))
+}
+
+const EMERGENCY_OUTPUT_BYTES: usize = 1024;
+static EMERGENCY_FORMATTING: AtomicBool = AtomicBool::new(false);
+
+struct EmergencyFormatting;
+
+impl EmergencyFormatting {
+    fn try_enter() -> Option<Self> {
+        EMERGENCY_FORMATTING
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for EmergencyFormatting {
+    fn drop(&mut self) {
+        EMERGENCY_FORMATTING.store(false, Ordering::Release);
+    }
+}
+
+struct EmergencyBuffer {
+    bytes: [u8; EMERGENCY_OUTPUT_BYTES],
+    len: usize,
+    source_len: usize,
+    truncated: bool,
+}
+
+impl EmergencyBuffer {
+    const fn new() -> Self {
+        Self {
+            bytes: [0; EMERGENCY_OUTPUT_BYTES],
+            len: 0,
+            source_len: 0,
+            truncated: false,
+        }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+
+    fn accepted_source_bytes(&self, written: usize) -> usize {
+        let written = written.min(self.len);
+        written
+            .saturating_sub(
+                self.bytes[..written]
+                    .iter()
+                    .filter(|&&byte| byte == b'\n')
+                    .count(),
+            )
+            .min(self.source_len)
+    }
+}
+
+impl Write for EmergencyBuffer {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.source_len = self.source_len.saturating_add(text.len());
+        if self.truncated {
+            return Ok(());
+        }
+        for character in text.chars() {
+            let required = character.len_utf8() + usize::from(character == '\n');
+            if self.len + required > self.bytes.len() {
+                self.truncated = true;
+                break;
+            }
+            if character == '\n' {
+                self.bytes[self.len] = b'\r';
+                self.len += 1;
+            }
+            let end = self.len + character.len_utf8();
+            character.encode_utf8(&mut self.bytes[self.len..end]);
+            self.len = end;
+        }
+        Ok(())
+    }
+}
+
+fn write_emergency_buffer<E: rdif_serial::UartEmergencyTx + ?Sized>(
     register_gate: &UartRegisterGate<E>,
     stats: &SerialStatsAtomic,
-    bytes: &[u8],
+    buffer: &EmergencyBuffer,
     notify_released: impl FnOnce(),
 ) -> usize {
     let Some(register_access) = register_gate.try_enter() else {
-        stats.add_log_dropped(bytes.len());
+        stats.add_log_dropped(buffer.source_len);
+        stats.add_log_dropped_records(1);
         return 0;
     };
-    let written = register_access.try_write(bytes);
-    stats.add_log_dropped(bytes.len() - written);
-    // Publish register availability before the IRQ-safe doorbell. A worker
-    // that consumed the original TX notification while emergency output held
-    // the gate must not sleep until an unrelated interrupt arrives.
+    let written = register_access.try_write(buffer.bytes());
+    stats.add_log_dropped(
+        buffer
+            .source_len
+            .saturating_sub(buffer.accepted_source_bytes(written)),
+    );
+    if written < buffer.bytes().len() || buffer.truncated {
+        stats.add_log_dropped_records(1);
+    }
+    // Publish register availability before waking the fixed worker. The worker
+    // may have consumed the original notification while emergency output held
+    // the gate and must not sleep until an unrelated interrupt arrives.
     drop(register_access);
     notify_released();
     written
+}
+
+fn deactivate_console(shared: &RuntimeShared) {
+    if ACTIVE_CONSOLE
+        .compare_exchange(
+            shared.index,
+            NO_ACTIVE_CONSOLE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        shared.log_mailbox.release(shared.index);
+        shared.bridge.notify_from_task();
+    }
+}
+
+/// Writes text through the active runtime console, if one has claimed output.
+pub fn write_active_console_text(bytes: &[u8]) -> Option<RuntimeResult<usize>> {
+    let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
+    let runtime = runtimes().get(index)?;
+    let _output = runtime.shared.tty_output_lock.lock();
+    Some(runtime.tx_sender().write_text_all(bytes))
+}
+
+/// Formats through the sleepable TTY path while serializing all fragments.
+pub fn write_active_console_fmt(args: fmt::Arguments<'_>) -> Option<fmt::Result> {
+    let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
+    let runtime = runtimes().get(index)?;
+    let _output = runtime.shared.tty_output_lock.lock();
+    let mut writer = ActiveConsoleWriter {
+        sender: runtime.tx_sender(),
+    };
+    Some(writer.write_fmt(args))
+}
+
+/// Runs the real-SMP mailbox ownership probe used by the kernel axtest suite.
+#[cfg(axtest)]
+#[doc(hidden)]
+pub fn smp_log_mailbox_contract_holds() -> bool {
+    const TEST_CPUS: usize = 4;
+    const RECORDS_PER_CPU: usize = 16;
+    const TEST_OWNER: usize = usize::MAX - 1;
+    const TTY_CAPACITY: usize = 16 * 256;
+
+    if ax_hal::cpu_num() < TEST_CPUS {
+        return false;
+    }
+
+    let mailbox = Arc::new(LogMailbox::new(TEST_CPUS));
+    if !mailbox.claim(TEST_OWNER) {
+        return false;
+    }
+
+    let ready = Arc::new(AtomicUsize::new(0));
+    let start = Arc::new(AtomicBool::new(false));
+    let passed = Arc::new(AtomicBool::new(true));
+    let mut tasks = Vec::with_capacity(TEST_CPUS);
+    for cpu_id in 0..TEST_CPUS {
+        let mailbox = mailbox.clone();
+        let ready = ready.clone();
+        let start = start.clone();
+        let passed = passed.clone();
+        let owner_cpu = match u32::try_from(cpu_id) {
+            Ok(cpu) => cpu,
+            Err(_) => return false,
+        };
+        let mut affinity = CpuSet::empty(ax_hal::cpu_num());
+        if !affinity.insert(CpuId::new(owner_cpu)) {
+            return false;
+        }
+        let task = match crate::task::spawn_raw_with_affinity(
+            move || {
+                if ax_hal::percpu::this_cpu_id() != cpu_id {
+                    passed.store(false, Ordering::Release);
+                }
+                ready.fetch_add(1, Ordering::Release);
+                while !start.load(Ordering::Acquire) {
+                    if crate::task::yield_current_cpu().is_err() {
+                        passed.store(false, Ordering::Release);
+                        return;
+                    }
+                }
+                for local_sequence in 0..RECORDS_PER_CPU {
+                    let checksum = smp_log_test_checksum(cpu_id, local_sequence);
+                    let outcome = mailbox.try_publish(
+                        cpu_id,
+                        LogRecordMeta::print(local_sequence as u64, None),
+                        format_args!(
+                            "mailbox-smp cpu={cpu_id} seq={local_sequence} \
+                             checksum={checksum:08x}\n"
+                        ),
+                    );
+                    if !outcome.published()
+                        || outcome.truncated()
+                        || outcome.dropped_records() != 0
+                        || outcome.dropped_source_bytes() != 0
+                    {
+                        passed.store(false, Ordering::Release);
+                    }
+                }
+            },
+            alloc::format!("log-mailbox-producer-{cpu_id}"),
+            crate::task::default_task_stack_size(),
+            affinity,
+        ) {
+            Ok(task) => task,
+            Err(_) => return false,
+        };
+        tasks.push(task);
+    }
+
+    while ready.load(Ordering::Acquire) != TEST_CPUS {
+        if crate::task::yield_current_cpu().is_err() {
+            return false;
+        }
+    }
+    start.store(true, Ordering::Release);
+    for task in tasks {
+        if crate::task::join_thread(task) != Ok(0) {
+            passed.store(false, Ordering::Release);
+        }
+    }
+
+    let ingress = TxIngress::new();
+    ingress.start_accepting();
+    let tty_payload = [b'T'; TTY_CAPACITY];
+    if ingress.try_write(&tty_payload, || {}) != TTY_CAPACITY {
+        passed.store(false, Ordering::Release);
+    }
+
+    let mut reader = mailbox.reader();
+    for index in 0..TEST_CPUS * RECORDS_PER_CPU {
+        let expected_cpu = index % TEST_CPUS;
+        let expected_sequence = index / TEST_CPUS;
+        let checksum = smp_log_test_checksum(expected_cpu, expected_sequence);
+        let expected = alloc::format!(
+            "mailbox-smp cpu={expected_cpu} seq={expected_sequence} checksum={checksum:08x}\r\n"
+        );
+        let Some(consumed) = reader.take(TEST_OWNER) else {
+            return false;
+        };
+        if consumed.sequence_gap != 0
+            || consumed.record.cpu_id() != expected_cpu
+            || consumed.record.sequence() != expected_sequence as u64
+            || consumed.record.bytes() != expected.as_bytes()
+        {
+            passed.store(false, Ordering::Release);
+        }
+    }
+    if reader.take(TEST_OWNER).is_some() {
+        passed.store(false, Ordering::Release);
+    }
+    mailbox.release(TEST_OWNER);
+    passed.load(Ordering::Acquire)
+}
+
+#[cfg(axtest)]
+const fn smp_log_test_checksum(cpu_id: usize, local_sequence: usize) -> u32 {
+    (cpu_id as u32).wrapping_mul(0x9e37_79b9)
+        ^ (local_sequence as u32).wrapping_mul(0x85eb_ca6b)
+        ^ 0xa5a5_5a5a
+}
+
+struct ActiveConsoleWriter {
+    sender: SerialTxSender,
+}
+
+impl Write for ActiveConsoleWriter {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.sender
+            .write_text_all(text.as_bytes())
+            .map(|_| ())
+            .map_err(|_| fmt::Error)
+    }
 }
 
 #[cfg(test)]
@@ -718,17 +1175,29 @@ mod tests {
         }
     }
 
+    struct RecordingIrq {
+        masked: rdif_serial::SerialEventSet,
+    }
+
+    impl rdif_serial::UartIrq for RecordingIrq {
+        fn mask(&mut self, sources: rdif_serial::SerialEventSet) {
+            self.masked |= sources;
+        }
+
+        fn handle(&mut self) -> Option<rdif_serial::SerialIrqReport> {
+            None
+        }
+    }
+
     #[test]
-    fn irq_publisher_drops_only_after_the_preallocated_ring_is_full() {
+    fn irq_report_drops_only_after_the_preallocated_ring_is_full() {
         let bridge = Arc::new(RuntimeIrqBridge::new());
         let stats = Arc::new(SerialStatsAtomic::new());
         let (producer, mut consumer) = spsc::channel(2);
-        let register_gate = Arc::new(UartRegisterGate::new(BoundedEmergencyTx));
         let mut publisher = RuntimeIrqPublisher {
             producer,
             bridge: bridge.clone(),
             stats: stats.clone(),
-            register_gate,
         };
         let samples = [
             rdif_serial::RxSample {
@@ -748,13 +1217,34 @@ mod tests {
         for sample in samples {
             batch.try_push(sample).unwrap();
         }
-        publisher.publish_batch(batch);
+        let event = publisher.publish(rdif_serial::SerialIrqReport::new(
+            rdif_serial::SerialIrqEvent::default(),
+            batch,
+        ));
 
         assert_eq!(consumer.pop().and_then(|sample| sample.byte), Some(1));
         assert_eq!(consumer.pop().and_then(|sample| sample.byte), Some(2));
         assert!(consumer.pop().is_none());
         assert_eq!(stats.snapshot().rx_dropped, 1);
         assert!(bridge.rx_overflow.load(Ordering::Acquire));
+        assert!(event.rx_errors.contains(rdif_serial::RxErrorFlags::OVERRUN));
+        assert!(event.rearm.contains(rdif_serial::SerialEventSet::RX));
+    }
+
+    #[test]
+    fn deferred_rx_masks_only_the_uart_source() {
+        let mut irq = RecordingIrq {
+            masked: rdif_serial::SerialEventSet::empty(),
+        };
+        mask_deferred_irq_rx(
+            &mut irq,
+            rdif_serial::SerialIrqEvent {
+                rearm: rdif_serial::SerialEventSet::RX | rdif_serial::SerialEventSet::TX_SPACE,
+                ..rdif_serial::SerialIrqEvent::default()
+            },
+        );
+
+        assert_eq!(irq.masked, rdif_serial::SerialEventSet::RX);
     }
 
     #[test]
@@ -815,9 +1305,11 @@ mod tests {
         let gate = UartRegisterGate::new(BoundedEmergencyTx);
         let stats = SerialStatsAtomic::new();
         let notifications = Cell::new(0);
+        let mut buffer = EmergencyBuffer::new();
+        buffer.write_fmt(format_args!("panic")).unwrap();
 
         assert_eq!(
-            route_emergency_bytes(&gate, &stats, b"panic", || {
+            write_emergency_buffer(&gate, &stats, &buffer, || {
                 notifications.set(notifications.get() + 1);
             }),
             2
@@ -831,6 +1323,15 @@ mod tests {
         assert!(
             gate.try_enter().is_some(),
             "the release notification must run after the register gate is dropped"
+        );
+    }
+
+    #[test]
+    fn absent_runtime_console_preserves_early_publication_fallback() {
+        ACTIVE_CONSOLE.store(NO_ACTIVE_CONSOLE, Ordering::Release);
+        assert_eq!(
+            try_publish_record(ax_log::RecordMeta::print(), format_args!("fallback")),
+            None
         );
     }
 }

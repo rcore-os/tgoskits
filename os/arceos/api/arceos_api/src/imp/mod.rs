@@ -17,7 +17,7 @@ cfg_display! {
 }
 
 mod stdio {
-    use core::fmt;
+    use core::fmt::{self, Write};
 
     pub fn ax_console_read_bytes(buf: &mut [u8]) -> crate::ApiResult<usize> {
         let len = ax_hal::console::read_bytes(buf);
@@ -39,7 +39,20 @@ mod stdio {
     }
 
     pub fn ax_console_write_fmt(args: fmt::Arguments) -> fmt::Result {
-        ax_log::print_fmt(args)
+        #[cfg(feature = "serial")]
+        if let Some(result) = ax_runtime::serial::write_active_console_fmt(args) {
+            return result;
+        }
+        PlatformConsoleWriter.write_fmt(args)
+    }
+
+    struct PlatformConsoleWriter;
+
+    impl Write for PlatformConsoleWriter {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            ax_hal::console::write_text_bytes(text.as_bytes());
+            Ok(())
+        }
     }
 }
 

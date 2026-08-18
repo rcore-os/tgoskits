@@ -44,6 +44,19 @@ fn read_test_reg(regs: &Pl011Registers, offset: usize) -> u32 {
     }
 }
 
+const CONFIG_REGISTER_OFFSETS: [usize; 8] =
+    [0x020, 0x024, 0x028, 0x02c, 0x030, 0x034, 0x038, 0x048];
+
+fn config_register_snapshot(regs: &Pl011Registers) -> [u32; 8] {
+    CONFIG_REGISTER_OFFSETS.map(|offset| read_test_reg(regs, offset))
+}
+
+fn seed_config_registers(regs: &mut Pl011Registers) {
+    for (index, offset) in CONFIG_REGISTER_OFFSETS.into_iter().enumerate() {
+        write_test_reg(regs, offset, 0x10 + index as u32);
+    }
+}
+
 fn started_parts(uart: Pl011) -> SerialParts<Pl011, Pl011Irq, Pl011EmergencyTx> {
     let mut parts = uart.split();
     parts.control.startup(&Config::new()).unwrap();
@@ -113,7 +126,7 @@ fn raw_rx_sample_reports_overrun_instead_of_swallowing_it() {
 }
 
 #[test]
-fn rx_irq_keeps_source_enabled_after_bounded_fifo_drain() {
+fn rx_irq_masks_source_after_bounded_fifo_drain() {
     let (mut regs, uart) = pl011_with_registers();
     let mut irq = uart.split().irq;
     let rx_mask = imsc_for_events(SerialEventSet::RX);
@@ -126,9 +139,25 @@ fn rx_irq_keeps_source_enabled_after_bounded_fifo_drain() {
     let event = event.unwrap();
 
     assert!(event.events.contains(SerialEventSet::RX_DATA));
-    assert!(!event.rearm.intersects(SerialEventSet::RX));
+    assert!(event.rearm.contains(SerialEventSet::RX));
     assert_eq!(samples.len(), IRQ_RX_BATCH_CAPACITY);
-    assert_eq!(read_test_reg(&regs, 0x038) & rx_mask, rx_mask);
+    assert_eq!(read_test_reg(&regs, 0x038) & rx_mask, 0);
+}
+
+#[test]
+fn overrun_irq_masks_receive_sources_until_worker_rearm() {
+    let (mut regs, uart) = pl011_with_registers();
+    let mut irq = uart.split().irq;
+    let rx_sources = imsc_for_events(SerialEventSet::RX);
+    write_test_reg(&mut regs, 0x018, UARTFR::RXFE::SET.value);
+    write_test_reg(&mut regs, 0x038, rx_sources);
+    write_test_reg(&mut regs, 0x040, UARTIS::OE::SET.value);
+
+    let report = irq.handle().expect("PL011 overrun interrupt report");
+
+    assert!(report.event.rx_errors.contains(RxErrorFlags::OVERRUN));
+    assert!(report.event.rearm.contains(SerialEventSet::RX));
+    assert_eq!(read_test_reg(&regs, 0x038) & rx_sources, 0);
 }
 
 #[test]
@@ -242,17 +271,29 @@ fn set_config_preserves_enabled_tx_and_rx_paths() {
 }
 
 #[test]
-fn runtime_config_does_not_wait_for_the_transmitter_to_become_idle() {
+fn set_config_busy_timeout_restores_every_configuration_register() {
     let (mut regs, mut uart) = pl011_with_registers();
-    regs.uartcr
-        .write(UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET);
+    seed_config_registers(&mut regs);
+    let before = config_register_snapshot(&regs);
     write_test_reg(&mut regs, 0x018, UARTFR::BUSY::SET.value);
 
-    assert_eq!(uart.set_config(&Config::new()), Ok(()));
-    let cr = regs.uartcr.extract();
-    assert!(cr.is_set(UARTCR::UARTEN));
-    assert!(cr.is_set(UARTCR::TXE));
-    assert!(cr.is_set(UARTCR::RXE));
+    let result = uart.set_config(&Config::new().baudrate(115_200));
+
+    assert_eq!(result, Err(ConfigError::Timeout));
+    assert_eq!(config_register_snapshot(&regs), before);
+}
+
+#[test]
+fn invalid_config_restores_every_configuration_register() {
+    let (mut regs, mut uart) = pl011_with_registers();
+    seed_config_registers(&mut regs);
+    write_test_reg(&mut regs, 0x018, 0);
+    let before = config_register_snapshot(&regs);
+
+    let result = uart.set_config(&Config::new().baudrate(2_000_000));
+
+    assert_eq!(result, Err(ConfigError::InvalidBaudrate));
+    assert_eq!(config_register_snapshot(&regs), before);
 }
 
 #[test]

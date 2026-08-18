@@ -6,7 +6,7 @@ use ax_io::IoError;
 use ax_memory_set::MappingError;
 use ax_mm::MmError;
 use ax_net::NetError;
-use ax_runtime::{RuntimeError, task::TaskError};
+use ax_runtime::{RuntimeError, serial::ConfigError, task::TaskError};
 use axfs_ng_vfs::VfsError;
 use dma_api::DmaError;
 #[cfg(any(test, axtest))]
@@ -384,9 +384,16 @@ fn vfs_error_from_errno(errno: Errno) -> VfsError {
 
 fn runtime_errno(error: &RuntimeError) -> Errno {
     match error {
+        RuntimeError::SerialConfig(error) => match error {
+            ConfigError::InvalidBaudrate
+            | ConfigError::UnsupportedDataBits
+            | ConfigError::UnsupportedStopBits
+            | ConfigError::UnsupportedParity => Errno::EINVAL,
+            ConfigError::Timeout => Errno::ETIMEDOUT,
+            ConfigError::RegisterError => Errno::EIO,
+        },
         RuntimeError::SerialNotStarted => Errno::EFAULT,
         RuntimeError::SerialControlBusy => Errno::EBUSY,
-        RuntimeError::SerialRegisterBusy => Errno::EBUSY,
         RuntimeError::Task(error) => task_errno(*error),
         RuntimeError::WouldBlock => Errno::EAGAIN,
         RuntimeError::OperationNotSupported => Errno::EOPNOTSUPP,
@@ -766,12 +773,32 @@ fn leaf_errno_mappings_hold() -> bool {
             Errno::EBUSY,
         ),
         (
-            StarryError::Runtime(RuntimeError::SerialRegisterBusy),
-            Errno::EBUSY,
-        ),
-        (
             StarryError::Runtime(RuntimeError::Task(TaskError::UnsafeContext)),
             Errno::EPERM,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::InvalidBaudrate)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::UnsupportedDataBits)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::UnsupportedStopBits)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::UnsupportedParity)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::Timeout)),
+            Errno::ETIMEDOUT,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::RegisterError)),
+            Errno::EIO,
         ),
         (
             StarryError::Runtime(RuntimeError::WouldBlock),

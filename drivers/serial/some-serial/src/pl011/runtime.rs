@@ -1,18 +1,53 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+struct Pl011ConfigSnapshot {
+    ilpr: u32,
+    ibrd: u32,
+    fbrd: u32,
+    lcr_h: u32,
+    cr: u32,
+    ifls: u32,
+    imsc: u32,
+    dmacr: u32,
+}
+
+impl Pl011ConfigSnapshot {
+    fn capture(registers: &Pl011Registers) -> Self {
+        Self {
+            ilpr: registers.uartilpr.get(),
+            ibrd: registers.uartibrd.get(),
+            fbrd: registers.uartfbrd.get(),
+            lcr_h: registers.uartlcr_h.get(),
+            cr: registers.uartcr.get(),
+            ifls: registers.uartifls.get(),
+            imsc: registers.uartimsc.get(),
+            dmacr: registers.uartdmacr.get(),
+        }
+    }
+
+    fn restore(self, registers: &Pl011Registers) {
+        registers.uartilpr.set(self.ilpr);
+        registers.uartibrd.set(self.ibrd);
+        registers.uartfbrd.set(self.fbrd);
+        registers.uartlcr_h.set(self.lcr_h);
+        registers.uartifls.set(self.ifls);
+        registers.uartimsc.set(self.imsc);
+        registers.uartdmacr.set(self.dmacr);
+        // Restore CR last so the original enable state is not published until
+        // every dependent configuration register is back in place.
+        registers.uartcr.set(self.cr);
+    }
+}
+
 impl UartPort for Pl011 {
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
-        // Runtime startup inherits a possibly active boot console. Do not wait
-        // for BUSY or flush its TX FIFO while the CPU-affine worker holds the
-        // IRQ exclusion boundary. Linux likewise programs normal PL011
-        // startup/termios state without using the polling-console BUSY drain.
+        let snapshot = Pl011ConfigSnapshot::capture(self.registers());
+        if let Err(error) = self.open().and_then(|()| self.set_config(config)) {
+            snapshot.restore(self.registers());
+            return Err(error);
+        }
         self.mask_all();
-        self.registers().uarticr.set(ALL_IRQ_BITS);
-        self.set_config(config)?;
-        self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
-        self.registers()
-            .uartcr
-            .modify(UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET);
         Ok(())
     }
 
@@ -22,23 +57,33 @@ impl UartPort for Pl011 {
     }
 
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        // Keep runtime configuration a bounded register transaction. Waiting
-        // for the transmitter belongs only to the polling early-console path;
-        // doing it here would extend the runtime's IRQ-off register section by
-        // up to BUSY_POLL_BUDGET iterations.
-        if let Some(baudrate) = config.baudrate {
-            self.set_baudrate_internal(baudrate)?;
+        let snapshot = Pl011ConfigSnapshot::capture(self.registers());
+        let result = (|| {
+            self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
+            self.wait_until_not_busy()?;
+
+            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
+            if let Some(baudrate) = config.baudrate {
+                self.set_baudrate_internal(baudrate)?;
+            }
+            if let Some(data_bits) = config.data_bits {
+                self.set_data_bits_internal(data_bits)?;
+            }
+            if let Some(stop_bits) = config.stop_bits {
+                self.set_stop_bits_internal(stop_bits)?;
+            }
+            if let Some(parity) = config.parity {
+                self.set_parity_internal(parity)?;
+            }
+            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
+            self.registers().uartcr.set(snapshot.cr);
+            Ok(())
+        })();
+
+        if result.is_err() {
+            snapshot.restore(self.registers());
         }
-        if let Some(data_bits) = config.data_bits {
-            self.set_data_bits_internal(data_bits)?;
-        }
-        if let Some(stop_bits) = config.stop_bits {
-            self.set_stop_bits_internal(stop_bits)?;
-        }
-        if let Some(parity) = config.parity {
-            self.set_parity_internal(parity)?;
-        }
-        Ok(())
+        result
     }
 
     fn read_rx(&mut self) -> Option<RxSample> {
@@ -57,6 +102,9 @@ impl UartPort for Pl011 {
         }
         self.registers().uartrsr_ecr.set(0);
         self.saved_rx_status = Pl011RxStatus::empty();
+        self.registers()
+            .uarticr
+            .set(imsc_for_events(SerialEventSet::RX));
     }
 
     fn discard_tx(&mut self) -> bool {
@@ -81,6 +129,13 @@ impl UartPort for Pl011 {
     fn tx_idle(&mut self) -> bool {
         let fr = self.registers().uartfr.extract();
         !fr.is_set(UARTFR::BUSY) && !fr.is_set(UARTFR::TXFF)
+    }
+
+    fn mask(&mut self, sources: SerialEventSet) {
+        let enabled = self.registers().uartimsc.get();
+        self.registers()
+            .uartimsc
+            .set(enabled & !imsc_for_events(sources));
     }
 
     fn mask_all(&mut self) {

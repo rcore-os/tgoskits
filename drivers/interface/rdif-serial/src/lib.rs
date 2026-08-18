@@ -1,10 +1,9 @@
 //! Portable UART capability boundary.
 //!
 //! This crate contains no software queues, task policy, IRQ registration, or
-//! OS wakeups. Concrete drivers split into one task-owned data/control endpoint
-//! one IRQ-owned event endpoint, and one emergency-only TX endpoint; the
-//! consuming runtime owns all buffering, register serialization, and scheduling
-//! policy.
+//! OS wakeups. Concrete drivers split into task-owned control, IRQ-owned event,
+//! and emergency-only TX endpoints; the consuming runtime owns all buffering,
+//! exclusion, and scheduling policy.
 
 #![no_std]
 

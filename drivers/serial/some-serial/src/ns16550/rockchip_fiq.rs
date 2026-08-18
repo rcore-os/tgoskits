@@ -592,6 +592,10 @@ impl UartPort for RockchipFiqSerial {
         self.serial.tx_idle()
     }
 
+    fn mask(&mut self, sources: SerialEventSet) {
+        UartPort::mask(&mut self.serial, sources);
+    }
+
     fn mask_all(&mut self) {
         UartPort::mask_all(&mut self.serial);
     }

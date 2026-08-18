@@ -281,6 +281,11 @@ impl TxIngress {
         self.activity.load(Ordering::Acquire) & IDLE_BIT != 0
     }
 
+    /// Clears idle before the worker starts a drain pass.
+    pub(super) fn begin_drain(&self) {
+        self.publish_activity(false);
+    }
+
     /// Publishes idle only if no producer changed activity around the check.
     pub(super) fn mark_idle_if_empty(&self, worker_empty: bool, hardware_idle: bool) -> bool {
         if !worker_empty || !hardware_idle || self.ring.has_reserved() {
@@ -438,6 +443,43 @@ mod tests {
             TX_FRAME_BYTES * TX_FRAME_CAPACITY
         );
         assert_eq!(ingress.try_write(b"x", || {}), 0);
+    }
+
+    #[test]
+    fn log_backlog_does_not_consume_tty_capacity() {
+        let ingress = started_ingress();
+        let mailbox = Arc::new(crate::serial::log_mailbox::LogMailbox::new(1));
+        assert!(mailbox.claim(0));
+
+        for _ in 0..crate::serial::log_mailbox::LOG_SLOTS_PER_CPU {
+            assert!(
+                mailbox
+                    .try_publish(
+                        0,
+                        crate::serial::log_mailbox::LogRecordMeta::print(0, None),
+                        format_args!("log backlog")
+                    )
+                    .published()
+            );
+        }
+        assert_eq!(
+            ingress.write_room(),
+            TX_FRAME_BYTES * TX_FRAME_CAPACITY,
+            "kernel logs must not consume the sleepable TTY queue"
+        );
+    }
+
+    #[test]
+    fn discard_pending_drops_queued_frames_without_stopping_ingress() {
+        let ingress = started_ingress();
+        assert_eq!(ingress.try_write(b"stale", || {}), 5);
+
+        ingress.discard_pending();
+
+        assert!(!ingress.has_pending());
+        assert_eq!(ingress.write_room(), TX_FRAME_BYTES * TX_FRAME_CAPACITY);
+        assert_eq!(ingress.try_write(b"fresh", || {}), 5);
+        assert_eq!(ingress.pop().unwrap().bytes(), b"fresh");
     }
 
     #[test]

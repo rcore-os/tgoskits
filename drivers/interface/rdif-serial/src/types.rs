@@ -17,10 +17,12 @@ bitflags! {
 }
 
 impl SerialEventSet {
+    /// Returns whether any receive-side source is present.
     pub const fn has_rx(self) -> bool {
         self.intersects(Self::RX)
     }
 
+    /// Returns whether the transmitter-space source is present.
     pub const fn has_tx(self) -> bool {
         self.contains(Self::TX_SPACE)
     }
@@ -88,6 +90,7 @@ pub struct IrqRxBatch {
 }
 
 impl IrqRxBatch {
+    /// Creates an empty fixed-capacity batch.
     pub const fn new() -> Self {
         Self {
             samples: [EMPTY_RX_SAMPLE; IRQ_RX_BATCH_CAPACITY],
@@ -105,14 +108,17 @@ impl IrqRxBatch {
         Ok(())
     }
 
+    /// Returns the number of buffered samples.
     pub const fn len(&self) -> usize {
         self.len
     }
 
+    /// Returns whether the batch contains no samples.
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Borrows the initialized prefix of the batch.
     pub fn as_slice(&self) -> &[RxSample] {
         &self.samples[..self.len]
     }
@@ -132,6 +138,7 @@ pub struct SerialIrqReport {
 }
 
 impl SerialIrqReport {
+    /// Combines one normalized IRQ event with its bounded receive batch.
     pub const fn new(event: SerialIrqEvent, rx: IrqRxBatch) -> Self {
         Self { event, rx }
     }

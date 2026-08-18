@@ -468,6 +468,10 @@ pub fn tracepoint_callbacks_run_without_raw_guard() -> bool {
     super::tracepoint::callbacks_run_without_raw_guard_for_test()
 }
 
+pub fn smp_log_mailbox_contract_holds() -> bool {
+    ax_runtime::serial::smp_log_mailbox_contract_holds()
+}
+
 pub fn is_wext_ioctl_validation_rules_hold() -> bool {
     super::file::is_wext_ioctl_validation_rules_hold_for_test()
 }

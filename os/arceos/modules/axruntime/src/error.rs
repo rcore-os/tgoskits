@@ -45,15 +45,20 @@ pub enum RuntimeError {
     #[cfg(feature = "serial")]
     #[error(transparent)]
     SerialConfig(#[from] ConfigError),
+    /// A platform console ownership transition was requested out of order.
+    #[cfg(feature = "serial")]
+    #[error(transparent)]
+    ConsoleHandoff(#[from] ax_hal::console::ConsoleHandoffError),
+    /// Another serial runtime already owns console log routing.
+    #[cfg(feature = "serial")]
+    #[error("another serial runtime already owns console routing")]
+    SerialConsoleBusy,
     /// A serial operation requires a running port.
     #[error("serial runtime is not started")]
     SerialNotStarted,
     /// The bounded serial control queue is full.
     #[error("serial control queue is busy")]
     SerialControlBusy,
-    /// The UART register gate is held by an IRQ or emergency writer.
-    #[error("serial register access is busy")]
-    SerialRegisterBusy,
     /// A bounded runtime queue has no capacity without waiting.
     #[error("runtime operation would block")]
     WouldBlock,
@@ -121,9 +126,12 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
             ConfigError::Timeout => KlibError::TimedOut,
             ConfigError::RegisterError => KlibError::Io,
         },
+        #[cfg(feature = "serial")]
+        RuntimeError::ConsoleHandoff(_) => KlibError::BadState,
+        #[cfg(feature = "serial")]
+        RuntimeError::SerialConsoleBusy => KlibError::ResourceBusy,
         RuntimeError::SerialNotStarted => KlibError::BadState,
         RuntimeError::SerialControlBusy => KlibError::ResourceBusy,
-        RuntimeError::SerialRegisterBusy => KlibError::ResourceBusy,
         RuntimeError::WouldBlock => KlibError::ResourceBusy,
         RuntimeError::OperationNotSupported => KlibError::Unsupported,
         RuntimeError::InvalidCpu { .. } => KlibError::InvalidInput,

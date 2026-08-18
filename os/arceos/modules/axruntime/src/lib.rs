@@ -137,52 +137,45 @@ struct LogIfImpl;
 
 #[ax_crate_interface::impl_interface]
 impl ax_log::LogIf for LogIfImpl {
-    fn console_write_str(s: &str) {
-        #[cfg(feature = "serial")]
-        if serial::route_console_bytes(s.as_bytes()).is_some() {
-            return;
-        }
-        ax_hal::console::write_text_bytes(s.as_bytes());
-    }
-
-    fn try_write_log_record(record: &str) -> bool {
-        #[cfg(feature = "serial")]
-        {
-            serial::route_console_bytes(record.as_bytes()).is_some()
-        }
+    fn try_publish(
+        meta: ax_log::RecordMeta,
+        args: core::fmt::Arguments<'_>,
+    ) -> ax_log::PublishStatus {
         #[cfg(not(feature = "serial"))]
-        {
-            let _ = record;
-            false
+        let _ = meta;
+        #[cfg(feature = "serial")]
+        if let Some(status) = serial::try_publish_record(meta, args) {
+            return status;
         }
-    }
-
-    fn current_time() -> core::time::Duration {
-        ax_hal::time::monotonic_time()
-    }
-
-    fn current_cpu_id() -> Option<usize> {
-        #[cfg(feature = "smp")]
-        if is_init_ok() {
-            Some(ax_hal::percpu::this_cpu_id())
+        let mut writer = PlatformConsoleWriter::default();
+        if core::fmt::write(&mut writer, args).is_ok() {
+            ax_log::PublishStatus::Published
         } else {
-            None
+            ax_log::PublishStatus::Dropped
         }
-        #[cfg(not(feature = "smp"))]
-        Some(0)
     }
 
-    fn current_task_id() -> Option<u64> {
-        if is_init_ok() {
-            #[cfg(feature = "multitask")]
-            {
-                task::current_thread_id().ok().map(|id| id.as_u64())
-            }
-            #[cfg(not(feature = "multitask"))]
-            None
-        } else {
-            None
+    fn emergency_write(args: core::fmt::Arguments<'_>) -> usize {
+        #[cfg(feature = "serial")]
+        if let Some(written) = serial::emergency_write(args) {
+            return written;
         }
+        let mut writer = PlatformConsoleWriter::default();
+        let _ = core::fmt::write(&mut writer, args);
+        writer.written
+    }
+}
+
+#[derive(Default)]
+struct PlatformConsoleWriter {
+    written: usize,
+}
+
+impl core::fmt::Write for PlatformConsoleWriter {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        ax_hal::console::write_text_bytes(text.as_bytes());
+        self.written = self.written.saturating_add(text.len());
+        Ok(())
     }
 }
 

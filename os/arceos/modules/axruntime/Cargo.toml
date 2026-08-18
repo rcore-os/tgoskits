@@ -7,6 +7,9 @@ name = "ax-runtime"
 repository = "https://github.com/rcore-os/tgoskits"
 version = "0.10.7"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [features]
 default = []
 

@@ -1,6 +1,9 @@
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
-use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf};
+use ax_plat::console::{
+    ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleHandoffError, ConsoleHandoffResult,
+    ConsoleIf,
+};
 
 #[cfg(all(feature = "irq", target_arch = "x86_64"))]
 fn console_irq(raw: usize) -> Option<ax_plat::irq::IrqId> {
@@ -59,8 +62,20 @@ impl ConsoleIf for ConsoleIfImpl {
         })
     }
 
-    fn claim_runtime_output() {
-        somehal::console::claim_runtime_output();
+    fn begin_runtime_handoff() -> ConsoleHandoffResult {
+        somehal::console::begin_runtime_handoff().map_err(|_| ConsoleHandoffError::InvalidState)
+    }
+
+    fn commit_runtime_handoff() -> ConsoleHandoffResult {
+        somehal::console::commit_runtime_handoff().map_err(|_| ConsoleHandoffError::InvalidState)
+    }
+
+    fn rollback_runtime_handoff() -> ConsoleHandoffResult {
+        somehal::console::rollback_runtime_handoff().map_err(|_| ConsoleHandoffError::InvalidState)
+    }
+
+    fn fail_runtime_handoff_closed() {
+        somehal::console::fail_runtime_handoff_closed();
     }
 
     /// Returns the IRQ number for the console input interrupt.

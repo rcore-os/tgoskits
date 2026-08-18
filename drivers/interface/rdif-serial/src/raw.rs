@@ -16,6 +16,7 @@ pub struct UartRegisterGate<E: ?Sized = dyn UartEmergencyTx> {
 }
 
 impl<E> UartRegisterGate<E> {
+    /// Creates a free register gate that owns `emergency_tx`.
     pub const fn new(emergency_tx: E) -> Self {
         Self {
             active: AtomicBool::new(false),
@@ -25,6 +26,7 @@ impl<E> UartRegisterGate<E> {
 }
 
 impl<E: ?Sized> UartRegisterGate<E> {
+    /// Attempts to claim the register block without waiting.
     pub fn try_enter(&self) -> Option<UartRegisterGuard<'_, E>> {
         self.active
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -76,6 +78,7 @@ pub struct SerialParts<C, I, E> {
 }
 
 impl<C, I, E> SerialParts<C, I, E> {
+    /// Creates a set of disjoint runtime endpoints.
     pub const fn new(control: C, irq: I, emergency_tx: E) -> Self {
         Self {
             control,
@@ -103,6 +106,11 @@ pub trait SplitUart: Sized {
 /// a memory-safety precondition.
 pub trait UartPort: Send + 'static {
     /// Initializes the UART while leaving every device interrupt source masked.
+    ///
+    /// On error, implementations must restore the configuration registers they
+    /// changed so a transactional early-console handoff can safely roll back.
+    /// [`ConfigError::RegisterError`] is reserved for failures where hardware
+    /// state cannot be proven restored and the caller must fail closed.
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError>;
 
     fn shutdown(&mut self);
@@ -126,6 +134,9 @@ pub trait UartPort: Send + 'static {
     /// Returns whether both the FIFO and transmitter shift register are empty.
     fn tx_idle(&mut self) -> bool;
 
+    /// Masks only the requested device-local interrupt sources.
+    fn mask(&mut self, sources: SerialEventSet);
+
     fn mask_all(&mut self);
 
     /// Rearms `sources` and closes the enable/readiness race.
@@ -138,6 +149,13 @@ pub trait UartPort: Send + 'static {
 
 /// UART hard-IRQ endpoint owned by the registered IRQ callback.
 pub trait UartIrq: Send + 'static {
+    /// Masks only the requested device-local interrupt sources.
+    ///
+    /// This must not disable or otherwise modify a shared interrupt-controller
+    /// line. It is used when the runtime queue becomes full after the driver
+    /// has already returned a report.
+    fn mask(&mut self, sources: SerialEventSet);
+
     /// Handles the current hardware event and returns a bounded value report.
     ///
     /// `None` means the shared interrupt was not raised by this UART. The
