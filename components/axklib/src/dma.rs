@@ -207,6 +207,15 @@ fn finish_coherent_mapping(
     }
 }
 
+/// # Safety
+///
+/// The handle's CPU pointer must be writable for its full layout and must not
+/// yet be observable by another owner.
+unsafe fn initialize_coherent_handle(handle: DmaAllocHandle) -> DmaAllocHandle {
+    unsafe { handle.as_ptr().write_bytes(0, handle.size()) };
+    handle
+}
+
 impl DmaOp for KlibDma {
     fn page_size(&self) -> usize {
         PAGE_SIZE_4K
@@ -241,7 +250,8 @@ impl DmaOp for KlibDma {
             }
         };
 
-        Some(unsafe { pages.into_coherent_handle(alias, layout) })
+        let handle = unsafe { pages.into_coherent_handle(alias, layout) };
+        Some(unsafe { initialize_coherent_handle(handle) })
     }
 
     unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
@@ -402,6 +412,23 @@ mod tests {
         let mapped = finish_coherent_mapping(DmaCoherentMappingOutcome::Mapped(alias));
 
         assert_eq!(mapped, Ok(alias));
+    }
+
+    #[test]
+    fn coherent_allocation_is_zeroed_through_the_published_alias() {
+        let mut allocation = [0_u8; 8];
+        let mut alias_bytes = [0xa5_u8; 8];
+        let allocation_ptr = NonNull::from_mut(&mut allocation[0]);
+        let alias = NonNull::from_mut(&mut alias_bytes[0]);
+        let layout = Layout::from_size_align(alias_bytes.len(), 1).unwrap();
+        let handle = unsafe {
+            DmaAllocHandle::new_with_allocation(alias, allocation_ptr, 0x1000_u64.into(), layout)
+        };
+
+        let handle = unsafe { initialize_coherent_handle(handle) };
+
+        assert_eq!(handle.as_ptr(), alias);
+        assert_eq!(alias_bytes, [0; 8]);
     }
 
     #[test]
