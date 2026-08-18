@@ -124,13 +124,27 @@ impl<T: GuestMemoryAccessor + Clone> AvailableRing<T> {
 
     /// Get the address of the used event field (if event_idx is enabled)
     pub fn used_event_addr(&self) -> GuestPhysAddr {
-        let offset = core::mem::size_of::<VirtQueueAvail>() + (self.size as usize * 2);
-        self.base_addr + offset
+        // Header + ring array fill the region up to 2 bytes before its end;
+        // the `used_event` footer is always part of the region (see
+        // `layout_size`).
+        self.base_addr + Self::layout_size(self.size) - 2
     }
 
-    /// Calculate the total size of the available ring
+    /// Size in bytes of the complete available ring for a queue of `size`
+    /// entries, including the trailing 2-byte `used_event` field.
+    ///
+    /// The footer is always counted: a driver that negotiated
+    /// `VIRTIO_F_RING_EVENT_IDX` writes `used_event` there, and layout
+    /// validation must not depend on negotiation state.
+    pub(crate) const fn layout_size(size: u16) -> usize {
+        core::mem::size_of::<VirtQueueAvail>() + (size as usize) * 2 + 2
+    }
+
+    /// The size in bytes this ring occupies in guest memory, always including
+    /// the trailing 2-byte event-index footer (see
+    /// [`layout_size`](Self::layout_size)).
     pub fn total_size(&self) -> usize {
-        core::mem::size_of::<VirtQueueAvail>() + (self.size as usize * 2) + 2
+        Self::layout_size(self.size)
     }
 
     /// Check if the available ring is valid
@@ -291,5 +305,22 @@ impl<T: GuestMemoryAccessor + Clone> AvailableRing<T> {
         self.accessor
             .write_obj(event_addr, event)
             .map_err(|_| VirtioError::InvalidAddress)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::NoGuestMemoryAccessor;
+
+    #[test]
+    fn layout_size_counts_header_entries_and_footer() {
+        // header (4) + 4 entries * 2 bytes + used_event footer (2) = 14.
+        assert_eq!(AvailableRing::<NoGuestMemoryAccessor>::layout_size(4), 14);
+        // Boundary: the largest queue size still counts the footer.
+        assert_eq!(
+            AvailableRing::<NoGuestMemoryAccessor>::layout_size(256),
+            4 + 256 * 2 + 2
+        );
     }
 }

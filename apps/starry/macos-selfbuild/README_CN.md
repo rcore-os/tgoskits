@@ -34,10 +34,10 @@ rootfs 由 axbuild image storage 选择；这个 app 不维护单独的 rootfs �
 干净默认运行时，路径是：
 
 ```text
-tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
+tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
 ```
 
-如果设置了 `TGOS_IMAGE_LOCAL_STORAGE`，axbuild 会使用对应的 image storage。
+如果设置了 `TGOS_IMAGE_EXTRACT_DIR`，axbuild 会使用对应的解压目录。
 `prebuild.sh` 会把本次 app runner 实际使用的 rootfs 记录到：
 
 ```text
@@ -47,10 +47,11 @@ target/starry-macos-selfbuild/rootfs.path
 app runner 通过现有内部 `rootfs::inject::inject_overlay()` 路径把自举 overlay
 注入这个 rootfs。本 app 不暴露也不依赖新的公共注入命令。
 
-因为 guest-built 产物需要写回 rootfs，`qemu-aarch64.toml` 设置
-`snapshot = false`，让 Starry app runner 不追加全局 `-snapshot`。下面的
-单独启动验证命令仍然带 `-snapshot`，它只用于验证提取出的 `.bin` 能正常启动，
-不需要把 shell 写入持久化回 rootfs。
+因为 guest-built 产物需要写回这个专用可写 rootfs，`qemu-aarch64.toml` 设置
+`rootfs_write_policy = "persist"`。rootfs patcher 会保持选中的 rootfs drive
+可写，并拒绝与持久化冲突的全局或 rootfs-drive snapshot 参数。不要让并发测试
+共享这个 rootfs。下面的单独启动验证命令仍然带 `-snapshot`，它只用于验证提取出的
+`.bin` 能正常启动，不需要把 shell 写入持久化回 rootfs。
 
 ## 前置依赖
 
@@ -93,7 +94,7 @@ qemu-system-aarch64 \
   -m 512M \
   -smp 1 \
   -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
-  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
   -netdev user,id=net0
 ```
@@ -143,7 +144,7 @@ qemu-system-aarch64 \
   -m 512M \
   -smp 1 \
   -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
-  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
   -netdev user,id=net0
 ```

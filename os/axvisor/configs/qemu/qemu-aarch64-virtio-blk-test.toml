@@ -1,0 +1,12 @@
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "4",
+  "-m", "4g",
+]
+fail_regex = ["ARCEOS_VIRTIO_BLK_FAIL", "(?i)panic"]
+success_regex = ["ARCEOS_VIRTIO_BLK_PASS"]
+timeout = 120
+to_bin = true
+uefi = false

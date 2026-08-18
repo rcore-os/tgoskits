@@ -42,6 +42,7 @@ mod config;
 mod consts;
 mod device;
 mod dhcp_server;
+mod error;
 mod general;
 mod ip_tos;
 mod listen_table;
@@ -79,11 +80,11 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_lazyinit::{LazyLock, OnceLock};
 use ax_sync::Mutex;
 use ax_task::{IrqNotify, WaitQueue};
 use axpoll::{IoEvents, PollSet};
+pub use error::{NetError, NetResult};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
@@ -576,7 +577,7 @@ pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig> {
 }
 
 /// Assigns a static IPv4 address to an interface at runtime.
-pub fn set_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u8) -> AxResult {
+pub fn set_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u8) -> NetResult {
     {
         let mut service = get_service();
         service.configure_static_ipv4(interface_id, Ipv4Address::from(ip.octets()), prefix_len)?;
@@ -586,7 +587,7 @@ pub fn set_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u
 }
 
 /// Removes a configured IPv4 address from an interface at runtime.
-pub fn remove_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u8) -> AxResult {
+pub fn remove_interface_ipv4(interface_id: InterfaceId, ip: Ipv4Addr, prefix_len: u8) -> NetResult {
     {
         let mut service = get_service();
         service.remove_static_ipv4(interface_id, Ipv4Address::from(ip.octets()), prefix_len)?;
@@ -690,9 +691,9 @@ pub enum WifiMode<'a> {
 /// Both halves run from the caller's task context, never from the RX poll
 /// task, so the blocking firmware command path cannot deadlock the stack.
 ///
-/// Returns [`AxError::NoSuchDevice`] if `name` has no registered wireless
-/// control plane, or [`AxError::Unsupported`] if the link-layer switch fails.
-pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
+/// Returns [`NetError::NoSuchDevice`] if `name` has no registered wireless
+/// control plane, or [`NetError::Unsupported`] if the link-layer switch fails.
+pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> NetResult<()> {
     // 1. Link-layer switch through the device control plane, plus the device's
     //    (possibly new) MAC. The registry lock is released before touching the
     //    stack service to avoid holding two locks across the blocking path.
@@ -703,16 +704,16 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
                 .iter()
                 .find(|(n, _)| n == name)
                 .map(|(_, handle)| handle.clone())
-                .ok_or(AxError::NoSuchDevice)?
+                .ok_or(NetError::NoSuchDevice)?
         };
-        let ctrl = handle.wifi_control().ok_or(AxError::NoSuchDevice)?;
+        let ctrl = handle.wifi_control().ok_or(NetError::NoSuchDevice)?;
         match &mode {
             WifiMode::Station { ssid, password } => ctrl
                 .connect(ssid, password)
-                .map_err(|_| ax_err_type!(Unsupported, "wifi STA connect failed"))?,
+                .map_err(|_| NetError::Unsupported)?,
             WifiMode::AccessPoint { ssid, channel, .. } => ctrl
                 .start_ap_open(ssid, *channel)
-                .map_err(|_| ax_err_type!(Unsupported, "wifi SoftAP start failed"))?,
+                .map_err(|_| NetError::Unsupported)?,
         }
         EthernetAddress(handle.mac_address())
     };
@@ -720,7 +721,7 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
     // 2. Reconfigure the stack's IPv4 / DHCP role for this interface.
     {
         let mut service = get_service();
-        let dev = service.device_index(name).ok_or(AxError::NoSuchDevice)?;
+        let dev = service.device_index(name).ok_or(NetError::NoSuchDevice)?;
         match mode {
             WifiMode::Station { .. } => service.reconfigure_as_sta(dev, mac),
             WifiMode::AccessPoint {
@@ -884,15 +885,15 @@ pub fn dns_servers() -> Vec<Ipv4Address> {
 const DNS_DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Resolves an A record using the default DNS timeout.
-pub fn dns_query(name: &str) -> AxResult<Vec<IpAddr>> {
+pub fn dns_query(name: &str) -> NetResult<Vec<IpAddr>> {
     dns_query_timeout(name, DNS_DEFAULT_TIMEOUT)
 }
 
 /// Resolves an A record using the configured DNS servers and timeout.
-pub fn dns_query_timeout(name: &str, timeout: Duration) -> AxResult<Vec<IpAddr>> {
+pub fn dns_query_timeout(name: &str, timeout: Duration) -> NetResult<Vec<IpAddr>> {
     let servers = dns_servers();
     if servers.is_empty() {
-        return Err(ax_err_type!(NotFound, "no DNS server configured"));
+        return Err(NetError::NotFound);
     }
 
     let servers = servers
@@ -905,10 +906,7 @@ pub fn dns_query_timeout(name: &str, timeout: Duration) -> AxResult<Vec<IpAddr>>
         .map(IpAddress::Ipv4)
         .collect::<Vec<_>>();
     if servers.is_empty() {
-        return Err(ax_err_type!(
-            NoSuchDeviceOrAddress,
-            "no routable DNS server configured"
-        ));
+        return Err(NetError::NoSuchDeviceOrAddress);
     }
     let handle = SOCKET_SET.add(dns::Socket::new(&servers, vec![]));
     DnsSocketGuard(handle).query_timeout(name, DnsQueryType::A, timeout)
@@ -922,7 +920,7 @@ impl DnsSocketGuard {
         name: &str,
         query_type: DnsQueryType,
         timeout: Duration,
-    ) -> AxResult<Vec<IpAddr>> {
+    ) -> NetResult<Vec<IpAddr>> {
         let query_handle = {
             let mut service = get_service();
             let mut sockets = SOCKET_SET.inner.lock();
@@ -933,15 +931,9 @@ impl DnsSocketGuard {
             )
         }
         .map_err(|err| match err {
-            StartQueryError::NoFreeSlot => {
-                ax_err_type!(ResourceBusy, "DNS query failed: no free slot")
-            }
-            StartQueryError::InvalidName => {
-                ax_err_type!(InvalidInput, "DNS query failed: invalid name")
-            }
-            StartQueryError::NameTooLong => {
-                ax_err_type!(InvalidInput, "DNS query failed: name too long")
-            }
+            StartQueryError::NoFreeSlot => NetError::ResourceBusy,
+            StartQueryError::InvalidName => NetError::InvalidInput,
+            StartQueryError::NameTooLong => NetError::InvalidInput,
         })?;
 
         let start_time = ax_hal::time::monotonic_time_nanos();
@@ -954,18 +946,16 @@ impl DnsSocketGuard {
                 socket
                     .get_query_result(query_handle)
                     .map_err(|err| match err {
-                        GetQueryResultError::Pending => AxError::WouldBlock,
-                        GetQueryResultError::Failed => {
-                            ax_err_type!(ConnectionRefused, "DNS query failed")
-                        }
+                        GetQueryResultError::Pending => NetError::WouldBlock,
+                        GetQueryResultError::Failed => NetError::ConnectionRefused,
                     })
             }) {
                 Ok(addrs) => {
                     return Ok(addrs.into_iter().map(IpAddr::from).collect());
                 }
-                Err(AxError::WouldBlock) => {
+                Err(NetError::WouldBlock) => {
                     if ax_hal::time::monotonic_time_nanos() >= deadline {
-                        return Err(ax_err_type!(TimedOut, "DNS query timed out"));
+                        return Err(NetError::TimedOut);
                     }
                     ax_task::yield_now();
                 }

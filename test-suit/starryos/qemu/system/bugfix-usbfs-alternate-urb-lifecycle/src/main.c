@@ -16,7 +16,7 @@
 #define USB_AUDIO_SUBCLASS_STREAMING 0x02
 /* QEMU usb-audio is full-speed, so 2048 ISO packets span more than usbfs's
  * one-second cancellation deadline and remain in flight at SETINTERFACE. */
-#define QUIESCED_URB_PACKETS 2048
+#define LONG_RUNNING_URB_PACKETS 2048
 #define BARRIER_URB_PACKETS 8
 
 #define USBFS_URB_TYPE_ISO 0
@@ -51,6 +51,7 @@ struct usbfs_urb {
 
 #define USBFS_SETINTERFACE _IOR('U', 4, struct usbfs_setinterface)
 #define USBFS_SUBMITURB _IOR('U', 10, struct usbfs_urb)
+#define USBFS_DISCARDURB _IO('U', 11)
 #define USBFS_REAPURB _IOW('U', 12, void *)
 #define USBFS_REAPURBNDELAY _IOW('U', 13, void *)
 #define USBFS_CLAIMINTERFACE _IOR('U', 15, unsigned int)
@@ -247,8 +248,9 @@ static int set_alternate(int fd, const audio_endpoint_t *endpoint, uint8_t alter
 
 static int expect_no_completion(int fd, const char *stage) {
     void *completed = NULL;
-    if (ioctl(fd, USBFS_REAPURBNDELAY, &completed) == 0) {
-        return failf("%s unexpectedly completed URB %p", stage, completed);
+    int result = ioctl(fd, USBFS_REAPURBNDELAY, &completed);
+    if (result != -1) {
+        return failf("%s REAPURBNDELAY returned %d with URB %p", stage, result, completed);
     }
     if (errno != EAGAIN) {
         return failf("%s REAPURBNDELAY: errno=%d (%s)", stage, errno, strerror(errno));
@@ -269,6 +271,8 @@ static int run_lifecycle_test(const audio_endpoint_t *endpoint) {
     int result = 1;
     iso_urb_t quiesced = {0};
     iso_urb_t barrier = {0};
+    iso_urb_t discarded = {0};
+    iso_urb_t terminal_barrier = {0};
     bool claimed = false;
 
     if (ioctl(fd, USBFS_CLAIMINTERFACE, &interface) < 0) {
@@ -280,7 +284,7 @@ static int run_lifecycle_test(const audio_endpoint_t *endpoint) {
         goto cleanup;
     }
 
-    quiesced = allocate_iso_urb(endpoint, QUIESCED_URB_PACKETS);
+    quiesced = allocate_iso_urb(endpoint, LONG_RUNNING_URB_PACKETS);
     if (quiesced.urb == NULL) {
         failf("allocate quiesced URB");
         goto cleanup;
@@ -325,7 +329,67 @@ static int run_lifecycle_test(const audio_endpoint_t *endpoint) {
         goto cleanup;
     }
 
-    puts("usbfs alternate URB lifecycle passed: quiesced request retired once, no stale completion");
+    discarded = allocate_iso_urb(endpoint, LONG_RUNNING_URB_PACKETS);
+    if (discarded.urb == NULL) {
+        failf("allocate discarded URB");
+        goto cleanup;
+    }
+    if (ioctl(fd, USBFS_SUBMITURB, discarded.urb) != 0) {
+        failf("SUBMITURB discarded: errno=%d (%s)", errno, strerror(errno));
+        goto cleanup;
+    }
+    if (ioctl(fd, USBFS_DISCARDURB, discarded.urb) != 0) {
+        failf("DISCARDURB: errno=%d (%s)", errno, strerror(errno));
+        goto cleanup;
+    }
+
+    completed = NULL;
+    if (ioctl(fd, USBFS_REAPURB, &completed) != 0) {
+        failf("REAPURB discarded: errno=%d (%s)", errno, strerror(errno));
+        goto cleanup;
+    }
+    if (completed != discarded.urb) {
+        failf("expected discarded URB %p, got completion %p", (void *)discarded.urb, completed);
+        goto cleanup;
+    }
+    if (discarded.urb->status != -ENOENT) {
+        failf("discarded URB status=%d, expected %d", discarded.urb->status, -ENOENT);
+        goto cleanup;
+    }
+
+    /* The lifecycle worker preserves endpoint queue order. Completion of this
+     * request proves that the discarded request reached its HCD terminal state;
+     * the following nonblocking reap then checks that terminal reclaim did not
+     * publish the discarded URB a second time. */
+    terminal_barrier = allocate_iso_urb(endpoint, BARRIER_URB_PACKETS);
+    if (terminal_barrier.urb == NULL) {
+        failf("allocate post-discard barrier URB");
+        goto cleanup;
+    }
+    if (ioctl(fd, USBFS_SUBMITURB, terminal_barrier.urb) != 0) {
+        failf("SUBMITURB post-discard barrier: errno=%d (%s)", errno, strerror(errno));
+        goto cleanup;
+    }
+    completed = NULL;
+    if (ioctl(fd, USBFS_REAPURB, &completed) != 0) {
+        failf("REAPURB post-discard barrier: errno=%d (%s)", errno, strerror(errno));
+        goto cleanup;
+    }
+    if (completed != terminal_barrier.urb) {
+        failf(
+            "expected post-discard barrier URB %p, got duplicate completion %p",
+            (void *)terminal_barrier.urb,
+            completed
+        );
+        goto cleanup;
+    }
+    if (expect_no_completion(fd, "after discarded request terminal reclaim") != 0) {
+        goto cleanup;
+    }
+
+    puts(
+        "usbfs alternate URB lifecycle passed: no stale quiesce completion, discard reaped once"
+    );
     result = 0;
 
 cleanup:
@@ -334,6 +398,8 @@ cleanup:
         (void)ioctl(fd, USBFS_RELEASEINTERFACE, &interface);
     }
     close(fd);
+    free_iso_urb(&terminal_barrier);
+    free_iso_urb(&discarded);
     free_iso_urb(&barrier);
     free_iso_urb(&quiesced);
     return result;

@@ -1,40 +1,38 @@
-use ax_errno::{AxError, AxResult};
 use ax_task::current;
 
-use crate::task::AsThread;
+use crate::{
+    StarryError, StarryResult,
+    task::{AsThread, current_pid_view},
+};
 
 #[inline(never)]
-pub fn sys_getpid() -> AxResult<isize> {
+pub fn sys_getpid() -> StarryResult<isize> {
     let curr = current();
     let thr = curr.as_thread();
-    let global_pid = thr.proc_data.proc.pid() as u64;
-    let nsproxy = thr.proc_data.nsproxy.lock();
-    let local = nsproxy.pid_ns.lock().local_pid(global_pid);
-    drop(nsproxy);
-    if let Some(local) = local {
-        Ok(local as isize)
-    } else {
-        Ok(global_pid as isize)
-    }
+    current_pid_view()
+        .visible_process_number(&thr.proc_data.identity())
+        .map(|pid| pid.get() as isize)
+        .ok_or(StarryError::NoSuchProcess)
 }
 
-pub fn sys_getppid() -> AxResult<isize> {
+pub fn sys_getppid() -> StarryResult<isize> {
     let curr = current();
     let thr = curr.as_thread();
-    let parent = thr.proc_data.proc.parent().ok_or(AxError::NoSuchProcess)?;
-    let parent_global_pid = parent.pid() as u64;
-    let nsproxy = thr.proc_data.nsproxy.lock();
-    match nsproxy.pid_ns.lock().local_pid(parent_global_pid) {
-        Some(local) => Ok(local as isize),
-        None => Ok(0),
-    }
+    let parent = thr
+        .proc_data
+        .proc
+        .parent()
+        .ok_or(StarryError::NoSuchProcess)?;
+    Ok(current_pid_view()
+        .visible_process_number(&parent.identity())
+        .map_or(0, |pid| pid.get() as isize))
 }
 
-pub fn sys_gettid() -> AxResult<isize> {
+pub fn sys_gettid() -> StarryResult<isize> {
     // `Thread::tid` rather than the scheduler ID: after a non-leader
     // `execve` they differ (the calling thread inherits the leader's TID
     // so that `gettid() == getpid()` holds in the new image).
-    Ok(current().as_thread().tid() as _)
+    Ok(current().as_thread().user_tid().get() as _)
 }
 
 /// `getcpu(2)`: report the CPU and NUMA node the caller is running on.
@@ -42,7 +40,7 @@ pub fn sys_gettid() -> AxResult<isize> {
 /// glibc's `sched_getcpu` and NUMA-aware allocators query this. We report the
 /// current CPU id and node 0 (single NUMA node); the obsolete `tcache` arg is
 /// ignored. Either pointer may be NULL.
-pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: usize) -> AxResult<isize> {
+pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: usize) -> StarryResult<isize> {
     use ax_runtime::hal::percpu::this_cpu_id;
     use starry_vm::VmMutPtr;
 
@@ -81,11 +79,11 @@ enum ArchPrctlCode {
 /// To set the clear_child_tid field in the task extended data.
 ///
 /// The set_tid_address() always succeeds
-pub fn sys_set_tid_address(clear_child_tid: usize) -> AxResult<isize> {
+pub fn sys_set_tid_address(clear_child_tid: usize) -> StarryResult<isize> {
     let curr = current();
     let thr = curr.as_thread();
     thr.set_clear_child_tid(clear_child_tid);
-    Ok(thr.tid() as isize)
+    Ok(thr.user_tid().get() as isize)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -93,10 +91,10 @@ pub fn sys_arch_prctl(
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
     code: i32,
     addr: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     use starry_vm::VmMutPtr;
 
-    let code = ArchPrctlCode::try_from(code).map_err(|_| AxError::InvalidInput)?;
+    let code = ArchPrctlCode::try_from(code).map_err(|_| StarryError::InvalidInput)?;
     debug!("sys_arch_prctl: code = {code:?}, addr = {addr:#x}");
 
     match code {
@@ -119,7 +117,7 @@ pub fn sys_arch_prctl(
             Ok(0)
         }
         ArchPrctlCode::GetCpuid => Ok(0),
-        ArchPrctlCode::SetCpuid => Err(ax_errno::AxError::NoSuchDevice),
+        ArchPrctlCode::SetCpuid => Err(crate::StarryError::NoSuchDevice),
     }
 }
 

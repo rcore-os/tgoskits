@@ -3,7 +3,7 @@ use core::sync::atomic::{Ordering as AtomicOrdering, fence};
 
 use ax_sync::SpinLock as Mutex;
 use dma_api::CoherentArray;
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use rdif_eth::{DmaBuffer, IRxQueue, ITxQueue, NetError, QueueConfig};
 
 use crate::{
@@ -82,7 +82,7 @@ impl ITxQueue for Rtl8125TxQueue {
         if self.submitted <= EARLY_PACKET_LOG_COUNT
             || self.submitted.is_multiple_of(TX_SUBMIT_LOG_INTERVAL)
         {
-            info!(
+            trace!(
                 "RTL8125 tx submitted: idx={idx}, len={}, submitted={}, reclaimed={}, status={:?}",
                 buffer.len,
                 self.submitted,
@@ -107,7 +107,7 @@ impl ITxQueue for Rtl8125TxQueue {
         if self.reclaimed <= EARLY_PACKET_LOG_COUNT
             || self.reclaimed.is_multiple_of(TX_RECLAIM_LOG_INTERVAL)
         {
-            info!(
+            trace!(
                 "RTL8125 tx reclaimed: idx={idx}, len={}, submitted={}, reclaimed={}, status={:?}",
                 desc.len(),
                 self.submitted,
@@ -288,7 +288,7 @@ impl IRxQueue for Rtl8125RxQueue {
         let len = desc.packet_len();
         self.reclaimed = self.reclaimed.saturating_add(1);
         if self.reclaimed.is_multiple_of(RX_RECLAIM_LOG_INTERVAL) {
-            info!(
+            trace!(
                 "RTL8125 rx packet: idx={idx}, len={len}, submitted={}, reclaimed={}, status={:?}",
                 self.submitted,
                 self.reclaimed,

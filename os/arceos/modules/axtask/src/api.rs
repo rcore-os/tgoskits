@@ -8,11 +8,11 @@ use alloc::{
 use core::fmt;
 
 use ax_memory_addr::VirtAddr;
-use ax_sync::PreemptIrqSaveState;
 
 #[cfg(feature = "lockdep")]
 pub use crate::lockdep::{HeldLock, HeldLockStack};
 pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wake_run_queue};
+use crate::sync::PreemptIrqSaveState;
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "task-ext"))))]
 #[cfg(feature = "task-ext")]
 pub use crate::task::{AxTaskExt, TaskExt};
@@ -35,8 +35,8 @@ pub type AxTaskRef = Arc<AxTask>;
 pub type WeakAxTaskRef = Weak<AxTask>;
 
 #[cfg(feature = "multitask")]
-static TASK_REGISTRY: ax_lazyinit::LazyLock<ax_sync::SpinRwLock<BTreeMap<u64, WeakAxTaskRef>>> =
-    ax_lazyinit::LazyLock::new(|| ax_sync::SpinRwLock::new(BTreeMap::new()));
+static TASK_REGISTRY: ax_lazyinit::LazyLock<crate::sync::SpinRwLock<BTreeMap<u64, WeakAxTaskRef>>> =
+    ax_lazyinit::LazyLock::new(|| crate::sync::SpinRwLock::new(BTreeMap::new()));
 
 /// The wrapper type for [`ax_cpumask::CpuMask`] with SMP configuration.
 pub type AxCpuMask = ax_cpumask::CpuMask<{ crate::build_info::CPU_CAPACITY }>;
@@ -84,26 +84,52 @@ pub fn current() -> CurrentTask {
 
 /// Disables preemption for the current task when preemption is configured.
 #[doc(hidden)]
-pub fn disable_preempt() {
+pub fn disable_preempt() -> usize {
     #[cfg(feature = "preempt")]
-    if let Some(curr) = current_may_uninit() {
-        curr.disable_preempt();
+    {
+        crate::runtime_preempt::enter()
+    }
+    #[cfg(not(feature = "preempt"))]
+    {
+        0
     }
 }
 
 /// Enables preemption for the current task when preemption is configured.
 #[doc(hidden)]
-pub fn enable_preempt() {
+pub fn enable_preempt(token: usize) {
     #[cfg(feature = "preempt")]
-    if let Some(curr) = current_may_uninit() {
-        curr.enable_preempt(true);
+    {
+        crate::runtime_preempt::exit(token);
     }
+    #[cfg(not(feature = "preempt"))]
+    let _ = token;
+}
+
+/// Reports scheduler work to the runtime preemption safe-point adapter.
+#[doc(hidden)]
+pub fn runtime_preemption_pending() -> bool {
+    #[cfg(feature = "preempt")]
+    {
+        current_may_uninit().is_some_and(|curr| curr.preemption_pending())
+    }
+    #[cfg(not(feature = "preempt"))]
+    {
+        false
+    }
+}
+
+/// Runs the legacy scheduler action after the runtime claims its baton.
+#[doc(hidden)]
+pub fn runtime_preempt_current() {
+    #[cfg(feature = "preempt")]
+    crate::task::TaskInner::current_check_preempt_pending();
 }
 
 #[cfg(feature = "lockdep")]
 #[doc(hidden)]
-pub fn collect_current_task_held_locks(snapshot: &mut ax_sync::HeldLockSnapshot) {
-    let _irq_guard = ax_sync::IrqSaveGuard::new();
+pub fn collect_current_task_held_locks(snapshot: &mut crate::sync::HeldLockSnapshot) {
+    let _irq_guard = crate::sync::IrqSaveGuard::new();
     if let Some(curr) = current_may_uninit() {
         curr.with_held_locks(|stack| snapshot.extend(stack));
     }
@@ -111,8 +137,8 @@ pub fn collect_current_task_held_locks(snapshot: &mut ax_sync::HeldLockSnapshot)
 
 #[cfg(feature = "lockdep")]
 #[doc(hidden)]
-pub fn push_current_task_held_lock(held: ax_sync::HeldLock) {
-    let _irq_guard = ax_sync::IrqSaveGuard::new();
+pub fn push_current_task_held_lock(held: crate::sync::HeldLock) {
+    let _irq_guard = crate::sync::IrqSaveGuard::new();
     if let Some(curr) = current_may_uninit() {
         curr.with_held_locks(|stack| stack.push(held));
     }
@@ -121,7 +147,7 @@ pub fn push_current_task_held_lock(held: ax_sync::HeldLock) {
 #[cfg(feature = "lockdep")]
 #[doc(hidden)]
 pub fn pop_current_task_held_lock(lock_addr: usize) {
-    let _irq_guard = ax_sync::IrqSaveGuard::new();
+    let _irq_guard = crate::sync::IrqSaveGuard::new();
     if let Some(curr) = current_may_uninit() {
         curr.with_held_locks(|stack| stack.pop_checked(lock_addr));
     }
@@ -183,7 +209,7 @@ pub fn on_timer_irq(scheduler_tick: bool) {
     if scheduler_tick {
         // Since irq and preemption are both disabled here,
         // we can get the current run queue without another context transition.
-        current_run_queue::<ax_sync::RawState>().scheduler_timer_tick();
+        current_run_queue::<crate::sync::RawState>().scheduler_timer_tick();
     }
 }
 
@@ -464,7 +490,7 @@ impl AtomicContextSnapshot {
                 }
                 #[cfg(feature = "host-test")]
                 {
-                    task_depth + ax_sync::host_preempt_depth()
+                    task_depth + crate::sync::host_preempt_depth()
                 }
             }
             #[cfg(not(feature = "preempt"))]
@@ -561,7 +587,7 @@ fn panic_atomic_sleep(
     snapshot: AtomicContextSnapshot,
     caller: &'static core::panic::Location<'static>,
 ) -> ! {
-    let held_locks = ax_sync::current_task_held_lock_snapshot();
+    let held_locks = crate::sync::current_task_held_lock_snapshot();
     panic!(
         "sleeping or rescheduling is not allowed in atomic context: caller={}, reasons={}, \
          irq_enabled={}, irq_context={}, preempt_count={}, cpu_id={}, task_id={:?}, \
@@ -623,20 +649,16 @@ pub fn register_task(task: &AxTaskRef) {
 
 /// Finds a task by its scheduler task id.
 #[cfg(feature = "multitask")]
-pub fn task_by_id(task_id: u64) -> Option<AxTaskRef> {
-    if task_id == 0 {
-        return current_may_uninit().map(|curr| curr.clone());
-    }
-
+pub fn task_by_id(task_id: TaskId) -> Option<AxTaskRef> {
     TASK_REGISTRY
         .read()
-        .get(&task_id)
+        .get(&task_id.as_u64())
         .and_then(|task| task.upgrade())
 }
 
 /// Wakes a task by its scheduler task id.
 #[cfg(feature = "multitask")]
-pub fn wake_task_by_id(task_id: u64) -> bool {
+pub fn wake_task_by_id(task_id: TaskId) -> bool {
     let Some(task) = task_by_id(task_id) else {
         return false;
     };
@@ -648,12 +670,12 @@ pub fn wake_task_by_id(task_id: u64) -> bool {
 pub fn register_task(_task: &AxTaskRef) {}
 
 #[cfg(not(feature = "multitask"))]
-pub fn task_by_id(_task_id: u64) -> Option<AxTaskRef> {
+pub fn task_by_id(_task_id: TaskId) -> Option<AxTaskRef> {
     None
 }
 
 #[cfg(not(feature = "multitask"))]
-pub fn wake_task_by_id(_task_id: u64) -> bool {
+pub fn wake_task_by_id(_task_id: TaskId) -> bool {
     false
 }
 
@@ -749,22 +771,8 @@ pub(crate) fn axtask_api_scheduler_name_hold_for_test() -> bool {
 
 #[cfg(axtest)]
 pub(crate) fn axtask_api_task_registry_functions_exist_hold_for_test() -> bool {
-    // Verify task registry functions exist (multitask feature)
-    // These are no-op when multitask is disabled, but should compile
-
-    #[cfg(feature = "multitask")]
-    {
-        // In multitask mode, task_by_id(0) returns current task
-        let result = super::task_by_id(0);
-        assert!(result.is_some() || result.is_none()); // Either is valid
-    }
-
-    #[cfg(not(feature = "multitask"))]
-    {
-        // Without multitask, task_by_id always returns None
-        let result = super::task_by_id(42);
-        assert!(result.is_none());
-    }
+    let _lookup: fn(super::TaskId) -> Option<super::AxTaskRef> = super::task_by_id;
+    let _wake: fn(super::TaskId) -> bool = super::wake_task_by_id;
 
     true
 }

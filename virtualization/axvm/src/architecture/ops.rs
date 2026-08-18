@@ -104,7 +104,7 @@ pub(crate) trait ArchOps {
     /// system registers (GIC LR, x86 vLAPIC, etc.) happen on the correct
     /// physical CPU.
     fn inject_vcpu_interrupt(
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        vcpu: &crate::vcpu::AxVCpu<Self::VCpu>,
         interrupt: PendingVcpuInterrupt,
     ) -> AxVmResult {
         vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
@@ -228,7 +228,7 @@ fn inject_drained_interrupts<A: ArchOps>(
     dispatcher: &crate::runtime::VcpuIrqDispatcher,
     vm_id: usize,
     vcpu_id: usize,
-    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
+    vcpu: &crate::vcpu::AxVCpu<A::VCpu>,
 ) {
     for interrupt in dispatcher.drain(vcpu_id) {
         if let Err(err) = A::inject_vcpu_interrupt(vcpu, interrupt) {
@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn inject_vcpu_interrupt_preserves_level_trigger_at_backend_boundary() {
         let injections = Arc::new(IrqSafeMutex::new(InjectionLog::default()));
-        let vcpu = Arc::new(AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap());
+        let vcpu = AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap();
         let interrupt = PendingVcpuInterrupt {
             id: VirtualInterruptId(0x31),
             trigger: InterruptTriggerMode::LevelTriggered,
@@ -450,7 +450,7 @@ mod tests {
             failing_vector: Some(0x42),
             ..Default::default()
         }));
-        let vcpu = Arc::new(AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap());
+        let vcpu = AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap();
         let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
         dispatcher.register_test_vcpu(0, 2);
         for interrupt in [

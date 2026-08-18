@@ -16,25 +16,17 @@ mod tests;
 pub use self::{area::MemoryArea, backend::MappingBackend, set::MemorySet};
 
 /// Error type for memory mapping operations.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub enum MappingError {
     /// Invalid parameter (e.g., `addr`, `size`, `flags`, etc.)
+    #[error("invalid mapping parameter")]
     InvalidParam,
     /// The given range overlaps with an existing mapping.
+    #[error("mapping already exists")]
     AlreadyExists,
     /// The backend page table is in a bad state.
+    #[error("mapping backend is in a bad state")]
     BadState,
-}
-
-#[cfg(feature = "ax-errno")]
-impl From<MappingError> for ax_errno::AxError {
-    fn from(err: MappingError) -> Self {
-        match err {
-            MappingError::InvalidParam => ax_errno::AxError::InvalidInput,
-            MappingError::AlreadyExists => ax_errno::AxError::AlreadyExists,
-            MappingError::BadState => ax_errno::AxError::BadState,
-        }
-    }
 }
 
 /// A [`Result`] type with [`MappingError`] as the error type.

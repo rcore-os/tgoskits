@@ -1,36 +1,17 @@
 use axtest::prelude::*;
 
+use crate::{SpinLock, SpinRwLock};
+
 #[axtest]
-fn spin_rwlock_constants_hold() {
-    ax_assert!(crate::spin_rwlock::rwlock_constants_hold_for_test());
+fn bridge_spin_lock_round_trip() {
+    let lock = SpinLock::new(1usize);
+    *lock.lock() += 1;
+    ax_assert_eq!(*lock.lock(), 2);
 }
 
 #[axtest]
-fn spin_rwlock_state_logic_hold() {
-    ax_assert!(crate::spin_rwlock::rwlock_state_logic_hold_for_test());
-}
-
-#[axtest]
-fn spin_rwlock_constants_and_phantom_hold() {
-    ax_assert!(crate::spin_rwlock::rwlock_constants_and_phantom_hold_for_test());
-}
-
-#[axtest]
-fn spin_rwlock_state_transitions_hold() {
-    ax_assert!(crate::spin_rwlock::rwlock_state_transitions_hold_for_test());
-}
-
-#[axtest]
-fn spin_rwlock_guard_types_hold() {
-    ax_assert!(crate::spin_rwlock::rwlock_guard_types_hold_for_test());
-}
-
-#[axtest]
-fn spin_rwlock_lockdep_and_feature_config_hold() {
-    ax_assert!(crate::spin_rwlock::rwlock_lockdep_and_feature_config_hold_for_test());
-}
-
-#[axtest]
-fn spin_rwlock_reader_writer_state_combinations_hold() {
-    ax_assert!(crate::spin_rwlock::rwlock_reader_writer_state_combinations_hold_for_test());
+fn bridge_rwlock_round_trip() {
+    let lock = SpinRwLock::new(1usize);
+    *lock.write() += 1;
+    ax_assert_eq!(*lock.read(), 2);
 }

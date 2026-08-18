@@ -119,6 +119,7 @@ pub(crate) trait BootImagePlatform {
 
 /// Architecture-specific host timer policy used by the ArceOS adapter.
 pub(crate) trait HostTimePlatform {
+    #[cfg(not(test))]
     fn request_timer_deadline(deadline_ns: u64) {
         ax_std::os::arceos::modules::ax_task::request_timer_deadline_nanos(deadline_ns);
     }

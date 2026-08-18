@@ -118,8 +118,11 @@ pub(crate) fn patch_qemu_rootfs(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
     let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
-    patch_qemu_rootfs_path(config, &rootfs_path);
-    Ok(())
+    patch_qemu_rootfs_path(
+        config,
+        &rootfs_path,
+        rootfs::qemu::RootfsWritePolicy::Persist,
+    )
 }
 
 /// Resolves the rootfs path selected for an Axvisor QEMU request.
@@ -140,12 +143,19 @@ pub(crate) fn qemu_rootfs_path(
 }
 
 /// Patches a QEMU config with a concrete Axvisor rootfs path.
-pub(crate) fn patch_qemu_rootfs_path(config: &mut QemuConfig, rootfs_path: &Path) {
+pub(crate) fn patch_qemu_rootfs_path(
+    config: &mut QemuConfig,
+    rootfs_path: &Path,
+    write_policy: rootfs::qemu::RootfsWritePolicy,
+) -> anyhow::Result<()> {
     rootfs::qemu::patch_rootfs(
         config,
         rootfs_path,
-        rootfs::qemu::RootfsPatchMode::ReplaceDriveOnly,
-    );
+        rootfs::qemu::RootfsPatchOptions {
+            mode: rootfs::qemu::RootfsPatchMode::ReplaceDriveOnly,
+            write_policy,
+        },
+    )
 }
 
 /// Returns the managed rootfs path Axvisor should prepare, if any.
@@ -205,15 +215,14 @@ mod tests {
     use super::*;
 
     fn managed_rootfs_path_for_test(root: &Path, image_name: &str) -> PathBuf {
-        root.join(".tgos-images").join(image_name).join(image_name)
+        root.join(".tgos-images").join(image_name)
     }
 
     fn write_test_image_config(root: &Path) {
         let config = crate::image::config::ImageConfig {
-            local_storage: root.join(".tgos-images"),
             registry: crate::image::config::DEFAULT_REGISTRY_URL.to_string(),
-            auto_sync: true,
-            auto_sync_threshold: 60,
+            download_dir: root.join(".tgos-downloads"),
+            extract_dir: root.join(".tgos-images"),
         };
         crate::image::config::ImageConfig::write_config(root, &config).unwrap();
     }

@@ -5,15 +5,14 @@ extern crate alloc;
 
 use ax_cpumask as _;
 use ax_driver as _;
-use ax_errno as _;
 use ax_hal as _;
 use ax_io as _;
 use ax_lazyinit as _;
 use ax_memory_addr as _;
 use ax_memory_set as _;
 use ax_net as _;
+use ax_runtime as _;
 use ax_std as _;
-use ax_sync as _;
 use axbacktrace as _;
 use axfs_ng_vfs as _;
 use axpoll as _;

@@ -21,7 +21,6 @@ cfg-if = "1.0"
 ax-sync.workspace = true
 
 # System independent crates provided by ArceOS.
-ax-memory-addr = { workspace = true }
 axdevice_base = { workspace = true }
 axvm-types = { workspace = true }
 thiserror = { workspace = true }

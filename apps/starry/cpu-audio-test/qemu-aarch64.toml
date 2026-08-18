@@ -1,0 +1,16 @@
+# cpu-audio-test aarch64 - "pyte for audio" signal-domain carpet on the Alpine musl `ffmpeg` CLI, which
+# Alpine builds for aarch64 (flac/opus/aac/mp3 + soxr). FFT / RIFF-WAVE / SHA-256 are self-written in the
+# cells. -cpu max exposes the full AArch64 feature set. -smp 1: single vCPU. 2048M: decode buffers + WAVs.
+args = [
+    "-nographic", "-cpu", "max", "-m", "2048M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 15000

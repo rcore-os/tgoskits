@@ -25,7 +25,6 @@ use alloc::{boxed::Box, sync::Arc};
 use core::task::Context;
 
 use async_trait::async_trait;
-use ax_errno::{AxError, AxResult};
 use ax_io::{IoBuf, Read, Write};
 use ax_lazyinit::LazyLock;
 use ax_sync::Mutex;
@@ -40,7 +39,7 @@ pub use self::{
     stream::StreamTransport,
 };
 use crate::{
-    RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
+    NetError, NetResult, RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
 
@@ -61,18 +60,18 @@ pub enum UnixSocketAddr {
 #[enum_dispatch]
 pub trait TransportOps: Configurable + Pollable + Send + Sync {
     /// Bind the transport to the given address.
-    fn bind(&self, slot: &BindSlot, local_addr: &UnixSocketAddr) -> AxResult;
+    fn bind(&self, slot: &BindSlot, local_addr: &UnixSocketAddr) -> NetResult;
     /// Connect the transport to a remote address and return an accept poll set
     /// that must be woken after the namespace and socket-state locks are released.
     fn connect(
         &self,
         slot: &BindSlot,
         local_addr: &UnixSocketAddr,
-    ) -> AxResult<Option<Arc<PollSet>>>;
+    ) -> NetResult<Option<Arc<PollSet>>>;
 
     /// Marks a bound connection-oriented transport as accepting connections.
-    fn listen(&self) -> AxResult {
-        Err(AxError::OperationNotSupported)
+    fn listen(&self) -> NetResult {
+        Err(NetError::OperationNotSupported)
     }
 
     /// Returns whether this transport currently accepts connections.
@@ -81,20 +80,20 @@ pub trait TransportOps: Configurable + Pollable + Send + Sync {
     }
 
     /// Accept an incoming connection, returning the new transport and peer address.
-    async fn accept(&self) -> AxResult<(Transport, UnixSocketAddr)>;
+    async fn accept(&self) -> NetResult<(Transport, UnixSocketAddr)>;
 
     /// Non-blocking accept: returns `WouldBlock` immediately when no connection is pending.
-    fn try_accept(&self) -> AxResult<(Transport, UnixSocketAddr)> {
-        Err(AxError::WouldBlock)
+    fn try_accept(&self) -> NetResult<(Transport, UnixSocketAddr)> {
+        Err(NetError::WouldBlock)
     }
 
     /// Send data through the transport.
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize>;
+    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize>;
     /// Receive data from the transport.
-    fn recv(&self, dst: impl Write, options: RecvOptions<'_>) -> AxResult<usize>;
+    fn recv(&self, dst: impl Write, options: RecvOptions<'_>) -> NetResult<usize>;
 
     /// Shutdown the transport.
-    fn shutdown(&self, _how: Shutdown) -> AxResult {
+    fn shutdown(&self, _how: Shutdown) -> NetResult {
         Ok(())
     }
 }
@@ -155,16 +154,16 @@ static ABSTRACT_BINDS: LazyLock<Mutex<HashMap<Arc<[u8]>, BindSlot>>> =
 /// Resolves an existing bind slot and runs `f` with it.
 pub(crate) fn with_slot<R>(
     addr: &UnixSocketAddr,
-    f: impl FnOnce(&BindSlot) -> AxResult<R>,
-) -> AxResult<R> {
+    f: impl FnOnce(&BindSlot) -> NetResult<R>,
+) -> NetResult<R> {
     match addr {
-        UnixSocketAddr::Unnamed => Err(AxError::InvalidInput),
+        UnixSocketAddr::Unnamed => Err(NetError::InvalidInput),
         UnixSocketAddr::Abstract(name) => {
             let binds = ABSTRACT_BINDS.lock();
             if let Some(slot) = binds.get(name) {
                 f(slot)
             } else {
-                Err(AxError::NotFound)
+                Err(NetError::NotFound)
             }
         }
         UnixSocketAddr::Path(path) => namespace::with_namespace(|ns| {
@@ -176,10 +175,10 @@ pub(crate) fn with_slot<R>(
 /// Resolves or creates a bind slot and runs `f` with it.
 fn with_slot_or_insert<R>(
     addr: &UnixSocketAddr,
-    f: impl FnOnce(&BindSlot) -> AxResult<R>,
-) -> AxResult<R> {
+    f: impl FnOnce(&BindSlot) -> NetResult<R>,
+) -> NetResult<R> {
     match addr {
-        UnixSocketAddr::Unnamed => Err(AxError::InvalidInput),
+        UnixSocketAddr::Unnamed => Err(NetError::InvalidInput),
         UnixSocketAddr::Abstract(name) => {
             let mut binds = ABSTRACT_BINDS.lock();
             f(binds.entry(name.clone()).or_default())
@@ -211,34 +210,34 @@ impl UnixSocket {
     }
 }
 impl Configurable for UnixSocket {
-    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool> {
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> NetResult<bool> {
         self.transport.get_option_inner(opt)
     }
 
-    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool> {
+    fn set_option_inner(&self, opt: SetSocketOption) -> NetResult<bool> {
         self.transport.set_option_inner(opt)
     }
 }
 impl SocketOps for UnixSocket {
-    fn bind(&self, local_addr: SocketAddrEx) -> AxResult {
+    fn bind(&self, local_addr: SocketAddrEx) -> NetResult {
         let local_addr = local_addr.into_unix()?;
         let mut guard = self.local_addr.lock();
         if matches!(&*guard, UnixSocketAddr::Unnamed) {
             with_slot_or_insert(&local_addr, |slot| self.transport.bind(slot, &local_addr))?;
             *guard = local_addr;
         } else {
-            return Err(AxError::InvalidInput);
+            return Err(NetError::InvalidInput);
         }
         Ok(())
     }
 
-    fn connect(&self, remote_addr: SocketAddrEx) -> AxResult {
+    fn connect(&self, remote_addr: SocketAddrEx) -> NetResult {
         let remote_addr = remote_addr.into_unix()?;
         let local_addr = self.local_addr.lock().clone();
         let accept_poll = {
             let mut guard = self.remote_addr.lock();
             if !matches!(&*guard, UnixSocketAddr::Unnamed) {
-                return Err(AxError::InvalidInput);
+                return Err(NetError::InvalidInput);
             }
             let accept_poll = with_slot(&remote_addr, |slot| {
                 self.transport.connect(slot, &local_addr)
@@ -250,7 +249,7 @@ impl SocketOps for UnixSocket {
         Ok(())
     }
 
-    fn listen(&self, _backlog: usize) -> AxResult {
+    fn listen(&self, _backlog: usize) -> NetResult {
         self.transport.listen()
     }
 
@@ -258,7 +257,7 @@ impl SocketOps for UnixSocket {
         self.transport.is_listening()
     }
 
-    fn accept(&self) -> AxResult<Socket> {
+    fn accept(&self) -> NetResult<Socket> {
         let mut nonblocking = false;
         let _ = self
             .transport
@@ -275,23 +274,23 @@ impl SocketOps for UnixSocket {
         .into())
     }
 
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
+    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize> {
         self.transport.send(src, options)
     }
 
-    fn recv(&self, dst: impl Write, options: RecvOptions<'_>) -> AxResult<usize> {
+    fn recv(&self, dst: impl Write, options: RecvOptions<'_>) -> NetResult<usize> {
         self.transport.recv(dst, options)
     }
 
-    fn local_addr(&self) -> AxResult<SocketAddrEx> {
+    fn local_addr(&self) -> NetResult<SocketAddrEx> {
         Ok(SocketAddrEx::Unix(self.local_addr.lock().clone()))
     }
 
-    fn peer_addr(&self) -> AxResult<SocketAddrEx> {
+    fn peer_addr(&self) -> NetResult<SocketAddrEx> {
         Ok(SocketAddrEx::Unix(self.remote_addr.lock().clone()))
     }
 
-    fn shutdown(&self, how: Shutdown) -> AxResult {
+    fn shutdown(&self, how: Shutdown) -> NetResult {
         self.transport.shutdown(how)
     }
 }

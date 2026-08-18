@@ -1,0 +1,21 @@
+# cpu-video-test x86_64 - the "pyte for video" carpet: decode video to raw pixels + audio to raw PCM
+# and assert in the pixel/signal/timing domains (per-frame sha256 / 8x8 luma sig / binary white-ratio /
+# PSNR / SSIM / FFT tone peak / PTS spacing / A/V drift) against analytically-known or golden refs.
+# Runtime dependency is the Alpine musl `ffmpeg`+`ffprobe` CLI (libavcodec/libavformat with
+# h264/hevc/vp9/ffv1/mpeg2 + aac/flac/opus/vorbis); the raw-frame reader / PSNR / SSIM / FFT / SHA-256
+# are self-written in the cells. No GPU or display. -smp 1: single vCPU. 3072M: ffmpeg decode/encode
+# buffers for the synthetic clips + the real Bad Apple frame/clip decodes.
+args = [
+    "-machine", "q35",
+    "-nographic", "-cpu", "Haswell", "-m", "3072M", "-smp", "1",
+    "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 18000

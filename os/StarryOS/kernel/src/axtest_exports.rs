@@ -34,6 +34,18 @@ pub fn random_write_mixes_entropy() -> bool {
     super::pseudofs::dev::random_write_mixes_entropy_for_test()
 }
 
+pub fn boot_id_formats_firmware_entropy() -> bool {
+    super::pseudofs::proc::boot_id_formats_firmware_entropy_for_test()
+}
+
+pub fn boot_id_is_omitted_without_trusted_entropy() -> bool {
+    super::pseudofs::proc::boot_id_is_omitted_without_trusted_entropy_for_test()
+}
+
+pub fn kmsg_reports_no_readiness_without_read_side() -> bool {
+    super::pseudofs::dev::kmsg_reports_no_readiness_without_read_side_for_test()
+}
+
 pub fn pipe_peer_close_with_multiple_readers_is_visible() -> bool {
     super::file::peer_close_with_multiple_readers_is_visible_for_test()
 }
@@ -44,6 +56,10 @@ pub fn pipe_resize_rejects_oversized_pipe() -> bool {
 
 pub fn pipe_linux_io_semantics_hold() -> bool {
     super::file::pipe_linux_io_semantics_hold_for_test()
+}
+
+pub fn prepared_descriptor_stays_hidden_until_install() -> bool {
+    super::file::prepared_descriptor_stays_hidden_until_install_for_test()
 }
 
 pub fn interrupted_pipe_write_preserves_partial_progress() -> bool {
@@ -78,8 +94,16 @@ pub fn epoll_edge_callback_does_not_reenter_target() -> bool {
     super::file::edge_callback_does_not_reenter_target_for_test()
 }
 
+pub fn epoll_level_callback_does_not_reenter_target() -> bool {
+    super::file::level_callback_does_not_reenter_target_for_test()
+}
+
 pub fn epoll_hup_does_not_synthesize_readable() -> bool {
     super::file::epoll_hup_does_not_synthesize_readable_for_test()
+}
+
+pub fn epoll_requeues_readiness_observed_during_rearm() -> bool {
+    super::file::epoll_requeues_readiness_observed_during_rearm_for_test()
 }
 
 pub fn process_mem_stats_formats_linux_fields() -> bool {
@@ -183,6 +207,14 @@ pub fn user_pointer_metadata_rules_hold() -> bool {
     super::mm::user_pointer_metadata_rules_hold_for_test()
 }
 
+pub fn vm_error_to_io_error_preserves_length() -> bool {
+    super::mm::vm_error_to_io_error_preserves_length_for_test()
+}
+
+pub fn domain_errno_mappings_hold() -> bool {
+    super::error::domain_errno_mappings_hold_for_test()
+}
+
 pub fn time_value_conversion_rules_hold() -> bool {
     super::time::time_value_conversion_rules_hold_for_test()
 }
@@ -241,6 +273,10 @@ pub fn mempolicy_validation_rules_hold() -> bool {
 
 pub fn task_clone_validation_rules_hold() -> bool {
     super::syscall::task_clone_validation_rules_hold_for_test()
+}
+
+pub fn duplicate_live_session_identity_is_rejected() -> bool {
+    super::task::duplicate_live_session_identity_is_rejected_for_test()
 }
 
 pub fn proc_formatting_contracts_hold() -> bool {
@@ -331,6 +367,11 @@ pub fn perf_control_callback_runs_preemptible() -> bool {
     super::perf::control_callback_runs_preemptible_for_test()
 }
 
+#[cfg(target_arch = "aarch64")]
+pub fn perf_kernel_task_sample_ids_are_empty() -> bool {
+    super::perf::sampling::kernel_task_sample_ids_are_empty_for_test()
+}
+
 pub fn stop_machine_runs_action_and_sync_on_each_cpu() -> bool {
     super::stop_machine::stop_machine_runs_action_and_sync_on_each_cpu_for_test()
 }
@@ -357,6 +398,26 @@ pub fn syscall_signal_restart_rules_hold() -> bool {
 
 pub fn futex_op_and_compare_rules_hold() -> bool {
     super::syscall::futex_op_and_compare_rules_hold_for_test()
+}
+
+pub fn nofault_user_read_recovers_unmapped_address() -> bool {
+    // SAFETY: the address is aligned and belongs to the configured user range.
+    // The test intentionally leaves it unmapped to exercise exception fixup.
+    matches!(
+        unsafe {
+            ax_runtime::hal::cpu::user_read_u32(super::config::USER_SPACE_BASE as *const u32)
+        },
+        Err(ax_runtime::hal::cpu::UserAccessError::Fault)
+    )
+}
+
+pub fn futex_nofault_failure_is_transactional() -> bool {
+    super::task::futex_nofault_failure_is_transactional_for_test()
+}
+
+pub fn page_fault_completion_updates_only_success() -> bool {
+    super::mm::page_fault_completion_updates_only_success_for_test()
+        && ax_runtime::hal::cache::update_mmu_cache_alignment_for_test()
 }
 
 pub fn mmap_capped_device_map_len_rules_hold() -> bool {
@@ -389,6 +450,10 @@ pub fn pidfd_flags_and_signal_validation_rules_hold() -> bool {
 
 pub fn reaping_identity_is_not_publicly_resolvable() -> bool {
     super::task::reaping_identity_is_not_publicly_resolvable_for_test()
+}
+
+pub fn pid_identity_state_machine_rules_hold() -> bool {
+    super::task::pid_identity_state_machine_rules_hold_for_test()
 }
 
 pub fn timerfd_timespec_conversion_rules_hold() -> bool {

@@ -68,7 +68,6 @@ flowchart TB
 ```csv
 package
 aarch64_sysreg
-ax-errno
 ax-io
 ax-sync
 irq-framework
@@ -78,7 +77,7 @@ scope-local
 ...
 ```
 
-当前白名单包含约 50 个 crate，覆盖架构寄存器、错误码、I/O 抽象、锁原语、内存地址、文件系统、调度器、中断框架等可在 host 端独立测试的组件。
+当前白名单包含约 45 个 crate，覆盖架构寄存器、I/O 抽象、锁原语、内存地址、文件系统、调度器、中断框架等可在 host 端独立测试的组件。
 
 ### 3.1 解析校验
 
@@ -124,12 +123,12 @@ fn cargo_test_args(package: &str) -> Vec<String> {
 每个包执行时打印进度和结果：
 
 ```text
-[1/50] cargo test -p aarch64_sysreg
+[1/45] cargo test -p aarch64_sysreg
 ok: aarch64_sysreg
-[2/50] cargo test -p ax-errno
-ok: ax-errno
+[2/45] cargo test -p ax-io
+ok: ax-io
 ...
-[15/50] cargo test -p memory_addr
+[14/45] cargo test -p memory_addr
 failed: memory_addr
 ...
 ```

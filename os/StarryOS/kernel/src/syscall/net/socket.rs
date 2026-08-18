@@ -1,10 +1,9 @@
 use alloc::boxed::Box;
 
-use ax_errno::{AxError, AxResult, LinuxError};
 #[cfg(feature = "vsock")]
 use ax_net::vsock::VsockSocket;
 use ax_net::{
-    Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
+    NetError, Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     raw::{IpProtocol, IpVersion, RawSocket},
     tcp::TcpSocket,
     udp::UdpSocket,
@@ -26,29 +25,32 @@ use super::addr::{
     SocketAddrExt, normalize_socket_addr_ex_for_ip_stack, socket_addr_ex_for_user_name,
 };
 use crate::{
+    Errno, StarryError, StarryResult,
     file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
     task::AsThread,
 };
 
 const SOCK_TYPE_MASK: u32 = 0xf;
+
 const SOCK_MAX: u32 = 11;
+
 const SOCK_FLAGS_MASK: u32 = O_NONBLOCK | O_CLOEXEC;
 
-pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
+pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> StarryResult<isize> {
     debug!("sys_socket <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
     let ty = raw_ty & SOCK_TYPE_MASK;
     if raw_ty & !(SOCK_TYPE_MASK | SOCK_FLAGS_MASK) != 0 || ty >= SOCK_MAX {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     if domain == AF_PACKET {
         if ty != SOCK_DGRAM {
             warn!("Unsupported packet socket type: {ty}");
-            return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
+            return Err(StarryError::from(Errno::ESOCKTNOSUPPORT));
         }
         if !current().as_thread().cred().has_cap_net_raw() {
-            return Err(AxError::from(LinuxError::EPERM));
+            return Err(StarryError::from(Errno::EPERM));
         }
         let socket = PacketSocket::new(proto as u16)?;
         if raw_ty & O_NONBLOCK != 0 {
@@ -58,7 +60,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         return socket.add_to_fd_table(cloexec).map(|fd| fd as isize);
     }
 
-    let pid = current().as_thread().proc_data.proc.pid();
+    let unix_credentials = Socket::current_unix_credentials();
     let ip_domain = if domain == AF_INET || domain == AF_INET6 {
         domain
     } else {
@@ -68,7 +70,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
     let socket = match (domain, ty) {
         (AF_INET | AF_INET6, SOCK_STREAM) => {
             if proto != 0 && proto != IPPROTO_TCP as _ {
-                return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
+                return Err(StarryError::from(Errno::EPROTONOSUPPORT));
             }
             TcpSocket::new().into()
         }
@@ -77,28 +79,30 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             // `ping_group_range` policy yet, so keep ping sockets behind the
             // existing CAP_NET_RAW capability boundary.
             if !current().as_thread().cred().has_cap_net_raw() {
-                return Err(AxError::from(LinuxError::EPERM));
+                return Err(StarryError::from(Errno::EPERM));
             }
             SocketInner::Raw(Box::new(RawSocket::new_ipv4_ping()))
         }
         (AF_INET | AF_INET6, SOCK_DGRAM) => {
             if proto != 0 && proto != IPPROTO_UDP as _ {
-                return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
+                return Err(StarryError::from(Errno::EPROTONOSUPPORT));
             }
             UdpSocket::new().into()
         }
-        (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(pid)).into(),
-        (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(pid)).into(),
-        (AF_UNIX, SOCK_SEQPACKET) => UnixSocket::new(DgramTransport::new_seqpacket(pid)).into(),
+        (AF_UNIX, SOCK_STREAM) => UnixSocket::new(StreamTransport::new(unix_credentials)).into(),
+        (AF_UNIX, SOCK_DGRAM) => UnixSocket::new(DgramTransport::new(unix_credentials)).into(),
+        (AF_UNIX, SOCK_SEQPACKET) => {
+            UnixSocket::new(DgramTransport::new_seqpacket(unix_credentials)).into()
+        }
         (AF_NETLINK, SOCK_RAW) | (AF_NETLINK, SOCK_DGRAM) => {
             match proto {
                 NETLINK_KOBJECT_UEVENT | NETLINK_ROUTE | NETLINK_GENERIC => {}
-                _ => return Err(AxError::from(LinuxError::EPROTONOSUPPORT)),
+                _ => return Err(StarryError::from(Errno::EPROTONOSUPPORT)),
             }
             if proto == NETLINK_KOBJECT_UEVENT && ty != SOCK_RAW {
-                return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
+                return Err(StarryError::from(Errno::ESOCKTNOSUPPORT));
             }
-            let socket = NetlinkSocket::new(proto);
+            let socket = NetlinkSocket::new(proto, ty);
             if raw_ty & O_NONBLOCK != 0 {
                 socket.set_nonblocking(true)?;
             }
@@ -109,19 +113,19 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
         (AF_VSOCK, SOCK_STREAM) => VsockSocket::new().into(),
         (AF_INET, SOCK_RAW) => {
             if proto != IPPROTO_ICMP as u32 {
-                return Err(AxError::from(LinuxError::EPROTONOSUPPORT));
+                return Err(StarryError::from(Errno::EPROTONOSUPPORT));
             }
             if !current().as_thread().cred().has_cap_net_raw() {
-                return Err(AxError::from(LinuxError::EPERM));
+                return Err(StarryError::from(Errno::EPERM));
             }
             SocketInner::Raw(Box::new(RawSocket::new(IpVersion::Ipv4, IpProtocol::Icmp)))
         }
         (AF_INET | AF_INET6, _) | (AF_UNIX, _) | (AF_NETLINK, _) | (AF_VSOCK, _) => {
             warn!("Unsupported socket type: domain: {domain}, ty: {ty}");
-            return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
+            return Err(StarryError::from(Errno::ESOCKTNOSUPPORT));
         }
         _ => {
-            return Err(AxError::from(LinuxError::EAFNOSUPPORT));
+            return Err(StarryError::from(Errno::EAFNOSUPPORT));
         }
     };
     let socket = Socket::new(socket, ip_domain);
@@ -134,11 +138,16 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
     socket.add_to_fd_table(cloexec).map(|fd| fd as isize)
 }
 
-pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult<isize> {
+pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryResult<isize> {
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
         let mut addr = super::addr::read_netlink_addr(addr, addrlen as _)?;
         if addr.nl_pid == 0 {
-            addr.nl_pid = current().as_thread().proc_data.proc.pid();
+            let thread = current();
+            let thread = thread.as_thread();
+            addr.nl_pid = crate::task::current_pid_view()
+                .visible_number(&thread.proc_data.identity())
+                .expect("current process is visible in its active PID namespace")
+                .get();
         }
         debug!("sys_bind <= fd: {fd}, netlink_addr: {addr:?}");
         socket.bind(addr)?;
@@ -187,7 +196,7 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
     Ok(0)
 }
 
-pub fn sys_connect(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult<isize> {
+pub fn sys_connect(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryResult<isize> {
     let socket = Socket::from_fd(fd)?;
     let mut addr = SocketAddrEx::read_from_user(addr, addrlen)?;
     if socket.ip_domain() == AF_INET6 {
@@ -196,21 +205,21 @@ pub fn sys_connect(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxRes
     debug!("sys_connect <= fd: {fd}, addr: {addr:?}");
 
     socket.connect(addr).map_err(|e| {
-        if e == AxError::WouldBlock {
-            AxError::InProgress
+        if matches!(e, NetError::WouldBlock) {
+            StarryError::InProgress
         } else {
-            e
+            e.into()
         }
     })?;
 
     Ok(0)
 }
 
-pub fn sys_listen(fd: i32, backlog: i32) -> AxResult<isize> {
+pub fn sys_listen(fd: i32, backlog: i32) -> StarryResult<isize> {
     debug!("sys_listen <= fd: {fd}, backlog: {backlog}");
 
     if backlog < 0 && backlog != -1 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     Socket::from_fd(fd)?.listen(backlog as usize)?;
@@ -222,7 +231,7 @@ pub fn sys_accept(
     fd: i32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     sys_accept4(fd, addr, addrlen, 0)
 }
 
@@ -231,13 +240,13 @@ pub fn sys_accept4(
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_accept <= fd: {fd}, flags: {flags}");
 
     // accept4 only accepts SOCK_CLOEXEC / SOCK_NONBLOCK (== O_CLOEXEC / O_NONBLOCK);
     // any other bit is EINVAL (Linux net/socket.c __sys_accept4).
     if flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let cloexec = flags & O_CLOEXEC != 0;
@@ -259,7 +268,7 @@ pub fn sys_accept4(
     Ok(fd)
 }
 
-pub fn sys_shutdown(fd: i32, how: u32) -> AxResult<isize> {
+pub fn sys_shutdown(fd: i32, how: u32) -> StarryResult<isize> {
     debug!("sys_shutdown <= fd: {fd}, how: {how:?}");
 
     let socket = Socket::from_fd(fd)?;
@@ -267,9 +276,9 @@ pub fn sys_shutdown(fd: i32, how: u32) -> AxResult<isize> {
         SHUT_RD => Shutdown::Read,
         SHUT_WR => Shutdown::Write,
         SHUT_RDWR => Shutdown::Both,
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     };
-    socket.shutdown(how).map(|_| 0)
+    Ok(socket.shutdown(how).map(|_| 0)?)
 }
 
 pub fn sys_socketpair(
@@ -277,31 +286,31 @@ pub fn sys_socketpair(
     raw_ty: u32,
     proto: u32,
     fds: UserPtr<[i32; 2]>,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     debug!("sys_socketpair <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
     let ty = raw_ty & 0xFF;
 
     if domain != AF_UNIX {
-        return Err(AxError::from(LinuxError::EAFNOSUPPORT));
+        return Err(StarryError::from(Errno::EAFNOSUPPORT));
     }
 
-    let pid = current().as_thread().proc_data.proc.pid();
+    let credentials = Socket::current_unix_credentials();
     let (sock1, sock2) = match ty {
         SOCK_STREAM => {
-            let (sock1, sock2) = StreamTransport::new_pair(pid);
+            let (sock1, sock2) = StreamTransport::new_pair(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         SOCK_DGRAM => {
-            let (sock1, sock2) = DgramTransport::new_pair(pid);
+            let (sock1, sock2) = DgramTransport::new_pair(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         SOCK_SEQPACKET => {
-            let (sock1, sock2) = DgramTransport::new_pair_seqpacket(pid);
+            let (sock1, sock2) = DgramTransport::new_pair_seqpacket(credentials);
             (UnixSocket::new(sock1), UnixSocket::new(sock2))
         }
         _ => {
             warn!("Unsupported socketpair type: {ty}");
-            return Err(AxError::from(LinuxError::ESOCKTNOSUPPORT));
+            return Err(StarryError::from(Errno::ESOCKTNOSUPPORT));
         }
     };
     let sock1 = Socket::new(sock1.into(), AF_UNIX);

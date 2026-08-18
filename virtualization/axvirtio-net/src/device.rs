@@ -100,6 +100,18 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
         self.state.is_driver_ok()
     }
 
+    /// Whether the queue with the given index has latched the faulted state.
+    ///
+    /// A faulted queue rejects `pop`/`complete` and all guest-data paths until
+    /// the guest resets the device; the VMM can poll this to surface the
+    /// condition instead of silently dropping service.
+    pub fn is_queue_faulted(&self, index: usize) -> bool {
+        self.state
+            .queues_lock()
+            .get(index)
+            .is_some_and(|q| q.is_faulted())
+    }
+
     /// Current interrupt status bits.
     pub fn interrupt_status(&self) -> u32 {
         self.state.interrupt_status()
@@ -158,6 +170,11 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
 
     /// Handles an MMIO write using a guest-memory capability scoped to this
     /// device access.
+    ///
+    /// The capability backs the `QUEUE_READY` ring-layout validation as well
+    /// as the TX drain, so runtimes whose queues were constructed with a
+    /// non-translating placeholder accessor (e.g. axvisor) can still make
+    /// queues ready.
     pub fn mmio_write_with_memory(
         &self,
         addr: GuestPhysAddr,
@@ -165,7 +182,10 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
         val: usize,
         memory: &mut dyn axvirtio_common::GuestMemory,
     ) -> VirtioResult<DeviceEvent> {
-        match self.state.mmio_write(addr, width, val)? {
+        match self
+            .state
+            .mmio_write_with_memory(addr, width, val, memory)?
+        {
             MmioWriteAction::None => Ok(DeviceEvent::None),
             MmioWriteAction::Reset => Ok(DeviceEvent::Reset),
             MmioWriteAction::InterruptPending => Ok(DeviceEvent::InterruptPending),
@@ -199,10 +219,29 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
             return DeviceEvent::None;
         }
 
-        let avail_idx = tx.read_avail_idx_with_memory(memory).unwrap_or(0);
+        // The available-index pre-read latches a fault on a configured queue
+        // whose ring became unreadable; stop draining and let the guest reset
+        // the device instead of treating the queue as empty.
+        let avail_idx = match tx.read_avail_idx_with_memory(memory) {
+            Ok(idx) => idx,
+            Err(error) => {
+                warn!(
+                    "virtio-net TX queue is faulted; stop draining until the guest resets the \
+                     device: {error:?}"
+                );
+                return DeviceEvent::None;
+            }
+        };
         let last = tx.get_last_avail_idx();
         let pending = avail_idx.wrapping_sub(last).min(tx.size);
         for _ in 0..pending {
+            if tx.is_faulted() {
+                warn!(
+                    "virtio-net TX queue is faulted; stop draining until the guest resets the \
+                     device"
+                );
+                break;
+            }
             let head = match tx.pop_available_head_with_memory(memory) {
                 Ok(Some(h)) => h,
                 Ok(None) => break,
@@ -304,6 +343,14 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
 
         // Peek before consuming so capacity/chain problems leave the ring intact.
         let last = rx.get_last_avail_idx();
+        if rx.is_faulted() {
+            // A faulted RX queue must not be served; the guest re-programs
+            // the queue after resetting the device.
+            warn!(
+                "virtio-net RX queue is faulted; dropping frames until the guest resets the device"
+            );
+            return Err(NetError::Queue(axvirtio_common::VirtioError::QueueFaulted));
+        }
         let avail_idx = rx
             .read_avail_idx_with_memory(memory)
             .map_err(NetError::from)?;

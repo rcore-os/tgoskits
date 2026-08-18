@@ -340,18 +340,15 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    /// Allocates an IVC channel from a graph-claimed guest range service.
-    pub fn alloc_ivc_channel(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
-        self.services
-            .require::<GuestRangeAllocatorKey>()?
-            .allocate(size)
-    }
-
-    /// Releases a previously allocated IVC channel.
-    pub fn release_ivc_channel(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
-        self.services
-            .require::<GuestRangeAllocatorKey>()?
-            .release(addr, size)
+    /// Returns a typed service contributed by one emulated device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no provider exists for `K`, or when `K` is a
+    /// multi-provider service that must be queried through a future explicit
+    /// multi-provider runtime API.
+    pub fn service<K: ServiceKey>(&self) -> DeviceManagerResult<Arc<K::Service>> {
+        self.services.require::<K>()
     }
 
     /// Registers a bundle atomically.  If any device fails to register,

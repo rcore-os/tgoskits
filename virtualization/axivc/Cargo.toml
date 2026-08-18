@@ -1,0 +1,13 @@
+[package]
+name = "axivc"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["hypervisor", "ivc", "shared-memory", "no-std"]
+categories = ["virtualization", "no-std"]
+description = "Shared-memory protocol helpers for AxVisor inter-VM communication"
+readme = "README.md"
+
+[dependencies]

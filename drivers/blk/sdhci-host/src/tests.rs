@@ -237,6 +237,50 @@ fn host2_advance_after_complete_is_rejected() {
 }
 
 #[test]
+fn host2_reset_all_invalidates_stale_irq_state_before_restore() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.enable_interrupt_status_capture();
+    host.enable_completion_irq();
+    host.irq.state.begin_request();
+    let generation = host.irq.state.generation();
+    host.irq
+        .state
+        .cache_if_current(generation, NORMAL_INT_CMD_COMPLETE, ERROR_INT_DATA_TIMEOUT);
+    let mut request = unsafe {
+        <Sdhci as sdio_host2::SdioHost>::submit_bus_op(&mut host, sdio_host2::BusOp::ResetAll)
+    }
+    .unwrap();
+
+    assert!(matches!(
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::Submitted,
+        ),
+        Ok(RequestProgress::RegisterPending { .. })
+    ));
+    host.write_u8(REG_SOFTWARE_RESET, 0);
+    assert!(matches!(
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::Complete(Ok(())))
+    ));
+
+    assert_eq!(host.irq.state.generation(), 0);
+    assert_eq!(host.irq.state.pending_normal(), 0);
+    assert_eq!(host.irq.state.pending_error(), 0);
+    assert!(host.completion_irq_enabled());
+}
+
+#[test]
 fn host2_bus_request_is_bound_to_originating_host() {
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);

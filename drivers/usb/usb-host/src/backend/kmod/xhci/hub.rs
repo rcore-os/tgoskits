@@ -12,7 +12,7 @@ use futures::{FutureExt, future::BoxFuture, task::AtomicWaker};
 use usb_if::{err::USBError, host::hub::Speed};
 
 use super::reg::{MemMapper, PortStatusRegisters, XhciRegisters};
-use crate::backend::kmod::hub::{HubInfo, HubOp, PortChangeInfo, PortState};
+use crate::backend::kmod::hub::{HubInfo, HubOp, PortChangeInfo, PortEvent, PortState};
 
 pub struct PortChangeWaker {
     ports: Arc<UnsafeCell<Vec<Port>>>,
@@ -76,7 +76,7 @@ impl XhciRootHub {
 }
 
 impl HubOp for XhciRootHub {
-    fn changed_ports(&mut self) -> BoxFuture<'_, Result<Vec<PortChangeInfo>, USBError>> {
+    fn changed_ports(&mut self) -> BoxFuture<'_, Result<Vec<PortEvent>, USBError>> {
         self._changed_ports().boxed()
     }
 
@@ -128,9 +128,36 @@ impl XhciRootHub {
         }
     }
 
-    async fn _changed_ports(&mut self) -> Result<Vec<PortChangeInfo>, USBError> {
+    async fn _changed_ports(&mut self) -> Result<Vec<PortEvent>, USBError> {
+        let mut events = self.handle_disconnected();
         self.handle_uninit().await?;
-        self.handle_reseted().await
+        events.extend(
+            self.handle_reseted()
+                .await?
+                .into_iter()
+                .map(PortEvent::Connected),
+        );
+        Ok(events)
+    }
+
+    fn handle_disconnected(&mut self) -> Vec<PortEvent> {
+        let disconnected = self
+            .ports()
+            .iter()
+            .filter(|port| matches!(port.state, PortState::Probed))
+            .filter_map(|port| {
+                let index = usize::from(port.port_id - 1);
+                (!self.portsc.read_volatile_at(index).current_connect_status())
+                    .then_some(port.port_id)
+            })
+            .collect::<Vec<_>>();
+        for port_id in &disconnected {
+            self.ports_mut()[usize::from(*port_id - 1)].state = PortState::Uninit;
+        }
+        disconnected
+            .into_iter()
+            .map(|port_id| PortEvent::Disconnected { port_id })
+            .collect()
     }
 
     async fn handle_uninit(&mut self) -> Result<(), USBError> {
@@ -190,8 +217,6 @@ impl XhciRootHub {
                 root_port_id: id,
                 port_id: id,
                 port_speed: speed,
-                // Root Hub 不需要 TT
-                tt_port_on_hub: None,
             });
         }
 

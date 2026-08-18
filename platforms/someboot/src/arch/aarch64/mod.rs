@@ -213,7 +213,11 @@ impl ArchTrait for Arch {
         elx::is_mmu_enabled()
     }
 
-    fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), crate::power::CpuOnError> {
+    fn kick_secondary_cpu(
+        hartid: usize,
+        entry: usize,
+        arg: usize,
+    ) -> Result<(), crate::power::CpuOnError> {
         power::cpu_on(hartid as _, entry as _, arg as _).map_err(|e| match e {
             smccc::psci::error::Error::NotSupported => crate::power::CpuOnError::NotSupported,
             smccc::psci::error::Error::InvalidParameters => {

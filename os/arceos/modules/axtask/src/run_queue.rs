@@ -3,28 +3,28 @@ use alloc::{collections::VecDeque, sync::Arc};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{mem::MaybeUninit, ops::Deref, ptr::NonNull};
 
-use ax_hal::percpu::{PreviousThreadBinding, this_cpu_id};
+use ax_hal::percpu::{PreviousContextBinding, this_cpu_id};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_sched::BaseScheduler;
+
 #[cfg(all(
     feature = "smp",
     feature = "ipi",
     feature = "preempt",
     not(feature = "host-test")
 ))]
-use ax_sync::RawState;
-use ax_sync::{GuardState, SpinLock, SpinLockIrqSaveGuard};
-
+use crate::sync::RawState;
 use crate::{
     AxCpuMask, AxTaskRef, Scheduler, TaskInner, WaitQueue,
+    sync::{GuardState, SpinLock, SpinLockIrqSaveGuard},
     task::{CurrentTask, TASK_STACK_ALIGN, TaskStack, TaskState},
     wait_queue::WaitQueueGuard,
 };
 
 struct PreviousTask {
     task: NonNull<crate::AxTask>,
-    binding: PreviousThreadBinding,
+    binding: PreviousContextBinding,
 }
 
 macro_rules! percpu_static {
@@ -473,10 +473,9 @@ mod rr_tests {
     use core::{marker::PhantomData, ptr::NonNull};
 
     use ax_sched::BaseScheduler;
-    use ax_sync::RawState;
 
     use super::{AxRunQueue, AxRunQueueRef, RunQueueAccess, Scheduler, SpinLock, TaskInner};
-    use crate::task::TaskState;
+    use crate::{sync::RawState, task::TaskState};
 
     fn new_test_task(name: &str, state: TaskState) -> crate::AxTaskRef {
         let task =
@@ -840,7 +839,7 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
         assert!(curr.is_running());
 
         // When we call `preempt_resched()`, both IRQs and preemption must
-        // have been disabled by `ax_sync::PreemptIrqSaveState`. So we need
+        // have been disabled by `crate::sync::PreemptIrqSaveState`. So we need
         // to set `current_disable_count` to 1 in `can_preempt()` to obtain
         // the preemption permission.
         let can_preempt = curr.can_preempt(1);
@@ -1202,8 +1201,8 @@ impl AxRunQueue {
         #[cfg(feature = "tracepoint-hooks")]
         ax_crate_interface::call_interface!(
             crate::sched_tracepoint::SchedTracepoint::on_sched_switch(
-                prev_task.id().as_u64(),
-                next_task.id().as_u64(),
+                prev_task.id(),
+                next_task.id(),
                 prev_task.state() as u32,
             )
         );
@@ -1214,15 +1213,15 @@ impl AxRunQueue {
 
             // The enclosing run-queue guard has already disabled migration and
             // local IRQs for the complete switch lifetime.
-            let prev_header_pointer = prev_task.current_header().as_non_null();
-            let next_header_pointer = next_task.current_header().as_non_null();
+            let prev_header_pointer = prev_task.context_header().as_non_null();
+            let next_header_pointer = next_task.context_header().as_non_null();
             ax_hal::percpu::with_cpu_pin(|pin| {
                 // SAFETY: both Arc allocations remain alive across the raw
                 // switch; the header fields are permanently pinned within them.
                 let prev_header = core::pin::Pin::new_unchecked(prev_header_pointer.as_ref());
                 let next_header = core::pin::Pin::new_unchecked(next_header_pointer.as_ref());
                 let (prepared, previous_binding) =
-                    ax_hal::percpu::prepare_thread_switch(pin, prev_header, next_header)
+                    ax_hal::percpu::prepare_context_switch(pin, prev_header, next_header)
                         .expect("scheduler thread switch must validate before publication");
 
                 // FP, address-space, Arc, and PREV_TASK work all remain before
@@ -1258,7 +1257,7 @@ fn gc_entry() {
     loop {
         // Drop all exited tasks and recycle resources.
         let n = {
-            let _guard = ax_sync::PreemptIrqSaveGuard::new();
+            let _guard = crate::sync::PreemptIrqSaveGuard::new();
             // SAFETY: the guard prevents migration and IRQ re-entry, and the
             // closure does not let the per-CPU borrow escape.
             unsafe {
@@ -1273,7 +1272,7 @@ fn gc_entry() {
         for _ in 0..n {
             // Do not do the slow drops in the critical section.
             let task = {
-                let _guard = ax_sync::PreemptIrqSaveGuard::new();
+                let _guard = crate::sync::PreemptIrqSaveGuard::new();
                 // SAFETY: the guard prevents migration and IRQ re-entry.
                 unsafe {
                     ax_hal::percpu::with_cpu_pin(|pin| {
@@ -1291,7 +1290,7 @@ fn gc_entry() {
                 } else {
                     // Otherwise (e.g, `switch_to` is not completed, held by the
                     // joiner, etc), push it back and wait for them to drop first.
-                    let _guard = ax_sync::PreemptIrqSaveGuard::new();
+                    let _guard = crate::sync::PreemptIrqSaveGuard::new();
                     // SAFETY: the guard prevents migration and IRQ re-entry.
                     unsafe {
                         ax_hal::percpu::with_cpu_pin(|pin| {
@@ -1335,7 +1334,7 @@ fn gc_entry() {
 /// then puts the task to the scheduler of target run queue.
 #[cfg(feature = "smp")]
 pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
-    let rq = select_run_queue::<ax_sync::PreemptIrqSaveState>(&migrated_task);
+    let rq = select_run_queue::<crate::sync::PreemptIrqSaveState>(&migrated_task);
     let cpu_id = rq.inner.cpu_id;
     migrated_task.set_cpu_id(cpu_id as _);
     // SAFETY: `rq` owns the target run-queue critical section.
@@ -1363,7 +1362,7 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
     let prev = unsafe { previous.task.as_ref() };
     // SAFETY: current publication and architecture registers already identify
     // the incoming task, and this is the sole owner of the recorded epoch.
-    unsafe { previous.binding.finish(prev.current_header()) }
+    unsafe { previous.binding.finish(prev.context_header()) }
         .expect("incoming switch tail must withdraw prev_task CPU binding");
     // Publish that the context is fully saved. The SeqCst store pairs with the
     // waker's `on_cpu()`/`take_wake()` handshake in `put_task_with_state`.

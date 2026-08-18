@@ -29,7 +29,7 @@ use std::{
 
 use ax_cpumask::CpuMask;
 use ax_memory_addr::align_up_4k;
-use ax_std::os::arceos::sync::IrqSafeMutex as Mutex;
+use ax_std::{os::arceos::sync::IrqSafeMutex, sync::Mutex as SleepMutex};
 use axaddrspace::{AddrSpace, NestedPageTableOps};
 use axdevice::*;
 use axdevice_base::*;
@@ -152,11 +152,11 @@ fn write_guest_bytes_to_chunks(chunks: &mut [&mut [u8]], data: &[u8]) -> AxVmRes
 }
 
 pub(crate) struct AxVMResources {
+    vm_id: VMId,
     // Todo: use more efficient lock.
     pub(crate) address_space: AddrSpace<ArchNestedPageTable>,
     nested_paging: NestedPagingConfig,
     memory_regions: Vec<VMMemoryRegion>,
-    config: AxVMConfig,
     phys_cpu_ls: PhysCpuList,
     vcpu_list: Option<Box<[AxVCpuRef]>>,
     devices: Option<Arc<DeviceRuntime>>,
@@ -179,14 +179,35 @@ pub(crate) enum PendingInterrupt {
 /// Runtime-only resources owned by Running/Paused/Stopping lifecycle states.
 pub(crate) struct VmRuntimeHandle {
     wait_queue: crate::WaitQueue,
-    vcpu_task_list: Mutex<BTreeMap<usize, crate::AxTaskRef>>,
+    notification_generation: AtomicUsize,
+    vcpu_task_list: IrqSafeMutex<BTreeMap<usize, crate::AxTaskRef>>,
     cpu_on_start_acks: StdMutex<BTreeMap<usize, Arc<crate::runtime::vcpus::CpuOnStartAck>>>,
     cpu_off_exit_reservations: StdMutex<BTreeSet<usize>>,
-    pending_interrupts: Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
+    pending_interrupts: IrqSafeMutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
     irq_dispatcher: crate::runtime::VcpuIrqDispatcher,
+    device_poll_requested: AtomicBool,
     running_halting_vcpu_count: AtomicUsize,
     lifecycle_error: StdMutex<Option<AxVmError>>,
     deferred_reset_requested: AtomicBool,
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) struct VcpuEventWaitSnapshot {
+    notification_generation: usize,
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) fn wait_for_vcpu_event_if_idle(
+    runtime: &VmRuntimeHandle,
+    wait_snapshot: &VcpuEventWaitSnapshot,
+    vm_running: impl Fn() -> bool,
+    wait_until: impl FnOnce(&dyn Fn() -> bool),
+) {
+    let wake_condition = || !vm_running() || wait_snapshot.has_pending_event(runtime);
+    if wake_condition() {
+        return;
+    }
+    wait_until(&wake_condition);
 }
 
 pub(crate) fn dispatch_vcpu_interrupt_with(
@@ -220,11 +241,13 @@ impl VmRuntimeHandle {
     pub(crate) fn new() -> Self {
         Self {
             wait_queue: crate::WaitQueue::new(),
-            vcpu_task_list: Mutex::new(BTreeMap::new()),
+            notification_generation: AtomicUsize::new(0),
+            vcpu_task_list: IrqSafeMutex::new(BTreeMap::new()),
             cpu_on_start_acks: StdMutex::new(BTreeMap::new()),
             cpu_off_exit_reservations: StdMutex::new(BTreeSet::new()),
-            pending_interrupts: Mutex::new(BTreeMap::new()),
+            pending_interrupts: IrqSafeMutex::new(BTreeMap::new()),
             irq_dispatcher: crate::runtime::VcpuIrqDispatcher::new(),
+            device_poll_requested: AtomicBool::new(false),
             running_halting_vcpu_count: AtomicUsize::new(0),
             lifecycle_error: StdMutex::new(None),
             deferred_reset_requested: AtomicBool::new(false),
@@ -369,12 +392,41 @@ impl VmRuntimeHandle {
         self.wait_queue.wait_until(condition);
     }
 
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(crate) fn notification_generation(&self) -> usize {
+        self.notification_generation.load(Ordering::Acquire)
+    }
+
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(crate) fn vcpu_event_wait_snapshot(&self) -> VcpuEventWaitSnapshot {
+        VcpuEventWaitSnapshot {
+            notification_generation: self.notification_generation(),
+        }
+    }
+
     pub(crate) fn notify_one(&self) {
+        self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_one(false);
     }
 
     pub(crate) fn notify_all(&self) {
+        self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_all(false);
+    }
+
+    /// Publishes pending device work before waking the primary vCPU.
+    pub(crate) fn notify_device_poll(&self) {
+        self.device_poll_requested.store(true, Ordering::Release);
+        self.notify_one();
+    }
+
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(crate) fn device_poll_requested(&self) -> bool {
+        self.device_poll_requested.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn take_device_poll_request(&self) -> bool {
+        self.device_poll_requested.swap(false, Ordering::AcqRel)
     }
 
     pub(crate) fn mark_vcpu_running(&self) {
@@ -465,6 +517,14 @@ impl VmRuntimeHandle {
     }
 }
 
+#[cfg(any(target_arch = "aarch64", test))]
+impl VcpuEventWaitSnapshot {
+    pub(crate) fn has_pending_event(&self, runtime: &VmRuntimeHandle) -> bool {
+        runtime.device_poll_requested()
+            || runtime.notification_generation() != self.notification_generation
+    }
+}
+
 #[cfg(all(test, feature = "host-test"))]
 mod runtime_handle_tests {
 
@@ -551,7 +611,7 @@ mod runtime_handle_tests {
 
 impl AxVMResources {
     pub(crate) fn from_page_table(
-        config: AxVMConfig,
+        vm_id: VMId,
         page_table: ArchNestedPageTable,
         device_plan: crate::arch::ArchVmPlan,
         build_nested_paging: impl FnOnce(HostPhysAddr) -> AxVmResult<NestedPagingConfig>,
@@ -564,10 +624,10 @@ impl AxVMResources {
         .map_err(|error| AxVmError::from_addrspace("create guest address space", error))?;
         let nested_paging = build_nested_paging(address_space.page_table_root())?;
         Ok(Self {
+            vm_id,
             address_space,
             nested_paging,
             memory_regions: Vec::new(),
-            config,
             phys_cpu_ls: PhysCpuList::default(),
             vcpu_list: None,
             devices: None,
@@ -576,11 +636,6 @@ impl AxVMResources {
             boot_description: GuestBootDescription::none(),
             device_plan,
         })
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    pub(crate) const fn config(&self) -> &AxVMConfig {
-        &self.config
     }
 
     pub(crate) fn planned_devices(&self) -> &crate::vm::prepare::device_plan::VmDevicePlan {
@@ -615,6 +670,7 @@ impl AxVMResources {
     }
 
     fn reset_transient_resources(&mut self) -> AxVmResult {
+        self.teardown_ivc_bindings()?;
         if let Some(devices) = self.devices.take() {
             devices
                 .reset_lifecycle_devices()
@@ -641,6 +697,203 @@ impl AxVMResources {
         self.interrupt_controller = None;
         self.address_layout = None;
         Ok(())
+    }
+
+    fn teardown_ivc_bindings(&mut self) -> AxVmResult {
+        let vm_id = self.vm_id;
+        let teardowns = crate::runtime::ivc::teardown_vm(vm_id);
+        release_ivc_teardowns(vm_id, teardowns, self)
+    }
+}
+
+trait IvcGuestBindingRelease {
+    fn unmap_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult;
+
+    fn release_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult;
+}
+
+impl IvcGuestBindingRelease for AxVMResources {
+    fn unmap_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult {
+        self.address_space
+            .unmap(binding.gpa, binding.size)
+            .map_err(|error| AxVmError::from_addrspace("unmap IVC binding", error))
+    }
+
+    fn release_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult {
+        if let Some(devices) = &self.devices {
+            crate::runtime::ivc::release_guest_binding(devices, binding.gpa, binding.size)
+                .map_err(|error| {
+                    AxVmError::device("release IVC binding during lifecycle cleanup", error)
+                })?;
+        }
+        Ok(())
+    }
+}
+
+impl IvcGuestBindingRelease for &AxVM {
+    fn unmap_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult {
+        self.unmap_region(binding.gpa, binding.size)
+    }
+
+    fn release_ivc_guest_binding(
+        &mut self,
+        binding: crate::runtime::ivc::IvcGuestBinding,
+    ) -> AxVmResult {
+        self.release_ivc_channel(binding.gpa, binding.size)
+    }
+}
+
+fn release_ivc_teardowns(
+    vm_id: usize,
+    teardowns: Vec<crate::runtime::ivc::IvcTeardown>,
+    release: &mut impl IvcGuestBindingRelease,
+) -> AxVmResult {
+    for teardown in teardowns {
+        let binding = teardown.binding();
+        if release_one_ivc_guest_binding(vm_id, binding, release) {
+            teardown.commit();
+        }
+    }
+    Ok(())
+}
+
+fn release_one_ivc_guest_binding(
+    vm_id: usize,
+    binding: crate::runtime::ivc::IvcGuestBinding,
+    release: &mut impl IvcGuestBindingRelease,
+) -> bool {
+    if let Err(err) = release.unmap_ivc_guest_binding(binding) {
+        warn!(
+            "VM[{}] failed to unmap IVC binding at GPA={:#x}: {err:?}",
+            vm_id,
+            binding.gpa.as_usize()
+        );
+        return false;
+    }
+    if let Err(err) = release.release_ivc_guest_binding(binding) {
+        warn!(
+            "VM[{}] failed to release IVC binding at GPA={:#x}: {err:?}",
+            vm_id,
+            binding.gpa.as_usize()
+        );
+        return false;
+    }
+    true
+}
+
+pub(crate) fn release_ivc_teardown_for_vm(
+    vm_id: usize,
+    teardown: crate::runtime::ivc::IvcTeardown,
+    vm: &AxVM,
+) -> bool {
+    let binding = teardown.binding();
+    let mut release = vm;
+    let released = release_one_ivc_guest_binding(vm_id, binding, &mut release);
+    if released {
+        teardown.commit();
+    }
+    released
+}
+#[cfg(test)]
+mod ivc_lifecycle_tests {
+    use std::vec::Vec;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct RecordingIvcBindingRelease {
+        events: Vec<String>,
+        fail_release: bool,
+    }
+
+    impl IvcGuestBindingRelease for RecordingIvcBindingRelease {
+        fn unmap_ivc_guest_binding(
+            &mut self,
+            binding: crate::runtime::ivc::IvcGuestBinding,
+        ) -> AxVmResult {
+            self.events
+                .push(format!("unmap:{:#x}", binding.gpa.as_usize()));
+            Ok(())
+        }
+
+        fn release_ivc_guest_binding(
+            &mut self,
+            binding: crate::runtime::ivc::IvcGuestBinding,
+        ) -> AxVmResult {
+            self.events
+                .push(format!("release:{:#x}", binding.gpa.as_usize()));
+            if self.fail_release {
+                Err(AxVmError::device("release test IVC binding", "injected"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn ivc_lifecycle_cleanup_unmaps_before_releasing_aperture_range() {
+        let mut release = RecordingIvcBindingRelease::default();
+
+        assert!(release_one_ivc_guest_binding(
+            1,
+            crate::runtime::ivc::IvcGuestBinding {
+                gpa: GuestPhysAddr::from_usize(0x7000_0000),
+                size: 0x1000,
+            },
+            &mut release
+        ));
+        assert!(release_one_ivc_guest_binding(
+            1,
+            crate::runtime::ivc::IvcGuestBinding {
+                gpa: GuestPhysAddr::from_usize(0x7000_1000),
+                size: 0x1000,
+            },
+            &mut release
+        ));
+
+        assert_eq!(
+            release.events,
+            [
+                "unmap:0x70000000",
+                "release:0x70000000",
+                "unmap:0x70001000",
+                "release:0x70001000"
+            ]
+        );
+    }
+
+    #[test]
+    fn ivc_lifecycle_cleanup_does_not_commit_after_release_failure() {
+        let mut release = RecordingIvcBindingRelease {
+            fail_release: true,
+            ..Default::default()
+        };
+
+        assert!(!release_one_ivc_guest_binding(
+            2,
+            crate::runtime::ivc::IvcGuestBinding {
+                gpa: GuestPhysAddr::from_usize(0x7100_0000),
+                size: 0x1000,
+            },
+            &mut release
+        ));
+
+        assert_eq!(release.events, ["unmap:0x71000000", "release:0x71000000"]);
     }
 }
 
@@ -777,7 +1030,10 @@ const TEMP_MAX_VCPU_NUM: usize = 64;
 pub struct AxVM {
     id: usize,
     name: String,
-    machine: Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
+    /// Task-context configuration, intentionally independent of IRQ/runtime state.
+    config: SleepMutex<AxVMConfig>,
+    /// Lifecycle and runtime state reached from both task and interrupt context.
+    machine: IrqSafeMutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
     fw_cfg_payload: Arc<FwCfgPayloadSlot>,
 }
 
@@ -790,16 +1046,17 @@ impl AxVM {
     ///
     /// Returns an error if nested paging is unsupported for the selected host
     /// CPUs or if the initial stage-2 address space cannot be allocated.
-    pub fn new(config: AxVMConfig) -> AxVmResult<AxVMRef> {
+    pub fn new(mut config: AxVMConfig) -> AxVmResult<AxVMRef> {
         let id = config.id();
         let name = config.name();
         let fw_cfg_payload = Arc::new(FwCfgPayloadSlot::new());
         let resources =
-            crate::arch::CurrentArch::create_vm_resources(config, fw_cfg_payload.clone())?;
+            crate::arch::CurrentArch::create_vm_resources(&mut config, fw_cfg_payload.clone())?;
         let result = Arc::new(Self {
             id,
             name,
-            machine: Mutex::new(Machine::Ready(resources)),
+            config: SleepMutex::new(config),
+            machine: IrqSafeMutex::new(Machine::Ready(resources)),
             fw_cfg_payload,
         });
 
@@ -826,8 +1083,7 @@ impl AxVM {
 
     /// Returns whether the guest address space starts from host identity mappings.
     pub fn uses_passthrough_address_space(&self) -> bool {
-        self.with_resources(|resources| Ok(resources.config.uses_passthrough_address_space()))
-            .unwrap_or(false)
+        self.with_config(|config| config.uses_passthrough_address_space())
     }
 
     fn with_resources<F, R>(&self, f: F) -> AxVmResult<R>
@@ -936,16 +1192,23 @@ impl AxVM {
         self.with_resources(|resources| Ok(resources.address_space.page_table_root()))
     }
 
-    /// Returns to the VM's configuration.
+    /// Executes an operation with mutable access to the VM's configuration.
+    ///
+    /// Configuration uses a task-context sleeping mutex and is intentionally
+    /// independent of the IRQ-safe machine lock. Keep the closure short and
+    /// return owned values before doing console I/O or other blocking work.
+    /// Callers must not invoke this method from interrupt context or recursively
+    /// access the same config. If an internal operation needs both locks, it must
+    /// acquire `config` before `machine`.
+    ///
+    /// Mutations update `AxVMConfig` only; they do not rebuild already-created
+    /// vCPUs, address spaces, or devices.
     pub fn with_config<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut AxVMConfig) -> R,
     {
-        let mut machine = self.machine.lock();
-        let resources = machine
-            .resources_mut()
-            .expect("VM resources are not available for config access");
-        f(&mut resources.config)
+        let mut config = self.config.lock();
+        f(&mut config)
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -966,11 +1229,11 @@ impl AxVM {
 
     /// Stores a guest DTB as VM-owned boot-description state.
     pub fn set_guest_device_tree(&self, load_gpa: GuestPhysAddr, bytes: Vec<u8>) -> AxVmResult {
+        let guest_dtb = GuestFdtBuilder::from_bytes(bytes).build(load_gpa);
+        let mut config = self.config.lock();
         self.with_resources_mut(|resources| {
-            resources.config.set_dtb_load_gpa(load_gpa);
-            resources
-                .boot_description
-                .set_device_tree(GuestFdtBuilder::from_bytes(bytes).build(load_gpa));
+            config.set_dtb_load_gpa(load_gpa);
+            resources.boot_description.set_device_tree(guest_dtb);
             Ok(())
         })
     }
@@ -1050,8 +1313,12 @@ impl AxVM {
             };
         }
 
-        let task = crate::host::task::spawn_task(primary_task);
-        runtime.add_vcpu_task(0, task)?;
+        crate::runtime::vcpus::spawn_registered_vcpu_task(
+            self.id(),
+            0,
+            runtime.clone(),
+            primary_task,
+        );
         Ok(())
     }
 
@@ -1114,7 +1381,12 @@ impl AxVM {
     }
 
     pub(crate) fn finish_stop(&self) -> AxVmResult {
-        self.machine.lock().finish_stop()
+        let mut machine = self.machine.lock();
+        machine.finish_stop()?;
+        if let Some(resources) = machine.resources_mut() {
+            resources.teardown_ivc_bindings()?;
+        }
+        Ok(())
     }
 
     fn wait_until_stopped(&self) -> AxVmResult {
@@ -1558,9 +1830,8 @@ impl AxVM {
     pub fn alloc_ivc_channel(&self, expected_size: usize) -> AxVmResult<(GuestPhysAddr, usize)> {
         // Ensure the expected size is aligned to 4K.
         let size = align_up_4k(expected_size);
-        let gpa = self
-            .get_devices()?
-            .alloc_ivc_channel(size)
+        let devices = self.get_devices()?;
+        let gpa = crate::runtime::ivc::alloc_guest_binding(&devices, size)
             .map_err(|error| AxVmError::memory("reserve IVC guest address range", error))?;
         Ok((gpa, size))
     }
@@ -1572,8 +1843,7 @@ impl AxVM {
     /// ## Returns
     /// * `AxVmResult<()>` - An empty result indicating success or failure.
     pub fn release_ivc_channel(&self, gpa: GuestPhysAddr, size: usize) -> AxVmResult {
-        self.get_devices()?
-            .release_ivc_channel(gpa, size)
+        crate::runtime::ivc::release_guest_binding(self.get_devices()?.as_ref(), gpa, size)
             .map_err(|error| AxVmError::memory("release IVC guest address range", error))?;
         Ok(())
     }
@@ -1640,8 +1910,7 @@ impl AxVM {
 
     /// Prepares all memory regions configured for this VM.
     pub fn prepare_memory_layout(&self) -> AxVmResult<PreparedMemoryLayout> {
-        let memory_regions =
-            self.with_resources(|resources| Ok(resources.config.memory_regions().to_vec()))?;
+        let memory_regions = self.with_config(|config| config.memory_regions().to_vec());
         let layout = memory::MemoryLayoutBuilder::new(self, &memory_regions).prepare()?;
         let main_memory = layout.main_memory();
         let boot_plan = boot::BootImagePlan::new(main_memory.gpa, main_memory.is_identical());
@@ -1715,6 +1984,8 @@ impl AxVM {
 
     fn cleanup_resource_set(vm_id: usize, resources: &mut AxVMResources) -> AxVmResult {
         info!("Cleaning up VM[{vm_id}] resources...");
+
+        resources.teardown_ivc_bindings()?;
 
         if let Some(devices) = resources.devices.take() {
             devices.reset_lifecycle_devices().map_err(|error| {
@@ -1927,6 +2198,16 @@ mod tests {
     }
 
     #[test]
+    fn runtime_notification_advances_wake_generation_without_waiters() {
+        let runtime = VmRuntimeHandle::new();
+        let observed = runtime.notification_generation();
+
+        runtime.notify_one();
+
+        assert_ne!(runtime.notification_generation(), observed);
+    }
+
+    #[test]
     fn runtime_records_the_first_lifecycle_error_once() {
         let runtime = VmRuntimeHandle::new();
         let first = AxVmError::interrupt("deactivate architecture devices", "first failure");
@@ -2074,3 +2355,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "host-test"))]
+mod config_lock_tests;

@@ -1,6 +1,6 @@
-use alloc::boxed::Box;
 #[cfg(any(kmod, umod))]
 use alloc::vec::Vec;
+use alloc::{boxed::Box, sync::Arc};
 use core::{
     any::Any,
     future::Future,
@@ -8,6 +8,7 @@ use core::{
     task::{Context, Poll},
 };
 
+use ax_sync::SpinLock;
 #[cfg(any(kmod, umod))]
 use usb_if::endpoint::{IsoPacketResult, TransferStatus};
 use usb_if::{
@@ -35,18 +36,6 @@ pub(crate) trait EndpointOp: Send + Any + 'static {
         Err(TransferError::NotSupported)
     }
 
-    /// Retires a request after the controller has stopped using this endpoint.
-    ///
-    /// The caller must first quiesce the endpoint in hardware, for example by
-    /// switching its interface to another alternate setting.
-    fn retire_request_after_quiesce(&mut self, _id: RequestId) -> Result<(), TransferError> {
-        Err(TransferError::NotSupported)
-    }
-
-    fn supports_retire_after_quiesce(&self) -> bool {
-        false
-    }
-
     fn reset(&mut self) -> EndpointResetFuture {
         Box::pin(async { Err(TransferError::NotSupported) })
     }
@@ -55,17 +44,33 @@ pub(crate) trait EndpointOp: Send + Any + 'static {
 pub type EndpointResetFuture =
     Pin<Box<dyn Future<Output = Result<(), TransferError>> + Send + 'static>>;
 
-pub struct Endpoint {
-    info: EndpointInfo,
-    raw: Box<dyn EndpointOp>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EndpointLifecycle {
+    Active,
+    Revoked,
+    Disconnected,
 }
 
-impl Endpoint {
+struct EndpointInner {
+    raw: Box<dyn EndpointOp>,
+    lifecycle: EndpointLifecycle,
+}
+
+#[derive(Clone)]
+pub struct EndpointHandle {
+    info: EndpointInfo,
+    inner: Arc<SpinLock<EndpointInner>>,
+}
+
+impl EndpointHandle {
     #[cfg(any(kmod, umod))]
     pub(crate) fn new(info: EndpointInfo, raw: impl EndpointOp) -> Self {
         Self {
             info,
-            raw: Box::new(raw),
+            inner: Arc::new(SpinLock::new(EndpointInner {
+                raw: Box::new(raw),
+                lifecycle: EndpointLifecycle::Active,
+            })),
         }
     }
 
@@ -73,28 +78,34 @@ impl Endpoint {
         self.info
     }
 
-    pub fn submit(&mut self, request: TransferRequest) -> Result<RequestId, TransferError> {
+    pub fn submit(&self, request: TransferRequest) -> Result<RequestId, TransferError> {
         self.validate_request(&request)?;
-        self.raw.submit_request(request)
+        let mut inner = self.inner.lock();
+        match inner.lifecycle {
+            EndpointLifecycle::Active => inner.raw.submit_request(request),
+            EndpointLifecycle::Revoked => Err(TransferError::EndpointRevoked),
+            EndpointLifecycle::Disconnected => Err(TransferError::Disconnected),
+        }
     }
 
-    pub fn reclaim(&mut self, id: RequestId) -> Result<Option<TransferCompletion>, TransferError> {
-        match self.raw.reclaim_request(id) {
+    pub fn reclaim(&self, id: RequestId) -> Result<Option<TransferCompletion>, TransferError> {
+        match self.inner.lock().raw.reclaim_request(id) {
             Some(result) => result.map(Some),
             None => Ok(None),
         }
     }
 
     pub fn poll_request(
-        &mut self,
+        &self,
         id: RequestId,
         cx: &mut Context<'_>,
     ) -> Poll<Result<TransferCompletion, TransferError>> {
-        match self.raw.reclaim_request(id) {
+        let mut inner = self.inner.lock();
+        match inner.raw.reclaim_request(id) {
             Some(res) => Poll::Ready(res),
             None => {
-                self.raw.register_waker(id, cx);
-                match self.raw.reclaim_request(id) {
+                inner.raw.register_waker(id, cx);
+                match inner.raw.reclaim_request(id) {
                     Some(res) => Poll::Ready(res),
                     None => Poll::Pending,
                 }
@@ -102,26 +113,18 @@ impl Endpoint {
         }
     }
 
-    pub fn cancel(&mut self, id: RequestId) -> Result<(), TransferError> {
-        self.raw.cancel_request(id)
-    }
-
-    pub fn retire_after_quiesce(&mut self, id: RequestId) -> Result<(), TransferError> {
-        self.raw.retire_request_after_quiesce(id)
-    }
-
-    pub fn supports_retire_after_quiesce(&self) -> bool {
-        self.raw.supports_retire_after_quiesce()
+    pub fn cancel(&self, id: RequestId) -> Result<(), TransferError> {
+        self.inner.lock().raw.cancel_request(id)
     }
 
     /// Resets host-controller state for this endpoint after a successful
     /// `CLEAR_FEATURE(ENDPOINT_HALT)` request.
-    pub fn reset(&mut self) -> EndpointResetFuture {
-        self.raw.reset()
+    pub fn reset(&self) -> EndpointResetFuture {
+        self.inner.lock().raw.reset()
     }
 
     pub async fn wait(
-        &mut self,
+        &self,
         request: TransferRequest,
     ) -> Result<TransferCompletion, TransferError> {
         let id = self.submit(request)?;
@@ -129,9 +132,23 @@ impl Endpoint {
     }
 
     #[allow(unused)]
-    pub(crate) fn with_raw_mut<T: EndpointOp, R>(&mut self, f: impl FnOnce(&mut T) -> R) -> R {
-        let d = self.raw.as_mut() as &mut dyn Any;
-        f(d.downcast_mut::<T>().expect("Endpoint downcast_mut failed"))
+    pub(crate) fn with_raw_mut<T: EndpointOp, R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        let mut inner = self.inner.lock();
+        let d = inner.raw.as_mut() as &mut dyn Any;
+        f(d.downcast_mut::<T>()
+            .expect("EndpointHandle downcast_mut failed"))
+    }
+
+    pub(crate) fn revoke(&self) {
+        self.inner.lock().lifecycle = EndpointLifecycle::Revoked;
+    }
+
+    pub(crate) fn disconnect(&self) {
+        self.inner.lock().lifecycle = EndpointLifecycle::Disconnected;
+    }
+
+    pub(crate) fn reactivate(&self) {
+        self.inner.lock().lifecycle = EndpointLifecycle::Active;
     }
 
     fn validate_request(&self, request: &TransferRequest) -> Result<(), TransferError> {
@@ -151,7 +168,7 @@ impl Endpoint {
 
 struct EndpointRequestFuture<'a> {
     id: RequestId,
-    endpoint: &'a mut Endpoint,
+    endpoint: &'a EndpointHandle,
 }
 
 impl Future for EndpointRequestFuture<'_> {

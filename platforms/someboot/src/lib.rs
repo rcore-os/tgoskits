@@ -37,6 +37,7 @@ pub(crate) mod consts;
 #[cfg(efi)]
 mod efi_stub;
 mod elf;
+mod entropy;
 mod entry;
 mod err;
 pub(crate) mod fdt;
@@ -52,6 +53,7 @@ pub mod timer;
 
 pub use acpi::rsdp_addr_phys;
 pub use cmdline::cmdline;
+pub use entropy::boot_entropy;
 pub use fdt::{fdt_addr, fdt_addr_phys, platform_name};
 pub use page_table_generic::*;
 pub use somehal_macros::{entry, someboot_secondary_entry as secondary_entry};
@@ -117,7 +119,12 @@ pub trait ArchTrait {
         Self::shutdown()
     }
     fn secondary_entry_fn_address() -> *const ();
-    fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError>;
+    /// Delivers the architecture-specific wake request to one secondary CPU.
+    ///
+    /// This method owns only the hardware or firmware transport. The generic
+    /// someboot lifecycle publishes `KICKED`, waits for the target CPU to
+    /// report `ALIVE`, and releases it into the OS entry path.
+    fn kick_secondary_cpu(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError>;
 
     fn systimer_enable();
     fn systimer_irq_enable();

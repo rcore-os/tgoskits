@@ -5,7 +5,7 @@ args = [
     "-m",
     "512M",
     "-drive",
-    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img,snapshot=on",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
     "-device",
     "nvme,serial=starry-block-io-bench,drive=nvm,max_ioqpairs=64,msix_qsize=1",
 ]

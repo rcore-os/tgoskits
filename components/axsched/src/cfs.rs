@@ -121,6 +121,37 @@ impl<T> CFScheduler<T> {
     pub fn scheduler_name() -> &'static str {
         "Completely Fair"
     }
+
+    /// Returns the number of ready tasks currently in the ready queue.
+    pub fn len(&self) -> usize {
+        self.ready_queue.len()
+    }
+
+    /// Returns whether the ready queue is empty.
+    pub fn is_empty(&self) -> bool {
+        self.ready_queue.is_empty()
+    }
+
+    /// Removes and returns the first ready task for which `pred` (over the inner
+    /// task struct) holds. `None` if no task matches. Recomputes the cached
+    /// min-vruntime the same way [`BaseScheduler::remove_task`] does.
+    pub fn pick_stealable_task(
+        &mut self,
+        mut pred: impl FnMut(&T) -> bool,
+    ) -> Option<Arc<CFSTask<T>>> {
+        let key = self
+            .ready_queue
+            .iter()
+            .find(|(_, v)| pred(v.inner()))
+            .map(|(k, _)| *k)?;
+        let task = self.ready_queue.remove(&key);
+        if let Some(((min_vruntime, _), _)) = self.ready_queue.first_key_value() {
+            self.min_vruntime = Some(AtomicIsize::new(*min_vruntime));
+        } else {
+            self.min_vruntime = None;
+        }
+        task
+    }
 }
 
 impl<T> BaseScheduler for CFScheduler<T> {

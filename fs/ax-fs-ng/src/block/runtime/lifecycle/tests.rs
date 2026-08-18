@@ -543,12 +543,12 @@ struct TestIrqRegistration {
 }
 
 impl BlockIrqRegistration for TestIrqRegistration {
-    fn enable(&self) -> AxResult {
+    fn enable(&self) -> BlockResult {
         self.log.lock().unwrap().push("irq_enable");
         Ok(())
     }
 
-    fn disable_and_synchronize(&self) -> AxResult {
+    fn disable_and_synchronize(&self) -> BlockResult {
         self.log.lock().unwrap().push("irq_disable_sync");
         Ok(())
     }
@@ -585,11 +585,16 @@ impl BlockIrqRegistrar for TestIrqRegistrar {
         _irq: IrqId,
         _cpu: usize,
         action: BlockIrqAction,
-    ) -> AxResult<Box<dyn BlockIrqRegistration>> {
-        let log = self.log.lock().unwrap().clone().ok_or(AxError::BadState)?;
+    ) -> BlockResult<Box<dyn BlockIrqRegistration>> {
+        let log = self
+            .log
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(BlockError::InvalidState)?;
         if self.fail_registration.load(Ordering::Acquire) {
             log.lock().unwrap().push("irq_register_failed");
-            return Err(AxError::Io);
+            return Err(BlockError::Io);
         }
         log.lock().unwrap().push("irq_register_disabled");
         let action = Arc::new(StdMutex::new(Some(action)));

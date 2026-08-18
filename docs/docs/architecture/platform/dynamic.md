@@ -32,7 +32,7 @@ dynamic  = true
 | `hv` | ✗ | `somehal/hv`；AArch64 目标再选择 `ax-cpu/arm-el2`，hypervisor 模式 |
 | `thead-mae` | ✗ | T-Head 扩展；`somehal/thead-mae` + `ax-cpu/xuantie-c9xx` |
 
-依赖：`anyhow`、`ax-cpu`、`cpu-local`、`ax-driver`、`ax-errno`、`axklib`（`buddy-slab`）、`ax-plat`、`heapless`、`log`、`ax-memory-addr`、`ax-percpu`、`rdrive`、`someboot`、`somehal`、`spin`。
+依赖：`anyhow`、`ax-cpu`、`cpu-local`、`ax-driver`、`ax-lazyinit`、`axklib`（`buddy-slab`）、`ax-plat`、`heapless`、`log`、`ax-memory-addr`、`ax-percpu`、`rdrive`、`someboot`、`somehal`、`thiserror`。
 
 ## lib.rs 总览
 
@@ -176,8 +176,16 @@ x86_64 上特别处理：当 IRQ 向量落在 PCI INTx 区间时，通过 `ax_pl
 fn cpu_num() -> usize { somehal::smp::cpu_meta_list().count() }
 fn system_off() -> !  { somehal::power::shutdown() }
 fn system_reset() -> !{ somehal::power::reset() }
-fn cpu_boot(cpu_id, stack_top_paddr) { somehal::power::cpu_on(cpu_id, stack_top_paddr) }
+fn cpu_boot(cpu_id, _stack_top_paddr) {
+    let startup = somehal::power::start_secondary_cpu(cpu_id).unwrap();
+    while startup.status() != SecondaryCpuStartupStatus::Alive {
+        // axplat-dyn uses the somehal timer to enforce a 10-second deadline.
+    }
+    startup.release().unwrap()
+}
 ```
+
+`PowerIf::cpu_boot()` 的公共契约保持同步；`axplat-dyn` 负责轮询和 10 秒超时策略。someboot 只提供非阻塞 `start/status/release` 机制，因此未来具有真实 timer/waker 的上层可以自行包装异步等待。`stack_top_paddr` 继续由动态平台忽略，因为 secondary stack 已在 someboot 发布的 immutable `PerCpuMeta` 中确定。
 
 ## generic_timer.rs — TimeIf 实现
 
@@ -232,12 +240,13 @@ const LOONGARCH_IRQ_TRACE_LIMIT: usize = 80;
 整个模块只有一个函数 (`platforms/axplat-dyn/src/drivers/mod.rs`)：
 
 ```rust
-pub fn probe_all_devices() -> Result<(), AxError> {
+pub fn probe_all_devices() -> Result<(), PlatformProbeError> {
     if !rdrive::is_initialized() {
         warn!("rdrive is not initialized; skip platform device probe");
         return Ok(());
     }
-    rdrive::probe_all(false).map_err(|_| AxError::BadState)
+    rdrive::probe_all(false)?;
+    Ok(())
 }
 ```
 

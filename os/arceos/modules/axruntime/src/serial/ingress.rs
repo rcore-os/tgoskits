@@ -1,7 +1,8 @@
 use alloc::collections::VecDeque;
 
-use ax_sync::SpinLock;
 use ax_task::IrqNotify;
+
+use crate::sync::SpinLock;
 
 pub(super) const TX_FRAME_BYTES: usize = 256;
 const TX_FRAME_CAPACITY: usize = 16;

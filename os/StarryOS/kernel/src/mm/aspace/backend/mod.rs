@@ -6,7 +6,6 @@ use alloc::{
 };
 
 use ax_alloc::{UsageKind, global_allocator};
-use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{DynPageIter, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_memory_set::MappingBackend;
 use ax_runtime::hal::{
@@ -15,7 +14,7 @@ use ax_runtime::hal::{
 };
 use enum_dispatch::enum_dispatch;
 
-use crate::sync::Mutex;
+use crate::{StarryError, StarryResult, sync::Mutex};
 
 mod cow;
 mod file;
@@ -38,12 +37,12 @@ fn divide_page(size: usize, page_size: usize) -> usize {
     size >> page_size.trailing_zeros()
 }
 
-pub(crate) fn alloc_frame(zeroed: bool, size: usize) -> AxResult<PhysAddr> {
+pub(crate) fn alloc_frame(zeroed: bool, size: usize) -> StarryResult<PhysAddr> {
     let num_pages = size / PAGE_SIZE_4K;
     let vaddr = VirtAddr::from(
         global_allocator()
             .alloc_pages(num_pages, size, UsageKind::VirtMem)
-            .map_err(|_| AxError::NoMemory)?,
+            .map_err(|_| StarryError::NoMemory)?,
     );
     if zeroed {
         unsafe { core::ptr::write_bytes(vaddr.as_mut_ptr(), 0, size) };
@@ -59,8 +58,8 @@ pub(crate) fn dealloc_frame(frame: PhysAddr, align: usize) {
     global_allocator().dealloc_pages(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
 }
 
-fn pages_in(range: VirtAddrRange, align: usize) -> AxResult<DynPageIter<VirtAddr>> {
-    DynPageIter::new(range.start, range.end, align).ok_or(AxError::InvalidInput)
+fn pages_in(range: VirtAddrRange, align: usize) -> StarryResult<DynPageIter<VirtAddr>> {
+    DynPageIter::new(range.start, range.end, align).ok_or(StarryError::InvalidInput)
 }
 
 type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace)>;
@@ -77,7 +76,7 @@ pub trait BackendOps {
         flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult;
+    ) -> StarryResult;
 
     /// Unmap a memory region.
     fn unmap(
@@ -85,7 +84,7 @@ pub trait BackendOps {
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> AxResult;
+    ) -> StarryResult;
 
     /// Called before a memory region is protected.
     fn on_protect(
@@ -93,7 +92,7 @@ pub trait BackendOps {
         _range: VirtAddrRange,
         _new_flags: MappingFlags,
         _pt: &mut PageTable,
-    ) -> AxResult {
+    ) -> StarryResult {
         Ok(())
     }
 
@@ -109,7 +108,7 @@ pub trait BackendOps {
         _access_flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
         _pt: &mut PageTable,
-    ) -> AxResult<(usize, Option<PopulateCallback>)> {
+    ) -> StarryResult<(usize, Option<PopulateCallback>)> {
         Ok((0, None))
     }
 
@@ -127,7 +126,7 @@ pub trait BackendOps {
         new_pt: &mut PageTable,
         new_aspace: &Arc<Mutex<AddrSpace>>,
         acct: CloneMapAccounting<'_>,
-    ) -> AxResult<Backend>;
+    ) -> StarryResult<Backend>;
 
     /// Splits the backend into two at the given position, and returns the backend for the upper part.
     ///
@@ -166,7 +165,7 @@ impl Backend {
     /// Returns the file information if this is a file-backed mapping, or `None` otherwise.
     ///
     /// The returned tuple contains the file name, offset, inode and whether the mapping is shared.
-    pub fn file_info(&self) -> AxResult<BackendFileInfo> {
+    pub fn file_info(&self) -> StarryResult<BackendFileInfo> {
         match self {
             Backend::Cow(b) => b.file_info(),
             Backend::Linear(b) => Ok(BackendFileInfo {
@@ -195,16 +194,16 @@ impl Backend {
         new_start: VirtAddr,
         src_offset: usize,
         aspace: &Arc<Mutex<AddrSpace>>,
-    ) -> AxResult<Self> {
+    ) -> StarryResult<Self> {
         let adjusted = new_start
             .as_usize()
             .checked_sub(src_offset)
             .map(VirtAddr::from)
-            .ok_or(AxError::InvalidInput)?;
+            .ok_or(StarryError::InvalidInput)?;
         Ok(match self {
             Self::Cow(cb) => Self::Cow(cb.with_start(adjusted)),
             Self::Shared(sb) => Self::Shared(sb.with_start(adjusted)),
-            Self::Linear(_) => return Err(AxError::OperationNotSupported),
+            Self::Linear(_) => return Err(StarryError::OperationNotSupported),
             Self::File(fb) => Self::File(fb.with_start(adjusted, aspace)),
         })
     }

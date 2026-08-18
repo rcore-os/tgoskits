@@ -81,10 +81,9 @@ pub unsafe fn with_cpu_pin<R>(
         _scope: PhantomData,
         _not_send_or_sync: PhantomData,
     };
-    // Validate the second architecture-owned source before exposing any
-    // typed access. This catches a restored CPU base paired with a stale task
-    // register (notably after a vCPU exit) at the pin boundary.
-    register::current_thread(&pin)?;
+    // Validate the image's selected current-context source before exposing
+    // typed access. Each image mode has exactly one authoritative source.
+    register::current_context(&pin)?;
     Ok(operation(&pin))
 }
 

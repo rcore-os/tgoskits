@@ -34,8 +34,14 @@
     test_runner(crate::bare_metal_test_runner)
 )]
 
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+extern crate std;
+
 #[cfg(all(test, not(target_os = "none"), feature = "multitask"))]
 mod tests;
+
+/// Native ArceOS synchronization primitives.
+pub mod sync;
 
 #[cfg(all(test, target_os = "none"))]
 fn bare_metal_test_runner(_tests: &[&dyn Fn()]) {}
@@ -72,6 +78,8 @@ cfg_if::cfg_if! {
         mod interrupt;
         mod task;
         mod api;
+        #[doc(hidden)]
+        pub mod runtime_preempt;
         #[cfg(feature = "lockdep")]
         mod lockdep;
         #[cfg(feature = "tracepoint-hooks")]

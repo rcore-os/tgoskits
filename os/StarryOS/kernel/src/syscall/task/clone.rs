@@ -1,22 +1,63 @@
 use alloc::sync::Arc;
+use core::mem::size_of;
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{AxTaskExt, current, spawn_task_with};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use scope_local::Scope;
-use starry_process::Pid;
 use starry_signal::Signo;
 use starry_vm::VmMutPtr;
 
 use crate::{
-    file::{FD_TABLE, FileLike, PidFd, close_file_like},
+    StarryError, StarryResult,
+    file::{FD_TABLE, PidFd, PreparedFileDescriptor, prepare_file_like},
     mm::copy_from_kernel,
     sync::SpinLock,
-    task::{AsThread, ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task},
+    task::{
+        AsThread, PidIdentity, PidReservation, PidReservationKind, Process, ProcessData,
+        ProcessDataInit, ProcessImage, Tgid, Thread, Tid, TidNumber, add_task_to_table,
+        new_user_task,
+    },
 };
+
+/// Rolls back prepared topology and fd-table changes if clone fails before spawn.
+///
+/// The separate [`PidReservation`] still owns every namespace number until the
+/// final, non-failing commit phase, so this transaction never has to undo an
+/// externally visible PID publication.
+struct CloneTransaction {
+    identity: Arc<PidIdentity>,
+    process: Option<Arc<Process>>,
+    committed: bool,
+}
+
+impl CloneTransaction {
+    fn new(identity: Arc<PidIdentity>) -> Self {
+        Self {
+            identity,
+            process: None,
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for CloneTransaction {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Some(process) = self.process.take() {
+            process.retire();
+        }
+        self.identity.abort_failed_task_publication();
+    }
+}
 
 bitflags! {
     /// Options for use with [`sys_clone`] and [`sys_clone3`].
@@ -109,6 +150,10 @@ ktracepoint::define_event_trace!(
     })
 );
 
+fn emit_sched_process_fork(parent_tid: TidNumber, child_tid: TidNumber) {
+    trace_sched_process_fork(parent_tid.get() as u64, child_tid.get() as u64);
+}
+
 /// Unified arguments for clone/clone3/fork/vfork.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CloneArgs {
@@ -122,51 +167,70 @@ pub struct CloneArgs {
 }
 
 impl CloneArgs {
-    fn validate(&self) -> AxResult<()> {
+    fn validate(&self) -> StarryResult<()> {
         let Self {
             flags, exit_signal, ..
         } = self;
 
         if *exit_signal > 0 && flags.contains(CloneFlags::THREAD) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::THREAD)
             && !flags.contains(CloneFlags::VM | CloneFlags::SIGHAND)
         {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::SIGHAND) && !flags.contains(CloneFlags::VM) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::VFORK | CloneFlags::THREAD) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::PIDFD | CloneFlags::DETACHED) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         if flags.contains(CloneFlags::NEWNS | CloneFlags::FS) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
         // A thread must remain in the PID namespace of its thread group.
         // CLONE_PARENT only changes parentage, so Linux permits it with
         // CLONE_NEWPID. clone3 separately requires a zero exit signal when
         // CLONE_PARENT is present.
         if flags.contains(CloneFlags::NEWPID | CloneFlags::THREAD) {
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
+        }
+        if flags.contains(CloneFlags::INTO_CGROUP | CloneFlags::THREAD) {
+            return Err(StarryError::InvalidInput);
         }
 
         Ok(())
     }
 
-    pub fn do_clone(self, uctx: &UserContext) -> AxResult<isize> {
+    fn validate_cgroup_target(&self, has_requested_cgroup: bool) -> StarryResult<()> {
         self.validate()?;
+        if self.flags.contains(CloneFlags::INTO_CGROUP) != has_requested_cgroup {
+            return Err(StarryError::InvalidInput);
+        }
+        Ok(())
+    }
+
+    pub fn do_clone(self, uctx: &UserContext) -> StarryResult<isize> {
+        self.do_clone_in_cgroup(uctx, None)
+    }
+
+    pub(super) fn do_clone_in_cgroup(
+        self,
+        uctx: &UserContext,
+        requested_cgroup: Option<Arc<ax_cgroup::CgroupNode>>,
+    ) -> StarryResult<isize> {
+        self.validate_cgroup_target(requested_cgroup.is_some())?;
 
         let Self {
             flags,
             exit_signal,
             stack,
             tls,
-            parent_tid,
+            parent_tid: parent_tid_ptr,
             child_tid,
             pidfd,
         } = self;
@@ -177,7 +241,7 @@ impl CloneArgs {
         );
 
         let exit_signal = if exit_signal > 0 {
-            Some(Signo::from_repr(exit_signal as u8).ok_or(AxError::InvalidInput)?)
+            Some(Signo::from_repr(exit_signal as u8).ok_or(StarryError::InvalidInput)?)
         } else {
             None
         };
@@ -211,11 +275,18 @@ impl CloneArgs {
             0
         };
 
+        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0 {
+            crate::mm::prepare_user_write(parent_tid_ptr, size_of::<u32>())?;
+        }
+        if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
+            crate::mm::prepare_user_write(pidfd, size_of::<i32>())?;
+        }
+
         let curr = current();
         let curr_thread = curr.as_thread();
         let old_proc_data = &curr_thread.proc_data;
         if flags.contains(CloneFlags::NEWCGROUP) && !curr_thread.cred().has_cap_sys_admin() {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
 
         let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
@@ -227,10 +298,77 @@ impl CloneArgs {
             new_task.ctx_mut().fp_state = fp_state;
         }
 
-        let tid = new_task.id().as_u64() as Pid;
-        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid != 0 {
-            (parent_tid as *mut Pid).vm_write(tid).ok();
-        }
+        let parent_pid_ns = curr_thread.active_pid_namespace();
+        let target_pid_ns = if flags.contains(CloneFlags::THREAD) {
+            parent_pid_ns.clone()
+        } else if flags.contains(CloneFlags::NEWPID) {
+            crate::namespace::PidNamespace::new_child(parent_pid_ns.clone())
+        } else {
+            old_proc_data.nsproxy.lock().pid_ns_for_children.clone()
+        };
+        let reservation_kind = if flags.contains(CloneFlags::THREAD) {
+            PidReservationKind::Thread
+        } else {
+            PidReservationKind::ProcessLeader
+        };
+        let reservation = PidReservation::reserve(&target_pid_ns, reservation_kind)?;
+        let root_tid = TidNumber::from(
+            reservation
+                .number_in(&crate::task::ROOT_PID_NS)
+                .ok_or(StarryError::BadState)?,
+        );
+        let parent_visible_tid = TidNumber::from(
+            reservation
+                .number_in(&parent_pid_ns)
+                .ok_or(StarryError::BadState)?,
+        );
+        let identity = reservation.identity();
+        let tid_lease = identity.acquire_role::<Tid>()?;
+        let mut tgid_lease = (!flags.contains(CloneFlags::THREAD))
+            .then(|| identity.acquire_role::<Tgid>())
+            .transpose()?;
+        let mut clone_transaction = CloneTransaction::new(identity.clone());
+
+        let child_kind = if flags.contains(CloneFlags::THREAD) {
+            ax_cgroup::CgroupChildKind::Thread
+        } else {
+            ax_cgroup::CgroupChildKind::Process
+        };
+        let mut cgroup_guard = match (child_kind, requested_cgroup) {
+            (ax_cgroup::CgroupChildKind::Process, Some(target)) => {
+                crate::cgroup::begin_process_at(target, &identity)?
+            }
+            (kind, None) => crate::cgroup::begin_task(&old_proc_data.identity(), &identity, kind)?,
+            (ax_cgroup::CgroupChildKind::Thread, Some(_)) => {
+                unreachable!("CLONE_INTO_CGROUP with CLONE_THREAD passed validation")
+            }
+        };
+        let child_cgroup = cgroup_guard.cgroup();
+        let mut prepared_nsproxy = (!flags.contains(CloneFlags::THREAD)).then(|| {
+            let mut nsproxy = old_proc_data.nsproxy.lock().clone_all();
+            if flags.contains(CloneFlags::NEWUTS) {
+                nsproxy.unshare_uts();
+            }
+            if flags.contains(CloneFlags::NEWIPC) {
+                nsproxy.unshare_ipc();
+            }
+            if flags.contains(CloneFlags::NEWNS) {
+                nsproxy.unshare_mnt();
+            }
+            if flags.contains(CloneFlags::NEWNET) {
+                nsproxy.unshare_net();
+            }
+            if flags.contains(CloneFlags::NEWUSER) {
+                nsproxy.unshare_user();
+            }
+            if flags.contains(CloneFlags::NEWCGROUP) {
+                nsproxy.unshare_cgroup(child_cgroup.clone());
+            }
+            if flags.contains(CloneFlags::NEWPID) {
+                nsproxy.pid_ns_for_children = target_pid_ns.clone();
+            }
+            nsproxy
+        });
 
         let new_proc_data = if flags.contains(CloneFlags::THREAD) {
             new_task
@@ -239,11 +377,15 @@ impl CloneArgs {
             old_proc_data.clone()
         } else {
             let proc = if flags.contains(CloneFlags::PARENT) {
-                old_proc_data.proc.parent().ok_or(AxError::InvalidInput)?
+                old_proc_data
+                    .proc
+                    .parent()
+                    .ok_or(StarryError::InvalidInput)?
             } else {
                 old_proc_data.proc.clone()
             }
-            .fork(tid);
+            .fork(identity.clone());
+            clone_transaction.process = Some(proc.clone());
 
             let aspace = if flags.contains(CloneFlags::VM) {
                 old_proc_data.aspace()
@@ -281,17 +423,22 @@ impl CloneArgs {
             );
             let proc_data = ProcessData::new(
                 proc,
-                process_image,
-                aspace,
-                signal_actions,
-                exit_signal,
-                curr_thread.tid(),
-                flags.contains(CloneFlags::VM),
+                identity.clone(),
+                tgid_lease
+                    .take()
+                    .expect("process clone must own one TGID lease"),
+                ProcessDataInit {
+                    image: process_image,
+                    aspace,
+                    signal_actions,
+                    exit_signal,
+                    wait_parent_tid: curr_thread.tid_number(),
+                    vm_aspace_shared: flags.contains(CloneFlags::VM),
+                },
             );
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
-            let inherited_cgroup = old_proc_data.cgroup.read().clone();
-            *proc_data.cgroup.write() = inherited_cgroup.clone();
+            *proc_data.cgroup.write() = child_cgroup.clone();
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
@@ -303,57 +450,12 @@ impl CloneArgs {
             proc_data.set_dumpable(old_proc_data.dumpable());
             proc_data.set_thp_disable(old_proc_data.thp_disable());
 
-            // Inherit the parent's namespace proxy, then unshare
-            // each namespace for which a CLONE_NEW* flag is set.
-            let mut new_nsproxy = old_proc_data.nsproxy.lock().clone_all();
-            if flags.contains(CloneFlags::NEWUTS) {
-                new_nsproxy.unshare_uts();
-            }
-            if flags.contains(CloneFlags::NEWIPC) {
-                new_nsproxy.unshare_ipc();
-            }
-            if flags.contains(CloneFlags::NEWNS) {
-                new_nsproxy.unshare_mnt();
-            }
-            let mut is_pid_namespace_init = false;
-            if flags.contains(CloneFlags::NEWPID) {
-                new_nsproxy.unshare_pid();
-                is_pid_namespace_init = true;
-            }
-            if flags.contains(CloneFlags::NEWNET) {
-                new_nsproxy.unshare_net();
-            }
-            if flags.contains(CloneFlags::NEWUSER) {
-                new_nsproxy.unshare_user();
-            }
-            if flags.contains(CloneFlags::NEWCGROUP) {
-                new_nsproxy.unshare_cgroup(inherited_cgroup);
-            }
-
-            // Consume a pending child PID namespace prepared by
-            // unshare(CLONE_NEWPID) in the parent (Linux: the parent is
-            // not moved; the child becomes PID 1 in the new namespace).
-            if !flags.contains(CloneFlags::NEWPID) {
-                let mut parent_ns = old_proc_data.nsproxy.lock();
-                if let Some(child_pid_ns) = parent_ns.child_pid_ns.take() {
-                    new_nsproxy.pid_ns = child_pid_ns;
-                    is_pid_namespace_init = true;
-                }
-            }
-            axnsproxy::PidNamespace::alloc_pid_chain(&new_nsproxy.pid_ns, tid as u64);
-            if is_pid_namespace_init {
-                new_nsproxy.pid_ns.lock().set_init_global_tid(tid as u64);
-            }
-
-            *proc_data.nsproxy.lock() = new_nsproxy;
+            *proc_data.nsproxy.lock() = prepared_nsproxy
+                .take()
+                .expect("process clone must prepare one namespace proxy");
 
             proc_data
         };
-
-        if flags.contains(CloneFlags::THREAD) {
-            let pid_ns = new_proc_data.nsproxy.lock().pid_ns.clone();
-            axnsproxy::PidNamespace::alloc_pid_chain(&pid_ns, tid as u64);
-        }
 
         let mut scope = Scope::new();
         let current_fd_table = crate::file::current_fd_table();
@@ -383,11 +485,13 @@ impl CloneArgs {
             *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
         }
 
-        new_proc_data.proc.add_thread(tid);
+        // Reserve pids before publishing the new TID in its thread group.
+        new_proc_data.proc.add_thread(root_tid);
 
         let parent_cred = Some(curr_thread.cred());
         let thr = Thread::new(
-            tid,
+            identity.clone(),
+            tid_lease,
             new_proc_data.clone(),
             parent_cred,
             curr_thread.signal.blocked(),
@@ -400,21 +504,20 @@ impl CloneArgs {
         if flags.contains(CloneFlags::CHILD_CLEARTID) {
             thr.set_clear_child_tid(child_tid);
         }
+        let mut prepared_pidfd: Option<PreparedFileDescriptor> = None;
+        let mut pidfd_copyout = None;
         if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
-            // The pidfd and the later registry publication share the identity
-            // embedded in ProcessData. A failed clone therefore cannot leave a
-            // prematurely registered PID behind.
-            let identity = new_proc_data.identity();
+            // The pidfd and later namespace publication share the prepared
+            // identity. Until the final commit, PID-number lookup cannot see it.
             let pidfd_obj = if flags.contains(CloneFlags::THREAD) {
-                PidFd::new_thread(identity, &thr, tid)
+                PidFd::new_thread(identity.clone(), &thr, root_tid)
             } else {
-                PidFd::new_process(identity)
+                PidFd::new_process(identity.clone())
             };
-            let fd = pidfd_obj.add_to_fd_table(true)?;
-            if let Err(err) = (pidfd as *mut i32).vm_write(fd) {
-                let _ = close_file_like(fd);
-                return Err(err.into());
-            }
+            let prepared = prepare_file_like(Arc::new(pidfd_obj), true)?;
+            let fd = prepared.fd();
+            prepared_pidfd = Some(prepared);
+            pidfd_copyout = Some((pidfd as *mut i32, fd));
         }
         // perf: clone any `attr.inherit` event from the parent onto the child so
         // `perf record` follows it. Done before the child is scheduled (it is not
@@ -431,11 +534,29 @@ impl CloneArgs {
             new_proc_data.set_vfork_done(poll);
         }
 
-        let parent_pid = curr.as_thread().proc_data.proc.pid();
+        if let Some((pidfd_ptr, fd)) = pidfd_copyout {
+            pidfd_ptr.vm_write(fd)?;
+        }
+        // All fallible resource setup and aborting user-memory writes are
+        // complete. Commit the namespace binding chain before installing the
+        // reserved pidfd or exposing parent_tid; everything below is
+        // deliberately infallible.
+        let published_identity = reservation.publish()?;
+        debug_assert!(Arc::ptr_eq(&published_identity, &identity));
+        if let Some(pidfd) = prepared_pidfd.take() {
+            pidfd.install();
+        }
+        if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0 {
+            // Linux performs this copyout after the child is visible and does
+            // not roll the child back if a concurrent unmap makes it fail.
+            let _ = (parent_tid_ptr as *mut u32).vm_write(parent_visible_tid.get());
+        }
+
+        let parent_pid = curr.as_thread().proc_data.proc.pid_number();
         // The user-visible tid, not the scheduler id: they diverge for the init
         // process (pid/tid pinned to 1, scheduler id higher). Signal delivery
         // and ptrace below look this up in the tid-keyed task table.
-        let parent_tid = curr.as_thread().tid() as Pid;
+        let parent_tid = curr.as_thread().tid_number();
         let ptrace_event = if flags.contains(CloneFlags::THREAD) {
             super::ptrace::PTRACE_EVENT_CLONE
         } else if flags.contains(CloneFlags::VFORK) {
@@ -444,10 +565,10 @@ impl CloneArgs {
             super::ptrace::PTRACE_EVENT_FORK
         };
         let trace_clone =
-            super::ptrace::ptrace_notify_clone(parent_pid, parent_tid, tid as Pid, ptrace_event);
-        if trace_clone && let Some(tracer_pid) = curr.as_thread().proc_data.ptrace_tracer_pid() {
+            super::ptrace::ptrace_notify_clone(parent_pid, parent_tid, &identity, ptrace_event);
+        if trace_clone && let Some(tracer) = curr.as_thread().proc_data.ptrace_tracer_identity() {
             if !flags.contains(CloneFlags::THREAD) {
-                new_proc_data.set_ptrace_tracer_pid(tracer_pid);
+                new_proc_data.set_ptrace_tracer(&tracer);
                 let attach_mode = if curr.as_thread().proc_data.is_ptrace_seized() {
                     crate::task::PtraceAttachMode::Seize
                 } else {
@@ -455,22 +576,12 @@ impl CloneArgs {
                 };
                 new_proc_data.set_ptrace_attach_mode(attach_mode);
             }
-            new_proc_data.set_ptrace_stop(tid, starry_signal::Signo::SIGSTOP, &new_uctx);
+            new_proc_data.set_ptrace_stop(root_tid, starry_signal::Signo::SIGSTOP, &new_uctx);
         }
 
-        let mut cgroup_guard = if flags.contains(CloneFlags::THREAD) {
-            None
-        } else {
-            Some(
-                crate::cgroup::begin_fork(new_proc_data.cgroup.read().clone(), tid as u32)
-                    .map_err(crate::cgroup::cgroup_error)?,
-            )
-        };
-        if let Some(guard) = &mut cgroup_guard {
-            guard.commit();
-        }
-
+        cgroup_guard.commit();
         spawn_task_with(new_task, add_task_to_table);
+        clone_transaction.commit();
 
         if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(
@@ -484,7 +595,7 @@ impl CloneArgs {
 
         // Fire before any potential vfork-wait so observers see the fork edge
         // even when the parent blocks below.
-        trace_sched_process_fork(curr.id().as_u64(), tid as u64);
+        emit_sched_process_fork(curr_thread.tid(), root_tid);
 
         // perf side-band: tell any `attr.task` event watching the parent that it
         // forked a child (PERF_RECORD_FORK), so `perf record` can account it.
@@ -492,17 +603,17 @@ impl CloneArgs {
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::on_clone_sideband(
             curr.as_thread(),
-            new_proc_data.proc.pid(),
-            tid as u32,
+            &new_proc_data.identity(),
+            &identity,
         );
 
         // Block the parent until the child exec's or exits.
         if needs_vfork_block {
             new_proc_data.wait_vfork_done();
-            let _ = super::ptrace::ptrace_notify_vfork_done(parent_pid, parent_tid, tid as Pid);
+            let _ = super::ptrace::ptrace_notify_vfork_done(parent_pid, parent_tid, &identity);
         }
 
-        Ok(tid as _)
+        Ok(parent_visible_tid.get() as _)
     }
 }
 
@@ -538,7 +649,7 @@ pub fn sys_clone(
     #[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))] child_tid: usize,
     tls: usize,
     #[cfg(not(any(target_arch = "x86_64", target_arch = "loongarch64")))] child_tid: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     const FLAG_MASK: u32 = 0xff;
     let clone_flags = CloneFlags::from_bits_truncate((flags & !FLAG_MASK) as u64);
     let exit_signal = (flags & FLAG_MASK) as u64;
@@ -546,7 +657,7 @@ pub fn sys_clone(
     trace_sys_clone(clone_flags.bits() as _, stack, parent_tid);
 
     if clone_flags.contains(CloneFlags::PIDFD | CloneFlags::PARENT_SETTID) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let args = CloneArgs {
@@ -568,12 +679,12 @@ pub fn sys_clone(
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_fork(uctx: &UserContext) -> AxResult<isize> {
+pub fn sys_fork(uctx: &UserContext) -> StarryResult<isize> {
     sys_clone(uctx, SIGCHLD, 0, 0, 0, 0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_vfork(uctx: &UserContext) -> AxResult<isize> {
+pub fn sys_vfork(uctx: &UserContext) -> StarryResult<isize> {
     let flags = (CloneFlags::VFORK | CloneFlags::VM).bits() as u32 | SIGCHLD;
     sys_clone(uctx, flags, 0, 0, 0, 0)
 }
@@ -612,6 +723,25 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
     }
     .validate()
     .is_err();
+    let thread_with_into_cgroup_rejected = CloneArgs {
+        flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND | CloneFlags::INTO_CGROUP,
+        ..Default::default()
+    }
+    .validate_cgroup_target(true)
+    .is_err();
+    let into_cgroup_without_target_rejected = CloneArgs {
+        flags: CloneFlags::INTO_CGROUP,
+        ..Default::default()
+    }
+    .validate_cgroup_target(false)
+    .is_err();
+    let unexpected_target_rejected = CloneArgs::default().validate_cgroup_target(true).is_err();
+    let into_cgroup_with_target_allowed = CloneArgs {
+        flags: CloneFlags::INTO_CGROUP,
+        ..Default::default()
+    }
+    .validate_cgroup_target(true)
+    .is_ok();
     let legacy_parent_newpid_allowed = CloneArgs {
         flags: CloneFlags::PARENT | CloneFlags::NEWPID,
         exit_signal: SIGCHLD as u64,
@@ -669,6 +799,10 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
         && sighand_without_vm_rejected
         && newns_with_fs_rejected
         && thread_with_newpid_rejected
+        && thread_with_into_cgroup_rejected
+        && into_cgroup_without_target_rejected
+        && unexpected_target_rejected
+        && into_cgroup_with_target_allowed
         && legacy_parent_newpid_allowed
         && thread_without_vm_sighand_rejected
         && vfork_with_thread_rejected
@@ -725,5 +859,30 @@ mod tests {
         };
 
         assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn clone_thread_rejects_into_cgroup() {
+        let args = CloneArgs {
+            flags: CloneFlags::THREAD
+                | CloneFlags::VM
+                | CloneFlags::SIGHAND
+                | CloneFlags::INTO_CGROUP,
+            ..Default::default()
+        };
+
+        assert!(args.validate_cgroup_target(true).is_err());
+    }
+
+    #[test]
+    fn clone_into_cgroup_requires_exactly_one_resolved_target() {
+        let args = CloneArgs {
+            flags: CloneFlags::INTO_CGROUP,
+            ..Default::default()
+        };
+        assert!(args.validate_cgroup_target(false).is_err());
+        assert!(args.validate_cgroup_target(true).is_ok());
+
+        assert!(CloneArgs::default().validate_cgroup_target(true).is_err());
     }
 }

@@ -53,15 +53,18 @@ mod mp;
 #[cfg(feature = "paging")]
 mod kernel_mapping;
 mod klib;
+#[cfg(feature = "multitask")]
+mod preempt;
 
 mod devices;
+mod error;
 mod fs;
 #[cfg(feature = "irq")]
 pub mod irq;
 mod registers;
 #[cfg(feature = "serial")]
 pub mod serial;
-mod sync;
+pub mod sync;
 
 #[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;
@@ -70,6 +73,7 @@ mod unix_ns;
 mod wifi_glue;
 
 pub use ax_hal as hal;
+pub use error::{RuntimeError, RuntimeResult};
 
 pub(crate) mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
@@ -284,7 +288,10 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 
     #[cfg(feature = "multitask")]
-    ax_task::init_scheduler();
+    {
+        ax_task::init_scheduler();
+        preempt::release_bootstrap();
+    }
 
     #[cfg(feature = "ipi")]
     {

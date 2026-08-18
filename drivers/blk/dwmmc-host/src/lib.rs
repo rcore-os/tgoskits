@@ -562,6 +562,7 @@ mod tests {
             <DwMmc as sdio_host2::SdioHost>::submit_bus_op(&mut host, sdio_host2::BusOp::ResetAll)
         }
         .unwrap();
+        host.poison_dma();
         const CTRL_WORD: usize = 0;
         const TMOUT_WORD: usize = 5;
         const CMD_WORD: usize = 11;
@@ -574,6 +575,18 @@ mod tests {
                 &mut host,
                 &mut request,
                 sdio_host2::ProgressCause::Submitted,
+            )
+            .unwrap(),
+            sdio_host2::RequestProgress::RegisterPending { .. }
+        ));
+        unsafe {
+            mmio.as_mut_ptr().add(CTRL_WORD).write_volatile(0);
+        }
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::advance_bus_op(
+                &mut host,
+                &mut request,
+                sdio_host2::ProgressCause::RegisterRetry,
             )
             .unwrap(),
             sdio_host2::RequestProgress::RegisterPending { .. }
@@ -604,6 +617,70 @@ mod tests {
             EXPECTED_FIFOTH
         );
         assert_eq!(unsafe { mmio.as_ptr().add(CMD_WORD).read_volatile() }, 0);
+        assert!(
+            host.check_not_poisoned().is_ok(),
+            "Linux-style ResetAll must rebuild a reusable IDMAC baseline"
+        );
+    }
+
+    #[test]
+    fn host2_reset_waits_for_dma_request_before_second_fifo_reset() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        let mut request = unsafe {
+            <DwMmc as sdio_host2::SdioHost>::submit_bus_op(&mut host, sdio_host2::BusOp::ResetAll)
+        }
+        .unwrap();
+        host.poison_dma();
+        const CTRL_WORD: usize = 0;
+        const STATUS_WORD: usize = 18;
+
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::advance_bus_op(
+                &mut host,
+                &mut request,
+                sdio_host2::ProgressCause::Submitted,
+            )
+            .unwrap(),
+            sdio_host2::RequestProgress::RegisterPending { .. }
+        ));
+        unsafe {
+            mmio.as_mut_ptr().add(CTRL_WORD).write_volatile(0);
+            mmio.as_mut_ptr()
+                .add(STATUS_WORD)
+                .write_volatile(crate::regs::Status::new().with_dma_req(true).into_bits());
+        }
+
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::advance_bus_op(
+                &mut host,
+                &mut request,
+                sdio_host2::ProgressCause::RegisterRetry,
+            )
+            .unwrap(),
+            sdio_host2::RequestProgress::RegisterPending { .. }
+        ));
+        assert_eq!(
+            mmio[CTRL_WORD], 0,
+            "FIFO reset must wait for DMA_REQ to clear"
+        );
+
+        unsafe {
+            mmio.as_mut_ptr()
+                .add(STATUS_WORD)
+                .write_volatile(crate::regs::Status::new().into_bits());
+        }
+        assert!(matches!(
+            <DwMmc as sdio_host2::SdioHost>::advance_bus_op(
+                &mut host,
+                &mut request,
+                sdio_host2::ProgressCause::RegisterRetry,
+            )
+            .unwrap(),
+            sdio_host2::RequestProgress::RegisterPending { .. }
+        ));
+        assert!(crate::regs::Ctrl::from_bits(mmio[CTRL_WORD]).fifo_reset());
     }
 
     #[test]

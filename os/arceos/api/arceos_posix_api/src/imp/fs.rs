@@ -5,12 +5,11 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::{LinuxError, LinuxResult};
 use ax_fs_ng::fops::OpenOptions;
 use ax_io::{PollState, SeekFrom};
 
 use super::fd_ops::{FileLike, get_file_like};
-use crate::{ctypes, sync::Mutex, utils::char_ptr_to_str};
+use crate::{PosixError, PosixResult, ctypes, sync::Mutex, utils::char_ptr_to_str};
 
 const UTIME_NOW: i64 = (1 << 30) - 1;
 const UTIME_OMIT: i64 = (1 << 30) - 2;
@@ -121,15 +120,15 @@ impl File {
         }
     }
 
-    fn add_to_fd_table(self) -> LinuxResult<c_int> {
+    fn add_to_fd_table(self) -> PosixResult<c_int> {
         super::fd_ops::add_file_like(Arc::new(self))
     }
 
-    fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>> {
+    fn from_fd(fd: c_int) -> PosixResult<Arc<Self>> {
         let f = super::fd_ops::get_file_like(fd)?;
         f.into_any()
             .downcast::<Self>()
-            .map_err(|_| LinuxError::EINVAL)
+            .map_err(|_| PosixError::EINVAL)
     }
 }
 
@@ -140,28 +139,28 @@ impl Directory {
         }
     }
 
-    fn add_to_fd_table(self) -> LinuxResult<c_int> {
+    fn add_to_fd_table(self) -> PosixResult<c_int> {
         super::fd_ops::add_file_like(Arc::new(self))
     }
 
-    fn from_fd(fd: c_int) -> LinuxResult<Arc<Self>> {
+    fn from_fd(fd: c_int) -> PosixResult<Arc<Self>> {
         let f = super::fd_ops::get_file_like(fd)?;
         f.into_any()
             .downcast::<Self>()
-            .map_err(|_| LinuxError::ENOTDIR)
+            .map_err(|_| PosixError::ENOTDIR)
     }
 }
 
 impl FileLike for File {
-    fn read(&self, buf: &mut [u8]) -> LinuxResult<usize> {
+    fn read(&self, buf: &mut [u8]) -> PosixResult<usize> {
         Ok(self.inner.lock().read(buf)?)
     }
 
-    fn write(&self, buf: &[u8]) -> LinuxResult<usize> {
+    fn write(&self, buf: &[u8]) -> PosixResult<usize> {
         Ok(self.inner.lock().write(buf)?)
     }
 
-    fn stat(&self) -> LinuxResult<ctypes::stat> {
+    fn stat(&self) -> PosixResult<ctypes::stat> {
         let metadata = self.inner.lock().get_attr()?;
         Ok(metadata_to_stat(metadata))
     }
@@ -170,7 +169,7 @@ impl FileLike for File {
         self
     }
 
-    fn poll(&self) -> LinuxResult<PollState> {
+    fn poll(&self) -> PosixResult<PollState> {
         Ok(PollState {
             readable: true,
             writable: true,
@@ -178,21 +177,21 @@ impl FileLike for File {
         })
     }
 
-    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
+    fn set_nonblocking(&self, _nonblocking: bool) -> PosixResult {
         Ok(())
     }
 }
 
 impl FileLike for Directory {
-    fn read(&self, _buf: &mut [u8]) -> LinuxResult<usize> {
-        Err(LinuxError::EISDIR)
+    fn read(&self, _buf: &mut [u8]) -> PosixResult<usize> {
+        Err(PosixError::EISDIR)
     }
 
-    fn write(&self, _buf: &[u8]) -> LinuxResult<usize> {
-        Err(LinuxError::EISDIR)
+    fn write(&self, _buf: &[u8]) -> PosixResult<usize> {
+        Err(PosixError::EISDIR)
     }
 
-    fn stat(&self) -> LinuxResult<ctypes::stat> {
+    fn stat(&self) -> PosixResult<ctypes::stat> {
         let st_mode = 0o040755;
         Ok(ctypes::stat {
             st_ino: 1,
@@ -211,7 +210,7 @@ impl FileLike for Directory {
         self
     }
 
-    fn poll(&self) -> LinuxResult<PollState> {
+    fn poll(&self) -> PosixResult<PollState> {
         Ok(PollState {
             readable: true,
             writable: false,
@@ -219,7 +218,7 @@ impl FileLike for Directory {
         })
     }
 
-    fn set_nonblocking(&self, _nonblocking: bool) -> LinuxResult {
+    fn set_nonblocking(&self, _nonblocking: bool) -> PosixResult {
         Ok(())
     }
 }
@@ -279,10 +278,10 @@ pub unsafe fn sys_getdents64(fd: c_int, buf: *mut u8, len: usize) -> ctypes::ssi
     debug!("sys_getdents64 <= {fd} {:#x} {len}", buf as usize);
     syscall_body!(sys_getdents64, {
         if buf.is_null() || len == 0 {
-            return Err(LinuxError::EINVAL);
+            return Err(PosixError::EINVAL);
         }
 
-        let dir = Directory::from_fd(fd).map_err(|_| LinuxError::EBADF)?;
+        let dir = Directory::from_fd(fd).map_err(|_| PosixError::EBADF)?;
         let mut dir = dir.inner.lock();
 
         let out = unsafe { core::slice::from_raw_parts_mut(buf, len) };
@@ -319,7 +318,7 @@ pub fn sys_lseek(fd: c_int, offset: ctypes::off_t, whence: c_int) -> ctypes::off
             0 => SeekFrom::Start(offset as _),
             1 => SeekFrom::Current(offset as _),
             2 => SeekFrom::End(offset as _),
-            _ => return Err(LinuxError::EINVAL),
+            _ => return Err(PosixError::EINVAL),
         };
         let off = File::from_fd(fd)?.inner.lock().seek(pos)?;
         Ok(off)
@@ -334,7 +333,7 @@ pub unsafe fn sys_stat(path: *const c_char, buf: *mut ctypes::stat) -> c_int {
     debug!("sys_stat <= {:?} {:#x}", path, buf as usize);
     syscall_body!(sys_stat, {
         if buf.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         let st = metadata_to_stat(ax_fs_ng::api::metadata(path?)?);
         unsafe { *buf = st };
@@ -349,7 +348,7 @@ pub unsafe fn sys_fstat(fd: c_int, buf: *mut ctypes::stat) -> c_int {
     debug!("sys_fstat <= {} {:#x}", fd, buf as usize);
     syscall_body!(sys_fstat, {
         if buf.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
 
         unsafe { *buf = get_file_like(fd)?.stat()? };
@@ -382,7 +381,7 @@ pub unsafe fn sys_futimens(fd: c_int, times: *const ctypes::timespec) -> c_int {
 
 unsafe fn futimens_times(
     times: *const ctypes::timespec,
-) -> LinuxResult<(Option<Duration>, Option<Duration>)> {
+) -> PosixResult<(Option<Duration>, Option<Duration>)> {
     let now = ax_hal::time::wall_time();
     if times.is_null() {
         return Ok((Some(now), Some(now)));
@@ -398,7 +397,7 @@ unsafe fn futimens_times(
 fn file_time_from_timespec(
     timespec: ctypes::timespec,
     now: Duration,
-) -> LinuxResult<Option<Duration>> {
+) -> PosixResult<Option<Duration>> {
     match timespec.tv_nsec {
         UTIME_NOW => Ok(Some(now)),
         UTIME_OMIT => Ok(None),
@@ -411,7 +410,7 @@ fn file_time_from_timespec(
                 nanoseconds as u32,
             )))
         }
-        _ => Err(LinuxError::EINVAL),
+        _ => Err(PosixError::EINVAL),
     }
 }
 
@@ -423,7 +422,7 @@ pub unsafe fn sys_lstat(path: *const c_char, buf: *mut ctypes::stat) -> ctypes::
     debug!("sys_lstat <= {:?} {:#x}", path, buf as usize);
     syscall_body!(sys_lstat, {
         if buf.is_null() {
-            return Err(LinuxError::EFAULT);
+            return Err(PosixError::EFAULT);
         }
         let st = metadata_to_stat(ax_fs_ng::api::symlink_metadata(path?)?);
         unsafe { *buf = st };
@@ -447,7 +446,7 @@ pub fn sys_getcwd(buf: *mut c_char, size: usize) -> *mut c_char {
             dst[cwd.len()] = 0;
             Ok(buf)
         } else {
-            Err(LinuxError::ERANGE)
+            Err(PosixError::ERANGE)
         }
     })
 }
@@ -548,7 +547,7 @@ mod tests {
                 },
                 now,
             ),
-            Err(LinuxError::EINVAL)
+            Err(PosixError::EINVAL)
         );
         assert_eq!(
             file_time_from_timespec(
@@ -558,7 +557,7 @@ mod tests {
                 },
                 now,
             ),
-            Err(LinuxError::EINVAL)
+            Err(PosixError::EINVAL)
         );
         assert_eq!(
             file_time_from_timespec(
@@ -568,7 +567,7 @@ mod tests {
                 },
                 now,
             ),
-            Err(LinuxError::EINVAL)
+            Err(PosixError::EINVAL)
         );
     }
 }

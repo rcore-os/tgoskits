@@ -53,8 +53,8 @@ fn public_errors_use_thiserror_without_manual_trait_impls() {
     assert!(source.contains("thiserror::Error"));
     assert!(!source.contains("impl fmt::Display for Cpu"));
     assert!(!source.contains("impl core::error::Error for Cpu"));
-    assert!(!source.contains("impl fmt::Display for ThreadSwitchError"));
-    assert!(!source.contains("impl core::error::Error for ThreadSwitchError"));
+    assert!(!source.contains("impl fmt::Display for ContextSwitchError"));
+    assert!(!source.contains("impl core::error::Error for ContextSwitchError"));
 }
 
 #[test]
@@ -65,4 +65,24 @@ fn pin_is_scoped_and_cannot_be_forged_directly() {
     assert!(pin.contains("pub unsafe fn with_cpu_pin"));
     assert!(!pin.contains("CpuPin::new_unchecked"));
     assert!(!pin.contains("pub const unsafe fn new_unchecked"));
+}
+
+#[test]
+fn preemption_handoff_is_linear_and_scheduler_neutral() {
+    let preempt = fs::read_to_string(crate_root().join("src/preempt.rs")).unwrap();
+    for declaration in [
+        "pub struct PreemptionToken",
+        "pub struct PendingPreemption",
+        "pub enum PreemptionExit",
+        "pub fn enter_preemption() -> PreemptionToken",
+        "pub fn handoff_preemption_after_context_switch(",
+        "pub fn finish_preemption(token: PreemptionToken) -> PreemptionExit",
+        "pub fn release_initial_context_preemption(",
+    ] {
+        assert!(preempt.contains(declaration), "missing `{declaration}`");
+    }
+    assert!(preempt.matches("#[must_use").count() >= 3);
+    assert!(!preempt.contains("scheduler"));
+    assert!(!preempt.contains("baton"));
+    assert!(!preempt.contains("RuntimeThreadCookie"));
 }

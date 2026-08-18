@@ -2,6 +2,16 @@ use axtest::prelude::*;
 use starry_kernel::axtest_exports;
 
 #[axtest]
+fn nofault_user_read_recovers_unmapped_address() {
+    ax_assert!(axtest_exports::nofault_user_read_recovers_unmapped_address());
+}
+
+#[axtest]
+fn page_fault_completion_updates_only_success() {
+    ax_assert!(axtest_exports::page_fault_completion_updates_only_success());
+}
+
+#[axtest]
 fn process_mem_stats_formats_linux_fields() {
     ax_assert!(axtest_exports::process_mem_stats_formats_linux_fields());
 }
@@ -29,6 +39,16 @@ fn process_vm_stat_edge_cases_hold() {
 #[axtest]
 fn user_pointer_metadata_rules_hold() {
     ax_assert!(axtest_exports::user_pointer_metadata_rules_hold());
+}
+
+#[axtest]
+fn vm_error_to_io_error_preserves_length() {
+    ax_assert!(axtest_exports::vm_error_to_io_error_preserves_length());
+}
+
+#[axtest]
+fn domain_errno_mappings_hold() {
+    ax_assert!(axtest_exports::domain_errno_mappings_hold());
 }
 
 #[axtest]

@@ -151,7 +151,7 @@ pub fn create_symbol_link_with_owner<B: BlockDevice>(
         new_inode.i_blocks_lo = iblocks_used;
         new_inode.l_i_blocks_high = 0; // iblocks_used is u32, so high part is 0
 
-        build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_ino, &data_blocks, device);
+        build_file_block_mapping_with_inode_num(fs, &mut new_inode, new_ino, &data_blocks, device)?;
     }
 
     let mut create_update = Ext4InodeMetadataUpdate::create(symlink_mode);
@@ -339,7 +339,7 @@ pub fn mkfile_with_owner<B: BlockDevice>(
             new_file_ino,
             &data_blocks,
             device,
-        );
+        )?;
     } else {
         // Empty file starts with no data blocks.
         new_inode.i_size_lo = 0;

@@ -10,6 +10,8 @@ use tock_registers::{
 
 use crate::{PollingUart, SerialDirection, SerialEvent, TransBytesError, TransferError};
 
+const OPEN_BUSY_POLL_BUDGET: usize = 1 << 20;
+
 register_bitfields! [
     u32,
 
@@ -172,6 +174,16 @@ impl Pl011 {
         unsafe { &*self.base.0.as_ptr() }
     }
 
+    fn wait_until_idle(&self) -> bool {
+        for _ in 0..OPEN_BUSY_POLL_BUDGET {
+            if !self.registers().uartfr.is_set(UARTFR::BUSY) {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    }
+
     fn current_baudrate(&self) -> u32 {
         let ibrd = self.registers().uartibrd.read(UARTIBRD::BAUD_DIVINT);
         let fbrd = self.registers().uartfbrd.read(UARTFBRD::BAUD_DIVFRAC);
@@ -288,14 +300,20 @@ impl Pl011 {
         Ok(())
     }
 
-    /// 初始化 PL011 UART
-    pub fn open(&mut self) {
+    /// Initializes the PL011 UART.
+    ///
+    /// Returns [`ConfigError::Timeout`] if an in-flight transfer does not
+    /// finish within the fixed early-boot polling budget.
+    pub fn open(&mut self) -> Result<(), ConfigError> {
+        let original_uartcr = self.registers().uartcr.get();
+
         // 禁用 UART
         self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
 
         // 等待当前传输完成
-        while self.registers().uartfr.is_set(UARTFR::BUSY) {
-            core::hint::spin_loop();
+        if !self.wait_until_idle() {
+            self.registers().uartcr.set(original_uartcr);
+            return Err(ConfigError::Timeout);
         }
 
         // 清除发送 FIFO
@@ -319,6 +337,7 @@ impl Pl011 {
         self.registers()
             .uartcr
             .modify(UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET);
+        Ok(())
     }
 
     pub fn set_irq_mask(&mut self, events: SerialEventSet) {
@@ -662,7 +681,7 @@ impl UartIrq for Pl011Irq {
 
 impl UartPort for Pl011 {
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
-        self.open();
+        self.open()?;
         self.set_config(config)?;
         self.mask_all();
         Ok(())
@@ -923,6 +942,24 @@ mod tests {
 
     use super::*;
 
+    // This adapter keeps the regression runnable against both the old `()`
+    // API and the new `Result` API, so the same test exposes the old hang.
+    trait AssertOpenTimeout {
+        fn assert_timeout(self);
+    }
+
+    impl AssertOpenTimeout for () {
+        fn assert_timeout(self) {
+            panic!("unbounded PL011 open returned without reporting a timeout");
+        }
+    }
+
+    impl AssertOpenTimeout for Result<(), ConfigError> {
+        fn assert_timeout(self) {
+            assert_eq!(self, Err(ConfigError::Timeout));
+        }
+    }
+
     #[derive(Default)]
     struct CollectRx(Vec<RxSample>);
 
@@ -974,6 +1011,25 @@ mod tests {
         let mut parts = uart.split();
         parts.port.startup(&Config::new()).unwrap();
         parts
+    }
+
+    #[test]
+    fn early_console_open_has_a_bounded_busy_failure() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        let original_uartcr = (UARTCR::UARTEN::SET
+            + UARTCR::SIREN::SET
+            + UARTCR::LBE::SET
+            + UARTCR::TXE::SET
+            + UARTCR::DTR::SET
+            + UARTCR::OUT2::SET
+            + UARTCR::CTSEN::SET)
+            .value;
+        write_test_reg(&mut regs, 0x018, UARTFR::BUSY::SET.value);
+        write_test_reg(&mut regs, 0x030, original_uartcr);
+
+        uart.open().assert_timeout();
+
+        assert_eq!(read_test_reg(&regs, 0x030), original_uartcr);
     }
 
     #[test]

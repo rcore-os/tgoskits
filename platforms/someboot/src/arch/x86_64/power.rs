@@ -1,8 +1,4 @@
-use core::{
-    arch::global_asm,
-    hint::spin_loop,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-};
+use core::{arch::global_asm, hint::spin_loop, sync::atomic::Ordering};
 
 use x86::msr::{
     IA32_APIC_BASE, IA32_X2APIC_APICID, IA32_X2APIC_ESR, IA32_X2APIC_ICR, rdmsr, wrmsr,
@@ -13,7 +9,6 @@ use crate::{mem::phys_to_virt, power::CpuOnError, smp::PerCpuMeta};
 pub const AP_TRAMPOLINE_PADDR: usize = 0x8000;
 const AP_TRAMPOLINE_VECTOR: u8 = (AP_TRAMPOLINE_PADDR >> 12) as u8;
 const AP_TRAMPOLINE_SIZE: usize = 0x1000;
-const AP_START_TIMEOUT_US: u64 = 500_000;
 
 const LAPIC_REG_ESR: u32 = 0x280;
 const LAPIC_REG_ICR_LOW: u32 = 0x300;
@@ -25,11 +20,9 @@ const IA32_APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
 // INIT IPI (level-triggered): assert then deassert.
 const ICR_INIT_ASSERT: u32 = 0x0000_c500;
 const ICR_INIT_DEASSERT: u32 = 0x0000_8500;
-// STARTUP IPI (edge-triggered + assert level)
-const ICR_STARTUP_BASE: u32 = 0x0000_4600;
-
-static START_LOCK: AtomicBool = AtomicBool::new(false);
-static AP_BOOTED_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+// STARTUP IPI, matching Linux APIC_DM_STARTUP. Edge-triggered delivery does
+// not carry the level-assert bit used by INIT.
+const ICR_STARTUP_BASE: u32 = 0x0000_0600;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ApicMode {
@@ -142,10 +135,6 @@ unsafe extern "C" {
     static __x86_ap_trampoline_entry: u8;
 }
 
-pub(crate) fn notify_ap_started(apic_id: usize) {
-    AP_BOOTED_ID.store(apic_id, Ordering::Release);
-}
-
 fn current_apic_id() -> usize {
     match current_apic_mode() {
         ApicMode::X2Apic => unsafe { rdmsr(IA32_X2APIC_APICID) as usize },
@@ -156,7 +145,11 @@ fn current_apic_id() -> usize {
     }
 }
 
-pub(crate) fn cpu_on(apic_id: usize, entry: usize, arg: usize) -> Result<(), CpuOnError> {
+pub(crate) fn kick_secondary_cpu(
+    apic_id: usize,
+    entry: usize,
+    arg: usize,
+) -> Result<(), CpuOnError> {
     if apic_id == current_apic_id() {
         return Err(CpuOnError::AlreadyOn);
     }
@@ -169,8 +162,6 @@ pub(crate) fn cpu_on(apic_id: usize, entry: usize, arg: usize) -> Result<(), Cpu
         )));
     }
 
-    let _guard = StartupGuard::lock();
-    AP_BOOTED_ID.store(usize::MAX, Ordering::Release);
     let entry_virt = crate::mem::__kimage_va(entry) as usize;
     prepare_trampoline(
         meta.boot_table_paddr as u64,
@@ -186,20 +177,7 @@ pub(crate) fn cpu_on(apic_id: usize, entry: usize, arg: usize) -> Result<(), Cpu
     send_ipi(apic_id, ICR_STARTUP_BASE | AP_TRAMPOLINE_VECTOR as u32)?;
     delay_us(200);
     send_ipi(apic_id, ICR_STARTUP_BASE | AP_TRAMPOLINE_VECTOR as u32)?;
-
-    let start = super::trap::ticks_now();
-    let timeout_ticks = us_to_tsc_ticks(AP_START_TIMEOUT_US);
-    while super::trap::ticks_now().wrapping_sub(start) < timeout_ticks {
-        if AP_BOOTED_ID.load(Ordering::Acquire) == apic_id as usize {
-            return Ok(());
-        }
-        spin_loop();
-    }
-
-    Err(CpuOnError::Other(anyhow::anyhow!(
-        "timeout waiting APIC ID {:#x} online",
-        apic_id
-    )))
+    Ok(())
 }
 
 fn us_to_tsc_ticks(us: u64) -> u64 {
@@ -368,26 +346,6 @@ fn wait_x2apic_delivery() -> Result<(), CpuOnError> {
     )))
 }
 
-struct StartupGuard;
-
-impl StartupGuard {
-    fn lock() -> Self {
-        while START_LOCK
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            spin_loop();
-        }
-        Self
-    }
-}
-
-impl Drop for StartupGuard {
-    fn drop(&mut self) {
-        START_LOCK.store(false, Ordering::Release);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +365,13 @@ mod tests {
 
         assert_eq!(icr >> 32, 0x1234_5678);
         assert_eq!(icr as u32, ICR_STARTUP_BASE | AP_TRAMPOLINE_VECTOR as u32);
+    }
+
+    #[test]
+    fn startup_ipi_matches_linux_edge_triggered_delivery_mode() {
+        const ICR_LEVEL_ASSERT: u32 = 1 << 14;
+
+        assert_eq!(ICR_STARTUP_BASE, 0x600);
+        assert_eq!(ICR_STARTUP_BASE & ICR_LEVEL_ASSERT, 0);
     }
 }

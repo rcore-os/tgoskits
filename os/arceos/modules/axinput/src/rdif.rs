@@ -105,6 +105,54 @@ impl From<rdif_input::InputDeviceId> for InputDeviceId {
     }
 }
 
+impl From<EventType> for rdif_input::EventType {
+    fn from(value: EventType) -> Self {
+        match value {
+            EventType::Synchronization => Self::Synchronization,
+            EventType::Key => Self::Key,
+            EventType::Relative => Self::Relative,
+            EventType::Absolute => Self::Absolute,
+            EventType::Misc => Self::Misc,
+            EventType::Switch => Self::Switch,
+            EventType::Led => Self::Led,
+            EventType::Sound => Self::Sound,
+            EventType::ForceFeedback => Self::ForceFeedback,
+        }
+    }
+}
+
+impl From<rdif_input::InputEvent> for Event {
+    fn from(value: rdif_input::InputEvent) -> Self {
+        Self {
+            event_type: value.event_type,
+            code: value.code,
+            value: value.value,
+        }
+    }
+}
+
+impl From<rdif_input::AbsInfo> for AbsInfo {
+    fn from(value: rdif_input::AbsInfo) -> Self {
+        Self {
+            min: value.min,
+            max: value.max,
+            fuzz: value.fuzz,
+            flat: value.flat,
+            res: value.res,
+        }
+    }
+}
+
+fn map_input_error(error: RdifInputError) -> InputError {
+    match error {
+        RdifInputError::NotSupported => InputError::Unsupported,
+        RdifInputError::Again => InputError::Again,
+        RdifInputError::NotAvailable => InputError::ResourceBusy,
+        RdifInputError::InvalidEvent => InputError::InvalidInput,
+        RdifInputError::Other(_) => InputError::Io,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use irq_framework::{HwIrq, IrqDomainId, IrqId};
@@ -162,53 +210,5 @@ mod tests {
         let erased = crate::ErasedInputDevice::new(device);
 
         assert_eq!(erased.irq_id(), None);
-    }
-}
-
-impl From<EventType> for rdif_input::EventType {
-    fn from(value: EventType) -> Self {
-        match value {
-            EventType::Synchronization => Self::Synchronization,
-            EventType::Key => Self::Key,
-            EventType::Relative => Self::Relative,
-            EventType::Absolute => Self::Absolute,
-            EventType::Misc => Self::Misc,
-            EventType::Switch => Self::Switch,
-            EventType::Led => Self::Led,
-            EventType::Sound => Self::Sound,
-            EventType::ForceFeedback => Self::ForceFeedback,
-        }
-    }
-}
-
-impl From<rdif_input::InputEvent> for Event {
-    fn from(value: rdif_input::InputEvent) -> Self {
-        Self {
-            event_type: value.event_type,
-            code: value.code,
-            value: value.value,
-        }
-    }
-}
-
-impl From<rdif_input::AbsInfo> for AbsInfo {
-    fn from(value: rdif_input::AbsInfo) -> Self {
-        Self {
-            min: value.min,
-            max: value.max,
-            fuzz: value.fuzz,
-            flat: value.flat,
-            res: value.res,
-        }
-    }
-}
-
-fn map_input_error(error: RdifInputError) -> InputError {
-    match error {
-        RdifInputError::NotSupported => InputError::Unsupported,
-        RdifInputError::Again => InputError::Again,
-        RdifInputError::NotAvailable => InputError::ResourceBusy,
-        RdifInputError::InvalidEvent => InputError::InvalidInput,
-        RdifInputError::Other(_) => InputError::Io,
     }
 }

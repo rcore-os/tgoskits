@@ -1,6 +1,6 @@
 use alloc::{borrow::Cow, boxed::Box, format, string::String, sync::Arc, vec::Vec};
 
-use axfs_ng_vfs::{Filesystem, NodeType, VfsResult};
+use axfs_ng_vfs::{Filesystem, NodeType, VfsError, VfsResult};
 
 use super::{
     descriptor::{UsbDeviceSnapshot, bus_name, device_name},
@@ -66,7 +66,7 @@ impl SimpleDirOps for SysUsbDir {
                     manager: self.manager.clone(),
                 },
             )),
-            _ => Err(ax_errno::AxError::NotFound),
+            _ => Err(VfsError::NotFound),
         }
     }
 }
@@ -111,7 +111,7 @@ impl SimpleDirOps for SysUsbDevicesDir {
         self.snapshots()
             .into_iter()
             .find(|snapshot| sysfs_device_name(snapshot) == name)
-            .ok_or(ax_errno::AxError::NotFound)?;
+            .ok_or(VfsError::NotFound)?;
         Ok(symlink(self.fs.clone(), format!("../device-nodes/{name}")))
     }
 }
@@ -157,7 +157,7 @@ impl SimpleDirOps for SysUsbDeviceNodesDir {
             .snapshots()
             .into_iter()
             .find(|snapshot| sysfs_device_name(snapshot) == name)
-            .ok_or(ax_errno::AxError::NotFound)?;
+            .ok_or(VfsError::NotFound)?;
         Ok(dir(
             self.fs.clone(),
             SysUsbDeviceDir {
@@ -242,7 +242,7 @@ impl SimpleDirOps for SysUsbDeviceDir {
                 format!("{:02x}\n", self.device_protocol()),
             )),
             "subsystem" => Ok(symlink(self.fs.clone(), "../../usb")),
-            _ => Err(ax_errno::AxError::NotFound),
+            _ => Err(VfsError::NotFound),
         }
     }
 }

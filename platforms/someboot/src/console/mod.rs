@@ -10,7 +10,7 @@ use kernutil::memory::{MemoryDescriptor, MemoryType};
 #[cfg(target_arch = "x86_64")]
 use some_serial::ns16550::Port;
 use some_serial::{
-    PollingUart, SerialEvent, TransferError,
+    ConfigError, PollingUart, SerialEvent, TransferError,
     ns16550::{self, Mmio, Ns16550},
     pl011,
 };
@@ -517,7 +517,10 @@ fn set_pl011(config: &EarlyconConfig) -> Result<(), &'static str> {
         NonNull::new(_fixmap_io(base_addr)).ok_or("Invalid base address for pl011 earlycon")?;
 
     let mut serial = pl011::Pl011::new(base_addr, 0);
-    serial.open();
+    serial.open().map_err(|error| match error {
+        ConfigError::Timeout => "PL011 earlycon remained busy until the polling timeout",
+        _ => "Failed to initialize PL011 earlycon",
+    })?;
     set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Pl011(serial)));
 
     Ok(())

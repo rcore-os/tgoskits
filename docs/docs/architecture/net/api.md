@@ -206,7 +206,7 @@ pub struct InterfaceInfo {
 系统 ABI 映射应使用 `InterfaceId`，而不是假设 `eth0`：
 
 ```rust
-let info = ax_net::interface_by_name("eth1").ok_or(AxError::NoSuchDevice)?;
+let info = ax_net::interface_by_name("eth1").ok_or(NetError::NoSuchDevice)?;
 let linux_ifindex = info.id.to_linux_ifindex();
 let id = InterfaceId::from_linux_ifindex(linux_ifindex).unwrap();
 ```
@@ -315,16 +315,16 @@ bitflags! {
 
 ```rust
 pub trait SocketOps: Configurable {
-    fn bind(&self, local_addr: SocketAddrEx) -> AxResult;
-    fn connect(&self, remote_addr: SocketAddrEx) -> AxResult;
-    fn listen(&self, _backlog: usize) -> AxResult;
-    fn accept(&self) -> AxResult<Socket>;
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize>;
-    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize>;
-    fn recv_available(&self) -> AxResult<usize>;
-    fn local_addr(&self) -> AxResult<SocketAddrEx>;
-    fn peer_addr(&self) -> AxResult<SocketAddrEx>;
-    fn shutdown(&self, how: Shutdown) -> AxResult;
+    fn bind(&self, local_addr: SocketAddrEx) -> NetResult;
+    fn connect(&self, remote_addr: SocketAddrEx) -> NetResult;
+    fn listen(&self, _backlog: usize) -> NetResult;
+    fn accept(&self) -> NetResult<Socket>;
+    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize>;
+    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> NetResult<usize>;
+    fn recv_available(&self) -> NetResult<usize>;
+    fn local_addr(&self) -> NetResult<SocketAddrEx>;
+    fn peer_addr(&self) -> NetResult<SocketAddrEx>;
+    fn shutdown(&self, how: Shutdown) -> NetResult;
 }
 ```
 
@@ -357,17 +357,17 @@ TCP、UDP 和 raw socket 提供直接绑定接口：
 
 ```rust
 impl TcpSocket {
-    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult;
+    pub fn bind_device(&self, interface_id: InterfaceId) -> NetResult;
 }
 impl UdpSocket {
-    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult;
+    pub fn bind_device(&self, interface_id: InterfaceId) -> NetResult;
 }
 impl RawSocket {
-    pub fn bind_device(&self, interface_id: InterfaceId) -> AxResult;
+    pub fn bind_device(&self, interface_id: InterfaceId) -> NetResult;
 }
 ```
 
-不存在的接口返回 `AxError::NoSuchDevice`。成功后内部设置：
+不存在的接口返回 `NetError::NoSuchDevice`。成功后内部设置：
 
 ```rust
 pub struct DeviceBinding {
@@ -386,11 +386,11 @@ socket option API 使用一个 get enum 和一个 set enum 表达 SO_*、TCP_* �
 ```rust
 #[enum_dispatch]
 pub trait Configurable {
-    fn get_option_inner(&self, opt: &mut GetSocketOption) -> AxResult<bool>;
-    fn set_option_inner(&self, opt: SetSocketOption) -> AxResult<bool>;
+    fn get_option_inner(&self, opt: &mut GetSocketOption) -> NetResult<bool>;
+    fn set_option_inner(&self, opt: SetSocketOption) -> NetResult<bool>;
 
-    fn get_option(&self, mut opt: GetSocketOption) -> AxResult { /* dispatch */ }
-    fn set_option(&self, opt: SetSocketOption) -> AxResult { /* dispatch */ }
+    fn get_option(&self, mut opt: GetSocketOption) -> NetResult { /* dispatch */ }
+    fn set_option(&self, opt: SetSocketOption) -> NetResult { /* dispatch */ }
 }
 ```
 
@@ -495,8 +495,8 @@ DNS API 位于 `lib.rs`，使用控制面的 DNS registry 和 route decision。
 
 ```rust
 pub fn dns_servers() -> Vec<Ipv4Address>;
-pub fn dns_query(name: &str) -> AxResult<Vec<IpAddr>>;
-pub fn dns_query_timeout(name: &str, timeout: Duration) -> AxResult<Vec<IpAddr>>;
+pub fn dns_query(name: &str) -> NetResult<Vec<IpAddr>>;
+pub fn dns_query_timeout(name: &str, timeout: Duration) -> NetResult<Vec<IpAddr>>;
 ```
 
 语义：
@@ -649,7 +649,7 @@ pub enum WifiMode<'a> {
     },
 }
 
-pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()>;
+pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> NetResult<()>;
 ```
 
 `reconfigure_wifi()` 先通过 `WifiControlHandle` 执行 STA connect 或 open SoftAP，再在 `Service` 锁内更新对应接口的 IPv4/DHCP 角色。STA 模式清空旧静态地址并启用 DHCP client；AP 模式安装静态地址并可选启用内置单客户端 DHCP server。
@@ -688,11 +688,11 @@ TCP/UDP 在 bind port 为 `0` 时分配临时端口。临时端口范围从 `491
 
 | 场景 | 错误 |
 | --- | --- |
-| 绑定不存在接口 | `AxError::NoSuchDevice` |
-| 绑定本机不存在地址 | `AxError::NoSuchDeviceOrAddress` |
-| 地址/端口冲突 | `AxError::AddrInUse` |
-| 操作不支持 | `AxError::OperationNotSupported` |
-| nonblocking 或 `MSG_DONTWAIT` 下 would block | `AxError::WouldBlock` |
+| 绑定不存在接口 | `NetError::NoSuchDevice` |
+| 绑定本机不存在地址 | `NetError::NoSuchDeviceOrAddress` |
+| 地址/端口冲突 | `NetError::AddrInUse` |
+| 操作不支持 | `NetError::OperationNotSupported` |
+| nonblocking 或 `MSG_DONTWAIT` 下 would block | `NetError::WouldBlock` |
 | 不支持的 socket option | Linux `ENOPROTOOPT` 映射 |
 
 ### API 使用建议

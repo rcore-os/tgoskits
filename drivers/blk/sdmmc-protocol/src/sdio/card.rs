@@ -1,5 +1,6 @@
 //! Card-facing SD/MMC command and block I/O wrapper.
 
+use alloc::string::String;
 use core::num::NonZeroU16;
 
 use dma_api::{CompletedDma, CpuDmaBuffer};
@@ -28,6 +29,7 @@ pub struct SdioSdmmc<H: SdioIrqHost + 'static> {
     pub(super) kind: CardKind,
     pub(super) sd_speed_selection_enabled: bool,
     pub(super) sd_uhs_selection_enabled: bool,
+    pub(super) diagnostic_identity: Option<String>,
 }
 
 pub struct SdioDataRequest<'a, H: SdioIrqHost + 'static> {
@@ -68,7 +70,22 @@ impl<H: SdioIrqHost + 'static> SdioSdmmc<H> {
             kind: CardKind::Sd,
             sd_speed_selection_enabled: true,
             sd_uhs_selection_enabled: true,
+            diagnostic_identity: None,
         }
+    }
+
+    /// Sets the platform-provided controller identity used in protocol logs.
+    ///
+    /// Portable protocol code treats this as an opaque diagnostic label. OS
+    /// glue may include firmware identity such as an FDT path without making
+    /// the driver core depend on firmware or probe APIs.
+    pub fn set_diagnostic_identity(&mut self, identity: impl Into<String>) {
+        self.diagnostic_identity = Some(identity.into());
+    }
+
+    /// Returns the platform-provided controller identity, when available.
+    pub fn diagnostic_identity(&self) -> Option<&str> {
+        self.diagnostic_identity.as_deref()
     }
 
     /// Returns mutable access to the underlying SDIO host controller.

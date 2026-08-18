@@ -220,7 +220,7 @@ impl Ext4FileSystem {
                         error!("Journal inode missing while filesystem needs recovery");
                         return Err(Ext4Error::corrupted());
                     }
-                    create_journal_entry(&mut fs, block_dev).expect("create journal entry failed");
+                    create_journal_entry(&mut fs, block_dev)?;
                 }
             }
             if needs_recovery && options.replay_journal && !fs.superblock.has_journal() {
@@ -235,7 +235,9 @@ impl Ext4FileSystem {
                 // `Jbd2Dev`.
                 let mut j_inode = fs
                     .get_inode_by_num(block_dev, InodeNumber::new(JOURNAL_FILE_INODE as u32)?)
-                    .expect("load journal inode failed");
+                    .inspect_err(|e| {
+                        error!("Failed to load journal inode: {e}");
+                    })?;
 
                 let journal_blocks =
                     fs.journal_blocks(block_dev, &mut j_inode)
@@ -251,7 +253,9 @@ impl Ext4FileSystem {
                 let journal_data = fs
                     .datablock_cache
                     .get_or_load(block_dev, journal_first_block)
-                    .expect("load journal superblock block failed")
+                    .inspect_err(|e| {
+                        error!("Failed to load journal superblock block: {e}");
+                    })?
                     .data
                     .clone();
 
@@ -379,13 +383,13 @@ impl Ext4FileSystem {
                     block_dev,
                     inode_cache_key,
                     AbsoluteBN::new(inode_bitmap_blk),
-                )
-                .expect("block read failed")
+                )?
                 .clone();
-            let blockbitmap_data = fs
-                .bitmap_cache
-                .get_or_load(block_dev, data_cache_key, AbsoluteBN::new(data_bitmap_blk))
-                .expect("block read failed");
+            let blockbitmap_data = fs.bitmap_cache.get_or_load(
+                block_dev,
+                data_cache_key,
+                AbsoluteBN::new(data_bitmap_blk),
+            )?;
 
             if ext4_superblock_has_metadata_csum(&fs.superblock) {
                 if !g0.is_inode_bitmap_uninit() {

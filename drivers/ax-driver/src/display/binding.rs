@@ -1,11 +1,10 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
 
-use ax_errno::AxError;
 use rdif_display::Interface;
 use rdrive::{DriverGeneric, probe::OnProbeError};
 
 use crate::{
-    BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt,
+    BindingInfo, BindingIrq, Error, binding_info_from_acpi, binding_info_from_fdt,
     registration::{BoundDevice, TakeRegistered, register_bound_device, take_registered_device},
 };
 #[cfg(feature = "pci")]
@@ -178,7 +177,7 @@ where
     )
 }
 
-pub fn take_display_devices() -> Result<Vec<TakenDisplayDevice>, AxError> {
+pub fn take_display_devices() -> crate::Result<Vec<TakenDisplayDevice>> {
     let mut devices = Vec::new();
     for dev in rdrive::get_list::<PlatformDisplayDevice>() {
         let display = take_display_device(dev)?;
@@ -189,8 +188,8 @@ pub fn take_display_devices() -> Result<Vec<TakenDisplayDevice>, AxError> {
 
 fn take_display_device(
     device: rdrive::Device<PlatformDisplayDevice>,
-) -> Result<TakenDisplayDevice, AxError> {
-    take_registered_device(device).ok_or(AxError::BadState)
+) -> crate::Result<TakenDisplayDevice> {
+    take_registered_device(device).ok_or(Error::DeviceUnavailable)
 }
 
 #[cfg(test)]

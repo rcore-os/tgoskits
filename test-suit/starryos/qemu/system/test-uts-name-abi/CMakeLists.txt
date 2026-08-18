@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-uts-name-abi C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+
+add_executable(test-uts-name-abi src/main.c)
+target_compile_options(test-uts-name-abi PRIVATE -Wall -Wextra -Werror)
+
+install(TARGETS test-uts-name-abi RUNTIME DESTINATION usr/bin/starry-test-suit)

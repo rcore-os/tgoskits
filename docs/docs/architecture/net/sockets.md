@@ -95,22 +95,22 @@ pub struct RecvOptions<'a> {
 
 ```rust
 pub trait SocketOps: Configurable {
-    fn bind(&self, local_addr: SocketAddrEx) -> AxResult;
-    fn connect(&self, remote_addr: SocketAddrEx) -> AxResult;
-    fn listen(&self, _backlog: usize) -> AxResult {
-        Err(AxError::OperationNotSupported)
+    fn bind(&self, local_addr: SocketAddrEx) -> NetResult;
+    fn connect(&self, remote_addr: SocketAddrEx) -> NetResult;
+    fn listen(&self, _backlog: usize) -> NetResult {
+        Err(NetError::OperationNotSupported)
     }
-    fn accept(&self) -> AxResult<Socket> {
-        Err(AxError::OperationNotSupported)
+    fn accept(&self) -> NetResult<Socket> {
+        Err(NetError::OperationNotSupported)
     }
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize>;
-    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> AxResult<usize>;
-    fn recv_available(&self) -> AxResult<usize> {
-        Err(AxError::OperationNotSupported)
+    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize>;
+    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> NetResult<usize>;
+    fn recv_available(&self) -> NetResult<usize> {
+        Err(NetError::OperationNotSupported)
     }
-    fn local_addr(&self) -> AxResult<SocketAddrEx>;
-    fn peer_addr(&self) -> AxResult<SocketAddrEx>;
-    fn shutdown(&self, how: Shutdown) -> AxResult;
+    fn local_addr(&self) -> NetResult<SocketAddrEx>;
+    fn peer_addr(&self) -> NetResult<SocketAddrEx>;
+    fn shutdown(&self, how: Shutdown) -> NetResult;
 }
 ```
 
@@ -320,14 +320,14 @@ fn listen_addrs_conflict(a: Option<IpAddress>, b: Option<IpAddress>) -> bool {
     a.is_none() || b.is_none() || a == b
 }
 
-fn register_tcp_bound(endpoint: IpListenEndpoint) -> AxResult {
+fn register_tcp_bound(endpoint: IpListenEndpoint) -> NetResult {
     let mut bound_ports = TCP_BOUND_PORTS.lock();
     let bound_addrs = bound_ports.entry(endpoint.port).or_default();
     if bound_addrs
         .iter()
         .any(|&addr| listen_addrs_conflict(addr, endpoint.addr))
     {
-        return Err(AxError::AddrInUse);
+        return Err(NetError::AddrInUse);
     }
     bound_addrs.insert(endpoint.addr);
     Ok(())
@@ -365,7 +365,7 @@ pub struct ListenTable {
 `tcp` 按端口懒创建 listen bucket，每个 bucket 存放该端口下的多个具体地址 listener。`listen()` 检查 wildcard/specific 冲突后插入 entry：
 
 ```rust
-pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxResult {
+pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> NetResult {
     let port = listen_endpoint.port;
     let entries = self.listen_entry_or_create(port);
     let mut entries = entries.lock();
@@ -373,7 +373,7 @@ pub fn listen(&self, listen_endpoint: IpListenEndpoint, backlog: usize) -> AxRes
         .iter()
         .any(|entry| listen_addrs_conflict(entry.listen_endpoint.addr, listen_endpoint.addr))
     {
-        return Err(AxError::AddrInUse);
+        return Err(NetError::AddrInUse);
     }
     entries.push(ListenTableEntryInner::new(listen_endpoint, backlog));
     Ok(())
@@ -391,16 +391,16 @@ pub fn accept(
     &self,
     listen_endpoint: IpListenEndpoint,
     sockets: &mut SocketSet<'_>,
-) -> AxResult<AcceptedTcp> {
+) -> NetResult<AcceptedTcp> {
     let Some(entries) = self.listen_entry(listen_endpoint.port) else {
-        return Err(AxError::InvalidInput);
+        return Err(NetError::InvalidInput);
     };
     let mut table = entries.lock();
     let Some(entry) = table
         .iter_mut()
         .find(|entry| entry.listen_endpoint == listen_endpoint)
     else {
-        return Err(AxError::InvalidInput);
+        return Err(NetError::InvalidInput);
     };
 
     let syn_queue: &mut VecDeque<AcceptedTcp> = &mut entry.syn_queue;
@@ -417,7 +417,7 @@ pub fn accept(
         }
         idx += 1;
     }
-    Err(AxError::WouldBlock)
+    Err(NetError::WouldBlock)
 }
 ```
 
@@ -704,12 +704,12 @@ socket 阻塞语义基于 `Pollable` + `poll_io()`。应用线程只注册 waker
 `GeneralOptions` 提供 send/recv 两类阻塞 helper：
 
 ```rust
-pub fn send_poller_with<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+pub fn send_poller_with<P: Pollable, F: FnMut() -> NetResult<T>, T>(
     &self,
     pollable: &P,
     extra_nonblocking: bool,
     f: F,
-) -> AxResult<T> {
+) -> NetResult<T> {
     block_on(timeout(
         self.send_timeout(),
         poll_io(

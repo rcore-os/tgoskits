@@ -3,15 +3,19 @@
 use crate::registers;
 
 /// A decode error reported by the hardware in `SWREG1`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum DecodeError {
     /// AXI bus error (`sw_dec_bus_sta`).
+    #[error("JPEG decoder reported an AXI bus error")]
     BusError,
     /// Stream decode error (`sw_dec_error_sta`).
+    #[error("JPEG decoder rejected the input stream")]
     StreamError,
     /// Decode timed out in hardware (`sw_dec_timeout_sta`).
+    #[error("JPEG decoder timed out")]
     Timeout,
     /// Input stream buffer ran empty (`sw_dec_buf_empty_sta`).
+    #[error("JPEG decoder input buffer ran empty")]
     BufferEmpty,
 }
 

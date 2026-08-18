@@ -80,6 +80,48 @@ struct CapabilityRefreshQueue {
     initialized: Arc<AtomicBool>,
 }
 
+struct FailingDrainQueue {
+    counters: Arc<QueueCounters>,
+}
+
+impl DriverGeneric for FailingDrainQueue {
+    fn name(&self) -> &str {
+        "failing-drain"
+    }
+}
+
+impl HardwareQueue for FailingDrainQueue {
+    fn id(&self) -> usize {
+        0
+    }
+
+    fn info(&self) -> QueueInfo {
+        test_queue_info(1)
+    }
+
+    fn submit_batch_owned(
+        &mut self,
+        _requests: &mut OwnedRequestBatch,
+        _sink: &mut dyn SubmissionSink,
+    ) -> rdif_block::BatchSubmitResult {
+        rdif_block::BatchSubmitResult::new(0, BatchSubmitDisposition::Continue)
+    }
+
+    fn commit_submissions(&mut self) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn drain_completions(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        self.counters.drained.fetch_add(1, Ordering::AcqRel);
+        Err(BlkError::Io)
+    }
+
+    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        self.counters.shutdown.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+}
+
 impl DriverGeneric for CapabilityRefreshQueue {
     fn name(&self) -> &str {
         "capability-refresh"
@@ -384,6 +426,14 @@ impl HardIrqHandler for QueueZeroIrq {
     }
 }
 
+struct QueueZeroControlIrq;
+
+impl HardIrqHandler for QueueZeroControlIrq {
+    fn ack(&mut self) -> IrqAck {
+        IrqAck::masked_needs_rearm(IrqQueueMask::from_queue(0), ControlEvent::new(0, 1))
+    }
+}
+
 fn test_queue_info(depth: usize) -> QueueInfo {
     let mut limits = QueueLimits::simple(512, u64::MAX);
     limits.max_inflight = depth;
@@ -504,6 +554,55 @@ fn register_retry_advances_only_register_state_and_posts_controller_event() {
 }
 
 #[test]
+fn terminal_state_rejects_an_already_due_register_retry() {
+    crate::os::task::install_test_runtime_ops();
+    let ops = runtime_ops().unwrap();
+    let state = HctxState {
+        info: IrqMutex::new(test_queue_info(1)),
+        submission_channels: IrqMutex::new(Vec::new()),
+        notification: ops.notification(),
+        lifecycle_notification: ops.notification(),
+        irq_latches: IrqMutex::new(Vec::new()),
+        quiescing: AtomicBool::new(false),
+        quiesced: AtomicBool::new(false),
+        stopping: AtomicBool::new(true),
+        terminated: AtomicBool::new(false),
+    };
+    let retries = Arc::new(AtomicUsize::new(0));
+    let drains = Arc::new(AtomicUsize::new(0));
+    let mut queue = RegisterRetryQueue {
+        retry_after: Some(Duration::from_millis(1)),
+        retries: Arc::clone(&retries),
+        drains,
+    };
+    let controller = TestControllerPort::default();
+    let now = Duration::from_secs(10);
+    let mut retry_at = Some(now);
+    let mut deadline = Some(now + QUEUE_REGISTER_TRANSITION_TIMEOUT);
+    let mut fatal_error = Some(BlkError::Io);
+    let mut pending = BTreeMap::new();
+    let observer: Arc<dyn HctxObserver> = Arc::new(TestObserver::default());
+    let observer = Arc::downgrade(&observer);
+
+    assert!(!advance_register_retry_if_due(
+        &mut queue,
+        now,
+        &mut RegisterRetryContext {
+            controller: &controller,
+            pending: &mut pending,
+            observer: &observer,
+            retry_at: &mut retry_at,
+            deadline: &mut deadline,
+            state: &state,
+            fatal_error: &mut fatal_error,
+        },
+    ));
+
+    assert_eq!(retries.load(Ordering::Acquire), 0);
+    assert!(controller.events.lock().unwrap().is_empty());
+}
+
+#[test]
 fn retry_backlog_does_not_starve_fresh_cpu_channel_submissions() {
     crate::os::task::install_test_runtime_ops();
     let ops = runtime_ops().unwrap();
@@ -603,6 +702,48 @@ fn irq_drain_refreshes_hctx_queue_capabilities() {
         initial.limits.max_submit_batch
     );
     hctx.stop();
+}
+
+#[test]
+fn terminal_irq_drain_failure_does_not_advance_controller_or_rearm() {
+    crate::os::task::install_test_runtime_ops();
+    let counters = Arc::new(QueueCounters::default());
+    let observer = Arc::new(TestObserver::default());
+    let observer_dyn: Arc<dyn HctxObserver> = observer.clone();
+    let controller = Arc::new(TestControllerPort::default());
+    let controller_dyn: Arc<dyn ControllerEventPort> = controller.clone();
+    let queue = FailingDrainQueue {
+        counters: Arc::clone(&counters),
+    };
+    let hctx = Hctx::start(
+        Box::new(queue),
+        0,
+        Arc::downgrade(&observer_dyn),
+        controller_dyn,
+    )
+    .unwrap();
+
+    let target = hctx.irq_target(0);
+    let mut action = BlockIrqAction::new(Box::new(QueueZeroControlIrq), vec![target]);
+    assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while observer.failed.load(Ordering::Acquire) != 1 {
+        assert!(
+            Instant::now() < deadline,
+            "terminal queue failure did not stop the hctx"
+        );
+        thread::yield_now();
+    }
+    hctx.stop();
+
+    assert_eq!(counters.drained.load(Ordering::Acquire), 1);
+    assert_eq!(counters.shutdown.load(Ordering::Acquire), 1);
+    assert_eq!(
+        controller.events.lock().unwrap().as_slice(),
+        [ControllerEvent::Watchdog { queue_id: 0 }],
+        "the hctx terminal owner must not forward the failed IRQ or rearm it"
+    );
 }
 
 #[test]

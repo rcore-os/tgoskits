@@ -1,20 +1,19 @@
 use alloc::sync::Arc;
 use core::ops::DerefMut;
 
-use ax_errno::{AxError, AxResult};
 use ax_fs_ng::{FS_CONTEXT, FsContext};
 use ax_task::current;
-use axnsproxy::NsProxy;
-use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
     CLONE_FILES, CLONE_FS, CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID,
     CLONE_NEWUSER, CLONE_NEWUTS,
 };
 
 use crate::{
-    file::{FD_TABLE, FileDescriptor, NsFd, PidFd, get_file_like},
-    sync::{Mutex, RwLock},
-    task::{AX_FILE_LIMIT, AsThread, Thread, get_task},
+    StarryError, StarryResult,
+    file::{FD_TABLE, FileTable, NsFd, PidFd, get_file_like},
+    namespace::NsProxy,
+    sync::{FsMutex, RwLock},
+    task::{AsThread, Thread},
 };
 
 const UNSHARE_NAMESPACE_FLAGS: u32 = CLONE_NEWUTS
@@ -29,16 +28,16 @@ const SUPPORTED_NS_FLAGS: u32 = UNSHARE_NAMESPACE_FLAGS | CLONE_FS | CLONE_FILES
 
 const SUPPORTED_SETNS_FLAGS: u32 = SUPPORTED_NS_FLAGS & !CLONE_FILES;
 
-type SharedFileTable = Arc<RwLock<FlattenObjects<FileDescriptor, AX_FILE_LIMIT>>>;
+type SharedFileTable = Arc<RwLock<FileTable>>;
 
 struct PreparedUnshare {
     file_table: Option<SharedFileTable>,
-    fs_context: Option<Arc<Mutex<FsContext>>>,
+    fs_context: Option<Arc<FsMutex<FsContext>>>,
     nsproxy: Option<NsProxy>,
 }
 
 impl PreparedUnshare {
-    fn prepare(flags: u32, thread: &Thread) -> AxResult<Self> {
+    fn prepare(flags: u32, thread: &Thread) -> StarryResult<Self> {
         let file_table = (flags & CLONE_FILES != 0)
             .then(|| Arc::new(RwLock::new(crate::file::current_fd_table().read().clone())));
 
@@ -49,7 +48,7 @@ impl PreparedUnshare {
                 nsproxy.unshare_uts();
             }
             if flags & CLONE_NEWPID != 0 {
-                nsproxy.prepare_child_pid_ns();
+                nsproxy.prepare_pid_ns_for_children(thread.active_pid_namespace());
             }
             if flags & CLONE_NEWNET != 0 {
                 nsproxy.unshare_net();
@@ -74,7 +73,7 @@ impl PreparedUnshare {
                     nsproxy.unshare_mnt();
                 }
             }
-            Some(Arc::new(Mutex::new(fs_context)))
+            Some(Arc::new(FsMutex::new(fs_context)))
         } else {
             None
         };
@@ -110,18 +109,19 @@ impl PreparedUnshare {
 }
 
 /// unshare(2) — disassociate parts of the process execution context.
-pub fn sys_unshare(flags: u32) -> AxResult<isize> {
-    if flags & !SUPPORTED_NS_FLAGS != 0 {
+pub fn sys_unshare(flags: usize) -> StarryResult<isize> {
+    if flags & !(SUPPORTED_NS_FLAGS as usize) != 0 {
         warn!("sys_unshare: unsupported flags {:#x}", flags);
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
+    let flags = flags as u32;
 
     let curr = current();
     let thread = curr.as_thread();
     let want_privileged_ns = flags & (CLONE_NEWNS | CLONE_NEWCGROUP) != 0;
 
     if want_privileged_ns && !thread.cred().has_cap_sys_admin() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
 
     let prepared = PreparedUnshare::prepare(flags, thread)?;
@@ -142,10 +142,10 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
 /// * `EINVAL` — `nstype` does not match the namespace type, or multi-threaded
 ///   process attempts to change PID namespace
 /// * `EPERM` — insufficient privileges (e.g. user namespace restrictions)
-pub fn sys_setns(fd: u32, nstype: u32) -> AxResult<isize> {
+pub fn sys_setns(fd: u32, nstype: u32) -> StarryResult<isize> {
     if nstype != 0 && nstype & !SUPPORTED_SETNS_FLAGS != 0 {
         warn!("sys_setns: unsupported nstype {:#x}", nstype);
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let file_like = get_file_like(fd as i32)?;
@@ -160,14 +160,14 @@ pub fn sys_setns(fd: u32, nstype: u32) -> AxResult<isize> {
         return setns_via_pidfd(pidfd, nstype);
     }
 
-    Err(AxError::BadFileDescriptor)
+    Err(StarryError::BadFileDescriptor)
 }
 
 /// setns via an NsFd (from `/proc/<pid>/ns/<type>`).
 ///
 /// An NsFd always references exactly one namespace type, so `nstype`
 /// must either be `0` or match the fd's type.
-fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
+fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> StarryResult<isize> {
     let fd_type = nsfd.ns_type();
 
     if nstype != 0 && nstype != fd_type {
@@ -175,19 +175,19 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
             "sys_setns: nstype {:#x} does not match fd type {:#x}",
             nstype, fd_type
         );
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let curr = current();
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
     if fd_type == CLONE_NEWCGROUP && !thread.cred().has_cap_sys_admin() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
 
     // PID namespace: calling process stays in its current PID ns;
-    // the target ns is staged to child_pid_ns and consumed by the
-    // next fork/clone. Must be single-threaded (Linux check).
+    // the target ns replaces the persistent pid_ns_for_children selection.
+    // Must be single-threaded (Linux check).
     if fd_type == CLONE_NEWPID {
         let thread_count = proc_data.proc.threads().len();
         if thread_count > 1 {
@@ -195,7 +195,7 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
                 "sys_setns: cannot change PID namespace in multi-threaded process ({} threads)",
                 thread_count
             );
-            return Err(AxError::InvalidInput);
+            return Err(StarryError::InvalidInput);
         }
     }
 
@@ -223,7 +223,7 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
                      threads)",
                     thread_count
                 );
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             nsproxy.set_ns_user(ns.clone());
         }
@@ -241,19 +241,22 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
 /// `nstype` is a bitmask of `CLONE_NEW*` flags specifying which
 /// namespaces to join from the target process.  Unlike the NsFd path,
 /// this can join multiple namespaces in a single call.
-fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
+fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> StarryResult<isize> {
     if nstype == 0 {
         warn!("sys_setns: nstype must be non-zero for pidfd");
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if nstype & !SUPPORTED_SETNS_FLAGS != 0 {
         warn!("sys_setns: unsupported nstype flags {:#x}", nstype);
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let target_proc = pidfd.process_data()?;
     let target_mnt_fs_ns = if nstype & CLONE_NEWNS != 0 {
-        let task = get_task(target_proc.proc.pid())?;
+        let task = pidfd
+            .process_identity()
+            .live_task()
+            .ok_or(StarryError::NoSuchProcess)?;
         let scope = task.as_thread().scope.read();
         let fs_context = FS_CONTEXT.scope(&scope).clone();
         drop(scope);
@@ -267,7 +270,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
     if nstype & CLONE_NEWCGROUP != 0 && !thread.cred().has_cap_sys_admin() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
 
     // Check multi-threaded restrictions before making any changes.
@@ -277,14 +280,14 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
             "sys_setns: cannot change PID namespace in multi-threaded process ({} threads)",
             thread_count
         );
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if nstype & CLONE_NEWUSER != 0 && thread_count > 1 {
         warn!(
             "sys_setns: cannot change user namespace in multi-threaded process ({} threads)",
             thread_count
         );
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
 
     let mut nsproxy = proc_data.nsproxy.lock();
@@ -304,7 +307,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
         nsproxy.set_ns_mnt(target_nsproxy.mnt_ns);
     }
     if nstype & CLONE_NEWPID != 0 {
-        nsproxy.set_ns_pid(target_nsproxy.pid_ns);
+        nsproxy.set_ns_pid(target_proc.identity().active_namespace());
     }
     if nstype & CLONE_NEWNET != 0 {
         nsproxy.set_ns_net(target_nsproxy.net_ns);

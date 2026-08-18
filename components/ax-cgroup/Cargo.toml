@@ -13,4 +13,4 @@ ax-lazyinit.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test", "lockdep"] }
+ax-sync = { workspace = true, features = ["host-test"] }

@@ -1,6 +1,6 @@
 use std::println;
 
-use ax_sync::SpinLock;
+use ax_std::os::arceos::sync::SpinLock;
 
 pub fn run() -> crate::TestResult {
     println!("lockdep_detect: triggering spin lock order inversion");

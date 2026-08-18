@@ -9,22 +9,15 @@ license.workspace = true
 
 [features]
 axtest = ["dep:axtest"]
-smp = []
+host-test = []
 sleep = []
-lockdep = ["dep:axpanic"]
 lock-api = ["dep:lock_api"]
-host-test = ["smp"]
 default = []
 
 [dependencies]
 axtest = { workspace = true, optional = true }
 ax-crate-interface.workspace = true
-axpanic = { workspace = true, optional = true }
-cfg-if.workspace = true
 lock_api = { workspace = true, optional = true }
-
-[target.'cfg(target_arch = "riscv64")'.dependencies]
-sbi-rt = { workspace = true, features = ["legacy"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

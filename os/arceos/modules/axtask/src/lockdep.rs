@@ -1,1 +1,1 @@
-pub use ax_sync::{HeldLock, HeldLockStack};
+pub use crate::sync::{HeldLock, HeldLockStack};

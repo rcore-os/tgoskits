@@ -398,15 +398,13 @@ impl DirNode {
                 }
                 return Ok(val);
             }
-            Err(err) if err.canonicalize() == VfsError::NotFound && options.create => {}
+            Err(VfsError::NotFound) if options.create => {}
             Err(err) => return Err(err),
         }
         let (uid, gid) = options.user.unwrap_or((0, 0));
         let entry = match self.create_entry(name, options.node_type, options.permission, uid, gid) {
             Ok(entry) => entry,
-            Err(err) if !options.create_new && err.canonicalize() == VfsError::AlreadyExists => {
-                self.lookup(name)?
-            }
+            Err(VfsError::AlreadyExists) if !options.create_new => self.lookup(name)?,
             Err(err) => return Err(err),
         };
         Ok(entry)

@@ -62,7 +62,7 @@ app runner 检测到成功标记后可安全结束 QEMU。来宾还会把当前�
 app 成功后，先确认 rootfs 中的产物非空：
 
 ```bash
-ROOTFS="${TGOS_IMAGE_LOCAL_STORAGE:-$PWD/tmp/axbuild/rootfs}/rootfs-x86_64-selfhost.img/rootfs-x86_64-selfhost.img"
+ROOTFS="${TGOS_IMAGE_EXTRACT_DIR:-$PWD/tmp/axbuild/rootfs}/rootfs-x86_64-selfhost.img"
 debugfs -R 'stat /opt/starryos-selfbuilt' "$ROOTFS"
 ```
 

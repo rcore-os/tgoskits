@@ -12,17 +12,22 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::ffi::c_char;
+use core::{
+    ffi::c_char,
+    mem::{MaybeUninit, size_of},
+    slice,
+};
 
-use ax_errno::{AxError, AxResult, LinuxError};
+use ax_memory_addr::PAGE_SIZE_4K;
 use axfs_ng_vfs::Location;
 use linux_raw_sys::general::{
     AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, XATTR_CREATE, XATTR_LIST_MAX, XATTR_NAME_MAX,
-    XATTR_REPLACE, XATTR_SIZE_MAX,
+    XATTR_REPLACE, XATTR_SIZE_MAX, xattr_args,
 };
 use starry_vm::{vm_read_slice, vm_write_slice};
 
 use crate::{
+    Errno, StarryError, StarryResult,
     file::{fd_is_path, resolve_at},
     mm::{vm_load_path_string, vm_load_string},
     pseudofs::overlay,
@@ -36,8 +41,8 @@ struct XattrStore {
     attrs: Mutex<XattrMap>,
 }
 
-fn linux_errno(errno: LinuxError) -> AxError {
-    AxError::from(errno)
+fn linux_errno(errno: Errno) -> StarryError {
+    StarryError::from(errno)
 }
 
 fn existing_store(loc: &Location) -> Option<Arc<XattrStore>> {
@@ -58,22 +63,22 @@ fn existing_attrs(loc: &Location) -> Option<XattrMap> {
 }
 
 /// Read and validate an xattr name from userspace.
-fn read_name(name: *const c_char) -> AxResult<String> {
+fn read_name(name: *const c_char) -> StarryResult<String> {
     let name = vm_load_string(name)?;
     let bytes = name.as_bytes();
     if bytes.is_empty() || bytes.len() > XATTR_NAME_MAX as usize {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if !name.starts_with("user.") {
-        return Err(AxError::OperationNotSupported);
+        return Err(StarryError::OperationNotSupported);
     }
     Ok(name)
 }
 
 /// Read an xattr value from userspace with Linux size limits.
-fn read_value(value: *const u8, size: usize) -> AxResult<Vec<u8>> {
+fn read_value(value: *const u8, size: usize) -> StarryResult<Vec<u8>> {
     if size > XATTR_SIZE_MAX as usize {
-        return Err(AxError::ArgumentListTooLong);
+        return Err(StarryError::ArgumentListTooLong);
     }
     if size == 0 {
         return Ok(Vec::new());
@@ -87,31 +92,72 @@ fn read_value(value: *const u8, size: usize) -> AxResult<Vec<u8>> {
 }
 
 /// Resolve a path argument used by path-based xattr syscalls.
-fn resolve_path(path: *const c_char, nofollow: bool) -> AxResult<Location> {
+fn resolve_path(path: *const c_char, nofollow: bool) -> StarryResult<Location> {
     let path = vm_load_path_string(path)?;
     let flags = if nofollow { AT_SYMLINK_NOFOLLOW } else { 0 };
     resolve_at(AT_FDCWD, Some(&path), flags)?
         .into_file()
-        .ok_or(AxError::BadFileDescriptor)
+        .ok_or(StarryError::BadFileDescriptor)
+}
+
+fn resolve_xattrat(dirfd: i32, path: *const c_char, at_flags: u32) -> StarryResult<Location> {
+    const VALID_FLAGS: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW;
+
+    if at_flags & !VALID_FLAGS != 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    let path = vm_load_path_string(path)?;
+    resolve_at(dirfd, Some(&path), at_flags)?
+        .into_file()
+        .ok_or(StarryError::BadFileDescriptor)
 }
 
 /// Resolve an fd argument used by fd-based xattr syscalls.
-fn resolve_fd(fd: i32) -> AxResult<Location> {
+fn resolve_fd(fd: i32) -> StarryResult<Location> {
     if fd_is_path(fd) {
-        return Err(AxError::BadFileDescriptor);
+        return Err(StarryError::BadFileDescriptor);
     }
     resolve_at(fd, None, AT_EMPTY_PATH)?
         .into_file()
-        .ok_or(AxError::BadFileDescriptor)
+        .ok_or(StarryError::BadFileDescriptor)
+}
+
+fn read_xattr_args(args: *const xattr_args, args_size: usize) -> StarryResult<xattr_args> {
+    let known_size = size_of::<xattr_args>();
+    if args_size < known_size {
+        return Err(StarryError::InvalidInput);
+    }
+    if args_size > PAGE_SIZE_4K {
+        return Err(StarryError::ArgumentListTooLong);
+    }
+
+    let mut raw_args = MaybeUninit::<xattr_args>::uninit();
+    vm_read_slice(args, slice::from_mut(&mut raw_args))?;
+    if args_size > known_size {
+        let tail_size = args_size - known_size;
+        let mut tail = Vec::<u8>::with_capacity(tail_size);
+        vm_read_slice(
+            args.cast::<u8>().wrapping_add(known_size),
+            &mut tail.spare_capacity_mut()[..tail_size],
+        )?;
+        // SAFETY: vm_read_slice initialized the whole requested tail.
+        unsafe { tail.set_len(tail_size) };
+        if tail.iter().any(|byte| *byte != 0) {
+            return Err(StarryError::ArgumentListTooLong);
+        }
+    }
+
+    // SAFETY: vm_read_slice initialized the complete v0 structure.
+    Ok(unsafe { raw_args.assume_init() })
 }
 
 /// Copy a single xattr value to userspace, or return its required size.
-fn copy_value_to_user(value: &[u8], user_value: *mut u8, size: usize) -> AxResult<isize> {
+fn copy_value_to_user(value: &[u8], user_value: *mut u8, size: usize) -> StarryResult<isize> {
     if size == 0 {
         return Ok(value.len() as isize);
     }
     if size < value.len() {
-        return Err(AxError::OutOfRange);
+        return Err(StarryError::OutOfRange);
     }
     if !value.is_empty() {
         vm_write_slice(user_value, value)?;
@@ -120,7 +166,7 @@ fn copy_value_to_user(value: &[u8], user_value: *mut u8, size: usize) -> AxResul
 }
 
 /// Serialize xattr names as a nul-separated Linux listxattr buffer.
-fn serialize_names(attrs: Option<&XattrMap>) -> AxResult<Vec<u8>> {
+fn serialize_names(attrs: Option<&XattrMap>) -> StarryResult<Vec<u8>> {
     let mut names = Vec::new();
     if let Some(attrs) = attrs {
         for name in attrs.keys() {
@@ -129,18 +175,18 @@ fn serialize_names(attrs: Option<&XattrMap>) -> AxResult<Vec<u8>> {
         }
     }
     if names.len() > XATTR_LIST_MAX as usize {
-        return Err(AxError::ArgumentListTooLong);
+        return Err(StarryError::ArgumentListTooLong);
     }
     Ok(names)
 }
 
 /// Copy a listxattr buffer to userspace, or return its required size.
-fn copy_list_to_user(names: &[u8], list: *mut u8, size: usize) -> AxResult<isize> {
+fn copy_list_to_user(names: &[u8], list: *mut u8, size: usize) -> StarryResult<isize> {
     if size == 0 {
         return Ok(names.len() as isize);
     }
     if size < names.len() {
-        return Err(AxError::OutOfRange);
+        return Err(StarryError::OutOfRange);
     }
     if !names.is_empty() {
         vm_write_slice(list, names)?;
@@ -154,23 +200,23 @@ fn get_xattr(
     name: *const c_char,
     user_value: *mut u8,
     size: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let name = read_name(name)?;
     let loc = overlay::visible_target(&loc)?;
     let value = {
-        let store = existing_store(&loc).ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
+        let store = existing_store(&loc).ok_or_else(|| linux_errno(Errno::ENODATA))?;
         store
             .attrs
             .lock()
             .get(&name)
             .cloned()
-            .ok_or_else(|| linux_errno(LinuxError::ENODATA))?
+            .ok_or_else(|| linux_errno(Errno::ENODATA))?
     };
     copy_value_to_user(&value, user_value, size)
 }
 
 /// List xattrs from the currently visible real node.
-fn list_xattr(loc: Location, list: *mut u8, size: usize) -> AxResult<isize> {
+fn list_xattr(loc: Location, list: *mut u8, size: usize) -> StarryResult<isize> {
     let loc = overlay::visible_target(&loc)?;
     let names = {
         let Some(store) = existing_store(&loc) else {
@@ -188,12 +234,12 @@ fn set_xattr(
     value: *const u8,
     size: usize,
     flags: i32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     let flags = flags as u32;
     if flags & !(XATTR_CREATE | XATTR_REPLACE) != 0
         || flags & XATTR_CREATE != 0 && flags & XATTR_REPLACE != 0
     {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let name = read_name(name)?;
@@ -203,13 +249,13 @@ fn set_xattr(
     if let Some(attrs) = &old_attrs {
         let exists = attrs.contains_key(&name);
         if exists && flags & XATTR_CREATE != 0 {
-            return Err(AxError::AlreadyExists);
+            return Err(StarryError::AlreadyExists);
         }
         if !exists && flags & XATTR_REPLACE != 0 {
-            return Err(linux_errno(LinuxError::ENODATA));
+            return Err(linux_errno(Errno::ENODATA));
         }
     } else if flags & XATTR_REPLACE != 0 {
-        return Err(linux_errno(LinuxError::ENODATA));
+        return Err(linux_errno(Errno::ENODATA));
     }
 
     let loc = overlay::ensure_copy_up_target(&loc)?;
@@ -223,13 +269,13 @@ fn set_xattr(
     match attrs.entry(name) {
         Entry::Occupied(mut entry) => {
             if flags & XATTR_CREATE != 0 {
-                return Err(AxError::AlreadyExists);
+                return Err(StarryError::AlreadyExists);
             }
             entry.insert(value);
         }
         Entry::Vacant(entry) => {
             if flags & XATTR_REPLACE != 0 {
-                return Err(linux_errno(LinuxError::ENODATA));
+                return Err(linux_errno(Errno::ENODATA));
             }
             entry.insert(value);
         }
@@ -238,12 +284,12 @@ fn set_xattr(
 }
 
 /// Remove an xattr, copying lower-backed overlay files up before mutation.
-fn remove_xattr(loc: Location, name: *const c_char) -> AxResult<isize> {
+fn remove_xattr(loc: Location, name: *const c_char) -> StarryResult<isize> {
     let name = read_name(name)?;
     let old_attrs = existing_attrs(&overlay::visible_target(&loc)?)
-        .ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
+        .ok_or_else(|| linux_errno(Errno::ENODATA))?;
     if !old_attrs.contains_key(&name) {
-        return Err(linux_errno(LinuxError::ENODATA));
+        return Err(linux_errno(Errno::ENODATA));
     }
 
     let loc = overlay::ensure_copy_up_target(&loc)?;
@@ -256,15 +302,15 @@ fn remove_xattr(loc: Location, name: *const c_char) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_listxattr(path: *const c_char, list: *mut u8, size: usize) -> AxResult<isize> {
+pub fn sys_listxattr(path: *const c_char, list: *mut u8, size: usize) -> StarryResult<isize> {
     list_xattr(resolve_path(path, false)?, list, size)
 }
 
-pub fn sys_llistxattr(path: *const c_char, list: *mut u8, size: usize) -> AxResult<isize> {
+pub fn sys_llistxattr(path: *const c_char, list: *mut u8, size: usize) -> StarryResult<isize> {
     list_xattr(resolve_path(path, true)?, list, size)
 }
 
-pub fn sys_flistxattr(fd: i32, list: *mut u8, size: usize) -> AxResult<isize> {
+pub fn sys_flistxattr(fd: i32, list: *mut u8, size: usize) -> StarryResult<isize> {
     list_xattr(resolve_fd(fd)?, list, size)
 }
 
@@ -273,7 +319,7 @@ pub fn sys_getxattr(
     name: *const c_char,
     value: *mut u8,
     size: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     get_xattr(resolve_path(path, false)?, name, value, size)
 }
 
@@ -282,12 +328,37 @@ pub fn sys_lgetxattr(
     name: *const c_char,
     value: *mut u8,
     size: usize,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     get_xattr(resolve_path(path, true)?, name, value, size)
 }
 
-pub fn sys_fgetxattr(fd: i32, name: *const c_char, value: *mut u8, size: usize) -> AxResult<isize> {
+pub fn sys_fgetxattr(
+    fd: i32,
+    name: *const c_char,
+    value: *mut u8,
+    size: usize,
+) -> StarryResult<isize> {
     get_xattr(resolve_fd(fd)?, name, value, size)
+}
+
+pub fn sys_getxattrat(
+    dirfd: i32,
+    path: *const c_char,
+    at_flags: u32,
+    name: *const c_char,
+    args: *const xattr_args,
+    args_size: usize,
+) -> StarryResult<isize> {
+    let args = read_xattr_args(args, args_size)?;
+    if args.flags != 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    get_xattr(
+        resolve_xattrat(dirfd, path, at_flags)?,
+        name,
+        args.value as *mut u8,
+        args.size as usize,
+    )
 }
 
 pub fn sys_setxattr(
@@ -296,8 +367,26 @@ pub fn sys_setxattr(
     value: *const u8,
     size: usize,
     flags: i32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     set_xattr(resolve_path(path, false)?, name, value, size, flags)
+}
+
+pub fn sys_setxattrat(
+    dirfd: i32,
+    path: *const c_char,
+    at_flags: u32,
+    name: *const c_char,
+    args: *const xattr_args,
+    args_size: usize,
+) -> StarryResult<isize> {
+    let args = read_xattr_args(args, args_size)?;
+    set_xattr(
+        resolve_xattrat(dirfd, path, at_flags)?,
+        name,
+        args.value as *const u8,
+        args.size as usize,
+        args.flags as i32,
+    )
 }
 
 pub fn sys_lsetxattr(
@@ -306,7 +395,7 @@ pub fn sys_lsetxattr(
     value: *const u8,
     size: usize,
     flags: i32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     set_xattr(resolve_path(path, true)?, name, value, size, flags)
 }
 
@@ -316,19 +405,19 @@ pub fn sys_fsetxattr(
     value: *const u8,
     size: usize,
     flags: i32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     set_xattr(resolve_fd(fd)?, name, value, size, flags)
 }
 
-pub fn sys_removexattr(path: *const c_char, name: *const c_char) -> AxResult<isize> {
+pub fn sys_removexattr(path: *const c_char, name: *const c_char) -> StarryResult<isize> {
     remove_xattr(resolve_path(path, false)?, name)
 }
 
-pub fn sys_lremovexattr(path: *const c_char, name: *const c_char) -> AxResult<isize> {
+pub fn sys_lremovexattr(path: *const c_char, name: *const c_char) -> StarryResult<isize> {
     remove_xattr(resolve_path(path, true)?, name)
 }
 
-pub fn sys_fremovexattr(fd: i32, name: *const c_char) -> AxResult<isize> {
+pub fn sys_fremovexattr(fd: i32, name: *const c_char) -> StarryResult<isize> {
     remove_xattr(resolve_fd(fd)?, name)
 }
 

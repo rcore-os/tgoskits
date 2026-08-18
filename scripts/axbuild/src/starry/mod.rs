@@ -266,14 +266,11 @@ impl Starry {
             rootfs::patch_rootfs(
                 &mut qemu,
                 &rootfs_path,
-                rootfs::RootfsPatchMode::EnsureDiskBootNet,
-            );
-            if case.snapshot && !qemu.args.iter().any(|arg| arg == "-snapshot") {
-                qemu.args.push("-snapshot".to_string());
-            }
-            if qemu.uefi {
-                qemu::apply_drive_snapshot_without_global_snapshot(&mut qemu);
-            }
+                rootfs::RootfsPatchOptions {
+                    mode: rootfs::RootfsPatchMode::EnsureDiskBootNet,
+                    write_policy: case.rootfs_write_policy,
+                },
+            )?;
             qemu::apply_timeout_scale(&mut qemu);
             println!("  prepare assets: 0ns (pipeline=plain, cache=miss)");
             println!(
@@ -322,14 +319,11 @@ impl Starry {
         rootfs::patch_rootfs(
             &mut qemu,
             &prepared_assets.rootfs_path,
-            rootfs::RootfsPatchMode::EnsureDiskBootNet,
-        );
-        qemu.args.extend(prepared_assets.extra_qemu_args.clone());
-        // Global snapshot mode makes the UEFI VVFAT ESP read-only. Preserve
-        // isolation on the ordinary disks while leaving the ESP writable.
-        if qemu.uefi {
-            qemu::apply_drive_snapshot_without_global_snapshot(&mut qemu);
-        }
+            rootfs::RootfsPatchOptions {
+                mode: rootfs::RootfsPatchMode::EnsureDiskBootNet,
+                write_policy: case.rootfs_write_policy,
+            },
+        )?;
         qemu::apply_timeout_scale(&mut qemu);
         println!(
             "  prepare assets: {:.2?} (pipeline={}, cache={})",

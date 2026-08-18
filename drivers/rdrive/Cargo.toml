@@ -36,6 +36,9 @@ x86.workspace = true
 
 [features]
 axtest = ["dep:axtest"]
+# Pull ax-sync's std Spin/RwLock impls so the crate's host tests link off-target
+# under `cargo xtask test`.
+host-test = ["ax-sync/host-test"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

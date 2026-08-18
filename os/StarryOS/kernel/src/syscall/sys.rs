@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
-use ax_errno::{AxError, AxResult, LinuxError};
+use ax_hal::mem::PAGE_SIZE_4K;
 use ax_task::current;
 use linux_raw_sys::{
     general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM},
@@ -16,8 +16,9 @@ use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 #[cfg(target_arch = "riscv64")]
 use crate::mm::UserPtr;
 use crate::{
+    Errno, StarryError, StarryResult,
     sync::Mutex,
-    task::{AsThread, SockFilter, SockFprog, get_task, processes},
+    task::{AsThread, SockFilter, SockFprog, get_task_by_number, processes},
 };
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
@@ -40,6 +41,13 @@ const SYSLOG_ACTION_SIZE_UNREAD: i32 = 9;
 const SYSLOG_ACTION_SIZE_BUFFER: i32 = 10;
 const SYSLOG_BUFFER_CAPACITY: usize = 4096;
 const SYSLOG_SEED_MESSAGE: &[u8] = b"StarryOS kernel log buffer initialized\n";
+/// Linux caps `getrandom` through `import_ubuf()` at `MAX_RW_COUNT`.
+/// `MAX_RW_COUNT` is `INT_MAX` rounded down to the page size on the 64-bit
+/// targets supported by StarryOS.
+const GETRANDOM_MAX_LEN: usize = (i32::MAX as usize) & !(PAGE_SIZE_4K - 1);
+/// Keep the syscall's temporary random-data buffer bounded by a small stack
+/// allocation, irrespective of the user-requested length.
+const GETRANDOM_CHUNK_SIZE: usize = 256;
 const SECCOMP_SET_MODE_STRICT: u32 = 0;
 const SECCOMP_SET_MODE_FILTER: u32 = 1;
 const SECCOMP_GET_ACTION_AVAIL: u32 = 2;
@@ -127,9 +135,9 @@ impl SyslogState {
 static SYSLOG_STATE: ax_lazyinit::LazyLock<Mutex<SyslogState>> =
     ax_lazyinit::LazyLock::new(|| Mutex::new(SyslogState::new()));
 
-pub fn sys_reboot(magic: u32, magic2: u32, cmd: u32, _arg: usize) -> AxResult<isize> {
+pub fn sys_reboot(magic: u32, magic2: u32, cmd: u32, _arg: usize) -> StarryResult<isize> {
     if !current().as_thread().cred().has_cap_sys_boot() {
-        return Err(AxError::from(LinuxError::EPERM));
+        return Err(StarryError::from(Errno::EPERM));
     }
 
     if magic != LINUX_REBOOT_MAGIC1
@@ -141,7 +149,7 @@ pub fn sys_reboot(magic: u32, magic2: u32, cmd: u32, _arg: usize) -> AxResult<is
                 | LINUX_REBOOT_MAGIC2C
         )
     {
-        return Err(AxError::from(LinuxError::EINVAL));
+        return Err(StarryError::from(Errno::EINVAL));
     }
 
     match cmd {
@@ -154,7 +162,7 @@ pub fn sys_reboot(magic: u32, magic2: u32, cmd: u32, _arg: usize) -> AxResult<is
             let _ = ax_fs_ng::shutdown_filesystems();
             ax_runtime::hal::power::system_off()
         }
-        _ => Err(AxError::from(LinuxError::EINVAL)),
+        _ => Err(StarryError::from(Errno::EINVAL)),
     }
 }
 
@@ -213,7 +221,7 @@ fn user_ns_overflow_gid() -> u32 {
     65534
 }
 
-pub fn sys_getuid() -> AxResult<isize> {
+pub fn sys_getuid() -> StarryResult<isize> {
     let overflow = user_ns_overflow_uid();
     if overflow != 0 {
         return Ok(overflow as isize);
@@ -222,7 +230,7 @@ pub fn sys_getuid() -> AxResult<isize> {
     Ok(cred.uid as isize)
 }
 
-pub fn sys_geteuid() -> AxResult<isize> {
+pub fn sys_geteuid() -> StarryResult<isize> {
     let overflow = user_ns_overflow_uid();
     if overflow != 0 {
         return Ok(overflow as isize);
@@ -231,7 +239,7 @@ pub fn sys_geteuid() -> AxResult<isize> {
     Ok(cred.euid as isize)
 }
 
-pub fn sys_getgid() -> AxResult<isize> {
+pub fn sys_getgid() -> StarryResult<isize> {
     let overflow = user_ns_overflow_gid();
     if overflow != 0 {
         return Ok(overflow as isize);
@@ -240,7 +248,7 @@ pub fn sys_getgid() -> AxResult<isize> {
     Ok(cred.gid as isize)
 }
 
-pub fn sys_getegid() -> AxResult<isize> {
+pub fn sys_getegid() -> StarryResult<isize> {
     let overflow = user_ns_overflow_gid();
     if overflow != 0 {
         return Ok(overflow as isize);
@@ -249,7 +257,7 @@ pub fn sys_getegid() -> AxResult<isize> {
     Ok(cred.egid as isize)
 }
 
-pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> AxResult<isize> {
+pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> StarryResult<isize> {
     let overflow = user_ns_overflow_uid();
     if overflow != 0 {
         ruid.vm_write(overflow)?;
@@ -264,7 +272,7 @@ pub fn sys_getresuid(ruid: *mut u32, euid: *mut u32, suid: *mut u32) -> AxResult
     Ok(0)
 }
 
-pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> AxResult<isize> {
+pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> StarryResult<isize> {
     let overflow = user_ns_overflow_gid();
     if overflow != 0 {
         rgid.vm_write(overflow)?;
@@ -281,7 +289,7 @@ pub fn sys_getresgid(rgid: *mut u32, egid: *mut u32, sgid: *mut u32) -> AxResult
 
 // ── setresuid / setresgid ────────────────────────────────────────────
 
-pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> AxResult<isize> {
+pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> StarryResult<isize> {
     debug!("sys_setresuid <= ruid: {ruid}, euid: {euid}, suid: {suid}");
     let thread = current();
     let thread = thread.as_thread();
@@ -304,19 +312,19 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> AxResult<isize> {
         let allowed = [old.uid, old.euid, old.suid];
         if ruid != NOCHG {
             if !allowed.contains(&ruid) {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             new.uid = ruid;
         }
         if euid != NOCHG {
             if !allowed.contains(&euid) {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             new.euid = euid;
         }
         if suid != NOCHG {
             if !allowed.contains(&suid) {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             new.suid = suid;
         }
@@ -332,7 +340,7 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> AxResult<isize> {
+pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> StarryResult<isize> {
     debug!("sys_setresgid <= rgid: {rgid}, egid: {egid}, sgid: {sgid}");
     let thread = current();
     let thread = thread.as_thread();
@@ -353,19 +361,19 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> AxResult<isize> {
         let allowed = [old.gid, old.egid, old.sgid];
         if rgid != NOCHG {
             if !allowed.contains(&rgid) {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             new.gid = rgid;
         }
         if egid != NOCHG {
             if !allowed.contains(&egid) {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             new.egid = egid;
         }
         if sgid != NOCHG {
             if !allowed.contains(&sgid) {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             new.sgid = sgid;
         }
@@ -382,12 +390,12 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> AxResult<isize> {
 
 // ── setuid / setgid ─────────────────────────────────────────────────
 
-pub fn sys_setuid(uid: u32) -> AxResult<isize> {
+pub fn sys_setuid(uid: u32) -> StarryResult<isize> {
     debug!("sys_setuid <= uid: {uid}");
     // Linux setuid(2) §ERRORS: "EINVAL — uid is not valid in this user namespace."
     // Single-arg setuid has no NOCHG sentinel; (uid_t)-1 must be rejected.
     if !uid_valid(uid) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let thread = current();
     let thread = thread.as_thread();
@@ -402,7 +410,7 @@ pub fn sys_setuid(uid: u32) -> AxResult<isize> {
     } else {
         // Unprivileged: only sets euid, and only if uid matches uid or suid.
         if uid != old.uid && uid != old.suid {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         new.euid = uid;
     }
@@ -416,11 +424,11 @@ pub fn sys_setuid(uid: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_setgid(gid: u32) -> AxResult<isize> {
+pub fn sys_setgid(gid: u32) -> StarryResult<isize> {
     debug!("sys_setgid <= gid: {gid}");
     // Linux setgid(2) §ERRORS: "EINVAL — gid is not valid in this user namespace."
     if !uid_valid(gid) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let thread = current();
     let thread = thread.as_thread();
@@ -433,7 +441,7 @@ pub fn sys_setgid(gid: u32) -> AxResult<isize> {
         new.sgid = gid;
     } else {
         if gid != old.gid && gid != old.sgid {
-            return Err(AxError::OperationNotPermitted);
+            return Err(StarryError::OperationNotPermitted);
         }
         new.egid = gid;
     }
@@ -449,7 +457,7 @@ pub fn sys_setgid(gid: u32) -> AxResult<isize> {
 
 // ── setreuid / setregid ─────────────────────────────────────────────
 
-pub fn sys_setreuid(ruid: u32, euid: u32) -> AxResult<isize> {
+pub fn sys_setreuid(ruid: u32, euid: u32) -> StarryResult<isize> {
     debug!("sys_setreuid <= ruid: {ruid}, euid: {euid}");
     let thread = current();
     let thread = thread.as_thread();
@@ -467,14 +475,14 @@ pub fn sys_setreuid(ruid: u32, euid: u32) -> AxResult<isize> {
         // ruid can only be set to current uid or euid.
         if ruid != NOCHG {
             if ruid != old.uid && ruid != old.euid {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             new.uid = ruid;
         }
         // euid can be set to current uid, euid, or suid.
         if euid != NOCHG {
             if euid != old.uid && euid != old.euid && euid != old.suid {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             new.euid = euid;
         }
@@ -497,7 +505,7 @@ pub fn sys_setreuid(ruid: u32, euid: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_setregid(rgid: u32, egid: u32) -> AxResult<isize> {
+pub fn sys_setregid(rgid: u32, egid: u32) -> StarryResult<isize> {
     debug!("sys_setregid <= rgid: {rgid}, egid: {egid}");
     let thread = current();
     let thread = thread.as_thread();
@@ -514,13 +522,13 @@ pub fn sys_setregid(rgid: u32, egid: u32) -> AxResult<isize> {
     } else {
         if rgid != NOCHG {
             if rgid != old.gid && rgid != old.egid {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             new.gid = rgid;
         }
         if egid != NOCHG {
             if egid != old.gid && egid != old.egid && egid != old.sgid {
-                return Err(AxError::OperationNotPermitted);
+                return Err(StarryError::OperationNotPermitted);
             }
             new.egid = egid;
         }
@@ -551,7 +559,7 @@ pub fn sys_setregid(rgid: u32, egid: u32) -> AxResult<isize> {
 //   Query trick: passing `(uid_t)-1` leaves the fsuid unchanged but still
 //   returns the previous value — used by libc to read the current fsuid.
 
-pub fn sys_setfsuid(fsuid: u32) -> AxResult<isize> {
+pub fn sys_setfsuid(fsuid: u32) -> StarryResult<isize> {
     debug!("sys_setfsuid <= fsuid: {fsuid}");
     let thread = current();
     let thread = thread.as_thread();
@@ -585,7 +593,7 @@ pub fn sys_setfsuid(fsuid: u32) -> AxResult<isize> {
     Ok(prev_fsuid as isize)
 }
 
-pub fn sys_setfsgid(fsgid: u32) -> AxResult<isize> {
+pub fn sys_setfsgid(fsgid: u32) -> StarryResult<isize> {
     debug!("sys_setfsgid <= fsgid: {fsgid}");
     let thread = current();
     let thread = thread.as_thread();
@@ -614,7 +622,7 @@ pub fn sys_setfsgid(fsgid: u32) -> AxResult<isize> {
     Ok(prev_fsgid as isize)
 }
 
-pub fn sys_getgroups(size: usize, list: *mut u32) -> AxResult<isize> {
+pub fn sys_getgroups(size: usize, list: *mut u32) -> StarryResult<isize> {
     debug!("sys_getgroups <= size: {size}");
     let cred = current().as_thread().cred();
     let ngroups = cred.groups.len();
@@ -622,7 +630,7 @@ pub fn sys_getgroups(size: usize, list: *mut u32) -> AxResult<isize> {
         return Ok(ngroups as isize);
     }
     if size < ngroups {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if ngroups > 0 {
         vm_write_slice(list, &cred.groups)?;
@@ -633,22 +641,23 @@ pub fn sys_getgroups(size: usize, list: *mut u32) -> AxResult<isize> {
 /// Linux limits supplementary groups to 65536 (`NGROUPS_MAX`).
 const NGROUPS_MAX: usize = 65536;
 
-pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
+pub fn sys_setgroups(size: i32, list: *const u32) -> StarryResult<isize> {
     debug!("sys_setgroups <= size: {size}");
     let thread = current();
     let thread = thread.as_thread();
     let old = thread.cred();
 
     if !old.has_cap_setgid() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
     // Linux 3.19+: writing "deny" to /proc/self/setgroups prevents setgroups(2).
     if thread.setgroups_deny() {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
-    if size > NGROUPS_MAX {
-        return Err(AxError::InvalidInput);
+    if (size as u32) > NGROUPS_MAX as u32 {
+        return Err(StarryError::InvalidInput);
     }
+    let size = size as usize;
 
     let groups = if size > 0 {
         let mut buf: Vec<MaybeUninit<u32>> = vec![MaybeUninit::uninit(); size];
@@ -670,7 +679,7 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
+pub fn sys_uname(name: *mut new_utsname) -> StarryResult<isize> {
     let curr = current();
     // Build the utsname inside a block so the SpinNoIrq guard is dropped
     // before we touch user memory via vm_write (access_user_memory requires
@@ -678,20 +687,21 @@ pub fn sys_uname(name: *mut new_utsname) -> AxResult<isize> {
     let uts = {
         let nsproxy = curr.as_thread().proc_data.nsproxy.lock();
         let ns = nsproxy.uts_ns.lock();
-        axnsproxy::build_utsname(&ns)
+        crate::namespace::build_utsname(&ns)
     };
     name.vm_write(uts)?;
     Ok(0)
 }
 
-pub fn sys_sethostname(name: *const c_char, len: usize) -> AxResult<isize> {
-    if len > 64 {
-        return Err(AxError::InvalidInput);
-    }
+pub fn sys_sethostname(name: *const c_char, len: i32) -> StarryResult<isize> {
     let curr = current();
     if curr.as_thread().cred().euid != 0 {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
+    if !(0..=64).contains(&len) {
+        return Err(StarryError::InvalidInput);
+    }
+    let len = len as usize;
     let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
     vm_read_slice(name.cast::<u8>(), &mut buf)?;
     let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
@@ -704,14 +714,15 @@ pub fn sys_sethostname(name: *const c_char, len: usize) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_setdomainname(name: *const c_char, len: usize) -> AxResult<isize> {
-    if len > 64 {
-        return Err(AxError::InvalidInput);
-    }
+pub fn sys_setdomainname(name: *const c_char, len: i32) -> StarryResult<isize> {
     let curr = current();
     if curr.as_thread().cred().euid != 0 {
-        return Err(AxError::OperationNotPermitted);
+        return Err(StarryError::OperationNotPermitted);
     }
+    if !(0..=64).contains(&len) {
+        return Err(StarryError::InvalidInput);
+    }
+    let len = len as usize;
     let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
     vm_read_slice(name.cast::<u8>(), &mut buf)?;
     let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
@@ -728,7 +739,7 @@ pub fn sys_setdomainname(name: *const c_char, len: usize) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
+pub fn sys_sysinfo(info: *mut sysinfo) -> StarryResult<isize> {
     let mut kinfo: sysinfo = unsafe { core::mem::zeroed() };
 
     let total = ax_runtime::hal::mem::total_ram_size();
@@ -752,23 +763,23 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     Ok(0)
 }
 
-fn require_syslog_privilege() -> AxResult<()> {
+fn require_syslog_privilege() -> StarryResult<()> {
     if current().as_thread().cred().euid == 0 {
         Ok(())
     } else {
-        Err(AxError::OperationNotPermitted)
+        Err(StarryError::OperationNotPermitted)
     }
 }
 
-fn validate_syslog_read_args(buf: *mut c_char, len: usize) -> AxResult<()> {
-    if buf.is_null() || len > i32::MAX as usize {
-        Err(AxError::InvalidInput)
+fn validate_syslog_read_args(buf: *mut c_char, len: i32) -> StarryResult<()> {
+    if buf.is_null() || len < 0 {
+        Err(StarryError::InvalidInput)
     } else {
         Ok(())
     }
 }
 
-pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
+pub fn sys_syslog(ty: i32, buf: *mut c_char, len: i32) -> StarryResult<isize> {
     match ty {
         SYSLOG_ACTION_CLOSE | SYSLOG_ACTION_OPEN => Ok(0),
         SYSLOG_ACTION_READ => {
@@ -776,7 +787,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
             validate_syslog_read_args(buf, len)?;
             let data = {
                 let mut state = SYSLOG_STATE.lock();
-                state.read(len)
+                state.read(len as usize)
             };
             if !data.is_empty() {
                 vm_write_slice(buf.cast::<u8>(), &data)?;
@@ -788,7 +799,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
             validate_syslog_read_args(buf, len)?;
             let data = {
                 let state = SYSLOG_STATE.lock();
-                state.read_all(len)
+                state.read_all(len as usize)
             };
             if !data.is_empty() {
                 vm_write_slice(buf.cast::<u8>(), &data)?;
@@ -800,7 +811,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
             validate_syslog_read_args(buf, len)?;
             let data = {
                 let mut state = SYSLOG_STATE.lock();
-                let data = state.read_all(len);
+                let data = state.read_all(len as usize);
                 state.clear();
                 data
             };
@@ -830,11 +841,11 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
         SYSLOG_ACTION_CONSOLE_LEVEL => {
             require_syslog_privilege()?;
             if !(1..=8).contains(&len) {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             let mut state = SYSLOG_STATE.lock();
             let old_level = state.console_level;
-            state.console_level = len;
+            state.console_level = len as usize;
             Ok(old_level as isize)
         }
         SYSLOG_ACTION_SIZE_UNREAD => {
@@ -846,7 +857,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
             let state = SYSLOG_STATE.lock();
             Ok(state.buffer_len() as isize)
         }
-        _ => Err(AxError::InvalidInput),
+        _ => Err(StarryError::InvalidInput),
     }
 }
 
@@ -859,13 +870,13 @@ bitflags::bitflags! {
     }
 }
 
-pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> AxResult<isize> {
+pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> StarryResult<isize> {
     if len == 0 {
         return Ok(0);
     }
-    let flags = GetRandomFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
+    let flags = GetRandomFlags::from_bits(flags).ok_or(StarryError::InvalidInput)?;
     if flags.contains(GetRandomFlags::INSECURE) && flags.contains(GetRandomFlags::RANDOM) {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     debug!("sys_getrandom <= buf: {buf:p}, len: {len}, flags: {flags:?}");
@@ -876,32 +887,53 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> AxResult<isize> {
         "/dev/urandom"
     };
 
+    // Linux `import_ubuf()` limits the iterator before feeding it to the
+    // random source. Bound the request equivalently, and reject an address
+    // range that wraps before touching the random device.
+    let len = len.min(GETRANDOM_MAX_LEN);
+    (buf as usize).checked_add(len).ok_or(Errno::EFAULT)?;
+
     let f = ax_fs_ng::vfs::current_fs_context().lock().resolve(path)?;
-    let mut kbuf = vec![0; len];
-    let len = f.entry().as_file()?.read_at(&mut kbuf, 0)?;
+    let file = f.entry().as_file()?;
+    let mut kbuf = [0u8; GETRANDOM_CHUNK_SIZE];
+    let mut written = 0;
+    while written < len {
+        let chunk_len = (len - written).min(kbuf.len());
+        let read = file.read_at(&mut kbuf[..chunk_len], 0)?;
+        if read == 0 {
+            break;
+        }
+        let dst = (buf as usize).checked_add(written).ok_or(Errno::EFAULT)? as *mut u8;
+        vm_write_slice(dst, &kbuf[..read])?;
+        written += read;
+        // Preserve a short device read as the syscall result. Retrying after
+        // having copied a partial result could turn Linux's partial success
+        // into a later EAGAIN for a nonblocking random source.
+        if read < chunk_len {
+            break;
+        }
+    }
 
-    vm_write_slice(buf, &kbuf)?;
-
-    Ok(len as _)
+    Ok(written as _)
 }
 
-fn check_seccomp_install_permission() -> AxResult<()> {
+fn check_seccomp_install_permission() -> StarryResult<()> {
     let curr = current();
     let thread = curr.as_thread();
     if thread.no_new_privs() || thread.cred().has_cap_sys_admin() {
         Ok(())
     } else {
-        Err(AxError::OperationNotPermitted)
+        Err(StarryError::OperationNotPermitted)
     }
 }
 
-fn read_seccomp_filter(args: *const ()) -> AxResult<Vec<SockFilter>> {
+fn read_seccomp_filter(args: *const ()) -> StarryResult<Vec<SockFilter>> {
     if args.is_null() {
-        return Err(AxError::BadAddress);
+        return Err(StarryError::BadAddress);
     }
     let prog = unsafe { (args as *const SockFprog).vm_read_uninit()?.assume_init() };
     if prog.len == 0 || prog.filter.is_null() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     let mut raw = vec![MaybeUninit::<SockFilter>::uninit(); prog.len as usize];
     vm_read_slice(prog.filter, &mut raw)?;
@@ -911,9 +943,9 @@ fn read_seccomp_filter(args: *const ()) -> AxResult<Vec<SockFilter>> {
         .collect())
 }
 
-fn seccomp_action_available(args: *const ()) -> AxResult<isize> {
+fn seccomp_action_available(args: *const ()) -> StarryResult<isize> {
     if args.is_null() {
-        return Err(AxError::BadAddress);
+        return Err(StarryError::BadAddress);
     }
     let action = unsafe { (args as *const u32).vm_read_uninit()?.assume_init() };
     match action {
@@ -922,7 +954,7 @@ fn seccomp_action_available(args: *const ()) -> AxResult<isize> {
         | SECCOMP_RET_ERRNO
         | SECCOMP_RET_KILL_THREAD
         | SECCOMP_RET_KILL_PROCESS => Ok(0),
-        _ => Err(AxError::OperationNotSupported),
+        _ => Err(StarryError::OperationNotSupported),
     }
 }
 
@@ -931,10 +963,10 @@ fn sync_seccomp_to_thread_group() {
     let thread = curr.as_thread();
     let state = thread.seccomp_state();
     for tid in thread.proc_data.proc.threads() {
-        if tid == thread.tid() {
+        if tid == thread.tid_number() {
             continue;
         }
-        if let Ok(task) = get_task(tid)
+        if let Ok(task) = get_task_by_number(tid)
             && let Some(peer) = task.try_as_thread()
         {
             peer.set_seccomp_state(state.clone());
@@ -942,15 +974,15 @@ fn sync_seccomp_to_thread_group() {
     }
 }
 
-pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> AxResult<isize> {
+pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> StarryResult<isize> {
     if flags & !SECCOMP_ALLOWED_FLAGS != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     match op {
         SECCOMP_SET_MODE_STRICT => {
             if flags != 0 || !args.is_null() {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             current().as_thread().install_seccomp_strict()?;
         }
@@ -966,11 +998,11 @@ pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> AxResult<isize> {
         }
         SECCOMP_GET_ACTION_AVAIL => {
             if flags != 0 {
-                return Err(AxError::InvalidInput);
+                return Err(StarryError::InvalidInput);
             }
             return seccomp_action_available(args);
         }
-        _ => return Err(AxError::InvalidInput),
+        _ => return Err(StarryError::InvalidInput),
     }
 
     Ok(0)
@@ -980,12 +1012,12 @@ pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> AxResult<isize> {
 const SYS_RISCV_FLUSH_ICACHE_LOCAL: usize = 1;
 
 #[cfg(target_arch = "riscv64")]
-pub fn sys_riscv_flush_icache(start: usize, end: usize, flags: usize) -> AxResult<isize> {
+pub fn sys_riscv_flush_icache(start: usize, end: usize, flags: usize) -> StarryResult<isize> {
     if flags & !SYS_RISCV_FLUSH_ICACHE_LOCAL != 0 {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if end < start {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     if flags & SYS_RISCV_FLUSH_ICACHE_LOCAL != 0 {
@@ -1011,15 +1043,15 @@ pub fn sys_riscv_hwprobe(
     cpu_count: usize,
     cpus: *const usize,
     flags: u32,
-) -> AxResult<isize> {
+) -> StarryResult<isize> {
     if flags != 0 || cpu_count != 0 || !cpus.is_null() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
     if pair_count == 0 {
         return Ok(0);
     }
     if pair_count > isize::MAX as usize / core::mem::size_of::<RiscvHwprobe>() {
-        return Err(AxError::InvalidInput);
+        return Err(StarryError::InvalidInput);
     }
 
     let pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast()).get_as_mut_slice(pair_count)?;
@@ -1044,15 +1076,15 @@ pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
         && uid_valid(u32::MAX - 1)
         && !uid_valid(u32::MAX)  // NOCHG is invalid
 
-    // validate_syslog_read_args: null buf or len > i32::MAX is invalid.
+    // validate_syslog_read_args: null buf or negative len is invalid.
     && validate_syslog_read_args(core::ptr::null_mut(), 0).is_err()
     && validate_syslog_read_args(core::ptr::null_mut::<c_char>(), 100).is_err()
     && validate_syslog_read_args(0x1 as *mut c_char, 0).is_ok()  // non-null, len=0 is ok
     && {
         let mut dummy: c_char = 0;
         let ptr: *mut c_char = &mut dummy;
-        validate_syslog_read_args(ptr, i32::MAX as usize).is_ok()
-        && validate_syslog_read_args(ptr, (i32::MAX as usize) + 1).is_err()
+        validate_syslog_read_args(ptr, i32::MAX).is_ok()
+        && validate_syslog_read_args(ptr, -1).is_err()
     }
 }
 

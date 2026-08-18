@@ -76,9 +76,10 @@ pub(super) fn patch_runtime_fdt(
                 format!("Failed to parse host FDT while updating guest FDT: {err:#?}")
             )
         })?;
-    let (serial_profile, serial_path, additional_serials) =
-        vm.with_planned_device_graph(|graph| {
+    let (serial_profile, serial_path, additional_serials, ivc_channels) = vm
+        .with_planned_device_graph(|graph| {
             let serials = crate::machine::resolved_serial_devices(graph)?;
+            let ivc_channels = crate::machine::resolved_ivc_channels(graph)?;
             let serial = serials
                 .iter()
                 .find(|serial| serial.id() == "console0")
@@ -92,7 +93,7 @@ pub(super) fn patch_runtime_fdt(
                 .filter(|serial| serial.id() != "console0")
                 .map(crate::machine::ResolvedSerialDevice::profile)
                 .collect();
-            Ok((serial.profile(), path, additional))
+            Ok((serial.profile(), path, additional, ivc_channels))
         })?;
     let (serial_identity, plic_profile) = vm.with_config(|config| {
         (
@@ -105,17 +106,20 @@ pub(super) fn patch_runtime_fdt(
         )
     });
     let guest_fdt = super::fdt::core::create::patch_guest_fdt_for_runtime(
-        fdt_bytes,
-        &vm.memory_regions(),
-        crate_config,
-        serial_profile,
-        serial_identity.as_ref(),
-        &additional_serials,
-        None,
-        plic_profile.as_ref(),
-        None,
-        None,
-        false,
+        super::fdt::core::create::GuestFdtRuntimePatch {
+            fdt_bytes,
+            memory_regions: &vm.memory_regions(),
+            ivc_channels: &ivc_channels,
+            crate_config,
+            serial_profile,
+            serial_identity: serial_identity.as_ref(),
+            additional_serials: &additional_serials,
+            gic_profile: None,
+            plic_profile: plic_profile.as_ref(),
+            timer_profile: None,
+            initrd_start_size: None,
+            create_chosen: false,
+        },
     )?;
     super::fdt::ensure_chosen_from_host(guest_fdt, host_fdt.as_ref())
 }

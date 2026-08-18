@@ -392,12 +392,12 @@ accept readiness 由 `ListenTableEntryInner.accept_poll` 维护。pending child 
 通用阻塞逻辑来自 `GeneralOptions`：
 
 ```rust
-pub fn send_poller_with<P: Pollable, F: FnMut() -> AxResult<T>, T>(
+pub fn send_poller_with<P: Pollable, F: FnMut() -> NetResult<T>, T>(
     &self,
     pollable: &P,
     extra_nonblocking: bool,
     f: F,
-) -> AxResult<T> {
+) -> NetResult<T> {
     block_on(timeout(
         self.send_timeout(),
         poll_io(pollable, IoEvents::OUT, self.nonblocking() || extra_nonblocking, f),

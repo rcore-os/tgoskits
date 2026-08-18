@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** re-export the queryable someboot secondary CPU startup handle in place of the
+  blocking `cpu_on()` API; timeout and polling policy now belong to the platform adapter.
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/somehal-v0.8.2...somehal-v0.8.3) - 2026-08-09
 
 ### Added

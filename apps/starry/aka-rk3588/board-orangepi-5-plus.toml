@@ -1,0 +1,10 @@
+board_type = "OrangePi-5-Plus-robot"
+shell_prefix = "root@starry:/root #"
+success_regex = [
+  '(?m)^AKA_RK3588_DEMO_PASSED$',
+]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?m)^AKA_RK3588_DEMO_FAILED .*$'
+]
+timeout = 600

@@ -45,6 +45,9 @@ pub use core::{arch, cell, cmp, hint, marker, mem, ops, ptr, slice, str};
 
 #[macro_use]
 mod macros;
+mod error;
+
+pub use error::{StdError, StdResult};
 
 pub mod env;
 pub mod io;
