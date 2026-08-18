@@ -560,7 +560,19 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                     let child_pid = process
                         .identity()
                         .visible_number(&parent.identity().active_namespace())
-                        .expect("child process must be visible to its parent")
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "child process must be visible to its parent: child id={:?} \
+                                 snapshot={:?}, parent id={:?} snapshot={:?} parent active \
+                                 ns={:?} lifecycle={:?}",
+                                process.identity().id(),
+                                process.identity().snapshot(),
+                                parent.identity().id(),
+                                parent.identity().snapshot(),
+                                parent.identity().active_namespace().id(),
+                                parent.identity().active_namespace().lifecycle(),
+                            )
+                        })
                         .get();
                     SignalInfo::new_sigchld(child_pid, child_uid, code, status)
                 } else {
@@ -613,6 +625,12 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     thr.set_exit();
     unsafe { thr.exit_event().wake(axpoll::IoEvents::IN) };
     unsafe { thr.proc_data.thread_exit_event().wake(axpoll::IoEvents::IN) };
+
+    // The exit path is complete only after zombie publication, parent
+    // notification, and relation close. PID namespace shutdown waits on this
+    // completion instead of the early runtime-link detach, mirroring Linux's
+    // `pid_allocated` drop in `free_pid()` — never before `do_notify_parent()`.
+    thr.pid_identity().mark_exit_path_complete();
 }
 
 /// Request a sibling thread to exit with thread-only semantics.

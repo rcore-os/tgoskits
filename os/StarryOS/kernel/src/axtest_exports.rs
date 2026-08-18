@@ -262,6 +262,10 @@ pub fn zombie_retains_the_leader_tid_role_until_reap() -> bool {
     super::task::zombie_retains_the_leader_tid_role_until_reap_for_test()
 }
 
+pub fn shutdown_wait_covers_the_exit_path_after_runtime_detach() -> bool {
+    super::task::shutdown_wait_covers_the_exit_path_after_runtime_detach_for_test()
+}
+
 pub fn resource_limit_defaults_hold() -> bool {
     super::task::resource_limit_defaults_hold_for_test()
 }

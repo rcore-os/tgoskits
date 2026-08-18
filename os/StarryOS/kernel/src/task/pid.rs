@@ -601,6 +601,7 @@ impl PidReservation {
             state: IrqMutex::new(PidIdentityState {
                 publication: PidIdentityPublication::Reserved,
                 runtime: RuntimeTaskLink::Reserved,
+                exit_path_pending: false,
                 roles: 0,
                 process: None,
                 process_group: Weak::new(),
@@ -675,6 +676,13 @@ enum RuntimeTaskLink {
 struct PidIdentityState {
     publication: PidIdentityPublication,
     runtime: RuntimeTaskLink,
+    /// The task detached its runtime link (early in `do_exit`) but its exit
+    /// path has not finished the namespace-visible phases yet (zombie
+    /// publication, parent notification, relation close). Modeled after
+    /// Linux's `pid_allocated`, which only drops in `free_pid()` after
+    /// `do_notify_parent()`, so a PID-namespace shutdown wait cannot complete
+    /// and mark the namespace dead while a member still dereferences it.
+    exit_path_pending: bool,
     roles: u8,
     process: Option<Arc<Process>>,
     process_group: Weak<ProcessGroup>,
@@ -792,27 +800,49 @@ impl PidIdentity {
         task.upgrade().ok().flatten()
     }
 
-    /// Reports whether a published PID still owns a runtime task transition.
+    /// Reports whether a published PID still owns a runtime task transition
+    /// or an exit path that has not finished its namespace-visible phases.
     ///
     /// PID namespace shutdown must include the short publication window before
     /// a staged scheduler task is attached. Linux likewise waits for every PID
     /// task left after PID allocation is disabled, not only currently runnable
-    /// tasks.
-    fn has_unexited_task(&self) -> bool {
-        !matches!(self.state.lock().runtime, RuntimeTaskLink::Exited)
+    /// tasks; and its `pid_allocated` count only drops in `free_pid()` — after
+    /// `do_notify_parent()` — so the wait also covers members that detached
+    /// their runtime link but still have zombie publication, parent
+    /// notification, and relation close ahead of them.
+    pub(crate) fn has_unexited_task(&self) -> bool {
+        let state = self.state.lock();
+        !matches!(state.runtime, RuntimeTaskLink::Exited) || state.exit_path_pending
     }
 
     pub fn mark_task_exited(&self) {
         let should_detach = {
             let mut state = self.state.lock();
             state.runtime = RuntimeTaskLink::Exited;
+            state.exit_path_pending = true;
             state.roles == 0
         };
         if should_detach {
             self.detach();
         }
-        for binding in self.bindings.iter().rev() {
-            unsafe { binding.namespace.task_exit_event.wake(IoEvents::IN) };
+    }
+
+    /// Completes the exit path of the task that detached its runtime link.
+    ///
+    /// Called at the end of `do_exit`, after zombie publication, parent
+    /// notification, and relation close, so PID namespace shutdown only
+    /// observes the member as exited once it no longer dereferences the
+    /// dying namespace. The wake mirrors the one Linux delivers by dropping
+    /// `pid_allocated` in `free_pid()`.
+    pub fn mark_exit_path_complete(&self) {
+        let pending = {
+            let mut state = self.state.lock();
+            core::mem::replace(&mut state.exit_path_pending, false)
+        };
+        if pending {
+            for binding in self.bindings.iter().rev() {
+                unsafe { binding.namespace.task_exit_event.wake(IoEvents::IN) };
+            }
         }
     }
 
@@ -825,6 +855,9 @@ impl PidIdentity {
             RuntimeTaskLink::Live(_) | RuntimeTaskLink::Exited
         ));
         state.runtime = RuntimeTaskLink::Live(task.downgrade());
+        // The transferred identity continues under the new task; the retired
+        // leader's exit path no longer owes namespace-visible work.
+        state.exit_path_pending = false;
     }
 
     /// Attaches the process lifecycle to the leader identity exactly once.

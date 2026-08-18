@@ -52,6 +52,11 @@ fn zombie_retains_the_leader_tid_role_until_reap() {
 }
 
 #[axtest]
+fn shutdown_wait_covers_the_exit_path_after_runtime_detach() {
+    ax_assert!(axtest_exports::shutdown_wait_covers_the_exit_path_after_runtime_detach());
+}
+
+#[axtest]
 fn time_value_conversion_rules_hold() {
     ax_assert!(axtest_exports::time_value_conversion_rules_hold());
 }

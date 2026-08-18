@@ -119,3 +119,24 @@ pub(crate) fn zombie_retains_the_leader_tid_role_until_reap_for_test() -> bool {
     let reaped = reap_process(&process).is_some();
     retained && reaped && !identity.has_role::<Tid>()
 }
+
+pub(crate) fn shutdown_wait_covers_the_exit_path_after_runtime_detach_for_test() -> bool {
+    let identity = PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader)
+        .unwrap()
+        .publish()
+        .unwrap();
+    let _tid_lease = identity.acquire_role::<Tid>().unwrap();
+
+    // The runtime link detaches early in `do_exit`; zombie publication,
+    // parent notification, and relation close follow. A PID namespace
+    // shutdown wait must still count the member as unexited in that window,
+    // mirroring Linux's `pid_allocated` dropping only in `free_pid()` after
+    // `do_notify_parent()`.
+    identity.mark_task_exited();
+    let pending_after_detach = identity.has_unexited_task();
+
+    identity.mark_exit_path_complete();
+    let complete_after_finish = !identity.has_unexited_task();
+
+    pending_after_detach && complete_after_finish
+}

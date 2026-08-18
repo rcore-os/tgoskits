@@ -175,6 +175,7 @@ mod axtest;
 #[cfg(axtest)]
 pub(crate) use axtest::{
     reaping_identity_is_not_publicly_resolvable_for_test,
+    shutdown_wait_covers_the_exit_path_after_runtime_detach_for_test,
     zombie_retains_the_leader_tid_role_until_reap_for_test,
 };
 
@@ -218,6 +219,32 @@ mod tests {
 
         drop(process);
         assert!(namespace.lookup(number).is_none());
+    }
+
+    #[test]
+    fn shutdown_wait_covers_the_exit_path_after_runtime_detach() {
+        let namespace = crate::task::new_test_pid_namespace();
+        let identity = PidReservation::reserve(&namespace, PidReservationKind::ProcessLeader)
+            .unwrap()
+            .publish()
+            .unwrap();
+        let _tid_lease = identity.acquire_role::<Tid>().unwrap();
+
+        // Before the exit path starts, the member counts as unexited.
+        assert!(identity.has_unexited_task());
+
+        // The runtime link detaches early in `do_exit`, but zombie
+        // publication, parent notification, and relation close are still
+        // ahead: the member must keep counting as unexited, or a PID
+        // namespace shutdown wait races those phases, finishes the
+        // namespace, and the dying member panics dereferencing it. Linux
+        // drops `pid_allocated` only in `free_pid()`, after
+        // `do_notify_parent()`.
+        identity.mark_task_exited();
+        assert!(identity.has_unexited_task());
+
+        identity.mark_exit_path_complete();
+        assert!(!identity.has_unexited_task());
     }
 
     #[test]
