@@ -57,7 +57,7 @@ fn with_observed_irq_entry<T>(
     let preempt_guard = ax_sync::PreemptGuard::new();
     let result = dispatch();
 
-    drop(preempt_guard); // rescheduling may occur when preemption is re-enabled.
+    preempt_guard.finish_irq_return(); // rescheduling may occur before the IRQ-return boundary.
     after_preempt_release();
     drop(irq_guard);
     result

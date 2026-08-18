@@ -50,6 +50,55 @@ fn atomic_context_uses_the_bound_arceos_cpu_state() {
 }
 
 #[axtest]
+fn pending_preemption_retains_scheduler_frame_until_first_entry() {
+    let observer_saw_consumed_frame = Arc::new(AtomicBool::new(false));
+    let observer_saw_consumed_frame_in_task = Arc::clone(&observer_saw_consumed_frame);
+    let cpu_id = ax_hal::percpu::this_cpu_id();
+    let preemption_token = ax_task::disable_preempt();
+    let observer = ax_task::TaskInner::new(
+        move || {
+            observer_saw_consumed_frame_in_task.store(
+                ax_task::axtest_support::initial_scheduler_frame_consumed(),
+                Ordering::Release,
+            );
+        },
+        "scheduler-frame-observer".into(),
+        ax_task::default_task_stack_size(),
+    );
+    observer.set_cpumask(ax_task::AxCpuMask::one_shot(cpu_id));
+    let observer = ax_task::spawn_task(observer);
+
+    ax_task::axtest_support::request_current_preemption();
+    let pending_before_exit = ax_task::runtime_preemption_pending();
+    ax_task::enable_preempt(preemption_token);
+    let pending_consumed = !ax_task::runtime_preemption_pending();
+
+    ax_assert_eq!(observer.join(), 0);
+    ax_assert!(pending_before_exit);
+    ax_assert!(pending_consumed);
+    ax_assert!(observer_saw_consumed_frame.load(Ordering::Acquire));
+}
+
+#[axtest]
+fn irq_disabled_task_exit_defers_pending_preemption_to_the_outer_boundary() {
+    let irq_state = ax_task::sync::irq_save_and_disable();
+    let preemption_token = ax_task::disable_preempt();
+    ax_task::axtest_support::request_current_preemption();
+
+    ax_task::enable_preempt(preemption_token);
+    let pending_while_irqs_disabled = ax_task::runtime_preemption_pending();
+
+    // SAFETY: `irq_state` belongs to the current CPU and is restored exactly
+    // once before this task reaches another scheduling boundary.
+    unsafe { ax_task::sync::irq_restore(irq_state) };
+    let preemption_token = ax_task::disable_preempt();
+    ax_task::enable_preempt(preemption_token);
+
+    ax_assert!(pending_while_irqs_disabled);
+    ax_assert!(!ax_task::runtime_preemption_pending());
+}
+
+#[axtest]
 fn spin_lock_contention_is_observed_between_runtime_tasks() {
     let lock = Arc::new(SpinLock::new(()));
     let held = Arc::new(AtomicBool::new(false));

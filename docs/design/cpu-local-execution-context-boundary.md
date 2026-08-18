@@ -93,8 +93,11 @@ context-switch resume handoff may replace a CPU-owned switch token.
 pending exit returns `PendingPreemption` while depth one remains published.
 `ax-runtime` masks local IRQs, mirrors task work into the pending bit, claims a
 per-CPU scheduler baton, releases the pending depth, clears the mirror, and only
-then invokes the task safe point. The task layer never manipulates the word and
-`cpu-local` never decides whether to schedule.
+then invokes the task safe point. The baton stays in `ax-runtime`: every
+switch-capable task path claims it before selecting the next task, a raw switch
+transfers it to the incoming continuation, and the resumed or first-entry tail
+consumes it before enabling local IRQs. The task layer never manipulates the
+preemption word and `cpu-local` never owns scheduler policy or baton state.
 
 Bootstrap contexts start at depth one. The runtime releases that exact depth
 once, after current context and local run-queue state are published.
@@ -129,5 +132,8 @@ depth zero.
 Host tests cover dependency vocabulary, current-source selection, offset-zero
 embedding, switch rollback and stale epochs, nested/final/pending preemption,
 bootstrap depth, malformed raw tokens, and owner retention. Cross-target clippy
-checks all four architecture backends. ArceOS QEMU covers task switching and
-preemption; Starry covers non-TLS current modes; Axvisor covers TLS modes.
+checks all four architecture backends. The scheduler-frame ownership regression
+belongs to the `ax-task` runtime owner and runs from `tests/axtest.rs` through
+`cargo xtask ktest qemu -p ax-task --test axtest --arch <arch>`. ArceOS QEMU
+covers task switching and preemption; Starry covers non-TLS current modes;
+Axvisor covers TLS modes.

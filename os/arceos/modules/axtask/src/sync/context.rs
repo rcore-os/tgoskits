@@ -84,6 +84,12 @@ pub struct RawState;
 #[doc(hidden)]
 pub struct PreemptState;
 
+impl PreemptState {
+    pub(crate) fn release_from_irq_return(state: usize) {
+        imp::enable_preempt_from_irq_return(state);
+    }
+}
+
 /// Lock state which saves and disables local interrupts.
 #[doc(hidden)]
 pub struct IrqSaveState;
@@ -292,6 +298,10 @@ mod imp {
         );
     }
 
+    pub(super) fn enable_preempt_from_irq_return(state: usize) {
+        enable_preempt(state);
+    }
+
     pub(super) fn irq_save_and_disable() -> usize {
         EVENTS.with_borrow_mut(|events| events.push("irq-disable"));
         let was_enabled = IRQ_ENABLED.replace(false);
@@ -341,6 +351,14 @@ mod imp {
     pub(super) fn enable_preempt(state: usize) {
         #[cfg(feature = "multitask")]
         crate::enable_preempt(state);
+        #[cfg(not(feature = "multitask"))]
+        let _ = state;
+    }
+
+    #[inline(always)]
+    pub(super) fn enable_preempt_from_irq_return(state: usize) {
+        #[cfg(feature = "multitask")]
+        crate::enable_preempt_from_irq_return(state);
         #[cfg(not(feature = "multitask"))]
         let _ = state;
     }

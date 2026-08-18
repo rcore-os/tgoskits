@@ -818,8 +818,13 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
         // but, do not put current task to the scheduler of this run queue.
         curr.set_state(TaskState::Ready);
 
-        // Call `switch_to` to reschedule to the migration task that performs the migration directly.
-        self.inner.switch_to(crate::current(), migration_task);
+        // Switch to the migration task through the same scheduler-frame
+        // transaction used by ordinary rescheduling.
+        let mut scheduler_frame = crate::runtime_preempt::SchedulerFrame::enter();
+        let result = self
+            .inner
+            .switch_to(crate::current(), migration_task, &mut scheduler_frame);
+        scheduler_frame.finish(result);
     }
 
     /// Preempts the current task and reschedules.
@@ -1134,6 +1139,7 @@ impl AxRunQueue {
     /// Core reschedule subroutine.
     /// Pick the next task to run and switch to it.
     fn resched(&self) {
+        let mut scheduler_frame = crate::runtime_preempt::SchedulerFrame::enter();
         // SAFETY: the caller holds the run-queue context guard.
         let next = unsafe { self.scheduler.lock_raw() }
             .pick_next_task()
@@ -1155,10 +1161,18 @@ impl AxRunQueue {
             next.id_name(),
             next.state()
         );
-        self.switch_to(crate::current(), next);
+        let result = self.switch_to(crate::current(), next, &mut scheduler_frame);
+        scheduler_frame.finish(result);
     }
 
-    fn switch_to(&self, prev_task: CurrentTask, next_task: AxTaskRef) {
+    fn switch_to(
+        &self,
+        prev_task: CurrentTask,
+        next_task: AxTaskRef,
+        scheduler_frame: &mut crate::runtime_preempt::SchedulerFrame,
+    ) -> crate::runtime_preempt::SchedulerFrameResult {
+        use crate::runtime_preempt::SchedulerFrameResult;
+
         // Make sure that IRQs are disabled by kernel guard or other means.
         #[cfg(all(feature = "irq", not(feature = "host-test")))]
         assert!(
@@ -1175,7 +1189,7 @@ impl AxRunQueue {
         next_task.set_preempt_pending(false);
         next_task.set_state(TaskState::Running);
         if prev_task.ptr_eq(&next_task) {
-            return;
+            return SchedulerFrameResult::Stayed;
         }
 
         // Claim the task as running, we do this before switching to it
@@ -1238,6 +1252,7 @@ impl AxRunQueue {
 
                 assert!(Arc::strong_count(&prev_task) > 1);
                 assert!(Arc::strong_count(&next_task) >= 1);
+                scheduler_frame.transfer();
                 CurrentTask::set_current(prev_task, next_task);
 
                 // switch_to_prepared consumes the only commit capability and
@@ -1250,6 +1265,7 @@ impl AxRunQueue {
             // previous binding before making that task runnable elsewhere.
             clear_prev_task_on_cpu();
         }
+        SchedulerFrameResult::Resumed
     }
 }
 
