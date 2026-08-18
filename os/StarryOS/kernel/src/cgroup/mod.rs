@@ -3,9 +3,7 @@
 use alloc::{string::String, sync::Arc};
 use core::fmt::Write;
 
-use ax_cgroup::{
-    CgroupChildKind, CgroupError, CgroupForkGuard, CgroupNode, CgroupTaskExit, ProcessId,
-};
+use ax_cgroup::{CgroupChildKind, CgroupError, CgroupForkGuard, CgroupNode, ProcessId};
 pub use ax_cgroup::{relative_path, root};
 
 use crate::{
@@ -51,15 +49,6 @@ pub fn begin_process_at(
     child: &Arc<PidIdentity>,
 ) -> Result<CgroupForkGuard, CgroupError> {
     ax_cgroup::begin_process_at(target, process_id(child))
-}
-
-/// Release one exact task generation through its process transaction.
-pub fn exit_task(
-    process: &ProcessData,
-    task: &Arc<PidIdentity>,
-    exit_kind: CgroupTaskExit,
-) -> Result<(), CgroupError> {
-    process.exit_cgroup_task(process_id(task), exit_kind)
 }
 
 /// Rename one exact task generation after execve de-threading.

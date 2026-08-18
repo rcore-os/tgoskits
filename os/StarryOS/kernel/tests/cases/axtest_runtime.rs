@@ -32,6 +32,11 @@ fn shutdown_wait_covers_the_exit_path_after_runtime_detach() {
 }
 
 #[axtest]
+fn task_exit_transaction_holds_membership_lock() {
+    ax_assert!(axtest_exports::task_exit_transaction_holds_membership_lock());
+}
+
+#[axtest]
 fn inactive_task_and_posix_timers_keep_the_fast_gate_closed() {
     ax_assert!(axtest_exports::timer_active_gate_rules_hold());
 }

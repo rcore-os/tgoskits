@@ -59,6 +59,7 @@ pub(crate) use self::{
         posix_timer_saturating_timespec_rules_hold_for_test,
         posix_timer_stale_expiry_signal_is_suppressed_for_test,
     },
+    process_cgroup::task_exit_transaction_holds_membership_lock_for_test,
     process_ptrace::inactive_ptrace_syscall_gate_is_lock_free_for_test,
 };
 #[cfg(test)]
@@ -269,13 +270,13 @@ impl ProcessData {
         self.cgroup.begin_task(child, child_kind)
     }
 
-    /// Release one exact child task charge under this process transaction.
-    pub(crate) fn exit_cgroup_task(
+    /// Retire one thread-group entry and its cgroup charge as one transaction.
+    pub(crate) fn finish_thread_exit(
         &self,
         task: ax_cgroup::ProcessId,
-        exit_kind: ax_cgroup::CgroupTaskExit,
-    ) -> ax_cgroup::CgroupResult<()> {
-        self.cgroup.exit_task(task, exit_kind)
+        transition: impl FnOnce() -> ThreadExit,
+    ) -> (ThreadExit, ax_cgroup::CgroupResult<()>) {
+        self.cgroup.finish_thread_exit(task, transition)
     }
 
     /// Rename one exact task charge after Linux de-threading.

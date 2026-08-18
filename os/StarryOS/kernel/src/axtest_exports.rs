@@ -3,6 +3,7 @@
 /// Initializes Starry runtime services required by kernel axtests.
 #[cfg(axtest)]
 pub fn init_kernel_services() {
+    super::cgroup::init();
     super::stop_machine::init();
 }
 
@@ -55,6 +56,11 @@ pub fn boot_id_formats_firmware_entropy() -> bool {
 #[cfg(axtest)]
 pub fn boot_id_is_omitted_without_trusted_entropy() -> bool {
     super::pseudofs::proc::boot_id_is_omitted_without_trusted_entropy_for_test()
+}
+
+#[cfg(axtest)]
+pub fn task_exit_transaction_holds_membership_lock() -> bool {
+    super::task::task_exit_transaction_holds_membership_lock_for_test()
 }
 
 #[cfg(axtest)]

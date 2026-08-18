@@ -424,23 +424,16 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     } else {
         thr.retire_pid();
     }
-    let thread_exit = process.exit_thread(
-        thr.tid_number(),
-        exit_code,
-        ProcessCpuTime::new(utime, stime),
-    );
-    let cgroup_exit = match &thread_exit {
-        ThreadExit::AlreadyExited => None,
-        ThreadExit::Remaining => Some(ax_cgroup::CgroupTaskExit::Thread),
-        ThreadExit::Last(_) => Some(ax_cgroup::CgroupTaskExit::LastProcessTask),
-    };
-    if let Some(exit_kind) = cgroup_exit {
-        super::cgroup_exit_invariant::enforce(crate::cgroup::exit_task(
-            &thr.proc_data,
-            &task_identity,
-            exit_kind,
-        ));
-    }
+    let task_generation = ax_cgroup::ProcessId::new(task_identity.id().get())
+        .expect("PID identity generation must be non-zero");
+    let (thread_exit, cgroup_exit) = thr.proc_data.finish_thread_exit(task_generation, || {
+        process.exit_thread(
+            thr.tid_number(),
+            exit_code,
+            ProcessCpuTime::new(utime, stime),
+        )
+    });
+    super::cgroup_exit_invariant::enforce(cgroup_exit);
     if let ThreadExit::Last(exit_owner) = thread_exit {
         debug_assert!(Arc::ptr_eq(exit_owner.process(), process));
         thr.proc_data.release_cgroup_namespace();
