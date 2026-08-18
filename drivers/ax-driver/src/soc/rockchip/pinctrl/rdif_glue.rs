@@ -235,13 +235,16 @@ mod tests {
             }
 
             fn mem_map_dma_coherent_uncached(
-                _addr: VirtAddr,
+                _addr: core::ptr::NonNull<u8>,
                 _size: usize,
             ) -> axklib::DmaCoherentMappingOutcome {
                 axklib::DmaCoherentMappingOutcome::NotStarted(KlibError::Unsupported)
             }
 
-            fn mem_unmap_dma_coherent(_addr: VirtAddr, _size: usize) -> KlibResult {
+            fn mem_unmap_dma_coherent(
+                _addr: core::ptr::NonNull<u8>,
+                _size: usize,
+            ) -> KlibResult {
                 Err(KlibError::Unsupported)
             }
 
@@ -255,11 +258,11 @@ mod tests {
                 _dma_mask: u64,
                 _num_pages: usize,
                 _align: usize,
-            ) -> KlibResult<VirtAddr> {
+            ) -> KlibResult<core::ptr::NonNull<u8>> {
                 Err(KlibError::Unsupported)
             }
 
-            fn dma_dealloc_pages(_addr: VirtAddr, _num_pages: usize) {}
+            fn dma_dealloc_pages(_addr: core::ptr::NonNull<u8>, _num_pages: usize) {}
 
             fn time_busy_wait(_dur: core::time::Duration) {}
 

@@ -43,7 +43,7 @@
 
 extern crate alloc;
 
-use core::time::Duration;
+use core::{ptr::NonNull, time::Duration};
 
 pub use ax_memory_addr::{PhysAddr, VirtAddr};
 pub use irq_framework::{
@@ -89,8 +89,8 @@ pub fn IrqNumber(raw: usize) -> Result<IrqId, IrqError> {
 #[must_use = "the outcome determines whether coherent pages can be reclaimed or must be quarantined"]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DmaCoherentMappingOutcome {
-    /// The alias mapping and required cross-CPU synchronization completed.
-    Mapped(VirtAddr),
+    /// The non-null CPU alias and required cross-CPU synchronization completed.
+    Mapped(NonNull<u8>),
     /// The mapping transaction did not start, so the allocated pages remain safe to reclaim.
     NotStarted(KlibError),
     /// The alias transaction started but its final cross-CPU state cannot be proven.
@@ -138,6 +138,8 @@ pub trait Klib {
     /// The cacheable allocator mapping remains installed but must not be used
     /// while the returned alias is owned by the coherent allocation. The DMA
     /// address continues to refer to the original physical pages.
+    /// A successful mapping returns a non-null CPU pointer; numerical virtual
+    /// address zero is not a valid CPU mapping capability.
     ///
     /// Implementations must perform the required cache maintenance, create a
     /// distinct virtual mapping, invalidate TLBs, and apply ordering barriers
@@ -147,7 +149,7 @@ pub trait Klib {
     /// started, failures must return
     /// [`DmaCoherentMappingOutcome::StateUncertain`] so callers quarantine the
     /// pages.
-    fn mem_map_dma_coherent_uncached(addr: VirtAddr, size: usize) -> DmaCoherentMappingOutcome;
+    fn mem_map_dma_coherent_uncached(addr: NonNull<u8>, size: usize) -> DmaCoherentMappingOutcome;
 
     /// Removes an uncached alias created by
     /// [`Klib::mem_map_dma_coherent_uncached`].
@@ -156,7 +158,7 @@ pub trait Klib {
     /// Implementations must perform the required TLB invalidation and ordering
     /// barriers internally before the original pages are returned to the page
     /// allocator. On failure, callers quarantine both the alias and the pages.
-    fn mem_unmap_dma_coherent(addr: VirtAddr, size: usize) -> KlibResult;
+    fn mem_unmap_dma_coherent(addr: NonNull<u8>, size: usize) -> KlibResult;
 
     /// Cleans a CPU cache range before device ownership.
     fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
@@ -170,11 +172,13 @@ pub trait Klib {
     /// Allocates contiguous DMA pages.
     ///
     /// `dma_mask` is the device-visible address mask. Implementations should
-    /// use a DMA32-capable allocator when the mask requires it.
-    fn dma_alloc_pages(dma_mask: u64, num_pages: usize, align: usize) -> KlibResult<VirtAddr>;
+    /// use a DMA32-capable allocator when the mask requires it. A non-empty
+    /// allocation must return a non-null CPU pointer. A zero-page request may
+    /// return [`NonNull::dangling`] and must be a deallocation no-op.
+    fn dma_alloc_pages(dma_mask: u64, num_pages: usize, align: usize) -> KlibResult<NonNull<u8>>;
 
     /// Releases pages previously allocated by [`Klib::dma_alloc_pages`].
-    fn dma_dealloc_pages(addr: VirtAddr, num_pages: usize);
+    fn dma_dealloc_pages(addr: NonNull<u8>, num_pages: usize);
 
     /// Busy-wait the current execution context for the provided duration.
     ///

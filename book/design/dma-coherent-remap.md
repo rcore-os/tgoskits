@@ -88,14 +88,32 @@ distinct values and owners:
   access while the coherent allocation is live;
 - layout: the allocation extent shared by all three views.
 
+The address-space allocator still operates on numerical `VirtAddr` values, so
+address zero remains representable for explicit, guest, and user mappings. The
+DMA capability boundary is stricter: every non-empty CPU-visible allocation or
+alias is represented as `NonNull<u8>`. Device-visible `DmaAddr` remains an
+independent numerical address and may legitimately be zero. A zero-length DMA
+allocation uses a dangling non-null CPU pointer, DMA address zero, and never
+calls the page allocator or deallocator.
+
 Non-coherent alias allocation performs these transitions:
 
 1. allocate physically contiguous pages and calculate the DMA address;
 2. clean and invalidate the cache through the allocator address;
-3. reserve a free kernel VA and map the physical pages there as
+3. reserve a free non-null kernel VA and map the physical pages there as
    `READ | WRITE | UNCACHED`;
 4. complete cross-CPU TLB invalidation and platform ordering;
-5. zero memory through the uncached alias and publish the handle.
+5. atomically publish the validated CPU alias, allocator address, DMA address,
+   and layout as one handle;
+6. zero memory through that published handle before returning it to the typed
+   DMA container.
+
+The temporary page owner is an internal transaction guard. It releases pages
+automatically until ownership is transferred into `DmaAllocHandle`. A
+`NotStarted` mapping failure therefore rolls back through normal guard drop,
+while `StateUncertain` explicitly disarms the guard and quarantines both pages
+and any partially visible alias. No fallible conversion or raw-pointer access
+is allowed between a successful alias mapping and handle publication.
 
 Alias release performs the reverse ownership transition: stop device access,
 remove the alias, complete cross-CPU TLB invalidation, and only then free the
@@ -113,6 +131,9 @@ occurs only for non-coherent devices.
   pages can be returned to the allocator.
 - After alias installation begins, a shootdown or ordering failure is
   `StateUncertain`; the alias and pages are quarantined.
+- A successful alias mapping can only contain a non-null CPU pointer. Kernel
+  address spaces whose numerical base is zero reserve the first page for
+  allocation-like CPU mappings instead of publishing a null pointer.
 - During alias release, any unmap or shootdown failure quarantines the
   allocation and prevents the original pages from being reused.
 
