@@ -218,6 +218,27 @@ fn explicit_arch_filters_workspace_packages_by_declared_support() {
 }
 
 #[test]
+fn axvisor_workspace_metadata_supports_aarch64_ktest() {
+    let metadata = crate::build::workspace_metadata().unwrap();
+    let packages = discover_workspace_ktests(&metadata).unwrap();
+    let selector = QemuPlanSelector {
+        packages: vec!["axvisor".into()],
+        tests: vec!["axtest".into()],
+        arch: Some("aarch64".into()),
+        ..QemuPlanSelector::default()
+    };
+
+    let plan = build_qemu_plan(&packages, &selector).unwrap();
+
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].package, "axvisor");
+    assert_eq!(plan[0].test, "axtest");
+    assert_eq!(plan[0].runtime, KtestRuntime::Axvisor);
+    assert_eq!(plan[0].arch, "aarch64");
+    assert_eq!(plan[0].target, AARCH64_TARGET);
+}
+
+#[test]
 fn config_overrides_require_one_execution_unit() {
     let args = ArgsKtestQemu {
         config: Some(PathBuf::from("build.toml")),
