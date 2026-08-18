@@ -6,12 +6,17 @@ use core::{future::poll_fn, task::Poll};
 use axpoll::{IoEvents, PollSet};
 use starry_signal::Signo;
 
-use super::{ProcessData, TidNumber, current_user_task, future};
+use super::{PidRoleLease, ProcessData, Tid, TidNumber, current_user_task, future};
 use crate::sync::{IrqMutex, PiMutex};
 
 struct VforkDone {
     done: bool,
     poll: Arc<PollSet>,
+}
+
+struct RetiredLeader {
+    nice: i32,
+    tid_lease: PidRoleLease<Tid>,
 }
 
 impl VforkDone {
@@ -28,7 +33,7 @@ pub(super) struct ProcessWaitState {
     exec_lock: PiMutex<()>,
     exit_signal: Option<Signo>,
     wait_parent_tid: TidNumber,
-    retired_leader_nice: IrqMutex<Option<i32>>,
+    retired_leader: IrqMutex<Option<RetiredLeader>>,
     vfork_done: IrqMutex<Option<VforkDone>>,
 }
 
@@ -41,7 +46,7 @@ impl ProcessWaitState {
             exec_lock: PiMutex::new(()),
             exit_signal,
             wait_parent_tid,
-            retired_leader_nice: IrqMutex::new(None),
+            retired_leader: IrqMutex::new(None),
             vfork_done: IrqMutex::new(None),
         }
     }
@@ -95,19 +100,34 @@ impl ProcessData {
         self.wait.wait_parent_tid
     }
 
-    /// Retains the exited thread-group leader's nice value.
-    pub fn retire_leader_nice(&self, nice: i32) {
-        *self.wait.retired_leader_nice.lock() = Some(nice);
+    /// Transfers the exited thread-group leader's retained state to the process.
+    pub(crate) fn retire_leader(&self, nice: i32, tid_lease: PidRoleLease<Tid>) {
+        let previous = self
+            .wait
+            .retired_leader
+            .lock()
+            .replace(RetiredLeader { nice, tid_lease });
+        assert!(previous.is_none(), "process retired its leader twice");
     }
 
     /// Returns the nice value retained for an exited thread-group leader.
     pub fn retired_leader_nice(&self) -> Option<i32> {
-        *self.wait.retired_leader_nice.lock()
+        self.wait
+            .retired_leader
+            .lock()
+            .as_ref()
+            .map(|leader| leader.nice)
     }
 
-    /// Clears a retired leader snapshot after `de_thread` installs a new leader.
-    pub fn clear_retired_leader_nice(&self) {
-        self.wait.retired_leader_nice.lock().take();
+    /// Transfers the retired leader state to a zombie or a de-threaded task.
+    pub(crate) fn take_retired_leader(&self) -> (i32, PidRoleLease<Tid>) {
+        let leader = self
+            .wait
+            .retired_leader
+            .lock()
+            .take()
+            .expect("process lost its retired leader state");
+        (leader.nice, leader.tid_lease)
     }
 
     /// Returns whether this child uses clone-style exit notification.

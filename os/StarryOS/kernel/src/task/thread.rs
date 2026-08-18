@@ -354,14 +354,19 @@ impl Thread {
         self.pid.lock().identity.attach_task(task);
     }
 
-    /// Releases the runtime link and TID role after scheduler-visible exit.
-    pub(crate) fn retire_pid(&self) {
+    /// Releases the runtime link while transferring the TID role to the caller.
+    pub(crate) fn retire_pid_retaining_tid(&self) -> PidRoleLease<Tid> {
         let (identity, lease) = {
             let mut pid = self.pid.lock();
             (pid.identity.clone(), pid.tid_lease.take())
         };
         identity.mark_task_exited();
-        drop(lease);
+        lease.expect("thread TID lease transferred twice")
+    }
+
+    /// Releases the runtime link and TID role after scheduler-visible exit.
+    pub(crate) fn retire_pid(&self) {
+        drop(self.retire_pid_retaining_tid());
     }
 
     /// Atomically transfers the leader identity to this runtime task at exec.

@@ -28,7 +28,7 @@ use crate::{
         validate_exec_arg_size, vm_load_string, vm_load_until_nul,
     },
     sync::{InterruptibleMutexExt, PiMutex},
-    task::{Tid, TidNumber, future::block_on, zap_thread},
+    task::{TidNumber, future::block_on, zap_thread},
 };
 
 fn commit_address_space_handoff<OldAddressSpace>(
@@ -456,18 +456,16 @@ fn do_execve(
     // caller, then updating signal and thread-group indexes that use TIDs.
     //
     // The original leader was zapped above (it's a sibling from `curr`'s
-    // viewpoint), did its `do_exit(0, false)`, and is no longer in the
-    // task table or thread group, so the destination TID is free.
+    // viewpoint), did its `do_exit(0, false)`, and transferred its TID role to
+    // the process. Taking that exact lease preserves the generation instead of
+    // releasing and reacquiring a numeric slot.
     if my_tid != leader_tid {
         let old_task_identity = thr.pid_identity();
         let leader_identity = proc_data.identity();
         crate::cgroup::rename_task(proc_data, &old_task_identity, &leader_identity)
             .expect("de-threaded task must own the process's sole cgroup charge");
-        let leader_tid_lease = leader_identity
-            .acquire_role::<Tid>()
-            .expect("exited exec leader retained its TID role");
+        let (_, leader_tid_lease) = proc_data.take_retired_leader();
         thr.transfer_pid_identity(curr, leader_identity, leader_tid_lease);
-        proc_data.clear_retired_leader_nice();
         proc_data
             .signal
             .rename_child(my_tid.get(), leader_tid.get());

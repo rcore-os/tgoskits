@@ -487,8 +487,9 @@ impl PidNamespaceShutdown<'_> {
                         // Linux's zap_pid_ns_processes waits for one retained
                         // PID when the leader executes teardown and two when a
                         // non-leader does: the namespace init identity plus
-                        // the current teardown task. Waiting for the executor
-                        // here would deadlock before its later retire_pid().
+                        // the current teardown task. The executor has already
+                        // retired its runtime link, but excluding its stable
+                        // identity keeps the count aligned with Linux.
                         identity.id() != self.init
                             && identity.id() != self.executor
                             && identity.has_unexited_task()
@@ -704,6 +705,7 @@ pub(crate) struct ZombieSnapshot {
     pub(crate) is_clone_child: bool,
     pub(crate) wait_parent_tid: TidNumber,
     pub(crate) cpu_time: ProcessCpuTime,
+    pub(crate) tid_lease: PidRoleLease<Tid>,
     pub(crate) tgid_lease: PidRoleLease<Tgid>,
 }
 

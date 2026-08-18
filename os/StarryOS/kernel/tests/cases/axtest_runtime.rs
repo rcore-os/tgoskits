@@ -47,6 +47,11 @@ fn kmsg_reports_no_readiness_without_read_side() {
 }
 
 #[axtest]
+fn zombie_retains_the_leader_tid_role_until_reap() {
+    ax_assert!(axtest_exports::zombie_retains_the_leader_tid_role_until_reap());
+}
+
+#[axtest]
 fn time_value_conversion_rules_hold() {
     ax_assert!(axtest_exports::time_value_conversion_rules_hold());
 }

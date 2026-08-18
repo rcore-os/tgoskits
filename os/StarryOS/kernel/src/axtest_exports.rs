@@ -258,6 +258,10 @@ pub fn credential_capability_rules_hold() -> bool {
     super::task::credential_capability_rules_hold_for_test()
 }
 
+pub fn zombie_retains_the_leader_tid_role_until_reap() -> bool {
+    super::task::zombie_retains_the_leader_tid_role_until_reap_for_test()
+}
+
 pub fn resource_limit_defaults_hold() -> bool {
     super::task::resource_limit_defaults_hold_for_test()
 }

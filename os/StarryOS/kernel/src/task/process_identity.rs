@@ -66,8 +66,9 @@ pub(crate) fn publish_zombie(
         .map_err(|_| StarryError::BadState)
 }
 
-/// Reaps one exact generation. The TGID lease is released only after topology
-/// retirement, outside its locks, so the number cannot be reused mid-retire.
+/// Reaps one exact generation. The leader TID and TGID leases are released
+/// only after topology retirement, outside its locks, so the number cannot be
+/// reused mid-retire.
 pub(crate) fn reap_process(process: &Arc<Process>) -> Option<ProcessCpuTime> {
     let identity = process_identity(process)?;
     let zombie = identity.claim_reap(process)?;
@@ -78,12 +79,14 @@ pub(crate) fn reap_process(process: &Arc<Process>) -> Option<ProcessCpuTime> {
     process.retire();
     identity.finish_reap();
     let cpu_time = zombie.cpu_time;
+    let tid_lease = zombie.tid_lease;
     let tgid_lease = zombie.tgid_lease;
     unsafe {
         identity
             .process_exit_event()
             .wake(axpoll::IoEvents::IN | axpoll::IoEvents::RDNORM | axpoll::IoEvents::HUP);
     }
+    tid_lease.release();
     tgid_lease.release();
     Some(cpu_time)
 }
@@ -170,7 +173,10 @@ pub(crate) fn traced_zombies_for(tracer: PidIdentityId) -> Vec<Arc<Process>> {
 mod axtest;
 
 #[cfg(axtest)]
-pub(crate) use axtest::reaping_identity_is_not_publicly_resolvable_for_test;
+pub(crate) use axtest::{
+    reaping_identity_is_not_publicly_resolvable_for_test,
+    zombie_retains_the_leader_tid_role_until_reap_for_test,
+};
 
 #[cfg(test)]
 mod tests {
@@ -192,7 +198,6 @@ mod tests {
         let process = Process::new_for_axtest(identity.clone());
 
         identity.mark_task_exited();
-        tid.release();
         identity.bind_zombie_for_axtest(
             process.clone(),
             Arc::new(PollSet::new()),
@@ -203,6 +208,7 @@ mod tests {
                 is_clone_child: false,
                 wait_parent_tid: TidNumber::from(number),
                 cpu_time: ProcessCpuTime::default(),
+                tid_lease: tid,
                 tgid_lease: tgid,
             },
         );
@@ -212,5 +218,41 @@ mod tests {
 
         drop(process);
         assert!(namespace.lookup(number).is_none());
+    }
+
+    #[test]
+    fn zombie_retains_the_leader_tid_role_until_reap() {
+        let namespace = crate::task::new_test_pid_namespace();
+        let identity = PidReservation::reserve(&namespace, PidReservationKind::ProcessLeader)
+            .unwrap()
+            .publish()
+            .unwrap();
+        let number = identity.root_number();
+        let tid = identity.acquire_role::<Tid>().unwrap();
+        let tgid = identity.acquire_role::<Tgid>().unwrap();
+        let process = Process::new_for_axtest(identity.clone());
+
+        identity.mark_task_exited();
+        identity.bind_zombie_for_axtest(
+            process.clone(),
+            Arc::new(PollSet::new()),
+            ZombieSnapshot {
+                cred: Arc::new(Cred::default()),
+                nice: 0,
+                ptrace_tracer: None,
+                is_clone_child: false,
+                wait_parent_tid: TidNumber::from(number),
+                cpu_time: ProcessCpuTime::default(),
+                tid_lease: tid,
+                tgid_lease: tgid,
+            },
+        );
+
+        assert!(
+            identity.has_role::<Tid>(),
+            "a waitable zombie must own the leader TID role until reap"
+        );
+        assert_eq!(reap_process(&process), Some(ProcessCpuTime::default()));
+        assert!(!identity.has_role::<Tid>());
     }
 }

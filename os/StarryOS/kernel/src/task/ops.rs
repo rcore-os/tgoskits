@@ -412,15 +412,18 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
     let is_process_leader = thr.tid().pid_number() == process.pid().pid_number();
-    if is_process_leader {
-        // Preserve the leader's Linux priority before scheduler reachability is
-        // removed. A peer may become the last exiting thread immediately after
-        // the thread-group lock is released.
-        thr.proc_data.retire_leader_nice(thr.nice());
-    }
     thr.account_cpu_time_now();
     let (utime, stime) = task_cpu_time(&curr);
     let task_identity = thr.pid_identity();
+    if is_process_leader {
+        // Publish the complete leader snapshot before dropping the thread-group
+        // lock below. A peer may become the final exiting thread immediately
+        // after the leader is removed from the group.
+        let tid_lease = thr.retire_pid_retaining_tid();
+        thr.proc_data.retire_leader(thr.nice(), tid_lease);
+    } else {
+        thr.retire_pid();
+    }
     let thread_exit = process.exit_thread(
         thr.tid_number(),
         exit_code,
@@ -517,13 +520,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         let ptrace_tracer = thr.proc_data.ptrace_tracer_identity();
         let is_clone_child = thr.proc_data.is_clone_child();
         let wait_parent_tid = thr.proc_data.wait_parent_tid();
-        let zombie_nice = if is_process_leader {
-            thr.nice()
-        } else {
-            thr.proc_data
-                .retired_leader_nice()
-                .expect("final non-leader exit must retain the exited leader's nice value")
-        };
+        let (zombie_nice, leader_tid_lease) = thr.proc_data.take_retired_leader();
 
         // A parent that observes this child as a zombie must not see IPC
         // resources that still belong to the exiting process. In particular,
@@ -547,6 +544,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 is_clone_child,
                 wait_parent_tid,
                 cpu_time: exit_owner.cpu_time(),
+                tid_lease: leader_tid_lease,
                 tgid_lease: thr.proc_data.take_tgid_lease(),
             },
         )
@@ -612,7 +610,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         thr.proc_data.notify_vfork_done();
     }
 
-    thr.retire_pid();
     thr.set_exit();
     unsafe { thr.exit_event().wake(axpoll::IoEvents::IN) };
     unsafe { thr.proc_data.thread_exit_event().wake(axpoll::IoEvents::IN) };

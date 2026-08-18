@@ -36,7 +36,6 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
     let process = Process::new_for_axtest(identity.clone());
     let test_tgid = process.pid();
     identity.mark_task_exited();
-    tid_lease.release();
     identity.bind_zombie_for_axtest(
         process.clone(),
         Arc::new(PollSet::new()),
@@ -47,6 +46,7 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
             is_clone_child: false,
             wait_parent_tid: TidNumber::from(test_tgid.pid_number()),
             cpu_time: ProcessCpuTime::default(),
+            tid_lease,
             tgid_lease,
         },
     );
@@ -87,4 +87,35 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
     let identity_hidden = matches!(identity_process_lookup, Err(StarryError::NoSuchProcess));
     let reaped_once = *reaped_cpu_time.lock() == Some(ProcessCpuTime::default());
     group_and_session_number_retained && view_hidden && identity_hidden && reaped_once
+}
+
+pub(crate) fn zombie_retains_the_leader_tid_role_until_reap_for_test() -> bool {
+    let identity = PidReservation::reserve(&ROOT_PID_NS, PidReservationKind::ProcessLeader)
+        .unwrap()
+        .publish()
+        .unwrap();
+    let tid_lease = identity.acquire_role::<Tid>().unwrap();
+    let tgid_lease = identity.acquire_role::<Tgid>().unwrap();
+    let process = Process::new_for_axtest(identity.clone());
+    let number = identity.root_number();
+
+    identity.mark_task_exited();
+    identity.bind_zombie_for_axtest(
+        process.clone(),
+        Arc::new(PollSet::new()),
+        ZombieSnapshot {
+            cred: Arc::new(Cred::default()),
+            nice: 0,
+            ptrace_tracer: None,
+            is_clone_child: false,
+            wait_parent_tid: TidNumber::from(number),
+            cpu_time: ProcessCpuTime::default(),
+            tid_lease,
+            tgid_lease,
+        },
+    );
+
+    let retained = identity.has_role::<Tid>();
+    let reaped = reap_process(&process).is_some();
+    retained && reaped && !identity.has_role::<Tid>()
 }
