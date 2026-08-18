@@ -105,6 +105,7 @@ pub(super) fn run_controller(
 ) {
     let mut irq_events = Vec::<LatchedControllerIrq>::new();
     let mut pending = None;
+    let mut expected_wake: Option<Duration> = None;
     loop {
         let mut progressed = false;
 
@@ -257,11 +258,29 @@ pub(super) fn run_controller(
                     let now = wall_time();
                     let wake_at = current.retry_at.min(current.deadline);
                     if wake_at > now {
+                        // Lost-wakeup detector: this thread is about to park
+                        // until `wake_at`. If the next iteration observes a
+                        // now far past that deadline, the timed park overslept
+                        // and every IRQ-less register retry stalled with it.
+                        if let Some(expected) = expected_wake
+                            && now > expected + STALL_WARN_MARGIN
+                        {
+                            warn!(
+                                "block controller park overslept: expected wake {expected:?}, now \
+                                 {now:?}, retry_at {:?}, deadline {:?}",
+                                current.retry_at, current.deadline
+                            );
+                        }
+                        expected_wake = Some(wake_at);
                         port.notification.wait_timeout(wake_at - now);
+                    } else {
+                        expected_wake = None;
                     }
                 }
                 None => port.notification.wait(),
             }
+        } else {
+            expected_wake = None;
         }
     }
 }
