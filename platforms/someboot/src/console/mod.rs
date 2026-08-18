@@ -20,6 +20,9 @@ use crate::{
     mem::{_fixmap_io, page_size},
 };
 
+mod handoff;
+pub use handoff::ConsoleHandoffError;
+
 pub(crate) static mut DEBUG_BASE: usize = 0;
 pub(crate) static mut DEBUG_IS_MMIO: bool = false;
 
@@ -63,23 +66,23 @@ pub(crate) fn debug_to_memory_desc() -> Option<MemoryDescriptor> {
 }
 
 pub fn _print(args: core::fmt::Arguments) {
-    if runtime_output_claimed() {
+    let Some(_access) = handoff::try_enter_early() else {
         return;
-    }
+    };
     let _ = ConFmt {}.write_fmt(args);
 }
 
 pub fn _write_bytes(bytes: &[u8]) -> usize {
-    if runtime_output_claimed() {
+    let Some(_access) = handoff::try_enter_early() else {
         return bytes.len();
-    }
+    };
     con().write_bytes(bytes)
 }
 
 pub fn _write_str(s: &str) {
-    if runtime_output_claimed() {
+    let Some(_access) = handoff::try_enter_early() else {
         return;
-    }
+    };
     con().write_str(s);
 }
 
@@ -182,7 +185,6 @@ impl Con for NoCon {
 }
 
 static mut CON: &dyn Con = &NoCon;
-static RUNTIME_OUTPUT_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     unsafe {
@@ -190,26 +192,24 @@ pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     }
 }
 
-/// Marks the boot console output path as superseded by a runtime console.
-///
-/// Once an OS serial/tty runtime owns the UART registers, the boot console must
-/// not write the same hardware directly. It still reports bytes as consumed so
-/// generic logging paths cannot spin forever after the handoff.
-pub fn claim_runtime_output() {
-    RUNTIME_OUTPUT_CLAIMED.store(true, Ordering::Release);
+/// Enters `Preparing`, blocks new early accesses, and drains in-flight access.
+pub fn begin_runtime_handoff() -> Result<(), ConsoleHandoffError> {
+    handoff::begin()
 }
 
-#[cfg(not(test))]
-fn runtime_output_claimed() -> bool {
-    // On AArch64, exclusive atomic instructions such as LDXR/LDAXR are not
-    // reliable before the MMU is enabled. Keep the pre-MMU boot console path
-    // free of atomic reads and only honor the runtime handoff afterwards.
-    crate::mem::mmu::is_mmu_enabled() && RUNTIME_OUTPUT_CLAIMED.load(Ordering::Acquire)
+/// Publishes runtime ownership after runtime configuration and routing succeed.
+pub fn commit_runtime_handoff() -> Result<(), ConsoleHandoffError> {
+    handoff::commit()
 }
 
-#[cfg(test)]
-fn runtime_output_claimed() -> bool {
-    RUNTIME_OUTPUT_CLAIMED.load(Ordering::Acquire)
+/// Restores early ownership after a recoverable handoff failure.
+pub fn rollback_runtime_handoff() -> Result<(), ConsoleHandoffError> {
+    handoff::rollback()
+}
+
+/// Fails closed when the hardware ownership state cannot be proven safe.
+pub fn fail_runtime_handoff_closed() {
+    handoff::fail_closed();
 }
 
 pub struct EarlySerial {
@@ -304,11 +304,15 @@ impl EarlySerial {
 }
 
 pub fn set_earlycon_serial(serial: EarlySerial) {
+    let Some(_access) = handoff::try_enter_early() else {
+        return;
+    };
     EARLYCON.set_serial(serial);
     unsafe { set_out(&EARLYCON) };
 }
 
 pub fn read_byte() -> Option<u8> {
+    let _access = handoff::try_enter_early()?;
     if let Some(byte) = <crate::arch::Arch as crate::ArchTrait>::Console::read_byte() {
         return Some(byte);
     }
@@ -317,14 +321,21 @@ pub fn read_byte() -> Option<u8> {
 }
 
 pub fn irq_num() -> Option<usize> {
+    let _access = handoff::try_enter_early()?;
     <crate::arch::Arch as crate::ArchTrait>::Console::irq_num()
 }
 
 pub fn set_input_irq_enabled(enabled: bool) {
+    let Some(_access) = handoff::try_enter_early() else {
+        return;
+    };
     <crate::arch::Arch as crate::ArchTrait>::Console::set_input_irq_enabled(enabled);
 }
 
 pub fn handle_irq() -> u32 {
+    let Some(_access) = handoff::try_enter_early() else {
+        return 0;
+    };
     <crate::arch::Arch as crate::ArchTrait>::Console::handle_irq()
 }
 
@@ -434,13 +445,17 @@ impl Con for EarlyconCell {
 
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    extern crate std;
+
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::{sync::Mutex, thread};
 
     use super::*;
 
     struct CountingCon;
 
     static WRITE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     impl Con for CountingCon {
         fn write_bytes(&self, bytes: &[u8]) -> usize {
@@ -451,22 +466,116 @@ mod tests {
 
     static COUNTING_CON: CountingCon = CountingCon;
 
-    #[test]
-    fn runtime_output_claim_consumes_without_touching_boot_console() {
+    struct BlockingCon;
+
+    static BLOCKING_ENTERED: AtomicBool = AtomicBool::new(false);
+    static BLOCKING_RELEASED: AtomicBool = AtomicBool::new(false);
+    static BEGIN_FINISHED: AtomicBool = AtomicBool::new(false);
+
+    impl Con for BlockingCon {
+        fn write_bytes(&self, bytes: &[u8]) -> usize {
+            BLOCKING_ENTERED.store(true, Ordering::Release);
+            while !BLOCKING_RELEASED.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            bytes.len()
+        }
+    }
+
+    static BLOCKING_CON: BlockingCon = BlockingCon;
+
+    fn reset_handoff() {
+        handoff::reset();
         WRITE_CALLS.store(0, Ordering::Relaxed);
-        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
+        BLOCKING_ENTERED.store(false, Ordering::Release);
+        BLOCKING_RELEASED.store(false, Ordering::Release);
+        BEGIN_FINISHED.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn successful_handoff_consumes_without_touching_boot_console() {
+        let _test = TEST_LOCK.lock().unwrap();
+        reset_handoff();
 
         unsafe { set_out(&COUNTING_CON) };
 
         assert_eq!(_write_bytes(b"before"), 6);
         assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
 
-        claim_runtime_output();
+        begin_runtime_handoff().unwrap();
+        assert_eq!(handoff::state(), handoff::PREPARING);
+        commit_runtime_handoff().unwrap();
+        assert_eq!(handoff::state(), handoff::RUNTIME);
 
         assert_eq!(_write_bytes(b"after"), 5);
         assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
 
-        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
+        reset_handoff();
+    }
+
+    #[test]
+    fn preparing_waits_for_in_flight_write_and_blocks_new_access() {
+        let _test = TEST_LOCK.lock().unwrap();
+        reset_handoff();
+        unsafe { set_out(&BLOCKING_CON) };
+
+        let writer = thread::spawn(|| assert_eq!(_write_bytes(b"in-flight"), 9));
+        while !BLOCKING_ENTERED.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+        let handoff = thread::spawn(|| {
+            begin_runtime_handoff().unwrap();
+            BEGIN_FINISHED.store(true, Ordering::Release);
+        });
+        while handoff::state() != handoff::PREPARING {
+            thread::yield_now();
+        }
+
+        assert!(!BEGIN_FINISHED.load(Ordering::Acquire));
+        assert_eq!(_write_bytes(b"blocked"), 7);
+        BLOCKING_RELEASED.store(true, Ordering::Release);
+        writer.join().unwrap();
+        handoff.join().unwrap();
+        assert!(BEGIN_FINISHED.load(Ordering::Acquire));
+
+        rollback_runtime_handoff().unwrap();
+        reset_handoff();
+    }
+
+    #[test]
+    fn recoverable_failure_rolls_back_to_early_console() {
+        let _test = TEST_LOCK.lock().unwrap();
+        reset_handoff();
+        unsafe { set_out(&COUNTING_CON) };
+
+        begin_runtime_handoff().unwrap();
+        assert_eq!(_write_bytes(b"preparing"), 9);
+        assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 0);
+        rollback_runtime_handoff().unwrap();
+
+        assert_eq!(handoff::state(), handoff::EARLY);
+        assert_eq!(_write_bytes(b"early"), 5);
+        assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
+        reset_handoff();
+    }
+
+    #[test]
+    fn uncertain_failure_closes_early_tx_rx_and_irq_access() {
+        let _test = TEST_LOCK.lock().unwrap();
+        reset_handoff();
+        unsafe { set_out(&COUNTING_CON) };
+
+        begin_runtime_handoff().unwrap();
+        fail_runtime_handoff_closed();
+
+        assert_eq!(handoff::state(), handoff::FAILED_CLOSED);
+        assert_eq!(_write_bytes(b"closed"), 6);
+        assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 0);
+        assert_eq!(read_byte(), None);
+        assert_eq!(irq_num(), None);
+        assert_eq!(handle_irq(), 0);
+        set_input_irq_enabled(true);
+        reset_handoff();
     }
 }
 

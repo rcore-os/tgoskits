@@ -1,0 +1,62 @@
+# Memory-backed guest fixture for the converged HTTP control-plane test.
+# The kernel and its BusyBox initramfs are embedded into the hypervisor binary
+# at build time (`image_location = "memory"`, see os/axvisor/build.rs) and
+# matched at runtime only by `base.id` — the `${workspace}` paths below are
+# resolved by axbuild at build time and ignored by the runtime create handler.
+#
+# `id = 1`: the runtime can only realize guest images baked into the hypervisor,
+# so the typed probe's `POST /api/vms/create` body uses this same config, whose
+# `base.id` re-matches the embedded image. `phys_cpu_ids = [1]` keeps the vCPU on
+# Core 1 while the management console runs on Core 0.
+[base]
+id = 1
+name = "linux-http-control-plane"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+#
+# Vm kernel configs
+#
+[kernel]
+# The entry point of the kernel image.
+entry_point = 0x8020_0000
+# The location of image: "memory" | "fs". Memory embeds the image at build time.
+image_location = "memory"
+# The file path of the kernel image (build-time only for memory images).
+kernel_path = "${workspace}/tmp/axbuild/images/qemu-aarch64/linux/linux-qemu"
+# The load address of the kernel image.
+kernel_load_addr = 0x8020_0000
+# The load address of the device tree blob (DTB).
+dtb_load_addr = 0x8000_0000
+# BusyBox initramfs generated from the managed rootfs (the guest rootfs; the
+# QEMU case appends `rdinit=/init`).
+ramdisk_path = "${workspace}/tmp/axbuild/axvisor/qemu-http-control-plane/initramfs-aarch64.cpio.gz"
+ramdisk_load_addr = 0x8400_0000
+
+# Memory regions with format (`base_paddr`, `size`, `flags`, `map_type`).
+# For `map_type`, 0 means `MAP_ALLOC`, 1 means `MAP_IDENTICAL`, 2 means `MAP_RESERVED`.
+# MAP_ALLOC maps guest GPA 0x80000000 to hypervisor-allocated host pages; the
+# QEMU virt host RAM is 0x40000000..0x80000000, so an identity-mapped region
+# would land at the host heap address rather than the configured 0x80000000 and
+# the guest images at 0x80200000 would not resolve.
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0], # System RAM 256M MAP_ALLOC
+]
+
+#
+# Device specifications
+#
+
+# Physical-device selection. Virtual platform devices are machine-owned.
+[devices]
+passthrough = []
+# The QEMU virt PCI host bridge must stay with the host. `guest_type =
+# "passthrough"` with an empty `passthrough` list auto-assigns every host
+# device (the machine's default passthrough root is "/"), which would hand the
+# guest the host's own virtio-net-pci (host eth0). The guest Linux would then
+# enumerate and initialize it, destroying the host's vrings and killing the
+# management network path this test drives through. Excluding the PCI bridge
+# removes it from the guest DTB and punches its ECAM/MMIO ranges out of the
+# guest address space; the guest still boots its BusyBox initramfs without a NIC.
+disabled = [{ path = "/pcie@10000000" }]

@@ -96,3 +96,39 @@ impl StateGuard<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::NetError;
+
+    #[test]
+    fn transition_commits_success_and_rolls_back_errors() {
+        let lock = StateLock::new(State::Idle);
+        let guard = lock.lock(State::Idle).unwrap();
+        assert_eq!(lock.get(), State::Busy);
+
+        assert_eq!(
+            guard
+                .transit(State::Connected, || Ok::<_, NetError>(9))
+                .unwrap(),
+            9
+        );
+        assert_eq!(lock.get(), State::Connected);
+
+        lock.set(State::Idle);
+        let guard = lock.lock(State::Idle).unwrap();
+        assert_eq!(
+            guard.transit(State::Listening, || Err::<(), _>(NetError::BadState)),
+            Err(NetError::BadState)
+        );
+        assert_eq!(lock.get(), State::Idle);
+    }
+
+    #[test]
+    fn state_encoding_rejects_unknown_values() {
+        assert_eq!(State::try_from(0), Ok(State::Idle));
+        assert_eq!(State::try_from(5), Ok(State::Closed));
+        assert_eq!(State::try_from(6), Err(()));
+    }
+}

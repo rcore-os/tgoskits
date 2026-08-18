@@ -1,0 +1,40 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "2",
+  # The memory-backed guest boots its embedded kernel + BusyBox initramfs; the
+  # initramfs is the guest rootfs (`rdinit=/init`), so no NVMe disk is needed.
+  "-append",
+  "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7",
+  # `-m 1g`: the guest uses a 256M MAP_ALLOC region, and the hypervisor plus
+  # that region must both fit in QEMU's total RAM (same sizing as the previous
+  # HTTP control case).
+  "-m",
+  "1g",
+]
+# Full lifecycle verification via the case's host-side probe asset.
+# `[host_http_probe]` makes the runner append hostfwd netdev + virtio-net-pci
+# device and execute the probe asset (`http_probe.py`, next to this file) over
+# real TCP. The asset drives the default VM (id 1, `vm-memory.toml`, kept
+# `Ready` by `no-auto-start`) through the full contract —
+# list/detail/auth/error/start/stop/delete/recreate — with polling, then quits
+# QEMU over QMP; the runner collects the asset's exit code as the verdict. The
+# test content is owned by this case and can evolve here without touching the
+# axbuild runner.
+# `success_regex` is empty because the probe result, not serial output, is the
+# verdict; a guest panic still fails via `fail_regex`.
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+]
+success_regex = []
+timeout = 600
+to_bin = true
+uefi = false
+
+[host_http_probe]
+token = "axvisor-http-test-token"

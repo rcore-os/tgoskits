@@ -223,7 +223,7 @@ impl ProcessMemStats {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn stats_classify_and_accumulate_rules_hold_for_test() -> bool {
     // Heap is classified as Data (writable, non-stack, non-exec).
     matches!(

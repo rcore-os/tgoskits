@@ -25,6 +25,7 @@ use crate::{
         Directory, File, FileLike, Pipe, get_file_like,
         memfd::{F_SEAL_ANY_WRITE, F_SEAL_GROW, Memfd},
     },
+    ipc::mqueue::MqDescriptor,
     mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, vm_load_path_string},
     task::AsThread,
 };
@@ -183,6 +184,10 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> StarryResu
     if let Ok(f) = File::from_fd(fd) {
         let off = f.inner().seek(pos)?;
         return Ok(off as _);
+    }
+
+    if let Ok(mq) = any_file.clone().downcast_arc::<MqDescriptor>() {
+        return Ok(mq.seek_status(pos)? as _);
     }
 
     if let Ok(d) = any_file.downcast_arc::<Directory>() {
@@ -1069,7 +1074,7 @@ pub fn sys_splice(
     isize::try_from(n).map_err(|_| StarryError::InvalidInput)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn io_rwf_flags_validation_rules_hold_for_test() -> bool {
     // validate_rwf_flags: only flags==0 is accepted.
     validate_rwf_flags(0).is_ok()
@@ -1077,7 +1082,7 @@ pub(crate) fn io_rwf_flags_validation_rules_hold_for_test() -> bool {
         && validate_rwf_flags(u32::MAX).is_err()
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn io_offset_from_hilo_rules_hold_for_test() -> bool {
     // Test offset_from_hilo function
     // On 64-bit, offset_from_hilo should return pos_l directly

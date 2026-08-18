@@ -39,7 +39,7 @@ flowchart LR
 
 ### 2.2 启动语义
 
-选中的 `qemu-*.toml` 定义 arch 相关参数、CPU flags、firmware、UEFI 和 ELF/BIN 启动格式。`test/qemu/boot.rs` 只追加 SMP、timeout 和 drive snapshot 等显式测试控制。
+选中的 `qemu-*.toml` 定义 arch 相关参数、CPU flags、firmware、UEFI 和 ELF/BIN 启动格式。`test/qemu/boot.rs` 只追加 SMP 和 timeout 等显式测试控制；rootfs drive 路径与写入策略由系统运行层通过 `rootfs/qemu` 补丁处理。
 
 ### 2.3 特性所有权
 
@@ -81,7 +81,8 @@ scripts/axbuild/src/
 - `context/resolve.rs` 是 CLI、Snapshot 和配置选择器的合并入口。
 - `build/info.rs` 定义 BuildInfo 到 Cargo 配置的转换。
 - `build/std_build.rs` 准备 musl PIE JSON target、交叉 C 环境、占位库和 linker wrapper。
-- `test/qemu/boot.rs` 处理 SMP、timeout 和 per-drive snapshot 等测试运行控制。
+- `test/qemu/boot.rs` 处理 SMP、timeout 等测试运行控制。
+- `rootfs/qemu` 处理 QEMU rootfs drive 选择与 `RootfsWritePolicy` 写入策略。
 - `image/storage.rs` 是 managed rootfs 的统一存储和拉取入口。
 
 固件路径由镜像存储、QEMU TOML 或具体设备流程提供；`scripts/axbuild/src/` 中的运行模块只消费这些已解析的路径。

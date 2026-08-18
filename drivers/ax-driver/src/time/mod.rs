@@ -3,12 +3,6 @@ use rdrive::probe::OnProbeError;
 
 #[cfg(target_arch = "x86_64")]
 mod cmos;
-#[cfg(all(axtest, target_arch = "x86_64"))]
-pub(crate) use self::cmos::cmos_io_struct_and_constants_hold_for_test;
-#[cfg(all(axtest, target_arch = "x86_64"))]
-pub(crate) use self::cmos::cmos_register_constants_hold_for_test;
-#[cfg(all(axtest, target_arch = "x86_64"))]
-pub(crate) use self::cmos::cmos_register_edge_cases_hold_for_test;
 #[cfg(any(test, target_arch = "x86_64"))]
 mod cmos_decode;
 #[cfg(any(
@@ -49,6 +43,3 @@ fn init_epoch_offset(node_name: &str, unix_timestamp: u64) -> Result<(), OnProbe
 
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {}

@@ -279,10 +279,22 @@ mod tests {
             "qemu",
             "-p",
             "starry-kernel",
+            "-p",
+            "axvisor",
             "--test",
             "axtest_kernel",
             "--arch",
             "x86_64",
+            "--features",
+            "alloc,irq",
+            "--no-default-features",
+            "--profile",
+            "dev",
+            "--target-dir",
+            "ktest-target",
+            "--locked",
+            "--offline",
+            "--no-fail-fast",
             "--qemu-config",
             "qemu.toml",
             "--coverage",
@@ -294,9 +306,16 @@ mod tests {
         match cli.command {
             Commands::Ktest(args) => match args.command {
                 ktest::Command::Qemu(args) => {
-                    assert_eq!(args.package, "starry-kernel");
-                    assert_eq!(args.test.as_deref(), Some("axtest_kernel"));
+                    assert_eq!(args.packages, ["starry-kernel", "axvisor"]);
+                    assert_eq!(args.tests, ["axtest_kernel"]);
                     assert_eq!(args.arch.as_deref(), Some("x86_64"));
+                    assert_eq!(args.features, ["alloc", "irq"]);
+                    assert!(args.no_default_features);
+                    assert_eq!(args.profile.as_deref(), Some("dev"));
+                    assert_eq!(args.target_dir, Some(PathBuf::from("ktest-target")));
+                    assert!(args.locked);
+                    assert!(args.offline);
+                    assert!(args.no_fail_fast);
                     assert_eq!(args.qemu_config, Some(PathBuf::from("qemu.toml")));
                     assert!(args.coverage);
                     assert_eq!(args.out_fmt, Some(ktest::KtestCoverageOutFmt::Html));
@@ -305,6 +324,30 @@ mod tests {
             },
             _ => panic!("expected ktest command"),
         }
+    }
+
+    #[test]
+    fn command_parses_bare_ktest_qemu_as_workspace_selection() {
+        let cli = TestCli::try_parse_from(["xtask", "ktest", "qemu"]).unwrap();
+
+        match cli.command {
+            Commands::Ktest(args) => match args.command {
+                ktest::Command::Qemu(args) => {
+                    assert!(!args.workspace);
+                    assert!(args.packages.is_empty());
+                    assert!(args.excludes.is_empty());
+                    assert!(args.tests.is_empty());
+                }
+                _ => panic!("expected ktest qemu command"),
+            },
+            _ => panic!("expected ktest command"),
+        }
+    }
+
+    #[test]
+    fn command_rejects_libtest_testname_and_trailing_arguments() {
+        assert!(TestCli::try_parse_from(["xtask", "ktest", "qemu", "case_name"]).is_err());
+        assert!(TestCli::try_parse_from(["xtask", "ktest", "qemu", "--", "--nocapture"]).is_err());
     }
 
     #[test]

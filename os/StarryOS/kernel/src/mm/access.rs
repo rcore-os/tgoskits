@@ -3,7 +3,7 @@ use core::{
     alloc::Layout,
     ffi::c_char,
     hint::{spin_loop, unlikely},
-    mem::{MaybeUninit, transmute},
+    mem::{MaybeUninit, size_of, transmute},
     ptr, slice,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
@@ -12,8 +12,10 @@ use ax_io::{IoError, prelude::*};
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
     cpu::{
+        UserAccessError, UserAtomicError, UserAtomicU32Op,
         asm::user_copy,
         trap::{PageFaultFlags, page_fault_handler},
+        user_atomic_u32, user_read_u32,
     },
     paging::MappingFlags,
 };
@@ -169,6 +171,63 @@ pub fn atomic_update_user_u32(
             }
         }
     })
+}
+
+/// Atomically updates a futex word without invoking the page-fault handler.
+pub fn atomic_update_user_u32_nofault(
+    ptr: *mut u32,
+    operation: UserAtomicU32Op,
+    argument: u32,
+) -> Result<u32, UserAtomicError> {
+    if ax_runtime::hal::irq::in_irq_context()
+        || !ptr.addr().is_multiple_of(size_of::<u32>())
+        || check_access(ptr.addr(), size_of::<u32>()).is_err()
+    {
+        return Err(UserAtomicError::Fault);
+    }
+
+    // SAFETY: the checks above establish alignment and the architecture user
+    // range contract. A concurrent mapping change is redirected through the
+    // dedicated nofault exception table.
+    unsafe { user_atomic_u32(ptr, operation, argument) }
+}
+
+/// Reads a futex word without invoking the page-fault handler.
+pub fn read_user_u32_nofault(ptr: *const u32) -> Result<u32, UserAccessError> {
+    if ax_runtime::hal::irq::in_irq_context()
+        || !ptr.addr().is_multiple_of(size_of::<u32>())
+        || check_access(ptr.addr(), size_of::<u32>()).is_err()
+    {
+        return Err(UserAccessError::Fault);
+    }
+
+    // SAFETY: the checks above establish alignment and the architecture user
+    // range contract. A concurrent mapping change is redirected through the
+    // dedicated nofault exception table.
+    unsafe { user_read_u32(ptr) }
+}
+
+/// Resolves and validates a readable futex word outside futex queue locks.
+pub fn fault_in_user_u32_read(ptr: *const u32) -> StarryResult<()> {
+    fault_in_user_u32(ptr.addr(), MappingFlags::READ)
+}
+
+/// Resolves and validates a writable futex word outside futex queue locks.
+pub fn fault_in_user_u32_write(ptr: *mut u32) -> StarryResult<()> {
+    fault_in_user_u32(ptr.addr(), MappingFlags::READ.union(MappingFlags::WRITE))
+}
+
+fn fault_in_user_u32(address: usize, access_flags: MappingFlags) -> StarryResult<()> {
+    if !address.is_multiple_of(size_of::<u32>()) {
+        return Err(StarryError::InvalidInput);
+    }
+    prepare_user_memory(
+        "fault in futex word",
+        address,
+        size_of::<u32>(),
+        access_flags,
+    )
+    .map_err(Into::into)
 }
 
 /// An immutable pointer to user space memory.
@@ -543,7 +602,7 @@ where
                 // while all other CPUs are parked, then rely on the per-CPU
                 // sync callback to flush instruction state.
                 action(addr.as_mut_ptr());
-                return Ok(());
+                Ok(())
             }
 
             #[cfg(not(target_arch = "loongarch64"))]
@@ -579,7 +638,7 @@ fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     ax_runtime::hal::cache::sync_kernel_text(start, size);
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
     let user_base = USER_SPACE_BASE;
     let user_end = USER_SPACE_BASE + USER_SPACE_SIZE;
@@ -620,4 +679,58 @@ pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
         && check_access(user_base, USER_SPACE_SIZE).is_ok()
         && check_access(user_base, USER_SPACE_SIZE + 1).is_err()
         && check_access(user_end - 1, usize::MAX).is_err()
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use core::{mem::MaybeUninit, ptr::NonNull};
+
+    use starry_vm::{VmMutPtr, VmPtr, vm_load};
+
+    use super::*;
+
+    #[test]
+    fn vm_pointer_access_rejects_unmapped_addresses() {
+        let null_ptr = core::ptr::null::<u32>();
+        assert!(null_ptr.nullable().is_none());
+
+        let dangling = NonNull::<u32>::dangling();
+        assert!(dangling.nullable().is_some());
+        assert_eq!(dangling.as_ptr().vm_read(), Err(VmError::AccessDenied));
+        assert_eq!(dangling.vm_write(42), Err(VmError::AccessDenied));
+    }
+
+    #[test]
+    fn vm_slice_access_rejects_invalid_user_ranges() {
+        let mut one_byte = [MaybeUninit::<u8>::uninit()];
+        assert_eq!(
+            vm_read_slice(core::ptr::null::<u8>(), &mut one_byte),
+            Err(VmError::AccessDenied)
+        );
+        assert_eq!(
+            vm_write_slice(core::ptr::null_mut::<u8>(), &[1]),
+            Err(VmError::AccessDenied)
+        );
+        assert_eq!(vm_write_slice(core::ptr::null_mut::<u8>(), &[]), Ok(()));
+        assert_eq!(vm_read_slice(core::ptr::null::<u8>(), &mut []), Ok(()));
+    }
+
+    #[test]
+    fn vm_alloc_helpers_validate_inputs_before_copying() {
+        let mut unaligned = [0_u16; 2];
+        let unaligned_ptr = unaligned
+            .as_mut_ptr()
+            .cast::<u8>()
+            .wrapping_add(1)
+            .cast::<u16>();
+        assert_eq!(vm_load_until_nul(unaligned_ptr), Err(VmError::BadAddress));
+        assert_eq!(
+            vm_load(core::ptr::null::<u8>(), 1),
+            Err(VmError::AccessDenied)
+        );
+
+        let empty: Vec<u8> = vm_load(core::ptr::null::<u8>(), 0).unwrap();
+        assert!(empty.is_empty());
+    }
 }

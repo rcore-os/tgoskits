@@ -28,32 +28,26 @@ pub struct ImageArgs {
 
 #[derive(ClapArgs, Debug, Clone, Default)]
 pub struct ConfigOverrides {
-    #[arg(short('S'), long, global = true)]
-    pub local_storage: Option<PathBuf>,
-
     #[arg(short('R'), long, global = true)]
     pub registry: Option<String>,
 
-    #[arg(short('N'), long, global = true)]
-    pub no_auto_sync: bool,
+    #[arg(short('D'), long, global = true)]
+    pub download_dir: Option<PathBuf>,
 
-    #[arg(long, global = true)]
-    pub auto_sync_threshold: Option<u64>,
+    #[arg(short('E'), long, global = true)]
+    pub extract_dir: Option<PathBuf>,
 }
 
 impl ConfigOverrides {
     pub fn apply_on(&self, config: &mut ImageConfig) {
-        if let Some(local_storage) = self.local_storage.as_ref() {
-            config.local_storage = local_storage.clone();
-        }
         if let Some(registry) = self.registry.as_ref() {
             config.registry = registry.clone();
         }
-        if self.no_auto_sync {
-            config.auto_sync = false;
+        if let Some(download_dir) = self.download_dir.as_ref() {
+            config.download_dir = download_dir.clone();
         }
-        if let Some(auto_sync_threshold) = self.auto_sync_threshold {
-            config.auto_sync_threshold = auto_sync_threshold;
+        if let Some(extract_dir) = self.extract_dir.as_ref() {
+            config.extract_dir = extract_dir.clone();
         }
     }
 }
@@ -88,10 +82,6 @@ pub struct ArgsPull {
     /// Pull the default Starry/ArceOS rootfs for this architecture.
     #[arg(long)]
     pub arch: Option<String>,
-
-    /// Output directory for generic extracted images. Managed rootfs images use local image storage.
-    #[arg(short, long)]
-    pub output_dir: Option<PathBuf>,
 
     /// Keep only the downloaded archive for generic images.
     #[arg(long)]
@@ -179,14 +169,14 @@ async fn pull_image(
     args: ArgsPull,
 ) -> anyhow::Result<()> {
     let image_path = match (args.image.as_deref(), args.arch.as_deref()) {
-        (Some(image), None) if args.output_dir.is_none() && !args.no_extract => {
+        (Some(image), None) if !args.no_extract => {
             let mut config = ImageConfig::read_config(workspace_root)?;
             overrides.apply_on(&mut config);
             let storage = Storage::new_from_config(&config).await?;
             match storage.pull_rootfs_image(ImageSpecRef::parse(image)).await {
                 Ok(path) => path,
                 Err(rootfs_err) => storage
-                    .pull_image(ImageSpecRef::parse(image), None, true)
+                    .pull_image(ImageSpecRef::parse(image), true)
                     .await
                     .map_err(|generic_err| {
                         anyhow::anyhow!(
@@ -200,20 +190,11 @@ async fn pull_image(
             let mut config = ImageConfig::read_config(workspace_root)?;
             overrides.apply_on(&mut config);
             let storage = Storage::new_from_config(&config).await?;
-            let output_dir = args
-                .output_dir
-                .as_deref()
-                .map(to_absolute_path)
-                .transpose()?;
             storage
-                .pull_image(
-                    ImageSpecRef::parse(image),
-                    output_dir.as_deref(),
-                    !args.no_extract,
-                )
+                .pull_image(ImageSpecRef::parse(image), !args.no_extract)
                 .await?
         }
-        (None, Some(arch)) if args.output_dir.is_none() && !args.no_extract => {
+        (None, Some(arch)) if !args.no_extract => {
             let mut config = ImageConfig::read_config(workspace_root)?;
             overrides.apply_on(&mut config);
             let image = storage::default_rootfs_image(arch).ok_or_else(|| {
@@ -223,9 +204,7 @@ async fn pull_image(
             storage.pull_rootfs_image(image.into()).await?
         }
         (None, Some(_)) => {
-            anyhow::bail!(
-                "`--arch` managed rootfs pulls do not accept `--output-dir` or `--no-extract`"
-            )
+            anyhow::bail!("`--arch` managed rootfs pulls do not accept `--no-extract`")
         }
         (None, None) => {
             anyhow::bail!("provide an image name or use `--arch <ARCH>`")
@@ -270,8 +249,34 @@ mod tests {
 
     #[derive(Parser)]
     struct Cli {
+        #[command(flatten)]
+        overrides: ConfigOverrides,
+
         #[command(subcommand)]
         command: Command,
+    }
+
+    #[test]
+    fn parses_separate_image_directories() {
+        let cli = Cli::try_parse_from([
+            "image",
+            "--download-dir",
+            "downloads",
+            "--extract-dir",
+            "rootfs",
+            "ls",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.overrides.download_dir, Some(PathBuf::from("downloads")));
+        assert_eq!(cli.overrides.extract_dir, Some(PathBuf::from("rootfs")));
+    }
+
+    #[test]
+    fn rejects_removed_storage_options() {
+        assert!(Cli::try_parse_from(["image", "--local-storage", "images", "ls"]).is_err());
+        assert!(Cli::try_parse_from(["image", "--no-auto-sync", "ls"]).is_err());
+        assert!(Cli::try_parse_from(["image", "--auto-sync-threshold", "60", "ls"]).is_err());
     }
 
     #[test]
@@ -282,7 +287,6 @@ mod tests {
             Command::Pull(args) => {
                 assert_eq!(args.image.as_deref(), Some("rootfs-riscv64-alpine.img"));
                 assert!(args.arch.is_none());
-                assert!(args.output_dir.is_none());
                 assert!(!args.no_extract);
             }
             _ => panic!("expected pull command"),
@@ -303,24 +307,70 @@ mod tests {
     }
 
     #[test]
-    fn parses_pull_with_output_dir_and_no_extract() {
-        let cli = Cli::try_parse_from([
-            "image",
-            "pull",
-            "demo-x86_64",
-            "--output-dir",
-            "tmp/images",
-            "--no-extract",
-        ])
-        .unwrap();
+    fn parses_pull_without_extracting() {
+        let cli = Cli::try_parse_from(["image", "pull", "demo-x86_64", "--no-extract"]).unwrap();
 
         match cli.command {
             Command::Pull(args) => {
                 assert_eq!(args.image.as_deref(), Some("demo-x86_64"));
-                assert_eq!(args.output_dir, Some(PathBuf::from("tmp/images")));
                 assert!(args.no_extract);
             }
             _ => panic!("expected pull command"),
+        }
+    }
+
+    #[test]
+    fn parses_pull_with_extract_dir_after_image() {
+        let cli = Cli::try_parse_from([
+            "image",
+            "pull",
+            "qemu-x86_64",
+            "--extract-dir",
+            "tmp/axbuild/images",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.overrides.extract_dir,
+            Some(PathBuf::from("tmp/axbuild/images"))
+        );
+        assert!(matches!(cli.command, Command::Pull(_)));
+    }
+
+    #[test]
+    fn ci_image_pull_commands_do_not_use_removed_output_dir() {
+        let workflow = include_str!("../../../.github/workflows/ci.yml");
+
+        for command in workflow
+            .lines()
+            .filter(|line| line.contains("cargo xtask image pull"))
+        {
+            assert!(
+                !command.contains("--output-dir"),
+                "CI still uses removed image option: {command}"
+            );
+        }
+
+        // The modular check definitions under `.github/ci/checks/*.toml` are the
+        // actual source of the commands CI runs. Scan them too, so a regressed
+        // `--output-dir` anywhere is caught instead of only in `ci.yml`.
+        let checks_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/ci/checks");
+        for entry in std::fs::read_dir(&checks_dir).expect("read checks dir") {
+            let path = entry.expect("check entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("read check toml");
+            for command in content
+                .lines()
+                .filter(|line| line.contains("cargo xtask image pull"))
+            {
+                assert!(
+                    !command.contains("--output-dir"),
+                    "CI check {} still uses removed image option: {command}",
+                    path.display()
+                );
+            }
         }
     }
 
@@ -329,7 +379,7 @@ mod tests {
         let cli = Cli::try_parse_from([
             "image",
             "check",
-            ".tgos-images/rootfs-riscv64-alpine.img/rootfs-riscv64-alpine.img",
+            ".tgos-images/rootfs-riscv64-alpine.img",
             "--sha256",
             "abc",
         ])
@@ -339,9 +389,7 @@ mod tests {
             Command::Check(args) => {
                 assert_eq!(
                     args.image,
-                    PathBuf::from(
-                        ".tgos-images/rootfs-riscv64-alpine.img/rootfs-riscv64-alpine.img"
-                    )
+                    PathBuf::from(".tgos-images/rootfs-riscv64-alpine.img")
                 );
                 assert_eq!(args.sha256.as_deref(), Some("abc"));
             }

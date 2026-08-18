@@ -449,7 +449,7 @@ pub fn seccomp_errno(errno: u16) -> usize {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn seccomp_filter_rules_hold_for_test() -> bool {
     let allow = SockFilter {
         code: BPF_RET,
@@ -630,7 +630,7 @@ pub(crate) fn seccomp_filter_rules_hold_for_test() -> bool {
         && seccomp_errno(13) == (-13i32 as usize)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn seccomp_filter_construction_rules_hold_for_test() -> bool {
     use alloc::vec;
 
@@ -668,7 +668,7 @@ pub(crate) fn seccomp_filter_construction_rules_hold_for_test() -> bool {
         .is_err()
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn seccomp_action_and_precedence_rules_hold_for_test() -> bool {
     // action_to_decision: converts raw seccomp return to decision.
     assert!(matches!(
@@ -722,7 +722,7 @@ pub(crate) fn seccomp_action_and_precedence_rules_hold_for_test() -> bool {
     true
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn seccomp_bpf_constants_hold_for_test() -> bool {
     // BPF limits
     assert!(BPF_MAXINSNS == 4096);

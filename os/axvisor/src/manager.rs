@@ -37,11 +37,25 @@ impl AxvmManager {
     }
 
     /// Start the default VM set without blocking the management console.
+    #[cfg_attr(
+        feature = "no-auto-start",
+        expect(
+            dead_code,
+            reason = "only the auto-start boot path launches the default VMs"
+        )
+    )]
     pub fn launch_default_vms(&self) -> Vec<VMId> {
         self.runtime.launch_default_vms()
     }
 
     /// Wait until every running VM has stopped.
+    #[cfg_attr(
+        feature = "no-auto-start",
+        expect(
+            dead_code,
+            reason = "only the auto-start boot path waits for default-VM completion"
+        )
+    )]
     pub fn wait_for_default_vms() {
         AxvmRuntime::wait_for_all_vms();
     }

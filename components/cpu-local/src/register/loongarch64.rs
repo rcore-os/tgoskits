@@ -1,14 +1,15 @@
 use super::*;
 
 pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentModel {
-    current_source_aliases_kernel_tls: true,
+    linux_current: CurrentContextSource::ArchitectureRegister,
+    unikernel_tls: CurrentContextSource::RuntimeAnchor,
 };
 
 pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
     Ok(())
 }
 
-pub(super) unsafe fn install_cpu_base(area_base: usize, boot_thread: usize) {
+pub(super) unsafe fn install_cpu_base(area_base: usize, boot_context: usize) {
     let shadow = area_base;
     unsafe {
         core::arch::asm!(
@@ -20,7 +21,7 @@ pub(super) unsafe fn install_cpu_base(area_base: usize, boot_thread: usize) {
     }
     if !cfg!(feature = "tls") {
         unsafe {
-            core::arch::asm!("move $tp, {current}", current = in(reg) boot_thread, options(nostack))
+            core::arch::asm!("move $tp, {current}", current = in(reg) boot_context, options(nostack))
         };
     }
 }
@@ -43,9 +44,9 @@ pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
     Ok(area_base)
 }
 
-pub(super) unsafe fn read_current_thread(area_base: usize) -> usize {
+pub(super) unsafe fn read_current_context(area_base: usize) -> usize {
     if cfg!(feature = "tls") {
-        unsafe { area_runtime_anchor(area_base) }.current_thread_raw()
+        unsafe { area_runtime_anchor(area_base) }.current_context_raw()
     } else {
         let current: usize;
         unsafe { core::arch::asm!("move {current}, $tp", current = out(reg) current) };
@@ -53,7 +54,7 @@ pub(super) unsafe fn read_current_thread(area_base: usize) -> usize {
     }
 }
 
-pub(super) unsafe fn write_current_thread(value: usize) {
+pub(super) unsafe fn write_current_context(value: usize) {
     if !cfg!(feature = "tls") {
         unsafe { core::arch::asm!("move $tp, {value}", value = in(reg) value) };
     }

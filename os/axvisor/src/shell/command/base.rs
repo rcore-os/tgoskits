@@ -24,12 +24,12 @@ use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::println;
 use std::string::{String, ToString};
 
+use crate::shell::command::{CommandNode, FlagDef, ParsedCommand};
 #[cfg(feature = "fs")]
-use crate::shell::command::fs::{
+use axvisor::shell_support::{
     CopyMode, RemoveOptions, collect_directory_entry_names, copy_operands, copy_path,
     move_file_or_dir, path_basename, remove_path, touch_file,
 };
-use crate::shell::command::{CommandNode, FlagDef, ParsedCommand};
 
 #[cfg(feature = "fs")]
 macro_rules! print_err {

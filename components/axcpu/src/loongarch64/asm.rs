@@ -142,6 +142,17 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     }
 }
 
+/// Makes a page-table entry installed by the local page-fault handler visible
+/// before retrying the faulting instruction.
+///
+/// The software refill path may cache a non-readable and non-executable
+/// placeholder for a missing page-table level. Invalidate that local entry so
+/// the retry refills from the newly installed PTE.
+#[inline]
+pub fn update_mmu_cache(vaddr: VirtAddr) {
+    flush_tlb(Some(vaddr));
+}
+
 /// Writes the Exception Entry Base Address register (`EENTRY`).
 ///
 /// It also set the Exception Configuration register (`ECFG`) to `VS=0`.
@@ -232,7 +243,11 @@ pub fn enable_lasx() {
 }
 
 #[cfg(feature = "uspace")]
-core::arch::global_asm!(include_asm_macros!(), include_str!("user_copy.S"));
+core::arch::global_asm!(
+    include_asm_macros!(),
+    include_str!("user_copy.S"),
+    include_str!("user_atomic.S"),
+);
 
 #[cfg(feature = "uspace")]
 unsafe extern "C" {

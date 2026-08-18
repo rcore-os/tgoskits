@@ -3,7 +3,7 @@ set -euo pipefail
 
 export STARRY_APP_DIR=/workspace/apps/starry/doom
 export STARRY_ARCH=x86_64
-export STARRY_ROOTFS=/tmp/.tgos-images/rootfs-x86_64-alpine.img/rootfs-x86_64-alpine.img
+export STARRY_ROOTFS=/tmp/.tgos-images/rootfs-x86_64-alpine.img
 export STARRY_STAGING_ROOT=/workspace/tmp/doom-staging
 export STARRY_OVERLAY_DIR=/workspace/tmp/doom-overlay
 export STARRY_WORKSPACE=/workspace

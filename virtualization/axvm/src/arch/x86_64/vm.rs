@@ -23,20 +23,16 @@ const ARCH_OWNED_REGIONS: [GuestOwnedRegion; 1] = [GuestOwnedRegion::new(
 
 impl X86_64Arch {
     pub(crate) fn create_vm_resources(
-        config: AxVMConfig,
+        config: &mut AxVMConfig,
         fw_cfg_payload: std::sync::Arc<axdevice::FwCfgPayloadSlot>,
     ) -> AxVmResult<AxVMResources> {
         #[cfg(feature = "host-fs")]
-        let config = {
-            let mut config = config;
-            apply_host_serial(&mut config)?;
-            config
-        };
-        let device_plan = plan_devices(&config, fw_cfg_payload)?;
+        apply_host_serial(config)?;
+        let device_plan = plan_devices(config, fw_cfg_payload)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = nested_paging::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config, page_table, device_plan, |root_paddr| {
+        AxVMResources::from_page_table(config.id(), page_table, device_plan, |root_paddr| {
             let gpa_bits = match levels {
                 3 => 39,
                 4 => 48,
@@ -49,17 +45,17 @@ impl X86_64Arch {
     }
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
-        vm.prepare_resources_with(|resources| {
-            let placements = resources.vcpu_placements();
+        vm.prepare_resources_with(|resources, config| {
+            let placements = resources.vcpu_placements(config);
             let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
             let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.prepare_guest_address_space(vm.id(), &ARCH_OWNED_REGIONS)?;
+            resources.prepare_guest_address_space(vm.id(), config, &ARCH_OWNED_REGIONS)?;
             resources.map_arch_address_space()?;
             let intercepted_ports = resources.resolved_port_intercepts()?;
-            vcpus.setup(resources, |config, memory_regions| {
+            vcpus.setup(resources, config, |config, memory_regions| {
                 build_vcpu_setup_config(config, memory_regions, &intercepted_ports)
             })?;
 

@@ -8,7 +8,7 @@ slug: /architecture/axvisor
 
 Axvisor 是基于 ArceOS 的统一组件化 Type-I Hypervisor。它既非直接包裹 KVM 的用户态工具，也非单体式虚拟机管理程序，而是建立在 ArceOS 运行时、虚拟化组件库与分层配置系统之上的 Hypervisor 软件栈。
 
-本文聚焦 Axvisor 的组织原理、配置体系与关键执行路径。若需要先运行 QEMU 示例，请先阅读 [Axvisor 快速上手](/docs/quickstart/axvisor)；客户机配置、设备直通与强制虚拟串口的详细语义见 [Axvisor 客户机配置与 Machine 设备模型](/docs/architecture/axvisor-guest-machine)。
+本文聚焦 Axvisor 的组织原理、配置体系与关键执行路径。若需要先运行 QEMU 示例，请先阅读 [Axvisor 快速上手](/docs/quickstart/axvisor)；客户机配置、设备直通与强制虚拟串口的详细语义见 [Axvisor 客户机配置与 Machine 设备模型](/docs/architecture/axvisor/axvisor-guest-machine)。
 
 ## 系统定位
 

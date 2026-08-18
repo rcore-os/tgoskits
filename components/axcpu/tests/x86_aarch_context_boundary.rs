@@ -29,7 +29,7 @@ fn aarch64_task_context_restores_current_and_tls_in_the_naked_window() {
     assert!(!naked_switch.contains("write_user_page_table"));
     assert!(naked_switch.contains("tpidr_el0"));
     assert!(naked_switch.contains("sp_el0"));
-    assert!(naked_switch.contains("current_header_offset"));
+    assert!(naked_switch.contains("context_header_offset"));
     assert!(!source.contains("pub fn switch_to("));
     assert!(!task_context_definition(&source).contains("ttbr0_el1"));
 }

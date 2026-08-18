@@ -1,0 +1,32 @@
+args = [
+    "-machine",
+    "q35",
+    "-nographic",
+    "-m",
+    "8192",
+    "-smp",
+    "8",
+    "-device",
+    "nvme,drive=disk0,serial=starrynixos,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-nixos.img",
+]
+uefi = true
+to_bin = true
+shell_prefix = ""
+success_regex = [
+    "(?s)STARRY_NIXOS_PHASE=pid1.*STARRY_NIXOS_PHASE=activation.*STARRY_NIXOS_PHASE=systemd.*STARRY_NIXOS_PHASE=marker.*STARRY_NIXOS_SYSTEM_PASSED",
+]
+fail_regex = [
+    '(?i)\bpanic(?:ked)?\b',
+    '(?i)\bfatal\b',
+    '(?m)^.*(?:starry-nixos-)?marker\.service: Failed with result',
+    '(?m)^Failed to start Verify the StarryNixOS stage-2 baseline\.?$',
+    "(?m)^STARRY_NIXOS_SYSTEM_FAILED:",
+]
+timeout = 600
+
+[rootfs_preparation]
+mode = "app-owned"
+builder = "build-rootfs.sh"
+target_arch = "x86_64"

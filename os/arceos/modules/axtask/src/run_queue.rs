@@ -3,7 +3,7 @@ use alloc::{collections::VecDeque, sync::Arc};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::{mem::MaybeUninit, ops::Deref, ptr::NonNull};
 
-use ax_hal::percpu::{PreviousThreadBinding, this_cpu_id};
+use ax_hal::percpu::{PreviousContextBinding, this_cpu_id};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_sched::BaseScheduler;
@@ -24,7 +24,7 @@ use crate::{
 
 struct PreviousTask {
     task: NonNull<crate::AxTask>,
-    binding: PreviousThreadBinding,
+    binding: PreviousContextBinding,
 }
 
 macro_rules! percpu_static {
@@ -1213,15 +1213,15 @@ impl AxRunQueue {
 
             // The enclosing run-queue guard has already disabled migration and
             // local IRQs for the complete switch lifetime.
-            let prev_header_pointer = prev_task.current_header().as_non_null();
-            let next_header_pointer = next_task.current_header().as_non_null();
+            let prev_header_pointer = prev_task.context_header().as_non_null();
+            let next_header_pointer = next_task.context_header().as_non_null();
             ax_hal::percpu::with_cpu_pin(|pin| {
                 // SAFETY: both Arc allocations remain alive across the raw
                 // switch; the header fields are permanently pinned within them.
                 let prev_header = core::pin::Pin::new_unchecked(prev_header_pointer.as_ref());
                 let next_header = core::pin::Pin::new_unchecked(next_header_pointer.as_ref());
                 let (prepared, previous_binding) =
-                    ax_hal::percpu::prepare_thread_switch(pin, prev_header, next_header)
+                    ax_hal::percpu::prepare_context_switch(pin, prev_header, next_header)
                         .expect("scheduler thread switch must validate before publication");
 
                 // FP, address-space, Arc, and PREV_TASK work all remain before
@@ -1362,7 +1362,7 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
     let prev = unsafe { previous.task.as_ref() };
     // SAFETY: current publication and architecture registers already identify
     // the incoming task, and this is the sole owner of the recorded epoch.
-    unsafe { previous.binding.finish(prev.current_header()) }
+    unsafe { previous.binding.finish(prev.context_header()) }
         .expect("incoming switch tail must withdraw prev_task CPU binding");
     // Publish that the context is fully saved. The SeqCst store pairs with the
     // waker's `on_cpu()`/`take_wake()` handshake in `put_task_with_state`.
@@ -1495,74 +1495,4 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     unsafe {
         RUN_QUEUES[cpu_id].write(run_queue);
     }
-}
-
-#[cfg(axtest)]
-pub(crate) fn run_queue_constants_hold_for_test() -> bool {
-    // Test that TASK_STACK_ALIGN is accessible
-    assert_eq!(TASK_STACK_ALIGN, 16);
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn run_queue_task_state_variants_hold_for_test() -> bool {
-    // Test TaskState variants are accessible
-    use crate::TaskState;
-
-    let _running = TaskState::Running;
-    let _ready = TaskState::Ready;
-    let _blocked = TaskState::Blocked;
-    let _exited = TaskState::Exited;
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn run_queue_percpu_statics_exist_hold_for_test() -> bool {
-    // Test that percpu statics exist and are accessible
-    // RUN_QUEUE, EXITED_TASKS, WAIT_FOR_EXIT, IDLE_TASK
-
-    // Verify the types compile correctly
-    let _ = "percpu_statics_exist";
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn run_queue_axrunqueue_struct_fields_hold_for_test() -> bool {
-    // Test AxRunQueue struct has expected fields (cpu_id, scheduler)
-
-    // We can't construct one directly without a scheduler,
-    // but verify the struct exists and is used
-    let _ = "AxRunQueue_exists";
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn run_queue_current_run_queue_ref_exists_hold_for_test() -> bool {
-    // Test that CurrentRunQueueRef type exists
-    let _ = "CurrentRunQueueRef_exists";
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn run_queue_select_functions_exist_hold_for_test() -> bool {
-    // Test that select_run_queue and select_wake_run_queue exist
-    // These are pub(crate) functions that should be callable from tests
-
-    let _ = "select_run_queue_exists";
-    let _ = "select_wake_run_queue_exists";
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn run_queue_init_secondary_exists_hold_for_test() -> bool {
-    // Test that init_secondary function exists
-    let _ = "init_secondary_exists";
-
-    true
 }

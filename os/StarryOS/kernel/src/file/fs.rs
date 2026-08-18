@@ -383,7 +383,7 @@ impl Pollable for Directory {
 
     fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
 }
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn metadata_to_kstat_conversion_rules_hold_for_test() -> bool {
     use core::time::Duration;
 

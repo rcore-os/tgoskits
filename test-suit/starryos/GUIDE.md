@@ -134,6 +134,24 @@ STARRY_SYSTEM_TEST_SUMMARY: total=1 passed=1 failed=0 elapsed_s=1
 install(TARGETS mytest RUNTIME DESTINATION usr/bin/starry-test-suit)
 ```
 
+串口/TTY 事务回归由 `qemu/system/test-tty-termios-transaction` 覆盖。它在真实
+`/dev/ttyS0` 上验证配置错误不会发布新 termios，并让普通输出与
+`TCSETSW2`/`TCSETSF2` 并发；同时通过 PTY 验证 `TCSETSF2` 在配置事务完成后清理旧输入。
+该子目录不放自己的 `qemu-*.toml`，而是由 `qemu/system/qemu-*.toml` 的统一 SMP4 guest
+承载。单独运行四个架构时使用：
+
+```bash
+cargo xtask starry test qemu --arch x86_64 -c qemu/system/test-tty-termios-transaction
+cargo xtask starry test qemu --arch riscv64 -c qemu/system/test-tty-termios-transaction
+cargo xtask starry test qemu --arch aarch64 -c qemu/system/test-tty-termios-transaction
+cargo xtask starry test qemu --arch loongarch64 -c qemu/system/test-tty-termios-transaction
+```
+
+同一 grouped runner 还必须保留 `test-tty-flush` 和
+`tty-bugfix-bug-raw-terminal-polling`。前者保持 `TCIFLUSH`、`TCOFLUSH`、`TCIOFLUSH`
+以及串口 output flush 的断言，后者保持 raw mode 下 `poll()` 超时的原有成功/失败条件。
+`tty-console-input-burst` 继续作为独立 shell-injection case，不迁入 grouped runner。
+
 如果某个 C 子测例只支持部分架构，优先使用 `system/common/starry_arch_filter.cmake`
 生成 skip 二进制。skip 输出要清楚说明目标和原因，并返回 0。
 

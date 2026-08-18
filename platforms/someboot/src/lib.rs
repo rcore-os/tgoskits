@@ -37,6 +37,7 @@ pub(crate) mod consts;
 #[cfg(efi)]
 mod efi_stub;
 mod elf;
+mod entropy;
 mod entry;
 mod err;
 pub(crate) mod fdt;
@@ -44,14 +45,13 @@ pub mod irq;
 pub mod mem;
 pub mod power;
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
 pub mod rtc;
 pub mod smp;
 pub mod timer;
 
 pub use acpi::rsdp_addr_phys;
 pub use cmdline::cmdline;
+pub use entropy::boot_entropy;
 pub use fdt::{fdt_addr, fdt_addr_phys, platform_name};
 pub use page_table_generic::*;
 pub use somehal_macros::{entry, someboot_secondary_entry as secondary_entry};

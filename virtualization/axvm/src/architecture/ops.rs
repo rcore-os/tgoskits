@@ -483,4 +483,28 @@ mod tests {
         );
         assert!(dispatcher.drain(0).is_empty());
     }
+
+    #[test]
+    fn default_vcpu_affinities_pins_single_cpu_to_isolated_core() {
+        // aarch64/riscv64 arceos-smp1.toml: cpu_num=1, phys_cpu_ids=[1] → pin to physical Core 1.
+        assert_eq!(
+            default_vcpu_affinities(1, Some(&[1]), None),
+            vec![(0, None, 1)]
+        );
+        // x86_64 arceos-smp1.toml: phys_cpu_sets=[2] → affinity mask 0b10 (Core 1).
+        assert_eq!(
+            default_vcpu_affinities(1, None, Some(&[2])),
+            vec![(0, Some(2), 0)]
+        );
+        // Default: no pinning, vcpu id equals physical id.
+        assert_eq!(default_vcpu_affinities(1, None, None), vec![(0, None, 0)]);
+    }
+
+    #[test]
+    fn default_vcpu_affinities_multi_cpu_falls_back_to_vcpu_id() {
+        assert_eq!(
+            default_vcpu_affinities(2, None, None),
+            vec![(0, None, 0), (1, None, 1)]
+        );
+    }
 }

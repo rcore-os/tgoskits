@@ -1,4 +1,4 @@
-use core::marker::PhantomData;
+use core::{marker::PhantomData, ptr::NonNull};
 
 use crate::{CpuAreaRef, CpuLocalError, register};
 
@@ -32,6 +32,44 @@ pub struct ExclusiveCpu<'pin> {
     area: CpuAreaRef,
     _scope: PhantomData<&'pin mut &'pin ()>,
     _not_send_or_sync: PhantomData<*mut ()>,
+}
+
+/// Scoped selection of the architecture-owned current CPU area.
+///
+/// This capability is intentionally weaker than [`CpuPin`]: it does not
+/// validate current execution-context publication. It exists for low-level
+/// owner boundaries that must select CPU-owned state before a pin can be
+/// constructed.
+#[doc(hidden)]
+#[must_use = "current CPU-area access is valid only while this token remains in scope"]
+#[derive(Debug)]
+pub struct CurrentCpuArea<'scope> {
+    area_base: usize,
+    _scope: PhantomData<&'scope mut &'scope ()>,
+    _not_send_or_sync: PhantomData<*mut ()>,
+}
+
+impl CurrentCpuArea<'_> {
+    /// Calculates a typed symbol address in the selected installed CPU area.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CpuLocalError::AddressOverflow`] when adding `offset` exceeds
+    /// the address space.
+    ///
+    /// # Safety
+    ///
+    /// `offset` must identify a live, properly aligned `T` in every initialized
+    /// CPU area. The returned pointer may only be dereferenced while the outer
+    /// owner transaction retains the synchronization required by `T`.
+    #[doc(hidden)]
+    pub unsafe fn symbol_ptr<T>(&self, offset: usize) -> Result<NonNull<T>, CpuLocalError> {
+        let address = self
+            .area_base
+            .checked_add(offset)
+            .ok_or(CpuLocalError::AddressOverflow)?;
+        NonNull::new(address as *mut T).ok_or(CpuLocalError::InvalidAreaBase { base: address })
+    }
 }
 
 impl ExclusiveCpu<'_> {
@@ -81,10 +119,9 @@ pub unsafe fn with_cpu_pin<R>(
         _scope: PhantomData,
         _not_send_or_sync: PhantomData,
     };
-    // Validate the second architecture-owned source before exposing any
-    // typed access. This catches a restored CPU base paired with a stale task
-    // register (notably after a vCPU exit) at the pin boundary.
-    register::current_thread(&pin)?;
+    // Validate the image's selected current-context source before exposing
+    // typed access. Each image mode has exactly one authoritative source.
+    register::current_context(&pin)?;
     Ok(operation(&pin))
 }
 
@@ -105,4 +142,57 @@ pub unsafe fn with_exclusive_cpu<R>(
         _not_send_or_sync: PhantomData,
     };
     operation(&exclusive)
+}
+
+/// Runs `operation` with a non-escaping selection of the current CPU area.
+///
+/// Unlike [`with_cpu_pin`], this boundary does not validate current
+/// execution-context publication or reconstruct the complete area identity.
+/// It is intended for low-level owner code that cannot construct a pin before
+/// accessing CPU-owned state.
+///
+/// # Errors
+///
+/// Returns [`CpuLocalError::AreaNotInstalled`] before the current CPU has an
+/// installed runtime area, or an address error for an invalid base.
+///
+/// # Safety
+///
+/// The caller must prevent migration and context switches for the complete
+/// callback. The installed area must remain mapped until shutdown. Values
+/// mutably selected through this token additionally require local IRQ/re-entry
+/// and every conflicting remote access to be excluded. Offline CPU bootstrap
+/// satisfies these conditions before interrupt publication.
+#[doc(hidden)]
+pub unsafe fn with_current_cpu_area<R>(
+    operation: impl for<'scope> FnOnce(&CurrentCpuArea<'scope>) -> R,
+) -> Result<R, CpuLocalError> {
+    let area_base = unsafe { register::current_cpu_area_base()? };
+    let area = CurrentCpuArea {
+        area_base,
+        _scope: PhantomData,
+        _not_send_or_sync: PhantomData,
+    };
+    Ok(operation(&area))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_cpu_area_rejects_a_symbol_address_overflow() {
+        let area = CurrentCpuArea {
+            area_base: usize::MAX,
+            _scope: PhantomData,
+            _not_send_or_sync: PhantomData,
+        };
+
+        assert_eq!(
+            // SAFETY: no pointer is dereferenced; the test exercises rejection
+            // before an address can be constructed.
+            unsafe { area.symbol_ptr::<u8>(1) },
+            Err(CpuLocalError::AddressOverflow),
+        );
+    }
 }

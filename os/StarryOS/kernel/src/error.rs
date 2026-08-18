@@ -6,11 +6,11 @@ use ax_io::IoError;
 use ax_memory_set::MappingError;
 use ax_mm::MmError;
 use ax_net::NetError;
-use ax_runtime::RuntimeError;
+use ax_runtime::{RuntimeError, serial::ConfigError};
 use ax_task::future::{Elapsed, Interrupted, PollIoError, TaskError};
 use axfs_ng_vfs::VfsError;
 use dma_api::DmaError;
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 use rdif_block::{BlkError, RequestOp};
 #[cfg(feature = "sg2002")]
 use sg2002_tpu::{ion::IonError, tpu::error::TpuError};
@@ -305,6 +305,7 @@ fn cgroup_errno(error: CgroupError) -> Errno {
         CgroupError::NotFound => Errno::ENOENT,
         CgroupError::AlreadyExists => Errno::EEXIST,
         CgroupError::ResourceBusy => Errno::EBUSY,
+        CgroupError::LimitExceeded => Errno::EAGAIN,
         CgroupError::NoSuchProcess => Errno::ESRCH,
         CgroupError::DirectoryNotEmpty => Errno::ENOTEMPTY,
     }
@@ -354,6 +355,14 @@ fn vfs_error_from_errno(errno: Errno) -> VfsError {
 
 fn runtime_errno(error: &RuntimeError) -> Errno {
     match error {
+        RuntimeError::SerialConfig(error) => match error {
+            ConfigError::InvalidBaudrate
+            | ConfigError::UnsupportedDataBits
+            | ConfigError::UnsupportedStopBits
+            | ConfigError::UnsupportedParity => Errno::EINVAL,
+            ConfigError::Timeout => Errno::ETIMEDOUT,
+            ConfigError::RegisterError => Errno::EIO,
+        },
         RuntimeError::SerialNotStarted => Errno::EFAULT,
         RuntimeError::SerialControlBusy => Errno::EBUSY,
         RuntimeError::WouldBlock => Errno::EAGAIN,
@@ -502,14 +511,14 @@ fn vfs_errno(error: VfsError) -> Errno {
     }
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn errno_cases_hold<const N: usize>(cases: [(StarryError, Errno); N]) -> bool {
     cases
         .into_iter()
         .all(|(error, expected)| error.linux_errno() == expected)
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn memory_errno_mappings_hold() -> bool {
     errno_cases_hold([
         (VmError::BadAddress.into(), Errno::EFAULT),
@@ -545,13 +554,14 @@ fn memory_errno_mappings_hold() -> bool {
         (CgroupError::NotFound.into(), Errno::ENOENT),
         (CgroupError::AlreadyExists.into(), Errno::EEXIST),
         (CgroupError::ResourceBusy.into(), Errno::EBUSY),
+        (CgroupError::LimitExceeded.into(), Errno::EAGAIN),
         (CgroupError::InvalidInput.into(), Errno::EINVAL),
         (CgroupError::NoSuchProcess.into(), Errno::ESRCH),
         (CgroupError::DirectoryNotEmpty.into(), Errno::ENOTEMPTY),
     ])
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn vfs_errno_mappings_hold() -> bool {
     errno_cases_hold([
         (VfsError::AlreadyExists.into(), Errno::EEXIST),
@@ -586,7 +596,7 @@ fn vfs_errno_mappings_hold() -> bool {
     ])
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn io_errno_mappings_hold() -> bool {
     errno_cases_hold([
         (IoError::AddrInUse.into(), Errno::EADDRINUSE),
@@ -647,7 +657,7 @@ fn io_errno_mappings_hold() -> bool {
     ])
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn block_errno_mappings_hold() -> bool {
     let device_error = |source| {
         StarryError::from(BlockError::Device {
@@ -680,7 +690,7 @@ fn block_errno_mappings_hold() -> bool {
     ])
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn leaf_errno_mappings_hold() -> bool {
     errno_cases_hold([
         (StarryError::AlreadyExists, Errno::EEXIST),
@@ -734,6 +744,30 @@ fn leaf_errno_mappings_hold() -> bool {
             Errno::EBUSY,
         ),
         (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::InvalidBaudrate)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::UnsupportedDataBits)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::UnsupportedStopBits)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::UnsupportedParity)),
+            Errno::EINVAL,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::Timeout)),
+            Errno::ETIMEDOUT,
+        ),
+        (
+            StarryError::Runtime(RuntimeError::SerialConfig(ConfigError::RegisterError)),
+            Errno::EIO,
+        ),
+        (
             StarryError::Runtime(RuntimeError::WouldBlock),
             Errno::EAGAIN,
         ),
@@ -762,7 +796,7 @@ fn leaf_errno_mappings_hold() -> bool {
     ])
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn domain_errno_mappings_hold() -> bool {
     memory_errno_mappings_hold()
         && vfs_errno_mappings_hold()
@@ -773,7 +807,7 @@ fn domain_errno_mappings_hold() -> bool {
         && StarryError::from(Errno::new(4094)).linux_errno().into_raw() == 4094
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn domain_errno_mappings_hold_for_test() -> bool {
     domain_errno_mappings_hold()
 }
