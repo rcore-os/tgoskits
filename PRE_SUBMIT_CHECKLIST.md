@@ -38,6 +38,20 @@ cargo test --manifest-path drivers/ax-driver/Cargo.toml --all-features --test pc
 cargo xtask test
 ```
 
+### `ax-driver` 的 workspace std profile
+
+`scripts/axbuild/src/test/std.rs` 对 `ax-driver` 选择的是
+`starfive-jh7110-dwmmc`，因此必须额外执行下面的**同一条命令**；
+`--all-features` 不能替代它：
+
+```bash
+cargo test -p ax-driver --features starfive-jh7110-dwmmc --locked -- --nocapture
+```
+
+该命令必须覆盖 library 与已启用的 integration tests。不得为了让
+combined-feature 测试通过而用 feature gate 隐藏既有单元测试；若失败，
+保留首条编译错误或失败测试及原始 exit code。
+
 若仓库当前资源限制不能完整运行，至少要求提交：
 
 - 以上 1～4 步全部通过；
