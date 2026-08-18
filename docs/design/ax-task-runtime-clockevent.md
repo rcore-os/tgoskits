@@ -18,7 +18,9 @@ base；任意 callback 不进入任务期限 heap，也不在 hard IRQ 中执行
 
 三份标量独立更新会产生以下问题：
 
-- cancel 或替换成更晚期限后，硬件仍保持旧 arm；
+- cancel 或替换成更晚期限时覆盖已经到期但尚未进入 IRQ handler 的 comparator，清掉
+  pending edge；
+- 保留旧 arm 却不记录它仍是物理 owner，导致后续逻辑状态误判设备已经 idle；
 - `Firing` 期间的新 earlier deadline 被旧 completion 覆盖；
 - rearm 只留下 tombstone，容量取决于历史 arm 次数；
 - 物理 timer IRQ 直接调用任意 consumer callback；
@@ -178,16 +180,24 @@ online 与 offline 都推进 epoch。进入 `Firing` 会产生不可复制的
 offline/re-online，旧 token 只能失效，不能提交到新周期。
 
 `LocalClockEvent` 是以下状态的唯一存储：scheduler generation、scheduler deadline、
-periodic deadline 和当前物理 arm。禁止旁路 scalar cache。
+periodic deadline 和尚未被 IRQ 入口消费的当前物理 arm。逻辑 selected minimum 与物理 arm
+不是同一个状态：producer 可以推迟或删除 selected minimum，但 comparator 只有在对应 IRQ
+进入 `Firing` 后才结束物理所有权。禁止旁路 scalar cache。
 
 ### 重新编程规则
 
 在 `Armed` 状态：
 
 - selected minimum 变早：重编程；
-- selected minimum 变晚：同样重编程；
-- 删除最后来源：stop device，进入 `Idle`；
+- selected minimum 变晚：保留当前物理 arm，等它的 IRQ 进入 `Firing` 后再编程新期限；
+- 删除最后来源：同样保留当前物理 arm，IRQ 进入 `Firing` 并确认没有新来源后才 stop device、
+  进入 `Idle`；
 - 语义状态完全相同：不写设备。
+
+这一约束与 dev 的 pending hardware timer IRQ 修复一致。单凭 wall time 已经过 comparator
+不能证明设备 edge 已经被消费；SBI timer 等后端在 pending 期间重写 compare 可能直接清掉
+这次中断。CPU offline 是显式生命周期终止，可以 mask/stop 并丢弃该 epoch 的物理 owner；
+普通 cancel、idle 和逻辑 deadline 替换不能借用 offline 权限。
 
 `Firing` 期间只更新逻辑 source state。handler 结束时从最新 task deadline 和 periodic deadline 计算一次 authoritative minimum，并且只提交一次硬件动作。
 
