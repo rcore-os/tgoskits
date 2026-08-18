@@ -1,5 +1,11 @@
 //! Narrow adapters shared by host unit tests and kernel axtest targets.
 
+/// Initializes Starry runtime services required by kernel axtests.
+#[cfg(axtest)]
+pub fn init_kernel_services() {
+    super::stop_machine::init();
+}
+
 #[cfg(test)]
 fn user_space_base() -> usize {
     super::config::USER_SPACE_BASE
