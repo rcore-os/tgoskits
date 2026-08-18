@@ -27,6 +27,11 @@
 
 #![no_std]
 
+// `alloc` is only needed by the host unit tests (e.g. `dtb` builds fixture
+// device trees), so pull it in under `cfg(test)` rather than the crate proper.
+#[cfg(test)]
+extern crate alloc;
+
 #[cfg(all(axtest, feature = "axtest"))]
 mod axtest;
 

@@ -43,6 +43,12 @@ uspace = ["ax-hal/uspace"]
 sched-cfs = ["multitask", "preempt"]
 sched-rr = ["multitask", "preempt"]
 
+# Capacity-aware big.LITTLE INITIAL task placement. A new (spawn/clone) task is
+# steered to the least-loaded eligible core, preferring a big (A76) core when idle
+# so a lone compute thread does not land on a little (A55) core. Does NOT migrate
+# already-running tasks and does NOT change wakeup placement. Requires smp.
+sched-loadbalance = ["smp"]
+
 host-test = [
   "ax-hal/host-test",
   "ax-percpu?/host-test",

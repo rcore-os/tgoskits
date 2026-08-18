@@ -103,6 +103,10 @@ sg2002-cvi-usb-camera = [
     "dep:sg200x-jpu",
 ]
 smp = ["ax-std/smp"]
+# Capacity-aware big.LITTLE initial task placement (spawn/clone steered to the
+# least-loaded eligible core, preferring a big core when idle). Placement-only, no
+# continuous migration. See ax-task's `sched-loadbalance`.
+sched-loadbalance = ["ax-task/sched-loadbalance"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = []

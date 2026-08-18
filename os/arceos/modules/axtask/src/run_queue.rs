@@ -75,6 +75,74 @@ const ARRAY_REPEAT_VALUE: MaybeUninit<NonNull<AxRunQueue>> = MaybeUninit::uninit
 pub(crate) static BUSY_TICKS: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
     [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
 
+/// A word-width-safe atomic bitmap of run queues that have finished coming online.
+/// [`AxCpuMask`] (and thus [`build_info::CPU_CAPACITY`], up to 1024) may exceed a
+/// machine word, so a single `usize` cannot address every CPU's bit; this spans as
+/// many `usize` words as the configured capacity needs. Publication is `Release` on
+/// [`set`](Self::set) / `Acquire` on [`contains`](Self::contains), so a CPU's online
+/// bit is observed strictly after the `RUN_QUEUES` slot write that precedes it.
+///
+/// [`build_info::CPU_CAPACITY`]: crate::build_info::CPU_CAPACITY
+#[cfg(any(all(feature = "smp", feature = "sched-loadbalance"), test))]
+struct OnlineCpus<const WORDS: usize> {
+    words: [core::sync::atomic::AtomicUsize; WORDS],
+}
+
+#[cfg(any(all(feature = "smp", feature = "sched-loadbalance"), test))]
+impl<const WORDS: usize> OnlineCpus<WORDS> {
+    const BITS: usize = usize::BITS as usize;
+
+    const fn new() -> Self {
+        Self {
+            words: [const { core::sync::atomic::AtomicUsize::new(0) }; WORDS],
+        }
+    }
+
+    /// Publishes `cpu` as online. `cpu` must be `< WORDS * usize::BITS`, which every
+    /// real CPU id satisfies (a CPU id is `< CPU_CAPACITY`, and `WORDS` is sized to
+    /// cover it).
+    #[inline]
+    fn set(&self, cpu: usize) {
+        self.words[cpu / Self::BITS].fetch_or(
+            1 << (cpu % Self::BITS),
+            core::sync::atomic::Ordering::Release,
+        );
+    }
+
+    /// Whether `cpu`'s run queue is online. An out-of-range `cpu` reads as offline
+    /// rather than indexing past the bitmap.
+    #[inline]
+    fn contains(&self, cpu: usize) -> bool {
+        let word = cpu / Self::BITS;
+        word < WORDS
+            && (self.words[word].load(core::sync::atomic::Ordering::Acquire)
+                & (1 << (cpu % Self::BITS)))
+                != 0
+    }
+}
+
+/// `usize` words needed to hold one online bit per configurable CPU.
+#[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+const ONLINE_WORDS: usize = crate::build_info::CPU_CAPACITY.div_ceil(usize::BITS as usize);
+
+/// Bitmap (bit `cpu_id`) of CPUs whose per-CPU run queue in [`RUN_QUEUES`] has been
+/// initialized. Capacity-aware placement ([`select_least_loaded`]) must only target
+/// online queues: during early boot the secondaries have not yet written their
+/// `RUN_QUEUES` slot, and `get_run_queue` on an uninitialized slot is a use of
+/// uninitialized memory. Set by each CPU as it initializes (see `init` /
+/// `init_secondary`).
+#[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+static RUN_QUEUE_ONLINE: OnlineCpus<ONLINE_WORDS> = OnlineCpus::new();
+
+/// Bumps a target CPU's occupancy without holding a run-queue reference — lets the
+/// deferred cross-core wake path (`clear_prev_task_on_cpu`) count a task it enqueues
+/// onto another CPU. See [`AxRunQueue::occ`].
+#[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+#[inline]
+fn occ_inc_cpu(cpu: usize) {
+    get_run_queue(cpu).occ_inc();
+}
+
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
     let (stack_ptr, stack_size) = ax_hal::mem::boot_stack_bounds(this_cpu_id());
@@ -133,6 +201,171 @@ fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
         if cpumask.get(index) {
             return index;
         }
+    }
+}
+
+/// Normalized compute capacity of `cpu` (big.LITTLE weighting), floored at 1 so the
+/// capacity-weighted division is always well-defined. Sourced from the device tree's
+/// `capacity-dmips-mhz` (A76 ~ 1024, A55 ~ 530); homogeneous machines (e.g. QEMU)
+/// report all-equal and this degrades to plain load-spreading.
+#[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+#[inline]
+fn cpu_capacity(cpu: usize) -> usize {
+    (ax_hal::dtb::cpu_capacities()[cpu] as usize).max(1)
+}
+
+/// Pure, host-testable core of capacity-aware placement (mirrors the wake-side idle
+/// picker): the eligible CPU with the lowest capacity-weighted load `load*1024/cap`.
+/// Tie-break, in order: (1) min effective load, (2) max raw capacity (an empty A76
+/// beats an empty A55 — this is what makes a lone compute task land on a big core),
+/// (3) lowest index. Returns `None` if `in_mask` names no CPU. Takes `load`/`cap` as
+/// closures and never dereferences a run queue, so unit tests drive it directly.
+///
+/// Compiled whenever `sched-loadbalance` is on (its only production caller,
+/// `select_least_loaded`) or under `cfg(test)` (so the host unit tests below run
+/// without pulling in the whole SMP scheduler).
+#[cfg(any(feature = "sched-loadbalance", test))]
+fn pick_least_loaded(
+    cpu_num: usize,
+    in_mask: impl Fn(usize) -> bool,
+    load: impl Fn(usize) -> usize,
+    cap: impl Fn(usize) -> usize,
+) -> Option<usize> {
+    let mut best: Option<(usize, usize, usize)> = None; // (cpu, eff_load, capacity)
+    for cpu in 0..cpu_num {
+        if !in_mask(cpu) {
+            continue;
+        }
+        let c = cap(cpu).max(1); // floor so the division is well-defined
+        let eff = load(cpu).saturating_mul(1024) / c;
+        let better = match best {
+            None => true,
+            Some((_, beff, bcap)) => eff < beff || (eff == beff && c > bcap),
+        };
+        if better {
+            best = Some((cpu, eff, c));
+        }
+    }
+    best.map(|(cpu, ..)| cpu)
+}
+
+/// Eligible CPU in `cpumask` with the lowest capacity-weighted load, using each CPU's
+/// occupancy ([`AxRunQueue::occ`]) as the load. Online CPUs only; falls back to the
+/// round-robin selector if the mask names no online CPU. Initial (fork/exec)
+/// placement only — never migrates an already-running task, and (unlike wakeups) adds
+/// no current-CPU cache-warmth bias, since a brand-new task has never run anywhere.
+#[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+fn select_least_loaded(cpumask: AxCpuMask) -> usize {
+    assert!(!cpumask.is_empty(), "No available CPU for task execution");
+    pick_least_loaded(
+        ax_hal::cpu_num(),
+        |c| cpumask.get(c) && RUN_QUEUE_ONLINE.contains(c),
+        // Occupancy = ready tasks PLUS the currently-running non-idle task, read as a
+        // single atom, so a core that just started running a task is immediately seen
+        // as load 1 — a burst of siblings spreads across big cores, then spills onto
+        // little cores, instead of piling onto one momentarily-"idle" core.
+        |c| get_run_queue(c).occ(),
+        cpu_capacity,
+    )
+    .unwrap_or_else(|| select_run_queue_index(cpumask))
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::pick_least_loaded;
+
+    /// RK3588 topology: logical CPUs 0-3 are A55 (capacity 530), 4-7 are A76 (1024).
+    fn rk3588_cap(cpu: usize) -> usize {
+        if cpu < 4 { 530 } else { 1024 }
+    }
+
+    #[test]
+    fn empty_mask_returns_none() {
+        assert_eq!(pick_least_loaded(8, |_| false, |_| 0, rk3588_cap), None);
+    }
+
+    #[test]
+    fn a_lone_task_on_an_all_idle_machine_lands_on_a_big_core() {
+        // All idle (load 0): every effective load is 0, so the tie-break picks the
+        // highest raw capacity — the first A76 (cpu 4), never an A55.
+        assert_eq!(pick_least_loaded(8, |_| true, |_| 0, rk3588_cap), Some(4));
+    }
+
+    #[test]
+    fn equal_raw_load_favors_the_big_core() {
+        // cpu0 (A55) and cpu4 (A76) both carry raw load 2. eff(A55)=2*1024/530=3,
+        // eff(A76)=2*1024/1024=2 — the big core is less loaded per unit capacity.
+        assert_eq!(
+            pick_least_loaded(8, |c| c == 0 || c == 4, |_| 2, rk3588_cap),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn a_busy_big_core_spills_to_an_idle_little_core() {
+        // cpu4 (A76) already runs 1 task (eff 1024/1024 = 1); cpu0 (A55) is idle
+        // (eff 0). Load-spreading sends the new task to the idle little core.
+        let load = |cpu: usize| if cpu == 4 { 1 } else { 0 };
+        assert_eq!(
+            pick_least_loaded(8, |c| c == 0 || c == 4, load, rk3588_cap),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn idle_big_cores_are_preferred_over_idle_little_cores() {
+        // cpu4 (A76) is busy; cpus 5-7 (A76) and 0-3 (A55) are idle. Among the idle
+        // cores (all eff 0) the max-capacity tie-break picks an idle A76 (cpu 5), not
+        // a little core.
+        let load = |cpu: usize| if cpu == 4 { 3 } else { 0 };
+        assert_eq!(pick_least_loaded(8, |_| true, load, rk3588_cap), Some(5));
+    }
+
+    #[test]
+    fn affinity_mask_is_respected() {
+        // Only the little cores are eligible; all idle + equal capacity, so the
+        // lowest index wins the tie.
+        assert_eq!(pick_least_loaded(8, |c| c < 4, |_| 0, rk3588_cap), Some(0));
+    }
+
+    #[test]
+    fn homogeneous_machine_degrades_to_lowest_index() {
+        // Uniform capacity (e.g. QEMU, where `cpu_capacities()` is all-1024) + all
+        // idle: every candidate ties, so placement falls back to the lowest index.
+        assert_eq!(pick_least_loaded(4, |_| true, |_| 0, |_| 1024), Some(0));
+    }
+
+    /// The online set must address CPUs beyond a single machine word. `CPU_CAPACITY`
+    /// (and `AxCpuMask`) can be built past 64, so a `usize` bitmap would alias high
+    /// CPUs onto low bits (`1 << 70` wraps to `1 << 6`). Uses 3 words (192 CPUs).
+    #[test]
+    fn online_mask_tracks_cpus_beyond_one_word() {
+        use super::OnlineCpus;
+
+        let online = OnlineCpus::<3>::new();
+        // Empty on construction, including high indices.
+        assert!(!online.contains(0));
+        assert!(!online.contains(70));
+        assert!(!online.contains(191));
+
+        // A CPU in the second word is tracked without aliasing a low bit: the
+        // single-`usize` bug set bit `70 % 64 == 6`, so `contains(6)` would wrongly
+        // read online here.
+        online.set(70);
+        assert!(online.contains(70));
+        assert!(!online.contains(6));
+        assert!(!online.contains(134)); // same intra-word offset, third word
+
+        // Independent low, high, and mid CPUs coexist.
+        online.set(1);
+        online.set(191);
+        assert!(online.contains(1));
+        assert!(online.contains(70));
+        assert!(online.contains(191));
+
+        // Out-of-range CPUs read offline instead of indexing past the bitmap.
+        assert!(!online.contains(192));
+        assert!(!online.contains(10_000));
     }
 }
 
@@ -490,6 +723,8 @@ mod rr_tests {
         let mut run_queue = AxRunQueue {
             cpu_id: 1,
             scheduler: SpinLock::new(Scheduler::new()),
+            #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+            occ: core::sync::atomic::AtomicUsize::new(0),
         };
         let queued = new_test_task("queued", TaskState::Ready);
         let blocked = new_test_task("blocked", TaskState::Blocked);
@@ -552,13 +787,23 @@ pub(crate) fn select_run_queue<G: GuardState>(task: &AxTaskRef) -> AxRunQueueRef
     }
     #[cfg(feature = "smp")]
     {
-        // When SMP is enabled, prefer the current CPU to keep the task's
-        // cache warm. Fall back to round-robin only when affinity forbids it.
-        let current_cpu = this_cpu_id();
-        let index = if task.cpumask().get(current_cpu) {
-            current_cpu
-        } else {
-            select_run_queue_index(task.cpumask())
+        // With `sched-loadbalance`, new-task (spawn / clone) placement is
+        // capacity-aware: steer to the least-loaded eligible core, preferring a big
+        // (A76) core when idle so a lone compute thread does not land on a little
+        // (A55) core. A fresh task has no warm cache to preserve, so there is no
+        // current-CPU bias here (unlike wakeups; see `select_wake_run_queue`).
+        #[cfg(feature = "sched-loadbalance")]
+        let index = select_least_loaded(task.cpumask());
+        // Default: prefer the current CPU to keep the task's cache warm; fall back to
+        // round-robin only when affinity forbids it.
+        #[cfg(not(feature = "sched-loadbalance"))]
+        let index = {
+            let current_cpu = this_cpu_id();
+            if task.cpumask().get(current_cpu) {
+                current_cpu
+            } else {
+                select_run_queue_index(task.cpumask())
+            }
         };
         AxRunQueueRef {
             inner: get_run_queue(index),
@@ -615,6 +860,22 @@ pub(crate) struct AxRunQueue {
     /// Since irq and preempt are preserved by the kernel guard hold by `AxRunQueueRef`,
     /// we just use a simple raw spin lock here.
     scheduler: SpinLock<Scheduler>,
+    /// Capacity-aware placement occupancy: the number of non-idle tasks this CPU
+    /// currently *owns* — those in its ready queue PLUS the one it is running. It
+    /// counts the running task, so it is the complete load signal a remote placer
+    /// needs, read as ONE atom.
+    ///
+    /// Maintained by incrementing when a task *enters* this CPU's active set (spawn,
+    /// wakeup, or migrate-in) and decrementing when it *leaves* (block, exit, or
+    /// migrate-out). The ready↔running transition (pick / preempt / yield) does NOT
+    /// change it, so — crucially — there is no window in which a core that just
+    /// started running a task is momentarily observed as load 0. A single per-CPU
+    /// counter closes a hazard a two-atom scheme (a length plus a separate is-running
+    /// flag, published at different points) could not: an unlocked reader could see
+    /// the pair inconsistently, which on-board either clustered every sibling thread
+    /// onto a few big cores or left idle big cores looking permanently busy.
+    #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+    occ: core::sync::atomic::AtomicUsize,
 }
 
 /// Permanent run-queue pointer whose references remain scoped to this handle.
@@ -693,6 +954,10 @@ impl<G: GuardState> AxRunQueueRef<G> {
         // SAFETY: `AxRunQueueRef<G>` has already entered the run-queue
         // critical section represented by `G`.
         unsafe { self.inner.scheduler.lock_raw() }.add_task(task);
+        // A brand-new task enters this CPU's active set. This is the single funnel for
+        // new-task enqueues, so every spawn path is counted exactly once.
+        #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+        self.inner.occ_inc();
         #[cfg(all(feature = "smp", feature = "ipi"))]
         kick_remote_cpu(cpu_id);
     }
@@ -817,6 +1082,10 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
         // Mark current task's state as `Ready`,
         // but, do not put current task to the scheduler of this run queue.
         curr.set_state(TaskState::Ready);
+        // The task leaves this CPU's active set; `migrate_entry` will `occ_inc` the
+        // destination CPU when it re-enqueues the task there.
+        #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+        self.inner.occ_dec();
 
         // Call `switch_to` to reschedule to the migration task that performs the migration directly.
         self.inner.switch_to(crate::current(), migration_task);
@@ -927,6 +1196,9 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
             ax_hal::power::system_off();
         } else {
             curr.set_state(TaskState::Exited);
+            // The task leaves this CPU's active set permanently.
+            #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+            self.inner.occ_dec();
 
             // Notify the joiner task.
             curr.notify_exit(exit_code);
@@ -971,6 +1243,11 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
         // Mark the task as blocked, this has to be done before adding it to the wait queue
         // while holding the lock of the wait queue.
         curr.set_state(TaskState::Blocked);
+        // The running task leaves this CPU's active set (pairs with the `occ_inc` in
+        // the eventual wakeup). A racing `unblock_task` can only flip Blocked->Ready
+        // after this store, so its `occ_inc` and this `occ_dec` balance out.
+        #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+        self.inner.occ_dec();
 
         // A preemptive future wake can re-enter a wait path before a previous
         // wait-queue entry has been consumed. Avoid leaving a stale duplicate
@@ -1004,6 +1281,9 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
         // Mark the task as blocked, this has to be done before adding it to the wait queue
         // while holding the lock of the wait queue.
         curr.set_state(TaskState::Blocked);
+        // The running task leaves this CPU's active set (see `blocked_resched`).
+        #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+        self.inner.occ_dec();
         *woke = false;
         drop(woke);
 
@@ -1025,6 +1305,10 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
         while ax_hal::time::monotonic_time() < deadline {
             crate::timers::set_alarm_wakeup(deadline, curr.clone());
             curr.set_state(TaskState::Blocked);
+            // Leaves the active set until the alarm wakes it (which `occ_inc`s via the
+            // wakeup); each loop iteration's block/wake pair balances.
+            #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+            self.inner.occ_dec();
             self.inner.resched();
         }
     }
@@ -1062,6 +1346,57 @@ impl AxRunQueue {
         Self {
             cpu_id,
             scheduler: SpinLock::new(scheduler),
+            // Seed occupancy at 1 for the pre-loaded gc task: it is a non-idle ready
+            // task this CPU owns, enqueued above without going through the spawn
+            // `occ_inc` hook.
+            #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+            occ: core::sync::atomic::AtomicUsize::new(1),
+        }
+    }
+
+    /// This CPU's occupancy (ready + running non-idle tasks). One atomic load — the
+    /// whole placement load signal, with no second atom to race against. See
+    /// [`AxRunQueue::occ`].
+    #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+    #[inline]
+    fn occ(&self) -> usize {
+        self.occ.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A task entered this CPU's active set (spawn / wake / migrate-in). Relaxed is
+    /// sufficient: this single atom only needs to be eventually-consistent and
+    /// correctly-signed for a best-effort placement heuristic.
+    #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+    #[inline]
+    fn occ_inc(&self) {
+        self.occ.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// A task left this CPU's active set (block / exit / migrate-out). Saturating: a
+    /// decrement below zero would wrap the unsigned counter and make the CPU look
+    /// infinitely busy. Since the maintenance hooks are exactly balanced there is no
+    /// self-heal, so the clamp is the sole guard; `debug_assert` still flags a real
+    /// missed `occ_inc` (an unbalanced hook) in test builds.
+    #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+    #[inline]
+    fn occ_dec(&self) {
+        use core::sync::atomic::Ordering::Relaxed;
+        // Saturating decrement via CAS: clamp at 0 rather than let a hook imbalance
+        // wrap the unsigned counter into "infinitely busy". `debug_assert` still flags
+        // a real missed `occ_inc` (an unbalanced hook) in test builds.
+        let mut cur = self.occ.load(Relaxed);
+        loop {
+            debug_assert!(cur > 0, "AxRunQueue::occ underflow on CPU {}", self.cpu_id);
+            if cur == 0 {
+                return;
+            }
+            match self
+                .occ
+                .compare_exchange_weak(cur, cur - 1, Relaxed, Relaxed)
+            {
+                Ok(_) => return,
+                Err(actual) => cur = actual,
+            }
         }
     }
 
@@ -1125,6 +1460,15 @@ impl AxRunQueue {
             task.set_cpu_id(self.cpu_id as _);
             // SAFETY: the caller holds the run-queue context guard.
             unsafe { self.scheduler.lock_raw() }.put_prev_task(task, preempt);
+            // A wakeup (Blocked -> Ready) brings a task back into this CPU's active
+            // set. A preemption/yield (Running -> Ready) does not: the task already
+            // belonged to this CPU and stays counted, so the `Blocked` gate excludes
+            // it. The deferred cross-core wake path returned `false` above (task still
+            // `on_cpu`) and is counted in `clear_prev_task_on_cpu` instead.
+            #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+            if current_state == TaskState::Blocked {
+                self.occ_inc();
+            }
             true
         } else {
             false
@@ -1339,6 +1683,10 @@ pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
     migrated_task.set_cpu_id(cpu_id as _);
     // SAFETY: `rq` owns the target run-queue critical section.
     unsafe { rq.inner.scheduler.lock_raw() }.put_prev_task(migrated_task, false);
+    // The task enters the target CPU's active set (pairs with the `occ_dec` in
+    // `migrate_current` that removed it from the source CPU).
+    #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+    rq.inner.occ_inc();
     #[cfg(all(feature = "smp", feature = "ipi"))]
     // Current-task migration cannot make progress until the target CPU runs
     // the migrated task, so do not let a stale coalescing bit suppress this IPI.
@@ -1380,6 +1728,12 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
         // SAFETY: this switch tail runs with preemption and local IRQs disabled;
         // the scheduler lock supplies cross-CPU exclusion.
         unsafe { target_run_queue.scheduler.lock_raw() }.put_prev_task(task, false);
+        // Deferred half of a wakeup (Blocked -> Ready): the task enters the target
+        // CPU's active set here, where `put_task_with_state` could not enqueue it
+        // (still `on_cpu`). Counted exactly once (the wake arbiter guarantees only one
+        // side reaches this).
+        #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+        occ_inc_cpu(target);
         if target != this_cpu_id() {
             // Remote target: ask that CPU to reschedule so it picks the task up
             // (and wakes if it is idle in `wait_for_irqs`).
@@ -1451,6 +1805,16 @@ pub(crate) fn init() {
     unsafe {
         RUN_QUEUES[cpu_id].write(run_queue);
     }
+    // The `main` task runs on this CPU but never went through the spawn `occ_inc`
+    // hook, so count it now (on top of the gc seed). It exits via `system_off` (the
+    // is-init branch of `exit_current`), never `occ_dec`, so this inc is deliberately
+    // unpaired — `main` occupies the CPU for the system's lifetime.
+    #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+    get_run_queue(cpu_id).occ_inc();
+    // Publish this CPU's run queue as online so capacity-aware placement may target
+    // it; the `set` orders the online bit strictly after the slot write above.
+    #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+    RUN_QUEUE_ONLINE.set(cpu_id);
 }
 
 pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
@@ -1495,6 +1859,11 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     unsafe {
         RUN_QUEUES[cpu_id].write(run_queue);
     }
+    // Publish this CPU's run queue as online so capacity-aware placement may target
+    // it. A secondary runs `idle` as its current task (not counted), and its gc task
+    // is the queue's seed=1, so no `occ_inc` for `main` here (unlike the boot CPU).
+    #[cfg(all(feature = "smp", feature = "sched-loadbalance"))]
+    RUN_QUEUE_ONLINE.set(cpu_id);
 }
 
 #[cfg(axtest)]
