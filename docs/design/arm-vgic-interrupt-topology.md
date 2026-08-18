@@ -33,9 +33,34 @@ arm_vgic / arm_vcpu / host GIC backend
 
 每个 VM 只有一个 `Arc<VgicCore>`。enable、pending latch、当前 line level、active、priority、group、trigger、target/route 和 backing 都只保存在该 core 中。GICD、GICC/GICR、ICC 和 ITS 前端只负责架构访问解码，不保存第二份状态，也不向 host GICD/GICR 透传客户机写入。
 
+GICv2 与 GICv3 只表示 guest 可见的硬件协议和 MMIO 拓扑，不形成两套内部状态模型。`ArmVgicConfig` 在构造时一次性选择 banked distributor + GICC，或 shared/affinity distributor + GICR/ICC/ITS；构造后的设备不保存 distributor 版本字段，也不在访问热路径动态查询版本。两类前端最终读写同一个 `VgicCore` canonical state。
+
 同一个 `Arc<VgicCore>` 同时以具体类型服务 vCPU、EOI 和物理 backing，并转换为 `Arc<dyn VirtualInterruptController>` 注册给设备框架。这里没有转发状态机和 `InterruptFabric`。
 
 `WiredIrqInput` 只表达电气 source 聚合：edge 调用 `pulse()`；level 调用 `assert()/deassert()`；shared-level 使用 wired-OR；source drop 自动撤销断言。LR 只是规范状态的有限硬件缓存，满时保留在软件 overflow 队列，不 panic。
+
+### MMIO 访问者身份
+
+触发 MMIO exit 的 VM-local vCPU 是访问者身份的唯一所有者。各架构 exit handler 在仍持有实际 `AxVCpuRef` 时取得 `vcpu.id()`，转换为类型化 `DeviceVcpuId`，再经共享 MMIO handler、`DeviceRuntime` 和一次访问生命周期内的 `DeviceAccess` 传到设备。该身份描述 guest architectural accessor，与承载回调的 host CPU、任务或 TLS 无关；调度、抢占或 host CPU 迁移不能改变它。
+
+数据流固定为：
+
+```text
+architecture VM exit -> DeviceVcpuId -> DeviceRuntime
+  -> DeviceAccess -> Device::read/write -> VGIC banked register
+```
+
+GICv2 CPU interface 以及 distributor 中的 SGI/PPI banked 寄存器必须读取 `DeviceAccess::source_vcpu()`。所有 guest MMIO、PIO 和 SysReg 请求都必须在构造时给出 source，不存在可选 identity 或无身份 guest helper。management/debug 操作应使用专门的 typed service，不能伪装为 guest access。GICv3 distributor 的共享寄存器和由 MMIO 地址直接选择 frame 的 redistributor 不依赖当前访问者。
+
+`DeviceAccess` 只保存本次 transaction 的 source vCPU、bus、address 与 width；`DeviceContext` 只保存 DMA、timer、wake、VM control 等运行能力。IRQ target vCPU 仍由 VGIC 路由状态决定，不能用 access source 代替。例如 source vCPU 0 可以配置并触发 target vCPU 1 的 SPI。
+
+不采用以下替代方案：
+
+- host TLS/current-vCPU 查询：身份会被执行位置隐式决定，无法承受迁移、嵌套回调或异步处理；
+- VM-global 可变 current-vCPU slot：并发 vCPU exit 会互相覆盖，且需要额外锁和回滚；
+- 各设备单独传递裸 `usize`：会绕过统一 dispatch boundary，无法由类型系统保证 identity 完整性。
+
+本改动不引入新的 vCPU 生命周期、task binding、异步 MMIO completion 或 GIC 状态模型，也不改变无需 per-vCPU bank 的设备访问语义。
 
 ## 配置与不可变计划
 
@@ -129,7 +154,7 @@ resource claim -> device/controller registry -> VGIC state -> backend LR/route s
 | planner | fixed 优先、输入顺序无关、lowest-first、溢出/耗尽、失败后最低资源重试 |
 | namespace | 跨 controller 同号、exclusive 冲突、shared trigger 不匹配、ITS 隔离、全局 LPI |
 | claim/runtime | 重复/未消费、bundle 回滚、controller 缺失/重复/ID 不匹配、seal |
-| VGIC | SGI/PPI/SPI、line/latch、pending/active、priority/route、overflow、maintenance、EOI/DIR |
+| VGIC | SGI/PPI/SPI、line/latch、pending/active、priority/route、overflow、maintenance、EOI/DIR、显式 MMIO vCPU identity、GICv2 banked 隔离和缺失 identity 拒绝 |
 | firmware | VGIC config、设备资源、GIC/ITS/interrupts 来自同一计划 |
 | physical | 固定 identity/trigger/route、重复 host SPI、quiesce/drain、EOI/DIR 到 deactivate |
 | system | QEMU GICv2 2-vCPU、GICv3+ITS 4-vCPU timer stress 和四架构 smoke |
