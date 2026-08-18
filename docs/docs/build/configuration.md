@@ -174,7 +174,7 @@ to_bin = true
 - `uefi = true`：Axvisor 强制要求同时显式设置 `to_bin = true`，否则在启动前报错。仓库内 ArceOS、StarryOS 的 x86_64/loongarch64 默认 UEFI 配置也遵循该组合。
 - QEMU machine、CPU、加速、firmware、UEFI 和设备参数由当前 TOML 提供；`apply_smp_qemu_arg()` 仅维护用户请求的 `-smp` 值。
 
-测试或 app case 若配置了全局 `-snapshot`，UEFI 路径会将其改写为各 `-drive` 的 `snapshot=on`。这样系统盘保持写时复制，同时 EFI pflash/ESP 不会被全局 snapshot 语义错误地变成不可写状态。
+测试和 app case 的 rootfs 写入语义由 QEMU TOML 的 `rootfs_write_policy` 控制。`discard` 是测试默认值，会移除全局 `-snapshot` 并只给匹配的 rootfs `-drive` 添加 `snapshot=on`；`persist` 会拒绝全局 `-snapshot` 以及 rootfs drive 上已有的 `snapshot=` 配置，确保写回意图不被隐藏参数覆盖。测试配置不允许使用 `persist`。
 
 ## 5. 虚拟化后端
 
@@ -208,6 +208,6 @@ guest 内核驱动不属于该迁移。
 | `TGOS_IMAGE_DOWNLOAD_DIR` | 覆盖镜像归档下载目录；Linux 默认 `/tmp/tgosimages` |
 | `TGOS_IMAGE_EXTRACT_DIR` | 覆盖可修改镜像的解压目录；默认 `<workspace>/tmp/axbuild/rootfs` |
 | `TGOS_OVMF_DIR` | 覆盖 Ostool 格式的 OVMF 缓存根目录；不绕过版本选择和 SHA-256 校验 |
-| `AXBUILD_KEEP_QEMU_LOG` | 保留 QEMU 日志，便于事后符号化 |
+| `TGOSKITS_KEEP_QEMU_LOG` | 保留 QEMU 日志，便于事后符号化 |
 
 `AX_LOG`、`SMP`、`AX_TARGET`、`AX_ARCH` 和 `AXVISOR_VM_CONFIGS` 主要由 axbuild 根据上述配置生成，不建议用外部环境绕过请求解析。

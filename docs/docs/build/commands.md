@@ -137,7 +137,7 @@ cargo xtask lock-lint
 | 子命令 | 用法 | 说明 |
 |--------|------|------|
 | `ls` | `board ls [--server <H>] [--port <P>]` | 列出可用板卡类型 |
-| `connect` | `board connect -b <TYPE> [--server <H>] [--port <P>]` | 分配板卡并连接串口 |
+| `connect` | `board connect -b <TYPE> [--server <H>] [--port <P>] [--session-file <REL=LOCAL>...]` | 分配板卡并连接串口，可上传一次性会话文件 |
 | `config` | `board config` | 编辑板卡服务器配置 |
 
 详见 [板卡管理](./board)。
@@ -261,9 +261,9 @@ cargo xtask agent-review-bench run --case <id> --agent codex --min-recall 80
 ArceOS Build Config 通过 `features`、`log`、`max_cpu_num` 与 `[env]` 描述构建能力；`BuildInfo::validate_features()` 验证输入，构建命令输出 ELF，QEMU TOML 的 `to_bin` 决定运行阶段是否准备 BIN。
 
 ```bash
-cargo arceos build --package arceos-helloworld --arch aarch64
-cargo arceos qemu  --package arceos-httpserver
-cargo arceos test qemu --arch riscv64 -g rust -c task-yield
+cargo xtask arceos build --package arceos-helloworld --arch aarch64
+cargo xtask arceos qemu  --package arceos-httpserver
+cargo xtask arceos test qemu --arch riscv64 -g rust -c task-yield
 ```
 
 ---
@@ -294,7 +294,7 @@ cargo arceos test qemu --arch riscv64 -g rust -c task-yield
 | `kmod build` | 编译内核模块 |
 | `rootfs` | 准备默认 managed rootfs |
 | `defconfig <BOARD>` / `config ls` | 板卡配置 |
-| `quick-start ...` | 旧版便捷入口（后续废弃） |
+| `quick-start ...` | 兼容便捷入口 |
 
 **各运行目标的额外参数**：
 
@@ -317,7 +317,7 @@ cargo arceos test qemu --arch riscv64 -g rust -c task-yield
 |--------|------|----------|
 | `app list` | `app list [--kind qemu\|board]` | — |
 | `app qemu` | `app qemu [--all] [-t <CASE>] [--cap <CAP>...] [--arch <A>] [--qemu-config <P>] [--debug]` | `--all` 跑全部；`--cap` 声明能力 |
-| `app board` | `app board -t <CASE> [--board-config <P>] [-b <T>] [--server <H>] [--port <P>] [--debug]` | `-t` 必需 |
+| `app board` | `app board -t <CASE> [--board-config <P>] [-b <T>] [--server <H>] [--port <P>] [--debug] [--linux-stage]` | `-t` 必需 |
 
 **性能剖析**（`perf`）：
 
@@ -346,9 +346,9 @@ cargo xtask starry perf [options]
 | `--flamegraph` | — | 即使 `--format` 非 SVG 也生成火焰图 |
 | `--flamegraph-kind` | `svg` | `svg`/`html`/`folded` |
 | `--full-stack` | — | 保留最深栈 |
-| `--callchain`（别名 `--perf-callchain`） | — | `leaf`/`fp`/`logical` |
-| `--debuginfo`（别名 `--perf-debuginfo`） | — | 添加 DWARF 调试信息 |
-| `--force-frame-pointers`（别名 `--perf-force-frame-pointers`） | — | 强制帧指针 |
+| `--perf-callchain`（别名 `--callchain`） | — | `leaf`/`fp`/`logical` |
+| `--perf-debuginfo` | — | 添加 DWARF 调试信息 |
+| `--perf-force-frame-pointers` | — | 强制帧指针 |
 | `--demangle` | — | 强制 Rust demangle |
 | `--no-truncate` | — | 火焰图保留极小帧 |
 | `--include-kernel-symbols` | 开 | 包含内核符号 |
@@ -381,20 +381,20 @@ cargo xtask starry kmod build [--arch <A>] [--target <T>] [--config <P>] [--smp 
 | `rootfs` | `rootfs [--arch <ARCH>]`（准备默认 managed rootfs） |
 | `defconfig` | `defconfig <BOARD>` |
 | `config ls` | `config ls` |
-| `quick-start` | `quick-start <platform> {build\|run}`（支持 `qemu-{aarch64,riscv64,loongarch64,x86_64}`/`orangepi-5-plus`/`licheerv-nano-sg2002`，后续废弃） |
+| `quick-start` | `quick-start <platform> {build\|run}`（支持 `qemu-{aarch64,riscv64,loongarch64,x86_64}`/`orangepi-5-plus`/`licheerv-nano-sg2002`） |
 
 ```bash
-cargo starry build
-cargo starry qemu
-cargo starry test qemu --arch riscv64
-cargo starry app qemu --all
-cargo starry perf --format Svg
-cargo starry kmod build --all
+cargo xtask starry build
+cargo xtask starry qemu
+cargo xtask starry test qemu --arch riscv64
+cargo xtask starry app qemu --all
+cargo xtask starry perf --format Svg
+cargo xtask starry kmod build --all
 ```
 
 ### 6.1 性能剖析
 
-`cargo starry perf` 构建 StarryOS 并通过 qperf 进行性能剖析，输出火焰图或 callchain 数据：
+`cargo xtask starry perf` 构建 StarryOS 并通过 qperf 进行性能剖析，输出火焰图或 callchain 数据：
 
 ```text
 cargo xtask starry perf [options]
@@ -421,9 +421,9 @@ cargo xtask starry perf [options]
 | `--flamegraph` | 即使 `--format` 非 SVG 也生成火焰图 |
 | `--flamegraph-kind` | 火焰图格式：`Svg`（默认）/`Html`/`Folded` |
 | `--full-stack` | 保留本构建可采集的最深栈 |
-| `--callchain`/`--perf-callchain` | qperf callchain 模式：`Leaf`（最快）/`Fp`（需帧指针）/`Logical` |
-| `--debuginfo`/`--perf-debuginfo` | 添加 DWARF 调试信息并保留符号 |
-| `--force-frame-pointers`/`--perf-force-frame-pointers` | 强制帧指针以支持 FP 解栈 |
+| `--perf-callchain`（别名 `--callchain`） | qperf callchain 模式：`Leaf`（最快）/`Fp`（需帧指针）/`Logical` |
+| `--perf-debuginfo` | 添加 DWARF 调试信息并保留符号 |
+| `--perf-force-frame-pointers` | 强制帧指针以支持 FP 解栈 |
 | `--demangle` | 在 qperf-analyzer 中强制 Rust demangle |
 | `--no-truncate` | 火焰图中保留极小帧（min width 设为 0） |
 | `--include-kernel-symbols` | 包含内核符号（StarryOS 默认开启） |
@@ -436,7 +436,7 @@ cargo xtask starry perf [options]
 
 ### 6.2 内核模块
 
-`cargo starry kmod build` 编译 StarryOS 可加载内核模块（`.ko`）：
+`cargo xtask starry kmod build` 编译 StarryOS 可加载内核模块（`.ko`）：
 
 ```text
 cargo xtask starry kmod build [--arch <ARCH>] [--target <TARGET>] [--config <PATH>] [--smp <N>] [--debug] \
@@ -495,7 +495,7 @@ cargo xtask starry kmod build [--arch <ARCH>] [--target <TARGET>] [--config <PAT
 Axvisor 的平台与 x86 虚拟化后端由 Build Config 的 feature 声明，QEMU CPU、UEFI 和设备参数由所选 TOML 定义。`vmx` 与 `svm` 分别对应 Intel 和 AMD 的虚拟化构建能力。
 
 ```bash
-cargo axvisor build
-cargo axvisor qemu --vmconfigs os/axvisor/configs/vms/qemu/aarch64/linux-smp1.toml
-cargo axvisor test uboot --board OrangePi-5-Plus
+cargo xtask axvisor build
+cargo xtask axvisor qemu --vmconfigs os/axvisor/configs/vms/qemu/aarch64/linux-smp1.toml
+cargo xtask axvisor test uboot --board OrangePi-5-Plus
 ```

@@ -47,6 +47,17 @@ stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
 test-backtrace-panic = ["backtrace"]
 test-panic-no-backtrace = ["dep:axbacktrace"]
+# axum-based management HTTP server (see src/http/ for the Router).
+# Off by default. Replaces the hand-rolled pilot, which is intentionally not
+# carried forward.
+# axum-based management HTTP server. Pulls `ax-std/net` explicitly so the
+# ArceOS network stack (which probes the QEMU virtio-net NIC and backs the
+# tokio `TcpListener`) is enabled only when the control plane is built; a
+# non-HTTP build must not enable the network subsystem.
+http-axum = ["ax-std/net", "dep:axum", "dep:tokio", "dep:serde_json"]
+# Do not auto-boot the default VMs at startup; the HTTP control plane starts
+# and stops them on demand (VMs are created and stay in `Ready`).
+no-auto-start = []
 
 [dependencies]
 shlex.workspace = true
@@ -58,6 +69,12 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, va
 anyhow.workspace = true
 log = "0.4"
 heapless.workspace = true
+axum = { version = "0.8", optional = true }
+serde_json = { version = "1", optional = true }
+# The runtime only enables the IO driver (`enable_io()`), so no `time` driver
+# and thus no `timerfd` syscall is needed. `rt` + `net` cover the manually
+# built current-thread runtime and `TcpListener`.
+tokio = { version = "1", optional = true, features = ["rt", "net"] }
 
 # System dependent modules provided by ArceOS.
 ax-api.workspace = true

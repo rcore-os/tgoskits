@@ -350,6 +350,28 @@ mod tests {
                 "CI still uses removed image option: {command}"
             );
         }
+
+        // The modular check definitions under `.github/ci/checks/*.toml` are the
+        // actual source of the commands CI runs. Scan them too, so a regressed
+        // `--output-dir` anywhere is caught instead of only in `ci.yml`.
+        let checks_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/ci/checks");
+        for entry in std::fs::read_dir(&checks_dir).expect("read checks dir") {
+            let path = entry.expect("check entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("read check toml");
+            for command in content
+                .lines()
+                .filter(|line| line.contains("cargo xtask image pull"))
+            {
+                assert!(
+                    !command.contains("--output-dir"),
+                    "CI check {} still uses removed image option: {command}",
+                    path.display()
+                );
+            }
+        }
     }
 
     #[test]

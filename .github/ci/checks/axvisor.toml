@@ -41,6 +41,21 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
 '''
 
 [[check]]
+id = "test-axvisor-aarch64-qemu-http-control-plane"
+name = "aarch64 QEMU · HTTP control-plane"
+runs_on = ["self-hosted", "linux", "qcs"]
+environment = "host"
+self_hosted_owner = "rcore-os"
+fallback_environment = "base"
+timeout_minutes = 30
+command = '''
+echo "==> pull qemu-aarch64 image"
+cargo xtask image pull qemu-aarch64 --extract-dir tmp/axbuild/images
+echo "==> axvisor aarch64 HTTP control-plane"
+cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
+'''
+
+[[check]]
 id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
 name = "riscv64 QEMU · Smoke + IPI + panic modes"
 runs_on = ["self-hosted", "linux", "qcs"]

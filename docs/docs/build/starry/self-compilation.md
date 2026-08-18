@@ -5,12 +5,12 @@ sidebar_label: "自编译"
 
 # StarryOS 自编译
 
-## x86_64：直接通过 Starry App 运行
+## 1. x86_64 Starry App 运行
 
 x86_64 自编译的唯一主入口是：
 
 ```bash
-cargo starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64
+cargo xtask starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64
 ```
 
 当前验收状态：清理前的提交已在启用 KVM 的 QEMU 中完成来宾工具链安装，并将
@@ -23,7 +23,7 @@ cargo starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64
 `prebuild.sh`、注入 overlay，并通过 `shell_init_cmd` 启动来宾 runner。它不依赖
 `scripts/self-compile.sh`、`expect`、loop mount 或 host sudo。
 
-### 来宾流程
+### 1.1 来宾流程
 
 首次运行时，app runner 从默认 Alpine rootfs 创建受管理的
 `rootfs-x86_64-selfhost.img`，并由 prebuild 扩容到 32 GiB。prebuild 会把当前 checkout
@@ -46,7 +46,7 @@ QEMU 通过 user-mode networking 联网。来宾 runner 会：
 app runner 检测到成功标记后可安全结束 QEMU。来宾还会把当前构建阶段写入 rootfs；若内核
 在编译中途异常重启，下一次登录会输出包含中断阶段的失败标记，而不会等待到全局超时。
 
-### 前置条件
+### 1.2 前置条件
 
 - Linux x86_64 host，并可读写 `/dev/kvm`；app runner 检测到后会自动加入 `-accel kvm`，
   上述长时间构建实际启用了 KVM；
@@ -57,7 +57,7 @@ app runner 检测到成功标记后可安全结束 QEMU。来宾还会把当前�
 正常流程不需要 sudo。第一次运行需要下载 Rust 官方组件、Alpine 包和 Cargo crates，后续运行
 复用 app rootfs 中的系统包、Rust 和 Cargo 缓存。
 
-### 验证并启动自编译产物
+### 1.3 验证并启动自编译产物
 
 app 成功后，先确认 rootfs 中的产物非空：
 
@@ -77,7 +77,7 @@ scripts/run-selfbuilt-kernel.sh --arch x86_64
 取得与其他 QEMU 流程相同的 CODE/VARS 后启动。该脚本当前保留为
 后续烟测工具；本 PR 尚未完成产物生成和启动验证，不能据此宣称已经到达 Starry shell。
 
-## riscv64 旧流程
+## 2. riscv64 旧流程
 
 riscv64 的离线 Debian selfhost 流程和 `scripts/self-compile.sh` 保持不变。它是与 x86_64
 app runner 独立的兼容路径；不要用该脚本准备或运行 x86_64 自编译。

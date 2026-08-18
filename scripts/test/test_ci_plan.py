@@ -26,7 +26,7 @@ class CiPlanTests(unittest.TestCase):
         plan = ci_plan.build_main_plan(self.upstream)
 
         self.assertEqual(len(plan["static_matrix"]["include"]), 3)
-        self.assertEqual(len(plan["test_matrix"]["include"]), 31)
+        self.assertEqual(len(plan["test_matrix"]["include"]), 32)
         self.assertTrue(
             all(" / " in row["name"] for row in plan["test_matrix"]["include"])
         )
@@ -70,7 +70,7 @@ class CiPlanTests(unittest.TestCase):
         static_rows = {row["id"]: row for row in plan["static_matrix"]["include"]}
         test_rows = {row["id"]: row for row in plan["test_matrix"]["include"]}
 
-        self.assertEqual(len(test_rows), 15)
+        self.assertEqual(len(test_rows), 16)
         self.assertFalse(any("board" in row["id"] for row in test_rows.values()))
         self.assertEqual(static_rows["check-formatting"]["runs_on"], ["ubuntu-latest"])
         self.assertEqual(
