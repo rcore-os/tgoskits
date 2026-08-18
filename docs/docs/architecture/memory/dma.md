@@ -284,11 +284,11 @@ flowchart LR
 
 ## 8. 源码入口
 
-下面的文件构成 DMA 从公共能力到系统 fd 的完整路径。完整的类型、约束、缓存转换、所有权和异常 teardown 用例集中在[内存管理测试与验收](./testing.md)。
+下面的文件构成 DMA 从公共能力到系统 fd 的完整路径。类型、约束、缓存转换、所有权和异常 teardown 用例见[内存管理测试](./testing.md)。
 
 ### 8.1 源码检查点
 
-Unsafe 修改必须遵循 `book/guideline/code-quality.md` 的 Safety contract 要求。
+Unsafe 修改必须遵循 `docs/guideline/code-quality.md` 的 Safety contract 要求。
 
 | 源码 | 审计重点 |
 | --- | --- |

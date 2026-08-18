@@ -1,4 +1,4 @@
-# Rust 代码质量约束准则
+# 代码质量约束准则
 
 ## 0. 总原则：代码首先是给人读的，其次才是给机器跑的
 
@@ -8,14 +8,14 @@ Rust 代码质量的核心目标是：
 
 Rust 的整洁代码不应只是“写得漂亮”，而应同时满足：
 
-| 维度       | Rust 版目标                              |
-| -------- | ------------------------------------- |
-| 可读性      | 名字表达意图，函数短小，模块边界清楚                    |
+| 维度        | Rust 版目标                                                  |
+| ----------- | ------------------------------------------------------------ |
+| 可读性      | 名字表达意图，函数短小，模块边界清楚                         |
 | 正确性      | 用类型系统、所有权、生命周期、`Result`/`Option` 表达约束 |
-| 可维护性     | 低耦合、少重复、小 API、可测试                     |
-| 可演进性     | 公共 API 少暴露实现细节，避免破坏性变更                |
-| 可诊断性     | 错误、日志、`Debug`、测试信息足够定位问题              |
-| Rust 惯用性 | 遵守 Rust 命名、格式化、trait、模块、错误处理习惯        |
+| 可维护性    | 低耦合、少重复、小 API、可测试                               |
+| 可演进性    | 公共 API 少暴露实现细节，避免破坏性变更                      |
+| 可诊断性    | 错误、日志、`Debug`、测试信息足够定位问题                  |
+| Rust 惯用性 | 遵守 Rust 命名、格式化、trait、模块、错误处理习惯            |
 
 Rust 官方书强调所有权是 Rust 的核心特性，它让 Rust 不依赖 GC 也能提供内存安全保证；因此 Rust 版整洁代码必须把“所有权是否清晰”当作一级质量指标。([Rust 文档][1])
 
@@ -25,13 +25,13 @@ Rust 官方书强调所有权是 Rust 的核心特性，它让 Rust 不依赖 GC
 
 对应到 Rust 代码，推荐阅读层次如下：
 
-| 报纸层次 | Rust 源文件层次 | 读者应获得的信息 |
-|----------|----------------|------------------|
-| 标题 | 模块说明、核心类型、整体功能入口 | 这个文件负责什么，主要能力从哪里开始读 |
-| 导语 | 编排函数 | 完整流程有哪些步骤，步骤之间如何连接 |
-| 正文 | 一个个命名清楚的步骤函数 | 每一步的业务规则、错误路径和状态变化 |
-| 专栏 | 边界转换、辅助函数、底层细节 | 不影响主线阅读的局部实现 |
-| 附录 | `#[cfg(test)] mod tests` | 行为约束和回归用例 |
+| 报纸层次 | Rust 源文件层次                  | 读者应获得的信息                       |
+| -------- | -------------------------------- | -------------------------------------- |
+| 标题     | 模块说明、核心类型、整体功能入口 | 这个文件负责什么，主要能力从哪里开始读 |
+| 导语     | 编排函数                         | 完整流程有哪些步骤，步骤之间如何连接   |
+| 正文     | 一个个命名清楚的步骤函数         | 每一步的业务规则、错误路径和状态变化   |
+| 专栏     | 边界转换、辅助函数、底层细节     | 不影响主线阅读的局部实现               |
+| 附录     | `#[cfg(test)] mod tests`       | 行为约束和回归用例                     |
 
 一个可阅读的源文件应先给出整体功能函数，再让这个函数像目录一样列出内部步骤：
 
@@ -101,14 +101,14 @@ let x = RetryPolicy::new(1, 3, true);
 
 Rust API Guidelines 规定，类型和 trait 通常使用 `UpperCamelCase`，函数、方法、变量、模块使用 `snake_case`，常量使用 `SCREAMING_SNAKE_CASE`。([Rust语言][2])
 
-| 对象                    | 规则                     | 示例                                           |
-| --------------------- | ---------------------- | -------------------------------------------- |
+| 对象                  | 规则                     | 示例                                               |
+| --------------------- | ------------------------ | -------------------------------------------------- |
 | struct / enum / trait | `UpperCamelCase`       | `UserProfile`, `PaymentStatus`, `Repository` |
-| 函数 / 方法               | `snake_case`           | `find_user`, `validate_token`                |
-| 模块                    | `snake_case`           | `user_service`, `payment_gateway`            |
-| 常量                    | `SCREAMING_SNAKE_CASE` | `MAX_RETRY_COUNT`                            |
-| 生命周期                  | 短小但有意义                 | `'a`, `'de`, `'src`                          |
-| 泛型                    | 简洁                     | `T`, `E`, `S`, `R`                           |
+| 函数 / 方法           | `snake_case`           | `find_user`, `validate_token`                  |
+| 模块                  | `snake_case`           | `user_service`, `payment_gateway`              |
+| 常量                  | `SCREAMING_SNAKE_CASE` | `MAX_RETRY_COUNT`                                |
+| 生命周期              | 短小但有意义             | `'a`, `'de`, `'src`                          |
+| 泛型                  | 简洁                     | `T`, `E`, `S`, `R`                         |
 
 ## 1.3 布尔参数必须替换为有意义的类型
 
@@ -701,13 +701,13 @@ pub trait UserRepository {
 
 模块边界解决“哪些代码应该放在一起”，单文件顺序解决“读者应该怎样进入这些代码”。同一个 Rust 源文件推荐按以下顺序组织：
 
-| 顺序 | 内容 | 目的 |
-|------|------|------|
-| 1 | 模块级 rustdoc、必要 `use`、核心类型和错误类型 | 建立上下文 |
-| 2 | 该文件最重要的入口函数或公共 API | 先看到整体功能 |
-| 3 | 入口函数直接调用的步骤函数 | 按目录顺序展开主线 |
-| 4 | 步骤内部 helper、转换函数、错误映射和底层细节 | 支撑局部实现 |
-| 5 | `#[cfg(test)] mod tests` | 把验证作为附录放在文件最后 |
+| 顺序 | 内容                                            | 目的                       |
+| ---- | ----------------------------------------------- | -------------------------- |
+| 1    | 模块级 rustdoc、必要`use`、核心类型和错误类型 | 建立上下文                 |
+| 2    | 该文件最重要的入口函数或公共 API                | 先看到整体功能             |
+| 3    | 入口函数直接调用的步骤函数                      | 按目录顺序展开主线         |
+| 4    | 步骤内部 helper、转换函数、错误映射和底层细节   | 支撑局部实现               |
+| 5    | `#[cfg(test)] mod tests`                      | 把验证作为附录放在文件最后 |
 
 **禁止：**
 
@@ -781,25 +781,25 @@ Rust 源文件不是越集中越好。一个文件承担太多职责时，读者
 
 推荐把文件大小作为 code review 的触发线，而不是机械的 CI 硬限制：
 
-| 信号 | 处理方式 |
-|------|----------|
-| 约 400 行以上 | 审视是否混入多种变化原因，优先拆出错误、状态、适配或测试 |
-| 约 800 行以上 | 必须拆分，或在评审中说明为什么当前文件仍是单一职责 |
-| 一个文件同时有入口、状态机、外部 IO、错误转换、测试 helper | 按职责拆文件 |
-| `mod.rs` / `lib.rs` 承载大量业务实现 | 下沉到领域文件，入口页只保留模块声明和稳定导出 |
+| 信号                                                       | 处理方式                                                 |
+| ---------------------------------------------------------- | -------------------------------------------------------- |
+| 约 400 行以上                                              | 审视是否混入多种变化原因，优先拆出错误、状态、适配或测试 |
+| 约 800 行以上                                              | 必须拆分，或在评审中说明为什么当前文件仍是单一职责       |
+| 一个文件同时有入口、状态机、外部 IO、错误转换、测试 helper | 按职责拆文件                                             |
+| `mod.rs` / `lib.rs` 承载大量业务实现                   | 下沉到领域文件，入口页只保留模块声明和稳定导出           |
 
 拆分时不要按“代码行数平均分”切文件，而要按变化原因切。Robert C. Martin 对 Single Responsibility Principle（SRP）的解释是：一个模块应只对一类 actor 或一类变化原因负责。落到 Rust 中，就是同因变化的类型和函数放在一起，异因变化的实现拆到不同文件。([Clean Coder][24])
 
 常见拆分方向：
 
-| 变化原因 | 推荐文件 |
-|----------|----------|
-| 对外入口和主流程变化 | `mod.rs` 或 `service.rs` |
-| 领域状态和状态转换变化 | `state.rs`、`lifecycle.rs` |
-| 错误语义变化 | `error.rs` |
-| 配置解析和默认值变化 | `config.rs` |
+| 变化原因                               | 推荐文件                                          |
+| -------------------------------------- | ------------------------------------------------- |
+| 对外入口和主流程变化                   | `mod.rs` 或 `service.rs`                      |
+| 领域状态和状态转换变化                 | `state.rs`、`lifecycle.rs`                    |
+| 错误语义变化                           | `error.rs`                                      |
+| 配置解析和默认值变化                   | `config.rs`                                     |
 | 外部存储、网络、硬件、系统调用适配变化 | `repository.rs`、`adapter.rs`、`runtime.rs` |
-| 测试 fixture、mock、断言变化 | `tests/` 或源文件末尾的 `mod tests` |
+| 测试 fixture、mock、断言变化           | `tests/` 或源文件末尾的 `mod tests`           |
 
 ## 7.7 标准目录结构遵循 Cargo 和 Rust 模块约定
 
@@ -972,21 +972,21 @@ Rust 不提供传统面向对象继承。Rust 官方书明确指出，Rust 使�
 
 ## 8.1 继承场景到 Rust 方案映射
 
-| 传统 OOP 需求     | Rust 方案                             |
-| ------------- | ----------------------------------- |
-| 多个类型共享行为      | `trait`                             |
-| 多个类型共享默认行为    | trait 默认方法 + 小 trait                |
-| 多个类型共享状态      | 组合 struct 字段                        |
-| 子类复用父类字段      | 把公共字段抽成组件 struct                    |
-| 多态调用          | 泛型 `T: Trait` 或 `dyn Trait`         |
-| 运行时存放不同实现     | `Box<dyn Trait>` / `Arc<dyn Trait>` |
-| 封闭状态机         | `enum` 或 typestate                  |
-| 开放插件扩展        | public trait                        |
-| 不希望外部实现 trait | sealed trait                        |
-| 多继承           | 多 trait bound + 多字段组合               |
-| 覆盖父类方法        | trait 实现或策略对象                       |
-| 模板方法模式        | 函数编排 + trait hook，谨慎使用              |
-| 基类工具方法        | 独立函数、扩展 trait、组合组件                  |
+| 传统 OOP 需求        | Rust 方案                               |
+| -------------------- | --------------------------------------- |
+| 多个类型共享行为     | `trait`                               |
+| 多个类型共享默认行为 | trait 默认方法 + 小 trait               |
+| 多个类型共享状态     | 组合 struct 字段                        |
+| 子类复用父类字段     | 把公共字段抽成组件 struct               |
+| 多态调用             | 泛型`T: Trait` 或 `dyn Trait`       |
+| 运行时存放不同实现   | `Box<dyn Trait>` / `Arc<dyn Trait>` |
+| 封闭状态机           | `enum` 或 typestate                   |
+| 开放插件扩展         | public trait                            |
+| 不希望外部实现 trait | sealed trait                            |
+| 多继承               | 多 trait bound + 多字段组合             |
+| 覆盖父类方法         | trait 实现或策略对象                    |
+| 模板方法模式         | 函数编排 + trait hook，谨慎使用         |
+| 基类工具方法         | 独立函数、扩展 trait、组合组件          |
 
 ---
 
@@ -1253,14 +1253,14 @@ Rust API Guidelines 推荐 sealed trait 用于保护未来演进空间：如果 
 
 Rust 中的复用不应模仿继承层级。推荐优先级如下：
 
-| 复用目标 | Rust 方式 | 适用场景 |
-|----------|-----------|----------|
-| 复用状态 | 组合 struct 字段 | 多个对象共享同一组数据和不变量 |
-| 复用行为 | 小 trait | 多个类型提供同一种能力 |
-| 复用静态能力 | 泛型 `T: Trait` | 调用方类型在编译期确定，性能敏感 |
-| 复用运行时开放扩展 | `dyn Trait` | 插件、异构集合、运行时选择实现 |
-| 复用底层表示 | newtype | 同一底层类型有不同语义 |
-| 复用出口 | `pub use module::*;` | 聚合稳定公共入口，减少机械 re-export |
+| 复用目标           | Rust 方式              | 适用场景                             |
+| ------------------ | ---------------------- | ------------------------------------ |
+| 复用状态           | 组合 struct 字段       | 多个对象共享同一组数据和不变量       |
+| 复用行为           | 小 trait               | 多个类型提供同一种能力               |
+| 复用静态能力       | 泛型`T: Trait`       | 调用方类型在编译期确定，性能敏感     |
+| 复用运行时开放扩展 | `dyn Trait`          | 插件、异构集合、运行时选择实现       |
+| 复用底层表示       | newtype                | 同一底层类型有不同语义               |
+| 复用出口           | `pub use module::*;` | 聚合稳定公共入口，减少机械 re-export |
 
 不要一开始就引入“大 trait + 大 struct + dyn Trait”。先用具体类型把职责切清楚，再在真实重复出现时抽出 trait 或泛型。
 
@@ -1397,13 +1397,13 @@ pub struct User {
 
 评审触发线：
 
-| 信号 | 说明 |
-|------|------|
-| 字段约 8 个以上 | 检查是否混入配置、状态、资源、策略、缓存和统计 |
-| 同时持有多个锁或原子状态 | 检查是否存在不同并发上下文 |
-| 同时持有外部 IO client 和领域状态 | 检查边界适配是否污染领域对象 |
-| `impl` 中方法跨越多个业务动作 | 检查是否是上帝对象 |
-| 字段需要不同生命周期或初始化顺序 | 拆出独立拥有者或 builder |
+| 信号                              | 说明                                           |
+| --------------------------------- | ---------------------------------------------- |
+| 字段约 8 个以上                   | 检查是否混入配置、状态、资源、策略、缓存和统计 |
+| 同时持有多个锁或原子状态          | 检查是否存在不同并发上下文                     |
+| 同时持有外部 IO client 和领域状态 | 检查边界适配是否污染领域对象                   |
+| `impl` 中方法跨越多个业务动作   | 检查是否是上帝对象                             |
+| 字段需要不同生命周期或初始化顺序  | 拆出独立拥有者或 builder                       |
 
 **禁止：**
 
@@ -1452,14 +1452,14 @@ pub struct SessionPolicy {
 
 拆分对象时，优先看“变化原因”，再看“技术类型”。同一变化原因的字段和方法放在一起，不同变化原因拆开。
 
-| 拆分维度 | 说明 | 常见类型名 |
-|----------|------|------------|
-| 配置 | 构造后很少变化，来自文件、CLI、feature 或默认值 | `Config`、`Options` |
-| 领域状态 | 业务不变量和状态转换 | `State`、`Lifecycle`、`Session` |
-| 外部边界 | 数据库、网络、硬件、文件系统、时间 | `Repository`、`Adapter`、`Runtime` |
-| 策略 | 可替换算法、权限、重试、调度、选择逻辑 | `Policy`、`Strategy` |
-| 事件和结果 | 跨边界传递的事实 | `Event`、`Command`、`Receipt` |
-| 错误 | 可匹配、可转换的失败语义 | `Error`、`Reason` |
+| 拆分维度   | 说明                                            | 常见类型名                               |
+| ---------- | ----------------------------------------------- | ---------------------------------------- |
+| 配置       | 构造后很少变化，来自文件、CLI、feature 或默认值 | `Config`、`Options`                  |
+| 领域状态   | 业务不变量和状态转换                            | `State`、`Lifecycle`、`Session`    |
+| 外部边界   | 数据库、网络、硬件、文件系统、时间              | `Repository`、`Adapter`、`Runtime` |
+| 策略       | 可替换算法、权限、重试、调度、选择逻辑          | `Policy`、`Strategy`                 |
+| 事件和结果 | 跨边界传递的事实                                | `Event`、`Command`、`Receipt`      |
+| 错误       | 可匹配、可转换的失败语义                        | `Error`、`Reason`                    |
 
 拆分后，主流程对象应像编排函数一样组合这些能力：
 
@@ -1680,39 +1680,39 @@ pub struct UserId(String);
 
 以下任一出现，都应在 code review 中要求解释或重构。
 
-| 坏味道                                  | Rust 版重构                        |
-| ------------------------------------ | ------------------------------- |
-| 函数过长                                 | 拆分为表达意图的小函数                     |
-| 源文件过大                                | 按变化原因拆成领域文件，`mod.rs` 只做目录页     |
-| 结构体字段过多                              | 拆成配置、状态、策略、资源、运行时适配            |
-| 参数过多                                 | struct / builder / 领域对象         |
-| 布尔参数                                 | enum / newtype                  |
-| `String` 到处传                         | `&str` / `Cow<'_, str>` / 明确所有权 |
-| 到处 `.clone()`                        | 重新审视所有权边界                       |
-| 大量 `Arc<Mutex<_>>`                   | 考虑消息传递、所有权转移或状态拆分               |
-| `unwrap` 出现在业务路径                     | `?`、错误转换、显式处理                   |
-| `Box<dyn Trait>` 到处用                 | 能否用泛型或 enum                     |
-| 巨型 trait                             | 拆成小 trait                       |
-| 巨型 enum                              | 是否需要拆领域、引入 trait 或状态对象          |
-| public 字段过多                          | 私有字段 + 构造函数 + 方法                |
-| `mod.rs` 承载大量实现                      | 下沉到领域文件，只 re-export 稳定入口        |
-| `foo.rs` 作为父模块同时存在 `foo/child.rs` | 迁移为 `foo/mod.rs` + `foo/child.rs` |
-| `mod utils` 泛滥                       | 按领域命名，拆到具体模块                    |
-| 整体入口函数藏在文件中部或底部                    | 把主入口移到源文件开头，让读者先看到主线            |
-| 编排函数夹杂底层解析、转换和 unsafe 细节             | 抽成命名步骤，让函数体像目录                  |
-| 领域对象混入 IO、存储、格式化、HTTP 或硬件访问          | 拆到 repository、adapter、runtime     |
-| 复用靠继承式大 trait 或共享大对象                 | 用组合、小 trait、泛型、newtype 分别复用     |
-| 逐个手写大量机械 re-export                  | 对稳定出口使用 `pub use module::*;`      |
-| 注释解释代码在干什么                           | 改名或拆函数                          |
-| `unsafe` 分散                          | 收敛到小模块并提供 safe API              |
-| 宏隐藏业务逻辑                              | 用函数/trait/generic 替代            |
-| `todo!()` / `unimplemented!()` 合入主分支 | 禁止                              |
-| 测试只测 happy path                      | 增加错误路径、边界条件、回归测试                |
-| `#[cfg(test)] mod tests` 插在生产代码中间     | 移到源文件最后，作为附录阅读                  |
-| 相同 `#[cfg(...)]` 在大量相邻 item 上重复       | 把共享条件收敛到最窄共同模块边界                |
-| 用 `include_str!` 解析 Rust 源码来验证行为       | 编译并调用真实模块或公共 API                 |
-| 错误类型是 `String` 或 `()`                | 定义具体错误类型                        |
-| 业务层依赖数据库/HTTP 框架类型                   | 建立边界转换层                         |
+| 坏味道                                         | Rust 版重构                                   |
+| ---------------------------------------------- | --------------------------------------------- |
+| 函数过长                                       | 拆分为表达意图的小函数                        |
+| 源文件过大                                     | 按变化原因拆成领域文件，`mod.rs` 只做目录页 |
+| 结构体字段过多                                 | 拆成配置、状态、策略、资源、运行时适配        |
+| 参数过多                                       | struct / builder / 领域对象                   |
+| 布尔参数                                       | enum / newtype                                |
+| `String` 到处传                              | `&str` / `Cow<'_, str>` / 明确所有权      |
+| 到处`.clone()`                               | 重新审视所有权边界                            |
+| 大量`Arc<Mutex<_>>`                          | 考虑消息传递、所有权转移或状态拆分            |
+| `unwrap` 出现在业务路径                      | `?`、错误转换、显式处理                     |
+| `Box<dyn Trait>` 到处用                      | 能否用泛型或 enum                             |
+| 巨型 trait                                     | 拆成小 trait                                  |
+| 巨型 enum                                      | 是否需要拆领域、引入 trait 或状态对象         |
+| public 字段过多                                | 私有字段 + 构造函数 + 方法                    |
+| `mod.rs` 承载大量实现                        | 下沉到领域文件，只 re-export 稳定入口         |
+| `foo.rs` 作为父模块同时存在 `foo/child.rs` | 迁移为`foo/mod.rs` + `foo/child.rs`       |
+| `mod utils` 泛滥                             | 按领域命名，拆到具体模块                      |
+| 整体入口函数藏在文件中部或底部                 | 把主入口移到源文件开头，让读者先看到主线      |
+| 编排函数夹杂底层解析、转换和 unsafe 细节       | 抽成命名步骤，让函数体像目录                  |
+| 领域对象混入 IO、存储、格式化、HTTP 或硬件访问 | 拆到 repository、adapter、runtime             |
+| 复用靠继承式大 trait 或共享大对象              | 用组合、小 trait、泛型、newtype 分别复用      |
+| 逐个手写大量机械 re-export                     | 对稳定出口使用`pub use module::*;`          |
+| 注释解释代码在干什么                           | 改名或拆函数                                  |
+| `unsafe` 分散                                | 收敛到小模块并提供 safe API                   |
+| 宏隐藏业务逻辑                                 | 用函数/trait/generic 替代                     |
+| `todo!()` / `unimplemented!()` 合入主分支  | 禁止                                          |
+| 测试只测 happy path                            | 增加错误路径、边界条件、回归测试              |
+| `#[cfg(test)] mod tests` 插在生产代码中间    | 移到源文件最后，作为附录阅读                  |
+| 相同`#[cfg(...)]` 在大量相邻 item 上重复     | 把共享条件收敛到最窄共同模块边界              |
+| 用`include_str!` 解析 Rust 源码来验证行为    | 编译并调用真实模块或公共 API                  |
+| 错误类型是`String` 或 `()`                 | 定义具体错误类型                              |
+| 业务层依赖数据库/HTTP 框架类型                 | 建立边界转换层                                |
 
 ---
 
@@ -1903,27 +1903,27 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
 > **先让读者看到整体功能，再用一个个可命名的函数调用展开细节；生产代码像正文，测试像附录，附录放在最后。**
 
-[1]: https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html "Understanding Ownership - The Rust Programming Language"
-[2]: https://rust-lang.github.io/api-guidelines/naming.html "Naming - Rust API Guidelines"
-[3]: https://rust-lang.github.io/api-guidelines/type-safety.html "Type safety - Rust API Guidelines"
-[4]: https://rust-lang.github.io/api-guidelines/documentation.html "Documentation - Rust API Guidelines"
-[5]: https://doc.rust-lang.org/style-guide/ "Introduction - The Rust Style Guide"
-[6]: https://doc.rust-lang.org/clippy/ "Introduction - Clippy Documentation"
-[7]: https://doc.rust-lang.org/cargo/reference/workspaces.html "Workspaces - The Cargo Book"
-[8]: https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html "Recoverable Errors with Result - The Rust Programming Language"
-[9]: https://rust-lang.github.io/api-guidelines/interoperability.html "Interoperability - Rust API Guidelines"
-[10]: https://rust-lang.github.io/api-guidelines/future-proofing.html "Future proofing - Rust API Guidelines"
-[11]: https://doc.rust-lang.org/reference/visibility-and-privacy.html "Visibility and privacy - The Rust Reference"
-[12]: https://doc.rust-lang.org/book/ch18-01-what-is-oo.html "Characteristics of Object-Oriented Languages - The Rust Programming Language"
-[13]: https://doc.rust-lang.org/book/ch10-02-traits.html "Defining Shared Behavior with Traits - The Rust Programming Language"
-[14]: https://rust-lang.github.io/api-guidelines/checklist.html "Checklist - Rust API Guidelines"
-[15]: https://doc.rust-lang.org/book/ch18-03-oo-design-patterns.html "Implementing an Object-Oriented Design Pattern"
-[16]: https://doc.rust-lang.org/cargo/guide/tests.html "Tests - The Cargo Book"
-[17]: https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html "spawn_blocking in tokio::task - Rust"
-[18]: https://doc.rust-lang.org/book/ch20-01-unsafe-rust.html "Unsafe Rust - The Rust Programming Language"
-[19]: https://rust-lang.github.io/api-guidelines/macros.html "Macros - Rust API Guidelines"
-[20]: https://rust-lang.github.io/api-guidelines/necessities.html "Necessities - Rust API Guidelines"
-[21]: https://rust-lang.github.io/api-guidelines/debuggability.html "Debuggability - Rust API Guidelines"
-[22]: https://doc.rust-lang.org/cargo/guide/project-layout.html "Package Layout - The Cargo Book"
-[23]: https://doc.rust-lang.org/book/ch07-05-separating-modules-into-different-files.html "Separating Modules into Different Files - The Rust Programming Language"
-[24]: https://blog.cleancoder.com/uncle-bob/2014/05/08/SingleReponsibilityPrinciple.html "The Single Responsibility Principle - The Clean Coder Blog"
+[1]: https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html
+[2]: https://rust-lang.github.io/api-guidelines/naming.html
+[3]: https://rust-lang.github.io/api-guidelines/type-safety.html
+[4]: https://rust-lang.github.io/api-guidelines/documentation.html
+[5]: https://doc.rust-lang.org/style-guide/
+[6]: https://doc.rust-lang.org/clippy/
+[7]: https://doc.rust-lang.org/cargo/reference/workspaces.html
+[8]: https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html
+[9]: https://rust-lang.github.io/api-guidelines/interoperability.html
+[10]: https://rust-lang.github.io/api-guidelines/future-proofing.html
+[11]: https://doc.rust-lang.org/reference/visibility-and-privacy.html
+[12]: https://doc.rust-lang.org/book/ch18-01-what-is-oo.html
+[13]: https://doc.rust-lang.org/book/ch10-02-traits.html
+[14]: https://rust-lang.github.io/api-guidelines/checklist.html
+[15]: https://doc.rust-lang.org/book/ch18-03-oo-design-patterns.html
+[16]: https://doc.rust-lang.org/cargo/guide/tests.html
+[17]: https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html
+[18]: https://doc.rust-lang.org/book/ch20-01-unsafe-rust.html
+[19]: https://rust-lang.github.io/api-guidelines/macros.html
+[20]: https://rust-lang.github.io/api-guidelines/necessities.html
+[21]: https://rust-lang.github.io/api-guidelines/debuggability.html
+[22]: https://doc.rust-lang.org/cargo/guide/project-layout.html
+[23]: https://doc.rust-lang.org/book/ch07-05-separating-modules-into-different-files.html
+[24]: https://blog.cleancoder.com/uncle-bob/2014/05/08/SingleReponsibilityPrinciple.html

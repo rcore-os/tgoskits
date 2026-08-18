@@ -313,7 +313,7 @@ MemoryDescriptor[]
 | early bump arena | 排序后第一个大于 8 MiB 的 `Free` 段 | 不跨物理 hole；无候选时 `expect("No free memory")` 启动失败 |
 | Buddy contiguous allocation | 单 section 内完成 | 不能跨物理 hole 拼接连续页 |
 
-这些限制不应通过引入通用非统一内存访问、compaction 或页迁移框架解决。若具体平台超过固定容量，应先提高有依据的常量或压缩平台描述符；对应验收方法见[内存管理测试与验收](./testing.md)。
+这些限制不应通过引入通用非统一内存访问、compaction 或页迁移框架解决。具体平台超过固定容量时，需要依据平台描述符数量调整容量或压缩描述符；相关用例见[内存管理测试](./testing.md)。
 
 ## 7. 地址处理实例
 

@@ -1,9 +1,10 @@
-schema_version = 1
+schema_version = 2
 phase = "test"
 group = "AxVisor"
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-smoke-axtest-timer-stress"
+impact_targets = ["axvisor:aarch64"]
 name = "aarch64 QEMU · Smoke + virtio-blk guest + axtest + timer stress"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
@@ -27,6 +28,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-panic-modes"
+impact_targets = ["axvisor:aarch64"]
 name = "aarch64 QEMU · Panic modes"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
@@ -42,6 +44,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane"
+impact_targets = ["axvisor:aarch64"]
 name = "aarch64 QEMU · HTTP control-plane"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
@@ -57,6 +60,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 
 [[check]]
 id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
+impact_targets = ["axvisor:riscv64"]
 name = "riscv64 QEMU · Smoke + IPI + panic modes"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
@@ -78,6 +82,7 @@ cargo xtask axvisor test qemu --arch riscv64 --test-case no-backtrace
 
 [[check]]
 id = "test-axvisor-loongarch64-qemu"
+impact_targets = ["axvisor:loongarch64"]
 name = "loongarch64 QEMU · Suites"
 runs_on = ["ubuntu-latest"]
 environment = "axvisor-lvz"
@@ -89,6 +94,7 @@ target/debug/tg-xtask axvisor test qemu --arch loongarch64
 
 [[check]]
 id = "test-axvisor-qemu-ivc"
+impact_targets = ["axvisor:aarch64"]
 name = "aarch64 QEMU · IVC"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
@@ -100,6 +106,7 @@ cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qem
 
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-svm-smoke-acpi"
+impact_targets = ["axvisor:x86_64"]
 name = "x86_64 SVM · Smoke + direct/OVMF ACPI"
 runs_on = ["self-hosted", "linux", "amd", "kvm"]
 environment = "host"
@@ -119,6 +126,7 @@ cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-svm
 
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-vmx"
+impact_targets = ["axvisor:x86_64"]
 name = "x86_64 VMX · Smoke"
 runs_on = ["self-hosted", "linux", "intel", "kvm"]
 environment = "host"
@@ -130,6 +138,7 @@ cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
 
 [[check]]
 id = "test-axloader-http-smoke"
+impact_packages = ["axloader"]
 name = "x86_64 UEFI · AxLoader HTTP boot"
 runs_on = ["self-hosted", "linux", "intel", "kvm"]
 environment = "host"
@@ -143,6 +152,7 @@ cargo xtask axloader test qemu --target x86_64-unknown-uefi
 
 [[check]]
 id = "test-axvisor-x86-64-acpi-direct-and-ovmf-boot-vmx"
+impact_targets = ["axvisor:x86_64"]
 name = "x86_64 VMX · Direct + MP fallback + OVMF ACPI"
 runs_on = ["self-hosted", "linux", "intel", "kvm"]
 environment = "host"
@@ -158,6 +168,7 @@ cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux"
+impact_targets = ["axvisor:aarch64"]
 name = "OrangePi 5 Plus board · Linux guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
@@ -168,6 +179,7 @@ cargo xtask axvisor test board --board orangepi-5-plus-linux
 
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-starry"
+impact_targets = ["axvisor:aarch64"]
 name = "OrangePi 5 Plus board · StarryOS guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
@@ -178,6 +190,7 @@ cargo xtask axvisor test board --board orangepi-5-plus-starry
 
 [[check]]
 id = "test-axvisor-self-hosted-board-roc-rk3568-pc-linux"
+impact_targets = ["axvisor:aarch64"]
 name = "ROC-RK3568-PC board · Linux guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
@@ -188,6 +201,7 @@ cargo xtask axvisor test board --board roc-rk3568-pc-linux
 
 [[check]]
 id = "test-axvisor-self-hosted-board-phytiumpi-linux"
+impact_targets = ["axvisor:aarch64"]
 name = "Phytium Pi board · Linux guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
@@ -198,6 +212,7 @@ cargo xtask axvisor test board --board phytiumpi-linux
 
 [[check]]
 id = "test-axvisor-self-hosted-board-asus-nuc15crh-linux"
+impact_targets = ["axvisor:x86_64"]
 name = "ASUS NUC15CRH board · Linux guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
@@ -215,6 +230,7 @@ cargo xtask axvisor test board --board asus-nuc15crh-linux
 
 [[check]]
 id = "test-orangepi-5-plus-robot-axvisor-starryos-guest"
+impact_targets = ["axvisor:aarch64"]
 name = "OrangePi 5 Plus robot board · StarryOS guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
@@ -226,6 +242,7 @@ cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
 
 [[check]]
 id = "test-orangepi-5-plus-robot-axvisor-linux-guest"
+impact_targets = ["axvisor:aarch64"]
 name = "OrangePi 5 Plus robot board · Linux guest"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"

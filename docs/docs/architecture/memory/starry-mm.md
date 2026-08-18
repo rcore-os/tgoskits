@@ -186,7 +186,7 @@ Starry `/dev/dma_heap` 和设备 import 使用 `dma-api` 高层 owner。fd、mma
 | fault result enum | `handle_page_fault()` 返回 `bool`，没有公共 `FaultOutcome` |
 | dirty-page writeback reclaim | page-cache reclaim 由注册 callback 提供，需保持锁外和有界 |
 
-增加用户可见内存语义时必须按 `book/guideline/starry/syscall.md` 对齐 Linux 行为；unsupported 路径应返回明确错误，不能静默成功或仅靠 proc 占位值误报完整支持。
+增加用户可见内存语义时必须按 `docs/guideline/starry_syscall.md` 对齐 Linux 行为；unsupported 路径应返回明确错误，不能静默成功或仅靠 proc 占位值误报完整支持。
 
 ## 8. 源码检查点
 
@@ -203,4 +203,4 @@ Starry `/dev/dma_heap` 和设备 import 使用 `dma-api` 高层 owner。fd、mma
 | `os/StarryOS/kernel/src/pseudofs/proc.rs` | meminfo、statm、status、overcommit sysctl 展示 |
 | `os/StarryOS/kernel/src/entry.rs` | page-cache reclaim callback 注册 |
 
-StarryOS 的系统调用、跨 VMA 失败注入、写时复制回滚和 RSS 统计用例集中在[内存管理测试与验收](./testing.md)。
+StarryOS 的系统调用、跨 VMA 失败注入、写时复制回滚和 RSS 统计用例见[内存管理测试](./testing.md)。

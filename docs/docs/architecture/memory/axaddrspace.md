@@ -465,7 +465,7 @@ guest writes GPA 0x4000_1234
 | `virtualization/axvm/src/vm/prepare/address_space.rs` | 生产客户机布局到 Linear 映射的接线 |
 | `virtualization/axvm/src/vm/mod.rs` | 外层锁、内存访问和销毁顺序 |
 
-巨大 Linear 映射、frame 释放和各架构构建的验证矩阵统一放在[内存管理测试与验收](./testing.md)，本章不复制测试命令和用例表。
+巨大 Linear 映射、frame 释放和各架构构建的测试见[内存管理测试](./testing.md)。
 
 ### 9.2 明确不负责的能力
 

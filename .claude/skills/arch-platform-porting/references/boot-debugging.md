@@ -131,18 +131,6 @@ the switch depth. A suspended guard resuming on another CPU must consume its old
 the equivalent switch depth left by the destination CPU's outgoing context. Context-owned
 architectures retain the token owner across migration and begin a new header at depth zero.
 
-AxVM's vCPU execution boundary follows Linux KVM's `vcpu_load()` / `vcpu_put()` split. For every
-public guest exit, load the architecture backend, publish the CPU-local current-vCPU identity, enter
-the guest, restore host state, unload the backend, and withdraw that publication under one
-non-migrating CPU pin. Only architecture register loading, pending-interrupt injection, guest
-entry/exit, and host-state restoration belong in that scope. Run MMIO/PIO emulation, hypercalls,
-guest-console callbacks, allocation, and other potentially blocking exit work after the backend is
-unloaded and preemption is enabled; a logical run slice may still continue with another load/entry
-after the handler completes. If Axvisor reaches a `futex` or conditional-wait `UnsafeContext`, use
-GDB to identify the outer vCPU frame and check whether `with_current_cpu_set` incorrectly spans the
-exit handler before changing the contested lock. On AArch64, keep run-slice timer-wait invalidation
-separate from the per-entry, pinned host-PPI migration preparation.
-
 For boot debugging, verify the typed per-CPU layout is finalized and frozen before CPU binding.
 Check both the architectural register and its defined mirror (RISC-V sscratch or LoongArch KS3)
 on secondaries. A separate current-context per-CPU variable can mask a stale register during normal
@@ -207,11 +195,10 @@ Use this order when auditing an early boot port:
     initialized once, frozen, and bound through the architecture CPU-local register contract.
 11. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
 12. The architecture hook ends after delivering its wake transport. The common someboot owner
-    publishes one per-CPU `KICKED` state before that hook, waits for the AP to report `ALIVE`
-    after reaching the final stack/page-table/common-entry boundary, and then releases exactly
-    that CPU as `SHOULD_ONLINE`. Keep this handshake separate from both immutable trampoline
-    metadata and the later OS scheduler, IRQ, and timer online publication. See
-    `book/design/someboot-secondary-cpu-startup.md`.
+    publishes one per-CPU `KICKED` state before that hook, waits for the secondary to report
+    `ALIVE` at the common entry, and then releases exactly that CPU as `SHOULD_ONLINE`. Keep this
+    handshake outside immutable trampoline metadata and separate from the later OS scheduler,
+    IRQ, and timer online publication. See `docs/design/someboot-secondary-cpu-startup.md`.
 
 ## RISC-V FDT SMP Notes
 
@@ -326,11 +313,9 @@ device-specific drivers.
 - TLB refill entry and general exception entry use different registers and may require different address forms. Do not reuse a high-half virtual symbol where a physical TLB refill vector is required.
 - Relocated symbols must be resolved relative to the running image. In the LoongArch SMP path, the secondary exception vector had to use a runtime symbol helper such as `sym_running_addr!(__exception_vectors)`, while the TLB refill entry needed the corresponding physical address.
 - A secondary CPU can fault before it has a working serial path. Put markers before and after DMW setup, stack switch, page table register setup, trap-vector setup, and jump to the common secondary entry.
-- Coverage instrumentation also applies to low-level dependency crates. A pre-MMU secondary path must not call Rust helpers that can update final-address coverage counters; `#[coverage(off)]` is not transitive into callees. Keep page-table and exception-vector CSR writes in a shared, explicitly non-instrumented helper with no calls into instrumented register crates, then verify the final ELF has no profile-counter access in that path and run a real SMP QEMU regression.
 - Initialize trap vectors on every CPU, not only the boot CPU.
 - Flush or barrier boot arguments before the architecture CPU-on transport; otherwise secondaries can observe stale stack, page table, or per-CPU data.
 - Keep logical CPU ID mapping separate from firmware CPU IDs. LoongArch CPU IDs in firmware data are not guaranteed to be dense array indices.
-- Keep the final scheduler idle handoff atomic. Set `CRMD.IE` immediately before `IDLE`, give that window stable assembly labels, and fast-forward interrupt return to the exit label. An empty `ESTAT` at the return instruction can be a consumed spurious interrupt from this window, not a new exception.
 - Compare ordering with local Linux architecture code when uncertain. For LoongArch, useful topics include DMW setup, CSR write ordering, TLB refill vector, exception entry, SMP boot argument handoff, and cache/TLB barriers.
 
 ## Finding Local Linux Source

@@ -275,7 +275,7 @@ ArceOS/Starry production tree 不应直接依赖 `axvm` 的第二阶段实现；
 
 ### 7.2 源码检查点
 
-以下文件覆盖页表分层后的关键一致性条件。对应的页表项往返转换、映射、查询、解除映射和地址转换后备缓冲区刷新范围用例集中在[内存管理测试与验收](./testing.md)。
+以下文件覆盖页表分层后的关键一致性条件。对应的页表项往返转换、映射、查询、解除映射和地址转换后备缓冲区刷新范围用例见[内存管理测试](./testing.md)。
 
 | 源码 | 审计重点 |
 | --- | --- |
@@ -288,7 +288,7 @@ ArceOS/Starry production tree 不应直接依赖 `axvm` 的第二阶段实现；
 | `virtualization/axvm/src/arch/*/` | 第二阶段 geometry、entry 和失效实现 |
 | `platforms/someboot/src/arch/*/paging*` | boot geometry、entry 和启用时序 |
 
-页帧分配失败、huge mapping 下继续下钻、地址宽度 overflow、已有 mapping conflict、部分 subtree 回收以及批量 flush 阈值的验收项见[内存管理测试与验收](./testing.md)。
+页帧分配失败、huge mapping 下继续下钻、地址宽度 overflow、已有 mapping conflict、部分 subtree 回收以及批量 flush 阈值的用例见[内存管理测试](./testing.md)。
 
 ## 8. 地址翻译实例
 

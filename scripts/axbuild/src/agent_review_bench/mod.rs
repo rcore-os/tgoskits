@@ -534,9 +534,9 @@ mod tests {
     fn create_test_case(workspace: &Path) -> BenchCase {
         fs::write(workspace.join("AGENTS.md"), "current rules\n").unwrap();
         fs::write(workspace.join("CLAUDE.md"), "see AGENTS.md\n").unwrap();
-        fs::create_dir_all(workspace.join("book/guideline")).unwrap();
+        fs::create_dir_all(workspace.join("docs/guideline")).unwrap();
         fs::write(
-            workspace.join("book/guideline/code-quality.md"),
+            workspace.join("docs/guideline/code-quality.md"),
             "current guideline\n",
         )
         .unwrap();

@@ -215,7 +215,7 @@ Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和
 
 ### 7.2 源码检查点
 
-下面的文件覆盖 stack 从静态布局到释放的完整生命周期。owner 类型、canary 和 guard shootdown 的用例集中在[内存管理测试与验收](./testing.md)。
+下面的文件覆盖 stack 从静态布局到释放的完整生命周期。owner 类型、canary 和 guard shootdown 的用例见[内存管理测试](./testing.md)。
 
 | 源码 | 审计重点 |
 | --- | --- |

@@ -866,15 +866,3 @@ net-poll worker:
 ```
 
 这更接近 lwIP `tcpip_thread` 和 Linux softirq/NAPI 的职责分离：应用线程不成为临时协议栈驱动者。
-
-## 检查清单
-
-修改 `ax-net` 锁相关代码时，应确认：
-
-- 新路径没有 `SOCKET_SET.inner -> SERVICE` 的反向获取。
-- 设备 worker 没有在持有 `DeviceHandle.inner` 或 driver IRQ-save `SpinLock` 时进入 `SERVICE` / `SOCKET_SET`。
-- `lock_irqsave()` guard 内没有 sleep、wait、block_on、DNS 查询或 socket API。
-- 新增全局表优先使用短临界区，并说明它与 `SERVICE` / `SOCKET_SET` 的顺序。
-- 新增 socket 局部状态优先用原子或 `RwLock`，避免把整个 POSIX 操作包在全局 `SocketSet` 锁内。
-- 新增 worker wake 路径只设置原子/waker，不直接执行 smoltcp poll。
-- 文档中的锁顺序与 `service.rs` 文件头保持一致。

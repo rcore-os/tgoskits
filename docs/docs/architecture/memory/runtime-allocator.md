@@ -48,7 +48,7 @@ flowchart TB
 | `global_add_memory(start_vaddr, size)` | 增加后续不连续 section | 未初始化、重叠、范围溢出 |
 | `init_percpu_slab(cpu_id)` | CPU bring-up 时初始化本地 Slab | CPU id 超过 `u16` 或重复初始化（两者直接 panic） |
 
-`add_region()` 对不足以容纳 metadata 和 2 MiB heap 对齐的短 region 会记录日志并跳过。平台验收不能只统计输入 free bytes，还应比较实际 `managed_bytes()`。
+`add_region()` 对不足以容纳 metadata 和 2 MiB heap 对齐的短 region 会记录日志并跳过。输入 free bytes 与实际 `managed_bytes()` 的差值来自对齐、metadata 和被跳过的短 region。
 
 ### 1.2 区段元数据
 

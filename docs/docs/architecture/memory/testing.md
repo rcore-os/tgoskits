@@ -1,11 +1,11 @@
 ---
 sidebar_position: 99
-sidebar_label: "测试与验收"
+sidebar_label: "测试"
 ---
 
-# 内存管理测试与验收
+# 内存管理测试
 
-内存修改必须同时验证区间事实、资源所有权、失败回滚、跨 CPU 可见性和热路径延迟。测试优先使用可控分配器、页表、后端和记录型 DMA 适配器，板级测试负责固件内存图、缓存、Translation Lookaside Buffer（地址转换后备缓冲区，TLB）与设备行为。
+内存测试覆盖区间事实、资源所有权、失败回滚、跨 CPU 可见性和热路径延迟。Host 测试使用可控分配器、页表、后端和记录型 DMA 适配器；板级测试覆盖固件内存图、缓存、Translation Lookaside Buffer（地址转换后备缓冲区，TLB）与设备行为。
 
 ## 1. 启动与 allocator 测试
 
@@ -143,11 +143,11 @@ MMIO host test 使用记录型 `MmioOp` 统计映射和解除映射，平台测�
 
 测试不得用普通切片访问代替易失性寄存器读写。易失性只能约束编译器访问，设备协议要求的 CPU 屏障仍需由驱动或平台实现并在目标架构上验证。
 
-## 4. 验证命令
+## 4. 测试命令
 
 内存 crate 的 host test可以使用 Cargo；ArceOS、StarryOS和 Axvisor 的系统构建/运行应使用 `cargo xtask`。文档改动另外执行 Docusaurus build。
 
-### 4.1 单组件验证
+### 4.1 组件测试
 
 修改单一 crate 时先运行格式、该 crate clippy和对应 unit/doc tests。以下命令是常用最小集合，feature 应按改动补齐。
 
@@ -164,21 +164,18 @@ cargo test -p dma-api
 
 修改公共 walker 时运行 `page-table-generic` 测试；修改主机页表时按目标架构验证 `ax-cpu`；修改第二阶段或启动页表时分别验证 `axvm` 或 `someboot`。修改 `ax-alloc` 时覆盖实际存在的 feature 组合：`global-allocator`、`tlsf`、`buddy-slab` 与 `tracking`。hard-实时 与 reserve 尚不是 Cargo feature，只有增加真实消费者和构建配置后才加入对应矩阵。
 
-### 4.2 工作区与系统验证
+### 4.2 工作区与系统测试
 
 依赖或 feature 改动需要检查 workspace metadata 和生产 dependency tree。系统命令以仓库 `cargo xtask --help` 和现有 CI配置为准。
 
 ```sh
 cargo metadata --format-version 1
 cargo tree --workspace
-# 按整改方案中的删除清单检查生产源码、manifest 和依赖树。
-npm --prefix docs run build
-git diff --check
 ```
 
 ArceOS、StarryOS 和 Axvisor 至少各选择一个 paging 配置构建；Starry 另运行直接发现的内存相关 QEMU case，重型压力负载通过 `cargo xtask starry app` 执行。物理 board、自托管 runner 和设备压力测试按变更范围执行。
 
-## 5. 性能与容量指标
+## 5. 性能与容量观测
 
 性能基线必须使用相同平台、CPU数、内存图、feature和 workload。平均值不能替代 P99/max，因为 实时和中断请求路径关注最坏延迟。
 
@@ -186,9 +183,9 @@ ArceOS、StarryOS 和 Axvisor 至少各选择一个 paging 配置构建；Starry
 
 allocator benchmark 分开记录 Slab、Buddy order-0、高阶连续页、Dma32和 cross-CPU free。统计至少包括延迟、锁等待和空间开销。
 
-| 指标 | 采集维度 | 验收目标 |
+| 指标 | 采集维度 | 用途 |
 | --- | --- | --- |
-| alloc/free latency | median、P99、max | 相同配置 P99相对基线退化不超过 10% |
+| alloc/free latency | median、P99、max | 与相同配置的既有基线比较 |
 | Buddy lock wait | CPU、operation size | 证明是否需要后续 cache优化 |
 | remote-free drain | queue length、drain latency | 无双重释放或长期不回收 |
 | fragmentation | largest allocatable block、free pages | 压力后仍满足目标高阶请求 |
@@ -212,11 +209,11 @@ allocator benchmark 分开记录 Slab、Buddy order-0、高阶连续页、Dma32�
 | hard-实时 | critical section通用 heap/page allocation次数 |
 | boot | memory map处理时间、early bump bytes、per-CPU固定开销 |
 
-hard-实时 的关键验收是已识别 实时 critical section 的通用堆和页分配次数为 0。驱动 ring/descriptor 应在 probe 或启动期预分配。
+已识别的实时 critical section 需要记录通用堆和页分配次数。驱动 ring/descriptor 在 probe 或启动期预分配，避免把通用分配器引入实时路径。
 
-## 6. 静态架构检查
+## 6. 依赖边界
 
-代码通过测试并不证明没有重复入口或反向依赖。每次修改内存子系统都要用 source/dependency scan 检查组件边界。
+组件边界同时受源码依赖和 Cargo dependency tree 约束。生产路径不能保留重复入口或反向依赖。
 
 ### 6.1 边界一致性
 
@@ -263,7 +260,7 @@ feature scan还要比较静态符号和镜像大小，避免关闭 feature 后�
 
 增加复杂机制前必须给出目标板 workload、绝对延迟/容量预算、采样证据和裁剪方案；仅以“Linux有该功能”不能作为引入理由。
 
-## 8. 可复现实例
+## 8. 测试场景
 
 内存测试必须给出确定输入、故障位置和完整状态断言。只执行压力负载或只断言返回 `Err` 无法证明 ownership 与专用失败清理正确。
 
@@ -302,7 +299,6 @@ map.merge_add(MemoryDescriptor::new_with_range(
 ```text
 initial VMAs: [0x1000,0x4000), [0x5000,0x8000)
 initial PTEs: pages 1,2,3,5,6,7 mapped
-operation:    unmap [0x2000,0x7000)
 operation:    unmap [0x2000,0x7000)
 
 required result on success:
@@ -363,7 +359,7 @@ cargo test -p buddy-slab-allocator \
 | contention | Buddy lock wait和 remote-free drain |
 | capacity | free pages、largest block、metadata bytes |
 
-对比基线与新实现时必须使用相同固件内存图和 CPU frequency policy。若 P99退化超过 10%，先用 lock wait、地址转换后备缓冲区 flush或 reclaim次数定位来源；不能直接用平均吞吐掩盖尾延迟。
+对比基线与新实现时使用相同固件内存图和 CPU frequency policy。出现明显尾延迟变化时，使用 lock wait、地址转换后备缓冲区 flush 或 reclaim 次数定位来源；平均吞吐不能替代分位数。
 
 ### 8.6 大范围映射回归
 

@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 phase = "test"
 group = "Starry"
 
@@ -8,6 +8,7 @@ group = "Starry"
 
 [[check]]
 id = "test-starry-riscv64-qemu"
+impact_targets = ["starry:riscv64"]
 name = "riscv64 QEMU · Suites"
 runs_on = ["ubuntu-latest"]
 environment = "base"
@@ -21,6 +22,7 @@ target/debug/tg-xtask ktest qemu -p starry-kernel --arch riscv64
 
 [[check]]
 id = "test-starry-aarch64-qemu"
+impact_targets = ["starry:aarch64"]
 name = "aarch64 QEMU · GICv2 SMP4 boot + suites"
 runs_on = ["ubuntu-latest"]
 environment = "base"
@@ -38,6 +40,7 @@ target/debug/tg-xtask ktest qemu -p starry-kernel --arch aarch64
 
 [[check]]
 id = "test-starry-loongarch64-qemu"
+impact_targets = ["starry:loongarch64"]
 name = "loongarch64 QEMU · Suites"
 runs_on = ["ubuntu-latest"]
 environment = "base"
@@ -51,6 +54,7 @@ target/debug/tg-xtask ktest qemu -p starry-kernel --arch loongarch64
 
 [[check]]
 id = "test-starry-x86-64-qemu"
+impact_targets = ["starry:x86_64"]
 name = "x86_64 QEMU · Suites"
 runs_on = ["ubuntu-latest"]
 environment = "base"
@@ -64,6 +68,7 @@ target/debug/tg-xtask ktest qemu -p starry-kernel --arch x86_64
 
 [[check]]
 id = "test-starry-self-hosted-board-orangepi-5-plus"
+impact_targets = ["starry:aarch64"]
 name = "OrangePi 5 Plus board · Suites"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
@@ -74,6 +79,7 @@ cargo xtask starry test board --board orangepi-5-plus
 
 [[check]]
 id = "test-orangepi-5-plus-robot-native-starryos"
+impact_targets = ["starry:aarch64"]
 name = "OrangePi 5 Plus robot board · Native suites"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
@@ -85,6 +91,7 @@ cargo xtask starry test board --board orangepi-5-plus-robot
 
 [[check]]
 id = "test-starry-self-hosted-board-aka-00-sg2002"
+impact_targets = ["starry:riscv64"]
 name = "AKA-00 SG2002 board · Suites"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
@@ -95,6 +102,7 @@ cargo xtask starry test board --board aka-00-sg2002
 
 [[check]]
 id = "test-starry-self-hosted-board-visionfive2"
+impact_targets = ["starry:riscv64"]
 name = "VisionFive 2 board · Suites"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"
@@ -105,6 +113,7 @@ cargo xtask starry test board --board visionfive2
 
 [[check]]
 id = "test-starry-self-hosted-board-jl-lsgd2k10"
+impact_targets = ["starry:loongarch64"]
 name = "JL LSGD2K10 board · Suites"
 runs_on = ["self-hosted", "linux", "board"]
 environment = "host"

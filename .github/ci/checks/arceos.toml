@@ -1,9 +1,10 @@
-schema_version = 1
+schema_version = 2
 phase = "test"
 group = "ArceOS"
 
 [[check]]
 id = "test-arceos-x86-64-qemu"
+impact_targets = ["arceos:x86_64"]
 name = "x86_64 QEMU · Suites + axtest"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
@@ -17,6 +18,7 @@ cargo xtask ktest qemu --workspace --exclude starry-kernel --exclude axvisor --a
 
 [[check]]
 id = "test-arceos-riscv64-qemu"
+impact_targets = ["arceos:riscv64"]
 name = "riscv64 QEMU · Suites + task IPI + axtest"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
@@ -32,6 +34,7 @@ cargo xtask ktest qemu --workspace --exclude starry-kernel --exclude axvisor --a
 
 [[check]]
 id = "test-arceos-aarch64-qemu-app-suites"
+impact_targets = ["arceos:aarch64"]
 name = "aarch64 QEMU · GICv2 SMP4 boot + suites + axtest"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
@@ -49,6 +52,7 @@ cargo xtask ktest qemu --workspace --exclude starry-kernel --exclude axvisor --a
 
 [[check]]
 id = "test-arceos-loongarch64-qemu"
+impact_targets = ["arceos:loongarch64"]
 name = "loongarch64 QEMU · Suites + axtest"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"

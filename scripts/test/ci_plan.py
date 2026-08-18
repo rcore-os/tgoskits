@@ -5,10 +5,16 @@ import json
 import os
 import re
 import sys
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
+
+if sys.version_info < (3, 11):
+    raise SystemExit("ci_plan.py requires Python 3.11 or newer")
+
+import tomllib
+
+from ci_impact import CiImpact, analyze_pull_request, render_summary
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +31,12 @@ STARRY_APPS_MANIFEST = CHECKS_ROOT / "starry-apps.toml"
 SUPPORTED_PHASES = {"static", "test", "starry_apps"}
 SUPPORTED_ENVIRONMENTS = {"host", "base", "axvisor-lvz"}
 SUPPORTED_PREFLIGHTS = {"none", "qemu-user", "full"}
+SUPPORTED_IMPACT_TARGETS = {
+    f"{os_name}:{arch}"
+    for os_name in ("arceos", "starry", "axvisor")
+    for arch in ("aarch64", "x86_64", "riscv64", "loongarch64")
+}
+SUPPORTED_IMPACT_PACKAGES = {"axloader"}
 CHECK_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 REDUNDANT_NAME_PREFIX_PATTERN = re.compile(
     r"^(?:check|run|scheduled|tests?)\b", re.IGNORECASE
@@ -51,6 +63,9 @@ CHECK_FIELDS = {
     "container_preflight",
     "events",
     "enable_boolean_input",
+    "impact_targets",
+    "impact_packages",
+    "pull_request_command",
 }
 REQUIRED_CHECK_FIELDS = {"id", "name", "runs_on", "environment", "command"}
 BOOLEAN_CHECK_FIELDS = {
@@ -71,6 +86,7 @@ class PlanContext:
     event_name: str
     base_ref: str = ""
     enabled_boolean_inputs: frozenset[str] = frozenset()
+    impact: CiImpact | None = None
 
 
 def load_catalog(manifests: Iterable[Path]) -> list[dict[str, Any]]:
@@ -94,6 +110,7 @@ def load_catalog(manifests: Iterable[Path]) -> list[dict[str, Any]]:
             checks.append(check)
 
     _validate_artifact_contract(checks)
+    _validate_impact_contract(checks)
     return checks
 
 
@@ -137,8 +154,8 @@ def _load_manifest(manifest: Path) -> dict[str, Any]:
         raise PlanError(
             f"{manifest} has unknown top-level fields: {sorted(unknown_fields)}"
         )
-    if document.get("schema_version") != 1:
-        raise PlanError(f"{manifest} must declare schema_version = 1")
+    if document.get("schema_version") != 2:
+        raise PlanError(f"{manifest} must declare schema_version = 2")
     if document.get("phase") not in SUPPORTED_PHASES:
         raise PlanError(f"{manifest} has an unsupported phase")
     if not isinstance(document.get("group"), str) or not document["group"].strip():
@@ -245,7 +262,43 @@ def _validate_check(
     ):
         raise PlanError(f"{location} cannot both upload and download the artifact")
 
+    impact_targets = check.get("impact_targets")
+    if impact_targets is not None:
+        _validate_string_array(impact_targets, "impact_targets", location)
+        unsupported_targets = set(impact_targets) - SUPPORTED_IMPACT_TARGETS
+        if unsupported_targets:
+            raise PlanError(
+                f"{location} has unsupported impact_targets: {sorted(unsupported_targets)}"
+            )
+
+    impact_packages = check.get("impact_packages")
+    if impact_packages is not None:
+        _validate_string_array(impact_packages, "impact_packages", location)
+        unsupported_packages = set(impact_packages) - SUPPORTED_IMPACT_PACKAGES
+        if unsupported_packages:
+            raise PlanError(
+                f"{location} has unsupported impact_packages: {sorted(unsupported_packages)}"
+            )
+
+    pull_request_command = check.get("pull_request_command")
+    if pull_request_command is not None and (
+        not isinstance(pull_request_command, str) or not pull_request_command.strip()
+    ):
+        raise PlanError(
+            f"{location} pull_request_command must be a non-empty string"
+        )
+
     return check
+
+
+def _validate_string_array(value: Any, field: str, location: str) -> None:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(item, str) or not item for item in value)
+        or len(set(value)) != len(value)
+    ):
+        raise PlanError(f"{location} {field} must be a unique non-empty string array")
 
 
 def _validate_display_name(name: str, group: str, location: str) -> None:
@@ -286,13 +339,25 @@ def _validate_artifact_contract(checks: list[dict[str, Any]]) -> None:
             )
 
 
+def _validate_impact_contract(checks: list[dict[str, Any]]) -> None:
+    for check in checks:
+        if check["phase"] != "test" or check["group"] == "Workspace":
+            continue
+        if not check.get("impact_targets") and not check.get("impact_packages"):
+            raise PlanError(
+                f"test check '{check['id']}' must declare impact_targets or impact_packages"
+            )
+
+
 def _plan_phase(
     checks: list[dict[str, Any]], phase: str, context: PlanContext
 ) -> list[dict[str, Any]]:
     return [
         _normalize_check(check, context)
         for check in checks
-        if check["phase"] == phase and _is_enabled(check, context)
+        if check["phase"] == phase
+        and _is_enabled(check, context)
+        and _matches_impact(check, context)
     ]
 
 
@@ -316,6 +381,22 @@ def _is_enabled(check: dict[str, Any], context: PlanContext) -> bool:
             return False
 
     return True
+
+
+def _matches_impact(check: dict[str, Any], context: PlanContext) -> bool:
+    impact = context.impact
+    if context.event_name != "pull_request" or impact is None or impact.full:
+        return True
+
+    impact_targets = set(check.get("impact_targets", ()))
+    impact_packages = set(check.get("impact_packages", ()))
+    if not impact_targets and not impact_packages:
+        return True
+
+    return bool(
+        impact_targets.intersection(impact.targets)
+        or impact_packages.intersection(impact.affected_packages)
+    )
 
 
 def _normalize_check(
@@ -348,6 +429,15 @@ def _normalize_check(
     if fallback and check["phase"] == "test":
         download_xtask = True
 
+    command = check["command"]
+    if (
+        context.event_name == "pull_request"
+        and context.impact is not None
+        and not context.impact.full
+        and check.get("pull_request_command")
+    ):
+        command = check["pull_request_command"]
+
     return {
         "id": check["id"],
         "name": name,
@@ -355,7 +445,7 @@ def _normalize_check(
         "runs_on": runs_on,
         "container_image": container_image,
         "container_preflight": preflight,
-        "command": check["command"].strip(),
+        "command": command.strip(),
         "cache_key": check.get("cache_key", ""),
         "apk_region": check.get("apk_region", "china"),
         "fetch_depth": fetch_depth,
@@ -390,6 +480,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--repository-owner", required=True)
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--base-ref", default="")
+    parser.add_argument("--since-ref", default="")
     parser.add_argument("--boolean-input", action="append", default=[])
     parser.add_argument(
         "--output-file",
@@ -400,17 +491,30 @@ def _parse_args() -> argparse.Namespace:
             else None
         ),
     )
+    parser.add_argument(
+        "--summary-file",
+        type=Path,
+        default=(
+            Path(os.environ["GITHUB_STEP_SUMMARY"])
+            if "GITHUB_STEP_SUMMARY" in os.environ
+            else None
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
+    impact = None
+    if args.mode == "main" and args.event_name == "pull_request":
+        impact = analyze_pull_request(WORKSPACE_ROOT, args.since_ref)
     context = PlanContext(
         repository=args.repository,
         repository_owner=args.repository_owner,
         event_name=args.event_name,
         base_ref=args.base_ref,
         enabled_boolean_inputs=frozenset(args.boolean_input),
+        impact=impact,
     )
     try:
         if args.mode == "main":
@@ -428,6 +532,23 @@ def main() -> int:
 
     for name, matrix in outputs.items():
         print(f"{name}: {len(matrix['include'])} checks", file=sys.stderr)
+    if impact is not None:
+        selected_ids = [
+            row["id"]
+            for matrix in outputs.values()
+            for row in matrix["include"]
+        ]
+        eligible_ids = [
+            check["id"]
+            for check in load_catalog(MAIN_MANIFESTS)
+            if _is_enabled(check, context)
+        ]
+        skipped_ids = [check_id for check_id in eligible_ids if check_id not in selected_ids]
+        summary = render_summary(impact, selected_ids, skipped_ids)
+        print(summary, file=sys.stderr)
+        if args.summary_file is not None:
+            with args.summary_file.open("a", encoding="utf-8") as summary_file:
+                summary_file.write(summary)
     return 0
 
 

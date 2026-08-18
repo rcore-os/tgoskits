@@ -29,12 +29,24 @@ live 阶段打开的 pidfd 保存 `ProcessData` event，exit 后打开的 pidfd 
 
 原修复参考 Linux `v7.2-rc4` 提交 `1590cf0329716306e948a8fc29f1d3ee87d3989f` 及 `7.2-rc4-rt3`。RT patch 未改变相关 `pid`、pidfs、exit、signal 生命周期，因此主线语义同样适用。
 
-- `struct pid` 是引用计数 generation identity，并拥有 `wait_pidfd`；numeric PID 复用会得到不同对象；
-- `pidfd_poll()` 在可观察 exit 时返回 `EPOLLIN | EPOLLRDNORM`，reap detach 后再加 `EPOLLHUP`；
-- `do_notify_pidfd()` 发布 exit readiness；
-- `__unhash_process()` 在 reap 时 detach 并唤醒稳定 pidfd wait queue；
-- `wait_task_zombie()` 保持 `WNOWAIT` 非消费，并用原子状态转换选出唯一消费 waiter；
-- `pidfd_send_signal()` 解析稳定 PID object：未 reap zombie 对 signal 0 和允许的非零 signal 仍可解析，reap 后返回 `ESRCH`。
+- [`struct pid` is reference-counted and owns `wait_pidfd`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/include/linux/pid.h#L35-L75).
+  Numeric PID reuse allocates a different object, so a pidfd cannot suffer ABA.
+- [`pidfd_poll`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/fs/pidfs.c#L305-L323)
+  returns `EPOLLIN | EPOLLRDNORM` for an observable exited task and additionally
+  returns `EPOLLHUP` after the task is detached during reap.
+- [`do_notify_pidfd`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/signal.c#L2158-L2166)
+  publishes exit readiness.
+- [`__unhash_process`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/exit.c#L132-L145)
+  detaches the task and wakes the stable pidfd wait queue at reap.
+- [`wait_task_zombie`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/exit.c#L1207-L1250)
+  leaves `WNOWAIT` non-consuming and uses an atomic state transition for the
+  consuming waiter.
+- [`pidfd_send_signal`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/signal.c#L4020-L4058)
+  resolves the stable PID object. It returns `ESRCH` after reap; before reap,
+  signal zero and a permitted nonzero signal can resolve the zombie identity
+  without changing the recorded exit status.
+- rt-linux release index:
+  [kernel.org rt 7.2](https://www.kernel.org/pub/linux/kernel/projects/rt/7.2/).
 
 Linux v7.1 的 `exit_notify()`、`do_wait()`、`copy_process()`、PID namespace 分配与 reparent 顺序用于后续关系审计。PREEMPT_RT 改变可睡眠锁实现，但不改变 PID generation 与 wait 语义。
 
