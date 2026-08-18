@@ -6,7 +6,6 @@ use sdio_host2::{ClockHz, ProgressCause, RequestProgress, SignalVoltage};
 use sdmmc_protocol::sdio::host::SdioIrqHost;
 
 use super::*;
-use crate::platform::*;
 
 impl SdioIrqHost for Cv181xSdhci {
     type Event = sdhci_host::Event;
@@ -116,16 +115,32 @@ impl sdio_host2::SdioHost for Cv181xSdhci {
                 Ok(BusRequest::inner(request, AfterBusOp::ResetAll))
             }
             sdio_host2::BusOp::SetClock(speed) => {
-                Ok(BusRequest::ready(self.set_clock_speed(speed)))
+                let plan = self.clock_plan(speed)?;
+                let request = unsafe {
+                    sdio_host2::SdioHost::submit_bus_op(
+                        &mut self.inner,
+                        sdio_host2::BusOp::SetClockHz(ClockHz(plan.target_hz)),
+                    )?
+                };
+                self.apply_clock_timing(plan);
+                Ok(BusRequest::inner(request, AfterBusOp::None))
             }
-            sdio_host2::BusOp::SetClockHz(ClockHz(hz)) => Ok(BusRequest::ready(
-                self.program_clock(hz, hz > DEFAULT_MAX_FREQUENCY_HZ, HOST_CTRL2_UHS_SDR12),
-            )),
+            sdio_host2::BusOp::SetClockHz(ClockHz(hz)) => {
+                let plan = self.clock_hz_plan(hz);
+                let request = unsafe {
+                    sdio_host2::SdioHost::submit_bus_op(
+                        &mut self.inner,
+                        sdio_host2::BusOp::SetClockHz(ClockHz(plan.target_hz)),
+                    )?
+                };
+                self.apply_clock_timing(plan);
+                Ok(BusRequest::inner(request, AfterBusOp::None))
+            }
             sdio_host2::BusOp::SetBusWidth(width) if !self.config.supports_bus_width(width) => {
-                Ok(BusRequest::ready(Err(sdio_host2::Error::Unsupported)))
+                Err(sdio_host2::Error::Unsupported)
             }
             sdio_host2::BusOp::SetSignalVoltage(SignalVoltage::V180) if self.config.no_1v8 => {
-                Ok(BusRequest::ready(Err(sdio_host2::Error::Unsupported)))
+                Err(sdio_host2::Error::Unsupported)
             }
             sdio_host2::BusOp::SetSignalVoltage(SignalVoltage::V330) => {
                 self.restore_3v3_power();
@@ -145,18 +160,6 @@ impl sdio_host2::SdioHost for Cv181xSdhci {
         cause: ProgressCause,
     ) -> Result<RequestProgress<()>, sdio_host2::AdvanceRequestError> {
         match &mut bus_request.state {
-            BusRequestState::Ready(result) => {
-                if cause == ProgressCause::Submitted {
-                    return Ok(RequestProgress::RegisterPending {
-                        retry_after: core::time::Duration::from_micros(1),
-                    });
-                }
-                let result = result
-                    .take()
-                    .ok_or(sdio_host2::AdvanceRequestError::AlreadyCompleted)?;
-                bus_request.state = BusRequestState::Done;
-                Ok(RequestProgress::Complete(result))
-            }
             BusRequestState::Inner {
                 request: inner,
                 after,
@@ -183,7 +186,7 @@ impl sdio_host2::SdioHost for Cv181xSdhci {
             BusRequestState::Inner { request: inner, .. } => {
                 sdio_host2::SdioHost::abort_bus_op(&mut self.inner, inner)
             }
-            BusRequestState::Ready(_) | BusRequestState::Done => Ok(()),
+            BusRequestState::Done => Ok(()),
         };
         bus_request.state = BusRequestState::Done;
         result
@@ -199,12 +202,6 @@ pub struct BusRequest {
 }
 
 impl BusRequest {
-    fn ready(result: Result<(), sdio_host2::Error>) -> Self {
-        Self {
-            state: BusRequestState::Ready(Some(result)),
-        }
-    }
-
     fn inner(request: <Sdhci as sdio_host2::SdioHost>::BusRequest, after: AfterBusOp) -> Self {
         Self {
             state: BusRequestState::Inner { request, after },
@@ -213,7 +210,6 @@ impl BusRequest {
 }
 
 enum BusRequestState {
-    Ready(Option<Result<(), sdio_host2::Error>>),
     Inner {
         request: <Sdhci as sdio_host2::SdioHost>::BusRequest,
         after: AfterBusOp,

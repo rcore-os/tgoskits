@@ -225,7 +225,9 @@ enum SdhciTuningState {
 }
 
 const SDHCI_RESET_POLLS: u32 = 1_000;
-const SDHCI_CLOCK_POLLS: u32 = 1_000;
+// Linux `sdhci_enable_clk()` waits at most 150 ms for the internal clock.
+// Host2 polls every 100 us, so the same hardware deadline is 1,500 polls.
+const SDHCI_CLOCK_POLLS: u32 = 1_500;
 const SDHCI_TUNING_POLLS: u32 = 1_000_000;
 const SDHCI_VOLTAGE_SWITCH_DELAY_MS: u64 = 5;
 const SDHCI_REGISTER_RETRY_DELAY: Duration = Duration::from_micros(100);

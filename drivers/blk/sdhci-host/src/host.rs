@@ -2,6 +2,7 @@
 
 use alloc::{boxed::Box, sync::Arc};
 use core::{
+    num::NonZeroU32,
     ptr::NonNull,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
@@ -38,6 +39,9 @@ pub(crate) use irq_state::IrqCore;
 pub struct Sdhci {
     pub(crate) base_addr: usize,
     pub(crate) command_state: CommandState,
+    /// Platform-provided input clock for controllers whose Capabilities
+    /// register does not report `Base Clock Frequency`.
+    pub(crate) fixed_base_clock_hz: Option<NonZeroU32>,
     /// Optional CRU-side clock callback. When set, the `SdioHost::set_clock`
     /// impl will route requests to this hook (and program the controller
     /// for 1:1 passthrough) instead of using the internal 10-bit divider.
@@ -84,6 +88,7 @@ impl Sdhci {
         Self {
             base_addr: base.as_ptr() as usize,
             command_state: CommandState::Idle,
+            fixed_base_clock_hz: None,
             ext_clock: None,
             reset_hook: None,
             timer: None,
@@ -152,6 +157,20 @@ impl Sdhci {
     /// the host to borrow the probe-time clock device.
     pub fn clear_external_clock(&mut self) {
         self.ext_clock = None;
+    }
+
+    /// Use a platform-known fixed input clock for the SDHCI internal divider.
+    ///
+    /// Some integrations leave the Capabilities base-clock field zero even
+    /// though the controller receives a fixed SoC clock. Configure that clock
+    /// before submitting requests so the native Host2 clock state machine can
+    /// calculate the divider without a platform-specific blocking clock path.
+    pub fn set_fixed_base_clock_hz(&mut self, hz: NonZeroU32) -> Result<(), Error> {
+        if !matches!(self.command_state, CommandState::Idle) || self.host2_active_id.is_some() {
+            return Err(Error::Busy);
+        }
+        self.fixed_base_clock_hz = Some(hz);
+        Ok(())
     }
 
     /// Install a platform post-reset hook. The hook is called after ResetAll
@@ -454,8 +473,11 @@ impl Sdhci {
             != 0
     }
 
-    /// Read the controller's base reference clock from Capabilities (Hz).
+    /// Return the configured or controller-reported base reference clock (Hz).
     pub fn base_clock_hz(&self) -> u32 {
+        if let Some(hz) = self.fixed_base_clock_hz {
+            return hz.get();
+        }
         let caps_low = self.read_u32(REG_CAPABILITIES_LOW);
         // SDHCI v3: bits 15..8 contain "Base Clock Frequency" in MHz.
         // SDHCI v2: bits 13..8 contain it. Use the wider mask; QEMU

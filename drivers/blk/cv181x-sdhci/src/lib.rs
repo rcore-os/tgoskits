@@ -6,6 +6,8 @@
 
 #![no_std]
 
+use core::num::NonZeroU32;
+
 use dma_api::DeviceDma;
 use sdhci_host::Sdhci;
 use sdmmc_protocol::Error as ProtocolError;
@@ -40,11 +42,17 @@ impl Cv181xSdhci {
     /// `mmio.core` must point to an exclusively-owned CV181x SDHCI register
     /// block and `mmio.syscon` must cover TOP_BASE including the pinmux block.
     pub unsafe fn new(mmio: Cv181xMmio, config: Cv181xConfig) -> Self {
-        let inner = unsafe { Sdhci::new(mmio.core()) };
+        let config = config.normalized();
+        let mut inner = unsafe { Sdhci::new(mmio.core()) };
+        let source_clock = NonZeroU32::new(config.src_frequency_hz)
+            .expect("normalized CV181x source clock must be non-zero");
+        inner
+            .set_fixed_base_clock_hz(source_clock)
+            .expect("a newly constructed SDHCI host must be idle");
         let mut this = Self {
             inner,
             mmio,
-            config: config.normalized(),
+            config,
         };
         this.restore_ds_hs_phy();
         this
@@ -68,23 +76,5 @@ impl Cv181xSdhci {
 
     pub fn configure_dma(&mut self, dma: DeviceDma) -> Result<(), ProtocolError> {
         self.inner.configure_dma(dma)
-    }
-}
-
-fn map_protocol_error(err: ProtocolError) -> sdio_host2::Error {
-    match err {
-        ProtocolError::Timeout(_) => sdio_host2::Error::Timeout,
-        ProtocolError::Crc(_) => sdio_host2::Error::Crc,
-        ProtocolError::NoCard => sdio_host2::Error::NoCard,
-        ProtocolError::Busy => sdio_host2::Error::Busy,
-        ProtocolError::UnsupportedCommand => sdio_host2::Error::Unsupported,
-        ProtocolError::Misaligned => sdio_host2::Error::Misaligned,
-        ProtocolError::InvalidArgument => sdio_host2::Error::InvalidArgument,
-        ProtocolError::BusError(_) => sdio_host2::Error::Bus,
-        ProtocolError::ReadError(_)
-        | ProtocolError::WriteError(_)
-        | ProtocolError::BadResponse(_) => sdio_host2::Error::Bus,
-        ProtocolError::CardError(_) | ProtocolError::CardLocked => sdio_host2::Error::Controller,
-        _ => sdio_host2::Error::Controller,
     }
 }

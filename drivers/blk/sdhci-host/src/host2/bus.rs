@@ -290,12 +290,12 @@ impl Sdhci {
             self.write_u16(REG_CLOCK_CONTROL, clock | CLOCK_SD_ENABLE);
             return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
         }
+        *polls += 1;
         if *polls >= SDHCI_CLOCK_POLLS {
             return Err(map_protocol_error(Error::Timeout(ErrorContext::new(
                 Phase::Init,
             ))));
         }
-        *polls += 1;
         Ok(sdio_host2::RequestProgress::WaitingForIrq)
     }
 
