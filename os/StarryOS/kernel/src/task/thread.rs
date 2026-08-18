@@ -370,13 +370,22 @@ impl Thread {
     }
 
     /// Atomically transfers the leader identity to this runtime task at exec.
+    ///
+    /// The caller's previous identity is fully retired here, not left to a
+    /// later `do_exit`: after the swap that exit runs under the leader
+    /// identity and will never complete the previous one. Linux's `de_thread`
+    /// likewise frees the swapped-out TID immediately (`exchange_tids` plus
+    /// `free_pid`), and that `pid_allocated` drop is what unblocks
+    /// `zap_pid_ns_processes`. Completing the exit path here clears
+    /// `exit_path_pending`, wakes PID-namespace shutdown waiters, and detaches
+    /// the number once its last role is gone.
     pub(crate) fn transfer_pid_identity(
         &self,
         task: &UserTaskRef,
         identity: Arc<PidIdentity>,
         tid_lease: PidRoleLease<Tid>,
     ) {
-        let old = {
+        let previous = {
             let mut pid = self.pid.lock();
             let _irq_guard = NoPreemptIrqSave::new();
             task.transfer_irq_pid_identity(&identity)
@@ -389,8 +398,15 @@ impl Thread {
                 },
             )
         };
-        old.identity.mark_task_exited();
-        drop(old);
+        // Dropping the lease first releases the previous TID role before the
+        // exit path completes, so a roleless identity can also detach its
+        // namespace number in the same step.
+        let previous_identity = {
+            drop(previous.tid_lease);
+            previous.identity
+        };
+        previous_identity.mark_task_exited();
+        previous_identity.mark_exit_path_complete();
         identity.transfer_task(task);
     }
 
