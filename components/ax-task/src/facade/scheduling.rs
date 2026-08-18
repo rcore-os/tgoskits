@@ -48,31 +48,50 @@ pub unsafe fn schedule_current_cpu_from_irq_guard_exit() -> Result<SchedulerOutc
 }
 
 fn schedule_current_cpu_with_entry(
-    entry: RuntimeSchedulerEntry,
+    mut entry: RuntimeSchedulerEntry,
 ) -> Result<SchedulerOutcome, TaskError> {
-    let mut scheduler_frame =
-        RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Preempt, entry)?;
-    let system = runtime_task_system()?;
-    let outcome = {
-        let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
-        // SAFETY: RuntimeSchedulerFrameGuard owns the IRQ-off scheduler baton.
-        let current_state = unsafe { cpu.scheduler_current_lifecycle_state() };
-        if !cpu.needs_reschedule() && !cpu.has_remote_work() {
-            if current_state == Some(ThreadState::Parking) {
-                SchedulerOutcome::ParkingDeferred
+    loop {
+        let mut scheduler_frame =
+            RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Preempt, entry)?;
+        let system = runtime_task_system()?;
+        let outcome = {
+            let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
+            // SAFETY: RuntimeSchedulerFrameGuard owns the IRQ-off scheduler baton.
+            let current_state = unsafe { cpu.scheduler_current_lifecycle_state() };
+            if !cpu.needs_reschedule() && !cpu.has_remote_work() {
+                if current_state == Some(ThreadState::Parking) {
+                    SchedulerOutcome::ParkingDeferred
+                } else {
+                    SchedulerOutcome::Quiescent
+                }
             } else {
-                SchedulerOutcome::Quiescent
+                let current = current_thread_ref()?;
+                // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
+                unsafe { system.schedule_if_requested_in_scheduler_frame(cpu.as_mut(), &current)? }
             }
-        } else {
-            let current = current_thread_ref()?;
-            // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
-            unsafe { system.schedule_if_requested_in_scheduler_frame(cpu.as_mut(), &current)? }
+        };
+        if let Some(decision) = outcome.decision() {
+            execute_switch_plan(&mut scheduler_frame, decision);
         }
-    };
-    if let Some(decision) = outcome.decision() {
-        execute_switch_plan(&mut scheduler_frame, decision);
+        let needs_reschedule = runtime_current_cpu_mut(&mut scheduler_frame)?.needs_reschedule();
+        let repeat = preempt_schedule_needs_repeat(outcome, needs_reschedule);
+        drop(scheduler_frame);
+        if !repeat {
+            return Ok(outcome);
+        }
+        entry = match entry {
+            RuntimeSchedulerEntry::IrqReturn | RuntimeSchedulerEntry::IrqReturnContinuation => {
+                RuntimeSchedulerEntry::IrqReturnContinuation
+            }
+            RuntimeSchedulerEntry::Task
+            | RuntimeSchedulerEntry::PreemptExit
+            | RuntimeSchedulerEntry::IrqGuardExit => RuntimeSchedulerEntry::Task,
+        };
     }
-    Ok(outcome)
+}
+
+fn preempt_schedule_needs_repeat(outcome: SchedulerOutcome, needs_reschedule: bool) -> bool {
+    needs_reschedule && !outcome.parking_deferred()
 }
 
 /// Yields the calling thread and executes the resulting context switch.
@@ -265,4 +284,25 @@ unsafe fn complete_current_context_switch_tail_in_scheduler_frame(
     };
     completion.finish();
     Ok(())
+}
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+mod tests {
+    use super::*;
+
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn preempt_safe_point_repeats_only_for_live_reschedule_work() {
+        assert!(preempt_schedule_needs_repeat(
+            SchedulerOutcome::OwnerWorkPending,
+            true,
+        ));
+        assert!(!preempt_schedule_needs_repeat(
+            SchedulerOutcome::OwnerWorkPending,
+            false,
+        ));
+        assert!(!preempt_schedule_needs_repeat(
+            SchedulerOutcome::ParkingDeferred,
+            true,
+        ));
+    }
 }

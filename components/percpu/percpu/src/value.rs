@@ -53,7 +53,6 @@ where
     }
 
     /// Returns this symbol's byte offset in one area.
-    #[inline(always)]
     pub fn offset(&self) -> usize {
         S::offset()
     }
@@ -87,27 +86,6 @@ where
             unsafe { NonNull::new_unchecked((exclusive.area().base() + S::offset()) as *mut T) };
         operation(unsafe { pointer.as_mut() })
     }
-
-    /// Mutates a CPU-owned scheduler object before a [`CpuPin`] exists.
-    ///
-    /// # Safety
-    ///
-    /// The caller must prevent migration, context switches, and local
-    /// IRQ/re-entry for the complete callback, and exclude every conflicting
-    /// remote access to this object. Offline CPU bootstrap satisfies the same
-    /// contract before interrupt publication.
-    #[doc(hidden)]
-    pub unsafe fn with_scheduler_cpu_mut<R>(
-        &self,
-        operation: impl for<'value> FnOnce(&'value mut T) -> R,
-    ) -> Result<R, cpu_local::CpuLocalError> {
-        unsafe {
-            cpu_local::with_scheduler_cpu_area(|area| {
-                let mut pointer = area.symbol_ptr::<T>(S::offset())?;
-                Ok(operation(pointer.as_mut()))
-            })?
-        }
-    }
 }
 
 impl<T, S> PerCpu<T, S>
@@ -123,26 +101,6 @@ where
     ) -> R {
         // SAFETY: T: Sync permits shared observation and the pin fixes address.
         operation(unsafe { S::current_ptr(pin).as_ref() })
-    }
-
-    /// Borrows a CPU-owned scheduler object before a [`CpuPin`] exists.
-    ///
-    /// # Safety
-    ///
-    /// The caller must prevent migration and context switches for the complete
-    /// callback and exclude every conflicting mutation of this object. Offline
-    /// CPU bootstrap satisfies the same contract before interrupt publication.
-    #[doc(hidden)]
-    pub unsafe fn with_scheduler_cpu<R>(
-        &self,
-        operation: impl for<'value> FnOnce(&'value T) -> R,
-    ) -> Result<R, cpu_local::CpuLocalError> {
-        unsafe {
-            cpu_local::with_scheduler_cpu_area(|area| {
-                let pointer = area.symbol_ptr::<T>(S::offset())?;
-                Ok(operation(pointer.as_ref()))
-            })?
-        }
     }
 }
 

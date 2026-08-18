@@ -12,7 +12,7 @@ pub use ax_task::sync::api::*;
 fn context_preempt_enter() -> usize {
     #[cfg(feature = "multitask")]
     {
-        crate::guard::enter_lock_preempt().map_or(0, ax_hal::percpu::PreemptGuardOwner::into_raw)
+        crate::guard::enter_lock_preempt().map_or(0, cpu_local::PreemptionToken::into_raw)
     }
     #[cfg(not(feature = "multitask"))]
     {
@@ -26,9 +26,9 @@ unsafe fn context_preempt_exit(state: usize) {
     }
     #[cfg(feature = "multitask")]
     {
-        let owner = unsafe { ax_hal::percpu::PreemptGuardOwner::from_raw(state) }
+        let token = unsafe { cpu_local::PreemptionToken::from_raw(state) }
             .expect("a live synchronization guard must retain its preemption owner");
-        crate::guard::exit_preempt(owner);
+        crate::guard::exit_preempt(token);
     }
     #[cfg(not(feature = "multitask"))]
     unreachable!("a uniprocessor runtime cannot own a preemption token");
@@ -40,9 +40,9 @@ unsafe fn context_preempt_exit_irq_return(state: usize) {
     }
     #[cfg(feature = "multitask")]
     {
-        let owner = unsafe { ax_hal::percpu::PreemptGuardOwner::from_raw(state) }
+        let token = unsafe { cpu_local::PreemptionToken::from_raw(state) }
             .expect("an IRQ-return guard must retain its preemption owner");
-        crate::guard::exit_preempt_from_irq_return(owner);
+        crate::guard::exit_preempt_from_irq_return(token);
     }
     #[cfg(not(feature = "multitask"))]
     unreachable!("a uniprocessor runtime cannot own an IRQ-return preemption token");

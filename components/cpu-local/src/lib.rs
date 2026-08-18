@@ -20,8 +20,8 @@ pub use area::*;
 pub use error::*;
 pub use identity::*;
 pub use pin::*;
-pub use preempt::PreemptExit;
-pub use register::current_thread;
+pub use preempt::*;
+pub use register::current_context;
 #[cfg(feature = "tls")]
 #[doc(hidden)]
 pub use register::install_kernel_tls;
@@ -29,20 +29,10 @@ pub use register::install_kernel_tls;
 pub use register::kernel_tls;
 #[doc(hidden)]
 pub use register::{
-    PreemptGuardOwner, install_bootstrap_thread, install_cpu_area,
-    scheduler_clear_preempt_need_resched, scheduler_consume_final_preempt_guard,
-    scheduler_current_cpu_index, scheduler_current_preempt_guard_owner,
-    scheduler_current_requires_irq_exclusion, scheduler_current_thread,
-    scheduler_enter_preempt_guard, scheduler_owned_preempt_guard_depth,
-    scheduler_preempt_guard_depth, scheduler_prepare_preempt_guard_exit,
-    scheduler_set_preempt_need_resched, with_scheduler_current_thread,
+    current_context_unpinned, install_bootstrap_context, install_cpu_area,
+    is_permanent_boot_context,
 };
-#[cfg(feature = "task-test-hooks")]
-#[doc(hidden)]
-pub use register::{
-    reset_preempt_guard_owner_resolution_count, take_preempt_guard_owner_resolution_count,
-};
-pub use switch::{PreparedThreadSwitch, PreviousThreadBinding, prepare_thread_switch};
+pub use switch::{PreparedContextSwitch, PreviousContextBinding, prepare_context_switch};
 #[doc(hidden)]
 pub use symbol::{cpu_area_template_base, cpu_area_template_size};
 pub use thread::*;

@@ -39,7 +39,8 @@ impl RunQueue {
 
     pub(super) fn membership_class(&self, id: ThreadId) -> Option<QueueMembershipClass> {
         #[cfg(any(test, all(axtest, feature = "axtest")))]
-        RUNQUEUE_MEMBERSHIP_LOOKUPS.set(RUNQUEUE_MEMBERSHIP_LOOKUPS.get().saturating_add(1));
+        self.membership_lookups
+            .set(self.membership_lookups.get().saturating_add(1));
         self.membership
             .get(id.slot() as usize)
             .and_then(|membership| *membership)

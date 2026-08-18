@@ -961,7 +961,7 @@ fn fair_enqueue_uses_direct_runqueue_membership() {
         )
         .unwrap();
 
-    reset_runqueue_membership_lookups();
+    queue.reset_membership_lookups();
     queue
         .enqueue_test(
             ThreadId::from_parts(1, 1),
@@ -972,7 +972,7 @@ fn fair_enqueue_uses_direct_runqueue_membership() {
         )
         .unwrap();
     assert_eq!(
-        runqueue_membership_lookups(),
+        queue.membership_lookups(),
         1,
         "enqueue must perform one generation-checked lookup instead of probing scheduler classes"
     );

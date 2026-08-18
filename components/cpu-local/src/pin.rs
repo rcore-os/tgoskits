@@ -1,4 +1,4 @@
-use core::{marker::PhantomData, ptr::NonNull};
+use core::marker::PhantomData;
 
 use crate::{CpuAreaRef, CpuLocalError, register};
 
@@ -32,34 +32,6 @@ pub struct ExclusiveCpu<'pin> {
     area: CpuAreaRef,
     _scope: PhantomData<&'pin mut &'pin ()>,
     _not_send_or_sync: PhantomData<*mut ()>,
-}
-
-/// Non-escaping selection of the CPU area owned by a scheduler/IRQ boundary.
-///
-/// This is intentionally weaker than [`CpuPin`]: it selects CPU-owned state
-/// without validating current-task publication. Only low-level scheduler,
-/// interrupt, and offline-bootstrap code should receive this capability.
-#[doc(hidden)]
-#[must_use = "scheduler CPU-area access is valid only while this token remains in scope"]
-pub struct SchedulerCpuArea<'scope> {
-    area_base: usize,
-    _scope: PhantomData<&'scope mut &'scope ()>,
-    _not_send_or_sync: PhantomData<*mut ()>,
-}
-
-impl SchedulerCpuArea<'_> {
-    /// Calculates a typed symbol address in the selected installed CPU area.
-    ///
-    /// Constructing the pointer does not grant permission to dereference it;
-    /// the symbol provider and outer owner transaction retain that contract.
-    #[doc(hidden)]
-    pub fn symbol_ptr<T>(&self, offset: usize) -> Result<NonNull<T>, CpuLocalError> {
-        let address = self
-            .area_base
-            .checked_add(offset)
-            .ok_or(CpuLocalError::AddressOverflow)?;
-        NonNull::new(address as *mut T).ok_or(CpuLocalError::InvalidAreaBase { base: address })
-    }
 }
 
 impl ExclusiveCpu<'_> {
@@ -109,10 +81,9 @@ pub unsafe fn with_cpu_pin<R>(
         _scope: PhantomData,
         _not_send_or_sync: PhantomData,
     };
-    // Validate the second architecture-owned source before exposing any
-    // typed access. This catches a restored CPU base paired with a stale task
-    // register (notably after a vCPU exit) at the pin boundary.
-    register::current_thread(&pin)?;
+    // Validate the image's selected current-context source before exposing
+    // typed access. Each image mode has exactly one authoritative source.
+    register::current_context(&pin)?;
     Ok(operation(&pin))
 }
 
@@ -133,29 +104,4 @@ pub unsafe fn with_exclusive_cpu<R>(
         _not_send_or_sync: PhantomData,
     };
     operation(&exclusive)
-}
-
-/// Runs `operation` with a scheduler-owned CPU-area selection.
-///
-/// Unlike [`with_cpu_pin`], this boundary does not route CPU-owned state
-/// through the current task and does not repeat full area identity validation.
-/// The higher-ranked callback prevents the selection token from escaping.
-///
-/// # Safety
-///
-/// The caller must prevent migration and context switches for the complete
-/// callback. Mutable values selected through this token additionally require
-/// local IRQ/re-entry and every conflicting remote access to be excluded.
-/// Offline bootstrap satisfies these conditions before interrupt publication.
-#[doc(hidden)]
-pub unsafe fn with_scheduler_cpu_area<R>(
-    operation: impl for<'scope> FnOnce(&SchedulerCpuArea<'scope>) -> R,
-) -> Result<R, CpuLocalError> {
-    let area_base = unsafe { register::scheduler_current_cpu_base()? };
-    let area = SchedulerCpuArea {
-        area_base,
-        _scope: PhantomData,
-        _not_send_or_sync: PhantomData,
-    };
-    Ok(operation(&area))
 }

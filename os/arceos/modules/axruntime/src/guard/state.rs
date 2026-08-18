@@ -2,6 +2,8 @@
 pub(super) struct RuntimeGuardState {
     pub(super) irq: RuntimeIrqState,
     pub(super) preempt: RuntimePreemptState,
+    #[cfg(feature = "task-test-hooks")]
+    preempt_guard_context_resolutions: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,6 +33,10 @@ pub(super) struct RuntimePreemptState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SchedulerBatonState {
+    /// The final pending preemption depth was converted under IRQ exclusion,
+    /// but ax-task has not entered its scheduler frame yet.
+    #[cfg(any(feature = "multitask", test))]
+    PreemptEntry,
     #[cfg(any(feature = "multitask", test))]
     Active,
     #[cfg(any(feature = "multitask", test))]
@@ -61,8 +67,31 @@ impl RuntimePreemptState {
     }
 
     #[cfg(any(feature = "multitask", test))]
+    pub(super) const fn has_preempt_entry_baton(self) -> bool {
+        matches!(self.scheduler_baton, SchedulerBatonState::PreemptEntry)
+    }
+
+    #[cfg(any(feature = "multitask", test))]
     pub(super) fn claim_scheduler(&mut self) -> bool {
         if !matches!(self.scheduler_baton, SchedulerBatonState::Finished) {
+            return false;
+        }
+        self.scheduler_baton = SchedulerBatonState::Active;
+        true
+    }
+
+    #[cfg(any(feature = "multitask", test))]
+    pub(super) fn claim_preempt_entry(&mut self) -> bool {
+        if !matches!(self.scheduler_baton, SchedulerBatonState::Finished) {
+            return false;
+        }
+        self.scheduler_baton = SchedulerBatonState::PreemptEntry;
+        true
+    }
+
+    #[cfg(any(feature = "multitask", test))]
+    pub(super) fn enter_preclaimed_scheduler(&mut self) -> bool {
+        if !self.has_preempt_entry_baton() {
             return false;
         }
         self.scheduler_baton = SchedulerBatonState::Active;
@@ -93,7 +122,24 @@ impl RuntimeGuardState {
         Self {
             irq: RuntimeIrqState::new(),
             preempt: RuntimePreemptState::new(),
+            #[cfg(feature = "task-test-hooks")]
+            preempt_guard_context_resolutions: 0,
         }
+    }
+
+    #[cfg(all(feature = "task-test-hooks", not(target_arch = "x86_64")))]
+    pub(super) fn record_preempt_guard_context_resolution(&mut self) {
+        self.preempt_guard_context_resolutions += 1;
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(super) fn reset_preempt_guard_context_resolutions(&mut self) {
+        self.preempt_guard_context_resolutions = 0;
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(super) fn take_preempt_guard_context_resolutions(&mut self) -> usize {
+        core::mem::take(&mut self.preempt_guard_context_resolutions)
     }
 
     #[cfg(any(feature = "multitask", test))]
@@ -152,7 +198,12 @@ impl RuntimeGuardState {
 
     #[cfg(any(feature = "multitask", test))]
     pub(super) fn claim_preempt_exit_scheduler(&mut self, preempt_depth: u32) -> bool {
-        self.irq.is_clear() && preempt_depth == 1 && self.preempt.claim_scheduler()
+        self.irq.is_clear() && preempt_depth == 1 && self.preempt.claim_preempt_entry()
+    }
+
+    #[cfg(any(feature = "multitask", test))]
+    pub(super) fn enter_preclaimed_scheduler(&mut self, preempt_depth: u32) -> bool {
+        self.irq.is_clear() && preempt_depth == 0 && self.preempt.enter_preclaimed_scheduler()
     }
 
     #[cfg(any(feature = "multitask", test))]

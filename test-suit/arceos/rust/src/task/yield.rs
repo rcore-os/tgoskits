@@ -5,10 +5,11 @@ use std::{
         modules::{
             ax_hal::{
                 asm::{disable_irqs, enable_irqs, irqs_enabled},
-                percpu::{
-                    reset_preempt_guard_owner_resolution_count,
-                    take_preempt_guard_owner_resolution_count, this_cpu_id,
-                },
+                percpu::this_cpu_id,
+            },
+            ax_runtime::{
+                reset_preempt_guard_context_resolution_count,
+                take_preempt_guard_context_resolution_count,
             },
             ax_task::{
                 FairMode, Nice, SchedulePolicy, ThreadId, schedule_current_cpu, set_thread_policy,
@@ -189,19 +190,19 @@ pub fn run() -> crate::TestResult {
         "task-yield must place its accounting noise on another CPU"
     );
     disable_irqs();
-    reset_preempt_guard_owner_resolution_count();
+    reset_preempt_guard_context_resolution_count();
     noise_started.store(true, Ordering::Release);
     while !noise_finished.load(Ordering::Acquire) {
         hint::spin_loop();
     }
     task_test_hooks::exercise_preempt_guard();
-    let owner_resolutions = take_preempt_guard_owner_resolution_count();
+    let context_resolutions = take_preempt_guard_context_resolution_count();
     enable_irqs();
     noise.join().unwrap();
     assert_eq!(
-        owner_resolutions,
+        context_resolutions,
         usize::from(!cfg!(target_arch = "x86_64")),
-        "one generic lock-preemption scope must resolve its task owner only once"
+        "one generic lock-preemption scope must resolve its execution context only once"
     );
     task_test_hooks::arm_current_handle_query_probe(current.as_u64());
     task_test_hooks::arm_current_dispatch_accounting_probe(current.as_u64());

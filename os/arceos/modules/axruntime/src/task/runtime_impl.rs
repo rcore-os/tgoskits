@@ -80,8 +80,9 @@ impl_task_runtime! {
         }
 
         unsafe fn current_cpu_id() -> RuntimeCpuId {
-            let cpu = u32::try_from(unsafe { ax_hal::percpu::scheduler_current_cpu_id() })
-                .expect("logical CPU ID must fit the TaskRuntime ABI");
+            // SAFETY: the TaskRuntime caller retains a migration pin for the
+            // complete owner-CPU observation.
+            let cpu = unsafe { with_current_cpu_pin(|pin| pin.area().cpu_index().as_u32()) };
             RuntimeCpuId::new(cpu)
         }
 
@@ -152,10 +153,10 @@ impl_task_runtime! {
             #[cfg(not(any(test, feature = "host-test")))]
             {
                 match crate::guard::enter_lock_preempt() {
-                    Some(owner) => {
+                    Some(token) => {
                         // SAFETY: the architecture owner identifies the live
                         // depth established by enter_lock_preempt.
-                        unsafe { PreemptGuardToken::from_raw(owner.into_raw()) }
+                        unsafe { PreemptGuardToken::from_raw(token.into_raw()) }
                     }
                     None => PreemptGuardToken::NONE,
                 }
@@ -169,11 +170,9 @@ impl_task_runtime! {
             );
             #[cfg(not(any(test, feature = "host-test")))]
             {
-                let owner = unsafe {
-                    ax_hal::percpu::PreemptGuardOwner::from_raw(token.into_raw())
-                }
+                let token = unsafe { cpu_local::PreemptionToken::from_raw(token.into_raw()) }
                 .expect("task preemption token must retain its architecture owner");
-                crate::guard::exit_preempt(owner);
+                crate::guard::exit_preempt(token);
             }
         }
 
@@ -184,11 +183,9 @@ impl_task_runtime! {
             );
             #[cfg(not(any(test, feature = "host-test")))]
             {
-                let owner = unsafe {
-                    ax_hal::percpu::PreemptGuardOwner::from_raw(token.into_raw())
-                }
+                let token = unsafe { cpu_local::PreemptionToken::from_raw(token.into_raw()) }
                 .expect("IRQ-return token must retain its architecture owner");
-                crate::guard::exit_preempt_from_irq_return(owner);
+                crate::guard::exit_preempt_from_irq_return(token);
             }
         }
 

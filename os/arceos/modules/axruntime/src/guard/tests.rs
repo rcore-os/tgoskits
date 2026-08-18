@@ -168,6 +168,25 @@ fn preempt_exit_cannot_replace_an_active_scheduler_frame() {
 }
 
 #[test]
+fn pending_preempt_exit_has_no_preemptible_gap_before_scheduler_entry() {
+    let mut state = RuntimeGuardState::new();
+
+    assert!(state.claim_preempt_exit_scheduler(1));
+    assert_eq!(
+        state.preempt.scheduler_baton,
+        SchedulerBatonState::PreemptEntry,
+        "the final depth must become a distinct preclaimed baton before release"
+    );
+    assert!(!state.preempt.has_active_scheduler_baton());
+    assert!(state.owns_cpu_context());
+
+    assert!(state.enter_preclaimed_scheduler(0));
+    assert!(state.preempt.has_active_scheduler_baton());
+    state.exit_scheduler_preempt("test preempt scheduler frame");
+    assert!(state.preempt.is_clear());
+}
+
+#[test]
 fn scheduler_frame_cannot_cross_a_live_lock_guard() {
     let mut state = RuntimeGuardState::new();
 

@@ -18,10 +18,10 @@ host-test = [
   "ax-sync/host-test",
   "ax-task/host-test",
   "ax-percpu/host-test",
+  "cpu-local/host-test",
 ]
 task-test-hooks = [
   "multitask",
-  "ax-hal/task-test-hooks",
   "ax-task/task-test-hooks",
 ]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi"]
@@ -110,6 +110,7 @@ ax-percpu.workspace = true
 ax-plat = {workspace = true}
 ax-sync.workspace = true
 ax-task.workspace = true
+cpu-local.workspace = true
 axbacktrace = {workspace = true}
 axpoll = {workspace = true, optional = true}
 axklib.workspace = true
@@ -128,6 +129,3 @@ thiserror.workspace = true
 
 [build-dependencies]
 quote = { workspace = true }
-
-[dev-dependencies]
-cpu-local = { workspace = true, features = ["host-test"] }

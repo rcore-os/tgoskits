@@ -91,6 +91,11 @@ mod wifi_glue;
 
 pub use ax_hal as hal;
 pub use error::{RuntimeError, RuntimeResult};
+#[cfg(feature = "task-test-hooks")]
+#[doc(hidden)]
+pub use guard::{
+    reset_preempt_guard_context_resolution_count, take_preempt_guard_context_resolution_count,
+};
 
 pub(crate) mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));

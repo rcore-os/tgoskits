@@ -7,8 +7,7 @@ use core::{
 };
 
 use ax_hal::percpu::{
-    CpuPin, CurrentContext, CurrentThreadHeader, PreparedThreadSwitch, PreviousThreadBinding,
-    RuntimeThreadCookie,
+    CpuPin, ExecutionContextHeader, PreparedContextSwitch, PreviousContextBinding,
 };
 use ax_task::{
     TaskError,
@@ -71,8 +70,8 @@ pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) 
 }
 
 struct RuntimeSwitchTail {
-    previous: NonNull<CurrentThreadHeader>,
-    binding: PreviousThreadBinding,
+    previous: NonNull<ExecutionContextHeader>,
+    binding: PreviousContextBinding,
 }
 
 /// Runtime-owned architecture context and its pinned scheduler identity.
@@ -83,7 +82,7 @@ struct RuntimeSwitchTail {
 /// consumed exactly once after it becomes current with local IRQs disabled.
 #[repr(C)]
 struct RuntimeContext {
-    header: CurrentThreadHeader,
+    header: ExecutionContextHeader,
     publication: UnsafeCell<CurrentThreadPublication>,
     inner: Box<UnsafeCell<ax_hal::context::TaskContext>>,
     stack: StackHandle,
@@ -105,13 +104,9 @@ impl RuntimeContext {
         preemption: InitialPreemptionState,
     ) -> *mut RuntimeContext {
         let inner = Box::new(UnsafeCell::new(inner));
-        let identity = CurrentContext::from_raw(inner.get().expose_provenance())
-            .expect("an architecture context allocation must have a non-zero identity");
         let header = match preemption {
-            InitialPreemptionState::Enabled => CurrentThreadHeader::new(identity),
-            InitialPreemptionState::BootstrapDisabled => {
-                CurrentThreadHeader::new_bootstrap(identity)
-            }
+            InitialPreemptionState::Enabled => ExecutionContextHeader::new(),
+            InitialPreemptionState::BootstrapDisabled => ExecutionContextHeader::new_bootstrap(),
         };
         Box::into_raw(Box::new(Self {
             header,
@@ -122,20 +117,10 @@ impl RuntimeContext {
         }))
     }
 
-    fn header(&self) -> Pin<&CurrentThreadHeader> {
+    fn header(&self) -> Pin<&ExecutionContextHeader> {
         // SAFETY: every RuntimeContext is constructed in a Box and is never
         // moved before destruction after its header is no longer published.
         unsafe { Pin::new_unchecked(&self.header) }
-    }
-
-    fn context_identity(&self) -> CurrentContext {
-        self.header
-            .current_context()
-            .expect("runtime task header must retain its context identity")
-    }
-
-    fn architecture_context_identity(&self) -> usize {
-        self.inner.get().expose_provenance()
     }
 
     fn has_switch_tail(&self) -> bool {
@@ -160,14 +145,13 @@ impl RuntimeContext {
         // IRQs disabled and completes the one-shot previous-binding token.
         let slot = unsafe { &mut *self.switch_tail.get() };
         let tail = slot
-            .as_mut()
+            .take()
             .expect("incoming runtime context is missing its switch tail");
         // SAFETY: the outgoing header stays pinned and unreclaimable through
         // the scheduler `on_cpu` handoff; this tail owns its exact epoch.
         let previous = unsafe { Pin::new_unchecked(tail.previous.as_ref()) };
         unsafe { tail.binding.finish(previous) }
             .expect("runtime switch tail did not own the exact previous CPU binding");
-        let _ = slot.take();
     }
 }
 
@@ -181,18 +165,21 @@ fn runtime_context(
     // SAFETY: TaskRuntime receives only live handles created by this provider;
     // the scheduler retains context ownership through every runtime call.
     let context = unsafe { &*context };
-    if context.context_identity().as_usize() != context.architecture_context_identity() {
+    if !ptr::eq(
+        ptr::addr_of!(context.header),
+        context as *const RuntimeContext as *const ExecutionContextHeader,
+    ) {
         return Err(RuntimeStatus::InvalidHandle);
     }
     Ok(context)
 }
 
 fn current_runtime_context(cpu_pin: &CpuPin) -> Result<&'static RuntimeContext, RuntimeStatus> {
-    let current = ax_hal::percpu::current_thread(cpu_pin)
+    let current = ax_hal::percpu::current_context(cpu_pin)
         .map_err(|_| RuntimeStatus::InvalidHandle)?
         .as_ptr()
         .expose_provenance();
-    let header = ptr::with_exposed_provenance::<CurrentThreadHeader>(current);
+    let header = ptr::with_exposed_provenance::<ExecutionContextHeader>(current);
     // SAFETY: the CPU runtime slot may publish only a pinned header whose live
     // CPU binding matches this prefix. The supplied pin covers the load and
     // every validation below.
@@ -201,13 +188,8 @@ fn current_runtime_context(cpu_pin: &CpuPin) -> Result<&'static RuntimeContext, 
     // owner identity. The independently allocated architecture context keeps
     // ContextIdentity free of self-referential outer pointers.
     let context = unsafe { &*ptr::from_ref(header).cast::<RuntimeContext>() };
-    if !ptr::eq(context.header().get_ref(), header)
-        || context.context_identity().as_usize() != context.architecture_context_identity()
-    {
+    if !ptr::eq(context.header().get_ref(), header) {
         return Err(RuntimeStatus::InvalidHandle);
-    }
-    if header.current_context().is_none() {
-        return Err(RuntimeStatus::NotInitialized);
     }
     if header.cpu_area() != Some(cpu_pin.area()) {
         return Err(RuntimeStatus::InvalidHandle);
@@ -220,16 +202,15 @@ pub(super) fn bind_bootstrap_runtime_context(
     handle: ExecutionContextHandle,
     kernel_tls: usize,
 ) -> Result<(), TaskError> {
-    let boot_thread =
-        ax_hal::percpu::current_thread(cpu_pin).map_err(|_| TaskError::InvalidConfiguration)?;
-    // The permanent boot header has no runtime execution-context identity.
-    if unsafe { boot_thread.as_ref() }.current_context().is_some() {
+    let boot_context =
+        ax_hal::percpu::current_context(cpu_pin).map_err(|_| TaskError::InvalidConfiguration)?;
+    if !ax_hal::percpu::is_permanent_boot_context(boot_context) {
         return Err(TaskError::InvalidConfiguration);
     }
     let context = runtime_context(handle).map_err(runtime_status_error)?;
     // SAFETY: the CPU is still offline and trap-free, while the scheduler
     // record keeps this pinned header alive until its switch tail withdraws it.
-    unsafe { ax_hal::percpu::install_bootstrap_thread(cpu_pin, context.header()) }
+    unsafe { ax_hal::percpu::install_bootstrap_context(cpu_pin, context.header()) }
         .map_err(|_| TaskError::InvalidConfiguration)?;
     #[cfg(feature = "tls")]
     // SAFETY: the same offline bootstrap boundary owns the task TLS register.
@@ -336,67 +317,50 @@ pub(super) fn bind_runtime_context_thread(binding: ContextThreadBinding) -> Runt
     let Ok(context) = runtime_context(binding.context) else {
         return RuntimeStatus::InvalidHandle;
     };
-    if context.header.runtime_thread_cookie().is_some() {
+    // Binding is immutable and occurs exactly once before scheduler publication.
+    if unsafe { *context.publication.get() } != CurrentThreadPublication::NONE {
         return RuntimeStatus::InvalidArgument;
     }
     // Context binding runs exactly once before scheduler publication, so this
     // is the sole write to the pinned current-thread publication.
     unsafe { *context.publication.get() = binding.publication };
-    let publication = context.publication.get().expose_provenance();
-    let Some(publication) = RuntimeThreadCookie::new(publication) else {
-        return RuntimeStatus::InvalidHandle;
-    };
-    if context
-        .header
-        .bind_runtime_thread_cookie(publication)
-        .is_err()
-    {
-        return RuntimeStatus::InvalidArgument;
-    }
     // Scheduler construction invokes this exactly once before the context can
     // enter a run queue. The bootstrap placeholder is likewise not consumed by
     // assembly until its first switch-out.
-    unsafe { &mut *context.inner.get() }.set_current_header(context.header().as_non_null());
+    unsafe { &mut *context.inner.get() }.set_context_header(context.header().as_non_null());
     RuntimeStatus::Success
 }
 
 /// Reads the immutable scheduler publication owned by the current task context.
 pub(super) fn scheduler_current_thread_publication() -> CurrentThreadPublication {
-    ax_hal::percpu::with_scheduler_current_thread(|header| {
-        let Some(publication) = header.runtime_thread_cookie() else {
-            // Only the permanent pre-scheduler bootstrap header has no runtime
-            // cookie. A runtime context receives its immutable cookie before it
-            // can enter any runqueue.
-            return CurrentThreadPublication::NONE;
-        };
-        let context = header as *const CurrentThreadHeader as *const RuntimeContext;
-        // SAFETY: `RuntimeContext::header` is at offset zero. The current-task
-        // callback retains this pinned context even if preemption migrates it.
-        let expected = unsafe { (*context).publication.get() };
-        assert_eq!(
-            publication.get(),
-            expected.expose_provenance(),
-            "current-thread cookie must identify its owning runtime publication"
-        );
-        // SAFETY: binding initialized this immutable field before the context
-        // entered any run queue, and the current task retains its owner.
-        unsafe { *expected }
-    })
-    .unwrap_or_else(|error| panic!("scheduler current-thread register is invalid: {error}"))
+    // SAFETY: the architecture current source identifies this executing
+    // context. Preemption may suspend and migrate it during the read, but the
+    // same pinned context resumes and its publication is immutable.
+    let header = unsafe { ax_hal::percpu::current_context_raw() };
+    let Some(header) = NonNull::new(header.cast_mut()) else {
+        return CurrentThreadPublication::NONE;
+    };
+    if ax_hal::percpu::is_permanent_boot_context(header) {
+        return CurrentThreadPublication::NONE;
+    }
+    let context = header.as_ptr().cast::<RuntimeContext>();
+    // SAFETY: RuntimeContext embeds the published header at offset zero and
+    // remains alive while this execution context can run or resume.
+    unsafe { *(*context).publication.get() }
 }
 
 fn prepare_runtime_thread_switch<'switch>(
     pin: &'switch CpuPin<'_>,
     previous: &'static RuntimeContext,
     next: &'static RuntimeContext,
-) -> (PreparedThreadSwitch<'switch>, PreviousThreadBinding) {
-    // `prepare_thread_switch` is the single production authority for current
+) -> (PreparedContextSwitch<'switch>, PreviousContextBinding) {
+    // `prepare_context_switch` is the single production authority for current
     // publication, previous binding and next-unbound validation. Repeating
     // those checks here would reread the architecture current-thread register
     // and split one switch transaction across two facts.
     // SAFETY: the scheduler baton pins this CPU, and both runtime contexts stay
     // live through the raw switch and incoming tail.
-    unsafe { ax_hal::percpu::prepare_thread_switch(pin, previous.header(), next.header()) }
+    unsafe { ax_hal::percpu::prepare_context_switch(pin, previous.header(), next.header()) }
         .unwrap_or_else(|error| panic!("failed to prepare runtime context switch: {error}"))
 }
 
@@ -425,12 +389,12 @@ pub(super) unsafe fn switch_runtime_context(switch: ContextSwitch) {
             let previous_arch_context = &mut *previous_context.inner.get();
             let next_arch_context = &mut *next_context.inner.get();
             debug_assert_eq!(
-                previous_arch_context.current_header(),
+                previous_arch_context.context_header(),
                 Some(previous_context.header().as_non_null()),
                 "outgoing architecture context retained a different current header"
             );
             debug_assert_eq!(
-                next_arch_context.current_header(),
+                next_arch_context.context_header(),
                 Some(next_context.header().as_non_null()),
                 "incoming architecture context retained a different current header"
             );
@@ -493,9 +457,9 @@ mod tests {
                 cpu_local::with_cpu_pin(|pin| {
                     let previous = &*previous;
                     let next = &*next;
-                    cpu_local::install_bootstrap_thread(pin, previous.header()).unwrap();
+                    cpu_local::install_bootstrap_context(pin, previous.header()).unwrap();
                     let (prepared, binding) =
-                        cpu_local::prepare_thread_switch(pin, previous.header(), next.header())
+                        cpu_local::prepare_context_switch(pin, previous.header(), next.header())
                             .unwrap();
                     prepared.commit();
 
@@ -516,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_prepare_reads_the_current_thread_register_once() {
+    fn switch_prepare_reads_the_current_context_register_once() {
         std::thread::spawn(|| {
             let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
             let base = storage.as_mut_ptr() as usize;
@@ -544,13 +508,13 @@ mod tests {
                 cpu_local::with_cpu_pin(|pin| {
                     let previous = &*previous;
                     let next = &*next;
-                    cpu_local::install_bootstrap_thread(pin, previous.header()).unwrap();
+                    cpu_local::install_bootstrap_context(pin, previous.header()).unwrap();
                     cpu_local::host_test::reset_register_read_counts();
 
                     let (prepared, _binding) = prepare_runtime_thread_switch(pin, previous, next);
                     let reads = cpu_local::host_test::register_read_counts();
                     assert_eq!(
-                        reads.current_thread, 1,
+                        reads.current_context, 1,
                         "switch preparation must validate current publication exactly once"
                     );
                     drop(prepared);

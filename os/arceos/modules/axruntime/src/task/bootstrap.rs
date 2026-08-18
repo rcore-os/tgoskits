@@ -385,13 +385,15 @@ pub(super) fn current_cpu_owner_handles(cpu_pin: &CpuPin) -> CurrentCpuOwnerHand
 /// for the complete observation.
 pub(super) unsafe fn scheduler_current_cpu_remote_handle() -> CpuRemoteHandle {
     let raw = unsafe {
-        CPU_REMOTE_HANDLE.with_scheduler_cpu(|slot| {
-            *slot
-                .get()
-                .expect("scheduler current CPU must own a CpuRemote handle")
+        ax_hal::percpu::with_cpu_pin(|pin| {
+            CPU_REMOTE_HANDLE.with_current(pin, |slot| {
+                *slot
+                    .get()
+                    .expect("scheduler current CPU must own a CpuRemote handle")
+            })
         })
     }
-    .expect("scheduler current CPU area must be installed");
+    .expect("scheduler current CPU area and context must be installed");
     // SAFETY: bootstrap publishes the Arc-backed endpoint before this CPU can
     // enter the scheduler and retains the owning TaskSystem until shutdown.
     unsafe { CpuRemoteHandle::from_raw(raw) }

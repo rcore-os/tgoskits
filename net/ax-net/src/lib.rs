@@ -1000,16 +1000,31 @@ mod initialization_contract_tests {
     use axtest::prelude::*;
 
     #[cfg(all(axtest, feature = "axtest"))]
+    fn current_preemption_depth() -> u32 {
+        let restore_irqs = ax_hal::asm::irqs_enabled();
+        ax_hal::asm::disable_irqs();
+        // SAFETY: raw local-IRQ exclusion prevents migration for the complete
+        // non-escaping CPU-local observation.
+        let snapshot = unsafe { ax_hal::percpu::with_cpu_pin(ax_hal::percpu::preemption_snapshot) }
+            .expect("network axtest must run after CPU-local initialization")
+            .expect("current execution context must own a preemption word");
+        if restore_irqs {
+            ax_hal::asm::enable_irqs();
+        }
+        snapshot.depth()
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
     #[axtest]
     fn protocol_service_lock_keeps_scheduler_ticks_enabled_while_held() {
         let _network = crate::test_support::network_test_guard();
         crate::test_support::init_split_route_network();
-        let depth_before = ax_hal::percpu::scheduler_preempt_guard_depth().unwrap();
+        let depth_before = current_preemption_depth();
 
         let service = super::get_service();
 
         assert_eq!(
-            ax_hal::percpu::scheduler_preempt_guard_depth().unwrap(),
+            current_preemption_depth(),
             depth_before,
             "the task-context protocol core must remain preemptible while its sleep mutex is held"
         );

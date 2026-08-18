@@ -99,7 +99,11 @@ fn finish_irq_entry(release_preempt: impl FnOnce(), complete: impl FnOnce()) {
 #[doc(hidden)]
 #[inline(always)]
 pub unsafe fn in_irq_context_pinned() -> bool {
-    let cpu = CpuId(unsafe { crate::percpu::scheduler_current_cpu_id() });
+    // SAFETY: forwarded caller contract prevents migration for this complete
+    // non-escaping CPU-area observation.
+    let cpu = unsafe { cpu_local::with_cpu_pin(|pin| pin.area().cpu_index().as_usize()) }
+        .map(CpuId)
+        .unwrap_or_else(|error| panic!("IRQ context CPU identity is invalid: {error}"));
     ax_plat::irq::in_irq_context_on(cpu)
 }
 

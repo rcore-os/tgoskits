@@ -600,6 +600,13 @@ pub enum RuntimeSchedulerEntry {
     /// scheduler work, then atomically converts that depth into the scheduler
     /// baton. This is the local counterpart of a remote scheduler IPI.
     IrqGuardExit = 3,
+    /// A repeated IRQ-return pass after the previous scheduler frame fully
+    /// released its switch baton.
+    ///
+    /// Hardware IRQs remain disabled and preemption depth is zero between
+    /// passes. The runtime claims a fresh baton without requiring the one-shot
+    /// [`Self::IrqReturn`] preemption-exit handoff.
+    IrqReturnContinuation = 4,
 }
 
 /// Raw IRQ state expected by the suspended scheduler continuation.

@@ -19,8 +19,8 @@ mod smoke {
     use std::{
         os::arceos::{
             api::task::{AxCpuMask, ax_set_current_affinity},
-            guard::PreemptGuard,
-            modules::ax_hal::percpu::{scheduler_preempt_guard_depth, this_cpu_id},
+            guard::{IrqSaveGuard, PreemptGuard},
+            modules::ax_hal::percpu::{preemption_snapshot, this_cpu_id, with_cpu_pin},
             percpu,
         },
         sync::Arc,
@@ -38,9 +38,19 @@ mod smoke {
     static WAITER_DONE: AtomicBool = AtomicBool::new(false);
     static PINNED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+    fn current_preemption_depth() -> u32 {
+        let _irq = IrqSaveGuard::new();
+        // SAFETY: the IRQ guard prevents migration for the complete
+        // non-escaping observation.
+        unsafe { with_cpu_pin(preemption_snapshot) }
+            .expect("axtest must run after CPU-local initialization")
+            .expect("current execution context must own a preemption word")
+            .depth()
+    }
+
     scope_local! {
         static INIT_PREEMPT_DEPTH: u32 =
-            scheduler_preempt_guard_depth().unwrap_or(u32::MAX);
+            current_preemption_depth();
         static BLOCKING_VALUE: usize = {
             INITIALIZER_ENTERED.store(true, Ordering::Release);
             while !RELEASE_INITIALIZER.load(Ordering::Acquire) {

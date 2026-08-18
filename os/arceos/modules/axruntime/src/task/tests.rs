@@ -439,7 +439,7 @@ fn entry_extension_lookup_does_not_pin_exited_thread() {
     std::thread::spawn(|| {
         use core::mem::MaybeUninit;
 
-        use cpu_local::{CpuAreaPrefix, CpuAreaRef, CpuIndex, CurrentContext, CurrentThreadHeader};
+        use cpu_local::{CpuAreaPrefix, CpuAreaRef, CpuIndex, ExecutionContextHeader};
 
         let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
         let base = storage.as_mut_ptr() as usize;
@@ -449,14 +449,12 @@ fn entry_extension_lookup_does_not_pin_exited_thread() {
         let area = unsafe { CpuAreaRef::from_initialized_base(base) }.unwrap();
         // SAFETY: this fresh host thread owns its CPU-local register model.
         unsafe { cpu_local::install_cpu_area(area) }.unwrap();
-        let current = Box::pin(CurrentThreadHeader::new(
-            CurrentContext::from_raw(1).unwrap(),
-        ));
+        let current = Box::pin(ExecutionContextHeader::new());
         // SAFETY: the modeled CPU is offline and the pinned header outlives
         // every scheduler/runtime operation in this thread.
         unsafe {
             cpu_local::with_cpu_pin(|pin| {
-                cpu_local::install_bootstrap_thread(pin, current.as_ref()).unwrap();
+                cpu_local::install_bootstrap_context(pin, current.as_ref()).unwrap();
             })
         }
         .unwrap();

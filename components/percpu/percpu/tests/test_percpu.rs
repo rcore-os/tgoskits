@@ -203,24 +203,6 @@ fn exercise_current_area(pin: &CpuPin<'_>, cpu0: PerCpuArea) {
         });
     }
 
-    cpu_local::host_test::reset_register_read_counts();
-    // SAFETY: this single-threaded fixture is an offline CPU and excludes
-    // migration, IRQ/re-entry, and remote access for the complete callback.
-    unsafe {
-        STRUCT
-            .with_scheduler_cpu_mut(|value| value.foo = 0x2333)
-            .unwrap();
-    }
-    assert_eq!(
-        cpu_local::host_test::register_read_counts(),
-        cpu_local::host_test::RegisterReadCounts {
-            cpu_base: 1,
-            current_thread: 0,
-            initialized_area_validations: 0,
-        },
-        "CPU-owner access must not route through task state or rebuild the installed CPU area"
-    );
-
     assert!(BOOL.read_current(pin));
     assert_eq!(U8.read_current(pin), 123);
     assert_eq!(U16.read_current(pin), 0xabcd);

@@ -34,9 +34,6 @@ std::thread_local! {
     static FAIR_RUNQUEUE_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
     };
-    static RUNQUEUE_MEMBERSHIP_LOOKUPS: core::cell::Cell<usize> = const {
-        core::cell::Cell::new(0)
-    };
     static DEADLINE_RUNQUEUE_VISITS: core::cell::Cell<usize> = const {
         core::cell::Cell::new(0)
     };
@@ -55,16 +52,6 @@ fn fair_runqueue_visits() -> usize {
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(super) fn record_fair_runqueue_visit() {
     FAIR_RUNQUEUE_VISITS.set(FAIR_RUNQUEUE_VISITS.get().saturating_add(1));
-}
-
-#[cfg(any(test, all(axtest, feature = "axtest")))]
-fn reset_runqueue_membership_lookups() {
-    RUNQUEUE_MEMBERSHIP_LOOKUPS.set(0);
-}
-
-#[cfg(any(test, all(axtest, feature = "axtest")))]
-fn runqueue_membership_lookups() -> usize {
-    RUNQUEUE_MEMBERSHIP_LOOKUPS.get()
 }
 
 #[cfg(any(test, all(axtest, feature = "axtest")))]
@@ -183,6 +170,8 @@ pub(crate) struct RunQueue {
     fair: FairRunQueue,
     idle_fair: FairRunQueue,
     membership: Vec<Option<QueueMembership>>,
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
+    membership_lookups: core::cell::Cell<usize>,
     fixed_placement_demand: u64,
     balance_scan_epoch: u64,
     next_sequence: u64,
@@ -200,6 +189,8 @@ impl RunQueue {
             fair: FairRunQueue::new(),
             idle_fair: FairRunQueue::new(),
             membership: Vec::new(),
+            #[cfg(any(test, all(axtest, feature = "axtest")))]
+            membership_lookups: core::cell::Cell::new(0),
             fixed_placement_demand: 0,
             balance_scan_epoch: 0,
             next_sequence: 0,
@@ -210,6 +201,16 @@ impl RunQueue {
     #[cfg(any(test, all(axtest, feature = "axtest")))]
     fn new() -> Self {
         Self::configured(u64::MAX, 64)
+    }
+
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
+    fn reset_membership_lookups(&self) {
+        self.membership_lookups.set(0);
+    }
+
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
+    fn membership_lookups(&self) -> usize {
+        self.membership_lookups.get()
     }
 
     pub(crate) const fn current(&self) -> Option<&CurrentDispatch> {

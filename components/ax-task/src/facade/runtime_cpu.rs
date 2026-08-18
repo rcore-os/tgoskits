@@ -259,7 +259,9 @@ impl RuntimeSchedulerFrameGuard {
             RuntimeSchedulerEntry::Task
             | RuntimeSchedulerEntry::PreemptExit
             | RuntimeSchedulerEntry::IrqGuardExit => RuntimeSchedulerReturn::Task,
-            RuntimeSchedulerEntry::IrqReturn => RuntimeSchedulerReturn::IrqReturn,
+            RuntimeSchedulerEntry::IrqReturn | RuntimeSchedulerEntry::IrqReturnContinuation => {
+                RuntimeSchedulerReturn::IrqReturn
+            }
         };
         Ok(Self {
             return_to,
