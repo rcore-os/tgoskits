@@ -1038,6 +1038,36 @@ fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
 }
 
 #[test]
+fn shell_command_failure_regex_ignores_smp_log_interleaving() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for path in [
+        "test-suit/axvisor/normal/qemu/smoke/qemu-aarch64.toml",
+        "test-suit/axvisor/normal/qemu/smoke/qemu-loongarch64.toml",
+        "test-suit/axvisor/normal/qemu/smoke/qemu-riscv64.toml",
+        "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-svm.toml",
+        "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-vmx.toml",
+        "test-suit/axvisor/normal/qemu-riscv-ipi/smp-ipi/qemu-riscv64.toml",
+    ] {
+        let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+        let config: QemuConfig = toml::from_str(&content).unwrap();
+        let pattern = config
+            .fail_regex
+            .iter()
+            .find(|pattern| pattern.contains("echo|cat|rm"))
+            .unwrap_or_else(|| panic!("{path} should reject shell command failures"));
+        let regex = regex::Regex::new(pattern).unwrap();
+
+        assert!(regex.is_match("cat: can't open '/missing': No such file or directory"));
+        assert!(regex.is_match("rm: can't remove '/missing': No such file or directory"));
+        assert!(
+            !regex.is_match("rm:axvm::host::arceos:373] Hardware virtualization enabled"),
+            "{path} must not interpret an SMP serial-log splice as a shell command failure"
+        );
+    }
+}
+
+#[test]
 fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
     let root = tempdir().unwrap();
     write_qemu_build_config(
