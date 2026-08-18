@@ -204,7 +204,9 @@ pub(super) fn bind_bootstrap_runtime_context(
 ) -> Result<(), TaskError> {
     let boot_context =
         ax_hal::percpu::current_context(cpu_pin).map_err(|_| TaskError::InvalidConfiguration)?;
-    if !ax_hal::percpu::is_permanent_boot_context(boot_context) {
+    if !ax_hal::percpu::is_permanent_boot_context(boot_context)
+        .map_err(|_| TaskError::InvalidConfiguration)?
+    {
         return Err(TaskError::InvalidConfiguration);
     }
     let context = runtime_context(handle).map_err(runtime_status_error)?;
@@ -336,13 +338,12 @@ pub(super) fn scheduler_current_thread_publication() -> CurrentThreadPublication
     // SAFETY: the architecture current source identifies this executing
     // context. Preemption may suspend and migrate it during the read, but the
     // same pinned context resumes and its publication is immutable.
-    let header = unsafe { ax_hal::percpu::current_context_raw() };
-    let Some(header) = NonNull::new(header.cast_mut()) else {
+    let Ok(header) = (unsafe { ax_hal::percpu::current_context_unpinned() }) else {
         return CurrentThreadPublication::NONE;
     };
-    if ax_hal::percpu::is_permanent_boot_context(header) {
+    let Ok(false) = ax_hal::percpu::is_permanent_boot_context(header) else {
         return CurrentThreadPublication::NONE;
-    }
+    };
     let context = header.as_ptr().cast::<RuntimeContext>();
     // SAFETY: RuntimeContext embeds the published header at offset zero and
     // remains alive while this execution context can run or resume.

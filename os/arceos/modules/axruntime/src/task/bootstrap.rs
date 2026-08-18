@@ -18,8 +18,8 @@ static CPU_LOCAL: LazyInit<Pin<Box<CpuLocal>>> = LazyInit::new();
 /// Arc-backed scheduler endpoint cached before this CPU becomes online.
 ///
 /// The endpoint is immutable and shutdown-live. Scheduler-adjacent current-CPU
-/// reads reach it through the architecture current-thread register instead of
-/// resolving a logical CPU through the global task-system registry.
+/// reads select it through the scheduler-owned current CPU-area boundary
+/// instead of resolving a logical CPU through the global task-system registry.
 #[ax_percpu::def_percpu]
 static CPU_REMOTE_HANDLE: LazyInit<usize> = LazyInit::new();
 
@@ -347,8 +347,11 @@ pub(super) fn with_current_cpu_local_mut_owner<R>(
 }
 
 pub(crate) fn current_cpu_remote(cpu_pin: &CpuPin) -> Option<&'static CpuRemote> {
-    let cpu = u32::try_from(ax_hal::percpu::this_cpu_id_pinned(cpu_pin)).ok()?;
-    task_system()?.cpu_remote(CpuId::new(cpu))
+    let raw = current_cpu_remote_handle(cpu_pin).into_raw();
+    // SAFETY: bootstrap cached the Arc-backed endpoint from TaskSystem before
+    // online publication, and TaskSystem retains it until shutdown.
+    let remote = unsafe { &*ptr::with_exposed_provenance::<CpuRemote>(raw) };
+    remote.is_online().then_some(remote)
 }
 
 pub(super) fn cpu_remote(cpu: RuntimeCpuId) -> Option<&'static CpuRemote> {
@@ -360,11 +363,7 @@ pub(super) fn current_cpu_owner_handles(cpu_pin: &CpuPin) -> CurrentCpuOwnerHand
         .expect("logical CPU ID must fit the TaskRuntime ABI");
     let local = CPU_LOCAL_OWNER_HANDLE.read_current(cpu_pin);
     assert_ne!(local, 0, "online scheduler CPU must own a CpuLocal handle");
-    let remote = CPU_REMOTE_HANDLE.with_current(cpu_pin, |slot| {
-        *slot
-            .get()
-            .expect("online scheduler CPU must own a CpuRemote handle")
-    });
+    let remote = current_cpu_remote_handle(cpu_pin);
     // SAFETY: initialization publishes all three values from one exclusive CPU
     // transaction before that CPU is admitted to scheduler traffic. The
     // containing runtime keeps both endpoint allocations live until shutdown.
@@ -372,9 +371,27 @@ pub(super) fn current_cpu_owner_handles(cpu_pin: &CpuPin) -> CurrentCpuOwnerHand
         CurrentCpuOwnerHandles::new(
             RuntimeCpuId::new(cpu),
             CurrentCpuLocalHandle::from_raw(local),
-            CpuRemoteHandle::from_raw(remote),
+            remote,
         )
     }
+}
+
+fn current_cpu_remote_handle(cpu_pin: &CpuPin) -> CpuRemoteHandle {
+    CPU_REMOTE_HANDLE.with_current(cpu_pin, initialized_cpu_remote_handle)
+}
+
+fn initialized_cpu_remote_handle(slot: &LazyInit<usize>) -> CpuRemoteHandle {
+    let raw = *slot
+        .get()
+        .expect("online scheduler CPU must own a CpuRemote handle");
+    assert_ne!(raw, 0, "scheduler CpuRemote handle must not be null");
+    assert!(
+        raw.is_multiple_of(core::mem::align_of::<CpuRemote>()),
+        "scheduler CpuRemote handle must be aligned"
+    );
+    // SAFETY: initialize_current_cpu obtains this opaque handle from the
+    // TaskSystem that remains owned by TASK_SYSTEM until shutdown.
+    unsafe { CpuRemoteHandle::from_raw(raw) }
 }
 
 /// Reads the current CPU's cached remote endpoint without constructing a pin.
@@ -384,19 +401,48 @@ pub(super) fn current_cpu_owner_handles(cpu_pin: &CpuPin) -> CurrentCpuOwnerHand
 /// The caller must prevent migration, context switches, and local IRQ re-entry
 /// for the complete observation.
 pub(super) unsafe fn scheduler_current_cpu_remote_handle() -> CpuRemoteHandle {
-    let raw = unsafe {
-        ax_hal::percpu::with_cpu_pin(|pin| {
-            CPU_REMOTE_HANDLE.with_current(pin, |slot| {
-                *slot
-                    .get()
-                    .expect("scheduler current CPU must own a CpuRemote handle")
-            })
+    unsafe { CPU_REMOTE_HANDLE.with_current_cpu_area(initialized_cpu_remote_handle) }
+        .expect("scheduler current CPU area must be installed")
+}
+
+#[cfg(all(test, feature = "host-test"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheduler_remote_handle_uses_pre_pin_current_cpu_area() {
+        std::thread::spawn(|| {
+            const TEST_REMOTE_HANDLE: usize = 0x1000;
+
+            ax_hal::percpu::initialize_host_test_cpu();
+            // SAFETY: this fresh host thread models one offline, non-migrating
+            // CPU and exclusively initializes its scheduler endpoint slot.
+            unsafe {
+                with_current_cpu_pin(|pin| {
+                    CPU_REMOTE_HANDLE.with_current(pin, |slot| {
+                        slot.call_once(|| TEST_REMOTE_HANDLE);
+                    });
+                })
+            };
+
+            cpu_local::host_test::reset_register_read_counts();
+            // SAFETY: the modeled CPU cannot migrate, switch context, or take
+            // interrupts for the complete observation.
+            let handle = unsafe { scheduler_current_cpu_remote_handle() };
+            assert_eq!(handle.into_raw(), TEST_REMOTE_HANDLE);
+            assert_eq!(
+                cpu_local::host_test::register_read_counts(),
+                cpu_local::host_test::RegisterReadCounts {
+                    cpu_base: 1,
+                    current_context: 0,
+                    initialized_area_validations: 0,
+                },
+                "scheduler endpoint lookup must use the pre-pin CPU-area boundary",
+            );
         })
+        .join()
+        .expect("modeled scheduler CPU must complete endpoint lookup");
     }
-    .expect("scheduler current CPU area and context must be installed");
-    // SAFETY: bootstrap publishes the Arc-backed endpoint before this CPU can
-    // enter the scheduler and retains the owning TaskSystem until shutdown.
-    unsafe { CpuRemoteHandle::from_raw(raw) }
 }
 
 pub(super) fn primary_bootstrap_thread() -> Option<ThreadId> {
