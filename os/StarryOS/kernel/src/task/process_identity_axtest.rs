@@ -125,7 +125,7 @@ pub(crate) fn shutdown_wait_covers_the_exit_path_after_runtime_detach_for_test()
         .unwrap()
         .publish()
         .unwrap();
-    let _tid_lease = identity.acquire_role::<Tid>().unwrap();
+    let tid_lease = identity.acquire_role::<Tid>().unwrap();
 
     // The runtime link detaches early in `do_exit`; zombie publication,
     // parent notification, and relation close follow. A PID namespace
@@ -135,8 +135,22 @@ pub(crate) fn shutdown_wait_covers_the_exit_path_after_runtime_detach_for_test()
     identity.mark_task_exited();
     let pending_after_detach = identity.has_unexited_task();
 
+    // The PID slot must also stay published while the exit path is pending,
+    // even after the thread role lease is released mid-exit (a non-leader
+    // thread executing the last process exit): `begin_shutdown` proves the
+    // executor is a namespace member through this slot, and Linux frees the
+    // PID only in `free_pid()`.
+    drop(tid_lease);
+    let slot_retained_while_pending = ROOT_PID_NS.retains_identity_slot_for_test(identity.id());
+    let roles_released_keeps_member = identity.has_unexited_task();
+
     identity.mark_exit_path_complete();
     let complete_after_finish = !identity.has_unexited_task();
+    let slot_released_after_finish = !ROOT_PID_NS.retains_identity_slot_for_test(identity.id());
 
-    pending_after_detach && complete_after_finish
+    pending_after_detach
+        && slot_retained_while_pending
+        && roles_released_keeps_member
+        && complete_after_finish
+        && slot_released_after_finish
 }

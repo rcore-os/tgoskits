@@ -280,6 +280,16 @@ impl PidNamespace {
         self.state.lock().init_identity
     }
 
+    /// Reports whether the namespace still holds the identity's number slot,
+    /// regardless of lookup visibility. Test-only probe for the exit-path
+    /// slot-retention invariant (a member must stay in the namespace until
+    /// its exit path completes, as Linux keeps `pid_allocated` until
+    /// `free_pid()`).
+    #[cfg(axtest)]
+    pub(crate) fn retains_identity_slot_for_test(&self, identity_id: PidIdentityId) -> bool {
+        self.state.lock().by_identity.contains_key(&identity_id)
+    }
+
     pub fn lookup(&self, number: PidNumber) -> Option<Arc<PidIdentity>> {
         let _publication = PUBLICATION_GATE.lock();
         let state = self.state.lock();
@@ -816,15 +826,14 @@ impl PidIdentity {
     }
 
     pub fn mark_task_exited(&self) {
-        let should_detach = {
-            let mut state = self.state.lock();
-            state.runtime = RuntimeTaskLink::Exited;
-            state.exit_path_pending = true;
-            state.roles == 0
-        };
-        if should_detach {
-            self.detach();
-        }
+        let mut state = self.state.lock();
+        state.runtime = RuntimeTaskLink::Exited;
+        // The runtime link detaches here, but the PID slot stays published
+        // until the exit path completes: Linux frees a task's PID only in
+        // free_pid(), after its exit path finished, so namespace membership
+        // (and shutdown-wait membership) outlives this transition. Deferred
+        // detach happens in mark_exit_path_complete.
+        state.exit_path_pending = true;
     }
 
     /// Completes the exit path of the task that detached its runtime link.
@@ -833,12 +842,20 @@ impl PidIdentity {
     /// notification, and relation close, so PID namespace shutdown only
     /// observes the member as exited once it no longer dereferences the
     /// dying namespace. The wake mirrors the one Linux delivers by dropping
-    /// `pid_allocated` in `free_pid()`.
+    /// `pid_allocated` in `free_pid()`, and the deferred detach frees the
+    /// member's namespace slots at the same point Linux frees the PID.
     pub fn mark_exit_path_complete(&self) {
-        let pending = {
+        let (pending, should_detach) = {
             let mut state = self.state.lock();
-            core::mem::replace(&mut state.exit_path_pending, false)
+            let pending = core::mem::replace(&mut state.exit_path_pending, false);
+            (
+                pending,
+                pending && state.roles == 0 && matches!(state.runtime, RuntimeTaskLink::Exited),
+            )
         };
+        if should_detach {
+            self.detach();
+        }
         if pending {
             for binding in self.bindings.iter().rev() {
                 unsafe { binding.namespace.task_exit_event.wake(IoEvents::IN) };
@@ -1090,7 +1107,12 @@ impl PidIdentity {
             let mut state = self.state.lock();
             assert_ne!(state.roles & R::BIT, 0, "PID role released twice");
             state.roles &= !R::BIT;
-            state.roles == 0 && matches!(state.runtime, RuntimeTaskLink::Exited)
+            // While an exit path is still pending, the PID slot stays
+            // published (Linux frees the PID in free_pid(), after the exit
+            // path); mark_exit_path_complete performs the deferred detach.
+            state.roles == 0
+                && !state.exit_path_pending
+                && matches!(state.runtime, RuntimeTaskLink::Exited)
         };
         if should_detach {
             self.detach();
