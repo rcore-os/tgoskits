@@ -123,13 +123,15 @@ pub mod axtest_support {
     }
 
     /// Records that the current task consumed its first-entry scheduler frame.
-    #[cfg(feature = "preempt")]
+    ///
+    /// This hook remains available without the `preempt` feature because the
+    /// runtime completes the first-entry scheduler handoff for every multitask
+    /// axtest configuration, including non-preemptive workspace consumers.
     pub fn record_initial_scheduler_frame_consumed() {
         super::api::record_initial_scheduler_frame_consumed_for_test();
     }
 
     /// Reports whether the current task consumed its first-entry scheduler frame.
-    #[cfg(feature = "preempt")]
     pub fn initial_scheduler_frame_consumed() -> bool {
         super::api::initial_scheduler_frame_consumed_for_test()
     }
