@@ -193,7 +193,7 @@ fn tx_irq_exposes_space_without_owning_a_software_fifo() {
 }
 
 #[test]
-fn emergency_tx_returns_immediately_when_the_fifo_is_full() {
+fn emergency_tx_gives_up_after_a_bounded_poll_when_the_fifo_stays_full() {
     let (mut regs, uart) = pl011_with_registers();
     let parts = uart.split();
     let gate = UartRegisterGate::new(parts.emergency_tx);
@@ -208,7 +208,7 @@ fn emergency_tx_returns_immediately_when_the_fifo_is_full() {
 }
 
 #[test]
-fn emergency_tx_has_a_fixed_write_budget() {
+fn emergency_tx_writes_the_whole_buffer_past_the_fifo_depth() {
     let (mut regs, uart) = pl011_with_registers();
     let parts = uart.split();
     write_test_reg(&mut regs, 0x018, 0);
@@ -216,7 +216,11 @@ fn emergency_tx_has_a_fixed_write_budget() {
     let gate = UartRegisterGate::new(parts.emergency_tx);
     let access = gate.try_enter().unwrap();
 
-    assert_eq!(access.try_write(&bytes), 16);
+    // A panic console must not drop payload beyond the hardware FIFO depth
+    // (Linux `pl011_wait_to_send_char` semantics): the emergency path drains
+    // the transmitter instead of truncating after one FIFO pass.
+    assert_eq!(access.try_write(&bytes), 17);
+    assert_eq!(regs.uartdr.get() as u8, b'x');
 }
 
 #[test]

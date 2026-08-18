@@ -12,7 +12,9 @@ use tock_registers::{
 use crate::{PollingUart, SerialDirection, SerialEvent, TransBytesError, TransferError};
 
 const BUSY_POLL_BUDGET: usize = 1 << 20;
-const EMERGENCY_TX_BUDGET: usize = 16;
+/// Per-byte FIFO-full poll bound for the emergency TX path, mirroring the
+/// bounded console spin Linux applies on dying hardware.
+const EMERGENCY_TX_POLL_BUDGET: usize = 100_000;
 const ALL_IRQ_BITS: u32 = (1 << 11) - 1;
 
 mod control;

@@ -17,6 +17,13 @@ use registers::*;
 
 use crate::{PollingUart, SerialDirection, SerialEvent, TransBytesError, TransferError};
 
+/// Per-byte readiness poll bound for the emergency TX path.
+///
+/// Matches the spirit of Linux 8250 `wait_for_xmitr` (10000 bounded polls with
+/// a delay each): long enough for a live transmitter at any baud, yet finite
+/// when the register block reads back garbage on a dying machine.
+const EMERGENCY_TX_POLL_BUDGET: usize = 100_000;
+
 pub mod dw_apb;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod pio;
@@ -153,10 +160,22 @@ impl<T: Kind> UartEmergencyTx for Ns16550EmergencyTx<T> {
     unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
         let _irq_mask = self.mask_interrupts();
         let mut written = 0;
-        for &byte in bytes.iter().take(UART_FIFO_SIZE as usize) {
-            let status: LineStatusFlags = self.base.read_flags(UART_LSR);
-            if !status.contains(LineStatusFlags::TRANSMITTER_HOLDING_EMPTY) {
-                break;
+        for &byte in bytes {
+            // Linux's panic console drains the transmitter instead of dropping
+            // payload (`wait_for_xmitr` spins on LSR.THRE with a 10000-iteration
+            // budget). Nothing will ever retransmit oops/panic bytes, so poll
+            // for readiness; the bound keeps a dead transmitter from hanging
+            // the terminating CPU forever.
+            let mut polls = 0;
+            loop {
+                let status: LineStatusFlags = self.base.read_flags(UART_LSR);
+                if status.contains(LineStatusFlags::TRANSMITTER_HOLDING_EMPTY) {
+                    break;
+                }
+                polls += 1;
+                if polls >= EMERGENCY_TX_POLL_BUDGET {
+                    return written;
+                }
             }
             self.base.write_reg(UART_THR, byte);
             written += 1;
@@ -815,6 +834,10 @@ mod tests {
     static RBR_READS: AtomicUsize = AtomicUsize::new(0);
     static LSR_READS: AtomicUsize = AtomicUsize::new(0);
     static LAST_FCR_WRITE: AtomicU8 = AtomicU8::new(0);
+    /// When nonzero, every Nth LSR read re-asserts THRE, modeling a
+    /// transmitter that drains one byte while the emergency path polls.
+    /// 0 keeps LSR strictly test-controlled (no simulated drain).
+    static TX_DRAIN_EVERY_LSR_READS: AtomicUsize = AtomicUsize::new(0);
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn handle_irq(irq: &mut impl UartIrq) -> (Option<SerialIrqEvent>, Vec<RxSample>) {
@@ -842,7 +865,14 @@ mod tests {
 
             let value = REGS[reg as usize].load(Ordering::SeqCst);
             if reg == UART_LSR {
-                LSR_READS.fetch_add(1, Ordering::SeqCst);
+                let reads = LSR_READS.fetch_add(1, Ordering::SeqCst) + 1;
+                let drain_every = TX_DRAIN_EVERY_LSR_READS.load(Ordering::SeqCst);
+                if drain_every > 0 && reads % drain_every == 0 {
+                    return REGS[UART_LSR as usize].fetch_or(
+                        LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
+                        Ordering::SeqCst,
+                    ) | LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits();
+                }
             }
             if reg == UART_RBR {
                 RBR_READS.fetch_add(1, Ordering::SeqCst);
@@ -974,31 +1004,6 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
-    struct AlwaysReadyTxKind {
-        writes: Arc<AtomicUsize>,
-    }
-
-    impl Kind for AlwaysReadyTxKind {
-        fn read_reg(&self, reg: u8) -> u8 {
-            if reg == UART_LSR {
-                LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits()
-            } else {
-                0
-            }
-        }
-
-        fn write_reg(&self, reg: u8, _val: u8) {
-            if reg == UART_THR {
-                self.writes.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-
-        fn get_base(&self) -> usize {
-            0x3000
-        }
-    }
-
     fn reset_regs() {
         for reg in &REGS {
             reg.store(0, Ordering::SeqCst);
@@ -1010,6 +1015,7 @@ mod tests {
         RBR_READS.store(0, Ordering::SeqCst);
         LSR_READS.store(0, Ordering::SeqCst);
         LAST_FCR_WRITE.store(0, Ordering::SeqCst);
+        TX_DRAIN_EVERY_LSR_READS.store(0, Ordering::SeqCst);
     }
 
     fn serial() -> (MutexGuard<'static, ()>, Ns16550<MockKind>) {
@@ -1271,9 +1277,9 @@ mod tests {
     }
 
     #[test]
-    fn emergency_tx_writes_only_the_current_nonblocking_fifo_capacity() {
+    fn emergency_tx_polls_a_full_transmitter_until_it_drains() {
         let (_guard, uart) = serial();
-        let parts = uart.split();
+        let parts = started_parts(uart);
         let gate = UartRegisterGate::new(parts.emergency_tx);
         let access = gate.try_enter().unwrap();
         REGS[UART_LSR as usize].store(
@@ -1281,9 +1287,35 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        assert_eq!(access.try_write(b"ab"), 1);
-        assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
-        assert_eq!(access.try_write(b"b"), 0);
+        // The enabled mock FIFO holds 16 bytes, so a two-byte write completes
+        // immediately; filling it clears THRE.
+        assert_eq!(access.try_write(b"ab"), 2);
+        assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'b');
+        REGS[UART_LSR as usize].store(0, Ordering::SeqCst);
+
+        // A panic console must not drop payload just because the transmitter
+        // is momentarily busy: it keeps polling until the hardware drains
+        // (Linux `wait_for_xmitr` semantics), instead of returning early.
+        TX_DRAIN_EVERY_LSR_READS.store(2, Ordering::SeqCst);
+        assert_eq!(access.try_write(b"cd"), 2);
+        assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'd');
+    }
+
+    #[test]
+    fn emergency_tx_stops_after_a_bounded_poll_when_the_transmitter_never_drains() {
+        let (_guard, uart) = serial();
+        let parts = uart.split();
+        let gate = UartRegisterGate::new(parts.emergency_tx);
+        let access = gate.try_enter().unwrap();
+        REGS[UART_LSR as usize].store(0, Ordering::SeqCst);
+
+        let reads_before = LSR_READS.load(Ordering::SeqCst);
+        assert_eq!(access.try_write(b"x"), 0);
+        assert_eq!(
+            LSR_READS.load(Ordering::SeqCst) - reads_before,
+            EMERGENCY_TX_POLL_BUDGET,
+            "a transmitter that never drains must terminate after the exact budget"
+        );
     }
 
     #[test]
@@ -1313,7 +1345,7 @@ mod tests {
     }
 
     #[test]
-    fn emergency_tx_has_a_fixed_write_budget() {
+    fn emergency_tx_writes_the_whole_buffer_past_the_fifo_depth() {
         let writes = Arc::new(AtomicUsize::new(0));
         let tx = Ns16550EmergencyTx {
             base: AlwaysReadyTxKind {
@@ -1324,8 +1356,11 @@ mod tests {
         let gate = UartRegisterGate::new(tx);
         let access = gate.try_enter().unwrap();
 
-        assert_eq!(access.try_write(&bytes), 16);
-        assert_eq!(writes.load(Ordering::SeqCst), 16);
+        // A panic console must not drop payload beyond the hardware FIFO
+        // depth (Linux `wait_for_xmitr` semantics): the emergency path drains
+        // the transmitter instead of truncating after one FIFO pass.
+        assert_eq!(access.try_write(&bytes), 17);
+        assert_eq!(writes.load(Ordering::SeqCst), 17);
     }
 
     #[test]

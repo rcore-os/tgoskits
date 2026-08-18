@@ -169,7 +169,15 @@ pub trait UartIrq: Send + 'static {
 /// blocking operation. A runtime must move it into [`UartRegisterGate`] before
 /// exposing safe emergency output.
 pub trait UartEmergencyTx: Send + Sync + 'static {
-    /// Performs one bounded pass over currently available FIFO capacity.
+    /// Writes the complete buffer by polling transmitter readiness per byte.
+    ///
+    /// Mirrors the Linux panic console contract (`uart_console_write` driving
+    /// `wait_for_xmitr`/`pl011_wait_to_send_char`): oops and panic paths must
+    /// not drop payload when the TX FIFO is momentarily full, because nothing
+    /// else will ever retransmit it. Implementations poll the per-byte
+    /// readiness flag with a bounded iteration budget so a dead or unmapped
+    /// transmitter still terminates the call; they return the number of bytes
+    /// actually written and may stop early only when that budget is exhausted.
     ///
     /// Implementations must save and mask every device interrupt source before
     /// touching the FIFO, then restore the saved mask before returning. The

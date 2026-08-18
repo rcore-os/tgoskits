@@ -39,9 +39,18 @@ impl UartEmergencyTx for Pl011EmergencyTx {
     unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
         let _irq_mask = self.mask_interrupts();
         let mut written = 0;
-        for &byte in bytes.iter().take(EMERGENCY_TX_BUDGET) {
-            if self.registers().uartfr.is_set(UARTFR::TXFF) {
-                break;
+        for &byte in bytes {
+            // Linux's panic console drains the transmitter instead of dropping
+            // payload (`pl011_wait_to_send_char` spins on FR.TXFF). Nothing
+            // will ever retransmit oops/panic bytes, so poll for FIFO space;
+            // the bound keeps a dead transmitter from hanging the terminating
+            // CPU forever.
+            let mut polls = 0;
+            while self.registers().uartfr.is_set(UARTFR::TXFF) {
+                polls += 1;
+                if polls >= EMERGENCY_TX_POLL_BUDGET {
+                    return written;
+                }
             }
             self.registers().uartdr.set(byte as u32);
             written += 1;
