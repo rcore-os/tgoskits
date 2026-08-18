@@ -209,7 +209,7 @@ impl Random {
         }
     }
 
-    #[cfg(any(test, axtest))]
+    #[cfg(axtest)]
     fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
         Self {
             state: Mutex::new(RandomState::new(seed)),
@@ -827,33 +827,4 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
 fn descriptor_symlink(fs: Arc<SimpleFs>, target: &'static str) -> Arc<SimpleFile> {
     SimpleFile::new(fs, NodeType::Symlink, move || Ok(target))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{DeviceOps, Random};
-
-    #[test]
-    fn random_write_mixes_entropy_into_stream() {
-        let seed = *b"0123456789abcdef0123456789abcdef";
-        let baseline = Random::new_with_seed_for_test(seed);
-        let mixed = Random::new_with_seed_for_test(seed);
-        let mut discarded = [0; 32];
-        let mut baseline_next = [0; 32];
-        let mut mixed_next = [0; 32];
-
-        assert_eq!(
-            baseline.read_at(&mut discarded, 0).unwrap(),
-            discarded.len()
-        );
-        assert_eq!(mixed.read_at(&mut discarded, 0).unwrap(), discarded.len());
-        assert_eq!(mixed.write_at(b"caller entropy", 0).unwrap(), 14);
-        assert_eq!(
-            baseline.read_at(&mut baseline_next, 0).unwrap(),
-            baseline_next.len()
-        );
-        assert_eq!(mixed.read_at(&mut mixed_next, 0).unwrap(), mixed_next.len());
-
-        assert_ne!(baseline_next, mixed_next);
-    }
 }

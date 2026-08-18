@@ -128,7 +128,7 @@ impl Default for ProcessVmStat {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn process_vm_stat_watermarks_hold_for_test() -> bool {
     let parent = ProcessVmStat::new();
     parent.on_map(3);
@@ -148,7 +148,7 @@ pub(crate) fn process_vm_stat_watermarks_hold_for_test() -> bool {
         && parent.peak_rss_pages() == 0
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn process_vm_stat_edge_cases_hold_for_test() -> bool {
     // Initial state: all zeros.
     let stat = ProcessVmStat::new();

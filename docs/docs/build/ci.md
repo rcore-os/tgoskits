@@ -114,10 +114,10 @@ push 到 `main` / `dev` 时强制运行 CI 检查。非 `main` / `dev` 分支没
 | Test starry aarch64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-aarch64` | `cargo xtask starry test qemu --arch aarch64` |
 | Test starry loongarch64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-loongarch64` | `cargo xtask starry test qemu --arch loongarch64` |
 | Test starry x86_64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-x86_64` | `cargo xtask starry test qemu --arch x86_64` |
-| Test arceos x86_64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch x86_64`；仅 `rcore-os` 仓库触发 |
-| Test arceos riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch riscv64`；仅 `rcore-os` 仓库触发 |
-| Test arceos aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch aarch64`；仅 `rcore-os` 仓库触发 |
-| Test arceos loongarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch loongarch64`；仅 `rcore-os` 仓库触发 |
+| Test arceos x86_64 qemu | `self-hosted linux qcs` | 否 | 无 | 先运行 ArceOS Rust/C suite，再以一次 `cargo xtask ktest qemu --workspace ... --arch x86_64` 串行运行同架构 axtest；仅 `rcore-os` 仓库触发 |
+| Test arceos riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | 先运行 ArceOS suite/任务 IPI，再以一次 `ktest qemu --arch riscv64` 串行运行同架构 axtest；仅 `rcore-os` 仓库触发 |
+| Test arceos aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | 先运行 GICv2 SMP4 boot 与 ArceOS suite，再以一次 `ktest qemu --arch aarch64` 串行运行同架构 axtest；仅 `rcore-os` 仓库触发 |
+| Test arceos loongarch64 qemu | `self-hosted linux qcs` | 否 | 无 | 先运行 ArceOS suite，再以一次 `ktest qemu --arch loongarch64` 串行运行同架构 axtest；仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted x86_64(svm) | `self-hosted linux amd kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm`；验证 SVM 宿主启动及宿主 NVMe 根文件系统写入/回读，仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted x86_64(vmx) | `self-hosted linux intel kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx`；验证 VMX 宿主启动及宿主 NVMe 根文件系统写入/回读，仅 `rcore-os` 仓库触发 |
 | Test axloader HTTP smoke | `self-hosted linux intel kvm` | 否 | 无 | 安装 `x86_64-unknown-uefi` target，通过 Ostool 获取并校验 OVMF，运行 `cargo xtask axloader test qemu --target x86_64-unknown-uefi`；仅 `rcore-os` 仓库触发 |

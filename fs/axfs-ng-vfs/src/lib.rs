@@ -4,10 +4,6 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-#[cfg(all(axtest, feature = "axtest"))]
-/// Coverage tests for VFS helpers and node contracts.
-pub mod axtest;
-
 mod fs;
 mod mount;
 mod node;

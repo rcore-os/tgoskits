@@ -669,7 +669,7 @@ impl Backend {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn cow_file_max_read_len_boundary_rules_hold_for_test() -> bool {
     // Zero-length file without an explicit end rejects any offset (offset 0 is
     // already >= file_len 0).

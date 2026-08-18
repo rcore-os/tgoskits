@@ -19,7 +19,26 @@ pub mod dyn_debug; // Re-export debug macros for use in other modules. It will o
 pub mod entry;
 
 #[cfg(axtest)]
+#[doc(hidden)]
 pub mod axtest_exports;
+#[cfg(all(test, not(axtest)))]
+mod axtest_exports;
+
+#[cfg(test)]
+mod host_link_symbols {
+    // Host unit tests do not execute the bare-metal boot path, but someboot's
+    // linked API refers to linker-script symbols even when those functions are
+    // dead code. Provide inert symbols so the standard test harness can link;
+    // runtime semantics remain covered only by the target axtest binary.
+    #[unsafe(no_mangle)]
+    static STACK_SIZE: usize = 0;
+    #[unsafe(no_mangle)]
+    static PAGE_SIZE: usize = 0;
+    #[unsafe(no_mangle)]
+    static __PERCPU_TEMPLATE_ALIGN_START: usize = 0;
+    #[unsafe(no_mangle)]
+    static __PERCPU_TEMPLATE_ALIGN_END: usize = 0;
+}
 
 mod cgroup;
 mod config;

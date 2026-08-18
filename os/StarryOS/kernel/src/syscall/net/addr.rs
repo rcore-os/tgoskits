@@ -352,7 +352,7 @@ impl SocketAddrExt for SocketAddrEx {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn net_addr_conversion_rules_hold_for_test() -> bool {
     use core::net::{Ipv4Addr, SocketAddrV4};
 

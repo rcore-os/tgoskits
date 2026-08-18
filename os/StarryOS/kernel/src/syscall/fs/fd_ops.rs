@@ -952,7 +952,7 @@ pub(crate) fn pipe_size_rounding_and_rejection_rules_hold_for_test() -> bool {
         && matches!(set_pipe_size(&read_end, 0), Ok(4096))
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn fd_ops_flags_to_options_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::*;
     // Test flags_to_options function - verify it doesn't panic for valid inputs

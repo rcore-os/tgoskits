@@ -5,7 +5,7 @@ sidebar_label: "测试"
 
 # ArceOS 测试
 
-ArceOS 的测试覆盖两类用例：**Rust 用例**（统一入口为 `arceos-test-suit`，单个用例由 crate feature 控制）和 **C 用例**（通过 Makefile 构建的 C 语言程序，由 `test_cmd` 文件定义测试序列）。两类用例的发现和处理方式有所不同，但最终都通过 QEMU 运行并使用正则匹配判定结果。
+ArceOS 的 suite 测试覆盖两类用例：**Rust 用例**（统一入口为 `arceos-test-suit`，单个用例由 crate feature 控制）和 **C 用例**（通过 Makefile 构建的 C 语言程序，由 `test_cmd` 文件定义测试序列）。Cargo `[[test]]` 形式的 crate axtest 不再由本命令发现，统一使用 [`cargo xtask ktest qemu`](../ktest)。
 
 测试编排（用例发现、分组构建、资产准备、结果判定）由 `scripts/axbuild/src/test/` 提供统一框架，核心原则是 **OS 只构建一次，逐 case 运行**——具有相同构建配置的用例归入同一 build wrapper，组内共享一次内核编译，然后逐 case 准备资产、运行 QEMU、匹配结果。共享框架的完整说明见 [测试基础设施](../test_infra)；本文描述 ArceOS 特有的测试目录结构和两类用例的处理差异。
 
@@ -17,7 +17,7 @@ ArceOS 的测试覆盖两类用例：**Rust 用例**（统一入口为 `arceos-t
 cargo xtask arceos test qemu --arch <arch> [--test-group <group>] [--test-case <case>]
 ```
 
-ArceOS 测试命令支持通过 `--test-group` 选择测试组（`rust`、`c` 或自定义组），通过 `--test-case` 过滤特定用例。不指定 `--test-group` 时默认运行所有组。Rust 组中 `--test-case` 直接使用 feature 名，例如 `task-yield`；不指定时运行 `all` feature。
+ArceOS 测试命令支持通过 `--test-group` 选择测试组（`rust`、`c` 或自定义组），通过 `--test-case` 过滤特定用例。不指定 `--test-group` 时默认运行 Rust、C 和自定义组。Rust 组中 `--test-case` 直接使用 feature 名，例如 `task-yield`；不指定时运行 `all` feature。旧的 `--test-group axtest` 只返回迁移提示，不再做目录发现。
 
 ## 测试组
 
@@ -33,13 +33,12 @@ Rust 组和 C 组是预定义的标准组，分别用于验证 ArceOS 的 Rust �
 
 ### 组分发逻辑
 
-`runner.rs::selected_qemu_test_groups()` 根据 `--test-group` 决定要执行的 `QemuTestFlow` 集合。不指定 `--test-group` 时默认执行 `rust` 和 `c`（以及 `axtest` 和所有自定义组）。每个 flow 映射到独立的处理函数：
+`runner.rs::selected_qemu_test_groups()` 根据 `--test-group` 决定要执行的 `QemuTestFlow` 集合。不指定 `--test-group` 时默认执行 `rust`、`c` 和所有自定义组。每个 flow 映射到独立的处理函数：
 
 | QemuTestFlow | 处理函数 | 说明 |
 |--------------|----------|------|
 | `Rust` | `rust_qemu::test_rust_qemu()` | feature-based runner，共享编译 |
 | `C` | `c_qemu::test_c_qemu()` | 每个 feature 独立 CMake 编译 |
-| `Axtest` | `axtest_qemu::test_axtest_qemu()` | `harness=false` 的内核 axtest |
 | `Generic(group)` | `generic_qemu::test_generic_qemu()` | 自定义组，走共享发现流程 |
 
 分发后，每个 flow 独立打印进度（`[N/M] arceos <flow> qemu <case>`）和结果汇总（`QemuTestSummary`），最终由 `summary.finish_with_total_detail()` 统一判定退出码。

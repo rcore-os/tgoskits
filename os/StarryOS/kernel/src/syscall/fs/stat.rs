@@ -349,7 +349,7 @@ pub fn sys_name_to_handle_at(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn stat_flags_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_SYMLINK_NOFOLLOW};
     // Test fstatat flag validation

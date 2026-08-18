@@ -13,6 +13,14 @@ authors = [
 repository.workspace = true
 license.workspace = true
 
+[package.metadata.docs.rs]
+targets = [
+    "x86_64-unknown-none",
+    "aarch64-unknown-none-softfloat",
+    "riscv64gc-unknown-none-elf",
+    "loongarch64-unknown-none-softfloat",
+]
+
 [[package.metadata.clippy.configurations]]
 name = "aarch64-system"
 target = "aarch64-unknown-none-softfloat"
@@ -139,7 +147,6 @@ ax-task = { workspace = true, features = [
     "task-ext",
     "tracepoint-hooks",
     "sched-rr",
-    "axtest",
 ] }
 rockchip-rga = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
@@ -221,12 +228,8 @@ kbpf-basic = "0.6"
 rbpf = { version = "0.4", default-features = false }
 
 [dev-dependencies]
-axtest.workspace = true
-axbacktrace = { workspace = true, features = ["axtest"] }
-ax-cpumask = { workspace = true, features = ["axtest"] }
-ax-driver = { workspace = true, features = ["axtest"] }
-ax-hal = { workspace = true, features = ["axtest"] }
-ax-std = { workspace = true, default-features = false, features = [
+axtest = { path = "../../../components/axtest/axtest" }
+ax-std = { path = "../../arceos/ulib/axstd", default-features = false, features = [
     "alloc",
     "fd",
     "ext-ld",
@@ -234,43 +237,15 @@ ax-std = { workspace = true, default-features = false, features = [
     "multitask",
     "irq",
 ] }
-ax-memory-addr = { workspace = true, features = ["axtest"] }
-ax-memory-set = { workspace = true, features = ["axtest"] }
-axfs-ng-vfs = { workspace = true, features = ["axtest"] }
-ax-io = { workspace = true, features = ["axtest"] }
-ax-lazyinit = { workspace = true, features = ["axtest"] }
-ax-net = { workspace = true, features = ["axtest"] }
-axpoll = { workspace = true, features = ["axtest"] }
-dma-api = { workspace = true, features = ["axtest"] }
-irq-framework = { workspace = true, features = ["axtest"] }
-kernutil = { workspace = true, features = ["axtest"] }
-mmio-api = { workspace = true, features = ["axtest"] }
-rdif-base = { workspace = true, features = ["axtest"] }
-rdif-block = { workspace = true, features = ["axtest"] }
-rdif-def = { workspace = true, features = ["axtest"] }
-rdif-display = { workspace = true, features = ["axtest"] }
-rdif-eth = { workspace = true, features = ["axtest"] }
-rdif-input = { workspace = true, features = ["axtest"] }
-rdif-intc = { workspace = true, features = ["axtest"] }
-rdif-msi = { workspace = true, features = ["axtest"] }
-rdif-pcie = { workspace = true, features = ["axtest"] }
-rdif-pinctrl = { workspace = true, features = ["axtest"] }
-rdif-power = { workspace = true, features = ["axtest"] }
-rdif-reset = { workspace = true, features = ["axtest"] }
-rdif-serial = { workspace = true, features = ["axtest"] }
-rdif-vsock = { workspace = true, features = ["axtest"] }
-ranges-ext.workspace = true
-rdrive = { workspace = true, features = ["axtest"] }
-rsext4 = { workspace = true, features = ["axtest"] }
-scope-local = { workspace = true, features = ["axtest"] }
-buddy-slab-allocator = { workspace = true, features = ["axtest"] }
-page-table-generic = { workspace = true }
 
 [[test]]
 name = "axtest_kernel"
 path = "tests/axtest_kernel.rs"
 harness = false
-required-features = ["axtest"]
+required-features = ["axtest", "smp"]
+
+[package.metadata.axtest]
+runtime = "starry"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

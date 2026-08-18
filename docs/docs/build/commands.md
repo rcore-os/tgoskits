@@ -73,11 +73,12 @@ cargo xtask test
 
 ### 3.2 内核测试
 
-构建并运行 `harness = false` 的内核 axtest target。当前仅支持 StarryOS 路径下的 package 和 `axvisor` package。命令会从 Cargo metadata 选择 test target，显式加入 `axtest`、target 的 `required-features`，并添加 `--cfg axtest`；QEMU 运行还追加 `AXTEST_SUITE_OK` 成功标记和 panic/用例失败正则。
+构建并运行确实依赖 QEMU/板卡的 `harness = false` Cargo 集成 axtest target；宿主可运行的测试应使用普通 `#[test]` 和 `cargo xtask test`。无参数时从 Cargo metadata 选择所有直接声明 workspace axtest dev-dependency 的 package；`--workspace`、可重复 `-p/--package`、`--exclude`、`--test` 与构建参数采用 Cargo 风格。`--arch` 会过滤到支持该架构的执行单元，每个 test bin 独立构建并启动一次 QEMU。
 
 ```bash
+cargo xtask ktest qemu --workspace --arch x86_64
 cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64
-cargo xtask ktest board -p axvisor --test axtest_kernel -b qemu-x86_64
+cargo xtask ktest board -p arceos-axtest-sg2002-usb-msc --test axtest -b aka-00-sg2002
 ```
 
 详见 [内核测试](./ktest)。

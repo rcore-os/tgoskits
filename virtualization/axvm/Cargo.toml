@@ -81,4 +81,4 @@ rdrive.workspace = true
 rdif-clk.workspace = true
 
 [dev-dependencies]
-rdif-clk.workspace = true
+rdif-clk = { path = "../../drivers/interface/rdif-clk" }

@@ -12,7 +12,6 @@ use cargo_metadata::Metadata;
 use crate::support::process::run_cargo_status;
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
-const MIGHT_SLEEP_FILTER: &str = "might_sleep";
 const TASK_INITIALIZATION_FILTER: &str = "task_initialization_precedes_scheduling";
 
 #[derive(Clone, Copy, Debug)]
@@ -25,31 +24,27 @@ struct PackageFeatureProfile {
 
 const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     PackageFeatureProfile {
+        name: "host-test+multitask+irq-pure",
+        features: &["host-test", "multitask", "irq"],
+        name_filter: Some("std_tests::"),
+        expected_tests: &[
+            "api::std_tests::axtask_api_constants_hold",
+            "api::std_tests::axtask_api_scheduler_name_hold",
+            "api::std_tests::axtask_api_task_registry_functions_exist_hold",
+            "api::std_tests::axtask_api_type_aliases_hold",
+        ],
+    },
+    PackageFeatureProfile {
         name: "host-test+multitask-task-initialization",
         features: &["host-test", "multitask"],
         name_filter: Some(TASK_INITIALIZATION_FILTER),
         expected_tests: &["api::tests::task_initialization_precedes_scheduling"],
     },
-    PackageFeatureProfile {
-        name: "host-test+multitask",
-        features: &["host-test", "multitask"],
-        name_filter: Some(MIGHT_SLEEP_FILTER),
-        expected_tests: &["tests::might_sleep_ignores_irq_state_without_irq_feature"],
-    },
-    PackageFeatureProfile {
-        name: "host-test+multitask+preempt+lockdep",
-        features: &["host-test", "multitask", "preempt", "lockdep"],
-        name_filter: Some(MIGHT_SLEEP_FILTER),
-        expected_tests: &[
-            "tests::might_sleep_reports_held_lock_stack",
-            "tests::might_sleep_reports_preempt_disabled_reason",
-        ],
-    },
 ];
 
 const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
-    name: "starfive-jh7110-dwmmc",
-    features: &["starfive-jh7110-dwmmc"],
+    name: "host-test+rtc+starfive-jh7110-dwmmc",
+    features: &["host-test", "rtc", "starfive-jh7110-dwmmc"],
     name_filter: None,
     expected_tests: &[],
 }];
@@ -58,6 +53,27 @@ const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeaturePro
     name: "host-test",
     features: &["host-test"],
     name_filter: None,
+    expected_tests: &[],
+}];
+
+const ALLOC_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "alloc",
+    features: &["alloc"],
+    name_filter: None,
+    expected_tests: &[],
+}];
+
+const FS_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "fs",
+    features: &["fs"],
+    name_filter: None,
+    expected_tests: &[],
+}];
+
+const STARRY_KERNEL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "std-tests-only",
+    features: &[],
+    name_filter: Some("std_tests::"),
     expected_tests: &[],
 }];
 
@@ -254,12 +270,29 @@ fn run_std_tests<R: CargoRunner>(
 
 fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeatureProfile]> {
     match package {
-        "arm_vgic" | "axdevice" | "axfs-ng-vfs" | "rsext4" | "scope-local" | "ax-sync" | "axvm"
-        | "ax-display" | "ax-input" | "ax-ipi" | "ax-log" | "ax-runtime" | "ax-api" | "rdrive" => {
-            Some(HOST_TEST_FEATURE_PROFILES)
-        }
+        "arm_vgic"
+        | "axdevice"
+        | "axfs-ng-vfs"
+        | "rsext4"
+        | "scope-local"
+        | "ax-sync"
+        | "axvm"
+        | "ax-display"
+        | "ax-input"
+        | "ax-ipi"
+        | "ax-log"
+        | "ax-runtime"
+        | "ax-api"
+        | "rdrive"
+        | "axpoll"
+        | "ax-net"
+        | "dma-api"
+        | "buddy-slab-allocator" => Some(HOST_TEST_FEATURE_PROFILES),
+        "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-task" => Some(AX_TASK_FEATURE_PROFILES),
         "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
+        "axvisor" => Some(FS_FEATURE_PROFILES),
+        "starry-kernel" => Some(STARRY_KERNEL_FEATURE_PROFILES),
         _ => None,
     }
 }
@@ -600,13 +633,13 @@ mod tests {
                 "-p",
                 "ax-driver",
                 "--features",
-                "starfive-jh7110-dwmmc"
+                "host-test,rtc,starfive-jh7110-dwmmc"
             ]
         );
     }
 
     #[test]
-    fn ax_task_uses_task_initialization_and_might_sleep_feature_profiles() {
+    fn ax_task_uses_pure_and_task_initialization_feature_profiles() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec!["ax-task".to_string()];
         let mut runner = FakeCargoRunner::succeeding().with_ax_task_discovery();
@@ -627,6 +660,24 @@ mod tests {
                     "-p",
                     "ax-task",
                     "--features",
+                    "host-test,multitask,irq",
+                    "std_tests::",
+                    "--",
+                    "--list",
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test,multitask,irq",
+                    "std_tests::",
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
                     "host-test,multitask",
                     "task_initialization_precedes_scheduling",
                     "--",
@@ -639,42 +690,6 @@ mod tests {
                     "--features",
                     "host-test,multitask",
                     "task_initialization_precedes_scheduling",
-                ],
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask",
-                    "might_sleep",
-                    "--",
-                    "--list",
-                ],
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask",
-                    "might_sleep",
-                ],
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask,preempt,lockdep",
-                    "might_sleep",
-                    "--",
-                    "--list",
-                ],
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask,preempt,lockdep",
-                    "might_sleep",
                 ],
             ]
         );
@@ -691,6 +706,7 @@ mod tests {
             "rsext4",
             "scope-local",
             "ax-sync",
+            "buddy-slab-allocator",
         ]
         .map(str::to_string)
         .to_vec();
@@ -713,6 +729,36 @@ mod tests {
                 vec!["test", "-p", "rsext4", "--features", "host-test"],
                 vec!["test", "-p", "scope-local", "--features", "host-test"],
                 vec!["test", "-p", "ax-sync", "--features", "host-test"],
+                vec![
+                    "test",
+                    "-p",
+                    "buddy-slab-allocator",
+                    "--features",
+                    "host-test",
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_aggregate_packages_run_only_their_standard_test_subset() {
+        let root = PathBuf::from("/tmp/workspace");
+        let packages = ["axvisor", "starry-kernel"].map(str::to_string).to_vec();
+        let mut runner = FakeCargoRunner::succeeding();
+
+        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
+
+        assert!(failed.is_empty());
+        let args = runner
+            .invocations
+            .iter()
+            .map(|(_, invocation)| invocation.args())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            vec![
+                vec!["test", "-p", "axvisor", "--features", "fs"],
+                vec!["test", "-p", "starry-kernel", "std_tests::"],
             ]
         );
     }
@@ -762,25 +808,28 @@ mod tests {
     fn profile_discovery_mismatch_fails_without_running_that_profile() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec!["ax-task".to_string()];
-        let basic_profile = &AX_TASK_FEATURE_PROFILES[1];
-        let diagnostic_profile = &AX_TASK_FEATURE_PROFILES[2];
+        let pure_profile = &AX_TASK_FEATURE_PROFILES[0];
+        let initialization_profile = &AX_TASK_FEATURE_PROFILES[1];
         let mut runner = FakeCargoRunner::succeeding()
             .with_ax_task_discovery()
-            .with_listing(basic_profile, &["tests::might_sleep_unexpected"])
-            .with_listing(diagnostic_profile, diagnostic_profile.expected_tests);
+            .with_listing(pure_profile, &["api::std_tests::unexpected"])
+            .with_listing(
+                initialization_profile,
+                initialization_profile.expected_tests,
+            );
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert_eq!(failed, vec!["ax-task"]);
         assert!(!runner.invocations.iter().any(|(_, invocation)| {
             invocation
-                == &CargoTestInvocation::for_profile("ax-task", basic_profile, CargoTestAction::Run)
+                == &CargoTestInvocation::for_profile("ax-task", pure_profile, CargoTestAction::Run)
         }));
         assert!(runner.invocations.iter().any(|(_, invocation)| {
             invocation
                 == &CargoTestInvocation::for_profile(
                     "ax-task",
-                    diagnostic_profile,
+                    initialization_profile,
                     CargoTestAction::Run,
                 )
         }));
@@ -817,6 +866,6 @@ mod tests {
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert_eq!(failed, vec!["ax-task", "ax-api"]);
-        assert_eq!(runner.invocations.len(), 7);
+        assert_eq!(runner.invocations.len(), 5);
     }
 }

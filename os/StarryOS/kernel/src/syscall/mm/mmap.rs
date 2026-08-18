@@ -1200,7 +1200,7 @@ pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> StarryResult<isize>
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn mmap_capped_device_map_len_rules_hold_for_test() -> bool {
     // capped_device_map_len: returns min of request and aligned available.
     let page_size = PAGE_SIZE_4K;

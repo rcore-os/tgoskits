@@ -91,7 +91,7 @@ fn has_ipc_permission(perm: &IpcPerm, current_uid: u32, current_gid: u32, is_wri
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn ipc_permission_and_constants_rules_hold_for_test() -> bool {
     // Test IPC constants
     assert!(IPC_PRIVATE == 0);

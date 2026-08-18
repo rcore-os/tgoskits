@@ -9,7 +9,6 @@ repository = "https://github.com/Starry-OS/scope-local"
 license = "Apache-2.0"
 
 [features]
-axtest = ["dep:axtest"]
 host-test = ["ax-sync/host-test", "cpu-local/host-test"]
 
 [dependencies]
@@ -17,12 +16,8 @@ ax-lazyinit.workspace = true
 ax-percpu.workspace = true
 ax-sync.workspace = true
 cpu-local.workspace = true
-axtest = { workspace = true, optional = true }
 
 [dev-dependencies]
-ax-sync.workspace = true
+ax-sync = { path = "../../os/arceos/modules/axsync" }
 ctor = "0.6"
-ax-percpu = { workspace = true, features = ["host-test"] }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+ax-percpu = { path = "../percpu/percpu", features = ["host-test"] }
