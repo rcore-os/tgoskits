@@ -291,7 +291,7 @@ pub fn sys_epoll_pwait2(
     )
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn epoll_validation_rules_hold_for_test() -> bool {
     use core::mem::size_of;
 

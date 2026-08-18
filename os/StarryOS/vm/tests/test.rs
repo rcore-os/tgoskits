@@ -164,3 +164,62 @@ fn load_until_nul_advances_for_elements_larger_than_one_chunk() {
 
     assert_eq!(vm_load_until_nul(&mut vm, ptr).unwrap().len(), 1);
 }
+
+/// A `VmIo` provider that rejects every non-empty access, used to verify that
+/// the slice/load helpers report denial before any copy is attempted.
+struct DenyVm;
+
+unsafe impl VmIo for DenyVm {
+    fn read(&mut self, _start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
+        if buf.is_empty() {
+            Ok(())
+        } else {
+            Err(VmError::AccessDenied)
+        }
+    }
+
+    fn write(&mut self, _start: usize, buf: &[u8]) -> VmResult {
+        if buf.is_empty() {
+            Ok(())
+        } else {
+            Err(VmError::AccessDenied)
+        }
+    }
+}
+
+#[test]
+fn vm_helpers_reject_denied_and_unaligned_inputs_before_copying() {
+    use starry_vm::{vm_load, vm_load_until_nul};
+
+    let mut vm = DenyVm;
+    let mut one_byte = [MaybeUninit::<u8>::uninit()];
+    assert_eq!(
+        vm_read_slice(&mut vm, core::ptr::null::<u8>(), &mut one_byte),
+        Err(VmError::AccessDenied)
+    );
+    assert_eq!(
+        vm_write_slice(&mut vm, core::ptr::null_mut::<u8>(), &[1]),
+        Err(VmError::AccessDenied)
+    );
+    assert_eq!(
+        vm_write_slice(&mut vm, core::ptr::null_mut::<u8>(), &[]),
+        Ok(())
+    );
+
+    let mut unaligned = [0_u16; 2];
+    let unaligned_ptr = unaligned
+        .as_mut_ptr()
+        .cast::<u8>()
+        .wrapping_add(1)
+        .cast::<u16>();
+    assert_eq!(
+        vm_load_until_nul(&mut vm, unaligned_ptr),
+        Err(VmError::BadAddress)
+    );
+
+    assert_eq!(vm_load(&mut vm, core::ptr::null::<u8>(), 0).unwrap(), []);
+    assert_eq!(
+        vm_load(&mut vm, core::ptr::null::<u8>(), 1),
+        Err(VmError::AccessDenied)
+    );
+}

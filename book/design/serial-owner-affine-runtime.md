@@ -205,12 +205,13 @@ mailbox 状态机的 host 确定性测试位于
 回归位于同目录的 `ingress.rs`。真实 SMP 探针由 Starry `axtest_kernel` 调用，只在
 `cfg(axtest)` 下编译：四个固定 CPU 的 producer 同时发布包含 CPU、本核 sequence 和
 checksum 的 record，测试 reader 验证 round-robin、核内 FIFO、完整性、零 gap 与零丢失，
-并确认日志 ring 已占用时独立 TTY ingress 仍可接受完整容量。四架构都通过
-`os/StarryOS/kernel/tests/qemu-<arch>-smp.toml` 明确使用 SMP=4，例如：
+并确认日志 ring 已占用时独立 TTY ingress 仍可接受完整容量。`axtest_kernel` 的 Cargo
+test target 通过 `required-features` 启用 `smp`，四架构都由 package 目录中的
+`os/StarryOS/kernel/qemu-<arch>.toml` 默认配置明确使用 SMP=4，例如：
 
 ```bash
 cargo xtask ktest qemu -p starry-kernel --test axtest_kernel \
-  --arch aarch64 --qemu-config os/StarryOS/kernel/tests/qemu-aarch64-smp.toml
+  --arch aarch64
 ```
 
 Starry grouped 回归新增 `test-tty-termios-transaction`，并保留

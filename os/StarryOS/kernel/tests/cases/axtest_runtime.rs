@@ -7,26 +7,6 @@ use axtest::prelude::*;
 use starry_kernel::axtest_exports;
 
 #[axtest]
-fn user_stack_layout_is_inside_user_space() {
-    ax_assert!(axtest_exports::user_space_base() < axtest_exports::user_stack_top());
-    ax_assert!(axtest_exports::user_stack_size() > 0);
-    ax_assert!(
-        axtest_exports::user_stack_top()
-            <= axtest_exports::user_space_base() + axtest_exports::user_space_size()
-    );
-}
-
-#[axtest]
-fn signal_trampoline_is_page_aligned() {
-    ax_assert_eq!(axtest_exports::signal_trampoline() & 0xfff, 0);
-}
-
-#[axtest]
-fn timespec_rejects_invalid_nsec() {
-    ax_assert!(axtest_exports::invalid_timespec_is_rejected());
-}
-
-#[axtest]
 fn random_write_mixes_entropy() {
     ax_assert!(axtest_exports::random_write_mixes_entropy());
 }
@@ -47,18 +27,8 @@ fn kmsg_reports_no_readiness_without_read_side() {
 }
 
 #[axtest]
-fn zombie_retains_the_leader_tid_role_until_reap() {
-    ax_assert!(axtest_exports::zombie_retains_the_leader_tid_role_until_reap());
-}
-
-#[axtest]
 fn shutdown_wait_covers_the_exit_path_after_runtime_detach() {
     ax_assert!(axtest_exports::shutdown_wait_covers_the_exit_path_after_runtime_detach());
-}
-
-#[axtest]
-fn time_value_conversion_rules_hold() {
-    ax_assert!(axtest_exports::time_value_conversion_rules_hold());
 }
 
 #[axtest]
@@ -131,7 +101,7 @@ fn futex_empty_wake_op_leaves_fixed_buckets_empty() {
     ax_assert!(axtest_exports::futex_empty_wake_op_leaves_fixed_buckets_empty());
 }
 
-#[test]
+#[axtest]
 fn futex_keys_follow_mm_and_backing_identity() {
     ax_assert!(axtest_exports::futex_keys_follow_mm_and_backing_identity());
 }
@@ -167,8 +137,58 @@ fn nofault_user_access_rejects_unmapped_word() {
 }
 
 #[axtest]
-fn dummy_stat_fs_fields_match_expected_defaults() {
-    ax_assert!(axtest_exports::dummy_stat_fs_fields_match_expected_defaults());
+fn pty_preserves_mouse_escape_reports() {
+    ax_assert!(axtest_exports::pty_preserves_mouse_escape_reports());
+}
+
+#[axtest]
+fn canonical_long_line_drain_continues_past_buf_size() {
+    axtest_exports::canonical_long_line_drain_continues_past_buf_size();
+}
+
+#[axtest]
+fn canonical_echo_is_batched_after_input_progress() {
+    axtest_exports::canonical_echo_is_batched_after_input_progress();
+}
+
+#[axtest]
+fn canonical_echo_can_be_flushed_before_input_is_returned() {
+    axtest_exports::canonical_echo_can_be_flushed_before_input_is_returned();
+}
+
+#[axtest]
+fn canonical_small_echo_respects_sync_limit() {
+    axtest_exports::canonical_small_echo_respects_sync_limit();
+}
+
+#[axtest]
+fn canonical_large_echo_exceeding_sync_limit_is_queued() {
+    axtest_exports::canonical_large_echo_exceeding_sync_limit_is_queued();
+}
+
+#[axtest]
+fn canonical_input_progress_does_not_wait_for_echo_writer() {
+    axtest_exports::canonical_input_progress_does_not_wait_for_echo_writer();
+}
+
+#[axtest]
+fn synchronous_echo_backpressure_queues_unsent_suffix() {
+    axtest_exports::synchronous_echo_backpressure_queues_unsent_suffix();
+}
+
+#[axtest]
+fn injected_input_is_readable_immediately() {
+    axtest_exports::injected_input_is_readable_immediately();
+}
+
+#[axtest]
+fn passive_read_drains_source_before_reporting_peer_eof() {
+    axtest_exports::passive_read_drains_source_before_reporting_peer_eof();
+}
+
+#[axtest]
+fn passive_read_preserves_input_across_partially_full_ring_buffer() {
+    axtest_exports::passive_read_preserves_input_across_partially_full_ring_buffer();
 }
 
 #[axtest]

@@ -74,10 +74,8 @@ pub fn vm_load_until_nul<I: VmIo, T: Pod>(vm: &mut I, ptr: *const T) -> VmResult
     Ok(result)
 }
 
-#[cfg(axtest)]
-/// Checks VM allocation constants and zero-value helpers used by axtest
-/// coverage.
-pub fn vm_alloc_is_zero_and_max_bytes_rules_hold_for_test() -> bool {
+#[cfg(test)]
+fn vm_alloc_is_zero_and_max_bytes_rules_hold_for_test() -> bool {
     // is_zero: zero value returns true
     let zero_val: u64 = 0;
     assert!(is_zero(&zero_val));
@@ -90,4 +88,12 @@ pub fn vm_alloc_is_zero_and_max_bytes_rules_hold_for_test() -> bool {
     assert!(MAX_BYTES == 131072);
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn allocation_constants_and_zero_value_helpers_hold() {
+        assert!(super::vm_alloc_is_zero_and_max_bytes_rules_hold_for_test());
+    }
 }

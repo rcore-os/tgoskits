@@ -3,8 +3,10 @@
 //! The suite emphasizes tree creation, lookup, deletion semantics, and the
 //! current behavior around implicit parent creation.
 
+// Host tests must link the external lock/task provider.
 use std::cell::Cell;
 
+use ax_runtime as _;
 use rsext4::{
     bmalloc::AbsoluteBN,
     checksum::verify_ext4_dirblock_checksum,

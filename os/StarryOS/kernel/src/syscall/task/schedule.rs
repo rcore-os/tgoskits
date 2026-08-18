@@ -799,7 +799,7 @@ fn set_thread_scheduler_nice(task: &UserTaskRef, nice: i32) -> crate::StarryResu
     Ok(())
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn schedule_clock_and_sched_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{
         CLOCK_MONOTONIC, CLOCK_REALTIME, SCHED_BATCH, SCHED_FIFO, SCHED_IDLE, SCHED_NORMAL,

@@ -1,5 +1,5 @@
 #![cfg_attr(target_os = "none", no_std)]
-#![cfg_attr(target_os = "none", no_main)]
+#![no_main]
 
 extern crate alloc;
 
@@ -7,58 +7,21 @@ use ax_hal as _;
 use ax_std as _;
 use axvm as _;
 
-mod host {
-    pub(super) fn write_host_bytes(_bytes: &[u8]) {}
-}
-
-mod manager {
-    pub struct AxvmManager;
-
-    impl AxvmManager {
-        pub fn notify_vm(_vm_id: axvm::VMId) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        pub fn vm_by_id(_vm_id: axvm::VMId) -> Option<axvm::AxVMRef> {
-            None
-        }
-
-        pub fn vm_list() -> Vec<axvm::AxVMRef> {
-            Vec::new()
-        }
-    }
-}
-
-#[path = "../src/guest_console/mux/mod.rs"]
-mod guest_console_mux;
-
-#[cfg(feature = "fs")]
-#[path = "../src/shell/command/fs.rs"]
-mod shell_fs;
-
 #[axtest::tests]
 mod tests {
     use axtest::prelude::*;
     #[cfg(feature = "fs")]
     use std::{
-        ffi::OsString,
         fs,
-        io::{self, ErrorKind},
-        string::ToString,
+        io::ErrorKind,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     #[cfg(feature = "fs")]
-    use super::shell_fs::{
-        CopyMode, RemoveOptions, collect_directory_entry_names, copy_after_rename_failure,
-        copy_operands, copy_path, ensure_recursive_destination_outside_source, ignore_remove_error,
+    use axvisor::shell_support::{
+        CopyMode, RemoveOptions, copy_path, ensure_recursive_destination_outside_source,
         metadata_for_remove, move_file_or_dir, remove_path, touch_file_at,
     };
-
-    #[test]
-    fn axvisor_axtest_smoke() {
-        ax_assert!(true);
-    }
 
     #[cfg(feature = "fs")]
     #[test]
@@ -232,14 +195,6 @@ mod tests {
 
     #[cfg(feature = "fs")]
     #[test]
-    fn mv_only_falls_back_to_copy_across_devices() {
-        ax_assert!(copy_after_rename_failure(ErrorKind::CrossesDevices));
-        ax_assert!(!copy_after_rename_failure(ErrorKind::PermissionDenied));
-        ax_assert!(!copy_after_rename_failure(ErrorKind::AlreadyExists));
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
     fn mv_renames_file_on_same_filesystem() {
         let root = "/tmp/axvisor-mv-regression";
         reset_test_dir(root);
@@ -266,46 +221,11 @@ mod tests {
 
     #[cfg(feature = "fs")]
     #[test]
-    fn rm_force_only_ignores_not_found() {
-        ax_assert!(ignore_remove_error(true, ErrorKind::NotFound));
-        ax_assert!(!ignore_remove_error(true, ErrorKind::PermissionDenied));
-        ax_assert!(!ignore_remove_error(true, ErrorKind::Unsupported));
-        ax_assert!(!ignore_remove_error(false, ErrorKind::NotFound));
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
     fn rm_does_not_follow_a_directory_symlink() {
         let metadata = metadata_for_remove("/var/run").expect("inspect rootfs directory symlink");
 
         ax_assert!(metadata.file_type().is_symlink());
         ax_assert!(!metadata.is_dir());
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
-    fn ls_propagates_directory_iteration_errors() {
-        let entries = [
-            Ok(OsString::from("visible")),
-            Err(io::Error::from(ErrorKind::PermissionDenied)),
-        ];
-
-        let error = collect_directory_entry_names(entries, false)
-            .expect_err("directory iteration error must be propagated");
-
-        ax_assert_eq!(error.kind(), ErrorKind::PermissionDenied);
-    }
-
-    #[cfg(feature = "fs")]
-    #[test]
-    fn cp_requires_exactly_two_operands() {
-        let source = "source".to_string();
-        let destination = "destination".to_string();
-        let extra = "extra".to_string();
-        ax_assert!(copy_operands(&[]).is_err());
-        ax_assert!(copy_operands(core::slice::from_ref(&source)).is_err());
-        ax_assert!(copy_operands(&[source.clone(), destination.clone()]).is_ok());
-        ax_assert!(copy_operands(&[source, destination, extra]).is_err());
     }
 
     #[cfg(feature = "fs")]

@@ -1,3 +1,4 @@
+// Link the external host lock provider (ax-runtime) into the test binary.
 use std::{
     sync::{
         Arc, Barrier,
@@ -9,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+use ax_runtime as _;
 use axpoll::{IoEvents, PollSet};
 
 struct Counter(AtomicUsize);

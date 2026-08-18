@@ -3,8 +3,10 @@
 //! These tests intentionally exercise unusual or degraded scenarios and record
 //! the current behavior, even when the behavior is not yet fully strict.
 
+// Host tests must link the external lock/task provider.
 use std::cell::Cell;
 
+use ax_runtime as _;
 use rsext4::{
     bmalloc::{AbsoluteBN, BGIndex},
     error::{Ext4Error, Ext4Result},

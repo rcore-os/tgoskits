@@ -656,7 +656,7 @@ pub fn zap_thread(tid: TidNumber) -> StarryResult<()> {
     Ok(())
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn decode_wait_status_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{CLD_DUMPED, CLD_EXITED, CLD_KILLED};
 

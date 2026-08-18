@@ -543,10 +543,8 @@ impl Process {
 
     /// Creates an isolated process for kernel axtests without replacing init.
     #[cfg(any(test, axtest))]
-    pub fn new_for_axtest(identity: Arc<PidIdentity>) -> Arc<Process> {
-        let process = Self::allocate(identity, None);
-        ProcessRelationTxn::attach_group(&process);
-        process
+    pub(crate) fn new_for_axtest(identity: Arc<PidIdentity>) -> Arc<Process> {
+        Self::new_group_member(identity, None)
     }
 }
 

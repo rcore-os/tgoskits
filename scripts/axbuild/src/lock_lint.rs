@@ -8,8 +8,19 @@ use anyhow::{Context, bail};
 use toml::Value;
 use walkdir::{DirEntry, WalkDir};
 
-const REMOVED_LOCK_PACKAGES: &[&str] = &["ax-kspin", "ax-kernel-guard", "ax-lockdep"];
-const REMOVED_LOCK_IMPORTS: &[&str] = &["ax_kspin", "ax_kernel_guard", "ax_lockdep"];
+const REMOVED_LOCK_PACKAGES: &[&str] = &[
+    "ax-kspin",
+    "ax-kernel-guard",
+    "ax-lockdep",
+    "ax-sync-test-support",
+];
+const REMOVED_LOCK_IMPORTS: &[&str] = &[
+    "ax_kspin",
+    "ax_kernel_guard",
+    "ax_lockdep",
+    "ax_sync_test_support",
+];
+const REMOVED_AX_SYNC_FEATURES: &[&str] = &["smp", "lockdep"];
 const DIRECT_SPIN_PATTERNS: &[&str] = &["use spin", "extern crate spin"];
 const PROVIDER_TRAITS: &[&str] = &[
     "ContextOps",
@@ -19,6 +30,13 @@ const PROVIDER_TRAITS: &[&str] = &[
     "LockdepOps",
 ];
 const RUNTIME_PROVIDER_PATH: &str = "os/arceos/modules/axruntime/src/sync.rs";
+const AX_SYNC_HOST_MODULE_PATH: &str = "os/arceos/modules/axsync/src/lib.rs";
+const AX_SYNC_OS_EDGE_ALLOWLIST: &[&str] = &[
+    "os/arceos/modules/axruntime/Cargo.toml",
+    "os/arceos/modules/axhal/Cargo.toml",
+    "os/arceos/modules/axmm/Cargo.toml",
+    "os/arceos/modules/axipi/Cargo.toml",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Finding {
@@ -85,6 +103,10 @@ fn lint_workspace(workspace_root: &Path) -> anyhow::Result<Vec<Finding>> {
 }
 
 fn check_manifests(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow::Result<()> {
+    let workspace_manifest = read_toml(&workspace_root.join("Cargo.toml"))?;
+    let internal_workspace_dependencies =
+        collect_internal_workspace_dependencies(&workspace_manifest);
+
     for entry in WalkDir::new(workspace_root)
         .into_iter()
         .filter_entry(should_visit_entry)
@@ -114,9 +136,34 @@ fn check_manifests(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow
         if path == workspace_root.join("Cargo.toml") {
             check_removed_workspace_members(path, &manifest, findings);
         }
-        check_dependency_tables(path, &manifest, findings);
+        check_dependency_tables(
+            workspace_root,
+            path,
+            &manifest,
+            &internal_workspace_dependencies,
+            findings,
+        );
+        check_removed_feature_forwarding(path, &manifest, "manifest", findings);
     }
     Ok(())
+}
+
+fn collect_internal_workspace_dependencies(manifest: &Value) -> HashSet<String> {
+    manifest
+        .get("workspace")
+        .and_then(Value::as_table)
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(Value::as_table)
+        .into_iter()
+        .flat_map(|dependencies| dependencies.iter())
+        .filter_map(|(name, dependency)| {
+            dependency
+                .as_table()
+                .and_then(|dependency| dependency.get("path"))
+                .and_then(Value::as_str)
+                .map(|_| name.clone())
+        })
+        .collect()
 }
 
 fn check_removed_workspace_members(
@@ -155,7 +202,13 @@ fn check_removed_workspace_members(
     }
 }
 
-fn check_dependency_tables(manifest_path: &Path, value: &Value, findings: &mut Vec<Finding>) {
+fn check_dependency_tables(
+    workspace_root: &Path,
+    manifest_path: &Path,
+    value: &Value,
+    internal_workspace_dependencies: &HashSet<String>,
+    findings: &mut Vec<Finding>,
+) {
     let Some(table) = value.as_table() else {
         return;
     };
@@ -174,6 +227,18 @@ fn check_dependency_tables(manifest_path: &Path, value: &Value, findings: &mut V
                     .unwrap_or(dependency_name);
                 let location = format!("{key}.{dependency_name}");
 
+                if key == "dev-dependencies" {
+                    check_internal_dev_dependency(
+                        workspace_root,
+                        manifest_path,
+                        dependency_name,
+                        dependency,
+                        internal_workspace_dependencies,
+                        &location,
+                        findings,
+                    );
+                }
+
                 if package_name == "spin" {
                     findings.push(Finding::new(
                         manifest_path,
@@ -190,52 +255,168 @@ fn check_dependency_tables(manifest_path: &Path, value: &Value, findings: &mut V
                         "depend on ax-sync and select context policy at lock acquisition",
                     ));
                 }
-                if is_axvisor_manifest(manifest_path) && package_name == "ax-sync" {
-                    findings.push(Finding::new(
+                if package_name == "ax-sync" {
+                    check_removed_dependency_features(
                         manifest_path,
                         &location,
-                        "Axvisor must not depend directly on ax-sync",
-                        "use std::sync normally and ax_std::os::arceos::sync in special contexts",
-                    ));
+                        dependency,
+                        findings,
+                    );
                 }
-                if is_posix_api_manifest(manifest_path) && package_name == "ax-sync" {
-                    findings.push(Finding::new(
-                        manifest_path,
-                        &location,
-                        "ax-posix-api must not depend directly on ax-sync",
-                        "consume synchronization primitives through ax-runtime::sync",
-                    ));
-                }
-                if is_ax_std_manifest(manifest_path) && package_name == "ax-sync" {
-                    findings.push(Finding::new(
-                        manifest_path,
-                        &location,
-                        "ax-std must not depend directly on ax-sync",
-                        "consume synchronization primitives through ax-runtime::sync",
-                    ));
-                }
-                if is_axnsproxy_manifest(manifest_path) && package_name == "ax-sync" {
-                    findings.push(Finding::new(
-                        manifest_path,
-                        &location,
-                        "axnsproxy must not depend directly on ax-sync",
-                        "consume synchronization primitives through ax-runtime::sync",
-                    ));
-                }
-                if is_starry_domain_manifest(manifest_path) && package_name == "ax-sync" {
+                if package_name == "ax-sync"
+                    && is_os_layer_manifest(workspace_root, manifest_path)
+                    && !is_allowed_ax_sync_os_edge(workspace_root, manifest_path)
+                {
                     findings.push(Finding::new(
                         manifest_path,
                         &location,
                         "OS-layer crate must not depend directly on ax-sync",
-                        "consume synchronization primitives through ax-runtime::sync",
+                        "use ax-runtime::sync, crate::sync, or ax_std::os::arceos::sync; only \
+                         documented cycle-breaking edges may use ax-sync directly",
                     ));
                 }
             }
         }
 
         if value.is_table() {
-            check_dependency_tables(manifest_path, value, findings);
+            check_dependency_tables(
+                workspace_root,
+                manifest_path,
+                value,
+                internal_workspace_dependencies,
+                findings,
+            );
         }
+    }
+}
+
+fn check_internal_dev_dependency(
+    workspace_root: &Path,
+    manifest_path: &Path,
+    dependency_name: &str,
+    dependency: &Value,
+    internal_workspace_dependencies: &HashSet<String>,
+    location: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let Some(dependency) = dependency.as_table() else {
+        return;
+    };
+
+    let inherits_workspace_version = dependency
+        .get("workspace")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && internal_workspace_dependencies.contains(dependency_name);
+    if inherits_workspace_version {
+        findings.push(Finding::new(
+            manifest_path,
+            location,
+            "workspace-internal dev-dependency must not inherit a version",
+            "use a relative path-only dev-dependency so cargo publish strips it",
+        ));
+        return;
+    }
+
+    if dependency.contains_key("version")
+        && dependency_path_is_inside_workspace(workspace_root, manifest_path, dependency)
+    {
+        findings.push(Finding::new(
+            manifest_path,
+            location,
+            "workspace-internal dev-dependency must not specify a version",
+            "remove `version` and keep only the relative path and required test features",
+        ));
+    }
+}
+
+fn dependency_path_is_inside_workspace(
+    workspace_root: &Path,
+    manifest_path: &Path,
+    dependency: &toml::value::Table,
+) -> bool {
+    let Some(dependency_path) = dependency.get("path").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(manifest_dir) = manifest_path.parent() else {
+        return false;
+    };
+    let Ok(workspace_root) = workspace_root.canonicalize() else {
+        return false;
+    };
+    let Ok(dependency_path) = manifest_dir.join(dependency_path).canonicalize() else {
+        return false;
+    };
+
+    dependency_path.starts_with(workspace_root)
+}
+
+fn check_removed_dependency_features(
+    manifest_path: &Path,
+    location: &str,
+    dependency: &Value,
+    findings: &mut Vec<Finding>,
+) {
+    let Some(features) = dependency
+        .as_table()
+        .and_then(|dependency| dependency.get("features"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    for feature in features.iter().filter_map(Value::as_str) {
+        if REMOVED_AX_SYNC_FEATURES.contains(&feature) {
+            findings.push(Finding::new(
+                manifest_path,
+                format!("{location}.features"),
+                format!("removed ax-sync feature `{feature}` is still requested"),
+                "SMP and lockdep behavior belong to the selected runtime engine",
+            ));
+        }
+    }
+}
+
+fn check_removed_feature_forwarding(
+    manifest_path: &Path,
+    value: &Value,
+    location: &str,
+    findings: &mut Vec<Finding>,
+) {
+    match value {
+        Value::String(feature) => {
+            if REMOVED_AX_SYNC_FEATURES
+                .iter()
+                .any(|removed| feature == &format!("ax-sync/{removed}"))
+            {
+                findings.push(Finding::new(
+                    manifest_path,
+                    location,
+                    format!("removed ax-sync feature forwarding `{feature}` remains"),
+                    "remove the forwarding; the provider selects SMP and lockdep behavior",
+                ));
+            }
+        }
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                check_removed_feature_forwarding(
+                    manifest_path,
+                    value,
+                    &format!("{location}[{index}]"),
+                    findings,
+                );
+            }
+        }
+        Value::Table(table) => {
+            for (key, value) in table {
+                check_removed_feature_forwarding(
+                    manifest_path,
+                    value,
+                    &format!("{location}.{key}"),
+                    findings,
+                );
+            }
+        }
+        _ => {}
     }
 }
 
@@ -265,22 +446,12 @@ fn check_source_boundaries(
         let relative = relative_path(workspace_root, path);
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        let source_lines = source_lines_without_comments(&contents);
-        let has_local_spin_module = source_lines.iter().any(|line| {
-            matches!(
-                line.trim(),
-                "mod spin;" | "pub mod spin;" | "pub(crate) mod spin;"
-            )
-        });
-        let mut in_local_use_group = false;
 
-        for (line_index, line) in source_lines.iter().enumerate() {
-            let starts_local_use_group = ["use self::", "use super::", "use crate::"]
-                .iter()
-                .any(|prefix| line.contains(prefix) && line.contains('{'));
-            let local_spin_path =
-                has_local_spin_module || in_local_use_group || starts_local_use_group;
-            if contains_direct_spin_path(line) && !local_spin_path {
+        let mut internal_use_tree_depth = 0usize;
+        for (line_index, line) in source_lines_without_comments(&contents).iter().enumerate() {
+            let in_internal_use_tree =
+                line_is_in_internal_use_tree(line, &mut internal_use_tree_depth);
+            if !in_internal_use_tree && contains_direct_spin_path(line) {
                 findings.push(Finding::new(
                     path,
                     format!("line {}", line_index + 1),
@@ -289,7 +460,7 @@ fn check_source_boundaries(
                 ));
             }
             for pattern in DIRECT_SPIN_PATTERNS {
-                if line.contains(pattern) && !local_spin_path {
+                if line.contains(pattern) {
                     findings.push(Finding::new(
                         path,
                         format!("line {}", line_index + 1),
@@ -311,7 +482,6 @@ fn check_source_boundaries(
             }
 
             if is_starry_kernel_source(&relative)
-                && relative != "os/StarryOS/kernel/src/sync.rs"
                 && (line.contains("ax_sync::") || line.contains("use ax_sync"))
             {
                 findings.push(Finding::new(
@@ -322,8 +492,34 @@ fn check_source_boundaries(
                 ));
             }
 
-            if is_axvisor_source(&relative)
+            if is_starry_kernel_source(&relative)
+                && relative != "os/StarryOS/kernel/src/sync.rs"
+                && line.contains("ax_runtime::sync")
+            {
+                findings.push(Finding::new(
+                    path,
+                    format!("line {}", line_index + 1),
+                    "Starry kernel lock code bypasses crate::sync runtime facade",
+                    "import synchronization primitives from crate::sync",
+                ));
+            }
+
+            if relative.starts_with("os/arceos/modules/axtask/src/")
                 && (line.contains("ax_sync::") || line.contains("use ax_sync"))
+            {
+                findings.push(Finding::new(
+                    path,
+                    format!("line {}", line_index + 1),
+                    "ax-task must not depend on the ax-sync bridge",
+                    "use the native crate::sync implementation",
+                ));
+            }
+
+            if is_axvisor_source(&relative)
+                && (line.contains("ax_sync::")
+                    || line.contains("use ax_sync")
+                    || line.contains("ax_task::sync")
+                    || line.contains("ax_runtime::sync"))
             {
                 findings.push(Finding::new(
                     path,
@@ -331,46 +527,6 @@ fn check_source_boundaries(
                     "Axvisor code bypasses its std/ax_std synchronization boundary",
                     "use std::sync normally or ax_std::os::arceos::sync for special contexts",
                 ));
-            }
-
-            if is_posix_api_source(&relative)
-                && (line.contains("ax_sync::") || line.contains("use ax_sync"))
-            {
-                findings.push(Finding::new(
-                    path,
-                    format!("line {}", line_index + 1),
-                    "ax-posix-api bypasses ax-runtime::sync",
-                    "import synchronization primitives from ax_runtime::sync or crate::sync",
-                ));
-            }
-
-            if is_ax_std_source(&relative)
-                && (line.contains("ax_sync::") || line.contains("use ax_sync"))
-            {
-                findings.push(Finding::new(
-                    path,
-                    format!("line {}", line_index + 1),
-                    "ax-std bypasses ax-runtime::sync",
-                    "import synchronization primitives from ax_runtime::sync",
-                ));
-            }
-
-            if is_axnsproxy_source(&relative)
-                && (line.contains("ax_sync::") || line.contains("use ax_sync"))
-            {
-                findings.push(Finding::new(
-                    path,
-                    format!("line {}", line_index + 1),
-                    "axnsproxy bypasses ax-runtime::sync",
-                    "import synchronization primitives from ax_runtime::sync",
-                ));
-            }
-
-            if starts_local_use_group && !line.contains(';') {
-                in_local_use_group = true;
-            }
-            if in_local_use_group && line.contains(';') {
-                in_local_use_group = false;
             }
         }
     }
@@ -393,6 +549,35 @@ fn contains_direct_spin_path(line: &str) -> bool {
             .next_back()
             .is_some_and(|character| character.is_alphanumeric() || character == '_')
     })
+}
+
+fn line_is_in_internal_use_tree(line: &str, depth: &mut usize) -> bool {
+    let starts_internal_tree = *depth == 0 && starts_internal_use_tree(line);
+    let in_internal_tree = *depth != 0 || starts_internal_tree;
+    if !in_internal_tree {
+        return false;
+    }
+
+    let opens = line.bytes().filter(|byte| *byte == b'{').count();
+    let closes = line.bytes().filter(|byte| *byte == b'}').count();
+    *depth = depth.saturating_add(opens).saturating_sub(closes);
+    in_internal_tree
+}
+
+fn starts_internal_use_tree(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(use_index) = trimmed.find("use ") else {
+        return false;
+    };
+    if use_index != 0 && !trimmed[..use_index].starts_with("pub") {
+        return false;
+    }
+
+    let path = &trimmed[use_index + "use ".len()..];
+    path.contains('{')
+        && ["crate::", "self::", "super::"]
+            .iter()
+            .any(|root| path.starts_with(root))
 }
 
 fn check_runtime_providers(
@@ -423,7 +608,10 @@ fn check_runtime_providers(
         let contents = fs::read_to_string(entry.path())
             .with_context(|| format!("failed to read {}", entry.path().display()))?;
         for (trait_index, trait_name) in PROVIDER_TRAITS.iter().enumerate() {
-            let occurrences = provider_occurrences(&contents, trait_name);
+            let qualified = format!("impl ax_sync::interface::{trait_name} for");
+            let local = format!("impl {trait_name} for");
+            let occurrences =
+                contents.matches(&qualified).count() + contents.matches(&local).count();
             if occurrences == 0 {
                 continue;
             }
@@ -451,30 +639,26 @@ fn check_runtime_providers(
             ));
         }
     }
-    check_provider_cfgs(workspace_root, findings)?;
+    check_host_engine_cfg(workspace_root, findings)?;
     Ok(())
 }
 
-fn provider_occurrences(contents: &str, trait_name: &str) -> usize {
-    let qualified = format!("impl ax_sync::interface::{trait_name} for");
-    let local = format!("impl {trait_name} for");
-    contents.matches(&qualified).count() + contents.matches(&local).count()
-}
-
-fn check_provider_cfgs(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow::Result<()> {
-    let runtime_path = workspace_root.join(RUNTIME_PROVIDER_PATH);
-    if runtime_path.exists() {
-        let contents = fs::read_to_string(&runtime_path)
-            .with_context(|| format!("failed to read {}", runtime_path.display()))?;
-        let code = source_lines_without_comments(&contents).join("\n");
-        if code.contains("target_os") || code.contains("feature = \"host-test\"") {
-            findings.push(Finding::new(
-                &runtime_path,
-                "provider cfg",
-                "ax-runtime providers must not be split by target or host-test cfg",
-                "keep one ax-runtime provider implementation for production and host validation",
-            ));
-        }
+fn check_host_engine_cfg(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow::Result<()> {
+    let path = workspace_root.join(AX_SYNC_HOST_MODULE_PATH);
+    if !path.exists() {
+        return Ok(());
+    }
+    let contents =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    if !contents.contains("all(feature = \"host-test\", not(target_os = \"none\"))")
+        || !contents.contains("mod host;")
+    {
+        findings.push(Finding::new(
+            &path,
+            "host engine cfg",
+            "ax-sync host engine is not restricted to host-test on std-capable targets",
+            "gate the host module with all(feature = \"host-test\", not(target_os = \"none\"))",
+        ));
     }
     Ok(())
 }
@@ -544,55 +728,23 @@ fn is_starry_kernel_source(relative: &str) -> bool {
     relative.starts_with("os/StarryOS/kernel/src/")
 }
 
-fn is_axvisor_manifest(path: &Path) -> bool {
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    normalized.ends_with("/virtualization/axvm/Cargo.toml")
-        || normalized.ends_with("/os/axvisor/Cargo.toml")
+fn is_os_layer_manifest(workspace_root: &Path, path: &Path) -> bool {
+    let relative = relative_path(workspace_root, path);
+    relative.starts_with("os/arceos/api/")
+        || relative.starts_with("os/arceos/modules/")
+        || relative.starts_with("os/arceos/ulib/")
+        || relative.starts_with("os/StarryOS/")
+        || relative.starts_with("os/axvisor/")
+        || relative.starts_with("virtualization/axvm/")
 }
 
-fn is_starry_domain_manifest(path: &Path) -> bool {
-    let normalized = path.to_string_lossy().replace('\\', "/");
-    [
-        "/os/StarryOS/process/Cargo.toml",
-        "/os/StarryOS/signal/Cargo.toml",
-        "/os/StarryOS/vm/Cargo.toml",
-    ]
-    .iter()
-    .any(|suffix| normalized.ends_with(suffix))
+fn is_allowed_ax_sync_os_edge(workspace_root: &Path, path: &Path) -> bool {
+    let relative = relative_path(workspace_root, path);
+    AX_SYNC_OS_EDGE_ALLOWLIST.contains(&relative.as_str())
 }
 
 fn is_axvisor_source(relative: &str) -> bool {
     relative.starts_with("virtualization/axvm/src/") || relative.starts_with("os/axvisor/src/")
-}
-
-fn is_posix_api_manifest(path: &Path) -> bool {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .ends_with("/os/arceos/api/arceos_posix_api/Cargo.toml")
-}
-
-fn is_posix_api_source(relative: &str) -> bool {
-    relative.starts_with("os/arceos/api/arceos_posix_api/src/")
-}
-
-fn is_ax_std_manifest(path: &Path) -> bool {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .ends_with("/os/arceos/ulib/axstd/Cargo.toml")
-}
-
-fn is_ax_std_source(relative: &str) -> bool {
-    relative.starts_with("os/arceos/ulib/axstd/src/")
-}
-
-fn is_axnsproxy_manifest(path: &Path) -> bool {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .ends_with("/os/StarryOS/axnsproxy/Cargo.toml")
-}
-
-fn is_axnsproxy_source(relative: &str) -> bool {
-    relative.starts_with("os/StarryOS/axnsproxy/src/")
 }
 
 fn relative_path(workspace_root: &Path, path: &Path) -> String {
@@ -669,10 +821,107 @@ impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {}
         );
     }
 
+    fn write_workspace_with_internal_helper(root: &Path) {
+        write_minimal_workspace(root);
+        write_file(
+            root,
+            "Cargo.toml",
+            r#"
+[workspace]
+members = ["crate", "helper"]
+
+[workspace.dependencies]
+helper = { version = "0.1.0", path = "helper" }
+"#,
+        );
+        write_file(
+            root,
+            "helper/Cargo.toml",
+            r#"
+[package]
+name = "helper"
+version = "0.1.0"
+edition = "2024"
+"#,
+        );
+    }
+
     #[test]
     fn accepts_unified_lock_workspace() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
+
+        assert!(lint_workspace(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_versioned_workspace_internal_dev_dependency() {
+        let root = tempfile::tempdir().unwrap();
+        write_workspace_with_internal_helper(root.path());
+        write_file(
+            root.path(),
+            "crate/Cargo.toml",
+            r#"
+[package]
+name = "crate"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+helper.workspace = true
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.location == "dev-dependencies.helper"
+                && finding.message.contains("must not inherit a version")
+        }));
+    }
+
+    #[test]
+    fn rejects_versioned_path_internal_dev_dependency() {
+        let root = tempfile::tempdir().unwrap();
+        write_workspace_with_internal_helper(root.path());
+        write_file(
+            root.path(),
+            "crate/Cargo.toml",
+            r#"
+[package]
+name = "crate"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+helper = { version = "0.1.0", path = "../helper" }
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.location == "dev-dependencies.helper"
+                && finding.message.contains("must not specify a version")
+        }));
+    }
+
+    #[test]
+    fn accepts_path_only_internal_and_versioned_external_dev_dependencies() {
+        let root = tempfile::tempdir().unwrap();
+        write_workspace_with_internal_helper(root.path());
+        write_file(
+            root.path(),
+            "crate/Cargo.toml",
+            r#"
+[package]
+name = "crate"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+helper = { path = "../helper" }
+external = "1"
+"#,
+        );
 
         assert!(lint_workspace(root.path()).unwrap().is_empty());
     }
@@ -723,29 +972,31 @@ spin = "0.12"
     }
 
     #[test]
-    fn accepts_local_spin_module_paths() {
+    fn accepts_internal_spin_module_use_trees() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
             root.path(),
             "crate/src/lib.rs",
             r#"
-mod spin;
-pub use self::{
-    other::Thing,
-    spin::LocalSpin,
+use crate::{
+    mutex::RawMutex,
+    spin::lockdep::LockdepMap,
 };
-mod child {
-    use crate::{
-        other::Other,
-        spin::LocalSpin,
-    };
-    use super::spin::OtherSpin;
-}
+pub use self::{
+    context::Guard,
+    spin::*,
+};
 "#,
         );
 
-        assert!(lint_workspace(root.path()).unwrap().is_empty());
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(
+            findings
+                .iter()
+                .all(|finding| !finding.message.contains("direct crates.io")),
+            "internal spin module was mistaken for crates.io spin: {findings:?}"
+        );
     }
 
     #[test]
@@ -792,41 +1043,6 @@ legacy = { package = "ax-lockdep", version = "0.1" }
     }
 
     #[test]
-    fn rejects_axnsproxy_bypassing_runtime_sync_facade() {
-        let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
-        write_file(
-            root.path(),
-            "os/StarryOS/axnsproxy/Cargo.toml",
-            r#"
-[package]
-name = "axnsproxy"
-version = "0.1.0"
-edition = "2024"
-[dependencies]
-ax-sync = "0.1"
-"#,
-        );
-        write_file(
-            root.path(),
-            "os/StarryOS/axnsproxy/src/lib.rs",
-            "use ax_sync::SpinLock;\n",
-        );
-
-        let findings = lint_workspace(root.path()).unwrap();
-        assert!(findings.iter().any(|finding| {
-            finding
-                .message
-                .contains("axnsproxy must not depend directly on ax-sync")
-        }));
-        assert!(findings.iter().any(|finding| {
-            finding
-                .message
-                .contains("axnsproxy bypasses ax-runtime::sync")
-        }));
-    }
-
-    #[test]
     fn rejects_axvisor_low_level_dependency_and_import() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
@@ -862,83 +1078,13 @@ ax-sync = "0.1"
     }
 
     #[test]
-    fn rejects_posix_api_bypassing_runtime_sync_facade() {
-        let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
-        write_file(
-            root.path(),
-            "os/arceos/api/arceos_posix_api/Cargo.toml",
-            r#"
-[package]
-name = "ax-posix-api"
-version = "0.1.0"
-edition = "2024"
-[dependencies]
-ax-sync = "0.1"
-"#,
-        );
-        write_file(
-            root.path(),
-            "os/arceos/api/arceos_posix_api/src/lib.rs",
-            "use ax_sync::SpinLock;\n",
-        );
-
-        let findings = lint_workspace(root.path()).unwrap();
-        assert!(findings.iter().any(|finding| {
-            finding
-                .message
-                .contains("ax-posix-api must not depend directly on ax-sync")
-        }));
-        assert!(findings.iter().any(|finding| {
-            finding
-                .message
-                .contains("ax-posix-api bypasses ax-runtime::sync")
-        }));
-    }
-
-    #[test]
-    fn rejects_ax_std_bypassing_runtime_sync_facade() {
-        let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
-        write_file(
-            root.path(),
-            "os/arceos/ulib/axstd/Cargo.toml",
-            r#"
-[package]
-name = "ax-std"
-version = "0.1.0"
-edition = "2024"
-[dependencies]
-ax-sync = "0.1"
-"#,
-        );
-        write_file(
-            root.path(),
-            "os/arceos/ulib/axstd/src/lib.rs",
-            "use ax_sync::SpinLock;\n",
-        );
-
-        let findings = lint_workspace(root.path()).unwrap();
-        assert!(findings.iter().any(|finding| {
-            finding
-                .message
-                .contains("ax-std must not depend directly on ax-sync")
-        }));
-        assert!(
-            findings
-                .iter()
-                .any(|finding| { finding.message.contains("ax-std bypasses ax-runtime::sync") })
-        );
-    }
-
-    #[test]
     fn rejects_second_production_provider() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
             root.path(),
             "crate/src/provider.rs",
-            "impl ax_sync::interface::SpinOps for OtherRuntime {}\n",
+            "impl ax_sync::interface::ContextOps for OtherRuntime {}\n",
         );
 
         let findings = lint_workspace(root.path()).unwrap();
@@ -950,74 +1096,14 @@ ax-sync = "0.1"
     }
 
     #[test]
-    fn rejects_current_context_provider_outside_runtime() {
+    fn rejects_unconditional_host_engine() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
             root.path(),
-            "crate/src/provider.rs",
-            "impl ax_sync::interface::ContextOps for OtherRuntime {}\n",
-        );
-
-        let findings = lint_workspace(root.path()).unwrap();
-        assert!(findings.iter().any(|finding| {
-            finding
-                .message
-                .contains("ContextOps provider exists outside ax-runtime")
-        }));
-    }
-
-    #[test]
-    fn rejects_mutex_provider_outside_runtime() {
-        let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
-        write_file(
-            root.path(),
-            "components/ax-task/src/provider.rs",
-            "impl ax_sync::interface::MutexOps for TaskProvider {}\n",
-        );
-
-        let findings = lint_workspace(root.path()).unwrap();
-        assert!(findings.iter().any(|finding| {
-            finding
-                .message
-                .contains("MutexOps provider exists outside ax-runtime")
-        }));
-    }
-
-    #[test]
-    fn rejects_lockdep_provider_outside_runtime() {
-        let root = tempfile::tempdir().unwrap();
-        write_minimal_workspace(root.path());
-        write_file(
-            root.path(),
-            "components/ax-task/src/lockdep_provider.rs",
-            "impl ax_sync::interface::LockdepOps for TaskLockdepOps {}\n",
-        );
-
-        let findings = lint_workspace(root.path()).unwrap();
-        assert!(findings.iter().any(|finding| {
-            finding
-                .message
-                .contains("LockdepOps provider exists outside ax-runtime")
-        }));
-    }
-
-    #[test]
-    fn rejects_target_os_based_provider_selection() {
-        let root = tempfile::tempdir().unwrap();
-        write_file(root.path(), "Cargo.toml", "[workspace]\nmembers = []\n");
-        write_file(root.path(), "Cargo.lock", "version = 4\n");
-        write_file(
-            root.path(),
-            RUNTIME_PROVIDER_PATH,
+            AX_SYNC_HOST_MODULE_PATH,
             r#"
-#[cfg(target_os = "none")]
-impl ax_sync::interface::ContextOps for RuntimeContextOps {}
-impl ax_sync::interface::SpinOps for RuntimeSpinOps {}
-impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {}
-impl ax_sync::interface::MutexOps for RuntimeMutexOps {}
-impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {}
+mod host;
 "#,
         );
 
@@ -1025,25 +1111,72 @@ impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {}
         assert!(findings.iter().any(|finding| {
             finding
                 .message
-                .contains("must not be split by target or host-test cfg")
+                .contains("host engine is not restricted to host-test")
         }));
     }
 
     #[test]
-    fn rejects_host_test_based_provider_selection() {
+    fn accepts_target_aware_host_provider_selection() {
         let root = tempfile::tempdir().unwrap();
-        write_file(root.path(), "Cargo.toml", "[workspace]\nmembers = []\n");
-        write_file(root.path(), "Cargo.lock", "version = 4\n");
+        write_minimal_workspace(root.path());
         write_file(
             root.path(),
-            RUNTIME_PROVIDER_PATH,
+            AX_SYNC_HOST_MODULE_PATH,
             r#"
-#[cfg(not(feature = "host-test"))]
-impl ax_sync::interface::ContextOps for RuntimeContextOps {}
-impl ax_sync::interface::SpinOps for RuntimeSpinOps {}
-impl ax_sync::interface::RwLockOps for RuntimeRwLockOps {}
-impl ax_sync::interface::MutexOps for RuntimeMutexOps {}
-impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {}
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+mod host;
+"#,
+        );
+
+        assert!(lint_workspace(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_removed_ax_sync_features() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "crate/Cargo.toml",
+            r#"
+[package]
+name = "crate"
+version = "0.1.0"
+edition = "2024"
+[features]
+smp = ["ax-sync/smp"]
+[dependencies]
+ax-sync = { version = "0.1", features = ["lockdep"] }
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.message.contains("smp"))
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.message.contains("lockdep"))
+        );
+    }
+
+    #[test]
+    fn rejects_removed_ax_sync_test_support() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "crate/Cargo.toml",
+            r#"
+[package]
+name = "crate"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+ax-sync-test-support = "0.1"
 "#,
         );
 
@@ -1051,9 +1184,35 @@ impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {}
         assert!(findings.iter().any(|finding| {
             finding
                 .message
-                .contains("must not be split by target or host-test cfg")
+                .contains("dependency on removed lock crate `ax-sync-test-support`")
         }));
     }
+
+    #[test]
+    fn rejects_os_layer_ax_sync_dependency_outside_allowlist() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "os/arceos/modules/axtask/Cargo.toml",
+            r#"
+[package]
+name = "ax-task"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+ax-sync = "0.1"
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding
+                .message
+                .contains("OS-layer crate must not depend directly")
+        }));
+    }
+
     #[test]
     fn rejects_starry_signal_domain_crate_ax_sync_dependency() {
         let root = tempfile::tempdir().unwrap();
@@ -1077,5 +1236,25 @@ ax-sync = "0.1"
                 .message
                 .contains("OS-layer crate must not depend directly")
         }));
+    }
+
+    #[test]
+    fn accepts_documented_cycle_breaking_ax_sync_edge() {
+        let root = tempfile::tempdir().unwrap();
+        write_minimal_workspace(root.path());
+        write_file(
+            root.path(),
+            "os/arceos/modules/axhal/Cargo.toml",
+            r#"
+[package]
+name = "ax-hal"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+ax-sync = "0.1"
+"#,
+        );
+
+        assert!(lint_workspace(root.path()).unwrap().is_empty());
     }
 }

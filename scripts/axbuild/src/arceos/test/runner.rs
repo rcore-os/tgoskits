@@ -3,9 +3,8 @@ use std::time::Instant;
 use anyhow::{Context, bail};
 
 use super::{
-    ARCEOS_AXTEST_GROUP, ARCEOS_TEST_SUITE_OS,
-    args::{ArgsTestQemu, reject_removed_rust_package_filter},
-    axtest_qemu::test_axtest_qemu,
+    ARCEOS_TEST_SUITE_OS,
+    args::{ArgsTestQemu, reject_missing_qemu_target, reject_removed_rust_package_filter},
     c_qemu::test_c_qemu,
     discovery::selected_qemu_test_groups,
     generic_qemu::test_generic_qemu,
@@ -54,12 +53,6 @@ pub(super) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
                 QemuTestFlow::C => {
                     trees.extend(list_c_qemu_cases(arceos, None, args.test_case.as_deref())?)
                 }
-                QemuTestFlow::Axtest => trees.extend(list_generic_qemu_cases(
-                    arceos,
-                    None,
-                    ARCEOS_AXTEST_GROUP,
-                    args.test_case.as_deref(),
-                )?),
                 QemuTestFlow::Generic(ref group) => trees.extend(list_generic_qemu_cases(
                     arceos,
                     None,
@@ -76,6 +69,10 @@ pub(super) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
     }
 
     let selected_case = args.test_case.as_deref();
+    // Resolve the group first so the removed directory-style axtest entry
+    // gives its migration hint even though legacy callers omit a target.
+    let groups = selected_qemu_test_groups(arceos.app.workspace_root(), &args)?;
+    reject_missing_qemu_target(&args)?;
     let (arch, target) = qemu_test::parse_test_target(
         &args.arch,
         &args.target,
@@ -84,7 +81,6 @@ pub(super) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
         &crate::context::supported_targets(),
         crate::context::resolve_arceos_arch_and_target,
     )?;
-    let groups = selected_qemu_test_groups(arceos.app.workspace_root(), &args)?;
     let allow_rust_case_miss = args.test_group.is_none() && !args.only_rust;
     if args.list {
         let mut trees = Vec::new();
@@ -100,12 +96,6 @@ pub(super) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
                     arceos,
                     Some((&arch, &target)),
                     args.test_case.as_deref(),
-                )?),
-                QemuTestFlow::Axtest => trees.extend(list_generic_qemu_cases(
-                    arceos,
-                    Some((&arch, &target)),
-                    ARCEOS_AXTEST_GROUP,
-                    selected_case,
                 )?),
                 QemuTestFlow::Generic(ref group) => trees.extend(list_generic_qemu_cases(
                     arceos,
@@ -139,20 +129,6 @@ pub(super) async fn test_qemu(arceos: &mut ArceOS, args: ArgsTestQemu) -> anyhow
                 .await?
             }
             QemuTestFlow::C => test_c_qemu(arceos, &target, args.test_case.as_deref()).await?,
-            QemuTestFlow::Axtest => {
-                test_axtest_qemu(
-                    arceos,
-                    &arch,
-                    &target,
-                    GenericQemuRunOptions {
-                        selected_case,
-                        symbolize_after,
-                        keep_qemu_log,
-                        allow_empty: args.test_group.is_none(),
-                    },
-                )
-                .await?
-            }
             QemuTestFlow::Generic(ref group) => {
                 test_generic_qemu(
                     arceos,

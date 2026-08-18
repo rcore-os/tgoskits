@@ -742,7 +742,7 @@ pub fn sys_vfork(
     sys_clone(current, uctx, flags, 0, 0, 0, 0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
     let parent_signal_allowed = CloneArgs {
         flags: CloneFlags::PARENT,

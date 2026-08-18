@@ -443,7 +443,7 @@ pub fn sys_timer_delete(
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn time_clock_id_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{
         CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,

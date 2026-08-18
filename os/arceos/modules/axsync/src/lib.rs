@@ -8,9 +8,6 @@
 
 #![no_std]
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
-
 mod context;
 #[doc(hidden)]
 pub mod interface;

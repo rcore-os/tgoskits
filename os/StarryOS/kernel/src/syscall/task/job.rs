@@ -120,7 +120,7 @@ pub fn sys_setpgid(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn job_setpgid_validation_rules_hold_for_test() -> bool {
     // Test sys_setpgid validation: negative pid or pgid should fail
     // The function checks: if pid < 0 || pgid < 0 return Err(InvalidInput)

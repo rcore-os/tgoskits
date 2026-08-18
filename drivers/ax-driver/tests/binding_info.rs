@@ -1,3 +1,7 @@
+// Register a host lock provider (see common/lock_ops.rs).
+#[path = "common/lock_ops.rs"]
+mod lock_ops;
+
 use core::time::Duration;
 use std::{ptr::NonNull, sync::Mutex};
 

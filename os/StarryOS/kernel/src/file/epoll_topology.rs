@@ -202,7 +202,7 @@ fn push_topology_item<T>(items: &mut Vec<T>, item: T) -> StarryResult<()> {
     Ok(())
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn push_topology_item_preserves_order_and_grows_capacity() -> bool {
     let mut items: Vec<u32> = Vec::new();
     // First push seeds the vector with one element.
@@ -216,7 +216,7 @@ pub(crate) fn push_topology_item_preserves_order_and_grows_capacity() -> bool {
         && items.capacity() >= 3
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn epoll_edge_id_and_constants_hold_for_test() -> bool {
     // Test EpollEdgeId
     let id1 = EpollEdgeId(1);
@@ -230,7 +230,7 @@ pub(crate) fn epoll_edge_id_and_constants_hold_for_test() -> bool {
     true
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn epoll_topology_struct_and_methods_hold_for_test() -> bool {
     // Test EpollTopology default construction
     let _topology = EpollTopology::default();
@@ -241,7 +241,7 @@ pub(crate) fn epoll_topology_struct_and_methods_hold_for_test() -> bool {
     true
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn epoll_topology_direction_and_scan_hold_for_test() -> bool {
     // Test TopologyDirection variants exist
     let _parents = TopologyDirection::Parents;
@@ -258,7 +258,7 @@ pub(crate) fn epoll_topology_direction_and_scan_hold_for_test() -> bool {
     true
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn epoll_edge_id_clone_copy_partial_eq_hold_for_test() -> bool {
     // Test EpollEdgeId derives
     let id1 = EpollEdgeId(42);
@@ -271,7 +271,7 @@ pub(crate) fn epoll_edge_id_clone_copy_partial_eq_hold_for_test() -> bool {
     true
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn epoll_topology_static_constants_hold_for_test() -> bool {
     // Test static constants
     assert_eq!(MAX_NESTED_EPOLL_EDGES, 4);
@@ -282,7 +282,7 @@ pub(crate) fn epoll_topology_static_constants_hold_for_test() -> bool {
     true
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn epoll_topology_link_clone_hold_for_test() -> bool {
     // Test EpollTopologyLink is Clone
     // Can't construct without Arc<EpollInner>, but verify the type has Clone bound
@@ -294,7 +294,7 @@ pub(crate) fn epoll_topology_link_clone_hold_for_test() -> bool {
     true
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn epoll_topology_vec_and_reserve_hold_for_test() -> bool {
     use alloc::vec::Vec;
 
@@ -328,7 +328,7 @@ pub(crate) fn epoll_topology_vec_and_reserve_hold_for_test() -> bool {
     true
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn epoll_arc_operations_hold_for_test() -> bool {
     use alloc::sync::Arc;
 

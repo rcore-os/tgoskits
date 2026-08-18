@@ -823,7 +823,7 @@ where
                 // while all other CPUs are parked, then rely on the per-CPU
                 // sync callback to flush instruction state.
                 action(addr.as_mut_ptr());
-                return Ok(());
+                Ok(())
             }
 
             #[cfg(not(target_arch = "loongarch64"))]
@@ -867,7 +867,7 @@ fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     ax_runtime::hal::cache::sync_kernel_text(start, size);
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
     let user_base = USER_SPACE_BASE;
     let user_end = USER_SPACE_BASE + USER_SPACE_SIZE;

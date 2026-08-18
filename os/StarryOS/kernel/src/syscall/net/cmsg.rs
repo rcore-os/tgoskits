@@ -145,7 +145,7 @@ impl<'task, 'len> CMsgBuilder<'task, 'len> {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn cmsg_alignment_and_space_rules_hold_for_test() -> bool {
     // cmsg_align: rounds up to alignment boundary (usize-aligned).
     let align = size_of::<usize>();

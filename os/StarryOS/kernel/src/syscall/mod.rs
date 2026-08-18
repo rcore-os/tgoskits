@@ -1498,7 +1498,7 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn task_clone_validation_rules_hold_for_test() -> bool {
     task::clone_validation_rules_hold_for_test()
 }
@@ -1517,7 +1517,7 @@ const _: fn(
     u32,
 ) -> crate::StarryResult<isize> = sys_futex;
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
     task::capability_data_conversion_rules_hold_for_test()
 }
@@ -1529,12 +1529,12 @@ pub(crate) fn pipe_size_rounding_and_rejection_rules_hold_for_test() -> bool {
     fs::pipe_size_rounding_and_rejection_rules_hold_for_test()
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn membarrier_validation_rules_hold_for_test() -> bool {
     sync::membarrier_validation_rules_hold_for_test()
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn syscall_signal_restart_rules_hold_for_test() -> bool {
     use syscalls::Sysno;
 
@@ -1557,15 +1557,15 @@ pub(crate) fn syscall_signal_restart_rules_hold_for_test() -> bool {
     true
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::ipc::ipc_permission_and_constants_rules_hold_for_test;
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::kmod::kmod_flags_validation_rules_hold_for_test;
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::resources::resources_rlimit_validation_rules_hold_for_test;
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::signal::signal_sigset_and_signo_validation_rules_hold_for_test;
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::sys::sys_constants_and_validation_rules_hold_for_test;
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::time::time_clock_id_validation_rules_hold_for_test;

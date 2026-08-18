@@ -4,12 +4,12 @@ mod rseq;
 
 pub use self::{futex::*, membarrier::*, rseq::*};
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn membarrier_validation_rules_hold_for_test() -> bool {
     membarrier::membarrier_query_and_global_rules_hold_for_test()
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn futex_op_and_compare_rules_hold_for_test() -> bool {
     futex::futex_op_and_compare_rules_hold_for_test()
 }
@@ -19,5 +19,5 @@ pub(crate) fn futex_wake_completion_is_scheduler_driven_for_test() -> bool {
     futex::futex_wake_completion_is_scheduler_driven_for_test()
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::rseq::rseq_validation_rules_hold_for_test;

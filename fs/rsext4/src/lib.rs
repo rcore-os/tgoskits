@@ -9,6 +9,9 @@
 //! - Supporting configuration and utilities (`config`, `endian`, `tool`)
 
 #![no_std]
+// Link the external host lock/task provider into unit-test binaries.
+#[cfg(test)]
+use ax_runtime as _;
 
 extern crate alloc;
 
@@ -40,9 +43,6 @@ pub use file::{
 pub use metadata::{chmod, chown, set_flags, set_project, utimens};
 
 pub mod api;
-#[cfg(all(axtest, feature = "axtest"))]
-/// Coverage tests for ext4 data structures and helpers.
-pub mod axtest;
 pub mod bitmap;
 pub mod blockdev;
 pub mod blockgroup_description;

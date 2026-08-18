@@ -1,3 +1,4 @@
+// Host tests must link the external lock/task provider.
 use std::{
     cell::Cell,
     fs::{self, File, OpenOptions},
@@ -6,6 +7,7 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
+use ax_runtime as _;
 use rsext4::{
     bmalloc::AbsoluteBN,
     error::{Ext4Error, Ext4Result},

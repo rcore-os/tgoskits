@@ -21,7 +21,7 @@ impl<T> BpfResultExt<T> for kbpf_basic::BpfResult<T> {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn bpf_error_adapter_rules_hold_for_test() -> bool {
     // Known Errno codes map through; unknown values fall back to EINVAL.
     let r1: StarryError = bpf_error_to_starry(kbpf_basic::BpfError::ENOMEM);
@@ -44,7 +44,7 @@ pub(crate) fn bpf_error_adapter_rules_hold_for_test() -> bool {
     r1_matches && r2_matches && ok_ok && err_is_perm
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn bpf_error_more_variants_and_edge_cases_hold_for_test() -> bool {
     // Test more BpfError variants mapping through the Starry adapter.
     let e2big: StarryError = bpf_error_to_starry(kbpf_basic::BpfError::E2BIG);

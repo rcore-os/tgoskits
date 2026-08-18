@@ -97,7 +97,7 @@ pub fn sys_membarrier(
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn membarrier_query_and_global_rules_hold_for_test() -> bool {
     matches!(
         decode_membarrier_action(MEMBARRIER_CMD_QUERY, 0),

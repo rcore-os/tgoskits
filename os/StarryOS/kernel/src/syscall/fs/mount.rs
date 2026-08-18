@@ -952,7 +952,7 @@ pub fn sys_pivot_root(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn mount_flags_validation_rules_hold_for_test() -> bool {
     // Test umount flag validation
     const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;

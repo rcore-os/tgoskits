@@ -1,6 +1,5 @@
 mod args;
 mod assets;
-mod axtest_qemu;
 mod board;
 mod c_qemu;
 mod discovery;
@@ -21,9 +20,6 @@ const ARCEOS_TEST_SUITE_OS: &str = "arceos";
 const ARCEOS_RUST_TEST_PACKAGE: &str = "arceos-test-suit";
 const ARCEOS_RUST_TEST_BUILD_GROUP: &str = "arceos-test-suit";
 const ARCEOS_C_TEST_BUILD_GROUP: &str = "arceos-c-test-suit";
-pub(super) const ARCEOS_AXTEST_RUSTFLAGS: &[&str] =
-    &["--cfg", "axtest", "--check-cfg", "cfg(axtest)"];
-
 const ARCEOS_RUST_ALL_FEATURE: &str = "all";
 const ARCEOS_C_ALL_FEATURE: &str = "all";
 const ARCEOS_RUST_DEBUG_BACKTRACE_FEATURE: &str = "debug-backtrace";

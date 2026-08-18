@@ -48,7 +48,7 @@ class CiPlanTests(unittest.TestCase):
         )
         self.assertEqual(
             test_rows["test-arceos-aarch64-qemu-app-suites"],
-            "ArceOS / aarch64 QEMU · GICv2 SMP4 boot + suites",
+            "ArceOS / aarch64 QEMU · GICv2 SMP4 boot + suites + axtest",
         )
         self.assertEqual(
             test_rows["test-axvisor-aarch64-qemu-panic-modes"],
@@ -58,6 +58,28 @@ class CiPlanTests(unittest.TestCase):
             test_rows["test-starry-self-hosted-board-visionfive2"],
             "Starry / VisionFive 2 board · Suites",
         )
+
+    def test_arceos_qemu_jobs_run_same_arch_axtests_serially(self) -> None:
+        plan = ci_plan.build_main_plan(self.upstream)
+        rows = {row["id"]: row for row in plan["test_matrix"]["include"]}
+        expected_arches = {
+            "test-arceos-x86-64-qemu": "x86_64",
+            "test-arceos-riscv64-qemu": "riscv64",
+            "test-arceos-aarch64-qemu-app-suites": "aarch64",
+            "test-arceos-loongarch64-qemu": "loongarch64",
+        }
+
+        for check_id, arch in expected_arches.items():
+            command = rows[check_id]["command"]
+            arceos_command = f"cargo xtask arceos test qemu --arch {arch}"
+            axtest_command = (
+                "cargo xtask ktest qemu --workspace --exclude starry-kernel "
+                f"--exclude axvisor --arch {arch}"
+            )
+            self.assertIn(arceos_command, command)
+            self.assertIn(axtest_command, command)
+            self.assertLess(command.index(arceos_command), command.index(axtest_command))
+            self.assertEqual(rows[check_id]["cache_key"], "")
 
     def test_fork_filters_owner_checks_and_falls_back_from_qcs(self) -> None:
         context = ci_plan.PlanContext(

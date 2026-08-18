@@ -43,12 +43,14 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions},
 };
 
+#[cfg(axtest)]
+pub(crate) use self::pid::pid_identity_state_machine_rules_hold_for_test;
 pub use self::{
     cred::*, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable, process::*,
     process_image::ProcessImage, process_wait::wait_on_pollset, resources::*, scheduler_task::*,
     seccomp::*, signal::*, stat::*, thread::Thread, timer::*, user::*,
 };
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::{
     futex::{
         empty_wake_op_leaves_fixed_buckets_empty_for_test,

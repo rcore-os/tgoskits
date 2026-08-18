@@ -30,6 +30,9 @@
 //! - `unix` and `vsock`: local transports outside the smoltcp IP path.
 
 #![no_std]
+// Link the external host lock/task provider into unit-test binaries.
+#[cfg(test)]
+use ax_runtime as _;
 
 #[macro_use]
 extern crate log;
@@ -68,9 +71,6 @@ pub mod unix;
 #[cfg(feature = "vsock")]
 pub mod vsock;
 mod wrapper;
-
-#[cfg(all(axtest, feature = "axtest"))]
-mod axtest;
 
 use alloc::{
     borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, task::Wake, vec, vec::Vec,

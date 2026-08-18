@@ -90,8 +90,8 @@ fn futex_wake_op_arg(raw_op: u32, encoded_op: u32) -> i32 {
     oparg
 }
 
-#[cfg(axtest)]
-fn apply_futex_wake_op(old_value: u32, raw_op: u32, oparg: i32) -> crate::StarryResult<u32> {
+#[cfg(test)]
+fn apply_futex_wake_op(old_value: u32, raw_op: u32, oparg: i32) -> StarryResult<u32> {
     let op = raw_op & !FUTEX_OP_OPARG_SHIFT;
     let new_value = match op {
         FUTEX_OP_SET => oparg as u32,
@@ -443,7 +443,7 @@ pub fn sys_set_robust_list(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn futex_op_and_compare_rules_hold_for_test() -> bool {
     // sign_extend_12: sign-extends a 12-bit value.
     assert!(sign_extend_12(0x000) == 0);

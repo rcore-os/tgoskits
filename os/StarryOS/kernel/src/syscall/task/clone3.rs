@@ -132,7 +132,7 @@ pub fn sys_clone3(
     clone_args.do_clone_in_cgroup(current, uctx, requested_cgroup)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn clone3_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{
         CLONE_DETACHED, CLONE_NEWPID, CLONE_PARENT, CLONE_THREAD, SIGCHLD,

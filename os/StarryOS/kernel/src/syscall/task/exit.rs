@@ -10,7 +10,7 @@ pub fn sys_exit_group(exit_code: i32) -> StarryResult<isize> {
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn exit_code_encoding_rules_hold_for_test() -> bool {
     // Test exit code encoding: sys_exit shifts left by 8
     let exit_code = 42i32;

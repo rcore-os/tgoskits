@@ -9,7 +9,7 @@ use ax_net::NetError;
 use ax_runtime::{RuntimeError, serial::ConfigError, task::TaskError};
 use axfs_ng_vfs::VfsError;
 use dma_api::DmaError;
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 use rdif_block::{BlkError, RequestOp};
 #[cfg(feature = "sg2002")]
 use sg2002_tpu::{ion::IonError, tpu::error::TpuError};
@@ -541,14 +541,14 @@ fn vfs_errno(error: VfsError) -> Errno {
     }
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn errno_cases_hold<const N: usize>(cases: [(StarryError, Errno); N]) -> bool {
     cases
         .into_iter()
         .all(|(error, expected)| error.linux_errno() == expected)
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn memory_errno_mappings_hold() -> bool {
     errno_cases_hold([
         (VmError::BadAddress.into(), Errno::EFAULT),
@@ -591,7 +591,7 @@ fn memory_errno_mappings_hold() -> bool {
     ])
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn vfs_errno_mappings_hold() -> bool {
     errno_cases_hold([
         (VfsError::AlreadyExists.into(), Errno::EEXIST),
@@ -626,7 +626,7 @@ fn vfs_errno_mappings_hold() -> bool {
     ])
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn io_errno_mappings_hold() -> bool {
     errno_cases_hold([
         (IoError::AddrInUse.into(), Errno::EADDRINUSE),
@@ -687,7 +687,7 @@ fn io_errno_mappings_hold() -> bool {
     ])
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn block_errno_mappings_hold() -> bool {
     let device_error = |source| {
         StarryError::from(BlockError::Device {
@@ -720,7 +720,7 @@ fn block_errno_mappings_hold() -> bool {
     ])
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn leaf_errno_mappings_hold() -> bool {
     errno_cases_hold([
         (StarryError::AlreadyExists, Errno::EEXIST),
@@ -829,7 +829,7 @@ fn leaf_errno_mappings_hold() -> bool {
     ])
 }
 
-#[cfg(any(test, axtest))]
+#[cfg(test)]
 fn domain_errno_mappings_hold() -> bool {
     memory_errno_mappings_hold()
         && vfs_errno_mappings_hold()
@@ -840,7 +840,7 @@ fn domain_errno_mappings_hold() -> bool {
         && StarryError::from(Errno::new(4094)).linux_errno().into_raw() == 4094
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn domain_errno_mappings_hold_for_test() -> bool {
     domain_errno_mappings_hold()
 }

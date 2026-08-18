@@ -250,6 +250,10 @@ impl AppContext {
         let paths = crate::support::axtest_coverage::AxtestCoveragePaths::new(
             self.workspace_root(),
             &cargo.package,
+            cargo
+                .test
+                .as_deref()
+                .context("axtest coverage requires a Cargo test target")?,
             &cargo.target,
         )?;
         crate::support::axtest_coverage::apply_qemu_monitor(&mut qemu, &paths)?;
