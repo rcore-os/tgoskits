@@ -1593,8 +1593,6 @@ mod tests {
 
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 mod l2_counter_tests {
-    #[cfg(all(axtest, feature = "axtest"))]
-    use axtest::prelude::*;
     use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
     #[cfg(all(axtest, feature = "axtest"))]
     use smoltcp::{storage::PacketMetadata, wire::Ipv4Address};
@@ -1744,8 +1742,7 @@ mod l2_counter_tests {
     // ── frame-length contract: send ────────────────────────────────────
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn send_returns_frame_len_tx_counts_l2_not_ip_payload() {
+    pub(super) fn send_returns_frame_len_tx_counts_l2_not_ip_payload() {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 1514, // L2 frame length (14 eth hdr + 1500 IP payload)
@@ -1771,8 +1768,7 @@ mod l2_counter_tests {
     }
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn send_returns_zero_no_tx_counted() {
+    pub(super) fn send_returns_zero_no_tx_counted() {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0, // ARP pending or send failure
@@ -1799,8 +1795,7 @@ mod l2_counter_tests {
     // ── frame-length contract: recv ────────────────────────────────────
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn recv_returns_frame_len_rx_counts_it() {
+    pub(super) fn recv_returns_frame_len_rx_counts_it() {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
@@ -1826,8 +1821,7 @@ mod l2_counter_tests {
     }
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn recv_returns_zero_no_rx_counted() {
+    pub(super) fn recv_returns_zero_no_rx_counted() {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
@@ -1975,8 +1969,7 @@ mod l2_counter_tests {
     /// from all three counting paths: recv() return value (IP RX),
     /// drain_deferred_tx() (ARP TX), and drain_deferred_rx() (ARP RX).
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn rx_worker_three_path_combined_drain() {
+    pub(super) fn rx_worker_three_path_combined_drain() {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
@@ -2013,4 +2006,13 @@ mod l2_counter_tests {
         assert_eq!(snap.tx_packets, 2);
         assert_eq!(snap.tx_bytes, 120);
     }
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn run_axtest_contracts() {
+    l2_counter_tests::send_returns_frame_len_tx_counts_l2_not_ip_payload();
+    l2_counter_tests::send_returns_zero_no_tx_counted();
+    l2_counter_tests::recv_returns_frame_len_rx_counts_it();
+    l2_counter_tests::recv_returns_zero_no_rx_counted();
+    l2_counter_tests::rx_worker_three_path_combined_drain();
 }

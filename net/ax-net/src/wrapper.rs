@@ -150,10 +150,9 @@ fn udp_binds_conflict(entry: &UdpBoundEntry, addr: Option<IpAddress>, reuse_port
 }
 
 #[cfg(all(axtest, feature = "axtest"))]
-mod tests {
+mod axtest_support {
     use alloc::{vec, vec::Vec};
 
-    use axtest::prelude::*;
     use smoltcp::{
         iface::SocketSet,
         socket::udp,
@@ -183,7 +182,6 @@ mod tests {
             .collect()
     }
 
-    #[axtest]
     fn udp_bind_rules_allow_distinct_specific_addresses() {
         let w = SocketSetWrapper::new();
         let h = handles(4);
@@ -204,7 +202,6 @@ mod tests {
         );
     }
 
-    #[axtest]
     fn udp_bind_rejects_specific_after_wildcard() {
         let w = SocketSetWrapper::new();
         let h = handles(2);
@@ -216,7 +213,6 @@ mod tests {
         );
     }
 
-    #[axtest]
     fn udp_reuseport_group_shares_a_port_while_plain_binders_conflict() {
         let w = SocketSetWrapper::new();
         let h = handles(4);
@@ -255,7 +251,6 @@ mod tests {
         w.udp_bind(h[3], local, 18101, false).unwrap();
     }
 
-    #[axtest]
     fn udp_port_available_avoids_any_active_bind() {
         let w = SocketSetWrapper::new();
         let h = handles(1);
@@ -263,4 +258,16 @@ mod tests {
         w.udp_bind(h[0], addr(192, 0, 2, 10), 5355, false).unwrap();
         assert!(!w.udp_port_available(wildcard(), 5355));
     }
+
+    pub(super) fn run_all() {
+        udp_bind_rules_allow_distinct_specific_addresses();
+        udp_bind_rejects_specific_after_wildcard();
+        udp_reuseport_group_shares_a_port_while_plain_binders_conflict();
+        udp_port_available_avoids_any_active_bind();
+    }
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn run_axtest_contracts() {
+    axtest_support::run_all();
 }

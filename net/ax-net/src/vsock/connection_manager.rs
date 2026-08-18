@@ -286,9 +286,6 @@ mod tests {
         task::{Context, Waker},
     };
 
-    #[cfg(all(axtest, feature = "axtest"))]
-    use axtest::prelude::*;
-
     use super::*;
 
     fn test_poll_lease() -> VsockPollLease {
@@ -304,8 +301,7 @@ mod tests {
     }
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn tx_poll_capability_is_owned_outside_connection_state() {
+    pub(super) fn tx_poll_capability_is_owned_outside_connection_state() {
         let connection = Connection::new_shared(
             VsockAddr { cid: 3, port: 4 },
             Some(VsockAddr { cid: 5, port: 6 }),
@@ -387,8 +383,7 @@ mod tests {
     }
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn unlisten_retires_connections_waiting_in_accept_queue() {
+    pub(super) fn unlisten_retires_connections_waiting_in_accept_queue() {
         let mut manager = VsockConnectionManager::new();
         let local_addr = VsockAddr { cid: 3, port: 13 };
         let conn_id = VsockConnId {
@@ -410,4 +405,10 @@ mod tests {
         assert_eq!(retired.len(), 1);
         assert_eq!(retired[0].0, conn_id);
     }
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn run_axtest_contracts() {
+    tests::tx_poll_capability_is_owned_outside_connection_state();
+    tests::unlisten_retires_connections_waiting_in_accept_queue();
 }

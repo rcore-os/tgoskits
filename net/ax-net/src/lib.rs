@@ -30,9 +30,9 @@
 //! - `unix` and `vsock`: local transports outside the smoltcp IP path.
 
 #![no_std]
-// Link the external host lock/task provider into unit-test binaries.
+// Link the ax-std host capability provider into unit-test binaries.
 #[cfg(test)]
-use ax_runtime as _;
+use ax_std as _;
 
 #[macro_use]
 extern crate log;
@@ -864,28 +864,6 @@ fn device_poll_fallback_due(timed_out: bool, irq_pending: bool, delay: Duration)
     irq_pending || (timed_out && delay > Duration::ZERO)
 }
 
-#[cfg(test)]
-mod tests {
-    use core::time::Duration;
-
-    use super::device_poll_fallback_due;
-
-    #[test]
-    fn poll_timeout_wakes_devices_as_polling_fallback() {
-        assert!(device_poll_fallback_due(
-            true,
-            false,
-            Duration::from_millis(100)
-        ));
-    }
-
-    #[test]
-    fn immediate_socket_poll_does_not_force_device_fallback() {
-        assert!(!device_poll_fallback_due(true, false, Duration::ZERO));
-        assert!(device_poll_fallback_due(false, true, Duration::ZERO));
-    }
-}
-
 /// Returns the list of configured DNS servers.
 ///
 /// Priority: DHCP-provided servers take precedence over statically configured servers.
@@ -994,12 +972,8 @@ fn wait_for_dhcp_bootstrap() {
     warn!("DHCP bootstrap timed out");
 }
 
-#[cfg(any(test, all(axtest, feature = "axtest")))]
+#[cfg(all(axtest, feature = "axtest"))]
 mod initialization_contract_tests {
-    #[cfg(all(axtest, feature = "axtest"))]
-    use axtest::prelude::*;
-
-    #[cfg(all(axtest, feature = "axtest"))]
     fn current_preemption_depth() -> u32 {
         let restore_irqs = ax_hal::asm::irqs_enabled();
         ax_hal::asm::disable_irqs();
@@ -1014,11 +988,9 @@ mod initialization_contract_tests {
         snapshot.depth()
     }
 
-    #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
     fn protocol_service_lock_keeps_scheduler_ticks_enabled_while_held() {
-        let _network = crate::test_support::network_test_guard();
-        crate::test_support::init_split_route_network();
+        let _network = crate::network_test_support::network_test_guard();
+        crate::network_test_support::init_split_route_network();
         let depth_before = current_preemption_depth();
 
         let service = super::get_service();
@@ -1031,11 +1003,9 @@ mod initialization_contract_tests {
         drop(service);
     }
 
-    #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
     fn split_route_tests_reuse_existing_network_runtime() {
-        let _network = crate::test_support::network_test_guard();
-        crate::test_support::init_split_route_network();
+        let _network = crate::network_test_support::network_test_guard();
+        crate::network_test_support::init_split_route_network();
 
         assert_eq!(
             super::net_poll_worker_start_attempts(),
@@ -1043,10 +1013,15 @@ mod initialization_contract_tests {
             "test topology initialization must not start a second global net-poll worker"
         );
     }
+
+    pub(super) fn run_all() {
+        protocol_service_lock_keeps_scheduler_ticks_enabled_while_held();
+        split_route_tests_reuse_existing_network_runtime();
+    }
 }
 
 #[cfg(all(axtest, feature = "axtest"))]
-pub(crate) mod test_support {
+mod network_test_support {
     use alloc::string::String;
 
     use ax_lazyinit::OnceLock;
@@ -1073,6 +1048,12 @@ pub(crate) mod test_support {
         static INIT: OnceLock<SplitRouteNetwork> = OnceLock::new();
 
         INIT.call_once(|| {
+            if crate::NETWORK_RUNTIME.get().is_none() {
+                crate::init_network(
+                    crate::EthernetDeviceList::new(),
+                    crate::NetworkConfig::default(),
+                );
+            }
             let local_cidr = Ipv4Cidr::new(LOCAL_ADDR, 24);
             let peer_cidr = Ipv4Cidr::new(PEER_ADDR, 24);
             let (local_if, local_workers, peer_if, peer_workers) = {
@@ -1092,5 +1073,69 @@ pub(crate) mod test_support {
 
             SplitRouteNetwork { local_if, peer_if }
         })
+    }
+}
+
+/// Target-runtime contract entry points used by the Cargo axtest integration target.
+#[cfg(all(axtest, feature = "axtest"))]
+#[doc(hidden)]
+pub mod axtest_support {
+    /// Checks that network initialization preserves the task-context lock contract.
+    pub fn run_initialization_contracts() {
+        super::initialization_contract_tests::run_all();
+    }
+
+    /// Checks UDP bind ownership against the target lock/runtime implementation.
+    pub fn run_udp_bind_contracts() {
+        super::wrapper::run_axtest_contracts();
+    }
+
+    /// Checks UDP route selection against the initialized target network runtime.
+    pub fn run_udp_route_contracts() {
+        super::udp::run_axtest_contracts();
+    }
+
+    /// Checks TCP option, route, and port ownership contracts on the target runtime.
+    pub fn run_tcp_contracts() {
+        super::tcp::run_axtest_contracts();
+    }
+
+    /// Checks router frame accounting while using the target synchronization provider.
+    pub fn run_router_accounting_contracts() {
+        super::router::run_axtest_contracts();
+    }
+
+    /// Checks vsock connection ownership on the target synchronization provider.
+    #[cfg(feature = "vsock")]
+    pub fn run_vsock_connection_contracts() {
+        super::vsock::connection_manager::run_axtest_contracts();
+    }
+
+    /// Checks vsock device-gate and worker-budget ordering on the target runtime.
+    #[cfg(feature = "vsock")]
+    pub fn run_vsock_poll_contracts() {
+        super::device::run_vsock_axtest_contracts();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+
+    use super::device_poll_fallback_due;
+
+    #[test]
+    fn poll_timeout_wakes_devices_as_polling_fallback() {
+        assert!(device_poll_fallback_due(
+            true,
+            false,
+            Duration::from_millis(100)
+        ));
+    }
+
+    #[test]
+    fn immediate_socket_poll_does_not_force_device_fallback() {
+        assert!(!device_poll_fallback_due(true, false, Duration::ZERO));
+        assert!(device_poll_fallback_due(false, true, Duration::ZERO));
     }
 }

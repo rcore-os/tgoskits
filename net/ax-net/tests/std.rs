@@ -1,6 +1,6 @@
 extern crate alloc;
 
-// Host tests must link the external lock/task provider.
+// Host tests must link the ax-std host capability provider.
 use alloc::{boxed::Box, string::String};
 use core::{cell::Cell, net::Ipv4Addr, time::Duration};
 
@@ -14,7 +14,7 @@ use ax_net::{
         UnixCredentials,
     },
 };
-use ax_runtime as _;
+use ax_std as _;
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address, Ipv4Cidr};
 
 #[test]

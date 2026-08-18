@@ -1144,14 +1144,13 @@ mod tests {
     #[cfg(all(axtest, feature = "axtest"))]
     use core::net::{IpAddr, SocketAddr};
 
-    #[cfg(all(axtest, feature = "axtest"))]
-    use axtest::prelude::*;
-
     use super::*;
     #[cfg(all(axtest, feature = "axtest"))]
     use crate::{
+        network_test_support::{
+            LOCAL_ADDR, PEER_ADDR, init_split_route_network, network_test_guard,
+        },
         options::{Configurable, GetSocketOption, SetSocketOption, TcpState},
-        test_support::{LOCAL_ADDR, PEER_ADDR, init_split_route_network, network_test_guard},
     };
 
     #[test]
@@ -1198,8 +1197,7 @@ mod tests {
     }
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn tcp_info_reports_default_socket_metrics() {
+    pub(super) fn tcp_info_reports_default_socket_metrics() {
         let _guard = network_test_guard();
         init_split_route_network();
 
@@ -1222,8 +1220,7 @@ mod tests {
     }
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn tcp_congestion_control_reports_and_accepts_active_algorithm() {
+    pub(super) fn tcp_congestion_control_reports_and_accepts_active_algorithm() {
         let _guard = network_test_guard();
         init_split_route_network();
 
@@ -1242,8 +1239,7 @@ mod tests {
     }
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn connect_preserves_bound_interface() {
+    pub(super) fn connect_preserves_bound_interface() {
         let _guard = network_test_guard();
         let topology = init_split_route_network();
 
@@ -1278,8 +1274,7 @@ mod tests {
     }
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn connect_uses_peer_route_when_unbound() {
+    pub(super) fn connect_uses_peer_route_when_unbound() {
         let _guard = network_test_guard();
         let topology = init_split_route_network();
 
@@ -1311,8 +1306,7 @@ mod tests {
     }
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn connect_rejects_unroutable_bound_device() {
+    pub(super) fn connect_rejects_unroutable_bound_device() {
         let _guard = network_test_guard();
         let topology = init_split_route_network();
 
@@ -1343,8 +1337,7 @@ mod tests {
     }
 
     #[cfg(all(axtest, feature = "axtest"))]
-    #[axtest]
-    fn reuseport_group_shares_a_port_while_plain_binders_conflict() {
+    pub(super) fn reuseport_group_shares_a_port_while_plain_binders_conflict() {
         let _guard = network_test_guard();
 
         let endpoint = IpListenEndpoint {
@@ -1379,4 +1372,14 @@ mod tests {
         unregister_tcp_bound(endpoint);
         assert!(!TCP_BOUND_PORTS.lock().contains_key(&endpoint.port));
     }
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn run_axtest_contracts() {
+    tests::tcp_info_reports_default_socket_metrics();
+    tests::tcp_congestion_control_reports_and_accepts_active_algorithm();
+    tests::connect_preserves_bound_interface();
+    tests::connect_uses_peer_route_when_unbound();
+    tests::connect_rejects_unroutable_bound_device();
+    tests::reuseport_group_shares_a_port_while_plain_binders_conflict();
 }

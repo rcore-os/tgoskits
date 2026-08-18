@@ -4,7 +4,6 @@ use core::{
     task::{Context, Waker},
 };
 
-use axtest::prelude::*;
 use rdif_vsock::{DriverGeneric, Interface, VsockAddr, VsockConnId, VsockError};
 
 use super::*;
@@ -102,7 +101,6 @@ impl Wake for DeviceGateProbe {
     }
 }
 
-#[axtest]
 fn received_event_releases_device_gate_before_waking_socket() {
     let conn_id = VsockConnId {
         peer_addr: VsockAddr { cid: 2, port: 3 },
@@ -154,7 +152,6 @@ fn received_event_releases_device_gate_before_waking_socket() {
         .remove_connection_if(conn_id, &connection);
 }
 
-#[axtest]
 fn credit_update_releases_device_gate_before_waking_sender() {
     let conn_id = VsockConnId {
         peer_addr: VsockAddr { cid: 20, port: 21 },
@@ -203,7 +200,6 @@ fn credit_update_releases_device_gate_before_waking_sender() {
         .remove_connection_if(conn_id, &connection);
 }
 
-#[axtest]
 fn send_backpressure_performs_one_device_attempt_without_internal_waiting() {
     let send_count = Arc::new(AtomicUsize::new(0));
     *VSOCK_DEVICE.lock() = Some(Box::new(TestVsock {
@@ -231,7 +227,6 @@ fn send_backpressure_performs_one_device_attempt_without_internal_waiting() {
     *VSOCK_DEVICE.lock() = None;
 }
 
-#[axtest]
 fn poll_iteration_has_a_fixed_event_budget() {
     let poll_count = Arc::new(AtomicUsize::new(0));
     *VSOCK_DEVICE.lock() = Some(Box::new(TestVsock {
@@ -251,4 +246,11 @@ fn poll_iteration_has_a_fixed_event_budget() {
     );
 
     *VSOCK_DEVICE.lock() = None;
+}
+
+pub(super) fn run_all() {
+    received_event_releases_device_gate_before_waking_socket();
+    credit_update_releases_device_gate_before_waking_sender();
+    send_backpressure_performs_one_device_attempt_without_internal_waiting();
+    poll_iteration_has_a_fixed_event_budget();
 }

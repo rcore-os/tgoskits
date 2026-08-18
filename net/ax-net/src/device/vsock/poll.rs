@@ -393,3 +393,8 @@ impl VsockPollWorker {
 
 #[cfg(all(axtest, feature = "axtest"))]
 mod tests;
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn run_axtest_contracts() {
+    tests::run_all();
+}
