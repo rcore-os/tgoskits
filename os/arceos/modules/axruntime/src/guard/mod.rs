@@ -192,8 +192,11 @@ pub(crate) const fn publish_local_scheduler_work() -> bool {
 
 #[cfg(feature = "multitask")]
 pub(crate) fn finish_initial_context_switch() {
-    with_current_cpu_pin(cpu_local::release_initial_context_preemption)
-        .unwrap_or_else(|error| panic!("initial preemption handoff is invalid: {error}"));
+    assert_eq!(
+        current_preempt_depth(),
+        0,
+        "initial scheduler frame must own only the transferred scheduler baton"
+    );
     let _task_context_safe = exit_scheduler_frame_guard_inner(
         ax_task::runtime::RuntimeSchedulerReturn::Task,
         "initial scheduler frame",
