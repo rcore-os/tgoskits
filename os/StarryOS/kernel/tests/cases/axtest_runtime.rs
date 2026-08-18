@@ -32,6 +32,16 @@ fn shutdown_wait_covers_the_exit_path_after_runtime_detach() {
 }
 
 #[axtest]
+fn dropped_exit_path_lease_keeps_unfinished_work_pending() {
+    ax_assert!(axtest_exports::dropped_exit_path_lease_keeps_unfinished_work_pending());
+}
+
+#[axtest]
+fn exit_path_completion_precedes_task_transfer() {
+    ax_assert!(axtest_exports::exit_path_completion_precedes_task_transfer());
+}
+
+#[axtest]
 fn task_exit_transaction_holds_membership_lock() {
     ax_assert!(axtest_exports::task_exit_transaction_holds_membership_lock());
 }

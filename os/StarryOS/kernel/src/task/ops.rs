@@ -415,15 +415,19 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     thr.account_cpu_time_now();
     let (utime, stime) = task_cpu_time(&curr);
     let task_identity = thr.pid_identity();
-    if is_process_leader {
+    // The lease keeps this identity's exit path pending until the tail of
+    // `do_exit`, covering zombie publication, parent notification, and
+    // relation close the way Linux holds `pid_allocated` until `free_pid()`.
+    let exit_path = if is_process_leader {
         // Publish the complete leader snapshot before dropping the thread-group
         // lock below. A peer may become the final exiting thread immediately
         // after the leader is removed from the group.
-        let tid_lease = thr.retire_pid_retaining_tid();
+        let (tid_lease, exit_path) = thr.retire_pid_retaining_tid();
         thr.proc_data.retire_leader(thr.nice(), tid_lease);
+        exit_path
     } else {
-        thr.retire_pid();
-    }
+        thr.retire_pid()
+    };
     let task_generation = ax_cgroup::ProcessId::new(task_identity.id().get())
         .expect("PID identity generation must be non-zero");
     let (thread_exit, cgroup_exit) = thr.proc_data.finish_thread_exit(task_generation, || {
@@ -513,7 +517,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         let ptrace_tracer = thr.proc_data.ptrace_tracer_identity();
         let is_clone_child = thr.proc_data.is_clone_child();
         let wait_parent_tid = thr.proc_data.wait_parent_tid();
-        let (zombie_nice, leader_tid_lease) = thr.proc_data.take_retired_leader();
+        let (zombie_nice, leader_tid_lease) = thr.proc_data.take_retired_leader_for_zombie();
 
         // A parent that observes this child as a zombie must not see IPC
         // resources that still belong to the exiting process. In particular,
@@ -617,13 +621,18 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     thr.set_exit();
     unsafe { thr.exit_event().wake(axpoll::IoEvents::IN) };
-    unsafe { thr.proc_data.thread_exit_event().wake(axpoll::IoEvents::IN) };
 
     // The exit path is complete only after zombie publication, parent
     // notification, and relation close. PID namespace shutdown waits on this
     // completion instead of the early runtime-link detach, mirroring Linux's
     // `pid_allocated` drop in `free_pid()` — never before `do_notify_parent()`.
-    thr.pid_identity().mark_exit_path_complete();
+    exit_path.complete();
+    if is_process_leader {
+        thr.proc_data.complete_retired_leader_exit_path();
+    }
+    // Exec waits on this channel for both thread-group removal and the retired
+    // leader's completed exit path. Publish both conditions before waking it.
+    unsafe { thr.proc_data.thread_exit_event().wake(axpoll::IoEvents::IN) };
 }
 
 /// Request a sibling thread to exit with thread-only semantics.

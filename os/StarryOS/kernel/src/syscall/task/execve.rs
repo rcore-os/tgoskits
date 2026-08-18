@@ -296,7 +296,9 @@ fn do_execve(
             .into_iter()
             .filter(|tid| *tid != my_tid)
             .collect();
-        if siblings.is_empty() {
+        let leader_exit_complete =
+            my_tid == leader_tid || proc_data.retired_leader_exit_path_complete();
+        if siblings.is_empty() && leader_exit_complete {
             break;
         }
 
@@ -316,7 +318,9 @@ fn do_execve(
                 .into_iter()
                 .filter(|tid| *tid != my_tid)
                 .count();
-            if remaining == 0 {
+            let leader_exit_complete =
+                my_tid == leader_tid || proc_data.retired_leader_exit_path_complete();
+            if remaining == 0 && leader_exit_complete {
                 return Poll::Ready(());
             }
             unsafe {
@@ -333,7 +337,9 @@ fn do_execve(
                 .into_iter()
                 .filter(|tid| *tid != my_tid)
                 .count();
-            if remaining == 0 {
+            let leader_exit_complete =
+                my_tid == leader_tid || proc_data.retired_leader_exit_path_complete();
+            if remaining == 0 && leader_exit_complete {
                 Poll::Ready(())
             } else {
                 Poll::Pending
@@ -464,7 +470,7 @@ fn do_execve(
         let leader_identity = proc_data.identity();
         crate::cgroup::rename_task(proc_data, &old_task_identity, &leader_identity)
             .expect("de-threaded task must own the process's sole cgroup charge");
-        let (_, leader_tid_lease) = proc_data.take_retired_leader();
+        let (_, leader_tid_lease) = proc_data.take_retired_leader_for_exec();
         thr.transfer_pid_identity(curr, leader_identity, leader_tid_lease);
         proc_data
             .signal

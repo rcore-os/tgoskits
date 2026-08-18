@@ -372,6 +372,16 @@ pub fn shutdown_wait_covers_the_exit_path_after_runtime_detach() -> bool {
     super::task::shutdown_wait_covers_the_exit_path_after_runtime_detach_for_test()
 }
 
+#[cfg(axtest)]
+pub fn dropped_exit_path_lease_keeps_unfinished_work_pending() -> bool {
+    super::task::dropped_exit_path_lease_keeps_unfinished_work_pending_for_test()
+}
+
+#[cfg(axtest)]
+pub fn exit_path_completion_precedes_task_transfer() -> bool {
+    super::task::exit_path_completion_precedes_task_transfer_for_test()
+}
+
 #[cfg(test)]
 fn resource_limit_defaults_hold() -> bool {
     super::task::resource_limit_defaults_hold_for_test()

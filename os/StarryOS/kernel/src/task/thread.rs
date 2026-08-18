@@ -9,9 +9,9 @@ use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWr
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
 use super::{
-    CpuTimeAccounting, CpuTimeDelta, Cred, PidIdentity, PidNamespaceRef, PidRoleLease, ProcessData,
-    ROOT_PID_NS, RttimeWatchdog, SeccompDecision, SeccompState, SeccompStateStore, SockFilter, Tid,
-    TidNumber, TimerState, UserTaskRef,
+    CpuTimeAccounting, CpuTimeDelta, Cred, ExitPathLease, PidIdentity, PidNamespaceRef,
+    PidRoleLease, ProcessData, ROOT_PID_NS, RttimeWatchdog, SeccompDecision, SeccompState,
+    SeccompStateStore, SockFilter, Tid, TidNumber, TimerState, UserTaskRef,
     bounded_stack::BoundedStack,
     futex::ThreadWaitState,
     interruption::{InterruptSnapshot, InterruptState},
@@ -354,31 +354,43 @@ impl Thread {
         self.pid.lock().identity.attach_task(task);
     }
 
-    /// Releases the runtime link while transferring the TID role to the caller.
-    pub(crate) fn retire_pid_retaining_tid(&self) -> PidRoleLease<Tid> {
+    /// Releases the runtime link while transferring the TID role and the
+    /// remaining exit-path responsibility to the caller.
+    ///
+    /// The returned [`ExitPathLease`] owns everything the retired task still
+    /// owes its PID namespaces; the caller completes it once zombie
+    /// publication, parent notification, and relation close finished.
+    pub(crate) fn retire_pid_retaining_tid(&self) -> (PidRoleLease<Tid>, ExitPathLease) {
         let (identity, lease) = {
             let mut pid = self.pid.lock();
             (pid.identity.clone(), pid.tid_lease.take())
         };
-        identity.mark_task_exited();
-        lease.expect("thread TID lease transferred twice")
+        let exit_path = identity.mark_task_exited();
+        (
+            lease.expect("thread TID lease transferred twice"),
+            exit_path,
+        )
     }
 
     /// Releases the runtime link and TID role after scheduler-visible exit.
-    pub(crate) fn retire_pid(&self) {
-        drop(self.retire_pid_retaining_tid());
+    ///
+    /// The returned [`ExitPathLease`] keeps the identity's exit path pending
+    /// until the caller completes it at the end of `do_exit`.
+    pub(crate) fn retire_pid(&self) -> ExitPathLease {
+        let (tid_lease, exit_path) = self.retire_pid_retaining_tid();
+        drop(tid_lease);
+        exit_path
     }
 
-    /// Atomically transfers the leader identity to this runtime task at exec.
+    /// Atomically transfers a fully retired leader identity to this runtime
+    /// task at exec.
     ///
     /// The caller's previous identity is fully retired here, not left to a
     /// later `do_exit`: after the swap that exit runs under the leader
-    /// identity and will never complete the previous one. Linux's `de_thread`
-    /// likewise frees the swapped-out TID immediately (`exchange_tids` plus
-    /// `free_pid`), and that `pid_allocated` drop is what unblocks
-    /// `zap_pid_ns_processes`. Completing the exit path here clears
-    /// `exit_path_pending`, wakes PID-namespace shutdown waiters, and detaches
-    /// the number once its last role is gone.
+    /// identity and will never complete the previous one. The caller waits for
+    /// the retired leader's exit-path lease before this transfer, matching
+    /// Linux `de_thread`, which observes the old leader's exit state and runs
+    /// its `release_task` path before adopting the leader PID.
     pub(crate) fn transfer_pid_identity(
         &self,
         task: &UserTaskRef,
@@ -398,15 +410,14 @@ impl Thread {
                 },
             )
         };
-        // Dropping the lease first releases the previous TID role before the
-        // exit path completes, so a roleless identity can also detach its
+        // Dropping the TID role lease first releases the previous role before
+        // the exit path completes, so a roleless identity can also detach its
         // namespace number in the same step.
         let previous_identity = {
             drop(previous.tid_lease);
             previous.identity
         };
-        previous_identity.mark_task_exited();
-        previous_identity.mark_exit_path_complete();
+        previous_identity.mark_task_exited().complete();
         identity.transfer_task(task);
     }
 

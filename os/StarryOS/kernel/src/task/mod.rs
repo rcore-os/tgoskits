@@ -51,7 +51,11 @@ pub use self::{
 #[cfg(axtest)]
 pub(crate) use self::{
     futex::futex_nofault_failure_is_transactional_for_test,
-    pid::pid_identity_state_machine_rules_hold_for_test,
+    pid::{
+        dropped_exit_path_lease_keeps_unfinished_work_pending_for_test,
+        exit_path_completion_precedes_task_transfer_for_test,
+        pid_identity_state_machine_rules_hold_for_test,
+    },
     posix_timer::{
         posix_timer_active_gate_rules_hold_for_test,
         posix_timer_clock_sampling_rules_hold_for_test,
