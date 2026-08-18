@@ -84,20 +84,46 @@ pub fn current() -> CurrentTask {
 
 /// Disables preemption for the current task when preemption is configured.
 #[doc(hidden)]
-pub fn disable_preempt() {
+pub fn disable_preempt() -> usize {
     #[cfg(feature = "preempt")]
-    if let Some(curr) = current_may_uninit() {
-        curr.disable_preempt();
+    {
+        crate::runtime_preempt::enter()
+    }
+    #[cfg(not(feature = "preempt"))]
+    {
+        0
     }
 }
 
 /// Enables preemption for the current task when preemption is configured.
 #[doc(hidden)]
-pub fn enable_preempt() {
+pub fn enable_preempt(token: usize) {
     #[cfg(feature = "preempt")]
-    if let Some(curr) = current_may_uninit() {
-        curr.enable_preempt(true);
+    {
+        crate::runtime_preempt::exit(token);
     }
+    #[cfg(not(feature = "preempt"))]
+    let _ = token;
+}
+
+/// Reports scheduler work to the runtime preemption safe-point adapter.
+#[doc(hidden)]
+pub fn runtime_preemption_pending() -> bool {
+    #[cfg(feature = "preempt")]
+    {
+        current_may_uninit().is_some_and(|curr| curr.preemption_pending())
+    }
+    #[cfg(not(feature = "preempt"))]
+    {
+        false
+    }
+}
+
+/// Runs the legacy scheduler action after the runtime claims its baton.
+#[doc(hidden)]
+pub fn runtime_preempt_current() {
+    #[cfg(feature = "preempt")]
+    crate::task::TaskInner::current_check_preempt_pending();
 }
 
 #[cfg(feature = "lockdep")]

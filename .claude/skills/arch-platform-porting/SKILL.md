@@ -27,18 +27,19 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   and must not contain kernel TLS. Axvisor remains a std/musl PIE and explicitly enables TLS.
   ArceOS enables TLS by default, but configuration must reject `uspace + tls` rather than
   constructing an image with overlapping register ownership.
-- **CPU-local register ABI**: `cpu-local` owns the register contract and `ax-percpu` owns only
-  typed layout/storage. Do not create a second current-task per-CPU pointer. The active image
+- **CPU-local execution-context ABI**: `cpu-local` owns current-source selection, context binding,
+  switch transactions, and architecture-selected preemption state; `ax-percpu` owns only typed
+  layout/storage. Do not create a second current-context per-CPU pointer. The active image
   mode determines the register assignment. The exact initialized `CpuAreaRef` address is the
   area identity; do not add in-image ABI versions, generation counters, cookies, provider-trait
   FFI, or raw TP access:
 
   | Architecture | CPU area | `LinuxCurrent` | `UnikernelTls` |
   | --- | --- | --- | --- |
-  | x86_64 | GS base | current header in the GS runtime anchor | FS base |
-  | AArch64 | TPIDR_EL1/EL2 | SP_EL0 | TPIDR_EL0 |
-  | RISC-V | current-header backtrace or sscratch | `tp = current`, `sscratch = 0` | `tp = TLS`, `sscratch = CPU base` |
-  | LoongArch | r21 with KS3 mirror | `tp = current` | `tp = TLS` |
+  | x86_64 | GS base | GS runtime anchor; FS unused | GS runtime anchor; FS is TLS |
+  | AArch64 | TPIDR_EL1/EL2 | SP_EL0; TPIDR_EL0 unused | SP_EL0; TPIDR_EL0 is TLS |
+  | RISC-V | current-header backtrace or sscratch | `tp = current`, `sscratch = 0` | anchor current; `tp = TLS`, `sscratch = CPU base` |
+  | LoongArch | r21 with KS3 mirror | `tp = current` | anchor current; `tp = TLS` |
 
   Keep LoongArch KS4/KS5 reserved for vCPU scratch. On RISC-V, `gp` is the ordinary global
   pointer again; target specs still need `--no-relax` where the PIE relocation model requires
@@ -47,7 +48,16 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   the live CPU base, area self pointer/index, and current header. Atomic scalars require migration
   exclusion; shared `T: Sync` objects also rely on object-owned synchronization; mutable local
   objects additionally require `ExclusiveCpu` after excluding IRQ/re-entry and conflicting remote
-  access. Scheduler switches keep IRQs off and consume prepared/previous transaction tokens.
+  access. Context switches keep IRQs off and consume prepared/previous transaction tokens.
+  AArch64 may lend SP_EL0 to userspace only after spilling the sole current header in the pinned
+  kernel stack and must restore it before returning to Rust. Preemption tokens are linear.
+  Load/store architectures retain the current-context owner across migration. x86_64 uses the
+  CPU anchor, so a suspended switch guard resuming on another CPU must consume its old proof and
+  adopt the equivalent depth left by the destination CPU's outgoing context. A runtime must claim
+  its scheduler baton before releasing a final pending preemption depth; task policy and baton
+  state do not belong in `cpu-local`. On a CPU-owned preemption architecture, a context's
+  first-entry tail must finish the switch depth because it has no suspended incoming guard;
+  context-owned architectures start that header at depth zero.
 - **Build system**: wire arch/target mapping in `scripts/axbuild`, dynamic platform defaults, feature propagation, kernel format conversion, UEFI/to-bin behavior, rootfs handling, and per-OS test discovery.
 - **QEMU and firmware**: verify QEMU binary, machine type, CPU, SMP count, pflash/OVMF files, serial console, disk/rootfs device, `-snapshot`, debug flags, timeout, and success/fail regexes.
   Obtain OVMF CODE/VARS through `cargo xtask ovmf --arch <arch>`, which reuses Ostool's pinned

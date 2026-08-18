@@ -15,7 +15,9 @@ use axpoll::{IoEvents, Pollable};
 #[cfg(feature = "irq")]
 use crate::IrqNotify;
 #[cfg(feature = "preempt")]
-use crate::sync::{PreemptGuard, SpinLock};
+use crate::sync::PreemptGuard;
+#[cfg(all(feature = "lockdep", feature = "preempt"))]
+use crate::sync::SpinLock;
 use crate::{
     WaitQueue, api as ax_task, current,
     future::{TaskError, TaskResult},

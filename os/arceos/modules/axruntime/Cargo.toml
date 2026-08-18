@@ -17,6 +17,7 @@ host-test = [
   "ax-ipi?/host-test",
   "ax-percpu?/host-test",
   "ax-task/host-test",
+  "cpu-local/host-test",
 ]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task/ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
@@ -101,6 +102,7 @@ ax-percpu = {workspace = true, optional = true}
 ax-plat = {workspace = true}
 ax-sync.workspace = true
 ax-task = {workspace = true, features = ["lock-api"]}
+cpu-local.workspace = true
 axbacktrace = {workspace = true}
 axpoll = {workspace = true, optional = true}
 axklib.workspace = true

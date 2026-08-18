@@ -109,7 +109,7 @@ fn dynamic_areas_are_scoped_initialized_and_isolated() {
     let uninstalled = std::thread::spawn(|| {
         // SAFETY: the fresh host thread cannot migrate between modeled CPUs and
         // has no installed CPU area; the callback must not be entered.
-        unsafe { STRUCT.with_scheduler_cpu(|_| ()) }
+        unsafe { STRUCT.with_current_cpu_area(|_| ()) }
     })
     .join()
     .expect("uninstalled CPU-area probe panicked");
@@ -213,44 +213,44 @@ fn exercise_current_area(pin: &CpuPin<'_>, cpu0: PerCpuArea) {
     }
 
     cpu_local::host_test::reset_register_read_counts();
-    let scheduler_pointer = unsafe {
+    let current_area_pointer = unsafe {
         // SAFETY: this single-threaded fixture models an offline CPU and
         // excludes migration, context switches, IRQ/re-entry, and remote access.
         STRUCT
-            .with_scheduler_cpu_mut(|value| {
+            .with_current_cpu_area_mut(|value| {
                 value.foo = 0x2333;
                 value as *mut Struct as usize
             })
             .unwrap()
     };
-    assert_eq!(scheduler_pointer, base + STRUCT.offset());
+    assert_eq!(current_area_pointer, base + STRUCT.offset());
     assert_eq!(
         cpu_local::host_test::register_read_counts(),
         cpu_local::host_test::RegisterReadCounts {
             cpu_base: 1,
-            current_thread: 0,
+            current_context: 0,
             initialized_area_validations: 0,
         },
-        "CPU-owner access must not route through task state or rebuild the installed CPU area",
+        "current CPU-area access must not read current context or rebuild the installed area",
     );
 
     cpu_local::host_test::reset_register_read_counts();
-    let scheduler_value = unsafe {
+    let current_area_value = unsafe {
         // SAFETY: the modeled offline CPU remains fixed and no mutation can
         // conflict with this non-escaping shared observation.
         STRUCT
-            .with_scheduler_cpu(|value| (value.foo, value as *const Struct as usize))
+            .with_current_cpu_area(|value| (value.foo, value as *const Struct as usize))
             .unwrap()
     };
-    assert_eq!(scheduler_value, (0x2333, base + STRUCT.offset()));
+    assert_eq!(current_area_value, (0x2333, base + STRUCT.offset()));
     assert_eq!(
         cpu_local::host_test::register_read_counts(),
         cpu_local::host_test::RegisterReadCounts {
             cpu_base: 1,
-            current_thread: 0,
+            current_context: 0,
             initialized_area_validations: 0,
         },
-        "shared CPU-owner access must use the same direct CPU-area boundary",
+        "shared current CPU-area access must use the same direct boundary",
     );
 
     assert!(BOOL.read_current(pin));
@@ -329,7 +329,7 @@ fn exercise_remote_area() {
         // SAFETY: this dedicated thread models one fixed offline CPU and the
         // shared callback cannot conflict with a mutation.
         unsafe {
-            STRUCT.with_scheduler_cpu(|value| {
+            STRUCT.with_current_cpu_area(|value| {
                 assert_eq!(value.foo, 0x6666);
                 assert_eq!(value.bar, 200);
                 assert_eq!(

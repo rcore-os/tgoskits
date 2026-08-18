@@ -90,7 +90,7 @@ where
         operation(unsafe { pointer.as_mut() })
     }
 
-    /// Mutates a CPU-owned scheduler object before a [`CpuPin`] exists.
+    /// Mutates the current CPU's object before a [`CpuPin`] exists.
     ///
     /// # Errors
     ///
@@ -105,7 +105,7 @@ where
     /// remote access to this object. Offline CPU bootstrap satisfies the same
     /// contract before interrupt publication.
     #[doc(hidden)]
-    pub unsafe fn with_scheduler_cpu_mut<R>(
+    pub unsafe fn with_current_cpu_area_mut<R>(
         &self,
         operation: impl for<'value> FnOnce(&'value mut T) -> R,
     ) -> Result<R, cpu_local::CpuLocalError> {
@@ -135,7 +135,7 @@ where
         operation(unsafe { S::current_ptr(pin).as_ref() })
     }
 
-    /// Borrows a CPU-owned scheduler object before a [`CpuPin`] exists.
+    /// Borrows the current CPU's object before a [`CpuPin`] exists.
     ///
     /// # Errors
     ///
@@ -149,7 +149,7 @@ where
     /// callback and exclude every conflicting mutation of this object. Offline
     /// CPU bootstrap satisfies the same contract before interrupt publication.
     #[doc(hidden)]
-    pub unsafe fn with_scheduler_cpu<R>(
+    pub unsafe fn with_current_cpu_area<R>(
         &self,
         operation: impl for<'value> FnOnce(&'value T) -> R,
     ) -> Result<R, cpu_local::CpuLocalError> {

@@ -872,14 +872,24 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
         if show_config {
             println!();
             println!("Configuration:");
-            vm.with_config(|cfg| {
-                println!("  BSP Entry:      {:#x}", cfg.bsp_entry().as_usize());
-                println!("  AP Entry:       {:#x}", cfg.ap_entry().as_usize());
-                println!("  Address Space:  {:?}", cfg.address_space_policy());
-                if let Some(dtb_addr) = cfg.image_config().dtb_load_gpa {
-                    println!("  DTB Address:    {:#x}", dtb_addr.as_usize());
-                }
+            // Snapshot configuration values and release the config lock before
+            // console output, keeping the lock scope independent of formatting.
+            let (bsp_entry, ap_entry, address_space_policy, dtb_load_gpa) = vm.with_config(|cfg| {
+                (
+                    cfg.bsp_entry().as_usize(),
+                    cfg.ap_entry().as_usize(),
+                    cfg.address_space_policy(),
+                    cfg.image_config()
+                        .dtb_load_gpa
+                        .map(|address| address.as_usize()),
+                )
             });
+            println!("  BSP Entry:      {:#x}", bsp_entry);
+            println!("  AP Entry:       {:#x}", ap_entry);
+            println!("  Address Space:  {:?}", address_space_policy);
+            if let Some(dtb_addr) = dtb_load_gpa {
+                println!("  DTB Address:    {:#x}", dtb_addr);
+            }
         }
 
         // Device Summary
@@ -1036,68 +1046,82 @@ fn show_vm_full_details(vm_id: usize) {
         // Configuration
         println!();
         println!("Configuration:");
-        vm.with_config(|cfg| {
-            println!("  BSP Entry:      {:#x}", cfg.bsp_entry().as_usize());
-            println!("  AP Entry:       {:#x}", cfg.ap_entry().as_usize());
-            println!("  Address Space:  {:?}", cfg.address_space_policy());
-
-            if let Some(dtb_addr) = cfg.image_config().dtb_load_gpa {
-                println!("  DTB Address:    {:#x}", dtb_addr.as_usize());
-            }
-
-            // Show kernel info
-            println!(
-                "  Kernel GPA:     {:#x}",
-                cfg.image_config().kernel_load_gpa.as_usize()
-            );
-
-            // Show passthrough devices
-            if !cfg.pass_through_devices().is_empty() {
-                println!();
-                println!(
-                    "  Passthrough Devices: ({} device(s))",
-                    cfg.pass_through_devices().len()
-                );
-                for device in cfg.pass_through_devices() {
-                    println!(
-                        "    - {}: GPA[{:#x}~{:#x}] -> HPA[{:#x}~{:#x}] ({})",
-                        device.name,
-                        device.base_gpa,
-                        device.base_gpa + device.length,
-                        device.base_hpa,
-                        device.base_hpa + device.length,
-                        format_memory_size(device.length)
-                    );
-                }
-            }
-
-            // Show passthrough addresses
-            if !cfg.pass_through_addresses().is_empty() {
-                println!();
-                println!(
-                    "  Passthrough Memory Regions: ({} region(s))",
-                    cfg.pass_through_addresses().len()
-                );
-                for pt_addr in cfg.pass_through_addresses() {
-                    println!(
-                        "    - GPA[{:#x}~{:#x}] ({})",
-                        pt_addr.base_gpa,
-                        pt_addr.base_gpa + pt_addr.length,
-                        format_memory_size(pt_addr.length)
-                    );
-                }
-            }
-
-            // Show physical IRQs routed through the virtual GIC.
-            #[cfg(target_arch = "aarch64")]
-            {
-                let irqs = cfg.pass_through_irqs();
-                if !irqs.is_empty() {
-                    println!();
-                    println!("  Physical IRQ Routes: {:?}", irqs);
-                }
-            }
+        // Snapshot the values needed for output, then release the config lock
+        // before taking console locks while formatting the details.
+        let (
+            bsp_entry,
+            ap_entry,
+            address_space_policy,
+            dtb_load_gpa,
+            kernel_load_gpa,
+            pass_through_devices,
+            pass_through_addresses,
+        ) = vm.with_config(|cfg| {
+            (
+                cfg.bsp_entry().as_usize(),
+                cfg.ap_entry().as_usize(),
+                cfg.address_space_policy(),
+                cfg.image_config()
+                    .dtb_load_gpa
+                    .map(|address| address.as_usize()),
+                cfg.image_config().kernel_load_gpa.as_usize(),
+                cfg.pass_through_devices().to_vec(),
+                cfg.pass_through_addresses().to_vec(),
+            )
         });
+        #[cfg(target_arch = "aarch64")]
+        let pass_through_irqs = vm.with_config(|cfg| cfg.pass_through_irqs().to_vec());
+
+        println!("  BSP Entry:      {:#x}", bsp_entry);
+        println!("  AP Entry:       {:#x}", ap_entry);
+        println!("  Address Space:  {:?}", address_space_policy);
+
+        if let Some(dtb_addr) = dtb_load_gpa {
+            println!("  DTB Address:    {:#x}", dtb_addr);
+        }
+
+        println!("  Kernel GPA:     {:#x}", kernel_load_gpa);
+
+        if !pass_through_devices.is_empty() {
+            println!();
+            println!(
+                "  Passthrough Devices: ({} device(s))",
+                pass_through_devices.len()
+            );
+            for device in &pass_through_devices {
+                println!(
+                    "    - {}: GPA[{:#x}~{:#x}] -> HPA[{:#x}~{:#x}] ({})",
+                    device.name,
+                    device.base_gpa,
+                    device.base_gpa + device.length,
+                    device.base_hpa,
+                    device.base_hpa + device.length,
+                    format_memory_size(device.length)
+                );
+            }
+        }
+
+        if !pass_through_addresses.is_empty() {
+            println!();
+            println!(
+                "  Passthrough Memory Regions: ({} region(s))",
+                pass_through_addresses.len()
+            );
+            for address in &pass_through_addresses {
+                println!(
+                    "    - GPA[{:#x}~{:#x}] ({})",
+                    address.base_gpa,
+                    address.base_gpa + address.length,
+                    format_memory_size(address.length)
+                );
+            }
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        if !pass_through_irqs.is_empty() {
+            println!();
+            println!("  Physical IRQ Routes: {:?}", pass_through_irqs);
+        }
 
         // Devices
         println!();

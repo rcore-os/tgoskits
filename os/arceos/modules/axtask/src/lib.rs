@@ -78,6 +78,8 @@ cfg_if::cfg_if! {
         mod interrupt;
         mod task;
         mod api;
+        #[doc(hidden)]
+        pub mod runtime_preempt;
         #[cfg(feature = "lockdep")]
         mod lockdep;
         #[cfg(feature = "tracepoint-hooks")]
