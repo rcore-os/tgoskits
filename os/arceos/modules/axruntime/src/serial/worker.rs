@@ -106,9 +106,11 @@ impl SerialWorker {
                 }
                 let outcome = self.service_rx(path);
                 rx_blocked = outcome.blocked;
-                if outcome.budget_exhausted
-                    || (!outcome.blocked && self.shared.bridge.latch.has_pending())
-                {
+                if worker_budget_requires_yield(outcome.budget_exhausted) {
+                    yield_after_worker_budget();
+                    continue;
+                }
+                if !outcome.blocked && self.shared.bridge.latch.has_pending() {
                     continue;
                 }
             }
@@ -128,7 +130,8 @@ impl SerialWorker {
             }
 
             self.update_tx_idle();
-            if budget_exhausted {
+            if worker_budget_requires_yield(budget_exhausted) {
+                yield_after_worker_budget();
                 continue;
             }
             if self.port_rx_ready {
@@ -675,6 +678,16 @@ struct TxServiceOutcome {
     budget_exhausted: bool,
 }
 
+const fn worker_budget_requires_yield(budget_exhausted: bool) -> bool {
+    budget_exhausted
+}
+
+fn yield_after_worker_budget() {
+    crate::task::yield_current_cpu().unwrap_or_else(|error| {
+        panic!("serial worker budget yield must run in schedulable task context: {error:?}")
+    });
+}
+
 fn rearm_drained_rx(
     drained: bool,
     polling: bool,
@@ -898,5 +911,11 @@ mod tests {
         assert!(log_extraction_allowed(0, false));
         assert!(!log_extraction_allowed(1, false));
         assert!(!log_extraction_allowed(0, true));
+    }
+
+    #[test]
+    fn exhausted_serial_worker_budget_requires_a_scheduler_yield() {
+        assert!(worker_budget_requires_yield(true));
+        assert!(!worker_budget_requires_yield(false));
     }
 }
