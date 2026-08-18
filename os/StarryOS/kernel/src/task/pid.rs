@@ -1417,6 +1417,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     }
     group_only.mark_task_exited();
     group_only_pgid.release();
+    group_only.mark_exit_path_complete();
 
     let shutdown_executor = PidReservation::reserve(&child, PidReservationKind::Thread)
         .unwrap()
@@ -1438,6 +1439,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
             }
             descendant_body.mark_task_exited();
             descendant_tid.release();
+            descendant_body.mark_exit_path_complete();
         },
         "pid-namespace-descendant".into(),
     );
@@ -1456,6 +1458,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     crate::task::join_kernel_thread(descendant_task);
     shutdown_executor.mark_task_exited();
     shutdown_executor_tid.release();
+    shutdown_executor.mark_exit_path_complete();
     if view.visible_number(&child_init).is_some() || view.nspid_chain(&child_init).is_some() {
         return false;
     }
@@ -1464,6 +1467,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     drop(session);
     child_tid.release();
     child_tgid.release();
+    child_init.mark_exit_path_complete();
     drop(shutdown);
     if child.lifecycle() != PidNamespaceLifecycle::Dead {
         return false;
@@ -1478,6 +1482,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     let old_role = old.acquire_role::<Pgid>().unwrap();
     old.mark_task_exited();
     old_role.release();
+    old.mark_exit_path_complete();
     if root.lookup_identity(old_generation).is_some() {
         return false;
     }
@@ -1495,6 +1500,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
             .is_some_and(|registered| Arc::ptr_eq(&registered, &replacement));
     replacement.mark_task_exited();
     replacement_role.release();
+    replacement.mark_exit_path_complete();
 
     let failed_reservation = PidReservation::reserve(&root, PidReservationKind::Thread).unwrap();
     let failed_identity = failed_reservation.identity();
@@ -1511,6 +1517,7 @@ pub(crate) fn pid_identity_state_machine_rules_hold_for_test() -> bool {
     root_init.mark_task_exited();
     root_init_tid.release();
     root_init_tgid.release();
+    root_init.mark_exit_path_complete();
     generation_is_stable && failed_publication_was_removed
 }
 
