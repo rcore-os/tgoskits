@@ -5,6 +5,7 @@ use arm_vgic::{
     HostGicVersion, IntId, InterruptState, VgicBackend, VgicBackendCapabilities, VgicCore,
     VgicDeviceSet, VgicMmioRegion, VgicResult, VgicV2Config,
 };
+use ax_runtime as _;
 use axdevice_base::{
     BusKind, DeviceAccess, DeviceId, DeviceVcpuId, InterruptControllerId, InterruptTrigger,
     NoopDeviceContext,

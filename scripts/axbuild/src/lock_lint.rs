@@ -639,25 +639,26 @@ fn check_runtime_providers(
             ));
         }
     }
-    check_host_engine_cfg(workspace_root, findings)?;
+    check_ax_sync_is_wrapper_only(workspace_root, findings)?;
     Ok(())
 }
 
-fn check_host_engine_cfg(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow::Result<()> {
+fn check_ax_sync_is_wrapper_only(
+    workspace_root: &Path,
+    findings: &mut Vec<Finding>,
+) -> anyhow::Result<()> {
     let path = workspace_root.join(AX_SYNC_HOST_MODULE_PATH);
     if !path.exists() {
         return Ok(());
     }
     let contents =
         fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    if !contents.contains("all(feature = \"host-test\", not(target_os = \"none\"))")
-        || !contents.contains("mod host;")
-    {
+    if contents.contains("mod host") || contents.contains("crate::host") {
         findings.push(Finding::new(
             &path,
-            "host engine cfg",
-            "ax-sync host engine is not restricted to host-test on std-capable targets",
-            "gate the host module with all(feature = \"host-test\", not(target_os = \"none\"))",
+            "host engine boundary",
+            "ax-sync must not select an in-crate host lock engine",
+            "keep ax-sync as a wrapper and link the unique provider from ax-runtime in host tests",
         ));
     }
     Ok(())
@@ -1096,7 +1097,7 @@ ax-sync = "0.1"
     }
 
     #[test]
-    fn rejects_unconditional_host_engine() {
+    fn rejects_in_crate_host_engine() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
@@ -1111,20 +1112,21 @@ mod host;
         assert!(findings.iter().any(|finding| {
             finding
                 .message
-                .contains("host engine is not restricted to host-test")
+                .contains("must not select an in-crate host lock engine")
         }));
     }
 
     #[test]
-    fn accepts_target_aware_host_provider_selection() {
+    fn accepts_external_runtime_provider_with_wrapper_only_ax_sync() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
         write_file(
             root.path(),
             AX_SYNC_HOST_MODULE_PATH,
             r#"
-#[cfg(all(feature = "host-test", not(target_os = "none")))]
-mod host;
+#![no_std]
+
+pub mod interface;
 "#,
         );
 

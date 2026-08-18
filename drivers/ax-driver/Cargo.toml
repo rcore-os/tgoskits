@@ -199,11 +199,8 @@ thiserror.workspace = true
 virtio-drivers = { workspace = true, optional = true }
 
 [dev-dependencies]
+ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
-# Test-local lock provider registration (tests/common/lock_ops.rs). ax-runtime
-# is not linked here because its production Klib implementation would collide
-# with the TestKlib mock the tests register.
-ax-crate-interface = { workspace = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_goldfish = "0.1"

@@ -558,10 +558,11 @@ mod tests {
         thread,
     };
 
-    use ax_runtime::sync::LockdepMutexExt;
-
     use super::{PreparedFork, Process, ProcessGroup};
-    use crate::task::{PidIdentity, PidNamespaceRef, PidRoleLease, Tgid};
+    use crate::{
+        sync::LockdepMutexExt,
+        task::{PidIdentity, PidNamespaceRef, PidRoleLease, Tgid},
+    };
 
     const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
     const NESTED_GROUP_MEMBERS_LOCK_SUBCLASS: u32 = 1;
@@ -601,7 +602,7 @@ mod tests {
 
     #[test]
     fn thread_group_uses_a_sleepable_pi_lock() {
-        fn assert_pi_mutex<T>(_: &ax_runtime::sync::PiMutex<T>) {}
+        fn assert_pi_mutex<T>(_: &crate::sync::PiMutex<T>) {}
 
         let mut fixture = TestProcessFixture::new();
         let process = fixture.init();

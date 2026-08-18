@@ -492,6 +492,7 @@ version = "0.5.6"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
+ "ax-runtime",
  "ax-sync",
  "axdevice_base",
  "axvm-types",
@@ -825,6 +826,7 @@ dependencies = [
  "ax-alloc",
  "ax-arm-pl031",
  "ax-crate-interface",
+ "ax-runtime",
  "ax-sync",
  "axklib",
  "crab-usb",
@@ -1313,6 +1315,7 @@ dependencies = [
 name = "axdevice"
 version = "0.5.7"
 dependencies = [
+ "ax-runtime",
  "ax-sync",
  "axdevice_base",
  "axvm-types",

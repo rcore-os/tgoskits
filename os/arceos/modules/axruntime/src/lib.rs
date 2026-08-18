@@ -33,6 +33,9 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(missing_abi)]
 
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+extern crate std;
+
 #[macro_use]
 extern crate ax_log;
 
@@ -58,6 +61,12 @@ mod irq_time;
 #[cfg(feature = "paging")]
 mod kernel_mapping;
 mod klib;
+
+/// Host-only adapters for testing runtime-owned capability providers.
+#[cfg(all(feature = "host-test", not(target_os = "none")))]
+pub mod host_test {
+    pub use crate::klib::{HostIomapOverride, try_install_iomap_override};
+}
 
 #[cfg(any(feature = "irq", test))]
 mod clock_event;
