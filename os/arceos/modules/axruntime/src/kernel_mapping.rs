@@ -1,3 +1,5 @@
+use core::ptr::NonNull;
+
 #[cfg(feature = "multitask")]
 use ax_hal::paging::MappingFlags;
 use ax_memory_addr::{PhysAddr, VirtAddr};
@@ -31,7 +33,7 @@ pub(crate) fn protect_kernel_range(
 pub(crate) fn map_dma_coherent_alias(
     paddr: PhysAddr,
     size: usize,
-) -> Result<VirtAddr, MappingTransactionError> {
+) -> Result<NonNull<u8>, MappingTransactionError> {
     let mut kernel_aspace = ax_mm::kernel_aspace().lock();
     map_alias_transaction(
         || {
@@ -40,13 +42,14 @@ pub(crate) fn map_dma_coherent_alias(
                 .map_err(Into::into)
         },
         |alias| {
-            ax_hal::cache::flush_tlb_range_all_cpus(alias, size)?;
+            let alias_vaddr = VirtAddr::from_usize(alias.as_ptr() as usize);
+            ax_hal::cache::flush_tlb_range_all_cpus(alias_vaddr, size)?;
             Ok(())
         },
     )
 }
 
-pub(crate) fn unmap_dma_coherent_alias(alias: VirtAddr, size: usize) -> RuntimeResult {
+pub(crate) fn unmap_dma_coherent_alias(alias: NonNull<u8>, size: usize) -> RuntimeResult {
     // Keep the address-space lock across the shootdown so another allocation
     // cannot reuse this VA while any CPU may retain its old translation.
     let mut kernel_aspace = ax_mm::kernel_aspace().lock();
@@ -56,16 +59,17 @@ pub(crate) fn unmap_dma_coherent_alias(alias: VirtAddr, size: usize) -> RuntimeR
             Ok(())
         },
         || {
-            ax_hal::cache::flush_tlb_range_all_cpus(alias, size)?;
+            let alias_vaddr = VirtAddr::from_usize(alias.as_ptr() as usize);
+            ax_hal::cache::flush_tlb_range_all_cpus(alias_vaddr, size)?;
             Ok(())
         },
     )
 }
 
 fn map_alias_transaction(
-    map: impl FnOnce() -> RuntimeResult<VirtAddr>,
-    shootdown: impl FnOnce(VirtAddr) -> RuntimeResult,
-) -> Result<VirtAddr, MappingTransactionError> {
+    map: impl FnOnce() -> RuntimeResult<NonNull<u8>>,
+    shootdown: impl FnOnce(NonNull<u8>) -> RuntimeResult,
+) -> Result<NonNull<u8>, MappingTransactionError> {
     let alias = map().map_err(MappingTransactionError::NotStarted)?;
     shootdown(alias).map_err(MappingTransactionError::StateUncertain)?;
     Ok(alias)
@@ -157,7 +161,7 @@ mod tests {
             )))
         ));
 
-        let alias = VirtAddr::from_usize(0x4000);
+        let alias = NonNull::new(0x4000 as *mut u8).unwrap();
         let uncertain = map_alias_transaction(
             || Ok(alias),
             |_| Err(RuntimeError::from(TlbShootdownError::Timeout)),
