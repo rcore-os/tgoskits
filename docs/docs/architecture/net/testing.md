@@ -5,7 +5,7 @@ sidebar_label: "测试与限制"
 
 # 测试与限制
 
-本文说明 `ax-net` 现有测试资产、运行方式、覆盖范围和当前限制。测试分三层：`net/ax-net` crate 内单元测试验证协议栈内部数据结构和路由/绑定语义；StarryOS system 测试验证 Linux ABI 观测面；`apps/starry/qemu/dual-net` 验证双网口 DHCP、路由和并发数据面。
+`ax-net` 测试分三层：`net/ax-net` crate 内单元测试覆盖协议栈内部数据结构和路由/绑定语义；StarryOS system 测试覆盖 Linux ABI 观测面；`apps/starry/qemu/dual-net` 覆盖双网口 DHCP、路由和并发数据面。
 
 ## 测试资产
 

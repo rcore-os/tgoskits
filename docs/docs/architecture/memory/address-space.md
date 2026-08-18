@@ -276,4 +276,4 @@ StarryOS `AddrSpace` 在调用 backend 时把具体页表和 `MemoryAccounting` 
 | `os/StarryOS/kernel/src/mm/aspace/` | StarryOS Linux 虚拟内存策略和专用恢复 |
 | `virtualization/axaddrspace/src/address_space/` | 客户机地址空间策略 |
 
-测试和验收命令统一见[内存管理测试与验收](./testing.md)。
+相关测试命令见[内存管理测试](./testing.md)。

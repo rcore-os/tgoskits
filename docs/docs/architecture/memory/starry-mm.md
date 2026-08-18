@@ -203,4 +203,4 @@ Starry `/dev/dma_heap` 和设备 import 使用 `dma-api` 高层 owner。fd、mma
 | `os/StarryOS/kernel/src/pseudofs/proc.rs` | meminfo、statm、status、overcommit sysctl 展示 |
 | `os/StarryOS/kernel/src/entry.rs` | page-cache reclaim callback 注册 |
 
-StarryOS 的系统调用、跨 VMA 失败注入、写时复制回滚和 RSS 统计用例集中在[内存管理测试与验收](./testing.md)。
+StarryOS 的系统调用、跨 VMA 失败注入、写时复制回滚和 RSS 统计用例见[内存管理测试](./testing.md)。

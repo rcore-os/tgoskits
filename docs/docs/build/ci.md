@@ -5,7 +5,7 @@ sidebar_label: "自动 CI 测试"
 
 # 自动 CI 测试
 
-本文档说明 `.github/workflows/ci.yml`、`.github/workflows/ci-branch-push.yml`、`.github/workflows/reusable-command.yml` 和容器镜像在 CI 中的职责，以及当前测试矩阵、缓存策略和 self-hosted runner 的使用方式。
+CI 由 `.github/workflows/ci.yml`、`.github/workflows/ci-branch-push.yml`、`.github/workflows/reusable-command.yml` 和配套容器镜像共同组成，覆盖测试矩阵、缓存策略和 self-hosted runner 调度。
 
 TGOSKits 将大部分构建与运行依赖收敛到统一的 container 镜像，由 GitHub Actions 和本地开发流程共同消费。需要物理设备、虚拟化能力或专用机器环境的任务则运行在 self-hosted runner 上。
 

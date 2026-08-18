@@ -319,15 +319,3 @@ sock.bind_device(mgmt.id)?;
 - 非 root namespace 主要只看到 loopback。
 
 需要完整 network namespace 时，应在 `ax-net` 上方设计 namespace domain，而不是在 StarryOS 局部复制接口表。
-
-## 接入检查清单
-
-新增或修改系统接入路径时，应检查：
-
-- 是否通过 `NetworkConfig`、`InterfaceInfo`、`InterfaceId`、`DeviceBinding` 等公开模型传递网络语义。
-- 是否避免固定 `eth0`、固定 ifindex 或固定 gateway。
-- 是否只由 `ax-net` 维护 route table、DNS registry 和 ARP entries。
-- 是否使用 `ax_net::interfaces()`、`interface_by_name()`、`interface_by_id()` 查询接口。
-- 是否将 Linux ABI 结构体编解码留在 StarryOS，而不是下沉到 `ax-net`。
-- 是否在动态设备注册后调用 `request_poll()` 或依赖 `register_device_with_config()` 的唤醒路径。
-- 是否避免在 IRQ、设备 worker 或 syscall 热路径中直接推进 smoltcp poll。

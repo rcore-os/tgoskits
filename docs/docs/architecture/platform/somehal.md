@@ -236,7 +236,7 @@ pub trait PlatOp {
 - **下游（`axplat-dyn`）**：通过 `somehal::init`、`somehal::post_paging`、`somehal::irq::begin_irq` 等被消费；`KernelOp` 是 `axplat-dyn` 必须实现的 trait。
 - **架构无关 helper**：`PlatOp`、`IrqDomain`、`boot_console`、`irq_routing` 都被多个 arch 共享，新增架构只需实现 `PlatOp` 并在 `arch/<new>/mod.rs` 中注册 probe driver。
 
-## 扩展指引
+## 扩展接口
 
 - **新增架构**：创建 `src/arch/<arch>/`，定义 `pub struct Plat;` 并实现 `PlatOp`；按需在 `irq_routing.rs` 添加架构无关 helper；通过 `module_driver!` 注册中断控制器。
 - **新增 IRQ domain**：在 `IrqDomainKind` 加枚举值，给 arch 后端在合适时机调用 `register_irq_domain` / `alloc_irq_domain`；添加 per-kind atomic slot 以走 fast path。
