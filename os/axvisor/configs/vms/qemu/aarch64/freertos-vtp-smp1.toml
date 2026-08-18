@@ -1,0 +1,39 @@
+# FreeRTOS VTP guest for QEMU aarch64 under Axvisor, with a virtio-net device.
+#
+# This is the FreeRTOS side of the StarryOS <-> FreeRTOS VTP demo. The guest
+# uses the runtime-generated DTB (no dtb_path), so the virtio-net virtual
+# device automatically gets a /virtio_mmio@a000000 node (reg 0x0a00_0000,
+# SPI 48). If FreeRTOS is built with a compiled-in devicetree instead, its
+# virtio_mmio node must match this binding. See docs/design/axvisor-vtp.md and
+# guests/freertos-vtp/README.md.
+
+[base]
+id = 2
+name = "freertos-vtp"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [2]
+phys_cpu_sets = [2]
+
+[kernel]
+# Entry point must match the built FreeRTOS image (qemu_cortex_a53 style).
+entry_point = 0x4000_1000
+image_location = "memory"
+kernel_path = "${workspace}/guests/freertos-vtp/build/freertos.bin"
+kernel_load_addr = 0x4000_0000
+dtb_load_addr = 0x47e0_0000
+
+# Memory region format: [base, size, flags, map_type].
+# 128 MiB MAP_ALLOC at 0x4000_0000 (the FreeRTOS image loads at 0x4000_0000).
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x57]

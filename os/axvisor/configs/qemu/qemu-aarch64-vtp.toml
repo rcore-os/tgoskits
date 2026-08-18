@@ -1,0 +1,15 @@
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "4",
+  "-m", "4g",
+  # Host-attached NVMe carrying the StarryOS rootfs; passed through to VM1.
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+]
+fail_regex = ["STARRY_VTP_FAIL", "FREERTOS_VTP_FAIL", "(?i)panic", "VCPU_RUNTIME_ERROR"]
+success_regex = ["(?s)(STARRY_VTP_PASS.*FREERTOS_VTP_PASS|FREERTOS_VTP_PASS.*STARRY_VTP_PASS)"]
+timeout = 180
+to_bin = true
+uefi = false
