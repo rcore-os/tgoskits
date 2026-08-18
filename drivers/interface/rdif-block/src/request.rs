@@ -43,11 +43,6 @@ impl RequestFlags {
         self.0
     }
 
-    #[cfg(all(axtest, feature = "axtest"))]
-    pub(crate) const fn from_bits_for_test(bits: u32) -> Self {
-        Self(bits)
-    }
-
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -572,6 +567,23 @@ mod tests {
         assert_eq!(
             validate_owned_request_shape(info.device, limits, &request_with(0x1000, 512),),
             Err(BlkError::NotSupported)
+        );
+    }
+
+    #[test]
+    fn request_validation_rejects_unknown_flags() {
+        let limits = QueueLimits::simple(512, u64::MAX);
+        let request = OwnedRequest {
+            op: RequestOp::Flush,
+            lba: 0,
+            block_count: 0,
+            data: None,
+            flags: RequestFlags(1 << 24),
+        };
+
+        assert_eq!(
+            validate_owned_request(info_with(limits), &request),
+            Err(BlkError::InvalidRequest)
         );
     }
 }

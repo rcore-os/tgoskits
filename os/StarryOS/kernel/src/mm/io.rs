@@ -151,7 +151,7 @@ fn vm_error_to_io_error(error: VmError) -> IoError {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn vm_error_to_io_error_preserves_length_for_test() -> bool {
     vm_error_to_io_error(VmError::TooLong) == IoError::NameTooLong
 }

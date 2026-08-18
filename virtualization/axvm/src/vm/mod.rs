@@ -237,6 +237,24 @@ fn pulse_interrupt_with_snapshot(
     Ok(())
 }
 
+/// Hold a request-stop on a `Running` VM until the first vCPU task enters the
+/// guest run loop, closing the start->stop race for the destroy/reset quiesce
+/// path.
+///
+/// `start_vm` flips the status to `Running` synchronously while the vCPU task
+/// may still be queued on another CPU. Accepting a request-stop in that window
+/// strands the task in its startup gate (it needs a `Running` window it already
+/// missed), so the VM never reaches `Stopped`. This is the same guard
+/// [`stop_vm`](crate::runtime::stop_vm) applies; the accessors are injected so
+/// the start->stop ordering is deterministically testable, and production
+/// passes the VM's own `running_vcpu_count`/`stopping`.
+fn wait_for_running_vm_quiesce(
+    running_vcpu_count: impl Fn() -> usize,
+    stopping: impl Fn() -> bool,
+) -> AxVmResult {
+    crate::runtime::wait_until_vcpu_entered(|| running_vcpu_count() > 0, stopping)
+}
+
 impl VmRuntimeHandle {
     pub(crate) fn new() -> Self {
         Self {
@@ -430,8 +448,11 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn mark_vcpu_running(&self) {
+        // Release publishes the "a vCPU has entered the guest" signal to the
+        // control plane, which observes it with an Acquire load
+        // (`running_halting_vcpu_count`) before issuing a request-stop.
         self.running_halting_vcpu_count
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Release);
     }
 
     pub(crate) fn publish_cpu_on_start_success(&self, ack: &crate::runtime::vcpus::CpuOnStartAck) {
@@ -445,6 +466,12 @@ impl VmRuntimeHandle {
                 count.checked_sub(1)
             })
             == Ok(1)
+    }
+
+    pub(crate) fn running_halting_vcpu_count(&self) -> usize {
+        // Acquire pairs with the Release increment in `mark_vcpu_running`: the
+        // caller observes "a vCPU has entered the guest" before acting on it.
+        self.running_halting_vcpu_count.load(Ordering::Acquire)
     }
 
     pub(crate) fn record_lifecycle_error(&self, error: AxVmError) {
@@ -1187,6 +1214,30 @@ impl AxVM {
             .collect()
     }
 
+    /// Returns the number of vCPUs whose task has entered the guest run loop
+    /// and not yet finished exiting.
+    ///
+    /// A vCPU increments the count once, right before its first guest entry
+    /// (`vcpu_run`), and decrements it when it stops, so the count covers the
+    /// whole running + halting window: a non-zero value means at least one vCPU
+    /// task has been scheduled and is executing the guest. This differs from
+    /// `start_vm()`, which flips the VM status to `Running` synchronously while
+    /// the vCPU task may still be queued on another CPU.
+    ///
+    /// The count is a publish/observe signal between the vCPU cores and the
+    /// control plane: `mark_vcpu_running` increments it with `Release`, and this
+    /// getter loads it with `Acquire`. The control plane polls it to `> 0`
+    /// before issuing a request-stop, so a stop is only requested after a vCPU
+    /// has actually entered the guest; otherwise a stop issued before the vCPU
+    /// is scheduled would strand the vCPU task waiting forever for a `Running`
+    /// window it already missed. Because the count includes the halting window,
+    /// it must be read only as a monotone "a vCPU has entered" signal, not as an
+    /// exact "still running" count.
+    pub fn running_vcpu_count(&self) -> usize {
+        self.with_runtime(|runtime| Ok(runtime.running_halting_vcpu_count()))
+            .unwrap_or(0)
+    }
+
     /// Returns the root address of the nested page table for the VM.
     pub fn nested_page_table_root(&self) -> AxVmResult<HostPhysAddr> {
         self.with_resources(|resources| Ok(resources.address_space.page_table_root()))
@@ -1414,6 +1465,16 @@ impl AxVM {
     fn stop_and_join_runtime(&self, reason: StopReason) -> AxVmResult {
         match self.status() {
             VmStatus::Running | VmStatus::Paused => {
+                // A request-stop accepted in the start->stop window strands the
+                // vCPU task in its startup gate (it needs a `Running` window it
+                // already missed) and the VM never reaches `Stopped`, so a
+                // `Running` VM holds the stop until the first vCPU entry,
+                // exactly as `AxvmRuntime::stop_vm` does. This guards the
+                // destroy/reset quiesce path too: a client may POST `/start`
+                // and then immediately DELETE the VM.
+                if matches!(self.status(), VmStatus::Running) {
+                    wait_for_running_vm_quiesce(|| self.running_vcpu_count(), || self.stopping())?;
+                }
                 self.stop(reason)?;
                 if let Ok(()) = self.with_runtime(|runtime| {
                     runtime.notify_all();
@@ -2267,6 +2328,59 @@ mod tests {
         let result = pulse_interrupt_with_snapshot(|| Ok(controller.clone()), 11);
 
         assert_eq!(result, Err(AxVmError::from(irq_error)));
+    }
+
+    #[test]
+    fn delete_after_start_holds_stop_until_vcpu_entry() {
+        // A client POSTs /start and immediately DELETEs the VM. The vCPU task
+        // is still queued (it has not entered the guest run loop) when the
+        // destroy quiesce path requests the stop; accepting it in that window
+        // strands the task in its startup gate and the VM never reaches
+        // `Stopped`. The quiesce path must hold the stop until the first vCPU
+        // entry, exactly as `stop_vm` guards it.
+        let entered = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::new(AtomicBool::new(false));
+        let first_poll = Arc::new(std::sync::Barrier::new(2));
+        let release_entered = Arc::new(std::sync::Barrier::new(2));
+
+        let entered_for_task = entered.clone();
+        let first_poll_for_task = first_poll.clone();
+        let release_entered_for_task = release_entered.clone();
+        let vcpu_task = std::thread::spawn(move || {
+            // The vCPU task is queued but has not entered the guest run loop.
+            first_poll_for_task.wait();
+            release_entered_for_task.wait();
+            entered_for_task.store(true, Ordering::Release);
+        });
+
+        let entered_for_wait = entered.clone();
+        let stopping_for_wait = stopping.clone();
+        let poll_count = std::cell::Cell::new(0);
+        let result = wait_for_running_vm_quiesce(
+            || {
+                let is_entered = entered_for_wait.load(Ordering::Acquire);
+                if poll_count.get() == 0 {
+                    // First poll observed the pre-entry state; only now release
+                    // the vCPU task to enter, deterministically ordering
+                    // stop-before-entry.
+                    poll_count.set(1);
+                    first_poll.wait();
+                    release_entered.wait();
+                }
+                if is_entered { 1 } else { 0 }
+            },
+            || stopping_for_wait.load(Ordering::Acquire),
+        );
+
+        vcpu_task.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "destroy must wait for vCPU entry, not strand it"
+        );
+        assert!(
+            entered.load(Ordering::Acquire),
+            "vCPU task must have entered the guest run loop"
+        );
     }
 
     #[derive(Default)]

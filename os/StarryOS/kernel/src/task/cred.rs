@@ -276,7 +276,7 @@ impl Default for Cred {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
     let root = Cred::root();
     let mut unprivileged = Cred::unprivileged(1000, 100);

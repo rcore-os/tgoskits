@@ -32,6 +32,8 @@ use ax_std as _;
 mod banner;
 mod config;
 mod guest_console;
+#[cfg(feature = "http-axum")]
+mod http;
 mod manager;
 mod shell;
 mod virtio_blk;
@@ -55,8 +57,12 @@ fn init_panic_hook() {
 ///
 /// 1. Print the startup banner.
 /// 2. Check and enable hardware virtualization on every CPU.
-/// 3. Build and start configured guest VMs.
-/// 4. Run the VM completion waiter and management console concurrently.
+/// 3. Build the default guest VMs.
+/// 4. Spawn the management plane first — the HTTP server so the API is live
+///    before any guest boots — then the VM lifecycle waiter and the shell.
+///
+/// The vCPU tasks are pinned to the secondary CPUs via `phys_cpu_ids` in the
+/// VM configs, while the management console stays on the primary CPU.
 fn main() {
     #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
     init_panic_hook();
@@ -76,18 +82,44 @@ fn main() {
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
     manager.init_default_vms();
+
+    // The management HTTP server accepts connections in a loop and needs its
+    // own task so neither the shell nor the VMM blocks it. It is spawned first
+    // so the management API is ready as early as possible. `ax_std::thread::spawn`
+    // only enqueues the task — the main task keeps running until it yields or
+    // blocks — so the server's bind does not necessarily happen before
+    // `launch_default_vms` queues the vCPU tasks; the ordering is best-effort.
+    #[cfg(feature = "http-axum")]
+    std::thread::Builder::new()
+        .name("axvisor-http".into())
+        .spawn(http::serve)
+        .unwrap_or_else(|error| panic!("failed to start management HTTP server: {error}"));
+
     let default_vms = manager::AxvmManager::vm_list();
     guest_console::configure_host_console_reader(&default_vms)
         .unwrap_or_else(|error| panic!("failed to configure host console input: {error:#}"));
+
+    // With `no-auto-start` the default VMs are only created (staying in
+    // `Ready`) and the management plane boots them on demand, so nothing is
+    // launched or waited on here.
+    #[cfg(not(feature = "no-auto-start"))]
     let started_vms = manager.launch_default_vms();
+    #[cfg(not(feature = "no-auto-start"))]
     guest_console::attach_default(started_vms);
 
+    #[cfg(not(feature = "no-auto-start"))]
     std::thread::Builder::new()
         .name("axvisor-vm-wait".into())
         .spawn(manager::AxvmManager::wait_for_default_vms)
         .unwrap_or_else(|error| panic!("failed to start VM completion waiter: {error}"));
 
+    #[cfg(not(feature = "no-auto-start"))]
     info!("[OK] Default guest initialized");
+
+    // The management console runs on the primary CPU (Core 0) while the vCPU
+    // tasks are pinned to Core 1 via `phys_cpu_ids`, so it stays responsive
+    // regardless of guest behavior.
+    info!("shell task on CPU{}", axvm::host::cpu::current_id());
 
     shell::console_init();
 }

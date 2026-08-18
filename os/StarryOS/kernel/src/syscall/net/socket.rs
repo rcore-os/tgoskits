@@ -329,7 +329,7 @@ pub fn sys_socketpair(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn net_socket_constants_hold_for_test() -> bool {
     // Address family constants
     assert!(AF_INET == 2);

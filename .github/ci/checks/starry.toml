@@ -16,6 +16,7 @@ apk_region = "us"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry test qemu --arch riscv64
+target/debug/tg-xtask ktest qemu -p starry-kernel --arch riscv64
 '''
 
 [[check]]
@@ -32,6 +33,7 @@ target/debug/tg-xtask starry qemu --arch aarch64 --smp 4 \
   --qemu-config os/StarryOS/configs/qemu/qemu-aarch64-gicv2-boot.toml
 echo "==> starry aarch64 test suites"
 target/debug/tg-xtask starry test qemu --arch aarch64
+target/debug/tg-xtask ktest qemu -p starry-kernel --arch aarch64
 '''
 
 [[check]]
@@ -44,6 +46,7 @@ apk_region = "us"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry test qemu --arch loongarch64
+target/debug/tg-xtask ktest qemu -p starry-kernel --arch loongarch64
 '''
 
 [[check]]
@@ -56,6 +59,7 @@ apk_region = "us"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask starry test qemu --arch x86_64
+target/debug/tg-xtask ktest qemu -p starry-kernel --arch x86_64
 '''
 
 [[check]]

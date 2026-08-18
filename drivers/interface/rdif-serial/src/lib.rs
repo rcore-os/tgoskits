@@ -92,9 +92,6 @@ impl Config {
     }
 }
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
-
 #[cfg(test)]
 mod tests {
     use super::*;

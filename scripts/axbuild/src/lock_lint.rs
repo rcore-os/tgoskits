@@ -103,6 +103,10 @@ fn lint_workspace(workspace_root: &Path) -> anyhow::Result<Vec<Finding>> {
 }
 
 fn check_manifests(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow::Result<()> {
+    let workspace_manifest = read_toml(&workspace_root.join("Cargo.toml"))?;
+    let internal_workspace_dependencies =
+        collect_internal_workspace_dependencies(&workspace_manifest);
+
     for entry in WalkDir::new(workspace_root)
         .into_iter()
         .filter_entry(should_visit_entry)
@@ -132,10 +136,34 @@ fn check_manifests(workspace_root: &Path, findings: &mut Vec<Finding>) -> anyhow
         if path == workspace_root.join("Cargo.toml") {
             check_removed_workspace_members(path, &manifest, findings);
         }
-        check_dependency_tables(workspace_root, path, &manifest, findings);
+        check_dependency_tables(
+            workspace_root,
+            path,
+            &manifest,
+            &internal_workspace_dependencies,
+            findings,
+        );
         check_removed_feature_forwarding(path, &manifest, "manifest", findings);
     }
     Ok(())
+}
+
+fn collect_internal_workspace_dependencies(manifest: &Value) -> HashSet<String> {
+    manifest
+        .get("workspace")
+        .and_then(Value::as_table)
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(Value::as_table)
+        .into_iter()
+        .flat_map(|dependencies| dependencies.iter())
+        .filter_map(|(name, dependency)| {
+            dependency
+                .as_table()
+                .and_then(|dependency| dependency.get("path"))
+                .and_then(Value::as_str)
+                .map(|_| name.clone())
+        })
+        .collect()
 }
 
 fn check_removed_workspace_members(
@@ -178,6 +206,7 @@ fn check_dependency_tables(
     workspace_root: &Path,
     manifest_path: &Path,
     value: &Value,
+    internal_workspace_dependencies: &HashSet<String>,
     findings: &mut Vec<Finding>,
 ) {
     let Some(table) = value.as_table() else {
@@ -197,6 +226,18 @@ fn check_dependency_tables(
                     .and_then(Value::as_str)
                     .unwrap_or(dependency_name);
                 let location = format!("{key}.{dependency_name}");
+
+                if key == "dev-dependencies" {
+                    check_internal_dev_dependency(
+                        workspace_root,
+                        manifest_path,
+                        dependency_name,
+                        dependency,
+                        internal_workspace_dependencies,
+                        &location,
+                        findings,
+                    );
+                }
 
                 if package_name == "spin" {
                     findings.push(Finding::new(
@@ -238,9 +279,76 @@ fn check_dependency_tables(
         }
 
         if value.is_table() {
-            check_dependency_tables(workspace_root, manifest_path, value, findings);
+            check_dependency_tables(
+                workspace_root,
+                manifest_path,
+                value,
+                internal_workspace_dependencies,
+                findings,
+            );
         }
     }
+}
+
+fn check_internal_dev_dependency(
+    workspace_root: &Path,
+    manifest_path: &Path,
+    dependency_name: &str,
+    dependency: &Value,
+    internal_workspace_dependencies: &HashSet<String>,
+    location: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let Some(dependency) = dependency.as_table() else {
+        return;
+    };
+
+    let inherits_workspace_version = dependency
+        .get("workspace")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && internal_workspace_dependencies.contains(dependency_name);
+    if inherits_workspace_version {
+        findings.push(Finding::new(
+            manifest_path,
+            location,
+            "workspace-internal dev-dependency must not inherit a version",
+            "use a relative path-only dev-dependency so cargo publish strips it",
+        ));
+        return;
+    }
+
+    if dependency.contains_key("version")
+        && dependency_path_is_inside_workspace(workspace_root, manifest_path, dependency)
+    {
+        findings.push(Finding::new(
+            manifest_path,
+            location,
+            "workspace-internal dev-dependency must not specify a version",
+            "remove `version` and keep only the relative path and required test features",
+        ));
+    }
+}
+
+fn dependency_path_is_inside_workspace(
+    workspace_root: &Path,
+    manifest_path: &Path,
+    dependency: &toml::value::Table,
+) -> bool {
+    let Some(dependency_path) = dependency.get("path").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(manifest_dir) = manifest_path.parent() else {
+        return false;
+    };
+    let Ok(workspace_root) = workspace_root.canonicalize() else {
+        return false;
+    };
+    let Ok(dependency_path) = manifest_dir.join(dependency_path).canonicalize() else {
+        return false;
+    };
+
+    dependency_path.starts_with(workspace_root)
 }
 
 fn check_removed_dependency_features(
@@ -713,10 +821,107 @@ impl ax_sync::interface::LockdepOps for RuntimeLockdepOps {}
         );
     }
 
+    fn write_workspace_with_internal_helper(root: &Path) {
+        write_minimal_workspace(root);
+        write_file(
+            root,
+            "Cargo.toml",
+            r#"
+[workspace]
+members = ["crate", "helper"]
+
+[workspace.dependencies]
+helper = { version = "0.1.0", path = "helper" }
+"#,
+        );
+        write_file(
+            root,
+            "helper/Cargo.toml",
+            r#"
+[package]
+name = "helper"
+version = "0.1.0"
+edition = "2024"
+"#,
+        );
+    }
+
     #[test]
     fn accepts_unified_lock_workspace() {
         let root = tempfile::tempdir().unwrap();
         write_minimal_workspace(root.path());
+
+        assert!(lint_workspace(root.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_versioned_workspace_internal_dev_dependency() {
+        let root = tempfile::tempdir().unwrap();
+        write_workspace_with_internal_helper(root.path());
+        write_file(
+            root.path(),
+            "crate/Cargo.toml",
+            r#"
+[package]
+name = "crate"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+helper.workspace = true
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.location == "dev-dependencies.helper"
+                && finding.message.contains("must not inherit a version")
+        }));
+    }
+
+    #[test]
+    fn rejects_versioned_path_internal_dev_dependency() {
+        let root = tempfile::tempdir().unwrap();
+        write_workspace_with_internal_helper(root.path());
+        write_file(
+            root.path(),
+            "crate/Cargo.toml",
+            r#"
+[package]
+name = "crate"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+helper = { version = "0.1.0", path = "../helper" }
+"#,
+        );
+
+        let findings = lint_workspace(root.path()).unwrap();
+        assert!(findings.iter().any(|finding| {
+            finding.location == "dev-dependencies.helper"
+                && finding.message.contains("must not specify a version")
+        }));
+    }
+
+    #[test]
+    fn accepts_path_only_internal_and_versioned_external_dev_dependencies() {
+        let root = tempfile::tempdir().unwrap();
+        write_workspace_with_internal_helper(root.path());
+        write_file(
+            root.path(),
+            "crate/Cargo.toml",
+            r#"
+[package]
+name = "crate"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+helper = { path = "../helper" }
+external = "1"
+"#,
+        );
 
         assert!(lint_workspace(root.path()).unwrap().is_empty());
     }

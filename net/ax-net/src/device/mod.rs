@@ -164,3 +164,62 @@ pub trait Device: Send + Sync {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use smoltcp::wire::Ipv4Address;
+
+    use super::*;
+
+    struct DefaultDevice;
+
+    impl Device for DefaultDevice {
+        fn name(&self) -> &str {
+            "default-device"
+        }
+
+        fn recv(
+            &mut self,
+            _interface_id: InterfaceId,
+            _buffer: &mut PacketBuffer<InterfaceId>,
+            _timestamp: Instant,
+            _snoop: &mut dyn FnMut(&[u8]),
+        ) -> usize {
+            0
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
+            0
+        }
+    }
+
+    #[test]
+    fn device_defaults_report_no_deferred_work_or_readiness() {
+        let mut device = DefaultDevice;
+
+        assert_eq!(device.name(), "default-device");
+        assert!(device.drain_deferred_tx().is_empty());
+        assert!(device.drain_deferred_rx().is_empty());
+        assert_eq!(device.drain_deferred_tx_errors(), 0);
+        assert_eq!(device.drain_deferred_tx_drops(), 0);
+        assert_eq!(device.drain_deferred_rx_errors(), 0);
+        assert_eq!(device.drain_deferred_rx_drops(), 0);
+        assert!(device.arp_entries(Instant::from_millis(1)).is_empty());
+        assert!(device.readiness_poll().is_none());
+        device.set_ipv4_addr(Some(Ipv4Cidr::new(Ipv4Address::LOCALHOST, 8)));
+    }
+
+    #[test]
+    fn arp_entry_keeps_neighbor_metadata() {
+        let entry = ArpEntry {
+            ip_addr: [192, 168, 1, 1],
+            hw_type: 1,
+            flags: 2,
+            hw_addr: [1, 2, 3, 4, 5, 6],
+            device: String::from("eth0"),
+        };
+
+        assert_eq!(entry.ip_addr, [192, 168, 1, 1]);
+        assert_eq!(entry.device, "eth0");
+    }
+}

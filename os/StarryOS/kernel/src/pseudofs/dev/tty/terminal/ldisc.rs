@@ -692,8 +692,8 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(axtest)]
+pub(crate) mod axtest_support {
     use alloc::{sync::Arc, vec, vec::Vec};
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -873,8 +873,7 @@ mod tests {
     /// drive_input() to stop looping and the remaining input (including the newline)
     /// to be silently dropped.  The board CI symptom was shell commands being
     /// truncated to the first BUF_SIZE characters (e.g. "sleep 5; ..." → "leep 5; ...").
-    #[test]
-    fn canonical_long_line_drain_continues_past_buf_size() {
+    pub(crate) fn canonical_long_line_drain_continues_past_buf_size() {
         // BUF_SIZE ordinary chars followed by '\n' — total BUF_SIZE+1 bytes.
         let mut data: Vec<u8> = (0..BUF_SIZE).map(|_| b'a').collect();
         data.push(b'\n');
@@ -901,8 +900,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn canonical_echo_is_batched_after_input_progress() {
+    pub(crate) fn canonical_echo_is_batched_after_input_progress() {
         let (buf_tx, rx) = ReadBuf::default().split();
         let calls = Arc::new(AtomicUsize::new(0));
         let bytes = Arc::new(AtomicUsize::new(0));
@@ -934,8 +932,7 @@ mod tests {
         assert_eq!(bytes.load(Ordering::Relaxed), b"hello\r\n".len());
     }
 
-    #[test]
-    fn canonical_echo_can_be_flushed_before_input_is_returned() {
+    pub(crate) fn canonical_echo_can_be_flushed_before_input_is_returned() {
         let (buf_tx, rx) = ReadBuf::default().split();
         let calls = Arc::new(AtomicUsize::new(0));
         let bytes = Arc::new(AtomicUsize::new(0));
@@ -963,8 +960,7 @@ mod tests {
         assert_eq!(bytes.load(Ordering::Relaxed), b"echo marker\r\n".len());
     }
 
-    #[test]
-    fn canonical_small_echo_respects_sync_limit() {
+    pub(crate) fn canonical_small_echo_respects_sync_limit() {
         let (buf_tx, rx) = ReadBuf::default().split();
         let calls = Arc::new(AtomicUsize::new(0));
         let bytes = Arc::new(AtomicUsize::new(0));
@@ -993,8 +989,7 @@ mod tests {
         assert_eq!(bytes.load(Ordering::Relaxed), b"echo marker\r\n".len());
     }
 
-    #[test]
-    fn canonical_large_echo_exceeding_sync_limit_is_queued() {
+    pub(crate) fn canonical_large_echo_exceeding_sync_limit_is_queued() {
         let (buf_tx, rx) = ReadBuf::default().split();
         let calls = Arc::new(AtomicUsize::new(0));
         let bytes = Arc::new(AtomicUsize::new(0));
@@ -1029,8 +1024,7 @@ mod tests {
         assert_eq!(bytes.load(Ordering::Relaxed), 130);
     }
 
-    #[test]
-    fn canonical_input_progress_does_not_wait_for_echo_writer() {
+    pub(crate) fn canonical_input_progress_does_not_wait_for_echo_writer() {
         let (buf_tx, rx) = ReadBuf::default().split();
         let mut reader = InputReader {
             terminal: Arc::new(Terminal::default()),
@@ -1048,8 +1042,7 @@ mod tests {
         assert_eq!(rx.occupied_len(), b"burst\n".len());
     }
 
-    #[test]
-    fn synchronous_echo_backpressure_queues_unsent_suffix() {
+    pub(crate) fn synchronous_echo_backpressure_queues_unsent_suffix() {
         let calls = Arc::new(AtomicUsize::new(0));
         let bytes = Arc::new(AtomicUsize::new(0));
         let budget = Arc::new(AtomicUsize::new(2));
@@ -1074,8 +1067,7 @@ mod tests {
         assert!(calls.load(Ordering::Relaxed) >= 2);
     }
 
-    #[test]
-    fn injected_input_is_readable_immediately() {
+    pub(crate) fn injected_input_is_readable_immediately() {
         let mut ldisc = LineDiscipline::new(
             Arc::new(Terminal::default()),
             TtyConfig {
@@ -1094,8 +1086,7 @@ mod tests {
         assert_eq!(&buf, b"\x1b[1;1R");
     }
 
-    #[test]
-    fn passive_read_drains_source_before_reporting_peer_eof() {
+    pub(crate) fn passive_read_drains_source_before_reporting_peer_eof() {
         let payload = b"data before eof";
         let mut ldisc = LineDiscipline::new(
             Arc::new(Terminal::default()),
@@ -1112,8 +1103,7 @@ mod tests {
         assert_eq!(ldisc.read(&mut buf).unwrap(), 0);
     }
 
-    #[test]
-    fn passive_read_preserves_input_across_partially_full_ring_buffer() {
+    pub(crate) fn passive_read_preserves_input_across_partially_full_ring_buffer() {
         let payload: Vec<u8> = (0..(BUF_SIZE * 2 + 31))
             .map(|index| (index % 251) as u8)
             .collect();

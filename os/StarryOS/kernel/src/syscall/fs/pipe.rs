@@ -51,7 +51,7 @@ pub fn sys_pipe2(fds: *mut [c_int; 2], flags: u32) -> StarryResult<isize> {
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn pipe_flags_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{O_CLOEXEC, O_NONBLOCK};
     // Test PipeFlags validation

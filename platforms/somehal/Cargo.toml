@@ -10,16 +10,12 @@ repository.workspace = true
 version = "0.8.3"
 
 [features]
-axtest = []
 efi = ["someboot/efi"]
 hv = ["mmu", "someboot/hv", "dep:ax-cpu"]
 mmu = ["someboot/mmu"]
 thead-mae = ["someboot/thead-mae"]
 tls = ["someboot/tls"]
 uspace = ["mmu", "someboot/uspace"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
 anyhow = {workspace = true}
@@ -57,4 +53,4 @@ x2apic = "0.5"
 x86 = "0.52"
 
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test"] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

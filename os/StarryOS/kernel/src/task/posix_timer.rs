@@ -269,7 +269,7 @@ impl PosixTimerTable {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn posix_timer_clock_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{
         CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,

@@ -632,7 +632,7 @@ pub fn sys_prctl(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
     matches!(parse_mempolicy_mode(MPOL_DEFAULT), Ok(MPOL_DEFAULT))
         && matches!(
@@ -726,7 +726,7 @@ pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
         && sys_mbind(0x1000, 4096, 99, core::ptr::null(), 0, 0).is_err()
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
     use alloc::sync::Arc;
 

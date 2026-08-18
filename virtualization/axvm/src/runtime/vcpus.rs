@@ -475,7 +475,12 @@ fn vcpu_run() {
         mark_vcpu_running(&vm);
     }
 
-    info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
+    info!(
+        "VM[{}] VCpu[{}] running on CPU{}...",
+        vm.id(),
+        vcpu.id(),
+        crate::host::cpu::current_id()
+    );
 
     loop {
         if vcpu_id == 0 {

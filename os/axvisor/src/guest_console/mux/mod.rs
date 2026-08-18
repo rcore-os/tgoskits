@@ -472,6 +472,13 @@ pub fn route_host_byte(byte: u8) -> ConsoleInputEvent {
 }
 
 /// Attach the lowest-ID member of the default running VM set.
+#[cfg_attr(
+    feature = "no-auto-start",
+    expect(
+        dead_code,
+        reason = "only the auto-start boot path attaches the console to a default running VM"
+    )
+)]
 pub fn attach_default(running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
     GUEST_CONSOLE_MUX.attach_default(running)
 }

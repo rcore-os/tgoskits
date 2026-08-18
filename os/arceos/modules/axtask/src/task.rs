@@ -1160,72 +1160,93 @@ extern "C" fn task_entry() -> ! {
     crate::exit(0);
 }
 
-#[cfg(axtest)]
-pub(crate) fn task_id_and_state_hold_for_test() -> bool {
-    // Test TaskId
-    let id1 = TaskId(1);
-    let id2 = TaskId(2);
-    assert!(id1 != id2);
-    assert!(id1 == id1);
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
 
-    // Test TaskState variants
-    assert!(TaskState::Running as u8 == 1);
-    assert!(TaskState::Ready as u8 == 2);
+    fn task_id_and_state_hold_for_test() -> bool {
+        // Test TaskId
+        let id1 = TaskId(1);
+        let id2 = TaskId(2);
+        assert!(id1 != id2);
+        assert!(id1 == id1);
 
-    true
-}
+        // Test TaskState variants
+        assert!(TaskState::Running as u8 == 1);
+        assert!(TaskState::Ready as u8 == 2);
 
-#[cfg(axtest)]
-pub(crate) fn task_constants_hold_for_test() -> bool {
-    // Test TASK_STACK_ALIGN constant
-    assert_eq!(TASK_STACK_ALIGN, 16);
+        true
+    }
 
-    // Test STACK_END_MAGIC for 64-bit
-    #[cfg(target_pointer_width = "64")]
-    assert!(STACK_END_MAGIC == 0x57AC_CE11_57AC_CE11usize);
+    fn task_constants_hold_for_test() -> bool {
+        // Test TASK_STACK_ALIGN constant
+        assert_eq!(TASK_STACK_ALIGN, 16);
 
-    true
-}
+        // Test STACK_END_MAGIC for 64-bit
+        #[cfg(target_pointer_width = "64")]
+        assert!(STACK_END_MAGIC == 0x57AC_CE11_57AC_CE11usize);
 
-#[cfg(axtest)]
-pub(crate) fn task_id_operations_hold_for_test() -> bool {
-    // Test TaskId operations
-    let id1 = TaskId(100);
-    let id2 = TaskId(200);
+        true
+    }
 
-    // Test equality
-    assert!(id1 == id1);
-    assert!(id1 != id2);
+    fn task_id_operations_hold_for_test() -> bool {
+        // Test TaskId operations
+        let id1 = TaskId(100);
+        let id2 = TaskId(200);
 
-    // Test clone
-    let id3 = id1.clone();
-    assert!(id1 == id3);
+        // Test equality
+        assert!(id1 == id1);
+        assert!(id1 != id2);
 
-    // Test copy
-    let id4 = id1;
-    assert!(id4 == id1);
+        // Test clone
+        let id3 = id1.clone();
+        assert!(id1 == id3);
 
-    true
-}
+        // Test copy
+        let id4 = id1;
+        assert!(id4 == id1);
 
-#[cfg(axtest)]
-pub(crate) fn task_state_all_variants_hold_for_test() -> bool {
-    // Test all TaskState variants
-    let running = TaskState::Running;
-    let ready = TaskState::Ready;
-    let blocked = TaskState::Blocked;
-    let exited = TaskState::Exited;
+        true
+    }
 
-    // Verify all are different
-    assert!(core::mem::discriminant(&running) != core::mem::discriminant(&ready));
-    assert!(core::mem::discriminant(&ready) != core::mem::discriminant(&blocked));
-    assert!(core::mem::discriminant(&blocked) != core::mem::discriminant(&exited));
+    fn task_state_all_variants_hold_for_test() -> bool {
+        // Test all TaskState variants
+        let running = TaskState::Running;
+        let ready = TaskState::Ready;
+        let blocked = TaskState::Blocked;
+        let exited = TaskState::Exited;
 
-    // Verify ordinal values
-    assert!(running as u8 == 1);
-    assert!(ready as u8 == 2);
-    assert!(blocked as u8 == 3);
-    assert!(exited as u8 == 4);
+        // Verify all are different
+        assert!(core::mem::discriminant(&running) != core::mem::discriminant(&ready));
+        assert!(core::mem::discriminant(&ready) != core::mem::discriminant(&blocked));
+        assert!(core::mem::discriminant(&blocked) != core::mem::discriminant(&exited));
 
-    true
+        // Verify ordinal values
+        assert!(running as u8 == 1);
+        assert!(ready as u8 == 2);
+        assert!(blocked as u8 == 3);
+        assert!(exited as u8 == 4);
+
+        true
+    }
+
+    #[test]
+    fn task_id_and_state_hold() {
+        assert!(task_id_and_state_hold_for_test());
+    }
+
+    #[test]
+    fn task_constants_hold() {
+        assert!(task_constants_hold_for_test());
+    }
+
+    #[test]
+    fn task_id_operations_hold() {
+        assert!(task_id_operations_hold_for_test());
+    }
+
+    #[test]
+    fn task_state_all_variants_hold() {
+        assert!(task_state_all_variants_hold_for_test());
+    }
 }

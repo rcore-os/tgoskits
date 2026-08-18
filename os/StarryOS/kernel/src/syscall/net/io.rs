@@ -550,7 +550,7 @@ pub fn sys_recvmmsg(
     Ok(received)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn net_io_constants_hold_for_test() -> bool {
     // MMSG_MAX_VLEN constant
     assert!(MMSG_MAX_VLEN == 1024);
