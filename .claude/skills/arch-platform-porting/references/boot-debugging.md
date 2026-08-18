@@ -386,6 +386,7 @@ These commands form a practical ladder for LoongArch dynamic platform work:
 
 ```bash
 cargo test -p axbuild --lib
+cargo xtask ktest qemu --workspace --arch loongarch64
 cargo xtask arceos test qemu --arch loongarch64
 cargo xtask starry test qemu --arch loongarch64
 docker run --rm -v "$PWD:/workspace" -w /workspace \

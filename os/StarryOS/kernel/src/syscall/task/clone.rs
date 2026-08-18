@@ -689,7 +689,7 @@ pub fn sys_vfork(uctx: &UserContext) -> StarryResult<isize> {
     sys_clone(uctx, flags, 0, 0, 0, 0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
     let parent_signal_allowed = CloneArgs {
         flags: CloneFlags::PARENT,

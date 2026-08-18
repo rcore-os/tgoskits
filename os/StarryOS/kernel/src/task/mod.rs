@@ -37,14 +37,15 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions, ThreadSignalManager},
 };
 
+#[cfg(axtest)]
+pub(crate) use self::pid::pid_identity_state_machine_rules_hold_for_test;
 pub use self::{
     cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, process::*, resources::*, seccomp::*,
     signal::*, stat::*, timer::*, user::*,
 };
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::{
     ops::decode_wait_status_rules_hold_for_test,
-    pid::pid_identity_state_machine_rules_hold_for_test,
     posix_timer::posix_timer_clock_validation_rules_hold_for_test,
     seccomp::seccomp_action_and_precedence_rules_hold_for_test,
     seccomp::seccomp_bpf_constants_hold_for_test,

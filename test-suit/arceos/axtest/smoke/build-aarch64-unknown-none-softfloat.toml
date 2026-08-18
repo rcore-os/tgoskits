@@ -1,7 +1,0 @@
-features = [
-]
-log = "Info"
-max_cpu_num = 1
-
-[env]
-AXTEST_COVERAGE = "y"

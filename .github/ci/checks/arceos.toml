@@ -4,50 +4,58 @@ group = "ArceOS"
 
 [[check]]
 id = "test-arceos-x86-64-qemu"
-name = "x86_64 QEMU · Suites"
+name = "x86_64 QEMU · Suites + axtest"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
 fallback_environment = "base"
+cache_key = ""
 command = '''
 cargo xtask arceos test qemu --arch x86_64
+cargo xtask ktest qemu --workspace --exclude starry-kernel --exclude axvisor --arch x86_64
 '''
 
 [[check]]
 id = "test-arceos-riscv64-qemu"
-name = "riscv64 QEMU · Suites + task IPI"
+name = "riscv64 QEMU · Suites + task IPI + axtest"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
 fallback_environment = "base"
+cache_key = ""
 command = '''
 cargo xtask arceos test qemu --arch riscv64
 taskset -c 0 cargo xtask arceos test qemu --arch riscv64 \
   --test-group rust --test-case task-ipi
+cargo xtask ktest qemu --workspace --exclude starry-kernel --exclude axvisor --arch riscv64
 '''
 
 [[check]]
 id = "test-arceos-aarch64-qemu-app-suites"
-name = "aarch64 QEMU · GICv2 SMP4 boot + suites"
+name = "aarch64 QEMU · GICv2 SMP4 boot + suites + axtest"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
 fallback_environment = "base"
+cache_key = ""
 command = '''
 echo "==> arceos aarch64 GICv2 SMP4 default app boot"
 cargo xtask arceos qemu --arch aarch64 --smp 4 \
   --qemu-config os/arceos/configs/qemu/qemu-aarch64-gicv2-boot.toml
 echo "==> arceos aarch64 test suites (Rust GICv2 SMP4 IPI + C GICv3 SMP4)"
 cargo xtask arceos test qemu --arch aarch64
+cargo xtask ktest qemu --workspace --exclude starry-kernel --exclude axvisor --arch aarch64
 '''
 
 [[check]]
 id = "test-arceos-loongarch64-qemu"
-name = "loongarch64 QEMU · Suites"
+name = "loongarch64 QEMU · Suites + axtest"
 runs_on = ["self-hosted", "linux", "qcs"]
 environment = "host"
 self_hosted_owner = "rcore-os"
 fallback_environment = "base"
+cache_key = ""
 command = '''
 cargo xtask arceos test qemu --arch loongarch64
+cargo xtask ktest qemu --workspace --exclude starry-kernel --exclude axvisor --arch loongarch64
 '''

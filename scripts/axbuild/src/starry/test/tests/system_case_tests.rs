@@ -518,12 +518,18 @@ fn tty_regressions_are_in_system_grouped_qemu_case() {
 }
 
 #[test]
-fn serial_mailbox_kernel_tests_keep_four_cpu_qemu_configs() {
+fn serial_mailbox_kernel_target_uses_smp4_configs() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let config_dir = workspace_root.join("os/StarryOS/kernel/tests");
+    let config_dir = workspace_root.join("os/StarryOS/kernel");
+    let supported_targets = [
+        ("aarch64", "aarch64-unknown-none-softfloat"),
+        ("loongarch64", "loongarch64-unknown-none-softfloat"),
+        ("riscv64", "riscv64gc-unknown-none-elf"),
+        ("x86_64", "x86_64-unknown-none"),
+    ];
 
-    for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
-        let path = config_dir.join(format!("qemu-{arch}-smp.toml"));
+    for (arch, _) in supported_targets {
+        let path = config_dir.join(format!("qemu-{arch}.toml"));
         let content = fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
         let config: toml::Value = toml::from_str(&content).unwrap();
@@ -540,6 +546,47 @@ fn serial_mailbox_kernel_tests_keep_four_cpu_qemu_configs() {
             Some("4"),
             "{} must exercise all four mailbox producer CPUs",
             path.display()
+        );
+    }
+
+    let manifest_path = config_dir.join("Cargo.toml");
+    let manifest_content = fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", manifest_path.display()));
+    let manifest: toml::Value = toml::from_str(&manifest_content).unwrap();
+    let target = manifest
+        .get("test")
+        .and_then(toml::Value::as_array)
+        .and_then(|targets| {
+            targets.iter().find(|target| {
+                target.get("name").and_then(toml::Value::as_str) == Some("axtest_kernel")
+            })
+        })
+        .expect("starry-kernel must declare the axtest_kernel target");
+    let required_features = target
+        .get("required-features")
+        .and_then(toml::Value::as_array)
+        .expect("axtest_kernel must declare required features");
+    assert!(
+        required_features
+            .iter()
+            .any(|feature| feature.as_str() == Some("smp")),
+        "axtest_kernel must compile the runtime for the four-CPU QEMU topology"
+    );
+
+    let docs_targets = manifest
+        .get("package")
+        .and_then(|package| package.get("metadata"))
+        .and_then(|metadata| metadata.get("docs"))
+        .and_then(|docs| docs.get("rs"))
+        .and_then(|docs_rs| docs_rs.get("targets"))
+        .and_then(toml::Value::as_array)
+        .expect("starry-kernel must declare its QEMU architecture matrix");
+    for (_, target) in supported_targets {
+        assert!(
+            docs_targets
+                .iter()
+                .any(|declared| declared.as_str() == Some(target)),
+            "starry-kernel docs.rs targets must include {target}"
         );
     }
 }

@@ -1,15 +1,12 @@
 #![no_std]
 
-#[cfg(all(axtest, feature = "axtest"))]
+#[cfg(test)]
 extern crate alloc;
 
 #[macro_use]
 mod _macro;
 
 pub mod irq;
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
 
 /// Kernel error
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]

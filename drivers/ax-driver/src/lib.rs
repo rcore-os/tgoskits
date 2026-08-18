@@ -143,6 +143,3 @@ pub use binding_resolver::{
 };
 pub use error::{Error, Result};
 pub use irq_binding::IrqBindingLease;
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;

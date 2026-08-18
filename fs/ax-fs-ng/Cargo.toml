@@ -45,3 +45,19 @@ version = "0.4.1-preview.2"
 default-features = false
 optional = true
 features = ["alloc", "lfn", "log_level_trace", "unicode"]
+
+[[test]]
+name = "axtest"
+path = "tests/axtest.rs"
+harness = false
+required-features = ["axtest"]
+
+[dev-dependencies.axtest]
+workspace = true
+
+[dev-dependencies.ax-std]
+workspace = true
+features = ["default"]
+
+[dev-dependencies.ax-hal]
+workspace = true

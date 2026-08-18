@@ -1,26 +1,32 @@
-//! Narrow test-only exports for kernel axtest targets.
+//! Narrow adapters shared by host unit tests and kernel axtest targets.
 
-pub fn user_space_base() -> usize {
+#[cfg(test)]
+fn user_space_base() -> usize {
     super::config::USER_SPACE_BASE
 }
 
-pub fn user_space_size() -> usize {
+#[cfg(test)]
+fn user_space_size() -> usize {
     super::config::USER_SPACE_SIZE
 }
 
-pub fn user_stack_top() -> usize {
+#[cfg(test)]
+fn user_stack_top() -> usize {
     super::config::USER_STACK_TOP
 }
 
-pub fn user_stack_size() -> usize {
+#[cfg(test)]
+fn user_stack_size() -> usize {
     super::config::USER_STACK_SIZE
 }
 
-pub fn signal_trampoline() -> usize {
+#[cfg(test)]
+fn signal_trampoline() -> usize {
     super::config::SIGNAL_TRAMPOLINE
 }
 
-pub fn invalid_timespec_is_rejected() -> bool {
+#[cfg(test)]
+fn invalid_timespec_is_rejected() -> bool {
     use super::time::TimeValueLike;
 
     let invalid = linux_raw_sys::general::__kernel_timespec {
@@ -30,83 +36,158 @@ pub fn invalid_timespec_is_rejected() -> bool {
     invalid.try_into_time_value().is_err()
 }
 
+#[cfg(axtest)]
 pub fn random_write_mixes_entropy() -> bool {
     super::pseudofs::dev::random_write_mixes_entropy_for_test()
 }
 
+#[cfg(axtest)]
 pub fn boot_id_formats_firmware_entropy() -> bool {
     super::pseudofs::proc::boot_id_formats_firmware_entropy_for_test()
 }
 
+#[cfg(axtest)]
 pub fn boot_id_is_omitted_without_trusted_entropy() -> bool {
     super::pseudofs::proc::boot_id_is_omitted_without_trusted_entropy_for_test()
 }
 
+#[cfg(axtest)]
 pub fn kmsg_reports_no_readiness_without_read_side() -> bool {
     super::pseudofs::dev::kmsg_reports_no_readiness_without_read_side_for_test()
 }
 
+#[cfg(axtest)]
+pub fn pty_preserves_mouse_escape_reports() -> bool {
+    super::pseudofs::dev::tty::pty_preserves_mouse_escape_reports_for_test()
+}
+
+#[cfg(axtest)]
+pub fn canonical_long_line_drain_continues_past_buf_size() {
+    super::pseudofs::dev::tty::canonical_long_line_drain_continues_past_buf_size()
+}
+
+#[cfg(axtest)]
+pub fn canonical_echo_is_batched_after_input_progress() {
+    super::pseudofs::dev::tty::canonical_echo_is_batched_after_input_progress()
+}
+
+#[cfg(axtest)]
+pub fn canonical_echo_can_be_flushed_before_input_is_returned() {
+    super::pseudofs::dev::tty::canonical_echo_can_be_flushed_before_input_is_returned()
+}
+
+#[cfg(axtest)]
+pub fn canonical_small_echo_respects_sync_limit() {
+    super::pseudofs::dev::tty::canonical_small_echo_respects_sync_limit()
+}
+
+#[cfg(axtest)]
+pub fn canonical_large_echo_exceeding_sync_limit_is_queued() {
+    super::pseudofs::dev::tty::canonical_large_echo_exceeding_sync_limit_is_queued()
+}
+
+#[cfg(axtest)]
+pub fn canonical_input_progress_does_not_wait_for_echo_writer() {
+    super::pseudofs::dev::tty::canonical_input_progress_does_not_wait_for_echo_writer()
+}
+
+#[cfg(axtest)]
+pub fn synchronous_echo_backpressure_queues_unsent_suffix() {
+    super::pseudofs::dev::tty::synchronous_echo_backpressure_queues_unsent_suffix()
+}
+
+#[cfg(axtest)]
+pub fn injected_input_is_readable_immediately() {
+    super::pseudofs::dev::tty::injected_input_is_readable_immediately()
+}
+
+#[cfg(axtest)]
+pub fn passive_read_drains_source_before_reporting_peer_eof() {
+    super::pseudofs::dev::tty::passive_read_drains_source_before_reporting_peer_eof()
+}
+
+#[cfg(axtest)]
+pub fn passive_read_preserves_input_across_partially_full_ring_buffer() {
+    super::pseudofs::dev::tty::passive_read_preserves_input_across_partially_full_ring_buffer()
+}
+
+#[cfg(axtest)]
 pub fn pipe_peer_close_with_multiple_readers_is_visible() -> bool {
     super::file::peer_close_with_multiple_readers_is_visible_for_test()
 }
 
+#[cfg(axtest)]
 pub fn pipe_resize_rejects_oversized_pipe() -> bool {
     super::file::resize_rejects_oversized_pipe_for_test()
 }
 
+#[cfg(axtest)]
 pub fn pipe_linux_io_semantics_hold() -> bool {
     super::file::pipe_linux_io_semantics_hold_for_test()
 }
 
+#[cfg(axtest)]
 pub fn prepared_descriptor_stays_hidden_until_install() -> bool {
     super::file::prepared_descriptor_stays_hidden_until_install_for_test()
 }
 
+#[cfg(axtest)]
 pub fn interrupted_pipe_write_preserves_partial_progress() -> bool {
     super::file::interrupted_pipe_write_preserves_partial_progress_for_test()
 }
 
+#[cfg(axtest)]
 pub fn fcntl_setpipe_size_returns_capacity() -> bool {
     super::syscall::fcntl_setpipe_size_returns_capacity_for_test()
 }
 
+#[cfg(axtest)]
 pub fn private_mmap_rejects_fault_at_file_eof() -> bool {
     super::mm::private_mmap_eof_check_for_test()
 }
 
-pub fn cow_file_max_read_len_boundary_rules_hold() -> bool {
+#[cfg(test)]
+fn cow_file_max_read_len_boundary_rules_hold() -> bool {
     super::mm::cow_file_max_read_len_boundary_rules_hold_for_test()
 }
 
+#[cfg(axtest)]
 pub fn concurrent_epoll_reverse_add_is_serialized() -> bool {
     super::file::concurrent_reverse_add_is_serialized_for_test()
 }
 
+#[cfg(axtest)]
 pub fn epoll_level_aliases_rotate_in_linux_callback_order() -> bool {
     super::file::level_aliases_rotate_in_linux_callback_order_for_test()
 }
 
+#[cfg(axtest)]
 pub fn epoll_edge_readiness_requires_a_new_notification() -> bool {
     super::file::edge_readiness_requires_a_new_notification_for_test()
 }
 
+#[cfg(axtest)]
 pub fn epoll_edge_callback_does_not_reenter_target() -> bool {
     super::file::edge_callback_does_not_reenter_target_for_test()
 }
 
+#[cfg(axtest)]
 pub fn epoll_level_callback_does_not_reenter_target() -> bool {
     super::file::level_callback_does_not_reenter_target_for_test()
 }
 
+#[cfg(axtest)]
 pub fn epoll_hup_does_not_synthesize_readable() -> bool {
     super::file::epoll_hup_does_not_synthesize_readable_for_test()
 }
 
+#[cfg(axtest)]
 pub fn epoll_requeues_readiness_observed_during_rearm() -> bool {
     super::file::epoll_requeues_readiness_observed_during_rearm_for_test()
 }
 
-pub fn process_mem_stats_formats_linux_fields() -> bool {
+#[cfg(test)]
+fn process_mem_stats_formats_linux_fields() -> bool {
     use super::mm::ProcessMemStats;
 
     let stats = ProcessMemStats {
@@ -142,7 +223,8 @@ pub fn process_mem_stats_formats_linux_fields() -> bool {
         }
 }
 
-pub fn memory_accounting_tracks_cow_charge_transitions() -> bool {
+#[cfg(test)]
+fn memory_accounting_tracks_cow_charge_transitions() -> bool {
     use ax_memory_addr::VirtAddr;
 
     use super::mm::{MemoryAccounting, RssKind};
@@ -162,7 +244,8 @@ pub fn memory_accounting_tracks_cow_charge_transitions() -> bool {
         && acct.rss_total_pages() == 0
 }
 
-pub fn memory_accounting_rejects_duplicate_and_conflicting_charges() -> bool {
+#[cfg(test)]
+fn memory_accounting_rejects_duplicate_and_conflicting_charges() -> bool {
     use ax_memory_addr::VirtAddr;
 
     use super::mm::{MemoryAccounting, RssKind};
@@ -183,227 +266,283 @@ pub fn memory_accounting_rejects_duplicate_and_conflicting_charges() -> bool {
         && acct.rss_anon_pages() == 1
 }
 
-pub fn accounting_edge_cases_and_snapshot_rules_hold() -> bool {
+#[cfg(test)]
+fn accounting_edge_cases_and_snapshot_rules_hold() -> bool {
     super::mm::accounting_edge_cases_and_snapshot_rules_hold_for_test()
 }
 
-pub fn rss_kind_and_accounting_rules_hold() -> bool {
+#[cfg(test)]
+fn rss_kind_and_accounting_rules_hold() -> bool {
     super::mm::rss_kind_and_accounting_rules_hold_for_test()
 }
 
-pub fn accounting_rss_kind_debug_and_default_hold() -> bool {
+#[cfg(test)]
+fn accounting_rss_kind_debug_and_default_hold() -> bool {
     super::mm::accounting_rss_kind_debug_and_default_hold_for_test()
 }
 
-pub fn process_vm_stat_watermarks_hold() -> bool {
+#[cfg(test)]
+fn process_vm_stat_watermarks_hold() -> bool {
     super::mm::process_vm_stat_watermarks_hold_for_test()
 }
 
-pub fn process_vm_stat_edge_cases_hold() -> bool {
+#[cfg(test)]
+fn process_vm_stat_edge_cases_hold() -> bool {
     super::mm::process_vm_stat_edge_cases_hold_for_test()
 }
 
-pub fn user_pointer_metadata_rules_hold() -> bool {
+#[cfg(test)]
+fn user_pointer_metadata_rules_hold() -> bool {
     super::mm::user_pointer_metadata_rules_hold_for_test()
 }
 
-pub fn vm_error_to_io_error_preserves_length() -> bool {
+#[cfg(test)]
+fn vm_error_to_io_error_preserves_length() -> bool {
     super::mm::vm_error_to_io_error_preserves_length_for_test()
 }
 
-pub fn domain_errno_mappings_hold() -> bool {
+#[cfg(test)]
+fn domain_errno_mappings_hold() -> bool {
     super::error::domain_errno_mappings_hold_for_test()
 }
 
-pub fn time_value_conversion_rules_hold() -> bool {
+#[cfg(test)]
+fn time_value_conversion_rules_hold() -> bool {
     super::time::time_value_conversion_rules_hold_for_test()
 }
 
-pub fn credential_capability_rules_hold() -> bool {
+#[cfg(test)]
+fn credential_capability_rules_hold() -> bool {
     super::task::credential_capability_rules_hold_for_test()
 }
 
-pub fn resource_limit_defaults_hold() -> bool {
+#[cfg(test)]
+fn resource_limit_defaults_hold() -> bool {
     super::task::resource_limit_defaults_hold_for_test()
 }
 
-pub fn posix_timer_clock_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn posix_timer_clock_validation_rules_hold() -> bool {
     super::task::posix_timer_clock_validation_rules_hold_for_test()
 }
 
-pub fn itimer_type_signo_and_time_conversion_rules_hold() -> bool {
+#[cfg(test)]
+fn itimer_type_signo_and_time_conversion_rules_hold() -> bool {
     super::task::itimer_type_signo_and_time_conversion_rules_hold_for_test()
 }
 
-pub fn seccomp_filter_rules_hold() -> bool {
+#[cfg(test)]
+fn seccomp_filter_rules_hold() -> bool {
     super::task::seccomp_filter_rules_hold_for_test()
 }
 
-pub fn rseq_validation_rejects_invalid_arguments() -> bool {
+#[cfg(test)]
+fn rseq_validation_rejects_invalid_arguments() -> bool {
     super::syscall::rseq_validation_rejects_invalid_arguments_for_test()
 }
 
-pub fn membarrier_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn membarrier_validation_rules_hold() -> bool {
     super::syscall::membarrier_validation_rules_hold_for_test()
 }
 
-pub fn signal_sigset_size_and_signo_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn signal_sigset_size_and_signo_validation_rules_hold() -> bool {
     super::syscall::signal_sigset_size_and_signo_validation_rules_hold_for_test()
 }
 
-pub fn signal_sigset_and_signo_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn signal_sigset_and_signo_validation_rules_hold() -> bool {
     super::syscall::signal_sigset_and_signo_validation_rules_hold_for_test()
 }
 
-pub fn io_rwf_flags_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn io_rwf_flags_validation_rules_hold() -> bool {
     super::syscall::io_rwf_flags_validation_rules_hold_for_test()
 }
 
-pub fn metadata_to_kstat_conversion_rules_hold() -> bool {
+#[cfg(test)]
+fn metadata_to_kstat_conversion_rules_hold() -> bool {
     super::file::metadata_to_kstat_conversion_rules_hold_for_test()
 }
 
-pub fn uid_valid_and_syslog_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn uid_valid_and_syslog_validation_rules_hold() -> bool {
     super::syscall::uid_valid_and_syslog_validation_rules_hold_for_test()
 }
 
-pub fn mempolicy_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn mempolicy_validation_rules_hold() -> bool {
     super::syscall::mempolicy_validation_rules_hold_for_test()
 }
 
-pub fn task_clone_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn task_clone_validation_rules_hold() -> bool {
     super::syscall::task_clone_validation_rules_hold_for_test()
 }
 
+#[cfg(axtest)]
 pub fn duplicate_live_session_identity_is_rejected() -> bool {
     super::task::duplicate_live_session_identity_is_rejected_for_test()
 }
 
+#[cfg(axtest)]
 pub fn proc_formatting_contracts_hold() -> bool {
     super::pseudofs::proc::formatting_contracts_hold_for_test()
 }
 
+#[cfg(axtest)]
 pub fn proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout() -> bool {
     super::pseudofs::proc::proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout_for_test()
 }
 
-pub fn bpf_unknown_command_is_invalid() -> bool {
+#[cfg(test)]
+fn bpf_unknown_command_is_invalid() -> bool {
     super::ebpf::bpf_unknown_command_is_invalid_for_test()
 }
 
-pub fn bpf_error_adapter_rules_hold() -> bool {
+#[cfg(test)]
+fn bpf_error_adapter_rules_hold() -> bool {
     super::ebpf::bpf_error_adapter_rules_hold_for_test()
 }
 
-pub fn bpf_error_more_variants_and_edge_cases_hold() -> bool {
+#[cfg(test)]
+fn bpf_error_more_variants_and_edge_cases_hold() -> bool {
     super::ebpf::bpf_error_more_variants_and_edge_cases_hold_for_test()
 }
 
+#[cfg(axtest)]
 pub fn pipe_resize_rounding_and_state_rules_hold() -> bool {
     super::file::pipe_resize_rounding_and_state_rules_hold_for_test()
 }
 
-pub fn epoll_event_matching_rules_hold() -> bool {
+#[cfg(test)]
+fn epoll_event_matching_rules_hold() -> bool {
     super::file::epoll_event_matching_rules_hold_for_test()
 }
 
-pub fn stats_classify_and_accumulate_rules_hold() -> bool {
+#[cfg(test)]
+fn stats_classify_and_accumulate_rules_hold() -> bool {
     super::mm::stats_classify_and_accumulate_rules_hold_for_test()
 }
 
-pub fn capability_data_conversion_rules_hold() -> bool {
+#[cfg(test)]
+fn capability_data_conversion_rules_hold() -> bool {
     super::syscall::capability_data_conversion_rules_hold_for_test()
 }
 
+#[cfg(axtest)]
 pub fn pipe_size_rounding_and_rejection_rules_hold() -> bool {
     super::syscall::pipe_size_rounding_and_rejection_rules_hold_for_test()
 }
 
-pub fn seccomp_filter_construction_rules_hold() -> bool {
+#[cfg(test)]
+fn seccomp_filter_construction_rules_hold() -> bool {
     super::task::seccomp_filter_construction_rules_hold_for_test()
 }
 
-pub fn push_topology_item_preserves_order_and_grows_capacity() -> bool {
+#[cfg(test)]
+fn push_topology_item_preserves_order_and_grows_capacity() -> bool {
     super::file::push_topology_item_preserves_order_and_grows_capacity()
 }
 
-pub fn epoll_edge_id_and_constants_hold() -> bool {
+#[cfg(test)]
+fn epoll_edge_id_and_constants_hold() -> bool {
     super::file::epoll_edge_id_and_constants_hold_for_test()
 }
 
-pub fn epoll_topology_struct_and_methods_hold() -> bool {
+#[cfg(test)]
+fn epoll_topology_struct_and_methods_hold() -> bool {
     super::file::epoll_topology_struct_and_methods_hold_for_test()
 }
 
-pub fn epoll_topology_direction_and_scan_hold() -> bool {
+#[cfg(test)]
+fn epoll_topology_direction_and_scan_hold() -> bool {
     super::file::epoll_topology_direction_and_scan_hold_for_test()
 }
 
-pub fn epoll_edge_id_clone_copy_partial_eq_hold() -> bool {
+#[cfg(test)]
+fn epoll_edge_id_clone_copy_partial_eq_hold() -> bool {
     super::file::epoll_edge_id_clone_copy_partial_eq_hold_for_test()
 }
 
-pub fn epoll_topology_static_constants_hold() -> bool {
+#[cfg(test)]
+fn epoll_topology_static_constants_hold() -> bool {
     super::file::epoll_topology_static_constants_hold_for_test()
 }
 
-pub fn epoll_topology_link_clone_hold() -> bool {
+#[cfg(test)]
+fn epoll_topology_link_clone_hold() -> bool {
     super::file::epoll_topology_link_clone_hold_for_test()
 }
 
-pub fn epoll_topology_vec_and_reserve_hold() -> bool {
+#[cfg(test)]
+fn epoll_topology_vec_and_reserve_hold() -> bool {
     super::file::epoll_topology_vec_and_reserve_hold_for_test()
 }
 
-pub fn epoll_arc_operations_hold() -> bool {
+#[cfg(test)]
+fn epoll_arc_operations_hold() -> bool {
     super::file::epoll_arc_operations_hold_for_test()
 }
 
-pub fn dummy_stat_fs_fields_match_expected_defaults() -> bool {
+#[cfg(test)]
+fn dummy_stat_fs_fields_match_expected_defaults() -> bool {
     super::pseudofs::dummy_stat_fs_fields_match_expected_defaults_for_test()
 }
 
+#[cfg(axtest)]
 pub fn perf_control_callback_runs_preemptible() -> bool {
     super::perf::control_callback_runs_preemptible_for_test()
 }
 
 #[cfg(target_arch = "aarch64")]
+#[cfg(axtest)]
 pub fn perf_kernel_task_sample_ids_are_empty() -> bool {
     super::perf::sampling::kernel_task_sample_ids_are_empty_for_test()
 }
 
+#[cfg(axtest)]
 pub fn stop_machine_runs_action_and_sync_on_each_cpu() -> bool {
     super::stop_machine::stop_machine_runs_action_and_sync_on_each_cpu_for_test()
 }
 
+#[cfg(axtest)]
 pub fn smp_log_mailbox_contract_holds() -> bool {
     ax_runtime::serial::smp_log_mailbox_contract_holds()
 }
 
-pub fn is_wext_ioctl_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn is_wext_ioctl_validation_rules_hold() -> bool {
     super::file::is_wext_ioctl_validation_rules_hold_for_test()
 }
 
-pub fn cmsg_alignment_and_space_rules_hold() -> bool {
+#[cfg(test)]
+fn cmsg_alignment_and_space_rules_hold() -> bool {
     super::syscall::cmsg_alignment_and_space_rules_hold_for_test()
 }
 
-pub fn seccomp_action_and_precedence_rules_hold() -> bool {
+#[cfg(test)]
+fn seccomp_action_and_precedence_rules_hold() -> bool {
     super::task::seccomp_action_and_precedence_rules_hold_for_test()
 }
 
-pub fn seccomp_bpf_constants_hold() -> bool {
+#[cfg(test)]
+fn seccomp_bpf_constants_hold() -> bool {
     super::task::seccomp_bpf_constants_hold_for_test()
 }
 
-pub fn syscall_signal_restart_rules_hold() -> bool {
+#[cfg(test)]
+fn syscall_signal_restart_rules_hold() -> bool {
     super::syscall::syscall_signal_restart_rules_hold_for_test()
 }
 
-pub fn futex_op_and_compare_rules_hold() -> bool {
+#[cfg(test)]
+fn futex_op_and_compare_rules_hold() -> bool {
     super::syscall::futex_op_and_compare_rules_hold_for_test()
 }
 
+#[cfg(axtest)]
 pub fn nofault_user_read_recovers_unmapped_address() -> bool {
     // SAFETY: the address is aligned and belongs to the configured user range.
     // The test intentionally leaves it unmapped to exercise exception fixup.
@@ -415,159 +554,666 @@ pub fn nofault_user_read_recovers_unmapped_address() -> bool {
     )
 }
 
+#[cfg(axtest)]
 pub fn futex_nofault_failure_is_transactional() -> bool {
     super::task::futex_nofault_failure_is_transactional_for_test()
 }
 
+#[cfg(axtest)]
 pub fn page_fault_completion_updates_only_success() -> bool {
     super::mm::page_fault_completion_updates_only_success_for_test()
         && ax_runtime::hal::cache::update_mmu_cache_alignment_for_test()
 }
 
-pub fn mmap_capped_device_map_len_rules_hold() -> bool {
+#[cfg(test)]
+fn mmap_capped_device_map_len_rules_hold() -> bool {
     super::syscall::mmap_capped_device_map_len_rules_hold_for_test()
 }
 
-pub fn aio_iocb_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn aio_iocb_validation_rules_hold() -> bool {
     super::syscall::aio_iocb_validation_rules_hold_for_test()
 }
 
-pub fn decode_wait_status_rules_hold() -> bool {
+#[cfg(test)]
+fn decode_wait_status_rules_hold() -> bool {
     super::task::decode_wait_status_rules_hold_for_test()
 }
 
-pub fn xattr_name_and_value_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn xattr_name_and_value_validation_rules_hold() -> bool {
     super::syscall::xattr_name_and_value_validation_rules_hold_for_test()
 }
 
-pub fn eventfd_flags_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn eventfd_flags_validation_rules_hold() -> bool {
     super::syscall::eventfd_flags_validation_rules_hold_for_test()
 }
 
-pub fn signalfd_flags_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn signalfd_flags_validation_rules_hold() -> bool {
     super::syscall::signalfd_flags_validation_rules_hold_for_test()
 }
 
-pub fn pidfd_flags_and_signal_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn pidfd_flags_and_signal_validation_rules_hold() -> bool {
     super::syscall::pidfd_flags_and_signal_validation_rules_hold_for_test()
 }
 
+#[cfg(axtest)]
 pub fn reaping_identity_is_not_publicly_resolvable() -> bool {
     super::task::reaping_identity_is_not_publicly_resolvable_for_test()
 }
 
+#[cfg(axtest)]
 pub fn pid_identity_state_machine_rules_hold() -> bool {
     super::task::pid_identity_state_machine_rules_hold_for_test()
 }
 
-pub fn timerfd_timespec_conversion_rules_hold() -> bool {
+#[cfg(test)]
+fn timerfd_timespec_conversion_rules_hold() -> bool {
     super::syscall::timerfd_timespec_conversion_rules_hold_for_test()
 }
 
-pub fn inotify_flags_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn inotify_flags_validation_rules_hold() -> bool {
     super::syscall::inotify_flags_validation_rules_hold_for_test()
 }
 
-pub fn pipe_flags_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn pipe_flags_validation_rules_hold() -> bool {
     super::syscall::pipe_flags_validation_rules_hold_for_test()
 }
 
-pub fn stat_flags_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn stat_flags_validation_rules_hold() -> bool {
     super::syscall::stat_flags_validation_rules_hold_for_test()
 }
 
-pub fn memfd_flags_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn memfd_flags_validation_rules_hold() -> bool {
     super::syscall::memfd_flags_validation_rules_hold_for_test()
 }
 
-pub fn mount_flags_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn mount_flags_validation_rules_hold() -> bool {
     super::syscall::mount_flags_validation_rules_hold_for_test()
 }
 
-pub fn io_offset_from_hilo_rules_hold() -> bool {
+#[cfg(test)]
+fn io_offset_from_hilo_rules_hold() -> bool {
     super::syscall::io_offset_from_hilo_rules_hold_for_test()
 }
 
-pub fn io_uring_round_ring_entries_rules_hold() -> bool {
+#[cfg(test)]
+fn io_uring_round_ring_entries_rules_hold() -> bool {
     super::syscall::io_uring_round_ring_entries_rules_hold_for_test()
 }
 
-pub fn fd_ops_flags_to_options_rules_hold() -> bool {
+#[cfg(test)]
+fn fd_ops_flags_to_options_rules_hold() -> bool {
     super::syscall::fd_ops_flags_to_options_rules_hold_for_test()
 }
 
-pub fn rseq_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn rseq_validation_rules_hold() -> bool {
     super::syscall::rseq_validation_rules_hold_for_test()
 }
 
-pub fn mincore_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn mincore_validation_rules_hold() -> bool {
     super::syscall::mincore_validation_rules_hold_for_test()
 }
 
-pub fn time_clock_id_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn time_clock_id_validation_rules_hold() -> bool {
     super::syscall::time_clock_id_validation_rules_hold_for_test()
 }
 
-pub fn exit_code_encoding_rules_hold() -> bool {
+#[cfg(test)]
+fn exit_code_encoding_rules_hold() -> bool {
     super::syscall::exit_code_encoding_rules_hold_for_test()
 }
 
-pub fn job_setpgid_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn job_setpgid_validation_rules_hold() -> bool {
     super::syscall::job_setpgid_validation_rules_hold_for_test()
 }
 
-pub fn schedule_clock_and_sched_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn schedule_clock_and_sched_validation_rules_hold() -> bool {
     super::syscall::schedule_clock_and_sched_validation_rules_hold_for_test()
 }
 
-pub fn thread_arch_prctl_code_rules_hold() -> bool {
+#[cfg(test)]
+fn thread_arch_prctl_code_rules_hold() -> bool {
     super::syscall::thread_arch_prctl_code_rules_hold_for_test()
 }
 
-pub fn resources_rlimit_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn resources_rlimit_validation_rules_hold() -> bool {
     super::syscall::resources_rlimit_validation_rules_hold_for_test()
 }
 
-pub fn kmod_flags_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn kmod_flags_validation_rules_hold() -> bool {
     super::syscall::kmod_flags_validation_rules_hold_for_test()
 }
 
-pub fn sys_constants_and_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn sys_constants_and_validation_rules_hold() -> bool {
     super::syscall::sys_constants_and_validation_rules_hold_for_test()
 }
 
-pub fn select_fd_set_and_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn select_fd_set_and_validation_rules_hold() -> bool {
     super::syscall::select_fd_set_and_validation_rules_hold_for_test()
 }
 
-pub fn poll_nfds_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn poll_nfds_validation_rules_hold() -> bool {
     super::syscall::poll_nfds_validation_rules_hold_for_test()
 }
 
-pub fn epoll_validation_rules_hold() -> bool {
+#[cfg(test)]
+fn epoll_validation_rules_hold() -> bool {
     super::syscall::epoll_validation_rules_hold_for_test()
 }
 
-pub fn ipc_permission_and_constants_rules_hold() -> bool {
+#[cfg(test)]
+fn ipc_permission_and_constants_rules_hold() -> bool {
     super::syscall::ipc_permission_and_constants_rules_hold_for_test()
 }
 
-pub fn net_addr_conversion_rules_hold() -> bool {
+#[cfg(test)]
+fn net_addr_conversion_rules_hold() -> bool {
     super::syscall::net_addr_conversion_rules_hold_for_test()
 }
 
-pub fn ctl_ioctl_constants_hold() -> bool {
+#[cfg(test)]
+fn ctl_ioctl_constants_hold() -> bool {
     super::syscall::ctl_ioctl_constants_hold_for_test()
 }
 
-pub fn net_opt_normalization_rules_hold() -> bool {
+#[cfg(test)]
+fn net_opt_normalization_rules_hold() -> bool {
     super::syscall::net_opt_normalization_rules_hold_for_test()
 }
 
-pub fn net_io_constants_hold() -> bool {
+#[cfg(test)]
+fn net_io_constants_hold() -> bool {
     super::syscall::net_io_constants_hold_for_test()
 }
 
-pub fn net_socket_constants_hold() -> bool {
+#[cfg(test)]
+fn net_socket_constants_hold() -> bool {
     super::syscall::net_socket_constants_hold_for_test()
+}
+
+#[cfg(test)]
+mod tests {
+    mod fs {
+        use super::super as facade;
+
+        #[test]
+        fn epoll_event_matching_rules_hold() {
+            assert!(facade::epoll_event_matching_rules_hold());
+        }
+
+        #[test]
+        fn push_topology_item_preserves_order_and_grows_capacity() {
+            assert!(facade::push_topology_item_preserves_order_and_grows_capacity());
+        }
+
+        #[test]
+        fn epoll_edge_id_and_constants_hold() {
+            assert!(facade::epoll_edge_id_and_constants_hold());
+        }
+
+        #[test]
+        fn epoll_topology_struct_and_methods_hold() {
+            assert!(facade::epoll_topology_struct_and_methods_hold());
+        }
+
+        #[test]
+        fn epoll_topology_direction_and_scan_hold() {
+            assert!(facade::epoll_topology_direction_and_scan_hold());
+        }
+
+        #[test]
+        fn epoll_edge_id_clone_copy_partial_eq_hold() {
+            assert!(facade::epoll_edge_id_clone_copy_partial_eq_hold());
+        }
+
+        #[test]
+        fn epoll_topology_static_constants_hold() {
+            assert!(facade::epoll_topology_static_constants_hold());
+        }
+
+        #[test]
+        fn epoll_topology_link_clone_hold() {
+            assert!(facade::epoll_topology_link_clone_hold());
+        }
+
+        #[test]
+        fn epoll_topology_vec_and_reserve_hold() {
+            assert!(facade::epoll_topology_vec_and_reserve_hold());
+        }
+
+        #[test]
+        fn epoll_arc_operations_hold() {
+            assert!(facade::epoll_arc_operations_hold());
+        }
+
+        #[test]
+        fn capability_data_conversion_rules_hold() {
+            assert!(facade::capability_data_conversion_rules_hold());
+        }
+
+        #[test]
+        fn metadata_to_kstat_conversion_rules_hold() {
+            assert!(facade::metadata_to_kstat_conversion_rules_hold());
+        }
+
+        #[test]
+        fn is_wext_ioctl_validation_rules_hold() {
+            assert!(facade::is_wext_ioctl_validation_rules_hold());
+        }
+    }
+
+    mod memory {
+        use super::super as facade;
+
+        #[test]
+        fn process_mem_stats_formats_linux_fields() {
+            assert!(facade::process_mem_stats_formats_linux_fields());
+        }
+
+        #[test]
+        fn memory_accounting_tracks_cow_charge_transitions() {
+            assert!(facade::memory_accounting_tracks_cow_charge_transitions());
+        }
+
+        #[test]
+        fn memory_accounting_rejects_duplicate_and_conflicting_charges() {
+            assert!(facade::memory_accounting_rejects_duplicate_and_conflicting_charges());
+        }
+
+        #[test]
+        fn process_vm_stat_watermarks_hold() {
+            assert!(facade::process_vm_stat_watermarks_hold());
+        }
+
+        #[test]
+        fn process_vm_stat_edge_cases_hold() {
+            assert!(facade::process_vm_stat_edge_cases_hold());
+        }
+
+        #[test]
+        fn user_pointer_metadata_rules_hold() {
+            assert!(facade::user_pointer_metadata_rules_hold());
+        }
+
+        #[test]
+        fn vm_error_to_io_error_preserves_length() {
+            assert!(facade::vm_error_to_io_error_preserves_length());
+        }
+
+        #[test]
+        fn domain_errno_mappings_hold() {
+            assert!(facade::domain_errno_mappings_hold());
+        }
+
+        #[test]
+        fn cow_file_max_read_len_boundary_rules_hold() {
+            assert!(facade::cow_file_max_read_len_boundary_rules_hold());
+        }
+
+        #[test]
+        fn stats_classify_and_accumulate_rules_hold() {
+            assert!(facade::stats_classify_and_accumulate_rules_hold());
+        }
+
+        #[test]
+        fn accounting_edge_cases_and_snapshot_rules_hold() {
+            assert!(facade::accounting_edge_cases_and_snapshot_rules_hold());
+        }
+    }
+
+    mod runtime {
+        use super::super as facade;
+
+        #[test]
+        fn user_stack_layout_is_inside_user_space() {
+            assert!(facade::user_space_base() < facade::user_stack_top());
+            assert!(facade::user_stack_size() > 0);
+            assert!(
+                facade::user_stack_top() <= facade::user_space_base() + facade::user_space_size()
+            );
+        }
+
+        #[test]
+        fn signal_trampoline_is_page_aligned() {
+            assert_eq!(facade::signal_trampoline() & 0xfff, 0);
+        }
+
+        #[test]
+        fn timespec_rejects_invalid_nsec() {
+            assert!(facade::invalid_timespec_is_rejected());
+        }
+
+        #[test]
+        fn time_value_conversion_rules_hold() {
+            assert!(facade::time_value_conversion_rules_hold());
+        }
+
+        #[test]
+        fn dummy_stat_fs_fields_match_expected_defaults() {
+            assert!(facade::dummy_stat_fs_fields_match_expected_defaults());
+        }
+    }
+
+    mod syscall {
+        use super::super as facade;
+
+        #[test]
+        fn bpf_unknown_command_is_invalid() {
+            assert!(facade::bpf_unknown_command_is_invalid());
+        }
+
+        #[test]
+        fn bpf_error_adapter_rules_hold() {
+            assert!(facade::bpf_error_adapter_rules_hold());
+        }
+
+        #[test]
+        fn bpf_error_more_variants_and_edge_cases_hold() {
+            assert!(facade::bpf_error_more_variants_and_edge_cases_hold());
+        }
+
+        #[test]
+        fn posix_timer_clock_validation_rules_hold() {
+            assert!(facade::posix_timer_clock_validation_rules_hold());
+        }
+
+        #[test]
+        fn itimer_type_signo_and_time_conversion_rules_hold() {
+            assert!(facade::itimer_type_signo_and_time_conversion_rules_hold());
+        }
+
+        #[test]
+        fn signal_sigset_size_and_signo_validation_rules_hold() {
+            assert!(facade::signal_sigset_size_and_signo_validation_rules_hold());
+        }
+
+        #[test]
+        fn signal_sigset_and_signo_validation_rules_hold() {
+            assert!(facade::signal_sigset_and_signo_validation_rules_hold());
+        }
+
+        #[test]
+        fn io_rwf_flags_validation_rules_hold() {
+            assert!(facade::io_rwf_flags_validation_rules_hold());
+        }
+
+        #[test]
+        fn uid_valid_and_syslog_validation_rules_hold() {
+            assert!(facade::uid_valid_and_syslog_validation_rules_hold());
+        }
+
+        #[test]
+        fn credential_capability_rules_hold() {
+            assert!(facade::credential_capability_rules_hold());
+        }
+
+        #[test]
+        fn resource_limit_defaults_hold() {
+            assert!(facade::resource_limit_defaults_hold());
+        }
+
+        #[test]
+        fn seccomp_filter_rules_hold() {
+            assert!(facade::seccomp_filter_rules_hold());
+        }
+
+        #[test]
+        fn seccomp_filter_construction_rules_hold() {
+            assert!(facade::seccomp_filter_construction_rules_hold());
+        }
+
+        #[test]
+        fn rseq_validation_rejects_invalid_arguments() {
+            assert!(facade::rseq_validation_rejects_invalid_arguments());
+        }
+
+        #[test]
+        fn rseq_validation_rules_hold() {
+            assert!(facade::rseq_validation_rules_hold());
+        }
+
+        #[test]
+        fn membarrier_validation_rules_hold() {
+            assert!(facade::membarrier_validation_rules_hold());
+        }
+
+        #[test]
+        fn mempolicy_validation_rules_hold() {
+            assert!(facade::mempolicy_validation_rules_hold());
+        }
+
+        #[test]
+        fn task_clone_validation_rules_hold() {
+            assert!(facade::task_clone_validation_rules_hold());
+        }
+
+        #[test]
+        fn capability_data_conversion_rules_hold() {
+            assert!(facade::capability_data_conversion_rules_hold());
+        }
+
+        #[test]
+        fn cmsg_alignment_and_space_rules_hold() {
+            assert!(facade::cmsg_alignment_and_space_rules_hold());
+        }
+
+        #[test]
+        fn seccomp_action_and_precedence_rules_hold() {
+            assert!(facade::seccomp_action_and_precedence_rules_hold());
+        }
+
+        #[test]
+        fn syscall_signal_restart_rules_hold() {
+            assert!(facade::syscall_signal_restart_rules_hold());
+        }
+
+        #[test]
+        fn futex_op_and_compare_rules_hold() {
+            assert!(facade::futex_op_and_compare_rules_hold());
+        }
+
+        #[test]
+        fn mmap_capped_device_map_len_rules_hold() {
+            assert!(facade::mmap_capped_device_map_len_rules_hold());
+        }
+
+        #[test]
+        fn aio_iocb_validation_rules_hold() {
+            assert!(facade::aio_iocb_validation_rules_hold());
+        }
+
+        #[test]
+        fn decode_wait_status_rules_hold() {
+            assert!(facade::decode_wait_status_rules_hold());
+        }
+
+        #[test]
+        fn xattr_name_and_value_validation_rules_hold() {
+            assert!(facade::xattr_name_and_value_validation_rules_hold());
+        }
+
+        #[test]
+        fn eventfd_flags_validation_rules_hold() {
+            assert!(facade::eventfd_flags_validation_rules_hold());
+        }
+
+        #[test]
+        fn signalfd_flags_validation_rules_hold() {
+            assert!(facade::signalfd_flags_validation_rules_hold());
+        }
+
+        #[test]
+        fn pidfd_flags_and_signal_validation_rules_hold() {
+            assert!(facade::pidfd_flags_and_signal_validation_rules_hold());
+        }
+
+        #[test]
+        fn timerfd_timespec_conversion_rules_hold() {
+            assert!(facade::timerfd_timespec_conversion_rules_hold());
+        }
+
+        #[test]
+        fn inotify_flags_validation_rules_hold() {
+            assert!(facade::inotify_flags_validation_rules_hold());
+        }
+
+        #[test]
+        fn pipe_flags_validation_rules_hold() {
+            assert!(facade::pipe_flags_validation_rules_hold());
+        }
+
+        #[test]
+        fn stat_flags_validation_rules_hold() {
+            assert!(facade::stat_flags_validation_rules_hold());
+        }
+
+        #[test]
+        fn memfd_flags_validation_rules_hold() {
+            assert!(facade::memfd_flags_validation_rules_hold());
+        }
+
+        #[test]
+        fn mount_flags_validation_rules_hold() {
+            assert!(facade::mount_flags_validation_rules_hold());
+        }
+
+        #[test]
+        fn io_offset_from_hilo_rules_hold() {
+            assert!(facade::io_offset_from_hilo_rules_hold());
+        }
+
+        #[test]
+        fn io_uring_round_ring_entries_rules_hold() {
+            assert!(facade::io_uring_round_ring_entries_rules_hold());
+        }
+
+        #[test]
+        fn fd_ops_flags_to_options_rules_hold() {
+            assert!(facade::fd_ops_flags_to_options_rules_hold());
+        }
+
+        #[test]
+        fn mincore_validation_rules_hold() {
+            assert!(facade::mincore_validation_rules_hold());
+        }
+
+        #[test]
+        fn time_clock_id_validation_rules_hold() {
+            assert!(facade::time_clock_id_validation_rules_hold());
+        }
+
+        #[test]
+        fn exit_code_encoding_rules_hold() {
+            assert!(facade::exit_code_encoding_rules_hold());
+        }
+
+        #[test]
+        fn job_setpgid_validation_rules_hold() {
+            assert!(facade::job_setpgid_validation_rules_hold());
+        }
+
+        #[test]
+        fn schedule_clock_and_sched_validation_rules_hold() {
+            assert!(facade::schedule_clock_and_sched_validation_rules_hold());
+        }
+
+        #[test]
+        fn thread_arch_prctl_code_rules_hold() {
+            assert!(facade::thread_arch_prctl_code_rules_hold());
+        }
+
+        #[test]
+        fn resources_rlimit_validation_rules_hold() {
+            assert!(facade::resources_rlimit_validation_rules_hold());
+        }
+
+        #[test]
+        fn kmod_flags_validation_rules_hold() {
+            assert!(facade::kmod_flags_validation_rules_hold());
+        }
+
+        #[test]
+        fn sys_constants_and_validation_rules_hold() {
+            assert!(facade::sys_constants_and_validation_rules_hold());
+        }
+
+        #[test]
+        fn select_fd_set_and_validation_rules_hold() {
+            assert!(facade::select_fd_set_and_validation_rules_hold());
+        }
+
+        #[test]
+        fn poll_nfds_validation_rules_hold() {
+            assert!(facade::poll_nfds_validation_rules_hold());
+        }
+
+        #[test]
+        fn epoll_validation_rules_hold() {
+            assert!(facade::epoll_validation_rules_hold());
+        }
+
+        #[test]
+        fn ipc_permission_and_constants_rules_hold() {
+            assert!(facade::ipc_permission_and_constants_rules_hold());
+        }
+
+        #[test]
+        fn net_addr_conversion_rules_hold() {
+            assert!(facade::net_addr_conversion_rules_hold());
+        }
+
+        #[test]
+        fn ctl_ioctl_constants_hold() {
+            assert!(facade::ctl_ioctl_constants_hold());
+        }
+
+        #[test]
+        fn net_opt_normalization_rules_hold() {
+            assert!(facade::net_opt_normalization_rules_hold());
+        }
+
+        #[test]
+        fn net_io_constants_hold() {
+            assert!(facade::net_io_constants_hold());
+        }
+
+        #[test]
+        fn net_socket_constants_hold() {
+            assert!(facade::net_socket_constants_hold());
+        }
+
+        #[test]
+        fn seccomp_bpf_constants_hold() {
+            assert!(facade::seccomp_bpf_constants_hold());
+        }
+
+        #[test]
+        fn rss_kind_and_accounting_rules_hold() {
+            assert!(facade::rss_kind_and_accounting_rules_hold());
+        }
+
+        #[test]
+        fn accounting_rss_kind_debug_and_default_hold() {
+            assert!(facade::accounting_rss_kind_debug_and_default_hold());
+        }
+    }
 }

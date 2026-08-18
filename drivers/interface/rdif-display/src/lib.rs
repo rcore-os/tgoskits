@@ -6,10 +6,6 @@ mod error;
 mod interface;
 mod types;
 
-#[cfg(all(axtest, feature = "axtest"))]
-/// Coverage tests for display interface defaults and framebuffer wrappers.
-pub mod axtest;
-
 pub use error::*;
 pub use interface::*;
 pub use rdif_base::{DriverGeneric, KError, io};

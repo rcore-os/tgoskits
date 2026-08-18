@@ -8,16 +8,16 @@ description = "ArceOS synchronization primitives"
 license.workspace = true
 
 [features]
-axtest = ["dep:axtest"]
 host-test = []
 sleep = []
 lock-api = ["dep:lock_api"]
 default = []
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 ax-crate-interface.workspace = true
 lock_api = { workspace = true, optional = true }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+[[test]]
+name = "std"
+path = "tests/std.rs"
+required-features = ["host-test"]

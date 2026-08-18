@@ -25,6 +25,12 @@ struct PackageFeatureProfile {
 
 const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     PackageFeatureProfile {
+        name: "host-test+multitask+irq-pure",
+        features: &["host-test", "multitask", "irq"],
+        name_filter: Some("std_tests::"),
+        expected_tests: &["std_tests::axtask_api_constants_hold"],
+    },
+    PackageFeatureProfile {
         name: "host-test+multitask-task-initialization",
         features: &["host-test", "multitask"],
         name_filter: Some(TASK_INITIALIZATION_FILTER),
@@ -48,8 +54,8 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
 ];
 
 const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
-    name: "starfive-jh7110-dwmmc",
-    features: &["starfive-jh7110-dwmmc"],
+    name: "host-test+rtc+starfive-jh7110-dwmmc",
+    features: &["host-test", "rtc", "starfive-jh7110-dwmmc"],
     name_filter: None,
     expected_tests: &[],
 }];
@@ -58,6 +64,27 @@ const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeaturePro
     name: "host-test",
     features: &["host-test"],
     name_filter: None,
+    expected_tests: &[],
+}];
+
+const ALLOC_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "alloc",
+    features: &["alloc"],
+    name_filter: None,
+    expected_tests: &[],
+}];
+
+const FS_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "fs",
+    features: &["fs"],
+    name_filter: None,
+    expected_tests: &[],
+}];
+
+const STARRY_KERNEL_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "std-tests-only",
+    features: &[],
+    name_filter: Some("std_tests::"),
     expected_tests: &[],
 }];
 
@@ -254,12 +281,29 @@ fn run_std_tests<R: CargoRunner>(
 
 fn package_feature_profiles(package: &str) -> Option<&'static [PackageFeatureProfile]> {
     match package {
-        "arm_vgic" | "axdevice" | "axfs-ng-vfs" | "rsext4" | "scope-local" | "ax-sync" | "axvm"
-        | "ax-display" | "ax-input" | "ax-ipi" | "ax-log" | "ax-runtime" | "ax-api" | "rdrive" => {
-            Some(HOST_TEST_FEATURE_PROFILES)
-        }
+        "arm_vgic"
+        | "axdevice"
+        | "axfs-ng-vfs"
+        | "rsext4"
+        | "scope-local"
+        | "ax-sync"
+        | "axvm"
+        | "ax-display"
+        | "ax-input"
+        | "ax-ipi"
+        | "ax-log"
+        | "ax-runtime"
+        | "ax-api"
+        | "rdrive"
+        | "axpoll"
+        | "ax-net"
+        | "dma-api"
+        | "buddy-slab-allocator" => Some(HOST_TEST_FEATURE_PROFILES),
+        "ax-io" | "axbacktrace" => Some(ALLOC_FEATURE_PROFILES),
         "ax-task" => Some(AX_TASK_FEATURE_PROFILES),
         "ax-driver" => Some(AX_DRIVER_FEATURE_PROFILES),
+        "axvisor" => Some(FS_FEATURE_PROFILES),
+        "starry-kernel" => Some(STARRY_KERNEL_FEATURE_PROFILES),
         _ => None,
     }
 }
@@ -600,7 +644,7 @@ mod tests {
                 "-p",
                 "ax-driver",
                 "--features",
-                "starfive-jh7110-dwmmc"
+                "host-test,rtc,starfive-jh7110-dwmmc"
             ]
         );
     }
@@ -622,6 +666,24 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test,multitask,irq",
+                    "std_tests::",
+                    "--",
+                    "--list",
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-task",
+                    "--features",
+                    "host-test,multitask,irq",
+                    "std_tests::",
+                ],
                 vec![
                     "test",
                     "-p",
@@ -691,6 +753,7 @@ mod tests {
             "rsext4",
             "scope-local",
             "ax-sync",
+            "buddy-slab-allocator",
         ]
         .map(str::to_string)
         .to_vec();
@@ -713,6 +776,36 @@ mod tests {
                 vec!["test", "-p", "rsext4", "--features", "host-test"],
                 vec!["test", "-p", "scope-local", "--features", "host-test"],
                 vec!["test", "-p", "ax-sync", "--features", "host-test"],
+                vec![
+                    "test",
+                    "-p",
+                    "buddy-slab-allocator",
+                    "--features",
+                    "host-test",
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_aggregate_packages_run_only_their_standard_test_subset() {
+        let root = PathBuf::from("/tmp/workspace");
+        let packages = ["axvisor", "starry-kernel"].map(str::to_string).to_vec();
+        let mut runner = FakeCargoRunner::succeeding();
+
+        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
+
+        assert!(failed.is_empty());
+        let args = runner
+            .invocations
+            .iter()
+            .map(|(_, invocation)| invocation.args())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            vec![
+                vec!["test", "-p", "axvisor", "--features", "fs"],
+                vec!["test", "-p", "starry-kernel", "std_tests::"],
             ]
         );
     }
@@ -817,6 +910,6 @@ mod tests {
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert_eq!(failed, vec!["ax-task", "ax-api"]);
-        assert_eq!(runner.invocations.len(), 7);
+        assert_eq!(runner.invocations.len(), 9);
     }
 }

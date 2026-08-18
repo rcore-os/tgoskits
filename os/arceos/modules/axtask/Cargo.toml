@@ -48,7 +48,7 @@ host-test = [
   "ax-percpu?/host-test",
 ]
 test = ["host-test"]
-axtest = ["dep:axtest"]
+axtest = ["irq", "multitask"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
@@ -66,7 +66,6 @@ ax-percpu = {workspace = true, optional = true}
 axpanic = {workspace = true, optional = true}
 ax-sched = { workspace = true, optional = true }
 ax-timer-list = {workspace = true, optional = true}
-axtest = {workspace = true, optional = true}
 axpoll = {workspace = true, optional = true}
 cfg-if.workspace = true
 extern-trait = { workspace = true, optional = true }
@@ -86,3 +85,16 @@ ax-hal = { workspace = true, features = ["fp-simd"] }
 
 [build-dependencies]
 quote = { workspace = true }
+
+[[test]]
+name = "axtest"
+path = "tests/axtest.rs"
+harness = false
+required-features = ["axtest"]
+
+[dev-dependencies.axtest]
+workspace = true
+
+[dev-dependencies.ax-std]
+workspace = true
+features = ["default"]

@@ -12,3 +12,24 @@ pub(crate) fn map_bitmap_error(err: BitmapError) -> Ext4Error {
         BitmapError::AlreadyFree => Ext4Error::from(Errno::ENOENT),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bitmap_errors_map_to_ext4_errno() {
+        assert_eq!(
+            map_bitmap_error(BitmapError::IndexOutOfRange).code,
+            Errno::EINVAL
+        );
+        assert_eq!(
+            map_bitmap_error(BitmapError::AlreadyAllocated).code,
+            Errno::EEXIST
+        );
+        assert_eq!(
+            map_bitmap_error(BitmapError::AlreadyFree).code,
+            Errno::ENOENT
+        );
+    }
+}

@@ -213,11 +213,19 @@ cargo test -p axvmconfig
 cargo test -p axdevice serial::tests
 cargo test -p axvm machine::tests
 cargo test -p virtualization-tests --test configured_device_graph
+cargo xtask ktest qemu --workspace --arch <arch>
 cargo xtask arceos test qemu --arch <arch>
 cargo xtask starry test qemu --arch <arch>
 cargo xtask axvisor test qemu --list --arch <arch>
 cargo xtask axvisor test qemu --arch <arch> --test-group normal --test-case smoke
 ```
+
+`ktest qemu --arch <arch>` filters the Cargo-metadata execution plan to packages
+whose `[package.metadata.docs.rs].targets` contains the matching bare-metal
+target. Packages without docs targets are intentionally x86_64-only, and
+`[package.metadata.axtest] runtime = "board"` targets are excluded from QEMU.
+Keep all ArceOS axtests for one architecture in one serial ktest invocation;
+do not replace the separate ArceOS Rust/C suite command.
 
 For LoongArch Axvisor LVZ validation, use the repository LVZ container and build `xtask` inside the container so embedded Cargo paths match the mounted workspace:
 

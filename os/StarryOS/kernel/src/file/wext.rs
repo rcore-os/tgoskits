@@ -258,7 +258,7 @@ fn _write_iwreq_data(arg: usize, data: &[u8]) -> StarryResult<()> {
     Ok(vm_write_slice((arg + IWREQ_DATA_OFFSET) as *mut u8, data)?)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn is_wext_ioctl_validation_rules_hold_for_test() -> bool {
     // is_wext_ioctl: returns true only for the 5 handled WE ioctl commands.
     let valid_cmds = [

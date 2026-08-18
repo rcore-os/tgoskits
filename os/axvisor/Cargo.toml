@@ -24,6 +24,7 @@ include = [
 [[bin]]
 name = "axvisor"
 path = "src/main.rs"
+test = false
 
 [[bin]]
 name = "xtask"
@@ -36,6 +37,9 @@ name = "axtest"
 path = "tests/axtest.rs"
 harness = false
 required-features = ["axtest", "fs"]
+
+[package.metadata.axtest]
+runtime = "axvisor"
 
 [features]
 default = []
@@ -89,8 +93,7 @@ axbacktrace = { workspace = true, optional = true }
 
 [dev-dependencies]
 axtest.workspace = true
-ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv", "axtest"] }
-ax-task = { workspace = true, features = ["axtest"] }
+ax-hal.workspace = true
 
 # xtask dependencies (only used on host platforms)
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]

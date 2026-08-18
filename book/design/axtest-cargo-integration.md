@@ -33,6 +33,12 @@ preempt/per-CPU 运行时状态、内核任务调度、真实块设备/文件系
 adapter 安装所需上下文，则仍属于标准测试，不应仅为复用旧入口而启动 QEMU。不得新增
 只为让测试通过而模拟内核全局状态的临时 fake runtime。
 
+标准测试继续遵守 Cargo/Rust 的测试边界：验证私有规则的单元测试放在所属实现源文件
+末尾的 `#[cfg(test)] mod tests` 中，测试 helper 保持在该私有模块内；从 crate 外部验证
+公开 API、feature 组合或链接契约的集成测试放在 `tests/`。不得为了让标准测试跨模块
+转调而新增公开 `*_for_test` facade。只有 `harness = false` 的目标运行时测试允许通过
+`cfg(axtest)` 下最小的 `axtest_support` facade 跨越 Cargo test bin 边界。
+
 ## Manifest 契约
 
 确认测试确实需要 QEMU/板卡后，crate 使用以下模板：
