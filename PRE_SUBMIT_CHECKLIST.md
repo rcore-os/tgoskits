@@ -40,12 +40,12 @@ cargo xtask test
 
 ### `ax-driver` 的 workspace std profile
 
-`scripts/axbuild/src/test/std.rs` 对 `ax-driver` 选择的是
-`starfive-jh7110-dwmmc`，因此必须额外执行下面的**同一条命令**；
+`scripts/axbuild/src/test/std.rs` 当前对 `ax-driver` 选择的是
+`host-test,rtc,starfive-jh7110-dwmmc`，因此必须额外执行下面的**同一条命令**；
 `--all-features` 不能替代它：
 
 ```bash
-cargo test -p ax-driver --features starfive-jh7110-dwmmc --locked -- --nocapture
+cargo test -p ax-driver --features host-test,rtc,starfive-jh7110-dwmmc --locked -- --nocapture
 ```
 
 该命令必须覆盖 library 与已启用的 integration tests。不得为了让
