@@ -33,3 +33,13 @@ environment = "base"
 command = '''
 cargo xtask lock-lint
 '''
+
+[[check]]
+id = "test-wayland-apk-cache-paths"
+name = "Wayland APK cache path checks"
+runs_on = ["ubuntu-latest"]
+environment = "base"
+command = '''
+cd apps/starry/wayland
+python3 -m unittest -v test_wayland_apk_paths.py
+'''

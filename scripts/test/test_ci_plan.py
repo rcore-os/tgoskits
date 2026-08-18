@@ -25,7 +25,7 @@ class CiPlanTests(unittest.TestCase):
     def test_upstream_main_plan_preserves_all_checks(self) -> None:
         plan = ci_plan.build_main_plan(self.upstream)
 
-        self.assertEqual(len(plan["static_matrix"]["include"]), 3)
+        self.assertEqual(len(plan["static_matrix"]["include"]), 4)
         self.assertEqual(len(plan["test_matrix"]["include"]), 31)
         self.assertTrue(
             all(" / " in row["name"] for row in plan["test_matrix"]["include"])
@@ -42,6 +42,9 @@ class CiPlanTests(unittest.TestCase):
 
         self.assertEqual(
             static_rows["check-formatting"], "Formatting + publish dry-run"
+        )
+        self.assertEqual(
+            static_rows["test-wayland-apk-cache-paths"], "Wayland APK cache path checks"
         )
         self.assertEqual(
             test_rows["run-clippy"], "Workspace / Incremental Clippy"
