@@ -92,12 +92,30 @@ impl Backend {
     ) -> bool {
         if populate {
             false // Populated mappings should not trigger page faults.
-        } else if let Some(frame) = alloc_frame(true) {
-            // Allocate a physical frame lazily and map it to the fault address.
-            pt.remap_page(vaddr, frame, orig_flags).is_ok()
         } else {
-            false
+            // Allocate a physical frame lazily and map it to the fault address.
+            remap_frame_or_dealloc(
+                alloc_frame(true),
+                |frame| pt.remap_page(vaddr, frame, orig_flags).is_ok(),
+                dealloc_frame,
+            )
         }
+    }
+}
+
+fn remap_frame_or_dealloc(
+    frame: Option<PhysAddr>,
+    remap_frame: impl FnOnce(PhysAddr) -> bool,
+    dealloc_frame: impl FnOnce(PhysAddr),
+) -> bool {
+    let Some(frame) = frame else {
+        return false;
+    };
+    if remap_frame(frame) {
+        true
+    } else {
+        dealloc_frame(frame);
+        false
     }
 }
 
@@ -168,6 +186,7 @@ fn rollback_populated_pages(ops: &mut impl PopulatePageOps, start: VirtAddr, map
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
+    use core::cell::Cell;
 
     use super::*;
 
@@ -193,6 +212,32 @@ mod tests {
         assert!(!populate_pages(&mut ops, start, 3 * PAGE_SIZE_4K));
         assert!(ops.mapped.is_empty());
         assert_eq!(ops.deallocated, [PhysAddr::from(PAGE_SIZE_4K)]);
+    }
+
+    #[test]
+    fn keeps_lazy_frame_when_remap_succeeds() {
+        let frame = PhysAddr::from(PAGE_SIZE_4K);
+        let deallocated = Cell::new(None);
+
+        assert!(remap_frame_or_dealloc(
+            Some(frame),
+            |_| true,
+            |frame| deallocated.set(Some(frame)),
+        ));
+        assert_eq!(deallocated.get(), None);
+    }
+
+    #[test]
+    fn deallocates_lazy_frame_when_remap_fails() {
+        let frame = PhysAddr::from(PAGE_SIZE_4K);
+        let deallocated = Cell::new(None);
+
+        assert!(!remap_frame_or_dealloc(
+            Some(frame),
+            |_| false,
+            |frame| deallocated.set(Some(frame)),
+        ));
+        assert_eq!(deallocated.get(), Some(frame));
     }
 
     struct MockPopulatePageOps {
