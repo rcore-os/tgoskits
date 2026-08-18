@@ -736,9 +736,14 @@ fn signalfd_flags_validation_rules_hold() -> bool {
     super::syscall::signalfd_flags_validation_rules_hold_for_test()
 }
 
-#[cfg(test)]
-fn pidfd_flags_and_signal_validation_rules_hold() -> bool {
+#[cfg(any(test, axtest))]
+pub fn pidfd_flags_and_signal_validation_rules_hold() -> bool {
     super::syscall::pidfd_flags_and_signal_validation_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub fn pidfd_thread_exit_window_matches_linux() -> bool {
+    super::syscall::pidfd_thread_exit_window_matches_linux_for_test()
 }
 
 #[cfg(axtest)]

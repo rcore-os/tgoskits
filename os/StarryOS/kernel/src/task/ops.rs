@@ -620,6 +620,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     }
 
     thr.set_exit();
+    task_identity.notify_thread_pidfd_exit();
     unsafe { thr.exit_event().wake(axpoll::IoEvents::IN) };
 
     // The exit path is complete only after zombie publication, parent

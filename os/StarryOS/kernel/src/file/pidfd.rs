@@ -4,7 +4,7 @@ use core::{
     task::Context,
 };
 
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
 
 use crate::{
     StarryError, StarryResult,
@@ -17,8 +17,6 @@ pub struct PidFd {
     identity: Arc<PidIdentity>,
     /// Stable thread-group generation used by process-scoped operations.
     process_identity: Arc<PidIdentity>,
-    exit_event: Arc<PollSet>,
-    thread_exit: Option<Arc<AtomicBool>>,
     tid: Option<TidNumber>,
 
     non_blocking: AtomicBool,
@@ -26,10 +24,8 @@ pub struct PidFd {
 impl PidFd {
     pub(crate) fn new_process(identity: Arc<PidIdentity>) -> Self {
         Self {
-            exit_event: identity.process_exit_event(),
             process_identity: identity.clone(),
             identity,
-            thread_exit: None,
             tid: None,
 
             non_blocking: AtomicBool::new(false),
@@ -40,22 +36,21 @@ impl PidFd {
         Self {
             process_identity: thread.proc_data.identity(),
             identity,
-            exit_event: thread.exit_event(),
-            thread_exit: Some(thread.exit_flag()),
             tid: Some(tid),
 
             non_blocking: AtomicBool::new(false),
         }
     }
 
-    /// Creates a thread pidfd for an exited thread-group leader.
-    pub(crate) fn new_exited_thread(identity: Arc<PidIdentity>) -> Self {
-        let tid = TidNumber::from(identity.root_number());
+    /// Creates a thread pidfd after its runtime task link detached.
+    pub(crate) fn new_detached_thread(
+        identity: Arc<PidIdentity>,
+        process_identity: Arc<PidIdentity>,
+        tid: TidNumber,
+    ) -> Self {
         Self {
-            exit_event: identity.process_exit_event(),
-            process_identity: identity.clone(),
+            process_identity,
             identity,
-            thread_exit: Some(Arc::new(AtomicBool::new(true))),
             tid: Some(tid),
             non_blocking: AtomicBool::new(false),
         }
@@ -89,10 +84,7 @@ impl PidFd {
     /// Resolves a thread-scoped pidfd target.
     pub fn signal_thread(&self) -> StarryResult<crate::task::UserTaskRef> {
         let tid = self.tid.ok_or(StarryError::InvalidInput)?;
-        if self
-            .thread_exit
-            .as_ref()
-            .is_some_and(|exited| exited.load(Ordering::Acquire))
+        if self.identity.thread_pidfd_exited()
             && !(tid.pid_number() == self.identity.root_number() && self.identity.is_zombie())
         {
             return Err(StarryError::NoSuchProcess);
@@ -103,9 +95,7 @@ impl PidFd {
     pub fn process_data(&self) -> StarryResult<Arc<ProcessData>> {
         // For threads, the pidfd is invalid once the thread exits, even if its
         // process is still alive.
-        if let Some(thread_exit) = &self.thread_exit
-            && thread_exit.load(Ordering::Acquire)
-        {
+        if self.is_thread() && self.identity.thread_pidfd_exited() {
             return Err(StarryError::NoSuchProcess);
         }
         self.process_identity
@@ -133,15 +123,8 @@ impl Pollable for PidFd {
         // Linux pidfd becomes readable only after the referenced task exits.
         // Reporting IN while it is still alive makes event loops spin or wait
         // on the wrong readiness edge.
-        if let Some(thread_exit) = &self.thread_exit {
-            let exited = thread_exit.load(Ordering::Acquire);
-            let mut events = if exited {
-                IoEvents::IN | IoEvents::RDNORM
-            } else {
-                IoEvents::empty()
-            };
-            events.set(IoEvents::HUP, self.identity.is_reaped());
-            events
+        if self.is_thread() {
+            self.identity.thread_pidfd_poll_events()
         } else {
             self.identity.process_poll_events()
         }
@@ -151,7 +134,12 @@ impl Pollable for PidFd {
         let interests = events & (IoEvents::IN | IoEvents::RDNORM | IoEvents::HUP);
         if !interests.is_empty() {
             // Registration happens from pidfd poll task context.
-            unsafe { self.exit_event.register(context.waker(), interests) };
+            let exit_event = if self.is_thread() {
+                self.identity.thread_pidfd_exit_event()
+            } else {
+                self.identity.process_exit_event()
+            };
+            unsafe { exit_event.register(context.waker(), interests) };
         }
     }
 }

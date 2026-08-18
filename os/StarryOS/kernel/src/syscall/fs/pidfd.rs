@@ -1,4 +1,8 @@
 use alloc::sync::Arc;
+#[cfg(axtest)]
+use alloc::task::Wake;
+#[cfg(axtest)]
+use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use bitflags::bitflags;
 use linux_raw_sys::general::{SI_TKILL, SI_USER};
@@ -10,8 +14,8 @@ use crate::{
     mm::VmPtr,
     syscall::signal::check_kill_permission_identity,
     task::{
-        PidView, Tgid, TgidNumber, Tid, TidNumber, send_signal_to_process_data,
-        send_signal_to_process_group_ref, send_signal_to_task,
+        PidIdentity, PidView, Tgid, TgidNumber, Tid, TidNumber, UserTaskRef,
+        send_signal_to_process_data, send_signal_to_process_group_ref, send_signal_to_task,
     },
 };
 
@@ -42,6 +46,20 @@ enum PidFdSignalScope {
 enum PidFdOpenTarget {
     Process(TgidNumber),
     Thread(TidNumber),
+}
+
+#[cfg(axtest)]
+struct PidfdWakeCounter(AtomicUsize);
+
+#[cfg(axtest)]
+impl Wake for PidfdWakeCounter {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, AtomicOrdering::Relaxed);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, AtomicOrdering::Relaxed);
+    }
 }
 
 impl PidFdOpenTarget {
@@ -80,6 +98,24 @@ fn make_pidfd_siginfo(
     SignalInfo::new_user(signo, code, sender, thread.cred().uid)
 }
 
+fn open_thread_pidfd_with<T>(
+    identity: Arc<PidIdentity>,
+    tid: TidNumber,
+    new_live: impl FnOnce(Arc<PidIdentity>, UserTaskRef, TidNumber) -> T,
+    new_detached: impl FnOnce(Arc<PidIdentity>, Arc<PidIdentity>, TidNumber) -> T,
+) -> StarryResult<T> {
+    if !identity.has_role::<Tid>() {
+        return Err(StarryError::NoSuchProcess);
+    }
+    if let Some(task) = identity.live_task() {
+        let identity = task.as_thread().pid_identity();
+        Ok(new_live(identity, task, tid))
+    } else {
+        let process_identity = identity.thread_pidfd_process_identity()?;
+        Ok(new_detached(identity, process_identity, tid))
+    }
+}
+
 pub fn sys_pidfd_open(
     current: &crate::task::UserTaskRef,
     pid: u32,
@@ -93,16 +129,12 @@ pub fn sys_pidfd_open(
     let fd = match PidFdOpenTarget::parse(pid, flags)? {
         PidFdOpenTarget::Thread(tid) => {
             let identity = view.resolve_identity(tid.pid_number())?;
-            if identity.has_role::<Tid>()
-                && let Some(task) = identity.live_task()
-            {
-                let identity = task.as_thread().pid_identity();
-                PidFd::new_thread(identity, task.as_thread(), tid)
-            } else if identity.has_role::<Tgid>() && identity.is_zombie() {
-                PidFd::new_exited_thread(identity)
-            } else {
-                return Err(StarryError::NoSuchProcess);
-            }
+            open_thread_pidfd_with(
+                identity,
+                tid,
+                |identity, task, tid| PidFd::new_thread(identity, task.as_thread(), tid),
+                PidFd::new_detached_thread,
+            )?
         }
         PidFdOpenTarget::Process(tgid) => {
             // Without PIDFD_THREAD the target must be a thread-group leader.
@@ -236,7 +268,7 @@ pub fn sys_pidfd_send_signal(
     Ok(0)
 }
 
-#[cfg(test)]
+#[cfg(any(test, axtest))]
 pub(crate) fn pidfd_flags_and_signal_validation_rules_hold_for_test() -> bool {
     // Test PidFdFlags validation
     let valid_flags = 0u32;
@@ -262,4 +294,59 @@ pub(crate) fn pidfd_flags_and_signal_validation_rules_hold_for_test() -> bool {
     assert!(parse_signo(255).is_err()); // Out of range
 
     true
+}
+
+#[cfg(axtest)]
+pub(crate) fn pidfd_thread_exit_window_matches_linux_for_test() -> bool {
+    let namespace = crate::task::new_test_pid_namespace();
+    let (process_identity, tgid_lease) = crate::task::new_test_process_identity(&namespace);
+    let exit_flag = Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let (identity, tid_lease) =
+        crate::task::new_test_thread_identity(&namespace, &process_identity, exit_flag.clone());
+    let tid = TidNumber::from(identity.root_number());
+    let exit_path = identity.mark_task_exited().retain_tid(tid_lease);
+    let view = PidView::new(namespace);
+
+    let fd = view
+        .resolve_identity(tid.pid_number())
+        .and_then(|identity| {
+            open_thread_pidfd_with(
+                identity,
+                tid,
+                |identity, task, tid| PidFd::new_thread(identity, task.as_thread(), tid),
+                PidFd::new_detached_thread,
+            )
+        });
+    let Ok(fd) = fd else {
+        return false;
+    };
+    let unreadable_before_exit = !axpoll::Pollable::poll(&fd).contains(axpoll::IoEvents::IN);
+    let wake_counter = Arc::new(PidfdWakeCounter(AtomicUsize::new(0)));
+    let waker = core::task::Waker::from(wake_counter.clone());
+    let mut context = core::task::Context::from_waker(&waker);
+    axpoll::Pollable::register(
+        &fd,
+        &mut context,
+        axpoll::IoEvents::IN | axpoll::IoEvents::HUP,
+    );
+    exit_flag.store(true, core::sync::atomic::Ordering::Release);
+    identity.notify_thread_pidfd_exit();
+    let readable_after_exit = axpoll::Pollable::poll(&fd).contains(axpoll::IoEvents::IN);
+    let exit_woke_waiter = wake_counter.0.load(AtomicOrdering::Relaxed) > 0;
+
+    let wakes_before_release = wake_counter.0.load(AtomicOrdering::Relaxed);
+    axpoll::Pollable::register(&fd, &mut context, axpoll::IoEvents::HUP);
+    exit_path.complete();
+    let identity_released = view.resolve_identity(tid.pid_number()).is_err();
+    let released_fd_hangs_up = axpoll::Pollable::poll(&fd).contains(axpoll::IoEvents::HUP);
+    let release_woke_waiter = wake_counter.0.load(AtomicOrdering::Relaxed) > wakes_before_release;
+    process_identity.mark_task_exited().complete();
+    tgid_lease.release();
+
+    unreadable_before_exit
+        && readable_after_exit
+        && exit_woke_waiter
+        && identity_released
+        && released_fd_hangs_up
+        && release_woke_waiter
 }

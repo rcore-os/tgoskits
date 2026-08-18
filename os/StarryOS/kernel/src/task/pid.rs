@@ -13,7 +13,7 @@ use core::{
     future::poll_fn,
     marker::PhantomData,
     num::{NonZeroU32, NonZeroU64},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::Poll,
 };
 
@@ -608,10 +608,12 @@ impl PidReservation {
         let identity = Arc::new(PidIdentity {
             id: identity_id,
             bindings: identity_bindings,
+            thread_pidfd_event: Arc::new(PollSet::new()),
             state: IrqMutex::new(PidIdentityState {
                 publication: PidIdentityPublication::Reserved,
                 runtime: RuntimeTaskLink::Reserved,
                 exit_path_pending: false,
+                thread_pidfd: None,
                 roles: 0,
                 process: None,
                 process_group: Weak::new(),
@@ -683,6 +685,17 @@ enum RuntimeTaskLink {
     Exited,
 }
 
+/// Per-task data addressed through the stable PID identity.
+///
+/// The exit flag follows the task currently attached as `PIDTYPE_PID`; it is
+/// replaced together with the runtime link during `de_thread`. The wait set is
+/// intentionally stored on [`PidIdentity`] itself, like Linux's
+/// `struct pid::wait_pidfd`, so registrations survive that transfer.
+struct ThreadPidfdBinding {
+    process_identity: Weak<PidIdentity>,
+    exit: Arc<AtomicBool>,
+}
+
 struct PidIdentityState {
     publication: PidIdentityPublication,
     runtime: RuntimeTaskLink,
@@ -693,6 +706,7 @@ struct PidIdentityState {
     /// `do_notify_parent()`, so a PID-namespace shutdown wait cannot complete
     /// and mark the namespace dead while a member still dereferences it.
     exit_path_pending: bool,
+    thread_pidfd: Option<ThreadPidfdBinding>,
     roles: u8,
     process: Option<Arc<Process>>,
     process_group: Weak<ProcessGroup>,
@@ -731,6 +745,7 @@ pub(crate) struct ZombieSnapshot {
 pub struct PidIdentity {
     id: PidIdentityId,
     bindings: Arc<[PidBinding]>,
+    thread_pidfd_event: Arc<PollSet>,
     state: IrqMutex<PidIdentityState>,
 }
 
@@ -739,6 +754,7 @@ impl PidIdentity {
         let state = self.state.lock();
         state.publication == PidIdentityPublication::Published
             && (matches!(state.runtime, RuntimeTaskLink::Live(_))
+                || state.exit_path_pending
                 || matches!(
                     state.process_lifecycle,
                     ProcessLifecycle::Live(_) | ProcessLifecycle::Zombie(_)
@@ -799,7 +815,86 @@ impl PidIdentity {
         let mut state = self.state.lock();
         assert_eq!(state.publication, PidIdentityPublication::Published);
         assert!(matches!(state.runtime, RuntimeTaskLink::Reserved));
+        assert!(state.thread_pidfd.is_some());
         state.runtime = RuntimeTaskLink::Live(task.downgrade());
+    }
+
+    /// Binds the per-task pidfd state before the task becomes visible.
+    pub(super) fn bind_thread_pidfd(
+        &self,
+        process_identity: &Arc<PidIdentity>,
+        exit: Arc<AtomicBool>,
+    ) {
+        let mut state = self.state.lock();
+        assert!(state.thread_pidfd.is_none());
+        state.thread_pidfd = Some(ThreadPidfdBinding {
+            process_identity: Arc::downgrade(process_identity),
+            exit,
+        });
+    }
+
+    pub(crate) fn thread_pidfd_process_identity(&self) -> StarryResult<Arc<PidIdentity>> {
+        self.state
+            .lock()
+            .thread_pidfd
+            .as_ref()
+            .and_then(|binding| binding.process_identity.upgrade())
+            .ok_or(StarryError::NoSuchProcess)
+    }
+
+    pub(crate) fn thread_pidfd_exited(&self) -> bool {
+        self.state
+            .lock()
+            .thread_pidfd
+            .as_ref()
+            .is_none_or(|binding| binding.exit.load(Ordering::Acquire))
+    }
+
+    /// Reports pidfd readiness from the task currently attached as
+    /// `PIDTYPE_PID`.
+    ///
+    /// A prematurely exiting group leader is deliberately not readable while
+    /// the process is still live: a remaining sibling may `exec` and inherit
+    /// this identity. This is Linux's `delay_group_leader()` rule.
+    pub(crate) fn thread_pidfd_poll_events(&self) -> IoEvents {
+        let state = self.state.lock();
+        let exited = state
+            .thread_pidfd
+            .as_ref()
+            .is_none_or(|binding| binding.exit.load(Ordering::Acquire));
+        let delayed_group_leader = self.has_role_locked::<Tgid>(&state)
+            && matches!(state.process_lifecycle, ProcessLifecycle::Live(_));
+        if !exited || delayed_group_leader {
+            return IoEvents::empty();
+        }
+
+        let mut events = IoEvents::IN | IoEvents::RDNORM;
+        events.set(
+            IoEvents::HUP,
+            state.publication == PidIdentityPublication::Detached
+                || matches!(state.process_lifecycle, ProcessLifecycle::Reaped),
+        );
+        events
+    }
+
+    pub(crate) fn thread_pidfd_exit_event(&self) -> Arc<PollSet> {
+        self.thread_pidfd_event.clone()
+    }
+
+    /// Wakes waiters after the attached task published its exit flag.
+    pub(crate) fn notify_thread_pidfd_exit(&self) {
+        unsafe {
+            self.thread_pidfd_event
+                .wake(IoEvents::IN | IoEvents::RDNORM)
+        };
+    }
+
+    /// Wakes pidfd waiters after the `PIDTYPE_PID` link is released.
+    fn notify_thread_pidfd_release(&self) {
+        unsafe {
+            self.thread_pidfd_event
+                .wake(IoEvents::IN | IoEvents::RDNORM | IoEvents::HUP)
+        };
     }
 
     pub fn live_task(&self) -> Option<UserTaskRef> {
@@ -838,6 +933,7 @@ impl PidIdentity {
         }
         ExitPathLease {
             identity: Some(self.clone()),
+            tid_lease: None,
         }
     }
 
@@ -861,6 +957,7 @@ impl PidIdentity {
         };
         if should_detach {
             self.detach();
+            self.notify_thread_pidfd_release();
         }
         if pending {
             for binding in self.bindings.iter().rev() {
@@ -870,20 +967,36 @@ impl PidIdentity {
     }
 
     /// Transfers this identity's live runtime link during `de_thread`.
-    pub fn transfer_task(&self, task: &UserTaskRef) {
+    pub fn transfer_task(
+        &self,
+        task: &UserTaskRef,
+        process_identity: &Arc<PidIdentity>,
+        exit: Arc<AtomicBool>,
+    ) {
+        let thread_pidfd = ThreadPidfdBinding {
+            process_identity: Arc::downgrade(process_identity),
+            exit,
+        };
         assert!(
-            self.try_transfer_task_with(|| task.downgrade()),
+            self.try_transfer_task_with(|| task.downgrade(), Some(thread_pidfd)),
             "PID identity transferred before its exit path completed"
         );
     }
 
-    fn try_transfer_task_with(&self, task: impl FnOnce() -> WeakUserTaskRef) -> bool {
+    fn try_transfer_task_with(
+        &self,
+        task: impl FnOnce() -> WeakUserTaskRef,
+        thread_pidfd: Option<ThreadPidfdBinding>,
+    ) -> bool {
         let mut state = self.state.lock();
         assert_eq!(state.publication, PidIdentityPublication::Published);
         if !Self::task_transfer_ready(&state) {
             return false;
         }
         state.runtime = RuntimeTaskLink::Live(task());
+        if let Some(thread_pidfd) = thread_pidfd {
+            state.thread_pidfd = Some(thread_pidfd);
+        }
         true
     }
 
@@ -1018,18 +1131,24 @@ impl PidIdentity {
         expected: &Arc<ProcessData>,
         zombie: ZombieSnapshot,
     ) -> Result<(), ZombieSnapshot> {
-        let mut state = self.state.lock();
-        let matches = matches!(
-            &state.process_lifecycle,
-            ProcessLifecycle::Live(process_data)
-                if process_data
-                    .upgrade()
-                    .is_some_and(|registered| Arc::ptr_eq(&registered, expected))
-        );
-        if !matches {
-            return Err(zombie);
+        {
+            let mut state = self.state.lock();
+            let matches = matches!(
+                &state.process_lifecycle,
+                ProcessLifecycle::Live(process_data)
+                    if process_data
+                        .upgrade()
+                        .is_some_and(|registered| Arc::ptr_eq(&registered, expected))
+            );
+            if !matches {
+                return Err(zombie);
+            }
+            state.process_lifecycle = ProcessLifecycle::Zombie(zombie);
         }
-        state.process_lifecycle = ProcessLifecycle::Zombie(zombie);
+        // A leader that exited before its siblings was deliberately suppressed
+        // by delay_group_leader(). Zombie publication means the last sibling
+        // is gone, so wake the stable leader-pid wait set again.
+        self.notify_thread_pidfd_exit();
         Ok(())
     }
 
@@ -1057,6 +1176,7 @@ impl PidIdentity {
         // identity lock: the final Process may release PGID/SID role leases,
         // whose destructors re-enter this identity to detach its PID slots.
         drop(process);
+        self.notify_thread_pidfd_release();
     }
 
     pub(crate) fn zombie_snapshot<R>(&self, f: impl FnOnce(&ZombieSnapshot) -> R) -> Option<R> {
@@ -1204,13 +1324,31 @@ impl PidIdentity {
               the exit path finishes"]
 pub struct ExitPathLease {
     identity: Option<Arc<PidIdentity>>,
+    tid_lease: Option<PidRoleLease<Tid>>,
 }
 
 impl ExitPathLease {
+    /// Retains `PIDTYPE_PID` ownership until the exit path reaches its explicit
+    /// completion point, matching Linux's detach in `release_task()`.
+    pub(crate) fn retain_tid(mut self, tid_lease: PidRoleLease<Tid>) -> Self {
+        let identity = self
+            .identity
+            .as_ref()
+            .expect("completed exit path cannot retain a TID role");
+        assert!(tid_lease.belongs_to(identity));
+        assert!(self.tid_lease.is_none());
+        self.tid_lease = Some(tid_lease);
+        self
+    }
+
     /// Completes the exit path at a defined point: the end of `do_exit`,
     /// after zombie publication, parent notification, and relation close.
     pub fn complete(mut self) {
         if let Some(identity) = self.take_identity() {
+            // Linux detaches PIDTYPE_PID in release_task() before free_pid()
+            // releases the namespace slot. Releasing the role while the exit
+            // path is pending preserves the same order here.
+            drop(self.tid_lease.take());
             identity.complete_exit_path();
         }
     }
@@ -1258,6 +1396,13 @@ pub struct PidRoleLease<R: PidRole> {
 }
 
 impl<R: PidRole> PidRoleLease<R> {
+    fn belongs_to(&self, identity: &Arc<PidIdentity>) -> bool {
+        self.identity
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|owner| Arc::ptr_eq(&owner, identity))
+    }
+
     pub fn release(mut self) {
         self.identity
             .take()
@@ -1605,8 +1750,10 @@ pub(crate) fn exit_path_completion_precedes_task_transfer_for_test() -> bool {
     let tid = identity.acquire_role::<Tid>().unwrap();
 
     let exit_path = identity.mark_task_exited();
-    let transfer_rejected_while_pending = !identity
-        .try_transfer_task_with(|| panic!("pending exit path unexpectedly reached task transfer"));
+    let transfer_rejected_while_pending = !identity.try_transfer_task_with(
+        || panic!("pending exit path unexpectedly reached task transfer"),
+        None,
+    );
     exit_path.complete();
     let transfer_allowed_after_completion =
         PidIdentity::task_transfer_ready(&identity.state.lock());
@@ -1630,6 +1777,21 @@ pub(crate) fn new_test_process_identity(
         .unwrap();
     let tgid = identity.acquire_role::<Tgid>().unwrap();
     (identity, tgid)
+}
+
+#[cfg(axtest)]
+pub(crate) fn new_test_thread_identity(
+    namespace: &PidNamespaceRef,
+    process_identity: &Arc<PidIdentity>,
+    exit: Arc<AtomicBool>,
+) -> (Arc<PidIdentity>, PidRoleLease<Tid>) {
+    let identity = PidReservation::reserve(namespace, PidReservationKind::Thread)
+        .unwrap()
+        .publish()
+        .unwrap();
+    let tid = identity.acquire_role::<Tid>().unwrap();
+    identity.bind_thread_pidfd(process_identity, exit);
+    (identity, tid)
 }
 
 #[cfg(test)]

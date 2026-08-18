@@ -269,10 +269,11 @@ impl Thread {
             .expect("new thread identity has no root PID binding")
             .get();
         let process_signal = proc_data.signal.clone();
-        Box::new(Self {
+        let process_identity = proc_data.identity();
+        let thread = Box::new(Self {
             identity: ThreadIdentity::new(),
             pid: IrqMutex::new(ThreadPidOwnership {
-                identity,
+                identity: identity.clone(),
                 tid_lease: Some(tid_lease),
             }),
             proc_data,
@@ -283,7 +284,9 @@ impl Thread {
             signals: ThreadSignals::new(tid, process_signal, signal_mask),
             security: ThreadSecurity::new(parent_cred),
             trace: ThreadTrace::new(),
-        })
+        });
+        identity.bind_thread_pidfd(&process_identity, thread.exit_flag());
+        thread
     }
 
     pub(super) const fn wait_state(&self) -> &ThreadWaitState {
@@ -378,8 +381,7 @@ impl Thread {
     /// until the caller completes it at the end of `do_exit`.
     pub(crate) fn retire_pid(&self) -> ExitPathLease {
         let (tid_lease, exit_path) = self.retire_pid_retaining_tid();
-        drop(tid_lease);
-        exit_path
+        exit_path.retain_tid(tid_lease)
     }
 
     /// Atomically transfers a fully retired leader identity to this runtime
@@ -418,7 +420,7 @@ impl Thread {
             previous.identity
         };
         previous_identity.mark_task_exited().complete();
-        identity.transfer_task(task);
+        identity.transfer_task(task, &self.proc_data.identity(), self.exit_flag());
     }
 
     /// Returns this Linux task's retained nice value.

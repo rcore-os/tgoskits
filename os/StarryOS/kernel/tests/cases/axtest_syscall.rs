@@ -27,6 +27,11 @@ fn pid_identity_state_machine_rules_hold() {
 }
 
 #[axtest]
+fn pidfd_thread_exit_window_matches_linux() {
+    ax_assert!(axtest_exports::pidfd_thread_exit_window_matches_linux());
+}
+
+#[axtest]
 fn itimer_type_signo_and_time_conversion_rules_hold() {
     ax_assert!(axtest_exports::itimer_type_signo_and_time_conversion_rules_hold());
 }
