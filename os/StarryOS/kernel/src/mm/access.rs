@@ -602,7 +602,7 @@ where
                 // while all other CPUs are parked, then rely on the per-CPU
                 // sync callback to flush instruction state.
                 action(addr.as_mut_ptr());
-                return Ok(());
+                Ok(())
             }
 
             #[cfg(not(target_arch = "loongarch64"))]
