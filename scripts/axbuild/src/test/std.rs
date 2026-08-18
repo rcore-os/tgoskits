@@ -7,12 +7,20 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use cargo_metadata::Metadata;
+use cargo_metadata::{Metadata, Package};
+use clap::Args;
 
-use crate::support::process::run_cargo_status;
+use crate::support::{git::IncrementalPackageSelection, process::run_cargo_status};
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 const TASK_INITIALIZATION_FILTER: &str = "task_initialization_precedes_scheduling";
+
+#[derive(Args, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StdTestArgs {
+    /// Run std tests only for workspace packages affected since the git ref
+    #[arg(long, value_name = "REF")]
+    pub(crate) since: Option<String>,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct PackageFeatureProfile {
@@ -140,20 +148,54 @@ struct CargoRunOutput {
     stdout: String,
 }
 
-pub(crate) fn run_std_test_command() -> anyhow::Result<()> {
+pub(crate) fn run_std_test_command(args: &StdTestArgs) -> anyhow::Result<()> {
     let workspace_manifest = crate::context::workspace_manifest_path()?;
-    let metadata = crate::context::workspace_metadata_root_manifest(&workspace_manifest)
-        .context("failed to load cargo metadata")?;
+    let metadata = if args.since.is_some() {
+        crate::context::workspace_metadata_root_manifest_with_deps(&workspace_manifest)
+    } else {
+        crate::context::workspace_metadata_root_manifest(&workspace_manifest)
+    }
+    .context("failed to load cargo metadata")?;
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
     let known_packages = workspace_package_names(&metadata);
     let csv_path = workspace_root.join(STD_CRATES_CSV);
-    let packages = load_std_crates(&csv_path, &known_packages)?;
+    let all_packages = load_std_crates(&csv_path, &known_packages)?;
+    let packages = match args.since.as_deref() {
+        None => all_packages,
+        Some(since) => {
+            let workspace_packages = workspace_packages(&metadata);
+            let selection = crate::support::git::select_incremental_packages(
+                &workspace_root,
+                &metadata,
+                &workspace_packages,
+                since,
+            )
+            .unwrap_or_else(|error| IncrementalPackageSelection::Full {
+                reason: format!("incremental std test selection failed: {error:#}"),
+            });
+            match &selection {
+                IncrementalPackageSelection::Packages { changed, affected } => println!(
+                    "incremental std tests since {since}: changed [{}], affected [{}]",
+                    changed.join(", "),
+                    affected.join(", ")
+                ),
+                IncrementalPackageSelection::Full { reason } => println!(
+                    "incremental std test selection fell back to the full whitelist: {reason}"
+                ),
+            }
+            select_std_packages(all_packages, &selection)
+        }
+    };
 
     println!(
         "running std tests for {} package(s) from {}",
         packages.len(),
         csv_path.display()
     );
+    if packages.is_empty() {
+        println!("no affected std test packages selected");
+        return Ok(());
+    }
 
     let mut runner = ProcessCargoRunner;
     let failed = run_std_tests(&mut runner, &workspace_root, &packages)?;
@@ -169,6 +211,27 @@ pub(crate) fn run_std_test_command() -> anyhow::Result<()> {
         failed.join(", ")
     );
     bail!("std test run failed")
+}
+
+fn workspace_packages(metadata: &Metadata) -> Vec<Package> {
+    metadata
+        .packages
+        .iter()
+        .filter(|package| metadata.workspace_members.contains(&package.id))
+        .cloned()
+        .collect()
+}
+
+fn select_std_packages(
+    mut packages: Vec<String>,
+    selection: &IncrementalPackageSelection,
+) -> Vec<String> {
+    let IncrementalPackageSelection::Packages { affected, .. } = selection else {
+        return packages;
+    };
+    let affected = affected.iter().map(String::as_str).collect::<HashSet<_>>();
+    packages.retain(|package| affected.contains(package.as_str()));
+    packages
 }
 
 fn workspace_package_names(metadata: &Metadata) -> HashSet<String> {
@@ -514,6 +577,44 @@ mod tests {
             parse_std_crates_csv("package\nax-api\nax-hal\n", &known_packages()).unwrap();
 
         assert_eq!(packages, vec!["ax-api".to_string(), "ax-hal".to_string()]);
+    }
+
+    #[test]
+    fn incremental_selection_keeps_affected_whitelist_order() {
+        let packages = ["ax-api", "ax-hal", "ax-task"].map(str::to_string).to_vec();
+        let selection = IncrementalPackageSelection::Packages {
+            changed: vec!["ax-task".to_string()],
+            affected: vec!["ax-task".to_string(), "ax-api".to_string()],
+        };
+
+        let selected = select_std_packages(packages, &selection);
+
+        assert_eq!(selected, vec!["ax-api".to_string(), "ax-task".to_string()]);
+    }
+
+    #[test]
+    fn incremental_selection_accepts_no_affected_std_packages() {
+        let packages = vec!["ax-api".to_string(), "ax-hal".to_string()];
+        let selection = IncrementalPackageSelection::Packages {
+            changed: vec!["standalone".to_string()],
+            affected: vec!["standalone".to_string()],
+        };
+
+        let selected = select_std_packages(packages, &selection);
+
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn incremental_full_fallback_keeps_every_std_package() {
+        let packages = vec!["ax-api".to_string(), "ax-hal".to_string()];
+        let selection = IncrementalPackageSelection::Full {
+            reason: "fixture".to_string(),
+        };
+
+        let selected = select_std_packages(packages.clone(), &selection);
+
+        assert_eq!(selected, packages);
     }
 
     #[test]

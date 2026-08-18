@@ -37,12 +37,22 @@ flowchart TB
 |------|------|
 | `push` 到 `main` / `dev` | 排除纯文档变更（`*.md`、`docs/**` 等），其余路径直接触发完整 CI |
 | `push` 到其他分支 | 先进入 `ci-branch-push.yml`。若该分支已有 open PR，则 router 成功结束；否则由 router 触发完整 CI |
-| `pull_request` | 同上 |
+| `pull_request` | 纯 Markdown 不触发主 CI；其余变更由 planner 按 crate、OS 和 arch 生成增量矩阵 |
 | `workflow_dispatch` | 默认用于发布容器镜像（`base` / `axvisor-lvz` / `both`）；router 也会用 `run_target=ci` 调度非 PR 分支的完整 CI |
 
 `dev` 分支的 `push` 和手动触发使用 `concurrency.queue: max` 串行排队运行，避免多个 dev CI 同时占用 runner。其他分支、`main` 分支、PR 以及非 `dev` 手动触发不会进入 dev 队列；新 run 会在最早的 `cancel_stale_runs` 阶段取消同一分支或同一 PR 上仍在 queued/running 的旧 CI run。
 
 非 `main` / `dev` 分支的 `push` 由轻量 router 先检查是否已有同仓库、同名分支的 open PR。已有 PR 时不会调度 `.github/workflows/ci.yml`，router 会输出跳过原因并以成功状态结束，PR 的 `pull_request` CI 负责验证同一提交。没有 open PR 时，router 使用 `workflow_dispatch(run_target=ci)` 调度完整 CI，并把 push 事件的 `before` SHA 传给差异检查。
+
+### PR 增量矩阵
+
+只有 `pull_request` 使用增量矩阵。planner 以 PR base SHA 做三点 diff，忽略 `.md` 和 `apps/**`，并将其余路径映射到最深层 workspace package。随后分别为 aarch64、x86_64、riscv64 和 loongarch64 运行带 `--all-features --filter-platform` 的 Cargo metadata，通过反向依赖确定 ArceOS、StarryOS 和 AxVisor 的受影响架构。workspace axtest package 还会按其声明的 target 选择承载该测试的 ArceOS job。
+
+非 crate 的已知 OS 配置和 test-suit 文件按目录及配置名映射；只能确定 OS 时运行该 OS 的全部架构。package 删除、未知源码路径、Cargo/toolchain、CI planner/workflow/check manifest、`.cargo/**` 或任意 xtask 实现变更，以及 diff/metadata 失败，都会回退到当前完整矩阵。回退不会静默缩小覆盖。
+
+每个被选中的 OS/arch 仍执行该矩阵项原有的全部 QEMU、KVM 和板卡命令。`apps/**` 本身不选择 OS/arch 或 app 运行测试；混合 PR 中的其他改动仍按正常规则选择。static checks 始终保留，workspace Clippy 继续使用 `--since`，std whitelist 在增量 PR 中使用 `cargo xtask test --since <base>`。`push` 和 `workflow_dispatch` 不使用该影响分析，保持完整矩阵。
+
+planner 将 changed paths、忽略的 Markdown/apps、changed/affected packages、选中的 OS/arch、选中/跳过的 checks 和全量回退原因写入 Actions job summary。
 
 ## 执行流水线
 
@@ -106,7 +116,7 @@ push 到 `main` / `dev` 时强制运行 CI 检查。非 `main` / `dev` 分支没
 | Job 名称 | Runner | 使用容器 | Cache Key | 功能说明 |
 |----------|--------|----------|-----------|----------|
 | Run clippy | `self-hosted linux qcs` | 否 | 无 | `cargo xtask clippy --since <base>`；需要完整 git 历史；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
-| Test with std | `self-hosted linux qcs` | 否 | 无 | `cargo xtask test`，运行 `scripts/test/std_crates.csv` 中的 host 测试；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
+| Test with std | `self-hosted linux qcs` | 否 | 无 | 非 PR 或全量回退运行 `cargo xtask test`；增量 PR 运行 `cargo xtask test --since <base>`，只保留 affected package 与 `scripts/test/std_crates.csv` 的交集；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
 | Test axvisor aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch aarch64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
 | Test axvisor riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch riscv64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
 | Test axvisor loongarch64 qemu | `ubuntu-latest` | 是（`axvisor-lvz`） | `test-axvisor-loongarch64` | `cargo xtask axvisor test qemu --arch loongarch64`，使用带 LVZ 支持的镜像 |

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("ci_plan.py")
+sys.path.insert(0, str(MODULE_PATH.parent))
 SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ci_plan = importlib.util.module_from_spec(SPEC)
@@ -30,6 +32,131 @@ class CiPlanTests(unittest.TestCase):
         self.assertTrue(
             all(" / " in row["name"] for row in plan["test_matrix"]["include"])
         )
+
+    def test_pull_request_impact_selects_only_matching_os_and_arch(self) -> None:
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            base_ref="dev",
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=("os/arceos/modules/axhal/src/lib.rs",),
+                changed_packages=("ax-hal",),
+                affected_packages=("ax-hal",),
+                targets=("arceos:aarch64",),
+            ),
+        )
+
+        plan = ci_plan.build_main_plan(context)
+        ids = {row["id"] for row in plan["test_matrix"]["include"]}
+
+        self.assertEqual(
+            ids,
+            {
+                "run-clippy",
+                "test-with-std",
+                "test-arceos-aarch64-qemu-app-suites",
+            },
+        )
+
+    def test_pull_request_impact_package_selects_standalone_check(self) -> None:
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=("bootloader/axloader/src/main.rs",),
+                changed_packages=("axloader",),
+                affected_packages=("axloader",),
+            ),
+        )
+
+        plan = ci_plan.build_main_plan(context)
+        ids = {row["id"] for row in plan["test_matrix"]["include"]}
+
+        self.assertIn("test-axloader-http-smoke", ids)
+        self.assertFalse(any(check_id.startswith("test-arceos-") for check_id in ids))
+        self.assertFalse(any(check_id.startswith("test-starry-") for check_id in ids))
+
+    def test_incremental_pr_uses_std_since_but_full_pr_does_not(self) -> None:
+        incremental = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="fixture",
+                changed_paths=("components/shared/src/lib.rs",),
+            ),
+        )
+        full = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            impact=ci_plan.CiImpact.full_selection("fixture"),
+        )
+
+        incremental_rows = {
+            row["id"]: row for row in ci_plan.build_main_plan(incremental)["test_matrix"]["include"]
+        }
+        full_rows = {
+            row["id"]: row for row in ci_plan.build_main_plan(full)["test_matrix"]["include"]
+        }
+
+        self.assertIn('--since "$SINCE_REF"', incremental_rows["test-with-std"]["command"])
+        self.assertNotIn("--since", full_rows["test-with-std"]["command"])
+        self.assertEqual(len(full_rows), 32)
+
+    def test_app_only_impact_does_not_select_runtime_checks(self) -> None:
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            base_ref="dev",
+            impact=ci_plan.CiImpact(
+                full=False,
+                reason="only ignored app paths changed",
+                changed_paths=("apps/starry/demo/main.c",),
+                ignored_apps=("apps/starry/demo/main.c",),
+            ),
+        )
+
+        plan = ci_plan.build_main_plan(context)
+        test_ids = {row["id"] for row in plan["test_matrix"]["include"]}
+
+        self.assertEqual(test_ids, {"run-clippy", "test-with-std"})
+
+    def test_non_pr_events_ignore_impact_and_preserve_full_matrix(self) -> None:
+        impact = ci_plan.CiImpact(
+            full=False,
+            reason="must be ignored outside pull requests",
+            changed_paths=("virtualization/arm_vcpu/src/lib.rs",),
+            targets=("axvisor:aarch64",),
+        )
+        for event_name in ("push", "workflow_dispatch"):
+            with self.subTest(event=event_name):
+                baseline = ci_plan.build_main_plan(
+                    ci_plan.PlanContext(
+                        repository="rcore-os/tgoskits",
+                        repository_owner="rcore-os",
+                        event_name=event_name,
+                    )
+                )
+                with_impact = ci_plan.build_main_plan(
+                    ci_plan.PlanContext(
+                        repository="rcore-os/tgoskits",
+                        repository_owner="rcore-os",
+                        event_name=event_name,
+                        impact=impact,
+                    )
+                )
+
+                self.assertEqual(with_impact, baseline)
+                self.assertEqual(len(with_impact["test_matrix"]["include"]), 32)
 
     def test_display_names_expose_target_and_purpose(self) -> None:
         plan = ci_plan.build_main_plan(self.upstream)
@@ -267,6 +394,14 @@ class CiPlanTests(unittest.TestCase):
             ({**valid, "environment": "unknown"}, "unsupported environment"),
             ({**valid, "command": ""}, "non-empty string"),
             ({**valid, "id": "INVALID_ID"}, "lowercase kebab-case"),
+            (
+                {**valid, "impact_targets": ["unknown:aarch64"]},
+                "unsupported impact_targets",
+            ),
+            (
+                {**valid, "impact_packages": ["misspelled-package"]},
+                "unsupported impact_packages",
+            ),
         )
 
         for check, error in invalid_cases:

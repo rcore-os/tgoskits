@@ -37,6 +37,7 @@ CI_CHECK_PATHS = {
     "tools/**",
     "virtualization/**",
     "xtask/**",
+    "!**/*.md",
 }
 
 
@@ -92,6 +93,9 @@ def main() -> int:
         list_items(ci_pull_request, "paths", 4),
         CI_CHECK_PATHS,
     )
+    pull_request_paths = list_items_in_order(ci_pull_request, "paths", 4)
+    if not pull_request_paths or pull_request_paths[-1] != "!**/*.md":
+        errors.append("the Markdown exclusion must be the final pull_request path rule")
     if scalar_value(since_sha, "type", 8) != "string":
         errors.append("since_sha must be a workflow_dispatch string input")
     for removed_input in ("run_target", "container_target"):
@@ -124,6 +128,18 @@ def main() -> int:
     )
     require_contains(
         errors,
+        ci_workflow,
+        '--since-ref "$SINCE_REF"',
+        "the planner must receive the resolved PR base revision",
+    )
+    require_contains(
+        errors,
+        ci_workflow,
+        '--summary-file "$GITHUB_STEP_SUMMARY"',
+        "the planner must publish its PR impact summary",
+    )
+    require_contains(
+        errors,
         static_checks,
         'cargo xtask sync-lint --since "$SINCE_REF"',
         "sync-lint must consume SINCE_REF from the reusable runner",
@@ -133,6 +149,12 @@ def main() -> int:
         workspace_checks,
         'cargo xtask clippy --since "$SINCE_REF"',
         "clippy must consume SINCE_REF from the reusable runner",
+    )
+    require_contains(
+        errors,
+        workspace_checks,
+        'cargo xtask test --since "$SINCE_REF"',
+        "incremental std tests must consume SINCE_REF from the reusable runner",
     )
     for event_branch in (
         'if [ "$EVENT_NAME" = "pull_request" ]; then',
@@ -237,12 +259,16 @@ def mapping_block(text: str, key: str, indent: int) -> str:
 
 
 def list_items(text: str, key: str, indent: int) -> set[str]:
+    return set(list_items_in_order(text, key, indent))
+
+
+def list_items_in_order(text: str, key: str, indent: int) -> list[str]:
     block = mapping_block(text, key, indent)
-    return {
+    return [
         line.strip()[2:].strip().strip('"')
         for line in block.splitlines()
         if line.strip().startswith("- ")
-    }
+    ]
 
 
 def scalar_value(text: str, key: str, indent: int) -> str:
