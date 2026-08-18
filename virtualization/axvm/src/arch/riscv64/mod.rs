@@ -259,7 +259,8 @@ fn vplic_runtime(vm: &crate::AxVM) -> AxVmResult<Arc<irq::RiscvPlicRuntime>> {
 
 fn sync_vplic_vseip(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>) -> AxVmResult {
     let asserted = vplic_runtime(vm)?.vcpu_has_deliverable_irq(vcpu.id())?;
-    vcpu.get_arch_vcpu().sync_bound_vseip(asserted)
+    vcpu.get_arch_vcpu().set_vseip_level(asserted);
+    Ok(())
 }
 
 fn handle_riscv_nested_page_fault(
@@ -354,9 +355,8 @@ impl AxvmRiscvVcpu {
         self.0.decode_mmio_fault(addr, access_flags)
     }
 
-    fn sync_bound_vseip(&mut self, asserted: bool) -> AxVmResult {
-        riscv_result(self.0.sync_bound_vseip(asserted))
-            .map_err(|error| crate::AxVmError::vcpu("synchronize RISC-V VSEIP", error))
+    fn set_vseip_level(&mut self, asserted: bool) {
+        self.0.set_vseip_level(asserted);
     }
 
     fn complete_ipi(&mut self, request: RiscvIpiRequest, completion: RiscvIpiCompletion) {
