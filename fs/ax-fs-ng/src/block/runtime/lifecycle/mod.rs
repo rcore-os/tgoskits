@@ -48,6 +48,9 @@ use crate::{
 
 const CONTROLLER_CHANNEL_DEPTH: usize = 64;
 const CONTROLLER_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
+/// Slack before a controller-thread park that outlives its own wake deadline
+/// is reported as a lost-wakeup diagnostic.
+const STALL_WARN_MARGIN: Duration = Duration::from_millis(500);
 const MAX_RUNTIME_HCTX: usize = u64::BITS as usize;
 
 const DEVICE_STARTING: u8 = 0;
