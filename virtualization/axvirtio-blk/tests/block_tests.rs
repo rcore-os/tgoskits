@@ -11,8 +11,9 @@ use std::{
 use ax_memory_addr::PhysAddr;
 use axaddrspace::{AddrSpaceError, AddrSpaceResult, GuestMemoryAccessor};
 use axdevice_base::{
-    BusAccess, BusKind, BusResponse, ControllerInputId, Device, DeviceId, InterruptControllerId,
-    InterruptTriggerMode, IrqResult, NoopDeviceAccess, Resource, WiredIrqInput, WiredIrqSink,
+    BusKind, ControllerInputId, Device, DeviceAccess, DeviceId, DeviceVcpuId,
+    InterruptControllerId, InterruptTriggerMode, IrqResult, NoopDeviceContext, Resource,
+    WiredIrqInput, WiredIrqSink,
 };
 use axvirtio_blk::{
     BlockBackend, ManagedVirtioBlockDevice, VirtioBlockConfig, VirtioMmioBlockDevice, VirtioResult,
@@ -910,18 +911,17 @@ fn managed_device_declares_resources_and_routes_mmio() {
             },
         ]
     );
-    let mut context = NoopDeviceAccess::new(DeviceId::new(0));
-    let response = device
-        .access(
-            &BusAccess {
-                kind: BusKind::Mmio,
-                is_read: true,
-                addr: 0x0a00_0000,
-                width: AccessWidth::Dword,
-                data: 0,
-            },
+    let mut context = NoopDeviceContext::new(DeviceId::new(0));
+    let value = device
+        .read(
+            &DeviceAccess::new(
+                DeviceVcpuId::new(0),
+                BusKind::Mmio,
+                0x0a00_0000,
+                AccessWidth::Dword,
+            ),
             &mut context,
         )
         .unwrap();
-    assert!(matches!(response, BusResponse::Read { value } if value == 0x7472_6976));
+    assert_eq!(value, 0x7472_6976);
 }

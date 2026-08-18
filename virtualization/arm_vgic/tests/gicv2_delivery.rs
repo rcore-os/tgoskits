@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 
 use arm_vgic::{
     ArmVgicConfig, CpuInterfaceState, GicAffinity, GicV3BackendError, GicV3VcpuWake, GicVcpuId,
@@ -6,8 +6,8 @@ use arm_vgic::{
     VgicDeviceSet, VgicMmioRegion, VgicResult, VgicV2Config,
 };
 use axdevice_base::{
-    BusAccess, BusKind, BusResponse, DeviceError, DeviceId, DeviceVcpuId, InterruptControllerId,
-    InterruptTrigger, NoopDeviceAccess,
+    BusKind, DeviceAccess, DeviceId, DeviceVcpuId, InterruptControllerId, InterruptTrigger,
+    NoopDeviceContext,
 };
 use axvm_types::AccessWidth;
 
@@ -122,43 +122,33 @@ fn v2_mmio_cpu_interface_uses_explicit_accessor_without_current_vcpu() {
     let cpu_interface = &devices.devices()[1];
 
     let write_pmr = |vcpu_id, value| {
-        let mut context =
-            NoopDeviceAccess::new(DeviceId::new(0)).with_vcpu(DeviceVcpuId::new(vcpu_id));
-        assert!(matches!(
-            cpu_interface
-                .access(
-                    &BusAccess {
-                        kind: BusKind::Mmio,
-                        is_read: false,
-                        addr: 0x0801_0000 + GICC_PMR,
-                        width: AccessWidth::Dword,
-                        data: value,
-                    },
-                    &mut context,
-                )
-                .unwrap(),
-            BusResponse::Write
-        ));
+        let mut context = NoopDeviceContext::new(DeviceId::new(0));
+        cpu_interface
+            .write(
+                &DeviceAccess::new(
+                    DeviceVcpuId::new(vcpu_id),
+                    BusKind::Mmio,
+                    0x0801_0000 + GICC_PMR,
+                    AccessWidth::Dword,
+                ),
+                value,
+                &mut context,
+            )
+            .unwrap();
     };
     let read_pmr = |vcpu_id| {
-        let mut context =
-            NoopDeviceAccess::new(DeviceId::new(0)).with_vcpu(DeviceVcpuId::new(vcpu_id));
-        match cpu_interface
-            .access(
-                &BusAccess {
-                    kind: BusKind::Mmio,
-                    is_read: true,
-                    addr: 0x0801_0000 + GICC_PMR,
-                    width: AccessWidth::Dword,
-                    data: 0,
-                },
+        let mut context = NoopDeviceContext::new(DeviceId::new(0));
+        cpu_interface
+            .read(
+                &DeviceAccess::new(
+                    DeviceVcpuId::new(vcpu_id),
+                    BusKind::Mmio,
+                    0x0801_0000 + GICC_PMR,
+                    AccessWidth::Dword,
+                ),
                 &mut context,
             )
             .unwrap()
-        {
-            BusResponse::Read { value } => value,
-            BusResponse::Write => panic!("VGIC PMR read returned a write acknowledgement"),
-        }
     };
 
     write_pmr(0, 0x11);
@@ -168,31 +158,53 @@ fn v2_mmio_cpu_interface_uses_explicit_accessor_without_current_vcpu() {
 }
 
 #[test]
-fn v2_mmio_rejects_per_vcpu_access_without_an_explicit_accessor() {
+fn v2_mmio_cpu_interface_keeps_banked_state_isolated_across_host_threads() {
     let (core, _) = core();
+    let _vcpu0 = core.attach_vcpu(0, Arc::new(Wake)).unwrap();
+    let _vcpu1 = core.attach_vcpu(1, Arc::new(Wake)).unwrap();
     let devices = VgicDeviceSet::new(Arc::new(core)).unwrap();
-    let mut context = NoopDeviceAccess::new(DeviceId::new(0));
+    let cpu_interface = devices.devices()[1].clone();
+    let barrier = Arc::new(Barrier::new(2));
 
-    for (device, addr) in [
-        (&devices.devices()[0], 0x0800_0000 + GICD_CTLR),
-        (&devices.devices()[1], 0x0801_0000 + GICC_PMR),
-    ] {
-        assert!(matches!(
-            device.access(
-                &BusAccess {
-                    kind: BusKind::Mmio,
-                    is_read: true,
-                    addr,
-                    width: AccessWidth::Dword,
-                    data: 0,
-                },
-                &mut context,
-            ),
-            Err(DeviceError::InvalidState {
-                operation: "access per-vCPU VGIC register",
-                ..
-            })
-        ));
+    let workers = [(0, 0x11), (1, 0x22)].map(|(vcpu_id, value)| {
+        let cpu_interface = cpu_interface.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            for _ in 0..256 {
+                let mut context = NoopDeviceContext::new(DeviceId::new(0));
+                cpu_interface
+                    .write(
+                        &DeviceAccess::new(
+                            DeviceVcpuId::new(vcpu_id),
+                            BusKind::Mmio,
+                            0x0801_0000 + GICC_PMR,
+                            AccessWidth::Dword,
+                        ),
+                        value,
+                        &mut context,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    cpu_interface
+                        .read(
+                            &DeviceAccess::new(
+                                DeviceVcpuId::new(vcpu_id),
+                                BusKind::Mmio,
+                                0x0801_0000 + GICC_PMR,
+                                AccessWidth::Dword,
+                            ),
+                            &mut context,
+                        )
+                        .unwrap(),
+                    value
+                );
+            }
+        })
+    });
+
+    for worker in workers {
+        worker.join().unwrap();
     }
 }
 
@@ -205,45 +217,33 @@ fn v2_mmio_distributor_uses_explicit_accessor_for_banked_state() {
     let distributor = &devices.devices()[0];
 
     let write_enabled = |vcpu_id, bit| {
-        let mut context =
-            NoopDeviceAccess::new(DeviceId::new(0)).with_vcpu(DeviceVcpuId::new(vcpu_id));
-        assert!(matches!(
-            distributor
-                .access(
-                    &BusAccess {
-                        kind: BusKind::Mmio,
-                        is_read: false,
-                        addr: 0x0800_0000 + GICD_ISENABLER,
-                        width: AccessWidth::Dword,
-                        data: 1u64 << bit,
-                    },
-                    &mut context,
-                )
-                .unwrap(),
-            BusResponse::Write
-        ));
+        let mut context = NoopDeviceContext::new(DeviceId::new(0));
+        distributor
+            .write(
+                &DeviceAccess::new(
+                    DeviceVcpuId::new(vcpu_id),
+                    BusKind::Mmio,
+                    0x0800_0000 + GICD_ISENABLER,
+                    AccessWidth::Dword,
+                ),
+                1u64 << bit,
+                &mut context,
+            )
+            .unwrap();
     };
     let read_enabled = |vcpu_id| {
-        let mut context =
-            NoopDeviceAccess::new(DeviceId::new(0)).with_vcpu(DeviceVcpuId::new(vcpu_id));
-        match distributor
-            .access(
-                &BusAccess {
-                    kind: BusKind::Mmio,
-                    is_read: true,
-                    addr: 0x0800_0000 + GICD_ISENABLER,
-                    width: AccessWidth::Dword,
-                    data: 0,
-                },
+        let mut context = NoopDeviceContext::new(DeviceId::new(0));
+        distributor
+            .read(
+                &DeviceAccess::new(
+                    DeviceVcpuId::new(vcpu_id),
+                    BusKind::Mmio,
+                    0x0800_0000 + GICD_ISENABLER,
+                    AccessWidth::Dword,
+                ),
                 &mut context,
             )
             .unwrap()
-        {
-            BusResponse::Read { value } => value,
-            BusResponse::Write => {
-                panic!("VGIC distributor enable read returned a write acknowledgement")
-            }
-        }
     };
 
     write_enabled(0, 27);
@@ -255,26 +255,34 @@ fn v2_mmio_distributor_uses_explicit_accessor_for_banked_state() {
 #[test]
 fn v2_distributor_clear_enable_and_cpu_target_share_canonical_state() {
     let (core, backend) = core();
+    let core = Arc::new(core);
     let vcpu0 = core.attach_vcpu(0, Arc::new(Wake)).unwrap();
     let vcpu1 = core.attach_vcpu(1, Arc::new(Wake)).unwrap();
+    let devices = VgicDeviceSet::new(core.clone()).unwrap();
+    let distributor = &devices.devices()[0];
     let spi = 40u32;
+    let write_distributor = |address, width, value| {
+        let mut context = NoopDeviceContext::new(DeviceId::new(0));
+        distributor
+            .write(
+                &DeviceAccess::new(DeviceVcpuId::new(0), BusKind::Mmio, address, width),
+                value,
+                &mut context,
+            )
+            .unwrap();
+    };
 
-    core.write_v2_distributor(GicVcpuId::new(0), GICD_CTLR, AccessWidth::Dword, 1)
-        .unwrap();
-    core.write_v2_distributor(
-        GicVcpuId::new(0),
-        GICD_ITARGETSR + u64::from(spi),
+    write_distributor(0x0800_0000 + GICD_CTLR, AccessWidth::Dword, 1);
+    write_distributor(
+        0x0800_0000 + GICD_ITARGETSR + u64::from(spi),
         AccessWidth::Byte,
         0b10,
-    )
-    .unwrap();
-    core.write_v2_distributor(
-        GicVcpuId::new(0),
-        GICD_ISENABLER + 4,
+    );
+    write_distributor(
+        0x0800_0000 + GICD_ISENABLER + 4,
         AccessWidth::Dword,
         1 << (spi - 32),
-    )
-    .unwrap();
+    );
     core.controller()
         .configure_spi_input(
             arm_vgic::SpiId::new(spi).unwrap(),
@@ -292,13 +300,11 @@ fn v2_distributor_clear_enable_and_cpu_target_share_canonical_state() {
 
     vcpu0.save().unwrap();
     vcpu1.save().unwrap();
-    core.write_v2_distributor(
-        GicVcpuId::new(0),
-        GICD_ICENABLER + 4,
+    write_distributor(
+        0x0800_0000 + GICD_ICENABLER + 4,
         AccessWidth::Dword,
         1 << (spi - 32),
-    )
-    .unwrap();
+    );
     assert_eq!(
         core.read_v2_distributor(GicVcpuId::new(0), GICD_ISENABLER + 4, AccessWidth::Dword,)
             .unwrap()

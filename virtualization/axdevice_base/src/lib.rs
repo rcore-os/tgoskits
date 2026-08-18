@@ -23,7 +23,8 @@
 //! The crate contains the following key components:
 //!
 //! - [`Device`]: The unified V3 device trait used by the runtime hot path.
-//! - [`DeviceAccess`]: The access-scoped capability context passed to devices.
+//! - [`DeviceAccess`]: Immutable metadata for one guest device access.
+//! - [`DeviceContext`]: Access-scoped runtime capabilities passed to devices.
 //! - [`Resource`]: Static device resource declarations used for registration
 //!   validation and bus dispatch.
 //! - [`VirtualInterruptController`], [`WiredIrqInput`], and [`IrqLine`]:
@@ -32,12 +33,12 @@
 //! # Usage
 //!
 //! New emulated devices should implement [`Device`] directly and receive all
-//! sensitive runtime abilities through [`DeviceAccess`].
+//! sensitive runtime abilities through [`DeviceContext`].
 //!
 //! ```rust,ignore
 //! use axdevice_base::{
-//!     AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess,
-//!     DeviceError, Resource,
+//!     AccessWidth, BusKind, Device, DeviceAccess, DeviceContext, DeviceError,
+//!     DeviceVcpuId, Resource,
 //! };
 //!
 //! struct MyDevice {
@@ -55,15 +56,30 @@
 //!         &self.resources
 //!     }
 //!
-//!     fn access(
+//!     fn read(
 //!         &self,
-//!         access: &BusAccess,
-//!         context: &mut dyn DeviceAccess,
-//!     ) -> Result<BusResponse, DeviceError> {
-//!         match (access.kind, access.is_read) {
-//!             (BusKind::Mmio, true) => Ok(BusResponse::Read { value: 0 }),
-//!             (BusKind::Mmio, false) => Ok(BusResponse::Write),
-//!             _ => Err(DeviceError::OutOfRange { addr: access.addr }),
+//!         access: &DeviceAccess,
+//!         _context: &mut dyn DeviceContext,
+//!     ) -> Result<u64, DeviceError> {
+//!         match access.bus() {
+//!             BusKind::Mmio => Ok(0),
+//!             _ => Err(DeviceError::OutOfRange {
+//!                 addr: access.address(),
+//!             }),
+//!         }
+//!     }
+//!
+//!     fn write(
+//!         &self,
+//!         access: &DeviceAccess,
+//!         _value: u64,
+//!         _context: &mut dyn DeviceContext,
+//!     ) -> Result<(), DeviceError> {
+//!         match access.bus() {
+//!             BusKind::Mmio => Ok(()),
+//!             _ => Err(DeviceError::OutOfRange {
+//!                 addr: access.address(),
+//!             }),
 //!         }
 //!     }
 //! }
@@ -92,8 +108,8 @@ use alloc::{string::String, sync::Arc};
 pub use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, InterruptTriggerMode, IrqLineId};
 
 pub use crate::device::{
-    AccessWidth, BusAccess, BusKind, BusResponse, DeviceAddr, DeviceAddrRange, DeviceError,
-    DeviceResult, Port, PortRange, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BusKind, DeviceAccess, DeviceAddr, DeviceAddrRange, DeviceError, DeviceResult,
+    Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
 
 // ---------------------------------------------------------------------------
@@ -291,8 +307,9 @@ pub enum RegistryError {
 ///
 /// Every emulated device (interrupt controller, UART, virtio-blk, …)
 /// implements this trait.  The device manager calls [`resources`](Device::resources)
-/// at registration time for conflict detection and [`access`](Device::access)
-/// on the hot path whenever a vCPU exit is dispatched to this device.
+/// at registration time for conflict detection and [`read`](Device::read) or
+/// [`write`](Device::write) on the hot path whenever a vCPU exit is dispatched
+/// to this device.
 ///
 /// Concrete collaboration between devices and architecture code should be
 /// exposed through typed services registered with the VM device runtime, not
@@ -310,12 +327,16 @@ pub trait Device: Send + Sync {
     /// path without allocation.
     fn resources(&self) -> &[Resource];
 
-    /// Handles a single bus access with runtime-scoped device context.
-    fn access(
+    /// Handles one guest read with runtime-scoped device capabilities.
+    fn read(&self, access: &DeviceAccess, context: &mut dyn DeviceContext) -> DeviceResult<u64>;
+
+    /// Handles one guest write with runtime-scoped device capabilities.
+    fn write(
         &self,
-        access: &BusAccess,
-        context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError>;
+        access: &DeviceAccess,
+        value: u64,
+        context: &mut dyn DeviceContext,
+    ) -> DeviceResult;
 }
 
 macro_rules! define_grant {
@@ -365,14 +386,27 @@ define_grant!(
     StopGrant
 );
 
-/// Context scoped to one device bus access.
+/// Guest-memory operations made available to a device runtime.
 ///
-/// A [`BusRouter`] creates this context immediately before calling
-/// [`Device::access`] and drops it before returning to the architecture exit
-/// handler. Sensitive abilities such as guest-memory DMA, timer scheduling,
-/// vCPU wake, and VM stop requests are denied by default and become available
-/// only when the current device presents the matching registration-time grant.
-pub trait DeviceAccess {
+/// This boundary deliberately carries no device identity or grant. The
+/// runtime validates those before delegating to this VM-owned memory port.
+pub trait GuestMemoryAccess {
+    /// Reads bytes from guest physical memory.
+    fn read(&mut self, addr: GuestPhysAddr, data: &mut [u8]) -> DeviceResult;
+
+    /// Writes bytes to guest physical memory.
+    fn write(&mut self, addr: GuestPhysAddr, data: &[u8]) -> DeviceResult;
+}
+
+/// Runtime capability context scoped to one device callback.
+///
+/// The device runtime creates this context immediately before calling
+/// [`Device::read`] or [`Device::write`] and drops it before returning to the
+/// architecture exit handler. Sensitive abilities such as guest-memory DMA,
+/// timer scheduling, vCPU wake, and VM stop requests are denied by default and
+/// become available only when the current device presents the matching
+/// registration-time grant.
+pub trait DeviceContext {
     /// Returns the identity of the device currently handling this access.
     fn device_id(&self) -> DeviceId;
 
@@ -438,13 +472,13 @@ pub trait DeviceAccess {
     }
 }
 
-/// A no-permission access context for tests and adapter-only callers.
-pub struct NoopDeviceAccess {
+/// A no-permission device context for tests and adapter-only callers.
+pub struct NoopDeviceContext {
     device_id: DeviceId,
     accessing_vcpu: Option<DeviceVcpuId>,
 }
 
-impl NoopDeviceAccess {
+impl NoopDeviceContext {
     /// Creates a no-permission context for `device_id`.
     pub const fn new(device_id: DeviceId) -> Self {
         Self {
@@ -460,7 +494,7 @@ impl NoopDeviceAccess {
     }
 }
 
-impl DeviceAccess for NoopDeviceAccess {
+impl DeviceContext for NoopDeviceContext {
     fn device_id(&self) -> DeviceId {
         self.device_id
     }
@@ -481,20 +515,6 @@ pub trait DeviceRegistry {
     /// On success the device is assigned a unique [`DeviceId`] and inserted
     /// into the manager's lookup structures.
     fn register(&mut self, device: Arc<dyn Device>) -> Result<DeviceId, RegistryError>;
-}
-
-/// Bus dispatch interface — the runtime hot-path half of a
-/// [`DeviceRuntime`].
-///
-/// Called on every vCPU exit that targets an emulated device (MMIO / Port /
-/// SysReg).
-pub trait BusRouter {
-    /// Looks up the device responsible for `access` and forwards the access
-    /// to it, returning the result.
-    fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError>;
-
-    /// Looks up the device responsible for `access` without handling the access.
-    fn lookup(&self, access: &BusAccess) -> Result<Arc<dyn Device>, DeviceError>;
 }
 
 // ---------------------------------------------------------------------------

@@ -19,7 +19,7 @@ Axvisor 的模拟设备由 Hypervisor 在软件中实现，客户机通过 MMIO�
 
 | 位置 | 主要内容 | 运行阶段 |
 | --- | --- | --- |
-| `virtualization/axdevice_base/src/lib.rs` | `Device`、`DeviceAccess`、`BusAccess`、`Resource`、grant、IRQ 与 MSI 基础接口 | 注册与访问热路径 |
+| `virtualization/axdevice_base/src/lib.rs` | `Device`、`DeviceAccess`、`DeviceContext`、`GuestMemoryAccess`、`Resource`、grant、IRQ 与 MSI 基础接口 | 注册与访问热路径 |
 | `virtualization/axdevice/src/model.rs` | `DeviceModel`、`DeviceFirmwareSpec` | 设备声明与构建 |
 | `virtualization/axdevice/src/graph/*` | `DeviceNodeSpec`、`DeviceGraphBuilder`、`ResolvedDeviceGraph` | VM prepare |
 | `virtualization/axdevice/src/resources/*` | `DeviceRequirements`、`ResourcePools`、`VmResourcePlanner`、claim/lease | 资源规划与构建校验 |
@@ -54,7 +54,7 @@ flowchart TB
             Grants["DMA / timer / wake / stop grants"]
         end
         subgraph BASE["axdevice_base"]
-            Contract["Device / Resource / BusAccess"]
+            Contract["Device / DeviceAccess / DeviceContext / Resource"]
             Interrupt["IrqLine / MSI endpoint"]
         end
         Arch["axvm::arch：GIC、PLIC、IOAPIC、PCH-PIC、fw_cfg 等"]
@@ -105,7 +105,7 @@ model = "ivc-channel"
 
 ### 1.3 总体流程
 
-从 TOML 到一次设备访问，主路径分为 prepare 和 VM-exit 两段。prepare 生成静态设备图和资源计划；VM-exit 热路径只做索引查找、访问上下文创建和 `Device::access()` 调用。
+从 TOML 到一次设备访问，主路径分为 prepare 和 VM-exit 两段。prepare 生成静态设备图和资源计划；VM-exit 热路径只构造包含 source vCPU 的不可变请求、查找索引、创建能力上下文，并调用 `Device::read()` 或 `Device::write()`。
 
 ```mermaid
 flowchart LR
@@ -118,8 +118,8 @@ flowchart LR
     Resolved["ResolvedDeviceGraph"]
     Runtime["sealed DeviceRuntime"]
     Exit["vCPU VM-exit"]
-    Access["BusAccess"]
-    Device["Device::access"]
+    Access["DeviceAccess<br/>source + bus + address + width"]
+    Device["Device::read / Device::write"]
 
     Toml --> Request --> Catalog --> Nodes
     Nodes --> Graph
@@ -377,7 +377,7 @@ grant 使用 bundle-local 设备下标记录归属，直到注册成功后才换
 
 ## 5. 设备与访问模型
 
-运行时只认识统一的 `Device` trait。设备协议状态保存在具体实现内部，框架通过静态 `resources()` 建立分派索引，通过 `access()` 处理一次已经解码的客户机访问。
+运行时只认识统一的 `Device` trait。设备协议状态保存在具体实现内部，框架通过静态 `resources()` 建立分派索引，通过 `read()` 或 `write()` 处理一次已经解码的客户机访问。
 
 ### 5.1 `Device` trait
 
@@ -387,30 +387,37 @@ grant 使用 bundle-local 设备下标记录归属，直到注册成功后才换
 pub trait Device: Send + Sync {
     fn name(&self) -> &str;
     fn resources(&self) -> &[Resource];
-    fn access(
+    fn read(
         &self,
-        access: &BusAccess,
-        context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError>;
+        access: &DeviceAccess,
+        context: &mut dyn DeviceContext,
+    ) -> Result<u64, DeviceError>;
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError>;
 }
 ```
 
 `resources()` 返回的 slice 在设备构造时确定，注册后不再变化。设备内部需要修改的寄存器、FIFO、队列或 pending 状态由实现自己的锁、原子变量或后端状态机保护。
 
-### 5.2 `BusAccess` 与 `BusResponse`
+### 5.2 `DeviceAccess` 请求
 
-架构 VM-exit 被归一化为 `BusAccess`。runtime 不解析 VMCS、ESR、trap frame 或具体指令格式。
+架构 VM-exit 被归一化为不可变的 `DeviceAccess`。runtime 不解析 VMCS、ESR、trap frame 或具体指令格式。构造函数要求四个字段完整给出，字段保持私有，因此 guest MMIO、PIO 和 SysReg 请求不存在“缺少 source vCPU”的可表示状态。
 
 | 字段或类型 | 可取值 | 说明 |
 | --- | --- | --- |
+| `DeviceAccess.source_vcpu()` | `DeviceVcpuId` | 发起本次访问的 VM-local vCPU，不能从 host CPU、任务或 TLS 推导 |
 | `BusKind` | `Mmio`、`Port`、`SysReg` | 三类地址域彼此独立 |
 | `AccessWidth` | `Byte`、`Word`、`Dword`、`Qword` | 1、2、4、8 字节 |
-| `BusAccess.addr` | `u64` | 原始总线地址；Port/SysReg 会再收窄校验 |
-| `BusAccess.data` | `u64` | 写入数据低位 |
-| `BusResponse::Read` | `{ value: u64 }` | 读操作返回值 |
-| `BusResponse::Write` | 无数据 | 写操作完成确认 |
+| `DeviceAccess.address()` | `u64` | 原始总线地址；Port/SysReg 会再收窄校验 |
+| `DeviceAccess.width()` | `AccessWidth` | 本次 transaction 的访问宽度 |
 
-MMIO 读、Port 读和 SysReg 读都会拒绝写响应。MMIO 写和带 memory 的 Port 写会检查设备返回 `BusResponse::Write`；现有普通 `handle_port_write()` 与 `handle_sys_reg_write()` 只传播 `dispatch()` 错误，不再次校验响应 variant。
+读写方向不再是请求中的布尔字段。`read()` 只能返回 `u64`，`write()` 接收独立的 `value: u64` 并只能返回 `()`；不存在运行时响应 variant 混淆，也不存在读写复用数据槽。
+
+`source_vcpu` 只描述 architectural accessor。中断路由中的 target vCPU 由 GIC/PLIC/APIC 的路由状态决定，两者即使数值相同也不能复用为一个概念。例如 vCPU 0 写 GIC distributor 将 SPI 路由给 vCPU 1 时，请求 source 仍是 0，IRQ target 是 1。
 
 ### 5.3 `Resource`
 
@@ -438,7 +445,7 @@ fn lookup_mmio(&self, addr: u64, width: AccessWidth) -> Option<usize> {
 
 如果设备声明 `[0x1000, 0x1004)`，从 `0x1002` 发起 4 字节访问虽然起始地址位于窗口内，但结束地址越过 `0x1004`，runtime 会按未命中处理。地址加访问宽度溢出时同样不会命中。
 
-### 5.5 VM-exit 到 `dispatch()`
+### 5.5 VM-exit 到 `try_read()` / `try_write()`
 
 四个架构的 MMIO fault、x86 I/O instruction 和 AArch64 系统寄存器退出最终都会构造公共访问对象并进入 `DeviceRuntime`。
 
@@ -449,25 +456,26 @@ sequenceDiagram
     participant RT as DeviceRuntime
     participant DEV as Device
 
-    VCPU->>VM: VM-exit(addr, width, read/write, data)
-    VM->>RT: handle_mmio/port/sys_reg_*()
+    VCPU->>VM: VM-exit(vCPU, addr, width, direction, data)
+    VM->>VM: construct mandatory DeviceAccess
+    VM->>RT: try_read(access) / try_write(access, value, memory)
     RT->>RT: lookup complete access range
-    RT->>RT: create RuntimeDeviceAccess
-    RT->>DEV: access(BusAccess, DeviceAccess)
-    DEV-->>RT: BusResponse or DeviceError
+    RT->>RT: create RuntimeDeviceContext
+    RT->>DEV: read(access, context) / write(access, value, context)
+    DEV-->>RT: u64 / () / DeviceError
     RT-->>VM: value, success, None, or DeviceManagerError
     VM-->>VCPU: complete emulation or fall through
 ```
 
-`try_handle_mmio_read()`、`try_handle_port_read()` 和带 memory 的 try-write 入口在未命中时返回 `None`/`false`，便于架构 fault handler 继续执行 stage-2 映射策略；强制处理入口则把未命中包装成 `DeviceError::NotFound`。
+`DeviceRuntime` 只暴露 `try_read()` 与 `try_write()` 两个路由入口。未命中分别返回 `None` 和 `false`，便于架构 fault handler 继续 stage-2 或未映射总线策略。MMIO、PIO、SysReg 的差异只体现在 `DeviceAccess.bus()` 和架构退出完成方式，不形成无 source 的旁路 helper。
 
 ## 6. 访问上下文与运行时能力
 
-设备访问寄存器时可能需要读写 guest memory、设置定时器、唤醒 vCPU 或请求停止 VM。这些能力通过一次访问期间的 `DeviceAccess` 和不可伪造 grant 控制。
+设备访问寄存器时可能需要读写 guest memory、设置定时器、唤醒 vCPU 或请求停止 VM。这些运行能力通过一次回调期间的 `DeviceContext` 和不可伪造 grant 控制；它们不属于描述请求事实的 `DeviceAccess`。
 
-### 6.1 `DeviceAccess` 与 grant
+### 6.1 `DeviceContext`、`GuestMemoryAccess` 与 grant
 
-`RuntimeDeviceAccess` 在栈上创建，生命周期严格限制在一次 `Device::access()` 或一次 `DmaPollableDeviceOps::poll_dma()` 调用内。它同时检查正在访问的 `DeviceId` 和 grant token 是否与 runtime 注册记录匹配。
+`RuntimeDeviceContext` 在栈上创建，生命周期严格限制在一次 `Device::read()`、`Device::write()` 或 `DmaPollableDeviceOps::poll_dma()` 调用内。它同时检查正在访问的 `DeviceId` 和 grant token 是否与 runtime 注册记录匹配。
 
 | 能力 | Grant | 使用路径 |
 | --- | --- | --- |
@@ -480,7 +488,9 @@ sequenceDiagram
 
 ### 6.2 DMA 与 DMA pollable
 
-guest-memory 端口不会长期保存在设备中。普通 MMIO/Port dispatch 默认没有 memory port；只有 VM 判断该访问需要 DMA，或 VM 主动调用 `poll_dma_devices()` 时，runtime 才创建带 `memory: Some(...)` 的 `RuntimeDeviceAccess`。
+VM 内存由独立的 `GuestMemoryAccess` capability 实现。该 trait 不携带 device identity 或 grant；`DeviceRuntime` 在委托前已经用 `DeviceContext` 验证当前设备和 `DmaGrant`。设备不能从 `DeviceAccess`、source vCPU 或 `DeviceContext` 反向取得 `AxVM`。
+
+guest-memory 端口不会长期保存在设备中。guest 写路径可以给 runtime 注入临时 memory port；读路径没有隐式 VM 内存能力。VM 主动调用 `poll_dma_devices()` 时也会创建一次性 `RuntimeDeviceContext`。
 
 ```mermaid
 sequenceDiagram
@@ -489,8 +499,8 @@ sequenceDiagram
     participant DEV as DMA device
     participant MEM as guest-memory port
 
-    VM->>RT: handle_mmio_write_with_memory(...)
-    RT->>DEV: access(..., RuntimeDeviceAccess)
+    VM->>RT: try_write(DeviceAccess, value, GuestMemoryAccess)
+    RT->>DEV: write(..., RuntimeDeviceContext)
     DEV->>RT: read_guest_memory(DmaGrant, gpa, buf)
     RT->>MEM: read(gpa, buf)
     DEV->>RT: write_guest_memory(DmaGrant, gpa, data)
@@ -651,7 +661,6 @@ fixed MMIO inside guest RAM 会被资源池报告为与 `guest-memory-*` 冲突�
 | `NotFound` | runtime 索引未命中；检查地址窗口、完整访问宽度和 BusKind |
 | `OutOfRange` | 已命中设备，但设备内部 offset/宽度检查拒绝访问 |
 | `Unsupported` | 设备或 access port 不支持该操作，例如 Qword x86 port I/O |
-| `UnexpectedResponse` | 读请求收到写确认，或写请求收到读数据 |
 
 DMA 失败时应额外检查：设备是否注册了同一个 `DmaGrant`，本次入口是否带 memory port，以及 poll_dma/access 回调是否在作用域内完成 guest-memory 操作。
 

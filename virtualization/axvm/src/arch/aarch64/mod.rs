@@ -142,6 +142,7 @@ impl ArchOps for Aarch64Arch {
             ),
             ArmVmExit::SysRegWrite { addr, value } => sysreg::handle_write(
                 vm,
+                vcpu,
                 SysRegWriteExit {
                     addr: arm_sys_reg_addr_to_ax(addr),
                     value,

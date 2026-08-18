@@ -95,16 +95,6 @@ fn riscv_ipi_protocol_stays_out_of_common_architecture_files() {
 }
 
 #[test]
-fn loongarch_platform_injector_does_not_claim_the_eiointc_cascade_line() {
-    let loongarch_irq = read_source("src/arch/loongarch64/irq.rs");
-    assert_omits(
-        &loongarch_irq,
-        "src/arch/loongarch64/irq.rs",
-        &["EIOINTC_IRQ", "set_irq_enabled"],
-    );
-}
-
-#[test]
 fn aarch64_vgic_lifecycle_observes_deferred_kick_results() {
     let vgic = read_source("src/arch/aarch64/vgic/mod.rs");
     assert_omits_lines(

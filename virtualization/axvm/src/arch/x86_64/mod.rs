@@ -136,6 +136,7 @@ impl ArchOps for X86_64Arch {
             ),
             X86VmExit::PortIoWrite { port, width, data } => exit::handle_io_write(
                 vm,
+                vcpu,
                 IoWriteExit {
                     port: x86_port_to_ax(port),
                     width: x86_access_width_to_ax(width),
@@ -179,6 +180,7 @@ impl ArchOps for X86_64Arch {
             ),
             X86VmExit::MsrWrite { addr, value } => sysreg::handle_write(
                 vm,
+                vcpu,
                 SysRegWriteExit {
                     addr: x86_msr_addr_to_ax(addr),
                     value,
