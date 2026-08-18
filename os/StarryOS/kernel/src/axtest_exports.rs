@@ -367,6 +367,10 @@ pub fn perf_control_callback_runs_preemptible() -> bool {
     super::perf::control_callback_runs_preemptible_for_test()
 }
 
+pub fn exit_reclaim_frees_dead_holder_device() -> bool {
+    super::rdrive_osal::exit_reclaim_frees_dead_holder_device_for_test()
+}
+
 #[cfg(target_arch = "aarch64")]
 pub fn perf_kernel_task_sample_ids_are_empty() -> bool {
     super::perf::sampling::kernel_task_sample_ids_are_empty_for_test()

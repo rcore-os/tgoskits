@@ -439,6 +439,19 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         crate::syscall::release_pid_locks(process_identity_id);
         crate::syscall::release_pid_flock_locks(process_identity_id);
 
+        // Reclaim any rdrive device lock this process still held (e.g. an
+        // accelerator /dev node opened for exclusive access). rdrive tags each
+        // lock with the holder's pid; a holder that dies without releasing
+        // would otherwise leave the device stuck `UsedByOthers` and block every
+        // later acquirer forever. Freeing them here restores availability.
+        // PID-reuse-safe: reclaim CAS-matches the exact (generation, owner)
+        // token, so a recycled pid that legitimately re-acquired the lock is
+        // never stomped. Guarded because rdrive may be uninitialized on
+        // platforms/configs with no device registry.
+        if rdrive::is_initialized() {
+            rdrive::reclaim_all_held_by(process.pid().get());
+        }
+
         // Snapshot children before reparenting them. Otherwise
         // process.children() returns an empty
         // list and pdeathsig never reaches the real children.

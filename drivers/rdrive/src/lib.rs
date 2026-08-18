@@ -265,6 +265,42 @@ pub fn get_one<T: DriverGeneric>() -> Option<Device<T>> {
     read(|manager| manager.dev_container.get_one())
 }
 
+/// Frees every device lock still held by `pid` (a dead process). Returns the
+/// number of locks reclaimed. PID-reuse-safe: reclaim CASes the exact
+/// observed (generation, owner) token, so a recycled pid that re-acquired
+/// the lock is never stomped.
+pub fn reclaim_all_held_by(pid: u32) -> usize {
+    // Keep the registry spinlock's critical section tiny: only the CAS work
+    // happens inside `edit`; logging happens after it's released.
+    let reclaimed = edit(|manager| manager.dev_container.reclaim_all_held_by(pid));
+    let count = reclaimed.len();
+    for id in reclaimed {
+        warn!(
+            "reclaimed device lock (id={:?}) held by dead pid {}",
+            id, pid
+        );
+    }
+    count
+}
+
+/// Test-only: registers a fresh [`Empty`](driver::Empty) device in the global
+/// registry and returns its id.
+///
+/// Lets a consumer exercise the public dead-holder reclaim path
+/// ([`reclaim_all_held_by`]) end-to-end — acquire the lock through the installed
+/// [`Osal`], then reclaim it as a process-exit hook would — against a real
+/// registry entry instead of poking the private device container. Production
+/// devices only ever reach the registry through probing, so this narrow helper
+/// is the sole way for a test to seed a standalone entry; it is gated to test
+/// builds and never compiled into a shipping kernel.
+#[cfg(any(test, feature = "axtest"))]
+pub fn test_register_empty_device() -> DeviceId {
+    let descriptor = Descriptor::new();
+    let id = descriptor.device_id();
+    edit(|manager| manager.dev_container.insert(descriptor, driver::Empty));
+    id
+}
+
 pub fn fdt_phandle_to_device_id(phandle: Phandle) -> Option<DeviceId> {
     probe::fdt::try_system().and_then(|system| system.phandle_to_device_id(phandle))
 }
