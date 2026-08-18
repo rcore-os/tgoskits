@@ -74,6 +74,9 @@ echo "==> axvisor riscv64 IPI cross-test"
 cargo xtask cross-test --arch riscv64 \
   --package riscv_vcpu --package axvm \
   --features axvm/host-test --no-default-features --lib ipi
+echo "==> axvisor riscv64 VSEIP unbound-state cross-test"
+cargo xtask cross-test --arch riscv64 --package riscv_vcpu --lib \
+  controller_vseip_line_updates_saved_state_while_unbound
 echo "==> axvisor riscv64 backtrace panic"
 cargo xtask axvisor test qemu --arch riscv64 --test-case backtrace-panic
 echo "==> axvisor riscv64 no-backtrace panic"
