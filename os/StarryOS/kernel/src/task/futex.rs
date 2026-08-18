@@ -1301,6 +1301,54 @@ pub(crate) fn empty_wake_op_leaves_fixed_buckets_empty_for_test() -> bool {
 }
 
 #[cfg(axtest)]
+pub(crate) fn futex_nofault_failure_is_transactional_for_test() -> bool {
+    let wait_queue = WaitQueue::new();
+    let wait_result = wait_queue.wait_if_with_cleanup_nofault_with_task(
+        || panic!("a failed nofault condition must not clone a user task"),
+        u32::MAX,
+        None,
+        None,
+        || Err(FutexAccessError::UserFault),
+    );
+    if wait_result != Err(FutexWaitError::Access(FutexAccessError::UserFault))
+        || !wait_queue.inner.lock().queue.is_empty()
+    {
+        return false;
+    }
+
+    let domain = Arc::new(FutexDomain::new_private());
+    let source = ResolvedFutex {
+        key: FutexKey::Private {
+            mm_generation: domain.generation(),
+            address: 0x1000,
+        },
+        domain: FutexDomainOwner::Private(domain.clone()),
+    };
+    let target = ResolvedFutex {
+        key: FutexKey::Private {
+            mm_generation: domain.generation(),
+            address: 0x2000,
+        },
+        domain: FutexDomainOwner::Private(domain.clone()),
+    };
+
+    if source.wake_op(1, &target, 1, || Err(FutexAccessError::UserFault))
+        != Err(FutexAccessError::UserFault)
+        || source.requeue_to(&target, 1, u32::MAX, 1, || Err(FutexAccessError::Retry))
+            != Err(FutexAccessError::Retry)
+    {
+        return false;
+    }
+
+    domain.buckets.iter().all(|bucket| {
+        bucket
+            .waiters
+            .try_lock()
+            .is_some_and(|waiters| waiters.is_empty())
+    })
+}
+
+#[cfg(axtest)]
 pub(crate) fn futex_keys_follow_mm_and_backing_identity_for_test() -> bool {
     let first_mm = FutexDomain::new_private();
     let second_mm = FutexDomain::new_private();

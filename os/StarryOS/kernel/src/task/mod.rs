@@ -43,12 +43,23 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions},
 };
 
-#[cfg(axtest)]
-pub(crate) use self::pid::pid_identity_state_machine_rules_hold_for_test;
 pub use self::{
     cred::*, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable, process::*,
     process_image::ProcessImage, process_wait::wait_on_pollset, resources::*, scheduler_task::*,
     seccomp::*, signal::*, stat::*, thread::Thread, timer::*, user::*,
+};
+#[cfg(axtest)]
+pub(crate) use self::{
+    futex::futex_nofault_failure_is_transactional_for_test,
+    pid::pid_identity_state_machine_rules_hold_for_test,
+    posix_timer::{
+        posix_timer_active_gate_rules_hold_for_test,
+        posix_timer_clock_sampling_rules_hold_for_test,
+        posix_timer_expiry_batch_rules_hold_for_test,
+        posix_timer_saturating_timespec_rules_hold_for_test,
+        posix_timer_stale_expiry_signal_is_suppressed_for_test,
+    },
+    process_ptrace::inactive_ptrace_syscall_gate_is_lock_free_for_test,
 };
 #[cfg(test)]
 pub(crate) use self::{

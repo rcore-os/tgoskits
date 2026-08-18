@@ -192,7 +192,7 @@ mod axtest_support {
         }
         REAP_CLAIM_REACHED.store(true, Ordering::Release);
         while !REAP_CLAIM_RELEASED.load(Ordering::Acquire) {
-            ax_task::yield_now();
+            ax_std::thread::yield_now();
         }
     }
 
@@ -207,16 +207,17 @@ mod axtest_support {
         let process = Process::new_for_axtest(identity.clone());
         let test_tgid = process.pid();
         identity.mark_task_exited();
-        tid_lease.release();
         identity.bind_zombie_for_axtest(
             process.clone(),
             Arc::new(PollSet::new()),
             ZombieSnapshot {
                 cred: Arc::new(Cred::default()),
+                nice: 0,
                 ptrace_tracer: None,
                 is_clone_child: false,
                 wait_parent_tid: TidNumber::from(test_tgid.pid_number()),
                 cpu_time: ProcessCpuTime::default(),
+                tid_lease,
                 tgid_lease,
             },
         );
@@ -229,13 +230,13 @@ mod axtest_support {
         let reap_task = {
             let process = process.clone();
             let reaped_cpu_time = reaped_cpu_time.clone();
-            ax_task::spawn(move || {
+            ax_std::thread::spawn(move || {
                 *reaped_cpu_time.lock() = reap_process(&process);
             })
         };
 
         while !REAP_CLAIM_REACHED.load(Ordering::Acquire) {
-            ax_task::yield_now();
+            ax_std::thread::yield_now();
         }
         let number = test_tgid.pid_number();
         let namespace_lookup = ROOT_PID_NS.lookup(number);
@@ -244,7 +245,7 @@ mod axtest_support {
         let identity_process_lookup = identity.public_process();
 
         REAP_CLAIM_RELEASED.store(true, Ordering::Release);
-        reap_task.join();
+        reap_task.join().unwrap();
         REAP_CLAIM_BARRIER_PID.store(0, Ordering::Release);
 
         let group_and_session_number_retained = namespace_lookup
