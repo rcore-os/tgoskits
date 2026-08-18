@@ -98,7 +98,14 @@ pub fn sys_pidfd_open(
             {
                 let identity = task.as_thread().pid_identity();
                 PidFd::new_thread(identity, task.as_thread(), tid)
-            } else if identity.has_role::<Tgid>() && identity.is_zombie() {
+            } else if identity.has_role::<Tgid>()
+                && (identity.is_zombie() || identity.exit_path_pending())
+            {
+                // A leader stays openable from the moment its runtime link
+                // detaches (early in `do_exit`) until it is reaped: Linux
+                // resolves PIDFD_THREAD against `struct pid`, which lives
+                // until `free_pid()`. `exit_path_pending` covers the window
+                // before zombie publication, `is_zombie` the state after it.
                 PidFd::new_exited_thread(identity)
             } else {
                 return Err(StarryError::NoSuchProcess);

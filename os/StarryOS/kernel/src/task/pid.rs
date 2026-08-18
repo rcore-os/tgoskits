@@ -825,6 +825,18 @@ impl PidIdentity {
         !matches!(state.runtime, RuntimeTaskLink::Exited) || state.exit_path_pending
     }
 
+    /// Reports whether the task detached its runtime link but its exit path
+    /// (zombie publication, parent notification, relation close) is still
+    /// running.
+    ///
+    /// Observers that must keep resolving this identity until it is reaped —
+    /// like `pidfd_open(PIDFD_THREAD)` on a group leader — treat this window
+    /// as still open: Linux resolves such a pidfd against `struct pid`, which
+    /// lives until `free_pid()`.
+    pub(crate) fn exit_path_pending(&self) -> bool {
+        self.state.lock().exit_path_pending
+    }
+
     pub fn mark_task_exited(self: &Arc<Self>) -> ExitPathLease {
         {
             let mut state = self.state.lock();
