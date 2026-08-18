@@ -19,12 +19,12 @@ sidebar_label: "测试与验收"
 | --- | --- |
 | Free 中插入 Reserved | Free 被 split，Reserved 精确保留 |
 | 相邻同类型 reservation | 合并为单一描述符 |
-| 不同 non-Free overlap | 返回 `Conflict`，原 map 不变 |
-| fixed capacity exhausted | 返回 `Capacity`，原 map 不变 |
+| 不同 non-Free overlap | 返回 `RangeError::Conflict`，新描述符未加入 |
+| fixed capacity exhausted | 返回 `RangeError::Capacity`；注意 merge_add 原地修改，此前拆分不回滚，启动路径应立即 panic |
 | range/alignment overflow | 返回 typed error，无 wrapping range |
 | 多 memory nodes/regions | 每个合法 bank 都进入最终 Free 列表 |
-| early bump freeze | used prefix 变 Reserved，freeze 后拒绝 allocation |
-| x86_64 同时存在低端与更大的高端 RAM | early arena 位于 4 GiB 以下；高端 RAM 仍交给 Buddy |
+| early bump 交接 | `memory_map_setup()` 把 used prefix 变 Reserved；`memories()` 超过 128 ranges 时 `.ok()` 静默截断应被测试暴露 |
+| 多段 RAM 与首个大段 | early arena 是排序后第一个大于 8 MiB 的 Free 段（与架构、地址高低无关）；无候选时启动失败 |
 | 12 GiB 固件保留区 | 启动内存图只增加一个区间描述符，不按 4 KiB 展开 |
 | RAM、MMIO 与地址空洞分类 | 只有 Free RAM 进入 Buddy；设备区使用设备属性；不可访问区不误作普通 RAM |
 
@@ -45,7 +45,7 @@ host test 使用可控内存 slice 建立多个 section，覆盖 page、lowmem�
 | all size classes | round-up、bitmap 和 empty-slab return正确 |
 | cross-CPU free | remote stack只消费一次，owner drain 后可复用 |
 
-分配失败不得触发 callback、虚拟文件系统、阻塞或隐式 retry。使用 fake reclaim counter 可以证明 `ax-alloc` 完全不调用上层回收。
+字节分配失败不触发 callback、虚拟文件系统、阻塞或隐式 retry。显式页分配（`alloc_pages()` / `alloc_dma32_pages()`）失败则会在释放 allocator 锁后调用已注册的 page reclaim callback 并最多重试 4 轮；使用 fake reclaim counter 可以验证“锁外执行、重试有界、回收 0 页即返回 `NoMemory`”。
 
 ## 2. 页表与地址空间测试
 
@@ -58,16 +58,16 @@ host test 使用可控内存 slice 建立多个 section，覆盖 page、lowmem�
 | 用例 | 断言 |
 | --- | --- |
 | entry round-trip | 物理地址、permission、device/uncached 与 huge bit 不丢失 |
-| AArch64 MAIR layout | boot/EL1/EL2/页表项共用同一 index/value |
+| AArch64 MAIR layout | 运行时 3 slot（`0x44ff04`）与 boot 4 slot 布局中 index 0/1/2 语义一致 |
 | frame allocation failure | 返回 `PagingError::NoMemory`，不留下 half-linked table |
 | map conflict | 旧页表项保持不变 |
 | huge mapping | alignment、level 和 translate offset正确 |
 | Guest huge Linear clear | 按实际 block 数保存恢复项；clear 成功且不退化为逐 4 KiB 快照 |
 | 混合页尺寸 range | 未对齐首尾使用 4 KiB，中间在允许时升级为 2 MiB/1 GiB |
 | 属性边界 | 大页不跨越权限、缓存属性或所有权发生变化的边界 |
-| cursor batching | 1..32 地址逐项 flush，超过阈值 full flush |
-| 多核 validation | local-only + multi CPU + no 处理器间中断 初始化失败 |
-| owned table Drop | 每个 owned child frame只释放一次 |
+| map_region 批量失效 | ≤ `TARGETED_FLUSH_LIMIT`（32）个新映射逐地址 flush，超过阈值一次 full flush；protect/remap 立即逐地址 flush |
+| 多核 shootdown | 解除共享内核映射走 `flush_tlb_range_all_cpus()`，未 ready/offline CPU 被跳过（`CpuOffline`） |
+| owned table Drop | 每个 owned child frame只释放一次，Drop 不隐式 flush |
 
 主机第一阶段、客户机第二阶段和 boot 页表需要分别构建，证明所属 crate 之间没有错误耦合。boot provider 的 no-free 语义应单独测试，不能用 runtime provider 的 Drop 预期套用。
 
@@ -81,8 +81,8 @@ host test 使用可控内存 slice 建立多个 section，覆盖 page、lowmem�
 | area split/shrink | 地址、actual/reported flags 和 backend offset 一致 |
 | metadata-only move | 不调用 backend，不重复释放物理页 |
 | 12 GiB Linear map | 不建立与 3,145,728 个基础页成比例的软件快照 |
-| 分配型 map 中间失败 | backend 删除本次已安装前缀并释放对应 frame |
-| 分配型 unmap | 每个被删除的 allocation-backed frame 恰好释放一次 |
+| 分配型 map 中间失败 | 固定当前语义：ax-mm 与 axaddrspace 的 alloc backend 均不回滚已安装前缀（已知遗留），测试应断言该行为并防止进一步退化 |
+| 分配型 unmap | 每个被删除的 allocation-backed frame 恰好释放一次；axaddrspace 遇到大页首项时先删项后失败的行为需单独断言 |
 | 跨多区域 backend 失败 | 明确验证直接语义，不声称公共层自动恢复前缀 |
 
 ArceOS、Starry 和 axaddrspace backend 各自增加 frame、常驻内存集大小/写时复制或 Guest RAM ownership 断言。Starry 的 clone、连续填页和 mremap 使用专用恢复测试，不把 Linux 策略下沉为所有消费者共同承担的状态机。
@@ -98,13 +98,12 @@ Starry 测试要同时比较用户可见结果和内部计数。涉及 syscall �
 | 用例 | 断言 |
 | --- | --- |
 | RLIMIT_AS replacement | 只计算 retained + requested，超限不改虚拟内存区域 |
-| Always overcommit | mode=1，checked charge 溢出返回错误，普通请求不按 CommitLimit 拒绝并准确报告 |
-| commit 分类 | private anonymous/private file 仅 writable 计入；shared-anonymous owner 计入一次；file/device/imported memory 不计入 |
-| fork 写时复制 overflow | checked `u32` 拒绝且 count不变 |
+| overcommit proc 展示 | 当前 procfs 展示 overcommit 控制项，`/proc/meminfo` 的 `Committed_AS` 仍为 0 |
+| fork 写时复制 overflow | 当前 `u8` 引用计数达到上限时不能静默回绕 |
 | fork 中间失败 | parent flags/refs/常驻内存集大小与 child resources回滚 |
 | private file read→write | 常驻内存集大小 File 迁移到 Anon |
 | mremap move | 只移动页表项；物理页所有权和聚合计数保持不变 |
-| fault clean reclaim | 只对 内存不足回收一次、最多 retry一次 |
+| allocator page-cache reclaim | page allocation 失败后锁外调用注册 reclaim，最多 4 轮重试 |
 | proc status/statm | 虚拟内存大小、常驻内存集大小 categories、peak和 stack分类一致 |
 
 Starry 直接发现的 QEMU/board case 应覆盖多线程 fault、fork/exec/exit、memfd/shared mapping、MAP_FIXED 和跨虚拟内存区域 `mprotect`。重型内存压力负载放在 `apps/starry`，通过 `cargo xtask starry app` 执行。
@@ -115,8 +114,8 @@ DMA host test 使用 tracking `DmaOp` 记录 allocation、free、map、unmap和 
 
 | 用例 | 断言 |
 | --- | --- |
-| invalid `DmaPod` compile-fail | reference/resource类型无法进入 typed buffer |
-| token Copy/Clone compile-fail | free/unmap token不可复制 |
+| DMA descriptor 使用点审计 | 当前 `DmaPod` blanket impl 覆盖所有 `Copy`，测试和评审需验证 descriptor 真正 plain-data |
+| handle Copy/Clone 风险 | 当前底层 handle 可复制，高层 owner 仍应只释放一次 |
 | 资源获取即初始化 Drop | coherent、contiguous、streaming 各释放一次 |
 | backend violates mask | token先被释放，再返回 typed error |
 | bounce direction | copy-in/out 和 clean/invalidate 顺序正确 |
@@ -158,14 +157,12 @@ cargo xtask clippy --package ax-alloc
 cargo xtask clippy --package page-table-generic
 cargo xtask clippy --package ax-cpu
 cargo xtask clippy --package ax-memory-set
-cargo xtask clippy --package starry-mm
 cargo xtask clippy --package dma-api
 cargo test -p ax-memory-set
-cargo test -p starry-mm
 cargo test -p dma-api
 ```
 
-修改公共 walker 时运行 `page-table-generic` 测试；修改主机页表时按目标架构验证 `ax-cpu`；修改第二阶段或启动页表时分别验证 `axvm` 或 `someboot`。修改 `ax-alloc` 时覆盖实际存在的 `global-allocator`、`tracking` 和 `smp` 组合。hard-实时 与 reserve 尚不是 Cargo feature，只有增加真实消费者和构建配置后才加入对应矩阵。
+修改公共 walker 时运行 `page-table-generic` 测试；修改主机页表时按目标架构验证 `ax-cpu`；修改第二阶段或启动页表时分别验证 `axvm` 或 `someboot`。修改 `ax-alloc` 时覆盖实际存在的 feature 组合：`global-allocator`、`tlsf`、`buddy-slab` 与 `tracking`。hard-实时 与 reserve 尚不是 Cargo feature，只有增加真实消费者和构建配置后才加入对应矩阵。
 
 ### 4.2 工作区与系统验证
 
@@ -242,7 +239,7 @@ Cargo.lock 冲突不手工合并；依赖冲突解决后由 Cargo 重新生成�
 | 构建 | 应存在 | 不应存在 |
 | --- | --- | --- |
 | embedded ArceOS | `ax-alloc`、必要 Stage-1 | Starry policy、Stage-2、unused reserve |
-| Starry | Stage-1、`starry-mm`、Linux backend | Stage-2 |
+| Starry | Stage-1、Starry kernel mm、Linux backend | Stage-2 |
 | Axvisor | Stage-2、`axaddrspace` | Starry policy、boot engine runtime copy |
 | boot-only platform component | `page-table-generic` | runtime allocator依赖循环 |
 
@@ -259,7 +256,7 @@ feature scan还要比较静态符号和镜像大小，避免关闭 feature 后�
 | Dma32不是静态 reserve | 避免无需求板浪费低地址内存，关键设备应预分配 |
 | 不预置 EmergencyReserve | 没有经过审计的保证进展消费者时不增加公共 API 和静态页 |
 | DMA domain 当前为 identity | 当前平台是输入输出内存管理单元 bypass；不得把 domain id 当成真实隔离 |
-| fault最多一次 clean reclaim | 延迟有界，不在 allocator内做 I/O |
+| allocator reclaim 重试有界 | 延迟有界，不在 allocator 锁内做 I/O |
 | 无 swap/非统一内存访问/page migration/multi-gen 最近最少使用 | 不符合当前嵌入式范围与复杂度预算 |
 | fixed-capacity boot maps | early boot无堆且失败边界明确 |
 | 实时/中断请求使用专用固定池 | 保证关键路径不进入通用 allocator |
@@ -296,7 +293,7 @@ map.merge_add(MemoryDescriptor::new_with_range(
 | 1 | `0x3000..0x5000` | Reserved |
 | 2 | `0x5000..0x9000` | Free |
 
-随后使用容量更小的 map制造 split capacity failure，并在调用前保存 clone；返回 `MemoryRangeError::Capacity` 后断言 `map == before`。这同时验证 transactional clone和无部分发布。
+随后使用容量更小的 map制造 split capacity failure：`merge_add()` 返回 `RangeError::Capacity`。注意当前实现原地修改，此前已完成的拆分不会回滚；启动路径因此对错误一律 `unwrap`/panic。测试应断言错误返回本身，不能断言 `map == before` 这种事务性行为。
 
 ### 8.2 地址空间确定性用例
 
@@ -318,17 +315,16 @@ no operation-sized snapshot or plan allocation
 
 ### 8.3 写时复制失败用例
 
-Starry kernel axtest `cow_fault_accounting_failure_rolls_back` 构造两页连续填页请求，并把匿名页聚合计数预置为 `u64::MAX - 1`。第一页递增成功，第二页因 checked overflow 失败，从而确定性覆盖当前页和前序页的回滚。
+当前 Starry COW fault 路径没有独立 `FaultOutcome`、checked accounting overflow 或 host-only `starry-mm` 测试 crate。确定性失败覆盖应围绕现有内核路径设计：触发 frame allocation、页表映射或 backend 操作失败后，检查已经插入的页表项、COW frame table 引用和 `MemoryAccounting` 分类是否回滚。
 
-| 检查对象 | 失败前中间状态 | 返回后期望 |
+| 检查对象 | 失败前可能中间状态 | 返回后期望 |
 | --- | --- | --- |
-| 第一页页表项 | 已 map | 不存在 |
-| 匿名页聚合计数 | 从 `u64::MAX - 1` 增至 `u64::MAX` | 恢复为 `u64::MAX - 1` |
-| 第一页 frame | live | 已归还 |
-| 第二页页表项 | 已 map，随后计数溢出 | 不存在 |
-| 返回值 | 计数溢出 | `BadState` |
+| 当前页页表项 | 已 map 或准备 map | 不存在或保持原合法 PTE |
+| COW frame table | 已增加 frame 引用 | 引用恢复，引用归零时 frame 已释放 |
+| `MemoryAccounting` 分类 | 已记录 Anon/File/Shared charge | charge map 与聚合计数一致 |
+| 返回值 | backend 或映射失败 | fault 返回失败，不能留下半完成状态 |
 
-该用例必须通过 `cargo xtask ktest qemu` 运行，因为它需要真实 kernel PageTable与 frame table；host-only `starry-mm` 测试无法覆盖页表项/frame回滚。
+这类用例必须通过 `cargo xtask ktest qemu` 运行，因为它需要真实 kernel PageTable 与 frame table；当前没有独立 `starry-mm` crate 的 host-only 测试可以覆盖页表项/frame 回滚。现有 `MemoryAccounting::dec()` 只在 debug build 断言下溢，不能把发布构建 checked overflow 当作已实现行为来写测试。
 
 ```sh
 cargo xtask ktest qemu \
@@ -349,7 +345,7 @@ cargo test -p buddy-slab-allocator \
   -- --ignored --test-threads=1
 ```
 
-九个用例覆盖多 section、exhaustion recovery、fragmentation、multi-thread page allocation、mixed small/large allocation和 remote free。host build必须通过 `ax-kspin/host-test` 使用 no-op 中断请求 backend；否则 `SpinNoIrq` 在用户态执行 x86 `cli/sti` 会以 SIGSEGV终止，这属于测试配置错误而非 production lock降级理由。
+九个用例覆盖多 section、exhaustion recovery、fragmentation、multi-thread page allocation、mixed small/large allocation和 remote free。host build必须通过 `ax-sync` 的 `host-test` feature（或 `cfg(test)` 内建 host provider）使用 no-op 中断请求 backend；否则 `lock_irqsave()` 在用户态执行 x86 `cli/sti` 会以 SIGSEGV终止，这属于测试配置错误而非 production lock降级理由。
 
 ### 8.5 性能样本格式
 

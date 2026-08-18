@@ -19,7 +19,7 @@ DMA 不是独立物理 allocator。底层页仍由 `ax-alloc` 管理，`dma-api`
 | --- | --- | --- |
 | `dma-api` | device constraints、domain、typed buffer、sync、资源获取即初始化 token | 直接依赖全局 allocator、解析 扁平设备树/输入输出内存管理单元控制器 |
 | `axklib::dma` | `DmaOp` adapter、页申请、物理地址转换、cache/页表项属性切换 | 暴露裸释放元数据、保存驱动对象 |
-| `ax-runtime::Klib` | 将 mask 映射到 Normal/Dma32 `PageRequest` | 创建第二个 DMA allocator |
+| `ax-runtime::Klib` | 根据 mask 选择 `alloc_pages()` 或 `alloc_dma32_pages()` | 创建第二个 DMA allocator |
 | 驱动 core | 持有 owner、编程 DMA address、执行 ownership transition | 直接 free imported buffer、绕过 constraint check |
 | Starry dma-buf glue | fd/mmap/import 的 `Arc` lifetime | 把 user fd lifetime 当成唯一 owner |
 
@@ -70,9 +70,9 @@ Dma32 始终按转换后的物理地址末端检查 4 GiB 上限。虚拟地址�
 | `align` | DMA address 满足 device 与 Layout 最大 alignment | `AlignMismatch` |
 | `boundary` | start 与 end 位于同一 boundary window | `BoundaryCross` |
 | `max_segment_size` | bytes 不超过单 segment 上限 | `SegmentTooLarge` |
-| nonzero length | `Layout::size()` 必须大于 0，且在调用 backend 前检查 | `ZeroSizedBuffer` |
+| nonzero length | streaming map 要求 `Layout::size()` 大于 0，且在调用 backend 前检查 | `ZeroSizedBuffer` |
 
-检查使用 checked end-address arithmetic。零长度请求不会进入 backend；backend 返回其他不合规 token 时，`DeviceDma` 先按值消费并释放/unmap token，再向调用方返回 typed error。
+检查使用 checked end-address arithmetic。零长度拦截当前只存在于 streaming map 路径（`StreamingMap` 以 `NonZeroUsize` 预检）；coherent/contiguous 分配路径不做零长度预检，`size_of::<T>() == 0` 的请求会进入 backend。backend 返回其他不合规 token 时，`DeviceDma` 先按值消费并释放/unmap token，再向调用方返回 typed error。
 
 ### 2.2 转换域身份
 
@@ -112,19 +112,19 @@ DMA typed buffer 允许设备直接读写 `T` 的原始字节，因此 `T` 必�
 
 ### 3.1 安全契约
 
-`DmaPod: Copy` 的 `# Safety` 要求全零 bit pattern 有效，任意设备写入不会破坏 Rust validity，且值不拥有需要 Drop 的资源或引用。
+`DmaPod: Copy` 的 `# Safety` 文档要求全零 bit pattern 有效，任意设备写入不会破坏 Rust validity，且值不拥有需要 Drop 的资源或引用。
 
 ```rust
 pub unsafe trait DmaPod: Copy {}
 
-unsafe impl<T: bytemuck::Pod> DmaPod for T {}
+unsafe impl<T: Copy> DmaPod for T {}
 ```
 
-trait 必须是 `unsafe`，因为编译器无法仅从 `Copy` 证明布局、padding 和所有 bit pattern 安全。`unsafe` 把无法自动验证的责任集中在实现点，而不是让每次 buffer 访问都隐式承担未声明前提。
+trait 是 `unsafe`，因为编译器无法仅从 `Copy` 证明布局、padding 和所有 bit pattern 安全。当前源码却为所有 `Copy` 类型提供 blanket impl，这使安全契约弱于文档理想模型；新增驱动仍应只把真正 plain-data descriptor 放进 typed DMA buffer。
 
 ### 3.2 实现规则
 
-本地 hardware descriptor 应优先 `#[derive(bytemuck::Pod, bytemuck::Zeroable)]`，通过 blanket impl 获得 `DmaPod`。只有外部类型 wrapper 或 derive 无法表达的特殊布局才允许 manual `unsafe impl`。
+本地 hardware descriptor 应优先 `#[derive(bytemuck::Pod, bytemuck::Zeroable)]` 或等价布局断言来证明 plain-data 属性。由于当前 blanket impl 已覆盖所有 `Copy`，代码评审需要在使用点检查类型是否真的满足 DMA 写入安全，而不能依赖 trait bound 自动排除引用、padding 或 invalid niche。
 
 | 类型情况 | 处理 |
 | --- | --- |
@@ -133,7 +133,7 @@ trait 必须是 `unsafe`，因为编译器无法仅从 `Copy` 证明布局、pad
 | 含引用、pointer owner、enum invalid niche | 禁止作为 typed DMA buffer |
 | manual `unsafe impl DmaPod` | 必须紧邻英文 SAFETY 注释和 size/align/layout assertion |
 
-当前生产代码中 xHCI context 的四个外部 wrapper 保留 manual impl，并配套布局断言。新增驱动不得为方便而给普通 descriptor 批量添加 manual unsafe impl。
+当前生产代码中没有 manual `DmaPod` impl；由于 blanket impl 已覆盖所有 `Copy`，新增驱动只能在使用点自行证明类型满足 DMA 写入安全，不能依赖 trait bound 自动排除引用、padding 或 invalid niche。
 
 ## 4. 缓冲区类型
 
@@ -146,14 +146,15 @@ DMA API 区分 coherent allocation、普通连续 allocation 和 existing buffer
 | 类型 | 物理连续 | CPU/device cache 规则 | Drop |
 | --- | --- | --- | --- |
 | `CoherentBox<T>` / `CoherentArray<T>` | 是 | 无显式 clean/invalidate；ordering barrier 仍由驱动负责 | 恢复平台 mapping policy并 consume token |
-| `ContiguousBox<T>` / `ContiguousArray<T>` | 是 | 调用 `prepare_for_device` / `complete_for_cpu` | consume contiguous token |
-| `ContiguousBufferPool` | pool 内每项连续 | 与 ContiguousArray 相同；固定容量，耗尽立即返回 `NoMemory` | 返回 pool；pool 消失后 owner 正常 Drop |
+| `ContiguousArray<T>` | 是 | 调用 `prepare_for_device` / `complete_for_cpu` | consume contiguous token |
+| `ContiguousBox<T>` | 是 | 调用 `prepare_for_device_all` / `complete_for_cpu_all`（整盒方向转换） | consume contiguous token |
+| `ContiguousBufferPool` | pool 内每项连续 | 与 ContiguousArray 相同；`with_capacity()` 会尽量预填，空池 `alloc()` 可继续按需分配 | 返回 pool；pool 消失后 owner 正常 Drop |
 
 CPU accessor 本身不会自动 sync cache。高层 `write_for_device()` 和 `read_from_device()` 将 CPU access 与相应 sync 组合，普通 `set_cpu()`/`read_cpu()` 只执行内存访问。
 
 ### 4.2 流式映射与回弹缓冲区
 
-`StreamingMap<T>` 借用调用方已有 slice，并持有 move-only `DmaMapHandle`。若原 buffer 的物理地址不满足 mask/alignment，`KlibDma` 分配符合约束的 bounce pages 并把地址记录在 token 中。
+`StreamingMap<T>` 借用调用方已有 slice，并持有底层 `DmaMapHandle`。若原 buffer 的物理地址不满足 mask/alignment，`KlibDma` 分配符合约束的 bounce pages 并把地址记录在 handle 中；释放唯一性由 `StreamingMap` owner 提供。
 
 | Direction | device 前动作 | CPU 完成动作 |
 | --- | --- | --- |
@@ -167,43 +168,40 @@ CPU accessor 本身不会自动 sync cache。高层 `write_for_device()` 和 `re
 
 底层 handle 和高层 owner 解决不同问题。handle 是 backend release metadata，高层 container 的 Drop 才是日常驱动应使用的资源获取即初始化。
 
-### 5.1 单次消费令牌
+### 5.1 底层 handle 与高层 owner
 
-`DmaAllocHandle` 保存 CPU address、DMA address、Layout 和 opaque backend token；`DmaMapHandle` 额外保存可选 bounce pointer。两者不实现 `Copy`/`Clone`。
+`DmaAllocHandle` 保存 CPU address、DMA address 和 Layout；`DmaMapHandle` 额外保存可选 bounce pointer。当前两者派生 `Clone + Copy`，不是 move-only token；日常释放唯一性依赖 `DmaAllocation` / `StreamingMap` 这类高层 owner。
 
 | Token | 创建 | 消费 |
 | --- | --- | --- |
 | `DmaAllocHandle` | `alloc_contiguous` / `alloc_coherent` | `dealloc_contiguous(handle)` / `dealloc_coherent(handle)` |
 | `DmaMapHandle` | `map_streaming` | `unmap_streaming(handle)` |
-| `DmaPageAllocation` | runtime `dma_alloc_pages` | runtime `dma_dealloc_pages(allocation)` |
+| runtime page tuple | `ax-runtime::Klib::dma_alloc_pages()` | `ax-runtime::Klib::dma_dealloc_pages(vaddr, num_pages)` |
 
-查询方法只借用 token，free/unmap 按值消费。opaque backend token 供真正需要额外释放信息的 backend 使用；当前 `axklib` adapter 使用默认值 0，因为 `Normal` 与 `Dma32` 共享 Buddy section，释放根据地址定位 section，无需额外 zone 或 bool 参数。
+查询方法只借用 handle，free/unmap 按值接收 handle。当前 handle 中没有 opaque backend token，因为普通页与 DMA32 共享 Buddy section，释放根据地址定位 section，无需额外 zone 或 bool 参数。
 
 `DmaAllocHandle` 的字段对 backend 可见（`pub(crate)`），但对外只暴露查询方法。两个 unsafe 构造函数把“调用方证明 cpu_addr/dma_addr 关系”的责任集中在创建点，避免后续每次访问都重复验证。
 
 ```rust
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DmaAllocHandle {
     pub(crate) cpu_addr: NonNull<u8>,
     pub(crate) dma_addr: DmaAddr,
     pub(crate) layout: Layout,
-    pub(crate) backend_token: usize,
 }
 
-/// Backend mapping token with consume-on-unmap ownership.
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DmaMapHandle {
     pub(crate) cpu_addr: NonNull<u8>,
     pub(crate) dma_addr: DmaAddr,
     pub(crate) layout: Layout,
     pub(crate) bounce_ptr: Option<NonNull<u8>>,
-    pub(crate) backend_token: usize,
 }
 ```
 
-`DmaMapHandle::bounce_ptr` 为 `Some` 时表示原 buffer 不满足 DMA 约束，backend 已经分配了符合 mask 的 bounce page 并把 DMA 地址指向 bounce。释放时 bounce 与 handle 一并按值消费。`backend_token` 由具体 backend 解释，当前 `axklib` 不在其中编码地址区域。
+`DmaMapHandle::bounce_ptr` 为 `Some` 时表示原 buffer 不满足 DMA 约束，backend 已经分配了符合 mask 的 bounce page 并把 DMA 地址指向 bounce。释放时 bounce 与 handle 一并传给 backend，但由于 handle 可复制，只有高层 owner 能提供“只释放一次”的实际约束。
 
-`dma-api` 通过 doc-test 强制这些 token 不能复制：把 `require_copy::<DmaAllocHandle>()` 写在 compile_fail 代码块中，使任何意外添加 `Copy`/`Clone` 的实现都会被 doc-test 拦截。
+当前没有 compile-fail 测试阻止 handle 复制；这也是评审 DMA soundness 时需要额外关注的点。
 
 ### 5.2 异步所有权状态
 
@@ -227,12 +225,12 @@ stateDiagram-v2
 
 ### 6.1 来源与释放元数据
 
-`ax-runtime` 根据 mask 选择 allocator zone，并返回 move-only `DmaPageAllocation { addr, num_pages }`。zone 只参与申请时的地址筛选；释放根据地址定位 Buddy section，因此不写入 allocation token 或 handle backend token。
+`ax-runtime` 根据 mask 选择 `alloc_dma32_pages()` 或普通 `alloc_pages()`，并按地址和页数释放。低地址路径只参与申请时的地址筛选；释放根据地址定位 Buddy section，因此不写入 allocation token 或 handle backend token。
 
 | Mask | Runtime request | Usage |
 | --- | --- | --- |
-| `<= u32::MAX` | `MemoryZone::Dma32` | `UsageKind::Dma` |
-| `> u32::MAX` | `MemoryZone::Normal` | `UsageKind::Dma` |
+| `<= u32::MAX` | `alloc_dma32_pages(num_pages, align, UsageKind::Dma)` | `UsageKind::Dma` |
+| `> u32::MAX` | `alloc_pages(num_pages, align, UsageKind::Dma)` | `UsageKind::Dma` |
 
 release 接口按值消费地址和页数，避免旧 `_dma32: bool` 与地址、页数分离后传错。页数不匹配或 mask/alignment 防御检查失败会立即归还页面。
 
@@ -294,14 +292,14 @@ Unsafe 修改必须遵循 `book/guideline/code-quality.md` 的 Safety contract �
 
 | 源码 | 审计重点 |
 | --- | --- |
-| `memory/dma-api/src/def.rs` | constraint、typed error、`DmaPod`、move-only token |
+| `memory/dma-api/src/def.rs` | constraint、typed error、`DmaPod`、底层 handle |
 | `memory/dma-api/src/lib.rs` | `DeviceDma` validation 与高层构造 |
 | `memory/dma-api/src/common.rs` | `DmaAllocation` 单次 Drop |
 | `memory/dma-api/src/array.rs` / `dbox.rs` | typed coherent/contiguous owner |
 | `memory/dma-api/src/streaming.rs` | borrow、bounce sync 与 unmap |
 | `memory/dma-api/src/owned.rs` | async ownership state machine |
 | `components/axklib/src/dma.rs` | zone token、coherent mapping、cache adapter |
-| `os/arceos/modules/axruntime/src/klib.rs` | mask → PageRequest 与按值释放 |
+| `os/arceos/modules/axruntime/src/klib.rs` | mask → 普通/DMA32 页入口与按值释放 |
 | `os/StarryOS/kernel/src/file/dmabuf.rs` | fd/mmap/import 共享 `Arc` owner |
 
 任何新 manual `unsafe impl DmaPod`、裸 handle 构造或 in-flight completion 都应作为独立 soundness review 点，而不是普通样板代码。
@@ -324,7 +322,7 @@ let device = axklib::dma::device_with_mask(u32::MAX as u64)
 let ring = device.coherent_array_zero_with_align::<Descriptor>(256, 0x1000)?;
 ```
 
-`Descriptor` 必须通过 `bytemuck::Pod + Zeroable` 获得 `DmaPod`。8192 B 没有超过 16 KiB；runtime 构造两个 Dma32 pages，并在 backend 返回后再次验证起点、末地址和 boundary。
+`Descriptor` 应通过 `bytemuck::Pod + Zeroable` 或等价布局断言证明其 DMA plain-data 属性。8192 B 没有超过 16 KiB；runtime 构造两个 Dma32 pages，并在 backend 返回后再次验证起点、末地址和 boundary。
 
 | Backend 返回 DMA start | Range | 结果 |
 | --- | --- | --- |

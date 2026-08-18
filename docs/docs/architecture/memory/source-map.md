@@ -9,7 +9,7 @@ sidebar_label: "源码结构"
 
 ## 1. 源码分层
 
-内存主线由启动期、公共机制、系统策略和设备能力四组源码组成。目录层级不是调用深度；例如页表算法通过 `PageFrameProvider` 获取页表页，但 `page-table-generic` 和 `axcpu::paging` 都不直接依赖 `ax-alloc`。
+内存主线由启动期、公共机制、系统策略和设备能力四组源码组成。目录层级不是调用深度；例如页表算法通过 `FrameAllocator` 获取页表页，但 `page-table-generic` 和 `axcpu::paging` 都不直接依赖 `ax-alloc`。
 
 ### 1.1 公共组件
 
@@ -18,19 +18,20 @@ sidebar_label: "源码结构"
 | 源码目录 | Crate 或模块 | 负责的事实 | 主要入口 |
 | --- | --- | --- | --- |
 | `memory/memory_addr/` | `ax-memory-addr` | 主机物理地址、虚拟地址、区间和页对齐 | `PhysAddr`、`VirtAddr`、`AddrRange` |
-| `components/kernutil/src/memory.rs` | `kernutil::memory` | 固定容量启动内存图及区间覆盖 | `MemoryDescriptor`、`MemoryMapExt::merge_add()` |
+| `components/kernutil/src/memory.rs` | `kernutil::memory` | 启动内存描述符类型与区间覆盖判定 | `MemoryDescriptor`、`MemoryType`、`RangeOp`（`overwritable()`/`mergeable()`） |
+| `memory/ranges-ext/src/lib.rs` | `ranges-ext` | 固定容量区间容器的合并与冲突处理 | `VecOp::merge_add()`、`RangeError` |
 | `memory/ax-alloc/` | `ax-alloc` | 运行时页、内核堆、全局分配器和统计 | `global_init()`、`global_add_memory()`、`alloc_pages()` |
 | `memory/buddy-slab-allocator/` | `buddy-slab-allocator` | 多段 Buddy 与每 CPU Slab 算法 | `GlobalAllocator`，仅供 `ax-alloc` 集成 |
-| `memory/page-table-generic/` | `page-table-generic` | 无架构选择的递归页表遍历和页帧契约 | `PageFrameProvider`、`TableMeta`、`PageTable` |
-| `components/axcpu/src/paging/` | `axcpu::paging` | 主机页表项、第一阶段 cursor 和失效元数据 | `PageTable32/64`、`PagingMetaData`、`MappingFlags`、`TlbInvalidator` |
+| `memory/page-table-generic/` | `page-table-generic` | 无架构选择的递归页表遍历和页帧契约 | `FrameAllocator`、`TableMeta`、`PageTable` |
+| `components/axcpu/src/paging.rs`、`src/{aarch64,riscv,x86_64,loongarch64}/paging.rs` | `axcpu` | 主机页表项、几何常量和本 CPU 失效 | `MappingFlags`、`ArchPagingMeta`、`A64Pte`/`Rv64Pte`/`X64Pte`/`La64Pte` |
 | `virtualization/axvm/src/arch/*/` | `axvm` | 客户机第二阶段页表项、几何和失效 | `NestedPageTable`、`GenericNestedPageTable` |
 | `platforms/someboot/src/arch/*/paging*` | `someboot` | 启动页表项、几何和启用流程 | 架构 boot table adapter |
 | `memory/memory_set/` | `ax-memory-set` | 虚拟内存区域集合和直接 backend 操作 | `MemorySet`、`MemoryArea`、`MappingBackend` |
-| `memory/starry-mm/` | `starry-mm` | Linux 兼容记账、提交策略和缺页能力边界 | `MemoryAccounting`、`AddressSpaceCommit`、`FaultOutcome` |
-| `memory/dma-api/` | `dma-api` | DMA 设备约束和资源所有权 | `DeviceDma`、`DmaAllocation`、`DmaMapping` |
+| `os/StarryOS/kernel/src/mm/` | Starry kernel mm | Linux 兼容虚拟区域、COW、RSS/VSS 统计、缺页和 syscall 接线 | `AddrSpace`、`Backend`、`MemoryAccounting`、`ProcessVmStat`、`ProcessMemStats` |
+| `memory/dma-api/` | `dma-api` | DMA 设备约束和资源所有权 | `DeviceDma`、`DmaAllocation`、`StreamingMap` |
 | `memory/mmio-api/` | `mmio-api` | 内存映射输入输出能力和易失性访问 | `Mmio`、`MmioRaw`、`MmioOp` |
 
-`buddy-slab-allocator` 是算法实现，不是第二个公共分配入口。若新消费者需要页，应扩展 `ax-alloc` 的类型化接口；若页表需要不同来源，应实现 `PageFrameProvider`，而不是让页表 crate 反向依赖操作系统。
+`buddy-slab-allocator` 是算法实现，不是第二个公共分配入口。若新消费者需要页，应扩展 `ax-alloc` 的类型化接口；若页表需要不同来源，应实现 `FrameAllocator`，而不是让页表 crate 反向依赖操作系统。
 
 ### 1.2 启动与系统集成
 
@@ -40,7 +41,7 @@ sidebar_label: "源码结构"
 | --- | --- | --- |
 | `platforms/someboot/src/fdt/memory.rs` | 动态设备树启动 | 收集全部 RAM bank、reservation block 和 `/reserved-memory` |
 | `platforms/someboot/src/efi_stub/memmap.rs` | UEFI 启动 | 把 UEFI memory type 归一为 `Free`、`Reserved` 或 `Mmio` |
-| `platforms/someboot/src/mem/` | 早期启动 | 选择线性分配区、分配启动对象、冻结并发布最终内存图 |
+| `platforms/someboot/src/mem/` | 早期启动 | 选择线性分配区、分配启动对象、发布最终内存图 |
 | `platforms/axplat-dyn/src/mem.rs` | 动态平台 | 把启动描述符转换为固定容量平台内存区 |
 | `os/arceos/modules/axhal/src/mem.rs` | ArceOS 硬件抽象 | 扣除保留区并进行基础页对齐 |
 | `os/arceos/modules/axruntime/src/lib.rs` | ArceOS 运行时 | 初始化第一个 Buddy section，并加入其余不连续内存段 |
@@ -50,7 +51,7 @@ sidebar_label: "源码结构"
 | `components/axklib/src/dma.rs` | DMA 平台适配 | 把 `DeviceDma` 接到页分配、地址转换和缓存维护 |
 | `components/axklib/src/mmio.rs` | MMIO 平台适配 | 把设备寄存器窗口接到内核地址空间映射能力 |
 
-StarryOS 的 Linux 语义留在 `starry-mm` 和 Starry kernel，Axvisor 的客户机策略留在 `axaddrspace`。二者都可使用相同页表机制和物理页入口，但不会共享同一个虚拟内存策略对象。
+StarryOS 的 Linux 语义留在 Starry kernel `mm/`、syscall 和 procfs 接线中，Axvisor 的客户机策略留在 `axaddrspace`。二者都可使用相同页表机制和物理页入口，但不会共享同一个虚拟内存策略对象。
 
 ## 2. 依赖方向
 
@@ -76,7 +77,7 @@ flowchart TB
         GUESTPT["axvm Stage-2"] --> COREPT
         BOOTPT["someboot paging"] --> COREPT
         SET["ax-memory-set"] --> ADDR
-        SMM["starry-mm"] --> ADDR
+        SMM["Starry kernel mm"] --> ADDR
     end
 
     subgraph Policy["并列策略层"]
@@ -98,9 +99,9 @@ flowchart TB
     end
 
     PLAT --> ALLOC
-    AXMM -. "PageFrameProvider" .-> ALLOC
-    STARRY -. "PageFrameProvider" .-> ALLOC
-    AXVM -. "HostMemory / PageFrameProvider" .-> ALLOC
+    AXMM -. "FrameAllocator" .-> ALLOC
+    STARRY -. "FrameAllocator" .-> ALLOC
+    AXVM -. "HostMemory / FrameAllocator" .-> ALLOC
     KDMA --> ALLOC
     KMMIO --> AXMM
 ```
@@ -113,9 +114,9 @@ flowchart TB
 
 | 禁止方向 | 原因 | 正确边界 |
 | --- | --- | --- |
-| `page-table-generic` 或 `axcpu → ax-alloc` | 启动页表尚不能使用运行时 allocator，CPU 层也不应选择系统 allocator | 上层实现 `PageFrameProvider` |
+| `page-table-generic` 或 `axcpu → ax-alloc` | 启动页表尚不能使用运行时 allocator，CPU 层也不应选择系统 allocator | 上层实现 `FrameAllocator` |
 | `buddy-slab-allocator → ax-alloc` | 算法层不应知道公共用途和统计 | `ax-alloc` 包装算法层 |
-| `starry-mm → Starry kernel/VFS/task` | 可复用策略不能依赖操作系统对象 | `VmFile`、`PageSource`、`FaultOutcome` capability |
+| 公共机制 crate → Starry kernel/VFS/task | 可复用机制不能依赖操作系统对象 | Starry 专属文件、COW 和 proc 策略留在 `os/StarryOS/kernel/src/mm` |
 | `dma-api → ax-alloc` | 设备能力接口不能选择全局 allocator | `axklib::dma` 或 OS adapter 实现 `DeviceDma` |
 | 驱动 → `ax-mm::iomap()` | 驱动不应绑定某个操作系统地址空间 | 驱动依赖 `mmio-api` |
 | ArceOS/StarryOS → Buddy 内部类型 | 绕过公共统计、zone 和所有权 | 只调用 `ax-alloc` |
@@ -131,12 +132,11 @@ flowchart TB
 ```text
 firmware entry
   -> fdt::memory::init_memory_map() / efi_stub::memmap
-  -> kernutil::memory::MemoryMapExt::merge_add()
-  -> mem::early_init()
+  -> ranges_ext::VecOp::merge_add()（kernutil 描述符）
+  -> mem::early_init()（排序 + 选第一个 > 8 MiB Free 段）
   -> mem::ram::init()
   -> boot page tables + saved DTB + per-CPU areas
   -> mem::memory_map_setup()
-  -> mem::ram::freeze()
   -> axplat-dyn::mem
   -> axhal::mem::memory_regions()
   -> axruntime::init_allocator()
@@ -144,7 +144,7 @@ firmware entry
   -> ax_alloc::init_percpu_slab(cpu_id)
 ```
 
-`memory_map_setup()` 是单向交接点。它先把线性分配器尚未发布的已用前缀加入保留区，再冻结分配器；冻结后的 `Free` 描述符才允许进入 Buddy。
+`memory_map_setup()` 是单向交接点。它把线性分配器尚未发布的已用前缀（和 memory-backed debug console 区间）加入保留区；此后 early bump 不再使用，剩余 `Free` 描述符进入 Buddy。当前代码没有强制冻结状态，“交接后不再调用 early allocator”由启动调用顺序约定保证。
 
 ### 3.2 运行时请求
 
@@ -154,7 +154,7 @@ firmware entry
 | --- | --- | --- |
 | Rust 小对象 | `GlobalAlloc::alloc()` → `ax-alloc` → 当前 CPU Slab | 同一布局进入 Slab；跨 CPU 释放排入 owner 的 remote-free 链 |
 | Rust 大对象 | `GlobalAlloc::alloc()` → `ax-alloc` → Buddy | 根据原 `Layout` 归还 Buddy |
-| 显式页 | `alloc_pages(PageRequest, UsageKind)` → Buddy section | `GlobalPage::drop()` 使用保存的页数和用途归还 |
+| 显式页 | `global_allocator().alloc_pages(num, align, UsageKind)` → Buddy section | `GlobalPage::drop()` 固定归还 `UsageKind::Global`；其他 owner 调用对称 `dealloc_pages()` |
 | 页表页 | 策略层 provider → `ax-alloc` | 页表销毁时由同一 provider 释放 |
 | Starry 匿名页 | 缺页 backend → `ax-alloc` → 页表映射 → RSS 记账 | 解除页表映射、撤销记账、最后归还物理页 |
 | 客户机 RAM | `axaddrspace` backend → `ax-alloc` → 第二阶段页表 | 客户机解除映射或虚拟机销毁 |

@@ -17,7 +17,7 @@ TGOSKits 的内存管理采用“启动期事实发现、运行期统一分配�
 flowchart TB
     subgraph Firmware["固件与启动阶段"]
         FW["UEFI / U-Boot / Device Tree Blob"] --> BOOT["someboot"]
-        BOOT --> BMAP["kernutil::memory\n固定容量启动内存图"]
+        BOOT --> BMAP["someboot::mem\n固定容量启动内存图\n(kernutil 描述符 + ranges-ext 合并)"]
         BOOT --> BOOTPT["someboot::paging\nboot tables"]
         BMAP --> HANDOFF["axplat-dyn / ax-hal\n规范化 Free、Reserved、MMIO"]
     end
@@ -26,7 +26,7 @@ flowchart TB
         HANDOFF --> ALLOC["ax-alloc\n页、内核堆、GlobalAlloc、统计"]
         ALLOC --> BS["buddy-slab-allocator\n多 section Buddy + 每 CPU Slab"]
         CORE["page-table-generic\ngeneric walker"]
-        HOSTPT["axcpu::paging\nHost Stage-1"]
+        HOSTPT["axcpu ArchPagingMeta + ax-hal\nHost Stage-1"]
         GUESTPT["axvm\nGuest Stage-2"]
         SET["ax-memory-set\n虚拟区域 + 直接 backend 操作"]
         ADDR["ax-memory-addr\n地址与范围"]
@@ -39,7 +39,7 @@ flowchart TB
 
     subgraph Policy["并列地址空间策略"]
         AXMM["ax-mm\nArceOS 第一阶段"]
-        STARRY["starry-mm + Starry kernel mm\nLinux 兼容策略"]
+        STARRY["Starry kernel mm\nLinux 兼容策略"]
         AXAS["axaddrspace\n客户机 GPA 策略"]
         AXVM["axvm adapter\nNestedPageTableOps"]
         AXMM --> HOSTPT
@@ -56,9 +56,9 @@ flowchart TB
         MMIO["mmio-api + axklib::mmio"]
     end
 
-    ALLOC -. "PageFrameProvider" .-> AXMM
-    ALLOC -. "PageFrameProvider" .-> STARRY
-    ALLOC -. "HostMemory / PageFrameProvider" .-> AXVM
+    ALLOC -. "FrameAllocator" .-> AXMM
+    ALLOC -. "FrameAllocator" .-> STARRY
+    ALLOC -. "HostMemory / FrameAllocator" .-> AXVM
     ALLOC --> DMA
     MMIO --> AXMM
 ```
@@ -71,8 +71,8 @@ flowchart TB
 
 | 层级 | 维护的不变量 | 代表性边界 |
 | --- | --- | --- |
-| 启动事实 | RAM、保留区和启动占用不重叠 | `MemoryDescriptor`、early allocator freeze |
-| 公共机制 | 页恰好属于一个 owner；虚拟区域不重叠 | `GlobalPage`、`PageFrameProvider`、`MemorySet` |
+| 启动事实 | RAM、保留区和启动占用不重叠 | `MemoryDescriptor`、early bump used-range 发布 |
+| 公共机制 | 页恰好属于一个 owner；虚拟区域不重叠 | `GlobalPage`、`FrameAllocator`、`MemorySet` |
 | 系统策略 | ArceOS、Linux 进程和客户机分别解释映射与回收 | `ax-mm`、Starry memory management、`axaddrspace` |
 | 设备能力 | 驱动只消费已验证的 DMA 或寄存器映射能力 | `DeviceDma`、`Mmio` |
 
@@ -80,9 +80,9 @@ flowchart TB
 
 ### 1.2 唯一入口
 
-同一种资源只有一个公共入口：物理页和内核堆进入 `ax-alloc`，页表帧由 `PageFrameProvider` 注入，虚拟区域由 `MemorySet` 持有，Linux 内存承诺与常驻集记账由 `starry-mm` 维护，DMA 和内存映射输入输出分别进入其设备能力接口。
+同一种资源只有一个公共入口：物理页和内核堆进入 `ax-alloc`，页表帧由 `FrameAllocator` 注入，虚拟区域由 `MemorySet` 持有，StarryOS 的 Linux 兼容虚拟内存状态由 `os/StarryOS/kernel/src/mm` 维护，DMA 和内存映射输入输出分别进入其设备能力接口。
 
-`buddy-slab-allocator` 只是 `ax-alloc` 的算法实现，不能成为普通消费者的第二入口；`starry-mm` 也不是 ArceOS `ax-mm` 的包装层。具体依赖方向和禁止的反向依赖只在[内存管理源码结构](./source-map.md#2-依赖方向)维护。
+`buddy-slab-allocator` 只是 `ax-alloc` 的算法实现，不能成为普通消费者的第二入口；StarryOS `AddrSpace` 也不是 ArceOS `ax-mm` 的包装层。具体依赖方向和禁止的反向依赖只在[内存管理源码结构](./source-map.md#2-依赖方向)维护。
 
 ## 2. 端到端数据流
 
@@ -95,12 +95,12 @@ flowchart TB
 ```mermaid
 flowchart TB
     Firmware["U-Boot / firmware\nDTB pointer"] --> Fdt["someboot::fdt\nRAM + reservations"]
-    Fdt --> BootMap["kernutil::memory\nfixed-capacity MemoryMap"]
+    Fdt --> BootMap["someboot::mem fixed-capacity MemoryMap\n(kernutil 描述符 + ranges-ext 合并)"]
     Image["kernel image / arch ranges"] --> BootMap
     BootMap --> Bump["someboot::mem::ram\nearly bump"]
     Bump --> BootObjects["boot page tables / saved 设备树二进制对象 /\nper-CPU meta + stacks + data"]
-    BootObjects --> Frozen["memory_map_setup\nmark used range + freeze"]
-    Frozen --> Platform["axplat-dyn / ax-hal\nnormalized memory_regions"]
+    BootObjects --> Handoff["memory_map_setup\nmark used range Reserved"]
+    Handoff --> Platform["axplat-dyn / ax-hal\nnormalized memory_regions"]
     Platform --> Alloc["ax-runtime::init_allocator\nax-alloc"]
     Alloc --> Buddy["multi-section Buddy"]
     Alloc --> Slab["per-CPU Slab"]
@@ -109,7 +109,7 @@ flowchart TB
     Alloc --> Dma["axklib::dma / dma-api"]
 ```
 
-启动 bump 使用的区间在冻结前被重新标记为 `Reserved`，因此不会再次进入 Buddy。运行期每个 `Free` 物理段作为独立 section 加入分配器，连续页分配不能跨越段边界。
+启动 bump 已使用的前缀由 `memory_map_setup()` 重新标记为 `Reserved`，因此不会再次进入 Buddy。运行期每个 `Free` 物理段作为独立 section 加入分配器，连续页分配不能跨越段边界。
 
 ### 2.2 运行期请求路径
 
@@ -119,12 +119,12 @@ flowchart TB
 | --- | --- | --- | --- |
 | 小对象 | Rust allocator / `GlobalAlloc` | `ax-alloc` → per-CPU Slab | byte allocation 被释放 |
 | 大对象 | Rust allocator / `GlobalAlloc` | `ax-alloc` → Buddy pages | byte allocation 被释放 |
-| 显式物理页 | `alloc_pages(PageRequest, UsageKind)` | `ax-alloc` → Buddy section | `GlobalPage::drop` 或 raw 对称释放 |
-| Stage-1 页表页 | `PageFrameProvider` adapter | `ax-mm`/Starry adapter → `ax-alloc` | 页表层级销毁 |
+| 显式物理页 | `global_allocator().alloc_pages(num, align, UsageKind)` 或 `GlobalPage` | `ax-alloc` → Buddy section | `GlobalPage::drop` 或对称 `dealloc_pages` |
+| Stage-1 页表页 | `FrameAllocator` adapter | `ax-mm`/Starry adapter → `ax-alloc` | 页表层级销毁 |
 | Guest RAM | `NestedPageTableOps::alloc_frame` | `axaddrspace`/AxVM → `ax-alloc` | 客户机解除映射或虚拟机销毁 |
-| DMA buffer | `DeviceDma` 资源获取即初始化 API | `dma-api` → `axklib::dma` → `ax-alloc` | 最后一个 owner 被消费或 Drop |
+| DMA buffer | `DeviceDma` 资源获取即初始化 API | `dma-api` → `axklib::dma` → `ax-alloc` | 高层 owner Drop 或显式 release |
 
-`PageFrameProvider` 只隔离“页从哪里来”，不会在 `page-table-generic`、`axcpu::paging`、`axvm` 或 `someboot` 内触发回收。Linux 缺页的有界 clean-page reclaim 位于 Starry 地址空间外层，失败后最多重新尝试一次。
+`FrameAllocator` 只隔离“页从哪里来”，不会在 `page-table-generic`、`axcpu::paging`、`axvm` 或 `someboot` 内注册回收策略。当前 StarryOS 在启动时把 `ax_fs_ng::vfs::page_cache_reclaim` 注册给 `ax-alloc`；`alloc_pages()` 和 `alloc_dma32_pages()` 失败时会在释放 allocator 锁后最多尝试 4 轮回收/重试。
 
 ## 3. 一致性保证
 
@@ -136,13 +136,13 @@ flowchart TB
 
 | 资源 | 所有者或状态来源 | 关键类型 |
 | --- | --- | --- |
-| 普通页 / DMA32 页 | `ax-alloc` 内部 Buddy section | `PageRequest`、`GlobalPage` |
+| 普通页 / DMA32 页 | `ax-alloc` 内部 Buddy section | `alloc_pages()`、`alloc_dma32_pages()`、`GlobalPage` |
 | Slab backing 页 | owner CPU 的 Slab | `SlabPageHeader`、remote-free stack |
 | 虚拟内存区域 | `MemorySet` | `BTreeMap` 中互不重叠的 `MemoryArea`；backend 直接修改页表 |
-| Starry 写时复制页 | Starry backend 与引用状态 | `CowFrameReferences`、`MemoryAccounting` |
-| DMA allocation/map | `dma-api` 资源获取即初始化 owner | `DmaAllocHandle`、`DmaMapHandle`、`DmaAllocation` |
+| Starry 写时复制页 | Starry backend 与引用状态 | `FRAME_TABLE`、`MemoryAccounting` |
+| DMA allocation/map | `dma-api` 资源获取即初始化 owner | `DmaAllocation`、`StreamingMap`、`DmaAllocHandle`、`DmaMapHandle` |
 
-`DmaAllocHandle` 和 `DmaMapHandle` 是按值消费的 backend token，不实现 `Copy` 或 `Clone`。`GlobalPage` 记录页数和用途，Drop 时返回拥有该地址的 Buddy section；地址区域只参与分配筛选，不参与释放路由。
+当前 `DmaAllocHandle` 和 `DmaMapHandle` 在源码中派生了 `Clone + Copy`，高层 `DmaAllocation` / `StreamingMap` 才通过内部 `Option` 和 Drop 控制日常释放。`GlobalPage` 记录起始虚拟地址和页数，Drop 固定按 `UsageKind::Global` 归还；其他用途的长期 owner 必须保存原页数和 `UsageKind` 并调用对称释放。
 
 ### 3.2 上下文与并发约束
 
@@ -151,10 +151,10 @@ Buddy 采用单个非抢占自旋锁，per-CPU Slab 将小对象热路径留在�
 | 上下文 | 允许的内存路径 | 禁止或应预分配的路径 |
 | --- | --- | --- |
 | early boot | checked bump、boot 页表、固定容量 metadata | 调度等待、回收、文件 I/O |
-| 普通内核线程 | Slab、Buddy、地址空间操作 | 持 allocator 锁调用虚拟文件系统/reclaim |
+| 普通内核线程 | Slab、Buddy、地址空间操作；内存不足时可在 allocator 锁外触发已注册 reclaim | 持 allocator 锁调用虚拟文件系统/reclaim |
 | 中断请求 / 实时 critical | 固定池或已经预留的 ring/descriptor | 通用堆、Buddy、Slab 扩容、回收 |
-| Starry 用户缺页 | backend fault、外层一次有界 clean-page reclaim | 中断请求上下文 fault、无限重试 |
-| Guest fault | `axaddrspace` 按需 Guest RAM | 隐式 Host reclaim callback |
+| Starry 用户缺页 | backend fault；底层页申请失败时可能触发 `ax-alloc` 注册的 page-cache reclaim | 中断请求上下文 fault、无限重试 |
+| Guest fault | `axaddrspace` 按需 Guest RAM | 在客户机地址空间层隐藏额外 reclaim 策略 |
 
 当前不提供没有生产消费者的通用实时 guard；中断请求和实时路径由具体组件预分配固定对象，并保持不进入通用分配器的路径约束。
 
@@ -164,7 +164,7 @@ Buddy 采用单个非抢占自旋锁，per-CPU Slab 将小对象热路径留在�
 
 ### 4.1 多段内存交接
 
-假设固件报告两个 RAM bank，内核被加载到第一个 bank，第二个 bank 中存在设备固件保留区。`someboot::fdt::memory::init_memory_map()` 先把两个 bank 都登记为 `Free`，随后 `MemoryMapExt::merge_add()` 用 `KImage` 和 `Reserved` 覆盖相交的 Free 子区间。
+假设固件报告两个 RAM bank，内核被加载到第一个 bank，第二个 bank 中存在设备固件保留区。`someboot::fdt::memory::init_memory_map()` 先把两个 bank 都登记为 `Free`，随后 `VecOp::merge_add()` 用 `KImage` 和 `Reserved` 覆盖相交的 Free 子区间。
 
 | 输入事实 | 地址范围 | 大小 | 初始类型 |
 | --- | --- | ---: | --- |
@@ -173,7 +173,7 @@ Buddy 采用单个非抢占自旋锁，per-CPU Slab 将小对象热路径留在�
 | RAM bank 1 | `0x8000_0000..0x9000_0000` | 256 MiB | `Free` |
 | device firmware | `0x8800_0000..0x8820_0000` | 2 MiB | `Reserved` |
 
-覆盖完成后，内存图不把物理 hole `0x4800_0000..0x8000_0000` 表示成任何 RAM。最终直接映射尚未建立，`select_early_ram()` 先应用架构早期地址上限和计算所得启动工作集，再选择物理起点最低的合格 Free 子区间，因此本例选择 bank 0 中紧随内核镜像的区间；该选择不会改变其他 Free 段的类型。x86_64 的候选区间必须位于 4 GiB 以下，以保证应用处理器能在 32 位启动阶段装载 CR3。
+覆盖完成后，内存图不把物理 hole `0x4800_0000..0x8000_0000` 表示成任何 RAM。最终直接映射尚未建立，`early_init()` 先把内存图按物理起点排序，再取第一个大小超过 8 MiB 的 `Free` 段整体作为 early arena，因此本例选择 bank 0 中紧随内核镜像的区间；该选择不会改变其他 Free 段的类型。该规则没有架构地址上限；x86_64 的应用处理器 trampoline 通过单独预留的低地址页保证 32 位启动阶段能装载 CR3，与 early arena 位置无关。
 
 ```text
 0x4000_0000                                                     0x4800_0000
@@ -187,7 +187,7 @@ Buddy 采用单个非抢占自旋锁，per-CPU Slab 将小对象热路径留在�
                                          0x8800_0000  0x8820_0000
 ```
 
-假设 boot 页表、设备树二进制对象副本和四个 CPU 区域共占用 `0x40c0_0000..0x4100_0000`，`memory_map_setup()` 会把这一前缀发布为 `Reserved` 并冻结 bump。运行时最终看到三个 Free 描述符，而不是一个伪连续 heap。
+假设 boot 页表、设备树二进制对象副本和四个 CPU 区域共占用 `0x40c0_0000..0x4100_0000`，`memory_map_setup()` 会把这一前缀发布为 `Reserved`，此后 early bump 不再使用。运行时最终看到三个 Free 描述符，而不是一个伪连续 heap。
 
 | 运行时 Free section 候选 | 大小 | 处理方式 |
 | --- | ---: | --- |
@@ -211,23 +211,19 @@ sequenceDiagram
     participant 常驻内存集大小 as MemoryAccounting
 
     Fault->>Backend: populate(vaddr, access)
-    Backend->>Alloc: PageRequest Normal + VirtMem
+    Backend->>Alloc: alloc_pages(1, 4096, VirtMem)
     Alloc->>Buddy: alloc_pages(1, 4096)
     Buddy-->>Backend: physical frame
     Backend->>Backend: zero or copy file bytes
     Backend->>PT: map(vaddr, paddr, flags)
     PT-->>Backend: mapping installed
-    Backend->>常驻内存集大小: inc(Anon, 1)
-    alt accounting succeeds
-        Backend-->>Fault: Resolved
-    else accounting fails
-        Backend->>PT: unmap(vaddr)
-        Backend->>Alloc: return frame
-        Backend-->>Fault: typed error
-    end
+    Backend->>常驻内存集大小: record_charge(vaddr, Anon)
+    Backend-->>Fault: Resolved
 ```
 
-这里的回滚顺序是安全要求：只有页表项成功删除后才能归还物理页，否则 CPU 仍可能通过旧地址转换访问已经重新分配的物理页。连续预读一次填充多页时，`CowBackend::rollback_fault_run()` 逆序撤销此前成功的页，并按物理页所有者记录的类别递减常驻内存集大小聚合计数。
+单页失败路径由 backend 就地清理：文件读取或 `map_page()` 失败时，`CowBackend::alloc_new_at()` / `alloc_file_run()` 先调用 `deinit_frame()`（从 `FRAME_TABLE` 移除并归还物理页）再返回错误；映射尚未建立或刚刚失败，因此不存在需要先 unmap 的页表项。`record_charge()` 只在重复记账时失败，此时该页保持已映射并返回错误，属于调用方缺陷。解除映射方向的安全顺序仍由 backend 维护：只有页表项成功删除后才能递减引用并归还物理页，否则 CPU 仍可能通过旧地址转换访问已经重新分配的物理页。
+
+连续预读一次填充多页时（`CowBackend::alloc_file_run()`），当前实现逐页“分配、复制、映射、记账”，中途失败只清理当前页；此前成功的页保持映射，剩余页由后续缺页、显式 unmap 或进程退出回收。整段预读没有逆序回滚机制，审查内存压力下的部分失败行为时应以此为前提。
 
 ## 5. 主流实现依据
 
@@ -243,8 +239,8 @@ Linux 启动期使用 `memblock` 保存物理内存与保留区间，而不是�
 | 分配排除 | reserved ranges | `Reserved`、`KImage`、`PerCpuData`、`Mmio` | 必须在 Buddy 接管前完成 |
 | 直接映射排除 | 独立 `MEMBLOCK_NOMAP` | 没有独立标志，`Reserved` 当前通常仍进入映射清单 | 平台必须准确分类；不可访问区间不能只依赖笼统 `Reserved` |
 | 大范围映射 | 最大安全页尺寸 | 页表核心支持大页，ArceOS linear 当前禁用 | 启用前必须处理属性边界和局部修改语义 |
-| 新 Map 失败恢复 | 操作内清理已建部分 | backend 清理已建前缀 | Map prepare 不保存逐基础页空快照 |
-| Unmap/Protect 恢复 | 锁与操作专用状态 | 当前保存逐 4 KiB 旧映射 | 超大范围仍需容量测试或紧凑撤销表示 |
+| 新 Map 失败恢复 | 操作内清理已建部分 | 单页失败由 backend 就地清理；多页预读失败保留已成功页 | Map prepare 不保存逐基础页空快照 |
+| Unmap/Protect 恢复 | 锁与操作专用状态 | mremap 用逐页 `MovedPage` 记录并逆序回滚；unmap/protect 无整段旧映射快照 | 超大范围仍需容量测试或紧凑撤销表示 |
 
 StarryOS 兼容 Linux 用户态语义，不等于复制 Linux 的全部服务器级物理内存子系统。写时复制、文件映射、常驻内存集大小、提交记账和缺页结果属于 Starry 策略；非统一内存访问、内存压缩、页迁移和通用内存不足终止器不进入公共嵌入式分配器。
 

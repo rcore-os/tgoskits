@@ -9,11 +9,11 @@ sidebar_label: "系统集成"
 
 ## 1. 启动顺序
 
-系统集成从 `someboot` 已冻结的内存图开始，不重复解释固件扫描、区间裁剪或 Buddy 内部算法。组件边界和禁止依赖见[内存管理源码结构](./source-map.md)，本章只说明 ArceOS、StarryOS 与 Axvisor 如何按顺序接入公共机制。
+系统集成从 `someboot` 已交接的内存图开始，不重复解释固件扫描、区间裁剪或 Buddy 内部算法。组件边界和禁止依赖见[内存管理源码结构](./source-map.md)，本章只说明 ArceOS、StarryOS 与 Axvisor 如何按顺序接入公共机制。
 
 ### 1.1 引导处理器路径
 
-动态平台的引导处理器从 `someboot` 已冻结的内存图进入 `ax-runtime::rust_main()`。固件解析、early bump 和每 CPU 区域构造见[启动内存发现与交接](./boot-memory.md#13-完整启动流程)，这里从所有权交接点开始。
+动态平台的引导处理器从 `someboot` 已交接的内存图进入 `ax-runtime::rust_main()`。固件解析、early bump 和每 CPU 区域构造见[启动内存发现与交接](./boot-memory.md#13-完整启动流程)，这里从所有权交接点开始。
 
 ```mermaid
 sequenceDiagram
@@ -23,13 +23,13 @@ sequenceDiagram
     participant Alloc as ax-alloc
     participant Mm as ax-mm
     participant Rt as ax-runtime
-    Boot->>Rt: frozen memory map + preallocated per-CPU areas
+    Boot->>Rt: handed-off memory map + preallocated per-CPU areas
     Rt->>Hal: init primary per-CPU state
     Rt->>Alloc: init CPU0 Slab metadata
     Rt->>Hal: init early platform
     Rt->>Alloc: global_init largest Free region
     Rt->>Alloc: global_add_memory remaining regions
-    Rt->>Mm: validate 多核 地址转换后备缓冲区 + create kernel page table
+    Rt->>Mm: init_memory_management 创建内核页表并写根寄存器
     Rt->>Hal: init later devices
     Rt->>Rt: scheduler / 中断请求 / drivers / filesystems
 ```
@@ -56,12 +56,12 @@ ArceOS 是公共 runtime 和 Host Stage-1 的主要集成者。它使用统一 a
 
 ### 2.1 内核与用户地址空间
 
-启用 paging 时，`ax-runtime` 调用 `ax_mm::init_memory_management()`，后者验证 多核 invalidation capability、创建 fine-grained kernel page table、写 root register 并 flush。
+启用 paging 时，`ax-runtime` 调用 `ax_mm::init_memory_management()`，后者创建 fine-grained kernel page table、写 root register 并 flush；当前没有多核失效 capability 校验，跨核 shootdown 由解除共享映射的调用点按需执行（见[页表分层](./page-table.md#42-多核远端失效)）。
 
 | 资源 | ArceOS 路径 | Usage |
 | --- | --- | --- |
 | Rust heap/object | `GlobalAlloc` → Slab/Buddy | `RustHeap` |
-| Stage-1 page table | `PagingHandlerImpl` → Normal pages | `PageTable` |
+| Stage-1 page table | `ax-hal::paging::PagingAllocator` → Normal pages | `PageTable` |
 | allocation-backed 虚拟内存区域 | `ax-mm::Backend::Alloc` | `VirtMem` |
 | kernel task stack | `TaskStack` → GlobalAlloc/pages | `RustHeap` 或 `Global` |
 | MMIO 虚拟地址 | `ax-mm::iomap` → Linear backend | 不拥有物理 RAM |
@@ -74,8 +74,8 @@ runtime page-fault handler 先诊断 kernel stack guard，再把其他 fault 交
 
 | 层 | ArceOS 职责 |
 | --- | --- |
-| `ax-runtime` | mask → Normal/Dma32、cache/页表项/虚拟地址平台回调 |
-| `axklib` | 实现 `DmaOp`、编码 release zone、bounce buffer |
+| `ax-runtime` | mask → 普通/DMA32 页入口、cache/页表项/虚拟地址平台回调 |
+| `axklib` | 实现 `DmaOp`、coherent mapping/cache policy、bounce buffer |
 | `dma-api` | 验证 constraints、资源获取即初始化与 ownership transition |
 | driver | 持有 owner、预分配 ring、在正确时机 sync/quiesce |
 
@@ -83,7 +83,7 @@ runtime page-fault handler 先诊断 kernel stack guard，再把其他 fault 交
 
 ## 3. StarryOS 集成
 
-StarryOS 复用 ArceOS 运行时、主机页表、分配器与驱动框架，再通过独立 `starry-mm` 和 kernel backend 提供 Linux 进程虚拟内存。
+StarryOS 复用 ArceOS 运行时、主机页表、分配器与驱动框架，再通过 Starry kernel `mm/`、syscall 和 procfs 接线提供 Linux 进程虚拟内存。
 
 ### 3.1 进程虚拟内存
 
@@ -92,12 +92,12 @@ Starry kernel 的 `AddrSpace` 与 ArceOS `ax-mm::AddrSpace` 并列，不在后�
 | 能力 | 公共机制 | Starry 专属策略 |
 | --- | --- | --- |
 | 虚拟地址 range container | `ax-memory-set` | Linux mmap/mprotect/mremap 的区域查找与拆分 |
-| 页表项 | `axcpu::paging` | Cow/Shared/File/Linear backend |
+| 页表项 | `ax-hal::paging::PageTable`（`ArchPagingMeta` 来自 `axcpu`） | Cow/Shared/File/Linear backend |
 | physical pages | `ax-alloc` | 常驻内存集大小 category、写时复制 refs、page cache owner |
-| 内存不足 | allocator 立即 `NoMemory` | fault 外层一次 clean-page reclaim |
-| admission | 无公共 allocator policy | RLIMIT_AS + Always committed-memory accounting |
+| 内存不足 | allocator page 路径可在锁外调用已注册 page-cache reclaim 并重试 | fault handler 直接返回 bool 成功/失败 |
+| admission | 无公共 allocator policy | syscall/resource 层处理 `RLIMIT_AS`；`Committed_AS` 当前展示为 0 |
 
-`starry-mm` 只实现当前产品配置实际使用的 mode 1；不为尚无调用配置的 mode 2 保留 feature、limit 状态或分支。
+当前 `/proc/sys/vm/overcommit_memory` 由 procfs 展示，`/proc/meminfo` 的 `Committed_AS` 仍固定为 0；不能把它描述成已经有独立 committed-memory ledger。
 
 ### 3.2 设备内存
 
@@ -165,7 +165,7 @@ Starry 和 hypervisor 在同一底座上增加所需策略，不迫使嵌入式�
 
 | 配置目标 | 增加内容 | 仍保持的边界 |
 | --- | --- | --- |
-| Starry default | Linux 虚拟内存区域、常驻内存集大小、写时复制、mode 1、一次有界回收 | allocator 不回收、不阻塞 |
+| Starry default | Linux 虚拟内存区域、常驻内存集大小、写时复制、proc/sys 展示、注册 page-cache reclaim | allocator 不在锁内回收，重试有界 |
 | Axvisor | `stage2`、`axaddrspace`、显式 Guest RAM | Host allocator 仍为 `ax-alloc` |
 | 混合 Host + device | `dma-api` 与实际 driver | 输入输出内存管理单元未实现时保持 identity/bypass domain |
 
@@ -190,7 +190,7 @@ flowchart LR
     Backend --> PT
 ```
 
-如果调用方使用 `populate: true`，backend 逐页准备并安装物理页；中间失败会清理本次已经安装的前缀并释放对应 frame。`Backend::Linear` 则只映射外部物理地址，unmap 不释放其 backing。
+如果调用方使用 `populate: true`，backend 逐页准备并安装物理页；中途失败时当前实现直接返回失败、不清理已安装前缀（已知遗留，见[地址空间](./address-space.md#41-新建映射)）。`Backend::Linear` 则只映射外部物理地址，unmap 不释放其 backing。
 
 | 层 | 16 KiB alloc mapping 的责任 |
 | --- | --- |
@@ -199,19 +199,16 @@ flowchart LR
 | Stage-1 | 写页表项、分配下级 table frame、地址转换后备缓冲区 invalidation |
 | `ax-alloc` | 提供实际 data frame和 table frame |
 
-ArceOS 不经过 `starry-mm`，也不需要 Linux commit/常驻内存集大小。将常驻内存集大小或 overcommit 放进 `ax-mm` 会使嵌入式消费者承担无关策略。
+ArceOS 不经过 Starry kernel `mm/`，也不需要 Linux 常驻内存集大小或 overcommit 展示。将常驻内存集大小或 overcommit 放进 `ax-mm` 会使嵌入式消费者承担无关策略。
 
 ### 6.2 Starry 匿名映射
 
-Starry 的 16 KiB `MAP_PRIVATE | MAP_ANONYMOUS | PROT_READ | PROT_WRITE` 先通过 syscall 应用程序二进制接口验证，再执行 RLIMIT_AS和 commit delta，最后由 `MemorySet<Backend>` 发布 Cow 虚拟内存区域。未使用 `MAP_POPULATE` 时，建立 mapping不立即消耗四个 resident frame。
+Starry 的 16 KiB `MAP_PRIVATE | MAP_ANONYMOUS | PROT_READ | PROT_WRITE` 先通过 syscall 应用程序二进制接口验证，再由 `MemorySet<Backend>` 发布 Cow 虚拟内存区域。未使用 `MAP_POPULATE` 时，建立 mapping不立即消耗四个 resident frame。
 
 ```text
 sys_mmap
   -> validate flags, fd, offset and user range
-  -> admit_address_space(current, replaced, 16 KiB, RLIMIT_AS)
-  -> AddressSpaceCommit::prepare_delta(removed_commit, 16 KiB)
   -> AddrSpace::map / MemorySet direct backend operation
-  -> CommitDelta::commit
   -> return user 虚拟地址
 
 later write fault
@@ -221,7 +218,7 @@ later write fault
   -> map 页表项 + record 常驻内存集大小 Anon
 ```
 
-mapping 成功时虚拟内存大小和 private commit增加 16 KiB，常驻内存集大小仍可能为 0；每个首次写 fault 再使常驻内存集大小 Anon增加一页。syscall 返回值和 errno由 Starry kernel处理，`starry-mm` 只返回 typed policy/fault结果。
+mapping 成功时 `ProcessVmStat` 的虚拟内存大小增加 16 KiB，常驻内存集大小仍可能为 0；每个首次写 fault 再使常驻内存集大小 Anon增加一页。syscall 返回值和 errno由 Starry kernel处理。
 
 ### 6.3 Axvisor 客户机内存
 
@@ -260,7 +257,7 @@ portable driver
   -> dma-api DmaAllocation owner
   -> axklib::dma::KlibDma
   -> ax-runtime Klib::dma_alloc_pages
-  -> ax-alloc PageRequest { count=4, zone=Normal/Dma32 }, UsageKind::Dma
+  -> ax-alloc alloc_pages/alloc_dma32_pages(count=4, UsageKind::Dma)
 ```
 
 这条路径跨越多层是因为每层分别拥有 device constraint、资源获取即初始化 token、platform cache policy 和物理页；不能为了减少调用层数把 mask/domain/cache状态塞进通用 allocator。相反，不承担新一致性条件的转发 facade 应删除。

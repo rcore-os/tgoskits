@@ -172,7 +172,7 @@ Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和
 
 ### 6.1 虚拟区与驻留页
 
-用户栈的虚拟范围计入虚拟内存大小，只有已映射的匿名页计入常驻内存集大小。`starry-mm::ProcessMemStats::record_vma()` 通过 `[stack]` 名称或进程 stack range 将虚拟内存区域分类到 `stack_pages`。
+用户栈的虚拟范围计入虚拟内存大小，只有已映射的匿名页计入常驻内存集大小。`os/StarryOS/kernel/src/mm/stats.rs::ProcessMemStats` 通过 `[stack]` 名称或进程 stack range 将虚拟内存区域分类到 `stack_pages`。
 
 | 指标 | 用户栈含义 | 物理占用关系 |
 | --- | --- | --- |
@@ -189,7 +189,7 @@ Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和
 
 | 边界 | 负责组件 | 故障处理 |
 | --- | --- | --- |
-| 用户 stack 虚拟内存区域权限 | Starry `AddrSpace` / backend | 转换为 `FaultOutcome`，再由 kernel 处理 signal |
+| 用户 stack 虚拟内存区域权限 | Starry `AddrSpace` / backend | `handle_page_fault()` 返回是否成功，trap 层再处理 signal |
 | kernel task guard page | `axtask` + `ax-mm` | 诊断 `diagnose_stack_guard_page_fault()` |
 | CPU boot stack 范围 | `someboot` / `ax-hal` | 启动配置与 canary，当前无动态 guard |
 
@@ -225,7 +225,7 @@ Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和
 | `platforms/axplat-dyn/src/boot.rs` | `boot_stack_bounds()` 元数据来源 |
 | `os/arceos/modules/axtask/src/run_queue.rs` | main/secondary task 借用 boot stack |
 | `os/arceos/modules/axtask/src/task.rs` | plain/guarded/borrowed Drop 与地址转换后备缓冲区 flush |
-| `memory/starry-mm/src/stats.rs` | 用户 stack 虚拟内存区域统计分类 |
+| `os/StarryOS/kernel/src/mm/stats.rs` | 用户 stack 虚拟内存区域统计分类 |
 
 容量计算应包含每 CPU 固定 stack 总开销、最大 task 数乘以配置栈大小、guard page 的额外一页以及 Starry 用户 stack 的虚拟内存大小/常驻内存集大小差异。
 
@@ -279,14 +279,8 @@ let guarded_size = usable_size
     .checked_add(PAGE_SIZE_4K)
     .expect("guarded task stack size overflow");
 let pages = guarded_size / PAGE_SIZE_4K;
-let base = ax_alloc::global_allocator().alloc_pages(
-    PageRequest {
-        count: pages,
-        align: PAGE_SIZE_4K,
-        zone: MemoryZone::Normal,
-    },
-    UsageKind::Global,
-)
+let base = ax_alloc::global_allocator()
+    .alloc_pages(pages, PAGE_SIZE_4K, UsageKind::Global)
 .expect("guarded task stack allocation failed");
 ```
 
@@ -314,7 +308,7 @@ Drop 时顺序相反：先 remap guard page并完成地址转换后备缓冲区�
 
 | 属性 | Plain stack | Guarded stack |
 | --- | --- | --- |
-| 入口 | `alloc::alloc::alloc(Layout)` | `alloc_pages(PageRequest)` |
+| 入口 | `alloc::alloc::alloc(Layout)` | `global_allocator().alloc_pages(num, align, usage)` |
 | 下层 | large `GlobalAlloc` → Buddy | Buddy pages |
 | overflow 检测 | bottom canary | unmapped guard + canary |
 | Drop | `alloc::alloc::dealloc()` | remap guard后 raw page deallocation |

@@ -17,7 +17,7 @@ sidebar_label: "锁与并发"
 
 | 执行上下文 | 可使用的同步 | 可进入的内存路径 | 禁止行为 |
 | --- | --- | --- | --- |
-| 单核 early boot | `SpinRaw`，依赖引导核独占 | 固定容量内存图、checked bump、boot 页表 | 调度等待、回收、文件系统调用 |
+| 单核 early boot | 无锁（约定引导核独占） | 固定容量内存图、early bump、boot 页表 | 调度等待、回收、文件系统调用 |
 | 普通内核线程 | 禁止中断/禁止抢占自旋锁，或操作系统 Mutex | Slab、Buddy、地址空间操作、缺页 | 持 allocator 锁调用文件系统或回收 |
 | 硬中断 | 已预分配对象、固定 ring、极短禁止中断锁 | 驱动已有 descriptor 的状态转换 | 通用堆、Buddy、Slab 扩容、阻塞 Mutex |
 | bottom half | 由具体运行时约束决定 | 已预留资源、无阻塞短路径 | 无界 reclaim、持自旋锁等待 I/O |
@@ -32,38 +32,37 @@ sidebar_label: "锁与并发"
 
 | 锁或原子 | 源码 | 保护对象 | 关键约束 |
 | --- | --- | --- | --- |
-| `SpinRaw<RamAllocatorState>` | `someboot/src/mem/ram.rs` | early bump 状态机 | 仅引导处理器使用；不承担运行时 IRQ 安全 |
-| `SpinNoIrq<BuddyAllocator>` | `buddy-slab-allocator/src/global.rs` | 全部 Buddy section、free lists 和 page metadata | 临界区内不调用上层策略或回收 |
-| `SpinNoIrq<SlabAllocator>` | `ax-alloc/src/buddy_slab.rs` | 当前 CPU 的 Slab cache | 调用期间同时持有 `NoPreempt` |
+| 无锁 `static mut`（`RAM_START/RAM_END/RAM_CURRENT`） | `someboot/src/mem/ram.rs` | early bump 状态 | 仅引导处理器、单核 early boot 阶段调用；不承担运行时 IRQ 安全 |
+| `SpinLock<BuddyAllocator>`（ax_sync，经 `lock_irqsave()` 访问） | `buddy-slab-allocator/src/global.rs` | 全部 Buddy section、free lists 和 page metadata | 临界区内不调用上层策略或回收 |
+| `SpinLock<SlabAllocator>`（ax_sync） | `buddy-slab-allocator/src/slab/mod.rs` | 当前 CPU 的 Slab cache | 通过 `ax_percpu::with_cpu_pin` 获取 CPU-local 指针 |
 | remote-free atomics | `buddy-slab-allocator/src/slab/page.rs` | 跨 CPU 归还的 object 链 | 释放者只发布节点，owner CPU drain |
-| `AtomicUsize` 用途计数 | `ax-alloc/src/lib.rs` | feature-gated `UsageKind` 字节计数 | Relaxed，仅统计，不发布资源 |
-| `SpinNoIrq<AddrSpace>` | `axmm/src/lib.rs` | ArceOS 内核地址空间 | 不在锁内执行可睡眠 I/O |
+| `SpinLock<Usages>` | `ax-alloc/src/buddy_slab.rs` | `UsageKind` 字节计数 | 统计锁不发布资源，释放正确性由 allocator 锁和 owner 协议保证 |
+| `SpinLock<AddrSpace>`（ax_sync，`lock_irqsave()`） | `axmm/src/lib.rs` | ArceOS 内核地址空间 | 不在锁内执行可睡眠 I/O |
 | `Mutex<AddrSpace>` | Starry `kernel/src/mm/aspace` | 单个进程地址空间、虚拟内存区域与页表 | fault、map、clone 通过同一 owner 串行化 |
-| `SpinNoIrq<Machine<...>>` | `axvm/src/vm/mod.rs` | AxVM 生命周期资源、`axaddrspace` 与嵌套页表 | map、fault、客户机访问和 clear 均在同一虚拟机 owner 下执行 |
-| `AtomicU64` 汇总计数 | `starry-mm/src/accounting.rs` | 单地址空间匿名页、文件页、共享内存页和峰值 | 映射操作由地址空间锁串行化；原子只提供无锁统计快照 |
-| `SpinNoIrq<CowFrameTable>` | Starry 写时复制 backend | 写时复制物理页索引、引用计数和分类 | 不在表锁内执行外部 I/O；归还物理页前释放表锁 |
-| `AtomicU64/AtomicI64` | `starry-mm` policy/stat | commit、RSS/VSS 与峰值 | 原子顺序按 admission 或统计语义选择 |
+| `Mutex<Machine<...>>`（`IrqSafeMutex` 别名） | `axvm/src/vm/mod.rs` | AxVM 生命周期资源、`axaddrspace` 与嵌套页表 | map、fault、客户机访问和 clear 均在同一虚拟机 owner 下执行 |
+| `AtomicU64` 汇总计数 | `os/StarryOS/kernel/src/mm/aspace/accounting.rs` | 单地址空间匿名页、文件页、共享内存页和峰值 | 映射操作由地址空间锁串行化；原子只提供无锁统计快照 |
+| `IrqMutex<FrameTableRefCount>` | Starry 写时复制 backend | 写时复制物理页索引；每个 frame 再用 `IrqMutex<FrameRefCnt>` 保存 `u8` 引用计数 | 不在外层表锁内执行外部 I/O；归还物理页前释放表锁 |
+| `AtomicU64/AtomicI64` | Starry kernel mm stat/accounting | RSS/VSS 与峰值 | 原子顺序按统计语义选择；当前 `/proc/meminfo` 的 `Committed_AS` 固定展示 0 |
 
 ## 2. 启动期同步
 
-`RamAllocatorState` 的 `SpinRaw` 只防止同一早期调用链中的可变别名，不意味着应用处理器可以并发分配。引导处理器在启动其他 CPU 前完成所有 early allocation、内存图发布和 per-CPU 区域构造。
+early bump allocator 没有锁：`ram.rs` 用三个 `static mut`（`RAM_START`、`RAM_END`、`RAM_CURRENT`）保存状态，安全性完全依赖“仅引导处理器、单核 early boot 阶段调用”的约定。引导处理器在启动其他 CPU 前完成所有 early allocation、内存图发布和 per-CPU 区域构造。
 
-### 2.1 单写者状态机
+### 2.1 单写者流程
 
-状态只按 `Uninitialized → Active → Frozen` 前进。`alloc()` 在锁内完成对齐、溢出检查和 `current` 更新；失败不修改状态。`memory_map_setup()` 先发布剩余已用区间，再冻结，避免运行时看到部分状态。
+启动内存的所有更新都发生在引导处理器单一调用链上。`alloc()` 完成对齐和边界检查后推进 `RAM_CURRENT`；失败不修改状态。`memory_map_setup()` 把尚未发布的已用区间以 `Reserved` 合入内存图，此后 early bump 不再使用（当前没有冻结机制，靠调用顺序保证）。
 
 ```mermaid
 sequenceDiagram
     participant BSP as 引导处理器
-    participant RAM as RamAllocatorState
+    participant RAM as early bump（static mut）
     participant Map as MemoryMap
     participant AP as 应用处理器
 
-    BSP->>RAM: init(lowest_range_covering_boot_working_set)
+    BSP->>RAM: init(first Free segment > 8 MiB)
     BSP->>RAM: alloc(boot tables / DTB / CPU areas)
     BSP->>RAM: used_range()
     BSP->>Map: merge_add(Reserved)
-    BSP->>RAM: freeze()
     BSP->>AP: publish per-CPU layout and start
     Note over AP,RAM: AP 不调用 early allocator
 ```
@@ -80,7 +79,7 @@ sequenceDiagram
 
 ### 3.1 Buddy 临界区
 
-`GlobalAllocator::buddy` 使用 `SpinNoIrq<BuddyAllocator>`。section 链、free list、`PageMeta`、拆分和合并都只在该锁内修改。region 初始化也持有同一锁，因此初始化期间不能并发分配。
+`GlobalAllocator::buddy` 是 `ax_sync::SpinLock<BuddyAllocator>`，通过 `lock_irqsave()` 访问（取锁同时关闭本地中断）。section 链、free list、`PageMeta`、拆分和合并都只在该锁内修改。region 初始化也持有同一锁，因此初始化期间不能并发分配。
 
 ```text
 alloc_pages
@@ -91,11 +90,11 @@ alloc_pages
   -> release lock + restore IRQ state
 ```
 
-锁内不能调用虚拟文件系统、页缓存回收、缺页处理或任何可能再次分配的 callback。`NoMemory` 在释放锁后直接返回，上层若有回收策略，应在锁外完成并限制重试次数。
+锁内不能调用虚拟文件系统、页缓存回收、缺页处理或任何可能再次分配的 callback。当前 `ax-alloc` 在 page allocation 失败后会释放 allocator 锁，再调用已注册的 page reclaim callback 并重试；因此新增 reclaim 代码必须维持“锁外执行、重试有界”的约束。
 
 ### 3.2 每 CPU Slab 与禁止抢占
 
-字节分配在 `ax-alloc/src/buddy_slab.rs` 中先创建 `NoPreempt` guard，再通过 `with_cpu_pin` 获取当前 CPU 的 Slab。具体 allocation 代码只在[运行时页与堆分配器](./runtime-allocator.md#33-页所有权)展示；本章只定义并发条件：guard 必须覆盖 Slab lookup、可能发生的 Buddy backing allocation 和统计更新，防止任务持有 CPU-local 指针时迁移。
+字节分配在 `ax-alloc/src/buddy_slab.rs` 中通过 `ax_percpu::with_cpu_pin` 获取当前 CPU 的 Slab 指针，并由 per-CPU Slab 内部 `SpinLock` 串行化本 CPU cache。具体 allocation 代码只在[运行时页与堆分配器](./runtime-allocator.md#33-页所有权)展示；本章只定义并发条件：CPU-local 指针的获取和使用必须处在有效 pinning/IRQ-safe allocator 调用边界内，避免任务持有 CPU-local 指针时迁移。
 
 锁顺序是“固定当前 CPU → 本 CPU Slab → 必要时短时 Buddy”。Buddy 实现不反向获取某个 CPU 的 Slab 锁；这样避免 `Buddy → Slab` 与 `Slab → Buddy` 形成环。
 
@@ -121,7 +120,7 @@ sequenceDiagram
 
 ### 3.4 统计原子
 
-启用 `stats` feature 后，`AllocatorCounters` 的每个 usage bucket 使用 `AtomicUsize` Relaxed 操作。计数不决定页是否可访问、不发布 owner，也不参与释放正确性，所以无需用其建立线程间 happens-before。资源发布由锁、remote-free 原子和上层所有权协议承担。
+`ax-alloc` 的用途统计由 `SpinLock<Usages>` 无条件保护：每次成功分配/释放都在 allocator 内部锁之外短暂持有统计锁更新对应 `UsageKind` bucket，没有独立 feature 开关，也没有 per-bucket 原子。计数不决定页是否可访问、不发布 owner，也不参与释放正确性，所以无需用其建立线程间 happens-before。资源发布由锁、remote-free 原子和上层所有权协议承担。
 
 ## 4. 页表与地址空间
 
@@ -133,10 +132,10 @@ sequenceDiagram
 
 | 消费者 | 外层 owner | 操作期间的要求 |
 | --- | --- | --- |
-| ArceOS kernel | `SpinNoIrq<AddrSpace>` | 不睡眠、不调用文件系统，完成 map/unmap/protect 后释放 |
+| ArceOS kernel | `SpinLock<AddrSpace>`（ax_sync，`lock_irqsave()`） | 不睡眠、不调用文件系统，完成 map/unmap/protect 后释放 |
 | ArceOS user address space | 由进程/调用链持有可变访问 | 不允许另一个线程并发修改同一实例 |
 | StarryOS process | `Arc<Mutex<AddrSpace>>` | 虚拟内存区域、页表和记账作为一个状态转换提交 |
-| Axvisor guest | `SpinNoIrq<Machine<AxVMResources, ...>>` | 客户机映射修改、缺页和内存访问由同一虚拟机 owner 串行化；销毁前停止虚拟处理器 |
+| Axvisor guest | `Mutex<Machine<AxVMResources, ...>>`（`IrqSafeMutex`） | 客户机映射修改、缺页和内存访问由同一虚拟机 owner 串行化；销毁前停止虚拟处理器 |
 
 `ax-memory-set` 不提供通用 undo 日志。单个 backend 必须清理本次 map 新建的资源；需要专用恢复的写时复制 clone、页连续填充或页表移动由 Starry 策略层维护局部记录。Axvisor 的具体锁闭包和 slice 生命周期见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md#7-锁并发与安全边界)。
 
@@ -154,7 +153,7 @@ sequenceDiagram
 7. 发布新的虚拟内存区域元数据并释放外层 owner。
 ```
 
-AArch64 默认失效器提供 inner-shareable 硬件广播。x86_64、RISC-V 和 LoongArch64 默认失效器只处理本 CPU；多 CPU consumer 必须提供远程处理器间中断或定制 `TlbInvalidator`。缺少有效 shootdown 时不能把本地失效当作系统完成。
+AArch64 的地址级 `tlbi vaae1is` 提供 inner-shareable 硬件广播（全量 `vmalle1` 仅本核）。x86_64、RISC-V 和 LoongArch64 的 `TableMeta::flush()` 只处理本 CPU；多 CPU consumer 解除共享内核映射时必须使用 `ax_hal::cache::flush_tlb_range_all_cpus()` 一类的软件 shootdown（基于 `axipi` 的 ready 状态机）。缺少有效 shootdown 时不能把本地失效当作系统完成。
 
 ## 5. StarryOS 并发
 
@@ -168,15 +167,15 @@ StarryOS 的缺页、映射和进程克隆涉及可睡眠对象，因此以 `Arc
 
 ### 5.2 写时复制帧表
 
-全局 `FRAME_TABLE` 的 `SpinNoIrq<CowFrameTable>` 同时保护以物理地址数值为键的哈希表、带溢出检查的 `u32` 引用计数和常驻内存集大小分类，不再为每个物理页增加 `Arc<SpinNoIrq<_>>`。引用增加、释放和分类读取都在一次短临界区内完成；物理页释放在退出 `FRAME_TABLE` 临界区后执行。
+全局 `FRAME_TABLE` 当前是 `IrqMutex<FrameTableRefCount>`，内部用 `BTreeMap<PhysAddr, Arc<IrqMutex<FrameRefCnt>>>` 保存每个 COW frame 的 `u8` 引用计数。引用增加、释放和分类读取需要检查这个两级锁结构；物理页释放应在不持有外层 frame table 锁时执行。
 
-写时复制 clone 使用 preflight、commit 和 rollback。预检先验证计数不会溢出并准备所有页，提交阶段逐项增加引用、修改父子页表并增加 child 汇总计数；任一步失败都逆序撤销已提交项。新 frame 登记前使用 `HashMap::try_reserve()`，因此内存不足返回 `AxError::NoMemory`；锁顺序固定为地址空间 Mutex、`FRAME_TABLE`、allocator，释放物理页时不持有 `FRAME_TABLE`。
+当前写时复制 frame table 使用 `BTreeMap<PhysAddr, Arc<IrqMutex<FrameRefCnt>>>` 和 `u8` 引用计数。clone 流程逐区域调用 backend `clone_map()` 并在 child `MemorySet` 发布 metadata；失败路径依赖 backend 和 fresh child 清理已经建立的映射。锁顺序仍应保持地址空间 Mutex、`FRAME_TABLE`、allocator，释放物理页时不持有 `FRAME_TABLE`。
 
 ### 5.3 记账与提交策略
 
-`MemoryAccounting` 用原子保存匿名页、文件页、共享内存页和峰值。File/Shared backend 的分类由 backend 类型确定；私有写时复制页的分类由 `CowFrameState::rss_kind` 确定。文件私有页第一次写入时，在地址空间锁内执行 checked File→Anon 汇总转换并更新 frame state；任一计数下溢都会返回 `AxError::BadState`，不会在发布构建中回绕。
+`MemoryAccounting` 用原子保存匿名页、文件页、共享内存页和峰值，同时用地址空间锁下访问的 charge map 记录 COW resident 页分类。File/Shared backend 的分类由 backend 类型确定；文件私有页第一次写入时通过 `cow_file_write_to_anon()` 在地址空间锁内把统计从 File 迁移为 Anon。当前减少操作使用 `fetch_sub` 并只在 debug build 断言下溢，不是发布构建的 checked error。
 
-全局 commit admission 使用原子计数。严格模式通过原子 compare-exchange 保证“检查上限并扣费”不可被并发请求越过；Always 模式仍维护统计，但不因上限拒绝。测试锁只在 `cfg(test)` 中串行化全局测试状态，不是生产同步的一部分。
+当前 StarryOS 没有独立的全局 commit admission 对象；`RLIMIT_AS`、overcommit 展示和 mmap/brk 准入由 Starry kernel syscall/resource 代码处理，`/proc/meminfo` 的 `Committed_AS` 仍固定为 0。
 
 ## 6. DMA 与内存映射输入输出
 
@@ -184,7 +183,7 @@ StarryOS 的缺页、映射和进程克隆涉及可睡眠对象，因此以 `Arc
 
 ### 6.1 DMA 所有权顺序
 
-`DmaAllocation` 和 `DmaMapping` 不实现任意复制的释放 token。驱动提交 DMA 前把 buffer 的 operation-lifetime retainer 交给请求；完成中断只标记完成并唤醒，最终 owner 在设备不再访问后执行 unmap/free。
+高层 `DmaAllocation` 和 `StreamingMap` 不实现任意复制的释放 owner。需要注意的是，当前底层 `DmaAllocHandle` 和 `DmaMapHandle` 派生了 `Clone + Copy`，所以驱动代码必须只通过高层 owner 传播生命周期，不能把裸 handle 当成独占 token 复制保存。
 
 ```text
 allocate/map
@@ -213,7 +212,7 @@ allocate/map
 
 ```text
 process/task owner
-  -> address-space Mutex or SpinNoIrq
+  -> address-space Mutex or irq-save SpinLock
     -> backend-local state
       -> page-table cursor / COW frame reference
         -> ax-alloc per-CPU Slab or Buddy lock

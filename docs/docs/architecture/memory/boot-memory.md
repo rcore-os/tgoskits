@@ -18,9 +18,9 @@ sidebar_label: "启动内存"
 | 架构入口 | `platforms/someboot/src/arch/*/entry.rs` | 固件参数、当前 CPU 标识和初始执行环境 |
 | 设备树 RAM | `platforms/someboot/src/fdt/memory.rs` | 全部 RAM bank、reservation block、`/reserved-memory` |
 | UEFI RAM | `platforms/someboot/src/efi_stub/memmap.rs` | 归一后的 Free、Reserved 与 MMIO 描述符 |
-| 区间容器 | `components/kernutil/src/memory.rs` | 固定容量、事务式覆盖的 `MemoryDescriptor[]` |
-| early allocator | `platforms/someboot/src/mem/ram.rs` | `Uninitialized/Active/Frozen` checked bump |
-| 启动编排 | `platforms/someboot/src/mem/mod.rs` | KImage、架构保留区、已用 early 前缀和冻结后的 map |
+| 描述符与区间操作 | `components/kernutil/src/memory.rs`、`memory/ranges-ext/src/lib.rs` | `MemoryDescriptor`、`MemoryType`、`RangeOp` 实现与 `VecOp::merge_add()` 区间覆盖 |
+| early allocator | `platforms/someboot/src/mem/ram.rs` | 引导处理器专用的线性 bump 分配器 |
+| 启动编排 | `platforms/someboot/src/mem/mod.rs` | KImage、架构保留区、已用 early 前缀和最终发布的 map |
 | 每 CPU 对象 | `platforms/someboot/src/smp/` | 全部 CPU 的 metadata、boot stack 和 linker data |
 | 运行时交接 | `axplat-dyn` → `axhal` → `axruntime` | 多个独立 Buddy section 和 CPU-local Slab |
 
@@ -56,24 +56,21 @@ flowchart TD
     U --> N["规范化物理范围和类型"]
     F --> N
     F --> R["解析 reservation block 与 /reserved-memory"]
-    N --> M["MemoryMapExt::merge_add"]
+    N --> M["VecOp::merge_add"]
     R --> M
     K["内核镜像范围"] --> M
     A["架构早期保留区"] --> M
-    M --> C["应用架构早期地址上限"]
-    C --> L{"容量覆盖 CPU 区、DTB 与启动元数据？"}
-    L -->|"否"| N["检查下一个更高地址候选"]
-    N --> L
-    L -->|"是：取最低地址候选"| B["ram::init 进入 Active"]
-    L --> B
+    M --> S["按物理起点排序内存图"]
+    S --> L{"第一个 Free 段大于 8 MiB？"}
+    L -->|"否（无更多 Free 段）"| PANIC["启动失败：No free memory"]
+    L -->|"是"| B["ram::init 以该段为 bump arena"]
     B --> P["分配 boot 页表"]
     P --> D["保存 DTB / 固件数据"]
-    D --> S["一次性分配全部 CPU area 和 boot stack"]
-    S --> Q["建立并切换最终启动页表"]
+    D --> S2["一次性分配全部 CPU area 和 boot stack"]
+    S2 --> Q["建立并切换最终启动页表"]
     Q --> X["flush_to_memory_map 发布分类前缀"]
-    X --> Z["memory_map_setup 发布剩余已用范围"]
-    Z --> FR["ram::freeze 进入 Frozen"]
-    FR --> PL["axplat-dyn 转换 Free / Reserved / MMIO"]
+    X --> Z["memory_map_setup 发布剩余已用范围与调试控制台"]
+    Z --> PL["axplat-dyn 转换 Free / Reserved / MMIO"]
     PL --> H["ax-hal 扣除保留区并按 4 KiB 对齐"]
     H --> G["axruntime 选择最大 Free region"]
     G --> GI["ax_alloc::global_init"]
@@ -88,12 +85,14 @@ flowchart TD
 
 固件输入、地址规范化和页表切换由架构层实现，内存描述符合并与运行时交接保持一致。下表给出影响启动内存结果的差异。
 
-| 架构 | 固件与 RAM 输入 | early arena 限制 | 页表切换 | 地址处理 |
+固件输入、地址规范化和页表切换由架构层实现，内存描述符合并与运行时交接保持一致。early arena 的选择规则在四个架构上完全相同：`early_init()` 先把内存图按物理起点排序，再取第一个大小超过 8 MiB 的 `Free` 描述符整体作为 bump arena；不存在候选时直接 `panic!("No free memory")`。当前代码没有按架构裁剪候选区间地址上限的逻辑，x86_64 的 arena 也可能位于 4 GiB 以上；应用处理器 trampoline 通过 `reserve_arch_early_ranges()` 单独预留一页低地址 `Reserved`。下表给出其余影响启动内存结果的差异。
+
+| 架构 | 固件与 RAM 输入 | 架构早期保留 | 页表切换 | 地址处理 |
 | --- | --- | --- | --- | --- |
-| x86_64 | 主要来自 UEFI/动态平台描述 | 页表根必须在 4 GiB 以下，供应用处理器 32 位 trampoline 装载 | 写 `CR3` 并失效本地翻译 | 重定位前恒等，之后使用 `PHYS_VIRT_OFFSET` |
-| AArch64 | UEFI 或 U-Boot 传入设备树 | 在满足计算所得启动容量的段中选择最低地址，无 4 GiB trampoline 限制 | 设置 EL1/EL2 translation registers、MAIR 和 TLBI | RAM 使用 `PAGE_OFFSET`，每 CPU 区有额外窗口 |
-| RISC-V 64 | OpenSBI/U-Boot 传入设备树 | 在满足计算所得启动容量的段中选择最低地址 | 写 Sv39 `satp` 并执行 `sfence.vma` | 重定位配置下区分镜像、每 CPU 区和线性映射 |
-| LoongArch64 | UEFI 或设备树 | 在满足计算所得启动容量的段中选择最低地址 | 写 `PGDH/PGDL`、ASID，执行 `invtlb` 与屏障 | 先移除直接映射窗口高位；RAM 与 MMIO 使用不同窗口 |
+| x86_64 | 主要来自 UEFI/动态平台描述 | AP trampoline 一页 `Reserved`，已被固件保留时接受现状 | 写 `CR3` 并失效本地翻译 | 重定位前恒等，之后使用 `PHYS_VIRT_OFFSET` |
+| AArch64 | UEFI 或 U-Boot 传入设备树 | 无 | 设置 EL1/EL2 translation registers、MAIR 和 TLBI | RAM 使用 `PAGE_OFFSET`，每 CPU 区有额外窗口 |
+| RISC-V 64 | OpenSBI/U-Boot 传入设备树 | 无 | 写 Sv39 `satp` 并执行 `sfence.vma` | 重定位配置下区分镜像、每 CPU 区和线性映射 |
+| LoongArch64 | UEFI 或设备树 | 无 | 写 `PGDH/PGDL`、ASID，执行 TLB 全量失效与屏障 | 先移除直接映射窗口高位；RAM 与 MMIO 使用不同窗口 |
 
 更完整的页表项、缓存属性和多 CPU 失效差异见[多架构内存实现](./architecture-support.md)。
 
@@ -131,24 +130,22 @@ pub enum MemoryType {
 }
 ```
 
-`MemoryDescriptor` 只保存 `physical_start`、`size_in_bytes` 和 `memory_type` 三个字段；它不持有 allocator 私有 metadata，也不携带 owner 指针。所有重叠检测、对齐与 conflict 判定都由外层 `MemoryMapExt::merge_add()` 在固定容量 `heapless::Vec` 上完成。
+`MemoryDescriptor` 只保存 `physical_start`、`size_in_bytes` 和 `memory_type` 三个字段；它不持有 allocator 私有 metadata，也不携带 owner 指针。重叠检测与 conflict 判定由 `memory/ranges-ext` 的 `VecOp::merge_add()` 在固定容量 `heapless::Vec` 上原地完成，`kernutil::memory` 只为描述符实现 `RangeOp`（提供 `overwritable()` 与同类型 `mergeable()` 判定）。
 
 ### 2.2 区间合并与冲突
 
-`MemoryMapExt::merge_add()` 先克隆当前固定容量 map，在副本上执行 split、insert 和同类型合并，成功后才替换原 map。这使 capacity、alignment、range overflow 或冲突错误不会留下半修改状态。
+`VecOp::merge_add()` 直接在当前固定容量 map 上原地执行：逐个检查与新区间重叠的既有描述符，把被覆盖的 `Free` 段拆分收缩，再 push 新描述符并合并相邻同类型区间。冲突在新描述符写入前判定；容量不足时 push/insert 返回 `RangeError::Capacity`，但此前已经生效的拆分不会回滚，调用方因此需要在启动路径上用 `unwrap`/`panic` 立即暴露容量问题，而不是假设 map 保持事务性。
 
 ```mermaid
 flowchart LR
-    New["new descriptor"] --> Clone["clone current map"]
-    Clone --> Check{"overlap existing?"}
-    Check -->|"Free or same type"| Split["split overwritten free range"]
-    Check -->|"different non-Free type"| Conflict["return Conflict\noriginal unchanged"]
-    Split --> Insert["insert descriptor"]
+    New["new descriptor"] --> Check{"overlap existing?"}
+    Check -->|"Free or same type"| Split["shrink/split overwritten range in place"]
+    Check -->|"different non-Free type"| Conflict["return RangeError::Conflict\nnew item not added"]
+    Split --> Insert["push descriptor"]
     Insert --> Merge["merge adjacent/overlapping\nsame-type ranges"]
-    Merge --> Commit["replace original map"]
 ```
 
-同类型范围可以相邻或重叠后合并。新描述符可以覆盖 `Free`，但不能覆盖不同类型的非 `Free` 区间；例如 `Reserved` 与已有 `KImage` 冲突时会返回 `MemoryRangeError::Conflict`。
+同类型范围可以相邻或重叠后合并。新描述符可以覆盖 `Free`，但不能覆盖不同类型的非 `Free` 区间；例如 `Reserved` 与已有 `KImage` 冲突时会返回 `RangeError::Conflict`。x86 AP trampoline 的预留代码就依赖这一语义：`Conflict` 且既有区间非 `Free` 时接受固件已保留的现状，其余错误直接 panic。
 
 ### 2.3 分配资格、直接映射与页表属性
 
@@ -170,54 +167,44 @@ flowchart LR
 
 ### 3.1 固件与镜像保留区
 
-`init_memory_map()` 处理 扁平设备树 memory reservation block，并将范围按页对齐后加入 `Reserved`。它也遍历 `/reserved-memory` 每个子节点的全部 `reg` tuple；固定容量内存图无法保留条目时明确失败，不能静默暴露保留页。
+`init_memory_map()` 处理 扁平设备树 memory reservation block，并将范围按页对齐后加入 `Reserved`。它还遍历 `/reserved-memory` 的每个子节点，但当前实现只读取每个节点的第一个 `reg` tuple（`reserved.reg()` 迭代器只调用一次 `next()`），其余 reg 被忽略；该路径构造描述符时不做页对齐，与 reservation block 不同。固件在 `/reserved-memory` 节点中使用多个 reg 或非页对齐边界时，平台需要显式处理或修正解析代码。
 
 | 保留来源 | 添加位置 | 类型或处理 |
 | --- | --- | --- |
 | 扁平设备树 reservation block | `platforms/someboot/src/fdt/memory.rs` | 页对齐的 `Reserved` |
-| `/reserved-memory` | `platforms/someboot/src/fdt/memory.rs` | 每个 node 的全部 `reg` tuple 都加入 `Reserved` |
+| `/reserved-memory` | `platforms/someboot/src/fdt/memory.rs` | 每个节点仅第一个 `reg` tuple，不做页对齐 |
 | kernel image | `mem::early_init()` | `KImage`，结束地址按 `KIMAGE_MAP_ALIGN` 扩展 |
 | x86 应用处理器 trampoline | `reserve_arch_early_ranges()` | 一页 `Reserved`，已被固件保留时接受现状 |
 | memory-backed debug console | `memory_map_setup()` | 平台返回的描述符 |
 
 ### 3.2 早期线性分配
 
-`someboot::mem::ram` 在 `early_init()` 中先计算全部固件 CPU 区域的精确大小，加上经校验的设备树二进制对象大小和一个 `KIMAGE_MAP_ALIGN`（2 MiB）的页表、对齐及其他启动元数据余量；随后在非空、地址计算不溢出且满足架构启动地址约束的 `Free` 子区间中，选择物理地址最低且容量达到该工作集的区间作为 bump arena。最终直接映射尚未建立时，不能根据容量推断高地址 RAM 已经可访问；2 MiB 小段也不能仅因地址最低而被选中。选择过程先应用 `ArchTrait::EARLY_RAM_END_EXCLUSIVE`，不依赖固件描述符顺序。early arena 不是运行期 heap，也不跨多个 RAM bank 拼接分配，后续每次 bump 仍执行边界检查。
-
-x86_64 的应用处理器 trampoline 在 32 位启动阶段通过 `movl %eax, %cr3` 装载启动页表根物理地址，因此 early arena 必须位于 4 GiB 以下。`select_early_ram()` 会把 x86_64 候选区间的末端裁剪到 `0x1_0000_0000`；完全位于该地址以上的 RAM 不参与 early arena 选择。该限制只约束启动页表、设备树副本和每 CPU 启动对象，不会丢弃高端 RAM：`memory_map_setup()` 交接后，高端 `Free` 描述符仍进入运行时 Buddy section。
-
-例如固件同时报告 `0x20_0000..0x42f7_b000` 和 `0x1_0000_0000..0x8_8000_0000`，后者虽然更大，x86_64 仍选择前者。这样启动页表根保持在 4 GiB 以下，而 30 GiB 高端区间在运行时分配器初始化时继续作为独立 section 加入。
-
-`RamAllocatorState` 是一个三态显式状态机，定义在 `platforms/someboot/src/mem/ram.rs`。`Active` 携带 `used_start`、`end` 与 `current` 三个字段，使 `used_range()` 能在 flush 时把已用前缀切出未用尾部。
+`platforms/someboot/src/mem/mod.rs::early_init()` 完成内存图裁剪后，先把描述符按 `physical_start` 排序，再取第一个大小超过 8 MiB 的 `Free` 描述符整体作为 bump arena；不存在这样的段时 `expect("No free memory")` 直接失败。选择不计算启动工作集，也没有架构地址上限：arena 可能位于高地址 RAM，8 MiB 阈值只是当前经验的保守下界。early arena 不是运行期 heap，也不跨多个 RAM bank 拼接分配，后续每次 bump 仍检查 `end > RAM_END` 边界。
 
 ```rust
-#[derive(Clone, Copy)]
-enum RamAllocatorState {
-    Uninitialized,
-    Active {
-        used_start: usize,
-        end: usize,
-        current: usize,
-    },
-    Frozen,
+unsafe { MEMORY_MAP.update(|m| m.sort_by_key(|a| a.physical_start)) };
+
+let mut free_range = None;
+for desc in memory_map().iter() {
+    if desc.memory_type == MemoryType::Free && desc.size_in_bytes > 8 * MB {
+        free_range = Some(desc.physical_start..(desc.physical_start + desc.size_in_bytes));
+        break;
+    }
 }
+ram::init(free_range.expect("No free memory"));
 ```
 
-状态转换严格单向，没有从 `Frozen` 回到 `Active` 的 thaw 路径。下图展示三个状态、它们的入口动作和退出条件，以及 `Active` 自循环对 `used_start` 与 `current` 字段的不同影响。
+`platforms/someboot/src/mem/ram.rs` 的 early allocator 由三个 `static mut`（`RAM_START`、`RAM_END`、`RAM_CURRENT`）组成的线性 bump 实现，没有锁也没有显式状态机；它的安全前提是只在引导处理器、单核 early boot 阶段被调用。
 
-```mermaid
-stateDiagram-v2
-    [*] --> Uninitialized: 编译期静态初值
-    Uninitialized --> Active: ram init 选择区间并设置 current
-    Active --> Active: alloc 成功后推进 current；失败返回 None
-    Active --> Active: flush_to_memory_map 发布已用前缀
-    Active --> Frozen: memory_map_setup 发布剩余前缀并冻结
-    Frozen --> [*]: 运行时分配器接管 Free 段
+```rust
+static mut RAM_START: usize = 0;
+static mut RAM_END: usize = 0;
+static mut RAM_CURRENT: usize = 0;
 ```
 
-`ram::init()` 把 `current` 初始化为 `range.start.max(0x40)` 而非 `range.start`，避免从地址 0 开始分配造成 NULL 指针语义混淆；当 `range.start < 0x40` 时 `used_start` 与 `current` 之间存在初始间隙，该间隙会随首次 `flush_to_memory_map()` 一同作为已用前缀发布。`alloc(Layout)` 仅在 checked arithmetic 全部成功时推进 `current` 并返回地址；arena 耗尽或加法溢出时保持状态字段不变并返回 `None`，因此冻结后再次调用 early provider 只会得到分配失败，而不是默默回退到其他来源。
+`ram::init()` 把 `RAM_CURRENT` 初始化为 `range.start.max(0x40)` 而非 `range.start`，避免从地址 0 开始分配造成 NULL 指针语义混淆；当 `range.start < 0x40` 时 `RAM_START` 与 `RAM_CURRENT` 之间存在初始间隙，该间隙会随首次 `flush_to_memory_map()` 一同作为已用前缀发布。`alloc(Layout)` 先对齐 `RAM_CURRENT`，加上请求大小后与 `RAM_END` 比较；arena 耗尽时返回 `None`。注意当前实现的加法没有使用 checked arithmetic，`start + size` 在极地址下溢出会回绕，这是已知实现限制。
 
-`flush_to_memory_map(kind)` 把区间 `[used_start, current.align_up(page_size))` 作为 `MemoryDescriptor` 加入内存图，随后把 `used_start` 与 `current` 同时重置为已发布区间的末端；下一次 `alloc` 从新的 `current` 继续推进。`memory_map_setup()` 是 boot/runtime 边界的最后一步：它先读取尚未 flush 的 `ram::used_range()`，把该剩余范围作为 `Reserved` 加入内存图（保证已使用前缀不会被运行时分配器重复分配），再调用 `ram::freeze()` 进入 `Frozen` 终态。该顺序保证 arena 已用前缀和未用尾部在冻结前都已正确反映到内存图中。
+`flush_to_memory_map(kind)` 把区间 `[RAM_START, RAM_CURRENT.align_up(page_size))` 作为 `MemoryDescriptor` 加入内存图，随后把 `RAM_START` 与 `RAM_CURRENT` 同时重置为已发布区间的末端；下一次 `alloc` 从新的 `RAM_CURRENT` 继续推进。`memory_map_setup()` 是 boot/runtime 边界的交接点：它读取尚未 flush 的 `ram::used_range()` 并作为 `Reserved` 加入内存图（保证已使用前缀不会被运行时分配器重复分配），再加入 memory-backed debug console 描述符。当前代码没有冻结机制阻止交接后继续调用 early allocator；“`memory_map_setup()` 之后不再使用 early bump”是启动流程的约定，由调用顺序而非类型系统保证。
 
 ## 4. 启动对象
 
@@ -225,7 +212,7 @@ Early bump 只分配必须在通用 allocator 之前存在、且生命周期明�
 
 ### 4.1 启动页表与设备树
 
-`someboot` 的各架构启动页表通过 `page-table-generic::PageFrameProvider` 使用 `someboot::mem::ram::Ram`。该 provider 能分配 frame 和完成物理到虚拟地址转换，但 boot 阶段的 deallocation 是 no-op；整个已用前缀随后统一标记为 `Reserved`。
+`someboot` 的各架构启动页表通过 `page-table-generic::FrameAllocator` 使用 `someboot::mem::ram::Ram`。该 allocator 能分配 frame 和完成物理到虚拟地址转换，但 boot 阶段的 deallocation 是 no-op；整个已用前缀随后统一标记为 `Reserved`。
 
 | 启动对象 | 分配来源 | 运行期释放 |
 | --- | --- | --- |
@@ -264,7 +251,7 @@ flowchart LR
 
 | 阶段 | 输入 | 输出 |
 | --- | --- | --- |
-| `someboot::memory_map_setup()` | 扁平设备树、KImage、early allocations | 冻结后的 `MemoryDescriptor[]` |
+| `someboot::memory_map_setup()` | 扁平设备树、KImage、early allocations | 交接后的最终 `MemoryDescriptor[]` |
 | `axplat-dyn::mem` | `MemoryType` | FREE / RESERVED / MMIO 平台区域 |
 | `ax-hal::mem::memory_regions()` | 平台区域 | 页对齐且已扣除保留区的运行时区域 |
 | `ax-runtime::init_allocator()` | 所有 `MemRegionFlags::FREE` 区域 | `ax-alloc` 的多个 Buddy section |
@@ -319,18 +306,18 @@ MemoryDescriptor[]
 | 限制 | 当前值或行为 | 影响 |
 | --- | --- | --- |
 | someboot memory map | 512 descriptors | 大量 split 后可能 capacity failure |
-| 扁平设备树 `memories()` 临时结果 | 128 ranges | 超出时立即失败，不静默丢弃 range |
+| 扁平设备树 `memories()` 临时结果 | 128 ranges | 超出时 `push(...).ok()` 静默丢弃，不报错 |
 | axplat dynamic free list | 32 ranges | 超出平台容量不能完整交接 |
 | axplat dynamic reserved list | 32 ranges | 复杂保留图需要显式处理 |
 | axplat dynamic MMIO list | 16 ranges | 设备窗口数量受限 |
-| early bump arena | 满足计算所得启动工作集和架构地址约束的最低地址 Free range | 不跨物理 hole；x86_64 位于 4 GiB 以下；无候选时初始化立即失败 |
+| early bump arena | 排序后第一个大于 8 MiB 的 `Free` 段 | 不跨物理 hole；无候选时 `expect("No free memory")` 启动失败 |
 | Buddy contiguous allocation | 单 section 内完成 | 不能跨物理 hole 拼接连续页 |
 
 这些限制不应通过引入通用非统一内存访问、compaction 或页迁移框架解决。若具体平台超过固定容量，应先提高有依据的常量或压缩平台描述符；对应验收方法见[内存管理测试与验收](./testing.md)。
 
 ## 7. 地址处理实例
 
-启动内存最容易出现的错误不是 allocator 算法错误，而是区间端点、对齐和覆盖顺序错误。`MemoryDescriptor` 的实际更新过程可以展开到具体地址，其结果由 `MemoryMapExt::merge_add()` 的 split/insert/merge 分支决定。
+启动内存最容易出现的错误不是 allocator 算法错误，而是区间端点、对齐和覆盖顺序错误。`MemoryDescriptor` 的实际更新过程可以展开到具体地址，其结果由 `VecOp::merge_add()` 的拆分/收缩与同类型合并分支决定。
 
 ### 7.1 保留区拆分
 
@@ -342,24 +329,19 @@ MemoryDescriptor[]
 | 对齐 reservation | `Reserved 0x47ff_f000..0x4800_3000` |
 | `merge_add()` 提交后 | `Free 0x4000_0000..0x47ff_f000`；`Reserved 0x47ff_f000..0x4800_3000`；`Free 0x4800_3000..0x5000_0000` |
 
-拆分先在 `planned = self.clone()` 上完成。若固定容量不足，原内存图仍只有完整 Free bank，不会出现 reservation 已插入但右侧 Free 丢失的部分状态。
+拆分在原 map 上逐项完成：与 reservation 相交的 `Free` 段被收缩为左右两段，随后 push 新描述符并合并相邻同类型区间。若固定容量不足，push/insert 返回 `RangeError::Capacity`，但此前已完成的收缩不会回滚，因此启动路径对 `merge_add()` 的结果一律 `unwrap`，让容量问题立即暴露。
 
 ```rust
-let new_range = descriptor_range(&descriptor)?;
-let mut planned = self.clone();
-
-// 相交的 Free 可被拆成左右两段；不同的非 Free 类型返回 Conflict。
-if existing.memory_type != MemoryType::Free
-    && existing.memory_type != descriptor.memory_type
-{
-    return Err(MemoryRangeError::Conflict { new: descriptor, existing });
+// 相交且既不可覆盖也不可合并（不同非 Free 类型）时，先于任何修改返回冲突。
+if new_range.start < existing_range.end && new_range.end > existing_range.start {
+    if !(existing.overwritable(&item) || existing.mergeable(&item)) {
+        return Err(RangeError::Conflict { new: item, existing: existing.clone() });
+    }
+    // 按重叠位置 remove/insert 收缩既有区间，之后 push(item) 并 merge_same_kind()。
 }
-
-// 所有 split、insert、merge 成功后才发布。
-*self = planned;
 ```
 
-该代码位于 `components/kernutil/src/memory.rs::MemoryMapExt::merge_add()`。`KImage`、`Reserved` 和 `PerCpuData` 都使用相同覆盖规则，因此无需为每一种保留来源复制一套区间算法。
+该代码位于 `memory/ranges-ext/src/lib.rs::VecOp::merge_add()`。`KImage`、`Reserved` 和 `PerCpuData` 都使用相同覆盖规则，因此无需为每一种保留来源复制一套区间算法。
 
 ### 7.2 早期分配对齐
 
@@ -370,54 +352,58 @@ if existing.memory_type != MemoryType::Free
 | `Layout(4096, 4096)` | `0x8000_4000` | `0x8000_5000` | `0xee0` |
 | `Layout(160, 64)` | `0x8000_5000` | `0x8000_50a0` | `0` |
 
-`ram::alloc()` 对 `current + align_mask` 和 `start + size` 都使用 checked arithmetic，并在 `end > region_end` 时返回 `None`。因此地址溢出和 arena 耗尽都不会回绕到低地址。
+`ram::alloc()` 先把 `RAM_CURRENT` 向上对齐，再做普通加法并在 `end > RAM_END` 时返回 `None`。arena 耗尽会立即失败；注意当前实现的加法不是 checked arithmetic，极端地址溢出会回绕（见 3.2 节的实现限制说明）。
 
 ```rust
-let align_mask = layout.align().checked_sub(1)?;
-let start = current.checked_add(align_mask)? & !align_mask;
-let end = start.checked_add(layout.size())?;
-if end > region_end {
-    return None;
+pub unsafe fn alloc(layout: Layout) -> Option<usize> {
+    let start = unsafe { RAM_CURRENT.align_up(layout.align()) };
+    let end = start + layout.size();
+
+    if end > unsafe { RAM_END } {
+        return None;
+    }
+
+    unsafe { RAM_CURRENT = end; }
+    Some(start)
 }
 ```
 
 如果此时调用 `flush_to_memory_map(PerCpuData)`，发布范围会从当前 `used_start` 延伸到 `current.align_up(page_size())`。上例最后的 `0x8000_50a0` 会按页扩展到 `0x8000_6000`；扩展出的尾部 padding 也属于该启动对象，不能再次进入 Buddy。
 
-### 7.3 冻结与二次分配防护
+### 7.3 交接与二次分配防护
 
-`memory_map_setup()` 先读取尚未 flush 的 `used_range()`，把它加入 `Reserved`，再调用 `ram::freeze()`。冻结后 `alloc()` 的模式匹配只能得到非 Active 状态并返回 `None`。
+`memory_map_setup()` 读取尚未 flush 的 `used_range()`，把它加入 `Reserved`，再加入 memory-backed debug console 描述符。当前没有 freeze 状态：交接后继续调用 early provider 仍会成功返回 arena 内的地址，因此“交接后不再使用 early bump”由启动调用顺序约定保证。
 
 ```rust
 pub(crate) fn memory_map_setup() {
     let ram_range = ram::used_range();
     if !ram_range.is_empty() {
-        add_memory_descriptor(MemoryDescriptor::new_with_range(
-            ram_range,
-            MemoryType::Reserved,
-        ))
-        .unwrap();
+        let desc = MemoryDescriptor::new_with_range(ram_range, MemoryType::Reserved);
+        add_memory_descriptor(desc).unwrap();
     }
-    ram::freeze();
+    if let Some(desc) = crate::console::debug_to_memory_desc() {
+        add_memory_descriptor(desc).unwrap();
+    }
 }
 ```
 
-冻结是 boot/runtime 的单向边界，不提供 thaw。运行期新增页表、任务栈或驱动 buffer 必须进入 `ax-alloc`；继续调用 early provider 只会得到 allocation failure，不能隐藏回退到其他来源。
+boot/runtime 边界是一次性的：运行期新增页表、任务栈或驱动 buffer 必须进入 `ax-alloc`。若未来在交接后错误地继续调用 early provider，已发布为 `Reserved` 的区间会被再次分配，这是当前实现需要评审关注的边界。
 
 ### 7.4 运行时区段结果
 
-延续 7.1 的 RAM bank，再假设 KImage 为 `0x4020_0000..0x40e0_0000`，early bump 最终保留 `0x4800_3000..0x4824_0000`。在扣除这些范围后，运行时能够接收的 Free 段是可逐项计算的。
+延续 7.1 的 RAM bank，再假设 KImage 为 `0x4020_0000..0x40e0_0000`，early bump 已用前缀为 `0x40e0_0000..0x4100_0000`。排序后第一个大于 8 MiB 的 `Free` 段是 `0x40e0_0000..0x47ff_f000`，因此它就是 early arena；其已用前缀发布为 `Reserved`。在扣除这些范围后，运行时能够接收的 Free 段是可逐项计算的。
 
 ```text
 0x4000_0000  Free
 0x4020_0000  KImage start
-0x40e0_0000  KImage end / Free resumes
+0x40e0_0000  KImage end / early arena start
+0x4100_0000  early used end / Free resumes
 0x47ff_f000  firmware Reserved start
-0x4800_3000  firmware Reserved end / early arena start
-0x4824_0000  early used end / Free resumes
+0x4800_3000  firmware Reserved end / Free resumes
 0x5000_0000  RAM end
 ```
 
-最终候选为 `0x4000_0000..0x4020_0000`、`0x40e0_0000..0x47ff_f000` 和 `0x4824_0000..0x5000_0000`。`ax-hal::memory_regions()` 还会执行 4 KiB 对齐，`buddy-slab-allocator` 再消耗每个 region 的 section metadata 和 2 MiB heap 对齐前缀，因此 `managed_bytes()` 必然小于这三段的简单字节和。
+最终候选为 `0x4000_0000..0x4020_0000`、`0x4100_0000..0x47ff_f000` 和 `0x4800_3000..0x5000_0000`。`ax-hal::memory_regions()` 还会执行 4 KiB 对齐，`buddy-slab-allocator` 再消耗每个 region 的 section metadata 和 2 MiB heap 对齐前缀，因此 `managed_bytes()` 必然小于这三段的简单字节和。
 
 ### 7.5 大型固件保留区
 

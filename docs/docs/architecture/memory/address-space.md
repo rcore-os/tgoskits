@@ -126,9 +126,9 @@ pub trait MappingBackend: Clone {
 - `prepare/abort/commit/rollback/finalize`；
 - 通用逐页 `SavedMapping`。
 
-这样 ArceOS 和 Axvisor 的普通映射不会因为 Linux 系统调用级回滚语义创建动态数组或扫描整个旧映射。
+这样 ArceOS 和 Axvisor 的普通映射不会因为 Linux 系统调用级回滚语义创建动态数组或扫描整个旧映射。trait 还提供默认的 `shrink_left`/`shrink_right`，按拆分后的偏移收缩 backend。
 
-当前 trait 仍使用 `bool` 表示 backend 成败。公共 `MemorySet` 把失败转换为 `MappingError::BadState`。这是保留原接口以控制修改范围的明确限制；需要细分 `NoMemory`、参数错误和页表损坏时，应先证明所有调用方都能稳定处理这些错误，再单独修改接口。
+当前 trait 仍使用 `bool` 表示 backend 成败。公共 `MemorySet` 把 map/unmap/shrink 的失败转换为 `MappingError::BadState`；`protect_area` 当前不检查 backend `protect` 的返回值，直接返回 `Ok(())`，这是保留原接口以控制修改范围的已知限制。需要细分 `NoMemory`、参数错误和页表损坏时，应先证明所有调用方都能稳定处理这些错误，再单独修改接口。
 
 ## 4. 映射流程
 
@@ -146,9 +146,7 @@ MemorySet::map(area)
   └─ backend 成功后插入 BTreeMap
 ```
 
-不重叠映射不会构造操作计划或撤销日志。backend 必须保证单次 map 中途失败时清理本次已经建立的前缀。
-
-例如 `ax-mm` 的 allocation backend 在 `populate=true` 时逐页分配。任一页帧申请或页表写入失败后，`rollback_alloc_mapping` 只遍历本次已安装页面并释放对应页帧。
+不重叠映射不会构造操作计划或撤销日志。backend 负责处理单次 map 内部的失败清理，但各实现当前并不一致：例如 `ax-mm` 的 allocation backend 在 `populate=true` 时逐页分配，任一页帧申请或页表写入失败后直接返回 `false`，本次已安装的前缀页不回滚（当前实现会遗留已映射前缀与页帧，属于已知限制）；修复时应由 backend 在失败时逆序清理本次已建立的映射并归还页帧。
 
 ### 4.2 解除映射
 
@@ -175,11 +173,12 @@ StarryOS 写时复制 backend 可以把页表实际写权限清除，同时保�
 
 | API | 用途 |
 | --- | --- |
-| `map_metadata` | 页表项和 owner 已由专用流程建立后发布新区域 |
 | `unmap_metadata` | 页表项已移动或分离后只删除区域描述 |
 | `replace_area_metadata` | 在已有区域内部替换一段描述而不修改页表 |
 
-StarryOS fork 的写时复制流程先建立 child 页表项、引用计数和常驻页统计，然后调用 `map_metadata`。如果元数据发布失败，StarryOS 专用回滚逻辑撤销 child 页表项和引用；公共组件不重复保存同一份撤销状态。
+`MemorySet` 当前只有这两个 metadata-only 入口；发布新区域仍走常规 `map`（含 backend 页表操作）。StarryOS 的 fork 先由 backend `clone_map()` 把页表项写入 child 页表，再用 `map`（不允许覆盖）发布区域描述；mremap 等路径用 `replace_area_metadata`/`unmap_metadata` 调整已有描述。
+
+StarryOS fork 的写时复制流程先由 backend `clone_map()` 建立 child 页表项、引用计数和常驻页统计，再用常规 `map`（不允许覆盖）发布区域元数据。如果元数据发布失败，整个新建的 child `AddrSpace` 被丢弃，其 Drop/`clear()` 撤销已建立的 child 页表项、引用计数与记账；公共组件不重复保存同一份撤销状态。
 
 ## 5. 覆盖映射和原子性边界
 
@@ -231,7 +230,7 @@ backend 额外状态：常数
 - `Linear`：虚拟地址按固定差值换算为物理地址；
 - `Alloc`：立即填充或缺页时分配物理页。
 
-页帧使用 `MemoryZone::Normal` 和 `UsageKind::VirtMem`。释放时传回原页数和用途，不需要保存 zone。
+页帧使用 `global_allocator().alloc_pages(..., UsageKind::VirtMem)`。释放时传回原页数和用途；DMA32 这类低地址选择不参与普通虚拟内存页释放路由。
 
 ### 7.2 StarryOS
 
@@ -244,7 +243,7 @@ backend 额外状态：常数
 - mremap、fork 和缺页恢复；
 - signal/errno 转换。
 
-`AddressSpacePageTable` 把具体页表和 `MemoryAccounting` 交给同一次 backend 调用。这个结构体维护“页表变化必须同步更新常驻页统计”的 StarryOS 不变量，不是通用事务 plan。
+StarryOS `AddrSpace` 在调用 backend 时把具体页表和 `MemoryAccounting` 一并传入。这个边界维护“页表变化必须同步更新常驻页统计”的 StarryOS 不变量，不是通用事务 plan。
 
 ### 7.3 Axvisor axaddrspace
 

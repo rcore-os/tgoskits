@@ -5,7 +5,7 @@ sidebar_label: "运行时分配器"
 
 # 运行时页与堆分配器
 
-`memory/ax-alloc` 是运行期物理页、内核字节分配和 Rust `GlobalAlloc` 的公共入口。它固定使用 `buddy-slab-allocator`：Buddy 管理多个物理内存区段，每 CPU Slab 服务小对象，显式页 API 通过地址区域、用途和 Resource Acquisition Is Initialization（资源获取即初始化，RAII）所有者表达约束。
+`memory/ax-alloc` 是运行期物理页、内核字节分配和 Rust `GlobalAlloc` 的公共入口。它在当前配置下使用 `buddy-slab-allocator`：Buddy 管理多个物理内存区段，每 CPU Slab 服务小对象，显式页 API 通过页数、对齐、用途和 Normal/DMA32 两条分配函数表达约束。
 
 ## 1. 初始化与内存布局
 
@@ -15,7 +15,7 @@ sidebar_label: "运行时分配器"
 
 ```mermaid
 flowchart TB
-    C["消费者"] --> API["memory/ax-alloc/src/lib.rs\nPageRequest / UsageKind / Stats / Error"]
+    C["消费者"] --> API["memory/ax-alloc/src/lib.rs\nAllocatorOps / UsageKind / Usages / AllocError"]
     API --> PAGE["page.rs\nGlobalPage owner + Drop"]
     API --> WRAP["buddy_slab.rs\nGlobalAlloc + per-CPU wiring"]
     WRAP --> GLOBAL["buddy-slab-allocator/src/global.rs\nsize routing"]
@@ -29,9 +29,9 @@ flowchart TB
 
 | 源码 | 关键实现 | 主要不变量 |
 | --- | --- | --- |
-| `memory/ax-alloc/src/lib.rs` | `MemoryZone`、`PageRequest`、`UsageKind`、可选统计与 typed error | 一个公共入口、一个统计事实源 |
+| `memory/ax-alloc/src/lib.rs` | `AllocatorOps`、`UsageKind`、`Usages`、`AllocError`、page reclaim callback | 一个公共入口、一个统计事实源 |
 | `memory/ax-alloc/src/page.rs` | `GlobalPage`、连续页 slice、Drop | owner 保存页数和用途，恰好释放一次 |
-| `memory/ax-alloc/src/buddy_slab.rs` | `GlobalAlloc`、raw page adapter、每 CPU Slab | byte 路径固定 CPU；NoMemory 不触发回调 |
+| `memory/ax-alloc/src/buddy_slab.rs` | `GlobalAlloc`、page adapter、每 CPU Slab | byte 路径固定 CPU；page NoMemory 可在锁外触发注册的 reclaim 回调 |
 | `memory/ax-alloc/src/tracking.rs` | 可选 allocation tracking | 仅 tracking feature；不改变生产所有权 |
 | `memory/buddy-slab-allocator/src/global.rs` | 小对象/大对象路由、Buddy 锁、section 添加 | Buddy 是唯一页源 |
 | `memory/buddy-slab-allocator/src/buddy/mod.rs` | order、split/merge、lowmem 筛选 | 一个 allocation 完全位于一个 section |
@@ -46,7 +46,7 @@ flowchart TB
 | --- | --- | --- |
 | `global_init(start_vaddr, size)` | 建立第一个 Buddy section | 已初始化、范围溢出、metadata/layout 无效 |
 | `global_add_memory(start_vaddr, size)` | 增加后续不连续 section | 未初始化、重叠、范围溢出 |
-| `init_percpu_slab(cpu_id)` | CPU bring-up 时初始化本地 Slab | CPU id 超过 `u16` 或重复初始化 |
+| `init_percpu_slab(cpu_id)` | CPU bring-up 时初始化本地 Slab | CPU id 超过 `u16` 或重复初始化（两者直接 panic） |
 
 `add_region()` 对不足以容纳 metadata 和 2 MiB heap 对齐的短 region 会记录日志并跳过。平台验收不能只统计输入 free bytes，还应比较实际 `managed_bytes()`。
 
@@ -115,45 +115,37 @@ pub const fn slab_pages(self, page_size: usize) -> usize {
 
 超过 Slab 上限的 byte allocation 被向上取整为 4 KiB 页数，由 Buddy 直接完成。它仍以请求的 `Layout` 通过 `GlobalAlloc` 对称释放，不应和显式页 API 混用。
 
-启用 `stats` feature 后，本 CPU 命中、Slab 扩容、跨 CPU 释放和大对象路径都计入 `RustHeap`。跨 CPU 释放只把对象发布给原 owner CPU，不直接操作 Buddy；锁类型、禁止抢占范围、remote-free 原子顺序和锁顺序统一在[内存管理锁与并发](./concurrency.md#3-运行时分配器)维护。
+`RustHeap` 记账是无条件的：本 CPU 命中、Slab 扩容、跨 CPU 释放和大对象路径都经 `SpinLock<Usages>` 计入该 bucket，没有独立 feature 开关。跨 CPU 释放只把对象发布给原 owner CPU，不直接操作 Buddy；锁类型、禁止抢占范围、remote-free 原子顺序和锁顺序统一在[内存管理锁与并发](./concurrency.md#3-运行时分配器)维护。
 
 ## 3. 显式页接口
 
-页表、用户虚拟内存、页缓存、DMA 和其他需要页粒度所有权的代码使用 `PageRequest` 与 `UsageKind`。公共资源获取即初始化入口是 `alloc_pages()`，少数实现层可使用隐藏的 raw 对称 API。
+页表、用户虚拟内存、页缓存、DMA 和其他需要页粒度所有权的代码直接调用 `global_allocator().alloc_pages(num_pages, align, UsageKind)` 或 `alloc_dma32_pages(num_pages, align, UsageKind)`。`UsageKind` 只表达统计用途；低地址约束由单独的 DMA32 入口表达。
 
 ### 3.1 页请求模型
 
-请求包含连续页数、物理地址字节对齐和物理地址约束。当前 base page 固定为 4 KiB，`count` 必须非零，乘法和地址范围都执行 overflow 检查。Buddy 通过平台 `virt_to_phys` 转换计算普通页和 DMA32 页的候选位置，不能用内核虚拟地址对齐代替物理对齐；这允许直接映射偏移不满足大页对齐时仍返回正确的物理页帧。
+请求包含连续页数和字节对齐。当前 base page 固定为 4 KiB，具体参数合法性由 `buddy-slab-allocator` 检查。Buddy 通过平台 `virt_to_phys` 转换计算普通页和 DMA32 页的候选位置，不能用内核虚拟地址对齐代替物理对齐；这允许直接映射偏移不满足大页对齐时仍返回正确的物理页帧。
 
 ```rust
-pub struct PageRequest {
-    pub count: usize,
-    pub align: usize,
-    pub zone: MemoryZone,
-}
-
-pub fn alloc_pages(
-    request: PageRequest,
-    usage: UsageKind,
-) -> AllocResult<GlobalPage>;
+fn alloc_pages(&self, num_pages: usize, align: usize, kind: UsageKind) -> AllocResult<usize>;
+fn alloc_dma32_pages(&self, num_pages: usize, align: usize, kind: UsageKind) -> AllocResult<usize>;
 ```
 
-`MemoryZone` 只表达物理可达性，`UsageKind` 只表达用途统计。两者不得组合成大量 page class，也不改变分配失败时立即返回 `NoMemory` 的规则。
+DMA32 入口只表达物理可达性，`UsageKind` 只表达用途统计。两者不得组合成大量 page class。当前 page 分配失败时会在 allocator 锁外调用已注册的 page reclaim callback，最多 4 轮；没有注册 callback 或回收 0 页时返回 `NoMemory`。
 
 ### 3.2 地址区域
 
-`Normal` 调用 Buddy 的普通 `alloc_pages()`；`Dma32` 调用 `alloc_pages_lowmem()`，只接受物理地址完全位于 4 GiB 以下的结果。当前两者扫描同一组 Buddy section。
+普通页调用 Buddy 的 `alloc_pages()`；DMA32 页调用 `alloc_pages_lowmem()`，只接受物理地址完全位于 4 GiB 以下的结果。当前两者扫描同一组 Buddy section。
 
-| Zone | 地址约束 | 是否独立保留池 | 典型消费者 |
+| 入口 | 地址约束 | 是否独立保留池 | 典型消费者 |
 | --- | --- | --- | --- |
-| `Normal` | allocator 可管理的任意物理地址 | 否 | 页表、用户页、Guest RAM、内核大对象 |
-| `Dma32` | allocation 末地址不超过 32-bit DMA window | 否 | `dma_mask <= u32::MAX` 的设备 |
+| `alloc_pages()` | allocator 可管理的任意物理地址 | 否 | 页表、用户页、Guest RAM、内核大对象 |
+| `alloc_dma32_pages()` | allocation 末地址不超过 32-bit DMA window | 否 | `dma_mask <= u32::MAX` 的设备 |
 
 因为 `Normal` 也能消费低于 4 GiB 的页，Dma32 不是 Linux 式永久 DMA zone reserve。低地址紧张的平台应在启动期规划容量或预分配关键 DMA ring，而不是假设后期请求必然成功。
 
 ### 3.3 页所有权
 
-`GlobalPage` 保存 `start_vaddr`、页数和 `UsageKind`。它不实现复制，Drop 根据地址找到对应 Buddy section，并用原用途更新可选统计。zone 只约束分配时的地址选择，不需要在 owner 中重复保存。
+`GlobalPage` 保存 `start_vaddr` 和页数。它不实现复制，Drop 根据地址找到对应 Buddy section，并固定使用 `UsageKind::Global` 更新统计。其他用途的页 owner 不应借用 `GlobalPage` 表示所有用途，而应保存地址、页数和对应 `UsageKind` 并调用对称释放。
 
 | 方法 | 行为 | 所有权影响 |
 | --- | --- | --- |
@@ -165,42 +157,39 @@ pub fn alloc_pages(
 
 需要把页交给页表项或外部对象长期持有的代码必须明确转移或封装生命周期。不能丢弃 `GlobalPage` 后继续使用其地址，否则 Drop 已经把页返回 allocator。
 
-`Drop` 实现是 owner 协议的执行点。它把构造时记录的页数和用途传回 deallocator；分配时的对齐与地址区域只影响地址选择，释放 Buddy block 时不参与计算。`dealloc_pages()` 标记为 `unsafe` 是因为它要求调用方保证地址确实来自对称的 `alloc_pages()`，并保持原页数和用途。
+`Drop` 实现是 `GlobalPage` owner 协议的执行点。它把构造时记录的页数传回 deallocator；分配时的对齐只影响地址选择，释放 Buddy block 时不参与计算。`dealloc_pages()` 本身是安全函数，但调用方仍必须保证地址确实来自对称的页分配，并保持原页数和用途。
 
 ```rust
 impl Drop for GlobalPage {
     fn drop(&mut self) {
-        // SAFETY: this owner stores the unchanged request and usage associated
-        // with the live allocation, and Drop runs exactly once.
-        unsafe {
-            global_allocator().dealloc_pages(
-                self.start_vaddr.into(),
-                self.num_pages,
-                self.usage,
-            );
-        }
+        global_allocator().dealloc_pages(
+            self.start_vaddr.into(),
+            self.num_pages,
+            UsageKind::Global,
+        );
     }
 }
 ```
 
-字节分配 `GlobalAllocator::alloc()` 与 `dealloc()` 在进入 Slab/Buddy 前获取 `NoPreempt` 守卫，并在守卫作用域结束前完成所有 upstream 操作。`NoPreempt` 防止任务在持有 per-CPU Slab 引用期间被调度到其他 CPU；remote free 与本 CPU free 的路由也由该守卫保护。
+字节分配 `GlobalAllocator::alloc()` 与 `dealloc()` 通过 `buddy-slab-allocator` 的 slab pool hook 获取当前 CPU Slab。`current_percpu_slab()` 使用 `ax_percpu::with_cpu_pin`，安全前提是外层 allocator 操作在访问 CPU-local Slab 时保持当前 CPU pin 有效；remote free 与本 CPU free 的路由由 Slab page header 的 owner CPU 记录决定。
 
 ```rust
 pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
-    // Slab lookup obtains a pointer to the current CPU's cache. Keep the
-    // task on that CPU until the complete upstream operation finishes.
-    let _guard = NoPreempt::new();
-    let result = self.inner.alloc(layout).map_err(crate::AllocError::from);
-    #[cfg(feature = "stats")]
+    let result = self
+        .inner
+        .lock_irqsave()
+        .alloc(layout)
+        .map_err(crate::AllocError::from);
     if result.is_ok() {
-        self.stats
+        self.usages
+            .lock_irqsave()
             .alloc(UsageKind::RustHeap, layout.size());
     }
     result
 }
 ```
 
-`_guard` 的作用域与单次 alloc 同步，因此即使 Slab miss 触发短时获取全局 Buddy 锁，`NoPreempt` 仍能保证 task 不会在锁内迁移 CPU。该约束是 `current_percpu_slab()` 通过 `ax_percpu::with_cpu_pin` 拿到本 CPU pointer 的安全前提。
+当前代码中的 `SpinLock::lock_irqsave()` 负责禁止本地中断并保护 allocator 内部状态；`ax_percpu::with_cpu_pin` 负责在取得 CPU-local 指针时建立 pinning 前提。该约束是 `current_percpu_slab()` 拿到本 CPU pointer 的安全前提。
 
 ## 4. 统计与失败语义
 
@@ -208,27 +197,28 @@ pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
 
 ### 4.1 单一用途统计表
 
-`AllocatorStats` 只在启用 `stats` feature 时存在，并保存一张按 `UsageKind` 索引的字节计数表。每次成功 allocation 只增加一个 bucket，释放只减少原 bucket；关闭 feature 后计数原子和热路径更新均不进入镜像。
+`Usages` 保存一张按 `UsageKind` 索引的字节计数表。每次成功 allocation 只增加一个 bucket，释放只减少原 bucket；当前 buddy-slab wrapper 用 `SpinLock<Usages>` 保护统计，而不是 per-bucket 原子。
 
 | 数据 | 当前枚举或接口 | 含义 |
 | --- | --- | --- |
 | `UsageKind` | `RustHeap`、`VirtMem`、`PageCache`、`PageTable`、`Dma`、`Global` | allocation 的逻辑用途 |
 | backend occupancy | `used_bytes()` / `available_bytes()` | Buddy 页级占用，不等于请求 layout 精确和 |
 
-每个 bucket 使用一个 Relaxed 原子计数；一次分配只写对应 bucket，不用统计全局锁串行化 per-CPU Slab 命中。`stats()` 读取这些 bucket 生成值快照，`usage()` 和 `total()` 从快照聚合。地址区域不是 allocation 来源统计维度，因为 `Normal` 与 `Dma32` 当前共享 Buddy section，后者只是地址筛选条件。
+一次分配只写对应 bucket。地址区域不是 allocation 来源统计维度，因为普通页与 DMA32 当前共享 Buddy section，后者只是地址筛选条件。
 
 ### 4.2 立即失败
 
-`AllocError` 区分参数、初始化状态、重叠、无内存和错误释放。allocator 内部没有 reclaim callback、虚拟文件系统 callback、阻塞等待或隐藏重试。
+`AllocError` 区分参数、初始化状态、重叠、无内存、错误释放和未知句柄（`InvalidParam`、`NotInitialized`、`AlreadyInitialized`、`MemoryOverlap`、`NoMemory`、`NotAllocated`、`NotFound`）。allocator 内部有一个可选 page reclaim callback：`register_page_reclaim_fn()` 保存函数指针，页分配失败后 `buddy_slab.rs` 会释放 allocator 锁、调用 `try_page_reclaim(num_pages.max(16))`，然后重试。
 
 | 错误 | 触发示例 | 上层处理 |
 | --- | --- | --- |
 | `InvalidParam` | `count == 0`、乘法溢出、region range 无效 | 修正调用或返回 `EINVAL` 类错误 |
 | `NotInitialized` / `AlreadyInitialized` | 启动顺序错误 | 作为系统状态错误处理 |
 | `MemoryOverlap` | 重复交接同一物理区 | 启动失败并检查内存图 |
-| `NoMemory` | 没有满足 size/align/zone 的 section | 由调用方决定返回、回收或终止操作 |
+| `NoMemory` | reclaim/retry 后仍没有满足 size/align/地址约束的 section | 由调用方决定返回或终止操作 |
+| `NotAllocated` / `NotFound` | 释放未被分配的内存；请求的地址或实体未找到 | 调用方 bug，应立即暴露 |
 
-Starry 的 clean-page reclaim 位于 fault 外层：只有操作返回 `AxError::NoMemory` 时回收一次，并最多重新执行一次。这个策略不会进入 `ax-alloc` 锁内。
+StarryOS 在 `kernel/src/entry.rs` 中注册 `ax_fs_ng::vfs::page_cache_reclaim`。回收函数不在 allocator 锁内执行，但它是 `ax-alloc` 页分配失败路径的一部分；因此文档和评审不能再假设 allocator 永远“立即失败且无 callback”。
 
 ## 5. 实时与处理器启动
 
@@ -265,7 +255,7 @@ Buddy、Slab、统计和所有权代码在 x86_64、AArch64、RISC-V 64 与 Loon
 
 ## 6. 分配计算实例
 
-运行时分配器的可用容量、内部碎片和地址约束都可以从输入 region 与 `PageRequest` 直接计算。下面的实例对应 `buddy-slab-allocator` 当前 4 KiB page、2 MiB managed-heap 对齐和固定 size class 实现。
+运行时分配器的可用容量、内部碎片和地址约束都可以从输入 region、页数、对齐和是否走 DMA32 入口直接计算。下面的实例对应 `buddy-slab-allocator` 当前 4 KiB page、2 MiB managed-heap 对齐和固定 size class 实现。
 
 ### 6.1 区段前缀计算
 
@@ -340,35 +330,36 @@ match pool.alloc(layout)? {
     SlabAllocResult::Allocated(ptr) => Ok(ptr),
     SlabAllocResult::NeedsSlab { size_class, pages } => {
         let bytes = pages * PAGE_SIZE;
-        let addr = self.buddy.lock().alloc_pages(pages, bytes)?;
-        unsafe { self.buddy.lock().set_page_flags(addr, PageFlags::Slab)? };
+        let addr = self.buddy().alloc_pages(pages, bytes)?;
+        unsafe {
+            self.buddy().set_page_flags(addr, PageFlags::Slab)?;
+        }
         pool.add_slab(size_class, addr, bytes);
-        // 再执行一次本 CPU allocation。
+        match pool.alloc(layout)? {
+            SlabAllocResult::Allocated(ptr) => Ok(ptr),
+            SlabAllocResult::NeedsSlab { .. } => Err(AllocError::NoMemory),
+        }
     }
 }
 ```
 
-这里两次获取 Buddy 锁是有意缩短临界区；`pool.add_slab()` 不在全局 Buddy lock 内执行。首次 class 扩容仍可能失败，所以中断请求/实时 路径不能把“per-CPU Slab”误解为无条件、无界延迟的固定池。
+`self.buddy()` 是返回 `lock_irqsave()` 守卫的私有访问器；这里两次获取 Buddy 锁是有意缩短临界区，`pool.add_slab()` 不在全局 Buddy 锁内执行，新 slab 建立后会再执行一次本 CPU allocation，仍失败则返回 `NoMemory`。首次 class 扩容仍可能失败，所以中断请求/实时 路径不能把“per-CPU Slab”误解为无条件、无界延迟的固定池。
 
 ### 6.4 地址约束与所有权
 
-一个 32-bit DMA 设备申请 16 KiB、16 KiB 对齐 buffer 时，runtime adapter 构造 `PageRequest { count: 4, align: 0x4000, zone: Dma32 }` 并使用 `UsageKind::Dma`。Buddy 只接受最后一个 byte 仍低于 `0x1_0000_0000` 的 block。
+一个 32-bit DMA 设备申请 16 KiB、16 KiB 对齐 buffer 时，runtime adapter 调用 `alloc_dma32_pages(4, 0x4000, UsageKind::Dma)`。Buddy 只接受最后一个 byte 仍低于 `0x1_0000_0000` 的 block。
 
 ```rust
-let request = PageRequest {
-    count: 4,
-    align: 0x4000,
-    zone: MemoryZone::Dma32,
-};
-let pages = ax_alloc::alloc_pages(request, UsageKind::Dma)?;
+let pages = ax_alloc::global_allocator()
+    .alloc_dma32_pages(4, 0x4000, UsageKind::Dma)?;
 ```
 
-假设返回物理地址 `0xffff_c000`，16 KiB 范围正好结束于 `0x1_0000_0000`，仍满足 32-bit mask；若起点为 `0xffff_d000`，末端越界，lowmem path 必须继续扫描或返回 `NoMemory`。`GlobalPage` 保存页数与用途，Drop 根据地址定位 Buddy section，不需要调用方重新传递 `_dma32` 一类布尔值。
+假设返回物理地址 `0xffff_c000`，16 KiB 范围正好结束于 `0x1_0000_0000`，仍满足 32-bit mask；若起点为 `0xffff_d000`，末端越界，lowmem path 必须继续扫描或返回 `NoMemory`。释放根据地址定位 Buddy section，不需要调用方重新传递 `_dma32` 一类布尔值。
 
 ```mermaid
 stateDiagram-v2
     [*] --> Free: page位于Buddy free list
-    Free --> Owned: alloc_pages(request, usage)
+    Free --> Owned: alloc_pages / alloc_dma32_pages
     Owned --> Borrowed: as_slice / address query
     Borrowed --> Owned: borrow结束
     Owned --> Free: GlobalPage Drop

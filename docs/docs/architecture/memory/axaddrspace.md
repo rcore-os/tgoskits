@@ -156,7 +156,7 @@ let area = MemoryArea::new(start, size, flags, Backend::new_alloc(populate));
 self.areas.map(area, &mut self.pt, false)?;
 ```
 
-立即填充路径若在第 N 页分配或映射失败，会解除此前已经建立的前缀并归还对应 frame。懒分配路径若 `remap()` 失败，会立即归还刚取得的 frame，不留下无人拥有的宿主页。
+立即填充路径逐页“分配 + 映射”，当前实现在第 N 页失败时直接返回 `false`，不清理此前已建立的前缀映射，`map` 失败时刚取得的 frame 也不会归还——这是当前实现的已知遗留（已映射前缀与页帧泄漏，靠后续 `clear()` 或销毁回收）。懒分配路径取得 frame 后调用 `remap()`；当前实现同样不在 `remap` 失败时调用 `dealloc_frame`。
 
 当前 AxVM 的生产内存布局先由宿主分配 `VMMemoryRegion`，再使用 `map_linear()` 建立客户机映射；仓库内 `map_alloc()` 的直接调用目前集中在 `axaddrspace` 测试。`Alloc` 是已实现的组件能力，但不能据此宣称现有 AxVM 默认使用按需 Guest RAM。
 
@@ -172,7 +172,7 @@ self.areas.map(area, &mut self.pt, false)?;
 | 地址区域元数据 | `MemorySet` | `AddrSpace` | backend 操作成功后删除或拆分 |
 | 设备模拟缓冲区 | 设备模型或 DMA owner | 对应设备对象 | 不由 Guest RAM backend 隐式释放 |
 
-分配型 unmap 对每个存在的 4 KiB 页表项执行 `unmap`，成功后立即调用 `dealloc_frame`。它先扫描并拒绝大页，避免把大页首项删除后再发现释放粒度不匹配。公共层不保存逐页撤销日志，因此跨多个区域的后续失败不会恢复已经成功删除的前缀。
+分配型 unmap 对每个存在的 4 KiB 页表项执行 `unmap`，成功后立即调用 `dealloc_frame`。当前实现的顺序是先执行 `pt.unmap(addr)`，成功后才检查 `page_size.is_huge()` 并返回 `false`——即遇到大页首项时该页表项已被删除、frame 不释放，调用方收到失败结果；因此该路径只能安全处理纯 4 KiB 的分配型区域。公共层不保存逐页撤销日志，跨多个区域的后续失败不会恢复已经成功删除的前缀。
 
 ## 4. 直接映射与缺页
 
@@ -190,11 +190,11 @@ flowchart TB
     NPT -->|"失败"| Error["返回 MappingState"]
 ```
 
-`Linear` map 直接调用 `map_region(..., allow_huge = true)`，不为目标范围建立软件页快照。`Alloc { populate: true }` 按 4 KiB 页分配；若中途失败，仅逆序清理本次 map 已安装的前缀。`Alloc` unmap 允许懒分配区域内存在空洞，但会先拒绝任何大页，再删除实际存在的基础页并立即释放 frame。
+`Linear` map 直接调用 `map_region(..., allow_huge = true)`，不为目标范围建立软件页快照。`Alloc { populate: true }` 按 4 KiB 页分配；中途失败时当前实现直接返回 `false`，不清理已安装前缀（见 3.2 节）。`Alloc` unmap 允许懒分配区域内存在空洞，但只在 `unmap` 成功后检查大页：遇到大页首项时该项已被删除且 frame 不释放并返回失败，纯 4 KiB 区域则逐项删除并立即释放 frame。
 
 ### 4.2 失败边界
 
-单个分配型 map 保证失败时清理本次新建的前缀。跨多个 `MemoryArea` 的 unmap/clear 不提供全成或回滚：后续 backend 失败时，前面已经删除的页表项和 frame 不会恢复。AxVM 当前生产布局主要使用经过预验证的 Linear 映射，并在停止虚拟处理器后销毁；如果未来需要面向不可信动态请求的原子客户机重映射，应在 AxVM 策略层增加专用预检，而不是恢复通用逐页快照。
+单个分配型 map 当前不保证清理本次新建的前缀（见 3.2 节的遗留行为），审查内存压力下的失败路径时应以此为前提。跨多个 `MemoryArea` 的 unmap/clear 不提供全成或回滚：后续 backend 失败时，前面已经删除的页表项和 frame 不会恢复。AxVM 当前生产布局主要使用经过预验证的 Linear 映射，并在停止虚拟处理器后销毁；如果未来需要面向不可信动态请求的原子客户机重映射，应在 AxVM 策略层增加专用预检，而不是恢复通用逐页快照。
 
 ### 4.3 懒分配缺页
 
@@ -204,15 +204,10 @@ flowchart TB
 let Some(frame) = pt.alloc_frame() else {
     return false;
 };
-if pt.remap(vaddr, frame, orig_flags) {
-    true
-} else {
-    pt.dealloc_frame(frame);
-    false
-}
+pt.remap(vaddr, frame, orig_flags)
 ```
 
-缺页路径一次只处理一个 4 KiB 页，不执行回收、阻塞或内部重试。宿主分配失败直接返回 `false`，上层虚拟处理器异常处理决定如何终止、注入异常或采取其他策略。
+`remap()` 失败时当前实现不归还刚取得的 frame，与立即填充路径的遗留行为一致。缺页路径一次只处理一个 4 KiB 页，不执行回收、阻塞或内部重试。宿主分配失败直接返回 `false`，上层虚拟处理器异常处理决定如何终止、注入异常或采取其他策略。
 
 ## 5. 第二阶段页表适配
 
@@ -233,14 +228,14 @@ if pt.remap(vaddr, frame, orig_flags) {
 
 ### 5.2 通用适配器
 
-`virtualization/axvm/src/npt.rs` 用 `GenericFrameAllocator<H>` 把 `HostPagingHandler` 接到 `page_table_generic::PageFrameProvider`，再由 `LeveledPageTable` 实现 `NestedPageTableOps`。
+`virtualization/axvm/src/npt.rs` 用 `GenericFrameAllocator<H>` 把 `HostPagingHandler` 接到 `page_table_generic::FrameAllocator`，再由 `LeveledPageTable` 实现 `NestedPageTableOps`。
 
 ```text
 HostPagingHandler
     │ alloc_frame / dealloc_frame / phys_to_virt
     ▼
 GenericFrameAllocator<H>
-    │ PageFrameProvider
+    │ FrameAllocator
     ▼
 page_table_generic::PageTable
     │ map / unmap / query / protect
@@ -333,7 +328,7 @@ AxVM::destroy
   -> drop nested page table
 ```
 
-`AddrSpace::drop()` 也会调用 `clear()` 作为最后防线，并记录清理失败；正常生命周期仍应显式 `clear()` 并处理错误，不能依赖 Drop 吞掉一致性故障。
+`AddrSpace::drop()` 也会调用 `clear()` 作为最后防线；`clear()` 内部对区域删除使用 `unwrap()`，清理失败会直接 panic 而不是记录后吞掉。`clear()` 本身返回 `()`，调用方无法在其返回值上处理错误，正常生命周期必须在 Drop 前显式完成清理并保证条件成立。
 
 ## 7. 锁、并发与安全边界
 
@@ -341,7 +336,7 @@ AxVM::destroy
 
 ### 7.1 外层锁
 
-`virtualization/axvm/src/vm/mod.rs` 将 `ax_kspin::SpinNoIrq` 别名为 `Mutex`，并以 `Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>` 保护地址空间和生命周期状态。
+`virtualization/axvm/src/vm/mod.rs` 通过 `use ax_std::os::arceos::sync::IrqSafeMutex as Mutex` 引入关中断自旋锁，并以 `Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>` 保护地址空间和生命周期状态。
 
 ```rust
 fn with_resources_mut<F, R>(&self, f: F) -> AxVmResult<R>
@@ -360,12 +355,12 @@ where
 
 ### 7.2 禁止中断临界区
 
-`SpinNoIrq` 表示地址空间操作期间本 CPU 中断关闭。页表遍历、页表页建立和宿主页分配都可能发生在该临界区，因此它保证一致性但不保证硬实时延迟。
+`IrqSafeMutex`（基于 `ax_sync::SpinLock` + `lock_irqsave`）表示地址空间操作期间本 CPU 中断关闭。页表遍历、页表页建立和宿主页分配都可能发生在该临界区，因此它保证一致性但不保证硬实时延迟。
 
 | 路径 | 临界区内可能发生的工作 | 约束 |
 | --- | --- | --- |
 | Linear map | 区间查询、页表页分配、大范围页表建立 | 不执行文件系统或回收 callback |
-| Alloc populate | 每个 4 KiB 页分配和映射 | 不用于硬实时路径；失败立即回滚 |
+| Alloc populate | 每个 4 KiB 页分配和映射 | 不用于硬实时路径；失败不回滚前缀（见 3.2 节） |
 | Alloc fault | 一个 frame 分配与 remap | 不阻塞、不内部重试 |
 | unmap/clear | 删除映射、失效翻译、释放 Alloc frame | 虚拟处理器必须已停止或与更新同步 |
 | guest buffer access | 查询页表并复制数据 | slice 不得逃逸出锁保护的闭包 |
