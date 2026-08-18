@@ -730,7 +730,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod coverage_tests {
+mod std_tests {
     use super::*;
 
     fn axtask_api_constants_hold_for_test() -> bool {

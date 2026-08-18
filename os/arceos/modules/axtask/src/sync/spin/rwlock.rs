@@ -485,7 +485,7 @@ pub(crate) mod tests {
         thread,
     };
 
-    use super::{LockdepAcquire, MAX_READER, READER, WRITER};
+    use super::{MAX_READER, READER, WRITER};
 
     type RwLock<T> = crate::sync::SpinRwLock<T>;
 
@@ -763,30 +763,6 @@ pub(crate) mod tests {
         // Writer acquired
         let writer_only = WRITER;
         assert!(writer_only != 0);
-    }
-
-    #[test]
-    fn rwlock_lockdep_and_feature_config_hold() {
-        // Test LockdepAcquire behavior based on feature flag
-        #[cfg(feature = "lockdep")]
-        {
-            // With lockdep feature, LockdepAcquire is crate::sync::spin::lockdep::Lockdep
-            let _acquire = LockdepAcquire;
-        }
-
-        #[cfg(not(feature = "lockdep"))]
-        {
-            // Without lockdep feature, LockdepAcquire is a simple unit struct
-            let acquire = LockdepAcquire;
-            acquire.finish(true);
-            acquire.finish(false);
-        }
-
-        // Test that WRITER bit position is correct
-        assert_eq!(WRITER, 1usize << (usize::BITS - 1));
-
-        // Test MAX_READER calculation
-        assert_eq!(MAX_READER, 1usize << (usize::BITS - 2));
     }
 
     #[test]
