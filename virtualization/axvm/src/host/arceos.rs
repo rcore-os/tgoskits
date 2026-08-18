@@ -516,10 +516,15 @@ impl HostPlatform for ArceOsHost {
                 spawn_thread_with_extension_and_affinity(
                     move || {
                         let host = arceos_host();
-                        info!("Core {cpu_id} is initializing hardware virtualization support...");
+                        // Secondary cores log at debug only: this closure runs
+                        // in the thread-extension context around the EL2
+                        // transition, where concurrent Info-rate console
+                        // writes have frozen real boards (the same image with
+                        // log=Warn passes; QEMU does not reproduce).
+                        debug!("Core {cpu_id} is initializing hardware virtualization support...");
                         host.enable_virtualization_on_current_cpu()
                             .expect("failed to enable hardware virtualization");
-                        info!("Hardware virtualization support enabled on core {cpu_id}");
+                        debug!("Hardware virtualization support enabled on core {cpu_id}");
                         let _ = CORES.fetch_add(1, Ordering::Release);
                     },
                     std::format!("axvm-hv-init-{cpu_id}"),
