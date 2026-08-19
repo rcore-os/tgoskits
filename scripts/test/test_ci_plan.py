@@ -25,9 +25,16 @@ class CiPlanTests(unittest.TestCase):
     def test_upstream_main_plan_preserves_all_checks(self) -> None:
         plan = ci_plan.build_main_plan(self.upstream)
 
-        self.assertEqual(len(plan["static_matrix"]["include"]), 3)
+        self.assertEqual(len(plan["static_matrix"]["include"]), 2)
         self.assertEqual(len(plan["test_matrix"]["include"]), 32)
         self.assertTrue(plan["static_required"])
+        static_rows = {
+            row["id"]: row for row in plan["static_matrix"]["include"]
+        }
+        self.assertIn(
+            "cargo xtask lock-lint",
+            static_rows["run-sync-lint"]["command"],
+        )
         self.assertTrue(
             all(" / " in row["name"] for row in plan["test_matrix"]["include"])
         )

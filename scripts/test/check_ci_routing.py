@@ -53,18 +53,18 @@ def main() -> int:
             "the planner must publish its impact summary",
         ),
         (
-            "if: needs.plan_ci.outputs.static_required == 'true'",
+            "needs.plan_ci.outputs.static_required == 'true'",
             "Preflight must follow the planner decision",
         ),
         (
             "needs.static_checks.result == 'skipped'",
             "Verification must accept an intentionally skipped Preflight",
         ),
-        ("gh pr list", "the prepare job must detect open pull requests"),
+        ("gh pr list", "the plan job must detect open pull requests"),
         ("should_run=false", "an open PR must disable duplicate branch push CI"),
         (
-            "if: needs.prepare_ci.outputs.should_run == 'true'",
-            "matrix planning must follow the branch routing decision",
+            "needs.plan_ci.outputs.should_run == 'true'",
+            "matrix jobs must follow the branch routing decision",
         ),
         (
             "github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'",

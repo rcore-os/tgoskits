@@ -30,10 +30,9 @@ sidebar_label: "自动 CI 测试"
 ## 执行阶段与名称
 
 ```text
-Prepare CI
-  -> Plan CI
-     -> Preflight / <purpose>
-        -> Verification / <OS> / <platform> <arch-or-board> · <purpose>
+Plan CI
+  -> Preflight / <purpose>
+     -> Verification / <OS> / <platform> <arch-or-board> · <purpose>
 ```
 
 固定阶段名称为 `Preflight` 和 `Verification`。平台写在架构之前，例如：

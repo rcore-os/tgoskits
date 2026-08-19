@@ -61,8 +61,8 @@ concurrency:
   queue: max
 
 jobs:
-  prepare_ci:
-    name: Prepare CI
+  plan_ci:
+    name: Plan CI
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -70,6 +70,10 @@ jobs:
       pull-requests: read
     outputs:
       should_run: ${{ steps.route.outputs.should_run }}
+      since_ref: ${{ steps.since.outputs.since_ref }}
+      static_matrix: ${{ steps.matrix.outputs.static_matrix }}
+      test_matrix: ${{ steps.matrix.outputs.test_matrix }}
+      static_required: ${{ steps.matrix.outputs.static_required }}
     steps:
       - name: Route branch push
         id: route
@@ -156,26 +160,14 @@ jobs:
             done <<< "$runs"
           done
 
-  plan_ci:
-    name: Plan CI
-    needs: prepare_ci
-    if: needs.prepare_ci.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      since_ref: ${{ steps.since.outputs.since_ref }}
-      static_matrix: ${{ steps.matrix.outputs.static_matrix }}
-      test_matrix: ${{ steps.matrix.outputs.test_matrix }}
-      static_required: ${{ steps.matrix.outputs.static_required }}
-    steps:
       - name: Checkout code
+        if: steps.route.outputs.should_run == 'true'
         uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
       - name: Validate CI configuration
+        if: steps.route.outputs.should_run == 'true'
         run: |
           set -euo pipefail
           python3 scripts/test/check_ci_routing.py
@@ -183,6 +175,7 @@ jobs:
 
       - name: Resolve incremental base revision
         id: since
+        if: steps.route.outputs.should_run == 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
           SINCE_SHA: ${{ inputs.since_sha || '' }}
@@ -216,6 +209,7 @@ jobs:
 
       - name: Plan check matrices
         id: matrix
+        if: steps.route.outputs.should_run == 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
@@ -242,7 +236,9 @@ jobs:
   static_checks:
     name: Preflight
     needs: plan_ci
-    if: needs.plan_ci.outputs.static_required == 'true'
+    if: >-
+      needs.plan_ci.outputs.should_run == 'true' &&
+      needs.plan_ci.outputs.static_required == 'true'
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
       matrix_json: ${{ needs.plan_ci.outputs.static_matrix }}
@@ -262,6 +258,7 @@ jobs:
     if: >-
       always() &&
       needs.plan_ci.result == 'success' &&
+      needs.plan_ci.outputs.should_run == 'true' &&
       (needs.static_checks.result == 'success' ||
        needs.static_checks.result == 'skipped')
     uses: ./.github/workflows/reusable-check-matrix.yml
