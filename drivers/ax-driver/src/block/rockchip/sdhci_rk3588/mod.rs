@@ -187,7 +187,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         warn!("rockchip-sdhci: no core clock found; using SDHCI internal clock divider");
     }
     host.set_reset_hook(RockchipSdhciResetHook { resets });
-    host.set_timer(&HOST_TIMER);
+    install_host_timer(&mut host);
     let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
         dma_api::DmaDomainId::Direct,
         crate::binding_resolver::dma_coherency_from_fdt(info),
