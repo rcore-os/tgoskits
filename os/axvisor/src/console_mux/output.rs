@@ -36,7 +36,7 @@ struct GuestOutputState {
     at_line_start: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, axtest))]
 #[derive(Debug, Eq, PartialEq)]
 pub struct ArbitrationSnapshot {
     mode: OutputMode,
@@ -321,24 +321,24 @@ impl GuestOutputMux {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, axtest))]
     fn pending_len(&self, vm_id: usize) -> usize {
         self.guests
             .get(&vm_id)
             .map_or(0, |guest| guest.pending.len())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, axtest))]
     fn total_pending(&self) -> usize {
         self.total_pending
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, axtest))]
     fn preemption(&self) -> Option<usize> {
         self.preemption
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, axtest))]
     pub fn snapshot(&self) -> ArbitrationSnapshot {
         ArbitrationSnapshot {
             mode: self.mode,

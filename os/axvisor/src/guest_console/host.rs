@@ -6,7 +6,6 @@ use ax_std::os::arceos::modules::ax_runtime::console::{
     self, ConsoleLogDropReport, ConsoleLogRecord, ConsoleLogSubscription, TaskConsoleInput,
     TaskConsoleOutput,
 };
-use axvm::AxVMRef;
 use std::sync::OnceLock;
 
 struct HostConsole {
@@ -18,7 +17,7 @@ struct HostConsole {
 static HOST_CONSOLE: OnceLock<HostConsole> = OnceLock::new();
 
 /// Takes the sole task-context input and log subscription before any vCPU starts.
-pub(crate) fn configure_host_console_reader(_vms: &[AxVMRef]) -> Result<()> {
+pub(crate) fn configure_host_console_reader() -> Result<()> {
     let logs = match console::subscribe_logs() {
         Ok(logs) => Some(logs),
         Err(RuntimeError::OperationNotSupported) => None,

@@ -78,7 +78,8 @@ mod tests {
 The `#[axtest::tests]` macro registers every `#[test]` function in the inline
 module and generates the kernel test entry point. The entry point configures
 printing, runs the suite, emits `AXTEST_SUITE_OK` / `AXTEST_SUITE_FAIL`, dumps
-coverage when enabled, and powers the target off on success.
+coverage when enabled, and requests an orderly runtime shutdown on success so
+accepted console output is drained before the target powers off.
 
 ### Basic Test
 

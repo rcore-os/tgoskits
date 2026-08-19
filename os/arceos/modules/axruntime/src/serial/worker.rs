@@ -8,7 +8,7 @@ use rdif_serial::{Config, RxErrorFlags, RxFlag, RxSample, SerialEventSet};
 
 use super::{
     RuntimeIrqBridge, RuntimeShared, RxItem,
-    control::{CONTROL_QUEUE_CAPACITY, ControlCommand, ControlOp},
+    control::{CONTROL_QUEUE_CAPACITY, ControlCommand, ControlOp, ControlRequest, DrainCompletion},
     deactivate_console,
     ingress::TxFrameCursor,
     log_mailbox::{LogReader, LogRecord, LogRecordCursor, LogRecordKind},
@@ -30,6 +30,7 @@ pub(super) struct SerialWorker {
     log_reader: LogReader,
     pending_log: Option<LogRecordCursor>,
     pending_control: Option<ControlCommand>,
+    pending_drain: Option<DrainCompletion>,
     prefer_log: bool,
     pending_rearm: SerialEventSet,
     immediate_events: SerialEventSet,
@@ -55,6 +56,7 @@ impl SerialWorker {
             log_reader,
             pending_log: None,
             pending_control: None,
+            pending_drain: None,
             prefer_log: false,
             pending_rearm: SerialEventSet::empty(),
             immediate_events: SerialEventSet::empty(),
@@ -122,7 +124,7 @@ impl SerialWorker {
                 tx_blocked = outcome.blocked;
             }
 
-            self.update_tx_idle();
+            let drain_waiting_for_hardware = self.progress_tx_drain();
             if budget_exhausted {
                 ax_task::yield_now();
                 continue;
@@ -139,7 +141,7 @@ impl SerialWorker {
             }
 
             if self.shared.bridge.latch.has_pending()
-                || self.shared.control.has_pending()
+                || (!self.control_transaction_pending() && self.shared.control.has_pending())
                 || (self.pending_control.is_some() && !tx_blocked)
                 || (!tx_blocked
                     && (self.pending_frame.is_some()
@@ -153,7 +155,9 @@ impl SerialWorker {
                 continue;
             }
 
-            if self.shared.polling {
+            if drain_waiting_for_hardware {
+                ax_task::yield_now();
+            } else if self.shared.polling {
                 ax_task::sleep(Duration::from_millis(1));
             } else {
                 self.shared.bridge.notify.wait();
@@ -163,6 +167,9 @@ impl SerialWorker {
 
     fn process_control_commands(&mut self) -> bool {
         let mut force_service = false;
+        if self.pending_drain.is_some() {
+            return false;
+        }
         if let Some(command) = self.pending_control.take() {
             if self.pending_log.is_some() {
                 self.pending_control = Some(command);
@@ -171,8 +178,15 @@ impl SerialWorker {
             force_service |= self.execute_control(command);
         }
         for _ in 0..CONTROL_QUEUE_CAPACITY {
-            let Some(command) = self.shared.control.try_pop() else {
+            let Some(request) = self.shared.control.try_pop() else {
                 break;
+            };
+            let command = match request {
+                ControlRequest::Command(command) => command,
+                ControlRequest::DrainTx(completion) => {
+                    self.pending_drain = Some(completion);
+                    break;
+                }
             };
             if config_must_wait_for_pending_log(&command.op, self.pending_log.is_some()) {
                 self.pending_control = Some(command);
@@ -288,27 +302,20 @@ impl SerialWorker {
     }
 
     fn discard_tx(&mut self) -> RuntimeResult {
-        let hardware_idle = self
-            .shared
+        self.shared
             .with_port(|port| {
                 if !port.discard_tx() {
                     return Err(RuntimeError::OperationNotSupported);
                 }
-                Ok(port.tx_idle())
+                Ok(())
             })
             .ok_or(RuntimeError::SerialNotStarted)??;
         self.shared.ingress.discard_pending();
         self.pending_frame = None;
         self.pending_rearm.remove(SerialEventSet::TX_SPACE);
         self.immediate_events.remove(SerialEventSet::TX_SPACE);
-        if !hardware_idle && !self.shared.polling {
-            self.pending_rearm.insert(SerialEventSet::TX_SPACE);
-        }
 
         self.shared.publish_tx_space();
-        if self.shared.ingress.mark_idle_if_empty(true, hardware_idle) {
-            self.shared.publish_tx_idle();
-        }
         Ok(())
     }
 
@@ -522,7 +529,7 @@ impl SerialWorker {
             self.shared
                 .log_barriers
                 .load(core::sync::atomic::Ordering::Acquire),
-            self.pending_control.is_some(),
+            self.control_transaction_pending(),
         ) {
             return false;
         }
@@ -575,45 +582,51 @@ impl SerialWorker {
             self.shared
                 .log_barriers
                 .load(core::sync::atomic::Ordering::Acquire),
-            self.pending_control.is_some(),
+            self.control_transaction_pending(),
         ) && self.shared.log_mailbox.has_pending_for(self.shared.index)
     }
 
-    fn update_tx_idle(&mut self) {
-        let drain_active = self
-            .shared
-            .log_barriers
-            .load(core::sync::atomic::Ordering::Acquire)
-            != 0;
-        let worker_empty =
-            self.pending_frame.is_none() && (!drain_active || self.pending_log.is_none());
-        let hardware_idle = if !self.shared.started() {
-            true
+    fn progress_tx_drain(&mut self) -> bool {
+        if self.pending_drain.is_none() {
+            return false;
+        }
+
+        let result = if !self.shared.started() {
+            Err(RuntimeError::SerialNotStarted)
+        } else if self.tx_bytes_pending() {
+            return false;
         } else {
-            self.shared.with_port(|port| port.tx_idle()).unwrap_or(true)
+            match self.shared.with_port(|port| port.tx_idle()) {
+                Some(true) => Ok(()),
+                Some(false) => return true,
+                None => Err(RuntimeError::SerialNotStarted),
+            }
         };
-        if !hardware_idle && !self.shared.polling {
-            self.pending_rearm |= SerialEventSet::TX_SPACE;
+        if let Some(completion) = self.pending_drain.take() {
+            completion.complete(result);
         }
-        if self
-            .shared
-            .ingress
-            .mark_idle_if_empty(worker_empty, hardware_idle)
-        {
-            self.shared.publish_tx_idle();
-        }
+        false
+    }
+
+    fn tx_bytes_pending(&self) -> bool {
+        self.pending_frame.is_some()
+            || self.pending_log.is_some()
+            || self.shared.ingress.has_pending()
+    }
+
+    fn tx_work_pending(&self) -> bool {
+        self.tx_bytes_pending() || self.logs_serviceable()
+    }
+
+    fn control_transaction_pending(&self) -> bool {
+        self.pending_control.is_some() || self.pending_drain.is_some()
     }
 
     fn rearm_sources(&mut self) {
-        let mut sources = core::mem::take(&mut self.pending_rearm);
-        if self.pending_frame.is_none()
-            && self.pending_log.is_none()
-            && !self.shared.ingress.has_pending()
-            && !self.logs_serviceable()
-            && self.shared.ingress.is_idle()
-        {
-            sources.remove(SerialEventSet::TX_SPACE);
-        }
+        let sources = tx_rearm_sources(
+            core::mem::take(&mut self.pending_rearm),
+            self.tx_work_pending(),
+        );
         if sources.is_empty() {
             return;
         }
@@ -625,6 +638,13 @@ impl SerialWorker {
         self.pending_rearm |= ready;
         self.immediate_events |= ready;
     }
+}
+
+fn tx_rearm_sources(mut sources: SerialEventSet, tx_work_pending: bool) -> SerialEventSet {
+    if !tx_work_pending {
+        sources.remove(SerialEventSet::TX_SPACE);
+    }
+    sources
 }
 
 #[derive(Clone, Copy)]
@@ -958,6 +978,14 @@ mod tests {
         assert!(ready.is_empty());
         assert!(!called);
         assert_eq!(pending, SerialEventSet::RX);
+    }
+
+    #[test]
+    fn hardware_completion_without_pending_bytes_does_not_rearm_tx() {
+        assert!(
+            tx_rearm_sources(SerialEventSet::TX_SPACE, false).is_empty(),
+            "hardware completion is polled only by an explicit drain transaction"
+        );
     }
 
     #[test]

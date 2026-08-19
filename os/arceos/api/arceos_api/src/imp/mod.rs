@@ -124,7 +124,8 @@ mod stdio {
 }
 
 mod sys {
-    pub use ax_hal::{cpu_num as ax_get_cpu_num, power::system_off as ax_terminate};
+    pub use ax_hal::cpu_num as ax_get_cpu_num;
+    pub use ax_runtime::terminate as ax_terminate;
 }
 
 mod time {
@@ -133,7 +134,7 @@ mod time {
     };
 }
 
-pub use ax_hal::power::system_off as ax_terminate;
 pub use ax_io::PollState as AxPollState;
+pub use ax_runtime::terminate as ax_terminate;
 
 pub use self::{mem::*, stdio::*, sys::*, task::*, time::*};

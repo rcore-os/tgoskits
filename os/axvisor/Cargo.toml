@@ -69,6 +69,7 @@ no-auto-start = []
 
 [dependencies]
 shlex.workspace = true
+axtest.workspace = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }
@@ -114,7 +115,7 @@ ax-driver = { workspace = true, optional = true }
 axbacktrace = { workspace = true, optional = true }
 
 [dev-dependencies]
-axtest = { path = "../../components/axtest/axtest" }
+axtest.workspace = true
 ax-hal = { path = "../arceos/modules/axhal" }
 
 # xtask dependencies (only used on host platforms)

@@ -19,7 +19,7 @@ Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机�
 | `ConsoleCore` / `ConsoleState` / `GuestState` | 保存每 VM 当前 backend generation、4096 字节输入队列、运行集合、前台、上次前台与快捷键前缀状态 | 输入、输出和 lifecycle 更新 |
 | `GuestSerialBackendFactory` / `GuestSerialBackend` | factory 为一个 host-console serial request 创建带 `(VMId, BackendGeneration)` 身份的 backend；backend 把设备层字节调用转入 mux | configured node 创建；UART runtime 读写 |
 | `GuestOutputMux` | 在 `BootMultiplex` 与 `Interactive` 间切换，补齐物理行，维护每 VM 16 KiB 环形输出，并生成回放 | 客户机输出与前台变化 |
-| `guest_console/host.rs` | 关闭宿主输入 IRQ、选择可选的 host-only CPU affinity、轮询一个宿主字节、写宿主字节 | Axvisor 初始化与 shell 主循环 |
+| `guest_console/host.rs` | 在 vCPU 启动前取得唯一的 task-console RX 与日志订阅，等待输入/日志事件，并通过共享 task-console output 写宿主字节 | Axvisor 初始化与 shell 主循环 |
 | `shell/mod.rs` | 作为轮询循环的唯一 owner，消费 `ConsoleInputEvent`，调用 `activate()`，每轮 reconcile VM 状态 | 管理 shell |
 | `shell/command/vm.rs` | `vm start --console`、`vm console` 以及 start/stop/reset/resume/delete 的 mux lifecycle 调用 | 管理命令 |
 | `AxvmManager` 接入 | 提供 VM registry/status，输入入队后唤醒 VM；实际设备 poll 由 vCPU0 执行 | VM lifecycle 与运行期 |
@@ -28,14 +28,16 @@ Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机�
 
 ## 2. 初始化与宿主输入 ownership
 
-`main.rs` 在启动默认 VM 的 vCPU task 之前取得 VM 列表并调用 `configure_host_console_reader()`。该函数先执行 `axvm::host::console::set_input_irq_enabled(false)`，因此当前 Axvisor 输入不是 UART IRQ consumer。随后它检查所有 vCPU 的物理 CPU mask：只有能证明某个在线 CPU 不在任何 vCPU mask 内时，才把当前控制台 reader task 迁移到最低编号的 host-only CPU；mask 缺失、为空或只包含离线位时都不能证明隔离性，因此不猜测 affinity。
-
-这项 affinity 是合作式 FIFO 调度下的临时进展保证，不改变 vCPU mask。没有可证明的 host-only CPU 时，reader 保持原 affinity，靠轮询失败后的 `yield_now()` 给其他任务运行机会。
+`main.rs` 在启动默认 VM 的 vCPU task 之前调用 `configure_host_console_reader()`。该函数从
+`ax-runtime::console` 取得唯一的 `TaskConsoleInput`、可克隆的 `TaskConsoleOutput` 和可选的
+`ConsoleLogSubscription`。runtime UART 已接管时，RX IRQ 与 owner worker 发布输入并唤醒
+shell；没有匹配的 runtime UART 时，同一 capability 内部使用 RawHal，不让 Axvisor 维护第二
+条 platform reader 路径。这里不再关闭输入 IRQ、计算 host-only CPU 或改变 reader affinity。
 
 ```mermaid
 flowchart LR
     UART["物理宿主 console"]
-    Reader["shell loop<br/>read_host_byte：至多 1 byte"]
+    Reader["shell loop<br/>task-console event wait"]
     Route["GuestConsoleMux<br/>route state"]
     Shell["ShellByte / ShellSequence<br/>命令行编辑器"]
     Queue["GuestState.input<br/>4096-byte queue"]
@@ -49,9 +51,16 @@ flowchart LR
     Queue --> Notify --> Poll --> Backend
 ```
 
-`read_host_byte()` 每次只向 `axvm::host::console::read_bytes()` 请求一个字节。模块契约明确禁止其他 Axvisor 组件直接读 platform console input；否则两个 reader 会竞争并不可恢复地拆分输入流。
+`read_host_byte()` 每次从唯一的 `TaskConsoleInput` capability 消费至多一个有效字节；RX
+错误项保留在公共 runtime 层并在这里跳过。输入与日志都暂时为空时，shell 调用
+`wait_event()`，由 RX worker 或完整日志记录发布直接唤醒，不进行 `yield_now()` 忙轮询。模块
+契约明确禁止其他 Axvisor 组件再次取得输入 capability，否则初始化会得到明确错误，而不会
+形成两个 reader 拆分输入流。
 
-这里不要与 ArceOS/StarryOS 的通用 serial runtime 混为一谈。后者以 `SerialRuntimeHandle::take_rx_subscription()` 把 IRQ/poll 产生的 RX 流租给单一 OS consumer，StarryOS 的 `ttyS*` 会取得该 subscription；Axvisor 当前则保留 early/platform console 的单 owner 轮询路径并关闭输入 IRQ。两者是不同 OS 应用选择，不是 Axvisor 中同时运行的两条 RX 路径。
+日志订阅只在完整 record 边界切换。shell 未附着 guest 时，mux 先清除当前编辑行、输出宿主
+日志，再重画 prompt、内容和光标；guest 位于前台时，宿主日志按完整记录进入 16 KiB 有界
+backlog，返回管理 shell 后再回放。底层 64 条 record 队列和 mux backlog 的溢出都以摘要
+报告，不把宿主日志字节注入 guest 虚拟 UART。
 
 ## 3. 输入状态机与前台选择
 
@@ -204,7 +213,8 @@ flowchart LR
 
 | 边界 | 当前保证 | 限制 |
 | --- | --- | --- |
-| 宿主 RX | shell loop 是唯一 polling owner；输入 IRQ 禁用 | 没有可证明的 host-only CPU 时，持续运行的 vCPU 仍可能影响 reader 调度延迟 |
+| 宿主 RX | shell loop 独占 `TaskConsoleInput`；runtime RX IRQ/worker 或 RawHal fallback 保持单 owner | capability 已被取得或 runtime 停止时，初始化/等待返回明确错误 |
+| 宿主日志 | 唯一 `ConsoleLogSubscription` 按完整 record 投递；编辑行清除后重画，guest 前台期间有界缓存 | 两级有界队列溢出时丢弃并报告摘要，panic/emergency 不保证重画 |
 | mux 锁 | 双锁路径固定 `output_lock` → `state`；host output 与 replacement/invalidation 串行化 | `std::sync::Mutex` poisoned 会触发 `expect`，没有运行时恢复 |
 | VM notify | 入队后锁外 notify，不把 mux 锁带进 manager/scheduler | notify 失败只告警，字节等后续 poll |
 | 虚拟设备 poll | 只有 vCPU0 调用 `poll_vm_devices()`，它是串口 backend 的唯一 poll owner | secondary vCPU 不消费串口输入 |
@@ -220,7 +230,9 @@ SMP 限制不能通过让任意 vCPU poll 来规避，那会破坏设备 poll �
 
 | 现象 | 首先检查 | 对应事实 |
 | --- | --- | --- |
-| shell 和客户机都偶发丢字符 | 是否出现第二个 platform console reader；输入 IRQ 是否被重新启用 | 当前契约是 polling single-owner，IRQ handler 也不能偷偷 drain RX |
+| shell 和客户机都偶发丢字符 | `TaskConsoleInput` 是否被第二次取得；runtime RX error/overrun 统计是否增长 | 当前契约是 capability single-owner；RX IRQ 只采样并由 owner worker 发布 |
+| 输入空闲时 shell 占用 CPU | `wait_for_host_input()` 是否走 `wait_event()` / `wait_readable()` | shell 不应以 `yield_now()` 轮询 task-console |
+| 宿主日志插入正在编辑的命令 | 是否取得唯一日志订阅；记录是否经 `route_host_log()`；drop 摘要是否增长 | shell 模式必须清行、输出完整记录并重画；guest 前台模式必须缓存而非直写 |
 | `vm console` 报错 | VM ID 是否存在，状态是否严格为 `Running` | attach 不接受 Ready、Paused、Stopping 或 Stopped |
 | 客户机不立即收到输入 | 输入队列是否满；`notify_vm` warning；guest 是否 SMP 且 vCPU0 空闲 | 4096 字节尾部丢弃；SMP notify 不能定向 vCPU0 |
 | reset 后控制台永久无输入输出 | reset 前是否调用过 `mark_stopped()`；是否误以为 reset 会创建 backend | reset clone 同一 backend Arc，不会发布新 generation；已失效 generation 不会自动复活 |
@@ -231,7 +243,7 @@ SMP 限制不能通过让任意 vCPU poll 来规避，那会破坏设备 poll �
 
 ## 9. 测试覆盖与验证命令
 
-`os/axvisor/src/guest_console/mux/tests.rs` 当前有 18 个测试，覆盖范围应按测试实际断言理解：
+`os/axvisor/src/guest_console/mux/tests.rs` 当前有 20 个测试，覆盖范围应按测试实际断言理解：
 
 - `Ctrl+X h` detach，`[`/`]` 环绕切换，未知后缀与重复 `Ctrl+X` 的原序路由；
 - 最小 running VM 默认附着、输入只到前台、前台从 running 集合消失后返回 shell；
@@ -240,21 +252,15 @@ SMP 限制不能通过让任意 vCPU poll 来规避，那会破坏设备 poll �
 - 第一次前台输入进入 Interactive、切换时回放后台 ring、detach 后全部缓存；
 - foreground 或 background 未结束物理行在切换时正确补行。
 
-`mux/output.rs` 另有 14 个内部测试，直接覆盖完整行选择、分片只加一次前缀、pending/total 容量上界、超大单次 write、16 KiB 淘汰与回放、Interactive 前台分片、reset/reconcile 后物理分隔符。`host.rs` 测试 host-only CPU 的保守选择；`axvm::runtime` 与 vCPU runtime 测试单 vCPU poll flag 和 SMP 不发布 shared flag 的差异。
+`mux/output.rs` 另有 16 个内部测试，直接覆盖完整行选择、分片只加一次前缀、pending/total 容量上界、超大单次 write、16 KiB 淘汰与回放、Interactive 前台分片、reset/reconcile 后物理分隔符。顶层 mux 测试还覆盖宿主完整日志隔离、guest 前台缓存与返回 shell 后回放；`axvm::runtime` 与 vCPU runtime 测试单 vCPU poll flag 和 SMP 不发布 shared flag 的差异。
 
-现有测试仍没有直接断言 shell 命令解析或 4096 字节输入队列溢出。以上测试也不是完整的真实 UART、VM lifecycle 和终端端到端覆盖，不能把 18 个顶层 mux 测试泛化为所有边界都已验证。
+现有测试仍没有直接断言 shell 命令解析或 4096 字节输入队列溢出。以上测试也不是完整的真实 UART、VM lifecycle 和终端端到端覆盖，不能把 20 个顶层 mux 测试泛化为所有边界都已验证。
 
 目标环境中的建议命令如下：
 
 ```bash
-cargo xtask ktest qemu -p axvisor --test axtest --arch x86_64
+cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
 cargo xtask axvisor test qemu --arch x86_64 --test-group normal --test-case direct-acpi-vmx
 ```
 
-第一条运行带 `axtest` 标记的 Axvisor 控制台测试。第二条使用包含一台 x86 Linux guest 的 `direct-acpi-vmx` 配置：guest 通过 `console=ttyS0` 输出成功标记，因此可观察 VM 启动、虚拟串口 TX 和宿主控制台输出组合路径；它不验证输入快捷键、foreground 切换或 4096 字节队列边界。AMD/SVM 宿主上的对应 case 是 `direct-acpi-svm`。两者都依赖 KVM 和相应的 VMX/SVM 能力。
-
-本文档修改未运行以上两条目标环境命令。只执行了以下发现检查，确认当前 xtask 能在 `normal` 组列出 `direct-acpi-vmx` 与 `direct-acpi-svm`：
-
-```bash
-cargo xtask axvisor test qemu --list --arch x86_64
-```
+第一条在受支持的 aarch64 target 上运行带 `axtest` 标记的 Axvisor 控制台测试。第二条使用包含一台 x86 Linux guest 的 `direct-acpi-vmx` 配置：guest 通过 `console=ttyS0` 输出成功标记，因此可观察 VM 启动、虚拟串口 TX 和宿主控制台输出组合路径；它不验证输入快捷键、foreground 切换或 4096 字节队列边界。AMD/SVM 宿主上的对应 case 是 `direct-acpi-svm`。VMX/SVM 用例依赖 KVM 和相应的 CPU 能力。

@@ -97,8 +97,7 @@ fn main() {
         .spawn(http::serve)
         .unwrap_or_else(|error| panic!("failed to start management HTTP server: {error}"));
 
-    let default_vms = manager::AxvmManager::vm_list();
-    guest_console::configure_host_console_reader(&default_vms)
+    guest_console::configure_host_console_reader()
         .unwrap_or_else(|error| panic!("failed to configure host console input: {error:#}"));
 
     #[cfg(feature = "test-console-interleave")]

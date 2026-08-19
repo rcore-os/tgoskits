@@ -79,6 +79,18 @@ mod wifi_glue;
 pub use ax_hal as hal;
 pub use error::{RuntimeError, RuntimeResult};
 
+/// Drains task-console output before shutting down the whole system.
+///
+/// Fatal paths must bypass this task-context transaction and use the
+/// emergency console plus [`ax_hal::power::system_off`] directly.
+pub fn terminate() -> ! {
+    #[cfg(all(feature = "irq", feature = "multitask"))]
+    if let Ok(output) = console::output() {
+        let _ = output.drain();
+    }
+    ax_hal::power::system_off()
+}
+
 pub(crate) mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
 }
@@ -394,14 +406,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     fs::online_smp();
 
     ax_app_entry();
-
-    #[cfg(feature = "multitask")]
-    ax_task::exit(0);
-    #[cfg(not(feature = "multitask"))]
-    {
-        debug!("main task exited: exit_code={}", 0);
-        ax_hal::power::system_off();
-    }
+    terminate();
 }
 
 fn init_allocator() {

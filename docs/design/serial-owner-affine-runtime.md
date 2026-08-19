@@ -125,8 +125,8 @@ IRQ 中禁止分配、阻塞、调用 runtime/platform callback、操作 TTY 或
 controller line。共享 IRQ 返回 `None` 表示本 UART 未产生事件。
 
 TX source 命中后立即 mask，并在 report 中加入 `TX_SPACE` rearm。worker 消费现有有界
-TX ingress，直到当前预算或 FIFO 空间用尽；仍有数据时执行 rearm，已无数据且硬件 idle
-时清除 TX pending，避免空闲 TX interrupt storm。
+TX ingress，直到当前预算或 FIFO 空间用尽；只有仍有待发送字节时才执行 rearm，软件输出
+为空后立即清除 TX pending，避免把“移位寄存器尚未清空”错误表示成可由 TX IRQ 推进的工作。
 
 每个带 RX、timeout 或 RX error 的 IRQ pass 都在发布有界 report 后 mask 对应 RX source，
 并把 RX 加入 rearm。这样 hard IRQ 只负责固定预算的采样和确认，owner worker 则成为下一次
@@ -221,14 +221,16 @@ termios-update -> output -> terminal-termios
 - `TCSETSW`：在同一次 output lock 持有期间 drain、配置、发布；
 - `TCSETSF`：完成 `TCSETSW` 事务并释放 output lock，然后获取 line discipline 并清输入。
 
-硬件配置失败时不发布新 termios。无效参数返回 `EINVAL`，有界硬件等待超时返回
-`ETIMEDOUT`，其他寄存器/设备错误返回 `EIO`。用户内存复制必须在上述锁外完成。
+硬件配置失败时不发布新 termios。无效参数返回 `EINVAL`，驱动配置阶段的有界硬件等待
+超时返回 `ETIMEDOUT`，其他寄存器/设备错误返回 `EIO`。用户内存复制必须在上述锁外完成。
 
 owner worker 在普通状态下有界交替服务 TTY frame 与日志 record。drain 或 termios barrier
-进入后，worker 先完成已经取得的 pending record，随后暂停取得新日志；只有 TTY ingress
-为空、pending TTY frame 为空且 UART FIFO/shift register 报告 idle 后，才确认 barrier。
-因此持续日志流不能饿死 `TCSETSW`/`TCSETSF`，而 barrier 也不会丢弃已经接受的 TTY
-输出。配置发布或失败回滚完成后，worker 恢复日志 round-robin。
+进入后提交一个由 worker 唯一持有的 `DrainTx` 控制事务。worker 先完成已经取得的 pending
+record，随后暂停取得新日志；只有 TTY ingress 为空、pending TTY frame 为空且 UART
+FIFO/shift register 报告 idle 后，才完成事务。普通状态不查询或保存 hardware-idle 状态；
+若 UART 没有 shift-register completion IRQ，drain 事务让出调度器后重新检查，而不创建
+定时任务或依赖超时兜底。因此持续日志流不能饿死 `TCSETSW`/`TCSETSF`，barrier 也不会
+丢弃已经接受的 TTY 输出。配置发布或失败回滚完成后，worker 恢复日志 round-robin。
 
 ## 公共任务态控制台与日志仲裁
 

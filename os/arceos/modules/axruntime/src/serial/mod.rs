@@ -148,12 +148,6 @@ impl RuntimeShared {
         unsafe { self.tx_source.wake(IoEvents::OUT) };
     }
 
-    fn publish_tx_idle(&self) {
-        self.tx_progress.notify_all(true);
-        // SAFETY: idle is published under the TX queue lock before this wake.
-        unsafe { self.tx_source.wake(IoEvents::OUT) };
-    }
-
     fn enable_irq(&self) -> RuntimeResult {
         let Some(handle) = self.irq_handle.get().copied() else {
             return Ok(());
@@ -426,16 +420,7 @@ impl SerialOutputBarrier {
     /// to become idle. New log records remain paused after this method returns.
     pub fn wait_idle(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
-        self.shared.ingress.begin_drain();
-        self.shared.bridge.notify.notify();
-        self.shared
-            .tx_progress
-            .wait_until(|| self.shared.ingress.is_idle() || !self.shared.started());
-        if self.shared.ingress.is_idle() {
-            Ok(())
-        } else {
-            Err(RuntimeError::SerialNotStarted)
-        }
+        self.shared.control.submit_drain(&self.shared.bridge.notify)
     }
 
     /// Applies configuration before allowing worker log extraction to resume.

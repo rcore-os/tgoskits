@@ -32,7 +32,7 @@ pub mod sys {
     define_api! {
         /// Returns the number of available logical CPUs.
         pub fn ax_get_cpu_num() -> usize;
-        /// Shutdown the whole system and all CPUs.
+        /// Drain task-console output, then shut down the whole system and all CPUs.
         pub fn ax_terminate() -> !;
     }
 }

@@ -40,6 +40,10 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   source, and let the owner worker perform the rearm. If rearm immediately observes readable
   hardware while no IRQ samples remain, drain through the direct port path; treating that state as
   an empty IRQ report can strand a PL011 FIFO without another wakeup edge.
+- Rearm `TX_SPACE` only while software bytes remain pending. Query FIFO/shift-register completion
+  only inside the worker-owned `DrainTx` control transaction; a UART without a completion IRQ must
+  let that transaction yield and recheck, not retain a false TX-ready state or create a timeout task
+  that attempts to repair it later.
 - Fatal output must make one terminal UART ownership transition. Use a bounded, non-sleeping claim
   so panic cannot deadlock on an interrupted normal transaction; after a successful claim, keep
   emergency ownership until shutdown, exclude worker/IRQ register access, and synchronously stream
