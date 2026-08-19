@@ -115,7 +115,7 @@ ax-driver = { workspace = true, optional = true }
 axbacktrace = { workspace = true, optional = true }
 
 [dev-dependencies]
-axtest.workspace = true
+axtest = { path = "../../components/axtest/axtest" }
 ax-hal = { path = "../arceos/modules/axhal" }
 
 # xtask dependencies (only used on host platforms)
