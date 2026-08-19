@@ -134,6 +134,28 @@ fn host_test_feature_uses_host_target_outside_docs_target_matrix() {
 }
 
 #[test]
+fn host_test_feature_alias_uses_host_target_outside_docs_target_matrix() {
+    let checks = expand(&[pkg(
+        "alpha",
+        "alpha 0.1.0 (path+file:///tmp/alpha)",
+        &[
+            ("host-test", &[]),
+            ("platform", &[]),
+            ("test", &["host-test"]),
+        ],
+        Some(&["aarch64-unknown-none-softfloat"]),
+    )]);
+    let test_checks = checks
+        .iter()
+        .filter(|check| check.label().contains("feature: test"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(test_checks.len(), 1);
+    assert_eq!(test_checks[0].label(), "alpha (feature: test)");
+    assert!(!test_checks[0].cargo_args().contains(&"--target".into()));
+}
+
+#[test]
 fn incremental_selection_keeps_runnable_top_levels_when_some_are_skipped() {
     let packages = vec![
         pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),

@@ -23,6 +23,8 @@ ax-display
 rdrive
 ax-hal
 ax-sync
+ax-mm
+ax-task
 ax-input
 ax-ipi
 ax-log

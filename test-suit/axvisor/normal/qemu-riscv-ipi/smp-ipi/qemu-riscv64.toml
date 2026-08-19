@@ -26,7 +26,7 @@ fail_regex = [
   "(?i)kernel panic",
   "(?i)login incorrect",
   "(?i)permission denied",
-  "(?m)^(?:echo|cat|rm):",
+  "(?m)^(?:echo|cat|rm):\\s",
   "(?i)IPI extension is not available",
 ]
 success_regex = ['(?m)^guest smp ipi pass!\s*$']

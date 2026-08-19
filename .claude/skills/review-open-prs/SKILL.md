@@ -63,39 +63,42 @@ Carry this plan into the per-PR review and final report. The report must disting
 
 ## Dispatch
 
-For each eligible PR, invoke `review-single-pr` with a prompt that carries the multi-PR context but leaves review decisions to the single-PR skill:
+对每个符合条件的 PR 调用 `review-single-pr`。提示中携带批量审查上下文，但把具体审查决定留给单 PR 技能：
 
 ```text
-Use $review-single-pr to review PR #<pr> in <owner>/<repo>.
+请使用 $review-single-pr 审查 <owner>/<repo> 的 PR #<pr>。
 
-Context from $review-open-prs:
-- This PR is eligible because <never reviewed by current user | latest commit <sha/time> is newer than current user's last review <time>>.
-- Draft status: <draft|ready>.
-- Merge state: <mergeStateStatus>; maintainer edits: <maintainerCanModify>.
-- Scope requested by user: <scope summary>.
-- Current-head CI summary: <success/failure/pending/skipped counts, relevant check names, stale/missing/suspicious notes>.
-- Validation plan: <CI covered evidence>; <every affected app and its documented environment setup, architecture, exact local runtime command, readiness check, and postcondition>; <other CI-missing PR-body/docs workflows to validate>; <duplicative non-app CI-equivalent local checks to skip>; <commands that still must run because CI is missing/failing/suspicious or review-single-pr requires them>.
+来自 $review-open-prs 的上下文：
+- 符合条件的原因：<当前用户从未审查 | 最新提交 <sha/time> 晚于当前用户上次审查 <time>>。
+- 草稿状态：<draft|ready>。
+- 合并状态：<mergeStateStatus>；维护者能否修改：<maintainerCanModify>。
+- 用户要求的范围：<范围摘要>。
+- 当前提交的 CI 摘要：<success/failure/pending/skipped 数量、相关检查名称、陈旧/缺失/可疑说明>。
+- 验证计划：<CI 已覆盖的证据>；<每个受影响应用及其文档化环境准备、架构、精确本地运行命令、就绪检查和后置条件>；<其他 CI 未覆盖且需验证的 PR 描述或文档流程>；<因当前提交 CI 已覆盖而跳过的重复非应用检查>；<因 CI 缺失、失败、可疑或 review-single-pr 强制要求而仍须运行的命令>。
 
-Review exactly this PR. After reading every applicable instruction, guideline, and runbook, use the available todo tool to create a complete PR-specific todo before detailed review or validation; use a visible Markdown fallback only when no tool is available or it is confirmed unusable. Follow $review-single-pr for worktree setup, duplicate/superseded fix checks, conflict handling policy, targeted validation, Chinese inline comments, head-SHA freshness checks, and final APPROVE or REQUEST_CHANGES submission. Locally configure and run every affected StarryOS or ArceOS app on the current head even when CI passed; documentation, setup, readiness, or runtime failure requires REQUEST_CHANGES with the exact reason. Audit every todo item before submission and again after reviewer assignment and cleanup.
+只审查这个 PR。完整阅读所有适用指令、规范和操作手册后，在详细审查或验证前使用可用的任务清单工具创建完整的 PR 专属清单；只有工具不可用或确认失效时才改用可见的 Markdown 清单。按照 $review-single-pr 建立工作树、检查重复或已被取代的实现、处理冲突、执行针对性验证、检查当前提交 SHA，并提交最终的 APPROVE 或 REQUEST_CHANGES。即使 CI 已通过，也要在当前提交本地配置并运行每个受影响的 StarryOS 或 ArceOS 应用；文档、准备、就绪或运行失败都必须以精确理由请求修改。每条要求继续修改的行内评论或讨论回复都使用 $review-single-pr 的七段中文模板，总审查正文使用四段中文核心结构；提交前检查草稿格式，提交后重新读取实际评论并检查显示格式。提交前以及分配审查人和清理后，都要逐项审计任务清单。
 ```
 
-If workers or subagents are explicitly allowed, give each worker exactly one PR and one worktree. Worker prompts must say:
+明确允许使用执行者或子代理时，给每个执行者恰好一个 PR 和一个工作树。提示中必须要求：
 
-- use `review-single-pr` for the actual review procedure;
-- after reading all applicable instructions and references, use the available todo tool to create and maintain a complete PR-specific todo before detailed review; use a visible Markdown fallback only when no tool is available or confirmed unusable;
-- perform read-only review plus targeted validation only;
-- skip broad non-app local checks that only duplicate already-passing current-head CI, but always follow the documented environment setup and locally run every affected StarryOS or ArceOS app on the current head;
-- do not submit GitHub reviews;
-- do not push contributor branches unless explicitly assigned conflict-repair work, and then prefer local commit only with final push by the main agent;
-- return `APPROVE` or `REQUEST_CHANGES`;
-- provide `path`, `line`, `side=RIGHT`, and Chinese inline comment body for each blocking issue;
-- include commands run and exact failures;
-- report each affected app's setup source, setup commands, readiness result, architecture, runtime command, and postcondition or blocking failure, plus CI-covered evidence, other CI-missing workflows validated, CI-missing workflows not validated with reasons, and non-app CI-equivalent local checks skipped as duplicative;
-- identify missing reproduction tests for bug fixes.
-- audit every todo item before returning and report completed evidence, concrete not-applicable reasons, blocking results, and unfinished items;
-- clean temporary worktrees/files before returning, or report the path and reason when cleanup is unsafe.
+- 使用 `review-single-pr` 执行实际审查流程；
+- 完整阅读所有适用指令和资料后，在详细审查前使用可用的任务清单工具创建并维护完整的 PR 专属清单；只有工具不可用或确认失效时才改用可见的 Markdown 清单；
+- 只执行只读审查和针对性验证；
+- 跳过仅重复当前提交已通过 CI 的宽泛非应用本地检查，但始终遵循文档化环境准备，并在当前提交本地运行每个受影响的 StarryOS 或 ArceOS 应用；
+- 不提交 GitHub 审查；
+- 除非明确分配冲突修复，否则不推送贡献者分支；即使分配，也优先只创建本地提交，由主代理最终推送；
+- 返回 `APPROVE` 或 `REQUEST_CHANGES`；
+- 为每个阻塞问题返回 `path`、`line`、`side=RIGHT` 和中文行内评论正文；
+- 每条要求继续修改的评论完整包含“为什么需要改动”“改动收益”“改动前逻辑（基准分支）”“改动后逻辑（当前 PR）”“触发场景与证据”“问题级别”“建议修改方式”七个粗体 Markdown 标题；
+- 总审查正文至少包含前四个二级 Markdown 标题，并报告发布前后的格式检查结果；
+- 返回前逐字核对固定标题；缺少标题、标题下为空或使用连续段落代替时，丢弃草稿并重写；
+- 列出执行的命令和精确失败；
+- 汇报每个受影响应用的准备资料来源、准备命令、就绪结果、架构、运行命令、后置条件或阻塞失败，同时汇报 CI 已覆盖证据、已验证的 CI 缺失流程、未验证流程及原因，以及因重复当前提交 CI 而跳过的非应用本地检查；
+- 指出错误修复缺失的复现测试；
+- 返回前审计每个任务清单项，汇报完成证据、具体不适用理由、阻塞结果和未完成项目；
+- 清理临时工作树和文件；清理不安全时汇报路径和原因。
 
-Before submitting any worker-derived review, the main agent must refresh the PR head, verify each finding still applies to a current right-side diff line, and follow `review-single-pr` submission rules.
+提交任何来自执行者的审查前，主代理必须刷新 PR 当前提交，确认每个问题仍适用于当前右侧变更行，并遵循 `review-single-pr` 的提交和发布后格式检查规则。
 
 ## Conflict Handling
 
