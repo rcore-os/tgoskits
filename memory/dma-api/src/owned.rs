@@ -1,6 +1,8 @@
 use core::{mem::ManuallyDrop, num::NonZeroUsize, ptr::NonNull};
 
-use crate::{ContiguousArray, DeviceDma, DmaAddr, DmaDirection, DmaDomainId, DmaError};
+use crate::{
+    ContiguousArray, DeviceDma, DmaAddr, DmaCoherency, DmaDirection, DmaDomainId, DmaError,
+};
 
 /// One device-visible DMA segment owned by a prepared request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +67,10 @@ impl CpuDmaBuffer {
         self.domain
     }
 
+    pub fn coherency(&self) -> DmaCoherency {
+        self.backing.coherency()
+    }
+
     pub fn cpu_ptr(&self) -> NonNull<u8> {
         self.backing.as_ptr()
     }
@@ -127,6 +133,10 @@ impl PreparedDma {
 
     pub const fn domain_id(&self) -> DmaDomainId {
         self.buffer.domain_id()
+    }
+
+    pub fn coherency(&self) -> DmaCoherency {
+        self.buffer.coherency()
     }
 
     pub fn cpu_ptr(&self) -> NonNull<u8> {
@@ -196,6 +206,10 @@ impl InFlightDma {
 
     pub fn domain_id(&self) -> DmaDomainId {
         self.prepared.domain_id()
+    }
+
+    pub fn coherency(&self) -> DmaCoherency {
+        self.prepared.coherency()
     }
 
     pub fn cpu_ptr(&self) -> NonNull<u8> {

@@ -85,6 +85,20 @@ pub struct DmaConstraints {
     pub max_segment_size: Option<usize>,
 }
 
+/// Cache-coherency relationship between one DMA device and the CPU.
+///
+/// This is a device property supplied by firmware or the platform bus. It is
+/// independent from address-mask and segment-layout constraints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DmaCoherency {
+    /// CPU and device observe the same cacheable mapping without explicit
+    /// cache maintenance.
+    Coherent,
+    /// CPU ownership transitions require cache maintenance or a coherent CPU
+    /// mapping supplied by the DMA backend.
+    NonCoherent,
+}
+
 impl DmaConstraints {
     pub const fn new(addr_mask: u64) -> Self {
         Self {
@@ -162,6 +176,7 @@ unsafe impl<T: Copy> DmaPod for T {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DmaAllocHandle {
     pub(crate) cpu_addr: NonNull<u8>,
+    pub(crate) allocation_addr: NonNull<u8>,
     pub(crate) dma_addr: DmaAddr,
     pub(crate) layout: Layout,
 }
@@ -174,6 +189,30 @@ impl DmaAllocHandle {
     pub unsafe fn new(cpu_addr: NonNull<u8>, dma_addr: DmaAddr, layout: Layout) -> Self {
         Self {
             cpu_addr,
+            allocation_addr: cpu_addr,
+            dma_addr,
+            layout,
+        }
+    }
+
+    /// Creates a handle whose CPU mapping differs from the allocator-owned
+    /// address that must be used during release.
+    ///
+    /// # Safety
+    ///
+    /// `cpu_addr` and `allocation_addr` must refer to the same live physical
+    /// allocation described by `layout`. `cpu_addr` must remain the only CPU
+    /// mapping exposed to the allocation owner until deallocation, and
+    /// `dma_addr` must be the device-visible address for those pages.
+    pub unsafe fn new_with_allocation(
+        cpu_addr: NonNull<u8>,
+        allocation_addr: NonNull<u8>,
+        dma_addr: DmaAddr,
+        layout: Layout,
+    ) -> Self {
+        Self {
+            cpu_addr,
+            allocation_addr,
             dma_addr,
             layout,
         }
@@ -189,6 +228,12 @@ impl DmaAllocHandle {
 
     pub fn as_ptr(&self) -> NonNull<u8> {
         self.cpu_addr
+    }
+
+    /// Returns the allocator-owned address required by the DMA backend when
+    /// releasing this handle.
+    pub fn allocation_ptr(&self) -> NonNull<u8> {
+        self.allocation_addr
     }
 
     pub fn dma_addr(&self) -> DmaAddr {
@@ -250,5 +295,24 @@ impl DmaMapHandle {
 
     pub fn bounce_ptr(&self) -> Option<NonNull<u8>> {
         self.bounce_ptr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coherent_handle_keeps_cpu_alias_and_allocator_address_distinct() {
+        let alias = NonNull::new(0x8000_usize as *mut u8).unwrap();
+        let allocation = NonNull::new(0x4000_usize as *mut u8).unwrap();
+        let layout = Layout::from_size_align(0x1000, 0x1000).unwrap();
+        let handle = unsafe {
+            DmaAllocHandle::new_with_allocation(alias, allocation, 0x2000_u64.into(), layout)
+        };
+
+        assert_eq!(handle.as_ptr(), alias);
+        assert_eq!(handle.allocation_ptr(), allocation);
+        assert_eq!(handle.dma_addr(), DmaAddr::from(0x2000_u64));
     }
 }
