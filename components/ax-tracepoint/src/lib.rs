@@ -25,6 +25,8 @@ use alloc::{
 };
 use core::mem::{align_of, size_of};
 
+#[doc(hidden)]
+pub use basic_macro::TraceRecord;
 pub use paste;
 pub use point::{
     CommonTracePointMeta, ExtTracePoint, RawTraceEventFunc, TraceCallbackType, TraceDefaultFunc,

@@ -49,15 +49,18 @@ impl TraceEntry {
 ///
 /// # Safety
 ///
-/// Every bit pattern must be a valid value of the implementing type, and the
-/// type must not own resources that require drop. The event formatter uses
-/// this contract to perform an unaligned copy from a trace record.
+/// Every bit pattern must be a valid value of the implementing type, the type
+/// must not own resources that require drop, and its object representation
+/// must not contain padding bytes. Generated event encoders copy each field's
+/// complete object representation into a zero-initialized record, while event
+/// formatters perform an unaligned copy from that record.
 pub unsafe trait TraceField: FieldClassifier + Copy {}
 
 macro_rules! impl_trace_field {
     ($($type:ty),+ $(,)?) => {
         $(
-            // SAFETY: integer primitives accept every bit pattern and are Copy.
+            // SAFETY: integer primitives accept every bit pattern, are Copy,
+            // and contain no padding bytes.
             unsafe impl TraceField for $type {}
         )+
     };
@@ -66,8 +69,8 @@ macro_rules! impl_trace_field {
 impl_trace_field!(i8, i16, i32, i64, i128, isize);
 impl_trace_field!(u8, u16, u32, u64, u128, usize);
 
-// SAFETY: an array is byte-valid and Copy when each element is byte-valid and
-// Copy, and arrays do not add an invalid bit pattern of their own.
+// SAFETY: an array is byte-valid, Copy, and padding-free when each element has
+// those properties; arrays do not add padding between elements.
 unsafe impl<T: TraceField, const LEN: usize> TraceField for [T; LEN] {}
 
 /// Linker-collected metadata for one tracepoint.
@@ -497,6 +500,26 @@ mod tests {
         }
     }
 
+    struct PaddingKernel;
+
+    impl KernelTraceOps for PaddingKernel {
+        fn current_pid() -> u32 {
+            0
+        }
+
+        fn trace_pipe_push_raw_record(_: &[u8]) {}
+
+        fn trace_cmdline_push(_: u32) {}
+
+        fn read_tracepoint_state<R>(_: u32, _: impl FnOnce(&ExtTracePoint<Self>) -> R) -> R {
+            panic!("test has no tracepoint registry")
+        }
+
+        fn write_tracepoint_state<R>(_: u32, _: impl FnOnce(&mut ExtTracePoint<Self>) -> R) -> R {
+            panic!("test has no tracepoint registry")
+        }
+    }
+
     crate::define_event_trace!(
         test_kernel_event,
         TP_kops(TestKernel),
@@ -517,6 +540,26 @@ mod tests {
         TP_fast_assign { value: value },
         TP_ident(entry),
         TP_printk(format_args!("value={}", entry.value))
+    );
+
+    crate::define_event_trace!(
+        padded_kernel_event,
+        TP_kops(PaddingKernel),
+        TP_system(ax_tracepoint_test),
+        TP_PROTO(sequence: u64, state: u32),
+        TP_STRUCT__entry {
+            sequence: u64,
+            state: u32,
+        },
+        TP_fast_assign {
+            sequence: sequence,
+            state: state,
+        },
+        TP_ident(entry),
+        TP_printk(format_args!(
+            "sequence={} state={}",
+            entry.sequence, entry.state
+        ))
     );
 
     fn format_entry(_: &[u8]) -> Result<String, TraceParseError> {
@@ -672,6 +715,34 @@ mod tests {
                 expected: size_of::<TraceEntry>(),
                 actual: 0,
             })
+        );
+    }
+
+    #[test]
+    fn generated_record_zeroes_c_layout_padding() {
+        let record = encode_padded_kernel_event_record(
+            TraceEntry {
+                common_type: 7,
+                common_flags: 0,
+                common_preempt_count: 0,
+                common_pid: 11,
+            },
+            0x1122_3344_5566_7788,
+            0xaabb_ccdd,
+        );
+        let padding_start =
+            core::mem::offset_of!(__padded_kernel_event_full_entry, entry.state) + size_of::<u32>();
+        let padding_end = size_of::<__padded_kernel_event_full_entry>();
+
+        assert!(
+            padding_start < padding_end,
+            "the regression layout must contain tail padding"
+        );
+        assert!(
+            record.as_bytes()[padding_start..padding_end]
+                .iter()
+                .all(|byte| *byte == 0),
+            "all bytes exposed to trace callbacks must be initialized"
         );
     }
 }

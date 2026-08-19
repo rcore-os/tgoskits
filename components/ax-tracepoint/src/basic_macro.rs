@@ -1,3 +1,51 @@
+use core::mem::size_of;
+
+use crate::TraceField;
+
+/// A zero-initialized byte record assembled by generated tracepoint encoders.
+#[doc(hidden)]
+pub struct TraceRecord<const SIZE: usize> {
+    bytes: [u8; SIZE],
+}
+
+impl<const SIZE: usize> TraceRecord<SIZE> {
+    /// Creates a record whose complete object representation is initialized.
+    #[doc(hidden)]
+    pub const fn new() -> Self {
+        Self { bytes: [0; SIZE] }
+    }
+
+    /// Writes one field at its generated C-layout offset.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated field range is outside the record.
+    #[doc(hidden)]
+    pub fn write_field<T: TraceField>(&mut self, offset: usize, value: T) {
+        let end = offset
+            .checked_add(size_of::<T>())
+            .expect("trace field range must not overflow");
+        assert!(end <= SIZE, "trace field must fit in its record");
+
+        // SAFETY: the checked range lies inside `bytes`, `write_unaligned`
+        // accepts its byte alignment, and `TraceField` guarantees that the
+        // copied value has no uninitialized padding bytes.
+        unsafe {
+            self.bytes
+                .as_mut_ptr()
+                .add(offset)
+                .cast::<T>()
+                .write_unaligned(value);
+        }
+    }
+
+    /// Returns the fully initialized record bytes.
+    #[doc(hidden)]
+    pub const fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 /// Define a tracepoint with the given parameters.
 ///
 /// This macro generates a tracepoint with the specified name, arguments, entry structure, assignment logic, identifier, and print format.
@@ -52,19 +100,56 @@ macro_rules! define_event_trace{
         TP_printk($fmt_expr: expr)
     ) => {
         $crate::paste::paste!{
+            #[allow(non_camel_case_types)]
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct [<__ $name _entry>] {
+                $($entry: $entry_type,)*
+            }
+
+            #[allow(non_camel_case_types)]
+            #[repr(C)]
+            struct [<__ $name _full_entry>] {
+                common: $crate::TraceEntry,
+                entry: [<__ $name _entry>],
+            }
+
+            fn [<encode_ $name _record>](
+                common: $crate::TraceEntry,
+                $($entry: $entry_type),*
+            ) -> $crate::TraceRecord<{
+                core::mem::size_of::<[<__ $name _full_entry>]>()
+            }> {
+                type FullEntry = [<__ $name _full_entry>];
+                let mut record = $crate::TraceRecord::new();
+                record.write_field(
+                    core::mem::offset_of!(FullEntry, common.common_type),
+                    common.common_type,
+                );
+                record.write_field(
+                    core::mem::offset_of!(FullEntry, common.common_flags),
+                    common.common_flags,
+                );
+                record.write_field(
+                    core::mem::offset_of!(FullEntry, common.common_preempt_count),
+                    common.common_preempt_count,
+                );
+                record.write_field(
+                    core::mem::offset_of!(FullEntry, common.common_pid),
+                    common.common_pid,
+                );
+                $(
+                    record.write_field(
+                        core::mem::offset_of!(FullEntry, entry.$entry),
+                        $entry,
+                    );
+                )*
+                record
+            }
+
             #[allow(non_upper_case_globals)]
             #[used]
             static [<__ $name>]: $crate::TracePoint<$kops> = {
-                #[repr(C)]
-                #[derive(Clone, Copy)]
-                struct Entry {
-                    $($entry: $entry_type,)*
-                }
-                #[repr(C)]
-                struct FullEntry {
-                    common: $crate::TraceEntry,
-                    entry: Entry,
-                }
                 use $crate::tp_lexer::{schema,FieldClassifier};
                 const fn assert_trace_field<T: $crate::TraceField>() {}
                 $(assert_trace_field::<$entry_type>();)*
@@ -74,7 +159,7 @@ macro_rules! define_event_trace{
                     "common_preempt_count" => (u8::FIELD_TYPE, 3, 1),
                     "common_pid" => (i32::FIELD_TYPE, 4, 4),
                     $(
-                        stringify!($entry) => (<$entry_type>::FIELD_TYPE, core::mem::offset_of!(FullEntry, entry.$entry), core::mem::size_of::<$entry_type>()),
+                        stringify!($entry) => (<$entry_type>::FIELD_TYPE, core::mem::offset_of!([<__ $name _full_entry>], entry.$entry), core::mem::size_of::<$entry_type>()),
                     )*
                 );
                 $crate::TracePoint::new(stringify!($name), stringify!($system),[<trace_fmt_ $name>], [<trace_fmt_show $name>], schema)
@@ -103,18 +188,7 @@ macro_rules! define_event_trace{
 
                 let event_handler = |event_func: &$crate::TraceEventFunc|{
                     if event_func.perf_enabled(){
-                        #[repr(C)]
-                        #[derive(Clone, Copy)]
-                        struct Entry {
-                            $($entry: $entry_type,)*
-                        }
-                        #[repr(C)]
-                        struct FullEntry {
-                            common: $crate::TraceEntry,
-                            entry: Entry,
-                        }
-
-                        let entry = Entry {
+                        let entry = [<__ $name _entry>] {
                             $($assign: $value,)*
                         };
                         use $crate::KernelTraceOps;
@@ -126,18 +200,11 @@ macro_rules! define_event_trace{
                             common_pid: pid as i32,
                         };
 
-                        let full_entry = FullEntry {
+                        let event_record = [<encode_ $name _record>](
                             common,
-                            entry,
-                        };
-
-                        let event_buf = unsafe {
-                            core::slice::from_raw_parts(
-                                &full_entry as *const FullEntry as *const u8,
-                                core::mem::size_of::<FullEntry>(),
-                            )
-                        };
-                        event_func.call(event_buf);
+                            $(entry.$entry),*
+                        );
+                        event_func.call(event_record.as_bytes());
                     }
                 };
 
@@ -214,18 +281,7 @@ macro_rules! define_event_trace{
             #[allow(non_snake_case)]
             fn [<trace_default_ $name>]<F:$crate::KernelTraceOps>(tp_compiled_expr: Option<&$crate::tp_lexer::Compiled>, _data:& (dyn core::any::Any+Send+Sync), $($arg:$arg_type),* )
             {
-                #[repr(C)]
-                #[derive(Clone, Copy)]
-                struct Entry {
-                    $($entry: $entry_type,)*
-                }
-                #[repr(C)]
-                struct FullEntry {
-                    common: $crate::TraceEntry,
-                    entry: Entry,
-                }
-
-                let entry = Entry {
+                let entry = [<__ $name _entry>] {
                     $($assign: $value,)*
                 };
 
@@ -237,17 +293,11 @@ macro_rules! define_event_trace{
                     common_pid: pid as i32,
                 };
 
-                let full_entry = FullEntry {
+                let event_record = [<encode_ $name _record>](
                     common,
-                    entry,
-                };
-
-                let event_buf = unsafe {
-                    core::slice::from_raw_parts(
-                        &full_entry as *const FullEntry as *const u8,
-                        core::mem::size_of::<FullEntry>(),
-                    )
-                };
+                    $(entry.$entry),*
+                );
+                let event_buf = event_record.as_bytes();
 
                 if let Some(compiled_expr) = tp_compiled_expr {
                     use $crate::tp_lexer::BufContext;
@@ -263,11 +313,7 @@ macro_rules! define_event_trace{
 
             #[allow(non_snake_case)]
             pub fn [<trace_fmt_ $name>](buf: &[u8]) -> core::result::Result<alloc::string::String, $crate::TraceParseError> {
-                #[repr(C)]
-                #[derive(Clone, Copy)]
-                struct Entry {
-                    $($entry: $entry_type,)*
-                }
+                type Entry = [<__ $name _entry>];
                 let expected = core::mem::size_of::<Entry>();
                 if buf.len() < expected {
                     return Err($crate::TraceParseError::PayloadTooShort {
@@ -299,17 +345,7 @@ macro_rules! define_event_trace{
                         _ => false,
                     }
                 }
-
-
-                #[repr(C)]
-                struct Entry {
-                    $($entry: $entry_type,)*
-                }
-                #[repr(C)]
-                struct FullEntry {
-                    common: $crate::TraceEntry,
-                    entry: Entry,
-                }
+                type FullEntry = [<__ $name _full_entry>];
 
                 $(
                     let offset = core::mem::offset_of!(FullEntry, entry.$entry);
