@@ -83,16 +83,16 @@ async fn main() -> anyhow::Result<()> {
 /// relative paths against `std::env::current_dir()`.
 ///
 /// Path-valued flags that are normalised:
-/// - `-S` / `--local-storage`  (image global override)
-/// - `-o` / `--output-dir`     (pull subcommand)
-/// - `--output`                (resize subcommand)
+/// - `-D` / `--download-dir` (image global override)
+/// - `-E` / `--extract-dir`  (image global override)
+/// - `--output`              (resize subcommand)
 #[cfg(any(windows, all(unix, not(target_env = "musl"))))]
 fn normalize_image_paths(args: &mut [OsString], invocation_dir: &Path) {
-    const PATH_FLAGS: &[&str] = &["-S", "--local-storage", "-o", "--output-dir", "--output"];
+    const PATH_FLAGS: &[&str] = &["-D", "--download-dir", "-E", "--extract-dir", "--output"];
 
     let mut i = 1; // skip binary name
     while i < args.len() {
-        // Handle --flag=<value> / -S=<value> form.
+        // Handle --flag=<value> / -D=<value> form.
         // Match the ASCII flag prefix at the byte level via try_strip_prefix so
         // that non-UTF-8 path values (valid on POSIX) are not silently dropped.
         let mut matched = false;
@@ -108,19 +108,19 @@ fn normalize_image_paths(args: &mut [OsString], invocation_dir: &Path) {
                 break;
             }
 
-            // Handle attached short options: -Svalue / -ovalue (no =, no space).
-            // Must come AFTER the =<value> check so -S=cache is still handled
+            // Handle attached short options: -Dvalue / -Evalue (no =, no space).
+            // Must come AFTER the =<value> check so -D=cache is still handled
             // by that branch.
             if flag.len() == 2
                 && let Some(rest) = try_strip_prefix(&args[i], flag)
             {
-                // Skip empty (bare -S falls through to space form) and
+                // Skip empty (bare -D falls through to space form) and
                 // = prefixed (already handled by the = form above).
                 if !rest.is_empty() && !starts_with_equals(rest) {
                     let path = Path::new(rest);
                     if path.is_relative() {
                         let abs = invocation_dir.join(path);
-                        // Reconstruct as -S/path (no =, preserving attached form)
+                        // Reconstruct as -D/path (no =, preserving attached form)
                         let mut new_arg = OsString::from(flag);
                         new_arg.push(abs);
                         args[i] = new_arg;
@@ -135,7 +135,7 @@ fn normalize_image_paths(args: &mut [OsString], invocation_dir: &Path) {
             continue;
         }
 
-        // Handle -S <value> / --flag <value> form.
+        // Handle -D <value> / --flag <value> form.
         // Flag tokens are always ASCII so to_str() is safe for the flag check;
         // the path value is handled as OsStr to preserve non-UTF-8 bytes.
         if let Some(current_str) = args[i].to_str()
@@ -380,13 +380,13 @@ mod tests {
     }
 
     #[test]
-    fn relative_output_dir_is_resolved() {
+    fn relative_extract_dir_is_resolved() {
         let inv = Path::new("/home/user/project");
         let mut args = vec![
             os("xtask"),
             os("image"),
             os("pull"),
-            os("--output-dir"),
+            os("--extract-dir"),
             os("out/images"),
             os("qemu-aarch64"),
         ];
@@ -395,22 +395,22 @@ mod tests {
     }
 
     #[test]
-    fn relative_output_dir_equals_form() {
+    fn relative_extract_dir_equals_form() {
         let inv = Path::new("/home/user/project");
-        let mut args = vec![os("xtask"), os("pull"), os("--output-dir=../staging")];
+        let mut args = vec![os("xtask"), os("pull"), os("--extract-dir=../staging")];
         normalize_image_paths(&mut args, inv);
         // Path::join preserves `..` components (matching `to_absolute_path` in
         // axbuild); the filesystem resolves them equivalently.
-        assert_path_eq(&args[2], "--output-dir=/home/user/project/../staging");
+        assert_path_eq(&args[2], "--extract-dir=/home/user/project/../staging");
     }
 
     #[test]
-    fn relative_local_storage_short_flag() {
+    fn relative_download_dir_short_flag() {
         let inv = Path::new("/tmp/work");
         let mut args = vec![
             os("xtask"),
             os("image"),
-            os("-S"),
+            os("-D"),
             os("my-store"),
             os("pull"),
             os("qemu-aarch64"),
@@ -420,17 +420,17 @@ mod tests {
     }
 
     #[test]
-    fn relative_local_storage_equals_form() {
+    fn relative_download_dir_equals_form() {
         let inv = Path::new("/tmp/work");
         let mut args = vec![
             os("xtask"),
             os("image"),
-            os("--local-storage=cache/img"),
+            os("--download-dir=cache/img"),
             os("pull"),
             os("qemu-aarch64"),
         ];
         normalize_image_paths(&mut args, inv);
-        assert_path_eq(&args[2], "--local-storage=/tmp/work/cache/img");
+        assert_path_eq(&args[2], "--download-dir=/tmp/work/cache/img");
     }
 
     #[test]
@@ -440,7 +440,7 @@ mod tests {
             os("xtask"),
             os("image"),
             os("pull"),
-            os("--output-dir"),
+            os("--extract-dir"),
             os("/absolute/path"),
             os("qemu-aarch64"),
         ];
@@ -465,23 +465,23 @@ mod tests {
     }
 
     #[test]
-    fn short_o_flag_with_equals_is_normalised() {
-        // `-o=<value>` is valid clap syntax (clap accepts `=` form for short flags too).
+    fn short_e_flag_with_equals_is_normalised() {
+        // `-E=<value>` is valid clap syntax (clap accepts `=` form for short flags too).
         let inv = Path::new("/home/user/project");
-        let mut args = vec![os("xtask"), os("image"), os("pull"), os("-o=tmp/out")];
+        let mut args = vec![os("xtask"), os("image"), os("pull"), os("-E=tmp/out")];
         normalize_image_paths(&mut args, inv);
-        assert_path_eq(&args[3], "-o=/home/user/project/tmp/out");
+        assert_path_eq(&args[3], "-E=/home/user/project/tmp/out");
     }
 
     #[test]
     fn non_path_value_not_starts_with_dash() {
-        // -S followed by a flag-like value should not be treated as a path
+        // -D followed by a flag-like value should not be treated as a path
         let inv = Path::new("/home/user/project");
         let mut args = vec![
             os("xtask"),
             os("image"),
             os("pull"),
-            os("-S"),
+            os("-D"),
             os("--another-flag"),
         ];
         let expected = args.clone();
@@ -491,14 +491,14 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn non_utf8_local_storage_short_flag() {
+    fn non_utf8_download_dir_short_flag() {
         use std::os::unix::ffi::OsStrExt;
         let inv = Path::new("/tmp/work");
         let val = OsString::from(OsStr::from_bytes(b"cache-\xff"));
         let mut args = vec![
             OsString::from("xtask"),
             OsString::from("image"),
-            OsString::from("-S"),
+            OsString::from("-D"),
             val,
             OsString::from("pull"),
             OsString::from("qemu-aarch64"),
@@ -511,10 +511,10 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn non_utf8_local_storage_equals_form() {
+    fn non_utf8_download_dir_equals_form() {
         use std::os::unix::ffi::OsStrExt;
         let inv = Path::new("/tmp/work");
-        let arg = OsString::from(OsStr::from_bytes(b"--local-storage=cache-\xff"));
+        let arg = OsString::from(OsStr::from_bytes(b"--download-dir=cache-\xff"));
         let mut args = vec![
             OsString::from("xtask"),
             OsString::from("image"),
@@ -523,47 +523,47 @@ mod tests {
             OsString::from("qemu-aarch64"),
         ];
         normalize_image_paths(&mut args, inv);
-        let mut expected = Vec::from(b"--local-storage=/tmp/work/cache-");
+        let mut expected = Vec::from(b"--download-dir=/tmp/work/cache-");
         expected.push(0xff);
         assert_eq!(args[2].as_bytes(), expected.as_slice());
     }
 
     #[test]
-    fn attached_short_s_form_is_normalised() {
-        // -Scache → -S/tmp/work/cache (no = sign, attached form preserved)
+    fn attached_short_d_form_is_normalised() {
+        // -Dcache → -D/tmp/work/cache (no = sign, attached form preserved)
         let inv = Path::new("/tmp/work");
         let mut args = vec![
             os("xtask"),
             os("image"),
-            os("-Scache"),
+            os("-Dcache"),
             os("pull"),
             os("qemu-aarch64"),
         ];
         normalize_image_paths(&mut args, inv);
-        assert_path_eq(&args[2], "-S/tmp/work/cache");
+        assert_path_eq(&args[2], "-D/tmp/work/cache");
     }
 
     #[test]
-    fn attached_short_o_form_is_normalised() {
-        // -oout → -o/home/user/project/out
+    fn attached_short_e_form_is_normalised() {
+        // -Eout → -E/home/user/project/out
         let inv = Path::new("/home/user/project");
         let mut args = vec![
             os("xtask"),
             os("image"),
             os("pull"),
-            os("-oout"),
+            os("-Eout"),
             os("qemu-aarch64"),
         ];
         normalize_image_paths(&mut args, inv);
-        assert_path_eq(&args[3], "-o/home/user/project/out");
+        assert_path_eq(&args[3], "-E/home/user/project/out");
     }
 
     #[test]
     #[cfg(unix)]
-    fn attached_short_s_form_non_utf8() {
+    fn attached_short_d_form_non_utf8() {
         use std::os::unix::ffi::OsStrExt;
         let inv = Path::new("/tmp/work");
-        let mut arg_bytes = Vec::from(b"-Scache-");
+        let mut arg_bytes = Vec::from(b"-Dcache-");
         arg_bytes.push(0xff);
         let arg = OsString::from(OsStr::from_bytes(&arg_bytes));
         let mut args = vec![
@@ -574,17 +574,17 @@ mod tests {
             OsString::from("qemu-aarch64"),
         ];
         normalize_image_paths(&mut args, inv);
-        let mut expected = Vec::from(b"-S/tmp/work/cache-");
+        let mut expected = Vec::from(b"-D/tmp/work/cache-");
         expected.push(0xff);
         assert_eq!(args[2].as_bytes(), expected.as_slice());
     }
 
     #[test]
     #[cfg(unix)]
-    fn attached_short_o_form_non_utf8() {
+    fn attached_short_e_form_non_utf8() {
         use std::os::unix::ffi::OsStrExt;
         let inv = Path::new("/home/user/project");
-        let mut arg_bytes = Vec::from(b"-oout-");
+        let mut arg_bytes = Vec::from(b"-Eout-");
         arg_bytes.push(0xff);
         let arg = OsString::from(OsStr::from_bytes(&arg_bytes));
         let mut args = vec![
@@ -595,19 +595,19 @@ mod tests {
             OsString::from("qemu-aarch64"),
         ];
         normalize_image_paths(&mut args, inv);
-        let mut expected = Vec::from(b"-o/home/user/project/out-");
+        let mut expected = Vec::from(b"-E/home/user/project/out-");
         expected.push(0xff);
         assert_eq!(args[3].as_bytes(), expected.as_slice());
     }
 
     #[test]
     fn attached_short_absolute_path_unchanged() {
-        // -S/absolute should not be touched
+        // -D/absolute should not be touched
         let inv = Path::new("/tmp/work");
         let mut args = vec![
             os("xtask"),
             os("image"),
-            os("-S/usr/local"),
+            os("-D/usr/local"),
             os("pull"),
             os("qemu-aarch64"),
         ];
@@ -618,43 +618,43 @@ mod tests {
 
     #[test]
     fn attached_short_equals_form_still_works() {
-        // -S=rel must still be handled by the = form (regression guard)
+        // -D=rel must still be handled by the = form (regression guard)
         let inv = Path::new("/tmp/work");
         let mut args = vec![
             os("xtask"),
             os("image"),
-            os("-S=rel"),
+            os("-D=rel"),
             os("pull"),
             os("qemu-aarch64"),
         ];
         normalize_image_paths(&mut args, inv);
-        assert_path_eq(&args[2], "-S=/tmp/work/rel");
+        assert_path_eq(&args[2], "-D=/tmp/work/rel");
     }
 
     #[test]
-    fn attached_short_combined_s_o() {
-        // Clap treats -So as -S with value "o", not -S + -o
+    fn attached_short_combined_d_e() {
+        // Clap treats -De as -D with value "e", not -D + -E
         let inv = Path::new("/tmp/work");
         let mut args = vec![
             os("xtask"),
             os("image"),
-            os("-So"),
+            os("-De"),
             os("pull"),
             os("qemu-aarch64"),
         ];
         normalize_image_paths(&mut args, inv);
-        assert_path_eq(&args[2], "-S/tmp/work/o");
+        assert_path_eq(&args[2], "-D/tmp/work/e");
     }
 
     #[test]
     fn attached_short_alone_falls_through() {
-        // Bare -S with no attached value: the fallthrough to space form
+        // Bare -D with no attached value: the fallthrough to space form
         // must still work (regression guard).
         let inv = Path::new("/tmp/work");
         let mut args = vec![
             os("xtask"),
             os("image"),
-            os("-S"),
+            os("-D"),
             os("store"),
             os("pull"),
             os("qemu-aarch64"),

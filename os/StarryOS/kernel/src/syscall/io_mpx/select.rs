@@ -209,7 +209,7 @@ pub fn sys_pselect6(
     )
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn select_fd_set_and_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::__FD_SETSIZE;
 

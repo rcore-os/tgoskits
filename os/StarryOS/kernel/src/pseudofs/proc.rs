@@ -50,6 +50,8 @@ static IRQ_CNT: AtomicUsize = AtomicUsize::new(0);
 
 pub static KALLSYMS: LazyInit<KallsymsMapped<'static>> = LazyInit::new();
 
+static BOOT_ID: LazyInit<String> = LazyInit::new();
+
 fn read_kallsyms() -> KallsymsMapped<'static> {
     unsafe extern "C" {
         fn _stext();
@@ -80,6 +82,72 @@ fn read_kallsyms() -> KallsymsMapped<'static> {
 
 fn procfs_visible_pid(view: &PidView, proc: &Process) -> Option<u32> {
     view.visible_number(&proc.identity()).map(PidNumber::get)
+}
+
+fn boot_id_proc_file(fs: Arc<SimpleFs>) -> Option<Arc<SimpleFile>> {
+    let generated_boot_id = boot_id_from_entropy(ax_runtime::hal::boot::boot_entropy())?;
+    let boot_id = BOOT_ID.get_or_init(|| generated_boot_id).clone();
+    let file = SimpleFile::new_regular(fs, move || Ok(boot_id.clone()));
+    let now = wall_time();
+    file.set_attrs(
+        NodePermission::from_bits_truncate(0o444),
+        0,
+        0,
+        now,
+        now,
+        now,
+    );
+    Some(file)
+}
+
+fn boot_id_from_entropy(boot_entropy: Option<[u8; 32]>) -> Option<String> {
+    let boot_entropy = boot_entropy?;
+    let random_bytes = boot_entropy[..16]
+        .try_into()
+        .expect("boot entropy contains 16 UUID bytes");
+    Some(format_boot_id(random_bytes))
+}
+
+fn format_boot_id(mut random_bytes: [u8; 16]) -> String {
+    random_bytes[6] = (random_bytes[6] & 0x0f) | 0x40;
+    random_bytes[8] = (random_bytes[8] & 0x3f) | 0x80;
+
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:\
+         02x}{:02x}{:02x}\n",
+        random_bytes[0],
+        random_bytes[1],
+        random_bytes[2],
+        random_bytes[3],
+        random_bytes[4],
+        random_bytes[5],
+        random_bytes[6],
+        random_bytes[7],
+        random_bytes[8],
+        random_bytes[9],
+        random_bytes[10],
+        random_bytes[11],
+        random_bytes[12],
+        random_bytes[13],
+        random_bytes[14],
+        random_bytes[15],
+    )
+}
+
+#[cfg(axtest)]
+pub(crate) fn boot_id_formats_firmware_entropy_for_test() -> bool {
+    boot_id_from_entropy(Some([
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ]))
+    .as_deref()
+        == Some("00010203-0405-4607-8809-0a0b0c0d0e0f\n")
+}
+
+#[cfg(axtest)]
+pub(crate) fn boot_id_is_omitted_without_trusted_entropy_for_test() -> bool {
+    boot_id_from_entropy(None).is_none()
 }
 
 fn render_meminfo() -> String {
@@ -616,6 +684,7 @@ fn usb_endpoint_type_label(ty: u8) -> &'static str {
         _ => "Unk.",
     }
 }
+
 pub fn new_procfs(observer: PidNamespaceRef) -> Filesystem {
     let view = PidView::new(observer);
     SimpleFs::new_with("proc".into(), 0x9fa0, move |fs| builder(fs, view))
@@ -772,6 +841,7 @@ fn render_task_status(
 #[rustfmt::skip]
 fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
     let base = &status.base;
+    let groups = SupplementaryGroups(&base.cred.groups);
     // NOTE: `Threads:\t<n>` is REQUIRED by psutil. `Process.num_threads()`
     // does `int(re.compile(br'Threads:\t(\d+)').findall(data)[0])`, which
     // raises an *uncaught* IndexError (not NoSuchProcess/AccessDenied/
@@ -788,6 +858,7 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
         TracerPid:\t{}\n\
         Uid:\t{}\t{}\t{}\t{}\n\
         Gid:\t{}\t{}\t{}\t{}\n\
+        Groups:\t{}\n\
         CapInh:\t{:016x}\n\
         CapPrm:\t{:016x}\n\
         CapEff:\t{:016x}\n\
@@ -809,6 +880,7 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
         base.tracer_pid.map_or(0, TidNumber::get),
         base.cred.uid, base.cred.euid, base.cred.suid, base.cred.fsuid,
         base.cred.gid, base.cred.egid, base.cred.sgid, base.cred.fsgid,
+        groups,
         base.cred.cap_inheritable,
         base.cred.cap_permitted,
         base.cred.cap_effective,
@@ -819,6 +891,22 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
         status.cpus_allowed,
         status.cpus_allowed_list,
     )
+}
+
+/// A `/proc/<pid>/status` supplementary-group list, written directly into the
+/// status buffer to avoid an additional allocation for large valid group sets.
+struct SupplementaryGroups<'a>(&'a [u32]);
+
+impl core::fmt::Display for SupplementaryGroups<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for (index, group) in self.0.iter().enumerate() {
+            if index != 0 {
+                formatter.write_str(" ")?;
+            }
+            write!(formatter, "{group}")?;
+        }
+        Ok(())
+    }
 }
 
 fn format_cpumask_hex(cpumask: AxCpuMask, cpu_num: usize) -> String {
@@ -1814,6 +1902,7 @@ fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc
         }),
     )
 }
+
 fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
@@ -1994,6 +2083,13 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
                     }),
                 ),
             );
+            kernel.add("random", {
+                let mut random = DirMapping::new();
+                if let Some(boot_id) = boot_id_proc_file(fs.clone()) {
+                    random.add("boot_id", boot_id);
+                }
+                SimpleDir::new_maker(fs.clone(), Arc::new(random))
+            });
 
             // perf knobs the upstream Linux `perf` tool probes at startup.
             // `perf_event_paranoid` gates how much unprivileged users may
@@ -2448,6 +2544,8 @@ fn task_status_fields_match_linux_layout() -> bool {
     let cpu_presence = collect_cpu_presence([1usize, 3], 4);
     let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
     let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
+    let mut cred = Cred::root();
+    cred.groups = Arc::from([100, 200, 300].as_slice());
     let mem = ProcessMemStats {
         vss_pages: 128,
         resident_pages: 96,
@@ -2466,7 +2564,7 @@ fn task_status_fields_match_linux_layout() -> bool {
             pid: TidNumber::try_from(43).unwrap(),
             ppid: Some(TgidNumber::try_from(41).unwrap()),
             tracer_pid: Some(TidNumber::try_from(7).unwrap()),
-            cred: &Cred::root(),
+            cred: &cred,
             num_threads: 3,
         },
         cpus_allowed: &cpus_allowed,
@@ -2480,6 +2578,7 @@ fn task_status_fields_match_linux_layout() -> bool {
         && status.contains("Pid:\t43\n")
         && status.contains("PPid:\t41\n")
         && status.contains("TracerPid:\t7\n")
+        && status.contains("Groups:\t100 200 300\n")
         && status.contains("Threads:\t3\n")
         && status.contains("VmPeak:\t1024 kB\n")
         && status.contains("VmRSS:\t384 kB\n")
@@ -2515,7 +2614,7 @@ fn high_speed_root_hub_snapshot_for_test() -> crate::pseudofs::usbfs::UsbDeviceS
 
 #[cfg(test)]
 mod tests {
-    use alloc::{format, string::String};
+    use alloc::{format, string::String, sync::Arc};
 
     use super::{
         TaskStatusBase, TaskStatusFields, collect_cpu_presence, format_cpu_presence_hex,
@@ -2662,6 +2761,32 @@ mod tests {
         // Tab-separated, exactly as the psutil regex expects (not space).
         assert!(!status.contains("Threads: 3"));
         assert!(status.contains("State:\tS (sleeping)\n"));
+    }
+
+    #[test]
+    fn task_status_reports_supplementary_groups() {
+        let cpu_presence = collect_cpu_presence([0usize], 1);
+        let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
+        let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
+        let mut cred = Cred::root();
+        cred.groups = Arc::from([100, 200, 300].as_slice());
+        let status = render_task_status_fields(&TaskStatusFields {
+            base: TaskStatusBase {
+                name: "proc-status-test",
+                state: "S (sleeping)",
+                tgid: TgidNumber::try_from(1).unwrap(),
+                pid: TidNumber::try_from(1).unwrap(),
+                ppid: None,
+                tracer_pid: None,
+                cred: &cred,
+                num_threads: 1,
+            },
+            cpus_allowed: &cpus_allowed,
+            cpus_allowed_list: &cpus_allowed_list,
+            mem: &sample_mem_stats(),
+        });
+
+        assert!(status.contains("Groups:\t100 200 300\n"));
     }
 
     #[test]

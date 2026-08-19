@@ -53,6 +53,21 @@ pub enum DCacheOp {
     CleanInvalidate,
 }
 
+/// Platform contract for cacheable Normal memory shared by CPUs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuSharedMemoryModel {
+    /// All online CPUs observe a coherent view of cacheable Normal memory.
+    ///
+    /// Standard Acquire/Release atomics and the platform IPI ordering contract
+    /// are sufficient for publishing CPU-owned queues. Per-message cache
+    /// maintenance is neither required nor permitted as a substitute for
+    /// synchronization.
+    Coherent,
+    /// The platform cannot provide the coherent memory model required by the
+    /// generic SMP runtime.
+    Unsupported,
+}
+
 bitflags::bitflags! {
     /// The flags of a physical memory region.
     #[derive(Clone, Copy)]
@@ -172,6 +187,13 @@ impl PhysMemRegion {
 /// Physical memory interface.
 #[def_plat_interface]
 pub trait MemIf {
+    /// Returns the memory model provided for cacheable RAM shared by CPUs.
+    ///
+    /// Platforms must establish this contract before secondary CPUs enter the
+    /// generic runtime. [`CpuSharedMemoryModel::Unsupported`] restricts the
+    /// runtime to a single CPU; it does not request queue-local cache flushing.
+    fn cpu_shared_memory_model() -> CpuSharedMemoryModel;
+
     /// Returns all physical memory (RAM) ranges on the platform.
     ///
     /// All memory ranges except reserved ranges (including the kernel loaded

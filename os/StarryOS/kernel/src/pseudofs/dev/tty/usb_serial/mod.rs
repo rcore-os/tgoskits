@@ -507,6 +507,9 @@ impl TtyWrite for UsbSerialWriter {
     }
 
     fn try_write(&self, buf: &[u8]) -> usize {
+        let Some(_guard) = self.backend.output_lock.try_lock() else {
+            return 0;
+        };
         self.backend.try_queue_bytes(buf)
     }
 
@@ -516,19 +519,31 @@ impl TtyWrite for UsbSerialWriter {
         Ok(())
     }
 
-    fn termios_changed(&self, old: &Termios2, new: &Termios2) {
+    fn termios_changed(&self, old: &Termios2, new: &Termios2) -> StarryResult<()> {
         let Some(new_baud) = new.baudrate() else {
-            return;
+            return Ok(());
         };
         if old.baudrate() == Some(new_baud) {
-            return;
+            return Ok(());
         }
-        if let Err(err) = self.backend.set_baudrate(new_baud) {
-            warn!(
-                "usb-serial: ttyUSB{} failed to set baudrate {new_baud}: {err:?}",
-                self.backend.index
-            );
+        self.backend.set_baudrate(new_baud)
+    }
+
+    fn update_termios(
+        &self,
+        old: &Termios2,
+        new: &Termios2,
+        drain: bool,
+        publish: &mut dyn FnMut(),
+    ) -> StarryResult<()> {
+        self.backend.ensure_started()?;
+        let _guard = self.backend.output_lock.lock();
+        if drain {
+            self.backend.drain_tx_queue_locked()?;
         }
+        self.termios_changed(old, new)?;
+        publish();
+        Ok(())
     }
 }
 

@@ -1,8 +1,9 @@
 use core::ptr::NonNull;
 
 use rdif_serial::{
-    Config, ConfigError, DataBits, IrqRxSink, Parity, RxErrorFlags, RxFlag, RxSample,
-    SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartInfo, UartIrq, UartParts, UartPort,
+    Config, ConfigError, DataBits, IRQ_RX_BATCH_CAPACITY, IrqRxBatch, Parity, RxErrorFlags, RxFlag,
+    RxSample, SerialEventSet, SerialIrqEvent, SerialIrqReport, SerialParts, SplitUart, StopBits,
+    UartEmergencyTx, UartInfo, UartIrq, UartPort,
 };
 use tock_registers::{
     LocalRegisterCopy, interfaces::*, register_bitfields, register_structs, registers::*,
@@ -11,6 +12,7 @@ use tock_registers::{
 use crate::{PollingUart, SerialDirection, SerialEvent, TransBytesError, TransferError};
 
 const OPEN_BUSY_POLL_BUDGET: usize = 1 << 20;
+const EMERGENCY_TX_BUDGET: usize = 16;
 
 register_bitfields! [
     u32,
@@ -149,6 +151,46 @@ pub struct Pl011 {
     saved_rx_status: Pl011RxStatus,
 }
 
+#[derive(Clone, Copy)]
+struct Pl011ConfigSnapshot {
+    ilpr: u32,
+    ibrd: u32,
+    fbrd: u32,
+    lcr_h: u32,
+    cr: u32,
+    ifls: u32,
+    imsc: u32,
+    dmacr: u32,
+}
+
+impl Pl011ConfigSnapshot {
+    fn capture(registers: &Pl011Registers) -> Self {
+        Self {
+            ilpr: registers.uartilpr.get(),
+            ibrd: registers.uartibrd.get(),
+            fbrd: registers.uartfbrd.get(),
+            lcr_h: registers.uartlcr_h.get(),
+            cr: registers.uartcr.get(),
+            ifls: registers.uartifls.get(),
+            imsc: registers.uartimsc.get(),
+            dmacr: registers.uartdmacr.get(),
+        }
+    }
+
+    fn restore(self, registers: &Pl011Registers) {
+        registers.uartilpr.set(self.ilpr);
+        registers.uartibrd.set(self.ibrd);
+        registers.uartfbrd.set(self.fbrd);
+        registers.uartlcr_h.set(self.lcr_h);
+        registers.uartifls.set(self.ifls);
+        registers.uartimsc.set(self.imsc);
+        registers.uartdmacr.set(self.dmacr);
+        // Restore CR last so the original enable state is not published until
+        // every dependent configuration register is back in place.
+        registers.uartcr.set(self.cr);
+    }
+}
+
 impl Pl011 {
     /// 创建新的 PL011 实例（仅基地址，使用默认配置）
     ///
@@ -226,9 +268,13 @@ impl Pl011 {
         // IBRD = integer(BAUDDIV)
         // FBRD = integer((BAUDDIV - IBRD) * 64 + 0.5)
 
-        let bauddiv = self.clock_freq / (16 * baudrate);
-        let remainder = self.clock_freq % (16 * baudrate);
-        let fbrd = (remainder * 64 + (16 * baudrate / 2)) / (16 * baudrate);
+        let scaled_baudrate = baudrate
+            .checked_mul(16)
+            .filter(|scaled| *scaled != 0)
+            .ok_or(ConfigError::InvalidBaudrate)?;
+        let bauddiv = self.clock_freq / scaled_baudrate;
+        let remainder = self.clock_freq % scaled_baudrate;
+        let fbrd = (remainder * 64 + scaled_baudrate / 2) / scaled_baudrate;
 
         if bauddiv == 0 || bauddiv > 0xFFFF {
             return Err(ConfigError::InvalidBaudrate);
@@ -305,14 +351,14 @@ impl Pl011 {
     /// Returns [`ConfigError::Timeout`] if an in-flight transfer does not
     /// finish within the fixed early-boot polling budget.
     pub fn open(&mut self) -> Result<(), ConfigError> {
-        let original_uartcr = self.registers().uartcr.get();
+        let snapshot = Pl011ConfigSnapshot::capture(self.registers());
 
         // 禁用 UART
         self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
 
         // 等待当前传输完成
         if !self.wait_until_idle() {
-            self.registers().uartcr.set(original_uartcr);
+            snapshot.restore(self.registers());
             return Err(ConfigError::Timeout);
         }
 
@@ -623,6 +669,56 @@ pub struct Pl011Irq {
     saved_rx_status: Pl011RxStatus,
 }
 
+/// Restricted non-blocking TX view used only for emergency output.
+pub struct Pl011EmergencyTx {
+    base: Reg,
+}
+
+struct Pl011EmergencyIrqMask<'a> {
+    emergency: &'a Pl011EmergencyTx,
+    enabled: u32,
+}
+
+impl Drop for Pl011EmergencyIrqMask<'_> {
+    fn drop(&mut self) {
+        self.emergency.registers().uartimsc.set(self.enabled);
+    }
+}
+
+impl Pl011EmergencyTx {
+    fn registers(&self) -> &Pl011Registers {
+        // SAFETY: `base` points at the mapped PL011 register block. This view
+        // exposes only the TX FIFO readiness and data registers.
+        unsafe { &*self.base.0.as_ptr() }
+    }
+
+    fn mask_interrupts(&self) -> Pl011EmergencyIrqMask<'_> {
+        let enabled = self.registers().uartimsc.get();
+        self.registers().uartimsc.set(0);
+        // Flush a posted MMIO write before the emergency path touches TX.
+        let _masked = self.registers().uartimsc.get();
+        Pl011EmergencyIrqMask {
+            emergency: self,
+            enabled,
+        }
+    }
+}
+
+impl UartEmergencyTx for Pl011EmergencyTx {
+    unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
+        let _irq_mask = self.mask_interrupts();
+        let mut written = 0;
+        for &byte in bytes.iter().take(EMERGENCY_TX_BUDGET) {
+            if self.registers().uartfr.is_set(UARTFR::TXFF) {
+                break;
+            }
+            self.registers().uartdr.set(byte as u32);
+            written += 1;
+        }
+        written
+    }
+}
+
 impl Pl011Irq {
     fn registers(&self) -> &Pl011Registers {
         // SAFETY: `base` points at the mapped PL011 register block. The IRQ
@@ -632,9 +728,14 @@ impl Pl011Irq {
 }
 
 impl UartIrq for Pl011Irq {
-    fn handle(&mut self, rx: &mut dyn IrqRxSink) -> Option<SerialIrqEvent> {
-        const RX_SAMPLE_BUDGET: usize = 256;
+    fn mask(&mut self, sources: SerialEventSet) {
+        let enabled = self.registers().uartimsc.get();
+        self.registers()
+            .uartimsc
+            .set(enabled & !imsc_for_events(sources));
+    }
 
+    fn handle(&mut self) -> Option<SerialIrqReport> {
         let mis = self.registers().uartmis.extract();
         let active = mis.get();
         if active == 0 {
@@ -642,6 +743,7 @@ impl UartIrq for Pl011Irq {
         }
 
         let mut events = events_from_mis(mis);
+        let mut rx = IrqRxBatch::new();
         if active & !0x7ff != 0 {
             events |= SerialEventSet::FAULT;
         }
@@ -651,38 +753,45 @@ impl UartIrq for Pl011Irq {
             // SAFETY: `base` is the mapped PL011 register block shared with
             // the task endpoint under the runtime's same-CPU exclusion rule.
             let registers = unsafe { &*base.0.as_ptr() };
-            for _ in 0..RX_SAMPLE_BUDGET {
+            for _ in 0..IRQ_RX_BATCH_CAPACITY {
                 let Some(sample) = read_rx_sample(registers, &mut self.saved_rx_status) else {
                     break;
                 };
                 rx_errors |= rx_errors_from_sample(sample);
-                rx.push(sample);
+                rx.try_push(sample)
+                    .expect("the fixed PL011 IRQ loop cannot overflow its RX batch");
             }
         }
 
-        let rearm = events & SerialEventSet::TX_SPACE;
+        let mut rearm = events & SerialEventSet::TX_SPACE;
+        if rx.len() == IRQ_RX_BATCH_CAPACITY || rx_errors.contains(RxErrorFlags::OVERRUN) {
+            rearm |= SerialEventSet::RX;
+        }
         if events.contains(SerialEventSet::FAULT) {
             self.registers().uartimsc.set(0);
         } else if !rearm.is_empty() {
-            let enabled = self.registers().uartimsc.get();
-            self.registers()
-                .uartimsc
-                .set(enabled & !imsc_for_events(rearm));
+            self.mask(rearm);
         }
         self.registers().uarticr.set(active);
 
-        Some(SerialIrqEvent {
-            events,
-            rx_errors,
-            rearm,
-        })
+        Some(SerialIrqReport::new(
+            SerialIrqEvent {
+                events,
+                rx_errors,
+                rearm,
+            },
+            rx,
+        ))
     }
 }
 
 impl UartPort for Pl011 {
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
-        self.open()?;
-        self.set_config(config)?;
+        let snapshot = Pl011ConfigSnapshot::capture(self.registers());
+        if let Err(error) = self.open().and_then(|()| self.set_config(config)) {
+            snapshot.restore(self.registers());
+            return Err(error);
+        }
         self.mask_all();
         Ok(())
     }
@@ -693,48 +802,35 @@ impl UartPort for Pl011 {
     }
 
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        use tock_registers::interfaces::Readable;
+        let snapshot = Pl011ConfigSnapshot::capture(self.registers());
+        let result = (|| {
+            self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
+            if !self.wait_until_idle() {
+                return Err(ConfigError::Timeout);
+            }
 
-        // 根据ARM文档的建议配置流程：
-        // 1. 禁用UART
-        let original_cr = self.registers().uartcr.extract(); // 保存原始使能状态
-        self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR); // 禁用UART
+            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
+            if let Some(baudrate) = config.baudrate {
+                self.set_baudrate_internal(baudrate)?;
+            }
+            if let Some(data_bits) = config.data_bits {
+                self.set_data_bits_internal(data_bits)?;
+            }
+            if let Some(stop_bits) = config.stop_bits {
+                self.set_stop_bits_internal(stop_bits)?;
+            }
+            if let Some(parity) = config.parity {
+                self.set_parity_internal(parity)?;
+            }
+            self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
+            self.registers().uartcr.set(snapshot.cr);
+            Ok(())
+        })();
 
-        // 2. 等待当前字符传输完成
-        while self.registers().uartfr.is_set(UARTFR::BUSY) {
-            core::hint::spin_loop();
+        if result.is_err() {
+            snapshot.restore(self.registers());
         }
-
-        // 3. 刷新发送FIFO（通过设置FEN=0）
-        self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
-
-        // 4. 配置各项参数
-        if let Some(baudrate) = config.baudrate {
-            self.set_baudrate_internal(baudrate)?;
-        }
-        if let Some(data_bits) = config.data_bits {
-            self.set_data_bits_internal(data_bits)?;
-        }
-        if let Some(stop_bits) = config.stop_bits {
-            self.set_stop_bits_internal(stop_bits)?;
-        }
-        if let Some(parity) = config.parity {
-            self.set_parity_internal(parity)?;
-        }
-
-        // 5. 重新启用FIFO
-        self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
-
-        // 6. 恢复UART使能状态
-        if original_cr.is_set(UARTCR::UARTEN) {
-            self.registers().uartcr.modify(
-                UARTCR::UARTEN.val(original_cr.read(UARTCR::UARTEN))
-                    + UARTCR::TXE.val(original_cr.read(UARTCR::TXE))
-                    + UARTCR::RXE.val(original_cr.read(UARTCR::RXE)),
-            );
-        }
-
-        Ok(())
+        result
     }
 
     fn read_rx(&mut self) -> Option<RxSample> {
@@ -773,6 +869,13 @@ impl UartPort for Pl011 {
         !fr.is_set(UARTFR::BUSY) && !fr.is_set(UARTFR::TXFF)
     }
 
+    fn mask(&mut self, sources: SerialEventSet) {
+        let enabled = self.registers().uartimsc.get();
+        self.registers()
+            .uartimsc
+            .set(enabled & !imsc_for_events(sources));
+    }
+
     fn mask_all(&mut self) {
         self.registers().uartimsc.set(0);
     }
@@ -803,8 +906,9 @@ impl UartPort for Pl011 {
 }
 
 impl SplitUart for Pl011 {
-    type Port = Self;
+    type Control = Self;
     type Irq = Pl011Irq;
+    type EmergencyTx = Pl011EmergencyTx;
 
     fn runtime_info(&self) -> UartInfo {
         UartInfo {
@@ -814,12 +918,13 @@ impl SplitUart for Pl011 {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq> {
+    fn split(self) -> SerialParts<Self::Control, Self::Irq, Self::EmergencyTx> {
         let irq = Pl011Irq {
             base: self.base,
             saved_rx_status: Pl011RxStatus::empty(),
         };
-        UartParts::new(self, irq)
+        let emergency_tx = Pl011EmergencyTx { base: self.base };
+        SerialParts::new(self, irq, emergency_tx)
     }
 }
 
@@ -940,6 +1045,8 @@ mod tests {
     use core::ptr::NonNull;
     use std::{boxed::Box, vec::Vec};
 
+    use rdif_serial::UartRegisterGate;
+
     use super::*;
 
     // This adapter keeps the regression runnable against both the old `()`
@@ -960,19 +1067,11 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct CollectRx(Vec<RxSample>);
-
-    impl IrqRxSink for CollectRx {
-        fn push(&mut self, sample: RxSample) {
-            self.0.push(sample);
-        }
-    }
-
     fn handle_irq(irq: &mut impl UartIrq) -> (Option<SerialIrqEvent>, Vec<RxSample>) {
-        let mut rx = CollectRx::default();
-        let event = irq.handle(&mut rx);
-        (event, rx.0)
+        let Some(report) = irq.handle() else {
+            return (None, Vec::new());
+        };
+        (Some(report.event), report.rx.as_slice().to_vec())
     }
 
     fn pl011_with_registers() -> (Box<Pl011Registers>, Pl011) {
@@ -1007,9 +1106,22 @@ mod tests {
         }
     }
 
-    fn started_parts(uart: Pl011) -> UartParts<Pl011, Pl011Irq> {
+    const CONFIG_REGISTER_OFFSETS: [usize; 8] =
+        [0x020, 0x024, 0x028, 0x02c, 0x030, 0x034, 0x038, 0x048];
+
+    fn config_register_snapshot(regs: &Pl011Registers) -> [u32; 8] {
+        CONFIG_REGISTER_OFFSETS.map(|offset| read_test_reg(regs, offset))
+    }
+
+    fn seed_config_registers(regs: &mut Pl011Registers) {
+        for (index, offset) in CONFIG_REGISTER_OFFSETS.into_iter().enumerate() {
+            write_test_reg(regs, offset, 0x10 + index as u32);
+        }
+    }
+
+    fn started_parts(uart: Pl011) -> SerialParts<Pl011, Pl011Irq, Pl011EmergencyTx> {
         let mut parts = uart.split();
-        parts.port.startup(&Config::new()).unwrap();
+        parts.control.startup(&Config::new()).unwrap();
         parts
     }
 
@@ -1058,7 +1170,7 @@ mod tests {
         assert!(event.rx_errors.contains(RxErrorFlags::OVERRUN));
         assert_eq!(
             samples.len(),
-            256,
+            IRQ_RX_BATCH_CAPACITY,
             "the hard IRQ must enforce its RX budget"
         );
         let sample = samples[0];
@@ -1068,7 +1180,7 @@ mod tests {
     }
 
     #[test]
-    fn rx_irq_keeps_source_enabled_after_bounded_fifo_drain() {
+    fn rx_irq_masks_source_after_bounded_fifo_drain() {
         let (mut regs, uart) = pl011_with_registers();
         let mut irq = uart.split().irq;
         let rx_mask = imsc_for_events(SerialEventSet::RX);
@@ -1081,9 +1193,9 @@ mod tests {
         let event = event.unwrap();
 
         assert!(event.events.contains(SerialEventSet::RX_DATA));
-        assert!(!event.rearm.intersects(SerialEventSet::RX));
-        assert_eq!(samples.len(), 256);
-        assert_eq!(read_test_reg(&regs, 0x038) & rx_mask, rx_mask);
+        assert!(event.rearm.contains(SerialEventSet::RX));
+        assert_eq!(samples.len(), IRQ_RX_BATCH_CAPACITY);
+        assert_eq!(read_test_reg(&regs, 0x038) & rx_mask, 0);
     }
 
     #[test]
@@ -1102,7 +1214,7 @@ mod tests {
         assert!(event.events.contains(SerialEventSet::RX_STATUS));
         assert!(event.rx_errors.contains(RxErrorFlags::PARITY));
         assert!(event.rx_errors.contains(RxErrorFlags::OVERRUN));
-        assert!(parts.port.read_rx().is_none());
+        assert!(parts.control.read_rx().is_none());
     }
 
     #[test]
@@ -1114,8 +1226,52 @@ mod tests {
         write_test_reg(&mut regs, 0x040, UARTIS::TX::SET.value);
         let event = handle_irq(&mut parts.irq).0.unwrap();
         assert!(event.events.contains(SerialEventSet::TX_SPACE));
-        assert_eq!(parts.port.write_tx(b"x"), 1);
+        assert_eq!(parts.control.write_tx(b"x"), 1);
         assert_eq!(regs.uartdr.get() as u8, b'x');
+    }
+
+    #[test]
+    fn emergency_tx_returns_immediately_when_the_fifo_is_full() {
+        let (mut regs, uart) = pl011_with_registers();
+        let parts = uart.split();
+        let gate = UartRegisterGate::new(parts.emergency_tx);
+        let access = gate.try_enter().unwrap();
+        write_test_reg(&mut regs, 0x018, UARTFR::TXFF::SET.value);
+
+        assert_eq!(access.try_write(b"x"), 0);
+
+        write_test_reg(&mut regs, 0x018, 0);
+        assert_eq!(access.try_write(b"x"), 1);
+        assert_eq!(regs.uartdr.get() as u8, b'x');
+    }
+
+    #[test]
+    fn emergency_tx_has_a_fixed_write_budget() {
+        let (mut regs, uart) = pl011_with_registers();
+        let parts = uart.split();
+        write_test_reg(&mut regs, 0x018, 0);
+        let bytes = [b'x'; EMERGENCY_TX_BUDGET + 1];
+        let gate = UartRegisterGate::new(parts.emergency_tx);
+        let access = gate.try_enter().unwrap();
+
+        assert_eq!(access.try_write(&bytes), EMERGENCY_TX_BUDGET);
+    }
+
+    #[test]
+    fn emergency_irq_mask_guard_restores_the_worker_mask() {
+        let (mut regs, uart) = pl011_with_registers();
+        let emergency = uart.split().emergency_tx;
+        let enabled = UARTIS::RX::SET.value | UARTIS::TX::SET.value;
+        write_test_reg(&mut regs, 0x038, enabled);
+
+        let mask = emergency.mask_interrupts();
+        assert_eq!(
+            read_test_reg(&regs, 0x038),
+            0,
+            "a gate-busy IRQ must observe a device-masked emergency transaction"
+        );
+        drop(mask);
+        assert_eq!(read_test_reg(&regs, 0x038), enabled);
     }
 
     #[test]
@@ -1169,6 +1325,38 @@ mod tests {
     }
 
     #[test]
+    fn overrun_irq_masks_receive_sources_until_worker_rearm() {
+        let (mut regs, uart) = pl011_with_registers();
+        let mut irq = uart.split().irq;
+        let rx_sources = imsc_for_events(SerialEventSet::RX);
+        write_test_reg(&mut regs, 0x018, UARTFR::RXFE::SET.value);
+        write_test_reg(&mut regs, 0x038, rx_sources);
+        write_test_reg(&mut regs, 0x040, UARTIS::OE::SET.value);
+
+        let report = irq.handle().expect("PL011 overrun interrupt report");
+
+        assert!(report.event.rx_errors.contains(RxErrorFlags::OVERRUN));
+        assert!(report.event.rearm.contains(SerialEventSet::RX));
+        assert_eq!(read_test_reg(&regs, 0x038) & rx_sources, 0);
+    }
+
+    #[test]
+    fn drained_rx_irq_keeps_receive_sources_enabled() {
+        let (mut regs, uart) = pl011_with_registers();
+        let mut irq = uart.split().irq;
+        let rx_sources = imsc_for_events(SerialEventSet::RX);
+        write_test_reg(&mut regs, 0x018, UARTFR::RXFE::SET.value);
+        write_test_reg(&mut regs, 0x038, rx_sources);
+        write_test_reg(&mut regs, 0x040, UARTIS::RX::SET.value);
+
+        let report = irq.handle().expect("PL011 drained RX interrupt report");
+
+        assert!(report.rx.is_empty());
+        assert!(!report.event.rearm.intersects(SerialEventSet::RX));
+        assert_eq!(read_test_reg(&regs, 0x038) & rx_sources, rx_sources);
+    }
+
+    #[test]
     fn set_config_preserves_enabled_tx_and_rx_paths() {
         let (regs, mut uart) = pl011_with_registers();
         regs.uartcr
@@ -1180,6 +1368,32 @@ mod tests {
         assert!(cr.is_set(UARTCR::UARTEN));
         assert!(cr.is_set(UARTCR::TXE));
         assert!(cr.is_set(UARTCR::RXE));
+    }
+
+    #[test]
+    fn set_config_busy_timeout_restores_every_configuration_register() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        seed_config_registers(&mut regs);
+        let before = config_register_snapshot(&regs);
+        write_test_reg(&mut regs, 0x018, UARTFR::BUSY::SET.value);
+
+        let result = uart.set_config(&Config::new().baudrate(115_200));
+
+        assert_eq!(result, Err(ConfigError::Timeout));
+        assert_eq!(config_register_snapshot(&regs), before);
+    }
+
+    #[test]
+    fn invalid_config_restores_every_configuration_register() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        seed_config_registers(&mut regs);
+        write_test_reg(&mut regs, 0x018, 0);
+        let before = config_register_snapshot(&regs);
+
+        let result = uart.set_config(&Config::new().baudrate(2_000_000));
+
+        assert_eq!(result, Err(ConfigError::InvalidBaudrate));
+        assert_eq!(config_register_snapshot(&regs), before);
     }
 
     #[test]
@@ -1203,7 +1417,7 @@ mod tests {
         let (mut regs, uart) = pl011_with_registers();
         let mut parts = uart.split();
 
-        parts.port.set_irq_mask(SerialEventSet::RX);
+        parts.control.set_irq_mask(SerialEventSet::RX);
         write_test_reg(&mut regs, 0x040, 0);
         write_test_reg(&mut regs, 0x018, 0);
 

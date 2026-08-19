@@ -49,6 +49,29 @@ struct clone3_args
     unsigned long long cgroup;      /* CLONE_INTO_CGROUP fd */
 };
 
+struct clone3_args_extended
+{
+    struct clone3_args args;
+    unsigned long long extension;
+};
+
+static void run_clone3_size_validation_test(void)
+{
+    struct clone3_args_extended extended;
+
+    errno = 0;
+    CHECK(syscall(__NR_clone3, NULL, 4097U) == -1 && errno == E2BIG,
+          "clone3 rejects oversized argument structures before user-memory access");
+
+    memset(&extended, 0, sizeof(extended));
+    extended.args.flags = CLONE_THREAD;
+    extended.args.exit_signal = SIGCHLD;
+    extended.extension = 1;
+    errno = 0;
+    CHECK(syscall(__NR_clone3, &extended, sizeof(extended)) == -1 && errno == E2BIG,
+          "clone3 rejects nonzero extension bytes before argument validation");
+}
+
 static pid_t clone3_child(unsigned long long flags)
 {
     struct clone3_args args;
@@ -315,6 +338,7 @@ int main(void)
     setvbuf(stdout, NULL, _IONBF, 0);
     TEST_START("namespace (UTS / PID / USER isolation)");
 
+    run_clone3_size_validation_test();
     run_uts_namespace_test();
     run_pid_namespace_flag_validation_test();
     run_pid_namespace_test();

@@ -1,6 +1,7 @@
 use ax_lazyinit::OnceLock;
 use ax_plat::mem::{
-    DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, PhysAddr, RawRange, VirtAddr,
+    CpuSharedMemoryModel, DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, PhysAddr,
+    RawRange, VirtAddr,
 };
 use heapless::Vec;
 use someboot::ArchTrait;
@@ -69,6 +70,31 @@ fn push_non_overlapping<const N: usize>(list: &mut Vec<RawRange, N>, range: RawR
 
 #[impl_plat_interface]
 impl MemIf for MemIfImpl {
+    fn cpu_shared_memory_model() -> CpuSharedMemoryModel {
+        // All architectures supported by the dynamic platform require their
+        // firmware/interconnect to establish coherent cacheable RAM before
+        // secondary CPUs enter the generic runtime.
+        #[cfg(any(
+            target_arch = "aarch64",
+            target_arch = "loongarch64",
+            target_arch = "riscv64",
+            target_arch = "x86_64"
+        ))]
+        {
+            CpuSharedMemoryModel::Coherent
+        }
+
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            target_arch = "loongarch64",
+            target_arch = "riscv64",
+            target_arch = "x86_64"
+        )))]
+        {
+            CpuSharedMemoryModel::Unsupported
+        }
+    }
+
     fn phys_ram_ranges() -> &'static [RawRange] {
         FREE_LIST.call_once(|| {
             let mut list = Vec::new();

@@ -146,7 +146,7 @@ pub fn sys_getrusage(who: i32, usage: *mut rusage) -> StarryResult<isize> {
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn resources_rlimit_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::RLIM_NLIMITS;
 

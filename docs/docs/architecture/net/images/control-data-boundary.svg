@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 500" role="img" aria-labelledby="title desc">
+  <title id="title">socket 操作跨越控制面与数据面的边界</title>
+  <desc id="desc">bind、connect 和 send 先通过 NetControl 形成设备绑定或路由决策，数据写入 smoltcp 后由 Router dispatch 再次按共享路由表选择出口。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#52667d"/></marker>
+    <style>
+      .panel{fill:#f8fafc;stroke:#91a0b2;stroke-width:2}
+      .socket{fill:#f0edff;stroke:#7457b6;stroke-width:2}
+      .control{fill:#fff4df;stroke:#c98216;stroke-width:2}
+      .data{fill:#eaf8ef;stroke:#398a55;stroke-width:2}
+      .title{font:700 23px sans-serif;fill:#213247}.heading{font:700 18px sans-serif;fill:#31465f}
+      .text{font:600 15px sans-serif;fill:#26384d}.small{font:14px sans-serif;fill:#455a72}
+      .edge{fill:none;stroke:#52667d;stroke-width:2.1;marker-end:url(#arrow)}
+      .return{fill:none;stroke:#c98216;stroke-width:2.1;stroke-dasharray:7 5;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <text class="title" x="35" y="38">控制面决定约束，数据面推进 packet</text>
+  <rect class="panel" x="30" y="65" width="300" height="380" rx="18"/>
+  <text class="heading" x="55" y="98">Socket 操作</text>
+  <rect class="socket" x="70" y="130" width="220" height="62" rx="11"/><text class="text" x="144" y="167">bind(addr)</text>
+  <rect class="socket" x="70" y="225" width="220" height="62" rx="11"/><text class="text" x="131" y="262">connect(dst)</text>
+  <rect class="socket" x="70" y="320" width="220" height="62" rx="11"/><text class="text" x="139" y="357">send(data)</text>
+
+  <rect class="panel" x="430" y="65" width="300" height="380" rx="18"/>
+  <text class="heading" x="455" y="98">NetControl 查询</text>
+  <rect class="control" x="470" y="130" width="220" height="62" rx="11"/>
+  <text class="text" x="503" y="157">local_binding_for()</text><text class="small" x="508" y="179">返回 DeviceBinding</text>
+  <rect class="control" x="470" y="225" width="220" height="62" rx="11"/>
+  <text class="text" x="491" y="252">select_route_with_binding()</text><text class="small" x="511" y="274">返回 RouteDecision</text>
+  <rect class="control" x="470" y="320" width="220" height="62" rx="11"/>
+  <text class="text" x="499" y="347">register_waker(binding)</text><text class="small" x="507" y="369">绑定设备 readiness</text>
+
+  <rect class="panel" x="830" y="65" width="300" height="380" rx="18"/>
+  <text class="heading" x="855" y="98">数据面</text>
+  <rect class="data" x="870" y="130" width="220" height="62" rx="11"/>
+  <text class="text" x="895" y="157">smoltcp Interface::poll</text><text class="small" x="918" y="179">socket TX → IP packet</text>
+  <rect class="data" x="870" y="225" width="220" height="62" rx="11"/>
+  <text class="text" x="923" y="252">Router::dispatch</text><text class="small" x="908" y="274">loopback / per-device TX</text>
+  <rect class="data" x="870" y="320" width="220" height="62" rx="11"/>
+  <text class="text" x="910" y="347">snoop / readiness</text><text class="small" x="901" y="369">SYN、DHCP 与 socket wake</text>
+
+  <path class="edge" d="M290 161 H470"/><path class="edge" d="M290 256 H470"/>
+  <path class="edge" d="M290 351 H430 V256 H470"/><path class="edge" d="M690 256 H790 V161 H870"/>
+  <path class="edge" d="M690 351 H770 V351 H870"/><path class="edge" d="M980 192 V225"/>
+  <path class="return" d="M870 256 H790 V415 H580 V382"/>
+  <text class="small" x="631" y="407">dispatch 再查共享 RouteTable</text>
+</svg>

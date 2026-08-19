@@ -141,9 +141,16 @@ pub fn bind_console_to(proc: &Process) -> StarryResult<()> {
     if let Some(index) = SERIAL_REGISTRY.console_index
         && let Some(entry) = SERIAL_REGISTRY.entries.get(index)
     {
-        entry.backend.ensure_started()?;
-        entry.backend.runtime.claim_console_output()?;
-        return entry.tty.bind_to(proc);
+        entry.backend.runtime.begin_console_handoff()?;
+        if let Err(error) = entry.tty.bind_to(proc) {
+            if entry.backend.runtime.rollback_console_handoff().is_err() {
+                entry.backend.runtime.fail_console_handoff_closed();
+            }
+            return Err(error);
+        }
+        entry.backend.ensure_started_for_console()?;
+        entry.backend.runtime.commit_console_handoff()?;
+        return Ok(());
     }
     Err(StarryError::NoSuchDevice)
 }
@@ -289,6 +296,28 @@ impl SerialBackend {
         Ok(())
     }
 
+    fn ensure_started_for_console(&self) -> StarryResult<()> {
+        if self.started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let _lifecycle = self.lifecycle_lock.lock();
+        if self.started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let result = self.runtime.start_prepared_console(
+            Config::new().baudrate(startup_baudrate(self.runtime.info().initial_baudrate)),
+        );
+        if let Err(err) = result {
+            warn!(
+                "{} failed to prepare console serial port {}: {:?}",
+                self.tty_name, self.name, err
+            );
+            return Err(err.into());
+        }
+        self.started.store(true, Ordering::Release);
+        Ok(())
+    }
+
     fn drain_tx(&self) -> StarryResult<()> {
         self.ensure_started()?;
         let _guard = self.output_lock.lock();
@@ -332,6 +361,13 @@ fn serial_config_from_termios(termios: &Termios2) -> Config {
         config = config.baudrate(baudrate);
     }
     config
+}
+
+fn termios_requires_reconfigure(old: &Termios2, new: &Termios2) -> bool {
+    old.baudrate() != new.baudrate()
+        || old.data_bits() != new.data_bits()
+        || old.stop_bits() != new.stop_bits()
+        || old.parity() != new.parity()
 }
 
 impl TtyRead for SerialReader {
@@ -426,27 +462,35 @@ impl TtyWrite for SerialWriter {
         Ok(self.backend.tx.discard_pending()?)
     }
 
-    fn termios_changed(&self, old: &Termios2, new: &Termios2) {
-        if old.baudrate() == new.baudrate()
-            && old.data_bits() == new.data_bits()
-            && old.stop_bits() == new.stop_bits()
-            && old.parity() == new.parity()
-        {
-            return;
+    fn termios_changed(&self, old: &Termios2, new: &Termios2) -> StarryResult<()> {
+        if !termios_requires_reconfigure(old, new) {
+            return Ok(());
         }
-        if self.backend.ensure_started().is_err() {
-            return;
-        }
-        if let Err(err) = self
+        self.backend.ensure_started()?;
+        Ok(self
             .backend
             .runtime
-            .set_config(serial_config_from_termios(new))
-        {
-            warn!(
-                "{} failed to apply termios on {}: {:?}",
-                self.backend.tty_name, self.backend.name, err
-            );
+            .set_config(serial_config_from_termios(new))?)
+    }
+
+    fn update_termios(
+        &self,
+        old: &Termios2,
+        new: &Termios2,
+        drain: bool,
+        publish: &mut dyn FnMut(),
+    ) -> StarryResult<()> {
+        self.backend.ensure_started()?;
+        let _guard = self.backend.output_lock.lock();
+        let barrier = self.backend.runtime.output_barrier()?;
+        if drain {
+            barrier.wait_idle()?;
         }
+        if termios_requires_reconfigure(old, new) {
+            barrier.set_config(serial_config_from_termios(new))?;
+        }
+        publish();
+        Ok(())
     }
 }
 

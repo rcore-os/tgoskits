@@ -5,15 +5,14 @@
 //! translate between userspace's split `u32` capability arrays and StarryOS's
 //! internal `Cred` bitmap fields.
 
-use core::ffi::c_char;
-
+use ax_io::Read;
 use ax_task::current;
 use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct, CAP_LAST_CAP};
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
     StarryError, StarryResult,
-    mm::vm_load_string,
+    mm::VmBytes,
     task::{AsThread, Cred, TidNumber, get_user_task_by_number},
 };
 
@@ -21,6 +20,9 @@ const CAPABILITY_VERSION_3: u32 = 0x20080522;
 const CAP_U32S_3: usize = 2;
 const PERSONALITY_GET: u32 = 0xffff_ffff;
 const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
+const SECUREBITS_VALID_MASK: u32 = 0xff;
+const SECUREBITS_LOCK_MASK: u32 = 0xaa;
+const SECBIT_NO_CAP_AMBIENT_RAISE: u32 = 1 << 6;
 const MPOL_DEFAULT: i32 = 0;
 const MPOL_PREFERRED: i32 = 1;
 const MPOL_BIND: i32 = 2;
@@ -382,8 +384,18 @@ pub fn sys_prctl(
 
     match option {
         PR_SET_NAME => {
-            let s = vm_load_string(arg2 as *const c_char)?;
-            current().set_name(&s);
+            let mut name = [0u8; 15];
+            let mut user_name = VmBytes::new(arg2 as *const u8, name.len());
+            let mut len = 0;
+            while len < name.len() {
+                user_name.read_exact(&mut name[len..=len])?;
+                if name[len] == 0 {
+                    break;
+                }
+                len += 1;
+            }
+            let name = core::str::from_utf8(&name[..len]).map_err(|_| StarryError::IllegalBytes)?;
+            current().set_name(name);
         }
         PR_GET_NAME => {
             let name = current().name();
@@ -479,7 +491,10 @@ pub fn sys_prctl(
                         return Err(StarryError::InvalidInput);
                     }
                     let bit = cap_bit(arg3 as u32)?;
-                    if old.cap_permitted & bit == 0 || old.cap_inheritable & bit == 0 {
+                    if old.securebits & SECBIT_NO_CAP_AMBIENT_RAISE != 0
+                        || old.cap_permitted & bit == 0
+                        || old.cap_inheritable & bit == 0
+                    {
                         return Err(StarryError::OperationNotPermitted);
                     }
                     let mut new = (*old).clone();
@@ -506,6 +521,34 @@ pub fn sys_prctl(
                 }
                 _ => return Err(StarryError::InvalidInput),
             }
+        }
+        PR_GET_SECUREBITS => {
+            return Ok(current().as_thread().cred().securebits as isize);
+        }
+        PR_SET_SECUREBITS => {
+            // Linux only consumes arg2 for this option. Variadic libc prctl
+            // callers do not have to initialize the unused argument slots.
+            if arg2 > SECUREBITS_VALID_MASK as usize {
+                return Err(StarryError::InvalidInput);
+            }
+
+            let thread_ref = current();
+            let thread = thread_ref.as_thread();
+            let old = thread.cred();
+            if !old.has_cap_setpcap() {
+                return Err(StarryError::OperationNotPermitted);
+            }
+
+            let requested = arg2 as u32;
+            let locked = old.securebits & SECUREBITS_LOCK_MASK;
+            let locked_values = locked >> 1;
+            if requested & locked != locked || (requested ^ old.securebits) & locked_values != 0 {
+                return Err(StarryError::OperationNotPermitted);
+            }
+
+            let mut new = (*old).clone();
+            new.securebits = requested;
+            thread.set_cred(new);
         }
         PR_GET_DUMPABLE => {
             // man 2 prctl PR_GET_DUMPABLE: returns current dumpable value
@@ -589,7 +632,7 @@ pub fn sys_prctl(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
     matches!(parse_mempolicy_mode(MPOL_DEFAULT), Ok(MPOL_DEFAULT))
         && matches!(
@@ -683,7 +726,7 @@ pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
         && sys_mbind(0x1000, 4096, 99, core::ptr::null(), 0, 0).is_err()
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
     use alloc::sync::Arc;
 

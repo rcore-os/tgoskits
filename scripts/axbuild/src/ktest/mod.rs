@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
@@ -7,19 +7,26 @@ use std::{
 };
 
 use anyhow::{Context, anyhow, bail};
-use cargo_metadata::Package;
+use cargo_metadata::{DependencyKind, Metadata, Package};
 use clap::{Args, Subcommand, ValueEnum};
-use ostool::{board::RunBoardOptions, build::config::Cargo, ovmf::Arch, run::qemu::QemuConfig};
+use ostool::{
+    board::RunBoardOptions,
+    build::config::{Cargo, CargoBuildProfile},
+    ovmf::Arch,
+    run::qemu::QemuConfig,
+};
 
+use self::plan::{
+    DiscoveredKtestPackage, KtestExecutionUnit, KtestRuntime, PlanFailure, QemuPlanSelector,
+    build_qemu_plan,
+};
 use crate::{
-    axvisor,
-    context::{
-        AppContext, ResolvedAxvisorRequest, ResolvedStarryRequest, resolve_axvisor_arch_and_target,
-        resolve_starry_arch_and_target,
-    },
+    arceos, axvisor,
+    context::{AppContext, ResolvedAxvisorRequest, ResolvedBuildRequest, ResolvedStarryRequest},
     starry,
 };
 
+mod plan;
 #[cfg(test)]
 mod tests;
 
@@ -45,15 +52,23 @@ pub(crate) enum Command {
     Board(ArgsKtestBoard),
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 pub(crate) struct ArgsKtestQemu {
-    /// Cargo package that owns the test target
-    #[arg(short = 'p', long = "package", value_name = "PACKAGE")]
-    pub(crate) package: String,
+    /// Test every workspace package with a direct axtest dev-dependency
+    #[arg(long, conflicts_with = "packages")]
+    pub(crate) workspace: bool,
 
-    /// Cargo test target name. Omit only when the package has exactly one harness=false test target
+    /// Cargo package(s) that own test targets
+    #[arg(short = 'p', long = "package", value_name = "PACKAGE")]
+    pub(crate) packages: Vec<String>,
+
+    /// Exclude package(s) from workspace selection
+    #[arg(long = "exclude", value_name = "PACKAGE")]
+    pub(crate) excludes: Vec<String>,
+
+    /// Cargo test target name(s); otherwise run every harness=false test target
     #[arg(long = "test", value_name = "TARGET")]
-    pub(crate) test: Option<String>,
+    pub(crate) tests: Vec<String>,
 
     /// Target architecture
     #[arg(long, value_name = "ARCH", conflicts_with = "target")]
@@ -62,6 +77,38 @@ pub(crate) struct ArgsKtestQemu {
     /// Rust target triple
     #[arg(short = 't', long, value_name = "TRIPLE", conflicts_with = "arch")]
     pub(crate) target: Option<String>,
+
+    /// Features to enable, separated by commas or repeated
+    #[arg(long, value_delimiter = ',', value_name = "FEATURES")]
+    pub(crate) features: Vec<String>,
+
+    /// Enable every feature of the selected package
+    #[arg(long = "all-features", conflicts_with = "no_default_features")]
+    pub(crate) all_features: bool,
+
+    /// Do not enable the selected package's default feature
+    #[arg(long = "no-default-features")]
+    pub(crate) no_default_features: bool,
+
+    /// Cargo build profile
+    #[arg(long, value_name = "PROFILE")]
+    pub(crate) profile: Option<String>,
+
+    /// Cargo target directory
+    #[arg(long = "target-dir", value_name = "DIRECTORY")]
+    pub(crate) target_dir: Option<PathBuf>,
+
+    /// Require Cargo.lock to remain unchanged
+    #[arg(long)]
+    pub(crate) locked: bool,
+
+    /// Run without accessing the network
+    #[arg(long)]
+    pub(crate) offline: bool,
+
+    /// Equivalent to --locked and --offline
+    #[arg(long)]
+    pub(crate) frozen: bool,
 
     /// Build TOML path
     #[arg(long = "config", value_name = "BUILD_TOML")]
@@ -83,6 +130,10 @@ pub(crate) struct ArgsKtestQemu {
         requires = "coverage"
     )]
     pub(crate) out_fmt: Option<KtestCoverageOutFmt>,
+
+    /// Continue running execution units after a failure
+    #[arg(long = "no-fail-fast")]
+    pub(crate) no_fail_fast: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -146,10 +197,8 @@ pub(crate) enum KtestTargetKind {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KtestRuntime {
-    Starry,
-    Axvisor,
+fn is_harness_false_test(target: &KtestTarget) -> bool {
+    target.kind == KtestTargetKind::Test && !target.harness
 }
 
 pub(crate) async fn run(args: ArgsKtest) -> anyhow::Result<()> {
@@ -161,41 +210,114 @@ pub(crate) async fn run(args: ArgsKtest) -> anyhow::Result<()> {
 
 async fn run_qemu(args: ArgsKtestQemu) -> anyhow::Result<()> {
     let mut app = AppContext::new()?;
-    let package = load_ktest_package(&args.package)?;
-    let target = select_ktest_target(&package, args.test.as_deref())?;
-    let runtime = runtime_for_package(app.workspace_root(), &args.package)?;
-    let (arch, triple) = resolve_arch_and_target(runtime, args.arch, args.target)?;
-    let build_config = args
-        .config
-        .unwrap_or_else(|| default_qemu_build_config(app.workspace_root(), &args.package, &arch));
-    let qemu_config = args
-        .qemu_config
-        .unwrap_or_else(|| default_qemu_run_config(app.workspace_root(), &args.package, &arch));
+    let packages = discover_workspace_ktests(crate::build::cached_workspace_metadata()?)?;
+    let plan = build_qemu_plan(&packages, &args.qemu_selector())?;
+    validate_unique_config_overrides(&args, &plan)?;
+    if plan.is_empty() {
+        println!("[axtest] no QEMU execution units selected");
+        return Ok(());
+    }
+
+    println!("[axtest] execution plan ({} unit(s)):", plan.len());
+    for unit in &plan {
+        println!(
+            "  {} --test {} --target {} runtime={}",
+            unit.package,
+            unit.test,
+            unit.target,
+            runtime_name(unit.runtime)
+        );
+    }
+
+    let package_by_name = packages
+        .iter()
+        .map(|package| (package.name.as_str(), package))
+        .collect::<BTreeMap<_, _>>();
+    let mut failures = Vec::new();
+    for unit in plan {
+        let package = package_by_name
+            .get(unit.package.as_str())
+            .copied()
+            .ok_or_else(|| anyhow!("planned package `{}` disappeared", unit.package))?;
+        println!(
+            "[axtest] running package={} test={} target={}",
+            unit.package, unit.test, unit.target
+        );
+        if let Err(error) = run_qemu_unit(&mut app, &args, package, &unit).await {
+            eprintln!(
+                "[axtest] failed package={} test={} target={}: {error:#}",
+                unit.package, unit.test, unit.target
+            );
+            failures.push(PlanFailure { unit, error });
+            if !args.no_fail_fast {
+                break;
+            }
+        }
+    }
+    finish_qemu_plan(failures)
+}
+
+async fn run_qemu_unit(
+    app: &mut AppContext,
+    args: &ArgsKtestQemu,
+    package: &DiscoveredKtestPackage,
+    unit: &KtestExecutionUnit,
+) -> anyhow::Result<()> {
+    let target = package
+        .targets
+        .iter()
+        .find(|target| target.name == unit.test)
+        .ok_or_else(|| {
+            anyhow!(
+                "test target `{}` disappeared from package `{}`",
+                unit.test,
+                unit.package
+            )
+        })?;
+    let package_dir = package
+        .manifest_path
+        .parent()
+        .ok_or_else(|| anyhow!("invalid manifest path {}", package.manifest_path.display()))?;
+    let build_config = args.config.clone().unwrap_or_else(|| {
+        default_qemu_build_config(
+            app.workspace_root(),
+            package_dir,
+            unit.runtime,
+            &unit.arch,
+            &unit.target,
+        )
+    });
+    let qemu_config = args.qemu_config.clone().unwrap_or_else(|| {
+        default_qemu_run_config(app.workspace_root(), package_dir, unit.runtime, &unit.arch)
+    });
     let mut cargo = load_runtime_cargo(
-        runtime,
+        unit.runtime,
         app.workspace_root(),
-        &args.package,
-        &arch,
-        &triple,
+        &unit.package,
+        &unit.arch,
+        &unit.target,
         &build_config,
     )?;
-    prepare_ktest_cargo(&mut cargo, target, args.coverage);
+    prepare_ktest_cargo(&mut cargo, target, unit.runtime, args.coverage);
+    apply_qemu_cargo_options(&mut cargo, args);
     app.set_debug_mode(false)?;
 
     let output = app.build(cargo.clone(), build_config.clone()).await?;
     maybe_postprocess_starry_artifact(
         KtestBuildContext {
-            runtime,
+            runtime: unit.runtime,
             workspace_root: app.workspace_root(),
-            package: &args.package,
-            arch: &arch,
-            target: &triple,
+            package: &unit.package,
+            arch: &unit.arch,
+            target: &unit.target,
             build_config: &build_config,
         },
         &cargo,
         &output,
     )?;
-    let rootfs = ensure_runtime_qemu_assets(runtime, app.workspace_root(), &arch, &triple).await?;
+    let rootfs =
+        ensure_runtime_qemu_assets(unit.runtime, app.workspace_root(), &unit.arch, &unit.target)
+            .await?;
 
     let mut qemu = app
         .read_qemu_config_from_path_for_cargo(&cargo, &qemu_config)
@@ -211,7 +333,11 @@ async fn run_qemu(args: ArgsKtestQemu) -> anyhow::Result<()> {
             },
         )?;
     }
-    patch_x86_64_uefi_kernel_loader(&mut qemu, &arch, output.elf_path()).await?;
+    if unit.runtime == KtestRuntime::Arceos {
+        arceos::rootfs::prepare_default_qemu_fat32_rootfs(app.workspace_root(), &qemu)?;
+    }
+    patch_x86_64_uefi_kernel_loader(&mut qemu, &unit.arch, output.elf_path()).await?;
+    apply_ktest_timeout(&mut qemu, unit.runtime, args.coverage);
     apply_axtest_qemu_markers(&mut qemu);
     app.run_qemu_with_axtest_coverage(&cargo, qemu, None)
         .await?;
@@ -219,6 +345,44 @@ async fn run_qemu(args: ArgsKtestQemu) -> anyhow::Result<()> {
         generate_ktest_coverage_report(out_fmt, app.workspace_root(), &cargo, output.elf_path())?;
     }
     Ok(())
+}
+
+impl ArgsKtestQemu {
+    fn qemu_selector(&self) -> QemuPlanSelector {
+        QemuPlanSelector {
+            workspace: self.workspace,
+            packages: self.packages.clone(),
+            excludes: self.excludes.clone(),
+            tests: self.tests.clone(),
+            arch: self.arch.clone(),
+            target: self.target.clone(),
+        }
+    }
+}
+
+fn validate_unique_config_overrides(
+    args: &ArgsKtestQemu,
+    plan: &[KtestExecutionUnit],
+) -> anyhow::Result<()> {
+    if plan.len() > 1 && (args.config.is_some() || args.qemu_config.is_some()) {
+        bail!("--config and --qemu-config require exactly one QEMU execution unit");
+    }
+    Ok(())
+}
+
+fn finish_qemu_plan(failures: Vec<PlanFailure>) -> anyhow::Result<()> {
+    if failures.is_empty() {
+        println!("[axtest] all QEMU execution units passed");
+        return Ok(());
+    }
+    eprintln!("[axtest] {} execution unit(s) failed:", failures.len());
+    for failure in &failures {
+        eprintln!(
+            "  {} --test {} --target {}: {:#}",
+            failure.unit.package, failure.unit.test, failure.unit.target, failure.error
+        );
+    }
+    bail!("{} axtest QEMU execution unit(s) failed", failures.len())
 }
 
 async fn patch_x86_64_uefi_kernel_loader(
@@ -288,16 +452,32 @@ async fn ensure_runtime_qemu_assets(
 
 async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
     let mut app = AppContext::new()?;
-    let package = load_ktest_package(&args.package)?;
+    let discovered = load_discovered_ktest_package(&args.package)?;
+    if !discovered.uses_workspace_axtest {
+        bail!(
+            "package `{}` must declare workspace `axtest` directly in [dev-dependencies]",
+            args.package
+        );
+    }
+    let package = KtestPackage {
+        name: discovered.name.clone(),
+        targets: discovered.targets.clone(),
+    };
     let target = select_ktest_target(&package, Some(&args.test))?;
-    let runtime = runtime_for_package(app.workspace_root(), &args.package)?;
+    let runtime = discovered.runtime;
+    let package_dir = discovered.manifest_path.parent().ok_or_else(|| {
+        anyhow!(
+            "invalid manifest path {}",
+            discovered.manifest_path.display()
+        )
+    })?;
     let board = args.board;
-    let build_config = args
-        .config
-        .unwrap_or_else(|| default_board_build_config(app.workspace_root(), &args.package, &board));
-    let board_config_path = args
-        .board_config
-        .unwrap_or_else(|| default_board_run_config(app.workspace_root(), &args.package, &board));
+    let build_config = args.config.unwrap_or_else(|| {
+        default_board_build_config(app.workspace_root(), package_dir, runtime, &board)
+    });
+    let board_config_path = args.board_config.unwrap_or_else(|| {
+        default_board_run_config(app.workspace_root(), package_dir, runtime, &board)
+    });
     let target_from_config =
         load_target_from_build_config(runtime, &build_config).with_context(|| {
             format!(
@@ -316,7 +496,7 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
         &triple,
         &build_config,
     )?;
-    prepare_ktest_cargo(&mut cargo, target, false);
+    prepare_ktest_cargo(&mut cargo, target, runtime, false);
 
     let board_config = app
         .read_board_run_config_from_path_for_cargo(&cargo, &board_config_path)
@@ -354,14 +534,100 @@ async fn run_board(args: ArgsKtestBoard) -> anyhow::Result<()> {
     .await
 }
 
-fn load_ktest_package(package: &str) -> anyhow::Result<KtestPackage> {
-    let metadata = crate::build::cached_workspace_metadata()?;
-    let package = metadata
+fn load_discovered_ktest_package(package: &str) -> anyhow::Result<DiscoveredKtestPackage> {
+    discover_workspace_ktests(crate::build::cached_workspace_metadata()?)?
+        .into_iter()
+        .find(|candidate| candidate.name == package)
+        .ok_or_else(|| anyhow!("workspace package `{package}` not found"))
+}
+
+fn discover_workspace_ktests(metadata: &Metadata) -> anyhow::Result<Vec<DiscoveredKtestPackage>> {
+    let workspace_members = metadata
+        .workspace_members
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let axtest = metadata
         .packages
         .iter()
-        .find(|candidate| candidate.name.as_str() == package)
-        .ok_or_else(|| anyhow!("workspace package `{package}` not found"))?;
-    ktest_package_from_metadata(package)
+        .find(|package| {
+            package.name.as_str() == AXTEST_FEATURE && workspace_members.contains(&package.id)
+        })
+        .ok_or_else(|| anyhow!("workspace package `axtest` not found"))?;
+    let axtest_dir = axtest
+        .manifest_path
+        .parent()
+        .ok_or_else(|| anyhow!("invalid axtest manifest path {}", axtest.manifest_path))?;
+    let mut packages = Vec::new();
+
+    for package in metadata
+        .packages
+        .iter()
+        .filter(|package| workspace_members.contains(&package.id))
+    {
+        let uses_workspace_axtest = package.dependencies.iter().any(|dependency| {
+            dependency.kind == DependencyKind::Development
+                && dependency.name == AXTEST_FEATURE
+                && dependency.path.as_deref() == Some(axtest_dir)
+        });
+        let ktest_package = ktest_package_from_metadata(package)?;
+        packages.push(DiscoveredKtestPackage {
+            name: ktest_package.name,
+            manifest_path: package.manifest_path.as_std_path().to_path_buf(),
+            uses_workspace_axtest,
+            runtime: runtime_from_package_metadata(package)?,
+            targets: ktest_package.targets,
+            docs_rs_targets: docs_rs_targets(package)?,
+        });
+    }
+    packages.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(packages)
+}
+
+fn runtime_from_package_metadata(package: &Package) -> anyhow::Result<KtestRuntime> {
+    let Some(runtime) = package
+        .metadata
+        .get("axtest")
+        .and_then(|axtest| axtest.get("runtime"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(KtestRuntime::Arceos);
+    };
+    match runtime {
+        "arceos" => Ok(KtestRuntime::Arceos),
+        "starry" => Ok(KtestRuntime::Starry),
+        "axvisor" => Ok(KtestRuntime::Axvisor),
+        "board" => Ok(KtestRuntime::Board),
+        _ => bail!(
+            "package `{}` has unsupported [package.metadata.axtest] runtime `{runtime}`",
+            package.name
+        ),
+    }
+}
+
+fn docs_rs_targets(package: &Package) -> anyhow::Result<Option<Vec<String>>> {
+    let Some(targets) = package
+        .metadata
+        .get("docs")
+        .and_then(|docs| docs.get("rs"))
+        .and_then(|docs_rs| docs_rs.get("targets"))
+    else {
+        return Ok(None);
+    };
+    let targets = targets.as_array().ok_or_else(|| {
+        anyhow!(
+            "package `{}` must declare [package.metadata.docs.rs].targets as an array",
+            package.name
+        )
+    })?;
+    targets
+        .iter()
+        .map(|target| {
+            target.as_str().map(str::to_string).ok_or_else(|| {
+                anyhow!("package `{}` has a non-string docs.rs target", package.name)
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+        .map(Some)
 }
 
 fn ktest_package_from_metadata(package: &Package) -> anyhow::Result<KtestPackage> {
@@ -443,7 +709,7 @@ pub(crate) fn select_ktest_target<'a>(
     let candidates = package
         .targets
         .iter()
-        .filter(|target| target.kind == KtestTargetKind::Test && !target.harness)
+        .filter(|target| is_harness_false_test(target))
         .collect::<Vec<_>>();
     match candidates.as_slice() {
         [target] => Ok(*target),
@@ -465,7 +731,12 @@ pub(crate) fn select_ktest_target<'a>(
     }
 }
 
-fn prepare_ktest_cargo(cargo: &mut Cargo, target: &KtestTarget, coverage: bool) {
+fn prepare_ktest_cargo(
+    cargo: &mut Cargo,
+    target: &KtestTarget,
+    runtime: KtestRuntime,
+    coverage: bool,
+) {
     cargo.bin = None;
     cargo.test = Some(target.name.clone());
     remove_cargo_target_selector_args(&mut cargo.args);
@@ -476,12 +747,24 @@ fn prepare_ktest_cargo(cargo: &mut Cargo, target: &KtestTarget, coverage: bool) 
     for feature in &target.required_features {
         ensure_feature(cargo, feature);
     }
+    if matches!(runtime, KtestRuntime::Arceos | KtestRuntime::Board) {
+        ensure_feature(cargo, "ax-std/arceos");
+        // Cargo integration tests are independent ArceOS applications. Keep
+        // the sleep-lock provider available for crates that exercise
+        // `ax-sync/sleep`; otherwise the ax-runtime `MutexOps` implementation
+        // is not compiled into the test artifact.
+        ensure_feature(cargo, "ax-std/multitask");
+    }
     crate::build::append_encoded_rustflags(cargo, AXTEST_RUSTFLAGS);
     if coverage {
         cargo
             .env
             .insert("AXTEST_COVERAGE".to_string(), "y".to_string());
         crate::support::axtest_coverage::prepare_cargo(cargo);
+    } else {
+        // Coverage is owned by the explicit ktest CLI flag. Package-local
+        // build configuration must not turn it on implicitly.
+        cargo.env.remove("AXTEST_COVERAGE");
     }
 }
 
@@ -504,6 +787,10 @@ fn generate_ktest_coverage_html(
     let paths = crate::support::axtest_coverage::AxtestCoveragePaths::new(
         workspace_root,
         &cargo.package,
+        cargo
+            .test
+            .as_deref()
+            .context("axtest coverage report requires a Cargo test target")?,
         &cargo.target,
     )?;
     let profraw_path = paths.profraw_path;
@@ -610,6 +897,69 @@ fn ensure_feature(cargo: &mut Cargo, feature: &str) {
     }
 }
 
+fn apply_qemu_cargo_options(cargo: &mut Cargo, args: &ArgsKtestQemu) {
+    for feature in &args.features {
+        ensure_feature(cargo, feature);
+    }
+    if args.all_features {
+        ensure_cargo_arg(&mut cargo.args, "--all-features");
+    }
+    if args.no_default_features {
+        ensure_cargo_arg(&mut cargo.args, "--no-default-features");
+    }
+    if args.locked {
+        ensure_cargo_arg(&mut cargo.args, "--locked");
+    }
+    if args.offline {
+        ensure_cargo_arg(&mut cargo.args, "--offline");
+    }
+    if args.frozen {
+        ensure_cargo_arg(&mut cargo.args, "--frozen");
+    }
+    if let Some(target_dir) = &args.target_dir {
+        remove_cargo_value_arg(&mut cargo.args, "--target-dir");
+        cargo
+            .args
+            .extend(["--target-dir".to_string(), target_dir.display().to_string()]);
+    }
+    if let Some(profile) = &args.profile {
+        remove_cargo_value_arg(&mut cargo.args, "--profile");
+        cargo.profile = Some(if profile == "release" {
+            CargoBuildProfile::Release
+        } else {
+            CargoBuildProfile::Debug
+        });
+        if !matches!(profile.as_str(), "dev" | "debug" | "release") {
+            cargo
+                .args
+                .extend(["--profile".to_string(), profile.clone()]);
+        }
+    }
+}
+
+fn ensure_cargo_arg(args: &mut Vec<String>, arg: &str) {
+    if !args.iter().any(|candidate| candidate == arg) {
+        args.push(arg.to_string());
+    }
+}
+
+fn remove_cargo_value_arg(args: &mut Vec<String>, name: &str) {
+    let equals_prefix = format!("{name}=");
+    let mut filtered = Vec::with_capacity(args.len());
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == name {
+            let _ = iter.next();
+            continue;
+        }
+        if arg.starts_with(&equals_prefix) {
+            continue;
+        }
+        filtered.push(arg.clone());
+    }
+    *args = filtered;
+}
+
 fn remove_cargo_target_selector_args(args: &mut Vec<String>) {
     let mut filtered = Vec::with_capacity(args.len());
     let mut iter = args.iter();
@@ -633,41 +983,31 @@ fn apply_axtest_qemu_markers(qemu: &mut QemuConfig) {
     ensure_regex(&mut qemu.fail_regex, AXTEST_CASE_FAIL);
 }
 
+fn apply_ktest_timeout(qemu: &mut QemuConfig, runtime: KtestRuntime, coverage: bool) {
+    if qemu.timeout.is_some() {
+        return;
+    }
+    qemu.timeout = Some(match (runtime, coverage) {
+        (KtestRuntime::Arceos, false) => 60,
+        (KtestRuntime::Arceos, true) => 120,
+        (KtestRuntime::Starry | KtestRuntime::Axvisor, false) => 300,
+        (KtestRuntime::Starry | KtestRuntime::Axvisor, true) => 360,
+        (KtestRuntime::Board, _) => return,
+    });
+}
+
 fn ensure_regex(regexes: &mut Vec<String>, regex: &str) {
     if !regexes.iter().any(|candidate| candidate == regex) {
         regexes.push(regex.to_string());
     }
 }
 
-fn runtime_for_package(workspace_root: &Path, package: &str) -> anyhow::Result<KtestRuntime> {
-    if package == axvisor::build::AXVISOR_PACKAGE {
-        return Ok(KtestRuntime::Axvisor);
-    }
-    let metadata = crate::build::cached_workspace_metadata()?;
-    let package = metadata
-        .packages
-        .iter()
-        .find(|candidate| candidate.name.as_str() == package)
-        .ok_or_else(|| anyhow!("workspace package `{package}` not found"))?;
-    let manifest = package.manifest_path.as_std_path();
-    if manifest.starts_with(workspace_root.join("os/StarryOS")) {
-        Ok(KtestRuntime::Starry)
-    } else {
-        bail!(
-            "ktest currently supports StarryOS and Axvisor packages, got `{}`",
-            package.name
-        )
-    }
-}
-
-fn resolve_arch_and_target(
-    runtime: KtestRuntime,
-    arch: Option<String>,
-    target: Option<String>,
-) -> anyhow::Result<(String, String)> {
+fn runtime_name(runtime: KtestRuntime) -> &'static str {
     match runtime {
-        KtestRuntime::Starry => resolve_starry_arch_and_target(arch, target),
-        KtestRuntime::Axvisor => resolve_axvisor_arch_and_target(arch, target),
+        KtestRuntime::Arceos => "arceos",
+        KtestRuntime::Starry => "starry",
+        KtestRuntime::Axvisor => "axvisor",
+        KtestRuntime::Board => "board",
     }
 }
 
@@ -680,6 +1020,10 @@ fn load_runtime_cargo(
     build_config: &Path,
 ) -> anyhow::Result<Cargo> {
     match runtime {
+        KtestRuntime::Arceos | KtestRuntime::Board => {
+            let request = arceos_request(package, arch, target, build_config);
+            arceos::build::load_cargo_config(&request)
+        }
         KtestRuntime::Starry => {
             let request = starry_request(package, arch, target, build_config);
             starry::build::load_cargo_config(&request)
@@ -696,9 +1040,21 @@ fn load_target_from_build_config(
     build_config: &Path,
 ) -> anyhow::Result<Option<String>> {
     match runtime {
+        KtestRuntime::Arceos | KtestRuntime::Board => load_target_from_toml(build_config),
         KtestRuntime::Starry => starry::build::load_target_from_build_config(build_config),
         KtestRuntime::Axvisor => axvisor::build::load_target_from_build_config(build_config),
     }
+}
+
+fn load_target_from_toml(path: &Path) -> anyhow::Result<Option<String>> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read build config {}", path.display()))?;
+    let config: toml::Value = toml::from_str(&contents)
+        .with_context(|| format!("failed to parse build config {}", path.display()))?;
+    Ok(config
+        .get("target")
+        .and_then(toml::Value::as_str)
+        .map(str::to_string))
 }
 
 fn maybe_postprocess_starry_artifact(
@@ -732,6 +1088,24 @@ fn starry_request(
     }
 }
 
+fn arceos_request(
+    package: &str,
+    arch: &str,
+    target: &str,
+    build_config: &Path,
+) -> ResolvedBuildRequest {
+    ResolvedBuildRequest {
+        package: package.to_string(),
+        arch: arch.to_string(),
+        target: target.to_string(),
+        smp: None,
+        debug: false,
+        build_info_path: build_config.to_path_buf(),
+        qemu_config: None,
+        uboot_config: None,
+    }
+}
+
 fn axvisor_request(
     workspace_root: &Path,
     package: &str,
@@ -753,36 +1127,86 @@ fn axvisor_request(
     }
 }
 
-pub(crate) fn default_qemu_build_config(
+fn default_qemu_build_config(
     workspace_root: &Path,
-    package: &str,
+    package_dir: &Path,
+    runtime: KtestRuntime,
+    arch: &str,
+    target: &str,
+) -> PathBuf {
+    let package_config = package_dir.join(format!("build-{target}.toml"));
+    if package_config.exists() {
+        package_config
+    } else {
+        runtime_config_root(workspace_root, runtime).join(format!("configs/board/qemu-{arch}.toml"))
+    }
+}
+
+fn default_qemu_run_config(
+    workspace_root: &Path,
+    package_dir: &Path,
+    runtime: KtestRuntime,
     arch: &str,
 ) -> PathBuf {
-    runtime_config_root(workspace_root, package).join(format!("configs/board/qemu-{arch}.toml"))
+    let package_config = package_dir.join(format!("qemu-{arch}.toml"));
+    if package_config.exists() {
+        package_config
+    } else {
+        runtime_config_root(workspace_root, runtime).join(format!("configs/qemu/qemu-{arch}.toml"))
+    }
 }
 
-fn default_qemu_run_config(workspace_root: &Path, package: &str, arch: &str) -> PathBuf {
-    runtime_config_root(workspace_root, package).join(format!("configs/qemu/qemu-{arch}.toml"))
+fn default_board_build_config(
+    workspace_root: &Path,
+    package_dir: &Path,
+    runtime: KtestRuntime,
+    board: &str,
+) -> PathBuf {
+    let package_config = package_dir.join(format!("build-{board}.toml"));
+    if package_config.exists() {
+        return package_config;
+    }
+    let mut package_configs = fs::read_dir(package_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("build-") && name.ends_with(".toml"))
+        })
+        .collect::<Vec<_>>();
+    package_configs.sort();
+    if let [only] = package_configs.as_slice() {
+        return only.clone();
+    }
+    runtime_config_root(workspace_root, runtime).join(format!("configs/board/{board}.toml"))
 }
 
-fn default_board_build_config(workspace_root: &Path, package: &str, board: &str) -> PathBuf {
-    runtime_config_root(workspace_root, package).join(format!("configs/board/{board}.toml"))
-}
-
-fn default_board_run_config(workspace_root: &Path, package: &str, board: &str) -> PathBuf {
-    let root = runtime_config_root(workspace_root, package);
+fn default_board_run_config(
+    workspace_root: &Path,
+    package_dir: &Path,
+    runtime: KtestRuntime,
+    board: &str,
+) -> PathBuf {
+    let package_config = package_dir.join(format!("board-{board}.toml"));
+    if package_config.exists() {
+        return package_config;
+    }
+    let root = runtime_config_root(workspace_root, runtime);
     let starry_board_config = root.join(format!("configs/board/{board}-board.toml"));
-    if package != axvisor::build::AXVISOR_PACKAGE && starry_board_config.exists() {
+    if runtime != KtestRuntime::Axvisor && starry_board_config.exists() {
         starry_board_config
     } else {
         root.join(format!("configs/board/{board}.toml"))
     }
 }
 
-fn runtime_config_root(workspace_root: &Path, package: &str) -> PathBuf {
-    if package == axvisor::build::AXVISOR_PACKAGE {
-        workspace_root.join("os/axvisor")
-    } else {
-        workspace_root.join("os/StarryOS")
+fn runtime_config_root(workspace_root: &Path, runtime: KtestRuntime) -> PathBuf {
+    match runtime {
+        KtestRuntime::Arceos | KtestRuntime::Board => workspace_root.join("os/arceos"),
+        KtestRuntime::Starry => workspace_root.join("os/StarryOS"),
+        KtestRuntime::Axvisor => workspace_root.join("os/axvisor"),
     }
 }

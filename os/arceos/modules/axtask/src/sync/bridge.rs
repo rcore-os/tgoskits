@@ -82,10 +82,7 @@ struct LockdepAcquireRequest<'a> {
 pub fn context_enter(context: u8) -> usize {
     match context {
         CONTEXT_RAW => 0,
-        CONTEXT_PREEMPT => {
-            PreemptState::acquire();
-            0
-        }
+        CONTEXT_PREEMPT => PreemptState::acquire(),
         CONTEXT_IRQSAVE => IrqSaveState::acquire(),
         CONTEXT_PREEMPT_IRQSAVE => PreemptIrqSaveState::acquire(),
         _ => panic!("unknown lock context mode {context}"),
@@ -96,7 +93,7 @@ pub fn context_enter(context: u8) -> usize {
 pub fn context_exit(context: u8, state: usize) {
     match context {
         CONTEXT_RAW => {}
-        CONTEXT_PREEMPT => PreemptState::release(()),
+        CONTEXT_PREEMPT => PreemptState::release(state),
         CONTEXT_IRQSAVE => IrqSaveState::release(state),
         CONTEXT_PREEMPT_IRQSAVE => PreemptIrqSaveState::release(state),
         _ => panic!("unknown lock context mode {context}"),

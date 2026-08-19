@@ -37,9 +37,6 @@
 #[cfg(all(feature = "host-test", not(target_os = "none")))]
 extern crate std;
 
-#[cfg(all(test, not(target_os = "none"), feature = "multitask"))]
-mod tests;
-
 /// Native ArceOS synchronization primitives.
 pub mod sync;
 
@@ -78,6 +75,8 @@ cfg_if::cfg_if! {
         mod interrupt;
         mod task;
         mod api;
+        #[doc(hidden)]
+        pub mod runtime_preempt;
         #[cfg(feature = "lockdep")]
         mod lockdep;
         #[cfg(feature = "tracepoint-hooks")]
@@ -107,5 +106,12 @@ cfg_if::cfg_if! {
     }
 }
 
-#[cfg(axtest)]
-pub mod axtest;
+/// Runtime checks that require a bound ArceOS CPU-local area.
+#[cfg(all(axtest, feature = "axtest"))]
+#[doc(hidden)]
+pub mod axtest_support {
+    /// Checks the live atomic-context query and target stack configuration.
+    pub fn atomic_context_and_stack_configuration_hold() -> bool {
+        super::api::axtask_api_atomic_context_structs_hold_for_test()
+    }
+}

@@ -130,7 +130,7 @@ impl TimeValueLike for __kernel_sock_timeval {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn time_value_conversion_rules_hold_for_test() -> bool {
     let tv = TimeValue::new(5, 123_456_789);
     let ts = timespec::from_time_value(tv);

@@ -36,8 +36,10 @@ pub mod tty;
 
 #[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_jpu;
+
 #[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_usb_camera;
+
 #[cfg(feature = "sg2002-cvi-usb-camera")]
 mod cvi_vdec;
 
@@ -58,11 +60,12 @@ pub static ION_DEVICE: OnceLock<Arc<ion::IonDevice>> = OnceLock::new();
 pub use log::bind_dev_log;
 use rand::{Rng, SeedableRng, rngs::ChaCha20Rng};
 
-use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFs};
+use crate::pseudofs::{Device, DeviceOps, DirMaker, DirMapping, SimpleDir, SimpleFile, SimpleFs};
 
 const RANDOM_SEED_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static RANDOM_SEED_COUNTER: AtomicU64 = AtomicU64::new(0xa076_1d64_78bd_642f);
+
 static INITIAL_PTS_INSTANCE: OnceLock<Arc<tty::PtsInstance>> = OnceLock::new();
 
 #[cfg(any(feature = "sg2002", feature = "k230-kpu"))]
@@ -206,7 +209,7 @@ impl Random {
         }
     }
 
-    #[cfg(any(test, axtest))]
+    #[cfg(axtest)]
     fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
         Self {
             state: Mutex::new(RandomState::new(seed)),
@@ -334,6 +337,11 @@ pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
 }
 
 #[cfg(axtest)]
+pub(crate) fn kmsg_reports_no_readiness_without_read_side_for_test() -> bool {
+    kmsg::reports_no_readiness_without_read_side_for_test()
+}
+
+#[cfg(axtest)]
 fn splitmix64_determinism_rules_hold() -> bool {
     // splitmix64 is a pure bijection: the same input always yields the same
     // 64-bit output (deterministic PRNG), and distinct inputs yield distinct
@@ -415,6 +423,15 @@ impl DeviceOps for CpuDmaLatency {
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     let pts_instance = initial_pts_instance(tty::DevPtsOptions::root());
+
+    // Linux environments conventionally expose descriptor paths through
+    // these links into procfs (proc_pid_fd(5)). Bash process substitution and
+    // the generated NixOS stage-2 initializer rely on the dynamic /dev/fd/N
+    // form before systemd can perform any additional /dev setup.
+    root.add("fd", descriptor_symlink(fs.clone(), "/proc/self/fd"));
+    root.add("stdin", descriptor_symlink(fs.clone(), "/proc/self/fd/0"));
+    root.add("stdout", descriptor_symlink(fs.clone(), "/proc/self/fd/1"));
+    root.add("stderr", descriptor_symlink(fs.clone(), "/proc/self/fd/2"));
     root.add(
         "null",
         Device::new(
@@ -808,31 +825,6 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     SimpleDir::new_maker(fs, Arc::new(root))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{DeviceOps, Random};
-
-    #[test]
-    fn random_write_mixes_entropy_into_stream() {
-        let seed = *b"0123456789abcdef0123456789abcdef";
-        let baseline = Random::new_with_seed_for_test(seed);
-        let mixed = Random::new_with_seed_for_test(seed);
-        let mut discarded = [0; 32];
-        let mut baseline_next = [0; 32];
-        let mut mixed_next = [0; 32];
-
-        assert_eq!(
-            baseline.read_at(&mut discarded, 0).unwrap(),
-            discarded.len()
-        );
-        assert_eq!(mixed.read_at(&mut discarded, 0).unwrap(), discarded.len());
-        assert_eq!(mixed.write_at(b"caller entropy", 0).unwrap(), 14);
-        assert_eq!(
-            baseline.read_at(&mut baseline_next, 0).unwrap(),
-            baseline_next.len()
-        );
-        assert_eq!(mixed.read_at(&mut mixed_next, 0).unwrap(), mixed_next.len());
-
-        assert_ne!(baseline_next, mixed_next);
-    }
+fn descriptor_symlink(fs: Arc<SimpleFs>, target: &'static str) -> Arc<SimpleFile> {
+    SimpleFile::new(fs, NodeType::Symlink, move || Ok(target))
 }

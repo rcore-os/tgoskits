@@ -13,8 +13,6 @@
 // limitations under the License.
 
 mod base;
-#[cfg(feature = "fs")]
-mod fs;
 mod history;
 mod vm;
 

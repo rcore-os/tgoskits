@@ -9,7 +9,7 @@ description: 审查本 tgoskits 仓库中一个指定的 GitHub Pull Request。�
 
 本 skill 是强制性审查规范，不是建议清单。触发后，必须完整阅读本文件，再作出审查结论；除非更高优先级指令冲突，否则执行所有适用要求。
 
-判断代码质量、可维护性或可合入状态前，必须完整阅读 `book/guideline/code-quality.md`。PR 新增或扩展用户可见行为、共享或公共接口、crate、子系统、平台或硬件能力时，必须完整阅读 `book/guideline/feature-development.md`；触发条件按语义判断，不按标题判断。仅在语义适用时读取其他领域规范。任何改动或声明若影响 StarryOS syscall/Linux ABI，包括 task、VFS、namespace、signal、socket、credential、memory-management 等间接 helper，必须完整阅读 `book/guideline/starry/syscall.md`。不适用时，在审查清单中记录具体理由。上下文被压缩、从摘要恢复或无法确信记得规范时，重新完整阅读，不能依赖记忆或旧的局部阅读。
+判断代码质量、可维护性或可合入状态前，必须完整阅读 `docs/guideline/code-quality.md`。PR 新增或扩展用户可见行为、共享或公共接口、crate、子系统、平台或硬件能力时，必须完整阅读 `docs/guideline/feature-development.md`；触发条件按语义判断，不按标题判断。仅在语义适用时读取其他领域规范。任何改动或声明若影响 StarryOS syscall/Linux ABI，包括 task、VFS、namespace、signal、socket、credential、memory-management 等间接 helper，必须完整阅读 `docs/guideline/starry_syscall.md`。不适用时，在审查清单中记录具体理由。上下文被压缩、从摘要恢复或无法确信记得规范时，重新完整阅读，不能依赖记忆或旧的局部阅读。
 
 没有完整阅读本 skill 和所有适用规范时，不得提交 `APPROVE`、`REQUEST_CHANGES`、no-submit 总结或任何面向 PR 的评论。规则重叠时采用更严格者；跳过要求时必须记录具体理由和证据。
 
@@ -27,7 +27,7 @@ description: 审查本 tgoskits 仓库中一个指定的 GitHub Pull Request。�
 
 仅当以精确参数 `offline-benchmark` 调用，且仓库存在 `.agent-review-context/reviewer.md` 时启用。否则执行正常在线流程。
 
-以 `bench-base..HEAD` 为唯一被审变更。完整阅读本 skill、`AGENTS.md`、`book/guideline/code-quality.md`、按需读取 `book/guideline/feature-development.md` 和领域规范，并读取离线 contract 与输出 schema。应用本 skill 的审查重点、测试质量、阻塞 finding、硬件/ABI、安全/健全性、可维护性和文档要求。
+以 `bench-base..HEAD` 为唯一被审变更。完整阅读本 skill、`AGENTS.md`、`docs/guideline/code-quality.md`、按需读取 `docs/guideline/feature-development.md` 和领域规范，并读取离线 contract 与输出 schema。应用本 skill 的审查重点、测试质量、阻塞 finding、硬件/ABI、安全/健全性、可维护性和文档要求。
 
 离线环境没有真实 PR：PR 元数据、review threads、远端 CI、开放 PR 搜索、worktree、冲突修复、联网语义研究、命令验证、GitHub 提交、reviewer 分配和远端清理均标为不适用。禁止推断 PR 编号、访问仓库外路径或网络、修改文件、创建 commit/branch、运行 build/test。只使用只读仓库检查和 harness 允许的 Git 历史/diff 命令。
 
@@ -194,11 +194,11 @@ push 后刷新 PR、更新 review worktree，并重跑支持批准的验证。�
 - Axvisor 配置检查 `entry_point`、`kernel_load_addr`、`memory_regions`、`map_type` 和 guest image layout；
 - Starry 测试改动应用 `starry-test-suit`；portable driver 或 OS glue 改动应用 `cross-kernel-driver`。
 
-影响 StarryOS syscall/Linux ABI 时，按 `book/guideline/starry/syscall.md` 的证据层级追踪间接 helper 到每个受影响 syscall entry；行为随版本变化时记录对照的 Linux 版本或 commit。
+影响 StarryOS syscall/Linux ABI 时，按 `docs/guideline/starry_syscall.md` 的证据层级追踪间接 helper 到每个受影响 syscall entry；行为随版本变化时记录对照的 Linux 版本或 commit。
 
 ### 新功能设计门禁
 
-新增或扩展功能时，按 `book/guideline/feature-development.md` 分类 local/shared/high risk，并在清单记录分类和证据位置。按以下顺序审查：必要性、重复性、语义与 prior art、替代方案、整体架构/API、实现、验证与交付。
+新增或扩展功能时，按 `docs/guideline/feature-development.md` 分类 local/shared/high risk，并在清单记录分类和证据位置。按以下顺序审查：必要性、重复性、语义与 prior art、替代方案、整体架构/API、实现、验证与交付。
 
 必须核对具体问题、目标用户/调用方、真实场景、成功标准、non-goals、仓库内部研究、适用的权威外部研究、现实替代方案和不实现成本。high-risk 功能必须有可独立审查的设计材料，覆盖适用的 ownership、dependency、compatibility、migration、rollback、observability、performance 和 security。先提交重大设计 blocker，再处理低层 polish。测试通过不能替代“为什么项目需要它、为什么优于复用/扩展、为什么复杂度现在必要”的解释。
 

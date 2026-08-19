@@ -36,7 +36,7 @@ pub trait DmaPollableDeviceOps: Send + Sync {
     fn poll_dma(
         &self,
         now_ns: u64,
-        access: &mut dyn DeviceAccess,
+        context: &mut dyn DeviceContext,
         grant: &DmaGrant,
     ) -> DeviceManagerResult;
 }

@@ -117,6 +117,7 @@ impl ArchOps for Aarch64Arch {
             ),
             ArmVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
                 vm,
+                vcpu,
                 MmioWriteExit {
                     addr: arm_guest_phys_addr_to_ax(addr),
                     width: arm_access_width_to_ax(width),
@@ -133,6 +134,7 @@ impl ArchOps for Aarch64Arch {
             ),
             ArmVmExit::SysRegWrite { addr, value } => sysreg::handle_write(
                 vm,
+                vcpu,
                 SysRegWriteExit {
                     addr: arm_sys_reg_addr_to_ax(addr),
                     value,

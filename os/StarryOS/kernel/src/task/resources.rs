@@ -79,7 +79,7 @@ impl IndexMut<u32> for Rlimits {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn resource_limit_defaults_hold_for_test() -> bool {
     let mut limits = Rlimits::default();
     limits[RLIMIT_NOFILE] = Rlimit::new(7, 9);

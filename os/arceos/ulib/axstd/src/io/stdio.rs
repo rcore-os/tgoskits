@@ -173,8 +173,8 @@ pub fn stdout() -> Stdout {
 #[doc(hidden)]
 pub fn __print_impl(args: core::fmt::Arguments) {
     if cfg!(feature = "smp") {
-        // synchronize using the lock in ax-log, to avoid interleaving
-        // with kernel logs
+        // The runtime serializes formatted user output on the sleepable TTY
+        // path; kernel logs use a separate non-blocking mailbox.
         ax_api::stdio::ax_console_write_fmt(args).unwrap();
     } else {
         stdout().lock().write_fmt(args).unwrap();

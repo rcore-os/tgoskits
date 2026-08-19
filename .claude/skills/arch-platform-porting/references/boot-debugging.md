@@ -83,17 +83,18 @@ must remain trapped, and guest writes must never mutate host GICD/GICR state.
 
 ## CPU-local Register Ownership
 
-`cpu-local` is the single owner of host CPU-area, current-thread, and kernel-TLS register
-semantics. `ax-percpu` supplies the typed template/layout/area implementation but must not choose
+`cpu-local` is the single owner of host CPU-area, current-context, kernel-TLS register, context
+binding, and architecture-selected preemption semantics. `ax-percpu` supplies the typed
+template/layout/area implementation but must not choose
 an architecture register independently. The two image modes are mutually exclusive at a final
 image boundary:
 
 | Architecture | CPU area | Linux-current image | Unikernel-TLS image |
 | --- | --- | --- | --- |
-| x86_64 | GS base | current header in `CpuRuntimeAnchor` | FS base is task TLS |
-| AArch64 | TPIDR_EL1 at EL1, TPIDR_EL2 at EL2 | SP_EL0 is current | TPIDR_EL0 is task TLS |
-| RISC-V | recover from current header, or sscratch | tp is current and sscratch is zero in kernel Rust | tp is task TLS and sscratch is CPU base |
-| LoongArch | r21, mirrored in KS3 | tp is current | tp is task TLS |
+| x86_64 | GS base | anchor current; FS unused | anchor current; FS is context TLS |
+| AArch64 | TPIDR_EL1 at EL1, TPIDR_EL2 at EL2 | SP_EL0 current; TPIDR_EL0 unused | SP_EL0 current; TPIDR_EL0 is context TLS |
+| RISC-V | recover from current header, or sscratch | tp current; sscratch zero | anchor current; tp is TLS; sscratch is CPU base |
+| LoongArch | r21, mirrored in KS3 | tp current | anchor current; tp is TLS |
 
 The final ELF owns exactly one `.percpu.template`, one `.percpu.init` descriptor table, and one
 `.percpu.align` table. someboot or another platform allocates the runtime areas dynamically from
@@ -111,17 +112,28 @@ remote access are excluded. CPU-area construction is permitted only while that C
 the raw destination is exclusively owned.
 
 Context-switch publication follows one ordering: validate the outgoing binding, bind the next
-stable task header, prepare every fallible state transition, commit the architecture register,
+stable execution-context header, prepare every fallible state transition, commit the selected source,
 perform the naked switch, and unbind the previous header in the incoming tail. The interrupt-off
 `CpuPin` spans that sequence. An uncommitted prepared token rolls the next binding back, while the
-previous binding epoch rejects a stale incoming tail after task rebinding; that epoch is a runtime
+previous binding epoch rejects a stale incoming tail after context rebinding; that epoch is a runtime
 concurrency guard, not an ABI version. vCPU exits must restore the host register contract before returning
 to host Rust; LoongArch KS4/KS5 remain vCPU scratch and AArch64 must restore host TPIDR_EL0 before
-calling Rust exception handlers.
+calling Rust exception handlers. AArch64 must spill its sole SP_EL0 current header in the pinned
+kernel stack before lending SP_EL0 to userspace and restore it before returning to Rust; a CPU
+anchor mirror is not a valid fallback.
+
+Preemption entry returns a linear token bound to the selected owner. x86_64 uses the CPU anchor;
+load/store architectures use the current context header. A final pending exit retains depth one
+until the runtime has claimed its per-CPU scheduler baton. `cpu-local` must not contain the baton,
+task pending policy, a runtime owner cookie, or any `scheduler_*` API.
+On CPU-owned preemption architectures, verify that a newly entered context explicitly finishes
+the switch depth. A suspended guard resuming on another CPU must consume its old proof and adopt
+the equivalent switch depth left by the destination CPU's outgoing context. Context-owned
+architectures retain the token owner across migration and begin a new header at depth zero.
 
 For boot debugging, verify the typed per-CPU layout is finalized and frozen before CPU binding.
 Check both the architectural register and its defined mirror (RISC-V sscratch or LoongArch KS3)
-on secondaries. A separate current-task per-CPU variable can mask a stale register during normal
+on secondaries. A separate current-context per-CPU variable can mask a stale register during normal
 execution and then fail only on traps or vCPU exits, so it is not a valid fallback.
 
 ## Final Image Runtime Modes
@@ -186,7 +198,7 @@ Use this order when auditing an early boot port:
     publishes one per-CPU `KICKED` state before that hook, waits for the secondary to report
     `ALIVE` at the common entry, and then releases exactly that CPU as `SHOULD_ONLINE`. Keep this
     handshake outside immutable trampoline metadata and separate from the later OS scheduler,
-    IRQ, and timer online publication. See `book/design/someboot-secondary-cpu-startup.md`.
+    IRQ, and timer online publication. See `docs/design/someboot-secondary-cpu-startup.md`.
 
 ## RISC-V FDT SMP Notes
 
@@ -374,6 +386,7 @@ These commands form a practical ladder for LoongArch dynamic platform work:
 
 ```bash
 cargo test -p axbuild --lib
+cargo xtask ktest qemu --workspace --arch loongarch64
 cargo xtask arceos test qemu --arch loongarch64
 cargo xtask starry test qemu --arch loongarch64
 docker run --rm -v "$PWD:/workspace" -w /workspace \

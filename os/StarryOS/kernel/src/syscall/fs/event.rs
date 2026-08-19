@@ -41,7 +41,7 @@ pub fn sys_eventfd2(initval: u32, flags: u32) -> StarryResult<isize> {
     Ok(fd)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn eventfd_flags_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE};
     // Test EventFdFlags validation

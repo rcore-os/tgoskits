@@ -10,18 +10,18 @@ autotests = false
 [dependencies]
 
 [dev-dependencies]
-ax-driver = { workspace = true, features = ["serial"] }
-ax-lazyinit.workspace = true
-ax-sync = { workspace = true, features = ["host-test"] }
-axklib.workspace = true
-eth-intel.workspace = true
+ax-driver = { path = "../../ax-driver", features = ["serial"] }
+ax-lazyinit = { path = "../../../components/ax-lazyinit" }
+ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }
+axklib = { path = "../../../components/axklib" }
+eth-intel = { path = "../../net/eth-intel" }
 fdt-edit.workspace = true
-pcie.workspace = true
-rdif-intc.workspace = true
-rdif-serial.workspace = true
-rdrive.workspace = true
-rockchip-soc.workspace = true
-some-serial.workspace = true
+pcie = { path = "../../pci/pcie" }
+rdif-intc = { path = "../../interface/rdif-intc" }
+rdif-serial = { path = "../../interface/rdif-serial" }
+rdrive = { path = "../../rdrive" }
+rockchip-soc = { path = "../../soc/rockchip/rockchip-soc" }
+some-serial = { path = "../../serial/some-serial" }
 num-align = "0.1.0"
 
 [[test]]

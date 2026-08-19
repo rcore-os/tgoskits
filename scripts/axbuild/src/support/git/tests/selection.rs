@@ -140,6 +140,29 @@ fn no_changes_selects_no_packages() {
 }
 
 #[test]
+fn markdown_inside_crates_does_not_expand_incremental_packages() {
+    let (root, metadata, workspace_packages) = test_workspace();
+    let selected = select_incremental_packages_for_paths(
+        root.path(),
+        &metadata,
+        &workspace_packages,
+        [
+            PathBuf::from("crates/alpha/README.md"),
+            PathBuf::from("crates/beta/src/lib.rs"),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        selected,
+        IncrementalPackageSelection::Packages {
+            changed: vec!["beta".into()],
+            affected: vec!["beta".into(), "gamma".into()],
+        }
+    );
+}
+
+#[test]
 fn lockfile_only_change_falls_back_to_full() {
     // Cargo.lock is Soft: a dep-version-only update with no source changes
     // can still affect compilation via transitive deps, proc macros, or

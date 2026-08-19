@@ -6,7 +6,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use axdevice::*;
 use axdevice_base::{
-    BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DmaGrant, InterruptSharing,
+    BusKind, Device, DeviceAccess, DeviceContext, DeviceError, DmaGrant, InterruptSharing,
     InterruptTrigger, IrqLine, Resource,
 };
 use axvirtio_common::{GuestMemory, NoGuestMemoryAccessor, VirtioError};
@@ -307,19 +307,19 @@ impl SwitchPort for PortEndpoint {
 }
 
 struct ScopedDeviceMemory<'a> {
-    access: &'a mut dyn DeviceAccess,
+    context: &'a mut dyn DeviceContext,
     grant: &'a DmaGrant,
 }
 
 impl GuestMemory for ScopedDeviceMemory<'_> {
     fn read(&mut self, guest_addr: GuestPhysAddr, data: &mut [u8]) -> Result<(), VirtioError> {
-        self.access
+        self.context
             .read_guest_memory(self.grant, guest_addr, data)
             .map_err(|_| VirtioError::InvalidAddress)
     }
 
     fn write(&mut self, guest_addr: GuestPhysAddr, data: &[u8]) -> Result<(), VirtioError> {
-        self.access
+        self.context
             .write_guest_memory(self.grant, guest_addr, data)
             .map_err(|_| VirtioError::InvalidAddress)
     }
@@ -343,34 +343,51 @@ impl Device for VirtioNetRuntimeDevice {
         &self.resources
     }
 
-    fn access(
+    fn read(
         &self,
-        access: &BusAccess,
-        context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Mmio {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+        access: &DeviceAccess,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<u64, DeviceError> {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
-        let address = GuestPhysAddr::from(access.addr as usize);
-        if access.is_read {
-            return self
-                .model
-                .mmio_read(address, access.width)
-                .map(|value| BusResponse::Read {
-                    value: value as u64,
-                })
-                .map_err(map_virtio_error);
+        self.model
+            .mmio_read(
+                GuestPhysAddr::from(access.address() as usize),
+                access.width(),
+            )
+            .map(|value| value as u64)
+            .map_err(map_virtio_error)
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError> {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
         let mut memory = ScopedDeviceMemory {
-            access: context,
+            context,
             grant: &self.grant,
         };
         let event = self
             .model
-            .mmio_write_with_memory(address, access.width, access.data as usize, &mut memory)
+            .mmio_write_with_memory(
+                GuestPhysAddr::from(access.address() as usize),
+                access.width(),
+                value as usize,
+                &mut memory,
+            )
             .map_err(map_virtio_error)?;
         self.pulse_if_pending(event)?;
-        Ok(BusResponse::Write)
+        Ok(())
     }
 }
 
@@ -378,10 +395,10 @@ impl DmaPollableDeviceOps for VirtioNetRuntimeDevice {
     fn poll_dma(
         &self,
         _now_ns: u64,
-        access: &mut dyn DeviceAccess,
+        context: &mut dyn DeviceContext,
         grant: &DmaGrant,
     ) -> DeviceManagerResult {
-        let mut memory = ScopedDeviceMemory { access, grant };
+        let mut memory = ScopedDeviceMemory { context, grant };
         while let Some(frame) = self.endpoint.pop_ingress() {
             match self.model.receive_frame_with_memory(&frame, &mut memory) {
                 Ok(RxOutcome::Delivered { notify, .. }) => {

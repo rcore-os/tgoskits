@@ -1,0 +1,62 @@
+schema_version = 3
+phase = "test"
+group = "ArceOS"
+default_runner = "qcs"
+
+[[check]]
+id = "test-arceos-x86-64-qemu"
+impact_targets = ["arceos:x86_64"]
+name = "QEMU x86_64 · Suites + axtest"
+command = '''
+cargo xtask arceos test qemu --arch x86_64
+cargo xtask ktest qemu --workspace --exclude starry-kernel --exclude axvisor --arch x86_64
+'''
+
+[[check.suite]]
+kind = "arceos-qemu"
+arch = "x86_64"
+
+[[check]]
+id = "test-arceos-riscv64-qemu"
+impact_targets = ["arceos:riscv64"]
+name = "QEMU riscv64 · Suites + task IPI + axtest"
+command = '''
+cargo xtask arceos test qemu --arch riscv64
+taskset -c 0 cargo xtask arceos test qemu --arch riscv64 \
+  --test-group rust --test-case task-ipi
+cargo xtask ktest qemu --workspace --exclude starry-kernel --exclude axvisor --arch riscv64
+'''
+
+[[check.suite]]
+kind = "arceos-qemu"
+arch = "riscv64"
+
+[[check]]
+id = "test-arceos-aarch64-qemu-app-suites"
+impact_targets = ["arceos:aarch64"]
+name = "QEMU aarch64 · GICv2 SMP4 boot + suites + axtest"
+command = '''
+echo "==> arceos aarch64 GICv2 SMP4 default app boot"
+cargo xtask arceos qemu --arch aarch64 --smp 4 \
+  --qemu-config os/arceos/configs/qemu/qemu-aarch64-gicv2-boot.toml
+echo "==> arceos aarch64 test suites (Rust GICv2 SMP4 IPI + C GICv3 SMP4)"
+cargo xtask arceos test qemu --arch aarch64
+cargo xtask ktest qemu --workspace --exclude starry-kernel --exclude axvisor --arch aarch64
+'''
+
+[[check.suite]]
+kind = "arceos-qemu"
+arch = "aarch64"
+
+[[check]]
+id = "test-arceos-loongarch64-qemu"
+impact_targets = ["arceos:loongarch64"]
+name = "QEMU loongarch64 · Suites + axtest"
+command = '''
+cargo xtask arceos test qemu --arch loongarch64
+cargo xtask ktest qemu --workspace --exclude starry-kernel --exclude axvisor --arch loongarch64
+'''
+
+[[check.suite]]
+kind = "arceos-qemu"
+arch = "loongarch64"

@@ -1,19 +1,11 @@
 ---
 sidebar_position: 7
-sidebar_label: "锁使用问题跟踪"
+sidebar_label: "锁使用约束"
 ---
 
-# 锁使用问题跟踪
+# 锁使用约束与已知问题
 
-本文档用于跟踪统一到 `ax-sync` 过程中暴露出的锁使用问题，以及后续对锁范围、锁类型和上下文语义的调整进度。
-
-它整理自历史记录：
-
-- `reports/external-spin-audit.md`
-- `reports/external-spin-migration-plan.md`
-- `reports/spin-no-preempt-audit.md`
-
-这些报告曾在 #1064 中删除。本文档保留其中仍然有效的判断，并按当前代码路径重新整理成后续维护用的跟踪清单。
+`ax-sync` 统一了内核运行路径的锁原语与 lockdep 可见性。锁类型仍需与 IRQ、抢占、睡眠、用户内存访问和 I/O 边界匹配；以下内容记录当前约束和仍存在风险的代码路径。
 
 ## 背景
 
@@ -39,7 +31,7 @@ sidebar_label: "锁使用问题跟踪"
 6. lockdep subclass 只应用于同一抽象下的合法嵌套，不应掩盖真实 ABBA 顺序问题。
 7. 近期不以新增 RwLock 作为修复方向。现有 `SpinRwLock` 已纳入 lockdep；如果读写分离不是必要语义，仍应评估 mutex 化并避免扩大使用面。
 
-## 当前跟踪项
+## 已知风险路径
 
 | 区域 | 当前状态 | 风险 | 后续方向 |
 | --- | --- | --- | --- |
@@ -59,24 +51,7 @@ sidebar_label: "锁使用问题跟踪"
 | `os/StarryOS/kernel/src/file/mod.rs`、`task/mod.rs`、`task/ops.rs` 等 | 原外部 RwLock 已迁移到 Starry `crate::sync` facade；`file/signalfd.rs` 的 signal mask 使用 IRQ-save spin lock。 | 锁已统一可见，但 FD table、task 状态等路径的粒度和顺序仍需按运行时重要性复查。 | 能 mutex 化的先 mutex 化；必须使用 RwLock 的点保持通过 facade，禁止绕过统一入口。 |
 | drivers / portable crates 中的直接 `spin` | 第一方直接依赖和源码导入已清理。 | 后续若 portable crate 绕回外部 `spin`，内核运行路径会重新形成 lockdep 盲区。 | 依赖 `lock-lint` 防回退；新增 driver 锁时使用 `ax-sync` 或明确的 OS glue 同步抽象。 |
 
-## 调整计划
-
-近期目标不是把所有锁替换成某一种统一原语，而是让锁的使用与上下文匹配。优先级按风险和依赖关系排列。
-
-| 优先级 | 工作项 | 范围 | 完成标准 |
-| --- | --- | --- | --- |
-| P0 | 建立锁使用分类清单 | `SpinLock::{lock,lock_irqsave,lock_raw}`、`SpinRwLock`、关键 atomic | 每个候选点标出保护对象、是否 IRQ/waker 路径、是否可能 sleep / fault / 分配 / I/O / 回调。 |
-| P1 | 缩小 VFS dentry / mount 锁范围 | `fs/axfs-ng-vfs/src/node/dir.rs`、`fs/axfs-ng-vfs/src/mount.rs` | VFS 自旋锁内只做 cache / mount 元数据操作；FS 后端调用在锁外执行。 |
-| P1 | 清理自旋锁内的高风险操作 | 用户内存访问、后端 callback、block I/O、可能分配的 waker 入队 | `might_sleep()` 覆盖路径下不再出现持 spin guard 的 user copy / callback / I/O。 |
-| P1 | 修正 epoll ready queue fast path | `os/StarryOS/kernel/src/file/epoll.rs` | waker 路径不做堆扩容；通过预分配、限长队列或延迟到任务上下文解决。 |
-| P2 | 重新设计 FAT/ext4/lwext4 粗文件系统锁 | `fs/ax-fs-ng/src/fs/` | 文件系统锁不再长期包住 block I/O / flush / journal / 外部 sink callback，或明确只在 sleepable 上下文使用 sleepable mutex。 |
-| P2 | 明确早期启动 sleepability 边界 | rootfs mount、pseudofs init、tmpfs root_dir | 区分早期启动误伤和运行期 atomic sleep bug；减少因为启动阶段限制而长期保留自旋锁的场景。 |
-| P2 | 复查 tmpfs 保守自旋锁 | `os/StarryOS/kernel/src/pseudofs/tmp.rs` | VFS 后端调用移出 spin guard 后，评估 tmpfs entries / metadata 是否能改成 mutex 或进一步缩短自旋锁范围。 |
-| P3 | 复查已有 `SpinRwLock` | `axfs-ng` highlevel file、Starry FD/task/signal 等 | 不新增 RwLock 方案；逐点判断能否 mutex 化，不能的记录为 deferred 并冻结新增使用。 |
-| P3 | portable drivers 同步抽象 | `drivers/`、`memory/` 中后续新增或调整的锁 | 区分 portable core 和 OS glue；内核运行路径不重新直接依赖外部 `spin::Mutex` 作为默认锁。 |
-| P3 | atomic 与锁的合理性审计 | mount flags、epoll membership、cached file reclaim、file flags 等 | 独立标志可保留 atomic；复合不变量、flag+data 发布协议、队列/map 生命周期应回到锁或明确内存序协议。 |
-
-### Atomic 使用准则
+## Atomic 使用准则
 
 适合使用 atomic：
 
@@ -91,7 +66,7 @@ sidebar_label: "锁使用问题跟踪"
 - `flag + data` 发布协议但没有清晰 Acquire / Release 关系。
 - 需要和锁内数据保持一致的状态，例如队列成员关系、mount tree 关系、reclaim 全局状态。
 
-## 已形成的经验
+## 边界规则
 
 以下问题已经有明确处理模式，后续改动应保持这些边界。
 
@@ -100,7 +75,7 @@ sidebar_label: "锁使用问题跟踪"
 - VFS cache / user_data guard 内不应执行文件系统、socket、设备等后端回调。应先复制出必要的 `Arc` 或小状态，再释放 guard。
 - 文件系统粗锁包住 block I/O 是当前最大的未完成项。把 `lock()` 改成 `lock_irqsave()` 只是关闭 IRQ 重入风险，不代表 I/O under spin lock 合理。
 - 早期启动阶段的 `might_sleep()` 误伤和真实运行期 atomic sleep bug 需要区分。长期方向是让启动阶段进入更清晰的 sleepability 状态，或把 rootfs / pseudofs 初始化移动到正常任务上下文。
-- `might_sleep()` 已纳入显式 IRQ context，并能在 `lockdep` 构建下输出 held-lock stack；held non-sleep lock 作为直接触发条件仍待后续阶段。锁策略调整仍应先消除 spin guard 内的 fault、alloc、I/O、callback，而不是依赖诊断机制长期兜底；详细计划见 [`might_sleep` 后续增强计划](./might-sleep-followups.md)。
+- `might_sleep()` 已纳入显式 IRQ context，并能在 `lockdep` 构建下输出 held-lock stack。锁策略调整应消除 spin guard 内的 fault、alloc、I/O 和 callback，而不是依赖诊断机制兜底。
 
 ## 复查命令
 
@@ -129,28 +104,3 @@ rg -n "lock_irqsave\(|lock_raw\(|try_lock_irqsave\(|try_lock_raw\(" \
 - `os/StarryOS/kernel/src/file/packet.rs`
 - `os/StarryOS/kernel/src/pseudofs/tmp.rs`
 - `os/StarryOS/kernel/src/pseudofs/dev/loop_block.rs`
-
-## 验证要求
-
-调整锁相关逻辑时，至少做以下验证：
-
-1. 运行 `cargo fmt`。
-2. 对每个修改过的 crate 运行针对性 clippy，优先使用：
-
-```bash
-cargo xtask clippy --package <crate>
-```
-
-3. 若改动 `ax-sync`、lockdep 或 `might_sleep()` 覆盖路径，补跑对应 lockdep / multitask 回归。
-4. 若改动 VFS、FAT、ext4、tmpfs、loop block 相关锁，补跑能覆盖 mount、read/write、sync、rename、unlink、page cache 或 loop rootfs 的 Starry / ArceOS 用例。
-5. 若改动用户内存访问和 socket / netlink / packet 队列路径，确保 faultable user copy 不在自旋锁 guard 内。
-
-## 记录更新规则
-
-每次对上表中的锁策略做实质调整，应同步更新本文档：
-
-- 写明旧锁类型和新锁类型。
-- 写明锁内还剩哪些操作。
-- 写明是否仍可能 sleep、fault、分配、I/O 或回调。
-- 写明本次验证命令和结果。
-- 如果只是保守止血，不要把状态标成完成，应明确留下后续设计方向。

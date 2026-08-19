@@ -242,10 +242,9 @@ fn prepared_qemu_case(name: &str, build_config_path: PathBuf) -> PreparedStarryQ
 
 fn write_test_image_config(workspace_root: &Path) {
     let config = crate::image::config::ImageConfig {
-        local_storage: workspace_root.join(".tgos-images"),
         registry: crate::image::config::DEFAULT_REGISTRY_URL.to_string(),
-        auto_sync: true,
-        auto_sync_threshold: 60,
+        download_dir: workspace_root.join(".tgos-downloads"),
+        extract_dir: workspace_root.join(".tgos-images"),
     };
     crate::image::config::ImageConfig::write_config(workspace_root, &config).unwrap();
 }

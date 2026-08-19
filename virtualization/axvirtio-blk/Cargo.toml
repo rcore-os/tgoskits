@@ -22,5 +22,5 @@ log.workspace = true
 ax-sync.workspace = true
 
 [dev-dependencies]
-ax-memory-addr.workspace = true
-ax-sync = { workspace = true, features = ["host-test"] }
+ax-memory-addr = { path = "../../memory/memory_addr" }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

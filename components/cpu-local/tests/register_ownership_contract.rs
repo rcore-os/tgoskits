@@ -74,10 +74,10 @@ fn register_validation_returns_a_typed_cpu_area() {
 }
 
 #[test]
-fn register_leaf_does_not_export_raw_area_or_thread_access() {
+fn register_leaf_does_not_export_raw_area_or_context_access() {
     assert!(
         !REGISTER.contains("pub unsafe fn current_area_base_raw(")
-            && !REGISTER.contains("pub unsafe fn current_thread_raw("),
+            && !REGISTER.contains("pub unsafe fn current_context_raw("),
         "architecture values must remain behind shared typed validation"
     );
     assert!(
@@ -122,11 +122,11 @@ fn riscv_uses_linux_current_or_unikernel_scratch_by_image_mode() {
 }
 
 #[test]
-fn x86_and_aarch64_keep_task_tls_separate_from_the_cpu_anchor() {
+fn x86_and_aarch64_keep_context_tls_separate_from_the_cpu_anchor() {
     let x86 = X86_64;
     assert!(x86.contains("IA32_GS_BASE"));
     assert!(x86.contains("gs:[{offset}]") && x86.contains("CPU_AREA_SELF_BASE_OFFSET"));
-    assert!(x86.contains("CPU_AREA_CURRENT_THREAD_OFFSET"));
+    assert!(x86.contains("CPU_AREA_CURRENT_CONTEXT_OFFSET"));
     let x86_install = x86
         .split_once("unsafe fn install_cpu_base")
         .unwrap()
@@ -150,7 +150,7 @@ fn x86_and_aarch64_keep_task_tls_separate_from_the_cpu_anchor() {
         .split_once("unsafe fn read_cpu_base")
         .unwrap()
         .1
-        .split_once("unsafe fn read_current_thread")
+        .split_once("unsafe fn read_current_context")
         .unwrap()
         .0;
     assert!(!install.contains("TPIDR_EL0"));
@@ -173,17 +173,17 @@ fn aarch64_current_stays_in_sp_el0_when_tls_is_enabled() {
     assert!(!install.contains("cfg!(feature = \"tls\")"));
 
     let read_current = AARCH64
-        .split_once("unsafe fn read_current_thread")
+        .split_once("unsafe fn read_current_context")
         .unwrap()
         .1
-        .split_once("unsafe fn write_current_thread")
+        .split_once("unsafe fn write_current_context")
         .unwrap()
         .0;
     assert!(read_current.contains("SP_EL0"));
     assert!(!read_current.contains("area_runtime_anchor"));
 
     let write_current = AARCH64
-        .split_once("unsafe fn write_current_thread")
+        .split_once("unsafe fn write_current_context")
         .unwrap()
         .1
         .split_once("unsafe fn read_kernel_tls")

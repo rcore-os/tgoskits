@@ -66,22 +66,6 @@ impl TxIngress {
         accepted
     }
 
-    pub(super) fn try_write_log(&self, bytes: &[u8], notify: &IrqNotify) -> usize {
-        let Some(mut state) = self.state.try_lock_irqsave() else {
-            return 0;
-        };
-        let accepted = submit_text_locked(&mut state, bytes);
-        drop(state);
-        if accepted > 0 {
-            if ax_hal::irq::in_irq_context() {
-                notify.notify_irq();
-            } else {
-                notify.notify();
-            }
-        }
-        accepted
-    }
-
     pub(super) fn pop(&self) -> Option<TxFrame> {
         self.state.lock_irqsave().frames.pop_front()
     }
@@ -118,6 +102,10 @@ impl TxIngress {
 
     pub(super) fn is_idle(&self) -> bool {
         self.state.lock_irqsave().idle
+    }
+
+    pub(super) fn begin_drain(&self) {
+        self.state.lock_irqsave().idle = false;
     }
 
     /// Publishes idle under the same lock that producers use to enqueue.
@@ -264,6 +252,31 @@ mod tests {
             TX_FRAME_BYTES * TX_FRAME_CAPACITY
         );
         assert_eq!(submit_locked(&mut state, b"x"), 0);
+    }
+
+    #[test]
+    fn log_backlog_does_not_consume_tty_capacity() {
+        let ingress = TxIngress::new();
+        ingress.start_accepting();
+        let mailbox = Arc::new(crate::serial::log_mailbox::LogMailbox::new(1));
+        assert!(mailbox.claim(0));
+
+        for _ in 0..crate::serial::log_mailbox::LOG_SLOTS_PER_CPU {
+            assert!(
+                mailbox
+                    .try_publish(
+                        0,
+                        crate::serial::log_mailbox::LogRecordMeta::print(0, None),
+                        format_args!("log backlog")
+                    )
+                    .published()
+            );
+        }
+        assert_eq!(
+            ingress.write_room(),
+            TX_FRAME_BYTES * TX_FRAME_CAPACITY,
+            "kernel logs must not consume the sleepable TTY queue"
+        );
     }
 
     #[test]

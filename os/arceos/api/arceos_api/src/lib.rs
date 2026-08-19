@@ -86,7 +86,7 @@ pub mod stdio {
         pub fn ax_console_read_bytes(buf: &mut [u8]) -> crate::ApiResult<usize>;
         /// Writes a slice of bytes to the console, returns the number of bytes written.
         pub fn ax_console_write_bytes(buf: &[u8]) -> crate::ApiResult<usize>;
-        /// Writes a formatted string to the console.
+        /// Writes a formatted string through the sleepable TTY console path.
         pub fn ax_console_write_fmt(args: fmt::Arguments) -> fmt::Result;
     }
 }

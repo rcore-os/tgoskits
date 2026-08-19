@@ -169,6 +169,13 @@ impl PackagePathIndex {
             if path.as_os_str().is_empty() {
                 continue;
             }
+            if path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            {
+                continue;
+            }
             if path == Path::new(ROOT_MANIFEST) {
                 match root_manifest_change
                     .clone()
