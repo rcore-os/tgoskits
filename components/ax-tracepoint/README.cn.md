@@ -1,4 +1,4 @@
-# ktracepoint
+# ax-tracepoint
 
 面向内核场景的 Rust tracepoint 库，设计目标类似 Linux tracepoint：
 
@@ -22,13 +22,14 @@
 
 ```toml
 [dependencies]
-ktracepoint = "*"
+ax-tracepoint = "*"
 ```
 
 ### 2. 链接脚本中保留 .tracepoint 段
 
 该库通过 __start_tracepoint / __stop_tracepoint 扫描所有事件元数据。
 请将 my_section.ld 的内容并入你的链接脚本，确保 .tracepoint 段被 KEEP。
+StarryOS 的内核 linker script 已包含该契约；其它宿主需要自行加入等价段定义。
 
 ### 3. 实现 KernelTraceOps
 
@@ -59,7 +60,7 @@ callback 时先关闭 gate，再退役旧状态。
 ### 4. 定义并调用事件
 
 ```rust
-use ktracepoint::{define_event_trace, KernelTraceOps};
+use ax_tracepoint::{define_event_trace, KernelTraceOps};
 
 define_event_trace!(
     TEST,
@@ -76,12 +77,13 @@ define_event_trace!(
 trace_TEST(1, 2);
 ```
 
-提示：TP_STRUCT__entry 会参与字节布局，请确保字段布局符合预期（建议 C 风格布局思路）。
+提示：TP_STRUCT__entry 会参与字节布局。字段必须实现 TraceField；内置实现覆盖整数
+原语及 trace field 数组。
 
 ### 5. 初始化管理器
 
 ```rust
-use ktracepoint::global_init_events;
+use ax_tracepoint::global_init_events;
 
 let (tracepoints, ext_tracepoints) = global_init_events::<Kops>()?;
 
@@ -92,7 +94,7 @@ let (tracepoints, ext_tracepoints) = global_init_events::<Kops>()?;
 ### 6. 启用、过滤、消费输出
 
 ```rust
-use ktracepoint::{TraceFilterFile, TracePointEnableFile, TracePointFormatFile, TracePointIdFile};
+use ax_tracepoint::{TraceFilterFile, TracePointEnableFile, TracePointFormatFile, TracePointIdFile};
 
 let event_id = 0;
 Kops::write_tracepoint_state(event_id, |event| {
@@ -110,8 +112,7 @@ let id = TracePointIdFile::new(tracepoint).read();
 ## 运行示例
 
 ```bash
-cd examples
-cargo run --example usage
+cargo run -p ax-tracepoint --example usage
 ```
 
 示例代码位于 examples/usage.rs，覆盖了：
@@ -127,8 +128,12 @@ cargo run --example usage
 - TracePoint / ExtTracePoint / TracePointMap
 - TracePipeRaw / TracePipeSnapshot / TracePipeOps
 - TraceCmdLineCache / TraceEntryParser
+- TraceFilterError / TraceParseError / TraceInitError
+
+损坏的 trace record 和被拒绝的 filter 更新会返回 typed error。filter 编译失败会保留
+上一个已生效的 compiled filter；只有精确写入 `0`（允许外围空白）才会清除 filter。
 
 ## 参考项目
 
 - DragonOS: <https://github.com/DragonOS-Community/DragonOS/blob/master/kernel/src/debug/tracing/mod.rs>
-- Hermit: <https://github.com/os-module/hermit-kernel/blob/dev/src/tracepoint/mod.rs>
+- TGOSKits StarryOS: <https://github.com/rcore-os/tgoskits/tree/dev/os/StarryOS>

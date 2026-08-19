@@ -23,9 +23,9 @@ use core::{
 
 use ax_lazyinit::LazyInit;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
+use ax_tracepoint::*;
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
-use ktracepoint::*;
 pub use registry::KernelExtTracePoint;
 use registry::TracepointReclaimer;
 
@@ -655,11 +655,18 @@ fn common_trace_pipe_read(
             }
             let mut record_cmdline = TraceCmdLineCache::new(NonZero::new(1).unwrap());
             record_cmdline.insert(record.pid, &record.comm);
-            let record_str = TraceEntryParser::parse::<KernelTraceAux>(
+            let record_str = match TraceEntryParser::parse::<KernelTraceAux>(
                 &TRACE_STATE.point_map,
                 &record_cmdline,
                 &record.record,
-            );
+            ) {
+                Ok(record) => record,
+                Err(error) => {
+                    warn!("discarding invalid trace record: {error}");
+                    trace_buf.pop();
+                    continue;
+                }
+            };
             if !drain.copy_record(record_str.as_bytes(), buf, &mut copy_len) {
                 break;
             }
@@ -684,7 +691,7 @@ pub fn tracepoint_init() -> StarryResult<()> {
         .into_iter()
         .map(|ext_tp| {
             (
-                ext_tp.id(),
+                ext_tp.trace_point().id(),
                 KernelExtTracePoint::new(ext_tp, &TRACE_STATE.reclaimer),
             )
         })

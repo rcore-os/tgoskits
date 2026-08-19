@@ -123,7 +123,7 @@ bitflags! {
 // funnel through), so the event schema and the fast-path call stay together.
 // Registration into the global `.tracepoint` section is by link section, so
 // the definition's module location is immaterial to discovery.
-ktracepoint::define_event_trace!(
+ax_tracepoint::define_event_trace!(
     sched_process_fork,
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(sched),
@@ -663,7 +663,7 @@ fn map_task_creation_error(error: ax_std::os::arceos::task::TaskError) -> Starry
     }
 }
 
-ktracepoint::define_event_trace!(
+ax_tracepoint::define_event_trace!(
     sys_clone,
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(syscalls),

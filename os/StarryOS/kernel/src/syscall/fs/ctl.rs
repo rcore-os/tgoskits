@@ -164,7 +164,7 @@ pub fn sys_chroot(
     Ok(0)
 }
 
-ktracepoint::define_event_trace!(
+ax_tracepoint::define_event_trace!(
     sys_mkdirat,
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(syscalls),

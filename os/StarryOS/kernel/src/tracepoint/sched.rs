@@ -182,7 +182,7 @@ pub(super) fn replay_comm(pid: u32) -> Option<([u8; TASK_COMM_LEN], usize)> {
     Some((comm, len))
 }
 
-ktracepoint::define_event_trace!(
+ax_tracepoint::define_event_trace!(
     sched_switch,
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(sched),
@@ -209,14 +209,15 @@ ktracepoint::define_event_trace!(
 );
 
 #[cfg(axtest)]
-pub(super) fn tracepoint_state_for_test() -> ktracepoint::ExtTracePoint<super::KernelTraceAux> {
+pub(super) fn tracepoint_state_for_test() -> ax_tracepoint::ExtTracePoint<super::KernelTraceAux> {
     fn unused_default_callback() {}
 
-    ktracepoint::ExtTracePoint::new(
+    ax_tracepoint::ExtTracePoint::new(
         &__sched_switch,
-        alloc::sync::Arc::new(ktracepoint::TraceDefaultFunc {
-            func: unused_default_callback,
-            data: Box::new(()),
+        // SAFETY: this test-only erased callback is never dispatched and its
+        // original signature is exactly `fn()`.
+        alloc::sync::Arc::new(unsafe {
+            ax_tracepoint::TraceDefaultFunc::from_erased(unused_default_callback, Box::new(()))
         }),
     )
 }

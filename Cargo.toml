@@ -29,13 +29,13 @@ members = [
     "components/axklib",
     "components/axpanic",
     "components/axpoll",
+    "components/ax-tracepoint",
     "components/axsched",
     "components/cpumask",
     "components/crate_interface",
     "components/irq-framework",
     "components/kasm-aarch64",
     "components/kernutil",
-    "components/ktracepoint",
     "components/linked_list_r4l",
     "components/scope-local",
     "components/timer_list",
@@ -142,7 +142,6 @@ virtio-drivers = { version = "0.13.0", default-features = false }
 ax-fs-ng = { version = "0.8.7", path = "fs/ax-fs-ng" }
 ax-hal = { version = "0.5.31", path = "os/arceos/modules/axhal" }
 irq-framework = { version = "0.3.2", path = "components/irq-framework" }
-ktracepoint = { version = "0.6.0", path = "components/ktracepoint" }
 ax-input = { version = "0.6.8", path = "os/arceos/modules/axinput" }
 ax-io = { version = "0.6.4", path = "components/axio" }
 ax-ipi = { version = "0.5.30", path = "os/arceos/modules/axipi" }
@@ -167,6 +166,7 @@ ax-sched = { version = "0.5.8", path = "components/axsched" }
 ax-std = { version = "0.5.31", path = "os/arceos/ulib/axstd", default-features = false }
 ax-sync = { version = "0.5.31", path = "os/arceos/modules/axsync" }
 ax-task = { version = "0.7.0", path = "components/ax-task" }
+ax-tracepoint = { version = "0.6.0", path = "components/ax-tracepoint" }
 axtest = { version = "0.5.14", path = "components/axtest/axtest" }
 axtest-macros = { version = "0.5.14", path = "components/axtest/axtest_macros" }
 xcover = { version = "0.1.3", default-features = false, features = ["alloc"] }

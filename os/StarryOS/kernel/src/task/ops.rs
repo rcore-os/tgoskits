@@ -304,7 +304,7 @@ pub fn exit_robust_list(
 // emission site in `do_exit`, so the event schema and the fast-path call stay
 // together. Registration into the global `.tracepoint` section is by link
 // section, so the definition's module location is immaterial to discovery.
-ktracepoint::define_event_trace!(
+ax_tracepoint::define_event_trace!(
     sched_process_exit,
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(sched),

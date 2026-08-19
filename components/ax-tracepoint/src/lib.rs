@@ -23,21 +23,20 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::{
-    ops::{Deref, DerefMut},
-    sync::atomic::AtomicU32,
-};
+use core::mem::{align_of, size_of};
 
+#[doc(hidden)]
+pub use basic_macro::TraceRecord;
 pub use paste;
 pub use point::{
     CommonTracePointMeta, ExtTracePoint, RawTraceEventFunc, TraceCallbackType, TraceDefaultFunc,
-    TraceEntry, TraceEventFunc, TracePoint,
+    TraceEntry, TraceEventFunc, TraceField, TracePoint,
 };
 pub use tp_lexer;
 use tp_lexer::compile_with_schema;
 pub use trace_pipe::{
-    TraceCmdLineCache, TraceCmdLineCacheSnapshot, TraceEntryParser, TracePipeOps, TracePipeRaw,
-    TracePipeRecord, TracePipeSnapshot,
+    TraceCmdLineCache, TraceCmdLineCacheSnapshot, TraceEntryParser, TraceParseError, TracePipeOps,
+    TracePipeRaw, TracePipeRecord, TracePipeSnapshot,
 };
 
 /// KernelTraceOps trait provides kernel-level operations for tracing.
@@ -81,19 +80,34 @@ impl<K: KernelTraceOps> TracePointMap<K> {
     pub const fn new() -> Self {
         Self(BTreeMap::new())
     }
-}
 
-impl<K: KernelTraceOps> Deref for TracePointMap<K> {
-    type Target = BTreeMap<u32, &'static TracePoint<K>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    /// Returns the tracepoint registered for `id`.
+    pub fn get(&self, id: &u32) -> Option<&'static TracePoint<K>> {
+        self.0.get(id).copied()
     }
-}
 
-impl<K: KernelTraceOps> DerefMut for TracePointMap<K> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+    /// Iterates over tracepoint IDs and descriptors in ID order.
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &'static TracePoint<K>)> + '_ {
+        self.0.iter().map(|(id, tracepoint)| (id, *tracepoint))
+    }
+
+    /// Iterates over tracepoint descriptors in ID order.
+    pub fn values(&self) -> impl Iterator<Item = &'static TracePoint<K>> + '_ {
+        self.0.values().copied()
+    }
+
+    /// Returns the number of registered tracepoints.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns whether the map contains no tracepoints.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn insert(&mut self, id: u32, tracepoint: &'static TracePoint<K>) {
+        self.0.insert(id, tracepoint);
     }
 }
 
@@ -178,6 +192,17 @@ impl<K: KernelTraceOps> TracePointIdFile<K> {
     }
 }
 
+/// An error produced while updating a tracepoint filter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum TraceFilterError {
+    /// The supplied filter expression was empty.
+    #[error("filter expression is empty")]
+    EmptyExpression,
+    /// The supplied filter expression could not be compiled against the event schema.
+    #[error("filter expression failed to compile")]
+    CompileExpression,
+}
+
 /// TraceFilterFile provides a way to set filters on the tracepoint.
 #[derive(Debug)]
 pub struct TraceFilterFile {
@@ -213,15 +238,21 @@ impl TraceFilterFile {
         &mut self,
         ext_tracepoint: &mut ExtTracePoint<K>,
         filter: &str,
-    ) -> Result<(), &'static str> {
-        if filter.as_bytes()[0] == b'0' {
+    ) -> Result<(), TraceFilterError> {
+        let filter = filter.trim();
+        if filter.is_empty() {
+            self.pre_error = Some("filter expression is empty\n".to_string());
+            return Err(TraceFilterError::EmptyExpression);
+        }
+
+        if filter == "0" {
             // clear the filter and pre-error
             self.filter_expr = None;
             self.pre_error = None;
             ext_tracepoint.set_compiled_expr(None);
             Ok(())
         } else {
-            let schema = ext_tracepoint.schema();
+            let schema = ext_tracepoint.trace_point().schema();
             let res = compile_with_schema(filter, *schema);
             match res {
                 Ok(compiled_expr) => {
@@ -233,13 +264,38 @@ impl TraceFilterFile {
                 Err(mut e) => {
                     e.message.push('\n');
                     self.pre_error = Some(e.message);
-                    self.filter_expr = None;
-                    ext_tracepoint.set_compiled_expr(None);
-                    Err("compile error")
+                    Err(TraceFilterError::CompileExpression)
                 }
             }
         }
     }
+}
+
+/// An error produced while discovering linker-collected tracepoints.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum TraceInitError {
+    /// The linker exported the section end before its start.
+    #[error("tracepoint section end precedes its start")]
+    InvalidSectionBounds,
+    /// The linker section start does not satisfy the metadata alignment.
+    #[error("tracepoint section start {address:#x} is not aligned to {alignment} bytes")]
+    MisalignedSection {
+        /// Address exported as `__start_tracepoint`.
+        address: usize,
+        /// Required metadata alignment.
+        alignment: usize,
+    },
+    /// The linker section byte length is not a whole metadata entry count.
+    #[error("tracepoint section size {bytes} is not divisible by entry size {entry_size}")]
+    InvalidSectionSize {
+        /// Section size in bytes.
+        bytes: usize,
+        /// Size of one metadata entry.
+        entry_size: usize,
+    },
+    /// More tracepoints were linked than the 32-bit event ID can represent.
+    #[error("too many tracepoints for a 32-bit event ID")]
+    TooManyTracepoints,
 }
 
 unsafe extern "C" {
@@ -259,39 +315,73 @@ unsafe extern "C" {
 /// [`KernelTraceOps::read_tracepoint_state`] and
 /// [`KernelTraceOps::write_tracepoint_state`] backing registry before enabling
 /// or triggering tracepoints.
+///
+/// The final linker script must define `__start_tracepoint` and
+/// `__stop_tracepoint`, keep all `.tracepoint` input sections between them,
+/// and align the start for [`CommonTracePointMeta`]. The supplied
+/// `my_section.ld` is a reference fragment.
 pub fn global_init_events<K: KernelTraceOps>()
--> Result<(TracePointMap<K>, Vec<ExtTracePoint<K>>), &'static str> {
-    static TRACE_POINT_ID: AtomicU32 = AtomicU32::new(0);
-    let tracepoint_data_start = __start_tracepoint as *mut CommonTracePointMeta<K>;
-    let tracepoint_data_end = __stop_tracepoint as *mut CommonTracePointMeta<K>;
+-> Result<(TracePointMap<K>, Vec<ExtTracePoint<K>>), TraceInitError> {
+    let tracepoint_data_start = __start_tracepoint as *const () as usize;
+    let tracepoint_data_end = __stop_tracepoint as *const () as usize;
     log::info!(
         "tracepoint_data_start: {:#x}, tracepoint_data_end: {:#x}",
-        tracepoint_data_start as usize,
-        tracepoint_data_end as usize
+        tracepoint_data_start,
+        tracepoint_data_end
     );
-    let tracepoint_data_len = (tracepoint_data_end as usize - tracepoint_data_start as usize)
-        / size_of::<CommonTracePointMeta<K>>();
-    let tracepoint_data =
-        unsafe { core::slice::from_raw_parts_mut(tracepoint_data_start, tracepoint_data_len) };
+    let section_bytes = tracepoint_data_end
+        .checked_sub(tracepoint_data_start)
+        .ok_or(TraceInitError::InvalidSectionBounds)?;
+    let metadata_alignment = align_of::<CommonTracePointMeta>();
+    if !tracepoint_data_start.is_multiple_of(metadata_alignment) {
+        return Err(TraceInitError::MisalignedSection {
+            address: tracepoint_data_start,
+            alignment: metadata_alignment,
+        });
+    }
+    let metadata_size = size_of::<CommonTracePointMeta>();
+    if !section_bytes.is_multiple_of(metadata_size) {
+        return Err(TraceInitError::InvalidSectionSize {
+            bytes: section_bytes,
+            entry_size: metadata_size,
+        });
+    }
+    let tracepoint_data_len = section_bytes / metadata_size;
+    // SAFETY: the bounds, alignment, and whole-entry length are checked above.
+    // The macro emits this exact `repr(C)` metadata type into `.tracepoint`,
+    // and the linker contract keeps those entries in the exported range.
+    let linked_metadata = unsafe {
+        core::slice::from_raw_parts(
+            tracepoint_data_start as *const CommonTracePointMeta,
+            tracepoint_data_len,
+        )
+    };
+    let mut tracepoint_data = linked_metadata
+        .iter()
+        .filter(|metadata| metadata.belongs_to::<K>())
+        .collect::<Vec<_>>();
     tracepoint_data.sort_by(|a, b| {
-        a.trace_point
-            .name()
-            .cmp(b.trace_point.name())
-            .then(a.trace_point.system().cmp(b.trace_point.system()))
+        // SAFETY: the iterator above retained only metadata tagged with `K`.
+        let a = unsafe { a.trace_point::<K>() };
+        // SAFETY: the iterator above retained only metadata tagged with `K`.
+        let b = unsafe { b.trace_point::<K>() };
+        a.name().cmp(b.name()).then(a.system().cmp(b.system()))
     });
     log::info!("tracepoint_data_len: {tracepoint_data_len}");
 
     let mut tp_map = TracePointMap::new();
     let mut ext_tps = Vec::with_capacity(tracepoint_data_len);
 
-    for tracepoint_meta in tracepoint_data.iter() {
-        let tracepoint = tracepoint_meta.trace_point;
-        let id = TRACE_POINT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    for (index, tracepoint_meta) in tracepoint_data.into_iter().enumerate() {
+        // SAFETY: `tracepoint_data` contains only metadata tagged with `K`.
+        let tracepoint = unsafe { tracepoint_meta.trace_point::<K>() };
+        let id = u32::try_from(index).map_err(|_| TraceInitError::TooManyTracepoints)?;
         tracepoint.set_id(id);
 
-        let default_callback = Arc::new(TraceDefaultFunc {
-            func: tracepoint_meta.print_func,
-            data: Box::new(()),
+        // SAFETY: `CommonTracePointMeta::new` accepts only the erased default
+        // callback paired with this exact generated tracepoint.
+        let default_callback = Arc::new(unsafe {
+            TraceDefaultFunc::from_erased(tracepoint_meta.print_func(), Box::new(()))
         });
 
         let ext_tracepoint = ExtTracePoint::new(tracepoint, default_callback);

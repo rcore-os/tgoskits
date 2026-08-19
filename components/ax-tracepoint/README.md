@@ -1,4 +1,4 @@
-# ktracepoint
+# ax-tracepoint
 
 A Rust tracepoint library for kernel scenarios, designed with goals similar to Linux tracepoints:
 
@@ -8,7 +8,7 @@ A Rust tracepoint library for kernel scenarios, designed with goals similar to L
 - Provide both raw event buffering and human-readable output
 - no_std compatible
 
-Repository: <https://github.com/Starry-OS/tracepoint>
+Repository: <https://github.com/rcore-os/tgoskits/tree/dev/components/ax-tracepoint>
 
 ## Core Capabilities
 
@@ -24,13 +24,15 @@ Repository: <https://github.com/Starry-OS/tracepoint>
 
 ```toml
 [dependencies]
-ktracepoint = "*"
+ax-tracepoint = "*"
 ```
 
 ### 2. Keep the `.tracepoint` section in your linker script
 
 This library scans event metadata through `__start_tracepoint / __stop_tracepoint`.
 Merge the content of `my_section.ld` into your linker script and ensure the `.tracepoint` section is kept with `KEEP`.
+StarryOS already carries this contract in its kernel linker scripts; other
+hosts must add the equivalent section themselves.
 
 ### 3. Implement `KernelTraceOps`
 
@@ -58,10 +60,14 @@ setting the gate, and clear the gate before retiring the last callback state.
 
 Violating these rules may deadlock. Hosts that implement `read_tracepoint_state` with RCU, snapshots, or another non-blocking read-side mechanism may provide weaker restrictions.
 
+Cooked event callbacks receive `&mut [u8]` for a freshly generated record.
+Each callback owns a distinct record for the duration of the call, so BPF
+adapters can update their context without casting away a shared reference.
+
 ### 4. Define and invoke events
 
 ```rust
-use ktracepoint::{define_event_trace, KernelTraceOps};
+use ax_tracepoint::{define_event_trace, KernelTraceOps};
 
 define_event_trace!(
     TEST,
@@ -78,12 +84,14 @@ define_event_trace!(
 trace_TEST(1, 2);
 ```
 
-Note: `TP_STRUCT__entry` participates in byte layout. Ensure your field layout matches expectations (think in C layout terms).
+Note: `TP_STRUCT__entry` participates in byte layout. Fields must implement
+`TraceField`; the built-in implementations cover integer primitives and arrays
+of trace fields.
 
 ### 5. Initialize the manager
 
 ```rust
-use ktracepoint::global_init_events;
+use ax_tracepoint::global_init_events;
 
 let (tracepoints, ext_tracepoints) = global_init_events::<Kops>()?;
 
@@ -94,7 +102,7 @@ let (tracepoints, ext_tracepoints) = global_init_events::<Kops>()?;
 ### 6. Enable, filter, and consume output
 
 ```rust
-use ktracepoint::{TraceFilterFile, TracePointEnableFile, TracePointFormatFile, TracePointIdFile};
+use ax_tracepoint::{TraceFilterFile, TracePointEnableFile, TracePointFormatFile, TracePointIdFile};
 
 let event_id = 0;
 Kops::write_tracepoint_state(event_id, |event| {
@@ -112,8 +120,7 @@ let id = TracePointIdFile::new(tracepoint).read();
 ## Run the example
 
 ```bash
-cd examples
-cargo run --example usage
+cargo run -p ax-tracepoint --example usage
 ```
 
 Example code is in `examples/usage.rs`, covering:
@@ -129,8 +136,13 @@ Example code is in `examples/usage.rs`, covering:
 - `TracePoint` / `ExtTracePoint` / `TracePointMap`
 - `TracePipeRaw` / `TracePipeSnapshot` / `TracePipeOps`
 - `TraceCmdLineCache` / `TraceEntryParser`
+- `TraceFilterError` / `TraceParseError` / `TraceInitError`
+
+Malformed trace records and rejected filter updates return typed errors. A
+failed filter compilation preserves the previously active compiled filter;
+write exactly `0` (surrounding whitespace is allowed) to clear it.
 
 ## Reference Projects
 
 - DragonOS: <https://github.com/DragonOS-Community/DragonOS/blob/master/kernel/src/debug/tracing/mod.rs>
-- StarryOS: <https://github.com/Starry-OS/StarryOS>
+- TGOSKits StarryOS: <https://github.com/rcore-os/tgoskits/tree/dev/os/StarryOS>

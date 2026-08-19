@@ -1,20 +1,19 @@
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
 use core::{
-    any::Any,
+    any::{Any, TypeId},
     marker::PhantomData,
-    ops::Deref,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
-use tp_lexer::{Compiled, Schema};
+use tp_lexer::{Compiled, FieldClassifier, Schema};
 
-use crate::KernelTraceOps;
+use crate::{KernelTraceOps, TraceParseError};
 
-type TraceEventCallback = dyn Fn(&[u8], &(dyn Any + Send + Sync)) + Send + Sync;
+type TraceEventCallback = dyn Fn(&mut [u8], &(dyn Any + Send + Sync)) + Send + Sync;
 type RawTraceEventCallback = dyn Fn(&[u64], &(dyn Any + Send + Sync)) + Send + Sync;
 
 /// A trace entry structure that holds metadata about a trace event.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct TraceEntry {
     /// The type of the trace event, typically the tracepoint ID.
@@ -46,20 +45,97 @@ impl TraceEntry {
     }
 }
 
-/// CommonTracePointMeta holds metadata for a common tracepoint.
-#[derive(Debug)]
+/// A field type that can be copied from an arbitrary initialized byte buffer.
+///
+/// # Safety
+///
+/// Every bit pattern must be a valid value of the implementing type, the type
+/// must not own resources that require drop, and its object representation
+/// must not contain padding bytes. Generated event encoders copy each field's
+/// complete object representation into a zero-initialized record, while event
+/// formatters perform an unaligned copy from that record.
+pub unsafe trait TraceField: FieldClassifier + Copy {}
+
+macro_rules! impl_trace_field {
+    ($($type:ty),+ $(,)?) => {
+        $(
+            // SAFETY: integer primitives accept every bit pattern, are Copy,
+            // and contain no padding bytes.
+            unsafe impl TraceField for $type {}
+        )+
+    };
+}
+
+impl_trace_field!(i8, i16, i32, i64, i128, isize);
+impl_trace_field!(u8, u16, u32, u64, u128, usize);
+
+// SAFETY: an array is byte-valid, Copy, and padding-free when each element has
+// those properties; arrays do not add padding between elements.
+unsafe impl<T: TraceField, const LEN: usize> TraceField for [T; LEN] {}
+
+/// Linker-collected metadata for one tracepoint.
+#[doc(hidden)]
 #[repr(C)]
-pub struct CommonTracePointMeta<K: KernelTraceOps> {
-    /// A reference to the tracepoint.
-    pub trace_point: &'static TracePoint<K>,
-    /// The print function for the tracepoint.
-    pub print_func: fn(),
+pub struct CommonTracePointMeta {
+    kernel_type_id: fn() -> TypeId,
+    trace_point: *const (),
+    print_func: fn(),
+}
+
+// SAFETY: metadata is immutable after link. `trace_point` is produced only
+// from a shared reference to a `TracePoint<K>`, which is Sync by the
+// `KernelTraceOps: Send + Sync` bound, and function pointers are Sync.
+unsafe impl Sync for CommonTracePointMeta {}
+
+fn kernel_type_id<K: KernelTraceOps>() -> TypeId {
+    TypeId::of::<K>()
+}
+
+impl CommonTracePointMeta {
+    /// Constructs linker metadata from a generated tracepoint callback.
+    ///
+    /// # Safety
+    ///
+    /// `print_func` must be the type-erased form of the default callback
+    /// generated for `trace_point`. It may only be restored to that exact
+    /// signature by the macro that defined the tracepoint.
+    #[doc(hidden)]
+    pub const unsafe fn new<K: KernelTraceOps>(
+        trace_point: &'static TracePoint<K>,
+        print_func: fn(),
+    ) -> Self {
+        Self {
+            kernel_type_id: kernel_type_id::<K>,
+            trace_point: core::ptr::from_ref(trace_point).cast(),
+            print_func,
+        }
+    }
+
+    pub(crate) fn belongs_to<K: KernelTraceOps>(&self) -> bool {
+        (self.kernel_type_id)() == TypeId::of::<K>()
+    }
+
+    /// Restores the tracepoint type recorded by [`Self::belongs_to`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must first verify that `self.belongs_to::<K>()` is true.
+    pub(crate) unsafe fn trace_point<K: KernelTraceOps>(&self) -> &'static TracePoint<K> {
+        // SAFETY: the caller verified the type tag installed from the same
+        // `TracePoint<K>` reference by `new`.
+        unsafe { &*self.trace_point.cast::<TracePoint<K>>() }
+    }
+
+    pub(crate) const fn print_func(&self) -> fn() {
+        self.print_func
+    }
 }
 
 /// A structure representing a registered tracepoint callback function.
 pub struct TraceEventFunc {
     /// The callback function to be called when the tracepoint is hit.
-    /// The function takes a byte slice representing the raw trace entry data and a reference to any associated data.
+    /// The function receives exclusive access to one generated event record
+    /// and a reference to its associated data.
     func: Box<TraceEventCallback>,
     /// The data associated with the callback function.
     data: Box<dyn Any + Send + Sync>,
@@ -77,7 +153,7 @@ impl TraceEventFunc {
     }
 
     /// Calls the callback function with the provided trace entry data.
-    pub fn call(&self, entry: &[u8]) {
+    pub fn call(&self, entry: &mut [u8]) {
         (self.func)(entry, &self.data);
     }
 
@@ -115,10 +191,34 @@ impl RawTraceEventFunc {
 /// A structure representing a registered tracepoint callback function.
 #[derive(Debug)]
 pub struct TraceDefaultFunc {
-    /// The static function pointer for the format function of the tracepoint.
-    pub func: fn(),
-    /// The data associated with the callback function.
-    pub data: Box<dyn Any + Send + Sync>,
+    func: fn(),
+    data: Box<dyn Any + Send + Sync>,
+}
+
+impl TraceDefaultFunc {
+    /// Constructs a callback from a type-erased generated function.
+    ///
+    /// # Safety
+    ///
+    /// `func` must be restored only to the exact callback signature from which
+    /// it was erased. The generated registration and dispatch functions uphold
+    /// this pairing.
+    #[doc(hidden)]
+    pub unsafe fn from_erased(func: fn(), data: Box<dyn Any + Send + Sync>) -> Self {
+        Self { func, data }
+    }
+
+    /// Returns the erased callback pointer for generated dispatch code.
+    #[doc(hidden)]
+    pub const fn erased_func(&self) -> fn() {
+        self.func
+    }
+
+    /// Returns the payload associated with this callback.
+    #[doc(hidden)]
+    pub fn data(&self) -> &(dyn Any + Send + Sync) {
+        self.data.as_ref()
+    }
 }
 
 /// An enum representing the different types of tracepoint callback functions.
@@ -155,7 +255,7 @@ pub struct TracePoint<K: KernelTraceOps> {
     system: &'static str,
     callbacks_enabled: AtomicBool,
     id: AtomicU32,
-    trace_entry_fmt_func: fn(&[u8]) -> String,
+    trace_entry_fmt_func: fn(&[u8]) -> Result<String, TraceParseError>,
     trace_print_func: fn() -> String,
     schema: Schema,
     flags: u8,
@@ -197,14 +297,6 @@ impl<K: KernelTraceOps> core::fmt::Debug for ExtTracePoint<K> {
         f.debug_struct("ExtTracePoint")
             .field("tracepoint", &self.tracepoint)
             .finish()
-    }
-}
-
-impl<K: KernelTraceOps> Deref for ExtTracePoint<K> {
-    type Target = TracePoint<K>;
-
-    fn deref(&self) -> &Self::Target {
-        self.tracepoint
     }
 }
 
@@ -276,7 +368,7 @@ impl<K: KernelTraceOps> TracePoint<K> {
     pub const fn new(
         name: &'static str,
         system: &'static str,
-        fmt_func: fn(&[u8]) -> String,
+        fmt_func: fn(&[u8]) -> Result<String, TraceParseError>,
         trace_print_func: fn() -> String,
         schema: Schema,
     ) -> Self {
@@ -324,7 +416,7 @@ impl<K: KernelTraceOps> TracePoint<K> {
     }
 
     /// Returns the format function for the tracepoint.
-    pub(crate) fn fmt_func(&self) -> fn(&[u8]) -> String {
+    pub(crate) fn fmt_func(&self) -> fn(&[u8]) -> Result<String, TraceParseError> {
         self.trace_entry_fmt_func
     }
 
@@ -355,12 +447,19 @@ impl<K: KernelTraceOps> TracePoint<K> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, string::String, sync::Arc};
+    #![allow(dead_code)]
 
-    use tp_lexer::Schema;
+    extern crate std;
 
-    use super::{ExtTracePoint, TraceCallbackType, TraceDefaultFunc, TracePoint};
-    use crate::KernelTraceOps;
+    use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
+
+    use tp_lexer::{FieldClassifier, Schema};
+
+    use super::{ExtTracePoint, TraceCallbackType, TraceDefaultFunc, TraceEventFunc, TracePoint};
+    use crate::{
+        KernelTraceOps, TraceEntry, TraceEntryParser, TraceParseError, TracePipeRecord,
+        TracePointMap,
+    };
 
     struct TestKernel;
 
@@ -382,8 +481,90 @@ mod tests {
         }
     }
 
-    fn format_entry(_: &[u8]) -> String {
-        String::new()
+    struct OtherKernel;
+
+    impl KernelTraceOps for OtherKernel {
+        fn current_pid() -> u32 {
+            0
+        }
+
+        fn trace_pipe_push_raw_record(_: &[u8]) {}
+
+        fn trace_cmdline_push(_: u32) {}
+
+        fn read_tracepoint_state<R>(_: u32, _: impl FnOnce(&ExtTracePoint<Self>) -> R) -> R {
+            panic!("test has no tracepoint registry")
+        }
+
+        fn write_tracepoint_state<R>(_: u32, _: impl FnOnce(&mut ExtTracePoint<Self>) -> R) -> R {
+            panic!("test has no tracepoint registry")
+        }
+    }
+
+    struct PaddingKernel;
+
+    impl KernelTraceOps for PaddingKernel {
+        fn current_pid() -> u32 {
+            0
+        }
+
+        fn trace_pipe_push_raw_record(_: &[u8]) {}
+
+        fn trace_cmdline_push(_: u32) {}
+
+        fn read_tracepoint_state<R>(_: u32, _: impl FnOnce(&ExtTracePoint<Self>) -> R) -> R {
+            panic!("test has no tracepoint registry")
+        }
+
+        fn write_tracepoint_state<R>(_: u32, _: impl FnOnce(&mut ExtTracePoint<Self>) -> R) -> R {
+            panic!("test has no tracepoint registry")
+        }
+    }
+
+    crate::define_event_trace!(
+        test_kernel_event,
+        TP_kops(TestKernel),
+        TP_system(ax_tracepoint_test),
+        TP_PROTO(value: u32),
+        TP_STRUCT__entry { value: u32 },
+        TP_fast_assign { value: value },
+        TP_ident(entry),
+        TP_printk(format_args!("value={}", entry.value))
+    );
+
+    crate::define_event_trace!(
+        other_kernel_event,
+        TP_kops(OtherKernel),
+        TP_system(ax_tracepoint_test),
+        TP_PROTO(value: u32),
+        TP_STRUCT__entry { value: u32 },
+        TP_fast_assign { value: value },
+        TP_ident(entry),
+        TP_printk(format_args!("value={}", entry.value))
+    );
+
+    crate::define_event_trace!(
+        padded_kernel_event,
+        TP_kops(PaddingKernel),
+        TP_system(ax_tracepoint_test),
+        TP_PROTO(sequence: u64, state: u32),
+        TP_STRUCT__entry {
+            sequence: u64,
+            state: u32,
+        },
+        TP_fast_assign {
+            sequence: sequence,
+            state: state,
+        },
+        TP_ident(entry),
+        TP_printk(format_args!(
+            "sequence={} state={}",
+            entry.sequence, entry.state
+        ))
+    );
+
+    fn format_entry(_: &[u8]) -> Result<String, TraceParseError> {
+        Ok(String::new())
     }
 
     fn print_format() -> String {
@@ -392,13 +573,31 @@ mod tests {
 
     fn default_callback() {}
 
+    static TEST_FIELDS: &[(&str, tp_lexer::FieldType, usize, usize)] =
+        &[("value", u32::FIELD_TYPE, 0, size_of::<u32>())];
+
     static TEST_POINT: TracePoint<TestKernel> = TracePoint::new(
         "callback_gate",
-        "ktracepoint_test",
+        "ax_tracepoint_test",
         format_entry,
         print_format,
-        Schema::new(&[]),
+        Schema::new(TEST_FIELDS),
     );
+
+    #[test]
+    fn cooked_event_callback_receives_an_exclusive_record() {
+        let callback = TraceEventFunc::new(
+            Box::new(|entry, _data| {
+                entry[0] = 0xa5;
+            }),
+            Box::new(()),
+        );
+        let mut record = [0_u8; 1];
+
+        callback.call(&mut record);
+
+        assert_eq!(record, [0xa5]);
+    }
 
     #[test]
     fn callback_state_changes_are_side_effect_free_until_the_owner_publishes_the_gate() {
@@ -426,5 +625,140 @@ mod tests {
 
         state.trace_point().set_callback_gate(false);
         assert!(!published.trace_point().key_is_enabled());
+    }
+
+    #[test]
+    fn linker_discovery_filters_metadata_by_kernel_ops_type() {
+        let (test_points, _) = crate::global_init_events::<TestKernel>().unwrap();
+        let (other_points, _) = crate::global_init_events::<OtherKernel>().unwrap();
+
+        assert_eq!(test_points.len(), 1);
+        assert_eq!(other_points.len(), 1);
+        assert_eq!(
+            test_points.values().next().unwrap().name(),
+            "test_kernel_event"
+        );
+        assert_eq!(
+            other_points.values().next().unwrap().name(),
+            "other_kernel_event"
+        );
+    }
+
+    #[test]
+    fn empty_filter_is_rejected_without_panicking() {
+        let mut state = ExtTracePoint::new(
+            &TEST_POINT,
+            Arc::new(TraceDefaultFunc {
+                func: default_callback,
+                data: Box::new(()),
+            }),
+        );
+        let mut filter = crate::TraceFilterFile::new();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            filter.write(&mut state, "")
+        }));
+
+        assert!(result.is_ok(), "an empty filter must not panic");
+        assert_eq!(
+            result.unwrap(),
+            Err(crate::TraceFilterError::EmptyExpression)
+        );
+    }
+
+    #[test]
+    fn invalid_filter_preserves_the_previous_compiled_expression() {
+        let mut state = ExtTracePoint::new(
+            &TEST_POINT,
+            Arc::new(TraceDefaultFunc {
+                func: default_callback,
+                data: Box::new(()),
+            }),
+        );
+        let mut filter = crate::TraceFilterFile::new();
+
+        assert_eq!(filter.write(&mut state, "value == 1"), Ok(()));
+        assert!(state.get_compiled_expr().is_some());
+        assert_eq!(
+            filter.write(&mut state, "value ??? 1"),
+            Err(crate::TraceFilterError::CompileExpression)
+        );
+        assert!(
+            state.get_compiled_expr().is_some(),
+            "a rejected update must not clear the active filter"
+        );
+    }
+
+    #[test]
+    fn unknown_tracepoint_record_is_rejected_without_panicking() {
+        let header = TraceEntry {
+            common_type: 17,
+            common_flags: 0,
+            common_preempt_count: 0,
+            common_pid: 1,
+        };
+        // SAFETY: `header` is fully initialized and is copied only for the
+        // duration of this statement.
+        let event = unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::from_ref(&header).cast::<u8>(),
+                size_of::<TraceEntry>(),
+            )
+        };
+        let record = TracePipeRecord::new(0, 0, Vec::from(event));
+        let map = TracePointMap::<TestKernel>::new();
+        let cmdlines = crate::TraceCmdLineCache::new(core::num::NonZero::new(1).unwrap());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            TraceEntryParser::parse(&map, &cmdlines, &record)
+        }));
+        assert!(result.is_ok(), "an unknown tracepoint ID must not panic");
+        assert_eq!(
+            result.unwrap(),
+            Err(TraceParseError::UnknownTracepoint { id: 17 })
+        );
+    }
+
+    #[test]
+    fn short_tracepoint_record_is_rejected_before_header_decode() {
+        let record = TracePipeRecord::new(0, 0, Vec::new());
+        let map = TracePointMap::<TestKernel>::new();
+        let cmdlines = crate::TraceCmdLineCache::new(core::num::NonZero::new(1).unwrap());
+
+        assert_eq!(
+            TraceEntryParser::parse(&map, &cmdlines, &record),
+            Err(TraceParseError::RecordTooShort {
+                expected: size_of::<TraceEntry>(),
+                actual: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn generated_record_zeroes_c_layout_padding() {
+        let record = encode_padded_kernel_event_record(
+            TraceEntry {
+                common_type: 7,
+                common_flags: 0,
+                common_preempt_count: 0,
+                common_pid: 11,
+            },
+            0x1122_3344_5566_7788,
+            0xaabb_ccdd,
+        );
+        let padding_start =
+            core::mem::offset_of!(__padded_kernel_event_full_entry, entry.state) + size_of::<u32>();
+        let padding_end = size_of::<__padded_kernel_event_full_entry>();
+
+        assert!(
+            padding_start < padding_end,
+            "the regression layout must contain tail padding"
+        );
+        assert!(
+            record.as_bytes()[padding_start..padding_end]
+                .iter()
+                .all(|byte| *byte == 0),
+            "all bytes exposed to trace callbacks must be initialized"
+        );
     }
 }

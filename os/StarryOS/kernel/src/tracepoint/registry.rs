@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use ktracepoint::{ExtTracePoint, TracePoint};
+use ax_tracepoint::{ExtTracePoint, TracePoint};
 
 use super::KernelTraceAux;
 use crate::{

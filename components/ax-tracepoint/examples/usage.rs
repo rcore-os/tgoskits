@@ -1,7 +1,7 @@
 extern crate alloc;
 use std::{collections::BTreeMap, sync::Arc};
 
-use ktracepoint::{
+use ax_tracepoint::{
     KernelTraceOps, RawTraceEventFunc, TraceCallbackType, TraceCmdLineCache, TraceEntryParser,
     TraceEventFunc, TraceFilterFile, TracePointEnableFile, TracePointMap, global_init_events,
 };
@@ -17,13 +17,13 @@ mod tracepoint_example {
         time,
     };
 
-    use ktracepoint::{ExtTracePoint, TraceCmdLineCache, define_event_trace};
+    use ax_tracepoint::{ExtTracePoint, TraceCmdLineCache, define_event_trace};
 
-    pub static TRACE_RAW_PIPE: Mutex<ktracepoint::TracePipeRaw> =
-        Mutex::new(ktracepoint::TracePipeRaw::new(1024));
+    pub static TRACE_RAW_PIPE: Mutex<ax_tracepoint::TracePipeRaw> =
+        Mutex::new(ax_tracepoint::TracePipeRaw::new(1024));
 
     pub static TRACE_CMDLINE_CACHE: LazyLock<Mutex<TraceCmdLineCache>> = LazyLock::new(|| {
-        Mutex::new(ktracepoint::TraceCmdLineCache::new(
+        Mutex::new(ax_tracepoint::TraceCmdLineCache::new(
             NonZero::new(1024).unwrap(),
         ))
     });
@@ -33,7 +33,7 @@ mod tracepoint_example {
 
     pub struct Kops;
 
-    impl ktracepoint::KernelTraceOps for Kops {
+    impl ax_tracepoint::KernelTraceOps for Kops {
         fn current_pid() -> u32 {
             0xff
         }
@@ -140,13 +140,14 @@ fn print_trace_records(
     tracepoint_map: &TracePointMap<Kops>,
     trace_cmdline_cache: &TraceCmdLineCache,
 ) {
-    use ktracepoint::TracePipeOps;
+    use ax_tracepoint::TracePipeOps;
     let mut snapshot = TRACE_RAW_PIPE.lock().unwrap().snapshot();
     print!("{}", snapshot.default_fmt_str());
     loop {
         let mut flag = false;
         if let Some(event) = snapshot.peek() {
-            let trace_str = TraceEntryParser::parse(tracepoint_map, trace_cmdline_cache, event);
+            let trace_str = TraceEntryParser::parse(tracepoint_map, trace_cmdline_cache, event)
+                .expect("example emitted an invalid trace record");
             print!("{}", trace_str);
             flag = true;
         }
@@ -188,7 +189,7 @@ fn main() {
 
     let ext_tps = ext_tps
         .into_iter()
-        .map(|ext_tp| (ext_tp.id(), ext_tp))
+        .map(|ext_tp| (ext_tp.trace_point().id(), ext_tp))
         .collect::<BTreeMap<_, _>>();
 
     *EXT_TRACEPOINTS.write().unwrap() = ext_tps;

@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
+use ax_tracepoint::TraceCmdLineCacheSnapshot;
 use axfs_ng_vfs::VfsResult;
-use ktracepoint::TraceCmdLineCacheSnapshot;
 
 use crate::{pseudofs::DirectRwFsFileOps, sync::PiMutex};
 

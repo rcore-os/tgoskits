@@ -5,6 +5,33 @@ use lru::LruCache;
 
 use crate::{KernelTraceOps, TraceEntry, TracePointMap};
 
+/// An error produced while decoding a trace pipe record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum TraceParseError {
+    /// The record does not contain a complete common trace header.
+    #[error("trace record is too short: expected at least {expected} bytes, got {actual}")]
+    RecordTooShort {
+        /// Minimum number of bytes required.
+        expected: usize,
+        /// Number of bytes supplied.
+        actual: usize,
+    },
+    /// The record names an event ID that is absent from the tracepoint map.
+    #[error("unknown tracepoint ID {id}")]
+    UnknownTracepoint {
+        /// Event ID read from the common trace header.
+        id: u32,
+    },
+    /// The event-specific payload is shorter than its generated entry layout.
+    #[error("trace payload is too short: expected at least {expected} bytes, got {actual}")]
+    PayloadTooShort {
+        /// Minimum number of bytes required.
+        expected: usize,
+        /// Number of bytes supplied.
+        actual: usize,
+    },
+}
+
 /// A trace pipe record with host-provided metadata captured when the event is written.
 #[derive(Clone, Debug)]
 pub struct TracePipeRecord {
@@ -217,9 +244,10 @@ impl TraceCmdLineCache {
         self.cmdline
             .iter()
             .find(|(key, _)| **key == id)
-            .map(|(_, value)| {
+            .and_then(|(_, value)| {
                 let line = value.as_str();
-                line.split_once(' ').unwrap().1.trim_end_matches('\n')
+                line.split_once(' ')
+                    .map(|(_, command)| command.trim_end_matches('\n'))
             })
     }
 
@@ -279,14 +307,25 @@ impl TraceEntryParser {
         tracepoint_map: &TracePointMap<K>,
         cmdline_cache: &TraceCmdLineCache,
         record: &TracePipeRecord,
-    ) -> String {
+    ) -> Result<String, TraceParseError> {
         let entry = record.event();
-        let trace_entry = unsafe { &*(entry.as_ptr() as *const TraceEntry) };
+        let header_len = core::mem::size_of::<TraceEntry>();
+        if entry.len() < header_len {
+            return Err(TraceParseError::RecordTooShort {
+                expected: header_len,
+                actual: entry.len(),
+            });
+        }
+        // SAFETY: the length check covers the complete C-layout header;
+        // `TraceEntry` contains only integer fields, so every bit pattern is
+        // valid, and `read_unaligned` does not require Vec<u8> alignment.
+        let trace_entry = unsafe { core::ptr::read_unaligned(entry.as_ptr().cast::<TraceEntry>()) };
         let id = trace_entry.common_type as u32;
-        let tracepoint = tracepoint_map.get(&id).expect("TracePoint not found");
+        let tracepoint = tracepoint_map
+            .get(&id)
+            .ok_or(TraceParseError::UnknownTracepoint { id })?;
         let fmt_func = tracepoint.fmt_func();
-        let offset = core::mem::size_of::<TraceEntry>();
-        let str = fmt_func(&entry[offset..]);
+        let str = fmt_func(&entry[header_len..])?;
 
         let time = record.timestamp();
         let cpu_id = record.cpu_id();
@@ -300,7 +339,7 @@ impl TraceEntryParser {
         let secs = time / 1_000_000_000;
         let usec_rem = time % 1_000_000_000 / 1000;
 
-        format!(
+        Ok(format!(
             "{:>16}-{:<7} [{:03}] {} {:5}.{:06}: {}({})\n",
             pname,
             pid,
@@ -310,6 +349,6 @@ impl TraceEntryParser {
             usec_rem,
             tracepoint.name(),
             str
-        )
+        ))
     }
 }

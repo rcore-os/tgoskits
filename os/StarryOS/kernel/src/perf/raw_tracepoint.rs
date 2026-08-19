@@ -3,7 +3,7 @@
 //! the raw `&[u64]` args slice instead of the cooked text record.
 //!
 //! Adapted from `Starry-OS/StarryOS:ebpf-kmod`
-//! (`kernel/src/perf/raw_tracepoint.rs`) to ktracepoint 0.6:
+//! (`kernel/src/perf/raw_tracepoint.rs`) to ax-tracepoint 0.6:
 //! `RawTraceEventFunc::new(closure, data)` replaces the trait-object
 //! callback, and registration goes through
 //! `ExtTracePoint::register(TraceCallbackType::RawEvent(...))`.
@@ -11,9 +11,9 @@
 use alloc::{borrow::Cow, boxed::Box, sync::Arc};
 use core::any::Any;
 
+use ax_tracepoint::{RawTraceEventFunc, TraceCallbackType};
 use axpoll::Pollable;
 use kbpf_basic::raw_tracepoint::BpfRawTracePointArg;
-use ktracepoint::{RawTraceEventFunc, TraceCallbackType};
 
 use crate::{
     StarryError, StarryResult,
@@ -108,7 +108,9 @@ impl RawTracepointPerfEvent {
             }
         });
         let callback = Arc::new(RawTraceEventFunc::new(func, ctx));
-        ext_tp.update(|ext_tp| ext_tp.register(TraceCallbackType::RawEvent(callback.clone())));
+        ext_tp.update(|state| {
+            state.register(TraceCallbackType::RawEvent(callback.clone()));
+        });
         Ok(Self { ext_tp, callback })
     }
 }
