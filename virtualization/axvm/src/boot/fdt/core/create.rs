@@ -58,6 +58,10 @@ pub(crate) fn create_guest_fdt(
     let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
         policy.should_keep(node_id, path, node)
     })?;
+    // With vCPU over-subscription (more guest vCPUs than host physical CPUs)
+    // the host FDT does not carry a CPU node for every guest virtual CPU id,
+    // so clone the missing ones to keep the guest SMP bootstrap functional.
+    guest_tree.ensure_guest_cpu_nodes(fdt, phys_cpu_ids)?;
     prune_dangling_interrupts_extended(fdt, &mut guest_tree)?;
     Ok(guest_tree.finish())
 }
