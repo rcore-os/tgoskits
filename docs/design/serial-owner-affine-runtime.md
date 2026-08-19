@@ -89,15 +89,19 @@ Early -> Preparing -> Runtime
 ```
 
 `Preparing` 首先阻止新的 early RX、TX 和 IRQ 寄存器访问，再等待已经进入的 early 访问
-退出。只有 UART startup/config、IRQ 注册和 runtime 输出路由全部成功后才提交 `Runtime`。
-提交前失败必须撤销已完成步骤；能证明寄存器已恢复时回到 `Early`，否则进入
-`FailedClosed`。后者吞掉输出并禁止输入，避免双 owner 再次触碰未知硬件状态。
+退出。probe 只建立 dormant runtime、注册保持 disabled 的 controller IRQ，不写任何 UART
+寄存器。精确匹配的 firmware console 已经完成线路、FIFO 和波特率配置，handoff 因而直接
+adopt 该状态：只 mask device-local source、启用已注册的 IRQ action 并发布 runtime 输出路由，
+不调用普通串口的 `startup()`，也不清 `UARTEN` 或等待正在按线速排空的 TX FIFO。只有这些
+步骤全部成功后才提交 `Runtime`；其他非 console UART 仍在显式 open 时执行 startup/config。
+提交前失败必须撤销已完成步骤；adopt 尚未改变线路配置时可回到 `Early`，硬件状态无法证明
+时才进入 `FailedClosed`。后者吞掉输出并禁止输入，避免双 owner 再次触碰未知硬件状态。
 
 当 runtime 同时具备 `irq + multitask` 时，公共层自动在 scheduler、IRQ、设备探测和 serial
 worker 就绪后、但在第一个 AP 启动前尝试接管，不再要求 OS 配置 `serial` 或
 `runtime-console` feature。firmware 给出硬件 `DeviceId` 时只接受精确匹配；只有
 `NotSpecified` 才按统一 `ttyS` 编号回退到 `ttyS0`。若没有探测到匹配的 runtime UART，
-保持原始 HAL 为唯一 owner；只有已经进入 `Preparing` 后启动、配置或提交失败，才执行
+保持原始 HAL 为唯一 owner；只有已经进入 `Preparing` 后 adopt、IRQ 启用或提交失败，才执行
 rollback 或进入 `FailedClosed`。成功提交后禁止 SMP 阶段重新落回 early UART。
 
 panic/FIQ 不反向调用 platform/runtime callback，也不借用 control endpoint。首次接管使用

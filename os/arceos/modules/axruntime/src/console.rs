@@ -14,8 +14,6 @@ use axpoll::PollSet;
 pub use crate::serial::RxItem;
 use crate::{RuntimeError, RuntimeResult, raw_console::RawConsoleInput, serial, sync::SpinLock};
 
-const DEFAULT_BAUDRATE: u32 = 115_200;
-
 static ACTIVATION: OnceLock<ConsoleActivation> = OnceLock::new();
 // Task writers take these in order. Log publishers take only the hardware
 // lock, so early CPUs and interrupt context never touch task-owned state.
@@ -46,7 +44,7 @@ pub enum ConsoleUnavailable {
     SelectedDeviceNotFound,
     NoTtyS0Fallback,
     HandoffFailed,
-    RuntimeStartFailed,
+    RuntimeAdoptFailed,
     LogRoutingBusy,
 }
 
@@ -73,24 +71,11 @@ pub(crate) fn activate_before_smp() -> ConsoleActivation {
     if runtime.begin_console_handoff().is_err() {
         return fail_closed(ConsoleUnavailable::HandoffFailed);
     }
-    let baudrate = match runtime.info().initial_baudrate {
-        0 => DEFAULT_BAUDRATE,
-        baudrate => baudrate,
-    };
-    if runtime
-        .start_prepared_console(
-            serial::Config::new()
-                .baudrate(baudrate)
-                .data_bits(serial::DataBits::Eight)
-                .stop_bits(serial::StopBits::One)
-                .parity(serial::Parity::None),
-        )
-        .is_err()
-    {
-        // A recoverable start failure may already have restored early
+    if runtime.adopt_prepared_console().is_err() {
+        // A recoverable adopt failure may already have restored early
         // ownership, but SMP is about to start. Close that path permanently
         // rather than letting later CPUs resume unsynchronized early access.
-        return fail_closed(ConsoleUnavailable::RuntimeStartFailed);
+        return fail_closed(ConsoleUnavailable::RuntimeAdoptFailed);
     }
     if let Err(error) = runtime.commit_console_handoff() {
         let reason = if error == RuntimeError::SerialConsoleBusy {

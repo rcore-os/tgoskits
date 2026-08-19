@@ -9,6 +9,7 @@ pub(super) const CONTROL_QUEUE_CAPACITY: usize = 32;
 
 pub(super) enum ControlOp {
     Start(Config),
+    AdoptFirmwareConsole,
     Shutdown,
     SetConfig(Config),
     DiscardRx,

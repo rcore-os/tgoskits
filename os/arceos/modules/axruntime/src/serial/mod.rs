@@ -266,20 +266,21 @@ impl SerialRuntimeHandle {
         Ok(())
     }
 
-    /// Starts a console whose low-level path is already in `Preparing`.
+    /// Adopts the already-running firmware console while the platform path is
+    /// in `Preparing`.
     ///
-    /// Configuration failures are recoverable because UART `startup()` must
-    /// restore its pre-call register state. Failures after successful hardware
-    /// configuration fail closed because the former early state is uncertain.
-    pub(crate) fn start_prepared_console(&self, config: Config) -> RuntimeResult {
-        match self.start(config) {
+    /// The worker preserves the firmware line/FIFO configuration and only
+    /// masks device-local sources before enabling its registered IRQ action.
+    /// A queue or IRQ-enable failure is therefore recoverable: early polling
+    /// output remains usable and the platform handoff can roll back.
+    pub(crate) fn adopt_prepared_console(&self) -> RuntimeResult {
+        match self
+            .shared
+            .control
+            .submit(ControlOp::AdoptFirmwareConsole, &self.shared.bridge.notify)
+        {
             Ok(()) => Ok(()),
-            Err(error @ RuntimeError::SerialConfig(ConfigError::RegisterError)) => {
-                ax_hal::console::fail_runtime_handoff_closed();
-                Err(error)
-            }
-            Err(error @ RuntimeError::SerialConfig(_))
-            | Err(error @ RuntimeError::SerialControlBusy) => {
+            Err(error @ RuntimeError::SerialControlBusy) | Err(error @ RuntimeError::Irq(_)) => {
                 if ax_hal::console::rollback_runtime_handoff().is_err() {
                     ax_hal::console::fail_runtime_handoff_closed();
                 }
@@ -733,12 +734,10 @@ fn build_runtime(
 ) -> RuntimeResult<SerialRuntimeHandle> {
     let SerialDevice {
         info,
-        mut port,
+        port,
         mut irq,
         register_gate,
     } = serial;
-    port.mask_all();
-
     let polling = info.irq.is_none();
     let bridge = Arc::new(RuntimeIrqBridge::new());
     let stats = Arc::new(SerialStatsAtomic::new());

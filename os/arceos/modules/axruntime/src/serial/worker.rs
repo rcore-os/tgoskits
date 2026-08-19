@@ -202,7 +202,12 @@ impl SerialWorker {
         let mut force_service = false;
         let result = match &command.op {
             ControlOp::Start(config) => {
-                let result = self.start_port(config);
+                let result = self.start_port(PortStart::Configure(config));
+                force_service |= result.is_ok();
+                result
+            }
+            ControlOp::AdoptFirmwareConsole => {
+                let result = self.start_port(PortStart::AdoptFirmwareConsole);
                 force_service |= result.is_ok();
                 result
             }
@@ -225,22 +230,17 @@ impl SerialWorker {
         force_service
     }
 
-    fn start_port(&mut self, config: &Config) -> RuntimeResult {
+    fn start_port(&mut self, start: PortStart<'_>) -> RuntimeResult {
         if self.shared.started() {
             return Ok(());
         }
         self.shared
-            .with_port(|port| {
-                port.startup(config)?;
-                port.mask_all();
-                Ok::<(), rdif_serial::ConfigError>(())
-            })
+            .with_port(|port| prepare_port_for_start(port, start))
             .ok_or(RuntimeError::SerialNotStarted)??;
         if let Err(err) = self.shared.enable_irq() {
-            self.shared.with_port(|port| {
-                port.mask_all();
-                port.shutdown();
-            });
+            self.shared.disable_irq();
+            self.shared
+                .with_port(|port| rollback_failed_port_start(port, start));
             return Err(err);
         }
         self.shared.ingress.start_accepting();
@@ -640,6 +640,31 @@ impl SerialWorker {
     }
 }
 
+#[derive(Clone, Copy)]
+enum PortStart<'a> {
+    Configure(&'a Config),
+    AdoptFirmwareConsole,
+}
+
+fn prepare_port_for_start(
+    port: &mut dyn rdif_serial::UartPort,
+    start: PortStart<'_>,
+) -> Result<(), rdif_serial::ConfigError> {
+    match start {
+        PortStart::Configure(config) => port.startup(config)?,
+        PortStart::AdoptFirmwareConsole => {}
+    }
+    port.mask_all();
+    Ok(())
+}
+
+fn rollback_failed_port_start(port: &mut dyn rdif_serial::UartPort, start: PortStart<'_>) {
+    if matches!(start, PortStart::Configure(_)) {
+        port.mask_all();
+        port.shutdown();
+    }
+}
+
 fn tx_rearm_sources(mut sources: SerialEventSet, tx_work_pending: bool) -> SerialEventSet {
     if !tx_work_pending {
         sources.remove(SerialEventSet::TX_SPACE);
@@ -813,6 +838,56 @@ mod tests {
         source_pending: Arc<AtomicBool>,
     }
 
+    #[derive(Default)]
+    struct FirmwareConsolePort {
+        startup_called: bool,
+        mask_all_called: bool,
+        shutdown_called: bool,
+    }
+
+    impl rdif_serial::UartPort for FirmwareConsolePort {
+        fn startup(&mut self, _config: &Config) -> Result<(), ConfigError> {
+            self.startup_called = true;
+            Ok(())
+        }
+
+        fn shutdown(&mut self) {
+            self.shutdown_called = true;
+        }
+
+        fn set_config(&mut self, _config: &Config) -> Result<(), ConfigError> {
+            Ok(())
+        }
+
+        fn read_rx(&mut self) -> Option<RxSample> {
+            None
+        }
+
+        fn discard_rx(&mut self) {}
+
+        fn write_tx(&mut self, _bytes: &[u8]) -> usize {
+            0
+        }
+
+        fn discard_tx(&mut self) -> bool {
+            false
+        }
+
+        fn tx_idle(&mut self) -> bool {
+            true
+        }
+
+        fn mask(&mut self, _sources: SerialEventSet) {}
+
+        fn mask_all(&mut self) {
+            self.mask_all_called = true;
+        }
+
+        fn rearm(&mut self, _sources: SerialEventSet) -> SerialEventSet {
+            SerialEventSet::empty()
+        }
+    }
+
     impl rdif_serial::UartPort for SourcePort {
         fn startup(&mut self, _config: &Config) -> Result<(), ConfigError> {
             Ok(())
@@ -889,6 +964,48 @@ mod tests {
         assert_eq!(event.events, SerialEventSet::TX_SPACE);
         assert!(event.rx_errors.is_empty());
         assert_eq!(event.rearm, SerialEventSet::TX_SPACE);
+    }
+
+    #[test]
+    fn firmware_console_adoption_does_not_reinitialize_working_uart() {
+        let mut port = FirmwareConsolePort::default();
+
+        prepare_port_for_start(&mut port, PortStart::AdoptFirmwareConsole).unwrap();
+
+        assert!(!port.startup_called);
+        assert!(port.mask_all_called);
+    }
+
+    #[test]
+    fn ordinary_serial_start_still_initializes_the_port() {
+        let mut port = FirmwareConsolePort::default();
+        let config = Config::new().baudrate(230_400);
+
+        prepare_port_for_start(&mut port, PortStart::Configure(&config)).unwrap();
+
+        assert!(port.startup_called);
+        assert!(port.mask_all_called);
+    }
+
+    #[test]
+    fn failed_adoption_keeps_the_firmware_uart_running_for_rollback() {
+        let mut port = FirmwareConsolePort::default();
+
+        rollback_failed_port_start(&mut port, PortStart::AdoptFirmwareConsole);
+
+        assert!(!port.mask_all_called);
+        assert!(!port.shutdown_called);
+    }
+
+    #[test]
+    fn failed_ordinary_start_shuts_the_initialized_uart_down() {
+        let mut port = FirmwareConsolePort::default();
+        let config = Config::new();
+
+        rollback_failed_port_start(&mut port, PortStart::Configure(&config));
+
+        assert!(port.mask_all_called);
+        assert!(port.shutdown_called);
     }
 
     #[test]

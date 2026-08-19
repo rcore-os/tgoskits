@@ -24,6 +24,8 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - When `ax-runtime` has both `irq` and `multitask`, initialize the scheduler and IRQ framework,
   probe UARTs, create owner-affine serial workers, and attempt the common runtime-console handoff
   before releasing any secondary CPU. Do not add a separate `serial` or `runtime-console` feature.
+  Probe must leave every runtime dormant: registering a disabled controller IRQ is allowed, but do
+  not mask, reset, or reconfigure any UART until that runtime is selected or explicitly opened.
 - If no matching runtime UART was discovered, keep the raw HAL console as the sole owner and expose
   output through the same task-console capability; consumers must not maintain their own fallback
   state. Raw task input is valid only when the HAL console exposes an IRQ: the common layer drains
@@ -38,7 +40,12 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   common Linux-compatible `ttyS0` numbering. A missing match before `Preparing` retains the raw HAL
   owner; it must not guess a different runtime UART. Fail closed only after a handoff has begun and
   hardware state can no longer be proven restored.
-- Keep `begin -> start -> commit` and rollback/fail-closed policy inside `ax-runtime::console`.
+- Keep `begin -> adopt -> commit` and rollback/fail-closed policy inside `ax-runtime::console`.
+  The exact firmware-selected console is already running, so adopt its line, baud, FIFO, and enable
+  state without calling the ordinary serial `startup()` path. Mask only its device-local sources,
+  enable the pre-registered IRQ action, then publish routing. This avoids iteration-count BUSY waits
+  whose wall-clock duration changes between QEMU and a fast physical CPU. Non-console UARTs still
+  run normal startup/configuration on their explicit open lifecycle.
   ArceOS, StarryOS, and Axvisor adapters must not maintain separate console-selection or handoff
   state.
 - A secondary CPU may publish complete startup log records after installing its per-CPU area but
