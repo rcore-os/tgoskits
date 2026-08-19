@@ -42,6 +42,11 @@ fn exit_path_completion_precedes_task_transfer() {
 }
 
 #[axtest]
+fn reaped_process_handle_retains_exact_identity() {
+    ax_assert!(axtest_exports::reaped_process_handle_retains_exact_identity());
+}
+
+#[axtest]
 fn task_exit_transaction_holds_membership_lock() {
     ax_assert!(axtest_exports::task_exit_transaction_holds_membership_lock());
 }

@@ -15,9 +15,9 @@ use crate::{
     task::{
         JobStatus, PgidNumber, PidIdentity, PidIdentityId, PidNumber, Process, ProcessData,
         ProcessGroup, ROOT_PID_NS, Tgid, Tid, TidNumber, current_pid_view, decode_wait_status,
-        future::block_on_user, get_process_data_by_number, get_task_by_number, get_zombie_cred,
-        is_reaped_process, is_zombie_clone_child, is_zombie_process, processes, reap_process,
-        traced_zombies_for, wait_on_pollset, zombie_wait_parent_tid,
+        future::block_on_user, get_task_by_number, get_zombie_cred, is_reaped_process,
+        is_zombie_clone_child, is_zombie_process, processes, reap_process, traced_zombies_for,
+        wait_on_pollset, zombie_wait_parent_tid,
     },
 };
 
@@ -235,7 +235,7 @@ fn stopped_wait_status(data: &ProcessData, signo: Signo) -> i32 {
 }
 
 fn child_uid(child: &Process) -> u32 {
-    get_zombie_cred(child.pid_number())
+    get_zombie_cred(child)
         .map(|cred| cred.uid)
         .or_else(|| {
             child.threads().into_iter().find_map(|tid| {
@@ -281,19 +281,21 @@ impl WaitChildFilter {
 
     fn matches_process(&self, child: &Process, current_tid: TidNumber) -> bool {
         if self.no_thread {
-            let wait_parent_tid = get_process_data_by_number(child.pid_number())
-                .ok()
+            let wait_parent_tid = child
+                .identity()
+                .live_data()
                 .map(|data| data.wait_parent_tid())
-                .or_else(|| zombie_wait_parent_tid(child.pid_number()));
+                .or_else(|| zombie_wait_parent_tid(child));
             if wait_parent_tid != Some(current_tid) {
                 return false;
             }
         }
 
-        let is_clone_child = get_process_data_by_number(child.pid_number())
-            .ok()
+        let is_clone_child = child
+            .identity()
+            .live_data()
             .map(|data| data.is_clone_child())
-            .or_else(|| is_zombie_clone_child(child.pid_number()))
+            .or_else(|| is_zombie_clone_child(child))
             .unwrap_or(false);
         self.matches_clone_kind(is_clone_child)
     }
@@ -409,17 +411,15 @@ pub fn sys_waitpid(
         // waiter is blocked.
         let children = candidate_scan.collect();
         if let Some((child, data, stop_tid, signo)) = children.iter().find_map(|child| {
-            get_process_data_by_number(child.pid_number())
-                .ok()
-                .and_then(|data| {
-                    let preferred_tid = target.ptrace_preferred_stop_tid(child);
-                    let stop = if target.ptrace_requires_exact_stop(child) {
-                        preferred_tid.and_then(|tid| data.ptrace_unreported_stop_for(tid))
-                    } else {
-                        data.ptrace_unreported_stop(preferred_tid)
-                    };
-                    stop.map(|(stop_tid, signo)| (child, data, stop_tid, signo))
-                })
+            child.identity().live_data().and_then(|data| {
+                let preferred_tid = target.ptrace_preferred_stop_tid(child);
+                let stop = if target.ptrace_requires_exact_stop(child) {
+                    preferred_tid.and_then(|tid| data.ptrace_unreported_stop_for(tid))
+                } else {
+                    data.ptrace_unreported_stop(preferred_tid)
+                };
+                stop.map(|(stop_tid, signo)| (child, data, stop_tid, signo))
+            })
         }) {
             data.select_ptrace_stop(stop_tid);
             let wait_pid = target.ptrace_report_pid(child, &data);
@@ -451,7 +451,7 @@ pub fn sys_waitpid(
         let want_continued = options.contains(WaitPidOptions::WCONTINUED);
         if want_stopped || want_continued {
             for child in &children {
-                let Ok(cdata) = get_process_data_by_number(child.pid_number()) else {
+                let Some(cdata) = child.identity().live_data() else {
                     continue;
                 };
                 if let Some(status) = cdata.peek_job_status_if(want_stopped, want_continued) {
@@ -552,17 +552,15 @@ pub fn sys_waitid(
         let children = candidate_scan.collect();
         if options.contains(WaitIdOptions::WUNTRACED)
             && let Some((child, data, stop_tid, signo)) = children.iter().find_map(|child| {
-                get_process_data_by_number(child.pid_number())
-                    .ok()
-                    .and_then(|data| {
-                        let preferred_tid = target.ptrace_preferred_stop_tid(child);
-                        let stop = if target.ptrace_requires_exact_stop(child) {
-                            preferred_tid.and_then(|tid| data.ptrace_unreported_stop_for(tid))
-                        } else {
-                            data.ptrace_unreported_stop(preferred_tid)
-                        };
-                        stop.map(|(stop_tid, signo)| (child, data, stop_tid, signo))
-                    })
+                child.identity().live_data().and_then(|data| {
+                    let preferred_tid = target.ptrace_preferred_stop_tid(child);
+                    let stop = if target.ptrace_requires_exact_stop(child) {
+                        preferred_tid.and_then(|tid| data.ptrace_unreported_stop_for(tid))
+                    } else {
+                        data.ptrace_unreported_stop(preferred_tid)
+                    };
+                    stop.map(|(stop_tid, signo)| (child, data, stop_tid, signo))
+                })
             })
         {
             let child_pid = target.ptrace_report_pid(child, &data);
@@ -589,7 +587,7 @@ pub fn sys_waitid(
         let want_continued = options.contains(WaitIdOptions::WCONTINUED);
         if want_stopped || want_continued {
             for child in &children {
-                let Ok(data) = get_process_data_by_number(child.pid_number()) else {
+                let Some(data) = child.identity().live_data() else {
                     continue;
                 };
                 if let Some(status) = data.peek_job_status_if(want_stopped, want_continued) {

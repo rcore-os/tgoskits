@@ -9,8 +9,9 @@ use starry_signal::{SignalInfo, Signo};
 
 use super::{
     AlarmTarget, AlarmToken, PendingTimerActions, ProcessData, Thread, TimerState, UserTaskRef,
-    ZombieSnapshot, current_user_task, get_process_data_by_number, processes, publish_zombie,
-    resolve_futex_for_process_teardown, send_signal_to_process, send_signal_to_thread, yield_now,
+    ZombieSnapshot, current_user_task, processes, publish_zombie,
+    resolve_futex_for_process_teardown, send_signal_to_process, send_signal_to_process_data,
+    send_signal_to_thread, yield_now,
 };
 use crate::{
     StarryError, StarryResult,
@@ -546,7 +547,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             },
         )
         .expect("last process thread must own one live PID identity");
-        if let Some(parent) = process.parent() {
+        if let Some(parent) = process.parent()
+            && let Some(parent_data) = parent.identity().live_data()
+        {
             if let Some(signo) = thr.proc_data.exit_signal() {
                 use starry_signal::Signo;
 
@@ -575,12 +578,10 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 } else {
                     SignalInfo::new_kernel(signo)
                 };
-                let _ = send_signal_to_process(parent.pid_number(), Some(sig));
+                let _ = send_signal_to_process_data(&parent_data, Some(sig));
             }
-            if let Ok(data) = get_process_data_by_number(parent.pid_number()) {
-                // Child exit state is published before waking waiters.
-                unsafe { data.child_exit_event().wake(axpoll::IoEvents::IN) };
-            }
+            // Child exit state is published before waking waiters.
+            unsafe { parent_data.child_exit_event().wake(axpoll::IoEvents::IN) };
         }
         if let Some(tracer) = ptrace_tracer
             && process
@@ -628,11 +629,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // completion instead of the early runtime-link detach, mirroring Linux's
     // `pid_allocated` drop in `free_pid()` — never before `do_notify_parent()`.
     exit_path.complete();
-    if is_process_leader {
-        thr.proc_data.complete_retired_leader_exit_path();
-    }
-    // Exec waits on this channel for both thread-group removal and the retired
-    // leader's completed exit path. Publish both conditions before waking it.
+    // Exec observes transfer readiness from the exact retained PID identity.
+    // Wake after completing that identity-owned exit path.
     unsafe { thr.proc_data.thread_exit_event().wake(axpoll::IoEvents::IN) };
 }
 

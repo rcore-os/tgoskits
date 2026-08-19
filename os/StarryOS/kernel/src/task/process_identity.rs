@@ -51,11 +51,6 @@ pub(crate) fn get_process_data_by_number(tgid: TgidNumber) -> StarryResult<Arc<P
         .ok_or(StarryError::NoSuchProcess)
 }
 
-fn process_identity(process: &Arc<Process>) -> Option<Arc<PidIdentity>> {
-    let identity = root_identity(process.pid_number()).ok()?;
-    identity.matches_process(process).then_some(identity)
-}
-
 pub(crate) fn publish_zombie(
     proc_data: &Arc<ProcessData>,
     zombie: ZombieSnapshot,
@@ -70,7 +65,7 @@ pub(crate) fn publish_zombie(
 /// only after topology retirement, outside its locks, so the number cannot be
 /// reused mid-retire.
 pub(crate) fn reap_process(process: &Arc<Process>) -> Option<ProcessCpuTime> {
-    let identity = process_identity(process)?;
+    let identity = process.identity();
     let zombie = identity.claim_reap(process)?;
 
     #[cfg(any(test, axtest))]
@@ -92,15 +87,15 @@ pub(crate) fn reap_process(process: &Arc<Process>) -> Option<ProcessCpuTime> {
 }
 
 pub(crate) fn is_zombie_process(process: &Arc<Process>) -> bool {
-    process_identity(process).is_some_and(|identity| identity.is_zombie())
+    process.identity().is_zombie()
 }
 
 pub(crate) fn is_reaped_process(process: &Arc<Process>) -> bool {
-    process_identity(process).is_none_or(|identity| identity.is_reaped())
+    process.identity().is_reaped()
 }
 
 fn is_live_process(process: &Arc<Process>) -> bool {
-    process_identity(process).is_some_and(|identity| identity.live_data().is_some())
+    process.identity().live_data().is_some()
 }
 
 pub(crate) fn orphan_reaper_for(process: &Arc<Process>) -> Arc<Process> {
@@ -132,21 +127,21 @@ pub(crate) fn orphan_reaper_for(process: &Arc<Process>) -> Arc<Process> {
     namespace_init
 }
 
-pub fn get_zombie_cred(tgid: TgidNumber) -> Option<Arc<Cred>> {
-    root_identity(tgid)
-        .ok()?
+pub(crate) fn get_zombie_cred(process: &Process) -> Option<Arc<Cred>> {
+    process
+        .identity()
         .zombie_snapshot(|zombie| zombie.cred.clone())
 }
 
-pub(crate) fn is_zombie_clone_child(tgid: TgidNumber) -> Option<bool> {
-    root_identity(tgid)
-        .ok()?
+pub(crate) fn is_zombie_clone_child(process: &Process) -> Option<bool> {
+    process
+        .identity()
         .zombie_snapshot(|zombie| zombie.is_clone_child)
 }
 
-pub(crate) fn zombie_wait_parent_tid(tgid: TgidNumber) -> Option<TidNumber> {
-    root_identity(tgid)
-        .ok()?
+pub(crate) fn zombie_wait_parent_tid(process: &Process) -> Option<TidNumber> {
+    process
+        .identity()
         .zombie_snapshot(|zombie| zombie.wait_parent_tid)
 }
 
@@ -172,15 +167,12 @@ pub(crate) fn traced_zombies_for(tracer: PidIdentityId) -> Vec<Arc<Process>> {
 mod axtest_support {
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-    #[cfg(axtest)]
     use axpoll::PollSet;
 
     use super::*;
     #[cfg(axtest)]
-    use crate::{
-        sync::IrqMutex,
-        task::{PidReservation, PidReservationKind, Tid},
-    };
+    use crate::sync::IrqMutex;
+    use crate::task::{PidReservation, PidReservationKind, Tid};
 
     static REAP_CLAIM_BARRIER_PID: AtomicU32 = AtomicU32::new(0);
     static REAP_CLAIM_REACHED: AtomicBool = AtomicBool::new(false);
@@ -293,10 +285,56 @@ mod axtest_support {
             && complete_after_finish
             && slot_released_after_finish
     }
+
+    pub(crate) fn reaped_process_handle_retains_exact_identity_for_test() -> bool {
+        let namespace = crate::task::new_test_pid_namespace();
+        let parent_identity =
+            PidReservation::reserve(&namespace, PidReservationKind::ProcessLeader)
+                .unwrap()
+                .publish()
+                .unwrap();
+        let _parent_tid = parent_identity.acquire_role::<Tid>().unwrap();
+        let _parent_tgid = parent_identity.acquire_role::<Tgid>().unwrap();
+        let parent = Process::new_for_axtest(parent_identity);
+
+        let child_identity = PidReservation::reserve(&namespace, PidReservationKind::ProcessLeader)
+            .unwrap()
+            .publish()
+            .unwrap();
+        let child_id = child_identity.id();
+        let child_tid = child_identity.acquire_role::<Tid>().unwrap();
+        let child_tgid = child_identity.acquire_role::<Tgid>().unwrap();
+        let child = parent
+            .prepare_fork(child_identity.clone())
+            .publish()
+            .unwrap()
+            .commit();
+        let exit_path = child_identity.mark_task_exited();
+        child_identity.bind_zombie_for_axtest(
+            child.clone(),
+            Arc::new(PollSet::new()),
+            ZombieSnapshot {
+                cred: Arc::new(Cred::default()),
+                nice: 0,
+                ptrace_tracer: None,
+                is_clone_child: false,
+                wait_parent_tid: TidNumber::from(parent.pid().pid_number()),
+                cpu_time: ProcessCpuTime::default(),
+                tid_lease: child_tid,
+                tgid_lease: child_tgid,
+            },
+        );
+        exit_path.complete();
+
+        let reaped = reap_process(&child) == Some(ProcessCpuTime::default());
+        drop(child_identity);
+        reaped && child.identity().id() == child_id
+    }
 }
 
 #[cfg(axtest)]
 pub(crate) use axtest_support::{
+    reaped_process_handle_retains_exact_identity_for_test,
     reaping_identity_is_not_publicly_resolvable_for_test,
     shutdown_wait_covers_the_exit_path_after_runtime_detach_for_test,
 };
@@ -307,6 +345,11 @@ mod tests {
 
     use super::*;
     use crate::task::{PidReservation, PidReservationKind, Tid};
+
+    #[test]
+    fn reaped_child_process_handle_retains_its_exact_identity() {
+        assert!(axtest_support::reaped_process_handle_retains_exact_identity_for_test());
+    }
 
     #[test]
     fn reaping_releases_process_owned_group_and_session_roles() {

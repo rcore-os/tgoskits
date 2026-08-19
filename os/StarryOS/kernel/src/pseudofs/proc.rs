@@ -33,8 +33,8 @@ use crate::{
     },
     task::{
         Cred, PidNamespaceRef, PidNumber, PidView, Process, ProcessData, ROOT_PID_NS, TaskStat,
-        TgidNumber, Thread, TidNumber, UserTaskRef, WeakUserTaskRef, current_user_task,
-        get_process_data_by_number, processes, tasks,
+        TgidNumber, Thread, TidNumber, UserTaskRef, WeakUserTaskRef, current_user_task, processes,
+        tasks,
     },
 };
 
@@ -726,8 +726,7 @@ impl SimpleDirOps for ProcessTaskDir {
             return Err(VfsError::NotFound);
         }
 
-        let proc_data =
-            get_process_data_by_number(process.pid_number()).map_err(|_| VfsError::NotFound)?;
+        let proc_data = process.identity().live_data().ok_or(VfsError::NotFound)?;
 
         Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
             self.fs.clone(),

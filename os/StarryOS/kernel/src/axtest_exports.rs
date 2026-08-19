@@ -382,6 +382,11 @@ pub fn exit_path_completion_precedes_task_transfer() -> bool {
     super::task::exit_path_completion_precedes_task_transfer_for_test()
 }
 
+#[cfg(axtest)]
+pub fn reaped_process_handle_retains_exact_identity() -> bool {
+    super::task::reaped_process_handle_retains_exact_identity_for_test()
+}
+
 #[cfg(test)]
 fn resource_limit_defaults_hold() -> bool {
     super::task::resource_limit_defaults_hold_for_test()

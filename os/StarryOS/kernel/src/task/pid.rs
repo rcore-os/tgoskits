@@ -1004,6 +1004,10 @@ impl PidIdentity {
         matches!(state.runtime, RuntimeTaskLink::Exited) && !state.exit_path_pending
     }
 
+    fn is_task_transfer_ready(&self) -> bool {
+        Self::task_transfer_ready(&self.state.lock())
+    }
+
     /// Attaches the process lifecycle to the leader identity exactly once.
     pub(super) fn bind_process(
         &self,
@@ -1276,32 +1280,40 @@ impl PidIdentity {
     /// already scheduler-owned, the fallback deliberately leaves it alone;
     /// scheduler/task exit then performs the ordinary ordered release.
     pub(crate) fn abort_failed_task_publication(&self) {
-        let _publication = PUBLICATION_GATE.lock();
-        {
-            let mut state = self.state.lock();
-            if state.publication != PidIdentityPublication::Published {
-                return;
-            }
-            let scheduler_owns_task = match &state.runtime {
-                RuntimeTaskLink::Reserved | RuntimeTaskLink::Exited => false,
-                RuntimeTaskLink::Live(task) => task.upgrade().is_ok_and(|task| task.is_some()),
+        let process = {
+            let _publication = PUBLICATION_GATE.lock();
+            let process = {
+                let mut state = self.state.lock();
+                if state.publication != PidIdentityPublication::Published {
+                    return;
+                }
+                let scheduler_owns_task = match &state.runtime {
+                    RuntimeTaskLink::Reserved | RuntimeTaskLink::Exited => false,
+                    RuntimeTaskLink::Live(task) => task.upgrade().is_ok_and(|task| task.is_some()),
+                };
+                if scheduler_owns_task {
+                    return;
+                }
+                if !matches!(
+                    &state.process_lifecycle,
+                    ProcessLifecycle::None | ProcessLifecycle::Live(_)
+                ) {
+                    return;
+                }
+                state.runtime = RuntimeTaskLink::Exited;
+                state.publication = PidIdentityPublication::Detached;
+                state.process_lifecycle = ProcessLifecycle::Reaped;
+                state.process.take()
             };
-            if scheduler_owns_task {
-                return;
+            for binding in self.bindings.iter().rev() {
+                binding.namespace.remove(self.id, binding.number);
             }
-            if !matches!(
-                &state.process_lifecycle,
-                ProcessLifecycle::None | ProcessLifecycle::Live(_)
-            ) {
-                return;
-            }
-            state.runtime = RuntimeTaskLink::Exited;
-            state.publication = PidIdentityPublication::Detached;
-            state.process_lifecycle = ProcessLifecycle::Reaped;
-        }
-        for binding in self.bindings.iter().rev() {
-            binding.namespace.remove(self.id, binding.number);
-        }
+            process
+        };
+        // Break the Process <-> PidIdentity lifecycle ownership only after
+        // publication removal, and outside both the publication and identity
+        // locks because dropping topology may release PID role leases.
+        drop(process);
     }
 }
 
@@ -1410,6 +1422,17 @@ impl<R: PidRole> PidRoleLease<R> {
             .upgrade()
             .expect("PID role outlived its published identity")
             .release_role::<R>();
+    }
+}
+
+impl PidRoleLease<Tid> {
+    /// Reports transfer readiness from this lease's exact PID generation.
+    pub(crate) fn task_transfer_ready(&self) -> bool {
+        self.identity
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .expect("retained TID lease outlived its published identity")
+            .is_task_transfer_ready()
     }
 }
 
@@ -1867,6 +1890,25 @@ mod tests {
         identity.complete_exit_path();
         assert!(!identity.has_unexited_task());
         assert!(!root.retains_identity_slot_for_test(identity.id()));
+    }
+
+    #[test]
+    fn retained_tid_lease_observes_its_exact_exit_path_completion() {
+        let (_root, identity, tid, tgid) = root_process();
+        let exit_path = identity.mark_task_exited();
+
+        assert!(
+            !tid.task_transfer_ready(),
+            "a retained TID must reject transfer while its exit path is pending"
+        );
+        exit_path.complete();
+        assert!(
+            tid.task_transfer_ready(),
+            "a retained TID must observe completion from its owning identity"
+        );
+
+        tid.release();
+        tgid.release();
     }
 
     #[test]

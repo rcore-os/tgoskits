@@ -17,13 +17,6 @@ struct VforkDone {
 struct RetiredLeader {
     nice: i32,
     tid_lease: PidRoleLease<Tid>,
-    exit_path: RetiredLeaderExitPath,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RetiredLeaderExitPath {
-    Pending,
-    Complete,
 }
 
 impl VforkDone {
@@ -109,40 +102,21 @@ impl ProcessData {
 
     /// Transfers the exited thread-group leader's retained state to the process.
     pub(crate) fn retire_leader(&self, nice: i32, tid_lease: PidRoleLease<Tid>) {
-        let previous = self.wait.retired_leader.lock().replace(RetiredLeader {
-            nice,
-            tid_lease,
-            exit_path: RetiredLeaderExitPath::Pending,
-        });
+        let previous = self
+            .wait
+            .retired_leader
+            .lock()
+            .replace(RetiredLeader { nice, tid_lease });
         assert!(previous.is_none(), "process retired its leader twice");
     }
 
-    /// Publishes that the retired leader consumed its exit-path lease.
-    ///
-    /// A final process exit may already have moved the retained TID into its
-    /// zombie snapshot. Otherwise a non-leader exec waits for this transition
-    /// before re-adopting the leader identity.
-    pub(crate) fn complete_retired_leader_exit_path(&self) {
-        let mut retired = self.wait.retired_leader.lock();
-        let Some(leader) = retired.as_mut() else {
-            return;
-        };
-        assert_eq!(
-            leader.exit_path,
-            RetiredLeaderExitPath::Pending,
-            "retired leader exit path completed twice"
-        );
-        leader.exit_path = RetiredLeaderExitPath::Complete;
-    }
-
-    /// Reports whether the retired leader reached the identity-transfer
-    /// boundary corresponding to Linux's completed `release_task` path.
-    pub(crate) fn retired_leader_exit_path_complete(&self) -> bool {
+    /// Reports transfer readiness from the retained TID's exact PID identity.
+    pub(crate) fn retired_leader_transfer_ready(&self) -> bool {
         self.wait
             .retired_leader
             .lock()
             .as_ref()
-            .is_some_and(|leader| leader.exit_path == RetiredLeaderExitPath::Complete)
+            .is_some_and(|leader| leader.tid_lease.task_transfer_ready())
     }
 
     /// Returns the nice value retained for an exited thread-group leader.
@@ -173,9 +147,8 @@ impl ProcessData {
             .lock()
             .take()
             .expect("process lost its retired leader state");
-        assert_eq!(
-            leader.exit_path,
-            RetiredLeaderExitPath::Complete,
+        assert!(
+            leader.tid_lease.task_transfer_ready(),
             "exec transferred a leader identity before its exit path completed"
         );
         (leader.nice, leader.tid_lease)

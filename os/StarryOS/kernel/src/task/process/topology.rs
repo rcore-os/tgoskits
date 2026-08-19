@@ -109,7 +109,12 @@ pub enum ThreadExit {
 /// A process.
 pub struct Process {
     pid: TgidNumber,
-    identity: Weak<PidIdentity>,
+    /// Exact PID generation retained by every topology handle.
+    ///
+    /// `PidIdentity::finish_reap` drops the reverse identity-to-process edge,
+    /// so post-reap wait/procfs observers remain generation-safe without
+    /// leaking the live/zombie ownership cycle.
+    identity: Arc<PidIdentity>,
     is_child_subreaper: AtomicBool,
     pub(crate) tg: ThreadGroupLock<ThreadGroup>,
 
@@ -195,9 +200,7 @@ impl Process {
     }
 
     pub(crate) fn identity(&self) -> Arc<PidIdentity> {
-        self.identity
-            .upgrade()
-            .expect("process topology outlived its PID identity")
+        self.identity.clone()
     }
 
     /// Returns `true` if this process acts as a child subreaper.
@@ -495,7 +498,7 @@ impl Process {
 
         Arc::new(Process {
             pid,
-            identity: Arc::downgrade(&identity),
+            identity,
             is_child_subreaper: AtomicBool::new(false),
             tg: ThreadGroupLock::new(ThreadGroup::default()),
             children: RelationLock::new(ChildRelations::new()),

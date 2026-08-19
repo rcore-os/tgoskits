@@ -64,6 +64,7 @@ pub(crate) use self::{
         posix_timer_stale_expiry_signal_is_suppressed_for_test,
     },
     process_cgroup::task_exit_transaction_holds_membership_lock_for_test,
+    process_identity::reaped_process_handle_retains_exact_identity_for_test,
     process_ptrace::inactive_ptrace_syscall_gate_is_lock_free_for_test,
 };
 #[cfg(test)]

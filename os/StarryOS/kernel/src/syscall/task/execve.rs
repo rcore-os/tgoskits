@@ -297,7 +297,7 @@ fn do_execve(
             .filter(|tid| *tid != my_tid)
             .collect();
         let leader_exit_complete =
-            my_tid == leader_tid || proc_data.retired_leader_exit_path_complete();
+            my_tid == leader_tid || proc_data.retired_leader_transfer_ready();
         if siblings.is_empty() && leader_exit_complete {
             break;
         }
@@ -319,7 +319,7 @@ fn do_execve(
                 .filter(|tid| *tid != my_tid)
                 .count();
             let leader_exit_complete =
-                my_tid == leader_tid || proc_data.retired_leader_exit_path_complete();
+                my_tid == leader_tid || proc_data.retired_leader_transfer_ready();
             if remaining == 0 && leader_exit_complete {
                 return Poll::Ready(());
             }
@@ -338,7 +338,7 @@ fn do_execve(
                 .filter(|tid| *tid != my_tid)
                 .count();
             let leader_exit_complete =
-                my_tid == leader_tid || proc_data.retired_leader_exit_path_complete();
+                my_tid == leader_tid || proc_data.retired_leader_transfer_ready();
             if remaining == 0 && leader_exit_complete {
                 Poll::Ready(())
             } else {
