@@ -13,7 +13,6 @@ use clap::Args;
 use crate::support::{git::IncrementalPackageSelection, process::run_cargo_status};
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
-const TASK_INITIALIZATION_FILTER: &str = "task_initialization_precedes_scheduling";
 
 #[derive(Args, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StdTestArgs {
@@ -30,25 +29,12 @@ struct PackageFeatureProfile {
     expected_tests: &'static [&'static str],
 }
 
-const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
-    PackageFeatureProfile {
-        name: "host-test+multitask+irq-pure",
-        features: &["host-test", "multitask", "irq"],
-        name_filter: Some("std_tests::"),
-        expected_tests: &[
-            "api::std_tests::axtask_api_constants_hold",
-            "api::std_tests::axtask_api_scheduler_name_hold",
-            "api::std_tests::axtask_api_task_registry_functions_exist_hold",
-            "api::std_tests::axtask_api_type_aliases_hold",
-        ],
-    },
-    PackageFeatureProfile {
-        name: "host-test+multitask-task-initialization",
-        features: &["host-test", "multitask"],
-        name_filter: Some(TASK_INITIALIZATION_FILTER),
-        expected_tests: &["api::tests::task_initialization_precedes_scheduling"],
-    },
-];
+const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
+    name: "host-test-native-task-core",
+    features: &["host-test"],
+    name_filter: None,
+    expected_tests: &[],
+}];
 
 const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test+rtc+starfive-jh7110-dwmmc",
@@ -533,13 +519,6 @@ mod tests {
             );
             self
         }
-
-        fn with_ax_task_discovery(mut self) -> Self {
-            for profile in AX_TASK_FEATURE_PROFILES {
-                self = self.with_listing(profile, profile.expected_tests);
-            }
-            self
-        }
     }
 
     impl CargoRunner for FakeCargoRunner {
@@ -740,10 +719,10 @@ mod tests {
     }
 
     #[test]
-    fn ax_task_uses_pure_and_task_initialization_feature_profiles() {
+    fn ax_task_uses_native_host_test_profile() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec!["ax-task".to_string()];
-        let mut runner = FakeCargoRunner::succeeding().with_ax_task_discovery();
+        let mut runner = FakeCargoRunner::succeeding();
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
@@ -755,44 +734,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             args,
-            vec![
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask,irq",
-                    "std_tests::",
-                    "--",
-                    "--list",
-                ],
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask,irq",
-                    "std_tests::",
-                ],
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask",
-                    "task_initialization_precedes_scheduling",
-                    "--",
-                    "--list",
-                ],
-                vec![
-                    "test",
-                    "-p",
-                    "ax-task",
-                    "--features",
-                    "host-test,multitask",
-                    "task_initialization_precedes_scheduling",
-                ],
-            ]
+            vec![vec!["test", "-p", "ax-task", "--features", "host-test",]]
         );
         assert!(!args.contains(&vec!["test".into(), "-p".into(), "ax-task".into()]));
     }
@@ -908,38 +850,33 @@ mod tests {
     #[test]
     fn profile_discovery_mismatch_fails_without_running_that_profile() {
         let root = PathBuf::from("/tmp/workspace");
-        let packages = vec!["ax-task".to_string()];
-        let pure_profile = &AX_TASK_FEATURE_PROFILES[0];
-        let initialization_profile = &AX_TASK_FEATURE_PROFILES[1];
-        let mut runner = FakeCargoRunner::succeeding()
-            .with_ax_task_discovery()
-            .with_listing(pure_profile, &["api::std_tests::unexpected"])
-            .with_listing(
-                initialization_profile,
-                initialization_profile.expected_tests,
-            );
+        let profile = PackageFeatureProfile {
+            name: "discovery-fixture",
+            features: &["host-test"],
+            name_filter: Some("std_tests::"),
+            expected_tests: &["api::std_tests::expected"],
+        };
+        let mut runner =
+            FakeCargoRunner::succeeding().with_listing(&profile, &["api::std_tests::unexpected"]);
 
-        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
+        let passed = run_feature_profiles(&mut runner, &root, "ax-task", &[profile]).unwrap();
 
-        assert_eq!(failed, vec!["ax-task"]);
+        assert!(!passed);
         assert!(!runner.invocations.iter().any(|(_, invocation)| {
             invocation
-                == &CargoTestInvocation::for_profile("ax-task", pure_profile, CargoTestAction::Run)
-        }));
-        assert!(runner.invocations.iter().any(|(_, invocation)| {
-            invocation
-                == &CargoTestInvocation::for_profile(
-                    "ax-task",
-                    initialization_profile,
-                    CargoTestAction::Run,
-                )
+                == &CargoTestInvocation::for_profile("ax-task", &profile, CargoTestAction::Run)
         }));
     }
 
     #[test]
     fn profile_discovery_rejects_zero_tests() {
-        let err = validate_discovered_tests(&AX_TASK_FEATURE_PROFILES[0], "0 tests, 0 benchmarks")
-            .unwrap_err();
+        let profile = PackageFeatureProfile {
+            name: "discovery-fixture",
+            features: &["host-test"],
+            name_filter: Some("std_tests::"),
+            expected_tests: &["api::std_tests::expected"],
+        };
+        let err = validate_discovered_tests(&profile, "0 tests, 0 benchmarks").unwrap_err();
 
         assert!(err.to_string().contains("discovered 0 tests"));
     }
@@ -950,7 +887,6 @@ mod tests {
         let packages = vec!["ax-task".to_string(), "ax-api".to_string()];
         let failed_profile = &AX_TASK_FEATURE_PROFILES[0];
         let mut runner = FakeCargoRunner::succeeding()
-            .with_ax_task_discovery()
             .with_status(
                 CargoTestInvocation::for_profile("ax-task", failed_profile, CargoTestAction::Run),
                 false,
@@ -967,6 +903,6 @@ mod tests {
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
         assert_eq!(failed, vec!["ax-task", "ax-api"]);
-        assert_eq!(runner.invocations.len(), 5);
+        assert_eq!(runner.invocations.len(), 2);
     }
 }
