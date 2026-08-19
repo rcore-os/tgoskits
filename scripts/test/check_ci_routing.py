@@ -3,7 +3,6 @@
 import sys
 from pathlib import Path
 
-
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
 BRANCH_PUSH_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-branch-push.yml"
@@ -47,7 +46,9 @@ def main() -> int:
     required_files = (CI_WORKFLOW, BRANCH_PUSH_WORKFLOW, CONTAINER_WORKFLOW)
     for required_file in required_files:
         if not required_file.is_file():
-            errors.append(f"missing workflow: {required_file.relative_to(WORKSPACE_ROOT)}")
+            errors.append(
+                f"missing workflow: {required_file.relative_to(WORKSPACE_ROOT)}"
+            )
     if errors:
         return report(errors)
 
@@ -64,9 +65,7 @@ def main() -> int:
     ci_dispatch_inputs = mapping_block(ci_dispatch, "inputs", 4)
     since_sha = mapping_block(ci_dispatch_inputs, "since_sha", 6)
 
-    router_push = mapping_block(
-        mapping_block(branch_push_workflow, "on", 0), "push", 2
-    )
+    router_push = mapping_block(mapping_block(branch_push_workflow, "on", 0), "push", 2)
     router_permissions = mapping_block(branch_push_workflow, "permissions", 0)
 
     require_equal(
@@ -108,6 +107,30 @@ def main() -> int:
         "since_ref: ${{ steps.since.outputs.since_ref }}",
         "plan_ci must publish the resolved since_ref",
     )
+    require_contains(
+        errors,
+        ci_workflow,
+        "static_required: ${{ steps.matrix.outputs.static_required }}",
+        "plan_ci must publish whether Preflight is required",
+    )
+    for needle, message in (
+        ("name: Preflight", "main CI must use the Preflight phase name"),
+        ("name: Verification", "main CI must use the Verification phase name"),
+        (
+            "if: needs.plan_ci.outputs.static_required == 'true'",
+            "Preflight must be controlled by the planner output",
+        ),
+        ("always() &&", "Verification must handle an intentionally skipped Preflight"),
+        (
+            "needs.static_checks.result == 'success'",
+            "Verification must require a successful Preflight when it runs",
+        ),
+        (
+            "needs.static_checks.result == 'skipped'",
+            "Verification must accept an intentionally skipped Preflight",
+        ),
+    ):
+        require_contains(errors, ci_workflow, needle, message)
     require_contains(
         errors,
         ci_workflow,
@@ -206,8 +229,7 @@ def main() -> int:
         "pull-requests": "read",
     }
     actual_permissions = {
-        name: scalar_value(router_permissions, name, 2)
-        for name in expected_permissions
+        name: scalar_value(router_permissions, name, 2) for name in expected_permissions
     }
     if actual_permissions != expected_permissions:
         errors.append(
@@ -230,7 +252,10 @@ def main() -> int:
         ('-f since_sha="$BEFORE_SHA"', "router must preserve the push base SHA"),
     ):
         require_contains(errors, branch_push_workflow, needle, message)
-    if "run_target" in branch_push_workflow or "container_target" in branch_push_workflow:
+    if (
+        "run_target" in branch_push_workflow
+        or "container_target" in branch_push_workflow
+    ):
         errors.append("branch router must not pass removed CI dispatch inputs")
 
     skip_index = branch_push_workflow.find("exit 0")
@@ -283,9 +308,7 @@ def indentation(line: str) -> int:
     return len(line) - len(line.lstrip())
 
 
-def require_contains(
-    errors: list[str], text: str, needle: str, message: str
-) -> None:
+def require_contains(errors: list[str], text: str, needle: str, message: str) -> None:
     if needle not in text:
         errors.append(message)
 

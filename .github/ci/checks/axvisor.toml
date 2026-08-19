@@ -1,15 +1,12 @@
-schema_version = 2
+schema_version = 3
 phase = "test"
 group = "AxVisor"
+default_runner = "qcs"
 
 [[check]]
 id = "test-axvisor-aarch64-qemu-smoke-axtest-timer-stress"
 impact_targets = ["axvisor:aarch64"]
-name = "aarch64 QEMU · Smoke + virtio-blk guest + axtest + timer stress"
-runs_on = ["self-hosted", "linux", "qcs"]
-environment = "host"
-self_hosted_owner = "rcore-os"
-fallback_environment = "base"
+name = "QEMU aarch64 · Smoke + virtio-blk guest + axtest + timer stress"
 timeout_minutes = 30
 command = '''
 echo "==> axvisor aarch64 smoke"
@@ -26,14 +23,15 @@ echo "==> axvisor aarch64 gicv3 timer stress"
 cargo xtask axvisor test qemu --arch aarch64 --test-case gicv3-timer-stress
 '''
 
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["smoke", "gicv2-timer-stress", "gicv3-timer-stress"]
+
 [[check]]
 id = "test-axvisor-aarch64-qemu-panic-modes"
 impact_targets = ["axvisor:aarch64"]
-name = "aarch64 QEMU · Panic modes"
-runs_on = ["self-hosted", "linux", "qcs"]
-environment = "host"
-self_hosted_owner = "rcore-os"
-fallback_environment = "base"
+name = "QEMU aarch64 · Panic modes"
 timeout_minutes = 30
 command = '''
 echo "==> axvisor aarch64 backtrace panic"
@@ -42,14 +40,15 @@ echo "==> axvisor aarch64 no-backtrace panic"
 cargo xtask axvisor test qemu --arch aarch64 --test-case no-backtrace
 '''
 
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["backtrace-panic", "no-backtrace"]
+
 [[check]]
 id = "test-axvisor-aarch64-qemu-http-control-plane"
 impact_targets = ["axvisor:aarch64"]
-name = "aarch64 QEMU · HTTP control-plane"
-runs_on = ["self-hosted", "linux", "qcs"]
-environment = "host"
-self_hosted_owner = "rcore-os"
-fallback_environment = "base"
+name = "QEMU aarch64 · HTTP control-plane"
 timeout_minutes = 30
 command = '''
 echo "==> pull qemu-aarch64 image"
@@ -58,14 +57,15 @@ echo "==> axvisor aarch64 HTTP control-plane"
 cargo xtask axvisor test qemu --arch aarch64 --test-case http-control-plane
 '''
 
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["http-control-plane"]
+
 [[check]]
 id = "test-axvisor-riscv64-qemu-smoke-panic-modes"
 impact_targets = ["axvisor:riscv64"]
-name = "riscv64 QEMU · Smoke + IPI + panic modes"
-runs_on = ["self-hosted", "linux", "qcs"]
-environment = "host"
-self_hosted_owner = "rcore-os"
-fallback_environment = "base"
+name = "QEMU riscv64 · Smoke + IPI + panic modes"
 timeout_minutes = 30
 command = '''
 echo "==> axvisor riscv64 smoke"
@@ -83,39 +83,46 @@ echo "==> axvisor riscv64 no-backtrace panic"
 cargo xtask axvisor test qemu --arch riscv64 --test-case no-backtrace
 '''
 
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "riscv64"
+cases = ["smoke", "backtrace-panic", "no-backtrace"]
+
 [[check]]
 id = "test-axvisor-loongarch64-qemu"
 impact_targets = ["axvisor:loongarch64"]
-name = "loongarch64 QEMU · Suites"
-runs_on = ["ubuntu-latest"]
-environment = "axvisor-lvz"
+name = "QEMU loongarch64 · Suites"
+runner = "ubuntu-axvisor-lvz"
 cache_key = "test-axvisor-loongarch64"
 download_xtask_bin_artifact = true
 command = '''
 target/debug/tg-xtask axvisor test qemu --arch loongarch64
 '''
 
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "loongarch64"
+cases = ["smoke"]
+
 [[check]]
 id = "test-axvisor-qemu-ivc"
 impact_targets = ["axvisor:aarch64"]
-name = "aarch64 QEMU · IVC"
-runs_on = ["self-hosted", "linux", "qcs"]
-environment = "host"
-self_hosted_owner = "rcore-os"
-fallback_environment = "base"
+name = "QEMU aarch64 · IVC"
 command = '''
 cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-ivc
 '''
 
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["qemu-ivc"]
+
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-svm-smoke-acpi"
 impact_targets = ["axvisor:x86_64"]
-name = "x86_64 SVM · Smoke + direct/OVMF ACPI"
-runs_on = ["self-hosted", "linux", "amd", "kvm"]
-environment = "host"
-required_owner = "rcore-os"
+name = "SVM x86_64 · Smoke + direct/OVMF ACPI"
+runner = "kvm-amd"
 timeout_minutes = 30
-require_kvm = true
 command = '''
 echo "==> axvisor x86_64 svm smoke"
 cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
@@ -127,27 +134,31 @@ echo "==> axvisor x86_64 svm nested OVMF ACPI boot"
 cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-svm
 '''
 
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "x86_64"
+cases = ["smoke-svm", "direct-acpi-svm", "ovmf-acpi-svm"]
+
 [[check]]
 id = "test-axvisor-self-hosted-x86-64-vmx"
 impact_targets = ["axvisor:x86_64"]
-name = "x86_64 VMX · Smoke"
-runs_on = ["self-hosted", "linux", "intel", "kvm"]
-environment = "host"
-required_owner = "rcore-os"
-require_kvm = true
+name = "VMX x86_64 · Smoke"
+runner = "kvm-intel"
 command = '''
 cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
 '''
 
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "x86_64"
+cases = ["smoke-vmx"]
+
 [[check]]
 id = "test-axloader-http-smoke"
 impact_packages = ["axloader"]
-name = "x86_64 UEFI · AxLoader HTTP boot"
-runs_on = ["self-hosted", "linux", "intel", "kvm"]
-environment = "host"
-required_owner = "rcore-os"
+name = "UEFI x86_64 · AxLoader HTTP boot"
+runner = "kvm-intel"
 timeout_minutes = 25
-require_kvm = true
 command = '''
 rustup target add x86_64-unknown-uefi
 cargo xtask axloader test qemu --target x86_64-unknown-uefi
@@ -156,12 +167,9 @@ cargo xtask axloader test qemu --target x86_64-unknown-uefi
 [[check]]
 id = "test-axvisor-x86-64-acpi-direct-and-ovmf-boot-vmx"
 impact_targets = ["axvisor:x86_64"]
-name = "x86_64 VMX · Direct + MP fallback + OVMF ACPI"
-runs_on = ["self-hosted", "linux", "intel", "kvm"]
-environment = "host"
-required_owner = "rcore-os"
+name = "VMX x86_64 · Direct + MP fallback + OVMF ACPI"
+runner = "kvm-intel"
 timeout_minutes = 45
-require_kvm = true
 command = '''
 cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
 cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
@@ -169,57 +177,68 @@ cargo xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
 cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
 '''
 
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "x86_64"
+cases = ["direct-acpi-vmx", "mp-fallback-vmx", "ovmf-acpi-vmx"]
+
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux"
 impact_targets = ["axvisor:aarch64"]
-name = "OrangePi 5 Plus board · Linux guest"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board OrangePi 5 Plus · Linux guest"
+runner = "board"
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-linux
 '''
 
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-linux"
+
 [[check]]
 id = "test-axvisor-self-hosted-board-orangepi-5-plus-starry"
 impact_targets = ["axvisor:aarch64"]
-name = "OrangePi 5 Plus board · StarryOS guest"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board OrangePi 5 Plus · StarryOS guest"
+runner = "board"
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-starry
 '''
 
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-starry"
+
 [[check]]
 id = "test-axvisor-self-hosted-board-roc-rk3568-pc-linux"
 impact_targets = ["axvisor:aarch64"]
-name = "ROC-RK3568-PC board · Linux guest"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board ROC-RK3568-PC · Linux guest"
+runner = "board"
 command = '''
 cargo xtask axvisor test board --board roc-rk3568-pc-linux
 '''
 
+[[check.suite]]
+kind = "axvisor-board"
+board = "roc-rk3568-pc-linux"
+
 [[check]]
 id = "test-axvisor-self-hosted-board-phytiumpi-linux"
 impact_targets = ["axvisor:aarch64"]
-name = "Phytium Pi board · Linux guest"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board Phytium Pi · Linux guest"
+runner = "board"
 command = '''
 cargo xtask axvisor test board --board phytiumpi-linux
 '''
 
+[[check.suite]]
+kind = "axvisor-board"
+board = "phytiumpi-linux"
+
 [[check]]
 id = "test-axvisor-self-hosted-board-asus-nuc15crh-linux"
 impact_targets = ["axvisor:x86_64"]
-name = "ASUS NUC15CRH board · Linux guest"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board ASUS NUC15CRH · Linux guest"
+runner = "board"
 timeout_minutes = 20
 command = '''
 mkdir -p tmp
@@ -231,26 +250,34 @@ gzip -dc \
 cargo xtask axvisor test board --board asus-nuc15crh-linux
 '''
 
+[[check.suite]]
+kind = "axvisor-board"
+board = "asus-nuc15crh-linux"
+
 [[check]]
 id = "test-orangepi-5-plus-robot-axvisor-starryos-guest"
 impact_targets = ["axvisor:aarch64"]
-name = "OrangePi 5 Plus robot board · StarryOS guest"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board OrangePi 5 Plus robot · StarryOS guest"
+runner = "board"
 timeout_minutes = 90
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
 '''
 
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-robot-starry"
+
 [[check]]
 id = "test-orangepi-5-plus-robot-axvisor-linux-guest"
 impact_targets = ["axvisor:aarch64"]
-name = "OrangePi 5 Plus robot board · Linux guest"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board OrangePi 5 Plus robot · Linux guest"
+runner = "board"
 timeout_minutes = 90
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
 '''
+
+[[check.suite]]
+kind = "axvisor-board"
+board = "orangepi-5-plus-robot-linux"
