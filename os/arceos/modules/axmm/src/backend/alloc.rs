@@ -94,29 +94,23 @@ impl Backend {
             false // Populated mappings should not trigger page faults.
         } else {
             // Allocate a physical frame lazily and map it to the fault address.
-            remap_frame_or_dealloc(
-                alloc_frame(true),
-                |frame| pt.remap_page(vaddr, frame, orig_flags).is_ok(),
-                dealloc_frame,
-            )
+            // Keep ownership of an unused frame with the fault path so a remap
+            // failure does not re-enter the allocator from the trap context.
+            remap_allocated_frame(alloc_frame(true), |frame| {
+                pt.remap_page(vaddr, frame, orig_flags).is_ok()
+            })
         }
     }
 }
 
-fn remap_frame_or_dealloc(
+fn remap_allocated_frame(
     frame: Option<PhysAddr>,
     remap_frame: impl FnOnce(PhysAddr) -> bool,
-    dealloc_frame: impl FnOnce(PhysAddr),
 ) -> bool {
     let Some(frame) = frame else {
         return false;
     };
-    if remap_frame(frame) {
-        true
-    } else {
-        dealloc_frame(frame);
-        false
-    }
+    remap_frame(frame)
 }
 
 trait PopulatePageOps {
@@ -186,7 +180,6 @@ fn rollback_populated_pages(ops: &mut impl PopulatePageOps, start: VirtAddr, map
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
-    use core::cell::Cell;
 
     use super::*;
 
@@ -217,27 +210,15 @@ mod tests {
     #[test]
     fn keeps_lazy_frame_when_remap_succeeds() {
         let frame = PhysAddr::from(PAGE_SIZE_4K);
-        let deallocated = Cell::new(None);
 
-        assert!(remap_frame_or_dealloc(
-            Some(frame),
-            |_| true,
-            |frame| deallocated.set(Some(frame)),
-        ));
-        assert_eq!(deallocated.get(), None);
+        assert!(remap_allocated_frame(Some(frame), |_| true));
     }
 
     #[test]
-    fn deallocates_lazy_frame_when_remap_fails() {
+    fn keeps_lazy_frame_owned_by_fault_path_when_remap_fails() {
         let frame = PhysAddr::from(PAGE_SIZE_4K);
-        let deallocated = Cell::new(None);
 
-        assert!(!remap_frame_or_dealloc(
-            Some(frame),
-            |_| false,
-            |frame| deallocated.set(Some(frame)),
-        ));
-        assert_eq!(deallocated.get(), Some(frame));
+        assert!(!remap_allocated_frame(Some(frame), |_| false));
     }
 
     struct MockPopulatePageOps {
