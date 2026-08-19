@@ -70,7 +70,13 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - Axvisor must acquire the unique input before starting a vCPU and acquire the complete-record log
   subscription when the runtime backend supports it. Host logs are independent lines during boot,
   shell-aware clear/log/redraw transactions in management mode, and bounded whole-record backlog
-  while a guest owns the foreground console.
+  while a guest owns the foreground console. Move its `TaskConsoleOutput` into one dedicated
+  task before launching a vCPU. A virtual-UART/device callback can run inside the vCPU's pinned,
+  preemption-disabled region, so it may only submit to a fixed-capacity, non-allocating queue under
+  a non-sleeping lock and issue an IRQ-safe notification. Only the output task may wait on the
+  sleepable runtime lock or UART backpressure. Report bounded-queue loss from that task; do not
+  repair an atomic-context sleep with a watchdog, timeout task, affinity reservation, or platform
+  polling fallback.
 - For a post-SMP interleaving failure, first verify the `runtime console active` message appears
   before secondary-CPU startup and that later log records reach the owner worker or Axvisor mux;
   do not weaken smoke-test fail regexes or reserve a polling CPU as a workaround.

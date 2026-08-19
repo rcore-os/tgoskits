@@ -1588,6 +1588,7 @@ dependencies = [
  "axvm-types",
  "axvmconfig",
  "clap",
+ "heapless",
  "log",
  "prettyplease 0.3.0",
  "proc-macro2",

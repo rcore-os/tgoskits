@@ -74,10 +74,12 @@ fn route_pending_host_log(
     };
 
     if crate::guest_console::attached_vm().is_some() {
-        crate::guest_console::write_host_bytes(&output);
+        crate::guest_console::submit_host_bytes(&output);
         #[cfg(feature = "test-console-interleave")]
         if completes_interleave_regression {
-            crate::guest_console::write_host_bytes(crate::guest_console::INTERLEAVE_SUCCESS_MARKER);
+            crate::guest_console::submit_host_bytes(
+                crate::guest_console::INTERLEAVE_SUCCESS_MARKER,
+            );
         }
         return true;
     }
@@ -104,7 +106,7 @@ fn route_pending_host_log(
     if cursor < content.len() {
         write!(transaction, "\x1b[{}D", content.len() - cursor).ok();
     }
-    crate::guest_console::write_host_bytes(&transaction);
+    crate::guest_console::submit_host_bytes(&transaction);
     true
 }
 

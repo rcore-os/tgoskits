@@ -289,8 +289,17 @@ Starry 的活动 `ttyS*` 直接取得公共 input/output，不再自行选择、
 output lock；其他串口仍按 open 生命周期启动，line discipline 和 Linux TTY ABI 不变。
 
 Axvisor 在任何 vCPU 启动前取得 input、output，并在 runtime 后端可用时取得 log
-subscription。HAL 不支持 IRQ-backed input 时不启动交互 shell；管理面和 VM 启动不能因
-轮询任务占据 cooperative FIFO 调度器。管理 shell 把
+subscription。`TaskConsoleOutput` 随后 move 给唯一的 `axvisor-console-output` 任务；
+GuestConsoleMux、虚拟串口 backend 和其他可能位于 vCPU 禁止抢占区内的 producer 只在
+backend 创建阶段预分配每 guest 的 16 KiB backlog；回调使用无分配的流式格式化，在
+`NoPreemptMutex` 下把同一 transaction 直接写入固定 64 KiB 字节队列，不取得 sleepable
+output lock，也不等待 UART 背压。该任务按 512 字节批次调用公共可睡眠 output；队列满时
+完整回滚并丢弃当前 transaction，在下一批前报告丢失总数，已经排队的 transaction 不会被
+截断；物理 output 失败时停止接受新提交并通过 emergency console 报告终态，不创建 timeout
+任务、重试 owner 或回退到平台轮询输出。
+
+HAL 不支持 IRQ-backed input 时不启动交互 shell；管理面和 VM 启动不能因轮询任务占据
+cooperative FIFO 调度器。管理 shell 把
 “清当前行、输出完整日志、重画 prompt/内容/光标”合成一次物理输出事务；boot multiplex
 把宿主日志作为独立完整行。guest 进入 interactive foreground 后，宿主日志不得进入
 guest RX 字节流，而按完整 record 缓存在 16 KiB host backlog；detach 时先报告丢失条数
@@ -330,6 +339,14 @@ Axvisor 的 `qemu-console-interleave/interleave` 是 #2108 的确定性红灯：
 `^rm:`；修复后 shell 必须实际消费该订阅 record、隔离输出并发布成功标记，测试仍保留
 原 `(?m)^rm:` fail regex。host mux 单元测试另外覆盖 open guest line 分隔、管理 shell
 显示、foreground 完整记录缓存、16 KiB oldest-record 丢弃和 detach 回放摘要。
+
+`qemu-console-atomic-output/atomic-output` 另行启用抢占调度，先创建并预分配测试 guest
+backend，再在 `PreemptGuard` 内用 `try_write` 填满公共 runtime TX ingress，直到明确返回
+`WouldBlock`，最后通过真实 `GuestSerialBackend::write` 提交成功标记。旧实现同步进入
+`TaskConsoleOutput::write_all`，稳定命中 `might_sleep` 的 atomic-context panic；新实现只做
+无分配流式格式化并提交到固定 Axvisor 队列，guard 释放后由唯一 output 任务完成同一标记。
+该用例验证 vCPU/device callback 不会因为物理串口背压而睡眠，不使用延时释放、watchdog
+或 timeout 修复错误状态。
 
 回滚整个改动时，旧 runtime 仍可恢复两个 endpoint 和单向 handoff；不能只回滚接口而
 保留新调用方。已经开始 handoff 后的单次接管失败按上述 typed state 回滚或 fail closed，

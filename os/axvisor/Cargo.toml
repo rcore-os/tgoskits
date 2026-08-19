@@ -55,6 +55,7 @@ backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
 test-backtrace-panic = ["backtrace"]
 test-panic-no-backtrace = ["dep:axbacktrace"]
 test-console-interleave = ["dep:ax-log"]
+test-console-atomic-output = ["ax-std/sched-rr"]
 # axum-based management HTTP server (see src/http/ for the Router).
 # Off by default. Replaces the hand-rolled pilot, which is intentionally not
 # carried forward.
@@ -70,6 +71,7 @@ no-auto-start = []
 [dependencies]
 shlex.workspace = true
 axtest.workspace = true
+heapless.workspace = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }

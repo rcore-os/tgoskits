@@ -8,9 +8,11 @@ pub(crate) const INTERLEAVE_HOST_LOG_MARKER: &str = ":CONSOLE_INTERLEAVE_HOST_LO
 #[cfg(feature = "test-console-interleave")]
 pub(crate) const INTERLEAVE_SUCCESS_MARKER: &[u8] = b"CONSOLE_INTERLEAVE_REGRESSION_PASSED\n";
 
+#[cfg(feature = "test-console-atomic-output")]
+pub(crate) use host::fill_runtime_output_queue;
 pub(crate) use host::{
-    configure_host_console_reader, read_host_byte, read_host_log, take_host_log_drops,
-    wait_for_host_input, write_host_bytes,
+    configure_host_console, read_host_byte, read_host_log, submit_host_bytes, take_host_log_drops,
+    wait_for_host_input,
 };
 #[cfg_attr(
     feature = "no-auto-start",

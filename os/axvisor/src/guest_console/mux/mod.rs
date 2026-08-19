@@ -7,12 +7,13 @@ use alloc::{
 };
 
 use anyhow::{Result, bail};
+use ax_std::os::arceos::sync::{NoPreemptMutex, NoPreemptMutexGuard};
 use axvm::{SerialBackend, SerialBackendFactory, VMId, VmStatus};
 use core::ops::Bound::{Excluded, Unbounded};
 use log::warn;
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::LazyLock;
 
-use super::host::write_host_bytes;
+use super::host::{submit_host_bytes, submit_host_transaction};
 
 use axvisor::console_mux::{GuestOutputMux, HostLogBacklog};
 
@@ -57,11 +58,15 @@ pub struct GuestConsoleMux {
 
 #[derive(Debug)]
 struct ConsoleCore {
-    state: Mutex<ConsoleState>,
+    /// Task and vCPU callbacks use this lock; hard IRQ handlers never do.
+    /// No caller may enter a sleepable API while it is held.
+    state: NoPreemptMutex<ConsoleState>,
     /// Serializes host writes with backend replacement and invalidation.
     ///
     /// Code that needs both locks must acquire `output_lock` before `state`.
-    output_lock: Mutex<()>,
+    /// The guest callback additionally acquires the fixed host transport before
+    /// `state`, so no physical output or sleepable lock is reachable here.
+    output_lock: NoPreemptMutex<()>,
 }
 
 #[derive(Debug, Default)]
@@ -102,8 +107,8 @@ impl GuestConsoleMux {
     fn new() -> Self {
         Self {
             core: Arc::new(ConsoleCore {
-                state: Mutex::new(ConsoleState::default()),
-                output_lock: Mutex::new(()),
+                state: NoPreemptMutex::new(ConsoleState::default()),
+                output_lock: NoPreemptMutex::new(()),
             }),
         }
     }
@@ -115,6 +120,7 @@ impl GuestConsoleMux {
         for vm_id in running {
             state.running.insert(vm_id);
             state.guests.entry(vm_id).or_default();
+            state.output.register_guest(vm_id);
         }
 
         let detached = state
@@ -134,7 +140,7 @@ impl GuestConsoleMux {
         } = &mut *state;
         output.reconcile_running(running);
         drop(state);
-        write_host_bytes(&host_output);
+        submit_host_bytes(&host_output);
         detached
     }
 
@@ -142,6 +148,7 @@ impl GuestConsoleMux {
         let mut state = self.core.lock_state();
         state.running.insert(vm_id);
         state.guests.entry(vm_id).or_default();
+        state.output.register_guest(vm_id);
     }
 
     fn mark_stopped(&self, vm_id: VMId) -> bool {
@@ -164,7 +171,7 @@ impl GuestConsoleMux {
             Vec::new()
         };
         drop(state);
-        write_host_bytes(&host_output);
+        submit_host_bytes(&host_output);
         detached
     }
 
@@ -188,7 +195,7 @@ impl GuestConsoleMux {
             Vec::new()
         };
         drop(state);
-        write_host_bytes(&host_output);
+        submit_host_bytes(&host_output);
         detached
     }
 
@@ -216,7 +223,7 @@ impl GuestConsoleMux {
         state.shortcut_prefix_pending = false;
         let host_output = state.output.buffer_all();
         drop(state);
-        write_host_bytes(&host_output);
+        submit_host_bytes(&host_output);
         true
     }
 
@@ -230,7 +237,7 @@ impl GuestConsoleMux {
         (state.attached == Some(vm_id)).then_some(())?;
         let replay = state.output.select_foreground(vm_id);
         drop(state);
-        write_host_bytes(&replay);
+        submit_host_bytes(&replay);
         Some(replay)
     }
 
@@ -278,7 +285,7 @@ impl GuestConsoleMux {
             route_literal_input(&mut state, &[byte], ConsoleInputEvent::ShellByte(byte))
         };
         drop(state);
-        write_host_bytes(&routed.host_output);
+        submit_host_bytes(&routed.host_output);
         routed
     }
 
@@ -376,16 +383,12 @@ fn switch_guest(state: &mut ConsoleState, direction: GuestSwitchDirection) -> Ro
 }
 
 impl ConsoleCore {
-    fn lock_state(&self) -> MutexGuard<'_, ConsoleState> {
-        self.state
-            .lock()
-            .expect("guest console state mutex poisoned")
+    fn lock_state(&self) -> NoPreemptMutexGuard<'_, ConsoleState> {
+        self.state.lock()
     }
 
-    fn lock_output(&self) -> MutexGuard<'_, ()> {
-        self.output_lock
-            .lock()
-            .expect("guest console output mutex poisoned")
+    fn lock_output(&self) -> NoPreemptMutexGuard<'_, ()> {
+        self.output_lock.lock()
     }
 
     fn create_serial_backend(self: &Arc<Self>, vm_id: VMId) -> Arc<GuestSerialBackend> {
@@ -405,6 +408,7 @@ impl ConsoleCore {
                 },
             );
             state.output.reset_guest(vm_id);
+            state.output.register_guest(vm_id);
             generation
         };
         Arc::new(GuestSerialBackend {
@@ -438,6 +442,7 @@ impl ConsoleCore {
         read_len
     }
 
+    #[cfg(test)]
     fn format_guest_output(
         &self,
         vm_id: VMId,
@@ -459,9 +464,21 @@ impl ConsoleCore {
         }
 
         let _output_guard = self.lock_output();
-        if let Some(output) = self.format_guest_output(vm_id, generation, bytes) {
-            write_host_bytes(&output);
-        }
+        submit_host_transaction(|emit| {
+            let mut state = self.lock_state();
+            let multiple_running = state.running.len() > 1;
+            let Some(guest) = state.guests.get(&vm_id) else {
+                return;
+            };
+            if guest.backend_generation != Some(generation) {
+                return;
+            }
+            let formatted =
+                state
+                    .output
+                    .format_registered_into(vm_id, multiple_running, bytes, emit);
+            debug_assert!(formatted, "active backend output state must be registered");
+        });
     }
 }
 

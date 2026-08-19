@@ -53,6 +53,15 @@ fn init_panic_hook() {
     }));
 }
 
+#[cfg(feature = "test-console-atomic-output")]
+fn init_atomic_output_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(
+            format_args!("{info}\n"),
+        );
+    }));
+}
+
 /// Axvisor kernel entry point.
 ///
 /// The startup sequence is:
@@ -66,6 +75,8 @@ fn init_panic_hook() {
 /// The vCPU tasks are pinned to the secondary CPUs via `phys_cpu_ids` in the
 /// VM configs, while the management console stays on the primary CPU.
 fn main() {
+    #[cfg(feature = "test-console-atomic-output")]
+    init_atomic_output_panic_hook();
     #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
     init_panic_hook();
 
@@ -97,8 +108,11 @@ fn main() {
         .spawn(http::serve)
         .unwrap_or_else(|error| panic!("failed to start management HTTP server: {error}"));
 
-    guest_console::configure_host_console_reader()
-        .unwrap_or_else(|error| panic!("failed to configure host console input: {error:#}"));
+    guest_console::configure_host_console()
+        .unwrap_or_else(|error| panic!("failed to configure host console: {error:#}"));
+
+    #[cfg(feature = "test-console-atomic-output")]
+    emit_console_atomic_output_regression();
 
     #[cfg(feature = "test-console-interleave")]
     emit_console_interleave_regression();
@@ -126,6 +140,18 @@ fn main() {
     info!("shell task on CPU{}", axvm::host::cpu::current_id());
 
     shell::console_init();
+}
+
+#[cfg(feature = "test-console-atomic-output")]
+fn emit_console_atomic_output_regression() {
+    const REGRESSION_VM_ID: usize = usize::MAX;
+
+    let backend = guest_console::serial_backend_factory(REGRESSION_VM_ID).create();
+    guest_console::mark_running(REGRESSION_VM_ID);
+    let no_preempt = ax_std::os::arceos::guard::PreemptGuard::new();
+    guest_console::fill_runtime_output_queue();
+    backend.write(b"\nCONSOLE_ATOMIC_OUTPUT_REGRESSION_PASSED\n");
+    drop(no_preempt);
 }
 
 #[cfg(feature = "test-console-interleave")]
