@@ -196,6 +196,61 @@ where
         child.protect_recursive(vaddr, config, level - 1)
     }
 
+    /// Splits the block mapping that contains `vaddr` until `boundary` is also
+    /// a mapping boundary. Existing leaf attributes and physical addresses are
+    /// preserved in every child entry.
+    pub(crate) fn split_leaf_for_boundary(
+        &mut self,
+        vaddr: VirtAddr,
+        boundary: VirtAddr,
+        level: usize,
+    ) -> PagingResult {
+        let index = Self::virt_to_index(vaddr, level);
+        let entry = self.as_slice()[index];
+        if entry.unused() || !entry.present() || level == 1 {
+            return Ok(());
+        }
+
+        if entry.huge(true) {
+            let block_size = Self::level_size(level);
+            if boundary.as_usize().is_multiple_of(block_size) {
+                return Ok(());
+            }
+
+            let child_level = level - 1;
+            let child_size = Self::level_size(child_level);
+            let child_entries = 1usize << T::LEVEL_BITS[T::LEVEL_BITS.len() - child_level];
+            let mut child = Self::new(self.allocator.clone())?;
+            let child_is_huge = child_level > 1;
+            let block_paddr = entry.paddr(true);
+            let block_config = entry.config(true);
+            for (child_index, child_entry) in child
+                .as_slice_mut()
+                .iter_mut()
+                .take(child_entries)
+                .enumerate()
+            {
+                *child_entry = T::P::new_page(
+                    block_paddr + child_index * child_size,
+                    block_config,
+                    child_is_huge,
+                );
+            }
+
+            // Break-before-make prevents a CPU from observing the old block
+            // descriptor and the new table descriptor at the same time.
+            self.as_slice_mut()[index].clear();
+            T::flush(None);
+            self.as_slice_mut()[index] = T::P::new_table(child.paddr);
+            T::flush(None);
+
+            child.split_leaf_for_boundary(vaddr, boundary, child_level)
+        } else {
+            let mut child = Self::from_paddr(entry.paddr(true), self.allocator.clone());
+            child.split_leaf_for_boundary(vaddr, boundary, level - 1)
+        }
+    }
+
     pub fn remap_recursive(
         &mut self,
         vaddr: VirtAddr,
