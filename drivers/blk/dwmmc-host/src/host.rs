@@ -357,8 +357,8 @@ impl DwMmc {
             return Err(Error::Busy);
         }
 
-        let hardware_mask = dma.dma_mask().min(u32::MAX as u64);
-        let inherited = dma.constraints();
+        let hardware_mask = dma.info().constraints().addr_mask.min(u32::MAX as u64);
+        let inherited = dma.info().constraints();
         let constraints = DmaConstraints {
             addr_mask: hardware_mask,
             align: inherited.align.max(4),

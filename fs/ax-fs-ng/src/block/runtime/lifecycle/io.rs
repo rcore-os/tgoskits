@@ -135,7 +135,9 @@ fn transfer_plan(
 ) -> Result<TransferPlan, BlockError> {
     let boundary_cap = info
         .limits
-        .segment_boundary
+        .dma
+        .constraints()
+        .boundary
         .unwrap_or(MAX_RUNTIME_TRANSFER_BYTES);
     let planner = TransferPlanner::new(
         info.device,
@@ -254,7 +256,7 @@ fn complete_read_window(
             continue;
         }
         let range = chunk.byte_offset..chunk.byte_offset + chunk.byte_len;
-        data.copy_from_device_to_slice(&mut buffer[range]);
+        data.copy_to_slice_cpu(&mut buffer[range]);
     }
 
     if let Some((lba, error)) = first_error {

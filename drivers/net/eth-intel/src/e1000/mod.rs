@@ -101,7 +101,7 @@ impl Interface for E1000 {
         let queue = E1000TxQueue {
             regs: self.regs,
             desc,
-            dma_mask: self.dma.dma_mask(),
+            dma_mask: self.dma.info().constraints().addr_mask,
             bus_addrs: [None; QUEUE_SIZE],
             next_submit: 0,
             next_reclaim: 0,
@@ -136,7 +136,7 @@ impl Interface for E1000 {
         let queue = E1000RxQueue {
             regs: self.regs,
             desc,
-            dma_mask: self.dma.dma_mask(),
+            dma_mask: self.dma.info().constraints().addr_mask,
             bus_addrs: [None; QUEUE_SIZE],
             next_submit: 0,
             next_reclaim: 0,

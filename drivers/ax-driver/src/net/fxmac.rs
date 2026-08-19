@@ -34,10 +34,11 @@ crate::model_register!(
 );
 
 fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), rdrive::probe::OnProbeError> {
-    let dma = axklib::dma::device_with_mask(
-        u64::MAX,
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
         crate::binding_resolver::dma_coherency_from_fdt(probe.info()),
-    );
+        dma_api::DmaConstraints::new(u64::MAX),
+    ));
     let info = binding_info_from_fdt(probe.info())?;
     let dev = FxmacNet::new();
     probe
@@ -49,7 +50,11 @@ fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), rdrive::probe:
 
 pub fn register(plat_dev: PlatformDevice) {
     let dev = FxmacNet::new();
-    let dma = axklib::dma::device_with_mask(u64::MAX, dma_api::DmaCoherency::NonCoherent);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        dma_api::DmaCoherency::NonCoherent,
+        dma_api::DmaConstraints::new(u64::MAX),
+    ));
     plat_dev.register_net(DRIVER_NAME, dev, dma);
     log::info!("registered FXmac network device");
 }
@@ -439,7 +444,8 @@ impl fxmac_rs::KernelFunc for FxmacKernelFunc {
             return;
         };
         let paddr = axklib::mem::virt_to_phys((vaddr.as_ptr() as usize).into()).as_usize();
-        let handle = unsafe { DmaAllocHandle::new(vaddr, DmaAddr::from(paddr as u64), layout) };
+        let handle =
+            unsafe { DmaAllocHandle::new(vaddr, vaddr, DmaAddr::from(paddr as u64), layout) };
         if let Err(err) = unsafe { axklib::dma::op().dealloc_coherent(handle) } {
             log::error!("FXmac DMA release failed; allocation quarantined: {err}");
         }

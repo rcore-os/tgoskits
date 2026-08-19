@@ -167,7 +167,7 @@ impl TrackingDmaOp {
         let ptr = unsafe { alloc_zeroed(layout) };
         let cpu_addr = NonNull::new(ptr)?;
         let dma_addr = self.alloc_dma_addr(layout, constraints);
-        Some(unsafe { DmaAllocHandle::new(cpu_addr, dma_addr.into(), layout) })
+        Some(unsafe { DmaAllocHandle::new(cpu_addr, cpu_addr, dma_addr.into(), layout) })
     }
 }
 

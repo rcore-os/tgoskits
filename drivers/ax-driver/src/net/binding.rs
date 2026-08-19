@@ -112,10 +112,11 @@ impl ProbeFdtNet for rdrive::probe::fdt::ProbeFdt<'_> {
     where
         T: Interface + 'static,
     {
-        let dma = axklib::dma::device_with_mask(
-            u64::MAX,
+        let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
             crate::binding_resolver::dma_coherency_from_fdt(self.info()),
-        );
+            dma_api::DmaConstraints::new(u64::MAX),
+        ));
         let info = binding_info_from_fdt(self.info())?;
         Ok(register_net_with_info(
             self.into_platform_device(),
@@ -138,10 +139,11 @@ impl ProbeAcpiNet for rdrive::probe::acpi::ProbeAcpi<'_> {
     where
         T: Interface + 'static,
     {
-        let dma = axklib::dma::device_with_mask(
-            u64::MAX,
+        let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
             crate::binding_resolver::dma_coherency_from_acpi(self.info())?,
-        );
+            dma_api::DmaConstraints::new(u64::MAX),
+        ));
         let info = binding_info_from_acpi(self.info())?;
         Ok(register_net_with_info(
             self.into_platform_device(),

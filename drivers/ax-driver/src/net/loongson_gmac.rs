@@ -1108,10 +1108,11 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     })?;
     let binding_info = gmac_binding_info(&info);
     let irq = binding_info.irq_num();
-    let dma = axklib::dma::device_with_mask(
-        u64::MAX,
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
         crate::binding_resolver::dma_coherency_from_fdt(&info),
-    );
+        dma_api::DmaConstraints::new(u64::MAX),
+    ));
     plat_dev.register_net_with_info(DEVICE_NAME, dev, dma, binding_info);
     info!(
         "registered {DEVICE_NAME} network device: irq={irq:?}, \

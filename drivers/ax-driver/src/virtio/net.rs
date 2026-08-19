@@ -378,7 +378,11 @@ pub fn register_transport<T: Transport + 'static>(
     transport: T,
 ) -> Result<(), OnProbeError> {
     let net = make_net(transport)?;
-    let dma = axklib::dma::device_with_mask(u64::MAX, dma_api::DmaCoherency::NonCoherent);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        dma_api::DmaCoherency::NonCoherent,
+        dma_api::DmaConstraints::new(u64::MAX),
+    ));
     let irq = plat_dev.register_net("virtio-net", net, dma);
     log::info!("registered virtio network device irq={irq:?}");
     Ok(())
@@ -391,10 +395,11 @@ pub fn register_fdt_transport<T: Transport + 'static>(
 ) -> Result<(), OnProbeError> {
     let net = make_net(transport)?;
     let binding = binding_info_from_fdt(info)?;
-    let dma = axklib::dma::device_with_mask(
-        u64::MAX,
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
         crate::binding_resolver::dma_coherency_from_fdt(info),
-    );
+        dma_api::DmaConstraints::new(u64::MAX),
+    ));
     let irq = plat_dev.register_net_with_info("virtio-net", net, dma, binding);
     log::info!("registered virtio network device irq={irq:?}");
     Ok(())

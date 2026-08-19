@@ -26,71 +26,23 @@ pub use streaming::*;
 #[derive(Clone)]
 pub struct DeviceDma {
     op: &'static dyn DmaOp,
-    constraints: DmaConstraints,
-    domain: DmaDomainId,
-    coherency: DmaCoherency,
+    info: DmaDeviceInfo,
 }
 
 impl DeviceDma {
-    pub fn new(
-        domain: DmaDomainId,
-        dma_mask: u64,
-        coherency: DmaCoherency,
-        op: &'static dyn DmaOp,
-    ) -> Self {
-        Self {
-            constraints: DmaConstraints::new(dma_mask),
-            domain,
-            coherency,
-            op,
-        }
-    }
-
-    pub fn new_legacy(dma_mask: u64, coherency: DmaCoherency, op: &'static dyn DmaOp) -> Self {
-        Self::new(DmaDomainId::legacy_global(), dma_mask, coherency, op)
+    pub const fn new(info: DmaDeviceInfo, op: &'static dyn DmaOp) -> Self {
+        Self { info, op }
     }
 
     pub fn with_constraints(&self, constraints: DmaConstraints) -> Self {
         Self {
             op: self.op,
-            constraints,
-            domain: self.domain,
-            coherency: self.coherency,
+            info: self.info.with_constraints(constraints),
         }
     }
 
-    pub fn constraints(&self) -> DmaConstraints {
-        self.constraints
-    }
-
-    pub fn dma_mask(&self) -> u64 {
-        self.constraints.addr_mask
-    }
-
-    pub fn domain_id(&self) -> DmaDomainId {
-        self.domain
-    }
-
-    pub fn coherency(&self) -> DmaCoherency {
-        self.coherency
-    }
-
-    pub fn flush(&self, addr: NonNull<u8>, size: usize) {
-        if self.coherency == DmaCoherency::NonCoherent {
-            self.op.flush(addr, size)
-        }
-    }
-
-    pub fn invalidate(&self, addr: NonNull<u8>, size: usize) {
-        if self.coherency == DmaCoherency::NonCoherent {
-            self.op.invalidate(addr, size)
-        }
-    }
-
-    pub fn flush_invalidate(&self, addr: NonNull<u8>, size: usize) {
-        if self.coherency == DmaCoherency::NonCoherent {
-            self.op.flush_invalidate(addr, size)
-        }
+    pub const fn info(&self) -> DmaDeviceInfo {
+        self.info
     }
 
     pub fn page_size(&self) -> usize {
@@ -101,7 +53,8 @@ impl DeviceDma {
         &self,
         layout: core::alloc::Layout,
     ) -> Result<DmaAllocHandle, DmaError> {
-        let constraints = self.constraints.with_align(layout.align());
+        let mut constraints = self.info.constraints();
+        constraints.align = constraints.align.max(layout.align());
         let res =
             unsafe { self.op.alloc_contiguous(constraints, layout) }.ok_or(DmaError::NoMemory)?;
         match self.check_alloc_handle(&res, constraints) {
@@ -121,8 +74,9 @@ impl DeviceDma {
         &self,
         layout: core::alloc::Layout,
     ) -> Result<DmaAllocHandle, DmaError> {
-        let constraints = self.constraints.with_align(layout.align());
-        let res = match self.coherency {
+        let mut constraints = self.info.constraints();
+        constraints.align = constraints.align.max(layout.align());
+        let res = match self.info.coherency() {
             DmaCoherency::Coherent => unsafe { self.op.alloc_contiguous(constraints, layout) },
             DmaCoherency::NonCoherent => unsafe { self.op.alloc_coherent(constraints, layout) },
         }
@@ -130,7 +84,7 @@ impl DeviceDma {
         match self.check_alloc_handle(&res, constraints) {
             Ok(()) => Ok(res),
             Err(e) => {
-                match self.coherency {
+                match self.info.coherency() {
                     DmaCoherency::Coherent => unsafe { self.op.dealloc_contiguous(res) },
                     DmaCoherency::NonCoherent => {
                         if let Err(release_err) = unsafe { self.op.dealloc_coherent(res) } {
@@ -147,7 +101,7 @@ impl DeviceDma {
     }
 
     pub(crate) unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
-        match self.coherency {
+        match self.info.coherency() {
             DmaCoherency::Coherent => {
                 unsafe { self.op.dealloc_contiguous(handle) };
                 Ok(())
@@ -163,7 +117,8 @@ impl DeviceDma {
         align: usize,
         direction: DmaDirection,
     ) -> Result<DmaMapHandle, DmaError> {
-        let constraints = self.constraints.with_align(align);
+        let mut constraints = self.info.constraints();
+        constraints.align = constraints.align.max(align);
         let res = unsafe { self.op.map_streaming(constraints, addr, size, direction) }?;
         match self.check_map_handle(&res, constraints) {
             Ok(()) => Ok(res),
@@ -185,7 +140,7 @@ impl DeviceDma {
         size: usize,
         direction: DmaDirection,
     ) {
-        if self.coherency == DmaCoherency::NonCoherent {
+        if self.info.coherency() == DmaCoherency::NonCoherent {
             self.op
                 .sync_alloc_for_device(handle, offset, size, direction);
         }
@@ -198,7 +153,7 @@ impl DeviceDma {
         size: usize,
         direction: DmaDirection,
     ) {
-        if self.coherency == DmaCoherency::NonCoherent {
+        if self.info.coherency() == DmaCoherency::NonCoherent {
             self.op.sync_alloc_for_cpu(handle, offset, size, direction);
         }
     }
@@ -211,7 +166,7 @@ impl DeviceDma {
         direction: DmaDirection,
     ) {
         self.op
-            .sync_map_for_device(handle, offset, size, direction, self.coherency);
+            .sync_map_for_device(handle, offset, size, direction, self.info.coherency());
     }
 
     pub(crate) fn sync_map_for_cpu(
@@ -222,7 +177,7 @@ impl DeviceDma {
         direction: DmaDirection,
     ) {
         self.op
-            .sync_map_for_cpu(handle, offset, size, direction, self.coherency);
+            .sync_map_for_cpu(handle, offset, size, direction, self.info.coherency());
     }
 
     pub fn coherent_array_zero<T: DmaPod>(&self, len: usize) -> Result<CoherentArray<T>, DmaError> {
@@ -296,7 +251,7 @@ impl DeviceDma {
         direction: DmaDirection,
     ) -> Result<StreamingMap<T>, DmaError> {
         let map = self.map_streaming_slice(buff, align, direction)?;
-        map.prepare_for_device_all();
+        map.prepare_for_device(0..map.bytes_len());
         Ok(map)
     }
 
