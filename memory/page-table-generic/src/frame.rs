@@ -229,9 +229,12 @@ where
     /// table so the commit cannot fail for lack of memory.
     ///
     /// Handles a present block and a *not-present* block (an `mprotect(PROT_NONE)`
-    /// over a huge area) uniformly: every arch encodes `huge(is_dir)` structurally
-    /// (present-independent), so both are reached through the same short-circuit as
-    /// [`Self::protect_recursive`] — no separate not-present path is needed.
+    /// over a huge area) uniformly *for PTE formats that keep the block descriptor
+    /// present-independent* (e.g. AArch64 stage-1, where `huge(is_dir)` is structural):
+    /// both reach the same short-circuit as [`Self::protect_recursive`], so no separate
+    /// not-present path is needed. Formats that instead clear a not-present entry (some
+    /// EPT/NPT encodings) leave it `unused()`, so the split degrades to `NotMapped` —
+    /// the safe result the zeroing-format test asserts.
     ///
     /// The `reserved` frame is consumed only on success (installed as the new table).
     /// On any error it is left untouched for the caller to reclaim. Returns the size
@@ -254,10 +257,12 @@ where
             return Err(PagingError::not_mapped());
         }
         let is_dir = level > 1;
-        // A block (present OR not-present) reports `huge()==true` on every arch — the
-        // same short-circuit `protect_recursive`/`find_occupied_leaf` use — so there
-        // is no separate not-present path. `level == 1` is never `huge` (is_dir is
-        // false there), so reaching this branch implies `level >= 2`.
+        // A block reports `huge()==true` on formats whose descriptor is present-
+        // independent — the same short-circuit `protect_recursive`/`find_occupied_leaf`
+        // use — so a present OR not-present block needs no separate path there. (Zeroing
+        // formats leave a not-present block `unused()`, already returned as `NotMapped`
+        // above.) `level == 1` is never `huge` (is_dir is false there), so reaching this
+        // branch implies `level >= 2`.
         if entry.huge(is_dir) {
             let block_paddr = entry.paddr(is_dir);
             let block_config = entry.config(is_dir);
