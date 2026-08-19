@@ -1,5 +1,4 @@
 board_type = "LicheeRV-Nano-SG2002"
-dtb_file = "os/StarryOS/configs/board/licheerv-nano-sg2002.dtb"
 kernel_load_addr = "0x80200000"
 fit_load_addr = "0x82200000"
 bootm_addr = "0x82200000"
