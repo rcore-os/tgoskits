@@ -475,22 +475,27 @@ impl CowBackend {
     }
 }
 
-trait CowCloneRollbackOps {
-    fn rollback_page(&mut self, vaddr: VirtAddr);
-}
-
-struct CowCloneTransaction<'a, O: CowCloneRollbackOps> {
-    rollback_ops: &'a mut O,
+struct CowCloneTransaction<'a> {
+    rollback: PageTableCowCloneRollback<'a>,
     start: VirtAddr,
     cloned_end: VirtAddr,
     page_size: usize,
     committed: bool,
 }
 
-impl<'a, O: CowCloneRollbackOps> CowCloneTransaction<'a, O> {
-    fn new(rollback_ops: &'a mut O, start: VirtAddr, page_size: usize) -> Self {
+impl<'a> CowCloneTransaction<'a> {
+    fn new(
+        page_table: &'a mut PageTable,
+        child_acct: Option<&'a MemoryAccounting>,
+        start: VirtAddr,
+        page_size: usize,
+    ) -> Self {
         Self {
-            rollback_ops,
+            rollback: PageTableCowCloneRollback {
+                page_table,
+                child_acct,
+                page_size,
+            },
             start,
             cloned_end: start,
             page_size,
@@ -498,8 +503,8 @@ impl<'a, O: CowCloneRollbackOps> CowCloneTransaction<'a, O> {
         }
     }
 
-    fn rollback_ops_mut(&mut self) -> &mut O {
-        self.rollback_ops
+    fn page_table_mut(&mut self) -> &mut PageTable {
+        self.rollback.page_table
     }
 
     fn record_cloned_page(&mut self, vaddr: VirtAddr) {
@@ -511,14 +516,14 @@ impl<'a, O: CowCloneRollbackOps> CowCloneTransaction<'a, O> {
     }
 }
 
-impl<O: CowCloneRollbackOps> Drop for CowCloneTransaction<'_, O> {
+impl Drop for CowCloneTransaction<'_> {
     fn drop(&mut self) {
         if self.committed {
             return;
         }
         while self.cloned_end > self.start {
             self.cloned_end -= self.page_size;
-            self.rollback_ops.rollback_page(self.cloned_end);
+            self.rollback.rollback_page(self.cloned_end);
         }
     }
 }
@@ -529,7 +534,7 @@ struct PageTableCowCloneRollback<'a> {
     page_size: usize,
 }
 
-impl CowCloneRollbackOps for PageTableCowCloneRollback<'_> {
+impl PageTableCowCloneRollback<'_> {
     fn rollback_page(&mut self, vaddr: VirtAddr) {
         if let Some(child) = self.child_acct
             && child.charge_kind(vaddr).is_some()
@@ -672,12 +677,7 @@ impl BackendOps for CowBackend {
         let cow_flags = flags - MappingFlags::WRITE;
         let parent_acct = acct.parent;
         let child_acct = acct.child;
-        let mut rollback_ops = PageTableCowCloneRollback {
-            page_table: new_pt,
-            child_acct,
-            page_size: self.size,
-        };
-        let mut transaction = CowCloneTransaction::new(&mut rollback_ops, range.start, self.size);
+        let mut transaction = CowCloneTransaction::new(new_pt, child_acct, range.start, self.size);
 
         for vaddr in pages_in(range, self.size)? {
             match old_pt.query(vaddr) {
@@ -706,8 +706,7 @@ impl BackendOps for CowBackend {
                         return Err(err.into());
                     }
                     if let Err(err) = transaction
-                        .rollback_ops_mut()
-                        .page_table
+                        .page_table_mut()
                         .map_page(vaddr, paddr, self.size, cow_flags)
                     {
                         drop(frame);
@@ -806,62 +805,106 @@ pub(crate) fn cow_file_max_read_len_boundary_rules_hold_for_test() -> bool {
         && matches!(cow_file_max_read_len(8192, Some(4096), 4096, 4096), Ok(0))
 }
 
-#[cfg(any(test, axtest))]
-fn cow_clone_transaction_rollback_rules_hold() -> bool {
-    struct MockRollback {
-        pages: alloc::vec::Vec<VirtAddr>,
-    }
-
-    impl CowCloneRollbackOps for MockRollback {
-        fn rollback_page(&mut self, vaddr: VirtAddr) {
-            self.pages.push(vaddr);
-        }
-    }
-
+#[cfg(axtest)]
+fn cow_clone_map_failure_restores_resources() -> bool {
     let start = VirtAddr::from(0x4000_0000);
-    let mut failed_before_current_commit = MockRollback {
-        pages: alloc::vec::Vec::new(),
+    let second_page = start + PAGE_SIZE_4K;
+    let mapping_size = 2 * PAGE_SIZE_4K;
+    let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+    let backend = CowBackend {
+        start,
+        size: PAGE_SIZE_4K,
+        file: None,
+        name: Some("[cow-clone-rollback-test]".to_string()),
+        shared: false,
+        write_upgraded: Cell::new(false),
     };
+
+    let Ok(mut parent) = AddrSpace::new_empty(start, mapping_size) else {
+        return false;
+    };
+    if parent
+        .map(
+            start,
+            mapping_size,
+            flags,
+            true,
+            Backend::Cow(backend.clone()),
+        )
+        .is_err()
     {
-        let mut transaction =
-            CowCloneTransaction::new(&mut failed_before_current_commit, start, PAGE_SIZE_4K);
-        transaction.record_cloned_page(start);
+        return false;
+    }
+    let Ok((first_frame, ..)) = parent.pt.query(start) else {
+        return false;
+    };
+    let Ok((second_frame, ..)) = parent.pt.query(second_page) else {
+        return false;
+    };
+
+    let Ok(child) = AddrSpace::new_empty(start, mapping_size) else {
+        return false;
+    };
+    let child_aspace = Arc::new(Mutex::new(child));
+    let mut child = child_aspace.lock();
+    if child
+        .pt
+        .map_page(second_page, second_frame, PAGE_SIZE_4K, flags)
+        .is_err()
+    {
+        return false;
+    }
+    let AddrSpace {
+        pt: parent_pt,
+        rss: parent_rss,
+        ..
+    } = &mut parent;
+    let AddrSpace {
+        pt: child_pt,
+        rss: child_rss,
+        ..
+    } = &mut *child;
+
+    let result = backend.clone_map(
+        VirtAddrRange::from_start_size(start, mapping_size),
+        flags,
+        parent_pt,
+        child_pt,
+        &child_aspace,
+        CloneMapAccounting {
+            parent: Some(parent_rss),
+            child: Some(child_rss),
+        },
+    );
+
+    fn frame_ref_count(paddr: PhysAddr) -> Option<u32> {
+        let frame = FRAME_TABLE.lock().get_frame_ref(paddr)?;
+        Some(frame.lock().count)
     }
 
-    let mut failed = MockRollback {
-        pages: alloc::vec::Vec::new(),
-    };
-    {
-        let mut transaction = CowCloneTransaction::new(&mut failed, start, PAGE_SIZE_4K);
-        transaction.record_cloned_page(start);
-        transaction.record_cloned_page(start + 2 * PAGE_SIZE_4K);
-    }
+    let first_frame_count = frame_ref_count(first_frame);
+    let second_frame_count = frame_ref_count(second_frame);
 
-    let mut committed = MockRollback {
-        pages: alloc::vec::Vec::new(),
-    };
-    {
-        let mut transaction = CowCloneTransaction::new(&mut committed, start, PAGE_SIZE_4K);
-        transaction.record_cloned_page(start);
-        transaction.commit();
-    }
-
-    failed_before_current_commit.pages == alloc::vec![start]
-        && failed.pages == alloc::vec![start + 2 * PAGE_SIZE_4K, start + PAGE_SIZE_4K, start,]
-        && committed.pages.is_empty()
+    matches!(
+        result,
+        Err(StarryError::Paging(PagingError::MappingConflict {
+            vaddr,
+            existing_paddr,
+        })) if vaddr == second_page && existing_paddr == second_frame
+    ) && matches!(child_pt.query(start), Err(PagingError::NotMapped))
+        && matches!(
+            child_pt.query(second_page),
+            Ok((paddr, _, page_size))
+                if paddr == second_frame && page_size == PAGE_SIZE_4K
+        )
+        && child_rss.charge_kind(start).is_none()
+        && child_rss.charge_kind(second_page).is_none()
+        && child_rss.rss_total_pages() == 0
+        && first_frame_count == Some(FrameTableRefCount::INITIAL_CNT)
+        && second_frame_count == Some(FrameTableRefCount::INITIAL_CNT)
 }
 
 #[cfg(axtest)]
 pub(crate) fn cow_clone_failure_rollback_rules_hold_for_test() -> bool {
-    cow_clone_transaction_rollback_rules_hold()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::cow_clone_transaction_rollback_rules_hold;
-
-    #[test]
-    fn cow_clone_failure_rolls_back_unregistered_pages() {
-        assert!(cow_clone_transaction_rollback_rules_hold());
-    }
+    cow_clone_map_failure_restores_resources()
 }
