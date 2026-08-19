@@ -88,25 +88,13 @@ impl HostTime for ArceOsHost {
     }
 }
 
-/// Returns the platform IRQ owned by the runtime-selected physical console.
+/// Returns the platform IRQ reserved for the physical host console.
 pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
     modules::ax_hal::console::irq_num()
 }
 
 pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::irq::handle_irq(vector);
-}
-
-pub(crate) fn set_console_input_irq_enabled(enabled: bool) {
-    modules::ax_hal::console::set_input_irq_enabled(enabled);
-}
-
-pub(crate) fn read_console_bytes(bytes: &mut [u8]) -> usize {
-    modules::ax_hal::console::read_bytes(bytes)
-}
-
-pub(crate) fn write_console_bytes(bytes: &[u8]) {
-    modules::ax_hal::console::write_bytes(bytes);
 }
 
 impl HostCpu for ArceOsHost {

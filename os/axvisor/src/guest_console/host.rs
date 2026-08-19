@@ -9,7 +9,7 @@ use ax_std::os::arceos::modules::ax_runtime::console::{
 use std::sync::OnceLock;
 
 struct HostConsole {
-    input: TaskConsoleInput,
+    input: Option<TaskConsoleInput>,
     output: TaskConsoleOutput,
     logs: Option<ConsoleLogSubscription>,
 }
@@ -23,8 +23,13 @@ pub(crate) fn configure_host_console_reader() -> Result<()> {
         Err(RuntimeError::OperationNotSupported) => None,
         Err(error) => return Err(error).context("failed to subscribe to host console logs"),
     };
+    let input = match console::take_input() {
+        Ok(input) => Some(input),
+        Err(RuntimeError::OperationNotSupported) => None,
+        Err(error) => return Err(error).context("failed to take host console input"),
+    };
     let console = HostConsole {
-        input: console::take_input().context("failed to take host console input")?,
+        input,
         output: console::output().context("failed to open host console output")?,
         logs,
     };
@@ -44,8 +49,9 @@ fn host_console() -> &'static HostConsole {
 ///
 /// No other Axvisor component may own the runtime RX subscription.
 pub(crate) fn read_host_byte() -> Option<u8> {
+    let input = host_console().input.as_ref()?;
     let mut item = [console::RxItem::default()];
-    while host_console().input.try_read(&mut item) != 0 {
+    while input.try_read(&mut item) != 0 {
         if let console::RxItem::Byte { byte, .. } = item[0] {
             return Some(byte);
         }
@@ -70,9 +76,12 @@ pub(crate) fn take_host_log_drops() -> ConsoleLogDropReport {
 /// longer make progress.
 pub(crate) fn wait_for_host_input() -> bool {
     let console = host_console();
+    let Some(input) = &console.input else {
+        return false;
+    };
     let result = match &console.logs {
-        Some(logs) => console.input.wait_event(logs),
-        None => console.input.wait_readable(),
+        Some(logs) => input.wait_event(logs),
+        None => input.wait_readable(),
     };
     match result {
         Ok(()) => true,

@@ -7,7 +7,7 @@
 mod control;
 mod ingress;
 mod log_mailbox;
-mod spsc;
+pub(crate) mod spsc;
 mod state;
 mod worker;
 

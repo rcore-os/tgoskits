@@ -5,24 +5,19 @@
 //! policy remain in the consuming OS.
 
 use alloc::sync::Arc;
-use core::{
-    fmt::{self, Write},
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::fmt::{self, Write};
 
 use ax_lazyinit::OnceLock;
 use ax_sync::Mutex;
 use axpoll::PollSet;
 
 pub use crate::serial::RxItem;
-use crate::{RuntimeError, RuntimeResult, serial, sync::SpinLock};
+use crate::{RuntimeError, RuntimeResult, raw_console::RawConsoleInput, serial};
 
 const DEFAULT_BAUDRATE: u32 = 115_200;
 
 static ACTIVATION: OnceLock<ConsoleActivation> = OnceLock::new();
-static RAW_INPUT_TAKEN: AtomicBool = AtomicBool::new(false);
 static RAW_OUTPUT_LOCK: Mutex<()> = Mutex::new(());
-static RAW_INPUT_SOURCE: OnceLock<Arc<PollSet>> = OnceLock::new();
 static RAW_OUTPUT_SOURCE: OnceLock<Arc<PollSet>> = OnceLock::new();
 
 /// Result of selecting the firmware console before secondary CPUs start.
@@ -215,16 +210,9 @@ pub fn take_input() -> RuntimeResult<TaskConsoleInput> {
             .ok_or(RuntimeError::SerialConsoleBusy);
     }
     match activation() {
-        Some(ConsoleActivation::RawHal(_)) => {
-            RAW_INPUT_TAKEN
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .map_err(|_| RuntimeError::SerialConsoleBusy)?;
-            Ok(TaskConsoleInput {
-                inner: TaskConsoleInputInner::RawHal(RawHalInput {
-                    pending: SpinLock::new(None),
-                }),
-            })
-        }
+        Some(ConsoleActivation::RawHal(_)) => Ok(TaskConsoleInput {
+            inner: TaskConsoleInputInner::RawHal(crate::raw_console::take_input()?),
+        }),
         activation => Err(inactive_console_error(activation)),
     }
 }
@@ -294,11 +282,7 @@ pub struct TaskConsoleInput {
 
 enum TaskConsoleInputInner {
     Runtime(serial::SerialRxSubscription),
-    RawHal(RawHalInput),
-}
-
-struct RawHalInput {
-    pending: SpinLock<Option<u8>>,
+    RawHal(RawConsoleInput),
 }
 
 impl TaskConsoleInput {
@@ -312,7 +296,10 @@ impl TaskConsoleInput {
     pub fn wait_readable(&self) -> RuntimeResult {
         match &self.inner {
             TaskConsoleInputInner::Runtime(inner) => inner.wait_readable(),
-            TaskConsoleInputInner::RawHal(inner) => inner.wait_readable(),
+            TaskConsoleInputInner::RawHal(inner) => {
+                inner.wait_readable();
+                Ok(())
+            }
         }
     }
 
@@ -342,7 +329,7 @@ impl TaskConsoleInput {
     pub fn poll_source(&self) -> Arc<PollSet> {
         match &self.inner {
             TaskConsoleInputInner::Runtime(inner) => inner.poll_source(),
-            TaskConsoleInputInner::RawHal(_) => raw_input_source(),
+            TaskConsoleInputInner::RawHal(inner) => inner.poll_source(),
         }
     }
 
@@ -350,74 +337,12 @@ impl TaskConsoleInput {
     pub fn wait_event(&self, logs: &ConsoleLogSubscription) -> RuntimeResult {
         match &self.inner {
             TaskConsoleInputInner::Runtime(inner) => inner.wait_console_event(&logs.inner),
-            TaskConsoleInputInner::RawHal(inner) => inner.wait_readable(),
-        }
-    }
-}
-
-impl RawHalInput {
-    fn try_read(&self, out: &mut [RxItem]) -> usize {
-        if out.is_empty() {
-            return 0;
-        }
-        let mut written = 0;
-        if let Some(byte) = self.pending.lock_irqsave().take() {
-            out[written] = raw_rx_item(byte);
-            written += 1;
-        }
-        let mut bytes = [0u8; 64];
-        while written < out.len() {
-            let limit = bytes.len().min(out.len() - written);
-            let count = ax_hal::console::read_bytes(&mut bytes[..limit]);
-            for &byte in &bytes[..count] {
-                out[written] = raw_rx_item(byte);
-                written += 1;
-            }
-            if count < limit {
-                break;
+            TaskConsoleInputInner::RawHal(inner) => {
+                inner.wait_readable();
+                Ok(())
             }
         }
-        written
     }
-
-    fn wait_readable(&self) -> RuntimeResult {
-        loop {
-            if self.pending.lock_irqsave().is_some() {
-                return Ok(());
-            }
-            let mut byte = [0u8; 1];
-            if ax_hal::console::read_bytes(&mut byte) != 0 {
-                *self.pending.lock_irqsave() = Some(byte[0]);
-                return Ok(());
-            }
-            ax_task::yield_now();
-        }
-    }
-
-    fn discard_pending(&self) {
-        self.pending.lock_irqsave().take();
-        let mut bytes = [0u8; 64];
-        while ax_hal::console::read_bytes(&mut bytes) == bytes.len() {}
-    }
-}
-
-impl Drop for RawHalInput {
-    fn drop(&mut self) {
-        RAW_INPUT_TAKEN.store(false, Ordering::Release);
-    }
-}
-
-const fn raw_rx_item(byte: u8) -> RxItem {
-    RxItem::Byte {
-        byte,
-        flag: serial::RxFlag::Normal,
-    }
-}
-
-fn raw_input_source() -> Arc<PollSet> {
-    RAW_INPUT_SOURCE
-        .call_once(|| Arc::new(PollSet::new()))
-        .clone()
 }
 
 fn raw_output_source() -> Arc<PollSet> {
@@ -732,9 +657,12 @@ mod tests {
     }
 
     #[test]
-    fn raw_hal_activation_still_provides_task_console_io() {
+    fn raw_hal_without_irq_does_not_fake_sleepable_input() {
         ACTIVATION.call_once(|| ConsoleActivation::RawHal(ConsoleUnavailable::NoSerialDevice));
-        assert!(take_input().is_ok());
+        assert!(matches!(
+            take_input(),
+            Err(RuntimeError::OperationNotSupported)
+        ));
         assert!(output().is_ok());
     }
 }

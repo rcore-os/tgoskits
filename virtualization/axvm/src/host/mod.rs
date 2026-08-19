@@ -12,27 +12,6 @@ pub(crate) fn default_host() -> &'static arceos::ArceOsHost {
 pub(crate) use paging::PagingHandler;
 pub(crate) use traits::{HostCpu, HostMemory, HostPlatform, HostTime};
 
-/// Physical host-console operations required by an AxVM application.
-///
-/// Callers must keep a single owner for console input. These operations are
-/// intended for task context; they do not provide an IRQ-safe buffering layer.
-pub mod console {
-    /// Enables or disables physical host-console input interrupts.
-    pub fn set_input_irq_enabled(enabled: bool) {
-        super::arceos::set_console_input_irq_enabled(enabled);
-    }
-
-    /// Reads available bytes from the physical host console.
-    pub fn read_bytes(bytes: &mut [u8]) -> usize {
-        super::arceos::read_console_bytes(bytes)
-    }
-
-    /// Writes bytes to the physical host console.
-    pub fn write_bytes(bytes: &[u8]) {
-        super::arceos::write_console_bytes(bytes);
-    }
-}
-
 /// Physical host-CPU information required by an AxVM application.
 pub mod cpu {
     use super::HostCpu;

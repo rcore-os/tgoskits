@@ -55,6 +55,8 @@ mod kernel_mapping;
 mod klib;
 #[cfg(feature = "multitask")]
 mod preempt;
+#[cfg(all(feature = "irq", feature = "multitask"))]
+mod raw_console;
 
 #[cfg(all(feature = "irq", feature = "multitask"))]
 pub mod console;

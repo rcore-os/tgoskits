@@ -259,17 +259,21 @@ subscription 只是 runtime 输出仲裁的附属 lease，不是第三条物理�
   输出。panic/emergency 不进入该队列，继续尝试 emergency endpoint。
 
 没有探测到匹配 UART driver 时，同一 `TaskConsoleInput`/`TaskConsoleOutput` 类型内部选择
-raw HAL 后端，而不是让 ArceOS、StarryOS 或 Axvisor 再维护 fallback 状态。raw input 保留
-唯一 reader，平台没有可用 IRQ runtime 时以让出调度器的方式等待；raw output 的所有克隆
-共享公共 sleepable lock，普通完整日志以非阻塞方式尝试同一把锁，从而不在记录内部与任务
-输出交叉。raw HAL 没有 owner worker，因此不提供日志 subscription、硬件 reconfigure 或
-比平台同步写更强的 drain 保证。已经进入 `Preparing` 后失败的 `FailedClosed` 后端不会走
-这条 fallback，也不会重新访问 early UART。
+raw HAL 后端，而不是让 ArceOS、StarryOS 或 Axvisor 再维护 fallback 状态。若 HAL 提供
+console IRQ，公共层注册唯一 handler，在 hard IRQ 中把 FIFO 排空到固定容量 SPSC queue，
+再通过 IRQ-safe `WaitQueue` 和 poll source 唤醒唯一 `TaskConsoleInput` reader；软件 queue
+满时保留 overrun 状态。任务态绝不直接轮询硬件，也不靠 `yield_now` 或 CPU affinity
+维持进展。HAL 没有 console IRQ 时，raw output 仍然可用，但 `take_input` 明确返回
+`OperationNotSupported`，调用方可以关闭交互入口而不制造伪睡眠 capability。raw output
+的所有克隆共享公共 sleepable lock，普通完整日志以非阻塞方式尝试同一把锁，从而不在
+记录内部与任务输出交叉。raw HAL 没有 owner worker，因此不提供日志 subscription、硬件
+reconfigure 或比平台同步写更强的 drain 保证。已经进入 `Preparing` 后失败的
+`FailedClosed` 后端不会走这条 fallback，也不会重新访问 early UART。
 
 console 不再有独立 Cargo feature。`ax-runtime` 在同时启用既有 `irq` 和 `multitask`
 能力时编译多 UART runtime、紧急端点与任务态 console；probe 后有匹配设备才接管，否则
-公共任务态 capability 自动使用 HAL 输入输出。无调度器或无 IRQ 的最小
-ArceOS 构建不会创建 owner worker，也保持原始 HAL 路径。
+公共任务态 output 自动使用 HAL，input 仅在 HAL 能提供 IRQ-backed sleep 时可用。无调度器
+或无 IRQ 的最小 ArceOS 构建不会创建 owner worker，也保持原始 HAL 路径。
 
 ArceOS 的 `ax-api`、`ax-posix-api` 和 `ax-std` 共享唯一 input lease；空输入通过
 `wait_readable` 睡眠，不再 `yield_now` 轮询，stdout `flush` 等待真实 UART idle。
@@ -277,7 +281,8 @@ Starry 的活动 `ttyS*` 直接取得公共 input/output，不再自行选择、
 output lock；其他串口仍按 open 生命周期启动，line discipline 和 Linux TTY ABI 不变。
 
 Axvisor 在任何 vCPU 启动前取得 input、output，并在 runtime 后端可用时取得 log
-subscription。管理 shell 把
+subscription。HAL 不支持 IRQ-backed input 时不启动交互 shell；管理面和 VM 启动不能因
+轮询任务占据 cooperative FIFO 调度器。管理 shell 把
 “清当前行、输出完整日志、重画 prompt/内容/光标”合成一次物理输出事务；boot multiplex
 把宿主日志作为独立完整行。guest 进入 interactive foreground 后，宿主日志不得进入
 guest RX 字节流，而按完整 record 缓存在 16 KiB host backlog；detach 时先报告丢失条数
@@ -321,4 +326,4 @@ Axvisor 的 `qemu-console-interleave/interleave` 是 #2108 的确定性红灯：
 回滚整个改动时，旧 runtime 仍可恢复两个 endpoint 和单向 handoff；不能只回滚接口而
 保留新调用方。已经开始 handoff 后的单次接管失败按上述 typed state 回滚或 fail closed，
 不允许静默退回 raw polling 或 controller-line mitigation；只有“未探测到匹配 driver”才
-选择公共 raw HAL 后端。
+选择公共 raw HAL 后端，并且该后端的任务输入仍必须由 IRQ 和有界 queue 驱动。
