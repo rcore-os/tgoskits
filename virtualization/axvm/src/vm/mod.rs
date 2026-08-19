@@ -349,6 +349,15 @@ impl VmRuntimeHandle {
         self.vcpu_threads.lock().active.contains_key(&vcpu_id)
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn vcpu_task(&self, vcpu_id: usize) -> Option<crate::ThreadHandle> {
+        self.vcpu_threads
+            .lock()
+            .active
+            .get(&vcpu_id)
+            .map(|runtime| runtime.thread.clone())
+    }
+
     pub(crate) fn add_vcpu_task(
         &self,
         vcpu_id: usize,
