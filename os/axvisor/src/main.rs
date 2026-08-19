@@ -99,6 +99,9 @@ fn main() {
     guest_console::configure_host_console_reader(&default_vms)
         .unwrap_or_else(|error| panic!("failed to configure host console input: {error:#}"));
 
+    #[cfg(feature = "test-console-interleave")]
+    emit_console_interleave_regression();
+
     // With `no-auto-start` the default VMs are only created (staying in
     // `Ready`) and the management plane boots them on demand, so nothing is
     // launched or waited on here.
@@ -122,4 +125,13 @@ fn main() {
     info!("shell task on CPU{}", axvm::host::cpu::current_id());
 
     shell::console_init();
+}
+
+#[cfg(feature = "test-console-interleave")]
+fn emit_console_interleave_regression() {
+    ax_api::stdio::ax_console_write_bytes(b"rm")
+        .expect("console interleave prefix must be written");
+    ax_log::ax_print!("{}\n", guest_console::INTERLEAVE_HOST_LOG_MARKER);
+    ax_api::stdio::ax_console_write_bytes(b"\n")
+        .expect("console interleave suffix must be written");
 }

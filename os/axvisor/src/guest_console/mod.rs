@@ -3,7 +3,15 @@
 mod host;
 mod mux;
 
-pub(crate) use host::{configure_host_console_reader, read_host_byte, wait_for_host_input};
+#[cfg(feature = "test-console-interleave")]
+pub(crate) const INTERLEAVE_HOST_LOG_MARKER: &str = ":CONSOLE_INTERLEAVE_HOST_LOG";
+#[cfg(feature = "test-console-interleave")]
+pub(crate) const INTERLEAVE_SUCCESS_MARKER: &[u8] = b"CONSOLE_INTERLEAVE_REGRESSION_PASSED\n";
+
+pub(crate) use host::{
+    configure_host_console_reader, read_host_byte, read_host_log, take_host_log_drops,
+    wait_for_host_input, write_host_bytes,
+};
 #[cfg_attr(
     feature = "no-auto-start",
     expect(
@@ -14,5 +22,5 @@ pub(crate) use host::{configure_host_console_reader, read_host_byte, wait_for_ho
 pub(crate) use mux::attach_default;
 pub(crate) use mux::{
     ConsoleInputEvent, activate, attach, attached_vm, mark_running, mark_stopped,
-    reconcile_vm_states, remove, route_host_byte, serial_backend_factory,
+    reconcile_vm_states, remove, route_host_byte, route_host_log, serial_backend_factory,
 };

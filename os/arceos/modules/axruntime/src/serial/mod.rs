@@ -24,8 +24,8 @@ use ax_sync::Mutex;
 use ax_task::{AxCpuMask, IrqNotify, TaskInner, WaitQueue};
 use axpoll::{IoEvents, PollSet};
 pub use rdif_serial::{Config, ConfigError, DataBits, Parity, RxFlag, StopBits};
-pub use state::SerialStats;
 
+pub(crate) use self::log_mailbox::{LogRecord, LogRecordKind};
 use self::{
     control::{ControlOp, ControlQueue},
     ingress::TxIngress,
@@ -39,6 +39,7 @@ use crate::{RuntimeError, RuntimeResult, sync::SpinLock};
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
 const IRQ_RX_CAPACITY: usize = 16_384;
 const SUBSCRIPTION_RX_CAPACITY: usize = 4_096;
+const LOG_SUBSCRIPTION_CAPACITY: usize = 64;
 
 static SERIAL_RUNTIMES: OnceLock<Box<[SerialRuntimeHandle]>> = OnceLock::new();
 static LOG_MAILBOX: OnceLock<Arc<LogMailbox>> = OnceLock::new();
@@ -85,12 +86,18 @@ struct RuntimeShared {
     ingress: TxIngress,
     log_mailbox: Arc<LogMailbox>,
     rx_subscription: SpinLock<Option<SpscConsumer<RxItem>>>,
+    log_subscription: SpinLock<Option<SpscConsumer<LogRecord>>>,
+    log_subscription_gate: SpinLock<()>,
+    log_subscription_active: AtomicBool,
+    log_subscription_dropped_records: AtomicUsize,
+    log_subscription_dropped_bytes: AtomicUsize,
     control: ControlQueue,
     bridge: Arc<RuntimeIrqBridge>,
     stats: Arc<SerialStatsAtomic>,
     rx_source: Arc<PollSet>,
     tx_source: Arc<PollSet>,
     rx_progress: WaitQueue,
+    console_progress: WaitQueue,
     tx_progress: WaitQueue,
     tty_output_lock: Mutex<()>,
     log_barriers: AtomicUsize,
@@ -126,6 +133,7 @@ impl RuntimeShared {
         self.started.store(started, Ordering::Release);
         if !started {
             self.rx_progress.notify_all(true);
+            self.console_progress.notify_all(true);
             self.tx_progress.notify_all(true);
         }
     }
@@ -180,12 +188,6 @@ impl SerialRuntimeHandle {
         &self.shared.info
     }
 
-    pub fn tx_sender(&self) -> SerialTxSender {
-        SerialTxSender {
-            shared: self.shared.clone(),
-        }
-    }
-
     /// Leases the only RX subscription.
     ///
     /// Dropping the subscription returns the consumer to this runtime so a
@@ -196,6 +198,35 @@ impl SerialRuntimeHandle {
             consumer: SpinLock::new(Some(consumer)),
             shared: self.shared.clone(),
         })
+    }
+
+    pub(crate) fn take_log_subscription(&self) -> Option<SerialLogSubscription> {
+        let _route = self.shared.log_subscription_gate.lock_irqsave();
+        if self.shared.log_subscription_active.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut available = self.shared.log_subscription.lock_irqsave();
+        let mut consumer = available.take()?;
+        consumer.clear();
+        self.shared
+            .log_subscription_dropped_records
+            .store(0, Ordering::Release);
+        self.shared
+            .log_subscription_dropped_bytes
+            .store(0, Ordering::Release);
+        self.shared
+            .log_subscription_active
+            .store(true, Ordering::Release);
+        Some(SerialLogSubscription {
+            consumer: SpinLock::new(Some(consumer)),
+            shared: self.shared.clone(),
+        })
+    }
+
+    pub(crate) fn task_output(&self) -> SerialTaskOutput {
+        SerialTaskOutput {
+            shared: self.shared.clone(),
+        }
     }
 
     pub fn start(&self, config: Config) -> RuntimeResult {
@@ -220,13 +251,13 @@ impl SerialRuntimeHandle {
     }
 
     /// Pauses extraction of new log records until the returned guard drops.
-    pub fn output_barrier(&self) -> RuntimeResult<SerialOutputBarrier> {
+    pub(crate) fn output_barrier(&self) -> RuntimeResult<SerialOutputBarrier> {
         self.shared.ensure_started()?;
         Ok(SerialOutputBarrier::new(self.shared.clone()))
     }
 
     /// Blocks new early-console register access before runtime configuration.
-    pub fn begin_console_handoff(&self) -> RuntimeResult {
+    pub(crate) fn begin_console_handoff(&self) -> RuntimeResult {
         ax_hal::console::begin_runtime_handoff()?;
         Ok(())
     }
@@ -236,7 +267,7 @@ impl SerialRuntimeHandle {
     /// Configuration failures are recoverable because UART `startup()` must
     /// restore its pre-call register state. Failures after successful hardware
     /// configuration fail closed because the former early state is uncertain.
-    pub fn start_prepared_console(&self, config: Config) -> RuntimeResult {
+    pub(crate) fn start_prepared_console(&self, config: Config) -> RuntimeResult {
         match self.start(config) {
             Ok(()) => Ok(()),
             Err(error @ RuntimeError::SerialConfig(ConfigError::RegisterError)) => {
@@ -258,8 +289,17 @@ impl SerialRuntimeHandle {
     }
 
     /// Publishes runtime log routing and completes the platform handoff.
-    pub fn commit_console_handoff(&self) -> RuntimeResult {
+    pub(crate) fn commit_console_handoff(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
+        // Reserve log routing before publishing either console-owner state.
+        // Once the platform transition is committed there is no safe early
+        // owner to roll back to, so every remaining operation must be
+        // infallible.
+        if !self.shared.log_mailbox.claim(self.shared.index) {
+            let _ = self.shutdown();
+            ax_hal::console::fail_runtime_handoff_closed();
+            return Err(RuntimeError::SerialConsoleBusy);
+        }
         if ACTIVE_CONSOLE
             .compare_exchange(
                 NO_ACTIVE_CONSOLE,
@@ -269,6 +309,8 @@ impl SerialRuntimeHandle {
             )
             .is_err()
         {
+            self.shared.log_mailbox.release(self.shared.index);
+            let _ = self.shutdown();
             ax_hal::console::fail_runtime_handoff_closed();
             return Err(RuntimeError::SerialConsoleBusy);
         }
@@ -279,42 +321,19 @@ impl SerialRuntimeHandle {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             );
+            self.shared.log_mailbox.release(self.shared.index);
+            let _ = self.shutdown();
             ax_hal::console::fail_runtime_handoff_closed();
             return Err(error.into());
         }
-        if !self.shared.log_mailbox.claim(self.shared.index) {
-            let _ = ACTIVE_CONSOLE.compare_exchange(
-                self.shared.index,
-                NO_ACTIVE_CONSOLE,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-            ax_hal::console::fail_runtime_handoff_closed();
-            return Err(RuntimeError::SerialConsoleBusy);
-        }
         self.shared.bridge.notify.notify();
         Ok(())
-    }
-
-    /// Restores early ownership before runtime hardware configuration begins.
-    pub fn rollback_console_handoff(&self) -> RuntimeResult {
-        ax_hal::console::rollback_runtime_handoff()?;
-        Ok(())
-    }
-
-    /// Prevents further early access after an ownership failure.
-    pub fn fail_console_handoff_closed(&self) {
-        ax_hal::console::fail_runtime_handoff_closed();
-    }
-
-    pub fn stats(&self) -> SerialStats {
-        self.shared.stats.snapshot()
     }
 }
 
 /// Cloneable, bounded MPSC submission façade. It never accesses UART registers.
 #[derive(Clone)]
-pub struct SerialTxSender {
+pub(crate) struct SerialTxSender {
     shared: Arc<RuntimeShared>,
 }
 
@@ -379,26 +398,10 @@ impl SerialTxSender {
         }
         Ok(written)
     }
-
-    pub fn wait_idle(&self) -> RuntimeResult {
-        self.shared.ensure_started()?;
-        SerialOutputBarrier::new(self.shared.clone()).wait_idle()
-    }
-
-    pub fn discard_pending(&self) -> RuntimeResult {
-        self.shared.ensure_started()?;
-        self.shared
-            .control
-            .submit(ControlOp::DiscardTx, &self.shared.bridge.notify)
-    }
-
-    pub fn poll_source(&self) -> Arc<PollSet> {
-        self.shared.tx_source.clone()
-    }
 }
 
 /// Sleepable TTY/configuration transaction which excludes new log extraction.
-pub struct SerialOutputBarrier {
+pub(crate) struct SerialOutputBarrier {
     shared: Arc<RuntimeShared>,
 }
 
@@ -445,6 +448,155 @@ impl Drop for SerialOutputBarrier {
 pub struct SerialRxSubscription {
     consumer: SpinLock<Option<SpscConsumer<RxItem>>>,
     shared: Arc<RuntimeShared>,
+}
+
+/// Internal complete-record consumer re-exported through `ax_runtime::console`.
+pub(crate) struct SerialLogSubscription {
+    consumer: SpinLock<Option<SpscConsumer<LogRecord>>>,
+    shared: Arc<RuntimeShared>,
+}
+
+impl SerialLogSubscription {
+    pub(crate) fn try_read(&self) -> Option<LogRecord> {
+        self.consumer.lock_irqsave().as_mut()?.pop()
+    }
+
+    pub(crate) fn dropped(&self) -> (usize, usize) {
+        (
+            self.shared
+                .log_subscription_dropped_records
+                .swap(0, Ordering::AcqRel),
+            self.shared
+                .log_subscription_dropped_bytes
+                .swap(0, Ordering::AcqRel),
+        )
+    }
+
+    pub(crate) fn wait_readable(&self) -> RuntimeResult {
+        self.shared.ensure_started()?;
+        self.shared.console_progress.wait_until(|| {
+            self.has_pending()
+                || !self.shared.log_subscription_active.load(Ordering::Acquire)
+                || !self.shared.started()
+        });
+        self.has_pending()
+            .then_some(())
+            .ok_or(RuntimeError::SerialNotStarted)
+    }
+
+    pub(crate) fn has_pending(&self) -> bool {
+        self.shared
+            .log_subscription_dropped_records
+            .load(Ordering::Acquire)
+            != 0
+            || self
+                .consumer
+                .lock_irqsave()
+                .as_ref()
+                .is_some_and(|consumer| !consumer.is_empty())
+    }
+}
+
+impl Drop for SerialLogSubscription {
+    fn drop(&mut self) {
+        let _route = self.shared.log_subscription_gate.lock_irqsave();
+        self.shared
+            .log_subscription_active
+            .store(false, Ordering::Release);
+        let Some(mut consumer) = self.consumer.get_mut().take() else {
+            return;
+        };
+        consumer.clear();
+        let mut available = self.shared.log_subscription.lock_irqsave();
+        debug_assert!(
+            available.is_none(),
+            "serial runtime cannot have two log consumers"
+        );
+        if available.is_none() {
+            *available = Some(consumer);
+        }
+        self.shared.console_progress.notify_all(true);
+        self.shared.bridge.notify.notify();
+    }
+}
+
+/// Internal output capability re-exported through `ax_runtime::console`.
+#[derive(Clone)]
+pub(crate) struct SerialTaskOutput {
+    shared: Arc<RuntimeShared>,
+}
+
+impl SerialTaskOutput {
+    pub(crate) fn try_write(&self, bytes: &[u8]) -> RuntimeResult<usize> {
+        let Some(_output) = self.shared.tty_output_lock.try_lock() else {
+            return Err(RuntimeError::WouldBlock);
+        };
+        SerialTxSender {
+            shared: self.shared.clone(),
+        }
+        .try_write(bytes)
+    }
+
+    pub(crate) fn write_all(&self, bytes: &[u8]) -> RuntimeResult<usize> {
+        let _output = self.shared.tty_output_lock.lock();
+        SerialTxSender {
+            shared: self.shared.clone(),
+        }
+        .write_all(bytes)
+    }
+
+    pub(crate) fn write_text_all(&self, bytes: &[u8]) -> RuntimeResult<usize> {
+        let _output = self.shared.tty_output_lock.lock();
+        SerialTxSender {
+            shared: self.shared.clone(),
+        }
+        .write_text_all(bytes)
+    }
+
+    pub(crate) fn write_fmt(&self, args: fmt::Arguments<'_>) -> fmt::Result {
+        let _output = self.shared.tty_output_lock.lock();
+        let mut writer = ActiveConsoleWriter {
+            sender: SerialTxSender {
+                shared: self.shared.clone(),
+            },
+        };
+        writer.write_fmt(args)
+    }
+
+    pub(crate) fn wait_idle(&self) -> RuntimeResult {
+        let _output = self.shared.tty_output_lock.lock();
+        SerialOutputBarrier::new(self.shared.clone()).wait_idle()
+    }
+
+    pub(crate) fn discard_pending(&self) -> RuntimeResult {
+        let _output = self.shared.tty_output_lock.lock();
+        self.shared.ensure_started()?;
+        self.shared
+            .control
+            .submit(ControlOp::DiscardTx, &self.shared.bridge.notify)
+    }
+
+    pub(crate) fn reconfigure(
+        &self,
+        config: Option<Config>,
+        drain: bool,
+        publish: impl FnOnce(),
+    ) -> RuntimeResult {
+        let _output = self.shared.tty_output_lock.lock();
+        let barrier = SerialOutputBarrier::new(self.shared.clone());
+        if drain {
+            barrier.wait_idle()?;
+        }
+        if let Some(config) = config {
+            barrier.set_config(config)?;
+        }
+        publish();
+        Ok(())
+    }
+
+    pub(crate) fn poll_source(&self) -> Arc<PollSet> {
+        self.shared.tx_source.clone()
+    }
 }
 
 impl SerialRxSubscription {
@@ -496,6 +648,26 @@ impl SerialRxSubscription {
         self.shared.rx_source.clone()
     }
 
+    pub(crate) fn wait_console_event(&self, logs: &SerialLogSubscription) -> RuntimeResult {
+        if !Arc::ptr_eq(&self.shared, &logs.shared) {
+            return Err(RuntimeError::OperationNotSupported);
+        }
+        self.shared.ensure_started()?;
+        self.shared
+            .console_progress
+            .wait_until(|| self.has_pending() || logs.has_pending() || !self.shared.started());
+        (self.has_pending() || logs.has_pending())
+            .then_some(())
+            .ok_or(RuntimeError::SerialNotStarted)
+    }
+
+    fn has_pending(&self) -> bool {
+        self.consumer
+            .lock_irqsave()
+            .as_ref()
+            .is_some_and(|consumer| !consumer.is_empty())
+    }
+
     fn clear_pending(&self) {
         if let Some(consumer) = self.consumer.lock_irqsave().as_mut() {
             consumer.clear();
@@ -528,6 +700,10 @@ fn notify_drained_space(count: usize, notify_space: impl FnOnce()) {
 
 pub fn runtimes() -> &'static [SerialRuntimeHandle] {
     SERIAL_RUNTIMES.get().map_or(&[], Box::as_ref)
+}
+
+pub(crate) fn active_console() -> Option<&'static SerialRuntimeHandle> {
+    runtimes().get(ACTIVE_CONSOLE.load(Ordering::Acquire))
 }
 
 pub(crate) fn init(primary_cpu: usize) {
@@ -565,6 +741,8 @@ fn build_runtime(
         Arc::from(register_gate);
     let (irq_rx_producer, irq_rx_consumer) = spsc::channel(IRQ_RX_CAPACITY);
     let (rx_output_producer, rx_output_consumer) = spsc::channel(SUBSCRIPTION_RX_CAPACITY);
+    let (log_subscription_producer, log_subscription_consumer) =
+        spsc::channel(LOG_SUBSCRIPTION_CAPACITY);
     let shared = Arc::new(RuntimeShared {
         index,
         info,
@@ -575,12 +753,18 @@ fn build_runtime(
         ingress: TxIngress::new(),
         log_mailbox,
         rx_subscription: SpinLock::new(Some(rx_output_consumer)),
+        log_subscription: SpinLock::new(Some(log_subscription_consumer)),
+        log_subscription_gate: SpinLock::new(()),
+        log_subscription_active: AtomicBool::new(false),
+        log_subscription_dropped_records: AtomicUsize::new(0),
+        log_subscription_dropped_bytes: AtomicUsize::new(0),
         control: ControlQueue::new(),
         bridge: bridge.clone(),
         stats: stats.clone(),
         rx_source: Arc::new(PollSet::new()),
         tx_source: Arc::new(PollSet::new()),
         rx_progress: WaitQueue::new(),
+        console_progress: WaitQueue::new(),
         tx_progress: WaitQueue::new(),
         tty_output_lock: Mutex::new(()),
         log_barriers: AtomicUsize::new(0),
@@ -588,7 +772,12 @@ fn build_runtime(
         irq_handle: OnceLock::new(),
     });
 
-    let worker = SerialWorker::new(shared.clone(), irq_rx_consumer, rx_output_producer);
+    let worker = SerialWorker::new(
+        shared.clone(),
+        irq_rx_consumer,
+        rx_output_producer,
+        log_subscription_producer,
+    );
     let task = TaskInner::new(
         move || worker.run(),
         alloc::format!("serial{index}-maint"),
@@ -668,6 +857,12 @@ struct RuntimeIrqPublisher {
 
 impl RuntimeIrqPublisher {
     fn publish(&mut self, mut report: rdif_serial::SerialIrqReport) -> rdif_serial::SerialIrqEvent {
+        // RX delivery is completed by the owner worker. Always mask and rearm
+        // RX after publishing the hard-IRQ batch so bytes arriving while the
+        // device interrupt is acknowledged cannot lose the next edge.
+        if report.event.events.has_rx() {
+            report.event.rearm |= rdif_serial::SerialEventSet::RX;
+        }
         for &sample in report.rx.as_slice() {
             if self.producer.push(sample).is_err() {
                 self.stats.add_rx_dropped(1);
@@ -860,25 +1055,6 @@ fn deactivate_console(shared: &RuntimeShared) {
     }
 }
 
-/// Writes text through the active runtime console, if one has claimed output.
-pub fn write_active_console_text(bytes: &[u8]) -> Option<RuntimeResult<usize>> {
-    let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
-    let runtime = runtimes().get(index)?;
-    let _output = runtime.shared.tty_output_lock.lock();
-    Some(runtime.tx_sender().write_text_all(bytes))
-}
-
-/// Formats through the sleepable TTY path while serializing all fragments.
-pub fn write_active_console_fmt(args: fmt::Arguments<'_>) -> Option<fmt::Result> {
-    let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
-    let runtime = runtimes().get(index)?;
-    let _output = runtime.shared.tty_output_lock.lock();
-    let mut writer = ActiveConsoleWriter {
-        sender: runtime.tx_sender(),
-    };
-    Some(writer.write_fmt(args))
-}
-
 /// Runs the real-SMP mailbox ownership probe used by the kernel axtest suite.
 #[cfg(axtest)]
 #[doc(hidden)]
@@ -1062,6 +1238,36 @@ mod tests {
         assert_eq!(stats.snapshot().rx_dropped, 1);
         assert!(bridge.rx_overflow.load(Ordering::Acquire));
         assert!(event.rx_errors.contains(rdif_serial::RxErrorFlags::OVERRUN));
+        assert!(event.rearm.contains(rdif_serial::SerialEventSet::RX));
+    }
+
+    #[test]
+    fn every_rx_irq_is_deferred_to_the_owner_rearm() {
+        let bridge = Arc::new(RuntimeIrqBridge::new());
+        let stats = Arc::new(SerialStatsAtomic::new());
+        let (producer, mut consumer) = spsc::channel(2);
+        let mut publisher = RuntimeIrqPublisher {
+            producer,
+            bridge,
+            stats,
+        };
+        let mut batch = rdif_serial::IrqRxBatch::new();
+        batch
+            .try_push(rdif_serial::RxSample {
+                byte: Some(b'x'),
+                ..rdif_serial::RxSample::default()
+            })
+            .unwrap();
+
+        let event = publisher.publish(rdif_serial::SerialIrqReport::new(
+            rdif_serial::SerialIrqEvent {
+                events: rdif_serial::SerialEventSet::RX_DATA,
+                ..rdif_serial::SerialIrqEvent::default()
+            },
+            batch,
+        ));
+
+        assert_eq!(consumer.pop().and_then(|sample| sample.byte), Some(b'x'));
         assert!(event.rearm.contains(rdif_serial::SerialEventSet::RX));
     }
 

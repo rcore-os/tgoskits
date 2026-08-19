@@ -14,9 +14,7 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use super::host::write_host_bytes;
 
-mod output;
-
-use output::GuestOutputMux;
+use axvisor::console_mux::{GuestOutputMux, HostLogBacklog};
 
 const CTRL_X: u8 = 0x18;
 const INPUT_QUEUE_CAPACITY: usize = 4096;
@@ -74,6 +72,7 @@ struct ConsoleState {
     last_attached: Option<VMId>,
     shortcut_prefix_pending: bool,
     output: GuestOutputMux,
+    host_logs: HostLogBacklog,
     next_backend_generation: u64,
 }
 
@@ -124,7 +123,9 @@ impl GuestConsoleMux {
         let host_output = if detached.is_some() {
             state.attached = None;
             state.shortcut_prefix_pending = false;
-            state.output.buffer_all()
+            let mut output = state.output.buffer_all();
+            append_host_log_replay(&mut state, &mut output);
+            output
         } else {
             Vec::new()
         };
@@ -156,7 +157,9 @@ impl GuestConsoleMux {
         let host_output = if detached {
             state.attached = None;
             state.shortcut_prefix_pending = false;
-            state.output.buffer_all()
+            let mut output = state.output.buffer_all();
+            append_host_log_replay(&mut state, &mut output);
+            output
         } else {
             Vec::new()
         };
@@ -178,7 +181,9 @@ impl GuestConsoleMux {
         let host_output = if detached {
             state.attached = None;
             state.shortcut_prefix_pending = false;
-            state.output.buffer_all()
+            let mut output = state.output.buffer_all();
+            append_host_log_replay(&mut state, &mut output);
+            output
         } else {
             Vec::new()
         };
@@ -236,11 +241,15 @@ impl GuestConsoleMux {
             state.shortcut_prefix_pending = false;
             match byte {
                 b'h' => match state.attached.take() {
-                    Some(vm_id) => RoutedInput {
-                        event: ConsoleInputEvent::Detached(vm_id),
-                        wake_vm: None,
-                        host_output: state.output.buffer_all(),
-                    },
+                    Some(vm_id) => {
+                        let mut host_output = state.output.buffer_all();
+                        append_host_log_replay(&mut state, &mut host_output);
+                        RoutedInput {
+                            event: ConsoleInputEvent::Detached(vm_id),
+                            wake_vm: None,
+                            host_output,
+                        }
+                    }
                     None => RoutedInput {
                         event: ConsoleInputEvent::Consumed,
                         wake_vm: None,
@@ -271,6 +280,34 @@ impl GuestConsoleMux {
         drop(state);
         write_host_bytes(&routed.host_output);
         routed
+    }
+
+    fn route_host_log(
+        &self,
+        record: &[u8],
+        dropped_records: usize,
+        dropped_bytes: usize,
+    ) -> Option<Vec<u8>> {
+        let _output_guard = self.core.lock_output();
+        let mut state = self.core.lock_state();
+        state.host_logs.add_drops(dropped_records, dropped_bytes);
+        if state.output.foreground_is_interactive() {
+            state.host_logs.push(record);
+            return None;
+        }
+
+        let mut host_output = Vec::new();
+        append_host_log_replay(&mut state, &mut host_output);
+        if !record.is_empty() {
+            host_output.extend(state.output.format_host_record(record));
+        }
+        Some(host_output)
+    }
+}
+
+fn append_host_log_replay(state: &mut ConsoleState, output: &mut Vec<u8>) {
+    for record in state.host_logs.drain() {
+        output.extend(state.output.format_host_record(&record));
     }
 }
 
@@ -469,6 +506,18 @@ pub fn route_host_byte(byte: u8) -> ConsoleInputEvent {
         warn!("failed to wake VM[{vm_id}] for console input: {error:#}");
     }
     routed.event
+}
+
+/// Routes a complete host log record without exposing it to a guest UART.
+///
+/// Returns the line-safe bytes to display, or `None` when the record was
+/// buffered behind an interactive guest until detach.
+pub fn route_host_log(
+    record: &[u8],
+    dropped_records: usize,
+    dropped_bytes: usize,
+) -> Option<Vec<u8>> {
+    GUEST_CONSOLE_MUX.route_host_log(record, dropped_records, dropped_bytes)
 }
 
 /// Attach the lowest-ID member of the default running VM set.

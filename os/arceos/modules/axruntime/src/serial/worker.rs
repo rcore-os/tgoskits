@@ -11,7 +11,7 @@ use super::{
     control::{CONTROL_QUEUE_CAPACITY, ControlCommand, ControlOp},
     deactivate_console,
     ingress::TxFrameCursor,
-    log_mailbox::{LogReader, LogRecordCursor, LogRecordKind},
+    log_mailbox::{LogReader, LogRecord, LogRecordCursor, LogRecordKind},
     spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
 };
 use crate::{RuntimeError, RuntimeResult};
@@ -23,6 +23,7 @@ pub(super) struct SerialWorker {
     shared: Arc<RuntimeShared>,
     irq_rx: SpscConsumer<RxSample>,
     rx_output: SpscProducer<RxItem>,
+    log_subscription: SpscProducer<LogRecord>,
     pending_rx: Option<PendingRx>,
     port_rx_ready: bool,
     pending_frame: Option<TxFrameCursor>,
@@ -40,12 +41,14 @@ impl SerialWorker {
         shared: Arc<RuntimeShared>,
         irq_rx: SpscConsumer<RxSample>,
         rx_output: SpscProducer<RxItem>,
+        log_subscription: SpscProducer<LogRecord>,
     ) -> Self {
         let log_reader = shared.log_mailbox.reader();
         Self {
             shared,
             irq_rx,
             rx_output,
+            log_subscription,
             pending_rx: None,
             port_rx_ready: false,
             pending_frame: None,
@@ -78,7 +81,6 @@ impl SerialWorker {
             {
                 self.latched_rx_errors |= RxErrorFlags::OVERRUN;
             }
-
             if events.contains(SerialEventSet::FAULT) {
                 self.stop_faulted_port();
             }
@@ -89,10 +91,8 @@ impl SerialWorker {
                 None
             } else if force_service || self.shared.polling || self.port_rx_ready {
                 Some(RxPath::Port)
-            } else if events.has_rx() || !self.irq_rx.is_empty() {
-                Some(RxPath::Irq)
             } else {
-                None
+                select_deferred_rx_path(!self.irq_rx.is_empty(), events.has_rx())
             };
             let mut rx_blocked = false;
             if let Some(path) = rx_path {
@@ -387,6 +387,7 @@ impl SerialWorker {
 
         if published {
             self.shared.rx_progress.notify_all(true);
+            self.shared.console_progress.notify_all(true);
             // SAFETY: the worker Release-publishes ring entries before waking
             // task-context waiters.
             unsafe { self.shared.rx_source.wake(IoEvents::IN) };
@@ -483,7 +484,9 @@ impl SerialWorker {
         }
         if self.prefer_log && self.try_load_log() {
             self.prefer_log = false;
-            return Some(PendingTxSource::Log);
+            if self.pending_log.is_some() {
+                return Some(PendingTxSource::Log);
+            }
         }
         if let Some(frame) = self.shared.ingress.pop() {
             self.pending_frame = Some(TxFrameCursor::new(frame));
@@ -493,7 +496,9 @@ impl SerialWorker {
         }
         if self.try_load_log() {
             self.prefer_log = false;
-            return Some(PendingTxSource::Log);
+            if self.pending_log.is_some() {
+                return Some(PendingTxSource::Log);
+            }
         }
         None
     }
@@ -520,7 +525,34 @@ impl SerialWorker {
             consumed.record.kind() == LogRecordKind::Log,
             consumed.record.is_truncated(),
         );
-        self.pending_log = Some(LogRecordCursor::new(consumed.record));
+        let _route = self.shared.log_subscription_gate.lock_irqsave();
+        let subscription_active = self
+            .shared
+            .log_subscription_active
+            .load(core::sync::atomic::Ordering::Acquire);
+        match route_log_subscription(
+            subscription_active,
+            &mut self.log_subscription,
+            consumed.record,
+        ) {
+            Ok(None) => {
+                self.shared.console_progress.notify_all(true);
+                return true;
+            }
+            Err(source_len) => {
+                self.shared
+                    .log_subscription_dropped_records
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                self.shared
+                    .log_subscription_dropped_bytes
+                    .fetch_add(source_len, core::sync::atomic::Ordering::Relaxed);
+                self.shared.stats.add_log_dropped_records(1);
+                self.shared.stats.add_log_dropped(source_len);
+                self.shared.console_progress.notify_all(true);
+                return true;
+            }
+            Ok(Some(record)) => self.pending_log = Some(LogRecordCursor::new(record)),
+        }
         true
     }
 
@@ -592,6 +624,24 @@ const fn log_extraction_allowed(active_barriers: usize, pending_control: bool) -
     active_barriers == 0 && !pending_control
 }
 
+/// Routes exactly one already-formatted record at a subscription boundary.
+/// `Ok(None)` means it was queued, `Ok(Some(_))` preserves direct UART output,
+/// and `Err(source_len)` reports one whole-record overflow.
+fn route_log_subscription(
+    active: bool,
+    subscription: &mut SpscProducer<LogRecord>,
+    record: LogRecord,
+) -> Result<Option<LogRecord>, usize> {
+    if !active {
+        return Ok(Some(record));
+    }
+    let source_len = record.source_len();
+    subscription
+        .push(record)
+        .map(|()| None)
+        .map_err(|_| source_len)
+}
+
 fn discard_rx_sources(
     port: &mut dyn rdif_serial::UartPort,
     irq_rx: &mut SpscConsumer<RxSample>,
@@ -609,6 +659,19 @@ fn discard_rx_sources(
 enum RxPath {
     Irq,
     Port,
+}
+
+const fn select_deferred_rx_path(
+    irq_samples_pending: bool,
+    hardware_ready: bool,
+) -> Option<RxPath> {
+    if irq_samples_pending {
+        Some(RxPath::Irq)
+    } else if hardware_ready {
+        Some(RxPath::Port)
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -808,6 +871,13 @@ mod tests {
     }
 
     #[test]
+    fn immediate_hardware_rx_without_irq_samples_uses_the_port() {
+        assert_eq!(select_deferred_rx_path(false, true), Some(RxPath::Port));
+        assert_eq!(select_deferred_rx_path(true, true), Some(RxPath::Irq));
+        assert_eq!(select_deferred_rx_path(false, false), None);
+    }
+
+    #[test]
     fn full_subscription_ring_keeps_sample_pending_until_space_is_released() {
         let (mut output, mut subscription) = super::super::spsc::channel(1);
         output.push(RxItem::Overrun).unwrap();
@@ -894,5 +964,60 @@ mod tests {
         assert!(log_extraction_allowed(0, false));
         assert!(!log_extraction_allowed(1, false));
         assert!(!log_extraction_allowed(0, true));
+    }
+
+    #[test]
+    fn log_subscription_switches_only_complete_records() {
+        let (mut producer, mut consumer) = super::super::spsc::channel(2);
+        let first = LogRecord::format(
+            0,
+            0,
+            super::super::log_mailbox::LogRecordMeta::print(1, None),
+            format_args!("rm"),
+        )
+        .unwrap();
+        let second = LogRecord::format(
+            1,
+            0,
+            super::super::log_mailbox::LogRecordMeta::print(2, None),
+            format_args!(":host\n"),
+        )
+        .unwrap();
+
+        let direct = route_log_subscription(false, &mut producer, first)
+            .unwrap()
+            .expect("unsubscribed record must stay on the direct path");
+        assert_eq!(direct.bytes(), b"rm");
+        assert!(
+            route_log_subscription(true, &mut producer, second)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(consumer.pop().unwrap().bytes(), b":host\r\n");
+    }
+
+    #[test]
+    fn full_log_subscription_drops_one_whole_record() {
+        let (mut producer, _consumer) = super::super::spsc::channel(1);
+        let record = |sequence, text| {
+            LogRecord::format(
+                0,
+                sequence,
+                super::super::log_mailbox::LogRecordMeta::print(sequence, None),
+                format_args!("{text}"),
+            )
+            .unwrap()
+        };
+
+        assert!(
+            route_log_subscription(true, &mut producer, record(0, "first"))
+                .unwrap()
+                .is_none()
+        );
+        let overflow = match route_log_subscription(true, &mut producer, record(1, "second")) {
+            Err(source_len) => source_len,
+            Ok(_) => panic!("a full subscription must drop the complete second record"),
+        };
+        assert_eq!(overflow, "second".len());
     }
 }

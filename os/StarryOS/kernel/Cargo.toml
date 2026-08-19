@@ -146,7 +146,6 @@ ax-runtime = { workspace = true, features = [
     "rtc",
     "ext4fs",
     "net",
-    "serial",
 ] }
 ax-task = { workspace = true, features = [
     "multitask",

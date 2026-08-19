@@ -308,7 +308,7 @@ mod tests {
         }));
         let start = Arc::new(Barrier::new(3));
         let mut threads = Vec::new();
-        for byte in [b'a', b'b'] {
+        for byte in *b"ab" {
             let state = state.clone();
             let start = start.clone();
             threads.push(thread::spawn(move || {
@@ -331,7 +331,7 @@ mod tests {
             .drain(..)
             .map(|frame| frame.bytes()[0])
             .collect::<Vec<_>>();
-        assert!(labels == [b'a', b'a', b'b', b'b'] || labels == [b'b', b'b', b'a', b'a']);
+        assert!(labels == *b"aabb" || labels == *b"bbaa");
     }
 
     #[test]

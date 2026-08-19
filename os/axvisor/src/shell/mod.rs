@@ -55,6 +55,59 @@ fn print_console_shortcuts() {
     println!("  Ctrl+X, then ]  attach the next running guest");
 }
 
+fn route_pending_host_log(
+    record: &[u8],
+    edit_line: &[u8],
+    cursor: usize,
+    line_len: usize,
+    dropped_records: usize,
+    dropped_bytes: usize,
+) -> bool {
+    #[cfg(feature = "test-console-interleave")]
+    let completes_interleave_regression = record
+        .windows(crate::guest_console::INTERLEAVE_HOST_LOG_MARKER.len())
+        .any(|window| window == crate::guest_console::INTERLEAVE_HOST_LOG_MARKER.as_bytes());
+
+    let Some(output) = crate::guest_console::route_host_log(record, dropped_records, dropped_bytes)
+    else {
+        return true;
+    };
+
+    if crate::guest_console::attached_vm().is_some() {
+        crate::guest_console::write_host_bytes(&output);
+        #[cfg(feature = "test-console-interleave")]
+        if completes_interleave_regression {
+            crate::guest_console::write_host_bytes(crate::guest_console::INTERLEAVE_SUCCESS_MARKER);
+        }
+        return true;
+    }
+
+    let content = std::str::from_utf8(&edit_line[..line_len]).unwrap_or("");
+    let prompt = prompt_string();
+    let mut transaction = std::vec::Vec::with_capacity(
+        output
+            .len()
+            .saturating_add(prompt.len())
+            .saturating_add(content.len())
+            .saturating_add(32),
+    );
+    transaction.extend_from_slice(b"\r\x1b[2K");
+    transaction.extend_from_slice(&output);
+    #[cfg(feature = "test-console-interleave")]
+    if completes_interleave_regression {
+        // Keep the success witness on its own physical line and inside the
+        // same mux transaction that proved the host record was rendered.
+        transaction.extend_from_slice(crate::guest_console::INTERLEAVE_SUCCESS_MARKER);
+    }
+    transaction.extend_from_slice(prompt.as_bytes());
+    transaction.extend_from_slice(content.as_bytes());
+    if cursor < content.len() {
+        write!(transaction, "\x1b[{}D", content.len() - cursor).ok();
+    }
+    crate::guest_console::write_host_bytes(&transaction);
+    true
+}
+
 // Initialize the console shell.
 pub fn console_init() {
     let mut stdout = std::io::stdout();
@@ -86,11 +139,37 @@ pub fn console_init() {
             clear_line_and_redraw(&mut stdout, &prompt_string(), current_content, cursor);
         }
 
+        let dropped = crate::guest_console::take_host_log_drops();
+        if let Some(record) = crate::guest_console::read_host_log() {
+            route_pending_host_log(
+                record.bytes(),
+                &buf,
+                cursor,
+                line_len,
+                dropped.records,
+                dropped.source_bytes,
+            );
+            continue;
+        }
+        if dropped.records != 0 {
+            route_pending_host_log(
+                &[],
+                &buf,
+                cursor,
+                line_len,
+                dropped.records,
+                dropped.source_bytes,
+            );
+            continue;
+        }
+
         let ch = match pending_shell_byte.take() {
             Some(ch) => ch,
             None => {
                 let Some(host_byte) = crate::guest_console::read_host_byte() else {
-                    crate::guest_console::wait_for_host_input();
+                    if !crate::guest_console::wait_for_host_input() {
+                        return;
+                    }
                     continue;
                 };
 

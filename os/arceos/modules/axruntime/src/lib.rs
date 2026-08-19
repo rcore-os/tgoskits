@@ -56,13 +56,17 @@ mod klib;
 #[cfg(feature = "multitask")]
 mod preempt;
 
+#[cfg(all(feature = "irq", feature = "multitask"))]
+pub mod console;
 mod devices;
+#[cfg(all(feature = "irq", feature = "multitask"))]
+pub mod emergency_console;
 mod error;
 mod fs;
 #[cfg(feature = "irq")]
 pub mod irq;
 mod registers;
-#[cfg(feature = "serial")]
+#[cfg(all(feature = "irq", feature = "multitask"))]
 pub mod serial;
 pub mod sync;
 
@@ -138,10 +142,14 @@ impl ax_log::LogIf for LogIfImpl {
         meta: ax_log::RecordMeta,
         args: core::fmt::Arguments<'_>,
     ) -> ax_log::PublishStatus {
-        #[cfg(not(feature = "serial"))]
+        #[cfg(not(all(feature = "irq", feature = "multitask")))]
         let _ = meta;
-        #[cfg(feature = "serial")]
+        #[cfg(all(feature = "irq", feature = "multitask"))]
         if let Some(status) = serial::try_publish_record(meta, args) {
+            return status;
+        }
+        #[cfg(all(feature = "irq", feature = "multitask"))]
+        if let Some(status) = console::try_publish_without_runtime(args) {
             return status;
         }
         let mut writer = PlatformConsoleWriter::default();
@@ -153,13 +161,16 @@ impl ax_log::LogIf for LogIfImpl {
     }
 
     fn emergency_write(args: core::fmt::Arguments<'_>) -> usize {
-        #[cfg(feature = "serial")]
-        if let Some(written) = serial::emergency_write(args) {
-            return written;
+        #[cfg(all(feature = "irq", feature = "multitask"))]
+        {
+            return emergency_console::write_fmt(args);
         }
-        let mut writer = PlatformConsoleWriter::default();
-        let _ = core::fmt::write(&mut writer, args);
-        writer.written
+        #[cfg(not(all(feature = "irq", feature = "multitask")))]
+        {
+            let mut writer = PlatformConsoleWriter::default();
+            let _ = core::fmt::write(&mut writer, args);
+            writer.written
+        }
     }
 }
 
@@ -321,8 +332,22 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     devices::probe_all_devices();
 
-    #[cfg(feature = "serial")]
+    #[cfg(all(feature = "irq", feature = "multitask"))]
     serial::init(cpu_id);
+
+    #[cfg(all(feature = "irq", feature = "multitask"))]
+    match console::activate_before_smp() {
+        console::ConsoleActivation::Active {
+            runtime_index,
+            tty_number,
+        } => info!("runtime console active: serial{runtime_index}, ttyS{tty_number}"),
+        console::ConsoleActivation::RawHal(reason) => {
+            info!("no runtime console selected; keeping the HAL console: {reason:?}")
+        }
+        console::ConsoleActivation::FailedClosed(reason) => {
+            warn!("runtime console unavailable; early console failed closed: {reason:?}")
+        }
+    }
 
     #[cfg(feature = "rtc")]
     ax_println!(

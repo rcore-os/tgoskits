@@ -1,5 +1,10 @@
 //! Shared Axvisor kernel support.
 
+extern crate alloc;
+
+#[doc(hidden)]
+pub mod console_mux;
+
 #[cfg(feature = "fs")]
 mod shell_fs;
 

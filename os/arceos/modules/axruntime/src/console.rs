@@ -1,0 +1,740 @@
+//! Sleepable task-context access to the runtime-owned physical console.
+//!
+//! This layer owns console selection and handoff. It deliberately exposes raw
+//! receive items and complete log records; line discipline and terminal ABI
+//! policy remain in the consuming OS.
+
+use alloc::sync::Arc;
+use core::{
+    fmt::{self, Write},
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use ax_lazyinit::OnceLock;
+use ax_sync::Mutex;
+use axpoll::PollSet;
+
+pub use crate::serial::RxItem;
+use crate::{RuntimeError, RuntimeResult, serial, sync::SpinLock};
+
+const DEFAULT_BAUDRATE: u32 = 115_200;
+
+static ACTIVATION: OnceLock<ConsoleActivation> = OnceLock::new();
+static RAW_INPUT_TAKEN: AtomicBool = AtomicBool::new(false);
+static RAW_OUTPUT_LOCK: Mutex<()> = Mutex::new(());
+static RAW_INPUT_SOURCE: OnceLock<Arc<PollSet>> = OnceLock::new();
+static RAW_OUTPUT_SOURCE: OnceLock<Arc<PollSet>> = OnceLock::new();
+
+/// Result of selecting the firmware console before secondary CPUs start.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsoleActivation {
+    /// One serial runtime owns the physical console.
+    Active {
+        runtime_index: usize,
+        tty_number: usize,
+    },
+    /// No compatible runtime UART was discovered; the HAL console remains the
+    /// sole owner.
+    RawHal(ConsoleUnavailable),
+    /// No runtime may use the former early console after this point.
+    FailedClosed(ConsoleUnavailable),
+}
+
+/// Why no task-context serial console was activated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsoleUnavailable {
+    NoSerialDevice,
+    NoHardwareSelected,
+    SelectedDeviceNotFound,
+    NoTtyS0Fallback,
+    HandoffFailed,
+    RuntimeStartFailed,
+    LogRoutingBusy,
+}
+
+/// Selects, starts, and commits the sole runtime console before SMP startup.
+pub(crate) fn activate_before_smp() -> ConsoleActivation {
+    if let Some(activation) = ACTIVATION.get().copied() {
+        return activation;
+    }
+
+    let runtimes = serial::runtimes();
+    let tty_numbers = assign_tty_numbers(
+        &runtimes
+            .iter()
+            .map(|runtime| runtime.info().alias_index)
+            .collect::<alloc::vec::Vec<_>>(),
+    );
+    let selection = select_runtime(runtimes, &tty_numbers, ax_hal::console::device_id());
+    let (runtime_index, tty_number) = match selection {
+        Ok(selection) => selection,
+        Err(unavailable) => return use_raw_hal(unavailable),
+    };
+
+    let runtime = &runtimes[runtime_index];
+    if runtime.begin_console_handoff().is_err() {
+        return fail_closed(ConsoleUnavailable::HandoffFailed);
+    }
+    let baudrate = match runtime.info().initial_baudrate {
+        0 => DEFAULT_BAUDRATE,
+        baudrate => baudrate,
+    };
+    if runtime
+        .start_prepared_console(
+            serial::Config::new()
+                .baudrate(baudrate)
+                .data_bits(serial::DataBits::Eight)
+                .stop_bits(serial::StopBits::One)
+                .parity(serial::Parity::None),
+        )
+        .is_err()
+    {
+        // A recoverable start failure may already have restored early
+        // ownership, but SMP is about to start. Close that path permanently
+        // rather than letting later CPUs resume unsynchronized early access.
+        return fail_closed(ConsoleUnavailable::RuntimeStartFailed);
+    }
+    if let Err(error) = runtime.commit_console_handoff() {
+        let reason = if error == RuntimeError::SerialConsoleBusy {
+            ConsoleUnavailable::LogRoutingBusy
+        } else {
+            ConsoleUnavailable::HandoffFailed
+        };
+        return fail_closed(reason);
+    }
+
+    let activation = ConsoleActivation::Active {
+        runtime_index,
+        tty_number,
+    };
+    ACTIVATION.call_once(|| activation);
+    activation
+}
+
+fn use_raw_hal(reason: ConsoleUnavailable) -> ConsoleActivation {
+    let activation = raw_hal_activation(reason);
+    ACTIVATION.call_once(|| activation);
+    activation
+}
+
+const fn raw_hal_activation(reason: ConsoleUnavailable) -> ConsoleActivation {
+    ConsoleActivation::RawHal(reason)
+}
+
+fn fail_closed(reason: ConsoleUnavailable) -> ConsoleActivation {
+    ax_hal::console::fail_runtime_handoff_closed();
+    let activation = ConsoleActivation::FailedClosed(reason);
+    ACTIVATION.call_once(|| activation);
+    activation
+}
+
+fn select_runtime(
+    runtimes: &[serial::SerialRuntimeHandle],
+    tty_numbers: &[Option<usize>],
+    selected: ax_hal::console::ConsoleDeviceIdResult,
+) -> Result<(usize, usize), ConsoleUnavailable> {
+    let candidates = runtimes
+        .iter()
+        .zip(tty_numbers.iter().copied())
+        .map(|(runtime, tty_number)| (runtime.info().device_id, tty_number))
+        .collect::<alloc::vec::Vec<_>>();
+    select_candidate(&candidates, selected)
+}
+
+fn select_candidate(
+    candidates: &[(ax_hal::console::ConsoleDeviceId, Option<usize>)],
+    selected: ax_hal::console::ConsoleDeviceIdResult,
+) -> Result<(usize, usize), ConsoleUnavailable> {
+    if candidates.is_empty() {
+        return Err(ConsoleUnavailable::NoSerialDevice);
+    }
+    match selected {
+        Ok(device_id) => candidates
+            .iter()
+            .position(|(candidate, _)| *candidate == device_id)
+            .and_then(|index| Some((index, candidates[index].1?)))
+            .ok_or(ConsoleUnavailable::SelectedDeviceNotFound),
+        Err(ax_hal::console::ConsoleDeviceIdError::NotSpecified) => candidates
+            .iter()
+            .position(|(_, number)| *number == Some(0))
+            .map(|index| (index, 0))
+            .ok_or(ConsoleUnavailable::NoTtyS0Fallback),
+        Err(ax_hal::console::ConsoleDeviceIdError::NoHardwareDevice) => {
+            Err(ConsoleUnavailable::NoHardwareSelected)
+        }
+        Err(ax_hal::console::ConsoleDeviceIdError::DeviceNotFound) => {
+            Err(ConsoleUnavailable::SelectedDeviceNotFound)
+        }
+    }
+}
+
+/// Returns the Linux-compatible `ttyS` number assigned to a serial runtime.
+pub fn tty_number(runtime: &serial::SerialRuntimeHandle) -> Option<usize> {
+    let index = serial::runtimes()
+        .iter()
+        .position(|candidate| candidate.info().device_id == runtime.info().device_id)?;
+    assign_tty_numbers(
+        &serial::runtimes()
+            .iter()
+            .map(|candidate| candidate.info().alias_index)
+            .collect::<alloc::vec::Vec<_>>(),
+    )
+    .get(index)
+    .copied()
+    .flatten()
+}
+
+/// Returns the active console selection, if initialization has completed.
+pub fn activation() -> Option<ConsoleActivation> {
+    ACTIVATION.get().copied()
+}
+
+/// Returns whether this runtime owns the active physical console.
+pub fn is_active(runtime: &serial::SerialRuntimeHandle) -> bool {
+    serial::active_console()
+        .is_some_and(|active| active.info().device_id == runtime.info().device_id)
+}
+
+fn inactive_console_error(activation: Option<ConsoleActivation>) -> RuntimeError {
+    match activation {
+        Some(ConsoleActivation::FailedClosed(_)) | Some(ConsoleActivation::Active { .. }) => {
+            RuntimeError::ConsoleFailedClosed
+        }
+        Some(ConsoleActivation::RawHal(_)) | None => RuntimeError::SerialNotStarted,
+    }
+}
+
+/// Takes the unique raw input capability for the active console.
+pub fn take_input() -> RuntimeResult<TaskConsoleInput> {
+    if let Some(runtime) = serial::active_console() {
+        return runtime
+            .take_rx_subscription()
+            .map(|inner| TaskConsoleInput {
+                inner: TaskConsoleInputInner::Runtime(inner),
+            })
+            .ok_or(RuntimeError::SerialConsoleBusy);
+    }
+    match activation() {
+        Some(ConsoleActivation::RawHal(_)) => {
+            RAW_INPUT_TAKEN
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .map_err(|_| RuntimeError::SerialConsoleBusy)?;
+            Ok(TaskConsoleInput {
+                inner: TaskConsoleInputInner::RawHal(RawHalInput {
+                    pending: SpinLock::new(None),
+                }),
+            })
+        }
+        activation => Err(inactive_console_error(activation)),
+    }
+}
+
+/// Returns a cloneable output capability for the active console.
+pub fn output() -> RuntimeResult<TaskConsoleOutput> {
+    if let Some(runtime) = serial::active_console() {
+        return Ok(TaskConsoleOutput {
+            inner: TaskConsoleOutputInner::Runtime(runtime.task_output()),
+        });
+    }
+    match activation() {
+        Some(ConsoleActivation::RawHal(_)) => Ok(TaskConsoleOutput {
+            inner: TaskConsoleOutputInner::RawHal,
+        }),
+        activation => Err(inactive_console_error(activation)),
+    }
+}
+
+/// Returns a cloneable serialized output capability for a UART runtime.
+pub fn output_for(runtime: &serial::SerialRuntimeHandle) -> TaskConsoleOutput {
+    TaskConsoleOutput {
+        inner: TaskConsoleOutputInner::Runtime(runtime.task_output()),
+    }
+}
+
+/// Takes the unique complete-log-record subscription for the active console.
+pub fn subscribe_logs() -> RuntimeResult<ConsoleLogSubscription> {
+    let runtime = serial::active_console().ok_or_else(|| match activation() {
+        Some(ConsoleActivation::RawHal(_)) => RuntimeError::OperationNotSupported,
+        activation => inactive_console_error(activation),
+    })?;
+    runtime
+        .take_log_subscription()
+        .map(|inner| ConsoleLogSubscription { inner })
+        .ok_or(RuntimeError::SerialConsoleBusy)
+}
+
+/// Serializes one ordinary log record with raw-HAL task output when no runtime
+/// UART exists. Failed-closed ownership consumes the record without touching
+/// the former early console.
+pub(crate) fn try_publish_without_runtime(
+    args: fmt::Arguments<'_>,
+) -> Option<ax_log::PublishStatus> {
+    match activation()? {
+        ConsoleActivation::RawHal(_) => {
+            let Some(_output) = RAW_OUTPUT_LOCK.try_lock() else {
+                return Some(ax_log::PublishStatus::Dropped);
+            };
+            let mut writer = RawHalWriter;
+            Some(if writer.write_fmt(args).is_ok() {
+                ax_log::PublishStatus::Published
+            } else {
+                ax_log::PublishStatus::Dropped
+            })
+        }
+        ConsoleActivation::Active { .. } | ConsoleActivation::FailedClosed(_) => {
+            Some(ax_log::PublishStatus::Dropped)
+        }
+    }
+}
+
+/// Unique raw RX capability. It performs no CR/LF or terminal transformation.
+pub struct TaskConsoleInput {
+    inner: TaskConsoleInputInner,
+}
+
+enum TaskConsoleInputInner {
+    Runtime(serial::SerialRxSubscription),
+    RawHal(RawHalInput),
+}
+
+struct RawHalInput {
+    pending: SpinLock<Option<u8>>,
+}
+
+impl TaskConsoleInput {
+    pub fn try_read(&self, out: &mut [RxItem]) -> usize {
+        match &self.inner {
+            TaskConsoleInputInner::Runtime(inner) => inner.drain(out),
+            TaskConsoleInputInner::RawHal(inner) => inner.try_read(out),
+        }
+    }
+
+    pub fn wait_readable(&self) -> RuntimeResult {
+        match &self.inner {
+            TaskConsoleInputInner::Runtime(inner) => inner.wait_readable(),
+            TaskConsoleInputInner::RawHal(inner) => inner.wait_readable(),
+        }
+    }
+
+    pub fn read(&self, out: &mut [RxItem]) -> RuntimeResult<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let read = self.try_read(out);
+            if read != 0 {
+                return Ok(read);
+            }
+            self.wait_readable()?;
+        }
+    }
+
+    pub fn discard_pending(&self) -> RuntimeResult {
+        match &self.inner {
+            TaskConsoleInputInner::Runtime(inner) => inner.discard_pending(),
+            TaskConsoleInputInner::RawHal(inner) => {
+                inner.discard_pending();
+                Ok(())
+            }
+        }
+    }
+
+    pub fn poll_source(&self) -> Arc<PollSet> {
+        match &self.inner {
+            TaskConsoleInputInner::Runtime(inner) => inner.poll_source(),
+            TaskConsoleInputInner::RawHal(_) => raw_input_source(),
+        }
+    }
+
+    /// Sleeps until either RX or a complete subscribed log record is ready.
+    pub fn wait_event(&self, logs: &ConsoleLogSubscription) -> RuntimeResult {
+        match &self.inner {
+            TaskConsoleInputInner::Runtime(inner) => inner.wait_console_event(&logs.inner),
+            TaskConsoleInputInner::RawHal(inner) => inner.wait_readable(),
+        }
+    }
+}
+
+impl RawHalInput {
+    fn try_read(&self, out: &mut [RxItem]) -> usize {
+        if out.is_empty() {
+            return 0;
+        }
+        let mut written = 0;
+        if let Some(byte) = self.pending.lock_irqsave().take() {
+            out[written] = raw_rx_item(byte);
+            written += 1;
+        }
+        let mut bytes = [0u8; 64];
+        while written < out.len() {
+            let limit = bytes.len().min(out.len() - written);
+            let count = ax_hal::console::read_bytes(&mut bytes[..limit]);
+            for &byte in &bytes[..count] {
+                out[written] = raw_rx_item(byte);
+                written += 1;
+            }
+            if count < limit {
+                break;
+            }
+        }
+        written
+    }
+
+    fn wait_readable(&self) -> RuntimeResult {
+        loop {
+            if self.pending.lock_irqsave().is_some() {
+                return Ok(());
+            }
+            let mut byte = [0u8; 1];
+            if ax_hal::console::read_bytes(&mut byte) != 0 {
+                *self.pending.lock_irqsave() = Some(byte[0]);
+                return Ok(());
+            }
+            ax_task::yield_now();
+        }
+    }
+
+    fn discard_pending(&self) {
+        self.pending.lock_irqsave().take();
+        let mut bytes = [0u8; 64];
+        while ax_hal::console::read_bytes(&mut bytes) == bytes.len() {}
+    }
+}
+
+impl Drop for RawHalInput {
+    fn drop(&mut self) {
+        RAW_INPUT_TAKEN.store(false, Ordering::Release);
+    }
+}
+
+const fn raw_rx_item(byte: u8) -> RxItem {
+    RxItem::Byte {
+        byte,
+        flag: serial::RxFlag::Normal,
+    }
+}
+
+fn raw_input_source() -> Arc<PollSet> {
+    RAW_INPUT_SOURCE
+        .call_once(|| Arc::new(PollSet::new()))
+        .clone()
+}
+
+fn raw_output_source() -> Arc<PollSet> {
+    RAW_OUTPUT_SOURCE
+        .call_once(|| Arc::new(PollSet::new()))
+        .clone()
+}
+
+/// Cloneable output capability. All clones share one sleepable output lock.
+#[derive(Clone)]
+pub struct TaskConsoleOutput {
+    inner: TaskConsoleOutputInner,
+}
+
+#[derive(Clone)]
+enum TaskConsoleOutputInner {
+    Runtime(serial::SerialTaskOutput),
+    RawHal,
+}
+
+impl TaskConsoleOutput {
+    pub fn try_write(&self, bytes: &[u8]) -> RuntimeResult<usize> {
+        match &self.inner {
+            TaskConsoleOutputInner::Runtime(inner) => inner.try_write(bytes),
+            TaskConsoleOutputInner::RawHal => {
+                let Some(_output) = RAW_OUTPUT_LOCK.try_lock() else {
+                    return Err(RuntimeError::WouldBlock);
+                };
+                ax_hal::console::write_bytes(bytes);
+                Ok(bytes.len())
+            }
+        }
+    }
+
+    pub fn write_all(&self, bytes: &[u8]) -> RuntimeResult<usize> {
+        match &self.inner {
+            TaskConsoleOutputInner::Runtime(inner) => inner.write_all(bytes),
+            TaskConsoleOutputInner::RawHal => {
+                let _output = RAW_OUTPUT_LOCK.lock();
+                ax_hal::console::write_bytes(bytes);
+                Ok(bytes.len())
+            }
+        }
+    }
+
+    pub fn write_text_all(&self, bytes: &[u8]) -> RuntimeResult<usize> {
+        match &self.inner {
+            TaskConsoleOutputInner::Runtime(inner) => inner.write_text_all(bytes),
+            TaskConsoleOutputInner::RawHal => {
+                let _output = RAW_OUTPUT_LOCK.lock();
+                ax_hal::console::write_text_bytes(bytes);
+                Ok(bytes.len())
+            }
+        }
+    }
+
+    pub fn write_fmt(&self, args: fmt::Arguments<'_>) -> fmt::Result {
+        match &self.inner {
+            TaskConsoleOutputInner::Runtime(inner) => inner.write_fmt(args),
+            TaskConsoleOutputInner::RawHal => {
+                let _output = RAW_OUTPUT_LOCK.lock();
+                RawHalWriter.write_fmt(args)
+            }
+        }
+    }
+
+    pub fn drain(&self) -> RuntimeResult {
+        match &self.inner {
+            TaskConsoleOutputInner::Runtime(inner) => inner.wait_idle(),
+            TaskConsoleOutputInner::RawHal => {
+                let _output = RAW_OUTPUT_LOCK.lock();
+                Ok(())
+            }
+        }
+    }
+
+    pub fn discard_pending(&self) -> RuntimeResult {
+        match &self.inner {
+            TaskConsoleOutputInner::Runtime(inner) => inner.discard_pending(),
+            TaskConsoleOutputInner::RawHal => {
+                let _output = RAW_OUTPUT_LOCK.lock();
+                Ok(())
+            }
+        }
+    }
+
+    /// Serializes an optional drain/configuration transaction with all writers.
+    pub fn reconfigure(
+        &self,
+        config: Option<serial::Config>,
+        drain: bool,
+        publish: impl FnOnce(),
+    ) -> RuntimeResult {
+        match &self.inner {
+            TaskConsoleOutputInner::Runtime(inner) => inner.reconfigure(config, drain, publish),
+            TaskConsoleOutputInner::RawHal => {
+                let _output = RAW_OUTPUT_LOCK.lock();
+                if config.is_some() {
+                    return Err(RuntimeError::OperationNotSupported);
+                }
+                let _ = drain;
+                publish();
+                Ok(())
+            }
+        }
+    }
+
+    pub fn poll_source(&self) -> Arc<PollSet> {
+        match &self.inner {
+            TaskConsoleOutputInner::Runtime(inner) => inner.poll_source(),
+            TaskConsoleOutputInner::RawHal => raw_output_source(),
+        }
+    }
+}
+
+struct RawHalWriter;
+
+impl Write for RawHalWriter {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        ax_hal::console::write_text_bytes(text.as_bytes());
+        Ok(())
+    }
+}
+
+/// One complete record produced by the shared kernel logger.
+pub struct ConsoleLogRecord {
+    inner: serial::LogRecord,
+}
+
+impl ConsoleLogRecord {
+    pub fn bytes(&self) -> &[u8] {
+        self.inner.bytes()
+    }
+
+    pub fn cpu_id(&self) -> usize {
+        self.inner.cpu_id()
+    }
+
+    pub fn timestamp_nanos(&self) -> u64 {
+        self.inner.timestamp_nanos()
+    }
+
+    pub fn task_id(&self) -> Option<u64> {
+        self.inner.task_id()
+    }
+
+    pub fn is_truncated(&self) -> bool {
+        self.inner.is_truncated()
+    }
+
+    pub fn is_log(&self) -> bool {
+        self.inner.kind() == serial::LogRecordKind::Log
+    }
+}
+
+/// Records discarded because the subscriber did not keep up.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ConsoleLogDropReport {
+    pub records: usize,
+    pub source_bytes: usize,
+}
+
+/// Unique optional complete-record log subscription.
+pub struct ConsoleLogSubscription {
+    inner: serial::SerialLogSubscription,
+}
+
+impl ConsoleLogSubscription {
+    pub fn try_read(&self) -> Option<ConsoleLogRecord> {
+        self.inner
+            .try_read()
+            .map(|inner| ConsoleLogRecord { inner })
+    }
+
+    pub fn dropped(&self) -> ConsoleLogDropReport {
+        let (records, source_bytes) = self.inner.dropped();
+        ConsoleLogDropReport {
+            records,
+            source_bytes,
+        }
+    }
+
+    pub fn wait_readable(&self) -> RuntimeResult {
+        self.inner.wait_readable()
+    }
+}
+
+fn assign_tty_numbers(alias_indices: &[Option<usize>]) -> alloc::vec::Vec<Option<usize>> {
+    let mut assigned = alloc::vec![None; alias_indices.len()];
+    let mut used = alloc::vec::Vec::new();
+
+    for (device_index, alias) in alias_indices.iter().copied().enumerate() {
+        let Some(number) = alias else {
+            continue;
+        };
+        if used.contains(&number) {
+            continue;
+        }
+        assigned[device_index] = Some(number);
+        used.push(number);
+    }
+
+    let mut next = 0usize;
+    for number in &mut assigned {
+        if number.is_some() {
+            continue;
+        }
+        while used.contains(&next) {
+            next += 1;
+        }
+        *number = Some(next);
+        used.push(next);
+    }
+    assigned
+}
+
+#[cfg(test)]
+mod tests {
+    use ax_hal::console::ConsoleDeviceIdError;
+
+    use super::{
+        ACTIVATION, ConsoleActivation, ConsoleUnavailable, assign_tty_numbers,
+        inactive_console_error, output, raw_hal_activation, select_candidate, take_input,
+    };
+    use crate::RuntimeError;
+
+    #[test]
+    fn tty_numbering_preserves_aliases_and_fills_gaps() {
+        assert_eq!(
+            assign_tty_numbers(&[Some(0), None, Some(2), None]),
+            [Some(0), Some(1), Some(2), Some(3)]
+        );
+        assert_eq!(
+            assign_tty_numbers(&[Some(1), Some(1), None]),
+            [Some(1), Some(0), Some(2)]
+        );
+    }
+
+    #[test]
+    fn firmware_device_id_wins_over_ttys0() {
+        let tty_s0 = rdrive::DeviceId::from(10);
+        let tty_s1 = rdrive::DeviceId::from(11);
+        assert_eq!(
+            select_candidate(&[(tty_s0, Some(0)), (tty_s1, Some(1))], Ok(tty_s1)),
+            Ok((1, 1))
+        );
+    }
+
+    #[test]
+    fn only_not_specified_falls_back_to_ttys0() {
+        let tty_s0 = rdrive::DeviceId::from(10);
+        let candidates = [(tty_s0, Some(0))];
+        assert_eq!(
+            select_candidate(&candidates, Err(ConsoleDeviceIdError::NotSpecified)),
+            Ok((0, 0))
+        );
+        assert_eq!(
+            select_candidate(&candidates, Err(ConsoleDeviceIdError::NoHardwareDevice)),
+            Err(ConsoleUnavailable::NoHardwareSelected)
+        );
+        assert_eq!(
+            select_candidate(&candidates, Err(ConsoleDeviceIdError::DeviceNotFound)),
+            Err(ConsoleUnavailable::SelectedDeviceNotFound)
+        );
+    }
+
+    #[test]
+    fn missing_hardware_and_ttys0_are_unavailable_for_runtime_selection() {
+        let tty_s1 = rdrive::DeviceId::from(11);
+        assert_eq!(
+            select_candidate(
+                &[(tty_s1, Some(1))],
+                Err(ConsoleDeviceIdError::NotSpecified)
+            ),
+            Err(ConsoleUnavailable::NoTtyS0Fallback)
+        );
+        assert_eq!(
+            select_candidate(&[], Err(ConsoleDeviceIdError::NotSpecified)),
+            Err(ConsoleUnavailable::NoSerialDevice)
+        );
+    }
+
+    #[test]
+    fn unavailable_runtime_selection_keeps_the_raw_hal_owner() {
+        for reason in [
+            ConsoleUnavailable::NoSerialDevice,
+            ConsoleUnavailable::NoHardwareSelected,
+            ConsoleUnavailable::SelectedDeviceNotFound,
+            ConsoleUnavailable::NoTtyS0Fallback,
+        ] {
+            assert_eq!(
+                raw_hal_activation(reason),
+                ConsoleActivation::RawHal(reason)
+            );
+        }
+    }
+
+    #[test]
+    fn failed_closed_console_never_falls_back_to_the_raw_hal() {
+        assert_eq!(
+            inactive_console_error(Some(ConsoleActivation::FailedClosed(
+                ConsoleUnavailable::HandoffFailed,
+            ))),
+            RuntimeError::ConsoleFailedClosed
+        );
+        assert_eq!(
+            inactive_console_error(Some(ConsoleActivation::RawHal(
+                ConsoleUnavailable::NoSerialDevice,
+            ))),
+            RuntimeError::SerialNotStarted
+        );
+    }
+
+    #[test]
+    fn raw_hal_activation_still_provides_task_console_io() {
+        ACTIVATION.call_once(|| ConsoleActivation::RawHal(ConsoleUnavailable::NoSerialDevice));
+        assert!(take_input().is_ok());
+        assert!(output().is_ok());
+    }
+}

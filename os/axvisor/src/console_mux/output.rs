@@ -8,11 +8,11 @@ use alloc::{
     vec::Vec,
 };
 
-pub(super) const PER_GUEST_LOG_CAPACITY: usize = 16 * 1024;
+pub const PER_GUEST_LOG_CAPACITY: usize = 16 * 1024;
 
 /// Arbitrates complete host-console lines across guest serial backends.
 #[derive(Debug, Default)]
-pub(crate) struct GuestOutputMux {
+pub struct GuestOutputMux {
     guests: BTreeMap<usize, GuestOutputState>,
     mode: OutputMode,
     owner: Option<usize>,
@@ -38,7 +38,7 @@ struct GuestOutputState {
 
 #[cfg(test)]
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct ArbitrationSnapshot {
+pub struct ArbitrationSnapshot {
     mode: OutputMode,
     owner: Option<usize>,
     physical_line_open: bool,
@@ -58,19 +58,48 @@ impl Default for GuestOutputState {
 
 impl GuestOutputMux {
     /// Starts the boot-time mode that displays complete lines from every VM.
-    pub(crate) fn start_boot_multiplex(&mut self) {
+    pub fn start_boot_multiplex(&mut self) {
         self.mode = OutputMode::BootMultiplex;
     }
 
     /// Gives one interactive guest direct access to the host console.
-    pub(crate) fn enter_interactive(&mut self, vm_id: usize) {
+    pub fn enter_interactive(&mut self, vm_id: usize) {
         self.mode = OutputMode::Interactive {
             foreground: Some(vm_id),
         };
     }
 
+    pub fn foreground_is_interactive(&self) -> bool {
+        matches!(
+            self.mode,
+            OutputMode::Interactive {
+                foreground: Some(_)
+            }
+        )
+    }
+
+    /// Emits one host record without allowing it to share a guest line.
+    pub fn format_host_record(&mut self, record: &[u8]) -> Vec<u8> {
+        let mut output = Vec::with_capacity(record.len().saturating_add(2));
+        if self.physical_line_open {
+            output.push(b'\n');
+        }
+        if let Some(owner) = self.owner
+            && let Some(guest) = self.guests.get_mut(&owner)
+        {
+            guest.at_line_start = true;
+        }
+        self.owner = None;
+        self.physical_line_open = false;
+        output.extend_from_slice(record);
+        if !record.ends_with(b"\n") {
+            output.push(b'\n');
+        }
+        output
+    }
+
     /// Keeps every guest's output in its ring and terminates its open physical line.
-    pub(crate) fn buffer_all(&mut self) -> Vec<u8> {
+    pub fn buffer_all(&mut self) -> Vec<u8> {
         let separator = if self.physical_line_open {
             Vec::from(*b"\n")
         } else {
@@ -89,13 +118,13 @@ impl GuestOutputMux {
     }
 
     /// Selects an interactive guest and returns its buffered console log.
-    pub(crate) fn select_foreground(&mut self, vm_id: usize) -> Vec<u8> {
+    pub fn select_foreground(&mut self, vm_id: usize) -> Vec<u8> {
         self.enter_interactive(vm_id);
         self.drain_guest_log(vm_id)
     }
 
     /// Enters interactive mode on the first input and returns the buffered prompt.
-    pub(crate) fn select_foreground_on_input(&mut self, vm_id: usize) -> Vec<u8> {
+    pub fn select_foreground_on_input(&mut self, vm_id: usize) -> Vec<u8> {
         match self.mode {
             OutputMode::Interactive {
                 foreground: Some(foreground),
@@ -105,7 +134,7 @@ impl GuestOutputMux {
     }
 
     /// Discards output state for guests that are no longer running.
-    pub(crate) fn reconcile_running(&mut self, running: &BTreeSet<usize>) {
+    pub fn reconcile_running(&mut self, running: &BTreeSet<usize>) {
         let discarded = self
             .guests
             .iter()
@@ -126,7 +155,7 @@ impl GuestOutputMux {
     }
 
     /// Discards pending output for a replaced or stopped backend.
-    pub(crate) fn reset_guest(&mut self, vm_id: usize) {
+    pub fn reset_guest(&mut self, vm_id: usize) {
         if let Some(guest) = self.guests.remove(&vm_id) {
             self.total_pending -= guest.pending.len();
         }
@@ -139,12 +168,12 @@ impl GuestOutputMux {
     }
 
     /// Requests that the next write from `vm_id` take physical-line ownership.
-    pub(crate) fn request_preemption(&mut self, vm_id: usize) {
+    pub fn request_preemption(&mut self, vm_id: usize) {
         self.preemption = Some(vm_id);
     }
 
     /// Enqueues one backend write and returns bytes ready for the host console.
-    pub(crate) fn format(&mut self, vm_id: usize, multiple_running: bool, bytes: &[u8]) -> Vec<u8> {
+    pub fn format(&mut self, vm_id: usize, multiple_running: bool, bytes: &[u8]) -> Vec<u8> {
         if let OutputMode::Interactive { foreground } = self.mode {
             return self.format_interactive(vm_id, foreground, bytes);
         }
@@ -310,7 +339,7 @@ impl GuestOutputMux {
     }
 
     #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> ArbitrationSnapshot {
+    pub fn snapshot(&self) -> ArbitrationSnapshot {
         ArbitrationSnapshot {
             mode: self.mode,
             owner: self.owner,
@@ -326,9 +355,25 @@ impl GuestOutputMux {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, axtest))]
 mod tests {
     use super::*;
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn host_record_terminates_an_open_guest_line() {
+        let mut mux = GuestOutputMux::default();
+        assert_eq!(mux.format(1, false, b"guest> "), b"guest> ");
+
+        assert_eq!(mux.format_host_record(b"host record\n"), b"\nhost record\n");
+    }
+
+    #[cfg_attr(axtest, axtest::axtest)]
+    #[cfg_attr(not(axtest), test)]
+    fn host_record_without_newline_becomes_an_independent_line() {
+        let mut mux = GuestOutputMux::default();
+        assert_eq!(mux.format_host_record(b":host"), b":host\n");
+    }
 
     #[cfg_attr(axtest, axtest::axtest)]
     #[cfg_attr(not(axtest), test)]

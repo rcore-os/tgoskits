@@ -1,5 +1,38 @@
 use super::*;
 
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn host_log_record_terminates_an_open_guest_line() {
+    let mux = GuestConsoleMux::new();
+    {
+        let mut state = mux.core.lock_state();
+        assert_eq!(state.output.format(1, false, b"guest> "), b"guest> ");
+    }
+
+    assert_eq!(
+        mux.route_host_log(b"host record\n", 0, 0),
+        Some(b"\nhost record\n".to_vec())
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn foreground_guest_buffers_whole_host_records_and_replays_on_detach() {
+    let mux = GuestConsoleMux::new();
+    {
+        let mut state = mux.core.lock_state();
+        state.output.enter_interactive(1);
+    }
+    assert_eq!(mux.route_host_log(b"first\n", 0, 0), None);
+    assert_eq!(mux.route_host_log(b"second\n", 0, 0), None);
+
+    let mut state = mux.core.lock_state();
+    state.output.buffer_all();
+    let mut replay = Vec::new();
+    append_host_log_replay(&mut state, &mut replay);
+    assert_eq!(replay, b"first\nsecond\n");
+}
+
 fn route_shortcut(mux: &GuestConsoleMux, suffix: u8) -> ConsoleInputEvent {
     assert_eq!(
         mux.route_host_byte(CTRL_X).event,

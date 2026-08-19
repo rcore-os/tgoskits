@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-pub(super) const LOG_RECORD_BYTES: usize = 1024;
+pub(crate) const LOG_RECORD_BYTES: usize = 1024;
 pub(super) const LOG_SLOTS_PER_CPU: usize = 64;
 
 const NO_OWNER: usize = usize::MAX;
@@ -27,7 +27,7 @@ enum SlotState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum LogRecordKind {
+pub(crate) enum LogRecordKind {
     Print,
     Log,
 }
@@ -58,7 +58,7 @@ impl LogRecordMeta {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct LogRecord {
+pub(crate) struct LogRecord {
     pub(super) cpu_id: u32,
     sequence: u64,
     pub(super) timestamp_nanos: u64,
@@ -87,7 +87,7 @@ impl LogRecord {
         }
     }
 
-    fn format(
+    pub(super) fn format(
         cpu_id: usize,
         sequence: u64,
         meta: LogRecordMeta,
@@ -129,7 +129,7 @@ impl LogRecord {
         Ok(record)
     }
 
-    pub(super) fn cpu_id(&self) -> usize {
+    pub(crate) fn cpu_id(&self) -> usize {
         self.cpu_id as usize
     }
 
@@ -137,23 +137,23 @@ impl LogRecord {
         self.sequence
     }
 
-    pub(super) fn timestamp_nanos(&self) -> u64 {
+    pub(crate) fn timestamp_nanos(&self) -> u64 {
         self.timestamp_nanos
     }
 
-    pub(super) fn task_id(&self) -> Option<u64> {
+    pub(crate) fn task_id(&self) -> Option<u64> {
         (self.flags & TASK_ID_VALID != 0).then_some(self.task_id)
     }
 
-    pub(super) fn kind(&self) -> LogRecordKind {
+    pub(crate) fn kind(&self) -> LogRecordKind {
         self.kind
     }
 
-    pub(super) fn is_truncated(&self) -> bool {
+    pub(crate) fn is_truncated(&self) -> bool {
         self.flags & TRUNCATED != 0
     }
 
-    pub(super) fn source_len(&self) -> usize {
+    pub(crate) fn source_len(&self) -> usize {
         self.source_len as usize
     }
 
@@ -161,7 +161,7 @@ impl LogRecord {
         self.accepted_source_len as usize
     }
 
-    pub(super) fn bytes(&self) -> &[u8] {
+    pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes[..self.len as usize]
     }
 }
