@@ -61,15 +61,17 @@ impl ArmPerCpu {
         // Todo: take care of `preemption`
         self.original_vbar_el2 = VBAR_EL2.get();
 
+        super::host::install_current_el_irq_handler::<H>();
+
         // Set current `VBAR_EL2` to `exception_vector_base_vcpu`
         // defined in this crate.
         VBAR_EL2.set(exception_vector_base_vcpu as *const () as usize as _);
+        instruction_synchronization_barrier();
 
         HCR_EL2.modify(
             HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64 + HCR_EL2::TSC::EnableTrapEl1SmcToEl2,
         );
-
-        super::host::install_current_el_irq_handler::<H>();
+        instruction_synchronization_barrier();
 
         // Note that `ICH_HCR_EL2` is not the same as `HCR_EL2`.
         //
@@ -112,5 +114,13 @@ impl ArmPerCpu {
     /// Returns the architectural counter frequency recorded on this CPU.
     pub const fn timer_frequency_hz(&self) -> u64 {
         self.timer_frequency_hz
+    }
+}
+
+fn instruction_synchronization_barrier() {
+    // SAFETY: `isb` only synchronizes subsequent instruction execution on the
+    // current CPU after system-register updates made above.
+    unsafe {
+        core::arch::asm!("isb", options(nostack, preserves_flags));
     }
 }

@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
-use log::error;
+use aarch64_cpu::registers::{
+    ELR_EL2, ESR_EL2, FAR_EL2, HCR_EL2, Readable, SCTLR_EL1, SPSR_EL2, VTCR_EL2, VTTBR_EL2,
+};
 
 use super::{
     TrapFrame,
@@ -333,12 +334,15 @@ fn current_el_sync_handler(tf: &mut TrapFrame) {
     let ec = ESR_EL2.read(ESR_EL2::EC);
     let iss = ESR_EL2.read(ESR_EL2::ISS);
 
-    error!("ESR_EL2: {:#x}", esr.get());
-    error!("Exception Class: {ec:#x}");
-    error!("Instruction Specific Syndrome: {iss:#x}");
-
     panic!(
-        "Unhandled synchronous exception from current EL: {:#x?}",
+        "Unhandled synchronous exception from current EL:\nESR_EL2: {:#x}\nException Class: \
+         {ec:#x}\nInstruction Specific Syndrome: {iss:#x}\nFAR_EL2: {:#x}\nELR_EL2: \
+         {:#x}\nSPSR_EL2: {:#x}\nHCR_EL2: {:#x}\nTrap frame: {:#x?}",
+        esr.get(),
+        FAR_EL2.get(),
+        ELR_EL2.get(),
+        SPSR_EL2.get(),
+        HCR_EL2.get(),
         tf
     );
 }

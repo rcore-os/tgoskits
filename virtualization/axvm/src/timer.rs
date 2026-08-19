@@ -2,16 +2,14 @@
 
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard};
-#[cfg(test)]
-use std::vec::Vec;
 use std::{
     boxed::Box,
-    collections::BTreeMap,
     sync::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
+    vec::Vec,
 };
 
 use ax_std::os::arceos::{guard::PreemptGuard, modules::ax_task::IrqNotify, sync::IrqSafeMutex};
@@ -116,38 +114,46 @@ impl TimerEvent for VmTimerEvent {
 }
 
 struct TimerWheels {
-    wheels: BTreeMap<usize, TimerList<VmTimerEvent>>,
-    owners: BTreeMap<usize, usize>,
-    published_deadlines: BTreeMap<usize, Arc<PublishedTimerDeadline>>,
+    wheels: Vec<Option<TimerList<VmTimerEvent>>>,
+    owners: Vec<Option<usize>>,
+    published_deadlines: Vec<Option<Arc<PublishedTimerDeadline>>>,
 }
 
 impl TimerWheels {
     fn new() -> Self {
         Self {
-            wheels: BTreeMap::new(),
-            owners: BTreeMap::new(),
-            published_deadlines: BTreeMap::new(),
+            wheels: Vec::new(),
+            owners: Vec::new(),
+            published_deadlines: Vec::new(),
         }
     }
 
     fn ensure_cpu(&mut self, cpu_id: usize) -> &mut TimerList<VmTimerEvent> {
-        self.published_deadlines
-            .entry(cpu_id)
-            .or_insert_with(|| Arc::new(PublishedTimerDeadline::new()));
-        self.wheels.entry(cpu_id).or_default()
+        if self.wheels.len() <= cpu_id {
+            self.wheels.resize_with(cpu_id + 1, || None);
+        }
+        if self.published_deadlines.len() <= cpu_id {
+            self.published_deadlines.resize_with(cpu_id + 1, || None);
+        }
+        if self.published_deadlines[cpu_id].is_none() {
+            self.published_deadlines[cpu_id] = Some(Arc::new(PublishedTimerDeadline::new()));
+        }
+        self.wheels[cpu_id].get_or_insert_with(TimerList::default)
     }
 
     fn published_deadline(&mut self, cpu_id: usize) -> Arc<PublishedTimerDeadline> {
         self.ensure_cpu(cpu_id);
         self.published_deadlines
-            .get(&cpu_id)
+            .get(cpu_id)
+            .and_then(Option::as_ref)
             .expect("ensured AxVM timer CPU must have a published deadline")
             .clone()
     }
 
     fn publish_next_deadline(&self, cpu_id: usize, deadline: Option<TimeValue>) {
         self.published_deadlines
-            .get(&cpu_id)
+            .get(cpu_id)
+            .and_then(Option::as_ref)
             .expect("AxVM timer wheel must publish only initialized CPUs")
             .publish(deadline);
     }
@@ -159,7 +165,10 @@ impl TimerWheels {
         deadline: TimeValue,
         event: VmTimerEvent,
     ) -> Option<TimeValue> {
-        self.owners.insert(token, owner_cpu);
+        if self.owners.len() <= token {
+            self.owners.resize(token + 1, None);
+        }
+        self.owners[token] = Some(owner_cpu);
         self.ensure_cpu(owner_cpu).set(deadline, event);
         let next_deadline = self.next_deadline(owner_cpu);
         self.publish_next_deadline(owner_cpu, next_deadline);
@@ -168,17 +177,21 @@ impl TimerWheels {
 
     fn handle(&self, token: usize) -> Option<VmTimerHandle> {
         self.owners
-            .get(&token)
+            .get(token)
             .copied()
+            .flatten()
             .map(|owner_cpu| VmTimerHandle { token, owner_cpu })
     }
 
     fn cancel_handle(&mut self, handle: VmTimerHandle) -> Option<Option<TimeValue>> {
-        if self.owners.get(&handle.token).copied() != Some(handle.owner_cpu) {
+        if self.owners.get(handle.token).copied().flatten() != Some(handle.owner_cpu) {
             return None;
         }
-        self.owners.remove(&handle.token);
-        let wheel = self.wheels.get_mut(&handle.owner_cpu)?;
+        self.owners[handle.token] = None;
+        let wheel = self
+            .wheels
+            .get_mut(handle.owner_cpu)
+            .and_then(Option::as_mut)?;
         wheel.cancel(|event| event.token == handle.token);
         let next_deadline = wheel.next_deadline();
         self.publish_next_deadline(handle.owner_cpu, next_deadline);
@@ -192,10 +205,13 @@ impl TimerWheels {
     ) -> Option<(TimeValue, VmTimerEvent)> {
         let expired = self
             .wheels
-            .get_mut(&owner_cpu)
+            .get_mut(owner_cpu)
+            .and_then(Option::as_mut)
             .and_then(|wheel| wheel.expire_one(now));
-        if let Some((_, event)) = &expired {
-            self.owners.remove(&event.token);
+        if let Some((_, event)) = &expired
+            && let Some(owner) = self.owners.get_mut(event.token)
+        {
+            *owner = None;
         }
         self.publish_next_deadline(owner_cpu, self.next_deadline(owner_cpu));
         expired
@@ -203,7 +219,8 @@ impl TimerWheels {
 
     fn next_deadline(&self, owner_cpu: usize) -> Option<TimeValue> {
         self.wheels
-            .get(&owner_cpu)
+            .get(owner_cpu)
+            .and_then(Option::as_ref)
             .and_then(TimerList::next_deadline)
     }
 }
@@ -326,7 +343,6 @@ fn rearm_host_timer(next_deadline: Option<TimeValue>) {
 }
 
 pub(crate) fn init_percpu() {
-    info!("Initializing AxVM timer wheel...");
     let deadline_source =
         with_current_timer_wheels(|cpu_id, timer_wheels| timer_wheels.published_deadline(cpu_id));
 

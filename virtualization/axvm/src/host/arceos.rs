@@ -367,10 +367,8 @@ impl HostPlatform for ArceOsHost {
             let task = modules::ax_task::TaskInner::new(
                 move || {
                     let host = arceos_host();
-                    info!("Core {cpu_id} is initializing hardware virtualization support...");
                     host.enable_virtualization_on_current_cpu()
                         .expect("failed to enable hardware virtualization");
-                    info!("Hardware virtualization support enabled on core {cpu_id}");
                     let _ = CORES.fetch_add(1, Ordering::Release);
                 },
                 std::format!("axvm-hv-init-{cpu_id}"),
