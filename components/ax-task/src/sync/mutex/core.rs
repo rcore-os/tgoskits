@@ -8,6 +8,8 @@ use core::{
     sync::atomic::{AtomicU8, AtomicU64, Ordering},
 };
 
+use crate::ThreadHandle;
+
 static NEXT_PI_MUTEX_GENERATION: AtomicU64 = AtomicU64::new(1);
 const OWNER_HAS_WAITERS: u64 = 1 << 63;
 const OWNER_ID_MASK: u64 = !OWNER_HAS_WAITERS;
@@ -748,7 +750,7 @@ pub enum PiMutexOwnedRelease {
 #[derive(Debug)]
 pub struct PiWaitToken {
     thread: PiTaskId,
-    initial_owner: Option<PiTaskId>,
+    initial_owner: Option<ThreadHandle>,
     generation: u64,
     lock: PiMutexRaw,
     provider_waiter: NonNull<()>,
@@ -763,10 +765,10 @@ impl PiWaitToken {
     /// that registration must keep the physical mutex alive until cancellation
     /// or handoff claim completes.
     #[doc(hidden)]
-    pub const unsafe fn from_registration(
+    pub unsafe fn from_registration(
         lock: PiMutexRaw,
         thread: PiTaskId,
-        initial_owner: Option<PiTaskId>,
+        initial_owner: Option<ThreadHandle>,
         generation: u64,
         provider_waiter: NonNull<()>,
     ) -> Self {
@@ -785,8 +787,16 @@ impl PiWaitToken {
     }
 
     /// Returns the owner observed by the registration transaction.
-    pub const fn initial_owner(&self) -> Option<PiTaskId> {
+    pub fn initial_owner(&self) -> Option<PiTaskId> {
         self.initial_owner
+            .as_ref()
+            .map(|owner| PiTaskId::from(owner.id()))
+    }
+
+    /// Borrows the generation-valid owner capability retained at registration.
+    #[doc(hidden)]
+    pub(crate) fn initial_owner_handle(&self) -> Option<&ThreadHandle> {
+        self.initial_owner.as_ref()
     }
 
     /// Returns the task-local waiter generation.

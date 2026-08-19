@@ -787,7 +787,11 @@ ax-sync 与 ax-task 的 PI registration、release 和 claim 遵循 Linux rtmutex
    再把剩余 cached top 挂入新 owner donor tree；
 6. ax-sync 只保存 `PiMutexCore` 和 waiter sequence，不保存第二份 owner、selected、本地
    waiter 链或 pinned waiter 生命周期。block 与定向 wake 都在调度图和 per-lock gate 释放后
-   执行。
+   执行；
+7. registration 在 owner scheduler activity 仍受保护时创建 generation-valid
+   `ThreadHandle`，并把它移入 `PiWaitToken`。owner-spin 直接通过该强 capability 观察
+   `scheduler_fence_cpu`，不再把 owner word 中的数值 `ThreadId` 重新查询 registry；claim、
+   cancel 或 token drop 才释放这份 owner lifetime lease。
 
 这个顺序对应 Linux `rt_mutex` 的 `wait_lock -> task->pi_lock` 分层和 `wake_q` 锁外唤醒语义。
 owner word 是物理持有者的唯一权威，ax-task per-lock tree 是调度顺序与 selected token 的
@@ -798,6 +802,16 @@ selected token；claim 或新 waiter 恰好跨过该窗口时会把旧快照带�
 而是删除 ax-sync 的第二个 gate，把 owner word、waiter tree、donation graph 和 selection
 纳入 ax-task 的单一事务。per-lock gate 是不关中断的 raw ticket gate，硬中断不访问 PI
 metadata；实际 block/wake 始终在 gate 外完成。
+
+第 7 条对应 Linux v7.1 在持有 `wait_lock`/`pi_lock` 时验证 owner 后立即
+`get_task_struct()` 的规则：owner 指针离开锁保护前必须先取得稳定生命周期引用，后续
+`rtmutex_spin_on_owner()` 才能在 RCU/引用保护下重验 owner 和 `on_cpu`。仅把数值 owner ID
+带入 token 会在“owner word 仍匹配 -> owner 解锁退出并被 registry 回收 -> waiter 查询
+on-CPU 状态”的窗口得到 stale ID；把该错误解释成“不在 CPU”只是兜底，会隐藏 owner
+publication 与生命周期断裂。确定性 QEMU 回归把 waiter 暂停在 registration 已提交、首次
+owner observation 尚未发生的位置，让 owner 解锁并退出，并要求 token 的 owner lease
+仍然存在；旧实现稳定为 0，新实现随后完成 handoff，且 300-fork Starry 回归不再触发 stale
+owner panic。
 
 Linux v7.1 的 `rt_mutex_adjust_prio_chain()` 默认允许较深的链并在遍历中提供可抢占点；当前
 ax-task 的 donation graph 仍由一个不可抢占事务保护，因此不能照搬 Linux 的 1024 层默认

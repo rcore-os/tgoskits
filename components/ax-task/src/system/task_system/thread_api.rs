@@ -124,6 +124,15 @@ impl TaskSystem {
         Ok(ThreadHandle::from_core(Arc::clone(&record.core)))
     }
 
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn thread_external_lease_count_for_test(
+        &self,
+        thread: ThreadId,
+    ) -> Result<usize, TaskError> {
+        let state = self.state.lock();
+        Ok(state.thread_record(thread)?.core.external_lease_count())
+    }
+
     /// Borrows the opaque OS extension through a generation-valid strong handle.
     ///
     /// The borrow cannot outlive `handle`, which prevents the registry reaper

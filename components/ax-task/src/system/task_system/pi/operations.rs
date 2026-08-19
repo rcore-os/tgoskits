@@ -229,17 +229,26 @@ impl TaskSystem {
                 }
                 return Err(error);
             }
+            // Linux takes a task_struct reference while the owner remains
+            // protected by wait_lock/pi_lock. Retain the equivalent typed
+            // scheduler handle before releasing the owner activity lease, so
+            // owner observation never has to resolve a stale numeric ID.
+            let initial_owner_handle = initial_owner
+                .as_ref()
+                .map(|owner| ThreadHandle::from_core(Arc::clone(owner)));
             drop(_owner_activity);
             drop(_waiter_activity);
             #[cfg(feature = "task-test-hooks")]
             crate::task_test_hooks::registered_waiter(waiter);
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::owner_lifetime_registered(waiter);
             return Ok(PiMutexLockResult::Waiting(unsafe {
                 // SAFETY: both waiter-tree edges are committed and retain this
                 // physical lock identity until claim or cancellation.
                 PiWaitToken::from_registration(
                     lock_raw,
                     waiter.into(),
-                    owner.map(PiTaskId::from),
+                    initial_owner_handle,
                     generation,
                     core::ptr::NonNull::from(waiter_core.pi_wait_state()).cast(),
                 )
@@ -409,7 +418,11 @@ impl TaskSystem {
         let Some(owner) = token.initial_owner() else {
             return Ok(false);
         };
-        let owner = self.pi_thread_core(owner.into())?;
+        let owner = token
+            .initial_owner_handle()
+            .filter(|handle| handle.id() == ThreadId::from(owner))
+            .ok_or(TaskError::InvalidPiState)?
+            .runtime_core_arc();
         Ok(owner.sched().scheduler_fence_cpu().is_some())
     }
 }

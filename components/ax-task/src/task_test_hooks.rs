@@ -14,6 +14,8 @@ static TARGET_CHAIN_TOP: AtomicU64 = AtomicU64::new(0);
 static PI_CHAIN_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static PI_OWNER_EXIT_TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
 static PI_OWNER_EXIT_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static PI_OWNER_LIFETIME_TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
+static PI_OWNER_LIFETIME_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static PI_OWNER_SPIN_TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
 static PI_OWNER_SPIN_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static PI_OWNER_SPIN_ITERATIONS: AtomicU64 = AtomicU64::new(0);
@@ -1323,6 +1325,50 @@ pub fn allow_pi_waiter_after_owner_exit() {
     );
 }
 
+/// Arms a pause after a waiter commits its owner-lifetime observation.
+pub fn arm_pi_owner_lifetime_after_registration(waiter: u64) {
+    assert_ne!(waiter, 0, "a PI owner-lifetime waiter must be non-zero");
+    assert_eq!(
+        PI_OWNER_LIFETIME_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one PI owner-lifetime probe may be armed"
+    );
+    PI_OWNER_LIFETIME_TARGET_WAITER.store(waiter, Ordering::Relaxed);
+    PI_OWNER_LIFETIME_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the waiter committed its owner-lifetime observation.
+pub fn pi_owner_lifetime_registration_committed() -> bool {
+    PI_OWNER_LIFETIME_STAGE.load(Ordering::Acquire) == STAGE_WAITER_REGISTERED
+}
+
+/// Returns whether a committed PI waiter pins the observed owner's identity.
+pub fn pi_owner_lifetime_is_pinned(owner: u64) -> bool {
+    let owner = ThreadId::from_parts(owner as u32, (owner >> 32) as u32);
+    crate::facade::runtime_task_system()
+        .and_then(|system| system.thread_external_lease_count_for_test(owner))
+        .is_ok_and(|leases| leases != 0)
+}
+
+/// Lets the waiter continue after the owner-lifetime invariant is observed.
+pub fn allow_pi_waiter_after_owner_lifetime_observation() {
+    assert_eq!(
+        PI_OWNER_LIFETIME_STAGE.compare_exchange(
+            STAGE_WAITER_REGISTERED,
+            STAGE_OWNER_EXITED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_WAITER_REGISTERED),
+        "PI owner-lifetime observation must follow waiter registration"
+    );
+}
+
 /// Arms observation of the first owner-spin iteration for one live PI waiter.
 pub fn arm_pi_owner_spin(waiter: u64) {
     assert_ne!(
@@ -1493,4 +1539,27 @@ pub(crate) fn owner_snapshot_captured(waiter: ThreadId) {
     }
     PI_OWNER_EXIT_TARGET_WAITER.store(0, Ordering::Relaxed);
     PI_OWNER_EXIT_STAGE.store(STAGE_IDLE, Ordering::Release);
+}
+
+pub(crate) fn owner_lifetime_registered(waiter: ThreadId) {
+    if PI_OWNER_LIFETIME_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || PI_OWNER_LIFETIME_TARGET_WAITER.load(Ordering::Relaxed) != waiter.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        PI_OWNER_LIFETIME_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_WAITER_REGISTERED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "target PI waiter reached owner observation in an invalid test stage"
+    );
+    while PI_OWNER_LIFETIME_STAGE.load(Ordering::Acquire) != STAGE_OWNER_EXITED {
+        core::hint::spin_loop();
+    }
+    PI_OWNER_LIFETIME_TARGET_WAITER.store(0, Ordering::Relaxed);
+    PI_OWNER_LIFETIME_STAGE.store(STAGE_IDLE, Ordering::Release);
 }

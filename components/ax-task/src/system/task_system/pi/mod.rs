@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::{
-    PiMutexClaimOutcome, PiMutexLockResult, PiMutexRef, PiMutexWaiters, PiTaskId,
-    PiWaitCancelOutcome, PiWaitStateError, lock::PreemptScope, lock_pi_mutex_waiters,
-    lock_raw_pi_mutex_waiters, try_lock_raw_pi_mutex_waiters,
+    PiMutexClaimOutcome, PiMutexLockResult, PiMutexRef, PiMutexWaiters, PiWaitCancelOutcome,
+    PiWaitStateError, lock::PreemptScope, lock_pi_mutex_waiters, lock_raw_pi_mutex_waiters,
+    try_lock_raw_pi_mutex_waiters,
 };
 
 #[derive(Clone, Copy)]

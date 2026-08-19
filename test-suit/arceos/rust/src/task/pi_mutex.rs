@@ -97,8 +97,62 @@ pub fn run() -> crate::TestResult {
     owner.join().unwrap();
     owner_change_after_origin_registration();
     owner_exit_after_waiter_snapshot();
+    wait_token_retains_initial_owner_lifetime();
     owner_spin_allows_higher_priority_preemption();
     Ok(())
+}
+
+fn wait_token_retains_initial_owner_lifetime() {
+    let mutex = Arc::new(Mutex::new(()));
+    let owner_locked = Arc::new(AtomicBool::new(false));
+    let release_owner = Arc::new(AtomicBool::new(false));
+    let owner = {
+        let mutex = Arc::clone(&mutex);
+        let owner_locked = Arc::clone(&owner_locked);
+        let release_owner = Arc::clone(&release_owner);
+        thread::spawn(move || {
+            pin_current_to_cpu(0);
+            let guard = mutex.lock();
+            owner_locked.store(true, Ordering::Release);
+            while !release_owner.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+            drop(guard);
+        })
+    };
+    wait_until(
+        || owner_locked.load(Ordering::Acquire),
+        "PI owner-lifetime owner did not acquire the lock",
+    );
+    let owner_id = owner.thread().id().as_u64().get();
+
+    let start_waiter = Arc::new(AtomicBool::new(false));
+    let waiter = {
+        let mutex = Arc::clone(&mutex);
+        let start_waiter = Arc::clone(&start_waiter);
+        thread::spawn(move || {
+            pin_current_to_cpu(1);
+            while !start_waiter.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+            drop(mutex.lock());
+        })
+    };
+    task_test_hooks::arm_pi_owner_lifetime_after_registration(waiter.thread().id().as_u64().get());
+    start_waiter.store(true, Ordering::Release);
+    wait_until(
+        task_test_hooks::pi_owner_lifetime_registration_committed,
+        "PI waiter did not commit its owner-lifetime observation",
+    );
+
+    release_owner.store(true, Ordering::Release);
+    owner.join().unwrap();
+    assert!(
+        task_test_hooks::pi_owner_lifetime_is_pinned(owner_id),
+        "a committed PI wait token must retain its observed owner's scheduler lifetime"
+    );
+    task_test_hooks::allow_pi_waiter_after_owner_lifetime_observation();
+    waiter.join().unwrap();
 }
 
 fn owner_spin_allows_higher_priority_preemption() {
