@@ -12,12 +12,15 @@ use ax_sync::Mutex;
 use axpoll::PollSet;
 
 pub use crate::serial::RxItem;
-use crate::{RuntimeError, RuntimeResult, raw_console::RawConsoleInput, serial};
+use crate::{RuntimeError, RuntimeResult, raw_console::RawConsoleInput, serial, sync::SpinLock};
 
 const DEFAULT_BAUDRATE: u32 = 115_200;
 
 static ACTIVATION: OnceLock<ConsoleActivation> = OnceLock::new();
+// Task writers take these in order. Log publishers take only the hardware
+// lock, so early CPUs and interrupt context never touch task-owned state.
 static RAW_OUTPUT_LOCK: Mutex<()> = Mutex::new(());
+static RAW_HARDWARE_LOCK: SpinLock<()> = SpinLock::new(());
 static RAW_OUTPUT_SOURCE: OnceLock<Arc<PollSet>> = OnceLock::new();
 
 /// Result of selecting the firmware console before secondary CPUs start.
@@ -259,19 +262,25 @@ pub(crate) fn try_publish_without_runtime(
 ) -> Option<ax_log::PublishStatus> {
     match activation()? {
         ConsoleActivation::RawHal(_) => {
-            let Some(_output) = RAW_OUTPUT_LOCK.try_lock() else {
-                return Some(ax_log::PublishStatus::Dropped);
-            };
-            let mut writer = RawHalWriter;
-            Some(if writer.write_fmt(args).is_ok() {
-                ax_log::PublishStatus::Published
-            } else {
-                ax_log::PublishStatus::Dropped
-            })
+            // Logging can run on a secondary CPU before its scheduler has
+            // installed a current task, or from interrupt context. A
+            // sleepable mutex is therefore never a valid record arbiter.
+            Some(publish_raw_record(args, &mut RawHalWriter))
         }
         ConsoleActivation::Active { .. } | ConsoleActivation::FailedClosed(_) => {
             Some(ax_log::PublishStatus::Dropped)
         }
+    }
+}
+
+fn publish_raw_record(args: fmt::Arguments<'_>, writer: &mut impl Write) -> ax_log::PublishStatus {
+    let Some(_hardware) = RAW_HARDWARE_LOCK.try_lock_irqsave() else {
+        return ax_log::PublishStatus::Dropped;
+    };
+    if writer.write_fmt(args).is_ok() {
+        ax_log::PublishStatus::Published
+    } else {
+        ax_log::PublishStatus::Dropped
     }
 }
 
@@ -371,6 +380,9 @@ impl TaskConsoleOutput {
                 let Some(_output) = RAW_OUTPUT_LOCK.try_lock() else {
                     return Err(RuntimeError::WouldBlock);
                 };
+                let Some(_hardware) = RAW_HARDWARE_LOCK.try_lock_irqsave() else {
+                    return Err(RuntimeError::WouldBlock);
+                };
                 ax_hal::console::write_bytes(bytes);
                 Ok(bytes.len())
             }
@@ -382,6 +394,7 @@ impl TaskConsoleOutput {
             TaskConsoleOutputInner::Runtime(inner) => inner.write_all(bytes),
             TaskConsoleOutputInner::RawHal => {
                 let _output = RAW_OUTPUT_LOCK.lock();
+                let _hardware = RAW_HARDWARE_LOCK.lock_irqsave();
                 ax_hal::console::write_bytes(bytes);
                 Ok(bytes.len())
             }
@@ -393,6 +406,7 @@ impl TaskConsoleOutput {
             TaskConsoleOutputInner::Runtime(inner) => inner.write_text_all(bytes),
             TaskConsoleOutputInner::RawHal => {
                 let _output = RAW_OUTPUT_LOCK.lock();
+                let _hardware = RAW_HARDWARE_LOCK.lock_irqsave();
                 ax_hal::console::write_text_bytes(bytes);
                 Ok(bytes.len())
             }
@@ -404,6 +418,7 @@ impl TaskConsoleOutput {
             TaskConsoleOutputInner::Runtime(inner) => inner.write_fmt(args),
             TaskConsoleOutputInner::RawHal => {
                 let _output = RAW_OUTPUT_LOCK.lock();
+                let _hardware = RAW_HARDWARE_LOCK.lock_irqsave();
                 RawHalWriter.write_fmt(args)
             }
         }
@@ -414,6 +429,7 @@ impl TaskConsoleOutput {
             TaskConsoleOutputInner::Runtime(inner) => inner.wait_idle(),
             TaskConsoleOutputInner::RawHal => {
                 let _output = RAW_OUTPUT_LOCK.lock();
+                let _hardware = RAW_HARDWARE_LOCK.lock_irqsave();
                 Ok(())
             }
         }
@@ -424,6 +440,7 @@ impl TaskConsoleOutput {
             TaskConsoleOutputInner::Runtime(inner) => inner.discard_pending(),
             TaskConsoleOutputInner::RawHal => {
                 let _output = RAW_OUTPUT_LOCK.lock();
+                let _hardware = RAW_HARDWARE_LOCK.lock_irqsave();
                 Ok(())
             }
         }
@@ -440,6 +457,7 @@ impl TaskConsoleOutput {
             TaskConsoleOutputInner::Runtime(inner) => inner.reconfigure(config, drain, publish),
             TaskConsoleOutputInner::RawHal => {
                 let _output = RAW_OUTPUT_LOCK.lock();
+                let _hardware = RAW_HARDWARE_LOCK.lock_irqsave();
                 if config.is_some() {
                     return Err(RuntimeError::OperationNotSupported);
                 }
@@ -564,8 +582,9 @@ mod tests {
     use ax_hal::console::ConsoleDeviceIdError;
 
     use super::{
-        ACTIVATION, ConsoleActivation, ConsoleUnavailable, assign_tty_numbers,
-        inactive_console_error, output, raw_hal_activation, select_candidate, take_input,
+        ACTIVATION, ConsoleActivation, ConsoleUnavailable, RAW_OUTPUT_LOCK, assign_tty_numbers,
+        inactive_console_error, output, publish_raw_record, raw_hal_activation, select_candidate,
+        take_input,
     };
     use crate::RuntimeError;
 
@@ -664,5 +683,18 @@ mod tests {
             Err(RuntimeError::OperationNotSupported)
         ));
         assert!(output().is_ok());
+    }
+
+    #[test]
+    fn raw_hal_logging_does_not_require_the_task_output_mutex() {
+        ACTIVATION.call_once(|| ConsoleActivation::RawHal(ConsoleUnavailable::NoSerialDevice));
+        let _task_output = RAW_OUTPUT_LOCK.lock();
+        let mut rendered = alloc::string::String::new();
+
+        assert_eq!(
+            publish_raw_record(format_args!("early secondary record"), &mut rendered),
+            ax_log::PublishStatus::Published
+        );
+        assert_eq!(rendered, "early secondary record");
     }
 }

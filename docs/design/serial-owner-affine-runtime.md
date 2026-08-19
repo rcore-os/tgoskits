@@ -265,10 +265,14 @@ console IRQ，公共层注册唯一 handler，在 hard IRQ 中把 FIFO 排空到
 满时保留 overrun 状态。任务态绝不直接轮询硬件，也不靠 `yield_now` 或 CPU affinity
 维持进展。HAL 没有 console IRQ 时，raw output 仍然可用，但 `take_input` 明确返回
 `OperationNotSupported`，调用方可以关闭交互入口而不制造伪睡眠 capability。raw output
-的所有克隆共享公共 sleepable lock，普通完整日志以非阻塞方式尝试同一把锁，从而不在
-记录内部与任务输出交叉。raw HAL 没有 owner worker，因此不提供日志 subscription、硬件
-reconfigure 或比平台同步写更强的 drain 保证。已经进入 `Preparing` 后失败的
-`FailedClosed` 后端不会走这条 fallback，也不会重新访问 early UART。
+的所有克隆共享公共 sleepable task lock；实际访问 raw hardware 前再取得 IRQ-safe
+hardware lock。普通完整日志只非阻塞尝试 hardware lock，不能触碰依赖 current task 的
+sleepable lock，因为日志既可能来自 hard IRQ，也可能来自尚未执行
+`init_scheduler_secondary` 的 AP。固定锁序为 task lock → hardware lock，日志仅取后者，
+因此完整 record 不与任务输出交叉，也不会让 pre-scheduler AP 因查询 mutex owner 进入错误
+状态。raw HAL 没有 owner worker，因此不提供日志 subscription、硬件 reconfigure 或比
+平台同步写更强的 drain 保证。已经进入 `Preparing` 后失败的 `FailedClosed` 后端不会走
+这条 fallback，也不会重新访问 early UART。
 
 console 不再有独立 Cargo feature。`ax-runtime` 在同时启用既有 `irq` 和 `multitask`
 能力时编译多 UART runtime、紧急端点与任务态 console；probe 后有匹配设备才接管，否则

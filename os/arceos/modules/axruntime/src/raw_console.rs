@@ -94,9 +94,26 @@ fn handle_raw_input_irq(
         published |= publish_rx_item(producer, runtime, RxItem::Overrun);
     }
 
+    published |= drain_raw_input(producer, runtime, ax_hal::console::read_bytes);
+
+    if published || runtime.overflow.load(Ordering::Acquire) {
+        runtime.progress.notify_all_from_irq();
+        runtime.poll_source.wake_from_irq(IoEvents::IN);
+    }
+    ax_hal::irq::IrqReturn::Handled
+}
+
+fn drain_raw_input(
+    producer: &mut SpscProducer<RxItem>,
+    runtime: &RawInputRuntime,
+    mut read: impl FnMut(&mut [u8]) -> usize,
+) -> bool {
+    let mut published = false;
     let mut bytes = [0u8; 64];
-    loop {
-        let count = ax_hal::console::read_bytes(&mut bytes);
+    let mut budget = RAW_RX_CAPACITY;
+    while budget != 0 {
+        let limit = bytes.len().min(budget);
+        let count = read(&mut bytes[..limit]).min(limit);
         for &byte in &bytes[..count] {
             published |= publish_rx_item(
                 producer,
@@ -107,16 +124,12 @@ fn handle_raw_input_irq(
                 },
             );
         }
-        if count < bytes.len() {
+        budget -= count;
+        if count < limit {
             break;
         }
     }
-
-    if published || runtime.overflow.load(Ordering::Acquire) {
-        runtime.progress.notify_all_from_irq();
-        runtime.poll_source.wake_from_irq(IoEvents::IN);
-    }
-    ax_hal::irq::IrqReturn::Handled
+    published
 }
 
 fn publish_rx_item(
@@ -223,5 +236,31 @@ mod tests {
         assert_eq!(input.try_read(&mut out), 2);
         assert_eq!(out, [RxItem::Overrun, retained]);
         assert_eq!(input.try_read(&mut out), 0);
+    }
+
+    #[test]
+    fn raw_irq_drain_has_a_fixed_per_interrupt_budget() {
+        let source_bytes = RAW_RX_CAPACITY + 64;
+        let (mut producer, _consumer) = crate::serial::spsc::channel(source_bytes);
+        let runtime = RawInputRuntime {
+            available: SpinLock::new(None),
+            overflow: AtomicBool::new(false),
+            progress: WaitQueue::new(),
+            poll_source: Arc::new(PollSet::new()),
+            irq_handle: OnceLock::new(),
+        };
+        let mut remaining = source_bytes;
+        let mut drained = 0;
+
+        drain_raw_input(&mut producer, &runtime, |out| {
+            let count = out.len().min(remaining);
+            out[..count].fill(b'x');
+            remaining -= count;
+            drained += count;
+            count
+        });
+
+        assert_eq!(drained, RAW_RX_CAPACITY);
+        assert_eq!(remaining, 64);
     }
 }
