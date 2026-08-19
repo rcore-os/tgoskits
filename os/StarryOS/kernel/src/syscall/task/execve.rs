@@ -502,6 +502,9 @@ fn do_execve(
     // symbolize this task's samples (the new aspace + name are committed above).
     #[cfg(target_arch = "aarch64")]
     crate::perf::task::on_exec_sideband(thr);
+    // Software per-task perf counters are arch-independent: flip any
+    // `enable_on_exec` counter to enabled and open its live slice now.
+    crate::perf::sw::on_exec(thr);
 
     // Unblock a vfork parent waiting for this child to exec.
     // Must be last: by now CLOEXEC fds are closed so the parent's pipe

@@ -92,7 +92,7 @@ impl BpfPerfOutput {
 /// non-sleeping output state plus a poll set so readers can wait for records.
 ///
 /// Ownership model: the user VMA owns the ringbuf pages via the strong
-/// `Arc<GlobalPage>` threaded into `DeviceMmap::Physical`'s retainer slot;
+/// `Arc<GlobalPage>` threaded into `DeviceMmap::PhysicalCached`'s retainer slot;
 /// the shared output state keeps only a `Weak`. Consequences:
 ///
 /// * UAF safety — the pages outlive `close(perf_fd)` (which drops this
@@ -230,7 +230,7 @@ impl PerfEventOps for BpfPerfEventWrapper {
             core::ptr::addr_of_mut!((*header).compat_version).write(0);
         }
         // Keep only a `Weak`; hand the sole strong ref to the caller, which
-        // threads it into `DeviceMmap::Physical`'s retainer so the user VMA
+        // threads it into `DeviceMmap::PhysicalCached`'s retainer so the user VMA
         // pins these frames until `munmap`/exit even if the perf fd (and this
         // wrapper) is closed first. Because the wrapper does not retain a
         // strong ref, an mmap that is abandoned or fails before a VMA adopts

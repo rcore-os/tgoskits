@@ -369,6 +369,15 @@ const PERF_EVENT_SOURCES: &[(&str, u32)] = &[
 #[cfg(target_arch = "aarch64")]
 const ARMV8_PMUV3_DEVICE: &str = "armv8_pmuv3_0";
 
+/// The two big.LITTLE cluster PMU device names, mirroring Linux's per-cluster
+/// `arm_pmu` registration. Each exposes its own dynamic `type` and a `cpus` mask
+/// (the CPUs of that cluster); an event opened against it is restricted to the
+/// cluster. The generic `armv8_pmuv3_0` (above) stays as an all-clusters alias.
+#[cfg(target_arch = "aarch64")]
+const ARMV8_CORTEX_A55_DEVICE: &str = "armv8_cortex_a55";
+#[cfg(target_arch = "aarch64")]
+const ARMV8_CORTEX_A76_DEVICE: &str = "armv8_cortex_a76";
+
 /// Named ARM PMUv3 event aliases exposed under
 /// `/sys/bus/event_source/devices/armv8_pmuv3_0/events/<name>`, each serving
 /// `"event=0xNN\n"`. `perf` substitutes the parsed value into the `config` bits
@@ -426,7 +435,13 @@ impl SimpleDirOps for EventSourceDevicesDir {
         // so it is advertised regardless of `ax_hal::pmu::info()` (which a
         // `perf_event_open` against the type still consults and may reject).
         #[cfg(target_arch = "aarch64")]
-        let pmu = core::iter::once(Cow::Borrowed(ARMV8_PMUV3_DEVICE));
+        let pmu = [
+            ARMV8_PMUV3_DEVICE,
+            ARMV8_CORTEX_A55_DEVICE,
+            ARMV8_CORTEX_A76_DEVICE,
+        ]
+        .into_iter()
+        .map(Cow::Borrowed);
         #[cfg(not(target_arch = "aarch64"))]
         let pmu = core::iter::empty();
         Box::new(tracing.chain(pmu))
@@ -434,12 +449,28 @@ impl SimpleDirOps for EventSourceDevicesDir {
 
     fn lookup_child(&self, name: &str) -> VfsResult<NodeOpsMux> {
         let fs = self.fs.clone();
+        // The generic PMU covers all clusters; the two cluster PMUs each expose
+        // their own dynamic type + cluster `cpus` mask.
         #[cfg(target_arch = "aarch64")]
-        if name == ARMV8_PMUV3_DEVICE {
-            return Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
-                fs.clone(),
-                Arc::new(HwPmuDeviceDir { fs }),
-            )));
+        {
+            use ax_cpu::pmu::ClusterId;
+            let pmu = match name {
+                ARMV8_PMUV3_DEVICE => Some((crate::perf::hw::ARMV8_PMUV3_PERF_TYPE, None)),
+                ARMV8_CORTEX_A55_DEVICE => Some((
+                    crate::perf::hw::ARMV8_CORTEX_A55_TYPE,
+                    Some(ClusterId::Little),
+                )),
+                ARMV8_CORTEX_A76_DEVICE => {
+                    Some((crate::perf::hw::ARMV8_CORTEX_A76_TYPE, Some(ClusterId::Big)))
+                }
+                _ => None,
+            };
+            if let Some((ty, cluster)) = pmu {
+                return Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
+                    fs.clone(),
+                    Arc::new(HwPmuDeviceDir { fs, ty, cluster }),
+                )));
+            }
         }
         let ty = PERF_EVENT_SOURCES
             .iter()
@@ -461,6 +492,11 @@ impl SimpleDirOps for EventSourceDevicesDir {
 #[cfg(target_arch = "aarch64")]
 struct HwPmuDeviceDir {
     fs: Arc<SimpleFs>,
+    /// The dynamic perf `type` this device advertises (8 generic, 9 A55, 10 A76).
+    ty: u32,
+    /// The cluster this PMU is restricted to; `None` for the generic all-clusters
+    /// device (whose `cpus` is the full online range).
+    cluster: Option<ax_cpu::pmu::ClusterId>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -479,12 +515,21 @@ impl SimpleDirOps for HwPmuDeviceDir {
             // The dynamic perf type `perf` puts in `perf_event_attr.type`; the
             // dispatcher routes it to the hardware-PMU backend.
             "type" => {
-                let body = format!("{}\n", crate::perf::hw::ARMV8_PMUV3_PERF_TYPE);
+                let body = format!("{}\n", self.ty);
                 Ok(SimpleFile::new_regular(fs, move || Ok(body.clone())).into())
             }
-            // CPUs this PMU covers; reuse the shared online-CPU range ("0\n"
-            // under smp1). Matches Linux's `<pmu>/cpus`.
-            "cpus" => Ok(SimpleFile::new_regular(fs, || Ok(cpu_range_string())).into()),
+            // CPUs this PMU covers (Linux's `<pmu>/cpus`): the cluster's CPU list
+            // for a cluster PMU, else the full online range for the generic one.
+            "cpus" => {
+                let cluster = self.cluster;
+                Ok(SimpleFile::new_regular(fs, move || {
+                    Ok(match cluster {
+                        Some(c) => crate::perf::percpu::cluster_cpu_list(c),
+                        None => cpu_range_string(),
+                    })
+                })
+                .into())
+            }
             "format" => Ok(NodeOpsMux::Dir(SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(HwPmuFormatDir { fs }),

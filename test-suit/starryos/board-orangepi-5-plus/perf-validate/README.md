@@ -1,0 +1,99 @@
+# perf-validate — RK3588 SMP + big.LITTLE hardware-PMU board validation
+
+One self-contained C binary (`src/perf_validate.c`) that validates the StarryOS
+SMP per-CPU + big.LITTLE `perf` implementation on a real Orange Pi 5 Plus
+(RK3588: 4× Cortex-A55 cpu0-3 + 4× Cortex-A76 cpu4-7). It auto-discovers
+topology and runs every applicable check, then prints a verdict. The full
+validation matrix, expected values, and interpretation live in
+`docs/superpowers/perf-board-validation-plan.md`.
+
+## Why the board (what QEMU can't prove)
+
+QEMU `virt` is homogeneous (cortex-a53, every core `ClusterId::Other`). Real
+MIDR cluster identity, the dual-PMU `cpus` masks (`0-3`/`4-7`), cross-cluster
+ENOENT, the `BRANCH_INSTRUCTIONS` 0x0C-vs-0x21 PMCEID divergence, per-cluster
+`PMCR.N`, secondary-PE bring-up, and A76>A55 IPC are **only** observable on
+silicon — the QEMU suite could only fake clusters via the parity test-override.
+
+## Run modes (auto-detected)
+
+- **board** — cpu0 MIDR is a real RK3588 core (A55 `0xD05` / A76 `0xD0B`): the
+  full real-silicon matrix.
+- **selftest** — anything else (auto on QEMU, or `PERF_VALIDATE_SELFTEST=1`):
+  enables the parity override and exercises the cluster/pool LOGIC +
+  counting/sampling/rdpmc. Silicon-only rows self-SKIP. This is the permanent
+  QEMU regression (`qemu-smp4/system/perf-validate`, which holds a byte-identical
+  copy of this source) and the pre-board debug. `PERF_VALIDATE_BOARD=1` forces
+  board mode.
+
+## Two cases: smp1 anchor + smp8 big.LITTLE gate
+
+This directory (`perf-validate`) is the **single-core anchor**: `max_cpu_num=1`,
+full drivers, always-green. Its `needs-smp8` / `needs-both-clusters` checks SKIP
+and the verdict is **PARTIAL** = "single-core regression passed; big.LITTLE not
+exercised" — a SUCCESSFUL anchor run.
+
+The big.LITTLE behavior is enforced by the sibling **`../perf-validate-smp8`**
+case: a minimal `max_cpu_num=8` kernel (drops USB/NPU/PCIe/net, whose
+secondary-core IRQ storm causes the smp8 boot hang) that runs the SAME binary and
+accepts **ONLY FULL**. PROVEN on real 4×A55+4×A76 silicon (39 pass / 0 fail →
+FULL). Splitting the two keeps the anchor stable while ensuring a skipped SMP
+path can never pass unnoticed.
+
+## Deploy + run (board)
+
+The xtask deploys the KERNEL only. Like every other orangepi board case (e.g.
+npu-yolov8's `/guest/npu_demo`), the userspace binary is provisioned **once,
+out-of-band** onto the board's persistent ext4 — NOT rebuilt/redeployed per CI
+run. The board case just execs the pre-staged `/usr/local/bin/perf-validate`; if
+it is absent, the `not found` fail_regex fails the run fast instead of hanging.
+
+Pre-stage it once (and again only when `src/perf_validate.c` changes):
+
+```sh
+# 1. Cross-compile a static aarch64 binary (host). Uses the container toolchain
+#    if Docker is present, else falls back to a native aarch64-linux-*-gcc:
+./deploy.sh build                 # -> ./perf-validate
+
+# 2. With the board in OrangePi Linux (cabled NIC up), deploy it:
+./deploy.sh deploy   # stages to /tmp, sudo-installs to /usr/local/bin/perf-validate + sync
+#    (override BOARD_USER / BOARD_IP / BOARD_DEST / BOARD_PW as needed)
+#    — or scp it yourself, then `sync` on the board (see the commit=600 note below).
+
+# 3. Power-cycle into StarryOS and run the board test from the ostool-server host
+#    (board OFF at launch, powered ON at the "waiting for power on" cue):
+cargo xtask starry test board -c perf-validate \
+  -b OrangePi-5-Plus --server localhost --port 2999
+```
+
+Success matches `BOARD_PERF_VALIDATE_VERDICT (FULL|PARTIAL)`; the unique final
+line `BOARD_PERF_VALIDATE_DONE` lets a hang time out instead of matching early.
+The self-hosted CI board runner needs this binary pre-staged the same way (a
+one-time step for the runner owner) — the CI job does not build or deploy it.
+
+### First-run caveats (see board-run-mechanics)
+
+- `BOARD_DEST` is `/usr/local/bin/perf-validate` — on the SD ext4 (mmcblk1p2)
+  that StarryOS mounts as `/`, so StarryOS runs it by full path. `/root` is
+  700-root and not orangepi-writable; `/usr/local/bin` is the proven shared path
+  (the perf 6.6 binary lives there too).
+- The board's cabled NIC drifts between the two 2.5G ports (`enP4p65s0` /
+  `enP3p49s0`); whichever is UP but only has a `169.254.x` link-local address is
+  the live one — add the static IP to it: `sudo ip addr add 192.168.50.2/24 dev
+  <live-nic>`. The host NIC `en5` needs `sudo ifconfig en5 192.168.50.1 …`.
+- The board's ext4 is mounted `commit=600` (dirty pages flush to the SD only
+  every 10 min). After any scp/install you MUST `sync` on the board before
+  power-cycling into StarryOS, or the fresh binary lives only in Linux's page
+  cache and StarryOS mounts the SD without it → `perf-validate: not found`.
+  `deploy.sh deploy` does this sync for you.
+- If Linux boot reports ext4 corruption, run a U-Boot fsck repair first (prior
+  board tests have left the rootfs needing repair).
+- The binary writes `perf_test_force_clusters=0` on exit; in board mode it never
+  enables the parity override.
+
+## Self-test under QEMU (pre-board)
+
+```sh
+cargo xtask starry test qemu --arch aarch64 -c qemu-smp4/system/perf-validate
+# auto selftest mode (parity override); exits 0 on SELFTEST-OK.
+```

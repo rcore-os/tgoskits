@@ -1,0 +1,42 @@
+# Board run config for perf-validate-smp8 — the FULL big.LITTLE enforcement case.
+#
+# This is the SMP + big.LITTLE gate. Where ../perf-validate is the smp1 anchor
+# (max_cpu_num=1, accepts VERDICT PARTIAL so it stays green even when only the
+# single-core regression is exercised), THIS case builds a MULTI-CORE kernel (its
+# own build wrapper = max_cpu_num=8, minimal drivers) and accepts ONLY VERDICT
+# FULL. So the core claims of the multicore + big.LITTLE work — per-cluster PMU
+# identity, dual-PMU cpus masks, cross-cluster ENOENT, A76/A55 event divergence,
+# per-secondary-PE PMU bring-up, sampling on a secondary core — cannot silently
+# SKIP (which yields PARTIAL) and still pass: PARTIAL FAILS this case.
+#
+# It runs the SAME pre-staged /usr/local/bin/perf-validate binary as the anchor,
+# provisioned out-of-band once (see ../perf-validate/README.md + deploy.sh); the
+# `not found` fail_regex fails fast if it is absent. The validator auto-discovers
+# the now-8-core topology (both clusters) and runs every silicon check, printing:
+#   BOARD_PERF_SUMMARY ...
+#   BOARD_PERF_VALIDATE_VERDICT <FULL|PARTIAL|FAIL|INVALID>
+#   BOARD_PERF_VALIDATE_DONE     (unique final sentinel)
+#
+# success = FULL only. PARTIAL / FAIL / INVALID (and panic / not-found) FAIL.
+# ostool tears down on the FIRST success match, so we gate on the explicit FULL
+# verdict line; DONE is the unconditional last line so a hang times out instead of
+# matching an early line.
+board_type   = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "/usr/local/bin/perf-validate"
+success_regex = ['(?m)^BOARD_PERF_VALIDATE_VERDICT FULL\s*$']
+fail_regex = [
+  # PARTIAL is a FAILURE here: it means big.LITTLE/SMP checks SKIPped (the very
+  # behavior this case exists to enforce). FAIL/INVALID fail as always.
+  '(?m)^BOARD_PERF_VALIDATE_VERDICT (PARTIAL|FAIL|INVALID)',
+  # Binary not provisioned on the board rootfs — fail fast instead of hanging to
+  # the timeout (the shell prints "<path>: not found" / "No such file").
+  '(?mi)perf-validate:? +(not found|no such file)',
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+]
+# smp8 ymodem transfer + the full multi-core matrix on real silicon is longer
+# than the smp1 anchor; give it headroom.
+timeout = 900
