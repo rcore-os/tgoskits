@@ -30,8 +30,9 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   when the platform has no runtime RX IRQ. Once handoff enters `Preparing`, failure must roll back
   or fail closed; after a successful commit, SMP code must never fall back to the early UART.
 - Match a firmware-selected hardware `DeviceId` exactly. Only `NotSpecified` may fall back to the
-  common Linux-compatible `ttyS0` numbering; `NoHardwareDevice`, `DeviceNotFound`, no serial device,
-  or no `ttyS0` must fail closed.
+  common Linux-compatible `ttyS0` numbering. A missing match before `Preparing` retains the raw HAL
+  owner; it must not guess a different runtime UART. Fail closed only after a handoff has begun and
+  hardware state can no longer be proven restored.
 - Keep `begin -> start -> commit` and rollback/fail-closed policy inside `ax-runtime::console`.
   ArceOS, StarryOS, and Axvisor adapters must not maintain separate console-selection or handoff
   state.
@@ -39,6 +40,10 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   source, and let the owner worker perform the rearm. If rearm immediately observes readable
   hardware while no IRQ samples remain, drain through the direct port path; treating that state as
   an empty IRQ report can strand a PL011 FIFO without another wakeup edge.
+- Fatal output must make one terminal UART ownership transition. Use a bounded, non-sleeping claim
+  so panic cannot deadlock on an interrupted normal transaction; after a successful claim, keep
+  emergency ownership until shutdown, exclude worker/IRQ register access, and synchronously stream
+  the complete formatted record instead of truncating it to a fixed software buffer.
 - Axvisor must acquire the unique input before starting a vCPU and acquire the complete-record log
   subscription when the runtime backend supports it. Host logs are independent lines during boot,
   shell-aware clear/log/redraw transactions in management mode, and bounded whole-record backlog

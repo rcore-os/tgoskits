@@ -1235,7 +1235,7 @@ mod tests {
         let (mut regs, uart) = pl011_with_registers();
         let parts = uart.split();
         let gate = UartRegisterGate::new(parts.emergency_tx);
-        let access = gate.try_enter().unwrap();
+        let access = gate.try_begin_emergency().unwrap();
         write_test_reg(&mut regs, 0x018, UARTFR::TXFF::SET.value);
 
         assert_eq!(access.try_write(b"x"), 0);
@@ -1252,7 +1252,7 @@ mod tests {
         write_test_reg(&mut regs, 0x018, 0);
         let bytes = [b'x'; EMERGENCY_TX_BUDGET + 1];
         let gate = UartRegisterGate::new(parts.emergency_tx);
-        let access = gate.try_enter().unwrap();
+        let access = gate.try_begin_emergency().unwrap();
 
         assert_eq!(access.try_write(&bytes), EMERGENCY_TX_BUDGET);
     }

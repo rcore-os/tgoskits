@@ -108,15 +108,18 @@ struct RuntimeShared {
 impl RuntimeShared {
     /// Runs one task-context register transaction with local IRQ delivery
     /// excluded and all cross-CPU aliases serialized by the UART gate.
-    fn with_port<R>(&self, access: impl FnOnce(&mut dyn rdif_serial::UartPort) -> R) -> R {
+    fn with_port<R>(&self, access: impl FnOnce(&mut dyn rdif_serial::UartPort) -> R) -> Option<R> {
         let mut port = self.port.lock_irqsave();
         let _register_access = loop {
+            if self.register_gate.emergency_active() {
+                return None;
+            }
             if let Some(access) = self.register_gate.try_enter() {
                 break access;
             }
             core::hint::spin_loop();
         };
-        access(&mut **port)
+        Some(access(&mut **port))
     }
 
     fn started(&self) -> bool {
@@ -174,6 +177,13 @@ impl RuntimeShared {
                 self.info.name
             );
         }
+    }
+
+    fn disable_irq_for_emergency(&self) {
+        let Some(handle) = self.irq_handle.get().copied() else {
+            return;
+        };
+        let _ = ax_hal::irq::disable_irq(handle);
     }
 }
 
@@ -932,7 +942,7 @@ pub(crate) fn try_publish_record(
     })
 }
 
-/// Formats and attempts one bounded emergency write without the log mailbox.
+/// Synchronously streams one emergency record without the log mailbox.
 pub(crate) fn emergency_write(args: fmt::Arguments<'_>) -> Option<usize> {
     let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
     let runtime = runtimes().get(index)?;
@@ -940,30 +950,32 @@ pub(crate) fn emergency_write(args: fmt::Arguments<'_>) -> Option<usize> {
         runtime.shared.stats.add_log_dropped_records(1);
         return Some(0);
     };
-    let mut buffer = EmergencyBuffer::new();
-    if buffer.write_fmt(args).is_err() {
-        runtime.shared.stats.add_log_dropped_records(1);
-        return Some(0);
-    }
-    let Some(register_access) = runtime.shared.register_gate.try_enter() else {
-        runtime.shared.stats.add_log_dropped(buffer.source_len);
+    let Some(register_access) = claim_emergency_registers(&runtime.shared.register_gate) else {
         runtime.shared.stats.add_log_dropped_records(1);
         return Some(0);
     };
-    let written = register_access.try_write(buffer.bytes());
-    runtime.shared.stats.add_log_dropped(
-        buffer
-            .source_len
-            .saturating_sub(buffer.accepted_source_bytes(written)),
-    );
-    if written < buffer.bytes().len() || buffer.truncated {
+    runtime.shared.disable_irq_for_emergency();
+    let mut writer = EmergencyWriter::new(register_access);
+    if writer.write_fmt(args).is_err() {
         runtime.shared.stats.add_log_dropped_records(1);
     }
-    Some(written)
+    Some(writer.source_written)
 }
 
-const EMERGENCY_OUTPUT_BYTES: usize = 1024;
+const EMERGENCY_CLAIM_ATTEMPTS: usize = 4096;
 static EMERGENCY_FORMATTING: AtomicBool = AtomicBool::new(false);
+
+fn claim_emergency_registers(
+    gate: &rdif_serial::UartRegisterGate<dyn rdif_serial::UartEmergencyTx>,
+) -> Option<rdif_serial::UartEmergencyAccess<'_, dyn rdif_serial::UartEmergencyTx>> {
+    for _ in 0..EMERGENCY_CLAIM_ATTEMPTS {
+        if let Some(access) = gate.try_begin_emergency() {
+            return Some(access);
+        }
+        core::hint::spin_loop();
+    }
+    None
+}
 
 struct EmergencyFormatting;
 
@@ -982,60 +994,41 @@ impl Drop for EmergencyFormatting {
     }
 }
 
-struct EmergencyBuffer {
-    bytes: [u8; EMERGENCY_OUTPUT_BYTES],
-    len: usize,
-    source_len: usize,
-    truncated: bool,
+struct EmergencyWriter<'a, E: rdif_serial::UartEmergencyTx + ?Sized> {
+    access: rdif_serial::UartEmergencyAccess<'a, E>,
+    source_written: usize,
 }
 
-impl EmergencyBuffer {
-    const fn new() -> Self {
+impl<'a, E: rdif_serial::UartEmergencyTx + ?Sized> EmergencyWriter<'a, E> {
+    const fn new(access: rdif_serial::UartEmergencyAccess<'a, E>) -> Self {
         Self {
-            bytes: [0; EMERGENCY_OUTPUT_BYTES],
-            len: 0,
-            source_len: 0,
-            truncated: false,
+            access,
+            source_written: 0,
         }
     }
 
-    fn bytes(&self) -> &[u8] {
-        &self.bytes[..self.len]
-    }
-
-    fn accepted_source_bytes(&self, written: usize) -> usize {
-        let written = written.min(self.len);
-        written
-            .saturating_sub(
-                self.bytes[..written]
-                    .iter()
-                    .filter(|&&byte| byte == b'\n')
-                    .count(),
-            )
-            .min(self.source_len)
+    fn write_all_blocking(&self, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            let written = self.access.try_write(bytes).min(bytes.len());
+            if written == 0 {
+                core::hint::spin_loop();
+            } else {
+                bytes = &bytes[written..];
+            }
+        }
     }
 }
 
-impl Write for EmergencyBuffer {
+impl<E: rdif_serial::UartEmergencyTx + ?Sized> Write for EmergencyWriter<'_, E> {
     fn write_str(&mut self, text: &str) -> fmt::Result {
-        self.source_len = self.source_len.saturating_add(text.len());
-        if self.truncated {
-            return Ok(());
+        let mut remaining = text.as_bytes();
+        while let Some(newline) = remaining.iter().position(|&byte| byte == b'\n') {
+            self.write_all_blocking(&remaining[..newline]);
+            self.write_all_blocking(b"\r\n");
+            remaining = &remaining[newline + 1..];
         }
-        for character in text.chars() {
-            let required = character.len_utf8() + usize::from(character == '\n');
-            if self.len + required > self.bytes.len() {
-                self.truncated = true;
-                break;
-            }
-            if character == '\n' {
-                self.bytes[self.len] = b'\r';
-                self.len += 1;
-            }
-            let end = self.len + character.len_utf8();
-            character.encode_utf8(&mut self.bytes[self.len..end]);
-            self.len = end;
-        }
+        self.write_all_blocking(remaining);
+        self.source_written = self.source_written.saturating_add(text.len());
         Ok(())
     }
 }
@@ -1185,6 +1178,16 @@ impl Write for ActiveConsoleWriter {
 mod tests {
     use super::*;
 
+    struct ChunkedEmergencyTx(&'static AtomicUsize);
+
+    impl rdif_serial::UartEmergencyTx for ChunkedEmergencyTx {
+        unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
+            let written = bytes.len().min(7);
+            self.0.fetch_add(written, Ordering::Relaxed);
+            written
+        }
+    }
+
     struct RecordingIrq {
         masked: rdif_serial::SerialEventSet,
     }
@@ -1197,6 +1200,24 @@ mod tests {
         fn handle(&mut self) -> Option<rdif_serial::SerialIrqReport> {
             None
         }
+    }
+
+    #[test]
+    fn emergency_writer_streams_a_record_larger_than_the_former_buffer() {
+        static HARDWARE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+        HARDWARE_BYTES.store(0, Ordering::Relaxed);
+        let gate = rdif_serial::UartRegisterGate::new(ChunkedEmergencyTx(&HARDWARE_BYTES));
+        let access = gate.try_begin_emergency().expect("emergency takeover");
+        let mut writer = EmergencyWriter::new(access);
+        let payload = "x".repeat(2_048);
+
+        writer.write_str(&payload).unwrap();
+        writer.write_str("\nBACKTRACE_END").unwrap();
+
+        assert_eq!(writer.source_written, payload.len() + 14);
+        assert_eq!(HARDWARE_BYTES.load(Ordering::Relaxed), payload.len() + 15);
+        assert!(gate.try_enter().is_none());
     }
 
     #[test]

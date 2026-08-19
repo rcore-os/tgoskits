@@ -23,7 +23,7 @@ RT priority。RX SPSC、TTY 有界 `SpinLock` 队列、控制队列和 `IrqNotif
 TX ingress，并使日志背压不再占用 TTY 容量。扩大调度器或通用通信抽象不能直接修复
 寄存器所有权问题。
 
-`ax-runtime` 对外只提供两类控制台语义：`emergency_console` 是同步、不可睡眠的有界直达
+`ax-runtime` 对外只提供两类控制台语义：`emergency_console` 是同步、不可睡眠的阻塞直达
 输出，`console` 是普通任务上下文的可睡眠输入输出。后者供 ArceOS、StarryOS 和 Axvisor
 复用，不引入第二个 active-console 状态，也不承载 TTY ABI：原始 RX 错误、字节输出和完整
 日志记录仍由既有 owner worker 传输；CR/LF、canonical、echo、termios、前台进程组和
@@ -70,13 +70,15 @@ throttle、软件缓冲压力、overrun 或设备错误才 mask 对应 RX source
 ```text
 control endpoint    owner_cpu 上的唯一维护线程
 IRQ endpoint        固定到 owner_cpu 的注册回调
-emergency endpoint  panic/FIQ 的有界、非阻塞输出路径
+emergency endpoint  panic/FIQ 的同步输出路径
 ```
 
 三者引用同一个 `UartRegisterGate`。worker 在保存并关闭本地 IRQ 后进入 gate；IRQ、FIQ 和
-panic 只能 `try_enter`，失败时设置既有 pending/统计状态并立即返回，不能自旋等待。
-gate guard 不可跨线程移动。endpoint 只负责 raw UART 寄存器语义；IRQ 注册、CPU affinity、
-worker 唤醒和 TTY 适配仍属于 OS runtime。
+panic 首次接管都不能偷取正在执行的普通事务。普通 guard 退出后恢复空闲；panic 使用有界
+重试取得 emergency ownership，成功后直到关机都不归还，后续格式化调用直接复用该
+ownership，普通 worker 与 IRQ 因而不能插入 fatal record。gate access 不可跨线程移动。
+endpoint 只负责 raw UART 寄存器语义；IRQ 注册、CPU affinity、worker 唤醒和 TTY 适配仍
+属于 OS runtime。
 
 early console 是第四个、仅在 runtime 接管前有效的所有者。接管状态为：
 
@@ -98,13 +100,17 @@ worker 就绪后、但在第一个 AP 启动前尝试接管，不再要求 OS �
 保持原始 HAL 为唯一 owner；只有已经进入 `Preparing` 后启动、配置或提交失败，才执行
 rollback 或进入 `FailedClosed`。成功提交后禁止 SMP 阶段重新落回 early UART。
 
-panic/FIQ 不反向调用 platform/runtime callback，也不借用 control endpoint。它只在 gate
-可用时保存必要 interrupt-mask 寄存器、mask UART source、写固定预算字节并恢复 mask；
-无法进入或预算耗尽时丢弃剩余字节并更新统计。
+panic/FIQ 不反向调用 platform/runtime callback，也不借用 control endpoint。首次接管使用
+固定次数的非睡眠 gate 重试，避免 panic 打断同核 owner 时永久自锁；接管失败就丢弃本次
+记录并更新统计。接管成功后关闭该 UART 的 controller IRQ，并永久排除普通 register
+transaction。驱动的每次 raw pass 仍保存必要 interrupt-mask 寄存器、mask UART source、
+写固定预算字节并恢复 mask；runtime 重复这些有界 pass，直接流式写完完整格式化记录，
+不再把 fatal record 截断在固定软件缓冲区。
 
-这个接口是同步直达而不是排队等待，但不能做无界 busy wait：panic 可能打断正在持有
-register gate 的同核 owner，硬件也可能永久不 ready。`emergency_console::write_fmt`
-因此不分配、不睡眠、不等待 worker，并返回本次实际尝试写出的字节数。
+这个接口是同步阻塞直达而不是排队等待：`emergency_console::write_fmt` 不分配、不睡眠、
+不等待 worker。成功接管后它轮询硬件直到记录写完并返回源字节数；若首次 gate 接管失败
+则返回 0。该语义优先保留完整 panic/backtrace 诊断，硬件永久不 ready 时可能停在 fatal
+输出，属于同步 emergency console 的明确边界。
 
 ## IRQ 与 worker 协议
 
@@ -196,7 +202,8 @@ ownership，复制完成后才释放，禁止 producer 与 reader 同时访问 r
 
 early 阶段仍可通过 early endpoint 做有界直接输出；`Preparing` 阻止新访问，`Runtime`
 提交后普通日志只能进 mailbox，`FailedClosed` 丢弃普通日志。panic/FIQ 只尝试 emergency
-endpoint，不能排空 record ring 或等待 owner worker。
+endpoint，不能排空 record ring 或等待 owner worker；一旦成功接管，排队中的普通记录
+直接留在 runtime 队列中，不得再访问 UART。
 
 ## TTY 事务与锁顺序
 
@@ -268,7 +275,7 @@ guest RX 字节流，而按完整 record 缓存在 16 KiB host backlog；detach 
 最低层确定性测试覆盖 gate contention、worker/IRQ/emergency MMIO 互斥、固定 report
 容量、TX mask/rearm、每次 RX IRQ 转交 rearm、RX budget/queue-full/overrun 状态、rearm
 窗口 immediate event 选择 `Port` 路径、shared IRQ 不关闭 controller line、PL011 配置 timeout/寄存器回滚，
-以及 termios 并发 writer 和错误传播。日志 mailbox 另外覆盖 slot generation/state、回收
+emergency 永久接管与超过 1 KiB 的 fatal record 流式输出，以及 termios 并发 writer 和错误传播。日志 mailbox 另外覆盖 slot generation/state、回收
 `READY`、拒绝覆盖 `READING/WRITING`、sequence gap、每 CPU FIFO、跨 CPU round-robin、
 递归发布、UTF-8 截断、日志 flood 与 TTY 容量隔离。
 

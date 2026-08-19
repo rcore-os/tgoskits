@@ -42,12 +42,14 @@ mod virtio_net;
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
 fn init_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        eprintln!("{info}");
         // When the `backtrace` feature is NOT enabled, axbacktrace is compiled
         // without `alloc` → Inner::Disabled → BT_ERROR requires_alloc.
         // When the `backtrace` feature IS enabled, axbacktrace captures real
         // frames (alloc=true, frames enumerated).
-        eprintln!("{}", axbacktrace::Backtrace::capture().kind("panic"));
+        let backtrace = axbacktrace::Backtrace::capture().kind("panic");
+        let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(
+            format_args!("{info}\n{backtrace}\n"),
+        );
     }));
 }
 

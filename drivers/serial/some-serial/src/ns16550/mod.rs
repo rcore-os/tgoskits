@@ -1250,7 +1250,7 @@ mod tests {
         let (_guard, uart) = serial();
         let parts = uart.split();
         let gate = UartRegisterGate::new(parts.emergency_tx);
-        let access = gate.try_enter().unwrap();
+        let access = gate.try_begin_emergency().unwrap();
         REGS[UART_LSR as usize].store(
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
             Ordering::SeqCst,
@@ -1266,7 +1266,7 @@ mod tests {
         let (_guard, uart) = serial();
         let parts = uart.split();
         let gate = UartRegisterGate::new(parts.emergency_tx);
-        let access = gate.try_enter().unwrap();
+        let access = gate.try_begin_emergency().unwrap();
         let enabled = UART_IER_RDI | UART_IER_RLSI | UART_IER_THRI;
         REGS[UART_IER as usize].store(enabled, Ordering::SeqCst);
         REGS[UART_LSR as usize].store(
@@ -1297,7 +1297,7 @@ mod tests {
         };
         let bytes = [b'x'; 17];
         let gate = UartRegisterGate::new(tx);
-        let access = gate.try_enter().unwrap();
+        let access = gate.try_begin_emergency().unwrap();
 
         assert_eq!(access.try_write(&bytes), 16);
         assert_eq!(writes.load(Ordering::SeqCst), 16);

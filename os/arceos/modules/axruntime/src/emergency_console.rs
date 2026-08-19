@@ -1,17 +1,17 @@
 //! Synchronous emergency text output.
 //!
 //! This is the only public console path for panic, oops, and other contexts
-//! that cannot sleep. It performs a direct, bounded hardware attempt and never
+//! that cannot sleep. It performs direct synchronous hardware output and never
 //! waits for the serial worker or acquires a sleepable lock. When runtime
 //! ownership has not been committed yet, it uses the platform early console.
 
 use core::fmt::{self, Write};
 
-/// Synchronously attempts to write one formatted emergency record.
+/// Synchronously writes one formatted emergency record.
 ///
-/// The call itself does not queue work, allocate, or sleep. A contended or
-/// stalled UART may cause a partial write so panic handling cannot deadlock on
-/// an interrupted register owner or broken hardware.
+/// The call itself does not queue work, allocate, or sleep. Once the emergency
+/// path claims a runtime UART, normal worker and IRQ register access remains
+/// excluded until shutdown so fatal records cannot be interleaved.
 pub fn write_fmt(args: fmt::Arguments<'_>) -> usize {
     if let Some(written) = crate::serial::emergency_write(args) {
         return written;
