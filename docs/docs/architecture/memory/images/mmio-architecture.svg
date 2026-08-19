@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1050" height="650" viewBox="0 0 1050 650" role="img" aria-labelledby="title desc">
+  <title id="title">MMIO 映射能力架构</title><desc id="desc">可移植驱动经 mmio-api、axklib、runtime 和 ax-mm 建立设备属性映射。</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0L0 6L9 3Z" fill="#475569"/></marker><style>.h{font:700 24px sans-serif;fill:#0f172a}.t{font:600 18px sans-serif;fill:#0f172a}.s{font:14px sans-serif;fill:#334155}.drv{fill:#f5f3ff;stroke:#8b5cf6;stroke-width:2}.api{fill:#eff6ff;stroke:#3b82f6;stroke-width:2}.wire{fill:#fff7ed;stroke:#f97316;stroke-width:2}.map{fill:#ecfdf5;stroke:#10b981;stroke-width:2}.l{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#a)}</style></defs>
+  <text x="525" y="36" text-anchor="middle" class="h">MMIO 寄存器映射与所有权边界</text>
+  <rect x="345" y="70" width="360" height="75" rx="14" class="drv"/><text x="525" y="101" text-anchor="middle" class="t">可移植驱动</text><text x="525" y="126" text-anchor="middle" class="s">持有 Mmio，执行易失性寄存器访问</text>
+  <rect x="345" y="190" width="360" height="85" rx="14" class="api"/><text x="525" y="223" text-anchor="middle" class="t">mmio-api</text><text x="525" y="250" text-anchor="middle" class="s">MmioOp + MmioRaw + Mmio RAII owner</text>
+  <rect x="345" y="320" width="360" height="75" rx="14" class="wire"/><text x="525" y="351" text-anchor="middle" class="t">axklib::mmio / KlibMmio</text><text x="525" y="376" text-anchor="middle" class="s">平台能力注册与错误转换</text>
+  <rect x="80" y="455" width="280" height="85" rx="14" class="wire"/><text x="220" y="487" text-anchor="middle" class="t">ax-runtime Klib</text><text x="220" y="514" text-anchor="middle" class="s">分页能力检查</text>
+  <rect x="385" y="455" width="280" height="85" rx="14" class="map"/><text x="525" y="487" text-anchor="middle" class="t">ax-mm::iomap</text><text x="525" y="514" text-anchor="middle" class="s">范围、页对齐与虚拟区间</text>
+  <rect x="690" y="455" width="280" height="85" rx="14" class="map"/><text x="830" y="487" text-anchor="middle" class="t">ax-hal 平台决策</text><text x="830" y="514" text-anchor="middle" class="s">已有窗口或通用映射</text>
+  <rect x="345" y="580" width="360" height="55" rx="14" class="map"/><text x="525" y="604" text-anchor="middle" class="t">设备页表属性 + 架构访问屏障</text><text x="525" y="624" text-anchor="middle" class="s">寄存器窗口绝不进入 Buddy</text>
+  <path d="M525 145V190M525 275V320M525 395V425H220V455M525 395V455M525 425H830V455M220 540V560H525V580M525 540V580M830 540V560H525" class="l"/>
+</svg>

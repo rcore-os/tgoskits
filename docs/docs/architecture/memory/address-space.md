@@ -11,17 +11,11 @@ ArceOS、StarryOS 和 Axvisor 分别在 `ax-mm`、StarryOS kernel 与 `axaddrspa
 
 ## 1. 组件边界
 
-```text
-                         ax-memory-set
-                MemoryArea + MemorySet + MappingBackend
-                    /                |                 \
-                   /                 |                  \
-              ax-mm        StarryOS kernel/aspace     axaddrspace
-          内核虚拟地址       Linux 进程虚拟地址       客户机物理地址
-                 \                  |                  /
-                  \                 |                 /
-                       各自页表实现与页帧所有权
-```
+`ax-memory-set` 只维护区域集合和 backend 调用协议，三个消费者分别拥有地址类型、页表对象与物理页释放策略。下图把公共容器和系统策略分开，避免把共享 `MemorySet` 误读成统一的操作系统地址空间实现。
+
+![地址空间组件边界](./images/address-space-boundaries.svg)
+
+图中的向下依赖表示系统策略消费公共区域机制，而不是公共层回调某个固定操作系统。维护映射失败、缺页或销毁路径时，应先确认资源属于 ArceOS、StarryOS 还是 Axvisor，再检查相应 backend 的对称释放行为。
 
 | 组件 | 保存的状态 | 不承担的职责 |
 | --- | --- | --- |
@@ -31,11 +25,15 @@ ArceOS、StarryOS 和 Axvisor 分别在 `ax-mm`、StarryOS kernel 与 `axaddrspa
 | `axaddrspace` | 客户机物理地址范围、线性或分配型客户机 RAM backend | Linux 虚拟内存区域、宿主内核 iomap |
 | `axcpu::paging` / `axvm` | 所属上下文的页表项、映射、权限修改和失效能力 | 虚拟内存区域策略和物理页回收策略 |
 
+这组边界要求新增消费者通过实现 `MappingBackend` 组合自己的页表和页帧策略，而不是把系统特有的回收、文件或客户机语义加入 `MemorySet`。
+
 ## 2. 数据模型
 
-### 2.1 MemoryArea
+区域数据模型由单个 `MemoryArea<B>` 和有序集合 `MemorySet<B>` 组成。前者维护一个连续区间的权限与 backend，后者负责跨区域查找、重叠判断和拆分；两者都不隐式取得物理页分配器所有权。
 
-源码：`memory/memory_set/src/area.rs`。
+### 2.1 区域对象
+
+`MemoryArea<B>` 是区域级不变量的所有者，源码位于 `memory/memory_set/src/area.rs`。它把半开虚拟范围、实际权限、报告权限和可拆分 backend 绑定在一起，使边界变化不会与物理偏移或写时复制报告语义分离。
 
 `MemoryArea<B>` 描述一个半开区间 `[start, end)`：
 
@@ -48,6 +46,8 @@ pub struct MemoryArea<B: MappingBackend> {
 }
 ```
 
+字段全部保持私有，调用方只能通过构造、拆分和查询方法改变区域状态；这使虚拟范围、实际权限、报告权限和 backend 偏移能够作为一个不变量整体维护。
+
 | 字段 | 含义 |
 | --- | --- |
 | `va_range` | 连续虚拟地址范围 |
@@ -59,9 +59,9 @@ pub struct MemoryArea<B: MappingBackend> {
 
 `split(pos)` 只在 `start < pos < end` 时成功。它同时调用 backend 的 `split(align_diff)`，因此范围元数据和 backend 内部偏移不会分离。
 
-### 2.2 MemorySet
+### 2.2 区域集合
 
-源码：`memory/memory_set/src/set.rs`。
+`MemorySet<B>` 是地址空间中的有序区域索引，源码位于 `memory/memory_set/src/set.rs`。它用区域起点作为 `BTreeMap` 键，集中实现查找、重叠判断、空洞搜索和跨区域拆分，但把页表与物理页动作委托给 backend。
 
 ```rust
 pub struct MemorySet<B: MappingBackend> {
@@ -81,9 +81,9 @@ pub struct MemorySet<B: MappingBackend> {
 
 当前实现保留 `BTreeMap`。没有代表性 StarryOS 多虚拟内存区域基准前，不用排序 `Vec` 替换它，也不为了预留树节点引入第二套元数据 allocator。
 
-## 3. MappingBackend
+## 3. 后端能力
 
-源码：`memory/memory_set/src/backend.rs`。
+`MappingBackend` 定义于 `memory/memory_set/src/backend.rs`，是区域元数据与具体页表策略之间的最小能力边界。它要求每个消费者明确地址类型、权限类型和页表对象，并为 map、unmap、protect 与 split 提供系统专属实现。
 
 ```rust
 pub trait MappingBackend: Clone {
@@ -132,7 +132,11 @@ pub trait MappingBackend: Clone {
 
 ## 4. 映射流程
 
+`MemorySet` 的公开修改接口先验证区间和元数据关系，再调用当前区域的 backend 修改页表。公共层只在 backend 成功后提交相应区域元数据，但跨多个区域的复合操作仍不承诺通用事务语义。
+
 ### 4.1 新建映射
+
+`MemorySet::map()` 先拒绝空区间与未授权重叠，再调用 `MemoryArea::map_area()`。如果调用方允许覆盖，已有重叠范围会先被解除，因此新 backend 失败时不能假设旧映射仍然存在。
 
 ```text
 MemorySet::map(area)
@@ -146,11 +150,11 @@ MemorySet::map(area)
   └─ backend 成功后插入 BTreeMap
 ```
 
-不重叠映射不会构造操作计划或撤销日志。backend 负责处理单次 map 内部的失败清理，但各实现当前并不一致：例如 `ax-mm` 的 allocation backend 在 `populate=true` 时逐页分配，任一页帧申请或页表写入失败后直接返回 `false`，本次已安装的前缀页不回滚（当前实现会遗留已映射前缀与页帧，属于已知限制）；修复时应由 backend 在失败时逆序清理本次已建立的映射并归还页帧。
+不重叠映射不会构造公共操作计划或撤销日志，单次 map 的失败清理由具体 backend 承担。当前 `ax-mm` 的 allocation backend 在 `populate=true` 时通过 `populate_pages()` 逐页建立映射；页帧申请或页表写入失败时，`rollback_populated_pages()` 删除本次已经安装的前缀页，并连同当前尚未映射的 frame 一并归还。`axaddrspace` 的 allocation backend 尚未实现同等回滚，因此两个消费者不能被概括为相同失败语义。
 
 ### 4.2 解除映射
 
-`unmap(start, size)` 按三类相交方式处理：
+`unmap(start, size)` 会遍历与目标半开区间相交的区域，并根据覆盖关系选择整段删除、边界收缩或中间拆分。backend 操作成功后才提交对应边界变化，但已完成的前序区域不会因后续区域失败而自动恢复。
 
 ```text
 原区域完全位于目标范围：调用 unmap_area 后删除
@@ -171,6 +175,8 @@ StarryOS 写时复制 backend 可以把页表实际写权限清除，同时保�
 
 ### 4.4 metadata-only 操作
 
+当策略层已经移动、复制或分离页表项时，再调用普通 map/unmap 会重复触碰物理资源。`unmap_metadata()` 与 `replace_area_metadata()` 只调整区域描述，专门服务这种已经由上层完成页表状态转换的路径。
+
 | API | 用途 |
 | --- | --- |
 | `unmap_metadata` | 页表项已移动或分离后只删除区域描述 |
@@ -182,24 +188,30 @@ StarryOS fork 的写时复制流程先由 backend `clone_map()` 建立 child 页
 
 ## 5. 覆盖映射和原子性边界
 
-`MemorySet::replace` 验证新区域位于 replacement range 内，然后直接执行：
+当前 `MemorySet` 没有独立的 `replace()` API。覆盖行为由 `map(area, page_table, unmap_overlap)` 的第三个参数控制；当该参数为 `true` 时，公共层先解除相交范围，再尝试安装新区域。
 
-```rust
-self.unmap(replace_range.start, replace_range.size(), page_table)?;
-self.map(area, page_table, false)
+```text
+if overlaps && unmap_overlap
+  -> unmap overlapping range
+  -> map the new area's backend
+  -> insert the new area metadata
 ```
 
-因此新 map 失败时，已经解除的旧范围不会由公共层自动恢复。该接口只适合：
+这段调用顺序对应 `MemorySet::map()` 的实际控制流。新 backend 失败时，已经解除的旧范围不会由公共层自动恢复，因此启用覆盖只适合具有明确恢复策略或允许重建映射的上层路径。
 
 - 上层已经保存专用恢复信息；
 - 失败后允许调用方重建映射；
 - 不要求 Linux 系统调用原子性的内部路径。
+
+这些条件是覆盖映射的使用边界，而不是三个任选其一即可忽略失败状态的豁免。Linux `MAP_FIXED`、mremap 等用户可见操作仍需在 StarryOS syscall 和 `AddrSpace` 层完成预检与专用恢复。
 
 StarryOS 的 `AddrSpace` 在调用低层操作前负责地址范围、`RLIMIT_AS`、commit delta、文件映射状态和页表移动预检。写时复制 clone 和 mremap 分别维护自己的有限回滚记录，不把通用逐页快照施加给所有地址空间消费者。
 
 普通跨区域 unmap/protect 当前不承诺 all-or-nothing。这一限制必须保留在设计、测试和错误报告中，不能仅通过文档声称已经具备事务保证。
 
 ## 6. 12 GiB 映射示例
+
+大范围映射的关键成本来自实际页表层级与叶子项数量，而不是 `MemorySet` 元数据。下面的计算说明当前公共区域层只保存一个 `MemoryArea`，不会按 4 KiB 基础页生成通用撤销数组。
 
 12 GiB 范围包含：
 
@@ -223,18 +235,22 @@ backend 额外状态：常数
 
 ## 7. 三类消费者
 
+三个主要消费者复用相同区域容器，但各自实现不同的页帧来源、页表类型和失败清理。理解这些差异是判断某个 backend 修改是否能够复用到其他系统的前提。
+
 ### 7.1 ArceOS ax-mm
 
-`os/arceos/modules/axmm/src/backend/` 提供：
+`os/arceos/modules/axmm/src/backend/` 提供线性与分配型两类 backend；其中分配型 eager populate 已为当前操作实现前缀回滚，懒分配则在缺页时补充单页。
 
 - `Linear`：虚拟地址按固定差值换算为物理地址；
 - `Alloc`：立即填充或缺页时分配物理页。
+
+这两个 backend 的 backing ownership 不同：`Linear` 只删除页表项，`Alloc` 才按 `UsageKind::VirtMem` 归还自己取得的 frame。
 
 页帧使用 `global_allocator().alloc_pages(..., UsageKind::VirtMem)`。释放时传回原页数和用途；DMA32 这类低地址选择不参与普通虚拟内存页释放路由。
 
 ### 7.2 StarryOS
 
-`os/StarryOS/kernel/src/mm/aspace/` 保留 Linux 专属状态：
+`os/StarryOS/kernel/src/mm/aspace/` 保留 Linux 专属状态，并通过 `MemoryAccounting`、COW frame table 与文件 backend 把页表变化和用户可见统计关联起来。
 
 - 写时复制；
 - anonymous、file、shared mapping；
@@ -242,6 +258,8 @@ backend 额外状态：常数
 - commit accounting；
 - mremap、fork 和缺页恢复；
 - signal/errno 转换。
+
+这些状态依赖进程地址空间外层锁和 Linux ABI 规则，不能下沉为所有 `MemorySet` 消费者都必须承担的字段。
 
 StarryOS `AddrSpace` 在调用 backend 时把具体页表和 `MemoryAccounting` 一并传入。这个边界维护“页表变化必须同步更新常驻页统计”的 StarryOS 不变量，不是通用事务 plan。
 
@@ -253,6 +271,8 @@ StarryOS `AddrSpace` 在调用 backend 时把具体页表和 `MemoryAccounting` 
 
 ## 8. 锁与并发
 
+`MemorySet` 本身不提供内部同步，调用方必须在进入 map、unmap、protect 或 clear 之前取得对应地址空间的唯一修改权。下表列出三个生产消费者实际使用的外层同步边界。
+
 `MemorySet` 自身不包含锁。所有修改要求调用方持有地址空间锁：
 
 | 消费者 | 外层同步 |
@@ -261,11 +281,15 @@ StarryOS `AddrSpace` 在调用 backend 时把具体页表和 `MemoryAccounting` 
 | StarryOS process address space | `Arc<Mutex<AddrSpace>>` |
 | Axvisor guest address space | VM/地址空间所有者的外层锁 |
 
+外层锁只串行化软件状态；页表项对其他 CPU 或虚拟处理器的可见性仍需由 Stage-1 或 Stage-2 失效协议完成。
+
 锁内可能执行页表操作和页帧分配，因此不能从硬中断上下文调用，也不能在持锁期间执行虚拟文件系统回调或不可控回收。
 
 跨 CPU Translation Lookaside Buffer（地址转换后备缓冲区）失效由页表和操作系统层协调，不由 `MemorySet` 发起。AArch64 硬件广播和其他架构的处理器间中断路径见[多架构内存实现](./architecture-support.md)。
 
 ## 9. 源码索引
+
+修改区域容器、系统 backend 或页表接线时，应从下列文件按“公共机制、系统策略、页表所有者”的顺序审计。表中的目录都是当前实现入口，不包含已经删除的事务计划类型。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -275,5 +299,7 @@ StarryOS `AddrSpace` 在调用 backend 时把具体页表和 `MemoryAccounting` 
 | `os/arceos/modules/axmm/src/backend/` | ArceOS Linear/Alloc backend |
 | `os/StarryOS/kernel/src/mm/aspace/` | StarryOS Linux 虚拟内存策略和专用恢复 |
 | `virtualization/axaddrspace/src/address_space/` | 客户机地址空间策略 |
+
+相关测试需要同时覆盖 `memory_set` 的区域操作和具体 backend 的资源回滚；只运行公共容器测试无法证明系统页帧已经对称释放。
 
 相关测试命令见[内存管理测试](./testing.md)。

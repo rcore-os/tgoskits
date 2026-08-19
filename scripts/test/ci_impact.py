@@ -4,10 +4,9 @@ import json
 import re
 import subprocess
 from collections import defaultdict
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
-
 
 ARCH_TARGETS = {
     "aarch64": "aarch64-unknown-none-softfloat",
@@ -39,14 +38,17 @@ FULL_PREFIXES = (
     Path("os/axvisor/xtask"),
 )
 IGNORED_APP_PREFIX = Path("apps")
-KNOWN_OS_PATHS = (
+TEST_SUITE_PATHS = (
     (Path("test-suit/arceos"), "arceos"),
     (Path("test-suit/starryos"), "starry"),
     (Path("test-suit/axvisor"), "axvisor"),
+)
+KNOWN_OS_CONFIG_PATHS = (
     (Path("os/arceos/configs"), "arceos"),
     (Path("os/StarryOS/configs"), "starry"),
     (Path("os/axvisor/configs"), "axvisor"),
 )
+CI_OWNED_APP_INPUTS = ((Path("apps/arceos/virtio-blk-test"), "axvisor:qemu:aarch64"),)
 ARCH_PATH_ALIASES = {
     "aarch64": (
         "a1000",
@@ -84,6 +86,10 @@ class CiImpact:
     ignored_apps: tuple[str, ...] = ()
     changed_packages: tuple[str, ...] = ()
     affected_packages: tuple[str, ...] = ()
+    affected_oses: tuple[str, ...] = ()
+    input_selections: tuple[str, ...] = ()
+    test_suite_paths: tuple[str, ...] = ()
+    exclusive: bool = False
     targets: tuple[str, ...] = ()
 
     @classmethod
@@ -101,6 +107,7 @@ class CiImpact:
             changed_paths=_sorted_path_strings(changed_paths),
             ignored_markdown=tuple(sorted(set(ignored_markdown))),
             ignored_apps=tuple(sorted(set(ignored_apps))),
+            affected_oses=tuple(OS_ROOT_PACKAGES),
             targets=tuple(
                 f"{os_name}:{arch}"
                 for os_name in OS_ROOT_PACKAGES
@@ -139,7 +146,11 @@ def analyze_pull_request(workspace_root: Path, since_ref: str) -> CiImpact:
                 ignored_markdown=ignored_markdown,
                 ignored_apps=ignored_apps,
             )
-        metadata_by_arch = load_metadata_by_arch(workspace_root)
+        metadata_by_arch = (
+            {}
+            if all(_is_known_input_path(path) for path in relevant)
+            else load_metadata_by_arch(workspace_root)
+        )
         return analyze_changed_paths(workspace_root, changed_paths, metadata_by_arch)
     except (
         ImpactError,
@@ -172,8 +183,7 @@ def changed_paths_since(workspace_root: Path, since_ref: str) -> list[Path]:
         command,
         cwd=workspace_root,
         check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     return [
         _normalize_relative_path(Path(raw.decode("utf-8")))
@@ -202,8 +212,7 @@ def load_metadata_by_arch(workspace_root: Path) -> dict[str, dict]:
             cwd=workspace_root,
             check=True,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
         metadata_by_arch[arch] = json.loads(result.stdout)
     return metadata_by_arch
@@ -229,17 +238,29 @@ def analyze_changed_paths(
         )
 
     try:
-        package_index = _package_path_index(workspace_root, metadata_by_arch)
         changed_package_ids: set[str] = set()
         changed_package_names: set[str] = set()
-        direct_targets: set[str] = set()
+        input_selections: set[str] = set()
+        test_suite_paths: set[str] = set()
+        package_paths: list[Path] = []
         unknown_paths: list[Path] = []
 
         for path in relevant_paths:
-            known_targets = _known_path_targets(path)
-            if known_targets:
-                direct_targets.update(known_targets)
+            if _test_suite_os(path) is not None:
+                test_suite_paths.add(path.as_posix())
                 continue
+            known_inputs = _known_input_selections(path)
+            if known_inputs:
+                input_selections.update(known_inputs)
+                continue
+            package_paths.append(path)
+
+        package_index = (
+            _package_path_index(workspace_root, metadata_by_arch)
+            if package_paths
+            else []
+        )
+        for path in package_paths:
             package = _package_for_path(path, package_index)
             if package is not None:
                 changed_package_ids.add(package.package_id)
@@ -256,9 +277,14 @@ def analyze_changed_paths(
                 ignored_apps=ignored_apps,
             )
 
-        targets = set(direct_targets)
+        targets = {
+            target
+            for selection in input_selections
+            for target in _input_selection_targets(selection)
+        }
         affected_names = set(changed_package_names)
-        for arch in ARCH_TARGETS:
+        affected_oses: set[str] = set()
+        for arch in ARCH_TARGETS if changed_package_ids else ():
             metadata = metadata_by_arch.get(arch)
             if metadata is None:
                 raise ImpactError(f"missing cargo metadata for {arch}")
@@ -273,9 +299,12 @@ def analyze_changed_paths(
             root_ids = _os_root_package_ids(metadata)
             for os_name, root_id in root_ids.items():
                 if root_id in affected_ids:
-                    targets.add(f"{os_name}:{arch}")
+                    affected_oses.add(os_name)
             if _affected_axtest_runs_in_arceos_ci(metadata, affected_ids, arch):
                 targets.add(f"arceos:{arch}")
+
+        for os_name in affected_oses:
+            targets.update(f"{os_name}:{arch}" for arch in ARCH_TARGETS)
 
         return CiImpact(
             full=False,
@@ -285,6 +314,13 @@ def analyze_changed_paths(
             ignored_apps=tuple(sorted(ignored_apps)),
             changed_packages=tuple(sorted(changed_package_names)),
             affected_packages=tuple(sorted(affected_names)),
+            affected_oses=tuple(
+                os_name for os_name in OS_ROOT_PACKAGES if os_name in affected_oses
+            ),
+            input_selections=tuple(sorted(input_selections)),
+            test_suite_paths=tuple(sorted(test_suite_paths)),
+            exclusive=bool(test_suite_paths)
+            and len(test_suite_paths) == len(relevant_paths),
             targets=tuple(sorted(targets, key=_target_sort_key)),
         )
     except (KeyError, TypeError, ValueError) as error:
@@ -312,6 +348,10 @@ def render_summary(
         f"- Ignored apps: {_render_values(impact.ignored_apps)}",
         f"- Changed packages: {_render_values(impact.changed_packages)}",
         f"- Affected packages: {_render_values(impact.affected_packages)}",
+        f"- Affected OSes: {_render_values(impact.affected_oses)}",
+        f"- Precise inputs: {_render_values(impact.input_selections)}",
+        f"- Test suites: {_render_values(impact.test_suite_paths)}",
+        f"- Exclusive selection: `{str(impact.exclusive).lower()}`",
         f"- OS/arch targets: {_render_values(impact.targets)}",
         f"- Selected checks ({len(selected_check_ids)}): {_render_values(selected_check_ids)}",
         f"- Skipped checks ({len(skipped_check_ids)}): {_render_values(skipped_check_ids)}",
@@ -331,7 +371,9 @@ def _partition_ignored(
         rendered = path.as_posix()
         if path.suffix.casefold() == ".md":
             ignored_markdown.add(rendered)
-        elif _is_prefix(path, IGNORED_APP_PREFIX):
+        elif _is_prefix(path, IGNORED_APP_PREFIX) and not any(
+            _is_prefix(path, prefix) for prefix, _ in CI_OWNED_APP_INPUTS
+        ):
             ignored_apps.add(rendered)
         else:
             relevant.append(path)
@@ -339,7 +381,9 @@ def _partition_ignored(
 
 
 def _requires_full_matrix(path: Path) -> bool:
-    return path in FULL_PATHS or any(_is_prefix(path, prefix) for prefix in FULL_PREFIXES)
+    return path in FULL_PATHS or any(
+        _is_prefix(path, prefix) for prefix in FULL_PREFIXES
+    )
 
 
 def _pre_metadata_full_reason(
@@ -371,9 +415,7 @@ def _package_path_index(
             raise ImpactError(
                 f"workspace package `{package['name']}` is outside the workspace"
             ) from error
-        entries.append(
-            PackagePathEntry(package["id"], package["name"], relative_dir)
-        )
+        entries.append(PackagePathEntry(package["id"], package["name"], relative_dir))
     entries.sort(
         key=lambda entry: (-len(entry.relative_dir.parts), entry.name, entry.package_id)
     )
@@ -522,7 +564,9 @@ def _package_axtest_arches(package: dict) -> set[str]:
         raise ImpactError(f"invalid docs.rs targets for `{package['name']}`")
     target_to_arch = {target: arch for arch, target in ARCH_TARGETS.items()}
     supported_arches = {
-        target_to_arch[target] for target in declared_targets if target in target_to_arch
+        target_to_arch[target]
+        for target in declared_targets
+        if target in target_to_arch
     }
     if not supported_arches:
         raise ImpactError(
@@ -531,15 +575,47 @@ def _package_axtest_arches(package: dict) -> set[str]:
     return supported_arches
 
 
-def _known_path_targets(path: Path) -> set[str]:
-    for prefix, os_name in KNOWN_OS_PATHS:
+def _is_known_input_path(path: Path) -> bool:
+    return _test_suite_os(path) is not None or bool(_known_input_selections(path))
+
+
+def _test_suite_os(path: Path) -> str | None:
+    for prefix, os_name in TEST_SUITE_PATHS:
+        if _is_prefix(path, prefix):
+            return os_name
+    return None
+
+
+def _known_input_selections(path: Path) -> set[str]:
+    for prefix, selection in CI_OWNED_APP_INPUTS:
+        if _is_prefix(path, prefix):
+            return {selection}
+
+    for prefix, os_name in KNOWN_OS_CONFIG_PATHS:
         if not _is_prefix(path, prefix):
             continue
         arches = _arch_hints(path)
-        if not arches:
-            arches = set(ARCH_TARGETS)
-        return {f"{os_name}:{arch}" for arch in arches}
+        relative = path.relative_to(prefix)
+        parts = tuple(part.casefold() for part in relative.parts)
+        if "qemu" in parts and arches:
+            return {f"{os_name}:qemu:{arch}" for arch in arches}
+        if "board" in parts and path.suffix == ".toml":
+            return {f"{os_name}:board:{path.stem.casefold()}"}
+        return {f"{os_name}:all"}
     return set()
+
+
+def _input_selection_targets(selection: str) -> set[str]:
+    os_name, _, detail = selection.partition(":")
+    if os_name not in OS_ROOT_PACKAGES:
+        return set()
+    _, _, value = detail.partition(":")
+    if value in ARCH_TARGETS:
+        return {f"{os_name}:{value}"}
+    arches = _arch_hints(Path(value))
+    if arches:
+        return {f"{os_name}:{arch}" for arch in arches}
+    return {f"{os_name}:{arch}" for arch in ARCH_TARGETS}
 
 
 def _arch_hints(path: Path) -> set[str]:

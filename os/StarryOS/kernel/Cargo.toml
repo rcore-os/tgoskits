@@ -73,6 +73,12 @@ SMP = "4"
 [features]
 default = ["dynamic_debug"]
 dev-log = []
+# Lock-free user-copy fast path: probe the HW page table (aarch64 `AT S1E0R/W`)
+# so a syscall copy of already-present, EL0-permitted pages skips the aspace lock
+# and `populate_area`. Off by default; misses fall to the unchanged locked slow
+# path. The probe itself is always compiled (rides ax-cpu `uspace`); this gate
+# only enables its use. Only meaningful on aarch64 (other arches stub to false).
+user-access-fastpath = []
 ext4 = ["ax-fs-ng/ext4"]
 fat = ["ax-fs-ng/fat"]
 input = ["dep:ax-input", "ax-runtime/input"]

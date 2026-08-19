@@ -5,17 +5,32 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 if sys.version_info < (3, 11):
     raise SystemExit("ci_plan.py requires Python 3.11 or newer")
 
 import tomllib
-
-from ci_impact import CiImpact, analyze_pull_request, render_summary
-
+from ci_impact import ARCH_TARGETS, CiImpact, analyze_pull_request, render_summary
+from ci_runner_profiles import (
+    GLOBAL_DEFAULT_RUNNER,
+    SUPPORTED_ENVIRONMENTS,
+    RunnerProfileError,
+    load_runner_profiles,
+    validate_runner_profile,
+)
+from ci_suite import (
+    SUITE_FIELDS,
+    SUPPORTED_SUITE_KINDS,
+    SuiteRouteError,
+    SuiteSelection,
+    check_matches_input,
+    resolve_suite_selections,
+    validate_suite_catalog,
+)
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 CHECKS_ROOT = WORKSPACE_ROOT / ".github" / "ci" / "checks"
@@ -27,9 +42,9 @@ MAIN_MANIFESTS = (
     CHECKS_ROOT / "starry.toml",
 )
 STARRY_APPS_MANIFEST = CHECKS_ROOT / "starry-apps.toml"
+RUNNER_PROFILES_MANIFEST = CHECKS_ROOT.parent / "runner-profiles.toml"
 
 SUPPORTED_PHASES = {"static", "test", "starry_apps"}
-SUPPORTED_ENVIRONMENTS = {"host", "base", "axvisor-lvz"}
 SUPPORTED_PREFLIGHTS = {"none", "qemu-user", "full"}
 SUPPORTED_IMPACT_TARGETS = {
     f"{os_name}:{arch}"
@@ -41,20 +56,21 @@ CHECK_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 REDUNDANT_NAME_PREFIX_PATTERN = re.compile(
     r"^(?:check|run|scheduled|tests?)\b", re.IGNORECASE
 )
-TOP_LEVEL_FIELDS = {"schema_version", "phase", "group", "check"}
+TOP_LEVEL_FIELDS = {
+    "schema_version",
+    "phase",
+    "group",
+    "default_runner",
+    "check",
+}
 CHECK_FIELDS = {
     "id",
     "name",
-    "runs_on",
-    "environment",
+    "runner",
     "command",
-    "self_hosted_owner",
-    "fallback_environment",
-    "required_owner",
     "required_base_branch",
     "fetch_depth",
     "timeout_minutes",
-    "require_kvm",
     "cache_key",
     "apk_region",
     "upload_xtask_bin_artifact",
@@ -66,8 +82,9 @@ CHECK_FIELDS = {
     "impact_targets",
     "impact_packages",
     "pull_request_command",
+    "suite",
 }
-REQUIRED_CHECK_FIELDS = {"id", "name", "runs_on", "environment", "command"}
+REQUIRED_CHECK_FIELDS = {"id", "name", "command"}
 BOOLEAN_CHECK_FIELDS = {
     "require_kvm",
     "upload_xtask_bin_artifact",
@@ -92,14 +109,26 @@ class PlanContext:
 def load_catalog(manifests: Iterable[Path]) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    runner_profiles = _load_runner_profiles(RUNNER_PROFILES_MANIFEST)
 
     for manifest in manifests:
         document = _load_manifest(manifest)
         phase = document["phase"]
         group = document["group"]
+        default_runner = document.get("default_runner", GLOBAL_DEFAULT_RUNNER)
+        if default_runner not in runner_profiles:
+            raise PlanError(
+                f"{manifest} references unknown default_runner '{default_runner}'"
+            )
         for index, raw_check in enumerate(document["check"], start=1):
             location = f"{manifest}:{index}"
-            check = _validate_check(raw_check, location, group)
+            check = _validate_check(
+                raw_check,
+                location,
+                group,
+                runner_profiles,
+                default_runner,
+            )
             check_id = check["id"]
             if check_id in seen_ids:
                 raise PlanError(f"duplicate check id '{check_id}' at {location}")
@@ -111,18 +140,36 @@ def load_catalog(manifests: Iterable[Path]) -> list[dict[str, Any]]:
 
     _validate_artifact_contract(checks)
     _validate_impact_contract(checks)
+    try:
+        validate_suite_catalog(WORKSPACE_ROOT, checks)
+    except SuiteRouteError as error:
+        raise PlanError(str(error)) from error
     return checks
 
 
-def build_main_plan(context: PlanContext) -> dict[str, dict[str, list[dict[str, Any]]]]:
+def build_main_plan(context: PlanContext) -> dict[str, Any]:
     checks = load_catalog(MAIN_MANIFESTS)
-    static_rows = _plan_phase(checks, "static", context)
-    test_rows = _plan_phase(checks, "test", context)
-    if not static_rows or not test_rows:
-        raise PlanError("main CI must resolve to non-empty static and test matrices")
+    context = _resolve_input_fallbacks(checks, context)
+    suite_only = bool(
+        context.event_name == "pull_request"
+        and context.impact is not None
+        and context.impact.exclusive
+        and context.impact.test_suite_paths
+    )
+    static_rows = [] if suite_only else _plan_phase(checks, "static", context)
+    test_rows = (
+        _plan_suite_rows(checks, context)
+        if suite_only
+        else _plan_phase(checks, "test", context) + _plan_suite_rows(checks, context)
+    )
+    if not test_rows:
+        raise PlanError("main CI must resolve to a non-empty test matrix")
+    if not suite_only and not static_rows:
+        raise PlanError("main CI must resolve to a non-empty static matrix")
     return {
         "static_matrix": {"include": static_rows},
         "test_matrix": {"include": test_rows},
+        "static_required": bool(static_rows),
     }
 
 
@@ -154,8 +201,8 @@ def _load_manifest(manifest: Path) -> dict[str, Any]:
         raise PlanError(
             f"{manifest} has unknown top-level fields: {sorted(unknown_fields)}"
         )
-    if document.get("schema_version") != 2:
-        raise PlanError(f"{manifest} must declare schema_version = 2")
+    if document.get("schema_version") != 3:
+        raise PlanError(f"{manifest} must declare schema_version = 3")
     if document.get("phase") not in SUPPORTED_PHASES:
         raise PlanError(f"{manifest} has an unsupported phase")
     if not isinstance(document.get("group"), str) or not document["group"].strip():
@@ -166,7 +213,11 @@ def _load_manifest(manifest: Path) -> dict[str, Any]:
 
 
 def _validate_check(
-    raw_check: Any, location: str, group: str = ""
+    raw_check: Any,
+    location: str,
+    group: str = "",
+    runner_profiles: dict[str, dict[str, Any]] | None = None,
+    default_runner: str = GLOBAL_DEFAULT_RUNNER,
 ) -> dict[str, Any]:
     if not isinstance(raw_check, dict):
         raise PlanError(f"{location} check entry must be a table")
@@ -177,7 +228,16 @@ def _validate_check(
     if missing_fields:
         raise PlanError(f"{location} is missing fields: {sorted(missing_fields)}")
 
-    check = dict(raw_check)
+    profiles = runner_profiles or _load_runner_profiles(RUNNER_PROFILES_MANIFEST)
+    runner = raw_check.get("runner", default_runner)
+    if not isinstance(runner, str) or not runner:
+        raise PlanError(f"{location} field 'runner' must be a non-empty string")
+    if runner not in profiles:
+        raise PlanError(f"{location} references unknown runner profile '{runner}'")
+
+    check = {key: value for key, value in raw_check.items() if key != "runner"}
+    check.update(profiles[runner])
+    check["runner"] = runner
     for field in ("id", "name", "environment", "command"):
         if not isinstance(check[field], str) or not check[field].strip():
             raise PlanError(f"{location} field '{field}' must be a non-empty string")
@@ -240,9 +300,7 @@ def _validate_check(
     if boolean_input is not None and (
         not isinstance(boolean_input, str) or not boolean_input
     ):
-        raise PlanError(
-            f"{location} enable_boolean_input must be a non-empty string"
-        )
+        raise PlanError(f"{location} enable_boolean_input must be a non-empty string")
 
     cache_key = check.get("cache_key", "")
     if not isinstance(cache_key, str):
@@ -284,11 +342,58 @@ def _validate_check(
     if pull_request_command is not None and (
         not isinstance(pull_request_command, str) or not pull_request_command.strip()
     ):
-        raise PlanError(
-            f"{location} pull_request_command must be a non-empty string"
-        )
+        raise PlanError(f"{location} pull_request_command must be a non-empty string")
+
+    suite = check.get("suite")
+    if suite is not None:
+        _validate_suite_registrations(suite, location)
 
     return check
+
+
+def _load_runner_profiles(manifest: Path) -> dict[str, dict[str, Any]]:
+    try:
+        return load_runner_profiles(manifest)
+    except RunnerProfileError as error:
+        raise PlanError(str(error)) from error
+
+
+def _validate_runner_profile(profile: dict[str, Any], location: str) -> None:
+    try:
+        validate_runner_profile(profile, location)
+    except RunnerProfileError as error:
+        raise PlanError(str(error)) from error
+
+
+def _validate_suite_registrations(suite: Any, location: str) -> None:
+    if not isinstance(suite, list) or not suite:
+        raise PlanError(f"{location} suite must be a non-empty table array")
+    for index, registration in enumerate(suite, start=1):
+        suite_location = f"{location} suite {index}"
+        if not isinstance(registration, dict):
+            raise PlanError(f"{suite_location} must be a table")
+        unknown_fields = set(registration) - SUITE_FIELDS
+        if unknown_fields:
+            raise PlanError(
+                f"{suite_location} has unknown fields: {sorted(unknown_fields)}"
+            )
+        kind = registration.get("kind")
+        if kind not in SUPPORTED_SUITE_KINDS:
+            raise PlanError(f"{suite_location} has an unsupported kind")
+        is_qemu = kind.endswith("-qemu")
+        arch = registration.get("arch")
+        board = registration.get("board")
+        if is_qemu and arch not in ARCH_TARGETS:
+            raise PlanError(f"{suite_location} must declare a supported arch")
+        if not is_qemu and (not isinstance(board, str) or not board):
+            raise PlanError(f"{suite_location} must declare a non-empty board")
+        if is_qemu and board is not None:
+            raise PlanError(f"{suite_location} qemu registration cannot declare board")
+        if not is_qemu and arch is not None:
+            raise PlanError(f"{suite_location} board registration cannot declare arch")
+        cases = registration.get("cases")
+        if cases is not None:
+            _validate_string_array(cases, "cases", suite_location)
 
 
 def _validate_string_array(value: Any, field: str, location: str) -> None:
@@ -303,9 +408,7 @@ def _validate_string_array(value: Any, field: str, location: str) -> None:
 
 def _validate_display_name(name: str, group: str, location: str) -> None:
     if REDUNDANT_NAME_PREFIX_PATTERN.search(name):
-        raise PlanError(
-            f"{location} name must not start with Test/Run/Check/Scheduled"
-        )
+        raise PlanError(f"{location} name must not start with Test/Run/Check/Scheduled")
     if "self-hosted" in name.casefold():
         raise PlanError(f"{location} name must not expose the self-hosted runner")
     if group:
@@ -315,6 +418,16 @@ def _validate_display_name(name: str, group: str, location: str) -> None:
         )
         if group_pattern.search(name):
             raise PlanError(f"{location} name must not repeat group '{group}'")
+    for arch in ARCH_TARGETS:
+        for platform in ("QEMU", "VMX", "SVM", "UEFI"):
+            if re.search(
+                rf"\b{re.escape(arch)}\s+{platform}\b",
+                name,
+                flags=re.IGNORECASE,
+            ):
+                raise PlanError(
+                    f"{location} name must place platform before architecture"
+                )
 
 
 def _validate_artifact_contract(checks: list[dict[str, Any]]) -> None:
@@ -326,7 +439,9 @@ def _validate_artifact_contract(checks: list[dict[str, Any]]) -> None:
         check for check in main_checks if check.get("upload_xtask_bin_artifact", False)
     ]
     if len(producers) != 1 or producers[0]["phase"] != "static":
-        raise PlanError("main CI must define exactly one static xtask artifact producer")
+        raise PlanError(
+            "main CI must define exactly one static xtask artifact producer"
+        )
 
     producer_name = producers[0].get("xtask_bin_artifact_name", "tg-xtask-bin")
     for check in main_checks:
@@ -361,6 +476,94 @@ def _plan_phase(
     ]
 
 
+def _resolve_input_fallbacks(
+    checks: list[dict[str, Any]], context: PlanContext
+) -> PlanContext:
+    impact = context.impact
+    if impact is None or impact.full or not impact.input_selections:
+        return context
+
+    resolved = []
+    fallback_inputs = []
+    for selection in impact.input_selections:
+        if any(check_matches_input(check, selection) for check in checks):
+            resolved.append(selection)
+            continue
+        os_name = selection.partition(":")[0]
+        fallback = f"{os_name}:all"
+        resolved.append(fallback)
+        fallback_inputs.append(selection)
+    if not fallback_inputs:
+        return context
+
+    reason = (
+        f"{impact.reason}; unmatched precise inputs fell back to OS-wide: "
+        f"{', '.join(fallback_inputs)}"
+    )
+    resolved_impact = replace(
+        impact,
+        reason=reason,
+        input_selections=tuple(sorted(set(resolved))),
+    )
+    return replace(context, impact=resolved_impact)
+
+
+def _plan_suite_rows(
+    checks: list[dict[str, Any]], context: PlanContext
+) -> list[dict[str, Any]]:
+    impact = context.impact
+    if (
+        context.event_name != "pull_request"
+        or impact is None
+        or impact.full
+        or not impact.test_suite_paths
+    ):
+        return []
+
+    suite_paths = tuple(
+        path
+        for path in impact.test_suite_paths
+        if _suite_path_os(path) not in impact.affected_oses
+    )
+    if not suite_paths:
+        return []
+    try:
+        selections = resolve_suite_selections(WORKSPACE_ROOT, checks, suite_paths)
+    except SuiteRouteError as error:
+        raise PlanError(str(error)) from error
+
+    checks_by_id = {check["id"]: check for check in checks}
+    rows = []
+    for selection in selections:
+        template = checks_by_id[selection.template_id]
+        if not _is_enabled(template, context):
+            raise PlanError(
+                f"test suite path `{selection.source_path}` requires unavailable "
+                f"check '{selection.template_id}'"
+            )
+        rows.append(_normalize_suite_selection(template, selection, context))
+    return rows
+
+
+def _normalize_suite_selection(
+    template: dict[str, Any],
+    selection: SuiteSelection,
+    context: PlanContext,
+) -> dict[str, Any]:
+    row = _normalize_check(template, context)
+    row.update(
+        {
+            "id": selection.row_id,
+            "name": f"{template['group']} / {selection.leaf_name}",
+            "command": selection.command,
+            "template_id": selection.template_id,
+            "upload_xtask_bin_artifact": False,
+            "download_xtask_bin_artifact": False,
+        }
+    )
+    return row
+
+
 def _is_enabled(check: dict[str, Any], context: PlanContext) -> bool:
     required_owner = check.get("required_owner")
     if required_owner and context.repository_owner != required_owner:
@@ -393,15 +596,38 @@ def _matches_impact(check: dict[str, Any], context: PlanContext) -> bool:
     if not impact_targets and not impact_packages:
         return True
 
+    if any(
+        target.partition(":")[0] in impact.affected_oses for target in impact_targets
+    ):
+        return True
+    input_matches = any(
+        check_matches_input(check, selection) for selection in impact.input_selections
+    )
+    if input_matches:
+        return True
+    if impact.input_selections:
+        return bool(impact_packages.intersection(impact.affected_packages))
+
     return bool(
         impact_targets.intersection(impact.targets)
         or impact_packages.intersection(impact.affected_packages)
     )
 
 
-def _normalize_check(
-    check: dict[str, Any], context: PlanContext
-) -> dict[str, Any]:
+def _suite_path_os(path: str) -> str | None:
+    normalized = Path(path)
+    prefixes = {
+        Path("test-suit/arceos"): "arceos",
+        Path("test-suit/starryos"): "starry",
+        Path("test-suit/axvisor"): "axvisor",
+    }
+    for prefix, os_name in prefixes.items():
+        if normalized == prefix or prefix in normalized.parents:
+            return os_name
+    return None
+
+
+def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, Any]:
     runs_on = list(check["runs_on"])
     environment = check["environment"]
     fallback = bool(
@@ -451,13 +677,9 @@ def _normalize_check(
         "fetch_depth": fetch_depth,
         "timeout_minutes": check.get("timeout_minutes", 360),
         "require_kvm": check.get("require_kvm", False),
-        "upload_xtask_bin_artifact": check.get(
-            "upload_xtask_bin_artifact", False
-        ),
+        "upload_xtask_bin_artifact": check.get("upload_xtask_bin_artifact", False),
         "download_xtask_bin_artifact": download_xtask,
-        "xtask_bin_artifact_name": check.get(
-            "xtask_bin_artifact_name", "tg-xtask-bin"
-        ),
+        "xtask_bin_artifact_name": check.get("xtask_bin_artifact_name", "tg-xtask-bin"),
         "source": check["source"],
     }
 
@@ -486,9 +708,7 @@ def _parse_args() -> argparse.Namespace:
         "--output-file",
         type=Path,
         default=(
-            Path(os.environ["GITHUB_OUTPUT"])
-            if "GITHUB_OUTPUT" in os.environ
-            else None
+            Path(os.environ["GITHUB_OUTPUT"]) if "GITHUB_OUTPUT" in os.environ else None
         ),
     )
     parser.add_argument(
@@ -518,6 +738,11 @@ def main() -> int:
     )
     try:
         if args.mode == "main":
+            context = _resolve_input_fallbacks(
+                load_catalog(MAIN_MANIFESTS),
+                context,
+            )
+            impact = context.impact
             outputs = build_main_plan(context)
         else:
             outputs = build_starry_apps_plan(context)
@@ -530,20 +755,32 @@ def main() -> int:
     else:
         print(json.dumps(outputs, indent=2))
 
-    for name, matrix in outputs.items():
-        print(f"{name}: {len(matrix['include'])} checks", file=sys.stderr)
+    for name, value in outputs.items():
+        if isinstance(value, dict) and isinstance(value.get("include"), list):
+            print(f"{name}: {len(value['include'])} checks", file=sys.stderr)
     if impact is not None:
         selected_ids = [
             row["id"]
-            for matrix in outputs.values()
-            for row in matrix["include"]
+            for value in outputs.values()
+            if isinstance(value, dict) and isinstance(value.get("include"), list)
+            for row in value["include"]
         ]
+        selected_template_ids = {
+            row.get("template_id", row["id"])
+            for value in outputs.values()
+            if isinstance(value, dict) and isinstance(value.get("include"), list)
+            for row in value["include"]
+        }
         eligible_ids = [
             check["id"]
             for check in load_catalog(MAIN_MANIFESTS)
             if _is_enabled(check, context)
         ]
-        skipped_ids = [check_id for check_id in eligible_ids if check_id not in selected_ids]
+        skipped_ids = [
+            check_id
+            for check_id in eligible_ids
+            if check_id not in selected_template_ids
+        ]
         summary = render_summary(impact, selected_ids, skipped_ids)
         print(summary, file=sys.stderr)
         if args.summary_file is not None:

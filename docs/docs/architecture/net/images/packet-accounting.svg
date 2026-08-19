@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 420" role="img" aria-labelledby="title desc">
+  <title id="title">ax-net 包长度与网卡统计口径</title>
+  <desc id="desc">Ethernet 接口按不含 FCS 的二层帧长度统计，loopback 按 IP 包长度统计；RX 队列拥塞由工作线程保留本地批次并重试，TX 队列满则计入丢包。</desc>
+  <defs>
+    <marker id="arrow2" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#43556b"/>
+    </marker>
+    <style>
+      .box{fill:#f7f9fc;stroke:#6f8299;stroke-width:2}
+      .ok{fill:#eaf8ef;stroke:#398a55;stroke-width:2}
+      .warn{fill:#fff4df;stroke:#c98216;stroke-width:2}
+      .drop{fill:#fff0f0;stroke:#bf4747;stroke-width:2}
+      .title{font:600 20px sans-serif;fill:#213247}
+      .text{font:16px sans-serif;fill:#26384d}
+      .small{font:14px sans-serif;fill:#41546b}
+      .edge{fill:none;stroke:#43556b;stroke-width:2.2;marker-end:url(#arrow2)}
+    </style>
+  </defs>
+
+  <text class="title" x="38" y="42">RX</text>
+  <rect class="box" x="38" y="65" width="205" height="88" rx="12"/>
+  <text class="text" x="78" y="101">Ethernet frame</text>
+  <text class="small" x="62" y="127">长度含 L2 header，不含 FCS</text>
+  <rect class="ok" x="315" y="65" width="205" height="88" rx="12"/>
+  <text class="text" x="350" y="101">RX worker batch</text>
+  <text class="small" x="344" y="127">最多 16 包，本地保留</text>
+  <rect class="warn" x="592" y="65" width="205" height="88" rx="12"/>
+  <text class="text" x="624" y="101">shared RX queue</text>
+  <text class="small" x="621" y="127">满时 yield 后重试，不丢包</text>
+  <rect class="ok" x="869" y="65" width="205" height="88" rx="12"/>
+  <text class="text" x="916" y="101">rx counters</text>
+  <text class="small" x="897" y="127">成功 / driver 错误 / 丢弃</text>
+  <path class="edge" d="M243 109 H315"/>
+  <path class="edge" d="M520 109 H592"/>
+  <path class="edge" d="M797 109 H869"/>
+
+  <text class="title" x="38" y="232">TX</text>
+  <rect class="box" x="38" y="255" width="205" height="88" rx="12"/>
+  <text class="text" x="73" y="291">Router IP packet</text>
+  <text class="small" x="62" y="317">按路由选择 loopback / NIC</text>
+  <rect class="warn" x="315" y="255" width="205" height="88" rx="12"/>
+  <text class="text" x="347" y="291">per-device TX queue</text>
+  <text class="small" x="343" y="317">满时 tx_dropped + 1</text>
+  <rect class="ok" x="592" y="255" width="205" height="88" rx="12"/>
+  <text class="text" x="625" y="291">EthernetDevice</text>
+  <text class="small" x="617" y="317">ARP 后补齐到最小 60 B</text>
+  <rect class="ok" x="869" y="255" width="205" height="88" rx="12"/>
+  <text class="text" x="916" y="291">tx counters</text>
+  <text class="small" x="897" y="317">实际提交的 L2 帧长度</text>
+  <path class="edge" d="M243 299 H315"/>
+  <path class="edge" d="M520 299 H592"/>
+  <path class="edge" d="M797 299 H869"/>
+
+  <text class="small" x="38" y="389">Loopback 没有 Ethernet header：其 rx_bytes / tx_bytes 按 IP packet 长度累计。</text>
+</svg>

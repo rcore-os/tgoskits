@@ -13,17 +13,7 @@ sidebar_label: "运行时分配器"
 
 运行时实现分为公共 API、接线层和算法层。`ax-alloc` 保存用途、统计与资源所有者；`buddy-slab-allocator` 只实现 free-list、page metadata 和 size class，不向操作系统暴露第二套分配 API。
 
-```mermaid
-flowchart TB
-    C["消费者"] --> API["memory/ax-alloc/src/lib.rs\nAllocatorOps / UsageKind / Usages / AllocError"]
-    API --> PAGE["page.rs\nGlobalPage owner + Drop"]
-    API --> WRAP["buddy_slab.rs\nGlobalAlloc + per-CPU wiring"]
-    WRAP --> GLOBAL["buddy-slab-allocator/src/global.rs\nsize routing"]
-    GLOBAL --> BUDDY["buddy/mod.rs\nsections / orders / PageMeta"]
-    GLOBAL --> SLAB["slab/\nfixed classes / remote free"]
-    PLAT["axruntime::init_allocator"] --> API
-    CPU["CPU bring-up"] --> WRAP
-```
+![运行时分配器分层架构](./images/allocator-architecture.svg)
 
 下面的源码表可直接用于沿调用链定位问题。公共接口改动集中在 `ax-alloc`，碎片和锁竞争问题集中在底层算法，平台缺页或 Free 总量错误应回到启动交接检查。
 
@@ -37,6 +27,8 @@ flowchart TB
 | `memory/buddy-slab-allocator/src/buddy/mod.rs` | order、split/merge、lowmem 筛选 | 一个 allocation 完全位于一个 section |
 | `memory/buddy-slab-allocator/src/buddy/page_meta.rs` | 12 字节 `PageMeta` 和 flags | Free/Allocated/Slab 状态互斥 |
 | `memory/buddy-slab-allocator/src/slab/` | 固定 size class、partial/full/empty list、remote free | backing 页归 owner CPU 管理 |
+
+表中的边界也决定修改位置：公共用途与回收策略属于 `ax-alloc`，section 布局、碎片和 remote-free 算法属于 `buddy-slab-allocator`，平台 Free 区段错误则应回溯到启动交接。
 
 ### 1.1 多区段初始化
 
@@ -54,14 +46,7 @@ flowchart TB
 
 每个 region 的前缀存放 `BuddySection` 和与页数相关的 `PageMeta[]`，随后将可管理 heap 起点按 `REGION_GRANULE = 2 MiB` 对齐。metadata 和对齐 padding 不再作为可分配页返回。
 
-```mermaid
-flowchart LR
-    Start["region start"] --> Section["BuddySection"]
-    Section --> Meta["PageMeta array"]
-    Meta --> Pad["alignment padding"]
-    Pad --> Heap["managed heap\n2 MiB aligned"]
-    Heap --> End["region end"]
-```
+![Buddy section 区段前缀布局](./images/allocator-region-layout.svg)
 
 多个 region 形成多个独立 section。Buddy 可以在分配时扫描 section，但一个连续 allocation 不会跨越 section 或物理 hole。
 

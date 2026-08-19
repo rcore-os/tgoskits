@@ -8,6 +8,8 @@ slug: /architecture/axvisor
 
 Axvisor 是基于 ArceOS 的统一组件化 Type-I Hypervisor。它既非直接包裹 KVM 的用户态工具，也非单体式虚拟机管理程序，而是建立在 ArceOS 运行时、虚拟化组件库与分层配置系统之上的 Hypervisor 软件栈。
 
+本文聚焦 Axvisor 的组织原理、配置体系与关键执行路径。若需要先运行 QEMU 示例，请先阅读 [Axvisor 快速上手](/docs/quickstart/axvisor)。客户机 Machine 的设计按职责分为[客户机配置](./guest-configuration.md)、[资源规划](./machine-profile.md)、[设备运行时](./device-runtime.md)和[客户机控制台](./guest-console.md)四篇文档。
+
 ## 系统定位
 
 Axvisor 与 ArceOS/StarryOS 的最大差异在于：**代码、配置和 Guest 镜像同等重要**。许多"看起来像代码 bug"的问题，根因通常是 `.build.toml`、`vm_configs`、`kernel_path` 或 `tmp/rootfs.img` 未对齐。
@@ -98,7 +100,7 @@ fn main() {
 }
 ```
 
-运行时主线可概括为五步：检查硬件支持 → 使能虚拟化 → 初始化 VMM → 启动 VM 与完成等待任务 → 进入并发运行的管理 shell。`GuestConsoleMux` 是宿主控制台的唯一输入读取者，默认把输入附着到 ID 最小的运行中客户机；`Ctrl+Alt+H` 返回 shell，`Ctrl+Alt+[` 与 `Ctrl+Alt+]` 在运行中客户机之间循环切换。
+运行时主线可概括为五步：检查硬件支持 → 使能虚拟化 → 初始化 VMM → 启动 VM 与完成等待任务 → 进入并发运行的管理 shell。`GuestConsoleMux` 是宿主控制台的唯一输入读取者，默认把输入附着到 ID 最小的运行中客户机；`Ctrl+X` 后输入 `h` 返回 shell，输入 `[` 或 `]` 在运行中客户机之间循环切换。
 
 ### 架构适配
 
@@ -170,7 +172,7 @@ VM 配置定义每个 Guest 的资源分配与运行参数，包括 CPU 数量�
 | `[kernel]` | entry point、image location、kernel path、load address、memory regions |
 | `[devices]` | 结构化的 `passthrough` 与 `disabled` 物理设备选择器 |
 
-中断控制器、定时器和固件接口由架构创建；默认串口优先由 host FDT/ACPI 派生并以 machine profile 兜底。普通虚拟设备通过 `[[devices.virtual]]` 的 `id + model + options` 交给代码 catalog 创建 dyn model，`console0` 可按 ID 覆盖型号和语义参数，但配置始终不填写地址或中断号。`virtualized` 客户机只映射显式选择的物理设备；`passthrough` 客户机默认选择全部 guest-assignable 物理设备，再按最终解析后设备图为 RAM、禁用设备、宿主物理 UART、host replacement 和虚拟设备打洞。配置不接受旧 `vm_type`、`emu_devices`、裸地址/IRQ 或 `interrupt_mode` 字段。
+中断控制器、定时器和固件接口由架构创建；默认串口优先由 host FDT/ACPI 派生并以 machine profile 兜底。普通虚拟设备通过 `[[devices.virtual]]` 的 `id + model + options` 交给代码 catalog 创建 dyn model，`console0` 可按 ID 覆盖型号和语义参数，但配置始终不填写地址或中断号。`virtualized` 客户机只映射显式选择的物理设备；`passthrough` 客户机默认选择全部 guest-assignable 物理设备，再按最终解析后设备图为 RAM、禁用设备、宿主物理 UART、host replacement 和虚拟设备打孔。解析器只保留数字 `vm_type` 的只读兼容入口，序列化与 schema 统一使用 `guest_type`；`emu_devices`、裸地址/IRQ 和 `interrupt_mode` 等已移除字段会被拒绝。
 
 ## 关键执行流程
 

@@ -29,17 +29,7 @@ TGOSKits 没有把物理 RAM 静态切成一个“栈区”和一个“堆区”
 
 “栈和堆如何划分”在运行期表现为不同 owner 使用同一 allocator，而不是两个永久物理分区。下图展示来源关系。
 
-```mermaid
-flowchart TB
-    KImage["kernel image"] --> EarlyStack["CPU0 earliest stack\n.bss"]
-    Bump["someboot early bump"] --> CpuStacks["all CPU boot stacks"]
-    Buddy["ax-alloc Buddy"] --> Large["large GlobalAlloc"]
-    Large --> TaskStacks["plain kernel task stacks"]
-    Buddy --> Guarded["page allocation"]
-    Guarded --> GuardStacks["guarded kernel task stacks"]
-    Buddy --> UserPages["Starry fault-populated pages"]
-    UserPages --> UserStack["user stack 虚拟内存区域"]
-```
+![内核与用户栈资源来源](./images/stack-architecture.svg)
 
 普通任务栈默认 256 KiB，超过 2048 B Slab 上限，因此 plain 模式最终由 Buddy 提供大对象页。启用 guard page 后则直接使用显式连续页 API。
 
@@ -128,13 +118,7 @@ Canary 能检测已经写到栈底的溢出，但不能阻止继续破坏相邻�
 
 启用 `stack-guard-page` 后，`TaskStack::alloc_guarded()` 申请 `usable pages + 1` 个连续 Normal 页，将最低一页从 kernel address space unmap，并把可用 bottom 设置在 guard page 之后。
 
-```mermaid
-flowchart LR
-    Base["allocation base"] --> Guard["4 KiB unmapped guard"]
-    Guard --> Canary["stack bottom + canary"]
-    Canary --> Usable["usable stack pages"]
-    Usable --> Top["stack top"]
-```
+![带保护页的内核任务栈布局](./images/guarded-stack-layout.svg)
 
 Drop 时先通过 `ax-mm::kernel_aspace().map_linear()` 恢复 guard 页映射，再按原页数和用途释放整段 allocation；分配对齐和地址区域不属于释放契约。先恢复映射可避免 Buddy 重用该页后内核 direct map 仍残留 hole。
 

@@ -190,7 +190,7 @@ flowchart LR
     Backend --> PT
 ```
 
-如果调用方使用 `populate: true`，backend 逐页准备并安装物理页；中途失败时当前实现直接返回失败、不清理已安装前缀（已知遗留，见[地址空间](./address-space.md#41-新建映射)）。`Backend::Linear` 则只映射外部物理地址，unmap 不释放其 backing。
+如果调用方使用 `populate: true`，backend 通过 `populate_pages()` 逐页准备并安装物理页；页帧申请或 `map_page()` 中途失败时，`rollback_populated_pages()` 删除当前操作已经安装的前缀并归还相应 frame。这个保证只覆盖单次 ArceOS eager populate，不代表跨多个 `MemoryArea` 的上层操作具有通用事务语义。`Backend::Linear` 只映射外部物理地址，unmap 不释放其 backing。
 
 | 层 | 16 KiB alloc mapping 的责任 |
 | --- | --- |

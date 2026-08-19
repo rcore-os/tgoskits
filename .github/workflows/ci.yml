@@ -149,6 +149,7 @@ jobs:
       since_ref: ${{ steps.since.outputs.since_ref }}
       static_matrix: ${{ steps.matrix.outputs.static_matrix }}
       test_matrix: ${{ steps.matrix.outputs.test_matrix }}
+      static_required: ${{ steps.matrix.outputs.static_required }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -222,8 +223,9 @@ jobs:
             --output-file "$GITHUB_OUTPUT"
 
   static_checks:
-    name: Static
+    name: Preflight
     needs: plan_ci
+    if: needs.plan_ci.outputs.static_required == 'true'
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
       matrix_json: ${{ needs.plan_ci.outputs.static_matrix }}
@@ -234,10 +236,15 @@ jobs:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
 
   test_checks:
-    name: Tests
+    name: Verification
     needs:
       - plan_ci
       - static_checks
+    if: >-
+      always() &&
+      needs.plan_ci.result == 'success' &&
+      (needs.static_checks.result == 'success' ||
+       needs.static_checks.result == 'skipped')
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
       matrix_json: ${{ needs.plan_ci.outputs.test_matrix }}

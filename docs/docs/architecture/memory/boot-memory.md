@@ -24,6 +24,8 @@ sidebar_label: "启动内存"
 | 每 CPU 对象 | `platforms/someboot/src/smp/` | 全部 CPU 的 metadata、boot stack 和 linker data |
 | 运行时交接 | `axplat-dyn` → `axhal` → `axruntime` | 多个独立 Buddy section 和 CPU-local Slab |
 
+这些阶段按单向所有权交接排列：前一阶段发布的范围分类成为后一阶段的可信输入，后续代码不能重新解释或直接使用已经标记为保留的启动字节。
+
 ### 1.1 U-Boot 与 设备树二进制对象 契约
 
 U-Boot 或 OpenSBI 通过架构启动协议传入设备树二进制对象指针，UEFI 路径则提供 memory map。`someboot` 的架构入口只保存和规范化固件参数，随后分别交给 `platforms/someboot/src/fdt/` 或 `efi_stub/memmap.rs`；各架构的寄存器、页表切换和地址规则集中在 1.4 节。
@@ -177,6 +179,8 @@ flowchart LR
 | x86 应用处理器 trampoline | `reserve_arch_early_ranges()` | 一页 `Reserved`，已被固件保留时接受现状 |
 | memory-backed debug console | `memory_map_setup()` | 平台返回的描述符 |
 
+这些保留来源最终都进入同一固定容量内存图，但对齐规则并不完全一致；修改固件解析时必须分别验证 reservation block、`/reserved-memory` 和架构保留区的端点语义。
+
 ### 3.2 早期线性分配
 
 `platforms/someboot/src/mem/mod.rs::early_init()` 完成内存图裁剪后，先把描述符按 `physical_start` 排序，再取第一个大小超过 8 MiB 的 `Free` 描述符整体作为 bump arena；不存在这样的段时 `expect("No free memory")` 直接失败。选择不计算启动工作集，也没有架构地址上限：arena 可能位于高地址 RAM，8 MiB 阈值只是当前经验的保守下界。early arena 不是运行期 heap，也不跨多个 RAM bank 拼接分配，后续每次 bump 仍检查 `end > RAM_END` 边界。
@@ -228,16 +232,7 @@ boot 页表引擎不依赖 `ax-alloc`，从而避免“建立运行时页表之�
 
 `platforms/someboot/src/smp/layout.rs` 在引导处理器上为固件报告的全部可用 CPU 一次性预留连续区域。每个 CPU 使用相同的 `area_stride`，内部依次放置 per-CPU linker data、按至少 64 B 对齐的 `PerCpuMeta`、页对齐填充和 boot stack。总大小通过 `area_stride.checked_mul(cpu_count)` 计算，CPU 数为零、对齐非法或地址运算溢出都会在分配前失败。
 
-```mermaid
-flowchart LR
-    Bump["early bump allocation"] --> Region["one CPU-area region"]
-    subgraph RegionLayout["repeated area_stride"]
-        C0["CPU0 data | metadata | padding | stack"]
-        C1["CPU1 data | metadata | padding | stack"]
-        CN["CPU N data | metadata | padding | stack"]
-    end
-    Region --> C0 --> C1 --> CN
-```
+![启动期每 CPU 预分配区域](./images/boot-percpu-layout.svg)
 
 `allocate_cpu_areas()` 只保留并清零原始物理存储；切换到最终高地址镜像后，`initialize_percpu_layout()` 调用标量应用程序二进制接口 `__percpu_initialize_layout()` 构造全部 typed per-CPU 值，再写入 CPU identity、stack top、页表地址并完成 cache maintenance。运行期发布 CPU 数采用 Release，读取采用 Acquire。应用处理器启动后只绑定已构造区域并初始化本 CPU Slab，不重新申请 metadata 或 stack。
 
