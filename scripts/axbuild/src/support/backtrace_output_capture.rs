@@ -313,9 +313,14 @@ mod platform {
         let suppress_terminal_raw_blocks = capture.suppress_terminal_raw_blocks;
         let success_output = capture.success_output.clone();
 
+        // HANDLEs are raw pointers and aren't Send; move them as usize into
+        // the reader thread and cast back inside.
+        let read_handle_usize = read_handle as usize;
+        let orig_stdout_usize = orig_stdout as usize;
+
         let reader = std::thread::spawn(move || {
-            let mut pipe = unsafe { File::from_raw_handle(read_handle as _) };
-            let mut terminal = unsafe { File::from_raw_handle(orig_stdout as _) };
+            let mut pipe = unsafe { File::from_raw_handle(read_handle_usize as HANDLE) };
+            let mut terminal = unsafe { File::from_raw_handle(orig_stdout_usize as HANDLE) };
             let mut buf = [0u8; 8192];
             loop {
                 match pipe.read(&mut buf) {
