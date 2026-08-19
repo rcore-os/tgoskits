@@ -206,6 +206,11 @@ secondary CPU 在建立本核 scheduler/current task 前也可能发布启动日
 `wake_ready` 状态只在 scheduler、IRQ 和 IPI 路径全部就绪后发布；之后的普通日志或 IRQ
 日志才发送可合并 doorbell，并同时推动此前缓存的早期 record。
 
+RX hard IRQ 在驱动给定的固定 budget 内直接抽取样本。只有驱动明确报告 batch 未排空、
+overrun 或 IRQ pass budget 耗尽，或者 runtime 的预分配 ring 已满时，公共层才 mask RX 并
+交给 owner worker rearm。已经排空的 IRQ 保持硬件 RX source 开启；不能把每个小 batch 都
+无条件 deferred 到任务态，否则 16550 等小 FIFO 会在 worker 获得调度前按线速溢出。
+
 early 阶段仍可通过 early endpoint 做有界直接输出；`Preparing` 阻止新访问，`Runtime`
 提交后普通日志只能进 mailbox，`FailedClosed` 丢弃普通日志。panic/FIQ 只尝试 emergency
 endpoint，不能排空 record ring 或等待 owner worker；一旦成功接管，排队中的普通记录

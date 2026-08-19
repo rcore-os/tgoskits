@@ -862,12 +862,9 @@ struct RuntimeIrqPublisher {
 
 impl RuntimeIrqPublisher {
     fn publish(&mut self, mut report: rdif_serial::SerialIrqReport) -> rdif_serial::SerialIrqEvent {
-        // RX delivery is completed by the owner worker. Always mask and rearm
-        // RX after publishing the hard-IRQ batch so bytes arriving while the
-        // device interrupt is acknowledged cannot lose the next edge.
-        if report.event.events.has_rx() {
-            report.event.rearm |= rdif_serial::SerialEventSet::RX;
-        }
+        // Preserve the driver's bounded-IRQ decision. A fully drained UART
+        // must remain armed while the owner transports its samples; masking a
+        // small FIFO until task context runs can overflow at line rate.
         for &sample in report.rx.as_slice() {
             if self.producer.push(sample).is_err() {
                 self.stats.add_rx_dropped(1);
@@ -1289,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn every_rx_irq_is_deferred_to_the_owner_rearm() {
+    fn fully_drained_rx_irq_keeps_hardware_source_armed() {
         let bridge = Arc::new(RuntimeIrqBridge::new());
         let stats = Arc::new(SerialStatsAtomic::new());
         let (producer, mut consumer) = spsc::channel(2);
@@ -1315,7 +1312,10 @@ mod tests {
         ));
 
         assert_eq!(consumer.pop().and_then(|sample| sample.byte), Some(b'x'));
-        assert!(event.rearm.contains(rdif_serial::SerialEventSet::RX));
+        assert!(
+            !event.rearm.contains(rdif_serial::SerialEventSet::RX),
+            "a drained IRQ must not leave a small UART FIFO masked until the owner task runs"
+        );
     }
 
     #[test]

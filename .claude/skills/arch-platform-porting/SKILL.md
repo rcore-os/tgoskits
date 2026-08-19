@@ -41,10 +41,12 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   the CPU's explicit log-wake readiness only after its scheduler, IRQ, and IPI paths are ready.
   The later scheduler-ready record sends the coalesced doorbell and drains the earlier records as
   one stream.
-- After every bounded UART IRQ pass containing RX, publish the complete report, mask the UART RX
-  source, and let the owner worker perform the rearm. If rearm immediately observes readable
-  hardware while no IRQ samples remain, drain through the direct port path; treating that state as
-  an empty IRQ report can strand a PL011 FIFO without another wakeup edge.
+- Let each UART driver's bounded IRQ pass decide whether RX needs deferred rearm. Preserve an
+  explicit rearm after an incomplete batch, overrun, exhausted IRQ budget, or runtime-ring
+  overflow, but keep a fully drained RX source armed while the owner transports its samples;
+  unconditionally masking a small FIFO until task context runs can overflow at line rate. If a
+  deferred rearm immediately observes readable hardware while no IRQ samples remain, drain through
+  the direct port path.
 - Rearm `TX_SPACE` only while software bytes remain pending. Query FIFO/shift-register completion
   only inside the worker-owned `DrainTx` control transaction; a UART without a completion IRQ must
   let that transaction yield and recheck, not retain a false TX-ready state or create a timeout task
