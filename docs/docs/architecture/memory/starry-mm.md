@@ -11,9 +11,11 @@ StarryOS 与 ArceOS `ax-mm` 并列使用 `ax-memory-set` 和主机 Stage-1 页�
 
 ## 1. 当前边界
 
+StarryOS 的进程地址空间把区域集合、Stage-1 页表和 Linux 统计放在同一个 `AddrSpace` 所有者中，并由外层 `Arc<Mutex<_>>` 串行化修改。公共内存 crate 只提供机制，Linux syscall、procfs 和文件映射语义都保留在 Starry kernel 内。
+
 ### 1.1 主要对象
 
-`AddrSpace` 是 StarryOS 进程地址空间的核心 owner：
+`AddrSpace` 是 StarryOS 进程地址空间的核心 owner，它同时保存用户虚拟范围、VMA 集合、Stage-1 页表和两类统计状态。下面的字段布局解释了为什么 map、fault、clone 与 procfs 采集必须围绕同一个外层锁组织。
 
 ```rust
 pub struct AddrSpace {
@@ -25,6 +27,8 @@ pub struct AddrSpace {
     rss: MemoryAccounting,
 }
 ```
+
+这些字段共同构成单个进程地址空间的状态边界，任何成功的 map、unmap、fault 或 clone 都必须保持区域、页表和统计之间一致；外层锁负责使这组变化不会与另一个修改者交错。
 
 | 字段 | 当前职责 |
 | --- | --- |
@@ -39,6 +43,8 @@ pub struct AddrSpace {
 
 ### 1.2 与公共机制的关系
 
+StarryOS 复用区域容器、页表、物理页与 DMA owner，但会在各机制外增加 Linux 可见的 admission、记账和错误转换。下表区分可共享的实现边界与不能下沉到公共 crate 的系统策略。
+
 | 公共机制 | StarryOS 使用方式 | StarryOS 保留策略 |
 | --- | --- | --- |
 | `ax-memory-set` | 保存 VMA、调用 backend map/unmap/protect | Linux mmap/mprotect/mremap 规则、reported flags |
@@ -50,7 +56,7 @@ pub struct AddrSpace {
 
 ## 2. 映射后端
 
-`os/StarryOS/kernel/src/mm/aspace/backend/` 使用 enum dispatch 统一四种 backend：
+`os/StarryOS/kernel/src/mm/aspace/backend/` 使用 enum dispatch 统一四种 backend。每个变体都实现相同的区域操作入口，但物理页来源、共享方式和 RSS 更新规则不同，因而不能只根据 VMA flags 推断释放动作。
 
 | Backend | 物理来源 | 典型 mapping | 释放/记账 |
 | --- | --- | --- | --- |
@@ -73,7 +79,7 @@ pub struct AddrSpace {
 
 ## 3. 写时复制
 
-当前 COW frame table 位于 `os/StarryOS/kernel/src/mm/aspace/backend/cow.rs`：
+当前 COW frame table 位于 `os/StarryOS/kernel/src/mm/aspace/backend/cow.rs`，它为每个已登记物理页保存共享引用对象。父子地址空间的只读页表项、frame 引用数和 RSS charge 必须在 clone、写故障和 unmap 三条路径中保持对称。
 
 ```rust
 struct FrameRefCnt {
@@ -89,7 +95,7 @@ struct FrameTableRefCount {
 
 ### 3.1 fault-in 与写故障
 
-`CowBackend::populate()` 根据访问类型决定 RSS 分类：
+`CowBackend::populate()` 根据匿名或文件来源以及本次访问类型决定物理页内容、页表权限和 RSS 分类。私有文件页第一次写入还会把既有 File charge 迁移为 Anon，而不是简单增加第二份统计。
 
 | fault | 物理页内容 | PTE flags | RSS |
 | --- | --- | --- | --- |
@@ -107,15 +113,15 @@ struct FrameTableRefCount {
 
 ## 4. RSS 与 VSS
 
-StarryOS 当前把虚拟映射规模和 resident page 分开维护。
+StarryOS 把已驻留物理页和已声明虚拟范围分开统计：`MemoryAccounting` 维护 RSS 分类与 COW charge，`ProcessVmStat` 维护 VSS 与峰值近似值。procfs 再将两组状态和 VMA 分类组合为用户可见字段。
 
-### 4.1 `MemoryAccounting`
+### 4.1 常驻页记账
 
 `MemoryAccounting` 使用三个 relaxed atomic bucket 保存 `rss_anon`、`rss_file`、`rss_shmem`，并维护 `hiwater_rss`。此外，它用 `UnsafeCell<BTreeMap<VirtAddr, RssKind>>` 保存 COW resident charge；所有 charge map 访问要求调用方持有 `AddrSpace` 锁。
 
 减少操作当前使用 `fetch_sub`，debug build 会断言下溢，发布构建不会返回 checked error。因此文档、测试和评审不能声称 RSS 减少在发布构建中会转换为 `AxError::BadState`。
 
-### 4.2 `ProcessVmStat`
+### 4.2 虚拟规模统计
 
 `ProcessVmStat` 位于 `os/StarryOS/kernel/src/mm/vm_stat.rs`。它用 `AtomicI64` 保存当前 VSS 页数，用 `AtomicU64` 保存 `peak_vss_pages` 和 `peak_rss_pages`。当前 `peak_rss_pages` 仍在 map 时按 VSS 更新，是近似高水位；真实 RSS 当前值和 hiwater 由 `MemoryAccounting` 提供。
 
@@ -154,13 +160,15 @@ File backend 可能返回 deferred callback，用于处理 page-cache eviction �
 
 ## 6. 文件、共享页和 dma-buf
 
+文件页、共享匿名页和 dma-buf 的最终 owner 不相同，StarryOS 通过不同 backend 与 retainer 保持释放协议可判定。三类对象都可以出现在进程 VMA 中，但 VMA 的存在本身并不等价于拥有底层物理页。
+
 ### 6.1 文件映射
 
 `FileBackend` 仍留在 Starry kernel。私有 file mapping 走 COW backend，shared file mapping 走 File backend/page cache。syscall 层在 destructive `MAP_FIXED` unmap 前先验证 file mmap 权限和 memfd seals，避免 `EACCES` / `EPERM` 时提前撕掉旧映射。
 
-### 6.2 `SharedPages`
+### 6.2 共享页所有权
 
-`SharedPages` 当前有两种 owner：
+`SharedPages` 当前区分自行分配和借用外部物理页两种 owner。该区分决定最后一个 `Arc` 析构时是逐页归还 allocator，还是只释放维持外部资源存活的 retainer。
 
 | Owner | Drop 行为 | 使用场景 |
 | --- | --- | --- |
@@ -175,6 +183,8 @@ Starry `/dev/dma_heap` 和设备 import 使用 `dma-api` 高层 owner。fd、mma
 
 ## 7. 当前限制
 
+当前实现已经提供基本 Linux 虚拟内存行为，但仍有若干统计精度、引用计数宽度和缺页结果表达方面的限制。下表描述的是源码现状，不能据此推断未列出的 Linux 内存策略已经实现。
+
 | 限制 | 当前状态 |
 | --- | --- |
 | 独立 `starry-mm` crate | 未存在，策略在 Starry kernel 内 |
@@ -186,9 +196,13 @@ Starry `/dev/dma_heap` 和设备 import 使用 `dma-api` 高层 owner。fd、mma
 | fault result enum | `handle_page_fault()` 返回 `bool`，没有公共 `FaultOutcome` |
 | dirty-page writeback reclaim | page-cache reclaim 由注册 callback 提供，需保持锁外和有界 |
 
+这些限制若影响 syscall 或 procfs 的用户可见语义，修改时必须重新核对 Linux 行为和 `docs/guideline/starry_syscall.md`，并补充对应的系统级回归证据。
+
 增加用户可见内存语义时必须按 `docs/guideline/starry_syscall.md` 对齐 Linux 行为；unsupported 路径应返回明确错误，不能静默成功或仅靠 proc 占位值误报完整支持。
 
 ## 8. 源码检查点
+
+StarryOS 内存修改通常同时影响地址空间编排、某个 backend 和用户可见统计。下表按 owner 与边界列出主要入口，便于从行为变化追踪到实际状态维护位置。
 
 | 源码 | 审计重点 |
 | --- | --- |
@@ -202,5 +216,7 @@ Starry `/dev/dma_heap` 和设备 import 使用 `dma-api` 高层 owner。fd、mma
 | `os/StarryOS/kernel/src/syscall/mm/` | Linux mmap/brk/mprotect/mremap/mincore syscall 语义 |
 | `os/StarryOS/kernel/src/pseudofs/proc.rs` | meminfo、statm、status、overcommit sysctl 展示 |
 | `os/StarryOS/kernel/src/entry.rs` | page-cache reclaim callback 注册 |
+
+只修改 procfs 展示不能修复底层记账，只修改 backend 也不能自动更新 syscall 错误与统计输出；涉及跨层语义时应把这些入口作为同一审计集合。
 
 StarryOS 的系统调用、跨 VMA 失败注入、写时复制回滚和 RSS 统计用例见[内存管理测试](./testing.md)。

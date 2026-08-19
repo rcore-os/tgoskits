@@ -29,15 +29,7 @@ Direct Memory Access（直接内存访问，DMA）管理设备可访问的内存
 
 映射请求从驱动向平台逐层收敛，映射结果以 `Mmio` 或 `MmioRaw` 返回。`mmio-api` 不反向依赖 `ax-mm`，因此可移植驱动不会绑定到 ArceOS。
 
-```mermaid
-flowchart TB
-    Driver["portable driver\nregister access"] --> Api["mmio-api\nMmioOp + Mmio"]
-    Api --> Adapter["axklib::mmio\nKlibMmio"]
-    Adapter --> Runtime["ax-runtime::KlibImpl\nmem_iomap"]
-    Runtime --> AddressSpace["ax-mm::iomap\nkernel address space"]
-    AddressSpace --> Platform["ax-hal::mem\nplatform decision"]
-    Platform --> PageTable["device page-table attributes"]
-```
+![MMIO 寄存器映射与所有权边界](./images/mmio-architecture.svg)
 
 `platforms/axplat-dyn/src/boot.rs` 也实现 `MmioOp`，把动态平台探测阶段的请求转交给同一个 `axklib::mmio::op()`。`platforms/somehal/src/setup.rs::set_kernel_op()` 在平台与内核运行时接线时注册能力，平台驱动因此不需要直接引用 `ax-mm`。
 
@@ -253,8 +245,6 @@ Base Address Register（基址寄存器，BAR）只描述设备窗口的位置�
 ## 8. 源码入口
 
 下面的文件构成从公共能力到内核页表和驱动消费的完整路径。输入范围、页对齐、设备属性、易失性访问和对象生命周期的用例见[内存管理测试](./testing.md)。
-
-### 8.1 源码检查点
 
 修改任一层时，需要同步检查相邻层的所有权与错误转换。
 

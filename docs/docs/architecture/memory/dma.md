@@ -29,17 +29,7 @@ MMIO 使用 `mmio-api` 建立寄存器映射，不经 DMA allocator。输入输�
 
 设备创建 `DeviceDma` 后，所有 allocation/map 都先经过通用 constraint 验证，再由 `DmaOp` 执行平台动作。
 
-```mermaid
-flowchart TB
-    Driver["driver core"] --> Device["DeviceDma\nconstraints + domain"]
-    Device --> Owner["Coherent / Contiguous / Streaming owner"]
-    Owner --> Op["DmaOp capability"]
-    Op --> Klib["axklib::dma::KlibDma"]
-    Klib --> Zone{"dma mask <= 32 bit?"}
-    Zone -->|"yes"| Dma32["ax-alloc Dma32 request"]
-    Zone -->|"no"| Normal["ax-alloc Normal request"]
-    Klib --> Cache["cache maintenance / coherent 页表项 policy"]
-```
+![DMA 内存能力架构](./images/dma-architecture.svg)
 
 当前 `KlibDma` 使用 `virt_to_phys` 得到 device address，表示输入输出内存管理单元-bypass/identity 路径。`DmaDomainId::legacy_global()` 标记尚未按设备拆分的兼容 domain，不代表已经实现 device-specific 输入输出内存管理单元 isolation。
 
@@ -285,8 +275,6 @@ flowchart LR
 ## 8. 源码入口
 
 下面的文件构成 DMA 从公共能力到系统 fd 的完整路径。类型、约束、缓存转换、所有权和异常 teardown 用例见[内存管理测试](./testing.md)。
-
-### 8.1 源码检查点
 
 Unsafe 修改必须遵循 `docs/guideline/code-quality.md` 的 Safety contract 要求。
 

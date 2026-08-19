@@ -28,7 +28,7 @@ sidebar_label: "锁与并发"
 
 ### 1.2 同步对象
 
-当前主要锁及其保护对象如下。测试专用的 `std::sync::Mutex` 不属于生产并发模型。
+当前主要锁及其保护对象覆盖 early boot、运行时分配器、地址空间和虚拟机生命周期。测试专用的 `std::sync::Mutex` 不属于生产并发模型，不能用于推断禁止中断、CPU pinning 或内核可抢占语义。
 
 | 锁或原子 | 源码 | 保护对象 | 关键约束 |
 | --- | --- | --- | --- |
@@ -43,6 +43,8 @@ sidebar_label: "锁与并发"
 | `AtomicU64` 汇总计数 | `os/StarryOS/kernel/src/mm/aspace/accounting.rs` | 单地址空间匿名页、文件页、共享内存页和峰值 | 映射操作由地址空间锁串行化；原子只提供无锁统计快照 |
 | `IrqMutex<FrameTableRefCount>` | Starry 写时复制 backend | 写时复制物理页索引；每个 frame 再用 `IrqMutex<FrameRefCnt>` 保存 `u8` 引用计数 | 不在外层表锁内执行外部 I/O；归还物理页前释放表锁 |
 | `AtomicU64/AtomicI64` | Starry kernel mm stat/accounting | RSS/VSS 与峰值 | 原子顺序按统计语义选择；当前 `/proc/meminfo` 的 `Committed_AS` 固定展示 0 |
+
+表中的同步对象保护不同层级状态，不能组成一个长期持有的全局锁链。尤其是 allocator、地址空间和文件 backend 之间需要在资源准备与状态提交阶段缩短临界区。
 
 ## 2. 启动期同步
 
@@ -233,3 +235,5 @@ process/task owner
 | 复制 DMA free/unmap token | 重复释放或设备仍在使用时释放 |
 | 硬中断中触发 Slab miss 或 Buddy 高阶搜索 | 无确定延迟并扩大禁止中断窗口 |
 | 同时持文件 backend Mutex 与地址空间 Mutex 执行可睡眠 I/O | 文件回调或 listener 反向取锁 |
+
+遇到这些组合时，应调整所有权阶段、预分配资源或拆分锁区间，不能通过增加重试、关闭锁检查或延长禁止中断时间掩盖问题。

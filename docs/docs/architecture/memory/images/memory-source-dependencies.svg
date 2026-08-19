@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title id="title">内存源码依赖方向</title><desc id="desc">展示启动、公共机制、系统策略和设备能力之间允许的依赖方向。</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0L0 6L9 3Z" fill="#475569"/></marker><style>.h{font:700 24px sans-serif;fill:#0f172a}.t{font:600 17px sans-serif;fill:#0f172a}.s{font:13px sans-serif;fill:#334155}.group{fill:#f8fafc;stroke:#94a3b8;stroke-width:2}.boot{fill:#fff7ed;stroke:#f97316;stroke-width:2}.core{fill:#eff6ff;stroke:#3b82f6;stroke-width:2}.policy{fill:#f5f3ff;stroke:#8b5cf6;stroke-width:2}.dev{fill:#ecfdf5;stroke:#10b981;stroke-width:2}.l{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#a)}.dash{stroke-dasharray:7 6}</style></defs>
+  <text x="600" y="35" text-anchor="middle" class="h">内存组件源码依赖方向</text>
+  <rect x="35" y="65" width="1130" height="115" rx="16" class="group boot"/><text x="58" y="94" class="t">启动事实</text>
+  <rect x="100" y="110" width="210" height="48" rx="9" class="boot"/><text x="205" y="140" text-anchor="middle" class="t">固件 / DTB</text><rect x="410" y="110" width="210" height="48" rx="9" class="boot"/><text x="515" y="140" text-anchor="middle" class="t">someboot</text><rect x="720" y="110" width="300" height="48" rx="9" class="boot"/><text x="870" y="140" text-anchor="middle" class="t">axplat-dyn / ax-hal</text><path d="M310 134H410M620 134H720" class="l"/>
+  <rect x="35" y="210" width="1130" height="220" rx="16" class="group core"/><text x="58" y="239" class="t">公共机制</text>
+  <rect x="80" y="270" width="200" height="55" rx="9" class="core"/><text x="180" y="304" text-anchor="middle" class="t">ax-alloc</text><rect x="80" y="350" width="200" height="55" rx="9" class="core"/><text x="180" y="383" text-anchor="middle" class="t">buddy-slab</text>
+  <rect x="350" y="270" width="200" height="55" rx="9" class="core"/><text x="450" y="304" text-anchor="middle" class="t">page-table-generic</text><rect x="350" y="350" width="200" height="55" rx="9" class="core"/><text x="450" y="383" text-anchor="middle" class="t">ax-memory-addr</text>
+  <rect x="620" y="270" width="200" height="55" rx="9" class="core"/><text x="720" y="304" text-anchor="middle" class="t">ax-memory-set</text><rect x="890" y="270" width="200" height="55" rx="9" class="core"/><text x="990" y="304" text-anchor="middle" class="t">axcpu / axvm PTE</text>
+  <path d="M180 325V350M450 325V350M620 297H550M890 297H550" class="l"/>
+  <path d="M870 158V190H180V270" class="l"/>
+  <rect x="35" y="460" width="780" height="190" rx="16" class="group policy"/><text x="58" y="489" class="t">系统策略</text>
+  <rect x="75" y="525" width="210" height="70" rx="11" class="policy"/><text x="180" y="554" text-anchor="middle" class="t">ArceOS ax-mm</text><text x="180" y="577" text-anchor="middle" class="s">Host Stage-1</text>
+  <rect x="320" y="525" width="210" height="70" rx="11" class="policy"/><text x="425" y="554" text-anchor="middle" class="t">Starry kernel mm</text><text x="425" y="577" text-anchor="middle" class="s">Linux 策略</text>
+  <rect x="565" y="525" width="210" height="70" rx="11" class="policy"/><text x="670" y="554" text-anchor="middle" class="t">axaddrspace / AxVM</text><text x="670" y="577" text-anchor="middle" class="s">Guest Stage-2</text>
+  <path d="M180 525V450H720V325M425 525V430H720V325M670 525V430H990V325" class="l"/>
+  <rect x="845" y="460" width="320" height="190" rx="16" class="group dev"/><text x="868" y="489" class="t">设备能力</text>
+  <rect x="890" y="525" width="230" height="48" rx="9" class="dev"/><text x="1005" y="555" text-anchor="middle" class="t">dma-api / axklib</text><rect x="890" y="590" width="230" height="48" rx="9" class="dev"/><text x="1005" y="620" text-anchor="middle" class="t">mmio-api / axklib</text>
+  <path d="M890 549H830V298H280M890 614H830V298H620" class="l dash"/>
+  <text x="600" y="683" text-anchor="middle" class="s">策略依赖机制；机制不反向依赖操作系统、驱动或文件系统对象</text>
+</svg>

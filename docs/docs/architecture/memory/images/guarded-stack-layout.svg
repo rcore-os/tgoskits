@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="280" viewBox="0 0 1100 280" role="img" aria-labelledby="title desc">
+  <title id="title">带保护页的内核任务栈布局</title><desc id="desc">从 allocation base 到 stack top 依次为未映射保护页、canary 和可用栈页。</desc>
+  <style>.h{font:700 23px sans-serif;fill:#0f172a}.t{font:600 17px sans-serif;fill:#0f172a}.s{font:14px sans-serif;fill:#334155}.g{fill:#fee2e2;stroke:#ef4444;stroke-width:2}.c{fill:#ffedd5;stroke:#f97316;stroke-width:2}.u{fill:#dbeafe;stroke:#3b82f6;stroke-width:2}.tick{stroke:#475569;stroke-width:2}</style>
+  <text x="550" y="36" text-anchor="middle" class="h">带保护页的内核任务栈</text>
+  <rect x="60" y="95" width="180" height="85" class="g"/><text x="150" y="129" text-anchor="middle" class="t">4 KiB guard</text><text x="150" y="155" text-anchor="middle" class="s">页表项已解除</text>
+  <rect x="240" y="95" width="150" height="85" class="c"/><text x="315" y="129" text-anchor="middle" class="t">stack bottom</text><text x="315" y="155" text-anchor="middle" class="s">canary</text>
+  <rect x="390" y="95" width="650" height="85" class="u"/><text x="715" y="129" text-anchor="middle" class="t">usable stack pages</text><text x="715" y="155" text-anchor="middle" class="s">向低地址增长，任务运行期间保持映射</text>
+  <path d="M60 82V202M240 82V202M1040 82V202" class="tick"/>
+  <text x="60" y="225" class="s">allocation base</text><text x="240" y="225" text-anchor="middle" class="s">published bottom</text><text x="1040" y="225" text-anchor="end" class="s">stack top</text>
+</svg>
