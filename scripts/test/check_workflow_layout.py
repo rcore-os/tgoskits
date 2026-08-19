@@ -4,10 +4,9 @@ import re
 import sys
 from pathlib import Path
 
-
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = WORKSPACE_ROOT / ".github" / "workflows"
-CHECKS = WORKSPACE_ROOT / ".github" / "ci" / "checks"
+CI_CONFIG = WORKSPACE_ROOT / ".github" / "ci"
 PUBLISH_ACTION = (
     WORKSPACE_ROOT / ".github" / "actions" / "publish-container" / "action.yml"
 )
@@ -31,7 +30,7 @@ def main() -> int:
             continue
         text = path.read_text(encoding="utf-8")
         texts[name] = text
-        if re.search(r"^    if:", text, flags=re.MULTILINE):
+        if name != "ci.yml" and re.search(r"^    if:", text, flags=re.MULTILINE):
             errors.append(f"{name} contains a job-level applicability condition")
 
     reusable = texts.get("reusable-check-matrix.yml", "")
@@ -43,12 +42,21 @@ def main() -> int:
 
     ci = texts.get("ci.yml", "")
     for required_call in (
-        "name: Static",
-        "name: Tests",
+        "name: Preflight",
+        "name: Verification",
         "uses: ./.github/workflows/reusable-check-matrix.yml",
+        "if: needs.plan_ci.outputs.static_required == 'true'",
+        "always() &&",
+        "needs.plan_ci.result == 'success'",
+        "needs.static_checks.result == 'success'",
+        "needs.static_checks.result == 'skipped'",
     ):
         if required_call not in ci:
             errors.append(f"main CI is missing: {required_call}")
+    if len(re.findall(r"^    if:", ci, flags=re.MULTILINE)) != 2:
+        errors.append(
+            "main CI must define only the planned Preflight and Verification conditions"
+        )
     if "dorny/paths-filter" in ci:
         errors.append("main CI must not create a detect-and-skip path-filter job")
 
@@ -84,9 +92,11 @@ def main() -> int:
                     f"publish-container action is missing: {required_fragment}"
                 )
 
-    for manifest in CHECKS.glob("*.toml"):
+    for manifest in CI_CONFIG.rglob("*.toml"):
         if "${{" in manifest.read_text(encoding="utf-8"):
-            errors.append(f"{manifest.name} embeds a GitHub expression")
+            errors.append(
+                f"{manifest.relative_to(CI_CONFIG)} embeds a GitHub expression"
+            )
 
     legacy_workflow = WORKFLOWS / "reusable-command.yml"
     if legacy_workflow.exists():
