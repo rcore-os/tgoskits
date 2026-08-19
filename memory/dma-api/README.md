@@ -62,6 +62,26 @@ domain. `coherency` is a required device property obtained from firmware or the
 bus; it is separate from address and layout constraints. Use `with_constraints`
 when a specific queue or transfer has stronger requirements.
 
+### Migrating from 0.9
+
+This release intentionally replaces the legacy global-domain API instead of
+keeping a second compatibility path:
+
+- Replace `DmaDomainId::legacy_global()` and `DmaDomainId::from_raw(0)` with
+  `DmaDomainId::Direct` only for devices whose DMA addresses are physical
+  addresses.
+- Replace a nonzero raw domain value with `DmaDomainId::Translated(id)` only
+  when `id` comes from a real IOMMU domain already attached to the device.
+- Build one `DmaDeviceInfo` from the device domain, coherency property, and
+  constraints, then call `DeviceDma::new(info, op)`.
+- Replace public `sync_for_device` / `sync_for_cpu` calls with
+  `prepare_for_device(range)` / `complete_for_cpu(range)` ownership
+  transitions.
+
+There is no automatic translation from an arbitrary legacy domain number: a
+direct device and an IOMMU-translated device have different address semantics,
+so callers must select the case supported by their platform.
+
 Backends must never hand a driver a DMA address outside the requested mask. For
 example, a device whose constraints use `u32::MAX as u64` must only return
 32-bit reachable DMA addresses. Streaming mappings may use a fast path when the
