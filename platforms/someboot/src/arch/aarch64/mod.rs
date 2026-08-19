@@ -232,12 +232,12 @@ impl ArchTrait for Arch {
         aarch64_cpu_ext::cache::dcache_range(op.into(), addr, size);
     }
 
-    fn dma_coherent_before_make_uncached(addr: usize, size: usize) {
+    fn dma_coherent_before_map_uncached(addr: usize, size: usize) {
         Self::dcache_range(crate::DCacheOp::CleanInvalidate, addr, size);
         aarch64_dsb_sy();
     }
 
-    fn dma_coherent_before_restore_cached(_addr: usize, _size: usize) {
+    fn dma_coherent_before_unmap_uncached(_addr: usize, _size: usize) {
         aarch64_dsb_sy();
     }
 

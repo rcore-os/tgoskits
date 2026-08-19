@@ -187,12 +187,12 @@ impl MemIf for MemIfImpl {
         somehal::cache::dcache_range(to_somehal_dcache_op(op), addr.as_usize() as *const u8, size);
     }
 
-    fn dma_coherent_before_make_uncached(addr: VirtAddr, size: usize) {
-        somehal::cache::dma_coherent_before_make_uncached(addr.as_usize() as *const u8, size);
+    fn dma_coherent_before_map_uncached(addr: VirtAddr, size: usize) {
+        somehal::cache::dma_coherent_before_map_uncached(addr.as_usize() as *const u8, size);
     }
 
-    fn dma_coherent_before_restore_cached(addr: VirtAddr, size: usize) {
-        somehal::cache::dma_coherent_before_restore_cached(addr.as_usize() as *const u8, size);
+    fn dma_coherent_before_unmap_uncached(addr: VirtAddr, size: usize) {
+        somehal::cache::dma_coherent_before_unmap_uncached(addr.as_usize() as *const u8, size);
     }
 
     fn dma_coherent_after_mapping_update() {

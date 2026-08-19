@@ -7,7 +7,7 @@ pub use ax_memory_addr::{
 pub use ax_plat::mem::{
     CpuSharedMemoryModel, DCacheOp, IomapAttrs, IomapDecision, IomapError, MemRegionFlags,
     PhysMemRegion, cpu_shared_memory_model, dcache_range, dma_coherent_after_mapping_update,
-    dma_coherent_before_make_uncached, dma_coherent_before_restore_cached, kernel_aspace,
+    dma_coherent_before_map_uncached, dma_coherent_before_unmap_uncached, kernel_aspace,
     mmio_ranges, phys_ram_ranges, phys_to_virt, prepare_iomap, reserved_phys_ram_ranges,
     total_ram_size, user_aspace_needs_kernel_mappings, virt_to_phys,
 };
