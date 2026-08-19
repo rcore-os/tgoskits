@@ -64,6 +64,10 @@ pub(crate) fn create_guest_fdt(
     })?;
     prune_cpu_references(fdt, &mut guest_tree)?;
     super::disabled::apply(&mut guest_tree, crate_config)?;
+    // With vCPU over-subscription (more guest vCPUs than host physical CPUs)
+    // the host FDT does not carry a CPU node for every guest virtual CPU id,
+    // so clone the missing ones to keep the guest SMP bootstrap functional.
+    guest_tree.ensure_guest_cpu_nodes(fdt, phys_cpu_ids)?;
     Ok(guest_tree.finish())
 }
 
