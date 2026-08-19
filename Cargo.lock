@@ -972,8 +972,6 @@ version = "0.5.30"
 dependencies = [
  "ax-hal",
  "ax-lazyinit",
- "ax-percpu",
- "ax-sync",
  "log",
 ]
 

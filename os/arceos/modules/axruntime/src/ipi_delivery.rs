@@ -1,4 +1,4 @@
-//! Shared IPI transport for scheduler doorbells and generic callbacks.
+//! Shared IPI transport for scheduler doorbells and synchronous hard calls.
 
 #[cfg(all(feature = "irq", feature = "ipi"))]
 pub(crate) unsafe fn run_on_cpu_sync(
@@ -12,15 +12,13 @@ pub(crate) unsafe fn run_on_cpu_sync(
 }
 
 #[cfg(any(feature = "ipi", feature = "wake-ipi", test))]
-fn dispatch_shared_ipi(
-    drain_callbacks: impl FnOnce(),
+fn dispatch_scheduler_doorbell(
     scheduler_work_pending: impl FnOnce() -> bool,
     publish_scheduler_work: impl FnOnce(),
 ) {
     if scheduler_work_pending() {
         publish_scheduler_work();
     }
-    drain_callbacks();
 }
 
 #[cfg(all(feature = "multitask", any(feature = "ipi", feature = "wake-ipi")))]
@@ -37,12 +35,7 @@ fn local_scheduler_work_pending() -> bool {
 #[cfg(all(feature = "irq", feature = "ipi"))]
 pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::claim_current_delivery();
-    dispatch_shared_ipi(
-        || {
-            ax_ipi::drain_hard_calls()
-                .unwrap_or_else(|error| panic!("failed to continue hard-call draining: {error:?}"));
-            ax_ipi::legacy::drain_current_callbacks();
-        },
+    dispatch_scheduler_doorbell(
         || {
             #[cfg(feature = "multitask")]
             {
@@ -60,14 +53,15 @@ pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqRetu
             }
         },
     );
+    ax_ipi::drain_hard_calls()
+        .unwrap_or_else(|error| panic!("failed to continue hard-call draining: {error:?}"));
     ax_hal::irq::IrqReturn::Handled
 }
 
 #[cfg(all(feature = "irq", feature = "wake-ipi", not(feature = "ipi")))]
 pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     ax_ipi::claim_current_delivery();
-    dispatch_shared_ipi(
-        || {},
+    dispatch_scheduler_doorbell(
         || {
             #[cfg(feature = "multitask")]
             {
@@ -90,14 +84,13 @@ pub(crate) fn irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqRetu
 
 #[cfg(test)]
 mod tests {
-    use core::cell::{Cell, RefCell};
+    use core::cell::RefCell;
 
     #[test]
-    fn shared_ipi_dispatch_consumes_scheduler_delivery_before_callback_drain() {
+    fn shared_ipi_dispatch_publishes_pending_scheduler_work() {
         let events = RefCell::new(alloc::vec::Vec::new());
 
-        super::dispatch_shared_ipi(
-            || events.borrow_mut().push("callbacks"),
+        super::dispatch_scheduler_doorbell(
             || {
                 events.borrow_mut().push("consume");
                 true
@@ -105,40 +98,14 @@ mod tests {
             || events.borrow_mut().push("publish"),
         );
 
-        assert_eq!(*events.borrow(), ["consume", "publish", "callbacks"]);
-    }
-
-    #[test]
-    fn shared_ipi_callback_can_publish_a_fresh_scheduler_epoch() {
-        let scheduler_epoch_claimed = Cell::new(true);
-
-        super::dispatch_shared_ipi(
-            || {
-                assert!(
-                    !scheduler_epoch_claimed.get(),
-                    "the delivered scheduler epoch must be released at IPI entry"
-                );
-                scheduler_epoch_claimed.set(true);
-            },
-            || {
-                scheduler_epoch_claimed.set(false);
-                true
-            },
-            || {},
-        );
-
-        assert!(
-            scheduler_epoch_claimed.get(),
-            "a scheduler delivery published during callback drain must remain pending"
-        );
+        assert_eq!(*events.borrow(), ["consume", "publish"]);
     }
 
     #[test]
     fn unrelated_shared_ipi_only_checks_the_scheduler_doorbell() {
         let events = RefCell::new(alloc::vec::Vec::new());
 
-        super::dispatch_shared_ipi(
-            || events.borrow_mut().push("callbacks"),
+        super::dispatch_scheduler_doorbell(
             || {
                 events.borrow_mut().push("consume");
                 false
@@ -146,6 +113,6 @@ mod tests {
             || events.borrow_mut().push("publish"),
         );
 
-        assert_eq!(*events.borrow(), ["consume", "callbacks"]);
+        assert_eq!(*events.borrow(), ["consume"]);
     }
 }

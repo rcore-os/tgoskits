@@ -20,16 +20,12 @@ use std::{
 };
 
 const MAX_SENDER_CPUS: usize = 3;
-const CALLBACKS_PER_SENDER: usize = 16;
-const TEST_ROUNDS: usize = 2;
 const IDLE_WAKE_POLLS: usize = 100_000;
 const POST_IPI_WAITER_COUNT: usize = 16;
 const STALL_POLLS: usize = 200;
 const POLL_INTERVAL_MS: u64 = 1;
 
 static TARGET_CPU: AtomicUsize = AtomicUsize::new(0);
-static SENT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
-static EXECUTED_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static EXECUTED_HARD_CALLS: AtomicUsize = AtomicUsize::new(0);
 static IDLE_TARGET_MASKED: AtomicBool = AtomicBool::new(false);
 static IDLE_IPI_PUBLISHED: AtomicBool = AtomicBool::new(false);
@@ -56,16 +52,6 @@ fn pin_current_to_cpu(cpu_id: usize) {
         cpu_id,
         "task did not migrate to CPU {cpu_id}"
     );
-}
-
-fn counting_callback() {
-    let target_cpu = TARGET_CPU.load(Ordering::Relaxed);
-    assert_eq!(
-        this_cpu_id(),
-        target_cpu,
-        "IPI callback ran on the wrong CPU"
-    );
-    EXECUTED_CALLBACKS.fetch_add(1, Ordering::Release);
 }
 
 unsafe fn counting_hard_call(argument: *mut ()) {
@@ -265,52 +251,6 @@ fn verify_remote_owner_work_delivery(sender_cpu: usize, target_cpu: usize) {
     );
 }
 
-fn run_async_callback_batch(target_cpu: usize, sender_cpus: &[usize], round: usize) {
-    SENT_CALLBACKS.store(0, Ordering::Relaxed);
-    EXECUTED_CALLBACKS.store(0, Ordering::Release);
-
-    let ready = Arc::new(AtomicUsize::new(0));
-    let start = Arc::new(AtomicBool::new(false));
-    let mut senders = Vec::with_capacity(sender_cpus.len());
-
-    for &sender_cpu in sender_cpus {
-        let ready = ready.clone();
-        let start = start.clone();
-        senders.push(thread::spawn(move || {
-            pin_current_to_cpu(sender_cpu);
-            ready.fetch_add(1, Ordering::Release);
-
-            while !start.load(Ordering::Acquire) {
-                thread::yield_now();
-            }
-
-            for _ in 0..CALLBACKS_PER_SENDER {
-                SENT_CALLBACKS.fetch_add(1, Ordering::Relaxed);
-                ax_ipi::legacy::run_on_cpu(target_cpu, counting_callback)
-                    .expect("failed to send callback IPI");
-            }
-        }));
-    }
-
-    while ready.load(Ordering::Acquire) != sender_cpus.len() {
-        thread::yield_now();
-    }
-    start.store(true, Ordering::Release);
-
-    for sender in senders {
-        sender.join().unwrap();
-    }
-
-    let expected = sender_cpus.len() * CALLBACKS_PER_SENDER;
-    assert_eq!(SENT_CALLBACKS.load(Ordering::Relaxed), expected);
-    assert!(
-        wait_for_counter_or_stall(&EXECUTED_CALLBACKS, expected),
-        "IPI callbacks stalled at {}/{} in round {round}",
-        EXECUTED_CALLBACKS.load(Ordering::Acquire),
-        expected
-    );
-}
-
 fn run_concurrent_hard_calls(target_cpu: usize, sender_cpus: &[usize]) {
     EXECUTED_HARD_CALLS.store(0, Ordering::Relaxed);
 
@@ -377,10 +317,6 @@ pub fn run() -> crate::TestResult {
     exercise_irq_masked_idle_wake(target_cpu, sender_cpus[0]);
     verify_self_ipi_delivery(sender_cpus[0]);
 
-    for round in 0..TEST_ROUNDS {
-        run_async_callback_batch(target_cpu, &sender_cpus, round);
-    }
-
     run_concurrent_hard_calls(target_cpu, &sender_cpus);
 
     pin_current_to_cpu(sender_cpus[0]);
@@ -399,10 +335,8 @@ pub fn run() -> crate::TestResult {
     verify_wait_queue_deadlines_during_ipi(target_cpu);
 
     println!(
-        "task_ipi: passed self-claim on CPU {}, {} async callbacks, and {} concurrent hard calls \
-         on CPU {target_cpu}",
+        "task_ipi: passed self-claim on CPU {} and {} concurrent hard calls on CPU {target_cpu}",
         sender_cpus[0],
-        TEST_ROUNDS * sender_cpus.len() * CALLBACKS_PER_SENDER,
         sender_cpus.len()
     );
 

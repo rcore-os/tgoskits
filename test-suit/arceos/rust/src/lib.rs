@@ -221,7 +221,11 @@ const SELECTED_TESTS: &[TestCase] = &[
     #[cfg(feature = "task-affinity")]
     TestCase::new("task-affinity", "task CPU affinity", run_task_affinity),
     #[cfg(feature = "task-ipi")]
-    TestCase::new("task-ipi", "IPI callback delivery", run_task_ipi),
+    TestCase::new(
+        "task-ipi",
+        "IPI owner work and hard-call delivery",
+        run_task_ipi,
+    ),
     #[cfg(feature = "task-irq")]
     TestCase::new("task-irq", "task IRQ state", run_task_irq),
     #[cfg(feature = "task-kernel-timer")]
