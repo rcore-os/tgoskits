@@ -3,24 +3,24 @@
 //! `/sys/kernel/debug/tracing/events/<sys>/<event>/id`).
 //!
 //! Adapted from `Starry-OS/StarryOS:ebpf-kmod` (`kernel/src/perf/tracepoint.rs`)
-//! to use ktracepoint **0.6**:
+//! to use ax-tracepoint **0.6**:
 //!
-//! * ktracepoint 0.6 dropped the `TracePoint<L, K>` lock parameter — there
+//! * ax-tracepoint 0.6 dropped the `TracePoint<L, K>` lock parameter — there
 //!   is a single generic over `K: KernelTraceOps`, and `ExtTracePoint<K>`
 //!   wraps callback management.
 //! * `TraceEventFunc::new(closure, data)` replaces the trait-object based
 //!   `TracePointCallBackFunc::call(entry)` callback registration.
 //! * Registration goes through `ExtTracePoint::register(TraceCallbackType::Event(...))`
 //!   rather than `TracePoint::register_event_callback(id, callback)`.
-//! * Enable/disable is implicit: `ExtTracePoint::register` enables the
-//!   static-key when the callback list becomes non-empty.
+//! * The Starry tracepoint registry updates the atomic callback gate while
+//!   holding its state lock; `ExtTracePoint::register` only edits that state.
 
 use alloc::{boxed::Box, sync::Arc};
 use core::any::Any;
 
+use ax_tracepoint::{TraceCallbackType, TraceEventFunc};
 use axpoll::Pollable;
 use kbpf_basic::perf::{PerfProbeArgs, PerfProbeConfig};
-use ktracepoint::{TraceCallbackType, TraceEventFunc};
 
 use crate::{
     StarryError, StarryResult,
@@ -36,7 +36,7 @@ type TpCallback = Box<dyn Fn(&[u8], &(dyn Any + Send + Sync)) + Send + Sync>;
 
 /// Per-fd tracepoint perf event. Holds the Arc<Mutex<ExtTracePoint>> so we
 /// can register/unregister callbacks on drop; remembers the callback
-/// payload so the same registration can be undone (ktracepoint 0.6
+/// payload so the same registration can be undone (ax-tracepoint 0.6
 /// `unregister(callback)` compares Arc pointer identity).
 pub struct TracepointPerfEvent {
     _args: PerfProbeArgs,
@@ -107,16 +107,19 @@ impl PerfEventOps for TracepointPerfEvent {
             }
         });
         let callback = Arc::new(TraceEventFunc::new(func, ctx));
-        self.ext_tp
-            .lock()
-            .register(TraceCallbackType::Event(callback.clone()));
+        self.registered
+            .try_reserve(1)
+            .map_err(|_| StarryError::NoMemory)?;
+        self.ext_tp.update(|ext_tp| {
+            ext_tp.register(TraceCallbackType::Event(callback.clone()));
+        });
         self.registered.push(callback);
         Ok(())
     }
 
     fn enable(&mut self) -> StarryResult<()> {
-        // ktracepoint dispatch only invokes a cooked `TraceEventFunc` when
-        // its per-callback `perf_enabled` flag is set (see ktracepoint 0.6
+        // ax-tracepoint dispatch only invokes a cooked `TraceEventFunc` when
+        // its per-callback `perf_enabled` flag is set (see ax-tracepoint 0.6
         // `basic_macro.rs`), and `TraceEventFunc::new` starts disabled. So a
         // perf event that is registered but not enabled would silently never
         // fire — we must flip the flag on every callback we registered.
@@ -140,10 +143,12 @@ impl PerfEventOps for TracepointPerfEvent {
 
 impl Drop for TracepointPerfEvent {
     fn drop(&mut self) {
-        let mut ext_tp = self.ext_tp.lock();
-        for cb in self.registered.drain(..) {
-            ext_tp.unregister(TraceCallbackType::Event(cb));
-        }
+        let registered = core::mem::take(&mut self.registered);
+        self.ext_tp.update(|ext_tp| {
+            for callback in registered {
+                ext_tp.unregister(TraceCallbackType::Event(callback));
+            }
+        });
     }
 }
 

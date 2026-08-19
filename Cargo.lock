@@ -1246,6 +1246,18 @@ name = "ax-timer-list"
 version = "0.3.5"
 
 [[package]]
+name = "ax-tracepoint"
+version = "0.6.0"
+dependencies = [
+ "env_logger",
+ "log",
+ "lru 0.18.2",
+ "paste",
+ "thiserror 2.0.20",
+ "tp-lexer",
+]
+
+[[package]]
 name = "axaddrspace"
 version = "0.5.19"
 dependencies = [
@@ -4735,19 +4747,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ktracepoint"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30aa94490986294aa3a19dc3fbc6b7eefe3fbbac18c323c4153a0cfd1a7a0b74"
-dependencies = [
- "log",
- "lru 0.18.2",
- "paste",
- "static-keys",
- "tp-lexer",
-]
-
-[[package]]
 name = "lab"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7856,6 +7855,7 @@ dependencies = [
  "ax-runtime",
  "ax-std",
  "ax-task",
+ "ax-tracepoint",
  "axbacktrace",
  "axfs-ng-vfs",
  "axklib",
@@ -7886,7 +7886,6 @@ dependencies = [
  "kmod-tools",
  "kprobe",
  "ksym",
- "ktracepoint",
  "linux-raw-sys 0.12.1",
  "lock_api",
  "lwprintf-rs",
