@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_sync::SpinLock as Mutex;
-use dma_api::{CoherentArray, CoherentBox};
+use dma_api::{CoherentArray, CoherentBox, DmaCoherency};
 use futures::{
     FutureExt,
     future::{BoxFuture, poll_fn},
@@ -758,7 +758,7 @@ unsafe impl Sync for Ehci {}
 impl Ehci {
     pub fn new(params: EhciNewParams) -> Result<Self> {
         let regs = EhciRegisters::new(params.mmio);
-        let kernel = Kernel::new(EHCI_DMA_MASK, params.kernel);
+        let kernel = Kernel::new(EHCI_DMA_MASK, DmaCoherency::NonCoherent, params.kernel);
         let schedule = AsyncSchedule::new(&kernel, regs)?;
         let wakeups = TransferWakeups::new();
         let root_hub = EhciRootHub::new(regs, kernel.clone());
@@ -1969,7 +1969,11 @@ mod tests {
 
     #[test]
     fn async_schedule_accepts_multiple_endpoint_queue_heads() {
-        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let kernel = Kernel::new(
+            EHCI_DMA_MASK,
+            dma_api::DmaCoherency::NonCoherent,
+            &TEST_KERNEL,
+        );
         let mut mmio = Box::new([0u32; 64]);
         let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
         let schedule = AsyncSchedule::new(&kernel, regs).unwrap();
@@ -1998,7 +2002,11 @@ mod tests {
 
     #[test]
     fn periodic_qh_waits_nine_microframes_before_reclaim() {
-        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let kernel = Kernel::new(
+            EHCI_DMA_MASK,
+            dma_api::DmaCoherency::NonCoherent,
+            &TEST_KERNEL,
+        );
         let mut mmio = Box::new([0u32; 64]);
         let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
         let schedule = AsyncSchedule::new(&kernel, regs).unwrap();
@@ -2022,7 +2030,11 @@ mod tests {
 
     #[test]
     fn async_qh_waits_for_two_iaa_cycles_before_reclaim() {
-        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let kernel = Kernel::new(
+            EHCI_DMA_MASK,
+            dma_api::DmaCoherency::NonCoherent,
+            &TEST_KERNEL,
+        );
         let mut mmio = Box::new([0u32; 64]);
         let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
         let schedule = AsyncSchedule::new(&kernel, regs).unwrap();

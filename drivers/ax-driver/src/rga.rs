@@ -75,7 +75,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         });
     }
 
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device_with_mask(
+        u32::MAX as u64,
+        crate::binding_resolver::dma_coherency_from_fdt(&info),
+    );
     let rga = RockchipRga::new(&resources, dma);
     let core_count = rga.core_count();
     let version = rga.cores().first().map(|c| c.version());

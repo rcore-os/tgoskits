@@ -25,7 +25,7 @@ impl IonHeapManager {
     /// 创建新的堆管理器
     pub fn new() -> Self {
         Self {
-            dma: axklib::dma::device_with_mask(u64::MAX),
+            dma: axklib::dma::device_with_mask(u64::MAX, dma_api::DmaCoherency::NonCoherent),
         }
     }
 

@@ -250,6 +250,7 @@ impl AhciQueue {
             limits: QueueLimits {
                 dma_mask: self.dma.dma_mask(),
                 dma_domain: self.dma.domain_id(),
+                dma_coherency: self.dma.coherency(),
                 dma_alignment: 2,
                 dma_length_alignment: LOGICAL_BLOCK_SIZE,
                 segment_boundary: None,

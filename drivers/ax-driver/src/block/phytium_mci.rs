@@ -65,7 +65,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         );
         return Ok(());
     }
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device_with_mask(
+        u32::MAX as u64,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+    );
     let block_config = phytium_block_config(&dma);
     host.configure_dma(dma).map_err(|err| {
         OnProbeError::other(format!("phytium-mci IDMAC configuration failed: {err:?}"))
@@ -106,7 +109,8 @@ mod tests {
 
     #[test]
     fn phytium_block_limits_match_persistent_idmac_ring() {
-        let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+        let dma =
+            axklib::dma::device_with_mask(u32::MAX as u64, dma_api::DmaCoherency::NonCoherent);
         let config = phytium_block_config(&dma);
 
         assert_eq!(config.name(), "phytium-mci");

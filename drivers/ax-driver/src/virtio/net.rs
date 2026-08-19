@@ -378,7 +378,8 @@ pub fn register_transport<T: Transport + 'static>(
     transport: T,
 ) -> Result<(), OnProbeError> {
     let net = make_net(transport)?;
-    let irq = plat_dev.register_net("virtio-net", net);
+    let dma = axklib::dma::device_with_mask(u64::MAX, dma_api::DmaCoherency::NonCoherent);
+    let irq = plat_dev.register_net("virtio-net", net, dma);
     log::info!("registered virtio network device irq={irq:?}");
     Ok(())
 }
@@ -390,7 +391,11 @@ pub fn register_fdt_transport<T: Transport + 'static>(
 ) -> Result<(), OnProbeError> {
     let net = make_net(transport)?;
     let binding = binding_info_from_fdt(info)?;
-    let irq = plat_dev.register_net_with_info("virtio-net", net, binding);
+    let dma = axklib::dma::device_with_mask(
+        u64::MAX,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+    );
+    let irq = plat_dev.register_net_with_info("virtio-net", net, dma, binding);
     log::info!("registered virtio network device irq={irq:?}");
     Ok(())
 }
@@ -400,11 +405,12 @@ fn register_pci_transport<T: Transport + 'static>(
     probe: rdrive::probe::pci::ProbePci<'_>,
     transport: T,
 ) -> Result<(), OnProbeError> {
+    let dma = crate::pci::device_dma(probe.info(), u64::MAX);
     let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Required)?;
     let net = make_net(transport)?;
     let irq = probe
         .into_platform_device()
-        .register_net_with_info("virtio-net", net, info);
+        .register_net_with_info("virtio-net", net, dma, info);
     log::info!("registered virtio network device irq={irq:?}");
     Ok(())
 }

@@ -22,7 +22,7 @@ struct NoopDmaBuffer;
 
 impl NoopDmaBuffer {
     fn progress() -> DmaProgress {
-        let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
+        let dma = DeviceDma::new_legacy(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_DMA);
         let buffer = CpuDmaBuffer::new_zero(
             &dma,
             NonZeroUsize::new(BLOCK_SIZE).unwrap(),
@@ -276,7 +276,7 @@ fn stop_completion_consumes_fast_cmd12_irq_without_second_wakeup() {
 
 #[test]
 fn request_slot_returns_completed_owned_dma_once() {
-    let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
+    let dma = DeviceDma::new_legacy(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_DMA);
     let buffer = dma_api::CpuDmaBuffer::new_zero(
         &dma,
         NonZeroUsize::new(BLOCK_SIZE).unwrap(),

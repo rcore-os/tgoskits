@@ -7,6 +7,8 @@ pub(super) struct NvmeBlockQueue {
     name: &'static str,
     namespace: Namespace,
     dma_mask: u64,
+    dma_domain: dma_api::DmaDomainId,
+    dma_coherency: dma_api::DmaCoherency,
     page_size: usize,
     max_transfer_bytes: Option<usize>,
     depth: usize,
@@ -41,6 +43,8 @@ impl NvmeBlockQueue {
         name: &'static str,
         namespace: Namespace,
         dma_mask: u64,
+        dma_domain: dma_api::DmaDomainId,
+        dma_coherency: dma_api::DmaCoherency,
         page_size: usize,
         max_transfer_bytes: Option<usize>,
         queue: NvmeQueue,
@@ -57,6 +61,8 @@ impl NvmeBlockQueue {
             name,
             namespace,
             dma_mask,
+            dma_domain,
+            dma_coherency,
             page_size,
             max_transfer_bytes,
             depth,
@@ -76,6 +82,8 @@ impl NvmeBlockQueue {
             device: device_info(self.name, self.namespace),
             limits: limits(
                 self.dma_mask,
+                self.dma_domain,
+                self.dma_coherency,
                 self.page_size,
                 self.max_transfer_bytes,
                 self.namespace,
@@ -424,6 +432,8 @@ impl<'a> PrpPageAccumulator<'a> {
 
 fn limits(
     dma_mask: u64,
+    dma_domain: dma_api::DmaDomainId,
+    dma_coherency: dma_api::DmaCoherency,
     page_size: usize,
     controller_max_transfer_bytes: Option<usize>,
     namespace: Namespace,
@@ -445,7 +455,8 @@ fn limits(
     let max_bytes = (max_blocks as usize).saturating_mul(lba_size);
     QueueLimits {
         dma_mask,
-        dma_domain: dma_api::DmaDomainId::legacy_global(),
+        dma_domain,
+        dma_coherency,
         dma_alignment: lba_size,
         dma_length_alignment: lba_size,
         segment_boundary: None,
@@ -527,8 +538,17 @@ mod tests {
             lba_count: 1024,
             metadata_size: 0,
         };
-        let limits = limits(u64::MAX, 4096, Some(512 * 1024), namespace, 8);
+        let limits = limits(
+            u64::MAX,
+            dma_api::DmaDomainId::legacy_global(),
+            dma_api::DmaCoherency::Coherent,
+            4096,
+            Some(512 * 1024),
+            namespace,
+            8,
+        );
 
+        assert_eq!(limits.dma_coherency, dma_api::DmaCoherency::Coherent);
         assert_eq!(limits.dma_alignment, 512);
         assert_eq!(limits.dma_length_alignment, 512);
         assert_eq!(limits.max_blocks_per_request, 1024);

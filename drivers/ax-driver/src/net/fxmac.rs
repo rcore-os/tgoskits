@@ -34,18 +34,23 @@ crate::model_register!(
 );
 
 fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), rdrive::probe::OnProbeError> {
+    let dma = axklib::dma::device_with_mask(
+        u64::MAX,
+        crate::binding_resolver::dma_coherency_from_fdt(probe.info()),
+    );
     let info = binding_info_from_fdt(probe.info())?;
     let dev = FxmacNet::new();
     probe
         .into_platform_device()
-        .register_net_with_info(DRIVER_NAME, dev, info);
+        .register_net_with_info(DRIVER_NAME, dev, dma, info);
     log::info!("registered FXmac FDT network device");
     Ok(())
 }
 
 pub fn register(plat_dev: PlatformDevice) {
     let dev = FxmacNet::new();
-    plat_dev.register_net(DRIVER_NAME, dev);
+    let dma = axklib::dma::device_with_mask(u64::MAX, dma_api::DmaCoherency::NonCoherent);
+    plat_dev.register_net(DRIVER_NAME, dev, dma);
     log::info!("registered FXmac network device");
 }
 

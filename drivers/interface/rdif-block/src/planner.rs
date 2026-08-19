@@ -257,6 +257,7 @@ mod tests {
         QueueLimits {
             dma_mask: u64::MAX,
             dma_domain: dma_api::DmaDomainId::legacy_global(),
+            dma_coherency: dma_api::DmaCoherency::NonCoherent,
             dma_alignment: 512,
             dma_length_alignment: 512,
             segment_boundary: None,
@@ -319,7 +320,11 @@ mod tests {
 
     #[test]
     fn simple_limits_allow_single_block_transfers() {
-        let info = queue_info_with(QueueLimits::simple(512, u64::MAX));
+        let info = queue_info_with(QueueLimits::simple(
+            512,
+            u64::MAX,
+            dma_api::DmaCoherency::NonCoherent,
+        ));
         let planner = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
         let plan = planner.plan(0, 2048).unwrap();
         let chunks: Vec<_> = plan.collect();
@@ -468,7 +473,11 @@ mod tests {
 
     #[test]
     fn transfer_planner_checks_range_when_creating_plan() {
-        let info = queue_info_with(QueueLimits::simple(512, u64::MAX));
+        let info = queue_info_with(QueueLimits::simple(
+            512,
+            u64::MAX,
+            dma_api::DmaCoherency::NonCoherent,
+        ));
         let planner = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
 
         assert_eq!(

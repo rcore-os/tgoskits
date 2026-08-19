@@ -176,6 +176,8 @@ impl NvmeBlockDriver {
             self.name,
             namespace,
             self.nvme.dma_mask(),
+            self.nvme.dma_domain_id(),
+            self.nvme.dma_coherency(),
             self.nvme.page_size(),
             self.nvme.max_transfer_bytes(),
             queue,

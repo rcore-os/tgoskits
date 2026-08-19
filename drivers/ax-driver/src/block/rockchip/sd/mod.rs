@@ -145,7 +145,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
              CRU rate"
         );
     }
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device_with_mask(
+        u32::MAX as u64,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+    );
     let block_config = BlockConfig::dma("rockchip-dwmmc", 0, &dma)
         .with_max_blocks_per_request(IDMAC_MAX_BLOCKS)
         .with_max_segment_size(IDMAC_MAX_TRANSFER_SIZE);

@@ -1161,7 +1161,7 @@ mod tests {
         let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
         let slot_id = SlotId::from(1);
         let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = Kernel::new(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_KERNEL);
         let command_ring =
             CommandRing::new(DmaDirection::Bidirectional, &kernel, registers).unwrap();
         let endpoint = Endpoint::new(slot_id, Dci::from(2), &kernel, bell, command_ring).unwrap();
@@ -1203,7 +1203,7 @@ mod tests {
         let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
         let slot_id = SlotId::from(1);
         let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = Kernel::new(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_KERNEL);
         let command_ring =
             CommandRing::new(DmaDirection::Bidirectional, &kernel, registers.clone()).unwrap();
         let active = Endpoint::new(
@@ -1240,7 +1240,7 @@ mod tests {
         let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
         let slot_id = SlotId::from(1);
         let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = Kernel::new(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_KERNEL);
         let command_ring =
             CommandRing::new(DmaDirection::Bidirectional, &kernel, registers.clone()).unwrap();
         let old = Endpoint::new(

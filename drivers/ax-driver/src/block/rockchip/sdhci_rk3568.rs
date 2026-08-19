@@ -139,7 +139,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         warn!("rockchip-rk3568-sdhci: no core clock found; using SDHCI internal clock divider");
     }
     host.set_reset_hook(RockchipSdhciResetHook);
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device_with_mask(
+        u32::MAX as u64,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+    );
     let config = sdhci_rdif::dma_config("rockchip-rk3568-sdhci", 0, &dma);
     host.configure_dma(dma).map_err(|err| {
         OnProbeError::other(format!(
@@ -261,7 +264,8 @@ mod tests {
 
     #[test]
     fn rk3568_block_io_uses_dma_config_with_irq_completion() {
-        let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+        let dma =
+            axklib::dma::device_with_mask(u32::MAX as u64, dma_api::DmaCoherency::NonCoherent);
         let config = sdhci_rdif::dma_config("rockchip-rk3568-sdhci", 8, &dma);
 
         assert!(config.uses_dma());
@@ -270,7 +274,8 @@ mod tests {
 
     #[test]
     fn rk3568_dma_queue_limits_multi_block_requests() {
-        let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+        let dma =
+            axklib::dma::device_with_mask(u32::MAX as u64, dma_api::DmaCoherency::NonCoherent);
         let config = sdhci_rdif::dma_config("rockchip-rk3568-sdhci", 8, &dma);
         let limits = sdmmc_protocol::rdif::config::queue_limits(&config);
 

@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_sync::SpinLock as Mutex;
-use dma_api::CoherentArray;
+use dma_api::{CoherentArray, DmaCoherency};
 use futures::{
     FutureExt,
     future::{BoxFuture, poll_fn},
@@ -715,7 +715,11 @@ impl Dwc2 {
         }
 
         let regs = Dwc2Registers::new(params.mmio);
-        let kernel = Kernel::new(params.params.dma_mask, params.kernel);
+        let kernel = Kernel::new(
+            params.params.dma_mask,
+            DmaCoherency::NonCoherent,
+            params.kernel,
+        );
         let root_hub = Dwc2RootHub::new(regs, kernel.clone());
         let channel_completions = Dwc2ChannelCompletions::new();
         let stats = Dwc2Stats::new();
@@ -2937,7 +2941,7 @@ mod tests {
 
     #[test]
     fn dma_buffer_bounces_in_data_through_coherent_dma_memory() {
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = Kernel::new(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_KERNEL);
         let mut pool = Dwc2DmaBufferPool::default();
         let stats = Dwc2Stats::new();
         let mut data = [0u8; 4];
@@ -2957,7 +2961,7 @@ mod tests {
 
     #[test]
     fn dma_buffer_pool_reuses_existing_dma_allocation() {
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = Kernel::new(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_KERNEL);
         let stats = Dwc2Stats::new();
         let mut pool = Dwc2DmaBufferPool::default();
         let mut first = [0u8; 64];
@@ -3120,7 +3124,7 @@ mod tests {
     #[test]
     fn endpoint_submit_waits_for_irq_completion_before_reclaiming() {
         let (_backing, regs) = test_regs();
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = Kernel::new(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_KERNEL);
         let completions = Dwc2ChannelCompletions::new();
         let stats = Dwc2Stats::new();
         let channel_pool = HostChannelPool::new(2, completions.clone());
@@ -3160,7 +3164,7 @@ mod tests {
     #[test]
     fn cancelled_endpoint_waits_for_real_channel_halt_before_reclaiming() {
         let (_backing, regs) = test_regs();
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = Kernel::new(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_KERNEL);
         let completions = Dwc2ChannelCompletions::new();
         let stats = Dwc2Stats::new();
         let channel_pool = HostChannelPool::new(2, completions.clone());
@@ -3201,7 +3205,7 @@ mod tests {
     #[test]
     fn disconnect_completes_active_request_without_more_channel_writes() {
         let (_backing, regs) = test_regs();
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = Kernel::new(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_KERNEL);
         let completions = Dwc2ChannelCompletions::new();
         let stats = Dwc2Stats::new();
         let channel_pool = HostChannelPool::new(2, completions.clone());
@@ -3245,7 +3249,7 @@ mod tests {
     #[test]
     fn acquired_channel_cannot_start_after_disconnect() {
         let (_backing, regs) = test_regs();
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = Kernel::new(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_KERNEL);
         let completions = Dwc2ChannelCompletions::new();
         let channel_pool = HostChannelPool::new(2, completions.clone());
         let endpoint = Dwc2Endpoint::new(Dwc2EndpointParams {
@@ -3287,7 +3291,7 @@ mod tests {
     #[test]
     fn opposite_direction_endpoints_do_not_share_a_host_channel() {
         let (_backing, regs) = test_regs();
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = Kernel::new(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_KERNEL);
         let completions = Dwc2ChannelCompletions::new();
         let channel_pool = HostChannelPool::new(4, completions);
         let endpoint_info = |address, direction| EndpointInfo {

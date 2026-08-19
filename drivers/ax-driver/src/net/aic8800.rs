@@ -212,7 +212,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     // rx/tx-queue IRQ): the SDIO1 controller IRQ is registered manually above
     // and Wi-Fi RX is delivered out-of-band, so the net device itself carries
     // no IRQ.
-    plat_dev.register_net("wlan0", wifi);
+    let dma = axklib::dma::device_with_mask(
+        u64::MAX,
+        crate::binding_resolver::dma_coherency_from_fdt(&info),
+    );
+    plat_dev.register_net("wlan0", wifi, dma);
     info!("[wifi] wlan0 device registered (probe stage done)");
     Ok(())
 }

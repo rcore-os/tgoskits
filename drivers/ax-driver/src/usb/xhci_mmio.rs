@@ -20,6 +20,7 @@ crate::model_register!(
 );
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let dma_coherency = crate::binding_resolver::dma_coherency_from_fdt(probe.info());
     let node_name = probe.info().node.name();
     let base_reg = probe
         .info()
@@ -32,7 +33,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_size = base_reg.size.unwrap_or(0x1000) as usize;
     let mmio = crate::mmio::iomap(base_reg.address as usize, mmio_size)?;
 
-    let host = crab_usb::USBHost::new_xhci(mmio, usb_kernel()).map_err(|err| {
+    let host = crab_usb::USBHost::new_xhci(mmio, dma_coherency, usb_kernel()).map_err(|err| {
         OnProbeError::other(format!(
             "failed to create xHCI host for [{}]: {err}",
             node_name

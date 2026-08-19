@@ -38,7 +38,11 @@ mod tests {
 
     #[test]
     fn dma_config_advertises_adma_window() {
-        let dma = dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA);
+        let dma = dma_api::DeviceDma::new_legacy(
+            u32::MAX as u64,
+            dma_api::DmaCoherency::NonCoherent,
+            &TEST_DMA,
+        );
         let config = dma_config("sdhci", 16, &dma);
         let limits = protocol_rdif_config::queue_limits(&config);
 

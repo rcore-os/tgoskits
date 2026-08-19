@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn ion_buffer_preserves_size_address_and_last_arc_release() {
         RELEASES.store(0, Ordering::SeqCst);
-        let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA)
+        let dma = DeviceDma::new_legacy(u64::MAX, dma_api::DmaCoherency::NonCoherent, &TEST_DMA)
             .coherent_array_zero_with_align::<u8>(123, 8)
             .unwrap();
         let cpu_ptr = dma.as_ptr();

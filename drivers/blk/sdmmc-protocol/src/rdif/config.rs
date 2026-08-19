@@ -27,6 +27,7 @@ impl BlockConfig {
             limits: QueueLimits {
                 dma_mask: dma.dma_mask(),
                 dma_domain: dma.domain_id(),
+                dma_coherency: dma.coherency(),
                 dma_alignment: BLOCK_SIZE,
                 dma_length_alignment: BLOCK_SIZE,
                 segment_boundary: None,

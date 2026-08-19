@@ -40,8 +40,13 @@ fn allocate(
         constraints = constraints.with_boundary(boundary);
     }
     constraints = constraints.with_max_segment_size(limits.max_segment_size);
-    let device =
-        DeviceDma::new(limits.dma_domain, limits.dma_mask, dma_op).with_constraints(constraints);
+    let device = DeviceDma::new(
+        limits.dma_domain,
+        limits.dma_mask,
+        limits.dma_coherency,
+        dma_op,
+    )
+    .with_constraints(constraints);
     CpuDmaBuffer::new_zero(
         &device,
         NonZeroUsize::new(len).ok_or(BlkError::InvalidRequest)?,
