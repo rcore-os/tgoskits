@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use serde::Serialize;
 
 use super::{
