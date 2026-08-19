@@ -3,11 +3,14 @@
 use core::{
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
 };
 
 use ax_driver::register::DriverRegister;
-use ax_runtime as _;
-use axklib::{KlibResult, PhysAddr, VirtAddr};
+use axklib::{
+    BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, Klib, KlibError,
+    KlibResult, PhysAddr, VirtAddr, impl_trait,
+};
 use fdt_edit::{Fdt, Node, Phandle, Property};
 use rdrive::{
     DriverGeneric, Platform,
@@ -30,15 +33,90 @@ unsafe extern "Rust" {
     static SYSCRG_DRIVER: DriverRegister;
 }
 
-fn map_syscrg_mmio(addr: PhysAddr, size: usize) -> KlibResult<VirtAddr> {
-    assert_eq!(addr.as_usize(), SYSCRG_PADDR);
-    assert_eq!(size, SYSCRG_MMIO_SIZE);
-    let ptr = SYSCRG_MMIO.load(Ordering::SeqCst);
-    assert_ne!(
-        ptr, 0,
-        "test SYSCRG MMIO must be initialized before probing"
-    );
-    Ok(VirtAddr::from_usize(ptr))
+struct KlibImpl;
+
+impl_trait! {
+    impl Klib for KlibImpl {
+        fn mem_iomap(addr: PhysAddr, size: usize) -> KlibResult<VirtAddr> {
+            assert_eq!(addr.as_usize(), SYSCRG_PADDR);
+            assert_eq!(size, SYSCRG_MMIO_SIZE);
+            let ptr = SYSCRG_MMIO.load(Ordering::SeqCst);
+            assert_ne!(ptr, 0, "test SYSCRG MMIO must be initialized before probing");
+            Ok(VirtAddr::from_usize(ptr))
+        }
+
+        fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr {
+            PhysAddr::from_usize(addr.as_usize())
+        }
+
+        fn mem_map_dma_coherent_uncached(
+            _addr: core::ptr::NonNull<u8>,
+            _size: usize,
+        ) -> axklib::DmaCoherentMappingOutcome {
+            axklib::DmaCoherentMappingOutcome::NotStarted(KlibError::Unsupported)
+        }
+
+        fn mem_unmap_dma_coherent(_addr: core::ptr::NonNull<u8>, _size: usize) -> KlibResult {
+            Err(KlibError::Unsupported)
+        }
+
+        fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
+
+        fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
+
+        fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
+
+        fn dma_alloc_pages(_dma_mask: u64, _num_pages: usize, _align: usize) -> KlibResult<core::ptr::NonNull<u8>> {
+            Err(KlibError::Unsupported)
+        }
+
+        fn dma_dealloc_pages(_addr: core::ptr::NonNull<u8>, _num_pages: usize) {}
+
+        fn time_busy_wait(_dur: Duration) {}
+
+        fn time_monotonic_nanos() -> u64 {
+            0
+        }
+
+        fn time_try_init_epoch_offset(_epoch_time_nanos: u64) -> bool {
+            false
+        }
+
+        fn irq_set_enable(_irq: IrqId, _enabled: bool) -> KlibResult {
+            Ok(())
+        }
+
+        fn irq_request_shared(_irq: IrqId, _handler: BoxedIrqHandler) -> KlibResult<IrqHandle> {
+            Err(KlibError::Unsupported)
+        }
+
+        fn irq_request_shared_disabled(
+            _irq: IrqId,
+            _handler: BoxedIrqHandler,
+        ) -> KlibResult<IrqHandle> {
+            Err(KlibError::Unsupported)
+        }
+
+        fn irq_request_percpu(
+            _irq: IrqId,
+            _cpus: IrqCpuMask,
+            _handler: ConcurrentBoxedIrqHandler,
+        ) -> KlibResult<IrqHandle> {
+            Err(KlibError::Unsupported)
+        }
+
+        fn irq_free(_handle: IrqHandle) -> KlibResult {
+            Err(KlibError::Unsupported)
+        }
+
+        fn irq_enable(_handle: IrqHandle) -> KlibResult {
+            Err(KlibError::Unsupported)
+        }
+
+        fn irq_disable(_handle: IrqHandle) -> KlibResult {
+            Err(KlibError::Unsupported)
+        }
+    }
 }
 
 struct SyscrgConsumer;
@@ -98,12 +176,6 @@ fn combined_syscrg_node_publishes_clock_and_reset_capabilities() {
     regs[RESET_STATUS_OFFSET / size_of::<u32>() + reset_status_word] =
         1 << (SDIO0_AHB_RESET % u32::BITS);
     SYSCRG_MMIO.store(regs.as_mut_ptr() as usize, Ordering::SeqCst);
-    let iomap_override = ax_runtime::host_test::try_install_iomap_override(map_syscrg_mmio)
-        .expect("the SYSCRG test must own the host iomap boundary");
-    assert!(
-        ax_runtime::host_test::try_install_iomap_override(map_syscrg_mmio).is_none(),
-        "a live iomap owner must reject a parallel provider"
-    );
 
     let encoded = Box::leak(Box::new(syscrg_consumer_fdt().encode()));
     let addr = NonNull::new(encoded.as_ref().as_ptr() as *mut u8).unwrap();
@@ -117,11 +189,6 @@ fn combined_syscrg_node_publishes_clock_and_reset_capabilities() {
     assert!(rdrive::get::<rdif_clk::Clk>(provider).is_ok());
     assert!(rdrive::get::<rdif_reset::Reset>(provider).is_ok());
     assert!(rdrive::get_one::<SyscrgConsumer>().is_some());
-
-    drop(iomap_override);
-    let replacement = ax_runtime::host_test::try_install_iomap_override(map_syscrg_mmio)
-        .expect("dropping the iomap owner must release the boundary");
-    drop(replacement);
 }
 
 fn syscrg_consumer_fdt() -> Fdt {

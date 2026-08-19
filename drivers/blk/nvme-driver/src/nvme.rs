@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use dma_api::{CoherentArray, ContiguousArray, DeviceDma, DmaCoherency, DmaDirection, DmaDomainId};
+use dma_api::{CoherentArray, ContiguousArray, DeviceDma, DmaDirection};
 use log::{debug, info};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 
@@ -183,16 +183,8 @@ impl Nvme {
         Ok(nvme)
     }
 
-    pub fn dma_mask(&self) -> u64 {
-        self.dma.dma_mask()
-    }
-
-    pub fn dma_domain_id(&self) -> DmaDomainId {
-        self.dma.domain_id()
-    }
-
-    pub fn dma_coherency(&self) -> DmaCoherency {
-        self.dma.coherency()
+    pub const fn dma_info(&self) -> dma_api::DmaDeviceInfo {
+        self.dma.info()
     }
 
     pub(crate) fn start_initialization(&mut self) -> Result<NvmeInitProgress> {

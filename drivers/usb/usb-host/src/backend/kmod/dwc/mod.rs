@@ -534,7 +534,7 @@ impl Dwc {
                 DmaDirection::Bidirectional,
             )
             .map_err(|_| USBError::NoMemory)?;
-        scratchbuf.prepare_for_device_all();
+        scratchbuf.prepare_for_device(0..scratchbuf.bytes_len());
 
         self.scratchbuf = Some(scratchbuf);
         debug!(

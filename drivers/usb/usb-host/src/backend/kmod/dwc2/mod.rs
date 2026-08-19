@@ -151,8 +151,11 @@ impl Dwc2 {
 
         let regs = Dwc2Registers::new(params.mmio);
         let kernel = Kernel::new(
-            params.params.dma_mask,
-            DmaCoherency::NonCoherent,
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(params.params.dma_mask),
+            ),
             params.kernel,
         );
         let root_hub = Dwc2RootHub::new(regs, kernel.clone());

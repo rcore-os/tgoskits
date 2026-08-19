@@ -73,7 +73,11 @@ const PCI_INTX_LINES: usize = 4;
     all(feature = "net", feature = "pci")
 ))]
 pub(crate) fn device_dma(info: PciInfo, dma_mask: u64) -> DeviceDma {
-    axklib::dma::device_with_mask(dma_mask, dma_coherency(info))
+    axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        dma_coherency(info),
+        dma_api::DmaConstraints::new(dma_mask),
+    ))
 }
 
 #[cfg(any(

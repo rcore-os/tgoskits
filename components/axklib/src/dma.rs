@@ -2,8 +2,8 @@ use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
 
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 use dma_api::{
-    DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDirection, DmaDomainId, DmaError,
-    DmaMapHandle, DmaOp,
+    DeviceDma, DmaAllocHandle, DmaConstraints, DmaDeviceInfo, DmaDirection, DmaError, DmaMapHandle,
+    DmaOp,
 };
 use mbarrier::mb;
 
@@ -17,12 +17,8 @@ pub fn op() -> &'static KlibDma {
     &DMA
 }
 
-pub const fn domain_id() -> DmaDomainId {
-    DmaDomainId::legacy_global()
-}
-
-pub fn device_with_mask(dma_mask: u64, coherency: DmaCoherency) -> DeviceDma {
-    DeviceDma::new(domain_id(), dma_mask, coherency, op())
+pub fn device(info: DmaDeviceInfo) -> DeviceDma {
+    DeviceDma::new(info, op())
 }
 
 struct DmaPages {
@@ -117,7 +113,7 @@ impl DmaPages {
         self.state = DmaPagesState::Transferred;
         // SAFETY: `self` owns the live allocation and its matching DMA address
         // until this method transfers both values into the handle.
-        unsafe { DmaAllocHandle::new(self.cpu_addr, self.dma_addr.into(), layout) }
+        unsafe { DmaAllocHandle::new(self.cpu_addr, self.cpu_addr, self.dma_addr.into(), layout) }
     }
 
     /// Transfers the allocator pages to a coherent handle using `alias` for CPU access.
@@ -128,9 +124,7 @@ impl DmaPages {
     /// complete `layout` and must remain valid until coherent deallocation.
     unsafe fn into_coherent_handle(mut self, alias: NonNull<u8>, layout: Layout) -> DmaAllocHandle {
         self.state = DmaPagesState::Transferred;
-        unsafe {
-            DmaAllocHandle::new_with_allocation(alias, self.cpu_addr, self.dma_addr.into(), layout)
-        }
+        unsafe { DmaAllocHandle::new(alias, self.cpu_addr, self.dma_addr.into(), layout) }
     }
 
     fn into_bounce_parts(mut self) -> (NonNull<u8>, u64) {
@@ -421,9 +415,8 @@ mod tests {
         let allocation_ptr = NonNull::from_mut(&mut allocation[0]);
         let alias = NonNull::from_mut(&mut alias_bytes[0]);
         let layout = Layout::from_size_align(alias_bytes.len(), 1).unwrap();
-        let handle = unsafe {
-            DmaAllocHandle::new_with_allocation(alias, allocation_ptr, 0x1000_u64.into(), layout)
-        };
+        let handle =
+            unsafe { DmaAllocHandle::new(alias, allocation_ptr, 0x1000_u64.into(), layout) };
 
         let handle = unsafe { initialize_coherent_handle(handle) };
 
@@ -440,7 +433,7 @@ mod tests {
         assert_eq!(dma_addr, 0);
         assert_eq!(num_pages, 0);
 
-        let handle = unsafe { DmaAllocHandle::new(cpu_addr, dma_addr.into(), layout) };
+        let handle = unsafe { DmaAllocHandle::new(cpu_addr, cpu_addr, dma_addr.into(), layout) };
         assert_eq!(handle.as_ptr(), NonNull::dangling());
         assert_eq!(handle.dma_addr().as_u64(), 0);
         assert_eq!(handle.size(), 0);

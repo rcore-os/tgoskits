@@ -97,10 +97,11 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let config = fdt_profile(info);
     let name = format!("ahci-fdt-{}-{address:x}", info.node.name());
     let mmio = map_mmio(address, size)?;
-    let dma = axklib::dma::device_with_mask(
-        u64::MAX,
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
         crate::binding_resolver::dma_coherency_from_fdt(info),
-    );
+        dma_api::DmaConstraints::new(u64::MAX),
+    ));
     let host = create_host(name, mmio, dma, config)?;
     let (_, platform) = probe.into_parts();
     platform.register_block_group_with_info(host, binding);

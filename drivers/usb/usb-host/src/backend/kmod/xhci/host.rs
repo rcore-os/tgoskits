@@ -118,7 +118,14 @@ impl Xhci {
             u32::MAX as usize
         };
 
-        let kernel = Kernel::new(dma_mask as _, coherency, kernel);
+        let kernel = Kernel::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                coherency,
+                dma_api::DmaConstraints::new(dma_mask as _),
+            ),
+            kernel,
+        );
 
         let reg_shared = Arc::new(RwLock::new(reg.clone()));
 

@@ -1,418 +1,258 @@
 ---
 sidebar_position: 12
-sidebar_label: "DMA 内存"
+sidebar_label: "设备直接访存"
 ---
 
-# DMA 内存与设备所有权
+# 设备直接访存接口设计
 
-`memory/dma-api` 是驱动可见的 DMA 能力边界。驱动通过 `DeviceDma` 表达地址掩码、对齐、边界、单段大小和地址转换域，通过 coherent、contiguous 或 streaming 的 Resource Acquisition Is Initialization（资源获取即初始化，RAII）所有者管理生命周期；`axklib::dma` 负责把能力接到 `ax-alloc`、页表属性和平台缓存维护。
+本文面向第一次接触设备直接访存的读者。这里的“设备直接访存”是指：网卡、硬盘控制器、图形处理器等设备，不经过处理器逐字节搬运，直接读写内存。代码中沿用通用缩写 `DMA`。
 
-## 1. 分层边界
+## 1. 先理解问题
 
-DMA 不是独立物理 allocator。底层页仍由 `ax-alloc` 管理，`dma-api` 增加的是设备可达性、cache ownership 和 consume-on-release 协议。
+处理器和设备虽然都在访问内存，但它们看到的内容和地址不一定相同。
 
-### 1.1 组件职责
+- 处理器写入的数据可能暂时留在缓存中，设备还看不到。
+- 设备写入内存后，处理器缓存里可能仍是旧数据。
+- 设备能够使用的地址位数可能有限，例如只能访问低 4 吉字节。
+- 某些机器会在设备和内存之间做地址转换，同一个设备地址只对某个转换空间有效。
+- 一块内存在交给设备后，处理器不能同时随意改写；设备完成前也不能释放或复用。
 
-当前 DMA 主线只有能力层（`dma-api`）和平台 adapter（`axklib::dma`）。驱动通过 `DeviceDma` 表达约束、通过 RAII owner 管理生命周期，平台 adapter 负责把能力接到 `ax-alloc`、页表属性和平台缓存维护。
+所以，这不是简单调用一次“同步内存”就能完整解决的问题。系统既要知道“底层怎样同步”，也要知道“这台设备是否需要同步、什么时候同步、同步哪一段、使用哪个设备地址、当前由谁使用”。
 
-| 组件 | 职责 | 禁止承担的职责 |
-| --- | --- | --- |
-| `dma-api` | device constraints、domain、typed buffer、sync、资源获取即初始化 token | 直接依赖全局 allocator、解析 扁平设备树/输入输出内存管理单元控制器 |
-| `axklib::dma` | `DmaOp` adapter、页申请、物理地址转换、cache/页表项属性切换 | 暴露裸释放元数据、保存驱动对象 |
-| `ax-runtime::Klib` | 根据 mask 选择 `alloc_pages()` 或 `alloc_dma32_pages()` | 创建第二个 DMA allocator |
-| 驱动 core | 持有 owner、编程 DMA address、执行 ownership transition | 直接 free imported buffer、绕过 constraint check |
-| Starry dma-buf glue | fd/mmap/import 的 `Arc` lifetime | 把 user fd lifetime 当成唯一 owner |
+## 2. 1775 暴露了什么
 
-MMIO 使用 `mmio-api` 建立寄存器映射，不经 DMA allocator。输入输出内存管理单元 page table 若实现，应归具体 controller/domain adapter，不复用 CPU Stage-2 作为 IOPTE 格式。
+1775 发现的问题，本质上是设备属性和平台动作没有被完整绑定到一起。
 
-### 1.2 请求数据流
+在模拟的 RISC-V 机器上，存储控制器与处理器能够直接看到一致的内存内容，不需要为它额外建立无缓存映射。如果把它一律当成“不一致设备”处理，就会走到不必要的特殊映射分配，最后可能以“没有可用内存”失败。
 
-设备创建 `DeviceDma` 后，所有 allocation/map 都先经过通用 constraint 验证，再由 `DmaOp` 执行平台动作。
+但在 SG2002 一类机器上，设备与处理器并不自动保持缓存一致。提交描述符前若不把处理器写入推出缓存，设备可能读取旧描述符；设备写完后若不让处理器丢弃旧缓存，处理器又可能读取旧结果。
 
-![DMA 内存能力架构](./images/dma-architecture.svg)
+因此，正确方案必须同时满足两端：
 
-当前 `KlibDma` 使用 `virt_to_phys` 得到 device address，表示输入输出内存管理单元-bypass/identity 路径。`DmaDomainId::legacy_global()` 标记尚未按设备拆分的兼容 domain，不代表已经实现 device-specific 输入输出内存管理单元 isolation。
+- 自动保持一致的设备，不做多余的缓存和映射操作。
+- 不能自动保持一致的设备，在所有权切换时执行正确操作。
+- 两种设备使用同一套上层接口，由设备自身属性决定底层动作。
 
-### 1.3 架构差异
+这也是本次重构能解决 1775 的关键，而不是单独增加某个平台同步函数。
 
-`dma-api` 的类型和 ownership 在各架构相同，平台 adapter 负责处理物理地址转换、缓存一致性和设备内存属性。驱动不得根据 `target_arch` 自行跳过 cache transition。
+## 3. 为什么只有系统内存同步接口还不够
 
-| 架构 | identity DMA 地址来源 | cache 处理 | coherent/uncached 页属性 |
-| --- | --- | --- | --- |
-| x86_64 | 去除内核物理线性映射偏移 | 常见平台为硬件一致，仍由 capability 决定 | 页表禁用缓存/写穿透位 |
-| AArch64 | 区分镜像、每 CPU 区和普通线性映射后取物理地址 | 显式 clean、invalidate 和数据同步屏障 | `MAIR_ELx` 的 Normal/Non-cacheable/Device 槽位 |
-| RISC-V 64 | 按重定位和 `PAGE_OFFSET` 反向转换 | 由具体 cache controller/platform capability 决定 | 标准实现与处理器扩展能力分开 |
-| LoongArch64 | `addrspace::to_phys()` 去除直接映射窗口编码 | 当前平台至少执行数据屏障 | 页表项 Memory Access Type（内存访问类型，MAT） |
+`someboot` 和 `somehal` 已经提供了缓存范围处理能力。它们适合回答“这台机器具体怎样清理缓存”，但无法独自回答下面的问题。
 
-Dma32 始终按转换后的物理地址末端检查 4 GiB 上限。虚拟地址低于 4 GiB 不代表设备可达，带直接映射窗口高位的虚拟地址也不代表物理地址超限。
-
-## 2. 设备约束
-
-`DeviceDma` 可 Clone，内部持有静态 `DmaOp` capability、`DmaConstraints` 和稳定 `DmaDomainId`。clone 共享同一 backend，不复制 allocation owner。
-
-### 2.1 约束模型
-
-`DmaConstraints` 在每次 allocation/map 后由 `DeviceDma` 再验证 backend token，防止错误平台实现把不可达地址交给硬件。
-
-| 约束 | 验证规则 | 错误 |
-| --- | --- | --- |
-| `addr_mask` | allocation 的最后一个 byte 也必须在 mask 内 | `DmaMaskNotMatch` |
-| `align` | DMA address 满足 device 与 Layout 最大 alignment | `AlignMismatch` |
-| `boundary` | start 与 end 位于同一 boundary window | `BoundaryCross` |
-| `max_segment_size` | bytes 不超过单 segment 上限 | `SegmentTooLarge` |
-| nonzero length | streaming map 要求 `Layout::size()` 大于 0，且在调用 backend 前检查 | `ZeroSizedBuffer` |
-
-检查使用 checked end-address arithmetic。零长度拦截当前只存在于 streaming map 路径（`StreamingMap` 以 `NonZeroUsize` 预检）；coherent/contiguous 分配路径不做零长度预检，`size_of::<T>() == 0` 的请求会进入 backend。backend 返回其他不合规 token 时，`DeviceDma` 先按值消费并释放/unmap token，再向调用方返回 typed error。
-
-### 2.2 转换域身份
-
-`DmaDomainId` 是非零稳定标识，用于拒绝已经为另一个设备/输入输出内存管理单元 domain 准备的 buffer。`with_constraints()` 保留原 domain，只替换 constraints。
-
-| 构造 | 语义 |
+| 问题 | 谁负责回答 |
 | --- | --- |
-| `DeviceDma::new(domain, mask, op)` | 显式 domain |
-| `DeviceDma::new_legacy(mask, op)` | 尚未按设备拆分的全局兼容 domain |
-| `axklib::dma::device_with_mask(mask)` | 当前 runtime adapter 的全局兼容 domain |
+| 设备是否自动保持一致 | 总线或固件探测结果 |
+| 设备只能访问哪些地址 | 设备能力和控制器限制 |
+| 地址是否经过转换 | 设备所属的地址空间 |
+| 当前是处理器交给设备，还是设备交还处理器 | 驱动的请求生命周期 |
+| 同步整块内存还是其中一段 | 缓冲区所有者 |
+| 设备尚未停止时能否释放内存 | 驱动的完成和复位流程 |
+| 某种处理器具体执行哪条缓存指令 | `someboot` 和 `somehal` |
 
-真正输入输出内存管理单元支持需要 domain-specific map/unmap、输入输出虚拟地址 ownership、device attach/detach 和输入输出地址转换后备缓冲区 invalidation。未实现的平台不能仅换一个 domain id 就声称完成隔离。
+如果驱动直接调用系统内存同步函数，每个驱动都要重复判断这些条件，也很容易把方向写反、漏掉一条完成路径，或者对本来自动一致的设备执行错误操作。
 
-`DmaDomainId` 内部使用 `NonZeroU64`。`legacy_global()` 的值为 1；`from_raw(0)` 为兼容旧调用方回落到该值，非零值原样保存。当前接口没有保留值校验，也没有仅凭 domain id 实现输入输出内存管理单元隔离。
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DmaDomainId(NonZeroU64);
-
-impl DmaDomainId {
-    /// Compatibility domain for callers without device-specific translation.
-    pub const fn legacy_global() -> Self {
-        Self(NonZeroU64::MIN)
-    }
-
-    pub fn from_raw(id: u64) -> Self {
-        Self(NonZeroU64::new(id).unwrap_or(NonZeroU64::MIN))
-    }
-}
-```
-
-`DmaConstraints` 是 plain struct，调用方通过 builder-style `with_align()` / `with_boundary()` / `with_max_segment_size()` 链式补充约束。`boundary` 与 `max_segment_size` 都是 `Option<usize>`：`None` 表示“无对应约束”，`Some(b)` 表示“DMA 起止必须落在同一 `b` 字节窗口内”或“单个 segment 不得超过 `b` 字节”。
-
-## 3. 类型安全
-
-DMA typed buffer 允许设备直接读写 `T` 的原始字节，因此 `T` 必须没有引用、资源 owner、无效 bit pattern 或未初始化 padding。`DmaPod` 是这一安全性条件的 unsafe marker。
-
-### 3.1 安全契约
-
-`DmaPod: Copy` 的 `# Safety` 文档要求全零 bit pattern 有效，任意设备写入不会破坏 Rust validity，且值不拥有需要 Drop 的资源或引用。
-
-```rust
-pub unsafe trait DmaPod: Copy {}
-
-unsafe impl<T: Copy> DmaPod for T {}
-```
-
-trait 是 `unsafe`，因为编译器无法仅从 `Copy` 证明布局、padding 和所有 bit pattern 安全。当前源码却为所有 `Copy` 类型提供 blanket impl，这使安全契约弱于文档理想模型；新增驱动仍应只把真正 plain-data descriptor 放进 typed DMA buffer。
-
-### 3.2 实现规则
-
-本地 hardware descriptor 应优先 `#[derive(bytemuck::Pod, bytemuck::Zeroable)]` 或等价布局断言来证明 plain-data 属性。由于当前 blanket impl 已覆盖所有 `Copy`，代码评审需要在使用点检查类型是否真的满足 DMA 写入安全，而不能依赖 trait bound 自动排除引用、padding 或 invalid niche。
-
-| 类型情况 | 处理 |
-| --- | --- |
-| 本地 `repr(C)` descriptor、无 padding | derive `Pod + Zeroable` |
-| 外部 crate hardware record | 用本地透明/固定布局 wrapper，并审计 |
-| 含引用、pointer owner、enum invalid niche | 禁止作为 typed DMA buffer |
-| manual `unsafe impl DmaPod` | 必须紧邻英文 SAFETY 注释和 size/align/layout assertion |
-
-当前生产代码中没有 manual `DmaPod` impl；由于 blanket impl 已覆盖所有 `Copy`，新增驱动只能在使用点自行证明类型满足 DMA 写入安全，不能依赖 trait bound 自动排除引用、padding 或 invalid niche。
-
-## 4. 缓冲区类型
-
-DMA API 区分 coherent allocation、普通连续 allocation 和 existing buffer streaming map。三者的 cache 与物理 ownership 不同。
-
-### 4.1 一致性与连续缓冲区
-
-`CoherentBox/Array` 和 `ContiguousBox/Array` 内部都持有不可复制的 `DmaAllocation`。区别在于 coherent mapping 生命周期内无需显式 cache maintenance，而 contiguous 需要按 direction 转移 ownership。
-
-| 类型 | 物理连续 | CPU/device cache 规则 | Drop |
-| --- | --- | --- | --- |
-| `CoherentBox<T>` / `CoherentArray<T>` | 是 | 无显式 clean/invalidate；ordering barrier 仍由驱动负责 | 恢复平台 mapping policy并 consume token |
-| `ContiguousArray<T>` | 是 | 调用 `prepare_for_device` / `complete_for_cpu` | consume contiguous token |
-| `ContiguousBox<T>` | 是 | 调用 `prepare_for_device_all` / `complete_for_cpu_all`（整盒方向转换） | consume contiguous token |
-| `ContiguousBufferPool` | pool 内每项连续 | 与 ContiguousArray 相同；`with_capacity()` 会尽量预填，空池 `alloc()` 可继续按需分配 | 返回 pool；pool 消失后 owner 正常 Drop |
-
-CPU accessor 本身不会自动 sync cache。高层 `write_for_device()` 和 `read_from_device()` 将 CPU access 与相应 sync 组合，普通 `set_cpu()`/`read_cpu()` 只执行内存访问。
-
-### 4.2 流式映射与回弹缓冲区
-
-`StreamingMap<T>` 借用调用方已有 slice，并持有底层 `DmaMapHandle`。若原 buffer 的物理地址不满足 mask/alignment，`KlibDma` 分配符合约束的 bounce pages 并把地址记录在 handle 中；释放唯一性由 `StreamingMap` owner 提供。
-
-| Direction | device 前动作 | CPU 完成动作 |
-| --- | --- | --- |
-| `ToDevice` | copy 到 bounce（若有）并 clean | 通常无需 invalidate/copy back |
-| `FromDevice` | invalidate device target | invalidate 后从 bounce copy back |
-| `Bidirectional` | clean/invalidate并可能 copy-in | invalidate并可能 copy-out |
-
-`StreamingMap::drop()` 按值消费 token并 unmap；bounce pages 同时释放。调用方必须保证原 slice 在整个 map 生命周期保持 live。
-
-## 5. 令牌与状态所有权
-
-底层 handle 和高层 owner 解决不同问题。handle 是 backend release metadata，高层 container 的 Drop 才是日常驱动应使用的资源获取即初始化。
-
-### 5.1 底层 handle 与高层 owner
-
-`DmaAllocHandle` 保存 CPU address、DMA address 和 Layout；`DmaMapHandle` 额外保存可选 bounce pointer。当前两者派生 `Clone + Copy`，不是 move-only token；日常释放唯一性依赖 `DmaAllocation` / `StreamingMap` 这类高层 owner。
-
-| Token | 创建 | 消费 |
-| --- | --- | --- |
-| `DmaAllocHandle` | `alloc_contiguous` / `alloc_coherent` | `dealloc_contiguous(handle)` / `dealloc_coherent(handle)` |
-| `DmaMapHandle` | `map_streaming` | `unmap_streaming(handle)` |
-| runtime page tuple | `ax-runtime::Klib::dma_alloc_pages()` | `ax-runtime::Klib::dma_dealloc_pages(vaddr, num_pages)` |
-
-查询方法只借用 handle，free/unmap 按值接收 handle。当前 handle 中没有 opaque backend token，因为普通页与 DMA32 共享 Buddy section，释放根据地址定位 section，无需额外 zone 或 bool 参数。
-
-`DmaAllocHandle` 的字段对 backend 可见（`pub(crate)`），但对外只暴露查询方法。两个 unsafe 构造函数把“调用方证明 cpu_addr/dma_addr 关系”的责任集中在创建点，避免后续每次访问都重复验证。
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DmaAllocHandle {
-    pub(crate) cpu_addr: NonNull<u8>,
-    pub(crate) dma_addr: DmaAddr,
-    pub(crate) layout: Layout,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DmaMapHandle {
-    pub(crate) cpu_addr: NonNull<u8>,
-    pub(crate) dma_addr: DmaAddr,
-    pub(crate) layout: Layout,
-    pub(crate) bounce_ptr: Option<NonNull<u8>>,
-}
-```
-
-`DmaMapHandle::bounce_ptr` 为 `Some` 时表示原 buffer 不满足 DMA 约束，backend 已经分配了符合 mask 的 bounce page 并把 DMA 地址指向 bounce。释放时 bounce 与 handle 一并传给 backend，但由于 handle 可复制，只有高层 owner 能提供“只释放一次”的实际约束。
-
-当前没有 compile-fail 测试阻止 handle 复制；这也是评审 DMA soundness 时需要额外关注的点。
-
-### 5.2 异步所有权状态
-
-`CpuDmaBuffer` 提供面向异步 request 的显式状态转换：CPU-owned → Prepared → InFlight → Completed。硬件未 quiesce 时不能安全回收 backing。
-
-```mermaid
-stateDiagram-v2
-    [*] --> CpuDmaBuffer: allocate
-    CpuDmaBuffer --> PreparedDma: prepare_for_device
-    PreparedDma --> InFlightDma: unsafe into_in_flight
-    InFlightDma --> CompletedDma: unsafe complete_after_quiesce
-    CompletedDma --> CpuDmaBuffer: into_cpu_buffer
-    InFlightDma --> QuarantinedDma: quarantine
-```
-
-直接 Drop `InFlightDma` 或 `QuarantinedDma` 会故意泄漏 backing，避免硬件仍访问时内存被重用。正确驱动应在 reset/timeout 路径证明硬件 quiesce 后完成 owner 转换；无法证明时泄漏是安全隔离而不是正常资源管理策略。
-
-## 6. 运行时适配
-
-`components/axklib/src/dma.rs::KlibDma` 实现 `DmaOp`。它把通用 Layout 转成页数与对齐，通过 Klib 回调向 `ax-alloc` 申请页面。
-
-### 6.1 来源与释放元数据
-
-`ax-runtime` 根据 mask 选择 `alloc_dma32_pages()` 或普通 `alloc_pages()`，并按地址和页数释放。低地址路径只参与申请时的地址筛选；释放根据地址定位 Buddy section，因此不写入 allocation token 或 handle backend token。
-
-| Mask | Runtime request | Usage |
-| --- | --- | --- |
-| `<= u32::MAX` | `alloc_dma32_pages(num_pages, align, UsageKind::Dma)` | `UsageKind::Dma` |
-| `> u32::MAX` | `alloc_pages(num_pages, align, UsageKind::Dma)` | `UsageKind::Dma` |
-
-release 接口按值消费地址和页数，避免旧 `_dma32: bool` 与地址、页数分离后传错。页数不匹配或 mask/alignment 防御检查失败会立即归还页面。
-
-### 6.2 一致性与缓存策略
-
-当前 coherent adapter 通过 `mem_make_dma_coherent_uncached()` 修改 kernel mapping，allocation 前后执行平台 cache/页表项同步；释放前调用 `mem_restore_dma_cached()`。
-
-| 路径 | 平台动作 |
-| --- | --- |
-| coherent alloc | 申请页 → clean/属性准备 → 页表项改 uncached → 地址转换后备缓冲区/cache barrier → 清零 |
-| coherent free | 恢复 cached 页表项 → 地址转换后备缓冲区/cache barrier → 按地址归还 Buddy section |
-| contiguous sync | 按 direction clean/invalidate normal mapping |
-| streaming bounce | 使用符合 mask 的 Normal/Dma32 pages，并在 sync 时 copy |
-
-恢复 cached mapping 是释放 coherent page 的前置条件。失败时 adapter 立即终止该内核路径，绝不把属性不一致的 page 归还 Buddy；平台页表实现必须保证该恢复操作在合法 owner 上成功。
-
-## 7. Starry 共享缓冲区
-
-Starry `/dev/dma_heap` 使用同一 `dma-api` owner，不再保存裸释放元数据。fd、mmap 和加速器 import 共享一个 `Arc` allocation。
-
-### 7.1 分配与映射
-
-`DmaBufFile::alloc(len)` 将大小向 4 KiB 取整，使用 `device_with_mask(u32::MAX)` 创建页对齐 `CoherentArray<u8>`，满足当前 RK3588 输入输出内存管理单元-bypass 32-bit 地址寄存器。
+因此分层如下：
 
 ```mermaid
 flowchart LR
-    Heap["/dev/dma_heap alloc"] --> Owner["Arc<DmaBufAlloc>\nCoherentArray<u8>"]
-    Owner --> Fd["DmaBufFile fd"]
-    Owner --> Mmap["DeviceMmap retainer"]
-    Owner --> Import["RGA/JPEG/NPU operation retainer"]
-    Fd --> Last{"last Arc?"}
-    Mmap --> Last
-    Import --> Last
-    Last -->|"yes"| Drop["CoherentArray Drop\nrestore + free"]
+    A["设备探测：得到设备属性"] --> B["dma-api：检查地址、记录所有权、决定是否同步"]
+    B --> C["axklib：连接系统内存和页表能力"]
+    C --> D["somehal：转交当前平台实现"]
+    D --> E["someboot：执行本处理器所需的缓存和屏障操作"]
 ```
 
-`device_mmap()` 把 allocation clone 为 type-erased retainer，因此用户关闭 fd 后只要虚拟内存区域仍存在，物理页就不会释放。
+从内存对象的角度看，驱动持有的所有权对象会同时约束设备地址、内存页来源和平台缓存动作：
 
-### 7.2 导入契约
+![设备直接访存的内存与所有权关系](./images/dma-architecture.svg)
 
-`resolve_contiguous_dmabuf(fd)` 只接受本内核 `DmaBufFile`，返回 `Arc<DmaBufFile>`。设备 glue 获取 DMA base、size 和 operation-lifetime owner，并在提交前验证访问范围。
+`someboot` 和 `somehal` 仍然是必需的，但它们是最后一段平台实现，不是设备直接访存的完整语义接口。
 
-| 参与者 | 可以做 | 不可以做 |
-| --- | --- | --- |
-| Starry fd layer | 解析 fd、clone owner | 暴露可复制 free token |
-| accelerator glue | 校验 offset/length、保留 `Arc` | 释放 imported buffer |
-| driver core | 编程已验证 DMA address | 假定 fd 在 operation 中始终存在 |
-| mmap | 借用同一物理地址并持有 retainer | 独立拥有或释放 page |
+## 4. 唯一的设备描述
 
-同一 owner 模型适用于 RGA、JPEG 和 NPU import，避免每个设备建立自己的 DMA facade 或手工引用计数。
+一台设备的直接访存能力用 `DmaDeviceInfo` 一次性描述，包含三部分：
 
-## 8. 源码入口
-
-下面的文件构成 DMA 从公共能力到系统 fd 的完整路径。类型、约束、缓存转换、所有权和异常 teardown 用例见[内存管理测试](./testing.md)。
-
-Unsafe 修改必须遵循 `docs/guideline/code-quality.md` 的 Safety contract 要求。
-
-| 源码 | 审计重点 |
-| --- | --- |
-| `memory/dma-api/src/def.rs` | constraint、typed error、`DmaPod`、底层 handle |
-| `memory/dma-api/src/lib.rs` | `DeviceDma` validation 与高层构造 |
-| `memory/dma-api/src/common.rs` | `DmaAllocation` 单次 Drop |
-| `memory/dma-api/src/array.rs` / `dbox.rs` | typed coherent/contiguous owner |
-| `memory/dma-api/src/streaming.rs` | borrow、bounce sync 与 unmap |
-| `memory/dma-api/src/owned.rs` | async ownership state machine |
-| `components/axklib/src/dma.rs` | zone token、coherent mapping、cache adapter |
-| `os/arceos/modules/axruntime/src/klib.rs` | mask → 普通/DMA32 页入口与按值释放 |
-| `os/StarryOS/kernel/src/file/dmabuf.rs` | fd/mmap/import 共享 `Arc` owner |
-
-任何新 manual `unsafe impl DmaPod`、裸 handle 构造或 in-flight completion 都应作为独立 soundness review 点，而不是普通样板代码。
-
-## 9. 设备请求实例
-
-DMA 请求是否有效由整个地址范围、设备 domain 和 ownership 阶段共同决定。下面以 descriptor ring、streaming RX 和 dma-buf import 展开三种不同生命周期。
-
-### 9.1 描述符环分配
-
-假设设备使用 32-bit DMA address，descriptor ring 为 256 项、每项 32 B，要求 4 KiB 对齐、不得跨 64 KiB boundary，单 segment 上限 16 KiB。请求大小为 8192 B。
+1. 设备地址属于哪个地址空间。
+2. 设备和处理器是否自动保持缓存一致。
+3. 设备地址、对齐、边界和单段长度限制。
 
 ```rust
-let constraints = DmaConstraints::new(u32::MAX as u64)
-    .with_align(0x1000)
-    .with_boundary(0x1_0000)
-    .with_max_segment_size(0x4000);
-let device = axklib::dma::device_with_mask(u32::MAX as u64)
-    .with_constraints(constraints);
-let ring = device.coherent_array_zero_with_align::<Descriptor>(256, 0x1000)?;
+let info = DmaDeviceInfo::new(
+    DmaDomainId::Direct,
+    DmaCoherency::NonCoherent,
+    DmaConstraints::new(u32::MAX as u64)
+        .with_align(64)
+        .with_boundary(0x1_0000)
+        .with_max_segment_size(0x4000),
+);
+let dma = DeviceDma::new(info, axklib::dma::op());
 ```
 
-`Descriptor` 应通过 `bytemuck::Pod + Zeroable` 或等价布局断言证明其 DMA plain-data 属性。8192 B 没有超过 16 KiB；runtime 构造两个 Dma32 pages，并在 backend 返回后再次验证起点、末地址和 boundary。
+`DeviceDma` 只接受完整描述和系统实现，不再接受一组容易错位的零散参数。块设备队列也直接携带同一个 `DmaDeviceInfo`，文件系统不再把设备域、一致性和地址限制重新拼装一遍。
 
-| Backend 返回 DMA start | Range | 结果 |
-| --- | --- | --- |
-| `0x0010_0000` | `0x0010_0000..0x0010_2000` | 满足 4 KiB alignment 和 64 KiB boundary |
-| `0x0010_f000` | `0x0010_f000..0x0011_1000` | 跨 `0x0011_0000` boundary，释放 token 后返回 `BoundaryCross` |
-| `0xffff_f000` | `0xffff_f000..0x1_0000_1000` | 末地址超出 32-bit mask，释放 token 后返回 `DmaMaskNotMatch` |
+### 4.1 地址空间只有两种明确情况
 
-mask 检查必须覆盖最后一个 byte，而不是只检查 start。constraint 验证失败时，`DeviceDma` 消费 backend token执行对应 deallocation，调用方不会得到一个需要手工清理的半有效 owner。
+`DmaDomainId` 不再使用“历史全局值”或数字零回退。
 
-```rust
-match self.check_alloc_handle(&res, constraints) {
-    Ok(()) => Ok(res),
-    Err(error) => {
-        unsafe { self.op.dealloc_coherent(res) };
-        Err(error)
-    }
-}
-```
+- `DmaDomainId::Direct`：设备地址就是物理地址。当前未启用设备地址转换的平台使用这一项。
+- `DmaDomainId::Translated(编号)`：为以后接入设备地址转换保留的明确类型。当前实现还没有建立这种转换空间，不能因为填写了编号就认为已经完成地址转换或设备隔离；真正接入后，编号必须来自已建立并绑定到设备的转换空间。
 
-成功后 `CoherentArray` 独占 move-only handle。驱动只保存 owner和 `dma_addr()`，不能把 `(addr, pages, dma32)` 拆成三份长期状态。
+这样可以避免把一个随手填写的数字误认为已经实现了设备隔离。将来接入地址转换硬件时，也必须从真正的转换空间取得编号，不能继续借用全局占位值。
 
-### 9.2 流式接收与回弹
+### 4.2 缓存一致性是设备属性
 
-假设网络驱动已有一个位于物理地址 `0x1_2000_0000` 的 4096 B CPU buffer，但设备只能访问 32-bit 地址。`map_streaming_slice(..., FromDevice)` 无法直接使用原物理地址，`KlibDma` 必须从 Dma32 路径申请 bounce page。
+`DmaCoherency::Coherent` 表示设备和处理器能够自动看到对方写入的内容。`DmaCoherency::NonCoherent` 表示所有权切换时必须执行平台规定的缓存处理。
+
+它不是由处理器种类单独决定的。同一种处理器上，不同设备也可能具有不同属性。这个值应来自设备树、固件表、总线信息或明确的平台配置。
+
+### 4.3 地址限制必须检查整个范围
+
+`DmaConstraints` 包含：
+
+- `addr_mask`：设备能表示的地址范围。
+- `align`：设备地址起点必须满足的对齐。
+- `boundary`：一个连续段不能跨过的边界。
+- `max_segment_size`：单个连续段的最大长度。
+
+检查必须覆盖最后一个字节。只检查起始地址会漏掉“开头在范围内、末尾已经越界”的情况。平台分配返回不合规地址时，`DeviceDma` 会先收回该分配，再向驱动返回明确错误。
+
+## 5. 内存所有权怎样切换
+
+公开接口只保留一套所有权用语：
+
+- `prepare_for_device(范围)`：处理器已经写完，把指定范围交给设备。
+- `complete_for_cpu(范围)`：设备已经停止访问，把指定范围交还处理器。
+
+不再同时提供另一套 `sync_for_*` 名称，也不再提供仅仅转调的 `*_all` 兼容入口。整块数组使用 `0..bytes_len()` 明确范围；只有固定大小的单值容器可以省略范围。
+
+以“处理器写、设备读”为例：
 
 ```mermaid
 sequenceDiagram
-    participant Driver
-    participant Map as StreamingMap
-    participant Klib as KlibDma
-    participant Device
-    participant CpuBuf as original CPU buffer
-
-    Driver->>Map: map FromDevice
-    Map->>Klib: map_streaming(constraints, original)
-    Klib->>Klib: allocate Dma32 bounce page
-    Klib-->>Map: DmaMapHandle(bounce_ptr, dma_addr)
-    Map->>Device: prepare_for_device / submit DMA address
-    Device-->>Map: completion after hardware quiesce
-    Map->>Klib: sync_map_for_cpu
-    Klib->>CpuBuf: invalidate and copy bounce -> original
-    Driver->>Map: Drop
-    Map->>Klib: consume handle and free bounce page
+    participant C as 处理器
+    participant M as 直接访存缓冲区
+    participant D as 设备
+    C->>M: 写入数据
+    C->>M: prepare_for_device
+    M->>D: 提供设备地址
+    D->>M: 读取数据并完成
+    D-->>C: 完成通知
 ```
 
-`FromDevice` 不需要在提交前把原 buffer 内容复制到 bounce，因为设备将覆盖目标；完成后必须 invalidate device-written range 并 copy back。`ToDevice` 的方向相反，提交前 copy-in/clean，完成后通常不 copy back。
+以“设备写、处理器读”为例：
 
-| Direction | 提交前 bounce | 完成后 bounce |
-| --- | --- | --- |
-| `ToDevice` | original → bounce | 无 copy-back |
-| `FromDevice` | 无需保留 original 内容 | bounce → original |
-| `Bidirectional` | original → bounce | bounce → original |
-
-硬件 completion 到达不自动证明 DMA 已停止。驱动必须按设备协议确认 queue ownership 已回到 CPU，才能调用 complete/sync 并释放 mapping；timeout 路径无法证明 quiesce 时应进入 quarantine，而不是 Drop 后复用页面。
-
-### 9.3 一致性页属性转换
-
-当前 identity adapter 的 coherent allocation 使用普通物理页，但在 CPU kernel mapping 中切换为 uncached。顺序是分配、cache 准备、修改页表项、地址转换后备缓冲区/cache barrier、清零，再交给设备。
-
-```text
-allocate Normal/Dma32 pages
-        |
-        v
-dma_coherent_before_make_uncached
-        |
-        v
-kernel 页表项 cached -> uncached
-        |
-        v
-地址转换后备缓冲区/cache mapping-update barrier
-        |
-        v
-zero bytes and publish DmaAllocHandle
+```mermaid
+sequenceDiagram
+    participant C as 处理器
+    participant M as 直接访存缓冲区
+    participant D as 设备
+    C->>M: prepare_for_device
+    M->>D: 提供设备地址
+    D->>M: 写入结果并停止访问
+    D-->>C: 完成通知
+    C->>M: complete_for_cpu
+    C->>M: 读取结果
 ```
 
-释放顺序必须先撤销设备使用并恢复 cached mapping，再按地址和页数归还 Buddy。分配时的 `Normal`/`Dma32` 只决定地址筛选，不参与释放路由。
+对于自动保持一致的设备，这些上层步骤仍然保留，因为所有权顺序没有消失；底层只是跳过不需要的缓存操作。对于不能自动保持一致的设备，同样的步骤会下传到平台缓存实现。
 
-```rust
-unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
-    let num_pages = DmaPages::layout_pages(handle.layout());
-    CoherentDmaPolicy::restore_cached(handle.as_ptr(), num_pages)
-        .expect("DMA pages must regain their cached mapping before release");
-    DmaPages::dealloc_pages(
-        handle.as_ptr(),
-        num_pages,
-    );
-}
+## 6. 三类缓冲区
+
+### 6.1 自动一致缓冲区
+
+`CoherentArray<T>` 和 `CoherentBox<T>` 适合设备描述符、命令队列、完成队列等频繁交接的小块控制数据。
+
+如果设备本身自动一致，系统保留普通映射；如果设备不自动一致，后端可以为处理器建立专用映射，当前实现使用无缓存别名。这个映射只是保证处理器按正确方式访问同一块内存，并不会把原本不一致的设备变成一致设备。驱动不需要为两种情况写两套逻辑。
+
+### 6.2 物理连续缓冲区
+
+`ContiguousArray<T>` 和 `ContiguousBox<T>` 适合数据区。它们使用普通的处理器映射，在交给设备和收回时执行显式所有权转换。
+
+高层组合方法如 `copy_to_device_from_slice` 和 `read_from_device` 仍然保留，因为它们表达的是一次完整动作，而不是旧接口的别名。
+
+### 6.3 临时映射已有内存
+
+`StreamingMap<T>` 用于一次请求中临时交给设备的现有内存。如果原内存地址不满足设备限制，平台实现会申请一块符合限制的中转内存：
+
+- 处理器交给设备前，按传输方向复制到中转内存。
+- 设备交还处理器后，按传输方向复制回原内存。
+- 映射对象销毁时，自动解除映射并释放中转内存。
+
+## 7. 异步请求不能提前释放
+
+块设备请求可能在提交后很久才完成。仅收到超时不代表设备已经停止访问内存。因此异步缓冲区使用类型变化表示状态：
+
+```mermaid
+stateDiagram-v2
+    [*] --> CpuDmaBuffer: 处理器持有
+    CpuDmaBuffer --> PreparedDma: 准备交给设备
+    PreparedDma --> InFlightDma: 已提交给设备
+    InFlightDma --> CompletedDma: 确认设备已经停止
+    CompletedDma --> CpuDmaBuffer: 重新交给处理器
+    InFlightDma --> QuarantinedDma: 无法确认设备已经停止
 ```
 
-恢复失败时不能继续 free，因为 Buddy 后续可能把仍带 uncached alias 或失效地址转换后备缓冲区状态的页交给普通内核对象。当前实现把这种平台一致性故障视为不可恢复错误。
+无法证明设备已经停止时，宁可隔离这块内存，也不能把它重新交给分配器。否则设备可能继续写入已经被别处使用的页面，造成难以复现的数据破坏。
 
-### 9.4 dma-buf 引用顺序
+## 8. 系统实现具体怎样同步
 
-假设用户创建 dma-buf fd 7，随后 mmap，再把 fd 传给 RGA，最后按“关闭 fd、解除 mmap、RGA completion”顺序释放。三者都持有同一个 `Arc<DmaBufAlloc>`。
+当前调用链为：
 
-| 时刻 | fd owner | mmap retainer | RGA retainer | backing 状态 |
-| --- | ---: | ---: | ---: | --- |
-| allocation 后 | 1 | 0 | 0 | live |
-| mmap 后 | 1 | 1 | 0 | live |
-| import 后 | 1 | 1 | 1 | live |
-| close fd | 0 | 1 | 1 | live |
-| munmap | 0 | 0 | 1 | live |
-| RGA completion | 0 | 0 | 0 | 最后一个 Arc Drop，恢复 cached并释放 Dma32 pages |
+1. 驱动调用 `prepare_for_device` 或 `complete_for_cpu`。
+2. `dma-api` 根据设备一致性和传输方向决定是否需要缓存操作。
+3. `axklib` 把内存范围传给内核运行时。
+4. 动态平台层把请求交给 `somehal::cache`。
+5. `somehal` 转交 `someboot::mem`。
+6. `someboot` 的各处理器实现执行对应缓存指令和必要屏障。
 
-驱动 core只接收 DMA address、length 和 operation-lifetime retainer，不接收释放函数。这样 fd close 与 device completion 的先后顺序不会造成 use-after-free，也不需要在每个加速器中复制 dma-buf 引用计数。
+三种基本动作是：
+
+| 动作 | 目的 |
+| --- | --- |
+| 清理 | 把处理器缓存中的新数据写到设备可见的位置 |
+| 失效 | 丢弃处理器可能保存的旧数据，让之后读取设备写入的新内容 |
+| 清理并失效 | 双向传输时同时处理两种风险 |
+
+平台函数只处理“怎样做”。是否调用、调用方向和内存生命周期仍由 `dma-api` 与驱动所有权流程决定。
+
+## 9. 纯粹接口的取舍
+
+本次设计有意不保留历史兼容层：
+
+- 删除 `DeviceDma::new_legacy`。
+- 删除 `DmaDomainId::legacy_global` 和数字零自动回退。
+- 删除 `axklib::dma::device_with_mask`，改为传入完整设备描述。
+- 删除公开的 `sync_for_device`、`sync_for_cpu` 及仅转调的整块别名。
+- `DmaAllocHandle` 只保留一个构造入口，明确给出处理器访问地址、分配器释放地址和设备地址。
+- 块设备队列只保存一个 `DmaDeviceInfo`，不再复制其中字段。
+
+这样做会要求所有调用方一次性迁移，但最终只有一条正确路径，后续代码无需猜测旧接口和新接口的差别。
+
+## 10. 验证重点
+
+验证不能只看能否编译，还要覆盖下列行为：
+
+- 自动一致设备不会执行多余缓存操作，也不会错误申请专用无缓存映射。
+- 非自动一致设备在交给设备和交还处理器时执行对应缓存操作。
+- 设备地址的最后一个字节不能超过地址范围。
+- 不满足地址范围时能够使用中转内存，并按传输方向复制。
+- 不同地址转换空间准备的缓冲区不能混用。
+- 块设备队列传递的设备描述与实际缓冲区完全一致。
+- 设备未停止时，异步缓冲区不能被释放或复用。
+
+这些检查共同保证既修复 1775 的一致性误判，也不会破坏 SG2002 等确实需要缓存处理的平台。
+
+## 11. 主要源码位置
+
+| 文件 | 作用 |
+| --- | --- |
+| `memory/dma-api/src/def.rs` | 设备描述、地址空间、限制和错误类型 |
+| `memory/dma-api/src/lib.rs` | 设备能力入口和统一检查 |
+| `memory/dma-api/src/array.rs` | 数组缓冲区及范围所有权转换 |
+| `memory/dma-api/src/dbox.rs` | 固定大小缓冲区 |
+| `memory/dma-api/src/streaming.rs` | 已有内存的临时映射 |
+| `memory/dma-api/src/owned.rs` | 异步请求状态变化 |
+| `components/axklib/src/dma.rs` | 内核内存、地址和缓存能力连接 |
+| `os/arceos/modules/axruntime/src/klib.rs` | 内核运行时实现 |
+| `platforms/axplat-dyn/src/mem.rs` | 动态平台转接 |
+| `platforms/somehal/src/cache.rs` | 平台硬件抽象入口 |
+| `platforms/someboot/src/mem/mod.rs` | 各处理器缓存操作入口 |

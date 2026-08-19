@@ -49,31 +49,16 @@ impl PartialOrd<u64> for DmaAddr {
     }
 }
 
-/// Stable identity for one DMA translation domain.
+/// Identity of the address domain used by one DMA device.
 ///
 /// Drivers use this to reject already-prepared DMA buffers that were prepared
 /// for a different device/IOMMU domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DmaDomainId(NonZeroU64);
-
-impl DmaDomainId {
-    pub const fn new(id: NonZeroU64) -> Self {
-        Self(id)
-    }
-
-    /// Compatibility domain for legacy callers that have not plumbed a
-    /// device/IOMMU-specific identity yet.
-    pub const fn legacy_global() -> Self {
-        Self(NonZeroU64::MIN)
-    }
-
-    pub fn from_raw(id: u64) -> Self {
-        Self(NonZeroU64::new(id).unwrap_or(NonZeroU64::MIN))
-    }
-
-    pub const fn get(self) -> NonZeroU64 {
-        self.0
-    }
+pub enum DmaDomainId {
+    /// Device addresses are physical addresses shared by direct-mapped devices.
+    Direct,
+    /// Device addresses are translated in the identified IOMMU domain.
+    Translated(NonZeroU64),
 }
 
 /// Device-visible DMA constraints.
@@ -109,19 +94,63 @@ impl DmaConstraints {
         }
     }
 
-    pub fn with_align(mut self, align: usize) -> Self {
-        self.align = align.max(1);
+    pub const fn with_align(mut self, align: usize) -> Self {
+        self.align = if align == 0 { 1 } else { align };
         self
     }
 
-    pub fn with_boundary(mut self, boundary: usize) -> Self {
-        self.boundary = Some(boundary.max(1));
+    pub const fn with_boundary(mut self, boundary: usize) -> Self {
+        self.boundary = Some(if boundary == 0 { 1 } else { boundary });
         self
     }
 
-    pub fn with_max_segment_size(mut self, max_segment_size: usize) -> Self {
+    pub const fn with_max_segment_size(mut self, max_segment_size: usize) -> Self {
         self.max_segment_size = Some(max_segment_size);
         self
+    }
+}
+
+/// Complete device-scoped DMA capability metadata.
+///
+/// This value deliberately contains no OS backend. It can cross portable
+/// driver boundaries without exposing platform implementation details.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmaDeviceInfo {
+    domain: DmaDomainId,
+    coherency: DmaCoherency,
+    constraints: DmaConstraints,
+}
+
+impl DmaDeviceInfo {
+    pub const fn new(
+        domain: DmaDomainId,
+        coherency: DmaCoherency,
+        constraints: DmaConstraints,
+    ) -> Self {
+        Self {
+            domain,
+            coherency,
+            constraints,
+        }
+    }
+
+    pub const fn domain(self) -> DmaDomainId {
+        self.domain
+    }
+
+    pub const fn coherency(self) -> DmaCoherency {
+        self.coherency
+    }
+
+    pub const fn constraints(self) -> DmaConstraints {
+        self.constraints
+    }
+
+    pub const fn with_constraints(self, constraints: DmaConstraints) -> Self {
+        Self {
+            constraints,
+            ..self
+        }
     }
 }
 
@@ -182,21 +211,7 @@ pub struct DmaAllocHandle {
 }
 
 impl DmaAllocHandle {
-    /// # Safety
-    ///
-    /// `cpu_addr` must point to a live allocation described by `layout`, and
-    /// `dma_addr` must be the device-visible address for that allocation.
-    pub unsafe fn new(cpu_addr: NonNull<u8>, dma_addr: DmaAddr, layout: Layout) -> Self {
-        Self {
-            cpu_addr,
-            allocation_addr: cpu_addr,
-            dma_addr,
-            layout,
-        }
-    }
-
-    /// Creates a handle whose CPU mapping differs from the allocator-owned
-    /// address that must be used during release.
+    /// Creates a handle from its CPU-visible and allocator-owned addresses.
     ///
     /// # Safety
     ///
@@ -204,7 +219,7 @@ impl DmaAllocHandle {
     /// allocation described by `layout`. `cpu_addr` must remain the only CPU
     /// mapping exposed to the allocation owner until deallocation, and
     /// `dma_addr` must be the device-visible address for those pages.
-    pub unsafe fn new_with_allocation(
+    pub unsafe fn new(
         cpu_addr: NonNull<u8>,
         allocation_addr: NonNull<u8>,
         dma_addr: DmaAddr,
@@ -307,9 +322,7 @@ mod tests {
         let alias = NonNull::new(0x8000_usize as *mut u8).unwrap();
         let allocation = NonNull::new(0x4000_usize as *mut u8).unwrap();
         let layout = Layout::from_size_align(0x1000, 0x1000).unwrap();
-        let handle = unsafe {
-            DmaAllocHandle::new_with_allocation(alias, allocation, 0x2000_u64.into(), layout)
-        };
+        let handle = unsafe { DmaAllocHandle::new(alias, allocation, 0x2000_u64.into(), layout) };
 
         assert_eq!(handle.as_ptr(), alias);
         assert_eq!(handle.allocation_ptr(), allocation);
