@@ -2,6 +2,7 @@ use alloc::{
     collections::BTreeMap,
     string::{String, ToString},
     sync::Arc,
+    vec::Vec,
 };
 use core::{cell::Cell, slice};
 
@@ -476,6 +477,8 @@ impl CowBackend {
 }
 
 struct CowCloneTransaction<'a> {
+    parent_page_table: &'a mut PageTable,
+    parent_original_flags: Vec<(VirtAddr, MappingFlags)>,
     rollback: PageTableCowCloneRollback<'a>,
     start: VirtAddr,
     cloned_end: VirtAddr,
@@ -485,14 +488,17 @@ struct CowCloneTransaction<'a> {
 
 impl<'a> CowCloneTransaction<'a> {
     fn new(
-        page_table: &'a mut PageTable,
+        parent_page_table: &'a mut PageTable,
+        child_page_table: &'a mut PageTable,
         child_acct: Option<&'a MemoryAccounting>,
         start: VirtAddr,
         page_size: usize,
     ) -> Self {
         Self {
+            parent_page_table,
+            parent_original_flags: Vec::new(),
             rollback: PageTableCowCloneRollback {
-                page_table,
+                page_table: child_page_table,
                 child_acct,
                 page_size,
             },
@@ -505,6 +511,27 @@ impl<'a> CowCloneTransaction<'a> {
 
     fn page_table_mut(&mut self) -> &mut PageTable {
         self.rollback.page_table
+    }
+
+    fn protect_parent_page(
+        &mut self,
+        vaddr: VirtAddr,
+        original_flags: MappingFlags,
+        cow_flags: MappingFlags,
+    ) -> StarryResult {
+        if original_flags == cow_flags {
+            return Ok(());
+        }
+        // Reserve rollback state before mutating the published parent PTE, so
+        // bookkeeping OOM cannot make a failed clone visible to the parent.
+        self.parent_original_flags
+            .try_reserve(1)
+            .map_err(|_| StarryError::NoMemory)?;
+        self.parent_original_flags.push((vaddr, original_flags));
+        self.parent_page_table
+            .protect_page(vaddr, cow_flags)
+            .map(|_| ())
+            .map_err(Into::into)
     }
 
     fn record_cloned_page(&mut self, vaddr: VirtAddr) {
@@ -520,6 +547,11 @@ impl Drop for CowCloneTransaction<'_> {
     fn drop(&mut self) {
         if self.committed {
             return;
+        }
+        while let Some((vaddr, original_flags)) = self.parent_original_flags.pop() {
+            if let Err(err) = self.parent_page_table.protect_page(vaddr, original_flags) {
+                warn!("failed to restore parent COW page {vaddr:?} during rollback: {err}");
+            }
         }
         while self.cloned_end > self.start {
             self.cloned_end -= self.page_size;
@@ -677,11 +709,12 @@ impl BackendOps for CowBackend {
         let cow_flags = flags - MappingFlags::WRITE;
         let parent_acct = acct.parent;
         let child_acct = acct.child;
-        let mut transaction = CowCloneTransaction::new(new_pt, child_acct, range.start, self.size);
+        let mut transaction =
+            CowCloneTransaction::new(old_pt, new_pt, child_acct, range.start, self.size);
 
         for vaddr in pages_in(range, self.size)? {
-            match old_pt.query(vaddr) {
-                Ok((paddr, _pte_flags, page_size)) => {
+            match transaction.parent_page_table.query(vaddr) {
+                Ok((paddr, pte_flags, page_size)) => {
                     assert_eq!(page_size, self.size);
                     let frame = FRAME_TABLE
                         .lock()
@@ -701,9 +734,9 @@ impl BackendOps for CowBackend {
                             return Err(StarryError::NoMemory);
                         }
                     };
-                    if let Err(err) = old_pt.protect_page(vaddr, cow_flags) {
+                    if let Err(err) = transaction.protect_parent_page(vaddr, pte_flags, cow_flags) {
                         drop(frame);
-                        return Err(err.into());
+                        return Err(err);
                     }
                     if let Err(err) = transaction
                         .page_table_mut()
@@ -835,10 +868,10 @@ fn cow_clone_map_failure_restores_resources() -> bool {
     {
         return false;
     }
-    let Ok((first_frame, ..)) = parent.pt.query(start) else {
+    let Ok((first_frame, first_parent_flags, ..)) = parent.pt.query(start) else {
         return false;
     };
-    let Ok((second_frame, ..)) = parent.pt.query(second_page) else {
+    let Ok((second_frame, second_parent_flags, ..)) = parent.pt.query(second_page) else {
         return false;
     };
 
@@ -892,6 +925,20 @@ fn cow_clone_map_failure_restores_resources() -> bool {
             existing_paddr,
         })) if vaddr == second_page && existing_paddr == second_frame
     ) && matches!(child_pt.query(start), Err(PagingError::NotMapped))
+        && matches!(
+            parent_pt.query(start),
+            Ok((paddr, parent_flags, page_size))
+                if paddr == first_frame
+                    && parent_flags == first_parent_flags
+                    && page_size == PAGE_SIZE_4K
+        )
+        && matches!(
+            parent_pt.query(second_page),
+            Ok((paddr, parent_flags, page_size))
+                if paddr == second_frame
+                    && parent_flags == second_parent_flags
+                    && page_size == PAGE_SIZE_4K
+        )
         && matches!(
             child_pt.query(second_page),
             Ok((paddr, _, page_size))
