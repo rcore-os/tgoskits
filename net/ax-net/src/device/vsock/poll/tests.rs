@@ -1,9 +1,10 @@
 use alloc::{boxed::Box, sync::Arc, task::Wake};
 use core::{
     sync::atomic::{AtomicBool, AtomicUsize},
-    task::{Context, Waker},
+    task::Waker,
 };
 
+use axpoll::{PollRegistrar, SharedObserver};
 use rdif_vsock::{DriverGeneric, Interface, VsockAddr, VsockConnId, VsockError};
 
 use super::*;
@@ -122,7 +123,10 @@ fn received_event_releases_device_gate_before_waking_socket() {
         wake_count: AtomicUsize::new(0),
     });
     let waker = Waker::from(probe.clone());
-    connection.register_rx_poll(&mut Context::from_waker(&waker));
+    let mut registration = PollRegistrar::<SharedObserver>::new(&waker);
+    // SAFETY: this test registers from task context and keeps the registration
+    // alive until the device event publishes RX readiness.
+    unsafe { connection.register_rx_shared(&mut registration) };
 
     let requested_rx = Arc::new(AtomicUsize::new(0));
     *VSOCK_DEVICE.lock() = Some(Box::new(TestVsock {
@@ -173,7 +177,10 @@ fn credit_update_releases_device_gate_before_waking_sender() {
         wake_count: AtomicUsize::new(0),
     });
     let waker = Waker::from(probe.clone());
-    connection.register_tx_poll(&mut Context::from_waker(&waker));
+    let mut registration = PollRegistrar::<SharedObserver>::new(&waker);
+    // SAFETY: this test registers from task context and keeps the registration
+    // alive until the device event publishes TX readiness.
+    unsafe { connection.register_tx_shared(&mut registration) };
 
     *VSOCK_DEVICE.lock() = Some(Box::new(TestVsock {
         requested_rx: Arc::new(AtomicUsize::new(0)),

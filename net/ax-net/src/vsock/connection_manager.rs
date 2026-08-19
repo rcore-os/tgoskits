@@ -283,8 +283,10 @@ mod tests {
     use alloc::{sync::Arc, task::Wake};
     use core::{
         sync::atomic::{AtomicBool, Ordering},
-        task::{Context, Waker},
+        task::Waker,
     };
+
+    use axpoll::{PollRegistrar, SharedObserver};
 
     use super::*;
 
@@ -313,7 +315,10 @@ mod tests {
         drop(state);
         let wake_flag = Arc::new(WakeFlag(AtomicBool::new(false)));
         let waker = Waker::from(wake_flag.clone());
-        connection.register_tx_poll(&mut Context::from_waker(&waker));
+        let mut registration = PollRegistrar::<SharedObserver>::new(&waker);
+        // SAFETY: this axtest registers from task context and keeps the
+        // registration alive through the readiness publication.
+        unsafe { connection.register_tx_shared(&mut registration) };
         connection.wake_tx();
 
         assert!(wake_flag.0.load(Ordering::Acquire));
