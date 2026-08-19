@@ -220,6 +220,15 @@ fn owner_spin_allows_higher_priority_preemption() {
         let start_waiter = Arc::clone(&start_waiter);
         thread::spawn(move || {
             pin_current_to_cpu(1);
+            // Keep the first Linux owner-spin eligibility check free from a
+            // fair time-slice reschedule; the priority-99 probe must still
+            // preempt this waiter after it enters the spin loop.
+            let current = current_thread_id().expect("PI owner-spin waiter needs a thread id");
+            set_thread_policy(
+                current,
+                SchedulePolicy::fifo(RtPriority::new(50).expect("priority 50 must be valid")),
+            )
+            .expect("failed to promote PI owner-spin waiter");
             while !start_waiter.load(Ordering::Acquire) {
                 core::hint::spin_loop();
             }
@@ -235,23 +244,23 @@ fn owner_spin_allows_higher_priority_preemption() {
 
     release_probe.store(true, Ordering::Release);
     task_api::ax_wait_queue_wake(&PROBE_WAIT, 1);
-    task_test_hooks::allow_pi_owner_spin();
     let started = Instant::now();
     while !probe_ran.load(Ordering::Acquire) && started.elapsed() < PROGRESS_TIMEOUT {
         core::hint::spin_loop();
     }
-    let preempted_while_owner_locked = probe_ran.load(Ordering::Acquire);
+    let preempted_while_owner_spinning = probe_ran.load(Ordering::Acquire);
+    stop_probe.store(true, Ordering::Release);
+    task_test_hooks::allow_pi_owner_spin();
     let owner_spin_iterations = task_test_hooks::pi_owner_spin_iterations();
 
     release_owner.store(true, Ordering::Release);
-    stop_probe.store(true, Ordering::Release);
     owner.join().unwrap();
     waiter.join().unwrap();
     task_api::ax_wait_queue_wake(&PROBE_WAIT, 1);
     probe.join().unwrap();
     task_test_hooks::finish_pi_owner_spin_probe();
     assert!(
-        preempted_while_owner_locked,
+        preempted_while_owner_spinning,
         "PI owner spinning must remain preemptible like Linux rtmutex"
     );
     assert_eq!(
