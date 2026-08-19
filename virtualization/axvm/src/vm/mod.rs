@@ -362,6 +362,11 @@ impl VmRuntimeHandle {
         self.vcpu_task_list.lock().contains_key(&vcpu_id)
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn vcpu_task(&self, vcpu_id: usize) -> Option<crate::AxTaskRef> {
+        self.vcpu_task_list.lock().get(&vcpu_id).cloned()
+    }
+
     pub(crate) fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: crate::AxTaskRef) -> AxVmResult {
         let mut vcpu_task_list = self.vcpu_task_list.lock();
         if vcpu_task_list.contains_key(&vcpu_id) {
