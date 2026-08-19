@@ -116,6 +116,11 @@ worker。重新开启 source 必须使用固定协议：
 自己的 IER/IMSC，禁止调用 `disable_irq()` 屏蔽 shared controller line；controller handle
 只用于 runtime startup/shutdown 和注册失败回滚。
 
+RX 或 TX 的单次预算耗尽时，worker 保留已有 pending/rearm/notify 状态，并在释放 UART
+register gate 和相关锁后主动让出一次调度机会，再继续处理本轮另一方向或进入下一轮。
+这样持续串口积压仍会推进，RX 也不会跳过同轮 TX，但固定的 `owner_cpu` 不会成为无界运行
+段，source mask/rearm 的所有权保持不变。
+
 ## SMP 与内存顺序
 
 IRQ affinity 和 worker cpumask 都固定到同一 `owner_cpu`，以满足当前 `UartPort` 的本地
