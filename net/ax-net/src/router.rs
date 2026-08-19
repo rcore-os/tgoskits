@@ -51,7 +51,7 @@ use core::{
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
 use ax_sync::{Mutex, SpinLock, SpinRwLock as RwLock};
 use ax_task::WaitQueue;
-use axpoll::IoEvents;
+use axpoll::{IoEvents, PollRegistrar, SharedObserver};
 use smoltcp::{
     iface::SocketSet,
     phy::{DeviceCapabilities, Medium, PacketMeta},
@@ -65,7 +65,7 @@ use smoltcp::{
 
 use crate::{
     LISTEN_TABLE,
-    config::{DeviceBinding, InterfaceId, RouteInfo},
+    config::{InterfaceId, RouteInfo},
     consts::{DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::{ArpEntry, Device},
     ip_tos::apply_egress_ip_tos,
@@ -274,6 +274,10 @@ struct DeviceHandle {
     tx_wake: Arc<WaitQueue>,
     /// Waker registered into the concrete device.
     rx_waker: Waker,
+    /// Exact registration of `rx_waker` in the concrete device readiness source.
+    rx_registration: SpinLock<Option<PollRegistrar<SharedObserver>>>,
+    /// Exact registration of the global protocol-poll waker in the device source.
+    protocol_registration: SpinLock<Option<PollRegistrar<SharedObserver>>>,
     /// Sticky readiness bit for RX wakeups. `WaitQueue` notifications are not
     /// sticky, so a device wake that races with the worker entering `wait()`
     /// must be preserved here until the worker observes it.
@@ -305,8 +309,8 @@ impl PreparedDeviceWorkers {
     /// Initializes device-local and global readiness registrations.
     pub(crate) fn register_device_waker(&self, waker: &core::task::Waker) {
         for device in &self.devices {
-            register_device_poll(device, &device.rx_waker);
-            register_device_poll(device, waker);
+            refresh_device_poll_registration(device, &device.rx_waker, &device.rx_registration);
+            refresh_device_poll_registration(device, waker, &device.protocol_registration);
         }
     }
 
@@ -353,6 +357,8 @@ impl DeviceHandle {
             rx_waker: Waker::from(Arc::new(DeviceRxWake {
                 device: weak.clone(),
             })),
+            rx_registration: SpinLock::new(None),
+            protocol_registration: SpinLock::new(None),
             rx_ready: AtomicBool::new(false),
             rx_bytes: AtomicU64::new(0),
             rx_packets: AtomicU64::new(0),
@@ -504,13 +510,21 @@ impl DeviceHandle {
     }
 }
 
-fn register_device_poll(device: &DeviceHandle, waker: &core::task::Waker) {
+fn refresh_device_poll_registration(
+    device: &DeviceHandle,
+    waker: &core::task::Waker,
+    slot: &SpinLock<Option<PollRegistrar<SharedObserver>>>,
+) {
     let poll = { device.inner.lock().readiness_poll() };
-    if let Some(poll) = poll {
+    let registration = poll.map(|poll| {
+        let mut registrar = PollRegistrar::new(waker);
         // Device poll set is cloned while holding the device lock; registration
         // runs after releasing it.
-        unsafe { poll.register(waker, IoEvents::IN | IoEvents::OUT | IoEvents::ERR) };
-    }
+        unsafe { registrar.register(&poll, IoEvents::IN | IoEvents::OUT | IoEvents::ERR) };
+        registrar
+    });
+    let previous = core::mem::replace(&mut *slot.lock(), registration);
+    drop(previous);
 }
 
 fn wake_device_poll(device: &DeviceHandle) {
@@ -898,16 +912,6 @@ impl Router {
         }
     }
 
-    /// Registers a waker for devices allowed by a socket's binding.
-    pub fn register_waker(&self, binding: DeviceBinding, waker: &core::task::Waker) {
-        for device in &self.devices {
-            if binding.bound_if.is_none_or(|id| id == device.interface_id) {
-                register_device_poll(device, &device.rx_waker);
-                register_device_poll(device, waker);
-            }
-        }
-    }
-
     /// Routes smoltcp-emitted TX packets to loopback or device workers.
     pub fn dispatch(&mut self, _timestamp: Instant, sockets: &mut SocketSet<'_>) -> bool {
         let mut poll_next = false;
@@ -1184,7 +1188,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         }
 
         if !received && local_batch.is_empty() {
-            register_device_poll(&device, &device.rx_waker);
+            refresh_device_poll_registration(&device, &device.rx_waker, &device.rx_registration);
             device
                 .rx_wake
                 .wait_timeout_until(DEVICE_RX_IDLE_POLL_INTERVAL, || device.take_rx_ready());

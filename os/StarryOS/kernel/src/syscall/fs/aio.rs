@@ -7,7 +7,6 @@ use alloc::{
 };
 use core::{
     ffi::c_int,
-    future::poll_fn,
     mem::{MaybeUninit, offset_of, size_of},
     slice,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -17,7 +16,8 @@ use ax_fs_ng::vfs::FileFlags;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange, align_up_4k};
 use ax_runtime::hal::{paging::MappingFlags, time::wall_time};
 use ax_std::os::arceos::task::WaitQueue;
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 use linux_raw_sys::general::timespec;
 use starry_signal::SignalSet;
 
@@ -29,7 +29,7 @@ use crate::{
     syscall::signal::check_sigset_size,
     task::{
         PidIdentityId,
-        future::{UserWaitOutcome, block_on, block_on_user_until_wall},
+        future::{UserWaitOutcome, block_on, block_on_user_until_wall, poll_shared},
         with_blocked_signals,
     },
     time::TimeValueLike,
@@ -811,30 +811,23 @@ fn poll_result(
     file: &Arc<dyn FileLike>,
     interested: IoEvents,
 ) -> crate::StarryResult<isize> {
-    block_on(poll_fn(|cx| {
-        // Check before registration so already-ready fds complete immediately.
-        if context.destroying.load(Ordering::Acquire) {
-            return core::task::Poll::Ready(Err(StarryError::Interrupted));
-        }
-        if let Some(ready) = ready_poll_events(file, interested) {
-            return core::task::Poll::Ready(Ok(ready));
-        }
-        file.register(cx, interested);
-        // Registration happens from AIO worker/wait task context.
-        unsafe {
-            context
-                .completion_wakers
-                .register(cx.waker(), IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
-        };
-        // Re-check after registration to avoid losing a destroy or readiness wake.
-        if context.destroying.load(Ordering::Acquire) {
-            return core::task::Poll::Ready(Err(StarryError::Interrupted));
-        }
-        if let Some(ready) = ready_poll_events(file, interested) {
-            return core::task::Poll::Ready(Ok(ready));
-        }
-        core::task::Poll::Pending
-    }))
+    block_on(poll_shared(
+        || {
+            if context.destroying.load(Ordering::Acquire) {
+                return core::task::Poll::Ready(Err(StarryError::Interrupted));
+            }
+            ready_poll_events(file, interested).map_or(core::task::Poll::Pending, |ready| {
+                core::task::Poll::Ready(Ok(ready))
+            })
+        },
+        |registrar| unsafe {
+            file.register_shared(registrar, interested);
+            registrar.register(
+                &context.completion_wakers,
+                IoEvents::IN | IoEvents::ERR | IoEvents::HUP,
+            );
+        },
+    ))
 }
 
 // Dispatch one prepared request to the matching operation implementation.
@@ -1093,19 +1086,8 @@ fn wait_for_completion(
     context: &AioContext,
     deadline: Option<core::time::Duration>,
 ) -> StarryResult<bool> {
-    let wait = poll_fn(|cx| {
-        // Register then re-check to avoid a completion wake racing this waiter.
-        if context.ready_count.load(Ordering::Acquire) != 0
-            || context.destroying.load(Ordering::Acquire)
-        {
-            core::task::Poll::Ready(())
-        } else {
-            // Registration happens from AIO wait task context.
-            unsafe {
-                context
-                    .completion_wakers
-                    .register(cx.waker(), IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
-            };
+    let wait = poll_shared(
+        || {
             if context.ready_count.load(Ordering::Acquire) != 0
                 || context.destroying.load(Ordering::Acquire)
             {
@@ -1113,8 +1095,14 @@ fn wait_for_completion(
             } else {
                 core::task::Poll::Pending
             }
-        }
-    });
+        },
+        |registrar| unsafe {
+            registrar.register(
+                &context.completion_wakers,
+                IoEvents::IN | IoEvents::ERR | IoEvents::HUP,
+            )
+        },
+    );
 
     let task = current;
     match block_on_user_until_wall(task, deadline, wait) {
@@ -1126,26 +1114,23 @@ fn wait_for_completion(
 
 // Wait until io_destroy sees every running request finish.
 fn wait_for_inflight_drain(context: &AioContext) {
-    block_on(poll_fn(|cx| {
-        let inflight = context.inner.lock().inflight;
-        if inflight == 0 {
-            return core::task::Poll::Ready(());
-        }
-
-        debug!("sys_io_destroy: still waiting, inflight={}", inflight);
-        // Registration happens from io_destroy task context.
-        unsafe {
-            context
-                .completion_wakers
-                .register(cx.waker(), IoEvents::IN | IoEvents::ERR | IoEvents::HUP)
-        };
-        // Re-check after registration so the final completion cannot be missed.
-        if context.inner.lock().inflight == 0 {
-            core::task::Poll::Ready(())
-        } else {
-            core::task::Poll::Pending
-        }
-    }))
+    block_on(poll_shared(
+        || {
+            let inflight = context.inner.lock().inflight;
+            if inflight == 0 {
+                core::task::Poll::Ready(())
+            } else {
+                debug!("sys_io_destroy: still waiting, inflight={}", inflight);
+                core::task::Poll::Pending
+            }
+        },
+        |registrar| unsafe {
+            registrar.register(
+                &context.completion_wakers,
+                IoEvents::IN | IoEvents::ERR | IoEvents::HUP,
+            )
+        },
+    ))
 }
 
 // Read an optional relative timeout from userspace.

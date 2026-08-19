@@ -6,7 +6,6 @@ use core::{
     mem::MaybeUninit,
     slice,
     sync::atomic::{AtomicUsize, Ordering},
-    task::Context,
 };
 
 use ax_driver::rknpu::{
@@ -323,7 +322,12 @@ impl Pollable for ExportedGemBuffer {
         IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 fn prime_fd_cloexec(flags: u32) -> bool {

@@ -2,10 +2,10 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::{
     mem,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
 };
 
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use starry_signal::{SignalInfo, SignalSet};
 use zerocopy::{Immutable, IntoBytes};
 
@@ -184,18 +184,39 @@ impl Pollable for Signalfd {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
             // The private poll set covers mask updates and additional queued
             // signals. New signal delivery wakes the current thread's shared
             // signalfd poll set, so an already-blocked epoll waiter must be
             // registered with both sources.
             unsafe {
-                self.poll_rx.register(context.waker(), IoEvents::IN);
+                sink.register_shared(&self.poll_rx, IoEvents::IN);
+                sink.register_shared(
+                    current_user_task().as_thread().signalfd_poll_source(),
+                    IoEvents::IN,
+                );
             }
-            current_user_task()
-                .as_thread()
-                .register_signalfd_waker(context.waker());
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe {
+                sink.register_exclusive(&self.poll_rx, IoEvents::IN);
+                sink.register_exclusive(
+                    current_user_task().as_thread().signalfd_poll_source(),
+                    IoEvents::IN,
+                );
+            }
         }
     }
 }

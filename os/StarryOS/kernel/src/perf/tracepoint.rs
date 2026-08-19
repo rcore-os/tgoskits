@@ -66,7 +66,11 @@ impl Pollable for TracepointPerfEvent {
         axpoll::IoEvents::empty()
     }
 
-    fn register(&self, _context: &mut core::task::Context<'_>, _events: axpoll::IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: axpoll::IoEvents,
+    ) {
         // Tracepoint perf events do not deliver readiness through poll;
         // sample delivery is via the attached BPF program or trace_pipe.
     }

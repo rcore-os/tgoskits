@@ -4,7 +4,7 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin};
-use axpoll::PollSet;
+use axpoll_set::PollSet;
 use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWriteGuard};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
@@ -663,14 +663,8 @@ impl Thread {
         unsafe { self.signals.signalfd_waker.wake(axpoll::IoEvents::IN) };
     }
 
-    pub(crate) fn register_signalfd_waker(&self, waker: &core::task::Waker) {
-        // PollSet retains its own waker reference; the caller only needs to
-        // prove that this Thread is the current task for the registration.
-        unsafe {
-            self.signals
-                .signalfd_waker
-                .register(waker, axpoll::IoEvents::IN);
-        }
+    pub(crate) fn signalfd_poll_source(&self) -> &PollSet {
+        &self.signals.signalfd_waker
     }
 
     /// Returns the OOM score adjustment value.

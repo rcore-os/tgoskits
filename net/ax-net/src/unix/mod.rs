@@ -22,13 +22,13 @@ pub mod namespace;
 pub(crate) mod stream;
 
 use alloc::{boxed::Box, sync::Arc};
-use core::task::Context;
 
 use async_trait::async_trait;
 use ax_io::{IoBuf, Read, Write};
 use ax_lazyinit::LazyLock;
 use ax_sync::SpinLock;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use enum_dispatch::enum_dispatch;
 use hashbrown::HashMap;
 
@@ -127,10 +127,21 @@ impl Pollable for Transport {
         }
     }
 
-    fn register(&self, context: &mut core::task::Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         match self {
-            Transport::Stream(stream) => stream.register(context, events),
-            Transport::Dgram(dgram) => dgram.register(context, events),
+            Transport::Stream(stream) => unsafe { stream.register_shared(sink, events) },
+            Transport::Dgram(dgram) => unsafe { dgram.register_shared(sink, events) },
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        match self {
+            Transport::Stream(stream) => unsafe { stream.register_exclusive(sink, events) },
+            Transport::Dgram(dgram) => unsafe { dgram.register_exclusive(sink, events) },
         }
     }
 }
@@ -300,7 +311,15 @@ impl Pollable for UnixSocket {
         self.transport.poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.transport.register(context, events);
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        unsafe { self.transport.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.transport.register_exclusive(sink, events) };
     }
 }

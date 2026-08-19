@@ -1,6 +1,5 @@
 use alloc::vec::Vec;
 use core::{
-    future::poll_fn,
     mem::{MaybeUninit, offset_of},
     task::Poll,
 };
@@ -17,7 +16,7 @@ use crate::{
     mm::{UserConstPtr, UserPtr, vm_read_slice, vm_write_slice},
     syscall::signal::check_sigset_size,
     task::{
-        future::{UserWaitOutcome, block_on_user_timeout},
+        future::{UserWaitOutcome, block_on_user_timeout, poll_shared},
         with_blocked_signals,
     },
     time::TimeValueLike,
@@ -135,20 +134,16 @@ fn do_poll(
     let fds = FdPollSet(fds);
 
     with_blocked_signals(sigmask, || {
-        let wait = poll_fn(|cx| {
-            let mut res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
-            if res > 0 {
-                return Poll::Ready(Ok(res as _));
-            }
-
-            fds.register(cx, IoEvents::empty());
-
-            res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
-            if res > 0 {
-                return Poll::Ready(Ok(res as _));
-            }
-            Poll::Pending
-        });
+        let wait = poll_shared(
+            || {
+                let res = collect_ready_poll_events(&fds, &revent_indices, poll_fds);
+                if res > 0 {
+                    return Poll::Ready(Ok(res as _));
+                }
+                Poll::Pending
+            },
+            |registrar| unsafe { fds.register_shared(registrar, IoEvents::empty()) },
+        );
 
         let task = current;
         match block_on_user_timeout(task, timeout, wait) {

@@ -23,10 +23,7 @@
 //! `F_SEAL_FUTURE_WRITE` after populating them.
 
 use alloc::{borrow::Cow, format, string::String, sync::Arc, vec::Vec};
-use core::{
-    sync::atomic::{AtomicU32, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use ax_fs_ng::vfs::FileFlags;
 use ax_io::{IoBuf, SeekFrom, prelude::*};
@@ -564,7 +561,19 @@ impl Pollable for Memfd {
         self.inner.poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.inner.register(context, events);
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.register_exclusive(sink, events) };
     }
 }

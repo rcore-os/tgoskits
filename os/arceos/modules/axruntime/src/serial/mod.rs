@@ -20,7 +20,8 @@ use core::{
 use ax_driver::serial::SerialDevice;
 pub use ax_driver::serial::SerialDeviceInfo;
 use ax_lazyinit::OnceLock;
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 pub use rdif_serial::{Config, ConfigError, DataBits, Parity, RxFlag, StopBits, UartRegisterGate};
 pub use state::SerialStats;
 

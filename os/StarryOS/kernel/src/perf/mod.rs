@@ -75,7 +75,7 @@ use ax_io::{Read, Write};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{paging::MappingFlags, pmu};
-use axpoll::Pollable;
+use axpoll::{ExclusiveRegistrationSink, Pollable, SharedRegistrationSink};
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
 use kbpf_basic::{
@@ -227,6 +227,8 @@ pub struct PerfEvent {
     control: Option<Arc<dyn PerfControl>>,
     /// Bounded non-sleeping output endpoint for software BPF events.
     irq_output: Option<bpf::BpfPerfOutput>,
+    /// Readiness endpoint that can register without holding the event mutex.
+    bpf_poll: Option<bpf::BpfPerfPoll>,
     /// Unique, stable perf-event id (see [`NEXT_PERF_EVENT_ID`]). Returned by
     /// `PERF_EVENT_IOC_ID` and used as the `read_format` `PERF_FORMAT_ID` value.
     id: u64,
@@ -260,10 +262,15 @@ impl PerfEvent {
             .as_any_mut()
             .downcast_mut::<BpfPerfEventWrapper>()
             .map(|event| event.output_handle());
+        let bpf_poll = event
+            .as_any_mut()
+            .downcast_mut::<BpfPerfEventWrapper>()
+            .map(|event| event.poll_handle());
         Ok(PerfEvent {
             event: PiMutex::new(event),
             control,
             irq_output,
+            bpf_poll,
             id,
             nonblocking: AtomicBool::new(false),
         })
@@ -333,16 +340,34 @@ impl Pollable for PerfEvent {
     fn poll(&self) -> axpoll::IoEvents {
         if let Some(control) = &self.control {
             control.poll()
+        } else if let Some(poll) = &self.bpf_poll {
+            poll.poll()
         } else {
             self.event.lock().poll()
         }
     }
 
-    fn register(&self, context: &mut core::task::Context<'_>, events: axpoll::IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn SharedRegistrationSink,
+        events: axpoll::IoEvents,
+    ) {
         if let Some(control) = &self.control {
-            control.register(context, events);
-        } else {
-            self.event.lock().register(context, events);
+            unsafe { control.register_shared(sink, events) };
+        } else if let Some(poll) = &self.bpf_poll {
+            unsafe { poll.register_shared(sink, events) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: axpoll::IoEvents,
+    ) {
+        if let Some(control) = &self.control {
+            unsafe { control.register_exclusive(sink, events) };
+        } else if let Some(poll) = &self.bpf_poll {
+            unsafe { poll.register_exclusive(sink, events) };
         }
     }
 }
@@ -673,7 +698,12 @@ pub(crate) fn control_callback_runs_preemptible_for_test() -> bool {
             axpoll::IoEvents::empty()
         }
 
-        fn register(&self, _context: &mut core::task::Context<'_>, _events: axpoll::IoEvents) {}
+        unsafe fn register_shared(
+            &self,
+            _sink: &mut dyn axpoll::SharedRegistrationSink,
+            _events: axpoll::IoEvents,
+        ) {
+        }
     }
 
     impl PerfEventOps for YieldingControl {

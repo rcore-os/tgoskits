@@ -1,9 +1,10 @@
 //! Process wait channels and immutable exit metadata.
 
 use alloc::sync::Arc;
-use core::{future::poll_fn, task::Poll};
+use core::task::Poll;
 
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 use starry_signal::Signo;
 
 use super::{PidRoleLease, ProcessData, Tid, TidNumber, current_user_task, future};
@@ -58,20 +59,10 @@ impl ProcessWaitState {
 
 /// Waits on a poll set while closing the check-versus-register race.
 pub async fn wait_on_pollset<T>(poll: &PollSet, mut check: impl FnMut() -> Option<T>) -> T {
-    poll_fn(move |cx| {
-        if let Some(value) = check() {
-            return Poll::Ready(value);
-        }
-
-        // Registration happens from wait task context.
-        unsafe { poll.register(cx.waker(), IoEvents::IN) };
-
-        if let Some(value) = check() {
-            Poll::Ready(value)
-        } else {
-            Poll::Pending
-        }
-    })
+    future::poll_shared(
+        || check().map_or(Poll::Pending, Poll::Ready),
+        |registrar| unsafe { registrar.register(poll, IoEvents::IN) },
+    )
     .await
 }
 
@@ -178,21 +169,14 @@ impl ProcessData {
         loop {
             let result = future::block_on_user(
                 &curr_task,
-                core::future::poll_fn(|cx| {
-                    // Registration happens before the completion recheck.
-                    unsafe { poll.register(cx.waker(), IoEvents::IN) };
-                    let done = self
-                        .wait
+                wait_on_pollset(&poll, || {
+                    self.wait
                         .vfork_done
                         .lock()
                         .as_ref()
                         .map(|vfork| vfork.done)
-                        .unwrap_or(true);
-                    if done {
-                        core::task::Poll::Ready(())
-                    } else {
-                        core::task::Poll::Pending
-                    }
+                        .unwrap_or(true)
+                        .then_some(())
                 }),
             );
             match result {

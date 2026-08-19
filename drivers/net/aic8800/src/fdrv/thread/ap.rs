@@ -12,6 +12,8 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{sync::atomic::Ordering, task::Poll};
 
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar};
+
 use crate::fdrv::{
     consts::{CONTROL_PORT_MAX_RETRY, CONTROL_PORT_RECONCILE_MS, MAX_REGISTERED_STAS},
     core::bus::{BusState, WifiBus},
@@ -22,9 +24,13 @@ use crate::fdrv::{
 /// 启动 AP worker 线程
 pub fn start(bus: Arc<WifiBus>) {
     log::debug!("[wifi-ap] worker thread starting");
+    let mut registration = None::<PollRegistrar<ExclusiveConsumer>>;
     crate::runtime::runtime().spawn_poll_task(
         "wifi-ap",
         Box::new(move |cx| {
+            if let Some(registration) = registration.as_mut() {
+                registration.reset(cx.waker());
+            }
             if *bus.state.lock() == BusState::Down {
                 return Poll::Ready(());
             }
@@ -65,11 +71,15 @@ pub fn start(bus: Arc<WifiBus>) {
                 false
             };
 
-            bus.ap.assoc_pollset.register(cx.waker());
+            let registration = registration.get_or_insert_with(|| PollRegistrar::new(cx.waker()));
+            // SAFETY: this closure is polled only by the AP task.
+            unsafe { registration.register_exclusive(&bus.ap.assoc_pollset, IoEvents::IN) };
             // 注册后再检查一次，避免错过唤醒
             if !bus.ap.assoc_queue.lock().is_empty() {
+                registration.clear();
                 cx.waker().wake_by_ref();
             } else if has_pending {
+                registration.clear();
                 // 仍有未授权 STA:周期性自唤醒重试,直到全部授权或到重试上限。
                 crate::runtime::runtime().sleep_ms(CONTROL_PORT_RECONCILE_MS);
                 cx.waker().wake_by_ref();

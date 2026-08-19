@@ -1,5 +1,3 @@
-use core::{future::poll_fn, task::Poll};
-
 use axfs_ng_vfs::{VfsError, VfsResult};
 
 use super::IdentityTraceBuffer;
@@ -51,23 +49,8 @@ impl DirectRwFsFileOps for TracePipeFile {
             let task = current_user_task();
             let _result = block_on_user(
                 &task,
-                poll_fn(|cx| {
-                    match self.readable() {
-                        true => Poll::Ready(true),
-                        false => {
-                            // Registration happens from trace_pipe read task context.
-                            unsafe {
-                                super::TRACE_STATE
-                                    .pipe_event
-                                    .register(cx.waker(), axpoll::IoEvents::IN)
-                            };
-                            if self.readable() {
-                                Poll::Ready(true)
-                            } else {
-                                Poll::Pending
-                            }
-                        }
-                    }
+                crate::task::wait_on_pollset(&super::TRACE_STATE.pipe_event, || {
+                    self.readable().then_some(true)
                 }),
             )
             .into_result()

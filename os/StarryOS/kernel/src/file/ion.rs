@@ -48,7 +48,11 @@ impl Pollable for IonBufferFile {
         IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut core::task::Context<'_>, _events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
         // Ion buffer 总是就绪
     }
 }

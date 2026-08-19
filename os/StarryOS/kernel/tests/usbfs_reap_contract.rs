@@ -22,7 +22,7 @@ fn backend_reclaim_cannot_complete_a_blocking_reap() {
     );
     assert!(
         reap.contains("crate::task::future::block_on_user(")
-            && reap.contains("poll_fn(|cx|")
+            && reap.contains("crate::task::future::poll_exclusive(")
             && reap.contains("current,"),
         "blocking REAPURB must preserve Linux signal-interruptible user wait semantics"
     );
@@ -30,8 +30,7 @@ fn backend_reclaim_cannot_complete_a_blocking_reap() {
 
 #[test]
 fn poll_readiness_uses_the_same_user_completion_condition() {
-    let register =
-        function_source("fn register(&self, context: &mut Context<'_>, events: IoEvents)");
+    let register = function_source("unsafe fn register_shared(");
     assert!(
         !register.contains("collect_submitted_urbs(Some(context)) ||"),
         "a discarded backend terminal must not publish readable USBFS state"

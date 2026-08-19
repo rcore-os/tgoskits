@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicBool;
 
-use axpoll::PollSet;
+use axpoll_set::PollSet;
 use kbpf_basic::linux_bpf::{perf_event_attr, perf_hw_id, perf_type_id};
 
 use super::{

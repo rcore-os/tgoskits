@@ -517,27 +517,30 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
 
 ### 6.3 Waker 注册
 
-Router 提供两类 waker 注册。它先在短设备锁内 clone `readiness_poll()`，释放锁后再执行 `PollSet::register()`：
+Router 为每个设备持有两份共享 `PollRegistrar`：一份唤醒设备 RX worker，另一份
+唤醒协议轮询 worker。它先在短设备锁内 clone `readiness_poll()`，释放锁后再通过
+`SharedRegistrationSink` 建立 owned registration：
 
 ```rust
 pub fn register_device_waker(&self, waker: &Waker) {
     for device in &self.devices {
-        register_device_poll(device, &device.rx_waker);
-        register_device_poll(device, waker);
-    }
-}
-
-pub fn register_waker(&self, binding: DeviceBinding, waker: &Waker) {
-    for device in &self.devices {
-        if binding.bound_if.is_none_or(|id| id == device.interface_id) {
-            register_device_poll(device, &device.rx_waker);
-            register_device_poll(device, waker);
-        }
+        refresh_device_poll_registration(
+            device,
+            &device.rx_waker,
+            &device.rx_registration,
+        );
+        refresh_device_poll_registration(
+            device,
+            waker,
+            &device.protocol_registration,
+        );
     }
 }
 ```
 
-`register_device_waker()` 用于 net-poll worker 的全局设备 readiness；`register_waker(binding, waker)` 用于 socket readiness，只向 `SO_BINDTODEVICE` 或本地地址绑定允许的接口注册。
+这两份 registrar 都有明确 owner；刷新或 worker 退出会精确撤销旧 lease，不再保存
+匿名、无法取消的 waker。Socket 的设备 readiness 也通过调用方持有的 sink 注册，
+并只覆盖 `SO_BINDTODEVICE` 或本地地址绑定允许的接口。
 
 ## 7. Ethernet 链路层
 

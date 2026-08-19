@@ -38,14 +38,14 @@ use alloc::{
 use core::{
     any::Any,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
-    task::Context,
 };
 
 use ax_alloc::GlobalPage;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
 use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time};
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use bytemuck::bytes_of;
 use linux_raw_sys::general::O_CLOEXEC;
 
@@ -277,7 +277,12 @@ impl Pollable for DmaBufGem {
         IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 /// Last legacy `SETCRTC` binding so `GETCRTC` can report what the
@@ -671,10 +676,23 @@ impl Pollable for Card0 {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from DRM file poll task context.
-            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_rx, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_rx, IoEvents::IN) };
         }
     }
 }

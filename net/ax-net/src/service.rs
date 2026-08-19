@@ -1056,7 +1056,7 @@ impl Service {
         self.router.wake_all_devices();
     }
 
-    pub fn register_waker(&mut self, binding: DeviceBinding, waker: &Waker) {
+    pub fn register_timeout_waker(&mut self, waker: &Waker) {
         let next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
 
         if let Some(deadline) = next {
@@ -1065,8 +1065,6 @@ impl Service {
                 waker: waker.clone(),
             });
         }
-
-        self.router.register_waker(binding, waker);
     }
 
     pub(crate) fn prepare_device_workers(&self) -> PreparedDeviceWorkers {

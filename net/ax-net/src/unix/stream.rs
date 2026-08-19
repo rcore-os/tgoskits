@@ -19,15 +19,13 @@
 //! with the next message's ancillary data.
 
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
-use core::{
-    sync::atomic::{AtomicBool, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use ax_io::{IoBuf, Read, Write};
 use ax_sync::SpinLock;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use ringbuf::{
     HeapCons, HeapProd, HeapRb,
     traits::{Consumer, Observer, Producer, Split},
@@ -668,7 +666,29 @@ impl Pollable for StreamTransport {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_shared(poll, interests)
+        });
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_exclusive(poll, interests)
+        });
+    }
+}
+
+impl StreamTransport {
+    fn register_poll_sources(
+        &self,
+        events: IoEvents,
+        mut register: impl FnMut(&PollSet, IoEvents),
+    ) {
         let chan_poll = if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
             self.channel
                 .lock()
@@ -678,16 +698,13 @@ impl Pollable for StreamTransport {
             None
         };
         if let Some(poll) = chan_poll {
-            // Registration happens from socket poll task context.
-            unsafe { poll.register(context.waker(), events) };
+            register(&poll, events);
         } else if let Some((_, poll_new_conn)) = self.conn_rx.lock().as_ref()
             && events.contains(IoEvents::IN)
         {
-            // Registration happens from socket poll task context.
-            unsafe { poll_new_conn.register(context.waker(), IoEvents::IN) };
+            register(poll_new_conn, IoEvents::IN);
         }
-        // Registration happens from socket poll task context.
-        unsafe { self.poll_state.register(context.waker(), events) };
+        register(&self.poll_state, events);
     }
 }
 

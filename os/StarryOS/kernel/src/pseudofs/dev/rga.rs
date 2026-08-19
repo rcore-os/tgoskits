@@ -10,7 +10,7 @@
 //! bookkeeping.
 
 use alloc::{borrow::Cow, collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
-use core::{any::Any, ffi::c_int, task::Context};
+use core::{any::Any, ffi::c_int};
 
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
@@ -746,5 +746,10 @@ impl Pollable for RgaFile {
         IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }

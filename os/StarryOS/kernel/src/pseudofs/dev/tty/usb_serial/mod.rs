@@ -4,7 +4,8 @@ use alloc::{collections::VecDeque, string::ToString, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use ax_lazyinit::LazyLock;
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 
 use self::backend::{UsbSerialPortInfo, find_usb_serial_port};
 use super::{

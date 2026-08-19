@@ -1,10 +1,8 @@
 use alloc::{borrow::Cow, sync::Arc};
-use core::{
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 
 use crate::{
     StarryError, StarryResult,
@@ -145,14 +143,29 @@ impl Pollable for EventFd {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_rx, IoEvents::IN) };
         }
         if events.contains(IoEvents::OUT) {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_tx.register(context.waker(), IoEvents::OUT) };
+            unsafe { sink.register_shared(&self.poll_tx, IoEvents::OUT) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_rx, IoEvents::IN) };
+        }
+        if events.contains(IoEvents::OUT) {
+            unsafe { sink.register_exclusive(&self.poll_tx, IoEvents::OUT) };
         }
     }
 }

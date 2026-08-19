@@ -1,6 +1,9 @@
 //! Bounded listener and accept queues.
 
-use axpoll::{IoEvents, PollSet};
+use alloc::sync::Arc;
+
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 use ringbuf::{HeapRb, traits::*};
 
 use super::{VsockAddr, VsockConnId};
@@ -59,7 +62,7 @@ impl AcceptQueue {
 /// listen queue
 pub struct ListenQueue {
     pub accept_queue: AcceptQueue,
-    pub wakers: PollSet,
+    pub wakers: Arc<PollSet>,
     pub local_addr: VsockAddr,
 }
 
@@ -67,7 +70,7 @@ impl ListenQueue {
     pub fn new(local_addr: VsockAddr) -> Self {
         Self {
             accept_queue: AcceptQueue::new(),
-            wakers: PollSet::new(),
+            wakers: Arc::new(PollSet::new()),
             local_addr,
         }
     }
@@ -75,10 +78,5 @@ impl ListenQueue {
     pub fn wake(&mut self) {
         // Accept queue state is published before waking listeners.
         unsafe { self.wakers.wake(IoEvents::IN) };
-    }
-
-    pub fn register_poll(&mut self, context: &mut core::task::Context<'_>) {
-        // Registration happens from vsock poll task context.
-        unsafe { self.wakers.register(context.waker(), IoEvents::IN) };
     }
 }

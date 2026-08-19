@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 #[cfg(target_arch = "riscv64")]
 use core::mem::{MaybeUninit, align_of, size_of};
-use core::{future::poll_fn, task::Poll};
 
 use ax_runtime::hal::cpu::uspace::UserContext;
 use linux_raw_sys::general::{CLD_CONTINUED, CLD_STOPPED, CLD_TRAPPED, RLIMIT_RTTIME};
@@ -213,17 +212,11 @@ fn wait_ptrace_resume(thr: &Thread, tid: TidNumber, uctx: &mut UserContext) {
     thr.acknowledge_interrupt(stale_interrupts);
     let wait_result = block_on_user(
         &task,
-        poll_fn(|cx| {
-            if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
-                Poll::Ready(())
-            } else {
-                thr.proc_data.register_ptrace_stop_waker(cx.waker());
-                if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
-                    Poll::Ready(())
-                } else {
-                    Poll::Pending
-                }
-            }
+        super::process_wait::wait_on_pollset(thr.proc_data.ptrace_stop_event(), || {
+            thr.proc_data
+                .ptrace_stop_signo_for(tid)
+                .is_none()
+                .then_some(())
         }),
     );
 
@@ -249,18 +242,10 @@ fn ptrace_stop_current_impl(
 
     let tid = thr.tid();
     while !thr.proc_data.claim_ptrace_stop(tid) {
-        block_on(poll_fn(|cx| {
-            if !thr.proc_data.has_ptrace_stop(tid) {
-                Poll::Ready(())
-            } else {
-                thr.proc_data.register_ptrace_stop_waker(cx.waker());
-                if !thr.proc_data.has_ptrace_stop(tid) {
-                    Poll::Ready(())
-                } else {
-                    Poll::Pending
-                }
-            }
-        }));
+        block_on(super::process_wait::wait_on_pollset(
+            thr.proc_data.ptrace_stop_event(),
+            || (!thr.proc_data.has_ptrace_stop(tid)).then_some(()),
+        ));
     }
 
     #[cfg(any(
@@ -535,19 +520,9 @@ fn do_job_stop(thr: &Thread, signo: Signo, uctx: &mut UserContext) {
             continue;
         }
 
-        block_on(poll_fn(|cx| {
-            if !proc_data.is_job_stopped() || proc_data.has_ptrace_pending_event_for(tid) {
-                return Poll::Ready(());
-            }
-            // Registration happens from the stopped task context.
-            unsafe { cont_event.register(cx.waker(), axpoll::IoEvents::IN) };
-            // Re-check after registering to avoid a lost wakeup if the continue
-            // or ptrace interrupt landed between the checks and registration.
-            if proc_data.is_job_stopped() && !proc_data.has_ptrace_pending_event_for(tid) {
-                Poll::Pending
-            } else {
-                Poll::Ready(())
-            }
+        block_on(super::process_wait::wait_on_pollset(&cont_event, || {
+            (!proc_data.is_job_stopped() || proc_data.has_ptrace_pending_event_for(tid))
+                .then_some(())
         }));
     }
 }

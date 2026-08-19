@@ -1,7 +1,7 @@
 use alloc::sync::{Arc, Weak};
-use core::task::Context;
 
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 
 use super::TerminalStateLock;
 use crate::{
@@ -112,10 +112,13 @@ impl Pollable for JobControl {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from tty job-control poll task context.
-            unsafe { self.poll_fg.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_fg, IoEvents::IN) };
         }
     }
 }

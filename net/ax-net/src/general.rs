@@ -210,9 +210,9 @@ impl GeneralOptions {
         Ok(())
     }
 
-    /// Registers a waker with the service/device path for the bound interface.
-    pub fn register_waker(&self, waker: &Waker) {
-        get_service().register_waker(self.device_binding(), waker);
+    /// Registers a waker for the protocol timer deadline.
+    pub fn register_timeout_waker(&self, waker: &Waker) {
+        get_service().register_timeout_waker(waker);
     }
 
     /// Runs a send operation through the standard blocking/nonblocking poller.

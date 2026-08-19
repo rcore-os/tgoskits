@@ -8,7 +8,7 @@
 //! The read side (history replay) is not implemented yet; `read_at` returns
 //! EOF.
 
-use core::{any::Any, task::Context};
+use core::any::Any;
 
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use axpoll::{IoEvents, Pollable};
@@ -95,7 +95,12 @@ impl Pollable for Kmsg {
         IoEvents::empty()
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 #[cfg(axtest)]

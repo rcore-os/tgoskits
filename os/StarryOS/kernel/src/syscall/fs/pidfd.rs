@@ -323,19 +323,22 @@ pub(crate) fn pidfd_thread_exit_window_matches_linux_for_test() -> bool {
     let unreadable_before_exit = !axpoll::Pollable::poll(&fd).contains(axpoll::IoEvents::IN);
     let wake_counter = Arc::new(PidfdWakeCounter(AtomicUsize::new(0)));
     let waker = core::task::Waker::from(wake_counter.clone());
-    let mut context = core::task::Context::from_waker(&waker);
-    axpoll::Pollable::register(
-        &fd,
-        &mut context,
-        axpoll::IoEvents::IN | axpoll::IoEvents::HUP,
-    );
+    let mut registrar = axpoll::PollRegistrar::<axpoll::SharedObserver>::new(&waker);
+    unsafe {
+        axpoll::Pollable::register_shared(
+            &fd,
+            &mut registrar,
+            axpoll::IoEvents::IN | axpoll::IoEvents::HUP,
+        )
+    };
     exit_flag.store(true, core::sync::atomic::Ordering::Release);
     identity.notify_thread_pidfd_exit();
     let readable_after_exit = axpoll::Pollable::poll(&fd).contains(axpoll::IoEvents::IN);
     let exit_woke_waiter = wake_counter.0.load(AtomicOrdering::Relaxed) > 0;
 
     let wakes_before_release = wake_counter.0.load(AtomicOrdering::Relaxed);
-    axpoll::Pollable::register(&fd, &mut context, axpoll::IoEvents::HUP);
+    registrar.reset(&waker);
+    unsafe { axpoll::Pollable::register_shared(&fd, &mut registrar, axpoll::IoEvents::HUP) };
     exit_path.complete();
     let identity_released = view.resolve_identity(tid.pid_number()).is_err();
     let released_fd_hangs_up = axpoll::Pollable::poll(&fd).contains(axpoll::IoEvents::HUP);

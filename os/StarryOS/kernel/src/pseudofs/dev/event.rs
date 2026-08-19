@@ -3,7 +3,6 @@ use core::{
     any::Any,
     mem::offset_of,
     sync::atomic::{AtomicU8, AtomicU32, Ordering},
-    task::Context,
     time::Duration,
 };
 
@@ -22,7 +21,8 @@ use ax_lazyinit::OnceLock;
 use ax_runtime::hal::{irq::IrqId, time::wall_time};
 use ax_std::os::arceos::task::{self as scheduler, IrqWaitCell, IrqWaitRegistration, WaitQueue};
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsError, VfsResult};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use bitmaps::Bitmap;
 use linux_raw_sys::{
     general::{__kernel_old_time_t, __kernel_suseconds_t},
@@ -650,13 +650,27 @@ impl Pollable for EventDev {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         if !events.contains(IoEvents::IN) {
             return;
         }
-        unsafe { self.waiters.register(context.waker(), IoEvents::IN) };
+        unsafe { sink.register_shared(&self.waiters, IoEvents::IN) };
         if self.inner.lock().has_event() {
-            context.waker().wake_by_ref();
+            unsafe { self.waiters.wake(IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if !events.contains(IoEvents::IN) {
+            return;
+        }
+        unsafe { sink.register_exclusive(&self.waiters, IoEvents::IN) };
+        if self.inner.lock().has_event() {
+            unsafe { self.waiters.wake(IoEvents::IN) };
         }
     }
 }

@@ -25,7 +25,8 @@ use ax_lazyinit::LazyInit;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_tracepoint::*;
 use axfs_ng_vfs::NodePermission;
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 pub use registry::KernelExtTracePoint;
 use registry::TracepointReclaimer;
 

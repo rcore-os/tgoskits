@@ -18,13 +18,13 @@ use alloc::{
 };
 use core::{
     sync::atomic::{AtomicU32, AtomicUsize, Ordering},
-    task::Context,
     time::Duration,
 };
 
 use ax_io::SeekFrom;
 use ax_runtime::hal::time::wall_time;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use linux_raw_sys::general::{
     O_ACCMODE, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, S_IFREG, SIGEV_NONE, SIGEV_SIGNAL,
     SIGEV_THREAD,
@@ -1042,12 +1042,29 @@ impl Pollable for MessageQueue {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            unsafe { self.poll_recv.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_recv, IoEvents::IN) };
         }
         if events.contains(IoEvents::OUT) {
-            unsafe { self.poll_send.register(context.waker(), IoEvents::OUT) };
+            unsafe { sink.register_shared(&self.poll_send, IoEvents::OUT) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_recv, IoEvents::IN) };
+        }
+        if events.contains(IoEvents::OUT) {
+            unsafe { sink.register_exclusive(&self.poll_send, IoEvents::OUT) };
         }
     }
 }
@@ -1202,8 +1219,20 @@ impl Pollable for MqDescriptor {
         self.queue.poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.queue.register(context, events)
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.queue.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.queue.register_exclusive(sink, events) };
     }
 }
 

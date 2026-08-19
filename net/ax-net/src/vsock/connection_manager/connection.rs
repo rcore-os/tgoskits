@@ -3,7 +3,8 @@
 use alloc::sync::Arc;
 
 use ax_sync::{Mutex, MutexGuard};
-use axpoll::{IoEvents, PollSet};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::*};
 
 use super::{VsockAddr, VsockPollLease};
@@ -31,9 +32,9 @@ pub enum ConnectionState {
 /// wake publication never runs while owning `state`.
 pub struct Connection {
     state: Mutex<ConnectionData>,
-    rx_wakers: Mutex<PollSet>,
-    tx_wakers: Mutex<PollSet>,
-    connect_wakers: Mutex<PollSet>,
+    rx_wakers: PollSet,
+    tx_wakers: PollSet,
+    connect_wakers: PollSet,
     _poll_lease: VsockPollLease,
 }
 
@@ -86,9 +87,9 @@ impl Connection {
                 tx_bytes: 0,
                 dropped_bytes: 0,
             }),
-            rx_wakers: Mutex::new(PollSet::new()),
-            tx_wakers: Mutex::new(PollSet::new()),
-            connect_wakers: Mutex::new(PollSet::new()),
+            rx_wakers: PollSet::new(),
+            tx_wakers: PollSet::new(),
+            connect_wakers: PollSet::new(),
             _poll_lease: poll_lease,
         })
     }
@@ -97,34 +98,28 @@ impl Connection {
         self.state.lock()
     }
 
-    pub fn register_rx_poll(&self, context: &mut core::task::Context<'_>) {
-        // SAFETY: registration happens in task context and the caller repeats
-        // its readiness check after publishing the waker.
-        unsafe {
-            self.rx_wakers
-                .lock()
-                .register(context.waker(), IoEvents::IN)
-        };
+    pub unsafe fn register_rx_shared(&self, sink: &mut dyn SharedRegistrationSink) {
+        unsafe { sink.register_shared(&self.rx_wakers, IoEvents::IN) };
     }
 
-    pub fn register_tx_poll(&self, context: &mut core::task::Context<'_>) {
-        // SAFETY: registration happens in task context and the caller repeats
-        // its transport-credit check after publishing the waker.
-        unsafe {
-            self.tx_wakers
-                .lock()
-                .register(context.waker(), IoEvents::OUT)
-        };
+    pub unsafe fn register_rx_exclusive(&self, sink: &mut dyn ExclusiveRegistrationSink) {
+        unsafe { sink.register_exclusive(&self.rx_wakers, IoEvents::IN) };
     }
 
-    pub fn register_connect_poll(&self, context: &mut core::task::Context<'_>) {
-        // SAFETY: registration happens in task context and connection state is
-        // checked again after the waker is published.
-        unsafe {
-            self.connect_wakers
-                .lock()
-                .register(context.waker(), IoEvents::OUT | IoEvents::ERR)
-        };
+    pub unsafe fn register_tx_shared(&self, sink: &mut dyn SharedRegistrationSink) {
+        unsafe { sink.register_shared(&self.tx_wakers, IoEvents::OUT) };
+    }
+
+    pub unsafe fn register_tx_exclusive(&self, sink: &mut dyn ExclusiveRegistrationSink) {
+        unsafe { sink.register_exclusive(&self.tx_wakers, IoEvents::OUT) };
+    }
+
+    pub unsafe fn register_connect_shared(&self, sink: &mut dyn SharedRegistrationSink) {
+        unsafe { sink.register_shared(&self.connect_wakers, IoEvents::OUT | IoEvents::ERR) };
+    }
+
+    pub unsafe fn register_connect_exclusive(&self, sink: &mut dyn ExclusiveRegistrationSink) {
+        unsafe { sink.register_exclusive(&self.connect_wakers, IoEvents::OUT | IoEvents::ERR) };
     }
 
     pub fn wake_rx(&self) {
@@ -132,7 +127,6 @@ impl Connection {
         // this task-context wake.
         unsafe {
             self.rx_wakers
-                .lock()
                 .wake(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP)
         };
     }
@@ -140,16 +134,12 @@ impl Connection {
     pub fn wake_tx(&self) {
         // SAFETY: peer-credit or terminal connection state is published before
         // this task-context wake.
-        unsafe { self.tx_wakers.lock().wake(IoEvents::OUT | IoEvents::ERR) };
+        unsafe { self.tx_wakers.wake(IoEvents::OUT | IoEvents::ERR) };
     }
 
     pub fn wake_connect(&self) {
         // SAFETY: connected/closed state is published before this wake.
-        unsafe {
-            self.connect_wakers
-                .lock()
-                .wake(IoEvents::OUT | IoEvents::ERR)
-        };
+        unsafe { self.connect_wakers.wake(IoEvents::OUT | IoEvents::ERR) };
     }
 
     pub(crate) fn stats(&self) -> ConnectionStats {

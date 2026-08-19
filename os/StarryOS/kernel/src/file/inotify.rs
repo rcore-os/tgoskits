@@ -8,11 +8,11 @@ use alloc::{
 use core::{
     mem::size_of,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
 };
 
 use ax_lazyinit::LazyLock;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use linux_raw_sys::{
     general::{
         IN_ALL_EVENTS, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_IGNORED, IN_ISDIR,
@@ -269,10 +269,23 @@ impl Pollable for Inotify {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_rx, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_rx, IoEvents::IN) };
         }
     }
 }

@@ -2,11 +2,11 @@ use alloc::{borrow::Cow, collections::VecDeque, format, sync::Arc};
 use core::{
     mem,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
 };
 
 use ax_memory_addr::PAGE_SIZE_4K;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use linux_raw_sys::{
     general::{O_RDONLY, O_WRONLY, S_IFIFO},
     ioctl::FIONREAD,
@@ -25,7 +25,7 @@ use crate::{
     sync::PiMutex,
     task::{
         current_user_task,
-        future::{block_on_user, poll_io},
+        future::{block_on_user, poll_io_with_wake},
         send_signal_to_process,
     },
 };
@@ -40,6 +40,7 @@ struct Shared {
     state: PiMutex<PipeState>,
     poll_rx: PollSet,
     poll_tx: PollSet,
+    poll_usage: AtomicBool,
 }
 
 struct PipeState {
@@ -132,7 +133,7 @@ impl Drop for Pipe {
             };
             if wake_writers {
                 // Reader count is published before waking blocked writers.
-                unsafe { self.shared.poll_tx.wake(IoEvents::ERR | IoEvents::OUT) };
+                unsafe { self.shared.poll_tx.wake_all(IoEvents::ERR | IoEvents::OUT) };
             }
             return;
         }
@@ -145,7 +146,7 @@ impl Drop for Pipe {
         };
         if wake_readers {
             // Writer count is published before waking blocked readers.
-            unsafe { self.shared.poll_rx.wake(IoEvents::HUP | IoEvents::IN) };
+            unsafe { self.shared.poll_rx.wake_all(IoEvents::HUP | IoEvents::IN) };
         }
     }
 }
@@ -161,6 +162,7 @@ impl Pipe {
             }),
             poll_rx: PollSet::new(),
             poll_tx: PollSet::new(),
+            poll_usage: AtomicBool::new(false),
         });
         let read_end = Pipe {
             read_side: true,
@@ -258,11 +260,15 @@ impl Pipe {
         let task = current_user_task();
         let result = block_on_user(
             &task,
-            poll_io(self, IoEvents::OUT, self.nonblocking(), || {
+            poll_io_with_wake(self, IoEvents::OUT, self.nonblocking(), |wake| {
                 enum WriteStep {
                     Closed,
                     WouldBlock,
-                    Wrote(usize),
+                    Wrote {
+                        bytes: usize,
+                        wake_readers: bool,
+                        wake_next_writer: bool,
+                    },
                 }
 
                 let step = {
@@ -272,6 +278,7 @@ impl Pipe {
                     if state.readers == 0 {
                         WriteStep::Closed
                     } else {
+                        let was_empty = state.buffer.is_empty();
                         let mut written = 0;
                         if merge_pending {
                             merge_pending = false;
@@ -289,7 +296,12 @@ impl Pipe {
                         if written == 0 {
                             WriteStep::WouldBlock
                         } else {
-                            WriteStep::Wrote(written)
+                            WriteStep::Wrote {
+                                bytes: written,
+                                wake_readers: was_empty
+                                    || self.shared.poll_usage.load(Ordering::Acquire),
+                                wake_next_writer: wake.was_notified() && state.has_free_buffer(),
+                            }
                         }
                     }
                 };
@@ -303,12 +315,25 @@ impl Pipe {
                         return Err(crate::StarryError::BrokenPipe);
                     }
                     WriteStep::WouldBlock => return Err(crate::StarryError::WouldBlock),
-                    WriteStep::Wrote(written) => written,
+                    WriteStep::Wrote {
+                        bytes,
+                        wake_readers,
+                        wake_next_writer,
+                    } => {
+                        if wake_readers {
+                            // Pipe bytes were committed before waking readers.
+                            unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
+                        }
+                        if wake_next_writer {
+                            // A selected writer transfers remaining capacity to
+                            // the next exclusive waiter.
+                            unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
+                        }
+                        bytes
+                    }
                 };
 
                 if written > 0 {
-                    // Pipe bytes were committed before waking readers.
-                    unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
                     total_written += written;
                     if total_written == size || self.nonblocking() {
                         return Ok(total_written);
@@ -393,9 +418,10 @@ impl FileLike for Pipe {
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io(self, IoEvents::IN, self.nonblocking(), || {
-                let (read, writers) = {
+            poll_io_with_wake(self, IoEvents::IN, self.nonblocking(), |wake| {
+                let (read, writers, wake_writers, wake_next_reader) = {
                     let mut state = self.shared.state.lock();
+                    let was_full = !state.has_free_buffer();
                     let (left, right) = state.buffer.as_slices();
                     let mut count = dst.write(left)?;
                     if count >= left.len() {
@@ -403,11 +429,23 @@ impl FileLike for Pipe {
                     }
                     unsafe { state.buffer.advance_read_index(count) };
                     state.consume(count);
-                    (count, state.writers)
+                    (
+                        count,
+                        state.writers,
+                        count > 0 && was_full && state.has_free_buffer(),
+                        count > 0 && wake.was_notified() && !state.buffer.is_empty(),
+                    )
                 };
                 if read > 0 {
-                    // Pipe capacity was freed before waking writers.
-                    unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
+                    if wake_writers {
+                        // Pipe capacity was freed before waking writers.
+                        unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
+                    }
+                    if wake_next_reader {
+                        // A selected reader transfers remaining data to the
+                        // next exclusive waiter.
+                        unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
+                    }
                     Ok(read)
                 } else if writers == 0 {
                     Ok(0)
@@ -485,7 +523,30 @@ impl Pollable for Pipe {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.shared.poll_usage.store(true, Ordering::Release);
+        self.register_poll_source(events, |poll, interests| unsafe {
+            sink.register_shared(poll, interests)
+        });
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.register_poll_source(events, |poll, interests| unsafe {
+            sink.register_exclusive(poll, interests)
+        });
+    }
+}
+
+impl Pipe {
+    fn register_poll_source(&self, events: IoEvents, register: impl FnOnce(&PollSet, IoEvents)) {
         let read_ready = events.intersects(IoEvents::IN | IoEvents::RDNORM);
         let write_ready = events.intersects(IoEvents::OUT | IoEvents::WRNORM);
         let mut interests = if self.read_side {
@@ -505,11 +566,9 @@ impl Pollable for Pipe {
             return;
         }
         if self.read_side {
-            // Registration happens from file poll task context.
-            unsafe { self.shared.poll_rx.register(context.waker(), interests) };
+            register(&self.shared.poll_rx, interests);
         } else {
-            // Registration happens from file poll task context.
-            unsafe { self.shared.poll_tx.register(context.waker(), interests) };
+            register(&self.shared.poll_tx, interests);
         }
     }
 }

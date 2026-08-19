@@ -4,7 +4,8 @@ use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 use ax_runtime::hal::cpu::uspace::UserContext;
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 use starry_signal::{SignalInfo, Signo};
 
 use super::{PidIdentity, PidSnapshot, PidView, ProcessData, TidNumber};
@@ -517,10 +518,9 @@ impl ProcessData {
         self.ptrace.exec_stop_pending.lock().take()
     }
 
-    /// Register a waiter for changes to this process's ptrace stop state.
-    pub fn register_ptrace_stop_waker(&self, waker: &core::task::Waker) {
-        // Registration happens from task/wait context.
-        unsafe { self.ptrace.stop_event.register(waker, IoEvents::IN) };
+    /// Returns the readiness source for ptrace-stop state changes.
+    pub(crate) fn ptrace_stop_event(&self) -> &PollSet {
+        &self.ptrace.stop_event
     }
 
     pub(crate) fn set_ptrace_attach_mode(&self, mode: PtraceAttachMode) {

@@ -526,7 +526,7 @@ impl CloneArgs {
         // execs or exits. Use PollSet so the parent's wait remains
         // interruptible by task.interrupt().
         if needs_vfork_block {
-            let poll = Arc::new(axpoll::PollSet::new());
+            let poll = Arc::new(axpoll_set::PollSet::new());
             new_proc_data.set_vfork_done(poll);
         }
 

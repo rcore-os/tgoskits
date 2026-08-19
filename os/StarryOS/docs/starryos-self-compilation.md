@@ -476,12 +476,13 @@ poll 边界通过 `poll_interrupt()` 消费该状态并返回类型化的 `Inter
 
 ### 与 I/O readiness 的配合
 
-I/O future 通过 `Pollable::register()` 保存 Rust `Waker`，设备或 task-context
-service 在 readiness 变化后调用 `PollSet::wake()`。信号路径不能依赖 I/O 最终
-完成，因此仍必须直接唤醒目标 scheduler thread。`poll_io()` 在注册后再次尝试
-I/O；统一的 `block_on_user()` poll 边界随后检查 interruption。park 入口又在
-WaitQueue 谓词内复查 sticky interruption，从而闭合“状态变化发生在第一次检查与
-注册之间”的竞态窗口。
+I/O future 持有类型化 `PollRegistrar`，并通过
+`Pollable::register_shared()` 或 `register_exclusive()` 获取精确可取消的
+registration lease；设备或 task-context service 在 readiness 变化后调用
+`PollSet::wake()`。信号路径不能依赖 I/O 最终完成，因此仍必须直接唤醒目标
+scheduler thread。`poll_io()` 在注册后再次尝试 I/O；统一的 `block_on_user()`
+poll 边界随后检查 interruption。park 入口又在 WaitQueue 谓词内复查 sticky
+interruption，从而闭合“状态变化发生在第一次检查与注册之间”的竞态窗口。
 
 ### 修复演进历史
 

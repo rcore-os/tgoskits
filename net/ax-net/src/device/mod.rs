@@ -20,7 +20,7 @@
 
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use axpoll::PollSet;
+use axpoll_set::PollSet;
 use smoltcp::{
     storage::PacketBuffer,
     time::Instant,

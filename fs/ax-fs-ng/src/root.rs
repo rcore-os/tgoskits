@@ -808,8 +808,8 @@ mod tests {
 
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-        FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-        Reference, StatFs, VfsResult, WeakDirEntry,
+        FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, Reference, StatFs, VfsResult,
+        WeakDirEntry,
     };
     use rdif_block::{
         BatchSubmitResult, BlkError, BlockController, CompletionSink, ControllerEvent,
@@ -1071,12 +1071,17 @@ mod tests {
         }
     }
 
-    impl FsPollable for ReadonlyLeaf {
-        fn poll(&self) -> FsIoEvents {
-            FsIoEvents::IN | FsIoEvents::OUT
+    impl axpoll::Pollable for ReadonlyLeaf {
+        fn poll(&self) -> axpoll::IoEvents {
+            axpoll::IoEvents::IN | axpoll::IoEvents::OUT
         }
 
-        fn register(&self, _context: &mut core::task::Context<'_>, _events: FsIoEvents) {}
+        unsafe fn register_shared(
+            &self,
+            _sink: &mut dyn axpoll::SharedRegistrationSink,
+            _events: axpoll::IoEvents,
+        ) {
+        }
     }
 
     impl FileNodeOps for ReadonlyLeaf {

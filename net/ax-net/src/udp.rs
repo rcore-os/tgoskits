@@ -24,15 +24,16 @@
 //! UDP send/recv operations request the shared net-poll worker after socket
 //! state changes. They do not run the interface poll loop directly.
 
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    task::Context,
+    task::Waker,
 };
 
 use ax_io::prelude::*;
 use ax_sync::{Mutex, SpinLock};
-use axpoll::{IoEvents, Pollable};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use smoltcp::{
     iface::SocketHandle,
     phy::PacketMeta,
@@ -42,8 +43,8 @@ use smoltcp::{
 };
 
 use crate::{
-    IpCmsg, NetError, NetResult, RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions,
-    Shutdown, SocketAddrEx, SocketOps,
+    DeferPollWake, IpCmsg, NetError, NetResult, RecvFlags, RecvOptions, SOCKET_SET, SendFlags,
+    SendOptions, Shutdown, SocketAddrEx, SocketOps,
     addr::allocate_ephemeral_port,
     config::{DeviceBinding, InterfaceId},
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
@@ -79,6 +80,8 @@ pub struct UdpSocket {
 
     /// Shared socket options and blocking helpers.
     general: GeneralOptions,
+    /// Multiplexes protocol and timer wakeups to owned poll registrations.
+    poll_state: Arc<PollSet>,
     /// Egress IP_TOS policies registered for recently used UDP destinations.
     tos_keys: SpinLock<Vec<EgressIpTosKey>>,
     /// MSG_MORE corking state: captures endpoint at first MSG_MORE
@@ -102,6 +105,7 @@ impl UdpSocket {
             peer_addr: Mutex::new(None),
 
             general: GeneralOptions::new(2, 2, 17), // SOCK_DGRAM
+            poll_state: Arc::new(PollSet::new()),
             tos_keys: SpinLock::new(Vec::new()),
             cork: Mutex::new(None),
         }
@@ -620,17 +624,43 @@ impl Pollable for UdpSocket {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        unsafe { sink.register_shared(&self.poll_state, events) };
+        self.arm_poll_sources(events);
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { sink.register_exclusive(&self.poll_state, events) };
+        self.arm_poll_sources(events);
+    }
+}
+
+impl UdpSocket {
+    fn arm_poll_sources(&self, events: IoEvents) {
         self.with_smol_socket(|socket| {
             if events.contains(IoEvents::IN) {
-                socket.register_recv_waker(context.waker());
+                socket.register_recv_waker(&Waker::from(Arc::new(DeferPollWake {
+                    poll: self.poll_state.clone(),
+                    ready: IoEvents::IN,
+                })));
             }
             if events.contains(IoEvents::OUT) {
-                socket.register_send_waker(context.waker());
+                socket.register_send_waker(&Waker::from(Arc::new(DeferPollWake {
+                    poll: self.poll_state.clone(),
+                    ready: IoEvents::OUT,
+                })));
             }
         });
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
-            self.general.register_waker(context.waker());
+            self.general
+                .register_timeout_waker(&Waker::from(Arc::new(DeferPollWake {
+                    poll: self.poll_state.clone(),
+                    ready: events,
+                })));
         }
     }
 }

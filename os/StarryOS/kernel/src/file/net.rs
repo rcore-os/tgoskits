@@ -9,7 +9,6 @@ use core::{
     mem::offset_of,
     ops::Deref,
     sync::atomic::{AtomicBool, AtomicI32, Ordering},
-    task::Context,
 };
 
 use ax_io::{Cursor, IoBuf, IoBufMut, Read, Write};
@@ -609,7 +608,19 @@ impl Pollable for Socket {
         self.inner.poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.inner.register(context, events);
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.register_exclusive(sink, events) };
     }
 }

@@ -130,7 +130,7 @@ pub(crate) struct SamplingAnchors {
     notify: Arc<IrqNotify>,
     /// Readiness set the perf fd's poller waits on; woken (`IoEvents::IN`) by the
     /// worker after each sample lands in the ring.
-    poll_ready: Arc<axpoll::PollSet>,
+    poll_ready: Arc<axpoll_set::PollSet>,
     /// Liveness flag for the worker; cleared on family/fd close.
     poll_alive: Arc<AtomicBool>,
 }
@@ -138,7 +138,7 @@ pub(crate) struct SamplingAnchors {
 impl SamplingAnchors {
     pub(crate) fn new(
         notify: Arc<IrqNotify>,
-        poll_ready: Arc<axpoll::PollSet>,
+        poll_ready: Arc<axpoll_set::PollSet>,
         poll_alive: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -549,16 +549,17 @@ impl PerTaskCounter {
     ///
     /// Mirrors the M2 `register`: the notify worker wakes this `PollSet` after
     /// each sample. No-op if the ring has not been mmap'd yet (no `PollSet`).
-    pub fn register_poll(&self, context: &mut core::task::Context<'_>) {
+    pub unsafe fn register_poll_shared(&self, sink: &mut dyn axpoll::SharedRegistrationSink) {
         let guard = self.anchors.lock();
         if let Some(anchors) = guard.as_ref() {
-            // SAFETY: `poll_ready` is a live `PollSet`; registering a waker on it
-            // is the documented `axpoll` contract (mirrors the M2 path).
-            unsafe {
-                anchors
-                    .poll_ready
-                    .register(context.waker(), axpoll::IoEvents::IN)
-            };
+            unsafe { sink.register_shared(&anchors.poll_ready, axpoll::IoEvents::IN) };
+        }
+    }
+
+    pub unsafe fn register_poll_exclusive(&self, sink: &mut dyn axpoll::ExclusiveRegistrationSink) {
+        let guard = self.anchors.lock();
+        if let Some(anchors) = guard.as_ref() {
+            unsafe { sink.register_exclusive(&anchors.poll_ready, axpoll::IoEvents::IN) };
         }
     }
 }

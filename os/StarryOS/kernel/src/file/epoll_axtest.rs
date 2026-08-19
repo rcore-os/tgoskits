@@ -1,12 +1,13 @@
 //! Deterministic concurrency hooks for epoll kernel tests.
 
-use alloc::{borrow::Cow, sync::Arc, task::Wake};
+use alloc::{borrow::Cow, sync::Arc, task::Wake, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    task::{Context, Waker},
+    task::Waker,
 };
 
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 
 use super::{
     FileLike,
@@ -105,8 +106,8 @@ impl Pollable for ReadyFile {
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        unsafe { self.poll_waiters.register(context.waker(), events) };
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        unsafe { sink.register_shared(&self.poll_waiters, events) };
     }
 }
 
@@ -161,9 +162,9 @@ impl Pollable for CallbackBoundaryFile {
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         self.record_callback_reentry();
-        unsafe { self.poll_waiters.register(context.waker(), events) };
+        unsafe { sink.register_shared(&self.poll_waiters, events) };
     }
 }
 
@@ -209,6 +210,7 @@ pub(crate) fn level_aliases_rotate_in_linux_callback_order_for_test() -> bool {
         .add_file_for_test(2, target_file, 0x22, EpollFlags::empty())
         .expect("second test interest must be added");
 
+    let mut registrations = Vec::new();
     for result_index in 0..2 {
         let waiter = Arc::new(EpollWaiter {
             epoll: epoll.clone(),
@@ -216,8 +218,9 @@ pub(crate) fn level_aliases_rotate_in_linux_callback_order_for_test() -> bool {
             results: results.clone(),
         });
         let waker = Waker::from(waiter);
-        let mut context = Context::from_waker(&waker);
-        epoll.register(&mut context, IoEvents::IN);
+        let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);
+        unsafe { epoll.register_exclusive(&mut registrar, IoEvents::IN) };
+        registrations.push(registrar);
     }
 
     target.make_ready();
@@ -312,7 +315,7 @@ impl Pollable for ReadyDuringRegisterFile {
         }
     }
 
-    fn register(&self, _context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, _sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         if events.contains(IoEvents::IN) {
             // Model readiness becoming visible after the old wake was consumed
             // but before the replacement waker can observe a new transition.

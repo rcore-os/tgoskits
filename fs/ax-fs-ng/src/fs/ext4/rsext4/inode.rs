@@ -8,9 +8,10 @@ use core::{any::Any, cell::Cell};
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, FilesystemOps,
-    FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
-    Reference, VfsError, VfsResult, WeakDirEntry,
+    Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference, VfsError,
+    VfsResult, WeakDirEntry,
 };
+use axpoll::{IoEvents, Pollable};
 use rsext4::{BLOCK_SIZE, bmalloc::InodeNumber};
 
 use super::{
@@ -336,12 +337,17 @@ impl FileNodeOps for Inode {
     }
 }
 
-impl FsPollable for Inode {
-    fn poll(&self) -> FsIoEvents {
-        FsIoEvents::IN | FsIoEvents::OUT
+impl Pollable for Inode {
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut core::task::Context<'_>, _events: FsIoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 impl DirNodeOps for Inode {

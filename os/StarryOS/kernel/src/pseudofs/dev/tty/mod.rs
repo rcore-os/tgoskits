@@ -15,7 +15,6 @@ use core::{
     any::Any,
     ops::Deref,
     sync::atomic::{AtomicUsize, Ordering},
-    task::Context,
 };
 
 use axfs_ng_vfs::{Location, NodeFlags, VfsError, VfsResult};
@@ -420,13 +419,37 @@ impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         let _ = self.writer.open();
         if !self.is_ptm {
-            self.terminal.job_control.register(context, events);
+            unsafe { self.terminal.job_control.register_shared(sink, events) };
         }
         if events.contains(IoEvents::IN) {
-            self.ldisc.lock().register_rx_waker(context.waker());
+            let source = self.ldisc.lock().rx_poll_source();
+            unsafe { sink.register_shared(&source, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        let _ = self.writer.open();
+        if !self.is_ptm {
+            unsafe {
+                self.terminal
+                    .job_control
+                    .register_shared(sink.as_shared(), events)
+            };
+        }
+        if events.contains(IoEvents::IN) {
+            let source = self.ldisc.lock().rx_poll_source();
+            unsafe { sink.register_exclusive(&source, IoEvents::IN) };
         }
     }
 }

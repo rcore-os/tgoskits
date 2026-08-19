@@ -6,10 +6,8 @@ use alloc::{
 };
 use core::{
     ffi::{c_char, c_int},
-    future::poll_fn,
     iter,
     mem::size_of,
-    task::Poll,
 };
 
 use ax_fs_ng::vfs::current_fs_context;
@@ -311,40 +309,20 @@ fn do_execve(
             let _ = zap_thread(*tid);
         }
 
-        block_on(poll_fn(|cx| {
-            let remaining = proc_data
-                .proc
-                .threads()
-                .into_iter()
-                .filter(|tid| *tid != my_tid)
-                .count();
-            let leader_exit_complete =
-                my_tid == leader_tid || proc_data.retired_leader_transfer_ready();
-            if remaining == 0 && leader_exit_complete {
-                return Poll::Ready(());
-            }
-            unsafe {
-                proc_data
-                    .thread_exit_event()
-                    .register(cx.waker(), axpoll::IoEvents::IN)
-            };
-            // Re-check after registering: a sibling could have exited
-            // between the first check and the register, and the wake
-            // that fired then would have found an empty waker set.
-            let remaining = proc_data
-                .proc
-                .threads()
-                .into_iter()
-                .filter(|tid| *tid != my_tid)
-                .count();
-            let leader_exit_complete =
-                my_tid == leader_tid || proc_data.retired_leader_transfer_ready();
-            if remaining == 0 && leader_exit_complete {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        }));
+        block_on(crate::task::wait_on_pollset(
+            proc_data.thread_exit_event(),
+            || {
+                let remaining = proc_data
+                    .proc
+                    .threads()
+                    .into_iter()
+                    .filter(|tid| *tid != my_tid)
+                    .count();
+                let leader_exit_complete =
+                    my_tid == leader_tid || proc_data.retired_leader_transfer_ready();
+                (remaining == 0 && leader_exit_complete).then_some(())
+            },
+        ));
     }
 
     // ----------------------------------------------------------------

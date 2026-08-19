@@ -172,6 +172,7 @@ rdif-pinctrl = { workspace = true, optional = true }
 rdif-pwm = { workspace = true, optional = true }
 ax-io = { workspace = true }
 axpoll = { workspace = true }
+axpoll-set.workspace = true
 bitflags = "2.10"
 bitmaps = { version = "3.2", default-features = false }
 bytemuck = { version = "1.23", features = ["unsound_ptr_pod_impl", "derive"] }

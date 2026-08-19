@@ -2,15 +2,15 @@ use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::{
     any::Any,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
     time::Duration,
 };
 use std::sync::Mutex as StdMutex;
 
 use axfs_ng_vfs::{
-    DeviceId, DirEntry, FileNodeOps, Filesystem, FilesystemOps, FsIoEvents, FsPollable, Metadata,
-    MetadataUpdate, Mountpoint, NodeFlags, NodeOps, NodePermission, NodeType, Reference, StatFs,
+    DeviceId, DirEntry, FileNodeOps, Filesystem, FilesystemOps, Metadata, MetadataUpdate,
+    Mountpoint, NodeFlags, NodeOps, NodePermission, NodeType, Reference, StatFs,
 };
+use axpoll::{IoEvents, Pollable};
 
 use super::*;
 use crate::os::memory::test_support::with_test_page_provider;
@@ -117,12 +117,17 @@ impl NodeOps for CacheTestFile {
     }
 }
 
-impl FsPollable for CacheTestFile {
-    fn poll(&self) -> FsIoEvents {
-        FsIoEvents::IN | FsIoEvents::OUT
+impl Pollable for CacheTestFile {
+    fn poll(&self) -> IoEvents {
+        IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 impl FileNodeOps for CacheTestFile {

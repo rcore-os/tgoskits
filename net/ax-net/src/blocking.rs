@@ -7,12 +7,12 @@
 use alloc::{sync::Arc, task::Wake};
 use core::{
     sync::atomic::{AtomicBool, Ordering},
-    task::{Context, Waker},
+    task::Waker,
     time::Duration,
 };
 
 use ax_task::{ThreadWakeHandle, WaitQueue};
-use axpoll::{IoEvents, Pollable};
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable};
 
 use crate::{NetError, NetResult};
 
@@ -34,17 +34,18 @@ where
 {
     let waiter = BlockingWaiter::new()?;
     let waker = Waker::from(Arc::clone(&waiter));
-    let mut context = Context::from_waker(&waker);
+    let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);
     let deadline_ns = timeout.map(deadline_after);
 
     loop {
+        registrar.reset(&waker);
         match operation() {
             Ok(value) => return Ok(value),
             Err(NetError::WouldBlock) => {}
             Err(error) => return Err(error),
         }
 
-        pollable.register(&mut context, events);
+        unsafe { pollable.register_exclusive(&mut registrar, events) };
         match operation() {
             Ok(value) => return Ok(value),
             Err(NetError::WouldBlock) if nonblocking => return Err(NetError::WouldBlock),

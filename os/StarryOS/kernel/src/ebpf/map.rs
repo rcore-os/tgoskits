@@ -7,7 +7,8 @@ use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 use core::ops::{Deref, DerefMut};
 
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use kbpf_basic::{
     PollWaker,
     map::{BpfMapMeta, UnifiedMap, bpf_map_create},
@@ -63,10 +64,23 @@ impl Pollable for BpfMap {
         events
     }
 
-    fn register(&self, context: &mut core::task::Context<'_>, events: axpoll::IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: axpoll::IoEvents,
+    ) {
         if !events.is_empty() {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_ready.register(context.waker(), events) };
+            unsafe { sink.register_shared(&self.poll_ready.0, events) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: axpoll::IoEvents,
+    ) {
+        if !events.is_empty() {
+            unsafe { sink.register_exclusive(&self.poll_ready.0, events) };
         }
     }
 }

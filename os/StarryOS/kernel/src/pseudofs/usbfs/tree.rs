@@ -1,5 +1,5 @@
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec::Vec};
-use core::{any::Any, task::Context};
+use core::any::Any;
 
 use axfs_ng_vfs::{NodeFlags, NodeType, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
@@ -183,5 +183,10 @@ impl Pollable for UsbDeviceOps {
         IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }

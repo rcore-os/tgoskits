@@ -21,7 +21,7 @@ use ax_std::os::arceos::task::{
     self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, LocalExecutor,
     MonotonicDeadline, MonotonicInstant, WaitQueue,
 };
-use axpoll::{IoEvents, Pollable};
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedObserver};
 
 pub use super::user_wait::{UserWaitError, UserWaitOutcome};
 use super::{UserTaskRef, user_wait::resolve_user_wait};
@@ -256,6 +256,55 @@ impl Default for IrqNotify {
     }
 }
 
+async fn poll_with_registrar<M, T>(
+    mut check: impl FnMut() -> Poll<T>,
+    mut register: impl FnMut(&mut PollRegistrar<M>),
+) -> T {
+    let mut registrar = None::<PollRegistrar<M>>;
+    poll_fn(move |context| {
+        if let Some(registrar) = registrar.as_mut() {
+            registrar.reset(context.waker());
+        }
+        if let Poll::Ready(value) = check() {
+            if let Some(registrar) = registrar.as_mut() {
+                registrar.clear();
+            }
+            return Poll::Ready(value);
+        }
+
+        let registrar = registrar.get_or_insert_with(|| PollRegistrar::new(context.waker()));
+        register(registrar);
+        match check() {
+            Poll::Ready(value) => {
+                registrar.clear();
+                Poll::Ready(value)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await
+}
+
+/// Waits on shared readiness sources using one owned registration attempt.
+///
+/// `check` is evaluated before and after `register`, closing the readiness
+/// publication race. Cancellation, timeout, and interruption drop the future
+/// and therefore unregister every source owned by its registrar.
+pub async fn poll_shared<T>(
+    check: impl FnMut() -> Poll<T>,
+    register: impl FnMut(&mut PollRegistrar<SharedObserver>),
+) -> T {
+    poll_with_registrar(check, register).await
+}
+
+/// Waits on consumptive readiness sources using exclusive registrations.
+pub async fn poll_exclusive<T>(
+    check: impl FnMut() -> Poll<T>,
+    register: impl FnMut(&mut PollRegistrar<ExclusiveConsumer>),
+) -> T {
+    poll_with_registrar(check, register).await
+}
+
 /// Wraps a non-blocking operation in readiness polling.
 ///
 /// User interruption belongs to [`block_on_user`], not to this task-neutral
@@ -270,19 +319,74 @@ where
     P: Pollable,
     F: FnMut() -> crate::StarryResult<T>,
 {
+    poll_io_with_wake(pollable, events, non_blocking, move |_| operation()).await
+}
+
+/// Identifies whether an exclusive source selected the current I/O attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExclusivePollWake {
+    /// The attempt is an initial or unselected readiness recheck.
+    Unselected,
+    /// An exclusive source selected this attempt and invoked its waker.
+    Notified,
+}
+
+impl ExclusivePollWake {
+    /// Returns whether an exclusive source selected this attempt.
+    pub const fn was_notified(self) -> bool {
+        matches!(self, Self::Notified)
+    }
+}
+
+/// Wraps a non-blocking operation and reports exclusive wake ownership.
+///
+/// Consumptive sources use the notification marker to hand remaining
+/// readiness to the next waiter, matching Linux exclusive wait queues.
+pub async fn poll_io_with_wake<P, F, T>(
+    pollable: &P,
+    events: IoEvents,
+    non_blocking: bool,
+    mut operation: F,
+) -> crate::StarryResult<T>
+where
+    P: Pollable,
+    F: FnMut(ExclusivePollWake) -> crate::StarryResult<T>,
+{
+    let mut registrar = None::<PollRegistrar<ExclusiveConsumer>>;
     poll_fn(move |context| {
-        match operation() {
+        let wake = if registrar
+            .as_ref()
+            .is_some_and(PollRegistrar::was_exclusively_notified)
+        {
+            ExclusivePollWake::Notified
+        } else {
+            ExclusivePollWake::Unselected
+        };
+        if let Some(registrar) = registrar.as_mut() {
+            registrar.reset(context.waker());
+        }
+        match operation(wake) {
             Ok(value) => return Poll::Ready(Ok(value)),
             Err(error) if error.is_would_block() => {}
             Err(error) => return Poll::Ready(Err(error)),
         }
 
-        pollable.register(context, events);
-        match operation() {
-            Ok(value) => Poll::Ready(Ok(value)),
-            Err(error) if error.is_would_block() && non_blocking => Poll::Ready(Err(error)),
+        let registrar = registrar.get_or_insert_with(|| PollRegistrar::new(context.waker()));
+        unsafe { pollable.register_exclusive(registrar, events) };
+        match operation(ExclusivePollWake::Unselected) {
+            Ok(value) => {
+                registrar.clear();
+                Poll::Ready(Ok(value))
+            }
+            Err(error) if error.is_would_block() && non_blocking => {
+                registrar.clear();
+                Poll::Ready(Err(error))
+            }
             Err(error) if error.is_would_block() => Poll::Pending,
-            Err(error) => Poll::Ready(Err(error)),
+            Err(error) => {
+                registrar.clear();
+                Poll::Ready(Err(error))
+            }
         }
     })
     .await

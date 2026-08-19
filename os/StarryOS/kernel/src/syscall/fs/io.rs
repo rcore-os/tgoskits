@@ -1,8 +1,5 @@
 use alloc::{borrow::Cow, sync::Arc, vec, vec::Vec};
-use core::{
-    ffi::{c_char, c_int},
-    task::Context,
-};
+use core::ffi::{c_char, c_int};
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
@@ -105,7 +102,12 @@ impl Pollable for DummyFd {
         IoEvents::empty()
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 pub fn sys_dummy_fd(

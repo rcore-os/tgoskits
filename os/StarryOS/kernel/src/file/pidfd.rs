@@ -1,8 +1,5 @@
 use alloc::{borrow::Cow, sync::Arc};
-use core::{
-    sync::atomic::{AtomicBool, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use axpoll::{IoEvents, Pollable};
 
@@ -130,16 +127,19 @@ impl Pollable for PidFd {
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         let interests = events & (IoEvents::IN | IoEvents::RDNORM | IoEvents::HUP);
         if !interests.is_empty() {
-            // Registration happens from pidfd poll task context.
             let exit_event = if self.is_thread() {
                 self.identity.thread_pidfd_exit_event()
             } else {
                 self.identity.process_exit_event()
             };
-            unsafe { exit_event.register(context.waker(), interests) };
+            unsafe { sink.register_shared(&exit_event, interests) };
         }
     }
 }

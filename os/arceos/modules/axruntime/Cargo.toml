@@ -88,6 +88,7 @@ serial = [
   "multitask",
   "ax-driver/serial",
   "dep:axpoll",
+  "dep:axpoll-set",
   "dep:rdif-serial",
 ]
 
@@ -116,6 +117,7 @@ ax-task.workspace = true
 cpu-local.workspace = true
 axbacktrace = {workspace = true}
 axpoll = {workspace = true, optional = true}
+axpoll-set = {workspace = true, optional = true}
 axklib.workspace = true
 axpanic = {workspace = true}
 cfg-if = {workspace = true}

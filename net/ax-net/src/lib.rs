@@ -85,7 +85,8 @@ use core::{
 use ax_lazyinit::{LazyInit, LazyLock, OnceLock};
 use ax_sync::{Mutex, MutexGuard};
 use ax_task::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, quiesce_irq_wait};
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 pub use error::{NetError, NetResult};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},

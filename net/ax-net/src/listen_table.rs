@@ -33,7 +33,8 @@ use alloc::{collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::task::Waker;
 
 use ax_sync::SpinLock;
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 use hashbrown::HashMap;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},

@@ -1,24 +1,16 @@
 use alloc::{sync::Arc, vec::Vec};
-use core::{any::Any, task::Context};
+use core::any::Any;
 
 use ax_fs_ng::vfs::CachedFile;
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use axfs_ng_vfs::{
-    DeviceId, FileNodeOps, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate,
-    NodeFlags, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
+    DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
+    NodePermission, NodeType, VfsError, VfsResult,
 };
 use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 
 use super::{SimpleFs, SimpleFsNode};
-
-fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
-    IoEvents::from_bits_truncate(events.bits())
-}
-
-fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
-    FsIoEvents::from_bits_truncate(events.bits())
-}
 
 /// Mmap behavior for devices.
 #[derive(Clone)]
@@ -203,28 +195,32 @@ impl FileNodeOps for Device {
     }
 }
 
-impl FsPollable for Device {
-    fn poll(&self) -> FsIoEvents {
-        if let Some(pollable) = self.ops.as_pollable() {
-            io_events_to_fs(pollable.poll())
-        } else {
-            FsIoEvents::IN | FsIoEvents::OUT
-        }
-    }
-
-    fn register(&self, context: &mut Context<'_>, events: FsIoEvents) {
-        if let Some(pollable) = self.ops.as_pollable() {
-            pollable.register(context, fs_events_to_io(events));
-        }
-    }
-}
-
 impl Pollable for Device {
     fn poll(&self) -> IoEvents {
-        fs_events_to_io(FsPollable::poll(self))
+        if let Some(pollable) = self.ops.as_pollable() {
+            pollable.poll()
+        } else {
+            IoEvents::IN | IoEvents::OUT
+        }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        FsPollable::register(self, context, io_events_to_fs(events));
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        if let Some(pollable) = self.ops.as_pollable() {
+            unsafe { pollable.register_shared(sink, events) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if let Some(pollable) = self.ops.as_pollable() {
+            unsafe { pollable.register_exclusive(sink, events) };
+        }
     }
 }

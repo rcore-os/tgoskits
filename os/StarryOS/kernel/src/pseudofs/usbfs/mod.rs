@@ -22,7 +22,8 @@ use core::{
 };
 
 use axfs_ng_vfs::Filesystem;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use crab_usb::usb_if::endpoint::{TransferCompletion, TransferRequest};
 use event_listener::Event as NotifyEvent;
 
@@ -1276,23 +1277,18 @@ impl UsbDeviceFile {
         } else {
             crate::task::future::block_on_user(
                 current,
-                poll_fn(|cx| {
-                    self.collect_submitted_urbs(None);
-                    if let Some(completed) = self.pending_urbs.lock().pop_front() {
-                        return Poll::Ready(completed);
-                    }
-
-                    // Registration happens from usbfs reap task context.
-                    unsafe {
-                        self.poll_urbs
-                            .register(cx.waker(), IoEvents::IN | IoEvents::OUT)
-                    };
-                    self.collect_submitted_urbs(Some(cx));
-                    self.pending_urbs
-                        .lock()
-                        .pop_front()
-                        .map_or(Poll::Pending, Poll::Ready)
-                }),
+                crate::task::future::poll_exclusive(
+                    || {
+                        self.collect_submitted_urbs(None);
+                        self.pending_urbs
+                            .lock()
+                            .pop_front()
+                            .map_or(Poll::Pending, Poll::Ready)
+                    },
+                    |registrar| unsafe {
+                        registrar.register_exclusive(&self.poll_urbs, IoEvents::IN | IoEvents::OUT)
+                    },
+                ),
             )
             .into_result()?
         };
@@ -1463,17 +1459,31 @@ impl Pollable for UsbDeviceFile {
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        if events.intersects(IoEvents::IN | IoEvents::OUT) {
-            // Registration happens from usbfs poll task context.
-            unsafe {
-                self.poll_urbs
-                    .register(context.waker(), events & (IoEvents::IN | IoEvents::OUT))
-            };
-            self.collect_submitted_urbs(Some(context));
-            if !self.pending_urbs.lock().is_empty() {
-                context.waker().wake_by_ref();
-            }
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        let interests = events & (IoEvents::IN | IoEvents::OUT);
+        if interests.is_empty() {
+            return;
+        }
+        unsafe { sink.register_shared(&self.poll_urbs, interests) };
+        self.collect_submitted_urbs(None);
+        if !self.pending_urbs.lock().is_empty() {
+            unsafe { self.poll_urbs.wake(IoEvents::IN | IoEvents::OUT) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        let interests = events & (IoEvents::IN | IoEvents::OUT);
+        if interests.is_empty() {
+            return;
+        }
+        unsafe { sink.register_exclusive(&self.poll_urbs, interests) };
+        self.collect_submitted_urbs(None);
+        if !self.pending_urbs.lock().is_empty() {
+            unsafe { self.poll_urbs.wake(IoEvents::IN | IoEvents::OUT) };
         }
     }
 }

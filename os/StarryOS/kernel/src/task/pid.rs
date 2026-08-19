@@ -10,15 +10,14 @@ use alloc::{
 };
 use core::{
     fmt,
-    future::poll_fn,
     marker::PhantomData,
     num::{NonZeroU32, NonZeroU64},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    task::Poll,
 };
 
 use ax_lazyinit::LazyLock;
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 
 use super::{
     Cred, Process, ProcessCpuTime, ProcessData, ProcessGroup, Session, UserTaskRef, WeakUserTaskRef,
@@ -488,37 +487,28 @@ pub struct PidNamespaceShutdown<'a> {
 
 impl PidNamespaceShutdown<'_> {
     pub fn wait_for_descendants_exit(&self) {
-        super::future::block_on(poll_fn(|cx| {
-            let has_unexited_descendants = || {
-                self.namespace
-                    .published_members()
-                    .into_iter()
-                    .any(|identity| {
-                        // Linux's zap_pid_ns_processes waits for one retained
-                        // PID when the leader executes teardown and two when a
-                        // non-leader does: the namespace init identity plus
-                        // the current teardown task. The executor has already
-                        // retired its runtime link, but excluding its stable
-                        // identity keeps the count aligned with Linux.
-                        identity.id() != self.init
-                            && identity.id() != self.executor
-                            && identity.has_unexited_task()
-                    })
-            };
-            if !has_unexited_descendants() {
-                return Poll::Ready(());
-            }
-            unsafe {
-                self.namespace
-                    .task_exit_event
-                    .register(cx.waker(), IoEvents::IN)
-            };
-            if has_unexited_descendants() {
-                Poll::Pending
-            } else {
-                Poll::Ready(())
-            }
-        }));
+        super::future::block_on(super::process_wait::wait_on_pollset(
+            &self.namespace.task_exit_event,
+            || {
+                let has_unexited_descendants = {
+                    self.namespace
+                        .published_members()
+                        .into_iter()
+                        .any(|identity| {
+                            // Linux's zap_pid_ns_processes waits for one retained
+                            // PID when the leader executes teardown and two when a
+                            // non-leader does: the namespace init identity plus
+                            // the current teardown task. The executor has already
+                            // retired its runtime link, but excluding its stable
+                            // identity keeps the count aligned with Linux.
+                            identity.id() != self.init
+                                && identity.id() != self.executor
+                                && identity.has_unexited_task()
+                        })
+                };
+                (!has_unexited_descendants).then_some(())
+            },
+        ));
         self.namespace.finish_shutdown(self.init);
     }
 }

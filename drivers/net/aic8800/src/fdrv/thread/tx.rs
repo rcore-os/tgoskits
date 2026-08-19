@@ -1,6 +1,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{sync::atomic::Ordering, task::Poll};
 
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar};
 use log;
 
 use crate::{
@@ -44,15 +45,13 @@ fn pad_cmd_frame(cmd: &mut Vec<u8>) -> usize {
 /// 启动 wifi-tx 线程
 pub fn start(bus: Arc<WifiBus>) {
     log::debug!("[wifi-tx] thread starting");
-    // TX poll kicker 仅 DC/DW 启用:它兜底 PollSet 无 sticky 导致的唤醒丢失,是
-    // DC 双管道 + 控制端口对账场景下的需要。D80/8801 走 upstream/dev 的纯事件
-    // 驱动路径,不启动 kicker,避免额外周期任务干扰已验证的调度。
-    if bus.transport.is_dual_pipe() {
-        start_tx_poll_kicker(bus.clone());
-    }
+    let mut registration = None::<PollRegistrar<ExclusiveConsumer>>;
     crate::runtime::runtime().spawn_poll_task(
         "wifi-tx",
         alloc::boxed::Box::new(move |cx| {
+            if let Some(registration) = registration.as_mut() {
+                registration.reset(cx.waker());
+            }
             // 检查总线状态
             if *bus.state.lock() == BusState::Down {
                 log::warn!("[wifi-tx] poll exit: bus down");
@@ -62,51 +61,23 @@ pub fn start(bus: Arc<WifiBus>) {
             // 处理所有待发帧
             let did_work = tx_process(&bus);
 
-            // 注册 waker
-            bus.tx.wake_pollset.register(cx.waker());
+            let registration = registration.get_or_insert_with(|| PollRegistrar::new(cx.waker()));
+            // SAFETY: this closure is polled only by the TX task.
+            unsafe { registration.register_exclusive(&bus.tx.wake_pollset, IoEvents::IN) };
 
-            // 双重检查
+            // 注册后重新观察生产者发布的状态，关闭 check/register 竞态。
             let pending = has_pending_work(&bus);
             if did_work || pending {
+                registration.clear();
                 cx.waker().wake_by_ref();
             }
 
             // 只在有错误时唤醒 rsp_pollset，避免无意义的任务切换
             if bus.cmd.rsp_error.load(Ordering::Acquire) {
-                bus.cmd.rsp_pollset.wake();
+                // SAFETY: this is the task-owned TX service path.
+                unsafe { bus.cmd.rsp_pollset.wake(IoEvents::IN) };
             }
 
-            Poll::Pending
-        }),
-    );
-}
-
-/// 周期性唤醒 wifi-tx 线程的兜底任务。
-///
-/// 背景:wifi-tx 是边沿触发的 poll 任务,且先 tx_process 再 register waker
-/// (tx.rs:57/60)。PollSet 无 sticky 位(pollset.rs),若 `wake_pollset.wake()`
-/// 触发时 TX 的 waker 恰不在 set 里(例如 TX 正在 tx_process 内的 yield 点),
-/// 这次唤醒会永久丢失;叠加 `pending_flag` 队头阻塞(process_data_tx 见 pending
-/// CMD 即 break),一次丢失的 CMD 唤醒会冻结整条 TX 数秒,直到下一次偶然命中
-/// 注册窗口的 wake——这正是控制端口命令时好时坏超时的根因。
-///
-/// RX 线程早有对称的 10ms kicker(start_rx_poll_kicker)解决同类问题;此处为
-/// TX 补上,确保任何丢失的唤醒最多被延迟 ~10ms 即被救醒。
-fn start_tx_poll_kicker(bus: Arc<WifiBus>) {
-    crate::runtime::runtime().spawn_poll_task(
-        "wifi-tx-kick",
-        alloc::boxed::Box::new(move |cx| {
-            if *bus.state.lock() == BusState::Down {
-                return Poll::Ready(());
-            }
-            // 仅在确有待发工作时才唤醒 TX,避免空转。
-            if has_pending_work(&bus) {
-                bus.tx.wake_pollset.wake();
-            }
-            // 阻塞 sleep:本任务独占一个 ax_task 线程,只拖慢自己。
-            crate::runtime::runtime().sleep_ms(10);
-            // 自唤醒,形成 10ms 周期循环。
-            cx.waker().wake_by_ref();
             Poll::Pending
         }),
     );
@@ -164,7 +135,8 @@ fn process_cmd_tx(bus: &WifiBus) -> bool {
     } else if !fc_ok {
         log::error!("[wifi-tx] CMD flow_ctrl timeout, dropping CMD");
         bus.cmd.rsp_error.store(true, Ordering::Release);
-        bus.cmd.rsp_pollset.wake();
+        // SAFETY: this is the task-owned TX service path.
+        unsafe { bus.cmd.rsp_pollset.wake(IoEvents::IN) };
         transport.unmask_card_irq();
     } else {
         transport.unmask_card_irq();
@@ -559,7 +531,8 @@ pub fn enqueue_data_frame(bus: &Arc<WifiBus>, eth_frame: Vec<u8>) -> Result<(), 
     drop(queue);
 
     bus.tx.pktcnt.fetch_add(1, Ordering::AcqRel);
-    bus.tx.wake_pollset.wake();
+    // SAFETY: enqueue runs in task context after publishing queue state.
+    unsafe { bus.tx.wake_pollset.wake(IoEvents::IN) };
     Ok(())
 }
 
@@ -583,6 +556,7 @@ pub fn enqueue_mgmt_frame(bus: &WifiBus, mgmt_frame: Vec<u8>) -> Result<(), TxEr
 
     let cnt = bus.tx.pktcnt.fetch_add(1, Ordering::AcqRel) + 1;
     log::trace!("[wifi-tx] enqueue: pktcnt={}", cnt);
-    bus.tx.wake_pollset.wake();
+    // SAFETY: enqueue runs in task context after publishing queue state.
+    unsafe { bus.tx.wake_pollset.wake(IoEvents::IN) };
     Ok(())
 }

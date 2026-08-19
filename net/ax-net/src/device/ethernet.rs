@@ -24,7 +24,7 @@ use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 
 use ax_lazyinit::OnceLock;
 use ax_sync::SpinLock;
-use axpoll::PollSet;
+use axpoll_set::PollSet;
 use hashbrown::HashMap;
 use irq_framework::IrqId;
 use smoltcp::{

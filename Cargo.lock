@@ -173,6 +173,8 @@ dependencies = [
  "aes",
  "atomic-waker",
  "ax-sync",
+ "axpoll",
+ "axpoll-set",
  "digest 0.10.7",
  "dma-api",
  "hmac",
@@ -902,6 +904,7 @@ dependencies = [
  "ax-std",
  "ax-sync",
  "axfs-ng-vfs",
+ "axpoll",
  "axtest",
  "bitflags 2.13.1",
  "cfg-if",
@@ -1047,6 +1050,7 @@ dependencies = [
  "ax-sync",
  "ax-task",
  "axpoll",
+ "axpoll-set",
  "axtest",
  "bitflags 2.13.1",
  "cfg-if",
@@ -1166,6 +1170,7 @@ dependencies = [
  "axklib",
  "axpanic",
  "axpoll",
+ "axpoll-set",
  "cfg-if",
  "chrono",
  "cpu-local",
@@ -1367,6 +1372,7 @@ version = "0.5.8"
 dependencies = [
  "ax-runtime",
  "ax-sync",
+ "axpoll",
  "bitflags 2.13.1",
  "cfg-if",
  "hashbrown 0.16.1",
@@ -1441,12 +1447,19 @@ dependencies = [
 name = "axpoll"
 version = "0.5.4"
 dependencies = [
+ "bitflags 2.13.1",
+ "linux-raw-sys 0.12.1",
+]
+
+[[package]]
+name = "axpoll-set"
+version = "0.1.0"
+dependencies = [
  "ax-lazyinit",
  "ax-runtime",
  "ax-sync",
- "bitflags 2.13.1",
+ "axpoll",
  "futures",
- "linux-raw-sys 0.12.1",
  "tokio",
 ]
 
@@ -7903,6 +7916,7 @@ dependencies = [
  "axklib",
  "axplat-dyn",
  "axpoll",
+ "axpoll-set",
  "axtest",
  "bitflags 2.13.1",
  "bitmaps",

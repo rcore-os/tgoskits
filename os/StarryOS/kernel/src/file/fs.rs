@@ -3,12 +3,11 @@ use core::{
     ffi::c_int,
     hint::likely,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
 };
 
 use ax_fs_ng::vfs::{FileBackend, FileFlags, FsContext, current_fs_context};
 use ax_io::{Seek, SeekFrom};
-use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
+use axfs_ng_vfs::{Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
@@ -167,14 +166,6 @@ fn path_for(loc: &Location) -> Cow<'static, str> {
         .map_or_else(|_| "<error>".into(), |f| Cow::Owned(f.to_string()))
 }
 
-fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
-    IoEvents::from_bits_truncate(events.bits())
-}
-
-fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
-    FsIoEvents::from_bits_truncate(events.bits())
-}
-
 impl FileLike for File {
     fn read(&self, dst: &mut IoDst) -> StarryResult<usize> {
         let inner = self.inner();
@@ -313,13 +304,23 @@ impl FileLike for File {
 }
 impl Pollable for File {
     fn poll(&self) -> IoEvents {
-        fs_events_to_io(self.inner().location().poll())
+        self.inner().location().poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.inner()
-            .location()
-            .register(context, io_events_to_fs(events));
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner().location().register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner().location().register_exclusive(sink, events) };
     }
 }
 
@@ -402,10 +403,15 @@ impl FileLike for Directory {
 }
 impl Pollable for Directory {
     fn poll(&self) -> IoEvents {
-        fs_events_to_io(FsIoEvents::IN | FsIoEvents::OUT)
+        IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 #[cfg(test)]
 pub(crate) fn metadata_to_kstat_conversion_rules_hold_for_test() -> bool {

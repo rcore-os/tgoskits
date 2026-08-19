@@ -1,8 +1,5 @@
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
-use core::{
-    ffi::{c_char, c_void},
-    task::Context,
-};
+use core::ffi::{c_char, c_void};
 
 use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
 use axfs_ng_vfs::{Filesystem, MetadataUpdate, Mountpoint, NodePermission};
@@ -246,7 +243,12 @@ impl Pollable for MountContext {
         IoEvents::empty()
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 fn parse_tmpfs_size(value: &str) -> StarryResult<u64> {

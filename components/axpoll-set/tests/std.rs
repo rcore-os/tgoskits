@@ -4,11 +4,14 @@ extern crate alloc;
 use alloc::{format, sync::Arc, task::Wake, vec::Vec};
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
-    task::{Context, Waker},
+    task::Waker,
 };
 
 use ax_runtime as _;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{
+    ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedObserver, SharedRegistrationSink,
+};
+use axpoll_set::PollSet;
 
 struct WakeCounter(AtomicUsize);
 
@@ -52,7 +55,7 @@ fn axpoll_event_masks_and_empty_wake_rules_hold() {
 
     let poll_set = PollSet::default();
     assert_eq!(unsafe { poll_set.wake(IoEvents::IN) }, 0);
-    assert_eq!(poll_set.wake_from_irq(IoEvents::IN), 0);
+    assert_eq!(unsafe { poll_set.wake(IoEvents::IN) }, 0);
 }
 
 #[test]
@@ -62,17 +65,19 @@ fn axpoll_wakes_only_matching_interests() {
     let write_counter = WakeCounter::new();
     let read_waker = counter_waker(&read_counter);
     let write_waker = counter_waker(&write_counter);
+    let mut read = PollRegistrar::<SharedObserver>::new(&read_waker);
+    let mut write = PollRegistrar::<SharedObserver>::new(&write_waker);
 
     unsafe {
-        poll_set.register(&read_waker, IoEvents::IN);
-        poll_set.register(&write_waker, IoEvents::OUT);
+        read.register(&poll_set, IoEvents::IN);
+        write.register(&poll_set, IoEvents::OUT);
     }
 
     assert_eq!(unsafe { poll_set.wake(IoEvents::IN) }, 1);
     assert_eq!(read_counter.count(), 1);
     assert_eq!(write_counter.count(), 0);
 
-    assert_eq!(poll_set.wake_from_irq(IoEvents::OUT), 1);
+    assert_eq!(unsafe { poll_set.wake(IoEvents::OUT) }, 1);
     assert_eq!(read_counter.count(), 1);
     assert_eq!(write_counter.count(), 1);
     assert_eq!(unsafe { poll_set.wake(IoEvents::IN | IoEvents::OUT) }, 0);
@@ -85,44 +90,47 @@ fn axpoll_exclusive_wake_keeps_other_matching_waiters() {
     let second_counter = WakeCounter::new();
     let first_waker = counter_waker(&first_counter);
     let second_waker = counter_waker(&second_counter);
+    let mut first = PollRegistrar::<ExclusiveConsumer>::new(&first_waker);
+    let mut second = PollRegistrar::<ExclusiveConsumer>::new(&second_waker);
 
     unsafe {
-        poll_set.register(&first_waker, IoEvents::IN);
-        poll_set.register(&second_waker, IoEvents::IN);
+        first.register_exclusive(&poll_set, IoEvents::IN);
+        second.register_exclusive(&poll_set, IoEvents::IN);
     }
 
-    assert_eq!(unsafe { poll_set.wake_one(IoEvents::IN) }, 1);
+    assert_eq!(unsafe { poll_set.wake(IoEvents::IN) }, 1);
     assert_eq!(first_counter.count() + second_counter.count(), 1);
-    assert_eq!(unsafe { poll_set.wake_one(IoEvents::IN) }, 1);
+    assert_eq!(unsafe { poll_set.wake(IoEvents::IN) }, 1);
     assert_eq!(first_counter.count(), 1);
     assert_eq!(second_counter.count(), 1);
-    assert_eq!(unsafe { poll_set.wake_one(IoEvents::IN) }, 0);
+    assert_eq!(unsafe { poll_set.wake(IoEvents::IN) }, 0);
 }
 
 #[test]
-fn axpoll_capacity_overwrite_and_drop_rules_hold() {
+fn axpoll_unbounded_registration_and_drop_rules_hold() {
     let poll_set = PollSet::new();
     let counters = (0..65).map(|_| WakeCounter::new()).collect::<Vec<_>>();
+    let mut registrars = Vec::new();
 
     for counter in &counters {
         let waker = counter_waker(counter);
-        unsafe { poll_set.register(&waker, IoEvents::IN) };
+        let mut registrar = PollRegistrar::<SharedObserver>::new(&waker);
+        unsafe { registrar.register(&poll_set, IoEvents::IN) };
+        registrars.push(registrar);
     }
 
-    assert_eq!(unsafe { poll_set.wake(IoEvents::IN) }, 64);
-    assert_eq!(
-        counters
-            .iter()
-            .map(|counter| counter.count())
-            .sum::<usize>(),
-        65
-    );
+    assert!(counters.iter().all(|counter| counter.count() == 0));
+    assert_eq!(unsafe { poll_set.wake(IoEvents::IN) }, 65);
+    assert!(counters.iter().all(|counter| counter.count() == 1));
 
     let poll_set = PollSet::new();
     let drop_counter = WakeCounter::new();
+    let drop_waker = counter_waker(&drop_counter);
+    let mut drop_registrars = Vec::new();
     for _ in 0..4 {
-        let waker = counter_waker(&drop_counter);
-        unsafe { poll_set.register(&waker, IoEvents::OUT) };
+        let mut registrar = PollRegistrar::<SharedObserver>::new(&drop_waker);
+        unsafe { registrar.register(&poll_set, IoEvents::OUT) };
+        drop_registrars.push(registrar);
     }
     drop(poll_set);
     assert_eq!(drop_counter.count(), 4);
@@ -147,25 +155,25 @@ impl Pollable for FixedPollable {
         self.ready
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        unsafe { self.poll_set.register(context.waker(), events) };
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        unsafe { sink.register_shared(&self.poll_set, events) };
     }
 }
 
 #[test]
-fn axpoll_pollable_context_registration_rules_hold() {
+fn axpoll_pollable_owned_registration_rules_hold() {
     let pollable = FixedPollable::new(IoEvents::IN | IoEvents::HUP);
     let counter = WakeCounter::new();
     let waker = counter_waker(&counter);
-    let mut context = Context::from_waker(&waker);
+    let mut registrar = PollRegistrar::<SharedObserver>::new(&waker);
 
     assert!(pollable.poll().contains(IoEvents::IN));
     assert!(pollable.poll().contains(IoEvents::HUP));
-    pollable.register(&mut context, IoEvents::IN | IoEvents::ERR);
+    unsafe { pollable.register_shared(&mut registrar, IoEvents::IN | IoEvents::ERR) };
 
     assert_eq!(unsafe { pollable.poll_set.wake(IoEvents::OUT) }, 0);
     assert_eq!(counter.count(), 0);
-    assert_eq!(pollable.poll_set.wake_from_irq(IoEvents::ERR), 1);
+    assert_eq!(unsafe { pollable.poll_set.wake(IoEvents::ERR) }, 1);
     assert_eq!(counter.count(), 1);
 
     let all_readable = IoEvents::all() & !IoEvents::NVAL;

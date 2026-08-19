@@ -34,7 +34,11 @@ use core::sync::atomic::Ordering;
 
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
+#[cfg(target_arch = "aarch64")]
+use axpoll::{ExclusiveRegistrationSink, SharedRegistrationSink};
 use axpoll::{IoEvents, Pollable};
+#[cfg(target_arch = "aarch64")]
+use axpoll_set::PollSet;
 #[cfg(not(target_arch = "aarch64"))]
 use kbpf_basic::linux_bpf::perf_event_attr;
 
@@ -246,26 +250,6 @@ impl HwPerfEventState {
             // A counting event is always readable: `read(perf_fd)` returns the
             // current value without blocking.
             None => IoEvents::IN,
-        }
-    }
-
-    fn register(&self, context: &mut core::task::Context<'_>, events: IoEvents) {
-        // Per-task sampling events register a waker on the ptc's `PollSet` (the
-        // one the per-task notify worker wakes). Counting events (per-task or
-        // system-wide) never transition readiness, so they register nothing.
-        if let Some(family) = &self.per_task {
-            let ptc = family.root();
-            if ptc.is_sampling() && events.contains(IoEvents::IN) {
-                ptc.register_poll(context);
-            }
-            return;
-        }
-        // Counting events never transition readiness, so only sampling events
-        // register a waker — on the same `PollSet` the notify worker wakes.
-        if let Some(sampling) = &self.sampling
-            && events.contains(IoEvents::IN)
-        {
-            unsafe { sampling.poll_ready.register(context.waker(), IoEvents::IN) };
         }
     }
 }
@@ -516,6 +500,14 @@ impl HwPerfControl {
     fn task_family(&self) -> Option<Arc<PerfInheritanceFamily>> {
         self.state.lock().per_task.clone()
     }
+
+    fn system_poll_source(&self) -> Option<Arc<PollSet>> {
+        self.state
+            .lock()
+            .sampling
+            .as_ref()
+            .map(|sampling| Arc::clone(&sampling.poll_ready))
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -536,15 +528,40 @@ impl Pollable for HwPerfControl {
         self.state.lock().poll()
     }
 
-    fn register(&self, context: &mut core::task::Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        if !events.contains(IoEvents::IN) {
+            return;
+        }
         if let Some(family) = self.task_family() {
             let root = family.root();
-            if root.is_sampling() && events.contains(IoEvents::IN) {
-                root.register_poll(context);
+            if root.is_sampling() {
+                unsafe { root.register_poll_shared(sink) };
             }
             return;
         }
-        self.state.lock().register(context, events);
+        if let Some(source) = self.system_poll_source() {
+            unsafe { sink.register_shared(&source, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if !events.contains(IoEvents::IN) {
+            return;
+        }
+        if let Some(family) = self.task_family() {
+            let root = family.root();
+            if root.is_sampling() {
+                unsafe { root.register_poll_exclusive(sink) };
+            }
+            return;
+        }
+        if let Some(source) = self.system_poll_source() {
+            unsafe { sink.register_exclusive(&source, IoEvents::IN) };
+        }
     }
 }
 
@@ -711,8 +728,16 @@ impl Pollable for HwPerfEvent {
         self.control.poll()
     }
 
-    fn register(&self, context: &mut core::task::Context<'_>, events: IoEvents) {
-        self.control.register(context, events);
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        unsafe { self.control.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.control.register_exclusive(sink, events) };
     }
 }
 
@@ -773,7 +798,12 @@ impl Pollable for HwPerfEvent {
         IoEvents::IN
     }
 
-    fn register(&self, _context: &mut core::task::Context<'_>, _events: IoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
+    }
 }
 
 #[cfg(not(target_arch = "aarch64"))]

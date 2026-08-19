@@ -9,7 +9,8 @@ use core::{
 use ax_alloc::GlobalPage;
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::PhysAddr;
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 use super::{

@@ -29,12 +29,12 @@ use core::{
     mem::size_of,
     net::Ipv4Addr,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
 };
 
 use ax_lazyinit::LazyLock;
 use ax_net::{InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use linux_raw_sys::{
     general::{O_RDWR, S_IFSOCK},
     net::AF_NETLINK,
@@ -738,10 +738,23 @@ impl Pollable for NetlinkSocket {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         if events.contains(IoEvents::IN) {
-            // Registration happens from socket poll task context.
-            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
+            unsafe { sink.register_shared(&self.poll_rx, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_rx, IoEvents::IN) };
         }
     }
 }

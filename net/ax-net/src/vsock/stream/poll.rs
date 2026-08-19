@@ -1,8 +1,6 @@
 //! Vsock readiness publication and final connection retirement.
 
-use core::task::Context;
-
-use axpoll::{IoEvents, Pollable};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 
 use super::VsockStreamTransport;
 use crate::{Shutdown, vsock::connection_manager::*};
@@ -59,7 +57,7 @@ impl Pollable for VsockStreamTransport {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         if let Ok(conn) = self.get_connection() {
             let (state, local_port) = {
                 let state = conn.lock();
@@ -69,19 +67,54 @@ impl Pollable for VsockStreamTransport {
                 ConnectionState::Listening if events.contains(IoEvents::IN) => {
                     let queue = VSOCK_CONN_MANAGER.lock().get_listen_queue(local_port);
                     if let Some(queue) = queue {
-                        queue.lock().register_poll(context);
+                        let wakers = queue.lock().wakers.clone();
+                        unsafe { sink.register_shared(&wakers, IoEvents::IN) };
                     }
                 }
                 ConnectionState::Connected => {
                     if events.contains(IoEvents::IN) {
-                        conn.register_rx_poll(context);
+                        unsafe { conn.register_rx_shared(sink) };
                     }
                     if events.contains(IoEvents::OUT) {
-                        conn.register_tx_poll(context);
+                        unsafe { conn.register_tx_shared(sink) };
                     }
                 }
                 ConnectionState::Connecting if events.contains(IoEvents::OUT) => {
-                    conn.register_connect_poll(context);
+                    unsafe { conn.register_connect_shared(sink) };
+                }
+                _ => {}
+            }
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if let Ok(conn) = self.get_connection() {
+            let (state, local_port) = {
+                let state = conn.lock();
+                (state.state(), state.local_addr().port)
+            };
+            match state {
+                ConnectionState::Listening if events.contains(IoEvents::IN) => {
+                    let queue = VSOCK_CONN_MANAGER.lock().get_listen_queue(local_port);
+                    if let Some(queue) = queue {
+                        let wakers = queue.lock().wakers.clone();
+                        unsafe { sink.register_exclusive(&wakers, IoEvents::IN) };
+                    }
+                }
+                ConnectionState::Connected => {
+                    if events.contains(IoEvents::IN) {
+                        unsafe { conn.register_rx_exclusive(sink) };
+                    }
+                    if events.contains(IoEvents::OUT) {
+                        unsafe { conn.register_tx_exclusive(sink) };
+                    }
+                }
+                ConnectionState::Connecting if events.contains(IoEvents::OUT) => {
+                    unsafe { conn.register_connect_exclusive(sink) };
                 }
                 _ => {}
             }

@@ -1,301 +1,291 @@
-//! A library for polling I/O events and waking up tasks.
+//! Typed readiness capabilities independent of a queue or scheduler implementation.
 
 #![no_std]
 #![deny(missing_docs)]
 
 extern crate alloc;
 
-use alloc::{boxed::Box, vec::Vec};
-use core::{
-    mem::MaybeUninit,
-    task::{Context, Waker},
-};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use core::{marker::PhantomData, task::Waker};
 
-use ax_lazyinit::OnceLock;
-use ax_sync::SpinLock;
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 
 bitflags! {
-    /// I/O events.
-    #[derive(Debug, Clone, Copy)]
+    /// I/O readiness events.
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
     pub struct IoEvents: u32 {
-        /// Available for read
+        /// Available for read.
         const IN     = POLLIN;
-        /// Urgent data for read
+        /// Urgent data for read.
         const PRI    = POLLPRI;
-        /// Available for write
+        /// Available for write.
         const OUT    = POLLOUT;
-
-        /// Error condition
+        /// Error condition.
         const ERR    = POLLERR;
-        /// Hang up
+        /// Hang up.
         const HUP    = POLLHUP;
-        /// Invalid request
+        /// Invalid request.
         const NVAL   = POLLNVAL;
-
-        /// Equivalent to [`IN`](Self::IN)
+        /// Equivalent to [`IN`](Self::IN).
         const RDNORM = POLLRDNORM;
-        /// Priority band data can be read
+        /// Priority band data can be read.
         const RDBAND = POLLRDBAND;
-        /// Equivalent to [`OUT`](Self::OUT)
+        /// Equivalent to [`OUT`](Self::OUT).
         const WRNORM = POLLWRNORM;
-        /// Priority data can be written
+        /// Priority data can be written.
         const WRBAND = POLLWRBAND;
-
-        /// Message
+        /// Message.
         const MSG    = POLLMSG;
-        /// Remove
+        /// Remove.
         const REMOVE = POLLREMOVE;
-        /// Stream socket peer closed connection, or shut down writing half of connection.
+        /// Stream socket peer closed connection, or shut down writing half.
         const RDHUP  = POLLRDHUP;
-
-        /// Events that are always polled even without specifying them.
+        /// Events reported even when callers did not request them.
         const ALWAYS_POLL = Self::ERR.bits() | Self::HUP.bits();
     }
 }
 
-/// Trait for types that can be polled for I/O events.
+/// Marker for a readiness observer that does not consume an event.
+pub enum SharedObserver {}
+
+/// Marker for a waiter that competes to consume one readiness event.
+pub enum ExclusiveConsumer {}
+
+/// Selection mode attached to one readiness registration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegistrationMode {
+    /// Every matching observer is notified.
+    Shared,
+    /// One matching consumer is notified by an ordinary wake transaction.
+    Exclusive,
+}
+
+/// An owned source registration whose drop cancels the exact registered entry.
+pub trait PollRegistration: Send {
+    /// Returns whether the source selected this registration for notification.
+    ///
+    /// Once true, the result remains true until the registration is dropped.
+    /// Sources publish this state before invoking the registered waker.
+    fn was_notified(&self) -> bool;
+}
+
+/// A readiness source capable of creating owned registrations.
+pub trait PollSource: Send + Sync {
+    /// Registers `waker` and returns the exact cancellation lease.
+    ///
+    /// # Safety
+    ///
+    /// Registration is task/deferred-context only. The caller must not invoke
+    /// it from hard IRQ, NMI, or a trap callback. A producer must publish its
+    /// readiness state before waking this registration, and the consumer's
+    /// next readiness check must observe that publication through the same
+    /// lock or a matching Release/Acquire synchronization pair.
+    unsafe fn register(
+        &self,
+        waker: &Waker,
+        interests: IoEvents,
+        mode: RegistrationMode,
+    ) -> Option<Box<dyn PollRegistration>>;
+}
+
+impl<T: PollSource + ?Sized> PollSource for Arc<T> {
+    unsafe fn register(
+        &self,
+        waker: &Waker,
+        interests: IoEvents,
+        mode: RegistrationMode,
+    ) -> Option<Box<dyn PollRegistration>> {
+        unsafe { self.as_ref().register(waker, interests, mode) }
+    }
+}
+
+struct OwnedRegistration {
+    lease: Box<dyn PollRegistration>,
+    mode: RegistrationMode,
+}
+
+/// Owns every readiness registration made by one polling attempt.
+///
+/// Dropping or resetting a registrar cancels every still-live source lease.
+#[must_use = "dropping the registrar immediately cancels its poll registrations"]
+pub struct PollRegistrar<M> {
+    waker: Waker,
+    registrations: Vec<OwnedRegistration>,
+    mode: PhantomData<fn() -> M>,
+}
+
+impl<M> PollRegistrar<M> {
+    /// Creates an empty registrar for `waker`.
+    pub fn new(waker: &Waker) -> Self {
+        Self {
+            waker: waker.clone(),
+            registrations: Vec::new(),
+            mode: PhantomData,
+        }
+    }
+
+    /// Cancels the previous polling attempt and starts one with `waker`.
+    pub fn reset(&mut self, waker: &Waker) {
+        self.registrations.clear();
+        self.waker.clone_from(waker);
+    }
+
+    /// Cancels every registration owned by this registrar.
+    pub fn clear(&mut self) {
+        self.registrations.clear();
+    }
+
+    /// Returns whether this registrar currently owns no registration.
+    pub fn is_empty(&self) -> bool {
+        self.registrations.is_empty()
+    }
+
+    unsafe fn register_mode(
+        &mut self,
+        source: &dyn PollSource,
+        interests: IoEvents,
+        mode: RegistrationMode,
+    ) {
+        if interests.is_empty() {
+            return;
+        }
+        if let Some(lease) = unsafe { source.register(&self.waker, interests, mode) } {
+            self.registrations.push(OwnedRegistration { lease, mode });
+        }
+    }
+}
+
+impl PollRegistrar<SharedObserver> {
+    /// Registers this observer in `source` for `interests`.
+    ///
+    /// # Safety
+    ///
+    /// Registration is task/deferred-context only.
+    pub unsafe fn register(&mut self, source: &dyn PollSource, interests: IoEvents) {
+        unsafe { self.register_mode(source, interests, RegistrationMode::Shared) };
+    }
+}
+
+impl PollRegistrar<ExclusiveConsumer> {
+    /// Returns whether an exclusive source selected this polling attempt.
+    ///
+    /// Consumptive sources use this to transfer still-available readiness to
+    /// the next exclusive waiter without turning ordinary wakeups into a
+    /// broadcast.
+    pub fn was_exclusively_notified(&self) -> bool {
+        self.registrations.iter().any(|registration| {
+            registration.mode == RegistrationMode::Exclusive && registration.lease.was_notified()
+        })
+    }
+
+    /// Registers this consumer as an exclusive waiter.
+    ///
+    /// # Safety
+    ///
+    /// Registration is task/deferred-context only.
+    pub unsafe fn register_exclusive(&mut self, source: &dyn PollSource, interests: IoEvents) {
+        unsafe { self.register_mode(source, interests, RegistrationMode::Exclusive) };
+    }
+
+    /// Registers this consumer as a shared observer at a composite boundary.
+    ///
+    /// # Safety
+    ///
+    /// Registration is task/deferred-context only.
+    pub unsafe fn register_shared(&mut self, source: &dyn PollSource, interests: IoEvents) {
+        unsafe { self.register_mode(source, interests, RegistrationMode::Shared) };
+    }
+}
+
+/// Capability for adding shared registrations to an owned attempt.
+pub trait SharedRegistrationSink {
+    /// Returns the waker owned by this registration attempt.
+    fn waker(&self) -> &Waker;
+
+    /// Adds a shared registration owned by this sink.
+    ///
+    /// # Safety
+    ///
+    /// Registration is task/deferred-context only.
+    unsafe fn register_shared(&mut self, source: &dyn PollSource, interests: IoEvents);
+}
+
+/// Capability for adding exclusive registrations to an owned attempt.
+pub trait ExclusiveRegistrationSink {
+    /// Returns the waker owned by this registration attempt.
+    fn waker(&self) -> &Waker;
+
+    /// Adds an exclusive registration owned by this sink.
+    ///
+    /// # Safety
+    ///
+    /// Registration is task/deferred-context only.
+    unsafe fn register_exclusive(&mut self, source: &dyn PollSource, interests: IoEvents);
+
+    /// Borrows this sink's shared-registration capability.
+    fn as_shared(&mut self) -> &mut dyn SharedRegistrationSink;
+}
+
+impl SharedRegistrationSink for PollRegistrar<SharedObserver> {
+    fn waker(&self) -> &Waker {
+        &self.waker
+    }
+
+    unsafe fn register_shared(&mut self, source: &dyn PollSource, interests: IoEvents) {
+        unsafe { self.register(source, interests) };
+    }
+}
+
+impl SharedRegistrationSink for PollRegistrar<ExclusiveConsumer> {
+    fn waker(&self) -> &Waker {
+        &self.waker
+    }
+
+    unsafe fn register_shared(&mut self, source: &dyn PollSource, interests: IoEvents) {
+        unsafe { self.register_shared(source, interests) };
+    }
+}
+
+impl ExclusiveRegistrationSink for PollRegistrar<ExclusiveConsumer> {
+    fn waker(&self) -> &Waker {
+        &self.waker
+    }
+
+    unsafe fn register_exclusive(&mut self, source: &dyn PollSource, interests: IoEvents) {
+        unsafe { self.register_exclusive(source, interests) };
+    }
+
+    fn as_shared(&mut self) -> &mut dyn SharedRegistrationSink {
+        self
+    }
+}
+
+/// A value that reports I/O readiness and publishes owned registrations.
 pub trait Pollable {
     /// Polls for I/O events.
     fn poll(&self) -> IoEvents;
 
-    /// Registers wakers for I/O events.
-    fn register(&self, context: &mut Context<'_>, events: IoEvents);
-}
-
-const POLL_SET_CAPACITY: usize = 64;
-
-struct Entry {
-    waker: Waker,
-    interests: IoEvents,
-}
-
-impl Entry {
-    fn wake(self) {
-        self.waker.wake();
-    }
-}
-
-struct Inner {
-    entries: Box<[MaybeUninit<Entry>]>,
-    cursor: usize,
-}
-
-impl Inner {
-    fn new() -> Self {
-        Self {
-            entries: Box::new_uninit_slice(POLL_SET_CAPACITY),
-            cursor: 0,
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.cursor.min(POLL_SET_CAPACITY)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.cursor == 0
-    }
-
-    fn push_entry(&mut self, entry: Entry) {
-        debug_assert!(self.cursor < POLL_SET_CAPACITY);
-        let slot = self.cursor;
-        self.cursor += 1;
-        self.entries[slot].write(entry);
-    }
-
-    fn register(&mut self, waker: &Waker, interests: IoEvents) -> Option<Entry> {
-        let slot = self.cursor % POLL_SET_CAPACITY;
-        let replaced = if self.cursor >= POLL_SET_CAPACITY {
-            let old = unsafe { self.entries[slot].assume_init_read() };
-            let replaced = (!old.waker.will_wake(waker)).then_some(old);
-            self.cursor = ((slot + 1) % POLL_SET_CAPACITY) + POLL_SET_CAPACITY;
-            replaced
-        } else {
-            self.cursor += 1;
-            None
-        };
-        self.entries[slot].write(Entry {
-            waker: waker.clone(),
-            interests,
-        });
-        replaced
-    }
-
-    fn drain_ready(&mut self, ready: IoEvents, ready_entries: &mut Vec<Entry>) {
-        if self.is_empty() {
-            return;
-        }
-
-        let mut old = Self::new();
-        core::mem::swap(&mut old, self);
-
-        for i in 0..old.len() {
-            let entry = unsafe { old.entries[i].assume_init_read() };
-            if entry.interests.intersects(ready) {
-                ready_entries.push(entry);
-            } else {
-                self.push_entry(entry);
-            }
-        }
-        old.cursor = 0;
-    }
-
-    fn take_one_ready(&mut self, ready: IoEvents) -> Option<Entry> {
-        let len = self.len();
-        let mut selected = None;
-        let mut keep_len = 0;
-
-        for index in 0..len {
-            let entry = unsafe { self.entries[index].assume_init_read() };
-            if selected.is_none() && entry.interests.intersects(ready) {
-                selected = Some(entry);
-            } else {
-                self.entries[keep_len].write(entry);
-                keep_len += 1;
-            }
-        }
-        self.cursor = keep_len;
-        selected
-    }
-}
-
-impl Drop for Inner {
-    fn drop(&mut self) {
-        for i in 0..self.len() {
-            unsafe { self.entries[i].assume_init_read() }.wake();
-        }
-    }
-}
-
-/// A data structure for waking up tasks that are waiting for I/O events.
-pub struct PollSet(OnceLock<SpinLock<Inner>>);
-
-impl Default for PollSet {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PollSet {
-    /// Creates a new empty [`PollSet`].
-    pub const fn new() -> Self {
-        Self(OnceLock::new())
-    }
-
-    /// Registers a waker for the requested I/O events.
+    /// Registers a shared readiness observer.
     ///
     /// # Safety
     ///
-    /// This method is task/deferred-context only. Callers must not invoke it
-    /// from hard IRQ, NMI, or trap callbacks, and must not hold locks that may
-    /// be re-entered by the registered waker or by poll wakeup paths.
-    pub unsafe fn register(&self, waker: &Waker, interests: IoEvents) {
-        let replaced = {
-            self.0
-                .call_once(|| SpinLock::new(Inner::new()))
-                .lock_irqsave()
-                .register(waker, interests)
-        };
-        if let Some(entry) = replaced {
-            entry.wake();
-        }
-    }
+    /// Registration is task/deferred-context only.
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents);
 
-    /// Wakes up registered wakers whose interests intersect `ready`.
+    /// Registers a consumer that may sleep until readiness changes.
+    ///
+    /// The default preserves shared-observer semantics. Consumptive sources
+    /// override it and use the exclusive capability.
     ///
     /// # Safety
     ///
-    /// This method is task/deferred-context only. Callers must not invoke it
-    /// from hard IRQ, NMI, or trap callbacks. The readiness state represented
-    /// by `ready` must be published before this method is called, and callers
-    /// must not hold locks that may be re-entered by waker execution or poll
-    /// wakeup paths.
-    pub unsafe fn wake(&self, ready: IoEvents) -> usize {
-        let Some(inner) = self.0.get() else {
-            return 0;
-        };
-        let mut ready_entries = Vec::with_capacity(POLL_SET_CAPACITY);
-        {
-            inner.lock_irqsave().drain_ready(ready, &mut ready_entries);
-        }
-        let woke = ready_entries.len();
-        for entry in ready_entries {
-            entry.wake();
-        }
-        woke
-    }
-
-    /// Wakes one registered waker whose interests intersect `ready`.
-    ///
-    /// Matching wakers that are not selected remain registered. This is used
-    /// by wait queues with Linux-style exclusive wakeup semantics, where one
-    /// readiness transition should give one waiter a chance to consume work.
-    ///
-    /// # Safety
-    ///
-    /// This method is task/deferred-context only. Callers must not invoke it
-    /// from hard IRQ, NMI, or trap callbacks. The readiness state represented
-    /// by `ready` must be published before this method is called, and callers
-    /// must not hold locks that may be re-entered by waker execution or poll
-    /// wakeup paths.
-    pub unsafe fn wake_one(&self, ready: IoEvents) -> usize {
-        let Some(inner) = self.0.get() else {
-            return 0;
-        };
-        let ready_entry = inner.lock_irqsave().take_one_ready(ready);
-        let Some(entry) = ready_entry else {
-            return 0;
-        };
-        entry.wake();
-        1
-    }
-
-    /// Wakes up registered wakers whose interests intersect `ready` from IRQ context.
-    ///
-    /// Unlike [`wake`](Self::wake), this does not allocate a replacement
-    /// waiter buffer. It drains the already-initialized entries in place, so
-    /// device IRQ handlers can acknowledge the device and then wake matching
-    /// poll waiters without allocating in hard IRQ context.
-    pub fn wake_from_irq(&self, ready: IoEvents) -> usize {
-        let Some(inner) = self.0.get() else {
-            return 0;
-        };
-        let mut ready_entries = [const { MaybeUninit::<Entry>::uninit() }; POLL_SET_CAPACITY];
-        let ready_len = {
-            let mut inner = inner.lock_irqsave();
-            let len = inner.len();
-            if len == 0 {
-                return 0;
-            }
-
-            let mut ready_len = 0;
-            let mut keep_len = 0;
-            for i in 0..len {
-                let entry = unsafe { inner.entries[i].assume_init_read() };
-                if entry.interests.intersects(ready) {
-                    ready_entries[ready_len].write(entry);
-                    ready_len += 1;
-                } else {
-                    inner.entries[keep_len].write(entry);
-                    keep_len += 1;
-                }
-            }
-            inner.cursor = keep_len;
-            ready_len
-        };
-
-        for entry in ready_entries.iter_mut().take(ready_len) {
-            unsafe { entry.assume_init_read() }.wake();
-        }
-        ready_len
-    }
-}
-
-impl Drop for PollSet {
-    fn drop(&mut self) {
-        // Ensure all entries are dropped
-        unsafe { self.wake(IoEvents::all()) };
+    /// Registration is task/deferred-context only.
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.register_shared(sink.as_shared(), events) };
     }
 }

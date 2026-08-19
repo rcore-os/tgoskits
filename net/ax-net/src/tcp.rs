@@ -29,13 +29,14 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
-    task::{Context, Waker},
+    task::Waker,
 };
 
 use ax_io::prelude::*;
 use ax_lazyinit::LazyLock;
 use ax_sync::SpinLock;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use hashbrown::HashMap;
 use smoltcp::{
     iface::SocketHandle,
@@ -785,7 +786,29 @@ impl Pollable for TcpSocket {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_shared(poll, interests)
+        });
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_exclusive(poll, interests)
+        });
+    }
+}
+
+impl TcpSocket {
+    fn register_poll_sources(
+        &self,
+        events: IoEvents,
+        mut register: impl FnMut(&PollSet, IoEvents),
+    ) {
         let mut accept_registration = None;
         if self.state.get() == State::Listening && events.intersects(IoEvents::IN | IoEvents::RDHUP)
         {
@@ -795,7 +818,7 @@ impl Pollable for TcpSocket {
                 if let Some(accept_poll) = LISTEN_TABLE.accept_poll(endpoint) {
                     // accept registration runs from task poll context after
                     // releasing the listen-table lock.
-                    unsafe { accept_poll.register(context.waker(), IoEvents::IN) };
+                    register(&accept_poll, IoEvents::IN);
                     let accept_waker = LISTEN_TABLE.accept_waker(accept_poll.clone());
                     accept_registration = Some((endpoint, accept_poll, accept_waker));
                 }
@@ -804,10 +827,7 @@ impl Pollable for TcpSocket {
         let recv_waker = if events.intersects(IoEvents::IN | IoEvents::RDHUP) {
             // Socket registration runs from task poll context before taking the
             // socket-set lock.
-            unsafe {
-                self.poll_rx
-                    .register(context.waker(), IoEvents::IN | IoEvents::RDHUP)
-            };
+            register(&self.poll_rx, IoEvents::IN | IoEvents::RDHUP);
             Some(Waker::from(Arc::new(DeferPollWake {
                 poll: self.poll_rx.clone(),
                 ready: IoEvents::IN | IoEvents::RDHUP,
@@ -818,7 +838,7 @@ impl Pollable for TcpSocket {
         let send_waker = if events.contains(IoEvents::OUT) {
             // Socket registration runs from task poll context before taking the
             // socket-set lock.
-            unsafe { self.poll_tx.register(context.waker(), IoEvents::OUT) };
+            register(&self.poll_tx, IoEvents::OUT);
             Some(Waker::from(Arc::new(DeferPollWake {
                 poll: self.poll_tx.clone(),
                 ready: IoEvents::OUT,
@@ -844,14 +864,16 @@ impl Pollable for TcpSocket {
             }
         });
         if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
-            self.general.register_waker(context.waker());
+            register(&self.poll_rx, events);
+            self.general
+                .register_timeout_waker(&Waker::from(Arc::new(DeferPollWake {
+                    poll: self.poll_rx.clone(),
+                    ready: events,
+                })));
         }
         if events.contains(IoEvents::RDHUP) {
             // Registration happens from socket poll task context.
-            unsafe {
-                self.poll_rx_closed
-                    .register(context.waker(), IoEvents::RDHUP | IoEvents::IN)
-            };
+            register(&self.poll_rx_closed, IoEvents::RDHUP | IoEvents::IN);
         }
     }
 }

@@ -21,7 +21,6 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
     time::Duration,
 };
 
@@ -30,7 +29,8 @@ use async_trait::async_trait;
 use ax_hal::time::wall_time;
 use ax_io::{Read, Write};
 use ax_sync::{SpinLock, SpinRwLock as RwLock};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 
 use crate::{
     CMsgData, NetError, NetResult, RecvFlags, RecvOptions, SendOptions, SocketAddrEx, SocketCmsg,
@@ -691,17 +691,38 @@ impl Pollable for DgramTransport {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_shared(poll, interests)
+        });
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_exclusive(poll, interests)
+        });
+    }
+}
+
+impl DgramTransport {
+    fn register_poll_sources(
+        &self,
+        events: IoEvents,
+        mut register: impl FnMut(&PollSet, IoEvents),
+    ) {
         if !events.contains(IoEvents::IN) {
             return;
         }
-        // Registration happens from socket poll task context.
         if let Some((_, poll)) = self.data_rx.lock().as_ref() {
-            unsafe { poll.register(context.waker(), IoEvents::IN) };
+            register(poll, IoEvents::IN);
         }
         // Seqpacket listener waits for incoming connections.
         if let Some((_, poll)) = self.conn_rx.lock().as_ref() {
-            unsafe { poll.register(context.waker(), IoEvents::IN) };
+            register(poll, IoEvents::IN);
         }
     }
 }

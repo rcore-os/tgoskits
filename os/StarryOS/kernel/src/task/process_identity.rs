@@ -167,7 +167,7 @@ pub(crate) fn traced_zombies_for(tracer: PidIdentityId) -> Vec<Arc<Process>> {
 mod axtest_support {
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-    use axpoll::PollSet;
+    use axpoll_set::PollSet;
 
     use super::*;
     #[cfg(axtest)]
@@ -341,7 +341,7 @@ pub(crate) use axtest_support::{
 
 #[cfg(test)]
 mod tests {
-    use axpoll::PollSet;
+    use axpoll_set::PollSet;
 
     use super::*;
     use crate::task::{PidReservation, PidReservationKind, Tid};

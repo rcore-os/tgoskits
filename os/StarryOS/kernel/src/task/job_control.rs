@@ -2,7 +2,8 @@
 
 use alloc::sync::Arc;
 
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 use starry_signal::Signo;
 
 use super::{ProcessData, TidNumber};

@@ -9,17 +9,17 @@ use core::{
     any::Any,
     iter,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
-    task::Context,
     time::Duration,
 };
 
+use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, FsIoEvents,
-    FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission,
-    NodeType, OpenOptions, Reference, ReferenceKey, TypeMap, VfsError, VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, Metadata,
+    MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions,
+    Reference, ReferenceKey, TypeMap, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -1089,10 +1089,20 @@ impl Location {
 }
 
 #[inherit_methods(from = "self.entry")]
-impl FsPollable for Location {
-    fn poll(&self) -> FsIoEvents;
+impl Pollable for Location {
+    fn poll(&self) -> IoEvents;
 
-    fn register(&self, context: &mut Context<'_>, events: FsIoEvents);
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    );
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    );
 }
 
 #[cfg(test)]
