@@ -69,6 +69,12 @@ impl_task_runtime! {
             scheduler_current_thread_publication()
         }
 
+        fn current_preemption_pending() -> bool {
+            cpu_local::current_preemption_pending().unwrap_or_else(|error| {
+                panic!("current preemption state is unavailable: {error}")
+            })
+        }
+
         unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
             cpu_remote(cpu).map_or(CpuRemoteHandle::NONE, |cpu| {
                 // SAFETY: TaskSystem owns this Arc-backed CpuRemote endpoint

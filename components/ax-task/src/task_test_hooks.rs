@@ -14,6 +14,9 @@ static TARGET_CHAIN_TOP: AtomicU64 = AtomicU64::new(0);
 static PI_CHAIN_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static PI_OWNER_EXIT_TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
 static PI_OWNER_EXIT_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static PI_OWNER_SPIN_TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
+static PI_OWNER_SPIN_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static PI_OWNER_SPIN_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 static WAKE_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static WAKE_ENTITY_READ_COPY_TARGET: AtomicU64 = AtomicU64::new(0);
 static WAKE_ENTITY_READ_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -1309,6 +1312,88 @@ pub fn allow_pi_waiter_after_owner_exit() {
         Ok(STAGE_OWNER_CAPTURED),
         "PI waiter continuation must follow owner exit"
     );
+}
+
+/// Arms observation of the first owner-spin iteration for one live PI waiter.
+pub fn arm_pi_owner_spin(waiter: u64) {
+    assert_ne!(
+        waiter, 0,
+        "a PI owner-spin waiter identity must be non-zero"
+    );
+    assert_eq!(
+        PI_OWNER_SPIN_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one PI owner-spin probe may be armed"
+    );
+    PI_OWNER_SPIN_TARGET_WAITER.store(waiter, Ordering::Relaxed);
+    PI_OWNER_SPIN_ITERATIONS.store(0, Ordering::Relaxed);
+    PI_OWNER_SPIN_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the target waiter entered owner spinning.
+pub fn pi_owner_spin_entered() -> bool {
+    PI_OWNER_SPIN_STAGE.load(Ordering::Acquire) == STAGE_WAITER_REGISTERED
+}
+
+/// Lets the target waiter continue after the first owner-spin iteration.
+pub fn allow_pi_owner_spin() {
+    assert_eq!(
+        PI_OWNER_SPIN_STAGE.compare_exchange(
+            STAGE_WAITER_REGISTERED,
+            STAGE_RELEASE_BEFORE_WAKE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_WAITER_REGISTERED),
+        "PI owner spinning must enter before it is released"
+    );
+}
+
+/// Returns owner-spin iterations observed after the probe was armed.
+pub fn pi_owner_spin_iterations() -> u64 {
+    PI_OWNER_SPIN_ITERATIONS.load(Ordering::Acquire)
+}
+
+/// Releases the completed owner-spin observation for the next test.
+pub fn finish_pi_owner_spin_probe() {
+    assert_eq!(
+        PI_OWNER_SPIN_STAGE.compare_exchange(
+            STAGE_RELEASE_BEFORE_WAKE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_RELEASE_BEFORE_WAKE),
+        "PI owner-spin probe must complete before it is released"
+    );
+    PI_OWNER_SPIN_TARGET_WAITER.store(0, Ordering::Relaxed);
+    PI_OWNER_SPIN_ITERATIONS.store(0, Ordering::Relaxed);
+    PI_OWNER_SPIN_STAGE.store(STAGE_IDLE, Ordering::Release);
+}
+
+pub(crate) fn record_pi_owner_spin(waiter: ThreadId) {
+    if PI_OWNER_SPIN_TARGET_WAITER.load(Ordering::Relaxed) != waiter.as_u64() {
+        return;
+    }
+    PI_OWNER_SPIN_ITERATIONS.fetch_add(1, Ordering::Relaxed);
+    if PI_OWNER_SPIN_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_WAITER_REGISTERED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        while PI_OWNER_SPIN_STAGE.load(Ordering::Acquire) == STAGE_WAITER_REGISTERED {
+            core::hint::spin_loop();
+        }
+    }
 }
 
 pub(crate) fn registered_waiter(waiter: ThreadId) {

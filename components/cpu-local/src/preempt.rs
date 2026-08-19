@@ -18,6 +18,13 @@ pub struct PreemptionSnapshot {
 }
 
 impl PreemptionSnapshot {
+    pub(crate) const fn from_raw(state: u32) -> Self {
+        Self {
+            depth: state & PREEMPT_DEPTH_MASK,
+            pending: state & PREEMPT_NO_PENDING == 0,
+        }
+    }
+
     /// Returns the number of active preemption exclusions.
     pub const fn depth(self) -> u32 {
         self.depth
@@ -73,12 +80,8 @@ impl PreemptionState {
         Self(AtomicU32::new(PREEMPT_NO_PENDING | 1))
     }
 
-    fn snapshot(&self) -> PreemptionSnapshot {
-        let state = self.0.load(Ordering::Relaxed);
-        PreemptionSnapshot {
-            depth: state & PREEMPT_DEPTH_MASK,
-            pending: state & PREEMPT_NO_PENDING == 0,
-        }
+    pub(crate) fn snapshot(&self) -> PreemptionSnapshot {
+        PreemptionSnapshot::from_raw(self.0.load(Ordering::Relaxed))
     }
 
     fn set_pending(&self) {
@@ -280,6 +283,16 @@ pub fn enter_preemption() -> PreemptionToken {
 /// Observes the current architecture-selected preemption state.
 pub fn preemption_snapshot(pin: &CpuPin<'_>) -> Result<PreemptionSnapshot, CpuLocalError> {
     Ok(selected_state(pin)?.snapshot())
+}
+
+/// Tests the current execution context's advisory preemption-pending state.
+///
+/// This is an architecture-local safe-point query. It neither publishes nor
+/// consumes external work. A `false` result is only a snapshot; a later
+/// interrupt may publish work immediately after the observation.
+#[inline(always)]
+pub fn current_preemption_pending() -> Result<bool, CpuLocalError> {
+    Ok(crate::register::current_preemption_snapshot()?.is_pending())
 }
 
 /// Marks work pending at the current preemptible boundary.

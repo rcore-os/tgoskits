@@ -8,7 +8,6 @@ pub(in crate::sync) mod lockdep;
 mod pi_core;
 
 pub use self::pi_core::*;
-use super::context::PreemptGuard;
 
 /// A non-recursive, urgency-ordered PI mutex implementing `lock_api::RawMutex`.
 ///
@@ -61,8 +60,6 @@ pub trait InterruptibleMutexExt<T: ?Sized> {
     where
         F: FnMut() -> bool;
 }
-
-const OWNER_SPIN_BATCH: usize = 64;
 
 #[cfg(not(feature = "lockdep"))]
 /// A lockdep subclass identifier when lockdep is disabled.
@@ -282,9 +279,9 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     /// Spins only while the registered waiter can make progress under the same
     /// gates as Linux `rtmutex_spin_on_owner`: the observed owner is unchanged
     /// and executing, this waiter remains most urgent, and the current CPU has
-    /// no pending reschedule request.
+    /// no pending reschedule request. The architecture current-state query is
+    /// advisory and leaves owner spinning preemptible.
     fn spin_on_owner(&self, token: &PiWaitToken) -> bool {
-        let _preempt_guard = PreemptGuard::new();
         let Some(owner) = token.initial_owner() else {
             return token.can_claim() || token.is_granted();
         };
@@ -294,40 +291,19 @@ impl<'lock> PiMutexAlgorithm<'lock> {
                 return true;
             }
 
-            if !self.core.is_owned_by(owner) {
-                return token.can_claim() || token.is_granted();
-            }
-            let owner_on_cpu = token.initial_owner_is_on_cpu();
-            // SAFETY: `_preempt_guard` pins this caller to one CPU throughout
-            // the observation and the following spin batch.
-            let need_resched = task_result(
-                unsafe {
-                    // SAFETY: `_preempt_guard` pins this caller through the
-                    // complete owner-spin eligibility decision.
-                    crate::current_needs_reschedule_pinned()
-                },
-                "observe pinned PI mutex reschedule state",
-            );
-            let waiter_is_top = token.is_top_waiter();
-
-            if !owner_spin_eligible(
+            let may_spin = owner_spin_eligible(
                 self.core.is_owned_by(owner),
-                owner_on_cpu,
-                waiter_is_top,
-                need_resched,
-            ) {
+                token.initial_owner_is_on_cpu(),
+                token.is_top_waiter(),
+                crate::runtime::task_runtime::current_preemption_pending(),
+            );
+            if !may_spin {
                 return token.can_claim() || token.is_granted();
             }
 
-            for _ in 0..OWNER_SPIN_BATCH {
-                if token.can_claim() || token.is_granted() {
-                    return true;
-                }
-                if !self.core.is_owned_by(owner) {
-                    return token.can_claim() || token.is_granted();
-                }
-                core::hint::spin_loop();
-            }
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_pi_owner_spin(token.thread_id().into());
+            core::hint::spin_loop();
         }
     }
 

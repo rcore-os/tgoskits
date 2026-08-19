@@ -64,6 +64,14 @@ pub trait TaskRuntime {
     /// context. Preemption and migration must not change this task identity.
     fn current_thread_publication() -> CurrentThreadPublication;
 
+    /// Tests the current execution context's advisory preemption-pending state.
+    ///
+    /// This is the runtime equivalent of Linux's `need_resched()` safe-point
+    /// query. It must read the architecture-selected current state without
+    /// disabling preemption, claiming scheduler work, or acknowledging a
+    /// scheduler-request generation. A `false` result is only a snapshot.
+    fn current_preemption_pending() -> bool;
+
     /// Returns the Arc-backed [`crate::CpuRemote`] endpoint for `cpu`.
     ///
     /// Unlike [`Self::current_cpu_local_handle`], this handle must never point
