@@ -118,9 +118,9 @@ impl MemIf for DummyMem {
 
     fn dcache_range(_op: DCacheOp, _addr: ax_memory_addr::VirtAddr, _size: usize) {}
 
-    fn dma_coherent_before_make_uncached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
+    fn dma_coherent_before_map_uncached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
 
-    fn dma_coherent_before_restore_cached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
+    fn dma_coherent_before_unmap_uncached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
 
     fn dma_coherent_after_mapping_update() {}
 }

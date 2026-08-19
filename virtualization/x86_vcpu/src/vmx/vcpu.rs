@@ -34,7 +34,14 @@ use x86_64::registers::{
 use x86_vlapic::EmulatedLocalApic;
 
 use super::{VmxExitInfo, definitions::*, structs::*, vmcs::*, *};
-use crate::{msr::*, port_io::*, regs::*, xstate::*, *};
+use crate::{
+    msr::*,
+    pending_event::{PendingEvent, queue_pending_event},
+    port_io::*,
+    regs::*,
+    xstate::*,
+    *,
+};
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 100_000;
 
@@ -62,13 +69,6 @@ const CR0_PE: usize = 1 << 0;
 
 fn secondary_control_bits_allowed(bits: u32) -> bool {
     ((Msr::IA32_VMX_PROCBASED_CTLS2.read() >> 32) as u32 & bits) == bits
-}
-
-#[derive(Clone, Copy, Debug)]
-struct PendingEvent {
-    vector: u8,
-    err_code: Option<u32>,
-    level_triggered: bool,
 }
 
 /// A virtual CPU within a guest.
@@ -328,11 +328,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
     /// Add a virtual interrupt or exception to the pending events list,
     /// and try to inject it before later VM entries.
     pub fn queue_event(&mut self, vector: u8, err_code: Option<u32>) {
-        self.pending_events.push_back(PendingEvent {
-            vector,
-            err_code,
-            level_triggered: false,
-        });
+        self.queue_event_with_trigger(vector, err_code, false);
     }
 
     /// Add a virtual interrupt or exception with trigger mode metadata.
@@ -342,11 +338,14 @@ impl<H: X86HostOps> VmxVcpu<H> {
         err_code: Option<u32>,
         level_triggered: bool,
     ) {
-        self.pending_events.push_back(PendingEvent {
-            vector,
-            err_code,
-            level_triggered,
-        });
+        queue_pending_event(
+            &mut self.pending_events,
+            PendingEvent {
+                vector,
+                err_code,
+                level_triggered,
+            },
+        );
     }
 
     /// If enable, a VM exit occurs at the beginning of any instruction if

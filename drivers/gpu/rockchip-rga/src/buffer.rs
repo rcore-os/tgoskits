@@ -42,12 +42,12 @@ impl RgaDmaBuffer {
 
     /// Hand ownership to the device before starting hardware (flush CPU writes).
     pub fn prepare_for_device(&self) {
-        self.inner.prepare_for_device_all();
+        self.inner.prepare_for_device(0..self.inner.bytes_len());
     }
 
     /// Reclaim ownership after completion (invalidate so the CPU sees device writes).
     pub fn complete_for_cpu(&self) {
-        self.inner.complete_for_cpu_all();
+        self.inner.complete_for_cpu(0..self.inner.bytes_len());
     }
 }
 

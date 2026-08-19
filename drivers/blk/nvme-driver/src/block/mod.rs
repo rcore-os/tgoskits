@@ -9,7 +9,7 @@ use core::{
 };
 
 use dma_api::{CoherentArray, InFlightDma};
-use io_queue::{NvmeBlockQueue, alloc_prp_lists};
+use io_queue::{NvmeBlockQueue, NvmeBlockQueueConfig, alloc_prp_lists};
 use log::warn;
 use rdif_block::{
     BatchSubmitDisposition, BatchSubmitResult, BlkError, BlockController, CompletedRequest,
@@ -171,13 +171,15 @@ impl NvmeBlockDriver {
         let depth = self.queue_depth.min(queue.depth().saturating_sub(1).max(1));
         let prp_lists = alloc_prp_lists(&self.nvme, depth).map_err(nvme_error_to_block)?;
         Ok(NvmeBlockQueue::new(
-            queue_id,
-            depth,
-            self.name,
-            namespace,
-            self.nvme.dma_mask(),
-            self.nvme.page_size(),
-            self.nvme.max_transfer_bytes(),
+            NvmeBlockQueueConfig {
+                id: queue_id,
+                depth,
+                name: self.name,
+                namespace,
+                dma: self.nvme.dma_info(),
+                page_size: self.nvme.page_size(),
+                max_transfer_bytes: self.nvme.max_transfer_bytes(),
+            },
             queue,
             prp_lists,
         ))

@@ -1,7 +1,7 @@
-use core::{alloc::Layout, marker::PhantomData, ptr::NonNull};
+use core::{alloc::Layout, marker::PhantomData, ops::Range, ptr::NonNull};
 
 use crate::{
-    DeviceDma, DmaAddr, DmaDirection, DmaDomainId, DmaError, DmaPod,
+    DeviceDma, DmaAddr, DmaCoherency, DmaDirection, DmaDomainId, DmaError, DmaPod,
     common::{AllocationKind, DmaAllocation},
 };
 
@@ -146,7 +146,11 @@ impl<T: DmaPod> ContiguousArray<T> {
     }
 
     pub fn domain_id(&self) -> DmaDomainId {
-        self.data.device.domain_id()
+        self.data.device.info().domain()
+    }
+
+    pub fn coherency(&self) -> DmaCoherency {
+        self.data.device.info().coherency()
     }
 
     pub fn direction(&self) -> DmaDirection {
@@ -176,55 +180,31 @@ impl<T: DmaPod> ContiguousArray<T> {
         }
     }
 
-    pub fn sync_for_device(&self, offset: usize, size: usize) {
-        self.check_range(offset, size);
-        self.data.sync_for_device(offset, size);
+    pub fn prepare_for_device(&self, range: Range<usize>) {
+        self.check_range(&range);
+        self.data.sync_for_device(range.start, range.len());
     }
 
-    pub fn sync_for_cpu(&self, offset: usize, size: usize) {
-        self.check_range(offset, size);
-        self.data.sync_for_cpu(offset, size);
-    }
-
-    pub fn sync_for_device_all(&self) {
-        self.data.sync_for_device(0, self.bytes_len());
-    }
-
-    pub fn sync_for_cpu_all(&self) {
-        self.data.sync_for_cpu(0, self.bytes_len());
-    }
-
-    pub fn prepare_for_device(&self, offset: usize, size: usize) {
-        self.sync_for_device(offset, size);
-    }
-
-    pub fn prepare_for_device_all(&self) {
-        self.sync_for_device_all();
-    }
-
-    pub fn complete_for_cpu(&self, offset: usize, size: usize) {
-        self.sync_for_cpu(offset, size);
-    }
-
-    pub fn complete_for_cpu_all(&self) {
-        self.sync_for_cpu_all();
+    pub fn complete_for_cpu(&self, range: Range<usize>) {
+        self.check_range(&range);
+        self.data.sync_for_cpu(range.start, range.len());
     }
 
     pub fn write_for_device<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
         let ret = self.write_with_cpu(len, f);
-        self.prepare_for_device(0, len * core::mem::size_of::<T>());
+        self.prepare_for_device(0..len * core::mem::size_of::<T>());
         ret
     }
 
     pub fn read_from_device<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
         let size = len * core::mem::size_of::<T>();
-        self.complete_for_cpu(0, size);
+        self.complete_for_cpu(0..size);
         self.read_with_cpu(len, f)
     }
 
     pub fn copy_to_device_from_slice(&mut self, src: &[T]) {
         self.copy_from_slice_cpu(src);
-        self.prepare_for_device(0, core::mem::size_of_val(src));
+        self.prepare_for_device(0..core::mem::size_of_val(src));
     }
 
     pub fn copy_from_device_to_slice(&self, dst: &mut [T]) {
@@ -261,12 +241,11 @@ impl<T: DmaPod> ContiguousArray<T> {
         unsafe { core::slice::from_raw_parts_mut(self.as_ptr().as_ptr(), self.len()) }
     }
 
-    fn check_range(&self, offset: usize, size: usize) {
+    fn check_range(&self, range: &Range<usize>) {
         assert!(
-            offset <= self.bytes_len() && size <= self.bytes_len().saturating_sub(offset),
-            "range out of bounds, offset: {}, size: {}, bytes_len: {}",
-            offset,
-            size,
+            range.start <= range.end && range.end <= self.bytes_len(),
+            "range out of bounds, range: {:?}, bytes_len: {}",
+            range,
             self.bytes_len()
         );
     }

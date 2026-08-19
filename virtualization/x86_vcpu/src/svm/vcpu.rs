@@ -20,7 +20,14 @@ use super::{
     structs::*,
     vmcb::{VmcbTlbControl, *},
 };
-use crate::{msr::*, port_io::*, regs::*, xstate::*, *};
+use crate::{
+    msr::*,
+    pending_event::{PendingEvent, queue_pending_event},
+    port_io::*,
+    regs::*,
+    xstate::*,
+    *,
+};
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const X86_PIT_PORT_BASE: u16 = 0x40;
@@ -134,13 +141,6 @@ struct SvmIoExitInfo {
     address_size: Option<X86AddressSize>,
     segment: u8,
     port: X86Port,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PendingEvent {
-    vector: u8,
-    err_code: Option<u32>,
-    level_triggered: bool,
 }
 
 /// Register memory shared with the SVM world-switch assembly.
@@ -560,14 +560,6 @@ impl<H: X86HostOps> SvmVcpu<H> {
         self.vlapic.handle_eoi()
     }
 
-    fn has_pending_external_event(&self, vector: u8) -> bool {
-        vector >= 32
-            && self
-                .pending_events
-                .iter()
-                .any(|event| event.vector == vector)
-    }
-
     /// Add a virtual interrupt or exception to the pending events list.
     pub fn queue_event(&mut self, vector: u8, err_code: Option<u32>) {
         self.queue_event_with_trigger(vector, err_code, false);
@@ -580,15 +572,14 @@ impl<H: X86HostOps> SvmVcpu<H> {
         err_code: Option<u32>,
         level_triggered: bool,
     ) {
-        if self.has_pending_external_event(vector) {
-            return;
-        }
-
-        self.pending_events.push_back(PendingEvent {
-            vector,
-            err_code,
-            level_triggered,
-        });
+        queue_pending_event(
+            &mut self.pending_events,
+            PendingEvent {
+                vector,
+                err_code,
+                level_triggered,
+            },
+        );
     }
 
     fn flush_guest_tlb(&mut self) {

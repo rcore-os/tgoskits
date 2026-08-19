@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::mem::size_of;
 
-use dma_api::{CoherentArray, DeviceDma, DmaOp};
+use dma_api::{CoherentArray, DeviceDma};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 use rdif_eth::{DmaBuffer, Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
 
@@ -37,15 +37,12 @@ impl E1000 {
     pub fn new(
         bar_addr: impl Into<MmioAddr>,
         bar_size: usize,
-        dma_mask: u64,
-        dma_op: &'static dyn DmaOp,
+        dma: DeviceDma,
         mmio_op: &'static dyn MmioOp,
     ) -> Result<Self> {
         mmio_api::init(mmio_op);
         let mmio = mmio_api::ioremap(bar_addr.into(), bar_size)?;
         let regs = Regs::new(mmio.as_nonnull_ptr());
-        let dma = DeviceDma::new_legacy(dma_mask, dma_op);
-
         regs.reset();
         regs.disable_all_irq();
 
@@ -104,7 +101,7 @@ impl Interface for E1000 {
         let queue = E1000TxQueue {
             regs: self.regs,
             desc,
-            dma_mask: self.dma.dma_mask(),
+            dma_mask: self.dma.info().constraints().addr_mask,
             bus_addrs: [None; QUEUE_SIZE],
             next_submit: 0,
             next_reclaim: 0,
@@ -139,7 +136,7 @@ impl Interface for E1000 {
         let queue = E1000RxQueue {
             regs: self.regs,
             desc,
-            dma_mask: self.dma.dma_mask(),
+            dma_mask: self.dma.info().constraints().addr_mask,
             bus_addrs: [None; QUEUE_SIZE],
             next_submit: 0,
             next_reclaim: 0,

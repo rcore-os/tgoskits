@@ -215,11 +215,11 @@ impl Sdhci {
             return Err(Error::UnsupportedCommand);
         }
         let hardware_mask = if self.supports_64bit_system_addressing() {
-            dma.dma_mask()
+            dma.info().constraints().addr_mask
         } else {
-            dma.dma_mask().min(u32::MAX as u64)
+            dma.info().constraints().addr_mask.min(u32::MAX as u64)
         };
-        let mut constraints = dma.constraints();
+        let mut constraints = dma.info().constraints();
         constraints.addr_mask = hardware_mask;
         constraints.align = constraints.align.max(4);
         let dma = dma.with_constraints(constraints);

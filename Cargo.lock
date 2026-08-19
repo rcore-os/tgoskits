@@ -3021,6 +3021,7 @@ dependencies = [
  "ax-lazyinit",
  "ax-sync",
  "axklib",
+ "dma-api",
  "eth-intel",
  "fdt-edit",
  "num-align",

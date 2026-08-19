@@ -293,6 +293,7 @@ fn qemu_block_passthrough_pci_info() -> ax_driver::probe::pci::PciInfo {
         address: PciAddress::new(0, 0, device, function),
         interrupt_pin: pin,
         interrupt_line: 0,
+        dma_coherent: true,
         intx_route: Some(PciIntxRoute {
             root_device: device,
             root_function: function,

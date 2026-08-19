@@ -218,7 +218,7 @@ fn resolve_fd(fd: u32) -> Option<u32> {
         warn!("mpp_service: register fd {fd} is not a resolvable dma-buf");
         return None;
     };
-    // The decoder is 32-bit (device_with_mask(u32::MAX)); reject buffers above
+    // The decoder is limited to 32-bit device addresses; reject buffers above
     // 4 GiB rather than silently truncating the address. /dev/dma_heap buffers
     // are allocated below 4 GiB (dma32), so this should not trigger.
     let phys = buf.phys_base();

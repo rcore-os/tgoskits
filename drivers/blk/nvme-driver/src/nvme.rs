@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use dma_api::{CoherentArray, ContiguousArray, DeviceDma, DmaDirection, DmaOp};
+use dma_api::{CoherentArray, ContiguousArray, DeviceDma, DmaDirection};
 use log::{debug, info};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 
@@ -123,14 +123,12 @@ impl Nvme {
     pub fn new(
         bar_addr: impl Into<MmioAddr>,
         bar_size: usize,
-        dma_mask: u64,
-        dma_op: &'static dyn DmaOp,
+        dma: DeviceDma,
         mmio_op: &'static dyn MmioOp,
         config: Config,
     ) -> Result<Self> {
         mmio_api::init(mmio_op);
         let mmio = mmio_api::ioremap(bar_addr.into(), bar_size)?;
-        let dma = DeviceDma::new_legacy(dma_mask, dma_op);
         Self::new_mmio(mmio, dma, config)
     }
 
@@ -185,8 +183,8 @@ impl Nvme {
         Ok(nvme)
     }
 
-    pub fn dma_mask(&self) -> u64 {
-        self.dma.dma_mask()
+    pub const fn dma_info(&self) -> dma_api::DmaDeviceInfo {
+        self.dma.info()
     }
 
     pub(crate) fn start_initialization(&mut self) -> Result<NvmeInitProgress> {

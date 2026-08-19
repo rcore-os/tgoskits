@@ -246,13 +246,13 @@ pub trait MemIf {
     /// Maintains a CPU data-cache range for non-coherent DMA ownership changes.
     fn dcache_range(op: DCacheOp, addr: VirtAddr, size: usize);
 
-    /// Prepares a cached range before the kernel remaps it as uncached for DMA.
-    fn dma_coherent_before_make_uncached(addr: VirtAddr, size: usize);
+    /// Prepares cached pages before the kernel creates an uncached DMA alias.
+    fn dma_coherent_before_map_uncached(addr: VirtAddr, size: usize);
 
-    /// Prepares an uncached DMA range before the kernel restores cached mappings.
-    fn dma_coherent_before_restore_cached(addr: VirtAddr, size: usize);
+    /// Orders accesses before the kernel removes an uncached DMA alias.
+    fn dma_coherent_before_unmap_uncached(addr: VirtAddr, size: usize);
 
-    /// Completes platform ordering after a DMA coherent mapping attribute update.
+    /// Completes platform ordering after a DMA coherent alias update.
     fn dma_coherent_after_mapping_update();
 }
 
