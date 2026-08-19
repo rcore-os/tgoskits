@@ -258,6 +258,8 @@ pub struct SvmVcpu<H: X86HostOps> {
     entry: Option<X86GuestPhysAddr>,
     /// The nested page table root address.
     npt_root: Option<X86HostPhysAddr>,
+    /// Resolved device MMIO ranges decoded as emulated MMIO exits.
+    intercepted_mmio: Vec<X86InterceptedMmioRange>,
     /// The guest VMCB.
     vmcb: VmcbFrame<H>,
     /// Host state saved with VMSAVE and restored with VMLOAD.
@@ -284,6 +286,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
             launched: false,
             entry: None,
             npt_root: None,
+            intercepted_mmio: Vec::new(),
             vmcb: VmcbFrame::<H>::new()?,
             load_save_states,
             iopm: IOPm::<H>::guest_owned()?,
@@ -303,7 +306,8 @@ impl<H: X86HostOps> SvmVcpu<H> {
         npt_root: X86HostPhysAddr,
         config: X86VcpuSetupConfig,
     ) -> X86VcpuResult {
-        self.setup_io_bitmap(config)?;
+        self.setup_io_bitmap(&config)?;
+        self.intercepted_mmio = config.intercepted_mmio;
         self.setup_msr_bitmap()?;
         self.setup_vmcb_guest(entry)?;
         self.setup_vmcb_control(npt_root)
@@ -430,7 +434,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
         Ok(())
     }
 
-    fn setup_io_bitmap(&mut self, config: X86VcpuSetupConfig) -> X86VcpuResult {
+    fn setup_io_bitmap(&mut self, config: &X86VcpuSetupConfig) -> X86VcpuResult {
         // This port is part of the x86 QEMU test contract: 0x604 reports test completion.
         self.iopm
             .set_intercept_of_range(QEMU_EXIT_PORT as _, 2, true);
@@ -1240,14 +1244,20 @@ impl<H: X86HostOps> SvmVcpu<H> {
         let local_apic =
             (X86_LOCAL_APIC_GPA..X86_LOCAL_APIC_GPA + X86_LOCAL_APIC_SIZE).contains(&addr_usize);
         let ioapic = (X86_IOAPIC_BASE..X86_IOAPIC_BASE + X86_IOAPIC_SIZE).contains(&addr_usize);
-        if !local_apic && !ioapic {
+        let device_mmio = self
+            .intercepted_mmio
+            .iter()
+            .any(|range| range.contains(addr));
+        if !local_apic && !ioapic && !device_mmio {
             return Ok(None);
         }
 
         let start = self.gla2gva(X86GuestVirtAddr::from(exit_info.guest_rip as usize));
         let mut rip = start;
         let mut rex = 0u8;
-        if let Err(err) = self.skip_simple_prefixes(&mut rip, &mut rex) {
+        let mut operand_size_override = false;
+        if let Err(err) = self.skip_simple_prefixes(&mut rip, &mut rex, &mut operand_size_override)
+        {
             debug!("failed to decode SVM NPF MMIO prefixes: {err:?}");
             return Ok(None);
         }
@@ -1261,12 +1271,126 @@ impl<H: X86HostOps> SvmVcpu<H> {
             return Ok(None);
         }
 
+        if local_apic || ioapic {
+            return self.decode_npt_apic_mmio_access(crate::decode::X86ApicMmioDecode {
+                start,
+                rip,
+                modrm,
+                rex,
+                opcode,
+                addr,
+                write,
+                local_apic,
+            });
+        }
+
+        let rex_w = rex & 0x8 != 0;
+        match (write, opcode) {
+            (true, 0x88) => {
+                let byte_reg = crate::decode::x86_byte_register((modrm >> 3) & 0x7, rex)
+                    .ok_or(X86VcpuError::InvalidData)?;
+                let end = self.skip_modrm_memory_operand(rip, modrm, rex)?;
+                let data = self.read_byte_register(byte_reg);
+                let exit = crate::decode::mov_mmio_write_exit(
+                    addr,
+                    opcode,
+                    operand_size_override,
+                    rex_w,
+                    data,
+                )
+                .ok_or(X86VcpuError::InvalidData)?;
+                Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
+            }
+            (true, 0x89) => {
+                let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
+                let end = self.skip_modrm_memory_operand(rip, modrm, rex)?;
+                let data = if reg == 4 {
+                    self.read_rsp()
+                } else {
+                    self.world_switch.guest_regs.get_reg_of_index(reg)
+                };
+                let exit = crate::decode::mov_mmio_write_exit(
+                    addr,
+                    opcode,
+                    operand_size_override,
+                    rex_w,
+                    data,
+                )
+                .ok_or(X86VcpuError::InvalidData)?;
+                Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
+            }
+            (true, 0xc6 | 0xc7) if (modrm >> 3) & 0x7 == 0 => {
+                let width = X86AccessWidth::for_mov_opcode(opcode, operand_size_override, rex_w)
+                    .ok_or(X86VcpuError::InvalidData)?;
+                let imm_addr = self.skip_modrm_memory_operand(rip, modrm, rex)?;
+                let data = self.read_mmio_immediate(imm_addr, width)?;
+                let exit = self.handle_decoded_npt_mmio_write(addr, data, false, width)?;
+                let instr_len = imm_addr.as_usize() + crate::decode::mov_immediate_size(width)
+                    - start.as_usize();
+                Ok(Some((exit, instr_len as u8)))
+            }
+            (false, 0x8a) => {
+                let byte_reg = crate::decode::x86_byte_register((modrm >> 3) & 0x7, rex)
+                    .ok_or(X86VcpuError::InvalidData)?;
+                let end = self.skip_modrm_memory_operand(rip, modrm, rex)?;
+                let exit = X86VmExit::MmioRead {
+                    addr,
+                    width: X86AccessWidth::Byte,
+                    reg: byte_reg.gpr as usize,
+                    reg_width: X86AccessWidth::Byte,
+                    signed_ext: false,
+                    byte_reg: Some(byte_reg),
+                };
+                Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
+            }
+            (false, 0x8b) => {
+                let width = X86AccessWidth::for_mov_opcode(opcode, operand_size_override, rex_w)
+                    .ok_or(X86VcpuError::InvalidData)?;
+                let reg = (((modrm >> 3) & 0x7) | ((rex & 0x4) << 1)) as usize;
+                let end = self.skip_modrm_memory_operand(rip, modrm, rex)?;
+                let exit = X86VmExit::MmioRead {
+                    addr,
+                    width,
+                    reg,
+                    reg_width: width,
+                    signed_ext: false,
+                    byte_reg: None,
+                };
+                Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
+            }
+            _ => {
+                debug!("unsupported SVM NPF MMIO opcode {opcode:#x}, write={write}");
+                Ok(None)
+            }
+        }
+    }
+
+    fn decode_npt_apic_mmio_access(
+        &mut self,
+        decode: crate::decode::X86ApicMmioDecode,
+    ) -> X86VcpuResult<Option<(X86VmExit, u8)>> {
+        let crate::decode::X86ApicMmioDecode {
+            start,
+            rip,
+            modrm,
+            rex,
+            opcode,
+            addr,
+            write,
+            local_apic,
+        } = decode;
+
         match (write, opcode) {
             (_, opcode) if svm_mmio_register_write_opcode(write, opcode, local_apic) => {
                 let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
                 let end = self.skip_modrm_memory_operand(rip, modrm, rex)?;
                 let data = self.world_switch.guest_regs.get_reg_of_index(reg) as u32 as u64;
-                let exit = self.handle_decoded_npt_mmio_write(addr, data, local_apic)?;
+                let exit = self.handle_decoded_npt_mmio_write(
+                    addr,
+                    data,
+                    local_apic,
+                    X86AccessWidth::Dword,
+                )?;
                 Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
             }
             (true, 0xc7) if (modrm >> 3) & 0x7 == 0 => {
@@ -1275,7 +1399,12 @@ impl<H: X86HostOps> SvmVcpu<H> {
                 for i in 0..size_of::<u32>() {
                     data |= (self.read_guest_u8(imm_addr + i)? as u32) << (i * 8);
                 }
-                let exit = self.handle_decoded_npt_mmio_write(addr, data as u64, local_apic)?;
+                let exit = self.handle_decoded_npt_mmio_write(
+                    addr,
+                    data as u64,
+                    local_apic,
+                    X86AccessWidth::Dword,
+                )?;
                 Ok(Some((
                     exit,
                     (imm_addr.as_usize() + size_of::<u32>() - start.as_usize()) as u8,
@@ -1302,6 +1431,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
                         reg,
                         reg_width: X86AccessWidth::Dword,
                         signed_ext: false,
+                        byte_reg: None,
                     }
                 };
                 Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
@@ -1313,18 +1443,104 @@ impl<H: X86HostOps> SvmVcpu<H> {
         }
     }
 
+    fn read_mmio_immediate(
+        &self,
+        imm_addr: X86GuestVirtAddr,
+        width: X86AccessWidth,
+    ) -> X86VcpuResult<u64> {
+        match width {
+            X86AccessWidth::Byte => Ok(self.read_guest_u8(imm_addr)? as u64),
+            X86AccessWidth::Word => {
+                let mut data = 0u64;
+                for i in 0..size_of::<u16>() {
+                    data |= (self.read_guest_u8(imm_addr + i)? as u64) << (i * 8);
+                }
+                Ok(data)
+            }
+            X86AccessWidth::Dword => {
+                let mut data = 0u64;
+                for i in 0..size_of::<u32>() {
+                    data |= (self.read_guest_u8(imm_addr + i)? as u64) << (i * 8);
+                }
+                Ok(data)
+            }
+            X86AccessWidth::Qword => {
+                // C7 with REX.W still encodes a 32-bit immediate; the CPU
+                // sign-extends it to 64 bits before storing.
+                let mut imm = 0u32;
+                for i in 0..size_of::<u32>() {
+                    imm |= (self.read_guest_u8(imm_addr + i)? as u32) << (i * 8);
+                }
+                Ok((imm as i32) as i64 as u64)
+            }
+        }
+    }
+
+    fn read_byte_register(&self, byte_reg: X86ByteRegister) -> u64 {
+        if byte_reg.gpr == 4 {
+            // RSP is saved in the VMCB state save area rather than the
+            // world-switch GPR frame.
+            // SAFETY: `vmcb` is the unique guest VMCB owned by this vCPU and
+            // remains mapped for the duration of the borrow.
+            let rsp = unsafe { self.vmcb.as_vmcb_ref().state.rsp.get() };
+            return rsp & 0xff;
+        }
+        let value = self.world_switch.guest_regs.get_reg_of_index(byte_reg.gpr);
+        u64::from(crate::decode::x86_byte_register_value(value, byte_reg))
+    }
+
+    fn read_rsp(&self) -> u64 {
+        // SAFETY: `vmcb` is the unique guest VMCB owned by this vCPU and
+        // remains mapped for the duration of the borrow.
+        unsafe { self.vmcb.as_vmcb_ref().state.rsp.get() }
+    }
+
+    fn write_rsp(&mut self, value: u64) {
+        // SAFETY: `vmcb` is the unique guest VMCB owned by this vCPU and
+        // remains mapped for the duration of the mutable borrow.
+        unsafe { self.vmcb.as_vmcb().state.rsp.set(value) };
+    }
+
+    fn write_byte_register(&mut self, byte_reg: X86ByteRegister, value: u8) {
+        if byte_reg.gpr == 4 {
+            // SAFETY: `vmcb` is the unique guest VMCB owned by this vCPU and
+            // remains mapped for the duration of the mutable borrow.
+            let vmcb = unsafe { self.vmcb.as_vmcb() };
+            let old = vmcb.state.rsp.get();
+            vmcb.state.rsp.set((old & !0xff) | u64::from(value));
+            return;
+        }
+        let gpr = byte_reg.gpr;
+        let old = self.world_switch.guest_regs.get_reg_of_index(gpr);
+        let new = crate::decode::x86_byte_register_merge(old, byte_reg, value);
+        self.regs_mut().set_reg_of_index(gpr, new);
+    }
+
+    fn write_word_register(&mut self, reg: usize, value: u16) {
+        if reg == 4 {
+            // SAFETY: `vmcb` is the unique guest VMCB owned by this vCPU and
+            // remains mapped for the duration of the mutable borrow.
+            let vmcb = unsafe { self.vmcb.as_vmcb() };
+            let old = vmcb.state.rsp.get();
+            vmcb.state
+                .rsp
+                .set(crate::decode::x86_word_register_merge(old, value));
+            return;
+        }
+        let old = self.world_switch.guest_regs.get_reg_of_index(reg as u8);
+        let new = crate::decode::x86_word_register_merge(old, value);
+        self.regs_mut().set_reg_of_index(reg as u8, new);
+    }
+
     fn handle_decoded_npt_mmio_write(
         &mut self,
         addr: X86GuestPhysAddr,
         data: u64,
         local_apic: bool,
+        width: X86AccessWidth,
     ) -> X86VcpuResult<X86VmExit> {
         if !local_apic {
-            return Ok(X86VmExit::MmioWrite {
-                addr,
-                width: X86AccessWidth::Dword,
-                data,
-            });
+            return Ok(X86VmExit::MmioWrite { addr, width, data });
         }
 
         let offset = addr.as_usize() - X86_LOCAL_APIC_GPA;
@@ -1344,13 +1560,15 @@ impl<H: X86HostOps> SvmVcpu<H> {
         Ok(X86VmExit::Nothing)
     }
 
-    fn skip_simple_prefixes(&self, rip: &mut X86GuestVirtAddr, rex: &mut u8) -> X86VcpuResult {
+    fn skip_simple_prefixes(
+        &self,
+        rip: &mut X86GuestVirtAddr,
+        rex: &mut u8,
+        operand_size_override: &mut bool,
+    ) -> X86VcpuResult {
         loop {
             let byte = self.read_guest_u8(*rip)?;
-            if byte == 0x66 {
-                *rip += 1;
-            } else if (0x40..=0x4f).contains(&byte) {
-                *rex = byte;
+            if crate::decode::x86_simple_prefix_update(byte, rex, operand_size_override) {
                 *rip += 1;
             } else {
                 return Ok(());
@@ -1364,26 +1582,18 @@ impl<H: X86HostOps> SvmVcpu<H> {
         modrm: u8,
         rex: u8,
     ) -> X86VcpuResult<X86GuestVirtAddr> {
-        let mode = modrm >> 6;
         let rm = modrm & 0x7;
+        let mut sib = None;
 
         if rm == 0b100 {
-            let sib = self.read_guest_u8(cursor)?;
+            let byte = self.read_guest_u8(cursor)?;
             cursor += 1;
-            let base = sib & 0x7;
-            if mode == 0 && base == 0b101 {
-                cursor += size_of::<u32>();
-            }
-        } else if mode == 0 && rm == 0b101 && rex & 0x1 == 0 {
-            cursor += size_of::<u32>();
+            sib = Some(byte);
         }
 
-        match mode {
-            0 => {}
-            1 => cursor += size_of::<u8>(),
-            2 => cursor += size_of::<u32>(),
-            _ => return x86_err!(InvalidInput, "ModRM register operand is not memory"),
-        }
+        let disp_size = crate::decode::x86_modrm_displacement_size(modrm, sib, rex)
+            .ok_or_else(|| x86_err_type!(InvalidInput, "ModRM register operand is not memory"))?;
+        cursor += disp_size;
 
         Ok(cursor)
     }
@@ -1756,6 +1966,22 @@ impl<H: X86HostOps> SvmVcpu<H> {
 
     pub fn set_gpr(&mut self, reg: usize, val: usize) {
         self.regs_mut().set_reg_of_index(reg as u8, val as u64);
+    }
+
+    /// Sets one byte-encoded guest register while preserving adjacent bytes.
+    pub fn set_gpr_byte(&mut self, reg: X86ByteRegister, value: u8) {
+        self.write_byte_register(reg, value);
+    }
+
+    /// Sets one 16-bit guest register while preserving adjacent bytes.
+    pub fn set_gpr_word(&mut self, reg: usize, value: u16) {
+        self.write_word_register(reg, value);
+    }
+
+    /// Sets the architectural RSP according to the destination-operand width.
+    pub fn set_gpr_rsp(&mut self, width: X86AccessWidth, value: u64) {
+        let old = self.read_rsp();
+        self.write_rsp(crate::decode::x86_rsp_merge(old, width, value));
     }
 
     pub fn inject_interrupt(&mut self, vector: usize) -> X86VcpuResult {

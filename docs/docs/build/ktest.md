@@ -5,7 +5,7 @@ sidebar_label: "内核测试"
 
 # 内核测试（ktest）
 
-`cargo xtask ktest` 为 workspace 中声明为 `harness = false` 的 Cargo `[[test]]` target 提供统一的 QEMU 和板卡执行路径。它不是 host 端的 `cargo test`：测试目标会作为 ArceOS、StarryOS 或 Axvisor 内核镜像构建，并在目标运行环境输出 axtest 标记。只有依赖目标架构、内核运行时、真实设备或板卡的测例才使用 axtest；可在宿主确定性运行的算法、状态机、格式化和参数校验测试统一使用普通 `#[test]`。完整契约见仓库文档 `book/design/axtest-cargo-integration.md`。
+`cargo xtask ktest` 为 workspace 中声明为 `harness = false` 的 Cargo `[[test]]` target 提供统一的 QEMU 和板卡执行路径。它不是 host 端的 `cargo test`：测试目标会作为 ArceOS、StarryOS 或 Axvisor 内核镜像构建，并在目标运行环境输出 axtest 标记。只有依赖目标架构、内核运行时、真实设备或板卡的测例才使用 axtest；可在宿主确定性运行的算法、状态机、格式化和参数校验测试统一使用普通 `#[test]`。完整契约见仓库文档 `docs/design/axtest-cargo-integration.md`。
 
 ## 1. 运行接口
 

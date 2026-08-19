@@ -287,3 +287,72 @@ unsafe extern "C" {
     /// while a value > 0 indicates failure.
     pub fn user_copy(dst: *mut u8, src: *const u8, size: usize) -> usize;
 }
+
+/// Probes whether EL0 is permitted to access the page containing `vaddr` under
+/// the *current* user translation regime (`TTBR0_EL1`), without taking any lock.
+///
+/// Uses the `AT S1E0R` / `AT S1E0W` address-translation instruction, which asks
+/// the MMU to translate `vaddr` for an EL0 read (or write, when `write`) access
+/// and reports the result in `PAR_EL1`. `PAR_EL1.F == 0` means the translation
+/// succeeded and the access is permitted — exactly the permission the CPU itself
+/// enforces for a user-mode access, read lock-free. A not-present page or one
+/// lacking the requested EL0 permission (e.g. a copy-on-write page probed for
+/// write) reports `F == 1`.
+///
+/// Returns `true` iff the MMU would permit the EL0 access.
+///
+/// # Safety
+///
+/// The caller MUST invoke this with interrupts disabled. `PAR_EL1` is a per-CPU
+/// scratch register shared across contexts; an interrupt executing another `AT`
+/// between this `AT` and the `mrs` would clobber the result. On the
+/// pointer-validation path that could turn an inaccessible page into a `true`
+/// result and thus a raw kernel dereference of an unchecked address. IRQs-off
+/// guarantees no other `AT` runs on this CPU in between. Because violating this
+/// precondition is a memory-safety hazard (not merely a wrong answer), the
+/// function is `unsafe` so every call site must establish it.
+#[cfg(all(feature = "uspace", not(feature = "arm-el2")))]
+#[inline]
+pub unsafe fn user_access_ok_page(vaddr: usize, write: bool) -> bool {
+    let par: u64;
+    // SAFETY: `AT` reads the current translation tables and writes `PAR_EL1`;
+    // `mrs` reads it back. No memory is accessed and no flags are clobbered. The
+    // caller holds IRQs off so the `AT`/`mrs` pair is not split by another `AT`.
+    unsafe {
+        if write {
+            asm!(
+                "at s1e0w, {vaddr}",
+                "isb",
+                "mrs {par}, par_el1",
+                vaddr = in(reg) vaddr,
+                par = out(reg) par,
+                options(nostack, preserves_flags),
+            );
+        } else {
+            asm!(
+                "at s1e0r, {vaddr}",
+                "isb",
+                "mrs {par}, par_el1",
+                vaddr = in(reg) vaddr,
+                par = out(reg) par,
+                options(nostack, preserves_flags),
+            );
+        }
+    }
+    // PAR_EL1.F (bit 0): 0 = translation succeeded and the EL0 access is allowed.
+    par & 1 == 0
+}
+
+/// `arm-el2` builds run the hypervisor at EL2, where the EL1&0 `AT` probe does
+/// not describe guest-user access, so always fall back to the locked slow path.
+///
+/// # Safety
+///
+/// No precondition — this stub reads nothing and always returns `false`. It is
+/// `unsafe` only to share the signature of the aarch64 EL1 probe (which requires
+/// IRQs-off), so callers can use one `unsafe` block across all targets.
+#[cfg(all(feature = "uspace", feature = "arm-el2"))]
+#[inline]
+pub unsafe fn user_access_ok_page(_vaddr: usize, _write: bool) -> bool {
+    false
+}

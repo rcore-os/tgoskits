@@ -876,7 +876,7 @@ fsync, and checksum, and must not be presented as precise throughput:
 | LicheeRV Nano / CV181x SDHCI | 1 / 1 | 2 MiB / 5 s | 2 MiB / 3 s | 5,240,320 B / 9 s | 4 MiB / 5 s | 3 s |
 | AKA-00 / CV181x SDHCI | 1 / 1 | 2 MiB / 5 s | 2 MiB / 2 s | 5,240,320 B / 8 s | 4 MiB / 6 s | 1 s |
 | VisionFive2 / JH7110 DWMMC | 4 / 1 | 2 MiB / 3 s | 2 MiB / 2 s | 5,222,400 B / 7 s | 5,224,960 B / 7 s | 1 s |
-| ROC-RK3568-PC / DWCMSHC | 4 / 1 | 2 MiB / 2 s | 2 MiB / <1 s | 5,240,320 B / 2 s | 4 MiB / 1 s | 1 s |
+| ROC-RK3568-PC / DWCMSHC | 4 / 1 | 2 MiB / 2 s | 2 MiB / &lt;1 s | 5,240,320 B / 2 s | 4 MiB / 1 s | 1 s |
 | PhytiumPi / Phytium MCI | 4 / 1 | 2 MiB / 2 s | 2 MiB / 1 s | 4 MiB / 4 s | 4,198,400 B / 3 s | 1 s |
 | JL-LSGD2K10 / LS2K1000 AHCI | 2 / 1 | 2 MiB / 3 s | 2 MiB / 1 s | 4 MiB / 2 s | 4,194,816 B / 3 s | 1 s |
 

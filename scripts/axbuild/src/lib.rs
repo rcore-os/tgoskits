@@ -57,7 +57,7 @@ enum Commands {
         command: agent_review_bench::Command,
     },
     /// Run std tests for the configured workspace package whitelist
-    Test,
+    Test(test::std::StdTestArgs),
     /// Run statically linked workspace crate tests through qemu-user
     CrossTest(test::cross::CrossTestArgs),
     /// Run kernel axtest targets through QEMU or a remote board
@@ -124,7 +124,7 @@ where
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::AgentReviewBench { command } => agent_review_bench::execute(command).await,
-        Commands::Test => test::std::run_std_test_command(),
+        Commands::Test(args) => test::std::run_std_test_command(&args),
         Commands::CrossTest(args) => test::cross::run(args),
         Commands::Ktest(args) => ktest::run(args).await,
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
@@ -164,6 +164,17 @@ mod tests {
                 command.join(" ")
             )
         });
+    }
+
+    #[test]
+    fn std_test_command_accepts_incremental_base() {
+        let cli = TestCli::try_parse_from(["xtask", "test", "--since", "origin/dev"])
+            .expect("test --since must parse");
+
+        match cli.command {
+            Commands::Test(args) => assert_eq!(args.since.as_deref(), Some("origin/dev")),
+            _ => panic!("expected std test command"),
+        }
     }
 
     #[test]

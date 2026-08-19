@@ -5,7 +5,7 @@ sidebar_label: "运行时流程"
 
 # 运行时流程
 
-本文描述 `ax-net` 从初始化到运行期收发包、socket 阻塞等待、DHCP/DNS 和本地 transport 的关键流程。流程以源码中的真实边界为准：应用线程只修改 socket 状态并请求 poll，设备 worker 只搬运 packet，专用 net-poll worker 独占推进 smoltcp `Interface` 和全局 `SocketSet`。
+本文描述 `ax-net` 从初始化到运行期收发包、socket 阻塞等待、DHCP/DNS 和本地 transport 的关键流程。流程以源码中的真实边界为准：普通应用路径修改 socket 状态并请求 poll，设备 worker 只搬运 packet，`PollOwnership` 保证 smoltcp `Interface` 和全局 `SocketSet` 串行推进。
 
 核心流程涉及：
 
@@ -19,7 +19,9 @@ sidebar_label: "运行时流程"
 | TCP passive open | `listen_table.rs` / `router.rs` `snoop_tcp_packet()` |
 | DHCP/DNS | `service.rs`, `lib.rs` |
 
-## 总体时序
+源码表覆盖初始化、轮询、Router、socket 和本地 transport 五类流程所有者。总体时序先展示这些对象如何围绕一个协议推进者协作，后续章节再分别展开状态与异常分支。
+
+## 1. 总体时序
 
 运行期只有一个协议核心 owner：net-poll worker。socket 调用者和设备 worker 都通过轻量唤醒把工作交给它。
 
@@ -40,13 +42,15 @@ flowchart TB
     Service --> Dispatch["Router::dispatch(): tx_buffer -> device"]
 ```
 
-## 初始化阶段
+所有触发源都只产生轮询请求，`poll_until_idle()` 才是进入 `Service::poll()` 的统一入口。初始化阶段必须先建立这些对象和通知通道，之后应用与设备事件才能沿图中路径安全汇合。
+
+## 2. 初始化阶段
 
 初始化阶段构造控制面、单协议核心和多设备数据面。`init_network()` 是一次性入口，重复调用会 panic。
 
-### 配置校验
+### 2.1 配置校验
 
-`init_network()` 首先校验 `NetworkConfig`：
+`init_network()` 首先校验 `NetworkConfig` 中的接口匹配、名称、静态地址和路由约束，再构造任何全局状态或后台任务。fail-fast 使配置错误不会留下半初始化 `SERVICE`，也让后续设备与控制面构建可以依赖已验证输入。
 
 - 接口名不能是保留名 `lo`。
 - `dhcp = true` 不能同时配置 `static_ip`。
@@ -59,7 +63,9 @@ flowchart TB
 
 网关 `0.0.0.0` 是有效配置，表示不安装默认路由。
 
-### 设备与控制面构建
+### 2.2 设备与控制面构建
+
+初始化构建时，`init_network()` 先把 loopback 和发现到的 Ethernet driver 加入 `Router`，再据静态配置或 DHCP 角色建立 `NetControl` 与 `Service`。时序图突出全局单例和 Worker 必须在接口、路由及 smoltcp 地址准备完成后发布，避免后台线程观察到半初始化状态。
 
 ```mermaid
 sequenceDiagram
@@ -98,9 +104,11 @@ sequenceDiagram
 - Ethernet 接口从 `InterfaceId(2)` 开始按设备发现顺序分配。
 - `InterfaceId(0)` 是 Router TX 内部占位符，不出现在 public API。
 
-### DHCP Bootstrap
+构建阶段列表说明 `Service`、控制面和 Worker 在同一初始化入口中按顺序发布，静态接口此时已经可用。DHCP bootstrap 只为动态接口提供有限启动等待，不重新构造这些对象。
 
-如果存在 DHCP 接口，初始化末尾调用 `wait_for_dhcp_bootstrap()`：
+### 2.3 DHCP Bootstrap
+
+如果存在 DHCP 接口，初始化末尾调用 `wait_for_dhcp_bootstrap()` 等待至少一个动态接口获得可用配置，而不是等待所有 NIC 成功。该边界避免断开的次要网卡阻塞系统启动，同时仍允许网络轮询 Worker 继续推进其 DHCP 状态。
 
 ```rust
 fn wait_for_dhcp_bootstrap() {
@@ -117,11 +125,13 @@ fn wait_for_dhcp_bootstrap() {
 
 bootstrap 等待只要求任一 DHCP 接口成功获得地址。这样一个断开的 DHCP 网口不会阻塞整个系统启动；未配置完成的接口后续仍由 net-poll worker 继续推进。
 
-## Poll 主循环
+## 3. 轮询主循环
 
-poll 主循环由 `net-poll` 线程执行。它合并 socket、设备和 timer 唤醒，并通过 CAS 防止重入。
+poll 主循环通常由 `net-poll` 线程执行。它合并 socket、设备和 timer 唤醒，并通过 `PollOwnership` CAS 保证任一时刻只有一个推进者；UDP close 前的同步 flush 是另一种受控 owner。
 
-### request_poll
+### 3.1 轮询请求
+
+`request_poll()` 是所有非 IRQ 调用者提交推进需求的轻量入口，它设置请求状态并唤醒 `NET_POLL_WAKE`，但不直接获取 `SERVICE`。这种设计让 socket 操作和设备 Worker 能在固定成本下合并多次请求，由网络轮询 Worker 统一竞争 `PollOwnership`。
 
 ```rust
 pub fn request_poll() {
@@ -139,27 +149,18 @@ fn publish_poll_request(requested: &AtomicBool, wake: impl FnOnce()) {
 
 `request_poll()` 不执行协议栈，只设置标志并唤醒 worker。关键点：`publish_poll_request()` 用 `swap` 检测 `false→true` 转换，**仅在该转换发生时**才调用 `notify_one()`，避免已经在 pending 状态下重复 wake 唤醒造成的额外调度开销。socket 热路径、设备 RX/TX worker、DHCP/DNS 查询都使用这个入口。
 
-### poll_until_idle
+### 3.2 空闲收敛
+
+`poll_until_idle()` 在获得所有权后重复调用单轮 poll，直到协议核心没有立即工作或达到防止饥饿的边界。它同时处理循环期间出现的新请求，因此释放所有权前必须重新观察原子状态，避免错过并发唤醒。
 
 ```rust
-fn poll_until_idle() {
-    POLL_AGAIN.store(true, Ordering::Release);
-    loop {
-        if POLLING_INTERFACES
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
-            .is_err()
-        {
-            return;
-        }
-
-        while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            while get_service().poll(&mut SOCKET_SET.inner.lock()) {}
-        }
-        POLLING_INTERFACES.store(false, Ordering::Release);
-        if !POLL_AGAIN.load(Ordering::Acquire) {
-            return;
-        }
+fn poll_until_idle(ownership: PollOwnership) -> bool {
+    if !ownership.try_acquire() {
+        return false;
     }
+    // 消费 NET_POLL_REQUESTED，持 SERVICE -> SOCKET_SET 推进到 idle，
+    // drain deferred wakes，然后 Release poll ownership。
+    true
 }
 ```
 
@@ -169,9 +170,9 @@ fn poll_until_idle() {
 SERVICE -> SOCKET_SET.inner -> Service::poll()
 ```
 
-`poll_until_idle()` 在仍有工作时批量推进，不主动 yield。它是专用 worker，不需要在每个 packet 后让出给应用线程。
+`Opportunistic` 用于 `net-poll`，所有权被占用时直接跳过；`Required` 用于 `flush_egress()`，会等待现有 owner 释放。两者共享同一原子状态，因此不会并发进入 `Service::poll()`。持有所有权时在仍有工作时批量推进，不需要在每个 packet 后 yield。
 
-### defer_poll_wake
+### 3.3 延迟唤醒
 
 smoltcp 在 `Interface::poll()` 中调用 socket waker 时，`SocketSet` 仍被持有。此时如果 waker 直接调用 `PollSet::wake()`，可能在 PollSet 内部触发 re-registration 等需要 socket 锁的操作，导致潜在重入或死锁。因此 ax-net 使用延迟唤醒机制：
 
@@ -187,20 +188,22 @@ pub(crate) fn defer_poll_wake(poll: Arc<PollSet>, ready: IoEvents) {
 
 `DeferPollWake` 实现 `Wake` trait，被所有需要安全唤醒的 smoltcp socket 路径使用。每次 `poll_until_idle()` 结束前，`net-poll` worker 调用 `drain_deferred_poll_wakes()` 批量执行延迟的 PollSet 唤醒——此时 `SocketSet` 已解锁。
 
-### wake_net_task_irq / NET_IRQ_NOTIFY
+### 3.4 IRQ 唤醒
 
-IRQ 上下文不能直接进入协议栈。设备通过 `wake_net_task_irq()` 设置 `NET_IRQ_NOTIFY`，通知 net-poll worker 有新的设备事件需要处理。该函数只做原子置位 + wait-queue wake，不涉及任何锁：
+IRQ 上下文不能直接进入协议栈。设备通过 `wake_net_task_irq()` 通知 `NET_IRQ_NOTIFY`，并从 IRQ 上下文唤醒 net-poll worker。该函数不获取锁，也不复用普通 `request_poll()` 的 pending 位：
 
 ```rust
 pub(crate) fn wake_net_task_irq() {
-    NET_IRQ_NOTIFY.notify();
-    request_poll();
+    NET_IRQ_NOTIFY.notify_irq();
+    NET_POLL_WAKE.notify_one_from_irq();
 }
 ```
 
-### Service::poll
+worker 区分 IRQ、普通 poll request 和 timer/deferred wake。IRQ 或定时超时会额外调用 `wake_all_devices()`，使 sticky RX readiness 和没有硬件 wake source 的设备都能继续推进。
 
-`Service::poll()` 是协议核心的单轮调度。下面是保留关键顺序的简化示意：
+### 3.5 单轮协议推进
+
+`Service::poll()` 是协议核心的单轮调度，依次吸收 Router RX、推进 smoltcp、处理 DHCP/orphan 等辅助状态并分发 TX。顺序决定同一轮中哪些事件可以立即收敛，返回值则告诉 `poll_until_idle()` 是否仍有无需等待外部事件的工作。
 
 ```rust
 pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
@@ -244,11 +247,15 @@ pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
 - DHCP ACK/NAK 先生成 `NetworkStateUpdate`，再提交到 smoltcp address list、控制面和 route table。
 - `Router::dispatch()` 在 smoltcp 后执行，把本轮生成的 TX packet 送出。
 
-## 数据面流程
+单轮协议推进列表给出了 `Service::poll()` 的因果顺序，延迟 wake 在释放 `SocketSet` 后统一执行。数据面章节会沿这个顺序分别跟踪 RX、TX 与 loopback packet。
+
+## 4. 数据面流程
 
 数据面由 RX path、TX path 和 loopback fast path 组成。真实设备通过 worker 和有界队列与协议核心解耦。
 
-### RX Path
+### 4.1 RX 路径
+
+RX 时序跨越 driver、设备 Worker、共享队列、Router 和 smoltcp 五个所有权域。图中队列满分支尤其重要：`device_rx_worker` 保留本地 batch 并 yield 后重试，不把共享 RX queue 的短暂拥塞直接计为丢包。
 
 ```mermaid
 sequenceDiagram
@@ -264,6 +271,9 @@ sequenceDiagram
     RxW->>Driver: Device::recv()
     Driver-->>RxW: IP packet in local PacketBuffer
     RxW->>Queue: push(RxPacket{interface_id, QueuedPacket})
+    alt shared RX queue 暂满
+        RxW->>RxW: 保留 local_batch，yield 后重试
+    end
     RxW->>Poll: request_poll()
     Poll->>Router: drain queue into rx_buffer
     Router->>Sock: snoop_tcp_packet()
@@ -282,9 +292,11 @@ driver RX buffer
   -> RxToken -> smoltcp Interface::poll()
 ```
 
-`RxPacket` 保存 ingress `InterfaceId`，用于 DHCP 分发和诊断。队列满时丢包并记录 warning，避免网络热路径无界增长。
+`RxPacket` 保存 ingress `InterfaceId`。`Router::poll()` drain 时从 IP header 生成 TOS/traffic-class packet metadata。shared RX queue 满时，未入队 packet 连同 L2 frame 长度保留在 RX worker 的 `local_batch`，worker 请求主 poll、yield 后重试；这一处是有界背压，不是丢包。TX queue 满、超 MTU、frame 解析失败等边界才计入对应 dropped/error。
 
-### TX Path
+### 4.2 TX 路径
+
+TX 时序从 socket 写入 smoltcp 状态开始，由网络轮询 Worker 生成 IP packet 并调用 `Router::dispatch()` 完成出接口决策。loopback 会直接回注 RX buffer，而 Ethernet 路径进入 per-device TX queue，再由设备 Worker 执行 ARP 和二层发送。
 
 ```mermaid
 sequenceDiagram
@@ -319,9 +331,11 @@ dispatch 规则：
 - loopback 目的地直接写入 `Router.rx_buffer`。
 - 普通设备 TX 进入 per-device `tx_queue`，由 TX worker 调用 `Device::send()`。
 
-### Loopback Fast Path
+TX 路径列表说明普通 Ethernet packet 在路由选择后进入设备队列，并由 Worker 完成链路发送。Loopback 选择相同路由接口，但在 Router 内直接回注，从而省去后半段设备路径。
 
-loopback 普通 TX 不进入设备队列：
+### 4.3 Loopback 快速路径
+
+loopback 普通 TX 不进入设备队列，`Router::dispatch()` 识别本地出口后直接把 IP packet 注入 smoltcp-facing RX buffer。该快速路径仍执行 TCP SYN snoop 并请求后续 poll，因此优化并未绕过监听与 readiness 语义。
 
 ```text
 Router.tx_buffer
@@ -333,9 +347,9 @@ Router.tx_buffer
 
 `inject_loopback_rx_direct()` 在写入 RX buffer 前调用 `snoop_tcp_packet()`，因此 loopback TCP SYN 可以在同一轮 poll 中预创建 accept child socket。
 
-### ARP / Neighbor
+### 4.4 ARP 邻居解析
 
-Ethernet TX 需要把 IP packet 发送到 next-hop MAC：
+Ethernet TX 需要根据路由决策中的 next hop 找到目标 MAC，`EthernetDevice` 会先查询 ARP cache，未命中时发送请求并暂存有限数量的 IP packet。解析成功后 pending packet 才进入 driver，超时或容量不足则反映到设备统计。
 
 ```text
 Device::send(next_hop, ip_packet)
@@ -346,11 +360,13 @@ Device::send(next_hop, ip_packet)
 
 入站 ARP reply 或 gratuitous ARP 会更新 neighbor 表，并释放等待该 next hop 的 pending packet。neighbor TTL 为 300 秒，ARP retry 间隔为 1 秒。
 
-## Socket 流程
+## 5. Socket 流程
 
 socket 流程只修改 socket 状态并注册 waker；协议状态机推进交给 net-poll worker。
 
-### TCP Connect
+### 5.1 TCP 连接
+
+TCP connect 先通过 `NetControl::select_route_with_binding()` 确定本地地址和接口约束，再在 `SocketSet` 中启动 smoltcp 状态机。调用者只负责写入连接意图并等待 readiness，握手重传和状态推进由网络轮询 Worker 完成。
 
 ```text
 TcpSocket::connect(remote)
@@ -364,7 +380,9 @@ TcpSocket::connect(remote)
 
 连接完成由 smoltcp 在后续 `Interface::poll()` 中推进。`Pollable::register()` 同时注册 smoltcp send/recv waker 和设备 readiness waker。
 
-### TCP Listen / Accept
+### 5.2 TCP 监听接收
+
+TCP listen/accept 依赖 `ListenTable` 聚合 wildcard 或按地址监听，并由 `Router::poll()` 的 SYN snoop 提前创建 child socket。该调用链确保 SYN 到达、child 入队和用户 `accept()` 使用同一监听仲裁状态，而不是为每个设备维护独立 listener。
 
 ```text
 TcpSocket::listen(backlog)
@@ -387,9 +405,9 @@ TcpSocket::accept()
 
 accept readiness 由 `ListenTableEntryInner.accept_poll` 维护。pending child 的 recv/send readiness 会唤醒 listener 的 accept waiters。
 
-### TCP/UDP Send-Recv
+### 5.3 TCP 与 UDP 收发
 
-通用阻塞逻辑来自 `GeneralOptions`：
+TCP 与 UDP 的用户等待规则由 `GeneralOptions` 中的 nonblocking、timeout 和 `PollSet` 辅助统一实现，而协议数据分别保存在 stream 或 datagram buffer。普通 send/recv 只修改 socket 状态并提交 poll 请求；UDP drop 的同步 egress flush 是明确例外。
 
 ```rust
 pub fn send_poller_with<P: Pollable, F: FnMut() -> NetResult<T>, T>(
@@ -415,22 +433,49 @@ pub fn send_poller_with<P: Pollable, F: FnMut() -> NetResult<T>, T>(
 
 UDP connected socket 在 recv 时过滤 peer；`MSG_MORE` 会把多次 send 合并为一个 datagram，并固定第一次 send 的 remote/source。
 
-### Raw Socket
+UDP 的析构路径还有一条交付保证：先调用 `flush_egress()` 申请 `Required` poll ownership，直到 smoltcp UDP TX queue 为空，再从 `SocketSet` 移除 socket。它修复了“send 成功后立即 close，packet 尚未被 `net-poll` 提取”的丢包窗口。
 
-raw socket 处理 IP 层 packet：
+```mermaid
+sequenceDiagram
+    participant App as send() then close()
+    participant Udp as UdpSocket::drop()
+    participant Owner as PollOwnership
+    participant Core as Service::poll()
+    participant Dev as Router / device queue
+
+    App->>Udp: datagram 已进入 smoltcp TX queue
+    Udp->>Owner: wait_and_acquire(Required)
+    Owner-->>Udp: 独占推进权
+    loop while UDP TX queue not empty
+        Udp->>Core: poll once
+        Core->>Dev: dispatch packet
+    end
+    Udp->>Owner: release
+    Udp->>Udp: remove socket handle
+```
+
+该时序是普通异步 send 路径的例外：UDP drop 必须确保已经进入 smoltcp TX queue 的 datagram 被 dispatch 后才能移除 handle。required ownership 只改变调用者是否等待，不允许与网络轮询 Worker 并发推进协议核心。
+
+### 5.4 Raw Socket
+
+Raw Socket 处理 IP 层 packet，并按协议 filter、connected peer、TTL 与 traffic-class 选项生成或筛选消息。ping datagram 的 ICMP 兼容也在该 backend 完成，但状态推进仍复用全局 smoltcp `SocketSet` 和网络轮询 Worker。
 
 - send 时按 remote 选择 source，或使用显式绑定地址。
 - loopback ICMP 走本地快速路径。
 - connected raw socket 使用 peer filter。
 - `deferred_rx` 保存被 peer filter 暂存的 wire packet，保证 `MSG_PEEK` 和后续 recv 不破坏 packet 格式。
+- IPv4 ping datagram socket 只向用户返回 ICMP payload；普通 IPv4 raw socket 返回完整 IP packet，IPv6 raw recv 返回 payload。
+- `IP_RECVTTL` 启用时通过 `IpCmsg::Ipv4Ttl` 返回 hop limit。
 
-## 控制协议流程
+Raw Socket 列表界定返回完整 IP packet、payload 和 ICMP ping 兼容的不同格式，仍由 IP 协议核心推进。控制协议则通过 snoop 或临时 socket 参与同一轮询，不属于 raw 用户数据接口。
 
-控制协议不是独立线程，它们挂在 `Service::poll()` 中运行。
+## 6. 控制协议流程
 
-### DHCP Client
+DHCP client/server 与 DNS 查询都依赖 `Service::poll()` 或临时 smoltcp socket 推进，不各自创建长期协议线程。它们通过 Router snoop、控制面提交和统一定时唤醒与普通数据面协作，因而必须遵守同一 `PollOwnership`。
 
-DHCP 状态机：
+### 6.1 DHCP Client
+
+每个启用 DHCP 的 Ethernet 接口对应一个 `DhcpState`，其状态机通过 ingress `InterfaceId` 接收 snoop packet，并在定时期限到达时发送 discover/request。ACK 产生的地址、路由和 DNS 由 `commit_network_state()` 一次性提交，NAK 或 lease 失效则清理同一来源状态。
 
 ```text
 Discovering --Offer--> Requesting --ACK--> Bound
@@ -459,7 +504,7 @@ Router::poll()
 
 出站 DHCP packet 由 `poll_dhcp()` 生成，再通过 `Router::send_on_device()` 从指定设备广播。
 
-### DHCP Server
+### 6.2 DHCP Server
 
 内置 DHCP server 用于 SoftAP 场景。它在 Router RX snoop 中接收 Discover/Request，生成 Offer/Ack 后通过 `send_on_device()` 从绑定设备发出。它不依赖 smoltcp DHCP socket。
 
@@ -480,7 +525,11 @@ DHCP server 和 DHCP client 的职责分离：
 - server 负责本机作为 SoftAP/服务接口给对端分配一个固定客户端地址，不修改本机控制面地址。
 - server 发送路径绕过 smoltcp UDP socket，避免和用户 UDP socket 或 DHCP client socket 竞争端口 67/68。
 
-### DNS Query
+DHCP server 列表强调其轻量、单客户端和指定接口边界，不应被当作通用服务。DNS 查询不使用这套 server 状态，而是创建临时 smoltcp DNS socket 并读取控制面 server 快照。
+
+### 6.3 DNS 查询
+
+DNS 查询通过临时 smoltcp DNS socket 发起，server 顺序来自 `NetControl::dns_servers()` 的 metric-aware 快照。查询完成、超时或出错后都必须移除临时 handle，避免重复解析逐步耗尽全局 `SocketSet`。
 
 ```text
 dns_query_timeout(name, timeout)
@@ -503,18 +552,20 @@ dns_query_timeout(name, timeout)
 - DNS socket 无 free slot：`ResourceBusy`。
 - 名称非法或过长：`InvalidInput`。
 
-## Local Transport 流程
+DNS 调用链在完成或超时后移除临时 handle，所有网络进展仍由统一轮询产生。本地 transport 不创建这类 IP handle，因此单独使用 namespace、ring buffer 和事件管理器。
+
+## 7. 本地传输流程
 
 AF_UNIX 和 AF_VSOCK 不通过 smoltcp `Interface`，但复用 `SocketOps` 和 `Pollable`。
 
-### Unix Stream / Datagram
+### 7.1 Unix 传输
 
-Unix socket 使用 `Transport` 分发：
+Unix socket 使用 `Transport` 枚举在 stream、datagram 与 seqpacket 语义之间分发，并由路径或 abstract namespace 建立端点关联。payload、凭据和 readiness 全部在本地 transport 内维护，不经过 Router 或 smoltcp poll。
 
 ```text
 UnixSocket
   -> Transport::Stream(StreamTransport)
-  -> Transport::Dgram(DgramTransport)
+  -> Transport::Dgram(DgramTransport) // datagram 或 connection-oriented seqpacket
 ```
 
 abstract namespace 存在内存 map 中；path namespace 通过 `register_unix_namespace()` 注入。Unix stream accept 使用 transport 自己的 `Pollable` 和 `poll_io()`，不调用 `request_poll()`。
@@ -533,11 +584,11 @@ Unix stream recvmsg
   -> stop at cmsg message boundary when needed
 ```
 
-datagram 的 cmsg 与 payload 一起封装在单个 packet 中，因此天然保留消息边界；stream 则依靠 byte offset 维护 ancillary data 与发送调用之间的关系。
+datagram/seqpacket 的 cmsg 与 payload 一起封装在单个 packet 中，因此天然保留消息边界；seqpacket 还复用 namespace 的 bind/listen/connect/accept 状态机。`SO_PASSCRED` 只在接收端启用时附加发送任务 credentials，`SO_TIMESTAMP` 在消息入队时保存 wall-clock 时间。`MSG_PEEK` clone payload/cmsg 并保留原消息；stream 则依靠 byte offset 维护 ancillary data 与发送调用之间的关系。
 
-### Vsock Stream
+### 7.2 Vsock 传输
 
-vsock 只在 `vsock` feature 下启用：
+Vsock 只在对应 feature 下启用，由 `rdif_vsock::Interface` 事件和独立 connection manager 推进 listening、connecting 与 connected 状态。无法立即交付的事件保存在 pending queue，并通过专用 waiters 唤醒 accept、connect 和收发调用者。
 
 ```text
 VsockSocket
@@ -559,11 +610,11 @@ vsock-poll task
 
 连接管理器维护 listening、connecting、connected 和 closed 状态。listener 通过 `ListenQueue` 和 `AcceptQueue` 接收连接；每条 established connection 拥有 64KiB RX ring，并通过 credit update 唤醒 TX waiters。设备事件处理使用 4KiB 临时 RX buffer；无法立即交付的事件会留在 pending queue，后续 poll 周期继续推进。
 
-## 并发与锁边界
+## 8. 并发锁边界
 
 运行时流程需要维持固定边界，避免应用线程、设备 worker 和协议核心互相阻塞。
 
-### 典型锁路径
+典型锁路径体现了各执行域允许进入的共享状态。`net-poll`、Router、设备 worker、TCP 监听和控制面查询分别沿固定方向获取资源，以下调用链用于维护时检查是否出现反向嵌套：
 
 ```text
 net-poll:
@@ -585,17 +636,24 @@ control query:
 禁止路径：
 
 - 设备 worker 进入 `Service` 或 `SocketSet`。
-- socket 热路径同步执行完整 interface poll。
+- 绕过 `PollOwnership` 从 socket 热路径同步执行完整 interface poll。
 - 持设备锁等待 socket readiness。
 - 持 `SocketSet` 锁做可能阻塞的用户 IO。
 
-## 流程速查
+禁止路径列表把锁章节的规则落实到流程入口，特别排除设备 Worker 和 socket 热路径直接推进协议核心。速查表随后按相同边界汇总入口、推进者和结果，便于快速判断调用职责。
+
+## 9. 流程速查
+
+流程速查把常见入口、实际推进者和最终状态放在一起，用于判断一个调用是否应该同步完成还是仅提交异步工作。表中的推进者是并发边界的一部分，例如 UDP drop 可以申请 required ownership，而普通 TCP 发送只唤醒网络轮询 Worker。
 
 | 场景 | 入口 | 推进者 | 结果 |
 | --- | --- | --- | --- |
 | 应用发送 TCP 数据 | `TcpSocket::send()` | net-poll worker | smoltcp 生成 IP packet，Router dispatch 到设备 |
+| UDP send 后立即 close | `UdpSocket::drop()` | caller 持 Required poll ownership | 排空 UDP TX，再移除 socket |
 | 设备收到包 | `device_rx_worker` | net-poll worker | Router RX buffer，smoltcp 处理 socket 状态 |
 | TCP accept | `Router::poll()` SYN snoop + `accept()` | net-poll worker | child socket 进入 accept queue |
 | DHCP 获取地址 | `DhcpState::process_packet()` | `Service::poll()` | 更新接口、route、DNS 和 smoltcp 地址 |
 | DNS 查询 | `dns_query_timeout()` | caller + net-poll worker | 临时 DNS socket 查询并自动移除 |
 | Unix socketpair | `UnixSocket` transport | transport PollSet | 不经过 smoltcp/Router |
+
+速查表中的“入口”不等于执行全部工作的线程，判断阻塞和锁行为时应以“推进者”列为准。新增流程若无法归入现有所有权模型，应先设计明确的请求、队列或同步例外，而不是从任意调用线程直接进入协议核心。

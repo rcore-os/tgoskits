@@ -1,11 +1,11 @@
 ---
 sidebar_position: 99
-sidebar_label: "测试与验收"
+sidebar_label: "测试"
 ---
 
-# 内存管理测试与验收
+# 内存管理测试
 
-内存修改必须同时验证区间事实、资源所有权、失败回滚、跨 CPU 可见性和热路径延迟。测试优先使用可控分配器、页表、后端和记录型 DMA 适配器，板级测试负责固件内存图、缓存、Translation Lookaside Buffer（地址转换后备缓冲区，TLB）与设备行为。
+内存测试覆盖区间事实、资源所有权、失败回滚、跨 CPU 可见性和热路径延迟。Host 测试使用可控分配器、页表、后端和记录型 DMA 适配器；板级测试覆盖固件内存图、缓存、Translation Lookaside Buffer（地址转换后备缓冲区，TLB）与设备行为。
 
 ## 1. 启动与 allocator 测试
 
@@ -49,7 +49,7 @@ host test 使用可控内存 slice 建立多个 section，覆盖 page、lowmem�
 
 ## 2. 页表与地址空间测试
 
-页表测试验证单个机制，地址空间测试验证多个机制组合后的 all-or-rollback。两者不能互相替代。
+页表测试验证递归映射、页表帧和失效机制，地址空间测试验证区域元数据与具体 backend 的组合语义。不同 backend 的回滚边界并不相同，因此测试必须分别固定 ArceOS、StarryOS 和 Axvisor 的实际资源结果，不能用一个笼统的 all-or-rollback 预期替代。
 
 ### 2.1 页表能力
 
@@ -81,7 +81,8 @@ host test 使用可控内存 slice 建立多个 section，覆盖 page、lowmem�
 | area split/shrink | 地址、actual/reported flags 和 backend offset 一致 |
 | metadata-only move | 不调用 backend，不重复释放物理页 |
 | 12 GiB Linear map | 不建立与 3,145,728 个基础页成比例的软件快照 |
-| 分配型 map 中间失败 | 固定当前语义：ax-mm 与 axaddrspace 的 alloc backend 均不回滚已安装前缀（已知遗留），测试应断言该行为并防止进一步退化 |
+| ArceOS 分配型 map 中间失败 | `populate_pages()` 回滚当前操作已安装的全部前缀页，并归还当前尚未映射及已经解除映射的 frame |
+| Axvisor 分配型 map 中间失败 | 固定当前遗留语义：`axaddrspace` 尚不回滚已安装前缀，失败页的 frame 也可能泄漏；测试应准确暴露该差异 |
 | 分配型 unmap | 每个被删除的 allocation-backed frame 恰好释放一次；axaddrspace 遇到大页首项时先删项后失败的行为需单独断言 |
 | 跨多区域 backend 失败 | 明确验证直接语义，不声称公共层自动恢复前缀 |
 
@@ -143,11 +144,11 @@ MMIO host test 使用记录型 `MmioOp` 统计映射和解除映射，平台测�
 
 测试不得用普通切片访问代替易失性寄存器读写。易失性只能约束编译器访问，设备协议要求的 CPU 屏障仍需由驱动或平台实现并在目标架构上验证。
 
-## 4. 验证命令
+## 4. 测试命令
 
 内存 crate 的 host test可以使用 Cargo；ArceOS、StarryOS和 Axvisor 的系统构建/运行应使用 `cargo xtask`。文档改动另外执行 Docusaurus build。
 
-### 4.1 单组件验证
+### 4.1 组件测试
 
 修改单一 crate 时先运行格式、该 crate clippy和对应 unit/doc tests。以下命令是常用最小集合，feature 应按改动补齐。
 
@@ -164,21 +165,18 @@ cargo test -p dma-api
 
 修改公共 walker 时运行 `page-table-generic` 测试；修改主机页表时按目标架构验证 `ax-cpu`；修改第二阶段或启动页表时分别验证 `axvm` 或 `someboot`。修改 `ax-alloc` 时覆盖实际存在的 feature 组合：`global-allocator`、`tlsf`、`buddy-slab` 与 `tracking`。hard-实时 与 reserve 尚不是 Cargo feature，只有增加真实消费者和构建配置后才加入对应矩阵。
 
-### 4.2 工作区与系统验证
+### 4.2 工作区与系统测试
 
 依赖或 feature 改动需要检查 workspace metadata 和生产 dependency tree。系统命令以仓库 `cargo xtask --help` 和现有 CI配置为准。
 
 ```sh
 cargo metadata --format-version 1
 cargo tree --workspace
-# 按整改方案中的删除清单检查生产源码、manifest 和依赖树。
-npm --prefix docs run build
-git diff --check
 ```
 
 ArceOS、StarryOS 和 Axvisor 至少各选择一个 paging 配置构建；Starry 另运行直接发现的内存相关 QEMU case，重型压力负载通过 `cargo xtask starry app` 执行。物理 board、自托管 runner 和设备压力测试按变更范围执行。
 
-## 5. 性能与容量指标
+## 5. 性能与容量观测
 
 性能基线必须使用相同平台、CPU数、内存图、feature和 workload。平均值不能替代 P99/max，因为 实时和中断请求路径关注最坏延迟。
 
@@ -186,9 +184,9 @@ ArceOS、StarryOS 和 Axvisor 至少各选择一个 paging 配置构建；Starry
 
 allocator benchmark 分开记录 Slab、Buddy order-0、高阶连续页、Dma32和 cross-CPU free。统计至少包括延迟、锁等待和空间开销。
 
-| 指标 | 采集维度 | 验收目标 |
+| 指标 | 采集维度 | 用途 |
 | --- | --- | --- |
-| alloc/free latency | median、P99、max | 相同配置 P99相对基线退化不超过 10% |
+| alloc/free latency | median、P99、max | 与相同配置的既有基线比较 |
 | Buddy lock wait | CPU、operation size | 证明是否需要后续 cache优化 |
 | remote-free drain | queue length、drain latency | 无双重释放或长期不回收 |
 | fragmentation | largest allocatable block、free pages | 压力后仍满足目标高阶请求 |
@@ -212,11 +210,11 @@ allocator benchmark 分开记录 Slab、Buddy order-0、高阶连续页、Dma32�
 | hard-实时 | critical section通用 heap/page allocation次数 |
 | boot | memory map处理时间、early bump bytes、per-CPU固定开销 |
 
-hard-实时 的关键验收是已识别 实时 critical section 的通用堆和页分配次数为 0。驱动 ring/descriptor 应在 probe 或启动期预分配。
+已识别的实时 critical section 需要记录通用堆和页分配次数。驱动 ring/descriptor 在 probe 或启动期预分配，避免把通用分配器引入实时路径。
 
-## 6. 静态架构检查
+## 6. 依赖边界
 
-代码通过测试并不证明没有重复入口或反向依赖。每次修改内存子系统都要用 source/dependency scan 检查组件边界。
+组件边界同时受源码依赖和 Cargo dependency tree 约束。生产路径不能保留重复入口或反向依赖。
 
 ### 6.1 边界一致性
 
@@ -247,7 +245,7 @@ feature scan还要比较静态符号和镜像大小，避免关闭 feature 后�
 
 ## 7. 当前设计约束
 
-以下内容是嵌入式性能和复杂度取舍，不应被当成缺失功能自动补齐。
+当前设计约束来自嵌入式容量、尾延迟和实现复杂度的共同取舍，不应被当成缺失功能自动补齐。下表同时说明每项限制保护的边界，新增机制前需要先提供真实消费者和可复现测量证据。
 
 | 约束 | 理由 |
 | --- | --- |
@@ -263,7 +261,7 @@ feature scan还要比较静态符号和镜像大小，避免关闭 feature 后�
 
 增加复杂机制前必须给出目标板 workload、绝对延迟/容量预算、采样证据和裁剪方案；仅以“Linux有该功能”不能作为引入理由。
 
-## 8. 可复现实例
+## 8. 测试场景
 
 内存测试必须给出确定输入、故障位置和完整状态断言。只执行压力负载或只断言返回 `Err` 无法证明 ownership 与专用失败清理正确。
 
@@ -302,7 +300,6 @@ map.merge_add(MemoryDescriptor::new_with_range(
 ```text
 initial VMAs: [0x1000,0x4000), [0x5000,0x8000)
 initial PTEs: pages 1,2,3,5,6,7 mapped
-operation:    unmap [0x2000,0x7000)
 operation:    unmap [0x2000,0x7000)
 
 required result on success:
@@ -363,28 +360,29 @@ cargo test -p buddy-slab-allocator \
 | contention | Buddy lock wait和 remote-free drain |
 | capacity | free pages、largest block、metadata bytes |
 
-对比基线与新实现时必须使用相同固件内存图和 CPU frequency policy。若 P99退化超过 10%，先用 lock wait、地址转换后备缓冲区 flush或 reclaim次数定位来源；不能直接用平均吞吐掩盖尾延迟。
+对比基线与新实现时使用相同固件内存图和 CPU frequency policy。出现明显尾延迟变化时，使用 lock wait、地址转换后备缓冲区 flush 或 reclaim 次数定位来源；平均吞吐不能替代分位数。
 
 ### 8.6 大范围映射回归
 
-大范围回归使用一个虚拟地址与物理地址均按 1 GiB 对齐的 12 GiB Linear 区间。测试页表 provider 应记录页表 frame 分配次数，并允许在指定次数返回 `None`；backend 还应暴露仅供测试读取的 plan 保存项数量。
+大范围回归使用一个虚拟地址与物理地址均按 1 GiB 对齐的 12 GiB Linear 区间。当前实现没有 `MappingPlan` 或 `previous` 快照，测试应直接记录 `MemorySet` 区域数量、页表 frame 分配次数、叶子项尺寸和失败后的查询结果。
 
 ```text
 range:             0x4000_0000..0x3_4000_0000
 size:              12 GiB
 base pages:        3,145,728
-Map previous.len:  0
-prepare allocation: independent of base-page count
+MemoryArea count:  1
+software undo log: none
 ```
 
-该地址示例的末端由受检加法计算，测试代码不能直接信任文本常量。测试分三组运行，分别证明准备阶段、提交失败和页尺寸策略。
+该地址示例的末端由受检加法计算，测试代码不能直接信任文本常量。测试分别证明区域元数据保持常数规模、`map_region()` 失败回滚已建立叶子项，以及大页选择不跨越属性边界。
 
 | 组别 | 注入或配置 | 必须断言 |
 | --- | --- | --- |
-| Map prepare | 只创建 plan，不提交 | `previous.len() == 0`，没有约 96 MiB 快照分配 |
-| 4 KiB commit failure | `allow_huge=false`，在中间页表 frame 分配失败 | 返回 `NoMemory`；查询整个已完成前缀均为未映射；虚拟内存区域未发布 |
+| 区域元数据 | 构造一个 12 GiB `MemoryArea` | `MemorySet` 只增加一个区域，不产生与基础页数量成比例的撤销数组 |
+| 4 KiB map failure | `allow_huge=false`，让 frame provider 在中间下级页表分配时返回 `None` | `map_region()` 返回 `NoMemory` 并解除当前调用已经建立的前缀；上层 `MemoryArea` 不发布 |
 | 大页 capability | `allow_huge=true`，范围属性一致 | 生成 12 个 1 GiB 叶子项，不分配 4 KiB 叶子表 |
 | 属性边界 | 中间插入 2 MiB 设备或只读区 | 请求先按属性拆分；任何大页都不跨边界 |
-| Unmap/Protect capacity | 强制 `previous.try_reserve()` 失败 | 在修改页表前返回 `NoMemory`，原范围逐点抽样和边界查询均一致 |
+
+这些断言分别对应 `memory/memory_set/src/set.rs` 和 `memory/page-table-generic/src/table.rs::map_region()` 的当前控制流。若测试仍引用 `MappingPlan`、`previous.len()` 或 `previous.try_reserve()`，它验证的是已经删除的实现模型，应当改写而不是保留兼容 fixture。
 
 系统级 QEMU 回归还要使用真实固件内存清单复现原始 12 GiB 保留区。日志至少记录该区间的 `MemoryType`、是否进入 `ax-hal::memory_regions()`、是否进入 `new_kernel_aspace()`、实际页尺寸计数和页表 frame 总量。若区间属于固件私有窗口，正确结果是排除分配且不建立普通直接映射；若属于必须访问的保留 RAM，才比较大页与基础页映射成本。

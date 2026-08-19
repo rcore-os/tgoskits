@@ -47,3 +47,4 @@ apps/starry/py-tui
 apps/starry/python-net
 apps/starry/qt-calc
 apps/starry/openssh
+apps/starry/qemu/ltp-hackbench

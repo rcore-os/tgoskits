@@ -31,6 +31,18 @@ test-suit/starryos/<build_wrapper>/<case>/<runtime-config>.toml
 旧的 Starry `--test-group` 和 `--stress` 入口已经移除。需要运行迁出的压力、K230、
 visual 或 golden 类用例时，使用 `cargo xtask starry app ...` 或对应脚本。
 
+## CI 精确路由
+
+CI 路由不改变上述 xtask 发现规则。`.github/ci/checks/starry.toml` 通过 check 下的
+`[[check.suite]]` 注册当前可用的 QEMU 架构或 board runner；planner 再以实际存在的
+`qemu-<arch>.toml`、`board-<board>.toml` 和最近的 `build-<target>.toml` 解析 case。
+不要从目录名字手工拼接 CI job，也不要为未在 CI 中运行的板卡借用其他 runner。
+
+PR 的有效改动全部位于 `test-suit/**` 时，只运行匹配的已注册 case。多个 case 取
+稳定去重并集；共享 build wrapper 变更展开到该 wrapper 下所有已注册 case。
+`qemu/system/<subcase>` 源码变更会生成 `qemu/<subcase>` selector。若新增 case 或
+board 尚未在 manifest 注册，`Plan CI` 会明确失败，而不是静默跳过或自动启用真机。
+
 ## 当前目录概览
 
 ```text

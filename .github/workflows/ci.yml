@@ -39,6 +39,7 @@ on:
       - "tools/**"
       - "virtualization/**"
       - "xtask/**"
+      - "!**/*.md"
   workflow_dispatch:
     inputs:
       since_sha:
@@ -148,6 +149,7 @@ jobs:
       since_ref: ${{ steps.since.outputs.since_ref }}
       static_matrix: ${{ steps.matrix.outputs.static_matrix }}
       test_matrix: ${{ steps.matrix.outputs.test_matrix }}
+      static_required: ${{ steps.matrix.outputs.static_required }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -160,7 +162,7 @@ jobs:
           python3 scripts/test/check_ci_paths.py
           python3 scripts/test/check_ci_routing.py
           python3 scripts/test/check_workflow_layout.py
-          python3 -m unittest scripts/test/test_ci_plan.py
+          python3 -m unittest scripts/test/test_ci_impact.py scripts/test/test_ci_plan.py
 
       - name: Resolve incremental base revision
         id: since
@@ -179,6 +181,9 @@ jobs:
 
           if [ "$EVENT_NAME" = "pull_request" ]; then
             since_ref="$PR_BASE_SHA"
+            if ! git rev-parse --verify "${since_ref}^{commit}" >/dev/null 2>&1; then
+              git fetch --no-tags --depth=1 origin "$since_ref" >/dev/null 2>&1 || true
+            fi
           elif [ "$EVENT_NAME" = "push" ] && ! is_empty_or_zero_sha "$PUSH_BEFORE_SHA"; then
             since_ref="$PUSH_BEFORE_SHA"
           elif [ "$EVENT_NAME" = "workflow_dispatch" ] && ! is_empty_or_zero_sha "$SINCE_SHA"; then
@@ -200,6 +205,7 @@ jobs:
           REPOSITORY_OWNER: ${{ github.repository_owner }}
           PR_HEAD_REPOSITORY_OWNER: >-
             ${{ github.event.pull_request.head.repo.owner.login || '' }}
+          SINCE_REF: ${{ steps.since.outputs.since_ref }}
         run: |
           set -euo pipefail
           source_repository_owner="$REPOSITORY_OWNER"
@@ -212,11 +218,14 @@ jobs:
             --repository-owner "$source_repository_owner" \
             --event-name "$EVENT_NAME" \
             --base-ref "$BASE_REF" \
+            --since-ref "$SINCE_REF" \
+            --summary-file "$GITHUB_STEP_SUMMARY" \
             --output-file "$GITHUB_OUTPUT"
 
   static_checks:
-    name: Static
+    name: Preflight
     needs: plan_ci
+    if: needs.plan_ci.outputs.static_required == 'true'
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
       matrix_json: ${{ needs.plan_ci.outputs.static_matrix }}
@@ -227,10 +236,15 @@ jobs:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
 
   test_checks:
-    name: Tests
+    name: Verification
     needs:
       - plan_ci
       - static_checks
+    if: >-
+      always() &&
+      needs.plan_ci.result == 'success' &&
+      (needs.static_checks.result == 'success' ||
+       needs.static_checks.result == 'skipped')
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
       matrix_json: ${{ needs.plan_ci.outputs.test_matrix }}

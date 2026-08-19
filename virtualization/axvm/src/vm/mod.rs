@@ -55,26 +55,18 @@ pub(crate) type AxVCpuRef<A = crate::arch::ArchVCpu> = Arc<AxVCpu<A>>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
 
-pub(crate) struct VmDmaAccess<'a> {
+pub(crate) struct VmGuestMemoryAccess<'a> {
     vm: &'a AxVM,
 }
 
-impl<'a> VmDmaAccess<'a> {
+impl<'a> VmGuestMemoryAccess<'a> {
     pub(crate) const fn new(vm: &'a AxVM) -> Self {
         Self { vm }
     }
 }
 
-impl DeviceAccess for VmDmaAccess<'_> {
-    fn device_id(&self) -> DeviceId {
-        DeviceId::new(0)
-    }
-    fn read_guest_memory(
-        &mut self,
-        _grant: &DmaGrant,
-        addr: GuestPhysAddr,
-        data: &mut [u8],
-    ) -> DeviceResult {
+impl GuestMemoryAccess for VmGuestMemoryAccess<'_> {
+    fn read(&mut self, addr: GuestPhysAddr, data: &mut [u8]) -> DeviceResult {
         self.vm
             .read_from_guest(addr, data)
             .map_err(|error| axdevice_base::DeviceError::Backend {
@@ -82,12 +74,7 @@ impl DeviceAccess for VmDmaAccess<'_> {
                 detail: std::format!("{error}"),
             })
     }
-    fn write_guest_memory(
-        &mut self,
-        _grant: &DmaGrant,
-        addr: GuestPhysAddr,
-        data: &[u8],
-    ) -> DeviceResult {
+    fn write(&mut self, addr: GuestPhysAddr, data: &[u8]) -> DeviceResult {
         self.vm
             .write_to_guest(addr, data)
             .map_err(|error| axdevice_base::DeviceError::Backend {
@@ -1572,29 +1559,11 @@ impl AxVM {
         AxVmDeviceAccessPorts::new(self.id()).into_ports()
     }
 
-    pub(crate) fn try_handle_mmio_write(
-        &self,
-        addr: GuestPhysAddr,
-        width: AccessWidth,
-        data: usize,
-    ) -> AxVmResult<bool> {
+    pub(crate) fn try_write_device(&self, access: &DeviceAccess, value: u64) -> AxVmResult<bool> {
         let devices = self.get_devices()?;
-        let mut memory = VmDmaAccess { vm: self };
+        let mut memory = VmGuestMemoryAccess { vm: self };
         devices
-            .try_handle_mmio_write_with_memory(addr, width, data, &mut memory)
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn try_handle_port_write(
-        &self,
-        port: Port,
-        width: AccessWidth,
-        data: usize,
-    ) -> AxVmResult<bool> {
-        let devices = self.get_devices()?;
-        let mut memory = VmDmaAccess { vm: self };
-        devices
-            .try_handle_port_write_with_memory(port, width, data, &mut memory)
+            .try_write(access, value, Some(&mut memory))
             .map_err(Into::into)
     }
 

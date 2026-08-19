@@ -62,7 +62,7 @@ applies to that rt-linux version.
   signal zero and a permitted nonzero signal can resolve the zombie identity
   without changing the recorded exit status.
 - rt-linux release index:
-  <https://www.kernel.org/pub/linux/kernel/projects/rt/7.2/>.
+  [kernel.org rt 7.2](https://www.kernel.org/pub/linux/kernel/projects/rt/7.2/).
 
 ## Intended state model
 
