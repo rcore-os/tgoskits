@@ -464,6 +464,7 @@ impl Drop for ProducerReservation<'_> {
 pub(super) struct LogMailbox {
     owner: AtomicUsize,
     rings: Box<[CpuLogRing]>,
+    wake_ready: Box<[AtomicBool]>,
 }
 
 impl LogMailbox {
@@ -476,10 +477,26 @@ impl LogMailbox {
         assert!(slot_count > 0);
         let mut rings = Vec::with_capacity(cpu_count);
         rings.resize_with(cpu_count, || CpuLogRing::new(slot_count));
+        let mut wake_ready = Vec::with_capacity(cpu_count);
+        wake_ready.resize_with(cpu_count, || AtomicBool::new(false));
         Self {
             owner: AtomicUsize::new(NO_OWNER),
             rings: rings.into_boxed_slice(),
+            wake_ready: wake_ready.into_boxed_slice(),
         }
+    }
+
+    pub(super) fn mark_wake_ready(&self, cpu_id: usize) {
+        self.wake_ready
+            .get(cpu_id)
+            .expect("log producer CPU must have a mailbox ring")
+            .store(true, Ordering::Release);
+    }
+
+    pub(super) fn wake_ready(&self, cpu_id: usize) -> bool {
+        self.wake_ready
+            .get(cpu_id)
+            .is_some_and(|ready| ready.load(Ordering::Acquire))
     }
 
     pub(super) fn claim(&self, runtime_index: usize) -> bool {

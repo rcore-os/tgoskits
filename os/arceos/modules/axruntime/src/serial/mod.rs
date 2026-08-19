@@ -705,6 +705,9 @@ pub(crate) fn init(primary_cpu: usize) {
     let log_mailbox = LOG_MAILBOX
         .call_once(|| Arc::new(LogMailbox::new(ax_hal::cpu_num().max(1))))
         .clone();
+    // `rust_main` initializes the primary scheduler and IPI/IRQ framework
+    // before serial discovery, so task-context doorbells are safe on this CPU.
+    log_mailbox.mark_wake_ready(primary_cpu);
     let mut handles = Vec::new();
     for serial in ax_driver::serial::take_serial_devices() {
         match build_runtime(handles.len(), primary_cpu, serial, log_mailbox.clone()) {
@@ -713,6 +716,13 @@ pub(crate) fn init(primary_cpu: usize) {
         }
     }
     SERIAL_RUNTIMES.call_once(|| handles.into_boxed_slice());
+}
+
+#[cfg(feature = "smp")]
+pub(crate) fn mark_log_wake_ready(cpu_id: usize) {
+    if let Some(log_mailbox) = LOG_MAILBOX.get() {
+        log_mailbox.mark_wake_ready(cpu_id);
+    }
 }
 
 fn build_runtime(
@@ -886,22 +896,26 @@ pub(crate) fn try_publish_record(
     let guard = ax_task::sync::PreemptIrqSaveGuard::new();
     // SAFETY: `guard` prevents task migration and local IRQ re-entry for the
     // whole callback; runtime CPU-local state is installed before handoff.
-    let outcome = unsafe {
+    let (outcome, log_wake_ready) = unsafe {
         ax_hal::percpu::with_cpu_pin(|pin| {
             let cpu_id = ax_hal::percpu::this_cpu_id_pinned(pin);
-            let task_id = ax_task::current_may_uninit().map(|task| task.id().as_u64());
+            let current = ax_task::current_may_uninit();
+            let task_id = current.as_ref().map(|task| task.id().as_u64());
             let timestamp_nanos = ax_hal::time::monotonic_time().as_nanos() as u64;
             let record_meta = match meta.kind() {
                 ax_log::RecordKind::Print => LogRecordMeta::print(timestamp_nanos, task_id),
                 ax_log::RecordKind::Log => LogRecordMeta::log(timestamp_nanos, task_id),
             };
-            runtime
-                .shared
-                .log_mailbox
-                .try_publish(cpu_id, record_meta, args)
+            (
+                runtime
+                    .shared
+                    .log_mailbox
+                    .try_publish(cpu_id, record_meta, args),
+                runtime.shared.log_mailbox.wake_ready(cpu_id),
+            )
         })
     }
-    .unwrap_or_else(|_| log_mailbox::PublishOutcome::dropped(0));
+    .unwrap_or_else(|_| (log_mailbox::PublishOutcome::dropped(0), false));
     drop(guard);
     runtime
         .shared
@@ -911,12 +925,18 @@ pub(crate) fn try_publish_record(
         .shared
         .stats
         .add_log_dropped_records(outcome.dropped_records());
-    if outcome.published() {
-        if ax_hal::irq::in_irq_context() {
+    match record_wake_context(
+        outcome.published(),
+        ax_hal::irq::in_irq_context(),
+        log_wake_ready,
+    ) {
+        RecordWakeContext::Interrupt => {
             runtime.shared.bridge.notify.notify_irq();
-        } else {
+        }
+        RecordWakeContext::Task => {
             runtime.shared.bridge.notify.notify();
         }
+        RecordWakeContext::None => {}
     }
     Some(if !outcome.published() {
         ax_log::PublishStatus::Dropped
@@ -925,6 +945,27 @@ pub(crate) fn try_publish_record(
     } else {
         ax_log::PublishStatus::Published
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecordWakeContext {
+    None,
+    Interrupt,
+    Task,
+}
+
+const fn record_wake_context(
+    published: bool,
+    in_irq_context: bool,
+    log_wake_ready: bool,
+) -> RecordWakeContext {
+    if !published || !log_wake_ready {
+        RecordWakeContext::None
+    } else if in_irq_context {
+        RecordWakeContext::Interrupt
+    } else {
+        RecordWakeContext::Task
+    }
 }
 
 /// Synchronously streams one emergency record without the log mailbox.
@@ -1329,5 +1370,68 @@ mod tests {
             try_publish_record(ax_log::RecordMeta::print(), format_args!("fallback")),
             None
         );
+    }
+
+    #[test]
+    fn early_secondary_log_does_not_wake_before_log_wake_ready() {
+        assert_eq!(
+            record_wake_context(true, false, false),
+            RecordWakeContext::None
+        );
+        assert_eq!(
+            record_wake_context(true, false, true),
+            RecordWakeContext::Task
+        );
+        assert_eq!(
+            record_wake_context(true, true, false),
+            RecordWakeContext::None
+        );
+        assert_eq!(
+            record_wake_context(true, true, true),
+            RecordWakeContext::Interrupt
+        );
+    }
+
+    #[test]
+    fn wake_ready_transition_preserves_early_secondary_records() {
+        const OWNER: usize = 7;
+        let mailbox = Arc::new(LogMailbox::new(2));
+        assert!(mailbox.claim(OWNER));
+
+        let early = mailbox.try_publish(
+            1,
+            LogRecordMeta::log(1, None),
+            format_args!("secondary started\n"),
+        );
+        assert!(early.published());
+        assert_eq!(
+            record_wake_context(early.published(), false, mailbox.wake_ready(1)),
+            RecordWakeContext::None
+        );
+
+        mailbox.mark_wake_ready(1);
+        let ready = mailbox.try_publish(
+            1,
+            LogRecordMeta::log(2, Some(8)),
+            format_args!("secondary init OK\n"),
+        );
+        assert!(ready.published());
+        assert_eq!(
+            record_wake_context(ready.published(), false, mailbox.wake_ready(1)),
+            RecordWakeContext::Task
+        );
+
+        let mut reader = mailbox.reader();
+        assert!(
+            reader
+                .take(OWNER)
+                .is_some_and(|record| record.record.bytes().ends_with(b"secondary started\r\n"))
+        );
+        assert!(
+            reader
+                .take(OWNER)
+                .is_some_and(|record| record.record.bytes().ends_with(b"secondary init OK\r\n"))
+        );
+        assert!(reader.take(OWNER).is_none());
     }
 }

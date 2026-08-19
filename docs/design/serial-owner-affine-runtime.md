@@ -200,6 +200,12 @@ ownership，复制完成后才释放，禁止 producer 与 reader 同时访问 r
 超长 UTF-8 消息在 record 边界内截断并标记；递归 publish、runtime 未就绪或 slot busy
 均只更新有界统计并返回，不能等待 worker、分配内存或进入 TTY。
 
+secondary CPU 在建立本核 scheduler/current task 前也可能发布启动日志。该阶段只允许把
+完整 record 发布到本 CPU ring，不能通过 `IrqNotify` 选择运行队列或唤醒固定在 owner CPU
+的 worker；否则会在本核 scheduler/IPI 尚未初始化时进入跨核 wake。每 CPU 的显式
+`wake_ready` 状态只在 scheduler、IRQ 和 IPI 路径全部就绪后发布；之后的普通日志或 IRQ
+日志才发送可合并 doorbell，并同时推动此前缓存的早期 record。
+
 early 阶段仍可通过 early endpoint 做有界直接输出；`Preparing` 阻止新访问，`Runtime`
 提交后普通日志只能进 mailbox，`FailedClosed` 丢弃普通日志。panic/FIQ 只尝试 emergency
 endpoint，不能排空 record ring 或等待 owner worker；一旦成功接管，排队中的普通记录

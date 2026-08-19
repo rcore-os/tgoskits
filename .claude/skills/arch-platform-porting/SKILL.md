@@ -36,6 +36,11 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - Keep `begin -> start -> commit` and rollback/fail-closed policy inside `ax-runtime::console`.
   ArceOS, StarryOS, and Axvisor adapters must not maintain separate console-selection or handoff
   state.
+- A secondary CPU may publish complete startup log records after installing its per-CPU area but
+  before publishing a current task. Queue those records without waking the owner worker; publish
+  the CPU's explicit log-wake readiness only after its scheduler, IRQ, and IPI paths are ready.
+  The later scheduler-ready record sends the coalesced doorbell and drains the earlier records as
+  one stream.
 - After every bounded UART IRQ pass containing RX, publish the complete report, mask the UART RX
   source, and let the owner worker perform the rearm. If rearm immediately observes readable
   hardware while no IRQ samples remain, drain through the direct port path; treating that state as
