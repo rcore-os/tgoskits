@@ -262,3 +262,18 @@ unsafe extern "C" {
     /// while a value > 0 indicates failure.
     pub fn user_copy(dst: *mut u8, src: *const u8, size: usize) -> usize;
 }
+
+/// Lock-free EL0/user access probe. No hardware address-translation probe is
+/// wired up on this architecture yet, so always report "not fast-path eligible"
+/// and let the caller take the locked slow path (correctness preserved).
+///
+/// # Safety
+///
+/// No precondition — this stub reads nothing and always returns `false`. It is
+/// `unsafe` only to share the signature of the aarch64 EL1 probe (which requires
+/// IRQs-off), so callers can use one `unsafe` block across all targets.
+#[cfg(feature = "uspace")]
+#[inline]
+pub unsafe fn user_access_ok_page(_vaddr: usize, _write: bool) -> bool {
+    false
+}
