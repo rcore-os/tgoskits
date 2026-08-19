@@ -156,6 +156,26 @@ fn wake_during_final_park_publication_hook(system: &TaskSystem, thread: ThreadId
 }
 
 impl TaskSystem {
+    fn publish_detached_deadline_owner_work(source_remote: &CpuRemote) {
+        source_remote.kick_scheduler_work();
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn exercise_detached_deadline_owner_work_for_test(
+        &self,
+        source: CpuId,
+    ) -> Result<u64, TaskError> {
+        let source_remote = self
+            .cpu_remotes
+            .get(source.as_usize())
+            .ok_or(TaskError::InvalidCpu(source.as_u32()))?;
+        let _irq = IrqScope::enter();
+        let before = source_remote.scheduler_request_state_for_test().0;
+        Self::publish_detached_deadline_owner_work(source_remote);
+        let after = source_remote.scheduler_request_state_for_test().0;
+        Ok(after - before)
+    }
+
     fn consume_wake_locked(
         core: &Arc<ThreadCore>,
         sched: &mut ThreadSchedState,
@@ -478,8 +498,7 @@ impl TaskSystem {
             // inactive/CBS timer. Its owner recomputes the base before idle;
             // a racing stale edge is harmless and will be stopped by the
             // clockevent firing transaction.
-            source_remote.request_scheduler_work();
-            source_remote.kick_scheduler_work();
+            Self::publish_detached_deadline_owner_work(source_remote);
         }
         let mut run_queue = OwnerRqTxn::begin_nested(self, remote, &irq_owner);
         #[cfg(feature = "task-test-hooks")]

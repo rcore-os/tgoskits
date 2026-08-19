@@ -251,6 +251,16 @@ fn verify_remote_owner_work_delivery(sender_cpu: usize, target_cpu: usize) {
     );
 }
 
+fn verify_detached_deadline_owner_uses_one_publication(target_cpu: usize) {
+    let target_cpu = u32::try_from(target_cpu).expect("test CPU id must fit in u32");
+    assert_eq!(
+        task_test_hooks::exercise_detached_deadline_owner_work(target_cpu)
+            .expect("failed to publish detached Deadline owner work"),
+        1,
+        "one Deadline reservation detach must publish one owner-work generation",
+    );
+}
+
 fn run_concurrent_hard_calls(target_cpu: usize, sender_cpus: &[usize]) {
     EXECUTED_HARD_CALLS.store(0, Ordering::Relaxed);
 
@@ -314,6 +324,7 @@ pub fn run() -> crate::TestResult {
 
     TARGET_CPU.store(target_cpu, Ordering::Relaxed);
     verify_remote_owner_work_delivery(sender_cpus[0], target_cpu);
+    verify_detached_deadline_owner_uses_one_publication(target_cpu);
     exercise_irq_masked_idle_wake(target_cpu, sender_cpus[0]);
     verify_self_ipi_delivery(sender_cpus[0]);
 

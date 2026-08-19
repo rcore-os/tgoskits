@@ -248,6 +248,15 @@ pub fn request_cpu_owner_work(cpu: u32) -> Result<bool, crate::TaskError> {
     Ok(remote.request_scheduler_work_for_test())
 }
 
+/// Exercises the production publication used after moving a Deadline
+/// reservation away from its previous owner CPU.
+pub fn exercise_detached_deadline_owner_work(cpu: u32) -> Result<u64, crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let cpu = crate::CpuId::new(cpu);
+    let system = crate::facade::runtime_task_system()?;
+    system.exercise_detached_deadline_owner_work_for_test(cpu)
+}
+
 /// Takes task-lock entries from the armed no-switch scheduler pass.
 pub fn take_no_switch_thread_lock_count() -> Option<u64> {
     if NO_SWITCH_THREAD_LOCK_STAGE
