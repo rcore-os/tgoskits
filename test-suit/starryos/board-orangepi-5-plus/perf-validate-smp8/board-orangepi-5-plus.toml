@@ -1,0 +1,75 @@
+# Board run config for perf-validate-smp8 — the FULL big.LITTLE enforcement case.
+#
+# This is the SMP + big.LITTLE gate. Where ../perf-validate is the smp1 anchor
+# (max_cpu_num=1, accepts VERDICT PARTIAL so it stays green even when only the
+# single-core regression is exercised), THIS case builds a MULTI-CORE kernel (its
+# own build wrapper = max_cpu_num=8, minimal drivers) and accepts ONLY VERDICT
+# FULL. So the core claims of the multicore + big.LITTLE work — per-cluster PMU
+# identity, dual-PMU cpus masks, cross-cluster ENOENT, A76/A55 event divergence,
+# per-secondary-PE PMU bring-up, sampling on a secondary core — cannot silently
+# SKIP (which yields PARTIAL) and still pass: PARTIAL FAILS this case.
+#
+# It runs the SAME validator as the anchor, BUILT FROM THE COMMITTED SOURCE and
+# UPLOADED ON EVERY RUN via the board session-asset flow (c/CMakeLists.txt here
+# compiles ../perf-validate/c/src/perf_validate.c; see test-suit/starryos/GUIDE.md
+# and ../perf-validate/README.md). The shell_init_cmd downloads
+# `${sessionFile:bin/perf-validate}` into /tmp, chmods it, and executes it — no
+# manually pre-staged persistent-rootfs binary. A download/exec failure prints
+# BOARD_PERF_VALIDATE_SETUP_FAILED and fails fast instead of hanging to the
+# timeout. The validator auto-discovers the now-8-core topology (both clusters)
+# and runs every silicon check, printing:
+#   BOARD_PERF_SUMMARY ...
+#   BOARD_PERF_VALIDATE_VERDICT <FULL|PARTIAL|FAIL|INVALID>
+#   BOARD_PERF_VALIDATE_DONE     (unique final sentinel)
+#
+# success = FULL only. PARTIAL / FAIL / INVALID (and panic / setup failure) FAIL.
+# ostool tears down on the FIRST success match, so we gate on the explicit FULL
+# verdict line; DONE is the unconditional last line so a hang times out instead of
+# matching an early line.
+board_type   = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = '''
+bin=/tmp/perf-validate
+url='${sessionFile:bin/perf-validate}'
+
+download() {
+  if command -v curl >/dev/null 2>&1; then
+    curl --connect-timeout 3 --max-time 30 -fsSL "$url" -o "$bin"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -T 30 -O "$bin" "$url"
+  else
+    return 1
+  fi
+}
+
+rm -f "$bin"
+ok=0
+attempt=1
+while [ "$attempt" -le 20 ]; do
+  if download; then ok=1; break; fi
+  sleep 1
+  attempt=$((attempt + 1))
+done
+if [ "$ok" != "1" ] || ! chmod +x "$bin"; then
+  echo BOARD_PERF_VALIDATE_SETUP_FAILED: download_or_chmod
+else
+  "$bin" || echo BOARD_PERF_VALIDATE_SETUP_FAILED: execution
+fi
+'''
+success_regex = ['(?m)^BOARD_PERF_VALIDATE_VERDICT FULL\s*$']
+fail_regex = [
+  # PARTIAL is a FAILURE here: it means big.LITTLE/SMP checks SKIPped (the very
+  # behavior this case exists to enforce). FAIL/INVALID fail as always.
+  '(?m)^BOARD_PERF_VALIDATE_VERDICT (PARTIAL|FAIL|INVALID)',
+  # Session asset could not be downloaded/chmod'd/executed on the board — fail
+  # fast instead of hanging to the timeout.
+  '(?m)^BOARD_PERF_VALIDATE_SETUP_FAILED:',
+  '(?i)(curl|wget|chmod): .*not found',
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+]
+# smp8 ymodem transfer + the full multi-core matrix on real silicon is longer
+# than the smp1 anchor; give it headroom.
+timeout = 900

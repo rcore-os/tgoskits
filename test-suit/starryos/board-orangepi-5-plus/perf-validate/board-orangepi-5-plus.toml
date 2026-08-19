@@ -1,0 +1,78 @@
+# Board run config for perf-validate on the Orange Pi 5 Plus.
+#
+# The validator binary is BUILT FROM THE COMMITTED SOURCE (c/CMakeLists.txt ->
+# c/src/perf_validate.c) and UPLOADED ON EVERY RUN through the standard board
+# session-asset flow (see test-suit/starryos/GUIDE.md): `cargo xtask starry test
+# board` cross-compiles it with the shared musl toolchain, and the CMake
+# `install(... DESTINATION bin)` product is served to the board as
+# `${sessionFile:bin/perf-validate}`. The shell_init_cmd below downloads it into
+# /tmp, chmods it, and executes it — so the board always runs the current
+# commit's validator, with NO reliance on a manually pre-staged persistent-rootfs
+# binary. A download/exec failure prints BOARD_PERF_VALIDATE_SETUP_FAILED and
+# fails fast instead of hanging to the 900s timeout.
+#
+# NOTE: the SAME validator source is byte-identical to
+# test-suit/starryos/qemu/system/perf-validate, which builds from source and runs
+# in CI under QEMU — so the validator logic already has deterministic CI coverage;
+# this board case adds only the silicon-only checks.
+#
+# It auto-discovers topology and prints PASS/FAIL/SKIP/INFO per check, then:
+#   BOARD_PERF_SUMMARY ...
+#   BOARD_PERF_VALIDATE_VERDICT <FULL|PARTIAL|FAIL|INVALID>
+#   BOARD_PERF_VALIDATE_DONE     (unique final sentinel)
+#
+# This is the single-core ANCHOR: max_cpu_num=1, so VERDICT PARTIAL = "single-core
+# regression passed; big.LITTLE checks SKIPped (need smp8)" is a SUCCESS here, and
+# success matches FULL|PARTIAL. The big.LITTLE behavior is enforced separately by
+# the sibling `../perf-validate-smp8` case (max_cpu_num=8, accepts ONLY FULL) so a
+# skipped SMP path can never pass unnoticed. FAIL/INVALID (and panic / setup
+# failure) fail. ostool tears down on the FIRST success match, so we gate on the
+# explicit verdict line, and DONE is the unconditional last line — a hang after
+# partial output times out instead of matching an early line.
+board_type   = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = '''
+bin=/tmp/perf-validate
+url='${sessionFile:bin/perf-validate}'
+
+download() {
+  if command -v curl >/dev/null 2>&1; then
+    curl --connect-timeout 3 --max-time 30 -fsSL "$url" -o "$bin"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -T 30 -O "$bin" "$url"
+  else
+    return 1
+  fi
+}
+
+rm -f "$bin"
+ok=0
+attempt=1
+while [ "$attempt" -le 20 ]; do
+  if download; then ok=1; break; fi
+  sleep 1
+  attempt=$((attempt + 1))
+done
+if [ "$ok" != "1" ] || ! chmod +x "$bin"; then
+  echo BOARD_PERF_VALIDATE_SETUP_FAILED: download_or_chmod
+else
+  "$bin" || echo BOARD_PERF_VALIDATE_SETUP_FAILED: execution
+fi
+'''
+success_regex = ['(?m)^BOARD_PERF_VALIDATE_VERDICT (FULL|PARTIAL)\s*$']
+fail_regex = [
+  '(?m)^BOARD_PERF_VALIDATE_VERDICT (FAIL|INVALID)',
+  # Session asset could not be downloaded/chmod'd/executed on the board — fail
+  # fast instead of hanging to the 900s timeout.
+  '(?m)^BOARD_PERF_VALIDATE_SETUP_FAILED:',
+  # Neither curl nor wget on the board rootfs, or the shell cannot exec the
+  # downloaded binary.
+  '(?i)(curl|wget|chmod): .*not found',
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+]
+# SMP-ROTATE / SMP-MIGRATE / RDPMC-3 loops are long on real silicon; the smp8
+# ymodem transfer + full-matrix run needs headroom over the smp1 anchor.
+timeout = 900

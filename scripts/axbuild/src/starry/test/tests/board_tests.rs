@@ -1,5 +1,79 @@
 use super::*;
 
+/// Reproducibility regression for the RK3588 `perf-validate` board cases.
+///
+/// The board runner deploys only the kernel; a userspace validator that lives
+/// on the board's persistent rootfs is not built, uploaded, or version-checked
+/// by the case, so a clean runner reports `not found` and a pre-staged runner
+/// can silently execute a stale binary that no longer matches the committed
+/// source. Every `perf-validate*` board case must therefore provision its
+/// validator through the standard `c/CMakeLists.txt` session-asset flow: built
+/// from the committed C source and uploaded on every run, then downloaded and
+/// executed via `${sessionFile:...}` — never a manually pre-staged persistent
+/// path. This test fails on the pre-fix configuration.
+#[test]
+fn perf_validate_board_cases_provision_validator_via_session_assets() {
+    let Some(board_dir) = repo_board_case_dir("board-orangepi-5-plus") else {
+        return; // out-of-tree checkout: nothing to lint.
+    };
+
+    let mut checked = 0usize;
+    for entry in fs::read_dir(&board_dir).unwrap() {
+        let case_dir = entry.unwrap().path();
+        let name = case_dir.file_name().unwrap().to_string_lossy().into_owned();
+        if !case_dir.is_dir() || !name.starts_with("perf-validate") {
+            continue;
+        }
+        checked += 1;
+
+        // 1. The validator is built per run from committed C source.
+        let cmake = case_dir.join("c").join("CMakeLists.txt");
+        assert!(
+            cmake.is_file(),
+            "board case `{name}` must build its validator through the session-asset \
+             `c/CMakeLists.txt` flow; none found at {}",
+            cmake.display()
+        );
+
+        let toml_path = case_dir.join("board-orangepi-5-plus.toml");
+        let body = fs::read_to_string(&toml_path).unwrap();
+
+        // 2. The run command downloads the freshly uploaded session asset...
+        assert!(
+            body.contains("${sessionFile:"),
+            "board case `{name}` must execute the uploaded `${{sessionFile:...}}` validator \
+             instead of a pre-staged path ({})",
+            toml_path.display()
+        );
+        // 3. ...and never depends on a manually pre-staged persistent binary.
+        assert!(
+            !body.contains("/usr/local/bin/perf-validate"),
+            "board case `{name}` still references the manually pre-staged \
+             /usr/local/bin/perf-validate ({})",
+            toml_path.display()
+        );
+    }
+
+    assert!(
+        checked >= 2,
+        "expected at least the smp1 anchor and smp8 gate `perf-validate*` cases under {}, found \
+         {checked}",
+        board_dir.display()
+    );
+}
+
+/// Resolves `test-suit/starryos/<board>` in the checked-out workspace, or `None`
+/// when the crate is built outside the repository tree.
+fn repo_board_case_dir(board: &str) -> Option<PathBuf> {
+    let board_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("axbuild crate lives at <workspace>/scripts/axbuild")
+        .join("test-suit/starryos")
+        .join(board);
+    board_dir.is_dir().then_some(board_dir)
+}
+
 #[test]
 fn discovers_board_test_group_and_build_mapping() {
     let root = tempdir().unwrap();

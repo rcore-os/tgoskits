@@ -45,6 +45,13 @@ impl<'a> KernelTrapFrame<'a> {
         self.raw.0.ip()
     }
 
+    /// Raw pointer to the live saved frame, for publishing to a PMU overflow
+    /// handler running inside `dispatch_irq` (see [`super::pmu::set_trap_frame`]).
+    /// Valid only while `self` is alive.
+    pub fn as_trap_frame_ptr(&self) -> *const TrapFrame {
+        core::ptr::addr_of!(self.raw.0)
+    }
+
     /// Sets the saved instruction pointer.
     pub const fn set_ip(&mut self, ip: usize) {
         self.raw.0.set_ip(ip);
@@ -233,7 +240,15 @@ unsafe extern "C" fn aarch64_trap_handler(raw: *mut RawTrapFrame, raw_kind: u8, 
             );
         }
         TrapKind::Irq => {
+            // Publish the interrupted frame so a PMU overflow handler running
+            // inside `dispatch_irq` can unwind the interrupted call stack for
+            // `PERF_SAMPLE_CALLCHAIN`. Purely additive: set after SAVE_REGS, clear
+            // before returning, both under the IRQ-masked dispatch window, so no
+            // nested IRQ observes a stale frame and the save/restore path is
+            // untouched.
+            unsafe { super::pmu::set_trap_frame(tf.as_trap_frame_ptr()) };
             crate::trap::dispatch_irq(0);
+            super::pmu::clear_trap_frame();
         }
         TrapKind::Synchronous => {
             #[cfg(not(feature = "arm-el2"))]

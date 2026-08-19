@@ -183,7 +183,15 @@ impl UserContext {
 
         let ret = match kind {
             TrapKind::Irq => {
+                // See the EL1 site in trap.rs: publish the interrupted user frame
+                // so a PMU overflow handler running inside `dispatch_irq` can
+                // unwind the user call stack for `PERF_SAMPLE_CALLCHAIN`. The user
+                // `x29` lives in `self.tf.x[29]`; `SP_EL0` still holds the user SP.
+                // IRQs stay masked from `enter_user`'s trap until `enable_irqs`
+                // below, so no nested IRQ observes a stale frame.
+                unsafe { super::pmu::set_trap_frame(&self.tf as *const _) };
                 crate::trap::dispatch_irq(0);
+                super::pmu::clear_trap_frame();
                 ReturnReason::Interrupt
             }
             TrapKind::Fiq | TrapKind::SError => ReturnReason::Unknown,
