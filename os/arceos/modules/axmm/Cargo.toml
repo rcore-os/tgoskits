@@ -22,4 +22,4 @@ page-table-generic = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-ax-hal = { workspace = true, features = ["host-test"] }
+ax-hal = { path = "../axhal", features = ["host-test"] }
