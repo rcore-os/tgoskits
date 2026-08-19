@@ -1,0 +1,63 @@
+# Board run config for perf-validate on the Orange Pi 5 Plus.
+#
+# DISABLED (`.disabled` suffix ⇒ NOT discovered by `cargo xtask starry test
+# board`, so the self-hosted board CI job does NOT run or gate on this case).
+# Rationale: this `perf-validate` binary is provisioned OUT-OF-BAND onto the
+# board's persistent ext4 (/usr/local/bin/perf-validate). The CI board runner
+# deploys only the KERNEL and has no controlled step that builds/syncs/deploys the
+# binary from the committed `src/perf_validate.c`. Gating CI on that persistent,
+# hand-staged file is not reproducible from repo source — a runner swap/clean
+# loses it (→ `not found` + timeout) and a stale copy could pass on an unreviewed
+# validator — so this case is kept as a MANUAL-only validation flow, not CI
+# coverage. Same pattern as `../../board-aka-00-sg2002/usb2-libuvc-init/
+# board-aka-00-sg2002.toml.disabled` (disabled until in-CI session provisioning
+# is available on-board).
+#
+# The validator LOGIC still has deterministic CI coverage: the byte-identical
+# `test-suit/starryos/qemu/system/perf-validate` case builds from the SAME source
+# and runs in CI under QEMU (SELFTEST mode). This board case adds only the
+# silicon-only checks, which a self-hosted RK3588 operator runs by hand.
+#
+# TO RE-ENABLE as CI coverage: add a controlled case/CI prep step that builds
+# `src/perf_validate.c` from source and delivers it per-run — e.g. the board
+# session-file mechanism (see `../native-network-smoke`, which downloads a
+# built artifact via `${sessionFile:...}`; the full-driver anchor build here has
+# the RTL8125 net device it needs) — then rename this file back to
+# `board-orangepi-5-plus.toml` and attach current-head board success evidence.
+#
+# --- Manual run reference (kept for the operator) ---
+# `./deploy.sh build` cross-compiles from the committed source; `./deploy.sh
+# deploy` stages + syncs it to /usr/local/bin on the board (see README.md). If the
+# binary is absent the `not found` fail_regex below fails fast instead of hanging
+# to the 900s timeout.
+#
+# It auto-discovers topology and prints PASS/FAIL/SKIP/INFO per check, then:
+#   BOARD_PERF_SUMMARY ...
+#   BOARD_PERF_VALIDATE_VERDICT <FULL|PARTIAL|FAIL|INVALID>
+#   BOARD_PERF_VALIDATE_DONE     (unique final sentinel)
+#
+# This is the single-core ANCHOR: max_cpu_num=1, so VERDICT PARTIAL = "single-core
+# regression passed; big.LITTLE checks SKIPped (need smp8)" is a SUCCESS here, and
+# success matches FULL|PARTIAL. The big.LITTLE behavior is enforced separately by
+# the sibling `../perf-validate-smp8` case (max_cpu_num=8, accepts ONLY FULL) so a
+# skipped SMP path can never pass unnoticed. FAIL/INVALID (and panic / not-found)
+# fail. ostool tears down on the FIRST success match, so we gate on the explicit
+# verdict line, and DONE is the unconditional last line — a hang after partial
+# output times out instead of matching an early line.
+board_type   = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "/usr/local/bin/perf-validate"
+success_regex = ['(?m)^BOARD_PERF_VALIDATE_VERDICT (FULL|PARTIAL)\s*$']
+fail_regex = [
+  '(?m)^BOARD_PERF_VALIDATE_VERDICT (FAIL|INVALID)',
+  # Binary not provisioned on the board rootfs — fail fast instead of hanging to
+  # the 900s timeout (the shell prints "<path>: not found" / "No such file").
+  '(?mi)perf-validate:? +(not found|no such file)',
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+]
+# SMP-ROTATE / SMP-MIGRATE / RDPMC-3 loops are long on real silicon; the smp8
+# ymodem transfer + full-matrix run needs headroom over the smp1 anchor.
+timeout = 900
