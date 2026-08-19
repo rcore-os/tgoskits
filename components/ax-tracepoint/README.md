@@ -60,6 +60,10 @@ setting the gate, and clear the gate before retiring the last callback state.
 
 Violating these rules may deadlock. Hosts that implement `read_tracepoint_state` with RCU, snapshots, or another non-blocking read-side mechanism may provide weaker restrictions.
 
+Cooked event callbacks receive `&mut [u8]` for a freshly generated record.
+Each callback owns a distinct record for the duration of the call, so BPF
+adapters can update their context without casting away a shared reference.
+
 ### 4. Define and invoke events
 
 ```rust

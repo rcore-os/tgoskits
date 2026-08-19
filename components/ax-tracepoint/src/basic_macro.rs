@@ -44,6 +44,12 @@ impl<const SIZE: usize> TraceRecord<SIZE> {
     pub const fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
+
+    /// Returns the fully initialized record bytes with exclusive access.
+    #[doc(hidden)]
+    pub const fn as_bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.bytes
+    }
 }
 
 /// Define a tracepoint with the given parameters.
@@ -188,8 +194,9 @@ macro_rules! define_event_trace{
 
                 let event_handler = |event_func: &$crate::TraceEventFunc|{
                     if event_func.perf_enabled(){
+                        let ($([<__ $assign _value>],)*) = ($($value,)*);
                         let entry = [<__ $name _entry>] {
-                            $($assign: $value,)*
+                            $($assign: [<__ $assign _value>],)*
                         };
                         use $crate::KernelTraceOps;
                         let pid = $kops::current_pid();
@@ -200,11 +207,11 @@ macro_rules! define_event_trace{
                             common_pid: pid as i32,
                         };
 
-                        let event_record = [<encode_ $name _record>](
+                        let mut event_record = [<encode_ $name _record>](
                             common,
                             $(entry.$entry),*
                         );
-                        event_func.call(event_record.as_bytes());
+                        event_func.call(event_record.as_bytes_mut());
                     }
                 };
 
@@ -281,8 +288,9 @@ macro_rules! define_event_trace{
             #[allow(non_snake_case)]
             fn [<trace_default_ $name>]<F:$crate::KernelTraceOps>(tp_compiled_expr: Option<&$crate::tp_lexer::Compiled>, _data:& (dyn core::any::Any+Send+Sync), $($arg:$arg_type),* )
             {
+                let ($([<__ $assign _value>],)*) = ($($value,)*);
                 let entry = [<__ $name _entry>] {
-                    $($assign: $value,)*
+                    $($assign: [<__ $assign _value>],)*
                 };
 
                 let pid = F::current_pid();

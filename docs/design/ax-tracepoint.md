@@ -130,6 +130,8 @@ rename，所有实际调用点同时迁移，不增加兼容 shim。
   callback/filter 状态值。
 - `TracePointMap` 只提供查询、迭代和长度 API，不通过 `DerefMut` 暴露内部 `BTreeMap`。
 - `TraceFilterError`、`TraceParseError` 和 `TraceInitError` 是可匹配的 typed error。
+- cooked event callback 接收当前调用独占的 `&mut [u8]`；每个 callback 都编码独立
+  record，Starry BPF adapter 不从共享引用构造可变切片。
 - filter 更新是事务性的：编译失败或空表达式记录错误，但不清除上一个有效 compiled
   filter；仅精确的 `0`（允许外围空白）清除 filter。
 - StarryOS 只通过 `KernelExtTracePoint::update` 修改 callback state，避免调用方忘记同步
@@ -188,11 +190,15 @@ workspace 内消费者在同一提交完成迁移。关闭路径从 static key �
 
 - red：`empty_filter_is_rejected_without_panicking` 在原实现对空 slice 索引 panic；
   `invalid_filter_preserves_the_previous_compiled_expression` 在原实现清空 compiled state；
-  `unknown_tracepoint_record_is_rejected_without_panicking` 在原实现的 `expect` panic。
-- green：`cargo test -p ax-tracepoint` 当前 6/6，通过上述回归、短 record 和两种
-  `KernelTraceOps` metadata 隔离。
+  `unknown_tracepoint_record_is_rejected_without_panicking` 在原实现的 `expect` panic；
+  padding 回归在直接暴露 `repr(C)` object representation 时读到未初始化尾部；独占
+  callback 回归在旧 `&[u8]` 接口上无法编译。
+- green：`cargo test -p ax-tracepoint` 当前 8/8，通过上述回归、短 record、零初始化
+  padding、独占可变 callback 和两种 `KernelTraceOps` metadata 隔离。
 - green：`cargo run -p ax-tracepoint --example usage`，实际发现两个 event，完成 callback、
   filter、raw/event dispatch 和 6 条文本记录格式化。
+- green：`cargo clippy -p ax-tracepoint --all-targets -- -D warnings`，覆盖 macro 的测试与
+  example 展开，不产生 `redundant_field_names`。
 - green：`cargo xtask clippy --package ax-tracepoint --package starry-kernel`，覆盖四种
   target、逐 feature 与系统配置的完整矩阵，99/99。
 - green：`cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64`，

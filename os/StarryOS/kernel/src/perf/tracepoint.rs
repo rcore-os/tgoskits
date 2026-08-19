@@ -30,9 +30,9 @@ use crate::{
 };
 
 /// Closure signature accepted by `TraceEventFunc::new` for cooked tracepoints:
-/// the tracing layer hands over the per-cpu sample bytes plus the type-erased
+/// the tracing layer hands over an exclusive event record plus the type-erased
 /// per-callback payload, and the closure dispatches into the BPF VM.
-type TpCallback = Box<dyn Fn(&[u8], &(dyn Any + Send + Sync)) + Send + Sync>;
+type TpCallback = Box<dyn Fn(&mut [u8], &(dyn Any + Send + Sync)) + Send + Sync>;
 
 /// Per-fd tracepoint perf event. Holds the Arc<Mutex<ExtTracePoint>> so we
 /// can register/unregister callbacks on drop; remembers the callback
@@ -86,7 +86,7 @@ impl PerfEventOps for TracepointPerfEvent {
             vm: OwnedEbpfVm::new(bpf_prog)?,
         });
 
-        let func: TpCallback = Box::new(|entry: &[u8], data: &(dyn Any + Send + Sync)| {
+        let func: TpCallback = Box::new(|entry: &mut [u8], data: &(dyn Any + Send + Sync)| {
             // `TraceEventFunc` keeps the payload as `Box<dyn Any + Send + Sync>`
             // and hands the closure `&self.data`, so the concrete type observed
             // here is the *box*, not `Ctx` (same as the raw-tracepoint path in
@@ -95,13 +95,6 @@ impl PerfEventOps for TracepointPerfEvent {
                 .downcast_ref::<Box<dyn Any + Send + Sync>>()
                 .and_then(|boxed| boxed.downcast_ref::<Ctx>())
                 .expect("tracepoint Ctx mismatch");
-            // BPF programs expect a mutable context slice; the
-            // tracepoint hands us a `&[u8]` carved out of its
-            // per-cpu sample buffer, which is single-writer at that
-            // point, so casting to `&mut [u8]` is safe under the
-            // tracepoint contract.
-            let entry =
-                unsafe { core::slice::from_raw_parts_mut(entry.as_ptr() as *mut u8, entry.len()) };
             if let Err(e) = ctx.vm.execute_program(entry) {
                 error!("tracepoint BPF program failed: {e:?}");
             }

@@ -9,7 +9,7 @@ use tp_lexer::{Compiled, FieldClassifier, Schema};
 
 use crate::{KernelTraceOps, TraceParseError};
 
-type TraceEventCallback = dyn Fn(&[u8], &(dyn Any + Send + Sync)) + Send + Sync;
+type TraceEventCallback = dyn Fn(&mut [u8], &(dyn Any + Send + Sync)) + Send + Sync;
 type RawTraceEventCallback = dyn Fn(&[u64], &(dyn Any + Send + Sync)) + Send + Sync;
 
 /// A trace entry structure that holds metadata about a trace event.
@@ -134,7 +134,8 @@ impl CommonTracePointMeta {
 /// A structure representing a registered tracepoint callback function.
 pub struct TraceEventFunc {
     /// The callback function to be called when the tracepoint is hit.
-    /// The function takes a byte slice representing the raw trace entry data and a reference to any associated data.
+    /// The function receives exclusive access to one generated event record
+    /// and a reference to its associated data.
     func: Box<TraceEventCallback>,
     /// The data associated with the callback function.
     data: Box<dyn Any + Send + Sync>,
@@ -152,7 +153,7 @@ impl TraceEventFunc {
     }
 
     /// Calls the callback function with the provided trace entry data.
-    pub fn call(&self, entry: &[u8]) {
+    pub fn call(&self, entry: &mut [u8]) {
         (self.func)(entry, &self.data);
     }
 
@@ -454,7 +455,7 @@ mod tests {
 
     use tp_lexer::{FieldClassifier, Schema};
 
-    use super::{ExtTracePoint, TraceCallbackType, TraceDefaultFunc, TracePoint};
+    use super::{ExtTracePoint, TraceCallbackType, TraceDefaultFunc, TraceEventFunc, TracePoint};
     use crate::{
         KernelTraceOps, TraceEntry, TraceEntryParser, TraceParseError, TracePipeRecord,
         TracePointMap,
@@ -582,6 +583,21 @@ mod tests {
         print_format,
         Schema::new(TEST_FIELDS),
     );
+
+    #[test]
+    fn cooked_event_callback_receives_an_exclusive_record() {
+        let callback = TraceEventFunc::new(
+            Box::new(|entry, _data| {
+                entry[0] = 0xa5;
+            }),
+            Box::new(()),
+        );
+        let mut record = [0_u8; 1];
+
+        callback.call(&mut record);
+
+        assert_eq!(record, [0xa5]);
+    }
 
     #[test]
     fn callback_state_changes_are_side_effect_free_until_the_owner_publishes_the_gate() {
