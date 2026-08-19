@@ -399,6 +399,9 @@ pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> S
     const SYNC_FILE_RANGE_WAIT_AFTER: u32 = 4;
     const SYNC_FILE_RANGE_ALL: u32 =
         SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER;
+    // Linux resolves the descriptor before validating range arguments and
+    // flags, so an invalid descriptor takes precedence over EINVAL.
+    let any = get_file_like(fd)?;
     if offset < 0 || nbytes < 0 {
         return Err(StarryError::from(Errno::EINVAL));
     }
@@ -411,7 +414,6 @@ pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> S
     // stronger whole-file fdatasync-style flush (matches the advisory
     // nature documented in the man page). Invalid fds still surface the
     // underlying error (EBADF). Directory fds are accepted to match fsync.
-    let any = get_file_like(fd)?;
     if any.downcast_ref::<File>().is_none()
         && any.downcast_ref::<Directory>().is_none()
         && any.downcast_ref::<Memfd>().is_none()
