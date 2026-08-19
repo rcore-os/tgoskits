@@ -5,10 +5,6 @@
 
 extern crate alloc;
 
-#[cfg(all(axtest, feature = "axtest"))]
-/// Coverage tests for scoped local storage.
-pub mod axtest;
-
 mod boxed;
 mod item;
 mod scope;

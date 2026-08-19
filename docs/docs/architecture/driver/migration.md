@@ -1,13 +1,13 @@
 ---
 sidebar_position: 11
-sidebar_label: "迁移与验收"
+sidebar_label: "迁移记录"
 ---
 
-# 迁移与验收
+# 驱动框架迁移记录
 
-本文记录从旧 `ax-driver` 全局容器模型到 `rdrive + rdif` 驱动框架的分阶段硬切实施计划和验收标准。该迁移对应 #606 的宿主物理设备重构目标。
+宿主物理设备已经从旧 `ax-driver` 全局容器模型迁移到 `rdrive + rdif` 驱动框架。迁移围绕设备发现、能力接口、领域服务和上层消费路径分阶段完成。
 
-## 分阶段硬切实施
+## 迁移阶段
 
 ### Phase 1: rdrive backend 分发
 
@@ -48,43 +48,3 @@ sidebar_label: "迁移与验收"
 
 - `ax-runtime` 中旧 `ax-driver/virtio-*`、`driver-*`、`bus-*` 映射到 rdrive probe feature。
 - legacy `ax-driver` feature 只保留给未迁移代码，不作为新宿主路径入口。
-
-## 验收标准
-
-### 文档验收
-
-```bash
-git diff --check
-cd docs
-yarn build
-```
-
-本地 `docs` 未安装依赖时，先执行 `corepack enable` 与 `yarn install --frozen-lockfile`，再运行 `yarn build`。
-
-### 代码验收
-
-```bash
-cargo xtask clippy --package rdrive
-cargo xtask clippy --package ax-runtime
-cargo xtask clippy --package ax-fs-ng
-cargo xtask clippy --package ax-net
-cargo xtask clippy --package starry-kernel
-cargo xtask clippy --package axvisor
-```
-
-### 搜索验收
-
-```bash
-rg "AllDevices|AxDeviceContainer|AxBlockDevice|AxNetDevice|ax_driver::scan_partitions" os/arceos/modules os/StarryOS/kernel os/axvisor
-rg "rdrive::get_|rdrive::get_one|rdrive::get_list" os/arceos/modules os/StarryOS/kernel os/axvisor
-```
-
-第二条搜索只允许 Starry USBFS 设备管理路径和 Axvisor HAL/GIC backend 出现裸 `rdrive::get_*`。
-
-### 系统回归重点
-
-- StarryOS QEMU smoke。
-- ext4 rootfs 启动与读写。
-- `net` / DHCP。
-- aarch64 QEMU 动态平台配置。
-- Axvisor QEMU / GIC / `rdif-intc` 路径。

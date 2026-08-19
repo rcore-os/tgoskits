@@ -368,7 +368,7 @@ fn expand_tests_module(
     Ok(quote! {
         #module
 
-        #[cfg_attr(any(feature = "ax-std", target_os = "none"), unsafe(no_mangle))]
+        #[unsafe(no_mangle)]
         fn main() {
             fn __axtest_print(args: core::fmt::Arguments<'_>) {
                 ax_std::print!("{}", args);
@@ -507,7 +507,7 @@ mod tests {
         let expanded = expanded.to_string();
 
         assert!(expanded.contains("fn main"));
-        assert!(expanded.contains("feature = \"ax-std\""));
+        assert!(expanded.contains("no_mangle"));
         assert!(expanded.contains("run_kernel_tests"));
         assert!(expanded.contains("__axtest_descriptor_smoke"));
         assert!(expanded.contains("__axtest_descriptor_ignored"));

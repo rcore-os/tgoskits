@@ -102,7 +102,7 @@ pub fn sys_timerfd_gettime(fd: i32, curr_value: *mut __kernel_itimerspec) -> Sta
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn timerfd_timespec_conversion_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::__kernel_timespec;
     // Test timespec_to_duration validation

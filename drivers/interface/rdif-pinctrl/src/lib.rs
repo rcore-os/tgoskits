@@ -21,9 +21,6 @@ pub use irq::*;
 pub use rdif_base::{DriverGeneric, KError, io};
 pub use types::*;
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
-
 #[cfg(test)]
 mod tests {
     use alloc::{boxed::Box, string::String, vec, vec::Vec};

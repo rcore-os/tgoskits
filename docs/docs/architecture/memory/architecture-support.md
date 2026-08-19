@@ -40,6 +40,8 @@ TGOSKits 在 x86_64、AArch64、RISC-V 64 和 LoongArch64 上共享内存图、�
 | `memory/page-table-generic/src/` | 可变页大小与层级的无架构递归实现 |
 | `components/axklib/src/dma.rs` | 架构无关 DMA owner 到平台缓存操作的接线 |
 
+新增架构时应在这些边界逐项补齐地址转换、页表项、根寄存器、失效和缓存操作，而不是在公共 allocator 或区域容器中增加目标架构分支。
+
 ## 2. x86_64
 
 x86_64 的特殊约束集中在应用处理器早期启动和本地地址转换后备缓冲区失效。early arena 的选择与其他架构一致（排序后第一个大于 8 MiB 的 `Free` 段），没有 4 GiB 地址上限；应用处理器 trampoline 通过 `reserve_arch_early_ranges()` 在低地址单独预留一页。
@@ -55,6 +57,8 @@ early arena = first sorted Free region > 8 MiB (address-agnostic)
 AP trampoline page (low memory) -> separately Reserved
 all remaining Free descriptors -> independent Buddy sections
 ```
+
+这三条规则相互独立：低地址 trampoline 解决应用处理器启动限制，early arena 解决启动对象分配，剩余所有 Free 描述符才进入运行时 Buddy section。
 
 ### 2.2 页表与一致性
 

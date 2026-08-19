@@ -457,7 +457,7 @@ pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> Star
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn signal_sigset_size_and_signo_validation_rules_hold_for_test() -> bool {
     use core::mem::size_of;
 
@@ -481,7 +481,7 @@ pub(crate) fn signal_sigset_size_and_signo_validation_rules_hold_for_test() -> b
     ok && too_small && too_big && zero && valid_signo && valid_signo2 && zero_signo && overflow
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn signal_sigset_and_signo_validation_rules_hold_for_test() -> bool {
     use core::mem::size_of;
 

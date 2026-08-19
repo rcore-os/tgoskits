@@ -237,9 +237,7 @@ impl DeviceModel for Aarch64VgicFactory {
                 detail: std::format!("{error}"),
             }
         })?;
-        let access_context: Arc<dyn VgicAccessContext> =
-            Arc::new(AxvmVgicAccessContext { vm_id: self.vm_id });
-        let devices = VgicDeviceSet::new(runtime.core.clone(), access_context)
+        let devices = VgicDeviceSet::new(runtime.core.clone())
             .map_err(|error| vgic_device_error("build AArch64 virtual GIC frontends", error))?;
         let mut bundle = DeviceBundle::new();
         for device in devices.into_devices() {
@@ -256,18 +254,6 @@ impl DeviceModel for Aarch64VgicFactory {
         }
         bundle.push(DeviceRegistration::InterruptController(registration));
         bundle.with_service::<Aarch64VgicRuntimeKey>(runtime)
-    }
-}
-
-struct AxvmVgicAccessContext {
-    vm_id: usize,
-}
-
-impl VgicAccessContext for AxvmVgicAccessContext {
-    fn current_vcpu(&self) -> Option<usize> {
-        (crate::current_vm_id() == Some(self.vm_id))
-            .then(crate::current_vcpu_id)
-            .flatten()
     }
 }
 

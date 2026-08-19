@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 phase = "test"
 group = "Workspace"
 
@@ -24,4 +24,7 @@ self_hosted_owner = "rcore-os"
 fallback_environment = "base"
 command = '''
 cargo xtask test
+'''
+pull_request_command = '''
+cargo xtask test --since "$SINCE_REF"
 '''

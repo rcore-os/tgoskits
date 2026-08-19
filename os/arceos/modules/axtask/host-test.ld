@@ -20,6 +20,13 @@ SECTIONS
         *(SORT_BY_NAME(.percpu.template.storage*))
         KEEP(*(.percpu.template.end))
     }
+
+    .host_test_tls : {
+        _stdata = .;
+        _etdata = .;
+        _stbss = .;
+        _etbss = .;
+    }
     ASSERT(__CPU_LOCAL_AREA_PREFIX == ADDR(.percpu.template),
            "CPU area prefix must be at template offset zero")
     ASSERT(__CPU_LOCAL_TEMPLATE_END + 1 ==

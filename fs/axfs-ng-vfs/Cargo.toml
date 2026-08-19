@@ -9,14 +9,12 @@ repository = "https://github.com/Starry-OS/axfs-ng-vfs"
 license = "Apache-2.0"
 
 [features]
-axtest = ["dep:axtest"]
 default = []
 host-test = ["ax-sync/host-test"]
 lockdep = []
 
 [dependencies]
 ax-sync = { workspace = true, features = ["sleep"] }
-axtest = { workspace = true, optional = true }
 bitflags = "2.10"
 cfg-if = "1"
 hashbrown = "0.16"
@@ -26,7 +24,9 @@ smallvec = "1.15"
 thiserror.workspace = true
 
 [dev-dependencies]
-ax-sync.workspace = true
+ax-sync = { path = "../../os/arceos/modules/axsync" }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+[[test]]
+name = "std"
+path = "tests/std.rs"
+required-features = ["host-test"]

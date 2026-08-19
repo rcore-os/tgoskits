@@ -14,9 +14,6 @@
 #[cfg(any(test, doctest, all(feature = "host-test", not(target_os = "none"))))]
 extern crate std;
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
-
 mod context;
 #[cfg(all(feature = "host-test", not(target_os = "none")))]
 mod host;

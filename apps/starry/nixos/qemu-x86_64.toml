@@ -20,8 +20,8 @@ success_regex = [
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     '(?i)\bfatal\b',
-    '(?m)^.*starry-nixos-marker\.service: Failed with result',
-    '(?m)^Failed to start Verify the StarryNixOS stage-2 baseline\.$',
+    '(?m)^.*(?:starry-nixos-)?marker\.service: Failed with result',
+    '(?m)^Failed to start Verify the StarryNixOS stage-2 baseline\.?$',
     "(?m)^STARRY_NIXOS_SYSTEM_FAILED:",
 ]
 timeout = 600

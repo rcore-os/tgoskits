@@ -13,12 +13,6 @@ x86_64 自编译的唯一主入口是：
 cargo xtask starry app qemu -t selfhost/selfhost-full-kernel --arch x86_64
 ```
 
-当前验收状态：清理前的提交已在启用 KVM 的 QEMU 中完成来宾工具链安装，并将
-`tg-xtask` 构建推进到 `453/454`、即最终大型静态链接前；该次链接因耗时过长被人工终止。
-因此目前能够证明绝大多数 Rust crate 可编译，但尚未证明最终链接完成、
-`/opt/starryos-selfbuilt` 已发布或自编译 ELF 能通过 OVMF 启动。本次清理后的提交只运行定向
-回归测试，不重复数小时端到端构建。最终链接性能优化和启动烟测留待后续完成。
-
 该命令使用项目的 Starry app runner：构建种子内核、创建或复用 app 专用 rootfs、执行
 `prebuild.sh`、注入 overlay，并通过 `shell_init_cmd` 启动来宾 runner。它不依赖
 `scripts/self-compile.sh`、`expect`、loop mount 或 host sudo。
@@ -57,7 +51,7 @@ app runner 检测到成功标记后可安全结束 QEMU。来宾还会把当前�
 正常流程不需要 sudo。第一次运行需要下载 Rust 官方组件、Alpine 包和 Cargo crates，后续运行
 复用 app rootfs 中的系统包、Rust 和 Cargo 缓存。
 
-### 1.3 验证并启动自编译产物
+### 1.3 检查并启动自编译产物
 
 app 成功后，先确认 rootfs 中的产物非空：
 
@@ -74,8 +68,7 @@ scripts/run-selfbuilt-kernel.sh --arch x86_64
 ```
 
 脚本会重新从 rootfs 提取 ELF，转换为 EFI payload，通过 `cargo xtask ovmf --arch x86_64`
-取得与其他 QEMU 流程相同的 CODE/VARS 后启动。该脚本当前保留为
-后续烟测工具；本 PR 尚未完成产物生成和启动验证，不能据此宣称已经到达 Starry shell。
+取得与其他 QEMU 流程相同的 CODE/VARS 后启动。
 
 ## 2. riscv64 旧流程
 

@@ -341,28 +341,40 @@ impl Device for LoongArchPchPic {
         &self.resources
     }
 
-    fn access(
-        &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Mmio {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
-        let addr = GuestPhysAddr::from_usize(access.addr as usize);
+        let addr = GuestPhysAddr::from_usize(access.address() as usize);
         if !self.contains(addr) {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
+        self.read_register(addr, access.width())
+            .map(|value| value as u64)
+    }
 
-        if access.is_read {
-            self.read_register(addr, access.width)
-                .map(|value| BusResponse::Read {
-                    value: value as u64,
-                })
-        } else {
-            self.write_register(addr, access.width, access.data as usize)
-                .map(|_| BusResponse::Write)
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
+        let addr = GuestPhysAddr::from_usize(access.address() as usize);
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
+        }
+        self.write_register(addr, access.width(), value as usize)
     }
 }
 

@@ -602,7 +602,7 @@ where
                 // while all other CPUs are parked, then rely on the per-CPU
                 // sync callback to flush instruction state.
                 action(addr.as_mut_ptr());
-                return Ok(());
+                Ok(())
             }
 
             #[cfg(not(target_arch = "loongarch64"))]
@@ -638,7 +638,7 @@ fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     ax_runtime::hal::cache::sync_kernel_text(start, size);
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
     let user_base = USER_SPACE_BASE;
     let user_end = USER_SPACE_BASE + USER_SPACE_SIZE;
@@ -679,4 +679,58 @@ pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
         && check_access(user_base, USER_SPACE_SIZE).is_ok()
         && check_access(user_base, USER_SPACE_SIZE + 1).is_err()
         && check_access(user_end - 1, usize::MAX).is_err()
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use core::{mem::MaybeUninit, ptr::NonNull};
+
+    use starry_vm::{VmMutPtr, VmPtr, vm_load};
+
+    use super::*;
+
+    #[test]
+    fn vm_pointer_access_rejects_unmapped_addresses() {
+        let null_ptr = core::ptr::null::<u32>();
+        assert!(null_ptr.nullable().is_none());
+
+        let dangling = NonNull::<u32>::dangling();
+        assert!(dangling.nullable().is_some());
+        assert_eq!(dangling.as_ptr().vm_read(), Err(VmError::AccessDenied));
+        assert_eq!(dangling.vm_write(42), Err(VmError::AccessDenied));
+    }
+
+    #[test]
+    fn vm_slice_access_rejects_invalid_user_ranges() {
+        let mut one_byte = [MaybeUninit::<u8>::uninit()];
+        assert_eq!(
+            vm_read_slice(core::ptr::null::<u8>(), &mut one_byte),
+            Err(VmError::AccessDenied)
+        );
+        assert_eq!(
+            vm_write_slice(core::ptr::null_mut::<u8>(), &[1]),
+            Err(VmError::AccessDenied)
+        );
+        assert_eq!(vm_write_slice(core::ptr::null_mut::<u8>(), &[]), Ok(()));
+        assert_eq!(vm_read_slice(core::ptr::null::<u8>(), &mut []), Ok(()));
+    }
+
+    #[test]
+    fn vm_alloc_helpers_validate_inputs_before_copying() {
+        let mut unaligned = [0_u16; 2];
+        let unaligned_ptr = unaligned
+            .as_mut_ptr()
+            .cast::<u8>()
+            .wrapping_add(1)
+            .cast::<u16>();
+        assert_eq!(vm_load_until_nul(unaligned_ptr), Err(VmError::BadAddress));
+        assert_eq!(
+            vm_load(core::ptr::null::<u8>(), 1),
+            Err(VmError::AccessDenied)
+        );
+
+        let empty: Vec<u8> = vm_load(core::ptr::null::<u8>(), 0).unwrap();
+        assert!(empty.is_empty());
+    }
 }

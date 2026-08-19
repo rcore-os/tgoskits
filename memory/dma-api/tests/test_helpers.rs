@@ -70,6 +70,12 @@ pub struct TrackingDmaOp {
     fail_coherent_release: Arc<AtomicBool>,
 }
 
+impl Default for TrackingDmaOp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TrackingDmaOp {
     pub fn new() -> Self {
         Self {

@@ -187,3 +187,23 @@ pub struct DeviceBinding {
     /// If set, route selection is constrained to this interface.
     pub bound_if: Option<InterfaceId>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dns_entries_keep_source_and_route_priority() {
+        let entry = DnsServerEntry {
+            server: Ipv4Address::new(9, 9, 9, 9),
+            interface_id: InterfaceId::new(2),
+            metric: 5,
+            source: DnsSource::Static,
+        };
+
+        assert_eq!(entry.server, Ipv4Address::new(9, 9, 9, 9));
+        assert_eq!(entry.interface_id, InterfaceId::new(2));
+        assert_eq!(entry.metric, 5);
+        assert_eq!(entry.source, DnsSource::Static);
+    }
+}

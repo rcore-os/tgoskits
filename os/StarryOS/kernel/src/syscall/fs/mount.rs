@@ -934,7 +934,7 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> Starry
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn mount_flags_validation_rules_hold_for_test() -> bool {
     // Test umount flag validation
     const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;

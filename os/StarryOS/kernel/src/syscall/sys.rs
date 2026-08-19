@@ -1067,7 +1067,7 @@ pub fn sys_riscv_hwprobe(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
     // uid_valid: NOCHG (u32::MAX) is invalid, everything else is valid.
     uid_valid(0)
@@ -1088,7 +1088,7 @@ pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn sys_constants_and_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM};
 

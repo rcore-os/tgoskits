@@ -5,7 +5,7 @@ sidebar_label: "自动 CI 测试"
 
 # 自动 CI 测试
 
-本文档说明 `.github/workflows/ci.yml`、`.github/workflows/ci-branch-push.yml`、`.github/workflows/reusable-command.yml` 和容器镜像在 CI 中的职责，以及当前测试矩阵、缓存策略和 self-hosted runner 的使用方式。
+CI 由 `.github/workflows/ci.yml`、`.github/workflows/ci-branch-push.yml`、`.github/workflows/reusable-command.yml` 和配套容器镜像共同组成，覆盖测试矩阵、缓存策略和 self-hosted runner 调度。
 
 TGOSKits 将大部分构建与运行依赖收敛到统一的 container 镜像，由 GitHub Actions 和本地开发流程共同消费。需要物理设备、虚拟化能力或专用机器环境的任务则运行在 self-hosted runner 上。
 
@@ -37,12 +37,22 @@ flowchart TB
 |------|------|
 | `push` 到 `main` / `dev` | 排除纯文档变更（`*.md`、`docs/**` 等），其余路径直接触发完整 CI |
 | `push` 到其他分支 | 先进入 `ci-branch-push.yml`。若该分支已有 open PR，则 router 成功结束；否则由 router 触发完整 CI |
-| `pull_request` | 同上 |
+| `pull_request` | 纯 Markdown 不触发主 CI；其余变更由 planner 按 crate、OS 和 arch 生成增量矩阵 |
 | `workflow_dispatch` | 默认用于发布容器镜像（`base` / `axvisor-lvz` / `both`）；router 也会用 `run_target=ci` 调度非 PR 分支的完整 CI |
 
 `dev` 分支的 `push` 和手动触发使用 `concurrency.queue: max` 串行排队运行，避免多个 dev CI 同时占用 runner。其他分支、`main` 分支、PR 以及非 `dev` 手动触发不会进入 dev 队列；新 run 会在最早的 `cancel_stale_runs` 阶段取消同一分支或同一 PR 上仍在 queued/running 的旧 CI run。
 
 非 `main` / `dev` 分支的 `push` 由轻量 router 先检查是否已有同仓库、同名分支的 open PR。已有 PR 时不会调度 `.github/workflows/ci.yml`，router 会输出跳过原因并以成功状态结束，PR 的 `pull_request` CI 负责验证同一提交。没有 open PR 时，router 使用 `workflow_dispatch(run_target=ci)` 调度完整 CI，并把 push 事件的 `before` SHA 传给差异检查。
+
+### PR 增量矩阵
+
+只有 `pull_request` 使用增量矩阵。planner 以 PR base SHA 做三点 diff，忽略 `.md` 和 `apps/**`，并将其余路径映射到最深层 workspace package。随后分别为 aarch64、x86_64、riscv64 和 loongarch64 运行带 `--all-features --filter-platform` 的 Cargo metadata，通过反向依赖确定 ArceOS、StarryOS 和 AxVisor 的受影响架构。workspace axtest package 还会按其声明的 target 选择承载该测试的 ArceOS job。
+
+非 crate 的已知 OS 配置和 test-suit 文件按目录及配置名映射；只能确定 OS 时运行该 OS 的全部架构。package 删除、未知源码路径、Cargo/toolchain、CI planner/workflow/check manifest、`.cargo/**` 或任意 xtask 实现变更，以及 diff/metadata 失败，都会回退到当前完整矩阵。回退不会静默缩小覆盖。
+
+每个被选中的 OS/arch 仍执行该矩阵项原有的全部 QEMU、KVM 和板卡命令。`apps/**` 本身不选择 OS/arch 或 app 运行测试；混合 PR 中的其他改动仍按正常规则选择。static checks 始终保留，workspace Clippy 继续使用 `--since`，std whitelist 在增量 PR 中使用 `cargo xtask test --since <base>`。`push` 和 `workflow_dispatch` 不使用该影响分析，保持完整矩阵。
+
+planner 将 changed paths、忽略的 Markdown/apps、changed/affected packages、选中的 OS/arch、选中/跳过的 checks 和全量回退原因写入 Actions job summary。
 
 ## 执行流水线
 
@@ -106,7 +116,7 @@ push 到 `main` / `dev` 时强制运行 CI 检查。非 `main` / `dev` 分支没
 | Job 名称 | Runner | 使用容器 | Cache Key | 功能说明 |
 |----------|--------|----------|-----------|----------|
 | Run clippy | `self-hosted linux qcs` | 否 | 无 | `cargo xtask clippy --since <base>`；需要完整 git 历史；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
-| Test with std | `self-hosted linux qcs` | 否 | 无 | `cargo xtask test`，运行 `scripts/test/std_crates.csv` 中的 host 测试；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
+| Test with std | `self-hosted linux qcs` | 否 | 无 | 非 PR 或全量回退运行 `cargo xtask test`；增量 PR 运行 `cargo xtask test --since <base>`，只保留 affected package 与 `scripts/test/std_crates.csv` 的交集；fork PR 回退到 `ubuntu-latest` + `base` 容器 |
 | Test axvisor aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch aarch64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
 | Test axvisor riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask axvisor test qemu --arch riscv64`；`rcore-os` 仓库使用 self-hosted，fork PR 回退到 `ubuntu-latest` + `base` 容器 |
 | Test axvisor loongarch64 qemu | `ubuntu-latest` | 是（`axvisor-lvz`） | `test-axvisor-loongarch64` | `cargo xtask axvisor test qemu --arch loongarch64`，使用带 LVZ 支持的镜像 |
@@ -114,10 +124,10 @@ push 到 `main` / `dev` 时强制运行 CI 检查。非 `main` / `dev` 分支没
 | Test starry aarch64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-aarch64` | `cargo xtask starry test qemu --arch aarch64` |
 | Test starry loongarch64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-loongarch64` | `cargo xtask starry test qemu --arch loongarch64` |
 | Test starry x86_64 qemu | `ubuntu-latest` | 是（`base`） | `test-starry-x86_64` | `cargo xtask starry test qemu --arch x86_64` |
-| Test arceos x86_64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch x86_64`；仅 `rcore-os` 仓库触发 |
-| Test arceos riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch riscv64`；仅 `rcore-os` 仓库触发 |
-| Test arceos aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch aarch64`；仅 `rcore-os` 仓库触发 |
-| Test arceos loongarch64 qemu | `self-hosted linux qcs` | 否 | 无 | `cargo xtask arceos test qemu --arch loongarch64`；仅 `rcore-os` 仓库触发 |
+| Test arceos x86_64 qemu | `self-hosted linux qcs` | 否 | 无 | 先运行 ArceOS Rust/C suite，再以一次 `cargo xtask ktest qemu --workspace ... --arch x86_64` 串行运行同架构 axtest；仅 `rcore-os` 仓库触发 |
+| Test arceos riscv64 qemu | `self-hosted linux qcs` | 否 | 无 | 先运行 ArceOS suite/任务 IPI，再以一次 `ktest qemu --arch riscv64` 串行运行同架构 axtest；仅 `rcore-os` 仓库触发 |
+| Test arceos aarch64 qemu | `self-hosted linux qcs` | 否 | 无 | 先运行 GICv2 SMP4 boot 与 ArceOS suite，再以一次 `ktest qemu --arch aarch64` 串行运行同架构 axtest；仅 `rcore-os` 仓库触发 |
+| Test arceos loongarch64 qemu | `self-hosted linux qcs` | 否 | 无 | 先运行 ArceOS suite，再以一次 `ktest qemu --arch loongarch64` 串行运行同架构 axtest；仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted x86_64(svm) | `self-hosted linux amd kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm`；验证 SVM 宿主启动及宿主 NVMe 根文件系统写入/回读，仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted x86_64(vmx) | `self-hosted linux intel kvm` | 否 | 无 | `cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx`；验证 VMX 宿主启动及宿主 NVMe 根文件系统写入/回读，仅 `rcore-os` 仓库触发 |
 | Test axloader HTTP smoke | `self-hosted linux intel kvm` | 否 | 无 | 安装 `x86_64-unknown-uefi` target，通过 Ostool 获取并校验 OVMF，运行 `cargo xtask axloader test qemu --target x86_64-unknown-uefi`；仅 `rcore-os` 仓库触发 |

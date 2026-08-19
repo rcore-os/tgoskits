@@ -8,7 +8,7 @@ mod stats;
 mod vm_stat;
 
 pub use self::{access::*, aspace::*, io::*, loader::*, stats::*, vm_stat::*};
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::{
     aspace::accounting_edge_cases_and_snapshot_rules_hold_for_test,
     aspace::accounting_rss_kind_debug_and_default_hold_for_test,

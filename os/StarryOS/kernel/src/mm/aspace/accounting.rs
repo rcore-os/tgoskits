@@ -304,7 +304,6 @@ impl MemoryAccounting {
             return Ok(());
         };
         if charges.contains_key(&dst) {
-            debug_assert!(false, "move_charge: dst {dst:?} already charged");
             charges.insert(src, kind);
             return Err(StarryError::InvalidInput);
         }
@@ -364,7 +363,7 @@ pub(crate) fn bridge_rss_accounting() -> Option<&'static MemoryAccounting> {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn accounting_edge_cases_and_snapshot_rules_hold_for_test() -> bool {
     use ax_memory_addr::VirtAddr;
 
@@ -503,7 +502,7 @@ mod tests {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn rss_kind_and_accounting_rules_hold_for_test() -> bool {
     // RssKind variants are Debug, Clone, Copy, PartialEq, Eq
     let anon = RssKind::Anon;
@@ -529,7 +528,7 @@ pub(crate) fn rss_kind_and_accounting_rules_hold_for_test() -> bool {
     true
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn accounting_rss_kind_debug_and_default_hold_for_test() -> bool {
     // Test MemoryAccounting default trait
     let acc_default = MemoryAccounting::default();

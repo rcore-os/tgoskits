@@ -399,7 +399,7 @@ pub fn spawn_alarm_task() {
     );
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn itimer_type_signo_and_time_conversion_rules_hold_for_test() -> bool {
     // ITimerType::signo returns a Signo for each variant without panicking.
     let _real = ITimerType::Real.signo();

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1050" height="650" viewBox="0 0 1050 650" role="img" aria-labelledby="title desc">
+  <title id="title">DMA 内存能力架构</title><desc id="desc">驱动经 DeviceDma 和 RAII owner 进入平台适配、物理页选择与缓存维护。</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0L0 6L9 3Z" fill="#475569"/></marker><style>.h{font:700 24px sans-serif;fill:#0f172a}.t{font:600 18px sans-serif;fill:#0f172a}.s{font:14px sans-serif;fill:#334155}.drv{fill:#f5f3ff;stroke:#8b5cf6;stroke-width:2}.api{fill:#eff6ff;stroke:#3b82f6;stroke-width:2}.plat{fill:#fff7ed;stroke:#f97316;stroke-width:2}.mem{fill:#ecfdf5;stroke:#10b981;stroke-width:2}.l{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#a)}</style></defs>
+  <text x="525" y="36" text-anchor="middle" class="h">DMA 内存、设备约束与缓存所有权</text>
+  <rect x="355" y="75" width="340" height="75" rx="14" class="drv"/><text x="525" y="105" text-anchor="middle" class="t">可移植驱动核心</text><text x="525" y="130" text-anchor="middle" class="s">持有 owner，编程 DMA 地址</text>
+  <rect x="110" y="215" width="340" height="110" rx="16" class="api"/><text x="280" y="249" text-anchor="middle" class="t">DeviceDma</text><text x="280" y="276" text-anchor="middle" class="s">domain、mask、alignment、boundary</text><text x="280" y="299" text-anchor="middle" class="s">校验 backend 返回的完整范围</text>
+  <rect x="600" y="215" width="340" height="110" rx="16" class="api"/><text x="770" y="249" text-anchor="middle" class="t">DMA RAII owner</text><text x="770" y="276" text-anchor="middle" class="s">Coherent / Contiguous / Streaming</text><text x="770" y="299" text-anchor="middle" class="s">状态转换与单次释放</text>
+  <path d="M475 150L280 215M575 150L770 215M450 270H600" class="l"/>
+  <rect x="355" y="390" width="340" height="85" rx="16" class="plat"/><text x="525" y="423" text-anchor="middle" class="t">axklib::dma / KlibDma</text><text x="525" y="450" text-anchor="middle" class="s">页申请、地址转换与 cache policy</text>
+  <path d="M770 325V360H525V390" class="l"/>
+  <rect x="80" y="540" width="250" height="75" rx="14" class="mem"/><text x="205" y="570" text-anchor="middle" class="t">Normal pages</text><text x="205" y="595" text-anchor="middle" class="s">设备 mask 大于 32 位</text>
+  <rect x="400" y="540" width="250" height="75" rx="14" class="mem"/><text x="525" y="570" text-anchor="middle" class="t">DMA32 pages</text><text x="525" y="595" text-anchor="middle" class="s">完整范围低于 4 GiB</text>
+  <rect x="720" y="540" width="250" height="75" rx="14" class="mem"/><text x="845" y="570" text-anchor="middle" class="t">缓存与页属性</text><text x="845" y="595" text-anchor="middle" class="s">clean / invalidate / mapping</text>
+  <path d="M470 475L205 540M525 475V540M580 475L845 540" class="l"/>
+</svg>

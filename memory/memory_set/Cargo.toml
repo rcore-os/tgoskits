@@ -11,12 +11,7 @@ categories = ["os", "memory-management", "no-std"]
 license = "Apache-2.0"
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 ax-memory-addr = { workspace = true }
 thiserror.workspace = true
 
 [features]
-axtest = ["dep:axtest"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
