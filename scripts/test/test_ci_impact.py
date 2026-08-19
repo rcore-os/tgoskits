@@ -6,7 +6,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 MODULE_PATH = Path(__file__).with_name("ci_impact.py")
 SPEC = importlib.util.spec_from_file_location("ci_impact", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -57,9 +56,7 @@ class CiImpactTests(unittest.TestCase):
                 }
             )
 
-        self.package_ids = {
-            package["name"]: package["id"] for package in self.packages
-        }
+        self.package_ids = {package["name"]: package["id"] for package in self.packages}
         self.metadata_by_arch = {
             arch: self._metadata(arch) for arch in ci_impact.ARCH_TARGETS
         }
@@ -77,7 +74,9 @@ class CiImpactTests(unittest.TestCase):
         for package in self.packages:
             deps = []
             for name in dependency_names.get(package["name"], []):
-                dep_kinds = [{"kind": "dev", "target": None}] if name == "axtest" else []
+                dep_kinds = (
+                    [{"kind": "dev", "target": None}] if name == "axtest" else []
+                )
                 deps.append({"pkg": self.package_ids[name], "dep_kinds": dep_kinds})
             nodes.append({"id": package["id"], "deps": deps})
         self.assertIn(shared, {node["id"] for node in nodes})
@@ -136,7 +135,9 @@ class CiImpactTests(unittest.TestCase):
             },
         )
 
-    def test_target_specific_crate_selects_only_matching_target(self) -> None:
+    def test_target_specific_crate_selects_every_registered_target_for_its_os(
+        self,
+    ) -> None:
         impact = ci_impact.analyze_changed_paths(
             self.workspace_root,
             [Path("virtualization/arm-vcpu/src/lib.rs")],
@@ -144,7 +145,11 @@ class CiImpactTests(unittest.TestCase):
         )
 
         self.assertFalse(impact.full)
-        self.assertEqual(impact.targets, ("axvisor:aarch64",))
+        self.assertEqual(impact.affected_oses, ("axvisor",))
+        self.assertEqual(
+            impact.targets,
+            tuple(f"axvisor:{arch}" for arch in ci_impact.ARCH_TARGETS),
+        )
 
     def test_standalone_crate_does_not_select_an_os(self) -> None:
         impact = ci_impact.analyze_changed_paths(
@@ -186,15 +191,37 @@ class CiImpactTests(unittest.TestCase):
         self.assertEqual(impact.ignored_markdown, ("components/shared/README.md",))
         self.assertEqual(impact.ignored_apps, ("apps/starry/demo/prebuild.sh",))
 
-    def test_known_non_package_path_uses_os_and_arch_hint(self) -> None:
+    def test_test_suite_path_is_preserved_for_exclusive_exact_routing(self) -> None:
         impact = ci_impact.analyze_changed_paths(
             self.workspace_root,
-            [Path("test-suit/starryos/qemu-aarch64.toml")],
+            [Path("test-suit/starryos/qemu/system/qemu-aarch64.toml")],
             self.metadata_by_arch,
         )
 
         self.assertFalse(impact.full)
-        self.assertEqual(impact.targets, ("starry:aarch64",))
+        self.assertTrue(impact.exclusive)
+        self.assertEqual(
+            impact.test_suite_paths,
+            ("test-suit/starryos/qemu/system/qemu-aarch64.toml",),
+        )
+        self.assertEqual(impact.targets, ())
+
+    def test_ci_owned_virtio_blk_app_triggers_axvisor_aarch64(self) -> None:
+        impact = ci_impact.analyze_changed_paths(
+            self.workspace_root,
+            [Path("apps/arceos/virtio-blk-test/run.sh")],
+            self.metadata_by_arch,
+        )
+
+        self.assertFalse(impact.full)
+        self.assertNotIn(
+            "apps/arceos/virtio-blk-test/run.sh",
+            impact.ignored_apps,
+        )
+        self.assertEqual(
+            impact.input_selections,
+            ("axvisor:qemu:aarch64",),
+        )
 
     def test_os_specific_config_without_arch_hint_selects_all_os_arches(self) -> None:
         impact = ci_impact.analyze_changed_paths(
@@ -212,15 +239,9 @@ class CiImpactTests(unittest.TestCase):
     def test_known_config_names_map_to_board_architectures(self) -> None:
         cases = {
             "os/StarryOS/configs/board/visionfive2.toml": ("starry:riscv64",),
-            "os/StarryOS/configs/board/jl-lsgd2k10.toml": (
-                "starry:loongarch64",
-            ),
-            "os/axvisor/configs/board/asus-nuc15crh-x86_64.toml": (
-                "axvisor:x86_64",
-            ),
-            "os/axvisor/configs/board/orangepi-5-plus.toml": (
-                "axvisor:aarch64",
-            ),
+            "os/StarryOS/configs/board/jl-lsgd2k10.toml": ("starry:loongarch64",),
+            "os/axvisor/configs/board/asus-nuc15crh-x86_64.toml": ("axvisor:x86_64",),
+            "os/axvisor/configs/board/orangepi-5-plus.toml": ("axvisor:aarch64",),
         }
         for changed_path, expected_targets in cases.items():
             with self.subTest(path=changed_path):

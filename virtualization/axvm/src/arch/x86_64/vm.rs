@@ -55,8 +55,14 @@ impl X86_64Arch {
             resources.prepare_guest_address_space(vm.id(), config, &ARCH_OWNED_REGIONS)?;
             resources.map_arch_address_space()?;
             let intercepted_ports = resources.resolved_port_intercepts()?;
+            let intercepted_mmio = resources.resolved_mmio_intercepts()?;
             vcpus.setup(resources, config, |config, memory_regions| {
-                build_vcpu_setup_config(config, memory_regions, &intercepted_ports)
+                build_vcpu_setup_config(
+                    config,
+                    memory_regions,
+                    &intercepted_ports,
+                    &intercepted_mmio,
+                )
             })?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
@@ -149,6 +155,7 @@ fn build_vcpu_setup_config(
     _config: &AxVMConfig,
     memory_regions: &[crate::vm::VMMemoryRegion],
     intercepted_ports: &[(u16, u16)],
+    intercepted_mmio: &[(X86GuestPhysAddr, usize)],
 ) -> AxVmResult<<super::AxvmX86Vcpu as VmArchVcpuOps>::SetupConfig> {
     let mut setup_config = X86VcpuSetupConfig {
         guest_memory_regions: memory_regions
@@ -165,6 +172,10 @@ fn build_vcpu_setup_config(
         x86_result(setup_config.add_intercepted_port_range(base, size))
             .map_err(|error| AxVmError::vcpu("configure resolved device port intercept", error))?;
     }
+    for &(base, size) in intercepted_mmio {
+        x86_result(setup_config.add_intercepted_mmio_range(base, size))
+            .map_err(|error| AxVmError::vcpu("configure resolved device MMIO intercept", error))?;
+    }
     Ok(setup_config)
 }
 
@@ -179,6 +190,23 @@ impl AxVMResources {
                     .pio_ranges()
                     .map(|(_, base, size)| (base, size)),
             );
+        }
+        Ok(ranges)
+    }
+
+    fn resolved_mmio_intercepts(&self) -> AxVmResult<std::vec::Vec<(X86GuestPhysAddr, usize)>> {
+        let graph = self.planned_devices().graph();
+        let mut ranges = std::vec::Vec::new();
+        for node in graph.nodes() {
+            for (_, base, size) in graph.resources_for(node.id())?.mmio_ranges() {
+                let base = usize::try_from(base).map_err(|_| {
+                    AxVmError::invalid_config("planned device MMIO GPA does not fit usize")
+                })?;
+                let size = usize::try_from(size).map_err(|_| {
+                    AxVmError::invalid_config("planned device MMIO size does not fit usize")
+                })?;
+                ranges.push((X86GuestPhysAddr::from_usize(base), size));
+            }
         }
         Ok(ranges)
     }
@@ -247,6 +275,27 @@ mod tests {
                     0x1_0000_0000 - X86_LOCAL_APIC_GPA - X86_LOCAL_APIC_SIZE,
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn build_vcpu_setup_config_forwards_resolved_device_mmio_ranges() {
+        let config = AxVMConfig::default_for_test(1, "x86-mmio-setup-test");
+        let bar0_base = X86GuestPhysAddr::from_usize(0x8000_0000);
+        let bar0_size = 0x1000;
+
+        let setup_config =
+            build_vcpu_setup_config(&config, &[], &[], &[(bar0_base, bar0_size)]).unwrap();
+
+        let ranges = setup_config
+            .intercepted_mmio_ranges()
+            .collect::<std::vec::Vec<_>>();
+        assert_eq!(
+            ranges,
+            std::vec![X86InterceptedMmioRange {
+                base: bar0_base,
+                size: bar0_size,
+            }]
         );
     }
 }

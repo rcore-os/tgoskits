@@ -1,4 +1,4 @@
-schema_version = 2
+schema_version = 3
 phase = "test"
 group = "Starry"
 
@@ -9,9 +9,7 @@ group = "Starry"
 [[check]]
 id = "test-starry-riscv64-qemu"
 impact_targets = ["starry:riscv64"]
-name = "riscv64 QEMU · Suites"
-runs_on = ["ubuntu-latest"]
-environment = "base"
+name = "QEMU riscv64 · Suites"
 cache_key = "test-starry-riscv64"
 apk_region = "us"
 download_xtask_bin_artifact = true
@@ -20,12 +18,14 @@ target/debug/tg-xtask starry test qemu --arch riscv64
 target/debug/tg-xtask ktest qemu -p starry-kernel --arch riscv64
 '''
 
+[[check.suite]]
+kind = "starry-qemu"
+arch = "riscv64"
+
 [[check]]
 id = "test-starry-aarch64-qemu"
 impact_targets = ["starry:aarch64"]
-name = "aarch64 QEMU · GICv2 SMP4 boot + suites"
-runs_on = ["ubuntu-latest"]
-environment = "base"
+name = "QEMU aarch64 · GICv2 SMP4 boot + suites"
 cache_key = "test-starry-aarch64"
 apk_region = "us"
 download_xtask_bin_artifact = true
@@ -38,12 +38,14 @@ target/debug/tg-xtask starry test qemu --arch aarch64
 target/debug/tg-xtask ktest qemu -p starry-kernel --arch aarch64
 '''
 
+[[check.suite]]
+kind = "starry-qemu"
+arch = "aarch64"
+
 [[check]]
 id = "test-starry-loongarch64-qemu"
 impact_targets = ["starry:loongarch64"]
-name = "loongarch64 QEMU · Suites"
-runs_on = ["ubuntu-latest"]
-environment = "base"
+name = "QEMU loongarch64 · Suites"
 cache_key = "test-starry-loongarch64"
 apk_region = "us"
 download_xtask_bin_artifact = true
@@ -52,12 +54,14 @@ target/debug/tg-xtask starry test qemu --arch loongarch64
 target/debug/tg-xtask ktest qemu -p starry-kernel --arch loongarch64
 '''
 
+[[check.suite]]
+kind = "starry-qemu"
+arch = "loongarch64"
+
 [[check]]
 id = "test-starry-x86-64-qemu"
 impact_targets = ["starry:x86_64"]
-name = "x86_64 QEMU · Suites"
-runs_on = ["ubuntu-latest"]
-environment = "base"
+name = "QEMU x86_64 · Suites"
 cache_key = "test-starry-x86_64"
 apk_region = "us"
 download_xtask_bin_artifact = true
@@ -66,58 +70,72 @@ target/debug/tg-xtask starry test qemu --arch x86_64
 target/debug/tg-xtask ktest qemu -p starry-kernel --arch x86_64
 '''
 
+[[check.suite]]
+kind = "starry-qemu"
+arch = "x86_64"
+
 [[check]]
 id = "test-starry-self-hosted-board-orangepi-5-plus"
 impact_targets = ["starry:aarch64"]
-name = "OrangePi 5 Plus board · Suites"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board OrangePi 5 Plus · Suites"
+runner = "board"
 command = '''
 cargo xtask starry test board --board orangepi-5-plus
 '''
 
+[[check.suite]]
+kind = "starry-board"
+board = "orangepi-5-plus"
+
 [[check]]
 id = "test-orangepi-5-plus-robot-native-starryos"
 impact_targets = ["starry:aarch64"]
-name = "OrangePi 5 Plus robot board · Native suites"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board OrangePi 5 Plus robot · Native suites"
+runner = "board"
 timeout_minutes = 90
 command = '''
 cargo xtask starry test board --board orangepi-5-plus-robot
 '''
 
+[[check.suite]]
+kind = "starry-board"
+board = "orangepi-5-plus-robot"
+
 [[check]]
 id = "test-starry-self-hosted-board-aka-00-sg2002"
 impact_targets = ["starry:riscv64"]
-name = "AKA-00 SG2002 board · Suites"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board AKA-00 SG2002 · Suites"
+runner = "board"
 command = '''
 cargo xtask starry test board --board aka-00-sg2002
 '''
 
+[[check.suite]]
+kind = "starry-board"
+board = "aka-00-sg2002"
+
 [[check]]
 id = "test-starry-self-hosted-board-visionfive2"
 impact_targets = ["starry:riscv64"]
-name = "VisionFive 2 board · Suites"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board VisionFive 2 · Suites"
+runner = "board"
 command = '''
 cargo xtask starry test board --board visionfive2
 '''
 
+[[check.suite]]
+kind = "starry-board"
+board = "visionfive2"
+
 [[check]]
 id = "test-starry-self-hosted-board-jl-lsgd2k10"
 impact_targets = ["starry:loongarch64"]
-name = "JL LSGD2K10 board · Suites"
-runs_on = ["self-hosted", "linux", "board"]
-environment = "host"
-required_owner = "rcore-os"
+name = "Board JL LSGD2K10 · Suites"
+runner = "board"
 command = '''
 cargo xtask starry test board --board jl-lsgd2k10
 '''
+
+[[check.suite]]
+kind = "starry-board"
+board = "jl-lsgd2k10"

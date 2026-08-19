@@ -31,32 +31,7 @@ sidebar_label: "客户机地址空间"
 
 依赖从虚拟机策略指向公共机制，页表和物理页能力通过 trait 注入。该方向使地址空间可使用测试页表，也避免公共页表反向绑定 ArceOS 分配器。
 
-```mermaid
-flowchart TB
-    subgraph Policy["客户机策略"]
-        AS["axaddrspace\nAddrSpace + Backend"]
-    end
-
-    subgraph Mechanism["公共机制"]
-        TYPES["axvm-types\nGPA + MappingFlags"]
-        SET["ax-memory-set\n虚拟区域容器"]
-    end
-
-    subgraph Integration["AxVM 组合层"]
-        VM["axvm\n虚拟机布局与生命周期"]
-        ADAPTER["NestedPageTableOps adapter"]
-        HOST["HostPagingHandler\n宿主页能力"]
-        PT["page-table-generic\n页表遍历与页表项"]
-    end
-
-    AS --> TYPES
-    AS --> SET
-    VM --> AS
-    VM --> ADAPTER
-    ADAPTER --> PT
-    ADAPTER --> HOST
-    ADAPTER -. "trait capability" .-> AS
-```
+![Axvisor 客户机地址空间组件边界](./images/axaddrspace-architecture.svg)
 
 运行时真实链路是 `AxVM → AddrSpace<ArchNestedPageTable> → NestedPageTableOps → page-table-generic`。`axaddrspace` 不应增加只转发这些调用的页表 facade，也不应直接调用 `ax-alloc` 形成第二个宿主页入口。
 
@@ -151,6 +126,8 @@ pub enum Backend<Npt: NestedPageTableOps> {
 
 `Alloc { populate }` 通过 `NestedPageTableOps::alloc_frame()` 获取宿主基础页。`populate = true` 在 map 提交时逐页分配并映射；`populate = false` 只发布区域元数据，首次客户机访问再由缺页路径分配。
 
+下面的构造调用只保存映射策略和 `populate` 选择，实际 frame 分配发生在 backend 的 map 或 fault 回调中；`MemoryArea` 本身不会预先取得宿主页。
+
 ```rust
 let area = MemoryArea::new(start, size, flags, Backend::new_alloc(populate));
 self.areas.map(area, &mut self.pt, false)?;
@@ -179,6 +156,8 @@ self.areas.map(area, &mut self.pt, false)?;
 `axaddrspace::Backend<Npt>` 实现 `ax_memory_set::MappingBackend`。`MemorySet` 负责区域重叠检查和边界拆分，backend 直接调用 `NestedPageTableOps`。公共路径没有 `MappingPlan`、逐页快照或 finalize 阶段。
 
 ### 4.1 映射调用
+
+`AddrSpace` 的 map/unmap 先在客户机物理地址域验证总范围与 4 KiB 对齐，再由 `MemorySet` 定位区域并调用 `Backend<Npt>`。下图强调页表动作成功后才提交相应区域元数据，但不表示跨区域操作具备通用回滚事务。
 
 ```mermaid
 flowchart TB
@@ -228,7 +207,7 @@ pt.remap(vaddr, frame, orig_flags)
 
 ### 5.2 通用适配器
 
-`virtualization/axvm/src/npt.rs` 用 `GenericFrameAllocator<H>` 把 `HostPagingHandler` 接到 `page_table_generic::FrameAllocator`，再由 `LeveledPageTable` 实现 `NestedPageTableOps`。
+`virtualization/axvm/src/npt.rs` 用 `GenericFrameAllocator<H>` 把 `HostPagingHandler` 接到 `page_table_generic::FrameAllocator`，再由 `LeveledPageTable` 实现 `NestedPageTableOps`。这个适配器同时保持页表帧来源、主机物理地址转换和架构几何的类型关系，不让 `axaddrspace` 直接依赖某个宿主 allocator。
 
 ```text
 HostPagingHandler
@@ -250,7 +229,7 @@ axaddrspace::AddrSpace
 
 ### 5.3 架构差异
 
-所有架构向 `AddrSpace` 暴露同一 `NestedPageTableOps`，差异留在 `axvm/src/arch/<arch>/npt.rs` 或 x86 嵌套分页运行时中。
+所有架构向 `AddrSpace` 暴露同一 `NestedPageTableOps`，差异留在 `axvm/src/arch/<arch>/npt.rs` 或 x86 嵌套分页运行时中。这样 GPA 区域策略只处理统一的页尺寸与权限结果，页表项编码、根寄存器和失效指令仍由相应架构所有者维护。
 
 | 架构 | AxVM 具体类型 | 本层可见差异 |
 | --- | --- | --- |
@@ -336,7 +315,7 @@ AxVM::destroy
 
 ### 7.1 外层锁
 
-`virtualization/axvm/src/vm/mod.rs` 通过 `use ax_std::os::arceos::sync::IrqSafeMutex as Mutex` 引入关中断自旋锁，并以 `Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>` 保护地址空间和生命周期状态。
+`virtualization/axvm/src/vm/mod.rs` 通过 `use ax_std::os::arceos::sync::IrqSafeMutex as Mutex` 引入关中断自旋锁，并以 `Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>` 保护地址空间和生命周期状态。映射、缺页、客户机缓冲区访问与 clear 都必须在这个 VM owner 下串行化，避免 slice 或页表查询跨越资源销毁。
 
 ```rust
 fn with_resources_mut<F, R>(&self, f: F) -> AxVmResult<R>
@@ -449,7 +428,7 @@ guest writes GPA 0x4000_1234
 
 ### 9.1 源码入口
 
-以下文件构成从公共 API 到生产第二阶段页表的完整路径。
+以下文件构成从公共 API 到生产第二阶段页表的完整路径。审查时应沿着 `AddrSpace`、backend、`NestedPageTableOps` 和 AxVM adapter 向下核对，而不是只验证区域元数据或单个页表函数。
 
 | 源码 | 维护内容 |
 | --- | --- |

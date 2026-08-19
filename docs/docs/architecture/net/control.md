@@ -17,48 +17,27 @@ sidebar_label: "控制面"
 | `general.rs` | socket 通用选项中的 `SO_BINDTODEVICE` / `DeviceBinding` 存取 |
 | `tcp.rs`、`udp.rs`、`raw.rs` | connect/send/bind 时使用控制面做地址、路由和设备绑定决策 |
 
-## 设计边界
+源码表将配置数据、控制面状态、路由规则和 socket 绑定分别定位到其维护模块。设计边界基于这些所有者区分只读快照、原子提交和实际 packet 处理，避免控制面膨胀为第二个数据面。
+
+## 1. 设计边界
 
 控制面是 `NetControl` 持有的只读状态层，通过 `ax_sync::SpinRwLock` 保护接口 registry、DNS registry 和共享路由表。它的查询接口（`interfaces()`、`select_route()`、`dns_servers()` 等）只持读锁、返回快照，不进入 `Service` 或 `SocketSet` 锁，也不接触设备收发队列。协议状态机推进、包收发和 socket payload 读写全部由数据面的 `Service::poll()` 和设备 worker 在独立的锁层级中完成。
 
-### 无线控制面句柄
+### 1.1 无线控制面句柄
 
 `WIFI_CONTROLS` 是一个全局 `Mutex<Vec<(String, rd_net::WifiControlHandle)>>`，存储无线设备的控制面句柄。当无线设备注册时，runtime 在 driver 的 `WifiControlHandle` 被消费进数据面 `EthernetDriver` 之前捕获一份，按接口名索引。这允许 StarryOS wireless-extensions ioctl 或类似的运行时管理接口通过名称找到对应设备的 `WifiControl`，在不需要持有 `Service` 或 `SocketSet` 锁的情况下完成模式切换。
 
-```mermaid
-flowchart TB
-    Config["NetworkConfig / InterfaceConfig"] --> Init["init_network()"]
-    Dhcp["DHCP ACK / NAK"] --> Commit["commit_network_state()"]
-    DynDev["register_device_with_config()"] --> Commit
-    Wifi["reconfigure_wifi() STA/AP"] --> Commit
-    Bind["bind(addr) / SO_BINDTODEVICE"] --> Binding["DeviceBinding"]
+### 1.2 状态来源与消费者
 
-    Init --> Control["NetControl"]
-    Commit --> Control
+控制面图把写入来源、原子提交边界和读取方放在同一视图中，强调 `NetControl` 保存的是协议核心与系统 ABI 共享的状态快照。`DeviceBinding` 不写入全局路由表，而是在 socket 查询时附加接口约束；这一区别决定了绑定行为不会修改其他 socket 的选路结果。
 
-    subgraph ControlState["Control Plane State"]
-        Ifaces["interfaces: Vec<NetInterface>"]
-        Dns["dns: Vec<DnsServerEntry>"]
-        Routes["SharedRouteTable"]
-    end
-
-    Control --> Ifaces
-    Control --> Dns
-    Control --> Routes
-
-    Ifaces --> Query["interfaces()/ipv4_config()"]
-    Routes --> RouteLookup["select_route_with_binding()"]
-    Dns --> DnsQuery["dns_servers()/dns_query_timeout()"]
-    Binding --> RouteLookup
-    RouteLookup --> Sockets["TCP/UDP/raw connect/send"]
-    Routes --> Dispatch["Router::dispatch()"]
-```
+![ax-net 控制面状态来源与消费者](images/control-plane-architecture.svg)
 
 控制面状态有四类写入路径：`init_network()` 构造初始状态；DHCP ACK/NAK 通过 `commit_interface_update()` 原子替换某接口的地址、DNS 和路由规则；`register_device_with_config()` 运行期新增静态 IPv4 设备；`reconfigure_wifi()` 在 STA/AP 模式切换时更新对应接口 IPv4/DHCP 角色。除初始构造外，这些路径都在 `Service` 锁内同步更新 smoltcp IP address list、`NetControl` 快照和 `RouteTable`，避免数据面与查询面看到不一致状态。
 
 `SharedRouteTable`（`Arc<RwLock<RouteTable>>`）同时被 `NetControl`（查询侧）和 `Router`（TX dispatch 侧）持有，两者指向同一实例。控制面通过 `select_route_with_binding()` 提供 socket 级别的路由查询；`Router::dispatch()` 通过 `select_route_for_source()` 做实际发包时的出接口选择。两者共享同一套路由规则，但查询时机和过滤条件不同。
 
-## 初始化流程
+## 2. 初始化流程
 
 `init_network()` 是启动阶段控制面状态的构造入口。它按固定顺序构建 loopback、Ethernet 接口、静态地址、DNS registry 和共享路由表，然后把所有状态提交给 `NetControl` 和 `Service`。运行期新增设备和 Wi-Fi 模式切换会在同一套 `NetControl`/`RouteTable` 上追加或替换状态。
 
@@ -111,11 +90,13 @@ sequenceDiagram
 - `NetControl` 先于 `SERVICE` 初始化，确保 `get_control()` 在 poll worker 启动前可用。
 - DHCP bootstrap 只要求任一 DHCP 接口配置成功即返回，避免断网卡阻塞启动。
 
-## 数据模型
+初始化要点列表说明路由表共享和全局发布顺序是控制面一致性的基础，DHCP 等动态状态在此之后才能安全提交。数据模型章节将这些约束落实到接口 ID、快照、registry 和 DNS entry。
+
+## 3. 数据模型
 
 控制面状态分为三类：对外稳定的接口标识、可快照查询的接口/DNS 状态，以及被 Router 和 `NetControl` 共享的路由表。接口 ID 用于跨模块引用同一接口，接口快照用于系统 ABI 和诊断接口，`NetControl` 负责把这些状态组织成可查询的控制面视图。
 
-### 接口标识
+### 3.1 接口标识
 
 `InterfaceId(u32)` 是 `ax-net` 内部和对外统一的接口标识，也是 StarryOS Linux ABI 的 ifindex 来源。
 
@@ -156,9 +137,11 @@ impl InterfaceId {
 - `InterfaceId(0)` 是内部 TX 占位符，不对外暴露。
 - StarryOS 的 `SIOCGIFINDEX`、AF_PACKET `sockaddr_ll.sll_ifindex` 都应通过 `InterfaceId` 映射。
 
-### 接口快照
+接口标识列表说明内部 ID 与 Linux ifindex 使用同一稳定数值，并提供显式转换函数。接口快照在这个身份基础上附加名称、地址和 flags，而不暴露 registry 内部引用。
 
-对外接口信息使用 `InterfaceInfo`，它是快照，不是内部对象引用：
+### 3.2 接口快照
+
+对外接口信息使用拥有型 `InterfaceInfo`，把名称、`InterfaceId`、地址、flags 和设备类型作为同一控制面快照返回。查询方不会持有内部 registry 引用或读锁，因此可以安全完成 ioctl、netlink 和诊断编码，而不会阻塞后续 DHCP 提交。
 
 ```rust
 // config.rs
@@ -211,7 +194,7 @@ impl NetInterface {
 
 这里特意返回快照，是为了让查询方不持有内部锁，也不依赖接口状态长期不变。DHCP 更新、动态设备注册或后续 link state 更新都可能改变快照内容。
 
-### NetControl
+### 3.3 控制面状态
 
 `NetControl` 是控制面的核心对象。它在 `init_network()` 中创建，并早于 `SERVICE` 注册到全局 `NET_CONTROL`。
 
@@ -271,9 +254,9 @@ SERVICE.call_once(|| Mutex::new(service));
 
 这个共享关系很关键：控制面查询看到的是 `NetControl.routes`，数据面 TX dispatch 使用的是 `Router.table`，两者实际指向同一个 `SharedRouteTable`。
 
-### DNS 注册表
+### 3.4 DNS 注册表
 
-DNS server 不是简单地址列表，而是带来源和 metric 的 registry：
+DNS server 以带来源接口、metric 和来源类型的 `DnsServerEntry` 保存，而不是无上下文地址列表。`NetControl` 按路由偏好排序并去重，使 DHCP、静态配置和 fallback server 能共存，同时在接口状态删除时精确移除对应来源。
 
 ```rust
 pub enum DnsSource { Dhcp, Static, Fallback }
@@ -286,6 +269,8 @@ pub(crate) struct DnsServerEntry {
 }
 ```
 
+`DnsServerEntry` 的字段让控制面能够在接口 lease 变化时按来源精确替换，而不是清空整个 resolver 配置。下表把三个来源映射到创建时机和 metric，说明 fallback 为什么总排在具有接口上下文的 server 之后。
+
 | 来源 | 创建时机 | metric |
 | --- | --- | --- |
 | DHCP | DHCP ACK 后 `commit_interface_update()` | 对应接口 metric |
@@ -294,13 +279,13 @@ pub(crate) struct DnsServerEntry {
 
 `dns_servers()` 排序去重后返回纯地址列表。`dns_query_timeout()` 还会通过 route decision 过滤不可达 server。
 
-## 查询与决策
+## 4. 查询决策
 
 查询入口只返回快照或 route decision，不把内部锁、Router 设备索引以外的可变对象暴露给调用方。公共 API 通过 `lib.rs` facade 进入 `NetControl`，socket 实现则直接使用 crate 内部查询函数完成 bind/connect/send 前的决策。
 
-### 接口查询
+### 4.1 接口查询
 
-只读查询都走 `NetControl` 的读锁：
+接口只读查询都通过 `NetControl.state` 的读锁取得拥有型快照，并在返回前释放锁。`interfaces()`、按名称或 ID 查询以及本地地址推导共享同一 registry，避免 ABI 层各自解释接口状态并产生不一致结果。
 
 ```rust
 pub fn interfaces(&self) -> Vec<InterfaceInfo> {
@@ -361,7 +346,9 @@ pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig> {
 }
 ```
 
-### RouteTable
+接口查询代码表明 snapshot 在释放控制面读锁后交给调用者，避免 ABI 编码期间阻塞状态提交。路由表是另一份共享状态，通过独立读写锁同时服务查询与 Router dispatch。
+
+### 4.2 路由表
 
 `RouteTable` 存在于 `router.rs`，被 `Arc<RwLock<_>>` 包装为 `SharedRouteTable`。
 
@@ -392,9 +379,9 @@ pub struct RouteTable {
 
 这两个值不能混用。`dev` 是 Router 内部位置，`interface_id` 是公共语义。
 
-#### 排序策略
+#### 4.2.1 排序策略
 
-路由规则在 add/replace 后排序：
+路由规则在新增或按接口替换后立即按前缀长度、metric 和稳定插入序排序，使后续查询无需在热路径重复重排。排序规则同时服务 socket 预选路和 Router 实际 dispatch，任何变化都会影响多网卡出口优先级。
 
 ```rust
 fn sort_rules(&mut self) {
@@ -414,9 +401,11 @@ fn sort_rules(&mut self) {
 2. 低 metric 优先。
 3. 插入顺序稳定。
 
-#### 查询策略
+排序要点保证最长前缀与 metric 在所有查询入口中一致，插入序只负责稳定打破完全相同的候选。查询策略在此顺序上再应用目标、源地址与设备绑定过滤。
 
-普通路由查询使用 `select_route_if()`：
+#### 4.2.2 查询策略
+
+普通路由查询通过 `select_route_if()` 过滤地址族、目标前缀、可选源地址与 `DeviceBinding`，再返回排序后的首个候选。DNS server 选择和 Router dispatch 会使用更具体的包装入口，但都必须保持相同规则语义。
 
 ```rust
 pub fn select_route_if(
@@ -441,6 +430,8 @@ pub fn select_route_if(
 
 - 如果 socket 绑定了接口，只允许该接口。
 - 只允许 `InterfaceFlags::UP` 的接口。
+
+过滤条件先把不可用接口和违反 socket 绑定的候选排除，再由已排序的 `RouteTable` 返回最终 `RouteDecision`。下面的实现片段显示状态锁与路由锁只在查询期间持有，结果离开函数后不携带 guard。
 
 ```rust
 pub fn select_route_with_binding(
@@ -497,13 +488,13 @@ pub fn select_route_for_source(
 
 这个函数服务于多宿主场景：smoltcp 已经生成 IP 包并选择了源地址，Router 不能只按目的地址选路由，否则可能从 `eth1` 发出源地址属于 `eth0` 的包。
 
-## 状态更新流程
+## 5. 状态更新
 
-动态状态更新主要来自 DHCP 和运行期设备注册。更新必须同时覆盖 smoltcp `Interface` 地址、控制面接口快照、DNS registry 和 route table，避免外部查询和数据面发送路径看到不一致的网络状态。
+动态状态更新来自 DHCP、运行期 IPv4 地址 API、Wi-Fi 模式切换和设备注册。更新必须同时覆盖 smoltcp `Interface` 地址、控制面接口快照、DNS registry 和 route table，避免外部查询和数据面发送路径看到不一致的网络状态。
 
-### 路由规则更新
+### 5.1 路由规则更新
 
-静态接口初始化或 DHCP ACK 后都会生成一组 IPv4 规则：
+静态接口初始化和 DHCP ACK 都通过 `Router::ipv4_rules()` 为单个接口生成 connected 与可选 default route，再由控制面按来源整体替换。按接口替换而非逐条增删可以避免旧 lease 或旧 gateway 规则残留在共享路由表中。
 
 ```rust
 // router.rs
@@ -562,9 +553,9 @@ pub fn replace_ipv4_rules_for_interface(
 
 这保证 DHCP 更新不会留下旧地址或旧默认路由。
 
-### DHCP 事务更新
+### 5.2 DHCP 事务更新
 
-DHCP 更新跨越三类状态：
+DHCP 更新跨越 smoltcp IP address list、`NetControl` 接口/DNS 快照和共享 `RouteTable` 三类状态，由 `Service::commit_network_state()` 在协议核心锁内协调。事务式提交避免外部查询在地址、路由和 DNS 之间看到不一致中间态。
 
 - smoltcp `Interface` 的 IP address list。
 - `NetControl.state.interfaces` 中的 IPv4/gateway。
@@ -668,13 +659,32 @@ fn commit_interface_update(
 
 这个过程保证外部查询不会看到“接口地址已更新但 DNS/路由仍旧”的半更新状态。需要注意的是，smoltcp IP address list 的更新发生在 `Service` 内，因为它属于协议核心；`NetControl` 只维护对外查询和 route decision 所需状态。
 
-## Socket 绑定
+### 5.3 运行期 IPv4 地址更新
+
+`set_interface_ipv4()` 和 `remove_interface_ipv4()` 在 `SERVICE` 锁内分别调用 `configure_static_ipv4()` / `remove_static_ipv4()`，复用同一条 `commit_network_state()` 提交链。这个入口面向 StarryOS `RTM_NEWADDR` / `RTM_DELADDR`，边界比启动配置窄：只接受 Ethernet、每接口只有一个 IPv4、没有 gateway 参数。
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoAddress: 接口已注册
+    NoAddress --> DhcpPending: 启动/STA 启用 DHCP
+    DhcpPending --> DhcpBound: DHCP ACK
+    DhcpPending --> StaticAddress: RTM_NEWADDR\n删除 DHCP state
+    DhcpBound --> NoAddress: RTM_DELADDR 精确匹配\n删除 DHCP route/DNS
+    DhcpBound --> StaticAddress: 需先 RTM_DELADDR\n再 RTM_NEWADDR
+    StaticAddress --> NoAddress: RTM_DELADDR 精确匹配
+    NoAddress --> StaticAddress: RTM_NEWADDR\nconnected route only
+    StaticAddress --> StaticAddress: 第二次 RTM_NEWADDR\nAlreadyExists
+```
+
+设置地址时提交 `gateway=None` 和空 DHCP DNS，只安装 connected route；因此它不能替代带默认网关的 `StaticIpConfig`。删除地址不会自动恢复 DHCP，如需 DHCP 必须经 STA 重配或重新初始化对应 DHCP 状态。
+
+## 6. Socket 绑定
 
 socket 层通过控制面把本地地址、`SO_BINDTODEVICE` 和 DNS server 可达性统一到接口语义上。绑定结果不直接保存设备索引，而是保存稳定的 `InterfaceId`，后续 route lookup 和 waker 注册再根据它过滤可用接口。
 
-### 本地地址推导
+### 6.1 本地地址推导
 
-`bind(具体本地地址)` 会推导接口绑定。核心函数是 `local_binding_for()`：
+对具体本地地址执行 bind 时，`local_binding_for()` 会从接口 registry 推导唯一 `InterfaceId`，并把它写入 socket 的 `DeviceBinding`。该约束会参与后续选路、readiness 和接收过滤；wildcard 地址则不会隐式绑定某个设备。
 
 ```rust
 pub fn local_binding_for(&self, endpoint: &IpListenEndpoint) -> NetResult<DeviceBinding> {
@@ -727,7 +737,9 @@ if binding.bound_if.is_some() {
 }
 ```
 
-### DeviceBinding
+本地地址推导代码只返回接口约束，不修改 route 或 socket payload 状态。设备绑定将这个结果以原子 ID 保存到 `GeneralOptions`，供后续查询和 waker 注册复用。
+
+### 6.2 设备绑定
 
 `DeviceBinding` 对应 Linux `SO_BINDTODEVICE` 和本地地址推导出的接口约束：
 
@@ -765,10 +777,12 @@ pub fn device_binding(&self) -> DeviceBinding {
 影响范围：
 
 - `select_route_with_binding()` 只允许匹配接口的 route。
-- `register_waker(binding, waker)` 只向匹配接口的设备注册 waker。
+- `register_waker(binding, waker)` 先在设备锁内取得匹配接口的 `readiness_poll()`，释放设备锁后再注册 waker；没有 IRQ/OOB readiness source 的设备依靠 RX worker 的 10 ms 兜底轮询。
 - `SO_BINDTODEVICE` 设置后，socket 不应被无关设备 readiness 唤醒。
 
-## 运行期设备注册
+设备绑定影响列表说明约束贯穿选路和 readiness，但不会修改全局接口状态。运行期设备注册属于另一类控制面写入，需要新增接口、地址、路由和 Worker，而不是复用 socket 绑定状态。
+
+## 7. 运行期设备注册
 
 启动时注册的 NIC 和运行期新增的静态设备都通过同一套接口 registry、smoltcp address list 和 route table 更新路径进入协议栈。控制面因此不是只读配置表，而是网络状态变化的提交点。
 
@@ -817,9 +831,7 @@ pub fn register_static_device(
 
 这条路径说明控制面不是仅启动时静态表；它也能接收运行期新增接口，并把新接口加入 registry、route table 和 smoltcp address list。
 
-### Wi-Fi 模式切换
-
-`Service` 提供运行时 Wi-Fi 模式切换方法。`reconfigure_as_ap()` 将设备转为 SoftAP 模式并可选启用 DHCP 服务器：
+Wi-Fi 模式切换复用同一提交边界。`Service` 的 `reconfigure_as_ap()` 将设备转为 SoftAP 模式并可选启用 DHCP 服务器，而 `reconfigure_as_sta()` 会清理 AP 状态并恢复 DHCP client，因此两种方向都必须同步协议地址、控制面快照和路由规则。
 
 ```rust
 pub fn reconfigure_as_ap(
@@ -858,13 +870,11 @@ pub fn reconfigure_as_sta(&mut self, dev: usize, mac: EthernetAddress) {
 
 这两个方法都是 `Service` 持有锁时调用的，保证 smoltcp IP address list、`NetControl` 状态和 `RouteTable` 原子更新。
 
-## 并发与锁
+## 8. 并发边界
 
 控制面锁只保护接口、DNS 和路由状态，不保护设备收发队列，也不推进 smoltcp poll。数据面 worker、socket 热路径和 DHCP commit 通过固定锁顺序进入控制面，避免设备锁与协议核心锁互相反向嵌套。
 
-### 锁边界
-
-控制面锁边界应遵循：
+控制面锁边界由查询和提交路径的不同所有权决定。维护 `NetControl.state`、`SharedRouteTable` 或 DHCP commit 时，需要遵循以下约束，才能避免设备锁与协议核心锁之间形成反向嵌套：
 
 - 只读查询只持 `NetControl.state.read()`，返回快照后释放锁。
 - 路由查询同时读取 `state` 和 `routes`，不进入设备锁。
@@ -889,38 +899,13 @@ control query path:
 
 控制面查询路径通常不持有 `SERVICE`，因此 `interfaces()`、`default_routes()`、`dns_servers()` 不会阻塞在 smoltcp poll 上；运行期 commit 则由 `Service` 协调，确保 smoltcp 地址和控制面状态一致。
 
-## 与数据面的交互
+## 9. 数据面交互
 
 控制面状态不是被动配置表——它在 socket 操作的每个关键路径上被主动查询。以下是 TCP/UDP socket 典型生命周期中控制面的参与点：
 
-```mermaid
-flowchart LR
-    subgraph Socket["Socket 操作"]
-        Bind["bind(addr)"]
-        Connect["connect(dst)"]
-        Send["send(data)"]
-    end
+![socket 操作跨越控制面与数据面的边界](images/control-data-boundary.svg)
 
-    subgraph Control["控制面查询"]
-        LB["local_binding_for()"]
-        SR["select_route_with_binding()"]
-        RW["register_waker(binding)"]
-    end
-
-    subgraph Data["数据面"]
-        Dispatch["Router::dispatch()"]
-        Snoop["snoop_tcp_packet()"]
-        Poll["smoltcp Interface::poll()"]
-    end
-
-    Bind -->|"推导接口"| LB
-    LB -->|"DeviceBinding"| RW
-    Connect -->|"查路由"| SR
-    SR -->|"RouteDecision"| Send
-    Send -->|"写入 smoltcp TX buffer"| Poll
-    Poll -->|"TX IP 包"| Dispatch
-    Dispatch -->|"select_route_for_source()"| Control
-```
+图中的控制面查询不会直接发送 packet，而是为 socket 形成地址和接口约束；真正的发送仍由 smoltcp 与 Router 在后续 poll 中完成。以下生命周期要点把 bind、connect、send 和 readiness 分别对应到这两个阶段。
 
 - **bind**：`local_binding_for()` 从监听地址推导出 `DeviceBinding`，写入 `GeneralOptions::bound_if`。
 - **connect**：`select_route_with_binding()` 按目的地址 + 绑定约束选出接口和源地址，smoltcp 用此源地址构造 SYN。

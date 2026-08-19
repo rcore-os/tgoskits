@@ -59,58 +59,15 @@ StarryOS 的 Linux 语义留在 Starry kernel `mm/`、syscall 和 procfs 接线�
 
 ### 2.1 组件依赖图
 
-该图省略日志、错误和同步基础库，只展示会影响内存所有权的主路径。
+依赖图省略日志、错误和同步基础库，只展示会影响内存所有权、页表帧来源和设备资源释放的主路径。实线表示直接机制依赖，虚线表示上层通过 trait 或平台函数注入能力。
 
-```mermaid
-flowchart TB
-    subgraph Boot["启动事实与交接"]
-        FW["UEFI / U-Boot / DTB"] --> SB["someboot"]
-        SB --> KU["kernutil::memory"]
-        SB --> PLAT["axplat-dyn / ax-hal"]
-    end
-
-    subgraph Core["公共内存机制"]
-        ADDR["ax-memory-addr"]
-        ALLOC["ax-alloc"] --> BUDDY["buddy-slab-allocator"]
-        COREPT["page-table-generic"] --> ADDR
-        HOSTPT["axcpu::paging"] --> COREPT
-        GUESTPT["axvm Stage-2"] --> COREPT
-        BOOTPT["someboot paging"] --> COREPT
-        SET["ax-memory-set"] --> ADDR
-        SMM["Starry kernel mm"] --> ADDR
-    end
-
-    subgraph Policy["并列策略层"]
-        AXMM["ax-mm"] --> SET
-        AXMM --> HOSTPT
-        STARRY["Starry kernel mm"] --> SMM
-        STARRY --> SET
-        STARRY --> HOSTPT
-        GUEST["axaddrspace"] --> SET
-        AXVM["axvm adapter"] --> GUEST
-        AXVM --> GUESTPT
-    end
-
-    subgraph Device["设备能力"]
-        DMA["dma-api"]
-        MMIO["mmio-api"]
-        KDMA["axklib::dma"] --> DMA
-        KMMIO["axklib::mmio"] --> MMIO
-    end
-
-    PLAT --> ALLOC
-    AXMM -. "FrameAllocator" .-> ALLOC
-    STARRY -. "FrameAllocator" .-> ALLOC
-    AXVM -. "HostMemory / FrameAllocator" .-> ALLOC
-    KDMA --> ALLOC
-    KMMIO --> AXMM
-```
+![内存组件源码依赖方向](./images/memory-source-dependencies.svg)
 
 公共页表层只知道“如何申请、释放和访问一个页表帧”，不知道该页来自 Buddy、启动线性分配器还是测试 provider。这个边界消除了启动页表依赖运行时堆的循环。
 
 ### 2.2 禁止的反向依赖
 
-以下依赖会制造第二份所有权或把系统策略泄漏到公共层，因此不应出现。
+反向依赖会制造第二份资源入口，或把 StarryOS、Axvisor 和驱动策略泄漏到可复用机制层。下表给出禁止方向、具体风险和应当使用的能力边界，新增依赖时需要逐项核对。
 
 | 禁止方向 | 原因 | 正确边界 |
 | --- | --- | --- |
@@ -120,6 +77,8 @@ flowchart TB
 | `dma-api → ax-alloc` | 设备能力接口不能选择全局 allocator | `axklib::dma` 或 OS adapter 实现 `DeviceDma` |
 | 驱动 → `ax-mm::iomap()` | 驱动不应绑定某个操作系统地址空间 | 驱动依赖 `mmio-api` |
 | ArceOS/StarryOS → Buddy 内部类型 | 绕过公共统计、zone 和所有权 | 只调用 `ax-alloc` |
+
+这些反向依赖即使能够编译，也会把 allocator、操作系统策略或设备生命周期绑定到错误层级；审查依赖树时应将它们视为边界退化，而不是普通重构差异。
 
 ## 3. 关键调用链
 
@@ -159,3 +118,5 @@ firmware entry
 | Starry 匿名页 | 缺页 backend → `ax-alloc` → 页表映射 → RSS 记账 | 解除页表映射、撤销记账、最后归还物理页 |
 | 客户机 RAM | `axaddrspace` backend → `ax-alloc` → 第二阶段页表 | 客户机解除映射或虚拟机销毁 |
 | DMA buffer | `DeviceDma` → `axklib::dma` → `ax-alloc` | 资源所有者 Drop 或按值消费 token |
+
+任一调用链新增缓存、引用表或延迟回收后，都必须同步明确该状态由谁持有、在什么事件后释放，以及失败是否保留已经成功的前缀。

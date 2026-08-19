@@ -13,55 +13,7 @@ TGOSKits 的内存管理采用“启动期事实发现、运行期统一分配�
 
 下图是源码级总体架构。纵向箭头表示所有权或能力向下传递，横向并列的 `ax-mm`、StarryOS memory management 和 `axaddrspace` 分别维护 ArceOS、Linux 兼容环境和客户机的策略，不形成彼此包装关系。
 
-```mermaid
-flowchart TB
-    subgraph Firmware["固件与启动阶段"]
-        FW["UEFI / U-Boot / Device Tree Blob"] --> BOOT["someboot"]
-        BOOT --> BMAP["someboot::mem\n固定容量启动内存图\n(kernutil 描述符 + ranges-ext 合并)"]
-        BOOT --> BOOTPT["someboot::paging\nboot tables"]
-        BMAP --> HANDOFF["axplat-dyn / ax-hal\n规范化 Free、Reserved、MMIO"]
-    end
-
-    subgraph Runtime["公共运行时机制"]
-        HANDOFF --> ALLOC["ax-alloc\n页、内核堆、GlobalAlloc、统计"]
-        ALLOC --> BS["buddy-slab-allocator\n多 section Buddy + 每 CPU Slab"]
-        CORE["page-table-generic\ngeneric walker"]
-        HOSTPT["axcpu ArchPagingMeta + ax-hal\nHost Stage-1"]
-        GUESTPT["axvm\nGuest Stage-2"]
-        SET["ax-memory-set\n虚拟区域 + 直接 backend 操作"]
-        ADDR["ax-memory-addr\n地址与范围"]
-        CORE --> ADDR
-        HOSTPT --> CORE
-        GUESTPT --> CORE
-        BOOTPT --> CORE
-        SET --> ADDR
-    end
-
-    subgraph Policy["并列地址空间策略"]
-        AXMM["ax-mm\nArceOS 第一阶段"]
-        STARRY["Starry kernel mm\nLinux 兼容策略"]
-        AXAS["axaddrspace\n客户机 GPA 策略"]
-        AXVM["axvm adapter\nNestedPageTableOps"]
-        AXMM --> HOSTPT
-        AXMM --> SET
-        STARRY --> HOSTPT
-        STARRY --> SET
-        AXAS --> SET
-        AXVM --> AXAS
-        AXVM --> GUESTPT
-    end
-
-    subgraph Device["设备能力边界"]
-        DMA["dma-api + axklib::dma"]
-        MMIO["mmio-api + axklib::mmio"]
-    end
-
-    ALLOC -. "FrameAllocator" .-> AXMM
-    ALLOC -. "FrameAllocator" .-> STARRY
-    ALLOC -. "HostMemory / FrameAllocator" .-> AXVM
-    ALLOC --> DMA
-    MMIO --> AXMM
-```
+![TGOSKits 内存管理总体架构](./images/memory-architecture.svg)
 
 源码目录和关键调用链见[内存管理源码结构](./source-map.md)，客户机 GPA 策略和 AxVM adapter 见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md)，各架构的地址转换、页表根、页表项和失效差异见[多架构内存实现](./architecture-support.md)，锁类型和顺序见[内存管理锁与并发](./concurrency.md)。
 

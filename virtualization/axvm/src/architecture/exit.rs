@@ -22,17 +22,7 @@ pub(crate) fn try_handle_mmio_read<V: VmArchVcpuOps>(
     vcpu: &crate::vm::AxVCpuRef<V>,
     exit: MmioReadExit,
 ) -> AxVmResult<bool> {
-    let access = DeviceAccess::new(
-        DeviceVcpuId::new(vcpu.id()),
-        BusKind::Mmio,
-        exit.addr.as_usize() as u64,
-        exit.width,
-    );
-    let Some(raw) = vm
-        .get_devices()?
-        .try_read(&access)
-        .map_err(|error| AxVmError::device("read guest MMIO", error))?
-    else {
+    let Some(raw) = try_read_mmio_value(vm, vcpu, exit.addr, exit.width)? else {
         return Ok(false);
     };
     let masked = raw as usize & crate::vm::width_mask(exit.width);
@@ -43,6 +33,35 @@ pub(crate) fn try_handle_mmio_read<V: VmArchVcpuOps>(
     };
     vcpu.set_gpr(exit.reg, val);
     Ok(true)
+}
+
+pub(crate) fn read_mmio_value<V: VmArchVcpuOps>(
+    vm: &crate::AxVM,
+    vcpu: &crate::vm::AxVCpuRef<V>,
+    addr: axvm_types::GuestPhysAddr,
+    width: axvm_types::AccessWidth,
+) -> AxVmResult<usize> {
+    match try_read_mmio_value(vm, vcpu, addr, width)? {
+        Some(raw) => Ok(raw as usize),
+        None => Err(missing_mmio_error("read", addr, width)),
+    }
+}
+
+pub(crate) fn try_read_mmio_value<V: VmArchVcpuOps>(
+    vm: &crate::AxVM,
+    vcpu: &crate::vm::AxVCpuRef<V>,
+    addr: axvm_types::GuestPhysAddr,
+    width: axvm_types::AccessWidth,
+) -> AxVmResult<Option<u64>> {
+    let access = DeviceAccess::new(
+        DeviceVcpuId::new(vcpu.id()),
+        BusKind::Mmio,
+        addr.as_usize() as u64,
+        width,
+    );
+    vm.get_devices()?
+        .try_read(&access)
+        .map_err(|error| AxVmError::device("read guest MMIO", error))
 }
 
 pub(crate) fn handle_mmio_write<A: ArchOps>(

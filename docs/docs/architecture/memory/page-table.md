@@ -13,6 +13,8 @@ sidebar_label: "页表分层"
 
 ### 1.1 所有权边界
 
+页表核心、主机架构事实、客户机第二阶段和启动页表分别由不同目录拥有。下表列出每个所有者导出的关键类型与直接消费者，避免把同名页表操作误认为同一执行上下文。
+
 | 所有者 | 主要源码 | 主要类型 | 消费者 |
 | --- | --- | --- | --- |
 | `page-table-generic` | `memory/page-table-generic/src/` | `FrameAllocator`、`PageTable`、`TableMeta`、`PageTableEntry`、`PteConfigOf` | `axcpu`、`ax-hal`、`axvm`、`someboot` |
@@ -26,17 +28,7 @@ sidebar_label: "页表分层"
 
 公共算法只依赖地址类型和固定开销容器，不依赖 `ax-alloc`。启动 provider 使用 bump arena，主机运行时 provider 使用 Buddy，第二阶段 provider 使用 AxVM 的主机页能力，测试使用模拟 frame source。地址转换后备缓冲区失效是 `TableMeta::flush()` 的必需方法，由各架构 adapter 注入本 CPU 指令；多核远端失效由 `ax-hal` 的 shootdown 基础设施另行提供，不进入公共核心接口。
 
-```mermaid
-flowchart BT
-    Addr["ax-memory-addr"] --> Core["page-table-generic\narchitecture-neutral walker"]
-    Core --> Host["ax-hal::paging::PageTable\nHost Stage-1 instance"]
-    Core --> Guest["axvm::npt + arch\nGuest Stage-2"]
-    Core --> Boot["someboot::paging\nboot tables"]
-    AxcpuMeta["axcpu\nArchPagingMeta + MappingFlags + arch PTE"] --> Host
-    RuntimeProvider["ax-hal::PagingAllocator\nax-alloc"] --> Host
-    GuestProvider["AxVM PagingHandler"] --> Guest
-    BootProvider["someboot::mem::ram::Ram"] --> Boot
-```
+![页表机制与执行上下文分层](./images/page-table-architecture.svg)
 
 frame provider 是能力注入，不是 allocator facade。页表层收到 `None` 时返回 `PagingError::NoMemory`，不会注册 reclaim callback 或重试。
 
@@ -307,14 +299,7 @@ ArceOS/Starry production tree 不应直接依赖 `axvm` 的第二阶段实现；
 
 若 L4、L3 已存在而 L2 指向空 entry，映射 4 KiB 页需要为 L1 table 申请一个 frame，再写最终 leaf 页表项。任何中间 frame allocation 返回 `None` 都转换为 `PagingError::NoMemory`，已经临时建立但未链接的 frame 必须释放。
 
-```mermaid
-flowchart LR
-    Root["root frame"] --> L4["L4[0x100]"]
-    L4 --> L3["L3[0x000]"]
-    L3 --> L2["L2[0x091]"]
-    L2 --> L1["L1[0x145]"]
-    L1 --> Frame["target 物理地址 + flags"]
-```
+![四级页表遍历](./images/page-table-walk.svg)
 
 如果目标使用 2 MiB mapping，leaf 停在 L2，虚拟地址、物理地址和 size 都必须 2 MiB 对齐；query 返回该 block 的 base 物理地址，再加 `PageSize::align_offset(vaddr)` 得到最终物理地址。已有 huge entry 下不能静默创建更低一级 table，否则会破坏原映射。
 
