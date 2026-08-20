@@ -293,10 +293,10 @@ pub fn sys_mknodat(
     Ok(res)
 }
 
-// Directory buffer for getdents64 syscall
+// Directory buffer for getdents64 syscall.
 //
-// Linux fills user memory directly while iterating. StarryOS needs this
-// temporary representation to serialize a VFS entry, so keep its allocation
+// Linux serializes directory entries directly into user memory. StarryOS needs
+// a temporary representation while iterating the VFS, so keep that allocation
 // bounded independently of the userspace `count` argument.
 const GETDENTS_BUFFER_SIZE: usize = 4096;
 
@@ -352,14 +352,14 @@ pub fn sys_getdents64(
     current: &crate::task::UserTaskRef,
     fd: i32,
     buf: *mut u8,
-    len: usize,
-) -> crate::StarryResult<isize> {
+    len: u32,
+) -> StarryResult<isize> {
     debug!("sys_getdents64 <= fd: {fd}, buf: {buf:?}, len: {len}");
 
     // Resolve the descriptor before allocating any user-controlled amount of
     // kernel memory. A bad fd must return EBADF rather than consume `len` bytes.
     let dir = Directory::from_fd(fd)?;
-    let mut buffer = DirBuffer::new(len.min(GETDENTS_BUFFER_SIZE));
+    let mut buffer = DirBuffer::new((len as usize).min(GETDENTS_BUFFER_SIZE));
     let mut dir_offset = dir.offset.lock();
 
     let mut has_remaining = false;
