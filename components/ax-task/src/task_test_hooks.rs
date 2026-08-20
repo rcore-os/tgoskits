@@ -31,6 +31,8 @@ static PARK_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static SWITCH_TAIL_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
 static POLICY_SWITCH_HANDOFF_TARGET: AtomicU64 = AtomicU64::new(0);
 static POLICY_SWITCH_HANDOFF_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static PI_OUTGOING_RECLASS_TARGET: AtomicU64 = AtomicU64::new(0);
+static PI_OUTGOING_RECLASS_COUNT: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_RT_PERIOD_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
@@ -1031,6 +1033,43 @@ pub(crate) fn pause_policy_switch_handoff(previous: ThreadId) {
     }
     POLICY_SWITCH_HANDOFF_TARGET.store(0, Ordering::Relaxed);
     POLICY_SWITCH_HANDOFF_STAGE.store(STAGE_IDLE, Ordering::Release);
+}
+
+/// Arms PI reclassification accounting for one outgoing task which has left
+/// `rq->curr` but still retains its switch-tail `on_cpu` claim.
+pub fn arm_pi_outgoing_reclassification_probe(thread: u64) {
+    assert_ne!(thread, 0, "a PI outgoing identity must be non-zero");
+    PI_OUTGOING_RECLASS_COUNT.store(0, Ordering::Relaxed);
+    assert_eq!(
+        PI_OUTGOING_RECLASS_TARGET.compare_exchange(
+            0,
+            thread,
+            Ordering::Release,
+            Ordering::Relaxed,
+        ),
+        Ok(0),
+        "only one PI outgoing reclassification probe may be armed"
+    );
+}
+
+/// Returns whether the armed outgoing task completed a PI reclassification.
+pub fn pi_outgoing_reclassification_observed() -> bool {
+    PI_OUTGOING_RECLASS_COUNT.load(Ordering::Acquire) != 0
+}
+
+/// Takes the number of PI reclassifications observed for the armed task.
+pub fn take_pi_outgoing_reclassification_count() -> Option<u64> {
+    let target = PI_OUTGOING_RECLASS_TARGET.swap(0, Ordering::AcqRel);
+    if target == 0 {
+        return None;
+    }
+    Some(PI_OUTGOING_RECLASS_COUNT.swap(0, Ordering::AcqRel))
+}
+
+pub(crate) fn record_pi_outgoing_reclassification(thread: ThreadId) {
+    if PI_OUTGOING_RECLASS_TARGET.load(Ordering::Acquire) == thread.as_u64() {
+        PI_OUTGOING_RECLASS_COUNT.fetch_add(1, Ordering::Release);
+    }
 }
 
 /// Arms one real running-to-blocked park for IRQ-owner accounting.

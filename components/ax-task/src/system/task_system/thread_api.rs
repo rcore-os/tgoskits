@@ -28,15 +28,18 @@ impl TaskSystem {
             (Arc::clone(&record.core), Arc::clone(&record.sched))
         };
         let sched = sched_cell.lock();
-        let running_now_ns = if let Some(cpu) = sched.placement.execution_cpu() {
+        let running_now_ns = if let Some(cpu) = sched.placement.assigned_cpu() {
             let remote = self
                 .cpu_remotes
                 .get(cpu.as_usize())
                 .ok_or(TaskError::InvalidCpu(cpu.as_u32()))?;
             let transaction = OwnerRqTxn::begin(self, remote);
-            let now_ns = transaction.clock().task().as_nanos();
+            let rq_state = transaction.task_state(thread, &sched.placement);
+            let now_ns = rq_state
+                .is_current()
+                .then(|| transaction.clock().task().as_nanos());
             transaction.commit();
-            Some(now_ns)
+            now_ns
         } else {
             None
         };
@@ -65,7 +68,7 @@ impl TaskSystem {
         let record = state.thread_record_mut(current)?;
         let mut sched = record.sched.lock();
         if sched.lifecycle.state() != ThreadState::Running
-            || sched.placement.execution_cpu() != Some(owner)
+            || sched.placement.queued_cpu() != Some(owner)
             || sched.placement.on_cpu() != Some(owner)
         {
             return Err(TaskError::InvalidConfiguration);
@@ -98,7 +101,7 @@ impl TaskSystem {
         let record = state.thread_record_mut(current)?;
         let mut sched = record.sched.lock();
         if sched.lifecycle.state() != ThreadState::Running
-            || sched.placement.execution_cpu() != Some(owner)
+            || sched.placement.queued_cpu() != Some(owner)
             || sched.placement.on_cpu() != Some(owner)
             || record.resources.address_space().is_none()
         {
@@ -251,7 +254,7 @@ impl TaskSystem {
         Self::finish_policy_admission_locked(&mut root_domain, &core, applied.commit);
         drop(root_domain);
         drop(sched);
-        Self::notify_policy_generation(&core, applied.commit, Some(applied.owner_now_ns));
+        Self::notify_policy_generation(&core, applied.commit);
         self.recompute_pi_after_policy_update(core.id())
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5049_1216, core.id().as_u64() as usize)

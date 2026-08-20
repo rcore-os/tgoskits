@@ -19,7 +19,7 @@ impl TaskSystem {
                 return Err(TaskError::StaleThreadId);
             }
             let mut sched = record.sched.lock();
-            if sched.placement.queued_cpu().is_some() || sched.placement.execution_cpu().is_some() {
+            if sched.placement.queued_cpu().is_some() {
                 return Err(TaskError::AlreadyQueued);
             }
             if sched.placement.on_cpu().is_some() {

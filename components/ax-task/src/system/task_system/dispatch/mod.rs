@@ -1,13 +1,31 @@
 //! Wake consumption, runqueue dispatch, and policy-application internals.
 
 use super::*;
+use crate::system::OwnerRqTaskState;
 
 #[derive(Clone, Copy)]
 pub(super) struct PolicyGenerationCommit {
     pub(super) base_policy: SchedulePolicy,
-    pub(super) running_policy_changed: bool,
+    pub(super) application: PolicyApplication,
     pub(super) held_deadline_reservation: u64,
     pub(super) committed_deadline_reservation: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum PolicyApplication {
+    Current { owner_now_ns: u64 },
+    Queued,
+    Inactive,
+}
+
+impl PolicyApplication {
+    pub(super) const fn from_rq_state(state: OwnerRqTaskState, owner_now_ns: u64) -> Self {
+        match state {
+            OwnerRqTaskState::Current => Self::Current { owner_now_ns },
+            OwnerRqTaskState::Queued { .. } => Self::Queued,
+            OwnerRqTaskState::Inactive => Self::Inactive,
+        }
+    }
 }
 
 #[cfg(any(test, all(axtest, feature = "axtest")))]

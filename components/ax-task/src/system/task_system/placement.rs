@@ -63,14 +63,10 @@ impl TaskSystem {
         {
             return false;
         }
-        let placement_is_allowed = [
-            sched.placement.queued_cpu(),
-            sched.placement.execution_cpu(),
-            sched.placement.on_cpu(),
-        ]
-        .into_iter()
-        .flatten()
-        .all(|cpu| sched.affinity.affinity.contains(cpu));
+        let placement_is_allowed = [sched.placement.queued_cpu(), sched.placement.on_cpu()]
+            .into_iter()
+            .flatten()
+            .all(|cpu| sched.affinity.affinity.contains(cpu));
         placement_is_allowed && core.publish_affinity_completion(sched.affinity.affinity_generation)
     }
 
@@ -251,7 +247,7 @@ impl TaskSystem {
         let core = cpu.current_core().ok_or(TaskError::NoRunnableThread)?;
         let current = core.id();
         let mut sched = core.sched().lock();
-        if sched.placement.execution_cpu() != Some(cpu.owner())
+        if sched.placement.queued_cpu() != Some(cpu.owner())
             || sched.placement.on_cpu() != Some(cpu.owner())
         {
             return Err(TaskError::InvalidConfiguration);

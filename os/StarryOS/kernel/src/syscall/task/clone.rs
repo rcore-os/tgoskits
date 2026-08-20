@@ -10,9 +10,9 @@ use starry_signal::Signo;
 
 use super::schedule_abi::fork_schedule_policy;
 #[cfg(target_arch = "riscv64")]
-use crate::task::prepare_user_thread_with_fp_state_and_policy;
+use crate::task::prepare_user_thread_with_fp_scheduler_state;
 #[cfg(not(target_arch = "riscv64"))]
-use crate::task::prepare_user_thread_with_policy;
+use crate::task::prepare_user_thread_with_scheduler_state;
 use crate::{
     StarryError, StarryResult,
     file::{FD_TABLE, PidFd, PreparedFileDescriptor, prepare_file_like},
@@ -20,7 +20,7 @@ use crate::{
     sync::SpinLock,
     task::{
         PidIdentity, PidReservation, PidReservationKind, ProcessData, ProcessDataInit,
-        ProcessImage, Tgid, Thread, Tid, TidNumber, new_user_task,
+        ProcessImage, Tgid, Thread, Tid, TidNumber, UserThreadInitialSchedulerState, new_user_task,
     },
 };
 
@@ -295,6 +295,11 @@ impl CloneArgs {
             ax_std::os::arceos::task::SchedulePolicy::Fair { nice, .. } => i32::from(nice.get()),
             _ => curr_thread.nice(),
         };
+        let child_scheduler_state = UserThreadInitialSchedulerState::new(
+            child_policy,
+            curr.affinity(),
+            child_reset_on_fork,
+        );
 
         #[cfg(target_arch = "riscv64")]
         let child_fp_state = {
@@ -531,24 +536,22 @@ impl CloneArgs {
         }
 
         #[cfg(target_arch = "riscv64")]
-        let prepared_task = prepare_user_thread_with_fp_state_and_policy(
+        let prepared_task = prepare_user_thread_with_fp_scheduler_state(
             new_user_task(new_uctx, set_child_tid, child_visible_tid),
             alloc::string::String::from(curr.name().as_ref()),
             crate::config::KERNEL_STACK_SIZE,
             child_fp_state,
             thr,
-            child_policy,
-            child_reset_on_fork,
+            child_scheduler_state,
         )
         .map_err(map_task_creation_error)?;
         #[cfg(not(target_arch = "riscv64"))]
-        let prepared_task = prepare_user_thread_with_policy(
+        let prepared_task = prepare_user_thread_with_scheduler_state(
             new_user_task(new_uctx, set_child_tid, child_visible_tid),
             alloc::string::String::from(curr.name().as_ref()),
             crate::config::KERNEL_STACK_SIZE,
             thr,
-            child_policy,
-            child_reset_on_fork,
+            child_scheduler_state,
         )
         .map_err(map_task_creation_error)?;
 

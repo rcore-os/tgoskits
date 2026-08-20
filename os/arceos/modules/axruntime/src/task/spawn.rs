@@ -173,7 +173,7 @@ where
     }
 }
 
-/// Creates a user thread with its policy installed before run-queue publication.
+/// Prepares a user thread with its scheduler state installed before publication.
 ///
 /// # Safety
 ///
@@ -218,13 +218,14 @@ where
 ///
 /// The extension and address-space ownership rules are identical to
 /// [`spawn_raw_with_extension_in_address_space_and_policy`].
-pub unsafe fn prepare_raw_with_extension_in_address_space_and_policy<F>(
+pub unsafe fn prepare_raw_with_extension_in_address_space_and_scheduler_state<F>(
     entry: F,
     name: String,
     stack_size: usize,
     os_extension: Option<ThreadExtension>,
     address_space: TaskAddressSpace,
     policy: SchedulePolicy,
+    affinity: CpuSet,
 ) -> Result<PreparedThread, TaskError>
 where
     F: FnOnce() + Send + 'static,
@@ -235,7 +236,7 @@ where
             name,
             stack_size,
             os_extension,
-            None,
+            Some(affinity),
             policy,
             InitialContextState::user(address_space),
         )
@@ -309,14 +310,14 @@ where
     }
 }
 
-/// Prepares a RISC-V user thread with FP state without making it runnable.
+/// Prepares a RISC-V user thread with FP and scheduler state before publication.
 ///
 /// # Safety
 ///
 /// The ownership rules are identical to
 /// [`spawn_raw_with_extension_in_address_space_and_fp_state_and_policy`].
 #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
-pub unsafe fn prepare_raw_with_extension_in_address_space_and_fp_state_and_policy<F>(
+pub unsafe fn prepare_raw_with_extension_in_address_space_and_fp_scheduler_state<F>(
     entry: F,
     name: String,
     stack_size: usize,
@@ -324,6 +325,7 @@ pub unsafe fn prepare_raw_with_extension_in_address_space_and_fp_state_and_polic
     address_space: TaskAddressSpace,
     fp_state: ax_hal::cpu::FpState,
     policy: SchedulePolicy,
+    affinity: CpuSet,
 ) -> Result<PreparedThread, TaskError>
 where
     F: FnOnce() + Send + 'static,
@@ -334,7 +336,7 @@ where
             name,
             stack_size,
             os_extension,
-            None,
+            Some(affinity),
             policy,
             InitialContextState::user_with_fp_state(address_space, fp_state),
         )

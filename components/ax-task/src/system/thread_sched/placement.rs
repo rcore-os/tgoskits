@@ -76,13 +76,6 @@ impl SchedulerPlacement {
             .flatten()
     }
 
-    pub(in crate::system) fn execution_cpu(&self) -> Option<CpuId> {
-        let state = self.snapshot();
-        (state.on_rq == TaskOnRunQueue::Queued && state.task_cpu == state.on_cpu)
-            .then_some(state.on_cpu)
-            .flatten()
-    }
-
     pub(in crate::system) fn on_cpu(&self) -> Option<CpuId> {
         self.snapshot().on_cpu
     }
@@ -113,10 +106,6 @@ impl SchedulerPlacement {
 
     pub(in crate::system) fn has_pending_migration(&self) -> bool {
         self.committed_migration_target().is_some() || self.requested_migration().is_some()
-    }
-
-    pub(in crate::system) fn can_continue_running_on(&self, cpu: CpuId) -> bool {
-        self.execution_cpu() == Some(cpu) && self.requested_migration().is_none()
     }
 
     /// Linux `task_cpu()`: the last committed rq assignment.

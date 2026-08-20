@@ -5,9 +5,37 @@ use crate::{
     BalanceScan, EnqueueReason, FairEntity, PickedThread, QueuedThreadSnapshot, RtEligibility,
     system::{
         task_system::{SwitchEndpoint, TaskSystem},
-        thread_sched::{ThreadSchedCell, ThreadSchedState},
+        thread_sched::{SchedulerPlacement, ThreadSchedCell, ThreadSchedState},
     },
 };
+
+/// Linux `task_current()` and `task_on_rq_queued()` facts sampled under one rq
+/// lock.
+///
+/// `Queued { outgoing: true }` is the legal switch-handoff window where the
+/// task has left `rq->curr` but still retains its `p->on_cpu` stack claim.
+/// Keeping this state typed prevents callers from reconstructing current
+/// identity from placement metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::system) enum OwnerRqTaskState {
+    Current,
+    Queued { outgoing: bool },
+    Inactive,
+}
+
+impl OwnerRqTaskState {
+    pub(in crate::system) const fn is_current(self) -> bool {
+        matches!(self, Self::Current)
+    }
+
+    pub(in crate::system) const fn is_queued(self) -> bool {
+        matches!(self, Self::Queued { .. })
+    }
+
+    pub(in crate::system) const fn is_runnable(self) -> bool {
+        matches!(self, Self::Current | Self::Queued { .. })
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum OwnerRqEntry {
@@ -277,6 +305,27 @@ impl<'a> OwnerRqTxn<'a> {
 
     pub(crate) fn current_thread(&self) -> Option<ThreadId> {
         self.run_queue().current_thread()
+    }
+
+    /// Samples the task's Linux rq facts while this transaction owns the rq.
+    pub(in crate::system) fn task_state(
+        &self,
+        thread: ThreadId,
+        placement: &SchedulerPlacement,
+    ) -> OwnerRqTaskState {
+        let owner = self.owner();
+        let queued = placement.queued_cpu() == Some(owner);
+        let on_cpu = placement.on_cpu() == Some(owner);
+        if self.current_thread() == Some(thread) {
+            if !queued || !on_cpu {
+                task_runtime::fatal_invariant(0x5251_1011, thread.as_u64() as usize);
+            }
+            OwnerRqTaskState::Current
+        } else if queued {
+            OwnerRqTaskState::Queued { outgoing: on_cpu }
+        } else {
+            OwnerRqTaskState::Inactive
+        }
     }
 
     pub(crate) fn current_core(&self) -> Option<Arc<ThreadCore>> {

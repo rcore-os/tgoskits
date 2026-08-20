@@ -628,7 +628,10 @@ impl TaskSystem {
                 matches!(
                     transaction.current_scheduling_entity(),
                     Some(SchedulingEntity::Fair(_))
-                ) && core.sched().placement().can_continue_running_on(owner)
+                ) && transaction
+                    .task_state(core.id(), core.sched().placement())
+                    .is_current()
+                    && core.sched().placement().requested_migration().is_none()
                     && previous_sched.affinity.affinity.contains(owner)
                     && transaction.nr_queued() == 0
             };
@@ -672,7 +675,7 @@ impl TaskSystem {
                     && !sched.is_pi_boosted()
                 {
                     if sched.lifecycle.state() != ThreadState::Running
-                        || placement.execution_cpu() != Some(cpu.owner())
+                        || placement.queued_cpu() != Some(cpu.owner())
                         || placement.on_cpu() != Some(cpu.owner())
                     {
                         task_runtime::fatal_invariant(0x5343_120b, core.id().as_u64() as usize);

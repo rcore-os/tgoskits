@@ -8,9 +8,9 @@ impl TaskSystem {
         sched: &mut ThreadSchedState,
         active: &mut ActiveSchedulingState,
         generation: u64,
-        owner_now_ns: Option<u64>,
+        owner_now_ns: u64,
         fair_placement: Option<FairPolicyPlacement>,
-        activate_deadline: bool,
+        application: PolicyApplication,
     ) -> Result<Option<PolicyGenerationCommit>, TaskError> {
         Self::validate_owner_policy_generation(sched, generation)?;
         let Some(pending) = sched.policy.pending_update() else {
@@ -40,10 +40,7 @@ impl TaskSystem {
                 sched.deadline.server.clone(),
             ),
         };
-        if activate_deadline {
-            let now_ns = owner_now_ns.ok_or(TaskError::InvalidConfiguration)?;
-            base_entity.activate_deadline(now_ns);
-        }
+        base_entity.activate_deadline(owner_now_ns);
         let next_dispatch_generation = sched
             .policy
             .dispatch_generation
@@ -61,10 +58,9 @@ impl TaskSystem {
             .bandwidth
             .replace_detached_reservation(committed.reservation_scaled);
         sched.policy.dispatch_generation = next_dispatch_generation;
-        let running_policy_changed = sched.placement.execution_cpu().is_some();
         Ok(Some(PolicyGenerationCommit {
             base_policy,
-            running_policy_changed,
+            application,
             held_deadline_reservation,
             committed_deadline_reservation: committed.reservation_scaled,
         }))
@@ -88,20 +84,16 @@ impl TaskSystem {
     pub(in crate::system::task_system) fn notify_policy_generation(
         core: &Arc<ThreadCore>,
         commit: PolicyGenerationCommit,
-        owner_now_ns: Option<u64>,
     ) {
-        if commit.running_policy_changed
+        if let PolicyApplication::Current { owner_now_ns } = commit.application
             && let Some(extension) = core.extension_view()
         {
-            let now_ns = owner_now_ns.unwrap_or_else(|| {
-                task_runtime::fatal_invariant(0x5251_1301, core.id().as_u64() as usize)
-            });
             // SAFETY: the thread-state lock is released. A running update
             // executes on the placement owner while it retains the scheduler
             // baton. Construction guarantees that the callback is bounded and
             // valid for this retained ThreadCore.
             unsafe {
-                extension.notify_running_policy_applied(core.id(), commit.base_policy, now_ns)
+                extension.notify_running_policy_applied(core.id(), commit.base_policy, owner_now_ns)
             };
         }
     }

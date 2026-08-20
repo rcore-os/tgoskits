@@ -238,7 +238,6 @@ impl TaskSystemState {
             let sched = record.sched.lock();
             if sched.lifecycle.state() == ThreadState::Exited
                 || sched.placement.queued_cpu().is_some()
-                || sched.placement.execution_cpu().is_some()
                 || sched.placement.on_cpu().is_some()
                 || sched.placement.has_pending_migration()
                 || sched.deadline.bandwidth.reservation_owner().is_some()

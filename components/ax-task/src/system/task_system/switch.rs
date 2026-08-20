@@ -44,7 +44,7 @@ impl TaskSystem {
         let owner = cpu.owner();
         let placement = core.sched().placement();
         if core.state() != ThreadState::Running
-            || placement.execution_cpu() != Some(owner)
+            || placement.queued_cpu() != Some(owner)
             || placement.on_cpu() != Some(owner)
             || !self.owner_preemption_is_rq_owned(transaction, &core)
         {
@@ -174,7 +174,7 @@ impl TaskSystem {
         let placement = core.sched().placement();
         let retained_current = transaction.is_linked_current(core.id());
         if sched.lifecycle.state() != ThreadState::Running
-            || placement.execution_cpu() != Some(owner)
+            || placement.queued_cpu() != Some(owner)
             || placement.on_cpu() != Some(owner)
         {
             task_runtime::fatal_invariant(0x5343_1102, core.id().as_u64() as usize);

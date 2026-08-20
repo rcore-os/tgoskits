@@ -154,7 +154,7 @@ impl TaskSystem {
         let core = Arc::clone(current.runtime_core_arc());
         let placement = core.sched().placement();
         if core.state() != ThreadState::Running
-            || placement.execution_cpu() != Some(cpu.owner())
+            || placement.queued_cpu() != Some(cpu.owner())
             || placement.on_cpu() != Some(cpu.owner())
         {
             return Err(TaskError::StaleThreadId);
@@ -285,7 +285,7 @@ impl TaskSystem {
                 true
             } else {
                 if sched.lifecycle.state() != ThreadState::Blocked
-                    || placement.execution_cpu() != Some(cpu.owner())
+                    || placement.queued_cpu() != Some(cpu.owner())
                     || placement.on_cpu() != Some(cpu.owner())
                 {
                     task_runtime::fatal_invariant(
@@ -400,7 +400,7 @@ impl TaskSystem {
         }
         let placement = core.sched().placement();
         if core.state() != ThreadState::Parking
-            || placement.execution_cpu() != Some(cpu.owner())
+            || placement.queued_cpu() != Some(cpu.owner())
             || placement.on_cpu() != Some(cpu.owner())
         {
             return Err(TaskError::StaleThreadId);
@@ -460,8 +460,7 @@ impl TaskSystem {
         if sched.pi.blocked_on.is_some() || !sched.pi.donors.is_empty() {
             return Err(TaskError::InvalidPiState);
         }
-        if placement.execution_cpu() != Some(cpu.owner()) || placement.on_cpu() != Some(cpu.owner())
-        {
+        if placement.queued_cpu() != Some(cpu.owner()) || placement.on_cpu() != Some(cpu.owner()) {
             return Err(TaskError::ThreadBusy);
         }
         if require_runtime_context && record.resources.context().is_none() {
@@ -577,7 +576,7 @@ impl TaskSystem {
             let placement = exited_core.sched().placement();
             let sched = &mut *exited_sched;
             if sched.lifecycle.state() != ThreadState::Running
-                || placement.execution_cpu() != Some(cpu.owner())
+                || placement.queued_cpu() != Some(cpu.owner())
                 || placement.on_cpu() != Some(cpu.owner())
             {
                 task_runtime::fatal_invariant(0x4558_1101, exiting.as_u64() as usize);
@@ -703,7 +702,8 @@ impl TaskSystem {
         let runtime_tail_finished = initial_handoff.runtime_tail_is_finished();
         if previous_core.id() == incoming.id()
             || previous_core.sched().placement().on_cpu() != Some(owner)
-            || incoming.sched().placement().execution_cpu() != Some(owner)
+            || incoming.sched().placement().queued_cpu() != Some(owner)
+            || incoming.sched().placement().on_cpu() != Some(owner)
         {
             return Err(TaskError::InvalidConfiguration);
         }
@@ -876,9 +876,7 @@ impl TaskSystem {
                 if target != reserved_target {
                     return Err(TaskError::InvalidConfiguration);
                 }
-                if sched.lifecycle.state() != ThreadState::Ready
-                    || placement.queued_cpu().is_some()
-                    || placement.execution_cpu().is_some()
+                if sched.lifecycle.state() != ThreadState::Ready || placement.queued_cpu().is_some()
                 {
                     return Err(TaskError::InvalidConfiguration);
                 }

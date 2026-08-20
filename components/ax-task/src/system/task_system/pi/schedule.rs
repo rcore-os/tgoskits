@@ -1,6 +1,8 @@
 //! PI scheduling-class resolution and rq-owned priority updates.
 
 use super::*;
+#[cfg(feature = "task-test-hooks")]
+use crate::system::OwnerRqTaskState;
 
 impl TaskSystem {
     pub(in crate::system::task_system) fn resolved_pi_schedule_update(
@@ -70,8 +72,7 @@ impl TaskSystem {
         if transaction.owner() != owner {
             task_runtime::fatal_invariant(0x5049_1206, core.id().as_u64() as usize);
         }
-        let running = sched.placement.execution_cpu() == Some(owner);
-        let queued = sched.placement.queued_cpu() == Some(owner) && !running;
+        let rq_state = transaction.task_state(core.id(), &sched.placement);
         let owner_now_ns = transaction.clock().wall().as_nanos();
         let source_fair = sched
             .policy
@@ -89,10 +90,7 @@ impl TaskSystem {
             }),
             _ => None,
         };
-        if running {
-            if transaction.current_thread() != Some(core.id()) {
-                task_runtime::fatal_invariant(0x5049_1201, core.id().as_u64() as usize);
-            }
+        if rq_state.is_current() {
             let active = transaction.detach_current_schedule(core.id());
             let active =
                 apply_pi_schedule_update(sched, active, update, owner_now_ns, fair_placement)
@@ -117,7 +115,7 @@ impl TaskSystem {
             core.publish_effective_schedule(policy, &entity);
             return PiRqFollowup::RemoteReschedule;
         }
-        if queued {
+        if rq_state.is_queued() {
             let current_fair = transaction
                 .current_scheduling_entity()
                 .and_then(|entity| entity.fair());
@@ -145,6 +143,10 @@ impl TaskSystem {
                 EnqueueReason::PolicyChanged,
                 current_fair,
             );
+            #[cfg(feature = "task-test-hooks")]
+            if matches!(rq_state, OwnerRqTaskState::Queued { outgoing: true }) {
+                crate::task_test_hooks::record_pi_outgoing_reclassification(core.id());
+            }
             core.publish_effective_schedule(policy, &entity);
             return PiRqFollowup::RemoteReschedule;
         }

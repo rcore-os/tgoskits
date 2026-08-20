@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "test_framework.h"
 #include <sched.h>
+#include <pthread.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -71,6 +72,22 @@ static int contains_online_cpus(const cpu_set_t *mask, long nprocs)
     return 1;
 }
 
+struct affinity_observation {
+    cpu_set_t expected;
+    int matches;
+};
+
+static void *observe_inherited_affinity(void *arg)
+{
+    struct affinity_observation *observation = arg;
+    cpu_set_t actual;
+
+    CPU_ZERO(&actual);
+    observation->matches = sched_getaffinity(0, sizeof(actual), &actual) == 0 &&
+                           CPU_EQUAL(&actual, &observation->expected);
+    return NULL;
+}
+
 /*
  *   test-sched-family 对比测试:
  *   Linux/WSL 行为 vs StarryOS 行为
@@ -115,6 +132,73 @@ int main(void)
             CPU_ZERO(&mask);
             CPU_SET(0, &mask);
             CHECK_ERR(sched_getaffinity(0, 0, &mask), EINVAL, "getaffinity with too small cpusetsize returns EINVAL");
+        }
+
+        // Linux initializes every fork/clone child with a value copy of the
+        // calling thread's effective affinity before the child becomes
+        // runnable. pthread_create exercises the CLONE_THREAD path.
+        {
+            cpu_set_t original, singleton, readback;
+            int selected_cpu = -1;
+
+            CPU_ZERO(&original);
+            CHECK_RET(sched_getaffinity(0, sizeof(original), &original), 0,
+                "read affinity before inheritance test");
+            for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+                if (CPU_ISSET(cpu, &original)) {
+                    selected_cpu = cpu;
+                    break;
+                }
+            }
+            CHECK(selected_cpu >= 0, "current affinity contains one usable CPU");
+            CHECK(CPU_COUNT(&original) > 1,
+                "affinity inheritance regression runs with multiple available CPUs");
+
+            CPU_ZERO(&singleton);
+            if (selected_cpu >= 0)
+                CPU_SET(selected_cpu, &singleton);
+            CHECK_RET(sched_setaffinity(0, sizeof(singleton), &singleton), 0,
+                "restrict parent to one allowed CPU before clone");
+            CPU_ZERO(&readback);
+            CHECK_RET(sched_getaffinity(0, sizeof(readback), &readback), 0,
+                "read back singleton parent affinity");
+            CHECK(CPU_EQUAL(&readback, &singleton),
+                "parent singleton affinity is installed before clone");
+
+            pid_t child = fork();
+            CHECK(child >= 0, "fork affinity inheritance child");
+            if (child == 0) {
+                cpu_set_t child_mask;
+                CPU_ZERO(&child_mask);
+                int inherited = sched_getaffinity(0, sizeof(child_mask), &child_mask) == 0 &&
+                                CPU_EQUAL(&child_mask, &singleton);
+                _exit(inherited ? 0 : 1);
+            }
+            if (child > 0) {
+                int status = 0;
+                CHECK_RET(waitpid(child, &status, 0), child,
+                    "wait for affinity inheritance child");
+                CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                    "fork child inherits the caller affinity");
+            }
+
+            struct affinity_observation observation = {
+                .expected = singleton,
+                .matches = 0,
+            };
+            pthread_t thread;
+            int create_result = pthread_create(
+                &thread, NULL, observe_inherited_affinity, &observation);
+            CHECK_RET(create_result, 0, "create affinity inheritance pthread");
+            if (create_result == 0) {
+                CHECK_RET(pthread_join(thread, NULL), 0,
+                    "join affinity inheritance pthread");
+                CHECK(observation.matches,
+                    "pthread child inherits the caller affinity");
+            }
+
+            CHECK_RET(sched_setaffinity(0, sizeof(original), &original), 0,
+                "restore affinity after inheritance test");
         }
 
         // ==== EPERM: sched_setaffinity permission test (fork-based) ====

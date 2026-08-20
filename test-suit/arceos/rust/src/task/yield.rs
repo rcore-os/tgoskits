@@ -20,7 +20,7 @@ use std::{
     },
     println,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
@@ -36,6 +36,7 @@ fn thread_id_from_raw(raw: u64) -> ThreadId {
 }
 
 fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
+    let mutex = Arc::new(Mutex::new(()));
     let peer_ready = Arc::new(AtomicBool::new(false));
     let stop_peer = Arc::new(AtomicBool::new(false));
     let peer = {
@@ -58,12 +59,14 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
     let may_yield = Arc::new(AtomicBool::new(false));
     let may_exit = Arc::new(AtomicBool::new(false));
     let yielding = {
+        let mutex = Arc::clone(&mutex);
         let yield_ready = Arc::clone(&yield_ready);
         let may_yield = Arc::clone(&may_yield);
         let may_exit = Arc::clone(&may_exit);
         thread::spawn(move || {
             assert!(ax_set_current_affinity(AxCpuMask::one_shot(target_cpu)).is_ok());
             assert_eq!(this_cpu_id(), target_cpu);
+            let guard = mutex.lock();
             yield_ready.store(true, Ordering::Release);
             while !may_yield.load(Ordering::Acquire) {
                 thread::yield_now();
@@ -72,6 +75,7 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
             while !may_exit.load(Ordering::Acquire) {
                 hint::spin_loop();
             }
+            drop(guard);
         })
     };
     while !yield_ready.load(Ordering::Acquire) {
@@ -87,10 +91,13 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
     let updater_ready = Arc::new(AtomicBool::new(false));
     let may_update = Arc::new(AtomicBool::new(false));
     let policy_updated = Arc::new(AtomicBool::new(false));
+    let pi_waiter_finished = Arc::new(AtomicBool::new(false));
     let updater = {
+        let mutex = Arc::clone(&mutex);
         let updater_ready = Arc::clone(&updater_ready);
         let may_update = Arc::clone(&may_update);
         let policy_updated = Arc::clone(&policy_updated);
+        let pi_waiter_finished = Arc::clone(&pi_waiter_finished);
         thread::spawn(move || {
             assert!(ax_set_current_affinity(AxCpuMask::one_shot(updater_cpu)).is_ok());
             assert_eq!(this_cpu_id(), updater_cpu);
@@ -98,12 +105,23 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
             while !may_update.load(Ordering::Acquire) {
                 thread::yield_now();
             }
+            let current = current_thread_id().expect("PI updater must have a task identity");
+            set_thread_policy(
+                current,
+                SchedulePolicy::fair(
+                    Nice::new(-20).expect("nice -20 must be valid"),
+                    FairMode::Normal,
+                ),
+            )
+            .expect("PI updater must become more urgent than the mutex owner");
             set_thread_policy(
                 thread_id_from_raw(yielding_raw),
                 SchedulePolicy::fair(Nice::new(1).unwrap(), FairMode::Normal),
             )
             .expect("a queued outgoing task must accept a policy update");
             policy_updated.store(true, Ordering::Release);
+            drop(mutex.lock());
+            pi_waiter_finished.store(true, Ordering::Release);
         })
     };
     let updater_started = Instant::now();
@@ -116,6 +134,7 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
     }
 
     task_test_hooks::arm_policy_switch_handoff_probe(yielding_raw);
+    task_test_hooks::arm_pi_outgoing_reclassification_probe(yielding_raw);
     may_yield.store(true, Ordering::Release);
     let pause_started = Instant::now();
     while !task_test_hooks::policy_switch_handoff_paused() {
@@ -134,6 +153,13 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
         thread::yield_now();
     }
     let updated_before_release = policy_updated.load(Ordering::Acquire);
+    let pi_started = Instant::now();
+    while !task_test_hooks::pi_outgoing_reclassification_observed()
+        && pi_started.elapsed() < SWITCH_HANDOFF_TIMEOUT
+    {
+        thread::yield_now();
+    }
+    let pi_updated_before_release = task_test_hooks::pi_outgoing_reclassification_observed();
     stop_peer.store(true, Ordering::Release);
     may_exit.store(true, Ordering::Release);
     task_test_hooks::release_policy_switch_handoff();
@@ -141,9 +167,19 @@ fn exercise_policy_update_during_switch_handoff(target_cpu: usize) {
         updated_before_release,
         "policy update waited for the outgoing task to leave on_cpu"
     );
+    assert!(
+        pi_updated_before_release,
+        "PI update waited for the outgoing task to leave on_cpu"
+    );
     updater.join().unwrap();
+    assert!(pi_waiter_finished.load(Ordering::Acquire));
     yielding.join().unwrap();
     peer.join().unwrap();
+    assert_eq!(
+        task_test_hooks::take_pi_outgoing_reclassification_count(),
+        Some(1),
+        "the outgoing task must be reclassified exactly once"
+    );
 }
 
 pub fn run() -> crate::TestResult {

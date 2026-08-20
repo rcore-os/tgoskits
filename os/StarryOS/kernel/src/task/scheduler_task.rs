@@ -554,15 +554,44 @@ where
     )
 }
 
+/// Scheduling attributes committed atomically during user-thread creation.
+pub struct UserThreadInitialSchedulerState {
+    policy: scheduler::SchedulePolicy,
+    affinity: scheduler::CpuSet,
+    reset_on_fork: bool,
+}
+
+impl UserThreadInitialSchedulerState {
+    /// Captures the scheduling attributes inherited by an unpublished child.
+    pub fn new(
+        policy: scheduler::SchedulePolicy,
+        affinity: scheduler::CpuSet,
+        reset_on_fork: bool,
+    ) -> Self {
+        Self {
+            policy,
+            affinity,
+            reset_on_fork,
+        }
+    }
+
+    fn default_user() -> Self {
+        Self::new(
+            scheduler::SchedulePolicy::default(),
+            scheduler::CpuSet::all(ax_runtime::hal::cpu_num()),
+            false,
+        )
+    }
+}
+
 /// Prepares a Starry user thread with inherited scheduling state.
 #[cfg(not(target_arch = "riscv64"))]
-pub fn prepare_user_thread_with_policy<F>(
+pub fn prepare_user_thread_with_scheduler_state<F>(
     entry: F,
     name: String,
     stack_size: usize,
     thread: Box<Thread>,
-    policy: scheduler::SchedulePolicy,
-    reset_on_fork: bool,
+    scheduler_state: UserThreadInitialSchedulerState,
 ) -> Result<PreparedUserTask, scheduler::TaskError>
 where
     F: FnOnce() + Send + 'static,
@@ -573,20 +602,19 @@ where
         name,
         stack_size,
         thread,
-        StarryContextState::user_with_policy(address_space, policy, reset_on_fork),
+        StarryContextState::user_with_scheduler_state(address_space, scheduler_state),
     )
 }
 
 /// Prepares a RISC-V user thread with inherited FP and scheduling state.
 #[cfg(target_arch = "riscv64")]
-pub fn prepare_user_thread_with_fp_state_and_policy<F>(
+pub fn prepare_user_thread_with_fp_scheduler_state<F>(
     entry: F,
     name: String,
     stack_size: usize,
     fp_state: ax_cpu::FpState,
     thread: Box<Thread>,
-    policy: scheduler::SchedulePolicy,
-    reset_on_fork: bool,
+    scheduler_state: UserThreadInitialSchedulerState,
 ) -> Result<PreparedUserTask, scheduler::TaskError>
 where
     F: FnOnce() + Send + 'static,
@@ -600,8 +628,7 @@ where
         StarryContextState {
             address_space: Some(address_space),
             fp_state: Some(fp_state),
-            policy,
-            reset_on_fork,
+            scheduler_state,
         },
     )
 }
@@ -610,8 +637,7 @@ struct StarryContextState {
     address_space: Option<scheduler::TaskAddressSpace>,
     #[cfg(target_arch = "riscv64")]
     fp_state: Option<ax_cpu::FpState>,
-    policy: scheduler::SchedulePolicy,
-    reset_on_fork: bool,
+    scheduler_state: UserThreadInitialSchedulerState,
 }
 
 impl StarryContextState {
@@ -620,23 +646,20 @@ impl StarryContextState {
             address_space: Some(address_space),
             #[cfg(target_arch = "riscv64")]
             fp_state: None,
-            policy: scheduler::SchedulePolicy::default(),
-            reset_on_fork: false,
+            scheduler_state: UserThreadInitialSchedulerState::default_user(),
         }
     }
 
     #[cfg(not(target_arch = "riscv64"))]
-    fn user_with_policy(
+    fn user_with_scheduler_state(
         address_space: scheduler::TaskAddressSpace,
-        policy: scheduler::SchedulePolicy,
-        reset_on_fork: bool,
+        scheduler_state: UserThreadInitialSchedulerState,
     ) -> Self {
         Self {
             address_space: Some(address_space),
             #[cfg(target_arch = "riscv64")]
             fp_state: None,
-            policy,
-            reset_on_fork,
+            scheduler_state,
         }
     }
 }
@@ -657,7 +680,7 @@ where
         thread,
         name: PiMutex::new(Arc::from(name.as_str())),
         irq_identity,
-        reset_on_fork: AtomicBool::new(context_state.reset_on_fork),
+        reset_on_fork: AtomicBool::new(context_state.scheduler_state.reset_on_fork),
     })) as usize;
     // SAFETY: `data` is a uniquely owned `Box<StarryUserTaskExtension>`. The
     // runtime takes that ownership even when scheduler creation fails and
@@ -677,35 +700,38 @@ where
     let prepared = unsafe {
         match context_state.fp_state {
             Some(fp_state) => {
-                scheduler::prepare_raw_with_extension_in_address_space_and_fp_state_and_policy(
+                scheduler::prepare_raw_with_extension_in_address_space_and_fp_scheduler_state(
                     entry,
                     name,
                     stack_size,
                     Some(extension),
                     address_space,
                     fp_state,
-                    context_state.policy,
+                    context_state.scheduler_state.policy,
+                    context_state.scheduler_state.affinity,
                 )?
             }
-            None => scheduler::prepare_raw_with_extension_in_address_space_and_policy(
+            None => scheduler::prepare_raw_with_extension_in_address_space_and_scheduler_state(
                 entry,
                 name,
                 stack_size,
                 Some(extension),
                 address_space,
-                context_state.policy,
+                context_state.scheduler_state.policy,
+                context_state.scheduler_state.affinity,
             )?,
         }
     };
     #[cfg(not(target_arch = "riscv64"))]
     let prepared = unsafe {
-        scheduler::prepare_raw_with_extension_in_address_space_and_policy(
+        scheduler::prepare_raw_with_extension_in_address_space_and_scheduler_state(
             entry,
             name,
             stack_size,
             Some(extension),
             address_space,
-            context_state.policy,
+            context_state.scheduler_state.policy,
+            context_state.scheduler_state.affinity,
         )?
     };
     Ok(PreparedUserTask {

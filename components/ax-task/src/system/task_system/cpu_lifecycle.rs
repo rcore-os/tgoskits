@@ -255,7 +255,6 @@ impl TaskSystem {
                 continue;
             }
             if sched.placement.queued_cpu().is_some()
-                || sched.placement.execution_cpu().is_some()
                 || sched.placement.on_cpu().is_some()
                 || sched.placement.has_pending_migration()
             {
@@ -350,7 +349,6 @@ impl TaskSystem {
                 return false;
             }
             let physically_owned = sched.placement.queued_cpu() == Some(cpu)
-                || sched.placement.execution_cpu() == Some(cpu)
                 || sched.placement.on_cpu() == Some(cpu)
                 || sched.placement.committed_migration_target() == Some(cpu)
                 || sched.deadline.bandwidth.reservation_owner() == Some(cpu)
@@ -359,7 +357,6 @@ impl TaskSystem {
                 return false;
             }
             let has_other_placement = sched.placement.queued_cpu().is_some()
-                || sched.placement.execution_cpu().is_some()
                 || sched.placement.on_cpu().is_some()
                 || sched.placement.has_pending_migration()
                 || sched.deadline.bandwidth.reservation_owner().is_some()
@@ -428,7 +425,6 @@ impl TaskSystem {
                         && sched.affinity.affinity.contains(candidate)
                 });
                 let owned_by_cpu = sched.placement.queued_cpu() == Some(cpu)
-                    || sched.placement.execution_cpu() == Some(cpu)
                     || sched.placement.on_cpu() == Some(cpu)
                     || sched.placement.committed_migration_target() == Some(cpu)
                     || sched.deadline.bandwidth.reservation_owner() == Some(cpu)
@@ -451,7 +447,6 @@ impl TaskSystem {
             registration.remote.ktimer_worker() == Some(core.id())
                 && sched.lifecycle.state() == ThreadState::Blocked
                 && sched.placement.queued_cpu().is_none()
-                && sched.placement.execution_cpu().is_none()
                 && sched.placement.on_cpu().is_none()
                 && !sched.placement.has_pending_migration()
                 && sched.deadline.bandwidth.reservation_owner().is_none()

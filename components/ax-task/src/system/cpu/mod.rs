@@ -40,6 +40,7 @@ pub(crate) use remote::{
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(crate) use remote::{reset_rt_bandwidth_lock_acquisitions, rt_bandwidth_lock_acquisitions};
 pub use snapshot::CpuSnapshot;
+pub(in crate::system) use transaction::OwnerRqTaskState;
 pub(crate) use transaction::{OwnerRqEntry, OwnerRqTxn};
 
 use crate::{
