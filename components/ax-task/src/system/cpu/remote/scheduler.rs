@@ -4,8 +4,7 @@ use super::*;
 
 const REQUEST_PREEMPT: u64 = 1 << 0;
 const REQUEST_OWNER_WORK: u64 = 1 << 1;
-const REQUEST_HARD_TIMER: u64 = 1 << 5;
-const REQUEST_REASON_MASK: u64 = REQUEST_PREEMPT | REQUEST_OWNER_WORK | REQUEST_HARD_TIMER;
+const REQUEST_REASON_MASK: u64 = REQUEST_PREEMPT | REQUEST_OWNER_WORK;
 const REQUEST_ENTRY_MASK: u64 = REQUEST_PREEMPT | REQUEST_OWNER_WORK;
 const REQUEST_IDLE_POLLING: u64 = 1 << 3;
 const REQUEST_PARK_PREEMPT_DEFERRED: u64 = 1 << 4;
@@ -192,24 +191,6 @@ impl CpuRemote {
             SchedulerRequestDelivery::DoorbellRequired
         };
         SchedulerRequestPublication { delivery }
-    }
-
-    pub(in crate::system::cpu) fn publish_hard_timer_work(&self) {
-        let _ = self.publish_scheduler_request_owned(REQUEST_HARD_TIMER);
-    }
-
-    pub(in crate::system::cpu) fn begin_hard_timer_work(&self) -> bool {
-        self.scheduler_request
-            .request
-            .fetch_and(!REQUEST_HARD_TIMER, Ordering::AcqRel)
-            & REQUEST_HARD_TIMER
-            != 0
-    }
-
-    pub(in crate::system::cpu) fn finish_hard_timer_work(&self, pending: bool) {
-        if pending {
-            let _ = self.publish_scheduler_request_owned(REQUEST_HARD_TIMER);
-        }
     }
 
     pub(crate) fn kick_scheduler_work(&self) -> bool {

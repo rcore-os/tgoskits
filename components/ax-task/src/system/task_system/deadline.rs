@@ -35,6 +35,12 @@ pub(crate) struct KtimerServiceBatch {
     update: Option<SchedulerDeadlineUpdate>,
     kernel_timer: Option<KernelTimerExecution>,
     task_timer: Option<ExpiredTaskDeadline>,
+    completed_timer: Option<KernelTimerEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct HardTimerServiceBatch {
+    processed: usize,
 }
 
 pub(crate) struct KernelTimerCompletionBatch {
@@ -72,6 +78,16 @@ impl KtimerServiceBatch {
 
     pub(crate) fn take_task_timer(&mut self) -> Option<ExpiredTaskDeadline> {
         self.task_timer.take()
+    }
+
+    pub(crate) fn take_completed_timer(&mut self) -> Option<KernelTimerEntry> {
+        self.completed_timer.take()
+    }
+}
+
+impl HardTimerServiceBatch {
+    pub(crate) const fn processed(self) -> usize {
+        self.processed
     }
 }
 
@@ -611,6 +627,7 @@ impl TaskSystem {
         let budget = cpu.batch_limit();
         let mut kernel_timer = None;
         let mut task_timer = None;
+        let mut completed_timer = None;
         let (claim, pending) = cpu
             .as_mut()
             .claim_ktimer_service_step(monotonic_now, budget);
@@ -620,6 +637,9 @@ impl TaskSystem {
             }
             Some(KtimerServiceClaim::Task(event)) => {
                 task_timer = Some(event);
+            }
+            Some(KtimerServiceClaim::Reap(entry)) => {
+                completed_timer = Some(entry);
             }
             None => {}
         }
@@ -647,11 +667,14 @@ impl TaskSystem {
         );
         Ok(KtimerServiceBatch {
             #[cfg(any(test, all(axtest, feature = "axtest")))]
-            processed: usize::from(kernel_timer.is_some() || task_timer.is_some()),
+            processed: usize::from(
+                kernel_timer.is_some() || task_timer.is_some() || completed_timer.is_some(),
+            ),
             pending,
             update,
             kernel_timer,
             task_timer,
+            completed_timer,
         })
     }
 
@@ -713,7 +736,7 @@ impl TaskSystem {
             .lock_deadline_activity(DeadlineBaseGuardSource::SoftExpiry);
         let completed = deadline_base
             .kernel_timers
-            .complete_execution(execution, action);
+            .complete_soft_execution(execution, action);
         let update = CpuLocal::update_scheduler_deadline_registration_publication_if_changed(
             &mut deadline_base,
             non_timer,
@@ -773,34 +796,47 @@ impl TaskSystem {
         }
     }
 
-    /// Drains one bounded remainder of hard scheduler timers at an owner safe
-    /// point after the timer IRQ transferred progress responsibility.
+    /// Runs every hard timer due at this clock-event sample.
     ///
-    /// Linux hard hrtimers run in interrupt context; ax-task additionally
-    /// bounds that path. A budget overrun therefore remains scheduler work,
-    /// never a rearmed overdue physical edge or arbitrary task callback.
-    pub(super) fn service_due_scheduler_deadlines(
+    /// Linux drains the hard hrtimer queue in `hrtimer_interrupt()` and never
+    /// transfers a remainder to task context. Callbacks may mutate or rearm
+    /// their stable entries after the deadline-base lock is released; the
+    /// complete queue is drained before one combined expires-next update.
+    pub(crate) fn service_due_hard_timers(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
         now: MonotonicInstant,
-        budget: usize,
-    ) -> Result<bool, TaskError> {
+    ) -> Result<HardTimerServiceBatch, TaskError> {
         let mut processed = 0;
-        let mut pending = false;
-        while processed < budget {
-            let (event, more) = cpu.as_mut().take_due_scheduler_deadline(now);
-            pending = more;
-            let Some(event) = event else {
+        loop {
+            let Some(claim) = cpu.as_mut().claim_due_hard_timer(now) else {
                 break;
             };
-            self.service_expired_scheduler_deadline(cpu.as_mut(), event)?;
+            match claim {
+                HardTimerServiceClaim::Scheduler(event) => {
+                    self.service_expired_scheduler_deadline(cpu.as_mut(), event)?;
+                }
+                HardTimerServiceClaim::Kernel(mut execution) => {
+                    let action = unsafe {
+                        // SAFETY: this service runs with the owner CPU's IRQ
+                        // baton. The queue lock was released before returning
+                        // the explicitly hard-safe callback capability.
+                        execution.invoke_hard()
+                    };
+                    cpu.as_mut()
+                        .complete_hard_kernel_timer_execution(execution, action);
+                }
+            }
             processed += 1;
         }
-        pending |= cpu.has_due_scheduler_deadline(now);
-        if pending {
-            cpu.request_reschedule();
+        if processed != 0 {
+            // Linux runs the complete hard queue first, then recomputes one
+            // expires-next value for the shared hrtimer base. Do the same for
+            // callback Complete/Disarm/Rearm transitions so the IRQ firing
+            // transaction publishes exactly one combined clockevent update.
+            self.program_local_timer(cpu.as_mut(), SchedulerDeadlineDerivationSource::KernelTimer)?;
         }
-        Ok(pending)
+        Ok(HardTimerServiceBatch { processed })
     }
 
     fn service_expired_deadline_cbs(

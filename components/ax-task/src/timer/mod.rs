@@ -5,6 +5,7 @@ mod kernel;
 mod node;
 
 pub use kernel::{
+    HardKernelTimerAction, HardKernelTimerCallback, HardRestartableKernelTimerCallback,
     KernelTimerAction, KernelTimerCallback, KernelTimerCancelOutcome, KernelTimerHandle,
     RestartableKernelTimerCallback,
 };
@@ -252,18 +253,24 @@ impl TaskDeadlineQueue {
         .map(TimerEntry::deadline)
     }
 
-    pub(crate) fn has_immediately_actionable_soft_entry(&self, now: MonotonicInstant) -> bool {
+    pub(crate) fn next_soft_deadline(&self) -> Option<MonotonicDeadline> {
         self.heap(TaskDeadlineClass::Park)
             .peek()
-            .is_some_and(|entry| now.reached(entry.deadline()))
+            .map(TimerEntry::deadline)
     }
 
-    pub(crate) fn has_immediately_actionable_scheduler_entry(&self, now: MonotonicInstant) -> bool {
+    pub(crate) fn next_scheduler_deadline(&self) -> Option<MonotonicDeadline> {
         self.next_entry_in(&[
             TaskDeadlineClass::DeadlineCbs,
             TaskDeadlineClass::DeadlineZeroLag,
         ])
-        .is_some_and(|entry| now.reached(entry.deadline()))
+        .map(TimerEntry::deadline)
+    }
+
+    pub(crate) fn has_immediately_actionable_soft_entry(&self, now: MonotonicInstant) -> bool {
+        self.heap(TaskDeadlineClass::Park)
+            .peek()
+            .is_some_and(|entry| now.reached(entry.deadline()))
     }
 
     /// Expires timers into caller-provided storage without allocating or invoking

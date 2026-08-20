@@ -625,14 +625,6 @@ impl TaskSystem {
     /// bounded owner-work remainder is assigned a fresh runtime doorbell before
     /// this safe point returns.
     pub(super) fn drain_owner_work(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<(), TaskError> {
-        if cpu.as_mut().begin_hard_timer_work() {
-            let now = task_runtime::monotonic_now();
-            let budget = cpu.batch_limit();
-            let service = self.service_due_scheduler_deadlines(cpu.as_mut(), now, budget);
-            let pending = service.as_ref().copied().unwrap_or(true);
-            cpu.as_mut().finish_hard_timer_work(pending);
-            service?;
-        }
         let policy_pending = cpu.remote().owner_control_inbox().has_pending();
         if policy_pending {
             self.drain_owner_control_inner(cpu.as_mut())?;

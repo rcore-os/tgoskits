@@ -6,7 +6,12 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
-use crate::{TaskError, ThreadId, ThreadState};
+use crate::{
+    TaskError, TaskSystemConfig, ThreadId, ThreadState,
+    runtime::MonotonicDeadline,
+    system::CpuDeadlineState,
+    timer::{TaskDeadlineKind, TaskDeadlineNode},
+};
 
 static TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
 static PI_RELEASE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
@@ -89,6 +94,24 @@ const RT_POLICY_OWNER_WORK: u8 = 1 << 1;
 /// complete Fair, RT, or Deadline entity.
 pub const fn active_scheduling_state_footprint() -> usize {
     core::mem::size_of::<crate::ActiveSchedulingState>()
+}
+
+/// Checks that deferred soft-timer ownership cannot hide a hard scheduler deadline.
+pub fn softirq_activation_preserves_hard_deadline() -> bool {
+    let mut state = CpuDeadlineState::new(TaskSystemConfig::new(1));
+    let node = TaskDeadlineNode::deadline_cbs_for_thread(ThreadId::from_parts(1, 1));
+    let deadline = MonotonicDeadline::from_nanos(10).expect("test deadline must be finite");
+    let _registration = state
+        .queue
+        .arm(&node, deadline, TaskDeadlineKind::DeadlineCbs)
+        .expect("test hard deadline must fit the fixed queue");
+    state.softirq_activated = true;
+    state.timer_deadline() == Some(deadline)
+}
+
+/// Reports the real runtime execution context for target-side timer tests.
+pub fn in_hard_irq_context() -> bool {
+    crate::runtime::task_runtime::in_hard_irq()
 }
 
 /// Enters and exits one ordinary preemption scope through the real runtime.

@@ -4,9 +4,11 @@
 
 本文定义 ax-task 迁移后的 timer、hard IRQ、CPU-local 和物理 clockevent 所有权边界。它正式替代“`components/ax-task` 必须与 PR #1596 字节一致”的旧要求。
 
-设计同时覆盖任务调度期限和内核 task-context callback timer。两者共享同一个 per-CPU
-deadline owner、物理 clockevent 和 `ktimers/<cpu>` worker，但使用相互独立的 typed clock
-base；任意 callback 不进入任务期限 heap，也不在 hard IRQ 中执行。
+设计同时覆盖任务调度期限和内核 callback timer。两者共享同一个 per-CPU deadline owner
+和物理 clockevent，但使用相互独立的 typed clock base。普通 callback 由
+`ktimers/<cpu>` 执行；只有显式构造的 `HardKernelTimerCallback` capability 才能在 hard
+expiry 上下文执行，而且它的 payload 析构仍由 `ktimers/<cpu>` 回收。两类 callback 都不
+进入任务期限 heap。
 
 ## 问题
 
@@ -32,7 +34,7 @@ base；任意 callback 不进入任务期限 heap，也不在 hard IRQ 中执行
 参考提交为 `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`，配置启用 `PREEMPT_RT`、`HIGH_RES_TIMERS`、SMP 和 CPU hotplug。
 
 - `kernel/time/clockevents.c::clockevents_program_event()` 是物理事件编程边界；
-- `kernel/time/hrtimer.c::hrtimer_interrupt()` 先失效已触发的 event，再处理有界 hard timer，并统一计算下一 event；
+- `kernel/time/hrtimer.c::hrtimer_interrupt()` 先失效已触发的 event，在 hard IRQ 中排空本次到期的 hard base，再统一计算下一 event；
 - `kernel/time/tick-sched.c::tick_nohz_stop_tick()`、`tick_nohz_idle_enter()` 和
   `tick_nohz_idle_exit()` 把 idle/nohz 状态与物理 tick 编程收敛到 per-CPU owner；
 - PREEMPT_RT 只把非 hard hrtimer callback 移到 soft/threaded 上下文，显式 hard timer 仍可在硬中断执行；
@@ -45,9 +47,11 @@ base；任意 callback 不进入任务期限 heap，也不在 hard IRQ 中执行
   `arch/arm64/kvm/arch_timer.c::soft_timer_start()`、RISC-V
   `arch/riscv/kvm/vcpu_timer.c` 和 x86 LAPIC timer 都把每 vCPU 的逻辑期限注册到宿主
   hrtimer；vCPU block 仍由通用 KVM wait/scheduler owner 执行。显式
-  `HRTIMER_MODE_ABS_HARD` callback 可以在 PREEMPT_RT hard IRQ 中直接发布 IRQ/wake，
-  但 TGOSKits 的 VM callback 会取得 task-context lock 和通知 wait queue，因此改由现有
-  `ktimers/<cpu>` 执行，而不是复制 KVM 的 hard-callback 上下文。
+  `HRTIMER_MODE_ABS_HARD` callback 可以在 PREEMPT_RT hard IRQ 中直接发布 IRQ/wake。
+  TGOSKits 的 AArch64 blocked-vCPU timer 同样使用显式 hard expiry，但 callback 只能重新
+  核验不可变 timer snapshot、推进 generation 并调用预绑定的 `ThreadWakeHandle`；VGIC
+  publication、runtime lookup 和 owning-reference 析构不进入该上下文。需要普通锁、任意
+  callback 或 wait queue 的 timer 继续由 `ktimers/<cpu>` 执行。
 
 TGOSKits 采用相同的所有权与排序，不复制 Linux callback 形态：ax-task 发布调度期限，ax-runtime 独占物理 clockevent。
 
@@ -101,22 +105,26 @@ task deadline 的唯一 owner：本地 timer IRQ/soft worker 负责消费，远�
 通用内核 callback 使用独立的 `KernelTimerQueue`，与 typed `TaskDeadlineQueue` 一起存放在
 同一个 `CpuDeadlineState` 中。它不是 ax-task 调度状态，也不得复用
 `TaskDeadlineKind`；共享的是 per-CPU owner、IRQ-safe deadline lock、物理最早期限选择和
-`ktimers/<cpu>` single-consumer 协议。
+`ktimers/<cpu>` single-consumer 回收/soft-callback 协议。
 
 registration 在调用任务上下文构造完整 entry 并完成 callback allocation，随后绑定当前 owner
 CPU。entry 状态只允许：
 
 ```text
-Queued -> Expired -> Executing -> Completed
-   |          |
-   +----------+-----------> Cancelled
+soft: Queued -> Expired -> Executing -> Completed
+hard: Queued -----------> Executing -> Requeued | ReapPending -> Completed
+         |                    |
+         +--------------------+-------------------------------> Cancelled
 ```
 
 - `Queued` entry 按 `(deadline, sequence)` 排序；相同期限保持 FIFO；
-- hard IRQ 只把 due entry 从 active queue 移入 expired FIFO，并发布 sticky ktimer work；
+- hard IRQ 把普通 due entry 从 active queue 移入 expired FIFO，并发布 sticky ktimer work；
   移动期间不分配、不 free、不执行 callback；
 - worker 在 deadline lock 内 claim 一个 `Expired -> Executing` entry，释放 IRQ guard 和所有
   scheduler/deadline lock 后才调用 callback，完成后进入 `Completed` 并释放 entry；
+- 显式 hard entry 从 active queue 直接 claim 为 `Executing`，释放 deadline-base lock 后才
+  调用 capability。`Rearm` 复用原 identity；完成或 cancel-race 只转为 `ReapPending`，由
+  worker 在任务上下文取得并析构 payload；
 - cancel 与 expiry/claim 在 owner deadline lock 下决定唯一 winner。成功取消 active 或
   expired entry 后，ownership 移出 lock 再析构；已经 `Executing` 或 terminal 时返回明确的
   non-cancelled 结果，不等待 callback；
@@ -254,7 +262,7 @@ ax-task 并平移逻辑期限；否则 scheduler 与用户 absolute sleep 会永
 1. claim 当前 arm；无逻辑 owner 的 stale edge 先 stop/mask；任何有效 `Armed` edge 都进入
    `Firing(token)` 并忘记旧 arm；
 2. 推进 periodic source；
-3. 调用 ax-task 的 bounded `on_clock_event(now, budget)`；
+3. 调用 ax-task 的 `on_clock_event(now, budget)`；hard base 在 IRQ 中完整消费，`budget` 只约束移交给 threaded-softirq 等价 worker 的 soft expiry；
 4. 发布 reschedule 与 deadline/deferred-work sticky state；
 5. 合并 handler 期间所有 source update；
 6. 统一 program 或 stop 一次；
@@ -267,21 +275,24 @@ hard IRQ 必须：
 
 - 无分配、无 free；
 - 无睡眠和无等待外部 owner；
-- 工作量受 budget 限制；
-- 不执行任意 callback；
+- hard base 不得把 budget remainder 转移到 scheduler safe point；每个 callback 自身必须
+  bounded，并且只有经过 unsafe 构造证明的 hard-IRQ-safe typed capability 可以执行；
+- 不执行其他任意 callback；
 - 不持有 Starry、驱动或进程对象裸指针。
 
-过期 task deadline 只复制到预分配 CPU-local buffer。真正的 thread wake 只由固定绑定的
-`ktimers/<cpu>` FIFO worker 在任务上下文执行；Deadline extension callback 和资源回收仍由
-独立 task-work worker 执行。scheduler safe point 不消费 task timeout，外部调用方也没有
-公开 drain buffer 的入口；buffer 只属于 ktimer worker 的单 consumer 生命周期。
+过期 task deadline 只复制到预分配 CPU-local buffer。普通 timeout wake 只由固定绑定的
+`ktimers/<cpu>` FIFO worker 在任务上下文执行；显式 hard timer 可以调用预先在任务上下文
+取得并保活的 `ThreadWakeHandle::wake()`，但不得临时创建、clone 或 drop owning handle。
+Deadline extension callback 和资源回收仍由独立 task-work worker 执行。scheduler safe point
+不消费 task timeout，外部调用方也没有公开 drain buffer 的入口；buffer 只属于 ktimer
+worker 的 single-consumer 生命周期。
 
-### batch 耗尽
+### soft batch 耗尽
 
-hard scheduler timer 预算耗尽时发布 sticky scheduler request 和 `need_resched`，owner safe
-point 在 drain 前 claim 旧 publication；task timeout 预算耗尽时只发布 ktimer event，worker
-在 drain 前 claim 旧 publication。两者若仍有 remainder 或并发新 publication，都重新发布
-自己的 generation-bearing sticky work；旧 completion 不得清掉新工作。
+task timeout 预算耗尽时只发布 ktimer event，worker 在 drain 前 claim 旧 publication；若仍有
+remainder 或并发新 publication，就重新发布 generation-bearing sticky work，旧 completion
+不得清掉新工作。hard scheduler/kernel timer 不进入该协议：它们与 Linux 一样只在 hard IRQ
+排空，不能由 scheduler safe point 代执行 callback。
 
 ### 无轮询恢复路径
 
@@ -289,8 +300,8 @@ point 在 drain 前 claim 旧 publication；task timeout 预算耗尽时只发�
 加速路径。实现不提供 `claim_due`、`recover_overdue`、析构恢复或周期轮询。正确性由
 generation publication、`Firing` 合并、idle 最终复查和远程 doorbell 共同保证；task timeout
 预算耗尽只发布有界 soft-timer work，由 `ktimers/<cpu>` 这一 threaded-softirq 等价路径继续
-消费；hard scheduler timer remainder 由 scheduler request 驱动 owner safe point。两条路径
-都不能依赖偶然 tick 推进。
+消费；hard base 在 clockevent IRQ 中完整消费并统一重算 expires-next，不能依赖 scheduler
+safe point 或偶然 tick 推进。
 
 ## idle 与远程投递
 
@@ -355,10 +366,12 @@ IRQ endpoint 只保存固定值状态和稳定 registration；任务态对象通
 
 AxVM 不再拥有 `TimerQueue`、token owner map、`IrqNotification` 或 `axvm-timer-*` worker。
 设备 timer、x86 LAPIC/PIT、LoongArch guest timer 和 AArch64 blocked-vCPU timer 都注册到
-宿主 kernel callback clock base；callback 仍只在线程上下文执行。
+宿主 kernel callback clock base。前三者保留普通 task-context callback；AArch64
+blocked-vCPU timer 使用显式 hard capability，只借用预绑定 wake handle，payload 回收仍回到
+`ktimers/<cpu>`。
 
 AxVM 保留虚拟化语义自身的状态：每 vCPU CVAL/CTL、AArch64
-`Aarch64TimerBinding::wait_generation`、host CNTV PPI activation owner，以及架构 backend
+`Aarch64TimerWaitState` 的单调 wait generation、host CNTV PPI activation owner，以及架构 backend
 要求的 cancel token。kernel timer handle 决定宿主 entry 的 at-most-once ownership；架构
 generation 决定一个已经开始执行的旧 wake hint 是否仍对当前 vCPU wait 有效。两者不能合并
 成一个 bool，也不能让 callback 直接断言 guest PPI。

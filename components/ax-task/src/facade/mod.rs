@@ -19,8 +19,8 @@ use crate::{
         SchedSwitchRecord, task_runtime,
     },
     timer::{
-        KernelTimerCallback, KernelTimerCancelOutcome, KernelTimerEntry, KernelTimerHandle,
-        RestartableKernelTimerCallback, TaskDeadlineError, TaskDeadlineKind,
+        HardKernelTimerCallback, KernelTimerCallback, KernelTimerCancelOutcome, KernelTimerEntry,
+        KernelTimerHandle, RestartableKernelTimerCallback, TaskDeadlineError, TaskDeadlineKind,
     },
 };
 
@@ -47,7 +47,9 @@ pub(crate) use deadline::{
 };
 pub use irq_worker::IrqWorkerWaiter;
 pub use kernel_timer::{
-    cancel_kernel_timer, register_kernel_timer, register_restartable_kernel_timer,
+    arm_hard_kernel_timer, cancel_kernel_timer, disarm_hard_kernel_timer,
+    register_hard_restartable_kernel_timer, register_kernel_timer,
+    register_restartable_kernel_timer,
 };
 pub use ktimer::start_current_ktimer_service;
 #[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]

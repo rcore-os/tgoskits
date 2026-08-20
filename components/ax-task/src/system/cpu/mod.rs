@@ -28,8 +28,11 @@ use load::SUMMARY_FAIR_PUSHABLE;
 pub use load::{CpuLoadSummary, DeadlineBandwidthSnapshot, SchedulingClass};
 pub use local::CpuLocal;
 pub(crate) use local::{
-    KtimerServiceClaim, SchedulerDeadlineDerivationSource, SchedulerDeadlineRqObservation,
+    HardTimerServiceClaim, KtimerServiceClaim, SchedulerDeadlineDerivationSource,
+    SchedulerDeadlineRqObservation,
 };
+#[cfg(feature = "task-test-hooks")]
+pub(crate) use remote::CpuDeadlineState;
 use remote::RqCurrentTick;
 pub use remote::{CpuLifecycleState, CpuLocalOwnerBorrow, CpuRemote};
 pub(crate) use remote::{
@@ -55,7 +58,8 @@ use crate::{
     },
     thread::ThreadCore,
     timer::{
-        ExpiredTaskDeadline, KernelTimerExecution, KernelTimerQueue, TaskDeadlineExpireBatch,
-        TaskDeadlineExpireRequest, TaskDeadlineQueue, TaskDeadlineRegistration,
+        ExpiredTaskDeadline, HardKernelTimerAction, KernelTimerEntry, KernelTimerExecution,
+        KernelTimerQueue, TaskDeadlineExpireBatch, TaskDeadlineExpireRequest, TaskDeadlineQueue,
+        TaskDeadlineRegistration,
     },
 };

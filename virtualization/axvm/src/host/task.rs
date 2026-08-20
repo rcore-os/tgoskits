@@ -3,9 +3,13 @@
 use super::arceos;
 
 pub(crate) type ThreadHandle = arceos::ArceOsThreadHandle;
+#[cfg(target_arch = "aarch64")]
+pub(crate) type ThreadWakeHandle = arceos::ArceOsThreadWakeHandle;
 pub(crate) type IrqNotification = arceos::ArceOsIrqNotification;
 pub(crate) type MonotonicDeadline = arceos::ArceOsMonotonicDeadline;
 pub(crate) type KernelTimerHandle = arceos::ArceOsKernelTimerHandle;
+#[cfg(target_arch = "aarch64")]
+pub(crate) type HardKernelTimerAction = arceos::ArceOsHardKernelTimerAction;
 #[cfg(target_arch = "x86_64")]
 pub(crate) type KernelTimerAction = arceos::ArceOsKernelTimerAction;
 pub(crate) type ThreadExtensionBorrow<'thread> =
@@ -36,6 +40,33 @@ pub(crate) fn register_restartable_kernel_timer(
     callback: std::boxed::Box<dyn FnMut(std::time::Duration) -> KernelTimerAction + Send + 'static>,
 ) -> Result<KernelTimerHandle, TaskError> {
     arceos::register_restartable_kernel_timer(deadline, callback)
+}
+
+/// # Safety
+///
+/// The callback must be bounded, non-panicking, allocation-free, and use only
+/// hard-IRQ-safe prebound capabilities.
+#[cfg(target_arch = "aarch64")]
+pub(crate) unsafe fn register_hard_restartable_kernel_timer(
+    deadline: MonotonicDeadline,
+    callback: std::boxed::Box<
+        dyn FnMut(std::time::Duration) -> HardKernelTimerAction + Send + 'static,
+    >,
+) -> Result<KernelTimerHandle, TaskError> {
+    unsafe { arceos::register_hard_restartable_kernel_timer(deadline, callback) }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn arm_hard_kernel_timer(
+    handle: KernelTimerHandle,
+    deadline: MonotonicDeadline,
+) -> Result<(), TaskError> {
+    arceos::arm_hard_kernel_timer(handle, deadline)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn disarm_hard_kernel_timer(handle: KernelTimerHandle) -> Result<(), TaskError> {
+    arceos::disarm_hard_kernel_timer(handle)
 }
 
 #[cfg(any(

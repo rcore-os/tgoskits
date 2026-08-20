@@ -109,8 +109,12 @@ impl HostCpu for ArceOsHost {
 }
 
 pub(crate) type ArceOsThreadHandle = runtime_task::ThreadHandle;
+#[cfg(target_arch = "aarch64")]
+pub(crate) type ArceOsThreadWakeHandle = runtime_task::ThreadWakeHandle;
 pub(crate) type ArceOsWaitQueue = runtime_task::WaitQueue;
 pub(crate) type ArceOsKernelTimerHandle = runtime_task::KernelTimerHandle;
+#[cfg(target_arch = "aarch64")]
+pub(crate) type ArceOsHardKernelTimerAction = runtime_task::HardKernelTimerAction;
 #[cfg(target_arch = "x86_64")]
 pub(crate) type ArceOsKernelTimerAction = runtime_task::KernelTimerAction;
 #[cfg(target_arch = "aarch64")]
@@ -220,6 +224,39 @@ pub(crate) fn register_restartable_kernel_timer(
         deadline,
         Box::new(move |now| callback(Duration::from_nanos(now.as_nanos()))),
     )
+}
+
+/// # Safety
+///
+/// `callback` must satisfy [`runtime_task::HardKernelTimerCallback::new`].
+#[cfg(target_arch = "aarch64")]
+pub(crate) unsafe fn register_hard_restartable_kernel_timer(
+    deadline: ArceOsMonotonicDeadline,
+    mut callback: Box<dyn FnMut(Duration) -> ArceOsHardKernelTimerAction + Send + 'static>,
+) -> Result<ArceOsKernelTimerHandle, ArceOsTaskError> {
+    let callback = unsafe {
+        // SAFETY: the caller owns the hard-IRQ callback proof; this adapter
+        // changes only the monotonic timestamp representation.
+        runtime_task::HardKernelTimerCallback::new(Box::new(move |now| {
+            callback(Duration::from_nanos(now.as_nanos()))
+        }))
+    };
+    runtime_task::register_hard_restartable_kernel_timer(deadline, callback)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn arm_hard_kernel_timer(
+    handle: ArceOsKernelTimerHandle,
+    deadline: ArceOsMonotonicDeadline,
+) -> Result<(), ArceOsTaskError> {
+    runtime_task::arm_hard_kernel_timer(handle, deadline)
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn disarm_hard_kernel_timer(
+    handle: ArceOsKernelTimerHandle,
+) -> Result<(), ArceOsTaskError> {
+    runtime_task::disarm_hard_kernel_timer(handle)
 }
 
 #[cfg(any(

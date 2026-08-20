@@ -11,6 +11,12 @@ pub(crate) struct SoftTimerExpireBatch {
 pub(crate) enum KtimerServiceClaim {
     Kernel(KernelTimerExecution),
     Task(ExpiredTaskDeadline),
+    Reap(KernelTimerEntry),
+}
+
+pub(crate) enum HardTimerServiceClaim {
+    Kernel(KernelTimerExecution),
+    Scheduler(ExpiredTaskDeadline),
 }
 
 impl SoftTimerExpireBatch {
@@ -387,28 +393,6 @@ impl CpuLocal {
         Ok(update)
     }
 
-    pub(crate) fn publish_hard_timer_work(&self) {
-        self.remote.publish_hard_timer_work();
-    }
-
-    pub(crate) fn begin_hard_timer_work(self: Pin<&mut Self>) -> bool {
-        self.remote.begin_hard_timer_work()
-    }
-
-    pub(crate) fn finish_hard_timer_work(self: Pin<&mut Self>, pending: bool) {
-        self.remote.finish_hard_timer_work(pending);
-    }
-
-    pub(crate) fn has_due_scheduler_deadline(&self, now: MonotonicInstant) -> bool {
-        self.remote
-            .read_active_deadline_base(DeadlineBaseGuardSource::Observation)
-            .is_some_and(|deadlines| {
-                deadlines
-                    .queue
-                    .has_immediately_actionable_scheduler_entry(now)
-            })
-    }
-
     #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn set_scheduler_deadline_generation_for_test(
         self: Pin<&mut Self>,
@@ -569,7 +553,7 @@ impl CpuLocal {
             Self::promote_due_task_deadlines_in_base(&mut deadlines, batch_limit, now, budget);
         let kernel_batch = deadlines
             .kernel_timers
-            .expire_due(now, budget.saturating_sub(task_batch.processed()));
+            .expire_due_soft(now, budget.saturating_sub(task_batch.processed()));
         if task_batch.expired() != 0
             || task_batch.pending()
             || kernel_batch.expired() != 0
@@ -607,37 +591,41 @@ impl CpuLocal {
         else {
             return (None, false);
         };
-        if !deadlines.kernel_timers.has_expired() && deadlines.kernel_timers.has_due(now) {
-            deadlines.kernel_timers.expire_due(now, 1);
+        if !deadlines.kernel_timers.has_expired() && deadlines.kernel_timers.has_due_soft(now) {
+            deadlines.kernel_timers.expire_due_soft(now, 1);
         }
         if deadlines.expired_count == 0
             && deadlines.queue.has_immediately_actionable_soft_entry(now)
         {
             Self::promote_due_task_deadlines_in_base(&mut deadlines, batch_limit, now, task_budget);
         }
-        let has_kernel = deadlines.kernel_timers.has_expired();
-        let has_task = deadlines.expired_count != 0;
-        let claim_class = deadlines.select_service_claim_class(has_kernel, has_task);
-        let claim = match claim_class {
-            Some(KtimerClaimClass::Kernel) => {
-                let execution = deadlines
-                    .kernel_timers
-                    .claim_expired()
-                    .expect("an expired kernel timer must remain claimable");
-                Some(KtimerServiceClaim::Kernel(execution))
+        let claim = if let Some(completed) = deadlines.kernel_timers.claim_completed() {
+            Some(KtimerServiceClaim::Reap(completed))
+        } else {
+            let has_kernel = deadlines.kernel_timers.has_expired();
+            let has_task = deadlines.expired_count != 0;
+            match deadlines.select_service_claim_class(has_kernel, has_task) {
+                Some(KtimerClaimClass::Kernel) => {
+                    let execution = deadlines
+                        .kernel_timers
+                        .claim_expired()
+                        .expect("an expired kernel timer must remain claimable");
+                    Some(KtimerServiceClaim::Kernel(execution))
+                }
+                Some(KtimerClaimClass::Task) => {
+                    let event = deadlines
+                        .claim_next_buffered_expiration()
+                        .expect("a buffered task expiration must remain claimable");
+                    Some(KtimerServiceClaim::Task(event))
+                }
+                None => None,
             }
-            Some(KtimerClaimClass::Task) => {
-                let event = deadlines
-                    .claim_next_buffered_expiration()
-                    .expect("a buffered task expiration must remain claimable");
-                Some(KtimerServiceClaim::Task(event))
-            }
-            None => None,
         };
         let pending = deadlines.expired_count != 0
             || deadlines.queue.has_immediately_actionable_soft_entry(now)
             || deadlines.kernel_timers.has_expired()
-            || deadlines.kernel_timers.has_due(now);
+            || deadlines.kernel_timers.has_completed()
+            || deadlines.kernel_timers.has_due_soft(now);
         deadlines.softirq_activated = pending;
         (claim, pending)
     }
@@ -669,22 +657,59 @@ impl CpuLocal {
         batch
     }
 
-    /// Removes one due hard scheduler timer from the owner hrtimer base.
-    pub(crate) fn take_due_scheduler_deadline(
+    /// Claims one earliest due hard timer from the shared owner hrtimer base.
+    pub(crate) fn claim_due_hard_timer(
         self: Pin<&mut Self>,
         now: MonotonicInstant,
-    ) -> (Option<ExpiredTaskDeadline>, bool) {
+    ) -> Option<HardTimerServiceClaim> {
         let Some(mut task_deadlines) = self
             .remote
             .lock_active_deadline_activity(DeadlineBaseGuardSource::HardExpiry)
         else {
-            return (None, false);
+            return None;
         };
-        let mut event = [ExpiredTaskDeadline::EMPTY; 1];
-        let batch = task_deadlines
-            .queue
-            .expire_scheduler(TaskDeadlineExpireRequest::new(now, 1), &mut event);
-        ((batch.expired() == 1).then_some(event[0]), batch.pending())
+        let scheduler_deadline = task_deadlines.queue.next_scheduler_deadline();
+        let kernel_deadline = task_deadlines.kernel_timers.next_hard_deadline();
+        let claim = match (scheduler_deadline, kernel_deadline) {
+            (Some(scheduler), Some(kernel)) if kernel < scheduler => task_deadlines
+                .kernel_timers
+                .claim_due_hard(now)
+                .map(HardTimerServiceClaim::Kernel),
+            (Some(scheduler), _) if now.reached(scheduler) => {
+                let mut event = [ExpiredTaskDeadline::EMPTY; 1];
+                let batch = task_deadlines
+                    .queue
+                    .expire_scheduler(TaskDeadlineExpireRequest::new(now, 1), &mut event);
+                (batch.expired() == 1).then_some(HardTimerServiceClaim::Scheduler(event[0]))
+            }
+            (_, Some(kernel)) if now.reached(kernel) => task_deadlines
+                .kernel_timers
+                .claim_due_hard(now)
+                .map(HardTimerServiceClaim::Kernel),
+            _ => None,
+        };
+        claim
+    }
+
+    pub(crate) fn complete_hard_kernel_timer_execution(
+        self: Pin<&mut Self>,
+        execution: KernelTimerExecution,
+        action: HardKernelTimerAction,
+    ) {
+        let mut deadlines = self
+            .remote
+            .lock_deadline_activity(DeadlineBaseGuardSource::HardExpiry);
+        if deadlines
+            .kernel_timers
+            .complete_hard_execution(execution, action)
+        {
+            // Callback ownership is reclaimed only by `ktimers/%u`; this bit
+            // describes deferred destruction, not the hard deadline that just
+            // left the active base.
+            deadlines.softirq_activated = true;
+            drop(deadlines);
+            self.remote.publish_ktimer_work();
+        }
     }
 
     #[cfg(any(test, all(axtest, feature = "axtest")))]

@@ -163,15 +163,12 @@ impl ArchOps for Aarch64Arch {
             ArmVmExit::ExternalInterrupt { token } => Ok(BoundVcpuExit::Defer(
                 Aarch64DeferredRunWork::ExternalInterrupt { token },
             )),
-            ArmVmExit::WaitForInterrupt => {
-                vcpu.get_arch_vcpu().arm_timer_wait()?;
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: true,
-                    stop_reason: None,
-                    resets_vm: false,
-                    exits_vcpu: false,
-                }))
-            }
+            ArmVmExit::WaitForInterrupt => Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                waits_for_event: true,
+                stop_reason: None,
+                resets_vm: false,
+                exits_vcpu: false,
+            })),
             ArmVmExit::CpuDown { state } => {
                 warn!(
                     "VM[{}] run VCpu[{}] CpuDown state {state:#x}",
@@ -273,14 +270,17 @@ impl ArchOps for Aarch64Arch {
                 return;
             }
         }
-        if let Err(error) = vcpu.get_arch_vcpu().arm_timer_wait() {
-            warn!(
-                "VM[{}] VCpu[{}] cannot rearm architectural timer before WFI wait: {error:?}",
-                vm.id(),
-                vcpu.id()
-            );
-            return;
-        }
+        let timer_wait = match vcpu.get_arch_vcpu().arm_timer_wait() {
+            Ok(timer_wait) => timer_wait,
+            Err(error) => {
+                warn!(
+                    "VM[{}] VCpu[{}] cannot rearm architectural timer before WFI wait: {error:?}",
+                    vm.id(),
+                    vcpu.id()
+                );
+                return;
+            }
+        };
         match vcpu.get_arch_vcpu().has_pending_interrupt() {
             Ok(true) => return,
             Ok(false) => {}
@@ -298,7 +298,11 @@ impl ArchOps for Aarch64Arch {
             runtime,
             &wait_snapshot,
             || vm.running(),
-            || runtime.has_pending_interrupt(vcpu.id()),
+            || {
+                runtime.has_pending_interrupt(vcpu.id())
+                    || timer_wait
+                        .is_some_and(|token| vcpu.get_arch_vcpu().timer_wait_completed(token))
+            },
             |condition| runtime.wait_until(condition),
         );
     }
@@ -332,7 +336,6 @@ impl ArmHostOps for AxvmArmHostOps {
 }
 
 pub(crate) struct AxvmArmVcpu {
-    vm_id: usize,
     inner: ArmVcpu<AxvmArmHostOps>,
     vgic: Option<Arc<VgicCore>>,
     vgic_binding: Option<GicV3VcpuBinding>,
@@ -357,7 +360,6 @@ impl AxvmArmVcpu {
             host_virtual_timer_intid,
         } = irq_binding;
         let timer_binding = vtimer::Aarch64TimerBinding::new(
-            self.vm_id,
             vgic.clone(),
             backend,
             binding.vcpu(),
@@ -422,7 +424,7 @@ impl AxvmArmVcpu {
         vgic_backend_result(binding.synchronize(snapshot))
     }
 
-    fn arm_timer_wait(&self) -> AxVmResult {
+    fn arm_timer_wait(&self) -> AxVmResult<Option<vtimer::Aarch64TimerWaitToken>> {
         let snapshot = self.inner.timer_snapshot().map_err(|error| {
             crate::AxVmError::vcpu(
                 "snapshot AArch64 architectural timers",
@@ -438,6 +440,12 @@ impl AxvmArmVcpu {
             .map_err(|error| crate::AxVmError::interrupt("arm architectural timer wait", error))
     }
 
+    fn timer_wait_completed(&self, token: vtimer::Aarch64TimerWaitToken) -> bool {
+        self.timer_binding
+            .as_ref()
+            .is_some_and(|binding| binding.timer_wait_completed(token))
+    }
+
     fn invalidate_virtual_timer_wait(&self) {
         if let Some(binding) = &self.timer_binding {
             binding.invalidate_wait();
@@ -445,13 +453,21 @@ impl AxvmArmVcpu {
     }
 
     fn prepare_timer_entry(&self) -> AxVmResult {
-        self.timer_binding
-            .as_ref()
-            .ok_or_else(|| {
-                crate::AxVmError::resource_unavailable("AArch64 timer binding", "missing")
-            })?
+        let binding = self.timer_binding.as_ref().ok_or_else(|| {
+            crate::AxVmError::resource_unavailable("AArch64 timer binding", "missing")
+        })?;
+        binding
             .prepare_run()
-            .map_err(|error| crate::AxVmError::interrupt("prepare timer PPI route", error))
+            .map_err(|error| crate::AxVmError::interrupt("prepare timer PPI route", error))?;
+        let snapshot = self.inner.timer_snapshot().map_err(|error| {
+            crate::AxVmError::vcpu(
+                "snapshot AArch64 architectural timers before entry",
+                std::format!("{error:?}"),
+            )
+        })?;
+        binding
+            .publish_for_entry(snapshot)
+            .map_err(|error| crate::AxVmError::interrupt("publish timer PPI before entry", error))
     }
 
     fn accept_host_timer_irq(&self, token: usize) -> bool {
@@ -478,7 +494,6 @@ impl VmArchVcpuOps for AxvmArmVcpu {
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
         arm_result(ArmVcpu::new(vm_id, vcpu_id, config)).map(|inner| Self {
-            vm_id,
             inner,
             vgic: None,
             vgic_binding: None,

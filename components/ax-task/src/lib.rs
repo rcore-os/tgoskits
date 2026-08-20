@@ -48,5 +48,8 @@ pub use sync::{Mutex, MutexGuard, PiMutex, PiMutexGuard, SpinLock, SpinRwLock};
 pub use system::*;
 pub use thread::*;
 pub use thread_start::*;
-pub use timer::{KernelTimerAction, KernelTimerCancelOutcome, KernelTimerHandle};
+pub use timer::{
+    HardKernelTimerAction, HardKernelTimerCallback, KernelTimerAction, KernelTimerCancelOutcome,
+    KernelTimerHandle,
+};
 pub use wait_queue::*;

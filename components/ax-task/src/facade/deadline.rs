@@ -162,37 +162,17 @@ pub fn on_clock_event(
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     let (charge, clock, current) = system.charge_current_until_with_clock(cpu.as_mut(), 0)?;
     let rt_unthrottled = system.service_rt_period(&cpu, now);
-    let mut hard_processed = 0;
-    let mut hard_pending = false;
-    while hard_processed < budget {
-        let (event, pending) = cpu.as_mut().take_due_scheduler_deadline(now);
-        hard_pending = pending;
-        let Some(event) = event else {
-            break;
-        };
-        system.service_expired_scheduler_deadline(cpu.as_mut(), event)?;
-        hard_processed += 1;
-    }
-    hard_pending |= cpu.has_due_scheduler_deadline(now);
-    if hard_pending {
-        // The hard-IRQ budget is an execution bound, not a progress source.
-        // Transfer the remainder to the owner scheduler safe point and keep a
-        // sticky reschedule request so idle cannot wait for another timer IRQ.
-        cpu.publish_hard_timer_work();
-        cpu.request_reschedule();
-    }
-    let batch = cpu
-        .as_mut()
-        .on_task_clock_event(now, budget.saturating_sub(hard_processed));
+    let hard = system.service_due_hard_timers(cpu.as_mut(), now)?;
+    let batch = cpu.as_mut().on_task_clock_event(now, budget);
     let scheduler_due = cpu.as_mut().scheduler_work_due(now);
-    let pending = hard_pending || batch.pending() || scheduler_due || rt_unthrottled;
+    let pending = batch.pending() || scheduler_due || rt_unthrottled;
     let update = cpu
         .as_mut()
         .next_scheduler_deadline_update(now, SchedulerDeadlineDerivationSource::ClockEvent)?;
     Ok(TaskClockEventOutcome {
         slice_expired: charge.slice_expired(),
         deadline_overrun: charge.deadline_overrun(),
-        expired: hard_processed.saturating_add(batch.expired()),
+        expired: hard.processed().saturating_add(batch.expired()),
         pending,
         update,
         scheduler_tick: SchedulerTickStamp {

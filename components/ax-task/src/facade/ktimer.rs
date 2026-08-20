@@ -79,7 +79,7 @@ fn ktimer_service_loop(owner: CpuId) -> Result<(), TaskError> {
 
 fn service_current_ktimer_pass(owner: CpuId) -> Result<bool, TaskError> {
     let system = runtime_task_system()?;
-    let (pending, mut kernel_timer, mut task_timer) = {
+    let (pending, mut kernel_timer, mut task_timer, completed_timer) = {
         let mut irq = RuntimeIrqGuard::enter();
         let mut cpu = runtime_current_cpu_mut(&mut irq)?;
         if cpu.owner() != owner {
@@ -96,8 +96,10 @@ fn service_current_ktimer_pass(owner: CpuId) -> Result<bool, TaskError> {
             batch.pending(),
             batch.take_kernel_timer(),
             batch.take_task_timer(),
+            batch.take_completed_timer(),
         )
     };
+    drop(completed_timer);
     if let Some(event) = task_timer.take() {
         let handle = match event.thread().map(|thread| system.thread_handle(thread)) {
             Some(Ok(handle)) => Some(handle),
@@ -132,7 +134,7 @@ fn service_current_ktimer_pass(owner: CpuId) -> Result<bool, TaskError> {
         }
     }
     if let Some(mut timer) = kernel_timer.take() {
-        let action = timer.invoke();
+        let action = timer.invoke_soft();
         let mut completion = {
             let mut irq = RuntimeIrqGuard::enter();
             // The callback entry and its queue tombstone must complete as one

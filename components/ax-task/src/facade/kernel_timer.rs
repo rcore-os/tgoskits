@@ -1,4 +1,4 @@
-//! Runtime-backed task-context kernel timer registration.
+//! Runtime-backed soft and explicitly hard kernel timer registration.
 
 use super::*;
 use crate::{
@@ -49,6 +49,129 @@ pub fn register_restartable_kernel_timer(
     let entry =
         KernelTimerEntry::new_restartable(deadline, callback).map_err(kernel_timer_error)?;
     register_kernel_timer_entry(entry)
+}
+
+/// Registers a stable callback with explicit hard-IRQ expiry semantics.
+///
+/// The callback capability carries the caller's proof that invocation is
+/// bounded and hard-IRQ-safe. Completion or cancellation drops its payload in
+/// task context; returning [`KernelTimerAction::Rearm`] preserves the same
+/// timer identity and physical clockevent owner.
+pub fn register_hard_restartable_kernel_timer(
+    deadline: MonotonicDeadline,
+    callback: HardKernelTimerCallback,
+) -> Result<KernelTimerHandle, TaskError> {
+    validate_task_context()?;
+    let entry =
+        KernelTimerEntry::new_hard_restartable(deadline, callback).map_err(kernel_timer_error)?;
+    register_kernel_timer_entry(entry)
+}
+
+/// Arms one inactive stable hard timer on its owner CPU.
+///
+/// The registration identity and callback allocation are reused. A caller
+/// that moves the consumer to another CPU must destroy the old registration
+/// and create a new owner-local one rather than remotely programming a
+/// physical comparator.
+pub fn arm_hard_kernel_timer(
+    handle: KernelTimerHandle,
+    deadline: MonotonicDeadline,
+) -> Result<(), TaskError> {
+    validate_task_context()?;
+    let update = {
+        let mut irq = RuntimeIrqGuard::enter();
+        let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+        if cpu.owner() != handle.owner() {
+            return Err(TaskError::CpuOwnerMismatch {
+                expected: handle.owner().as_u32(),
+                actual: cpu.owner().as_u32(),
+            });
+        }
+        let non_timer = cpu
+            .as_mut()
+            .prepare_scheduler_deadline_registration_publication(
+                task_runtime::monotonic_now(),
+                SchedulerDeadlineDerivationSource::KernelTimer,
+            );
+        let mut deadline_base = cpu
+            .remote()
+            .lock_deadline_activity(DeadlineBaseGuardSource::Registration);
+        if !deadline_base.kernel_timers.arm_hard(handle, deadline) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        match CpuLocal::update_scheduler_deadline_registration_publication_if_changed(
+            &mut deadline_base,
+            non_timer,
+        ) {
+            Ok(update) => update,
+            Err(error) => {
+                assert_eq!(
+                    deadline_base.kernel_timers.disarm_hard(handle),
+                    Some(Some(deadline)),
+                    "failed hard-timer arm publication must restore inactivity"
+                );
+                return Err(error);
+            }
+        }
+    };
+    if let Some(update) = update {
+        task_runtime::publish_scheduler_deadline(update);
+    }
+    Ok(())
+}
+
+/// Disarms one stable hard timer without destroying its callback payload.
+///
+/// Remote disarm only changes the logical owner base. Any already programmed
+/// edge remains conservative and is reconciled by that CPU's firing
+/// transaction; this operation never writes another CPU's comparator.
+pub fn disarm_hard_kernel_timer(handle: KernelTimerHandle) -> Result<(), TaskError> {
+    validate_task_context()?;
+    let update = {
+        let mut irq = RuntimeIrqGuard::enter();
+        let mut current = runtime_current_cpu_mut(&mut irq)?;
+        let system = runtime_task_system()?;
+        let remote = system
+            .cpu_remote(handle.owner())
+            .ok_or(TaskError::InvalidConfiguration)?;
+        let local_owner = current.owner() == handle.owner();
+        let non_timer = local_owner.then(|| {
+            current
+                .as_mut()
+                .prepare_scheduler_deadline_registration_publication(
+                    task_runtime::monotonic_now(),
+                    SchedulerDeadlineDerivationSource::KernelTimer,
+                )
+        });
+        let mut deadline_base =
+            remote.lock_deadline_activity(DeadlineBaseGuardSource::Registration);
+        let transition = deadline_base
+            .kernel_timers
+            .disarm_hard(handle)
+            .ok_or(TaskError::InvalidConfiguration)?;
+        let (Some(non_timer), Some(previous_deadline)) = (non_timer, transition) else {
+            return Ok(());
+        };
+        match CpuLocal::update_scheduler_deadline_registration_publication_if_changed(
+            &mut deadline_base,
+            non_timer,
+        ) {
+            Ok(update) => update,
+            Err(error) => {
+                assert!(
+                    deadline_base
+                        .kernel_timers
+                        .arm_hard(handle, previous_deadline),
+                    "failed hard-timer disarm publication must restore the active entry"
+                );
+                return Err(error);
+            }
+        }
+    };
+    if let Some(update) = update {
+        task_runtime::publish_scheduler_deadline(update);
+    }
+    Ok(())
 }
 
 fn register_kernel_timer_entry(entry: KernelTimerEntry) -> Result<KernelTimerHandle, TaskError> {

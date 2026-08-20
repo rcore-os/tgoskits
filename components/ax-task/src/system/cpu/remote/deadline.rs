@@ -28,6 +28,7 @@ fn decode_deadline_snapshot(snapshot: u64) -> Option<MonotonicDeadline> {
 /// second diagnostic operation to the hot path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DeadlineBaseGuardSource {
+    #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
     Observation,
     Publication,
     Registration,
@@ -41,6 +42,7 @@ pub(crate) enum DeadlineBaseGuardSource {
 impl DeadlineBaseGuardSource {
     pub(crate) const fn irq_guard_source(self) -> crate::runtime::IrqGuardSource {
         match self {
+            #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
             Self::Observation => crate::runtime::IrqGuardSource::CpuDeadlineObservationTicket,
             Self::Publication => crate::runtime::IrqGuardSource::CpuDeadlinePublicationTicket,
             Self::Registration => crate::runtime::IrqGuardSource::CpuDeadlineRegistrationTicket,
@@ -325,19 +327,25 @@ impl CpuDeadlineState {
     }
 
     pub(crate) fn timer_deadline(&self) -> Option<MonotonicDeadline> {
-        if self.softirq_activated {
-            // Linux suppresses `softirq_expires_next` only after the hard
-            // hrtimer path transfers progress ownership to `ktimers/%u`.
-            None
-        } else {
-            [
-                self.queue.next_deadline(),
-                self.kernel_timers.next_deadline(),
-            ]
-            .into_iter()
-            .flatten()
-            .min()
-        }
+        let hard = [
+            self.queue.next_scheduler_deadline(),
+            self.kernel_timers.next_hard_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        let soft = (!self.softirq_activated)
+            .then(|| {
+                [
+                    self.queue.next_soft_deadline(),
+                    self.kernel_timers.next_soft_deadline(),
+                ]
+                .into_iter()
+                .flatten()
+                .min()
+            })
+            .flatten();
+        [hard, soft].into_iter().flatten().min()
     }
 
     pub(crate) fn claim_next_buffered_expiration(&mut self) -> Option<ExpiredTaskDeadline> {
@@ -469,6 +477,21 @@ impl CpuRemote {
 mod tests {
     use super::*;
     use crate::timer::{TaskDeadlineKind, TaskDeadlineNode};
+
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn activated_softirq_does_not_hide_scheduler_hard_deadline() {
+        let mut state = CpuDeadlineState::new(TaskSystemConfig::new(1));
+        let node = TaskDeadlineNode::deadline_cbs_for_thread(ThreadId::from_parts(1, 1));
+        let deadline = MonotonicDeadline::from_nanos(10).unwrap();
+        let _registration = state
+            .queue
+            .arm(&node, deadline, TaskDeadlineKind::DeadlineCbs)
+            .unwrap();
+        state.softirq_activated = true;
+
+        assert_eq!(state.timer_deadline(), Some(deadline));
+    }
 
     #[cfg_attr(test, test)]
     #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
