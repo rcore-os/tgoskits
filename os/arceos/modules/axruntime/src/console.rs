@@ -4,7 +4,7 @@
 //! receive items and complete log records; line discipline and terminal ABI
 //! policy remain in the consuming OS.
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use core::fmt::{self, Write};
 
 use ax_lazyinit::OnceLock;
@@ -15,6 +15,7 @@ pub use crate::serial::RxItem;
 use crate::{RuntimeError, RuntimeResult, raw_console::RawConsoleInput, serial, sync::SpinLock};
 
 static ACTIVATION: OnceLock<ConsoleActivation> = OnceLock::new();
+static TTY_NUMBERS: OnceLock<Box<[Option<usize>]>> = OnceLock::new();
 // Task writers take these in order. Log publishers take only the hardware
 // lock, so early CPUs and interrupt context never touch task-owned state.
 static RAW_OUTPUT_LOCK: Mutex<()> = Mutex::new(());
@@ -23,7 +24,7 @@ static RAW_OUTPUT_SOURCE: OnceLock<Arc<PollSet>> = OnceLock::new();
 
 /// Result of selecting the firmware console before secondary CPUs start.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConsoleActivation {
+pub(crate) enum ConsoleActivation {
     /// One serial runtime owns the physical console.
     Active {
         runtime_index: usize,
@@ -38,7 +39,7 @@ pub enum ConsoleActivation {
 
 /// Why no task-context serial console was activated.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConsoleUnavailable {
+pub(crate) enum ConsoleUnavailable {
     NoSerialDevice,
     NoHardwareSelected,
     SelectedDeviceNotFound,
@@ -55,13 +56,8 @@ pub(crate) fn activate_before_smp() -> ConsoleActivation {
     }
 
     let runtimes = serial::runtimes();
-    let tty_numbers = assign_tty_numbers(
-        &runtimes
-            .iter()
-            .map(|runtime| runtime.info().alias_index)
-            .collect::<alloc::vec::Vec<_>>(),
-    );
-    let selection = select_runtime(runtimes, &tty_numbers, ax_hal::console::device_id());
+    let tty_numbers = initialize_tty_numbers(runtimes);
+    let selection = select_runtime(runtimes, tty_numbers, ax_hal::console::device_id());
     let (runtime_index, tty_number) = match selection {
         Ok(selection) => selection,
         Err(unavailable) => return use_raw_hal(unavailable),
@@ -72,9 +68,6 @@ pub(crate) fn activate_before_smp() -> ConsoleActivation {
         return fail_closed(ConsoleUnavailable::HandoffFailed);
     }
     if runtime.adopt_prepared_console().is_err() {
-        // A recoverable adopt failure may already have restored early
-        // ownership, but SMP is about to start. Close that path permanently
-        // rather than letting later CPUs resume unsynchronized early access.
         return fail_closed(ConsoleUnavailable::RuntimeAdoptFailed);
     }
     if let Err(error) = runtime.commit_console_handoff() {
@@ -156,19 +149,22 @@ pub fn tty_number(runtime: &serial::SerialRuntimeHandle) -> Option<usize> {
     let index = serial::runtimes()
         .iter()
         .position(|candidate| candidate.info().device_id == runtime.info().device_id)?;
-    assign_tty_numbers(
-        &serial::runtimes()
-            .iter()
-            .map(|candidate| candidate.info().alias_index)
-            .collect::<alloc::vec::Vec<_>>(),
-    )
-    .get(index)
-    .copied()
-    .flatten()
+    TTY_NUMBERS.get()?.get(index).copied().flatten()
 }
 
-/// Returns the active console selection, if initialization has completed.
-pub fn activation() -> Option<ConsoleActivation> {
+fn initialize_tty_numbers(runtimes: &[serial::SerialRuntimeHandle]) -> &'static [Option<usize>] {
+    TTY_NUMBERS.call_once(|| {
+        assign_tty_numbers(
+            &runtimes
+                .iter()
+                .map(|runtime| runtime.info().alias_index)
+                .collect::<alloc::vec::Vec<_>>(),
+        )
+        .into_boxed_slice()
+    })
+}
+
+fn activation() -> Option<ConsoleActivation> {
     ACTIVATION.get().copied()
 }
 
@@ -217,13 +213,6 @@ pub fn output() -> RuntimeResult<TaskConsoleOutput> {
             inner: TaskConsoleOutputInner::RawHal,
         }),
         activation => Err(inactive_console_error(activation)),
-    }
-}
-
-/// Returns a cloneable serialized output capability for a UART runtime.
-pub fn output_for(runtime: &serial::SerialRuntimeHandle) -> TaskConsoleOutput {
-    TaskConsoleOutput {
-        inner: TaskConsoleOutputInner::Runtime(runtime.task_output()),
     }
 }
 

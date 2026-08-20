@@ -31,6 +31,11 @@ use ax_std as _;
 
 mod banner;
 mod config;
+#[cfg(any(
+    feature = "test-console-atomic-output",
+    feature = "test-console-interleave"
+))]
+mod console_regression;
 mod guest_console;
 #[cfg(feature = "http-axum")]
 mod http;
@@ -66,10 +71,11 @@ fn init_atomic_output_panic_hook() {
 ///
 /// The startup sequence is:
 ///
-/// 1. Print the startup banner.
-/// 2. Check and enable hardware virtualization on every CPU.
-/// 3. Build the default guest VMs.
-/// 4. Spawn the management plane first — the HTTP server so the API is live
+/// 1. Configure the sole runtime host-console owner.
+/// 2. Print the startup banner through its output worker.
+/// 3. Check and enable hardware virtualization on every CPU.
+/// 4. Build the default guest VMs.
+/// 5. Spawn the management plane first — the HTTP server so the API is live
 ///    before any guest boots — then the VM lifecycle waiter and the shell.
 ///
 /// The vCPU tasks are pinned to the secondary CPUs via `phys_cpu_ids` in the
@@ -88,7 +94,10 @@ fn main() {
     #[cfg(feature = "test-panic-no-backtrace")]
     panic!("axvisor no-backtrace smoke test: panic without backtrace");
 
-    banner::print_logo();
+    guest_console::configure_host_console()
+        .unwrap_or_else(|error| panic!("failed to configure host console: {error:#}"));
+
+    guest_console::submit_host_bytes(banner::STARTUP);
 
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()
@@ -108,14 +117,11 @@ fn main() {
         .spawn(http::serve)
         .unwrap_or_else(|error| panic!("failed to start management HTTP server: {error}"));
 
-    guest_console::configure_host_console()
-        .unwrap_or_else(|error| panic!("failed to configure host console: {error:#}"));
-
     #[cfg(feature = "test-console-atomic-output")]
-    emit_console_atomic_output_regression();
+    console_regression::emit_atomic_output();
 
     #[cfg(feature = "test-console-interleave")]
-    emit_console_interleave_regression();
+    console_regression::emit_interleave();
 
     // With `no-auto-start` the default VMs are only created (staying in
     // `Ready`) and the management plane boots them on demand, so nothing is
@@ -140,25 +146,4 @@ fn main() {
     info!("shell task on CPU{}", axvm::host::cpu::current_id());
 
     shell::console_init();
-}
-
-#[cfg(feature = "test-console-atomic-output")]
-fn emit_console_atomic_output_regression() {
-    const REGRESSION_VM_ID: usize = usize::MAX;
-
-    let backend = guest_console::serial_backend_factory(REGRESSION_VM_ID).create();
-    guest_console::mark_running(REGRESSION_VM_ID);
-    let no_preempt = ax_std::os::arceos::guard::PreemptGuard::new();
-    guest_console::fill_runtime_output_queue();
-    backend.write(b"\nCONSOLE_ATOMIC_OUTPUT_REGRESSION_PASSED\n");
-    drop(no_preempt);
-}
-
-#[cfg(feature = "test-console-interleave")]
-fn emit_console_interleave_regression() {
-    ax_api::stdio::ax_console_write_bytes(b"rm")
-        .expect("console interleave prefix must be written");
-    ax_log::ax_print!("{}\n", guest_console::INTERLEAVE_HOST_LOG_MARKER);
-    ax_api::stdio::ax_console_write_bytes(b"\n")
-        .expect("console interleave suffix must be written");
 }

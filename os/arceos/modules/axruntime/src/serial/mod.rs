@@ -172,13 +172,6 @@ impl RuntimeShared {
             );
         }
     }
-
-    fn disable_irq_for_emergency(&self) {
-        let Some(handle) = self.irq_handle.get().copied() else {
-            return;
-        };
-        let _ = ax_hal::irq::disable_irq(handle);
-    }
 }
 
 /// Cloneable OS-facing façade for one UART runtime.
@@ -227,7 +220,13 @@ impl SerialRuntimeHandle {
         })
     }
 
-    pub(crate) fn task_output(&self) -> SerialTaskOutput {
+    /// Returns a cloneable task-context output capability for this UART.
+    ///
+    /// This per-port API is used by operating systems that expose non-console
+    /// serial devices. Physical-console consumers should use
+    /// [`crate::console::output`] so raw-HAL fallback and failed-closed state
+    /// remain hidden behind the console boundary.
+    pub fn task_output(&self) -> SerialTaskOutput {
         SerialTaskOutput {
             shared: self.shared.clone(),
         }
@@ -271,26 +270,12 @@ impl SerialRuntimeHandle {
     ///
     /// The worker preserves the firmware line/FIFO configuration and only
     /// masks device-local sources before enabling its registered IRQ action.
-    /// A queue or IRQ-enable failure is therefore recoverable: early polling
-    /// output remains usable and the platform handoff can roll back.
+    /// The console coordinator owns the surrounding handoff transaction and
+    /// closes the early path if this operation fails.
     pub(crate) fn adopt_prepared_console(&self) -> RuntimeResult {
-        match self
-            .shared
+        self.shared
             .control
             .submit(ControlOp::AdoptFirmwareConsole, &self.shared.bridge.notify)
-        {
-            Ok(()) => Ok(()),
-            Err(error @ RuntimeError::SerialControlBusy) | Err(error @ RuntimeError::Irq(_)) => {
-                if ax_hal::console::rollback_runtime_handoff().is_err() {
-                    ax_hal::console::fail_runtime_handoff_closed();
-                }
-                Err(error)
-            }
-            Err(error) => {
-                ax_hal::console::fail_runtime_handoff_closed();
-                Err(error)
-            }
-        }
     }
 
     /// Publishes runtime log routing and completes the platform handoff.
@@ -516,14 +501,14 @@ impl Drop for SerialLogSubscription {
     }
 }
 
-/// Internal output capability re-exported through `ax_runtime::console`.
+/// Cloneable task-context output capability for one runtime UART.
 #[derive(Clone)]
-pub(crate) struct SerialTaskOutput {
+pub struct SerialTaskOutput {
     shared: Arc<RuntimeShared>,
 }
 
 impl SerialTaskOutput {
-    pub(crate) fn try_write(&self, bytes: &[u8]) -> RuntimeResult<usize> {
+    pub fn try_write(&self, bytes: &[u8]) -> RuntimeResult<usize> {
         let Some(_output) = self.shared.tty_output_lock.try_lock() else {
             return Err(RuntimeError::WouldBlock);
         };
@@ -533,7 +518,7 @@ impl SerialTaskOutput {
         .try_write(bytes)
     }
 
-    pub(crate) fn write_all(&self, bytes: &[u8]) -> RuntimeResult<usize> {
+    pub fn write_all(&self, bytes: &[u8]) -> RuntimeResult<usize> {
         let _output = self.shared.tty_output_lock.lock();
         SerialTxSender {
             shared: self.shared.clone(),
@@ -541,7 +526,7 @@ impl SerialTaskOutput {
         .write_all(bytes)
     }
 
-    pub(crate) fn write_text_all(&self, bytes: &[u8]) -> RuntimeResult<usize> {
+    pub fn write_text_all(&self, bytes: &[u8]) -> RuntimeResult<usize> {
         let _output = self.shared.tty_output_lock.lock();
         SerialTxSender {
             shared: self.shared.clone(),
@@ -549,7 +534,7 @@ impl SerialTaskOutput {
         .write_text_all(bytes)
     }
 
-    pub(crate) fn write_fmt(&self, args: fmt::Arguments<'_>) -> fmt::Result {
+    pub fn write_fmt(&self, args: fmt::Arguments<'_>) -> fmt::Result {
         let _output = self.shared.tty_output_lock.lock();
         let mut writer = ActiveConsoleWriter {
             sender: SerialTxSender {
@@ -559,12 +544,12 @@ impl SerialTaskOutput {
         writer.write_fmt(args)
     }
 
-    pub(crate) fn wait_idle(&self) -> RuntimeResult {
+    pub fn wait_idle(&self) -> RuntimeResult {
         let _output = self.shared.tty_output_lock.lock();
         SerialOutputBarrier::new(self.shared.clone()).wait_idle()
     }
 
-    pub(crate) fn discard_pending(&self) -> RuntimeResult {
+    pub fn discard_pending(&self) -> RuntimeResult {
         let _output = self.shared.tty_output_lock.lock();
         self.shared.ensure_started()?;
         self.shared
@@ -572,7 +557,7 @@ impl SerialTaskOutput {
             .submit(ControlOp::DiscardTx, &self.shared.bridge.notify)
     }
 
-    pub(crate) fn reconfigure(
+    pub fn reconfigure(
         &self,
         config: Option<Config>,
         drain: bool,
@@ -590,7 +575,7 @@ impl SerialTaskOutput {
         Ok(())
     }
 
-    pub(crate) fn poll_source(&self) -> Arc<PollSet> {
+    pub fn poll_source(&self) -> Arc<PollSet> {
         self.shared.tx_source.clone()
     }
 }
@@ -976,7 +961,6 @@ pub(crate) fn emergency_write(args: fmt::Arguments<'_>) -> Option<usize> {
         runtime.shared.stats.add_log_dropped_records(1);
         return Some(0);
     };
-    runtime.shared.disable_irq_for_emergency();
     let mut writer = EmergencyWriter::new(register_access);
     if writer.write_fmt(args).is_err() {
         runtime.shared.stats.add_log_dropped_records(1);
@@ -1203,6 +1187,8 @@ mod tests {
     struct ChunkedEmergencyTx(&'static AtomicUsize);
 
     impl rdif_serial::UartEmergencyTx for ChunkedEmergencyTx {
+        unsafe fn mask_interrupts_unlocked(&self) {}
+
         unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
             let written = bytes.len().min(7);
             self.0.fetch_add(written, Ordering::Relaxed);

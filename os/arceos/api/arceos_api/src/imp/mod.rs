@@ -20,12 +20,11 @@ mod stdio {
     use core::fmt::{self, Write};
 
     #[cfg(all(feature = "irq", feature = "multitask"))]
-    fn runtime_input() -> &'static ax_runtime::RuntimeResult<ax_runtime::console::TaskConsoleInput>
+    fn runtime_input() -> ax_runtime::RuntimeResult<&'static ax_runtime::console::TaskConsoleInput>
     {
-        static INPUT: ax_lazyinit::LazyLock<
-            ax_runtime::RuntimeResult<ax_runtime::console::TaskConsoleInput>,
-        > = ax_lazyinit::LazyLock::new(ax_runtime::console::take_input);
-        &INPUT
+        static INPUT: ax_lazyinit::OnceLock<ax_runtime::console::TaskConsoleInput> =
+            ax_lazyinit::OnceLock::new();
+        INPUT.get_or_try_init(ax_runtime::console::take_input)
     }
 
     pub fn ax_console_read_bytes(buf: &mut [u8]) -> crate::ApiResult<usize> {
@@ -50,51 +49,52 @@ mod stdio {
                     }
                     return Ok(read);
                 }
-                Err(ax_runtime::RuntimeError::SerialNotStarted) => {}
-                Err(error) => return Err((*error).into()),
+                Err(error) => return Err(error.into()),
             }
         }
 
-        let len = ax_hal::console::read_bytes(buf);
-        for c in &mut buf[..len] {
-            if *c == b'\r' {
-                *c = b'\n';
+        #[cfg(not(all(feature = "irq", feature = "multitask")))]
+        {
+            let len = ax_hal::console::read_bytes(buf);
+            for c in &mut buf[..len] {
+                if *c == b'\r' {
+                    *c = b'\n';
+                }
             }
+            Ok(len)
         }
-        Ok(len)
     }
 
     pub fn ax_console_write_bytes(buf: &[u8]) -> crate::ApiResult<usize> {
         #[cfg(all(feature = "irq", feature = "multitask"))]
         {
-            match ax_runtime::console::output() {
-                Ok(output) => return Ok(output.write_text_all(buf)?),
-                Err(ax_runtime::RuntimeError::SerialNotStarted) => {}
-                Err(error) => return Err(error.into()),
-            }
+            let output = ax_runtime::console::output()?;
+            return Ok(output.write_text_all(buf)?);
         }
-        ax_hal::console::write_text_bytes(buf);
-        Ok(buf.len())
+        #[cfg(not(all(feature = "irq", feature = "multitask")))]
+        {
+            ax_hal::console::write_text_bytes(buf);
+            Ok(buf.len())
+        }
     }
 
     pub fn ax_console_write_fmt(args: fmt::Arguments) -> fmt::Result {
         #[cfg(all(feature = "irq", feature = "multitask"))]
         {
-            match ax_runtime::console::output() {
-                Ok(output) => return output.write_fmt(args),
-                Err(ax_runtime::RuntimeError::SerialNotStarted) => {}
-                Err(_) => return Err(fmt::Error),
-            }
+            return ax_runtime::console::output()
+                .map_err(|_| fmt::Error)?
+                .write_fmt(args);
         }
-        PlatformConsoleWriter.write_fmt(args)
+        #[cfg(not(all(feature = "irq", feature = "multitask")))]
+        {
+            PlatformConsoleWriter.write_fmt(args)
+        }
     }
 
     pub fn ax_console_wait_readable() -> crate::ApiResult {
         #[cfg(all(feature = "irq", feature = "multitask"))]
-        match runtime_input() {
-            Ok(input) => return Ok(input.wait_readable()?),
-            Err(ax_runtime::RuntimeError::SerialNotStarted) => ax_task::yield_now(),
-            Err(error) => return Err((*error).into()),
+        {
+            runtime_input()?.wait_readable()?;
         }
         #[cfg(all(feature = "multitask", not(feature = "irq")))]
         ax_task::yield_now();
@@ -105,16 +105,16 @@ mod stdio {
 
     pub fn ax_console_flush() -> crate::ApiResult {
         #[cfg(all(feature = "irq", feature = "multitask"))]
-        match ax_runtime::console::output() {
-            Ok(output) => output.drain()?,
-            Err(ax_runtime::RuntimeError::SerialNotStarted) => {}
-            Err(error) => return Err(error.into()),
+        {
+            ax_runtime::console::output()?.drain()?;
         }
         Ok(())
     }
 
+    #[cfg(not(all(feature = "irq", feature = "multitask")))]
     struct PlatformConsoleWriter;
 
+    #[cfg(not(all(feature = "irq", feature = "multitask")))]
     impl Write for PlatformConsoleWriter {
         fn write_str(&mut self, text: &str) -> fmt::Result {
             ax_hal::console::write_text_bytes(text.as_bytes());

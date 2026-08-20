@@ -674,17 +674,6 @@ pub struct Pl011EmergencyTx {
     base: Reg,
 }
 
-struct Pl011EmergencyIrqMask<'a> {
-    emergency: &'a Pl011EmergencyTx,
-    enabled: u32,
-}
-
-impl Drop for Pl011EmergencyIrqMask<'_> {
-    fn drop(&mut self) {
-        self.emergency.registers().uartimsc.set(self.enabled);
-    }
-}
-
 impl Pl011EmergencyTx {
     fn registers(&self) -> &Pl011Registers {
         // SAFETY: `base` points at the mapped PL011 register block. This view
@@ -692,21 +681,19 @@ impl Pl011EmergencyTx {
         unsafe { &*self.base.0.as_ptr() }
     }
 
-    fn mask_interrupts(&self) -> Pl011EmergencyIrqMask<'_> {
-        let enabled = self.registers().uartimsc.get();
+    fn mask_interrupts(&self) {
         self.registers().uartimsc.set(0);
         // Flush a posted MMIO write before the emergency path touches TX.
         let _masked = self.registers().uartimsc.get();
-        Pl011EmergencyIrqMask {
-            emergency: self,
-            enabled,
-        }
     }
 }
 
 impl UartEmergencyTx for Pl011EmergencyTx {
+    unsafe fn mask_interrupts_unlocked(&self) {
+        self.mask_interrupts();
+    }
+
     unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
-        let _irq_mask = self.mask_interrupts();
         let mut written = 0;
         for &byte in bytes.iter().take(EMERGENCY_TX_BUDGET) {
             if self.registers().uartfr.is_set(UARTFR::TXFF) {
@@ -1258,20 +1245,24 @@ mod tests {
     }
 
     #[test]
-    fn emergency_irq_mask_guard_restores_the_worker_mask() {
+    fn emergency_takeover_leaves_device_interrupts_masked() {
         let (mut regs, uart) = pl011_with_registers();
-        let emergency = uart.split().emergency_tx;
+        let gate = UartRegisterGate::new(uart.split().emergency_tx);
         let enabled = UARTIS::RX::SET.value | UARTIS::TX::SET.value;
         write_test_reg(&mut regs, 0x038, enabled);
 
-        let mask = emergency.mask_interrupts();
+        let access = gate.try_begin_emergency().unwrap();
         assert_eq!(
             read_test_reg(&regs, 0x038),
             0,
             "a gate-busy IRQ must observe a device-masked emergency transaction"
         );
-        drop(mask);
-        assert_eq!(read_test_reg(&regs, 0x038), enabled);
+        assert_eq!(access.try_write(b"x"), 1);
+        assert_eq!(
+            read_test_reg(&regs, 0x038),
+            0,
+            "terminal emergency ownership must not rearm the UART source"
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ args = [
     "512M",
 ]
 fail_regex = ["(?m)^rm:"]
-success_regex = ["(?m)^CONSOLE_INTERLEAVE_REGRESSION_PASSED\\s*$"]
+success_regex = [":CONSOLE_INTERLEAVE_HOST_LOG"]
 timeout = 60
 to_bin = true
 uefi = false

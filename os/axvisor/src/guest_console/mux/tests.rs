@@ -73,6 +73,37 @@ fn lowest_running_vm_is_default_and_input_only_reaches_foreground() {
 
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
+fn guest_input_overflow_is_reported_once_until_the_guest_drains_input() {
+    let mux = GuestConsoleMux::new();
+    let backend = mux.core.create_serial_backend(1);
+    let mut state = mux.core.lock_state();
+    state.attached = Some(1);
+
+    assert!(!enqueue_guest_input(
+        &mut state,
+        1,
+        &[b'x'; INPUT_QUEUE_CAPACITY]
+    ));
+    assert!(
+        route_literal_input(&mut state, b"y", ConsoleInputEvent::ShellByte(b'y'))
+            .input_overflow
+            .is_some()
+    );
+    assert!(
+        route_literal_input(&mut state, b"z", ConsoleInputEvent::ShellByte(b'z'))
+            .input_overflow
+            .is_none()
+    );
+    drop(state);
+
+    assert_eq!(backend.read(&mut [0]), 1);
+    let mut state = mux.core.lock_state();
+    assert!(!enqueue_guest_input(&mut state, 1, b"w"));
+    assert!(enqueue_guest_input(&mut state, 1, b"q"));
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
 fn console_shortcuts_detach_and_cycle_running_guests() {
     let mux = GuestConsoleMux::new();
     for vm_id in [2, 7, 10] {

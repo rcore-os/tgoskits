@@ -14,7 +14,7 @@ hard IRQ、日志生产者和 TTY 之间传递数据。但寄存器能力仍只�
 
 本设计服务 ArceOS/StarryOS/Axvisor 的 interrupt-driven UART runtime，以及仍需在启动
 和 panic 阶段输出诊断的调用方。成功标准是：每个寄存器访问都能归属于一个明确
-endpoint，hard IRQ 工作有固定上限，runtime 接管可回滚，TTY 配置失败对用户态返回
+endpoint，hard IRQ 工作有固定上限，runtime 接管失败进入确定的关闭状态，TTY 配置失败对用户态返回
 稳定 errno，并由确定性测试覆盖关键并发窗口。
 
 本次明确不引入公共 channel、全局 lock-free MPSC、自适应高低水位、串口专用调度类或
@@ -41,9 +41,9 @@ head `5c9b2249a330afc8b939046871558ebf445bdb0b` 中的 control/IRQ/emergency end
 line discipline：普通 RX 中断负责有界排空硬件 FIFO 并把输入交给后续上下文；只有
 throttle、软件缓冲压力、overrun 或设备错误才 mask 对应 RX source。IRQ 与后续线程同核
 不是 Linux 的通用正确性要求，但 TGOSKits 当前 raw UART 契约依赖本地 IRQ exclusion，
-所以本设计把同核固定作为实现不变量，而不是缓存同步手段。TGOSKits 还在每次有 RX 的
-有界 IRQ pass 后把 RX source 暂时交给 owner worker 重挂载：这是针对 PL011 清中断与新字节
-到达竞态的实现约束，不是对 Linux TTY 策略的照搬。
+所以本设计把同核固定作为实现不变量，而不是缓存同步手段。只有硬件 batch 未排空、
+软件 ring 无法接收、overrun 或固定预算耗尽时，TGOSKits 才把 RX source 暂时交给 owner
+worker 重挂载；已经排空的 IRQ 保持 source 开启。
 
 对比过的方案：
 
@@ -84,8 +84,7 @@ early console 是第四个、仅在 runtime 接管前有效的所有者。接管
 
 ```text
 Early -> Preparing -> Runtime
-                   -> Early         可证明硬件状态已恢复
-                   -> FailedClosed  硬件状态未知或恢复失败
+                   -> FailedClosed
 ```
 
 `Preparing` 首先阻止新的 early RX、TX 和 IRQ 寄存器访问，再等待已经进入的 early 访问
@@ -94,21 +93,23 @@ Early -> Preparing -> Runtime
 adopt 该状态：只 mask device-local source、启用已注册的 IRQ action 并发布 runtime 输出路由，
 不调用普通串口的 `startup()`，也不清 `UARTEN` 或等待正在按线速排空的 TX FIFO。只有这些
 步骤全部成功后才提交 `Runtime`；其他非 console UART 仍在显式 open 时执行 startup/config。
-提交前失败必须撤销已完成步骤；adopt 尚未改变线路配置时可回到 `Early`，硬件状态无法证明
-时才进入 `FailedClosed`。后者吞掉输出并禁止输入，避免双 owner 再次触碰未知硬件状态。
+一旦为已探测的 runtime UART 进入 `Preparing`，提交前任何失败都进入 `FailedClosed`；公共层
+不会把一次 runtime 启动失败重新解释为“未探测到 driver”并回退到 raw HAL。该状态吞掉普通
+输出并禁止输入，避免双 owner 再次触碰未知硬件状态。
 
 当 runtime 同时具备 `irq + multitask` 时，公共层自动在 scheduler、IRQ、设备探测和 serial
 worker 就绪后、但在第一个 AP 启动前尝试接管，不再要求 OS 配置 `serial` 或
 `runtime-console` feature。firmware 给出硬件 `DeviceId` 时只接受精确匹配；只有
 `NotSpecified` 才按统一 `ttyS` 编号回退到 `ttyS0`。若没有探测到匹配的 runtime UART，
-保持原始 HAL 为唯一 owner；只有已经进入 `Preparing` 后 adopt、IRQ 启用或提交失败，才执行
-rollback 或进入 `FailedClosed`。成功提交后禁止 SMP 阶段重新落回 early UART。
+保持原始 HAL 为唯一 owner；已经进入 `Preparing` 后 adopt、IRQ 启用或提交失败则进入
+`FailedClosed`。成功提交后禁止 SMP 阶段重新落回 early UART。
 
 panic/FIQ 不反向调用 platform/runtime callback，也不借用 control endpoint。首次接管使用
 固定次数的非睡眠 gate 重试，避免 panic 打断同核 owner 时永久自锁；接管失败就丢弃本次
-记录并更新统计。接管成功后关闭该 UART 的 controller IRQ，并永久排除普通 register
-transaction。驱动的每次 raw pass 仍保存必要 interrupt-mask 寄存器、mask UART source、
-写固定预算字节并恢复 mask；runtime 重复这些有界 pass，直接流式写完完整格式化记录，
+记录并更新统计。gate 只有在已经永久排除普通 register transaction、并在设备寄存器层 mask
+该 UART 的 IER/IMSC 后，才返回可写 emergency capability；调用者不存在“先写、以后再 mask”
+的状态。该过程绝不关闭可能共享的 controller line。后续每次 raw pass 只写固定预算字节，
+不恢复普通 owner 的 interrupt mask；runtime 重复这些有界 pass，直接流式写完完整格式化记录，
 不再把 fatal record 截断在固定软件缓冲区。
 
 这个接口是同步阻塞直达而不是排队等待：`emergency_console::write_fmt` 不分配、不睡眠、
@@ -132,13 +133,10 @@ TX source 命中后立即 mask，并在 report 中加入 `TX_SPACE` rearm。work
 TX ingress，直到当前预算或 FIFO 空间用尽；只有仍有待发送字节时才执行 rearm，软件输出
 为空后立即清除 TX pending，避免把“移位寄存器尚未清空”错误表示成可由 TX IRQ 推进的工作。
 
-每个带 RX、timeout 或 RX error 的 IRQ pass 都在发布有界 report 后 mask 对应 RX source，
-并把 RX 加入 rearm。这样 hard IRQ 只负责固定预算的采样和确认，owner worker 则成为下一次
-enable 的唯一所有者；即使 report 未满，也不能在清中断后继续让 RX source 保持 enabled，
-否则 PL011 FIFO 中剩余字符或清中断窗口内到达的新字符可能没有新的边沿来唤醒 worker。
-固定 report 已满、硬件 pass budget 用尽、runtime IRQ RX ring 无法接受整个 report、overrun
-和设备 fault 仍通过 report 的 overflow/error 状态精确传播；设备 fault 会 mask 全部 source
-并停止 runtime。
+RX IRQ 在驱动固定预算内排空当前硬件 batch。只有驱动报告仍有未排空样本、固定 report 已满、
+硬件 pass budget 用尽、runtime IRQ RX ring 无法接受整个 report 或发生 overrun 时，才 mask
+对应 RX source 并交给 owner worker rearm；完全排空的 IRQ 保持 source 开启，避免小 FIFO 在
+worker 获得调度前溢出。设备 fault 仍会 mask 全部 source 并停止 runtime。
 
 worker 先排空 report/RX ring，再执行重挂载。如果 rearm 立即报告硬件仍 readable，且此时
 IRQ ring 中没有 sample，worker 必须选择 `Port` 路径直接排空硬件 FIFO，不能把这个事件误当
@@ -285,10 +283,12 @@ console 不再有独立 Cargo feature。`ax-runtime` 在同时启用既有 `irq`
 
 ArceOS 的 `ax-api`、`ax-posix-api` 和 `ax-std` 共享唯一 input lease；空输入通过
 `wait_readable` 睡眠，不再 `yield_now` 轮询，stdout `flush` 等待真实 UART idle。
-Starry 的活动 `ttyS*` 直接取得公共 input/output，不再自行选择、handoff 或维护第二把
-output lock；其他串口仍按 open 生命周期启动，line discipline 和 Linux TTY ABI 不变。
+Starry 的 console `ttyS*` 取得公共 input，全部 runtime UART 使用 serial 层的 per-port task
+output capability，从而共享各 runtime 自己的 output lock；Starry 不再自行选择、handoff 或
+维护第二把 output lock。其他串口仍按 open 生命周期启动，line discipline 和 Linux TTY ABI
+不变；per-port UART 能力不反向扩张公共 console 的 active-owner API。
 
-Axvisor 在任何 vCPU 启动前取得 input、output，并在 runtime 后端可用时取得 log
+Axvisor 在打印 banner、发布普通启动日志或启动任何 vCPU 前取得 input、output，并在 runtime 后端可用时取得 log
 subscription。`TaskConsoleOutput` 随后 move 给唯一的 `axvisor-console-output` 任务；
 GuestConsoleMux、虚拟串口 backend 和其他可能位于 vCPU 禁止抢占区内的 producer 只在
 backend 创建阶段预分配每 guest 的 16 KiB backlog；回调使用无分配的流式格式化，在
@@ -298,17 +298,21 @@ output lock，也不等待 UART 背压。该任务按 512 字节批次调用公�
 截断；物理 output 失败时停止接受新提交并通过 emergency console 报告终态，不创建 timeout
 任务、重试 owner 或回退到平台轮询输出。
 
-HAL 不支持 IRQ-backed input 时不启动交互 shell；管理面和 VM 启动不能因轮询任务占据
-cooperative FIFO 调度器。管理 shell 把
+HAL 不支持 IRQ-backed input 时，Axvisor 的 console task 只消费宿主日志或永久睡眠，不创建
+轮询输入任务；管理面和 VM 启动不受影响。管理 shell 的 prompt、命令输出和行编辑都进入同一
+host-output 队列，并把
 “清当前行、输出完整日志、重画 prompt/内容/光标”合成一次物理输出事务；boot multiplex
 把宿主日志作为独立完整行。guest 进入 interactive foreground 后，宿主日志不得进入
 guest RX 字节流，而按完整 record 缓存在 16 KiB host backlog；detach 时先报告丢失条数
 和源字节，再按 record 回放。超过容量只删除最旧完整 record，不制造残缺日志行。
+guest RX ingress 同样有界；队列首次满时发布一条完整宿主日志，后续丢弃不重复刷屏，guest
+实际读出数据腾出空间后才允许报告下一次 overflow，因此输入丢失不会静默发生，也不会从
+宿主 warning 反向注入 guest UART 字节流。
 
 ## 验证与回滚
 
 最低层确定性测试覆盖 gate contention、worker/IRQ/emergency MMIO 互斥、固定 report
-容量、TX mask/rearm、每次 RX IRQ 转交 rearm、RX budget/queue-full/overrun 状态、rearm
+容量、TX mask/rearm、RX deferred 条件与 rearm、RX budget/queue-full/overrun 状态、rearm
 窗口 immediate event 选择 `Port` 路径、shared IRQ 不关闭 controller line、PL011 配置 timeout/寄存器回滚，
 emergency 永久接管与超过 1 KiB 的 fatal record 流式输出，以及 termios 并发 writer 和错误传播。日志 mailbox 另外覆盖 slot generation/state、回收
 `READY`、拒绝覆盖 `READING/WRITING`、sequence gap、每 CPU FIFO、跨 CPU round-robin、
@@ -336,19 +340,19 @@ Starry grouped 回归新增 `test-tty-termios-transaction`，并保留
 
 Axvisor 的 `qemu-console-interleave/interleave` 是 #2108 的确定性红灯：先直接输出 `rm`，
 再发布以 `:` 开头的宿主完整日志，最后结束交互片段。旧平台轮询/early UART 路径稳定形成
-`^rm:`；修复后 shell 必须实际消费该订阅 record、隔离输出并发布成功标记，测试仍保留
-原 `(?m)^rm:` fail regex。host mux 单元测试另外覆盖 open guest line 分隔、管理 shell
+`^rm:`；修复后 shell 必须实际消费该订阅 record，测试以独占一行的宿主记录作为成功见证，
+并仍保留原 `(?m)^rm:` fail regex。host mux 单元测试另外覆盖 open guest line 分隔、管理 shell
 显示、foreground 完整记录缓存、16 KiB oldest-record 丢弃和 detach 回放摘要。
 
-`qemu-console-atomic-output/atomic-output` 另行启用抢占调度，先创建并预分配测试 guest
-backend，再在 `PreemptGuard` 内用 `try_write` 填满公共 runtime TX ingress，直到明确返回
-`WouldBlock`，最后通过真实 `GuestSerialBackend::write` 提交成功标记。旧实现同步进入
+`qemu-console-atomic-output/atomic-output` 另行启用抢占调度，在 `PreemptGuard` 内用
+`try_write` 填满公共 runtime TX ingress，直到明确返回 `WouldBlock`，最后经真实的固定
+host-output 队列提交成功标记。旧实现同步进入
 `TaskConsoleOutput::write_all`，稳定命中 `might_sleep` 的 atomic-context panic；新实现只做
 无分配流式格式化并提交到固定 Axvisor 队列，guard 释放后由唯一 output 任务完成同一标记。
 该用例验证 vCPU/device callback 不会因为物理串口背压而睡眠，不使用延时释放、watchdog
 或 timeout 修复错误状态。
 
-回滚整个改动时，旧 runtime 仍可恢复两个 endpoint 和单向 handoff；不能只回滚接口而
-保留新调用方。已经开始 handoff 后的单次接管失败按上述 typed state 回滚或 fail closed，
-不允许静默退回 raw polling 或 controller-line mitigation；只有“未探测到匹配 driver”才
-选择公共 raw HAL 后端，并且该后端的任务输入仍必须由 IRQ 和有界 queue 驱动。
+这个迁移不能只替换公共接口而保留 OS 私有 owner、轮询 reader 或第二把 output lock。
+已经开始 handoff 后的单次接管失败必须 fail closed，不允许静默退回 raw polling 或
+controller-line mitigation；只有“未探测到匹配 driver”才选择公共 raw HAL 后端，并且
+该后端的任务输入仍必须由 IRQ 和有界 queue 驱动。

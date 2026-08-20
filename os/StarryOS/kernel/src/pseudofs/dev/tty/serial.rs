@@ -3,9 +3,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_lazyinit::LazyLock;
 use ax_runtime::{
-    console::{self, TaskConsoleInput, TaskConsoleOutput},
+    console::{self, TaskConsoleInput},
     serial::{
-        Config, DataBits, Parity, RxItem, SerialRuntimeHandle, SerialRxSubscription, StopBits,
+        Config, DataBits, Parity, RxItem, SerialRuntimeHandle, SerialRxSubscription,
+        SerialTaskOutput, StopBits,
     },
 };
 use axfs_ng_vfs::{VfsError, VfsResult};
@@ -52,7 +53,7 @@ struct SerialBackend {
     tty_name: String,
     number: usize,
     runtime: SerialRuntimeHandle,
-    output: TaskConsoleOutput,
+    output: SerialTaskOutput,
     input: SerialInput,
     is_console: bool,
     lifecycle_lock: Mutex<()>,
@@ -210,7 +211,7 @@ fn new_serial_tty(number: usize, runtime: SerialRuntimeHandle) -> StarryResult<S
                 .ok_or(StarryError::BadState)?,
         )
     };
-    let output = console::output_for(&runtime);
+    let output = runtime.task_output();
     let input_source = input.poll_source();
     let output_source = output.poll_source();
     let backend = Arc::new(SerialBackend {

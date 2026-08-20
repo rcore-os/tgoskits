@@ -15,8 +15,9 @@ use ax_std::os::arceos::{
     },
     sync::NoPreemptMutex,
 };
-use axvisor::console_mux::HostOutputQueue;
 use std::sync::{Mutex, OnceLock};
+
+use axvisor::console_mux::HostOutputQueue;
 
 const HOST_OUTPUT_QUEUE_CAPACITY: usize = 64 * 1024;
 const HOST_OUTPUT_BATCH_CAPACITY: usize = 512;
@@ -117,25 +118,27 @@ pub(crate) fn take_host_log_drops() -> ConsoleLogDropReport {
 
 /// Sleeps until physical input or a host log record is published.
 ///
-/// Returns `false` if the runtime console has stopped and the shell can no
-/// longer make progress.
-pub(crate) fn wait_for_host_input() -> bool {
+pub(crate) fn wait_for_host_event() {
     let Some(console) = host_console() else {
-        return false;
+        park_console_task();
     };
-    let Some(input) = &console.input else {
-        return false;
+    let result = match (&console.input, &console.logs) {
+        (Some(input), Some(logs)) => input.wait_event(logs),
+        (Some(input), None) => input.wait_readable(),
+        (None, Some(logs)) => logs.wait_readable(),
+        (None, None) => park_console_task(),
     };
-    let result = match &console.logs {
-        Some(logs) => input.wait_event(logs),
-        None => input.wait_readable(),
-    };
-    match result {
-        Ok(()) => true,
-        Err(err) => {
-            log::error!("runtime console stopped while Axvisor was running: {err}");
-            false
-        }
+    if let Err(err) = result {
+        log::error!("runtime console stopped while Axvisor was running: {err}");
+        park_console_task();
+    }
+}
+
+fn park_console_task() -> ! {
+    static STOPPED: ax_std::os::arceos::modules::ax_task::WaitQueue =
+        ax_std::os::arceos::modules::ax_task::WaitQueue::new();
+    loop {
+        STOPPED.wait();
     }
 }
 

@@ -44,6 +44,7 @@ struct RoutedInput {
     event: ConsoleInputEvent,
     wake_vm: Option<VMId>,
     host_output: Vec<u8>,
+    input_overflow: Option<VMId>,
 }
 
 /// Application-owned host console multiplexer.
@@ -88,6 +89,7 @@ struct BackendGeneration(u64);
 struct GuestState {
     backend_generation: Option<BackendGeneration>,
     input: VecDeque<u8>,
+    input_overflow_reported: bool,
 }
 
 #[derive(Debug)]
@@ -158,6 +160,7 @@ impl GuestConsoleMux {
         if let Some(guest) = state.guests.get_mut(&vm_id) {
             guest.backend_generation = None;
             guest.input.clear();
+            guest.input_overflow_reported = false;
         }
         state.output.reset_guest(vm_id);
         let detached = state.attached == Some(vm_id);
@@ -255,12 +258,14 @@ impl GuestConsoleMux {
                             event: ConsoleInputEvent::Detached(vm_id),
                             wake_vm: None,
                             host_output,
+                            input_overflow: None,
                         }
                     }
                     None => RoutedInput {
                         event: ConsoleInputEvent::Consumed,
                         wake_vm: None,
                         host_output: Vec::new(),
+                        input_overflow: None,
                     },
                 },
                 b'[' => switch_guest(&mut state, GuestSwitchDirection::Previous),
@@ -280,12 +285,18 @@ impl GuestConsoleMux {
                 event: ConsoleInputEvent::Consumed,
                 wake_vm: None,
                 host_output: Vec::new(),
+                input_overflow: None,
             }
         } else {
             route_literal_input(&mut state, &[byte], ConsoleInputEvent::ShellByte(byte))
         };
         drop(state);
         submit_host_bytes(&routed.host_output);
+        if let Some(vm_id) = routed.input_overflow {
+            warn!(
+                "VM[{vm_id}] console input queue is full; dropping input until the guest drains it"
+            );
+        }
         routed
     }
 
@@ -326,17 +337,19 @@ fn route_literal_input(
     match state.attached {
         Some(vm_id) => {
             let host_output = state.output.select_foreground_on_input(vm_id);
-            enqueue_guest_input(state, vm_id, guest_bytes);
+            let input_overflow = enqueue_guest_input(state, vm_id, guest_bytes).then_some(vm_id);
             RoutedInput {
                 event: ConsoleInputEvent::Consumed,
                 wake_vm: Some(vm_id),
                 host_output,
+                input_overflow,
             }
         }
         None => RoutedInput {
             event: shell_event,
             wake_vm: None,
             host_output: Vec::new(),
+            input_overflow: None,
         },
     }
 }
@@ -370,6 +383,7 @@ fn switch_guest(state: &mut ConsoleState, direction: GuestSwitchDirection) -> Ro
             event: ConsoleInputEvent::NoRunningGuest,
             wake_vm: None,
             host_output: Vec::new(),
+            input_overflow: None,
         };
     };
 
@@ -379,6 +393,7 @@ fn switch_guest(state: &mut ConsoleState, direction: GuestSwitchDirection) -> Ro
         event: ConsoleInputEvent::Attached(vm_id),
         wake_vm: None,
         host_output: state.output.buffer_all(),
+        input_overflow: None,
     }
 }
 
@@ -438,6 +453,9 @@ impl ConsoleCore {
                 .input
                 .pop_front()
                 .expect("guest input queue length was checked");
+        }
+        if read_len != 0 {
+            guest.input_overflow_reported = false;
         }
         read_len
     }
@@ -500,10 +518,16 @@ impl SerialBackendFactory for GuestSerialBackendFactory {
     }
 }
 
-fn enqueue_guest_input(state: &mut ConsoleState, vm_id: VMId, bytes: &[u8]) {
+fn enqueue_guest_input(state: &mut ConsoleState, vm_id: VMId, bytes: &[u8]) -> bool {
     let guest = state.guests.entry(vm_id).or_default();
     let available = INPUT_QUEUE_CAPACITY.saturating_sub(guest.input.len());
-    guest.input.extend(bytes.iter().copied().take(available));
+    let accepted = bytes.len().min(available);
+    guest.input.extend(bytes.iter().copied().take(accepted));
+    if accepted == bytes.len() || guest.input_overflow_reported {
+        return false;
+    }
+    guest.input_overflow_reported = true;
+    true
 }
 
 /// Returns the factory that provisions one backend per VM device generation.

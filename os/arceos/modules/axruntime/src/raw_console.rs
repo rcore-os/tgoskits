@@ -18,7 +18,7 @@ use crate::{
 
 const RAW_RX_CAPACITY: usize = 4_096;
 
-static RAW_INPUT: OnceLock<Result<Arc<RawInputRuntime>, RuntimeError>> = OnceLock::new();
+static RAW_INPUT: OnceLock<Arc<RawInputRuntime>> = OnceLock::new();
 
 struct RawInputRuntime {
     available: SpinLock<Option<SpscConsumer<RxItem>>>,
@@ -35,11 +35,7 @@ pub(crate) struct RawConsoleInput {
 }
 
 pub(crate) fn take_input() -> RuntimeResult<RawConsoleInput> {
-    let runtime = RAW_INPUT
-        .call_once(init_raw_input)
-        .as_ref()
-        .map_err(|error| *error)?
-        .clone();
+    let runtime = RAW_INPUT.get_or_try_init(init_raw_input)?.clone();
     let consumer = runtime
         .available
         .lock_irqsave()
@@ -67,7 +63,15 @@ fn init_raw_input() -> RuntimeResult<Arc<RawInputRuntime>> {
         ax_hal::irq::IrqRequest::new(move |_| handle_raw_input_irq(&mut producer, &irq_runtime))
             .share_mode(ax_hal::irq::ShareMode::Shared)
             .auto_enable(ax_hal::irq::AutoEnable::No);
-    let handle = ax_hal::irq::request_irq(irq, request)?;
+    let handle = match ax_hal::irq::request_irq(irq, request) {
+        Ok(handle) => handle,
+        Err(error) => {
+            // Leave the device source masked: no handler owns this IRQ yet.
+            // `get_or_try_init` permits a later caller to retry registration.
+            ax_hal::console::set_input_irq_enabled(false);
+            return Err(error.into());
+        }
+    };
     ax_hal::console::set_input_irq_enabled(true);
     if let Err(error) = ax_hal::irq::enable_irq(handle) {
         ax_hal::console::set_input_irq_enabled(false);

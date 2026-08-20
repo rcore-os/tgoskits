@@ -12,15 +12,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod command;
-
 use std::io::prelude::*;
-use std::println;
 use std::string::ToString;
+
+fn submit_shell_format(args: core::fmt::Arguments<'_>, newline: bool) {
+    let mut output = std::fmt::format(args);
+    if newline {
+        output.push('\n');
+    }
+    crate::guest_console::submit_host_bytes(output.as_bytes());
+}
+
+macro_rules! print {
+    ($($arg:tt)*) => {
+        crate::shell::submit_shell_format(format_args!($($arg)*), false)
+    };
+}
+
+macro_rules! println {
+    () => {
+        crate::shell::submit_shell_format(format_args!(""), true)
+    };
+    ($($arg:tt)*) => {
+        crate::shell::submit_shell_format(format_args!($($arg)*), true)
+    };
+}
+
+mod command;
 
 use crate::guest_console::ConsoleInputEvent;
 use crate::shell::command::{
-    CommandHistory, clear_line_and_redraw, handle_builtin_commands, print_prompt, prompt_string,
+    CommandHistory, handle_builtin_commands, print_prompt, prompt_string, redraw_line,
     run_cmd_bytes,
 };
 
@@ -63,11 +85,6 @@ fn route_pending_host_log(
     dropped_records: usize,
     dropped_bytes: usize,
 ) -> bool {
-    #[cfg(feature = "test-console-interleave")]
-    let completes_interleave_regression = record
-        .windows(crate::guest_console::INTERLEAVE_HOST_LOG_MARKER.len())
-        .any(|window| window == crate::guest_console::INTERLEAVE_HOST_LOG_MARKER.as_bytes());
-
     let Some(output) = crate::guest_console::route_host_log(record, dropped_records, dropped_bytes)
     else {
         return true;
@@ -75,12 +92,6 @@ fn route_pending_host_log(
 
     if crate::guest_console::attached_vm().is_some() {
         crate::guest_console::submit_host_bytes(&output);
-        #[cfg(feature = "test-console-interleave")]
-        if completes_interleave_regression {
-            crate::guest_console::submit_host_bytes(
-                crate::guest_console::INTERLEAVE_SUCCESS_MARKER,
-            );
-        }
         return true;
     }
 
@@ -95,12 +106,6 @@ fn route_pending_host_log(
     );
     transaction.extend_from_slice(b"\r\x1b[2K");
     transaction.extend_from_slice(&output);
-    #[cfg(feature = "test-console-interleave")]
-    if completes_interleave_regression {
-        // Keep the success witness on its own physical line and inside the
-        // same mux transaction that proved the host record was rendered.
-        transaction.extend_from_slice(crate::guest_console::INTERLEAVE_SUCCESS_MARKER);
-    }
     transaction.extend_from_slice(prompt.as_bytes());
     transaction.extend_from_slice(content.as_bytes());
     if cursor < content.len() {
@@ -112,7 +117,6 @@ fn route_pending_host_log(
 
 // Initialize the console shell.
 pub fn console_init() {
-    let mut stdout = std::io::stdout();
     let mut history = CommandHistory::new(100);
 
     let mut buf = [0; MAX_LINE_LEN];
@@ -138,7 +142,7 @@ pub fn console_init() {
                 shell_announced = true;
             }
             let current_content = std::str::from_utf8(&buf[..line_len]).unwrap_or("");
-            clear_line_and_redraw(&mut stdout, &prompt_string(), current_content, cursor);
+            redraw_shell_line(&prompt_string(), current_content, cursor);
         }
 
         let dropped = crate::guest_console::take_host_log_drops();
@@ -169,9 +173,7 @@ pub fn console_init() {
             Some(ch) => ch,
             None => {
                 let Some(host_byte) = crate::guest_console::read_host_byte() else {
-                    if !crate::guest_console::wait_for_host_input() {
-                        return;
-                    }
+                    crate::guest_console::wait_for_host_event();
                     continue;
                 };
 
@@ -199,24 +201,14 @@ pub fn console_init() {
                             shell_announced = true;
                         }
                         let current_content = std::str::from_utf8(&buf[..line_len]).unwrap_or("");
-                        clear_line_and_redraw(
-                            &mut stdout,
-                            &prompt_string(),
-                            current_content,
-                            cursor,
-                        );
+                        redraw_shell_line(&prompt_string(), current_content, cursor);
                         continue;
                     }
                     ConsoleInputEvent::NoRunningGuest => {
                         println!();
                         println!("[Axvisor] no running VM is available for console attachment");
                         let current_content = std::str::from_utf8(&buf[..line_len]).unwrap_or("");
-                        clear_line_and_redraw(
-                            &mut stdout,
-                            &prompt_string(),
-                            current_content,
-                            cursor,
-                        );
+                        redraw_shell_line(&prompt_string(), current_content, cursor);
                         continue;
                     }
                 }
@@ -264,7 +256,7 @@ pub fn console_init() {
                             let current_content =
                                 std::str::from_utf8(&buf[..line_len]).unwrap_or("");
                             let prompt = prompt_string();
-                            clear_line_and_redraw(&mut stdout, &prompt, current_content, cursor);
+                            redraw_shell_line(&prompt, current_content, cursor);
                         }
                     }
                     ESC => {
@@ -287,7 +279,7 @@ pub fn console_init() {
                             let current_content =
                                 std::str::from_utf8(&buf[..line_len]).unwrap_or("");
                             let prompt = prompt_string();
-                            clear_line_and_redraw(&mut stdout, &prompt, current_content, cursor);
+                            redraw_shell_line(&prompt, current_content, cursor);
                         }
                     }
                 }
@@ -314,7 +306,7 @@ pub fn console_init() {
                             cursor = copy_len;
                             line_len = copy_len;
                             let prompt = prompt_string();
-                            clear_line_and_redraw(&mut stdout, &prompt, prev_cmd, cursor);
+                            redraw_shell_line(&prompt, prev_cmd, cursor);
                         }
                         input_state = InputState::Normal;
                     }
@@ -332,7 +324,7 @@ pub fn console_init() {
                                 line_len = copy_len;
 
                                 let prompt = prompt_string();
-                                clear_line_and_redraw(&mut stdout, &prompt, next_cmd, cursor);
+                                redraw_shell_line(&prompt, next_cmd, cursor);
                             }
                             None => {
                                 // clear current line
@@ -340,7 +332,7 @@ pub fn console_init() {
                                 cursor = 0;
                                 line_len = 0;
                                 let prompt = prompt_string();
-                                clear_line_and_redraw(&mut stdout, &prompt, "", cursor);
+                                redraw_shell_line(&prompt, "", cursor);
                             }
                         }
                         input_state = InputState::Normal;
@@ -349,8 +341,7 @@ pub fn console_init() {
                         // RIGHT arrow - move cursor right
                         if cursor < line_len {
                             cursor += 1;
-                            stdout.write_all(b"\x1b[C").ok();
-                            stdout.flush().ok();
+                            crate::guest_console::submit_host_bytes(b"\x1b[C");
                         }
                         input_state = InputState::Normal;
                     }
@@ -358,8 +349,7 @@ pub fn console_init() {
                         // LEFT arrow - move cursor left
                         if cursor > 0 {
                             cursor -= 1;
-                            stdout.write_all(b"\x1b[D").ok();
-                            stdout.flush().ok();
+                            crate::guest_console::submit_host_bytes(b"\x1b[D");
                         }
                         input_state = InputState::Normal;
                     }
@@ -377,4 +367,9 @@ pub fn console_init() {
             }
         }
     }
+}
+
+fn redraw_shell_line(prompt: &str, content: &str, cursor: usize) {
+    let output = redraw_line(prompt, content, cursor);
+    crate::guest_console::submit_host_bytes(&output);
 }

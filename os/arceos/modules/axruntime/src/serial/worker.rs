@@ -240,7 +240,7 @@ impl SerialWorker {
         if let Err(err) = self.shared.enable_irq() {
             self.shared.disable_irq();
             self.shared
-                .with_port(|port| rollback_failed_port_start(port, start));
+                .with_port(|port| cleanup_failed_port_start(port, start));
             return Err(err);
         }
         self.shared.ingress.start_accepting();
@@ -658,7 +658,7 @@ fn prepare_port_for_start(
     Ok(())
 }
 
-fn rollback_failed_port_start(port: &mut dyn rdif_serial::UartPort, start: PortStart<'_>) {
+fn cleanup_failed_port_start(port: &mut dyn rdif_serial::UartPort, start: PortStart<'_>) {
     if matches!(start, PortStart::Configure(_)) {
         port.mask_all();
         port.shutdown();
@@ -988,10 +988,10 @@ mod tests {
     }
 
     #[test]
-    fn failed_adoption_keeps_the_firmware_uart_running_for_rollback() {
+    fn failed_adoption_does_not_reset_the_firmware_uart() {
         let mut port = FirmwareConsolePort::default();
 
-        rollback_failed_port_start(&mut port, PortStart::AdoptFirmwareConsole);
+        cleanup_failed_port_start(&mut port, PortStart::AdoptFirmwareConsole);
 
         assert!(!port.mask_all_called);
         assert!(!port.shutdown_called);
@@ -1002,7 +1002,7 @@ mod tests {
         let mut port = FirmwareConsolePort::default();
         let config = Config::new();
 
-        rollback_failed_port_start(&mut port, PortStart::Configure(&config));
+        cleanup_failed_port_start(&mut port, PortStart::Configure(&config));
 
         assert!(port.mask_all_called);
         assert!(port.shutdown_called);
