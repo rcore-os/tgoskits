@@ -95,7 +95,11 @@ adopt 该状态：只 mask device-local source、启用已注册的 IRQ action �
 步骤全部成功后才提交 `Runtime`；其他非 console UART 仍在显式 open 时执行 startup/config。
 一旦为已探测的 runtime UART 进入 `Preparing`，提交前任何失败都进入 `FailedClosed`；公共层
 不会把一次 runtime 启动失败重新解释为“未探测到 driver”并回退到 raw HAL。该状态吞掉普通
-输出并禁止输入，避免双 owner 再次触碰未知硬件状态。
+输出并禁止输入，避免双 owner 再次触碰未知硬件状态。`FailedClosed` 同时是被选中 UART
+runtime 自身的终态：即使它仍出现在已发现设备表中，per-port start、RX lease 与 TX 也不得
+把它当成普通 `ttyS*` 重新打开。进入该状态会先发布 runtime 终态并关闭 IRQ，再同步把
+register gate 转为 terminal ownership、mask device-local source；fail-close 返回后 normal
+worker 和 IRQ endpoint 都无法重新取得寄存器，不依赖 watchdog 或延时清理任务。
 
 当 runtime 同时具备 `irq + multitask` 时，公共层自动在 scheduler、IRQ、设备探测和 serial
 worker 就绪后、但在第一个 AP 启动前尝试接管，不再要求 OS 配置 `serial` 或
@@ -297,6 +301,9 @@ output lock，也不等待 UART 背压。该任务按 512 字节批次调用公�
 完整回滚并丢弃当前 transaction，在下一批前报告丢失总数，已经排队的 transaction 不会被
 截断；物理 output 失败时停止接受新提交并通过 emergency console 报告终态，不创建 timeout
 任务、重试 owner 或回退到平台轮询输出。
+每 guest backlog 满后保留最新字节并累计被淘汰的源字节；下次形成完整 boot 行或切为该 guest
+前台时，先用无分配 decimal formatter 输出丢失摘要，再回放保留内容。该热路径只在注册阶段
+为 `VecDeque` 预分配固定上限，满队列执行 pop/push，不触发扩容。
 
 HAL 不支持 IRQ-backed input 时，Axvisor 的 console task 只消费宿主日志或永久睡眠，不创建
 轮询输入任务；管理面和 VM 启动不受影响。管理 shell 的 prompt、命令输出和行编辑都进入同一
@@ -334,11 +341,12 @@ cargo xtask ktest qemu -p starry-kernel --test axtest_kernel \
 
 Starry grouped 回归新增 `test-tty-termios-transaction`，并保留
 `tty-bugfix-bug-raw-terminal-polling`、`test-tty-flush` 与
-`tty-console-input-burst` 的原有断言。最终在 x86_64、riscv64、aarch64、loongarch64 上
-串行运行 SMP=4 QEMU 用例。每个 bug 回归先在旧实现工作区证明失败，再与修复一起进入
-保持绿色的 commit。
+`tty-console-input-burst` 的原有断言。合入门槛是在 x86_64、riscv64、aarch64、
+loongarch64 上串行运行 SMP=4 QEMU 用例；当前是否满足以对应 PR head 的终态 CI 为准，
+设计文档不把历史运行结果当成新 head 的验证证据。
 
-Axvisor 的 `qemu-console-interleave/interleave` 是 #2108 的确定性红灯：先直接输出 `rm`，
+Axvisor 的 `qemu-console-interleave/interleave` 是 #2108 的确定性红灯：先经公共任务态 output
+直接输出 `rm`，
 再发布以 `:` 开头的宿主完整日志，最后结束交互片段。旧平台轮询/early UART 路径稳定形成
 `^rm:`；修复后 shell 必须实际消费该订阅 record，测试以独占一行的宿主记录作为成功见证，
 并仍保留原 `(?m)^rm:` fail regex。host mux 单元测试另外覆盖 open guest line 分隔、管理 shell
@@ -346,11 +354,11 @@ Axvisor 的 `qemu-console-interleave/interleave` 是 #2108 的确定性红灯：
 
 `qemu-console-atomic-output/atomic-output` 另行启用抢占调度，在 `PreemptGuard` 内用
 `try_write` 填满公共 runtime TX ingress，直到明确返回 `WouldBlock`，最后经真实的固定
-host-output 队列提交成功标记。旧实现同步进入
-`TaskConsoleOutput::write_all`，稳定命中 `might_sleep` 的 atomic-context panic；新实现只做
-无分配流式格式化并提交到固定 Axvisor 队列，guard 释放后由唯一 output 任务完成同一标记。
-该用例验证 vCPU/device callback 不会因为物理串口背压而睡眠，不使用延时释放、watchdog
-或 timeout 修复错误状态。
+host-output 队列提交成功标记。它直接验证 atomic producer 到唯一 output task 的 transport
+边界；`GuestSerialBackend` 的 generation、格式化与事务提交另由 mux/axtest 覆盖，不能把该
+单 CPU QEMU case 表述为真实 VM lifecycle 证明。旧的同步 guest output 调用会在同类背压下
+进入 `TaskConsoleOutput::write_all` 并命中 atomic-context panic；新边界只提交固定队列，guard
+释放后由唯一 output 任务完成标记，不使用延时释放、watchdog 或 timeout 修复错误状态。
 
 这个迁移不能只替换公共接口而保留 OS 私有 owner、轮询 reader 或第二把 output lock。
 已经开始 handoff 后的单次接管失败必须 fail closed，不允许静默退回 raw polling 或

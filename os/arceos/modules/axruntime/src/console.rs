@@ -65,10 +65,10 @@ pub(crate) fn activate_before_smp() -> ConsoleActivation {
 
     let runtime = &runtimes[runtime_index];
     if runtime.begin_console_handoff().is_err() {
-        return fail_closed(ConsoleUnavailable::HandoffFailed);
+        return fail_closed(runtime, ConsoleUnavailable::HandoffFailed);
     }
     if runtime.adopt_prepared_console().is_err() {
-        return fail_closed(ConsoleUnavailable::RuntimeAdoptFailed);
+        return fail_closed(runtime, ConsoleUnavailable::RuntimeAdoptFailed);
     }
     if let Err(error) = runtime.commit_console_handoff() {
         let reason = if error == RuntimeError::SerialConsoleBusy {
@@ -76,7 +76,7 @@ pub(crate) fn activate_before_smp() -> ConsoleActivation {
         } else {
             ConsoleUnavailable::HandoffFailed
         };
-        return fail_closed(reason);
+        return fail_closed(runtime, reason);
     }
 
     let activation = ConsoleActivation::Active {
@@ -97,7 +97,11 @@ const fn raw_hal_activation(reason: ConsoleUnavailable) -> ConsoleActivation {
     ConsoleActivation::RawHal(reason)
 }
 
-fn fail_closed(reason: ConsoleUnavailable) -> ConsoleActivation {
+fn fail_closed(
+    runtime: &serial::SerialRuntimeHandle,
+    reason: ConsoleUnavailable,
+) -> ConsoleActivation {
+    runtime.fail_console_closed();
     ax_hal::console::fail_runtime_handoff_closed();
     let activation = ConsoleActivation::FailedClosed(reason);
     ACTIVATION.call_once(|| activation);

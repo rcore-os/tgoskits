@@ -1,7 +1,5 @@
 //! Line-safe arbitration for output from multiple guest consoles.
 
-extern crate alloc;
-
 use alloc::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     vec::Vec,
@@ -32,6 +30,7 @@ enum OutputMode {
 #[derive(Debug)]
 struct GuestOutputState {
     pending: VecDeque<u8>,
+    dropped_bytes: usize,
     at_line_start: bool,
 }
 
@@ -50,6 +49,7 @@ impl Default for GuestOutputState {
     fn default() -> Self {
         Self {
             pending: VecDeque::with_capacity(PER_GUEST_LOG_CAPACITY),
+            dropped_bytes: 0,
             at_line_start: true,
         }
     }
@@ -226,9 +226,11 @@ impl GuestOutputMux {
                 .guests
                 .get_mut(&vm_id)
                 .expect("registered guest output state disappeared");
+            let dropped_bytes = core::mem::take(&mut guest.dropped_bytes);
             let pending_len = guest.pending.len();
             let last = guest.pending.back().copied();
             let (first, second) = guest.pending.as_slices();
+            emit_guest_drop_summary(vm_id, dropped_bytes, emit);
             emit(first);
             emit(second);
             guest.pending.clear();
@@ -274,6 +276,12 @@ impl GuestOutputMux {
                 previous_guest.at_line_start = true;
             }
             self.owner = Some(next);
+            let dropped_bytes = self
+                .guests
+                .get_mut(&next)
+                .map(|guest| core::mem::take(&mut guest.dropped_bytes))
+                .unwrap_or(0);
+            emit_guest_drop_summary(next, dropped_bytes, emit);
             emit_vm_prefix(next, emit);
 
             let guest = self
@@ -331,15 +339,17 @@ impl GuestOutputMux {
             .guests
             .get_mut(&vm_id)
             .expect("registered guest output state disappeared");
+        let dropped_bytes = core::mem::take(&mut guest.dropped_bytes);
         let pending_len = guest.pending.len();
         let pending_last = guest.pending.back().copied();
         let (first, second) = guest.pending.as_slices();
+        emit_guest_drop_summary(vm_id, dropped_bytes, emit);
         emit(first);
         emit(second);
         guest.pending.clear();
         self.total_pending -= pending_len;
 
-        match pending_last.or(emitted_separator.then_some(b'\n')) {
+        match pending_last.or((emitted_separator || dropped_bytes != 0).then_some(b'\n')) {
             Some(last) => {
                 guest.at_line_start = last == b'\n';
                 self.physical_line_open = last != b'\n';
@@ -364,7 +374,11 @@ impl GuestOutputMux {
         self.owner = Some(vm_id);
 
         let guest = self.guests.entry(vm_id).or_default();
+        let dropped_bytes = core::mem::take(&mut guest.dropped_bytes);
         self.total_pending -= guest.pending.len();
+        emit_guest_drop_summary(vm_id, dropped_bytes, &mut |bytes| {
+            output.extend_from_slice(bytes)
+        });
         output.extend(guest.pending.drain(..));
         self.update_physical_line(vm_id, &output);
         output
@@ -388,10 +402,12 @@ impl GuestOutputMux {
             .guests
             .get_mut(&vm_id)
             .expect("registered guest output state disappeared");
+        debug_assert!(guest.pending.capacity() >= PER_GUEST_LOG_CAPACITY);
         for &byte in bytes {
             if guest.pending.len() == PER_GUEST_LOG_CAPACITY {
                 guest.pending.pop_front();
                 self.total_pending -= 1;
+                guest.dropped_bytes = guest.dropped_bytes.saturating_add(1);
             }
             guest.pending.push_back(byte);
             self.total_pending += 1;
@@ -435,9 +451,25 @@ impl GuestOutputMux {
 fn emit_vm_prefix(vm_id: usize, emit: &mut dyn FnMut(&[u8])) {
     emit(b"[VM ");
 
+    emit_usize(vm_id, emit);
+    emit(b"] ");
+}
+
+fn emit_guest_drop_summary(vm_id: usize, dropped_bytes: usize, emit: &mut dyn FnMut(&[u8])) {
+    if dropped_bytes == 0 {
+        return;
+    }
+    emit(b"[Axvisor VM ");
+    emit_usize(vm_id, emit);
+    emit(b" console dropped ");
+    emit_usize(dropped_bytes, emit);
+    emit(b" buffered bytes]\n");
+}
+
+fn emit_usize(value: usize, emit: &mut dyn FnMut(&[u8])) {
     let mut digits = [0; usize::MAX.ilog10() as usize + 1];
     let mut cursor = digits.len();
-    let mut value = vm_id;
+    let mut value = value;
     loop {
         cursor -= 1;
         digits[cursor] = b'0' + (value % 10) as u8;
@@ -447,7 +479,6 @@ fn emit_vm_prefix(vm_id: usize, emit: &mut dyn FnMut(&[u8])) {
         }
     }
     emit(&digits[cursor..]);
-    emit(b"] ");
 }
 
 #[cfg(any(test, axtest))]
@@ -542,10 +573,15 @@ mod tests {
 
         let output = mux.format(1, true, b"\n");
 
-        assert!(output.starts_with(b"[VM 1] "));
+        assert!(output.starts_with(b"[Axvisor VM 1 console dropped 1 buffered bytes]\n[VM 1] "));
         assert!(output.ends_with(b"\n"));
+        let guest_line = output
+            .windows(b"[VM 1] ".len())
+            .position(|window| window == b"[VM 1] ")
+            .map(|offset| &output[offset + b"[VM 1] ".len()..])
+            .expect("guest line prefix");
         assert_eq!(
-            output.iter().filter(|&&byte| byte == b'x').count(),
+            guest_line.iter().filter(|&&byte| byte == b'x').count(),
             PER_GUEST_LOG_CAPACITY - 1
         );
     }
@@ -605,7 +641,8 @@ mod tests {
         );
         assert!(mux.format(2, true, b"TAIL").is_empty());
 
-        let mut expected = vec![b'a'; PER_GUEST_LOG_CAPACITY - 4];
+        let mut expected = b"[Axvisor VM 2 console dropped 4 buffered bytes]\n".to_vec();
+        expected.extend(vec![b'a'; PER_GUEST_LOG_CAPACITY - 4]);
         expected.extend_from_slice(b"TAIL");
         assert_eq!(mux.select_foreground(2), expected);
     }

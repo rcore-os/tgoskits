@@ -277,7 +277,7 @@ impl SerialBackend {
 
     fn drain_tx(&self) -> StarryResult<()> {
         self.ensure_started()?;
-        Ok(self.output.drain()?)
+        Ok(self.output.wait_idle()?)
     }
 
     fn drain_rx(&self, out: &mut [RxItem]) -> usize {

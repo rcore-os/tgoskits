@@ -81,6 +81,8 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   polling fallback.
   Guest input queues must also report the first overflow as a complete host record and suppress
   duplicate reports until the guest drains input; never inject that report into guest UART bytes.
+  Preallocate each guest-output ring before device callbacks can run, keep its hot path bounded,
+  and report evicted byte counts before replay instead of silently overwriting old output.
 - For a post-SMP interleaving failure, first verify the `runtime console active` message appears
   before secondary-CPU startup and that later log records reach the owner worker or Axvisor mux;
   do not weaken smoke-test fail regexes or reserve a polling CPU as a workaround.

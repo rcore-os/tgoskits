@@ -14,7 +14,7 @@ mod worker;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     fmt::{self, Write},
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
 };
 
 use ax_driver::serial::SerialDevice;
@@ -44,6 +44,54 @@ const LOG_SUBSCRIPTION_CAPACITY: usize = 64;
 static SERIAL_RUNTIMES: OnceLock<Box<[SerialRuntimeHandle]>> = OnceLock::new();
 static LOG_MAILBOX: OnceLock<Arc<LogMailbox>> = OnceLock::new();
 static ACTIVE_CONSOLE: AtomicUsize = AtomicUsize::new(NO_ACTIVE_CONSOLE);
+
+const RUNTIME_DORMANT: u8 = 0;
+const RUNTIME_STARTED: u8 = 1;
+const RUNTIME_FAILED_CLOSED: u8 = 2;
+
+struct RuntimeLifecycle(AtomicU8);
+
+impl RuntimeLifecycle {
+    const fn new() -> Self {
+        Self(AtomicU8::new(RUNTIME_DORMANT))
+    }
+
+    fn started(&self) -> bool {
+        self.0.load(Ordering::Acquire) == RUNTIME_STARTED
+    }
+
+    fn ensure_available(&self) -> RuntimeResult {
+        (self.0.load(Ordering::Acquire) != RUNTIME_FAILED_CLOSED)
+            .then_some(())
+            .ok_or(RuntimeError::ConsoleFailedClosed)
+    }
+
+    fn ensure_started(&self) -> RuntimeResult {
+        match self.0.load(Ordering::Acquire) {
+            RUNTIME_STARTED => Ok(()),
+            RUNTIME_FAILED_CLOSED => Err(RuntimeError::ConsoleFailedClosed),
+            RUNTIME_DORMANT => Err(RuntimeError::SerialNotStarted),
+            _ => unreachable!(),
+        }
+    }
+
+    fn set_started(&self, started: bool) {
+        let next = if started {
+            RUNTIME_STARTED
+        } else {
+            RUNTIME_DORMANT
+        };
+        let _ = self
+            .0
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                (state != RUNTIME_FAILED_CLOSED).then_some(next)
+            });
+    }
+
+    fn fail_closed(&self) {
+        self.0.store(RUNTIME_FAILED_CLOSED, Ordering::Release);
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RxItem {
@@ -101,7 +149,7 @@ struct RuntimeShared {
     tx_progress: WaitQueue,
     tty_output_lock: Mutex<()>,
     log_barriers: AtomicUsize,
-    started: AtomicBool,
+    lifecycle: RuntimeLifecycle,
     irq_handle: OnceLock<ax_hal::irq::IrqHandle>,
 }
 
@@ -123,22 +171,41 @@ impl RuntimeShared {
     }
 
     fn started(&self) -> bool {
-        self.started.load(Ordering::Acquire)
+        self.lifecycle.started()
     }
 
     fn ensure_started(&self) -> RuntimeResult {
-        self.started()
-            .then_some(())
-            .ok_or(RuntimeError::SerialNotStarted)
+        self.lifecycle.ensure_started()
     }
 
     fn set_started(&self, started: bool) {
-        self.started.store(started, Ordering::Release);
+        self.lifecycle.set_started(started);
         if !started {
             self.rx_progress.notify_all(true);
             self.console_progress.notify_all(true);
             self.tx_progress.notify_all(true);
         }
+    }
+
+    fn fail_closed(&self) {
+        self.lifecycle.fail_closed();
+        self.disable_irq();
+        // `FailedClosed` is not merely an API state. Terminally claim the
+        // register gate so a final in-flight worker or IRQ transaction cannot
+        // hand the UART back to a normal endpoint afterward. The lifecycle
+        // publication and disabled IRQ prevent new contenders; an existing
+        // bounded register transaction is allowed to finish.
+        while !self.register_gate.emergency_active() {
+            if let Some(access) = self.register_gate.try_begin_emergency() {
+                drop(access);
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        self.ingress.stop_and_discard();
+        self.rx_progress.notify_all(true);
+        self.console_progress.notify_all(true);
+        self.tx_progress.notify_all(true);
     }
 
     fn publish_tx_space(&self) {
@@ -190,6 +257,7 @@ impl SerialRuntimeHandle {
     /// Dropping the subscription returns the consumer to this runtime so a
     /// failed owner initialization does not permanently consume the RX path.
     pub fn take_rx_subscription(&self) -> Option<SerialRxSubscription> {
+        self.shared.lifecycle.ensure_available().ok()?;
         let consumer = self.shared.rx_subscription.lock_irqsave().take()?;
         Some(SerialRxSubscription {
             consumer: SpinLock::new(Some(consumer)),
@@ -198,6 +266,7 @@ impl SerialRuntimeHandle {
     }
 
     pub(crate) fn take_log_subscription(&self) -> Option<SerialLogSubscription> {
+        self.shared.lifecycle.ensure_available().ok()?;
         let _route = self.shared.log_subscription_gate.lock_irqsave();
         if self.shared.log_subscription_active.load(Ordering::Acquire) {
             return None;
@@ -233,6 +302,7 @@ impl SerialRuntimeHandle {
     }
 
     pub fn start(&self, config: Config) -> RuntimeResult {
+        self.shared.lifecycle.ensure_available()?;
         self.shared
             .control
             .submit(ControlOp::Start(config), &self.shared.bridge.notify)
@@ -278,6 +348,12 @@ impl SerialRuntimeHandle {
             .submit(ControlOp::AdoptFirmwareConsole, &self.shared.bridge.notify)
     }
 
+    /// Permanently rejects task, IRQ-consumer, and per-port use after a
+    /// selected console handoff becomes untrustworthy.
+    pub(crate) fn fail_console_closed(&self) {
+        self.shared.fail_closed();
+    }
+
     /// Publishes runtime log routing and completes the platform handoff.
     pub(crate) fn commit_console_handoff(&self) -> RuntimeResult {
         self.shared.ensure_started()?;
@@ -287,7 +363,6 @@ impl SerialRuntimeHandle {
         // infallible.
         if !self.shared.log_mailbox.claim(self.shared.index) {
             let _ = self.shutdown();
-            ax_hal::console::fail_runtime_handoff_closed();
             return Err(RuntimeError::SerialConsoleBusy);
         }
         if ACTIVE_CONSOLE
@@ -301,7 +376,6 @@ impl SerialRuntimeHandle {
         {
             self.shared.log_mailbox.release(self.shared.index);
             let _ = self.shutdown();
-            ax_hal::console::fail_runtime_handoff_closed();
             return Err(RuntimeError::SerialConsoleBusy);
         }
         if let Err(error) = ax_hal::console::commit_runtime_handoff() {
@@ -313,7 +387,6 @@ impl SerialRuntimeHandle {
             );
             self.shared.log_mailbox.release(self.shared.index);
             let _ = self.shutdown();
-            ax_hal::console::fail_runtime_handoff_closed();
             return Err(error.into());
         }
         self.shared.bridge.notify.notify();
@@ -757,7 +830,7 @@ fn build_runtime(
         tx_progress: WaitQueue::new(),
         tty_output_lock: Mutex::new(()),
         log_barriers: AtomicUsize::new(0),
-        started: AtomicBool::new(false),
+        lifecycle: RuntimeLifecycle::new(),
         irq_handle: OnceLock::new(),
     });
 
@@ -1198,6 +1271,35 @@ mod tests {
 
     struct RecordingIrq {
         masked: rdif_serial::SerialEventSet,
+    }
+
+    #[test]
+    fn failed_closed_runtime_cannot_return_to_dormant_or_started() {
+        let lifecycle = RuntimeLifecycle::new();
+
+        assert_eq!(
+            lifecycle.ensure_started(),
+            Err(RuntimeError::SerialNotStarted)
+        );
+        lifecycle.set_started(true);
+        assert!(lifecycle.ensure_started().is_ok());
+
+        lifecycle.fail_closed();
+        assert_eq!(
+            lifecycle.ensure_available(),
+            Err(RuntimeError::ConsoleFailedClosed)
+        );
+        assert_eq!(
+            lifecycle.ensure_started(),
+            Err(RuntimeError::ConsoleFailedClosed)
+        );
+
+        lifecycle.set_started(false);
+        lifecycle.set_started(true);
+        assert_eq!(
+            lifecycle.ensure_started(),
+            Err(RuntimeError::ConsoleFailedClosed)
+        );
     }
 
     impl rdif_serial::UartIrq for RecordingIrq {
