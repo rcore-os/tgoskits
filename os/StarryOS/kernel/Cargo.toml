@@ -36,6 +36,7 @@ features = [
     "ax-runtime/rtc",
     "smp",
     "starry-kernel/input",
+    "starry-kernel/user-access-fastpath",
     "starry-kernel/vsock",
 ]
 
