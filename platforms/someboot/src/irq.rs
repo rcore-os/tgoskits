@@ -10,18 +10,6 @@ pub fn irq_local_set_enable(enabled: bool) {
     crate::arch::Arch::irq_all_set_enable(enabled);
 }
 
-// Only architectures whose system timer is someboot-owned expose per-IRQ
-// state here; x86_64 interrupt control lives in somehal.
-#[cfg(not(target_arch = "x86_64"))]
-pub fn irq_is_enabled(irq: IrqId) -> bool {
-    crate::arch::Arch::irq_is_enabled(irq)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn irq_set_enable(irq: IrqId, enable: bool) {
-    crate::arch::Arch::irq_set_enable(irq, enable);
-}
-
 /// 全局唯一的软件中断号，平台自行转换为本地硬件中断号或外部中断号
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

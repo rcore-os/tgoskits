@@ -56,9 +56,8 @@ pub use fdt::{fdt_addr, fdt_addr_phys, platform_name};
 pub use page_table_generic::*;
 pub use somehal_macros::{entry, someboot_secondary_entry as secondary_entry};
 
-#[cfg(not(target_arch = "x86_64"))]
-use crate::irq::IrqId;
 use crate::{
+    irq::IrqId,
     mem::{PageTableInfo, cpu_area_phys_to_virt},
     power::CpuOnError,
 };
@@ -125,25 +124,6 @@ pub trait ArchTrait {
     /// report `ALIVE`, and releases it into the OS entry path.
     fn kick_secondary_cpu(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError>;
 
-    // Arming and acknowledging the system timer stays in someboot only for
-    // architectures whose timer is independent hardware (Arm generic timer,
-    // RISC-V sbi timer, LoongArch TCG). On x86_64 the system timer lives
-    // inside the local APIC, so its driver in somehal owns these operations
-    // and the trait surface is compiled out.
-    #[cfg(not(target_arch = "x86_64"))]
-    fn systimer_enable();
-    #[cfg(not(target_arch = "x86_64"))]
-    fn systimer_irq_enable();
-    #[cfg(not(target_arch = "x86_64"))]
-    fn systimer_irq_disable();
-    #[cfg(not(target_arch = "x86_64"))]
-    fn systimer_irq_is_enabled() -> bool;
-    /// Set the timer interval in ticks
-    #[cfg(not(target_arch = "x86_64"))]
-    fn systimer_set_interval(ticks: usize);
-    /// Acknowledge and clear the timer interrupt
-    #[cfg(not(target_arch = "x86_64"))]
-    fn systimer_ack();
     /// Get the timer frequency in Hz
     fn systimer_freq() -> usize;
     /// Get the current timer tick count
@@ -153,11 +133,6 @@ pub trait ArchTrait {
 
     fn irq_all_is_enabled() -> bool;
     fn irq_all_set_enable(enable: bool);
-
-    #[cfg(not(target_arch = "x86_64"))]
-    fn irq_is_enabled(irq: IrqId) -> bool;
-    #[cfg(not(target_arch = "x86_64"))]
-    fn irq_set_enable(irq: IrqId, enable: bool);
 
     fn dcache_range(op: DCacheOp, addr: usize, size: usize);
 
@@ -174,10 +149,73 @@ pub trait ArchTrait {
 
     /// EFI 入口点 - 从 EFI PE 入口跳转到内核
     ///
+    /// Returns `false` on architectures without EFI handoff.
+    ///
     /// # Safety
     /// `system_table` 必须是当前 EFI 固件提供的有效 `EFI_SYSTEM_TABLE` 指针，
     /// 并且调用者必须保证此调用符合对应架构的启动约定。
-    unsafe fn efi_enter_kernel(system_table: *const ::core::ffi::c_void) -> bool;
+    unsafe fn efi_enter_kernel(_system_table: *const ::core::ffi::c_void) -> bool {
+        false
+    }
+}
+
+/// System-timer arming capability for architectures whose timer is hardware
+/// independent of the interrupt controller (Arm generic timer, RISC-V SBI
+/// timer, LoongArch TCG).
+///
+/// The counter domain (`systimer_freq`/`systimer_tick`/`systimer_stability`)
+/// stays on [`ArchTrait`] because every architecture provides a counter. On
+/// x86_64 the system timer lives inside the local APIC, so somehal's
+/// interrupt-controller driver owns arming and the architecture simply does
+/// not implement this trait — the absent capability is the compile-time
+/// boundary, no conditional compilation is involved.
+///
+/// Primitives are implemented per architecture; the provided methods carry
+/// the common implementations and may be overridden (LoongArch overrides the
+/// per-line IRQ pair for its multi-line ECFG semantics).
+pub trait SystimerArch: ArchTrait {
+    /// The boot-level IRQ line of the system timer.
+    fn systimer_irq_id() -> IrqId;
+    fn systimer_enable();
+    fn systimer_irq_enable();
+    fn systimer_irq_disable();
+    fn systimer_irq_is_enabled() -> bool;
+    /// Set the timer interval in ticks.
+    fn systimer_set_interval(ticks: usize);
+
+    /// Acknowledge and clear the timer interrupt. Timers whose pending state
+    /// clears on re-arming keep this default.
+    fn systimer_ack() {}
+
+    /// Whether one boot-level IRQ line is enabled. The common implementation
+    /// knows only the system-timer line.
+    fn irq_is_enabled(irq: IrqId) -> bool {
+        irq == Self::systimer_irq_id() && Self::systimer_irq_is_enabled()
+    }
+
+    /// Enable or disable one boot-level IRQ line. The common implementation
+    /// controls only the system-timer line and ignores others.
+    fn irq_set_enable(irq: IrqId, enable: bool) {
+        if irq == Self::systimer_irq_id() {
+            if enable {
+                Self::systimer_irq_enable();
+            } else {
+                Self::systimer_irq_disable();
+            }
+        }
+    }
+
+    /// Arms a one-shot deadline `ticks` from now.
+    fn set_next_event_in_ticks(ticks: usize) {
+        Self::systimer_set_interval(ticks);
+    }
+
+    /// Configure the system timer with the desired interval.
+    fn set_next_event(interval: core::time::Duration) {
+        const NANOS_PER_SEC: u128 = 1_000_000_000;
+        let ticks = (interval.as_nanos() * Self::systimer_freq() as u128 / NANOS_PER_SEC) as usize;
+        Self::systimer_set_interval(ticks);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
