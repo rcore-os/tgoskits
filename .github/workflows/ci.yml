@@ -72,8 +72,15 @@ jobs:
       should_run: ${{ steps.route.outputs.should_run }}
       since_ref: ${{ steps.since.outputs.since_ref }}
       static_matrix: ${{ steps.matrix.outputs.static_matrix }}
-      test_matrix: ${{ steps.matrix.outputs.test_matrix }}
       static_required: ${{ steps.matrix.outputs.static_required }}
+      workspace_matrix: ${{ steps.matrix.outputs.workspace_matrix }}
+      workspace_required: ${{ steps.matrix.outputs.workspace_required }}
+      arceos_matrix: ${{ steps.matrix.outputs.arceos_matrix }}
+      arceos_required: ${{ steps.matrix.outputs.arceos_required }}
+      starry_matrix: ${{ steps.matrix.outputs.starry_matrix }}
+      starry_required: ${{ steps.matrix.outputs.starry_required }}
+      axvisor_matrix: ${{ steps.matrix.outputs.axvisor_matrix }}
+      axvisor_required: ${{ steps.matrix.outputs.axvisor_required }}
     steps:
       - name: Route branch push
         id: route
@@ -129,6 +136,7 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request" ]; then
             selector='select(
               .run_number < (env.CURRENT_RUN_NUMBER | tonumber)
+              and .event == "pull_request"
               and any(.pull_requests[]?; .number == (env.PR_NUMBER | tonumber))
             )'
           else
@@ -244,8 +252,8 @@ jobs:
     secrets:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
 
-  test_checks:
-    name: Verification
+  workspace_checks:
+    name: Workspace
     needs:
       - plan_ci
       - static_checks
@@ -253,11 +261,81 @@ jobs:
       always() &&
       needs.plan_ci.result == 'success' &&
       needs.plan_ci.outputs.should_run == 'true' &&
+      needs.plan_ci.outputs.workspace_required == 'true' &&
       (needs.static_checks.result == 'success' ||
        needs.static_checks.result == 'skipped')
     uses: ./.github/workflows/reusable-check-matrix.yml
     with:
-      matrix_json: ${{ needs.plan_ci.outputs.test_matrix }}
+      matrix_json: ${{ needs.plan_ci.outputs.workspace_matrix }}
+      fail_fast: true
+      save_cache: >-
+        ${{ github.event_name == 'push' &&
+            (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') }}
+      since_ref: ${{ needs.plan_ci.outputs.since_ref }}
+    secrets:
+      CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+
+  arceos_checks:
+    name: ArceOS
+    needs:
+      - plan_ci
+      - static_checks
+    if: >-
+      always() &&
+      needs.plan_ci.result == 'success' &&
+      needs.plan_ci.outputs.should_run == 'true' &&
+      needs.plan_ci.outputs.arceos_required == 'true' &&
+      (needs.static_checks.result == 'success' ||
+       needs.static_checks.result == 'skipped')
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      matrix_json: ${{ needs.plan_ci.outputs.arceos_matrix }}
+      fail_fast: true
+      save_cache: >-
+        ${{ github.event_name == 'push' &&
+            (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') }}
+      since_ref: ${{ needs.plan_ci.outputs.since_ref }}
+    secrets:
+      CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+
+  starry_checks:
+    name: Starry
+    needs:
+      - plan_ci
+      - static_checks
+    if: >-
+      always() &&
+      needs.plan_ci.result == 'success' &&
+      needs.plan_ci.outputs.should_run == 'true' &&
+      needs.plan_ci.outputs.starry_required == 'true' &&
+      (needs.static_checks.result == 'success' ||
+       needs.static_checks.result == 'skipped')
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      matrix_json: ${{ needs.plan_ci.outputs.starry_matrix }}
+      fail_fast: true
+      save_cache: >-
+        ${{ github.event_name == 'push' &&
+            (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') }}
+      since_ref: ${{ needs.plan_ci.outputs.since_ref }}
+    secrets:
+      CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
+
+  axvisor_checks:
+    name: AxVisor
+    needs:
+      - plan_ci
+      - static_checks
+    if: >-
+      always() &&
+      needs.plan_ci.result == 'success' &&
+      needs.plan_ci.outputs.should_run == 'true' &&
+      needs.plan_ci.outputs.axvisor_required == 'true' &&
+      (needs.static_checks.result == 'success' ||
+       needs.static_checks.result == 'skipped')
+    uses: ./.github/workflows/reusable-check-matrix.yml
+    with:
+      matrix_json: ${{ needs.plan_ci.outputs.axvisor_matrix }}
       fail_fast: true
       save_cache: >-
         ${{ github.event_name == 'push' &&

@@ -44,6 +44,12 @@ RUNNER_PROFILES_MANIFEST = CHECKS_ROOT.parent / "runner-profiles.toml"
 
 SUPPORTED_PHASES = {"static", "test", "starry_apps"}
 SUPPORTED_PREFLIGHTS = {"none", "qemu-user", "full"}
+TEST_GROUP_OUTPUT_PREFIXES = {
+    "Workspace": "workspace",
+    "ArceOS": "arceos",
+    "Starry": "starry",
+    "AxVisor": "axvisor",
+}
 SUPPORTED_IMPACT_TARGETS = {
     f"{os_name}:{arch}"
     for os_name in ("arceos", "starry", "axvisor")
@@ -165,11 +171,32 @@ def _build_main_plan(
         raise PlanError("main CI must resolve to a non-empty test matrix")
     if not suite_only and not static_rows:
         raise PlanError("main CI must resolve to a non-empty static matrix")
-    return {
+    outputs = {
         "static_matrix": {"include": static_rows},
-        "test_matrix": {"include": test_rows},
         "static_required": bool(static_rows),
     }
+    outputs.update(_build_test_group_outputs(test_rows))
+    return outputs
+
+
+def _build_test_group_outputs(
+    test_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    rows_by_group = {group: [] for group in TEST_GROUP_OUTPUT_PREFIXES}
+    for row in test_rows:
+        group = row["group"]
+        if group not in rows_by_group:
+            raise PlanError(
+                f"test row '{row['id']}' uses unsupported group '{group}'"
+            )
+        rows_by_group[group].append(row)
+
+    outputs = {}
+    for group, prefix in TEST_GROUP_OUTPUT_PREFIXES.items():
+        rows = rows_by_group[group]
+        outputs[f"{prefix}_matrix"] = {"include": rows}
+        outputs[f"{prefix}_required"] = bool(rows)
+    return outputs
 
 
 def build_starry_apps_plan(
@@ -202,10 +229,14 @@ def _load_manifest(manifest: Path) -> dict[str, Any]:
         )
     if document.get("schema_version") != 3:
         raise PlanError(f"{manifest} must declare schema_version = 3")
-    if document.get("phase") not in SUPPORTED_PHASES:
+    phase = document.get("phase")
+    if phase not in SUPPORTED_PHASES:
         raise PlanError(f"{manifest} has an unsupported phase")
-    if not isinstance(document.get("group"), str) or not document["group"].strip():
+    group = document.get("group")
+    if not isinstance(group, str) or not group.strip():
         raise PlanError(f"{manifest} must declare a non-empty group")
+    if phase == "test" and group not in TEST_GROUP_OUTPUT_PREFIXES:
+        raise PlanError(f"{manifest} has unsupported test group '{group}'")
     if not isinstance(document.get("check"), list) or not document["check"]:
         raise PlanError(f"{manifest} must contain at least one [[check]] entry")
     return document
@@ -502,7 +533,7 @@ def _normalize_suite_selection(
     row.update(
         {
             "id": selection.row_id,
-            "name": f"{template['group']} / {selection.leaf_name}",
+            "name": selection.leaf_name,
             "command": selection.command,
             "template_id": selection.template_id,
             "upload_xtask_bin_artifact": False,
@@ -595,10 +626,6 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
     if preflight is None:
         preflight = "full" if container_image else "none"
 
-    name = check["name"]
-    if check["phase"] == "test":
-        name = f"{check['group']} / {name}"
-
     download_xtask = check.get("download_xtask_bin_artifact", False)
     if fallback and check["phase"] == "test":
         download_xtask = True
@@ -614,7 +641,7 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
 
     return {
         "id": check["id"],
-        "name": name,
+        "name": check["name"],
         "group": check["group"],
         "runs_on": runs_on,
         "container_image": container_image,

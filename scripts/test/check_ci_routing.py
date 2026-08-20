@@ -23,6 +23,7 @@ def main() -> int:
     ci_triggers = mapping_block(ci_workflow, "on", 0)
     ci_push = mapping_block(ci_triggers, "push", 2)
     pull_request = mapping_block(ci_triggers, "pull_request", 2)
+    jobs = mapping_block(ci_workflow, "jobs", 0)
     if mapping_block(ci_push, "branches", 4):
         errors.append("main CI push trigger must accept every branch")
 
@@ -59,10 +60,9 @@ def main() -> int:
             "Preflight must follow the planner decision",
         ),
         (
-            "needs.static_checks.result == 'skipped'",
-            "Verification must accept an intentionally skipped Preflight",
+            "gh pr list",
+            "the plan job must detect open pull requests",
         ),
-        ("gh pr list", "the plan job must detect open pull requests"),
         ("should_run=false", "an open PR must disable duplicate branch push CI"),
         (
             "needs.plan_ci.outputs.should_run == 'true'",
@@ -74,6 +74,112 @@ def main() -> int:
         ),
     ):
         require_contains(errors, ci_workflow, fragment, message)
+
+    pull_request_selector, push_selector = shell_if_else_branches(
+        ci_workflow,
+        '"$EVENT_NAME" = "pull_request"',
+    )
+    if not pull_request_selector or not push_selector:
+        errors.append("missing event-specific stale-run selectors")
+    else:
+        for fragment, message in (
+            (
+                '.event == "pull_request"',
+                "PR cleanup must only select pull request runs",
+            ),
+            (
+                ".pull_requests[]?",
+                "PR cleanup must select runs for the same pull request",
+            ),
+        ):
+            require_contains(errors, pull_request_selector, fragment, message)
+        for fragment, message in (
+            (
+                '.event != "pull_request"',
+                "push cleanup must not cancel pull request runs",
+            ),
+            (
+                '.event != "pull_request_target"',
+                "push cleanup must not cancel pull request target runs",
+            ),
+        ):
+            require_contains(errors, push_selector, fragment, message)
+
+    if mapping_block(jobs, "test_checks", 2):
+        errors.append("the legacy Verification caller must be removed")
+    if re.search(r"^\s+name:\s+Verification\s*$", ci_workflow, re.MULTILINE):
+        errors.append("the CI job list must not expose a Verification group")
+    if "test_matrix" in ci_workflow:
+        errors.append("the workflow must consume per-group matrices, not test_matrix")
+
+    grouped_jobs = (
+        ("workspace_checks", "Workspace", "workspace"),
+        ("arceos_checks", "ArceOS", "arceos"),
+        ("starry_checks", "Starry", "starry"),
+        ("axvisor_checks", "AxVisor", "axvisor"),
+    )
+    for job_id, display_name, output_prefix in grouped_jobs:
+        job = mapping_block(jobs, job_id, 2)
+        if not job:
+            errors.append(f"missing grouped CI job: {job_id}")
+            continue
+        for fragment, message in (
+            (f"name: {display_name}", "must expose the expected group name"),
+            ("- plan_ci", "must depend on Plan CI"),
+            ("- static_checks", "must depend on Preflight"),
+            ("always()", "must evaluate after Preflight finishes"),
+            (
+                "needs.plan_ci.result == 'success'",
+                "must require successful planning",
+            ),
+            (
+                "needs.plan_ci.outputs.should_run == 'true'",
+                "must follow branch routing",
+            ),
+            (
+                f"needs.plan_ci.outputs.{output_prefix}_required == 'true'",
+                "must follow its planner selection",
+            ),
+            (
+                "needs.static_checks.result == 'success'",
+                "must require a successful Preflight",
+            ),
+            (
+                "needs.static_checks.result == 'skipped'",
+                "must accept an intentionally skipped Preflight",
+            ),
+            (
+                "uses: ./.github/workflows/reusable-check-matrix.yml",
+                "must call the reusable matrix executor",
+            ),
+            (
+                f"needs.plan_ci.outputs.{output_prefix}_matrix",
+                "must consume its planner matrix",
+            ),
+            ("fail_fast: true", "must keep fail-fast within the group"),
+            ("save_cache: >-", "must preserve cache-save routing"),
+            (
+                "since_ref: ${{ needs.plan_ci.outputs.since_ref }}",
+                "must receive the incremental base",
+            ),
+            (
+                "CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}",
+                "must preserve optional credentials",
+            ),
+        ):
+            require_contains(
+                errors,
+                job,
+                fragment,
+                f"{display_name} {message}",
+            )
+        for output_name in ("matrix", "required"):
+            require_contains(
+                errors,
+                ci_workflow,
+                f"steps.matrix.outputs.{output_prefix}_{output_name}",
+                f"Plan CI must publish {output_prefix}_{output_name}",
+            )
 
     return report(errors)
 
@@ -107,6 +213,21 @@ def list_items_in_order(text: str, key: str, indent: int) -> list[str]:
         for line in mapping_block(text, key, indent).splitlines()
         if line.strip().startswith("- ")
     ]
+
+
+def shell_if_else_branches(text: str, condition: str) -> tuple[str, str]:
+    match = re.search(
+        rf'^\s*if \[ {re.escape(condition)} \]; then\s*$\n'
+        r"(?P<then>.*?)"
+        r"^\s*else\s*$\n"
+        r"(?P<else>.*?)"
+        r"^\s*fi\s*$",
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        return "", ""
+    return match.group("then"), match.group("else")
 
 
 def require_contains(errors: list[str], text: str, fragment: str, message: str) -> None:

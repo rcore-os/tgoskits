@@ -14,7 +14,9 @@ sidebar_label: "自动 CI 测试"
 - `.github/workflows/reusable-check-matrix.yml` 执行展开后的矩阵行。
 
 容器发布由 `.github/workflows/container-publish.yml` 独立处理。非主线分支 push
-由主 CI 的准备阶段检查 open PR，已有 PR 时不再运行后续矩阵。
+由主 CI 的准备阶段检查 open PR，已有 PR 时准备阶段正常成功、后续矩阵标记为
+skipped。pull request run 只取消同一 PR 的旧 pull request run，不会把关联同一提交的
+push 准备阶段取消成失败状态。
 
 ## 触发条件
 
@@ -31,22 +33,28 @@ sidebar_label: "自动 CI 测试"
 
 ```text
 Plan CI
-  -> Preflight / <purpose>
-     -> Verification / <OS> / <platform> <arch-or-board> · <purpose>
+Preflight / <purpose>
+Workspace / <purpose>
+ArceOS / <platform> <arch-or-board> · <purpose>
+Starry / <platform> <arch-or-board> · <purpose>
+AxVisor / <platform> <arch-or-board> · <purpose>
 ```
 
-固定阶段名称为 `Preflight` 和 `Verification`。平台写在架构之前，例如：
+`Workspace`、`ArceOS`、`Starry` 和 `AxVisor` 都在 `Preflight` 成功或按计划跳过
+后启动。每个名称都是一个可展开的 reusable workflow 分组，平台写在架构之前，例如：
 
 ```text
 Preflight / Formatting + publish dry-run
-Verification / ArceOS / QEMU aarch64 · GICv2 SMP4 boot + suites + axtest
-Verification / AxVisor / VMX x86_64 · Smoke
-Verification / Starry / Board VisionFive 2 · Suites
+Workspace / Incremental Clippy
+ArceOS / QEMU aarch64 · GICv2 SMP4 boot + suites + axtest
+Starry / Board VisionFive 2 · Suites
+AxVisor / VMX x86_64 · Smoke
 ```
 
 `Preflight` 包含 formatting/publish dry-run、incremental sync-lint 和 locking
-policy。`Verification` 包含 Workspace、ArceOS、AxVisor 和 Starry 检查。全量运行
-展开为 3 个 Preflight 行和 32 个 Verification 行。
+policy。`Workspace` 包含跨 workspace 的 clippy 和 std tests，其余三个分组包含各自
+注册的 QEMU、KVM 和真机检查。实际行数由 manifests 动态生成，不在文档中维护易过期
+的固定总数。
 
 ## PR 影响路由
 
@@ -84,16 +92,16 @@ changed paths、affected OS、精确输入、test-suit 选择、selected/skipped
 动态名称遵循：
 
 ```text
-Verification / <OS> / <platform> <arch-or-board> · <case>
+<OS> / <platform> <arch-or-board> · <case>
 ```
 
 例如：
 
 ```text
-Verification / ArceOS / QEMU riscv64 · rust/task-ipi
-Verification / Starry / QEMU aarch64 · qemu/system
-Verification / AxVisor / VMX x86_64 · direct-acpi-vmx
-Verification / Starry / Board OrangePi 5 Plus · native-hardware-smoke
+ArceOS / QEMU riscv64 · rust/task-ipi
+Starry / QEMU aarch64 · qemu/system
+AxVisor / VMX x86_64 · direct-acpi-vmx
+Starry / Board OrangePi 5 Plus · native-hardware-smoke
 ```
 
 Starry `qemu/system/<subcase>` 源码变更使用 `qemu/<subcase>` selector，并为拥有
@@ -133,9 +141,11 @@ self-hosted 检查的 `cache_key` 必须为空；省略时默认就是空字符�
 
 ## 可复用矩阵
 
-`reusable-check-matrix.yml` 只包含一个 matrix job。planner 始终输出完全展开的
-runner labels、container image、preflight、cache、checkout depth、timeout、artifact
-和命令字段。
+`reusable-check-matrix.yml` 只包含一个 matrix job。planner 分别输出
+`workspace_matrix`、`arceos_matrix`、`starry_matrix` 和 `axvisor_matrix`，顶层同名
+caller 分别调用该执行器，从而在 Actions 左栏形成可展开分组。每个分组内部保留
+fail-fast；一个分组失败不会取消其他分组。矩阵行仍包含完全展开的 runner labels、
+container image、preflight、cache、checkout depth、timeout、artifact 和命令字段。
 
 普通完整/增量运行中，sync-lint 生成 `tg-xtask-bin` artifact，使用容器的测试行可
 下载复用。exclusive test-suit 不运行 Preflight，因此动态行直接使用 `cargo xtask`

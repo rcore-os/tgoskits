@@ -2,6 +2,7 @@
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,17 @@ SPEC = importlib.util.spec_from_file_location("ci_plan", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 ci_plan = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ci_plan)
+
+MAIN_TEST_PREFIXES = ("workspace", "arceos", "starry", "axvisor")
+MAIN_TEST_GROUPS = ("Workspace", "ArceOS", "Starry", "AxVisor")
+
+
+def main_test_rows(plan: dict) -> list[dict]:
+    return [
+        row
+        for prefix in MAIN_TEST_PREFIXES
+        for row in plan[f"{prefix}_matrix"]["include"]
+    ]
 
 
 class CiPlanTests(unittest.TestCase):
@@ -30,9 +42,15 @@ class CiPlanTests(unittest.TestCase):
 
         self.assertTrue(plan["static_required"])
         static_rows = self.assert_unique_ids(plan["static_matrix"]["include"])
-        test_rows = self.assert_unique_ids(plan["test_matrix"]["include"])
+        test_rows = self.assert_unique_ids(main_test_rows(plan))
+        self.assertNotIn("test_matrix", plan)
         self.assertTrue(static_rows.keys().isdisjoint(test_rows))
         rows = static_rows | test_rows
+        for prefix, group in zip(MAIN_TEST_PREFIXES, MAIN_TEST_GROUPS, strict=True):
+            group_rows = plan[f"{prefix}_matrix"]["include"]
+            self.assertTrue(plan[f"{prefix}_required"])
+            self.assertTrue(group_rows)
+            self.assertTrue(all(row["group"] == group for row in group_rows))
         expected_runners = {
             "check-formatting": ["self-hosted", "linux", "qcs"],
             "run-sync-lint": ["ubuntu-latest"],
@@ -59,7 +77,10 @@ class CiPlanTests(unittest.TestCase):
             static_rows["run-sync-lint"]["command"],
         )
         self.assertTrue(
-            all(" / " in row["name"] for row in plan["test_matrix"]["include"])
+            all(
+                not row["name"].startswith(f"{row['group']} / ")
+                for row in test_rows.values()
+            )
         )
 
     def test_pull_request_crate_impact_selects_every_check_for_matching_os(
@@ -84,9 +105,8 @@ class CiPlanTests(unittest.TestCase):
             ),
         )
 
-        rows = self.assert_unique_ids(
-            ci_plan.build_main_plan(context)["test_matrix"]["include"]
-        )
+        plan = ci_plan.build_main_plan(context)
+        rows = self.assert_unique_ids(main_test_rows(plan))
 
         self.assert_selects_full_group(rows, "Workspace")
         self.assert_selects_full_group(rows, "ArceOS")
@@ -94,6 +114,10 @@ class CiPlanTests(unittest.TestCase):
             {row["group"] for row in rows.values()},
             {"Workspace", "ArceOS"},
         )
+        self.assertTrue(plan["workspace_required"])
+        self.assertTrue(plan["arceos_required"])
+        self.assertFalse(plan["starry_required"])
+        self.assertFalse(plan["axvisor_required"])
 
     def test_pull_request_impact_package_selects_standalone_check(self) -> None:
         context = ci_plan.PlanContext(
@@ -110,7 +134,7 @@ class CiPlanTests(unittest.TestCase):
         )
 
         plan = ci_plan.build_main_plan(context)
-        ids = {row["id"] for row in plan["test_matrix"]["include"]}
+        ids = {row["id"] for row in main_test_rows(plan)}
 
         self.assertIn("test-axloader-http-smoke", ids)
         self.assertFalse(any(check_id.startswith("test-arceos-") for check_id in ids))
@@ -135,10 +159,10 @@ class CiPlanTests(unittest.TestCase):
         )
 
         incremental_rows = self.assert_unique_ids(
-            ci_plan.build_main_plan(incremental)["test_matrix"]["include"]
+            main_test_rows(ci_plan.build_main_plan(incremental))
         )
         full_rows = self.assert_unique_ids(
-            ci_plan.build_main_plan(full)["test_matrix"]["include"]
+            main_test_rows(ci_plan.build_main_plan(full))
         )
 
         self.assertIn(
@@ -160,12 +184,15 @@ class CiPlanTests(unittest.TestCase):
             ),
         )
 
-        rows = self.assert_unique_ids(
-            ci_plan.build_main_plan(context)["test_matrix"]["include"]
-        )
+        plan = ci_plan.build_main_plan(context)
+        rows = self.assert_unique_ids(main_test_rows(plan))
 
         self.assert_selects_full_group(rows, "Workspace")
         self.assertEqual({row["group"] for row in rows.values()}, {"Workspace"})
+        self.assertTrue(plan["workspace_required"])
+        for prefix in ("arceos", "starry", "axvisor"):
+            self.assertFalse(plan[f"{prefix}_required"])
+            self.assertEqual(plan[f"{prefix}_matrix"]["include"], [])
 
     def test_non_pr_events_ignore_impact_and_preserve_full_matrix(self) -> None:
         impact = ci_plan.CiImpact(
@@ -193,7 +220,7 @@ class CiPlanTests(unittest.TestCase):
                 )
 
                 self.assertEqual(with_impact, baseline)
-                self.assert_unique_ids(with_impact["test_matrix"]["include"])
+                self.assert_unique_ids(main_test_rows(with_impact))
 
     def test_pure_test_suite_change_runs_only_the_exact_registered_case(self) -> None:
         context = ci_plan.PlanContext(
@@ -214,12 +241,16 @@ class CiPlanTests(unittest.TestCase):
 
         self.assertFalse(plan["static_required"])
         self.assertEqual(plan["static_matrix"]["include"], [])
+        self.assertFalse(plan["workspace_required"])
+        self.assertFalse(plan["arceos_required"])
+        self.assertTrue(plan["starry_required"])
+        self.assertFalse(plan["axvisor_required"])
         self.assertEqual(
-            [row["name"] for row in plan["test_matrix"]["include"]],
-            ["Starry / QEMU aarch64 · qemu/system"],
+            [row["name"] for row in plan["starry_matrix"]["include"]],
+            ["QEMU aarch64 · qemu/system"],
         )
         self.assertEqual(
-            plan["test_matrix"]["include"][0]["command"],
+            plan["starry_matrix"]["include"][0]["command"],
             "cargo xtask starry test qemu --arch aarch64 --test-case qemu/system",
         )
 
@@ -246,11 +277,11 @@ class CiPlanTests(unittest.TestCase):
 
         self.assertFalse(plan["static_required"])
         self.assertEqual(
-            [row["name"] for row in plan["test_matrix"]["include"]],
-            ["Starry / Board OrangePi 5 Plus · native-hardware-smoke"],
+            [row["name"] for row in plan["starry_matrix"]["include"]],
+            ["Board OrangePi 5 Plus · native-hardware-smoke"],
         )
         self.assertEqual(
-            plan["test_matrix"]["include"][0]["command"],
+            plan["starry_matrix"]["include"][0]["command"],
             "cargo xtask starry test board --test-case native-hardware-smoke "
             "--board orangepi-5-plus",
         )
@@ -276,6 +307,38 @@ class CiPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ci_plan.PlanError, "not registered"):
             ci_plan.build_main_plan(context)
 
+    def test_unsupported_test_group_fails_planning(self) -> None:
+        with self.assertRaisesRegex(
+            ci_plan.PlanError,
+            "unsupported group 'Future OS'",
+        ):
+            ci_plan._build_test_group_outputs(
+                [{"id": "future-os-check", "group": "Future OS"}]
+            )
+
+    def test_manifest_rejects_unsupported_test_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest = Path(temp_dir) / "future-os.toml"
+            manifest.write_text(
+                """\
+schema_version = 3
+phase = "test"
+group = "Future OS"
+
+[[check]]
+id = "future-os-check"
+name = "Future OS check"
+command = "true"
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ci_plan.PlanError,
+                "unsupported test group 'Future OS'",
+            ):
+                ci_plan._load_manifest(manifest)
+
     def test_multiple_test_suite_changes_form_a_stable_exact_union(self) -> None:
         context = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",
@@ -296,16 +359,24 @@ class CiPlanTests(unittest.TestCase):
             ),
         )
 
-        rows = ci_plan.build_main_plan(context)["test_matrix"]["include"]
+        plan = ci_plan.build_main_plan(context)
+        axvisor_rows = plan["axvisor_matrix"]["include"]
+        starry_rows = plan["starry_matrix"]["include"]
 
         self.assertEqual(
-            [row["name"] for row in rows],
-            [
-                "AxVisor / VMX x86_64 · direct-acpi-vmx",
-                "Starry / QEMU aarch64 · qemu/system",
-            ],
+            [row["name"] for row in axvisor_rows],
+            ["VMX x86_64 · direct-acpi-vmx"],
         )
-        self.assertTrue(all(not row["download_xtask_bin_artifact"] for row in rows))
+        self.assertEqual(
+            [row["name"] for row in starry_rows],
+            ["QEMU aarch64 · qemu/system"],
+        )
+        self.assertTrue(
+            all(
+                not row["download_xtask_bin_artifact"]
+                for row in axvisor_rows + starry_rows
+            )
+        )
 
     def test_starry_grouped_subcase_runs_only_that_subcase_on_registered_arches(
         self,
@@ -324,13 +395,13 @@ class CiPlanTests(unittest.TestCase):
             ),
         )
 
-        rows = ci_plan.build_main_plan(context)["test_matrix"]["include"]
+        rows = ci_plan.build_main_plan(context)["starry_matrix"]["include"]
 
         self.assertEqual(len(rows), 4)
         self.assertEqual(
             {row["name"] for row in rows},
             {
-                f"Starry / QEMU {arch} · qemu/test-pivot-root"
+                f"QEMU {arch} · qemu/test-pivot-root"
                 for arch in ("aarch64", "loongarch64", "riscv64", "x86_64")
             },
         )
@@ -354,7 +425,7 @@ class CiPlanTests(unittest.TestCase):
 
         ids = {
             row["id"]
-            for row in ci_plan.build_main_plan(context)["test_matrix"]["include"]
+            for row in main_test_rows(ci_plan.build_main_plan(context))
         }
 
         self.assertIn("test-starry-self-hosted-board-visionfive2", ids)
@@ -382,7 +453,7 @@ class CiPlanTests(unittest.TestCase):
         )
 
         plan = ci_plan.build_main_plan(context)
-        rows = self.assert_unique_ids(plan["test_matrix"]["include"])
+        rows = self.assert_unique_ids(main_test_rows(plan))
 
         self.assertTrue(plan["static_required"])
         self.assert_selects_full_group(rows, "Starry")
@@ -401,18 +472,19 @@ class CiPlanTests(unittest.TestCase):
             ),
         )
 
-        rows = self.assert_unique_ids(
-            ci_plan.build_main_plan(context)["test_matrix"]["include"]
-        )
+        plan = ci_plan.build_main_plan(context)
+        rows = self.assert_unique_ids(main_test_rows(plan))
 
         self.assert_selects_full_group(rows, "Starry")
         self.assertFalse(
             any(row["group"] in {"ArceOS", "AxVisor"} for row in rows.values())
         )
+        self.assertEqual(plan["arceos_matrix"]["include"], [])
+        self.assertEqual(plan["axvisor_matrix"]["include"], [])
 
     def test_arceos_qemu_jobs_run_same_arch_axtests_serially(self) -> None:
         plan = ci_plan.build_main_plan(self.upstream)
-        rows = {row["id"]: row for row in plan["test_matrix"]["include"]}
+        rows = {row["id"]: row for row in plan["arceos_matrix"]["include"]}
         expected_arches = {
             "test-arceos-x86-64-qemu": "x86_64",
             "test-arceos-riscv64-qemu": "riscv64",
@@ -444,7 +516,7 @@ class CiPlanTests(unittest.TestCase):
         )
         plan = ci_plan.build_main_plan(context)
         static_rows = self.assert_unique_ids(plan["static_matrix"]["include"])
-        test_rows = self.assert_unique_ids(plan["test_matrix"]["include"])
+        test_rows = self.assert_unique_ids(main_test_rows(plan))
 
         self.assertTrue(
             {
@@ -549,7 +621,7 @@ class CiPlanTests(unittest.TestCase):
         self, rows: dict[str, dict[str, Any]], group: str
     ) -> None:
         full_rows = self.assert_unique_ids(
-            ci_plan.build_main_plan(self.upstream)["test_matrix"]["include"]
+            main_test_rows(ci_plan.build_main_plan(self.upstream))
         )
         selected_ids = {
             check_id for check_id, row in rows.items() if row["group"] == group
