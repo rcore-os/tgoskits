@@ -103,21 +103,26 @@ impl ArchTrait for Arch {
         trap::per_cpu_trap_init(is_primary);
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_enable() {
         tcfg::set_en(true);
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_enable() {
         tcfg::set_en(true);
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_disable() {
         tcfg::set_en(false);
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_is_enabled() -> bool {
         tcfg::read().en()
     }
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_set_interval(ticks: usize) {
         let ticks = crate::timer::loongarch64_interval::aligned_ticks(ticks);
 
@@ -135,6 +140,7 @@ impl ArchTrait for Arch {
         tcfg::set_en(true);
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_ack() {
         ticlr::clear_timer_interrupt();
     }
@@ -189,6 +195,7 @@ impl ArchTrait for Arch {
         crmd::set_ie(enable);
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn irq_is_enabled(irq: IrqId) -> bool {
         use loongArch64::register::ecfg::{self, LineBasedInterrupt};
 
@@ -208,6 +215,7 @@ impl ArchTrait for Arch {
         }
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn irq_set_enable(irq: IrqId, enable: bool) {
         use loongArch64::register::ecfg::{self, LineBasedInterrupt};
 

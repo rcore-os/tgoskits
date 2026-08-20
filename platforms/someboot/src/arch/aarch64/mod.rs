@@ -64,28 +64,34 @@ impl ArchTrait for Arch {
         elx::flush_tlb(None);
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_enable() {
         elx::systick_enable();
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_disable() {
         // debug!("Disable systick irq");
         elx::systick_irq_disable();
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_enable() {
         // debug!("Enable systick irq");
         elx::systick_irq_enable();
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_is_enabled() -> bool {
         elx::systick_irq_is_enabled()
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_set_interval(ticks: usize) {
         elx::systick_set_interval(ticks);
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_ack() {
         // ARM generic timer doesn't need explicit ACK
         // The interrupt is cleared when a new timer value is set
@@ -156,10 +162,12 @@ impl ArchTrait for Arch {
         false
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn irq_is_enabled(_irq: crate::irq::IrqId) -> bool {
         unimplemented!()
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn irq_set_enable(_irq: crate::irq::IrqId, _enable: bool) {
         unimplemented!()
     }

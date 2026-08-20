@@ -56,8 +56,9 @@ pub use fdt::{fdt_addr, fdt_addr_phys, platform_name};
 pub use page_table_generic::*;
 pub use somehal_macros::{entry, someboot_secondary_entry as secondary_entry};
 
+#[cfg(not(target_arch = "x86_64"))]
+use crate::irq::IrqId;
 use crate::{
-    irq::IrqId,
     mem::{PageTableInfo, cpu_area_phys_to_virt},
     power::CpuOnError,
 };
@@ -124,13 +125,24 @@ pub trait ArchTrait {
     /// report `ALIVE`, and releases it into the OS entry path.
     fn kick_secondary_cpu(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError>;
 
+    // Arming and acknowledging the system timer stays in someboot only for
+    // architectures whose timer is independent hardware (Arm generic timer,
+    // RISC-V sbi timer, LoongArch TCG). On x86_64 the system timer lives
+    // inside the local APIC, so its driver in somehal owns these operations
+    // and the trait surface is compiled out.
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_enable();
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_enable();
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_disable();
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_is_enabled() -> bool;
     /// Set the timer interval in ticks
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_set_interval(ticks: usize);
     /// Acknowledge and clear the timer interrupt
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_ack();
     /// Get the timer frequency in Hz
     fn systimer_freq() -> usize;
@@ -142,7 +154,9 @@ pub trait ArchTrait {
     fn irq_all_is_enabled() -> bool;
     fn irq_all_set_enable(enable: bool);
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn irq_is_enabled(irq: IrqId) -> bool;
+    #[cfg(not(target_arch = "x86_64"))]
     fn irq_set_enable(irq: IrqId, enable: bool);
 
     fn dcache_range(op: DCacheOp, addr: usize, size: usize);

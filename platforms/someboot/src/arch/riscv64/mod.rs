@@ -317,12 +317,14 @@ impl ArchTrait for Arch {
         }
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_enable() {
         // Only bring the timer source into a known idle state here.
         // IRQ masking/unmasking is controlled separately by the timer core.
         let _ = sbi::set_timer(u64::MAX);
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_enable() {
         unsafe {
             core::arch::asm!(
@@ -333,6 +335,7 @@ impl ArchTrait for Arch {
         }
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_disable() {
         unsafe {
             core::arch::asm!(
@@ -343,6 +346,7 @@ impl ArchTrait for Arch {
         }
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_irq_is_enabled() -> bool {
         let sie: usize;
         unsafe {
@@ -351,12 +355,14 @@ impl ArchTrait for Arch {
         (sie & SIE_STIE) != 0
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_set_interval(ticks: usize) {
         let now = Self::systimer_tick() as u64;
         let next = crate::timer::riscv64_interval::absolute_deadline(now, ticks as u64);
         let _ = sbi::set_timer(next);
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn systimer_ack() {}
 
     fn systimer_freq() -> usize {
@@ -414,10 +420,12 @@ impl ArchTrait for Arch {
         }
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn irq_is_enabled(irq: crate::irq::IrqId) -> bool {
         irq == irq::systimer_irq() && Self::systimer_irq_is_enabled()
     }
 
+    #[cfg(not(target_arch = "x86_64"))]
     fn irq_set_enable(irq: crate::irq::IrqId, enable: bool) {
         if irq == irq::systimer_irq() {
             if enable {

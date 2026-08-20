@@ -61,30 +61,36 @@ pub fn aarch64_timer_mode() -> ArchTimerMode {
     unsafe { ArchTimerMode::from_raw(ARCH_TIMER_MODE) }
 }
 
-/// Enable the platform system timer so that timer IRQs can fire.
+// Arming the system timer stays in someboot only for architectures whose
+// timer is independent hardware; on x86_64 the LAPIC-timer driver in somehal
+// provides these operations through its own `timer` module.
+#[cfg(not(target_arch = "x86_64"))]
 pub fn enable() {
     crate::arch::Arch::systimer_enable();
 }
 
-/// Disable the platform system timer to stop timer IRQs.
+#[cfg(not(target_arch = "x86_64"))]
 pub fn irq_disable() {
     crate::arch::Arch::systimer_irq_disable();
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 pub fn irq_enable() {
     crate::arch::Arch::systimer_irq_enable();
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 pub fn irq_is_enabled() -> bool {
     crate::arch::Arch::systimer_irq_is_enabled()
 }
 
-/// Configure the system timer with the desired interval.
+#[cfg(not(target_arch = "x86_64"))]
 pub fn set_next_event(interval: Duration) {
     let ticks = duration_to_ticks(interval);
     crate::arch::Arch::systimer_set_interval(ticks);
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 pub fn set_next_event_in_ticks(ticks: usize) {
     crate::arch::Arch::systimer_set_interval(ticks);
 }
@@ -175,6 +181,7 @@ pub(crate) mod loongarch64_interval {
 
 /// Acknowledge and clear the timer interrupt.
 /// This must be called in the timer interrupt handler.
+#[cfg(not(target_arch = "x86_64"))]
 pub fn ack() {
     crate::arch::Arch::systimer_ack();
 }
