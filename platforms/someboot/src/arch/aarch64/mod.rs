@@ -78,6 +78,13 @@ impl ArchTrait for Arch {
         elx::systick_stop_oneshot();
     }
 
+    fn systimer_resume_oneshot(ticks: usize) {
+        timer::resume_masked_level_oneshot(
+            || elx::systick_set_interval(ticks),
+            elx::systick_irq_enable,
+        );
+    }
+
     fn systimer_irq_enable() {
         // debug!("Enable systick irq");
         elx::systick_irq_enable();

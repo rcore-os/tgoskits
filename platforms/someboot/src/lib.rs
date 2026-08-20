@@ -130,6 +130,16 @@ pub trait ArchTrait {
     fn systimer_irq_disable();
     /// Stops the active one-shot source and discards its programmed event.
     fn systimer_stop_oneshot();
+    /// Restores a stopped one-shot source and installs its next event.
+    ///
+    /// The default ordering matches edge-triggered devices that must become
+    /// observable before a minimum-delta comparator is programmed. Level
+    /// sources whose expired comparator would repend at controller EOI must
+    /// override this and install the comparator before unmasking the source.
+    fn systimer_resume_oneshot(ticks: usize) {
+        Self::systimer_irq_enable();
+        Self::systimer_set_interval(ticks);
+    }
     fn systimer_irq_is_enabled() -> bool;
     /// Set the timer interval in ticks
     fn systimer_set_interval(ticks: usize);

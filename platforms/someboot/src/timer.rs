@@ -76,6 +76,11 @@ pub fn stop_oneshot() {
     crate::arch::Arch::systimer_stop_oneshot();
 }
 
+/// Restores a stopped one-shot timer using the architecture's required order.
+pub fn resume_oneshot_in_ticks(ticks: usize) {
+    crate::arch::Arch::systimer_resume_oneshot(ticks);
+}
+
 pub fn irq_enable() {
     crate::arch::Arch::systimer_irq_enable();
 }
@@ -92,6 +97,15 @@ pub fn set_next_event(interval: Duration) {
 
 pub fn set_next_event_in_ticks(ticks: usize) {
     crate::arch::Arch::systimer_set_interval(ticks);
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) fn resume_masked_level_oneshot(
+    program_comparator: impl FnOnce(),
+    unmask_source: impl FnOnce(),
+) {
+    program_comparator();
+    unmask_source();
 }
 
 #[cfg(any(target_arch = "aarch64", test))]
@@ -307,6 +321,18 @@ mod tests {
         assert_eq!(aarch64_timer_irq_index(ArchTimerMode::El1Phys), 1);
         assert_eq!(aarch64_timer_irq_index(ArchTimerMode::El1Virt), 2);
         assert_eq!(aarch64_timer_irq_index(ArchTimerMode::El2HypPhys), 3);
+    }
+
+    #[test]
+    fn masked_level_timer_replaces_the_comparator_before_unmask() {
+        let step = Cell::new(0);
+
+        resume_masked_level_oneshot(
+            || assert_eq!(step.replace(1), 0),
+            || assert_eq!(step.replace(2), 1),
+        );
+
+        assert_eq!(step.get(), 2);
     }
 
     #[test]

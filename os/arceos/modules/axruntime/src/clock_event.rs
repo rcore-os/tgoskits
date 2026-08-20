@@ -61,6 +61,14 @@ pub(crate) enum ClockEventRearm {
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct ClockEventFiringToken {
     cpu_epoch: u64,
+    quiesce: ClockEventAction,
+}
+
+impl ClockEventFiringToken {
+    #[cfg(feature = "irq")]
+    pub(crate) const fn quiesce_action(&self) -> ClockEventAction {
+        self.quiesce
+    }
 }
 
 /// Result of claiming a physical timer interrupt edge.
@@ -220,10 +228,17 @@ impl LocalClockEvent {
         let _armed = self
             .armed_deadline
             .expect("armed clockevent must retain its physical deadline");
+        assert_eq!(
+            self.device_state,
+            ClockEventDeviceState::Started,
+            "an armed clockevent must own an observable physical source"
+        );
         self.armed_deadline = None;
+        self.device_state = ClockEventDeviceState::Stopped;
         self.phase = ClockEventPhase::Firing;
         ClockEventIrqClaim::Firing(ClockEventFiringToken {
             cpu_epoch: self.cpu_epoch,
+            quiesce: ClockEventAction::Stop,
         })
     }
 
@@ -435,7 +450,7 @@ mod single_task_tests {
         assert_eq!(event.phase(), ClockEventPhase::Firing);
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Program(deadline(125))
+            ClockEventAction::Resume(deadline(125))
         );
         assert_eq!(event.phase(), ClockEventPhase::Armed);
         assert_eq!(event.armed_deadline(), Some(deadline(125)));
@@ -452,8 +467,8 @@ mod tests {
     use ax_task::runtime::{MonotonicDeadline, MonotonicInstant};
 
     use super::{
-        ClockDeadline, ClockEventAction, ClockEventFiringToken, ClockEventIrqClaim,
-        ClockEventPhase, ClockEventRearm, LocalClockEvent,
+        ClockDeadline, ClockEventAction, ClockEventDeviceState, ClockEventFiringToken,
+        ClockEventIrqClaim, ClockEventPhase, ClockEventRearm, LocalClockEvent,
     };
 
     fn deadline(nanos: u64) -> ClockDeadline {
@@ -527,7 +542,7 @@ mod tests {
         };
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Program(deadline(200))
+            ClockEventAction::Resume(deadline(200))
         );
         assert_eq!(event.phase(), ClockEventPhase::Armed);
         assert_eq!(event.armed_deadline(), Some(deadline(200)));
@@ -540,7 +555,7 @@ mod tests {
         let old_epoch = event.cpu_epoch();
         let firing = fire_due(&mut event, 100);
 
-        assert_eq!(event.take_offline(), ClockEventAction::Stop);
+        assert_eq!(event.take_offline(), ClockEventAction::None);
         event.online(deadline(200));
         assert!(event.cpu_epoch() > old_epoch);
 
@@ -570,7 +585,7 @@ mod tests {
         let firing = fire_due(&mut event, 100);
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Program(deadline(1_000))
+            ClockEventAction::Resume(deadline(1_000))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(1_000)));
     }
@@ -591,7 +606,7 @@ mod tests {
         assert!(!event.advance_periodic(instant(149), 25));
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Program(deadline(150))
+            ClockEventAction::Resume(deadline(150))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(150)));
     }
@@ -608,7 +623,7 @@ mod tests {
         let firing = fire_due(&mut event, 100);
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Stop
+            ClockEventAction::None
         );
         assert_eq!(event.phase(), ClockEventPhase::Idle);
         assert_eq!(event.armed_deadline(), None);
@@ -672,7 +687,7 @@ mod tests {
         let firing = fire_due(&mut event, 300);
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Program(deadline(500))
+            ClockEventAction::Resume(deadline(500))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(500)));
     }
@@ -703,7 +718,7 @@ mod tests {
         let firing = fire_due(&mut event, 350);
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Program(deadline(400))
+            ClockEventAction::Resume(deadline(400))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(400)));
     }
@@ -737,7 +752,7 @@ mod tests {
         let firing = fire_due(&mut event, 300);
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Stop
+            ClockEventAction::None
         );
         assert_eq!(event.phase(), ClockEventPhase::Idle);
         assert_eq!(event.armed_deadline(), None);
@@ -777,7 +792,7 @@ mod tests {
         );
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Program(deadline(250))
+            ClockEventAction::Resume(deadline(250))
         );
         assert_eq!(event.phase(), ClockEventPhase::Armed);
     }
@@ -791,7 +806,7 @@ mod tests {
         event.publish_scheduler(1, Some(scheduler_deadline(140)));
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Program(deadline(125))
+            ClockEventAction::Resume(deadline(125))
         );
     }
 
@@ -813,7 +828,7 @@ mod tests {
 
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Program(deadline(125))
+            ClockEventAction::Resume(deadline(125))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(125)));
     }
@@ -848,10 +863,35 @@ mod tests {
         assert_eq!(event.armed_deadline(), None);
         assert_eq!(
             event.finish_deferred_rearm(),
-            ClockEventAction::Program(deadline(400))
+            ClockEventAction::Resume(deadline(400))
         );
         assert_eq!(event.phase(), ClockEventPhase::Armed);
         assert_eq!(event.armed_deadline(), Some(deadline(400)));
+    }
+
+    #[test]
+    fn firing_quiesces_the_level_source_before_deferred_rearm() {
+        let mut event = LocalClockEvent::offline();
+        assert_eq!(
+            event.online(deadline(100)),
+            ClockEventAction::Resume(deadline(100))
+        );
+
+        let firing = fire_due(&mut event, 100);
+        assert_eq!(
+            event.device_state,
+            ClockEventDeviceState::Stopped,
+            "an acknowledged level clockevent must be unobservable before controller EOI"
+        );
+        assert_eq!(
+            event.finish_firing(firing, ClockEventRearm::Deferred),
+            ClockEventAction::None
+        );
+        assert_eq!(
+            event.finish_deferred_rearm(),
+            ClockEventAction::Resume(deadline(100)),
+            "deferred rearm must reactivate the quiesced source"
+        );
     }
 
     #[test]
@@ -872,7 +912,7 @@ mod tests {
         };
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Program(deadline(100))
+            ClockEventAction::Resume(deadline(100))
         );
         assert_eq!(event.phase(), ClockEventPhase::Armed);
         assert_eq!(event.armed_deadline(), Some(deadline(100)));
@@ -890,7 +930,7 @@ mod tests {
         };
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Stop
+            ClockEventAction::None
         );
         assert_eq!(event.phase(), ClockEventPhase::Idle);
         assert_eq!(event.armed_deadline(), None);
@@ -911,7 +951,7 @@ mod tests {
         assert_eq!(event.publish_scheduler(2, None), ClockEventAction::None);
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Program(deadline(500))
+            ClockEventAction::Resume(deadline(500))
         );
         assert!(!event.has_immediate_work(instant(100)));
     }

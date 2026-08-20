@@ -35,6 +35,9 @@ expiry 上下文执行，而且它的 payload 析构仍由 `ktimers/<cpu>` 回�
 
 - `kernel/time/clockevents.c::clockevents_program_event()` 是物理事件编程边界；
 - `kernel/time/hrtimer.c::hrtimer_interrupt()` 先失效已触发的 event，在 hard IRQ 中排空本次到期的 hard base，再统一计算下一 event；
+- `drivers/clocksource/arm_arch_timer.c::timer_handler()` 在调用 clockevent handler 前先 mask
+  已到期的 level source，`set_next_event()` 则先替换 comparator、再 unmask；因此 controller
+  EOI 不能重新锁存旧 level；
 - `kernel/time/tick-sched.c::tick_nohz_stop_tick()`、`tick_nohz_idle_enter()` 和
   `tick_nohz_idle_exit()` 把 idle/nohz 状态与物理 tick 编程收敛到 per-CPU owner；
 - PREEMPT_RT 只把非 hard hrtimer callback 移到 soft/threaded 上下文，显式 hard timer 仍可在硬中断执行；
@@ -179,7 +182,7 @@ Idle -> Armed(deadline) -> Firing -> Deferred --+
 - `Offline`：CPU area 存在，但物理事件不可用；
 - `Idle`：runtime 不认为设备有有效 arm；
 - `Armed`：一个绝对 deadline 已写入设备；
-- `Firing`：旧 arm 已失效，handler 正在合并更新。
+- `Firing`：旧 arm 已失效且物理 source 已 quiesce，handler 正在合并更新。
 - `Deferred`：handler 已完成逻辑合并，IRQ-return/scheduler-tail 拥有唯一 rearm 事务。
 
 online 与 offline 都推进 epoch。进入 `Firing` 会产生不可复制的
@@ -236,10 +239,10 @@ Deadline CBS/zero-lag hard timer 的对象生命周期由 owner rq 的 Deadline 
 
 - `Offline/Idle/Firing` 收到的 stale/spurious edge 不进入 ax-task，但返回前必须 stop/mask
   物理 clockevent；否则 level/pending source 可以在 EOI 后立刻重入，形成 IRQ storm；
-- `Armed` 收到物理 edge 时一律执行 `Armed -> Firing(token)` 并失效旧 arm，和 Linux
-  `hrtimer_interrupt()` 相同；若 edge 早于逻辑期限，有界到期扫描自然不产生 due work，
-  finish 再按最新 source state 统一重编程一次。不得在 claim 前自行判断 early edge 并走
-  第二套 rearm 路径。
+- `Armed` 收到物理 edge 时一律执行 `Armed -> Firing(token)`、失效旧 arm，并在任何 callback
+  前 stop/mask source，和 Linux clockevent driver 进入 `hrtimer_interrupt()` 的顺序相同；若
+  edge 早于逻辑期限，有界到期扫描自然不产生 due work，finish 再按最新 source state 统一
+  重编程一次。不得在 claim 前自行判断 early edge 并走第二套 rearm 路径。
 
 stop/mask 不是中断控制器 ACK/EOI。x86 LAPIC timer mask、AArch64 generic timer disable、
 RISC-V compare 更新和 LoongArch timer disable/clear 由 clockevent backend 实现；控制器的
@@ -248,7 +251,11 @@ firing transaction 会在 finish 时根据最新 source state 重新 program。
 
 ### 上下线
 
-early platform 初始化把 source 放在 masked、non-firing 状态。online 顺序为 program finite deadline，再 unmask。offline 先 mask/stop 物理源，再允许 scheduler 发布最终 `Offline`。re-online 重新执行 program-before-unmask。
+early platform 初始化把 source 放在 masked、non-firing 状态。online/re-online 通过平台
+`resume` capability 原子提交有限 deadline 和 source activation：level device（如 AArch64
+generic timer）先替换 comparator 再 unmask，edge device（如 x86 TSC deadline）可以先 unmask
+并完成所需 fence 再写 comparator。offline 先 mask/stop 物理源，再允许 scheduler 发布最终
+`Offline`。上层状态机不得包含架构分支。
 
 CPU 数上限统一使用：
 
@@ -274,18 +281,20 @@ ax-task 并平移逻辑期限；否则 scheduler 与用户 absolute sleep 会永
 
 ## hard IRQ 顺序
 
-平台控制器和 timer device 在 runtime handler 前 claim/ACK 或失效 delivered event。runtime 顺序固定为：
+平台控制器先 claim IRQ token；timer source quiesce 与控制器 ACK/EOI 是两个独立生命周期。
+multitask runtime 顺序固定为：
 
-1. claim 当前 arm；无逻辑 owner 的 stale edge 先 stop/mask；任何有效 `Armed` edge 都进入
-   `Firing(token)` 并忘记旧 arm；
+1. claim 当前 arm；无逻辑 owner 的 stale edge stop/mask；任何有效 `Armed` edge 都进入
+   `Firing(token)`、忘记旧 arm，并在 callback 前 stop/mask 物理 source；
 2. 推进 periodic source；
 3. 调用 ax-task 的 `on_clock_event(now, budget)`；hard base 在 IRQ 中完整消费，`budget` 只约束移交给 threaded-softirq 等价 worker 的 soft expiry；
 4. 发布 reschedule 与 deadline/deferred-work sticky state；
 5. 合并 handler 期间所有 source update；
-6. 统一 program 或 stop 一次；
-7. 返回平台完成 EOI。
+6. 以 `Deferred` 把唯一 rearm owner 交给 IRQ-return/scheduler-tail；
+7. 平台完成 controller EOI；此时 timer level 已不可观察，不能重新 pending；
+8. IRQ-return/scheduler-tail 从最新 minimum 统一 resume 或保持 stopped，再恢复本地 IRQ。
 
-步骤 3 到 6 都受 firing token 的 CPU epoch 约束；旧 token 的 finish 不得发布
+步骤 3 到 8 都受 firing token 的 CPU epoch 约束；旧 token 的 finish 不得发布
 逻辑 source 或物理动作。
 
 hard IRQ 必须：

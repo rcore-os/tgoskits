@@ -87,8 +87,10 @@ pub trait TimeIf {
 
     /// Returns a stopped one-shot timer to its active state and programs it.
     ///
-    /// The interrupt source must become observable before the comparator is
-    /// installed so a minimum-delta event cannot expire while still masked.
+    /// The implementation owns the architecture-specific activation order.
+    /// Edge devices may need to unmask before programming a minimum delta;
+    /// level devices may need to replace an expired comparator before unmask
+    /// so controller EOI cannot latch the old level again.
     #[cfg(feature = "irq")]
     fn resume_oneshot_timer(deadline_ns: u64);
 

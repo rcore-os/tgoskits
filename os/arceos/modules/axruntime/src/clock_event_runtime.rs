@@ -152,6 +152,10 @@ impl ClockEventFiringTransaction {
             }
             crate::clock_event::ClockEventIrqClaim::Firing(token) => token,
         };
+        // Linux clockevent drivers quiesce a claimed source before invoking
+        // the hrtimer callback. In particular, a level-triggered architectural
+        // timer must be masked before interrupt-controller EOI can repend it.
+        apply_clock_event_action(token.quiesce_action());
         let periodic_tick = with_local_clock_event_mut(|clockevent| {
             clockevent.advance_periodic(now, periodic_interval_nanos())
         });
