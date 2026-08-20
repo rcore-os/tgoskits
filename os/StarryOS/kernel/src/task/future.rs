@@ -17,6 +17,7 @@ use core::{
 
 use ax_lazyinit::OnceLock;
 use ax_runtime::hal::time::{TimeValue, epochoffset_nanos, monotonic_time};
+pub use ax_runtime::task::block_on;
 use ax_std::os::arceos::task::{
     self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, LocalExecutor,
     MonotonicDeadline, MonotonicInstant, WaitQueue,
@@ -38,20 +39,6 @@ static NEXT_TIMER_KEY: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(feature = "axtest")]
 const _: fn(&UserTaskRef) -> LocalExecutor = user_executor;
-
-/// Polls one future on the calling scheduler thread until completion.
-///
-/// This generic executor has no Starry user-task semantics and is therefore
-/// safe for kernel service threads. User waits that must abort their park when
-/// a signal arrives use [`block_on_user`].
-#[track_caller]
-pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
-    let scheduler_thread = scheduler::current_thread_handle()
-        .unwrap_or_else(|error| panic!("future polling requires a scheduler thread: {error}"));
-    let executor = LocalExecutor::new(scheduler_thread.wake_handle())
-        .unwrap_or_else(|error| panic!("future executor requires its owner thread: {error}"));
-    block_on_with_abort(future, executor, None, || false)
-}
 
 /// Polls a future for a proven Starry user task until completion.
 ///
