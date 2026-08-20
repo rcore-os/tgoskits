@@ -3,13 +3,15 @@
 //! This module handles DMA-based packet transmission and reception,
 //! including buffer descriptor ring management.
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     cmp::min,
     mem::size_of,
     ptr::{null, null_mut},
     slice::from_raw_parts_mut,
 };
+
+use dma_api::{CoherentArray, DeviceDma, DmaError};
 
 use crate::{fxmac::*, fxmac_const::*, fxmac_phy::*, utils::*};
 
@@ -159,33 +161,51 @@ impl Default for FXmacBdRing {
 }
 
 pub struct FXmacNetifBuffer {
-    // 作为FXmacBdRing的基地址，并设置成一串多个BD
-    pub rx_bdspace: usize, // [u8; FXMAX_RX_BDSPACE_LENGTH], aligned(256); 接收bd 缓冲区
-    pub tx_bdspace: usize, // FXMAX_TX_BDSPACE_LENGTH, aligned(256); 发送bd 缓冲区
-
-    // 保存收发数据包的内存基地址，收发数据包内存需要申请alloc
-    pub rx_pbufs_storage: [uintptr; FXMAX_RX_PBUFS_LENGTH],
-    pub tx_pbufs_storage: [uintptr; FXMAX_TX_PBUFS_LENGTH],
+    rx_bdspace: CoherentArray<u8>,
+    tx_bdspace: CoherentArray<u8>,
+    rx_pbufs: Vec<CoherentArray<u8>>,
+    tx_pbufs: Vec<CoherentArray<u8>>,
 }
 
-impl Default for FXmacNetifBuffer {
-    fn default() -> Self {
-        let alloc_pages = FXMAX_RX_BDSPACE_LENGTH.div_ceil(PAGE_SIZE);
-        let (mut rx_vaddr, mut rx_dma) =
-            ax_crate_interface::call_interface!(crate::KernelFunc::dma_alloc_coherent(alloc_pages));
+impl FXmacNetifBuffer {
+    pub fn new(dma: &DeviceDma, frame_size: usize) -> Result<Self, DmaError> {
+        let rx_bdspace =
+            dma.coherent_array_zero_with_align(FXMAX_RX_BDSPACE_LENGTH, BD_ALIGNMENT as usize)?;
+        let tx_bdspace =
+            dma.coherent_array_zero_with_align(FXMAX_TX_BDSPACE_LENGTH, BD_ALIGNMENT as usize)?;
+        let rx_pbufs = (0..FXMAX_RX_PBUFS_LENGTH)
+            .map(|_| {
+                dma.coherent_array_zero_with_align(frame_size, FXMAC_RX_BUF_ALIGNMENT as usize)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let tx_pbufs = (0..FXMAX_TX_PBUFS_LENGTH)
+            .map(|_| {
+                dma.coherent_array_zero_with_align(frame_size, FXMAC_RX_BUF_ALIGNMENT as usize)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
-        let alloc_pages = FXMAX_TX_BDSPACE_LENGTH.div_ceil(PAGE_SIZE);
-        let (mut tx_vaddr, mut tx_dma) =
-            ax_crate_interface::call_interface!(crate::KernelFunc::dma_alloc_coherent(alloc_pages));
+        Ok(Self {
+            rx_bdspace,
+            tx_bdspace,
+            rx_pbufs,
+            tx_pbufs,
+        })
+    }
 
-        // let rx_buf = unsafe { from_raw_parts_mut(vaddr as *mut u8, FXMAX_RX_BDSPACE_LENGTH) };
+    fn rx_bd_cpu_addr(&self) -> u64 {
+        self.rx_bdspace.as_ptr().as_ptr() as u64
+    }
 
-        Self {
-            rx_bdspace: rx_vaddr,
-            tx_bdspace: tx_vaddr,
-            rx_pbufs_storage: [0; FXMAX_RX_PBUFS_LENGTH],
-            tx_pbufs_storage: [0; FXMAX_TX_PBUFS_LENGTH],
-        }
+    fn tx_bd_cpu_addr(&self) -> u64 {
+        self.tx_bdspace.as_ptr().as_ptr() as u64
+    }
+
+    fn rx_bd_dma_addr(&self) -> u64 {
+        self.rx_bdspace.dma_addr().as_u64()
+    }
+
+    fn tx_bd_dma_addr(&self) -> u64 {
+        self.tx_bdspace.dma_addr().as_u64()
     }
 }
 
@@ -200,10 +220,7 @@ pub struct FXmacLwipPort {
 
 pub fn fxmac_bd_read(bd_ptr: u64, offset: u32) -> u32 {
     trace!("fxmac_bd_read at {:#x}", bd_ptr + offset as u64);
-    read_reg(
-        (ax_crate_interface::call_interface!(crate::KernelFunc::virt_to_phys(bd_ptr as usize))
-            + offset as usize) as *const u32,
-    )
+    unsafe { ((bd_ptr + offset as u64) as *const u32).read_volatile() }
 }
 pub fn fxmac_bd_write(bd_ptr: u64, offset: u32, data: u32) {
     debug!(
@@ -211,12 +228,7 @@ pub fn fxmac_bd_write(bd_ptr: u64, offset: u32, data: u32) {
         data,
         bd_ptr + offset as u64
     );
-    // uintptr: u64
-    write_reg(
-        (ax_crate_interface::call_interface!(crate::KernelFunc::virt_to_phys(bd_ptr as usize))
-            + offset as usize) as *mut u32,
-        data,
-    );
+    unsafe { ((bd_ptr + offset as u64) as *mut u32).write_volatile(data) };
 }
 
 /// FXmacBdSetRxWrap
@@ -319,51 +331,30 @@ fn FXMAC_RING_SEEKAHEAD(ring_ptr: &mut FXmacBdRing, bdptr: &mut (*mut FXmacBd), 
     );
 }
 
-pub fn FXmacAllocDmaPbufs(instance_p: &mut FXmac) -> u32 {
-    // 为DMA构建环形缓冲区内存
-
-    let mut status: u32 = 0;
-    let rxringptr: &mut FXmacBdRing = &mut instance_p.rx_bd_queue.bdring;
-    let txringptr: &mut FXmacBdRing = &mut instance_p.tx_bd_queue.bdring;
-
-    // Allocate RX descriptors, 1 RxBD at a time.
-    info!("Allocate RX descriptors, 1 RxBD at a time.");
-    for i in 0..FXMAX_RX_PBUFS_LENGTH {
-        let max_frame_size = if (instance_p.lwipport.feature & FXMAC_LWIP_PORT_CONFIG_JUMBO) != 0 {
-            info!("FXMAC_LWIP_PORT_CONFIG_JUMBO");
-            FXMAC_MAX_FRAME_SIZE_JUMBO
-        } else {
-            info!("NO CONFIG_JUMBO");
-            FXMAC_MAX_FRAME_SIZE
-        };
-
-        let alloc_rx_buffer_pages = (max_frame_size as usize).div_ceil(PAGE_SIZE);
-        let (mut rx_mbufs_vaddr, mut rx_mbufs_dma) = ax_crate_interface::call_interface!(
-            crate::KernelFunc::dma_alloc_coherent(alloc_rx_buffer_pages)
-        );
-
+fn FXmacAllocDmaPbufs(instance_p: &mut FXmac) -> Result<(), FxmacInitError> {
+    info!("Attach RX DMA buffers, one descriptor at a time.");
+    for _ in 0..FXMAX_RX_PBUFS_LENGTH {
         let rxringptr: &mut FXmacBdRing = &mut instance_p.rx_bd_queue.bdring;
         let mut rxbd: *mut FXmacBd = null_mut();
-        // let my_speed: Box<i32> = Box::new(88);
-        // rxbd = Box::into_raw(my_speed);
-        // OR
-        // let mut my_speed: i32 = 88;
-        // rxbd = &mut my_speed;
-
-        // 在BD list中预留待设置的BD
-        status = FXmacBdRingAlloc(rxringptr, 1, &mut rxbd);
-        assert!(!rxbd.is_null());
-        if (status != 0) {
-            error!("FXmacInitDma: Error allocating RxBD");
-            return status;
+        init_status(
+            FxmacInitStage::AllocateRxDescriptor,
+            FXmacBdRingAlloc(rxringptr, 1, &mut rxbd),
+        )?;
+        if rxbd.is_null() {
+            return Err(FxmacInitError::NullRxDescriptor);
         }
 
-        // 将一组BD排队到之前由FXmacBdRingAlloc分配了的硬件上
-        status = FXmacBdRingToHw(rxringptr, 1, rxbd);
+        init_status(
+            FxmacInitStage::SubmitRxDescriptor,
+            FXmacBdRingToHw(rxringptr, 1, rxbd),
+        )?;
 
         let bdindex = FXMAC_BD_TO_INDEX(rxringptr, rxbd as u64);
+        let rx_dma = instance_p.lwipport.buffer.rx_pbufs[bdindex as usize]
+            .dma_addr()
+            .as_u64();
 
-        let mut temp = rxbd as *mut u32;
+        let temp = rxbd as *mut u32;
 
         let mut v = 0;
         if bdindex == (FXMAX_RX_PBUFS_LENGTH - 1) as u32 {
@@ -377,65 +368,35 @@ pub fn FXmacAllocDmaPbufs(instance_p: &mut FXmac) -> u32 {
         }
         crate::utils::DSB();
 
-        // dc civac, virt_addr 通过虚拟地址清除和无效化cache
-        crate::utils::FCacheDCacheInvalidateRange(rx_mbufs_vaddr as u64, max_frame_size as u64);
-
-        // Set the BD's address field (word 0)
-        // void *payload; 指向数据区域的指针，指向该pbuf管理的数据区域起始地址，可以是ROM或者RAM中的某个地址
-        fxmac_bd_set_address_rx(rxbd as u64, rx_mbufs_dma as u64);
-
-        instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize] = rx_mbufs_vaddr as u64;
+        fxmac_bd_set_address_rx(rxbd as u64, rx_dma);
     }
 
     for index in 0..FXMAX_TX_PBUFS_LENGTH {
-        let max_fr_size = if (instance_p.lwipport.feature & FXMAC_LWIP_PORT_CONFIG_JUMBO) != 0 {
-            FXMAC_MAX_FRAME_SIZE_JUMBO
-        } else {
-            FXMAC_MAX_FRAME_SIZE
-        };
-        let alloc_pages = (max_fr_size as usize).div_ceil(PAGE_SIZE);
-        let (mut tx_mbufs_vaddr, mut tx_mbufs_dma) =
-            ax_crate_interface::call_interface!(crate::KernelFunc::dma_alloc_coherent(alloc_pages));
-
-        instance_p.lwipport.buffer.tx_pbufs_storage[index] = tx_mbufs_vaddr as u64;
-
-        /*
-        let txbd: *mut FXmacBd = null_mut();
-        FXmacBdRingAlloc(txringptr, 1, txbd);
-        FXmacBdRingToHw(txringptr, 1, txbd);
-
-        let bdindex = FXMAC_BD_TO_INDEX(txringptr, txbd as u64);
-        assert!(index == bdindex as usize);
-        */
-
-        // From index to BD
+        let txringptr: &mut FXmacBdRing = &mut instance_p.tx_bd_queue.bdring;
         let txbd =
             (txringptr.base_bd_addr + (index as u64 * txringptr.separation as u64)) as *mut FXmacBd;
+        let tx_dma = instance_p.lwipport.buffer.tx_pbufs[index]
+            .dma_addr()
+            .as_u64();
 
-        fxmac_bd_set_address_tx(txbd as u64, tx_mbufs_dma as u64);
-        //debug!("TX DMA DESC {}: {:#010x?}", index, unsafe{*(txbd as *const macb_dma_desc)});
-
-        //curbdpntr = FXMAC_BD_RING_NEXT(txring, curbdpntr);
+        fxmac_bd_set_address_tx(txbd as u64, tx_dma);
         crate::utils::DSB();
     }
-    0
+    Ok(())
 }
 
-pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
-    // let mut rxbd: FXmacBd = [0; FXMAC_BD_NUM_WORDS];
+pub(crate) fn FXmacInitDma(instance_p: &mut FXmac) -> Result<(), FxmacInitError> {
+    let rx_bd_cpu = instance_p.lwipport.buffer.rx_bd_cpu_addr();
+    let rx_bd_dma = instance_p.lwipport.buffer.rx_bd_dma_addr();
+    let tx_bd_cpu = instance_p.lwipport.buffer.tx_bd_cpu_addr();
+    let tx_bd_dma = instance_p.lwipport.buffer.tx_bd_dma_addr();
 
     let rxringptr: &mut FXmacBdRing = &mut instance_p.rx_bd_queue.bdring;
     let txringptr: &mut FXmacBdRing = &mut instance_p.tx_bd_queue.bdring;
     info!("FXmacInitDma, rxringptr: {:p}", rxringptr);
     info!("FXmacInitDma, txringptr: {:p}", txringptr);
-    info!(
-        "FXmacInitDma, rx_bdspace: {:#x}",
-        &instance_p.lwipport.buffer.rx_bdspace
-    );
-    info!(
-        "FXmacInitDma, tx_bdspace: {:#x}",
-        &instance_p.lwipport.buffer.tx_bdspace
-    );
+    info!("FXmacInitDma, rx_bdspace: {:#x}", rx_bd_cpu);
+    info!("FXmacInitDma, tx_bdspace: {:#x}", tx_bd_cpu);
 
     // Setup RxBD space.
     // 对BD域清零
@@ -446,16 +407,22 @@ pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
 
     // Create the RxBD ring, bdspace地址必须对齐128
     // 创建收包的环形缓冲区
-    let mut status: u32 = FXmacBdRingCreate(
-        rxringptr,
-        instance_p.lwipport.buffer.rx_bdspace as u64,
-        instance_p.lwipport.buffer.rx_bdspace as u64,
-        BD_ALIGNMENT,
-        FXMAX_RX_PBUFS_LENGTH as u32,
-    );
+    init_status(
+        FxmacInitStage::CreateRxRing,
+        FXmacBdRingCreate(
+            rxringptr,
+            rx_bd_dma,
+            rx_bd_cpu,
+            BD_ALIGNMENT,
+            FXMAX_RX_PBUFS_LENGTH as u32,
+        ),
+    )?;
 
     // 将给定的BD, 克隆到list中的每个BD上
-    status = FXmacBdRingClone(rxringptr, &bdtemplate, FXMAC_RECV);
+    init_status(
+        FxmacInitStage::CloneRxRing,
+        FXmacBdRingClone(rxringptr, &bdtemplate, FXMAC_RECV),
+    )?;
 
     // let bdtem = macb_dma_desc {
     // addr: 0,
@@ -474,22 +441,30 @@ pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
     );
 
     // Create the TxBD ring
-    status = FXmacBdRingCreate(
-        txringptr,
-        instance_p.lwipport.buffer.tx_bdspace as u64,
-        instance_p.lwipport.buffer.tx_bdspace as u64,
-        BD_ALIGNMENT,
-        FXMAX_TX_PBUFS_LENGTH as u32,
-    );
+    init_status(
+        FxmacInitStage::CreateTxRing,
+        FXmacBdRingCreate(
+            txringptr,
+            tx_bd_dma,
+            tx_bd_cpu,
+            BD_ALIGNMENT,
+            FXMAX_TX_PBUFS_LENGTH as u32,
+        ),
+    )?;
 
     // We reuse the bd template, as the same one will work for both rx and tx.
-    status = FXmacBdRingClone(txringptr, &bdtemplate, FXMAC_SEND);
+    init_status(
+        FxmacInitStage::CloneTxRing,
+        FXmacBdRingClone(txringptr, &bdtemplate, FXMAC_SEND),
+    )?;
 
     // 创建收发网络包的DMA内存
-    FXmacAllocDmaPbufs(instance_p);
+    FXmacAllocDmaPbufs(instance_p)?;
 
-    FXmacSetQueuePtr(instance_p.rx_bd_queue.bdring.phys_base_addr, 0, FXMAC_RECV);
-    FXmacSetQueuePtr(instance_p.tx_bd_queue.bdring.phys_base_addr, 0, FXMAC_SEND);
+    let rx_ring_dma = instance_p.rx_bd_queue.bdring.phys_base_addr;
+    let tx_ring_dma = instance_p.tx_bd_queue.bdring.phys_base_addr;
+    FXmacSetQueuePtr(instance_p, rx_ring_dma, 0, FXMAC_RECV);
+    FXmacSetQueuePtr(instance_p, tx_ring_dma, 0, FXMAC_SEND);
 
     let FXMAC_TAIL_QUEUE = |queue: u64| 0x0e80 + (queue << 2);
     if (instance_p.config.caps & FXMAC_CAPS_TAILPTR) != 0 {
@@ -499,7 +474,7 @@ pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
         );
     }
 
-    0
+    Ok(())
 }
 
 fn FXMAC_BD_TO_INDEX(ringptr: &mut FXmacBdRing, bdptr: u64) -> u32 {
@@ -872,11 +847,6 @@ pub fn FXmacSgsend(instance_p: &mut FXmac, p: Vec<Vec<u8>>) -> u32 {
     for q in &p {
         bdindex = FXMAC_BD_TO_INDEX(txring, txbd as u64);
 
-        // if (instance_p.lwipport.buffer.tx_pbufs_storage[bdindex as usize] != 0)
-        // {
-        // panic!("PBUFS not available");
-        // }
-
         if (instance_p.lwipport.feature & FXMAC_LWIP_PORT_CONFIG_JUMBO) != 0 {
             max_fr_size = FXMAC_MAX_FRAME_SIZE_JUMBO;
         } else {
@@ -884,16 +854,17 @@ pub fn FXmacSgsend(instance_p: &mut FXmac, p: Vec<Vec<u8>>) -> u32 {
         }
         let pbufs_len = min(q.len(), max_fr_size as usize);
 
-        let pbufs_virt = instance_p.lwipport.buffer.tx_pbufs_storage[bdindex as usize];
-        let pbuf = unsafe { from_raw_parts_mut(pbufs_virt as *mut u8, pbufs_len) };
-        pbuf.copy_from_slice(q);
-        crate::utils::FCacheDCacheFlushRange(pbufs_virt, pbufs_len as u64);
+        let pbuf = &mut instance_p.lwipport.buffer.tx_pbufs[bdindex as usize];
+        let pbufs_virt = pbuf.as_ptr().as_ptr() as u64;
+        pbuf.write_with_cpu(pbufs_len, |dst| {
+            dst.copy_from_slice(&q[..pbufs_len]);
+        });
         warn!(
             ">>>>>>>>> TX PKT {} @{:#x} - {}",
             pbufs_len, pbufs_virt, bdindex
         );
 
-        debug!(">>>>>>>>> {:x?}", pbuf);
+        debug!(">>>>>>>>> {:x?}", &q[..pbufs_len]);
 
         // fxmac_bd_set_address_tx(txbd as u64, (pbufs_virt & 0xffff_ffff) as u64);
         send_len += pbufs_len as u32;
@@ -916,8 +887,6 @@ pub fn FXmacSgsend(instance_p: &mut FXmac, p: Vec<Vec<u8>>) -> u32 {
                     | (q.len() as u32 & 0x3FFF)),
             );
         }
-
-        // instance_p.lwipport.buffer.tx_pbufs_storage[bdindex as usize] = q.as_ptr() as u64;
 
         // 增加该pbuf的引用计数。
         // pbuf_ref(q);
@@ -1061,17 +1030,15 @@ pub fn FXmacRecvHandler(instance_p: &mut FXmac) -> Option<Vec<Vec<u8>>> {
             };
 
             let bdindex: u32 = FXMAC_BD_TO_INDEX(rxring, curbdptr as u64);
-            let pbufs_virt = instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize];
+            let pbuf = &mut instance_p.lwipport.buffer.rx_pbufs[bdindex as usize];
+            let pbufs_virt = pbuf.as_ptr().as_ptr() as u64;
             debug!(
                 "RX PKT {} @{:#x} <<<<<<<<< - {}",
                 rx_bytes, pbufs_virt, bdindex
             );
-            let mbuf = unsafe { from_raw_parts_mut(pbufs_virt as *mut u8, rx_bytes) };
-
-            debug!("pbuf: {:x?}", mbuf);
-
-            // Copy mbuf into a new Vec
-            recv_packets.push(mbuf.to_vec());
+            let packet = pbuf.read_with_cpu(rx_bytes, |data| data.to_vec());
+            debug!("pbuf: {:x?}", packet);
+            recv_packets.push(packet);
 
             // The value of hash_match indicates the hash result of the received packet
             // 0: No hash match
@@ -1084,21 +1051,11 @@ pub fn FXmacRecvHandler(instance_p: &mut FXmac) -> Option<Vec<Vec<u8>>> {
                 >> 29;
             debug!("hash_match is {:#x}", hash_match);
 
-            // Invalidate RX frame before queuing to handle
-            // L1 cache prefetch conditions on any architecture.
-            crate::utils::FCacheDCacheInvalidateRange(
-                instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize],
-                rx_bytes as u64,
-            );
-
             // store it in the receive queue,
             // where it'll be processed by a different handler
             // if (FXmacPqEnqueue(&instance_p->recv_q, (void *)p) < 0)
 
-            // instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize] = 0;
-
-            // Just clear 64 bits header
-            mbuf[..min(64, rx_bytes)].fill(0);
+            pbuf.write_with_cpu(min(64, rx_bytes), |header| header.fill(0));
 
             curbdptr = FXMAC_BD_RING_NEXT(rxring, curbdptr);
         }
@@ -1122,28 +1079,14 @@ pub fn SetupRxBds(instance_p: &mut FXmac) {
     let mut status: u32 = 0;
     let mut rxbd: *mut FXmacBd = null_mut();
 
-    // let alloc_tx_buffer_pages: usize = ((TX_RING_SIZE * MBUF_SIZE) + (PAGE_SIZE - 1)) / PAGE_SIZE;
-    // let alloc_rx_buffer_pages: usize = ((RX_RING_SIZE * MBUF_SIZE) + (PAGE_SIZE - 1)) / PAGE_SIZE;
-
     let mut freebds: u32 = rxring.free_cnt;
 
     while freebds > 0 {
         freebds -= 1;
 
-        let max_frame_size = if (instance_p.lwipport.feature & FXMAC_LWIP_PORT_CONFIG_JUMBO) != 0 {
-            FXMAC_MAX_FRAME_SIZE_JUMBO
-        } else {
-            FXMAC_MAX_FRAME_SIZE
-        };
-        let alloc_rx_buffer_pages: usize = (max_frame_size as usize).div_ceil(PAGE_SIZE);
-
         status = FXmacBdRingAlloc(rxring, 1, &mut rxbd);
         assert!(!rxbd.is_null());
         status = FXmacBdRingToHw(rxring, 1, rxbd);
-
-        // 继续使用前面申请过的dma pbufs, 不再清理并重新申请
-        // let (mut rx_mbufs_vaddr, mut rx_mbufs_dma) = crate::utils::dma_alloc_coherent(alloc_rx_buffer_pages);
-        // crate::utils::FCacheDCacheInvalidateRange(rx_mbufs_vaddr as u64, max_frame_size as u64);
 
         let bdindex: u32 = FXMAC_BD_TO_INDEX(rxring, rxbd as u64);
 
@@ -1166,8 +1109,7 @@ pub fn SetupRxBds(instance_p: &mut FXmac) {
         // 设置BD的地址字段(word 0)
         // fxmac_bd_set_address_rx(rxbd as u64, rx_mbufs_dma as u64);
 
-        assert!(instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize] != 0);
-        // instance_p.lwipport.buffer.rx_pbufs_storage[bdindex as usize] = rx_mbufs_vaddr as u64;
+        assert!(bdindex < instance_p.lwipport.buffer.rx_pbufs.len() as u32);
     }
 }
 
@@ -1193,20 +1135,19 @@ pub fn FXmacBdRingFree(ring_ptr: &mut FXmacBdRing, num_bd: u32) -> u32 {
 pub fn ResetDma(instance_p: &mut FXmac) {
     info!("Resetting DMA");
 
+    let tx_bd_cpu = instance_p.lwipport.buffer.tx_bd_cpu_addr();
+    let rx_bd_cpu = instance_p.lwipport.buffer.rx_bd_cpu_addr();
+
     let txringptr: &mut FXmacBdRing = &mut instance_p.tx_bd_queue.bdring;
     let rxringptr: &mut FXmacBdRing = &mut instance_p.rx_bd_queue.bdring;
 
-    FXmacBdringPtrReset(
-        txringptr,
-        instance_p.lwipport.buffer.tx_bdspace as *mut FXmacBd,
-    );
-    FXmacBdringPtrReset(
-        rxringptr,
-        instance_p.lwipport.buffer.rx_bdspace as *mut FXmacBd,
-    );
+    FXmacBdringPtrReset(txringptr, tx_bd_cpu as *mut FXmacBd);
+    FXmacBdringPtrReset(rxringptr, rx_bd_cpu as *mut FXmacBd);
 
-    FXmacSetQueuePtr(instance_p.tx_bd_queue.bdring.phys_base_addr, 0, FXMAC_SEND);
-    FXmacSetQueuePtr(instance_p.rx_bd_queue.bdring.phys_base_addr, 0, FXMAC_RECV);
+    let tx_ring_dma = instance_p.tx_bd_queue.bdring.phys_base_addr;
+    let rx_ring_dma = instance_p.rx_bd_queue.bdring.phys_base_addr;
+    FXmacSetQueuePtr(instance_p, tx_ring_dma, 0, FXMAC_SEND);
+    FXmacSetQueuePtr(instance_p, rx_ring_dma, 0, FXMAC_RECV);
 }
 
 /// Handle DMA interrupt error
@@ -1233,8 +1174,6 @@ pub fn FXmacHandleTxErrors(instance_p: &mut FXmac) {
         (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *mut u32,
         netctrlreg,
     );
-    FreeOnlyTxPbufs(instance_p);
-
     CleanDmaTxdescs(instance_p);
     netctrlreg = read_reg((instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *const u32);
     netctrlreg |= FXMAC_NWCTRL_TXEN_MASK;
@@ -1246,6 +1185,8 @@ pub fn FXmacHandleTxErrors(instance_p: &mut FXmac) {
 
 fn CleanDmaTxdescs(instance_p: &mut FXmac) {
     warn!("Clean DMA TX DESCs");
+    let tx_bd_cpu = instance_p.lwipport.buffer.tx_bd_cpu_addr();
+    let tx_bd_dma = instance_p.lwipport.buffer.tx_bd_dma_addr();
     let txringptr: &mut FXmacBdRing = &mut instance_p.tx_bd_queue.bdring;
 
     let mut bdtemplate: FXmacBd = [0; FXMAC_BD_NUM_WORDS];
@@ -1258,31 +1199,14 @@ fn CleanDmaTxdescs(instance_p: &mut FXmac) {
             | (FXMAC_TXBUF_USED_MASK),
     );
 
-    let tx_bdspace_ptr = instance_p.lwipport.buffer.tx_bdspace as u64;
     FXmacBdRingCreate(
         txringptr,
-        tx_bdspace_ptr,
-        tx_bdspace_ptr,
+        tx_bd_dma,
+        tx_bd_cpu,
         BD_ALIGNMENT,
         FXMAX_TX_BDSPACE_LENGTH as u32,
     );
     FXmacBdRingClone(txringptr, &bdtemplate, FXMAC_SEND);
-}
-
-fn FreeOnlyTxPbufs(instance_p: &mut FXmac) {
-    warn!("Free all TX DMA pbuf");
-    for index in 0..FXMAX_TX_PBUFS_LENGTH {
-        if (instance_p.lwipport.buffer.tx_pbufs_storage[index] != 0) {
-            let pbuf = instance_p.lwipport.buffer.tx_pbufs_storage[index];
-            let pages = (FXMAC_MAX_FRAME_SIZE as usize).div_ceil(PAGE_SIZE);
-            ax_crate_interface::call_interface!(crate::KernelFunc::dma_free_coherent(
-                pbuf as usize,
-                pages
-            ));
-
-            instance_p.lwipport.buffer.tx_pbufs_storage[index] = 0;
-        }
-    }
 }
 
 /// FXmacProcessSentBds, 释放发送队列q参数
@@ -1315,20 +1239,10 @@ pub fn FXmacProcessSentBds(instance_p: &mut FXmac) {
             let mut temp = curbdpntr as *mut u32;
             // Word 0
             unsafe {
-                //temp.write_volatile(0); // 这里不再对dma buffer地址清0
+                // temp.write_volatile(0); // 这里不再对dma buffer地址清0
                 temp.add(1).write_volatile(v); // 设置dma desc的ctrl
             }
             crate::utils::DSB();
-
-            //let pbuf = instance_p.lwipport.buffer.tx_pbufs_storage[bdindex];
-            /* if pbuf != 0 {
-                // pbuf_free(p);
-                let pages = (FXMAC_MAX_FRAME_SIZE as usize + (PAGE_SIZE - 1)) / PAGE_SIZE;
-                // Deallocate DMA memory by virtual address
-                crate::utils::dma_free_coherent(pbuf as usize, pages);
-            } */
-
-            //instance_p.lwipport.buffer.tx_pbufs_storage[bdindex] = 0;
 
             let b = curbdpntr;
             curbdpntr = FXMAC_BD_RING_NEXT(txring, curbdpntr);
@@ -1508,6 +1422,16 @@ pub fn ethernetif_input_to_recv_packets(instance_p: &mut FXmac) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn netif_buffers_require_an_explicit_device_dma_capability() {
+        fn assert_constructor(
+            _constructor: fn(&DeviceDma, usize) -> Result<FXmacNetifBuffer, DmaError>,
+        ) {
+        }
+
+        assert_constructor(FXmacNetifBuffer::new);
+    }
 
     #[test]
     fn rx_frame_len_rejects_lengths_larger_than_configured_buffers() {

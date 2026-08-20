@@ -19,49 +19,23 @@
 //!
 //! ## Quick Start
 //!
-//! To use this driver, you need to implement the [`KernelFunc`] trait to provide the necessary
-//! kernel functions for address translation and DMA memory allocation.
+//! The host supplies a [`dma_api::DeviceDma`] capability for all descriptor and
+//! packet-buffer allocations and an owned [`mmio_api::Mmio`] mapping for the
+//! complete register aperture.
 //!
 //! ```ignore
-//! use fxmac_rs::{KernelFunc, xmac_init, FXmacLwipPortTx, FXmacRecvHandler};
-//!
-//! // Implement the KernelFunc trait for your platform
-//! pub struct FXmacDriver;
-//!
-//! #[ax_crate_interface::impl_interface]
-//! impl KernelFunc for FXmacDriver {
-//!     fn virt_to_phys(addr: usize) -> usize {
-//!         // Your implementation
-//!         addr
-//!     }
-//!
-//!     fn phys_to_virt(addr: usize) -> usize {
-//!         // Your implementation
-//!         addr
-//!     }
-//!
-//!     fn dma_alloc_coherent(pages: usize) -> (usize, usize) {
-//!         // Your implementation: returns (virtual_addr, physical_addr)
-//!         unimplemented!()
-//!     }
-//!
-//!     fn dma_free_coherent(vaddr: usize, pages: usize) {
-//!         // Your implementation
-//!     }
-//!
-//! }
+//! use fxmac_rs::{xmac_init, FXmacLwipPortTx, FXmacRecvHandler};
 //!
 //! // Initialize the driver
-//! let hwaddr: [u8; 6] = [0x55, 0x44, 0x33, 0x22, 0x11, 0x00];
-//! let fxmac = xmac_init(&hwaddr);
+//! let (mut fxmac, irq_endpoint) = xmac_init(device_dma, mmio, hardware)?;
 //!
 //! // Send packets
 //! let mut tx_vec = Vec::new();
 //! tx_vec.push(packet_data.to_vec());
-//! FXmacLwipPortTx(fxmac, tx_vec);
+//! FXmacLwipPortTx(&mut fxmac, tx_vec);
 //!
 //! // Receive packets
-//! if let Some(recv_packets) = FXmacRecvHandler(fxmac) {
+//! if let Some(recv_packets) = FXmacRecvHandler(&mut fxmac) {
 //!     for packet in recv_packets {
 //!         // Process received packet
 //!     }
@@ -88,7 +62,6 @@
 //!   macros become no-ops.
 
 #![no_std]
-#![feature(linkage)]
 #![allow(unused)]
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
@@ -133,107 +106,8 @@ mod utils;
 pub use fxmac::*;
 // Re-exports for DMA operations
 pub use fxmac_dma::*;
-// Re-exports for interrupt handling
-pub use fxmac_intr::FXmacIntrHandler;
 // Re-exports for PHY interface
 pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
-
-/// Kernel function interface required by the FXMAC Ethernet driver.
-///
-/// This trait defines the platform-specific functions that must be implemented
-/// by the host system to support the FXMAC driver. These functions handle
-/// address translation and DMA memory management.
-///
-/// # Implementation Requirements
-///
-/// All implementations must be `#[ax_crate_interface::impl_interface]` compatible
-/// and provide thread-safe operations where applicable.
-///
-/// # Example
-///
-/// ```ignore
-/// pub struct MyPlatform;
-///
-/// #[ax_crate_interface::impl_interface]
-/// impl fxmac_rs::KernelFunc for MyPlatform {
-///     fn virt_to_phys(addr: usize) -> usize {
-///         // Platform-specific virtual to physical address translation
-///         addr - KERNEL_OFFSET
-///     }
-///
-///     fn phys_to_virt(addr: usize) -> usize {
-///         // Platform-specific physical to virtual address translation
-///         addr + KERNEL_OFFSET
-///     }
-///
-///     fn dma_alloc_coherent(pages: usize) -> (usize, usize) {
-///         // Allocate DMA-capable coherent memory
-///         // Returns (virtual_address, physical_address)
-///         allocator.alloc_dma(pages)
-///     }
-///
-///     fn dma_free_coherent(vaddr: usize, pages: usize) {
-///         // Free previously allocated DMA memory
-///         allocator.free_dma(vaddr, pages)
-///     }
-///
-/// }
-/// ```
-#[ax_crate_interface::def_interface]
-pub trait KernelFunc {
-    /// Converts a virtual address to its corresponding physical address.
-    ///
-    /// This function is used by the driver to obtain physical addresses for
-    /// DMA operations, as the hardware requires physical addresses for
-    /// buffer descriptors.
-    ///
-    /// # Arguments
-    ///
-    /// * `addr` - The virtual address to convert.
-    ///
-    /// # Returns
-    ///
-    /// The corresponding physical address.
-    fn virt_to_phys(addr: usize) -> usize;
-
-    /// Converts a physical address to its corresponding virtual address.
-    ///
-    /// This function is used by the driver to access hardware registers
-    /// and DMA buffers through virtual addresses.
-    ///
-    /// # Arguments
-    ///
-    /// * `addr` - The physical address to convert.
-    ///
-    /// # Returns
-    ///
-    /// The corresponding virtual address.
-    fn phys_to_virt(addr: usize) -> usize;
-
-    /// Allocates DMA-coherent memory pages.
-    ///
-    /// Allocates physically contiguous memory that is suitable for DMA
-    /// operations. The memory should be cache-coherent or properly managed
-    /// for DMA access.
-    ///
-    /// # Arguments
-    ///
-    /// * `pages` - The number of pages (typically 4KB each) to allocate.
-    ///
-    /// # Returns
-    ///
-    /// A tuple containing `(virtual_address, physical_address)` of the
-    /// allocated memory region.
-    fn dma_alloc_coherent(pages: usize) -> (usize, usize);
-
-    /// Frees previously allocated DMA-coherent memory.
-    ///
-    /// # Arguments
-    ///
-    /// * `vaddr` - The virtual address of the memory region to free.
-    /// * `pages` - The number of pages to free.
-    fn dma_free_coherent(vaddr: usize, pages: usize);
-}
 
 #[cfg(test)]
 mod tests {

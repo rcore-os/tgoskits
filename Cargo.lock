@@ -828,7 +828,6 @@ dependencies = [
  "arm-scmi-rs",
  "ax-alloc",
  "ax-arm-pl031",
- "ax-crate-interface",
  "ax-runtime",
  "ax-sync",
  "axklib",
@@ -3694,8 +3693,10 @@ name = "fxmac_rs"
 version = "0.6.1"
 dependencies = [
  "aarch64-cpu 10.0.0",
- "ax-crate-interface",
+ "dma-api",
  "log",
+ "mmio-api",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
