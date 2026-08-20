@@ -96,6 +96,13 @@ it does not own I/O registrations or Linux poll/epoll policy. A `Future` is used
 only at the top task wait boundary, where Rust's cancellation lifetime is useful;
 the source, VFS, and queue layers remain synchronous capabilities.
 
+The syscall layer must also preserve Linux's synchronous I/O fast path. A direct
+read or write attempts the source operation before constructing a task future or
+allocating registration state. Only a real `WouldBlock` result enters the
+`PollRegistrar` future below. This keeps cancellation ownership on the blocking
+path without charging ready I/O for an executor, and it does not create a second
+waiter-selection algorithm beside `PollSet`.
+
 ## Non-goals
 
 - This change does not add scheduler-specific policy to `axpoll`. The scheduler
@@ -243,8 +250,9 @@ rejects any in-flight attempt before it can create a lease.
 
 ## Future protocol
 
-The central blocking helper becomes a concrete future rather than a `poll_fn`
-whose temporary registration has no owner. Each poll follows this sequence:
+After a synchronous syscall attempt reports `WouldBlock`, the central blocking
+helper becomes a concrete future rather than a `poll_fn` whose temporary
+registration has no owner. Each slow-path poll follows this sequence:
 
 1. remove the previous attempt's leases;
 2. attempt the operation;
@@ -289,6 +297,13 @@ decision is derived from state transitions under the pipe lock:
 
 The state is published before wake, and no pipe buffer lock is held while wakers
 run. EOF/error transitions use the same mode-aware wake transaction.
+
+Pipe `read` and `write` first execute this state transition synchronously with
+an unselected wake token. A completed operation returns directly. Only an empty
+read or full write with a live peer enters the exclusive `PollSet` future and
+retries after registration. Pipe-local scheduler wait queues are deliberately
+absent: adding them would give the same readiness source two independent owners
+for waiter selection and cancellation.
 
 ## Rejected alternatives
 

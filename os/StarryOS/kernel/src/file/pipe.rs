@@ -25,7 +25,7 @@ use crate::{
     sync::PiMutex,
     task::{
         current_user_task,
-        future::{block_on_user, poll_io_with_wake},
+        future::{ExclusivePollWake, block_on_user, poll_io_with_wake},
         send_signal_to_process,
     },
 };
@@ -256,94 +256,102 @@ impl Pipe {
         let mut total_written = 0;
         let mut merge_pending = true;
         let merge_bytes = size % PIPE_BUF;
+        let mut operation = |wake: ExclusivePollWake| {
+            enum WriteStep {
+                Closed,
+                WouldBlock,
+                Wrote {
+                    bytes: usize,
+                    wake_readers: bool,
+                    wake_next_writer: bool,
+                },
+            }
+
+            let step = {
+                let mut state = self.shared.state.lock();
+                // Linux makes writes no larger than PIPE_BUF commit atomically;
+                // nonblocking callers get EAGAIN until the whole record fits.
+                if state.readers == 0 {
+                    WriteStep::Closed
+                } else {
+                    let was_empty = state.buffer.is_empty();
+                    let mut written = 0;
+                    if merge_pending {
+                        merge_pending = false;
+                        if merge_bytes > 0 && state.can_merge(merge_bytes) {
+                            written += state.merge_from(src, merge_bytes)?;
+                        }
+                    }
+                    while src.remaining() > 0 && state.has_free_buffer() {
+                        let appended = state.append_from(src)?;
+                        written += appended;
+                        if appended == 0 {
+                            break;
+                        }
+                    }
+                    if written == 0 {
+                        WriteStep::WouldBlock
+                    } else {
+                        WriteStep::Wrote {
+                            bytes: written,
+                            wake_readers: was_empty
+                                || self.shared.poll_usage.load(Ordering::Acquire),
+                            wake_next_writer: wake.was_notified() && state.has_free_buffer(),
+                        }
+                    }
+                }
+            };
+
+            let written = match step {
+                WriteStep::Closed => {
+                    if total_written > 0 {
+                        return Ok(total_written);
+                    }
+                    on_broken_pipe();
+                    return Err(StarryError::BrokenPipe);
+                }
+                WriteStep::WouldBlock => return Err(StarryError::WouldBlock),
+                WriteStep::Wrote {
+                    bytes,
+                    wake_readers,
+                    wake_next_writer,
+                } => {
+                    if wake_readers {
+                        // Pipe bytes were committed before waking readers.
+                        unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
+                    }
+                    if wake_next_writer {
+                        // A selected writer transfers remaining capacity to
+                        // the next exclusive waiter.
+                        unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
+                    }
+                    bytes
+                }
+            };
+
+            if written > 0 {
+                total_written += written;
+                if total_written == size || self.nonblocking() {
+                    return Ok(total_written);
+                }
+            }
+            Err(StarryError::WouldBlock)
+        };
+
+        match operation(ExclusivePollWake::Unselected) {
+            Ok(result) => return Ok(result),
+            Err(error) if error.is_would_block() && self.nonblocking() => return Err(error),
+            Err(error) if error.is_would_block() => {}
+            Err(error) => return Err(error),
+        }
 
         let task = current_user_task();
         let result = block_on_user(
             &task,
-            poll_io_with_wake(self, IoEvents::OUT, self.nonblocking(), |wake| {
-                enum WriteStep {
-                    Closed,
-                    WouldBlock,
-                    Wrote {
-                        bytes: usize,
-                        wake_readers: bool,
-                        wake_next_writer: bool,
-                    },
-                }
-
-                let step = {
-                    let mut state = self.shared.state.lock();
-                    // Linux makes writes no larger than PIPE_BUF commit atomically;
-                    // nonblocking callers get EAGAIN until the whole record fits.
-                    if state.readers == 0 {
-                        WriteStep::Closed
-                    } else {
-                        let was_empty = state.buffer.is_empty();
-                        let mut written = 0;
-                        if merge_pending {
-                            merge_pending = false;
-                            if merge_bytes > 0 && state.can_merge(merge_bytes) {
-                                written += state.merge_from(src, merge_bytes)?;
-                            }
-                        }
-                        while src.remaining() > 0 && state.has_free_buffer() {
-                            let appended = state.append_from(src)?;
-                            written += appended;
-                            if appended == 0 {
-                                break;
-                            }
-                        }
-                        if written == 0 {
-                            WriteStep::WouldBlock
-                        } else {
-                            WriteStep::Wrote {
-                                bytes: written,
-                                wake_readers: was_empty
-                                    || self.shared.poll_usage.load(Ordering::Acquire),
-                                wake_next_writer: wake.was_notified() && state.has_free_buffer(),
-                            }
-                        }
-                    }
-                };
-
-                let written = match step {
-                    WriteStep::Closed => {
-                        if total_written > 0 {
-                            return Ok(total_written);
-                        }
-                        on_broken_pipe();
-                        return Err(crate::StarryError::BrokenPipe);
-                    }
-                    WriteStep::WouldBlock => return Err(crate::StarryError::WouldBlock),
-                    WriteStep::Wrote {
-                        bytes,
-                        wake_readers,
-                        wake_next_writer,
-                    } => {
-                        if wake_readers {
-                            // Pipe bytes were committed before waking readers.
-                            unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
-                        }
-                        if wake_next_writer {
-                            // A selected writer transfers remaining capacity to
-                            // the next exclusive waiter.
-                            unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
-                        }
-                        bytes
-                    }
-                };
-
-                if written > 0 {
-                    total_written += written;
-                    if total_written == size || self.nonblocking() {
-                        return Ok(total_written);
-                    }
-                }
-                Err(crate::StarryError::WouldBlock)
-            }),
+            poll_io_with_wake(self, IoEvents::OUT, false, operation),
         )
         .into_result()
-        .map_err(crate::StarryError::from)
+        .map_err(StarryError::from)
         .and_then(|result| result);
 
         // Linux returns committed bytes instead of EINTR once a pipe write
@@ -415,44 +423,53 @@ impl FileLike for Pipe {
             return Ok(0);
         }
 
+        let mut operation = |wake: ExclusivePollWake| {
+            let (read, writers, wake_writers, wake_next_reader) = {
+                let mut state = self.shared.state.lock();
+                let was_full = !state.has_free_buffer();
+                let (left, right) = state.buffer.as_slices();
+                let mut count = dst.write(left)?;
+                if count >= left.len() {
+                    count += dst.write(right)?;
+                }
+                unsafe { state.buffer.advance_read_index(count) };
+                state.consume(count);
+                (
+                    count,
+                    state.writers,
+                    count > 0 && was_full && state.has_free_buffer(),
+                    count > 0 && wake.was_notified() && !state.buffer.is_empty(),
+                )
+            };
+            if read > 0 {
+                if wake_writers {
+                    // Pipe capacity was freed before waking writers.
+                    unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
+                }
+                if wake_next_reader {
+                    // A selected reader transfers remaining data to the next
+                    // exclusive waiter.
+                    unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
+                }
+                Ok(read)
+            } else if writers == 0 {
+                Ok(0)
+            } else {
+                Err(StarryError::WouldBlock)
+            }
+        };
+
+        match operation(ExclusivePollWake::Unselected) {
+            Ok(result) => return Ok(result),
+            Err(error) if error.is_would_block() && self.nonblocking() => return Err(error),
+            Err(error) if error.is_would_block() => {}
+            Err(error) => return Err(error),
+        }
+
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io_with_wake(self, IoEvents::IN, self.nonblocking(), |wake| {
-                let (read, writers, wake_writers, wake_next_reader) = {
-                    let mut state = self.shared.state.lock();
-                    let was_full = !state.has_free_buffer();
-                    let (left, right) = state.buffer.as_slices();
-                    let mut count = dst.write(left)?;
-                    if count >= left.len() {
-                        count += dst.write(right)?;
-                    }
-                    unsafe { state.buffer.advance_read_index(count) };
-                    state.consume(count);
-                    (
-                        count,
-                        state.writers,
-                        count > 0 && was_full && state.has_free_buffer(),
-                        count > 0 && wake.was_notified() && !state.buffer.is_empty(),
-                    )
-                };
-                if read > 0 {
-                    if wake_writers {
-                        // Pipe capacity was freed before waking writers.
-                        unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
-                    }
-                    if wake_next_reader {
-                        // A selected reader transfers remaining data to the
-                        // next exclusive waiter.
-                        unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
-                    }
-                    Ok(read)
-                } else if writers == 0 {
-                    Ok(0)
-                } else {
-                    Err(crate::StarryError::WouldBlock)
-                }
-            }),
+            poll_io_with_wake(self, IoEvents::IN, false, operation),
         )
         .into_result()?
     }

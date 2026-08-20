@@ -469,18 +469,23 @@ poll 边界通过 `poll_interrupt()` 消费该状态并返回类型化的 `Inter
 |-------------|---------|-----------|---------|
 | `waitpid` | 子进程未退出 | `block_on_user(wait_future)` | SIGCHLD |
 | `futex` | 互斥锁/条件变量 | `block_on_user_timeout(futex_future)` | 任意可递达信号 |
-| `read` (pipe) | 管道空 | `block_on_user(poll_io(...))` | 可递达信号或 I/O readiness |
+| `read` (pipe) | 同步读取返回 `EAGAIN` | `block_on_user(poll_io_with_wake(...))` 慢路径 | 可递达信号或 I/O readiness |
 | `sigtimedwait` | 无匹配 pending signal | `block_on_user(signal_future)` | 目标信号 |
 
 当子进程也因同一 bug 而挂起时，父进程在 `waitpid` 中永远等不到子进程退出——而子进程恰好在等某个信号来唤醒自己。系统形成死锁循环。
 
 ### 与 I/O readiness 的配合
 
+普通 pipe `read`/`write` 先同步执行一次数据操作：就绪时直接返回，不创建
+`LocalExecutor` 或 registration。只有同步尝试得到 `EAGAIN`，才进入下述 I/O
+future 慢路径。这样保留 Linux 的同步 I/O 快路径，同时避免在 pipe 内再增加一套
+与 `PollSet` 竞争 waiter 选择权的等待队列。
+
 I/O future 持有类型化 `PollRegistrar`，并通过
 `Pollable::register_shared()` 或 `register_exclusive()` 获取精确可取消的
 registration lease；设备或 task-context service 在 readiness 变化后调用
 `PollSet::wake()`。信号路径不能依赖 I/O 最终完成，因此仍必须直接唤醒目标
-scheduler thread。`poll_io()` 在注册后再次尝试 I/O；统一的 `block_on_user()`
+scheduler thread。`poll_io_with_wake()` 在注册后再次尝试 I/O；统一的 `block_on_user()`
 poll 边界随后检查 interruption。park 入口又在 WaitQueue 谓词内复查 sticky
 interruption，从而闭合“状态变化发生在第一次检查与注册之间”的竞态窗口。
 
@@ -516,7 +521,7 @@ interruption，从而闭合“状态变化发生在第一次检查与注册之�
 |------|------|
 | `components/ax-task/src/executor/*` | `LocalExecutor` 与 generation-valid waker |
 | `components/ax-task/src/wait_queue.rs` | prepare/publish/commit park 与 wake |
-| `os/StarryOS/kernel/src/task/future.rs` | `block_on_user`、`block_on_user_timeout`、`poll_io` |
+| `os/StarryOS/kernel/src/task/future.rs` | `block_on_user`、`block_on_user_timeout`、`poll_io_with_wake` |
 | `os/StarryOS/kernel/src/task/scheduler_task.rs` | Starry interruption bit + `ThreadWakeHandle` |
 | `os/StarryOS/kernel/src/task/signal.rs` | `send_signal_to_process` — 信号入队 + 唤醒目标 |
 | `os/StarryOS/kernel/src/task/user.rs` | syscall 返回路径的 signal drain loop |
