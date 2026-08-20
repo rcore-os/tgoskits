@@ -6,9 +6,8 @@ publish = false
 
 [features]
 default = ["ax-std"]
-ax-std = ["dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
+ax-std = ["dep:ax-std", "ax-std/arceos"]
 
 [dependencies]
 ax-cpu = { workspace = true, features = ["exception-table"] }
-ax-hal = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }

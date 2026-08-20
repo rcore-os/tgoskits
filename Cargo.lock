@@ -388,7 +388,6 @@ name = "arceos-loongarch-unaligned-fixup"
 version = "0.1.0"
 dependencies = [
  "ax-cpu",
- "ax-hal",
  "ax-std",
 ]
 
