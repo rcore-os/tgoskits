@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.19...axaddrspace-v0.5.20) - 2026-08-20
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+
 ## [0.5.19](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.18...axaddrspace-v0.5.19) - 2026-08-09
 
 ### Other

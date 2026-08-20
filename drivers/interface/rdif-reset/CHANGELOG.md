@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/rdif-reset-v0.1.2...rdif-reset-v0.2.0) - 2026-08-20
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/rdif-reset-v0.1.1...rdif-reset-v0.1.2) - 2026-08-09
 
 ### Other

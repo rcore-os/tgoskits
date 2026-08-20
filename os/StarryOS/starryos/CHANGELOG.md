@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.29](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.28...starryos-v0.5.29) - 2026-08-20
+
+### Added
+
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.5.28](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.27...starryos-v0.5.28) - 2026-08-09
 
 ### Other

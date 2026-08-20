@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/rcore-os/tgoskits/compare/sg200x-jpu-v0.1.3...sg200x-jpu-v0.1.4) - 2026-08-20
+
+### Other
+
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+
 ## [0.1.3](https://github.com/rcore-os/tgoskits/compare/sg200x-jpu-v0.1.2...sg200x-jpu-v0.1.3) - 2026-08-09
 
 ### Other
