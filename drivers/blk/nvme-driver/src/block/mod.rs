@@ -426,3 +426,6 @@ fn device_info(name: &'static str, namespace: Namespace) -> DeviceInfo {
         ..DeviceInfo::new(namespace.lba_count as u64, namespace.lba_size)
     }
 }
+
+#[cfg(test)]
+mod tests;

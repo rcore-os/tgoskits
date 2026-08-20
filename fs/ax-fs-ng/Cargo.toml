@@ -61,3 +61,7 @@ features = ["default"]
 
 [dev-dependencies.ax-hal]
 path = "../../os/arceos/modules/axhal"
+
+[dev-dependencies.ax-sync]
+workspace = true
+features = ["host-test"]
