@@ -24,6 +24,7 @@ def main() -> int:
     ci_push = mapping_block(ci_triggers, "push", 2)
     pull_request = mapping_block(ci_triggers, "pull_request", 2)
     jobs = mapping_block(ci_workflow, "jobs", 0)
+    plan_ci = mapping_block(jobs, "plan_ci", 2)
     if mapping_block(ci_push, "branches", 4):
         errors.append("main CI push trigger must accept every branch")
 
@@ -41,6 +42,50 @@ def main() -> int:
         )
     if "PR_HEAD_REPOSITORY_OWNER" in ci_workflow:
         errors.append("runner planning must not use the pull request source owner")
+
+    route_step = named_step_block(plan_ci, "Route duplicate events")
+    if not route_step:
+        errors.append("Plan CI must have a duplicate-event routing step")
+    else:
+        for fragment, message in (
+            (
+                'EVENT_ACTION: ${{ github.event.action || \'\' }}',
+                "duplicate routing must distinguish newly opened pull requests",
+            ),
+            (
+                'HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}',
+                "duplicate routing must compare the pull request head commit",
+            ),
+            (
+                '"$EVENT_ACTION" = "opened"',
+                "only a newly opened pull request may reuse its branch push run",
+            ),
+            (
+                "actions/workflows/ci.yml/runs",
+                "new pull requests must query runs from the same CI workflow",
+            ),
+            (
+                "-f event=push",
+                "new pull requests must only reuse push runs",
+            ),
+            (
+                '-f branch="$PR_HEAD_REF"',
+                "new pull requests must only reuse a push run for the same branch",
+            ),
+            (
+                '-f head_sha="$HEAD_SHA"',
+                "new pull requests must only reuse a push run for the same commit",
+            ),
+            (
+                '.conclusion != "cancelled"',
+                "a cancelled push run must not suppress pull request validation",
+            ),
+            (
+                "should_run=false",
+                "a matching push run must skip the duplicate pull request matrix",
+            ),
+        ):
+            require_contains(errors, route_step, fragment, message)
 
     for fragment, message in (
         (
@@ -213,6 +258,22 @@ def list_items_in_order(text: str, key: str, indent: int) -> list[str]:
         for line in mapping_block(text, key, indent).splitlines()
         if line.strip().startswith("- ")
     ]
+
+
+def named_step_block(text: str, name: str) -> str:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != f"- name: {name}":
+            continue
+        indent = len(line) - len(line.lstrip())
+        block = [line]
+        for nested_line in lines[index + 1 :]:
+            nested_indent = len(nested_line) - len(nested_line.lstrip())
+            if nested_line and nested_indent <= indent:
+                break
+            block.append(nested_line)
+        return "\n".join(block)
+    return ""
 
 
 def shell_if_else_branches(text: str, condition: str) -> tuple[str, str]:
