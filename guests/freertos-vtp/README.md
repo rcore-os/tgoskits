@@ -71,6 +71,35 @@ L2 switch 直连，构成基于 IP 的双向网络链路。协议定义见
 - `os/axvisor/configs/vms/qemu/aarch64/freertos-smp1.dts`：参考文档，标注
   `virtio_mmio@a000000`（reg `0x0a00_0000 0x200`、SPI 48、level）。
 
+## CI 验证：freertos.bin 产物要求
+
+双 VM VTP 网络通信已接入 CI：`.github/ci/checks/axvisor.toml` 的
+`test-axvisor-aarch64-qemu-vtp` job。它先检查
+**`guests/freertos-vtp/build/freertos.bin`** 是否存在，缺失则报清晰错误退出
+（见 `test-suit/axvisor/normal/qemu-vtp/run.sh`）。因此把链接出的镜像放到：
+
+```
+guests/freertos-vtp/build/freertos.bin
+```
+
+必须满足（对齐 `freertos-vtp-smp1.toml` 与 Axvisor virtio-net 设备）：
+
+| 项 | 值 |
+| --- | --- |
+| 加载基址 | `0x4000_0000` |
+| 入口 | `0x4000_1000` |
+| virtio-net MMIO / IRQ | `0x0a00_0000` / SPI 48 |
+| 静态 IP | `10.0.2.16/24`（与 Starry 侧 VTP server 配对） |
+| 成功 / 失败标记 | 打印 `FREERTOS_VTP_PASS` / `FREERTOS_VTP_FAIL` |
+
+准备就绪后 CI 会自动执行：
+1. 构建 StarryOS guest（`cargo xtask starry build`）。
+2. 编译 VTP server 并注入 Starry rootfs。
+3. 以 `starry-smp1.toml` + `freertos-vtp-smp1.toml` 双 VM 启动 Axvisor QEMU
+   aarch64，两个 guest 经内部 L2 switch 互发 VTP，直到两边都打印 PASS。
+
+本地手动验证：`test-suit/axvisor/normal/qemu-vtp/run.sh`。
+
 ## 端到端
 
 见 `test-suit/axvisor/normal/qemu-vtp/` 与 `apps` 侧的运行脚本。
