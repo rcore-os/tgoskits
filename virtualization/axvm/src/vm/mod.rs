@@ -36,8 +36,8 @@ use axdevice_base::*;
 use axvm_types::*;
 
 use crate::{
-    arch::*, boot::*, config::*, host::paging::*, irq::model::*, layout::*, lifecycle::*,
-    runtime::*, sync::MutexExt, vcpu::*, *,
+    arch::current::ArchNestedPageTable, architecture::ArchOps, boot::*, config::*, host::paging::*,
+    irq::model::*, layout::*, lifecycle::*, runtime::*, sync::MutexExt, vcpu::*, *,
 };
 
 pub(crate) mod boot;
@@ -49,9 +49,9 @@ const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
 
 /// A vCPU with architecture-independent interface.
-type VCpu = AxVCpu<crate::arch::ArchVCpu>;
+type VCpu = AxVCpu<crate::arch::current::ArchVCpu>;
 /// A reference to a vCPU.
-pub(crate) type AxVCpuRef<A = crate::arch::ArchVCpu> = Arc<AxVCpu<A>>;
+pub(crate) type AxVCpuRef<A = crate::arch::current::ArchVCpu> = Arc<AxVCpu<A>>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
 
@@ -125,7 +125,7 @@ fn write_guest_bytes_to_chunks(chunks: &mut [&mut [u8]], data: &[u8]) -> AxVmRes
             continue;
         }
         chunk[..len].copy_from_slice(&data[copied..copied + len]);
-        crate::clean_dcache_range((chunk.as_ptr() as usize).into(), len);
+        crate::arch::current::make_guest_memory_visible((chunk.as_ptr() as usize).into(), len);
         copied += len;
         if copied == data.len() {
             return Ok(());
@@ -150,7 +150,7 @@ pub(crate) struct AxVMResources {
     interrupt_controller: Option<Arc<dyn axdevice_base::VirtualInterruptController>>,
     address_layout: Option<VmAddressLayout>,
     boot_description: GuestBootDescription,
-    device_plan: crate::arch::ArchVmPlan,
+    device_plan: crate::arch::current::ArchVmPlan,
 }
 
 unsafe impl Send for AxVMResources {}
@@ -617,7 +617,7 @@ impl AxVMResources {
     pub(crate) fn from_page_table(
         vm_id: VMId,
         page_table: ArchNestedPageTable,
-        device_plan: crate::arch::ArchVmPlan,
+        device_plan: crate::arch::current::ArchVmPlan,
         build_nested_paging: impl FnOnce(HostPhysAddr) -> AxVmResult<NestedPagingConfig>,
     ) -> AxVmResult<Self> {
         let address_space = AddrSpace::new_empty(
@@ -648,7 +648,7 @@ impl AxVMResources {
         self.device_plan.devices()
     }
 
-    pub(crate) const fn architecture_plan(&self) -> &crate::arch::ArchVmPlan {
+    pub(crate) const fn architecture_plan(&self) -> &crate::arch::current::ArchVmPlan {
         &self.device_plan
     }
 
@@ -1053,8 +1053,10 @@ impl AxVM {
         let id = config.id();
         let name = config.name();
         let fw_cfg_payload = Arc::new(FwCfgPayloadSlot::new());
-        let resources =
-            crate::arch::CurrentArch::create_vm_resources(&mut config, fw_cfg_payload.clone())?;
+        let resources = crate::arch::current::CurrentArch::create_vm_resources(
+            &mut config,
+            fw_cfg_payload.clone(),
+        )?;
         let result = Arc::new(Self {
             id,
             name,
@@ -1240,7 +1242,7 @@ impl AxVM {
 
     pub(crate) fn with_architecture_plan<F, R>(&self, f: F) -> AxVmResult<R>
     where
-        F: FnOnce(&crate::arch::ArchVmPlan) -> AxVmResult<R>,
+        F: FnOnce(&crate::arch::current::ArchVmPlan) -> AxVmResult<R>,
     {
         self.with_resources(|resources| f(resources.architecture_plan()))
     }
@@ -1306,7 +1308,7 @@ impl AxVM {
             if let Some(runtime) = self.take_stopped_runtime() {
                 runtime.join_all_vcpu_tasks(self.id())?;
             }
-            crate::arch::CurrentArch::exit_runtime(self)?;
+            crate::arch::current::CurrentArch::exit_runtime(self)?;
             self.prepare()?;
         }
         info!("Starting VM[{}]", self.id());
@@ -1329,13 +1331,13 @@ impl AxVM {
             Ok(())
         })?;
 
-        crate::arch::CurrentArch::enter_runtime(self)?;
+        crate::arch::current::CurrentArch::enter_runtime(self)?;
         let start_result = self
             .machine
             .lock()
             .start_with(|_resources| Ok(runtime.clone()));
         if let Err(error) = start_result {
-            return match crate::arch::CurrentArch::exit_runtime(self) {
+            return match crate::arch::current::CurrentArch::exit_runtime(self) {
                 Ok(()) => Err(error),
                 Err(rollback) => Err(AxVmError::lifecycle_rollback("start VM", error, rollback)),
             };
@@ -1478,7 +1480,7 @@ impl AxVM {
         if let Some(runtime) = self.take_stopped_runtime() {
             runtime.join_all_vcpu_tasks(self.id())?;
         }
-        crate::arch::CurrentArch::exit_runtime(self)
+        crate::arch::current::CurrentArch::exit_runtime(self)
     }
 
     /// Resets the VM by discarding runtime-only state, rebuilding vCPUs/devices,
@@ -1986,7 +1988,7 @@ impl AxVM {
                     runtime.join_all_vcpu_tasks(vm_id)?;
                 }
                 if self.status() == VmStatus::Stopped {
-                    crate::arch::CurrentArch::exit_runtime(self)?;
+                    crate::arch::current::CurrentArch::exit_runtime(self)?;
                 }
             }
             VmStatus::Destroyed | VmStatus::Destroying => {}

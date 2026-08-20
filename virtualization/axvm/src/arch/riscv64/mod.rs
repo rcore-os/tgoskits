@@ -13,14 +13,11 @@ use crate::{
 
 mod capabilities;
 pub(crate) mod fdt;
-mod images;
 mod ipi;
 mod irq;
 mod npt;
 mod resource_pools;
 mod vm;
-pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
-pub use images::ImageLoader;
 pub(crate) use vm::RiscvVmPlan;
 
 pub(crate) struct Riscv64Arch;

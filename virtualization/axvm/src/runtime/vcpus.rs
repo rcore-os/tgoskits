@@ -16,7 +16,8 @@ use std::{format, sync::Arc};
 
 use crate::{
     AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
-    arch::{ArchOps, Architecture, CurrentArch, VcpuRunAction},
+    arch::current::CurrentArch,
+    architecture::{ArchOps, Architecture, VcpuRunAction},
     ax_err_type,
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
     vm::{PendingInterrupt, VmRuntimeHandle},

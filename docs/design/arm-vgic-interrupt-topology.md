@@ -19,7 +19,7 @@ axdevice_base
 axdevice
   dyn DeviceModel、设备图、资源、claim、bundle、runtime
         ^
-axvm::arch::aarch64
+AxVM 内部 ARM 架构适配
   host FDT 解析、ArmVgicConfig、固件、vCPU 与物理 IRQ 生命周期
         ^
 arm_vgic / arm_vcpu / host GIC backend

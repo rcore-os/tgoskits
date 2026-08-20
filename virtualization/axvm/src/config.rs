@@ -24,7 +24,7 @@ pub use axvm_types::{
 };
 use axvmconfig::VirtualDeviceRequest;
 
-use crate::{arch::*, machine::*};
+use crate::{arch::current::CurrentArch, architecture::MachinePlatform, machine::*};
 
 /// Policy used by AxVM when deriving runtime guest boot image addresses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

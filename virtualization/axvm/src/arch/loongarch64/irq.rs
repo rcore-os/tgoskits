@@ -125,8 +125,30 @@ pub(crate) fn register_platform_irq_injector() {
     ax_plat::irq::loongarch64_hv::register_virtual_irq_injector(inject_platform_irq);
 }
 
+/// Register all host IRQ routes prepared for one LoongArch guest.
+pub(crate) fn register_vm_guest_irq_routes(vm: &crate::AxVMRef) {
+    let vm_id = vm.id();
+    let routes = super::boot::get_guest_irq_routes(vm_id);
+    if routes.is_empty() {
+        let passthrough = vm.with_config(|config| !config.pass_through_devices().is_empty());
+        if passthrough {
+            warn!("VM[{vm_id}] has passthrough devices but no guest IRQ route was prepared");
+        }
+        return;
+    }
+
+    let vcpu_id = 0;
+    info!(
+        "Registering {} passthrough IRQ route(s) for VM[{vm_id}]",
+        routes.len()
+    );
+    for route in routes {
+        register_guest_irq_route(route.physical_irq, vm_id, vcpu_id, route.guest_vector);
+    }
+}
+
 /// Route a host physical IRQ to a LoongArch guest interrupt vector.
-pub fn register_guest_irq_route(
+fn register_guest_irq_route(
     physical_irq: usize,
     vm_id: usize,
     vcpu_id: usize,
@@ -141,7 +163,7 @@ pub fn register_guest_irq_route(
 }
 
 /// Remove all routed LoongArch guest IRQs owned by one VM.
-pub fn unregister_guest_irq_routes(vm_id: usize) {
+pub(crate) fn unregister_guest_irq_routes(vm_id: usize) {
     ax_plat::irq::loongarch64_hv::unregister_guest_irq_routes(vm_id);
 }
 

@@ -14,7 +14,8 @@ use axvm_types::{HostPhysAddr, HostVirtAddr};
 use crate::AxVmError;
 use crate::{
     AxVmResult,
-    arch::{ArchOps, CurrentArch},
+    arch::current::CurrentArch,
+    architecture::ArchOps,
     host::{HostCpu, HostMemory, HostPlatform, HostTime},
 };
 
@@ -84,7 +85,7 @@ impl HostTime for ArceOsHost {
 
     #[cfg(not(test))]
     fn request_timer_deadline(&self, deadline_ns: u64) {
-        crate::arch::request_timer_deadline(deadline_ns);
+        crate::arch::current::request_timer_deadline(deadline_ns);
     }
 }
 
@@ -230,10 +231,10 @@ pub(crate) fn register_qemu_block_passthrough_irq(vm: &crate::AxVMRef) -> AxVmRe
 
     match route {
         Ok((host_irq, trigger)) => {
-            crate::register_x86_ioapic_irq_forwarding_route_with_trigger(
+            crate::arch::current::register_host_irq_forwarding_route_with_trigger(
                 vm, guest_gsi, host_irq, trigger,
             )?;
-            crate::register_x86_ioapic_irq_forwarding_activator(
+            crate::arch::current::register_host_irq_forwarding_activator(
                 vm,
                 guest_gsi,
                 unmask_qemu_block_passthrough_intx,
@@ -387,7 +388,7 @@ impl HostPlatform for ArceOsHost {
                 break;
             }
         }
-        crate::arch::register_platform_irq_injector();
+        crate::arch::current::register_platform_irq_injector();
         let enabled_count = CORES.load(Ordering::Acquire);
         if enabled_count == cpu_count {
             info!("All cores have enabled hardware virtualization support.");

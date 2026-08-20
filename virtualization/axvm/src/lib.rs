@@ -42,16 +42,8 @@ mod timer;
 mod vcpu;
 mod vm;
 
-#[cfg(all(test, not(target_arch = "aarch64")))]
-#[path = "arch/aarch64/shared_mmio.rs"]
-mod aarch64_shared_mmio_tests;
-#[cfg(all(test, not(target_arch = "aarch64")))]
-#[path = "arch/aarch64/vtimer/percpu.rs"]
-mod aarch64_timer_percpu_tests;
-
 pub mod config;
 
-pub use arch::platform::*;
 pub use ax_cpumask::CpuMask;
 pub use axdevice::{SerialBackend, SerialBackendFactory};
 pub use axvm_types::{
@@ -80,14 +72,9 @@ pub use vm::{
 };
 
 /// The architecture-independent per-CPU type.
-pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::ArchPerCpu>;
+pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::current::ArchPerCpu>;
 
 /// Check and dispatch pending AxVM timer events on the current CPU.
 pub fn check_timer_events() {
     timer::check_events();
-}
-
-/// Clean data cache lines covering a host virtual address range.
-pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {
-    arch::make_guest_memory_visible(addr, size);
 }

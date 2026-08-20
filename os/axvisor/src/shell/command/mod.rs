@@ -33,7 +33,7 @@ pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
 
 pub(super) fn shutdown(exit_code: i32) -> ! {
     #[cfg(feature = "fs")]
-    if let Err(error) = axvm::shutdown_host_filesystems() {
+    if let Err(error) = axvm::host::shutdown_filesystems() {
         println!("Warning: failed to shut down host filesystems: {error}");
     }
     std::process::exit(exit_code);

@@ -11,6 +11,7 @@ pub(crate) mod capabilities;
 pub(crate) mod cpu_up;
 pub(crate) mod exit;
 pub(crate) mod ops;
+pub(crate) mod sysreg;
 mod types;
 
 pub(crate) use capabilities::{

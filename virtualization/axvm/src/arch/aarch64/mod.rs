@@ -21,23 +21,18 @@ mod capabilities;
 pub(crate) mod fdt;
 mod firmware_plan;
 mod gic;
-mod images;
 mod npt;
 mod resource_pools;
-mod shared_mmio;
 mod shared_provider;
-#[path = "../../architecture/sysreg.rs"]
-mod sysreg;
 mod vgic;
 mod vm;
 mod vm_plan;
 pub(crate) use vm_plan::Aarch64VmPlan;
 mod vtimer;
 
-pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
-pub use images::ImageLoader;
-use sysreg::{SysRegReadExit, SysRegWriteExit};
 use vgic::Aarch64VgicRuntimeKey;
+
+use crate::architecture::sysreg::{self, SysRegReadExit, SysRegWriteExit};
 
 pub(crate) struct Aarch64Arch;
 

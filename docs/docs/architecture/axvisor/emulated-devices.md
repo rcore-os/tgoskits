@@ -59,7 +59,7 @@ flowchart TB
             Contract["Device / DeviceAccess / DeviceContext / Resource"]
             Interrupt["IrqLine / MSI endpoint"]
         end
-        Arch["axvm::arch：GIC、PLIC、IOAPIC、PCH-PIC、fw_cfg 等"]
+        Arch["AxVM 内部架构适配：中断控制器、固件配置设备等"]
         Exit["VM-exit 解码"]
     end
 

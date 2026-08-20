@@ -31,7 +31,6 @@ pub(crate) mod boot;
 mod capabilities;
 mod cmos;
 mod exit;
-pub(crate) mod fdt;
 mod host_irq;
 pub(crate) mod irq;
 mod nested_paging;
@@ -39,12 +38,11 @@ mod pci_config;
 mod pic;
 pub(crate) mod port;
 mod resource_pools;
-#[path = "../../architecture/sysreg.rs"]
-mod sysreg;
 mod vm;
 use exit::*;
-use sysreg::{SysRegReadExit, SysRegWriteExit};
 pub(crate) use vm::X86VmPlan;
+
+use crate::architecture::sysreg::{self, SysRegReadExit, SysRegWriteExit};
 
 const RFLAGS_INTERRUPT_FLAG: u64 = 1 << 9;
 

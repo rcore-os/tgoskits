@@ -47,11 +47,3 @@ impl HostTimePlatform for LoongArch64Arch {
         });
     }
 }
-
-pub fn host_fdt_bootarg() -> usize {
-    ax_std::os::arceos::modules::ax_hal::dtb::get_bootarg()
-}
-
-pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
-    ax_std::os::arceos::modules::ax_hal::mem::phys_to_virt(paddr)
-}

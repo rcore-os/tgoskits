@@ -32,7 +32,12 @@ impl BootImagePlatform for Aarch64Arch {
         let bytes = dtb.as_bytes();
         let source = std::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
             .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
-        super::fdt::core::update_fdt(source, bytes.len(), loader.vm.clone(), &loader.config)
+        crate::boot::fdt::core::create::update_fdt(
+            source,
+            bytes.len(),
+            loader.vm.clone(),
+            &loader.config,
+        )
     }
 }
 
@@ -42,15 +47,15 @@ impl GuestBootPlatform for Aarch64Arch {
         vm_create_config: &mut axvmconfig::GuestConfig,
         provider: &dyn crate::boot::BootImageProvider,
     ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
-        super::fdt::core::prepare_dtb_guest(vm_config, vm_create_config, provider)
+        crate::boot::fdt::core::prepare_dtb_guest(vm_config, vm_create_config, provider)
     }
 }
 
-pub fn host_fdt_bootarg() -> usize {
+pub(crate) fn host_fdt_bootarg() -> usize {
     ax_std::os::arceos::modules::ax_hal::dtb::get_bootarg()
 }
 
-pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
+pub(crate) fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
     ax_std::os::arceos::modules::ax_hal::mem::phys_to_virt(paddr)
 }
 
@@ -62,7 +67,9 @@ pub(super) fn host_cpu_count() -> usize {
     ax_std::os::arceos::modules::ax_hal::cpu_num()
 }
 
-pub(super) fn decode_gic_spi(specifier: &[u32]) -> Option<super::fdt::core::DecodedInterrupt> {
+pub(super) fn decode_gic_spi(
+    specifier: &[u32],
+) -> Option<crate::boot::fdt::core::DecodedInterrupt> {
     if specifier.first().copied() != Some(0) {
         return None;
     }
@@ -73,7 +80,7 @@ pub(super) fn decode_gic_spi(specifier: &[u32]) -> Option<super::fdt::core::Deco
     } else {
         axdevice_base::InterruptTriggerMode::LevelTriggered
     };
-    Some(super::fdt::core::DecodedInterrupt { source, trigger })
+    Some(crate::boot::fdt::core::DecodedInterrupt { source, trigger })
 }
 
 pub(super) fn patch_runtime_fdt(
@@ -105,8 +112,8 @@ pub(super) fn patch_runtime_fdt(
             plan.timer_profile().clone(),
         ))
     })?;
-    super::fdt::core::create::patch_guest_fdt_for_runtime(
-        super::fdt::core::create::GuestFdtRuntimePatch {
+    crate::boot::fdt::core::create::patch_guest_fdt_for_runtime(
+        crate::boot::fdt::core::create::GuestFdtRuntimePatch {
             fdt_bytes,
             memory_regions: &vm.memory_regions(),
             ivc_channels: &ivc_channels,

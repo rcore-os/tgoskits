@@ -180,7 +180,7 @@ mod tests {
         type VCpu = RecordingVcpu;
         type PerCpu = RecordingPerCpu;
         type DeferredRunWork = ();
-        type NestedPageTable = crate::arch::ArchNestedPageTable;
+        type NestedPageTable = crate::arch::current::ArchNestedPageTable;
 
         fn has_hardware_support() -> bool {
             true

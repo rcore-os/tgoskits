@@ -36,7 +36,7 @@ impl PreparedVm {
 impl AxVM {
     /// Sets up the VM before booting.
     pub fn prepare(self: &Arc<Self>) -> AxVmResult {
-        crate::arch::CurrentArch::init_vm(self)
+        crate::arch::current::CurrentArch::init_vm(self)
     }
 
     pub(crate) fn prepare_resources_with(

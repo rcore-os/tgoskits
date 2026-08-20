@@ -22,29 +22,6 @@ mod linux_boot;
 mod mptable;
 mod multiboot;
 
-pub struct ImageLoader<'a>(ImageLoaderCore<'a>);
-
-impl<'a> ImageLoader<'a> {
-    pub fn new(
-        main_memory: crate::VMMemoryRegion,
-        config: axvmconfig::GuestConfig,
-        vm: crate::AxVMRef,
-        provider: &'a dyn BootImageProvider,
-    ) -> Self {
-        Self(ImageLoaderCore::new(
-            main_memory,
-            config,
-            vm,
-            provider,
-            None,
-        ))
-    }
-
-    pub fn load(&mut self) -> AxVmResult {
-        self.0.load()
-    }
-}
-
 impl BootImagePlatform for X86_64Arch {
     fn default_boot_firmware_load_gpa(config: &axvmconfig::GuestConfig) -> Option<GuestPhysAddr> {
         const BUILT_IN_BIOS_LOAD_GPA: usize = 0x8000;
@@ -761,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_boot_policy_preserves_x86_linux_compatibility() {
+    fn typed_boot_policy_distinguishes_direct_kernel_images() {
         let mut config = axvmconfig::GuestConfig::default();
         config.kernel.image_location = Some("memory".into());
         let linux_provider = memory_provider_with_kernel(linux_header_image());
@@ -770,11 +747,6 @@ mod tests {
             X86_64Arch::guest_boot_policy(&config, &linux_provider),
             crate::config::GuestBootPolicy::KeepConfigured
         );
-        assert!(crate::boot::images::is_x86_linux_image_config(
-            &config,
-            &linux_provider
-        ));
-
         let other_provider = memory_provider_with_kernel(vec![0u8; linux::HEADER_READ_SIZE]);
         assert_eq!(
             X86_64Arch::guest_boot_policy(&config, &other_provider),
@@ -782,9 +754,5 @@ mod tests {
                 protocol: VMBootProtocol::Direct,
             }
         );
-        assert!(!crate::boot::images::is_x86_linux_image_config(
-            &config,
-            &other_provider
-        ));
     }
 }
