@@ -271,7 +271,7 @@ fn binding_irq_from_fdt_interrupt(controller: DeviceId, cells: impl Into<Vec<u32
 }
 
 #[cfg(test)]
-mod dma_tests {
+mod dma_coherency_unit_tests {
     use dma_api::DmaCoherency;
 
     #[test]
@@ -348,7 +348,7 @@ pub fn binding_info_from_pci(
 }
 
 #[cfg(test)]
-mod dma_tests {
+mod dma_coherency_fdt_tests {
     extern crate std;
 
     use alloc::vec::Vec;
