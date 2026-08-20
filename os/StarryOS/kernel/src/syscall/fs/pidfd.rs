@@ -137,8 +137,14 @@ pub fn sys_pidfd_open(
             )?
         }
         PidFdOpenTarget::Process(tgid) => {
-            // Without PIDFD_THREAD the target must be a thread-group leader.
             let identity = view.resolve_identity(tgid.pid_number())?;
+            // Linux first requires a PIDTYPE_PID task, then checks whether it
+            // is also a thread-group leader. Other PID roles may keep the
+            // numeric slot published after the task itself has been reaped.
+            if !identity.has_role::<Tid>() {
+                return Err(StarryError::NoSuchProcess);
+            }
+            // Without PIDFD_THREAD the target must be a thread-group leader.
             if !identity.has_role::<Tgid>() {
                 return Err(Errno::ENOENT.into());
             }

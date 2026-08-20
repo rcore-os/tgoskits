@@ -183,6 +183,63 @@ static void test_pidfd_open_zombie(void)
     CHECK_ERR(x_pidfd_open(child, 0), ESRCH, "reap 后 pidfd_open(child) -> ESRCH");
 }
 
+static void test_pidfd_open_reaped_process_group_leader(void)
+{
+    printf("--- pidfd_open reaped process-group leader ---\n");
+
+    pid_t leader = fork();
+    CHECK(leader >= 0, "fork process-group leader 成功");
+    if (leader < 0) {
+        return;
+    }
+    if (leader == 0) {
+        for (;;) {
+            pause();
+        }
+    }
+
+    int group_rc = setpgid(leader, leader);
+    CHECK(group_rc == 0, "create child process group 成功");
+    if (group_rc != 0) {
+        kill(leader, SIGKILL);
+        waitpid(leader, NULL, 0);
+        return;
+    }
+
+    pid_t member = fork();
+    CHECK(member >= 0, "fork process-group member 成功");
+    if (member < 0) {
+        kill(leader, SIGKILL);
+        waitpid(leader, NULL, 0);
+        return;
+    }
+    if (member == 0) {
+        for (;;) {
+            pause();
+        }
+    }
+
+    int join_rc = setpgid(member, leader);
+    CHECK(join_rc == 0, "join child process group 成功");
+    if (join_rc != 0) {
+        kill(member, SIGKILL);
+        kill(leader, SIGKILL);
+        waitpid(member, NULL, 0);
+        waitpid(leader, NULL, 0);
+        return;
+    }
+
+    CHECK_RET(kill(leader, SIGKILL), 0, "kill process-group leader");
+    CHECK_RET(waitpid(leader, NULL, 0), leader, "reap process-group leader");
+    CHECK(getpgid(member) == leader,
+          "reaped leader PID remains the live process-group ID");
+    CHECK_ERR(x_pidfd_open(leader, 0), ESRCH,
+              "reaped group leader pidfd_open -> ESRCH");
+
+    CHECK_RET(kill(member, SIGKILL), 0, "kill process-group member");
+    CHECK_RET(waitpid(member, NULL, 0), member, "reap process-group member");
+}
+
 int main(void)
 {
     TEST_START("pidfd_open");
@@ -196,6 +253,7 @@ int main(void)
     test_pidfd_open_bad_flags();
     test_pidfd_open_thread_tid();
     test_pidfd_open_zombie();
+    test_pidfd_open_reaped_process_group_leader();
 
     TEST_DONE();
 }
