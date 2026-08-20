@@ -33,8 +33,10 @@ pub(crate) use self::io_uring::io_uring_round_ring_entries_rules_hold_for_test;
 pub(crate) use self::memfd::memfd_flags_validation_rules_hold_for_test;
 #[cfg(test)]
 pub(crate) use self::mount::mount_flags_validation_rules_hold_for_test;
-#[cfg(test)]
+#[cfg(any(test, axtest))]
 pub(crate) use self::pidfd::pidfd_flags_and_signal_validation_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::pidfd::pidfd_thread_exit_window_matches_linux_for_test;
 #[cfg(test)]
 pub(crate) use self::pipe::pipe_flags_validation_rules_hold_for_test;
 #[cfg(test)]

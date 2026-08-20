@@ -1,5 +1,12 @@
 //! Narrow adapters shared by host unit tests and kernel axtest targets.
 
+/// Initializes Starry runtime services required by kernel axtests.
+#[cfg(axtest)]
+pub fn init_kernel_services() {
+    super::cgroup::init();
+    super::stop_machine::init();
+}
+
 #[cfg(test)]
 fn user_space_base() -> usize {
     super::config::USER_SPACE_BASE
@@ -49,6 +56,11 @@ pub fn boot_id_formats_firmware_entropy() -> bool {
 #[cfg(axtest)]
 pub fn boot_id_is_omitted_without_trusted_entropy() -> bool {
     super::pseudofs::proc::boot_id_is_omitted_without_trusted_entropy_for_test()
+}
+
+#[cfg(axtest)]
+pub fn task_exit_transaction_holds_membership_lock() -> bool {
+    super::task::task_exit_transaction_holds_membership_lock_for_test()
 }
 
 #[cfg(axtest)]
@@ -121,22 +133,10 @@ pub fn pipe_resize_rejects_oversized_pipe() -> bool {
     super::file::resize_rejects_oversized_pipe_for_test()
 }
 
-#[cfg(axtest)]
-pub fn pipe_linux_io_semantics_hold() -> bool {
-    super::file::pipe_linux_io_semantics_hold_for_test()
-}
-
-#[cfg(axtest)]
 pub fn prepared_descriptor_stays_hidden_until_install() -> bool {
     super::file::prepared_descriptor_stays_hidden_until_install_for_test()
 }
 
-#[cfg(axtest)]
-pub fn interrupted_pipe_write_preserves_partial_progress() -> bool {
-    super::file::interrupted_pipe_write_preserves_partial_progress_for_test()
-}
-
-#[cfg(axtest)]
 pub fn fcntl_setpipe_size_returns_capacity() -> bool {
     super::syscall::fcntl_setpipe_size_returns_capacity_for_test()
 }
@@ -266,6 +266,57 @@ fn memory_accounting_rejects_duplicate_and_conflicting_charges() -> bool {
         && acct.rss_anon_pages() == 1
 }
 
+#[cfg(axtest)]
+pub fn futex_empty_wake_op_leaves_fixed_buckets_empty() -> bool {
+    super::task::empty_wake_op_leaves_fixed_buckets_empty_for_test()
+}
+
+#[cfg(axtest)]
+pub fn futex_keys_follow_mm_and_backing_identity() -> bool {
+    super::task::futex_keys_follow_mm_and_backing_identity_for_test()
+}
+
+#[cfg(axtest)]
+pub fn futex_false_wait_condition_short_circuits_before_task_clone() -> bool {
+    super::task::false_wait_condition_short_circuits_for_test()
+}
+
+#[cfg(axtest)]
+pub fn futex_queued_waiter_avoids_state_allocation() -> bool {
+    super::task::queued_waiter_state_allocations_for_test() == 0
+}
+
+#[cfg(axtest)]
+pub fn futex_park_prepare_error_cleans_waiter() -> bool {
+    super::task::park_prepare_error_cleans_waiter_for_test()
+}
+
+#[cfg(axtest)]
+pub fn futex_park_notification_rechecks_condition() -> bool {
+    super::task::park_notification_rechecks_condition_for_test()
+}
+
+#[cfg(axtest)]
+pub fn futex_wake_completion_is_scheduler_driven() -> bool {
+    super::syscall::futex_wake_completion_is_scheduler_driven_for_test()
+}
+
+#[cfg(axtest)]
+pub fn nofault_user_access_rejects_unmapped_word() -> bool {
+    use ax_runtime::hal::cpu::{
+        UserAccessError, UserAtomicError, UserAtomicU32Op, user_atomic_u32, user_read_u32,
+    };
+
+    let address = super::config::USER_SPACE_BASE as *mut u32;
+    // SAFETY: USER_SPACE_BASE is aligned and inside the user range. The
+    // bootstrap axtest address space deliberately leaves its first page
+    // unmapped, so both instructions must be recovered by the nofault table.
+    unsafe {
+        user_read_u32(address.cast_const()) == Err(UserAccessError::Fault)
+            && user_atomic_u32(address, UserAtomicU32Op::Set, 1) == Err(UserAtomicError::Fault)
+    }
+}
+
 #[cfg(test)]
 fn accounting_edge_cases_and_snapshot_rules_hold() -> bool {
     super::mm::accounting_edge_cases_and_snapshot_rules_hold_for_test()
@@ -316,6 +367,26 @@ fn credential_capability_rules_hold() -> bool {
     super::task::credential_capability_rules_hold_for_test()
 }
 
+#[cfg(axtest)]
+pub fn shutdown_wait_covers_the_exit_path_after_runtime_detach() -> bool {
+    super::task::shutdown_wait_covers_the_exit_path_after_runtime_detach_for_test()
+}
+
+#[cfg(axtest)]
+pub fn dropped_exit_path_lease_keeps_unfinished_work_pending() -> bool {
+    super::task::dropped_exit_path_lease_keeps_unfinished_work_pending_for_test()
+}
+
+#[cfg(axtest)]
+pub fn exit_path_completion_precedes_task_transfer() -> bool {
+    super::task::exit_path_completion_precedes_task_transfer_for_test()
+}
+
+#[cfg(axtest)]
+pub fn reaped_process_handle_retains_exact_identity() -> bool {
+    super::task::reaped_process_handle_retains_exact_identity_for_test()
+}
+
 #[cfg(test)]
 fn resource_limit_defaults_hold() -> bool {
     super::task::resource_limit_defaults_hold_for_test()
@@ -324,6 +395,77 @@ fn resource_limit_defaults_hold() -> bool {
 #[cfg(test)]
 fn posix_timer_clock_validation_rules_hold() -> bool {
     super::task::posix_timer_clock_validation_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub fn posix_timer_clock_sampling_rules_hold() -> bool {
+    super::task::posix_timer_clock_sampling_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub fn posix_timer_saturating_timespec_rules_hold() -> bool {
+    super::task::posix_timer_saturating_timespec_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub fn posix_timer_expiry_batch_rules_hold() -> bool {
+    super::task::posix_timer_expiry_batch_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub fn posix_timer_stale_expiry_signal_is_suppressed() -> bool {
+    super::task::posix_timer_stale_expiry_signal_is_suppressed_for_test()
+}
+
+#[cfg(axtest)]
+pub fn alarm_generation_rules_hold() -> bool {
+    super::task::alarm_generation_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub fn interval_timer_arm_uses_current_snapshot() -> bool {
+    super::task::interval_timer_arm_uses_current_snapshot_for_test()
+}
+
+#[cfg(axtest)]
+pub fn cpu_interval_timers_avoid_wall_alarms() -> bool {
+    super::task::cpu_interval_timers_avoid_wall_alarms_for_test()
+}
+
+#[cfg(axtest)]
+pub fn scheduler_tick_group_accounting_is_aggregate() -> bool {
+    super::task::scheduler_tick_group_accounting_is_aggregate_for_test()
+}
+
+#[cfg(axtest)]
+pub fn scheduler_tick_sampling_avoids_owner_writer() -> bool {
+    super::task::scheduler_tick_sampling_avoids_owner_writer_for_test()
+}
+
+#[cfg(axtest)]
+pub fn user_kernel_transitions_remain_task_local() -> bool {
+    super::task::user_kernel_transitions_remain_task_local_for_test()
+}
+
+#[cfg(axtest)]
+pub fn inactive_ptrace_syscall_gate_is_lock_free() -> bool {
+    super::task::inactive_ptrace_syscall_gate_is_lock_free_for_test()
+}
+
+#[cfg(axtest)]
+pub fn timer_active_gate_rules_hold() -> bool {
+    super::task::interval_timer_active_gate_rules_hold_for_test()
+        && super::task::posix_timer_active_gate_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub fn inactive_interval_timer_poll_skips_cpu_time_sample() -> bool {
+    super::task::inactive_interval_timer_poll_skips_cpu_time_sample_for_test()
+}
+
+#[cfg(axtest)]
+pub fn itimer_type_signo_and_time_conversion_rules_hold() -> bool {
+    super::task::itimer_type_signo_and_time_conversion_rules_hold_for_test()
 }
 
 #[cfg(test)]
@@ -508,6 +650,10 @@ pub fn stop_machine_runs_action_and_sync_on_each_cpu() -> bool {
 }
 
 #[cfg(axtest)]
+pub fn tracepoint_callbacks_run_without_raw_guard() -> bool {
+    super::tracepoint::callbacks_run_without_raw_guard_for_test()
+}
+
 pub fn smp_log_mailbox_contract_holds() -> bool {
     ax_runtime::serial::smp_log_mailbox_contract_holds()
 }
@@ -595,9 +741,14 @@ fn signalfd_flags_validation_rules_hold() -> bool {
     super::syscall::signalfd_flags_validation_rules_hold_for_test()
 }
 
-#[cfg(test)]
-fn pidfd_flags_and_signal_validation_rules_hold() -> bool {
+#[cfg(any(test, axtest))]
+pub fn pidfd_flags_and_signal_validation_rules_hold() -> bool {
     super::syscall::pidfd_flags_and_signal_validation_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub fn pidfd_thread_exit_window_matches_linux() -> bool {
+    super::syscall::pidfd_thread_exit_window_matches_linux_for_test()
 }
 
 #[cfg(axtest)]

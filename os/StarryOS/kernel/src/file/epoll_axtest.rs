@@ -1,12 +1,13 @@
 //! Deterministic concurrency hooks for epoll kernel tests.
 
-use alloc::{borrow::Cow, sync::Arc, task::Wake};
+use alloc::{borrow::Cow, sync::Arc, task::Wake, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    task::{Context, Waker},
+    task::Waker,
 };
 
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 
 use super::{
     FileLike,
@@ -25,7 +26,7 @@ pub(super) fn epoll_add_test_barrier() {
 
     EPOLL_ADD_TEST_BARRIER_ARRIVALS.fetch_add(1, Ordering::AcqRel);
     while EPOLL_ADD_TEST_BARRIER_ARRIVALS.load(Ordering::Acquire) < 2 {
-        ax_task::yield_now();
+        crate::task::yield_now();
     }
 }
 
@@ -41,21 +42,27 @@ pub(crate) fn concurrent_reverse_add_is_serialized_for_test() -> bool {
         let left = Arc::clone(&left);
         let right = Arc::clone(&right);
         let results = Arc::clone(&results);
-        ax_task::spawn(move || {
-            results.lock()[0] = left.add_nested_for_test(1, right).err();
-        })
+        crate::task::spawn_kernel_thread(
+            move || {
+                results.lock()[0] = left.add_nested_for_test(1, right).err();
+            },
+            "epoll-axtest-left".into(),
+        )
     };
     let right_task = {
         let left = Arc::clone(&left);
         let right = Arc::clone(&right);
         let results = Arc::clone(&results);
-        ax_task::spawn(move || {
-            results.lock()[1] = right.add_nested_for_test(2, left).err();
-        })
+        crate::task::spawn_kernel_thread(
+            move || {
+                results.lock()[1] = right.add_nested_for_test(2, left).err();
+            },
+            "epoll-axtest-right".into(),
+        )
     };
 
-    left_task.join();
-    right_task.join();
+    crate::task::join_kernel_thread(left_task);
+    crate::task::join_kernel_thread(right_task);
     EPOLL_ADD_TEST_BARRIER_ENABLED.store(false, Ordering::Release);
 
     let results = results.lock();
@@ -99,8 +106,8 @@ impl Pollable for ReadyFile {
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        unsafe { self.poll_waiters.register(context.waker(), events) };
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        unsafe { sink.register_shared(&self.poll_waiters, events) };
     }
 }
 
@@ -155,9 +162,9 @@ impl Pollable for CallbackBoundaryFile {
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         self.record_callback_reentry();
-        unsafe { self.poll_waiters.register(context.waker(), events) };
+        unsafe { sink.register_shared(&self.poll_waiters, events) };
     }
 }
 
@@ -203,6 +210,7 @@ pub(crate) fn level_aliases_rotate_in_linux_callback_order_for_test() -> bool {
         .add_file_for_test(2, target_file, 0x22, EpollFlags::empty())
         .expect("second test interest must be added");
 
+    let mut registrations = Vec::new();
     for result_index in 0..2 {
         let waiter = Arc::new(EpollWaiter {
             epoll: epoll.clone(),
@@ -210,8 +218,9 @@ pub(crate) fn level_aliases_rotate_in_linux_callback_order_for_test() -> bool {
             results: results.clone(),
         });
         let waker = Waker::from(waiter);
-        let mut context = Context::from_waker(&waker);
-        epoll.register(&mut context, IoEvents::IN);
+        let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);
+        unsafe { epoll.register_exclusive(&mut registrar, IoEvents::IN) };
+        registrations.push(registrar);
     }
 
     target.make_ready();
@@ -306,7 +315,7 @@ impl Pollable for ReadyDuringRegisterFile {
         }
     }
 
-    fn register(&self, _context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, _sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         if events.contains(IoEvents::IN) {
             // Model readiness becoming visible after the old wake was consumed
             // but before the replacement waker can observe a new transition.

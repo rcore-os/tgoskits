@@ -237,6 +237,11 @@ pub fn systick_irq_disable() {
     }
 }
 
+pub fn systick_stop_oneshot() {
+    systick_irq_disable();
+    timer::aarch64_deadline::el1::disarm(&El1TimerRegisters, timer::aarch64_timer_mode());
+}
+
 pub fn systick_irq_enable() {
     match timer::aarch64_timer_mode() {
         ArchTimerMode::El1Virt => CNTV_CTL_EL0.modify(CNTV_CTL_EL0::IMASK::CLEAR),

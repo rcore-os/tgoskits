@@ -9,17 +9,17 @@ use core::{
     any::Any,
     iter,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
-    task::Context,
     time::Duration,
 };
 
+use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 
 use crate::{
-    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, FsIoEvents,
-    FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission,
-    NodeType, OpenOptions, Reference, ReferenceKey, TypeMap, VfsError, VfsResult, WeakDirEntry,
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, Metadata,
+    MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission, NodeType, OpenOptions,
+    Reference, ReferenceKey, TypeMap, VfsError, VfsResult, WeakDirEntry,
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
@@ -972,7 +972,7 @@ impl Location {
     /// Mounts a filesystem with the source name exposed through mount metadata.
     pub fn mount_with_source(&self, fs: &Filesystem, source: &str) -> VfsResult<Arc<Mountpoint>> {
         // Filesystem callbacks may acquire sleepable locks. Prepare the
-        // unpublished mount before entering the non-preemptible topology
+        // unpublished mount before entering the serialized topology
         // transaction; only topology validation and publication belong inside
         // the global guard.
         let result = Mountpoint::new_with_source(fs, Some(self.clone()), source);
@@ -1089,10 +1089,20 @@ impl Location {
 }
 
 #[inherit_methods(from = "self.entry")]
-impl FsPollable for Location {
-    fn poll(&self) -> FsIoEvents;
+impl Pollable for Location {
+    fn poll(&self) -> IoEvents;
 
-    fn register(&self, context: &mut Context<'_>, events: FsIoEvents);
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    );
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    );
 }
 
 #[cfg(test)]
@@ -1138,9 +1148,8 @@ mod tests {
         }
 
         fn root_dir(&self) -> DirEntry {
-            assert_eq!(
-                ax_sync::host_preempt_depth(),
-                0,
+            assert!(
+                !MOUNT_TOPOLOGY_MUTATION.is_locked(),
                 "filesystem callbacks must run outside the mount topology guard"
             );
             make_dir_entry("mounted-root")

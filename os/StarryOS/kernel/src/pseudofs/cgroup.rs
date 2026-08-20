@@ -82,7 +82,10 @@ impl CgroupFile {
             CgroupFileKind::Controllers => crate::cgroup::controllers_text(&self.cgroup)
                 .as_bytes()
                 .to_vec(),
-            CgroupFileKind::Procs => crate::cgroup::procs_text(&self.cgroup).into_bytes(),
+            CgroupFileKind::Procs => {
+                let current = crate::task::current_user_task();
+                crate::cgroup::procs_text(&current, &self.cgroup).into_bytes()
+            }
             CgroupFileKind::SubtreeControl => crate::cgroup::subtree_control_text(&self.cgroup)
                 .as_bytes()
                 .to_vec(),
@@ -116,7 +119,10 @@ impl DirectRwFsFileOps for CgroupFile {
             CgroupFileKind::Controllers => {
                 return Err(VfsError::PermissionDenied);
             }
-            CgroupFileKind::Procs => crate::cgroup::write_procs(self.cgroup.clone(), buf)?,
+            CgroupFileKind::Procs => {
+                let current = crate::task::current_user_task();
+                crate::cgroup::write_procs(&current, self.cgroup.clone(), buf)?
+            }
             CgroupFileKind::SubtreeControl => {
                 crate::cgroup::write_subtree_control(&self.cgroup, buf)?
             }

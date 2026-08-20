@@ -49,9 +49,9 @@ use core::{
 };
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
-use ax_sync::{Mutex, SpinRwLock as RwLock};
+use ax_sync::{Mutex, SpinLock, SpinRwLock as RwLock};
 use ax_task::WaitQueue;
-use axpoll::IoEvents;
+use axpoll::{IoEvents, PollRegistrar, SharedObserver};
 use smoltcp::{
     iface::SocketSet,
     phy::{DeviceCapabilities, Medium, PacketMeta},
@@ -65,7 +65,7 @@ use smoltcp::{
 
 use crate::{
     LISTEN_TABLE,
-    config::{DeviceBinding, InterfaceId, RouteInfo},
+    config::{InterfaceId, RouteInfo},
     consts::{DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::{ArpEntry, Device},
     ip_tos::apply_egress_ip_tos,
@@ -174,7 +174,7 @@ fn tx_metadata() -> RxMetadata {
 
 /// Bounded FIFO used between the protocol core and per-device workers.
 struct BoundedPacketQueue<T> {
-    inner: Mutex<VecDeque<T>>,
+    inner: SpinLock<VecDeque<T>>,
     capacity: usize,
     len: AtomicUsize,
 }
@@ -182,7 +182,7 @@ struct BoundedPacketQueue<T> {
 impl<T> BoundedPacketQueue<T> {
     fn new(capacity: usize) -> Self {
         Self {
-            inner: Mutex::new(VecDeque::with_capacity(capacity)),
+            inner: SpinLock::new(VecDeque::with_capacity(capacity)),
             capacity,
             len: AtomicUsize::new(0),
         }
@@ -274,6 +274,10 @@ struct DeviceHandle {
     tx_wake: Arc<WaitQueue>,
     /// Waker registered into the concrete device.
     rx_waker: Waker,
+    /// Exact registration of `rx_waker` in the concrete device readiness source.
+    rx_registration: SpinLock<Option<PollRegistrar<SharedObserver>>>,
+    /// Exact registration of the global protocol-poll waker in the device source.
+    protocol_registration: SpinLock<Option<PollRegistrar<SharedObserver>>>,
     /// Sticky readiness bit for RX wakeups. `WaitQueue` notifications are not
     /// sticky, so a device wake that races with the worker entering `wait()`
     /// must be preserved here until the worker observes it.
@@ -289,6 +293,50 @@ struct DeviceHandle {
     tx_packets: AtomicU64,
     tx_errors: AtomicU64,
     tx_dropped: AtomicU64,
+}
+
+/// Device references captured before their worker threads become runnable.
+///
+/// Network initialization can finish PollSet registration and publish the
+/// owning Service before consuming this object. The worker entry points need
+/// only these device-local references and never borrow a partially published
+/// Router.
+pub(crate) struct PreparedDeviceWorkers {
+    devices: Vec<Arc<DeviceHandle>>,
+}
+
+impl PreparedDeviceWorkers {
+    /// Initializes device-local and global readiness registrations.
+    pub(crate) fn register_device_waker(&self, waker: &core::task::Waker) {
+        for device in &self.devices {
+            refresh_device_poll_registration(device, &device.rx_waker, &device.rx_registration);
+            refresh_device_poll_registration(device, waker, &device.protocol_registration);
+        }
+    }
+
+    /// Starts RX workers first, then TX workers, after Service publication.
+    pub(crate) fn start(self) {
+        for device in &self.devices {
+            spawn_device_rx_worker(device.clone());
+        }
+        for device in self.devices {
+            spawn_device_tx_worker(device);
+        }
+    }
+}
+
+fn spawn_device_tx_worker(device: Arc<DeviceHandle>) {
+    let name = format!("{}-tx", device.name);
+    if let Err(error) = crate::spawn_permanent_worker(name, move || device_tx_worker(device)) {
+        error!("failed to start network TX worker: {error}");
+    }
+}
+
+fn spawn_device_rx_worker(device: Arc<DeviceHandle>) {
+    let name = format!("{}-rx", device.name);
+    if let Err(error) = crate::spawn_permanent_worker(name, move || device_rx_worker(device)) {
+        error!("failed to start network RX worker: {error}");
+    }
 }
 
 impl DeviceHandle {
@@ -309,6 +357,8 @@ impl DeviceHandle {
             rx_waker: Waker::from(Arc::new(DeviceRxWake {
                 device: weak.clone(),
             })),
+            rx_registration: SpinLock::new(None),
+            protocol_registration: SpinLock::new(None),
             rx_ready: AtomicBool::new(false),
             rx_bytes: AtomicU64::new(0),
             rx_packets: AtomicU64::new(0),
@@ -428,7 +478,7 @@ impl DeviceHandle {
 
     fn wake_rx(&self) {
         self.rx_ready.store(true, Ordering::Release);
-        self.rx_wake.notify_one(true);
+        self.rx_wake.notify_one();
     }
 
     fn take_rx_ready(&self) -> bool {
@@ -455,18 +505,26 @@ impl DeviceHandle {
             self.count_tx_dropped(1);
             return false;
         }
-        self.tx_wake.notify_one(true);
+        self.tx_wake.notify_one();
         true
     }
 }
 
-fn register_device_poll(device: &DeviceHandle, waker: &core::task::Waker) {
+fn refresh_device_poll_registration(
+    device: &DeviceHandle,
+    waker: &core::task::Waker,
+    slot: &SpinLock<Option<PollRegistrar<SharedObserver>>>,
+) {
     let poll = { device.inner.lock().readiness_poll() };
-    if let Some(poll) = poll {
+    let registration = poll.map(|poll| {
+        let mut registrar = PollRegistrar::new(waker);
         // Device poll set is cloned while holding the device lock; registration
         // runs after releasing it.
-        unsafe { poll.register(waker, IoEvents::IN | IoEvents::OUT | IoEvents::ERR) };
-    }
+        unsafe { registrar.register(&poll, IoEvents::IN | IoEvents::OUT | IoEvents::ERR) };
+        registrar
+    });
+    let previous = core::mem::replace(&mut *slot.lock(), registration);
+    drop(previous);
 }
 
 fn wake_device_poll(device: &DeviceHandle) {
@@ -685,50 +743,28 @@ impl Router {
             .collect()
     }
 
-    /// Starts TX workers for all non-loopback devices.
-    pub fn start_tx_workers(&self) {
-        for dev in 0..self.devices.len() {
-            self.start_device_tx_worker(dev);
+    /// Captures all non-loopback devices without making a worker runnable yet.
+    pub(crate) fn prepare_device_workers(&self) -> PreparedDeviceWorkers {
+        PreparedDeviceWorkers {
+            devices: self
+                .devices
+                .iter()
+                .filter(|device| device.interface_id != InterfaceId::LOOPBACK)
+                .cloned()
+                .collect(),
         }
     }
 
-    /// Starts RX workers for all non-loopback devices.
-    pub fn start_rx_workers(&self) {
-        for dev in 0..self.devices.len() {
-            self.start_device_rx_worker(dev);
-        }
-    }
-
-    /// Starts RX/TX workers for one dynamically registered device.
-    pub fn start_device_workers(&self, dev: usize) {
-        self.start_device_rx_worker(dev);
-        self.start_device_tx_worker(dev);
-    }
-
-    fn start_device_tx_worker(&self, dev: usize) {
-        let Some(device) = self.devices.get(dev) else {
-            return;
-        };
-        // Skip loopback: it uses fast path (no worker needed)
-        if device.interface_id == InterfaceId::LOOPBACK {
-            return;
-        }
-        let device = device.clone();
-        let name = format!("{}-tx", device.name);
-        ax_task::spawn_with_name(move || device_tx_worker(device), name);
-    }
-
-    fn start_device_rx_worker(&self, dev: usize) {
-        let Some(device) = self.devices.get(dev) else {
-            return;
-        };
-        // Skip loopback: packets injected directly in dispatch
-        if device.interface_id == InterfaceId::LOOPBACK {
-            return;
-        }
-        let device = device.clone();
-        let name = format!("{}-rx", device.name);
-        ax_task::spawn_with_name(move || device_rx_worker(device), name);
+    /// Captures one dynamically registered device for deferred worker startup.
+    pub(crate) fn prepare_device_workers_for(&self, dev: usize) -> PreparedDeviceWorkers {
+        let devices = self
+            .devices
+            .get(dev)
+            .filter(|device| device.interface_id != InterfaceId::LOOPBACK)
+            .cloned()
+            .into_iter()
+            .collect();
+        PreparedDeviceWorkers { devices }
     }
 
     /// Finds the index of a device by its interface name (e.g. `"wlan0"`).
@@ -868,29 +904,11 @@ impl Router {
         self.devices.iter().map(|device| device.stats()).collect()
     }
 
-    /// Registers a global device-readiness waker for all devices.
-    pub fn register_device_waker(&self, waker: &core::task::Waker) {
-        for device in &self.devices {
-            register_device_poll(device, &device.rx_waker);
-            register_device_poll(device, waker);
-        }
-    }
-
     /// Forces all device RX workers to re-check their devices.
     pub fn wake_all_devices(&self) {
         for device in &self.devices {
             wake_device_poll(device);
             device.wake_rx();
-        }
-    }
-
-    /// Registers a waker for devices allowed by a socket's binding.
-    pub fn register_waker(&self, binding: DeviceBinding, waker: &core::task::Waker) {
-        for device in &self.devices {
-            if binding.bound_if.is_none_or(|id| id == device.interface_id) {
-                register_device_poll(device, &device.rx_waker);
-                register_device_poll(device, waker);
-            }
         }
     }
 
@@ -1159,7 +1177,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
             // their frame lengths paired.
             warn!("{}: RX queue is full, delaying packet", device.name);
             crate::request_poll();
-            ax_task::yield_now();
+            let _result = ax_task::yield_current_cpu();
         } else {
             // All entries were successfully pushed — notify the main poll loop
             // that new packets are available for processing.
@@ -1170,7 +1188,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         }
 
         if !received && local_batch.is_empty() {
-            register_device_poll(&device, &device.rx_waker);
+            refresh_device_poll_registration(&device, &device.rx_waker, &device.rx_registration);
             device
                 .rx_wake
                 .wait_timeout_until(DEVICE_RX_IDLE_POLL_INTERVAL, || device.take_rx_ready());
@@ -1577,13 +1595,11 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod l2_counter_tests {
-    use smoltcp::{
-        storage::{PacketBuffer, PacketMetadata},
-        time::Instant,
-        wire::{IpAddress, Ipv4Address},
-    };
+    use smoltcp::{storage::PacketBuffer, time::Instant, wire::IpAddress};
+    #[cfg(all(axtest, feature = "axtest"))]
+    use smoltcp::{storage::PacketMetadata, wire::Ipv4Address};
 
     use super::*;
 
@@ -1635,10 +1651,12 @@ mod l2_counter_tests {
         DeviceHandle::new(IF0, device, &queues)
     }
 
+    #[cfg(all(axtest, feature = "axtest"))]
     fn test_ip() -> IpAddress {
         IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))
     }
 
+    #[cfg(all(axtest, feature = "axtest"))]
     fn test_packet_buffer() -> PacketBuffer<'static, InterfaceId> {
         PacketBuffer::new(
             vec![PacketMetadata::EMPTY; 1],
@@ -1727,8 +1745,8 @@ mod l2_counter_tests {
 
     // ── frame-length contract: send ────────────────────────────────────
 
-    #[test]
-    fn send_returns_frame_len_tx_counts_l2_not_ip_payload() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn send_returns_frame_len_tx_counts_l2_not_ip_payload() {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 1514, // L2 frame length (14 eth hdr + 1500 IP payload)
@@ -1753,8 +1771,8 @@ mod l2_counter_tests {
         assert_eq!(snap.tx_packets, 1);
     }
 
-    #[test]
-    fn send_returns_zero_no_tx_counted() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn send_returns_zero_no_tx_counted() {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0, // ARP pending or send failure
@@ -1780,8 +1798,8 @@ mod l2_counter_tests {
 
     // ── frame-length contract: recv ────────────────────────────────────
 
-    #[test]
-    fn recv_returns_frame_len_rx_counts_it() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn recv_returns_frame_len_rx_counts_it() {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
@@ -1806,8 +1824,8 @@ mod l2_counter_tests {
         assert_eq!(snap.rx_packets, 1);
     }
 
-    #[test]
-    fn recv_returns_zero_no_rx_counted() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn recv_returns_zero_no_rx_counted() {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
@@ -1954,8 +1972,8 @@ mod l2_counter_tests {
     /// Verifies that a single recv+drain cycle correctly aggregates counts
     /// from all three counting paths: recv() return value (IP RX),
     /// drain_deferred_tx() (ARP TX), and drain_deferred_rx() (ARP RX).
-    #[test]
-    fn rx_worker_three_path_combined_drain() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn rx_worker_three_path_combined_drain() {
         let device = test_device_handle(Box::new(CountingMockDevice {
             name: "mock",
             send_returns: 0,
@@ -1992,4 +2010,13 @@ mod l2_counter_tests {
         assert_eq!(snap.tx_packets, 2);
         assert_eq!(snap.tx_bytes, 120);
     }
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn run_axtest_contracts() {
+    l2_counter_tests::send_returns_frame_len_tx_counts_l2_not_ip_payload();
+    l2_counter_tests::send_returns_zero_no_tx_counted();
+    l2_counter_tests::recv_returns_frame_len_rx_counts_it();
+    l2_counter_tests::recv_returns_zero_no_rx_counted();
+    l2_counter_tests::rx_worker_three_path_combined_drain();
 }

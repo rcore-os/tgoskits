@@ -146,14 +146,9 @@ pub fn unregister_guest_irq_routes(vm_id: usize) {
 }
 
 fn inject_platform_irq(vm_id: usize, vcpu_id: usize, vector: usize, physical_irq: usize) {
-    if let Err(err) = crate::runtime::vcpus::queue_pending_interrupt(
-        vm_id,
-        vcpu_id,
-        crate::vm::PendingInterrupt::External {
-            vector,
-            physical_irq,
-        },
-    ) {
+    if let Err(err) =
+        crate::runtime::vcpus::queue_physical_interrupt(vm_id, vcpu_id, vector, physical_irq)
+    {
         warn!(
             "failed to queue LoongArch platform IRQ {vector:#x}/physical {physical_irq:#x} for \
              VM[{vm_id}] VCpu[{vcpu_id}]: {err:?}"

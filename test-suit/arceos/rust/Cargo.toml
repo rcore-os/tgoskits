@@ -11,20 +11,39 @@ std = []
 # baseline instead of relying on axbuild to add it for the selected test case.
 ax-std = ["dep:ax-driver", "dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
 memtest = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask"]
-task-yield = ["ax-std", "ax-std/multitask"]
-sched-rr = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/sched-rr"]
-sched-cfs = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/sched-cfs"]
-task-affinity = ["ax-std", "ax-std/multitask"]
-task-wait-queue = ["ax-std", "ax-std/multitask", "ax-std/irq"]
-task-wait-queue-remote-wake = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
-task-ipi = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
-task-irq = ["ax-std", "ax-std/multitask", "ax-std/irq"]
-task-tls = ["ax-std", "ax-std/tls", "ax-std/alloc", "ax-std/multitask"]
-task-parallel = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask", "ax-std/irq"]
-task-priority = ["ax-std", "ax-std/alloc", "ax-std/multitask"]
-task-sleep = ["ax-std", "ax-std/multitask", "ax-std/irq"]
-task-smp-online = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
-task-stack-guard-page = ["ax-std", "ax-std/multitask", "ax-std/paging", "ax-std/stack-guard-page"]
+task-runtime = ["ax-std", "ax-std/multitask"]
+task-yield = ["task-runtime", "ax-std/task-test-hooks"]
+sched-rr = ["task-runtime", "ax-std/alloc"]
+sched-cfs = ["task-runtime", "ax-std/alloc"]
+task-affinity = ["task-runtime"]
+task-wait-queue = ["task-runtime", "ax-std/irq"]
+task-wait-queue-remote-wake = [
+    "task-runtime",
+    "ax-std/irq",
+    "ax-std/ipi",
+    "ax-std/task-test-hooks",
+]
+task-ipi = [
+    "task-runtime",
+    "ax-std/alloc",
+    "ax-std/irq",
+    "ax-std/ipi",
+    "ax-std/task-test-hooks",
+]
+task-irq = ["task-runtime", "ax-std/irq"]
+task-kernel-timer = ["task-runtime", "ax-std/irq", "ax-std/task-test-hooks"]
+task-tls = ["task-runtime", "ax-std/tls", "ax-std/alloc"]
+task-parallel = ["task-runtime", "dep:rand", "ax-std/alloc", "ax-std/irq"]
+task-pi-mutex = ["task-runtime", "ax-std/task-test-hooks"]
+task-priority = ["task-runtime", "ax-std/alloc"]
+task-rt-policy = [
+    "task-runtime",
+    "ax-std/alloc",
+    "ax-std/task-test-hooks",
+]
+task-sleep = ["task-runtime", "ax-std/irq"]
+task-smp-online = ["task-runtime", "ax-std/irq", "ax-std/ipi"]
+task-stack-guard-page = ["task-runtime", "ax-std/paging", "ax-std/stack-guard-page"]
 net-loopback = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
 fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs"]
 debug-backtrace = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
@@ -50,9 +69,12 @@ all = [
     "task-wait-queue-remote-wake",
     "task-ipi",
     "task-irq",
+    "task-kernel-timer",
     "task-tls",
     "task-parallel",
+    "task-pi-mutex",
     "task-priority",
+    "task-rt-policy",
     "task-sleep",
     "net-loopback",
     "fs-basic",

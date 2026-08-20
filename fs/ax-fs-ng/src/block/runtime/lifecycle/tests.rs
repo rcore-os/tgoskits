@@ -249,7 +249,11 @@ impl BlockController for BatchingReadController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().unwrap())],
-                vec![IrqEndpoint::new(0, 1, Box::new(QueueZeroHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(QueueZeroHandler),
+                )],
             )),
             ControllerEvent::Shutdown | ControllerEvent::Watchdog { .. } => {
                 Ok(ControllerUpdate::state(ControllerState::Shutdown))
@@ -289,7 +293,11 @@ impl BlockController for TerminalBeforeShutdownController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().unwrap())],
-                vec![IrqEndpoint::new(0, 1, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::Watchdog { .. } => {
                 self.terminal = true;
@@ -332,7 +340,11 @@ impl BlockController for LifecycleController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().unwrap())],
-                vec![IrqEndpoint::new(0, 1, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::QuiesceIrqs => {
                 self.log.lock().unwrap().push("controller_quiesce");
@@ -456,7 +468,11 @@ impl BlockController for WaitingForIrqController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::WaitingForIrq,
                 Vec::new(),
-                vec![IrqEndpoint::new(0, 0, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::none(),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::Rearm { .. } => {
                 Ok(ControllerUpdate::state(ControllerState::WaitingForIrq))
@@ -497,21 +513,31 @@ impl BlockController for EndpointFirstController {
                     retry_after: Duration::from_millis(30),
                 },
                 Vec::new(),
-                vec![IrqEndpoint::new(0, 0, Box::new(SpuriousHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::none(),
+                    Box::new(SpuriousHandler),
+                )],
             )),
             ControllerEvent::RegisterRetry => {
                 self.register_retries.fetch_add(1, Ordering::Relaxed);
                 Ok(ControllerUpdate::with_resources(
                     ControllerState::Ready,
                     vec![Box::new(self.queue.take().unwrap())],
-                    Vec::new(),
+                    vec![IrqEndpoint::new(
+                        0,
+                        IrqQueueMask::from_queue(0),
+                        Box::new(QueueZeroHandler),
+                    )],
                 ))
             }
-            ControllerEvent::Rearm { .. } => {
-                Ok(ControllerUpdate::state(ControllerState::RegisterPending {
+            ControllerEvent::Rearm { .. } => Ok(ControllerUpdate::state(if self.queue.is_some() {
+                ControllerState::RegisterPending {
                     retry_after: Duration::from_millis(1),
-                }))
-            }
+                }
+            } else {
+                ControllerState::Ready
+            })),
             ControllerEvent::QuiesceIrqs => {
                 self.log.lock().unwrap().push("controller_quiesce");
                 Ok(ControllerUpdate::state(ControllerState::Ready))
@@ -651,6 +677,18 @@ fn log_position(log: &[&str], item: &str) -> usize {
     log.iter()
         .position(|entry| *entry == item)
         .unwrap_or_else(|| panic!("missing lifecycle event {item}: {log:?}"))
+}
+
+#[test]
+fn expired_retry_does_not_hide_a_controller_park_oversleep() {
+    let expected_wake = Duration::from_secs(1);
+    let observed_at = expected_wake + STALL_WARN_MARGIN + Duration::from_millis(1);
+
+    assert_eq!(
+        controller::park_oversleep_lateness(expected_wake, observed_at),
+        Some(observed_at - expected_wake),
+        "the detector must observe the completed park before consuming an expired retry"
+    );
 }
 
 #[test]
@@ -1007,7 +1045,7 @@ fn controller_can_register_control_irq_before_creating_an_io_queue() {
             log: Arc::clone(&log),
         }),
         register_retries: Arc::clone(&register_retries),
-        log,
+        log: Arc::clone(&log),
     };
     let irq = IrqId::new(IrqDomainId(1), HwIrq(10));
 
@@ -1025,6 +1063,27 @@ fn controller_can_register_control_irq_before_creating_an_io_queue() {
     );
     assert_eq!(handle.inner.hctxs.lock().len(), 1);
     assert_eq!(handle.inner.cpu_channels.lock().len(), 1);
+    {
+        let log = log.lock().unwrap();
+        let registrations: Vec<_> = log
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| (*event == "irq_register_disabled").then_some(index))
+            .collect();
+        let enables: Vec<_> = log
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| (*event == "irq_enable").then_some(index))
+            .collect();
+        let replacement_disable = log
+            .iter()
+            .position(|event| *event == "irq_disable_sync")
+            .expect("the control-only endpoint must be synchronized before replacement");
+        assert_eq!(registrations.len(), 2);
+        assert_eq!(enables.len(), 2);
+        assert!(enables[0] < replacement_disable);
+        assert!(replacement_disable < enables[1]);
+    }
     assert_eq!(handle.shutdown(), 1);
 }
 
@@ -1045,6 +1104,7 @@ fn bootstrap_preserves_waiting_for_irq_controller_without_io_queue() {
         String::from("waiting-for-irq"),
         vec![BlockIrqSource { source_id: 0, irq }],
         Box::new(WaitingForIrqController),
+        IrqOwnership::Device,
     )
     .expect("a control IRQ may precede creation of the first I/O queue");
 
@@ -1058,13 +1118,14 @@ fn barrier_test_inner() -> Arc<DeviceInner> {
     let controller_notification = ops.notification();
     Arc::new(DeviceInner {
         name: String::from("barrier-test"),
-        info: IrqMutex::new(test_queue_info().device),
+        info: Mutex::new(test_queue_info().device),
         max_io_queues: 1,
+        irq_ownership: IrqOwnership::Device,
         irq_sources: Vec::new(),
-        hctxs: IrqMutex::new(Vec::new()),
-        detached_queues: IrqMutex::new(Vec::new()),
-        cpu_channels: IrqMutex::new(Vec::new()),
-        irq_registrations: IrqMutex::new(Vec::new()),
+        hctxs: Mutex::new(Vec::new()),
+        detached_queues: Mutex::new(Vec::new()),
+        cpu_channels: Mutex::new(Vec::new()),
+        irq_registrations: Mutex::new(Vec::new()),
         controller: Arc::new(ControllerPort {
             commands: BoundedChannel::with_item_notification(
                 1,
@@ -1072,9 +1133,9 @@ fn barrier_test_inner() -> Arc<DeviceInner> {
             )
             .unwrap(),
             notification: controller_notification,
-            irq_latches: IrqMutex::new(Vec::new()),
+            irq_latches: Mutex::new(Vec::new()),
         }),
-        controller_thread: IrqMutex::new(None),
+        controller_thread: Mutex::new(None),
         state: AtomicU8::new(DEVICE_READY),
         accepting: AtomicBool::new(true),
         active_data: AtomicUsize::new(0),

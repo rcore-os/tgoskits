@@ -3,15 +3,12 @@
 use alloc::{string::String, sync::Arc};
 use core::fmt::Write;
 
-use ax_cgroup::{
-    CgroupChildKind, CgroupError, CgroupForkGuard, CgroupNode, CgroupTaskExit, ProcessId,
-};
+use ax_cgroup::{CgroupChildKind, CgroupError, CgroupForkGuard, CgroupNode, ProcessId};
 pub use ax_cgroup::{relative_path, root};
-use ax_task::current;
 
 use crate::{
     StarryError,
-    task::{AsThread, PidIdentity, PidIdentityId, Tgid, TgidNumber, current_pid_view},
+    task::{PidIdentity, PidIdentityId, PidView, ProcessData, Tgid, TgidNumber, UserTaskRef},
 };
 
 const INTERFACE_FILES: [&str; 6] = [
@@ -22,26 +19,6 @@ const INTERFACE_FILES: [&str; 6] = [
     "pids.current",
     "pids.events",
 ];
-
-struct KernelCgroupProvider;
-
-impl ax_cgroup::CgroupProvider for KernelCgroupProvider {
-    fn is_zombie(&self, process: ProcessId) -> bool {
-        process_identity(process).is_some_and(|identity| identity.is_zombie())
-    }
-
-    fn membership(&self, process: ProcessId) -> Option<Arc<CgroupNode>> {
-        process_identity(process)
-            .and_then(|identity| identity.live_data())
-            .map(|process| process.cgroup.read().clone())
-    }
-
-    fn set_membership(&self, process: ProcessId, cgroup: Arc<CgroupNode>) {
-        if let Some(process) = process_identity(process).and_then(|identity| identity.live_data()) {
-            *process.cgroup.write() = cgroup;
-        }
-    }
-}
 
 fn process_id(identity: &PidIdentity) -> ProcessId {
     ProcessId::new(identity.id().get()).expect("PID identity generation must be non-zero")
@@ -57,16 +34,16 @@ pub fn attach_initial_process(identity: &Arc<PidIdentity>) -> Result<(), CgroupE
     ax_cgroup::attach_initial_process(process_id(identity))
 }
 
-/// Reserve one task charge before publishing a child identity.
+/// Reserve one task charge through the process-owned membership transaction.
 pub fn begin_task(
-    process: &Arc<PidIdentity>,
+    process: &ProcessData,
     child: &Arc<PidIdentity>,
     child_kind: CgroupChildKind,
 ) -> Result<CgroupForkGuard, CgroupError> {
-    ax_cgroup::begin_task(process_id(process), process_id(child), child_kind)
+    process.begin_cgroup_task(process_id(child), child_kind)
 }
 
-/// Reserve a process task in an explicit target cgroup.
+/// Reserve a process task directly in an explicit target cgroup.
 pub fn begin_process_at(
     target: Arc<CgroupNode>,
     child: &Arc<PidIdentity>,
@@ -74,32 +51,18 @@ pub fn begin_process_at(
     ax_cgroup::begin_process_at(target, process_id(child))
 }
 
-/// Release one exact task generation and optionally its process membership.
-pub fn exit_task(
-    process: &Arc<PidIdentity>,
-    task: &Arc<PidIdentity>,
-    exit_kind: CgroupTaskExit,
-) -> Result<(), CgroupError> {
-    ax_cgroup::exit_task(process_id(process), process_id(task), exit_kind)
-}
-
 /// Rename one exact task generation after execve de-threading.
 pub fn rename_task(
-    process: &Arc<PidIdentity>,
+    process: &ProcessData,
     old_task: &Arc<PidIdentity>,
     new_task: &Arc<PidIdentity>,
 ) -> Result<(), CgroupError> {
-    ax_cgroup::rename_task(
-        process_id(process),
-        process_id(old_task),
-        process_id(new_task),
-    )
+    process.rename_cgroup_task(process_id(old_task), process_id(new_task))
 }
 
-/// Initialize the cgroup hierarchy and kernel process provider.
+/// Initialize the cgroup hierarchy and task ledger.
 pub fn init() {
     ax_cgroup::init();
-    ax_cgroup::register_provider(&KernelCgroupProvider);
 }
 
 pub fn is_interface_file_name(name: &str) -> bool {
@@ -114,9 +77,9 @@ pub fn controllers_text(node: &CgroupNode) -> String {
     text
 }
 
-pub fn procs_text(node: &CgroupNode) -> String {
+pub fn procs_text(current: &UserTaskRef, node: &CgroupNode) -> String {
     let mut text = String::new();
-    let view = current_pid_view();
+    let view = PidView::new(current.as_thread().active_pid_namespace());
     for process in node.members() {
         let Some(identity) = process_identity(process) else {
             continue;
@@ -140,18 +103,27 @@ pub fn subtree_control_text(node: &CgroupNode) -> String {
     text
 }
 
-pub fn write_procs(node: Arc<CgroupNode>, data: &[u8]) -> Result<(), StarryError> {
-    let pid = core::str::from_utf8(data)
+pub fn write_procs(
+    current: &UserTaskRef,
+    node: Arc<CgroupNode>,
+    data: &[u8],
+) -> Result<(), StarryError> {
+    let local_pid = core::str::from_utf8(data)
         .map_err(|_| StarryError::InvalidInput)?
         .trim()
         .parse::<u32>()
         .map_err(|_| StarryError::InvalidInput)?;
-    let identity = if pid == 0 {
-        current().as_thread().proc_data.identity()
+    let identity = if local_pid == 0 {
+        current.as_thread().proc_data.identity()
     } else {
-        crate::task::resolve_user_process_identity_by_number(TgidNumber::try_from(pid)?)?
+        PidView::new(current.as_thread().active_pid_namespace())
+            .resolve_process(TgidNumber::try_from(local_pid)?)?
     };
-    ax_cgroup::migrate_process(process_id(&identity), node).map_err(StarryError::from)
+    identity
+        .live_data()
+        .ok_or(StarryError::NoSuchProcess)?
+        .migrate_cgroup(node)
+        .map_err(StarryError::from)
 }
 
 pub fn write_subtree_control(node: &CgroupNode, data: &[u8]) -> Result<(), StarryError> {

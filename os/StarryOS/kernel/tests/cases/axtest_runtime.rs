@@ -1,3 +1,8 @@
+extern crate alloc;
+
+use alloc::{string::String, sync::Arc};
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use axtest::prelude::*;
 use starry_kernel::axtest_exports;
 
@@ -19,6 +24,136 @@ fn boot_id_is_omitted_without_trusted_entropy() {
 #[axtest]
 fn kmsg_reports_no_readiness_without_read_side() {
     ax_assert!(axtest_exports::kmsg_reports_no_readiness_without_read_side());
+}
+
+#[axtest]
+fn shutdown_wait_covers_the_exit_path_after_runtime_detach() {
+    ax_assert!(axtest_exports::shutdown_wait_covers_the_exit_path_after_runtime_detach());
+}
+
+#[axtest]
+fn dropped_exit_path_lease_keeps_unfinished_work_pending() {
+    ax_assert!(axtest_exports::dropped_exit_path_lease_keeps_unfinished_work_pending());
+}
+
+#[axtest]
+fn exit_path_completion_precedes_task_transfer() {
+    ax_assert!(axtest_exports::exit_path_completion_precedes_task_transfer());
+}
+
+#[axtest]
+fn reaped_process_handle_retains_exact_identity() {
+    ax_assert!(axtest_exports::reaped_process_handle_retains_exact_identity());
+}
+
+#[axtest]
+fn task_exit_transaction_holds_membership_lock() {
+    ax_assert!(axtest_exports::task_exit_transaction_holds_membership_lock());
+}
+
+#[axtest]
+fn inactive_task_and_posix_timers_keep_the_fast_gate_closed() {
+    ax_assert!(axtest_exports::timer_active_gate_rules_hold());
+}
+
+#[axtest]
+fn inactive_interval_timer_poll_skips_cpu_time_sample() {
+    ax_assert!(axtest_exports::inactive_interval_timer_poll_skips_cpu_time_sample());
+}
+
+#[axtest]
+fn posix_timer_clock_sampling_stays_outside_metadata_lock() {
+    ax_assert!(axtest_exports::posix_timer_clock_sampling_rules_hold());
+}
+
+#[axtest]
+fn posix_timer_timespec_conversion_saturates() {
+    ax_assert!(axtest_exports::posix_timer_saturating_timespec_rules_hold());
+}
+
+#[axtest]
+fn posix_timer_expiry_scans_use_bounded_batches() {
+    ax_assert!(axtest_exports::posix_timer_expiry_batch_rules_hold());
+}
+
+#[axtest]
+fn posix_timer_disarm_suppresses_collected_stale_expiry() {
+    ax_assert!(axtest_exports::posix_timer_stale_expiry_signal_is_suppressed());
+}
+
+#[axtest]
+fn stale_alarm_cancellation_preserves_new_generation() {
+    ax_assert!(axtest_exports::alarm_generation_rules_hold());
+}
+
+#[axtest]
+fn interval_timer_arm_starts_from_current_clock_snapshot() {
+    ax_assert!(axtest_exports::interval_timer_arm_uses_current_snapshot());
+}
+
+#[axtest]
+fn cpu_interval_timers_are_scheduler_tick_driven() {
+    ax_assert!(axtest_exports::cpu_interval_timers_avoid_wall_alarms());
+}
+
+#[axtest]
+fn scheduler_ticks_publish_process_cpu_time_without_sibling_scans() {
+    ax_assert!(axtest_exports::scheduler_tick_group_accounting_is_aggregate());
+}
+
+#[axtest]
+fn scheduler_tick_sampling_is_read_only() {
+    ax_assert!(axtest_exports::scheduler_tick_sampling_avoids_owner_writer());
+}
+
+#[axtest]
+fn user_kernel_cpu_time_transitions_stay_task_local() {
+    ax_assert!(axtest_exports::user_kernel_transitions_remain_task_local());
+}
+
+#[axtest]
+fn untraced_syscall_boundary_skips_ptrace_maps() {
+    ax_assert!(axtest_exports::inactive_ptrace_syscall_gate_is_lock_free());
+}
+
+#[axtest]
+fn futex_empty_wake_op_leaves_fixed_buckets_empty() {
+    ax_assert!(axtest_exports::futex_empty_wake_op_leaves_fixed_buckets_empty());
+}
+
+#[axtest]
+fn futex_keys_follow_mm_and_backing_identity() {
+    ax_assert!(axtest_exports::futex_keys_follow_mm_and_backing_identity());
+}
+
+#[axtest]
+fn futex_false_wait_condition_short_circuits_before_task_clone() {
+    ax_assert!(axtest_exports::futex_false_wait_condition_short_circuits_before_task_clone());
+}
+
+#[axtest]
+fn futex_queued_waiter_avoids_state_allocation() {
+    ax_assert!(axtest_exports::futex_queued_waiter_avoids_state_allocation());
+}
+
+#[axtest]
+fn futex_park_prepare_error_cleans_waiter() {
+    ax_assert!(axtest_exports::futex_park_prepare_error_cleans_waiter());
+}
+
+#[axtest]
+fn futex_park_notification_rechecks_condition() {
+    ax_assert!(axtest_exports::futex_park_notification_rechecks_condition());
+}
+
+#[axtest]
+fn futex_wake_completion_is_scheduler_driven() {
+    ax_assert!(axtest_exports::futex_wake_completion_is_scheduler_driven());
+}
+
+#[axtest]
+fn nofault_user_access_rejects_unmapped_word() {
+    ax_assert!(axtest_exports::nofault_user_access_rejects_unmapped_word());
 }
 
 #[axtest]
@@ -85,6 +220,52 @@ fn perf_control_callback_runs_preemptible() {
 #[axtest]
 fn perf_kernel_task_sample_ids_are_empty() {
     ax_assert!(axtest_exports::perf_kernel_task_sample_ids_are_empty());
+}
+
+#[axtest]
+fn tracepoint_callbacks_run_without_raw_guard() {
+    ax_assert!(axtest_exports::tracepoint_callbacks_run_without_raw_guard());
+}
+
+#[axtest]
+fn staged_thread_entry_waits_for_activation() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let entered_by_thread = Arc::clone(&entered);
+    let prepared = ax_std::os::arceos::task::prepare_raw(
+        move || entered_by_thread.store(true, Ordering::Release),
+        String::from("staged-start-gate"),
+        64 * 1024,
+    )
+    .expect("failed to prepare staged test thread");
+    let staged = prepared.stage().expect("failed to stage test thread");
+
+    for _ in 0..4 {
+        ax_std::os::arceos::task::yield_current_cpu().expect("failed to yield to staged thread");
+    }
+    ax_assert!(!entered.load(Ordering::Acquire));
+
+    let thread = staged.activate();
+    ax_std::os::arceos::task::join_thread(thread).expect("failed to join activated test thread");
+    ax_assert!(entered.load(Ordering::Acquire));
+}
+
+#[axtest]
+fn dropping_staged_thread_aborts_its_entry() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let entered_by_thread = Arc::clone(&entered);
+    let prepared = ax_std::os::arceos::task::prepare_raw(
+        move || entered_by_thread.store(true, Ordering::Release),
+        String::from("staged-start-abort"),
+        64 * 1024,
+    )
+    .expect("failed to prepare abortable test thread");
+    let observer = prepared.thread_handle();
+    let staged = prepared.stage().expect("failed to stage abortable thread");
+
+    drop(staged);
+    ax_std::os::arceos::task::wait_thread(&observer).expect("aborted staged thread did not exit");
+    ax_assert!(!entered.load(Ordering::Acquire));
+    ax_std::os::arceos::task::join_thread(observer).expect("failed to reap aborted staged thread");
 }
 
 #[axtest]

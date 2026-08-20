@@ -1,4 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
+use core::mem::{offset_of, size_of};
 
 use linux_raw_sys::net::{SCM_RIGHTS, SOL_SOCKET, cmsghdr};
 
@@ -7,6 +8,9 @@ use crate::{
     file::{FileLike, get_file_like},
     mm::{UserConstPtr, UserPtr},
 };
+
+// Linux limits one SCM_RIGHTS control message to SCM_MAX_FD descriptors.
+const SCM_MAX_FD: usize = 253;
 
 fn cmsg_align(len: usize) -> usize {
     let align = size_of::<usize>();
@@ -27,24 +31,25 @@ pub enum CMsg {
     Rights { fds: Vec<Arc<dyn FileLike>> },
 }
 impl CMsg {
-    pub fn parse(hdr: &cmsghdr) -> StarryResult<Self> {
+    pub fn parse(
+        current: &crate::task::UserTaskRef,
+        hdr_addr: usize,
+        hdr: &cmsghdr,
+    ) -> crate::StarryResult<Self> {
         if hdr.cmsg_len < size_of::<cmsghdr>() {
             return Err(StarryError::InvalidInput);
         }
 
-        let data =
-            UserConstPtr::<u8>::from((hdr as *const cmsghdr as usize) + size_of::<cmsghdr>())
-                .get_as_slice(hdr.cmsg_len - size_of::<cmsghdr>())?;
+        let data_len = hdr.cmsg_len - size_of::<cmsghdr>();
         Ok(match (hdr.cmsg_level as u32, hdr.cmsg_type as u32) {
             (SOL_SOCKET, SCM_RIGHTS) => {
-                if data.len() % size_of::<i32>() != 0 {
-                    return Err(StarryError::InvalidInput);
+                if !data_len.is_multiple_of(size_of::<i32>())
+                    || data_len / size_of::<i32>() > SCM_MAX_FD
+                {
+                    return Err(crate::StarryError::InvalidInput);
                 }
-                // Linux caps a single SCM_RIGHTS at SCM_MAX_FD (253) fds;
-                // more fails with EINVAL (net/core/scm.c scm_fp_copy).
-                if data.len() / size_of::<i32>() > 253 {
-                    return Err(StarryError::InvalidInput);
-                }
+                let data = UserConstPtr::<u8>::from(hdr_addr + size_of::<cmsghdr>())
+                    .read_slice(current, data_len)?;
                 let mut fds = Vec::new();
                 for fd in data.as_chunks::<{ size_of::<i32>() }>().0 {
                     let fd = i32::from_ne_bytes(*fd);
@@ -63,16 +68,22 @@ impl CMsg {
     }
 }
 
-pub struct CMsgBuilder<'a> {
+pub struct CMsgBuilder<'task, 'len> {
+    current: &'task crate::task::UserTaskRef,
     hdr: UserPtr<cmsghdr>,
-    len: &'a mut usize,
+    len: &'len mut usize,
     capacity: usize,
     written: usize,
 }
-impl<'a> CMsgBuilder<'a> {
-    pub fn new(msg: UserPtr<cmsghdr>, len: &'a mut usize) -> Self {
+impl<'task, 'len> CMsgBuilder<'task, 'len> {
+    pub fn new(
+        current: &'task crate::task::UserTaskRef,
+        msg: UserPtr<cmsghdr>,
+        len: &'len mut usize,
+    ) -> Self {
         let capacity = *len;
         Self {
+            current,
             hdr: msg,
             len,
             capacity,
@@ -113,19 +124,20 @@ impl<'a> CMsgBuilder<'a> {
         }
 
         let hdr_addr = self.hdr.address().as_usize();
-        let hdr = self.hdr.get_as_mut()?;
-        hdr.cmsg_level = level as _;
-        hdr.cmsg_type = ty as _;
-
-        let data =
-            UserPtr::<u8>::from(hdr_addr + size_of::<cmsghdr>()).get_as_mut_slice(body_len)?;
-        let written = body(data)?;
+        let mut data = alloc::vec![0; body_len];
+        let written = body(&mut data)?;
         debug_assert_eq!(written, body_len);
 
         let Some(cmsg_len) = size_of::<cmsghdr>().checked_add(body_len) else {
             return Err(StarryError::InvalidInput);
         };
-        hdr.cmsg_len = cmsg_len;
+        self.hdr
+            .write_field(self.current, offset_of!(cmsghdr, cmsg_len), cmsg_len)?;
+        self.hdr
+            .write_field(self.current, offset_of!(cmsghdr, cmsg_level), level as i32)?;
+        self.hdr
+            .write_field(self.current, offset_of!(cmsghdr, cmsg_type), ty as i32)?;
+        UserPtr::<u8>::from(hdr_addr + size_of::<cmsghdr>()).write_slice(self.current, &data)?;
         let cmsg_space = cmsg_align(cmsg_len);
         self.hdr = UserPtr::from(hdr_addr + cmsg_space);
         self.written += cmsg_space;

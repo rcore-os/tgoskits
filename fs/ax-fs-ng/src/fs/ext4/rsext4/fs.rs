@@ -15,7 +15,7 @@ use rsext4::{
 use super::{Ext4Disk, Inode, util::into_vfs_err};
 use crate::{
     block::{BlockRegion, FsBlockDevice},
-    os::sync::{SleepMutex as Mutex, SleepMutexGuard as MutexGuard},
+    os::sync::{Mutex, MutexGuard},
 };
 
 const EXT4_ROOT_INO: u32 = 2;

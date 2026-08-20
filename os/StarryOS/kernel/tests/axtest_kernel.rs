@@ -16,5 +16,5 @@ mod axtest_runtime;
 #[path = "cases/axtest_syscall.rs"]
 mod axtest_syscall;
 
-#[axtest::tests]
+#[axtest::tests(setup = starry_kernel::axtest_exports::init_kernel_services)]
 mod tests {}

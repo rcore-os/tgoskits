@@ -31,7 +31,7 @@ impl Sdhci {
             sdio_host2::BusOp::PowerOff => Ok(BusRequestState::PowerOff),
             sdio_host2::BusOp::SetClock(speed) => self.prepare_host2_clock(speed),
             sdio_host2::BusOp::SetClockHz(sdio_host2::ClockHz(hz)) => {
-                if self.ext_clock.is_none() && self.base_clock_hz() == 0 {
+                if self.timer.is_none() || (self.ext_clock.is_none() && self.base_clock_hz() == 0) {
                     return Err(sdio_host2::Error::Controller);
                 }
                 Ok(BusRequestState::SetClock(SdhciClockState::Start {
@@ -61,7 +61,7 @@ impl Sdhci {
             ClockSpeed::Hs200 => (200_000_000, HOST_CTRL2_UHS_SDR104),
             _ => return Err(sdio_host2::Error::Unsupported),
         };
-        if self.ext_clock.is_none() && self.base_clock_hz() == 0 {
+        if self.timer.is_none() || (self.ext_clock.is_none() && self.base_clock_hz() == 0) {
             return Err(sdio_host2::Error::Controller);
         }
         let high_speed = !matches!(
@@ -227,7 +227,9 @@ impl Sdhci {
                     *state = SdhciClockState::ExternalSetClock { target_hz };
                 } else {
                     self.start_internal_clock(target_hz)?;
-                    *state = SdhciClockState::InternalWaitStable { polls: 0 };
+                    *state = SdhciClockState::InternalWaitStable {
+                        deadline_ns: self.clock_stable_deadline_ns()?,
+                    };
                 }
                 Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
@@ -253,14 +255,23 @@ impl Sdhci {
             }
             SdhciClockState::ExternalStart { target_hz } => {
                 self.start_passthrough_clock(target_hz);
-                *state = SdhciClockState::ExternalEnable { polls: 0 };
+                *state = SdhciClockState::ExternalEnable {
+                    deadline_ns: self.clock_stable_deadline_ns()?,
+                };
                 Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
-            SdhciClockState::ExternalEnable { ref mut polls }
-            | SdhciClockState::InternalWaitStable { ref mut polls } => {
-                self.advance_clock_stable(polls)
+            SdhciClockState::ExternalEnable { deadline_ns }
+            | SdhciClockState::InternalWaitStable { deadline_ns } => {
+                self.advance_clock_stable(deadline_ns)
             }
         }
+    }
+
+    fn clock_stable_deadline_ns(&self) -> Result<u64, sdio_host2::Error> {
+        self.timer
+            .map(HostTimer::now_ns)
+            .map(|now| now.saturating_add(SDHCI_CLOCK_TIMEOUT_NS))
+            .ok_or(sdio_host2::Error::Controller)
     }
 
     fn start_internal_clock(&mut self, target_hz: u32) -> Result<(), sdio_host2::Error> {
@@ -280,7 +291,7 @@ impl Sdhci {
 
     fn advance_clock_stable(
         &mut self,
-        polls: &mut u32,
+        deadline_ns: u64,
     ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
         let clock = self.read_u16(REG_CLOCK_CONTROL);
         if clock & CLOCK_INTERNAL_ENABLE == 0 {
@@ -290,12 +301,15 @@ impl Sdhci {
             self.write_u16(REG_CLOCK_CONTROL, clock | CLOCK_SD_ENABLE);
             return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
         }
-        if *polls >= SDHCI_CLOCK_POLLS {
+        let now_ns = self
+            .timer
+            .map(HostTimer::now_ns)
+            .ok_or(sdio_host2::Error::Controller)?;
+        if now_ns > deadline_ns {
             return Err(map_protocol_error(Error::Timeout(ErrorContext::new(
                 Phase::Init,
             ))));
         }
-        *polls += 1;
         Ok(sdio_host2::RequestProgress::WaitingForIrq)
     }
 

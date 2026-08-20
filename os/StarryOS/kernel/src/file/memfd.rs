@@ -23,10 +23,7 @@
 //! `F_SEAL_FUTURE_WRITE` after populating them.
 
 use alloc::{borrow::Cow, format, string::String, sync::Arc, vec::Vec};
-use core::{
-    sync::atomic::{AtomicU32, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use ax_fs_ng::vfs::FileFlags;
 use ax_io::{IoBuf, SeekFrom, prelude::*};
@@ -39,7 +36,7 @@ use super::{File, FileLike, IoDst, IoSrc, Kstat, get_file_like};
 use crate::{
     StarryError, StarryResult,
     mm::{AddrSpace, Backend},
-    sync::Mutex,
+    sync::PiMutex,
 };
 
 pub const F_SEAL_SEAL: u32 = 0x0001;
@@ -73,7 +70,7 @@ pub struct Memfd {
     name: String,
     /// Serializes seal-check-and-truncate to close the TOCTOU window
     /// between `check_truncate` and the underlying `set_len`.
-    truncate_mtx: Mutex<()>,
+    truncate_mtx: PiMutex<()>,
 }
 
 impl Memfd {
@@ -89,7 +86,7 @@ impl Memfd {
             seals: AtomicU32::new(initial),
             shared_writable_mmap_count: AtomicU32::new(0),
             name,
-            truncate_mtx: Mutex::new(()),
+            truncate_mtx: PiMutex::new(()),
         })
     }
 
@@ -517,8 +514,13 @@ impl FileLike for Memfd {
         self.inner.file_mmap()
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
-        self.inner.ioctl(cmd, arg)
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> crate::StarryResult<usize> {
+        self.inner.ioctl(current, cmd, arg)
     }
 
     fn open_flags(&self) -> u32 {
@@ -559,7 +561,19 @@ impl Pollable for Memfd {
         self.inner.poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.inner.register(context, events);
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.register_exclusive(sink, events) };
     }
 }

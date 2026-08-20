@@ -172,7 +172,8 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
     }
 
     fn copy_from_user(src: *const u8, size: usize, dst: &mut [u8]) -> kbpf_basic::BpfResult<()> {
-        let n = VmBytes::new(src, size)
+        let current = crate::task::current_user_task();
+        let n = VmBytes::new(&current, src, size)
             .read(dst)
             .map_err(|_| BpfError::EFAULT)?;
         if n == size {
@@ -183,7 +184,8 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
     }
 
     fn copy_to_user(dest: *mut u8, size: usize, src: &[u8]) -> kbpf_basic::BpfResult<()> {
-        let n = VmBytesMut::new(dest, size)
+        let current = crate::task::current_user_task();
+        let n = VmBytesMut::new(&current, dest, size)
             .write(src)
             .map_err(|_| BpfError::EFAULT)?;
         if n == size {
@@ -207,7 +209,8 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
     }
 
     fn string_from_user_cstr(ptr: *const u8) -> kbpf_basic::BpfResult<String> {
-        vm_load_string(ptr as *const _).map_err(|_| BpfError::EFAULT)
+        let current = crate::task::current_user_task();
+        vm_load_string(&current, ptr as *const _).map_err(|_| BpfError::EFAULT)
     }
 
     fn ebpf_write_str(s: &str) -> kbpf_basic::BpfResult<()> {

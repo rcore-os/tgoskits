@@ -1,7 +1,11 @@
 //! Configured VirtIO MMIO block device backed by memory or a file.
 
-use alloc::{collections::VecDeque, format, string::String, sync::Arc, vec, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(feature = "fs")]
+use alloc::collections::VecDeque;
+use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
+#[cfg(feature = "fs")]
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use axdevice::*;
@@ -246,8 +250,10 @@ impl DeviceModel for VirtioBlkModel {
                     "device model was built more than once",
                 )
             })?;
-        let mut config = VirtioBlockConfig::default();
-        config.capacity = backend.capacity_sectors();
+        let config = VirtioBlockConfig {
+            capacity: backend.capacity_sectors(),
+            ..VirtioBlockConfig::default()
+        };
         let model = Arc::new(
             VirtioMmioBlockDevice::new(
                 GuestPhysAddr::from(base as usize),

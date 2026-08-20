@@ -19,9 +19,11 @@
 use alloc::{string::String, vec::Vec};
 use core::mem::MaybeUninit;
 
-use starry_vm::{vm_read_slice, vm_write_slice};
-
-use crate::{StarryError, StarryResult, sync::IrqMutex as Mutex};
+use crate::{
+    StarryError, StarryResult,
+    mm::{vm_read_slice, vm_write_slice},
+    sync::PiMutex as Mutex,
+};
 
 // ---------------------------------------------------------------------------
 // Wireless-extensions ioctl numbers (not provided by linux_raw_sys).
@@ -117,27 +119,37 @@ fn take_pending(ifname: &str) -> Option<Pending> {
 // iwreq parsing helpers
 // ---------------------------------------------------------------------------
 
-fn read_user_array<const N: usize>(ptr: *const u8) -> StarryResult<[u8; N]> {
+fn read_user_array<const N: usize>(
+    current: &crate::task::UserTaskRef,
+    ptr: *const u8,
+) -> crate::StarryResult<[u8; N]> {
     let mut buf = [MaybeUninit::<u8>::uninit(); N];
-    vm_read_slice(ptr, &mut buf)?;
+    vm_read_slice(current, ptr, &mut buf)?;
     Ok(buf.map(|v| unsafe { v.assume_init() }))
 }
 
-fn read_ifname(arg: usize) -> StarryResult<String> {
-    let buf = read_user_array::<IWREQ_NAME_LEN>(arg as *const u8)?;
+fn read_ifname(current: &crate::task::UserTaskRef, arg: usize) -> crate::StarryResult<String> {
+    let buf = read_user_array::<IWREQ_NAME_LEN>(current, arg as *const u8)?;
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8(buf[..end].to_vec()).map_err(|_| StarryError::InvalidInput)
 }
 
 /// Reads the 16-byte `union iwreq_data` payload following the name.
-fn read_iwreq_data(arg: usize) -> StarryResult<[u8; 16]> {
-    read_user_array::<16>((arg + IWREQ_DATA_OFFSET) as *const u8)
+fn read_iwreq_data(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+) -> crate::StarryResult<[u8; 16]> {
+    read_user_array::<16>(current, (arg + IWREQ_DATA_OFFSET) as *const u8)
 }
 
 /// Reads a length-prefixed userspace buffer described by an `iw_point`
 /// (`{ void* pointer; u16 length; u16 flags; }`) embedded in `iwreq_data`.
-fn read_iw_point(arg: usize, max: usize) -> StarryResult<Vec<u8>> {
-    let data = read_iwreq_data(arg)?;
+fn read_iw_point(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+    max: usize,
+) -> crate::StarryResult<Vec<u8>> {
+    let data = read_iwreq_data(current, arg)?;
     let ptr = usize::from_ne_bytes(
         data[..core::mem::size_of::<usize>()]
             .try_into()
@@ -151,7 +163,7 @@ fn read_iw_point(arg: usize, max: usize) -> StarryResult<Vec<u8>> {
         return Err(StarryError::InvalidInput);
     }
     let mut buf = alloc::vec![MaybeUninit::<u8>::uninit(); len];
-    vm_read_slice(ptr as *const u8, &mut buf)?;
+    vm_read_slice(current, ptr as *const u8, &mut buf)?;
     Ok(buf
         .into_iter()
         .map(|v| unsafe { v.assume_init() })
@@ -172,12 +184,16 @@ pub fn is_wext_ioctl(cmd: u32) -> bool {
 
 /// Handles a wireless-extensions `ioctl`. Setters stage config; `SIOCSIWCOMMIT`
 /// applies it. Returns `Ok(0)` on success.
-pub fn handle(cmd: u32, arg: usize) -> StarryResult<usize> {
-    let ifname = read_ifname(arg)?;
+pub fn handle(
+    current: &crate::task::UserTaskRef,
+    cmd: u32,
+    arg: usize,
+) -> crate::StarryResult<usize> {
+    let ifname = read_ifname(current, arg)?;
 
     match cmd {
         SIOCSIWMODE => {
-            let data = read_iwreq_data(arg)?;
+            let data = read_iwreq_data(current, arg)?;
             let mode = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
             let staged = match mode {
                 IW_MODE_INFRA => StagedMode::Station,
@@ -187,7 +203,7 @@ pub fn handle(cmd: u32, arg: usize) -> StarryResult<usize> {
             with_pending(&ifname, |p| p.mode = Some(staged));
         }
         SIOCSIWESSID => {
-            let ssid = read_iw_point(arg, IW_ESSID_MAX_SIZE)?;
+            let ssid = read_iw_point(current, arg, IW_ESSID_MAX_SIZE)?;
             with_pending(&ifname, |p| p.ssid = Some(ssid));
         }
         SIOCSIWENCODEEXT => {
@@ -195,13 +211,13 @@ pub fn handle(cmd: u32, arg: usize) -> StarryResult<usize> {
             // the key at offset 24 with a preceding `u16 key_len` at offset 20;
             // but userspace tools also place the key via the iw_point buffer.
             // Accept the iw_point buffer as the raw passphrase for simplicity.
-            let key = read_iw_point(arg, MAX_PASSPHRASE)?;
-            let pass = String::from_utf8(key).map_err(|_| StarryError::InvalidInput)?;
+            let key = read_iw_point(current, arg, MAX_PASSPHRASE)?;
+            let pass = String::from_utf8(key).map_err(|_| crate::StarryError::InvalidInput)?;
             with_pending(&ifname, |p| p.passphrase = Some(pass));
         }
         SIOCSIWFREQ => {
             // Interpret the first u32 of iwreq_data as a channel number (1..=14).
-            let data = read_iwreq_data(arg)?;
+            let data = read_iwreq_data(current, arg)?;
             let chan = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
             if chan == 0 || chan > 14 {
                 return Err(StarryError::InvalidInput);
@@ -254,8 +270,16 @@ fn commit(ifname: &str) -> StarryResult<usize> {
 /// Silences unused-write-helper warnings if a setter that echoes data back is
 /// added later. Currently all WE setters here only stage, so no write-back.
 #[allow(dead_code)]
-fn _write_iwreq_data(arg: usize, data: &[u8]) -> StarryResult<()> {
-    Ok(vm_write_slice((arg + IWREQ_DATA_OFFSET) as *mut u8, data)?)
+fn _write_iwreq_data(
+    current: &crate::task::UserTaskRef,
+    arg: usize,
+    data: &[u8],
+) -> crate::StarryResult<()> {
+    Ok(vm_write_slice(
+        current,
+        (arg + IWREQ_DATA_OFFSET) as *mut u8,
+        data,
+    )?)
 }
 
 #[cfg(test)]

@@ -14,6 +14,19 @@ fn loongarch_ipi_command_uses_blocking_transport() {
 }
 
 #[test]
+fn loongarch_runtime_ipi_uses_the_reserved_runtime_action() {
+    let command = ipi_command::runtime_ipi_send_value(3).expect("valid runtime IPI command");
+
+    assert_ne!(command & ipi_command::IOCSR_IPI_SEND_BLOCKING, 0);
+    assert_eq!(command & 0xffff, 0);
+    assert_eq!(
+        (command >> ipi_command::IOCSR_IPI_SEND_CPU_SHIFT) & 0x7fff,
+        3
+    );
+}
+
+#[test]
 fn loongarch_ipi_command_rejects_cpu_ids_that_overlap_the_blocking_bit() {
     assert_eq!(ipi_command::make_ipi_send_value(1 << 15, 0), None);
+    assert_eq!(ipi_command::runtime_ipi_send_value(1 << 15), None);
 }

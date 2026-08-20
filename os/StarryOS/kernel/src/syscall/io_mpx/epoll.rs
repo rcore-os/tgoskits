@@ -3,7 +3,6 @@ use core::{
     time::Duration,
 };
 
-use ax_task::future::{self, block_on, poll_io};
 use axpoll::IoEvents;
 use bitflags::bitflags;
 use linux_raw_sys::general::{
@@ -11,7 +10,6 @@ use linux_raw_sys::general::{
     timespec,
 };
 use starry_signal::SignalSet;
-use starry_vm::{vm_read_slice, vm_write_slice};
 
 use crate::{
     StarryError, StarryResult,
@@ -19,9 +17,12 @@ use crate::{
         FileLike,
         epoll::{Epoll, EpollEvent, EpollFlags},
     },
-    mm::{UserConstPtr, UserPtr, check_access, nullable},
+    mm::{UserConstPtr, UserPtr, check_access, vm_read_slice, vm_write_slice},
     syscall::signal::check_sigset_size,
-    task::with_blocked_signals,
+    task::{
+        future::{UserWaitOutcome, block_on_user_timeout, poll_io},
+        with_blocked_signals,
+    },
     time::TimeValueLike,
 };
 
@@ -56,7 +57,10 @@ fn check_epoll_events_access(events: UserPtr<epoll_event>, maxevents: usize) -> 
 /// address that is `4 (mod 8)`. Reading through a typed `*const epoll_event`
 /// (which the generic VM helpers reject when the pointer is unaligned) would
 /// then fail with `EFAULT`. Copy at byte granularity to mirror Linux.
-fn read_epoll_event(event: UserConstPtr<epoll_event>) -> StarryResult<epoll_event> {
+fn read_epoll_event(
+    current: &crate::task::UserTaskRef,
+    event: UserConstPtr<epoll_event>,
+) -> crate::StarryResult<epoll_event> {
     let mut buf = MaybeUninit::<epoll_event>::uninit();
     let dst = unsafe {
         core::slice::from_raw_parts_mut(
@@ -64,7 +68,7 @@ fn read_epoll_event(event: UserConstPtr<epoll_event>) -> StarryResult<epoll_even
             size_of::<epoll_event>(),
         )
     };
-    vm_read_slice(event.address().as_ptr(), dst)?;
+    vm_read_slice(current, event.address().as_ptr(), dst)?;
     // SAFETY: all bytes were just initialized by the copy above and any bit
     // pattern is a valid `epoll_event` (plain old data).
     Ok(unsafe { buf.assume_init() })
@@ -78,6 +82,7 @@ fn read_epoll_event(event: UserConstPtr<epoll_event>) -> StarryResult<epoll_even
 /// Linux's `__put_user` of each field has no alignment requirement, so we copy
 /// at byte granularity to match.
 fn write_epoll_event(
+    current: &crate::task::UserTaskRef,
     events: UserPtr<epoll_event>,
     index: usize,
     event: &epoll_event,
@@ -89,7 +94,7 @@ fn write_epoll_event(
             size_of::<epoll_event>(),
         )
     };
-    vm_write_slice(dst, src)?;
+    vm_write_slice(current, dst, src)?;
     Ok(())
 }
 
@@ -119,6 +124,7 @@ pub fn sys_epoll_create(size: i32) -> StarryResult<isize> {
 }
 
 pub fn sys_epoll_ctl(
+    current: &crate::task::UserTaskRef,
     epfd: i32,
     op: u32,
     fd: i32,
@@ -131,8 +137,8 @@ pub fn sys_epoll_ctl(
         return Err(StarryError::InvalidInput);
     }
 
-    let parse_event = || -> StarryResult<(u32, EpollEvent, EpollFlags)> {
-        let event = read_epoll_event(event)?;
+    let parse_event = || -> crate::StarryResult<(u32, EpollEvent, EpollFlags)> {
+        let event = read_epoll_event(current, event)?;
         let raw_events = event.events;
         let events = IoEvents::from_bits_truncate(event.events);
         let flags =
@@ -174,6 +180,7 @@ pub fn sys_epoll_ctl(
 }
 
 fn do_epoll_wait(
+    current: &crate::task::UserTaskRef,
     epfd: i32,
     events: UserPtr<epoll_event>,
     maxevents: i32,
@@ -200,27 +207,38 @@ fn do_epoll_wait(
     }
     check_epoll_events_access(events, maxevents)?;
 
-    let count = with_blocked_signals(
-        nullable!(sigmask.get_as_ref())?.copied(),
-        || match block_on(future::timeout(
+    let sigmask = if sigmask.is_null() {
+        None
+    } else {
+        // SAFETY: SignalSet is a transparent signal-bit mask; every bit
+        // pattern is valid and unsupported bits are handled by signal logic.
+        Some(unsafe { sigmask.read_abi(current)? })
+    };
+
+    let task = current;
+    let count = with_blocked_signals(sigmask, || {
+        match block_on_user_timeout(
+            task,
             timeout,
             poll_io(epoll.as_ref(), IoEvents::IN, false, || {
                 epoll.register_waiter_wakers()?;
                 epoll.poll_events_with(maxevents, |index, event| {
-                    write_epoll_event(events, index, &event)?;
+                    write_epoll_event(current, events, index, &event)?;
                     Ok(())
                 })
             }),
-        )) {
-            Ok(r) => r.map(|n| n as _),
-            Err(_) => Ok(0),
-        },
-    )?;
+        ) {
+            UserWaitOutcome::Ready(result) => result.map(|count| count as _),
+            UserWaitOutcome::TimedOut => Ok(0),
+            UserWaitOutcome::Interrupted => Err(crate::StarryError::Interrupted),
+        }
+    })?;
 
     Ok(count)
 }
 
 pub fn sys_epoll_pwait(
+    current: &crate::task::UserTaskRef,
     epfd: i32,
     events: UserPtr<epoll_event>,
     maxevents: i32,
@@ -233,32 +251,44 @@ pub fn sys_epoll_pwait(
     } else {
         Some(Duration::from_millis(timeout as u64))
     };
-    do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
+    do_epoll_wait(
+        current, epfd, events, maxevents, timeout, sigmask, sigsetsize,
+    )
 }
 
 /// Implements legacy `epoll_wait` as an x86_64 wrapper around `epoll_pwait`.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_epoll_wait(
+    current: &crate::task::UserTaskRef,
     epfd: i32,
     events: UserPtr<epoll_event>,
     maxevents: i32,
     timeout: i32,
-) -> StarryResult<isize> {
-    sys_epoll_pwait(epfd, events, maxevents, timeout, 0usize.into(), 0)
+) -> crate::StarryResult<isize> {
+    sys_epoll_pwait(current, epfd, events, maxevents, timeout, 0usize.into(), 0)
 }
 
 pub fn sys_epoll_pwait2(
+    current: &crate::task::UserTaskRef,
     epfd: i32,
     events: UserPtr<epoll_event>,
     maxevents: i32,
     timeout: UserConstPtr<timespec>,
     sigmask: UserConstPtr<SignalSet>,
     sigsetsize: usize,
-) -> StarryResult<isize> {
-    let timeout = nullable!(timeout.get_as_ref())?
-        .map(|ts| ts.try_into_time_value())
-        .transpose()?;
-    do_epoll_wait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
+) -> crate::StarryResult<isize> {
+    let timeout = (if timeout.is_null() {
+        None
+    } else {
+        // SAFETY: timespec contains only signed integer fields; semantic
+        // range validation is performed by try_into_time_value below.
+        Some(unsafe { timeout.read_abi(current)? })
+    })
+    .map(|ts| ts.try_into_time_value())
+    .transpose()?;
+    do_epoll_wait(
+        current, epfd, events, maxevents, timeout, sigmask, sigsetsize,
+    )
 }
 
 #[cfg(test)]

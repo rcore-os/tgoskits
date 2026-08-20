@@ -178,7 +178,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unchanged_user_tls_requires_no_msr_write() {
+    fn unchanged_user_tls_requires_no_owner_write() {
         let values = UserTlsValues {
             fs_base: 0x1000,
             gs_base: 0x2000,
@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn user_tls_transition_writes_only_the_changed_msr() {
+    fn user_owner_transition_writes_only_changed_registers() {
         let previous = UserTlsValues {
             fs_base: 0x1000,
             gs_base: 0x2000,

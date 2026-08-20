@@ -188,6 +188,11 @@ impl<H: X86HostOps> X86Vcpu<H> {
 
     /// Enter the guest until the selected backend reports a VM exit.
     ///
+    /// The caller must keep this vCPU bound to the current host CPU, prevent
+    /// migration, and keep host IRQs disabled until this method returns. VMX
+    /// uses this interval to switch host-owned syscall MSRs without exposing
+    /// guest state to host interrupt handlers or another physical CPU.
+    ///
     /// # Errors
     ///
     /// Propagates guest-entry and VM-exit decoding errors from the selected backend.
@@ -262,6 +267,14 @@ impl<H: X86HostOps> X86Vcpu<H> {
         level_triggered: bool,
     ) -> X86VcpuResult {
         dispatch_vcpu!(self, inject_interrupt_with_trigger, vector, level_triggered)
+    }
+
+    /// Returns whether the selected backend owns an event awaiting guest injection.
+    pub fn has_pending_event(&self) -> bool {
+        match &self.inner {
+            X86VcpuInner::Vmx(vcpu) => vcpu.has_pending_event(),
+            X86VcpuInner::Svm(vcpu) => vcpu.has_pending_event(),
+        }
     }
 
     /// Handle a guest local-APIC end-of-interrupt notification.

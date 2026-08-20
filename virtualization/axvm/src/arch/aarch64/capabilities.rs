@@ -5,8 +5,6 @@ use std::format;
 use super::Aarch64Arch;
 use crate::{architecture::*, *};
 
-impl HostTimePlatform for Aarch64Arch {}
-
 impl MachinePlatform for Aarch64Arch {
     const MACHINE_ARCHITECTURE: crate::machine::MachineArchitecture =
         crate::machine::MachineArchitecture::Aarch64;

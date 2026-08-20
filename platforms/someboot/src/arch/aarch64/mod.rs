@@ -64,13 +64,18 @@ impl ArchTrait for Arch {
         elx::flush_tlb(None);
     }
 
-    fn systimer_enable() {
+    fn systimer_prepare_oneshot() {
+        elx::systick_irq_disable();
         elx::systick_enable();
     }
 
     fn systimer_irq_disable() {
         // debug!("Disable systick irq");
         elx::systick_irq_disable();
+    }
+
+    fn systimer_stop_oneshot() {
+        elx::systick_stop_oneshot();
     }
 
     fn systimer_irq_enable() {

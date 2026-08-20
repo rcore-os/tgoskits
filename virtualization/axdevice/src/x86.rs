@@ -40,12 +40,6 @@ pub trait X86IoApicDeviceOps: Send + Sync {
     fn end_of_interrupt(&self, vector: u8) -> Option<IoApicEoi>;
 }
 
-/// Type-specific PIT capability used by the x86 interrupt runtime.
-pub trait X86PitDeviceOps: Send + Sync {
-    /// Consume a pending PIT IRQ0 tick if the deadline is due.
-    fn consume_irq0_if_due(&self, now_ns: u64) -> bool;
-}
-
 /// Type-specific legacy PIC capability used by the x86 timer path.
 pub trait X86PicDeviceOps: Send + Sync {
     /// Latch one legacy IRQ edge and return a vector when it is deliverable.
@@ -85,16 +79,6 @@ impl ServiceKey for X86InterruptDomainKey {
     type Service = dyn X86InterruptDomainOps;
 
     const NAME: &'static str = "x86-interrupt-domain";
-    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
-}
-
-/// Typed service key for the VM's x86 virtual PIT.
-pub struct X86PitServiceKey;
-
-impl ServiceKey for X86PitServiceKey {
-    type Service = dyn X86PitDeviceOps;
-
-    const NAME: &'static str = "x86-pit";
     const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
@@ -220,12 +204,6 @@ impl<H: X86VlapicHostOps> X86PitDevice<H> {
 impl<H: X86VlapicHostOps> Default for X86PitDevice<H> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl<H: X86VlapicHostOps> X86PitDeviceOps for X86PitDevice<H> {
-    fn consume_irq0_if_due(&self, now_ns: u64) -> bool {
-        self.inner.consume_irq0_if_due(now_ns)
     }
 }
 

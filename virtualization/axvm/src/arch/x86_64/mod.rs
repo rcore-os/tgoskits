@@ -60,8 +60,15 @@ impl ArchOps for X86_64Arch {
         x86_vcpu::initialize_hardware_support().is_ok()
     }
 
+    fn activate_devices(vm: &crate::AxVM) -> AxVmResult {
+        irq::start_deferred_irq_delivery(vm)
+    }
+
+    fn deactivate_devices(vm: &crate::AxVM) -> AxVmResult {
+        irq::stop_deferred_irq_delivery(vm)
+    }
+
     fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        irq::start_deferred_irq_delivery(vm);
         irq::enable_ioapic_irq_forwarding(vm, vcpu);
     }
 
@@ -72,22 +79,42 @@ impl ArchOps for X86_64Arch {
         Ok(())
     }
 
+    fn complete_pending_vcpu_exit(
+        _vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        vcpu.get_arch_vcpu().complete_pending_port_io_string()
+    }
+
+    fn wait_for_vcpu_event(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        runtime: &crate::vm::VmRuntimeHandle,
+    ) {
+        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        crate::vm::wait_for_vcpu_event_if_idle(
+            runtime,
+            &wait_snapshot,
+            || vm.running(),
+            || runtime.has_pending_interrupt(vcpu.id()) || vcpu.get_arch_vcpu().has_pending_event(),
+            |condition| runtime.wait_until(condition),
+        );
+    }
+
     fn after_external_interrupt(
         _vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         vector: usize,
     ) {
         crate::host::arceos::dispatch_host_irq(vector);
-        crate::check_timer_events();
     }
 
     fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
         irq::disable_ioapic_irq_forwarding_for_vm(vm);
-        irq::stop_deferred_irq_delivery(vm);
-        Ok(())
+        Self::deactivate_devices(vm)
     }
 
-    fn handle_vcpu_exit_bound(
+    fn handle_vcpu_exit_unbound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
@@ -195,7 +222,7 @@ impl ArchOps for X86_64Arch {
                 }))
             }
             X86VmExit::PreemptionTimer => {
-                Ok(BoundVcpuExit::Defer(DeferredRunWork::PreemptionTimer))
+                Ok(BoundVcpuExit::Defer(DeferredRunWork::TimesliceExpired))
             }
             X86VmExit::InterruptEnd { vector } => {
                 Ok(BoundVcpuExit::Defer(DeferredRunWork::InterruptEnd {
@@ -259,6 +286,8 @@ fn x86_halt_action() -> VcpuRunAction {
 pub(crate) struct AxvmX86HostOps;
 
 impl X86VlapicHostOps for AxvmX86HostOps {
+    type TimerHandle = crate::host::task::KernelTimerHandle;
+
     fn alloc_frame() -> Option<x86_vlapic::X86HostPhysAddr> {
         default_host()
             .alloc_frame()
@@ -283,15 +312,32 @@ impl X86VlapicHostOps for AxvmX86HostOps {
         ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos()
     }
 
-    fn register_timer(deadline_nanos: u64, callback: X86TimerCallback) -> Option<usize> {
-        Some(crate::timer::register_timer(
-            deadline_nanos,
-            Box::new(move |deadline: Duration| callback(deadline.as_nanos() as u64)),
-        ))
+    fn register_timer(
+        deadline_nanos: u64,
+        mut callback: X86TimerCallback,
+    ) -> X86VlapicResult<Self::TimerHandle> {
+        crate::host::task::register_restartable_kernel_timer(
+            crate::host::task::MonotonicDeadline::from_duration(Duration::from_nanos(
+                deadline_nanos,
+            )),
+            Box::new(move |deadline| match callback(deadline.as_nanos() as u64) {
+                X86TimerAction::Complete => crate::host::task::KernelTimerAction::Complete,
+                X86TimerAction::Rearm(deadline_nanos) => {
+                    crate::host::task::KernelTimerAction::Rearm(
+                        crate::host::task::MonotonicDeadline::from_duration(Duration::from_nanos(
+                            deadline_nanos,
+                        )),
+                    )
+                }
+            }),
+        )
+        .map_err(|_| X86VlapicError::TimerUnavailable)
     }
 
-    fn cancel_timer(token: usize) {
-        crate::timer::cancel_timer(token);
+    fn cancel_timer(handle: Self::TimerHandle) -> X86VlapicResult {
+        crate::host::task::cancel_kernel_timer(handle)
+            .map(|_| ())
+            .map_err(|_| X86VlapicError::TimerUnavailable)
     }
 
     fn current_vm_id() -> X86VmId {
@@ -404,12 +450,63 @@ impl X86HostOps for AxvmX86HostOps {
     }
 }
 
-pub(crate) struct AxvmX86Vcpu(X86Vcpu<AxvmX86HostOps>);
+#[derive(Debug)]
+struct PendingCompletion<T>(Option<T>);
+
+impl<T> Default for PendingCompletion<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T> PendingCompletion<T> {
+    fn stage(&mut self, completion: T) -> Result<(), T> {
+        if self.0.is_some() {
+            return Err(completion);
+        }
+        self.0 = Some(completion);
+        Ok(())
+    }
+
+    fn take(&mut self) -> Option<T> {
+        self.0.take()
+    }
+
+    fn restore(&mut self, completion: T) {
+        debug_assert!(self.0.is_none());
+        self.0 = Some(completion);
+    }
+}
+
+pub(crate) struct AxvmX86Vcpu(
+    X86Vcpu<AxvmX86HostOps>,
+    PendingCompletion<X86PortIoStringExit>,
+);
 
 impl AxvmX86Vcpu {
-    fn complete_port_io_string(&mut self, exit: X86PortIoStringExit) -> AxVmResult {
-        x86_result(self.0.complete_port_io_string(exit))
-            .map_err(|error| crate::vcpu::map_vcpu_backend_error("complete x86 string I/O", error))
+    fn stage_port_io_string_completion(&mut self, exit: X86PortIoStringExit) -> AxVmResult {
+        self.1.stage(exit).map_err(|_| {
+            AxVmError::invalid_state(
+                "stage x86 string I/O completion",
+                "a previous string I/O completion is still pending",
+            )
+        })
+    }
+
+    fn complete_pending_port_io_string(&mut self) -> AxVmResult {
+        let Some(exit) = self.1.take() else {
+            return Ok(());
+        };
+        let result = x86_result(self.0.complete_port_io_string(exit))
+            .map_err(|error| crate::vcpu::map_vcpu_backend_error("complete x86 string I/O", error));
+        if result.is_err() {
+            self.1.restore(exit);
+        }
+        result
+    }
+
+    fn has_pending_event(&self) -> bool {
+        self.0.has_pending_event()
     }
 
     fn set_gpr_byte(&mut self, reg: X86ByteRegister, value: u8) {
@@ -431,7 +528,8 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
     type Exit = X86VmExit;
 
     fn new(vm_id: VMId, vcpu_id: VCpuId, config: Self::CreateConfig) -> BackendResult<Self> {
-        x86_result(X86Vcpu::new_with_config(vm_id, vcpu_id, config)).map(Self)
+        x86_result(X86Vcpu::new_with_config(vm_id, vcpu_id, config))
+            .map(|vcpu| Self(vcpu, PendingCompletion::default()))
     }
 
     fn set_entry(&mut self, entry: GuestPhysAddr) -> BackendResult {
@@ -597,12 +695,12 @@ impl X86InterruptDomain {
         }
     }
 
-    fn start_kick_worker(&self) {
-        self.wired.kick.start();
+    fn start_kick_worker(&self) -> AxVmResult {
+        self.wired.kick.start()
     }
 
-    fn stop_kick_worker(&self) {
-        self.wired.kick.stop();
+    fn stop_kick_worker(&self) -> AxVmResult {
+        self.wired.kick.stop()
     }
 
     fn take_pending_wired_gsis(&self) -> (usize, usize) {
@@ -787,9 +885,9 @@ impl DeviceModel for X86PitModel {
         let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new_for_vcpu(
             self.vm_id, 0,
         ));
-        let service: Arc<dyn X86PitDeviceOps> = pit.clone();
-        DeviceBundle::from_registration(DeviceRegistration::Device(pit))
-            .with_service::<X86PitServiceKey>(service)
+        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
+            pit,
+        )))
     }
 }
 
@@ -892,6 +990,7 @@ fn x86_error_to_backend(err: X86VcpuError) -> BackendError {
         X86VcpuError::BadState => BackendError::InvalidState,
         X86VcpuError::NoMemory => BackendError::OutOfMemory,
         X86VcpuError::ResourceBusy => BackendError::ResourceBusy,
+        X86VcpuError::TimerUnavailable => BackendError::InvalidState,
     }
 }
 
@@ -1041,5 +1140,15 @@ mod tests {
         assert!(x86_interrupt_is_level_triggered(
             InterruptTriggerMode::LevelTriggered
         ));
+    }
+
+    #[test]
+    fn pending_completion_rejects_replacement_without_losing_the_owner() {
+        let mut pending = PendingCompletion::default();
+
+        assert_eq!(pending.stage(11), Ok(()));
+        assert_eq!(pending.stage(22), Err(22));
+        assert_eq!(pending.take(), Some(11));
+        assert_eq!(pending.take(), None);
     }
 }

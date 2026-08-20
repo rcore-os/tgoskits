@@ -14,7 +14,6 @@ arceos = [
   "ax-std/paging",
   "ax-std/alloc",
   "ax-std/multitask",
-  "ax-std/sched-rr",
 ]
 
 [dependencies]

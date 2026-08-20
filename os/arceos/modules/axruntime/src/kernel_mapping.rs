@@ -1,5 +1,7 @@
 use core::ptr::NonNull;
 
+#[cfg(feature = "multitask")]
+use ax_hal::paging::MappingFlags;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
 use crate::{RuntimeError, RuntimeResult};
@@ -7,6 +9,25 @@ use crate::{RuntimeError, RuntimeResult};
 pub(crate) enum MappingTransactionError {
     NotStarted(RuntimeError),
     StateUncertain(RuntimeError),
+}
+
+#[cfg(feature = "multitask")]
+pub(crate) fn protect_kernel_range(
+    start: VirtAddr,
+    size: usize,
+    flags: MappingFlags,
+) -> RuntimeResult {
+    update_mapping_transaction(
+        || {
+            let mut kernel_aspace = ax_mm::kernel_aspace().lock();
+            kernel_aspace.protect(start, size, flags)?;
+            Ok(())
+        },
+        || {
+            ax_hal::cache::flush_tlb_range_all_cpus(start, size)?;
+            Ok(())
+        },
+    )
 }
 
 pub(crate) fn map_dma_coherent_alias(

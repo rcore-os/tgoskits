@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 
+use ax_fs_ng::vfs::current_fs_context;
 #[cfg(feature = "vsock")]
 use ax_net::vsock::VsockSocket;
 use ax_net::{
@@ -9,7 +10,6 @@ use ax_net::{
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
 };
-use ax_task::current;
 use axfs_ng_vfs::{MetadataUpdate, NodeType};
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
@@ -28,7 +28,6 @@ use crate::{
     Errno, StarryError, StarryResult,
     file::{FileLike, PacketSocket, SockAddrLl, Socket, add_file_like, netlink::NetlinkSocket},
     mm::{UserConstPtr, UserPtr},
-    task::AsThread,
 };
 
 const SOCK_TYPE_MASK: u32 = 0xf;
@@ -37,7 +36,12 @@ const SOCK_MAX: u32 = 11;
 
 const SOCK_FLAGS_MASK: u32 = O_NONBLOCK | O_CLOEXEC;
 
-pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> StarryResult<isize> {
+pub fn sys_socket(
+    current: &crate::task::UserTaskRef,
+    domain: u32,
+    raw_ty: u32,
+    proto: u32,
+) -> crate::StarryResult<isize> {
     debug!("sys_socket <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
     let ty = raw_ty & SOCK_TYPE_MASK;
     if raw_ty & !(SOCK_TYPE_MASK | SOCK_FLAGS_MASK) != 0 || ty >= SOCK_MAX {
@@ -49,8 +53,8 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> StarryResult<isize> {
             warn!("Unsupported packet socket type: {ty}");
             return Err(StarryError::from(Errno::ESOCKTNOSUPPORT));
         }
-        if !current().as_thread().cred().has_cap_net_raw() {
-            return Err(StarryError::from(Errno::EPERM));
+        if !current.as_thread().cred().has_cap_net_raw() {
+            return Err(crate::StarryError::from(crate::Errno::EPERM));
         }
         let socket = PacketSocket::new(proto as u16)?;
         if raw_ty & O_NONBLOCK != 0 {
@@ -78,8 +82,8 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> StarryResult<isize> {
             // StarryOS does not expose Linux's per-network-namespace
             // `ping_group_range` policy yet, so keep ping sockets behind the
             // existing CAP_NET_RAW capability boundary.
-            if !current().as_thread().cred().has_cap_net_raw() {
-                return Err(StarryError::from(Errno::EPERM));
+            if !current.as_thread().cred().has_cap_net_raw() {
+                return Err(crate::StarryError::from(crate::Errno::EPERM));
             }
             SocketInner::Raw(Box::new(RawSocket::new_ipv4_ping()))
         }
@@ -115,8 +119,8 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> StarryResult<isize> {
             if proto != IPPROTO_ICMP as u32 {
                 return Err(StarryError::from(Errno::EPROTONOSUPPORT));
             }
-            if !current().as_thread().cred().has_cap_net_raw() {
-                return Err(StarryError::from(Errno::EPERM));
+            if !current.as_thread().cred().has_cap_net_raw() {
+                return Err(crate::StarryError::from(crate::Errno::EPERM));
             }
             SocketInner::Raw(Box::new(RawSocket::new(IpVersion::Ipv4, IpProtocol::Icmp)))
         }
@@ -138,13 +142,17 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> StarryResult<isize> {
     socket.add_to_fd_table(cloexec).map(|fd| fd as isize)
 }
 
-pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryResult<isize> {
+pub fn sys_bind(
+    current: &crate::task::UserTaskRef,
+    fd: i32,
+    addr: UserConstPtr<sockaddr>,
+    addrlen: u32,
+) -> crate::StarryResult<isize> {
     if let Ok(socket) = NetlinkSocket::from_fd(fd) {
-        let mut addr = super::addr::read_netlink_addr(addr, addrlen as _)?;
+        let mut addr = super::addr::read_netlink_addr(current, addr, addrlen as _)?;
         if addr.nl_pid == 0 {
-            let thread = current();
-            let thread = thread.as_thread();
-            addr.nl_pid = crate::task::current_pid_view()
+            let thread = current.as_thread();
+            addr.nl_pid = crate::task::PidView::new(thread.active_pid_namespace())
                 .visible_number(&thread.proc_data.identity())
                 .expect("current process is visible in its active PID namespace")
                 .get();
@@ -155,14 +163,13 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryRe
     }
 
     if let Ok(packet) = PacketSocket::from_fd(fd) {
-        let addr =
-            SockAddrLl::read_from_user(addr.address().as_usize() as *const sockaddr, addrlen)?;
+        let addr = SockAddrLl::read_from_user(current, addr.as_ptr(), addrlen)?;
         packet.bind_ll(addr)?;
         return Ok(0);
     }
 
     let socket = Socket::from_fd(fd)?;
-    let mut addr = SocketAddrEx::read_from_user(addr, addrlen)?;
+    let mut addr = SocketAddrEx::read_from_user(current, addr, addrlen)?;
     if socket.ip_domain() == AF_INET6 {
         addr = normalize_socket_addr_ex_for_ip_stack(addr, true)?;
     }
@@ -172,12 +179,12 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryRe
         SocketAddrEx::Unix(UnixSocketAddr::Path(path)) => Some(path.clone()),
         _ => None,
     };
-    let cred = current().as_thread().cred();
+    let cred = current.as_thread().cred();
 
     socket.bind(addr)?;
 
     if let Some(path) = unix_path
-        && let Err(err) = ax_fs_ng::vfs::current_fs_context()
+        && let Err(err) = current_fs_context()
             .lock()
             .resolve_no_follow(path.as_ref())
             .and_then(|loc| {
@@ -196,9 +203,14 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryRe
     Ok(0)
 }
 
-pub fn sys_connect(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> StarryResult<isize> {
+pub fn sys_connect(
+    current: &crate::task::UserTaskRef,
+    fd: i32,
+    addr: UserConstPtr<sockaddr>,
+    addrlen: u32,
+) -> crate::StarryResult<isize> {
     let socket = Socket::from_fd(fd)?;
-    let mut addr = SocketAddrEx::read_from_user(addr, addrlen)?;
+    let mut addr = SocketAddrEx::read_from_user(current, addr, addrlen)?;
     if socket.ip_domain() == AF_INET6 {
         addr = normalize_socket_addr_ex_for_ip_stack(addr, false)?;
     }
@@ -228,14 +240,16 @@ pub fn sys_listen(fd: i32, backlog: i32) -> StarryResult<isize> {
 }
 
 pub fn sys_accept(
+    current: &crate::task::UserTaskRef,
     fd: i32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
-) -> StarryResult<isize> {
-    sys_accept4(fd, addr, addrlen, 0)
+) -> crate::StarryResult<isize> {
+    sys_accept4(current, fd, addr, addrlen, 0)
 }
 
 pub fn sys_accept4(
+    current: &crate::task::UserTaskRef,
     fd: i32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
@@ -262,7 +276,9 @@ pub fn sys_accept4(
     debug!("sys_accept => fd: {fd}, addr: {remote_addr:?}");
 
     if !addr.is_null() {
-        remote_addr.write_to_user(addr, addrlen.get_as_mut()?)?;
+        let mut addrlen_value = addrlen.read(current)?;
+        remote_addr.write_to_user(current, addr, &mut addrlen_value)?;
+        addrlen.write(current, addrlen_value)?;
     }
 
     Ok(fd)
@@ -282,6 +298,7 @@ pub fn sys_shutdown(fd: i32, how: u32) -> StarryResult<isize> {
 }
 
 pub fn sys_socketpair(
+    current: &crate::task::UserTaskRef,
     domain: u32,
     raw_ty: u32,
     proto: u32,
@@ -322,10 +339,13 @@ pub fn sys_socketpair(
     }
     let cloexec = raw_ty & O_CLOEXEC != 0;
 
-    *fds.get_as_mut()? = [
-        sock1.add_to_fd_table(cloexec)?,
-        sock2.add_to_fd_table(cloexec)?,
-    ];
+    fds.write(
+        current,
+        [
+            sock1.add_to_fd_table(cloexec)?,
+            sock2.add_to_fd_table(cloexec)?,
+        ],
+    )?;
     Ok(0)
 }
 

@@ -5,6 +5,8 @@
  * PIDFD_THREAD pidfd for the non-leader thread that will exec. After exec:
  *   - the process pidfd must still address the same process generation;
  *   - getpid() must retain the pre-exec TGID and gettid() must equal it;
+ *   - the exec thread's nice value must survive identity transfer and remain
+ *     queryable from the stable process identity while the child is a zombie;
  *   - the old thread pidfd must remain attached to the exited thread
  *     generation and must not redirect to the new leader runtime task.
  */
@@ -12,9 +14,11 @@
 #include "test_framework.h"
 
 #include <errno.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -23,6 +27,8 @@
 #ifndef PIDFD_THREAD
 #define PIDFD_THREAD 128u
 #endif
+
+#define EXEC_THREAD_NICE 7
 
 static int x_pidfd_open(pid_t pid, unsigned int flags)
 {
@@ -45,6 +51,8 @@ struct exec_context {
 static void *nonleader_exec(void *opaque)
 {
     const struct exec_context *ctx = opaque;
+    if (setpriority(PRIO_PROCESS, 0, EXEC_THREAD_NICE) != 0)
+        _exit(40);
     pid_t tid = (pid_t)syscall(SYS_gettid);
     if (write(ctx->tid_write, &tid, sizeof(tid)) != (ssize_t)sizeof(tid))
         _exit(41);
@@ -87,7 +95,12 @@ static int post_exec_main(char **argv)
 
     pid_t pid = getpid();
     pid_t tid = (pid_t)syscall(SYS_gettid);
-    char result = (pid == expected_pid && tid == pid) ? 'R' : 'F';
+    errno = 0;
+    int nice = getpriority(PRIO_PROCESS, 0);
+    char result = (pid == expected_pid && tid == pid && errno == 0 &&
+                   nice == EXEC_THREAD_NICE)
+                      ? 'R'
+                      : 'F';
     if (write(ready_write, &result, 1) != 1)
         return 54;
 
@@ -96,8 +109,10 @@ static int post_exec_main(char **argv)
         return 55;
     if (result != 'R') {
         fprintf(stderr,
-                "FAIL: post-exec expected TGID=%ld, observed pid=%ld tid=%ld\n",
-                expected_pid, (long)pid, (long)tid);
+                "FAIL: post-exec expected TGID=%ld nice=%d, observed pid=%ld "
+                "tid=%ld nice=%d errno=%d\n",
+                expected_pid, EXEC_THREAD_NICE, (long)pid, (long)tid, nice,
+                errno);
         return 56;
     }
     puts("PID_IDENTITY_EXEC_CHILD_OK");
@@ -194,6 +209,17 @@ int main(int argc, char **argv)
 
     CHECK_RET(write(finish_pipe[1], "F", 1), 1, "release post-exec image");
     close(finish_pipe[1]);
+    if (process_pidfd >= 0) {
+        struct pollfd exited = {
+            .fd = process_pidfd,
+            .events = POLLIN,
+        };
+        CHECK_RET(poll(&exited, 1, -1), 1, "wait for exec-transfer zombie");
+        errno = 0;
+        int zombie_nice = getpriority(PRIO_PROCESS, child);
+        CHECK(errno == 0 && zombie_nice == EXEC_THREAD_NICE,
+              "zombie leader nice remains in the stable process identity");
+    }
     int status = 0;
     CHECK_RET(waitpid(child, &status, 0), child, "reap exec-transfer child");
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,

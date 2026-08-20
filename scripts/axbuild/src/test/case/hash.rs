@@ -10,8 +10,9 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use super::types::{
-    CaseAssetConfig, CasePipeline, GROUPED_RUNNER_SCRIPT_FORMAT_VERSION, GroupedCaseRunnerConfig,
-    PYTHON_PIPELINE_CACHE_VERSION, RUST_PIPELINE_CACHE_VERSION, TestQemuCase,
+    CaseAssetConfig, CasePipeline, GROUPED_RUNNER_SCRIPT_FORMAT_VERSION, GroupedCaseExecution,
+    GroupedCaseRunnerConfig, PYTHON_PIPELINE_CACHE_VERSION, RUST_PIPELINE_CACHE_VERSION,
+    TestQemuCase,
 };
 
 const CMAKE_TOOLCHAIN_TEMPLATE_PATH: &str = "src/test/cmake-toolchain.cmake.in";
@@ -50,7 +51,7 @@ pub(super) fn case_asset_cache_key(
         hash_token(&mut hasher, RUST_PIPELINE_CACHE_VERSION);
     }
     if pipeline == CasePipeline::Grouped {
-        hash_grouped_runner_config(&mut hasher, &config.grouped_runner);
+        hash_grouped_execution(&mut hasher, &config.grouped_execution);
         hash_grouped_subcase_filter(&mut hasher, case.grouped_subcase_filter.as_ref());
     }
 
@@ -63,17 +64,24 @@ pub(super) fn case_asset_cache_key(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn hash_grouped_execution(hasher: &mut Sha256, execution: &GroupedCaseExecution) {
+    match execution {
+        GroupedCaseExecution::GuestInit(config) => {
+            hash_token(hasher, "guest-init");
+            hash_grouped_runner_config(hasher, config);
+        }
+        GroupedCaseExecution::ShellCommand(config) => {
+            hash_token(hasher, "shell-command");
+            hash_grouped_runner_config(hasher, config);
+        }
+        GroupedCaseExecution::External => hash_token(hasher, "external"),
+    }
+}
+
 fn hash_grouped_runner_config(hasher: &mut Sha256, config: &GroupedCaseRunnerConfig) {
     hash_token(hasher, GROUPED_RUNNER_SCRIPT_FORMAT_VERSION);
     hash_token(hasher, &config.runner_name);
     hash_token(hasher, &config.runner_path);
-    match &config.autorun_profile_script {
-        Some(script_name) => {
-            hash_token(hasher, "autorun_profile_script");
-            hash_token(hasher, script_name);
-        }
-        None => hash_token(hasher, "no_autorun_profile_script"),
-    }
     hash_token(hasher, &config.begin_marker);
     hash_token(hasher, &config.passed_marker);
     hash_token(hasher, &config.failed_marker);

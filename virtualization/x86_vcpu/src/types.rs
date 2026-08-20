@@ -42,6 +42,8 @@ pub enum X86VcpuError {
     NoMemory,
     /// The requested hardware resource is already in use.
     ResourceBusy,
+    /// The host timer service required by an emulated device is unavailable.
+    TimerUnavailable,
 }
 
 impl From<x86_vlapic::X86VlapicError> for X86VcpuError {
@@ -52,6 +54,7 @@ impl From<x86_vlapic::X86VlapicError> for X86VcpuError {
             x86_vlapic::X86VlapicError::Unsupported => Self::Unsupported,
             x86_vlapic::X86VlapicError::NoMemory => Self::NoMemory,
             x86_vlapic::X86VlapicError::BadState => Self::BadState,
+            x86_vlapic::X86VlapicError::TimerUnavailable => Self::TimerUnavailable,
         }
     }
 }

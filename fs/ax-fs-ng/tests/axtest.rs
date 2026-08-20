@@ -13,5 +13,11 @@ fn axfsng_block_irq_outcome_and_ready_hold() {
     ax_assert!(ax_fs_ng::axtest_support::block_irq_outcome_and_ready_hold_for_test());
 }
 
+#[axtest]
+fn axfsng_expired_retry_does_not_hide_controller_park_oversleep() {
+    #[cfg(feature = "axtest")]
+    ax_assert!(ax_fs_ng::axtest_support::controller_park_oversleep_detected_for_test());
+}
+
 #[axtest::tests]
 mod tests {}

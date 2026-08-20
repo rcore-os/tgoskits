@@ -3,8 +3,8 @@
 //! Logical pending state belongs to each subsystem. A publisher must make its
 //! state visible with Release ordering before calling [`notify_cpu`]. The IPI
 //! handler must call [`claim_current_delivery`] before it observes and drains
-//! scheduler work, hard calls, or legacy callbacks, so a publication racing
-//! with draining obtains a fresh physical edge. [`IpiNotification::Coalesced`]
+//! scheduler work or hard calls, so a publication racing with draining obtains
+//! a fresh physical edge. [`IpiNotification::Coalesced`]
 //! acknowledges only that physical edge; it does not acknowledge completion of
 //! any logical work.
 
@@ -25,7 +25,6 @@ use ax_hal::{
 use ax_lazyinit::LazyInit;
 
 mod hard_call;
-pub mod legacy;
 mod notification;
 
 #[cfg(test)]
@@ -80,7 +79,6 @@ pub fn init() {
         });
     }
 
-    legacy::init_current_queue();
     endpoint(CpuId(this_cpu_id()))
         .expect("current CPU must have a preallocated IPI endpoint")
         .state
@@ -235,9 +233,4 @@ fn endpoint(cpu: CpuId) -> Result<&'static CpuEndpoint, IrqError> {
         .get()
         .and_then(|endpoints| endpoints.get(cpu.0))
         .ok_or(IrqError::InvalidCpu)
-}
-
-pub(crate) fn remote_cpu_area(cpu: CpuId) -> Result<ax_percpu::PerCpuArea, IrqError> {
-    let index = ax_percpu::CpuIndex::try_from(cpu.0).map_err(|_| IrqError::InvalidCpu)?;
-    ax_percpu::area(index).map_err(|_| IrqError::CpuOffline)
 }

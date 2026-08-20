@@ -8,8 +8,8 @@ pub(crate) mod ops;
 mod types;
 
 pub(crate) use capabilities::{
-    BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform,
-    minimum_recorded_target_cpu_capability, unsupported_target_cpu_capability,
+    BootImagePlatform, GuestBootPlatform, MachinePlatform, minimum_recorded_target_cpu_capability,
+    unsupported_target_cpu_capability,
 };
 pub(crate) use exit::{handle_hypercall, handle_mmio_read, handle_mmio_write, read_mmio_value};
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]

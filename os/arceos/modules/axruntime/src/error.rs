@@ -12,6 +12,9 @@ use axklib::KlibError;
 #[cfg(all(feature = "irq", feature = "multitask"))]
 use rdif_serial::ConfigError;
 
+#[cfg(feature = "multitask")]
+use crate::task::TaskError;
+
 /// Errors owned by the ArceOS runtime layer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum RuntimeError {
@@ -34,6 +37,10 @@ pub enum RuntimeError {
     #[cfg(feature = "fs")]
     #[error(transparent)]
     Vfs(#[from] VfsError),
+    /// The scheduler rejected a runtime-owned task operation.
+    #[cfg(feature = "multitask")]
+    #[error(transparent)]
+    Task(#[from] TaskError),
     /// A UART rejected its requested configuration.
     #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error(transparent)]
@@ -112,6 +119,8 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
             VfsError::Unsupported | VfsError::OperationNotSupported => KlibError::Unsupported,
             _ => KlibError::Io,
         },
+        #[cfg(feature = "multitask")]
+        RuntimeError::Task(error) => task_error_to_klib_error(error),
         #[cfg(all(feature = "irq", feature = "multitask"))]
         RuntimeError::SerialConfig(error) => match error {
             ConfigError::InvalidBaudrate
@@ -132,5 +141,50 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
         RuntimeError::WouldBlock => KlibError::ResourceBusy,
         RuntimeError::OperationNotSupported => KlibError::Unsupported,
         RuntimeError::InvalidCpu { .. } => KlibError::InvalidInput,
+    }
+}
+
+#[cfg(all(feature = "paging", feature = "multitask"))]
+fn task_error_to_klib_error(error: TaskError) -> KlibError {
+    use ax_task::runtime::RuntimeStatus;
+
+    match error {
+        TaskError::InvalidConfiguration
+        | TaskError::InvalidCpuCount(_)
+        | TaskError::InvalidCpu(_)
+        | TaskError::InvalidNice(_)
+        | TaskError::InvalidRtPriority(_)
+        | TaskError::InvalidRoundRobinQuantum
+        | TaskError::InvalidDeadline { .. }
+        | TaskError::UnsupportedDeadlineFlags(_) => KlibError::InvalidInput,
+        TaskError::TimerCapacity | TaskError::ThreadCapacity => KlibError::NoMemory,
+        TaskError::RuntimeFailure(status) if status == RuntimeStatus::NoMemory as u32 => {
+            KlibError::NoMemory
+        }
+        TaskError::CpuOffline(_)
+        | TaskError::CpuNotQuiescent(_)
+        | TaskError::LastOnlineCpu(_)
+        | TaskError::DeadlineAdmission
+        | TaskError::DeadlineAffinity
+        | TaskError::ActiveTimerAffinity
+        | TaskError::ThreadBusy
+        | TaskError::CpuOwnerBorrowed => KlibError::ResourceBusy,
+        TaskError::StaleThreadId => KlibError::NotFound,
+        TaskError::UnsafeContext
+        | TaskError::NotInitialized
+        | TaskError::InvalidRuntimeHandle
+        | TaskError::CpuOwnerMismatch { .. }
+        | TaskError::ExecutorOwnerMismatch { .. }
+        | TaskError::CpuAlreadyOnline(_)
+        | TaskError::InvalidTransition { .. }
+        | TaskError::AlreadyQueued
+        | TaskError::NotReady
+        | TaskError::NotExited
+        | TaskError::NoRunnableThread
+        | TaskError::InvalidPiState
+        | TaskError::InvalidPiWaitState(_)
+        | TaskError::PiCycle
+        | TaskError::PiChainLimit { .. }
+        | TaskError::RuntimeFailure(_) => KlibError::BadState,
     }
 }

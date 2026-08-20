@@ -85,7 +85,7 @@ impl CpuSchedulerClock {
             .store(generation.wrapping_mul(2), Ordering::Release);
     }
 
-    fn ensure_anchor_generation(&self, raw_clock: u64, generation: u64) {
+    fn ensure_anchor_generation(&self, raw_clock: u64, generation: u64, continuity_floor: u64) {
         let expected = generation.wrapping_mul(2);
         loop {
             let observed = self.anchor_version.load(Ordering::Acquire);
@@ -104,7 +104,8 @@ impl CpuSchedulerClock {
                 continue;
             }
 
-            let continuity_clock = self.published.load(Ordering::Acquire);
+            let published = self.published.load(Ordering::Acquire);
+            let continuity_clock = later_clock(published, continuity_floor);
             self.anchor_raw.store(raw_clock, Ordering::Relaxed);
             self.anchor_clock.store(continuity_clock, Ordering::Relaxed);
             self.anchor_version.store(expected, Ordering::Release);
@@ -197,17 +198,26 @@ impl SchedulerClock {
     ) -> Result<u64, SchedulerClockError> {
         target.ensure_online()?;
         calling.ensure_online()?;
-        match self.wait_for_mode() {
-            CLOCK_STABLE => Ok(calling_raw_clock),
-            CLOCK_UNSTABLE => {
-                let local_clock = self.unstable_local_source(calling, calling_raw_clock);
-                if core::ptr::eq(calling, target) {
-                    Ok(local_clock)
-                } else {
-                    Ok(couple_clocks(calling, target))
+        loop {
+            match self.wait_for_mode() {
+                CLOCK_STABLE => {
+                    calling
+                        .published
+                        .store(calling_raw_clock, Ordering::Release);
+                    if self.mode.load(Ordering::Acquire) == CLOCK_STABLE {
+                        return Ok(calling_raw_clock);
+                    }
                 }
+                CLOCK_UNSTABLE => {
+                    let local_clock = self.unstable_local_source(calling, calling_raw_clock);
+                    return if core::ptr::eq(calling, target) {
+                        Ok(local_clock)
+                    } else {
+                        Ok(couple_clocks(calling, target))
+                    };
+                }
+                _ => unreachable!("scheduler clock mode must be initialized"),
             }
-            _ => unreachable!("scheduler clock mode must be initialized"),
         }
     }
 
@@ -215,33 +225,29 @@ impl SchedulerClock {
         &self,
         cpu: &CpuSchedulerClock,
         raw_clock: u64,
-        stability: SchedulerClockStability,
     ) -> Result<u64, SchedulerClockError> {
         cpu.ensure_online()?;
-        match self.observe_stability(stability).0 {
+        match self.wait_for_mode() {
             CLOCK_STABLE => Ok(self.publish_stable_tick(cpu, raw_clock)),
             CLOCK_UNSTABLE => self.source(cpu, cpu, raw_clock),
             _ => unreachable!("scheduler clock mode must be initialized"),
         }
     }
 
-    fn observe_stability(&self, stability: SchedulerClockStability) -> (u8, bool) {
-        loop {
-            match self.mode.load(Ordering::Acquire) {
-                CLOCK_UNINITIALIZED => {
-                    let _lifecycle_guard = self.lock_lifecycle();
-                    return self.observe_stability_serialized(stability);
-                }
-                CLOCK_STABLE if stability == SchedulerClockStability::Unstable => {
-                    let _lifecycle_guard = self.lock_lifecycle();
-                    return self.observe_stability_serialized(stability);
-                }
-                CLOCK_STABLE => return (CLOCK_STABLE, false),
-                CLOCK_UNSTABLE => return (CLOCK_UNSTABLE, false),
-                CLOCK_TRANSITIONING => spin_loop(),
-                _ => unreachable!("invalid scheduler clock mode"),
-            }
+    pub(crate) fn hardirq_sample(
+        &self,
+        cpu: &CpuSchedulerClock,
+        raw_clock: u64,
+        stability: SchedulerClockStability,
+    ) -> Result<u64, SchedulerClockError> {
+        cpu.ensure_online()?;
+        if self.mode.load(Ordering::Acquire) == CLOCK_STABLE
+            && stability == SchedulerClockStability::Unstable
+        {
+            let _lifecycle_guard = self.lock_lifecycle();
+            self.observe_stability_serialized(stability);
         }
+        self.source(cpu, cpu, raw_clock)
     }
 
     fn observe_stability_serialized(&self, stability: SchedulerClockStability) -> (u8, bool) {
@@ -303,7 +309,8 @@ impl SchedulerClock {
 
     fn unstable_local_source(&self, cpu: &CpuSchedulerClock, raw_clock: u64) -> u64 {
         let generation = self.generation.load(Ordering::Acquire);
-        cpu.ensure_anchor_generation(raw_clock, generation);
+        let continuity_floor = self.global_clock.load(Ordering::Acquire);
+        cpu.ensure_anchor_generation(raw_clock, generation, continuity_floor);
         let candidate = cpu.candidate_from_anchor(raw_clock);
         let published = promote_clock(&cpu.published, candidate);
         promote_clock(&self.global_clock, published);
@@ -336,6 +343,14 @@ fn promote_clock(clock: &AtomicU64, candidate: u64) -> u64 {
             Ok(_) => return candidate,
             Err(actual) => observed = actual,
         }
+    }
+}
+
+const fn later_clock(left: u64, right: u64) -> u64 {
+    if scheduler_clock_before(left, right) {
+        right
+    } else {
+        left
     }
 }
 
@@ -390,15 +405,27 @@ pub(crate) unsafe fn source(
     .map_err(|_| SchedulerClockError::CurrentCpuUnavailable)?
 }
 
-pub(crate) unsafe fn tick(
-    raw_clock: u64,
-    stability: SchedulerClockStability,
-) -> Result<u64, SchedulerClockError> {
+pub(crate) unsafe fn tick(raw_clock: u64) -> Result<u64, SchedulerClockError> {
     // SAFETY: the public boundary requires local IRQ/migration exclusion.
     unsafe {
         ax_percpu::with_cpu_pin(|pin| {
-            SCHEDULER_CLOCK_CPU
-                .with_current(pin, |cpu| SCHEDULER_CLOCK.tick(cpu, raw_clock, stability))
+            SCHEDULER_CLOCK_CPU.with_current(pin, |cpu| SCHEDULER_CLOCK.tick(cpu, raw_clock))
+        })
+    }
+    .map_err(|_| SchedulerClockError::CurrentCpuUnavailable)?
+}
+
+pub(crate) unsafe fn hardirq_sample(
+    raw_clock: u64,
+    stability: SchedulerClockStability,
+) -> Result<u64, SchedulerClockError> {
+    // SAFETY: the public boundary requires local IRQ/migration exclusion and
+    // invokes this transition only before the outer hard-IRQ interval starts.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            SCHEDULER_CLOCK_CPU.with_current(pin, |cpu| {
+                SCHEDULER_CLOCK.hardirq_sample(cpu, raw_clock, stability)
+            })
         })
     }
     .map_err(|_| SchedulerClockError::CurrentCpuUnavailable)?
@@ -467,7 +494,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(clock.source(&cpu0, &cpu1, 150).unwrap(), 150);
-        assert_eq!(cpu0.published.load(Ordering::Acquire), 100);
+        assert_eq!(cpu0.published.load(Ordering::Acquire), 150);
         assert_eq!(cpu1.published.load(Ordering::Acquire), 100);
     }
 
@@ -479,20 +506,32 @@ mod tests {
         clock
             .online_cpu(&cpu, 100, SchedulerClockStability::Stable)
             .unwrap();
-        assert_eq!(
-            clock
-                .tick(&cpu, 150, SchedulerClockStability::Stable)
-                .unwrap(),
-            150
-        );
+        assert_eq!(clock.tick(&cpu, 150).unwrap(), 150);
 
         assert_eq!(
             clock
-                .tick(&cpu, 10_000, SchedulerClockStability::Unstable)
+                .hardirq_sample(&cpu, 10_000, SchedulerClockStability::Unstable)
                 .unwrap(),
             150
         );
         assert_eq!(clock.source(&cpu, &cpu, 10_010).unwrap(), 160);
+    }
+
+    #[test]
+    fn timer_tick_does_not_switch_clock_epoch_inside_hardirq_accounting() {
+        let clock = SchedulerClock::new();
+        let cpu = CpuSchedulerClock::new();
+
+        clock
+            .online_cpu(&cpu, 100, SchedulerClockStability::Stable)
+            .unwrap();
+        assert_eq!(clock.tick(&cpu, 150).unwrap(), 150);
+
+        let hardirq_entry = clock.source(&cpu, &cpu, 10_000).unwrap();
+        clock.tick(&cpu, 10_010).unwrap();
+        let hardirq_exit = clock.source(&cpu, &cpu, 10_020).unwrap();
+
+        assert_eq!(hardirq_exit.wrapping_sub(hardirq_entry), 20);
     }
 
     #[test]

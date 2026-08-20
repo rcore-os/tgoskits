@@ -37,7 +37,7 @@ impl fmt::Display for AllocationBacktrace {
 
 fn run_memory_analysis() {
     // Wait for gc
-    ax_task::yield_now();
+    crate::task::yield_now();
     cleanup_task_tables();
     clear_elf_cache();
 

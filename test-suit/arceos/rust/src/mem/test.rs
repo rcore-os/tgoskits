@@ -3,6 +3,8 @@ use core::{
     ptr::{self, NonNull},
     slice,
 };
+#[cfg(target_arch = "loongarch64")]
+use std::os::arceos::api::modules::ax_hal::mem::{kernel_aspace, phys_to_virt};
 use std::{
     collections::BTreeMap,
     format,
@@ -291,7 +293,27 @@ fn test_cross_cpu_free() {
     println!("memtest: cross CPU free OK");
 }
 
+#[cfg(target_arch = "loongarch64")]
+fn test_kernel_page_table_window_excludes_direct_map() {
+    let (base, size) = kernel_aspace();
+    let base = base.as_usize();
+    let end = base
+        .checked_add(size)
+        .expect("kernel page-table window must not overflow");
+    let direct_map = phys_to_virt(0usize.into()).as_usize();
+
+    assert!(
+        direct_map < base || direct_map >= end,
+        "LoongArch DMW address {direct_map:#x} must stay outside the page-table-backed kernel \
+         window {base:#x}..{end:#x}"
+    );
+    println!("memtest: LoongArch page-table window excludes DMW OK");
+}
+
 pub fn run() -> crate::TestResult {
+    #[cfg(target_arch = "loongarch64")]
+    test_kernel_page_table_window_excludes_direct_map();
+
     let mut rng = SmallRng::seed_from_u64(0xdead_beef);
     test_vec(&mut rng);
     test_btree_map(&mut rng);

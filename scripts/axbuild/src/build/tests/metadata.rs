@@ -90,3 +90,47 @@ fn axvm_os_implementation_dependencies_are_facaded_by_ax_std() {
         "axvm must obtain OS implementation capabilities through ax-std: {direct_forbidden:?}"
     );
 }
+
+#[test]
+fn ax_task_does_not_embed_a_host_fake_system_runtime() {
+    let workspace = crate::context::workspace_root_path().unwrap();
+    let ax_task = workspace.join("components/ax-task");
+    let forbidden_paths = [
+        ax_task.join("src/test_runtime.rs"),
+        ax_task.join("tests/support"),
+    ];
+
+    for path in forbidden_paths {
+        assert!(
+            !path.exists(),
+            "ax-task system behavior must run on a real OS runtime, not the host fake at {}",
+            path.display()
+        );
+    }
+
+    let fake_runtime_implementations = WalkDir::new(&ax_task)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "rs"))
+        .filter_map(|entry| {
+            let source = fs::read_to_string(entry.path()).ok()?;
+            source
+                .contains("impl TaskRuntime for")
+                .then(|| entry.path().to_path_buf())
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        fake_runtime_implementations.is_empty(),
+        "ax-task must not implement its own host TaskRuntime: {fake_runtime_implementations:?}"
+    );
+
+    let manifest: toml::Value =
+        toml::from_str(&fs::read_to_string(ax_task.join("Cargo.toml")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["lib"]["test"].as_bool(),
+        Some(false),
+        "ax-task's complete production object requires the OS-owned TaskRuntime and must not be \
+         linked as a host lib-test binary"
+    );
+}

@@ -1,19 +1,16 @@
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr, align_up_4k};
 use ax_runtime::hal::paging::MappingFlags;
-use ax_task::current;
 use linux_raw_sys::general::RLIMIT_DATA;
 
 use crate::{
-    StarryResult,
     config::{USER_HEAP_BASE, USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
     mm::Backend,
-    task::AsThread,
 };
 
-pub fn sys_brk(addr: usize) -> StarryResult<isize> {
-    let curr = current();
+pub fn sys_brk(current: &crate::task::UserTaskRef, addr: usize) -> crate::StarryResult<isize> {
+    let curr = current;
     let proc_data = &curr.as_thread().proc_data;
-    let current_top = proc_data.get_heap_top() as usize;
+    let current_top = proc_data.get_heap_top();
 
     // brk(0) returns current heap top
     if addr == 0 {
@@ -34,7 +31,7 @@ pub fn sys_brk(addr: usize) -> StarryResult<isize> {
     // Since we don't have end_data - start_data, we approximate by checking
     // (addr - USER_HEAP_BASE) against the soft limit.
     // RLIM_INFINITY (u64::MAX) means unlimited.
-    let rlimit_data = proc_data.rlim.read()[RLIMIT_DATA].current;
+    let rlimit_data = proc_data.rlimits()[RLIMIT_DATA].current;
     if rlimit_data != u64::MAX {
         let heap_size = addr.saturating_sub(USER_HEAP_BASE);
         if heap_size > rlimit_data as usize {

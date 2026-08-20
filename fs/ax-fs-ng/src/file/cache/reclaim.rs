@@ -55,8 +55,20 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
 }
 
 pub(super) fn register_cached_file(file: &Arc<CachedFileShared>) {
-    prune_cached_files();
-    GLOBAL_CACHED_FILES.write().push(file.clone());
+    let mut guard = GLOBAL_CACHED_FILES.write();
+    register_cached_file_in(&mut guard, file);
+}
+
+fn register_cached_file_in(
+    cached_files: &mut Vec<Arc<CachedFileShared>>,
+    file: &Arc<CachedFileShared>,
+) {
+    // Linux publishes a new address_space without walking unrelated inode
+    // mappings. Global cache collection belongs to reclaim and sync passes;
+    // doing it here makes N live mappings cost O(N²) registration work and
+    // nests each mapping's sleepable page-cache lock under the registry spin
+    // lock.
+    cached_files.push(Arc::clone(file));
 }
 
 pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
@@ -129,5 +141,25 @@ impl CachedFileShared {
             }
         }
         evicted
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registration_does_not_collect_an_unrelated_cached_mapping() {
+        let existing = Arc::new(CachedFileShared::new_unbounded(0));
+        let mut cached_files = alloc::vec![existing];
+        let registered = Arc::new(CachedFileShared::new_unbounded(0));
+
+        register_cached_file_in(&mut cached_files, &registered);
+
+        assert_eq!(
+            cached_files.len(),
+            2,
+            "publishing one mapping must not scan or collect unrelated cached files"
+        );
     }
 }

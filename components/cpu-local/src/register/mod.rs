@@ -2,7 +2,10 @@
 
 use core::{pin::Pin, ptr::NonNull, sync::atomic::Ordering};
 
-use crate::{ContextSwitchError, CpuAreaRef, CpuLocalError, CpuPin, ExecutionContextHeader};
+use crate::{
+    ContextSwitchError, CpuAreaRef, CpuLocalError, CpuPin, ExecutionContextHeader,
+    preempt::PreemptionSnapshot,
+};
 
 #[cfg(all(not(feature = "host-test"), target_arch = "aarch64"))]
 mod aarch64;
@@ -68,6 +71,18 @@ impl ArchitectureCurrentModel {
     }
 }
 
+/// Architecture register boundary for current-state observations.
+///
+/// The execution-context implementation is the portable default. Backends may
+/// override it only when their current preemption owner has a cheaper native
+/// representation, while preserving the same advisory snapshot semantics.
+pub(super) trait ArchitectureRegisterBackend {
+    #[inline(always)]
+    fn current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalError> {
+        default_current_preemption_snapshot()
+    }
+}
+
 /// Installs the final area of an offline CPU.
 ///
 /// # Safety
@@ -113,6 +128,21 @@ pub(crate) unsafe fn current_cpu_area_base() -> Result<usize, CpuLocalError> {
         return Err(CpuLocalError::InvalidAreaBase { base: area_base });
     }
     Ok(area_base)
+}
+
+#[inline(always)]
+pub(crate) fn current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalError> {
+    imp::Backend::current_preemption_snapshot()
+}
+
+#[inline(always)]
+fn default_current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalError> {
+    let current = unsafe { current_context_unpinned()? };
+    // SAFETY: the architecture current source identifies this executing
+    // context. An interrupt may migrate it before the dereference, but this
+    // instruction stream can resume only as the same live context, whose
+    // preemption word migrates with it.
+    Ok(unsafe { current.as_ref() }.preemption_state().snapshot())
 }
 
 /// Commits the current-context source before the architecture switch tail.
@@ -339,6 +369,20 @@ mod tests {
             is_permanent_boot_context(runtime_context.as_ref().as_non_null()),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn backend_default_observes_the_current_execution_context() {
+        let area = modeled_area(0);
+        let boot = area.prefix().boot_context().header();
+
+        // SAFETY: this host thread serially owns the leaked CPU fixture.
+        unsafe { imp::install_cpu_base(area.base(), boot as *const _ as usize) };
+
+        let snapshot = current_preemption_snapshot()
+            .expect("host backend default should observe its boot context");
+        assert_eq!(snapshot.depth(), 1);
+        assert!(!snapshot.is_pending());
     }
 
     #[test]

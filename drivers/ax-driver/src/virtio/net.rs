@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use alloc::{boxed::Box, collections::BTreeMap, format, sync::Arc};
+use alloc::{boxed::Box, format, sync::Arc};
 use core::{
     cell::UnsafeCell,
     hint::spin_loop,
@@ -118,7 +118,6 @@ impl<T: VirtIoTransport> rd_net::Interface for VirtIoNetDevice<T> {
 struct VirtioNetInnerCell<T: VirtIoTransport> {
     inner: UnsafeCell<NetInner<T>>,
     access_active: AtomicBool,
-    irq_ack_pending: AtomicBool,
 }
 
 unsafe impl<T: VirtIoTransport> Send for VirtioNetInnerCell<T> {}
@@ -129,7 +128,6 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
         Self {
             inner: UnsafeCell::new(inner),
             access_active: AtomicBool::new(false),
-            irq_ack_pending: AtomicBool::new(false),
         }
     }
 
@@ -139,50 +137,32 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
         // SAFETY: `access_active` serializes all mutable access to the shared
         // raw transport. Task-side callers also keep local IRQ/preemption off.
         let inner = unsafe { &mut *self.inner.get() };
-        self.flush_pending_irq_ack(inner);
-        let ret = f(inner);
-        self.flush_pending_irq_ack(inner);
-        ret
+        f(inner)
     }
 
-    fn try_with_irq<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> Option<R> {
-        let _active = VirtioNetAccessGuard::try_enter_irq(&self.access_active)?;
+    fn with_irq<R>(&self, f: impl FnOnce(&mut NetInner<T>) -> R) -> R {
+        let _active = VirtioNetAccessGuard::enter_irq(&self.access_active);
         // SAFETY: `access_active` serializes IRQ-side access with task-side
-        // queue operations. IRQ context never waits for task-side access.
-        Some(f(unsafe { &mut *self.inner.get() }))
+        // queue operations. Every task-side critical section is non-sleeping,
+        // allocation-free, and bounded by one fixed-size VirtIO queue action.
+        f(unsafe { &mut *self.inner.get() })
     }
 
     fn handle_irq(&self) -> Event {
-        let queue_interrupt = self
-            .try_with_irq(|inner| {
-                self.irq_ack_pending.store(false, Ordering::Release);
-                inner
-                    .raw
-                    .ack_interrupt()
-                    .contains(InterruptStatus::QUEUE_INTERRUPT)
-            })
-            .unwrap_or_else(|| {
-                self.irq_ack_pending.store(true, Ordering::Release);
-                // The task-side owner will acknowledge the transport before
-                // and after its queue operation. Without an IRQ status snapshot
-                // we must not publish a queue event from a shared interrupt.
-                false
-            });
+        let queue_interrupt = self.with_irq(|inner| {
+            inner
+                .raw
+                .ack_interrupt()
+                .contains(InterruptStatus::QUEUE_INTERRUPT)
+        });
 
         if !queue_interrupt {
             return Event::none();
         }
-
         let mut event = Event::none();
         event.tx_queue.insert(0);
         event.rx_queue.insert(0);
         event
-    }
-
-    fn flush_pending_irq_ack(&self, inner: &mut NetInner<T>) {
-        if self.irq_ack_pending.swap(false, Ordering::AcqRel) {
-            let _ = inner.raw.ack_interrupt();
-        }
     }
 }
 
@@ -193,11 +173,8 @@ impl<'a> VirtioNetAccessGuard<'a> {
         Self::enter(active)
     }
 
-    fn try_enter_irq(active: &'a AtomicBool) -> Option<Self> {
-        active
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
-            .then_some(Self(active))
+    fn enter_irq(active: &'a AtomicBool) -> Self {
+        Self::enter(active)
     }
 
     fn enter(active: &'a AtomicBool) -> Self {
@@ -229,8 +206,8 @@ impl Drop for VirtioNetAccessGuard<'_> {
 
 struct NetInner<T: VirtIoTransport> {
     raw: VirtIONetRaw<VirtIoHalImpl, T, QUEUE_SIZE>,
-    tx_inflight: BTreeMap<u16, TxInflight>,
-    rx_inflight: BTreeMap<u16, RxInflight>,
+    tx_inflight: [Option<TxInflight>; QUEUE_SIZE],
+    rx_inflight: [Option<RxInflight>; QUEUE_SIZE],
 }
 
 unsafe impl<T: VirtIoTransport> Send for NetInner<T> {}
@@ -239,8 +216,8 @@ impl<T: VirtIoTransport> NetInner<T> {
     fn new(raw: VirtIONetRaw<VirtIoHalImpl, T, QUEUE_SIZE>) -> Self {
         Self {
             raw,
-            tx_inflight: BTreeMap::new(),
-            rx_inflight: BTreeMap::new(),
+            tx_inflight: core::array::from_fn(|_| None),
+            rx_inflight: core::array::from_fn(|_| None),
         }
     }
 
@@ -253,62 +230,52 @@ impl<T: VirtIoTransport> NetInner<T> {
         }
     }
 
-    fn submit_tx(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
-        let packet = unsafe { core::slice::from_raw_parts(buffer.virt.as_ptr(), buffer.len) };
-        let mut staging = alloc::vec![0; self.raw_header_len()? + buffer.len];
-        let header_len = self
-            .raw
-            .fill_buffer_header(&mut staging)
-            .map_err(map_net_error)?;
-        staging[header_len..header_len + buffer.len].copy_from_slice(packet);
+    fn fill_tx_header(&mut self, header: &mut [u8]) -> Result<usize, NetError> {
+        self.raw.fill_buffer_header(header).map_err(map_net_error)
+    }
+
+    fn submit_tx(&mut self, bus_addr: u64, staging: alloc::vec::Vec<u8>) -> Result<(), NetError> {
         let token = unsafe { self.raw.transmit_begin(&staging) }.map_err(map_net_error)?;
-        self.tx_inflight.insert(
-            token,
-            TxInflight {
-                bus_addr: buffer.bus_addr,
-                staging,
-            },
-        );
+        let slot = self
+            .tx_inflight
+            .get_mut(usize::from(token))
+            .expect("VirtIO TX token must fit the negotiated queue size");
+        assert!(slot.is_none(), "VirtIO TX token must not already be active");
+        *slot = Some(TxInflight { bus_addr, staging });
         Ok(())
     }
 
-    fn reclaim_tx(&mut self) -> Option<u64> {
+    fn reclaim_tx(&mut self) -> Option<TxInflight> {
         let token = self.raw.poll_transmit()?;
-        let inflight = self.tx_inflight.remove(&token)?;
+        let inflight = self.tx_inflight.get_mut(usize::from(token))?.take()?;
         let _ = unsafe { self.raw.transmit_complete(token, &inflight.staging) };
-        Some(inflight.bus_addr)
+        Some(inflight)
     }
 
     fn submit_rx(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
         let rx_buffer =
             unsafe { core::slice::from_raw_parts_mut(buffer.virt.as_ptr(), buffer.len) };
         let token = unsafe { self.raw.receive_begin(rx_buffer) }.map_err(map_net_error)?;
-        self.rx_inflight.insert(
-            token,
-            RxInflight {
-                virt_addr: buffer.virt.as_ptr() as usize,
-                bus_addr: buffer.bus_addr,
-                len: buffer.len,
-            },
-        );
+        let slot = self
+            .rx_inflight
+            .get_mut(usize::from(token))
+            .expect("VirtIO RX token must fit the negotiated queue size");
+        assert!(slot.is_none(), "VirtIO RX token must not already be active");
+        *slot = Some(RxInflight {
+            virt_addr: buffer.virt.as_ptr() as usize,
+            bus_addr: buffer.bus_addr,
+            len: buffer.len,
+        });
         Ok(())
     }
 
-    fn reclaim_rx(&mut self) -> Option<(u64, usize)> {
+    fn reclaim_rx(&mut self) -> Option<(RxInflight, usize, usize)> {
         let token = self.raw.poll_receive()?;
-        let inflight = self.rx_inflight.remove(&token)?;
+        let inflight = self.rx_inflight.get_mut(usize::from(token))?.take()?;
         let buffer =
             unsafe { core::slice::from_raw_parts_mut(inflight.virt_addr as *mut u8, inflight.len) };
         let (header_len, packet_len) = unsafe { self.raw.receive_complete(token, buffer) }.ok()?;
-        buffer.copy_within(header_len..header_len + packet_len, 0);
-        Some((inflight.bus_addr, packet_len))
-    }
-
-    fn raw_header_len(&mut self) -> Result<usize, NetError> {
-        let mut header = [0_u8; 16];
-        self.raw
-            .fill_buffer_header(&mut header)
-            .map_err(map_net_error)
+        Some((inflight, header_len, packet_len))
     }
 }
 
@@ -326,11 +293,22 @@ impl<T: VirtIoTransport> ITxQueue for NetTxQueue<T> {
     }
 
     fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
-        self.inner.with_task(|inner| inner.submit_tx(buffer))
+        let mut header = [0_u8; 16];
+        let header_len = self
+            .inner
+            .with_task(|inner| inner.fill_tx_header(&mut header))?;
+        let packet = unsafe { core::slice::from_raw_parts(buffer.virt.as_ptr(), buffer.len) };
+        let mut staging = alloc::vec![0; header_len + buffer.len];
+        staging[..header_len].copy_from_slice(&header[..header_len]);
+        staging[header_len..].copy_from_slice(packet);
+        self.inner
+            .with_task(|inner| inner.submit_tx(buffer.bus_addr, staging))
     }
 
     fn reclaim(&mut self) -> Option<u64> {
-        self.inner.with_task(NetInner::reclaim_tx)
+        self.inner
+            .with_task(NetInner::reclaim_tx)
+            .map(|inflight| inflight.bus_addr)
     }
 }
 
@@ -352,7 +330,11 @@ impl<T: VirtIoTransport> IRxQueue for NetRxQueue<T> {
     }
 
     fn reclaim(&mut self) -> Option<(u64, usize)> {
-        self.inner.with_task(NetInner::reclaim_rx)
+        let (inflight, header_len, packet_len) = self.inner.with_task(NetInner::reclaim_rx)?;
+        let buffer =
+            unsafe { core::slice::from_raw_parts_mut(inflight.virt_addr as *mut u8, inflight.len) };
+        buffer.copy_within(header_len..header_len + packet_len, 0);
+        Some((inflight.bus_addr, packet_len))
     }
 }
 
@@ -443,38 +425,36 @@ fn map_net_error(err: VirtIoError) -> NetError {
 mod tests {
     extern crate std;
 
+    use alloc::sync::Arc;
     use core::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
 
     use super::VirtioNetAccessGuard;
 
     #[test]
-    fn irq_access_returns_none_when_task_access_is_active() {
+    fn irq_access_can_enter_after_task_access_finishes() {
         let active = AtomicBool::new(false);
         let task_guard = VirtioNetAccessGuard::enter_task(&active);
 
-        assert!(VirtioNetAccessGuard::try_enter_irq(&active).is_none());
         drop(task_guard);
-        assert!(VirtioNetAccessGuard::try_enter_irq(&active).is_some());
+        drop(VirtioNetAccessGuard::enter_irq(&active));
     }
 
     #[test]
-    fn skipped_irq_access_records_pending_ack_without_queue_event() {
-        let access_active = AtomicBool::new(false);
-        let irq_ack_pending = AtomicBool::new(false);
+    fn contended_irq_access_must_not_defer_transport_ack() {
+        let access_active = Arc::new(AtomicBool::new(false));
+        let acknowledged = Arc::new(AtomicBool::new(false));
         let task_guard = VirtioNetAccessGuard::enter_task(&access_active);
+        let irq_access_active = Arc::clone(&access_active);
+        let irq_acknowledged = Arc::clone(&acknowledged);
+        let irq = thread::spawn(move || {
+            let _irq_guard = VirtioNetAccessGuard::enter_irq(&irq_access_active);
+            irq_acknowledged.store(true, Ordering::Release);
+        });
 
-        let queue_interrupt = if VirtioNetAccessGuard::try_enter_irq(&access_active).is_none() {
-            irq_ack_pending.store(true, Ordering::Release);
-            false
-        } else {
-            true
-        };
-
-        assert!(!queue_interrupt);
-        assert!(irq_ack_pending.load(Ordering::Acquire));
+        assert!(!acknowledged.load(Ordering::Acquire));
         drop(task_guard);
-        assert!(VirtioNetAccessGuard::try_enter_irq(&access_active).is_some());
-        assert!(irq_ack_pending.swap(false, Ordering::AcqRel));
-        assert!(!irq_ack_pending.load(Ordering::Acquire));
+        irq.join().unwrap();
+        assert!(acknowledged.load(Ordering::Acquire));
     }
 }

@@ -28,6 +28,7 @@ use crate::shell::command::{CommandNode, FlagDef, OptionDef, ParsedCommand};
 
 /// Check if a VM can transition to Running state.
 /// Returns Ok(()) if the transition is valid, Err with a message otherwise.
+#[cfg(feature = "fs")]
 fn can_start_vm(status: VmStatus) -> Result<(), &'static str> {
     match status {
         VmStatus::Ready | VmStatus::Stopped => Ok(()),
@@ -239,6 +240,7 @@ fn vm_start(cmd: &ParsedCommand) {
 
 /// Start a single VM by setting up vCPUs and calling boot.
 /// Returns Ok(()) if successful, Err otherwise.
+#[cfg(feature = "fs")]
 fn start_single_vm(vm: axvm::AxVMRef) -> anyhow::Result<()> {
     let vm_id = vm.id();
     let status = vm.status();
@@ -250,6 +252,7 @@ fn start_single_vm(vm: axvm::AxVMRef) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "fs")]
 fn start_vm_by_id(vm_id: usize, attach_console: bool) {
     match crate::manager::AxvmManager::with_vm(vm_id, |vm| start_single_vm(vm.clone())) {
         Some(Ok(_)) => {

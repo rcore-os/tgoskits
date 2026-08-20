@@ -20,11 +20,11 @@ use core::{
     time::Duration,
 };
 
-use ax_task::future::{block_on, poll_io, timeout};
 use axpoll::{IoEvents, Pollable};
 
 use crate::{
     NetError, NetResult,
+    blocking::poll_io,
     config::{DeviceBinding, InterfaceId},
     get_service, interface_by_id,
     options::{Configurable, GetSocketOption, SetSocketOption},
@@ -210,9 +210,9 @@ impl GeneralOptions {
         Ok(())
     }
 
-    /// Registers a waker with the service/device path for the bound interface.
-    pub fn register_waker(&self, waker: &Waker) {
-        get_service().register_waker(self.device_binding(), waker);
+    /// Registers a waker for the protocol timer deadline.
+    pub fn register_timeout_waker(&self, waker: &Waker) {
+        get_service().register_timeout_waker(waker);
     }
 
     /// Runs a send operation through the standard blocking/nonblocking poller.
@@ -243,15 +243,13 @@ impl GeneralOptions {
         extra_nonblocking: bool,
         f: F,
     ) -> NetResult<T> {
-        block_on(timeout(
+        poll_io(
+            pollable,
+            IoEvents::OUT,
+            self.nonblocking() || extra_nonblocking,
             self.send_timeout(),
-            poll_io(
-                pollable,
-                IoEvents::OUT,
-                self.nonblocking() || extra_nonblocking,
-                f,
-            ),
-        ))?
+            f,
+        )
     }
 
     /// Like [`recv_poller`] but lets the caller force non-blocking
@@ -262,15 +260,13 @@ impl GeneralOptions {
         extra_nonblocking: bool,
         f: F,
     ) -> NetResult<T> {
-        block_on(timeout(
+        poll_io(
+            pollable,
+            IoEvents::IN,
+            self.nonblocking() || extra_nonblocking,
             self.recv_timeout(),
-            poll_io(
-                pollable,
-                IoEvents::IN,
-                self.nonblocking() || extra_nonblocking,
-                f,
-            ),
-        ))?
+            f,
+        )
     }
 }
 impl Configurable for GeneralOptions {

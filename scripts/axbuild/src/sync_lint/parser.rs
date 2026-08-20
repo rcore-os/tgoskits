@@ -473,9 +473,7 @@ fn is_observer_event_name(name: &str) -> bool {
         name,
         "notify_one"
             | "notify_all"
-            | "notify_one_with"
             | "ax_wait_queue_wake"
-            | "ax_wait_queue_wake_one_with"
             | "wake"
             | "wake_by_ref"
             | "wake_one"

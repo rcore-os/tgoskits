@@ -18,7 +18,7 @@ use crate::{
         INT_TIMER, LOCAL_INTERRUPT_MASK, TIMER_BIT, advance_guest_pc, decode_interrupt_vector,
         extract_field, get_badi, get_guest_pc,
     },
-    types::{LoongArchVcpuId, LoongArchVmExit, LoongArchVmId},
+    types::{LoongArchVcpuId, LoongArchVcpuResult, LoongArchVmExit, LoongArchVmId},
 };
 
 const CPUCFG2_CRYPTO: usize = 1 << 9;
@@ -156,15 +156,15 @@ pub(crate) fn emulate_csrx<H: LoongArchHostOps>(
     ins: usize,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) -> LoongArchVmExit {
+    guest_timer_token: &mut Option<H::TimerHandle>,
+) -> LoongArchVcpuResult<LoongArchVmExit> {
     let rd = extract_field(ins, 0, 5);
     let rj = extract_field(ins, 5, 5);
     let csr = extract_field(ins, 10, 14);
 
-    emulate_guest_csr::<H>(ctx, rd, rj, csr, vm_id, vcpu_id, guest_timer_token);
+    emulate_guest_csr::<H>(ctx, rd, rj, csr, vm_id, vcpu_id, guest_timer_token)?;
     advance_guest_pc(ctx);
-    LoongArchVmExit::Nothing
+    Ok(LoongArchVmExit::Nothing)
 }
 
 /// Timer CSR numbers (matching GCSR encoding in LoongArch LVZ).
@@ -243,8 +243,8 @@ fn write_guest_csr<H: LoongArchHostOps>(
     value: usize,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) {
+    guest_timer_token: &mut Option<H::TimerHandle>,
+) -> LoongArchVcpuResult {
     match csr {
         CSR_CRMD => ctx.gcsr_crmd = value,
         CSR_PRMD => ctx.gcsr_prmd = value,
@@ -292,7 +292,7 @@ fn write_guest_csr<H: LoongArchHostOps>(
         0x3f => ctx.gcsr_save15 = value,
         CSR_TID => ctx.gcsr_tid = value,
         CSR_TCFG | CSR_TVAL | CSR_TICLR => {
-            write_guest_timer_csr::<H>(ctx, csr, value, vm_id, vcpu_id, guest_timer_token)
+            write_guest_timer_csr::<H>(ctx, csr, value, vm_id, vcpu_id, guest_timer_token)?
         }
         CSR_LLBCTL => ctx.gcsr_llbctl = value,
         CSR_TLBRENTRY => ctx.gcsr_tlbrentry = value,
@@ -313,6 +313,7 @@ fn write_guest_csr<H: LoongArchHostOps>(
             value
         ),
     }
+    Ok(())
 }
 
 fn guest_timer_periodic(ctx: &LoongArchContextFrame) -> bool {
@@ -323,22 +324,25 @@ fn guest_timer_init_ticks(ctx: &LoongArchContextFrame) -> u64 {
     guest_tcfg_initval(ctx.gcsr_tcfg) as u64
 }
 
-fn cancel_guest_timer<H: LoongArchHostOps>(guest_timer_token: &mut Option<usize>) {
-    if let Some(token) = guest_timer_token.take() {
-        H::cancel_timer(token);
+fn cancel_guest_timer<H: LoongArchHostOps>(
+    guest_timer_token: &mut Option<H::TimerHandle>,
+) -> LoongArchVcpuResult {
+    if let Some(handle) = guest_timer_token.take() {
+        H::cancel_timer(handle)?;
     }
+    Ok(())
 }
 
 fn register_guest_timer<H: LoongArchHostOps>(
     ctx: &mut LoongArchContextFrame,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) {
-    cancel_guest_timer::<H>(guest_timer_token);
+    guest_timer_token: &mut Option<H::TimerHandle>,
+) -> LoongArchVcpuResult {
+    cancel_guest_timer::<H>(guest_timer_token)?;
 
     if !guest_tcfg_enabled(ctx.gcsr_tcfg) {
-        return;
+        return Ok(());
     }
 
     let init_ticks = guest_timer_init_ticks(ctx);
@@ -352,7 +356,7 @@ fn register_guest_timer<H: LoongArchHostOps>(
                 ctx.gcsr_estat
             );
         }
-        return;
+        return Ok(());
     }
 
     ctx.gcsr_tval = init_ticks as usize;
@@ -367,11 +371,12 @@ fn register_guest_timer<H: LoongArchHostOps>(
             deadline_ns
         );
     }
-    let token = H::register_timer(
+    let handle = H::register_timer(
         Duration::from_nanos(deadline_ns),
         Box::new(move |_| H::inject_interrupt(vm_id, vcpu_id, INT_TIMER)),
-    );
-    *guest_timer_token = Some(token);
+    )?;
+    *guest_timer_token = Some(handle);
+    Ok(())
 }
 
 fn write_guest_timer_csr<H: LoongArchHostOps>(
@@ -380,12 +385,12 @@ fn write_guest_timer_csr<H: LoongArchHostOps>(
     value: usize,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) {
+    guest_timer_token: &mut Option<H::TimerHandle>,
+) -> LoongArchVcpuResult {
     match csr {
         CSR_TCFG => {
             ctx.gcsr_tcfg = value;
-            register_guest_timer::<H>(ctx, vm_id, vcpu_id, guest_timer_token);
+            register_guest_timer::<H>(ctx, vm_id, vcpu_id, guest_timer_token)?;
         }
         CSR_TVAL => {
             ctx.gcsr_tval = value;
@@ -405,15 +410,16 @@ fn write_guest_timer_csr<H: LoongArchHostOps>(
                     );
                 }
                 if guest_timer_periodic(ctx) {
-                    register_guest_timer::<H>(ctx, vm_id, vcpu_id, guest_timer_token);
+                    register_guest_timer::<H>(ctx, vm_id, vcpu_id, guest_timer_token)?;
                 } else {
                     ctx.gcsr_tcfg &= !guest_tcfg_enable_mask();
-                    cancel_guest_timer::<H>(guest_timer_token);
+                    cancel_guest_timer::<H>(guest_timer_token)?;
                 }
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 fn emulate_guest_csr<H: LoongArchHostOps>(
@@ -423,8 +429,8 @@ fn emulate_guest_csr<H: LoongArchHostOps>(
     csr: usize,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) {
+    guest_timer_token: &mut Option<H::TimerHandle>,
+) -> LoongArchVcpuResult {
     let old_value = read_guest_csr(ctx, csr);
     let mut return_value = old_value;
 
@@ -436,10 +442,11 @@ fn emulate_guest_csr<H: LoongArchHostOps>(
             return_value &= mask;
             (old_value & !mask) | (ctx.x[rd] & mask)
         };
-        write_guest_csr::<H>(ctx, csr, new_value, vm_id, vcpu_id, guest_timer_token);
+        write_guest_csr::<H>(ctx, csr, new_value, vm_id, vcpu_id, guest_timer_token)?;
     }
 
     ctx.set_gpr(rd, return_value);
+    Ok(())
 }
 
 pub(crate) fn emulate_cacop(ctx: &mut LoongArchContextFrame, _ins: usize) -> LoongArchVmExit {

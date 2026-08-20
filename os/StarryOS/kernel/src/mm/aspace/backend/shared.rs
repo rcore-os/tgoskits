@@ -8,7 +8,7 @@ use super::{
     AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, RssKind, alloc_frame,
     dealloc_frame, divide_page, pages_in,
 };
-use crate::{StarryResult, sync::Mutex};
+use crate::{StarryResult, sync::PiMutex};
 
 enum SharedPagesOwner {
     Allocated,
@@ -51,10 +51,6 @@ impl SharedPages {
 
     pub fn len(&self) -> usize {
         self.phys_pages.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.phys_pages.is_empty()
     }
 }
 
@@ -160,7 +156,7 @@ impl BackendOps for SharedBackend {
         _flags: MappingFlags,
         _old_pt: &mut PageTable,
         _new_pt: &mut PageTable,
-        _new_aspace: &Arc<Mutex<AddrSpace>>,
+        _new_aspace: &Arc<PiMutex<AddrSpace>>,
         _acct: CloneMapAccounting<'_>,
     ) -> StarryResult<Backend> {
         Ok(Backend::Shared(self.clone()))

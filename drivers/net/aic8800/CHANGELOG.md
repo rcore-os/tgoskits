@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the vendored fixed-capacity poll set with owned `axpoll-set`
+  registrations and removed the TX periodic wake fallback.
+
 ## [0.2.7](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.6...aic8800-v0.2.7) - 2026-08-09
 
 ### Other

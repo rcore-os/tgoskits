@@ -744,7 +744,8 @@ pub fn send_poller_with<P: Pollable, F: FnMut() -> NetResult<T>, T>(
 1. 先执行一次 socket 操作闭包。
 2. 如果成功，直接返回。
 3. 如果返回 `WouldBlock` 且是 nonblocking 或 `MSG_DONTWAIT`，立即返回错误。
-4. 否则调用 `Pollable::register()` 注册 waker，挂起当前任务。
+4. 否则用 `PollRegistrar<ExclusiveConsumer>` 调用
+   `Pollable::register_exclusive()`，取得由 future 持有的 lease 后挂起当前任务。
 5. 被唤醒或 timeout 后重试闭包。
 
 通用 helper 列表只规定等待和重试机制，不定义某个 transport 何时可读写。IP Socket readiness 由 smoltcp buffer 与连接状态产生，并额外通过设备事件推动下一轮协议处理。
@@ -887,6 +888,7 @@ TCP、UDP 与 Raw Socket 的 send、connect 和 recv 热路径只修改局部或
 
 1. 操作对应 smoltcp socket 或本地 socket 状态。
 2. 调用 `request_poll()` 请求专用 net-poll worker 推进协议栈。
-3. 在 `WouldBlock` 时通过 `Pollable::register()` 注册 waker 并让出当前任务。
+3. 在 `WouldBlock` 时通过调用方持有的 exclusive registrar 注册 readiness 并让出
+   当前任务；重试、timeout、signal 或 future drop 都撤销同一份 lease。
 
 这个模型保持应用线程和协议栈驱动线程分离，避免 socket 调用者临时成为 smoltcp interface owner。

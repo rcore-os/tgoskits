@@ -65,7 +65,9 @@ pub use imp::pthread::mutex::{
     sys_pthread_mutex_trylock, sys_pthread_mutex_unlock,
 };
 #[cfg(feature = "multitask")]
-pub use imp::pthread::{sys_pthread_create, sys_pthread_exit, sys_pthread_join, sys_pthread_self};
+pub use imp::pthread::{
+    sys_pthread_create, sys_pthread_detach, sys_pthread_exit, sys_pthread_join, sys_pthread_self,
+};
 pub use imp::{
     io::{sys_read, sys_write, sys_writev},
     resources::{sys_getrlimit, sys_setrlimit},

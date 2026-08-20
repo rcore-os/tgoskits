@@ -1,38 +1,34 @@
-use ax_task::current;
-
 use crate::{
     StarryError, StarryResult,
-    task::{AsThread, current_pid_view},
+    task::{PidView, UserTaskRef},
 };
 
 #[inline(never)]
-pub fn sys_getpid() -> StarryResult<isize> {
-    let curr = current();
-    let thr = curr.as_thread();
-    current_pid_view()
+pub fn sys_getpid(current: &UserTaskRef) -> StarryResult<isize> {
+    let thr = current.as_thread();
+    PidView::new(thr.active_pid_namespace())
         .visible_process_number(&thr.proc_data.identity())
         .map(|pid| pid.get() as isize)
         .ok_or(StarryError::NoSuchProcess)
 }
 
-pub fn sys_getppid() -> StarryResult<isize> {
-    let curr = current();
-    let thr = curr.as_thread();
-    let parent = thr
+pub fn sys_getppid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
+    let parent = current
+        .as_thread()
         .proc_data
         .proc
         .parent()
         .ok_or(StarryError::NoSuchProcess)?;
-    Ok(current_pid_view()
+    Ok(PidView::new(current.as_thread().active_pid_namespace())
         .visible_process_number(&parent.identity())
         .map_or(0, |pid| pid.get() as isize))
 }
 
-pub fn sys_gettid() -> StarryResult<isize> {
+pub fn sys_gettid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {
     // `Thread::tid` rather than the scheduler ID: after a non-leader
     // `execve` they differ (the calling thread inherits the leader's TID
     // so that `gettid() == getpid()` holds in the new image).
-    Ok(current().as_thread().user_tid().get() as _)
+    Ok(current.as_thread().user_tid().get() as _)
 }
 
 /// `getcpu(2)`: report the CPU and NUMA node the caller is running on.
@@ -40,15 +36,21 @@ pub fn sys_gettid() -> StarryResult<isize> {
 /// glibc's `sched_getcpu` and NUMA-aware allocators query this. We report the
 /// current CPU id and node 0 (single NUMA node); the obsolete `tcache` arg is
 /// ignored. Either pointer may be NULL.
-pub fn sys_getcpu(cpu: *mut u32, node: *mut u32, _tcache: usize) -> StarryResult<isize> {
+pub fn sys_getcpu(
+    current: &crate::task::UserTaskRef,
+    cpu: *mut u32,
+    node: *mut u32,
+    _tcache: usize,
+) -> crate::StarryResult<isize> {
     use ax_runtime::hal::percpu::this_cpu_id;
-    use starry_vm::VmMutPtr;
+
+    use crate::mm::VmMutPtr;
 
     if !cpu.is_null() {
-        cpu.vm_write(this_cpu_id() as u32)?;
+        cpu.vm_write(current, this_cpu_id() as u32)?;
     }
     if !node.is_null() {
-        node.vm_write(0)?;
+        node.vm_write(current, 0)?;
     }
     Ok(0)
 }
@@ -79,8 +81,11 @@ enum ArchPrctlCode {
 /// To set the clear_child_tid field in the task extended data.
 ///
 /// The set_tid_address() always succeeds
-pub fn sys_set_tid_address(clear_child_tid: usize) -> StarryResult<isize> {
-    let curr = current();
+pub fn sys_set_tid_address(
+    current: &crate::task::UserTaskRef,
+    clear_child_tid: usize,
+) -> crate::StarryResult<isize> {
+    let curr = current;
     let thr = curr.as_thread();
     thr.set_clear_child_tid(clear_child_tid);
     Ok(thr.user_tid().get() as isize)
@@ -88,11 +93,12 @@ pub fn sys_set_tid_address(clear_child_tid: usize) -> StarryResult<isize> {
 
 #[cfg(target_arch = "x86_64")]
 pub fn sys_arch_prctl(
+    current: &crate::task::UserTaskRef,
     uctx: &mut ax_runtime::hal::cpu::uspace::UserContext,
     code: i32,
     addr: usize,
-) -> StarryResult<isize> {
-    use starry_vm::VmMutPtr;
+) -> crate::StarryResult<isize> {
+    use crate::mm::VmMutPtr;
 
     let code = ArchPrctlCode::try_from(code).map_err(|_| StarryError::InvalidInput)?;
     debug!("sys_arch_prctl: code = {code:?}, addr = {addr:#x}");
@@ -101,7 +107,7 @@ pub fn sys_arch_prctl(
         // According to Linux implementation, SetFs & SetGs does not return
         // error at all
         ArchPrctlCode::GetFs => {
-            (addr as *mut usize).vm_write(uctx.tls())?;
+            (addr as *mut usize).vm_write(current, uctx.tls())?;
             Ok(0)
         }
         ArchPrctlCode::SetFs => {
@@ -109,7 +115,7 @@ pub fn sys_arch_prctl(
             Ok(0)
         }
         ArchPrctlCode::GetGs => {
-            (addr as *mut usize).vm_write(uctx.gs_base as _)?;
+            (addr as *mut usize).vm_write(current, uctx.gs_base as _)?;
             Ok(0)
         }
         ArchPrctlCode::SetGs => {

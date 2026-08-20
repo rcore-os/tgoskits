@@ -287,7 +287,12 @@ pub fn dispatch_irq(irq: IrqId) -> IrqOutcome {
     dispatch_irq_on(irq, PlatIrqOps.current_cpu())
 }
 
-fn in_irq_context_on(cpu: CpuId) -> bool {
+/// Tests one explicitly selected CPU's IRQ-action publication.
+///
+/// Callers that use this for the current CPU must retain their own migration
+/// exclusion across CPU identity resolution and this atomic observation.
+#[doc(hidden)]
+pub fn in_irq_context_on(cpu: CpuId) -> bool {
     irq_context_bit(cpu)
         .map(|bit| IRQ_CONTEXT_CPUS.load(Ordering::Acquire) & bit != 0)
         .unwrap_or(false)

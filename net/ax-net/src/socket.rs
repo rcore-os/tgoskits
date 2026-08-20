@@ -23,12 +23,11 @@ use core::{
     any::Any,
     fmt::{self, Debug},
     net::SocketAddr,
-    task::Context,
     time::Duration,
 };
 
 use ax_io::prelude::*;
-use axpoll::{IoEvents, Pollable};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 use bitflags::bitflags;
 use enum_dispatch::enum_dispatch;
 
@@ -386,14 +385,29 @@ impl Pollable for Socket {
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         match self {
-            Socket::Tcp(tcp) => tcp.register(context, events),
-            Socket::Udp(udp) => udp.register(context, events),
-            Socket::Raw(raw) => raw.register(context, events),
-            Socket::Unix(unix) => unix.register(context, events),
+            Socket::Tcp(tcp) => unsafe { tcp.register_shared(sink, events) },
+            Socket::Udp(udp) => unsafe { udp.register_shared(sink, events) },
+            Socket::Raw(raw) => unsafe { raw.register_shared(sink, events) },
+            Socket::Unix(unix) => unsafe { unix.register_shared(sink, events) },
             #[cfg(feature = "vsock")]
-            Socket::Vsock(vsock) => vsock.register(context, events),
+            Socket::Vsock(vsock) => unsafe { vsock.register_shared(sink, events) },
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        match self {
+            Socket::Tcp(tcp) => unsafe { tcp.register_exclusive(sink, events) },
+            Socket::Udp(udp) => unsafe { udp.register_exclusive(sink, events) },
+            Socket::Raw(raw) => unsafe { raw.register_exclusive(sink, events) },
+            Socket::Unix(unix) => unsafe { unix.register_exclusive(sink, events) },
+            #[cfg(feature = "vsock")]
+            Socket::Vsock(vsock) => unsafe { vsock.register_exclusive(sink, events) },
         }
     }
 }

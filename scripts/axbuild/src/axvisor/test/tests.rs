@@ -1220,7 +1220,6 @@ fn qemu_build_groups_preserve_distinct_executable_artifacts() {
     assert_eq!(fs::read(first).unwrap(), b"first VM config");
     assert_eq!(fs::read(second).unwrap(), b"second VM config");
 }
-
 #[test]
 fn qemu_cases_activate_their_build_group_artifact_and_conversion_mode() {
     let first = false;

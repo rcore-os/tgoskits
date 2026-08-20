@@ -23,9 +23,9 @@ use submission::{SubmissionLoop, SubmissionScratch, reject_unsubmitted, submit_a
 use super::{
     channel::BoundedChannel,
     completion::CompletionSender,
-    irq::{IrqEventLatch, IrqTarget, LatchedIrqEvent},
+    irq::{IrqEventLatch, IrqRearmEpisode, IrqTarget, LatchedIrqEvent},
 };
-use crate::os::{BlockNotification, BlockThread, runtime_ops, sync::IrqMutex, wall_time};
+use crate::os::{BlockNotification, BlockThread, runtime_ops, sync::Mutex, wall_time};
 
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -54,7 +54,7 @@ pub(super) struct Hctx {
     id: usize,
     cpu: usize,
     state: Arc<HctxState>,
-    thread: IrqMutex<Option<Box<dyn BlockThread>>>,
+    thread: Mutex<Option<Box<dyn BlockThread>>>,
 }
 
 pub(super) struct HctxStartError {
@@ -79,11 +79,11 @@ impl fmt::Debug for HctxStartError {
 }
 
 struct HctxState {
-    info: IrqMutex<QueueInfo>,
-    submission_channels: IrqMutex<Vec<Arc<BoundedChannel<Submission>>>>,
+    info: Mutex<QueueInfo>,
+    submission_channels: Mutex<Vec<Arc<BoundedChannel<Submission>>>>,
     notification: Arc<dyn BlockNotification>,
     lifecycle_notification: Arc<dyn BlockNotification>,
-    irq_latches: IrqMutex<Vec<Arc<IrqEventLatch>>>,
+    irq_latches: Mutex<Vec<Arc<IrqEventLatch>>>,
     quiescing: AtomicBool,
     quiesced: AtomicBool,
     stopping: AtomicBool,
@@ -127,11 +127,11 @@ impl Hctx {
         };
         let notification = ops.notification();
         let state = Arc::new(HctxState {
-            info: IrqMutex::new(info),
-            submission_channels: IrqMutex::new(Vec::new()),
+            info: Mutex::new(info),
+            submission_channels: Mutex::new(Vec::new()),
             notification,
             lifecycle_notification: ops.notification(),
-            irq_latches: IrqMutex::new(Vec::new()),
+            irq_latches: Mutex::new(Vec::new()),
             quiescing: AtomicBool::new(false),
             quiesced: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
@@ -141,10 +141,10 @@ impl Hctx {
             id: info.id,
             cpu,
             state: Arc::clone(&state),
-            thread: IrqMutex::new(None),
+            thread: Mutex::new(None),
         });
         let name = format!("blk-hctx/{}", info.id);
-        let queue_slot = Arc::new(IrqMutex::new(Some(queue)));
+        let queue_slot = Arc::new(Mutex::new(Some(queue)));
         let worker_queue_slot = Arc::clone(&queue_slot);
         let thread = match ops.spawn_pinned(
             name,
@@ -211,8 +211,8 @@ impl Hctx {
         Ok(channel)
     }
 
-    pub(super) fn irq_target(&self, source_id: usize) -> IrqTarget {
-        let latch = Arc::new(IrqEventLatch::new(source_id));
+    pub(super) fn irq_target(&self, source: Arc<IrqRearmEpisode>) -> IrqTarget {
+        let latch = Arc::new(IrqEventLatch::new(source));
         self.state.irq_latches.lock().push(Arc::clone(&latch));
         IrqTarget::new(self.id, latch, Arc::clone(&self.state.notification))
     }
@@ -284,7 +284,6 @@ fn run_hctx(
             &state,
             &mut pending,
             &observer,
-            &*controller,
             &mut fatal_error,
             &mut irq_events,
         );
@@ -536,22 +535,20 @@ fn drain_latched_irqs(
     state: &HctxState,
     pending: &mut BTreeMap<RequestId, PendingRequest>,
     observer: &Weak<dyn HctxObserver>,
-    controller: &dyn ControllerEventPort,
     fatal_error: &mut Option<BlkError>,
-    events: &mut Vec<LatchedIrqEvent>,
+    events: &mut Vec<(Arc<IrqEventLatch>, LatchedIrqEvent)>,
 ) -> bool {
     debug_assert!(events.is_empty());
     {
         let latches = state.irq_latches.lock();
         for latch in latches.iter() {
-            let event = latch.take();
-            if event.queue_ready || event.needs_rearm || !event.control.is_empty() {
-                events.push(event);
+            if let Some(event) = latch.claim() {
+                events.push((Arc::clone(latch), event));
             }
         }
     }
     let mut progressed = false;
-    for event in events.drain(..) {
+    for (latch, event) in events.drain(..) {
         if event.queue_ready {
             let mut unexpected_completion = false;
             let drain_result = {
@@ -580,15 +577,9 @@ fn drain_latched_irqs(
             continue;
         }
         if !event.control.is_empty() {
-            controller.post(ControllerEvent::Irq(event.control));
             progressed = true;
         }
-        if event.needs_rearm {
-            controller.post(ControllerEvent::Rearm {
-                source_id: event.control.source_id(),
-            });
-            progressed = true;
-        }
+        latch.finish_and_publish(event.control, fatal_error.is_none());
     }
     progressed
 }

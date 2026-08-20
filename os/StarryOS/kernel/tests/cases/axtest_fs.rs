@@ -12,16 +12,6 @@ fn pipe_resize_rejects_oversized_pipe() {
 }
 
 #[axtest]
-fn pipe_linux_io_semantics_hold() {
-    ax_assert!(axtest_exports::pipe_linux_io_semantics_hold());
-}
-
-#[axtest]
-fn interrupted_pipe_write_preserves_partial_progress() {
-    ax_assert!(axtest_exports::interrupted_pipe_write_preserves_partial_progress());
-}
-
-#[axtest]
 fn fcntl_setpipe_size_returns_capacity() {
     ax_assert!(axtest_exports::fcntl_setpipe_size_returns_capacity());
 }

@@ -3,33 +3,33 @@ use core::mem::size_of;
 
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_task::{AxTaskExt, current, spawn_task_with};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
 use scope_local::Scope;
 use starry_signal::Signo;
-use starry_vm::VmMutPtr;
 
+use super::schedule_abi::fork_schedule_policy;
+#[cfg(target_arch = "riscv64")]
+use crate::task::prepare_user_thread_with_fp_scheduler_state;
+#[cfg(not(target_arch = "riscv64"))]
+use crate::task::prepare_user_thread_with_scheduler_state;
 use crate::{
     StarryError, StarryResult,
     file::{FD_TABLE, PidFd, PreparedFileDescriptor, prepare_file_like},
-    mm::copy_from_kernel,
+    mm::{VmMutPtr, copy_from_kernel},
     sync::SpinLock,
     task::{
-        AsThread, PidIdentity, PidReservation, PidReservationKind, Process, ProcessData,
-        ProcessDataInit, ProcessImage, Tgid, Thread, Tid, TidNumber, add_task_to_table,
-        new_user_task,
+        PidIdentity, PidReservation, PidReservationKind, ProcessData, ProcessDataInit,
+        ProcessImage, Tgid, Thread, Tid, TidNumber, UserThreadInitialSchedulerState, new_user_task,
     },
 };
 
-/// Rolls back prepared topology and fd-table changes if clone fails before spawn.
+/// Aborts PID identity publication if clone fails before spawn.
 ///
-/// The separate [`PidReservation`] still owns every namespace number until the
-/// final, non-failing commit phase, so this transaction never has to undo an
-/// externally visible PID publication.
+/// Prepared topology and scoped resources are owned by their own rollback
+/// tokens; the PID reservation remains unpublished until the final commit.
 struct CloneTransaction {
     identity: Arc<PidIdentity>,
-    process: Option<Arc<Process>>,
     committed: bool,
 }
 
@@ -37,7 +37,6 @@ impl CloneTransaction {
     fn new(identity: Arc<PidIdentity>) -> Self {
         Self {
             identity,
-            process: None,
             committed: false,
         }
     }
@@ -51,9 +50,6 @@ impl Drop for CloneTransaction {
     fn drop(&mut self) {
         if self.committed {
             return;
-        }
-        if let Some(process) = self.process.take() {
-            process.retire();
         }
         self.identity.abort_failed_task_publication();
     }
@@ -214,12 +210,17 @@ impl CloneArgs {
         Ok(())
     }
 
-    pub fn do_clone(self, uctx: &UserContext) -> StarryResult<isize> {
-        self.do_clone_in_cgroup(uctx, None)
+    pub fn do_clone(
+        self,
+        current: &crate::task::UserTaskRef,
+        uctx: &UserContext,
+    ) -> crate::StarryResult<isize> {
+        self.do_clone_in_cgroup(current, uctx, None)
     }
 
     pub(super) fn do_clone_in_cgroup(
         self,
+        current: &crate::task::UserTaskRef,
         uctx: &UserContext,
         requested_cgroup: Option<Arc<ax_cgroup::CgroupNode>>,
     ) -> StarryResult<isize> {
@@ -276,27 +277,37 @@ impl CloneArgs {
         };
 
         if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0 {
-            crate::mm::prepare_user_write(parent_tid_ptr, size_of::<u32>())?;
+            crate::mm::prepare_user_write(current, parent_tid_ptr, size_of::<u32>())?;
         }
         if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
-            crate::mm::prepare_user_write(pidfd, size_of::<i32>())?;
+            crate::mm::prepare_user_write(current, pidfd, size_of::<i32>())?;
         }
 
-        let curr = current();
+        let curr = current;
         let curr_thread = curr.as_thread();
         let old_proc_data = &curr_thread.proc_data;
         if flags.contains(CloneFlags::NEWCGROUP) && !curr_thread.cred().has_cap_sys_admin() {
             return Err(StarryError::OperationNotPermitted);
         }
+        let (child_policy, child_reset_on_fork) =
+            fork_schedule_policy(curr.policy(), curr.reset_on_fork())?;
+        let child_nice = match child_policy {
+            ax_std::os::arceos::task::SchedulePolicy::Fair { nice, .. } => i32::from(nice.get()),
+            _ => curr_thread.nice(),
+        };
+        let child_scheduler_state = UserThreadInitialSchedulerState::new(
+            child_policy,
+            curr.affinity(),
+            child_reset_on_fork,
+        );
 
-        let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
         #[cfg(target_arch = "riscv64")]
-        {
+        let child_fp_state = {
             let mut fp_state = ax_cpu::FpState::default();
             fp_state.save();
             fp_state.fs = child_fp_fs;
-            new_task.ctx_mut().fp_state = fp_state;
-        }
+            fp_state
+        };
 
         let parent_pid_ns = curr_thread.active_pid_namespace();
         let target_pid_ns = if flags.contains(CloneFlags::THREAD) {
@@ -322,12 +333,18 @@ impl CloneArgs {
                 .number_in(&parent_pid_ns)
                 .ok_or(StarryError::BadState)?,
         );
+        let child_visible_tid = TidNumber::from(
+            reservation
+                .number_in(&target_pid_ns)
+                .ok_or(StarryError::BadState)?,
+        );
         let identity = reservation.identity();
         let tid_lease = identity.acquire_role::<Tid>()?;
         let mut tgid_lease = (!flags.contains(CloneFlags::THREAD))
             .then(|| identity.acquire_role::<Tgid>())
             .transpose()?;
         let mut clone_transaction = CloneTransaction::new(identity.clone());
+        let mut prepared_fork = None;
 
         let child_kind = if flags.contains(CloneFlags::THREAD) {
             ax_cgroup::CgroupChildKind::Thread
@@ -338,7 +355,7 @@ impl CloneArgs {
             (ax_cgroup::CgroupChildKind::Process, Some(target)) => {
                 crate::cgroup::begin_process_at(target, &identity)?
             }
-            (kind, None) => crate::cgroup::begin_task(&old_proc_data.identity(), &identity, kind)?,
+            (kind, None) => crate::cgroup::begin_task(old_proc_data, &identity, kind)?,
             (ax_cgroup::CgroupChildKind::Thread, Some(_)) => {
                 unreachable!("CLONE_INTO_CGROUP with CLONE_THREAD passed validation")
             }
@@ -371,12 +388,9 @@ impl CloneArgs {
         });
 
         let new_proc_data = if flags.contains(CloneFlags::THREAD) {
-            new_task
-                .ctx_mut()
-                .set_page_table_root(old_proc_data.aspace().lock().page_table_root());
             old_proc_data.clone()
         } else {
-            let proc = if flags.contains(CloneFlags::PARENT) {
+            let prepared = if flags.contains(CloneFlags::PARENT) {
                 old_proc_data
                     .proc
                     .parent()
@@ -384,8 +398,9 @@ impl CloneArgs {
             } else {
                 old_proc_data.proc.clone()
             }
-            .fork(identity.clone());
-            clone_transaction.process = Some(proc.clone());
+            .prepare_fork(identity.clone());
+            let proc = prepared.process().clone();
+            prepared_fork = Some(prepared);
 
             let aspace = if flags.contains(CloneFlags::VM) {
                 old_proc_data.aspace()
@@ -395,9 +410,6 @@ impl CloneArgs {
                 copy_from_kernel(&mut aspace.lock())?;
                 aspace
             };
-            new_task
-                .ctx_mut()
-                .set_page_table_root(aspace.lock().page_table_root());
 
             let signal_actions = if flags.contains(CloneFlags::SIGHAND) {
                 old_proc_data.signal.actions()
@@ -409,36 +421,37 @@ impl CloneArgs {
                 ))
             };
 
-            // RwLock read guards used as nested call arguments live until the
-            // outer statement ends. Build the plain image first so all six
-            // preemption guards are gone before `ProcessData::new` acquires
-            // the sleepable address-space mutex.
             let process_image = ProcessImage::new(
-                old_proc_data.exe_path.read().clone(),
-                old_proc_data.cmdline.read().clone(),
-                old_proc_data.envp.read().clone(),
-                old_proc_data.auxv.read().clone(),
-                old_proc_data.root_path.read().clone(),
-                old_proc_data.cwd_path.read().clone(),
+                old_proc_data.exe_path().as_ref().clone(),
+                old_proc_data.cmdline(),
+                old_proc_data.envp(),
+                old_proc_data.auxv().as_ref().clone(),
+                old_proc_data.root_path().as_ref().clone(),
+                old_proc_data.cwd_path().as_ref().clone(),
             );
+            let mut process_init = ProcessDataInit::new(
+                process_image,
+                aspace,
+                signal_actions,
+                prepared_nsproxy
+                    .take()
+                    .expect("process clone must prepare one namespace proxy"),
+                exit_signal,
+                curr_thread.tid_number(),
+            )
+            .with_cgroup(child_cgroup.clone());
+            if flags.contains(CloneFlags::VM) {
+                process_init = process_init.with_shared_memory(old_proc_data);
+            }
             let proc_data = ProcessData::new(
                 proc,
                 identity.clone(),
                 tgid_lease
                     .take()
                     .expect("process clone must own one TGID lease"),
-                ProcessDataInit {
-                    image: process_image,
-                    aspace,
-                    signal_actions,
-                    exit_signal,
-                    wait_parent_tid: curr_thread.tid_number(),
-                    vm_aspace_shared: flags.contains(CloneFlags::VM),
-                },
+                process_init,
             );
             proc_data.set_umask(old_proc_data.umask());
-            proc_data.set_nice(old_proc_data.nice());
-            *proc_data.cgroup.write() = child_cgroup.clone();
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
@@ -449,10 +462,6 @@ impl CloneArgs {
             // fork child PR_GET_DUMPABLE returns 0.
             proc_data.set_dumpable(old_proc_data.dumpable());
             proc_data.set_thp_disable(old_proc_data.thp_disable());
-
-            *proc_data.nsproxy.lock() = prepared_nsproxy
-                .take()
-                .expect("process clone must prepare one namespace proxy");
 
             proc_data
         };
@@ -485,18 +494,16 @@ impl CloneArgs {
             *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
         }
 
-        // Reserve pids before publishing the new TID in its thread group.
-        new_proc_data.proc.add_thread(root_tid);
-
         let parent_cred = Some(curr_thread.cred());
         let thr = Thread::new(
             identity.clone(),
             tid_lease,
             new_proc_data.clone(),
             parent_cred,
-            curr_thread.signal.blocked(),
+            curr_thread.signal().blocked(),
             scope,
         );
+        thr.set_nice(child_nice);
         if curr_thread.no_new_privs() {
             thr.set_no_new_privs();
         }
@@ -519,37 +526,69 @@ impl CloneArgs {
             prepared_pidfd = Some(prepared);
             pidfd_copyout = Some((pidfd as *mut i32, fd));
         }
-        // perf: clone any `attr.inherit` event from the parent onto the child so
-        // `perf record` follows it. Done before the child is scheduled (it is not
-        // yet spawned) so the counter is present the first time the child runs.
-        #[cfg(target_arch = "aarch64")]
-        crate::perf::task::on_clone_inherit(curr_thread, &thr);
-        *new_task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
         // vfork(2) and clone(CLONE_VFORK) must sleep the parent until the child
         // execs or exits. Use PollSet so the parent's wait remains
         // interruptible by task.interrupt().
         if needs_vfork_block {
-            let poll = Arc::new(axpoll::PollSet::new());
+            let poll = Arc::new(axpoll_set::PollSet::new());
             new_proc_data.set_vfork_done(poll);
         }
 
+        #[cfg(target_arch = "riscv64")]
+        let prepared_task = prepare_user_thread_with_fp_scheduler_state(
+            new_user_task(new_uctx, set_child_tid, child_visible_tid),
+            alloc::string::String::from(curr.name().as_ref()),
+            crate::config::KERNEL_STACK_SIZE,
+            child_fp_state,
+            thr,
+            child_scheduler_state,
+        )
+        .map_err(map_task_creation_error)?;
+        #[cfg(not(target_arch = "riscv64"))]
+        let prepared_task = prepare_user_thread_with_scheduler_state(
+            new_user_task(new_uctx, set_child_tid, child_visible_tid),
+            alloc::string::String::from(curr.name().as_ref()),
+            crate::config::KERNEL_STACK_SIZE,
+            thr,
+            child_scheduler_state,
+        )
+        .map_err(map_task_creation_error)?;
+
+        #[cfg(target_arch = "aarch64")]
+        prepared_task
+            .with_task(|task| crate::perf::task::on_clone_inherit(curr_thread, task.as_thread()));
+
+        let staged_task = prepared_task.stage().map_err(map_task_creation_error)?;
         if let Some((pidfd_ptr, fd)) = pidfd_copyout {
-            pidfd_ptr.vm_write(fd)?;
+            pidfd_ptr.vm_write(current, fd)?;
         }
-        // All fallible resource setup and aborting user-memory writes are
-        // complete. Commit the namespace binding chain before installing the
-        // reserved pidfd or exposing parent_tid; everything below is
-        // deliberately infallible.
+        cgroup_guard.publish()?;
+
+        // All resource preparation is complete. Publish topology while the
+        // PID reservation and scheduler start gate still make the child
+        // unreachable; the token rolls topology back if PID publication fails.
+        let published_fork = prepared_fork
+            .take()
+            .map(|prepared| prepared.publish().ok_or(StarryError::WouldBlock))
+            .transpose()?;
+
+        // PID publication is the final fallible visibility edge.
         let published_identity = reservation.publish()?;
         debug_assert!(Arc::ptr_eq(&published_identity, &identity));
+        if let Some(published) = published_fork {
+            let process = published.commit();
+            debug_assert!(Arc::ptr_eq(&process, &new_proc_data.proc));
+        }
+        staged_task.with_task(|task| task.as_thread().attach_pid_task(task));
+        new_proc_data.proc.add_thread(root_tid);
         if let Some(pidfd) = prepared_pidfd.take() {
             pidfd.install();
         }
         if flags.contains(CloneFlags::PARENT_SETTID) && parent_tid_ptr != 0 {
             // Linux performs this copyout after the child is visible and does
             // not roll the child back if a concurrent unmap makes it fail.
-            let _ = (parent_tid_ptr as *mut u32).vm_write(parent_visible_tid.get());
+            let _ = (parent_tid_ptr as *mut u32).vm_write(current, parent_visible_tid.get());
         }
 
         let parent_pid = curr.as_thread().proc_data.proc.pid_number();
@@ -580,8 +619,8 @@ impl CloneArgs {
         }
 
         cgroup_guard.commit();
-        spawn_task_with(new_task, add_task_to_table);
         clone_transaction.commit();
+        let _task = staged_task.activate();
 
         if trace_clone && needs_vfork_block {
             let _ = crate::task::send_signal_to_thread(
@@ -617,6 +656,16 @@ impl CloneArgs {
     }
 }
 
+fn map_task_creation_error(error: ax_std::os::arceos::task::TaskError) -> StarryError {
+    use ax_std::os::arceos::task::TaskError;
+
+    match error {
+        TaskError::TimerCapacity | TaskError::RuntimeFailure(_) => StarryError::NoMemory,
+        TaskError::DeadlineAdmission | TaskError::ThreadBusy => StarryError::ResourceBusy,
+        _ => StarryError::BadState,
+    }
+}
+
 ax_tracepoint::define_event_trace!(
     sys_clone,
     TP_kops(crate::tracepoint::KernelTraceAux),
@@ -642,6 +691,7 @@ ax_tracepoint::define_event_trace!(
 );
 
 pub fn sys_clone(
+    current: &crate::task::UserTaskRef,
     uctx: &UserContext,
     flags: u32,
     stack: usize,
@@ -675,18 +725,24 @@ pub fn sys_clone(
         },
     };
 
-    args.do_clone(uctx)
+    args.do_clone(current, uctx)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_fork(uctx: &UserContext) -> StarryResult<isize> {
-    sys_clone(uctx, SIGCHLD, 0, 0, 0, 0)
+pub fn sys_fork(
+    current: &crate::task::UserTaskRef,
+    uctx: &UserContext,
+) -> crate::StarryResult<isize> {
+    sys_clone(current, uctx, SIGCHLD, 0, 0, 0, 0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_vfork(uctx: &UserContext) -> StarryResult<isize> {
+pub fn sys_vfork(
+    current: &crate::task::UserTaskRef,
+    uctx: &UserContext,
+) -> crate::StarryResult<isize> {
     let flags = (CloneFlags::VFORK | CloneFlags::VM).bits() as u32 | SIGCHLD;
-    sys_clone(uctx, flags, 0, 0, 0, 0)
+    sys_clone(current, uctx, flags, 0, 0, 0, 0)
 }
 
 #[cfg(test)]
@@ -855,6 +911,16 @@ mod tests {
         let args = CloneArgs {
             flags: CloneFlags::PARENT | CloneFlags::NEWPID,
             exit_signal: SIGCHLD as u64,
+            ..Default::default()
+        };
+
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn clone_new_cgroup_namespace_reaches_runtime_permission_checks() {
+        let args = CloneArgs {
+            flags: CloneFlags::NEWCGROUP,
             ..Default::default()
         };
 

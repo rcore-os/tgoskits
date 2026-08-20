@@ -142,8 +142,8 @@ impl ArchTrait for Arch {
         power::kick_secondary_cpu(hartid, entry, arg)
     }
 
-    fn systimer_enable() {
-        trap::timer_enable();
+    fn systimer_prepare_oneshot() {
+        trap::timer_prepare_oneshot();
     }
 
     fn systimer_irq_enable() {
@@ -152,6 +152,10 @@ impl ArchTrait for Arch {
 
     fn systimer_irq_disable() {
         trap::timer_irq_disable();
+    }
+
+    fn systimer_stop_oneshot() {
+        trap::timer_stop_oneshot();
     }
 
     fn systimer_irq_is_enabled() -> bool {

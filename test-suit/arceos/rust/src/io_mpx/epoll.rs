@@ -38,7 +38,7 @@ fn test_create_rejects_unknown_flags() {
     );
     let epfd = syscalls::epoll_create1(EPOLL_CLOEXEC).expect("epoll_create1(EPOLL_CLOEXEC) failed");
     assert!(
-        epfd >= 0,
+        epfd.as_raw() >= 0,
         "epoll_create1(EPOLL_CLOEXEC) returned an invalid fd"
     );
 }
@@ -51,22 +51,22 @@ fn test_eventfd_roundtrip_via_epoll() {
         events: EPOLLIN,
         data: DATA_TOKEN,
     };
-    syscalls::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, Some(&mut interest))
+    syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD failed");
 
     let mut ready = [EpollEvent::default(); 4];
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "no event must be reported before any write"
     );
 
     assert_eq!(
-        syscalls::write_u64(fd, 1).unwrap(),
+        syscalls::write_u64(&fd, 1).unwrap(),
         8,
         "waking write to eventfd must return 8"
     );
-    let n = syscalls::epoll_wait(epfd, &mut ready, 0).expect("epoll_wait failed");
+    let n = syscalls::epoll_wait(&epfd, &mut ready, 0).expect("epoll_wait failed");
     assert_eq!(n, 1, "epoll must report the readable eventfd");
     assert_ne!(
         ready[0].events & EPOLLIN,
@@ -80,25 +80,25 @@ fn test_eventfd_roundtrip_via_epoll() {
     );
 
     assert_eq!(
-        syscalls::read_u64(fd).unwrap(),
+        syscalls::read_u64(&fd).unwrap(),
         1,
         "draining read must return the written value"
     );
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "no event must be reported after the counter is drained"
     );
 
     assert_errno(
-        syscalls::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, Some(&mut interest)),
+        syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest)),
         EEXIST,
         "duplicate epoll_ctl ADD",
     );
 
-    syscalls::epoll_ctl(epfd, EPOLL_CTL_DEL, fd, None).expect("epoll_ctl DEL failed");
+    syscalls::epoll_ctl(&epfd, EPOLL_CTL_DEL, &fd, None).expect("epoll_ctl DEL failed");
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "no event must be reported after DEL"
     );
@@ -111,7 +111,7 @@ fn test_epoll_ctl_on_non_epoll_fd_is_einval() {
         data: 0,
     };
     assert_errno(
-        syscalls::epoll_ctl(fd, EPOLL_CTL_ADD, fd, Some(&mut interest)),
+        syscalls::epoll_ctl(&fd, EPOLL_CTL_ADD, &fd, Some(&mut interest)),
         EINVAL,
         "epoll_ctl using an eventfd as the epoll instance",
     );
@@ -127,7 +127,7 @@ fn test_full_counter_writability_via_epoll() {
     // Fill the counter to its maximum: UINT64_MAX - 1 is the largest single
     // accepted write, and any further write must now block / EAGAIN.
     assert_eq!(
-        syscalls::write_u64(fd, u64::MAX - 1).unwrap(),
+        syscalls::write_u64(&fd, u64::MAX - 1).unwrap(),
         8,
         "fill write of UINT64_MAX - 1 must succeed"
     );
@@ -136,23 +136,23 @@ fn test_full_counter_writability_via_epoll() {
         events: EPOLLOUT,
         data: 0,
     };
-    syscalls::epoll_ctl(epfd, EPOLL_CTL_ADD, fd, Some(&mut interest))
+    syscalls::epoll_ctl(&epfd, EPOLL_CTL_ADD, &fd, Some(&mut interest))
         .expect("epoll_ctl ADD EPOLLOUT failed");
 
     let mut ready = [EpollEvent::default(); 4];
     assert_eq!(
-        syscalls::epoll_wait(epfd, &mut ready, 0).unwrap(),
+        syscalls::epoll_wait(&epfd, &mut ready, 0).unwrap(),
         0,
         "a saturated eventfd must not be reported writable"
     );
 
     // Draining the counter must make it writable again.
     assert_eq!(
-        syscalls::read_u64(fd).unwrap(),
+        syscalls::read_u64(&fd).unwrap(),
         u64::MAX - 1,
         "saturated counter must read back"
     );
-    let n = syscalls::epoll_wait(epfd, &mut ready, 0).expect("epoll_wait failed");
+    let n = syscalls::epoll_wait(&epfd, &mut ready, 0).expect("epoll_wait failed");
     assert_eq!(n, 1, "a drained eventfd must be reported writable");
     assert_ne!(
         ready[0].events & EPOLLOUT,

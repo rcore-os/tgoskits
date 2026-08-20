@@ -5,6 +5,8 @@ use ax_io::IoError;
 use ax_net::NetError;
 #[cfg(all(feature = "irq", feature = "multitask"))]
 use ax_runtime::RuntimeError;
+#[cfg(feature = "multitask")]
+use ax_runtime::task::TaskError;
 
 /// Errors owned by the public ArceOS API facade.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -21,6 +23,16 @@ pub enum ApiError {
     #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
+    /// A scheduler operation failed in the task domain.
+    #[cfg(feature = "multitask")]
+    #[error(transparent)]
+    Task(#[from] TaskError),
+    /// A public API argument is outside its accepted domain.
+    #[error("invalid ArceOS API input")]
+    InvalidInput,
+    /// The selected object or policy does not support this operation.
+    #[error("ArceOS API operation is not supported")]
+    OperationNotSupported,
     /// The scheduler rejected a priority update.
     #[error("failed to update the current task priority")]
     PriorityUpdateFailed,
@@ -41,8 +53,54 @@ impl From<ApiError> for IoError {
             ApiError::Net(error) => error.into(),
             #[cfg(all(feature = "irq", feature = "multitask"))]
             ApiError::Runtime(error) => runtime_error_to_io_error(error),
+            #[cfg(feature = "multitask")]
+            ApiError::Task(error) => task_error_to_io_error(error),
+            ApiError::InvalidInput => Self::InvalidInput,
+            ApiError::OperationNotSupported => Self::OperationNotSupported,
             ApiError::PriorityUpdateFailed | ApiError::AffinityUpdateFailed => Self::BadState,
         }
+    }
+}
+
+#[cfg(feature = "multitask")]
+fn task_error_to_io_error(error: TaskError) -> IoError {
+    match error {
+        TaskError::InvalidConfiguration
+        | TaskError::InvalidCpuCount(_)
+        | TaskError::InvalidCpu(_)
+        | TaskError::InvalidNice(_)
+        | TaskError::InvalidRtPriority(_)
+        | TaskError::InvalidRoundRobinQuantum
+        | TaskError::InvalidDeadline { .. }
+        | TaskError::UnsupportedDeadlineFlags(_) => IoError::InvalidInput,
+        TaskError::DeadlineAdmission
+        | TaskError::DeadlineAffinity
+        | TaskError::ActiveTimerAffinity
+        | TaskError::ThreadBusy => IoError::ResourceBusy,
+        // Linux copy_process() reports the global thread limit as EAGAIN.
+        TaskError::ThreadCapacity => IoError::WouldBlock,
+        TaskError::TimerCapacity => IoError::NoMemory,
+        TaskError::UnsafeContext => IoError::OperationNotPermitted,
+        TaskError::StaleThreadId => IoError::NotFound,
+        TaskError::NotInitialized
+        | TaskError::InvalidRuntimeHandle
+        | TaskError::CpuOwnerBorrowed
+        | TaskError::CpuOwnerMismatch { .. }
+        | TaskError::ExecutorOwnerMismatch { .. }
+        | TaskError::CpuAlreadyOnline(_)
+        | TaskError::CpuOffline(_)
+        | TaskError::CpuNotQuiescent(_)
+        | TaskError::LastOnlineCpu(_)
+        | TaskError::InvalidTransition { .. }
+        | TaskError::AlreadyQueued
+        | TaskError::NotReady
+        | TaskError::NotExited
+        | TaskError::NoRunnableThread
+        | TaskError::InvalidPiState
+        | TaskError::InvalidPiWaitState(_)
+        | TaskError::PiCycle
+        | TaskError::PiChainLimit { .. }
+        | TaskError::RuntimeFailure(_) => IoError::BadState,
     }
 }
 

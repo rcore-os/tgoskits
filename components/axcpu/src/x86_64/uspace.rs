@@ -35,9 +35,14 @@ pub struct UserContext {
     pub gs_base: u64,
     /// Kernel continuation stack saved while this context executes in ring 3.
     kernel_stack_pointer: u64,
-    /// Explicitly initialized tail required by the 16-byte ABI alignment.
+    /// Explicitly initializes the tail bytes required by the 16-byte ABI alignment.
     _reserved: u64,
 }
+
+// SAFETY: `TrapFrame` and every following field are integer-only, the explicit
+// tail word consumes the alignment padding, and the offset assertions below
+// pin that layout.
+unsafe impl bytemuck::NoUninit for UserContext {}
 
 const _: () = {
     // A privilege transition may align TSS.RSP0 down to 16 bytes before

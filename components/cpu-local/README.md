@@ -51,6 +51,13 @@ returns `PendingPreemption` without consuming the last depth. The runtime must
 first claim its scheduler baton, then call `release` and enter its safe point.
 Task policy and baton state never enter this crate.
 
+The architecture register backend exposes one current-preemption snapshot
+operation. Its trait default follows the current execution-context header, so
+new load/store backends inherit the portable behavior. A backend may override
+that operation when its selected owner has a cheaper native representation;
+the override must retain the same read-only, advisory snapshot contract. This
+keeps architecture choices below the shared CPU-local and runtime APIs.
+
 On a CPU-owned preemption architecture, the exclusion covering a raw context
 switch belongs to the CPU where each side executes. If a suspended context
 resumes on another CPU, the runtime uses the hidden

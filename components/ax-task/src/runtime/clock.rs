@@ -1,0 +1,197 @@
+//! Scheduler-clock and physical monotonic-clock ABI.
+
+/// Largest value in Linux's signed `ktime_t` domain.
+pub const KTIME_MAX_NANOS: u64 = i64::MAX as u64;
+
+/// One finite sample of the runtime monotonic clock.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct MonotonicInstant(u64);
+
+impl MonotonicInstant {
+    /// Validates one sample against the signed `ktime_t` domain.
+    pub const fn from_nanos(now_ns: u64) -> Option<Self> {
+        if now_ns <= KTIME_MAX_NANOS {
+            Some(Self(now_ns))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the absolute sample in nanoseconds.
+    pub const fn as_nanos(self) -> u64 {
+        self.0
+    }
+
+    /// Reports whether an absolute monotonic deadline has elapsed.
+    pub const fn reached(self, deadline: MonotonicDeadline) -> bool {
+        self.0 >= deadline.0
+    }
+
+    /// Adds a relative timeout with Linux `ktime_add_safe()` saturation.
+    pub fn deadline_after(self, timeout: core::time::Duration) -> MonotonicDeadline {
+        let timeout_ns = timeout.as_nanos();
+        let sum = self.0 as u128 + timeout_ns;
+        if sum >= KTIME_MAX_NANOS as u128 {
+            // Linux `ktime_add_safe()` calls `ktime_set(KTIME_SEC_MAX, 0)`;
+            // `ktime_set()` then clamps that boundary to `KTIME_MAX`.
+            MonotonicDeadline(KTIME_MAX_NANOS)
+        } else {
+            MonotonicDeadline(sum as u64)
+        }
+    }
+}
+
+/// Absolute finite deadline measured by the runtime's monotonic clock.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct MonotonicDeadline(u64);
+
+impl MonotonicDeadline {
+    /// The monotonic clock origin, which is necessarily already due once the
+    /// clock has advanced.
+    pub const ORIGIN: Self = Self(0);
+
+    /// Creates a representable physical clockevent deadline.
+    ///
+    /// Zero is a valid already-due deadline. Absence is represented only by
+    /// `Option::None`; like Linux `ktime_t`, `KTIME_MAX` remains a finite value.
+    pub const fn from_nanos(deadline_ns: u64) -> Option<Self> {
+        if deadline_ns <= KTIME_MAX_NANOS {
+            Some(Self(deadline_ns))
+        } else {
+            None
+        }
+    }
+
+    /// Converts a duration-valued absolute timestamp using Linux
+    /// `timespec64_to_ktime()` saturation.
+    pub fn from_duration(deadline: core::time::Duration) -> Self {
+        const NANOS_PER_SECOND: u64 = 1_000_000_000;
+        const KTIME_SEC_MAX: u64 = KTIME_MAX_NANOS / NANOS_PER_SECOND;
+
+        if deadline.as_secs() >= KTIME_SEC_MAX {
+            return Self(KTIME_MAX_NANOS);
+        }
+        Self(deadline.as_secs() * NANOS_PER_SECOND + u64::from(deadline.subsec_nanos()))
+    }
+
+    /// Returns the absolute deadline in nanoseconds.
+    pub const fn as_nanos(self) -> u64 {
+        self.0
+    }
+}
+
+/// One Linux-style runqueue-clock observation for a target CPU.
+///
+/// `clock` is the corrected `sched_clock_cpu()` value. `hardirq_time_ns` is
+/// the cumulative hard-interrupt time published by that CPU. The runqueue
+/// owner consumes both values in one locked `OwnerRqTxn` sample so
+/// task execution time can exclude interrupt service without comparing either
+/// value with the monotonic clockevent domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct RqClockSample {
+    clock: crate::SchedulerTimestamp,
+    hardirq_time_ns: u64,
+}
+
+impl RqClockSample {
+    /// Creates one coherent runqueue-clock observation.
+    pub const fn new(clock: crate::SchedulerTimestamp, hardirq_time_ns: u64) -> Self {
+        Self {
+            clock,
+            hardirq_time_ns,
+        }
+    }
+
+    /// Returns the corrected scheduler-clock value.
+    pub const fn clock(self) -> crate::SchedulerTimestamp {
+        self.clock
+    }
+
+    /// Returns cumulative hard-interrupt time for the target CPU.
+    pub const fn hardirq_time_ns(self) -> u64 {
+        self.hardirq_time_ns
+    }
+}
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+mod monotonic_time_tests {
+    use super::*;
+
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn zero_is_a_finite_already_due_deadline_not_an_absence_sentinel() {
+        let deadline = MonotonicDeadline::from_nanos(0).unwrap();
+
+        assert_eq!(deadline, MonotonicDeadline::ORIGIN);
+        assert!(MonotonicInstant::from_nanos(1).unwrap().reached(deadline));
+    }
+
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn option_not_ktime_max_represents_no_deadline() {
+        assert!(MonotonicInstant::from_nanos(KTIME_MAX_NANOS - 1).is_some());
+        assert!(MonotonicDeadline::from_nanos(KTIME_MAX_NANOS - 1).is_some());
+        assert!(MonotonicInstant::from_nanos(KTIME_MAX_NANOS).is_some());
+        assert_eq!(
+            MonotonicDeadline::from_nanos(KTIME_MAX_NANOS),
+            Some(MonotonicDeadline(KTIME_MAX_NANOS))
+        );
+        assert!(MonotonicDeadline::from_nanos(KTIME_MAX_NANOS + 1).is_none());
+    }
+
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn duration_conversion_matches_linux_ktime_saturation() {
+        assert_eq!(
+            MonotonicDeadline::from_duration(core::time::Duration::MAX),
+            MonotonicDeadline::from_nanos(KTIME_MAX_NANOS).unwrap()
+        );
+    }
+
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn relative_timeout_uses_linux_ktime_add_safe_saturation() {
+        let now = MonotonicInstant::from_nanos(KTIME_MAX_NANOS - 2).unwrap();
+
+        assert_eq!(
+            now.deadline_after(core::time::Duration::from_nanos(2)),
+            MonotonicDeadline::from_nanos(KTIME_MAX_NANOS).unwrap()
+        );
+    }
+}
+
+/// One generation-ordered publication from a CPU's scheduler owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchedulerDeadlineUpdate {
+    generation: u64,
+    deadline: Option<MonotonicDeadline>,
+}
+
+impl SchedulerDeadlineUpdate {
+    /// Creates one publication after the owner has committed its local state.
+    ///
+    /// Generation zero is reserved for an uninitialized consumer.
+    pub const fn try_new(generation: u64, deadline: Option<MonotonicDeadline>) -> Option<Self> {
+        if generation == 0 {
+            None
+        } else {
+            Some(Self {
+                generation,
+                deadline,
+            })
+        }
+    }
+
+    /// Returns the monotonically increasing per-CPU publication generation.
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the next scheduler-owned physical deadline, if one exists.
+    pub const fn deadline(self) -> Option<MonotonicDeadline> {
+        self.deadline
+    }
+}

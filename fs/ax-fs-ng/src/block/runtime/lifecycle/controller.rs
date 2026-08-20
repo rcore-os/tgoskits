@@ -3,7 +3,7 @@ use super::*;
 pub(super) struct ControllerPort {
     pub(super) commands: BoundedChannel<ControllerCommand>,
     pub(super) notification: Arc<dyn BlockNotification>,
-    pub(super) irq_latches: IrqMutex<Vec<Arc<ControllerIrqLatch>>>,
+    pub(super) irq_latches: Mutex<Vec<Arc<ControllerIrqLatch>>>,
 }
 
 pub(super) struct ControllerCommand {
@@ -12,7 +12,7 @@ pub(super) struct ControllerCommand {
 }
 
 struct ControllerReply {
-    result: IrqMutex<Option<Result<ControllerState, BlkError>>>,
+    result: Mutex<Option<Result<ControllerState, BlkError>>>,
     notification: Arc<dyn BlockNotification>,
 }
 
@@ -33,7 +33,7 @@ impl ControllerPort {
             .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
             .notification();
         let reply = Arc::new(ControllerReply {
-            result: IrqMutex::new(None),
+            result: Mutex::new(None),
             notification,
         });
         let command = ControllerCommand {
@@ -62,8 +62,16 @@ impl ControllerPort {
     }
 
     pub(super) fn irq_target(&self, source_id: usize) -> ControllerIrqTarget {
-        let latch = Arc::new(ControllerIrqLatch::new(source_id));
-        self.irq_latches.lock().push(Arc::clone(&latch));
+        let mut latches = self.irq_latches.lock();
+        let latch = latches
+            .iter()
+            .find(|latch| latch.source_id() == source_id)
+            .cloned()
+            .unwrap_or_else(|| {
+                let latch = Arc::new(ControllerIrqLatch::new(source_id));
+                latches.push(Arc::clone(&latch));
+                latch
+            });
         ControllerIrqTarget::new(latch, Arc::clone(&self.notification))
     }
 }
@@ -250,12 +258,30 @@ pub(super) fn run_controller(
                     let wake_at = current.retry_at.min(current.deadline);
                     if wake_at > now {
                         port.notification.wait_timeout(wake_at - now);
+                        let observed_at = wall_time();
+                        if let Some(lateness) = park_oversleep_lateness(wake_at, observed_at) {
+                            warn!(
+                                "block controller park overslept: expected wake {wake_at:?}, now \
+                                 {observed_at:?}, lateness {lateness:?}, retry_at {:?}, deadline \
+                                 {:?}",
+                                current.retry_at, current.deadline
+                            );
+                        }
                     }
                 }
                 None => port.notification.wait(),
             }
         }
     }
+}
+
+pub(super) fn park_oversleep_lateness(
+    expected_wake: Duration,
+    observed_at: Duration,
+) -> Option<Duration> {
+    observed_at
+        .checked_sub(expected_wake)
+        .filter(|lateness| *lateness > STALL_WARN_MARGIN)
 }
 
 fn apply_unsolicited_event(

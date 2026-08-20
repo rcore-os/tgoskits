@@ -71,6 +71,38 @@ enum ApicMode {
     X2Apic,
 }
 
+trait OneShotTimerHardware {
+    fn set_irq_masked(&self, masked: bool);
+    fn serialize_lvt_update(&self);
+    fn clear_comparator(&self);
+}
+
+struct LocalApicTimer;
+
+impl OneShotTimerHardware for LocalApicTimer {
+    fn set_irq_masked(&self, masked: bool) {
+        set_lvt_masked(masked);
+    }
+
+    fn serialize_lvt_update(&self) {
+        if requires_lvt_deadline_fence(current_apic_mode(), has_tsc_deadline()) {
+            unsafe {
+                core::arch::asm!("mfence", options(nostack, preserves_flags));
+            }
+        }
+    }
+
+    fn clear_comparator(&self) {
+        if has_tsc_deadline() {
+            unsafe {
+                wrmsr(msr::IA32_TSC_DEADLINE, 0);
+            }
+        } else {
+            write_lapic_reg(LAPIC_REG_TIMER_INIT_COUNT, 0);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct InterruptStackFrame {
@@ -107,20 +139,24 @@ pub fn init_local() {
     init_lapic();
 }
 
-pub fn timer_enable() {
+pub fn timer_prepare_oneshot() {
     ensure_lapic_ready();
-    set_lvt_masked(false);
-    write_lapic_reg(LAPIC_REG_LVT_TIMER, timer_lvt_value(false));
+    write_lapic_reg(LAPIC_REG_LVT_TIMER, timer_lvt_value(true));
 }
 
 pub fn timer_irq_enable() {
     ensure_lapic_ready();
-    set_lvt_masked(false);
+    enable_timer_irq(&LocalApicTimer);
 }
 
 pub fn timer_irq_disable() {
     ensure_lapic_ready();
     set_lvt_masked(true);
+}
+
+pub fn timer_stop_oneshot() {
+    ensure_lapic_ready();
+    stop_oneshot(&LocalApicTimer);
 }
 
 pub fn timer_irq_is_enabled() -> bool {
@@ -448,6 +484,24 @@ fn set_lvt_masked(masked: bool) {
     write_lapic_reg(LAPIC_REG_LVT_TIMER, val);
 }
 
+fn enable_timer_irq(timer: &impl OneShotTimerHardware) {
+    timer.set_irq_masked(false);
+    // xAPIC LVT writes are posted MMIO. Complete the state transition before
+    // the caller installs a minimum-delta TSC deadline or LAPIC count.
+    timer.serialize_lvt_update();
+}
+
+const fn requires_lvt_deadline_fence(apic_mode: ApicMode, tsc_deadline: bool) -> bool {
+    matches!(apic_mode, ApicMode::XApic) && tsc_deadline
+}
+
+fn stop_oneshot(timer: &impl OneShotTimerHardware) {
+    // Mask first so clearing the comparator cannot expose a final edge. Linux
+    // uses the same order for both TSC-deadline and legacy LAPIC clockevents.
+    timer.set_irq_masked(true);
+    timer.clear_comparator();
+}
+
 #[inline]
 fn has_tsc_deadline() -> bool {
     HAS_TSC_DEADLINE.load(Ordering::Acquire)
@@ -642,12 +696,23 @@ pub fn set_cr3(addr: PhysAddr) {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_scheduler_counter, ticks_to_apic_counts};
+    use core::{cell::Cell, sync::atomic::Ordering};
+
+    use super::{
+        APIC_COUNTS_PER_TSC_Q32, ApicMode, LAPIC_TIMER_MIN_DELTA_TICKS, OneShotTimerHardware,
+        classify_scheduler_counter, enable_timer_irq, requires_lvt_deadline_fence, stop_oneshot,
+        ticks_to_apic_counts,
+    };
     use crate::timer::CounterStability;
 
     #[test]
     fn legacy_lapic_clamps_overdue_events_to_the_device_minimum() {
-        assert_eq!(ticks_to_apic_counts(1), 0x0f);
+        APIC_COUNTS_PER_TSC_Q32.store(0, Ordering::Release);
+        assert_eq!(
+            ticks_to_apic_counts(1),
+            LAPIC_TIMER_MIN_DELTA_TICKS,
+            "Linux clockevents uses 0x0f LAPIC ticks as the minimum safe delta"
+        );
     }
 
     #[test]
@@ -668,6 +733,95 @@ mod tests {
             classify_scheduler_counter(true, 1, false),
             CounterStability::Unstable
         );
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TimerOperation {
+        Mask,
+        Unmask,
+        Serialize,
+        Clear,
+    }
+
+    struct RecordingTimerHardware {
+        operations: Cell<[Option<TimerOperation>; 4]>,
+        len: Cell<usize>,
+    }
+
+    impl RecordingTimerHardware {
+        const fn new() -> Self {
+            Self {
+                operations: Cell::new([None; 4]),
+                len: Cell::new(0),
+            }
+        }
+
+        fn record(&self, operation: TimerOperation) {
+            let len = self.len.get();
+            let mut operations = self.operations.get();
+            operations[len] = Some(operation);
+            self.operations.set(operations);
+            self.len.set(len + 1);
+        }
+
+        fn snapshot(&self) -> ([Option<TimerOperation>; 4], usize) {
+            (self.operations.get(), self.len.get())
+        }
+    }
+
+    impl OneShotTimerHardware for RecordingTimerHardware {
+        fn set_irq_masked(&self, masked: bool) {
+            self.record(if masked {
+                TimerOperation::Mask
+            } else {
+                TimerOperation::Unmask
+            });
+        }
+
+        fn serialize_lvt_update(&self) {
+            self.record(TimerOperation::Serialize);
+        }
+
+        fn clear_comparator(&self) {
+            self.record(TimerOperation::Clear);
+        }
+    }
+
+    #[test]
+    fn timer_shutdown_masks_source_before_clearing_comparator() {
+        let timer = RecordingTimerHardware::new();
+
+        stop_oneshot(&timer);
+
+        let (operations, len) = timer.snapshot();
+        assert_eq!(
+            &operations[..len],
+            &[Some(TimerOperation::Mask), Some(TimerOperation::Clear)]
+        );
+    }
+
+    #[test]
+    fn timer_unmask_is_serialized_before_comparator_programming() {
+        let timer = RecordingTimerHardware::new();
+
+        enable_timer_irq(&timer);
+
+        let (operations, len) = timer.snapshot();
+        assert_eq!(
+            &operations[..len],
+            &[
+                Some(TimerOperation::Unmask),
+                Some(TimerOperation::Serialize),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_xapic_tsc_deadline_transition_requires_mfence() {
+        assert!(requires_lvt_deadline_fence(ApicMode::XApic, true));
+        assert!(!requires_lvt_deadline_fence(ApicMode::XApic, false));
+        assert!(!requires_lvt_deadline_fence(ApicMode::X2Apic, true));
+        assert!(!requires_lvt_deadline_fence(ApicMode::X2Apic, false));
     }
 }
 

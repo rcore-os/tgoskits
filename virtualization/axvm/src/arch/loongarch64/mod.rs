@@ -40,57 +40,43 @@ impl ArchOps for LoongArch64Arch {
         irq::register_platform_irq_injector();
     }
 
-    fn inject_pending_interrupt(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        interrupt: crate::vm::PendingInterrupt,
+    fn inject_arch_interrupt(
+        vm_id: usize,
+        vcpu: &crate::vcpu::AxVCpu<Self::VCpu>,
+        interrupt: crate::runtime::QueuedVcpuInterrupt,
     ) {
-        match interrupt {
-            crate::vm::PendingInterrupt::Normal(vector) => {
-                trace!(
-                    "Injecting queued interrupt {vector:#x} into VM[{}] VCpu[{}]",
-                    vcpu.vm_id(),
-                    vcpu.id()
-                );
-                if let Err(err) = vcpu.inject_interrupt(vector) {
-                    warn!(
-                        "Failed to inject queued interrupt {vector:#x} into VM[{}] VCpu[{}]: \
-                         {err:?}",
-                        vcpu.vm_id(),
-                        vcpu.id()
-                    );
-                }
-            }
-            crate::vm::PendingInterrupt::External {
-                vector,
-                physical_irq,
-            } => {
-                let Some(vector) = loongarch_external_irq_vector(vm, vector, physical_irq) else {
-                    trace!(
-                        "Queued LoongArch external interrupt physical_irq={physical_irq:#x} is \
-                         masked in VM[{}]",
-                        vm.id()
-                    );
-                    return;
-                };
-                trace!(
-                    "Injecting queued LoongArch external interrupt vector={vector:#x}, \
-                     physical_irq={physical_irq:#x} into VM[{}] VCpu[{}]",
-                    vm.id(),
-                    vcpu.id()
-                );
-                if let Err(err) = vcpu
-                    .get_arch_vcpu()
-                    .inject_external_interrupt(vector, physical_irq)
-                {
-                    warn!(
-                        "Failed to inject queued LoongArch external interrupt vector={vector:#x}, \
-                         physical_irq={physical_irq:#x} into VM[{}] VCpu[{}]: {err:?}",
-                        vm.id(),
-                        vcpu.id()
-                    );
-                }
-            }
+        let crate::runtime::QueuedVcpuInterrupt::Physical {
+            vector,
+            physical_irq,
+        } = interrupt
+        else {
+            unreachable!("virtual interrupts are consumed by the common injection path")
+        };
+        let Some(vm) = crate::get_vm_by_id(vm_id) else {
+            warn!("VM[{vm_id}] disappeared before physical interrupt injection");
+            return;
+        };
+        let Some(vector) = loongarch_external_irq_vector(&vm, vector, physical_irq) else {
+            trace!(
+                "Queued LoongArch external interrupt physical_irq={physical_irq:#x} is masked in \
+                 VM[{vm_id}]"
+            );
+            return;
+        };
+        trace!(
+            "Injecting queued LoongArch external interrupt vector={vector:#x}, \
+             physical_irq={physical_irq:#x} into VM[{vm_id}] VCpu[{}]",
+            vcpu.id()
+        );
+        if let Err(err) = vcpu
+            .get_arch_vcpu()
+            .inject_external_interrupt(vector, physical_irq)
+        {
+            warn!(
+                "Failed to inject queued LoongArch external interrupt vector={vector:#x}, \
+                 physical_irq={physical_irq:#x} into VM[{vm_id}] VCpu[{}]: {err:?}",
+                vcpu.id()
+            );
         }
     }
 
@@ -98,7 +84,7 @@ impl ArchOps for LoongArch64Arch {
         drain_loongarch_pch_pic_events(vm);
     }
 
-    fn handle_vcpu_exit_bound(
+    fn handle_vcpu_exit_unbound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
@@ -311,7 +297,7 @@ fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
 fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
     use crate::AsVCpuTask;
 
-    let current = crate::host::task::current_task();
+    let current = crate::host::task::current_thread();
     if let Some(task) = current.try_as_vcpu_task()
         && task.vm().id() == vm_id
         && task.vcpu.id() == vcpu_id
@@ -325,6 +311,8 @@ fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVm
 struct AxvmLoongArchHostOps;
 
 impl LoongArchHostOps for AxvmLoongArchHostOps {
+    type TimerHandle = crate::host::task::KernelTimerHandle;
+
     fn virt_to_phys(vaddr: LoongArchHostVirtAddr) -> LoongArchHostPhysAddr {
         LoongArchHostPhysAddr::from_usize(
             default_host()
@@ -344,12 +332,18 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
     fn register_timer(
         deadline: Duration,
         callback: Box<dyn FnOnce(Duration) + Send + 'static>,
-    ) -> usize {
-        crate::timer::register_timer(deadline.as_nanos() as u64, callback)
+    ) -> LoongArchVcpuResult<Self::TimerHandle> {
+        crate::host::task::register_kernel_timer(
+            crate::host::task::MonotonicDeadline::from_duration(deadline),
+            callback,
+        )
+        .map_err(|_| LoongArchVcpuError::TimerUnavailable)
     }
 
-    fn cancel_timer(token: usize) {
-        crate::timer::cancel_timer(token);
+    fn cancel_timer(handle: Self::TimerHandle) -> LoongArchVcpuResult {
+        crate::host::task::cancel_kernel_timer(handle)
+            .map(|_| ())
+            .map_err(|_| LoongArchVcpuError::TimerUnavailable)
     }
 
     fn inject_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) {
@@ -483,6 +477,7 @@ fn loongarch_error_to_backend(err: LoongArchVcpuError) -> BackendError {
         LoongArchVcpuError::InvalidInput => BackendError::InvalidInput,
         LoongArchVcpuError::Unsupported => BackendError::Unsupported,
         LoongArchVcpuError::BadState => BackendError::InvalidState,
+        LoongArchVcpuError::TimerUnavailable => BackendError::InvalidState,
     }
 }
 

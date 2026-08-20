@@ -95,18 +95,32 @@ impl RiscvPlicRuntime {
     }
 
     pub(crate) fn activate(self: &Arc<Self>) -> AxVmResult {
-        self.kick.start();
+        self.kick.start()?;
         if let Err(error) = self.physical.start() {
-            self.kick.stop();
-            return Err(error);
+            return match self.kick.stop() {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(AxVmError::lifecycle_rollback(
+                    "activate RISC-V PLIC runtime",
+                    error,
+                    rollback,
+                )),
+            };
         }
         Ok(())
     }
 
     pub(crate) fn deactivate(&self) -> AxVmResult {
-        let result = self.physical.stop();
-        self.kick.stop();
-        result
+        let physical = self.physical.stop();
+        let kick = self.kick.stop();
+        match (physical, kick) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(rollback)) => Err(AxVmError::lifecycle_rollback(
+                "deactivate RISC-V PLIC runtime",
+                error,
+                rollback,
+            )),
+        }
     }
 
     /// Returns the controller-derived VSEIP state for one vCPU.
@@ -138,7 +152,7 @@ impl RiscvPlicRuntime {
 impl Drop for RiscvPlicRuntime {
     fn drop(&mut self) {
         let _ = self.physical.stop();
-        self.kick.stop();
+        let _ = self.kick.stop();
     }
 }
 

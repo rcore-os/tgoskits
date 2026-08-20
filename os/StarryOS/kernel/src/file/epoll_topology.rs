@@ -6,12 +6,12 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::epoll::EpollInner;
 use crate::{
     StarryError, StarryResult,
-    sync::{IrqMutex, Mutex, MutexGuard},
+    sync::{IrqMutex, SpinLock, SpinLockGuard},
 };
 
 const MAX_NESTED_EPOLL_EDGES: usize = 4;
 
-static EPOLL_TOPOLOGY_LOCK: Mutex<()> = Mutex::new(());
+static EPOLL_TOPOLOGY_LOCK: SpinLock<()> = SpinLock::new(());
 static NEXT_EPOLL_EDGE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -40,7 +40,7 @@ struct TopologyScan {
     reached_target: bool,
 }
 
-pub(super) fn lock_epoll_topology() -> MutexGuard<'static, ()> {
+pub(super) fn lock_epoll_topology() -> SpinLockGuard<'static, ()> {
     EPOLL_TOPOLOGY_LOCK.lock()
 }
 

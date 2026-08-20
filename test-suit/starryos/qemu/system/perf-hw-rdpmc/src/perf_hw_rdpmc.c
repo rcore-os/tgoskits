@@ -7,11 +7,11 @@
  * access (`PMUSERENR_EL0`) and (2) fill the mmap page's rdpmc metadata
  * (`cap_user_rdpmc`, the 1-based `index`, `pmc_width`).
  *
- * This test opens a disabled self counting CPU_CYCLES event. Per-task events use
- * a scheduler-owned programmable counter, so userspace selects the counter from
- * the mmap page's 1-based index instead of assuming the system-wide cycle
- * counter. After enable + sched_yield makes the scheduler publish the event, the
- * test reads that counter from EL0 and cross-checks it against read(perf_fd).
+ * This test opens a disabled self counting CPU_CYCLES event. Linux ARM PMUv3
+ * prefers the dedicated cycle counter for this event even when it is task-bound,
+ * while the scheduler still owns when that counter is installed for the task.
+ * After enable + sched_yield makes the scheduler publish the event, the test
+ * reads the mmap page's 1-based counter and cross-checks it against read(perf_fd).
  * If EL0 access were not enabled the system-register access would trap (SIGILL),
  * so reaching the comparison already proves it.
  *
@@ -257,10 +257,10 @@ int main(void) {
         close(efd);
         return fail("disabled event exposes a hardware counter before ENABLE");
     }
-    if (width != 32) {
+    if (width != 64) {
         munmap(base, 4096);
         close(efd);
-        return fail("per-task programmable counter width is not 32 bits");
+        return fail("preferred cycle counter width is not 64 bits");
     }
 
     if (ioctl(efd, PERF_EVENT_IOC_ENABLE, 0) != 0) {
@@ -311,8 +311,8 @@ int main(void) {
     int rc = 0;
     if (index == 0) {
         rc = fail("enabled event did not publish a hardware counter");
-    } else if (index >= CYCLE_PAGE_INDEX) {
-        rc = fail("per-task event published an invalid programmable counter");
+    } else if (index != CYCLE_PAGE_INDEX) {
+        rc = fail("CPU_CYCLES did not publish the preferred cycle counter");
     } else if (offset <= 0) {
         rc = fail("sched-out count not preserved in active mmap-page offset");
     } else if (rd == 0) {

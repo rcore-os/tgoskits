@@ -5,7 +5,7 @@ use axdevice::*;
 use axvm_types::VmArchVcpuOps;
 
 use crate::{
-    InterruptTriggerMode,
+    AxVmResult, InterruptTriggerMode,
     arch::x86_64::{
         X86InterruptDomain, X86InterruptDomainRuntimeKey,
         host_irq::{self as irq, IrqSource},
@@ -105,7 +105,7 @@ fn ioapic_irq_hook_gsis() -> impl Iterator<Item = usize> {
     (0..IOAPIC_GSI_COUNT).filter(|gsi| should_register_ioapic_gsi_hook(*gsi))
 }
 
-fn interrupt_domain_for_vm(vm: &crate::AxVMRef) -> Option<std::sync::Arc<X86InterruptDomain>> {
+fn interrupt_domain_for_vm(vm: &crate::AxVM) -> Option<std::sync::Arc<X86InterruptDomain>> {
     vm.get_devices()
         .ok()?
         .services()
@@ -442,16 +442,18 @@ impl X86InterruptDomain {
     }
 }
 
-pub fn start_deferred_irq_delivery(vm: &VMRef) {
+pub fn start_deferred_irq_delivery(vm: &crate::AxVM) -> AxVmResult {
     if let Some(domain) = interrupt_domain_for_vm(vm) {
-        domain.start_kick_worker();
+        domain.start_kick_worker()?;
     }
+    Ok(())
 }
 
-pub fn stop_deferred_irq_delivery(vm: &VMRef) {
+pub fn stop_deferred_irq_delivery(vm: &crate::AxVM) -> AxVmResult {
     if let Some(domain) = interrupt_domain_for_vm(vm) {
-        domain.stop_kick_worker();
+        domain.stop_kick_worker()?;
     }
+    Ok(())
 }
 
 pub fn drain_pending_wired_irqs(vm: &VMRef, vcpu: &VCpuRef) {
@@ -558,56 +560,6 @@ pub fn register_ioapic_irq_forwarding_activator(
     domain
         .register_forwarding_activator(guest_gsi, activator)
         .map_err(|error| forwarding_route_error(vm.id(), guest_gsi, "activator", error))
-}
-
-pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
-    if !vm.uses_passthrough_address_space() {
-        return;
-    }
-
-    let now_ns = ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos();
-    let Ok(devices) = vm.get_devices() else {
-        return;
-    };
-    if !devices
-        .services()
-        .require::<X86PitServiceKey>()
-        .is_ok_and(|pit| pit.consume_irq0_if_due(now_ns))
-    {
-        return;
-    }
-    if let Some(vector) = devices
-        .services()
-        .require::<X86PicServiceKey>()
-        .ok()
-        .and_then(|pic| pic.pulse_irq(PIT_TIMER_GSI as u8))
-    {
-        vcpu.get_arch_vcpu()
-            .inject_interrupt_with_trigger(vector as _, InterruptTriggerMode::EdgeTriggered)
-            .unwrap();
-        return;
-    }
-
-    let Some(irq) = devices
-        .services()
-        .require::<X86InterruptDomainKey>()
-        .ok()
-        .and_then(|ioapic| ioapic.assert_gsi(PIT_TIMER_GSI))
-    else {
-        trace!("x86 PIT IRQ0 due but vIOAPIC GSI0 is not ready");
-        return;
-    };
-
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {

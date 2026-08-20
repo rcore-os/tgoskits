@@ -23,20 +23,24 @@ fn test_wait() {
     COUNTER.store(0, Ordering::Release);
     GO.store(false, Ordering::Release);
 
+    let mut workers = std::vec::Vec::new();
     for _ in 0..NUM_TASKS {
-        thread::spawn(move || {
+        workers.push(thread::spawn(move || {
             COUNTER.fetch_add(1, Ordering::Release);
             api::ax_wait_queue_wake(&WQ1, 1);
             api::ax_wait_queue_wait_until(&WQ2, || GO.load(Ordering::Acquire), None);
             COUNTER.fetch_sub(1, Ordering::Release);
             api::ax_wait_queue_wake(&WQ1, 1);
-        });
+        }));
     }
 
     api::ax_wait_queue_wait_until(&WQ1, || COUNTER.load(Ordering::Acquire) == NUM_TASKS, None);
     GO.store(true, Ordering::Release);
     api::ax_wait_queue_wake(&WQ2, u32::MAX);
     api::ax_wait_queue_wait_until(&WQ1, || COUNTER.load(Ordering::Acquire) == 0, None);
+    for worker in workers {
+        worker.join().unwrap();
+    }
     assert_eq!(COUNTER.load(Ordering::Acquire), 0);
     println!("task_wait_queue: wait/wake OK");
 }
@@ -46,51 +50,53 @@ fn test_wait_timeout_until() {
     static WQ4: AxWaitQueueHandle = AxWaitQueueHandle::new();
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     static CONDITION: AtomicBool = AtomicBool::new(false);
+    static READY: AtomicUsize = AtomicUsize::new(0);
 
     COUNTER.store(0, Ordering::Release);
     CONDITION.store(false, Ordering::Release);
+    READY.store(0, Ordering::Release);
 
+    let mut notified_workers = std::vec::Vec::new();
     for _ in 0..NUM_TASKS {
-        thread::spawn(move || {
-            let timeout =
-                api::ax_wait_queue_wait_until(&WQ3, || true, Some(Duration::from_secs(100)));
-            assert!(!timeout, "task should be woken by notification");
+        notified_workers.push(thread::spawn(move || {
+            READY.fetch_add(1, Ordering::Release);
+            api::ax_wait_queue_wake(&WQ4, 1);
+            let timeout = api::ax_wait_queue_wait_until(
+                &WQ3,
+                || CONDITION.load(Ordering::Acquire),
+                Some(Duration::from_secs(100)),
+            );
+            assert!(
+                !timeout,
+                "publish-before-notify must make every conditional wait complete"
+            );
             COUNTER.fetch_add(1, Ordering::Release);
             api::ax_wait_queue_wake(&WQ4, 1);
-        });
+        }));
     }
 
-    thread::sleep(Duration::from_millis(100));
+    api::ax_wait_queue_wait_until(&WQ4, || READY.load(Ordering::Acquire) == NUM_TASKS, None);
+    CONDITION.store(true, Ordering::Release);
     api::ax_wait_queue_wake(&WQ3, u32::MAX);
     api::ax_wait_queue_wait_until(&WQ4, || COUNTER.load(Ordering::Acquire) == NUM_TASKS, None);
+    for worker in notified_workers {
+        worker.join().unwrap();
+    }
 
+    let mut timeout_workers = std::vec::Vec::new();
     for _ in 0..NUM_TASKS {
-        thread::spawn(move || {
+        timeout_workers.push(thread::spawn(move || {
             let timeout =
                 api::ax_wait_queue_wait_until(&WQ3, || false, Some(Duration::from_millis(50)));
             assert!(timeout, "task should be woken by timeout");
             COUNTER.fetch_sub(1, Ordering::Release);
             api::ax_wait_queue_wake(&WQ4, 1);
-        });
+        }));
     }
 
     api::ax_wait_queue_wait_until(&WQ4, || COUNTER.load(Ordering::Acquire) == 0, None);
-
-    for _ in 0..NUM_TASKS {
-        thread::spawn(move || {
-            let _ = api::ax_wait_queue_wait_until(
-                &WQ3,
-                || CONDITION.load(Ordering::Acquire),
-                Some(Duration::from_millis(100)),
-            );
-            COUNTER.fetch_add(1, Ordering::Release);
-            api::ax_wait_queue_wake(&WQ4, 1);
-        });
+    for worker in timeout_workers {
+        worker.join().unwrap();
     }
-
-    thread::sleep(Duration::from_millis(90));
-    CONDITION.store(true, Ordering::Release);
-    api::ax_wait_queue_wake(&WQ3, u32::MAX);
-    api::ax_wait_queue_wait_until(&WQ4, || COUNTER.load(Ordering::Acquire) == NUM_TASKS, None);
     println!("task_wait_queue: timeout OK");
 }

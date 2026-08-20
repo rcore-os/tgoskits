@@ -38,6 +38,18 @@ static int xsetns(int fd, int nstype) {
     return (int)syscall(__NR_setns, fd, nstype);
 }
 
+static void child_expect_errno(long result, int expected_errno, int exit_status,
+                               const char *operation) {
+    int actual_errno = errno;
+    if (result == -1 && actual_errno == expected_errno)
+        return;
+    dprintf(STDERR_FILENO,
+            "unprivileged %s: result=%ld errno=%d (%s), expected errno=%d\n",
+            operation, result, actual_errno, strerror(actual_errno),
+            expected_errno);
+    _exit(exit_status);
+}
+
 static void test_unprivileged_mount_operations(void) {
     const char *missing = "/tmp/starry-unprivileged-umount-missing";
     unlink(missing);
@@ -50,24 +62,23 @@ static void test_unprivileged_mount_operations(void) {
         if (setresuid(1000, 1000, 1000) < 0)
             _exit(1);
         errno = 0;
-        if (unshare(CLONE_NEWNS) != -1 || errno != EPERM)
-            _exit(2);
+        child_expect_errno(unshare(CLONE_NEWNS), EPERM, 2,
+                           "unshare(CLONE_NEWNS)");
         errno = 0;
-        if (umount2(missing, 0) != -1 || errno != ENOENT)
-            _exit(3);
+        child_expect_errno(umount2(missing, 0), ENOENT, 3,
+                           "umount2(missing)");
         errno = 0;
-        if (umount2("", 0) != -1 || errno != ENOENT)
-            _exit(4);
+        child_expect_errno(umount2("", 0), ENOENT, 4, "umount2(empty)");
         errno = 0;
-        if (umount2("/", MNT_DETACH) != -1 || errno != EPERM)
-            _exit(5);
+        child_expect_errno(umount2("/", MNT_DETACH), EPERM, 5,
+                           "umount2(root, MNT_DETACH)");
         errno = 0;
-        if (syscall(SYS_mount, NULL, "/", NULL, MS_SHARED, NULL) != -1 ||
-            errno != EPERM)
-            _exit(6);
+        child_expect_errno(
+            syscall(SYS_mount, NULL, "/", NULL, MS_SHARED, NULL), EPERM, 6,
+            "mount(root, MS_SHARED)");
         errno = 0;
-        if (syscall(SYS_pivot_root, "/", "/") != -1 || errno != EPERM)
-            _exit(7);
+        child_expect_errno(syscall(SYS_pivot_root, "/", "/"), EPERM, 7,
+                           "pivot_root(root, root)");
         _exit(0);
     }
 

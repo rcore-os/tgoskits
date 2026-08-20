@@ -9,8 +9,8 @@ use rdrive::probe::{
     pci::{FnOnProbe, ProbePci},
 };
 
-use super::{PlatformDeviceUsbHost, align_up_4k, usb_kernel};
-use crate::BindingInfo;
+use super::{ProbePciUsbHost, align_up_4k, usb_runtime};
+use crate::PciIrqRequirement;
 
 const DRIVER_NAME: &str = "usb-xhci-pci";
 
@@ -24,7 +24,7 @@ crate::model_register!(
 );
 
 fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
-    let dma_coherency = crate::pci::dma_coherency(probe.info());
+    let dma = crate::pci::device_dma(probe.info(), u64::MAX);
     let endpoint = probe.endpoint_mut();
     let class = endpoint.revision_and_class();
     if (class.base_class, class.sub_class, class.interface) != (0x0c, 0x03, 0x30) {
@@ -36,27 +36,20 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     };
 
     endpoint.update_command(|mut cmd| {
-        cmd.insert(
-            CommandRegister::MEMORY_ENABLE
-                | CommandRegister::BUS_MASTER_ENABLE
-                | CommandRegister::INTERRUPT_DISABLE,
-        );
+        cmd.insert(CommandRegister::MEMORY_ENABLE | CommandRegister::BUS_MASTER_ENABLE);
+        cmd.remove(CommandRegister::INTERRUPT_DISABLE);
         cmd
     });
 
     let mmio = crate::mmio::iomap(bar.start, align_up_4k(bar.count().max(1)))?;
     let address = endpoint.address();
-    let host = crab_usb::USBHost::new_xhci(mmio, dma_coherency, usb_kernel()).map_err(|err| {
+    let host = crab_usb::USBHost::new_xhci(mmio, dma, usb_runtime()).map_err(|err| {
         OnProbeError::other(format!(
             "failed to create xHCI host for PCI endpoint {address}: {err}",
         ))
     })?;
 
-    let irq = probe.into_platform_device().register_usb_host_with_info(
-        DRIVER_NAME,
-        host,
-        BindingInfo::empty(),
-    );
+    let irq = probe.register_usb_host(DRIVER_NAME, host, PciIrqRequirement::Required)?;
     info!(
         "xHCI PCI host registered successfully at {} with irq {:?}",
         address, irq

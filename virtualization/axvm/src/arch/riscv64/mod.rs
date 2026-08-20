@@ -89,7 +89,6 @@ impl ArchOps for Riscv64Arch {
             crate::host::arceos::dispatch_host_irq(vector);
             vcpu.get_arch_vcpu().latch_hvip_from_hw();
         });
-        crate::check_timer_events();
     }
 
     fn inject_vcpu_interrupt(
@@ -104,7 +103,7 @@ impl ArchOps for Riscv64Arch {
         vcpu.inject_interrupt_with_trigger(vector, interrupt.trigger)
     }
 
-    fn handle_vcpu_exit_bound(
+    fn handle_vcpu_exit_unbound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,

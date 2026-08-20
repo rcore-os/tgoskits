@@ -38,6 +38,10 @@ mod tests {
             Ok(())
         }
 
+        fn send_capacity(&mut self, _id: VsockConnId) -> Result<usize, VsockError> {
+            Ok(usize::MAX)
+        }
+
         fn send(&mut self, _id: VsockConnId, buf: &[u8]) -> Result<usize, VsockError> {
             Ok(buf.len())
         }
@@ -71,6 +75,7 @@ mod tests {
         let mut vsock = TestVsock;
         let id = VsockConnId::listening(1024);
         assert_eq!(vsock.guest_cid(), 3);
+        assert_eq!(vsock.send_capacity(id).unwrap(), usize::MAX);
         assert_eq!(vsock.send(id, &[1, 2, 3]).unwrap(), 3);
 
         let mut buf = [0; 4];

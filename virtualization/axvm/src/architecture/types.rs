@@ -22,6 +22,8 @@ pub(crate) enum BoundVcpuExit<D> {
     Complete(VcpuRunAction),
     /// Finish architecture-local work after unbinding the vCPU.
     Defer(D),
+    /// Finish a potentially blocking hypercall after unbinding the vCPU.
+    DeferHypercall(crate::runtime::hvc::DeferredHyperCall),
 }
 
 #[derive(Clone, Copy, Debug)]

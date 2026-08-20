@@ -2,13 +2,13 @@ use alloc::sync::Arc;
 use core::ffi::c_int;
 
 use ax_io::PollState;
-use ax_runtime::sync::SpinRwLock as RwLock;
 use flatten_objects::FlattenObjects;
 use scope_local::scope_local;
 
 use crate::{
     PosixError, PosixResult, ctypes,
     imp::stdio::{stdin, stdout},
+    sync::Mutex,
 };
 
 pub const AX_FILE_LIMIT: usize = 1024;
@@ -24,7 +24,7 @@ pub trait FileLike: Send + Sync {
 }
 
 scope_local! {
-    pub(crate) static FD_TABLE: Arc<RwLock<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LIMIT>>> = Arc::new(RwLock::new({
+    pub(crate) static FD_TABLE: Arc<Mutex<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LIMIT>>> = Arc::new(Mutex::new({
         let mut fd_table = flatten_objects::FlattenObjects::new();
         fd_table
             .add_at(0, Arc::new(stdin()) as _)
@@ -39,13 +39,13 @@ scope_local! {
     }));
 }
 
-fn current_fd_table() -> Arc<RwLock<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LIMIT>>> {
+fn current_fd_table() -> Arc<Mutex<FlattenObjects<Arc<dyn FileLike>, AX_FILE_LIMIT>>> {
     FD_TABLE.clone_current()
 }
 
 pub fn get_file_like(fd: c_int) -> PosixResult<Arc<dyn FileLike>> {
     current_fd_table()
-        .read()
+        .lock()
         .get(fd as usize)
         .cloned()
         .ok_or(PosixError::EBADF)
@@ -53,14 +53,14 @@ pub fn get_file_like(fd: c_int) -> PosixResult<Arc<dyn FileLike>> {
 
 pub fn add_file_like(f: Arc<dyn FileLike>) -> PosixResult<c_int> {
     Ok(current_fd_table()
-        .write()
+        .lock()
         .add(f)
         .map_err(|_| PosixError::EMFILE)? as c_int)
 }
 
 pub fn close_file_like(fd: c_int) -> PosixResult {
     let f = current_fd_table()
-        .write()
+        .lock()
         .remove(fd as usize)
         .ok_or(PosixError::EBADF)?;
     drop(f);
@@ -108,7 +108,7 @@ pub fn sys_dup2(old_fd: c_int, new_fd: c_int) -> c_int {
 
         let f = get_file_like(old_fd)?;
         current_fd_table()
-            .write()
+            .lock()
             .add_at(new_fd as usize, f)
             .map_err(|_| PosixError::EMFILE)?;
 

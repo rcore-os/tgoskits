@@ -56,8 +56,11 @@ pub mod net;
         feature = "task-affinity",
         feature = "task-ipi",
         feature = "task-irq",
+        feature = "task-kernel-timer",
         feature = "task-parallel",
+        feature = "task-pi-mutex",
         feature = "task-priority",
+        feature = "task-rt-policy",
         feature = "task-sleep",
         feature = "task-smp-online",
         feature = "task-stack-guard-page",
@@ -119,8 +122,15 @@ test_runner!("sched-rr", run_sched_rr, task::priority::run);
 test_runner!("task-affinity", run_task_affinity, task::affinity::run);
 test_runner!("task-ipi", run_task_ipi, task::ipi::run);
 test_runner!("task-irq", run_task_irq, task::irq::run);
+test_runner!(
+    "task-kernel-timer",
+    run_task_kernel_timer,
+    task::kernel_timer::run
+);
 test_runner!("task-parallel", run_task_parallel, task::parallel::run);
+test_runner!("task-pi-mutex", run_task_pi_mutex, task::pi_mutex::run);
 test_runner!("task-priority", run_task_priority, task::priority::run);
+test_runner!("task-rt-policy", run_task_rt_policy, task::rt_policy::run);
 test_runner!("task-sleep", run_task_sleep, task::sleep::run);
 test_runner!(
     "task-smp-online",
@@ -211,11 +221,27 @@ const SELECTED_TESTS: &[TestCase] = &[
     #[cfg(feature = "task-affinity")]
     TestCase::new("task-affinity", "task CPU affinity", run_task_affinity),
     #[cfg(feature = "task-ipi")]
-    TestCase::new("task-ipi", "IPI callback delivery", run_task_ipi),
+    TestCase::new(
+        "task-ipi",
+        "IPI owner work and hard-call delivery",
+        run_task_ipi,
+    ),
     #[cfg(feature = "task-irq")]
     TestCase::new("task-irq", "task IRQ state", run_task_irq),
+    #[cfg(feature = "task-kernel-timer")]
+    TestCase::new(
+        "task-kernel-timer",
+        "shared kernel timer callbacks",
+        run_task_kernel_timer,
+    ),
     #[cfg(feature = "task-parallel")]
     TestCase::new("task-parallel", "parallel computation", run_task_parallel),
+    #[cfg(feature = "task-pi-mutex")]
+    TestCase::new(
+        "task-pi-mutex",
+        "PI mutex late wake after waiter exit",
+        run_task_pi_mutex,
+    ),
     #[cfg(all(
         feature = "task-priority",
         not(any(feature = "sched-cfs", feature = "sched-rr"))
@@ -224,6 +250,12 @@ const SELECTED_TESTS: &[TestCase] = &[
         "task-priority",
         "task priority scheduling smoke",
         run_task_priority,
+    ),
+    #[cfg(feature = "task-rt-policy")]
+    TestCase::new(
+        "task-rt-policy",
+        "running FIFO policy crosses RT periods",
+        run_task_rt_policy,
     ),
     #[cfg(feature = "task-sleep")]
     TestCase::new("task-sleep", "bounded task sleeps", run_task_sleep),

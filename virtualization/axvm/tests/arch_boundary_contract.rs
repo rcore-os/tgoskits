@@ -22,6 +22,15 @@ fn assert_omits(source: &str, path: &str, forbidden: &[&str]) {
     }
 }
 
+fn assert_omits_lines(source: &str, path: &str, forbidden: &[&str]) {
+    for token in forbidden {
+        assert!(
+            !source.lines().any(|line| line.trim() == *token),
+            "{path} must not ignore architecture lifecycle result in {token:?}"
+        );
+    }
+}
+
 #[test]
 fn loongarch_platform_injector_does_not_claim_the_eiointc_cascade_line() {
     // This source-level contract intentionally names the forbidden ownership
@@ -83,4 +92,40 @@ fn riscv_ipi_protocol_stays_out_of_common_architecture_files() {
             &["#[path = \"../../architecture/cpu_up.rs\"]"],
         );
     }
+}
+
+#[test]
+fn aarch64_vgic_lifecycle_observes_deferred_kick_results() {
+    let vgic = read_source("src/arch/aarch64/vgic/mod.rs");
+    assert_omits_lines(
+        &vgic,
+        "src/arch/aarch64/vgic/mod.rs",
+        &["self.kick.start();", "self.kick.stop();"],
+    );
+}
+
+#[test]
+fn x86_pit_irq0_has_one_host_timer_owner() {
+    for (path, forbidden) in [
+        (
+            "src/arch/x86_64/irq.rs",
+            &["inject_due_pit_irq0", "consume_irq0_if_due"][..],
+        ),
+        ("src/arch/x86_64/exit.rs", &["PreemptionTimer"][..]),
+        ("../axdevice/src/x86.rs", &["consume_irq0_if_due"][..]),
+        ("../x86_vlapic/src/pit.rs", &["consume_irq0_if_due"][..]),
+    ] {
+        let source = read_source(path);
+        assert_omits(&source, path, forbidden);
+    }
+}
+
+#[test]
+fn vcpu_kicks_use_the_shared_ipi_delivery_edge() {
+    let host = read_source("src/host/arceos.rs");
+
+    assert!(
+        host.contains("runtime_task::notify_cpu(cpu_id)"),
+        "vCPU kicks must use the runtime IPI delivery edge"
+    );
 }

@@ -9,16 +9,19 @@ use ax_memory_addr::{
     MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr, VirtAddrRange, is_aligned_4k,
 };
 use ax_memory_set::{MemoryArea, MemorySet};
-use ax_runtime::hal::{
-    mem::phys_to_virt,
-    paging::{MappingFlags, PageTable, PagingAllocator},
-    trap::PageFaultFlags,
+use ax_runtime::{
+    hal::{
+        mem::phys_to_virt,
+        paging::{MappingFlags, PageTable, PagingAllocator},
+        trap::PageFaultFlags,
+    },
+    task::AddressSpaceCpuState,
 };
 
 use crate::{
     StarryError, StarryResult,
     mm::ProcessVmStat,
-    sync::{LockdepMutexExt, Mutex},
+    sync::{LockdepMutexExt, PiMutex},
 };
 
 fn complete_page_fault_with(
@@ -34,6 +37,7 @@ fn complete_page_fault_with(
 
 mod accounting;
 mod backend;
+mod tlb;
 
 #[cfg(test)]
 pub(crate) use self::accounting::accounting_edge_cases_and_snapshot_rules_hold_for_test;
@@ -67,12 +71,18 @@ pub struct AddrSpace {
     pt: PageTable,
     /// Number of live [`crate::task::ProcessData`] instances that reference this
     /// address space (each `fork`/`clone` / `execve` slot that holds the
-    /// `Arc<Mutex<AddrSpace>>`).
+    /// `Arc<PiMutex<AddrSpace>>`).
     ///
     /// This must **not** be confused with `Arc::strong_count`, which also counts
     /// transient clones from `ProcessData::aspace()` and is not reliable for
     /// SMP teardown decisions.
     pub(crate) process_slots: AtomicUsize,
+    /// Number of scheduler tokens that may still be installed or borrowed as
+    /// a CPU's active address space.
+    pub(crate) scheduler_slots: AtomicUsize,
+    /// CPUs whose hardware root may retain translations for this address
+    /// space. All scheduler tokens for this page table share this tracker.
+    active_cpus: Arc<AddressSpaceCpuState>,
     /// All VmX counters for this address space.  Maintained automatically by
     /// `map`, `unmap`, `clear`, and `try_clone`; never touch from outside mm/.
     pub vm_stat: ProcessVmStat,
@@ -105,23 +115,22 @@ impl AddrSpace {
         &mut self.pt
     }
 
-    /// Returns the root physical address of the inner page table.
-    pub const fn page_table_root(&self) -> PhysAddr {
-        self.pt.root_paddr()
-    }
-
     /// Checks if the address space contains the given address range.
     pub fn contains_range(&self, start: VirtAddr, size: usize) -> bool {
         self.va_range.contains(start) && (self.va_range.end - start) >= size
     }
 
     /// Creates a new empty address space.
-    pub fn new_empty(base: VirtAddr, size: usize) -> StarryResult<Self> {
+    pub fn new_empty(base: VirtAddr, size: usize) -> crate::StarryResult<Self> {
+        let pt = PageTable::new(PagingAllocator).map_err(|_| crate::StarryError::NoMemory)?;
+        let active_cpus = Arc::new(AddressSpaceCpuState::new(pt.root_paddr()));
         Ok(Self {
             va_range: VirtAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
-            pt: PageTable::new(PagingAllocator).map_err(|_| StarryError::NoMemory)?,
+            pt,
             process_slots: AtomicUsize::new(0),
+            scheduler_slots: AtomicUsize::new(0),
+            active_cpus,
             vm_stat: ProcessVmStat::new(),
             rss: MemoryAccounting::new(),
         })
@@ -139,6 +148,38 @@ impl AddrSpace {
             return Err(StarryError::InvalidInput);
         }
         Ok(())
+    }
+
+    fn mutate_with_tlb_gather<R>(
+        &mut self,
+        ranges: &[(VirtAddr, usize)],
+        operation: impl FnOnce(&mut Self) -> crate::StarryResult<R>,
+    ) -> crate::StarryResult<R> {
+        let mut gather = tlb::TlbGather::new();
+        for &(start, size) in ranges {
+            gather.record_range(tlb::checked_range(start, size)?);
+        }
+        let operation_result = {
+            let _guard = tlb::TlbGatherGuard::enter(&mut gather);
+            operation(self)
+        };
+
+        // Snapshot after the PTE mutation. A CPU that published itself before
+        // the mutation is included; a CPU entering after the snapshot installs
+        // the root with a local TLB invalidation and observes the new PTEs.
+        let shootdown_result = gather.finish(self.active_cpus.active_mask());
+        match (operation_result, shootdown_result) {
+            (_, Err(error)) => Err(error),
+            (result, Ok(())) => result,
+        }
+    }
+
+    pub(super) fn flush_active_tlb_range(
+        &self,
+        start: VirtAddr,
+        size: usize,
+    ) -> crate::StarryResult {
+        crate::mm::flush_tlb_range_on_cpus_sync(self.active_cpus.active_mask(), start, size)
     }
 
     /// Finds a free area that can accommodate the given size.
@@ -236,11 +277,22 @@ impl AddrSpace {
     /// contains unmapped area.
     pub fn populate_area(
         &mut self,
-        mut start: VirtAddr,
+        start: VirtAddr,
         size: usize,
         access_flags: MappingFlags,
     ) -> StarryResult {
         self.validate_region(start, size)?;
+        self.mutate_with_tlb_gather(&[], |aspace| {
+            aspace.populate_area_inner(start, size, access_flags)
+        })
+    }
+
+    fn populate_area_inner(
+        &mut self,
+        mut start: VirtAddr,
+        size: usize,
+        access_flags: MappingFlags,
+    ) -> crate::StarryResult {
         let end = start + size;
 
         loop {
@@ -265,7 +317,7 @@ impl AddrSpace {
             // points at it: a use-after-free that surfaces as a wild pointer
             // under heavy file-backed paging (the JVM jimage on loongarch).
             if let Some(cb) = callback {
-                cb(self);
+                cb(self)?;
             }
             start = area_end;
             assert!(start.is_aligned_4k());
@@ -286,6 +338,12 @@ impl AddrSpace {
     /// the VMA metadata intact (Linux `MADV_DONTNEED` / `MADV_FREE` semantics).
     pub fn discard_range(&mut self, start: VirtAddr, size: usize) -> StarryResult {
         self.validate_region(start, size)?;
+        self.mutate_with_tlb_gather(&[(start, size)], |aspace| {
+            aspace.discard_range_inner(start, size)
+        })
+    }
+
+    fn discard_range_inner(&mut self, start: VirtAddr, size: usize) -> crate::StarryResult {
         let end = start + size;
 
         let mut frags: alloc::vec::Vec<(VirtAddrRange, Backend)> = alloc::vec::Vec::new();
@@ -323,7 +381,10 @@ impl AddrSpace {
     /// aligned.
     pub fn unmap(&mut self, start: VirtAddr, size: usize) -> StarryResult {
         self.validate_region(start, size)?;
+        self.mutate_with_tlb_gather(&[(start, size)], |aspace| aspace.unmap_inner(start, size))
+    }
 
+    fn unmap_inner(&mut self, start: VirtAddr, size: usize) -> crate::StarryResult {
         // Compute the actual mapped bytes being removed (unmap is already O(n)).
         let end = start + size;
         let removed_pages: u64 = self
@@ -366,16 +427,6 @@ impl AddrSpace {
         Ok(())
     }
 
-    pub fn replace_area_metadata(
-        &mut self,
-        start: VirtAddr,
-        size: usize,
-        flags: MappingFlags,
-        backend: Backend,
-    ) -> StarryResult {
-        self.replace_area_metadata_with_reported_flags(start, size, flags, flags, backend)
-    }
-
     pub fn replace_area_metadata_with_reported_flags(
         &mut self,
         start: VirtAddr,
@@ -398,7 +449,18 @@ impl AddrSpace {
     ///
     /// Uses direct PTE map/unmap (not [`BackendOps::unmap`]) so Cow RSS charges
     /// migrate via [`MemoryAccounting::move_charge`] instead of remove+record.
-    pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) -> StarryResult {
+    pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) -> crate::StarryResult {
+        self.mutate_with_tlb_gather(&[(src, size), (dst, size)], |aspace| {
+            aspace.move_pages_inner(src, dst, size)
+        })
+    }
+
+    fn move_pages_inner(
+        &mut self,
+        src: VirtAddr,
+        dst: VirtAddr,
+        size: usize,
+    ) -> crate::StarryResult {
         let cursor = &mut self.pt;
         let mut mapped_pages = alloc::vec::Vec::new();
         let mut offset = 0;
@@ -522,14 +584,6 @@ impl AddrSpace {
         Ok(())
     }
 
-    /// Updates mapping within the specified virtual address range.
-    ///
-    /// Returns an error if the address range is out of the address space or not
-    /// aligned.
-    pub fn protect(&mut self, start: VirtAddr, size: usize, flags: MappingFlags) -> StarryResult {
-        self.protect_with_reported_flags(start, size, flags, flags)
-    }
-
     pub fn protect_with_reported_flags(
         &mut self,
         start: VirtAddr,
@@ -538,7 +592,18 @@ impl AddrSpace {
         reported_flags: MappingFlags,
     ) -> StarryResult {
         self.validate_region(start, size)?;
+        self.mutate_with_tlb_gather(&[(start, size)], |aspace| {
+            aspace.protect_with_reported_flags_inner(start, size, flags, reported_flags)
+        })
+    }
 
+    fn protect_with_reported_flags_inner(
+        &mut self,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+        reported_flags: MappingFlags,
+    ) -> crate::StarryResult {
         let touched_memfds =
             crate::syscall::memfd_collect_metas_touching_mprotect_range(self, start, size);
         let _rss = RssAccountingGuard::enter(&self.rss);
@@ -555,10 +620,15 @@ impl AddrSpace {
 
     /// Removes all mappings in the address space.
     pub fn clear(&mut self) {
-        crate::syscall::memfd_release_all_shared_writable_counts_for_aspace(self);
-        let _rss = RssAccountingGuard::enter(&self.rss);
-        self.areas.clear(&mut self.pt).unwrap();
-        self.vm_stat.on_clear();
+        let range = (self.base(), self.size());
+        self.mutate_with_tlb_gather(&[range], |aspace| {
+            crate::syscall::memfd_release_all_shared_writable_counts_for_aspace(aspace);
+            let _rss = RssAccountingGuard::enter(&aspace.rss);
+            aspace.areas.clear(&mut aspace.pt)?;
+            aspace.vm_stat.on_clear();
+            Ok(())
+        })
+        .unwrap_or_else(|error| panic!("address-space teardown failed: {error}"));
     }
 
     /// Checks whether an access to the specified memory region is valid.
@@ -603,8 +673,26 @@ impl AddrSpace {
     /// Returns `true` if the page fault is handled successfully (not a real
     /// fault).
     pub fn handle_page_fault(&mut self, vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
+        match self.mutate_with_tlb_gather(&[], |aspace| {
+            aspace.handle_page_fault_inner(vaddr, access_flags)
+        }) {
+            Ok(handled) => {
+                complete_page_fault_with(handled, vaddr, ax_runtime::hal::cache::update_mmu_cache)
+            }
+            Err(error) => {
+                warn!("Failed to finish page-fault TLB transaction: {error}");
+                false
+            }
+        }
+    }
+
+    fn handle_page_fault_inner(
+        &mut self,
+        vaddr: VirtAddr,
+        access_flags: PageFaultFlags,
+    ) -> crate::StarryResult<bool> {
         if !self.va_range.contains(vaddr) {
-            return false;
+            return Ok(false);
         }
         let access_flags = MappingFlags::from(access_flags);
         if let Some(area) = self.areas.find(vaddr) {
@@ -618,31 +706,26 @@ impl AddrSpace {
                     Some(&self.rss),
                     &mut self.pt,
                 );
-                let handled = match populate_result {
+                return match populate_result {
                     Ok((n, callback)) => {
                         if let Some(cb) = callback {
-                            cb(self);
+                            cb(self)?;
                         }
                         if n == 0 {
                             warn!("No pages populated for {vaddr:?} ({flags:?})");
-                            false
+                            Ok(false)
                         } else {
-                            true
+                            Ok(true)
                         }
                     }
                     Err(err) => {
                         warn!("Failed to populate pages for {vaddr:?} ({flags:?}): {err}");
-                        false
+                        Ok(false)
                     }
                 };
-                return complete_page_fault_with(
-                    handled,
-                    vaddr,
-                    ax_runtime::hal::cache::update_mmu_cache,
-                );
             }
         }
-        false
+        Ok(false)
     }
 
     /// Attempts to clone the current address space into a new one.
@@ -654,8 +737,12 @@ impl AddrSpace {
     /// After each area is mapped, `memfd_on_after_map` runs so each cloned memfd
     /// shared-writable VMA increments the same counter as [`AddrSpace::map`].
     /// (`CLONE_VM` shares one address space and does not duplicate VMAs here.)
-    pub fn try_clone(&mut self) -> StarryResult<Arc<Mutex<Self>>> {
-        let new_aspace = Arc::new(Mutex::new(Self::new_empty(self.base(), self.size())?));
+    pub fn try_clone(&mut self) -> crate::StarryResult<Arc<PiMutex<Self>>> {
+        self.mutate_with_tlb_gather(&[], Self::try_clone_inner)
+    }
+
+    fn try_clone_inner(&mut self) -> crate::StarryResult<Arc<PiMutex<Self>>> {
+        let new_aspace = Arc::new(PiMutex::new(Self::new_empty(self.base(), self.size())?));
         let new_aspace_clone = new_aspace.clone();
 
         // The caller holds the source AddrSpace lock while this fresh AddrSpace
@@ -767,20 +854,47 @@ pub(crate) fn page_fault_completion_updates_only_success_for_test() -> bool {
 }
 
 /// Increment how many [`crate::task::ProcessData`] slots refer to `aspace`.
-pub(crate) fn attach_process_slot(aspace: &Arc<Mutex<AddrSpace>>) {
+pub(crate) fn attach_process_slot(aspace: &Arc<PiMutex<AddrSpace>>) {
     aspace.lock().process_slots.fetch_add(1, Ordering::AcqRel);
 }
 
+/// Pins one address space for a move-only scheduler token and returns its root.
+pub(crate) fn attach_scheduler_slot(
+    aspace: &Arc<PiMutex<AddrSpace>>,
+) -> (PhysAddr, Arc<AddressSpaceCpuState>) {
+    let guard = aspace.lock();
+    guard.scheduler_slots.fetch_add(1, Ordering::AcqRel);
+    (guard.pt.root_paddr(), Arc::clone(&guard.active_cpus))
+}
+
+fn clear_unreferenced_address_space(aspace: &mut AddrSpace) {
+    if aspace.process_slots.load(Ordering::Acquire) == 0
+        && aspace.scheduler_slots.load(Ordering::Acquire) == 0
+    {
+        aspace.clear();
+    }
+}
+
 /// One [`crate::task::ProcessData`] releases its logical slot. When the last slot
-/// is dropped while holding [`Mutex`]`<`[`AddrSpace`]`>`, run [`AddrSpace::clear`]
+/// is dropped while holding [`PiMutex`]`<`[`AddrSpace`]`>`, run [`AddrSpace::clear`]
 /// so inode-scoped accounting (memfd, etc.) is torn down before the page table
 /// is reclaimed.
-pub(crate) fn release_process_slot(aspace: &Arc<Mutex<AddrSpace>>) {
+pub(crate) fn release_process_slot(aspace: &Arc<PiMutex<AddrSpace>>) {
     let mut guard = aspace.lock();
     let prev = guard.process_slots.fetch_sub(1, Ordering::AcqRel);
     debug_assert!(prev >= 1, "AddrSpace::process_slots underflow");
     if prev == 1 {
-        guard.clear();
+        clear_unreferenced_address_space(&mut guard);
+    }
+}
+
+/// Releases one scheduler token after runtime active-mm reclamation.
+pub(crate) fn release_scheduler_slot(aspace: &Arc<PiMutex<AddrSpace>>) {
+    let mut guard = aspace.lock();
+    let prev = guard.scheduler_slots.fetch_sub(1, Ordering::AcqRel);
+    debug_assert!(prev >= 1, "AddrSpace::scheduler_slots underflow");
+    if prev == 1 {
+        clear_unreferenced_address_space(&mut guard);
     }
 }
 
@@ -791,6 +905,11 @@ impl fmt::Debug for AddrSpace {
             .field("page_table_root", &self.pt.root_paddr())
             .field("areas", &self.areas)
             .field("process_slots", &self.process_slots.load(Ordering::Relaxed))
+            .field(
+                "scheduler_slots",
+                &self.scheduler_slots.load(Ordering::Relaxed),
+            )
+            .field("active_cpus", &self.active_cpus.active_mask())
             .finish()
     }
 }

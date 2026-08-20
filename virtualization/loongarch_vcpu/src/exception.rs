@@ -54,8 +54,8 @@ fn emulate_gspr<H: LoongArchHostOps>(
     ctx: &mut LoongArchContextFrame,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
-) -> LoongArchVmExit {
+    guest_timer_token: &mut Option<H::TimerHandle>,
+) -> LoongArchVcpuResult<LoongArchVmExit> {
     let ins = get_badi(ctx) as u32 as usize;
     const OPCODE_CPUCFG: usize = 0b0000000000000000011011;
     const OPCODE_CPUCFG_LEN: usize = 22;
@@ -96,19 +96,19 @@ fn emulate_gspr<H: LoongArchHostOps>(
     }
 
     if matches(OPCODE_CPUCFG, OPCODE_CPUCFG_LEN) {
-        return emulate_cpucfg(ctx, ins);
+        return Ok(emulate_cpucfg(ctx, ins));
     }
     if matches(OPCODE_CACOP, OPCODE_CACOP_LEN) {
-        return emulate_cacop(ctx, ins);
+        return Ok(emulate_cacop(ctx, ins));
     }
     if matches(OPCODE_IDLE, OPCODE_IDLE_LEN) {
-        return emulate_idle(ctx, ins);
+        return Ok(emulate_idle(ctx, ins));
     }
     if matches(OPCODE_CSRX, OPCODE_CSRX_LEN) {
         return emulate_csrx::<H>(ctx, ins, vm_id, vcpu_id, guest_timer_token);
     }
     if matches(OPCODE_IOCSR, OPCODE_IOCSR_LEN) {
-        return emulate_iocsr::<H>(state, ctx, ins, vm_id, vcpu_id);
+        return Ok(emulate_iocsr::<H>(state, ctx, ins, vm_id, vcpu_id));
     }
 
     panic!(
@@ -123,7 +123,7 @@ pub fn handle_exception_sync<H: LoongArchHostOps>(
     ctx: &mut LoongArchContextFrame,
     vm_id: LoongArchVmId,
     vcpu_id: LoongArchVcpuId,
-    guest_timer_token: &mut Option<usize>,
+    guest_timer_token: &mut Option<H::TimerHandle>,
 ) -> LoongArchVcpuResult<LoongArchVmExit> {
     let ecode = get_exception_code(ctx);
     let esubcode = get_exception_subcode(ctx);
@@ -205,13 +205,7 @@ pub fn handle_exception_sync<H: LoongArchHostOps>(
             advance_guest_pc(ctx);
             Ok(LoongArchVmExit::Hypercall { nr, args })
         }
-        ECODE_GSPR => Ok(emulate_gspr::<H>(
-            iocsr_state,
-            ctx,
-            vm_id,
-            vcpu_id,
-            guest_timer_token,
-        )),
+        ECODE_GSPR => emulate_gspr::<H>(iocsr_state, ctx, vm_id, vcpu_id, guest_timer_token),
         ECODE_PIL | ECODE_PIS | ECODE_PIF | ECODE_PME | ECODE_PNR | ECODE_PNX | ECODE_PPI => {
             let badv = get_badv(ctx);
             if should_inject_guest_virtual_fault(ctx, badv, false) {

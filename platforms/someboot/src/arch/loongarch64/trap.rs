@@ -1,9 +1,6 @@
 use core::{arch::global_asm, fmt::Arguments, mem::offset_of};
 
-use loongArch64::register::{
-    ecfg::{self},
-    eentry, estat, tlbrentry,
-};
+use loongArch64::register::{eentry, estat};
 
 use crate::{
     arch::{context::TrapFrame, register::csr},
@@ -65,6 +62,7 @@ mod exccode {
 }
 
 const VECSIZE: usize = 0x200;
+const VECTOR_SPACING: usize = (VECSIZE / 4).ilog2() as usize;
 
 use super::register::irq as cpuintc;
 
@@ -142,47 +140,51 @@ unsafe extern "C" {
     fn __exception_vectors();
 }
 
-fn eentry_addr() -> usize {
-    sym_running_addr!(__exception_vectors)
-}
-
-fn tlbrentry_addr() -> usize {
-    virt_to_phys((eentry_addr() + 80 * VECSIZE) as *const u8)
-}
-
 pub fn per_cpu_trap_init(is_primary: bool) {
-    setup_vint_size();
     configure_exception_vector(is_primary);
 }
 
+#[cfg_attr(axtest_coverage, coverage(off))]
 pub(crate) fn init_entries_for_secondary() {
-    setup_vint_size();
-    eentry::set_eentry(eentry_addr());
-    tlbrentry::set_tlbrentry(tlbrentry_addr());
-}
-
-fn setup_vint_size() {
-    let n = (VECSIZE / 4).ilog2();
-    ecfg::set_vs(n as _);
+    let eentry_addr = sym_running_addr!(__exception_vectors);
+    let phys_mask = (1usize << super::addrspace::PABITS) - 1;
+    let tlbrentry_addr = (eentry_addr + 80 * VECSIZE) & phys_mask;
+    write_exception_entries(eentry_addr, tlbrentry_addr);
 }
 
 /// 配置异常向量
 fn configure_exception_vector(verbose: bool) {
-    let eentry_addr = eentry_addr();
+    let eentry_addr = sym_running_addr!(__exception_vectors);
+    let tlbrentry_addr = virt_to_phys((eentry_addr + 80 * VECSIZE) as *const u8);
+    write_exception_entries(eentry_addr, tlbrentry_addr);
     if verbose {
         println!("Setting EENTRY to {:#x}", eentry_addr);
-    }
-    eentry::set_eentry(eentry_addr);
-    let val = eentry::read().eentry();
-    if verbose {
+        let val = eentry::read().eentry();
         println!("EENTRY set to {:#x}", val);
-    }
-
-    let tlbrentry_addr = tlbrentry_addr();
-    if verbose {
         println!("Setting TLBRENTRY to {:#x}", tlbrentry_addr);
     }
-    tlbrentry::set_tlbrentry(tlbrentry_addr);
+}
+
+/// Writes the exception-vector CSRs without touching final-address data.
+#[cfg_attr(axtest_coverage, coverage(off))]
+fn write_exception_entries(eentry_addr: usize, tlbrentry_addr: usize) {
+    unsafe {
+        core::arch::asm!(
+            "csrrd {ecfg}, {csr_ecfg}",
+            "bstrins.d {ecfg}, {vector_spacing}, 18, 16",
+            "csrwr {ecfg}, {csr_ecfg}",
+            "csrwr {eentry}, {csr_eentry}",
+            "csrwr {tlbrentry}, {csr_tlbrentry}",
+            ecfg = out(reg) _,
+            vector_spacing = in(reg) VECTOR_SPACING,
+            eentry = in(reg) eentry_addr,
+            tlbrentry = in(reg) tlbrentry_addr,
+            csr_ecfg = const 0x4,
+            csr_eentry = const 0xc,
+            csr_tlbrentry = const 0x88,
+            options(nostack),
+        );
+    }
 }
 
 /// 处理向量中断

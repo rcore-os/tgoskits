@@ -12,7 +12,10 @@ use rdif_block::{
 };
 
 use super::{submission::collect_submission_batch, *};
-use crate::block::runtime::{completion::CompletionSubscription, irq::BlockIrqAction};
+use crate::block::runtime::{
+    completion::CompletionSubscription,
+    irq::{BlockIrqAction, ControllerIrqLatch, ControllerIrqTarget, IrqRearmEpisode},
+};
 
 #[derive(Default)]
 struct QueueCounters {
@@ -495,11 +498,11 @@ fn register_retry_advances_only_register_state_and_posts_controller_event() {
     crate::os::task::install_test_runtime_ops();
     let ops = runtime_ops().unwrap();
     let state = HctxState {
-        info: IrqMutex::new(test_queue_info(1)),
-        submission_channels: IrqMutex::new(Vec::new()),
+        info: Mutex::new(test_queue_info(1)),
+        submission_channels: Mutex::new(Vec::new()),
         notification: ops.notification(),
         lifecycle_notification: ops.notification(),
-        irq_latches: IrqMutex::new(Vec::new()),
+        irq_latches: Mutex::new(Vec::new()),
         quiescing: AtomicBool::new(false),
         quiesced: AtomicBool::new(false),
         stopping: AtomicBool::new(false),
@@ -617,11 +620,11 @@ fn retry_backlog_does_not_starve_fresh_cpu_channel_submissions() {
     let channel =
         Arc::new(BoundedChannel::with_item_notification(4, Arc::clone(&notification)).unwrap());
     let state = HctxState {
-        info: IrqMutex::new(test_queue_info(2)),
-        submission_channels: IrqMutex::new(vec![Arc::clone(&channel)]),
+        info: Mutex::new(test_queue_info(2)),
+        submission_channels: Mutex::new(vec![Arc::clone(&channel)]),
         notification,
         lifecycle_notification: ops.notification(),
-        irq_latches: IrqMutex::new(Vec::new()),
+        irq_latches: Mutex::new(Vec::new()),
         quiescing: AtomicBool::new(false),
         quiesced: AtomicBool::new(false),
         stopping: AtomicBool::new(false),
@@ -669,6 +672,17 @@ fn wait_for_commits(counters: &QueueCounters, expected: usize) {
     }
 }
 
+fn queue_zero_action(hctx: &Hctx) -> BlockIrqAction {
+    let controller_latch = Arc::new(ControllerIrqLatch::new(0));
+    let controller_notification = runtime_ops().unwrap().notification();
+    let source = Arc::new(IrqRearmEpisode::new(
+        0,
+        ControllerIrqTarget::new(controller_latch, controller_notification),
+    ));
+    let target = hctx.irq_target(Arc::clone(&source));
+    BlockIrqAction::new(Box::new(QueueZeroIrq), source, vec![target])
+}
+
 #[test]
 fn irq_drain_refreshes_hctx_queue_capabilities() {
     crate::os::task::install_test_runtime_ops();
@@ -686,8 +700,7 @@ fn irq_drain_refreshes_hctx_queue_capabilities() {
     assert!(!initial.limits.supports_flush);
     assert_eq!(initial.limits.max_blocks_per_request, 256);
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    let mut action = queue_zero_action(&hctx);
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
     let deadline = Instant::now() + Duration::from_secs(1);
     while !hctx.info().limits.supports_flush {
@@ -821,8 +834,7 @@ fn out_of_order_irq_completions_reach_the_right_subscriptions() {
     wait_for_commits(&counters, 1);
     assert_eq!(counters.committed.load(Ordering::Acquire), 1);
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    let mut action = queue_zero_action(&hctx);
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
 
     assert_eq!(usize::from(first.recv().unwrap().id), 1);
@@ -860,8 +872,7 @@ fn dropped_subscription_does_not_cancel_hardware_ownership() {
     wait_for_submissions(&counters, 1);
     drop(subscription);
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    let mut action = queue_zero_action(&hctx);
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
     let deadline = Instant::now() + Duration::from_secs(1);
     while observer.completed.load(Ordering::Acquire) != 1 {
@@ -904,8 +915,7 @@ fn partial_batch_is_committed_and_remaining_request_is_retried_after_irq() {
     wait_for_commits(&counters, 1);
     assert_eq!(counters.submitted.load(Ordering::Acquire), 1);
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    let mut action = queue_zero_action(&hctx);
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
     wait_for_submissions(&counters, 2);
     wait_for_commits(&counters, 2);
@@ -1082,8 +1092,7 @@ fn unexpected_completion_fails_hctx_and_preserves_pending_ownership() {
     assert!(channel.send(submission, false).is_ok());
     wait_for_submissions(&counters, 1);
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    let mut action = queue_zero_action(&hctx);
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
 
     assert_eq!(subscription.recv().unwrap().result, Err(BlkError::Io));

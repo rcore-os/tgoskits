@@ -317,9 +317,8 @@ impl ArchTrait for Arch {
         }
     }
 
-    fn systimer_enable() {
-        // Only bring the timer source into a known idle state here.
-        // IRQ masking/unmasking is controlled separately by the timer core.
+    fn systimer_prepare_oneshot() {
+        Self::systimer_irq_disable();
         let _ = sbi::set_timer(u64::MAX);
     }
 
@@ -341,6 +340,11 @@ impl ArchTrait for Arch {
                 options(nostack, preserves_flags)
             );
         }
+    }
+
+    fn systimer_stop_oneshot() {
+        Self::systimer_irq_disable();
+        let _ = sbi::set_timer(crate::timer::riscv64_interval::stopped_deadline());
     }
 
     fn systimer_irq_is_enabled() -> bool {

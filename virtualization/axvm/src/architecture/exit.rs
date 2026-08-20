@@ -113,6 +113,7 @@ fn missing_mmio_error(
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum HyperCallExitAction {
     Return(usize),
+    Defer(crate::runtime::hvc::DeferredHyperCall),
     Complete(VcpuRunAction),
     CompleteWithReturn {
         return_value: usize,
@@ -149,6 +150,7 @@ pub(crate) fn hvc_outcome_action(
         crate::runtime::hvc::HyperCallOutcome::Return(ret_val) => {
             HyperCallExitAction::Return(ret_val)
         }
+        crate::runtime::hvc::HyperCallOutcome::Deferred(work) => HyperCallExitAction::Defer(work),
         crate::runtime::hvc::HyperCallOutcome::CpuSuspendStandby { return_value } => {
             HyperCallExitAction::CompleteWithReturn {
                 return_value,
@@ -199,6 +201,9 @@ pub(crate) fn handle_hypercall<V: VmArchVcpuOps, D>(
             Ok(outcome) => match hvc_outcome_action(outcome) {
                 HyperCallExitAction::Return(ret_val) => {
                     vcpu.set_return_value(ret_val);
+                }
+                HyperCallExitAction::Defer(work) => {
+                    return Ok(BoundVcpuExit::DeferHypercall(work));
                 }
                 HyperCallExitAction::CompleteWithReturn {
                     return_value,
@@ -337,6 +342,20 @@ mod tests {
                     exits_vcpu: false,
                 },
             }
+        );
+    }
+
+    #[test]
+    fn hvc_cpu_on_is_deferred_until_vcpu_ownership_is_released() {
+        let work = crate::runtime::hvc::DeferredHyperCall::PsciCpuOn {
+            target_vcpu_id: 1,
+            entry_point: axvm_types::GuestPhysAddr::from_usize(0x80_000),
+            context_id: 7,
+        };
+
+        assert_eq!(
+            hvc_outcome_action(HyperCallOutcome::Deferred(work)),
+            HyperCallExitAction::Defer(work)
         );
     }
 

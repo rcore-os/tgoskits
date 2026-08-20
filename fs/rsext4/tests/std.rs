@@ -1,6 +1,9 @@
 extern crate alloc;
 
+// Host tests must link the external lock/task provider.
 use alloc::{string::ToString, vec, vec::Vec};
+
+use ax_runtime as _;
 
 #[test]
 fn rsext4_crc_and_error_rules_hold() {

@@ -3,8 +3,10 @@
 //! These tests focus on the higher-level metadata contract: when timestamps
 //! advance, when `i_dtime` changes, and how inheritance behaves on new inodes.
 
+// Host tests must link the external lock/task provider.
 use std::cell::Cell;
 
+use ax_runtime as _;
 use rsext4::{
     bmalloc::AbsoluteBN,
     disknode::Ext4Inode,

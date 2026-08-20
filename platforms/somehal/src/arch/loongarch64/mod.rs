@@ -24,7 +24,6 @@ const IOCSR_IPI_SEND: usize = 0x1040;
 
 const EIOINTC_IRQ: usize = 3;
 const IPI_IRQ: usize = 12;
-const IPI_VECTOR: u32 = 0;
 
 fn cpu_local_irq(raw: usize) -> IrqId {
     IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(raw as u32))
@@ -231,8 +230,7 @@ impl PlatOp for Plat {
         if cpu_id >= someboot::smp::cpu_count() {
             return Err(IrqError::InvalidCpu);
         }
-        let command =
-            ipi_command::make_ipi_send_value(cpu_id, IPI_VECTOR).ok_or(IrqError::InvalidCpu)?;
+        let command = ipi_command::runtime_ipi_send_value(cpu_id).ok_or(IrqError::InvalidCpu)?;
         // The blocking command waits for transport acceptance, not for prior
         // shared-memory stores. Complete those stores before ringing the IOCSR
         // doorbell so the target cannot observe a stale payload.

@@ -27,7 +27,10 @@ use sdmmc_protocol::{
     sdio::{card::SdioSdmmc, init::CardInitPreference},
 };
 
-use crate::{block::ProbeFdtBlock, mmio::iomap};
+use crate::{
+    block::{ProbeFdtBlock, sdhci_runtime::install_host_timer},
+    mmio::iomap,
+};
 
 const DWCMSHC_P_VENDOR_AREA1: usize = 0xe8;
 const DWCMSHC_AREA1_MASK: u16 = 0x0fff;
@@ -131,6 +134,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
+    install_host_timer(&mut host);
     if let Some(clock) = info.find_clock_line_by_name("core")? {
         clock.enable()?;
         info!("rockchip-rk3568-sdhci: using external CRU clock");

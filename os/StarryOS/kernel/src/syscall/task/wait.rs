@@ -1,27 +1,23 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use ax_task::{
-    current,
-    future::{block_on, interruptible},
-};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, P_ALL, P_PGID, P_PID, P_PIDFD, WCONTINUED, WEXITED, WNOHANG,
     WNOWAIT, WUNTRACED,
 };
 use starry_signal::{SignalInfo, Signo};
-use starry_vm::{VmMutPtr, VmPtr};
 
-use super::ptrace::PTRACE_EVENT_STOP;
+use super::{ptrace::PTRACE_EVENT_STOP, wait_scan::WaitCandidateScan};
 use crate::{
     Errno, StarryError, StarryResult,
     file::{PidFd, get_file_like},
+    mm::{VmMutPtr, VmPtr},
     task::{
-        AsThread, JobStatus, PgidNumber, PidIdentity, PidIdentityId, PidNumber, Process,
-        ProcessData, ProcessGroup, ROOT_PID_NS, Tgid, Tid, TidNumber, current_pid_view,
-        decode_wait_status, get_process_data_by_number, get_task_by_number, get_zombie_cred,
-        is_reaped_process, is_zombie_clone_child, is_zombie_process, processes, reap_process,
-        traced_zombies_for, wait_on_pollset, zombie_wait_parent_tid,
+        JobStatus, PgidNumber, PidIdentity, PidIdentityId, PidNumber, Process, ProcessData,
+        ProcessGroup, ROOT_PID_NS, Tgid, Tid, TidNumber, current_pid_view, decode_wait_status,
+        future::block_on_user, get_task_by_number, get_zombie_cred, is_reaped_process,
+        is_zombie_clone_child, is_zombie_process, processes, reap_process, traced_zombies_for,
+        wait_on_pollset, zombie_wait_parent_tid,
     },
 };
 
@@ -239,7 +235,7 @@ fn stopped_wait_status(data: &ProcessData, signo: Signo) -> i32 {
 }
 
 fn child_uid(child: &Process) -> u32 {
-    get_zombie_cred(child.pid_number())
+    get_zombie_cred(child)
         .map(|cred| cred.uid)
         .or_else(|| {
             child.threads().into_iter().find_map(|tid| {
@@ -249,6 +245,10 @@ fn child_uid(child: &Process) -> u32 {
             })
         })
         .unwrap_or(0)
+}
+
+fn zombie_exit_code(child: &Arc<Process>) -> Option<i32> {
+    is_zombie_process(child).then(|| child.exit_code())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -281,19 +281,21 @@ impl WaitChildFilter {
 
     fn matches_process(&self, child: &Process, current_tid: TidNumber) -> bool {
         if self.no_thread {
-            let wait_parent_tid = get_process_data_by_number(child.pid_number())
-                .ok()
-                .map(|data| data.wait_parent_tid)
-                .or_else(|| zombie_wait_parent_tid(child.pid_number()));
+            let wait_parent_tid = child
+                .identity()
+                .live_data()
+                .map(|data| data.wait_parent_tid())
+                .or_else(|| zombie_wait_parent_tid(child));
             if wait_parent_tid != Some(current_tid) {
                 return false;
             }
         }
 
-        let is_clone_child = get_process_data_by_number(child.pid_number())
-            .ok()
+        let is_clone_child = child
+            .identity()
+            .live_data()
             .map(|data| data.is_clone_child())
-            .or_else(|| is_zombie_clone_child(child.pid_number()))
+            .or_else(|| is_zombie_clone_child(child))
             .unwrap_or(false);
         self.matches_clone_kind(is_clone_child)
     }
@@ -355,11 +357,16 @@ fn waitable_processes(
     candidates
 }
 
-pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> StarryResult<isize> {
+pub fn sys_waitpid(
+    current: &crate::task::UserTaskRef,
+    pid: i32,
+    exit_code: *mut i32,
+    options: u32,
+) -> StarryResult<isize> {
     let options = WaitPidOptions::from_bits(options).ok_or(StarryError::InvalidInput)?;
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
-    let curr = current();
+    let curr = current;
     let thr = curr.as_thread();
     let proc = &thr.proc_data.proc;
 
@@ -384,7 +391,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> StarryResult<
         ),
     };
 
-    let scan_children = || {
+    let candidate_scan = WaitCandidateScan::new(|| {
         waitable_processes(
             proc,
             &target,
@@ -392,9 +399,9 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> StarryResult<
             thr.tid_number(),
             WaitChildFilter::from_waitpid_options(&options),
         )
-    };
-    if scan_children().is_empty() {
-        return Err(StarryError::from(Errno::ECHILD));
+    });
+    if candidate_scan.collect().is_empty() {
+        return Err(crate::StarryError::from(crate::Errno::ECHILD));
     }
 
     let proc_data = curr.as_thread().proc_data.clone();
@@ -402,33 +409,34 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> StarryResult<
         // Linux rescans the authoritative child and ptrace relationships after
         // every wake; another thread can publish an eligible child while this
         // waiter is blocked.
-        let children = scan_children();
+        let children = candidate_scan.collect();
         if let Some((child, data, stop_tid, signo)) = children.iter().find_map(|child| {
-            get_process_data_by_number(child.pid_number())
-                .ok()
-                .and_then(|data| {
-                    let preferred_tid = target.ptrace_preferred_stop_tid(child);
-                    let stop = if target.ptrace_requires_exact_stop(child) {
-                        preferred_tid.and_then(|tid| data.ptrace_unreported_stop_for(tid))
-                    } else {
-                        data.ptrace_unreported_stop(preferred_tid)
-                    };
-                    stop.map(|(stop_tid, signo)| (child, data, stop_tid, signo))
-                })
+            child.identity().live_data().and_then(|data| {
+                let preferred_tid = target.ptrace_preferred_stop_tid(child);
+                let stop = if target.ptrace_requires_exact_stop(child) {
+                    preferred_tid.and_then(|tid| data.ptrace_unreported_stop_for(tid))
+                } else {
+                    data.ptrace_unreported_stop(preferred_tid)
+                };
+                stop.map(|(stop_tid, signo)| (child, data, stop_tid, signo))
+            })
         }) {
             data.select_ptrace_stop(stop_tid);
             let wait_pid = target.ptrace_report_pid(child, &data);
             let status = stopped_wait_status(&data, signo);
             if let Some(exit_code) = exit_code.nullable() {
-                exit_code.vm_write(status)?;
+                exit_code.vm_write(current, status)?;
             }
             data.mark_ptrace_stop_reported_for(stop_tid);
             return Ok(Some(wait_pid as _));
-        } else if let Some(child) = children.iter().find(|child| is_zombie_process(child)) {
+        } else if let Some((child, child_exit_code)) = children
+            .iter()
+            .find_map(|child| zombie_exit_code(child).map(|exit_code| (child, exit_code)))
+        {
             // Copy status before claiming the unique reap transition. A failed
             // user write leaves the zombie available for a later retry.
             if let Some(exit_code) = exit_code.nullable() {
-                exit_code.vm_write(child.exit_code())?;
+                exit_code.vm_write(current, child_exit_code)?;
             }
             let reported_pid = visible_process(child);
             if let Some(cpu_time) = reap_process(child) {
@@ -443,7 +451,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> StarryResult<
         let want_continued = options.contains(WaitPidOptions::WCONTINUED);
         if want_stopped || want_continued {
             for child in &children {
-                let Ok(cdata) = get_process_data_by_number(child.pid_number()) else {
+                let Some(cdata) = child.identity().live_data() else {
                     continue;
                 };
                 if let Some(status) = cdata.peek_job_status_if(want_stopped, want_continued) {
@@ -457,7 +465,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> StarryResult<
                     // `exit_code` pointer leaves the report intact to retry
                     // (mirrors the zombie-reap ordering above).
                     if let Some(exit_code) = exit_code.nullable() {
-                        exit_code.vm_write(raw)?;
+                        exit_code.vm_write(current, raw)?;
                     }
                     cdata.take_job_status_if(want_stopped, want_continued);
                     return Ok(Some(visible_process(child) as _));
@@ -474,19 +482,24 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> StarryResult<
         }
     };
 
-    block_on(interruptible(wait_on_pollset(
-        &proc_data.child_exit_event,
-        || check_children().transpose(),
-    )))?
+    let task = current;
+    block_on_user(
+        task,
+        wait_on_pollset(proc_data.child_exit_event(), || {
+            check_children().transpose()
+        }),
+    )
+    .into_result()?
 }
 
 pub fn sys_waitid(
+    current: &crate::task::UserTaskRef,
     idtype: u32,
     id: i32,
     infop: *mut linux_raw_sys::general::siginfo,
     options: u32,
-) -> StarryResult<isize> {
-    let curr = current();
+) -> crate::StarryResult<isize> {
+    let curr = current;
     let thr = curr.as_thread();
     let proc = &thr.proc_data.proc;
 
@@ -521,7 +534,7 @@ pub fn sys_waitid(
 
     info!("sys_waitid <= idtype: {idtype}, id: {id}, options: {options:?}");
 
-    let scan_children = || {
+    let candidate_scan = WaitCandidateScan::new(|| {
         waitable_processes(
             proc,
             &target,
@@ -529,27 +542,25 @@ pub fn sys_waitid(
             thr.tid_number(),
             WaitChildFilter::from_waitid_options(&options),
         )
-    };
-    if scan_children().is_empty() {
-        return Err(StarryError::from(Errno::ECHILD));
+    });
+    if candidate_scan.collect().is_empty() {
+        return Err(crate::StarryError::from(crate::Errno::ECHILD));
     }
 
     let proc_data = curr.as_thread().proc_data.clone();
     let check_children = || {
-        let children = scan_children();
+        let children = candidate_scan.collect();
         if options.contains(WaitIdOptions::WUNTRACED)
             && let Some((child, data, stop_tid, signo)) = children.iter().find_map(|child| {
-                get_process_data_by_number(child.pid_number())
-                    .ok()
-                    .and_then(|data| {
-                        let preferred_tid = target.ptrace_preferred_stop_tid(child);
-                        let stop = if target.ptrace_requires_exact_stop(child) {
-                            preferred_tid.and_then(|tid| data.ptrace_unreported_stop_for(tid))
-                        } else {
-                            data.ptrace_unreported_stop(preferred_tid)
-                        };
-                        stop.map(|(stop_tid, signo)| (child, data, stop_tid, signo))
-                    })
+                child.identity().live_data().and_then(|data| {
+                    let preferred_tid = target.ptrace_preferred_stop_tid(child);
+                    let stop = if target.ptrace_requires_exact_stop(child) {
+                        preferred_tid.and_then(|tid| data.ptrace_unreported_stop_for(tid))
+                    } else {
+                        data.ptrace_unreported_stop(preferred_tid)
+                    };
+                    stop.map(|(stop_tid, signo)| (child, data, stop_tid, signo))
+                })
             })
         {
             let child_pid = target.ptrace_report_pid(child, &data);
@@ -563,7 +574,7 @@ pub fn sys_waitid(
                     linux_raw_sys::general::CLD_TRAPPED as i32,
                     stopped_wait_signo(&data, signo),
                 );
-                infop.vm_write(siginfo.0)?;
+                infop.cast::<SignalInfo>().vm_write(current, siginfo)?;
             }
             if !options.contains(WaitIdOptions::WNOWAIT) {
                 data.mark_ptrace_stop_reported_for(stop_tid);
@@ -576,7 +587,7 @@ pub fn sys_waitid(
         let want_continued = options.contains(WaitIdOptions::WCONTINUED);
         if want_stopped || want_continued {
             for child in &children {
-                let Ok(data) = get_process_data_by_number(child.pid_number()) else {
+                let Some(data) = child.identity().live_data() else {
                     continue;
                 };
                 if let Some(status) = data.peek_job_status_if(want_stopped, want_continued) {
@@ -596,7 +607,7 @@ pub fn sys_waitid(
                             code,
                             status,
                         );
-                        infop.vm_write(siginfo.0)?;
+                        infop.cast::<SignalInfo>().vm_write(current, siginfo)?;
                     }
                     if !options.contains(WaitIdOptions::WNOWAIT) {
                         data.take_job_status_if(want_stopped, want_continued);
@@ -607,7 +618,9 @@ pub fn sys_waitid(
         }
 
         if options.contains(WaitIdOptions::WEXITED)
-            && let Some(child) = children.iter().find(|child| is_zombie_process(child))
+            && let Some((child, _child_exit_code)) = children
+                .iter()
+                .find_map(|child| zombie_exit_code(child).map(|exit_code| (child, exit_code)))
         {
             let child_pid = visible_process(child);
             let (code, status) = decode_wait_status(child.exit_code());
@@ -615,7 +628,7 @@ pub fn sys_waitid(
 
             if let Some(infop) = infop.nullable() {
                 let siginfo = SignalInfo::new_sigchld(child_pid, child_uid, code, status);
-                infop.vm_write(siginfo.0)?;
+                infop.cast::<SignalInfo>().vm_write(current, siginfo)?;
             }
 
             if options.contains(WaitIdOptions::WNOWAIT) {
@@ -631,8 +644,8 @@ pub fn sys_waitid(
             Err(StarryError::from(Errno::ECHILD))
         } else if options.contains(WaitIdOptions::WNOHANG) {
             if let Some(infop) = infop.nullable() {
-                let zeroed: linux_raw_sys::general::siginfo = unsafe { core::mem::zeroed() };
-                infop.vm_write(zeroed)?;
+                let zeroed = SignalInfo::zeroed();
+                infop.cast::<SignalInfo>().vm_write(current, zeroed)?;
             }
             Ok(Some(0))
         } else {
@@ -640,10 +653,14 @@ pub fn sys_waitid(
         }
     };
 
-    block_on(interruptible(wait_on_pollset(
-        &proc_data.child_exit_event,
-        || check_children().transpose(),
-    )))?
+    let task = current;
+    block_on_user(
+        task,
+        wait_on_pollset(proc_data.child_exit_event(), || {
+            check_children().transpose()
+        }),
+    )
+    .into_result()?
 }
 
 #[cfg(test)]

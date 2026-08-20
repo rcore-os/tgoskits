@@ -19,6 +19,7 @@ use core::{hint::spin_loop, ptr::null};
 
 pub(crate) use entry::_secondary_entry;
 use loongArch64::{
+    cpu::get_valen,
     register::*,
     time::{Time, get_timer_freq},
 };
@@ -103,8 +104,10 @@ impl ArchTrait for Arch {
         trap::per_cpu_trap_init(is_primary);
     }
 
-    fn systimer_enable() {
-        tcfg::set_en(true);
+    fn systimer_prepare_oneshot() {
+        tcfg::set_en(false);
+        tcfg::set_periodic(false);
+        ticlr::clear_timer_interrupt();
     }
 
     fn systimer_irq_enable() {
@@ -113,6 +116,13 @@ impl ArchTrait for Arch {
 
     fn systimer_irq_disable() {
         tcfg::set_en(false);
+    }
+
+    fn systimer_stop_oneshot() {
+        tcfg::set_en(false);
+        tcfg::set_periodic(false);
+        tcfg::set_init_val(crate::timer::loongarch64_interval::stopped_ticks());
+        ticlr::clear_timer_interrupt();
     }
 
     fn systimer_irq_is_enabled() -> bool {
@@ -315,7 +325,9 @@ impl ArchTrait for Arch {
     }
 
     fn kernel_space() -> core::ops::Range<usize> {
-        addrspace::PAGE_OFFSET..usize::MAX
+        let base = addrspace::vm_map_base(get_valen())
+            .expect("LoongArch CPU reported an invalid virtual-address length");
+        base..usize::MAX
     }
 
     fn is_mmu_enabled() -> bool {

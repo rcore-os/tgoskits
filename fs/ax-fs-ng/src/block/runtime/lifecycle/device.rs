@@ -206,22 +206,32 @@ impl DeviceInner {
         let mut new_registrations = Vec::new();
         let mut rearm_sources = Vec::new();
         for endpoint in endpoints {
-            rearm_sources.push(endpoint.source_id());
+            let source_id = endpoint.source_id();
+            if rearm_sources.contains(&source_id) {
+                disable_installed_sources(&new_registrations);
+                self.retain_uninstalled_resources(new_hctxs, Vec::new());
+                return Err(BlkError::InvalidRequest);
+            }
+            rearm_sources.push(source_id);
             match self.register_endpoint(endpoint, &candidates) {
                 Ok(registration) => new_registrations.push(registration),
                 Err(error) => {
-                    disable_registrations(&new_registrations);
+                    disable_installed_sources(&new_registrations);
                     self.retain_uninstalled_resources(new_hctxs, Vec::new());
                     return Err(error);
                 }
             }
         }
-        for registration in &new_registrations {
-            if registration.enable().is_err() {
-                disable_registrations(&new_registrations);
-                self.retain_uninstalled_resources(new_hctxs, Vec::new());
-                return Err(BlkError::Io);
-            }
+        if self.irq_ownership == IrqOwnership::Device
+            && new_hctxs.iter().any(|hctx| {
+                !new_registrations
+                    .iter()
+                    .any(|source| source.queue_bits & (1_u64 << hctx.id()) != 0)
+            })
+        {
+            disable_installed_sources(&new_registrations);
+            self.retain_uninstalled_resources(new_hctxs, Vec::new());
+            return Err(BlkError::InvalidRequest);
         }
         let rebuild_cpu_channels = !candidates.is_empty()
             && (!new_hctxs.is_empty() || self.cpu_channels.lock().len() < online_cpus);
@@ -229,7 +239,7 @@ impl DeviceInner {
             match create_cpu_channels(&candidates, online_cpus) {
                 Ok(channels) => Some(channels),
                 Err(error) => {
-                    disable_registrations(&new_registrations);
+                    disable_installed_sources(&new_registrations);
                     self.retain_uninstalled_resources(new_hctxs, Vec::new());
                     return Err(error);
                 }
@@ -237,6 +247,44 @@ impl DeviceInner {
         } else {
             None
         };
+
+        // One installed registration is authoritative for one physical source.
+        // Replacement endpoints are complete routing snapshots and the driver
+        // keeps the source masked until the controller receives `Rearm`.
+        let mut replaced = Vec::new();
+        {
+            let mut installed = self.irq_registrations.lock();
+            for new_source in &new_registrations {
+                if let Some(old_source) = installed
+                    .iter()
+                    .find(|source| source.source_id == new_source.source_id)
+                    && old_source.queue_bits & !new_source.queue_bits != 0
+                {
+                    drop(installed);
+                    disable_installed_sources(&new_registrations);
+                    self.retain_uninstalled_resources(new_hctxs, Vec::new());
+                    return Err(BlkError::InvalidRequest);
+                }
+            }
+            for new_source in &new_registrations {
+                if let Some(position) = installed
+                    .iter()
+                    .position(|source| source.source_id == new_source.source_id)
+                {
+                    replaced.push(installed.remove(position));
+                }
+            }
+        }
+        disable_installed_sources(&replaced);
+        for source in &new_registrations {
+            if source.registration.enable().is_err() {
+                disable_installed_sources(&new_registrations);
+                self.retain_uninstalled_resources(new_hctxs, Vec::new());
+                return Err(BlkError::Io);
+            }
+        }
+        drop(replaced);
+
         self.hctxs.lock().extend(new_hctxs);
         if let Some(new_cpu_channels) = new_cpu_channels {
             let old_channels = core::mem::replace(&mut *self.cpu_channels.lock(), new_cpu_channels);
@@ -264,14 +312,21 @@ impl DeviceInner {
         &self,
         endpoint: IrqEndpoint,
         hctxs: &[Arc<Hctx>],
-    ) -> Result<Box<dyn BlockIrqRegistration>, BlkError> {
+    ) -> Result<InstalledIrqSource, BlkError> {
         let source_id = endpoint.source_id();
-        let queue_bits = endpoint.queue_bits();
+        let queue_bits = endpoint.queue_mask().bits();
+        let controller_target = self.controller.irq_target(source_id);
+        let source = Arc::new(IrqRearmEpisode::new(source_id, controller_target));
         let mut targets: Vec<IrqTarget> = Vec::new();
+        let mut routed_queues = 0_u64;
         for hctx in hctxs {
             if queue_bits & (1u64 << hctx.id()) != 0 {
-                targets.push(hctx.irq_target(source_id));
+                routed_queues |= 1_u64 << hctx.id();
+                targets.push(hctx.irq_target(Arc::clone(&source)));
             }
+        }
+        if routed_queues != queue_bits {
+            return Err(BlkError::InvalidRequest);
         }
         let cpu = targets
             .first()
@@ -288,13 +343,11 @@ impl DeviceInner {
             .find(|source| source.source_id == source_id)
             .map(|source| source.irq)
             .ok_or(BlkError::NotSupported)?;
-        let controller_target = self.controller.irq_target(source_id);
         let registration = register_block_irq(
             format!("{}/irq-{source_id}", self.name),
             irq,
             cpu,
-            BlockIrqAction::new(endpoint.into_handler(), targets)
-                .with_controller_target(controller_target),
+            BlockIrqAction::new(endpoint.into_handler(), source, targets),
         )
         .map_err(|_| BlkError::Io)?;
         info!(
@@ -302,7 +355,11 @@ impl DeviceInner {
              {queue_bits:#x}",
             self.name, source_id, cpu
         );
-        Ok(registration)
+        Ok(InstalledIrqSource {
+            source_id,
+            queue_bits,
+            registration,
+        })
     }
 
     pub(super) fn group_irq_target(
@@ -311,15 +368,15 @@ impl DeviceInner {
         source_id: usize,
     ) -> GroupIrqMemberTarget {
         let hctxs = self.hctxs.lock();
+        let source = Arc::new(IrqRearmEpisode::new(
+            source_id,
+            self.controller.irq_target(source_id),
+        ));
         let targets = hctxs
             .iter()
-            .map(|hctx| hctx.irq_target(source_id))
+            .map(|hctx| hctx.irq_target(Arc::clone(&source)))
             .collect();
-        GroupIrqMemberTarget::new(
-            member_id,
-            targets,
-            Some(self.controller.irq_target(source_id)),
-        )
+        GroupIrqMemberTarget::new(member_id, source, targets)
     }
 
     pub(super) fn first_hctx_cpu(&self) -> Option<usize> {
@@ -419,7 +476,7 @@ impl DeviceInner {
         let quiesce_confirmed_terminal = matches!(quiesce_result, Ok(ControllerState::Shutdown));
         let registrations = core::mem::take(&mut *self.irq_registrations.lock());
         let count = registrations.len();
-        disable_registrations(&registrations);
+        disable_installed_sources(&registrations);
         drop(registrations);
 
         let hctxs = core::mem::take(&mut *self.hctxs.lock());

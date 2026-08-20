@@ -524,7 +524,7 @@ BT 0 ip=0x1 fp=0x2
     }
 
     #[test]
-    fn arceos_rust_task_ipi_riscv_config_uses_single_threaded_tcg_and_short_timeout() {
+    fn arceos_rust_task_ipi_riscv_config_uses_single_threaded_tcg_timeout() {
         let path =
             arceos_test_suit_case_qemu_config_path(&rust_test_suite_root(), "riscv64", "task-ipi")
                 .unwrap();
@@ -630,6 +630,7 @@ BT 0 ip=0x1 fp=0x2
                 case_dir: qemu_config_path.parent().unwrap().to_path_buf(),
                 qemu_config_path,
                 test_commands: Vec::new(),
+                grouped_command_selection: Default::default(),
                 host_symbolize_success_regex: Vec::new(),
                 host_http_server: None,
                 subcases: Vec::new(),

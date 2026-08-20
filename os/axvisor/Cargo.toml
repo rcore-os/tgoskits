@@ -55,7 +55,7 @@ backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
 test-backtrace-panic = ["backtrace"]
 test-panic-no-backtrace = ["dep:axbacktrace"]
 test-console-interleave = ["dep:ax-log"]
-test-console-atomic-output = ["ax-std/sched-rr"]
+test-console-atomic-output = []
 # axum-based management HTTP server (see src/http/ for the Router).
 # Off by default. Replaces the hand-rolled pilot, which is intentionally not
 # carried forward.
@@ -80,6 +80,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, va
 anyhow.workspace = true
 ax-log = { workspace = true, optional = true }
 log = "0.4"
+heapless.workspace = true
 axum = { version = "0.8", optional = true }
 serde_json = { version = "1", optional = true }
 # The runtime only enables the IO driver (`enable_io()`), so no `time` driver

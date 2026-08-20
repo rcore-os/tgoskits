@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
     StarryError, StarryResult,
-    sync::{IrqMutex, Mutex},
+    sync::{IrqMutex, PiMutex},
 };
 
 struct FrameRefCnt {
@@ -28,6 +28,26 @@ struct FrameRefCnt {
     /// uses a 32-bit refcount; `u32` (4 billion sharers) is effectively unbounded
     /// here, and the overflow path now returns `NoMemory` (ENOMEM), not EFAULT.
     count: u32,
+}
+
+pub(crate) struct DeferredFrameRelease {
+    paddr: PhysAddr,
+    page_size: usize,
+    frame_ref: Arc<IrqMutex<FrameRefCnt>>,
+}
+
+impl DeferredFrameRelease {
+    fn new(paddr: PhysAddr, page_size: usize, frame_ref: Arc<IrqMutex<FrameRefCnt>>) -> Self {
+        Self {
+            paddr,
+            page_size,
+            frame_ref,
+        }
+    }
+
+    pub(crate) fn release(self) {
+        self.frame_ref.lock().drop_frame(self.paddr, self.page_size);
+    }
 }
 
 impl FrameRefCnt {
@@ -362,21 +382,23 @@ impl CowBackend {
         pte_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTable,
-    ) -> StarryResult {
+    ) -> crate::StarryResult {
+        let shootdown_range = super::super::tlb::checked_range(vaddr, self.size)?;
         let mut frame_table = FRAME_TABLE.lock();
-        let frame = frame_table
+        let frame_ref = frame_table
             .get_frame_ref(paddr)
             .ok_or(StarryError::BadAddress)?;
         drop(frame_table);
-        let mut frame = frame.lock();
-        assert!(frame.count > 0, "invalid frame reference count");
+        let frame_count = frame_ref.lock();
+        assert!(frame_count.count > 0, "invalid frame reference count");
         debug_assert!(
-            frame.count < u32::MAX,
+            frame_count.count < u32::MAX,
             "frame reference count near overflow"
         );
-        match frame.count {
+        match frame_count.count {
             1 => {
                 pt.protect_page(vaddr, vma_flags)?;
+                super::super::tlb::record_range_for_shootdown(shootdown_range);
                 let defer_write =
                     self.cow_deferred_file_write(vma_flags, pte_flags) && self.write_upgraded.get();
                 if defer_write && let Some(acct) = acct {
@@ -397,12 +419,16 @@ impl CowBackend {
                     self.deinit_frame(new_frame);
                     return Err(err.into());
                 }
+                super::super::tlb::record_range_for_shootdown(shootdown_range);
                 if self.file.is_some()
                     && let Some(acct) = acct
                 {
                     self.reclassify_or_adopt_cow_write(acct, vaddr);
                 }
-                frame.drop_frame(paddr, self.size);
+                drop(frame_count);
+                super::super::tlb::defer_frame_until_shootdown(DeferredFrameRelease::new(
+                    paddr, self.size, frame_ref,
+                ));
             }
         }
 
@@ -427,9 +453,10 @@ impl CowBackend {
             let frame_ref = FRAME_TABLE
                 .lock()
                 .get_frame_ref(frame)
-                .ok_or(StarryError::BadAddress)?;
-            let mut frame_ref = frame_ref.lock();
-            frame_ref.drop_frame(frame, self.size);
+                .ok_or(crate::StarryError::BadAddress)?;
+            super::super::tlb::defer_frame_until_shootdown(DeferredFrameRelease::new(
+                frame, self.size, frame_ref,
+            ));
         }
         Ok(())
     }
@@ -579,7 +606,7 @@ impl BackendOps for CowBackend {
         flags: MappingFlags,
         old_pt: &mut PageTable,
         new_pt: &mut PageTable,
-        _new_aspace: &Arc<Mutex<AddrSpace>>,
+        _new_aspace: &Arc<PiMutex<AddrSpace>>,
         acct: CloneMapAccounting<'_>,
     ) -> StarryResult<Backend> {
         let cow_flags = flags - MappingFlags::WRITE;
@@ -587,6 +614,7 @@ impl BackendOps for CowBackend {
         for vaddr in pages_in(range, self.size)? {
             match old_pt.query(vaddr) {
                 Ok((paddr, _pte_flags, page_size)) => {
+                    let shootdown_range = super::super::tlb::checked_range(vaddr, self.size)?;
                     assert_eq!(page_size, self.size);
                     let frame = FRAME_TABLE
                         .lock()
@@ -606,6 +634,7 @@ impl BackendOps for CowBackend {
                         }
                     };
                     old_pt.protect_page(vaddr, cow_flags)?;
+                    super::super::tlb::record_range_for_shootdown(shootdown_range);
                     new_pt.map_page(vaddr, paddr, self.size, cow_flags)?;
                     if let (Some(parent), Some(child)) = (acct.parent, acct.child)
                         && let Some(_kind) = parent.charge_kind(vaddr)

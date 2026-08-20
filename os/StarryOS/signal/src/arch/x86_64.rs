@@ -28,7 +28,7 @@ signal_trampoline:
 // The 16-byte alignment the signal frame itself requires is provided by the outer
 // `UContext` (see below), not by over-aligning this inner struct.
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct MContext {
     r8: usize,
     r9: usize,
@@ -59,6 +59,10 @@ pub struct MContext {
     fpstate: usize,
     _reserved1: [usize; 8],
 }
+
+// SAFETY: all C-layout fields are integers and the four adjacent `u16` fields
+// explicitly fill the only sub-word region.
+unsafe impl bytemuck::NoUninit for MContext {}
 
 impl MContext {
     pub fn new(uctx: &UserContext) -> Self {
@@ -126,7 +130,7 @@ impl MContext {
 // offset; aligning the outer `UContext` instead keeps `uc_mcontext` at the Linux
 // ABI offset 40 while still guaranteeing frame alignment.
 #[repr(C, align(16))]
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct UContext {
     pub flags: usize,
     pub link: usize,
@@ -134,6 +138,10 @@ pub struct UContext {
     pub mcontext: MContext,
     pub sigmask: SignalSet,
 }
+
+// SAFETY: every field implements `NoUninit`; the existing ABI offset assertions
+// prove there is no hidden inter-field or trailing padding.
+unsafe impl bytemuck::NoUninit for UContext {}
 
 impl UContext {
     pub fn new(uctx: &UserContext, sigmask: SignalSet) -> Self {
@@ -153,4 +161,6 @@ const _: () = {
     // `uc_sigmask`@296.
     assert!(core::mem::offset_of!(UContext, mcontext) == 40);
     assert!(core::mem::offset_of!(UContext, sigmask) == 296);
+    assert!(core::mem::size_of::<MContext>() == 256);
+    assert!(core::mem::size_of::<UContext>() == 304);
 };

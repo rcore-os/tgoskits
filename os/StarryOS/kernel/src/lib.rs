@@ -10,6 +10,9 @@
 extern crate alloc;
 extern crate ax_runtime;
 
+#[cfg(test)]
+extern crate std;
+
 #[macro_use]
 extern crate ax_log;
 

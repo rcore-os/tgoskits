@@ -14,13 +14,14 @@ use ax_runtime::hal::{
 };
 use enum_dispatch::enum_dispatch;
 
-use crate::{StarryError, StarryResult, sync::Mutex};
+use crate::{StarryError, StarryResult, sync::PiMutex};
 
 mod cow;
 mod file;
 mod linear;
 mod shared;
 
+pub(crate) use self::cow::DeferredFrameRelease;
 #[cfg(test)]
 pub(crate) use self::cow::cow_file_max_read_len_boundary_rules_hold_for_test;
 #[cfg(axtest)]
@@ -62,7 +63,7 @@ fn pages_in(range: VirtAddrRange, align: usize) -> StarryResult<DynPageIter<Virt
     DynPageIter::new(range.start, range.end, align).ok_or(StarryError::InvalidInput)
 }
 
-type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace)>;
+type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace) -> crate::StarryResult>;
 
 #[enum_dispatch]
 pub trait BackendOps {
@@ -124,7 +125,7 @@ pub trait BackendOps {
         flags: MappingFlags,
         old_pt: &mut PageTable,
         new_pt: &mut PageTable,
-        new_aspace: &Arc<Mutex<AddrSpace>>,
+        new_aspace: &Arc<PiMutex<AddrSpace>>,
         acct: CloneMapAccounting<'_>,
     ) -> StarryResult<Backend>;
 
@@ -193,8 +194,8 @@ impl Backend {
         &self,
         new_start: VirtAddr,
         src_offset: usize,
-        aspace: &Arc<Mutex<AddrSpace>>,
-    ) -> StarryResult<Self> {
+        aspace: &Arc<PiMutex<AddrSpace>>,
+    ) -> crate::StarryResult<Self> {
         let adjusted = new_start
             .as_usize()
             .checked_sub(src_offset)
@@ -228,6 +229,7 @@ impl MappingBackend for Backend {
     fn unmap(&self, start: VirtAddr, size: usize, pt: &mut PageTable) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
         let acct = super::accounting::bridge_rss_accounting();
+        super::tlb::retain_backend_until_shootdown(self.clone());
         if let Err(err) = BackendOps::unmap(self, range, acct, pt) {
             warn!("Failed to unmap area: {:?}", err);
             false

@@ -4,10 +4,16 @@ pub mod affinity;
 pub mod ipi;
 #[cfg(feature = "task-irq")]
 pub mod irq;
+#[cfg(feature = "task-kernel-timer")]
+pub mod kernel_timer;
 #[cfg(feature = "task-parallel")]
 pub mod parallel;
+#[cfg(feature = "task-pi-mutex")]
+pub mod pi_mutex;
 #[cfg(any(feature = "task-priority", feature = "sched-cfs", feature = "sched-rr"))]
 pub mod priority;
+#[cfg(feature = "task-rt-policy")]
+pub mod rt_policy;
 #[cfg(feature = "task-sleep")]
 pub mod sleep;
 #[cfg(feature = "task-smp-online")]

@@ -10,6 +10,8 @@ use core::{
 #[cfg(feature = "vsock")]
 use ax_net::vsock::VsockAddr;
 use ax_net::{SocketAddrEx, unix::UnixSocketAddr};
+#[cfg(feature = "vsock")]
+use bytemuck::AnyBitPattern;
 use linux_raw_sys::{net::*, netlink::sockaddr_nl};
 
 use crate::{
@@ -71,37 +73,53 @@ pub fn socket_addr_v4_to_mapped_v6(v4: &SocketAddrV4) -> SocketAddrV6 {
 pub trait SocketAddrExt: Sized {
     /// This method attempts to interpret the data pointed to by `addr` with the
     /// given `addrlen` as a valid socket address of the implementing type.
-    fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> StarryResult<Self>;
+    fn read_from_user(
+        current: &crate::task::UserTaskRef,
+        addr: UserConstPtr<sockaddr>,
+        addrlen: socklen_t,
+    ) -> crate::StarryResult<Self>;
 
     /// This method serializes the current socket address instance into the
     /// [`sockaddr`] structure pointed to by `addr` in user space.
-    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> StarryResult<()>;
+    fn write_to_user(
+        &self,
+        current: &crate::task::UserTaskRef,
+        addr: UserPtr<sockaddr>,
+        addrlen: &mut socklen_t,
+    ) -> crate::StarryResult<()>;
 
     /// Gets the address family of the socket address.
     #[allow(dead_code)]
     fn family(&self) -> u16;
 }
 
-fn read_family(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> StarryResult<u16> {
+fn read_family(
+    current: &crate::task::UserTaskRef,
+    addr: UserConstPtr<sockaddr>,
+    addrlen: socklen_t,
+) -> crate::StarryResult<u16> {
     if size_of::<__kernel_sa_family_t>() > addrlen as usize {
         return Err(StarryError::InvalidInput);
     }
-    let family = *addr.cast::<__kernel_sa_family_t>().get_as_ref()?;
-    Ok(family)
+    addr.cast::<__kernel_sa_family_t>().read(current)
 }
 unsafe fn cast_to_slice<T>(value: &T) -> &[u8] {
     unsafe { core::slice::from_raw_parts(value as *const T as *const u8, size_of::<T>()) }
 }
-fn fill_addr(addr: UserPtr<sockaddr>, addrlen: &mut socklen_t, data: &[u8]) -> StarryResult<()> {
+fn fill_addr(
+    current: &crate::task::UserTaskRef,
+    addr: UserPtr<sockaddr>,
+    addrlen: &mut socklen_t,
+    data: &[u8],
+) -> crate::StarryResult<()> {
     let len = (*addrlen as usize).min(data.len());
-    addr.cast::<u8>()
-        .get_as_mut_slice(len)?
-        .copy_from_slice(&data[..len]);
+    addr.cast::<u8>().write_slice(current, &data[..len])?;
     *addrlen = data.len() as _;
     Ok(())
 }
 
 pub fn read_netlink_addr(
+    current: &crate::task::UserTaskRef,
     addr: UserConstPtr<sockaddr>,
     addrlen: socklen_t,
 ) -> StarryResult<sockaddr_nl> {
@@ -112,34 +130,46 @@ pub fn read_netlink_addr(
     if (addrlen as usize) < size_of::<sockaddr_nl>() {
         return Err(StarryError::InvalidInput);
     }
-    let addr_nl = addr.cast::<sockaddr_nl>().get_as_ref()?;
+    // SAFETY: sockaddr_nl is an integer-only C ABI record. Every copied bit
+    // pattern is valid; the family and semantic fields are checked below.
+    let addr_nl = unsafe { addr.cast::<sockaddr_nl>().read_abi(current)? };
     if addr_nl.nl_family as u32 != AF_NETLINK {
         return Err(StarryError::from(Errno::EAFNOSUPPORT));
     }
-    Ok(*addr_nl)
+    Ok(addr_nl)
 }
 
 pub fn write_netlink_addr(
+    current: &crate::task::UserTaskRef,
     addr_nl: &sockaddr_nl,
     addr: UserPtr<sockaddr>,
     addrlen: &mut socklen_t,
-) -> StarryResult<()> {
-    fill_addr(addr, addrlen, unsafe { cast_to_slice(addr_nl) })
+) -> crate::StarryResult<()> {
+    fill_addr(current, addr, addrlen, unsafe { cast_to_slice(addr_nl) })
 }
 
 impl SocketAddrExt for SocketAddr {
-    fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> StarryResult<Self> {
-        match read_family(addr, addrlen)? as u32 {
-            AF_INET => SocketAddrV4::read_from_user(addr, addrlen).map(Self::V4),
-            AF_INET6 => SocketAddrV6::read_from_user(addr, addrlen).map(Self::V6),
-            _ => Err(StarryError::from(Errno::EAFNOSUPPORT)),
+    fn read_from_user(
+        current: &crate::task::UserTaskRef,
+        addr: UserConstPtr<sockaddr>,
+        addrlen: socklen_t,
+    ) -> crate::StarryResult<Self> {
+        match read_family(current, addr, addrlen)? as u32 {
+            AF_INET => SocketAddrV4::read_from_user(current, addr, addrlen).map(Self::V4),
+            AF_INET6 => SocketAddrV6::read_from_user(current, addr, addrlen).map(Self::V6),
+            _ => Err(crate::StarryError::from(crate::Errno::EAFNOSUPPORT)),
         }
     }
 
-    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> StarryResult<()> {
+    fn write_to_user(
+        &self,
+        current: &crate::task::UserTaskRef,
+        addr: UserPtr<sockaddr>,
+        addrlen: &mut socklen_t,
+    ) -> crate::StarryResult<()> {
         match self {
-            SocketAddr::V4(v4) => v4.write_to_user(addr, addrlen),
-            SocketAddr::V6(v6) => v6.write_to_user(addr, addrlen),
+            SocketAddr::V4(v4) => v4.write_to_user(current, addr, addrlen),
+            SocketAddr::V6(v6) => v6.write_to_user(current, addr, addrlen),
         }
     }
 
@@ -152,11 +182,17 @@ impl SocketAddrExt for SocketAddr {
 }
 
 impl SocketAddrExt for SocketAddrV4 {
-    fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> StarryResult<Self> {
+    fn read_from_user(
+        current: &crate::task::UserTaskRef,
+        addr: UserConstPtr<sockaddr>,
+        addrlen: socklen_t,
+    ) -> crate::StarryResult<Self> {
         if addrlen < size_of::<sockaddr_in>() as socklen_t {
             return Err(StarryError::InvalidInput);
         }
-        let addr_in = addr.cast::<sockaddr_in>().get_as_ref()?;
+        // SAFETY: sockaddr_in contains only integer and byte-array fields.
+        // Family and address semantics are validated after the copy.
+        let addr_in = unsafe { addr.cast::<sockaddr_in>().read_abi(current)? };
         if addr_in.sin_family as u32 != AF_INET {
             return Err(StarryError::from(Errno::EAFNOSUPPORT));
         }
@@ -167,7 +203,12 @@ impl SocketAddrExt for SocketAddrV4 {
         ))
     }
 
-    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> StarryResult<()> {
+    fn write_to_user(
+        &self,
+        current: &crate::task::UserTaskRef,
+        addr: UserPtr<sockaddr>,
+        addrlen: &mut socklen_t,
+    ) -> crate::StarryResult<()> {
         let sockin_addr = sockaddr_in {
             sin_family: AF_INET as _,
             sin_port: self.port().to_be(),
@@ -176,7 +217,9 @@ impl SocketAddrExt for SocketAddrV4 {
             },
             __pad: [0_u8; 8],
         };
-        fill_addr(addr, addrlen, unsafe { cast_to_slice(&sockin_addr) })
+        fill_addr(current, addr, addrlen, unsafe {
+            cast_to_slice(&sockin_addr)
+        })
     }
 
     fn family(&self) -> u16 {
@@ -185,11 +228,17 @@ impl SocketAddrExt for SocketAddrV4 {
 }
 
 impl SocketAddrExt for SocketAddrV6 {
-    fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> StarryResult<Self> {
+    fn read_from_user(
+        current: &crate::task::UserTaskRef,
+        addr: UserConstPtr<sockaddr>,
+        addrlen: socklen_t,
+    ) -> crate::StarryResult<Self> {
         if addrlen < size_of::<sockaddr_in6>() as socklen_t {
             return Err(StarryError::InvalidInput);
         }
-        let addr_in6 = addr.cast::<sockaddr_in6>().get_as_ref()?;
+        // SAFETY: sockaddr_in6 contains only integer and byte-array fields.
+        // Family and address semantics are validated after the copy.
+        let addr_in6 = unsafe { addr.cast::<sockaddr_in6>().read_abi(current)? };
         if addr_in6.sin6_family as u32 != AF_INET6 {
             return Err(StarryError::from(Errno::EAFNOSUPPORT));
         }
@@ -202,7 +251,12 @@ impl SocketAddrExt for SocketAddrV6 {
         ))
     }
 
-    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> StarryResult<()> {
+    fn write_to_user(
+        &self,
+        current: &crate::task::UserTaskRef,
+        addr: UserPtr<sockaddr>,
+        addrlen: &mut socklen_t,
+    ) -> crate::StarryResult<()> {
         let sockin_addr = sockaddr_in6 {
             sin6_family: AF_INET6 as _,
             sin6_port: self.port().to_be(),
@@ -214,7 +268,9 @@ impl SocketAddrExt for SocketAddrV6 {
             },
             sin6_scope_id: self.scope_id(),
         };
-        fill_addr(addr, addrlen, unsafe { cast_to_slice(&sockin_addr) })
+        fill_addr(current, addr, addrlen, unsafe {
+            cast_to_slice(&sockin_addr)
+        })
     }
 
     fn family(&self) -> u16 {
@@ -223,13 +279,17 @@ impl SocketAddrExt for SocketAddrV6 {
 }
 
 impl SocketAddrExt for UnixSocketAddr {
-    fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> StarryResult<Self> {
-        if read_family(addr, addrlen)? as u32 != AF_UNIX {
-            return Err(StarryError::from(Errno::EAFNOSUPPORT));
+    fn read_from_user(
+        current: &crate::task::UserTaskRef,
+        addr: UserConstPtr<sockaddr>,
+        addrlen: socklen_t,
+    ) -> crate::StarryResult<Self> {
+        if read_family(current, addr, addrlen)? as u32 != AF_UNIX {
+            return Err(crate::StarryError::from(crate::Errno::EAFNOSUPPORT));
         }
         let offset = size_of::<__kernel_sa_family_t>();
         let ptr = UserConstPtr::<u8>::from(addr.address().as_usize() + offset);
-        let data = ptr.get_as_slice(addrlen as usize - offset)?;
+        let data = ptr.read_slice(current, addrlen as usize - offset)?;
         Ok(if data.is_empty() {
             Self::Unnamed
         } else if data[0] == 0 {
@@ -244,7 +304,12 @@ impl SocketAddrExt for UnixSocketAddr {
         })
     }
 
-    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> StarryResult<()> {
+    fn write_to_user(
+        &self,
+        current: &crate::task::UserTaskRef,
+        addr: UserPtr<sockaddr>,
+        addrlen: &mut socklen_t,
+    ) -> crate::StarryResult<()> {
         let data_len = match self {
             UnixSocketAddr::Unnamed => 0,
             UnixSocketAddr::Abstract(name) => name.len() + 1,
@@ -267,7 +332,7 @@ impl SocketAddrExt for UnixSocketAddr {
             }
         }
 
-        fill_addr(addr, addrlen, &buf)
+        fill_addr(current, addr, addrlen, &buf)
     }
 
     fn family(&self) -> u16 {
@@ -280,7 +345,7 @@ impl SocketAddrExt for UnixSocketAddr {
 #[cfg(feature = "vsock")]
 #[allow(non_camel_case_types)]
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, AnyBitPattern)]
 pub struct sockaddr_vm {
     pub svm_family: __kernel_sa_family_t,
     pub svm_reserved1: u16,
@@ -291,12 +356,16 @@ pub struct sockaddr_vm {
 
 #[cfg(feature = "vsock")]
 impl SocketAddrExt for VsockAddr {
-    fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> StarryResult<Self> {
+    fn read_from_user(
+        current: &crate::task::UserTaskRef,
+        addr: UserConstPtr<sockaddr>,
+        addrlen: socklen_t,
+    ) -> crate::StarryResult<Self> {
         if addrlen != size_of::<sockaddr_vm>() as socklen_t {
             return Err(StarryError::InvalidInput);
         }
 
-        let addr_vsock = addr.cast::<sockaddr_vm>().get_as_ref()?;
+        let addr_vsock = addr.cast::<sockaddr_vm>().read(current)?;
         if addr_vsock.svm_family as u32 != AF_VSOCK {
             return Err(StarryError::from(Errno::EAFNOSUPPORT));
         }
@@ -306,7 +375,12 @@ impl SocketAddrExt for VsockAddr {
         })
     }
 
-    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> StarryResult<()> {
+    fn write_to_user(
+        &self,
+        current: &crate::task::UserTaskRef,
+        addr: UserPtr<sockaddr>,
+        addrlen: &mut socklen_t,
+    ) -> crate::StarryResult<()> {
         let sockvm_addr = sockaddr_vm {
             svm_family: AF_VSOCK as _,
             svm_reserved1: 0,
@@ -314,7 +388,9 @@ impl SocketAddrExt for VsockAddr {
             svm_cid: self.cid as _,
             svm_zero: [0_u8; 4],
         };
-        fill_addr(addr, addrlen, unsafe { cast_to_slice(&sockvm_addr) })
+        fill_addr(current, addr, addrlen, unsafe {
+            cast_to_slice(&sockvm_addr)
+        })
     }
 
     fn family(&self) -> u16 {
@@ -323,22 +399,31 @@ impl SocketAddrExt for VsockAddr {
 }
 
 impl SocketAddrExt for SocketAddrEx {
-    fn read_from_user(addr: UserConstPtr<sockaddr>, addrlen: socklen_t) -> StarryResult<Self> {
-        match read_family(addr, addrlen)? as u32 {
-            AF_INET | AF_INET6 => SocketAddr::read_from_user(addr, addrlen).map(Self::Ip),
-            AF_UNIX => UnixSocketAddr::read_from_user(addr, addrlen).map(Self::Unix),
+    fn read_from_user(
+        current: &crate::task::UserTaskRef,
+        addr: UserConstPtr<sockaddr>,
+        addrlen: socklen_t,
+    ) -> crate::StarryResult<Self> {
+        match read_family(current, addr, addrlen)? as u32 {
+            AF_INET | AF_INET6 => SocketAddr::read_from_user(current, addr, addrlen).map(Self::Ip),
+            AF_UNIX => UnixSocketAddr::read_from_user(current, addr, addrlen).map(Self::Unix),
             #[cfg(feature = "vsock")]
-            AF_VSOCK => VsockAddr::read_from_user(addr, addrlen).map(Self::Vsock),
-            _ => Err(StarryError::from(Errno::EAFNOSUPPORT)),
+            AF_VSOCK => VsockAddr::read_from_user(current, addr, addrlen).map(Self::Vsock),
+            _ => Err(crate::StarryError::from(crate::Errno::EAFNOSUPPORT)),
         }
     }
 
-    fn write_to_user(&self, addr: UserPtr<sockaddr>, addrlen: &mut socklen_t) -> StarryResult<()> {
+    fn write_to_user(
+        &self,
+        current: &crate::task::UserTaskRef,
+        addr: UserPtr<sockaddr>,
+        addrlen: &mut socklen_t,
+    ) -> crate::StarryResult<()> {
         match self {
-            SocketAddrEx::Ip(ip_addr) => ip_addr.write_to_user(addr, addrlen),
-            SocketAddrEx::Unix(unix_addr) => unix_addr.write_to_user(addr, addrlen),
+            SocketAddrEx::Ip(ip_addr) => ip_addr.write_to_user(current, addr, addrlen),
+            SocketAddrEx::Unix(unix_addr) => unix_addr.write_to_user(current, addr, addrlen),
             #[cfg(feature = "vsock")]
-            SocketAddrEx::Vsock(vsock_addr) => vsock_addr.write_to_user(addr, addrlen),
+            SocketAddrEx::Vsock(vsock_addr) => vsock_addr.write_to_user(current, addr, addrlen),
         }
     }
 

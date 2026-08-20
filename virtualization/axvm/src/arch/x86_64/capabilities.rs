@@ -1,9 +1,7 @@
 //! x86_64 implementations of AxVM platform capability hooks.
 
 use super::X86_64Arch;
-use crate::architecture::{GuestBootPlatform, HostTimePlatform, MachinePlatform};
-
-impl HostTimePlatform for X86_64Arch {}
+use crate::architecture::{GuestBootPlatform, MachinePlatform};
 
 impl GuestBootPlatform for X86_64Arch {}
 

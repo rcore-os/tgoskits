@@ -1,20 +1,16 @@
 #[cfg(test)]
 use core::sync::atomic::AtomicUsize;
-use core::{
-    sync::atomic::{AtomicU8, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use ax_io::{SeekFrom, prelude::*};
-use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, NodeFlags, VfsError, VfsResult, path::Path};
+use axfs_ng_vfs::{Location, NodeFlags, VfsError, VfsResult, path::Path};
+use axpoll::{IoEvents, Pollable};
 
 use super::{
     cache::CachedFile,
     open::{FileFlags, OpenOptions, OpenResult},
 };
-use crate::{
-    fs_core::FsContext, io_error_to_vfs_error, os::sync::SleepMutex as Mutex, vfs_error_to_io_error,
-};
+use crate::{fs_core::FsContext, io_error_to_vfs_error, os::sync::Mutex, vfs_error_to_io_error};
 
 /// Low-level interface for file operations.
 #[derive(Clone)]
@@ -403,13 +399,25 @@ impl Seek for &File {
     }
 }
 
-impl FsPollable for File {
-    fn poll(&self) -> FsIoEvents {
+impl Pollable for File {
+    fn poll(&self) -> IoEvents {
         self.inner.location().poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: FsIoEvents) {
-        self.inner.location().register(context, events)
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.location().register_shared(sink, events) }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.inner.location().register_exclusive(sink, events) }
     }
 }
 
@@ -446,14 +454,12 @@ mod tests {
     use core::{
         any::Any,
         sync::atomic::{AtomicUsize, Ordering},
-        task::Context,
         time::Duration,
     };
 
     use axfs_ng_vfs::{
-        DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, FsIoEvents,
-        FsPollable, Metadata, MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType,
-        Reference, StatFs,
+        DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, Metadata,
+        MetadataUpdate, Mountpoint, NodeOps, NodePermission, NodeType, Reference, StatFs,
     };
 
     use super::*;
@@ -556,12 +562,17 @@ mod tests {
         }
     }
 
-    impl FsPollable for MetadataTrackingTestFile {
-        fn poll(&self) -> FsIoEvents {
-            FsIoEvents::IN | FsIoEvents::OUT
+    impl Pollable for MetadataTrackingTestFile {
+        fn poll(&self) -> IoEvents {
+            IoEvents::IN | IoEvents::OUT
         }
 
-        fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+        unsafe fn register_shared(
+            &self,
+            _sink: &mut dyn axpoll::SharedRegistrationSink,
+            _events: IoEvents,
+        ) {
+        }
     }
 
     impl FileNodeOps for MetadataTrackingTestFile {

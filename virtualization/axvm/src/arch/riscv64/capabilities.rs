@@ -5,11 +5,9 @@ use std::{format, vec::Vec};
 use super::Riscv64Arch;
 use crate::{
     AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform},
+    architecture::{BootImagePlatform, GuestBootPlatform, MachinePlatform},
     ax_err_type,
 };
-
-impl HostTimePlatform for Riscv64Arch {}
 
 impl MachinePlatform for Riscv64Arch {
     const MACHINE_ARCHITECTURE: crate::machine::MachineArchitecture =

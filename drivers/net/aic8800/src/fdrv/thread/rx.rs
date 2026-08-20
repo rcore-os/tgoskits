@@ -4,6 +4,7 @@ use core::{
     task::Poll,
 };
 
+use axpoll::IoEvents;
 use log;
 
 use crate::{
@@ -430,7 +431,8 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
                 .assoc_queue
                 .lock()
                 .push_back(mpdu[..pkt_len].to_vec());
-            bus.ap.assoc_pollset.wake();
+            // SAFETY: management frames are drained by the RX service task.
+            unsafe { bus.ap.assoc_pollset.wake(IoEvents::IN) };
         }
         // Deauth(0xC)/Disassoc(0xA):STA 断开。从驱动注册表移除(使重连能完整重新
         // 注册),并把该 STA 的 sta_idx 入队,交 AP worker 发 MM_STA_DEL_REQ 释放固件
@@ -454,7 +456,8 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
             };
             if let Some(idx) = removed_idx {
                 bus.ap.sta_del_queue.lock().push_back(idx);
-                bus.ap.assoc_pollset.wake();
+                // SAFETY: management frames are drained by the RX service task.
+                unsafe { bus.ap.assoc_pollset.wake(IoEvents::IN) };
             }
             log::info!(
                 "[ap-rx] {} from {:02x?} (removed_from_table={})",
@@ -588,7 +591,8 @@ fn process_eapol_frame(bus: &WifiBus, mpdu: &[u8], payload_start: usize, pkt_len
     let mut queue = bus.rx.eapol_queue.lock();
     queue.push_back(eapol);
     drop(queue);
-    bus.rx.eapol_pollset.wake();
+    // SAFETY: EAPOL readiness is published by the RX service task.
+    unsafe { bus.rx.eapol_pollset.wake(IoEvents::IN) };
 }
 
 /// 构造并发送以太网帧
@@ -628,7 +632,6 @@ fn build_and_enqueue_eth_frame(
     }
     queue.push_back(eth_frame);
     drop(queue);
-    bus.rx.data_pollset.wake();
     // 标记本批有数据帧入队,RX 线程稍后会驱动网络栈 poll。
     RX_DATA_PENDING.store(true, Ordering::Release);
 }
@@ -734,7 +737,8 @@ fn process_cmd_rsp(bus: &WifiBus, msg_data: &[u8]) {
         let mut queue = bus.cmd.rsp_queue.lock();
         queue.push_back(msg_data.to_vec());
         drop(queue);
-        bus.cmd.rsp_pollset.wake();
+        // SAFETY: queue publication and wake both run in the RX service task.
+        unsafe { bus.cmd.rsp_pollset.wake(IoEvents::IN) };
     } else {
         log::debug!(
             "[wifi-rx] indication: msg_id=0x{:04x} (expected_cfm=0x{:04x}) -> ind_queue",
@@ -744,7 +748,8 @@ fn process_cmd_rsp(bus: &WifiBus, msg_data: &[u8]) {
         let mut queue = bus.tx.ind_queue.lock();
         queue.push_back(msg_data.to_vec());
         drop(queue);
-        bus.tx.ind_pollset.wake();
+        // SAFETY: queue publication and wake both run in the RX service task.
+        unsafe { bus.tx.ind_pollset.wake(IoEvents::IN) };
     }
 }
 

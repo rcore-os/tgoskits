@@ -96,7 +96,7 @@ pub use self::net::{
 #[cfg(feature = "pipe")]
 pub use self::pipe::pipe;
 #[cfg(feature = "multitask")]
-pub use self::pthread::{pthread_create, pthread_exit, pthread_join, pthread_self};
+pub use self::pthread::{pthread_create, pthread_detach, pthread_exit, pthread_join, pthread_self};
 #[cfg(feature = "multitask")]
 pub use self::pthread::{pthread_mutex_init, pthread_mutex_lock, pthread_mutex_unlock};
 #[cfg(feature = "alloc")]

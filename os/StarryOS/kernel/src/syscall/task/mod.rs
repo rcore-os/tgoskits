@@ -7,8 +7,10 @@ mod job;
 mod namespace;
 pub mod ptrace;
 mod schedule;
+mod schedule_abi;
 mod thread;
 mod wait;
+mod wait_scan;
 
 pub use self::{
     clone::*, clone3::*, ctl::*, execve::*, exit::*, job::*, namespace::*, ptrace::*, schedule::*,

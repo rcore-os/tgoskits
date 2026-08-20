@@ -13,6 +13,8 @@ pub mod event;
 mod fb;
 #[cfg(feature = "sg2002")]
 pub mod ion;
+#[cfg(any(feature = "input", feature = "k230-kpu"))]
+mod irq_service;
 mod kmsg;
 #[cfg(feature = "k230-kpu")]
 mod kpu;
@@ -52,7 +54,7 @@ use core::{
 use ax_lazyinit::OnceLock;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsError, VfsResult};
 
-use crate::sync::Mutex;
+use crate::sync::PiMutex;
 
 #[cfg(feature = "sg2002")]
 pub static ION_DEVICE: OnceLock<Arc<ion::IonDevice>> = OnceLock::new();
@@ -199,20 +201,20 @@ impl DeviceOps for Zero {
 }
 
 struct Random {
-    state: Mutex<RandomState>,
+    state: PiMutex<RandomState>,
 }
 
 impl Random {
     pub fn new() -> Self {
         Self {
-            state: Mutex::new(RandomState::new(random_seed())),
+            state: PiMutex::new(RandomState::new(random_seed())),
         }
     }
 
     #[cfg(axtest)]
     fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
         Self {
-            state: Mutex::new(RandomState::new(seed)),
+            state: PiMutex::new(RandomState::new(seed)),
         }
     }
 }
@@ -235,13 +237,17 @@ impl RandomState {
     }
 
     fn mix_entropy(&mut self, entropy: &[u8]) {
+        self.mix_entropy_at(entropy, time_entropy());
+    }
+
+    fn mix_entropy_at(&mut self, entropy: &[u8], time_entropy: u64) {
         let mut seed = [0; 32];
         self.rng.fill_bytes(&mut seed);
 
         self.reseed_count = self.reseed_count.wrapping_add(1);
         fold_seed_word(&mut seed, entropy.len() as u64);
         fold_seed_word(&mut seed, self.reseed_count);
-        fold_seed_word(&mut seed, time_entropy());
+        fold_seed_word(&mut seed, time_entropy);
 
         for (idx, byte) in entropy.iter().copied().enumerate() {
             let seed_idx = idx % seed.len();
@@ -827,4 +833,27 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
 fn descriptor_symlink(fs: Arc<SimpleFs>, target: &'static str) -> Arc<SimpleFile> {
     SimpleFile::new(fs, NodeType::Symlink, move || Ok(target))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RandomState;
+
+    #[test]
+    fn random_write_mixes_entropy_into_stream() {
+        let seed = *b"0123456789abcdef0123456789abcdef";
+        let mut baseline = RandomState::new(seed);
+        let mut mixed = RandomState::new(seed);
+        let mut discarded = [0; 32];
+        let mut baseline_next = [0; 32];
+        let mut mixed_next = [0; 32];
+
+        baseline.fill_bytes(&mut discarded);
+        mixed.fill_bytes(&mut discarded);
+        mixed.mix_entropy_at(b"caller entropy", 0x1234_5678_9abc_def0);
+        baseline.fill_bytes(&mut baseline_next);
+        mixed.fill_bytes(&mut mixed_next);
+
+        assert_ne!(baseline_next, mixed_next);
+    }
 }

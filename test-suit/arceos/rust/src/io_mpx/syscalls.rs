@@ -1,7 +1,7 @@
 //! Raw syscall shims for the eventfd/epoll tests.
 //!
 //! `ax_std` exposes `eventfd`, `epoll_create1`, `epoll_ctl`, `epoll_wait`,
-//! `read`, and `write` as `#[no_mangle]` `extern "C"` symbols in
+//! `read`, `write`, and `close` as `#[no_mangle]` `extern "C"` symbols in
 //! `ax_std::os::libc_compat`. The test crate declares them here with plain C
 //! ABI types (the layout is erased at link time), so the tests can call them
 //! without depending on the `libc` crate. Error results follow the Linux
@@ -54,6 +54,7 @@ mod raw {
         ) -> c_int;
         pub(super) fn read(fd: c_int, buf: *mut u8, count: usize) -> isize;
         pub(super) fn write(fd: c_int, buf: *const u8, count: usize) -> isize;
+        pub(super) fn close(fd: c_int) -> c_int;
         pub(super) fn __errno_location() -> *mut c_int;
     }
 }
@@ -79,45 +80,74 @@ fn io_syscall(result: isize) -> Result<usize, c_int> {
     }
 }
 
-pub fn eventfd(initval: u32, flags: c_int) -> Result<c_int, c_int> {
-    fd_syscall(unsafe { raw::eventfd(initval, flags) })
+/// One test-owned descriptor, closed exactly once when its scope ends.
+#[derive(Debug)]
+pub struct OwnedFd(c_int);
+
+impl OwnedFd {
+    pub fn as_raw(&self) -> c_int {
+        self.0
+    }
 }
 
-pub fn epoll_create1(flags: c_int) -> Result<c_int, c_int> {
-    fd_syscall(unsafe { raw::epoll_create1(flags) })
+impl Drop for OwnedFd {
+    fn drop(&mut self) {
+        // SAFETY: `OwnedFd` is constructed only from a successful descriptor
+        // creation and cannot be cloned, so this is its unique close.
+        if let Err(errno) = fd_syscall(unsafe { raw::close(self.0) }) {
+            panic!("failed to close test fd {}: errno {errno}", self.0);
+        }
+    }
+}
+
+pub fn eventfd(initval: u32, flags: c_int) -> Result<OwnedFd, c_int> {
+    fd_syscall(unsafe { raw::eventfd(initval, flags) }).map(OwnedFd)
+}
+
+pub fn epoll_create1(flags: c_int) -> Result<OwnedFd, c_int> {
+    fd_syscall(unsafe { raw::epoll_create1(flags) }).map(OwnedFd)
 }
 
 pub fn epoll_ctl(
-    epfd: c_int,
+    epfd: &OwnedFd,
     op: c_int,
-    fd: c_int,
+    fd: &OwnedFd,
     event: Option<&mut EpollEvent>,
 ) -> Result<c_int, c_int> {
     let ptr = event.map_or(ptr::null_mut(), |event| event as *mut EpollEvent);
-    fd_syscall(unsafe { raw::epoll_ctl(epfd, op, fd, ptr) })
+    fd_syscall(unsafe { raw::epoll_ctl(epfd.as_raw(), op, fd.as_raw(), ptr) })
 }
 
-pub fn epoll_wait(epfd: c_int, events: &mut [EpollEvent], timeout: c_int) -> Result<c_int, c_int> {
+pub fn epoll_wait(
+    epfd: &OwnedFd,
+    events: &mut [EpollEvent],
+    timeout: c_int,
+) -> Result<c_int, c_int> {
     fd_syscall(unsafe {
-        raw::epoll_wait(epfd, events.as_mut_ptr(), events.len() as c_int, timeout)
+        raw::epoll_wait(
+            epfd.as_raw(),
+            events.as_mut_ptr(),
+            events.len() as c_int,
+            timeout,
+        )
     })
 }
 
-pub fn read(fd: c_int, buf: &mut [u8]) -> Result<usize, c_int> {
-    io_syscall(unsafe { raw::read(fd, buf.as_mut_ptr(), buf.len()) })
+pub fn read(fd: &OwnedFd, buf: &mut [u8]) -> Result<usize, c_int> {
+    io_syscall(unsafe { raw::read(fd.as_raw(), buf.as_mut_ptr(), buf.len()) })
 }
 
-pub fn write(fd: c_int, buf: &[u8]) -> Result<usize, c_int> {
-    io_syscall(unsafe { raw::write(fd, buf.as_ptr(), buf.len()) })
+pub fn write(fd: &OwnedFd, buf: &[u8]) -> Result<usize, c_int> {
+    io_syscall(unsafe { raw::write(fd.as_raw(), buf.as_ptr(), buf.len()) })
 }
 
-pub fn read_u64(fd: c_int) -> Result<u64, c_int> {
+pub fn read_u64(fd: &OwnedFd) -> Result<u64, c_int> {
     let mut buf = [0u8; 8];
     read(fd, &mut buf)?;
     Ok(u64::from_ne_bytes(buf))
 }
 
-pub fn write_u64(fd: c_int, value: u64) -> Result<usize, c_int> {
+pub fn write_u64(fd: &OwnedFd, value: u64) -> Result<usize, c_int> {
     write(fd, &value.to_ne_bytes())
 }
 

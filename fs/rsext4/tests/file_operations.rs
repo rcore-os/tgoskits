@@ -3,8 +3,10 @@
 //! The suite focuses on common file workflows and records a few implementation
 //! details that intentionally differ from a fully POSIX-like filesystem.
 
+// Host tests must link the external lock/task provider.
 use std::cell::Cell;
 
+use ax_runtime as _;
 use rsext4::{
     bmalloc::AbsoluteBN,
     error::{Ext4Error, Ext4Result},

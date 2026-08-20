@@ -176,6 +176,11 @@ pub fn systick_irq_disable() {
     CNTHP_CTL_EL2.modify(CNTHP_CTL_EL2::IMASK::SET);
 }
 
+pub fn systick_stop_oneshot() {
+    systick_irq_disable();
+    timer::aarch64_deadline::el2::disarm(&El2TimerRegisters);
+}
+
 pub fn systick_irq_enable() {
     CNTHP_CTL_EL2.modify(CNTHP_CTL_EL2::IMASK::CLEAR);
 }

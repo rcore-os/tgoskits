@@ -1,5 +1,6 @@
 #![no_std]
 #![cfg_attr(not(test), no_main)]
+#![cfg_attr(axtest_coverage, feature(coverage_attribute))]
 #![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
 #[allow(unused_imports)]
@@ -124,9 +125,11 @@ pub trait ArchTrait {
     /// report `ALIVE`, and releases it into the OS entry path.
     fn kick_secondary_cpu(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError>;
 
-    fn systimer_enable();
+    fn systimer_prepare_oneshot();
     fn systimer_irq_enable();
     fn systimer_irq_disable();
+    /// Stops the active one-shot source and discards its programmed event.
+    fn systimer_stop_oneshot();
     fn systimer_irq_is_enabled() -> bool;
     /// Set the timer interval in ticks
     fn systimer_set_interval(ticks: usize);

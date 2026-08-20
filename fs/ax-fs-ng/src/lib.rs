@@ -20,6 +20,10 @@ pub use axfs_ng_vfs::{VfsError, VfsResult};
 pub mod api;
 pub mod block;
 mod error;
+#[cfg(feature = "fat")]
+pub(crate) use error::block_error_to_vfs_error;
+pub use error::{BlockError, BlockResult};
+pub(crate) use error::{io_error_to_vfs_error, vfs_error_to_io_error};
 pub mod file;
 pub mod fops;
 mod fs;
@@ -37,15 +41,14 @@ pub mod axtest_support {
     pub fn block_irq_outcome_and_ready_hold_for_test() -> bool {
         super::os::block_irq_outcome_and_ready_hold_for_test()
     }
+
+    /// Checks that consuming an expired retry cannot hide a completed park oversleep.
+    pub fn controller_park_oversleep_detected_for_test() -> bool {
+        super::block::runtime::controller_park_oversleep_detected_for_test()
+    }
 }
 
-#[cfg(feature = "fat")]
-pub(crate) use error::block_error_to_vfs_error;
-pub use error::{BlockError, BlockResult};
-pub(crate) use error::{io_error_to_vfs_error, vfs_error_to_io_error};
-
-static MOUNTED_FILESYSTEMS: os::sync::IrqMutex<Vec<Filesystem>> =
-    os::sync::IrqMutex::new(Vec::new());
+static MOUNTED_FILESYSTEMS: os::sync::Mutex<Vec<Filesystem>> = os::sync::Mutex::new(Vec::new());
 
 fn register_mounted_filesystem(fs: Filesystem) {
     MOUNTED_FILESYSTEMS.lock().push(fs);

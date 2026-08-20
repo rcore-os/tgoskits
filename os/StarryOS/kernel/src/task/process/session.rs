@@ -1,16 +1,14 @@
-use alloc::{
-    sync::{Arc, Weak},
-    vec::Vec,
-};
-use core::{any::Any, convert::Infallible, fmt};
+use alloc::sync::{Arc, Weak};
+#[cfg(test)]
+use alloc::vec::Vec;
+use core::{any::Any, fmt};
 
-use weak_map::WeakMap;
-
+#[cfg(test)]
 use super::ProcessGroup;
+use super::{RelationLock, SessionGroups};
 use crate::{
     StarryResult,
-    sync::SpinLock,
-    task::{PgidNumber, PidIdentity, PidRoleLease, Sid, SidNumber},
+    task::{PidIdentity, PidRoleLease, Sid, SidNumber},
 };
 
 /// A [`Session`] is a collection of [`ProcessGroup`]s.
@@ -18,8 +16,8 @@ pub struct Session {
     sid: SidNumber,
     identity: Weak<PidIdentity>,
     _role: PidRoleLease<Sid>,
-    pub(crate) process_groups: SpinLock<WeakMap<PgidNumber, Weak<ProcessGroup>>>,
-    terminal: SpinLock<Option<Arc<dyn Any + Send + Sync>>>,
+    pub(crate) process_groups: RelationLock<SessionGroups>,
+    terminal: RelationLock<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 impl Session {
@@ -31,8 +29,8 @@ impl Session {
             sid,
             identity: Arc::downgrade(&identity),
             _role: role,
-            process_groups: SpinLock::new(WeakMap::new()),
-            terminal: SpinLock::new(None),
+            process_groups: RelationLock::new(SessionGroups::with_capacity(1)),
+            terminal: RelationLock::new(None),
         });
         identity.bind_session(&session);
         Ok(session)
@@ -56,14 +54,19 @@ impl Session {
     }
 
     /// The [`ProcessGroup`]s that belong to this [`Session`].
+    #[cfg(test)]
     pub fn process_groups(&self) -> Vec<Arc<ProcessGroup>> {
-        self.process_groups.lock_irqsave().values().collect()
-    }
-
-    /// Sets the terminal for this session.
-    pub fn set_terminal_with(&self, terminal: impl FnOnce() -> Arc<dyn Any + Send + Sync>) -> bool {
-        self.try_set_terminal_with(|| Ok::<_, Infallible>(terminal()))
-            .unwrap()
+        loop {
+            let group_count = self.process_groups.lock().len();
+            let mut groups = Vec::with_capacity(group_count);
+            let relations = self.process_groups.lock();
+            if groups.capacity() < relations.len() {
+                drop(relations);
+                continue;
+            }
+            relations.snapshot(&mut groups);
+            return groups;
+        }
     }
 
     /// Sets the terminal for this session with a fallible terminal initializer.
@@ -71,7 +74,7 @@ impl Session {
         &self,
         terminal: impl FnOnce() -> Result<Arc<dyn Any + Send + Sync>, E>,
     ) -> Result<bool, E> {
-        let mut guard = self.terminal.lock_irqsave();
+        let mut guard = self.terminal.lock();
         if guard.is_some() {
             return Ok(false);
         }
@@ -81,7 +84,7 @@ impl Session {
 
     /// Unsets the terminal for this session if it is the given terminal.
     pub fn unset_terminal(&self, term: &Arc<dyn Any + Send + Sync>) -> bool {
-        let mut guard = self.terminal.lock_irqsave();
+        let mut guard = self.terminal.lock();
         if guard.as_ref().is_some_and(|it| Arc::ptr_eq(it, term)) {
             *guard = None;
             true
@@ -92,7 +95,7 @@ impl Session {
 
     /// Gets the terminal for this session, if it exists.
     pub fn terminal(&self) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.terminal.lock_irqsave().clone()
+        self.terminal.lock().clone()
     }
 }
 

@@ -1,21 +1,19 @@
 use core::{
     ffi::{c_char, c_int},
-    mem::size_of,
+    mem::{offset_of, size_of},
 };
 
-use ax_task::current;
+use ax_fs_ng::vfs::current_fs_context;
 use axfs_ng_vfs::{Location, NodePermission};
 use linux_raw_sys::general::{
     __kernel_fsid_t, AT_EACCESS, AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE,
     AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW, R_OK, STATX__RESERVED, W_OK, X_OK, stat, statfs, statx,
 };
-use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     Errno, StarryError, StarryResult,
     file::{Directory, File, ResolveAtResult, get_file_like, memfd::Memfd, resolve_at},
-    mm::{UserPtr, vm_load_path_string},
-    task::AsThread,
+    mm::{UserPtr, VmMutPtr, VmPtr, vm_load_path_string},
 };
 
 const FILE_HANDLE_BYTES: usize = size_of::<u64>() * 2;
@@ -37,6 +35,7 @@ const ST_RDONLY: u32 = 1;
 const ST_RELATIME: u32 = 1 << 12;
 
 #[repr(C)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct FileHandleHeader {
     handle_bytes: u32,
     handle_type: i32,
@@ -46,30 +45,43 @@ pub struct FileHandleHeader {
 ///
 /// Return 0 if success.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_stat(path: *const c_char, statbuf: *mut stat) -> StarryResult<isize> {
+pub fn sys_stat(
+    current: &crate::task::UserTaskRef,
+    path: *const c_char,
+    statbuf: *mut stat,
+) -> crate::StarryResult<isize> {
     use linux_raw_sys::general::AT_FDCWD;
 
-    sys_fstatat(AT_FDCWD, path, statbuf, 0)
+    sys_fstatat(current, AT_FDCWD, path, statbuf, 0)
 }
 
 /// Get file metadata by `fd` and write into `statbuf`.
 ///
 /// Return 0 if success.
-pub fn sys_fstat(fd: i32, statbuf: *mut stat) -> StarryResult<isize> {
-    sys_fstatat(fd, core::ptr::null(), statbuf, AT_EMPTY_PATH)
+pub fn sys_fstat(
+    current: &crate::task::UserTaskRef,
+    fd: i32,
+    statbuf: *mut stat,
+) -> crate::StarryResult<isize> {
+    sys_fstatat(current, fd, core::ptr::null(), statbuf, AT_EMPTY_PATH)
 }
 
 /// Get the metadata of the symbolic link and write into `buf`.
 ///
 /// Return 0 if success.
 #[cfg(target_arch = "x86_64")]
-pub fn sys_lstat(path: *const c_char, statbuf: *mut stat) -> StarryResult<isize> {
+pub fn sys_lstat(
+    current: &crate::task::UserTaskRef,
+    path: *const c_char,
+    statbuf: *mut stat,
+) -> crate::StarryResult<isize> {
     use linux_raw_sys::general::{AT_FDCWD, AT_SYMLINK_NOFOLLOW};
 
-    sys_fstatat(AT_FDCWD, path, statbuf, AT_SYMLINK_NOFOLLOW)
+    sys_fstatat(current, AT_FDCWD, path, statbuf, AT_SYMLINK_NOFOLLOW)
 }
 
 pub fn sys_fstatat(
+    current: &crate::task::UserTaskRef,
     dirfd: i32,
     path: *const c_char,
     statbuf: *mut stat,
@@ -82,17 +94,21 @@ pub fn sys_fstatat(
         return Err(StarryError::InvalidInput);
     }
 
-    let path = path.nullable().map(vm_load_path_string).transpose()?;
+    let path = path
+        .nullable()
+        .map(|path| vm_load_path_string(current, path))
+        .transpose()?;
 
     debug!("sys_fstatat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
     let loc = resolve_at(dirfd, path.as_deref(), flags)?;
-    statbuf.vm_write(loc.stat()?.into())?;
+    write_stat(current, statbuf, loc.stat()?.into())?;
 
     Ok(0)
 }
 
 pub fn sys_statx(
+    current: &crate::task::UserTaskRef,
     dirfd: c_int,
     path: *const c_char,
     flags: u32,
@@ -140,7 +156,10 @@ pub fn sys_statx(
     //        below), then the target file is the one referred to by the
     //        file descriptor dirfd.
 
-    let path = path.nullable().map(vm_load_path_string).transpose()?;
+    let path = path
+        .nullable()
+        .map(|path| vm_load_path_string(current, path))
+        .transpose()?;
     debug!("sys_statx <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
     let resolved = resolve_at(dirfd, path.as_deref(), flags)?;
@@ -152,27 +171,32 @@ pub fn sys_statx(
             status.stx_attributes |= linux_raw_sys::general::STATX_ATTR_MOUNT_ROOT as u64;
         }
     }
-    statxbuf.vm_write(status)?;
+    write_statx(current, statxbuf, status)?;
 
     Ok(0)
 }
 
 #[cfg(target_arch = "x86_64")]
-pub fn sys_access(path: *const c_char, mode: u32) -> StarryResult<isize> {
+pub fn sys_access(
+    current: &crate::task::UserTaskRef,
+    path: *const c_char,
+    mode: u32,
+) -> crate::StarryResult<isize> {
     use linux_raw_sys::general::AT_FDCWD;
 
-    sys_faccessat2(AT_FDCWD, path, mode, 0)
+    sys_faccessat2(current, AT_FDCWD, path, mode, 0)
 }
 
 // Note: AT_EACCESS is not explicitly handled. This is functionally correct
 // because fsuid/fsgid track euid/egid by default in our credential model,
 // so the real-ID vs effective-ID distinction AT_EACCESS controls is a no-op.
 pub fn sys_faccessat2(
+    current: &crate::task::UserTaskRef,
     dirfd: c_int,
     path: *const c_char,
     mode: u32,
     flags: u32,
-) -> StarryResult<isize> {
+) -> crate::StarryResult<isize> {
     // man 2 access: mode is a mask of F_OK(0), R_OK, W_OK, and X_OK;
     // faccessat2 flags are limited to AT_EACCESS, AT_EMPTY_PATH, and
     // AT_SYMLINK_NOFOLLOW. Linux rejects invalid bits before path resolution.
@@ -182,7 +206,10 @@ pub fn sys_faccessat2(
         return Err(StarryError::InvalidInput);
     }
 
-    let path = path.nullable().map(vm_load_path_string).transpose()?;
+    let path = path
+        .nullable()
+        .map(|path| vm_load_path_string(current, path))
+        .transpose()?;
     debug!("sys_faccessat2 <= dirfd: {dirfd}, path: {path:?}, mode: {mode}, flags: {flags}");
 
     let file = resolve_at(dirfd, path.as_deref(), flags)?;
@@ -191,7 +218,7 @@ pub fn sys_faccessat2(
         return Ok(0);
     }
 
-    let cred = current().as_thread().cred();
+    let cred = current.as_thread().cred();
 
     // Root (fsuid == 0) bypasses R_OK and W_OK checks.
     // For X_OK, at least one execute bit must be set (owner, group, or other).
@@ -269,21 +296,28 @@ fn statfs_mount_flags(loc: &Location) -> u32 {
     statfs_flags
 }
 
-pub fn sys_statfs(path: *const c_char, buf: *mut statfs) -> StarryResult<isize> {
-    let path = vm_load_path_string(path)?;
+pub fn sys_statfs(
+    current: &crate::task::UserTaskRef,
+    path: *const c_char,
+    buf: *mut statfs,
+) -> crate::StarryResult<isize> {
+    let path = vm_load_path_string(current, path)?;
     debug!("sys_statfs <= path: {path:?}");
 
-    buf.vm_write(statfs(
-        &ax_fs_ng::vfs::current_fs_context()
-            .lock()
-            .resolve(path)?
-            .mountpoint()
-            .root_location(),
-    )?)?;
+    let location = current_fs_context().lock().resolve(path)?;
+    write_statfs(
+        current,
+        buf,
+        statfs(&location.mountpoint().root_location())?,
+    )?;
     Ok(0)
 }
 
-pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> StarryResult<isize> {
+pub fn sys_fstatfs(
+    current: &crate::task::UserTaskRef,
+    fd: i32,
+    buf: *mut statfs,
+) -> crate::StarryResult<isize> {
     debug!("sys_fstatfs <= fd: {fd}");
 
     let file_like = get_file_like(fd)?;
@@ -296,11 +330,192 @@ pub fn sys_fstatfs(fd: i32, buf: *mut statfs) -> StarryResult<isize> {
     } else {
         return Err(StarryError::InvalidInput);
     };
-    buf.vm_write(statfs(location)?)?;
+    write_statfs(current, buf, statfs(location)?)?;
     Ok(0)
 }
 
+fn write_stat(
+    current: &crate::task::UserTaskRef,
+    user: *mut stat,
+    value: stat,
+) -> crate::StarryResult<()> {
+    let mut bytes = [0_u8; size_of::<stat>()];
+    UserPtr::from(user).write_abi_fields(current, &mut bytes, |fields| {
+        fields.put_field(offset_of!(stat, st_dev), &value.st_dev)?;
+        fields.put_field(offset_of!(stat, st_ino), &value.st_ino)?;
+        fields.put_field(offset_of!(stat, st_nlink), &value.st_nlink)?;
+        fields.put_field(offset_of!(stat, st_mode), &value.st_mode)?;
+        fields.put_field(offset_of!(stat, st_uid), &value.st_uid)?;
+        fields.put_field(offset_of!(stat, st_gid), &value.st_gid)?;
+        #[cfg(target_arch = "x86_64")]
+        fields.put_field(offset_of!(stat, __pad0), &value.__pad0)?;
+        fields.put_field(offset_of!(stat, st_rdev), &value.st_rdev)?;
+        #[cfg(not(target_arch = "x86_64"))]
+        fields.put_field(offset_of!(stat, __pad1), &value.__pad1)?;
+        fields.put_field(offset_of!(stat, st_size), &value.st_size)?;
+        fields.put_field(offset_of!(stat, st_blksize), &value.st_blksize)?;
+        #[cfg(not(target_arch = "x86_64"))]
+        fields.put_field(offset_of!(stat, __pad2), &value.__pad2)?;
+        fields.put_field(offset_of!(stat, st_blocks), &value.st_blocks)?;
+        fields.put_field(offset_of!(stat, st_atime), &value.st_atime)?;
+        fields.put_field(offset_of!(stat, st_atime_nsec), &value.st_atime_nsec)?;
+        fields.put_field(offset_of!(stat, st_mtime), &value.st_mtime)?;
+        fields.put_field(offset_of!(stat, st_mtime_nsec), &value.st_mtime_nsec)?;
+        fields.put_field(offset_of!(stat, st_ctime), &value.st_ctime)?;
+        fields.put_field(offset_of!(stat, st_ctime_nsec), &value.st_ctime_nsec)?;
+        #[cfg(target_arch = "x86_64")]
+        fields.put_field(offset_of!(stat, __unused), &value.__unused)?;
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            fields.put_field(offset_of!(stat, __unused4), &value.__unused4)?;
+            fields.put_field(offset_of!(stat, __unused5), &value.__unused5)?;
+        }
+        Ok(())
+    })
+}
+
+fn write_statx_timestamp(
+    current: &crate::task::UserTaskRef,
+    user: UserPtr<statx>,
+    offset: usize,
+    value: linux_raw_sys::general::statx_timestamp,
+) -> crate::StarryResult<()> {
+    use linux_raw_sys::general::statx_timestamp;
+
+    user.write_field(
+        current,
+        offset + offset_of!(statx_timestamp, tv_sec),
+        value.tv_sec,
+    )?;
+    user.write_field(
+        current,
+        offset + offset_of!(statx_timestamp, tv_nsec),
+        value.tv_nsec,
+    )?;
+    user.write_field(
+        current,
+        offset + offset_of!(statx_timestamp, __reserved),
+        value.__reserved,
+    )
+}
+
+fn write_statx(
+    current: &crate::task::UserTaskRef,
+    user: *mut statx,
+    value: statx,
+) -> crate::StarryResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field(current, offset_of!(statx, stx_mask), value.stx_mask)?;
+    user.write_field(current, offset_of!(statx, stx_blksize), value.stx_blksize)?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_attributes),
+        value.stx_attributes,
+    )?;
+    user.write_field(current, offset_of!(statx, stx_nlink), value.stx_nlink)?;
+    user.write_field(current, offset_of!(statx, stx_uid), value.stx_uid)?;
+    user.write_field(current, offset_of!(statx, stx_gid), value.stx_gid)?;
+    user.write_field(current, offset_of!(statx, stx_mode), value.stx_mode)?;
+    user.write_field(current, offset_of!(statx, __spare0), value.__spare0)?;
+    user.write_field(current, offset_of!(statx, stx_ino), value.stx_ino)?;
+    user.write_field(current, offset_of!(statx, stx_size), value.stx_size)?;
+    user.write_field(current, offset_of!(statx, stx_blocks), value.stx_blocks)?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_attributes_mask),
+        value.stx_attributes_mask,
+    )?;
+    write_statx_timestamp(current, user, offset_of!(statx, stx_atime), value.stx_atime)?;
+    write_statx_timestamp(current, user, offset_of!(statx, stx_btime), value.stx_btime)?;
+    write_statx_timestamp(current, user, offset_of!(statx, stx_ctime), value.stx_ctime)?;
+    write_statx_timestamp(current, user, offset_of!(statx, stx_mtime), value.stx_mtime)?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_rdev_major),
+        value.stx_rdev_major,
+    )?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_rdev_minor),
+        value.stx_rdev_minor,
+    )?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_dev_major),
+        value.stx_dev_major,
+    )?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_dev_minor),
+        value.stx_dev_minor,
+    )?;
+    user.write_field(current, offset_of!(statx, stx_mnt_id), value.stx_mnt_id)?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_dio_mem_align),
+        value.stx_dio_mem_align,
+    )?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_dio_offset_align),
+        value.stx_dio_offset_align,
+    )?;
+    user.write_field(current, offset_of!(statx, stx_subvol), value.stx_subvol)?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_atomic_write_unit_min),
+        value.stx_atomic_write_unit_min,
+    )?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_atomic_write_unit_max),
+        value.stx_atomic_write_unit_max,
+    )?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_atomic_write_segments_max),
+        value.stx_atomic_write_segments_max,
+    )?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_dio_read_offset_align),
+        value.stx_dio_read_offset_align,
+    )?;
+    user.write_field(
+        current,
+        offset_of!(statx, stx_atomic_write_unit_max_opt),
+        value.stx_atomic_write_unit_max_opt,
+    )?;
+    user.write_field(current, offset_of!(statx, __spare2), value.__spare2)?;
+    user.write_field(current, offset_of!(statx, __spare3), value.__spare3)
+}
+
+fn write_statfs(
+    current: &crate::task::UserTaskRef,
+    user: *mut statfs,
+    value: statfs,
+) -> crate::StarryResult<()> {
+    let user = UserPtr::from(user);
+    user.write_field(current, offset_of!(statfs, f_type), value.f_type)?;
+    user.write_field(current, offset_of!(statfs, f_bsize), value.f_bsize)?;
+    user.write_field(current, offset_of!(statfs, f_blocks), value.f_blocks)?;
+    user.write_field(current, offset_of!(statfs, f_bfree), value.f_bfree)?;
+    user.write_field(current, offset_of!(statfs, f_bavail), value.f_bavail)?;
+    user.write_field(current, offset_of!(statfs, f_files), value.f_files)?;
+    user.write_field(current, offset_of!(statfs, f_ffree), value.f_ffree)?;
+    user.write_field(
+        current,
+        offset_of!(statfs, f_fsid) + offset_of!(__kernel_fsid_t, val),
+        value.f_fsid.val,
+    )?;
+    user.write_field(current, offset_of!(statfs, f_namelen), value.f_namelen)?;
+    user.write_field(current, offset_of!(statfs, f_frsize), value.f_frsize)?;
+    user.write_field(current, offset_of!(statfs, f_flags), value.f_flags)?;
+    user.write_field(current, offset_of!(statfs, f_spare), value.f_spare)
+}
+
 pub fn sys_name_to_handle_at(
+    current: &crate::task::UserTaskRef,
     dirfd: c_int,
     path: *const c_char,
     handle: *mut FileHandleHeader,
@@ -312,7 +527,10 @@ pub fn sys_name_to_handle_at(
         return Err(StarryError::InvalidInput);
     }
 
-    let path = path.nullable().map(vm_load_path_string).transpose()?;
+    let path = path
+        .nullable()
+        .map(|path| vm_load_path_string(current, path))
+        .transpose()?;
     debug!("sys_name_to_handle_at <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
     let resolve_flags = if flags & AT_SYMLINK_FOLLOW != 0 {
@@ -325,27 +543,28 @@ pub fn sys_name_to_handle_at(
         .ok_or(StarryError::InvalidInput)?;
     let stat = loc.metadata()?;
 
-    let header = UserPtr::<FileHandleHeader>::from(handle).get_as_mut()?;
+    let header_ptr = UserPtr::<FileHandleHeader>::from(handle);
+    let mut header = header_ptr.read(current)?;
     let capacity = header.handle_bytes as usize;
     header.handle_bytes = FILE_HANDLE_BYTES as u32;
     if capacity < FILE_HANDLE_BYTES {
-        return Err(StarryError::from(Errno::EOVERFLOW));
+        header_ptr.write(current, header)?;
+        return Err(crate::StarryError::from(crate::Errno::EOVERFLOW));
     }
 
     header.handle_type = FILE_HANDLE_TYPE_DEV_INO;
+    header_ptr.write(current, header)?;
     let mut bytes = [0u8; FILE_HANDLE_BYTES];
     bytes[..size_of::<u64>()].copy_from_slice(&stat.device.to_ne_bytes());
     bytes[size_of::<u64>()..].copy_from_slice(&stat.inode.to_ne_bytes());
     let data_ptr = (handle as usize)
         .checked_add(size_of::<FileHandleHeader>())
-        .ok_or(StarryError::InvalidInput)? as *mut u8;
-    UserPtr::<u8>::from(data_ptr)
-        .get_as_mut_slice(FILE_HANDLE_BYTES)?
-        .copy_from_slice(&bytes);
+        .ok_or(crate::StarryError::InvalidInput)? as *mut u8;
+    UserPtr::<u8>::from(data_ptr).write_slice(current, &bytes)?;
 
     let resolved_mount_id = c_int::try_from(loc.mountpoint().mount_id())
         .map_err(|_| StarryError::from(Errno::EOVERFLOW))?;
-    (mount_id as *mut c_int).vm_write(resolved_mount_id)?;
+    (mount_id as *mut c_int).vm_write(current, resolved_mount_id)?;
     Ok(0)
 }
 

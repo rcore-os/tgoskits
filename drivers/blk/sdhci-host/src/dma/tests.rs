@@ -16,14 +16,29 @@ fn empty_table64() -> [Adma2Desc64; ADMA2_DESC_COUNT] {
 fn single_descriptor_for_small_buffer() {
     let mut table = empty_table();
     let n = build_descriptors(&mut table, 0x1000_0000, 512, Phase::DataRead).unwrap();
-    assert_eq!(n, 1);
+    assert_eq!(n, 2);
     assert_eq!(table[0].length, 512);
     assert_eq!(table[0].address, 0x1000_0000);
-    // Valid + End + Tran action
+    assert_eq!(table[0].attr, ADMA2_ATTR_VALID | ADMA2_ATTR_ACT_TRAN);
+    assert_eq!(table[1].attr, ADMA2_ATTR_NOP_END);
+}
+
+#[test]
+fn small_transfer_uses_linux_style_nop_terminator() {
+    let mut table = empty_table();
+    let written = build_descriptors(&mut table, 0x1000_0000, 64, Phase::DataRead).unwrap();
+
+    assert_eq!(written, 2);
     assert_eq!(
         table[0].attr,
-        ADMA2_ATTR_VALID | ADMA2_ATTR_END | ADMA2_ATTR_ACT_TRAN
+        ADMA2_ATTR_VALID | ADMA2_ATTR_ACT_TRAN,
+        "the transfer descriptor must not own the terminal marker"
     );
+    assert_eq!(table[0].length, 64);
+    assert_eq!(table[0].address, 0x1000_0000);
+    assert_eq!(table[1].attr, ADMA2_ATTR_VALID | ADMA2_ATTR_END);
+    assert_eq!(table[1].length, 0);
+    assert_eq!(table[1].address, 0);
 }
 
 #[test]
@@ -31,14 +46,13 @@ fn splits_across_max_chunk() {
     let mut table = empty_table();
     let total = ADMA2_MAX_PER_DESC + 4096;
     let n = build_descriptors(&mut table, 0x2000_0000, total, Phase::DataRead).unwrap();
-    assert_eq!(n, 2);
+    assert_eq!(n, 3);
     assert_eq!(table[0].length as usize, ADMA2_MAX_PER_DESC);
-    // first descriptor must NOT have END
     assert!(table[0].attr & ADMA2_ATTR_END == 0);
-    // second descriptor covers the tail and has END
     assert_eq!(table[1].length, 4096);
-    assert!(table[1].attr & ADMA2_ATTR_END != 0);
+    assert!(table[1].attr & ADMA2_ATTR_END == 0);
     assert_eq!(table[1].address, 0x2000_0000 + ADMA2_MAX_PER_DESC as u32);
+    assert_eq!(table[2].attr, ADMA2_ATTR_NOP_END);
 }
 
 #[test]
@@ -47,13 +61,14 @@ fn splits_at_dwcmshc_128m_boundary() {
     let base = DWC_MSHC_ADMA_BOUNDARY as u64 - 1024;
     let n = build_descriptors(&mut table, base, 4096, Phase::DataRead).unwrap();
 
-    assert_eq!(n, 2);
+    assert_eq!(n, 3);
     assert_eq!(table[0].length, 1024);
     assert_eq!(table[0].address, base as u32);
     assert!(table[0].attr & ADMA2_ATTR_END == 0);
     assert_eq!(table[1].length, 3072);
     assert_eq!(table[1].address, DWC_MSHC_ADMA_BOUNDARY as u32);
-    assert!(table[1].attr & ADMA2_ATTR_END != 0);
+    assert!(table[1].attr & ADMA2_ATTR_END == 0);
+    assert_eq!(table[2].attr, ADMA2_ATTR_NOP_END);
 }
 
 #[test]
@@ -69,11 +84,12 @@ fn descriptor64_preserves_address_above_4gib() {
     let base = 0x1_0000_1000;
     let written = build_descriptors64(&mut table, base, 512).unwrap();
 
-    assert_eq!(written, 1);
+    assert_eq!(written, 2);
     assert_eq!(table[0].address_low, 0x1000);
     assert_eq!(table[0].address_high, 1);
     assert_eq!(table[0].length, 512);
-    assert_ne!(table[0].attr & ADMA2_ATTR_END, 0);
+    assert_eq!(table[0].attr, ADMA2_ATTR_VALID | ADMA2_ATTR_ACT_TRAN);
+    assert_eq!(table[1].attr, ADMA2_ATTR_NOP_END);
 }
 
 #[test]

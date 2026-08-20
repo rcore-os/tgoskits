@@ -1,16 +1,18 @@
+use core::mem::offset_of;
+
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::time::TimeValue;
-use ax_task::current;
 use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusage};
-use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
     StarryError, StarryResult,
-    task::{AsThread, TgidNumber, Thread, get_task_by_number, get_user_process_data_by_number},
+    mm::{UserPtr, VmPtr},
+    task::{ProcessData, TgidNumber, Thread, UserTaskRef, get_user_process_data_by_number},
     time::TimeValueLike,
 };
 
 pub fn sys_prlimit64(
+    current: &UserTaskRef,
     pid: u32,
     resource: u32,
     new_limit: *const rlimit64,
@@ -18,7 +20,7 @@ pub fn sys_prlimit64(
 ) -> StarryResult<isize> {
     // pid lookup first — match Linux error priority (ESRCH before EINVAL)
     let proc_data = if pid == 0 {
-        current().as_thread().proc_data.clone()
+        current.as_thread().proc_data.clone()
     } else {
         get_user_process_data_by_number(TgidNumber::try_from(pid)?)?
     };
@@ -28,30 +30,25 @@ pub fn sys_prlimit64(
     }
 
     if let Some(old_limit) = old_limit.nullable() {
-        let (current, max) = {
-            let limits = proc_data.rlim.read();
-            let limit = &limits[resource];
-            (limit.current, limit.max)
-        };
-        old_limit.vm_write(rlimit64 {
-            rlim_cur: current,
-            rlim_max: max,
-        })?;
+        let limit = &proc_data.rlimits()[resource];
+        let old_limit = UserPtr::<rlimit64>::from(old_limit);
+        old_limit.write_field(current, offset_of!(rlimit64, rlim_cur), limit.current)?;
+        old_limit.write_field(current, offset_of!(rlimit64, rlim_max), limit.max)?;
     }
 
     if let Some(new_limit) = new_limit.nullable() {
         // FIXME: AnyBitPattern
-        let new_limit = unsafe { new_limit.vm_read_uninit()?.assume_init() };
+        let new_limit = unsafe { new_limit.vm_read_uninit(current)?.assume_init() };
         if new_limit.rlim_cur > new_limit.rlim_max {
             return Err(StarryError::InvalidInput);
         }
 
-        let limit = &mut proc_data.rlim.write()[resource];
+        let limit = &mut proc_data.rlimits_mut()[resource];
         // Raising the hard limit requires CAP_SYS_RESOURCE.
         // TODO: has_cap_sys_resource() is currently euid==0 until a
         // fine-grained capability bitmap is implemented (see cred.rs).
         if new_limit.rlim_max > limit.max {
-            let cred = current().as_thread().cred();
+            let cred = current.as_thread().cred();
             if !cred.has_cap_sys_resource() {
                 return Err(StarryError::OperationNotPermitted);
             }
@@ -72,7 +69,7 @@ struct Rusage {
 
 impl Rusage {
     fn from_thread(thread: &Thread) -> Self {
-        let (utime, stime) = thread.time.borrow().output();
+        let (utime, stime) = thread.cpu_time().output();
         let max_rss_kb = thread.proc_data.aspace().lock().rss().hiwater_rss_pages()
             * (PAGE_SIZE_4K as u64 / 1024);
         Self {
@@ -82,11 +79,24 @@ impl Rusage {
         }
     }
 
-    fn collate(mut self, other: Rusage) -> Self {
-        self.utime += other.utime;
-        self.stime += other.stime;
-        self.max_rss_kb = self.max_rss_kb.max(other.max_rss_kb);
-        self
+    fn from_process(proc_data: &ProcessData) -> Self {
+        let (utime, stime) = proc_data.cpu_time();
+        let max_rss_kb =
+            proc_data.aspace().lock().rss().hiwater_rss_pages() * (PAGE_SIZE_4K as u64 / 1024);
+        Self {
+            utime,
+            stime,
+            max_rss_kb,
+        }
+    }
+
+    fn from_waited_children(proc_data: &ProcessData) -> Self {
+        let (utime, stime) = proc_data.children_cpu_time();
+        Self {
+            utime,
+            stime,
+            max_rss_kb: 0,
+        }
     }
 }
 
@@ -101,47 +111,68 @@ impl From<Rusage> for rusage {
     }
 }
 
-pub fn sys_getrusage(who: i32, usage: *mut rusage) -> StarryResult<isize> {
+fn write_rusage(
+    current: &crate::task::UserTaskRef,
+    user: *mut rusage,
+    usage: rusage,
+) -> crate::StarryResult<()> {
+    let user = UserPtr::from(user);
+    let utime = offset_of!(rusage, ru_utime);
+    user.write_field(
+        current,
+        utime + offset_of!(__kernel_old_timeval, tv_sec),
+        usage.ru_utime.tv_sec,
+    )?;
+    user.write_field(
+        current,
+        utime + offset_of!(__kernel_old_timeval, tv_usec),
+        usage.ru_utime.tv_usec,
+    )?;
+    let stime = offset_of!(rusage, ru_stime);
+    user.write_field(
+        current,
+        stime + offset_of!(__kernel_old_timeval, tv_sec),
+        usage.ru_stime.tv_sec,
+    )?;
+    user.write_field(
+        current,
+        stime + offset_of!(__kernel_old_timeval, tv_usec),
+        usage.ru_stime.tv_usec,
+    )?;
+    user.write_field(current, offset_of!(rusage, ru_maxrss), usage.ru_maxrss)?;
+    user.write_field(current, offset_of!(rusage, ru_ixrss), usage.ru_ixrss)?;
+    user.write_field(current, offset_of!(rusage, ru_idrss), usage.ru_idrss)?;
+    user.write_field(current, offset_of!(rusage, ru_isrss), usage.ru_isrss)?;
+    user.write_field(current, offset_of!(rusage, ru_minflt), usage.ru_minflt)?;
+    user.write_field(current, offset_of!(rusage, ru_majflt), usage.ru_majflt)?;
+    user.write_field(current, offset_of!(rusage, ru_nswap), usage.ru_nswap)?;
+    user.write_field(current, offset_of!(rusage, ru_inblock), usage.ru_inblock)?;
+    user.write_field(current, offset_of!(rusage, ru_oublock), usage.ru_oublock)?;
+    user.write_field(current, offset_of!(rusage, ru_msgsnd), usage.ru_msgsnd)?;
+    user.write_field(current, offset_of!(rusage, ru_msgrcv), usage.ru_msgrcv)?;
+    user.write_field(current, offset_of!(rusage, ru_nsignals), usage.ru_nsignals)?;
+    user.write_field(current, offset_of!(rusage, ru_nvcsw), usage.ru_nvcsw)?;
+    user.write_field(current, offset_of!(rusage, ru_nivcsw), usage.ru_nivcsw)
+}
+
+pub fn sys_getrusage(
+    current: &crate::task::UserTaskRef,
+    who: i32,
+    usage: *mut rusage,
+) -> crate::StarryResult<isize> {
     const RUSAGE_SELF: i32 = linux_raw_sys::general::RUSAGE_SELF as i32;
     const RUSAGE_CHILDREN: i32 = linux_raw_sys::general::RUSAGE_CHILDREN;
     const RUSAGE_THREAD: i32 = linux_raw_sys::general::RUSAGE_THREAD as i32;
 
-    let curr = current();
-    let thr = curr.as_thread();
+    let thr = current.as_thread();
 
     let result = match who {
-        RUSAGE_SELF => {
-            thr.proc_data
-                .proc
-                .threads()
-                .into_iter()
-                .fold(Rusage::default(), |acc, tid| {
-                    if let Ok(task) = get_task_by_number(tid) {
-                        acc.collate(Rusage::from_thread(task.as_thread()))
-                    } else {
-                        acc
-                    }
-                })
-        }
-        RUSAGE_CHILDREN => {
-            thr.proc_data
-                .proc
-                .threads()
-                .into_iter()
-                .fold(Rusage::default(), |acc, child| {
-                    if let Ok(task) = get_task_by_number(child)
-                        && !curr.ptr_eq(&task)
-                    {
-                        acc.collate(Rusage::from_thread(task.as_thread()))
-                    } else {
-                        acc
-                    }
-                })
-        }
+        RUSAGE_SELF => Rusage::from_process(&thr.proc_data),
+        RUSAGE_CHILDREN => Rusage::from_waited_children(&thr.proc_data),
         RUSAGE_THREAD => Rusage::from_thread(thr),
         _ => return Err(StarryError::InvalidInput),
     };
-    usage.vm_write(result.into())?;
+    write_rusage(current, usage, result.into())?;
 
     Ok(0)
 }

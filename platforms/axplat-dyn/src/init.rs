@@ -11,7 +11,7 @@ impl InitIf for InitIfImpl {
     /// early console, clocking).
     fn init_early(cpu_id: usize, _dtb: usize) {
         enable_fp_simd();
-        somehal::timer::enable();
+        somehal::timer::prepare_oneshot();
         // SAFETY: platform entry binds this CPU-local area before ax-runtime
         // calls init_early, and the scheduler and local IRQs are still offline.
         unsafe { ax_plat::time::init_scheduler_clock(cpu_id) }
@@ -22,7 +22,7 @@ impl InitIf for InitIfImpl {
     #[cfg(feature = "smp")]
     fn init_early_secondary(cpu_id: usize) {
         enable_fp_simd();
-        somehal::timer::enable();
+        somehal::timer::prepare_oneshot();
         // SAFETY: secondary early initialization precedes scheduler
         // publication and local IRQ enablement on this bound CPU.
         unsafe { ax_plat::time::init_scheduler_clock(cpu_id) }

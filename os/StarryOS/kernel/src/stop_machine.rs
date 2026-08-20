@@ -1,15 +1,19 @@
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 use core::{
     hint::spin_loop,
     sync::atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 
-use ax_ipi::legacy::run_on_cpu;
-use ax_runtime::hal::{cpu_num, percpu::this_cpu_id, time::monotonic_time_nanos};
+use ax_lazyinit::LazyInit;
+use ax_runtime::{
+    hal::{cpu_num, percpu::this_cpu_id},
+    task::{CpuId, CpuSet, SchedulePolicy, WaitQueue},
+};
 
-use crate::sync::{IrqMutex, PreemptIrqSaveGuard};
+use crate::sync::{NoPreemptIrqSave, PiMutex};
 
-static STOP_MACHINE_LOCK: IrqMutex<()> = IrqMutex::new(());
+static STOP_MACHINE_LOCK: PiMutex<()> = PiMutex::new(());
+static CPU_STOPPERS: LazyInit<Vec<Arc<CpuStopper>>> = LazyInit::new();
 
 const STAGE_PARKED: u8 = 0;
 const STAGE_SYNC: u8 = 1;
@@ -18,6 +22,7 @@ struct StopMachineState {
     stage: AtomicU8,
     parked: AtomicUsize,
     finished: AtomicUsize,
+    progress: WaitQueue,
     per_cpu_sync: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -30,21 +35,82 @@ impl StopMachineState {
             stage: AtomicU8::new(STAGE_PARKED),
             parked: AtomicUsize::new(0),
             finished: AtomicUsize::new(0),
+            progress: WaitQueue::new(),
             per_cpu_sync: Box::new(per_cpu_sync),
         }
     }
 }
 
-fn park_remote_cpu(state: Arc<StopMachineState>) {
-    let _guard = PreemptIrqSaveGuard::new();
+struct CpuStopper {
+    command: PiMutex<Option<Arc<StopMachineState>>>,
+    ready: WaitQueue,
+}
 
-    state.parked.fetch_add(1, Ordering::SeqCst);
-    while state.stage.load(Ordering::SeqCst) == STAGE_PARKED {
-        spin_loop();
+impl CpuStopper {
+    const fn new() -> Self {
+        Self {
+            command: PiMutex::new(None),
+            ready: WaitQueue::new(),
+        }
     }
 
-    (state.per_cpu_sync.as_ref())();
-    state.finished.fetch_add(1, Ordering::SeqCst);
+    fn submit(&self, state: Arc<StopMachineState>) {
+        let replaced = self.command.lock().replace(state);
+        assert!(
+            replaced.is_none(),
+            "CPU stopper accepted overlapping commands"
+        );
+        self.ready.notify_one();
+    }
+
+    fn run(&self) -> ! {
+        loop {
+            self.ready.wait_until(|| self.command.lock().is_some());
+            let state = self
+                .command
+                .lock()
+                .take()
+                .expect("notified CPU stopper lost its command");
+            park_remote_cpu(&state);
+        }
+    }
+}
+
+fn park_remote_cpu(state: &StopMachineState) {
+    {
+        let _guard = NoPreemptIrqSave::new();
+
+        state.parked.fetch_add(1, Ordering::SeqCst);
+        state.progress.notify_one();
+        while state.stage.load(Ordering::Acquire) == STAGE_PARKED {
+            spin_loop();
+        }
+
+        (state.per_cpu_sync.as_ref())();
+        state.finished.fetch_add(1, Ordering::Release);
+    }
+    state.progress.notify_one();
+}
+
+/// Starts one persistent stopper task per online logical CPU.
+pub(crate) fn init() {
+    let cpu_count = cpu_num();
+    let stoppers: Vec<_> = (0..cpu_count)
+        .map(|_| Arc::new(CpuStopper::new()))
+        .collect();
+    CPU_STOPPERS.init_once(stoppers);
+
+    for cpu in 0..cpu_count {
+        let stopper = Arc::clone(&CPU_STOPPERS[cpu]);
+        let mut affinity = CpuSet::empty(cpu_count);
+        assert!(affinity.insert(CpuId::new(cpu as u32)));
+        crate::task::spawn_kernel_thread_with_policy_and_affinity(
+            move || stopper.run(),
+            format!("migration/{cpu}"),
+            SchedulePolicy::kernel_stop(),
+            affinity,
+        );
+    }
 }
 
 /// Run a short non-blocking critical section while all other CPUs are parked.
@@ -60,42 +126,38 @@ where
     let total_cpus = cpu_num();
 
     if total_cpus <= 1 {
+        let _local_stop = NoPreemptIrqSave::new();
         let result = action();
         per_cpu_sync();
         return result;
     }
 
     let current_cpu = this_cpu_id();
-    let remote_cpu_count = total_cpus - 1;
+    let remote_cpus: Vec<_> = (0..total_cpus)
+        .filter(|&cpu| cpu != current_cpu && ax_runtime::hal::irq::is_cpu_online(cpu))
+        .collect();
+    let remote_cpu_count = remote_cpus.len();
     let state = Arc::new(StopMachineState::new(per_cpu_sync));
 
-    for cpu_id in 0..total_cpus {
-        if cpu_id == current_cpu {
-            continue;
-        }
-
-        let state = state.clone();
-        run_on_cpu(cpu_id, move || park_remote_cpu(state))
-            .unwrap_or_else(|err| panic!("stop_machine: failed to park CPU {cpu_id}: {err:?}"));
+    for &cpu_id in &remote_cpus {
+        CPU_STOPPERS[cpu_id].submit(Arc::clone(&state));
     }
 
-    const MAX_WAIT_NS: u64 = 5_000_000_000; // 5 seconds
-    let now = monotonic_time_nanos();
-    while state.parked.load(Ordering::SeqCst) != remote_cpu_count {
-        spin_loop();
-        if monotonic_time_nanos() - now > MAX_WAIT_NS {
-            panic!("stop_machine: timeout waiting for remote CPUs to park");
-        }
-    }
+    state
+        .progress
+        .wait_until(|| state.parked.load(Ordering::Acquire) == remote_cpu_count);
 
-    // Now all remote CPUs are parked. We can safely execute the critical section.
-    let result = action();
-    (state.per_cpu_sync.as_ref())();
-    state.stage.store(STAGE_SYNC, Ordering::SeqCst);
+    let result = {
+        let _local_stop = NoPreemptIrqSave::new();
+        let result = action();
+        (state.per_cpu_sync.as_ref())();
+        state.stage.store(STAGE_SYNC, Ordering::Release);
+        result
+    };
 
-    while state.finished.load(Ordering::SeqCst) != remote_cpu_count {
-        spin_loop();
-    }
+    state
+        .progress
+        .wait_until(|| state.finished.load(Ordering::Acquire) == remote_cpu_count);
 
     result
 }

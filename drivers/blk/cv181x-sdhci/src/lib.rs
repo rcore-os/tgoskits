@@ -6,8 +6,10 @@
 
 #![no_std]
 
+use core::num::NonZeroU32;
+
 use dma_api::DeviceDma;
-use sdhci_host::Sdhci;
+use sdhci_host::{HostResetHook, Sdhci};
 use sdmmc_protocol::Error as ProtocolError;
 
 mod board;
@@ -27,6 +29,33 @@ pub struct Cv181xSdhci {
     config: Cv181xConfig,
 }
 
+struct Cv181xResetHook {
+    mmio: Cv181xMmio,
+}
+
+impl Cv181xResetHook {
+    const fn new(mmio: Cv181xMmio) -> Self {
+        Self { mmio }
+    }
+}
+
+// SAFETY: The hook is owned by the corresponding `Sdhci` instance and is only
+// invoked while that host is exclusively borrowed for a controller reset. Its
+// MMIO pointer aliases the wrapper's mapping but all accesses are serialized by
+// the host's mutable request path.
+unsafe impl Send for Cv181xResetHook {}
+// SAFETY: See the `Send` implementation. Hook callbacks serialize writes
+// through the exclusively borrowed host even though the callback receiver is
+// shared by the generic capability contract.
+unsafe impl Sync for Cv181xResetHook {}
+
+impl HostResetHook for Cv181xResetHook {
+    fn after_reset(&self, _host: &mut Sdhci) -> Result<(), ProtocolError> {
+        board::restore_ds_hs_phy(self.mmio);
+        Ok(())
+    }
+}
+
 // SAFETY: The wrapper owns exclusive access to one SDHCI register file and the
 // board-level syscon/pinmux window for the controller lifetime. It does not
 // expose shared mutable access; IRQ extraction uses the cloned SDHCI IRQ core.
@@ -40,11 +69,18 @@ impl Cv181xSdhci {
     /// `mmio.core` must point to an exclusively-owned CV181x SDHCI register
     /// block and `mmio.syscon` must cover TOP_BASE including the pinmux block.
     pub unsafe fn new(mmio: Cv181xMmio, config: Cv181xConfig) -> Self {
-        let inner = unsafe { Sdhci::new(mmio.core()) };
+        let config = config.normalized();
+        let mut inner = unsafe { Sdhci::new(mmio.core()) };
+        let source_clock = NonZeroU32::new(config.src_frequency_hz)
+            .expect("normalized CV181x source clock must be non-zero");
+        inner
+            .set_fixed_base_clock_hz(source_clock)
+            .expect("a newly constructed SDHCI host must be idle");
+        inner.set_reset_hook(Cv181xResetHook::new(mmio));
         let mut this = Self {
             inner,
             mmio,
-            config: config.normalized(),
+            config,
         };
         this.restore_ds_hs_phy();
         this
@@ -68,23 +104,5 @@ impl Cv181xSdhci {
 
     pub fn configure_dma(&mut self, dma: DeviceDma) -> Result<(), ProtocolError> {
         self.inner.configure_dma(dma)
-    }
-}
-
-fn map_protocol_error(err: ProtocolError) -> sdio_host2::Error {
-    match err {
-        ProtocolError::Timeout(_) => sdio_host2::Error::Timeout,
-        ProtocolError::Crc(_) => sdio_host2::Error::Crc,
-        ProtocolError::NoCard => sdio_host2::Error::NoCard,
-        ProtocolError::Busy => sdio_host2::Error::Busy,
-        ProtocolError::UnsupportedCommand => sdio_host2::Error::Unsupported,
-        ProtocolError::Misaligned => sdio_host2::Error::Misaligned,
-        ProtocolError::InvalidArgument => sdio_host2::Error::InvalidArgument,
-        ProtocolError::BusError(_) => sdio_host2::Error::Bus,
-        ProtocolError::ReadError(_)
-        | ProtocolError::WriteError(_)
-        | ProtocolError::BadResponse(_) => sdio_host2::Error::Bus,
-        ProtocolError::CardError(_) | ProtocolError::CardLocked => sdio_host2::Error::Controller,
-        _ => sdio_host2::Error::Controller,
     }
 }

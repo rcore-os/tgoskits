@@ -7,7 +7,7 @@
 //! # Architecture Support
 //!
 //! All four supported architectures are enabled: x86_64, riscv64, aarch64,
-//! and loongarch64. Each architecture provides TrapFrame↔PtRegs register
+//! and loongarch64. Each architecture provides UserRegisters↔PtRegs register
 //! conversion to bridge the kernel's trap frame format with the kprobe
 //! crate's portable `PtRegs` type.
 //!
@@ -28,6 +28,7 @@ use core::{
     sync::atomic::{AtomicI32, Ordering},
 };
 
+use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::{
     cpu::{KernelTrapFrame, UserRegisters},
@@ -44,7 +45,7 @@ use kprobe::{
 use crate::{
     StarryError, StarryResult,
     sync::{IrqMutex, RawSpinNoIrq},
-    task::{AsThread, PidIdentity},
+    task::PidIdentity,
 };
 
 static NEXT_UPROBE_TARGET_ID: AtomicI32 = AtomicI32::new(1);
@@ -103,7 +104,7 @@ impl Drop for UprobeTargetLease {
     }
 }
 
-fn uprobe_target_task(opaque_id: i32) -> ax_task::AxTaskRef {
+fn uprobe_target_task(opaque_id: i32) -> crate::task::UserTaskRef {
     let id = NonZeroI32::new(opaque_id)
         .map(UprobeTargetId)
         .expect("uprobe target handle must be non-zero");
@@ -122,8 +123,8 @@ fn uprobe_target_task(opaque_id: i32) -> ax_task::AxTaskRef {
 /// concrete probe types parameterized on it — see [`KernelKprobe`] /
 /// [`KernelKretprobe`]).
 ///
-/// Backed by [`crate::sync::RawSpinNoIrq`], which disables kernel preemption and
-/// local IRQs across the critical section (IRQ-save semantics, the
+/// Backed by [`RawSpinNoIrq`], which disables kernel preemption and
+/// local IRQs across the critical section (`PreemptIrqGuard` semantics, the
 /// same as the rest of the kernel's spin locks). This matters because the lock
 /// is taken on trap / kprobe-callback paths: a plain atomic spin lock that left
 /// preemption and IRQs enabled could be re-entered on the same CPU and would
@@ -273,34 +274,28 @@ impl KprobeAuxiliaryOps for KernelKprobeOps {
     }
 
     fn insert_kretprobe_instance_to_task(instance: RetprobeInstance) {
-        let task = ax_task::current_may_uninit();
-        if let Some(task) = task {
-            let thread = task.try_as_thread();
-            if let Some(thread) = thread {
-                let mut kretprobe_instances = thread.kretprobe_stack.lock();
-                kretprobe_instances.push(instance);
-                return;
-            }
+        if let Some(task) = crate::task::try_current_user_irq_view() {
+            task.push_kretprobe(instance);
+            return;
         }
-        // If the current task is None, we can store it in a static variable
-        let mut instances = INSTANCE.lock();
+        let Some(mut instances) = kernel_kretprobe_stack().try_lock() else {
+            panic!("nested kretprobe tried to re-enter the kernel stack");
+        };
+        if instances.len() == KERNEL_KRETPROBE_STACK_CAPACITY {
+            core::mem::forget(instance);
+            panic!("kernel task exceeded its fixed kretprobe nesting capacity");
+        }
         instances.push(instance);
     }
 
     fn pop_kretprobe_instance_from_task() -> RetprobeInstance {
-        let task = ax_task::current_may_uninit();
-        if let Some(task) = task {
-            let thread = task.try_as_thread();
-            if let Some(thread) = thread {
-                let mut kretprobe_instances = thread.kretprobe_stack.lock();
-                return kretprobe_instances
-                    .pop()
-                    .expect("kretprobe instance stack underflow");
-            }
+        if let Some(task) = crate::task::try_current_user_irq_view() {
+            return task.pop_kretprobe();
         }
-        // If the current task is None, we can pop it from the static variable
-        let mut instances = INSTANCE.lock();
-        instances.pop().unwrap()
+        let Some(mut instances) = kernel_kretprobe_stack().try_lock() else {
+            panic!("nested kretprobe tried to re-enter the kernel stack");
+        };
+        instances.pop().expect("kernel kretprobe stack underflow")
     }
 }
 
@@ -317,7 +312,14 @@ pub type KprobeAuxiliary = KernelKprobeOps;
 
 static KPROBE_MANAGER: KprobeManager = KprobeManager::new();
 static KPROBE_POINT_LIST: IrqMutex<KprobePointList> = IrqMutex::new(KprobePointList::new());
-static INSTANCE: IrqMutex<Vec<RetprobeInstance>> = IrqMutex::new(Vec::new());
+const KERNEL_KRETPROBE_STACK_CAPACITY: usize = 64;
+static INSTANCE: LazyInit<IrqMutex<Vec<RetprobeInstance>>> = LazyInit::new();
+
+fn kernel_kretprobe_stack() -> &'static IrqMutex<Vec<RetprobeInstance>> {
+    INSTANCE
+        .get()
+        .expect("kernel kretprobe stack must be prepared before probes are armed")
+}
 
 fn with_manager<F, R>(f: F) -> R
 where
@@ -351,6 +353,7 @@ pub fn unregister_kprobe(kprobe: Arc<KernelKprobe>) {
 /// Register a kretprobe and return its live handle.
 #[inline(never)]
 pub fn register_kretprobe(builder: KretprobeBuilder<KernelRawMutex>) -> Arc<KernelKretprobe> {
+    INSTANCE.get_or_init(|| IrqMutex::new(Vec::with_capacity(KERNEL_KRETPROBE_STACK_CAPACITY)));
     with_manager_and_list(|mgr, list| {
         kprobe_crate_register_kretprobe(mgr, list, builder).expect("Failed to register kretprobe")
     })

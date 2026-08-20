@@ -12,10 +12,8 @@
 pub(crate) mod connection_manager;
 pub(crate) mod stream;
 
-use core::task::Context;
-
 use ax_io::{IoBuf, IoBufMut, Read, Write};
-use axpoll::{IoEvents, Pollable};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 pub use rdif_vsock::{VsockAddr, VsockConnId};
 
 pub use self::stream::VsockStreamTransport;
@@ -111,7 +109,15 @@ impl Pollable for VsockSocket {
         self.transport.poll()
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        self.transport.register(context, events);
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        unsafe { self.transport.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { self.transport.register_exclusive(sink, events) };
     }
 }
