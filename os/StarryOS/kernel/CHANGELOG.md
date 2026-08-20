@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.7...starry-kernel-v0.8.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+- *(ax-tracepoint)* extract tracepoint component ([#2107](https://github.com/rcore-os/tgoskits/pull/2107))
+- *(starry-kernel)* consume user_access_ok_page in a lock-free user-copy fast path ([#2063](https://github.com/rcore-os/tgoskits/pull/2063))
+- *(ax-cgroup)* enforce cgroup v2 pids limits ([#2014](https://github.com/rcore-os/tgoskits/pull/2014))
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+- *(starry)* add reproducible iperf3 board benchmark ([#1948](https://github.com/rcore-os/tgoskits/pull/1948))
+
+### Fixed
+
+- *(starry-kernel)* sync AArch64 clippy features ([#2125](https://github.com/rcore-os/tgoskits/pull/2125))
+- *(starry)* bound getdents buffer and count ABI ([#2059](https://github.com/rcore-os/tgoskits/pull/2059))
+- *(console)* unify sleepable runtime console arbitration ([#2113](https://github.com/rcore-os/tgoskits/pull/2113))
+- *(starry-kernel)* validate sync_file_range fd first ([#2100](https://github.com/rcore-os/tgoskits/pull/2100))
+- *(starry)* honor UTS setter signed-length ABI ([#2058](https://github.com/rcore-os/tgoskits/pull/2058))
+- *(starry)* honor setgroups signed-size ABI ([#2057](https://github.com/rcore-os/tgoskits/pull/2057))
+- *(starry)* validate full mremap flag width ([#2053](https://github.com/rcore-os/tgoskits/pull/2053))
+- *(starry)* validate tgkill pid arguments ([#2052](https://github.com/rcore-os/tgoskits/pull/2052))
+- *(starry)* validate full unshare flag width ([#2050](https://github.com/rcore-os/tgoskits/pull/2050))
+- *(starry)* bound PR_SET_NAME user reads ([#2049](https://github.com/rcore-os/tgoskits/pull/2049))
+- *(starry)* preserve getcwd size unsignedness ([#2048](https://github.com/rcore-os/tgoskits/pull/2048))
+- *(starry)* validate clone3 argument size ([#2047](https://github.com/rcore-os/tgoskits/pull/2047))
+- *(starry-kernel)* bound getdents scratch buffer ([#2030](https://github.com/rcore-os/tgoskits/pull/2030))
+- *(ax-cpu)* harden user access and architecture state transitions ([#2075](https://github.com/rcore-os/tgoskits/pull/2075))
+- *(starry)* expose supplementary groups in proc status ([#2035](https://github.com/rcore-os/tgoskits/pull/2035))
+- *(starry-kernel)* validate mqueue send length before copy ([#2028](https://github.com/rcore-os/tgoskits/pull/2028))
+- *(starry-kernel)* support status reads from message queue descriptors ([#2027](https://github.com/rcore-os/tgoskits/pull/2027))
+- *(starry-kernel)* bound execve argument loading ([#2033](https://github.com/rcore-os/tgoskits/pull/2033))
+- *(starry-kernel)* bound getrandom temporary storage ([#2029](https://github.com/rcore-os/tgoskits/pull/2029))
+- *(starry)* bound openat2 how size ([#2044](https://github.com/rcore-os/tgoskits/pull/2044))
+- *(starry)* match unlinkat flag ABI width ([#2051](https://github.com/rcore-os/tgoskits/pull/2051))
+- *(starry)* honor syslog signed-length ABI ([#2060](https://github.com/rcore-os/tgoskits/pull/2060))
+- *(starry-kernel)* unify PID namespace identity ownership ([#2023](https://github.com/rcore-os/tgoskits/pull/2023))
+- *(starry-kernel)* validate malformed ELF metadata ([#2031](https://github.com/rcore-os/tgoskits/pull/2031))
+- *(starry)* handle oversized module images ([#2042](https://github.com/rcore-os/tgoskits/pull/2042))
+- *(starry)* honor offset in /dev/fb0 read_at/write_at ([#1995](https://github.com/rcore-os/tgoskits/pull/1995))
+- *(starry)* break COW on anonymous mprotect(+W) ([#1992](https://github.com/rcore-os/tgoskits/pull/1992))
+- *(starry)* widen COW frame refcount u8->u32 (fixes fork() EFAULT at ~250 procs) ([#1991](https://github.com/rcore-os/tgoskits/pull/1991))
+- *(crab-usb)* align HCD endpoint lifecycle with Linux ([#1980](https://github.com/rcore-os/tgoskits/pull/1980))
+- *(ax-hal)* normalize hypervisor IRQ entry state ([#1949](https://github.com/rcore-os/tgoskits/pull/1949))
+- *(starry-kernel)* reject threads in new PID namespaces ([#1947](https://github.com/rcore-os/tgoskits/pull/1947))
+- *(starry-kernel)* align event notification semantics with Linux ([#1925](https://github.com/rcore-os/tgoskits/pull/1925))
+- *(starry-kernel)* preserve netlink sockopt writeback order ([#1944](https://github.com/rcore-os/tgoskits/pull/1944))
+- *(starry-kernel)* rescan wait candidates after wake ([#1940](https://github.com/rcore-os/tgoskits/pull/1940))
+- *(tty)* handle input flush and wakeups ([#1922](https://github.com/rcore-os/tgoskits/pull/1922))
+- *(starry-kernel)* support IPv4 ping syscall paths ([#1896](https://github.com/rcore-os/tgoskits/pull/1896))
+
+### Other
+
+- *(starry)* drop redundant user-buffer validation in sys_write ([#1998](https://github.com/rcore-os/tgoskits/pull/1998))
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(serial)* establish bounded owner-affine UART runtime ([#2076](https://github.com/rcore-os/tgoskits/pull/2076))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(starry)* seccomp syscall fast-path (lock-free active flag) ([#1999](https://github.com/rcore-os/tgoskits/pull/1999))
+- *(starry)* shard the per-process futex table + O(1) WaitQueue::is_empty ([#1997](https://github.com/rcore-os/tgoskits/pull/1997))
+- *(repo)* move starry-process, starry-signal, and starry-vm to os/StarryOS ([#1974](https://github.com/rcore-os/tgoskits/pull/1974))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- Fix UVC asynchronous transfer lifecycle ([#1924](https://github.com/rcore-os/tgoskits/pull/1924))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.7.7](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.6...starry-kernel-v0.7.7) - 2026-08-09
 
 ### Fixed

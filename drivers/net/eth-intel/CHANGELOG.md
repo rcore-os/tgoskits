@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/eth-intel-v0.1.13...eth-intel-v0.2.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
 ## [0.1.13](https://github.com/rcore-os/tgoskits/compare/eth-intel-v0.1.12...eth-intel-v0.1.13) - 2026-08-09
 
 ### Other

@@ -35,6 +35,12 @@ pub(crate) enum IrqGuardSource {
     CpuRunQueueMembarrierTicket,
     CpuRunQueueLifecycleTicket,
     CpuRtBandwidthTicket,
+    #[cfg(any(
+        test,
+        all(axtest, feature = "axtest"),
+        feature = "task-test-hooks",
+        feature = "qperf-metrics"
+    ))]
     CpuDeadlineObservationTicket,
     CpuDeadlinePublicationTicket,
     CpuDeadlineRegistrationTicket,

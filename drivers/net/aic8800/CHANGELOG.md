@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced the vendored fixed-capacity poll set with owned `axpoll-set`
   registrations and removed the TX periodic wake fallback.
 
+## [0.2.8](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.7...aic8800-v0.2.8) - 2026-08-20
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+- *(repo)* move block and net driver crates to drivers/ directory ([#1951](https://github.com/rcore-os/tgoskits/pull/1951))
+
 ## [0.2.7](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.6...aic8800-v0.2.7) - 2026-08-09
 
 ### Other
