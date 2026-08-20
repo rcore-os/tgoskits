@@ -7,7 +7,7 @@ keywords = ["os", "driver", "pinctrl", "gpio"]
 license = "MIT"
 name = "rdif-pinctrl"
 repository.workspace = true
-version = "0.1.4"
+version = "0.2.0"
 
 [dependencies]
 fdt-edit = { workspace = true, optional = true }

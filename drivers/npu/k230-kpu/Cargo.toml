@@ -1,6 +1,6 @@
 [package]
 name = "k230-kpu"
-version = "0.1.0"
+version = "0.1.1"
 repository = "https://github.com/rcore-os/tgoskits"
 description = "Register-level driver for the Kendryte K230 KPU."
 keywords = ["arceos", "starryos", "k230", "kpu", "npu"]

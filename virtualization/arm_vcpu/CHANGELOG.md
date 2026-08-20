@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.19...arm_vcpu-v0.5.20) - 2026-08-20
+
+### Added
+
+- *(axvisor)* Implement inter-VM communication (IVC) demo and protocol enhancements ([#1834](https://github.com/rcore-os/tgoskits/pull/1834))
+
+### Fixed
+
+- *(arm-vcpu)* preserve HVC exception PC ([#1953](https://github.com/rcore-os/tgoskits/pull/1953))
+- *(aarch64)* restore RK3588 guest cpufreq and SCMI support ([#1919](https://github.com/rcore-os/tgoskits/pull/1919))
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.5.19](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.18...arm_vcpu-v0.5.19) - 2026-08-09
 
 ### Other

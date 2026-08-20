@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.15...loongarch_vcpu-v0.5.16) - 2026-08-20
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.5.15](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.14...loongarch_vcpu-v0.5.15) - 2026-08-09
 
 ### Other
