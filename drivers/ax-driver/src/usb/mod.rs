@@ -1,7 +1,5 @@
 extern crate alloc;
 
-use core::time::Duration;
-
 use crab_usb::{EventHandler, USBHost, usb_if::Speed};
 #[cfg(any(
     test,
@@ -34,19 +32,39 @@ mod xhci_pci;
 pub type UsbHostDevice = rdrive::Device<PlatformUsbHost>;
 pub type UsbHostDeviceGuard = rdrive::DeviceGuard<PlatformUsbHost>;
 
-struct UsbRuntime;
+#[cfg(any(
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
+    feature = "sg2002-dwc2",
+    feature = "xhci-mmio",
+    feature = "xhci-pci"
+))]
+mod runtime {
+    use core::time::Duration;
 
-impl crab_usb::KernelOp for UsbRuntime {
-    fn delay(&self, duration: Duration) {
-        axklib::time::busy_wait(duration);
+    struct UsbRuntime;
+
+    impl crab_usb::KernelOp for UsbRuntime {
+        fn delay(&self, duration: Duration) {
+            axklib::time::busy_wait(duration);
+        }
+    }
+
+    static USB_RUNTIME: UsbRuntime = UsbRuntime;
+
+    pub(crate) fn usb_runtime() -> &'static dyn crab_usb::KernelOp {
+        &USB_RUNTIME
     }
 }
 
-static USB_RUNTIME: UsbRuntime = UsbRuntime;
-
-pub(crate) fn usb_runtime() -> &'static dyn crab_usb::KernelOp {
-    &USB_RUNTIME
-}
+#[cfg(any(
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
+    feature = "sg2002-dwc2",
+    feature = "xhci-mmio",
+    feature = "xhci-pci"
+))]
+pub(crate) use runtime::usb_runtime;
 
 #[cfg(any(
     feature = "rockchip-dwc-xhci",
