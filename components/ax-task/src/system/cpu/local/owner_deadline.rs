@@ -662,15 +662,12 @@ impl CpuLocal {
         self: Pin<&mut Self>,
         now: MonotonicInstant,
     ) -> Option<HardTimerServiceClaim> {
-        let Some(mut task_deadlines) = self
+        let mut task_deadlines = self
             .remote
-            .lock_active_deadline_activity(DeadlineBaseGuardSource::HardExpiry)
-        else {
-            return None;
-        };
+            .lock_active_deadline_activity(DeadlineBaseGuardSource::HardExpiry)?;
         let scheduler_deadline = task_deadlines.queue.next_scheduler_deadline();
         let kernel_deadline = task_deadlines.kernel_timers.next_hard_deadline();
-        let claim = match (scheduler_deadline, kernel_deadline) {
+        match (scheduler_deadline, kernel_deadline) {
             (Some(scheduler), Some(kernel)) if kernel < scheduler => task_deadlines
                 .kernel_timers
                 .claim_due_hard(now)
@@ -687,8 +684,7 @@ impl CpuLocal {
                 .claim_due_hard(now)
                 .map(HardTimerServiceClaim::Kernel),
             _ => None,
-        };
-        claim
+        }
     }
 
     pub(crate) fn complete_hard_kernel_timer_execution(
