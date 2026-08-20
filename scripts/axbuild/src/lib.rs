@@ -16,7 +16,6 @@ mod clippy;
 pub mod context;
 pub mod image;
 mod ktest;
-mod lock_lint;
 mod rootfs;
 pub mod starry;
 mod support;
@@ -66,8 +65,6 @@ enum Commands {
     Clippy(ClippyArgs),
     /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
     SyncLint(SyncLintArgs),
-    /// Verify workspace lock dependencies and OS synchronization boundaries
-    LockLint,
     /// Remote board management via ostool-server
     Board {
         #[command(subcommand)]
@@ -129,7 +126,6 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Ktest(args) => ktest::run(args).await,
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
-        Commands::LockLint => lock_lint::run_lock_lint_command(),
         Commands::Board { command } => board::execute(command).await,
         Commands::Backtrace { command } => backtrace::execute(command),
         Commands::Image(args) => image::run(args).await,

@@ -72,10 +72,12 @@ class CiPlanTests(unittest.TestCase):
         for check_id, runs_on in expected_runners.items():
             self.assertIn(check_id, rows)
             self.assertEqual(rows[check_id]["runs_on"], runs_on)
+        sync_lint_command = static_rows["run-sync-lint"]["command"]
         self.assertIn(
-            "cargo xtask lock-lint",
-            static_rows["run-sync-lint"]["command"],
+            'cargo xtask sync-lint --since "$SINCE_REF"',
+            sync_lint_command,
         )
+        self.assertNotIn("lock" + "-lint", sync_lint_command)
         self.assertTrue(
             all(
                 not row["name"].startswith(f"{row['group']} / ")

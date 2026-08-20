@@ -9,7 +9,7 @@ sidebar_label: "锁使用约束"
 
 ## 背景
 
-早期清理外部 `spin` crate 的直接目标是消除第三方 `spin::{Mutex,RwLock}` 在内核锁依赖检查中的可见性缺口。现在第一方锁已统一进入 `ax-sync` 的 lockdep 路径，`lock-lint` 禁止旧锁 crate 和直接 `spin` 导入回退。
+早期清理外部 `spin` crate 的直接目标是消除第三方 `spin::{Mutex,RwLock}` 在内核锁依赖检查中的可见性缺口。现在第一方锁已统一进入 `ax-sync` 的 lockdep 路径；后续改动必须在依赖与源码评审中阻止旧锁 crate 和直接 `spin` 导入回退。
 
 当时采用了保守策略：
 
@@ -49,7 +49,7 @@ sidebar_label: "锁使用约束"
 | `os/StarryOS/kernel/src/file/netlink.rs` 和 `os/StarryOS/kernel/src/file/packet.rs` | 已调整为锁内取出消息或包，锁外 copy 到用户缓冲区。 | 旧问题是持 IRQ-save `SpinLock` 时写用户内存，page fault 路径要求 IRQ enabled。 | 保持“队列状态锁内移动数据，用户内存访问锁外执行”的规则。 |
 | `fs/ax-fs-ng/src/highlevel/file.rs` | `GLOBAL_CACHED_FILES` 和 `append_lock` 已迁移到 `ax-sync::SpinRwLock`。 | 读写锁现在进入统一 lockdep，但 `append_lock` 是否确实需要读写分离仍是历史延期问题。 | 近期不引入新 RwLock。先确认是否必须读写分离；不必须的点评估 mutex 化。 |
 | `os/StarryOS/kernel/src/file/mod.rs`、`task/mod.rs`、`task/ops.rs` 等 | 原外部 RwLock 已迁移到 Starry `crate::sync` facade；`file/signalfd.rs` 的 signal mask 使用 IRQ-save spin lock。 | 锁已统一可见，但 FD table、task 状态等路径的粒度和顺序仍需按运行时重要性复查。 | 能 mutex 化的先 mutex 化；必须使用 RwLock 的点保持通过 facade，禁止绕过统一入口。 |
-| drivers / portable crates 中的直接 `spin` | 第一方直接依赖和源码导入已清理。 | 后续若 portable crate 绕回外部 `spin`，内核运行路径会重新形成 lockdep 盲区。 | 依赖 `lock-lint` 防回退；新增 driver 锁时使用 `ax-sync` 或明确的 OS glue 同步抽象。 |
+| drivers / portable crates 中的直接 `spin` | 第一方直接依赖和源码导入已清理。 | 后续若 portable crate 绕回外部 `spin`，内核运行路径会重新形成 lockdep 盲区。 | 通过依赖与源码评审防回退；新增 driver 锁时使用 `ax-sync` 或明确的 OS glue 同步抽象。 |
 
 ## Atomic 使用准则
 
@@ -79,7 +79,7 @@ sidebar_label: "锁使用约束"
 
 ## 复查命令
 
-第一方直接 `spin` 复查；结果应为空（历史文档和 `lock-lint` 规则字符串除外）：
+第一方直接 `spin` 复查；结果应为空：
 
 ```bash
 rg -n "use spin|extern crate spin|spin::" \

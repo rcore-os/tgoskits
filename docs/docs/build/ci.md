@@ -51,8 +51,8 @@ Starry / Board VisionFive 2 · Suites
 AxVisor / VMX x86_64 · Smoke
 ```
 
-`Preflight` 包含 formatting/publish dry-run、incremental sync-lint 和 locking
-policy。`Workspace` 包含跨 workspace 的 clippy 和 std tests，其余三个分组包含各自
+`Preflight` 包含 formatting/publish dry-run 和 incremental sync-lint。`Workspace`
+包含跨 workspace 的 clippy 和 std tests，其余三个分组包含各自
 注册的 QEMU、KVM 和真机检查。实际行数由 manifests 动态生成，不在文档中维护易过期
 的固定总数。
 
