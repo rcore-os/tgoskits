@@ -30,27 +30,23 @@ mod stdio {
     pub fn ax_console_read_bytes(buf: &mut [u8]) -> crate::ApiResult<usize> {
         #[cfg(all(feature = "irq", feature = "multitask"))]
         {
-            match runtime_input() {
-                Ok(input) => {
-                    let mut read = 0;
-                    let mut items = [ax_runtime::console::RxItem::default(); 64];
-                    while read < buf.len() {
-                        let limit = items.len().min(buf.len() - read);
-                        let count = input.try_read(&mut items[..limit]);
-                        if count == 0 {
-                            break;
-                        }
-                        for item in &items[..count] {
-                            if let ax_runtime::console::RxItem::Byte { byte, .. } = *item {
-                                buf[read] = if byte == b'\r' { b'\n' } else { byte };
-                                read += 1;
-                            }
-                        }
-                    }
-                    return Ok(read);
+            let input = runtime_input()?;
+            let mut read = 0;
+            let mut items = [ax_runtime::console::RxItem::default(); 64];
+            while read < buf.len() {
+                let limit = items.len().min(buf.len() - read);
+                let count = input.try_read(&mut items[..limit]);
+                if count == 0 {
+                    break;
                 }
-                Err(error) => return Err(error.into()),
+                for item in &items[..count] {
+                    if let ax_runtime::console::RxItem::Byte { byte, .. } = *item {
+                        buf[read] = if byte == b'\r' { b'\n' } else { byte };
+                        read += 1;
+                    }
+                }
             }
+            Ok(read)
         }
 
         #[cfg(not(all(feature = "irq", feature = "multitask")))]
@@ -69,7 +65,7 @@ mod stdio {
         #[cfg(all(feature = "irq", feature = "multitask"))]
         {
             let output = ax_runtime::console::output()?;
-            return Ok(output.write_text_all(buf)?);
+            Ok(output.write_text_all(buf)?)
         }
         #[cfg(not(all(feature = "irq", feature = "multitask")))]
         {
@@ -81,9 +77,9 @@ mod stdio {
     pub fn ax_console_write_fmt(args: fmt::Arguments) -> fmt::Result {
         #[cfg(all(feature = "irq", feature = "multitask"))]
         {
-            return ax_runtime::console::output()
+            ax_runtime::console::output()
                 .map_err(|_| fmt::Error)?
-                .write_fmt(args);
+                .write_fmt(args)
         }
         #[cfg(not(all(feature = "irq", feature = "multitask")))]
         {
