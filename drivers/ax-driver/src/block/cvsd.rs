@@ -86,6 +86,7 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     );
 
     let mut host = unsafe { Cv181xSdhci::new(Cv181xMmio::new(core, syscon), config) };
+    install_host_timer(host.inner_mut());
     let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
         dma_api::DmaDomainId::Direct,
         crate::binding_resolver::dma_coherency_from_fdt(info),

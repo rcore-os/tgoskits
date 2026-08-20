@@ -61,6 +61,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
+    install_host_timer(&mut host);
     let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
         dma_api::DmaDomainId::Direct,
         crate::binding_resolver::dma_coherency_from_fdt(info),
