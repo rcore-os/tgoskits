@@ -7777,8 +7777,7 @@ dependencies = [
  "somehal-macros",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
- "x2apic",
- "x86",
+ "x86-apic-driver",
 ]
 
 [[package]]
@@ -9747,6 +9746,17 @@ dependencies = [
  "bit_field",
  "bitflags 1.3.2",
  "raw-cpuid 10.7.0",
+]
+
+[[package]]
+name = "x86-apic-driver"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "rdif-intc",
+ "thiserror 2.0.20",
+ "x2apic",
+ "x86",
 ]
 
 [[package]]
