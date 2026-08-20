@@ -38,11 +38,13 @@ def main() -> int:
         errors.append(
             "pull_request paths omit workspace roots: " + ", ".join(missing_roots)
         )
+    if "PR_HEAD_REPOSITORY_OWNER" in ci_workflow:
+        errors.append("runner planning must not use the pull request source owner")
 
     for fragment, message in (
         (
-            "github.event.pull_request.head.repo.owner.login || ''",
-            "PR planning must use the source repository owner",
+            '--repository-owner "$REPOSITORY_OWNER"',
+            "runner planning must use the workflow repository owner",
         ),
         (
             '--since-ref "$SINCE_REF"',

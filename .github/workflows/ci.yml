@@ -214,19 +214,13 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
-          PR_HEAD_REPOSITORY_OWNER: >-
-            ${{ github.event.pull_request.head.repo.owner.login || '' }}
           SINCE_REF: ${{ steps.since.outputs.since_ref }}
         run: |
           set -euo pipefail
-          source_repository_owner="$REPOSITORY_OWNER"
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            source_repository_owner="$PR_HEAD_REPOSITORY_OWNER"
-          fi
           python3 scripts/test/ci_plan.py \
             --mode main \
             --repository "$GITHUB_REPOSITORY" \
-            --repository-owner "$source_repository_owner" \
+            --repository-owner "$REPOSITORY_OWNER" \
             --event-name "$EVENT_NAME" \
             --base-ref "$BASE_REF" \
             --since-ref "$SINCE_REF" \

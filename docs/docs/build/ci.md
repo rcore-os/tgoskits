@@ -117,10 +117,16 @@ check 中禁止直接声明 `runs_on`、`environment`、owner 或 `require_kvm`�
 | `ubuntu-base` | `ubuntu-latest` + base container | 全局默认 |
 | `ubuntu-host` | `ubuntu-latest` host | 不使用 container |
 | `ubuntu-axvisor-lvz` | `ubuntu-latest` + LVZ container | LoongArch AxVisor |
-| `qcs` | `self-hosted, linux, qcs` | fork 回退到 base container |
+| `qcs` | `self-hosted, linux, qcs` | workflow 在 fork 仓库运行时回退到 base container |
 | `board` | `self-hosted, linux, board` | 仅 `rcore-os` owner |
 | `kvm-intel` | `self-hosted, linux, intel, kvm` | 仅 `rcore-os`，要求 KVM |
 | `kvm-amd` | `self-hosted, linux, amd, kvm` | 仅 `rcore-os`，要求 KVM |
+
+Runner 路由以 workflow 执行仓库的 `github.repository_owner` 为准。fork
+仓库自行执行 CI 时使用 GitHub-hosted fallback；在 `rcore-os/tgoskits`
+中执行的 pull request workflow 使用完整的组织 Runner 矩阵。外部 PR 在使用
+self-hosted Runner 前应先经过 workflow 审批；应在仓库设置中为外部贡献者启用
+该审批，不能用 PR 源仓库 owner 改写 Runner 路由。
 
 self-hosted 检查的 `cache_key` 必须为空；省略时默认就是空字符串。GitHub-hosted
 检查只有显式非空 `cache_key` 才启用 `Swatinem/rust-cache`。

@@ -35,6 +35,12 @@ class CiPlanTests(unittest.TestCase):
             "cargo xtask lock-lint",
             static_rows["run-sync-lint"]["command"],
         )
+        test_rows = {row["id"]: row for row in plan["test_matrix"]["include"]}
+        self.assertEqual(
+            test_rows["run-clippy"]["runs_on"],
+            ["self-hosted", "linux", "qcs"],
+        )
+        self.assertIn("test-starry-self-hosted-board-visionfive2", test_rows)
         self.assertTrue(
             all(" / " in row["name"] for row in plan["test_matrix"]["include"])
         )
@@ -424,12 +430,13 @@ class CiPlanTests(unittest.TestCase):
             )
             self.assertEqual(rows[check_id]["cache_key"], "")
 
-    def test_fork_filters_owner_checks_and_falls_back_from_qcs(self) -> None:
+    def test_fork_repository_filters_owner_checks_and_falls_back_from_qcs(
+        self,
+    ) -> None:
         context = ci_plan.PlanContext(
-            repository="rcore-os/tgoskits",
+            repository="contributor/tgoskits",
             repository_owner="contributor",
-            event_name="pull_request",
-            base_ref="dev",
+            event_name="push",
         )
         plan = ci_plan.build_main_plan(context)
         static_rows = {row["id"]: row for row in plan["static_matrix"]["include"]}
@@ -440,7 +447,7 @@ class CiPlanTests(unittest.TestCase):
         self.assertEqual(static_rows["check-formatting"]["runs_on"], ["ubuntu-latest"])
         self.assertEqual(
             static_rows["check-formatting"]["container_image"],
-            "ghcr.io/rcore-os/tgoskits-container:latest",
+            "ghcr.io/contributor/tgoskits-container:latest",
         )
         self.assertFalse(static_rows["check-formatting"]["download_xtask_bin_artifact"])
         clippy = test_rows["run-clippy"]
