@@ -10,11 +10,6 @@ keywords = ["irq", "interrupt", "no-std", "kernel"]
 categories = ["no-std", "os"]
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [features]
-axtest = ["dep:axtest"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

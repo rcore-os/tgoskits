@@ -55,13 +55,14 @@ struct BoardServerArgs {
 struct ArgsConnect {
     board_type: String,         // 板卡类型（如 OrangePi-5-Plus）
     server: BoardServerArgs,    // 服务器参数
+    session_files: Vec<SessionFileArg>,  // 连接会话开始前上传的临时文件映射
 }
 ```
 
 | 子命令 | 参数 | 说明 |
 |--------|------|------|
 | `ls` | `--server <H>` `--port <P>`（可选） | 列出 ostool-server 上可用的远程板卡类型 |
-| `connect` | `-b/--board-type <TYPE>`（必需）、`--server <H>` `--port <P>`（可选） | 分配一块指定类型的板卡并连接到它的串口终端 |
+| `connect` | `-b/--board-type <TYPE>`（必需）、`--server <H>` `--port <P>`、`--session-file <REL=LOCAL>`（可重复） | 分配一块指定类型的板卡并连接到它的串口终端 |
 | `config` | 无 | 编辑默认的板卡服务器配置（ostool 全局配置） |
 
 ## 3. 服务配置
@@ -86,6 +87,8 @@ struct ArgsConnect {
 
 `connect` 会**占用**板卡资源（其他用户在该板卡被释放前无法使用），因此使用完毕后需通过退出终端（Ctrl+C / Ctrl+D）释放板卡。
 
+`--session-file RELATIVE_PATH=LOCAL_PATH` 可在串口会话开始前上传一个本地文件，并在终端输出板卡可访问的 HTTP URL。该参数可重复，适合临时把内核、脚本或诊断资产挂到一次手工调试会话中。
+
 ### 4.3 管理配置
 
 `Command::Config` 调用 `board::config()`，打开 ostool 全局配置文件（路径由 ostool 决定，通常位于用户配置目录）供编辑。保存的 `server` 和 `port` 值成为后续 `ls`/`connect` 命令的默认值。首次使用板卡前需执行一次此命令完成服务器配置。
@@ -104,13 +107,16 @@ cargo xtask board config
 # 分配一块 OrangePi-5-Plus 并连接串口
 cargo xtask board connect -b OrangePi-5-Plus
 
+# 连接前上传临时文件并打印板卡可访问 URL
+cargo xtask board connect -b OrangePi-5-Plus --session-file boot/Image=target/Image
+
 # 临时指定其他 ostool-server 实例
 cargo xtask board ls --server board-host.local --port 1234
 ```
 
 ## 6. 系统运行关系
 
-`cargo xtask <os> board`（如 `cargo starry board`、`cargo axvisor board`）在内部也会调用 ostool-server，但它假定板卡分配由 ostool 自动协商，并额外完成"编译 → 刷写固件 → 收集串口输出"的完整流程。`cargo xtask board connect` 用于**人工**串口调试：你想手动进入 U-Boot、观察引导日志、或在板卡 Linux 上准备文件时使用它。两者共用同一份服务器配置。
+`cargo xtask <os> board`（如 `cargo xtask starry board`、`cargo xtask axvisor board`）在内部也会调用 ostool-server，但它假定板卡分配由 ostool 自动协商，并额外完成"编译 → 刷写固件 → 收集串口输出"的完整流程。`cargo xtask board connect` 用于**人工**串口调试：你想手动进入 U-Boot、观察引导日志、或在板卡 Linux 上准备文件时使用它。两者共用同一份服务器配置。
 
 板卡相关的物理操作（如 U-Boot fsck 修复、Linux 侧 rootfs 部署）属于更专门的运维流程，详见相关技能文档。
 

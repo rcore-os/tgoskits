@@ -3,7 +3,7 @@
 use std::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 
 use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, Resource,
+    AccessWidth, BusKind, Device, DeviceAccess, DeviceContext, DeviceError, Resource,
 };
 use rdif_clk::ClockMmioWriteProtection;
 
@@ -91,46 +91,50 @@ impl SharedMmioDevice {
         }
     }
 
-    fn handle_access(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+    fn read_access(&self, access: &DeviceAccess) -> Result<u64, DeviceError> {
         let offset = self.checked_offset(access)?;
-        if access.is_read {
-            return self
-                .backend
-                .read(offset, access.width)
-                .map(|value| BusResponse::Read { value });
-        }
+        self.backend.read(offset, access.width())
+    }
 
-        match filter_mmio_write(&self.protections, offset, access.width, access.data) {
+    fn write_access(&self, access: &DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        let offset = self.checked_offset(access)?;
+        match filter_mmio_write(&self.protections, offset, access.width(), value) {
             FilteredMmioWrite::Forward(value) => {
-                self.backend.write(offset, access.width, value)?;
+                self.backend.write(offset, access.width(), value)?;
             }
             FilteredMmioWrite::Suppress => {}
         }
-        Ok(BusResponse::Write)
+        Ok(())
     }
 
-    fn checked_offset(&self, access: &BusAccess) -> Result<usize, DeviceError> {
-        if access.kind != BusKind::Mmio {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+    fn checked_offset(&self, access: &DeviceAccess) -> Result<usize, DeviceError> {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
         let offset = access
-            .addr
+            .address()
             .checked_sub(self.base)
             .and_then(|offset| usize::try_from(offset).ok())
-            .ok_or(DeviceError::OutOfRange { addr: access.addr })?;
-        let width = access.width.size();
-        let end = offset
-            .checked_add(width)
-            .ok_or(DeviceError::OutOfRange { addr: access.addr })?;
+            .ok_or(DeviceError::OutOfRange {
+                addr: access.address(),
+            })?;
+        let width = access.width().size();
+        let end = offset.checked_add(width).ok_or(DeviceError::OutOfRange {
+            addr: access.address(),
+        })?;
         if end > self.length {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
         if !offset.is_multiple_of(width) {
             return Err(DeviceError::InvalidInput {
                 operation: "access shared MMIO provider",
                 detail: std::format!(
                     "unaligned {:?} access at provider offset {offset:#x}",
-                    access.width
+                    access.width()
                 ),
             });
         }
@@ -147,12 +151,21 @@ impl Device for SharedMmioDevice {
         &self.resources
     }
 
-    fn access(
+    fn read(
         &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        self.handle_access(access)
+        access: &DeviceAccess,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<u64, DeviceError> {
+        self.read_access(access)
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError> {
+        self.write_access(access, value)
     }
 }
 
@@ -243,26 +256,15 @@ mod tests {
             backend.clone(),
         );
 
-        let read = device
-            .handle_access(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: true,
-                addr: 0x1370,
-                width: AccessWidth::Dword,
-                data: 0,
-            })
-            .unwrap();
-        assert!(matches!(read, BusResponse::Read { value: 0x1122_3344 }));
+        let access = DeviceAccess::new(
+            axdevice_base::DeviceVcpuId::new(0),
+            BusKind::Mmio,
+            0x1370,
+            AccessWidth::Dword,
+        );
+        assert_eq!(device.read_access(&access).unwrap(), 0x1122_3344);
 
-        device
-            .handle_access(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: false,
-                addr: 0x1370,
-                width: AccessWidth::Dword,
-                data: 0x0019_0019,
-            })
-            .unwrap();
+        device.write_access(&access, 0x0019_0019).unwrap();
         assert_eq!(
             backend.writes.lock().unwrap().as_slice(),
             &[(0x370, AccessWidth::Dword, 0x0010_0010)]
@@ -291,13 +293,15 @@ mod tests {
         );
 
         device
-            .handle_access(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: false,
-                addr: 0x1200,
-                width: AccessWidth::Dword,
-                data: 0,
-            })
+            .write_access(
+                &DeviceAccess::new(
+                    axdevice_base::DeviceVcpuId::new(0),
+                    BusKind::Mmio,
+                    0x1200,
+                    AccessWidth::Dword,
+                ),
+                0,
+            )
             .unwrap();
 
         assert_eq!(

@@ -12,10 +12,9 @@ license = "Apache-2.0"
 [features]
 alloc = []
 dwarf = ["dep:addr2line", "dep:gimli", "dep:paste", "alloc"]
-axtest = ["alloc", "dep:axtest"]
+axtest = ["alloc"]
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 axpanic = { workspace = true }
 cfg-if = "1"
 log = "0.4"
@@ -33,3 +32,27 @@ paste = { version = "1", optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
+[[test]]
+name = "axtest"
+path = "tests/axtest.rs"
+harness = false
+required-features = ["axtest"]
+
+[dev-dependencies.axtest]
+path = "../axtest/axtest"
+
+[dev-dependencies.ax-std]
+path = "../../os/arceos/ulib/axstd"
+features = ["default"]
+
+[dev-dependencies.ax-hal]
+path = "../../os/arceos/modules/axhal"
+
+[package.metadata.docs.rs]
+targets = [
+    "x86_64-unknown-none",
+    "aarch64-unknown-none-softfloat",
+    "riscv64gc-unknown-none-elf",
+    "loongarch64-unknown-none-softfloat",
+]

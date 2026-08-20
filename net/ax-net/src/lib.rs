@@ -67,9 +67,6 @@ pub mod unix;
 pub mod vsock;
 mod wrapper;
 
-#[cfg(all(axtest, feature = "axtest"))]
-mod axtest;
-
 use alloc::{
     borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, task::Wake, vec, vec::Vec,
 };

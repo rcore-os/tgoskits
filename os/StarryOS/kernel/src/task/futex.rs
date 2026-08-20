@@ -23,13 +23,44 @@ use ax_task::{
 use hashbrown::HashMap;
 
 use crate::{
-    StarryResult,
+    StarryError, StarryResult,
     mm::{AddrSpace, Backend, SharedPages},
     sync::{LockdepMutexExt, Mutex},
     task::{AsThread, ProcessData},
 };
 
 const NESTED_WAIT_QUEUE_LOCK_SUBCLASS: u32 = 1;
+
+/// Result of a user-memory operation performed while futex queues are locked.
+pub enum FutexAccessError {
+    /// The user mapping must be faulted in after releasing the queue locks.
+    Fault,
+    /// A bounded architecture atomic sequence must be retried later.
+    Retry,
+    /// The futex operation failed independently of user-memory residency.
+    Operation(StarryError),
+}
+
+/// Retries one futex operation whose locked section may only use nofault user
+/// access.
+///
+/// `operation` must release all futex queue locks before returning an error.
+/// Page population is therefore performed by `fault_in` only after the locked
+/// transaction has aborted without queue side effects.
+pub fn retry_futex_nofault<T>(
+    mut operation: impl FnMut() -> Result<T, FutexAccessError>,
+    mut fault_in: impl FnMut() -> StarryResult<()>,
+) -> StarryResult<T> {
+    loop {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(FutexAccessError::Fault) => fault_in()?,
+            Err(FutexAccessError::Retry) => {}
+            Err(FutexAccessError::Operation(error)) => return Err(error),
+        }
+        ax_task::yield_now();
+    }
+}
 
 /// Wait queue used by futex.
 #[derive(Default)]
@@ -94,15 +125,15 @@ struct WaitIfFuture<'a, F> {
     state: Option<Arc<WaiterState>>,
 }
 
-impl<F: FnOnce() -> bool + Unpin> Future for WaitIfFuture<'_, F> {
-    type Output = StarryResult<bool>;
+impl<F: FnOnce() -> Result<bool, FutexAccessError> + Unpin> Future for WaitIfFuture<'_, F> {
+    type Output = Result<bool, FutexAccessError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
         if let Some(condition) = this.condition.take() {
             let mut inner = this.queue.inner.lock();
-            if !condition() {
+            if !condition()? {
                 return Poll::Ready(Ok(false));
             }
 
@@ -185,7 +216,24 @@ impl WaitQueue {
         cleanup: Option<FutexWaitCleanup>,
         condition: impl FnOnce() -> bool + Unpin,
     ) -> StarryResult<bool> {
-        block_on(interruptible(future::timeout(
+        match self.wait_if_with_cleanup_nofault(bitset, timeout, cleanup, || Ok(condition())) {
+            Ok(waited) => Ok(waited),
+            Err(FutexAccessError::Operation(error)) => Err(error),
+            Err(FutexAccessError::Fault | FutexAccessError::Retry) => {
+                unreachable!("infallible wait condition returned a user access error")
+            }
+        }
+    }
+
+    /// Waits after checking a nofault condition while holding the queue lock.
+    pub fn wait_if_with_cleanup_nofault(
+        &self,
+        bitset: u32,
+        timeout: Option<Duration>,
+        cleanup: Option<FutexWaitCleanup>,
+        condition: impl FnOnce() -> Result<bool, FutexAccessError> + Unpin,
+    ) -> Result<bool, FutexAccessError> {
+        let timed = block_on(interruptible(future::timeout(
             timeout,
             WaitIfFuture {
                 queue: self,
@@ -194,7 +242,9 @@ impl WaitQueue {
                 condition: Some(condition),
                 state: None,
             },
-        )))??
+        )))
+        .map_err(|error| FutexAccessError::Operation(error.into()))?;
+        timed.map_err(|error| FutexAccessError::Operation(error.into()))?
     }
 
     fn wake_locked(queue: &mut VecDeque<Waiter>, count: usize, mask: u32, wakers: &mut Vec<Waker>) {
@@ -234,8 +284,8 @@ impl WaitQueue {
         wake_count: usize,
         target: &WaitQueue,
         wake2_count: usize,
-        condition: impl FnOnce() -> StarryResult<bool>,
-    ) -> StarryResult<usize> {
+        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
+    ) -> Result<usize, FutexAccessError> {
         let mut condition = Some(condition);
         let mut wakers = Vec::new();
 
@@ -324,8 +374,8 @@ impl WaitQueue {
         requeue_count: usize,
         target_cleanup: FutexWaitCleanup,
         target: &WaitQueue,
-        condition: impl FnOnce() -> StarryResult<bool>,
-    ) -> StarryResult<Option<usize>> {
+        condition: impl FnOnce() -> Result<bool, FutexAccessError>,
+    ) -> Result<Option<usize>, FutexAccessError> {
         let mut condition = Some(condition);
         let mut wakers = Vec::new();
 
@@ -627,6 +677,87 @@ impl Drop for FutexGuard<'_> {
             bucket.remove(&self.key);
         }
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn futex_nofault_failure_is_transactional_for_test() -> bool {
+    use core::{cell::Cell, task::Context};
+
+    let wait_queue = WaitQueue::new();
+    let mut wait = alloc::boxed::Box::pin(WaitIfFuture {
+        queue: &wait_queue,
+        bitset: u32::MAX,
+        cleanup: None,
+        condition: Some(|| Err(FutexAccessError::Fault)),
+        state: None,
+    });
+    let mut context = Context::from_waker(Waker::noop());
+    if !matches!(
+        wait.as_mut().poll(&mut context),
+        Poll::Ready(Err(FutexAccessError::Fault))
+    ) || !wait_queue.is_empty()
+    {
+        return false;
+    }
+
+    let source = WaitQueue::new();
+    let target = WaitQueue::new();
+    let state = Arc::new(WaiterState::new(None));
+    source.inner.lock().queue.push_back(Waiter {
+        waker: Waker::noop().clone(),
+        bitset: u32::MAX,
+        state: state.clone(),
+    });
+
+    if !matches!(
+        source.wake_op(1, &target, 1, || Err(FutexAccessError::Fault)),
+        Err(FutexAccessError::Fault)
+    ) || source.inner.lock().queue.len() != 1
+        || state.woken.load(AtomicOrdering::SeqCst)
+    {
+        return false;
+    }
+
+    let target_cleanup = FutexWaitCleanup {
+        table: Arc::new(FutexTable::new()),
+        key: 0x2000,
+    };
+    if !matches!(
+        source.wake_requeue_if(1, u32::MAX, 1, target_cleanup, &target, || {
+            Err(FutexAccessError::Retry)
+        }),
+        Err(FutexAccessError::Retry)
+    ) || source.inner.lock().queue.len() != 1
+        || !target.is_empty()
+        || state.woken.load(AtomicOrdering::SeqCst)
+    {
+        return false;
+    }
+
+    let attempts = Cell::new(0);
+    let fault_in_unlocked = Cell::new(false);
+    let result = retry_futex_nofault(
+        || {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 {
+                source.wake_op(0, &target, 0, || Err(FutexAccessError::Fault))
+            } else {
+                source.wake_op(0, &target, 0, || Ok(false))
+            }
+        },
+        || {
+            let source_unlocked = !unsafe { source.inner.raw() }.is_owned_by_current();
+            let target_unlocked = !unsafe { target.inner.raw() }.is_owned_by_current();
+            fault_in_unlocked.set(source_unlocked && target_unlocked);
+            Ok(())
+        },
+    );
+
+    matches!(result, Ok(0))
+        && attempts.get() == 2
+        && fault_in_unlocked.get()
+        && source.inner.lock().queue.len() == 1
+        && !state.woken.load(AtomicOrdering::SeqCst)
 }
 
 struct FutexTables {

@@ -3,10 +3,10 @@
 #[cfg(feature = "irq")]
 use ax_plat::irq::{HwIrq, IpiTarget, IrqError, IrqId, IrqIf, IrqNumber, IrqSource, TrapVector};
 use ax_plat::{
-    console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
+    console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleHandoffResult, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
-    mem::{DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
+    mem::{CpuSharedMemoryModel, DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
     power::PowerIf,
     time::TimeIf,
 };
@@ -46,7 +46,19 @@ impl ConsoleIf for DummyConsole {
         Err(ConsoleDeviceIdError::NotSpecified)
     }
 
-    fn claim_runtime_output() {}
+    fn begin_runtime_handoff() -> ConsoleHandoffResult {
+        Ok(())
+    }
+
+    fn commit_runtime_handoff() -> ConsoleHandoffResult {
+        Ok(())
+    }
+
+    fn rollback_runtime_handoff() -> ConsoleHandoffResult {
+        Ok(())
+    }
+
+    fn fail_runtime_handoff_closed() {}
 
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<IrqId> {
@@ -64,6 +76,10 @@ impl ConsoleIf for DummyConsole {
 
 #[impl_plat_interface]
 impl MemIf for DummyMem {
+    fn cpu_shared_memory_model() -> CpuSharedMemoryModel {
+        CpuSharedMemoryModel::Coherent
+    }
+
     fn phys_ram_ranges() -> &'static [RawRange] {
         &[]
     }
@@ -102,9 +118,9 @@ impl MemIf for DummyMem {
 
     fn dcache_range(_op: DCacheOp, _addr: ax_memory_addr::VirtAddr, _size: usize) {}
 
-    fn dma_coherent_before_make_uncached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
+    fn dma_coherent_before_map_uncached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
 
-    fn dma_coherent_before_restore_cached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
+    fn dma_coherent_before_unmap_uncached(_addr: ax_memory_addr::VirtAddr, _size: usize) {}
 
     fn dma_coherent_after_mapping_update() {}
 }

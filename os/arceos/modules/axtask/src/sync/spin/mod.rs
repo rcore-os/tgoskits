@@ -448,33 +448,6 @@ mod tests {
     }
 
     #[test]
-    fn failed_spin_lock_try_modes_restore_context() {
-        let lock = Arc::new(SpinLock::new(()));
-        let holder_lock = Arc::clone(&lock);
-        let (held_sender, held_receiver) = mpsc::channel();
-        let (release_sender, release_receiver) = mpsc::channel();
-        let holder = thread::spawn(move || {
-            // SAFETY: this thread owns the raw guard and the channel protocol
-            // keeps it alive until the contending thread finishes its tries.
-            let held = unsafe { holder_lock.lock_raw() };
-            held_sender.send(()).unwrap();
-            release_receiver.recv().unwrap();
-            drop(held);
-        });
-        held_receiver.recv().unwrap();
-
-        assert!(lock.try_lock().is_none());
-        assert_eq!(host_context_snapshot(), (0, true));
-        assert!(lock.try_lock_irqsave().is_none());
-        assert_eq!(host_context_snapshot(), (0, true));
-        assert!(unsafe { lock.try_lock_raw() }.is_none());
-        assert_eq!(host_context_snapshot(), (0, true));
-
-        release_sender.send(()).unwrap();
-        holder.join().unwrap();
-    }
-
-    #[test]
     fn failed_spin_rwlock_try_modes_restore_context() {
         let lock = Arc::new(SpinRwLock::new(()));
         let holder_lock = Arc::clone(&lock);

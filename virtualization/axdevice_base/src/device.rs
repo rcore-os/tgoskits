@@ -7,6 +7,8 @@ use ax_memory_addr::AddrRange;
 use axvm_types::GuestPhysAddr;
 pub use axvm_types::{AccessWidth, Port, SysRegAddr};
 
+use crate::DeviceVcpuId;
+
 /// An address-like type that can be used to access devices.
 pub trait DeviceAddr: Copy + Eq + Ord + core::fmt::Debug {}
 
@@ -137,7 +139,7 @@ impl LowerHex for PortRange {
 }
 
 // ---------------------------------------------------------------------------
-// Unified bus-access types
+// Device access types
 // ---------------------------------------------------------------------------
 
 /// The kind of bus a device is connected to.
@@ -151,31 +153,53 @@ pub enum BusKind {
     SysReg,
 }
 
-/// An access issued by a vCPU to a device on a bus.
-#[derive(Debug, Clone, Copy)]
-pub struct BusAccess {
-    /// The kind of bus being accessed.
-    pub kind: BusKind,
-    /// `true` if this is a read access; `false` for write.
-    pub is_read: bool,
-    /// The address being accessed.
-    pub addr: u64,
-    /// The width of the access.
-    pub width: AccessWidth,
-    /// The data to write (ignored for reads).
-    pub data: u64,
+/// Immutable metadata for one device access issued by a guest vCPU.
+///
+/// The source vCPU is an architectural identity within the VM. It must not be
+/// inferred from the host CPU or execution context handling the exit.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct DeviceAccess {
+    source_vcpu: DeviceVcpuId,
+    bus: BusKind,
+    address: u64,
+    width: AccessWidth,
 }
 
-/// The result of a bus access dispatched to a device.
-#[derive(Debug, Clone, Copy)]
-pub enum BusResponse {
-    /// A read response with the value.
-    Read {
-        /// The value read from the device.
-        value: u64,
-    },
-    /// A write acknowledgment.
-    Write,
+impl DeviceAccess {
+    /// Creates complete metadata for one guest device access.
+    pub const fn new(
+        source_vcpu: DeviceVcpuId,
+        bus: BusKind,
+        address: u64,
+        width: AccessWidth,
+    ) -> Self {
+        Self {
+            source_vcpu,
+            bus,
+            address,
+            width,
+        }
+    }
+
+    /// Returns the vCPU that issued the access.
+    pub const fn source_vcpu(self) -> DeviceVcpuId {
+        self.source_vcpu
+    }
+
+    /// Returns the accessed bus.
+    pub const fn bus(self) -> BusKind {
+        self.bus
+    }
+
+    /// Returns the address in the selected bus address space.
+    pub const fn address(self) -> u64 {
+        self.address
+    }
+
+    /// Returns the access width.
+    pub const fn width(self) -> AccessWidth {
+        self.width
+    }
 }
 
 /// Errors that can occur during device access handling.

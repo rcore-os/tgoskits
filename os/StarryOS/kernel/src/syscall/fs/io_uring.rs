@@ -275,7 +275,7 @@ pub fn sys_io_uring_register(
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn io_uring_round_ring_entries_rules_hold_for_test() -> bool {
     // Test round_ring_entries function
     // Zero should fail

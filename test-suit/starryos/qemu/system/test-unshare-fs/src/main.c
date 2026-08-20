@@ -11,7 +11,7 @@
  *   4. a pending CLONE_NEWPID survives a later namespace unshare.
  *   5. clone(CLONE_FS) → share cwd → child unshare(CLONE_FS) → cwd
  *      isolation: child chdir must not affect parent cwd.
- *   6. unshare(0xDEAD) → EINVAL.
+ *   6. Low- and high-word unknown unshare flags → EINVAL.
  *
  * Note: uses clone(CLONE_FS | SIGCHLD), NOT fork().  In this kernel
  * fork() does NOT share FS_CONTEXT, so a fork-based test would pass
@@ -28,7 +28,9 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define fail(fmt, ...) do { \
@@ -46,6 +48,7 @@
 /* Minimal stack for clone(CLONE_FS) child — 64KiB should be enough for
    chdir / getcwd / _exit; SIGCHLD so waitpid works. */
 #define STACK_SIZE (64 * 1024)
+#define ROLLBACK_SYNC_TIMEOUT_SECONDS 5
 
 struct clone_arg {
     int *shared;
@@ -66,7 +69,25 @@ struct rollback_arg {
     int ready;
     int check_fd;
     int fd_is_closed;
+    int observer_wait_error;
 };
+
+static int wait_for_rollback_flag(pthread_cond_t *condition,
+                                  pthread_mutex_t *mutex,
+                                  const int *flag)
+{
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0)
+        return errno != 0 ? errno : EIO;
+    deadline.tv_sec += ROLLBACK_SYNC_TIMEOUT_SECONDS;
+
+    while (*flag == 0) {
+        int error = pthread_cond_timedwait(condition, mutex, &deadline);
+        if (error != 0)
+            return error;
+    }
+    return 0;
+}
 
 static void *unshare_files_thread(void *opaque) {
     struct files_unshare_arg *arg = opaque;
@@ -113,9 +134,12 @@ static void *check_shared_fd_after_failed_unshare(void *opaque) {
     pthread_mutex_lock(&arg->mutex);
     arg->ready = 1;
     pthread_cond_signal(&arg->condition);
-    while (!arg->check_fd)
-        pthread_cond_wait(&arg->condition, &arg->mutex);
+    arg->observer_wait_error = wait_for_rollback_flag(
+        &arg->condition, &arg->mutex, &arg->check_fd);
     pthread_mutex_unlock(&arg->mutex);
+
+    if (arg->observer_wait_error != 0)
+        return NULL;
 
     errno = 0;
     arg->fd_is_closed = fcntl(arg->fd, F_GETFD) == -1 && errno == EBADF;
@@ -138,17 +162,28 @@ static void test_failed_unshare_rolls_back_all_state(void) {
 
     struct rollback_arg arg = {
         .mutex = PTHREAD_MUTEX_INITIALIZER,
-        .condition = PTHREAD_COND_INITIALIZER,
         .fd = fd,
     };
+    pthread_condattr_t condition_attr;
+    check(pthread_condattr_init(&condition_attr) == 0,
+          "initialize rollback observer condition attributes");
+    check(pthread_condattr_setclock(&condition_attr, CLOCK_MONOTONIC) == 0,
+          "select monotonic rollback observer timeout clock");
+    check(pthread_cond_init(&arg.condition, &condition_attr) == 0,
+          "initialize rollback observer condition");
+    check(pthread_condattr_destroy(&condition_attr) == 0,
+          "destroy rollback observer condition attributes");
     pthread_t worker;
     check(pthread_create(&worker, NULL, check_shared_fd_after_failed_unshare, &arg) == 0,
           "create failed-unshare rollback observer");
 
     pthread_mutex_lock(&arg.mutex);
-    while (!arg.ready)
-        pthread_cond_wait(&arg.condition, &arg.mutex);
+    int observer_ready_error = wait_for_rollback_flag(
+        &arg.condition, &arg.mutex, &arg.ready);
     pthread_mutex_unlock(&arg.mutex);
+    check(observer_ready_error == 0,
+          "rollback observer reaches ready phase (wait_error=%d, ready=%d)",
+          observer_ready_error, arg.ready);
 
     char deleted_cwd[128];
     int length = snprintf(deleted_cwd, sizeof(deleted_cwd),
@@ -172,7 +207,12 @@ static void test_failed_unshare_rolls_back_all_state(void) {
     arg.check_fd = 1;
     pthread_cond_signal(&arg.condition);
     pthread_mutex_unlock(&arg.mutex);
-    check(pthread_join(worker, NULL) == 0, "join failed-unshare rollback observer");
+    int join_error = pthread_join(worker, NULL);
+    check(join_error == 0,
+          "join failed-unshare rollback observer (rc=%d)", join_error);
+    check(arg.observer_wait_error == 0,
+          "rollback observer receives fd-check release (wait_error=%d, check_fd=%d)",
+          arg.observer_wait_error, arg.check_fd);
     check(arg.fd_is_closed,
           "failed unshare keeps caller and sibling on the shared fd table");
 
@@ -321,6 +361,12 @@ static void test_unshare_invalid_flags(void) {
     int rc = unshare(0xDEAD);
     check(rc == -1 && errno == EINVAL,
           "unshare(0xDEAD) returns EINVAL (rc=%d, errno=%d)", rc, errno);
+
+    errno = 0;
+    long raw_rc = syscall(SYS_unshare, 1ULL << 32);
+    check(raw_rc == -1 && errno == EINVAL,
+          "raw unshare high-word unknown flag returns EINVAL (rc=%ld, errno=%d)",
+          raw_rc, errno);
     printf("UNSHARE_FS_INVALID_PASSED\n");
 }
 

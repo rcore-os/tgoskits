@@ -19,6 +19,8 @@ use core::{
 
 use bitflags::bitflags;
 
+use crate::decode::X86ByteRegister;
+
 /// Size of a 4 KiB page.
 pub const X86_PAGE_SIZE_4K: usize = 0x1000;
 
@@ -221,6 +223,38 @@ impl X86AccessWidth {
             Self::Qword => 0..64,
         }
     }
+
+    /// Returns the memory-operand width encoded by a MOV opcode plus its
+    /// operand-size and REX prefixes.
+    pub(crate) fn for_mov_opcode(
+        opcode: u8,
+        operand_size_override: bool,
+        rex_w: bool,
+    ) -> Option<Self> {
+        match opcode {
+            0x88 | 0x8a | 0xc6 => Some(Self::Byte),
+            0x89 | 0x8b | 0xc7 => {
+                if rex_w {
+                    Some(Self::Qword)
+                } else if operand_size_override {
+                    Some(Self::Word)
+                } else {
+                    Some(Self::Dword)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Masks a value down to this width.
+    pub(crate) fn mask_value(self, value: u64) -> u64 {
+        match self {
+            Self::Byte => value & 0xff,
+            Self::Word => value & 0xffff,
+            Self::Dword => value & 0xffff_ffff,
+            Self::Qword => value,
+        }
+    }
 }
 
 impl TryFrom<usize> for X86AccessWidth {
@@ -336,6 +370,8 @@ pub enum X86VmExit {
         reg_width: X86AccessWidth,
         /// Whether the value should be sign-extended.
         signed_ext: bool,
+        /// Byte-register destination for byte-width MOV reads.
+        byte_reg: Option<X86ByteRegister>,
     },
     /// The guest performed an MMIO write.
     MmioWrite {

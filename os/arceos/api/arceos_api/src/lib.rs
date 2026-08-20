@@ -32,7 +32,7 @@ pub mod sys {
     define_api! {
         /// Returns the number of available logical CPUs.
         pub fn ax_get_cpu_num() -> usize;
-        /// Shutdown the whole system and all CPUs.
+        /// Drain task-console output, then shut down the whole system and all CPUs.
         pub fn ax_terminate() -> !;
     }
 }
@@ -86,8 +86,12 @@ pub mod stdio {
         pub fn ax_console_read_bytes(buf: &mut [u8]) -> crate::ApiResult<usize>;
         /// Writes a slice of bytes to the console, returns the number of bytes written.
         pub fn ax_console_write_bytes(buf: &[u8]) -> crate::ApiResult<usize>;
-        /// Writes a formatted string to the console.
+        /// Writes a formatted string through the sleepable TTY console path.
         pub fn ax_console_write_fmt(args: fmt::Arguments) -> fmt::Result;
+        /// Sleeps until task-console input becomes readable.
+        pub fn ax_console_wait_readable() -> crate::ApiResult;
+        /// Drains queued task output through the physical UART.
+        pub fn ax_console_flush() -> crate::ApiResult;
     }
 }
 

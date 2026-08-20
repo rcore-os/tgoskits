@@ -1,5 +1,5 @@
+use ax_tracepoint::{TraceFilterFile, TracePoint, TracePointEnableFile};
 use axfs_ng_vfs::{VfsError, VfsResult};
-use ktracepoint::{TraceFilterFile, TracePoint, TracePointEnableFile};
 
 use crate::{
     pseudofs::DirectRwFsFileOps,
@@ -17,7 +17,7 @@ pub struct EventEnableObj {
 impl EventEnableObj {
     /// Create a new `EventEnableObj` instance.
     pub fn new(ext_tp: KernelExtTracePoint) -> Self {
-        let tp = ext_tp.lock().trace_point();
+        let tp = ext_tp.trace_point();
         EventEnableObj {
             file: TracePointEnableFile::new(),
             ext_tp,
@@ -51,8 +51,7 @@ impl DirectRwFsFileOps for EventEnableObj {
             _ => return Err(VfsError::InvalidInput),
         };
 
-        let mut ext_tp = self.ext_tp.lock();
-        self.file.write(&mut ext_tp, value);
+        self.ext_tp.update(|ext_tp| self.file.write(ext_tp, value));
         Ok(buf.len())
     }
 }
@@ -87,10 +86,9 @@ impl DirectRwFsFileOps for EventFilterObj {
 
     fn write_at(&self, buf: &[u8], _offset: u64) -> VfsResult<usize> {
         let filter_str = core::str::from_utf8(buf).map_err(|_| VfsError::InvalidInput)?;
-        let mut ext_tp = self.ext_tp.lock();
-        self.file
-            .lock()
-            .write(&mut ext_tp, filter_str)
+        let mut file = self.file.lock();
+        self.ext_tp
+            .update(|ext_tp| file.write(ext_tp, filter_str))
             .map_err(|_| VfsError::InvalidInput)?;
         Ok(buf.len())
     }

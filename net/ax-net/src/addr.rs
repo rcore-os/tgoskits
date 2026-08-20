@@ -43,3 +43,30 @@ pub(crate) fn mask_from_prefix(prefix_len: u8) -> Ipv4Address {
     };
     Ipv4Address::from_bits(bits)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_addresses_conflict_with_specific_listeners() {
+        let localhost = IpAddress::Ipv4(Ipv4Address::new(127, 0, 0, 1));
+        let peer = IpAddress::Ipv4(Ipv4Address::new(127, 0, 0, 2));
+
+        assert!(listen_addrs_conflict(None, None));
+        assert!(listen_addrs_conflict(None, Some(localhost)));
+        assert!(listen_addrs_conflict(Some(localhost), Some(localhost)));
+        assert!(!listen_addrs_conflict(Some(localhost), Some(peer)));
+    }
+
+    #[test]
+    fn netmask_and_ephemeral_port_boundaries_hold() {
+        assert_eq!(mask_from_prefix(0), Ipv4Address::new(0, 0, 0, 0));
+        assert_eq!(mask_from_prefix(8), Ipv4Address::new(255, 0, 0, 0));
+        assert_eq!(mask_from_prefix(24), Ipv4Address::new(255, 255, 255, 0));
+        assert_eq!(mask_from_prefix(33), Ipv4Address::new(255, 255, 255, 255));
+
+        assert!(allocate_ephemeral_port(|port| port >= 0xc000).unwrap() >= 0xc000);
+        assert_eq!(allocate_ephemeral_port(|_| false), Err(NetError::AddrInUse));
+    }
+}

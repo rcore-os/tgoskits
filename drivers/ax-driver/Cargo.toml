@@ -12,7 +12,7 @@ name = "ax_driver"
 
 [features]
 default = []
-axtest = ["dep:axtest"]
+host-test = ["ax-sync?/host-test"]
 
 irq = []
 pci = ["dep:ax-sync", "dep:pcie", "dep:rdif-msi", "dep:rdif-pcie"]
@@ -141,7 +141,6 @@ list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 aic8800 = { workspace = true, optional = true }
 ahci-driver = { workspace = true, optional = true }
 anyhow = { workspace = true }
@@ -200,10 +199,7 @@ thiserror.workspace = true
 virtio-drivers = { workspace = true, optional = true }
 
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test"] }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_goldfish = "0.1"
@@ -213,3 +209,7 @@ ax-arm-pl031.workspace = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86.workspace = true
+
+[[test]]
+name = "std"
+path = "tests/std.rs"

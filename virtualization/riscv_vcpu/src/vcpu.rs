@@ -346,26 +346,24 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         self.set_virtual_interrupt_pending(vector, true)
     }
 
-    /// Synchronizes controller-derived VSEIP state for the bound vCPU.
+    /// Sets the controller-derived VSEIP line level for this vCPU.
     ///
     /// The virtual PLIC remains the owner of pending and delivery state. This
-    /// method only reflects its derived line value into the currently bound
-    /// hardware context and the vCPU's saved CSR image.
-    pub fn sync_bound_vseip(&mut self, asserted: bool) -> RiscvVcpuResult {
-        if !self.bound {
-            return Err(RiscvVcpuError::BadState);
-        }
+    /// method always updates the vCPU-owned saved CSR image and reflects the
+    /// line into hardware only while the vCPU is loaded on the current CPU.
+    pub fn set_vseip_level(&mut self, asserted: bool) {
         let mut saved = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
         saved.set_vseip(asserted);
         self.regs.virtual_hs_csrs.hvip = saved.bits();
-        unsafe {
-            if asserted {
-                hvip::set_vseip();
-            } else {
-                hvip::clear_vseip();
+        if self.bound {
+            unsafe {
+                if asserted {
+                    hvip::set_vseip();
+                } else {
+                    hvip::clear_vseip();
+                }
             }
         }
-        Ok(())
     }
 
     /// Sets the guest return value register.
@@ -1284,5 +1282,16 @@ mod tests {
             assert_eq!(vcpu.get_gpr(GprIndex::A0), expected.error);
             assert_eq!(vcpu.get_gpr(GprIndex::A1), expected.value);
         }
+    }
+
+    #[test]
+    fn controller_vseip_line_updates_saved_state_while_unbound() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+
+        vcpu.set_vseip_level(true);
+        assert!(hvip::Hvip::from_bits(vcpu.regs.virtual_hs_csrs.hvip).vseip());
+
+        vcpu.set_vseip_level(false);
+        assert!(!hvip::Hvip::from_bits(vcpu.regs.virtual_hs_csrs.hvip).vseip());
     }
 }

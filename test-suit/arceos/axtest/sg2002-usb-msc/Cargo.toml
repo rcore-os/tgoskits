@@ -7,17 +7,41 @@ publish = false
 [features]
 default = []
 ax-std = ["dep:ax-hal", "dep:ax-runtime", "dep:ax-std", "ax-runtime/irq"]
+axtest = [
+    "ax-std",
+    "dep:ax-driver",
+    "dep:ax-task",
+    "dep:axplat-dyn",
+    "dep:crab-usb",
+    "dep:rdrive",
+]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
-ax-driver.workspace = true
+ax-driver = { workspace = true, optional = true }
 ax-hal = { workspace = true, optional = true }
 ax-runtime = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }
-ax-task.workspace = true
-axplat-dyn.workspace = true
-axtest.workspace = true
-crab-usb.workspace = true
-rdrive.workspace = true
+ax-task = { workspace = true, optional = true }
+axplat-dyn = { workspace = true, optional = true }
+crab-usb = { workspace = true, optional = true }
+rdrive = { workspace = true, optional = true }
+
+[[test]]
+name = "axtest"
+path = "tests/axtest.rs"
+harness = false
+required-features = ["axtest"]
+
+[dev-dependencies]
+axtest = { path = "../../../../components/axtest/axtest" }
+ax-hal = { path = "../../../../os/arceos/modules/axhal" }
+ax-std = { path = "../../../../os/arceos/ulib/axstd", features = ["default"] }
+
+[package.metadata.axtest]
+runtime = "board"
+
+[package.metadata.docs.rs]
+targets = ["riscv64gc-unknown-none-elf"]

@@ -5,7 +5,7 @@ sidebar_label: "系统集成"
 
 # 系统集成
 
-`ax-net` 是 ArceOS、StarryOS 和 Axvisor 共享的网络栈实现。它统一维护接口、地址、路由、DNS、ARP、socket 状态和协议栈 poll 机制；上层系统只负责把平台设备、系统调用 ABI 或虚拟化管理意图转换为 `ax-net` 的公开 API。
+`ax-net` 是 ArceOS 和 StarryOS 直接使用的网络栈实现。Axvisor 只有在启用 `http-axum` 等依赖 `ax-std/net` 的管理服务功能时，才经 ArceOS 间接使用它。`ax-net` 统一维护接口、地址、路由、DNS、ARP、网卡统计、socket 状态和协议栈 poll 机制；上层系统只负责平台设备接入和 ABI 转换。
 
 核心源码：
 
@@ -16,46 +16,19 @@ sidebar_label: "系统集成"
 | `os/arceos/modules/axruntime/src/unix_ns.rs` | 将 ArceOS 文件系统命名空间适配为 Unix socket namespace |
 | `os/StarryOS/kernel/src/file/net.rs` | Linux `ifreq`/`SIOCGIF*`/`FIONREAD` 等网络 ioctl 适配 |
 | `os/StarryOS/kernel/src/file/packet.rs` | `AF_PACKET`、`sockaddr_ll`、packet socket ioctl 和模拟 ARP reply |
-| `os/StarryOS/kernel/src/file/netlink.rs` | `RTM_GETLINK`、`RTM_GETADDR` 等 netlink 查询 |
+| `os/StarryOS/kernel/src/file/netlink.rs` | `RTM_GETLINK/GETADDR/GETROUTE` 查询和 IPv4 `RTM_NEWADDR/DELADDR` 更新 |
 | `os/StarryOS/kernel/src/syscall/net/opt.rs` | `getsockopt()`/`setsockopt()`，包括 `SO_BINDTODEVICE` |
 | `os/StarryOS/kernel/src/pseudofs/proc.rs` | `/proc/net/arp`、`/proc/net/dev` 等 procfs 视图 |
 | `net/ax-net/src/lib.rs` | `init_network()`、`register_device_with_config()`、`init_vsock()`、public facade |
 | `net/ax-net/src/config.rs` | `NetworkConfig`、`InterfaceInfo`、`InterfaceId`、`DeviceBinding` 等跨系统数据模型 |
 
-## 集成模型
+源码表表明设备初始化、Linux ABI 和网络状态分别由不同模块维护，跨系统修改应沿公共 API 连接，而不是共享内部锁或对象。集成模型将在这些代码锚点基础上展示三类调用方进入 `ax-net` 的不同路径。
+
+## 1. 集成模型
 
 系统集成的基本原则是：网络状态只有一份，位于 `ax-net`；外部系统不复制接口表、路由表或 socket domain。
 
-```mermaid
-flowchart TB
-    Platform["platform / driver probe"] --> Runtime["ax-runtime devices.rs"]
-    Runtime --> Init["ax_net::init_network()"]
-    Runtime --> DynDev["ax_net::register_device_with_config()"]
-    Runtime --> Vsock["ax_net::init_vsock()"]
-
-    User["Linux / POSIX application"] --> StarrySyscall["StarryOS syscall layer"]
-    StarrySyscall --> SocketOps["ax_net::SocketOps"]
-    StarrySyscall --> IfaceAbi["ioctl / netlink / procfs / AF_PACKET"]
-
-    Hypervisor["Axvisor / management logic"] --> Config["NetworkConfig"]
-    Config --> Init
-
-    Init --> AxNet["ax-net"]
-    DynDev --> AxNet
-    Vsock --> AxNet
-    SocketOps --> AxNet
-    IfaceAbi --> AxNet
-
-    subgraph AxNetState["ax-net state"]
-        Control["NetControl: interfaces / DNS / routes"]
-        Service["Service: smoltcp Interface / SocketSet / DHCP"]
-        Router["Router as MultiDevice"]
-    end
-
-    AxNet --> Control
-    AxNet --> Service
-    AxNet --> Router
-```
+![ArceOS、StarryOS 与 Axvisor 的网络集成边界](images/os-integration-architecture.svg)
 
 各层边界：
 
@@ -64,13 +37,17 @@ flowchart TB
 | runtime / platform | 收集设备、注册 IRQ、传入结构化配置、注册动态设备 | 维护路由表、解析 Linux socket ABI、直接访问 `SocketSet` |
 | `ax-net` | 接口 registry、路由、DNS、socket、协议栈 poll、多设备 dataplane | 平台设备发现、Linux `ifreq` 编解码、虚拟机管理策略 |
 | StarryOS | Linux syscall 参数校验、ABI 结构体编解码、namespace 可见性过滤 | 复制第二套路由表、直接驱动 smoltcp、固定假设 `eth0` |
-| Axvisor | 描述管理面/服务面网络意图、选择接口绑定策略 | 自行实现 TCP/UDP/ARP/DNS 状态 |
+| Axvisor | 功能启用后经 `ax-std/net` 使用 ArceOS 网络 API | 直接构造或维护 `ax-net` 控制面 |
 
-## ArceOS Runtime
+职责表明确 runtime、`ax-net`、StarryOS 与 Axvisor 各自负责和禁止承担的工作。ArceOS runtime 是设备能力进入共享网络状态的首要边界，下面按初始化、IRQ、namespace 和动态设备展开。
 
-### 初始化入口
+## 2. ArceOS Runtime
 
-`ax-runtime` 是设备进入 `ax-net` 的主要入口。动态和静态设备路径都遵循同一顺序：
+ArceOS runtime 负责把平台发现、驱动能力、IRQ 注册和文件系统命名空间转换为 `ax-net` 可消费的输入。它不保存接口或路由副本；静态 NIC、动态 Wi-Fi 和 vsock 分别通过明确入口交给对应网络运行时，并由后者拥有后续状态。
+
+### 2.1 初始化入口
+
+`ax-runtime` 的设备初始化是普通 Ethernet 进入 `ax-net` 的主要入口，它先注入 IRQ 与 Unix namespace 能力，再收集 driver 并调用 `init_network()`。动态设备在全局服务建立后走追加路径，因此静态和动态流程共享状态边界，但不能颠倒发布顺序。
 
 ```rust
 // os/arceos/modules/axruntime/src/devices.rs, 简化示意
@@ -90,9 +67,9 @@ register_wireless_devices(wireless);
 - 将结构化 `NetworkConfig` 交给 `ax-net`，由 `ax-net` 创建 `lo`、Ethernet 接口、路由、DHCP 状态和 DNS registry。
 - 在主网络栈初始化后注册需要独立控制面的 Wi-Fi/SoftAP 设备。
 
-`parse_network_config()` 是系统配置到 `NetworkConfig` 的转换点。接口地址、DHCP、DNS、metric 和设备匹配策略应在这里进入结构化配置，而不是在 StarryOS 或驱动层再维护一份网络状态。
+`parse_network_config()` 当前直接返回 `NetworkConfig::default()`，尚未接入系统配置。因此启动时所有未显式匹配的普通 NIC 都采用 `ax-net` 默认策略：`eth{order}`、metric 100、DHCP、无静态 fallback DNS。该函数是未来接入接口地址/DNS/metric 的预留转换点，不应把它描述成已经生效的配置解析器。
 
-### IRQ 适配
+### 2.2 IRQ 适配
 
 `ax-net` 的 Ethernet 设备只依赖抽象的 `EthernetIrqRegistrar`。runtime 侧通过 `set_ethernet_irq_registrar()` 注入平台 IRQ 注册能力：
 
@@ -100,9 +77,9 @@ register_wireless_devices(wireless);
 ax_net::set_ethernet_irq_registrar(&crate::irq::NET_IRQ_REGISTRAR);
 ```
 
-IRQ 处理函数只负责唤醒设备路径，不进入 smoltcp poll。协议栈推进仍由 `net-poll` worker 串行完成，避免 IRQ 上下文或应用线程重入 `SocketSet`。
+有 IRQ 的 driver 通过 `take_irq_handler()` 将独立 endpoint 移交给 platform action。IRQ callback 不获取正常 RX/TX 所用的 driver `SpinLock`，只确认/汇总事件并调用 `wake_net_task_irq()`；没有独立 handler 或注册失败时由 RX worker 10 ms 兜底轮询。IRQ 上下文不进入 smoltcp poll。
 
-### Unix Socket Namespace
+### 2.3 Unix 命名空间
 
 Unix domain socket 的路径名绑定需要文件系统命名空间协助。`ax-runtime` 在启用 `fs-ng` 时注册 namespace adapter：
 
@@ -112,7 +89,7 @@ ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
 
 该适配层只处理 pathname socket 与 VFS namespace 的关系；Unix socket 的连接、收发、poll 和生命周期仍位于 `ax-net`。
 
-### 动态 Wi-Fi 与 SoftAP
+### 2.4 动态 Wi-Fi 与 SoftAP
 
 带 `wifi_control()` 的设备会走动态注册路径。runtime 从驱动读取 link policy，并把 OOB RX 唤醒函数设置为 `ax_net::wake_net_task_irq`：
 
@@ -129,19 +106,19 @@ ax_net::register_device_with_config(driver, config);
 
 这条路径适合 SoftAP 或运行期新增的静态地址设备。`ax-net` 会分配新的 `InterfaceId`，创建路由规则，更新 smoltcp IP address list，启动设备 worker，并可按配置启用 DHCP server。
 
-### Vsock
+### 2.5 Vsock
 
-`vsock` feature 下，runtime 收集 virtio-vsock 等设备并调用：
+启用 `vsock` feature 后，runtime 收集 virtio-vsock 等设备并把列表交给 `init_vsock()`，由独立连接管理器与 poll task 负责后续事件。该路径不创建 smoltcp socket，也不经过 Ethernet `Router`；当前只消费列表末尾设备的选择规则需要由调用方明确接受。
 
 ```rust
 ax_net::init_vsock(vsock_devs);
 ```
 
-`init_vsock()` 只注册传入列表中的第一个设备；空列表只会记录 warning，不建立额外的“无设备但已初始化”状态。没有注册设备时，AF_VSOCK 的 listen/connect/send 路径会在 `device::vsock_*()` 返回 `NotFound`。vsock 不参与 IP 路由、ARP、DNS 或 Ethernet dataplane；它只复用 `ax-net` 的 socket facade 和 poll 语义。
+`init_vsock()` 使用 `pop()` 注册传入列表的**最后一个**设备，其余设备忽略；空列表只会记录 warning，不建立额外的“无设备但已初始化”状态。没有注册设备时，AF_VSOCK 的 listen/connect/send 路径会在 `device::vsock_*()` 返回 `NotFound`。vsock 不参与 IP 路由、ARP、DNS 或 Ethernet dataplane；它只复用 `ax-net` 的 socket facade 和 poll 语义。
 
-## ArceOS API 层
+## 3. ArceOS API 层
 
-ArceOS API 层通过 `SocketOps` 和 `Socket` 枚举访问 `ax-net`：
+ArceOS API 层通过 `SocketOps` 与封闭的 `Socket` 枚举访问 `ax-net`，对上提供统一地址、I/O、poll 和 option 形状。这个外观层不暴露具体 backend 或 `SocketSet` handle，使 ArceOS 标准库式封装可以在 IP、Unix 和 vsock transport 之间保持一致调用方式。
 
 ```text
 ax-api / ax-posix-api
@@ -164,29 +141,17 @@ API 层只做语言级或 POSIX 风格的入口适配。具体协议状态、端
 
 应用通常不直接接触 `InterfaceId`。只有需要接口约束时，才通过 `bind_device()` 或 Linux ABI 层的 `SO_BINDTODEVICE` 建立 `DeviceBinding`。
 
-## StarryOS Linux ABI
+## 4. StarryOS Linux ABI
 
 StarryOS 负责把 Linux ABI 转换为 `ax-net` API。它不维护第二套接口 registry、路由表、ARP 表或 socket poller。
 
-```mermaid
-flowchart TB
-    App["Linux user program"] --> Syscall["StarryOS syscall/net"]
-    Syscall --> Inet["AF_INET / AF_INET6 socket"]
-    Syscall --> Packet["AF_PACKET socket"]
-    Syscall --> Netlink["AF_NETLINK socket"]
-    Syscall --> Ioctl["SIOCGIF* ioctl"]
-    Syscall --> Proc["/proc/net/*"]
+![StarryOS Linux 网络 ABI 适配](images/starry-linux-abi.svg)
 
-    Inet --> AxSocket["ax_net::SocketOps"]
-    Packet --> AxIface["ax_net::interfaces()/interface_by_id()"]
-    Netlink --> AxIface
-    Ioctl --> AxIface
-    Proc --> AxProc["ax_net::arp_entries()/interfaces()"]
-```
+图中的五类 ABI 最终都读取 `ax-net` 的权威状态，但只有 netlink 地址更新路径可以提交受限的运行期 IPv4 变化。namespace 过滤发生在 StarryOS 边界，不会为不同 namespace 创建独立 `Service` 或 `RouteTable`。
 
-### Namespace 可见性
+### 4.1 命名空间可见性
 
-StarryOS 的接口查询先经过可见性过滤：
+StarryOS 的接口查询先经过 namespace 可见性过滤，再从 `ax-net` 获取全局接口快照并筛选用户可见对象。当前机制只限制观察范围，不创建独立路由表或协议栈实例，因此不能等同于完整 Linux network namespace 隔离。
 
 ```rust
 fn visible_interfaces() -> impl Iterator<Item = InterfaceInfo> {
@@ -204,9 +169,9 @@ fn visible_interfaces() -> impl Iterator<Item = InterfaceInfo> {
 
 因此，namespace 适配属于 ABI 可见性层，不是 `ax-net` 内部的多网络命名空间实现。
 
-### ioctl 与 ifreq
+### 4.2 接口 ioctl
 
-`file/net.rs` 实现 `SIOCGIF*` 查询。数据来源必须是 `ax-net` 接口快照：
+`file/net.rs` 实现 `SIOCGIF*` 查询，并在 Linux `ifreq`、接口名与 `InterfaceId` 之间转换。所有地址、flags 和索引必须来自 `ax-net` 接口快照，避免 ioctl 与 netlink 或实际路由状态使用不同数据源。
 
 | ioctl | 数据来源 |
 | --- | --- |
@@ -219,12 +184,13 @@ fn visible_interfaces() -> impl Iterator<Item = InterfaceInfo> {
 | `SIOCGIFHWADDR` | Ethernet 返回真实 MAC，loopback 返回 loopback 硬件类型 |
 | `SIOCGIFMTU` | `InterfaceInfo::mtu` |
 | `SIOCGIFINDEX` | `InterfaceInfo::id.to_linux_ifindex()` |
+| `SIOCGIFNAME` | `ifr_ifindex` 反查 `interface_by_id()` 并写回 NUL-padded name；该 device ioctl 对 AF_UNIX/AF_NETLINK socket 也可用 |
 | `SIOCGIFMETRIC` / `SIOCGIFMAP` / `SIOCGIFTXQLEN` | 返回 Linux 兼容的固定或空结构值 |
 | `FIONREAD` | 转发到底层 socket 的 `recv_available()` |
 
 所有按接口名查询的 ioctl 都应先解析 ifreq 中的 name，再通过 `ax_net::interface_by_name()` 获取快照。这样多网口、loopback 和动态注册接口都能走同一套路径。
 
-### Socket Option
+### 4.3 Socket 选项
 
 StarryOS 的 `SO_BINDTODEVICE` 负责在 Linux 字符串接口名和 `ax-net` 的 `DeviceBinding` 之间转换：
 
@@ -240,11 +206,11 @@ getsockopt(SO_BINDTODEVICE)
   -> interface name
 ```
 
-其它 socket option 通过 `GetSocketOption`、`SetSocketOption` 和 `Configurable` 分发到具体 socket。`SO_TYPE`、`TCP_INFO`、超时、nonblocking、`SO_REUSEADDR` 等语义应以 `ax-net` 的 socket 状态为准。
+其它 socket option 通过 `GetSocketOption`、`SetSocketOption` 和 `Configurable` 分发到具体 socket。`SO_TYPE`、`TCP_INFO`、超时、nonblocking、`SO_REUSEADDR`/`SO_REUSEPORT`、`SO_PASSCRED`/`SO_TIMESTAMP` 和 `IP_MTU_DISCOVER` 等语义应以具体 backend 的支持矩阵为准；不支持的 option 不能被文档概括为“完整 Linux 实现”。
 
-### AF_PACKET
+### 4.4 AF_PACKET
 
-`AF_PACKET` 由 StarryOS 的 `PacketSocket` 实现，接口信息来自 `ax-net`：
+`AF_PACKET` 由 StarryOS `PacketSocket` 实现二层 ABI，并使用 `ax-net` 的接口 ID、名称与 MAC 快照解释 `sockaddr_ll`。packet socket 自身处理 frame 和必要的兼容行为，但不应复制接口 registry 或假定固定存在 `eth0`。
 
 - 创建 packet socket 需要 root network namespace。
 - `bind(sockaddr_ll)` 中 `sll_ifindex == 0` 时绑定第一个可见 Ethernet 接口。
@@ -254,62 +220,64 @@ getsockopt(SO_BINDTODEVICE)
 
 `PacketSocket::send_packet()` 只模拟有限的 ARP reply 场景，用于让 Linux 用户态工具在 QEMU 中看到预期的 gateway ARP 行为。它不是通用二层转发路径，也不绕过 `ax-net` 的 IP dataplane。
 
-### Netlink 与 procfs
+### 4.5 Netlink 与 procfs
 
-StarryOS 的 netlink 和 procfs 视图也应复用 `ax-net` 状态：
+StarryOS 的 rtnetlink 与 procfs 都应从 `ax-net` 的接口、路由、ARP 和 `NetDevStats` 快照生成用户视图。`RTM_NEWADDR` 与 `RTM_DELADDR` 还会调用运行期 IPv4 API，使查询结果和后续数据面选路在同一次控制面提交后变化。
 
 | 视图 | 数据来源 | 说明 |
 | --- | --- | --- |
 | `RTM_GETLINK` | `ax_net::interfaces()` | 生成 `RTM_NEWLINK`，包含 ifindex、name、flags、MAC 等属性 |
 | `RTM_GETADDR` | `ax_net::interfaces()` | 生成 IPv4 address dump |
+| `RTM_GETROUTE` | `ax_net::default_routes()` | 仅支持 dump，输出 IPv4 main/unspec table 的 default route；非 dump 返回 `EOPNOTSUPP` |
+| `RTM_NEWADDR` | `ax_net::set_interface_ipv4()` | 仅 AF_INET；读取 `IFA_LOCAL` 或 `IFA_ADDRESS`，每接口最多一个 IPv4，无 gateway 参数 |
+| `RTM_DELADDR` | `ax_net::remove_interface_ipv4()` | 仅 AF_INET；IP/prefix 必须精确匹配，内部 `NotFound` 映射为 `EADDRNOTAVAIL` |
 | `/proc/net/arp` | `ax_net::arp_entries()` | device 字段使用真实接口名 |
-| `/proc/net/dev` | `ax_net::interfaces()` | 按接口生成兼容视图 |
+| `/proc/net/dev` | `ax_net::net_dev_stats()` | 输出 bytes/packets/errors/dropped；fifo/frame/compressed/multicast/colls/carrier 等硬件专属列固定为 0 |
 
-这些路径用于 Linux 兼容层观测网络状态，不应创建独立的接口或 ARP 缓存。
+这些路径复用同一控制面和统计状态，不创建独立接口或 ARP 缓存。地址变更会删除该接口 DHCP 状态并同步 connected route；删除后不会自动重启 DHCP。
 
-## Axvisor 接入
+## 5. Axvisor 接入
 
-Axvisor 应通过 `NetworkConfig` 描述网络意图，例如：
+当前 `os/axvisor/Cargo.toml` 没有直接依赖 `ax-net`；`http-axum` feature 通过 `ax-std/net` 启用 ArceOS socket API，用于管理 HTTP 服务。Axvisor 本身没有单独构造 `NetworkConfig`、选择 VM 服务面 route 或直接调用 `bind_device()` 的集成代码。因此网络状态仍由承载 Axvisor 的 ArceOS runtime 初始化，不能把“Axvisor 管理面/服务面策略”描述成已实现能力。
 
-- 管理面接口使用静态地址或 DHCP。
-- VM 服务面接口配置独立 metric。
-- DNS server 来自接口级静态配置或全局 fallback。
-- 需要固定出接口的管理连接使用 `bind_device(InterfaceId)`。
+## 6. 集成约束
 
-示例：
+集成约束规定状态由谁拥有、哪些线程可以推进协议核心，以及接口身份如何跨 ABI 保持稳定。遵守这些边界可以防止 runtime、StarryOS 或 Axvisor 形成第二套网络真相，也能避免 hard IRQ 和 syscall 直接依赖内部锁顺序。
 
-```rust
-let mgmt = ax_net::interface_by_name("eth0").ok_or(NetError::NoSuchDevice)?;
-let sock = ax_net::tcp::TcpSocket::new();
-sock.bind_device(mgmt.id)?;
-```
+### 6.1 状态所有权
 
-普通 TCP/UDP 连接不需要 Axvisor 自行选择设备。目的地址、metric、接口 UP 状态和 socket 绑定约束统一交给 `ax-net` route decision。
-
-## 集成约束
-
-### 状态所有权
+接口、地址、路由和 DNS 必须只有一个权威来源，StarryOS 与 runtime 只通过 `ax-net` 查询或提交变化。以下约束防止上层为了适配 ABI 复制第二套网络状态，从而出现 ioctl、netlink 与实际发包路径互相矛盾的结果。
 
 - 接口 ID、接口名、IPv4、gateway、metric、DNS 和 route table 由 `ax-net` 控制面维护。
 - TCP/UDP/raw/Unix/vsock socket 状态由 `ax-net` socket 层维护。
-- StarryOS ioctl、netlink、procfs 只读取 `ax-net` 快照。
+- StarryOS ioctl/procfs 读取 `ax-net` 快照；rtnetlink 的 `RTM_NEWADDR/DELADDR` 是明确的受限写入口。
 - runtime 只传入设备和配置，不持有可变网络状态副本。
 
-### 线程与 poll 边界
+状态所有权列表要求所有查询和更新回到同一 `ax-net` 控制面，避免 ABI 层缓存派生状态。线程轮询边界进一步限制谁可以推进这份状态背后的协议核心。
+
+### 6.2 线程轮询边界
+
+平台 IRQ、设备 Worker 和 socket 调用者承担不同执行职责，只有获得 `PollOwnership` 的路径可以推进 smoltcp 协议核心。下面的边界要求用于避免 hard IRQ 获取普通锁、设备线程进入全局协议锁，或 StarryOS syscall 绕过统一轮询调度。
 
 - runtime IRQ 和设备 worker 可以唤醒网络栈，但不直接调用 smoltcp poll。
-- socket 热路径只请求 poll，不同步推进整个协议栈。
-- `net-poll` worker 独占执行 `Service::poll()`、smoltcp `Interface::poll()` 和 `SocketSet` 处理。
+- 普通 socket 热路径只请求 poll；UDP close 会通过 `flush_egress()` 取得 required ownership 后同步排空。
+- `PollOwnership` 保证 `Service::poll()`、smoltcp `Interface::poll()` 和 `SocketSet` 处理串行；常规 owner 是 `net-poll` worker。
 - StarryOS syscall 层不应持有 Linux ABI 锁后再进入设备锁。
 
-### 接口命名与 ifindex
+线程列表将 IRQ 和 Worker 限制为通知或 packet 搬运者，只有轮询所有权持有者进入 smoltcp。接口标识则保证这些异步路径和用户 ABI 引用同一个设备身份。
+
+### 6.3 接口标识
+
+`InterfaceId` 是跨 ArceOS、StarryOS 和 `ax-net` 的稳定接口身份，Linux ifindex 只是它在 ABI 边界的数值表示。接口名可以用于用户查询和设备绑定，但实现不能假定永远存在 `eth0`，也不能把列表位置当作持久身份。
 
 - `lo` 固定为 `InterfaceId::LOOPBACK`，Linux ifindex 为 1。
 - Ethernet 接口默认按发现顺序命名为 `eth0`、`eth1`。
 - Linux `ifindex` 和 `InterfaceId` 直接映射。
 - 外部系统不得把 Router 内部 `dev` 索引暴露为 ifindex。
 
-### namespace 限制
+接口标识列表说明名称、ifindex 与内部 ID 的转换必须集中处理，不能依赖设备顺序。命名空间在这些稳定身份之上做可见性过滤，但不改变全局所有权。
+
+### 6.4 命名空间限制
 
 当前 StarryOS namespace 集成是可见性过滤，不是完整 Linux network namespace：
 
@@ -319,15 +287,3 @@ sock.bind_device(mgmt.id)?;
 - 非 root namespace 主要只看到 loopback。
 
 需要完整 network namespace 时，应在 `ax-net` 上方设计 namespace domain，而不是在 StarryOS 局部复制接口表。
-
-## 接入检查清单
-
-新增或修改系统接入路径时，应检查：
-
-- 是否通过 `NetworkConfig`、`InterfaceInfo`、`InterfaceId`、`DeviceBinding` 等公开模型传递网络语义。
-- 是否避免固定 `eth0`、固定 ifindex 或固定 gateway。
-- 是否只由 `ax-net` 维护 route table、DNS registry 和 ARP entries。
-- 是否使用 `ax_net::interfaces()`、`interface_by_name()`、`interface_by_id()` 查询接口。
-- 是否将 Linux ABI 结构体编解码留在 StarryOS，而不是下沉到 `ax-net`。
-- 是否在动态设备注册后调用 `request_poll()` 或依赖 `register_device_with_config()` 的唤醒路径。
-- 是否避免在 IRQ、设备 worker 或 syscall 热路径中直接推进 smoltcp poll。

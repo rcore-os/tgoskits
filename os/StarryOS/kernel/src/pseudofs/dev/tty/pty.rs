@@ -151,22 +151,22 @@ pub(crate) fn create_pty_pair() -> (Arc<PtyDriver>, Arc<PtyDriver>) {
     (master, slave)
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(axtest)]
+pub(crate) fn pty_preserves_mouse_escape_reports_for_test() -> bool {
     use axpoll::{IoEvents, Pollable};
 
     use crate::pseudofs::DeviceOps;
 
-    #[test]
-    fn pty_preserves_mouse_escape_reports() {
-        let (master, slave) = super::create_pty_pair();
-        let report = b"\x1b[<0;1;1M";
+    let (master, slave) = create_pty_pair();
+    let report = b"\x1b[<0;1;1M";
 
-        assert_eq!(slave.write_at(report, 0), Ok(report.len()));
-        assert!(master.poll().contains(IoEvents::IN));
-
-        let mut buf = [0; 16];
-        let read = master.read_at(&mut buf, 0).unwrap();
-        assert_eq!(&buf[..read], report);
+    if slave.write_at(report, 0) != Ok(report.len()) || !master.poll().contains(IoEvents::IN) {
+        return false;
     }
+
+    let mut buf = [0; 16];
+    let Ok(read) = master.read_at(&mut buf, 0) else {
+        return false;
+    };
+    &buf[..read] == report
 }

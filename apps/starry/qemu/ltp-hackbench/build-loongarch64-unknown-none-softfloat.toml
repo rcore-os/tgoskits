@@ -1,0 +1,7 @@
+target = "loongarch64-unknown-none-softfloat"
+log = "Warn"
+max_cpu_num = 4
+features = [
+  "axplat-dyn/efi",
+  "ax-driver/nvme",
+]

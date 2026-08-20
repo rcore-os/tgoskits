@@ -16,6 +16,3 @@ mmio-api.workspace = true
 rdif-block.workspace = true
 thiserror.workspace = true
 tock-registers.workspace = true
-
-[dev-dependencies]
-axtest.workspace = true

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="650" viewBox="0 0 1100 650" role="img" aria-labelledby="title desc">
+  <title id="title">运行时分配器分层架构</title><desc id="desc">展示消费者、ax-alloc 公共入口、buddy-slab 算法和平台接线。</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0L0 6L9 3Z" fill="#475569"/></marker><style>.h{font:700 24px sans-serif;fill:#0f172a}.t{font:600 18px sans-serif;fill:#0f172a}.s{font:14px sans-serif;fill:#334155}.api{fill:#eff6ff;stroke:#3b82f6;stroke-width:2}.alg{fill:#ecfdf5;stroke:#10b981;stroke-width:2}.wire{fill:#fff7ed;stroke:#f97316;stroke-width:2}.consumer{fill:#f5f3ff;stroke:#8b5cf6;stroke-width:2}.l{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#a)}</style></defs>
+  <text x="550" y="36" text-anchor="middle" class="h">运行时页与堆分配器分层</text>
+  <rect x="80" y="80" width="240" height="76" rx="14" class="consumer"/><text x="200" y="110" text-anchor="middle" class="t">运行时消费者</text><text x="200" y="136" text-anchor="middle" class="s">堆、页表、VMA、DMA</text>
+  <rect x="430" y="80" width="240" height="76" rx="14" class="wire"/><text x="550" y="110" text-anchor="middle" class="t">axruntime</text><text x="550" y="136" text-anchor="middle" class="s">Free 区段交接与 CPU bring-up</text>
+  <rect x="780" y="80" width="240" height="76" rx="14" class="wire"/><text x="900" y="110" text-anchor="middle" class="t">平台能力</text><text x="900" y="136" text-anchor="middle" class="s">virt_to_phys 与 CPU-local</text>
+  <rect x="180" y="220" width="740" height="140" rx="18" class="api"/><text x="550" y="252" text-anchor="middle" class="t">ax-alloc：唯一公共入口</text>
+  <rect x="220" y="278" width="190" height="55" rx="10" class="api"/><text x="315" y="301" text-anchor="middle" class="t">显式页 API</text><text x="315" y="321" text-anchor="middle" class="s">UsageKind / reclaim</text>
+  <rect x="455" y="278" width="190" height="55" rx="10" class="api"/><text x="550" y="301" text-anchor="middle" class="t">GlobalAlloc</text><text x="550" y="321" text-anchor="middle" class="s">字节路由与统计</text>
+  <rect x="690" y="278" width="190" height="55" rx="10" class="api"/><text x="785" y="301" text-anchor="middle" class="t">GlobalPage</text><text x="785" y="321" text-anchor="middle" class="s">RAII 页 owner</text>
+  <path d="M200 156V195H315V220M550 156V220M900 156V195H785V220" class="l"/>
+  <rect x="180" y="420" width="740" height="170" rx="18" class="alg"/><text x="550" y="453" text-anchor="middle" class="t">buddy-slab-allocator：算法实现</text>
+  <rect x="225" y="490" width="275" height="68" rx="12" class="alg"/><text x="362" y="517" text-anchor="middle" class="t">多 section Buddy</text><text x="362" y="542" text-anchor="middle" class="s">连续页、order、PageMeta</text>
+  <rect x="600" y="490" width="275" height="68" rx="12" class="alg"/><text x="737" y="517" text-anchor="middle" class="t">每 CPU Slab</text><text x="737" y="542" text-anchor="middle" class="s">固定 class、remote free</text>
+  <path d="M315 360V420M550 360V390H362V420M550 390H737V420M785 360V420" class="l"/>
+  <text x="550" y="623" text-anchor="middle" class="s">算法层不认识操作系统用途；统计、重试和资源所有者由 ax-alloc 统一维护</text>
+</svg>

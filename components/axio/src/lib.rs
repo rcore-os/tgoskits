@@ -10,10 +10,6 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-#[cfg(all(axtest, feature = "axtest"))]
-/// Coverage tests for I/O traits and adapters.
-pub mod axtest;
-
 mod error;
 
 pub use error::{Error, ErrorKind, IoError, IoResult, Result};

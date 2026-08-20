@@ -38,13 +38,26 @@ mod tests {
 
     #[test]
     fn dma_config_advertises_adma_window() {
-        let dma = dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA);
+        let dma = dma_api::DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(u32::MAX as u64),
+            ),
+            &TEST_DMA,
+        );
         let config = dma_config("sdhci", 16, &dma);
         let limits = protocol_rdif_config::queue_limits(&config);
 
         assert_eq!(limits.max_blocks_per_request, ADMA2_MAX_BLOCKS);
-        assert_eq!(limits.max_segment_size, ADMA2_MAX_TRANSFER_SIZE);
-        assert_eq!(limits.segment_boundary, Some(DWC_MSHC_ADMA_BOUNDARY));
+        assert_eq!(
+            limits.dma.constraints().max_segment_size,
+            Some(ADMA2_MAX_TRANSFER_SIZE)
+        );
+        assert_eq!(
+            limits.dma.constraints().boundary,
+            Some(DWC_MSHC_ADMA_BOUNDARY)
+        );
         assert_eq!(limits.max_inflight, 1);
         assert!(config.uses_dma());
     }

@@ -10,16 +10,12 @@ repository.workspace = true
 version = "0.3.8"
 
 [features]
-axtest = []
 efi = []
 hv = []
 mmu = []
 thead-mae = []
 tls = []
 uspace = ["mmu"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
 acpi = "6.0.1"

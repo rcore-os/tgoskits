@@ -228,7 +228,7 @@ pub fn sys_pidfd_send_signal(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn pidfd_flags_and_signal_validation_rules_hold_for_test() -> bool {
     // Test PidFdFlags validation
     let valid_flags = 0u32;
