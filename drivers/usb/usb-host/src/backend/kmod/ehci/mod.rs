@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_sync::SpinLock as Mutex;
-use dma_api::{CoherentArray, CoherentBox, DmaCoherency};
+use dma_api::{CoherentArray, CoherentBox, DeviceDma};
 use futures::{
     FutureExt,
     future::{BoxFuture, poll_fn},
@@ -349,9 +349,10 @@ impl EhciRegisters {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct EhciNewParams {
     pub mmio: Mmio,
+    pub dma: DeviceDma,
     pub kernel: &'static dyn KernelOp,
 }
 
@@ -760,11 +761,7 @@ impl Ehci {
     pub fn new(params: EhciNewParams) -> Result<Self> {
         let regs = EhciRegisters::new(params.mmio);
         let kernel = Kernel::new(
-            dma_api::DmaDeviceInfo::new(
-                dma_api::DmaDomainId::Direct,
-                DmaCoherency::NonCoherent,
-                dma_api::DmaConstraints::new(EHCI_DMA_MASK),
-            ),
+            crate::osal::narrow_dma_capability(&params.dma, EHCI_DMA_MASK),
             params.kernel,
         );
         let schedule = AsyncSchedule::new(&kernel, regs)?;
@@ -1881,7 +1878,10 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
+    use dma_api::{
+        DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
+        DmaDomainId, DmaError, DmaMapHandle, DmaOp,
+    };
     use usb_if::{
         descriptor::EndpointType,
         endpoint::TransferRequest,
@@ -1898,7 +1898,7 @@ mod tests {
     };
     use crate::{
         backend::{
-            kmod::osal::Kernel,
+            kmod::osal::{Kernel, narrow_dma_capability},
             ty::{ControllerIrqState, EventHandlerOp},
         },
         osal::KernelOp,
@@ -1977,13 +1977,36 @@ mod tests {
 
     fn test_kernel() -> Kernel {
         Kernel::new(
-            dma_api::DmaDeviceInfo::new(
-                dma_api::DmaDomainId::Direct,
-                dma_api::DmaCoherency::NonCoherent,
-                dma_api::DmaConstraints::new(EHCI_DMA_MASK),
+            DeviceDma::new(
+                dma_api::DmaDeviceInfo::new(
+                    dma_api::DmaDomainId::Direct,
+                    dma_api::DmaCoherency::NonCoherent,
+                    dma_api::DmaConstraints::new(EHCI_DMA_MASK),
+                ),
+                &TEST_KERNEL,
             ),
             &TEST_KERNEL,
         )
+    }
+
+    #[test]
+    fn ehci_dma_narrowing_preserves_domain_and_coherency() {
+        let domain = DmaDomainId::Translated(core::num::NonZeroU64::new(7).unwrap());
+        let supplied = DeviceDma::new(
+            DmaDeviceInfo::new(
+                domain,
+                DmaCoherency::Coherent,
+                DmaConstraints::new(u64::MAX).with_align(64),
+            ),
+            &TEST_KERNEL,
+        );
+
+        let narrowed = narrow_dma_capability(&supplied, EHCI_DMA_MASK);
+
+        assert_eq!(narrowed.info().domain(), domain);
+        assert_eq!(narrowed.info().coherency(), DmaCoherency::Coherent);
+        assert_eq!(narrowed.info().constraints().addr_mask, EHCI_DMA_MASK);
+        assert_eq!(narrowed.info().constraints().align, 64);
     }
 
     #[test]
@@ -2086,11 +2109,7 @@ mod tests {
             op: NonNull::new(backing.as_mut_ptr().cast()).unwrap(),
             ports: 1,
         };
-        let kernel = Kernel::new(
-            EHCI_DMA_MASK,
-            dma_api::DmaCoherency::NonCoherent,
-            &TEST_KERNEL,
-        );
+        let kernel = test_kernel();
         let schedule = AsyncSchedule::new(&kernel, regs).unwrap();
         let handler = EhciEventHandler::new(
             regs,

@@ -1,7 +1,6 @@
 use core::{ops::Deref, time::Duration};
 
-use dma_api::{DeviceDma, DmaDeviceInfo};
-pub use dma_api::{DmaAddr, DmaCoherency, DmaDirection, DmaError, DmaMapHandle, DmaOp};
+use dma_api::{DeviceDma, DmaConstraints};
 
 #[derive(Clone)]
 pub(crate) struct Kernel {
@@ -10,11 +9,8 @@ pub(crate) struct Kernel {
 }
 
 impl Kernel {
-    pub fn new(info: DmaDeviceInfo, osal: &'static dyn KernelOp) -> Self {
-        Self {
-            dma: DeviceDma::new(info, osal),
-            osal,
-        }
+    pub fn new(dma: DeviceDma, osal: &'static dyn KernelOp) -> Self {
+        Self { dma, osal }
     }
 
     pub fn delay(&self, duration: Duration) {
@@ -30,7 +26,15 @@ impl Deref for Kernel {
     }
 }
 
-pub trait KernelOp: DmaOp {
+pub(crate) fn narrow_dma_capability(dma: &DeviceDma, hardware_mask: u64) -> DeviceDma {
+    let current = dma.info().constraints();
+    dma.with_constraints(DmaConstraints {
+        addr_mask: current.addr_mask.min(hardware_mask),
+        ..current
+    })
+}
+
+pub trait KernelOp: Send + Sync {
     fn delay(&self, duration: Duration);
 }
 

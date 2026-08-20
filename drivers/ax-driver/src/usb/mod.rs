@@ -3,9 +3,14 @@ extern crate alloc;
 use core::time::Duration;
 
 use crab_usb::{EventHandler, USBHost, usb_if::Speed};
-use dma_api::{
-    DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
-};
+#[cfg(any(
+    test,
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
+    feature = "sg2002-dwc2",
+    feature = "xhci-mmio"
+))]
+use dma_api::{DeviceDma, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDomainId};
 use rdrive::{DriverGeneric, probe::OnProbeError};
 
 use crate::{
@@ -29,116 +34,32 @@ mod xhci_pci;
 pub type UsbHostDevice = rdrive::Device<PlatformUsbHost>;
 pub type UsbHostDeviceGuard = rdrive::DeviceGuard<PlatformUsbHost>;
 
-struct UsbKernel;
+struct UsbRuntime;
 
-impl DmaOp for UsbKernel {
-    fn page_size(&self) -> usize {
-        axklib::dma::op().page_size()
-    }
-
-    unsafe fn alloc_contiguous(
-        &self,
-        constraints: DmaConstraints,
-        layout: core::alloc::Layout,
-    ) -> Option<DmaAllocHandle> {
-        unsafe { axklib::dma::op().alloc_contiguous(constraints, layout) }
-    }
-
-    unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
-        unsafe { axklib::dma::op().dealloc_contiguous(handle) }
-    }
-
-    unsafe fn alloc_coherent(
-        &self,
-        constraints: DmaConstraints,
-        layout: core::alloc::Layout,
-    ) -> Option<DmaAllocHandle> {
-        unsafe { axklib::dma::op().alloc_coherent(constraints, layout) }
-    }
-
-    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
-        unsafe { axklib::dma::op().dealloc_coherent(handle) }
-    }
-
-    unsafe fn map_streaming(
-        &self,
-        constraints: DmaConstraints,
-        addr: core::ptr::NonNull<u8>,
-        size: core::num::NonZeroUsize,
-        direction: DmaDirection,
-    ) -> Result<DmaMapHandle, DmaError> {
-        unsafe { axklib::dma::op().map_streaming(constraints, addr, size, direction) }
-    }
-
-    unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
-        unsafe { axklib::dma::op().unmap_streaming(handle) }
-    }
-
-    fn flush(&self, addr: core::ptr::NonNull<u8>, size: usize) {
-        axklib::dma::op().flush(addr, size);
-    }
-
-    fn invalidate(&self, addr: core::ptr::NonNull<u8>, size: usize) {
-        axklib::dma::op().invalidate(addr, size);
-    }
-
-    fn flush_invalidate(&self, addr: core::ptr::NonNull<u8>, size: usize) {
-        axklib::dma::op().flush_invalidate(addr, size);
-    }
-
-    fn sync_alloc_for_device(
-        &self,
-        handle: &DmaAllocHandle,
-        offset: usize,
-        size: usize,
-        direction: DmaDirection,
-    ) {
-        axklib::dma::op().sync_alloc_for_device(handle, offset, size, direction);
-    }
-
-    fn sync_alloc_for_cpu(
-        &self,
-        handle: &DmaAllocHandle,
-        offset: usize,
-        size: usize,
-        direction: DmaDirection,
-    ) {
-        axklib::dma::op().sync_alloc_for_cpu(handle, offset, size, direction);
-    }
-
-    fn sync_map_for_device(
-        &self,
-        handle: &DmaMapHandle,
-        offset: usize,
-        size: usize,
-        direction: DmaDirection,
-        coherency: DmaCoherency,
-    ) {
-        axklib::dma::op().sync_map_for_device(handle, offset, size, direction, coherency);
-    }
-
-    fn sync_map_for_cpu(
-        &self,
-        handle: &DmaMapHandle,
-        offset: usize,
-        size: usize,
-        direction: DmaDirection,
-        coherency: DmaCoherency,
-    ) {
-        axklib::dma::op().sync_map_for_cpu(handle, offset, size, direction, coherency);
-    }
-}
-
-impl crab_usb::KernelOp for UsbKernel {
+impl crab_usb::KernelOp for UsbRuntime {
     fn delay(&self, duration: Duration) {
         axklib::time::busy_wait(duration);
     }
 }
 
-static USB_KERNEL: UsbKernel = UsbKernel;
+static USB_RUNTIME: UsbRuntime = UsbRuntime;
 
-pub fn usb_kernel() -> &'static dyn crab_usb::KernelOp {
-    &USB_KERNEL
+pub(crate) fn usb_runtime() -> &'static dyn crab_usb::KernelOp {
+    &USB_RUNTIME
+}
+
+#[cfg(any(
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
+    feature = "sg2002-dwc2",
+    feature = "xhci-mmio"
+))]
+pub(crate) fn usb_device_dma(coherency: DmaCoherency) -> DeviceDma {
+    axklib::dma::device(DmaDeviceInfo::new(
+        DmaDomainId::Direct,
+        coherency,
+        DmaConstraints::new(u64::MAX),
+    ))
 }
 
 pub struct PlatformUsbHost {
@@ -434,6 +355,14 @@ mod tests {
         let mmio = NonNull::new(regs.as_mut_ptr().cast::<u8>()).unwrap();
         USBHost::new_dwc2(Dwc2NewParams {
             mmio,
+            dma: DeviceDma::new(
+                DmaDeviceInfo::new(
+                    DmaDomainId::Direct,
+                    DmaCoherency::NonCoherent,
+                    DmaConstraints::new(u64::MAX),
+                ),
+                &TEST_USB_KERNEL,
+            ),
             kernel: &TEST_USB_KERNEL,
             params: Dwc2HostParams::sg2002(),
         })

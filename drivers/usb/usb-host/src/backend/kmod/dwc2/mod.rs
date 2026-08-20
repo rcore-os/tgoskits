@@ -12,7 +12,7 @@ mod testutil;
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{task::Poll, time::Duration};
 
-use dma_api::DmaCoherency;
+use dma_api::DeviceDma;
 use futures::{
     FutureExt,
     future::{BoxFuture, poll_fn},
@@ -121,9 +121,10 @@ impl Dwc2HostParams {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Dwc2NewParams {
     pub mmio: Mmio,
+    pub dma: DeviceDma,
     pub kernel: &'static dyn KernelOp,
     pub params: Dwc2HostParams,
 }
@@ -151,11 +152,7 @@ impl Dwc2 {
 
         let regs = Dwc2Registers::new(params.mmio);
         let kernel = Kernel::new(
-            dma_api::DmaDeviceInfo::new(
-                dma_api::DmaDomainId::Direct,
-                dma_api::DmaCoherency::NonCoherent,
-                dma_api::DmaConstraints::new(params.params.dma_mask),
-            ),
+            crate::osal::narrow_dma_capability(&params.dma, params.params.dma_mask),
             params.kernel,
         );
         let root_hub = Dwc2RootHub::new(regs, kernel.clone());

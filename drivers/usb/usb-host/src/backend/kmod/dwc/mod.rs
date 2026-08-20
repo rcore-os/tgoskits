@@ -6,7 +6,7 @@
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec, vec::Vec};
 use core::ops::{Deref, DerefMut};
 
-use dma_api::{ContiguousArray, DmaCoherency, DmaDirection};
+use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
 use event::EventBuffer;
 use futures::{FutureExt, future::BoxFuture};
 use reg::{GCTL, GEVNTSIZ, GHWPARAMS0, GHWPARAMS1, GHWPARAMS3, GHWPARAMS4, GUCTL1, GUSB2PHYCFG};
@@ -92,6 +92,7 @@ pub struct DwcNewParams<'a> {
     pub usb2_phy_param: Usb2PhyParam<'a>,
     pub rst_list: &'a [NamedResetLine],
     pub params: DwcParams,
+    pub dma: DeviceDma,
     pub kernel: &'static dyn KernelOp,
 }
 
@@ -154,7 +155,7 @@ impl Dwc {
     pub fn new(mut params: DwcNewParams<'_>) -> Result<Self> {
         let mmio_base = params.ctrl.as_ptr() as usize;
         params.params.max_speed = Speed::Full;
-        let xhci = Xhci::new(params.ctrl, DmaCoherency::NonCoherent, params.kernel)?;
+        let xhci = Xhci::new(params.ctrl, params.dma, params.kernel)?;
 
         let phy = Udphy::new(params.phy, params.phy_param);
         let usb2_phy = Usb2Phy::new(params.usb2_phy_param, xhci.kernel().clone());

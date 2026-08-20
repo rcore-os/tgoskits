@@ -1153,10 +1153,13 @@ mod tests {
 
     fn test_kernel() -> Kernel {
         Kernel::new(
-            dma_api::DmaDeviceInfo::new(
-                dma_api::DmaDomainId::Direct,
-                dma_api::DmaCoherency::NonCoherent,
-                dma_api::DmaConstraints::new(u64::MAX),
+            dma_api::DeviceDma::new(
+                dma_api::DmaDeviceInfo::new(
+                    dma_api::DmaDomainId::Direct,
+                    dma_api::DmaCoherency::NonCoherent,
+                    dma_api::DmaConstraints::new(u64::MAX),
+                ),
+                &TEST_KERNEL,
             ),
             &TEST_KERNEL,
         )

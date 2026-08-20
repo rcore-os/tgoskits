@@ -2385,6 +2385,7 @@ name = "crab-usb"
 version = "0.10.5"
 dependencies = [
  "anyhow",
+ "ax-runtime",
  "ax-sync",
  "bitflags 2.13.1",
  "crossbeam",

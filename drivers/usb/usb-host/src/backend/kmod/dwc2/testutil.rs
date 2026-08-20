@@ -20,8 +20,8 @@ use core::{
 };
 
 use dma_api::{
-    DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection, DmaDomainId,
-    DmaError, DmaMapHandle, DmaOp,
+    DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
+    DmaDomainId, DmaError, DmaMapHandle, DmaOp,
 };
 
 use super::{
@@ -109,10 +109,13 @@ pub static TEST_KERNEL: TestKernel = TestKernel;
 
 pub fn test_kernel() -> Kernel {
     Kernel::new(
-        DmaDeviceInfo::new(
-            DmaDomainId::Direct,
-            DmaCoherency::NonCoherent,
-            DmaConstraints::new(u64::MAX),
+        DeviceDma::new(
+            DmaDeviceInfo::new(
+                DmaDomainId::Direct,
+                DmaCoherency::NonCoherent,
+                DmaConstraints::new(u64::MAX),
+            ),
+            &TEST_KERNEL,
         ),
         &TEST_KERNEL,
     )

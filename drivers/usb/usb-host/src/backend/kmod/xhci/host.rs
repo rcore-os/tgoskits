@@ -14,7 +14,7 @@ use ::xhci::{
     ring::trb::{command, event::CommandCompletion},
 };
 use ax_sync::{RawSpinLockGuard, SpinLock, SpinLockGuard, SpinRwLock as RwLock};
-use dma_api::{DmaCoherency, DmaDirection};
+use dma_api::{DeviceDma, DmaDirection};
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
 use usb_if::err::{TransferError, USBError};
@@ -35,7 +35,7 @@ use crate::{
         ty::{ControllerIrqState, DeviceOp, Event, EventHandlerOp},
     },
     err::Result,
-    osal::{Kernel, SpinWhile},
+    osal::{Kernel, SpinWhile, narrow_dma_capability},
     queue::Finished,
 };
 
@@ -97,7 +97,7 @@ impl CoreOp for Xhci {
 }
 
 impl Xhci {
-    pub fn new(mmio: Mmio, coherency: DmaCoherency, kernel: &'static dyn KernelOp) -> Result<Self> {
+    pub fn new(mmio: Mmio, dma: DeviceDma, runtime: &'static dyn KernelOp) -> Result<Self> {
         let reg = XhciRegisters::new(mmio);
 
         // 检查 xHCI 控制器的寻址能力（HCCPARAMS1 寄存器）
@@ -118,14 +118,7 @@ impl Xhci {
             u32::MAX as usize
         };
 
-        let kernel = Kernel::new(
-            dma_api::DmaDeviceInfo::new(
-                dma_api::DmaDomainId::Direct,
-                coherency,
-                dma_api::DmaConstraints::new(dma_mask as _),
-            ),
-            kernel,
-        );
+        let kernel = Kernel::new(narrow_dma_capability(&dma, dma_mask as u64), runtime);
 
         let reg_shared = Arc::new(RwLock::new(reg.clone()));
 

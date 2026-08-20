@@ -11,8 +11,11 @@ use alloc::{format, vec::Vec};
     feature = "phytium-mci",
     feature = "rga",
     feature = "rknpu",
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "sg2002-dwc2",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -36,8 +39,11 @@ use crate::{BindingInfo, BindingIrq};
     feature = "phytium-mci",
     feature = "rga",
     feature = "rknpu",
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "sg2002-dwc2",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -68,8 +74,11 @@ pub(crate) fn dma_coherency_from_fdt(info: &FdtInfo<'_>) -> DmaCoherency {
     feature = "phytium-mci",
     feature = "rga",
     feature = "rknpu",
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "sg2002-dwc2",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -108,8 +117,11 @@ fn next_dma_parent<'a>(
     feature = "phytium-mci",
     feature = "rga",
     feature = "rknpu",
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "sg2002-dwc2",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -143,8 +155,11 @@ fn dma_mem_interconnect_phandle<'a>(
     feature = "phytium-mci",
     feature = "rga",
     feature = "rknpu",
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "sg2002-dwc2",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
