@@ -19,33 +19,17 @@ concurrency:
 
 jobs:
   release-plz-release:
-    name: >-
-      ${{ github.repository == 'rcore-os/tgoskits' && (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev') && 'Release-plz release' || 'Release-plz release (not applicable)' }}
+    name: Release-plz release
+    if: >-
+      github.repository == 'rcore-os/tgoskits' &&
+      (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev')
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: read
     steps:
-      - &eligibility
-        name: Check release eligibility
-        id: eligibility
-        env:
-          RELEASE_ELIGIBLE: >-
-            ${{ github.repository == 'rcore-os/tgoskits' && (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev') }}
-        run: |
-          set -euo pipefail
-          echo "run=${RELEASE_ELIGIBLE}" >> "$GITHUB_OUTPUT"
-          if [ "$RELEASE_ELIGIBLE" != "true" ]; then
-            {
-              echo "## Release not applicable"
-              echo ""
-              echo "Release-plz only runs in \`rcore-os/tgoskits\` on a dev push or an explicit manual dispatch."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
       - &checkout
         name: Checkout repository
-        if: steps.eligibility.outputs.run == 'true'
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -53,15 +37,12 @@ jobs:
 
       - &install-rust
         name: Install Rust toolchain
-        if: steps.eligibility.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Preflight workspace packages
-        if: steps.eligibility.outputs.run == 'true'
         run: cargo publish --workspace --dry-run --no-verify
 
       - name: Run release-plz
-        if: steps.eligibility.outputs.run == 'true'
         uses: release-plz/action@v0.5
         with:
           command: release
@@ -71,19 +52,19 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   release-plz-pr:
-    name: >-
-      ${{ github.repository == 'rcore-os/tgoskits' && (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev') && 'Release-plz PR' || 'Release-plz PR (not applicable)' }}
+    name: Release-plz PR
+    if: >-
+      github.repository == 'rcore-os/tgoskits' &&
+      (github.event_name == 'workflow_dispatch' || github.ref_name == 'dev')
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - *eligibility
       - *checkout
       - *install-rust
 
       - name: Run release-plz
-        if: steps.eligibility.outputs.run == 'true'
         uses: release-plz/action@v0.5
         with:
           command: release-pr

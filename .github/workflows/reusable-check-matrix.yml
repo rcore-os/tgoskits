@@ -51,119 +51,38 @@ jobs:
       - name: Preflight self-hosted host runner
         if: contains(toJSON(matrix.runs_on), 'self-hosted')
         env:
-          REQUIRED_RUNNER_LABELS: ${{ toJSON(matrix.runs_on) }}
           REQUIRE_KVM: ${{ matrix.require_kvm }}
         run: |
           set -euo pipefail
-
-          failures=0
-
-          record_error() {
-            echo "::error::$1"
-            failures=1
-          }
-
-          require_command() {
-            local name="$1"
-            if command -v "${name}" >/dev/null 2>&1; then
-              echo "${name}: $(command -v "${name}")"
-            else
-              record_error "required command '${name}' was not found in PATH"
-            fi
-          }
-
-          {
-            echo "## Self-hosted runner preflight"
-            echo ""
-            echo "- Runner: \`${RUNNER_NAME:-unknown}\`"
-            echo "- OS/arch: \`${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}\`"
-            echo "- Required labels: \`${REQUIRED_RUNNER_LABELS}\`"
-            echo "- KVM required: \`${REQUIRE_KVM}\`"
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-          echo "Runner name: ${RUNNER_NAME:-unknown}"
-          echo "Runner OS/arch: ${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}"
-          echo "Required labels: ${REQUIRED_RUNNER_LABELS}"
-          echo "PATH=${PATH}"
-          echo "User: $(id -un 2>/dev/null || whoami 2>/dev/null || echo unknown)"
-          echo "Groups: $(id -nG 2>/dev/null || groups 2>/dev/null || echo unknown)"
-
-          require_command rustc
-          require_command cargo
-
-          if command -v rustc >/dev/null 2>&1; then
-            rustc -vV
-          fi
-          if command -v cargo >/dev/null 2>&1; then
-            cargo -V
-          fi
-
+          command -v rustc
+          command -v cargo
+          rustc -vV
+          cargo -V
           if [ "${REQUIRE_KVM}" = "true" ]; then
-            if [ -e /dev/kvm ]; then
-              ls -l /dev/kvm || true
-              if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
-                record_error "/dev/kvm exists but is not readable and writable by the runner user"
-              fi
-            else
-              record_error "/dev/kvm does not exist on this runner"
-            fi
-
-            if command -v lsmod >/dev/null 2>&1; then
-              lsmod | grep -E '^kvm' || echo "::warning::lsmod did not report loaded kvm modules"
-            elif [ -r /proc/modules ]; then
-              grep -E '^kvm' /proc/modules || echo "::warning::/proc/modules did not report loaded kvm modules"
-            else
-              echo "::warning::unable to inspect loaded kvm modules"
-            fi
-
-            if [ -r /proc/cpuinfo ]; then
-              awk -F ': *' '/^(vendor_id|CPU implementer)/ { print "CPU vendor/implementer: " $2; exit }' /proc/cpuinfo || true
-            fi
+            test -r /dev/kvm && test -w /dev/kvm
           fi
 
-          if [ "${failures}" -ne 0 ]; then
-            {
-              echo ""
-              echo "Preflight failed before the test command ran. Check the runner label assignment, PATH, Rust toolchain installation, and KVM device permissions."
-            } >> "${GITHUB_STEP_SUMMARY}"
-            exit 1
-          fi
-
-      - name: Show container checkout state
+      - name: Preflight container
         if: matrix.container_preflight != 'none'
+        env:
+          CONTAINER_PREFLIGHT: ${{ matrix.container_preflight }}
         run: |
           set -euo pipefail
           command -v git
-          git -c safe.directory="${GITHUB_WORKSPACE}" rev-parse --show-toplevel
           git -c safe.directory="${GITHUB_WORKSPACE}" rev-parse --is-inside-work-tree
-
-      - name: Ensure qemu user emulators
-        if: matrix.container_preflight == 'qemu-user' || matrix.container_preflight == 'full'
-        run: |
-          set -euo pipefail
           for emulator in \
             qemu-aarch64-static \
             qemu-riscv64-static \
             qemu-loongarch64-static \
             qemu-x86_64-static
           do
-            if ! command -v "${emulator}" >/dev/null 2>&1; then
-              echo "::error::${emulator} not found; rebuild the CI container image to include qemu-user-static"
-              exit 1
-            fi
+            command -v "${emulator}"
           done
-
-      - name: Ensure musl cross toolchains
-        if: matrix.container_preflight == 'full'
-        run: |
-          set -euo pipefail
-          for arch in aarch64 riscv64 x86_64 loongarch64; do
-            compiler="${arch}-linux-musl-cc"
-            if ! command -v "${compiler}" >/dev/null 2>&1; then
-              echo "::error::${compiler} not found; rebuild the CI container image to include musl cross toolchains"
-              exit 1
-            fi
-          done
+          if [ "${CONTAINER_PREFLIGHT}" = "full" ]; then
+            for arch in aarch64 riscv64 x86_64 loongarch64; do
+              command -v "${arch}-linux-musl-cc"
+            done
+          fi
 
       - name: Restore Rust cache
         if: matrix.cache_key != ''
@@ -185,18 +104,10 @@ jobs:
           set -euo pipefail
           artifact_path="${RUNNER_TEMP}/xtask-bin/tg-xtask-bin.tar"
           xtask_path="${GITHUB_WORKSPACE}/target/debug/tg-xtask"
-          if ! tar -xf "${artifact_path}" -C "${GITHUB_WORKSPACE}"; then
-            echo "::error::failed to extract tg-xtask artifact: ${artifact_path}"
-            exit 1
-          fi
-          if [ ! -f "${xtask_path}" ]; then
-            echo "::error::tg-xtask artifact did not contain the expected binary: ${xtask_path}"
-            exit 1
-          fi
-          if ! chmod +x "${xtask_path}" || [ ! -x "${xtask_path}" ]; then
-            echo "::error::restored tg-xtask binary could not be made executable: ${xtask_path}"
-            exit 1
-          fi
+          tar -xf "${artifact_path}" -C "${GITHUB_WORKSPACE}"
+          test -f "${xtask_path}"
+          chmod +x "${xtask_path}"
+          test -x "${xtask_path}"
 
       - name: Show Rust version
         run: rustc --version
@@ -233,10 +144,7 @@ jobs:
         if: success() && matrix.upload_xtask_bin_artifact
         run: |
           set -euo pipefail
-          if [ ! -x target/debug/tg-xtask ]; then
-            echo "::error::tg-xtask binary is missing or not executable: target/debug/tg-xtask"
-            exit 1
-          fi
+          test -x target/debug/tg-xtask
           tar -cf "${RUNNER_TEMP}/tg-xtask-bin.tar" target/debug/tg-xtask
 
       - name: Upload tg-xtask binary artifact
