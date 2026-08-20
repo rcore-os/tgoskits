@@ -25,13 +25,7 @@ pub fn guest_boot_policy(
     config: &axvmconfig::GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> crate::config::GuestBootPolicy {
-    if crate::boot::is_x86_linux_image_config(config, provider) {
-        crate::config::GuestBootPolicy::KeepConfigured
-    } else {
-        crate::config::GuestBootPolicy::AdjustKernelForBootProtocol {
-            protocol: config.kernel.effective_boot_protocol(),
-        }
-    }
+    crate::arch::guest_boot_policy(config, provider)
 }
 
 /// Resolves the configured or architecture-default boot firmware load address.

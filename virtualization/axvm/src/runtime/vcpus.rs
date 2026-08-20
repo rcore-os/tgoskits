@@ -16,7 +16,7 @@ use std::{format, sync::Arc};
 
 use crate::{
     AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
-    arch::{ArchOps, CurrentArch, VcpuRunAction},
+    arch::{ArchOps, Architecture, CurrentArch, VcpuRunAction},
     ax_err_type,
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
     vm::{PendingInterrupt, VmRuntimeHandle},
@@ -123,7 +123,7 @@ pub(crate) fn notify_vcpu(vm_id: usize, vcpu_id: usize) -> AxVmResult {
     Ok(())
 }
 
-pub(crate) fn inject_pending_interrupts<A: ArchOps>(
+pub(crate) fn inject_pending_interrupts<A: Architecture>(
     vm_id: usize,
     vcpu_id: usize,
     vcpu: &crate::vm::AxVCpuRef<A::VCpu>,

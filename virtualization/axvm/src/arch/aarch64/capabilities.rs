@@ -2,10 +2,14 @@
 
 use std::format;
 
+use ax_memory_addr::VirtAddr;
+
 use super::Aarch64Arch;
 use crate::{architecture::*, *};
 
 impl HostTimePlatform for Aarch64Arch {}
+
+impl Architecture for Aarch64Arch {}
 
 impl MachinePlatform for Aarch64Arch {
     const MACHINE_ARCHITECTURE: crate::machine::MachineArchitecture =
@@ -13,6 +17,14 @@ impl MachinePlatform for Aarch64Arch {
 }
 
 impl BootImagePlatform for Aarch64Arch {
+    fn make_guest_memory_visible(addr: VirtAddr, size: usize) {
+        aarch64_cpu_ext::cache::dcache_range(
+            aarch64_cpu_ext::cache::CacheOp::Clean,
+            addr.as_usize(),
+            size,
+        );
+    }
+
     fn load_guest_dtb(
         loader: &crate::boot::images::ImageLoaderCore<'_>,
         dtb: &crate::boot::fdt::GuestDtbImage,

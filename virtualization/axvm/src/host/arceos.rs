@@ -89,10 +89,12 @@ impl HostTime for ArceOsHost {
 }
 
 /// Returns the platform IRQ reserved for the physical host console.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
     modules::ax_hal::console::irq_num()
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::irq::handle_irq(vector);
 }
@@ -385,7 +387,7 @@ impl HostPlatform for ArceOsHost {
                 break;
             }
         }
-        CurrentArch::register_platform_irq_injector();
+        crate::arch::register_platform_irq_injector();
         let enabled_count = CORES.load(Ordering::Acquire);
         if enabled_count == cpu_count {
             info!("All cores have enabled hardware virtualization support.");

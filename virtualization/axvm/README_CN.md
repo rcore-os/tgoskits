@@ -1,6 +1,6 @@
 <h1 align="center">axvm</h1>
 
-<p align="center">Virtual Machine resource management crate for ArceOS's hypervisor variant</p>
+<p align="center">面向 ArceOS 虚拟化形态的虚拟机资源与运行期管理组件</p>
 
 <div align="center">
 
@@ -15,7 +15,9 @@
 
 # 介绍
 
-`axvm` 提供了 Virtual Machine resource management crate for ArceOS's hypervisor variant。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
+`axvm` 负责虚拟机、虚拟处理器、客户机地址空间、设备运行期和架构适配的组织。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、Axvisor 及相关底层系统软件项目。
+
+架构适配采用分层能力接口：通用代码只依赖所有架构都满足的统一入口，只有部分架构具备的处理器启动能力由独立接口表达，公共行为由默认方法提供，单一实现保留在具体架构路径。设备侧继续使用既有的访问、轮询、中断、生命周期和授权能力；资源需求与解析结果仍由封闭数据类型表达，不进行机械拆分。
 
 ## 快速开始
 
@@ -60,6 +62,9 @@ fn main() {
 ```
 
 ### 文档
+
+- [AxVM 分层能力接口设计](../../docs/design/axvm-capability-layering.md) —— 架构共同能力、部分能力、默认行为和设备体系边界的权威说明。
+- [Axvisor 解析后设备图与客户机固件](../../docs/design/axvisor-resolved-device-graph.md) —— 设备图、资源规划、注册事务与固件事实来源。
 
 生成并查看 API 文档：
 

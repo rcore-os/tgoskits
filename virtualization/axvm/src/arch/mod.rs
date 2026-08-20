@@ -87,6 +87,21 @@ pub(crate) type ArchVCpu = <CurrentArch as ArchOps>::VCpu;
 pub(crate) type ArchPerCpu = <CurrentArch as ArchOps>::PerCpu;
 pub(crate) type ArchNestedPageTable = <CurrentArch as ArchOps>::NestedPageTable;
 
+fn assert_architecture<T: Architecture>() {}
+const _: fn() = assert_architecture::<CurrentArch>;
+
+pub(crate) fn make_guest_memory_visible(addr: ax_memory_addr::VirtAddr, size: usize) {
+    CurrentArch::make_guest_memory_visible(addr, size);
+}
+
+#[cfg(target_arch = "loongarch64")]
+pub(crate) fn register_platform_irq_injector() {
+    loongarch64::irq::register_platform_irq_injector();
+}
+
+#[cfg(not(target_arch = "loongarch64"))]
+pub(crate) fn register_platform_irq_injector() {}
+
 pub(crate) fn register_timer_source(
     deadline_source: std::sync::Arc<crate::timer::PublishedTimerDeadline>,
     notify: std::sync::Arc<ax_std::os::arceos::modules::ax_task::IrqNotify>,
@@ -125,15 +140,35 @@ pub(crate) fn load_images_from_filesystem(
     CurrentArch::load_images_from_filesystem(loader)
 }
 
+pub(crate) fn guest_boot_policy(
+    config: &axvmconfig::GuestConfig,
+    provider: &dyn crate::boot::BootImageProvider,
+) -> crate::config::GuestBootPolicy {
+    CurrentArch::guest_boot_policy(config, provider)
+}
+
 pub(crate) fn is_x86_linux_image_config(
     config: &axvmconfig::GuestConfig,
     provider: &dyn crate::boot::BootImageProvider,
 ) -> bool {
-    CurrentArch::is_x86_linux_image_config(config, provider)
+    matches!(
+        guest_boot_policy(config, provider),
+        crate::config::GuestBootPolicy::KeepConfigured
+    )
 }
 
 pub(crate) fn default_boot_firmware_load_gpa(
     config: &axvmconfig::GuestConfig,
 ) -> Option<axvm_types::GuestPhysAddr> {
     CurrentArch::default_boot_firmware_load_gpa(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_target_implements_complete_architecture_contract() {
+        assert_architecture::<CurrentArch>();
+    }
 }

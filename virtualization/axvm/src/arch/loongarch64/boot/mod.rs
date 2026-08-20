@@ -238,6 +238,10 @@ fn resolved_fw_cfg(vm: &AxVMRef) -> AxVmResult<MmioRegion> {
 }
 
 impl BootImagePlatform for super::LoongArch64Arch {
+    fn make_guest_memory_visible(addr: ax_memory_addr::VirtAddr, size: usize) {
+        super::make_guest_memory_visible(addr, size);
+    }
+
     fn load_images_from_memory(
         loader: &mut ImageLoaderCore<'_>,
         images: StaticVmImage,

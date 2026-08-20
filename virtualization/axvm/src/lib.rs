@@ -49,8 +49,6 @@ mod aarch64_shared_mmio_tests;
 #[path = "arch/aarch64/vtimer/percpu.rs"]
 mod aarch64_timer_percpu_tests;
 
-use crate::arch::ArchOps;
-
 pub mod config;
 
 pub use arch::platform::*;
@@ -91,5 +89,5 @@ pub fn check_timer_events() {
 
 /// Clean data cache lines covering a host virtual address range.
 pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {
-    arch::CurrentArch::clean_dcache_range(addr, size);
+    arch::make_guest_memory_visible(addr, size);
 }
