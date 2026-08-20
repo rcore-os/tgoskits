@@ -17,7 +17,8 @@
  *   0      2   magic = 0xA5A5
  *   2      1   version = 0x01
  *   3      1   msg_type   CONTROL=0x01 STATUS=0x02 DATA=0x03 ERROR=0x04 ACK=0x05
- *   4      1   flags      bit0 REQUEST, bit1 LAST_FRAGMENT, bit2 ACK_REQUESTED
+ *   4      1   flags      bit0 REQUEST, bit1 LAST_FRAGMENT, bit2 ACK_REQUESTED,
+ *                          bit3 RESPONSE (set on ACK replies)
  *   5      1   reserved   (must be 0)
  *   6      4   seq        monotonically increasing sender sequence
  *   10     4   timestamp_ms  sender monotonic clock (ms)
@@ -58,6 +59,7 @@ extern "C" {
 #define VTP_FLAG_REQUEST       (1u << 0)
 #define VTP_FLAG_LAST_FRAGMENT (1u << 1)
 #define VTP_FLAG_ACK_REQUESTED (1u << 2)
+#define VTP_FLAG_RESPONSE      (1u << 3)
 
 /* Control command codes (CONTROL payload[0]) */
 #define VTP_CMD_PING          0x01u

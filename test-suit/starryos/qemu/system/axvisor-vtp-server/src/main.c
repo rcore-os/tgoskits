@@ -15,8 +15,6 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
-#include <linux/netlink.h>
-#include <linux/rtnetlink.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -27,6 +25,10 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+
+/* CI containers lack linux-libc-dev; the netlink UAPI used here is restated in
+ * this self-contained header instead of including <linux/netlink.h>. */
+#include "netlink_compat.h"
 
 #include "vtp.h"
 

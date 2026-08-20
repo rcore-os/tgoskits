@@ -213,9 +213,6 @@ int vtp_encode_control(uint8_t *out, size_t cap, uint8_t flags, uint32_t seq,
     uint8_t payload[1 + 255];
     size_t plen;
 
-    if (data_len > 255) {
-        return -VTP_ERR_INVALID_PAYLOAD;
-    }
     payload[0] = cmd;
     if (data_len > 0) {
         memcpy(payload + 1, data, data_len);
@@ -233,9 +230,6 @@ int vtp_encode_status(uint8_t *out, size_t cap, uint8_t flags, uint32_t seq,
     uint8_t payload[2 + 4 + 255];
     size_t plen;
 
-    if (extra_len > 255) {
-        return -VTP_ERR_INVALID_PAYLOAD;
-    }
     payload[0] = state;
     payload[1] = code;
     be32_put(payload + 2, uptime_ms);
@@ -254,9 +248,6 @@ int vtp_encode_error(uint8_t *out, size_t cap, uint8_t flags, uint32_t seq,
     uint8_t payload[2 + 1 + 255];
     size_t plen;
 
-    if (detail_len > 255) {
-        return -VTP_ERR_INVALID_PAYLOAD;
-    }
     be16_put(payload + 0, error_code);
     payload[2] = source;
     if (detail_len > 0) {
