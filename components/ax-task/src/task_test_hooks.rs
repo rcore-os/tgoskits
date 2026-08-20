@@ -7,7 +7,8 @@
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use crate::{
-    TaskError, TaskSystemConfig, ThreadId, ThreadState,
+    DispatchCharge, FairMode, Nice, RunQueue, SchedulePolicy, SchedulerClass, TaskError,
+    TaskSystemConfig, ThreadId, ThreadState,
     runtime::MonotonicDeadline,
     system::CpuDeadlineState,
     timer::{TaskDeadlineKind, TaskDeadlineNode},
@@ -107,6 +108,22 @@ pub fn softirq_activation_preserves_hard_deadline() -> bool {
         .expect("test hard deadline must fit the fixed queue");
     state.softirq_activated = true;
     state.timer_deadline() == Some(deadline)
+}
+
+/// Checks Linux EEVDF's lone-current periodic tick rule.
+pub fn lone_fair_slice_expiry_only_updates_accounting() -> bool {
+    let mut queue = RunQueue::configured(u64::MAX, 1);
+    let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+    let tick = SchedulerClass::Fair.task_tick(
+        &mut queue,
+        ThreadId::from_parts(1, 1),
+        policy,
+        DispatchCharge {
+            slice_expired: true,
+            ..DispatchCharge::default()
+        },
+    );
+    !tick.request_reschedule
 }
 
 /// Reports the real runtime execution context for target-side timer tests.

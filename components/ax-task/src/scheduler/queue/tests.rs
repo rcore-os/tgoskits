@@ -329,6 +329,56 @@ fn competing_round_robin_quantum_rotates_the_active_queue() {
 
 #[cfg_attr(test, test)]
 #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+fn lone_fair_slice_expiry_only_updates_accounting() {
+    let mut queue = RunQueue::new();
+    let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+    let current = ThreadId::from_parts(0, 1);
+    let tick = SchedulerClass::Fair.task_tick(
+        &mut queue,
+        current,
+        policy,
+        DispatchCharge {
+            slice_expired: true,
+            ..DispatchCharge::default()
+        },
+    );
+
+    assert!(
+        !tick.request_reschedule,
+        "Linux EEVDF does not reschedule a fair current without a queued contender"
+    );
+}
+
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+fn competing_fair_slice_expiry_requests_reschedule() {
+    let mut queue = RunQueue::new();
+    let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+    let current = ThreadId::from_parts(0, 1);
+    queue
+        .enqueue_test(
+            ThreadId::from_parts(1, 1),
+            policy,
+            SchedulingEntity::new(policy, 1, 0),
+            0,
+            EnqueueReason::Wake,
+        )
+        .unwrap();
+    let tick = SchedulerClass::Fair.task_tick(
+        &mut queue,
+        current,
+        policy,
+        DispatchCharge {
+            slice_expired: true,
+            ..DispatchCharge::default()
+        },
+    );
+
+    assert!(tick.request_reschedule);
+}
+
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn first_fair_placement_cannot_start_behind_runqueue_virtual_time() {
     let mut queue = RunQueue::new();
     queue.set_virtual_time_for_test(10_000);

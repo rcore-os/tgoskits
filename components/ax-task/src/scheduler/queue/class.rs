@@ -302,7 +302,11 @@ impl SchedulerClass {
                     SchedulePolicy::RoundRobin { .. } | SchedulePolicy::Fifo { .. } => false,
                     _ => task_runtime::fatal_invariant(0x5251_1011, current.as_u64() as usize),
                 },
-                Self::Fair | Self::IdleFair => charge.slice_expired,
+                // Linux EEVDF's periodic tick only updates accounting. A
+                // slice hrtick requests reschedule when another entity of the
+                // same Fair mode is queued; a lone current keeps running.
+                Self::Fair => charge.slice_expired && run_queue.has_fair(),
+                Self::IdleFair => charge.slice_expired && run_queue.has_idle_fair(),
                 Self::Stop => false,
             },
             realtime: matches!(self, Self::Realtime),

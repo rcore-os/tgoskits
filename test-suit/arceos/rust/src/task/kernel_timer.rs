@@ -41,6 +41,10 @@ pub fn run() -> crate::TestResult {
         task_test_hooks::softirq_activation_preserves_hard_deadline(),
         "softirq ownership must not hide a scheduler hard deadline"
     );
+    assert!(
+        task_test_hooks::lone_fair_slice_expiry_only_updates_accounting(),
+        "a lone Fair task must not reschedule on periodic slice accounting"
+    );
     CALLBACK_ORDER.store(0, Ordering::Release);
     CANCELLED_CALLBACK_RAN.store(false, Ordering::Release);
     RESTARTABLE_CALLBACKS.store(0, Ordering::Release);
