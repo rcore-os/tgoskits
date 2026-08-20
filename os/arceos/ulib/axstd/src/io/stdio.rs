@@ -31,6 +31,7 @@ impl Write for StdoutRaw {
         Ok(ax_api::stdio::ax_console_write_bytes(buf)?)
     }
     fn flush(&mut self) -> io::Result<()> {
+        ax_api::stdio::ax_console_flush()?;
         Ok(())
     }
 }
@@ -74,13 +75,13 @@ impl Read for Stdin {
         if buf.is_empty() || read_len > 0 {
             return Ok(read_len);
         }
-        // try again until we got something
+        // Sleep until the runtime RX worker publishes progress, then retry.
         loop {
+            ax_api::stdio::ax_console_wait_readable()?;
             let read_len = self.inner.lock().read(buf)?;
             if read_len > 0 {
                 return Ok(read_len);
             }
-            crate::thread::yield_now();
         }
     }
 }

@@ -19,23 +19,33 @@ Axvisor 只有一个物理宿主控制台，但管理 shell 和多台客户机�
 | `ConsoleCore` / `ConsoleState` / `GuestState` | 保存每 VM 当前 backend generation、4096 字节输入队列、运行集合、前台、上次前台与快捷键前缀状态 | 输入、输出和 lifecycle 更新 |
 | `GuestSerialBackendFactory` / `GuestSerialBackend` | factory 为一个 host-console serial request 创建带 `(VMId, BackendGeneration)` 身份的 backend；backend 把设备层字节调用转入 mux | configured node 创建；UART runtime 读写 |
 | `GuestOutputMux` | 在 `BootMultiplex` 与 `Interactive` 间切换，补齐物理行，维护每 VM 16 KiB 环形输出，并生成回放 | 客户机输出与前台变化 |
-| `guest_console/host.rs` | 关闭宿主输入 IRQ、选择可选的 host-only CPU affinity、轮询一个宿主字节、写宿主字节 | Axvisor 初始化与 shell 主循环 |
-| `shell/mod.rs` | 作为轮询循环的唯一 owner，消费 `ConsoleInputEvent`，调用 `activate()`，每轮 reconcile VM 状态 | 管理 shell |
+| `guest_console/host.rs` | 在 vCPU 启动前取得唯一的 task-console RX、日志订阅与 output；output 移交给专用任务，其他路径只向固定队列提交事务 | Axvisor 初始化与 shell 主循环 |
+| `shell/mod.rs` | 作为输入事件循环的唯一 owner，消费 `ConsoleInputEvent`，调用 `activate()`，每轮 reconcile VM 状态 | 管理 shell |
 | `shell/command/vm.rs` | `vm start --console`、`vm console` 以及 start/stop/reset/resume/delete 的 mux lifecycle 调用 | 管理命令 |
 | `AxvmManager` 接入 | 提供 VM registry/status，输入入队后唤醒 VM；实际设备 poll 由 vCPU0 执行 | VM lifecycle 与运行期 |
 
-`GuestConsoleMux` 持有一个共享的 `ConsoleCore`。`ConsoleCore` 有两把 `std::sync::Mutex`：`state` 保护以上全部可变状态，`output_lock` 串行化“修改输出状态 → 写物理控制台”以及 backend replacement/invalidation。需要同时持有两把锁的路径必须按 `output_lock` → `state` 的顺序加锁；反向加锁会引入死锁。
+`GuestConsoleMux` 持有一个共享的 `ConsoleCore`。`ConsoleCore` 有两把不可睡眠的
+`NoPreemptMutex`：`state` 保护以上全部可变状态，`output_lock` 串行化输出仲裁以及 backend
+replacement/invalidation。客户机输出路径的固定顺序是 `output_lock` → host transport queue →
+`state`；它只格式化并提交一个固定容量事务，不触碰物理 UART。其他同时使用两把 mux 锁的
+路径仍按 `output_lock` → `state` 加锁，禁止反向获取。
 
 ## 2. 初始化与宿主输入 ownership
 
-`main.rs` 在启动默认 VM 的 vCPU task 之前取得 VM 列表并调用 `configure_host_console_reader()`。该函数先执行 `axvm::host::console::set_input_irq_enabled(false)`，因此当前 Axvisor 输入不是 UART IRQ consumer。随后它检查所有 vCPU 的物理 CPU mask：只有能证明某个在线 CPU 不在任何 vCPU mask 内时，才把当前控制台 reader task 迁移到最低编号的 host-only CPU；mask 缺失、为空或只包含离线位时都不能证明隔离性，因此不猜测 affinity。
-
-这项 affinity 是合作式 FIFO 调度下的临时进展保证，不改变 vCPU mask。没有可证明的 host-only CPU 时，reader 保持原 affinity，靠轮询失败后的 `yield_now()` 给其他任务运行机会。
+`main.rs` 在打印 Axvisor banner、发布普通启动日志和启动默认 VM 的 vCPU task 之前调用
+`configure_host_console()`。该函数从
+`ax-runtime::console` 取得唯一的 `TaskConsoleInput`、`TaskConsoleOutput` 和可选的
+`ConsoleLogSubscription`。配置过程由可睡眠的一次性锁串行化；只有 output worker 创建成功
+后才发布 `HostConsole`，因此不会暴露半初始化 capability，也不会并发创建两个 worker。
+所有读写入口先通过 `OnceLock::get()` 做非阻塞 ready 检查；发布前不会等待配置锁或进入
+可睡眠 output，提前到达的内部事件也不会触发未初始化 panic。
+runtime UART 已接管时，RX IRQ 与 owner worker 发布输入并唤醒 shell；没有匹配的 runtime
+UART 时，同一 capability 内部使用 RawHal。Axvisor 不维护另一条 platform reader 或亲和性状态。
 
 ```mermaid
 flowchart LR
     UART["物理宿主 console"]
-    Reader["shell loop<br/>read_host_byte：至多 1 byte"]
+    Reader["shell loop<br/>task-console event wait"]
     Route["GuestConsoleMux<br/>route state"]
     Shell["ShellByte / ShellSequence<br/>命令行编辑器"]
     Queue["GuestState.input<br/>4096-byte queue"]
@@ -49,9 +59,16 @@ flowchart LR
     Queue --> Notify --> Poll --> Backend
 ```
 
-`read_host_byte()` 每次只向 `axvm::host::console::read_bytes()` 请求一个字节。模块契约明确禁止其他 Axvisor 组件直接读 platform console input；否则两个 reader 会竞争并不可恢复地拆分输入流。
+`read_host_byte()` 每次从唯一的 `TaskConsoleInput` capability 消费至多一个有效字节；RX
+错误项保留在公共 runtime 层并在这里跳过。输入与日志都暂时为空时，shell 调用
+`wait_event()`，由 RX worker 或完整日志记录发布直接唤醒，不进行 `yield_now()` 忙轮询。模块
+契约明确禁止其他 Axvisor 组件再次取得输入 capability，否则初始化会得到明确错误，而不会
+形成两个 reader 拆分输入流。
 
-这里不要与 ArceOS/StarryOS 的通用 serial runtime 混为一谈。后者以 `SerialRuntimeHandle::take_rx_subscription()` 把 IRQ/poll 产生的 RX 流租给单一 OS consumer，StarryOS 的 `ttyS*` 会取得该 subscription；Axvisor 当前则保留 early/platform console 的单 owner 轮询路径并关闭输入 IRQ。两者是不同 OS 应用选择，不是 Axvisor 中同时运行的两条 RX 路径。
+日志订阅只在完整 record 边界切换。shell 未附着 guest 时，mux 先清除当前编辑行、输出宿主
+日志，再重画 prompt、内容和光标；guest 位于前台时，宿主日志按完整记录进入 16 KiB 有界
+backlog，返回管理 shell 后再回放。底层 64 条 record 队列和 mux backlog 的溢出都以摘要
+报告，不把宿主日志字节注入 guest 虚拟 UART。
 
 ## 3. 输入状态机与前台选择
 
@@ -72,7 +89,7 @@ flowchart LR
 
 ### 3.1 有界输入与唤醒
 
-每个 `GuestState.input` 最多保存 4096 字节。一次路由只写剩余容量，超出部分从本次输入尾部丢弃；已有队列内容不会被淘汰，调用者不阻塞，也不会把溢出字节改投给 shell。backend 的 `read()` 按调用方 buffer 大小从队首取出字节。
+每个 `GuestState.input` 最多保存 4096 字节。一次路由只写剩余容量，超出部分从本次输入尾部丢弃；已有队列内容不会被淘汰，调用者不阻塞，也不会把溢出字节改投给 shell。第一次溢出发布一条完整宿主 warning，guest 读出至少一个字节后才允许报告下一次溢出，避免静默丢失和 warning flood。backend 的 `read()` 按调用方 buffer 大小从队首取出字节。
 
 `route_host_byte()` 在持有 mux 锁时只完成状态修改和入队，把待唤醒的 VM ID 放进 `RoutedInput`。公共入口释放 `state` 和 `output_lock` 后才调用 `AxvmManager::notify_vm()`；唤醒失败只记录 warning，已入队字节仍保留。这个锁外调用避免 mux 锁跨入 VM manager 和 scheduler。
 
@@ -157,7 +174,11 @@ reconcile 不是 `mark_stopped()` 的别名：它不会清 `GuestState.backend_g
 
 ## 6. 输出模式与行级仲裁
 
-客户机 TX 由 `GuestSerialBackend::write()` 同步进入 mux。`output_lock` 覆盖 generation 校验、`GuestOutputMux` 状态变化和最终 `write_host_bytes()`，因此不同 backend 的并发 writer 不会在同一次仲裁结果内部交错；持锁顺序仍是 `output_lock` → `state`。
+客户机 TX 由 `GuestSerialBackend::write()` 同步进入 mux，但该回调可能位于 vCPU 固定且禁止抢占
+的区域，不能分配、睡眠或等待物理 UART。`output_lock` 先串行化 backend writer，随后在固定
+64 KiB host transport 队列中开启事务，最后取得 `state` 完成 generation 校验和
+`GuestOutputMux` 流式格式化。整个事务完整入队后才唤醒专用 output worker；若空间不足，回滚
+本事务的全部分片并累计丢弃摘要，已排队事务不受影响。
 
 ```mermaid
 flowchart LR
@@ -169,17 +190,20 @@ flowchart LR
     Boot["BootMultiplex<br/>完整行 + 可选 [VM n]"]
     Fore["Interactive foreground<br/>ring replay + direct output"]
     Back["Interactive background / detached<br/>16 KiB ring"]
-    Host["write_host_bytes<br/>物理 console"]
+    Queue["HostOutputTransaction<br/>固定队列，整事务提交或回滚"]
+    Worker["output worker<br/>可睡眠 write_all"]
+    Host["TaskConsoleOutput<br/>物理 console"]
 
     TX1 --> Lock
     TX2 --> Lock
     Lock --> Valid
     Valid -->|否| Drop["丢弃且不改仲裁状态"]
     Valid -->|是| Mode
-    Mode --> Boot --> Host
-    Mode --> Fore --> Host
+    Mode --> Boot --> Queue
+    Mode --> Fore --> Queue
     Mode --> Back
     Back -->|以后 select_foreground| Fore
+    Queue --> Worker --> Host
 ```
 
 ### 6.1 `BootMultiplex`
@@ -192,7 +216,7 @@ flowchart LR
 
 `activate()` 或附着后的第一次普通输入会选择 foreground 并进入 Interactive。前台写先回放它在 ring 中的内容，再直接输出当前 bytes；后台 VM 只追加 ring，不写宿主。`Ctrl+X h`、前台 stop/delete/reconcile 会调用 `buffer_all()`，把 mode 设为 `Interactive { foreground: None }`，此后所有 guest 都只缓存。
 
-每 VM ring 上限是 16 KiB。满后继续追加会从头淘汰最旧字节，因此保留最新日志并限制内存。切换到该 VM 时，`select_foreground()` 在同一个 `output_lock` 临界区内 drain ring 后接入直写；并发 writer 必须等回放完成，不能插到回放中间。ring 保存原始客户机字节，`[VM n]` 只在 BootMultiplex 输出完整行时临时生成，不会回流到客户机输入。
+每 VM ring 上限是 16 KiB。它在 backend 注册的任务上下文中一次预分配；vCPU 热路径满后只执行 pop/push，不扩容。继续追加会从头淘汰最旧字节并累计丢失数，因此保留最新日志并限制内存。下次形成可输出的 boot 行或切到该 VM 时，mux 先输出 `[Axvisor VM n console dropped N buffered bytes]` 摘要，再回放保留内容。`select_foreground()` 在同一个 `output_lock` 临界区内 drain ring 后接入直写；并发 writer 必须等回放完成，不能插到回放中间。ring 保存原始客户机字节，`[VM n]` 只在 BootMultiplex 输出完整行时临时生成，不会回流到客户机输入。
 
 ### 6.3 物理行完成
 
@@ -204,13 +228,14 @@ flowchart LR
 
 | 边界 | 当前保证 | 限制 |
 | --- | --- | --- |
-| 宿主 RX | shell loop 是唯一 polling owner；输入 IRQ 禁用 | 没有可证明的 host-only CPU 时，持续运行的 vCPU 仍可能影响 reader 调度延迟 |
-| mux 锁 | 双锁路径固定 `output_lock` → `state`；host output 与 replacement/invalidation 串行化 | `std::sync::Mutex` poisoned 会触发 `expect`，没有运行时恢复 |
+| 宿主 RX | shell loop 独占 `TaskConsoleInput`；runtime RX IRQ/worker 或 RawHal fallback 保持单 owner | capability 已被取得或 runtime 停止时，初始化/等待返回明确错误 |
+| 宿主日志 | 唯一 `ConsoleLogSubscription` 按完整 record 投递；编辑行清除后重画，guest 前台期间有界缓存 | 两级有界队列溢出时丢弃并报告摘要，panic/emergency 不保证重画 |
+| mux 锁 | 双锁路径固定 `output_lock` → `state`；vCPU 回调使用 `NoPreemptMutex`，不进入可睡眠 API | hard IRQ 不进入 mux；新增路径必须保持同一锁顺序 |
 | VM notify | 入队后锁外 notify，不把 mux 锁带进 manager/scheduler | notify 失败只告警，字节等后续 poll |
 | 虚拟设备 poll | 只有 vCPU0 调用 `poll_vm_devices()`，它是串口 backend 的唯一 poll owner | secondary vCPU 不消费串口输入 |
 | 单 vCPU guest | `notify_vm()` 设置 Release 发布的 pending device-poll flag 并唤醒；vCPU0 用 Acquire/AcqRel 消费 | flag 只表达“需要 poll”，不计数；队列才保存字节 |
 | SMP guest | 当前沿用共享 wait queue 的 `notify_one()`，不发布 shared poll flag | 无法定向唤醒 vCPU0，可能只唤醒 secondary；空闲 SMP guest 的输入会延迟到 vCPU0 下次 VM-exit 或其他唤醒 |
-| 输出并发 | `output_lock` 覆盖 format、ring replay 和物理写，多个 backend writer 串行 | 慢速宿主 console 会延长所有输出 writer 的等待时间 |
+| 输出并发 | `output_lock` 覆盖 format 与 ring replay；固定队列保持事务边界，只有 output worker 等待 UART | transport 满时丢弃当前完整事务；per-guest ring 淘汰最旧字节；两者均报告摘要且不阻塞 vCPU writer |
 
 SMP 限制不能通过让任意 vCPU poll 来规避，那会破坏设备 poll 的 single-owner 假设。正确演进方向是为 vCPU0 提供可定向的 wait/wake 路径，再为 SMP 发布 pending poll 请求。
 
@@ -220,41 +245,48 @@ SMP 限制不能通过让任意 vCPU poll 来规避，那会破坏设备 poll �
 
 | 现象 | 首先检查 | 对应事实 |
 | --- | --- | --- |
-| shell 和客户机都偶发丢字符 | 是否出现第二个 platform console reader；输入 IRQ 是否被重新启用 | 当前契约是 polling single-owner，IRQ handler 也不能偷偷 drain RX |
+| shell 和客户机都偶发丢字符 | `TaskConsoleInput` 是否被第二次取得；runtime RX error/overrun 统计是否增长 | 当前契约是 capability single-owner；RX IRQ 只采样并由 owner worker 发布 |
+| 输入空闲时 shell 占用 CPU | `wait_for_host_event()` 是否走 `wait_event()` / `wait_readable()` | shell 不应以 `yield_now()` 轮询 task-console |
+| 宿主日志插入正在编辑的命令 | 是否取得唯一日志订阅；记录是否经 `route_host_log()`；drop 摘要是否增长 | shell 模式必须清行、输出完整记录并重画；guest 前台模式必须缓存而非直写 |
 | `vm console` 报错 | VM ID 是否存在，状态是否严格为 `Running` | attach 不接受 Ready、Paused、Stopping 或 Stopped |
-| 客户机不立即收到输入 | 输入队列是否满；`notify_vm` warning；guest 是否 SMP 且 vCPU0 空闲 | 4096 字节尾部丢弃；SMP notify 不能定向 vCPU0 |
+| 客户机不立即收到输入 | 输入队列是否满及 overflow warning；`notify_vm` warning；guest 是否 SMP 且 vCPU0 空闲 | 4096 字节尾部丢弃并按 drain 周期报告一次；SMP notify 不能定向 vCPU0 |
 | reset 后控制台永久无输入输出 | reset 前是否调用过 `mark_stopped()`；是否误以为 reset 会创建 backend | reset clone 同一 backend Arc，不会发布新 generation；已失效 generation 不会自动复活 |
 | replace/stop 后仍看到 late output | 应用路径是否真的调用 `mark_stopped()`/`remove()`；写入 backend generation 是否仍 current | 底层 stop/remove 不自动接入 mux；stale 写应在修改 output 前被拒绝 |
 | 多 VM 启动日志看似停住 | 对应 VM 是否只写了未结束片段 | BootMultiplex 在多 VM 时等完整 `\n` 行；切换 owner 才做物理补行 |
-| 切换前台后少了早期日志 | 该 VM ring 是否超过 16 KiB，或 lifecycle/reconcile 是否 reset/discard 了 output state | ring 淘汰最旧字节；stop/remove/replacement/reconcile 会清理相应 output state |
+| 切换前台后少了早期日志 | 该 VM ring 是否超过 16 KiB，是否出现 dropped 摘要，或 lifecycle/reconcile 是否 reset/discard 了 output state | ring 淘汰最旧字节并在回放前报告；stop/remove/replacement/reconcile 会清理相应 output state |
 | detach 后 shell prompt 接在 guest prompt 后 | 检查 `buffer_all()` 是否返回补行、调用方是否写出其结果 | `physical_line_open` 为真时必须先写 `\n` |
 
 ## 9. 测试覆盖与验证命令
 
-`os/axvisor/src/guest_console/mux/tests.rs` 当前有 18 个测试，覆盖范围应按测试实际断言理解：
+`os/axvisor/src/guest_console/mux/tests.rs` 的测试覆盖范围应按实际断言理解：
 
 - `Ctrl+X h` detach，`[`/`]` 环绕切换，未知后缀与重复 `Ctrl+X` 的原序路由；
 - 最小 running VM 默认附着、输入只到前台、前台从 running 集合消失后返回 shell；
+- 输入队列只在每个 drain 周期报告一次 overflow；
 - `mark_stopped`、`remove` 和 backend replacement 的 generation 失效，以及 stale writer 不改变 output snapshot；
 - BootMultiplex 多 VM 行前缀、默认附着和输入触发的抢占、命令 echo 后的前台结果；
 - 第一次前台输入进入 Interactive、切换时回放后台 ring、detach 后全部缓存；
 - foreground 或 background 未结束物理行在切换时正确补行。
 
-`mux/output.rs` 另有 14 个内部测试，直接覆盖完整行选择、分片只加一次前缀、pending/total 容量上界、超大单次 write、16 KiB 淘汰与回放、Interactive 前台分片、reset/reconcile 后物理分隔符。`host.rs` 测试 host-only CPU 的保守选择；`axvm::runtime` 与 vCPU runtime 测试单 vCPU poll flag 和 SMP 不发布 shared flag 的差异。
+`mux/output.rs` 另有 16 个内部测试，直接覆盖完整行选择、分片只加一次前缀、pending/total 容量上界、超大单次 write、16 KiB 淘汰与回放、Interactive 前台分片、reset/reconcile 后物理分隔符。`console_mux/transport.rs` 的 4 个测试验证 FIFO、队列满、超大事务和分块溢出时的整事务回滚。顶层 mux 测试还覆盖宿主完整日志隔离、guest 前台缓存与返回 shell 后回放；`axvm::runtime` 与 vCPU runtime 测试单 vCPU poll flag 和 SMP 不发布 shared flag 的差异。
 
-现有测试仍没有直接断言 shell 命令解析或 4096 字节输入队列溢出。以上测试也不是完整的真实 UART、VM lifecycle 和终端端到端覆盖，不能把 18 个顶层 mux 测试泛化为所有边界都已验证。
+现有测试仍没有直接断言 shell 命令解析。以上测试也不是完整的真实 UART、VM lifecycle 和终端端到端覆盖，不能把顶层 mux 测试泛化为所有边界都已验证。
 
 目标环境中的建议命令如下：
 
 ```bash
-cargo xtask ktest qemu -p axvisor --test axtest --arch x86_64
+cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
+cargo xtask axvisor test qemu --arch aarch64 --test-case atomic-output
+cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case qemu-console-interleave/interleave
 cargo xtask axvisor test qemu --arch x86_64 --test-group normal --test-case direct-acpi-vmx
 ```
 
-第一条运行带 `axtest` 标记的 Axvisor 控制台测试。第二条使用包含一台 x86 Linux guest 的 `direct-acpi-vmx` 配置：guest 通过 `console=ttyS0` 输出成功标记，因此可观察 VM 启动、虚拟串口 TX 和宿主控制台输出组合路径；它不验证输入快捷键、foreground 切换或 4096 字节队列边界。AMD/SVM 宿主上的对应 case 是 `direct-acpi-svm`。两者都依赖 KVM 和相应的 VMX/SVM 能力。
-
-本文档修改未运行以上两条目标环境命令。只执行了以下发现检查，确认当前 xtask 能在 `normal` 组列出 `direct-acpi-vmx` 与 `direct-acpi-svm`：
-
-```bash
-cargo xtask axvisor test qemu --list --arch x86_64
-```
+第一条在受支持的 aarch64 target 上运行带 `axtest` 标记的 Axvisor 控制台测试。
+`atomic-output` 先在禁止抢占区填满 runtime ingress，再通过固定 host transport 提交成功标记，
+直接验证 atomic producer 不进入可睡眠 output；真实 `GuestSerialBackend` 的 generation 与格式化
+边界由 mux/axtest 覆盖。`qemu-console-interleave` 经公共任务态 output 固定构造 `rm` 片段与
+以 `:` 开头的宿主日志，验证 task output 与完整日志不会拼成失败标记。最后一条使用包含一台 x86 Linux
+guest 的 `direct-acpi-vmx` 配置：guest 通过 `console=ttyS0` 输出成功标记，因此可观察 VM 启动、
+虚拟串口 TX 和宿主控制台输出组合路径；它不验证输入快捷键、foreground 切换或 4096 字节
+队列边界。AMD/SVM 宿主上的对应 case 是 `direct-acpi-svm`。VMX/SVM 用例依赖 KVM 和相应的
+CPU 能力。

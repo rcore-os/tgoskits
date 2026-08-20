@@ -19,6 +19,74 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 4. Prefer `cargo xtask` flows for ArceOS, StarryOS, and Axvisor. If a special QEMU/container setup needs raw commands, inspect the xtask path and match its arguments.
 5. Keep temporary debug markers out of the final patch unless the user explicitly asks to retain them.
 
+## Runtime Console Before SMP
+
+- When `ax-runtime` has both `irq` and `multitask`, initialize the scheduler and IRQ framework,
+  probe UARTs, create owner-affine serial workers, and attempt the common runtime-console handoff
+  before releasing any secondary CPU. Do not add a separate `serial` or `runtime-console` feature.
+  Probe must leave every runtime dormant: registering a disabled controller IRQ is allowed, but do
+  not mask, reset, or reconfigure any UART until that runtime is selected or explicitly opened.
+- If no matching runtime UART was discovered, keep the raw HAL console as the sole owner and expose
+  output through the same task-console capability; consumers must not maintain their own fallback
+  state. Raw task input is valid only when the HAL console exposes an IRQ: the common layer drains
+  RX into a bounded queue in hard IRQ and wakes a `WaitQueue`. Without a console IRQ, `take_input`
+  must return unsupported and the consumer must disable its interactive entry point; do not fake a
+  sleepable capability with `yield_now` polling or reserve a CPU through affinity. Raw task writers
+  share a sleepable task lock and then an IRQ-safe hardware lock; log publishers use only a
+  non-blocking attempt on the hardware lock because early AP and hard-IRQ records have no valid
+  current task. Once a selected runtime enters `Preparing`, any failure must fail closed; after a
+  successful commit, SMP code must never fall back to the early UART.
+- Match a firmware-selected hardware `DeviceId` exactly. Only `NotSpecified` may fall back to the
+  common Linux-compatible `ttyS0` numbering. A missing match before `Preparing` retains the raw HAL
+  owner; it must not guess a different runtime UART. Fail closed only after a handoff has begun.
+- Keep `begin -> adopt -> commit` and fail-closed policy inside `ax-runtime::console`.
+  The exact firmware-selected console is already running, so adopt its line, baud, FIFO, and enable
+  state without calling the ordinary serial `startup()` path. Mask only its device-local sources,
+  enable the pre-registered IRQ action, then publish routing. This avoids iteration-count BUSY waits
+  whose wall-clock duration changes between QEMU and a fast physical CPU. Non-console UARTs still
+  run normal startup/configuration on their explicit open lifecycle.
+  ArceOS, StarryOS, and Axvisor adapters must not maintain separate console-selection or handoff
+  state.
+- A secondary CPU may publish complete startup log records after installing its per-CPU area but
+  before publishing a current task. Queue those records without waking the owner worker; publish
+  the CPU's explicit log-wake readiness only after its scheduler, IRQ, and IPI paths are ready.
+  The later scheduler-ready record sends the coalesced doorbell and drains the earlier records as
+  one stream.
+- Let each UART driver's bounded IRQ pass decide whether RX needs deferred rearm. Preserve an
+  explicit rearm after an incomplete batch, overrun, exhausted IRQ budget, or runtime-ring
+  overflow, but keep a fully drained RX source armed while the owner transports its samples;
+  unconditionally masking a small FIFO until task context runs can overflow at line rate. If a
+  deferred rearm immediately observes readable hardware while no IRQ samples remain, drain through
+  the direct port path.
+- Rearm `TX_SPACE` only while software bytes remain pending. Query FIFO/shift-register completion
+  only inside the worker-owned `DrainTx` control transaction; a UART without a completion IRQ must
+  let that transaction yield and recheck, not retain a false TX-ready state or create a timeout task
+  that attempts to repair it later.
+- Fatal output must make one terminal UART ownership transition. Use a bounded, non-sleeping claim
+  so panic cannot deadlock on an interrupted normal transaction; after a successful claim, keep
+  emergency ownership until shutdown, exclude worker/IRQ register access, and mask device-local
+  sources before returning any writable emergency capability. The API must not represent a writable
+  but unmasked state. Synchronously stream the complete formatted record instead of truncating it to
+  a fixed software buffer.
+- Axvisor must acquire the unique input before starting a vCPU and acquire the complete-record log
+  subscription when the runtime backend supports it. Configure that owner before the startup banner
+  or any ordinary host log. Host logs are independent lines during boot,
+  shell-aware clear/log/redraw transactions in management mode, and bounded whole-record backlog
+  while a guest owns the foreground console. Move its `TaskConsoleOutput` into one dedicated
+  task before launching a vCPU. A virtual-UART/device callback can run inside the vCPU's pinned,
+  preemption-disabled region, so it may only submit to a fixed-capacity, non-allocating queue under
+  a non-sleeping lock and issue an IRQ-safe notification. Only the output task may wait on the
+  sleepable runtime lock or UART backpressure. Report bounded-queue loss from that task; do not
+  repair an atomic-context sleep with a watchdog, timeout task, affinity reservation, or platform
+  polling fallback.
+  Guest input queues must also report the first overflow as a complete host record and suppress
+  duplicate reports until the guest drains input; never inject that report into guest UART bytes.
+  Preallocate each guest-output ring before device callbacks can run, keep its hot path bounded,
+  and report evicted byte counts before replay instead of silently overwriting old output.
+- For a post-SMP interleaving failure, first verify the `runtime console active` message appears
+  before secondary-CPU startup and that later log records reach the owner worker or Axvisor mux;
+  do not weaken smoke-test fail regexes or reserve a polling CPU as a workaround.
+
 ## Porting Checklist
 
 - **Target and toolchain**: add or verify `scripts/targets` specs, target triple, panic strategy, relocation model, code model, ABI, soft-float setting, musl/std support, linker, objcopy, and `rust-src` availability.
@@ -101,7 +169,8 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - **RISC-V QEMU IRQ contract**: the dynamic RISC-V path targets QEMU `virt` firmware routing through CPU-local supervisor timer/software/external interrupt causes and one PLIC domain. `somehal::begin_irq(raw)` receives `scause.bits()`, not a PLIC source number; only S-timer, S-soft, and S-ext are runtime CPU-local causes. PLIC source IDs are controller-local `HwIrq`s and may only be produced by FDT translation or by claiming the PLIC after an S-ext trap. Do not dispatch a bare source number as a trap, do not treat PLIC source 0 as valid, and route PLIC enable through the registered `rdif_intc::Intc` controller instead of bypassing the rdrive lock.
 - **RISC-V guest SBI IPI contract**: keep SBI decoding, hart-mask representation, completion ABI, and saved/live HVIP state in `riscv_vcpu`; keep guest hart-to-vCPU topology resolution in AxVM's RISC-V layer; and publish VSSIP through the architecture-neutral `VmInterruptSender` path. Validate the complete target set before publishing any interrupt. Current and remote vCPUs must use the same queued delivery path, and guest VSSIP must remain distinct from host S-soft runtime IPI and PLIC routing. Keep this contract synchronized with `docs/design/axvm-riscv-sbi-ipi.md`.
 - **Runtime console selection**: Dynamic platforms expose the firmware-selected hardware console through `somehal::console_device_id()` and `ax_hal::console::device_id()`. The value is `Result<rdrive::DeviceId, ConsoleDeviceIdError>` derived from bootargs `console=`, ACPI SPCR, or FDT `stdout-path`; static platforms return `Err(NotSpecified)`. Linux-style `ttyS<N>` and `ttyAMA<N>` select the Nth ordinary FDT serial node, while Rockchip `ttyFIQ<N>` is a distinct `ConsoleSpec::RockchipFiq(N)` and must resolve against the Nth enabled `rockchip,fiq-debugger` node rather than aliasing an ordinary UART index. Numeric `tty<N>`, bare `tty`, and `ttynull` are virtual selections and must not bind a hardware device. OS code such as Starry should match `Ok(id)` against probed serial devices, use `ttyS0` as the Linux-style hardware-console fallback only for `Err(NotSpecified)`, and leave `/dev/console` unbound (`ENODEV`) for non-hardware console selections, unmatched selected hardware devices, or when no serial console TTY exists. Keep the console-spec parser and FDT node-to-`DeviceId` mapping together in `somehal`; do not reparse FDT or bootargs in the tty layer.
-- **Runtime console ownership**: once Starry or another OS runtime binds the firmware-selected UART to an interrupt-driven tty/serial driver, claim both runtime output routing and the low-level platform output path through the serial-runtime ownership operation; do not leave those as separate caller-side transitions. The handoff is transactional: enter `Preparing` to reject new early RX/TX/IRQ register access and wait for in-flight early access, commit `Runtime` only after driver startup, IRQ registration, and routing succeed, roll a recoverable failure back to `Early`, and enter `FailedClosed` when the hardware state cannot be proven restored. Axvisor must match the exact firmware-selected `DeviceId`, lease its unique RX subscription, start the runtime, and roll both ownership steps back on failure. SBI or another console without a hardware serial runtime may keep an explicitly documented polling transport. The hardware console must have one runtime register owner; otherwise kernel log output and tty output can interleave at the UART register level and corrupt test markers or user input/output.
+- **Runtime console ownership**: once Starry or another OS runtime binds the firmware-selected UART to an interrupt-driven tty/serial driver, claim both runtime output routing and the low-level platform output path through the serial-runtime ownership operation; do not leave those as separate caller-side transitions. The handoff enters `Preparing` to reject new early RX/TX/IRQ register access and wait for in-flight early access, and commits `Runtime` only after driver adoption, IRQ registration, and routing succeed. If a probed runtime UART fails after `Preparing`, enter `FailedClosed`; do not reinterpret that failure as an absent driver and fall back to raw HAL. Axvisor must consume the common task-console capability; the common layer matches an available runtime against the exact firmware-selected `DeviceId` and otherwise exposes the raw HAL backend without a second caller-owned fallback state. SBI or another console without a hardware serial runtime may retain synchronous raw output, but it must not expose task input as sleepable unless an IRQ-backed wake mechanism exists. Emergency takeover permanently masks only the UART's device-local IER/IMSC and must never disable a shared controller line. The hardware console must have one runtime register owner, and Axvisor task, guest, and log output must all pass through one application-level output owner; otherwise records and interactive redraw transactions can still overtake each other above the UART lock.
+- **x86 raw-console IRQ fallback**: COM1 IRQ4 may share an IOAPIC line. Claim it only when UART IIR reports a pending, recognized RX or receiver-line-status interrupt; an absent port commonly reads as `0xff` and must be treated as unhandled even if the synthetic LSR bits look ready. Bound each hard-IRQ drain to the fixed software RX capacity so a broken or continuously-ready device cannot keep one CPU inside the handler forever.
 - **Axvisor guest platform identity**: every Axvisor guest has a mandatory virtual UART with stable ID `console0`. Resolve it in the order machine fallback, valid host FDT/ACPI console snapshot, then user request with the same ID. FDT snapshots preserve node path, phandle, address span, register model/shift/access width, interrupt parent/specifier, clock providers, and stdout identity; ACPI snapshots preserve SPCR model, address space, range, IRQ, clock, baud, and namespace without retaining parser references or AML bytes. Guest TOML may replace `console0` model/options or add another serial ID, but must never provide numeric address, IRQ, controller, MSI/LPI, or `enabled = false`. A compatible model/transport keeps host fixed bindings and identity; an incompatible replacement becomes an automatically allocated virtual device. Keep exactly one host-console backend owner. Place vGIC distributor/redistributor at host GIC windows while retaining firmware identity. Firmware may describe padded, mutually overlapping GICv2 ranges; retain bases but normalize trapped apertures to the architectural 4 KiB Distributor and 8 KiB CPU-interface spans before registration. Corresponding physical UART and GIC ranges remain host-owned and excluded from passthrough. The application console mux remains the sole host-console input reader, and `SerialBackendFactory` creates a fresh generation on graph rebuild. A host-derived UART INTID remains a virtual controller input, not physical IRQ passthrough.
 - **Axvisor virtual-device planning**: keep VM initialization order architecture-owned. Each architecture builds a `DeviceGraphBuilder` containing its controller, bus, host-replacement, passthrough, firmware-only, and configured virtual-device nodes. Graph nodes retain the exact `Arc<dyn DeviceModel>` used for `requirements()`, `firmware()`, and `build()`. User configuration is `id + model + typed options`, resolved by an explicitly populated `ConfiguredDeviceCatalog` whose entries are plain `ConfiguredModelRegistration` function pointers; do not add a factory trait, instance wrapper, device-type enum, linker registration, or firmware dyn container. Fixed requests come only from machine policy or normalized host firmware. Every architecture creates its own deterministic plan, registers its interrupt-controller bundle before IRQ/MSI consumers, issues one `ResourceClaimSet` per node, and seals `DeviceRuntime` only after every slot is retained by a lease. FDT/ACPI and runtime read the same `ResolvedDeviceGraph`. MMIO/PIO exits perform one runtime interval lookup and dyn `Device::access`; do not restore address/device special cases, downcasts, `find_*` plus second dispatch, a shared cross-architecture device sequence, a second interrupt fabric, or guessed controller/address/IRQ fallback. AArch64 creates one immutable plan before final DTB serialization; the same `ArmVgicConfig` and resolved resources drive VGIC construction, GICR/ITS nodes, and endpoints. Host-derived GICD, GICC/GICR, and ITS windows must be disjoint and non-overflowing. RISC-V retains PLIC hart/context ordering, x86 retains LAPIC/IOAPIC/PIT/APIC-access ordering, and LoongArch retains IOCSR/EXTIOI/PCH-PIC cascading. Keep this contract synchronized with `docs/design/axvisor-resolved-device-graph.md` and `docs/design/arm-vgic-interrupt-topology.md`.
 - **Axvisor shared firmware providers**: replacing a host-owned FDT device also removes that device as a visible consumer of shared clocks, resets, power domains, or other providers. A passthrough guest must not retain unmediated write access that can disable the host-owned dependency. Preserve provider phandle/specifier/MMIO identity in the immutable machine plan, resolve a typed provider capability before VM construction, and attach a provider-specific `Arc<dyn DeviceModel>` as a `HostReplacement` node that claims the whole provider range so stage 2 traps it. The device may forward unrelated accesses only under provider-supplied, hardware-specific write-protection rules; the VM hot path must not contain board or SoC checks. Fixed providers without mutable registers need no mediator. Missing capability, ambiguous register layout, unsupported specifier shape, or invalid protection rules must fail VM creation instead of falling back to raw passthrough. Keep this contract synchronized with `docs/design/axvisor-shared-firmware-provider.md`.

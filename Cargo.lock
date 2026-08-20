@@ -721,6 +721,7 @@ dependencies = [
  "ax-hal",
  "ax-io",
  "ax-ipi",
+ "ax-lazyinit",
  "ax-log",
  "ax-mm",
  "ax-net",
@@ -1110,6 +1111,7 @@ name = "ax-posix-api"
 version = "0.5.32"
 dependencies = [
  "ax-alloc",
+ "ax-api",
  "ax-fs-ng",
  "ax-hal",
  "ax-io",
@@ -1571,6 +1573,7 @@ dependencies = [
  "ax-api",
  "ax-driver",
  "ax-hal",
+ "ax-log",
  "ax-std",
  "axbacktrace",
  "axbuild",
@@ -1585,6 +1588,7 @@ dependencies = [
  "axvm-types",
  "axvmconfig",
  "clap",
+ "heapless",
  "log",
  "prettyplease 0.3.0",
  "proc-macro2",

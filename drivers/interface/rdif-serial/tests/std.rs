@@ -156,6 +156,8 @@ struct MockUart;
 struct MockEmergencyTx;
 
 impl UartEmergencyTx for MockEmergencyTx {
+    unsafe fn mask_interrupts_unlocked(&self) {}
+
     unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
         bytes.len().min(1)
     }

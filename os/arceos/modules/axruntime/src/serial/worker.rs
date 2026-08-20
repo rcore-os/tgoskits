@@ -8,10 +8,10 @@ use rdif_serial::{Config, RxErrorFlags, RxFlag, RxSample, SerialEventSet};
 
 use super::{
     RuntimeIrqBridge, RuntimeShared, RxItem,
-    control::{CONTROL_QUEUE_CAPACITY, ControlCommand, ControlOp},
+    control::{CONTROL_QUEUE_CAPACITY, ControlCommand, ControlOp, ControlRequest, DrainCompletion},
     deactivate_console,
     ingress::TxFrameCursor,
-    log_mailbox::{LogReader, LogRecordCursor, LogRecordKind},
+    log_mailbox::{LogReader, LogRecord, LogRecordCursor, LogRecordKind},
     spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
 };
 use crate::{RuntimeError, RuntimeResult};
@@ -23,12 +23,14 @@ pub(super) struct SerialWorker {
     shared: Arc<RuntimeShared>,
     irq_rx: SpscConsumer<RxSample>,
     rx_output: SpscProducer<RxItem>,
+    log_subscription: SpscProducer<LogRecord>,
     pending_rx: Option<PendingRx>,
     port_rx_ready: bool,
     pending_frame: Option<TxFrameCursor>,
     log_reader: LogReader,
     pending_log: Option<LogRecordCursor>,
     pending_control: Option<ControlCommand>,
+    pending_drain: Option<DrainCompletion>,
     prefer_log: bool,
     pending_rearm: SerialEventSet,
     immediate_events: SerialEventSet,
@@ -40,18 +42,21 @@ impl SerialWorker {
         shared: Arc<RuntimeShared>,
         irq_rx: SpscConsumer<RxSample>,
         rx_output: SpscProducer<RxItem>,
+        log_subscription: SpscProducer<LogRecord>,
     ) -> Self {
         let log_reader = shared.log_mailbox.reader();
         Self {
             shared,
             irq_rx,
             rx_output,
+            log_subscription,
             pending_rx: None,
             port_rx_ready: false,
             pending_frame: None,
             log_reader,
             pending_log: None,
             pending_control: None,
+            pending_drain: None,
             prefer_log: false,
             pending_rearm: SerialEventSet::empty(),
             immediate_events: SerialEventSet::empty(),
@@ -78,7 +83,6 @@ impl SerialWorker {
             {
                 self.latched_rx_errors |= RxErrorFlags::OVERRUN;
             }
-
             if events.contains(SerialEventSet::FAULT) {
                 self.stop_faulted_port();
             }
@@ -89,10 +93,8 @@ impl SerialWorker {
                 None
             } else if force_service || self.shared.polling || self.port_rx_ready {
                 Some(RxPath::Port)
-            } else if events.has_rx() || !self.irq_rx.is_empty() {
-                Some(RxPath::Irq)
             } else {
-                None
+                select_deferred_rx_path(!self.irq_rx.is_empty(), events.has_rx())
             };
             let mut rx_blocked = false;
             if let Some(path) = rx_path {
@@ -122,7 +124,7 @@ impl SerialWorker {
                 tx_blocked = outcome.blocked;
             }
 
-            self.update_tx_idle();
+            let drain_waiting_for_hardware = self.progress_tx_drain();
             if budget_exhausted {
                 ax_task::yield_now();
                 continue;
@@ -139,7 +141,7 @@ impl SerialWorker {
             }
 
             if self.shared.bridge.latch.has_pending()
-                || self.shared.control.has_pending()
+                || (!self.control_transaction_pending() && self.shared.control.has_pending())
                 || (self.pending_control.is_some() && !tx_blocked)
                 || (!tx_blocked
                     && (self.pending_frame.is_some()
@@ -153,7 +155,9 @@ impl SerialWorker {
                 continue;
             }
 
-            if self.shared.polling {
+            if drain_waiting_for_hardware {
+                ax_task::yield_now();
+            } else if self.shared.polling {
                 ax_task::sleep(Duration::from_millis(1));
             } else {
                 self.shared.bridge.notify.wait();
@@ -163,6 +167,9 @@ impl SerialWorker {
 
     fn process_control_commands(&mut self) -> bool {
         let mut force_service = false;
+        if self.pending_drain.is_some() {
+            return false;
+        }
         if let Some(command) = self.pending_control.take() {
             if self.pending_log.is_some() {
                 self.pending_control = Some(command);
@@ -171,8 +178,15 @@ impl SerialWorker {
             force_service |= self.execute_control(command);
         }
         for _ in 0..CONTROL_QUEUE_CAPACITY {
-            let Some(command) = self.shared.control.try_pop() else {
+            let Some(request) = self.shared.control.try_pop() else {
                 break;
+            };
+            let command = match request {
+                ControlRequest::Command(command) => command,
+                ControlRequest::DrainTx(completion) => {
+                    self.pending_drain = Some(completion);
+                    break;
+                }
             };
             if config_must_wait_for_pending_log(&command.op, self.pending_log.is_some()) {
                 self.pending_control = Some(command);
@@ -188,7 +202,12 @@ impl SerialWorker {
         let mut force_service = false;
         let result = match &command.op {
             ControlOp::Start(config) => {
-                let result = self.start_port(config);
+                let result = self.start_port(PortStart::Configure(config));
+                force_service |= result.is_ok();
+                result
+            }
+            ControlOp::AdoptFirmwareConsole => {
+                let result = self.start_port(PortStart::AdoptFirmwareConsole);
                 force_service |= result.is_ok();
                 result
             }
@@ -211,20 +230,17 @@ impl SerialWorker {
         force_service
     }
 
-    fn start_port(&mut self, config: &Config) -> RuntimeResult {
+    fn start_port(&mut self, start: PortStart<'_>) -> RuntimeResult {
         if self.shared.started() {
             return Ok(());
         }
-        self.shared.with_port(|port| {
-            port.startup(config)?;
-            port.mask_all();
-            Ok::<(), rdif_serial::ConfigError>(())
-        })?;
+        self.shared
+            .with_port(|port| prepare_port_for_start(port, start))
+            .ok_or(RuntimeError::SerialNotStarted)??;
         if let Err(err) = self.shared.enable_irq() {
-            self.shared.with_port(|port| {
-                port.mask_all();
-                port.shutdown();
-            });
+            self.shared.disable_irq();
+            self.shared
+                .with_port(|port| cleanup_failed_port_start(port, start));
             return Err(err);
         }
         self.shared.ingress.start_accepting();
@@ -255,10 +271,13 @@ impl SerialWorker {
         if !self.shared.started() {
             return Err(RuntimeError::SerialNotStarted);
         }
-        let result = self.shared.with_port(|port| {
-            port.mask_all();
-            port.set_config(config).map_err(RuntimeError::from)
-        });
+        let result = self
+            .shared
+            .with_port(|port| {
+                port.mask_all();
+                port.set_config(config).map_err(RuntimeError::from)
+            })
+            .unwrap_or(Err(RuntimeError::SerialNotStarted));
         self.pending_rearm |= SerialEventSet::RX;
         if self.pending_frame.is_some()
             || self.pending_log.is_some()
@@ -283,24 +302,20 @@ impl SerialWorker {
     }
 
     fn discard_tx(&mut self) -> RuntimeResult {
-        let hardware_idle = self.shared.with_port(|port| {
-            if !port.discard_tx() {
-                return Err(RuntimeError::OperationNotSupported);
-            }
-            Ok(port.tx_idle())
-        })?;
+        self.shared
+            .with_port(|port| {
+                if !port.discard_tx() {
+                    return Err(RuntimeError::OperationNotSupported);
+                }
+                Ok(())
+            })
+            .ok_or(RuntimeError::SerialNotStarted)??;
         self.shared.ingress.discard_pending();
         self.pending_frame = None;
         self.pending_rearm.remove(SerialEventSet::TX_SPACE);
         self.immediate_events.remove(SerialEventSet::TX_SPACE);
-        if !hardware_idle && !self.shared.polling {
-            self.pending_rearm.insert(SerialEventSet::TX_SPACE);
-        }
 
         self.shared.publish_tx_space();
-        if self.shared.ingress.mark_idle_if_empty(true, hardware_idle) {
-            self.shared.publish_tx_idle();
-        }
         Ok(())
     }
 
@@ -334,7 +349,7 @@ impl SerialWorker {
             } else {
                 let next = match path {
                     RxPath::Irq => self.irq_rx.pop(),
-                    RxPath::Port => self.shared.with_port(|port| port.read_rx()),
+                    RxPath::Port => self.shared.with_port(|port| port.read_rx()).flatten(),
                 };
                 let Some(sample) = next else {
                     source_drained = true;
@@ -352,7 +367,9 @@ impl SerialWorker {
                         defer_rx_for_output_pressure(
                             self.shared.polling,
                             &mut self.pending_rearm,
-                            |sources| shared.with_port(|port| port.mask(sources)),
+                            |sources| {
+                                let _ = shared.with_port(|port| port.mask(sources));
+                            },
                         );
                         blocked = true;
                         break;
@@ -387,6 +404,7 @@ impl SerialWorker {
 
         if published {
             self.shared.rx_progress.notify_all(true);
+            self.shared.console_progress.notify_all(true);
             // SAFETY: the worker Release-publishes ring entries before waking
             // task-context waiters.
             unsafe { self.shared.rx_source.wake(IoEvents::IN) };
@@ -394,14 +412,16 @@ impl SerialWorker {
 
         if path == RxPath::Port && source_drained {
             let shared = self.shared.clone();
-            let ready = shared.with_port(|port| {
-                rearm_drained_rx(
-                    true,
-                    self.shared.polling,
-                    &mut self.pending_rearm,
-                    |sources| port.rearm(sources),
-                )
-            });
+            let ready = shared
+                .with_port(|port| {
+                    rearm_drained_rx(
+                        true,
+                        self.shared.polling,
+                        &mut self.pending_rearm,
+                        |sources| port.rearm(sources),
+                    )
+                })
+                .unwrap_or_default();
             if ready.has_rx() {
                 self.port_rx_ready = true;
             }
@@ -434,7 +454,9 @@ impl SerialWorker {
             };
             let limit = remaining.len().min(remaining_budget);
             let shared = self.shared.clone();
-            let written = shared.with_port(|port| port.write_tx(&remaining[..limit]));
+            let written = shared
+                .with_port(|port| port.write_tx(&remaining[..limit]))
+                .unwrap_or(0);
             if written == 0 {
                 self.pending_rearm |= SerialEventSet::TX_SPACE;
                 blocked = true;
@@ -483,7 +505,9 @@ impl SerialWorker {
         }
         if self.prefer_log && self.try_load_log() {
             self.prefer_log = false;
-            return Some(PendingTxSource::Log);
+            if self.pending_log.is_some() {
+                return Some(PendingTxSource::Log);
+            }
         }
         if let Some(frame) = self.shared.ingress.pop() {
             self.pending_frame = Some(TxFrameCursor::new(frame));
@@ -493,7 +517,9 @@ impl SerialWorker {
         }
         if self.try_load_log() {
             self.prefer_log = false;
-            return Some(PendingTxSource::Log);
+            if self.pending_log.is_some() {
+                return Some(PendingTxSource::Log);
+            }
         }
         None
     }
@@ -503,7 +529,7 @@ impl SerialWorker {
             self.shared
                 .log_barriers
                 .load(core::sync::atomic::Ordering::Acquire),
-            self.pending_control.is_some(),
+            self.control_transaction_pending(),
         ) {
             return false;
         }
@@ -520,7 +546,34 @@ impl SerialWorker {
             consumed.record.kind() == LogRecordKind::Log,
             consumed.record.is_truncated(),
         );
-        self.pending_log = Some(LogRecordCursor::new(consumed.record));
+        let _route = self.shared.log_subscription_gate.lock_irqsave();
+        let subscription_active = self
+            .shared
+            .log_subscription_active
+            .load(core::sync::atomic::Ordering::Acquire);
+        match route_log_subscription(
+            subscription_active,
+            &mut self.log_subscription,
+            consumed.record,
+        ) {
+            Ok(None) => {
+                self.shared.console_progress.notify_all(true);
+                return true;
+            }
+            Err(source_len) => {
+                self.shared
+                    .log_subscription_dropped_records
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                self.shared
+                    .log_subscription_dropped_bytes
+                    .fetch_add(source_len, core::sync::atomic::Ordering::Relaxed);
+                self.shared.stats.add_log_dropped_records(1);
+                self.shared.stats.add_log_dropped(source_len);
+                self.shared.console_progress.notify_all(true);
+                return true;
+            }
+            Ok(Some(record)) => self.pending_log = Some(LogRecordCursor::new(record)),
+        }
         true
     }
 
@@ -529,53 +582,94 @@ impl SerialWorker {
             self.shared
                 .log_barriers
                 .load(core::sync::atomic::Ordering::Acquire),
-            self.pending_control.is_some(),
+            self.control_transaction_pending(),
         ) && self.shared.log_mailbox.has_pending_for(self.shared.index)
     }
 
-    fn update_tx_idle(&mut self) {
-        let drain_active = self
-            .shared
-            .log_barriers
-            .load(core::sync::atomic::Ordering::Acquire)
-            != 0;
-        let worker_empty =
-            self.pending_frame.is_none() && (!drain_active || self.pending_log.is_none());
-        let hardware_idle = if !self.shared.started() {
-            true
+    fn progress_tx_drain(&mut self) -> bool {
+        if self.pending_drain.is_none() {
+            return false;
+        }
+
+        let result = if !self.shared.started() {
+            Err(RuntimeError::SerialNotStarted)
+        } else if self.tx_bytes_pending() {
+            return false;
         } else {
-            self.shared.with_port(|port| port.tx_idle())
+            match self.shared.with_port(|port| port.tx_idle()) {
+                Some(true) => Ok(()),
+                Some(false) => return true,
+                None => Err(RuntimeError::SerialNotStarted),
+            }
         };
-        if !hardware_idle && !self.shared.polling {
-            self.pending_rearm |= SerialEventSet::TX_SPACE;
+        if let Some(completion) = self.pending_drain.take() {
+            completion.complete(result);
         }
-        if self
-            .shared
-            .ingress
-            .mark_idle_if_empty(worker_empty, hardware_idle)
-        {
-            self.shared.publish_tx_idle();
-        }
+        false
+    }
+
+    fn tx_bytes_pending(&self) -> bool {
+        self.pending_frame.is_some()
+            || self.pending_log.is_some()
+            || self.shared.ingress.has_pending()
+    }
+
+    fn tx_work_pending(&self) -> bool {
+        self.tx_bytes_pending() || self.logs_serviceable()
+    }
+
+    fn control_transaction_pending(&self) -> bool {
+        self.pending_control.is_some() || self.pending_drain.is_some()
     }
 
     fn rearm_sources(&mut self) {
-        let mut sources = core::mem::take(&mut self.pending_rearm);
-        if self.pending_frame.is_none()
-            && self.pending_log.is_none()
-            && !self.shared.ingress.has_pending()
-            && !self.logs_serviceable()
-            && self.shared.ingress.is_idle()
-        {
-            sources.remove(SerialEventSet::TX_SPACE);
-        }
+        let sources = tx_rearm_sources(
+            core::mem::take(&mut self.pending_rearm),
+            self.tx_work_pending(),
+        );
         if sources.is_empty() {
             return;
         }
 
-        let ready = self.shared.with_port(|port| port.rearm(sources));
+        let ready = self
+            .shared
+            .with_port(|port| port.rearm(sources))
+            .unwrap_or_default();
         self.pending_rearm |= ready;
         self.immediate_events |= ready;
     }
+}
+
+#[derive(Clone, Copy)]
+enum PortStart<'a> {
+    Configure(&'a Config),
+    AdoptFirmwareConsole,
+}
+
+fn prepare_port_for_start(
+    port: &mut dyn rdif_serial::UartPort,
+    start: PortStart<'_>,
+) -> Result<(), rdif_serial::ConfigError> {
+    match start {
+        PortStart::Configure(config) => port.startup(config)?,
+        PortStart::AdoptFirmwareConsole => {}
+    }
+    port.mask_all();
+    Ok(())
+}
+
+fn cleanup_failed_port_start(port: &mut dyn rdif_serial::UartPort, start: PortStart<'_>) {
+    if matches!(start, PortStart::Configure(_)) {
+        port.mask_all();
+        port.shutdown();
+    }
+}
+
+fn tx_rearm_sources(mut sources: SerialEventSet, tx_work_pending: bool) -> SerialEventSet {
+    if !tx_work_pending {
+        sources.remove(SerialEventSet::TX_SPACE);
+    }
+    sources
 }
 
 #[derive(Clone, Copy)]
@@ -590,6 +684,24 @@ fn config_must_wait_for_pending_log(op: &ControlOp, pending_log: bool) -> bool {
 
 const fn log_extraction_allowed(active_barriers: usize, pending_control: bool) -> bool {
     active_barriers == 0 && !pending_control
+}
+
+/// Routes exactly one already-formatted record at a subscription boundary.
+/// `Ok(None)` means it was queued, `Ok(Some(_))` preserves direct UART output,
+/// and `Err(source_len)` reports one whole-record overflow.
+fn route_log_subscription(
+    active: bool,
+    subscription: &mut SpscProducer<LogRecord>,
+    record: LogRecord,
+) -> Result<Option<LogRecord>, usize> {
+    if !active {
+        return Ok(Some(record));
+    }
+    let source_len = record.source_len();
+    subscription
+        .push(record)
+        .map(|()| None)
+        .map_err(|_| source_len)
 }
 
 fn discard_rx_sources(
@@ -609,6 +721,19 @@ fn discard_rx_sources(
 enum RxPath {
     Irq,
     Port,
+}
+
+const fn select_deferred_rx_path(
+    irq_samples_pending: bool,
+    hardware_ready: bool,
+) -> Option<RxPath> {
+    if irq_samples_pending {
+        Some(RxPath::Irq)
+    } else if hardware_ready {
+        Some(RxPath::Port)
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -713,6 +838,56 @@ mod tests {
         source_pending: Arc<AtomicBool>,
     }
 
+    #[derive(Default)]
+    struct FirmwareConsolePort {
+        startup_called: bool,
+        mask_all_called: bool,
+        shutdown_called: bool,
+    }
+
+    impl rdif_serial::UartPort for FirmwareConsolePort {
+        fn startup(&mut self, _config: &Config) -> Result<(), ConfigError> {
+            self.startup_called = true;
+            Ok(())
+        }
+
+        fn shutdown(&mut self) {
+            self.shutdown_called = true;
+        }
+
+        fn set_config(&mut self, _config: &Config) -> Result<(), ConfigError> {
+            Ok(())
+        }
+
+        fn read_rx(&mut self) -> Option<RxSample> {
+            None
+        }
+
+        fn discard_rx(&mut self) {}
+
+        fn write_tx(&mut self, _bytes: &[u8]) -> usize {
+            0
+        }
+
+        fn discard_tx(&mut self) -> bool {
+            false
+        }
+
+        fn tx_idle(&mut self) -> bool {
+            true
+        }
+
+        fn mask(&mut self, _sources: SerialEventSet) {}
+
+        fn mask_all(&mut self) {
+            self.mask_all_called = true;
+        }
+
+        fn rearm(&mut self, _sources: SerialEventSet) -> SerialEventSet {
+            SerialEventSet::empty()
+        }
+    }
+
     impl rdif_serial::UartPort for SourcePort {
         fn startup(&mut self, _config: &Config) -> Result<(), ConfigError> {
             Ok(())
@@ -792,6 +967,48 @@ mod tests {
     }
 
     #[test]
+    fn firmware_console_adoption_does_not_reinitialize_working_uart() {
+        let mut port = FirmwareConsolePort::default();
+
+        prepare_port_for_start(&mut port, PortStart::AdoptFirmwareConsole).unwrap();
+
+        assert!(!port.startup_called);
+        assert!(port.mask_all_called);
+    }
+
+    #[test]
+    fn ordinary_serial_start_still_initializes_the_port() {
+        let mut port = FirmwareConsolePort::default();
+        let config = Config::new().baudrate(230_400);
+
+        prepare_port_for_start(&mut port, PortStart::Configure(&config)).unwrap();
+
+        assert!(port.startup_called);
+        assert!(port.mask_all_called);
+    }
+
+    #[test]
+    fn failed_adoption_does_not_reset_the_firmware_uart() {
+        let mut port = FirmwareConsolePort::default();
+
+        cleanup_failed_port_start(&mut port, PortStart::AdoptFirmwareConsole);
+
+        assert!(!port.mask_all_called);
+        assert!(!port.shutdown_called);
+    }
+
+    #[test]
+    fn failed_ordinary_start_shuts_the_initialized_uart_down() {
+        let mut port = FirmwareConsolePort::default();
+        let config = Config::new();
+
+        cleanup_failed_port_start(&mut port, PortStart::Configure(&config));
+
+        assert!(port.mask_all_called);
+        assert!(port.shutdown_called);
+    }
+
+    #[test]
     fn normalized_sample_reserves_byte_and_overrun_slots_together() {
         let normalized = normalize_rx(
             RxSample {
@@ -805,6 +1022,13 @@ mod tests {
         assert_eq!(normalized.flag, RxFlag::Parity);
         assert!(normalized.overrun);
         assert_eq!(normalized.output_items(), 2);
+    }
+
+    #[test]
+    fn immediate_hardware_rx_without_irq_samples_uses_the_port() {
+        assert_eq!(select_deferred_rx_path(false, true), Some(RxPath::Port));
+        assert_eq!(select_deferred_rx_path(true, true), Some(RxPath::Irq));
+        assert_eq!(select_deferred_rx_path(false, false), None);
     }
 
     #[test]
@@ -874,6 +1098,14 @@ mod tests {
     }
 
     #[test]
+    fn hardware_completion_without_pending_bytes_does_not_rearm_tx() {
+        assert!(
+            tx_rearm_sources(SerialEventSet::TX_SPACE, false).is_empty(),
+            "hardware completion is polled only by an explicit drain transaction"
+        );
+    }
+
+    #[test]
     fn configuration_waits_for_the_current_log_record() {
         assert!(config_must_wait_for_pending_log(
             &ControlOp::SetConfig(Config::new()),
@@ -894,5 +1126,60 @@ mod tests {
         assert!(log_extraction_allowed(0, false));
         assert!(!log_extraction_allowed(1, false));
         assert!(!log_extraction_allowed(0, true));
+    }
+
+    #[test]
+    fn log_subscription_switches_only_complete_records() {
+        let (mut producer, mut consumer) = super::super::spsc::channel(2);
+        let first = LogRecord::format(
+            0,
+            0,
+            super::super::log_mailbox::LogRecordMeta::print(1, None),
+            format_args!("rm"),
+        )
+        .unwrap();
+        let second = LogRecord::format(
+            1,
+            0,
+            super::super::log_mailbox::LogRecordMeta::print(2, None),
+            format_args!(":host\n"),
+        )
+        .unwrap();
+
+        let direct = route_log_subscription(false, &mut producer, first)
+            .unwrap()
+            .expect("unsubscribed record must stay on the direct path");
+        assert_eq!(direct.bytes(), b"rm");
+        assert!(
+            route_log_subscription(true, &mut producer, second)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(consumer.pop().unwrap().bytes(), b":host\r\n");
+    }
+
+    #[test]
+    fn full_log_subscription_drops_one_whole_record() {
+        let (mut producer, _consumer) = super::super::spsc::channel(1);
+        let record = |sequence, text| {
+            LogRecord::format(
+                0,
+                sequence,
+                super::super::log_mailbox::LogRecordMeta::print(sequence, None),
+                format_args!("{text}"),
+            )
+            .unwrap()
+        };
+
+        assert!(
+            route_log_subscription(true, &mut producer, record(0, "first"))
+                .unwrap()
+                .is_none()
+        );
+        let overflow = match route_log_subscription(true, &mut producer, record(1, "second")) {
+            Err(source_len) => source_len,
+            Ok(_) => panic!("a full subscription must drop the complete second record"),
+        };
+        assert_eq!(overflow, "second".len());
     }
 }

@@ -124,34 +124,21 @@ pub struct Ns16550EmergencyTx<T: Kind> {
     base: T,
 }
 
-struct Ns16550EmergencyIrqMask<'a, T: Kind> {
-    base: &'a T,
-    enabled: InterruptEnableFlags,
-}
-
-impl<T: Kind> Drop for Ns16550EmergencyIrqMask<'_, T> {
-    fn drop(&mut self) {
-        self.base.write_flags(UART_IER, self.enabled);
-    }
-}
-
 impl<T: Kind> Ns16550EmergencyTx<T> {
-    fn mask_interrupts(&self) -> Ns16550EmergencyIrqMask<'_, T> {
-        let enabled = self.base.read_flags(UART_IER);
+    fn mask_interrupts(&self) {
         self.base
             .write_flags(UART_IER, InterruptEnableFlags::empty());
         // Flush a posted MMIO write before the emergency path touches TX.
         let _: InterruptEnableFlags = self.base.read_flags(UART_IER);
-        Ns16550EmergencyIrqMask {
-            base: &self.base,
-            enabled,
-        }
     }
 }
 
 impl<T: Kind> UartEmergencyTx for Ns16550EmergencyTx<T> {
+    unsafe fn mask_interrupts_unlocked(&self) {
+        self.mask_interrupts();
+    }
+
     unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
-        let _irq_mask = self.mask_interrupts();
         let mut written = 0;
         for &byte in bytes.iter().take(UART_FIFO_SIZE as usize) {
             let status: LineStatusFlags = self.base.read_flags(UART_LSR);
@@ -1250,7 +1237,7 @@ mod tests {
         let (_guard, uart) = serial();
         let parts = uart.split();
         let gate = UartRegisterGate::new(parts.emergency_tx);
-        let access = gate.try_enter().unwrap();
+        let access = gate.try_begin_emergency().unwrap();
         REGS[UART_LSR as usize].store(
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
             Ordering::SeqCst,
@@ -1262,11 +1249,10 @@ mod tests {
     }
 
     #[test]
-    fn emergency_tx_masks_device_interrupts_while_touching_fifo() {
+    fn emergency_takeover_leaves_device_interrupts_masked() {
         let (_guard, uart) = serial();
         let parts = uart.split();
         let gate = UartRegisterGate::new(parts.emergency_tx);
-        let access = gate.try_enter().unwrap();
         let enabled = UART_IER_RDI | UART_IER_RLSI | UART_IER_THRI;
         REGS[UART_IER as usize].store(enabled, Ordering::SeqCst);
         REGS[UART_LSR as usize].store(
@@ -1274,6 +1260,7 @@ mod tests {
             Ordering::SeqCst,
         );
 
+        let access = gate.try_begin_emergency().unwrap();
         assert_eq!(access.try_write(b"x"), 1);
         assert_eq!(
             THR_WRITE_IER.load(Ordering::SeqCst),
@@ -1282,8 +1269,8 @@ mod tests {
         );
         assert_eq!(
             REGS[UART_IER as usize].load(Ordering::SeqCst),
-            enabled,
-            "emergency output must restore the worker-owned interrupt mask"
+            0,
+            "terminal emergency ownership must not rearm the UART source"
         );
     }
 
@@ -1297,7 +1284,7 @@ mod tests {
         };
         let bytes = [b'x'; 17];
         let gate = UartRegisterGate::new(tx);
-        let access = gate.try_enter().unwrap();
+        let access = gate.try_begin_emergency().unwrap();
 
         assert_eq!(access.try_write(&bytes), 16);
         assert_eq!(writes.load(Ordering::SeqCst), 16);

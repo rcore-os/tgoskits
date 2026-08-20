@@ -113,6 +113,13 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
         ax_ipi::mark_current_cpu_ready();
     }
 
+    // Publishing a log record is safe as soon as the per-CPU area exists, but
+    // waking the owner worker may select a run queue or send an IPI. Publish
+    // that separate capability only after this CPU has completed every
+    // scheduler, IRQ, and IPI prerequisite compiled into this runtime.
+    #[cfg(all(feature = "irq", feature = "multitask"))]
+    super::serial::mark_log_wake_ready(cpu_id);
+
     info!("Secondary CPU {cpu_id:x} init OK.");
     super::INITED_CPUS.fetch_add(1, Ordering::Release);
 

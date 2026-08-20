@@ -31,6 +31,11 @@ use ax_std as _;
 
 mod banner;
 mod config;
+#[cfg(any(
+    feature = "test-console-atomic-output",
+    feature = "test-console-interleave"
+))]
+mod console_regression;
 mod guest_console;
 #[cfg(feature = "http-axum")]
 mod http;
@@ -42,12 +47,23 @@ mod virtio_net;
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
 fn init_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        eprintln!("{info}");
         // When the `backtrace` feature is NOT enabled, axbacktrace is compiled
         // without `alloc` → Inner::Disabled → BT_ERROR requires_alloc.
         // When the `backtrace` feature IS enabled, axbacktrace captures real
         // frames (alloc=true, frames enumerated).
-        eprintln!("{}", axbacktrace::Backtrace::capture().kind("panic"));
+        let backtrace = axbacktrace::Backtrace::capture().kind("panic");
+        let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(
+            format_args!("{info}\n{backtrace}\n"),
+        );
+    }));
+}
+
+#[cfg(feature = "test-console-atomic-output")]
+fn init_atomic_output_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(
+            format_args!("{info}\n"),
+        );
     }));
 }
 
@@ -55,15 +71,18 @@ fn init_panic_hook() {
 ///
 /// The startup sequence is:
 ///
-/// 1. Print the startup banner.
-/// 2. Check and enable hardware virtualization on every CPU.
-/// 3. Build the default guest VMs.
-/// 4. Spawn the management plane first — the HTTP server so the API is live
+/// 1. Configure the sole runtime host-console owner.
+/// 2. Print the startup banner through its output worker.
+/// 3. Check and enable hardware virtualization on every CPU.
+/// 4. Build the default guest VMs.
+/// 5. Spawn the management plane first — the HTTP server so the API is live
 ///    before any guest boots — then the VM lifecycle waiter and the shell.
 ///
 /// The vCPU tasks are pinned to the secondary CPUs via `phys_cpu_ids` in the
 /// VM configs, while the management console stays on the primary CPU.
 fn main() {
+    #[cfg(feature = "test-console-atomic-output")]
+    init_atomic_output_panic_hook();
     #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
     init_panic_hook();
 
@@ -75,7 +94,10 @@ fn main() {
     #[cfg(feature = "test-panic-no-backtrace")]
     panic!("axvisor no-backtrace smoke test: panic without backtrace");
 
-    banner::print_logo();
+    guest_console::configure_host_console()
+        .unwrap_or_else(|error| panic!("failed to configure host console: {error:#}"));
+
+    guest_console::submit_host_bytes(banner::STARTUP);
 
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()
@@ -95,9 +117,11 @@ fn main() {
         .spawn(http::serve)
         .unwrap_or_else(|error| panic!("failed to start management HTTP server: {error}"));
 
-    let default_vms = manager::AxvmManager::vm_list();
-    guest_console::configure_host_console_reader(&default_vms)
-        .unwrap_or_else(|error| panic!("failed to configure host console input: {error:#}"));
+    #[cfg(feature = "test-console-atomic-output")]
+    console_regression::emit_atomic_output();
+
+    #[cfg(feature = "test-console-interleave")]
+    console_regression::emit_interleave();
 
     // With `no-auto-start` the default VMs are only created (staying in
     // `Ready`) and the management plane boots them on demand, so nothing is

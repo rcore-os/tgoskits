@@ -3,8 +3,6 @@ use ax_fs_ng::VfsError;
 use ax_io::IoError;
 #[cfg(feature = "net")]
 use ax_net::NetError;
-#[cfg(feature = "serial")]
-use ax_runtime::RuntimeError;
 use syscalls::Errno;
 
 /// Errors owned by the ArceOS POSIX compatibility layer.
@@ -148,17 +146,5 @@ fn vfs_error_to_errno(error: VfsError) -> Errno {
         VfsError::TimedOut => Errno::ETIMEDOUT,
         VfsError::Unsupported => Errno::ENOSYS,
         VfsError::WouldBlock => Errno::EAGAIN,
-    }
-}
-
-#[cfg(feature = "serial")]
-pub(crate) fn runtime_error_to_io_error(error: RuntimeError) -> IoError {
-    match error {
-        RuntimeError::SerialNotStarted => IoError::BadState,
-        RuntimeError::SerialControlBusy => IoError::ResourceBusy,
-        RuntimeError::WouldBlock => IoError::WouldBlock,
-        RuntimeError::OperationNotSupported => IoError::OperationNotSupported,
-        RuntimeError::InvalidCpu { .. } => IoError::InvalidInput,
-        _ => IoError::Io,
     }
 }

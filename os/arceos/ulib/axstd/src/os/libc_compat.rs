@@ -177,12 +177,9 @@ fn is_stdio_fd(fd: c_int) -> bool {
 }
 
 fn write_early_stdio_text(bytes: &[u8]) -> Result<(), Errno> {
-    #[cfg(feature = "serial")]
-    if let Some(result) = ax_runtime::serial::write_active_console_text(bytes) {
-        return result.map(|_| ()).map_err(|_| Errno::EIO);
-    }
-    ax_hal::console::write_text_bytes(bytes);
-    Ok(())
+    ax_api::stdio::ax_console_write_bytes(bytes)
+        .map(|_| ())
+        .map_err(|_| Errno::EIO)
 }
 
 fn early_stdio_write(fd: c_int, buf: *const c_void, count: SizeT) -> Option<SSizeT> {

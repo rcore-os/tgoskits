@@ -3,7 +3,12 @@
 mod host;
 mod mux;
 
-pub(crate) use host::{configure_host_console_reader, read_host_byte, wait_for_host_input};
+#[cfg(feature = "test-console-atomic-output")]
+pub(crate) use host::fill_runtime_output_queue;
+pub(crate) use host::{
+    configure_host_console, read_host_byte, read_host_log, submit_host_bytes, take_host_log_drops,
+    wait_for_host_event,
+};
 #[cfg_attr(
     feature = "no-auto-start",
     expect(
@@ -14,5 +19,5 @@ pub(crate) use host::{configure_host_console_reader, read_host_byte, wait_for_ho
 pub(crate) use mux::attach_default;
 pub(crate) use mux::{
     ConsoleInputEvent, activate, attach, attached_vm, mark_running, mark_stopped,
-    reconcile_vm_states, remove, route_host_byte, serial_backend_factory,
+    reconcile_vm_states, remove, route_host_byte, route_host_log, serial_backend_factory,
 };

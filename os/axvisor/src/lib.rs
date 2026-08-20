@@ -1,5 +1,10 @@
 //! Shared Axvisor kernel support.
 
+extern crate alloc;
+
+/// Line-safe guest output, host-log backlog, and fixed console transport.
+pub mod console_mux;
+
 #[cfg(feature = "fs")]
 mod shell_fs;
 
