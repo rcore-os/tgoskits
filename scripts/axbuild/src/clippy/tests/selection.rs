@@ -2,8 +2,8 @@ use std::{collections::HashSet, path::Path};
 
 use super::common::{args, metadata_with_packages, pkg};
 use crate::clippy::selection::{
-    resolve_requested_packages, validate_clippy_args, validate_requested_packages,
-    workspace_packages,
+    resolve_requested_packages, skip_unsupported_packages, validate_clippy_args,
+    validate_requested_packages, workspace_packages,
 };
 
 #[test]
@@ -59,7 +59,63 @@ fn default_mode_selects_every_workspace_package() {
     assert_eq!(
         resolved
             .iter()
-            .map(|pkg| pkg.package.name.as_str())
+            .map(|pkg| pkg.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha", "beta"]
+    );
+}
+
+#[test]
+fn all_mode_selects_every_workspace_package() {
+    let packages = vec![
+        pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
+        pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
+    ];
+    let metadata = metadata_with_packages(
+        packages.clone(),
+        &[
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            "beta 0.1.0 (path+file:///tmp/beta)",
+        ],
+    );
+
+    let resolved =
+        resolve_requested_packages(&args(true, &[]), Path::new("/tmp/ws"), &metadata, &packages)
+            .unwrap();
+
+    assert_eq!(
+        resolved
+            .iter()
+            .map(|pkg| pkg.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha", "beta"]
+    );
+}
+
+#[test]
+fn unavailable_since_ref_falls_back_to_every_workspace_package() {
+    let root = tempfile::tempdir().unwrap();
+    let packages = vec![
+        pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
+        pkg("beta", "beta 0.1.0 (path+file:///tmp/beta)", &[], None),
+    ];
+    let metadata = metadata_with_packages(
+        packages.clone(),
+        &[
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            "beta 0.1.0 (path+file:///tmp/beta)",
+        ],
+    );
+    let mut clippy_args = args(false, &[]);
+    clippy_args.since = Some("missing-ref".into());
+
+    let resolved =
+        resolve_requested_packages(&clippy_args, root.path(), &metadata, &packages).unwrap();
+
+    assert_eq!(
+        resolved
+            .iter()
+            .map(|pkg| pkg.name.as_str())
             .collect::<Vec<_>>(),
         vec!["alpha", "beta"]
     );
@@ -89,9 +145,48 @@ fn package_selection_overrides_default_workspace_selection() {
     assert_eq!(
         resolved
             .iter()
-            .map(|pkg| pkg.package.name.as_str())
+            .map(|pkg| pkg.name.as_str())
             .collect::<Vec<_>>(),
         vec!["beta"]
+    );
+}
+
+#[test]
+fn unsupported_packages_are_filtered_from_generic_clippy() {
+    let packages = vec![
+        pkg("alpha", "alpha 0.1.0 (path+file:///tmp/alpha)", &[], None),
+        pkg(
+            "axvisor",
+            "axvisor 0.1.0 (path+file:///tmp/axvisor)",
+            &[],
+            None,
+        ),
+        pkg("mingo", "mingo 0.1.0 (path+file:///tmp/mingo)", &[], None),
+    ];
+    let metadata = metadata_with_packages(
+        packages.clone(),
+        &[
+            "alpha 0.1.0 (path+file:///tmp/alpha)",
+            "axvisor 0.1.0 (path+file:///tmp/axvisor)",
+            "mingo 0.1.0 (path+file:///tmp/mingo)",
+        ],
+    );
+    let resolved = resolve_requested_packages(
+        &args(false, &[]),
+        Path::new("/tmp/ws"),
+        &metadata,
+        &packages,
+    )
+    .unwrap();
+
+    let filtered = skip_unsupported_packages(resolved);
+
+    assert_eq!(
+        filtered
+            .iter()
+            .map(|package| package.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha"]
     );
 }
 

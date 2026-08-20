@@ -1,11 +1,8 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::path::PathBuf;
 
-use cargo_metadata::Metadata;
-
-use super::common::{package, test_workspace};
+use super::common::test_workspace;
 use crate::support::git::{
     IncrementalPackageSelection, selection::select_incremental_packages_for_paths,
-    top_level_affected_workspace_packages,
 };
 
 #[test]
@@ -66,57 +63,6 @@ fn changed_middle_crate_selects_itself_and_dependents() {
             affected: vec!["beta".into(), "gamma".into()],
         }
     );
-}
-
-#[test]
-fn top_level_frontier_covers_a_dependency_cycle_at_the_top() {
-    // `a` and `b` form a cycle (only reachable through dev-dependencies) and
-    // sit at the top of the affected set. The bare "maximal element" rule
-    // drops both; the coverage guarantee must still promote one as a root so
-    // the whole cycle is linted with-deps.
-    let root = tempfile::tempdir().unwrap();
-    let ru = root.path().display().to_string();
-    let a = format!("a 0.1.0 (path+file://{ru}/crates/a)");
-    let b = format!("b 0.1.0 (path+file://{ru}/crates/b)");
-    let leaf = format!("leaf 0.1.0 (path+file://{ru}/crates/leaf)");
-    let dep = |name: &str, pkg: &str| {
-        serde_json::json!({
-            "name": name,
-            "pkg": pkg,
-            "dep_kinds": [{ "kind": null, "target": null }]
-        })
-    };
-    let value = serde_json::json!({
-        "packages": [
-            package(root.path(), "a", &["b", "leaf"]),
-            package(root.path(), "b", &["a", "leaf"]),
-            package(root.path(), "leaf", &[]),
-        ],
-        "workspace_members": [a, b, leaf],
-        "workspace_default_members": [a, b, leaf],
-        "resolve": {
-            "nodes": [
-                { "id": a, "dependencies": [b, leaf], "deps": [dep("b", &b), dep("leaf", &leaf)], "features": [] },
-                { "id": b, "dependencies": [a, leaf], "deps": [dep("a", &a), dep("leaf", &leaf)], "features": [] },
-                { "id": leaf, "dependencies": [], "deps": [], "features": [] },
-            ],
-            "root": null
-        },
-        "target_directory": root.path().join("target"),
-        "version": 1,
-        "workspace_root": root.path(),
-        "metadata": null,
-    });
-    let metadata: Metadata = serde_json::from_value(value).unwrap();
-    let packages = metadata.packages.clone();
-
-    let affected = BTreeSet::from(["a".to_string(), "b".to_string(), "leaf".to_string()]);
-    let frontier = top_level_affected_workspace_packages(&metadata, &packages, &affected);
-
-    // One cycle representative is promoted; its with-deps run covers the whole
-    // cycle plus `leaf`. The bare maximal-element rule would return an empty
-    // frontier and silently skip `a`/`b`.
-    assert_eq!(frontier, vec!["a".to_string()]);
 }
 
 #[test]
