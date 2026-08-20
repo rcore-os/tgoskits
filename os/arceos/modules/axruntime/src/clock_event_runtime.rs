@@ -313,6 +313,7 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
         // nested scheduler-clock publication for this complete stamp.
         unsafe { ax_hal::time::scheduler_clock_tick() }
             .expect("current CPU scheduler clock must be online before timer IRQs");
+        #[cfg(feature = "multitask")]
         let now = monotonic_now();
         #[cfg(feature = "multitask")]
         let outcome = crate::task::on_clock_event(now);

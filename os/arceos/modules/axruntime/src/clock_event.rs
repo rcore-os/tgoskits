@@ -33,6 +33,7 @@ pub(crate) enum ClockEventPhase {
     Armed,
     Firing,
     /// An expired physical edge remains owned until IRQ-return rearm.
+    #[cfg(any(test, feature = "multitask"))]
     Deferred,
 }
 
@@ -52,6 +53,7 @@ pub(crate) enum ClockEventRearm {
     #[cfg(any(test, not(feature = "multitask")))]
     Immediate,
     /// Transfer rearm to the IRQ-return or scheduler-tail transaction.
+    #[cfg(any(test, feature = "multitask"))]
     Deferred,
 }
 
@@ -206,10 +208,11 @@ impl LocalClockEvent {
     /// and reprograms the still-earliest absolute deadline exactly once.
     pub(crate) fn claim_irq(&mut self, _now: MonotonicInstant) -> ClockEventIrqClaim {
         match self.phase {
-            ClockEventPhase::Offline
-            | ClockEventPhase::Idle
-            | ClockEventPhase::Firing
-            | ClockEventPhase::Deferred => {
+            ClockEventPhase::Offline | ClockEventPhase::Idle | ClockEventPhase::Firing => {
+                return ClockEventIrqClaim::Ignored;
+            }
+            #[cfg(any(test, feature = "multitask"))]
+            ClockEventPhase::Deferred => {
                 return ClockEventIrqClaim::Ignored;
             }
             ClockEventPhase::Armed => {}
@@ -259,6 +262,7 @@ impl LocalClockEvent {
                 self.phase = ClockEventPhase::Idle;
                 self.reconcile_arm()
             }
+            #[cfg(any(test, feature = "multitask"))]
             ClockEventRearm::Deferred => {
                 // Match Linux's TIF_HRTIMER_REARM transaction: the expired
                 // comparator has left the active base while IRQs stay
@@ -271,6 +275,7 @@ impl LocalClockEvent {
     }
 
     /// Completes a deferred firing transaction before local IRQs are enabled.
+    #[cfg(any(test, feature = "multitask"))]
     pub(crate) fn finish_deferred_rearm(&mut self) -> ClockEventAction {
         if self.phase != ClockEventPhase::Deferred {
             return ClockEventAction::None;
@@ -334,11 +339,13 @@ impl LocalClockEvent {
     }
 
     fn reconcile_arm(&mut self) -> ClockEventAction {
-        if matches!(
-            self.phase,
-            ClockEventPhase::Offline | ClockEventPhase::Firing | ClockEventPhase::Deferred
-        ) {
-            return ClockEventAction::None;
+        match self.phase {
+            ClockEventPhase::Offline | ClockEventPhase::Firing => {
+                return ClockEventAction::None;
+            }
+            #[cfg(any(test, feature = "multitask"))]
+            ClockEventPhase::Deferred => return ClockEventAction::None,
+            ClockEventPhase::Idle | ClockEventPhase::Armed => {}
         }
         let selected = self.selected_deadline();
         if let Some(armed) = self.armed_deadline {
