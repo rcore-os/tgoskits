@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.31...ax-hal-v0.6.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+
+### Fixed
+
+- *(axtask)* preserve scheduler-frame ownership across switches ([#2101](https://github.com/rcore-os/tgoskits/pull/2101))
+- *(ax-cpu)* harden user access and architecture state transitions ([#2075](https://github.com/rcore-os/tgoskits/pull/2075))
+- *(ax-hal)* normalize hypervisor IRQ entry state ([#1949](https://github.com/rcore-os/tgoskits/pull/1949))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(serial)* establish bounded owner-affine UART runtime ([#2076](https://github.com/rcore-os/tgoskits/pull/2076))
+- *(cpu-local)* define scheduler-neutral execution context boundary ([#2080](https://github.com/rcore-os/tgoskits/pull/2080))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.5.31](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.30...ax-hal-v0.5.31) - 2026-08-09
 
 ### Fixed

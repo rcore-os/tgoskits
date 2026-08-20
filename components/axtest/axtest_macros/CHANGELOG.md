@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/axtest-macros-v0.5.14...axtest-macros-v0.5.15) - 2026-08-20
+
+### Fixed
+
+- *(console)* unify sleepable runtime console arbitration ([#2113](https://github.com/rcore-os/tgoskits/pull/2113))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+
 ## [0.5.14](https://github.com/rcore-os/tgoskits/compare/axtest-macros-v0.5.13...axtest-macros-v0.5.14) - 2026-08-09
 
 ### Other

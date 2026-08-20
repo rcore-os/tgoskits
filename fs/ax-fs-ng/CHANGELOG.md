@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.7...ax-fs-ng-v0.9.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+
+### Fixed
+
+- *(sdmmc)* align Rockchip reset failure lifecycle ([#1987](https://github.com/rcore-os/tgoskits/pull/1987))
+- *(rsext4)* propagate journal I/O failures without panicking ([#1967](https://github.com/rcore-os/tgoskits/pull/1967))
+- *(ax-std)* implement futimens for regular files ([#1950](https://github.com/rcore-os/tgoskits/pull/1950))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.6...ax-fs-ng-v0.8.7) - 2026-08-09
 
 ### Fixed

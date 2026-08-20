@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.5.31...ax-mm-v0.6.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
+### Fixed
+
+- *(ax-mm)* free frame after lazy remap failure ([#2094](https://github.com/rcore-os/tgoskits/pull/2094))
+- *(ax-mm)* roll back failed populated mappings ([#2079](https://github.com/rcore-os/tgoskits/pull/2079))
+- *(ax-cpu)* harden user access and architecture state transitions ([#2075](https://github.com/rcore-os/tgoskits/pull/2075))
+
+### Other
+
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.5.31](https://github.com/rcore-os/tgoskits/compare/ax-mm-v0.5.30...ax-mm-v0.5.31) - 2026-08-09
 
 ### Other

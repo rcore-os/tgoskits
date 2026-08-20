@@ -1,6 +1,6 @@
 [package]
 name = "riscv_vcpu"
-version = "0.5.20"
+version = "0.6.0"
 edition.workspace = true
 authors = [
     "KeYang Hu <keyang.hu@qq.com>",

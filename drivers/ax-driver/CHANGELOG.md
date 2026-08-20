@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.3...ax-driver-v0.13.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+- *(axvisor)* add dual-guest virtio-net support ([#1927](https://github.com/rcore-os/tgoskits/pull/1927))
+
+### Fixed
+
+- *(sdmmc)* align Rockchip reset failure lifecycle ([#1987](https://github.com/rcore-os/tgoskits/pull/1987))
+- *(visionfive2)* restore booti and SD rootfs boot ([#1954](https://github.com/rcore-os/tgoskits/pull/1954))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(serial)* establish bounded owner-affine UART runtime ([#2076](https://github.com/rcore-os/tgoskits/pull/2076))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(rdrive)* add fdt_ref() to borrow the device tree without cloning ([#2004](https://github.com/rcore-os/tgoskits/pull/2004))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.12.3](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.2...ax-driver-v0.12.3) - 2026-08-09
 
 ### Fixed
