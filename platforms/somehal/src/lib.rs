@@ -27,12 +27,19 @@ pub use boot_console::{ConsoleDeviceIdError, device_id as console_device_id};
 pub use page_table_generic::{PagingError, PagingResult};
 pub use platform::platform_name;
 pub use setup::KernelOp;
+// On x86_64 the system timer lives inside the local APIC, so somehal's own
+// timer module owns arming it through the interrupt-controller driver;
+// other architectures reuse someboot's timer contract directly.
+#[cfg(not(target_arch = "x86_64"))]
+pub use someboot::timer;
 pub use someboot::{
     boot_entropy, bootargs, console, entry, fdt_addr, fdt_addr_phys, mem, power, rsdp_addr_phys,
-    smp, timer,
+    smp,
 };
 pub use somehal_macros::somehal_secondary_entry as secondary_entry;
 
+#[cfg(target_arch = "x86_64")]
+pub use crate::arch::timer;
 use crate::common::PlatOp;
 
 #[cfg(target_arch = "loongarch64")]
