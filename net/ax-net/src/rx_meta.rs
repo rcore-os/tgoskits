@@ -118,4 +118,14 @@ mod tests {
             Some(ReceivedTrafficClass::Ipv6(0x2e))
         );
     }
+
+    #[test]
+    fn unrelated_or_malformed_metadata_is_ignored() {
+        assert_eq!(received_traffic_class(PacketMeta::default()), None);
+
+        let mut unknown_version = PacketMeta::default();
+        unknown_version.id = RX_QOS_META_MARK | (9 << RX_QOS_META_VERSION_SHIFT);
+        assert_eq!(received_traffic_class(unknown_version), None);
+        assert_eq!(packet_meta_for_rx_packet(&[0xff, 0]).id, 0);
+    }
 }

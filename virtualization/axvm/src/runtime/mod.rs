@@ -137,9 +137,51 @@ fn notify_runtime_for_device_poll(runtime: &crate::vm::VmRuntimeHandle, vcpu_num
 
 pub fn stop_vm(vm_id: usize) -> AxVmResult {
     let vm = vm_by_id(vm_id)?;
+    if matches!(vm.status(), VmStatus::Running) {
+        // `start_vm` flips the status to `Running` synchronously while the
+        // vCPU task may still be queued on another CPU. Requesting a stop in
+        // that window strands the task in its startup gate (which needs a
+        // `Running` window it already missed), so wait for the first vCPU
+        // entry before accepting the stop.
+        wait_until_vcpu_entered(|| vm.running_vcpu_count() > 0, || vm.stopping())?;
+    }
     vm.stop(StopReason::Forced)?;
     vcpus::notify_all_vcpus(vm_id);
     Ok(())
+}
+
+/// Boundedly wait for at least one vCPU task to enter the guest run loop
+/// before a request-stop is accepted.
+///
+/// `start_vm` flips the VM status to `Running` synchronously while the vCPU
+/// task may still be queued on another CPU. If the stop is accepted in that
+/// window, the task's startup gate blocks on a `Running` window it already
+/// missed and parks forever, so the VM never reaches `Stopped`. Waiting for
+/// the first vCPU entry closes that window.
+///
+/// The wait is bounded (`MAX_YIELDS`, mirroring the `wait_until_stopped`
+/// pattern): a vCPU task that never runs yields an error instead of hanging
+/// the caller, leaving the VM `Running` so the stop can be retried.
+///
+/// `pub(crate)` because the destroy/reset quiesce path
+/// (`AxVM::stop_and_join_runtime`) applies the same guard: a client may POST
+/// `/start` and then immediately DELETE the VM, so `destroy()` must hold the
+/// request-stop until the first vCPU entry just like `stop_vm`.
+pub(crate) fn wait_until_vcpu_entered(
+    vcpu_entered: impl Fn() -> bool,
+    vm_stopping: impl Fn() -> bool,
+) -> AxVmResult {
+    const MAX_YIELDS: usize = 10_000;
+    for _ in 0..MAX_YIELDS {
+        if vcpu_entered() || vm_stopping() {
+            return Ok(());
+        }
+        crate::host::task::yield_now();
+    }
+    ax_err!(
+        BadState,
+        "vCPU task did not enter the guest before request-stop"
+    )
 }
 
 pub fn resume_vm(vm_id: usize) -> AxVmResult {
@@ -179,6 +221,11 @@ const fn missing_vm_error(vm_id: usize) -> AxVmError {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        cell::Cell,
+        sync::{Arc, atomic::AtomicBool},
+    };
+
     use super::*;
 
     #[test]
@@ -221,5 +268,73 @@ mod tests {
         notify_runtime_for_device_poll(&runtime, 1);
 
         assert!(runtime.device_poll_requested());
+    }
+
+    #[test]
+    fn request_stop_wait_returns_immediately_once_a_vcpu_has_entered() {
+        assert!(wait_until_vcpu_entered(|| true, || false).is_ok());
+    }
+
+    #[test]
+    fn request_stop_wait_bails_out_when_vm_is_already_stopping() {
+        assert!(wait_until_vcpu_entered(|| false, || true).is_ok());
+    }
+
+    #[test]
+    fn request_stop_wait_times_out_instead_of_accepting_a_never_entering_vcpu() {
+        let err = wait_until_vcpu_entered(|| false, || false).unwrap_err();
+
+        assert!(matches!(err, AxVmError::InvalidState { .. }));
+    }
+
+    #[test]
+    fn request_stop_waits_for_vcpu_entry_when_stop_precedes_entry() {
+        // Force the scheduling order that previously stranded the vCPU task:
+        // the request-stop arrives while no vCPU task has entered the guest
+        // run loop, and the task only enters after the wait has begun. The
+        // stop must be held back until entry, never accepted-and-stranded.
+        let entered = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::new(AtomicBool::new(false));
+        let first_poll = Arc::new(std::sync::Barrier::new(2));
+        let release_entered = Arc::new(std::sync::Barrier::new(2));
+
+        let entered_for_task = entered.clone();
+        let first_poll_for_task = first_poll.clone();
+        let release_entered_for_task = release_entered.clone();
+        let vcpu_task = std::thread::spawn(move || {
+            // The vCPU task is queued but has not entered the guest yet.
+            first_poll_for_task.wait();
+            release_entered_for_task.wait();
+            entered_for_task.store(true, Ordering::Release);
+        });
+
+        let entered_for_wait = entered.clone();
+        let stopping_for_wait = stopping.clone();
+        let poll_count = Cell::new(0);
+        let result = wait_until_vcpu_entered(
+            || {
+                let is_entered = entered_for_wait.load(Ordering::Acquire);
+                if poll_count.get() == 0 {
+                    // First poll observed the pre-entry state. Only now release
+                    // the vCPU task to enter the guest, deterministically
+                    // ordering stop-before-entry.
+                    poll_count.set(1);
+                    first_poll.wait();
+                    release_entered.wait();
+                }
+                is_entered
+            },
+            || stopping_for_wait.load(Ordering::Acquire),
+        );
+
+        vcpu_task.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "stop must wait for vCPU entry, not strand it"
+        );
+        assert!(
+            entered.load(Ordering::Acquire),
+            "vCPU task must have entered the guest run loop"
+        );
     }
 }

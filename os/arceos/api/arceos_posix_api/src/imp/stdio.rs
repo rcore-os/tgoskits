@@ -5,22 +5,11 @@ use {crate::PosixError, crate::PosixResult, alloc::sync::Arc, ax_io::PollState};
 use crate::sync::Mutex;
 
 fn console_read_bytes(buf: &mut [u8]) -> IoResult<usize> {
-    let len = ax_hal::console::read_bytes(buf);
-    for c in &mut buf[..len] {
-        if *c == b'\r' {
-            *c = b'\n';
-        }
-    }
-    Ok(len)
+    Ok(ax_api::stdio::ax_console_read_bytes(buf)?)
 }
 
 fn console_write_bytes(buf: &[u8]) -> IoResult<usize> {
-    #[cfg(feature = "serial")]
-    if let Some(result) = ax_runtime::serial::write_active_console_text(buf) {
-        return result.map_err(crate::error::runtime_error_to_io_error);
-    }
-    ax_hal::console::write_text_bytes(buf);
-    Ok(buf.len())
+    Ok(ax_api::stdio::ax_console_write_bytes(buf)?)
 }
 
 struct StdinRaw;
@@ -47,6 +36,7 @@ impl Write for StdoutRaw {
     }
 
     fn flush(&mut self) -> IoResult {
+        ax_api::stdio::ax_console_flush()?;
         Ok(())
     }
 }
@@ -62,13 +52,13 @@ impl Stdin {
         if buf.is_empty() || read_len > 0 {
             return Ok(read_len);
         }
-        // try again until we get something
+        // Sleep until the runtime RX worker publishes progress, then retry.
         loop {
+            ax_api::stdio::ax_console_wait_readable()?;
             let read_len = self.inner.lock().read(buf)?;
             if read_len > 0 {
                 return Ok(read_len);
             }
-            crate::sys_sched_yield();
         }
     }
 }

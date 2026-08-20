@@ -65,7 +65,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         );
         return Ok(());
     }
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+        dma_api::DmaConstraints::new(u32::MAX as u64),
+    ));
     let block_config = phytium_block_config(&dma);
     host.configure_dma(dma).map_err(|err| {
         OnProbeError::other(format!("phytium-mci IDMAC configuration failed: {err:?}"))
@@ -102,113 +106,26 @@ fn phytium_block_config(dma: &dma_api::DeviceDma) -> BlockConfig {
 
 #[cfg(test)]
 mod tests {
-    use axklib::{
-        BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuMask, IrqHandle, IrqId, Klib, KlibError,
-        KlibResult, PhysAddr, VirtAddr, impl_trait,
-    };
-
     use super::*;
-
-    struct KlibImpl;
-
-    impl_trait! {
-        impl Klib for KlibImpl {
-            fn mem_iomap(_addr: PhysAddr, _size: usize) -> KlibResult<VirtAddr> {
-                Err(KlibError::Unsupported)
-            }
-
-            fn mem_virt_to_phys(addr: VirtAddr) -> PhysAddr {
-                PhysAddr::from_usize(addr.as_usize())
-            }
-
-            fn mem_make_dma_coherent_uncached(
-                _addr: VirtAddr,
-                _size: usize,
-            ) -> axklib::DmaCoherentMappingOutcome {
-                axklib::DmaCoherentMappingOutcome::NotStarted(KlibError::Unsupported)
-            }
-
-            fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> KlibResult {
-                Err(KlibError::Unsupported)
-            }
-
-            fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
-
-            fn dma_alloc_pages(
-                _dma_mask: u64,
-                _num_pages: usize,
-                _align: usize,
-            ) -> KlibResult<VirtAddr> {
-                Err(KlibError::Unsupported)
-            }
-
-            fn dma_dealloc_pages(_addr: VirtAddr, _num_pages: usize) {}
-
-            fn time_busy_wait(_dur: core::time::Duration) {}
-
-            fn time_monotonic_nanos() -> u64 {
-                0
-            }
-
-            fn time_try_init_epoch_offset(_epoch_time_nanos: u64) -> bool {
-                false
-            }
-
-            fn irq_set_enable(_irq: IrqId, _enabled: bool) -> KlibResult {
-                Ok(())
-            }
-
-            fn irq_request_shared(
-                _irq: IrqId,
-                _handler: BoxedIrqHandler,
-            ) -> KlibResult<IrqHandle> {
-                Err(KlibError::Unsupported)
-            }
-
-            fn irq_request_shared_disabled(
-                _irq: IrqId,
-                _handler: BoxedIrqHandler,
-            ) -> KlibResult<IrqHandle> {
-                Err(KlibError::Unsupported)
-            }
-
-            fn irq_request_percpu(
-                _irq: IrqId,
-                _cpus: IrqCpuMask,
-                _handler: ConcurrentBoxedIrqHandler,
-            ) -> KlibResult<IrqHandle> {
-                Err(KlibError::Unsupported)
-            }
-
-            fn irq_free(_handle: IrqHandle) -> KlibResult {
-                Err(KlibError::Unsupported)
-            }
-
-            fn irq_enable(_handle: IrqHandle) -> KlibResult {
-                Err(KlibError::Unsupported)
-            }
-
-            fn irq_disable(_handle: IrqHandle) -> KlibResult {
-                Err(KlibError::Unsupported)
-            }
-        }
-    }
 
     #[test]
     fn phytium_block_limits_match_persistent_idmac_ring() {
-        let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+        let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
+            dma_api::DmaCoherency::NonCoherent,
+            dma_api::DmaConstraints::new(u32::MAX as u64),
+        ));
         let config = phytium_block_config(&dma);
 
         assert_eq!(config.name(), "phytium-mci");
-        assert_eq!(config.limits.dma_mask, u32::MAX as u64);
+        assert_eq!(config.limits.dma.constraints().addr_mask, u32::MAX as u64);
         assert_eq!(config.limits.max_inflight, 1);
         assert_eq!(config.limits.max_submit_batch, 1);
         assert_eq!(config.limits.max_blocks_per_request, IDMAC_MAX_BLOCKS);
-        assert_eq!(config.limits.max_segment_size, IDMAC_MAX_TRANSFER_SIZE);
+        assert_eq!(
+            config.limits.dma.constraints().max_segment_size,
+            Some(IDMAC_MAX_TRANSFER_SIZE)
+        );
     }
 
     #[test]

@@ -1,19 +1,22 @@
 use super::*;
-use crate::{CPU_AREA_CURRENT_THREAD_OFFSET, CPU_AREA_SELF_BASE_OFFSET};
+use crate::{
+    CPU_AREA_CURRENT_CONTEXT_OFFSET, CPU_AREA_PREEMPTION_STATE_OFFSET, CPU_AREA_SELF_BASE_OFFSET,
+};
 
 const IA32_GS_BASE: u32 = 0xc000_0101;
 #[cfg(feature = "tls")]
 const IA32_FS_BASE: u32 = 0xc000_0100;
 
 pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentModel {
-    current_source_aliases_kernel_tls: false,
+    linux_current: CurrentContextSource::RuntimeAnchor,
+    unikernel_tls: CurrentContextSource::RuntimeAnchor,
 };
 
 pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
     Ok(())
 }
 
-pub(super) unsafe fn install_cpu_base(area_base: usize, _boot_thread: usize) {
+pub(super) unsafe fn install_cpu_base(area_base: usize, _boot_context: usize) {
     let area_base = area_base as u64;
     unsafe {
         core::arch::asm!(
@@ -39,23 +42,29 @@ pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
     Ok(area_base)
 }
 
-pub(super) unsafe fn read_current_thread(_area_base: usize) -> usize {
-    let current_thread: usize;
+pub(super) unsafe fn read_current_context(_area_base: usize) -> usize {
+    let current_context: usize;
     unsafe {
         core::arch::asm!(
             "mov {current}, gs:[{offset}]",
-            current = out(reg) current_thread,
-            offset = const CPU_AREA_CURRENT_THREAD_OFFSET,
+            current = out(reg) current_context,
+            offset = const CPU_AREA_CURRENT_CONTEXT_OFFSET,
             options(nostack, preserves_flags, readonly),
         );
     }
-    current_thread
+    current_context
 }
 
-// x86_64 stores current directly in the GS runtime anchor. The shared atomic
-// publication is therefore the architecture commit; there is no second task
-// pointer register to update.
-pub(super) unsafe fn write_current_thread(_value: usize) {}
+#[inline(always)]
+pub(super) unsafe fn enter_preemption() {
+    unsafe {
+        core::arch::asm!(
+            "inc dword ptr gs:[{offset}]",
+            offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
+            options(nostack),
+        );
+    }
+}
 
 #[cfg(feature = "tls")]
 pub(super) unsafe fn read_kernel_tls() -> usize {

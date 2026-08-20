@@ -2,7 +2,9 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 
 use fdt_edit::{Fdt, RegFixed};
 use log::warn;
-use rdif_serial::{SplitUart, UartInfo, UartIrq, UartParts, UartPort};
+use rdif_serial::{
+    SerialParts, SplitUart, UartEmergencyTx, UartInfo, UartIrq, UartPort, UartRegisterGate,
+};
 use rdrive::{Device, DeviceId, DriverGeneric, probe::acpi::AcpiInfo, register::FdtInfo};
 
 mod ns16550;
@@ -11,11 +13,15 @@ mod rockchip_fiq;
 
 use crate::{BindingInfo, BindingIrq, Error, binding_info_from_acpi, binding_info_from_fdt};
 
-type ErasedUartParts = UartParts<Box<dyn UartPort>, Box<dyn UartIrq>>;
+struct ErasedSerialParts {
+    port: Box<dyn UartPort>,
+    irq: Box<dyn UartIrq>,
+    register_gate: Box<UartRegisterGate<dyn UartEmergencyTx>>,
+}
 
 struct ProbedUart {
     hardware: UartInfo,
-    parts: ErasedUartParts,
+    parts: ErasedSerialParts,
 }
 
 struct PlatformSerialDevice {
@@ -25,7 +31,7 @@ struct PlatformSerialDevice {
     paddr: usize,
     initial_baudrate: u32,
     irq: Option<BindingIrq>,
-    parts: Option<ErasedUartParts>,
+    parts: Option<ErasedSerialParts>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +49,7 @@ pub struct SerialDevice {
     pub info: SerialDeviceInfo,
     pub port: Box<dyn UartPort>,
     pub irq: Box<dyn UartIrq>,
+    pub register_gate: Box<UartRegisterGate<dyn UartEmergencyTx>>,
 }
 
 impl PlatformSerialDevice {
@@ -73,10 +80,20 @@ impl DriverGeneric for PlatformSerialDevice {
 
 fn erase_uart(raw: impl SplitUart) -> ProbedUart {
     let hardware = raw.runtime_info();
-    let UartParts { port, irq } = raw.split();
+    let SerialParts {
+        control,
+        irq,
+        emergency_tx,
+    } = raw.split();
+    let register_gate: Box<UartRegisterGate<dyn UartEmergencyTx>> =
+        Box::new(UartRegisterGate::new(emergency_tx));
     ProbedUart {
         hardware,
-        parts: UartParts::new(Box::new(port), Box::new(irq)),
+        parts: ErasedSerialParts {
+            port: Box::new(control),
+            irq: Box::new(irq),
+            register_gate,
+        },
     }
 }
 
@@ -99,6 +116,7 @@ impl TryFrom<Device<PlatformSerialDevice>> for SerialDevice {
             },
             port: parts.port,
             irq: parts.irq,
+            register_gate: parts.register_gate,
         })
     }
 }

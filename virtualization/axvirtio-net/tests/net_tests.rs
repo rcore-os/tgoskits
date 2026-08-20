@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use ax_memory_addr::PhysAddr;
 use axaddrspace::GuestMemoryAccessor;
 use axdevice_base::{
-    BusAccess, BusKind, BusResponse, ControllerInputId, Device, DeviceId, InterruptControllerId,
-    InterruptTriggerMode, IrqResult, NoopDeviceAccess, Resource, WiredIrqInput, WiredIrqSink,
+    BusKind, ControllerInputId, Device, DeviceAccess, DeviceId, DeviceVcpuId,
+    InterruptControllerId, InterruptTriggerMode, IrqResult, NoopDeviceContext, Resource,
+    WiredIrqInput, WiredIrqSink,
 };
 // Re-export the MMIO register offsets from the common constants.
 use axvirtio_common::constants as vc;
@@ -830,21 +831,17 @@ fn managed_device_declares_resources_and_routes_mmio() {
             },
         ]
     );
-    let mut context = NoopDeviceAccess::new(DeviceId::new(0));
-    let response = device
-        .access(
-            &BusAccess {
-                kind: BusKind::Mmio,
-                is_read: true,
-                addr: BASE_IPA as u64,
-                width: AccessWidth::Dword,
-                data: 0,
-            },
+    let mut context = NoopDeviceContext::new(DeviceId::new(0));
+    let value = device
+        .read(
+            &DeviceAccess::new(
+                DeviceVcpuId::new(0),
+                BusKind::Mmio,
+                BASE_IPA as u64,
+                AccessWidth::Dword,
+            ),
             &mut context,
         )
         .unwrap();
-    assert!(matches!(
-        response,
-        BusResponse::Read { value } if value == vc::MMIO_MAGIC_VALUE as u64
-    ));
+    assert_eq!(value, vc::MMIO_MAGIC_VALUE as u64);
 }

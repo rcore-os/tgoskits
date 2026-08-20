@@ -17,18 +17,12 @@ pub enum TestCommand {
 
 #[derive(Args, Debug, Clone)]
 pub struct ArgsTestQemu {
-    #[arg(
-        long,
-        value_name = "ARCH",
-        required_unless_present_any = ["target", "list"],
-        help = "ArceOS architecture to test"
-    )]
+    #[arg(long, value_name = "ARCH", help = "ArceOS architecture to test")]
     pub arch: Option<String>,
     #[arg(
         short = 't',
         long,
         value_name = "TARGET",
-        required_unless_present_any = ["arch", "list"],
         help = "ArceOS target triple to test"
     )]
     pub target: Option<String>,
@@ -111,6 +105,13 @@ pub(super) fn reject_removed_rust_package_filter(args: &ArgsTestQemu) -> anyhow:
     )
 }
 
+pub(super) fn reject_missing_qemu_target(args: &ArgsTestQemu) -> anyhow::Result<()> {
+    if args.list || args.arch.is_some() || args.target.is_some() {
+        return Ok(());
+    }
+    bail!("ArceOS qemu tests require --arch <ARCH> or --target <TARGET>")
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -143,6 +144,47 @@ mod tests {
             },
             _ => panic!("expected test command"),
         }
+    }
+
+    #[test]
+    fn command_parses_removed_axtest_group_without_target() {
+        #[derive(Parser)]
+        struct Cli {
+            #[command(subcommand)]
+            command: Command,
+        }
+
+        let cli =
+            Cli::try_parse_from(["arceos", "test", "qemu", "--test-group", "axtest"]).unwrap();
+
+        let Command::Test(args) = cli.command else {
+            panic!("expected test command");
+        };
+        let TestCommand::Qemu(args) = args.command else {
+            panic!("expected qemu test command");
+        };
+        assert_eq!(args.test_group.as_deref(), Some("axtest"));
+        assert!(args.arch.is_none());
+        assert!(args.target.is_none());
+    }
+
+    #[test]
+    fn regular_qemu_run_still_requires_arch_or_target() {
+        let args = ArgsTestQemu {
+            arch: None,
+            target: None,
+            test_group: Some("rust".into()),
+            test_case: None,
+            list: false,
+            package: Vec::new(),
+            only_rust: false,
+            only_c: false,
+            no_symbolize: false,
+            keep_qemu_log: false,
+        };
+
+        let err = reject_missing_qemu_target(&args).unwrap_err();
+        assert!(err.to_string().contains("require --arch"));
     }
 
     #[test]

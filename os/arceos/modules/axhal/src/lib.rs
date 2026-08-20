@@ -27,9 +27,6 @@
 
 #![no_std]
 
-#[cfg(all(axtest, feature = "axtest"))]
-mod axtest;
-
 #[cfg(all(feature = "uspace", feature = "tls"))]
 compile_error!("ax-hal features `uspace` and `tls` select incompatible register ownership modes");
 
@@ -57,6 +54,21 @@ pub mod percpu;
 pub mod pmu;
 pub mod time;
 
+/// White-box checks used only by the Cargo axtest integration target.
+#[cfg(all(axtest, feature = "axtest"))]
+#[doc(hidden)]
+pub mod axtest_support {
+    /// Observes IRQ state during dispatch, preemption release, and return.
+    pub fn observe_irq_entry_state_for_test() -> (bool, bool, bool) {
+        let observation = super::irq::observe_irq_entry_state_for_test();
+        (
+            observation.dispatch_irqs_enabled,
+            observation.after_preempt_release_irqs_enabled,
+            observation.return_irqs_enabled,
+        )
+    }
+}
+
 #[cfg(feature = "tls")]
 pub mod tls;
 
@@ -69,8 +81,10 @@ pub mod paging;
 /// Console input and output.
 pub mod console {
     pub use ax_plat::console::{
-        ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, claim_runtime_output,
-        device_id, read_bytes, write_bytes, write_text_bytes,
+        ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleHandoffError,
+        ConsoleHandoffResult, begin_runtime_handoff, commit_runtime_handoff, device_id,
+        fail_runtime_handoff_closed, read_bytes, rollback_runtime_handoff, write_bytes,
+        write_text_bytes,
     };
     #[cfg(feature = "irq")]
     pub use ax_plat::console::{ConsoleIrqEvent, handle_irq, irq_num, set_input_irq_enabled};

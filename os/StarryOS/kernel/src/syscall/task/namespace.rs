@@ -109,11 +109,12 @@ impl PreparedUnshare {
 }
 
 /// unshare(2) — disassociate parts of the process execution context.
-pub fn sys_unshare(flags: u32) -> StarryResult<isize> {
-    if flags & !SUPPORTED_NS_FLAGS != 0 {
+pub fn sys_unshare(flags: usize) -> StarryResult<isize> {
+    if flags & !(SUPPORTED_NS_FLAGS as usize) != 0 {
         warn!("sys_unshare: unsupported flags {:#x}", flags);
         return Err(StarryError::InvalidInput);
     }
+    let flags = flags as u32;
 
     let curr = current();
     let thread = curr.as_thread();

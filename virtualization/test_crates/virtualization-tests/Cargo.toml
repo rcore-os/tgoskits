@@ -9,12 +9,12 @@ repository.workspace = true
 [dependencies]
 
 [dev-dependencies]
-ax-plat.workspace = true
-axdevice.workspace = true
-axdevice_base.workspace = true
-axvm.workspace = true
-axvm-types.workspace = true
-axvmconfig.workspace = true
-irq-framework.workspace = true
+ax-plat = { path = "../../../platforms/ax-plat" }
+axdevice = { path = "../../axdevice" }
+axdevice_base = { path = "../../axdevice_base" }
+axvm = { path = "../../axvm" }
+axvm-types = { path = "../../axvm-types" }
+axvmconfig = { path = "../../axvmconfig" }
+irq-framework = { path = "../../../components/irq-framework" }
 serde = { version = "1", features = ["derive"] }
 toml.workspace = true

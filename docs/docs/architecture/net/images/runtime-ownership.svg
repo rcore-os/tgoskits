@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 600" role="img" aria-labelledby="title desc">
+  <title id="title">ax-net 运行时所有权与数据通道</title>
+  <desc id="desc">调用者、协议核心和设备工作线程之间通过请求、锁和有界队列连接；UDP 关闭前的同步刷新是协议核心所有权的例外入口。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#41546b"/>
+    </marker>
+    <style>
+      .lane{fill:#f7f9fc;stroke:#8091a7;stroke-width:2}
+      .core{fill:#eaf3ff;stroke:#3478c0;stroke-width:2}
+      .queue{fill:#fff4df;stroke:#c98216;stroke-width:2}
+      .device{fill:#eaf8ef;stroke:#398a55;stroke-width:2}
+      .exception{fill:#fff0f0;stroke:#bf4747;stroke-width:2;stroke-dasharray:7 5}
+      .label{font:600 20px sans-serif;fill:#213247}
+      .text{font:16px sans-serif;fill:#26384d}
+      .small{font:14px sans-serif;fill:#41546b}
+      .edge{fill:none;stroke:#41546b;stroke-width:2.2;marker-end:url(#arrow)}
+      .wake{fill:none;stroke:#7b5bb5;stroke-width:2.2;stroke-dasharray:7 5;marker-end:url(#arrow)}
+      .sync{fill:none;stroke:#bf4747;stroke-width:2.4;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect class="lane" x="30" y="35" width="310" height="520" rx="18"/>
+  <text class="label" x="55" y="72">调用者 / OS ABI</text>
+  <rect class="core" x="70" y="110" width="230" height="82" rx="12"/>
+  <text class="text" x="102" y="145">SocketOps / options</text>
+  <text class="small" x="102" y="170">send · recv · connect · poll</text>
+  <rect class="queue" x="70" y="245" width="230" height="82" rx="12"/>
+  <text class="text" x="112" y="280">request_poll()</text>
+  <text class="small" x="93" y="305">原子请求位 + WaitQueue</text>
+  <rect class="exception" x="70" y="405" width="230" height="92" rx="12"/>
+  <text class="text" x="94" y="440">UDP Drop / flush_egress</text>
+  <text class="small" x="92" y="466">等待 Required 所有权后</text>
+  <text class="small" x="111" y="486">同步排空待发包</text>
+
+  <rect class="lane" x="405" y="35" width="310" height="520" rx="18"/>
+  <text class="label" x="430" y="72">串行协议核心</text>
+  <rect class="core" x="445" y="110" width="230" height="82" rx="12"/>
+  <text class="text" x="493" y="145">poll_until_idle()</text>
+  <text class="small" x="482" y="170">PollOwnership CAS</text>
+  <rect class="core" x="445" y="245" width="230" height="110" rx="12"/>
+  <text class="text" x="503" y="280">SERVICE</text>
+  <text class="small" x="480" y="305">smoltcp Interface</text>
+  <text class="small" x="477" y="327">DHCP · orphan · DNS</text>
+  <rect class="queue" x="445" y="405" width="230" height="92" rx="12"/>
+  <text class="text" x="504" y="440">Router</text>
+  <text class="small" x="470" y="466">共享 RX / 每设备 TX</text>
+
+  <rect class="lane" x="780" y="35" width="310" height="520" rx="18"/>
+  <text class="label" x="805" y="72">设备与 IRQ 域</text>
+  <rect class="device" x="820" y="110" width="230" height="82" rx="12"/>
+  <text class="text" x="856" y="145">{ifname}-rx / -tx</text>
+  <text class="small" x="852" y="170">10 ms RX 兜底轮询</text>
+  <rect class="device" x="820" y="245" width="230" height="110" rx="12"/>
+  <text class="text" x="872" y="280">EthernetDevice</text>
+  <text class="small" x="858" y="305">ARP · frame · stats</text>
+  <text class="small" x="850" y="327">RdNetDriver / DMA 队列</text>
+  <rect class="device" x="820" y="405" width="230" height="92" rx="12"/>
+  <text class="text" x="877" y="440">IRQ action</text>
+  <text class="small" x="845" y="466">独立拥有 IRQ handler</text>
+
+  <path class="edge" d="M300 151 H445"/>
+  <path class="wake" d="M300 286 H390 Q420 286 420 220 V168 Q420 151 445 151"/>
+  <path class="edge" d="M560 192 V245"/>
+  <path class="edge" d="M560 355 V405"/>
+  <path class="edge" d="M675 451 H820"/>
+  <path class="edge" d="M820 300 H735 Q705 300 705 420 H675"/>
+  <path class="wake" d="M820 451 H745 Q725 451 725 200 H675"/>
+  <path class="sync" d="M300 451 H375 Q395 451 395 135 Q395 110 445 110"/>
+
+  <text class="small" x="315" y="140">读写 socket 状态</text>
+  <text class="small" x="694" y="442">有界队列</text>
+  <text class="small" x="716" y="190">IRQ / OOB 唤醒</text>
+</svg>

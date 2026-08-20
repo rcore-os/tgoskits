@@ -8,11 +8,15 @@ description = "Unified network stack for TGOSKits (ArceOS, StarryOS, Axvisor)"
 license.workspace = true
 
 [features]
-axtest = ["dep:axtest"]
+host-test = [
+    "ax-hal/host-test",
+    "axpoll/host-test",
+    "ax-sync/host-test",
+    "ax-task/host-test",
+]
 vsock = ["dep:rdif-vsock"]
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 async-channel = { version = "2.5", default-features = false }
 async-trait = "0.1"
 ax-hal = { workspace = true }
@@ -59,9 +63,11 @@ features = [
 ]
 
 [dev-dependencies]
-ax-hal = { workspace = true, features = ["host-test"] }
-ax-sync = { workspace = true, features = ["host-test"] }
-ax-task = { workspace = true, features = ["host-test"] }
+ax-hal = { path = "../../os/arceos/modules/axhal", features = ["host-test"] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
+ax-task = { path = "../../os/arceos/modules/axtask", features = ["host-test"] }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+[[test]]
+name = "std"
+path = "tests/std.rs"
+required-features = ["host-test"]

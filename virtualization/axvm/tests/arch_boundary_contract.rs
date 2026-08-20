@@ -17,9 +17,33 @@ fn assert_omits(source: &str, path: &str, forbidden: &[&str]) {
     for token in forbidden {
         assert!(
             !source.contains(token),
-            "{path} must not own architecture-specific IPI protocol token {token:?}"
+            "{path} must not own forbidden architecture boundary token {token:?}"
         );
     }
+}
+
+#[test]
+fn loongarch_platform_injector_does_not_claim_the_eiointc_cascade_line() {
+    // This source-level contract intentionally names the forbidden ownership
+    // tokens so an AxVM-local cascade enable cannot be reintroduced unnoticed.
+    let loongarch_irq = read_source("src/arch/loongarch64/irq.rs");
+    assert!(
+        loongarch_irq.contains(
+            "ax_plat::irq::loongarch64_hv::register_virtual_irq_injector(inject_platform_irq)"
+        ),
+        "src/arch/loongarch64/irq.rs must keep the virtual IRQ injector registration"
+    );
+    assert_omits(
+        &loongarch_irq,
+        "src/arch/loongarch64/irq.rs",
+        &[
+            "EIOINTC_IRQ",
+            "set_irq_enabled",
+            "resolve_irq_source",
+            "IrqSource::AcpiGsi",
+            "irq::set_enable",
+        ],
+    );
 }
 
 #[test]

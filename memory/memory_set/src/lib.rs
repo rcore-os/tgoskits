@@ -7,9 +7,6 @@ mod area;
 mod backend;
 mod set;
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
-
 #[cfg(test)]
 mod tests;
 

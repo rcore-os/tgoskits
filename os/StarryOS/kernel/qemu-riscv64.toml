@@ -1,0 +1,5 @@
+args = ["-machine", "virt", "-m", "512M", "-nographic", "-cpu", "rv64", "-smp", "4"]
+uefi = false
+to_bin = true
+success_regex = []
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

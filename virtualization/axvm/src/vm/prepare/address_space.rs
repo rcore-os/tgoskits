@@ -12,16 +12,17 @@ impl AxVMResources {
     pub(crate) fn prepare_guest_address_space(
         &mut self,
         vm_id: usize,
+        config: &AxVMConfig,
         architecture_regions: &[GuestOwnedRegion],
     ) -> AxVmResult {
-        self.validate_guest_dtb()?;
-        let mut owned_regions = self.guest_owned_regions();
+        self.validate_guest_dtb(config)?;
+        let mut owned_regions = self.guest_owned_regions(config);
         owned_regions.extend_from_slice(architecture_regions);
-        self.map_guest_address_space(vm_id, &owned_regions)
+        self.map_guest_address_space(vm_id, config, &owned_regions)
     }
 
-    fn validate_guest_dtb(&self) -> AxVmResult {
-        if self.config.image_config().dtb_load_gpa.is_some()
+    fn validate_guest_dtb(&self, config: &AxVMConfig) -> AxVmResult {
+        if config.image_config().dtb_load_gpa.is_some()
             && self.boot_description.device_tree().is_none()
         {
             return ax_err!(
@@ -35,6 +36,7 @@ impl AxVMResources {
     fn map_guest_address_space(
         &mut self,
         vm_id: usize,
+        config: &AxVMConfig,
         owned_regions: &[GuestOwnedRegion],
     ) -> AxVmResult {
         let graph = self.planned_devices().graph();
@@ -73,7 +75,7 @@ impl AxVMResources {
             })
             .collect::<AxVmResult<Vec<_>>>()?;
         let address_layout = build_address_layout(
-            self.config.address_space_policy(),
+            config.address_space_policy(),
             VM_ASPACE_BASE,
             stage2_guest_address_space_size(self.nested_paging.gpa_bits),
             &passthrough_devices,
@@ -101,7 +103,7 @@ impl AxVMResources {
         Ok(())
     }
 
-    fn guest_owned_regions(&self) -> Vec<GuestOwnedRegion> {
+    fn guest_owned_regions(&self, config: &AxVMConfig) -> Vec<GuestOwnedRegion> {
         let mut regions = self
             .memory_regions
             .iter()
@@ -117,7 +119,7 @@ impl AxVMResources {
                     GuestOwnedRegion::new(base, length, VmRegionKind::BootDescription)
                 }),
         );
-        regions.extend(self.config.reserved_address_ranges().iter().map(|range| {
+        regions.extend(config.reserved_address_ranges().iter().map(|range| {
             GuestOwnedRegion::new(range.base_gpa, range.length, VmRegionKind::Reserved)
         }));
 

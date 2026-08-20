@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add non-escaping current-CPU-area callbacks for future CPU-owned access before
+  a `CpuPin` exists; there is no runtime caller yet.
+
 ## [0.4.17](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.16...ax-percpu-v0.4.17) - 2026-08-09
 
 ### Other

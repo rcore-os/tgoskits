@@ -288,6 +288,10 @@ pub(super) fn probe_rk3588(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     register_fdt_legacy_irq(&info, resources.logical_bus_end);
 
     let mut drv = PcieController::new(host);
+    drv.set_dma_coherent(matches!(
+        crate::binding_resolver::dma_coherency_from_fdt(&info),
+        dma_api::DmaCoherency::Coherent
+    ));
     for range in &resources.ranges {
         if is_config_range(range, resources.cfg_phys, resources.cfg_size) {
             continue;

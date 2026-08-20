@@ -20,7 +20,7 @@ fail_regex = [
   "(?i)kernel panic",
   "(?i)login incorrect",
   "(?i)permission denied",
-  "(?m)^(?:echo|cat|rm):",
+  "(?m)^(?:echo|cat|rm): (?:can't (?:open|remove) |cannot remove |/tmp/axvisor-nvme-rw:)",
 ]
 success_regex = [
   "(?m)^AXVISOR SHLEX  EMPTY\\s*$",

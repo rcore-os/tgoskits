@@ -294,8 +294,8 @@ impl PhytiumMci {
         {
             return Err(Error::Busy);
         }
-        let hardware_mask = dma.dma_mask().min(u32::MAX as u64);
-        let inherited = dma.constraints();
+        let hardware_mask = dma.info().constraints().addr_mask.min(u32::MAX as u64);
+        let inherited = dma.info().constraints();
         let dma = dma.with_constraints(DmaConstraints {
             addr_mask: hardware_mask,
             align: inherited.align.max(crate::dma::IDMAC_BUFFER_ALIGN as usize),

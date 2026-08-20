@@ -983,7 +983,7 @@ impl Epoll {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn epoll_event_matching_rules_hold_for_test() -> bool {
     use axpoll::IoEvents as E;
 

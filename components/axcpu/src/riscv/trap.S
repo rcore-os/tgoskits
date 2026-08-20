@@ -2,7 +2,7 @@
 .balign 4
 .global trap_vector_base
 trap_vector_base:
-    // LinuxCurrent owns tp as the pinned current-thread header. In kernel
+    // LinuxCurrent owns tp as the pinned execution-context header. In kernel
     // mode sscratch is zero; immediately before sret to user it carries the
     // kernel tp while user tp is live. This swap identifies the trap origin
     // without ever treating a userspace value as a CPU-area pointer.

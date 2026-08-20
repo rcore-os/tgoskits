@@ -70,8 +70,6 @@ sidebar_label: "检查机制总览"
 - 明确启动阶段 sleepability，区分早期启动限制和真实运行期 atomic sleep bug。
 - 补充针对性回归，覆盖 IRQ handler、持 non-sleep lock、faultable user copy、阻塞式分配和 `try_lock` 非阻塞语义。
 
-详细计划和逐项讨论状态见 [`might_sleep` 后续增强计划](./might-sleep-followups.md)。本文只保留机制级总览，避免与详细计划重复维护。
-
 ## 2. `sync-lint` 原子内存序静态检查
 
 [`sync-lint`](/community/sync-lint) 是仓库内的静态检查工具，入口命令是：
@@ -202,7 +200,7 @@ panic/oops 递归保护用于提升异常路径健壮性，避免主故障之后
 
 ## 5. [Backtrace Host 符号化](./backtrace-host-symbolize.md)
 
-Host 端 `cargo xtask backtrace symbolize` 用于对 target 输出的 raw backtrace 块（`BACKTRACE_BEGIN` / `BT` / `BACKTRACE_END`）做离线符号化，与 Issue #146、PR #635 / #646 配套。当前需 QEMU 后手动执行 symbolize；跑完测试自动 symbolize 计划在 #635 与 #646 合入后由后续 PR 提供。
+Host 端 `cargo xtask backtrace symbolize` 对 target 输出的 raw backtrace 块（`BACKTRACE_BEGIN` / `BT` / `BACKTRACE_END`）做离线符号化。当前流程在 QEMU 运行结束后手动执行 symbolize。
 
 主要实现：`scripts/axbuild/src/backtrace.rs`。
 

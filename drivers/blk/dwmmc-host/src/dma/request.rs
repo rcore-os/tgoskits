@@ -138,7 +138,7 @@ impl DmaRequestBuffer {
                 if read {
                     let completed = unsafe { buffer.complete_after_quiesce() };
                     if let Some((dst, len)) = readback {
-                        completed.copy_from_device_to_slice(unsafe {
+                        completed.copy_to_slice_cpu(unsafe {
                             core::slice::from_raw_parts_mut(dst.as_ptr(), len)
                         });
                     }

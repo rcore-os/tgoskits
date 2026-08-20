@@ -106,6 +106,15 @@ fn dynamic_areas_are_scoped_initialized_and_isolated() {
     ));
 
     let cpu0 = area(CpuIndex::try_from(0).unwrap()).unwrap();
+    let uninstalled = std::thread::spawn(|| {
+        // SAFETY: the fresh host thread cannot migrate between modeled CPUs and
+        // has no installed CPU area; the callback must not be entered.
+        unsafe { STRUCT.with_current_cpu_area(|_| ()) }
+    })
+    .join()
+    .expect("uninstalled CPU-area probe panicked");
+    assert_eq!(uninstalled, Err(cpu_local::CpuLocalError::AreaNotInstalled));
+
     // SAFETY: this host test thread models offline CPU 0 and the host-test
     // allocation remains live until process shutdown.
     unsafe { cpu_local::install_cpu_area(cpu0.cpu_area().unwrap()) }.unwrap();
@@ -203,6 +212,47 @@ fn exercise_current_area(pin: &CpuPin<'_>, cpu0: PerCpuArea) {
         });
     }
 
+    cpu_local::host_test::reset_register_read_counts();
+    let current_area_pointer = unsafe {
+        // SAFETY: this single-threaded fixture models an offline CPU and
+        // excludes migration, context switches, IRQ/re-entry, and remote access.
+        STRUCT
+            .with_current_cpu_area_mut(|value| {
+                value.foo = 0x2333;
+                value as *mut Struct as usize
+            })
+            .unwrap()
+    };
+    assert_eq!(current_area_pointer, base + STRUCT.offset());
+    assert_eq!(
+        cpu_local::host_test::register_read_counts(),
+        cpu_local::host_test::RegisterReadCounts {
+            cpu_base: 1,
+            current_context: 0,
+            initialized_area_validations: 0,
+        },
+        "current CPU-area access must not read current context or rebuild the installed area",
+    );
+
+    cpu_local::host_test::reset_register_read_counts();
+    let current_area_value = unsafe {
+        // SAFETY: the modeled offline CPU remains fixed and no mutation can
+        // conflict with this non-escaping shared observation.
+        STRUCT
+            .with_current_cpu_area(|value| (value.foo, value as *const Struct as usize))
+            .unwrap()
+    };
+    assert_eq!(current_area_value, (0x2333, base + STRUCT.offset()));
+    assert_eq!(
+        cpu_local::host_test::register_read_counts(),
+        cpu_local::host_test::RegisterReadCounts {
+            cpu_base: 1,
+            current_context: 0,
+            initialized_area_validations: 0,
+        },
+        "shared current CPU-area access must use the same direct boundary",
+    );
+
     assert!(BOOL.read_current(pin));
     assert_eq!(U8.read_current(pin), 123);
     assert_eq!(U16.read_current(pin), 0xabcd);
@@ -273,6 +323,19 @@ fn exercise_remote_area() {
                     assert_eq!(value.foo, 0x6666);
                     assert_eq!(value.bar, 200);
                 });
+            })
+        }
+        .unwrap();
+        // SAFETY: this dedicated thread models one fixed offline CPU and the
+        // shared callback cannot conflict with a mutation.
+        unsafe {
+            STRUCT.with_current_cpu_area(|value| {
+                assert_eq!(value.foo, 0x6666);
+                assert_eq!(value.bar, 200);
+                assert_eq!(
+                    value as *const Struct as usize,
+                    cpu1.runtime_base() + STRUCT.offset(),
+                );
             })
         }
         .unwrap();

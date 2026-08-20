@@ -311,7 +311,7 @@ pub fn exit_robust_list(thr: &Thread, head: *const RobustListHead) -> StarryResu
 // emission site in `do_exit`, so the event schema and the fast-path call stay
 // together. Registration into the global `.tracepoint` section is by link
 // section, so the definition's module location is immaterial to discovery.
-ktracepoint::define_event_trace!(
+ax_tracepoint::define_event_trace!(
     sched_process_exit,
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(sched),
@@ -399,15 +399,24 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
     let (utime, stime) = task_cpu_time(&curr);
+    let process_identity = thr.proc_data.identity();
+    let task_identity = thr.pid_identity();
     let thread_exit = process.exit_thread(
         thr.tid_number(),
         exit_code,
         ProcessCpuTime::new(utime, stime),
     );
+    let cgroup_exit = match thread_exit {
+        ThreadExit::AlreadyExited => None,
+        ThreadExit::Remaining => Some(ax_cgroup::CgroupTaskExit::Thread),
+        ThreadExit::Last(_) => Some(ax_cgroup::CgroupTaskExit::LastProcessTask),
+    };
+    if let Some(exit_kind) = cgroup_exit
+        && let Err(error) = crate::cgroup::exit_task(&process_identity, &task_identity, exit_kind)
+    {
+        warn!("failed to release cgroup task charge: {error}");
+    }
     if let ThreadExit::Last(process_cpu_time) = thread_exit {
-        if let Err(error) = crate::cgroup::exit_process(&thr.proc_data.identity()) {
-            warn!("failed to release cgroup membership: {error}");
-        }
         thr.proc_data.nsproxy.lock().release_cgroup_namespace();
 
         // AIO contexts pin the process address space and may have worker tasks
@@ -597,7 +606,7 @@ pub fn zap_thread(tid: TidNumber) -> StarryResult<()> {
     Ok(())
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn decode_wait_status_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{CLD_DUMPED, CLD_EXITED, CLD_KILLED};
 

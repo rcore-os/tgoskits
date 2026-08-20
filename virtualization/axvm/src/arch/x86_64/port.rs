@@ -156,25 +156,29 @@ impl Device for HostPortPassthrough {
         &self.resources
     }
 
-    fn access(
-        &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Port || access.addr > u16::MAX as u64 {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
-        }
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        self.read_port(self.port(access)?, access.width())
+            .map(|value| value as u64)
+    }
 
-        let port = Port::new(access.addr as u16);
-        if access.is_read {
-            self.read_port(port, access.width)
-                .map(|value| BusResponse::Read {
-                    value: value as u64,
-                })
-        } else {
-            self.write_port(port, access.width, access.data as usize)
-                .map(|_| BusResponse::Write)
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        self.write_port(self.port(access)?, access.width(), value as usize)
+    }
+}
+
+impl HostPortPassthrough {
+    fn port(&self, access: &DeviceAccess) -> DeviceResult<Port> {
+        if access.bus() != BusKind::Port || access.address() > u16::MAX as u64 {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
+        Ok(Port::new(access.address() as u16))
     }
 }
 

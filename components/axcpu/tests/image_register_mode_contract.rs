@@ -26,7 +26,7 @@ fn tls_feature_selects_register_semantics_without_changing_context_layout() {
             "image mode must not change TaskContext ABI"
         );
     }
-    assert!(TASK_LOCAL.contains("current_header: usize"));
+    assert!(TASK_LOCAL.contains("context_header: usize"));
     assert!(TASK_LOCAL.contains("kernel_tls: KernelTlsBase"));
     assert!(LIB.contains("fn for_task_context"));
     assert!(LIB.contains("requested.0 == 0"));
@@ -80,21 +80,20 @@ fn context_switches_select_tls_only_for_unikernel_images() {
 #[test]
 fn aarch64_user_exit_restores_linux_current_before_rust() {
     let exit = section(AARCH_TRAP, ".Lexit_user:", ".global enter_user");
-    assert_in_order(exit, "stp     x8, x9", "mrs     x12, tpidr_el1");
     assert_in_order(
         exit,
-        "mrs     x12, tpidr_el1",
-        "ldr     x12, [x12, {current_thread_offset}]",
+        "ldp     x10, x11, [x1, {trapframe_size}]",
+        "ldr     x12, [x10, 12 * 8]",
     );
-    assert_in_order(
-        exit,
-        "ldr     x12, [x12, {current_thread_offset}]",
-        "msr     sp_el0, x12",
-    );
+    assert_in_order(exit, "ldr     x12, [x10, 12 * 8]", "msr     sp_el0, x12");
     assert_in_order(exit, "msr     sp_el0, x12", "\n    ret");
+    assert!(!exit.contains("tpidr_el1"));
+    assert!(!exit.contains("tpidr_el2"));
+    assert!(!exit.contains("current_context_offset"));
 
     let enter = section(AARCH_TRAP, "enter_user:", ".Lexception_return:");
-    assert_in_order(enter, "ldp     x8, x9", "msr     sp_el0, x8");
+    assert_in_order(enter, "mrs     x12, sp_el0", "str     x12, [sp, 12 * 8]");
+    assert_in_order(enter, "str     x12, [sp, 12 * 8]", "msr     sp_el0, x8");
     assert_in_order(enter, "msr     sp_el0, x8", "msr     tpidr_el0, x9");
     assert_in_order(enter, "msr     tpidr_el0, x9", "mov     sp, x0");
 }

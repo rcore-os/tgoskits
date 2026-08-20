@@ -1,5 +1,6 @@
 //! See Linux Documentation for details: <https://docs.kernel.org/trace/ftrace.html>
 mod control;
+mod registry;
 mod sched;
 mod trace;
 mod trace_pipe;
@@ -18,17 +19,17 @@ use core::{
 };
 
 use ax_lazyinit::LazyInit;
-use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
 use ax_task::{IrqNotify, current};
+use ax_tracepoint::*;
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
-use ktracepoint::*;
+pub use registry::KernelExtTracePoint;
 
 use crate::{
     StarryError, StarryResult,
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
-    sync::{Mutex, NoPreemptMutex},
+    sync::Mutex,
     task::{AsThread, PidIdentityId, TgidNumber},
 };
 
@@ -36,14 +37,6 @@ use crate::{
 const TRACE_RAW_PIPE_CAPACITY: usize = 4096;
 /// Maximum number of PID→cmdline entries in the command-line cache.
 const TRACE_CMDLINE_CACHE_SIZE: usize = 4096;
-
-// The registry entry is locked from the tracepoint fire path, which for
-// `sched:sched_switch` runs inside `axtask::switch_to` (IRQ off,
-// preemption disabled). A sleeping `Mutex` would trip the
-// "sleeping in atomic context" guard there, so this lock must be a
-// non-sleeping spinlock — the same kind the perf output path (`PERF_FILE`)
-// uses for exactly this reason.
-pub type KernelExtTracePoint = Arc<NoPreemptMutex<ExtTracePoint<KernelTraceAux>>>;
 
 /// Look up a registered tracepoint by its numeric id (as found in
 /// `/sys/kernel/debug/tracing/events/<subsystem>/<event>/id`).
@@ -61,7 +54,7 @@ pub fn lookup_ext_tracepoint(id: u32) -> Option<KernelExtTracePoint> {
 /// initialized yet.
 pub fn find_ext_tracepoint_by_name(name: &str) -> Option<KernelExtTracePoint> {
     for ext_tp in TRACE_STATE.ext_tracepoints.get()?.values() {
-        if ext_tp.lock().trace_point().name() == name {
+        if ext_tp.trace_point().name() == name {
             return Some(ext_tp.clone());
         }
     }
@@ -258,18 +251,13 @@ impl KernelTraceOps for KernelTraceAux {
             .insert(tgid.get(), &current_comm());
     }
 
-    fn write_kernel_text(addr: *mut core::ffi::c_void, data: &[u8]) {
-        crate::mm::write_kernel_text(VirtAddr::from_mut_ptr_of(addr), data)
-            .expect("Failed to write kernel text");
-    }
-
     fn read_tracepoint_state<R>(id: u32, f: impl FnOnce(&ExtTracePoint<Self>) -> R) -> R {
         let ext_tp = TRACE_STATE
             .ext_tracepoints
             .deref()
             .get(&id)
             .expect("Tracepoint not found");
-        f(ext_tp.lock().deref())
+        ext_tp.read(f)
     }
 
     fn write_tracepoint_state<R>(id: u32, f: impl FnOnce(&mut ExtTracePoint<Self>) -> R) -> R {
@@ -278,8 +266,7 @@ impl KernelTraceOps for KernelTraceAux {
             .deref()
             .get(&id)
             .expect("Tracepoint not found");
-        let mut ext_tp = ext_tp.lock();
-        f(&mut ext_tp)
+        ext_tp.update(f)
     }
 }
 
@@ -385,11 +372,18 @@ fn common_trace_pipe_read(
             debug_assert_ne!(record.identity_id.get(), 0);
             let mut record_cmdline = TraceCmdLineCache::new(NonZero::new(1).unwrap());
             record_cmdline.insert(record.tgid.get(), &record.comm);
-            let record_str = TraceEntryParser::parse::<KernelTraceAux>(
+            let record_str = match TraceEntryParser::parse::<KernelTraceAux>(
                 &TRACE_STATE.point_map,
                 &record_cmdline,
                 &record.record,
-            );
+            ) {
+                Ok(record) => record,
+                Err(error) => {
+                    warn!("discarding invalid trace record: {error}");
+                    trace_buf.pop();
+                    continue;
+                }
+            };
             if !drain.copy_record(record_str.as_bytes(), buf, &mut copy_len) {
                 break;
             }
@@ -412,7 +406,7 @@ pub fn tracepoint_init() -> StarryResult<()> {
 
     let ext_tps = ext_tps
         .into_iter()
-        .map(|ext_tp| (ext_tp.id(), Arc::new(NoPreemptMutex::new(ext_tp))))
+        .map(|ext_tp| (ext_tp.trace_point().id(), KernelExtTracePoint::new(ext_tp)))
         .collect::<BTreeMap<_, _>>();
 
     ax_println!("Initialized {} tracepoints", tp_map.len());
@@ -470,7 +464,7 @@ fn init_events(fs: Arc<SimpleFs>) -> DirMaker {
     let mut subsystem = BTreeMap::new();
 
     for ext_tp in TRACE_STATE.ext_tracepoints.deref().values() {
-        let tp = ext_tp.lock().trace_point();
+        let tp = ext_tp.trace_point();
         let subsystem_name = tp.system();
         let event_name = tp.name();
 

@@ -9,7 +9,7 @@ pub(crate) mod irq;
 mod paging;
 pub(crate) mod power;
 pub(crate) mod relocate;
-mod trap;
+pub(crate) mod trap;
 
 use core::ptr::null;
 

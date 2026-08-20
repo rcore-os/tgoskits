@@ -38,9 +38,9 @@ test-suit/axvisor/
 
 | 模式 | 命令 | 运行环境 | 适用场景 |
 |------|------|----------|----------|
-| `test qemu` | `cargo axvisor test qemu` | QEMU 虚拟机 | 常规功能验证（CI 主力） |
-| `test uboot` | `cargo axvisor test uboot`（**Axvisor 独有**） | 远程板卡 + U-Boot 引导 | 验证 hypervisor 在真实硬件 + U-Boot 链路上的行为 |
-| `test board` | `cargo axvisor test board` | 远程板卡 | 板级回归 |
+| `test qemu` | `cargo xtask axvisor test qemu` | QEMU 虚拟机 | 常规功能验证（CI 主力） |
+| `test uboot` | `cargo xtask axvisor test uboot`（**Axvisor 独有**） | 远程板卡 + U-Boot 引导 | 验证 hypervisor 在真实硬件 + U-Boot 链路上的行为 |
+| `test board` | `cargo xtask axvisor test board` | 远程板卡 | 板级回归 |
 
 ### 3.1 QEMU 测试
 
@@ -59,7 +59,7 @@ flowchart TD
     G --> H["逐 case：run_qemu_case"]
     H --> I["load_qemu_case_config<br/>注入 grouped runner + timeout"]
     I --> J["prepare_case_assets<br/>rootfs 副本/overlay"]
-    J --> K["patch_qemu_rootfs_path + snapshot"]
+    J --> K["patch_qemu_rootfs_path(Discard)"]
     K --> L["run_qemu_with_prepared_case_assets"]
     L --> M{"success_regex?"}
     M -->|是| N["ok: case_name"]
@@ -80,11 +80,11 @@ flowchart TD
 | grouped 校验 | `validate_grouped_qemu_commands()` | 检查 `test_commands` 无空命令 |
 | 结果判定 | `QemuTestSummary` | 收集所有 case 的 pass/fail，最终 `finish_with_total_detail()` 统一判定退出码 |
 
-单个 case 运行（`run_qemu_case` → `load_qemu_case_config`）：注入 grouped runner（marker 前缀 `AXVISOR`）、`apply_timeout_scale`、准备 rootfs 资产（走共享 `test/case/` 层）、patch rootfs 路径、UEFI 时改写 snapshot 为 per-drive。Axvisor 不启用 backtrace capture（`capture_backtrace = None`）。
+单个 case 运行（`run_qemu_case` → `load_qemu_case_config`）：注入 grouped runner（marker 前缀 `AXVISOR`）、`apply_timeout_scale`、准备 rootfs 资产（走共享 `test/case/` 层）、以 `RootfsWritePolicy::Discard` patch rootfs 路径。Axvisor 不启用 backtrace capture（`capture_backtrace = None`）。
 
 ### 3.2 U-Boot 测试
 
-Axvisor 是唯一支持 U-Boot 测试模式的子系统。`cargo axvisor test uboot --board <TYPE>` 在远程板卡上通过 U-Boot 引导 Axvisor 和 Guest。执行链位于 `axvisor/test/board.rs::test_uboot()`。
+Axvisor 是唯一支持 U-Boot 测试模式的子系统。`cargo xtask axvisor test uboot --board <TYPE>` 在远程板卡上通过 U-Boot 引导 Axvisor 和 Guest。执行链位于 `axvisor/test/board.rs::test_uboot()`。
 
 ```mermaid
 flowchart TD

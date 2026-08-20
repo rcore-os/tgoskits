@@ -1,0 +1,6 @@
+features = [
+    "test-console-atomic-output",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

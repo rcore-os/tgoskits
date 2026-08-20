@@ -5,9 +5,7 @@ sidebar_label: "Backtrace Host 符号化"
 
 # Backtrace Host 符号化
 
-本文档说明 Issue [#146](https://github.com/rcore-os/tgoskits/issues/146) 中 **host 端** backtrace 日志符号化工具的用途、前置条件、命令参数与典型工作流。
-
-它与 target 侧（QEMU / 板载）输出的 **raw backtrace 块** 配合使用，由 PR [#635](https://github.com/rcore-os/tgoskits/pull/635) 提供实现；target 侧 raw 格式与 E2E 测例由 PR [#646](https://github.com/rcore-os/tgoskits/pull/646) 等提供。
+Host 端 backtrace 符号化工具读取 QEMU 或板卡输出的 raw backtrace 块，并使用同一次构建的 ELF 解析函数名和源码位置。
 
 ## 设计分工
 
@@ -83,9 +81,7 @@ BT 0 ip=0x... fp=0x... <function> (<file>:<line>)
 
 若某 `ip` 无法在 ELF 中解析，可能仍只显示 `ip` / `fp`，或解析失败；请确认 ELF 与日志来自同一次构建，必要时尝试 `--ip-bias`。
 
-## 典型工作流（当前：两步）
-
-在 PR **#635**（本工具）与 **#646**（raw 测例）均合入 `dev` 之前，请使用对应分支构建。
+## 典型工作流
 
 ### 1. 在 target 上产生 raw 日志
 

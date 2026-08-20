@@ -84,6 +84,12 @@ pub struct RawState;
 #[doc(hidden)]
 pub struct PreemptState;
 
+impl PreemptState {
+    pub(crate) fn release_from_irq_return(state: usize) {
+        imp::enable_preempt_from_irq_return(state);
+    }
+}
+
 /// Lock state which saves and disables local interrupts.
 #[doc(hidden)]
 pub struct IrqSaveState;
@@ -103,16 +109,16 @@ impl GuardState for RawState {
 }
 
 impl GuardState for PreemptState {
-    type State = ();
+    type State = usize;
 
     #[inline(always)]
     fn acquire() -> Self::State {
-        imp::disable_preempt();
+        imp::disable_preempt()
     }
 
     #[inline(always)]
-    fn release(_state: Self::State) {
-        imp::enable_preempt();
+    fn release(state: Self::State) {
+        imp::enable_preempt(state);
     }
 
     fn lockdep_enabled() -> bool {
@@ -139,14 +145,15 @@ impl GuardState for PreemptIrqSaveState {
 
     #[inline(always)]
     fn acquire() -> Self::State {
-        imp::disable_preempt();
-        imp::irq_save_and_disable()
+        let preemption = imp::disable_preempt();
+        assert_eq!(preemption & 1, 0, "preemption token must be aligned");
+        preemption | (imp::irq_save_and_disable() & 1)
     }
 
     #[inline(always)]
     fn release(state: Self::State) {
-        imp::irq_restore(state);
-        imp::enable_preempt();
+        imp::irq_restore(state & 1);
+        imp::enable_preempt(state & !1);
     }
 
     fn lockdep_enabled() -> bool {
@@ -164,14 +171,15 @@ impl GuardState for PreemptIrqSaveState {
 /// require_send::<ax_task::sync::PreemptGuard>();
 /// ```
 pub struct PreemptGuard {
+    state: <PreemptState as GuardState>::State,
     _not_send: PhantomData<*mut ()>,
 }
 
 impl PreemptGuard {
     /// Disables preemption and creates a guard which restores it on drop.
     pub fn new() -> Self {
-        PreemptState::acquire();
         Self {
+            state: PreemptState::acquire(),
             _not_send: PhantomData,
         }
     }
@@ -185,7 +193,7 @@ impl Default for PreemptGuard {
 
 impl Drop for PreemptGuard {
     fn drop(&mut self) {
-        PreemptState::release(());
+        PreemptState::release(self.state);
     }
 }
 
@@ -274,29 +282,24 @@ mod imp {
         static EVENTS: RefCell<std::vec::Vec<&'static str>> = const { RefCell::new(std::vec::Vec::new()) };
     }
 
-    pub(super) fn disable_preempt() {
+    pub(super) fn disable_preempt() -> usize {
         EVENTS.with_borrow_mut(|events| events.push("preempt-disable"));
-        #[cfg(feature = "multitask")]
-        if crate::current_may_uninit().is_some() {
-            crate::disable_preempt();
-            return;
-        }
         PREEMPT_DEPTH.set(PREEMPT_DEPTH.get() + 1);
+        0
     }
 
-    pub(super) fn enable_preempt() {
+    pub(super) fn enable_preempt(_state: usize) {
         EVENTS.with_borrow_mut(|events| events.push("preempt-enable"));
-        #[cfg(feature = "multitask")]
-        if crate::current_may_uninit().is_some() {
-            crate::enable_preempt();
-            return;
-        }
         PREEMPT_DEPTH.set(
             PREEMPT_DEPTH
                 .get()
                 .checked_sub(1)
                 .expect("unbalanced preemption guard"),
         );
+    }
+
+    pub(super) fn enable_preempt_from_irq_return(state: usize) {
+        enable_preempt(state);
     }
 
     pub(super) fn irq_save_and_disable() -> usize {
@@ -322,20 +325,42 @@ mod imp {
     pub(super) fn preempt_depth() -> usize {
         PREEMPT_DEPTH.get()
     }
+
+    #[cfg(feature = "preempt")]
+    pub(super) fn finish_initial_context_switch() {
+        assert_eq!(
+            PREEMPT_DEPTH.get(),
+            1,
+            "initial host context switch must inherit one exclusion depth"
+        );
+        PREEMPT_DEPTH.set(0);
+    }
 }
 
 #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
 mod imp {
     #[inline(always)]
-    pub(super) fn disable_preempt() {
+    pub(super) fn disable_preempt() -> usize {
         #[cfg(feature = "multitask")]
-        crate::disable_preempt();
+        return crate::disable_preempt();
+        #[cfg(not(feature = "multitask"))]
+        0
     }
 
     #[inline(always)]
-    pub(super) fn enable_preempt() {
+    pub(super) fn enable_preempt(state: usize) {
         #[cfg(feature = "multitask")]
-        crate::enable_preempt();
+        crate::enable_preempt(state);
+        #[cfg(not(feature = "multitask"))]
+        let _ = state;
+    }
+
+    #[inline(always)]
+    pub(super) fn enable_preempt_from_irq_return(state: usize) {
+        #[cfg(feature = "multitask")]
+        crate::enable_preempt_from_irq_return(state);
+        #[cfg(not(feature = "multitask"))]
+        let _ = state;
     }
 
     #[inline(always)]
@@ -360,6 +385,11 @@ mod imp {
 #[doc(hidden)]
 pub fn host_preempt_depth() -> usize {
     imp::preempt_depth()
+}
+
+#[cfg(all(feature = "preempt", feature = "host-test", not(target_os = "none")))]
+pub(crate) fn finish_initial_host_context_switch() {
+    imp::finish_initial_context_switch();
 }
 
 #[cfg(all(feature = "host-test", not(target_os = "none")))]

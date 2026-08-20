@@ -75,7 +75,7 @@ pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> StarryResult<isize>
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn membarrier_query_and_global_rules_hold_for_test() -> bool {
     matches!(
         sys_membarrier(MEMBARRIER_CMD_QUERY, 0, 0),

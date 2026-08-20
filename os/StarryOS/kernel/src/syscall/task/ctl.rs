@@ -5,15 +5,14 @@
 //! translate between userspace's split `u32` capability arrays and StarryOS's
 //! internal `Cred` bitmap fields.
 
-use core::ffi::c_char;
-
+use ax_io::Read;
 use ax_task::current;
 use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct, CAP_LAST_CAP};
 use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
     StarryError, StarryResult,
-    mm::vm_load_string,
+    mm::VmBytes,
     task::{AsThread, Cred, TidNumber, get_user_task_by_number},
 };
 
@@ -385,8 +384,18 @@ pub fn sys_prctl(
 
     match option {
         PR_SET_NAME => {
-            let s = vm_load_string(arg2 as *const c_char)?;
-            current().set_name(&s);
+            let mut name = [0u8; 15];
+            let mut user_name = VmBytes::new(arg2 as *const u8, name.len());
+            let mut len = 0;
+            while len < name.len() {
+                user_name.read_exact(&mut name[len..=len])?;
+                if name[len] == 0 {
+                    break;
+                }
+                len += 1;
+            }
+            let name = core::str::from_utf8(&name[..len]).map_err(|_| StarryError::IllegalBytes)?;
+            current().set_name(name);
         }
         PR_GET_NAME => {
             let name = current().name();
@@ -623,7 +632,7 @@ pub fn sys_prctl(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
     matches!(parse_mempolicy_mode(MPOL_DEFAULT), Ok(MPOL_DEFAULT))
         && matches!(
@@ -717,7 +726,7 @@ pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
         && sys_mbind(0x1000, 4096, 99, core::ptr::null(), 0, 0).is_err()
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
     use alloc::sync::Arc;
 

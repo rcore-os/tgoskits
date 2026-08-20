@@ -120,7 +120,7 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> StarryResult<isi
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn mincore_validation_rules_hold_for_test() -> bool {
     use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
     // Test mincore validation logic

@@ -46,7 +46,7 @@ pub fn sys_inotify_rm_watch(fd: c_int, wd: c_int) -> StarryResult<isize> {
     inotify.rm_watch(wd).map(|()| 0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn inotify_flags_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{IN_CLOEXEC, IN_NONBLOCK};
     // Test inotify_init1 flag validation

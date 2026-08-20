@@ -1,8 +1,9 @@
 use core::mem::{self, MaybeUninit};
 
+use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use bytemuck::AnyBitPattern;
-use starry_vm::vm_read_slice;
+use starry_vm::{vm_load, vm_read_slice};
 
 use super::clone::{CloneArgs, CloneFlags};
 use crate::{
@@ -28,6 +29,19 @@ pub struct Clone3Args {
 }
 
 const MIN_CLONE_ARGS_SIZE: usize = core::mem::size_of::<u64>() * 8;
+
+fn clone3_check_extra_bytes(args: *const u8, size: usize) -> StarryResult<()> {
+    let base_size = mem::size_of::<Clone3Args>();
+    if size <= base_size {
+        return Ok(());
+    }
+
+    let extra = vm_load(args.wrapping_add(base_size), size - base_size)?;
+    if extra.iter().any(|byte| *byte != 0) {
+        return Err(StarryError::ArgumentListTooLong);
+    }
+    Ok(())
+}
 
 impl TryFrom<Clone3Args> for CloneArgs {
     type Error = crate::StarryError;
@@ -70,13 +84,12 @@ impl TryFrom<Clone3Args> for CloneArgs {
 pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> StarryResult<isize> {
     debug!("sys_clone3 <= args: {args:p}, size: {size}");
 
+    if size > PAGE_SIZE_4K {
+        return Err(StarryError::ArgumentListTooLong);
+    }
     if size < MIN_CLONE_ARGS_SIZE {
         warn!("sys_clone3: size {size} too small, minimum is {MIN_CLONE_ARGS_SIZE}");
         return Err(StarryError::InvalidInput);
-    }
-
-    if size > core::mem::size_of::<Clone3Args>() {
-        debug!("sys_clone3: size {size} larger than expected, using known fields only");
     }
 
     let mut buffer = [0u8; core::mem::size_of::<Clone3Args>()];
@@ -88,6 +101,7 @@ pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> StarryRes
     })?;
     let clone3_args: Clone3Args =
         bytemuck::try_pod_read_unaligned(&buffer).map_err(|_| StarryError::InvalidInput)?;
+    clone3_check_extra_bytes(args, size)?;
 
     let clone_args = CloneArgs::try_from(clone3_args)?;
     let requested_cgroup = if clone_args.flags.contains(CloneFlags::INTO_CGROUP) {
@@ -109,7 +123,7 @@ pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> StarryRes
     clone_args.do_clone_in_cgroup(uctx, requested_cgroup)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn clone3_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{
         CLONE_DETACHED, CLONE_NEWPID, CLONE_PARENT, CLONE_THREAD, SIGCHLD,

@@ -155,7 +155,7 @@ pub fn memfd_checks_before_write_at(
     memfd_check_write_seal(file_like)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn memfd_flags_validation_rules_hold_for_test() -> bool {
     // Test memfd_create flag validation
     let valid_flags = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC;
