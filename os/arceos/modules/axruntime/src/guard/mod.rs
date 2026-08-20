@@ -443,6 +443,8 @@ fn exit_scheduler_frame_guard_inner(
     };
     publish_preemption_pending(needs_reschedule);
     with_guard_state_mut(|state| state.exit_scheduler_preempt(owner));
+    #[cfg(feature = "irq")]
+    crate::clock_event_runtime::finish_deferred_rearm();
     match return_to {
         RuntimeSchedulerReturn::Task => {
             ax_hal::asm::enable_irqs();

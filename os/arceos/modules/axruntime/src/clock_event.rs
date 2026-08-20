@@ -32,6 +32,8 @@ pub(crate) enum ClockEventPhase {
     Idle,
     Armed,
     Firing,
+    /// An expired physical edge remains owned until IRQ-return rearm.
+    Deferred,
 }
 
 /// Hardware action produced by one clockevent state transition.
@@ -41,6 +43,16 @@ pub(crate) enum ClockEventAction {
     Stop,
     Resume(ClockDeadline),
     Program(ClockDeadline),
+}
+
+/// Physical rearm ownership selected by the runtime integration layer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ClockEventRearm {
+    /// Reconcile the next edge in the firing transaction itself.
+    #[cfg(any(test, not(feature = "multitask")))]
+    Immediate,
+    /// Transfer rearm to the IRQ-return or scheduler-tail transaction.
+    Deferred,
 }
 
 /// Move-only proof that one CPU lifecycle epoch owns a firing transaction.
@@ -116,7 +128,7 @@ impl LocalClockEvent {
     pub(crate) fn stop_scheduler_tick_for_idle(&mut self) -> ClockEventAction {
         assert!(!matches!(
             self.phase,
-            ClockEventPhase::Offline | ClockEventPhase::Firing
+            ClockEventPhase::Offline | ClockEventPhase::Firing | ClockEventPhase::Deferred
         ));
         let SchedulerTickState::Running { next } = self.scheduler_tick else {
             return ClockEventAction::None;
@@ -136,7 +148,7 @@ impl LocalClockEvent {
     ) -> ClockEventAction {
         assert!(!matches!(
             self.phase,
-            ClockEventPhase::Offline | ClockEventPhase::Firing
+            ClockEventPhase::Offline | ClockEventPhase::Firing | ClockEventPhase::Deferred
         ));
         let SchedulerTickState::Stopped { resume_from } = self.scheduler_tick else {
             return ClockEventAction::None;
@@ -194,7 +206,10 @@ impl LocalClockEvent {
     /// and reprograms the still-earliest absolute deadline exactly once.
     pub(crate) fn claim_irq(&mut self, _now: MonotonicInstant) -> ClockEventIrqClaim {
         match self.phase {
-            ClockEventPhase::Offline | ClockEventPhase::Idle | ClockEventPhase::Firing => {
+            ClockEventPhase::Offline
+            | ClockEventPhase::Idle
+            | ClockEventPhase::Firing
+            | ClockEventPhase::Deferred => {
                 return ClockEventIrqClaim::Ignored;
             }
             ClockEventPhase::Armed => {}
@@ -228,8 +243,7 @@ impl LocalClockEvent {
     pub(crate) fn finish_firing(
         &mut self,
         token: ClockEventFiringToken,
-        now: MonotonicInstant,
-        defer_due_work: bool,
+        rearm: ClockEventRearm,
     ) -> ClockEventAction {
         if token.cpu_epoch != self.cpu_epoch {
             return ClockEventAction::None;
@@ -239,20 +253,29 @@ impl LocalClockEvent {
             ClockEventPhase::Firing,
             "clockevent finish requires a firing transaction"
         );
-        self.phase = ClockEventPhase::Idle;
-        if defer_due_work
-            && self
-                .selected_deadline()
-                .is_some_and(|deadline| now.reached(deadline.as_monotonic()))
-        {
-            // The scheduler safe point owns hard-timer remainder, while the
-            // fixed ktimer worker owns task-timeout remainder. Keep the
-            // logical deadline published without turning an already-due value
-            // into an interrupt storm.
-            self.armed_deadline = None;
-            self.device_state = ClockEventDeviceState::Stopped;
-            return ClockEventAction::Stop;
+        match rearm {
+            #[cfg(any(test, not(feature = "multitask")))]
+            ClockEventRearm::Immediate => {
+                self.phase = ClockEventPhase::Idle;
+                self.reconcile_arm()
+            }
+            ClockEventRearm::Deferred => {
+                // Match Linux's TIF_HRTIMER_REARM transaction: the expired
+                // comparator has left the active base while IRQs stay
+                // disabled. Scheduler/IRQ return reconciles the latest logical
+                // minimum exactly once before enabling IRQs.
+                self.phase = ClockEventPhase::Deferred;
+                ClockEventAction::None
+            }
         }
+    }
+
+    /// Completes a deferred firing transaction before local IRQs are enabled.
+    pub(crate) fn finish_deferred_rearm(&mut self) -> ClockEventAction {
+        if self.phase != ClockEventPhase::Deferred {
+            return ClockEventAction::None;
+        }
+        self.phase = ClockEventPhase::Idle;
         self.reconcile_arm()
     }
 
@@ -313,7 +336,7 @@ impl LocalClockEvent {
     fn reconcile_arm(&mut self) -> ClockEventAction {
         if matches!(
             self.phase,
-            ClockEventPhase::Offline | ClockEventPhase::Firing
+            ClockEventPhase::Offline | ClockEventPhase::Firing | ClockEventPhase::Deferred
         ) {
             return ClockEventAction::None;
         }
@@ -369,7 +392,8 @@ mod single_task_tests {
     use ax_task::runtime::MonotonicInstant;
 
     use super::{
-        ClockDeadline, ClockEventAction, ClockEventIrqClaim, ClockEventPhase, LocalClockEvent,
+        ClockDeadline, ClockEventAction, ClockEventIrqClaim, ClockEventPhase, ClockEventRearm,
+        LocalClockEvent,
     };
 
     fn deadline(nanos: u64) -> ClockDeadline {
@@ -403,7 +427,7 @@ mod single_task_tests {
         };
         assert_eq!(event.phase(), ClockEventPhase::Firing);
         assert_eq!(
-            event.finish_firing(firing, instant(100), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Program(deadline(125))
         );
         assert_eq!(event.phase(), ClockEventPhase::Armed);
@@ -422,7 +446,7 @@ mod tests {
 
     use super::{
         ClockDeadline, ClockEventAction, ClockEventFiringToken, ClockEventIrqClaim,
-        ClockEventPhase, LocalClockEvent,
+        ClockEventPhase, ClockEventRearm, LocalClockEvent,
     };
 
     fn deadline(nanos: u64) -> ClockDeadline {
@@ -495,7 +519,7 @@ mod tests {
             claim => panic!("armed edge was not claimed: {claim:?}"),
         };
         assert_eq!(
-            event.finish_firing(firing, instant(150), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Program(deadline(200))
         );
         assert_eq!(event.phase(), ClockEventPhase::Armed);
@@ -514,7 +538,7 @@ mod tests {
         assert!(event.cpu_epoch() > old_epoch);
 
         assert_eq!(
-            event.finish_firing(firing, instant(200), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::None
         );
         assert_eq!(event.phase(), ClockEventPhase::Armed);
@@ -538,7 +562,7 @@ mod tests {
 
         let firing = fire_due(&mut event, 100);
         assert_eq!(
-            event.finish_firing(firing, instant(100), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Program(deadline(1_000))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(1_000)));
@@ -559,7 +583,7 @@ mod tests {
         let firing = fire_due(&mut event, 149);
         assert!(!event.advance_periodic(instant(149), 25));
         assert_eq!(
-            event.finish_firing(firing, instant(149), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Program(deadline(150))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(150)));
@@ -576,7 +600,7 @@ mod tests {
 
         let firing = fire_due(&mut event, 100);
         assert_eq!(
-            event.finish_firing(firing, instant(100), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Stop
         );
         assert_eq!(event.phase(), ClockEventPhase::Idle);
@@ -640,7 +664,7 @@ mod tests {
 
         let firing = fire_due(&mut event, 300);
         assert_eq!(
-            event.finish_firing(firing, instant(300), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Program(deadline(500))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(500)));
@@ -671,7 +695,7 @@ mod tests {
 
         let firing = fire_due(&mut event, 350);
         assert_eq!(
-            event.finish_firing(firing, instant(350), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Program(deadline(400))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(400)));
@@ -705,7 +729,7 @@ mod tests {
 
         let firing = fire_due(&mut event, 300);
         assert_eq!(
-            event.finish_firing(firing, instant(300), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Stop
         );
         assert_eq!(event.phase(), ClockEventPhase::Idle);
@@ -745,7 +769,7 @@ mod tests {
             ClockEventAction::None
         );
         assert_eq!(
-            event.finish_firing(firing, instant(500), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Program(deadline(250))
         );
         assert_eq!(event.phase(), ClockEventPhase::Armed);
@@ -759,7 +783,7 @@ mod tests {
         assert!(event.advance_periodic(instant(100), 25));
         event.publish_scheduler(1, Some(scheduler_deadline(140)));
         assert_eq!(
-            event.finish_firing(firing, instant(100), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Program(deadline(125))
         );
     }
@@ -781,10 +805,46 @@ mod tests {
         assert_eq!(event.publish_scheduler(2, None), ClockEventAction::None);
 
         assert_eq!(
-            event.finish_firing(firing, instant(100), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Program(deadline(125))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(125)));
+    }
+
+    #[test]
+    fn deferred_rearm_keeps_the_physical_edge_owned_until_irq_return() {
+        let mut event = LocalClockEvent::offline();
+        assert_eq!(
+            event.online(deadline(500)),
+            ClockEventAction::Resume(deadline(500))
+        );
+        assert_eq!(
+            event.publish_scheduler(1, Some(scheduler_deadline(100))),
+            ClockEventAction::Program(deadline(100))
+        );
+
+        let firing = fire_due(&mut event, 100);
+        assert_eq!(
+            event.finish_firing(firing, ClockEventRearm::Deferred),
+            ClockEventAction::None,
+            "multitask IRQ return must retain a deferred physical rearm owner"
+        );
+        assert_eq!(event.phase(), ClockEventPhase::Deferred);
+        assert_eq!(event.armed_deadline(), None);
+
+        assert_eq!(
+            event.publish_scheduler(2, Some(scheduler_deadline(400))),
+            ClockEventAction::None,
+            "logical publication cannot commit hardware before scheduler tail"
+        );
+        assert_eq!(event.phase(), ClockEventPhase::Deferred);
+        assert_eq!(event.armed_deadline(), None);
+        assert_eq!(
+            event.finish_deferred_rearm(),
+            ClockEventAction::Program(deadline(400))
+        );
+        assert_eq!(event.phase(), ClockEventPhase::Armed);
+        assert_eq!(event.armed_deadline(), Some(deadline(400)));
     }
 
     #[test]
@@ -804,7 +864,7 @@ mod tests {
             claim => panic!("armed edge was not claimed: {claim:?}"),
         };
         assert_eq!(
-            event.finish_firing(firing, instant(50), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Program(deadline(100))
         );
         assert_eq!(event.phase(), ClockEventPhase::Armed);
@@ -822,7 +882,7 @@ mod tests {
             claim => panic!("outstanding idle edge was not claimed: {claim:?}"),
         };
         assert_eq!(
-            event.finish_firing(firing, instant(100), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Stop
         );
         assert_eq!(event.phase(), ClockEventPhase::Idle);
@@ -843,7 +903,7 @@ mod tests {
         let firing = fire_due(&mut event, 100);
         assert_eq!(event.publish_scheduler(2, None), ClockEventAction::None);
         assert_eq!(
-            event.finish_firing(firing, instant(100), false),
+            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Program(deadline(500))
         );
         assert!(!event.has_immediate_work(instant(100)));

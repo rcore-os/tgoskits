@@ -164,21 +164,17 @@ impl ClockEventFiringTransaction {
         })
     }
 
-    fn finish(
-        self,
-        now: ax_task::runtime::MonotonicInstant,
-        #[cfg(feature = "multitask")] outcome: ax_task::TaskClockEventOutcome,
-    ) {
+    fn finish(self, #[cfg(feature = "multitask")] outcome: ax_task::TaskClockEventOutcome) {
         let token = self.token;
         let action = with_local_clock_event_mut(|clockevent| {
             #[cfg(feature = "multitask")]
             let _ = clockevent
                 .publish_scheduler(outcome.update().generation(), outcome.update().deadline());
             #[cfg(feature = "multitask")]
-            let defer_due_work = outcome.pending();
+            let rearm = crate::clock_event::ClockEventRearm::Deferred;
             #[cfg(not(feature = "multitask"))]
-            let defer_due_work = false;
-            clockevent.finish_firing(token, now, defer_due_work)
+            let rearm = crate::clock_event::ClockEventRearm::Immediate;
+            clockevent.finish_firing(token, rearm)
         });
         apply_clock_event_action(action);
     }
@@ -224,6 +220,17 @@ pub(crate) fn publish_local_scheduler_deadline(update: ax_task::runtime::Schedul
             clockevent.publish_scheduler(update.generation(), update.deadline()),
         )
     });
+}
+
+/// Completes Linux-style deferred hrtimer rearm before local IRQ restoration.
+#[cfg(all(feature = "irq", feature = "multitask"))]
+pub(crate) fn finish_deferred_rearm() {
+    assert!(
+        !ax_hal::asm::irqs_enabled(),
+        "deferred clockevent rearm requires local IRQ exclusion"
+    );
+    let action = with_local_clock_event_mut(|clockevent| clockevent.finish_deferred_rearm());
+    apply_clock_event_action(action);
 }
 
 #[cfg(feature = "irq")]
@@ -314,7 +321,6 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
             crate::task::publish_scheduler_tick(outcome.scheduler_tick_stamp());
         }
         firing.finish(
-            now,
             #[cfg(feature = "multitask")]
             outcome,
         );

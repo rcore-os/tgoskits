@@ -35,17 +35,21 @@ unsafe fn context_preempt_exit(state: usize) {
 }
 
 unsafe fn context_preempt_exit_irq_return(state: usize) {
-    if state == 0 {
-        return;
-    }
     #[cfg(feature = "multitask")]
     {
-        let token = unsafe { cpu_local::PreemptionToken::from_raw(state) }
-            .expect("an IRQ-return guard must retain its preemption owner");
-        crate::guard::exit_preempt_from_irq_return(token);
+        if state != 0 {
+            let token = unsafe { cpu_local::PreemptionToken::from_raw(state) }
+                .expect("an IRQ-return guard must retain its preemption owner");
+            crate::guard::exit_preempt_from_irq_return(token);
+        }
+        #[cfg(feature = "irq")]
+        crate::clock_event_runtime::finish_deferred_rearm();
     }
     #[cfg(not(feature = "multitask"))]
-    unreachable!("a uniprocessor runtime cannot own an IRQ-return preemption token");
+    assert_eq!(
+        state, 0,
+        "a uniprocessor runtime cannot own an IRQ-return preemption token"
+    );
 }
 
 fn context_irq_save_and_disable() -> usize {

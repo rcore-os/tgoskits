@@ -271,6 +271,14 @@ impl CpuRemote {
                     .load(Ordering::Acquire)
     }
 
+    /// Returns whether a sticky preemption request owns scheduler progress.
+    ///
+    /// Unlike [`Self::needs_reschedule`], owner-only deferred work does not
+    /// transfer ownership of the current task's runtime clockevent.
+    pub(crate) fn preemption_requested(&self) -> bool {
+        self.scheduler_request.request.load(Ordering::Acquire) & REQUEST_PREEMPT != 0
+    }
+
     pub(crate) fn claim_scheduler_request(&self) -> SchedulerRequestClaim {
         let request = self
             .scheduler_request

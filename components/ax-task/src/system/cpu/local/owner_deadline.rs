@@ -104,9 +104,9 @@ impl CpuLocal {
             .expect("a task-test monotonic sample must be representable");
 
         // Seed the real authoritative base with a distinct future scheduler
-        // publication, then commit one already-due observation. The second
-        // due observation is the transaction under test: it must match the
-        // snapshot without entering the base again even though time advanced.
+        // publication, then commit one already-due observation. Match Linux's
+        // hrtick callback by transferring the fired edge to a sticky reschedule
+        // request before deriving the next physical publication.
         self.as_mut()
             .next_scheduler_deadline_update_if_changed_from_rq_observation(
                 first_now,
@@ -119,6 +119,7 @@ impl CpuLocal {
                 due,
                 SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
             )?;
+        self.as_ref().get_ref().remote.request_reschedule();
         let owner_index = usize::try_from(owner.as_u32())
             .expect("a runtime CPU identity must fit the local architecture");
         crate::task_test_hooks::arm_deadline_publication_probe(owner_index);
@@ -207,13 +208,18 @@ impl CpuLocal {
         rq_observation: SchedulerDeadlineRqObservation,
     ) -> Option<MonotonicDeadline> {
         let this = self.as_ref().get_ref();
-        // Deadline selection is a pure observation. An already-due hard
-        // scheduler timer remains a physical clockevent source and the
-        // runtime clamps it to the device minimum delta. Only the firing
-        // owner may convert it into sticky scheduler work.
-        let scheduler = rq_observation
-            .clock_event
-            .map(|event| event.physical_deadline(monotonic_now));
+        // Linux's hrtick callback returns HRTIMER_NORESTART after task_tick().
+        // Once that callback has published a sticky preemption request, the
+        // fired runtime/RT-quota edge has left the physical timer base. The
+        // scheduler claim is the next owner and will derive a fresh deadline
+        // from the selected rq state before returning with IRQs enabled.
+        let scheduler = (!this.remote.preemption_requested())
+            .then(|| {
+                rq_observation
+                    .clock_event
+                    .map(|event| event.physical_deadline(monotonic_now))
+            })
+            .flatten();
         let fair_balance = rq_observation
             .has_periodic_fair_balance_work
             .then(|| this.dispatch.fair_balance_deadline())

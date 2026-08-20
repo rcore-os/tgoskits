@@ -169,19 +169,18 @@ publication 已被处理。
 
 ```text
 Offline
-  | online
-  v
-Idle <-------------------------+
-  | arm                         |
-  v                             |
-Armed(deadline) -> Firing ------+
-       IRQ          finish/stop
+  | online                           IRQ return / scheduler tail
+  v                                             |
+Idle -> Armed(deadline) -> Firing -> Deferred --+
+ ^          IRQ                                   |
+ +------------------------------------------------+
 ```
 
 - `Offline`：CPU area 存在，但物理事件不可用；
 - `Idle`：runtime 不认为设备有有效 arm；
 - `Armed`：一个绝对 deadline 已写入设备；
 - `Firing`：旧 arm 已失效，handler 正在合并更新。
+- `Deferred`：handler 已完成逻辑合并，IRQ-return/scheduler-tail 拥有唯一 rearm 事务。
 
 online 与 offline 都推进 epoch。进入 `Firing` 会产生不可复制的
 `ClockEventFiringToken`；finish 必须消费该 token。若 CPU 已经过一次
@@ -208,6 +207,24 @@ periodic deadline 和尚未被 IRQ 入口消费的当前物理 arm。逻辑 sele
 普通 cancel、idle 和逻辑 deadline 替换不能借用 offline 权限。
 
 `Firing` 期间只更新逻辑 source state。handler 结束时从最新 task deadline 和 periodic deadline 计算一次 authoritative minimum，并且只提交一次硬件动作。
+
+`pending` 的 scheduler/ktimer work 只表示对应 task-context owner 仍需运行，不能据此决定
+clockevent 的物理生命周期。Linux v7.1 PREEMPT_RT 启用 `CONFIG_HRTIMER_REARM_DEFERRED` 后，
+`hrtimer_interrupt()` 每次都先让已触发 edge 离开 active base，再通过显式
+`TIF_HRTIMER_REARM` 把不可丢失的 rearm 事务交给 scheduler/IRQ-return。本实现对应地让
+multitask runtime 固定把 `Firing` 转成类型化的 `Deferred` phase，不再从 ax-task 传递兼容布尔。
+scheduler frame 尾部在完成调度状态发布后、打开 IRQ 前消费该事务；未发生调度的 IRQ-return
+则在恢复 IRQ 前消费它。两条路径都从最新 source minimum 只提交一次硬件动作，不能依赖后续
+普通任务、逻辑 generation 变化、轮询或周期 heartbeat 重新启动。没有 scheduler 的底层模式
+通过 `ClockEventRearm::Immediate` 使用通用的同事务 rearm，架构实现不改变上层所有权语义。
+
+scheduler runtime/RT-quota edge 还需要和 Linux `hrtick()` 一样完成所有权转移：hardirq 在
+`rq` 锁下 charge 当前任务并运行 class `task_tick()`；一旦产生 sticky `REQUEST_PREEMPT`，
+已触发的 runtime/RT-quota source 就从下一次物理 deadline 合并中移除。它不能继续以
+`MonotonicDeadline::ORIGIN` 留在 base 反复触发。scheduler claim 清除该 sticky bit 后，在同一
+IRQ-off safe point 按新选中的 `rq->curr` 重算并发布下一期限，等价于 Linux 的
+`hrtick()` 返回 `HRTIMER_NORESTART`、随后由 `hrtick_schedule_exit()` 按新调度状态启动下一次
+hrtick。owner-only deferred work 不是 preemption，不得借此移除当前 runtime timer。
 
 Deadline CBS/zero-lag hard timer 的对象生命周期由 owner rq 的 Deadline member set 保持，
 等价于 Linux 把 hrtimer 嵌入 `sched_dl_entity`。hard IRQ 只用 generation-bearing event 在该 rq

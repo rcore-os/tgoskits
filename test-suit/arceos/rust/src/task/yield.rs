@@ -260,9 +260,9 @@ pub fn run() -> crate::TestResult {
             observation: 0,
             rt_period_observation: 0,
             registration: 0,
-            publication: 0,
+            publication: 1,
         },
-        "the same due scheduler event must not re-enter its authoritative base"
+        "a fired scheduler edge must leave the physical base after publishing sticky reschedule"
     );
     // A no-switch pass must remain rq-owned, but it may still reprogram a
     // changed scheduler deadline just like Linux's hrtick_schedule_exit().

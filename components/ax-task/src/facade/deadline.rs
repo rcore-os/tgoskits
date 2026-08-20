@@ -161,11 +161,10 @@ pub fn on_clock_event(
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     let (charge, clock, current) = system.charge_current_until_with_clock(cpu.as_mut(), 0)?;
-    let rt_unthrottled = system.service_rt_period(&cpu, now);
+    system.service_rt_period(&cpu, now);
     let hard = system.service_due_hard_timers(cpu.as_mut(), now)?;
     let batch = cpu.as_mut().on_task_clock_event(now, budget);
-    let scheduler_due = cpu.as_mut().scheduler_work_due(now);
-    let pending = batch.pending() || scheduler_due || rt_unthrottled;
+    cpu.as_mut().scheduler_work_due(now);
     let update = cpu
         .as_mut()
         .next_scheduler_deadline_update(now, SchedulerDeadlineDerivationSource::ClockEvent)?;
@@ -173,7 +172,6 @@ pub fn on_clock_event(
         slice_expired: charge.slice_expired(),
         deadline_overrun: charge.deadline_overrun(),
         expired: hard.processed().saturating_add(batch.expired()),
-        pending,
         update,
         scheduler_tick: SchedulerTickStamp {
             cpu: cpu.owner(),
@@ -460,7 +458,6 @@ pub struct TaskClockEventOutcome {
     slice_expired: bool,
     deadline_overrun: bool,
     expired: usize,
-    pending: bool,
     update: crate::runtime::SchedulerDeadlineUpdate,
     scheduler_tick: SchedulerTickStamp,
 }
@@ -485,10 +482,6 @@ impl TaskClockEventOutcome {
     /// Returns the number of timer events claimed by this bounded IRQ pass.
     pub const fn expired(self) -> usize {
         self.expired
-    }
-    /// Returns whether another bounded expiry pass is immediately required.
-    pub const fn pending(self) -> bool {
-        self.pending
     }
     /// Returns the complete generation-ordered task-deadline publication.
     pub const fn update(self) -> crate::runtime::SchedulerDeadlineUpdate {
