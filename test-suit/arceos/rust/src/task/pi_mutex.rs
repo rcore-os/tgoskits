@@ -215,9 +215,11 @@ fn owner_spin_allows_higher_priority_preemption() {
     );
 
     let start_waiter = Arc::new(AtomicBool::new(false));
+    let waiter_ready = Arc::new(AtomicBool::new(false));
     let waiter = {
         let mutex = Arc::clone(&mutex);
         let start_waiter = Arc::clone(&start_waiter);
+        let waiter_ready = Arc::clone(&waiter_ready);
         thread::spawn(move || {
             pin_current_to_cpu(1);
             // Keep the first Linux owner-spin eligibility check free from a
@@ -229,12 +231,21 @@ fn owner_spin_allows_higher_priority_preemption() {
                 SchedulePolicy::fifo(RtPriority::new(50).expect("priority 50 must be valid")),
             )
             .expect("failed to promote PI owner-spin waiter");
+            // Linux clears need_resched in schedule() before returning to the
+            // selected task. Establish that same scheduler boundary before
+            // testing the independent owner-spin preemption edge.
+            thread::yield_now();
+            waiter_ready.store(true, Ordering::Release);
             while !start_waiter.load(Ordering::Acquire) {
                 core::hint::spin_loop();
             }
             drop(mutex.lock());
         })
     };
+    wait_until(
+        || waiter_ready.load(Ordering::Acquire),
+        "PI owner-spin waiter did not complete policy activation",
+    );
     task_test_hooks::arm_pi_owner_spin(waiter.thread().id().as_u64().get());
     start_waiter.store(true, Ordering::Release);
     wait_until(
