@@ -9,7 +9,7 @@ use ax_mm::MmError;
 use axfs_ng_vfs::VfsError;
 #[cfg(feature = "paging")]
 use axklib::KlibError;
-#[cfg(feature = "serial")]
+#[cfg(all(feature = "irq", feature = "multitask"))]
 use rdif_serial::ConfigError;
 
 #[cfg(feature = "multitask")]
@@ -42,17 +42,21 @@ pub enum RuntimeError {
     #[error(transparent)]
     Task(#[from] TaskError),
     /// A UART rejected its requested configuration.
-    #[cfg(feature = "serial")]
+    #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error(transparent)]
     SerialConfig(#[from] ConfigError),
     /// A platform console ownership transition was requested out of order.
-    #[cfg(feature = "serial")]
+    #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error(transparent)]
     ConsoleHandoff(#[from] ax_hal::console::ConsoleHandoffError),
     /// Another serial runtime already owns console log routing.
-    #[cfg(feature = "serial")]
+    #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error("another serial runtime already owns console routing")]
     SerialConsoleBusy,
+    /// The runtime console handoff failed after early ownership was revoked.
+    #[cfg(all(feature = "irq", feature = "multitask"))]
+    #[error("runtime console failed closed")]
+    ConsoleFailedClosed,
     /// A serial operation requires a running port.
     #[error("serial runtime is not started")]
     SerialNotStarted,
@@ -117,7 +121,7 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
         },
         #[cfg(feature = "multitask")]
         RuntimeError::Task(error) => task_error_to_klib_error(error),
-        #[cfg(feature = "serial")]
+        #[cfg(all(feature = "irq", feature = "multitask"))]
         RuntimeError::SerialConfig(error) => match error {
             ConfigError::InvalidBaudrate
             | ConfigError::UnsupportedDataBits
@@ -126,10 +130,12 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
             ConfigError::Timeout => KlibError::TimedOut,
             ConfigError::RegisterError => KlibError::Io,
         },
-        #[cfg(feature = "serial")]
+        #[cfg(all(feature = "irq", feature = "multitask"))]
         RuntimeError::ConsoleHandoff(_) => KlibError::BadState,
-        #[cfg(feature = "serial")]
+        #[cfg(all(feature = "irq", feature = "multitask"))]
         RuntimeError::SerialConsoleBusy => KlibError::ResourceBusy,
+        #[cfg(all(feature = "irq", feature = "multitask"))]
+        RuntimeError::ConsoleFailedClosed => KlibError::BadState,
         RuntimeError::SerialNotStarted => KlibError::BadState,
         RuntimeError::SerialControlBusy => KlibError::ResourceBusy,
         RuntimeError::WouldBlock => KlibError::ResourceBusy,

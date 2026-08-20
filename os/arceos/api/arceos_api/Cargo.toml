@@ -33,7 +33,6 @@ task-test-hooks = [
 fs = ["dep:ax-fs-ng"]
 net = ["dep:ax-net"]
 display = ["dep:ax-display"]
-serial = ["ax-runtime/serial"]
 
 
 # Use stub functions if the feature is not enabled.
@@ -47,6 +46,7 @@ ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
 ax-io.workspace = true
 ax-ipi = { workspace = true, optional = true }
+ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm = { workspace = true, optional = true }
 ax-net = { workspace = true, optional = true }

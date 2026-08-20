@@ -20,14 +20,13 @@ pub use base::*;
 pub use history::*;
 pub use vm::*;
 
-use std::io::prelude::*;
 use std::string::String;
+use std::sync::LazyLock;
 use std::vec::Vec;
 use std::{
     collections::{BTreeMap, BTreeSet},
     string::ToString,
 };
-use std::{print, println, sync::LazyLock};
 
 pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
     LazyLock::new(build_command_tree);
@@ -452,7 +451,6 @@ pub fn show_help(command_path: &[String]) -> Result<(), ParseError> {
 
 pub fn print_prompt() {
     print!("{}", prompt_string());
-    std::io::stdout().flush().ok();
 }
 
 pub fn prompt_string() -> String {
@@ -527,7 +525,6 @@ pub fn handle_builtin_commands(input: &str) -> bool {
         }
         [command] if command == "clear" => {
             print!("\x1b[2J\x1b[H"); // ANSI clear screen sequence
-            std::io::stdout().flush().ok();
             true
         }
         [command, command_path @ ..] if command == "help" => {

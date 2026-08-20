@@ -7,7 +7,6 @@ use core::{
 
 pub(super) const TX_FRAME_BYTES: usize = 256;
 const TX_FRAME_CAPACITY: usize = 16;
-const IDLE_BIT: u64 = 1;
 
 #[derive(Clone, Copy)]
 pub(super) struct TxFrame {
@@ -173,7 +172,6 @@ pub(super) struct TxIngress {
     ring: MpscFrameRing,
     accepting: AtomicBool,
     epoch: AtomicU64,
-    activity: AtomicU64,
 }
 
 impl TxIngress {
@@ -182,7 +180,6 @@ impl TxIngress {
             ring: MpscFrameRing::new(),
             accepting: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
-            activity: AtomicU64::new(IDLE_BIT),
         }
     }
 
@@ -195,13 +192,10 @@ impl TxIngress {
             return 0;
         }
 
-        self.publish_activity(false);
         let requested = bytes.len().div_ceil(TX_FRAME_BYTES);
         let Some(reservation) = self.ring.reserve(requested) else {
             return 0;
         };
-        self.publish_activity(false);
-
         let mut accepted = 0;
         for offset in 0..reservation.count() {
             let end = (accepted + TX_FRAME_BYTES).min(bytes.len());
@@ -221,11 +215,9 @@ impl TxIngress {
             return 0;
         }
 
-        self.publish_activity(false);
         let Some(reservation) = self.ring.reserve(text_frame_count(bytes)) else {
             return 0;
         };
-        self.publish_activity(false);
 
         let accepted = publish_text_frames(&reservation, epoch, bytes);
         notify();
@@ -246,11 +238,18 @@ impl TxIngress {
         self.ring.has_pending()
     }
 
+    /// Returns whether a drain must still wait for a TX submission.
+    pub(super) fn drain_pending(&self) -> bool {
+        // A producer publishes its worker notification only after filling all
+        // reserved frames. Count the reservation itself so a preceding drain
+        // request cannot complete in that publication window.
+        self.ring.has_reserved()
+    }
+
     pub(super) fn start_accepting(&self) {
         self.accepting.store(false, Ordering::Release);
         self.advance_epoch();
         while self.ring.pop().is_some() {}
-        self.publish_activity(true);
         self.accepting.store(true, Ordering::Release);
     }
 
@@ -258,7 +257,6 @@ impl TxIngress {
         self.accepting.store(false, Ordering::Release);
         self.advance_epoch();
         while self.ring.pop().is_some() {}
-        self.publish_activity(true);
     }
 
     pub(super) fn discard_pending(&self) {
@@ -277,48 +275,8 @@ impl TxIngress {
         (TX_FRAME_CAPACITY - self.ring.len()) * TX_FRAME_BYTES
     }
 
-    pub(super) fn is_idle(&self) -> bool {
-        self.activity.load(Ordering::Acquire) & IDLE_BIT != 0
-    }
-
-    /// Clears idle before the worker starts a drain pass.
-    pub(super) fn begin_drain(&self) {
-        self.publish_activity(false);
-    }
-
-    /// Publishes idle only if no producer changed activity around the check.
-    pub(super) fn mark_idle_if_empty(&self, worker_empty: bool, hardware_idle: bool) -> bool {
-        if !worker_empty || !hardware_idle || self.ring.has_reserved() {
-            return false;
-        }
-        let observed = self.activity.load(Ordering::Acquire);
-        if observed & IDLE_BIT != 0 {
-            return false;
-        }
-        if self.ring.has_reserved() {
-            return false;
-        }
-        self.activity
-            .compare_exchange(
-                observed,
-                observed | IDLE_BIT,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-    }
-
     fn advance_epoch(&self) {
         self.epoch.fetch_add(1, Ordering::AcqRel);
-    }
-
-    fn publish_activity(&self, idle: bool) {
-        let _ = self
-            .activity
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |activity| {
-                let generation = (activity & !IDLE_BIT).wrapping_add(2) & !IDLE_BIT;
-                Some(generation | u64::from(idle))
-            });
     }
 }
 
@@ -523,6 +481,17 @@ mod tests {
     }
 
     #[test]
+    fn unpublished_reservation_keeps_control_drain_pending() {
+        let ingress = started_ingress();
+        let _reservation = ingress.ring.reserve(1).expect("one free frame");
+
+        assert!(
+            ingress.drain_pending(),
+            "a drain request must not pass a producer whose frames are reserved but unpublished"
+        );
+    }
+
+    #[test]
     fn lifecycle_epoch_discards_frames_from_the_previous_start() {
         let ingress = started_ingress();
         assert_eq!(ingress.try_write(b"old", || {}), 3);
@@ -546,27 +515,6 @@ mod tests {
 
         assert_eq!(ingress.pop().unwrap().bytes(), b"fresh");
         assert!(ingress.pop().is_none());
-    }
-
-    #[test]
-    fn a_submit_after_idle_publication_clears_idle_again() {
-        let ingress = started_ingress();
-        ingress.publish_activity(false);
-        assert!(ingress.mark_idle_if_empty(true, true));
-        assert!(ingress.is_idle());
-
-        assert_eq!(ingress.try_write(b"x", || {}), 1);
-        assert!(!ingress.is_idle());
-    }
-
-    #[test]
-    fn hard_path_activity_generation_wraps_without_panicking() {
-        let ingress = TxIngress::new();
-        ingress.activity.store(u64::MAX - 1, Ordering::Release);
-
-        ingress.publish_activity(false);
-
-        assert_eq!(ingress.activity.load(Ordering::Acquire), 0);
     }
 
     #[test]

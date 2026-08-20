@@ -61,11 +61,13 @@ impl AxvmManager {
     }
 
     /// Create one VM from a TOML config string.
+    #[cfg(any(feature = "fs", feature = "http-axum"))]
     pub fn create_vm_from_toml(raw_cfg: &str) -> Result<VMId> {
         crate::config::init_guest_vm(raw_cfg).context("create VM from TOML configuration")
     }
 
     /// Start a VM by ID.
+    #[cfg(any(feature = "fs", feature = "http-axum"))]
     pub fn start_vm(vm_id: VMId) -> Result<()> {
         AxvmRuntime::start_vm(vm_id).with_context(|| format!("start VM[{vm_id}]"))
     }

@@ -404,7 +404,10 @@ fn expand_tests_module(
 
             #run_setup
             axtest::run_kernel_tests(
-                axtest::KernelTestConfig::new(__axtest_print, ax_hal::power::system_off)
+                axtest::KernelTestConfig::new(
+                    __axtest_print,
+                    ax_std::os::arceos::api::sys::ax_terminate,
+                )
                     .with_coverage_wait(__axtest_wait_for_coverage_extraction),
             );
         }

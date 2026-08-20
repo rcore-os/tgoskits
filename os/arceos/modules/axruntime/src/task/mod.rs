@@ -67,6 +67,7 @@ mod address_space;
 mod bootstrap;
 mod context;
 mod executor;
+mod irq_worker;
 mod resources;
 mod runtime_impl;
 mod scheduler_events;
@@ -106,6 +107,7 @@ use context::{
     switch_runtime_context,
 };
 pub use executor::{BlockOnError, block_on, block_on_timeout};
+pub use irq_worker::FixedIrqWorkerSignal;
 #[cfg(feature = "tls")]
 use resources::runtime_tls_pointer;
 use resources::{

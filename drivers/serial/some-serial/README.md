@@ -308,7 +308,7 @@ cargo test --test test --  --show-output --uboot
 
 ### 参考实现
 
-可以参考现有的 `src/pl011.rs` 作为新驱动的实现模板：
+可以参考现有的 `src/pl011/` 模块作为新驱动的实现模板：
 
 ```rust
 // 新驱动的基本结构示例

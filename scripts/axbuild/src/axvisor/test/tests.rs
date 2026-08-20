@@ -1068,6 +1068,44 @@ fn shell_command_failure_regex_ignores_smp_log_interleaving() {
 }
 
 #[test]
+fn aarch64_nvme_smoke_fail_regex_ignores_interleaved_kernel_logs() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let qemu_path = "test-suit/axvisor/normal/qemu/smoke/qemu-aarch64.toml";
+    let qemu = load_qemu_config(&workspace_root.join(qemu_path));
+    let fail_regexes = qemu
+        .fail_regex
+        .iter()
+        .map(|pattern| regex::Regex::new(pattern).unwrap())
+        .collect::<Vec<_>>();
+    let matches_failure = |output: &str| fail_regexes.iter().any(|regex| regex.is_match(output));
+
+    for interleaved_output in [
+        "rm:Core Waiting for all cores to enable hardware virtualization...",
+        "rm:370329Initializing AxVM timer wheel...",
+        "rm: Core Waiting for all cores to enable hardware virtualization...",
+        "rm: 370329Initializing AxVM timer wheel...",
+        "rm: s initializing hardware virtualization support...",
+    ] {
+        assert!(
+            !matches_failure(interleaved_output),
+            "{qemu_path} should not treat interleaved shell echo and kernel log as a failure: \
+             {interleaved_output}"
+        );
+    }
+
+    for shell_error in [
+        "rm: cannot remove '/tmp/axvisor-nvme-rw': Read-only file system",
+        "cat: /tmp/axvisor-nvme-rw: No such file or directory",
+        "echo: /tmp/axvisor-nvme-rw: No space left on device",
+    ] {
+        assert!(
+            matches_failure(shell_error),
+            "{qemu_path} should still reject a real shell command error: {shell_error}"
+        );
+    }
+}
+
+#[test]
 fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
     let root = tempdir().unwrap();
     write_qemu_build_config(

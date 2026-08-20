@@ -148,7 +148,6 @@ ax-runtime = { workspace = true, features = [
     "rtc",
     "ext4fs",
     "net",
-    "serial",
 ] }
 ax-std = { workspace = true, default-features = false, features = [
     "alloc",

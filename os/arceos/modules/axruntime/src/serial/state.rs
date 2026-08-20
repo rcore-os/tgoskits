@@ -160,6 +160,7 @@ impl SerialStatsAtomic {
             .store(timestamp_nanos, Ordering::Relaxed);
     }
 
+    #[cfg(test)]
     pub(super) fn snapshot(&self) -> SerialStats {
         SerialStats {
             handled_irq: self.handled_irq.load(Ordering::Relaxed),
@@ -183,7 +184,8 @@ impl SerialStatsAtomic {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SerialStats {
+#[cfg(test)]
+pub(super) struct SerialStats {
     pub handled_irq: u64,
     pub spurious_irq: u64,
     pub fault_irq: u64,

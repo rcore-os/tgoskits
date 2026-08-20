@@ -214,8 +214,22 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     crate::devices::probe_all_devices();
 
-    #[cfg(feature = "serial")]
+    #[cfg(all(feature = "irq", feature = "multitask"))]
     crate::serial::init(cpu_id);
+
+    #[cfg(all(feature = "irq", feature = "multitask"))]
+    match crate::console::activate_before_smp() {
+        crate::console::ConsoleActivation::Active {
+            runtime_index,
+            tty_number,
+        } => info!("runtime console active: serial{runtime_index}, ttyS{tty_number}"),
+        crate::console::ConsoleActivation::RawHal(reason) => {
+            info!("no runtime console selected; keeping the HAL console: {reason:?}")
+        }
+        crate::console::ConsoleActivation::FailedClosed(reason) => {
+            warn!("runtime console unavailable; early console failed closed: {reason:?}")
+        }
+    }
 
     #[cfg(feature = "rtc")]
     ax_println!(
@@ -256,16 +270,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     crate::fs::online_smp();
 
     crate::ax_app_entry();
-
-    #[cfg(feature = "multitask")]
-    crate::task::exit_current(0);
-    #[cfg(not(feature = "multitask"))]
-    {
-        debug!("main task exited: exit_code={}", 0);
-        #[cfg(feature = "irq")]
-        crate::clock_event_runtime::take_current_clock_event_offline();
-        ax_hal::power::system_off();
-    }
+    crate::terminate();
 }
 
 #[cfg(test)]

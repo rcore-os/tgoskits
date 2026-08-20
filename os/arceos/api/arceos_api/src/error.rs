@@ -3,7 +3,7 @@ use ax_fs_ng::VfsError;
 use ax_io::IoError;
 #[cfg(feature = "net")]
 use ax_net::NetError;
-#[cfg(feature = "serial")]
+#[cfg(all(feature = "irq", feature = "multitask"))]
 use ax_runtime::RuntimeError;
 #[cfg(feature = "multitask")]
 use ax_runtime::task::TaskError;
@@ -20,7 +20,7 @@ pub enum ApiError {
     #[error(transparent)]
     Net(#[from] NetError),
     /// A runtime-owned console operation failed.
-    #[cfg(feature = "serial")]
+    #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
     /// A scheduler operation failed in the task domain.
@@ -51,7 +51,7 @@ impl From<ApiError> for IoError {
             ApiError::Vfs(error) => vfs_error_to_io_error(error),
             #[cfg(feature = "net")]
             ApiError::Net(error) => error.into(),
-            #[cfg(feature = "serial")]
+            #[cfg(all(feature = "irq", feature = "multitask"))]
             ApiError::Runtime(error) => runtime_error_to_io_error(error),
             #[cfg(feature = "multitask")]
             ApiError::Task(error) => task_error_to_io_error(error),
@@ -139,9 +139,10 @@ fn vfs_error_to_io_error(error: VfsError) -> IoError {
     }
 }
 
-#[cfg(feature = "serial")]
+#[cfg(all(feature = "irq", feature = "multitask"))]
 fn runtime_error_to_io_error(error: RuntimeError) -> IoError {
     match error {
+        RuntimeError::ConsoleFailedClosed => IoError::BadState,
         RuntimeError::SerialNotStarted => IoError::BadState,
         RuntimeError::SerialControlBusy => IoError::ResourceBusy,
         RuntimeError::WouldBlock => IoError::WouldBlock,

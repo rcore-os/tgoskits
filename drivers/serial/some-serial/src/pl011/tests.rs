@@ -197,8 +197,8 @@ fn emergency_tx_gives_up_after_a_bounded_poll_when_the_fifo_stays_full() {
     let (mut regs, uart) = pl011_with_registers();
     let parts = uart.split();
     let gate = UartRegisterGate::new(parts.emergency_tx);
-    let access = gate.try_enter().unwrap();
     write_test_reg(&mut regs, 0x018, UARTFR::TXFF::SET.value);
+    let access = gate.try_begin_emergency().unwrap();
 
     assert_eq!(access.try_write(b"x"), 0);
 
@@ -214,30 +214,30 @@ fn emergency_tx_writes_the_whole_buffer_past_the_fifo_depth() {
     write_test_reg(&mut regs, 0x018, 0);
     let bytes = [b'x'; 17];
     let gate = UartRegisterGate::new(parts.emergency_tx);
-    let access = gate.try_enter().unwrap();
+    let access = gate.try_begin_emergency().unwrap();
 
-    // A panic console must not drop payload beyond the hardware FIFO depth
-    // (Linux `pl011_wait_to_send_char` semantics): the emergency path drains
-    // the transmitter instead of truncating after one FIFO pass.
-    assert_eq!(access.try_write(&bytes), 17);
+    assert_eq!(access.try_write(&bytes), EMERGENCY_TX_BUDGET);
+    assert_eq!(access.try_write(&bytes[EMERGENCY_TX_BUDGET..]), 1);
     assert_eq!(regs.uartdr.get() as u8, b'x');
 }
 
 #[test]
-fn emergency_irq_mask_guard_restores_the_worker_mask() {
+fn emergency_takeover_permanently_masks_device_interrupts() {
     let (mut regs, uart) = pl011_with_registers();
-    let emergency = uart.split().emergency_tx;
+    let gate = UartRegisterGate::new(uart.split().emergency_tx);
     let enabled = UARTIS::RX::SET.value | UARTIS::TX::SET.value;
     write_test_reg(&mut regs, 0x038, enabled);
 
-    let mask = emergency.mask_interrupts();
+    let access = gate.try_begin_emergency().expect("emergency takeover");
     assert_eq!(
         read_test_reg(&regs, 0x038),
         0,
-        "a gate-busy IRQ must observe a device-masked emergency transaction"
+        "emergency takeover must mask every device-local interrupt source"
     );
-    drop(mask);
-    assert_eq!(read_test_reg(&regs, 0x038), enabled);
+    drop(access);
+    assert_eq!(read_test_reg(&regs, 0x038), 0);
+    assert!(gate.emergency_active());
+    assert!(gate.try_enter().is_none());
 }
 
 #[test]
