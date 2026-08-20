@@ -4,6 +4,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 
 MODULE_PATH = Path(__file__).with_name("ci_plan.py")
 sys.path.insert(0, str(MODULE_PATH.parent))
@@ -22,25 +23,41 @@ class CiPlanTests(unittest.TestCase):
             base_ref="dev",
         )
 
-    def test_upstream_main_plan_preserves_all_checks(self) -> None:
+    def test_upstream_main_plan_preserves_required_checks_and_runner_policy(
+        self,
+    ) -> None:
         plan = ci_plan.build_main_plan(self.upstream)
 
-        self.assertEqual(len(plan["static_matrix"]["include"]), 2)
-        self.assertEqual(len(plan["test_matrix"]["include"]), 32)
         self.assertTrue(plan["static_required"])
-        static_rows = {
-            row["id"]: row for row in plan["static_matrix"]["include"]
+        static_rows = self.assert_unique_ids(plan["static_matrix"]["include"])
+        test_rows = self.assert_unique_ids(plan["test_matrix"]["include"])
+        self.assertTrue(static_rows.keys().isdisjoint(test_rows))
+        rows = static_rows | test_rows
+        expected_runners = {
+            "check-formatting": ["self-hosted", "linux", "qcs"],
+            "run-sync-lint": ["ubuntu-latest"],
+            "run-clippy": ["self-hosted", "linux", "qcs"],
+            "test-with-std": ["self-hosted", "linux", "qcs"],
+            "test-arceos-x86-64-qemu": ["self-hosted", "linux", "qcs"],
+            "test-axvisor-aarch64-qemu-http-control-plane": [
+                "self-hosted",
+                "linux",
+                "qcs",
+            ],
+            "test-starry-aarch64-qemu": ["ubuntu-latest"],
+            "test-starry-self-hosted-board-visionfive2": [
+                "self-hosted",
+                "linux",
+                "board",
+            ],
         }
+        for check_id, runs_on in expected_runners.items():
+            self.assertIn(check_id, rows)
+            self.assertEqual(rows[check_id]["runs_on"], runs_on)
         self.assertIn(
             "cargo xtask lock-lint",
             static_rows["run-sync-lint"]["command"],
         )
-        test_rows = {row["id"]: row for row in plan["test_matrix"]["include"]}
-        self.assertEqual(
-            test_rows["run-clippy"]["runs_on"],
-            ["self-hosted", "linux", "qcs"],
-        )
-        self.assertIn("test-starry-self-hosted-board-visionfive2", test_rows)
         self.assertTrue(
             all(" / " in row["name"] for row in plan["test_matrix"]["include"])
         )
@@ -67,19 +84,15 @@ class CiPlanTests(unittest.TestCase):
             ),
         )
 
-        plan = ci_plan.build_main_plan(context)
-        ids = {row["id"] for row in plan["test_matrix"]["include"]}
+        rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(context)["test_matrix"]["include"]
+        )
 
+        self.assert_selects_full_group(rows, "Workspace")
+        self.assert_selects_full_group(rows, "ArceOS")
         self.assertEqual(
-            ids,
-            {
-                "run-clippy",
-                "test-with-std",
-                "test-arceos-x86-64-qemu",
-                "test-arceos-riscv64-qemu",
-                "test-arceos-aarch64-qemu-app-suites",
-                "test-arceos-loongarch64-qemu",
-            },
+            {row["group"] for row in rows.values()},
+            {"Workspace", "ArceOS"},
         )
 
     def test_pull_request_impact_package_selects_standalone_check(self) -> None:
@@ -121,20 +134,17 @@ class CiPlanTests(unittest.TestCase):
             impact=ci_plan.CiImpact.full_selection("fixture"),
         )
 
-        incremental_rows = {
-            row["id"]: row
-            for row in ci_plan.build_main_plan(incremental)["test_matrix"]["include"]
-        }
-        full_rows = {
-            row["id"]: row
-            for row in ci_plan.build_main_plan(full)["test_matrix"]["include"]
-        }
+        incremental_rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(incremental)["test_matrix"]["include"]
+        )
+        full_rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(full)["test_matrix"]["include"]
+        )
 
         self.assertIn(
             '--since "$SINCE_REF"', incremental_rows["test-with-std"]["command"]
         )
         self.assertNotIn("--since", full_rows["test-with-std"]["command"])
-        self.assertEqual(len(full_rows), 32)
 
     def test_app_only_impact_does_not_select_runtime_checks(self) -> None:
         context = ci_plan.PlanContext(
@@ -150,10 +160,12 @@ class CiPlanTests(unittest.TestCase):
             ),
         )
 
-        plan = ci_plan.build_main_plan(context)
-        test_ids = {row["id"] for row in plan["test_matrix"]["include"]}
+        rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(context)["test_matrix"]["include"]
+        )
 
-        self.assertEqual(test_ids, {"run-clippy", "test-with-std"})
+        self.assert_selects_full_group(rows, "Workspace")
+        self.assertEqual({row["group"] for row in rows.values()}, {"Workspace"})
 
     def test_non_pr_events_ignore_impact_and_preserve_full_matrix(self) -> None:
         impact = ci_plan.CiImpact(
@@ -181,7 +193,7 @@ class CiPlanTests(unittest.TestCase):
                 )
 
                 self.assertEqual(with_impact, baseline)
-                self.assertEqual(len(with_impact["test_matrix"]["include"]), 32)
+                self.assert_unique_ids(with_impact["test_matrix"]["include"])
 
     def test_pure_test_suite_change_runs_only_the_exact_registered_case(self) -> None:
         context = ci_plan.PlanContext(
@@ -370,20 +382,11 @@ class CiPlanTests(unittest.TestCase):
         )
 
         plan = ci_plan.build_main_plan(context)
-        ids = {row["id"] for row in plan["test_matrix"]["include"]}
+        rows = self.assert_unique_ids(plan["test_matrix"]["include"])
 
         self.assertTrue(plan["static_required"])
-        self.assertEqual(
-            len(
-                [
-                    row
-                    for row in plan["test_matrix"]["include"]
-                    if row["group"] == "Starry"
-                ]
-            ),
-            9,
-        )
-        self.assertFalse(any(check_id.startswith("suite-") for check_id in ids))
+        self.assert_selects_full_group(rows, "Starry")
+        self.assertFalse(any(check_id.startswith("suite-") for check_id in rows))
 
     def test_unmatched_known_os_input_falls_back_to_that_os(self) -> None:
         context = ci_plan.PlanContext(
@@ -398,13 +401,14 @@ class CiPlanTests(unittest.TestCase):
             ),
         )
 
-        rows = ci_plan.build_main_plan(context)["test_matrix"]["include"]
-
-        self.assertEqual(
-            len([row for row in rows if row["group"] == "Starry"]),
-            9,
+        rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(context)["test_matrix"]["include"]
         )
-        self.assertFalse(any(row["group"] in {"ArceOS", "AxVisor"} for row in rows))
+
+        self.assert_selects_full_group(rows, "Starry")
+        self.assertFalse(
+            any(row["group"] in {"ArceOS", "AxVisor"} for row in rows.values())
+        )
 
     def test_arceos_qemu_jobs_run_same_arch_axtests_serially(self) -> None:
         plan = ci_plan.build_main_plan(self.upstream)
@@ -439,11 +443,25 @@ class CiPlanTests(unittest.TestCase):
             event_name="push",
         )
         plan = ci_plan.build_main_plan(context)
-        static_rows = {row["id"]: row for row in plan["static_matrix"]["include"]}
-        test_rows = {row["id"]: row for row in plan["test_matrix"]["include"]}
+        static_rows = self.assert_unique_ids(plan["static_matrix"]["include"])
+        test_rows = self.assert_unique_ids(plan["test_matrix"]["include"])
 
-        self.assertEqual(len(test_rows), 16)
+        self.assertTrue(
+            {
+                "run-clippy",
+                "test-with-std",
+                "test-arceos-aarch64-qemu-app-suites",
+                "test-axvisor-aarch64-qemu-http-control-plane",
+                "test-starry-aarch64-qemu",
+            }.issubset(test_rows)
+        )
         self.assertFalse(any("board" in row["id"] for row in test_rows.values()))
+        self.assertTrue(
+            all(
+                row["runs_on"] == ["ubuntu-latest"]
+                for row in (*static_rows.values(), *test_rows.values())
+            )
+        )
         self.assertEqual(static_rows["check-formatting"]["runs_on"], ["ubuntu-latest"])
         self.assertEqual(
             static_rows["check-formatting"]["container_image"],
@@ -473,28 +491,32 @@ class CiPlanTests(unittest.TestCase):
             event_name="schedule",
         )
 
-        self.assertEqual(
-            len(
-                ci_plan.build_starry_apps_plan(manual)["starry_apps_matrix"]["include"]
-            ),
-            5,
+        manual_rows = self.assert_unique_ids(
+            ci_plan.build_starry_apps_plan(manual)["starry_apps_matrix"]["include"]
         )
-        self.assertEqual(
-            len(
-                ci_plan.build_starry_apps_plan(manual_with_clippy)[
-                    "starry_apps_matrix"
-                ]["include"]
-            ),
-            6,
+        manual_with_clippy_rows = self.assert_unique_ids(
+            ci_plan.build_starry_apps_plan(manual_with_clippy)["starry_apps_matrix"][
+                "include"
+            ]
         )
-        self.assertEqual(
-            len(
-                ci_plan.build_starry_apps_plan(scheduled)["starry_apps_matrix"][
-                    "include"
-                ]
-            ),
-            6,
+        scheduled_rows = self.assert_unique_ids(
+            ci_plan.build_starry_apps_plan(scheduled)["starry_apps_matrix"]["include"]
         )
+        required_ids = {
+            "starry-app-smoke-x86-64",
+            "starry-app-smoke-aarch64",
+            "starry-app-smoke-riscv64",
+            "starry-app-smoke-loongarch64",
+            "starry-nixos-x86-64-qemu",
+        }
+        for name, rows, expects_clippy in (
+            ("manual", manual_rows, False),
+            ("manual with clippy", manual_with_clippy_rows, True),
+            ("scheduled", scheduled_rows, True),
+        ):
+            with self.subTest(selection=name):
+                self.assertTrue(required_ids.issubset(rows))
+                self.assertEqual("starry-apps-clippy-all" in rows, expects_clippy)
 
     def test_starry_apps_manual_nixos_uses_app_runner(self) -> None:
         manual = ci_plan.PlanContext(
@@ -511,6 +533,32 @@ class CiPlanTests(unittest.TestCase):
         self.assertEqual(nixos["timeout_minutes"], 45)
         self.assertIn("starry app qemu -t nixos", nixos["command"])
         self.assertNotIn("starry test", nixos["command"])
+
+    def assert_unique_ids(
+        self, rows: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        ids = [row["id"] for row in rows]
+        self.assertEqual(
+            len(ids),
+            len(set(ids)),
+            f"matrix check IDs must be unique: {ids}",
+        )
+        return {row["id"]: row for row in rows}
+
+    def assert_selects_full_group(
+        self, rows: dict[str, dict[str, Any]], group: str
+    ) -> None:
+        full_rows = self.assert_unique_ids(
+            ci_plan.build_main_plan(self.upstream)["test_matrix"]["include"]
+        )
+        selected_ids = {
+            check_id for check_id, row in rows.items() if row["group"] == group
+        }
+        full_ids = {
+            check_id for check_id, row in full_rows.items() if row["group"] == group
+        }
+        self.assertEqual(selected_ids, full_ids)
+
 
 if __name__ == "__main__":
     unittest.main()
