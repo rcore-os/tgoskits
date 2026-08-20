@@ -20,6 +20,10 @@ impl ax_sync::interface::ContextOps for RuntimeContextOps {
     fn exit(context: u8, state: usize) {
         ax_task::sync::bridge::context_exit(context, state);
     }
+
+    fn exit_preempt_from_irq_return(state: usize) {
+        ax_task::sync::bridge::preempt_exit_from_irq_return(state);
+    }
 }
 
 struct RuntimeSpinOps;

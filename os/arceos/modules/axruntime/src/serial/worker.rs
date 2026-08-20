@@ -101,9 +101,9 @@ impl SerialWorker {
                 }
                 let outcome = self.service_rx(path);
                 rx_blocked = outcome.blocked;
-                if outcome.budget_exhausted
-                    || (!outcome.blocked && self.shared.bridge.latch.has_pending())
-                {
+                if outcome.budget_exhausted {
+                    ax_task::yield_now();
+                } else if !outcome.blocked && self.shared.bridge.latch.has_pending() {
                     continue;
                 }
             }
@@ -124,6 +124,7 @@ impl SerialWorker {
 
             self.update_tx_idle();
             if budget_exhausted {
+                ax_task::yield_now();
                 continue;
             }
             if self.port_rx_ready {

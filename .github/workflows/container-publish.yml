@@ -67,12 +67,9 @@ jobs:
 
           base=false
           axvisor=false
-          reason="No container source changes selected an image."
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            if [ "$REF_NAME" != "main" ] && [ "$REF_NAME" != "dev" ]; then
-              reason="Manual container publishing is only available from main or dev."
-            else
+            if [ "$REF_NAME" = "main" ] || [ "$REF_NAME" = "dev" ]; then
               case "$MANUAL_TARGET" in
                 base)
                   base=true
@@ -89,15 +86,13 @@ jobs:
                   exit 1
                   ;;
               esac
-              reason="Manual target: ${MANUAL_TARGET}."
             fi
           else
             base="${FILTER_BASE:-false}"
             axvisor="${FILTER_AXVISOR:-false}"
-            reason="Targets selected from changed container inputs."
           fi
 
-          repository="$(printf '%s' "$GITHUB_REPOSITORY" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+          repository="${GITHUB_REPOSITORY,,}"
           any=false
           if [ "$base" = "true" ] || [ "$axvisor" = "true" ]; then
             any=true
@@ -107,18 +102,9 @@ jobs:
             echo "base=${base}"
             echo "axvisor=${axvisor}"
             echo "any=${any}"
-            echo "reason=${reason}"
             echo "base_image=ghcr.io/${repository}-container"
             echo "axvisor_image=ghcr.io/${repository}-container-axvisor-lvz"
           } >> "$GITHUB_OUTPUT"
-
-          {
-            echo "## Container publish plan"
-            echo ""
-            echo "- Base image: \`${base}\`"
-            echo "- AxVisor LVZ image: \`${axvisor}\`"
-            echo "- Reason: ${reason}"
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Docker Buildx
         if: steps.plan.outputs.any == 'true'

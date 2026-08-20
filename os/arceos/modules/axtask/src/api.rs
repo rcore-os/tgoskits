@@ -106,6 +106,17 @@ pub fn enable_preempt(token: usize) {
     let _ = token;
 }
 
+/// Enables preemption at the final IRQ-return boundary.
+#[doc(hidden)]
+pub fn enable_preempt_from_irq_return(token: usize) {
+    #[cfg(feature = "preempt")]
+    {
+        crate::runtime_preempt::exit_from_irq_return(token);
+    }
+    #[cfg(not(feature = "preempt"))]
+    let _ = token;
+}
+
 /// Reports scheduler work to the runtime preemption safe-point adapter.
 #[doc(hidden)]
 pub fn runtime_preemption_pending() -> bool {
@@ -124,6 +135,24 @@ pub fn runtime_preemption_pending() -> bool {
 pub fn runtime_preempt_current() {
     #[cfg(feature = "preempt")]
     crate::task::TaskInner::current_check_preempt_pending();
+}
+
+/// Marks the current task for a deterministic preemption safe-point test.
+#[cfg(all(axtest, feature = "preempt"))]
+pub(crate) fn request_current_preemption_for_test() {
+    current().set_preempt_pending(true);
+}
+
+/// Records that the current task's first-entry scheduler frame was consumed.
+#[cfg(axtest)]
+pub(crate) fn record_initial_scheduler_frame_consumed_for_test() {
+    current().record_initial_scheduler_frame_consumed_for_test();
+}
+
+/// Reports whether the current task consumed its first-entry scheduler frame.
+#[cfg(axtest)]
+pub(crate) fn initial_scheduler_frame_consumed_for_test() -> bool {
+    current().initial_scheduler_frame_consumed_for_test()
 }
 
 #[cfg(feature = "lockdep")]

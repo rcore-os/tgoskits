@@ -30,6 +30,7 @@ mod test_utils;
 mod world_switch_tests;
 
 mod decode;
+mod pending_event;
 mod port_io;
 mod runtime;
 mod types;

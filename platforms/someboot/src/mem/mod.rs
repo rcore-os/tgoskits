@@ -88,12 +88,12 @@ pub fn dcache_range(op: DCacheOp, addr: *const u8, size: usize) {
     Arch::dcache_range(op, addr as _, size);
 }
 
-pub fn dma_coherent_before_make_uncached(addr: *const u8, size: usize) {
-    Arch::dma_coherent_before_make_uncached(addr as _, size);
+pub fn dma_coherent_before_map_uncached(addr: *const u8, size: usize) {
+    Arch::dma_coherent_before_map_uncached(addr as _, size);
 }
 
-pub fn dma_coherent_before_restore_cached(addr: *const u8, size: usize) {
-    Arch::dma_coherent_before_restore_cached(addr as _, size);
+pub fn dma_coherent_before_unmap_uncached(addr: *const u8, size: usize) {
+    Arch::dma_coherent_before_unmap_uncached(addr as _, size);
 }
 
 pub fn dma_coherent_after_mapping_update() {

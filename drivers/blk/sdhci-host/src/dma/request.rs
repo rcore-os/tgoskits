@@ -204,7 +204,7 @@ impl Sdhci {
                 let mut backing =
                     CpuDmaBuffer::new_zero(dma, size, alignment, DmaDirection::ToDevice)
                         .map_err(map_dma_error)?;
-                backing.copy_to_device_from_slice(unsafe {
+                backing.copy_from_slice_cpu(unsafe {
                     core::slice::from_raw_parts(cpu_buffer.as_ptr(), len)
                 });
                 let dma_addr = backing.dma_addr().as_u64();
@@ -283,7 +283,7 @@ impl Sdhci {
                 return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
             }
         };
-        if buffer.direction() != expected_direction || buffer.domain_id() != dma.domain_id() {
+        if buffer.direction() != expected_direction || buffer.domain_id() != dma.info().domain() {
             return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
         }
         let len = buffer.len().get();

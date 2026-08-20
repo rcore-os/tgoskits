@@ -58,7 +58,7 @@ impl<T: Sized + Copy, O: Sized + Copy> MatMul<T, O> {
                 self.input.set_cpu(idx, a[src]);
             }
         }
-        self.input.prepare_for_device_all();
+        self.input.prepare_for_device(0..self.input.bytes_len());
     }
 
     fn gen_matul(
@@ -417,7 +417,7 @@ impl MatMul<i8, i32> {
                 self.weight.set_cpu(idx, b[src]);
             }
         }
-        self.weight.prepare_for_device_all();
+        self.weight.prepare_for_device(0..self.weight.bytes_len());
     }
 
     pub fn get_output(&self, m: usize, n: usize) -> i32 {
@@ -427,7 +427,7 @@ impl MatMul<i8, i32> {
     }
 
     pub fn output_buffer(&self) -> &[i32] {
-        self.output.complete_for_cpu_all();
+        self.output.complete_for_cpu(0..self.output.bytes_len());
         self.output.as_slice_cpu()
     }
 }

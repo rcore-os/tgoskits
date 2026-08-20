@@ -85,6 +85,9 @@ pub struct AcpiPciEcam {
     pub bus_start: u8,
     pub bus_end: u8,
     pub base_address: u64,
+    /// Firmware-declared cache coherency for the matching ACPI PCI root.
+    /// `None` means that `_CCA` was not present.
+    pub dma_coherent: Option<bool>,
 }
 
 impl AcpiPciEcam {
@@ -288,9 +291,10 @@ mod tests {
 
     use super::{
         AcpiGsiController, AcpiHandler, AcpiId, AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger,
-        AcpiIsaIrqOverride, AcpiPchPic, AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource,
-        LinkIrqResourceKind, Mutex, PciLinkAllocator, System, irq_descriptor_gsi,
-        is_buffer_field_to_field_unit_store_gap, pci_irq_descriptor_gsi,
+        AcpiIsaIrqOverride, AcpiPchPic, AcpiPciEcam, AcpiPciNamespace, AcpiPciRoot,
+        AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource, LinkIrqResourceKind, Mutex,
+        PciLinkAllocator, System, apply_pci_root_dma_coherency, inherited_device_cca,
+        irq_descriptor_gsi, is_buffer_field_to_field_unit_store_gap, pci_irq_descriptor_gsi,
         pci_link_irq_field_candidates, route_with_irq_descriptor_flags, select_pci_link_irq,
     };
     use crate::register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority};
@@ -481,6 +485,110 @@ mod tests {
         assert_eq!(
             super::decode_eisa_id(0x080a_d041).as_deref(),
             Some("PNP0A08")
+        );
+    }
+
+    #[test]
+    fn acpi_ecam_coherency_comes_from_matching_pci_root_cca() {
+        let mut regions = [AcpiPciEcam {
+            segment_group: 0,
+            bus_start: 0,
+            bus_end: 0xff,
+            base_address: 0x3000_0000,
+            dma_coherent: None,
+        }];
+        let pci = AcpiPciNamespace {
+            link_allocator: Mutex::new(PciLinkAllocator::default()),
+            roots: vec![AcpiPciRoot {
+                segment: 0,
+                bus: 0,
+                path: String::from("\\\\_SB.PCI0"),
+                dma_coherent: Some(true),
+                prt: None,
+                link_prt: None,
+            }],
+        };
+
+        apply_pci_root_dma_coherency(&mut regions, &pci).unwrap();
+
+        assert_eq!(regions[0].dma_coherent, Some(true));
+    }
+
+    #[test]
+    fn acpi_ecam_rejects_conflicting_root_cca_values() {
+        let mut regions = [AcpiPciEcam {
+            segment_group: 0,
+            bus_start: 0,
+            bus_end: 0xff,
+            base_address: 0x3000_0000,
+            dma_coherent: None,
+        }];
+        let root = |bus, dma_coherent| AcpiPciRoot {
+            segment: 0,
+            bus,
+            path: format!("\\\\_SB.PC{bus:02x}"),
+            dma_coherent: Some(dma_coherent),
+            prt: None,
+            link_prt: None,
+        };
+        let pci = AcpiPciNamespace {
+            link_allocator: Mutex::new(PciLinkAllocator::default()),
+            roots: vec![root(0, true), root(0x80, false)],
+        };
+
+        assert!(apply_pci_root_dma_coherency(&mut regions, &pci).is_err());
+    }
+
+    #[test]
+    fn acpi_cca_uses_first_declaring_device_ancestor() {
+        let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
+        let interpreter =
+            Interpreter::new(handler.clone(), 2, test_fixed_registers(&handler), None);
+        let parent = AmlName::from_str("\\_SB.DEV0").unwrap();
+        let child = AmlName::from_str("\\_SB.DEV0.PCI0").unwrap();
+        {
+            let mut namespace = interpreter.namespace.lock();
+            namespace
+                .add_level(parent.clone(), NamespaceLevelKind::Device)
+                .unwrap();
+            namespace
+                .add_level(child.clone(), NamespaceLevelKind::Device)
+                .unwrap();
+            namespace
+                .insert(
+                    AmlName::from_str("_CCA").unwrap().resolve(&parent).unwrap(),
+                    Object::Integer(0).wrap(),
+                )
+                .unwrap();
+            namespace
+                .insert(
+                    AmlName::from_str("_CCA").unwrap().resolve(&child).unwrap(),
+                    Object::Integer(1).wrap(),
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            inherited_device_cca(&interpreter, &child, &[parent, child.clone()]),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn acpi_cca_without_a_declaring_device_remains_unspecified() {
+        let handler = AcpiHandler::new(AcpiRoot::identity(0x1000), Vec::new());
+        let interpreter =
+            Interpreter::new(handler.clone(), 2, test_fixed_registers(&handler), None);
+        let device = AmlName::from_str("\\_SB.DEV0").unwrap();
+        interpreter
+            .namespace
+            .lock()
+            .add_level(device.clone(), NamespaceLevelKind::Device)
+            .unwrap();
+
+        assert_eq!(
+            inherited_device_cca(&interpreter, &device, core::slice::from_ref(&device)),
+            None
         );
     }
 
@@ -779,6 +887,8 @@ pub struct AcpiResourceDevice {
     pub memory_ranges: Vec<AcpiResourceRange>,
     pub io_ranges: Vec<AcpiResourceRange>,
     pub irq_routes: Vec<AcpiGsiRoute>,
+    /// Firmware-declared DMA coherency after ACPI `_CCA` inheritance.
+    pub dma_coherent: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -789,6 +899,7 @@ struct AcpiDeviceInfo {
     memory_ranges: Vec<AcpiResourceRange>,
     io_ranges: Vec<AcpiResourceRange>,
     irq_routes: Vec<AcpiGsiRoute>,
+    dma_coherent: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -872,6 +983,14 @@ impl AcpiInfo<'_> {
             .map(|device| device.irq_routes.as_slice())
             .unwrap_or_default()
     }
+
+    /// Returns the inherited ACPI `_CCA` value for this device.
+    ///
+    /// `None` means no ACPI device in this device's ancestor chain declared
+    /// `_CCA`; the consuming architecture decides whether that is supported.
+    pub fn dma_coherent(&self) -> Option<bool> {
+        self.device.and_then(|device| device.dma_coherent)
+    }
 }
 
 impl From<AcpiDeviceInfo> for AcpiResourceDevice {
@@ -883,6 +1002,7 @@ impl From<AcpiDeviceInfo> for AcpiResourceDevice {
             memory_ranges: value.memory_ranges,
             io_ranges: value.io_ranges,
             irq_routes: value.irq_routes,
+            dma_coherent: value.dma_coherent,
         }
     }
 }
@@ -1194,6 +1314,7 @@ struct AcpiPciRoot {
     segment: u16,
     bus: u8,
     path: String,
+    dma_coherent: Option<bool>,
     prt: Option<PciRoutingTable>,
     link_prt: Option<PciLinkRoutingTable>,
 }
@@ -1211,7 +1332,7 @@ impl System {
         let handler = root.handler();
         let tables =
             unsafe { AcpiTables::from_rsdp(handler.clone(), root.rsdp) }.map_err(acpi_error)?;
-        let ecam_regions = read_pci_ecam_regions(&tables)?;
+        let mut ecam_regions = read_pci_ecam_regions(&tables)?;
         let routing = read_interrupt_routing(&tables)?;
         let namespace_handler = root.handler_with_pci_ecam(ecam_regions.clone());
         let (interpreter, pci) = if load_aml {
@@ -1226,6 +1347,9 @@ impl System {
                     None
                 }
             };
+            if let Some(pci) = &pci {
+                apply_pci_root_dma_coherency(&mut ecam_regions, pci)?;
+            }
             (Some(interpreter), pci)
         } else {
             (None, None)
@@ -1449,12 +1573,14 @@ impl System {
             return Ok(Vec::new());
         };
         let mut devices = Vec::new();
+        let mut device_paths = Vec::new();
         let mut namespace = interpreter.namespace.lock().clone();
         namespace
             .traverse(|path, level| {
                 if level.kind != NamespaceLevelKind::Device {
                     return Ok(true);
                 }
+                device_paths.push(path.clone());
                 let Some((hid, cids)) = acpi_device_ids(interpreter, path)? else {
                     return Ok(true);
                 };
@@ -1469,6 +1595,7 @@ impl System {
                     memory_ranges: resources.memory_ranges,
                     io_ranges: resources.io_ranges,
                     irq_routes: resources.irq_routes,
+                    dma_coherent: inherited_device_cca(interpreter, path, &device_paths),
                 });
                 Ok(true)
             })
@@ -1481,12 +1608,14 @@ impl System {
             return Ok(Vec::new());
         };
         let mut devices = Vec::new();
+        let mut device_paths = Vec::new();
         let mut namespace = interpreter.namespace.lock().clone();
         namespace
             .traverse(|path, level| {
                 if level.kind != NamespaceLevelKind::Device {
                     return Ok(true);
                 }
+                device_paths.push(path.clone());
                 let Some((hid, cids)) = acpi_device_ids(interpreter, path)? else {
                     return Ok(true);
                 };
@@ -1498,6 +1627,7 @@ impl System {
                     memory_ranges: resources.memory_ranges,
                     io_ranges: resources.io_ranges,
                     irq_routes: resources.irq_routes,
+                    dma_coherent: inherited_device_cca(interpreter, path, &device_paths),
                 });
                 Ok(true)
             })
@@ -1620,6 +1750,7 @@ fn read_pci_ecam_regions(
             bus_start: region.bus_number_start,
             bus_end: region.bus_number_end,
             base_address: region.base_address,
+            dma_coherent: None,
         })
         .collect())
 }
@@ -1849,11 +1980,16 @@ fn read_pci_namespace(
     interpreter: &Interpreter<AcpiHandler>,
 ) -> Result<AcpiPciNamespace, AcpiError> {
     let mut roots = Vec::new();
+    let mut device_paths = Vec::new();
     {
         let mut namespace = interpreter.namespace.lock().clone();
         namespace
             .traverse(|path, level| {
-                if level.kind == NamespaceLevelKind::Device && is_pci_root(interpreter, path) {
+                if level.kind != NamespaceLevelKind::Device {
+                    return Ok(true);
+                }
+                device_paths.push(path.clone());
+                if is_pci_root(interpreter, path) {
                     let segment =
                         eval_integer_child(interpreter, path, "_SEG")?.unwrap_or(0) as u16;
                     let bus = eval_integer_child(interpreter, path, "_BBN")?.unwrap_or(0) as u8;
@@ -1861,6 +1997,7 @@ fn read_pci_namespace(
                         segment,
                         bus,
                         path: path.as_string(),
+                        dma_coherent: inherited_device_cca(interpreter, path, &device_paths),
                         prt: None,
                         link_prt: None,
                     });
@@ -1886,6 +2023,11 @@ fn read_pci_namespace(
             segment: 0,
             bus: 0,
             path: path.to_string(),
+            dma_coherent: inherited_device_cca(
+                interpreter,
+                &AmlName::from_str(path).map_err(AcpiError::Aml)?,
+                &device_paths,
+            ),
             prt: Some(prt),
             link_prt,
         });
@@ -1895,6 +2037,62 @@ fn read_pci_namespace(
         link_allocator: Mutex::new(PciLinkAllocator::default()),
         roots,
     })
+}
+
+fn inherited_device_cca(
+    interpreter: &Interpreter<AcpiHandler>,
+    path: &AmlName,
+    device_paths: &[AmlName],
+) -> Option<bool> {
+    let mut lineage = Vec::new();
+    let mut current = path.clone();
+    loop {
+        lineage.push(current.clone());
+        match current.parent() {
+            Ok(parent) => current = parent,
+            Err(AmlError::RootHasNoParent) => break,
+            Err(_) => return None,
+        }
+    }
+    lineage.reverse();
+
+    for ancestor in lineage {
+        if !device_paths.iter().any(|device| device == &ancestor) {
+            continue;
+        }
+        // Linux treats any failed `_CCA` integer evaluation as absent. On
+        // architectures that require `_CCA`, the consumer rejects the final
+        // `None`; other architectures apply their specified coherent default.
+        if let Ok(Some(value)) = eval_integer_child(interpreter, &ancestor, "_CCA") {
+            return Some(value != 0);
+        }
+    }
+    None
+}
+
+fn apply_pci_root_dma_coherency(
+    regions: &mut [AcpiPciEcam],
+    pci: &AcpiPciNamespace,
+) -> Result<(), DriverError> {
+    for region in regions {
+        let mut declared = pci
+            .roots
+            .iter()
+            .filter(|root| {
+                root.segment == region.segment_group
+                    && (region.bus_start..=region.bus_end).contains(&root.bus)
+            })
+            .filter_map(|root| root.dma_coherent);
+        let first = declared.next();
+        if declared.any(|value| Some(value) != first) {
+            return Err(DriverError::Unknown(format!(
+                "ACPI PCI roots in segment {} buses {}..={} declare conflicting _CCA values",
+                region.segment_group, region.bus_start, region.bus_end
+            )));
+        }
+        region.dma_coherent = first;
+    }
+    Ok(())
 }
 
 fn read_pci_routing_table(

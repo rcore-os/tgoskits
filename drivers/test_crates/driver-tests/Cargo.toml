@@ -14,6 +14,7 @@ ax-driver = { path = "../../ax-driver", features = ["serial"] }
 ax-lazyinit = { path = "../../../components/ax-lazyinit" }
 ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }
 axklib = { path = "../../../components/axklib" }
+dma-api = { path = "../../../memory/dma-api" }
 eth-intel = { path = "../../net/eth-intel" }
 fdt-edit.workspace = true
 pcie = { path = "../../pci/pcie" }

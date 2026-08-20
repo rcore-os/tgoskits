@@ -404,7 +404,7 @@ impl DwMmc {
                 // SAFETY: The caller keeps the borrowed source alive until the
                 // returned request completes, and `byte_count` was validated
                 // against the submitted data phase.
-                backing.copy_to_device_from_slice(unsafe {
+                backing.copy_from_slice_cpu(unsafe {
                     core::slice::from_raw_parts(buffer.as_ptr(), transfer.byte_count.get())
                 });
                 None
@@ -431,7 +431,7 @@ impl DwMmc {
         id: RequestId,
     ) -> Result<BlockRequest, PreparedDmaSubmitError> {
         if buffer.direction() != transfer.dma_direction()
-            || buffer.domain_id() != dma.domain_id()
+            || buffer.domain_id() != dma.info().domain()
             || buffer.len() != transfer.byte_count
         {
             return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));

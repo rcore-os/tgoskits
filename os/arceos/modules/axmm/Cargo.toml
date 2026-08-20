@@ -20,3 +20,6 @@ ax-memory-addr.workspace = true
 ax-memory-set.workspace = true
 page-table-generic = { workspace = true, optional = true }
 thiserror.workspace = true
+
+[dev-dependencies]
+ax-hal = { path = "../axhal", features = ["host-test"] }

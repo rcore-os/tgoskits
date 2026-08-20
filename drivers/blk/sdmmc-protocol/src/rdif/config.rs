@@ -1,4 +1,7 @@
-use rdif_block::{BlkError, DeviceInfo, QueueLimits, RequestFlags, dma_api::DeviceDma};
+use rdif_block::{
+    BlkError, DeviceInfo, QueueLimits, RequestFlags,
+    dma_api::{DeviceDma, DmaConstraints},
+};
 
 use crate::Error;
 
@@ -19,22 +22,22 @@ pub struct BlockConfig {
 
 impl BlockConfig {
     pub fn dma(name: &'static str, capacity_blocks: u64, dma: &DeviceDma) -> Self {
+        let current = dma.info().constraints();
         Self {
             device: DeviceInfo {
                 name: Some(name),
                 ..DeviceInfo::new(capacity_blocks, BLOCK_SIZE)
             },
             limits: QueueLimits {
-                dma_mask: dma.dma_mask(),
-                dma_domain: dma.domain_id(),
-                dma_alignment: BLOCK_SIZE,
+                dma: dma.info().with_constraints(DmaConstraints {
+                    align: current.align.max(BLOCK_SIZE),
+                    ..current
+                }),
                 dma_length_alignment: BLOCK_SIZE,
-                segment_boundary: None,
                 max_inflight: 1,
                 max_submit_batch: 1,
                 max_blocks_per_request: DEFAULT_DMA_MAX_BLOCKS_PER_REQUEST,
                 max_segments: 1,
-                max_segment_size: usize::MAX,
                 supported_flags: RequestFlags::NONE,
                 supports_flush: false,
             },
@@ -42,7 +45,11 @@ impl BlockConfig {
     }
 
     pub fn with_dma_mask(mut self, dma_mask: u64) -> Self {
-        self.limits.dma_mask = dma_mask;
+        let constraints = DmaConstraints {
+            addr_mask: dma_mask,
+            ..self.limits.dma.constraints()
+        };
+        self.limits.dma = self.limits.dma.with_constraints(constraints);
         self
     }
 
@@ -52,12 +59,22 @@ impl BlockConfig {
     }
 
     pub fn with_max_segment_size(mut self, max_segment_size: usize) -> Self {
-        self.limits.max_segment_size = max_segment_size;
+        let constraints = self
+            .limits
+            .dma
+            .constraints()
+            .with_max_segment_size(max_segment_size);
+        self.limits.dma = self.limits.dma.with_constraints(constraints);
         self
     }
 
     pub fn with_segment_boundary(mut self, segment_boundary: usize) -> Self {
-        self.limits.segment_boundary = Some(segment_boundary);
+        let constraints = self
+            .limits
+            .dma
+            .constraints()
+            .with_boundary(segment_boundary);
+        self.limits.dma = self.limits.dma.with_constraints(constraints);
         self
     }
 

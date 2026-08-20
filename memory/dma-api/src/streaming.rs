@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::{marker::PhantomData, num::NonZeroUsize, ptr::NonNull};
+use core::{marker::PhantomData, num::NonZeroUsize, ops::Range, ptr::NonNull};
 
 use crate::{DeviceDma, DmaDirection, DmaError, DmaMapHandle, DmaPod};
 
@@ -111,52 +111,26 @@ impl<T: DmaPod> StreamingMap<T> {
         vec
     }
 
-    pub fn sync_for_device(&self, offset: usize, size: usize) {
-        self.check_range(offset, size);
+    pub fn prepare_for_device(&self, range: Range<usize>) {
+        self.check_range(&range);
         self.device
-            .sync_map_for_device(&self.handle, offset, size, self.direction);
+            .sync_map_for_device(&self.handle, range.start, range.len(), self.direction);
     }
 
-    pub fn sync_for_cpu(&self, offset: usize, size: usize) {
-        self.check_range(offset, size);
+    pub fn complete_for_cpu(&self, range: Range<usize>) {
+        self.check_range(&range);
         self.device
-            .sync_map_for_cpu(&self.handle, offset, size, self.direction);
-    }
-
-    pub fn sync_for_device_all(&self) {
-        self.device
-            .sync_map_for_device(&self.handle, 0, self.handle.size(), self.direction);
-    }
-
-    pub fn sync_for_cpu_all(&self) {
-        self.device
-            .sync_map_for_cpu(&self.handle, 0, self.handle.size(), self.direction);
-    }
-
-    pub fn prepare_for_device(&self, offset: usize, size: usize) {
-        self.sync_for_device(offset, size);
-    }
-
-    pub fn prepare_for_device_all(&self) {
-        self.sync_for_device_all();
-    }
-
-    pub fn complete_for_cpu(&self, offset: usize, size: usize) {
-        self.sync_for_cpu(offset, size);
-    }
-
-    pub fn complete_for_cpu_all(&self) {
-        self.sync_for_cpu_all();
+            .sync_map_for_cpu(&self.handle, range.start, range.len(), self.direction);
     }
 
     pub fn write_for_device<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
         let ret = self.write_with_cpu(len, f);
-        self.prepare_for_device(0, len * core::mem::size_of::<T>());
+        self.prepare_for_device(0..len * core::mem::size_of::<T>());
         ret
     }
 
     pub fn read_from_device<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
-        self.complete_for_cpu(0, len * core::mem::size_of::<T>());
+        self.complete_for_cpu(0..len * core::mem::size_of::<T>());
         self.read_with_cpu(len, f)
     }
 
@@ -164,12 +138,11 @@ impl<T: DmaPod> StreamingMap<T> {
         self.handle.bounce_ptr()
     }
 
-    fn check_range(&self, offset: usize, size: usize) {
+    fn check_range(&self, range: &Range<usize>) {
         assert!(
-            offset <= self.bytes_len() && size <= self.bytes_len().saturating_sub(offset),
-            "range out of bounds, offset: {}, size: {}, bytes_len: {}",
-            offset,
-            size,
+            range.start <= range.end && range.end <= self.bytes_len(),
+            "range out of bounds, range: {:?}, bytes_len: {}",
+            range,
             self.bytes_len()
         );
     }

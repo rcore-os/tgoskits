@@ -160,6 +160,8 @@ pub struct TaskInner {
     need_resched: AtomicBool,
     #[cfg(feature = "preempt")]
     force_resched: AtomicBool,
+    #[cfg(axtest)]
+    initial_scheduler_frame_consumed: AtomicBool,
 
     interrupted: InterruptState,
     interrupt_waker: AtomicWaker,
@@ -435,6 +437,8 @@ impl TaskInner {
             need_resched: AtomicBool::new(false),
             #[cfg(feature = "preempt")]
             force_resched: AtomicBool::new(false),
+            #[cfg(axtest)]
+            initial_scheduler_frame_consumed: AtomicBool::new(false),
             interrupted: InterruptState::new(),
             interrupt_waker: AtomicWaker::new(),
             exit_code: AtomicI32::new(0),
@@ -667,6 +671,22 @@ impl TaskInner {
                 rq.preempt_resched()
             }
         }
+    }
+
+    #[cfg(axtest)]
+    pub(crate) fn record_initial_scheduler_frame_consumed_for_test(&self) {
+        assert!(
+            !self
+                .initial_scheduler_frame_consumed
+                .swap(true, Ordering::AcqRel),
+            "initial scheduler frame was consumed twice by one task"
+        );
+    }
+
+    #[cfg(axtest)]
+    pub(crate) fn initial_scheduler_frame_consumed_for_test(&self) -> bool {
+        self.initial_scheduler_frame_consumed
+            .load(Ordering::Acquire)
     }
 
     /// Notify all tasks that join on this task.

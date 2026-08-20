@@ -14,14 +14,14 @@ sidebar_label: "自动 CI 测试"
 - `.github/workflows/reusable-check-matrix.yml` 执行展开后的矩阵行。
 
 容器发布由 `.github/workflows/container-publish.yml` 独立处理。非主线分支 push
-先经过 `.github/workflows/ci-branch-push.yml`，已有 open PR 时不重复调度主 CI。
+由主 CI 的准备阶段检查 open PR，已有 PR 时不再运行后续矩阵。
 
 ## 触发条件
 
 | 事件 | 行为 |
 |------|------|
 | push 到 `main` / `dev` | 非文档变更运行完整矩阵 |
-| 其他分支 push | 没有 open PR 时通过 `workflow_dispatch` 运行完整矩阵 |
+| 其他分支 push | 没有 open PR 时运行完整矩阵 |
 | pull request | planner 根据三点 diff 生成增量矩阵 |
 | workflow dispatch | 使用指定的 `since_sha`，但仍运行完整矩阵 |
 
@@ -30,10 +30,9 @@ sidebar_label: "自动 CI 测试"
 ## 执行阶段与名称
 
 ```text
-Cancel stale CI runs
-  -> Plan CI
-     -> Preflight / <purpose>
-        -> Verification / <OS> / <platform> <arch-or-board> · <purpose>
+Plan CI
+  -> Preflight / <purpose>
+     -> Verification / <OS> / <platform> <arch-or-board> · <purpose>
 ```
 
 固定阶段名称为 `Preflight` 和 `Verification`。平台写在架构之前，例如：
@@ -140,9 +139,7 @@ runner labels、container image、preflight、cache、checkout depth、timeout�
 
 ```bash
 python3 -m unittest scripts/test/test_ci_impact.py scripts/test/test_ci_plan.py
-python3 scripts/test/check_ci_paths.py
 python3 scripts/test/check_ci_routing.py
-python3 scripts/test/check_workflow_layout.py
 actionlint
 ```
 

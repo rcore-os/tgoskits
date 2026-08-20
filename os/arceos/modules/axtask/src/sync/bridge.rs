@@ -100,6 +100,11 @@ pub fn context_exit(context: u8, state: usize) {
     }
 }
 
+/// Leaves a preemption context at the final IRQ-return boundary.
+pub fn preempt_exit_from_irq_return(state: usize) {
+    PreemptState::release_from_irq_return(state);
+}
+
 /// Returns host-test preemption depth and IRQ-enabled state.
 #[cfg(all(feature = "host-test", not(target_os = "none")))]
 pub fn host_context_snapshot() -> (usize, bool) {

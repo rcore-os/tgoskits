@@ -32,6 +32,7 @@ ax-driver
 rdrive
 ax-hal
 ax-sync
+ax-mm
 ax-task
 ax-input
 ax-ipi
