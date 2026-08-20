@@ -1,0 +1,15 @@
+# Axvisor build wrapper for the VTP test case.
+#
+# Requires the guest images to exist at build time (image_location = "memory"
+# embeds them via include_bytes):
+#   - StarryOS:  target/aarch64-unknown-none-softfloat/release/starryos.bin
+#   - FreeRTOS:  guests/freertos-vtp/build/freertos.bin
+# Run test-suit/axvisor/normal/qemu-vtp/run.sh to build them first.
+
+features = ["ax-driver/nvme", "fs"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "os/axvisor/configs/vms/qemu/aarch64/starry-smp1.toml",
+  "os/axvisor/configs/vms/qemu/aarch64/freertos-vtp-smp1.toml",
+]

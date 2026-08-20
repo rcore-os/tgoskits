@@ -118,6 +118,28 @@ arch = "aarch64"
 cases = ["qemu-ivc"]
 
 [[check]]
+id = "test-axvisor-aarch64-qemu-vtp"
+impact_targets = ["axvisor:aarch64"]
+name = "QEMU aarch64 · StarryOS ↔ FreeRTOS VTP dual-VM network"
+timeout_minutes = 60
+command = '''
+echo "==> axvisor aarch64 dual-VM VTP (StarryOS <-> FreeRTOS over internal L2 switch)"
+if [[ ! -f guests/freertos-vtp/build/freertos.bin ]]; then
+  echo "ERROR: FreeRTOS guest image missing: guests/freertos-vtp/build/freertos.bin"
+  echo "Build the FreeRTOS VTP guest (guests/freertos-vtp) with its external FreeRTOS +"
+  echo "lwIP sources and place the linked bare-metal image there, or provide a prebuilt"
+  echo "binary. See guests/freertos-vtp/README.md for integration steps."
+  exit 1
+fi
+test-suit/axvisor/normal/qemu-vtp/run.sh
+'''
+
+[[check.suite]]
+kind = "axvisor-qemu"
+arch = "aarch64"
+cases = ["qemu-vtp"]
+
+[[check]]
 id = "test-axvisor-self-hosted-x86-64-svm-smoke-acpi"
 impact_targets = ["axvisor:x86_64"]
 name = "SVM x86_64 · Smoke + direct/OVMF ACPI"

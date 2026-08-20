@@ -123,7 +123,9 @@ pub(crate) fn extract_rootfs(rootfs_img: &Path, output_dir: &Path) -> anyhow::Re
         fakeroot_program,
     }
     .run()?;
-    relativize_absolute_symlinks(output_dir)
+    #[cfg(unix)]
+    relativize_absolute_symlinks(output_dir)?;
+    Ok(())
 }
 
 /// A preselected rootfs extraction command.
@@ -273,6 +275,7 @@ fn status_has_effective_cap_chown(status: &str) -> bool {
 /// resolves against the host root and dangles, so dynamic loads such as apk's
 /// `libz` fail. Relative targets resolve within the staging root and remain
 /// valid both here and, after re-injection, inside the guest.
+#[cfg(unix)]
 fn relativize_absolute_symlinks(root: &Path) -> anyhow::Result<()> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {

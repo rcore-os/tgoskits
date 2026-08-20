@@ -329,7 +329,7 @@ fn request_qmp_quit(socket: &Path) -> anyhow::Result<()> {
 
 #[cfg(not(unix))]
 fn request_qmp_quit(_socket: &Path) -> anyhow::Result<()> {
-    bail!("QMP unix sockets are not supported on this host")
+    anyhow::bail!("QMP unix sockets are not supported on this host")
 }
 
 #[cfg(unix)]

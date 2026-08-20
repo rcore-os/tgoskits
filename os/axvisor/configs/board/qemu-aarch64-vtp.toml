@@ -1,0 +1,14 @@
+# Board config for the StarryOS <-> FreeRTOS VTP demo (QEMU aarch64).
+#
+# Boots both guests under Axvisor: StarryOS (VM1, passthrough + virtio-net)
+# and FreeRTOS (VM2, virtualized + virtio-net). The two virtio-net devices are
+# wired through Axvisor's internal L2 switch, forming the IP link between the
+# guests. See docs/design/axvisor-vtp.md.
+
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "os/axvisor/configs/vms/qemu/aarch64/starry-smp1.toml",
+  "os/axvisor/configs/vms/qemu/aarch64/freertos-vtp-smp1.toml",
+]
