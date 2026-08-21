@@ -74,8 +74,16 @@ def main() -> int:
                 "pull request routing must match the head commit",
             ),
             (
+                "for ((attempt = 1; attempt <= 10; attempt++))",
+                "pull request routing must retry while its push run becomes visible",
+            ),
+            (
+                "sleep 2",
+                "push run discovery retries must remain bounded and observable",
+            ),
+            (
                 'actions/runs/${run_id}/jobs',
-                "pull request routing must inspect the push run matrix jobs",
+                "completed push routing must inspect the push run matrix jobs",
             ),
             (
                 "--paginate",
@@ -83,7 +91,7 @@ def main() -> int:
             ),
             (
                 '.name != "Plan CI"',
-                "a Plan-only push run must not suppress pull request CI",
+                "a completed Plan-only push run must not suppress pull request CI",
             ),
             (
                 '.conclusion != "skipped"',
@@ -98,17 +106,47 @@ def main() -> int:
                 "pull request routing must recheck the push run before skipping",
             ),
             (
+                '[.status, (.conclusion != "cancelled")] | @tsv',
+                "push run recheck must return its current lifecycle state",
+            ),
+            (
+                "queued|in_progress|waiting|requested)",
+                "only known unfinished push states may suppress pull request CI",
+            ),
+            (
+                "completed)",
+                "completed push runs must prove that matrix jobs exist",
+            ),
+            (
+                "*)",
+                "unknown push states must fail open",
+            ),
+            (
                 "should_run=false",
-                "a matching active push matrix must skip duplicate pull request CI",
+                "a matching canonical push run must skip duplicate pull request CI",
             ),
         ):
             require_contains(errors, pull_request_route, fragment, message)
         if pull_request_route.count("should_run=false") != 1:
             errors.append(
-                "only a pull request backed by an active push matrix may disable CI"
+                "only a pull request backed by a canonical push run may disable CI"
             )
         if pull_request_route.count("--paginate") != 2:
             errors.append("both push runs and push jobs queries must paginate")
+        query_failure_check = pull_request_route.find(
+            'if [ "$route_query_failed" = "true" ]'
+        )
+        reusable_run_check = pull_request_route.rfind(
+            'if [ -n "$reusable_push_runs" ]'
+        )
+        if (
+            query_failure_check == -1
+            or reusable_run_check == -1
+            or query_failure_check > reusable_run_check
+        ):
+            errors.append(
+                "any push run query failure must fail open before reusing another run"
+            )
         for fragment in ('"$EVENT_NAME" = "push"', "gh pr list"):
             if fragment in route_step:
                 errors.append(
@@ -178,12 +216,8 @@ def main() -> int:
             errors.append("PR cleanup must not cancel matching push runs")
         for fragment, message in (
             (
-                '.event != "pull_request"',
-                "push cleanup must not cancel pull request runs",
-            ),
-            (
-                '.event != "pull_request_target"',
-                "push cleanup must not cancel pull request target runs",
+                ".event == env.EVENT_NAME",
+                "non-PR cleanup must only cancel runs from the same event",
             ),
         ):
             require_contains(errors, push_selector, fragment, message)

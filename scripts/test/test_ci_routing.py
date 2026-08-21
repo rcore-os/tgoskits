@@ -37,6 +37,67 @@ class DuplicateEventRoutingTests(unittest.TestCase):
             any("actions/runs/101/jobs" in call for call in result.gh_calls)
         )
 
+    def test_in_progress_push_suppresses_pull_request_before_matrix_exists(
+        self,
+    ) -> None:
+        result = run_route(
+            event_name="pull_request",
+            push_runs="101\t11975\thttps://example.test/push/101",
+            push_run_status="in_progress",
+        )
+
+        self.assertEqual(result.should_run, "false")
+        self.assertFalse(
+            any("actions/runs/101/jobs" in call for call in result.gh_calls)
+        )
+
+    def test_waiting_and_requested_pushes_suppress_pull_request(self) -> None:
+        for status in ("waiting", "requested"):
+            with self.subTest(status=status):
+                result = run_route(
+                    event_name="pull_request",
+                    push_runs="101\t11975\thttps://example.test/push/101",
+                    push_run_status=status,
+                )
+
+                self.assertEqual(result.should_run, "false")
+
+    def test_unknown_push_status_does_not_suppress_pull_request(self) -> None:
+        result = run_route(
+            event_name="pull_request",
+            push_runs="101\t11975\thttps://example.test/push/101",
+            push_run_status="mystery",
+        )
+
+        self.assertEqual(result.should_run, "true")
+
+    def test_pull_request_retries_until_push_run_is_visible(self) -> None:
+        result = run_route(
+            event_name="pull_request",
+            push_runs="101\t11975\thttps://example.test/push/101",
+            push_runs_after_query=2,
+            push_run_status="queued",
+        )
+
+        self.assertEqual(result.should_run, "false")
+        run_queries = [
+            call
+            for call in result.gh_calls
+            if "actions/workflows/ci.yml/runs" in call
+        ]
+        self.assertGreaterEqual(len(run_queries), 2)
+
+    def test_pull_request_runs_after_retry_when_no_push_appears(self) -> None:
+        result = run_route(event_name="pull_request")
+
+        self.assertEqual(result.should_run, "true")
+        run_queries = [
+            call
+            for call in result.gh_calls
+            if "actions/workflows/ci.yml/runs" in call
+        ]
+        self.assertEqual(len(run_queries), 10)
+
     def test_plan_only_push_does_not_suppress_pull_request(self) -> None:
         result = run_route(
             event_name="pull_request",
@@ -76,7 +137,7 @@ class DuplicateEventRoutingTests(unittest.TestCase):
         self.assertEqual(result.should_run, "true")
         self.assertIn("Failed to inspect branch push run", result.stdout)
 
-    def test_push_cancelled_after_job_query_does_not_suppress_pull_request(
+    def test_push_cancelled_before_route_decision_does_not_suppress_pull_request(
         self,
     ) -> None:
         result = run_route(
@@ -104,6 +165,20 @@ class DuplicateEventRoutingTests(unittest.TestCase):
 
         self.assertEqual(result.should_run, "true")
         self.assertIn("Failed to recheck branch push run", result.stdout)
+
+    def test_any_push_recheck_failure_overrides_another_reusable_run(self) -> None:
+        result = run_route(
+            event_name="pull_request",
+            push_runs=(
+                "101\t11975\thttps://example.test/push/101\n"
+                "202\t11976\thttps://example.test/push/202"
+            ),
+            push_run_query_fail_ids="202",
+            push_run_status="in_progress",
+        )
+
+        self.assertEqual(result.should_run, "true")
+        self.assertIn("Failed to recheck branch push run #11976", result.stdout)
 
     def test_fork_pull_request_runs_without_querying_base_pushes(self) -> None:
         result = run_route(
@@ -144,9 +219,12 @@ def run_route(
     has_active_matrix: str = "false",
     active_matrix_run_ids: str = "",
     push_run_is_usable: str = "true",
+    push_run_status: str = "completed",
     push_run_query_exit: str = "0",
+    push_run_query_fail_ids: str = "",
     run_query_exit: str = "0",
     job_query_exit: str = "0",
+    push_runs_after_query: int = 1,
 ) -> RouteResult:
     script = route_script()
     with tempfile.TemporaryDirectory() as temp_dir_name:
@@ -156,6 +234,9 @@ def run_route(
         fake_gh = bin_dir / "gh"
         fake_gh.write_text(FAKE_GH, encoding="utf-8")
         fake_gh.chmod(0o755)
+        fake_sleep = bin_dir / "sleep"
+        fake_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_sleep.chmod(0o755)
 
         output_file = temp_dir / "output"
         summary_file = temp_dir / "summary"
@@ -177,8 +258,12 @@ def run_route(
                 "FAKE_JOB_QUERY_EXIT": job_query_exit,
                 "FAKE_PUSH_RUNS": push_runs,
                 "FAKE_PUSH_RUN_IS_USABLE": push_run_is_usable,
+                "FAKE_PUSH_RUN_STATUS": push_run_status,
                 "FAKE_PUSH_RUN_QUERY_EXIT": push_run_query_exit,
+                "FAKE_PUSH_RUN_QUERY_FAIL_IDS": push_run_query_fail_ids,
                 "FAKE_RUN_QUERY_EXIT": run_query_exit,
+                "FAKE_PUSH_RUNS_AFTER_QUERY": str(push_runs_after_query),
+                "FAKE_STATE_DIR": str(temp_dir),
             }
         )
         completed = subprocess.run(
@@ -227,7 +312,15 @@ with Path(os.environ["FAKE_GH_LOG"]).open("a", encoding="utf-8") as log:
     log.write(arguments + "\n")
 
 if "actions/workflows/ci.yml/runs" in arguments:
-    print(os.environ["FAKE_PUSH_RUNS"])
+    query_count_file = Path(os.environ["FAKE_STATE_DIR"]) / "run-query-count"
+    query_count = (
+        int(query_count_file.read_text(encoding="utf-8"))
+        if query_count_file.exists()
+        else 0
+    ) + 1
+    query_count_file.write_text(str(query_count), encoding="utf-8")
+    if query_count >= int(os.environ["FAKE_PUSH_RUNS_AFTER_QUERY"]):
+        print(os.environ["FAKE_PUSH_RUNS"])
     sys.exit(int(os.environ["FAKE_RUN_QUERY_EXIT"]))
 if "/actions/runs/" in arguments and "/jobs" in arguments:
     run_id = arguments.split("/actions/runs/", maxsplit=1)[1].split("/", maxsplit=1)[0]
@@ -236,7 +329,13 @@ if "/actions/runs/" in arguments and "/jobs" in arguments:
         print("501")
     sys.exit(int(os.environ["FAKE_JOB_QUERY_EXIT"]))
 if "/actions/runs/" in arguments:
-    print(os.environ["FAKE_PUSH_RUN_IS_USABLE"])
+    run_id = arguments.split("/actions/runs/", maxsplit=1)[1].split()[0]
+    print(
+        f'{os.environ["FAKE_PUSH_RUN_STATUS"]}\t'
+        f'{os.environ["FAKE_PUSH_RUN_IS_USABLE"]}'
+    )
+    if run_id in os.environ["FAKE_PUSH_RUN_QUERY_FAIL_IDS"].split(","):
+        sys.exit(1)
     sys.exit(int(os.environ["FAKE_PUSH_RUN_QUERY_EXIT"]))
 
 print(f"unexpected gh invocation: {arguments}", file=sys.stderr)
