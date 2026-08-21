@@ -169,11 +169,19 @@ impl DeviceInner {
         update: &mut ControllerUpdate,
         controller: Arc<ControllerPort>,
     ) -> Result<Vec<usize>, BlkError> {
-        if let Some(info) = update.take_device_info() {
-            self.device_info.lock().observe(info)?;
-        }
         let queues = update.take_queues();
         let endpoints = update.take_irq_endpoints();
+        let device_info_result = match update.take_device_info() {
+            Some(info) => self.device_info.lock().observe(info),
+            None => Ok(()),
+        };
+        if let Err(error) = device_info_result {
+            // The endpoints were never registered, but the queues may
+            // already be DMA-visible and must survive until shutdown.
+            self.retain_uninstalled_resources(Vec::new(), queues);
+            drop(endpoints);
+            return Err(error);
+        }
         let online_cpus = runtime_ops()
             .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
             .online_cpu_count()

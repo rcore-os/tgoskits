@@ -88,6 +88,50 @@ struct LifecycleQueue {
     log: Arc<StdMutex<Vec<&'static str>>>,
 }
 
+struct DropTrackedQueue {
+    id: usize,
+    log: Arc<StdMutex<Vec<&'static str>>>,
+}
+
+impl Drop for DropTrackedQueue {
+    fn drop(&mut self) {
+        self.log.lock().unwrap().push("emitted_queue_drop");
+    }
+}
+
+impl HardwareQueue for DropTrackedQueue {
+    fn id(&self) -> usize {
+        self.id
+    }
+
+    fn info(&self) -> QueueInfo {
+        QueueInfo {
+            id: self.id,
+            ..test_queue_info()
+        }
+    }
+
+    fn submit_batch_owned(
+        &mut self,
+        _requests: &mut OwnedRequestBatch,
+        _sink: &mut dyn SubmissionSink,
+    ) -> BatchSubmitResult {
+        BatchSubmitResult::new(0, BatchSubmitDisposition::QueueFull)
+    }
+
+    fn commit_submissions(&mut self) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn drain_completions(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        Ok(())
+    }
+}
+
 impl HardwareQueue for LifecycleQueue {
     fn id(&self) -> usize {
         0
@@ -132,6 +176,22 @@ struct QueueZeroHandler;
 impl HardIrqHandler for QueueZeroHandler {
     fn ack(&mut self) -> IrqAck {
         IrqAck::cleared(IrqQueueMask::from_queue(0), ControlEvent::new(0, 0))
+    }
+}
+
+struct DropTrackedHandler {
+    log: Arc<StdMutex<Vec<&'static str>>>,
+}
+
+impl Drop for DropTrackedHandler {
+    fn drop(&mut self) {
+        self.log.lock().unwrap().push("unregistered_endpoint_drop");
+    }
+}
+
+impl HardIrqHandler for DropTrackedHandler {
+    fn ack(&mut self) -> IrqAck {
+        IrqAck::spurious(1)
     }
 }
 
@@ -276,6 +336,14 @@ struct DeviceInfoUpdateController {
     changed_info: DeviceInfo,
 }
 
+struct RejectedResourceUpdateController {
+    bootstrap_queue: Option<LifecycleQueue>,
+    emitted_queue: Option<DropTrackedQueue>,
+    emitted_handler: Option<DropTrackedHandler>,
+    changed_info: DeviceInfo,
+    log: Arc<StdMutex<Vec<&'static str>>>,
+}
+
 struct MutableQueueInfoController {
     queue: Option<MutableQueueInfoQueue>,
 }
@@ -347,6 +415,51 @@ impl BlockController for DeviceInfoUpdateController {
                     .with_device_info(self.changed_info))
             }
             ControllerEvent::Shutdown | ControllerEvent::Watchdog { .. } => {
+                Ok(ControllerUpdate::state(ControllerState::Shutdown))
+            }
+            _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
+
+impl DriverGeneric for RejectedResourceUpdateController {
+    fn name(&self) -> &str {
+        "rejected-resource-update-controller"
+    }
+}
+
+impl BlockController for RejectedResourceUpdateController {
+    fn device_info(&self) -> DeviceInfo {
+        test_queue_info().device
+    }
+
+    fn max_io_queues(&self) -> usize {
+        2
+    }
+
+    fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+        match event {
+            ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
+                ControllerState::Ready,
+                vec![Box::new(self.bootstrap_queue.take().ok_or(BlkError::Io)?)],
+                Vec::new(),
+            )),
+            ControllerEvent::OnlineSmp { .. } => Ok(ControllerUpdate::with_resources(
+                ControllerState::Ready,
+                vec![Box::new(self.emitted_queue.take().ok_or(BlkError::Io)?)],
+                vec![IrqEndpoint::new(
+                    1,
+                    1 << 1,
+                    Box::new(self.emitted_handler.take().ok_or(BlkError::Io)?),
+                )],
+            )
+            .with_device_info(self.changed_info)),
+            ControllerEvent::QuiesceIrqs => {
+                self.log.lock().unwrap().push("controller_quiesce");
+                Ok(ControllerUpdate::state(ControllerState::Ready))
+            }
+            ControllerEvent::Shutdown | ControllerEvent::Watchdog { .. } => {
+                self.log.lock().unwrap().push("controller_shutdown");
                 Ok(ControllerUpdate::state(ControllerState::Shutdown))
             }
             _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
@@ -903,6 +1016,47 @@ fn ready_device_rejects_changed_device_info_without_overwriting_epoch() {
     );
     assert_eq!(handle.device_info().num_blocks, initial_info.num_blocks);
     assert_eq!(handle.shutdown(), 0);
+}
+
+#[test]
+fn rejected_device_info_update_keeps_emitted_queue_until_controller_shutdown() {
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    let initial_info = test_queue_info().device;
+    let changed_info = DeviceInfo {
+        num_blocks: initial_info.num_blocks + 1,
+        ..initial_info
+    };
+    let controller = RejectedResourceUpdateController {
+        bootstrap_queue: Some(LifecycleQueue {
+            log: Arc::clone(&log),
+        }),
+        emitted_queue: Some(DropTrackedQueue {
+            id: 1,
+            log: Arc::clone(&log),
+        }),
+        emitted_handler: Some(DropTrackedHandler {
+            log: Arc::clone(&log),
+        }),
+        changed_info,
+        log: Arc::clone(&log),
+    };
+    let irq = IrqId::new(IrqDomainId(1), HwIrq(12));
+    let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
+        "rejected-resource-update",
+        [BlockIrqSource { source_id: 1, irq }],
+        Box::new(controller),
+    ))
+    .unwrap();
+
+    assert_eq!(handle.online_smp(), Err(BlkError::InvalidRequest));
+    assert_eq!(handle.device_info().num_blocks, initial_info.num_blocks);
+
+    let log = log.lock().unwrap();
+    let controller = log_position(&log, "controller_shutdown");
+    let queue = log_position(&log, "emitted_queue_drop");
+    assert!(log.contains(&"unregistered_endpoint_drop"));
+    assert!(controller < queue);
 }
 
 #[test]
