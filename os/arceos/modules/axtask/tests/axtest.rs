@@ -311,17 +311,32 @@ fn irq_notify_coalesces_runtime_task_callbacks() {
 }
 
 #[axtest]
-fn external_deadline_participates_in_timer_selection() {
+fn external_deadline_is_consumed_after_its_timer_irq() {
     const NO_DEADLINE: u64 = u64::MAX;
-    let external_deadline = Arc::new(AtomicU64::new(1));
+    let external_deadline = Arc::new(AtomicU64::new(NO_DEADLINE));
+    let deadline_for_irq = Arc::clone(&external_deadline);
+    ax_task::register_timer_irq_callback(move |now| {
+        let deadline = deadline_for_irq.load(Ordering::Acquire);
+        if deadline != NO_DEADLINE && now.as_nanos() >= deadline as u128 {
+            deadline_for_irq.store(NO_DEADLINE, Ordering::Release);
+        }
+    });
     let published_deadline = Arc::clone(&external_deadline);
     ax_task::register_timer_deadline_source(move || {
         let deadline = published_deadline.load(Ordering::Acquire);
         (deadline != NO_DEADLINE).then_some(deadline)
     });
 
-    ax_assert_eq!(ax_task::next_timer_deadline_nanos(), Some(1));
-    external_deadline.store(NO_DEADLINE, Ordering::Release);
+    let deadline = ax_hal::time::monotonic_time() + core::time::Duration::from_millis(10);
+    let deadline_nanos = deadline.as_nanos().min(u64::MAX as u128) as u64;
+    external_deadline.store(deadline_nanos, Ordering::Release);
+    ax_assert!(
+        ax_task::next_timer_deadline_nanos().is_some_and(|selected| selected <= deadline_nanos)
+    );
+    ax_task::request_timer_deadline_nanos(deadline_nanos);
+    while external_deadline.load(Ordering::Acquire) != NO_DEADLINE {
+        ax_task::yield_now();
+    }
 }
 
 #[axtest]

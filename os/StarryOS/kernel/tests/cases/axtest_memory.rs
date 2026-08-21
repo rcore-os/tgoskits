@@ -15,3 +15,8 @@ fn page_fault_completion_updates_only_success() {
 fn cow_clone_failure_rollback_rules_hold() {
     ax_assert!(axtest_exports::cow_clone_failure_rollback_rules_hold());
 }
+
+#[axtest]
+fn thread_page_table_lease_follows_task_lifetime() {
+    ax_assert!(axtest_exports::thread_page_table_lease_follows_task_lifetime());
+}
