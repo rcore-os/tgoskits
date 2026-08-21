@@ -532,7 +532,7 @@ fn init_timer() {
 
 #[cfg(feature = "irq")]
 fn advance_periodic_timer(now_ns: u64) -> bool {
-    let deadline = with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.read_current(pin));
+    let mut deadline = with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.read_current(pin));
     if deadline == 0 {
         with_periodic_deadline(|pin| {
             NEXT_PERIODIC_DEADLINE_NANOS
@@ -544,25 +544,36 @@ fn advance_periodic_timer(now_ns: u64) -> bool {
         return false;
     }
 
-    let deadline = catch_up_periodic_deadline(deadline, now_ns, periodic_interval_nanos());
+    while deadline <= now_ns {
+        deadline = deadline.saturating_add(periodic_interval_nanos());
+        if deadline == u64::MAX {
+            break;
+        }
+    }
     with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.write_current(pin, deadline));
     true
 }
 
 #[cfg(feature = "irq")]
-fn catch_up_periodic_deadline(
+fn select_timer_deadline(
     periodic_deadline_nanos: u64,
+    task_deadline_nanos: Option<u64>,
     now_nanos: u64,
     periodic_interval_nanos: u64,
-) -> u64 {
+) -> (u64, u64) {
     debug_assert_ne!(periodic_interval_nanos, 0);
-    if periodic_deadline_nanos > now_nanos {
-        return periodic_deadline_nanos;
-    }
-
-    let elapsed_intervals = (now_nanos - periodic_deadline_nanos) / periodic_interval_nanos;
-    periodic_deadline_nanos
-        .saturating_add(periodic_interval_nanos.saturating_mul(elapsed_intervals.saturating_add(1)))
+    let periodic_deadline_nanos = if periodic_deadline_nanos <= now_nanos {
+        let elapsed_intervals = (now_nanos - periodic_deadline_nanos) / periodic_interval_nanos;
+        periodic_deadline_nanos.saturating_add(
+            periodic_interval_nanos.saturating_mul(elapsed_intervals.saturating_add(1)),
+        )
+    } else {
+        periodic_deadline_nanos
+    };
+    let selected_deadline_nanos = task_deadline_nanos
+        .map(|task_deadline| core::cmp::min(periodic_deadline_nanos, task_deadline))
+        .unwrap_or(periodic_deadline_nanos);
+    (periodic_deadline_nanos, selected_deadline_nanos)
 }
 
 #[cfg(feature = "irq")]
@@ -573,9 +584,17 @@ fn program_next_timer() {
         deadline = now_ns.saturating_add(periodic_interval_nanos());
         with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.write_current(pin, deadline));
     }
+    #[cfg(feature = "multitask")]
+    let task_deadline = ax_task::next_timer_deadline_nanos();
+    #[cfg(not(feature = "multitask"))]
+    let task_deadline = None;
     let now_nanos = ax_hal::time::monotonic_time_nanos();
-    let next_periodic_deadline =
-        catch_up_periodic_deadline(deadline, now_nanos, periodic_interval_nanos());
+    let (next_periodic_deadline, selected_deadline) = select_timer_deadline(
+        deadline,
+        task_deadline,
+        now_nanos,
+        periodic_interval_nanos(),
+    );
     if next_periodic_deadline != deadline {
         // Timer callbacks and scheduler work can outlive the periodic deadline
         // selected at IRQ entry. Coalesce those ticks before rearming so the
@@ -584,11 +603,7 @@ fn program_next_timer() {
             NEXT_PERIODIC_DEADLINE_NANOS.write_current(pin, next_periodic_deadline);
         });
     }
-    deadline = next_periodic_deadline;
-    #[cfg(feature = "multitask")]
-    if let Some(task_deadline) = ax_task::next_timer_deadline_nanos() {
-        deadline = core::cmp::min(deadline, task_deadline);
-    }
+    deadline = selected_deadline;
 
     ax_hal::time::set_oneshot_timer(deadline);
     #[cfg(feature = "multitask")]
@@ -640,11 +655,10 @@ fn init_tls() {
 mod tests {
     #[cfg(feature = "irq")]
     #[test]
-    fn periodic_deadline_catches_up_without_phase_drift() {
-        assert_eq!(super::catch_up_periodic_deadline(100, 99, 25), 100);
-        assert_eq!(super::catch_up_periodic_deadline(100, 100, 25), 125);
-        assert_eq!(super::catch_up_periodic_deadline(100, 149, 25), 150);
-        assert_eq!(super::catch_up_periodic_deadline(100, 150, 25), 175);
+    fn timer_programming_catches_up_after_a_slow_irq() {
+        let (periodic, selected) = super::select_timer_deadline(100, None, 150, 10);
+        assert_eq!(periodic, 160);
+        assert_eq!(selected, 160);
     }
 
     #[test]
