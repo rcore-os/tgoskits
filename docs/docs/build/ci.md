@@ -25,7 +25,8 @@ pull request 不会取消当前 SHA 的 push，因此 GitHub 不会把正常去�
 failing/cancelled checks。pull request run 仍只取消同一 PR 的旧 pull request run，
 即使本次矩阵复用 push 而 skipped，也会清理旧 commit 尚未完成的 pull request run；
 新 commit 的 push 同样会取消同一分支的旧 push run。`main` 和 `dev` 是例外：每个
-push commit 的 CI 都完整保留，后续提交不会取消仍在运行的旧 CI。
+push commit 的 CI 都完整保留，后续提交不会取消仍在运行的旧 CI。旧 run 先收到普通
+cancel；短暂复查仍未完成时再 force-cancel，避免分组 job 的 `always()` 条件阻止清理。
 
 ## 触发条件
 

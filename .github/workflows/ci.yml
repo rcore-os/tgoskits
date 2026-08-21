@@ -245,10 +245,28 @@ jobs:
             fi
 
             while IFS=$'\t' read -r run_id run_number run_url; do
-              if [ -n "$run_id" ] && ! gh api \
+              if [ -z "$run_id" ]; then
+                continue
+              fi
+              if ! gh api \
                 --method POST \
                 "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null; then
                 echo "::warning::Failed to cancel stale CI run #${run_number}: ${run_url}"
+              fi
+              sleep 2
+              if ! run_status="$(
+                gh api \
+                  --method GET \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+                  --jq '.status' 2>&1
+              )"; then
+                echo "::warning::Failed to recheck stale CI run #${run_number}: ${run_status}"
+                continue
+              fi
+              if [ "$run_status" != "completed" ] && ! gh api \
+                --method POST \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/force-cancel" >/dev/null; then
+                echo "::warning::Failed to force-cancel stale CI run #${run_number}: ${run_url}"
               fi
             done <<< "$runs"
           done

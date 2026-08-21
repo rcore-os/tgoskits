@@ -190,6 +190,18 @@ class DuplicateEventRoutingTests(unittest.TestCase):
         self.assertEqual(result.gh_calls, [])
 
 
+class StaleRunCancellationTests(unittest.TestCase):
+    def test_stuck_stale_run_is_force_cancelled(self) -> None:
+        result = run_cancellation()
+
+        self.assertTrue(
+            any("actions/runs/101/cancel" in call for call in result.gh_calls)
+        )
+        self.assertTrue(
+            any("actions/runs/101/force-cancel" in call for call in result.gh_calls)
+        )
+
+
 class RouteResult:
     def __init__(
         self,
@@ -292,9 +304,61 @@ def run_route(
 
 
 def route_script() -> str:
+    return workflow_step_script("Route duplicate events")
+
+
+def run_cancellation() -> RouteResult:
+    script = workflow_step_script("Cancel older queued or running runs")
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        bin_dir = temp_dir / "bin"
+        bin_dir.mkdir()
+        fake_gh = bin_dir / "gh"
+        fake_gh.write_text(FAKE_CANCEL_GH, encoding="utf-8")
+        fake_gh.chmod(0o755)
+        fake_sleep = bin_dir / "sleep"
+        fake_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_sleep.chmod(0o755)
+
+        gh_log = temp_dir / "gh.log"
+        env = os.environ.copy()
+        env.update(
+            {
+                "CURRENT_RUN_NUMBER": "200",
+                "EVENT_NAME": "push",
+                "FAKE_GH_LOG": str(gh_log),
+                "GITHUB_REPOSITORY": "rcore-os/tgoskits",
+                "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                "PR_NUMBER": "",
+                "REF_NAME": "fix/qemu-forward-progress",
+            }
+        )
+        completed = subprocess.run(
+            ["bash", "-c", script],
+            cwd=WORKSPACE_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(
+                f"cancellation script failed with {completed.returncode}:\n"
+                f"{completed.stderr}"
+            )
+        return RouteResult(
+            "",
+            "",
+            completed.stdout,
+            completed.stderr,
+            gh_log.read_text(encoding="utf-8").splitlines(),
+        )
+
+
+def workflow_step_script(step_name: str) -> str:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-    route_step = named_step_block(workflow, "Route duplicate events")
-    lines = route_step.splitlines()
+    step = named_step_block(workflow, step_name)
+    lines = step.splitlines()
     run_index = next(
         index for index, line in enumerate(lines) if line.strip() == "run: |"
     )
@@ -337,6 +401,34 @@ if "/actions/runs/" in arguments:
     if run_id in os.environ["FAKE_PUSH_RUN_QUERY_FAIL_IDS"].split(","):
         sys.exit(1)
     sys.exit(int(os.environ["FAKE_PUSH_RUN_QUERY_EXIT"]))
+
+print(f"unexpected gh invocation: {arguments}", file=sys.stderr)
+sys.exit(2)
+'''
+
+
+FAKE_CANCEL_GH = r'''#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+
+arguments = " ".join(sys.argv[1:])
+with Path(os.environ["FAKE_GH_LOG"]).open("a", encoding="utf-8") as log:
+    log.write(arguments + "\n")
+
+if "actions/workflows/ci.yml/runs?status=queued" in arguments:
+    print("101\t11975\thttps://example.test/push/101")
+    sys.exit(0)
+if "actions/workflows/ci.yml/runs?status=" in arguments:
+    sys.exit(0)
+if "actions/runs/101/force-cancel" in arguments:
+    sys.exit(0)
+if "actions/runs/101/cancel" in arguments:
+    sys.exit(0)
+if "actions/runs/101" in arguments:
+    print("queued")
+    sys.exit(0)
 
 print(f"unexpected gh invocation: {arguments}", file=sys.stderr)
 sys.exit(2)

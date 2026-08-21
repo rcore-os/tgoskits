@@ -193,6 +193,16 @@ def main() -> int:
             f"github.ref != 'refs/heads/{protected_ref}'",
             f"stale-run cleanup must preserve every {protected_ref} push run",
         )
+    normal_cancel = cancel_step.find(
+        '"repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel"'
+    )
+    force_cancel = cancel_step.find(
+        '"repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/force-cancel"'
+    )
+    if normal_cancel == -1 or force_cancel == -1 or normal_cancel > force_cancel:
+        errors.append(
+            "stale-run cleanup must force-cancel runs that ignore normal cancellation"
+        )
 
     pull_request_selector, push_selector = shell_if_else_branches(
         ci_workflow,
