@@ -30,14 +30,14 @@ impl_trait! {
             PhysAddr::from_usize(addr.as_usize())
         }
 
-        fn mem_make_dma_coherent_uncached(
-            _addr: VirtAddr,
+        fn mem_map_dma_coherent_uncached(
+            _addr: NonNull<u8>,
             _size: usize,
         ) -> axklib::DmaCoherentMappingOutcome {
             axklib::DmaCoherentMappingOutcome::NotStarted(KlibError::Unsupported)
         }
 
-        fn mem_restore_dma_cached(_addr: VirtAddr, _size: usize) -> KlibResult {
+        fn mem_unmap_dma_coherent(_addr: NonNull<u8>, _size: usize) -> KlibResult {
             Err(KlibError::Unsupported)
         }
 
@@ -47,11 +47,15 @@ impl_trait! {
 
         fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
 
-        fn dma_alloc_pages(_dma_mask: u64, _num_pages: usize, _align: usize) -> KlibResult<VirtAddr> {
+        fn dma_alloc_pages(
+            _dma_mask: u64,
+            _num_pages: usize,
+            _align: usize,
+        ) -> KlibResult<NonNull<u8>> {
             Err(KlibError::Unsupported)
         }
 
-        fn dma_dealloc_pages(_addr: VirtAddr, _num_pages: usize) {}
+        fn dma_dealloc_pages(_addr: NonNull<u8>, _num_pages: usize) {}
 
         fn time_busy_wait(_dur: Duration) {}
 
