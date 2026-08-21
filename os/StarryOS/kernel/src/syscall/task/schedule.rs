@@ -1,4 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
+use core::mem::size_of;
 
 use ax_runtime::hal::{self, time::TimeValue};
 use ax_task::{
@@ -8,12 +9,14 @@ use ax_task::{
 use bytemuck::{Pod, Zeroable};
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
-    SCHED_BATCH, SCHED_FIFO, SCHED_IDLE, SCHED_NORMAL, SCHED_RR, TIMER_ABSTIME, timespec,
+    SCHED_BATCH, SCHED_DEADLINE, SCHED_EXT, SCHED_FIFO, SCHED_FLAG_ALL, SCHED_FLAG_KEEP_ALL,
+    SCHED_FLAG_KEEP_PARAMS, SCHED_FLAG_KEEP_POLICY, SCHED_IDLE, SCHED_NORMAL, SCHED_RR,
+    TIMER_ABSTIME, timespec,
 };
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
 use crate::{
-    StarryError, StarryResult,
+    Errno, StarryError, StarryResult,
     task::{
         AsThread, Cred, PgidNumber, ProcessData, TgidNumber, TidNumber, current_pid_view,
         get_task_by_number, get_user_process_data_by_number, get_user_task_by_number,
@@ -26,6 +29,40 @@ use crate::{
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct SchedParam {
     sched_priority: i32,
+}
+
+/// Linux `struct sched_attr` (UAPI layout, 56 bytes on 64-bit targets).
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct SchedAttr {
+    pub size: u32,
+    pub sched_policy: u32,
+    pub sched_flags: u64,
+    pub sched_nice: i32,
+    pub sched_priority: u32,
+    pub sched_runtime: u64,
+    pub sched_deadline: u64,
+    pub sched_period: u64,
+    pub sched_util_min: u32,
+    pub sched_util_max: u32,
+}
+
+impl SchedAttr {
+    /// Smallest size Linux accepts (`SCHED_ATTR_SIZE_VER0`, covers through
+    /// `sched_priority`).
+    const SIZE_VER0: u32 = 24;
+    /// Full size of the current UAPI struct (`SCHED_ATTR_SIZE_VER1`).
+    const SIZE_VER1: u32 = 56;
+
+    fn validate_size(size: u32) -> StarryResult<()> {
+        if size < Self::SIZE_VER0 {
+            return Err(StarryError::InvalidInput);
+        }
+        if size > Self::SIZE_VER1 {
+            return Err(StarryError::from(Errno::E2BIG));
+        }
+        Ok(())
+    }
 }
 
 pub fn sys_sched_yield() -> StarryResult<isize> {
@@ -258,6 +295,174 @@ pub fn sys_sched_getparam(pid: i32, param: *mut ()) -> StarryResult<isize> {
         );
         vm_write_slice(ptr as *mut u8, bytes)?;
     }
+    Ok(0)
+}
+
+/// sched_setattr(2) — set scheduling policy, priority, and nice value through
+/// the extended `sched_attr` structure.
+pub fn sys_sched_setattr(pid: i32, attr: *const u8, flags: u32) -> StarryResult<isize> {
+    let task = SchedulerTarget::try_from(pid)?.resolve()?;
+    check_sched_permission(&task)?;
+
+    if flags & !SCHED_FLAG_ALL != 0 {
+        return Err(StarryError::InvalidInput);
+    }
+
+    let user_attr = vm_load::<SchedAttr>(attr.cast(), 1)?;
+    let attr = user_attr[0];
+    SchedAttr::validate_size(attr.size)?;
+
+    let caller = current().as_thread().cred();
+    let policy = attr.sched_policy;
+    match policy {
+        SCHED_NORMAL | SCHED_FIFO | SCHED_RR | SCHED_BATCH | SCHED_IDLE => {}
+        SCHED_DEADLINE | SCHED_EXT => {
+            // Deadline and sched-ext classes need per-task runtime/deadline
+            // bookkeeping that StarryOS does not provide yet.
+            return Err(StarryError::InvalidInput);
+        }
+        _ => return Err(StarryError::InvalidInput),
+    }
+
+    if !(-20..=19).contains(&attr.sched_nice) {
+        return Err(StarryError::InvalidInput);
+    }
+
+    let prio = attr.sched_priority as i32;
+    match policy {
+        SCHED_NORMAL | SCHED_BATCH | SCHED_IDLE => {
+            if prio != 0 {
+                return Err(StarryError::InvalidInput);
+            }
+        }
+        SCHED_FIFO | SCHED_RR => {
+            if !(1..=99).contains(&prio) {
+                return Err(StarryError::InvalidInput);
+            }
+            if !caller.has_cap_sys_nice() {
+                return Err(StarryError::OperationNotPermitted);
+            }
+        }
+        _ => unreachable!(),
+    }
+
+    let target_proc = task.as_thread().proc_data.clone();
+    if attr.sched_nice < target_proc.nice() && !caller.has_cap_sys_nice() {
+        return Err(StarryError::OperationNotPermitted);
+    }
+
+    let keep_policy = flags & (SCHED_FLAG_KEEP_POLICY | SCHED_FLAG_KEEP_ALL) != 0;
+    let keep_params = flags & (SCHED_FLAG_KEEP_PARAMS | SCHED_FLAG_KEEP_ALL) != 0;
+    if !keep_policy {
+        task.set_sched_policy(policy as i32);
+    }
+    if !keep_params {
+        task.set_sched_priority(prio);
+        target_proc.set_nice(attr.sched_nice);
+    }
+    Ok(0)
+}
+
+/// sched_getattr(2) — read scheduling attributes into a user `sched_attr`.
+pub fn sys_sched_getattr(
+    pid: i32,
+    attr: *mut u8,
+    size: u32,
+    flags: u32,
+) -> StarryResult<isize> {
+    if flags != 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    SchedAttr::validate_size(size)?;
+
+    let task = SchedulerTarget::try_from(pid)?.resolve()?;
+    let proc = task.as_thread().proc_data.clone();
+    let out = SchedAttr {
+        size: SchedAttr::SIZE_VER1,
+        sched_policy: task.sched_policy() as u32,
+        sched_flags: 0,
+        sched_nice: proc.nice(),
+        sched_priority: task.sched_priority() as u32,
+        sched_runtime: 0,
+        sched_deadline: 0,
+        sched_period: 0,
+        sched_util_min: 0,
+        sched_util_max: 0,
+    };
+    let write_len = (size as usize).min(size_of::<SchedAttr>());
+    unsafe {
+        let bytes = core::slice::from_raw_parts(
+            &out as *const SchedAttr as *const u8,
+            write_len,
+        );
+        vm_write_slice(attr, bytes)?;
+    }
+    Ok(SchedAttr::SIZE_VER1 as _)
+}
+
+/// sched_setparam(2) — set only the RT priority of a task, keeping its policy.
+pub fn sys_sched_setparam(pid: i32, param: *const ()) -> StarryResult<isize> {
+    let task = SchedulerTarget::try_from(pid)?.resolve()?;
+    check_sched_permission(&task)?;
+    if param.is_null() {
+        return Err(StarryError::InvalidInput);
+    }
+    let user_param = vm_load::<SchedParam>(param.cast(), 1)?;
+    let prio = user_param[0].sched_priority;
+
+    let caller = current().as_thread().cred();
+    let policy = task.sched_policy();
+    match policy as u32 {
+        SCHED_FIFO | SCHED_RR => {
+            if !(1..=99).contains(&prio) {
+                return Err(StarryError::InvalidInput);
+            }
+            if prio > task.sched_priority() && !caller.has_cap_sys_nice() {
+                return Err(StarryError::OperationNotPermitted);
+            }
+        }
+        SCHED_NORMAL | SCHED_BATCH | SCHED_IDLE => {
+            if prio != 0 {
+                return Err(StarryError::InvalidInput);
+            }
+        }
+        _ => return Err(StarryError::InvalidInput),
+    }
+    task.set_sched_priority(prio);
+    Ok(0)
+}
+
+/// sched_get_priority_max(2) — return the maximum priority for a policy.
+pub fn sys_sched_get_priority_max(policy: u32) -> StarryResult<isize> {
+    match policy {
+        SCHED_FIFO | SCHED_RR => Ok(99),
+        SCHED_NORMAL | SCHED_BATCH | SCHED_IDLE | SCHED_DEADLINE | SCHED_EXT => Ok(0),
+        _ => Err(StarryError::InvalidInput),
+    }
+}
+
+/// sched_get_priority_min(2) — return the minimum priority for a policy.
+pub fn sys_sched_get_priority_min(policy: u32) -> StarryResult<isize> {
+    match policy {
+        SCHED_FIFO | SCHED_RR => Ok(1),
+        SCHED_NORMAL | SCHED_BATCH | SCHED_IDLE | SCHED_DEADLINE | SCHED_EXT => Ok(0),
+        _ => Err(StarryError::InvalidInput),
+    }
+}
+
+/// sched_rr_get_interval(2) — return the round-robin timeslice of a task.
+///
+/// StarryOS does not yet expose a per-task RR quantum, so the Linux default
+/// 100 ms is reported.
+pub fn sys_sched_rr_get_interval(pid: i32, tp: *mut timespec) -> StarryResult<isize> {
+    SchedulerTarget::try_from(pid)?.resolve()?;
+    if tp.is_null() {
+        return Err(StarryError::InvalidInput);
+    }
+    tp.vm_write(timespec {
+        tv_sec: 0,
+        tv_nsec: 100_000_000,
+    })?;
     Ok(0)
 }
 
