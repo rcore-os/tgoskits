@@ -71,6 +71,10 @@ pub trait TimeIf {
     /// clock start).
     fn epochoffset_nanos() -> u64;
 
+    /// Set the epoch offset in nanoseconds (wall time offset to monotonic
+    /// clock start). Backs `clock_settime(2)` / `settimeofday(2)`.
+    fn set_epochoffset_nanos(offset_nanos: u64);
+
     /// Returns the IRQ number for the timer interrupt.
     #[cfg(feature = "irq")]
     fn irq_num() -> irq_framework::IrqId;

@@ -10,6 +10,7 @@ use ax_plat::{
     power::PowerIf,
     time::TimeIf,
 };
+use core::sync::atomic::{AtomicU64, Ordering};
 
 struct DummyInit;
 struct DummyConsole;
@@ -144,7 +145,11 @@ impl TimeIf for DummyTime {
     }
 
     fn epochoffset_nanos() -> u64 {
-        0
+        DUMMY_EPOCH_OFFSET_NANOS.load(Ordering::Acquire)
+    }
+
+    fn set_epochoffset_nanos(offset_nanos: u64) {
+        DUMMY_EPOCH_OFFSET_NANOS.store(offset_nanos, Ordering::Release);
     }
 
     #[cfg(feature = "irq")]
@@ -155,6 +160,8 @@ impl TimeIf for DummyTime {
     #[cfg(feature = "irq")]
     fn set_oneshot_timer(_deadline_ns: u64) {}
 }
+
+static DUMMY_EPOCH_OFFSET_NANOS: AtomicU64 = AtomicU64::new(0);
 
 #[impl_plat_interface]
 impl PowerIf for DummyPower {

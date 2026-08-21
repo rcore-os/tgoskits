@@ -1,5 +1,6 @@
 use ax_runtime::hal::time::{
-    NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos, nanos_to_ticks, wall_time,
+    NANOS_PER_MICROS, NANOS_PER_SEC, TimeValue, monotonic_time, monotonic_time_nanos,
+    nanos_to_ticks, set_epochoffset_nanos, wall_time,
 };
 use ax_task::current;
 use linux_raw_sys::general::{
@@ -87,6 +88,69 @@ pub fn sys_clock_getres(clock_id: __kernel_clockid_t, res: *mut timespec) -> Sta
     };
     if let Some(res) = res.nullable() {
         res.vm_write(timespec::from_time_value(resolution))?;
+    }
+    Ok(0)
+}
+
+/// clock_settime(2) — set the wall clock (`CLOCK_REALTIME`).
+///
+/// Linux reads the user timespec before checking `CAP_SYS_TIME`, so a bad
+/// pointer yields `EFAULT` even for unprivileged callers. The nsec field must
+/// be in `[0, 999_999_999]`; anything else is `EINVAL`.
+pub fn sys_clock_settime(clock_id: __kernel_clockid_t, ts: *const timespec) -> StarryResult<isize> {
+    match clock_id as u32 {
+        CLOCK_REALTIME | CLOCK_REALTIME_COARSE => {}
+        _ => return Err(StarryError::InvalidInput),
+    }
+
+    // FIXME: AnyBitPattern
+    let ts = unsafe { ts.vm_read_uninit()?.assume_init() };
+    if !(0..NANOS_PER_SEC as i64).contains(&ts.tv_nsec) {
+        return Err(StarryError::InvalidInput);
+    }
+
+    if !current().as_thread().cred().has_cap_sys_time() {
+        return Err(StarryError::OperationNotPermitted);
+    }
+
+    let target_nanos = ts.tv_sec as u64 * NANOS_PER_SEC + ts.tv_nsec as u64;
+    // Wrapping subtraction keeps negative offsets (target before boot) valid
+    // through the unsigned wall-time composition.
+    let offset = target_nanos.wrapping_sub(monotonic_time_nanos());
+    set_epochoffset_nanos(offset);
+    Ok(0)
+}
+
+/// settimeofday(2) — set the wall clock and/or the legacy timezone.
+///
+/// The `tz` argument is accepted for ABI compatibility and otherwise ignored
+/// (Linux stopped using it for actual timezone handling in 2.6). With both
+/// `tv` and `tz` NULL, Linux returns `EINVAL`.
+pub fn sys_settimeofday(tv: *mut timeval, tz: *mut Timezone) -> StarryResult<isize> {
+    let tv_ptr = tv.nullable();
+    let tz_ptr = tz.nullable();
+    if tv_ptr.is_none() && tz_ptr.is_none() {
+        return Err(StarryError::InvalidInput);
+    }
+
+    if let Some(tv) = tv_ptr {
+        // FIXME: AnyBitPattern
+        let tv = unsafe { tv.vm_read_uninit()?.assume_init() };
+        if !(0..1_000_000).contains(&tv.tv_usec) {
+            return Err(StarryError::InvalidInput);
+        }
+        if !current().as_thread().cred().has_cap_sys_time() {
+            return Err(StarryError::OperationNotPermitted);
+        }
+        let target_nanos =
+            tv.tv_sec as u64 * NANOS_PER_SEC + tv.tv_usec as u64 * NANOS_PER_MICROS;
+        let offset = target_nanos.wrapping_sub(monotonic_time_nanos());
+        set_epochoffset_nanos(offset);
+    }
+
+    // Validate (but do not use) the timezone pointer when supplied.
+    if let Some(tz) = tz_ptr {
+        let _ = unsafe { tz.vm_read_uninit()?.assume_init() };
     }
     Ok(0)
 }

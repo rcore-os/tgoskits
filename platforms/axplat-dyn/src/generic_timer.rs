@@ -91,6 +91,17 @@ impl ax_plat::time::TimeIf for GenericTimer {
             offset => offset,
         }
     }
+
+    /// Set the epoch offset in nanoseconds.
+    ///
+    /// `clock_settime(2)` computes `target_epoch_ns - monotonic_ns` and stores
+    /// it here, so every later `wall_time()` read observes the new wall clock.
+    /// The `UNINIT_EPOCH_OFFSET_NANOS` sentinel (`u64::MAX`) is reserved for
+    /// boot; a real offset can never legitimately equal it.
+    fn set_epochoffset_nanos(offset_nanos: u64) {
+        debug_assert!(offset_nanos != UNINIT_EPOCH_OFFSET_NANOS);
+        EPOCH_OFFSET_NANOS.store(offset_nanos, Ordering::Release);
+    }
     /// Returns the IRQ number for the timer interrupt.
     #[cfg(feature = "irq")]
     fn irq_num() -> ax_plat::irq::IrqId {
