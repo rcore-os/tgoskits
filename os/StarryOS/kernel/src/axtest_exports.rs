@@ -152,6 +152,11 @@ fn cow_file_max_read_len_boundary_rules_hold() -> bool {
 }
 
 #[cfg(axtest)]
+pub fn cow_clone_failure_rollback_rules_hold() -> bool {
+    super::mm::cow_clone_failure_rollback_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
 pub fn concurrent_epoll_reverse_add_is_serialized() -> bool {
     super::file::concurrent_reverse_add_is_serialized_for_test()
 }
