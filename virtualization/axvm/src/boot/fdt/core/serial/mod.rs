@@ -21,7 +21,7 @@ pub(crate) fn install_machine_serial(
     tree: &mut FdtTree,
     profile: GuestSerialProfile,
     identity: Option<&GuestSerialFdtIdentity>,
-    preserved_physical_paths: &[String],
+    preserved_physical_selectors: &[String],
 ) -> AxVmResult {
     let machine = crate::machine::current_machine_profile(1);
     let GuestSerialTransport::Mmio { .. } = profile.transport else {
@@ -36,7 +36,7 @@ pub(crate) fn install_machine_serial(
         interrupt_encoding,
         identity,
         true,
-        preserved_physical_paths,
+        preserved_physical_selectors,
     )
 }
 
@@ -388,7 +388,7 @@ fn install_mmio_serial_preserving(
     interrupt_encoding: GuestSerialFdtInterrupt,
     identity: Option<&GuestSerialFdtIdentity>,
     console: bool,
-    preserved_physical_paths: &[String],
+    preserved_physical_selectors: &[String],
 ) -> AxVmResult {
     let GuestSerialTransport::Mmio {
         base,
@@ -409,7 +409,11 @@ fn install_mmio_serial_preserving(
 
     if console {
         let mut old_paths = physical_serial_paths(tree.inner());
-        old_paths.retain(|path| !preserved_physical_paths.contains(path));
+        old_paths.retain(|path| {
+            !preserved_physical_selectors
+                .iter()
+                .any(|selector| super::device::selector_includes_path(selector, path))
+        });
         old_paths.sort_by_key(|path| std::cmp::Reverse(path.matches('/').count()));
         for path in old_paths {
             tree.inner_mut().remove_by_path(&path);
