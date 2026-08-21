@@ -25,7 +25,10 @@ const IOPRIO_DATA_MASK: u32 = (1 << 13) - 1;
 const IOPRIO_CLASS_SHIFT: u32 = 13;
 
 fn validate_which(which: u32) -> StarryResult<()> {
-    if matches!(which, IOPRIO_WHO_PROCESS | IOPRIO_WHO_PGRP | IOPRIO_WHO_USER) {
+    if matches!(
+        which,
+        IOPRIO_WHO_PROCESS | IOPRIO_WHO_PGRP | IOPRIO_WHO_USER
+    ) {
         Ok(())
     } else {
         Err(StarryError::InvalidInput)
@@ -48,8 +51,10 @@ pub fn sys_ioprio_set(which: u32, _who: u32, ioprio: u32) -> StarryResult<isize>
     validate_which(which)?;
     let class = ioprio >> IOPRIO_CLASS_SHIFT;
     let data = ioprio & IOPRIO_DATA_MASK;
-    if !matches!(class, IOPRIO_CLASS_NONE | IOPRIO_CLASS_RT | IOPRIO_CLASS_BE | IOPRIO_CLASS_IDLE)
-    {
+    if !matches!(
+        class,
+        IOPRIO_CLASS_NONE | IOPRIO_CLASS_RT | IOPRIO_CLASS_BE | IOPRIO_CLASS_IDLE
+    ) {
         return Err(StarryError::InvalidInput);
     }
     // `IOPRIO_CLASS_NONE` carries no data in Linux.
@@ -73,7 +78,14 @@ pub(crate) fn ioprio_validation_rules_hold_for_test() -> bool {
     assert!(sys_ioprio_get(IOPRIO_WHO_PROCESS, 0).unwrap() == 0);
     assert!(sys_ioprio_set(IOPRIO_WHO_PROCESS, 0, 0).is_ok());
     // BE class priority 7 is valid.
-    assert!(sys_ioprio_set(IOPRIO_WHO_PROCESS, 0, (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 7).is_ok());
+    assert!(
+        sys_ioprio_set(
+            IOPRIO_WHO_PROCESS,
+            0,
+            (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 7
+        )
+        .is_ok()
+    );
     // Unknown class is invalid.
     assert!(sys_ioprio_set(IOPRIO_WHO_PROCESS, 0, 4 << IOPRIO_CLASS_SHIFT).is_err());
     true

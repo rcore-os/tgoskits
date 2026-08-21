@@ -22,9 +22,7 @@ use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
     StarryError, StarryResult,
-    file::{
-        Directory, File, FileLike, fd_is_path, get_file_like, resolve_at, with_fs,
-    },
+    file::{Directory, File, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::{vm_load_path_string, vm_load_string},
     task::AsThread,
     time::TimeValueLike,
