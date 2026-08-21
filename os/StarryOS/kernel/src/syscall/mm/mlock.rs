@@ -11,10 +11,7 @@ use ax_runtime::hal::paging::MappingFlags;
 use ax_task::current;
 use linux_raw_sys::general::{MCL_CURRENT, MCL_FUTURE, MCL_ONFAULT};
 
-use crate::{
-    StarryError, StarryResult,
-    task::AsThread,
-};
+use crate::{StarryError, StarryResult, task::AsThread};
 
 /// mlockall(2) — lock the calling process's current and/or future mappings.
 pub fn sys_mlockall(flags: i32) -> StarryResult<isize> {
