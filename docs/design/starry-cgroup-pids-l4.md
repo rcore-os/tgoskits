@@ -13,11 +13,12 @@ implementation lets a process move into a non-root pids-enabled cgroup, set
 `pids.max`, and observe that the next task-creating `fork` or `clone` fails
 with `EAGAIN` once the hierarchical limit is exhausted. The counters must
 remain balanced across fork rollback, thread exit, process exit, and process
-migration.
+migration. The read-only `pids.peak` interface reports the highest
+`pids.current` value reached during the cgroup node's lifetime.
 
 This is deliberately not a CPU, memory, cpuset, or I/O implementation. It
 does not add cgroup v2 threaded mode, delegation, notifications,
-`pids.events.local`, `pids.peak`, controller disabling, or the cgroup core's
+`pids.events.local`, controller disabling, or the cgroup core's
 no-internal-process rule. Those features require their own observable behavior
 and validation.
 
@@ -55,9 +56,13 @@ thread accounting, migration serialization, reservation rollback, or
 ## State, ownership, and synchronization
 
 Every `CgroupNode` owns a private pids state. The state retains a task count,
-an optional maximum, and the hierarchical `pids.events` max counter. Counts
-and max events are maintained for the affected non-root ancestors so they
-match the cgroup v2 hierarchy before an interface becomes visible.
+its lifetime high-water mark, an optional maximum, and the hierarchical
+`pids.events` max counter. Counts, peaks, and max events are maintained for
+the affected non-root ancestors so they match the cgroup v2 hierarchy before
+an interface becomes visible. Each successful per-node checked or migration
+charge raises the peak atomically; rollback and task exit lower only
+`pids.current`. As in Linux's hierarchical try-charge path, a lower node may
+retain a peak from a charge that an ancestor later rejects.
 The root owns accounting state but does not expose `pids.*` files; those files
 exist only in non-root cgroups whose parent enabled pids in
 `cgroup.subtree_control`.
@@ -120,17 +125,21 @@ existing entry points:
 The cgroupfs interface is observed through existing `mount`, `openat`, `read`,
 `write`, and `getdents64` paths. The change adds dynamic controller and
 `pids.*` entries to the existing cgroup2 filesystem adapter; it does not alter
-the generic syscall ABI. The QEMU cases validate file visibility, permissions,
-input errors, `cgroup.procs` migration, and read-back results.
+the generic syscall ABI. `pids.peak` is exposed beside the other non-root pids
+files after the parent enables the controller and is read-only. The QEMU cases
+validate file visibility, permissions, input errors, `cgroup.procs` migration,
+and read-back results.
 
 ## Validation evidence
 
 Host tests cover parse and read-back behavior, hierarchical charges, CAS limit
-races, rollback, thread accounting, idempotent exit, and migration above a
+races, peak updates after checked and unchecked charges, a stable peak after
+uncharge, rollback, thread accounting, idempotent exit, and migration above a
 limit. The Starry QEMU system test performs the user-visible sequence of
 enabling pids, migration, `pids.max` update, successful first fork, failed
 second fork with `EAGAIN`, a rejected raw `clone(CLONE_PARENT_SETTID)`,
-hierarchical event observation, and counter recovery after exit. The grouped
+hierarchical event observation, counter recovery after exit, and a persistent
+`pids.peak` high-water mark. The grouped
 `cgroup-basic` case also verifies that a successful
 `clone3(CLONE_INTO_CGROUP)` publishes the child in the target cgroup. The pids
 case verifies that a target with `pids.max=0` rejects that clone3 request,
@@ -144,22 +153,22 @@ The initial implementation received a four-architecture focused QEMU run on
 red/green `CLONE_PARENT_SETTID` ordering result, but it does not replace
 validation of later membership-ledger or clone3 target-selection repairs.
 
-The current repair was validated on `origin/dev` at
-`6bca19eb0a6e2488f38a8302df5647d4e2f06180` on 2026-08-17
+The `pids.peak` increment was rebased and validated on `origin/dev` at
+`35aaf4003137575375bb2c4ef481a718c86f7286` on 2026-08-18
 (Asia/Shanghai):
 
 | Gate | Result |
 | --- | --- |
 | `cargo fmt --all -- --check` | passed |
 | `git diff --check` | passed |
-| `cargo test --manifest-path components/ax-cgroup/Cargo.toml --all-features` | 25 passed |
-| `cargo clippy --manifest-path components/ax-cgroup/Cargo.toml --all-features -- -D warnings` | passed |
-| `cargo check -p starry-kernel` | passed |
-| loongarch64 `qemu/system/cgroup-basic` | passed, 1/1; successful `CLONE_INTO_CGROUP` observed in the target |
-| loongarch64 `qemu/system/cgroup-pids` | passed, 1/1; target rejection, rollback, event, and parent-TID checks passed |
+| `cargo test --manifest-path components/ax-cgroup/Cargo.toml --all-features` | 26 passed, including ancestor-rejection peak rollback |
+| `cargo xtask clippy --package ax-cgroup` | passed, 1/1 |
+| `cargo xtask clippy --package starry-kernel` | passed, 25/25 feature/configuration checks; the transient AIC8800 firmware EOF passed on an isolated retry |
+| loongarch64 `qemu/system/cgroup-basic` | passed, 1/1; the controller-disabled child still hides `pids.peak` |
+| loongarch64 `qemu/system/cgroup-pids` | passed, 1/1; direct rejection, hierarchical rollback peaks, exit, and migration checks passed |
 
-A diagnostic loongarch64 grouped-system run also passed both cgroup binaries in
-their real order. It was stopped after the unrelated I/O-heavy
+A historical diagnostic loongarch64 grouped-system run also passed both cgroup
+binaries in their real order. It was stopped after the unrelated I/O-heavy
 `test-ext4-inode-unique` and `test-pagecache-cap` cases each reached their
 existing 240-second per-binary budget; it is not recorded as a full-suite pass.
 A direct `starry-kernel` lib-test attempt is currently blocked before test

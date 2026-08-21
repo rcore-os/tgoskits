@@ -13,6 +13,7 @@ const UNLIMITED: u64 = u64::MAX;
 
 pub(crate) struct PidsState {
     current: AtomicU64,
+    peak: AtomicU64,
     maximum: AtomicU64,
     max_events: AtomicU64,
 }
@@ -21,6 +22,7 @@ impl PidsState {
     pub(crate) const fn new() -> Self {
         Self {
             current: AtomicU64::new(0),
+            peak: AtomicU64::new(0),
             maximum: AtomicU64::new(UNLIMITED),
             max_events: AtomicU64::new(0),
         }
@@ -40,6 +42,7 @@ impl PidsState {
                 .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
+                self.peak.fetch_max(current + 1, Ordering::AcqRel);
                 return Ok(());
             }
         }
@@ -49,6 +52,7 @@ impl PidsState {
     pub(crate) fn charge_unchecked(&self, count: u64) {
         let previous = self.current.fetch_add(count, Ordering::AcqRel);
         debug_assert!(previous <= UNLIMITED - count, "pids.current overflow");
+        self.peak.fetch_max(previous + count, Ordering::AcqRel);
     }
 
     /// Release a task count that was previously charged to this node.
@@ -73,6 +77,10 @@ impl PidsState {
 
     pub(crate) fn current_text(&self) -> String {
         format!("{}\n", self.current.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn peak_text(&self) -> String {
+        format!("{}\n", self.peak.load(Ordering::Acquire))
     }
 
     pub(crate) fn events_text(&self) -> String {
@@ -114,6 +122,7 @@ mod tests {
         assert_eq!(state.try_charge(), Err(CgroupError::LimitExceeded));
         state.record_max_event();
         assert_eq!(state.current_text(), "1\n");
+        assert_eq!(state.peak_text(), "1\n");
         assert_eq!(state.events_text(), "max 1\n");
     }
 
@@ -125,7 +134,12 @@ mod tests {
         state.charge_unchecked(2);
 
         assert_eq!(state.current_text(), "2\n");
+        assert_eq!(state.peak_text(), "2\n");
         assert_eq!(state.try_charge(), Err(CgroupError::LimitExceeded));
+
+        state.uncharge(2);
+        assert_eq!(state.current_text(), "0\n");
+        assert_eq!(state.peak_text(), "2\n");
     }
 
     #[test]
@@ -163,8 +177,10 @@ mod tests {
 
         assert_eq!(successes.load(Ordering::Acquire), LIMIT);
         assert_eq!(state.current_text(), "8\n");
+        assert_eq!(state.peak_text(), "8\n");
 
         state.uncharge(LIMIT as u64);
         assert_eq!(state.current_text(), "0\n");
+        assert_eq!(state.peak_text(), "8\n");
     }
 }

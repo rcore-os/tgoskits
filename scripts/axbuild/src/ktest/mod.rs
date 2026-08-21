@@ -755,7 +755,7 @@ fn prepare_ktest_cargo(
         // is not compiled into the test artifact.
         ensure_feature(cargo, "ax-std/multitask");
     }
-    crate::build::append_encoded_rustflags(cargo, AXTEST_RUSTFLAGS);
+    crate::build::append_cargo_rustflags(cargo, AXTEST_RUSTFLAGS);
     if coverage {
         cargo
             .env

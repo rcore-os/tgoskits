@@ -87,47 +87,131 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
-          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
         run: |
           set -euo pipefail
 
           should_run=true
-          if [ "$EVENT_NAME" = "push" ] \
-            && [ "$REF_NAME" != "main" ] \
-            && [ "$REF_NAME" != "dev" ] \
-            && [ "$GITHUB_REPOSITORY" = "rcore-os/tgoskits" ]; then
-            open_prs="$(
-              gh pr list \
-                --repo "$GITHUB_REPOSITORY" \
-                --head "$REF_NAME" \
-                --state open \
-                --json number,url,headRefName,headRepositoryOwner \
-                --jq '.[] | select(.headRepositoryOwner.login == env.REPOSITORY_OWNER and .headRefName == env.REF_NAME) | "- #\(.number): \(.url)"'
-            )"
-            if [ -n "$open_prs" ]; then
-              should_run=false
-              {
-                echo "## Duplicate push CI skipped"
-                echo ""
-                echo "This branch already has an open pull request; its pull_request run validates the same commit."
-                echo ""
-                echo "$open_prs"
-              } >> "$GITHUB_STEP_SUMMARY"
-            fi
+          if [ "$EVENT_NAME" = "pull_request" ] \
+            && [ "$HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ]; then
+            for ((attempt = 1; attempt <= 10; attempt++)); do
+              push_runs=""
+              if ! push_runs="$(
+                gh api \
+                  --method GET \
+                  --paginate \
+                  "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+                  -f event=push \
+                  -f branch="$PR_HEAD_REF" \
+                  -f head_sha="$HEAD_SHA" \
+                  -f per_page=100 \
+                  --jq '.workflow_runs[] | select(
+                    .event == "push"
+                    and .head_sha == env.HEAD_SHA
+                    and .head_branch == env.PR_HEAD_REF
+                    and .conclusion != "cancelled"
+                  ) | [.id, .run_number, .html_url] | @tsv' 2>&1
+              )"; then
+                echo "::warning::Failed to query matching branch push runs: ${push_runs}"
+                break
+              fi
+
+              if [ -z "$push_runs" ]; then
+                # The pull_request record can become visible before its sibling push run.
+                if [ "$attempt" -lt 10 ]; then
+                  sleep 2
+                  continue
+                fi
+                break
+              fi
+
+              reusable_push_runs=""
+              route_query_failed=false
+              while IFS=$'\t' read -r run_id run_number run_url; do
+                if [ -z "$run_id" ]; then
+                  continue
+                fi
+                if ! push_run_state="$(
+                  gh api \
+                    --method GET \
+                    "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+                    --jq '[.status, (.conclusion != "cancelled")] | @tsv' 2>&1
+                )"; then
+                  echo "::warning::Failed to recheck branch push run #${run_number}: ${push_run_state}"
+                  route_query_failed=true
+                  continue
+                fi
+                IFS=$'\t' read -r current_status push_run_is_usable <<< "$push_run_state"
+                if [ "$push_run_is_usable" != "true" ]; then
+                  continue
+                fi
+
+                # Push routing is canonical, so an unfinished matching run owns
+                # validation before GitHub materializes its matrix jobs.
+                case "$current_status" in
+                  queued|in_progress|waiting|requested)
+                    ;;
+                  completed)
+                    if ! active_matrix_jobs="$(
+                      gh api \
+                        --method GET \
+                        --paginate \
+                        "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs" \
+                        -f filter=latest \
+                        -f per_page=100 \
+                        --jq '.jobs[] | select(
+                          .name != "Plan CI"
+                          and .conclusion != "skipped"
+                          and .conclusion != "cancelled"
+                        ) | .id' 2>&1
+                    )"; then
+                      echo "::warning::Failed to inspect branch push run #${run_number}: ${active_matrix_jobs}"
+                      route_query_failed=true
+                      continue
+                    fi
+                    if [ -z "$active_matrix_jobs" ]; then
+                      continue
+                    fi
+                    ;;
+                  *)
+                    continue
+                    ;;
+                esac
+
+                if [ -n "$reusable_push_runs" ]; then
+                  reusable_push_runs+=$'\n'
+                fi
+                reusable_push_runs+="- #${run_number} (${current_status}): ${run_url}"
+              done <<< "$push_runs"
+
+              if [ "$route_query_failed" = "true" ]; then
+                break
+              fi
+              if [ -n "$reusable_push_runs" ]; then
+                should_run=false
+                {
+                  echo "## Duplicate pull request CI skipped"
+                  echo ""
+                  echo "A branch push run already owns validation for this pull request head commit."
+                  echo ""
+                  echo "$reusable_push_runs"
+                } >> "$GITHUB_STEP_SUMMARY"
+              fi
+              break
+            done
           fi
           echo "should_run=${should_run}" >> "$GITHUB_OUTPUT"
 
       - name: Cancel older queued or running runs
         if: >-
-          steps.route.outputs.should_run == 'true' &&
-          (github.event_name == 'pull_request' || github.ref != 'refs/heads/dev')
+          github.event_name == 'pull_request' ||
+          (github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev')
         env:
           GH_TOKEN: ${{ github.token }}
           CURRENT_RUN_NUMBER: ${{ github.run_number }}
           EVENT_NAME: ${{ github.event_name }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
           REF_NAME: ${{ github.ref_name }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
@@ -138,26 +222,14 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request" ]; then
             selector='select(
               .run_number < (env.CURRENT_RUN_NUMBER | tonumber)
-              and (
-                (
-                  .event == "pull_request"
-                  and any(.pull_requests[]?; .number == (env.PR_NUMBER | tonumber))
-                )
-                or (
-                  .event == "push"
-                  and .head_branch != "main"
-                  and .head_branch != "dev"
-                  and .head_sha == env.HEAD_SHA
-                  and .head_branch == env.PR_HEAD_REF
-                )
-              )
+              and .event == "pull_request"
+              and any(.pull_requests[]?; .number == (env.PR_NUMBER | tonumber))
             )'
           else
             selector='select(
               .run_number < (env.CURRENT_RUN_NUMBER | tonumber)
               and .head_branch == env.REF_NAME
-              and .event != "pull_request"
-              and .event != "pull_request_target"
+              and .event == env.EVENT_NAME
             )'
           fi
 
@@ -173,10 +245,28 @@ jobs:
             fi
 
             while IFS=$'\t' read -r run_id run_number run_url; do
-              if [ -n "$run_id" ] && ! gh api \
+              if [ -z "$run_id" ]; then
+                continue
+              fi
+              if ! gh api \
                 --method POST \
                 "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null; then
                 echo "::warning::Failed to cancel stale CI run #${run_number}: ${run_url}"
+              fi
+              sleep 2
+              if ! run_status="$(
+                gh api \
+                  --method GET \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+                  --jq '.status' 2>&1
+              )"; then
+                echo "::warning::Failed to recheck stale CI run #${run_number}: ${run_status}"
+                continue
+              fi
+              if [ "$run_status" != "completed" ] && ! gh api \
+                --method POST \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/force-cancel" >/dev/null; then
+                echo "::warning::Failed to force-cancel stale CI run #${run_number}: ${run_url}"
               fi
             done <<< "$runs"
           done
@@ -192,7 +282,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/test/check_ci_routing.py
-          python3 -m unittest scripts/test/test_ci_impact.py scripts/test/test_ci_plan.py
+          python3 -m unittest \
+            scripts/test/test_ci_impact.py \
+            scripts/test/test_ci_plan.py \
+            scripts/test/test_ci_routing.py
 
       - name: Resolve incremental base revision
         id: since
