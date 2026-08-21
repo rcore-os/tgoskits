@@ -176,7 +176,7 @@ impl AxVMConfig {
         Self::new(AxVMConfigParams {
             id,
             name: String::from(name),
-            phys_cpu_ls: PhysCpuList::new(1, None, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
             ..Default::default()
         })
     }
@@ -484,14 +484,22 @@ impl PhysCpuList {
         cpu_num: usize,
         phys_cpu_ids: Option<Vec<usize>>,
         phys_cpu_sets: Option<Vec<usize>>,
-        phys_cpu_priorities: Option<Vec<isize>>,
     ) -> Self {
         Self {
             cpu_num,
             phys_cpu_ids,
             phys_cpu_sets,
-            phys_cpu_priorities,
+            phys_cpu_priorities: None,
         }
+    }
+
+    /// Sets the vCPU priorities of this physical CPU list.
+    ///
+    /// Priorities are optional; when unset, every vCPU inherits the default
+    /// priority. Higher numbers mean higher priority (FreeRTOS convention).
+    pub fn with_cpu_priorities(mut self, phys_cpu_priorities: Option<Vec<isize>>) -> Self {
+        self.phys_cpu_priorities = phys_cpu_priorities;
+        self
     }
 
     /// Returns vCpu id list and its corresponding pCpu affinity list, as well as its physical id.
@@ -598,7 +606,7 @@ mod tests {
     #[test]
     fn controller_replacements_require_machine_capabilities() {
         let mut config = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(1, None, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
             ..Default::default()
         });
         let gic = GuestGicProfile {
