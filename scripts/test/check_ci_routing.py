@@ -148,6 +148,13 @@ def main() -> int:
         errors.append(
             "stale-run cleanup must run even when duplicate pull request CI is skipped"
         )
+    for protected_ref in ("main", "dev"):
+        require_contains(
+            errors,
+            cancel_step,
+            f"github.ref != 'refs/heads/{protected_ref}'",
+            f"stale-run cleanup must preserve every {protected_ref} push run",
+        )
 
     pull_request_selector, push_selector = shell_if_else_branches(
         ci_workflow,
