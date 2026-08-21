@@ -62,7 +62,8 @@ AxVisor / <platform> <arch-or-board> · <purpose>
 ```
 
 `Workspace`、`ArceOS`、`Starry` 和 `AxVisor` 都在 `Preflight` 成功或按计划跳过
-后启动。每个名称都是一个可展开的 reusable workflow 分组，平台写在架构之前，例如：
+后启动；这个门禁不会在四个后续分组之间建立先后顺序。每个名称都是一个可展开的
+reusable workflow 分组，平台写在架构之前，例如：
 
 ```text
 Preflight / Formatting + publish dry-run
@@ -165,7 +166,9 @@ self-hosted 检查的 `cache_key` 必须为空；省略时默认就是空字符�
 `reusable-check-matrix.yml` 只包含一个 matrix job。planner 分别输出
 `workspace_matrix`、`arceos_matrix`、`starry_matrix` 和 `axvisor_matrix`，顶层同名
 caller 分别调用该执行器，从而在 Actions 左栏形成可展开分组。每个分组内部保留
-fail-fast；一个分组失败不会取消其他分组。矩阵行仍包含完全展开的 runner labels、
+fail-fast，并显式允许最多 256 个矩阵项并行；因此 Preflight 门禁通过后，同一分组内
+所有匹配 self-hosted runner 的行都会同时参与调度，一个分组失败不会取消其他分组。
+实际开始时间仍取决于匹配标签的 runner 容量。矩阵行仍包含完全展开的 runner labels、
 container image、preflight、cache、checkout depth、timeout、artifact 和命令字段。
 
 普通完整/增量运行中，sync-lint 生成 `tg-xtask-bin` artifact，使用容器的测试行可

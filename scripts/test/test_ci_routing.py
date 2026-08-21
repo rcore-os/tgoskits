@@ -13,6 +13,9 @@ from scripts.test.check_ci_routing import mapping_block, named_step_block
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
+REUSABLE_CHECK_MATRIX = (
+    WORKSPACE_ROOT / ".github/workflows/reusable-check-matrix.yml"
+)
 
 
 class ConcurrencyRoutingTests(unittest.TestCase):
@@ -30,6 +33,34 @@ class ConcurrencyRoutingTests(unittest.TestCase):
             "format('ci-{0}-{1}', github.workflow, github.run_id)", concurrency
         )
         self.assertIn("queue: max", concurrency)
+
+
+class MatrixParallelismTests(unittest.TestCase):
+    def test_self_hosted_matrix_waits_for_preflight_then_runs_in_parallel(
+        self,
+    ) -> None:
+        ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        jobs = mapping_block(ci_workflow, "jobs", 0)
+
+        for job_name in (
+            "workspace_checks",
+            "arceos_checks",
+            "starry_checks",
+            "axvisor_checks",
+        ):
+            with self.subTest(job_name=job_name):
+                job = mapping_block(jobs, job_name, 2)
+                needs = mapping_block(job, "needs", 4)
+                self.assertIn("- plan_ci", needs)
+                self.assertIn("- static_checks", needs)
+
+        reusable_workflow = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
+        strategy = mapping_block(reusable_workflow, "strategy", 4)
+        self.assertIn("max-parallel: ${{ inputs.max_parallel }}", strategy)
+        self.assertRegex(
+            reusable_workflow,
+            r"(?ms)^      max_parallel:\n.*?^        default: (?:[2-9]|[1-9][0-9]+)$",
+        )
 
 
 class DuplicateEventRoutingTests(unittest.TestCase):

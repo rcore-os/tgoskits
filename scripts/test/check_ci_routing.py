@@ -7,6 +7,9 @@ from pathlib import Path
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_MANIFEST = WORKSPACE_ROOT / "Cargo.toml"
 CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
+REUSABLE_CHECK_MATRIX = (
+    WORKSPACE_ROOT / ".github/workflows/reusable-check-matrix.yml"
+)
 LEGACY_BRANCH_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-branch-push.yml"
 
 
@@ -14,12 +17,17 @@ def main() -> int:
     errors: list[str] = []
     if not CI_WORKFLOW.is_file():
         errors.append("missing workflow: .github/workflows/ci.yml")
+    if not REUSABLE_CHECK_MATRIX.is_file():
+        errors.append(
+            "missing workflow: .github/workflows/reusable-check-matrix.yml"
+        )
     if LEGACY_BRANCH_WORKFLOW.exists():
         errors.append("branch push routing must be part of ci.yml")
     if errors:
         return report(errors)
 
     ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    reusable_check_matrix = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
     ci_triggers = mapping_block(ci_workflow, "on", 0)
     ci_push = mapping_block(ci_triggers, "push", 2)
     pull_request = mapping_block(ci_triggers, "pull_request", 2)
@@ -363,6 +371,24 @@ def main() -> int:
                 f"steps.matrix.outputs.{output_prefix}_{output_name}",
                 f"Plan CI must publish {output_prefix}_{output_name}",
             )
+
+    max_parallel_input = mapping_block(
+        reusable_check_matrix,
+        "max_parallel",
+        6,
+    )
+    for fragment, message in (
+        ("type: number", "matrix parallelism must use a numeric limit"),
+        ("default: 256", "matrix entries must not be serialized by default"),
+    ):
+        require_contains(errors, max_parallel_input, fragment, message)
+    strategy = mapping_block(reusable_check_matrix, "strategy", 4)
+    require_contains(
+        errors,
+        strategy,
+        "max-parallel: ${{ inputs.max_parallel }}",
+        "the reusable matrix must honor its parallelism limit",
+    )
 
     return report(errors)
 
