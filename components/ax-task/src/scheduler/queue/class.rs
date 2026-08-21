@@ -413,8 +413,15 @@ fn fair_wakeup_preempts(
                 let current = current_entity
                     .fair()
                     .expect("fair policy must own a fair scheduling entity");
-                (!current.is_eligible(fair_virtual_time) || current.request_exhausted())
-                    && wakee.deadline_precedes(current)
+                // Linux v7.1 `wakeup_preempt_fair()` defaults to
+                // `PREEMPT_WAKEUP_PICK`: `pick_next_entity()` decides. An
+                // eligible wakee whose virtual deadline precedes the running
+                // entity's is the EEVDF pick and preempts immediately, and an
+                // ineligible current can never be the pick, so any eligible
+                // wakee preempts it. Requiring the current request to be
+                // exhausted first degenerates wake handoffs into full-slice
+                // rotation paced only by the slice clockevent.
+                !current.is_eligible(fair_virtual_time) || wakee.deadline_precedes(current)
             }
         }
     }
@@ -425,4 +432,81 @@ fn deadline_key(entity: &SchedulingEntity) -> u64 {
         .deadline()
         .and_then(DeadlineEntity::absolute_deadline_ns)
         .expect("a runnable Deadline entity must own an absolute deadline")
+}
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+mod tests {
+    use super::*;
+    use crate::{FairEntity, Nice};
+
+    fn fair(vruntime: u64, virtual_deadline: u64) -> SchedulingEntity {
+        SchedulingEntity::Fair(FairEntity::test_state(
+            Nice::ZERO,
+            FairMode::Normal,
+            vruntime,
+            virtual_deadline,
+        ))
+    }
+
+    fn normal_fair_policy() -> SchedulePolicy {
+        SchedulePolicy::fair(Nice::ZERO, FairMode::Normal)
+    }
+
+    /// Linux v7.1 `wakeup_preempt_fair()` defaults to `PREEMPT_WAKEUP_PICK`:
+    /// `pick_next_entity()` decides, so an eligible wakee whose virtual
+    /// deadline precedes the running entity's preempts immediately. The
+    /// running entity's request must not have to be exhausted first, or wake
+    /// handoffs degenerate into full-slice rotation driven only by the slice
+    /// clockevent.
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn eligible_wakee_with_earlier_deadline_preempts_mid_request_current() {
+        let current = fair(2_000, 3_000);
+        let wakee = fair(1_000, 1_500);
+
+        assert!(wakeup_preempts(
+            normal_fair_policy(),
+            &current,
+            false,
+            normal_fair_policy(),
+            &wakee,
+            2_000,
+        ));
+    }
+
+    /// An eligible current with the earlier deadline stays the EEVDF pick;
+    /// a later-deadline wakee must not preempt it.
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn eligible_wakee_with_later_deadline_keeps_eligible_current_running() {
+        let current = fair(1_000, 1_500);
+        let wakee = fair(900, 2_500);
+
+        assert!(!wakeup_preempts(
+            normal_fair_policy(),
+            &current,
+            false,
+            normal_fair_policy(),
+            &wakee,
+            1_000,
+        ));
+    }
+
+    /// An ineligible current can never be the EEVDF pick; an eligible wakee
+    /// preempts it regardless of the deadline comparison.
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn eligible_wakee_preempts_ineligible_current_without_deadline_order() {
+        let current = fair(3_000, 3_100);
+        let wakee = fair(1_000, 3_500);
+
+        assert!(wakeup_preempts(
+            normal_fair_policy(),
+            &current,
+            false,
+            normal_fair_policy(),
+            &wakee,
+            2_000,
+        ));
+    }
 }
