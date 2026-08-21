@@ -818,7 +818,7 @@ impl TaskSystem {
             // exactly this release, so the tail must never block on it first.
             let remote = Arc::clone(cpu.remote());
             // SAFETY: propagated from this method's selected entry contract.
-            let mut transaction = unsafe { rq_entry.begin(self, &remote) };
+            let transaction = unsafe { rq_entry.begin(self, &remote) };
             previous_core.sched().placement().finish_task(owner);
             transaction.commit();
             // SAFETY: propagated from this method's selected entry contract.

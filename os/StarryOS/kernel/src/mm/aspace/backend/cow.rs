@@ -926,7 +926,7 @@ fn cow_clone_map_failure_restores_resources() -> bool {
     let Ok(child) = AddrSpace::new_empty(start, mapping_size) else {
         return false;
     };
-    let child_aspace = Arc::new(Mutex::new(child));
+    let child_aspace = Arc::new(PiMutex::new(child));
     let mut child = child_aspace.lock();
     if child
         .pt
@@ -953,8 +953,8 @@ fn cow_clone_map_failure_restores_resources() -> bool {
         child_pt,
         &child_aspace,
         CloneMapAccounting {
-            parent: Some(parent_rss),
-            child: Some(child_rss),
+            parent: Some(&*parent_rss),
+            child: Some(&*child_rss),
         },
     );
 
