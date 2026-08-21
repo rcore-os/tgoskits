@@ -102,6 +102,13 @@ fn route_to_rdif(route: irq_framework::AcpiGsiRoute) -> AcpiGsiRoute {
     }
 }
 
+/// Boot-level per-line IRQ control, routed through someboot's `SystimerArch`
+/// capability (LoongArch masks every CPU-local line through ECFG.LIE).
+fn boot_irq_set_enable(irq: someboot::irq::IrqId, enable: bool) {
+    use someboot::{SystimerArch, arch::Arch};
+    Arch::irq_set_enable(irq, enable);
+}
+
 impl PlatOp for Plat {
     type ActiveIrq = ActiveIrq;
 
@@ -109,13 +116,13 @@ impl PlatOp for Plat {
         if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
             let raw = irq.hwirq.0 as usize;
             if raw == someboot::irq::systimer_irq().raw() {
-                someboot::irq::irq_set_enable(someboot::irq::IrqId::new(raw), enable);
+                boot_irq_set_enable(someboot::irq::IrqId::new(raw), enable);
                 return Ok(());
             }
             if raw == IPI_IRQ {
                 let value = if enable { u32::MAX } else { 0 };
                 iocsr_write_w(IOCSR_IPI_ENABLE, value);
-                someboot::irq::irq_set_enable(someboot::irq::IrqId::new(raw), enable);
+                boot_irq_set_enable(someboot::irq::IrqId::new(raw), enable);
                 return Ok(());
             }
             return Err(IrqError::InvalidIrq);
@@ -178,7 +185,7 @@ impl PlatOp for Plat {
                 // dispatch path reprograms the next one-shot timer; clearing
                 // afterwards can drop a newly-arrived timer edge and strand
                 // timer-based sleeps.
-                someboot::timer::ack();
+                crate::timer::ack();
                 Some(ActiveIrq::new(cpu_local_irq(raw), Completion::None))
             }
             RawIrq::Ipi => {

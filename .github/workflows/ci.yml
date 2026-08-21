@@ -54,7 +54,8 @@ env:
 concurrency:
   group: >-
     ${{
-      github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
+      github.event_name != 'pull_request'
+      && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
       && format('ci-{0}-{1}', github.workflow, github.ref)
       || format('ci-{0}-{1}', github.workflow, github.run_id)
     }}
@@ -206,12 +207,16 @@ jobs:
 
       - name: Cancel older queued or running runs
         if: >-
-          github.event_name == 'pull_request' ||
-          (github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev')
+          (github.event_name == 'pull_request' &&
+           github.event.pull_request.head.repo.full_name == github.repository) ||
+          (github.event_name != 'pull_request' &&
+           github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev')
         env:
           GH_TOKEN: ${{ github.token }}
           CURRENT_RUN_NUMBER: ${{ github.run_number }}
           EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+          PR_HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id || '' }}
           REF_NAME: ${{ github.ref_name }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
@@ -223,7 +228,16 @@ jobs:
             selector='select(
               .run_number < (env.CURRENT_RUN_NUMBER | tonumber)
               and .event == "pull_request"
-              and any(.pull_requests[]?; .number == (env.PR_NUMBER | tonumber))
+              and (
+                any(.pull_requests[]?; .number == (env.PR_NUMBER | tonumber))
+                or (
+                  (.pull_requests | length) == 0
+                  and env.PR_HEAD_REF != ""
+                  and env.PR_HEAD_REPOSITORY_ID != ""
+                  and .head_branch == env.PR_HEAD_REF
+                  and .head_repository.id == (env.PR_HEAD_REPOSITORY_ID | tonumber)
+                )
+              )
             )'
           else
             selector='select(

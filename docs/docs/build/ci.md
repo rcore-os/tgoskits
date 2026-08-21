@@ -13,7 +13,14 @@ sidebar_label: "自动 CI 测试"
 - `scripts/test/ci_plan.py` 展开配置并生成矩阵；
 - `.github/workflows/reusable-check-matrix.yml` 执行展开后的矩阵行。
 
-容器发布由 `.github/workflows/container-publish.yml` 独立处理。同仓分支 push 是
+容器发布由 `.github/workflows/container-publish.yml` 独立处理。`main` 和 `dev`
+各自使用按 ref 隔离的 FIFO concurrency group，同一分支的每个非 PR run 都会保留并
+轮流执行，两条分支之间不会互相排队。pull request、普通分支和其他事件使用按 run ID
+隔离的 group，不进入 `main` 或 `dev` 的 workflow 队列；不同 PR 也不会在 workflow
+层面互相排队。该隔离不划分 runner 容量，所有 run 仍共享现有 self-hosted runner，
+匹配标签的 runner 繁忙时 job 会继续保持 queued。
+
+同仓分支 push 是
 对应 head commit 的首选验证；pull request 准备阶段会短暂重试尚未可见的同 SHA push
 run。匹配的 push 仍在 queued 或 in_progress 时，它已经拥有该 commit 的验证，pull
 request 将自己的后续矩阵标记为 skipped；push 已 completed 时，仍必须存在非 Plan、
@@ -22,17 +29,22 @@ request 将自己的后续矩阵标记为 skipped；push 已 completed 时，仍
 Plan-only push 或已取消的 push 都会 fail-open，由 pull request 正常规划并执行。
 
 pull request 不会取消当前 SHA 的 push，因此 GitHub 不会把正常去重显示为
-failing/cancelled checks。pull request run 仍只取消同一 PR 的旧 pull request run，
+failing/cancelled checks。pull request run 仍只取消同一 PR 的旧 pull request run；
+同仓 PR 可由主 CI 直接清理，fork PR 则由不 checkout 代码的 `CI PR Cleanup`
+`pull_request_target` workflow 使用 Actions write token 清理。该 workflow 会先重新
+读取 PR 当前 head，忽略延迟到达的旧 synchronize 事件。GitHub API 未给 fork run
+返回 PR 关联时，清理逻辑使用稳定的 head repository ID 和 head branch 精确匹配。
 即使本次矩阵复用 push 而 skipped，也会清理旧 commit 尚未完成的 pull request run；
 新 commit 的 push 同样会取消同一分支的旧 push run。`main` 和 `dev` 是例外：每个
-push commit 的 CI 都完整保留，后续提交不会取消仍在运行的旧 CI。旧 run 先收到普通
-cancel；短暂复查仍未完成时再 force-cancel，避免分组 job 的 `always()` 条件阻止清理。
+commit 的 CI 都完整保留，并在各自分支队列中轮流执行；后续提交不会取消仍在运行或
+排队的旧 CI。旧 run 先收到普通 cancel；短暂复查仍未完成时再 force-cancel，避免分组
+job 的 `always()` 条件阻止清理。
 
 ## 触发条件
 
 | 事件 | 行为 |
 |------|------|
-| push 到 `main` / `dev` | 非文档变更运行完整矩阵，并保留每个 commit 的完整 CI |
+| push 到 `main` / `dev` | 非文档变更运行完整矩阵；两条分支分别 FIFO，并保留每个 commit 的完整 CI |
 | 其他分支 push | 非文档变更运行完整矩阵，作为同仓 PR 的首选验证 |
 | 首次创建 pull request | 同 SHA push 已拥有验证时跳过，否则按三点 diff 规划 |
 | 更新或重开 pull request | 取消旧 commit 的同事件 run；同 SHA push 已拥有验证时跳过，否则按三点 diff 规划 |
@@ -52,7 +64,8 @@ AxVisor / <platform> <arch-or-board> · <purpose>
 ```
 
 `Workspace`、`ArceOS`、`Starry` 和 `AxVisor` 都在 `Preflight` 成功或按计划跳过
-后启动。每个名称都是一个可展开的 reusable workflow 分组，平台写在架构之前，例如：
+后启动；这个门禁不会在四个后续分组之间建立先后顺序。每个名称都是一个可展开的
+reusable workflow 分组，平台写在架构之前，例如：
 
 ```text
 Preflight / Formatting + publish dry-run
@@ -155,7 +168,9 @@ self-hosted 检查的 `cache_key` 必须为空；省略时默认就是空字符�
 `reusable-check-matrix.yml` 只包含一个 matrix job。planner 分别输出
 `workspace_matrix`、`arceos_matrix`、`starry_matrix` 和 `axvisor_matrix`，顶层同名
 caller 分别调用该执行器，从而在 Actions 左栏形成可展开分组。每个分组内部保留
-fail-fast；一个分组失败不会取消其他分组。矩阵行仍包含完全展开的 runner labels、
+fail-fast，并显式允许最多 256 个矩阵项并行；因此 Preflight 门禁通过后，同一分组内
+所有匹配 self-hosted runner 的行都会同时参与调度，一个分组失败不会取消其他分组。
+实际开始时间仍取决于匹配标签的 runner 容量。矩阵行仍包含完全展开的 runner labels、
 container image、preflight、cache、checkout depth、timeout、artifact 和命令字段。
 
 普通完整/增量运行中，sync-lint 生成 `tg-xtask-bin` artifact，使用容器的测试行可

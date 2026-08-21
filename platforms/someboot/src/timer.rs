@@ -61,34 +61,6 @@ pub fn aarch64_timer_mode() -> ArchTimerMode {
     unsafe { ArchTimerMode::from_raw(ARCH_TIMER_MODE) }
 }
 
-/// Enable the platform system timer so that timer IRQs can fire.
-pub fn enable() {
-    crate::arch::Arch::systimer_enable();
-}
-
-/// Disable the platform system timer to stop timer IRQs.
-pub fn irq_disable() {
-    crate::arch::Arch::systimer_irq_disable();
-}
-
-pub fn irq_enable() {
-    crate::arch::Arch::systimer_irq_enable();
-}
-
-pub fn irq_is_enabled() -> bool {
-    crate::arch::Arch::systimer_irq_is_enabled()
-}
-
-/// Configure the system timer with the desired interval.
-pub fn set_next_event(interval: Duration) {
-    let ticks = duration_to_ticks(interval);
-    crate::arch::Arch::systimer_set_interval(ticks);
-}
-
-pub fn set_next_event_in_ticks(ticks: usize) {
-    crate::arch::Arch::systimer_set_interval(ticks);
-}
-
 #[cfg(any(target_arch = "aarch64", test))]
 pub(crate) mod aarch64_deadline {
     /// Converts a relative timer interval into an absolute counter compare value.
@@ -171,12 +143,6 @@ pub(crate) mod loongarch64_interval {
         let clamped = interval_ticks.max(MIN_TICKS).min(max_aligned);
         (clamped + (ALIGNMENT - 1)) & !(ALIGNMENT - 1)
     }
-}
-
-/// Acknowledge and clear the timer interrupt.
-/// This must be called in the timer interrupt handler.
-pub fn ack() {
-    crate::arch::Arch::systimer_ack();
 }
 
 pub fn since_boot() -> Duration {

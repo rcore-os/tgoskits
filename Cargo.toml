@@ -202,6 +202,7 @@ impl-simple-traits = { version = "0.3", path = "components/crate_interface/test_
 impl-weak-partial = { version = "0.3", path = "components/crate_interface/test_crates/impl-weak-partial" }
 impl-weak-traits = { version = "0.3", path = "components/crate_interface/test_crates/impl-weak-traits" }
 arm-gic-driver = { version = "0.17", path = "drivers/intc/arm-gic-driver" }
+x86-apic-driver = { version = "0.1", path = "drivers/intc/x86-apic-driver" }
 enumerate = { version = "0.1", path = "drivers/examples/enumerate" }
 eth-intel = { version = "0.2", path = "drivers/net/eth-intel" }
 loongarch_vcpu = { version = "0.5", path = "virtualization/loongarch_vcpu" }
@@ -326,5 +327,6 @@ sg200x-jpu = { version = "0.1", path = "drivers/vpu/sg200x-jpu" }
 syscalls = { version = "0.8.1", default-features = false }
 bcm2835-sdhci = "0.1.1-preview.1"
 x86 = "0.52"
+x2apic = "0.5"
 kmod-tools = "0.3"
 kprobe = "0.6"
