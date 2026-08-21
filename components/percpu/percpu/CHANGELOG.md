@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.18](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.17...ax-percpu-v0.4.18) - 2026-08-20
+
+### Added
+
+- *(percpu)* add scheduler-owned CPU access ([#2081](https://github.com/rcore-os/tgoskits/pull/2081))
+
+### Other
+
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ### Added
 
 - Add non-escaping current-CPU-area callbacks for future CPU-owned access before

@@ -62,7 +62,7 @@ impl Submit {
                 unsafe { &mut regcmd_all.as_mut_slice_cpu()[i * amount..(i + 1) * amount] };
             task.fill_regcmd(regcmd);
         }
-        regcmd_all.prepare_for_device_all();
+        regcmd_all.prepare_for_device(0..regcmd_all.bytes_len());
 
         Self {
             base,

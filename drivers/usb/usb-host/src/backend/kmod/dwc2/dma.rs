@@ -179,18 +179,18 @@ impl DmaDescriptors {
                 descs.len() * DmaDescriptor::SIZE,
             )
         }
-        self.data.sync_for_device(
-            start * DmaDescriptor::SIZE,
-            descs.len() * DmaDescriptor::SIZE,
-        );
+        let byte_start = start * DmaDescriptor::SIZE;
+        let byte_end = byte_start + descs.len() * DmaDescriptor::SIZE;
+        self.data.prepare_for_device(byte_start..byte_end);
         mb();
     }
 
     /// 读回 `start` 起的 `count` 个 desc（先 invalidate 整段再读，硬件可能
     /// 已回写状态字）。返回的切片在下次 sync 前有效。
     pub(crate) fn read_descs(&self, start: usize, count: usize) -> &[DmaDescriptor] {
-        self.data
-            .sync_for_cpu(start * DmaDescriptor::SIZE, count * DmaDescriptor::SIZE);
+        let byte_start = start * DmaDescriptor::SIZE;
+        let byte_end = byte_start + count * DmaDescriptor::SIZE;
+        self.data.complete_for_cpu(byte_start..byte_end);
         let base = self.data.as_ptr().as_ptr() as *const DmaDescriptor;
         unsafe { core::slice::from_raw_parts(base.add(start), count) }
     }
@@ -200,16 +200,17 @@ impl DmaDescriptors {
         let ptr = (self.data.as_ptr().as_ptr() as usize + index * DmaDescriptor::SIZE) as *mut u64;
         unsafe { core::ptr::write_volatile(ptr, 0u64) }
 
+        let byte_start = index * DmaDescriptor::SIZE;
         self.data
-            .sync_for_device(index * DmaDescriptor::SIZE, DmaDescriptor::SIZE);
+            .prepare_for_device(byte_start..byte_start + DmaDescriptor::SIZE);
     }
 
     /// 清空全部 desc（A=0）并 flush 落盘
     pub(crate) fn clear_all(&self) {
-        let bytes = self.data.len();
+        let bytes = self.data.bytes_len();
         unsafe { core::ptr::write_bytes(self.data.as_ptr().as_ptr(), 0, bytes) }
 
-        self.data.sync_for_device(0, bytes);
+        self.data.prepare_for_device(0..bytes);
     }
 
     /// DMA 地址（物理地址），用于编程 DMA 控制寄存器。
@@ -310,7 +311,7 @@ impl Dwc2DmaBuffer {
             }
             // CPU 写（OUT 载荷 / IN 清零）flush 到内存后才能交给 DMA 侧：
             // IN 短包未覆盖区域在完成时 invalidate 后必须已是内存中的 0。
-            coherent.sync_for_device(0, alloc_len);
+            coherent.prepare_for_device(0..alloc_len);
             Some(coherent)
         };
 
@@ -354,7 +355,7 @@ impl Dwc2DmaBuffer {
 
         // Cache 纪律（IN，DMA → CPU）：先 invalidate 丢弃旧值、从内存拿到
         // DMA 写入的数据，再拷贝回调用方 buffer。漏掉会读到陈旧数据。
-        coherent.sync_for_cpu(0, actual);
+        coherent.complete_for_cpu(0..actual);
         let dst = unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), actual) };
         coherent.read_with_cpu(actual, |src| dst.copy_from_slice(src));
         Ok(())

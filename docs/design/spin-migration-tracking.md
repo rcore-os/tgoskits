@@ -1,8 +1,7 @@
 # `spin` 迁移历史
 
 > 本文只保留早期迁移的历史结论，不再描述当前接口或可执行步骤。当前锁架构、
-> API、边界约束和验证命令以 [`ax-sync` 锁架构设计](./design/ax-sync-lock-architecture.md)
-> 与 [`lock-lint`](./docs/build/lock_lint.md) 文档为准。
+> API 和边界约束以 [`ax-sync` 锁架构设计](./ax-sync-lock-architecture.md)为准。
 
 项目最初同时使用 crates.io `spin`、`ax-kspin`、`ax-kernel-guard`、`ax-lockdep`
 和旧 `ax-sync`。迁移曾分阶段把外部 `spin` 的 `Mutex`、`RwLock`、`Once` 和
@@ -16,8 +15,8 @@
 - lockdep 和 guard 能力已并入 `ax-sync`；
 - `ax-kspin`、`ax-kernel-guard`、`ax-lockdep` 以及第一方 crates.io `spin` 依赖已删除；
 - no-std 一次性初始化使用 `ax-lazyinit`，std 组件使用 `std::sync`；
-- 原 `spin-lint` 已由覆盖完整锁边界的 `cargo xtask lock-lint` 取代。
+- 原迁移期仓库扫描命令均已下线。
 
 历史方案中的 vendored `components/spin`、旧锁类型名和 `spin-lint` 命令均已失效，
 不应再作为新代码或验证流程的依据。传递依赖仍可由第三方 crate 引入 `spin`；
-`lock-lint` 禁止的是第一方 manifest 和源码直接使用。
+第一方 manifest 和源码不得直接使用，并在依赖与源码评审中复核。

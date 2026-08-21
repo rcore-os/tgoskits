@@ -19,7 +19,10 @@ use core::{
     sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
 };
 
-use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp};
+use dma_api::{
+    DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection, DmaDomainId,
+    DmaError, DmaMapHandle, DmaOp,
+};
 
 use super::{
     channel::{Dwc2ChannelCompletions, Dwc2PeriodicSchedule, HostChannelPool},
@@ -70,7 +73,7 @@ impl DmaOp for TestKernel {
         // SAFETY: `ptr` and `layout` describe the allocation above, and
         // `dma_addr` is a deterministic fake bus address used only by unit
         // tests that never reaches real hardware.
-        Some(unsafe { DmaAllocHandle::new(ptr, dma_addr.into(), layout) })
+        Some(unsafe { DmaAllocHandle::new(ptr, ptr, dma_addr.into(), layout) })
     }
 
     unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
@@ -105,7 +108,14 @@ impl KernelOp for TestKernel {
 pub static TEST_KERNEL: TestKernel = TestKernel;
 
 pub fn test_kernel() -> Kernel {
-    Kernel::new(u64::MAX, &TEST_KERNEL)
+    Kernel::new(
+        DmaDeviceInfo::new(
+            DmaDomainId::Direct,
+            DmaCoherency::NonCoherent,
+            DmaConstraints::new(u64::MAX),
+        ),
+        &TEST_KERNEL,
+    )
 }
 
 /// 测试寄存器窗口：4KB 零初始化，按 `Dwc2Regs` 布局映射。

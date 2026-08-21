@@ -1,4 +1,4 @@
-//! Portable write filtering for shared physical MMIO providers.
+//! Portable write filtering for physical MMIO providers shared with a guest.
 
 use std::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 

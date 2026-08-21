@@ -1,0 +1,16 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "4",
+    "-m",
+    "512M",
+]
+fail_regex = ["(?m)^rm:"]
+success_regex = [":CONSOLE_INTERLEAVE_HOST_LOG"]
+timeout = 60
+to_bin = true
+uefi = false

@@ -147,15 +147,15 @@ pub trait ArchTrait {
 
     fn dcache_range(op: DCacheOp, addr: usize, size: usize);
 
-    /// Prepare a cached virtual range before remapping it as uncached for DMA.
-    fn dma_coherent_before_make_uncached(addr: usize, size: usize) {
+    /// Prepare cached pages before creating an uncached DMA alias.
+    fn dma_coherent_before_map_uncached(addr: usize, size: usize) {
         Self::dcache_range(DCacheOp::CleanInvalidate, addr, size);
     }
 
-    /// Prepare an uncached DMA range before restoring it to cached mappings.
-    fn dma_coherent_before_restore_cached(_addr: usize, _size: usize) {}
+    /// Order accesses before removing an uncached DMA alias.
+    fn dma_coherent_before_unmap_uncached(_addr: usize, _size: usize) {}
 
-    /// Complete ordering after a DMA coherent mapping attribute update.
+    /// Complete ordering after a DMA coherent alias update.
     fn dma_coherent_after_mapping_update() {}
 
     /// EFI 入口点 - 从 EFI PE 入口跳转到内核

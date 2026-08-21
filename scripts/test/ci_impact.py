@@ -23,10 +23,10 @@ ARCEOS_KTEST_EXCLUDED_PACKAGES = {"starry-kernel", "axvisor"}
 
 FULL_PATHS = {
     Path("Cargo.toml"),
-    Path("Cargo.lock"),
     Path("rust-toolchain"),
     Path("rust-toolchain.toml"),
 }
+SOFT_GLOBAL_PATHS = {Path("Cargo.lock")}
 FULL_PREFIXES = (
     Path(".cargo"),
     Path(".github/ci"),
@@ -138,7 +138,15 @@ def analyze_pull_request(workspace_root: Path, since_ref: str) -> CiImpact:
                 ignored_markdown=tuple(sorted(ignored_markdown)),
                 ignored_apps=tuple(sorted(ignored_apps)),
             )
-        full_reason = _pre_metadata_full_reason(workspace_root, relevant)
+        soft_global_inputs, impact_paths = _partition_soft_global_inputs(relevant)
+        if not impact_paths:
+            return CiImpact.full_selection(
+                _soft_only_full_reason(soft_global_inputs),
+                changed_paths,
+                ignored_markdown=ignored_markdown,
+                ignored_apps=ignored_apps,
+            )
+        full_reason = _pre_metadata_full_reason(workspace_root, impact_paths)
         if full_reason is not None:
             return CiImpact.full_selection(
                 full_reason,
@@ -148,7 +156,7 @@ def analyze_pull_request(workspace_root: Path, since_ref: str) -> CiImpact:
             )
         metadata_by_arch = (
             {}
-            if all(_is_known_input_path(path) for path in relevant)
+            if all(_is_known_input_path(path) for path in impact_paths)
             else load_metadata_by_arch(workspace_root)
         )
         return analyze_changed_paths(workspace_root, changed_paths, metadata_by_arch)
@@ -227,8 +235,17 @@ def analyze_changed_paths(
     workspace_root = workspace_root.resolve()
     paths = sorted({_normalize_relative_path(path) for path in changed_paths})
     ignored_markdown, ignored_apps, relevant_paths = _partition_ignored(paths)
+    soft_global_inputs, impact_paths = _partition_soft_global_inputs(relevant_paths)
 
-    full_reason = _pre_metadata_full_reason(workspace_root, relevant_paths)
+    if soft_global_inputs and not impact_paths:
+        return CiImpact.full_selection(
+            _soft_only_full_reason(soft_global_inputs),
+            paths,
+            ignored_markdown=ignored_markdown,
+            ignored_apps=ignored_apps,
+        )
+
+    full_reason = _pre_metadata_full_reason(workspace_root, impact_paths)
     if full_reason is not None:
         return CiImpact.full_selection(
             full_reason,
@@ -245,7 +262,7 @@ def analyze_changed_paths(
         package_paths: list[Path] = []
         unknown_paths: list[Path] = []
 
-        for path in relevant_paths:
+        for path in impact_paths:
             if _test_suite_os(path) is not None:
                 test_suite_paths.add(path.as_posix())
                 continue
@@ -308,7 +325,7 @@ def analyze_changed_paths(
 
         return CiImpact(
             full=False,
-            reason="pull request impact resolved",
+            reason=_resolved_impact_reason(soft_global_inputs),
             changed_paths=_sorted_path_strings(paths),
             ignored_markdown=tuple(sorted(ignored_markdown)),
             ignored_apps=tuple(sorted(ignored_apps)),
@@ -320,7 +337,7 @@ def analyze_changed_paths(
             input_selections=tuple(sorted(input_selections)),
             test_suite_paths=tuple(sorted(test_suite_paths)),
             exclusive=bool(test_suite_paths)
-            and len(test_suite_paths) == len(relevant_paths),
+            and len(test_suite_paths) == len(impact_paths),
             targets=tuple(sorted(targets, key=_target_sort_key)),
         )
     except (KeyError, TypeError, ValueError) as error:
@@ -378,6 +395,34 @@ def _partition_ignored(
         else:
             relevant.append(path)
     return ignored_markdown, ignored_apps, relevant
+
+
+def _partition_soft_global_inputs(
+    changed_paths: Iterable[Path],
+) -> tuple[list[Path], list[Path]]:
+    soft_global_inputs = []
+    impact_paths = []
+    for path in changed_paths:
+        if path in SOFT_GLOBAL_PATHS:
+            soft_global_inputs.append(path)
+        else:
+            impact_paths.append(path)
+    return soft_global_inputs, impact_paths
+
+
+def _soft_only_full_reason(soft_global_inputs: Sequence[Path]) -> str:
+    rendered = ", ".join(f"`{path.as_posix()}`" for path in soft_global_inputs)
+    return f"only soft global input {rendered} changed"
+
+
+def _resolved_impact_reason(soft_global_inputs: Sequence[Path]) -> str:
+    if not soft_global_inputs:
+        return "pull request impact resolved"
+    rendered = ", ".join(f"`{path.as_posix()}`" for path in soft_global_inputs)
+    return (
+        "pull request impact resolved; "
+        f"soft global input {rendered} did not expand selection"
+    )
 
 
 def _requires_full_matrix(path: Path) -> bool:

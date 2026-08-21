@@ -482,5 +482,5 @@ runner cleanup 另设 30 秒 deadline，失败立即中止 suite。stat fixture 
 `starry-kernel` QEMU axtest 407/407，完整 x86_64 Starry QEMU 的 system 430/430 且 4/4 case
 通过；聚焦 grouped case 中 session syscalls 为 19/19、msgctl 为 21/21、shm-family 为
 99/99、Unix passcred 为 41/41。`ax-net` 的 3 个与 `starry-kernel` 的 25 个 clippy 配置、
-lock-lint、sync-lint、fmt 和 diff check 同样全部通过。非本地架构的完整 grouped QEMU 仍由
+sync-lint、fmt 和 diff check 同样全部通过。非本地架构的完整 grouped QEMU 仍由
 必需 CI gate 验证；queued、cancelled 或 fail-fast 跳过的任务不计为成功。

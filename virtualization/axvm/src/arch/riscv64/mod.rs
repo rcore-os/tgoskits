@@ -1,4 +1,4 @@
-use std::{sync::Arc, vec::Vec};
+use std::sync::Arc;
 
 use ax_memory_addr::VirtAddr;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
@@ -7,23 +7,17 @@ use riscv_vcpu::{GprIndex as RiscvGprIndex, *};
 use super::*;
 use crate::{
     AxVmResult, StopReason,
-    architecture::{
-        cpu_up::{self, CpuUpExit, CpuUpOps},
-        ops::*,
-    },
+    architecture::cpu_up::{self, CpuUpExit, CpuUpOps},
     host::*,
 };
 
 mod capabilities;
 pub(crate) mod fdt;
-mod images;
 mod ipi;
 mod irq;
 mod npt;
 mod resource_pools;
 mod vm;
-pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
-pub use images::ImageLoader;
 pub(crate) use vm::RiscvVmPlan;
 
 pub(crate) struct Riscv64Arch;
@@ -54,42 +48,16 @@ impl ArchOps for Riscv64Arch {
         riscv_vcpu::has_hardware_support()
     }
 
-    fn activate_devices(vm: &crate::AxVM) -> AxVmResult {
+    fn enter_runtime(vm: &crate::AxVM) -> AxVmResult {
         vplic_runtime(vm)?.activate()
     }
 
-    fn deactivate_devices(vm: &crate::AxVM) -> AxVmResult {
+    fn exit_runtime(vm: &crate::AxVM) -> AxVmResult {
         vplic_runtime(vm)?.deactivate()
     }
 
     fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) -> AxVmResult {
         sync_vplic_vseip(vm, vcpu)
-    }
-
-    fn vcpu_affinities(
-        cpu_num: usize,
-        phys_cpu_ids: Option<&[usize]>,
-        phys_cpu_sets: Option<&[usize]>,
-    ) -> Vec<(usize, Option<usize>, usize)> {
-        let mut vcpus = default_vcpu_affinities(cpu_num, phys_cpu_ids, phys_cpu_sets);
-        if phys_cpu_sets.is_none() {
-            for (_, mask, phys_id) in &mut vcpus {
-                *mask = Some(1 << *phys_id);
-            }
-        }
-        vcpus
-    }
-
-    fn after_external_interrupt(
-        _vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        vector: usize,
-    ) {
-        vcpu.with_current_cpu_set(|| {
-            crate::host::arceos::dispatch_host_irq(vector);
-            vcpu.get_arch_vcpu().latch_hvip_from_hw();
-        });
-        crate::check_timer_events();
     }
 
     fn inject_vcpu_interrupt(
@@ -208,13 +176,13 @@ impl ArchOps for Riscv64Arch {
     }
 
     fn finish_deferred_run_work(
-        vm: &crate::AxVMRef,
+        _vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         work: Self::DeferredRunWork,
     ) -> AxVmResult<VcpuRunAction> {
         match work {
             RiscvDeferredRunWork::ExternalInterrupt { vector } => {
-                Self::after_external_interrupt(vm, vcpu, vector);
+                finish_external_interrupt(vcpu, vector);
             }
         }
         Ok(VcpuRunAction {
@@ -224,10 +192,14 @@ impl ArchOps for Riscv64Arch {
             exits_vcpu: false,
         })
     }
+}
 
-    fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
-        Self::deactivate_devices(vm)
-    }
+fn finish_external_interrupt(vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>, vector: usize) {
+    vcpu.with_current_cpu_set(|| {
+        crate::host::arceos::dispatch_host_irq(vector);
+        vcpu.get_arch_vcpu().latch_hvip_from_hw();
+    });
+    crate::check_timer_events();
 }
 
 fn handle_riscv_mmio_read(
@@ -245,7 +217,7 @@ fn handle_riscv_mmio_write(
     vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>,
     exit: MmioWriteExit,
 ) -> AxVmResult<BoundVcpuExit<RiscvDeferredRunWork>> {
-    let result = super::handle_mmio_write::<Riscv64Arch>(vm, vcpu, exit)?;
+    let result = super::handle_mmio_write(vm, vcpu, exit)?;
     sync_vplic_vseip(vm, vcpu)?;
     Ok(result)
 }
@@ -289,17 +261,15 @@ fn handle_riscv_nested_page_fault(
                     signed_ext,
                 },
             )?,
-            RiscvVmExit::MmioWrite { addr, width, data } => {
-                super::try_handle_mmio_write::<Riscv64Arch>(
-                    vm,
-                    vcpu,
-                    MmioWriteExit {
-                        addr: riscv_guest_phys_addr_to_ax(addr),
-                        width: riscv_access_width_to_ax(width),
-                        data,
-                    },
-                )?
-            }
+            RiscvVmExit::MmioWrite { addr, width, data } => super::try_handle_mmio_write(
+                vm,
+                vcpu,
+                MmioWriteExit {
+                    addr: riscv_guest_phys_addr_to_ax(addr),
+                    width: riscv_access_width_to_ax(width),
+                    data,
+                },
+            )?,
             _ => false,
         };
         if handled {

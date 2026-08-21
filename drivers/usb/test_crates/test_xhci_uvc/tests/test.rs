@@ -252,7 +252,12 @@ mod tests {
                 let irq = node.irq_info();
 
                 return XhciInfo {
-                    usb: USBHost::new_xhci(addr, &KernelImpl).expect("Failed to create xhci host"),
+                    usb: USBHost::new_xhci(
+                        addr,
+                        crab_usb::DmaCoherency::NonCoherent,
+                        &KernelImpl,
+                    )
+                    .expect("Failed to create xhci host"),
                     irq,
                 };
             }
@@ -363,7 +368,11 @@ mod tests {
                     println!("irq: {irq:?}");
 
                     return Some(XhciInfo {
-                        usb: USBHost::new_xhci(addr, &KernelImpl)
+                        usb: USBHost::new_xhci(
+                            addr,
+                            crab_usb::DmaCoherency::NonCoherent,
+                            &KernelImpl,
+                        )
                             .expect("Failed to create xhci host"),
                         irq,
                     });

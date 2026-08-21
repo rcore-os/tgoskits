@@ -1110,7 +1110,14 @@ mod tests {
             QueueInfo {
                 id: 0,
                 device: DeviceInfo::new(16, 512),
-                limits: QueueLimits::simple(512, u64::MAX),
+                limits: QueueLimits::simple(
+                    512,
+                    dma_api::DmaDeviceInfo::new(
+                        dma_api::DmaDomainId::Direct,
+                        dma_api::DmaCoherency::NonCoherent,
+                        dma_api::DmaConstraints::new(u64::MAX),
+                    ),
+                ),
             }
         }
 

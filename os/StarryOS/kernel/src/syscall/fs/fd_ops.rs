@@ -427,7 +427,7 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<StarryResult<i32>> {
     Some(fd)
 }
 
-ktracepoint::define_event_trace!(
+ax_tracepoint::define_event_trace!(
     sys_enter_openat,
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(syscalls),

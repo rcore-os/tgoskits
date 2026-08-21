@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7](https://github.com/rcore-os/tgoskits/compare/rk3588-pci-v0.2.6...rk3588-pci-v0.2.7) - 2026-08-20
+
+### Other
+
+- updated the following local packages: mmio-api, rdif-pcie
+
 ## [0.2.6](https://github.com/rcore-os/tgoskits/compare/rk3588-pci-v0.2.5...rk3588-pci-v0.2.6) - 2026-08-09
 
 ### Other

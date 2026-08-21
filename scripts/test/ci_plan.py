@@ -17,10 +17,8 @@ import tomllib
 from ci_impact import ARCH_TARGETS, CiImpact, analyze_pull_request, render_summary
 from ci_runner_profiles import (
     GLOBAL_DEFAULT_RUNNER,
-    SUPPORTED_ENVIRONMENTS,
     RunnerProfileError,
     load_runner_profiles,
-    validate_runner_profile,
 )
 from ci_suite import (
     SUITE_FIELDS,
@@ -46,6 +44,12 @@ RUNNER_PROFILES_MANIFEST = CHECKS_ROOT.parent / "runner-profiles.toml"
 
 SUPPORTED_PHASES = {"static", "test", "starry_apps"}
 SUPPORTED_PREFLIGHTS = {"none", "qemu-user", "full"}
+TEST_GROUP_OUTPUT_PREFIXES = {
+    "Workspace": "workspace",
+    "ArceOS": "arceos",
+    "Starry": "starry",
+    "AxVisor": "axvisor",
+}
 SUPPORTED_IMPACT_TARGETS = {
     f"{os_name}:{arch}"
     for os_name in ("arceos", "starry", "axvisor")
@@ -53,9 +57,6 @@ SUPPORTED_IMPACT_TARGETS = {
 }
 SUPPORTED_IMPACT_PACKAGES = {"axloader"}
 CHECK_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-REDUNDANT_NAME_PREFIX_PATTERN = re.compile(
-    r"^(?:check|run|scheduled|tests?)\b", re.IGNORECASE
-)
 TOP_LEVEL_FIELDS = {
     "schema_version",
     "phase",
@@ -86,7 +87,6 @@ CHECK_FIELDS = {
 }
 REQUIRED_CHECK_FIELDS = {"id", "name", "command"}
 BOOLEAN_CHECK_FIELDS = {
-    "require_kvm",
     "upload_xtask_bin_artifact",
     "download_xtask_bin_artifact",
 }
@@ -125,7 +125,6 @@ def load_catalog(manifests: Iterable[Path]) -> list[dict[str, Any]]:
             check = _validate_check(
                 raw_check,
                 location,
-                group,
                 runner_profiles,
                 default_runner,
             )
@@ -150,6 +149,12 @@ def load_catalog(manifests: Iterable[Path]) -> list[dict[str, Any]]:
 def build_main_plan(context: PlanContext) -> dict[str, Any]:
     checks = load_catalog(MAIN_MANIFESTS)
     context = _resolve_input_fallbacks(checks, context)
+    return _build_main_plan(checks, context)
+
+
+def _build_main_plan(
+    checks: list[dict[str, Any]], context: PlanContext
+) -> dict[str, Any]:
     suite_only = bool(
         context.event_name == "pull_request"
         and context.impact is not None
@@ -166,11 +171,32 @@ def build_main_plan(context: PlanContext) -> dict[str, Any]:
         raise PlanError("main CI must resolve to a non-empty test matrix")
     if not suite_only and not static_rows:
         raise PlanError("main CI must resolve to a non-empty static matrix")
-    return {
+    outputs = {
         "static_matrix": {"include": static_rows},
-        "test_matrix": {"include": test_rows},
         "static_required": bool(static_rows),
     }
+    outputs.update(_build_test_group_outputs(test_rows))
+    return outputs
+
+
+def _build_test_group_outputs(
+    test_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    rows_by_group = {group: [] for group in TEST_GROUP_OUTPUT_PREFIXES}
+    for row in test_rows:
+        group = row["group"]
+        if group not in rows_by_group:
+            raise PlanError(
+                f"test row '{row['id']}' uses unsupported group '{group}'"
+            )
+        rows_by_group[group].append(row)
+
+    outputs = {}
+    for group, prefix in TEST_GROUP_OUTPUT_PREFIXES.items():
+        rows = rows_by_group[group]
+        outputs[f"{prefix}_matrix"] = {"include": rows}
+        outputs[f"{prefix}_required"] = bool(rows)
+    return outputs
 
 
 def build_starry_apps_plan(
@@ -203,10 +229,14 @@ def _load_manifest(manifest: Path) -> dict[str, Any]:
         )
     if document.get("schema_version") != 3:
         raise PlanError(f"{manifest} must declare schema_version = 3")
-    if document.get("phase") not in SUPPORTED_PHASES:
+    phase = document.get("phase")
+    if phase not in SUPPORTED_PHASES:
         raise PlanError(f"{manifest} has an unsupported phase")
-    if not isinstance(document.get("group"), str) or not document["group"].strip():
+    group = document.get("group")
+    if not isinstance(group, str) or not group.strip():
         raise PlanError(f"{manifest} must declare a non-empty group")
+    if phase == "test" and group not in TEST_GROUP_OUTPUT_PREFIXES:
+        raise PlanError(f"{manifest} has unsupported test group '{group}'")
     if not isinstance(document.get("check"), list) or not document["check"]:
         raise PlanError(f"{manifest} must contain at least one [[check]] entry")
     return document
@@ -215,7 +245,6 @@ def _load_manifest(manifest: Path) -> dict[str, Any]:
 def _validate_check(
     raw_check: Any,
     location: str,
-    group: str = "",
     runner_profiles: dict[str, dict[str, Any]] | None = None,
     default_runner: str = GLOBAL_DEFAULT_RUNNER,
 ) -> dict[str, Any]:
@@ -238,39 +267,20 @@ def _validate_check(
     check = {key: value for key, value in raw_check.items() if key != "runner"}
     check.update(profiles[runner])
     check["runner"] = runner
-    for field in ("id", "name", "environment", "command"):
+    for field in ("id", "name", "command"):
         if not isinstance(check[field], str) or not check[field].strip():
             raise PlanError(f"{location} field '{field}' must be a non-empty string")
     check["name"] = check["name"].strip()
-    _validate_display_name(check["name"], group, location)
     if CHECK_ID_PATTERN.fullmatch(check["id"]) is None:
         raise PlanError(f"{location} field 'id' must use lowercase kebab-case")
-    if check["environment"] not in SUPPORTED_ENVIRONMENTS:
-        raise PlanError(f"{location} has an unsupported environment")
-
     runs_on = check["runs_on"]
-    if (
-        not isinstance(runs_on, list)
-        or not runs_on
-        or any(not isinstance(label, str) or not label for label in runs_on)
+    required_base = check.get("required_base_branch")
+    if required_base is not None and (
+        not isinstance(required_base, str) or not required_base
     ):
-        raise PlanError(f"{location} runs_on must be a non-empty string array")
-
-    fallback_environment = check.get("fallback_environment")
-    if fallback_environment is not None:
-        if not check.get("self_hosted_owner"):
-            raise PlanError(
-                f"{location} fallback_environment requires self_hosted_owner"
-            )
-        if fallback_environment not in SUPPORTED_ENVIRONMENTS - {"host"}:
-            raise PlanError(f"{location} has an unsupported fallback_environment")
-
-    for field in ("self_hosted_owner", "required_owner", "required_base_branch"):
-        value = check.get(field)
-        if value is not None and (not isinstance(value, str) or not value):
-            raise PlanError(f"{location} field '{field}' must be a non-empty string")
-    if check.get("self_hosted_owner") and "self-hosted" not in runs_on:
-        raise PlanError(f"{location} self_hosted_owner requires a self-hosted runner")
+        raise PlanError(
+            f"{location} field 'required_base_branch' must be a non-empty string"
+        )
 
     for field in BOOLEAN_CHECK_FIELDS:
         value = check.get(field)
@@ -358,13 +368,6 @@ def _load_runner_profiles(manifest: Path) -> dict[str, dict[str, Any]]:
         raise PlanError(str(error)) from error
 
 
-def _validate_runner_profile(profile: dict[str, Any], location: str) -> None:
-    try:
-        validate_runner_profile(profile, location)
-    except RunnerProfileError as error:
-        raise PlanError(str(error)) from error
-
-
 def _validate_suite_registrations(suite: Any, location: str) -> None:
     if not isinstance(suite, list) or not suite:
         raise PlanError(f"{location} suite must be a non-empty table array")
@@ -404,30 +407,6 @@ def _validate_string_array(value: Any, field: str, location: str) -> None:
         or len(set(value)) != len(value)
     ):
         raise PlanError(f"{location} {field} must be a unique non-empty string array")
-
-
-def _validate_display_name(name: str, group: str, location: str) -> None:
-    if REDUNDANT_NAME_PREFIX_PATTERN.search(name):
-        raise PlanError(f"{location} name must not start with Test/Run/Check/Scheduled")
-    if "self-hosted" in name.casefold():
-        raise PlanError(f"{location} name must not expose the self-hosted runner")
-    if group:
-        group_pattern = re.compile(
-            rf"(?<![A-Za-z0-9]){re.escape(group)}(?![A-Za-z0-9])",
-            re.IGNORECASE,
-        )
-        if group_pattern.search(name):
-            raise PlanError(f"{location} name must not repeat group '{group}'")
-    for arch in ARCH_TARGETS:
-        for platform in ("QEMU", "VMX", "SVM", "UEFI"):
-            if re.search(
-                rf"\b{re.escape(arch)}\s+{platform}\b",
-                name,
-                flags=re.IGNORECASE,
-            ):
-                raise PlanError(
-                    f"{location} name must place platform before architecture"
-                )
 
 
 def _validate_artifact_contract(checks: list[dict[str, Any]]) -> None:
@@ -554,7 +533,7 @@ def _normalize_suite_selection(
     row.update(
         {
             "id": selection.row_id,
-            "name": f"{template['group']} / {selection.leaf_name}",
+            "name": selection.leaf_name,
             "command": selection.command,
             "template_id": selection.template_id,
             "upload_xtask_bin_artifact": False,
@@ -647,10 +626,6 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
     if preflight is None:
         preflight = "full" if container_image else "none"
 
-    name = check["name"]
-    if check["phase"] == "test":
-        name = f"{check['group']} / {name}"
-
     download_xtask = check.get("download_xtask_bin_artifact", False)
     if fallback and check["phase"] == "test":
         download_xtask = True
@@ -666,7 +641,7 @@ def _normalize_check(check: dict[str, Any], context: PlanContext) -> dict[str, A
 
     return {
         "id": check["id"],
-        "name": name,
+        "name": check["name"],
         "group": check["group"],
         "runs_on": runs_on,
         "container_image": container_image,
@@ -693,6 +668,15 @@ def _container_image(environment: str, repository: str) -> str:
     if environment == "axvisor-lvz":
         return f"ghcr.io/{repository}-container-axvisor-lvz:latest"
     raise PlanError(f"unsupported environment: {environment}")
+
+
+def _matrix_rows(outputs: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        row
+        for value in outputs.values()
+        if isinstance(value, dict) and isinstance(value.get("include"), list)
+        for row in value["include"]
+    ]
 
 
 def _parse_args() -> argparse.Namespace:
@@ -738,12 +722,10 @@ def main() -> int:
     )
     try:
         if args.mode == "main":
-            context = _resolve_input_fallbacks(
-                load_catalog(MAIN_MANIFESTS),
-                context,
-            )
+            checks = load_catalog(MAIN_MANIFESTS)
+            context = _resolve_input_fallbacks(checks, context)
             impact = context.impact
-            outputs = build_main_plan(context)
+            outputs = _build_main_plan(checks, context)
         else:
             outputs = build_starry_apps_plan(context)
     except (OSError, PlanError, tomllib.TOMLDecodeError) as error:
@@ -759,21 +741,14 @@ def main() -> int:
         if isinstance(value, dict) and isinstance(value.get("include"), list):
             print(f"{name}: {len(value['include'])} checks", file=sys.stderr)
     if impact is not None:
-        selected_ids = [
-            row["id"]
-            for value in outputs.values()
-            if isinstance(value, dict) and isinstance(value.get("include"), list)
-            for row in value["include"]
-        ]
+        rows = _matrix_rows(outputs)
+        selected_ids = [row["id"] for row in rows]
         selected_template_ids = {
-            row.get("template_id", row["id"])
-            for value in outputs.values()
-            if isinstance(value, dict) and isinstance(value.get("include"), list)
-            for row in value["include"]
+            row.get("template_id", row["id"]) for row in rows
         }
         eligible_ids = [
             check["id"]
-            for check in load_catalog(MAIN_MANIFESTS)
+            for check in checks
             if _is_enabled(check, context)
         ]
         skipped_ids = [

@@ -22,15 +22,16 @@ rm -rf "${build_dir}" "${host_test_build_dir}" "${install_dir}"
 mkdir -p "${build_dir}" "${host_test_build_dir}" "${install_dir}"
 
 # The deployed runner is cross-compiled for aarch64 and cannot be executed on
-# the build host. Run the mock-backed host CTests first so a frame-decoding
-# regression blocks this deployment entry point.
+# the build host. Run all mock-backed host CTests so both frame-decoding and
+# JPEG-loader error-path regressions block this deployment entry point.
 cmake -S "${src_dir}" -B "${host_test_build_dir}" \
   -DCMAKE_C_COMPILER="${host_cc}" \
   -DCMAKE_CXX_COMPILER="${host_cxx}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DTARGET_SOC=rk3588
 cmake --build "${host_test_build_dir}" \
-  --target uvc_capture_layout_selftest uvc_capture_mjpeg_selftest -j"$(nproc)"
+  --target image_utils_jpeg_selftest uvc_capture_layout_selftest uvc_capture_mjpeg_selftest \
+  -j"$(nproc)"
 ctest --test-dir "${host_test_build_dir}" --output-on-failure
 
 cmake -S "${src_dir}" -B "${build_dir}" \

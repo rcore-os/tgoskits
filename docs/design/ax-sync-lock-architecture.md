@@ -64,8 +64,8 @@ Axvisor special contexts --------> ax_std::os::arceos::sync
   `ax_std::os::arceos::sync`，AxVM 不直接依赖 `ax-sync`；
 - `ax-log`、`ax-display`、`ax-input` 属于 ArceOS 内部基础模块，直接使用 `ax-task` 原生锁；
 - 为解除经 `ax-task`/`ax-runtime` 产生的真实依赖环，`ax-hal`、`ax-mm`、`ax-ipi` 是
-  允许直接依赖 `ax-sync` 的底层例外。新增例外必须以 `cargo metadata` 证明依赖环，并加入
-  `lock-lint` 的显式依赖边 allowlist。
+  允许直接依赖 `ax-sync` 的底层例外。新增例外必须以 `cargo metadata` 证明依赖环，并在
+  设计材料中记录理由与复核范围。
 
 ## 3. 公共锁语义
 
@@ -176,9 +176,9 @@ lockdep 只用于验证递归、锁序和 panic 回滚，不成为生产事实�
   facade 表达；
 - unlock 前以 Release 发布无 owner 状态，wake/notify 不得在持有宽锁时执行。
 
-`cargo xtask lock-lint` 对上述边界做机器检查：禁止旧锁 crate 和第一方 crates.io
-`spin`，禁止已移除的 `ax-sync/{smp,lockdep}` feature，禁止 OS 层、Starry、Axvisor、
-AxVM 和 `ax-task` 绕过 facade，检查生产 provider 的唯一位置，并限制 host 后端的 cfg。
+迁移完成后不再使用专用的全仓扫描器自动判断这些边界。新增依赖、源码导入、provider
+实现或 host 后端配置时，必须按本节约束进行架构评审，并由现有构建与运行矩阵验证实际
+组合。
 
 ## 8. Prior art 与方案比较
 
@@ -212,7 +212,7 @@ held-lock graph 说明多种锁算法应共享诊断状态。
 - mutex 单/多 waiter、unlock/登记边界、逐个唤醒、try 不分配不睡眠、owner、drop 和
   force-unlock wrapper；
 - 所有 guard 的 `!Send` 编译失败测试；
-- `lock-lint`、`sync-lint`、目标 crate clippy、rustdoc、ArceOS/Starry QEMU 和 Axvisor
+- `sync-lint`、目标 crate clippy、rustdoc、ArceOS/Starry QEMU 和 Axvisor
   多架构构建/smoke；
 - 最终生产依赖图只有一个 provider，`host-test` 不进入裸机目标。
 

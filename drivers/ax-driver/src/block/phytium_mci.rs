@@ -65,7 +65,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         );
         return Ok(());
     }
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        crate::binding_resolver::dma_coherency_from_fdt(info),
+        dma_api::DmaConstraints::new(u32::MAX as u64),
+    ));
     let block_config = phytium_block_config(&dma);
     host.configure_dma(dma).map_err(|err| {
         OnProbeError::other(format!("phytium-mci IDMAC configuration failed: {err:?}"))
@@ -106,15 +110,22 @@ mod tests {
 
     #[test]
     fn phytium_block_limits_match_persistent_idmac_ring() {
-        let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+        let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
+            dma_api::DmaCoherency::NonCoherent,
+            dma_api::DmaConstraints::new(u32::MAX as u64),
+        ));
         let config = phytium_block_config(&dma);
 
         assert_eq!(config.name(), "phytium-mci");
-        assert_eq!(config.limits.dma_mask, u32::MAX as u64);
+        assert_eq!(config.limits.dma.constraints().addr_mask, u32::MAX as u64);
         assert_eq!(config.limits.max_inflight, 1);
         assert_eq!(config.limits.max_submit_batch, 1);
         assert_eq!(config.limits.max_blocks_per_request, IDMAC_MAX_BLOCKS);
-        assert_eq!(config.limits.max_segment_size, IDMAC_MAX_TRANSFER_SIZE);
+        assert_eq!(
+            config.limits.dma.constraints().max_segment_size,
+            Some(IDMAC_MAX_TRANSFER_SIZE)
+        );
     }
 
     #[test]

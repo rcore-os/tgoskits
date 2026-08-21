@@ -13,7 +13,8 @@ use core::{
 };
 
 use dma_api::{
-    DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
+    DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
+    DmaDomainId, DmaError, DmaMapHandle, DmaOp,
 };
 
 #[derive(Default)]
@@ -77,7 +78,7 @@ impl TrackingDmaOp {
         let ptr = unsafe { alloc_zeroed(layout) };
         let cpu_addr = NonNull::new(ptr)?;
         let dma_addr = self.alloc_dma_addr(layout, constraints);
-        Some(unsafe { DmaAllocHandle::new(cpu_addr, (dma_addr as u64).into(), layout) })
+        Some(unsafe { DmaAllocHandle::new(cpu_addr, cpu_addr, (dma_addr as u64).into(), layout) })
     }
 }
 
@@ -168,6 +169,7 @@ impl DmaOp for TrackingDmaOp {
         offset: usize,
         size: usize,
         _direction: DmaDirection,
+        _coherency: DmaCoherency,
     ) {
         self.sync_map_for_device.fetch_add(1, Ordering::SeqCst);
         if let Some(bounce) = handle.bounce_ptr() {
@@ -186,6 +188,7 @@ impl DmaOp for TrackingDmaOp {
         offset: usize,
         size: usize,
         _direction: DmaDirection,
+        _coherency: DmaCoherency,
     ) {
         self.sync_map_for_cpu.fetch_add(1, Ordering::SeqCst);
         if let Some(bounce) = handle.bounce_ptr() {
@@ -200,9 +203,94 @@ impl DmaOp for TrackingDmaOp {
     }
 }
 
+struct DefaultSyncDmaOp {
+    inner: TrackingDmaOp,
+    cache_ops: AtomicUsize,
+}
+
+impl DefaultSyncDmaOp {
+    fn new() -> Self {
+        Self {
+            inner: TrackingDmaOp::new(),
+            cache_ops: AtomicUsize::new(0),
+        }
+    }
+
+    fn cache_ops(&self) -> usize {
+        self.cache_ops.load(Ordering::SeqCst)
+    }
+}
+
+impl DmaOp for DefaultSyncDmaOp {
+    fn page_size(&self) -> usize {
+        self.inner.page_size()
+    }
+
+    unsafe fn alloc_contiguous(
+        &self,
+        constraints: DmaConstraints,
+        layout: Layout,
+    ) -> Option<DmaAllocHandle> {
+        unsafe { self.inner.alloc_contiguous(constraints, layout) }
+    }
+
+    unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+        unsafe { self.inner.dealloc_contiguous(handle) }
+    }
+
+    unsafe fn alloc_coherent(
+        &self,
+        constraints: DmaConstraints,
+        layout: Layout,
+    ) -> Option<DmaAllocHandle> {
+        unsafe { self.inner.alloc_coherent(constraints, layout) }
+    }
+
+    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
+        unsafe { self.inner.dealloc_coherent(handle) }
+    }
+
+    unsafe fn map_streaming(
+        &self,
+        constraints: DmaConstraints,
+        addr: NonNull<u8>,
+        size: NonZeroUsize,
+        direction: DmaDirection,
+    ) -> Result<DmaMapHandle, DmaError> {
+        unsafe { self.inner.map_streaming(constraints, addr, size, direction) }
+    }
+
+    unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
+        unsafe { self.inner.unmap_streaming(handle) }
+    }
+
+    fn flush(&self, _addr: NonNull<u8>, _size: usize) {
+        self.cache_ops.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn invalidate(&self, _addr: NonNull<u8>, _size: usize) {
+        self.cache_ops.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn flush_invalidate(&self, _addr: NonNull<u8>, _size: usize) {
+        self.cache_ops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 fn tracking_device() -> (DeviceDma, &'static TrackingDmaOp) {
     let op = Box::leak(Box::new(TrackingDmaOp::new()));
-    (DeviceDma::new_legacy(u64::MAX, op), op)
+    (device(u64::MAX, DmaCoherency::NonCoherent, op), op)
+}
+
+fn device(dma_mask: u64, coherency: DmaCoherency, op: &'static dyn DmaOp) -> DeviceDma {
+    DeviceDma::new(
+        DmaDeviceInfo::new(
+            DmaDomainId::Direct,
+            coherency,
+            DmaConstraints::new(dma_mask),
+        ),
+        op,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -216,8 +304,15 @@ struct Descriptor {
 #[test]
 fn dma_api_device_metadata_constraints_and_nop_cache_ops_are_callable() {
     let (dev, op) = tracking_device();
-    let domain = dma_api::DmaDomainId::from_raw(0x42);
-    let scoped = DeviceDma::new(domain, u32::MAX as u64, op);
+    let domain = DmaDomainId::Translated(core::num::NonZeroU64::new(0x42).unwrap());
+    let scoped = DeviceDma::new(
+        DmaDeviceInfo::new(
+            domain,
+            DmaCoherency::NonCoherent,
+            DmaConstraints::new(u32::MAX as u64),
+        ),
+        op,
+    );
     let constrained = scoped.with_constraints(
         DmaConstraints::new(0xffff)
             .with_align(64)
@@ -225,15 +320,32 @@ fn dma_api_device_metadata_constraints_and_nop_cache_ops_are_callable() {
     );
 
     assert_eq!(dev.page_size(), 0x1000);
-    assert_eq!(scoped.domain_id(), domain);
-    assert_eq!(constrained.dma_mask(), 0xffff);
-    assert_eq!(constrained.constraints().align, 64);
+    assert_eq!(scoped.info().domain(), domain);
+    assert_eq!(constrained.info().constraints().addr_mask, 0xffff);
+    assert_eq!(constrained.info().constraints().align, 64);
+}
 
-    let mut byte = 0u8;
-    let ptr = NonNull::from(&mut byte);
-    dev.flush(ptr, 1);
-    dev.invalidate(ptr, 1);
-    dev.flush_invalidate(ptr, 1);
+#[test]
+fn dma_api_coherent_bounce_copies_without_cache_maintenance() {
+    let op = Box::leak(Box::new(DefaultSyncDmaOp::new()));
+    op.inner.force_next_dma_addr(0x80);
+    let dev = device(0xff, DmaCoherency::Coherent, op);
+    let mut backing = [0x11_u8; 16];
+    let map = dev
+        .map_streaming_slice(&mut backing, 16, DmaDirection::Bidirectional)
+        .unwrap();
+    let bounce = map
+        .bounce_ptr()
+        .expect("low DMA mask must use a bounce buffer");
+
+    map.prepare_for_device(0..map.bytes_len());
+    let device_view = unsafe { core::slice::from_raw_parts_mut(bounce.as_ptr(), backing.len()) };
+    assert_eq!(device_view, &[0x11; 16]);
+    device_view.fill(0x5a);
+    map.complete_for_cpu(0..map.bytes_len());
+
+    assert_eq!(backing, [0x5a; 16]);
+    assert_eq!(op.cache_ops(), 0);
 }
 
 #[test]
@@ -269,14 +381,14 @@ fn dma_api_coherent_and_contiguous_arrays_cover_cpu_and_sync_accessors() {
     contiguous.copy_to_device_from_slice(&[1, 2, 3, 4]);
     assert_eq!(contiguous.read_cpu(2), Some(3));
     assert_eq!(contiguous.direction(), DmaDirection::ToDevice);
-    assert_eq!(contiguous.domain_id(), dev.domain_id());
+    assert_eq!(contiguous.domain_id(), dev.info().domain());
     assert_eq!(op.sync_alloc_for_device.load(Ordering::SeqCst), 1);
 
     let mut out = [0u8; 4];
     contiguous.copy_from_device_to_slice(&mut out);
     assert_eq!(out, [1, 2, 3, 4]);
-    contiguous.prepare_for_device_all();
-    contiguous.complete_for_cpu_all();
+    contiguous.prepare_for_device(0..contiguous.bytes_len());
+    contiguous.complete_for_cpu(0..contiguous.bytes_len());
     assert!(op.sync_alloc_for_device.load(Ordering::SeqCst) >= 2);
     assert!(op.sync_alloc_for_cpu.load(Ordering::SeqCst) >= 2);
 }

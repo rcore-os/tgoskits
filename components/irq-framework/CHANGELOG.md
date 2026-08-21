@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/irq-framework-v0.3.2...irq-framework-v0.4.0) - 2026-08-20
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+
 ## [0.3.2](https://github.com/rcore-os/tgoskits/compare/irq-framework-v0.3.1...irq-framework-v0.3.2) - 2026-08-09
 
 ### Other

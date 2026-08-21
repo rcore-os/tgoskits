@@ -21,6 +21,7 @@ enum CgroupFileKind {
     SubtreeControl,
     PidsMax,
     PidsCurrent,
+    PidsPeak,
     PidsEvents,
 }
 
@@ -32,6 +33,7 @@ impl CgroupFileKind {
             "cgroup.subtree_control" => Some(Self::SubtreeControl),
             "pids.max" => Some(Self::PidsMax),
             "pids.current" => Some(Self::PidsCurrent),
+            "pids.peak" => Some(Self::PidsPeak),
             "pids.events" => Some(Self::PidsEvents),
             _ => None,
         }
@@ -44,30 +46,34 @@ impl CgroupFileKind {
             Self::SubtreeControl => "cgroup.subtree_control",
             Self::PidsMax => "pids.max",
             Self::PidsCurrent => "pids.current",
+            Self::PidsPeak => "pids.peak",
             Self::PidsEvents => "pids.events",
         }
     }
 
     fn permission(self) -> NodePermission {
         let mode = match self {
-            Self::Controllers | Self::PidsCurrent | Self::PidsEvents => 0o444,
+            Self::Controllers | Self::PidsCurrent | Self::PidsPeak | Self::PidsEvents => 0o444,
             Self::Procs | Self::SubtreeControl | Self::PidsMax => 0o644,
         };
         NodePermission::from_bits_truncate(mode)
     }
 
     fn is_available(self, cgroup: &CgroupNode) -> bool {
-        !matches!(self, Self::PidsMax | Self::PidsCurrent | Self::PidsEvents)
-            || cgroup.has_pids_interface()
+        !matches!(
+            self,
+            Self::PidsMax | Self::PidsCurrent | Self::PidsPeak | Self::PidsEvents
+        ) || cgroup.has_pids_interface()
     }
 }
 
-const CGROUP_FILES: [CgroupFileKind; 6] = [
+const CGROUP_FILES: [CgroupFileKind; 7] = [
     CgroupFileKind::Controllers,
     CgroupFileKind::Procs,
     CgroupFileKind::SubtreeControl,
     CgroupFileKind::PidsMax,
     CgroupFileKind::PidsCurrent,
+    CgroupFileKind::PidsPeak,
     CgroupFileKind::PidsEvents,
 ];
 
@@ -90,6 +96,7 @@ impl CgroupFile {
             CgroupFileKind::PidsCurrent => {
                 crate::cgroup::pids_current_text(&self.cgroup)?.into_bytes()
             }
+            CgroupFileKind::PidsPeak => crate::cgroup::pids_peak_text(&self.cgroup)?.into_bytes(),
             CgroupFileKind::PidsEvents => {
                 crate::cgroup::pids_events_text(&self.cgroup)?.into_bytes()
             }
@@ -121,7 +128,7 @@ impl DirectRwFsFileOps for CgroupFile {
                 crate::cgroup::write_subtree_control(&self.cgroup, buf)?
             }
             CgroupFileKind::PidsMax => crate::cgroup::write_pids_max(&self.cgroup, buf)?,
-            CgroupFileKind::PidsCurrent | CgroupFileKind::PidsEvents => {
+            CgroupFileKind::PidsCurrent | CgroupFileKind::PidsPeak | CgroupFileKind::PidsEvents => {
                 return Err(VfsError::OperationNotPermitted);
             }
         }

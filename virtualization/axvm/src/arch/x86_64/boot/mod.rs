@@ -10,7 +10,7 @@ use super::X86_64Arch;
 #[cfg(not(any(feature = "fs", feature = "host-fs")))]
 use crate::ax_err;
 use crate::{
-    architecture::*,
+    architecture::{capabilities::adjustable_guest_boot_policy, *},
     boot::{acpi::*, images::*, *},
     *,
 };
@@ -21,29 +21,6 @@ mod linux;
 mod linux_boot;
 mod mptable;
 mod multiboot;
-
-pub struct ImageLoader<'a>(ImageLoaderCore<'a>);
-
-impl<'a> ImageLoader<'a> {
-    pub fn new(
-        main_memory: crate::VMMemoryRegion,
-        config: axvmconfig::GuestConfig,
-        vm: crate::AxVMRef,
-        provider: &'a dyn BootImageProvider,
-    ) -> Self {
-        Self(ImageLoaderCore::new(
-            main_memory,
-            config,
-            vm,
-            provider,
-            None,
-        ))
-    }
-
-    pub fn load(&mut self) -> AxVmResult {
-        self.0.load()
-    }
-}
 
 impl BootImagePlatform for X86_64Arch {
     fn default_boot_firmware_load_gpa(config: &axvmconfig::GuestConfig) -> Option<GuestPhysAddr> {
@@ -113,14 +90,14 @@ impl BootImagePlatform for X86_64Arch {
         Ok(())
     }
 
-    fn is_x86_linux_image_config(
+    fn guest_boot_policy(
         config: &axvmconfig::GuestConfig,
         provider: &dyn BootImageProvider,
-    ) -> bool {
+    ) -> crate::config::GuestBootPolicy {
         if !should_direct_boot_linux(config) {
-            return false;
+            return adjustable_guest_boot_policy(config);
         }
-        match config.kernel.image_location.as_deref() {
+        let is_linux_image = match config.kernel.image_location.as_deref() {
             Some("memory") => provider
                 .static_vm_images()
                 .iter()
@@ -135,6 +112,11 @@ impl BootImagePlatform for X86_64Arch {
                     .is_some()
             }
             _ => false,
+        };
+        if is_linux_image {
+            crate::config::GuestBootPolicy::KeepConfigured
+        } else {
+            adjustable_guest_boot_policy(config)
         }
     }
 }
@@ -661,7 +643,46 @@ fn write_u64(buffer: &mut [u8], offset: usize, value: u64) {
 
 #[cfg(test)]
 mod tests {
+    use std::boxed::Box;
+
     use super::*;
+
+    struct MemoryImageProvider {
+        images: &'static [StaticVmImage],
+    }
+
+    impl BootImageProvider for MemoryImageProvider {
+        fn static_vm_images(&self) -> &'static [StaticVmImage] {
+            self.images
+        }
+
+        #[cfg(any(feature = "fs", feature = "host-fs"))]
+        fn read_file(&self, _file_name: &str) -> AxVmResult<Vec<u8>> {
+            ax_err!(NotFound, "the policy test provider has no filesystem")
+        }
+    }
+
+    fn memory_provider_with_kernel(kernel: Vec<u8>) -> MemoryImageProvider {
+        let kernel = Box::leak(kernel.into_boxed_slice());
+        let images = Box::leak(
+            vec![StaticVmImage {
+                id: 0,
+                kernel,
+                bios: None,
+                ramdisk: None,
+                dtb: None,
+            }]
+            .into_boxed_slice(),
+        );
+        MemoryImageProvider { images }
+    }
+
+    fn linux_header_image() -> Vec<u8> {
+        let mut image = vec![0u8; linux::HEADER_READ_SIZE];
+        image[0x1fe..0x200].copy_from_slice(&0xaa55u16.to_le_bytes());
+        image[0x202..0x206].copy_from_slice(b"HdrS");
+        image
+    }
 
     #[test]
     fn built_in_bios_uses_default_gpa_when_unspecified() {
@@ -714,5 +735,24 @@ mod tests {
 
         config.kernel.enable_bios = false;
         assert!(should_direct_boot_linux(&config));
+    }
+
+    #[test]
+    fn typed_boot_policy_distinguishes_direct_kernel_images() {
+        let mut config = axvmconfig::GuestConfig::default();
+        config.kernel.image_location = Some("memory".into());
+        let linux_provider = memory_provider_with_kernel(linux_header_image());
+
+        assert_eq!(
+            X86_64Arch::guest_boot_policy(&config, &linux_provider),
+            crate::config::GuestBootPolicy::KeepConfigured
+        );
+        let other_provider = memory_provider_with_kernel(vec![0u8; linux::HEADER_READ_SIZE]);
+        assert_eq!(
+            X86_64Arch::guest_boot_policy(&config, &other_provider),
+            crate::config::GuestBootPolicy::AdjustKernelForBootProtocol {
+                protocol: VMBootProtocol::Direct,
+            }
+        );
     }
 }

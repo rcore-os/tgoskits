@@ -93,6 +93,22 @@ VSSIP 以 level-triggered `VirtualInterruptId(1)` 发布。当前 vCPU 和远端
 HVIP 的保存副本由 `riscv_vcpu` 独占；只有当前绑定到硬件的 vCPU 才同步写 CSR。这样迁移、
 解绑和重新绑定仍以保存状态为事实源，不要求 AxVM 路由层持有 vCPU 内部锁。
 
+## vCPU CSR 执行所有权
+
+`RiscvVcpu::setup()` 只构造 guest-owned reset state，不得读取或写入当前 pCPU 的 live
+`sstatus`/`hstatus`。host 与 guest 的状态只由 `_run_guest` 汇编入口/出口边界对称交换；
+否则 setup 对 host CSR 的修改会在 guest 退出时被保存为 host context，回到 Axvisor 任务后
+仍以 guest 状态执行。
+
+guest target 公开 F/D 扩展，因此 HS-level `sstatus.FS` 的 reset 值为 `Initial`；guest 的
+架构 FS 状态仍由 `vsstatus` 拥有。该值来自 guest ISA 契约，而不是当前 host CSR。回归测试
+必须直接调用真实 `RiscvVcpu::setup()`，并能在 RISC-V qemu-user 中运行，以约束 setup 不再
+执行特权 CSR 访问。
+
+调试时需要区分两个信号：guest WFI 返回后立即出现 host `InstructionFault`，通常说明
+host/guest status 交换边界被污染；guest 内稍后出现浮点 illegal instruction，则需要检查
+guest ISA 与 reset FS 状态是否一致。两类问题都不能通过复制当前 host CSR 位来规避。
+
 ## 验证与回滚
 
 回归只保留 `linux-smp3-ipi.toml`，删除不再提供额外覆盖的 RISC-V QEMU 单核配置。三核
@@ -103,10 +119,18 @@ HVIP 的保存副本由 `riscv_vcpu` 独占；只有当前绑定到硬件的 vCP
 最低层行为回归直接编译 RISC-V 生产模块，并通过 RISC-V musl test binary 在
 qemu-user 中执行。跨架构 crate test 的 musl target、静态链接、linker 和 qemu-user
 runner 统一由 axbuild 的 `cross-test` 命令解析，不把工具链策略展开到 CI workflow。
+vCPU setup CSR 所有权回归使用不带 `ipi` 名称过滤的专用命令：
+
+```bash
+cargo xtask cross-test --arch riscv64 \
+  --package riscv_vcpu --lib \
+  setup_constructs_guest_status_without_accessing_host_csrs
+```
+
 `riscv_vcpu` 用例验证 legacy 与 SBI v0.2 completion 对 A0/A1 的不同写回；AxVM
 RISC-V router 用例验证广播、零 mask、目标顺序、hart ID 溢出、未映射 hart、重复
 vCPU 映射，以及运行时投递失败。参数错误用例同时断言完整目标集合校验完成前没有发布
-任何中断；运行时失败用例断言已经发布的前缀不会被伪装成可回滚。对应命令为：
+任何中断；运行时失败用例断言已经发布的前缀不会被伪装成可回滚。SBI IPI 路径对应命令为：
 
 ```bash
 cargo xtask cross-test --arch riscv64 \

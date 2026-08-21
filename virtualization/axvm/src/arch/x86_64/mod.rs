@@ -14,7 +14,10 @@ use std::{
     time::Duration,
 };
 
-use ax_std::os::arceos::sync::{IrqSafeMutex, IrqSafeMutexGuard};
+use ax_std::os::arceos::{
+    guard::IrqSaveGuard,
+    sync::{IrqSafeMutex, IrqSafeMutexGuard},
+};
 use axdevice::*;
 use axdevice_base::*;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
@@ -31,7 +34,6 @@ pub(crate) mod boot;
 mod capabilities;
 mod cmos;
 mod exit;
-pub(crate) mod fdt;
 mod host_irq;
 pub(crate) mod irq;
 mod nested_paging;
@@ -39,12 +41,11 @@ mod pci_config;
 mod pic;
 pub(crate) mod port;
 mod resource_pools;
-#[path = "../../architecture/sysreg.rs"]
-mod sysreg;
 mod vm;
 use exit::*;
-use sysreg::{SysRegReadExit, SysRegWriteExit};
 pub(crate) use vm::X86VmPlan;
+
+use crate::architecture::sysreg::{self, SysRegReadExit, SysRegWriteExit};
 
 const RFLAGS_INTERRUPT_FLAG: u64 = 1 << 9;
 
@@ -72,16 +73,8 @@ impl ArchOps for X86_64Arch {
         Ok(())
     }
 
-    fn after_external_interrupt(
-        _vm: &crate::AxVMRef,
-        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        vector: usize,
-    ) {
-        crate::host::arceos::dispatch_host_irq(vector);
-        crate::check_timer_events();
-    }
-
     fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
+        Self::exit_runtime(vm)?;
         irq::disable_ioapic_irq_forwarding_for_vm(vm);
         irq::stop_deferred_irq_delivery(vm);
         Ok(())
@@ -128,17 +121,20 @@ impl ArchOps for X86_64Arch {
                 let ax_addr = x86_guest_phys_addr_to_ax(addr);
                 let ax_width = x86_access_width_to_ax(width);
                 if let Some(byte_reg) = byte_reg {
-                    let raw = super::read_mmio_value(vm, vcpu, ax_addr, ax_width)?;
+                    let raw =
+                        crate::architecture::exit::read_mmio_value(vm, vcpu, ax_addr, ax_width)?;
                     let value = (raw & crate::vm::width_mask(ax_width)) as u8;
                     vcpu.get_arch_vcpu().set_gpr_byte(byte_reg, value);
                     Ok(BoundVcpuExit::Continue)
                 } else if reg == 4 {
-                    let raw = super::read_mmio_value(vm, vcpu, ax_addr, ax_width)?;
+                    let raw =
+                        crate::architecture::exit::read_mmio_value(vm, vcpu, ax_addr, ax_width)?;
                     let value = raw & crate::vm::width_mask(ax_width);
                     vcpu.get_arch_vcpu().set_gpr_rsp(width, value as u64);
                     Ok(BoundVcpuExit::Continue)
                 } else if ax_width == AccessWidth::Word {
-                    let raw = super::read_mmio_value(vm, vcpu, ax_addr, ax_width)?;
+                    let raw =
+                        crate::architecture::exit::read_mmio_value(vm, vcpu, ax_addr, ax_width)?;
                     let value = (raw & crate::vm::width_mask(ax_width)) as u16;
                     vcpu.get_arch_vcpu().set_gpr_word(reg, value);
                     Ok(BoundVcpuExit::Continue)
@@ -156,7 +152,7 @@ impl ArchOps for X86_64Arch {
                     )
                 }
             }
-            X86VmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
+            X86VmExit::MmioWrite { addr, width, data } => super::handle_mmio_write(
                 vm,
                 vcpu,
                 MmioWriteExit {
@@ -450,6 +446,7 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
     }
 
     fn run(&mut self) -> BackendResult<Self::Exit> {
+        let _entry_irq_guard = IrqSaveGuard::new();
         x86_result(self.0.run())
     }
 

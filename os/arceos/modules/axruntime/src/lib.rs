@@ -55,14 +55,20 @@ mod kernel_mapping;
 mod klib;
 #[cfg(feature = "multitask")]
 mod preempt;
+#[cfg(all(feature = "irq", feature = "multitask"))]
+mod raw_console;
 
+#[cfg(all(feature = "irq", feature = "multitask"))]
+pub mod console;
 mod devices;
+#[cfg(all(feature = "irq", feature = "multitask"))]
+pub mod emergency_console;
 mod error;
 mod fs;
 #[cfg(feature = "irq")]
 pub mod irq;
 mod registers;
-#[cfg(feature = "serial")]
+#[cfg(all(feature = "irq", feature = "multitask"))]
 pub mod serial;
 pub mod sync;
 
@@ -74,6 +80,18 @@ mod wifi_glue;
 
 pub use ax_hal as hal;
 pub use error::{RuntimeError, RuntimeResult};
+
+/// Drains task-console output before shutting down the whole system.
+///
+/// Fatal paths must bypass this task-context transaction and use the
+/// emergency console plus [`ax_hal::power::system_off`] directly.
+pub fn terminate() -> ! {
+    #[cfg(all(feature = "irq", feature = "multitask"))]
+    if let Ok(output) = console::output() {
+        let _ = output.drain();
+    }
+    ax_hal::power::system_off()
+}
 
 pub(crate) mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
@@ -138,10 +156,14 @@ impl ax_log::LogIf for LogIfImpl {
         meta: ax_log::RecordMeta,
         args: core::fmt::Arguments<'_>,
     ) -> ax_log::PublishStatus {
-        #[cfg(not(feature = "serial"))]
+        #[cfg(not(all(feature = "irq", feature = "multitask")))]
         let _ = meta;
-        #[cfg(feature = "serial")]
+        #[cfg(all(feature = "irq", feature = "multitask"))]
         if let Some(status) = serial::try_publish_record(meta, args) {
+            return status;
+        }
+        #[cfg(all(feature = "irq", feature = "multitask"))]
+        if let Some(status) = console::try_publish_without_runtime(args) {
             return status;
         }
         let mut writer = PlatformConsoleWriter::default();
@@ -153,13 +175,16 @@ impl ax_log::LogIf for LogIfImpl {
     }
 
     fn emergency_write(args: core::fmt::Arguments<'_>) -> usize {
-        #[cfg(feature = "serial")]
-        if let Some(written) = serial::emergency_write(args) {
-            return written;
+        #[cfg(all(feature = "irq", feature = "multitask"))]
+        {
+            return emergency_console::write_fmt(args);
         }
-        let mut writer = PlatformConsoleWriter::default();
-        let _ = core::fmt::write(&mut writer, args);
-        writer.written
+        #[cfg(not(all(feature = "irq", feature = "multitask")))]
+        {
+            let mut writer = PlatformConsoleWriter::default();
+            let _ = core::fmt::write(&mut writer, args);
+            writer.written
+        }
     }
 }
 
@@ -321,8 +346,22 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     devices::probe_all_devices();
 
-    #[cfg(feature = "serial")]
+    #[cfg(all(feature = "irq", feature = "multitask"))]
     serial::init(cpu_id);
+
+    #[cfg(all(feature = "irq", feature = "multitask"))]
+    match console::activate_before_smp() {
+        console::ConsoleActivation::Active {
+            runtime_index,
+            tty_number,
+        } => info!("runtime console active: serial{runtime_index}, ttyS{tty_number}"),
+        console::ConsoleActivation::RawHal(reason) => {
+            info!("no runtime console selected; keeping the HAL console: {reason:?}")
+        }
+        console::ConsoleActivation::FailedClosed(reason) => {
+            warn!("runtime console unavailable; early console failed closed: {reason:?}")
+        }
+    }
 
     #[cfg(feature = "rtc")]
     ax_println!(
@@ -369,14 +408,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     fs::online_smp();
 
     ax_app_entry();
-
-    #[cfg(feature = "multitask")]
-    ax_task::exit(0);
-    #[cfg(not(feature = "multitask"))]
-    {
-        debug!("main task exited: exit_code={}", 0);
-        ax_hal::power::system_off();
-    }
+    terminate();
 }
 
 fn init_allocator() {
@@ -523,6 +555,28 @@ fn advance_periodic_timer(now_ns: u64) -> bool {
 }
 
 #[cfg(feature = "irq")]
+fn select_timer_deadline(
+    periodic_deadline_nanos: u64,
+    task_deadline_nanos: Option<u64>,
+    now_nanos: u64,
+    periodic_interval_nanos: u64,
+) -> (u64, u64) {
+    debug_assert_ne!(periodic_interval_nanos, 0);
+    let periodic_deadline_nanos = if periodic_deadline_nanos <= now_nanos {
+        let elapsed_intervals = (now_nanos - periodic_deadline_nanos) / periodic_interval_nanos;
+        periodic_deadline_nanos.saturating_add(
+            periodic_interval_nanos.saturating_mul(elapsed_intervals.saturating_add(1)),
+        )
+    } else {
+        periodic_deadline_nanos
+    };
+    let selected_deadline_nanos = task_deadline_nanos
+        .map(|task_deadline| core::cmp::min(periodic_deadline_nanos, task_deadline))
+        .unwrap_or(periodic_deadline_nanos);
+    (periodic_deadline_nanos, selected_deadline_nanos)
+}
+
+#[cfg(feature = "irq")]
 fn program_next_timer() {
     let mut deadline = with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.read_current(pin));
     if deadline == 0 {
@@ -532,10 +586,24 @@ fn program_next_timer() {
     }
     #[cfg(feature = "multitask")]
     let task_deadline = ax_task::next_timer_deadline_nanos();
-    #[cfg(feature = "multitask")]
-    if let Some(task_deadline) = task_deadline {
-        deadline = core::cmp::min(deadline, task_deadline);
+    #[cfg(not(feature = "multitask"))]
+    let task_deadline = None;
+    let now_nanos = ax_hal::time::monotonic_time_nanos();
+    let (next_periodic_deadline, selected_deadline) = select_timer_deadline(
+        deadline,
+        task_deadline,
+        now_nanos,
+        periodic_interval_nanos(),
+    );
+    if next_periodic_deadline != deadline {
+        // Timer callbacks and scheduler work can outlive the periodic deadline
+        // selected at IRQ entry. Coalesce those ticks before rearming so the
+        // hardware comparator is not programmed with an already elapsed value.
+        with_periodic_deadline(|pin| {
+            NEXT_PERIODIC_DEADLINE_NANOS.write_current(pin, next_periodic_deadline);
+        });
     }
+    deadline = selected_deadline;
 
     ax_hal::time::set_oneshot_timer(deadline);
     #[cfg(feature = "multitask")]
@@ -585,6 +653,14 @@ fn init_tls() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "irq")]
+    #[test]
+    fn timer_programming_catches_up_after_a_slow_irq() {
+        let (periodic, selected) = super::select_timer_deadline(100, None, 150, 10);
+        assert_eq!(periodic, 160);
+        assert_eq!(selected, 160);
+    }
+
     #[test]
     fn fs_init_accepts_bootargs_without_fs_feature() {
         crate::fs::init(Some("root=/dev/nvme0n1"));

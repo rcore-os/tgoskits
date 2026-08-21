@@ -2,7 +2,6 @@
 
 use std::{format, vec::Vec};
 
-use ax_memory_addr::VirtAddr;
 use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 
@@ -17,18 +16,6 @@ pub(crate) trait ArchOps {
 
     fn has_hardware_support() -> bool;
 
-    fn clean_dcache_range(_addr: VirtAddr, _size: usize) {}
-
-    fn register_platform_irq_injector() {}
-
-    fn vcpu_affinities(
-        cpu_num: usize,
-        phys_cpu_ids: Option<&[usize]>,
-        phys_cpu_sets: Option<&[usize]>,
-    ) -> Vec<(usize, Option<usize>, usize)> {
-        default_vcpu_affinities(cpu_num, phys_cpu_ids, phys_cpu_sets)
-    }
-
     #[allow(dead_code)]
     fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, _vcpu_id: usize, arg: usize) {
         vcpu.set_gpr(0, arg);
@@ -36,13 +23,13 @@ pub(crate) trait ArchOps {
 
     fn before_first_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
 
-    /// Activates architecture-owned device bindings before the VM becomes runnable.
-    fn activate_devices(_vm: &crate::AxVM) -> AxVmResult {
+    /// Enters architecture-owned runtime state before the VM becomes runnable.
+    fn enter_runtime(_vm: &crate::AxVM) -> AxVmResult {
         Ok(())
     }
 
-    /// Rolls back architecture-owned device bindings after a failed start.
-    fn deactivate_devices(_vm: &crate::AxVM) -> AxVmResult {
+    /// Leaves architecture-owned runtime state after stop or failed start.
+    fn exit_runtime(_vm: &crate::AxVM) -> AxVmResult {
         Ok(())
     }
 
@@ -53,14 +40,18 @@ pub(crate) trait ArchOps {
         Ok(())
     }
 
-    fn after_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
-
     fn wait_for_vcpu_event(
-        _vm: &crate::AxVMRef,
+        vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         runtime: &crate::vm::VmRuntimeHandle,
     ) {
-        runtime.wait();
+        let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        crate::vm::wait_for_vcpu_event_if_idle(
+            runtime,
+            &wait_snapshot,
+            || vm.running(),
+            |condition| runtime.wait_until(condition),
+        );
     }
 
     fn inject_pending_interrupt(
@@ -110,24 +101,13 @@ pub(crate) trait ArchOps {
         vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
     }
 
-    fn after_external_interrupt(
-        _vm: &crate::AxVMRef,
-        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        vector: usize,
-    ) {
-        crate::host::arceos::dispatch_host_irq(vector);
-        crate::check_timer_events();
-    }
-
     /// Releases architecture runtime state after the VM's last vCPU exits.
     ///
     /// The VM reference is required for architecture state that is published
     /// through VM-local device services rather than indexed in global tables.
-    fn on_last_vcpu_exit(_vm: &crate::AxVMRef) -> AxVmResult {
-        Ok(())
+    fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
+        Self::exit_runtime(vm)
     }
-
-    fn after_mmio_write(_vm: &crate::AxVMRef) {}
 
     fn handle_vcpu_exit_bound(
         vm: &crate::AxVMRef,
@@ -140,66 +120,60 @@ pub(crate) trait ArchOps {
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         work: Self::DeferredRunWork,
     ) -> AxVmResult<VcpuRunAction>;
+}
 
-    fn run_vcpu(
-        vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-    ) -> AxVmResult<VcpuRunAction>
-    where
-        Self: Sized,
-    {
-        let vm_id = vm.id();
-        let vcpu_id = vcpu.id();
+pub(super) fn run_vcpu<A: super::Architecture>(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
+) -> AxVmResult<VcpuRunAction> {
+    let vm_id = vm.id();
+    let vcpu_id = vcpu.id();
 
-        match vcpu.state() {
-            VmVcpuState::Free => vcpu.bind()?,
-            VmVcpuState::Starting => vcpu.bind_after_cpu_on_or_rollback()?,
-            VmVcpuState::Ready => {}
-            state => {
-                return ax_err!(
-                    BadState,
-                    format!("VCpu state is not Free or Ready, but {state:?}")
-                );
+    match vcpu.state() {
+        VmVcpuState::Free => vcpu.bind()?,
+        VmVcpuState::Starting => vcpu.bind_after_cpu_on_or_rollback()?,
+        VmVcpuState::Ready => {}
+        state => {
+            return ax_err!(
+                BadState,
+                format!("VCpu state is not Free or Ready, but {state:?}")
+            );
+        }
+    }
+
+    let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
+        loop {
+            crate::runtime::vcpus::inject_pending_interrupts::<A>(vm.id(), vcpu_id, vcpu);
+
+            drain_and_inject_dispatched_interrupts::<A>(vm, vcpu_id, vcpu);
+
+            A::before_vcpu_run(vm, vcpu)?;
+            let exit = vcpu.run();
+            let exit = exit?;
+            trace!("{exit:#x?}");
+            match A::handle_vcpu_exit_bound(vm, vcpu, exit)? {
+                BoundVcpuExit::Continue => continue,
+                action => break Ok(action),
             }
         }
+    });
 
-        let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
-            loop {
-                crate::runtime::vcpus::inject_pending_interrupts::<Self>(vm.id(), vcpu_id, vcpu);
-
-                drain_and_inject_dispatched_interrupts::<Self>(vm, vcpu_id, vcpu);
-
-                Self::before_vcpu_run(vm, vcpu)?;
-                let exit = vcpu.run();
-                Self::after_vcpu_run(vm, vcpu);
-                let exit = exit?;
-                trace!("{exit:#x?}");
-                match Self::handle_vcpu_exit_bound(vm, vcpu, exit)? {
-                    BoundVcpuExit::Continue => continue,
-                    action => break Ok(action),
-                }
+    let unbind_result = vcpu.unbind();
+    match run_result {
+        Ok(BoundVcpuExit::Complete(action)) => {
+            unbind_result?;
+            Ok(action)
+        }
+        Ok(BoundVcpuExit::Defer(work)) => {
+            unbind_result?;
+            A::finish_deferred_run_work(vm, vcpu, work)
+        }
+        Ok(BoundVcpuExit::Continue) => unreachable!("continued exits do not leave run loop"),
+        Err(err) => {
+            if let Err(unbind_err) = unbind_result {
+                warn!("VM[{vm_id}] VCpu[{vcpu_id}] unbind after run error failed: {unbind_err:?}");
             }
-        });
-
-        let unbind_result = vcpu.unbind();
-        match run_result {
-            Ok(BoundVcpuExit::Complete(action)) => {
-                unbind_result?;
-                Ok(action)
-            }
-            Ok(BoundVcpuExit::Defer(work)) => {
-                unbind_result?;
-                Self::finish_deferred_run_work(vm, vcpu, work)
-            }
-            Ok(BoundVcpuExit::Continue) => unreachable!("continued exits do not leave run loop"),
-            Err(err) => {
-                if let Err(unbind_err) = unbind_result {
-                    warn!(
-                        "VM[{vm_id}] VCpu[{vcpu_id}] unbind after run error failed: {unbind_err:?}"
-                    );
-                }
-                Err(err)
-            }
+            Err(err)
         }
     }
 }
@@ -253,38 +227,15 @@ pub(crate) fn target_phys_cpu_ids(vcpu_mappings: &[(usize, Option<usize>, usize)
     cpu_ids
 }
 
-pub(crate) fn default_vcpu_affinities(
-    cpu_num: usize,
-    phys_cpu_ids: Option<&[usize]>,
-    phys_cpu_sets: Option<&[usize]>,
-) -> Vec<(usize, Option<usize>, usize)> {
-    let mut vcpus = Vec::with_capacity(cpu_num);
-    for vcpu_id in 0..cpu_num {
-        vcpus.push((vcpu_id, None, vcpu_id));
-    }
-
-    if let Some(phys_cpu_sets) = phys_cpu_sets {
-        for (vcpu_id, pcpu_mask_bitmap) in phys_cpu_sets.iter().enumerate() {
-            if let Some(vcpu) = vcpus.get_mut(vcpu_id) {
-                vcpu.1 = Some(*pcpu_mask_bitmap);
-            }
-        }
-    }
-
-    if let Some(phys_cpu_ids) = phys_cpu_ids {
-        for (vcpu_id, phys_id) in phys_cpu_ids.iter().enumerate() {
-            if let Some(vcpu) = vcpus.get_mut(vcpu_id) {
-                vcpu.2 = *phys_id;
-            }
-        }
-    }
-
-    vcpus
-}
-
 #[cfg(all(test, feature = "host-test"))]
 mod tests {
-    use std::{sync::Arc, vec};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        vec,
+    };
 
     use ax_std::os::arceos::sync::IrqSafeMutex;
     use axvm_types::{
@@ -397,14 +348,21 @@ mod tests {
 
     struct RecordingArch;
 
+    static EXIT_RUNTIME_CALLS: AtomicUsize = AtomicUsize::new(0);
+
     impl ArchOps for RecordingArch {
         type VCpu = RecordingVcpu;
         type PerCpu = RecordingPerCpu;
         type DeferredRunWork = ();
-        type NestedPageTable = crate::arch::ArchNestedPageTable;
+        type NestedPageTable = crate::arch::current::ArchNestedPageTable;
 
         fn has_hardware_support() -> bool {
             true
+        }
+
+        fn exit_runtime(_vm: &crate::AxVM) -> AxVmResult {
+            EXIT_RUNTIME_CALLS.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
 
         fn handle_vcpu_exit_bound(
@@ -485,26 +443,12 @@ mod tests {
     }
 
     #[test]
-    fn default_vcpu_affinities_pins_single_cpu_to_isolated_core() {
-        // aarch64/riscv64 arceos-smp1.toml: cpu_num=1, phys_cpu_ids=[1] → pin to physical Core 1.
-        assert_eq!(
-            default_vcpu_affinities(1, Some(&[1]), None),
-            vec![(0, None, 1)]
-        );
-        // x86_64 arceos-smp1.toml: phys_cpu_sets=[2] → affinity mask 0b10 (Core 1).
-        assert_eq!(
-            default_vcpu_affinities(1, None, Some(&[2])),
-            vec![(0, Some(2), 0)]
-        );
-        // Default: no pinning, vcpu id equals physical id.
-        assert_eq!(default_vcpu_affinities(1, None, None), vec![(0, None, 0)]);
-    }
+    fn last_vcpu_exit_uses_common_runtime_exit_by_default() {
+        EXIT_RUNTIME_CALLS.store(0, Ordering::Relaxed);
+        let vm = crate::vm::destroyed_vm_for_test(73);
 
-    #[test]
-    fn default_vcpu_affinities_multi_cpu_falls_back_to_vcpu_id() {
-        assert_eq!(
-            default_vcpu_affinities(2, None, None),
-            vec![(0, None, 0), (1, None, 1)]
-        );
+        RecordingArch::on_last_vcpu_exit(&vm).unwrap();
+
+        assert_eq!(EXIT_RUNTIME_CALLS.load(Ordering::Relaxed), 1);
     }
 }

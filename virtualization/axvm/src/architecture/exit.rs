@@ -3,7 +3,7 @@
 use axdevice_base::{BusKind, DeviceAccess, DeviceVcpuId};
 use axvm_types::VmArchVcpuOps;
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use super::{BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
 use crate::{AxVmError, AxVmResult, StopReason};
 
 pub(crate) fn handle_mmio_read<V: VmArchVcpuOps, D>(
@@ -35,6 +35,7 @@ pub(crate) fn try_handle_mmio_read<V: VmArchVcpuOps>(
     Ok(true)
 }
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn read_mmio_value<V: VmArchVcpuOps>(
     vm: &crate::AxVM,
     vcpu: &crate::vm::AxVCpuRef<V>,
@@ -45,6 +46,12 @@ pub(crate) fn read_mmio_value<V: VmArchVcpuOps>(
         Some(raw) => Ok(raw as usize),
         None => Err(missing_mmio_error("read", addr, width)),
     }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "loongarch64"))]
+pub(crate) fn finish_external_interrupt(vector: usize) {
+    crate::host::arceos::dispatch_host_irq(vector);
+    crate::check_timer_events();
 }
 
 pub(crate) fn try_read_mmio_value<V: VmArchVcpuOps>(
@@ -64,20 +71,20 @@ pub(crate) fn try_read_mmio_value<V: VmArchVcpuOps>(
         .map_err(|error| AxVmError::device("read guest MMIO", error))
 }
 
-pub(crate) fn handle_mmio_write<A: ArchOps>(
+pub(crate) fn handle_mmio_write<V: VmArchVcpuOps, D>(
     vm: &crate::AxVMRef,
-    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
+    vcpu: &crate::vm::AxVCpuRef<V>,
     exit: MmioWriteExit,
-) -> AxVmResult<BoundVcpuExit<A::DeferredRunWork>> {
-    if !try_handle_mmio_write::<A>(vm, vcpu, exit)? {
+) -> AxVmResult<BoundVcpuExit<D>> {
+    if !try_handle_mmio_write(vm, vcpu, exit)? {
         return Err(missing_mmio_error("write", exit.addr, exit.width));
     }
     Ok(BoundVcpuExit::Continue)
 }
 
-pub(crate) fn try_handle_mmio_write<A: ArchOps>(
+pub(crate) fn try_handle_mmio_write<V: VmArchVcpuOps>(
     vm: &crate::AxVMRef,
-    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
+    vcpu: &crate::vm::AxVCpuRef<V>,
     exit: MmioWriteExit,
 ) -> AxVmResult<bool> {
     let access = DeviceAccess::new(
@@ -86,11 +93,7 @@ pub(crate) fn try_handle_mmio_write<A: ArchOps>(
         exit.addr.as_usize() as u64,
         exit.width,
     );
-    let handled = vm.try_write_device(&access, exit.data)?;
-    if handled {
-        A::after_mmio_write(vm);
-    }
-    Ok(handled)
+    vm.try_write_device(&access, exit.data)
 }
 
 fn missing_mmio_error(

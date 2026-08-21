@@ -25,7 +25,7 @@ impl PreparedVcpus {
         mut build_config: impl FnMut(
             VcpuPlacement,
         ) -> AxVmResult<
-            <crate::arch::ArchVCpu as VmArchVcpuOps>::CreateConfig,
+            <crate::arch::current::ArchVCpu as VmArchVcpuOps>::CreateConfig,
         >,
     ) -> AxVmResult<Self> {
         debug!("id: {vm_id}, vCPU placements: {placements:#x?}");
@@ -61,7 +61,7 @@ impl PreparedVcpus {
             &crate::config::AxVMConfig,
             &[crate::vm::VMMemoryRegion],
         ) -> AxVmResult<
-            <crate::arch::ArchVCpu as VmArchVcpuOps>::SetupConfig,
+            <crate::arch::current::ArchVCpu as VmArchVcpuOps>::SetupConfig,
         >,
     ) -> AxVmResult {
         for vcpu in &self.vcpus {

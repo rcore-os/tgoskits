@@ -437,7 +437,7 @@ impl dma_api::DmaOp for TestDmaOp {
     ) -> Option<dma_api::DmaAllocHandle> {
         let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
         Some(unsafe {
-            dma_api::DmaAllocHandle::new(ptr, (ptr.as_ptr() as usize as u64).into(), layout)
+            dma_api::DmaAllocHandle::new(ptr, ptr, (ptr.as_ptr() as usize as u64).into(), layout)
         })
     }
 
@@ -481,7 +481,16 @@ impl dma_api::DmaOp for TestDmaOp {
 fn test_device_dma() -> &'static dma_api::DeviceDma {
     static DEVICE: OnceLock<dma_api::DeviceDma> = OnceLock::new();
     static OP: TestDmaOp = TestDmaOp;
-    DEVICE.get_or_init(|| dma_api::DeviceDma::new_legacy(u64::MAX, &OP))
+    DEVICE.get_or_init(|| {
+        dma_api::DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(u64::MAX),
+            ),
+            &OP,
+        )
+    })
 }
 
 fn protocol_error_to_host(error: Error) -> sdio_host2::Error {

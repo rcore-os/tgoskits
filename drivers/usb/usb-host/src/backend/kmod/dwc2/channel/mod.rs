@@ -90,7 +90,9 @@ impl Dwc2PeriodicSchedule {
             let value = unsafe { ptr.add(index).read_volatile() };
             unsafe { ptr.add(index).write_volatile(value | (1u32 << channel)) };
         }
-        self.inner.data.sync_for_device_all();
+        self.inner
+            .data
+            .prepare_for_device(0..self.inner.data.bytes_len());
         mb();
     }
 
@@ -102,7 +104,9 @@ impl Dwc2PeriodicSchedule {
             let value = unsafe { ptr.add(index).read_volatile() };
             unsafe { ptr.add(index).write_volatile(value & !(1u32 << channel)) };
         }
-        self.inner.data.sync_for_device_all();
+        self.inner
+            .data
+            .prepare_for_device(0..self.inner.data.bytes_len());
         mb();
     }
 }

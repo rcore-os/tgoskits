@@ -147,7 +147,7 @@ impl AhciHost {
             hba.max_ports(),
             hba.implemented_ports(),
             hba.command_slots(),
-            dma.dma_mask()
+            dma.info().constraints().addr_mask
         );
         Ok(Self {
             name,
@@ -591,7 +591,7 @@ impl BlockController for AhciPortController {
 }
 
 fn narrow_dma_capability(dma: &DeviceDma, hba_mask: u64) -> DeviceDma {
-    let current = dma.constraints();
+    let current = dma.info().constraints();
     let max_segment_size = current
         .max_segment_size
         .map_or(MAX_TRANSFER_BYTES, |limit| limit.min(MAX_TRANSFER_BYTES));

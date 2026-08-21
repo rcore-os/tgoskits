@@ -51,8 +51,7 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     let dev = Rtl8125::new(
         bar.start as u64,
         bar.count(),
-        RTL8125_DMA_MASK,
-        axklib::dma::op(),
+        crate::pci::device_dma(probe.info(), RTL8125_DMA_MASK),
         axklib::mmio::op(),
     )
     .map_err(|err| OnProbeError::other(alloc::format!("failed to create RTL8125: {err:?}")))?;

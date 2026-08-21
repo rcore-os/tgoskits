@@ -25,13 +25,7 @@ pub fn guest_boot_policy(
     config: &axvmconfig::GuestConfig,
     provider: &dyn BootImageProvider,
 ) -> crate::config::GuestBootPolicy {
-    if crate::boot::is_x86_linux_image_config(config, provider) {
-        crate::config::GuestBootPolicy::KeepConfigured
-    } else {
-        crate::config::GuestBootPolicy::AdjustKernelForBootProtocol {
-            protocol: config.kernel.effective_boot_protocol(),
-        }
-    }
+    crate::arch::current::guest_boot_policy(config, provider)
 }
 
 /// Resolves the configured or architecture-default boot firmware load address.
@@ -44,7 +38,7 @@ pub fn boot_firmware_load_gpa(config: &axvmconfig::GuestConfig) -> Option<GuestP
         .kernel
         .bios_load_addr
         .map(GuestPhysAddr::from)
-        .or_else(|| crate::arch::default_boot_firmware_load_gpa(config))
+        .or_else(|| crate::arch::current::default_boot_firmware_load_gpa(config))
 }
 
 /// Device-tree boot description owned by the VM lifecycle.

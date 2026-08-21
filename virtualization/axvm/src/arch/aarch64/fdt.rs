@@ -1,23 +1,10 @@
-//! AArch64 compatibility facade and target-specific guest FDT policy.
+//! AArch64-specific guest device-tree policy.
 
 use std::vec::Vec;
 
 use fdt_edit::Fdt;
 
-use crate::{
-    AxVmResult, ax_err_type,
-    boot::{BootImageProvider, fdt::GuestDtbImage},
-    config::AxVMConfig,
-};
-
-#[path = "../../boot/fdt/core/mod.rs"]
-pub(crate) mod core;
-
-pub use core::{
-    parse_passthrough_devices_address, parse_reserved_memory_regions, parse_vm_interrupt,
-    reserve_excluded_device_ranges, set_phys_cpu_sets, setup_guest_fdt_from_vmm, try_get_host_fdt,
-    update_fdt, update_provided_fdt,
-};
+use crate::{AxVmResult, ax_err_type, boot::fdt::core};
 
 pub(crate) fn host_gic_maintenance_intid(fdt: &Fdt) -> AxVmResult<Option<u32>> {
     core::interrupt::host_gic_maintenance_intid(fdt)
@@ -92,12 +79,4 @@ pub(super) fn update_cpu_node(
     }
 
     Ok(tree.finish())
-}
-
-pub fn handle_fdt_operations(
-    vm_config: &mut AxVMConfig,
-    vm_create_config: &mut axvmconfig::GuestConfig,
-    provider: &dyn BootImageProvider,
-) -> AxVmResult<Option<GuestDtbImage>> {
-    core::prepare_dtb_guest(vm_config, vm_create_config, provider)
 }

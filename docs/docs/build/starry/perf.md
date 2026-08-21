@@ -12,6 +12,11 @@ sidebar_label: "性能剖析"
 统一设置 `TGOS_OVMF_DIR`；该目录必须使用 Ostool 的 `<arch>/code.fd`、`vars.fd` 布局。
 建议在 x86_64 上同时使用 `--kernel-filter`，排除 UEFI 固件和用户态地址。
 
+qperf 工具和报告脚本统一通过 `apps/common/prebuild-harness-kit.sh` 获取固定版本的
+harness kit；`cargo xtask starry perf` 与 `apps/qperf`、`apps/OScope-harness` 复用同一
+checkout。需要使用预先准备的只读 checkout 时，设置 `TGOSKIT_HARNESS_KIT_DIR`；该
+目录必须是文档所列固定提交的 Git checkout，且包含 qperf 与报告脚本。
+
 ## 1. 剖析流程
 
 剖析流程先构建 qperf 工具链和 StarryOS 内核，再运行 QEMU 采样并生成报告。

@@ -30,7 +30,6 @@ impl TxFrame {
 
 struct TxQueueState {
     accepting: bool,
-    idle: bool,
     frames: VecDeque<TxFrame>,
 }
 
@@ -44,7 +43,6 @@ impl TxIngress {
         Self {
             state: SpinLock::new(TxQueueState {
                 accepting: false,
-                idle: true,
                 frames: VecDeque::with_capacity(TX_FRAME_CAPACITY),
             }),
         }
@@ -78,14 +76,12 @@ impl TxIngress {
         let mut state = self.state.lock_irqsave();
         state.frames.clear();
         state.accepting = true;
-        state.idle = true;
     }
 
     pub(super) fn stop_and_discard(&self) {
         let mut state = self.state.lock_irqsave();
         state.accepting = false;
         state.frames.clear();
-        state.idle = true;
     }
 
     pub(super) fn discard_pending(&self) {
@@ -99,20 +95,6 @@ impl TxIngress {
         }
         (TX_FRAME_CAPACITY - state.frames.len()) * TX_FRAME_BYTES
     }
-
-    pub(super) fn is_idle(&self) -> bool {
-        self.state.lock_irqsave().idle
-    }
-
-    pub(super) fn begin_drain(&self) {
-        self.state.lock_irqsave().idle = false;
-    }
-
-    /// Publishes idle under the same lock that producers use to enqueue.
-    pub(super) fn mark_idle_if_empty(&self, worker_empty: bool, hardware_idle: bool) -> bool {
-        let mut state = self.state.lock_irqsave();
-        publish_idle_locked(&mut state, worker_empty, hardware_idle)
-    }
 }
 
 fn submit_locked(state: &mut TxQueueState, bytes: &[u8]) -> usize {
@@ -125,9 +107,6 @@ fn submit_locked(state: &mut TxQueueState, bytes: &[u8]) -> usize {
         let end = (accepted + TX_FRAME_BYTES).min(bytes.len());
         state.frames.push_back(TxFrame::new(&bytes[accepted..end]));
         accepted = end;
-    }
-    if accepted > 0 {
-        state.idle = false;
     }
     accepted
 }
@@ -159,17 +138,7 @@ fn submit_text_locked(state: &mut TxQueueState, bytes: &[u8]) -> usize {
             .frames
             .push_back(TxFrame::new(&encoded[..encoded_len]));
     }
-    if accepted > 0 {
-        state.idle = false;
-    }
     accepted
-}
-
-fn publish_idle_locked(state: &mut TxQueueState, worker_empty: bool, hardware_idle: bool) -> bool {
-    let idle = worker_empty && state.frames.is_empty() && hardware_idle;
-    let became_idle = idle && !state.idle;
-    state.idle = idle;
-    became_idle
 }
 
 pub(super) struct TxFrameCursor {
@@ -211,7 +180,6 @@ mod tests {
     fn text_log_submission_expands_line_feeds_to_crlf() {
         let mut state = TxQueueState {
             accepting: true,
-            idle: true,
             frames: VecDeque::new(),
         };
 
@@ -229,7 +197,6 @@ mod tests {
     fn queue_order_is_the_lock_linearization_order() {
         let mut state = TxQueueState {
             accepting: true,
-            idle: true,
             frames: VecDeque::new(),
         };
         assert_eq!(submit_locked(&mut state, b"first"), 5);
@@ -242,7 +209,6 @@ mod tests {
     fn queue_accepts_partial_input_at_its_fixed_capacity() {
         let mut state = TxQueueState {
             accepting: true,
-            idle: true,
             frames: VecDeque::new(),
         };
         let bytes = [0x55; TX_FRAME_BYTES * (TX_FRAME_CAPACITY + 1)];
@@ -303,12 +269,11 @@ mod tests {
     fn concurrent_multi_frame_submissions_do_not_interleave() {
         let state = Arc::new(Mutex::new(TxQueueState {
             accepting: true,
-            idle: true,
             frames: VecDeque::new(),
         }));
         let start = Arc::new(Barrier::new(3));
         let mut threads = Vec::new();
-        for byte in [b'a', b'b'] {
+        for byte in *b"ab" {
             let state = state.clone();
             let start = start.clone();
             threads.push(thread::spawn(move || {
@@ -331,32 +296,6 @@ mod tests {
             .drain(..)
             .map(|frame| frame.bytes()[0])
             .collect::<Vec<_>>();
-        assert!(labels == [b'a', b'a', b'b', b'b'] || labels == [b'b', b'b', b'a', b'a']);
-    }
-
-    #[test]
-    fn tx_idle_cannot_be_overwritten_by_a_late_submit_publication() {
-        let state = Arc::new(Mutex::new(TxQueueState {
-            accepting: true,
-            idle: true,
-            frames: VecDeque::new(),
-        }));
-        let submitted = Arc::new(Barrier::new(2));
-        let producer = {
-            let state = state.clone();
-            let submitted = submitted.clone();
-            thread::spawn(move || {
-                assert_eq!(submit_locked(&mut state.lock().unwrap(), b"x"), 1);
-                submitted.wait();
-            })
-        };
-
-        submitted.wait();
-        let mut locked = state.lock().unwrap();
-        assert!(locked.frames.pop_front().is_some());
-        assert!(publish_idle_locked(&mut locked, true, true));
-        drop(locked);
-        producer.join().unwrap();
-        assert!(state.lock().unwrap().idle);
+        assert!(labels == *b"aabb" || labels == *b"bbaa");
     }
 }

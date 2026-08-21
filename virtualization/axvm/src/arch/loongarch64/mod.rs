@@ -9,13 +9,11 @@ use crate::{AxVmError, AxVmResult, host::*};
 
 pub(crate) mod boot;
 mod capabilities;
-pub(crate) mod fdt;
 mod idle;
 pub(crate) mod irq;
 mod npt;
 mod resource_pools;
 mod vm;
-pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 pub(crate) use vm::LoongArchVmPlan;
 
 pub(crate) struct LoongArch64Arch;
@@ -34,10 +32,6 @@ impl ArchOps for LoongArch64Arch {
 
     fn has_hardware_support() -> bool {
         loongarch_vcpu::has_hardware_support()
-    }
-
-    fn register_platform_irq_injector() {
-        irq::register_platform_irq_injector();
     }
 
     fn inject_pending_interrupt(
@@ -94,10 +88,6 @@ impl ArchOps for LoongArch64Arch {
         }
     }
 
-    fn after_mmio_write(vm: &crate::AxVMRef) {
-        drain_loongarch_pch_pic_events(vm);
-    }
-
     fn handle_vcpu_exit_bound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -127,7 +117,7 @@ impl ArchOps for LoongArch64Arch {
                     signed_ext,
                 },
             ),
-            LoongArchVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
+            LoongArchVmExit::MmioWrite { addr, width, data } => handle_loongarch_mmio_write(
                 vm,
                 vcpu,
                 MmioWriteExit {
@@ -174,13 +164,13 @@ impl ArchOps for LoongArch64Arch {
     }
 
     fn finish_deferred_run_work(
-        vm: &crate::AxVMRef,
+        _vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         work: Self::DeferredRunWork,
     ) -> AxVmResult<VcpuRunAction> {
         match work {
             LoongArchDeferredRunWork::ExternalInterrupt { vector } => {
-                Self::after_external_interrupt(vm, vcpu, vector);
+                crate::architecture::exit::finish_external_interrupt(vector);
             }
             LoongArchDeferredRunWork::Idle => idle::wait(vcpu),
         }
@@ -191,13 +181,28 @@ impl ArchOps for LoongArch64Arch {
             exits_vcpu: false,
         })
     }
+}
 
-    fn clean_dcache_range(addr: VirtAddr, size: usize) {
-        unsafe {
-            cache_range::<DCACHE_WB>(addr, size);
-            std::arch::asm!("dbar 0");
-        }
+fn handle_loongarch_mmio_write(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
+    exit: MmioWriteExit,
+) -> AxVmResult<BoundVcpuExit<LoongArchDeferredRunWork>> {
+    let result = super::handle_mmio_write(vm, vcpu, exit)?;
+    drain_loongarch_pch_pic_events(vm);
+    Ok(result)
+}
+
+fn try_handle_loongarch_mmio_write(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
+    exit: MmioWriteExit,
+) -> AxVmResult<bool> {
+    let handled = super::try_handle_mmio_write(vm, vcpu, exit)?;
+    if handled {
+        drain_loongarch_pch_pic_events(vm);
     }
+    Ok(handled)
 }
 
 fn handle_loongarch_nested_page_fault(
@@ -226,17 +231,15 @@ fn handle_loongarch_nested_page_fault(
                     signed_ext,
                 },
             )?,
-            LoongArchVmExit::MmioWrite { addr, width, data } => {
-                super::try_handle_mmio_write::<LoongArch64Arch>(
-                    vm,
-                    vcpu,
-                    MmioWriteExit {
-                        addr: loong_guest_phys_addr_to_ax(addr),
-                        width: loong_access_width_to_ax(width),
-                        data,
-                    },
-                )?
-            }
+            LoongArchVmExit::MmioWrite { addr, width, data } => try_handle_loongarch_mmio_write(
+                vm,
+                vcpu,
+                MmioWriteExit {
+                    addr: loong_guest_phys_addr_to_ax(addr),
+                    width: loong_access_width_to_ax(width),
+                    data,
+                },
+            )?,
             _ => false,
         };
         if handled {
@@ -537,6 +540,13 @@ fn loong_access_flags_to_ax(flags: LoongArchAccessFlags) -> MappingFlags {
 
 const CACHE_LINE_SIZE: usize = 64;
 const DCACHE_WB: u8 = 0x19;
+
+pub(super) fn make_guest_memory_visible(addr: VirtAddr, size: usize) {
+    unsafe {
+        cache_range::<DCACHE_WB>(addr, size);
+        std::arch::asm!("dbar 0");
+    }
+}
 
 unsafe fn cache_range<const OP: u8>(addr: VirtAddr, size: usize) {
     if size == 0 {

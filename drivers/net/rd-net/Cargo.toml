@@ -7,7 +7,7 @@ keywords = ["os", "driver", "network"]
 license = "MIT"
 name = "rd-net"
 repository.workspace = true
-version = "0.2.4"
+version = "0.3.0"
 
 [dependencies]
 dma-api.workspace = true

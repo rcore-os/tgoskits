@@ -7,7 +7,9 @@ sidebar_label: "模拟设备"
 
 Axvisor 的模拟设备由 Hypervisor 在软件中实现，客户机通过 MMIO、x86 Port I/O 或架构系统寄存器访问这些设备。用户配置只描述稳定 ID、model 名和设备语义参数，地址、中断、MSI、host IRQ 与固件 identity 均由 machine profile、host snapshot 和设备图统一规划。
 
-这套框架主要分布在 `virtualization/axdevice_base`、`virtualization/axdevice`、`virtualization/axvmconfig` 和 `virtualization/axvm` 中。本文以现有代码为准，说明配置解析、model 注册、设备图构建、资源规划、运行时注册、访问分派、DMA 授权、中断连接、固件生成以及各架构现有设备实现。
+这套框架主要分布在 `virtualization/axdevice_base`、`virtualization/axdevice`、`virtualization/axvmconfig` 和 `virtualization/axvm` 中。本文以现有代码为准，说明配置解析、设备型号注册、设备图构建、资源规划、运行时注册、访问分派、直接内存访问授权、中断连接、固件生成以及各架构现有设备实现。架构能力与设备能力为什么采用不同的分层方法，见[《AxVM 分层能力接口设计》](https://github.com/rcore-os/tgoskits/blob/dev/docs/design/axvm-capability-layering.md)。
+
+设备体系不因架构接口重构而机械拆分。同一设备模型必须先声明命名资源，再消费由同一计划签发的资源完成构建；资源需求、申请方式、节点种类和解析后资源表示规划状态与所有权，适合使用封闭数据类型。设备访问、轮询、中断控制和生命周期等“能做什么”才使用可选能力接口。这个边界保证设备主线继续保持“设备图解析 → 一次性资源申请 → 原子注册 → 封存运行期”，也保留原有失败回滚语义。
 
 ## 1. 代码组成
 
@@ -57,7 +59,7 @@ flowchart TB
             Contract["Device / DeviceAccess / DeviceContext / Resource"]
             Interrupt["IrqLine / MSI endpoint"]
         end
-        Arch["axvm::arch：GIC、PLIC、IOAPIC、PCH-PIC、fw_cfg 等"]
+        Arch["AxVM 内部架构适配：中断控制器、固件配置设备等"]
         Exit["VM-exit 解码"]
     end
 
@@ -229,6 +231,8 @@ runtime-backed 节点持有 `Arc<dyn DeviceModel>`。`HostPassthrough` 节点只
 ### 3.2 `DeviceModel`
 
 `DeviceModel` 是设备声明、固件描述和运行时构建的唯一对象。资源计划不能在 build 阶段换成另一个配置，因为同一个 `Arc<dyn DeviceModel>` 从声明阶段保留到构建阶段。
+
+这里刻意不把“声明资源”和“构建设备”拆成两个互不关联的接口。二者由同一个模型拥有，才能保证构建消费的正是声明阶段参与冲突检查和确定性分配的那份需求。分层的目标是收敛能力与所有权，而不是让每个方法各自成为一层。
 
 ```rust
 pub trait DeviceModel: Send + Sync {
@@ -517,7 +521,9 @@ sequenceDiagram
 
 ### 6.4 Service、lifecycle 与 pollable
 
-设备间协作不都表现为寄存器访问。`DeviceServices` 以强类型 key 保存 VM 内 capability，调用方通过 key 获取 trait 对象，不需要向下转换 `Arc<dyn Device>`。
+设备间协作不都表现为寄存器访问。`DeviceServices` 以强类型键保存虚拟机内能力，调用方通过键取得接口对象，不需要把通用设备对象向下转换成具体类型。
+
+这些接口表达的是设备可选能力：没有轮询能力的设备不会进入轮询表，没有生命周期能力的设备不会收到启停通知，没有中断控制能力的设备也不能被当作中断控制器。与之相对，设备节点种类和资源请求仍是封闭状态集合；把后者也改造成可选能力会隐藏规划步骤，削弱资源所有权检查。
 
 | 能力 | 现有用途 |
 | --- | --- |

@@ -402,7 +402,7 @@ impl ArceOS {
             build::ArceosBuildMode::RustStd => {
                 let mut cargo = build::load_cargo_config(&request)?;
                 if !extra_rustflags.is_empty() {
-                    crate::build::append_encoded_rustflags(&mut cargo, extra_rustflags);
+                    crate::build::append_cargo_rustflags(&mut cargo, extra_rustflags);
                 }
                 let board_config = self
                     .load_board_config(&cargo, board_config_path.as_deref())

@@ -10,6 +10,14 @@ use rdif_block::{
     validate_owned_request_shape,
 };
 
+fn dma_info(mask: u64, coherency: dma_api::DmaCoherency) -> dma_api::DmaDeviceInfo {
+    dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        coherency,
+        dma_api::DmaConstraints::new(mask),
+    )
+}
+
 fn queue_info_with(limits: QueueLimits) -> QueueInfo {
     QueueInfo {
         id: 0,
@@ -36,7 +44,10 @@ fn rdif_block_device_queue_info_and_error_mapping_rules_hold() {
     device.vendor = Some("qemu");
     device.model = Some("nvme");
 
-    let limits = QueueLimits::simple(512, 0xffff_ffff);
+    let limits = QueueLimits::simple(
+        512,
+        dma_info(0xffff_ffff, dma_api::DmaCoherency::NonCoherent),
+    );
     let info = QueueInfo {
         id: 3,
         device,
@@ -46,10 +57,10 @@ fn rdif_block_device_queue_info_and_error_mapping_rules_hold() {
     assert_eq!(info.id, 3);
     assert_eq!(info.device.num_blocks, 128);
     assert!(info.device.read_only);
-    assert_eq!(info.limits.dma_alignment, 512);
+    assert_eq!(info.limits.dma.constraints().align, 512);
     assert_eq!(info.limits.max_inflight, 1);
     assert_eq!(info.limits.max_submit_batch, 1);
-    assert_eq!(info.limits.max_segment_size, 512);
+    assert_eq!(info.limits.dma.constraints().max_segment_size, Some(512));
 
     assert_eq!(
         alloc::format!("{}", BlkError::InvalidBlockIndex(9)),
@@ -139,7 +150,7 @@ fn rdif_block_owned_request_validation_rejects_invalid_shapes_and_flags() {
         max_blocks_per_request: 8,
         supports_flush: true,
         supported_flags: RequestFlags::FUA | RequestFlags::PREFLUSH,
-        ..QueueLimits::simple(512, u64::MAX)
+        ..QueueLimits::simple(512, dma_info(u64::MAX, dma_api::DmaCoherency::NonCoherent))
     };
 
     let flush = flush_request();
@@ -176,7 +187,10 @@ fn rdif_block_owned_request_validation_rejects_invalid_shapes_and_flags() {
     };
     assert_eq!(
         validate_owned_request(
-            queue_info_with(QueueLimits::simple(512, u64::MAX)),
+            queue_info_with(QueueLimits::simple(
+                512,
+                dma_info(u64::MAX, dma_api::DmaCoherency::NonCoherent),
+            )),
             &unsupported_preflush
         ),
         Err(BlkError::NotSupported)
@@ -237,7 +251,7 @@ impl HardwareQueue for BatchQueue {
             supports_flush: true,
             max_inflight: 2,
             max_submit_batch: 2,
-            ..QueueLimits::simple(512, u64::MAX)
+            ..QueueLimits::simple(512, dma_info(u64::MAX, dma_api::DmaCoherency::NonCoherent))
         };
         queue_info_with(limits)
     }
@@ -309,10 +323,14 @@ fn rdif_block_hardware_queue_batches_commit_and_return_ownership() {
 fn rdif_block_transfer_planner_splits_chunks_and_segments() {
     let device = DeviceInfo::new(64, 512);
     let limits = QueueLimits {
+        dma: dma_info(u64::MAX, dma_api::DmaCoherency::NonCoherent).with_constraints(
+            dma_api::DmaConstraints::new(u64::MAX)
+                .with_align(512)
+                .with_max_segment_size(512),
+        ),
         max_blocks_per_request: 4,
         max_segments: 2,
-        max_segment_size: 512,
-        ..QueueLimits::simple(512, u64::MAX)
+        ..QueueLimits::simple(512, dma_info(u64::MAX, dma_api::DmaCoherency::NonCoherent))
     };
     let caps = TransferRuntimeCaps::new(4096, 2);
     let planner = TransferPlanner::new(device, limits, caps).unwrap();
@@ -347,7 +365,7 @@ fn rdif_block_transfer_planner_splits_chunks_and_segments() {
     assert!(matches!(
         TransferPlanner::new(
             DeviceInfo::new(64, 0),
-            QueueLimits::simple(512, u64::MAX),
+            QueueLimits::simple(512, dma_info(u64::MAX, dma_api::DmaCoherency::NonCoherent),),
             caps
         ),
         Err(BlkError::InvalidRequest)

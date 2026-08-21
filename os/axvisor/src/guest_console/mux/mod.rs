@@ -7,16 +7,15 @@ use alloc::{
 };
 
 use anyhow::{Result, bail};
+use ax_std::os::arceos::sync::{NoPreemptMutex, NoPreemptMutexGuard};
 use axvm::{SerialBackend, SerialBackendFactory, VMId, VmStatus};
 use core::ops::Bound::{Excluded, Unbounded};
 use log::warn;
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::LazyLock;
 
-use super::host::write_host_bytes;
+use super::host::{submit_host_bytes, submit_host_transaction};
 
-mod output;
-
-use output::GuestOutputMux;
+use axvisor::console_mux::{GuestOutputMux, HostLogBacklog};
 
 const CTRL_X: u8 = 0x18;
 const INPUT_QUEUE_CAPACITY: usize = 4096;
@@ -45,6 +44,7 @@ struct RoutedInput {
     event: ConsoleInputEvent,
     wake_vm: Option<VMId>,
     host_output: Vec<u8>,
+    input_overflow: Option<VMId>,
 }
 
 /// Application-owned host console multiplexer.
@@ -59,11 +59,15 @@ pub struct GuestConsoleMux {
 
 #[derive(Debug)]
 struct ConsoleCore {
-    state: Mutex<ConsoleState>,
+    /// Task and vCPU callbacks use this lock; hard IRQ handlers never do.
+    /// No caller may enter a sleepable API while it is held.
+    state: NoPreemptMutex<ConsoleState>,
     /// Serializes host writes with backend replacement and invalidation.
     ///
     /// Code that needs both locks must acquire `output_lock` before `state`.
-    output_lock: Mutex<()>,
+    /// The guest callback additionally acquires the fixed host transport before
+    /// `state`, so no physical output or sleepable lock is reachable here.
+    output_lock: NoPreemptMutex<()>,
 }
 
 #[derive(Debug, Default)]
@@ -74,6 +78,7 @@ struct ConsoleState {
     last_attached: Option<VMId>,
     shortcut_prefix_pending: bool,
     output: GuestOutputMux,
+    host_logs: HostLogBacklog,
     next_backend_generation: u64,
 }
 
@@ -84,6 +89,7 @@ struct BackendGeneration(u64);
 struct GuestState {
     backend_generation: Option<BackendGeneration>,
     input: VecDeque<u8>,
+    input_overflow_reported: bool,
 }
 
 #[derive(Debug)]
@@ -103,8 +109,8 @@ impl GuestConsoleMux {
     fn new() -> Self {
         Self {
             core: Arc::new(ConsoleCore {
-                state: Mutex::new(ConsoleState::default()),
-                output_lock: Mutex::new(()),
+                state: NoPreemptMutex::new(ConsoleState::default()),
+                output_lock: NoPreemptMutex::new(()),
             }),
         }
     }
@@ -116,6 +122,7 @@ impl GuestConsoleMux {
         for vm_id in running {
             state.running.insert(vm_id);
             state.guests.entry(vm_id).or_default();
+            state.output.register_guest(vm_id);
         }
 
         let detached = state
@@ -124,7 +131,9 @@ impl GuestConsoleMux {
         let host_output = if detached.is_some() {
             state.attached = None;
             state.shortcut_prefix_pending = false;
-            state.output.buffer_all()
+            let mut output = state.output.buffer_all();
+            append_host_log_replay(&mut state, &mut output);
+            output
         } else {
             Vec::new()
         };
@@ -133,7 +142,7 @@ impl GuestConsoleMux {
         } = &mut *state;
         output.reconcile_running(running);
         drop(state);
-        write_host_bytes(&host_output);
+        submit_host_bytes(&host_output);
         detached
     }
 
@@ -141,6 +150,7 @@ impl GuestConsoleMux {
         let mut state = self.core.lock_state();
         state.running.insert(vm_id);
         state.guests.entry(vm_id).or_default();
+        state.output.register_guest(vm_id);
     }
 
     fn mark_stopped(&self, vm_id: VMId) -> bool {
@@ -150,18 +160,21 @@ impl GuestConsoleMux {
         if let Some(guest) = state.guests.get_mut(&vm_id) {
             guest.backend_generation = None;
             guest.input.clear();
+            guest.input_overflow_reported = false;
         }
         state.output.reset_guest(vm_id);
         let detached = state.attached == Some(vm_id);
         let host_output = if detached {
             state.attached = None;
             state.shortcut_prefix_pending = false;
-            state.output.buffer_all()
+            let mut output = state.output.buffer_all();
+            append_host_log_replay(&mut state, &mut output);
+            output
         } else {
             Vec::new()
         };
         drop(state);
-        write_host_bytes(&host_output);
+        submit_host_bytes(&host_output);
         detached
     }
 
@@ -178,12 +191,14 @@ impl GuestConsoleMux {
         let host_output = if detached {
             state.attached = None;
             state.shortcut_prefix_pending = false;
-            state.output.buffer_all()
+            let mut output = state.output.buffer_all();
+            append_host_log_replay(&mut state, &mut output);
+            output
         } else {
             Vec::new()
         };
         drop(state);
-        write_host_bytes(&host_output);
+        submit_host_bytes(&host_output);
         detached
     }
 
@@ -211,7 +226,7 @@ impl GuestConsoleMux {
         state.shortcut_prefix_pending = false;
         let host_output = state.output.buffer_all();
         drop(state);
-        write_host_bytes(&host_output);
+        submit_host_bytes(&host_output);
         true
     }
 
@@ -225,7 +240,7 @@ impl GuestConsoleMux {
         (state.attached == Some(vm_id)).then_some(())?;
         let replay = state.output.select_foreground(vm_id);
         drop(state);
-        write_host_bytes(&replay);
+        submit_host_bytes(&replay);
         Some(replay)
     }
 
@@ -236,15 +251,21 @@ impl GuestConsoleMux {
             state.shortcut_prefix_pending = false;
             match byte {
                 b'h' => match state.attached.take() {
-                    Some(vm_id) => RoutedInput {
-                        event: ConsoleInputEvent::Detached(vm_id),
-                        wake_vm: None,
-                        host_output: state.output.buffer_all(),
-                    },
+                    Some(vm_id) => {
+                        let mut host_output = state.output.buffer_all();
+                        append_host_log_replay(&mut state, &mut host_output);
+                        RoutedInput {
+                            event: ConsoleInputEvent::Detached(vm_id),
+                            wake_vm: None,
+                            host_output,
+                            input_overflow: None,
+                        }
+                    }
                     None => RoutedInput {
                         event: ConsoleInputEvent::Consumed,
                         wake_vm: None,
                         host_output: Vec::new(),
+                        input_overflow: None,
                     },
                 },
                 b'[' => switch_guest(&mut state, GuestSwitchDirection::Previous),
@@ -264,13 +285,47 @@ impl GuestConsoleMux {
                 event: ConsoleInputEvent::Consumed,
                 wake_vm: None,
                 host_output: Vec::new(),
+                input_overflow: None,
             }
         } else {
             route_literal_input(&mut state, &[byte], ConsoleInputEvent::ShellByte(byte))
         };
         drop(state);
-        write_host_bytes(&routed.host_output);
+        submit_host_bytes(&routed.host_output);
+        if let Some(vm_id) = routed.input_overflow {
+            warn!(
+                "VM[{vm_id}] console input queue is full; dropping input until the guest drains it"
+            );
+        }
         routed
+    }
+
+    fn route_host_log(
+        &self,
+        record: &[u8],
+        dropped_records: usize,
+        dropped_bytes: usize,
+    ) -> Option<Vec<u8>> {
+        let _output_guard = self.core.lock_output();
+        let mut state = self.core.lock_state();
+        state.host_logs.add_drops(dropped_records, dropped_bytes);
+        if state.output.foreground_is_interactive() {
+            state.host_logs.push(record);
+            return None;
+        }
+
+        let mut host_output = Vec::new();
+        append_host_log_replay(&mut state, &mut host_output);
+        if !record.is_empty() {
+            host_output.extend(state.output.format_host_record(record));
+        }
+        Some(host_output)
+    }
+}
+
+fn append_host_log_replay(state: &mut ConsoleState, output: &mut Vec<u8>) {
+    for record in state.host_logs.drain() {
+        output.extend(state.output.format_host_record(&record));
     }
 }
 
@@ -282,17 +337,19 @@ fn route_literal_input(
     match state.attached {
         Some(vm_id) => {
             let host_output = state.output.select_foreground_on_input(vm_id);
-            enqueue_guest_input(state, vm_id, guest_bytes);
+            let input_overflow = enqueue_guest_input(state, vm_id, guest_bytes).then_some(vm_id);
             RoutedInput {
                 event: ConsoleInputEvent::Consumed,
                 wake_vm: Some(vm_id),
                 host_output,
+                input_overflow,
             }
         }
         None => RoutedInput {
             event: shell_event,
             wake_vm: None,
             host_output: Vec::new(),
+            input_overflow: None,
         },
     }
 }
@@ -326,6 +383,7 @@ fn switch_guest(state: &mut ConsoleState, direction: GuestSwitchDirection) -> Ro
             event: ConsoleInputEvent::NoRunningGuest,
             wake_vm: None,
             host_output: Vec::new(),
+            input_overflow: None,
         };
     };
 
@@ -335,20 +393,17 @@ fn switch_guest(state: &mut ConsoleState, direction: GuestSwitchDirection) -> Ro
         event: ConsoleInputEvent::Attached(vm_id),
         wake_vm: None,
         host_output: state.output.buffer_all(),
+        input_overflow: None,
     }
 }
 
 impl ConsoleCore {
-    fn lock_state(&self) -> MutexGuard<'_, ConsoleState> {
-        self.state
-            .lock()
-            .expect("guest console state mutex poisoned")
+    fn lock_state(&self) -> NoPreemptMutexGuard<'_, ConsoleState> {
+        self.state.lock()
     }
 
-    fn lock_output(&self) -> MutexGuard<'_, ()> {
-        self.output_lock
-            .lock()
-            .expect("guest console output mutex poisoned")
+    fn lock_output(&self) -> NoPreemptMutexGuard<'_, ()> {
+        self.output_lock.lock()
     }
 
     fn create_serial_backend(self: &Arc<Self>, vm_id: VMId) -> Arc<GuestSerialBackend> {
@@ -368,6 +423,7 @@ impl ConsoleCore {
                 },
             );
             state.output.reset_guest(vm_id);
+            state.output.register_guest(vm_id);
             generation
         };
         Arc::new(GuestSerialBackend {
@@ -398,9 +454,13 @@ impl ConsoleCore {
                 .pop_front()
                 .expect("guest input queue length was checked");
         }
+        if read_len != 0 {
+            guest.input_overflow_reported = false;
+        }
         read_len
     }
 
+    #[cfg(test)]
     fn format_guest_output(
         &self,
         vm_id: VMId,
@@ -422,9 +482,21 @@ impl ConsoleCore {
         }
 
         let _output_guard = self.lock_output();
-        if let Some(output) = self.format_guest_output(vm_id, generation, bytes) {
-            write_host_bytes(&output);
-        }
+        submit_host_transaction(|emit| {
+            let mut state = self.lock_state();
+            let multiple_running = state.running.len() > 1;
+            let Some(guest) = state.guests.get(&vm_id) else {
+                return;
+            };
+            if guest.backend_generation != Some(generation) {
+                return;
+            }
+            let formatted =
+                state
+                    .output
+                    .format_registered_into(vm_id, multiple_running, bytes, emit);
+            debug_assert!(formatted, "active backend output state must be registered");
+        });
     }
 }
 
@@ -446,10 +518,16 @@ impl SerialBackendFactory for GuestSerialBackendFactory {
     }
 }
 
-fn enqueue_guest_input(state: &mut ConsoleState, vm_id: VMId, bytes: &[u8]) {
+fn enqueue_guest_input(state: &mut ConsoleState, vm_id: VMId, bytes: &[u8]) -> bool {
     let guest = state.guests.entry(vm_id).or_default();
     let available = INPUT_QUEUE_CAPACITY.saturating_sub(guest.input.len());
-    guest.input.extend(bytes.iter().copied().take(available));
+    let accepted = bytes.len().min(available);
+    guest.input.extend(bytes.iter().copied().take(accepted));
+    if accepted == bytes.len() || guest.input_overflow_reported {
+        return false;
+    }
+    guest.input_overflow_reported = true;
+    true
 }
 
 /// Returns the factory that provisions one backend per VM device generation.
@@ -469,6 +547,18 @@ pub fn route_host_byte(byte: u8) -> ConsoleInputEvent {
         warn!("failed to wake VM[{vm_id}] for console input: {error:#}");
     }
     routed.event
+}
+
+/// Routes a complete host log record without exposing it to a guest UART.
+///
+/// Returns the line-safe bytes to display, or `None` when the record was
+/// buffered behind an interactive guest until detach.
+pub fn route_host_log(
+    record: &[u8],
+    dropped_records: usize,
+    dropped_bytes: usize,
+) -> Option<Vec<u8>> {
+    GUEST_CONSOLE_MUX.route_host_log(record, dropped_records, dropped_bytes)
 }
 
 /// Attach the lowest-ID member of the default running VM set.
