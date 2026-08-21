@@ -116,3 +116,26 @@ fn ready_online_smp_does_not_reissue_resources_or_change_device_info() {
         assert_eq!(controller.device_info(), expected_info);
     }
 }
+
+#[test]
+fn rearm_during_initialization_preserves_waiting_for_irq_state() {
+    let mut registers = vec![0_u64; 0x2000 / core::mem::size_of::<u64>()];
+    registers[0] = 63;
+    let config = Config::msix(4096, [0, 1]).unwrap();
+    let nvme = unsafe {
+        Nvme::from_borrowed_registers_for_test(
+            NonNull::new(registers.as_mut_ptr().cast()).unwrap(),
+            test_dma(),
+            config,
+        )
+    }
+    .unwrap();
+    let mut controller = NvmeBlockDriver::from_nvme(nvme);
+    controller.initialization_started = true;
+
+    let update = controller
+        .advance(ControllerEvent::Rearm { source_id: 0 })
+        .unwrap();
+
+    assert_eq!(update.controller_state(), ControllerState::WaitingForIrq);
+}

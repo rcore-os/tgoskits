@@ -334,7 +334,11 @@ impl BlockController for NvmeBlockDriver {
             }
             ControllerEvent::Rearm { source_id } => {
                 self.rearm_source(source_id)?;
-                Ok(ControllerUpdate::state(ControllerState::Ready))
+                Ok(ControllerUpdate::state(if self.ready {
+                    ControllerState::Ready
+                } else {
+                    ControllerState::WaitingForIrq
+                }))
             }
             ControllerEvent::QuiesceIrqs => Ok(self.quiesce_interrupts()),
             ControllerEvent::Watchdog { .. } => self.stop_controller(),
