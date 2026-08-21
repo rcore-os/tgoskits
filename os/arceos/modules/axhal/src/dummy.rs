@@ -1,5 +1,7 @@
 //! Dummy implementation of platform-related interfaces defined in [`axplat`].
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 #[cfg(feature = "irq")]
 use ax_plat::irq::{HwIrq, IpiTarget, IrqError, IrqId, IrqIf, IrqNumber, IrqSource, TrapVector};
 use ax_plat::{
@@ -10,7 +12,6 @@ use ax_plat::{
     power::PowerIf,
     time::TimeIf,
 };
-use core::sync::atomic::{AtomicU64, Ordering};
 
 struct DummyInit;
 struct DummyConsole;

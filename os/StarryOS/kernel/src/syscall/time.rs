@@ -142,8 +142,7 @@ pub fn sys_settimeofday(tv: *mut timeval, tz: *mut Timezone) -> StarryResult<isi
         if !current().as_thread().cred().has_cap_sys_time() {
             return Err(StarryError::OperationNotPermitted);
         }
-        let target_nanos =
-            tv.tv_sec as u64 * NANOS_PER_SEC + tv.tv_usec as u64 * NANOS_PER_MICROS;
+        let target_nanos = tv.tv_sec as u64 * NANOS_PER_SEC + tv.tv_usec as u64 * NANOS_PER_MICROS;
         let offset = target_nanos.wrapping_sub(monotonic_time_nanos());
         set_epochoffset_nanos(offset);
     }
