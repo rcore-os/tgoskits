@@ -8,9 +8,9 @@
 use alloc::sync::Arc;
 
 use linux_raw_sys::general::{
-    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_LAST_CAP, CAP_NET_RAW, CAP_SETGID, CAP_SETPCAP,
-    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RAWIO,
-    CAP_SYS_RESOURCE,
+    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_IPC_LOCK, CAP_LAST_CAP, CAP_NET_RAW, CAP_SETGID,
+    CAP_SETPCAP, CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE,
+    CAP_SYS_RAWIO, CAP_SYS_RESOURCE,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
@@ -194,6 +194,12 @@ impl Cred {
     /// (equivalent to `CAP_SYS_RESOURCE`).
     pub fn has_cap_sys_resource(&self) -> bool {
         self.has_cap(CAP_SYS_RESOURCE)
+    }
+
+    /// Check whether this credential may lock memory
+    /// (equivalent to `CAP_IPC_LOCK`).
+    pub fn has_cap_ipc_lock(&self) -> bool {
+        self.has_cap(CAP_IPC_LOCK)
     }
 
     /// Check whether this credential may bypass file read/write/execute

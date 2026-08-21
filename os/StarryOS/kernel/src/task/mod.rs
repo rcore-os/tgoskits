@@ -969,6 +969,8 @@ pub struct ProcessData {
 
     /// The process nice value used by getpriority/setpriority compatibility.
     nice: AtomicI32,
+    /// The `mlockall(2)` flags (`MCL_*`) recorded for this process.
+    mlockall_flags: AtomicU32,
 
     /// Process-local membarrier(2) registration state bitmask.
     membarrier_state: AtomicU32,
@@ -1164,6 +1166,7 @@ impl ProcessData {
 
             umask: AtomicU32::new(0o022),
             nice: AtomicI32::new(0),
+            mlockall_flags: AtomicU32::new(0),
             membarrier_state: AtomicU32::new(0),
             dumpable: AtomicI32::new(1),
             thp_disable: AtomicU32::new(0),
@@ -1308,6 +1311,16 @@ impl ProcessData {
     /// Set the process nice value.
     pub fn set_nice(&self, nice: i32) {
         self.nice.store(nice, Ordering::SeqCst);
+    }
+
+    /// Get the `mlockall(2)` flags recorded for this process.
+    pub fn mlockall_flags(&self) -> u32 {
+        self.mlockall_flags.load(Ordering::SeqCst)
+    }
+
+    /// Set the `mlockall(2)` flags recorded for this process.
+    pub fn set_mlockall_flags(&self, flags: u32) {
+        self.mlockall_flags.store(flags, Ordering::SeqCst);
     }
 
     /// Get the membarrier(2) registration state bitmask.
