@@ -60,7 +60,7 @@ const ICR_FIXED_LEVEL: u32 = 0x0000_4000;
 const ICR_DEST_SELF: u32 = 0x0004_0000;
 
 const IPI_DELIVERY_WAIT_SPINS: usize = 1_000_000;
-const LVT_TIMER_MASKED: u32 = 1 << 16;
+const LVT_MASKED: u32 = 1 << 16;
 
 /// OS-facing local APIC driver.
 ///
@@ -76,10 +76,22 @@ pub struct X86LocalApic {
 impl X86LocalApic {
     /// Creates a local APIC driver handle without touching hardware.
     ///
-    /// `xapic_mmio_base` must be the kernel mapping of the physical local
-    /// APIC page taken from `IA32_APIC_BASE`; it is only dereferenced while
-    /// the CPU runs in xAPIC mode.
-    pub fn new(config: LocalApicConfig, xapic_mmio_base: VirtAddr) -> Self {
+    /// ```compile_fail
+    /// use x86_apic_driver::{LocalApicConfig, VirtAddr, X86LocalApic};
+    ///
+    /// fn construct_from_unverified_address(config: LocalApicConfig, base: VirtAddr) {
+    ///     let _ = X86LocalApic::new(config, base);
+    /// }
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// `xapic_mmio_base` must point to a valid, device-mapped kernel mapping
+    /// of the complete physical local APIC page reported by
+    /// `IA32_APIC_BASE`. The mapping must remain valid for every use of the
+    /// returned handle. It is dereferenced only while the current CPU runs in
+    /// xAPIC mode.
+    pub unsafe fn new(config: LocalApicConfig, xapic_mmio_base: VirtAddr) -> Self {
         Self {
             config,
             xapic_mmio_base,
@@ -90,15 +102,15 @@ impl X86LocalApic {
     ///
     /// Enables the APIC (global-enable bit plus the x2APIC MSR bit when the
     /// CPU supports x2APIC), programs the timer/error/spurious vectors, the
-    /// timer mode/divide/initial count, and leaves the timer masked. This
-    /// must run once per CPU, with interrupts disabled.
+    /// timer mode/divide/initial count, and leaves the timer and both local
+    /// interrupt pins masked. This must run once per CPU, with interrupts
+    /// disabled.
     ///
     /// # Safety
     ///
-    /// The caller must ensure `xapic_mmio_base` passed at construction is the
-    /// mapped local APIC page and that the current CPU's APIC may safely be
-    /// reprogrammed (early boot, interrupts disabled, no interrupt sources
-    /// routed to the vectors in `config` yet).
+    /// The caller must ensure the current CPU's APIC may safely be reprogrammed
+    /// (early boot, interrupts disabled, no interrupt sources routed to the
+    /// vectors in `config` yet).
     pub unsafe fn bring_up(&self) -> Result<(), ApicError> {
         // `x2apic::LocalApic::enable` only manages the x2APIC bit; the global
         // APIC-enable bit must be set before any register access.
@@ -106,12 +118,25 @@ impl X86LocalApic {
             set_apic_base_enable_bit();
         }
 
+        // Preserve firmware delivery configuration before `enable` invokes
+        // x2apic 0.5's pin-disable helper, which writes both entries as zero
+        // and therefore clears their mask bits as well.
+        let (lint0, lint1) = unsafe { read_local_interrupt_pins(self.xapic_mmio_base) };
+
         let mut lapic = self.instance();
         unsafe {
             lapic.enable();
+            let (readback_lint0, readback_lint1) =
+                mask_local_interrupt_pins(self.xapic_mmio_base, lint0, lint1);
             // `enable` leaves the timer unmasked; restore the masked-at-boot
             // invariant so the first deadline arms it explicitly.
             lapic.disable_timer();
+            if !local_interrupt_pins_are_masked(readback_lint0, readback_lint1) {
+                return Err(ApicError::LocalInterruptPinsUnmasked {
+                    lint0: readback_lint0,
+                    lint1: readback_lint1,
+                });
+            }
         }
         Ok(())
     }
@@ -195,7 +220,7 @@ impl X86LocalApic {
     /// Returns whether the LVT timer entry is currently unmasked.
     pub fn timer_is_unmasked(&self) -> bool {
         let lvt = unsafe { read_lvt_timer(self.xapic_mmio_base) };
-        lvt & LVT_TIMER_MASKED == 0
+        lvt & LVT_MASKED == 0
     }
 
     /// Sets the timer initial count (one-shot and periodic modes).
@@ -303,6 +328,8 @@ fn current_apic_mode() -> ApicMode {
 //   `hw/intc/apic.c` reads the destination from `icr[1] >> 24`, matching
 //   Intel SDM Vol. 3).
 // - LVT timer read: needed to observe the timer mask bit.
+// - LVT LINT0/LINT1 read/write: `enable()` claims to mask both pins but
+//   x2apic 0.5 writes zero and therefore clears the architectural mask bit.
 // - `IA32_APIC_BASE` bit 11: `enable()` only manages the x2APIC bit.
 
 const IA32_APIC_BASE: u32 = 0x1b;
@@ -315,10 +342,14 @@ const XAPIC_REG_ESR: u32 = 0x280;
 const XAPIC_REG_ICR_LOW: u32 = 0x300;
 const XAPIC_REG_ICR_HIGH: u32 = 0x310;
 const XAPIC_REG_LVT_TIMER: u32 = 0x320;
+const XAPIC_REG_LVT_LINT0: u32 = 0x350;
+const XAPIC_REG_LVT_LINT1: u32 = 0x360;
 
 // x2APIC MSR addresses.
 const X2APIC_ESR: u32 = 0x828;
 const X2APIC_LVT_TIMER: u32 = 0x832;
+const X2APIC_LVT_LINT0: u32 = 0x835;
+const X2APIC_LVT_LINT1: u32 = 0x836;
 
 /// Sets the global APIC-enable bit in `IA32_APIC_BASE`.
 unsafe fn set_apic_base_enable_bit() {
@@ -357,6 +388,47 @@ unsafe fn read_lvt_timer(base: VirtAddr) -> u32 {
     }
 }
 
+/// Masks both local interrupt pins while preserving their vector and delivery
+/// configuration.
+unsafe fn mask_local_interrupt_pins(base: VirtAddr, lint0: u32, lint1: u32) -> (u32, u32) {
+    let (lint0, lint1) = masked_local_interrupt_pins(lint0, lint1);
+    unsafe {
+        write_lvt(base, XAPIC_REG_LVT_LINT0, X2APIC_LVT_LINT0, lint0);
+        write_lvt(base, XAPIC_REG_LVT_LINT1, X2APIC_LVT_LINT1, lint1);
+    }
+    unsafe { read_local_interrupt_pins(base) }
+}
+
+unsafe fn read_local_interrupt_pins(base: VirtAddr) -> (u32, u32) {
+    let lint0 = unsafe { read_lvt(base, XAPIC_REG_LVT_LINT0, X2APIC_LVT_LINT0) };
+    let lint1 = unsafe { read_lvt(base, XAPIC_REG_LVT_LINT1, X2APIC_LVT_LINT1) };
+    (lint0, lint1)
+}
+
+fn masked_local_interrupt_pins(lint0: u32, lint1: u32) -> (u32, u32) {
+    (lint0 | LVT_MASKED, lint1 | LVT_MASKED)
+}
+
+fn local_interrupt_pins_are_masked(lint0: u32, lint1: u32) -> bool {
+    lint0 & LVT_MASKED != 0 && lint1 & LVT_MASKED != 0
+}
+
+unsafe fn read_lvt(base: VirtAddr, xapic_offset: u32, x2apic_msr: u32) -> u32 {
+    match current_apic_mode() {
+        ApicMode::X2Apic => unsafe { x86::msr::rdmsr(x2apic_msr) as u32 },
+        ApicMode::XApic => unsafe { mmio_read(base, xapic_offset) },
+    }
+}
+
+unsafe fn write_lvt(base: VirtAddr, xapic_offset: u32, x2apic_msr: u32, value: u32) {
+    unsafe {
+        match current_apic_mode() {
+            ApicMode::X2Apic => x86::msr::wrmsr(x2apic_msr, u64::from(value)),
+            ApicMode::XApic => mmio_write(base, xapic_offset, value),
+        }
+    }
+}
+
 unsafe fn mmio_read(base: VirtAddr, offset: u32) -> u32 {
     unsafe {
         base.as_ptr::<u32>()
@@ -389,5 +461,22 @@ mod tests {
     #[test]
     fn fixed_ipi_level_bit_matches_the_runtime_icr_encoding() {
         assert_eq!(ICR_FIXED_LEVEL, 0x4000);
+    }
+
+    #[test]
+    fn local_interrupt_pin_masking_sets_both_masks_without_clobbering_configuration() {
+        // Typical firmware delivery modes: ExtINT on LINT0 and NMI on LINT1.
+        let lint0 = 0x700;
+        let lint1 = 0x455;
+
+        let (masked_lint0, masked_lint1) = masked_local_interrupt_pins(lint0, lint1);
+
+        assert_eq!(masked_lint0, lint0 | LVT_MASKED);
+        assert_eq!(masked_lint1, lint1 | LVT_MASKED);
+        assert!(local_interrupt_pins_are_masked(masked_lint0, masked_lint1));
+        assert!(!local_interrupt_pins_are_masked(
+            masked_lint0 & !LVT_MASKED,
+            masked_lint1
+        ));
     }
 }

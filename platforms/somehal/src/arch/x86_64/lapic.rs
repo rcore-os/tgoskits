@@ -41,7 +41,10 @@ pub(super) fn send_ipi(vector: u8) -> Result<(), IrqError> {
 /// Builds the local-APIC driver handle for the current CPU.
 pub(super) fn local_apic() -> X86LocalApic {
     let mmio_base = VirtAddr::new(someboot::mem::phys_to_virt(apic_phys_base()) as usize);
-    X86LocalApic::new(lapic_config(), mmio_base)
+    // SAFETY: `apic_phys_base` reads the LAPIC page from IA32_APIC_BASE, and
+    // someboot's permanent direct mapping keeps the complete page valid for
+    // the kernel lifetime. The driver dereferences it only in xAPIC mode.
+    unsafe { X86LocalApic::new(lapic_config(), mmio_base) }
 }
 
 fn lapic_config() -> LocalApicConfig {
@@ -63,6 +66,7 @@ fn map_apic_error(error: ApicError) -> IrqError {
     match error {
         ApicError::XapicDestinationOverflow(_) => IrqError::InvalidCpu,
         ApicError::IpiDeliveryTimeout => IrqError::Timeout,
+        ApicError::LocalInterruptPinsUnmasked { .. } => IrqError::Controller,
         ApicError::ApicUnsupported(_) => IrqError::Unsupported,
         ApicError::InvalidIoApicInput(_) => IrqError::InvalidIrq,
     }

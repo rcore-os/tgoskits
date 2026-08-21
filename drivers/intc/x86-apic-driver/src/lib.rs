@@ -103,6 +103,18 @@ pub enum ApicError {
     #[error("timed out waiting for local APIC IPI delivery")]
     IpiDeliveryTimeout,
 
+    /// The local APIC did not retain the mask bit for both local interrupt pins.
+    #[error(
+        "local APIC interrupt pins remain unmasked after initialization (LINT0={lint0:#x}, \
+         LINT1={lint1:#x})"
+    )]
+    LocalInterruptPinsUnmasked {
+        /// LVT LINT0 value read back after masking.
+        lint0: u32,
+        /// LVT LINT1 value read back after masking.
+        lint1: u32,
+    },
+
     /// The I/O APIC input pin is outside this chip's redirection table.
     #[error("I/O APIC input {0} is outside the redirection table")]
     InvalidIoApicInput(u8),

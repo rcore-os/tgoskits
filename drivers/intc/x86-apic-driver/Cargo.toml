@@ -9,9 +9,6 @@ repository.workspace = true
 keywords = ["x86_64", "driver", "apic", "interrupt-controller"]
 categories = ["embedded", "no-std", "hardware-support"]
 
-[lib]
-doctest = false
-
 [package.metadata.docs.rs]
 # Build docs on x86_64 so that platform-specific modules are included
 targets = ["x86_64-unknown-linux-gnu"]
