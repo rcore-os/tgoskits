@@ -570,6 +570,11 @@ pub fn page_fault_completion_updates_only_success() -> bool {
         && ax_runtime::hal::cache::update_mmu_cache_alignment_for_test()
 }
 
+#[cfg(axtest)]
+pub fn thread_page_table_lease_follows_task_lifetime() -> bool {
+    super::task::thread_page_table_lease_follows_task_lifetime_for_test()
+}
+
 #[cfg(test)]
 fn mmap_capped_device_map_len_rules_hold() -> bool {
     super::syscall::mmap_capped_device_map_len_rules_hold_for_test()
