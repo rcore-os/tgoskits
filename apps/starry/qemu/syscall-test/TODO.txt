@@ -119,16 +119,10 @@ remap_file_pages
 renameat2
 request_key
 sbrk
-sched_get_priority_max
-sched_get_priority_min
 sched_getaffinity
-sched_getattr
 sched_getparam
 sched_getscheduler
-sched_rr_get_interval
 sched_setaffinity
-sched_setattr
-sched_setparam
 sched_setscheduler
 sched_yield
 semctl
