@@ -30,9 +30,11 @@ Plan-only push 或已取消的 push 都会 fail-open，由 pull request 正常�
 
 pull request 不会取消当前 SHA 的 push，因此 GitHub 不会把正常去重显示为
 failing/cancelled checks。pull request run 仍只取消同一 PR 的旧 pull request run；
-GitHub API 未给 fork run 返回 PR 关联时，清理逻辑使用稳定的 head repository ID 和
-head branch 精确匹配。即使本次矩阵复用 push 而 skipped，也会清理旧 commit 尚未
-完成的 pull request run；
+同仓 PR 可由主 CI 直接清理，fork PR 则由不 checkout 代码的 `CI PR Cleanup`
+`pull_request_target` workflow 使用 Actions write token 清理。该 workflow 会先重新
+读取 PR 当前 head，忽略延迟到达的旧 synchronize 事件。GitHub API 未给 fork run
+返回 PR 关联时，清理逻辑使用稳定的 head repository ID 和 head branch 精确匹配。
+即使本次矩阵复用 push 而 skipped，也会清理旧 commit 尚未完成的 pull request run；
 新 commit 的 push 同样会取消同一分支的旧 push run。`main` 和 `dev` 是例外：每个
 commit 的 CI 都完整保留，并在各自分支队列中轮流执行；后续提交不会取消仍在运行或
 排队的旧 CI。旧 run 先收到普通 cancel；短暂复查仍未完成时再 force-cancel，避免分组

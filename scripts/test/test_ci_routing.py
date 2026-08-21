@@ -16,6 +16,7 @@ CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
 REUSABLE_CHECK_MATRIX = (
     WORKSPACE_ROOT / ".github/workflows/reusable-check-matrix.yml"
 )
+PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 
 
 class ConcurrencyRoutingTests(unittest.TestCase):
@@ -60,6 +61,92 @@ class MatrixParallelismTests(unittest.TestCase):
         self.assertRegex(
             reusable_workflow,
             r"(?ms)^      max_parallel:\n.*?^        default: (?:[2-9]|[1-9][0-9]+)$",
+        )
+
+
+class ForkCleanupPermissionTests(unittest.TestCase):
+    def test_fork_cleanup_uses_trusted_target_context(self) -> None:
+        self.assertTrue(
+            PR_CLEANUP_WORKFLOW.is_file(),
+            "fork PR cleanup needs a pull_request_target workflow with a write token",
+        )
+        workflow = PR_CLEANUP_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("pull_request_target:", workflow)
+        self.assertIn("actions: write", workflow)
+        self.assertIn(
+            '"repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"',
+            workflow,
+        )
+        self.assertIn(
+            'if [ "$PR_EVENT_HEAD_SHA" != "$PR_HEAD_SHA" ]',
+            workflow,
+        )
+        self.assertIn(".head_sha != env.PR_HEAD_SHA", workflow)
+        self.assertIn(".pull_requests[]?", workflow)
+        self.assertIn(".head_repository.id", workflow)
+        self.assertIn("actions/runs/${run_id}/cancel", workflow)
+        self.assertIn("actions/runs/${run_id}/force-cancel", workflow)
+        self.assertNotIn("actions/checkout", workflow)
+        self.assertNotIn("pull_request.head.repo.full_name", workflow)
+
+    def test_target_cleanup_cancels_only_old_current_pr_heads(self) -> None:
+        result = run_target_cancellation(
+            runs=[
+                fake_run(
+                    run_id=201,
+                    run_number=100,
+                    event="pull_request",
+                    head_branch="fork-branch",
+                    head_repository_id=42,
+                    head_sha="old-head",
+                ),
+                fake_run(
+                    run_id=202,
+                    run_number=101,
+                    event="pull_request",
+                    head_branch="fork-branch",
+                    head_repository_id=42,
+                    head_sha="current-head",
+                ),
+                fake_run(
+                    run_id=203,
+                    run_number=102,
+                    event="pull_request",
+                    head_branch="fork-branch",
+                    head_repository_id=99,
+                    head_sha="other-fork-head",
+                ),
+                fake_run(
+                    run_id=204,
+                    run_number=103,
+                    event="pull_request",
+                    head_branch="other-branch",
+                    head_repository_id=42,
+                    head_sha="other-branch-head",
+                ),
+                fake_run(
+                    run_id=205,
+                    run_number=104,
+                    event="push",
+                    head_branch="fork-branch",
+                    head_repository_id=42,
+                    head_sha="old-push-head",
+                ),
+            ]
+        )
+
+        self.assertEqual(cancelled_runs(result), {201})
+        self.assertTrue(
+            any("actions/runs/201/force-cancel" in call for call in result.gh_calls)
+        )
+
+    def test_delayed_target_event_does_not_cancel_newer_head(self) -> None:
+        result = run_target_cancellation(event_head_sha="superseded-head")
+
+        self.assertEqual(cancelled_runs(result), set())
+        self.assertFalse(
+            any("actions/workflows/ci.yml/runs" in call for call in result.gh_calls)
         )
 
 
@@ -502,6 +589,65 @@ def run_cancellation(
         )
 
 
+def run_target_cancellation(
+    *,
+    event_head_sha: str = "current-head",
+    runs: list[dict[str, object]] | None = None,
+) -> RouteResult:
+    script = workflow_step_script(
+        "Cancel older queued or running runs",
+        PR_CLEANUP_WORKFLOW,
+    )
+    if runs is None:
+        runs = []
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        bin_dir = temp_dir / "bin"
+        bin_dir.mkdir()
+        fake_gh = bin_dir / "gh"
+        fake_gh.write_text(FAKE_TARGET_CANCEL_GH, encoding="utf-8")
+        fake_gh.chmod(0o755)
+        fake_sleep = bin_dir / "sleep"
+        fake_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_sleep.chmod(0o755)
+
+        gh_log = temp_dir / "gh.log"
+        env = os.environ.copy()
+        env.update(
+            {
+                "FAKE_CANCEL_RUNS": json.dumps(runs),
+                "FAKE_CURRENT_HEAD_REF": "fork-branch",
+                "FAKE_CURRENT_HEAD_REPOSITORY_ID": "42",
+                "FAKE_CURRENT_HEAD_SHA": "current-head",
+                "FAKE_GH_LOG": str(gh_log),
+                "GITHUB_REPOSITORY": "rcore-os/tgoskits",
+                "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                "PR_EVENT_HEAD_SHA": event_head_sha,
+                "PR_NUMBER": "2078",
+            }
+        )
+        completed = subprocess.run(
+            ["bash", "-c", script],
+            cwd=WORKSPACE_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise AssertionError(
+                f"target cancellation script failed with {completed.returncode}:\n"
+                f"{completed.stderr}"
+            )
+        return RouteResult(
+            "",
+            "",
+            completed.stdout,
+            completed.stderr,
+            gh_log.read_text(encoding="utf-8").splitlines(),
+        )
+
+
 def fake_run(
     *,
     run_id: int,
@@ -509,6 +655,7 @@ def fake_run(
     event: str,
     head_branch: str,
     head_repository_id: int,
+    head_sha: str = "old-head",
     pull_request_number: int | None = None,
 ) -> dict[str, object]:
     pull_requests = (
@@ -518,6 +665,7 @@ def fake_run(
         "event": event,
         "head_branch": head_branch,
         "head_repository": {"id": head_repository_id},
+        "head_sha": head_sha,
         "html_url": f"https://example.test/runs/{run_id}",
         "id": run_id,
         "pull_requests": pull_requests,
@@ -534,8 +682,11 @@ def cancelled_runs(result: RouteResult) -> set[int]:
     }
 
 
-def workflow_step_script(step_name: str) -> str:
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+def workflow_step_script(
+    step_name: str,
+    workflow_path: Path = CI_WORKFLOW,
+) -> str:
+    workflow = workflow_path.read_text(encoding="utf-8")
     step = named_step_block(workflow, step_name)
     lines = step.splitlines()
     run_index = next(
@@ -625,6 +776,66 @@ if cancel_match:
 run_match = re.search(r"actions/runs/(\d+)", arguments)
 if run_match:
     print(os.environ["FAKE_RECHECK_STATUS"])
+    sys.exit(0)
+
+print(f"unexpected gh invocation: {arguments}", file=sys.stderr)
+sys.exit(2)
+'''
+
+
+FAKE_TARGET_CANCEL_GH = r'''#!/usr/bin/env python3
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+arguments = " ".join(sys.argv[1:])
+with Path(os.environ["FAKE_GH_LOG"]).open("a", encoding="utf-8") as log:
+    log.write(arguments + "\n")
+
+if "/pulls/" in arguments:
+    print(
+        f'{os.environ["FAKE_CURRENT_HEAD_SHA"]}\t'
+        f'{os.environ["FAKE_CURRENT_HEAD_REF"]}\t'
+        f'{os.environ["FAKE_CURRENT_HEAD_REPOSITORY_ID"]}'
+    )
+    sys.exit(0)
+
+if "actions/workflows/ci.yml/runs" in arguments:
+    status_argument = next(
+        argument
+        for argument in sys.argv[1:]
+        if argument.startswith("status=")
+    )
+    status = status_argument.split("=", maxsplit=1)[1]
+    runs = [
+        run
+        for run in json.loads(os.environ["FAKE_CANCEL_RUNS"])
+        if run["status"] == status
+    ]
+    jq_index = sys.argv.index("--jq")
+    completed = subprocess.run(
+        ["jq", "-r", sys.argv[jq_index + 1]],
+        input=json.dumps({"workflow_runs": runs}),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=os.environ,
+    )
+    sys.stdout.write(completed.stdout)
+    sys.stderr.write(completed.stderr)
+    sys.exit(completed.returncode)
+
+cancel_match = re.search(r"actions/runs/(\d+)/(?:force-)?cancel", arguments)
+if cancel_match:
+    sys.exit(0)
+
+run_match = re.search(r"actions/runs/(\d+)", arguments)
+if run_match:
+    print("queued")
     sys.exit(0)
 
 print(f"unexpected gh invocation: {arguments}", file=sys.stderr)

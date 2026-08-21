@@ -207,7 +207,8 @@ jobs:
 
       - name: Cancel older queued or running runs
         if: >-
-          github.event_name == 'pull_request' ||
+          (github.event_name == 'pull_request' &&
+           github.event.pull_request.head.repo.full_name == github.repository) ||
           (github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev')
         env:
           GH_TOKEN: ${{ github.token }}

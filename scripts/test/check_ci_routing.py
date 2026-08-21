@@ -10,6 +10,7 @@ CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
 REUSABLE_CHECK_MATRIX = (
     WORKSPACE_ROOT / ".github/workflows/reusable-check-matrix.yml"
 )
+PR_CLEANUP_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-pr-cleanup.yml"
 LEGACY_BRANCH_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci-branch-push.yml"
 
 
@@ -21,6 +22,8 @@ def main() -> int:
         errors.append(
             "missing workflow: .github/workflows/reusable-check-matrix.yml"
         )
+    if not PR_CLEANUP_WORKFLOW.is_file():
+        errors.append("missing workflow: .github/workflows/ci-pr-cleanup.yml")
     if LEGACY_BRANCH_WORKFLOW.exists():
         errors.append("branch push routing must be part of ci.yml")
     if errors:
@@ -28,6 +31,7 @@ def main() -> int:
 
     ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     reusable_check_matrix = REUSABLE_CHECK_MATRIX.read_text(encoding="utf-8")
+    pr_cleanup_workflow = PR_CLEANUP_WORKFLOW.read_text(encoding="utf-8")
     ci_triggers = mapping_block(ci_workflow, "on", 0)
     ci_push = mapping_block(ci_triggers, "push", 2)
     pull_request = mapping_block(ci_triggers, "pull_request", 2)
@@ -236,6 +240,12 @@ def main() -> int:
         errors.append(
             "stale-run cleanup must force-cancel runs that ignore normal cancellation"
         )
+    require_contains(
+        errors,
+        cancel_step,
+        "github.event.pull_request.head.repo.full_name == github.repository",
+        "fork PR cleanup must use the trusted pull_request_target workflow",
+    )
 
     pull_request_selector, push_selector = shell_if_else_branches(
         ci_workflow,
@@ -389,6 +399,45 @@ def main() -> int:
         "max-parallel: ${{ inputs.max_parallel }}",
         "the reusable matrix must honor its parallelism limit",
     )
+
+    for fragment, message in (
+        (
+            "pull_request_target:",
+            "fork PR cleanup must run in a trusted target context",
+        ),
+        ("actions: write", "fork PR cleanup must receive an Actions write token"),
+        (
+            '"repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"',
+            "fork PR cleanup must re-read the current PR head",
+        ),
+        (
+            'if [ "$PR_EVENT_HEAD_SHA" != "$PR_HEAD_SHA" ]',
+            "a delayed cleanup event must not cancel a newer PR head",
+        ),
+        (
+            '.head_sha != env.PR_HEAD_SHA',
+            "fork PR cleanup must preserve every run for the current head",
+        ),
+        (
+            ".pull_requests[]?",
+            "fork PR cleanup must prefer the pull request number",
+        ),
+        (
+            ".head_repository.id == (env.PR_HEAD_REPOSITORY_ID | tonumber)",
+            "fork PR fallback must match the stable source repository ID",
+        ),
+        (
+            'actions/runs/${run_id}/cancel',
+            "fork PR cleanup must request normal cancellation",
+        ),
+        (
+            'actions/runs/${run_id}/force-cancel',
+            "fork PR cleanup must force-cancel a run that remains active",
+        ),
+    ):
+        require_contains(errors, pr_cleanup_workflow, fragment, message)
+    if "actions/checkout" in pr_cleanup_workflow:
+        errors.append("pull_request_target cleanup must never checkout PR code")
 
     return report(errors)
 
