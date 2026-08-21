@@ -364,12 +364,7 @@ pub fn sys_sched_setattr(pid: i32, attr: *const u8, flags: u32) -> StarryResult<
 }
 
 /// sched_getattr(2) — read scheduling attributes into a user `sched_attr`.
-pub fn sys_sched_getattr(
-    pid: i32,
-    attr: *mut u8,
-    size: u32,
-    flags: u32,
-) -> StarryResult<isize> {
+pub fn sys_sched_getattr(pid: i32, attr: *mut u8, size: u32, flags: u32) -> StarryResult<isize> {
     if flags != 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -391,10 +386,7 @@ pub fn sys_sched_getattr(
     };
     let write_len = (size as usize).min(size_of::<SchedAttr>());
     unsafe {
-        let bytes = core::slice::from_raw_parts(
-            &out as *const SchedAttr as *const u8,
-            write_len,
-        );
+        let bytes = core::slice::from_raw_parts(&out as *const SchedAttr as *const u8, write_len);
         vm_write_slice(attr, bytes)?;
     }
     Ok(SchedAttr::SIZE_VER1 as _)
