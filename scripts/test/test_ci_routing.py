@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import os
 import subprocess
 import tempfile
@@ -7,11 +8,28 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from scripts.test.check_ci_routing import named_step_block
+from scripts.test.check_ci_routing import mapping_block, named_step_block
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = WORKSPACE_ROOT / ".github/workflows/ci.yml"
+
+
+class ConcurrencyRoutingTests(unittest.TestCase):
+    def test_main_and_dev_use_distinct_fifo_groups(self) -> None:
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        concurrency = mapping_block(workflow, "concurrency", 0)
+
+        self.assertIn("github.event_name != 'pull_request'", concurrency)
+        self.assertIn("github.ref == 'refs/heads/main'", concurrency)
+        self.assertIn("github.ref == 'refs/heads/dev'", concurrency)
+        self.assertIn(
+            "format('ci-{0}-{1}', github.workflow, github.ref)", concurrency
+        )
+        self.assertIn(
+            "format('ci-{0}-{1}', github.workflow, github.run_id)", concurrency
+        )
+        self.assertIn("queue: max", concurrency)
 
 
 class DuplicateEventRoutingTests(unittest.TestCase):
@@ -201,6 +219,82 @@ class StaleRunCancellationTests(unittest.TestCase):
             any("actions/runs/101/force-cancel" in call for call in result.gh_calls)
         )
 
+    def test_fork_pull_request_cancels_only_older_matching_head_runs(self) -> None:
+        result = run_cancellation(
+            event_name="pull_request",
+            pr_number="2078",
+            pr_head_ref="feat/axvisor-ai-rtos-integration",
+            pr_head_repository_id="1329374417",
+            runs=[
+                fake_run(
+                    run_id=101,
+                    run_number=100,
+                    event="pull_request",
+                    head_branch="feat/axvisor-ai-rtos-integration",
+                    head_repository_id=1329374417,
+                ),
+                fake_run(
+                    run_id=102,
+                    run_number=101,
+                    event="pull_request",
+                    head_branch="another-branch",
+                    head_repository_id=1329374417,
+                ),
+                fake_run(
+                    run_id=103,
+                    run_number=102,
+                    event="pull_request",
+                    head_branch="feat/axvisor-ai-rtos-integration",
+                    head_repository_id=999,
+                ),
+                fake_run(
+                    run_id=104,
+                    run_number=103,
+                    event="push",
+                    head_branch="feat/axvisor-ai-rtos-integration",
+                    head_repository_id=1329374417,
+                ),
+                fake_run(
+                    run_id=105,
+                    run_number=200,
+                    event="pull_request",
+                    head_branch="feat/axvisor-ai-rtos-integration",
+                    head_repository_id=1329374417,
+                ),
+                fake_run(
+                    run_id=106,
+                    run_number=104,
+                    event="pull_request",
+                    head_branch="feat/axvisor-ai-rtos-integration",
+                    head_repository_id=1329374417,
+                    pull_request_number=999,
+                ),
+            ],
+        )
+
+        cancelled_run_ids = cancelled_runs(result)
+        self.assertEqual(cancelled_run_ids, {101})
+
+    def test_pull_request_number_match_remains_supported(self) -> None:
+        result = run_cancellation(
+            event_name="pull_request",
+            pr_number="2078",
+            pr_head_ref="current-branch",
+            pr_head_repository_id="42",
+            runs=[
+                fake_run(
+                    run_id=107,
+                    run_number=100,
+                    event="pull_request",
+                    head_branch="historical-branch-name",
+                    head_repository_id=99,
+                    pull_request_number=2078,
+                )
+            ],
+        )
+
+        self.assertEqual(cancelled_runs(result), {107})
+
 
 class RouteResult:
     def __init__(
@@ -307,8 +401,26 @@ def route_script() -> str:
     return workflow_step_script("Route duplicate events")
 
 
-def run_cancellation() -> RouteResult:
+def run_cancellation(
+    *,
+    event_name: str = "push",
+    ref_name: str = "fix/qemu-forward-progress",
+    pr_number: str = "",
+    pr_head_ref: str = "",
+    pr_head_repository_id: str = "",
+    runs: list[dict[str, object]] | None = None,
+) -> RouteResult:
     script = workflow_step_script("Cancel older queued or running runs")
+    if runs is None:
+        runs = [
+            fake_run(
+                run_id=101,
+                run_number=100,
+                event="push",
+                head_branch=ref_name,
+                head_repository_id=1,
+            )
+        ]
     with tempfile.TemporaryDirectory() as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         bin_dir = temp_dir / "bin"
@@ -325,12 +437,16 @@ def run_cancellation() -> RouteResult:
         env.update(
             {
                 "CURRENT_RUN_NUMBER": "200",
-                "EVENT_NAME": "push",
+                "EVENT_NAME": event_name,
+                "FAKE_CANCEL_RUNS": json.dumps(runs),
                 "FAKE_GH_LOG": str(gh_log),
+                "FAKE_RECHECK_STATUS": "queued",
                 "GITHUB_REPOSITORY": "rcore-os/tgoskits",
                 "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
-                "PR_NUMBER": "",
-                "REF_NAME": "fix/qemu-forward-progress",
+                "PR_HEAD_REF": pr_head_ref,
+                "PR_HEAD_REPOSITORY_ID": pr_head_repository_id,
+                "PR_NUMBER": pr_number,
+                "REF_NAME": ref_name,
             }
         )
         completed = subprocess.run(
@@ -353,6 +469,38 @@ def run_cancellation() -> RouteResult:
             completed.stderr,
             gh_log.read_text(encoding="utf-8").splitlines(),
         )
+
+
+def fake_run(
+    *,
+    run_id: int,
+    run_number: int,
+    event: str,
+    head_branch: str,
+    head_repository_id: int,
+    pull_request_number: int | None = None,
+) -> dict[str, object]:
+    pull_requests = (
+        [] if pull_request_number is None else [{"number": pull_request_number}]
+    )
+    return {
+        "event": event,
+        "head_branch": head_branch,
+        "head_repository": {"id": head_repository_id},
+        "html_url": f"https://example.test/runs/{run_id}",
+        "id": run_id,
+        "pull_requests": pull_requests,
+        "run_number": run_number,
+        "status": "queued",
+    }
+
+
+def cancelled_runs(result: RouteResult) -> set[int]:
+    return {
+        int(call.split("actions/runs/", maxsplit=1)[1].split("/cancel", maxsplit=1)[0])
+        for call in result.gh_calls
+        if "/cancel" in call and "/force-cancel" not in call
+    }
 
 
 def workflow_step_script(step_name: str) -> str:
@@ -408,7 +556,10 @@ sys.exit(2)
 
 
 FAKE_CANCEL_GH = r'''#!/usr/bin/env python3
+import json
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -417,17 +568,32 @@ arguments = " ".join(sys.argv[1:])
 with Path(os.environ["FAKE_GH_LOG"]).open("a", encoding="utf-8") as log:
     log.write(arguments + "\n")
 
-if "actions/workflows/ci.yml/runs?status=queued" in arguments:
-    print("101\t11975\thttps://example.test/push/101")
-    sys.exit(0)
 if "actions/workflows/ci.yml/runs?status=" in arguments:
+    status = re.search(r"status=([^& ]+)", arguments).group(1)
+    runs = [
+        run
+        for run in json.loads(os.environ["FAKE_CANCEL_RUNS"])
+        if run["status"] == status
+    ]
+    jq_index = sys.argv.index("--jq")
+    completed = subprocess.run(
+        ["jq", "-r", sys.argv[jq_index + 1]],
+        input=json.dumps({"workflow_runs": runs}),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    sys.stdout.write(completed.stdout)
+    sys.stderr.write(completed.stderr)
+    sys.exit(completed.returncode)
+
+cancel_match = re.search(r"actions/runs/(\d+)/(?:force-)?cancel", arguments)
+if cancel_match:
     sys.exit(0)
-if "actions/runs/101/force-cancel" in arguments:
-    sys.exit(0)
-if "actions/runs/101/cancel" in arguments:
-    sys.exit(0)
-if "actions/runs/101" in arguments:
-    print("queued")
+
+run_match = re.search(r"actions/runs/(\d+)", arguments)
+if run_match:
+    print(os.environ["FAKE_RECHECK_STATUS"])
     sys.exit(0)
 
 print(f"unexpected gh invocation: {arguments}", file=sys.stderr)

@@ -28,6 +28,31 @@ def main() -> int:
     if mapping_block(ci_push, "branches", 4):
         errors.append("main CI push trigger must accept every branch")
 
+    concurrency = mapping_block(ci_workflow, "concurrency", 0)
+    for protected_ref in ("main", "dev"):
+        require_contains(
+            errors,
+            concurrency,
+            f"github.ref == 'refs/heads/{protected_ref}'",
+            f"{protected_ref} CI runs must use a stable per-ref concurrency group",
+        )
+    for fragment, message in (
+        (
+            "github.event_name != 'pull_request'",
+            "pull request runs must not enter main or dev concurrency queues",
+        ),
+        (
+            "format('ci-{0}-{1}', github.workflow, github.ref)",
+            "main and dev CI queues must be isolated by ref",
+        ),
+        (
+            "format('ci-{0}-{1}', github.workflow, github.run_id)",
+            "non-protected runs must use unique concurrency groups",
+        ),
+        ("queue: max", "main and dev CI queues must preserve every commit"),
+    ):
+        require_contains(errors, concurrency, fragment, message)
+
     pull_request_paths = list_items_in_order(pull_request, "paths", 4)
     if not pull_request_paths or pull_request_paths[-1] != "!**/*.md":
         errors.append("the Markdown exclusion must be the final pull_request path rule")
@@ -213,12 +238,43 @@ def main() -> int:
     else:
         for fragment, message in (
             (
+                "PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}",
+                "PR cleanup must receive the pull request head branch",
+            ),
+            (
+                "PR_HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id || '' }}",
+                "PR cleanup must receive the pull request head repository ID",
+            ),
+        ):
+            require_contains(errors, cancel_step, fragment, message)
+        for fragment, message in (
+            (
                 '.event == "pull_request"',
                 "PR cleanup must only select pull request runs",
             ),
             (
                 ".pull_requests[]?",
                 "PR cleanup must select runs for the same pull request",
+            ),
+            (
+                "(.pull_requests | length) == 0",
+                "PR cleanup must detect runs without pull request links",
+            ),
+            (
+                'env.PR_HEAD_REF != ""',
+                "fork PR cleanup must reject an empty head branch",
+            ),
+            (
+                'env.PR_HEAD_REPOSITORY_ID != ""',
+                "fork PR cleanup must reject an empty head repository ID",
+            ),
+            (
+                ".head_branch == env.PR_HEAD_REF",
+                "fork PR cleanup must match the head branch",
+            ),
+            (
+                ".head_repository.id == (env.PR_HEAD_REPOSITORY_ID | tonumber)",
+                "fork PR cleanup must match the stable head repository ID",
             ),
         ):
             require_contains(errors, pull_request_selector, fragment, message)

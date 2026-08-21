@@ -13,7 +13,14 @@ sidebar_label: "自动 CI 测试"
 - `scripts/test/ci_plan.py` 展开配置并生成矩阵；
 - `.github/workflows/reusable-check-matrix.yml` 执行展开后的矩阵行。
 
-容器发布由 `.github/workflows/container-publish.yml` 独立处理。同仓分支 push 是
+容器发布由 `.github/workflows/container-publish.yml` 独立处理。`main` 和 `dev`
+各自使用按 ref 隔离的 FIFO concurrency group，同一分支的每个非 PR run 都会保留并
+轮流执行，两条分支之间不会互相排队。pull request、普通分支和其他事件使用按 run ID
+隔离的 group，不进入 `main` 或 `dev` 的 workflow 队列；不同 PR 也不会在 workflow
+层面互相排队。该隔离不划分 runner 容量，所有 run 仍共享现有 self-hosted runner，
+匹配标签的 runner 繁忙时 job 会继续保持 queued。
+
+同仓分支 push 是
 对应 head commit 的首选验证；pull request 准备阶段会短暂重试尚未可见的同 SHA push
 run。匹配的 push 仍在 queued 或 in_progress 时，它已经拥有该 commit 的验证，pull
 request 将自己的后续矩阵标记为 skipped；push 已 completed 时，仍必须存在非 Plan、
@@ -22,17 +29,20 @@ request 将自己的后续矩阵标记为 skipped；push 已 completed 时，仍
 Plan-only push 或已取消的 push 都会 fail-open，由 pull request 正常规划并执行。
 
 pull request 不会取消当前 SHA 的 push，因此 GitHub 不会把正常去重显示为
-failing/cancelled checks。pull request run 仍只取消同一 PR 的旧 pull request run，
-即使本次矩阵复用 push 而 skipped，也会清理旧 commit 尚未完成的 pull request run；
+failing/cancelled checks。pull request run 仍只取消同一 PR 的旧 pull request run；
+GitHub API 未给 fork run 返回 PR 关联时，清理逻辑使用稳定的 head repository ID 和
+head branch 精确匹配。即使本次矩阵复用 push 而 skipped，也会清理旧 commit 尚未
+完成的 pull request run；
 新 commit 的 push 同样会取消同一分支的旧 push run。`main` 和 `dev` 是例外：每个
-push commit 的 CI 都完整保留，后续提交不会取消仍在运行的旧 CI。旧 run 先收到普通
-cancel；短暂复查仍未完成时再 force-cancel，避免分组 job 的 `always()` 条件阻止清理。
+commit 的 CI 都完整保留，并在各自分支队列中轮流执行；后续提交不会取消仍在运行或
+排队的旧 CI。旧 run 先收到普通 cancel；短暂复查仍未完成时再 force-cancel，避免分组
+job 的 `always()` 条件阻止清理。
 
 ## 触发条件
 
 | 事件 | 行为 |
 |------|------|
-| push 到 `main` / `dev` | 非文档变更运行完整矩阵，并保留每个 commit 的完整 CI |
+| push 到 `main` / `dev` | 非文档变更运行完整矩阵；两条分支分别 FIFO，并保留每个 commit 的完整 CI |
 | 其他分支 push | 非文档变更运行完整矩阵，作为同仓 PR 的首选验证 |
 | 首次创建 pull request | 同 SHA push 已拥有验证时跳过，否则按三点 diff 规划 |
 | 更新或重开 pull request | 取消旧 commit 的同事件 run；同 SHA push 已拥有验证时跳过，否则按三点 diff 规划 |
