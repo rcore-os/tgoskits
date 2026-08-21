@@ -8,7 +8,7 @@ slug: /architecture/axvisor
 
 Axvisor 是基于 ArceOS 的统一组件化 Type-I Hypervisor。它既非直接包裹 KVM 的用户态工具，也非单体式虚拟机管理程序，而是建立在 ArceOS 运行时、虚拟化组件库与分层配置系统之上的 Hypervisor 软件栈。
 
-本文聚焦 Axvisor 的组织原理、配置体系与关键执行路径。若需要先运行 QEMU 示例，请先阅读 [Axvisor 快速上手](/docs/quickstart/axvisor)。客户机 Machine 的设计按职责分为[客户机配置](./guest-configuration.md)、[资源规划](./machine-profile.md)、[设备运行时](./device-runtime.md)和[客户机控制台](./guest-console.md)四篇文档。
+本文聚焦 Axvisor 的组织原理、配置体系与关键执行路径。若需要先运行虚拟开发板示例，请先阅读 [Axvisor 快速上手](/docs/quickstart/axvisor)。客户机设计按职责分为[客户机配置](./guest-configuration.md)、[资源规划](./machine-profile.md)、[设备运行时](./device-runtime.md)和[客户机控制台](./guest-console.md)四篇文档。AxVM 内部怎样区分共同架构动作、部分架构能力和单一实现，见[《AxVM 分层能力接口设计》](https://github.com/rcore-os/tgoskits/blob/dev/docs/design/axvm-capability-layering.md)。
 
 ## 系统定位
 
@@ -104,14 +104,18 @@ fn main() {
 
 ### 架构适配
 
-`hal/arch/` 提供四套架构适配，每套实现各自架构的虚拟化启用、中断注入和上下文切换。aarch64 和 riscv64 是当前最成熟的两条路径，loongarch64 处于可用状态，x86_64 仍为 stub 占位。
+`hal/arch/` 提供四套宿主接入，AxVM 内部再为每种目标架构实现运行、机器、客户机启动、镜像装载和宿主时间等共同能力。通用虚拟处理器循环只依赖统一架构入口；处理器启动这类只有部分架构具备的动作由独立能力接口约束，没有该能力的架构无法误用。
+
+这种分层不依靠在通用代码中反复判断架构名称。架构目录根只负责选择四个目标模块，“当前目标”命名空间集中内部类型别名和转发；AxVM 不向 Axvisor 导出架构模块或架构专用函数。宿主文件系统释放、块设备直通准备和中断路由注册都通过架构无关的宿主服务入口完成，龙芯客户机中断路由随虚拟机注册与注销自动挂接和拆除。
+
+目标模块、专有寄存器和后端选择仍使用条件编译；领域能力的有无由实现列表表达。公共行为由默认方法提供，真实硬件差异由具体架构覆盖，只有一个实现的动作留在具体路径。完整判据见上文的分层能力设计。
 
 | 架构 | 虚拟化方式 | 中断注入 |
 | --- | --- | --- |
-| aarch64 | EL2 虚拟化 | GIC 中断注入 |
-| riscv64 | H 扩展 | PLIC 中断注入 |
-| loongarch64 | LVZ 虚拟化 | 中断注入 |
-| x86_64 | stub 占位 | — |
+| 六十四位 ARM | 第二异常级虚拟化 | 通用中断控制器注入 |
+| 精简指令集 V | 虚拟化扩展 | 平台级中断控制器注入 |
+| 龙芯 | 龙芯虚拟化扩展 | 扩展输入与平台中断级联注入 |
+| 六十四位 x86 | 英特尔与超微硬件虚拟化扩展 | 本地与输入输出高级可编程中断控制器注入 |
 
 ### 配置驱动的 VM 实例化
 

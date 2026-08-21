@@ -1,7 +1,9 @@
 //! LoongArch64 implementations of AxVM platform capability hooks.
 
 use super::LoongArch64Arch;
-use crate::architecture::{GuestBootPlatform, MachinePlatform};
+use crate::architecture::{Architecture, GuestBootPlatform, MachinePlatform};
+
+impl Architecture for LoongArch64Arch {}
 
 impl MachinePlatform for LoongArch64Arch {
     const MACHINE_ARCHITECTURE: crate::machine::MachineArchitecture =
@@ -27,12 +29,4 @@ impl GuestBootPlatform for LoongArch64Arch {
         super::boot::prepare_uefi_fdt_config(vm_config, vm_create_config)?;
         Ok(None)
     }
-}
-
-pub fn host_fdt_bootarg() -> usize {
-    ax_std::os::arceos::modules::ax_hal::dtb::get_bootarg()
-}
-
-pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
-    ax_std::os::arceos::modules::ax_hal::mem::phys_to_virt(paddr)
 }

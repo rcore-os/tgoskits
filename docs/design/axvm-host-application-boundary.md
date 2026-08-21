@@ -34,7 +34,7 @@ Axvisor 此前还导出了板级驱动 feature 的别名。这既重复了 `ax-d
 
 - `axvm::host::console` 控制并访问物理宿主控制台。
 - `axvm::host::cpu` 报告控制台读取任务选核所需的宿主 CPU 拓扑。
-- `axvm::host::x86` 持有固定的 QEMU 块设备 IRQ 路由和交接流程。
+- `axvm::host` 持有文件系统释放、块设备直通准备和宿主中断路由等架构无关入口；某个目标需要的专用实现留在 AxVM 内部。
 
 公共函数只使用 AxVM 类型或普通数据。`ax-hal` IRQ 类型、`ax-driver` PCI 描述符和内部宿主 trait 均保持私有。
 

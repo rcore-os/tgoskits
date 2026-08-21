@@ -2,6 +2,10 @@
 
 pub(crate) mod arceos;
 pub(crate) mod paging;
+#[cfg(any(test, target_arch = "aarch64"))]
+pub(crate) mod percpu_irq;
+#[cfg(any(test, target_arch = "aarch64"))]
+pub(crate) mod shared_mmio;
 pub(crate) mod task;
 pub(crate) mod traits;
 
@@ -27,18 +31,27 @@ pub mod cpu {
     }
 }
 
-/// x86 host-device handoff required by AxVM's QEMU block passthrough profile.
+/// Shut down host filesystems before their devices are transferred to a guest.
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+pub fn shutdown_filesystems() -> crate::AxVmResult {
+    arceos::shutdown_host_filesystems()
+}
+
+/// Register any host interrupt route required by the selected block-passthrough profile.
 #[cfg(all(feature = "host-fs", target_arch = "x86_64"))]
-pub mod x86 {
-    use crate::{AxVMRef, AxVmResult};
+pub fn register_block_passthrough_irq(vm: &crate::AxVMRef) -> crate::AxVmResult {
+    arceos::register_qemu_block_passthrough_irq(vm)
+}
 
-    /// Resolves and registers the host INTx route for the QEMU block device.
-    pub fn register_qemu_block_passthrough_irq(vm: &AxVMRef) -> AxVmResult {
-        super::arceos::register_qemu_block_passthrough_irq(vm)
-    }
+/// Other architectures do not require a host block interrupt forwarding route.
+#[cfg(all(feature = "host-fs", not(target_arch = "x86_64")))]
+pub fn register_block_passthrough_irq(_vm: &crate::AxVMRef) -> crate::AxVmResult {
+    Ok(())
+}
 
-    /// Detaches the QEMU block device from its host driver before guest start.
-    pub fn prepare_qemu_block_passthrough_device() {
-        super::arceos::prepare_qemu_block_passthrough_device();
-    }
+/// Detach any host block device selected for guest passthrough.
+#[cfg(feature = "host-fs")]
+pub fn prepare_block_passthrough_device() {
+    #[cfg(target_arch = "x86_64")]
+    arceos::prepare_qemu_block_passthrough_device();
 }

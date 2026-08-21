@@ -1,4 +1,4 @@
-//! Transaction boundary for claiming one enabled per-CPU timer interrupt.
+//! Transaction boundary for claiming one enabled per-CPU host interrupt.
 
 /// Host operations needed to configure and claim one per-CPU interrupt.
 pub(crate) trait PerCpuIrqControl {

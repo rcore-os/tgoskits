@@ -2,7 +2,6 @@
 
 use std::{format, sync::Arc, vec::Vec};
 
-use ax_memory_addr::VirtAddr;
 use ax_std::os::arceos::guard::IrqSaveGuard;
 use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
@@ -18,18 +17,6 @@ pub(crate) trait ArchOps {
 
     fn has_hardware_support() -> bool;
 
-    fn clean_dcache_range(_addr: VirtAddr, _size: usize) {}
-
-    fn register_platform_irq_injector() {}
-
-    fn vcpu_affinities(
-        cpu_num: usize,
-        phys_cpu_ids: Option<&[usize]>,
-        phys_cpu_sets: Option<&[usize]>,
-    ) -> Vec<(usize, Option<usize>, usize)> {
-        default_vcpu_affinities(cpu_num, phys_cpu_ids, phys_cpu_sets)
-    }
-
     #[allow(dead_code)]
     fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, _vcpu_id: usize, arg: usize) {
         vcpu.set_gpr(0, arg);
@@ -37,13 +24,13 @@ pub(crate) trait ArchOps {
 
     fn before_first_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
 
-    /// Activates architecture-owned device bindings before the VM becomes runnable.
-    fn activate_devices(_vm: &crate::AxVM) -> AxVmResult {
+    /// Enters architecture-owned runtime state before the VM becomes runnable.
+    fn enter_runtime(_vm: &crate::AxVM) -> AxVmResult {
         Ok(())
     }
 
-    /// Rolls back architecture-owned device bindings after a failed start.
-    fn deactivate_devices(_vm: &crate::AxVM) -> AxVmResult {
+    /// Leaves architecture-owned runtime state after stop or failed start.
+    fn exit_runtime(_vm: &crate::AxVM) -> AxVmResult {
         Ok(())
     }
 
@@ -122,23 +109,13 @@ pub(crate) trait ArchOps {
         vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
     }
 
-    fn after_external_interrupt(
-        _vm: &crate::AxVMRef,
-        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        vector: usize,
-    ) {
-        crate::host::arceos::dispatch_host_irq(vector);
-    }
-
     /// Releases architecture runtime state after the VM's last vCPU exits.
     ///
     /// The VM reference is required for architecture state that is published
     /// through VM-local device services rather than indexed in global tables.
-    fn on_last_vcpu_exit(_vm: &crate::AxVMRef) -> AxVmResult {
-        Ok(())
+    fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
+        Self::exit_runtime(vm)
     }
-
-    fn after_mmio_write(_vm: &crate::AxVMRef) {}
 
     /// Handles a VM exit after the architecture backend has been unloaded.
     ///
@@ -335,35 +312,6 @@ pub(crate) fn target_phys_cpu_ids(vcpu_mappings: &[(usize, Option<usize>, usize)
     cpu_ids
 }
 
-pub(crate) fn default_vcpu_affinities(
-    cpu_num: usize,
-    phys_cpu_ids: Option<&[usize]>,
-    phys_cpu_sets: Option<&[usize]>,
-) -> Vec<(usize, Option<usize>, usize)> {
-    let mut vcpus = Vec::with_capacity(cpu_num);
-    for vcpu_id in 0..cpu_num {
-        vcpus.push((vcpu_id, None, vcpu_id));
-    }
-
-    if let Some(phys_cpu_sets) = phys_cpu_sets {
-        for (vcpu_id, pcpu_mask_bitmap) in phys_cpu_sets.iter().enumerate() {
-            if let Some(vcpu) = vcpus.get_mut(vcpu_id) {
-                vcpu.1 = Some(*pcpu_mask_bitmap);
-            }
-        }
-    }
-
-    if let Some(phys_cpu_ids) = phys_cpu_ids {
-        for (vcpu_id, phys_id) in phys_cpu_ids.iter().enumerate() {
-            if let Some(vcpu) = vcpus.get_mut(vcpu_id) {
-                vcpu.2 = *phys_id;
-            }
-        }
-    }
-
-    vcpus
-}
-
 #[cfg(all(test, feature = "host-test"))]
 mod tests {
     use std::{cell::Cell, sync::Arc, vec};
@@ -483,7 +431,7 @@ mod tests {
         type VCpu = RecordingVcpu;
         type PerCpu = RecordingPerCpu;
         type DeferredRunWork = ();
-        type NestedPageTable = crate::arch::ArchNestedPageTable;
+        type NestedPageTable = crate::arch::current::ArchNestedPageTable;
 
         fn has_hardware_support() -> bool {
             true
@@ -617,29 +565,5 @@ mod tests {
             ]
         );
         assert!(dispatcher.drain(0, 1).is_empty());
-    }
-
-    #[test]
-    fn default_vcpu_affinities_pins_single_cpu_to_isolated_core() {
-        // aarch64/riscv64 arceos-smp1.toml: cpu_num=1, phys_cpu_ids=[1] → pin to physical Core 1.
-        assert_eq!(
-            default_vcpu_affinities(1, Some(&[1]), None),
-            vec![(0, None, 1)]
-        );
-        // x86_64 arceos-smp1.toml: phys_cpu_sets=[2] → affinity mask 0b10 (Core 1).
-        assert_eq!(
-            default_vcpu_affinities(1, None, Some(&[2])),
-            vec![(0, Some(2), 0)]
-        );
-        // Default: no pinning, vcpu id equals physical id.
-        assert_eq!(default_vcpu_affinities(1, None, None), vec![(0, None, 0)]);
-    }
-
-    #[test]
-    fn default_vcpu_affinities_multi_cpu_falls_back_to_vcpu_id() {
-        assert_eq!(
-            default_vcpu_affinities(2, None, None),
-            vec![(0, None, 0), (1, None, 1)]
-        );
     }
 }

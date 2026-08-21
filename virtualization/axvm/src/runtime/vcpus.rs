@@ -22,7 +22,8 @@ use std::{
 
 use crate::{
     AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
-    arch::{ArchOps, CurrentArch, VcpuRunAction},
+    arch::current::CurrentArch,
+    architecture::{ArchOps, VcpuRunAction},
     ax_err_type,
     irq::model::{PendingVcpuInterrupt, VirtualInterruptId},
     runtime::{VCpuRef, VMRef, sub_running_vm_count},

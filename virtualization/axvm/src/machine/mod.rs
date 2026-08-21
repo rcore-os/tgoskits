@@ -9,7 +9,7 @@ use std::{string::String, vec, vec::Vec};
 
 use axdevice_base::AccessWidth;
 
-use crate::{arch::CurrentArch, architecture::MachinePlatform};
+use crate::{arch::current::CurrentArch, architecture::MachinePlatform};
 
 mod factory;
 mod gic;

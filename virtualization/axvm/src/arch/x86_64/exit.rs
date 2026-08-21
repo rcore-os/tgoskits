@@ -123,7 +123,7 @@ pub(crate) fn finish(
 ) -> AxVmResult<VcpuRunAction> {
     match work {
         DeferredRunWork::ExternalInterrupt { vector } => {
-            X86_64Arch::after_external_interrupt(vm, vcpu, vector);
+            crate::architecture::exit::finish_external_interrupt(vector);
         }
         DeferredRunWork::TimesliceExpired => {}
         DeferredRunWork::InterruptEnd { vector } => {
