@@ -87,32 +87,85 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
-          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
         run: |
           set -euo pipefail
 
           should_run=true
-          if [ "$EVENT_NAME" = "push" ] \
-            && [ "$REF_NAME" != "main" ] \
-            && [ "$REF_NAME" != "dev" ] \
-            && [ "$GITHUB_REPOSITORY" = "rcore-os/tgoskits" ]; then
-            open_prs="$(
-              gh pr list \
-                --repo "$GITHUB_REPOSITORY" \
-                --head "$REF_NAME" \
-                --state open \
-                --json number,url,headRefName,headRepositoryOwner \
-                --jq '.[] | select(.headRepositoryOwner.login == env.REPOSITORY_OWNER and .headRefName == env.REF_NAME) | "- #\(.number): \(.url)"'
-            )"
-            if [ -n "$open_prs" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ] \
+            && [ "$HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ]; then
+            push_runs=""
+            if ! push_runs="$(
+              gh api \
+                --method GET \
+                --paginate \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+                -f event=push \
+                -f branch="$PR_HEAD_REF" \
+                -f head_sha="$HEAD_SHA" \
+                -f per_page=100 \
+                --jq '.workflow_runs[] | select(
+                  .event == "push"
+                  and .head_sha == env.HEAD_SHA
+                  and .head_branch == env.PR_HEAD_REF
+                  and .conclusion != "cancelled"
+                ) | [.id, .run_number, .html_url] | @tsv' 2>&1
+            )"; then
+              echo "::warning::Failed to query matching branch push runs: ${push_runs}"
+              push_runs=""
+            fi
+
+            active_push_runs=""
+            while IFS=$'\t' read -r run_id run_number run_url; do
+              if [ -z "$run_id" ]; then
+                continue
+              fi
+              if ! active_matrix_jobs="$(
+                gh api \
+                  --method GET \
+                  --paginate \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs" \
+                  -f filter=latest \
+                  -f per_page=100 \
+                  --jq '.jobs[] | select(
+                    .name != "Plan CI"
+                    and .conclusion != "skipped"
+                    and .conclusion != "cancelled"
+                  ) | .id' 2>&1
+              )"; then
+                echo "::warning::Failed to inspect branch push run #${run_number}: ${active_matrix_jobs}"
+                continue
+              fi
+              if [ -n "$active_matrix_jobs" ]; then
+                if ! push_run_is_usable="$(
+                  gh api \
+                    --method GET \
+                    "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
+                    --jq '.conclusion != "cancelled"' 2>&1
+                )"; then
+                  echo "::warning::Failed to recheck branch push run #${run_number}: ${push_run_is_usable}"
+                  continue
+                fi
+                if [ "$push_run_is_usable" != "true" ]; then
+                  continue
+                fi
+                if [ -n "$active_push_runs" ]; then
+                  active_push_runs+=$'\n'
+                fi
+                active_push_runs+="- #${run_number}: ${run_url}"
+              fi
+            done <<< "$push_runs"
+
+            if [ -n "$active_push_runs" ]; then
               should_run=false
               {
-                echo "## Duplicate push CI skipped"
+                echo "## Duplicate pull request CI skipped"
                 echo ""
-                echo "This branch already has an open pull request; its pull_request run validates the same commit."
+                echo "A branch push run already has an active matrix for this pull request head commit."
                 echo ""
-                echo "$open_prs"
+                echo "$active_push_runs"
               } >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
@@ -126,8 +179,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CURRENT_RUN_NUMBER: ${{ github.run_number }}
           EVENT_NAME: ${{ github.event_name }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
           REF_NAME: ${{ github.ref_name }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
@@ -138,19 +189,8 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request" ]; then
             selector='select(
               .run_number < (env.CURRENT_RUN_NUMBER | tonumber)
-              and (
-                (
-                  .event == "pull_request"
-                  and any(.pull_requests[]?; .number == (env.PR_NUMBER | tonumber))
-                )
-                or (
-                  .event == "push"
-                  and .head_branch != "main"
-                  and .head_branch != "dev"
-                  and .head_sha == env.HEAD_SHA
-                  and .head_branch == env.PR_HEAD_REF
-                )
-              )
+              and .event == "pull_request"
+              and any(.pull_requests[]?; .number == (env.PR_NUMBER | tonumber))
             )'
           else
             selector='select(
@@ -192,7 +232,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/test/check_ci_routing.py
-          python3 -m unittest scripts/test/test_ci_impact.py scripts/test/test_ci_plan.py
+          python3 -m unittest \
+            scripts/test/test_ci_impact.py \
+            scripts/test/test_ci_plan.py \
+            scripts/test/test_ci_routing.py
 
       - name: Resolve incremental base revision
         id: since

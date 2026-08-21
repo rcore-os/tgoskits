@@ -13,21 +13,22 @@ sidebar_label: "自动 CI 测试"
 - `scripts/test/ci_plan.py` 展开配置并生成矩阵；
 - `.github/workflows/reusable-check-matrix.yml` 执行展开后的矩阵行。
 
-容器发布由 `.github/workflows/container-publish.yml` 独立处理。非主线分支 push
-由主 CI 的准备阶段检查 open PR，已有 PR 时准备阶段正常成功、后续矩阵标记为
-skipped。所有 pull request 事件都由 pull request run 验证；它会取消同一 PR 的旧
-pull request run，以及同一普通分支和 head commit 下仍在排队或运行的 push run；
-`main` 和 `dev` 的 push run 始终保留。这样首次创建 PR 和重跑 workflow 时都不会
-出现 push 与 pull request 互相等待、最终没有测试矩阵执行的情况。
+容器发布由 `.github/workflows/container-publish.yml` 独立处理。同仓分支 push 是
+对应 head commit 的首选验证；pull request 准备阶段只在确认同一分支和 head commit
+的 push run 已经产生有效矩阵后，将自己的后续矩阵标记为 skipped。它不会取消 push
+run，因此 GitHub 不会把正常的事件去重显示为 failing/cancelled checks。没有匹配的
+有效 push 矩阵时（包括 fork PR、API 查询失败、push 只有 Plan CI 或矩阵已被取消），
+pull request run 正常规划并执行。pull request run 仍只取消同一 PR 的旧 pull
+request run。
 
 ## 触发条件
 
 | 事件 | 行为 |
 |------|------|
 | push 到 `main` / `dev` | 非文档变更运行完整矩阵 |
-| 其他分支 push | 没有 open PR 时运行完整矩阵 |
-| 首次创建 pull request | 按三点 diff 规划，并取消同 SHA 下仍未完成的 branch push run |
-| 更新或重开 pull request | planner 根据三点 diff 生成增量矩阵 |
+| 其他分支 push | 非文档变更运行完整矩阵，作为同仓 PR 的首选验证 |
+| 首次创建 pull request | 同 SHA push 已有有效矩阵时跳过，否则按三点 diff 规划 |
+| 更新或重开 pull request | 同 SHA push 已有有效矩阵时跳过，否则按三点 diff 规划 |
 | workflow dispatch | 使用指定的 `since_sha`，但仍运行完整矩阵 |
 
 纯 Markdown 变更不触发主 CI。`push` 和 `workflow_dispatch` 不缩小测试矩阵。
@@ -157,7 +158,10 @@ container image、preflight、cache、checkout depth、timeout、artifact 和命
 ## 本地检查
 
 ```bash
-python3 -m unittest scripts/test/test_ci_impact.py scripts/test/test_ci_plan.py
+python3 -m unittest \
+  scripts/test/test_ci_impact.py \
+  scripts/test/test_ci_plan.py \
+  scripts/test/test_ci_routing.py
 python3 scripts/test/check_ci_routing.py
 actionlint
 ```
