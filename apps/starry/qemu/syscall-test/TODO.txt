@@ -15,7 +15,6 @@ cachestat
 chroot
 clock_adjtime
 clock_nanosleep
-clock_settime
 clone
 clone3
 delete_module
@@ -148,7 +147,6 @@ setpgrp
 setpriority
 setrlimit
 setsid
-settimeofday
 sgetmask
 sigaction
 sighold
