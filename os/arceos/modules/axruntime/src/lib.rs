@@ -555,6 +555,28 @@ fn advance_periodic_timer(now_ns: u64) -> bool {
 }
 
 #[cfg(feature = "irq")]
+fn select_timer_deadline(
+    periodic_deadline_nanos: u64,
+    task_deadline_nanos: Option<u64>,
+    now_nanos: u64,
+    periodic_interval_nanos: u64,
+) -> (u64, u64) {
+    debug_assert_ne!(periodic_interval_nanos, 0);
+    let periodic_deadline_nanos = if periodic_deadline_nanos <= now_nanos {
+        let elapsed_intervals = (now_nanos - periodic_deadline_nanos) / periodic_interval_nanos;
+        periodic_deadline_nanos.saturating_add(
+            periodic_interval_nanos.saturating_mul(elapsed_intervals.saturating_add(1)),
+        )
+    } else {
+        periodic_deadline_nanos
+    };
+    let selected_deadline_nanos = task_deadline_nanos
+        .map(|task_deadline| core::cmp::min(periodic_deadline_nanos, task_deadline))
+        .unwrap_or(periodic_deadline_nanos);
+    (periodic_deadline_nanos, selected_deadline_nanos)
+}
+
+#[cfg(feature = "irq")]
 fn program_next_timer() {
     let mut deadline = with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.read_current(pin));
     if deadline == 0 {
@@ -564,10 +586,24 @@ fn program_next_timer() {
     }
     #[cfg(feature = "multitask")]
     let task_deadline = ax_task::next_timer_deadline_nanos();
-    #[cfg(feature = "multitask")]
-    if let Some(task_deadline) = task_deadline {
-        deadline = core::cmp::min(deadline, task_deadline);
+    #[cfg(not(feature = "multitask"))]
+    let task_deadline = None;
+    let now_nanos = ax_hal::time::monotonic_time_nanos();
+    let (next_periodic_deadline, selected_deadline) = select_timer_deadline(
+        deadline,
+        task_deadline,
+        now_nanos,
+        periodic_interval_nanos(),
+    );
+    if next_periodic_deadline != deadline {
+        // Timer callbacks and scheduler work can outlive the periodic deadline
+        // selected at IRQ entry. Coalesce those ticks before rearming so the
+        // hardware comparator is not programmed with an already elapsed value.
+        with_periodic_deadline(|pin| {
+            NEXT_PERIODIC_DEADLINE_NANOS.write_current(pin, next_periodic_deadline);
+        });
     }
+    deadline = selected_deadline;
 
     ax_hal::time::set_oneshot_timer(deadline);
     #[cfg(feature = "multitask")]
@@ -617,6 +653,14 @@ fn init_tls() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "irq")]
+    #[test]
+    fn timer_programming_catches_up_after_a_slow_irq() {
+        let (periodic, selected) = super::select_timer_deadline(100, None, 150, 10);
+        assert_eq!(periodic, 160);
+        assert_eq!(selected, 160);
+    }
+
     #[test]
     fn fs_init_accepts_bootargs_without_fs_feature() {
         crate::fs::init(Some("root=/dev/nvme0n1"));
