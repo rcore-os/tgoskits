@@ -9,6 +9,7 @@ license.workspace = true
 
 [features]
 axtest = []
+host-test = ["ax-sync/host-test"]
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
 vfs = ["ax-sync/sleep"]
@@ -61,7 +62,3 @@ features = ["default"]
 
 [dev-dependencies.ax-hal]
 path = "../../os/arceos/modules/axhal"
-
-[dev-dependencies.ax-sync]
-workspace = true
-features = ["host-test"]
