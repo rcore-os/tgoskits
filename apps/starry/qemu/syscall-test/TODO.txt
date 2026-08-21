@@ -56,8 +56,6 @@ ioctl_pidfd
 ioctl_sg
 ioperm
 iopl
-ioprio_get
-ioprio_set
 kcmp
 keyctl
 landlock
@@ -112,10 +110,8 @@ process_vm_writev
 profil
 prot_hsymlinks
 quotactl
-readahead
 readdir
 reboot
-remap_file_pages
 renameat2
 request_key
 sbrk
@@ -153,7 +149,6 @@ sgetmask
 sigaction
 sighold
 signal
-signalfd
 sigpending
 sigprocmask
 sigrelse
@@ -174,7 +169,6 @@ sysfs
 tee
 timer_create
 timer_delete
-timer_getoverrun
 timer_gettime
 timer_settime
 timerfd_create
