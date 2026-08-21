@@ -70,7 +70,8 @@ pub fn run() -> crate::TestResult {
     let avg = TOTAL_LATENCY_US.load(Ordering::Relaxed) / samples as u64;
     let late = LATE_WAKES.load(Ordering::Relaxed);
     println!(
-        "cyclictest: threads={} interval_ms={} samples={} max_latency_us={} avg_latency_us={} min_latency_us={} late_wakes={}",
+        "cyclictest: threads={} interval_ms={} samples={} max_latency_us={} avg_latency_us={} \
+         min_latency_us={} late_wakes={}",
         THREADS,
         INTERVAL.as_millis(),
         samples,

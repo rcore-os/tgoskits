@@ -82,13 +82,16 @@ pub(crate) static BUSY_TICKS: [core::sync::atomic::AtomicU64; crate::build_info:
 /// (or with IRQs disabled in `switch_to`), so `Relaxed` atomics suffice; the
 /// values are read cross-CPU only by `api::print_sched_latency_stats`.
 #[cfg(feature = "sched-latency")]
-pub(crate) static SCHED_LATENCY_MAX_NS: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
+pub(crate) static SCHED_LATENCY_MAX_NS: [core::sync::atomic::AtomicU64;
+    crate::build_info::CPU_CAPACITY] =
     [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
 #[cfg(feature = "sched-latency")]
-pub(crate) static SCHED_LATENCY_SUM_NS: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
+pub(crate) static SCHED_LATENCY_SUM_NS: [core::sync::atomic::AtomicU64;
+    crate::build_info::CPU_CAPACITY] =
     [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
 #[cfg(feature = "sched-latency")]
-pub(crate) static SCHED_LATENCY_COUNT: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
+pub(crate) static SCHED_LATENCY_COUNT: [core::sync::atomic::AtomicU64;
+    crate::build_info::CPU_CAPACITY] =
     [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
 
 #[cfg(not(feature = "host-test"))]

@@ -105,9 +105,7 @@ impl AxVMResources {
                 id,
                 phys_cpu_set,
                 phys_cpu_id,
-                priority: priorities
-                    .as_ref()
-                    .and_then(|prios| prios.get(id).copied()),
+                priority: priorities.as_ref().and_then(|prios| prios.get(id).copied()),
             })
             .collect()
     }
