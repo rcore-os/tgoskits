@@ -19,7 +19,9 @@ sidebar_label: "自动 CI 测试"
 run，因此 GitHub 不会把正常的事件去重显示为 failing/cancelled checks。没有匹配的
 有效 push 矩阵时（包括 fork PR、API 查询失败、push 只有 Plan CI 或矩阵已被取消），
 pull request run 正常规划并执行。pull request run 仍只取消同一 PR 的旧 pull
-request run。
+request run，即使本次 pull request 矩阵复用 push 而 skipped，也会清理旧 commit
+尚未完成的 pull request run；新 commit 的 push 同样会取消同一分支的旧 push run。
+两个事件都不会取消当前 commit 的另一类 run。
 
 ## 触发条件
 
@@ -28,7 +30,7 @@ request run。
 | push 到 `main` / `dev` | 非文档变更运行完整矩阵 |
 | 其他分支 push | 非文档变更运行完整矩阵，作为同仓 PR 的首选验证 |
 | 首次创建 pull request | 同 SHA push 已有有效矩阵时跳过，否则按三点 diff 规划 |
-| 更新或重开 pull request | 同 SHA push 已有有效矩阵时跳过，否则按三点 diff 规划 |
+| 更新或重开 pull request | 取消旧 commit 的同事件 run；同 SHA push 已有有效矩阵时跳过，否则按三点 diff 规划 |
 | workflow dispatch | 使用指定的 `since_sha`，但仍运行完整矩阵 |
 
 纯 Markdown 变更不触发主 CI。`push` 和 `workflow_dispatch` 不缩小测试矩阵。

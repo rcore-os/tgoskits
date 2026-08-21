@@ -173,8 +173,7 @@ jobs:
 
       - name: Cancel older queued or running runs
         if: >-
-          steps.route.outputs.should_run == 'true' &&
-          (github.event_name == 'pull_request' || github.ref != 'refs/heads/dev')
+          github.event_name == 'pull_request' || github.ref != 'refs/heads/dev'
         env:
           GH_TOKEN: ${{ github.token }}
           CURRENT_RUN_NUMBER: ${{ github.run_number }}

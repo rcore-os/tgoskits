@@ -143,6 +143,12 @@ def main() -> int:
     ):
         require_contains(errors, ci_workflow, fragment, message)
 
+    cancel_step = named_step_block(plan_ci, "Cancel older queued or running runs")
+    if "steps.route.outputs.should_run" in cancel_step:
+        errors.append(
+            "stale-run cleanup must run even when duplicate pull request CI is skipped"
+        )
+
     pull_request_selector, push_selector = shell_if_else_branches(
         ci_workflow,
         '"$EVENT_NAME" = "pull_request"',
