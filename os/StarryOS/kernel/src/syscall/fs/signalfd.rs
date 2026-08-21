@@ -9,6 +9,15 @@ use crate::{
     syscall::signal::check_sigset_size,
 };
 
+/// signalfd(2) — legacy signalfd entry point.
+///
+/// Linux implements `signalfd(fd, mask, sizemask)` as `signalfd4(fd, mask,
+/// sizemask, 0)`; the syscall table only exposes the legacy name on x86_64.
+#[cfg(target_arch = "x86_64")]
+pub fn sys_signalfd(fd: i32, mask: *const SignalSet, sigsetsize: usize) -> StarryResult<isize> {
+    sys_signalfd4(fd, mask, sigsetsize, 0)
+}
+
 // SFD flag definitions (if not available in linux_raw_sys)
 const SFD_CLOEXEC: u32 = O_CLOEXEC;
 const SFD_NONBLOCK: u32 = O_NONBLOCK;

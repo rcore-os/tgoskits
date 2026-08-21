@@ -165,11 +165,19 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         Sysno::sync => sys_sync(),
         Sysno::syncfs => sys_syncfs(uctx.arg0() as _),
+        Sysno::readahead => sys_readahead(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
 
         // xattr stubs — rsext4 has no extended attributes, return empty/ENODATA/EOPNOTSUPP
         Sysno::listxattr => sys_listxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::llistxattr => sys_llistxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::flistxattr => sys_flistxattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::listxattrat => sys_listxattrat(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
         Sysno::getxattr => sys_getxattr(
             uctx.arg0() as _,
             uctx.arg1() as _,
@@ -228,6 +236,12 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::removexattr => sys_removexattr(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::lremovexattr => sys_lremovexattr(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::fremovexattr => sys_fremovexattr(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::removexattrat => sys_removexattrat(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
 
         // file ops
         #[cfg(target_arch = "x86_64")]
@@ -644,6 +658,13 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         Sysno::madvise => sys_madvise(uctx.arg0(), uctx.arg1() as _, uctx.arg2() as _),
         Sysno::msync => sys_msync(uctx.arg0(), uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::remap_file_pages => sys_remap_file_pages(
+            uctx.arg0(),
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
         Sysno::mlock => sys_mlock(uctx.arg0(), uctx.arg1() as _),
         Sysno::mlock2 => sys_mlock2(uctx.arg0(), uctx.arg1() as _, uctx.arg2() as _),
 
@@ -675,6 +696,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         Sysno::sched_getparam => sys_sched_getparam(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::getpriority => sys_getpriority(uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setpriority => sys_setpriority(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+        Sysno::ioprio_get => sys_ioprio_get(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::ioprio_set => sys_ioprio_set(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
 
         // task ops
         Sysno::execve => sys_execve(uctx, uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -1014,6 +1037,8 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
 
         // signal file descriptors
+        #[cfg(target_arch = "x86_64")]
+        Sysno::signalfd => sys_signalfd(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2()),
         Sysno::signalfd4 => sys_signalfd4(
             uctx.arg0() as _,
             uctx.arg1() as _,
@@ -1056,6 +1081,7 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg3() as _,
         ),
         Sysno::timer_gettime => sys_timer_gettime(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::timer_getoverrun => sys_timer_getoverrun(uctx.arg0() as _),
         Sysno::timer_delete => sys_timer_delete(uctx.arg0() as _),
 
         _ => {

@@ -3,6 +3,7 @@ mod clone3;
 mod ctl;
 mod execve;
 mod exit;
+mod ioprio;
 mod job;
 mod namespace;
 pub mod ptrace;
@@ -11,8 +12,8 @@ mod thread;
 mod wait;
 
 pub use self::{
-    clone::*, clone3::*, ctl::*, execve::*, exit::*, job::*, namespace::*, ptrace::*, schedule::*,
-    thread::*, wait::*,
+    clone::*, clone3::*, ctl::*, execve::*, exit::*, ioprio::*, job::*, namespace::*, ptrace::*,
+    schedule::*, thread::*, wait::*,
 };
 
 #[cfg(test)]
@@ -27,6 +28,8 @@ pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
 
 #[cfg(test)]
 pub(crate) use self::exit::exit_code_encoding_rules_hold_for_test;
+#[cfg(test)]
+pub(crate) use self::ioprio::ioprio_validation_rules_hold_for_test;
 #[cfg(test)]
 pub(crate) use self::job::job_setpgid_validation_rules_hold_for_test;
 #[cfg(test)]

@@ -314,6 +314,19 @@ pub fn sys_flistxattr(fd: i32, list: *mut u8, size: usize) -> StarryResult<isize
     list_xattr(resolve_fd(fd)?, list, size)
 }
 
+/// listxattrat(2) — resolve a path relative to `dirfd` and list its extended
+/// attribute names. Linux 6.10+ exposes this as a first-class syscall; the
+/// argument shape is the classic listxattr form plus `at_flags`.
+pub fn sys_listxattrat(
+    dirfd: i32,
+    path: *const c_char,
+    list: *mut u8,
+    size: usize,
+    at_flags: u32,
+) -> StarryResult<isize> {
+    list_xattr(resolve_xattrat(dirfd, path, at_flags)?, list, size)
+}
+
 pub fn sys_getxattr(
     path: *const c_char,
     name: *const c_char,
@@ -419,6 +432,17 @@ pub fn sys_lremovexattr(path: *const c_char, name: *const c_char) -> StarryResul
 
 pub fn sys_fremovexattr(fd: i32, name: *const c_char) -> StarryResult<isize> {
     remove_xattr(resolve_fd(fd)?, name)
+}
+
+/// removexattrat(2) — remove an extended attribute from a path resolved
+/// relative to `dirfd`. Linux 6.10+ syscall counterpart of `removexattr`.
+pub fn sys_removexattrat(
+    dirfd: i32,
+    path: *const c_char,
+    name: *const c_char,
+    at_flags: u32,
+) -> StarryResult<isize> {
+    remove_xattr(resolve_xattrat(dirfd, path, at_flags)?, name)
 }
 
 #[cfg(test)]

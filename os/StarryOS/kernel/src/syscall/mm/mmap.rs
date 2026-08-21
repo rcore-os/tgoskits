@@ -1152,6 +1152,33 @@ pub fn sys_msync(addr: usize, length: usize, flags: u32) -> StarryResult<isize> 
     Ok(0)
 }
 
+/// remap_file_pages(2) — legacy non-linear file mapping syscall.
+///
+/// Linux keeps the syscall for ABI compatibility but marks it deprecated;
+/// since Linux 2.6 it maps the whole file linearly by default and the
+/// operation is effectively a no-op. StarryOS mirrors that: validate the
+/// ABI contract (page alignment, `prot == 0`, `flags == 0`) and return
+/// success without changing the mapping.
+pub fn sys_remap_file_pages(
+    addr: usize,
+    size: usize,
+    prot: u32,
+    _pgoff: usize,
+    flags: u32,
+) -> StarryResult<isize> {
+    debug!("sys_remap_file_pages <= addr: {addr:#x}, size: {size:x}");
+    if prot != 0 || flags != 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    if size == 0 {
+        return Ok(0);
+    }
+    if !addr.is_multiple_of(PAGE_SIZE_4K) || !size.is_multiple_of(PAGE_SIZE_4K) {
+        return Err(StarryError::InvalidInput);
+    }
+    Ok(0)
+}
+
 pub fn sys_mlock(addr: usize, length: usize) -> StarryResult<isize> {
     sys_mlock2(addr, length, 0)
 }

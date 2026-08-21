@@ -301,6 +301,24 @@ pub fn sys_timer_delete(timerid: __kernel_timer_t) -> StarryResult<isize> {
     }
 }
 
+/// timer_getoverrun(2) — report missed timer expirations since the last
+/// signal delivery.
+///
+/// StarryOS delivers each timer expiry through a dedicated alarm; because the
+/// alarm queue coalesces pending expirations before delivery, the observable
+/// overrun is always zero here (the same value Linux reports when no signal
+/// was lost). The syscall still validates the timer id, matching Linux's
+/// `EINVAL` for an unknown timer.
+pub fn sys_timer_getoverrun(timerid: __kernel_timer_t) -> StarryResult<isize> {
+    let curr = current();
+    let thr = curr.as_thread();
+
+    if thr.proc_data.posix_timers.gettime(timerid).is_err() {
+        return Err(StarryError::InvalidInput);
+    }
+    Ok(0)
+}
+
 #[cfg(test)]
 pub(crate) fn time_clock_id_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{

@@ -10,7 +10,7 @@ use core::{
     time::Duration,
 };
 
-use ax_fs_ng::vfs::{FsContext, sync_all_cached_files};
+use ax_fs_ng::vfs::{FileFlags, FsContext, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, VfsError, path::Path};
@@ -22,7 +22,9 @@ use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
     StarryError, StarryResult,
-    file::{Directory, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
+    file::{
+        Directory, File, FileLike, fd_is_path, get_file_like, resolve_at, with_fs,
+    },
     mm::{vm_load_path_string, vm_load_string},
     task::AsThread,
     time::TimeValueLike,
@@ -911,5 +913,26 @@ pub fn sys_syncfs(fd: c_int) -> StarryResult<isize> {
     } else if let Some(d) = any.downcast_ref::<Directory>() {
         d.inner().filesystem().flush()?;
     }
+    Ok(0)
+}
+
+/// readahead(2) — populate the page cache for a file range.
+///
+/// StarryOS already fills file-backed pages on demand through the mmap
+/// readahead path, so this advisory syscall only validates the descriptor and
+/// range and returns success. Linux treats `count == 0` as a no-op success and
+/// rejects negative offsets with `EINVAL`; a descriptor not open for reading
+/// yields `EBADF`.
+pub fn sys_readahead(fd: c_int, offset: i64, count: usize) -> StarryResult<isize> {
+    debug!("sys_readahead <= fd: {fd}, offset: {offset}, count: {count}");
+    if count == 0 {
+        return Ok(0);
+    }
+    if offset < 0 {
+        return Err(StarryError::InvalidInput);
+    }
+
+    let f = File::from_fd(fd)?;
+    f.inner().access(FileFlags::READ)?;
     Ok(0)
 }
