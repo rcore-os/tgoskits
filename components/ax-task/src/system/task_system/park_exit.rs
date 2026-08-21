@@ -806,12 +806,21 @@ impl TaskSystem {
                 Self::complete_affinity_if_satisfied_locked(&previous_core, &sched);
             (migration_target, previous_exited, affinity_completed)
         } else {
-            // Linux PREEMPT_RT keeps the wake transaction under `p->pi_lock`:
-            // before consulting task metadata, the incoming tail release-clears
-            // `p->on_cpu`. A waker that published TASK_WAKING observes this
-            // release and performs its own target selection and enqueue without
-            // a second rq transaction.
+            // Linux `finish_task_switch()` runs `finish_task(prev)` — the
+            // release-store of `prev->on_cpu` — while still holding
+            // `rq->lock`, and only then `finish_lock_switch()` drops it.
+            // Publishing the release inside the owner rq transaction keeps a
+            // concurrent owner transaction (policy update classification and
+            // re-link, wake, affinity reconcile) from observing `on_cpu`
+            // flipping mid-transaction. The task lock is taken only after the
+            // transaction commits: a waker spinning in
+            // `wait_until_not_on_cpu()` holds that lock while waiting for
+            // exactly this release, so the tail must never block on it first.
+            let remote = Arc::clone(cpu.remote());
+            // SAFETY: propagated from this method's selected entry contract.
+            let mut transaction = unsafe { rq_entry.begin(self, &remote) };
             previous_core.sched().placement().finish_task(owner);
+            transaction.commit();
             // SAFETY: propagated from this method's selected entry contract.
             let sched = unsafe { rq_entry.lock_thread_sched(previous_core.sched()) };
             #[cfg(feature = "task-test-hooks")]
