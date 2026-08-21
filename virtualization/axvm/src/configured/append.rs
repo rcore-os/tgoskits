@@ -224,10 +224,17 @@ mod tests {
         DeviceNodeSpec::virtual_device(id, Arc::new(TestInterruptControllerModel))
     }
 
+    fn registered_catalog() -> Arc<ConfiguredDeviceCatalog> {
+        let mut catalog = ConfiguredDeviceCatalog::new();
+        crate::machine::register_devices(&mut catalog).unwrap();
+        Arc::new(catalog)
+    }
+
     #[test]
     fn console_override_and_extra_serial_share_deterministic_planning() {
         let config = AxVMConfig::new(AxVMConfigParams {
             phys_cpu_ls: PhysCpuList::new(1, None, None),
+            virtual_device_catalog: registered_catalog(),
             virtual_device_requests: vec![
                 VirtualDeviceRequest {
                     id: "serial1".into(),
@@ -285,6 +292,7 @@ mod tests {
     fn ivc_channel_uses_resolved_notify_irq_and_planned_mmio_aperture() {
         let config = AxVMConfig::new(AxVMConfigParams {
             phys_cpu_ls: PhysCpuList::new(1, None, None),
+            virtual_device_catalog: registered_catalog(),
             virtual_device_requests: vec![VirtualDeviceRequest {
                 id: "ivc0".into(),
                 model: "ivc-channel".into(),
