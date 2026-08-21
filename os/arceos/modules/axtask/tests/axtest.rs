@@ -8,6 +8,7 @@ use core::{
     f64::consts,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     task::Context,
+    time::Duration,
 };
 
 use ax_std as _;
@@ -321,6 +322,10 @@ fn external_deadline_participates_in_timer_selection() {
     });
 
     ax_assert_eq!(ax_task::next_timer_deadline_nanos(), Some(1));
+    // Keep the elapsed source published across a real timer IRQ. Re-arming it
+    // as the next comparator deadline would starve this task before it can
+    // clear the publication.
+    ax_task::sleep(Duration::from_millis(20));
     external_deadline.store(NO_DEADLINE, Ordering::Release);
 }
 

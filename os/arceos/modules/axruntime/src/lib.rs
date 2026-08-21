@@ -571,6 +571,11 @@ fn select_timer_deadline(
         periodic_deadline_nanos
     };
     let selected_deadline_nanos = task_deadline_nanos
+        // The IRQ path has already dispatched callbacks and task timers before
+        // selecting the next comparator value. Re-arming an elapsed external
+        // publication can therefore retrigger the timer immediately forever
+        // if its owner has not cleared the stale value yet.
+        .filter(|task_deadline| *task_deadline > now_nanos)
         .map(|task_deadline| core::cmp::min(periodic_deadline_nanos, task_deadline))
         .unwrap_or(periodic_deadline_nanos);
     (periodic_deadline_nanos, selected_deadline_nanos)
@@ -659,6 +664,22 @@ mod tests {
         let (periodic, selected) = super::select_timer_deadline(100, None, 150, 10);
         assert_eq!(periodic, 160);
         assert_eq!(selected, 160);
+    }
+
+    #[cfg(feature = "irq")]
+    #[test]
+    fn timer_programming_does_not_rearm_an_elapsed_task_deadline() {
+        let (periodic, selected) = super::select_timer_deadline(200, Some(1), 150, 10);
+        assert_eq!(periodic, 200);
+        assert_eq!(selected, 200);
+    }
+
+    #[cfg(feature = "irq")]
+    #[test]
+    fn timer_programming_keeps_an_unexpired_task_deadline() {
+        let (periodic, selected) = super::select_timer_deadline(200, Some(175), 150, 10);
+        assert_eq!(periodic, 200);
+        assert_eq!(selected, 175);
     }
 
     #[test]
