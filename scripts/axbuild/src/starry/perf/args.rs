@@ -18,24 +18,17 @@ pub(super) fn apply_perf_cargo_features(cargo: &mut Cargo, args: &ArgsPerf) {
     if perf_needs_frame_pointers(args) {
         cargo.env.insert("BACKTRACE".to_string(), "y".to_string());
     }
-    apply_perf_rustflags(cargo, args);
+    apply_perf_rustflags(cargo);
 }
 
-fn apply_perf_rustflags(cargo: &mut Cargo, args: &ArgsPerf) {
-    let mut flags = Vec::new();
-    if perf_needs_debuginfo(args) {
-        flags.push("-Cdebuginfo=2".to_string());
-        flags.push("-Cstrip=none".to_string());
-    }
-    if perf_needs_frame_pointers(args) {
-        flags.push("-Cforce-frame-pointers=yes".to_string());
-    }
+fn apply_perf_rustflags(cargo: &mut Cargo) {
+    let flags = crate::build::toolchain_rustflags(&cargo.env);
     if flags.is_empty() {
         return;
     }
 
     let flags = flags.iter().map(String::as_str).collect::<Vec<_>>();
-    crate::build::append_encoded_rustflags(cargo, &flags);
+    crate::build::append_cargo_rustflags(cargo, &flags);
 }
 
 pub(super) fn validate_args(args: &ArgsPerf) -> anyhow::Result<()> {
