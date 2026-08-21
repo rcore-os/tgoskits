@@ -246,6 +246,12 @@ def main() -> int:
         "github.event.pull_request.head.repo.full_name == github.repository",
         "fork PR cleanup must use the trusted pull_request_target workflow",
     )
+    require_contains(
+        errors,
+        cancel_step,
+        "github.event_name != 'pull_request'",
+        "the non-protected ref branch must not re-enable fork PR cleanup",
+    )
 
     pull_request_selector, push_selector = shell_if_else_branches(
         ci_workflow,

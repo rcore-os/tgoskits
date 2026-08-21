@@ -65,6 +65,19 @@ class MatrixParallelismTests(unittest.TestCase):
 
 
 class ForkCleanupPermissionTests(unittest.TestCase):
+    def test_main_cleanup_skips_fork_pull_requests(self) -> None:
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        cleanup_step = named_step_block(
+            workflow,
+            "Cancel older queued or running runs",
+        )
+
+        self.assertIn(
+            "github.event.pull_request.head.repo.full_name == github.repository",
+            cleanup_step,
+        )
+        self.assertIn("github.event_name != 'pull_request'", cleanup_step)
+
     def test_fork_cleanup_uses_trusted_target_context(self) -> None:
         self.assertTrue(
             PR_CLEANUP_WORKFLOW.is_file(),

@@ -209,7 +209,8 @@ jobs:
         if: >-
           (github.event_name == 'pull_request' &&
            github.event.pull_request.head.repo.full_name == github.repository) ||
-          (github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev')
+          (github.event_name != 'pull_request' &&
+           github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev')
         env:
           GH_TOKEN: ${{ github.token }}
           CURRENT_RUN_NUMBER: ${{ github.run_number }}
