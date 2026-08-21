@@ -47,45 +47,44 @@ def main() -> int:
     if not route_step:
         errors.append("Plan CI must have a duplicate-event routing step")
     else:
+        push_route = shell_if_block(route_step, '"$EVENT_NAME" = "push"')
+        if not push_route:
+            errors.append("duplicate routing must identify branch push events")
         for fragment, message in (
             (
-                'EVENT_ACTION: ${{ github.event.action || \'\' }}',
-                "duplicate routing must distinguish newly opened pull requests",
+                '[ "$REF_NAME" != "main" ]',
+                "main push CI must not be disabled by pull request routing",
             ),
             (
-                'HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}',
-                "duplicate routing must compare the pull request head commit",
+                '[ "$REF_NAME" != "dev" ]',
+                "dev push CI must not be disabled by pull request routing",
             ),
             (
-                '"$EVENT_ACTION" = "opened"',
-                "only a newly opened pull request may reuse its branch push run",
+                '[ "$GITHUB_REPOSITORY" = "rcore-os/tgoskits" ]',
+                "fork branch pushes must not query base-repository pull requests",
             ),
             (
-                "actions/workflows/ci.yml/runs",
-                "new pull requests must query runs from the same CI workflow",
-            ),
-            (
-                "-f event=push",
-                "new pull requests must only reuse push runs",
-            ),
-            (
-                '-f branch="$PR_HEAD_REF"',
-                "new pull requests must only reuse a push run for the same branch",
-            ),
-            (
-                '-f head_sha="$HEAD_SHA"',
-                "new pull requests must only reuse a push run for the same commit",
-            ),
-            (
-                '.conclusion != "cancelled"',
-                "a cancelled push run must not suppress pull request validation",
+                "gh pr list",
+                "branch push routing must detect open pull requests",
             ),
             (
                 "should_run=false",
-                "a matching push run must skip the duplicate pull request matrix",
+                "an open PR must disable duplicate branch push CI",
             ),
         ):
-            require_contains(errors, route_step, fragment, message)
+            require_contains(errors, push_route, fragment, message)
+        if push_route.count("should_run=false") != 1:
+            errors.append(
+                "only branch push routing may disable CI; pull request events must run"
+            )
+        for fragment in (
+            '"$EVENT_NAME" = "pull_request"',
+            "actions/workflows/ci.yml/runs",
+        ):
+            if fragment in route_step:
+                errors.append(
+                    "pull request routing must not depend on a matching push run"
+                )
 
     for fragment, message in (
         (
@@ -120,6 +119,19 @@ def main() -> int:
     ):
         require_contains(errors, ci_workflow, fragment, message)
 
+    cancel_step = named_step_block(plan_ci, "Cancel older queued or running runs")
+    for fragment, message in (
+        (
+            'HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}',
+            "stale-run cancellation must compare the pull request head commit",
+        ),
+        (
+            'PR_HEAD_REF: ${{ github.event.pull_request.head.ref || \'\' }}',
+            "stale-run cancellation must compare the pull request head branch",
+        ),
+    ):
+        require_contains(errors, cancel_step, fragment, message)
+
     pull_request_selector, push_selector = shell_if_else_branches(
         ci_workflow,
         '"$EVENT_NAME" = "pull_request"',
@@ -135,6 +147,26 @@ def main() -> int:
             (
                 ".pull_requests[]?",
                 "PR cleanup must select runs for the same pull request",
+            ),
+            (
+                '.event == "push"',
+                "PR cleanup must select the matching branch push run",
+            ),
+            (
+                ".head_sha == env.HEAD_SHA",
+                "PR cleanup must compare the branch push head commit",
+            ),
+            (
+                ".head_branch == env.PR_HEAD_REF",
+                "PR cleanup must compare the branch push head branch",
+            ),
+            (
+                '.head_branch != "main"',
+                "PR cleanup must preserve main push CI",
+            ),
+            (
+                '.head_branch != "dev"',
+                "PR cleanup must preserve dev push CI",
             ),
         ):
             require_contains(errors, pull_request_selector, fragment, message)
@@ -289,6 +321,25 @@ def shell_if_else_branches(text: str, condition: str) -> tuple[str, str]:
     if match is None:
         return "", ""
     return match.group("then"), match.group("else")
+
+
+def shell_if_block(text: str, condition: str) -> str:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not line.strip().startswith("if ") or condition not in line:
+            continue
+        depth = 0
+        block = []
+        for nested_line in lines[index:]:
+            stripped = nested_line.strip()
+            if stripped.startswith("if "):
+                depth += 1
+            block.append(nested_line)
+            if stripped == "fi":
+                depth -= 1
+                if depth == 0:
+                    return "\n".join(block)
+    return ""
 
 
 def require_contains(errors: list[str], text: str, fragment: str, message: str) -> None:

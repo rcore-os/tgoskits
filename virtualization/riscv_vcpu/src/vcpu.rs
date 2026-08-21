@@ -72,9 +72,8 @@ fn initial_guest_sstatus() -> sstatus::Sstatus {
     status.set_sie(false);
     status.set_spie(false);
     status.set_spp(sstatus::SPP::Supervisor);
-    // The RISC-V vCPU target exposes the F/D extensions. HS-level FS must
-    // therefore permit the guest to execute floating-point instructions; the
-    // guest still owns its architectural FS state through `vsstatus`.
+    // The vCPU target exposes F/D, so HS must permit guest floating-point
+    // instructions. The guest still owns its architectural FS via `vsstatus`.
     status.set_fs(sstatus::FS::Initial);
     status
 }
@@ -215,9 +214,8 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
     /// Completes architecture-specific setup.
     pub fn setup(&mut self, _config: ()) -> RiscvVcpuResult {
-        // Setup constructs guest-owned reset state only. Host CSRs remain
-        // owned by the physical CPU until `_run_guest` swaps them at the
-        // entry/exit boundary, matching Linux KVM's host/guest context split.
+        // Setup only constructs guest-owned reset state. `_run_guest` owns the
+        // live host/guest CSR swap at the assembly entry/exit boundary.
         self.regs.guest_regs.sstatus = initial_guest_sstatus().bits();
         self.regs.guest_regs.hstatus = initial_guest_hstatus().bits();
 
@@ -1305,16 +1303,20 @@ mod tests {
     }
 
     #[test]
-    fn guest_reset_status_is_independent_from_host_execution_state() {
-        let sstatus = initial_guest_sstatus();
+    fn setup_constructs_guest_status_without_accessing_host_csrs() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+
+        vcpu.setup(()).unwrap();
+
+        let sstatus = sstatus::Sstatus::from_bits(vcpu.regs.guest_regs.sstatus);
         assert!(!sstatus.sie());
         assert!(!sstatus.spie());
         assert_eq!(sstatus.spp(), sstatus::SPP::Supervisor);
         assert_eq!(sstatus.fs(), sstatus::FS::Initial);
 
-        let hstatus = initial_guest_hstatus();
-        let expected = (2 << 32) | (1 << 8) | (1 << 7);
-        assert_eq!(hstatus.bits(), expected);
+        let hstatus = hstatus::Hstatus::from_bits(vcpu.regs.guest_regs.hstatus);
+        let expected_hstatus = (2 << 32) | (1 << 8) | (1 << 7);
+        assert_eq!(hstatus.bits(), expected_hstatus);
         assert!(hstatus.spv());
         assert!(hstatus.spvp());
         assert!(!hstatus.vtvm());

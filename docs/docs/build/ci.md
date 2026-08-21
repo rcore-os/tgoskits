@@ -15,10 +15,10 @@ sidebar_label: "自动 CI 测试"
 
 容器发布由 `.github/workflows/container-publish.yml` 独立处理。非主线分支 push
 由主 CI 的准备阶段检查 open PR，已有 PR 时准备阶段正常成功、后续矩阵标记为
-skipped。首次创建 pull request 时，如果同一分支和 head commit 已有 push run，则
-pull request 的准备阶段正常成功、后续矩阵标记为 skipped；后续更新已有 PR 时仍由
-pull request run 验证，push run 跳过。pull request run 只取消同一 PR 的旧 pull
-request run，不会把关联同一提交的 push 准备阶段取消成失败状态。
+skipped。所有 pull request 事件都由 pull request run 验证；它会取消同一 PR 的旧
+pull request run，以及同一普通分支和 head commit 下仍在排队或运行的 push run；
+`main` 和 `dev` 的 push run 始终保留。这样首次创建 PR 和重跑 workflow 时都不会
+出现 push 与 pull request 互相等待、最终没有测试矩阵执行的情况。
 
 ## 触发条件
 
@@ -26,7 +26,7 @@ request run，不会把关联同一提交的 push 准备阶段取消成失败状
 |------|------|
 | push 到 `main` / `dev` | 非文档变更运行完整矩阵 |
 | 其他分支 push | 没有 open PR 时运行完整矩阵 |
-| 首次创建 pull request | 同 SHA 已有 push run 时跳过重复矩阵，否则按三点 diff 规划 |
+| 首次创建 pull request | 按三点 diff 规划，并取消同 SHA 下仍未完成的 branch push run |
 | 更新或重开 pull request | planner 根据三点 diff 生成增量矩阵 |
 | workflow dispatch | 使用指定的 `since_sha`，但仍运行完整矩阵 |
 
