@@ -103,6 +103,10 @@ mod tests {
             )
         }
 
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
+        }
+
         fn build(
             &self,
             _context: &mut DeviceBuildContext<'_>,
@@ -121,6 +125,10 @@ mod tests {
                 0x1000,
                 ResourceRequest::Fixed(0x1000_0000),
             )
+        }
+
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
         }
 
         fn build(

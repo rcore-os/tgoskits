@@ -14,6 +14,17 @@ impl DeviceModel for X86PciConfigModel {
         )
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::interfaces(
+            None,
+            Some(std::vec![AcpiContributionSpec::PciHostBridge(
+                AcpiDeviceSpec::new("PCI0", "PNP0A03").with_register(
+                    ResourceSlot::new("registers").expect("static PCI config slot is valid"),
+                ),
+            )]),
+        )
+    }
+
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let range = context.pio(&ResourceSlot::new("registers")?)?;
         let expected = (

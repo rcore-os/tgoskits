@@ -33,6 +33,8 @@ pub struct GuestPlatform {
     pub fw_cfg: MmioRegion,
     pub firmware_devices: FirmwareDevices,
     pub irq_routes: Vec<probe::GuestIrqRoute>,
+    pub(crate) configured_fdt_devices: Vec<crate::boot::fdt::device::ResolvedFdtDevice>,
+    pub(crate) configured_acpi_devices: Vec<crate::boot::acpi::ResolvedAcpiDevice>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,14 +109,22 @@ pub struct GedDevice {
 
 impl GuestPlatform {
     pub fn discover(vm: &AxVMRef, _config: &GuestConfig) -> AxVmResult<Self> {
+        let (configured_fdt_devices, configured_acpi_devices) =
+            vm.with_planned_device_graph(|graph| {
+                Ok((
+                    crate::boot::fdt::device::resolve_fdt_devices(graph)?,
+                    crate::boot::acpi::resolve_devices(graph)?,
+                ))
+            })?;
         let fw_cfg = resolved_fw_cfg(vm)?;
         let serial = resolved_serial(vm)?;
-        Ok(
-            probe::GuestPlatformBuilder::new(ram_regions(vm), Some(fw_cfg))
-                .with_serial(serial)
-                .apply_host_acpi()
-                .build(),
-        )
+        let mut platform = probe::GuestPlatformBuilder::new(ram_regions(vm), Some(fw_cfg))
+            .with_serial(serial)
+            .apply_host_acpi()
+            .build();
+        platform.configured_fdt_devices = configured_fdt_devices;
+        platform.configured_acpi_devices = configured_acpi_devices;
+        Ok(platform)
     }
 
     pub fn fw_cfg_platform_config(&self, cpu_num: u16) -> AxVmResult<FwCfgPlatformConfig> {

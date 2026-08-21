@@ -76,6 +76,7 @@ pub(crate) struct X86FirmwarePlan {
     pub(super) pci: X86PciPlan,
     pub(super) power: X86PowerPlan,
     pub(super) resources: X86FirmwareResources,
+    pub(super) configured_devices: Vec<crate::boot::acpi::ResolvedAcpiDevice>,
 }
 
 impl X86FirmwarePlan {
@@ -83,6 +84,13 @@ impl X86FirmwarePlan {
         graph: &ResolvedDeviceGraph,
         cpu_count: usize,
     ) -> Result<Self, X86FirmwarePlanError> {
+        graph.validate_acpi_support()?;
+        let configured_devices = crate::boot::acpi::resolve_devices(graph).map_err(|error| {
+            DeviceManagerError::InvalidConfig {
+                operation: "resolve configured x86 ACPI devices",
+                detail: format!("{error}"),
+            }
+        })?;
         let apic_ids = (0..cpu_count)
             .map(|id| {
                 u8::try_from(id).map_err(|_| X86FirmwarePlanError::InvalidValue {
@@ -187,6 +195,7 @@ impl X86FirmwarePlan {
                 fw_cfg_dma_base,
                 fw_cfg_dma_size,
             },
+            configured_devices,
         })
     }
 
@@ -339,5 +348,6 @@ pub(super) fn test_plan(cpu_count: u8) -> X86FirmwarePlan {
             fw_cfg_dma_base: 0x514,
             fw_cfg_dma_size: 8,
         },
+        configured_devices: Vec::new(),
     }
 }

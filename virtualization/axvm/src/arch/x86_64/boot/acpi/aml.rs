@@ -25,6 +25,7 @@ pub(super) fn build_dsdt(plan: &X86FirmwarePlan) -> Result<Vec<u8>, AcpiBuildErr
         build_serial_device(serial, &mut aml)?;
     }
     build_fw_cfg_device(plan, &mut aml)?;
+    aml.extend(crate::boot::acpi::encode_devices(&plan.configured_devices)?);
 
     let mut dsdt = Sdt::new(*b"DSDT", 36, 2, OEM_ID, OEM_TABLE_ID, OEM_REVISION);
     dsdt.append_slice(&aml);

@@ -15,12 +15,17 @@ const REGISTERS_SLOT: &str = "registers";
 const NOTIFY_IRQ_SLOT: &str = "notify";
 pub(crate) const IVC_CHANNEL_SHARED_RANGE_SIZE: u64 = 0x1_0000;
 
-pub(crate) const IVC_REGISTRATIONS: &[ConfiguredModelRegistration] =
-    &[ConfiguredModelRegistration {
-        model: "ivc-channel",
-        create: create_ivc_channel,
-        default_fixed_resources: None,
-    }];
+pub(super) fn register(
+    catalog: &mut crate::ConfiguredDeviceCatalog,
+) -> Result<(), ConfiguredDeviceError> {
+    catalog.register(
+        module_path!(),
+        ConfiguredModelRegistration {
+            model: "ivc-channel",
+            create: create_ivc_channel,
+        },
+    )
+}
 
 fn request_error(
     request: &VirtualDeviceRequest,
@@ -113,11 +118,25 @@ impl DeviceModel for IvcChannelModel {
     }
 
     fn firmware(&self) -> DeviceFirmwareSpec {
-        DeviceFirmwareSpec::new("ivc-channel")
-            .with_compatible("axvisor,ivc-channel")
-            .with_register(ResourceSlot::new(REGISTERS_SLOT).expect("static IVC slot is valid"))
-            .with_interrupt(ResourceSlot::new(NOTIFY_IRQ_SLOT).expect("static IVC slot is valid"))
-            .with_u32_property("axvisor,ivc-version", 1)
+        DeviceFirmwareSpec::interfaces(
+            Some(std::vec![FdtContributionSpec::Conventional(
+                FdtNodeSpec::new("ivc-channel")
+                    .with_compatible("axvisor,ivc-channel")
+                    .with_register(
+                        ResourceSlot::new(REGISTERS_SLOT).expect("static IVC slot is valid"),
+                    )
+                    .with_interrupt(
+                        ResourceSlot::new(NOTIFY_IRQ_SLOT).expect("static IVC slot is valid"),
+                    )
+                    .with_interrupt_input_property(
+                        "axvisor,notify-irq",
+                        ResourceSlot::new(NOTIFY_IRQ_SLOT).expect("static IVC slot is valid"),
+                    )
+                    .with_string_property("status", "okay")
+                    .with_u32_property("axvisor,ivc-version", 1),
+            )]),
+            None,
+        )
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {

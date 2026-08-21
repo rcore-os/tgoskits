@@ -12,23 +12,22 @@ use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiat
 const REGISTERS_SLOT: &str = "registers";
 const IRQ_SLOT: &str = "irq";
 
-pub(crate) const SERIAL_REGISTRATIONS: &[ConfiguredModelRegistration] = &[
-    ConfiguredModelRegistration {
-        model: "pl011-mmio",
-        create: create_serial,
-        default_fixed_resources: None,
-    },
-    ConfiguredModelRegistration {
-        model: "uart16550-mmio",
-        create: create_serial,
-        default_fixed_resources: None,
-    },
-    ConfiguredModelRegistration {
-        model: "uart16550-pio",
-        create: create_serial,
-        default_fixed_resources: None,
-    },
-];
+const SERIAL_MODELS: &[&str] = &["pl011-mmio", "uart16550-mmio", "uart16550-pio"];
+
+pub(super) fn register_devices(
+    catalog: &mut crate::ConfiguredDeviceCatalog,
+) -> Result<(), ConfiguredDeviceError> {
+    for model in SERIAL_MODELS {
+        catalog.register(
+            module_path!(),
+            ConfiguredModelRegistration {
+                model,
+                create: create_serial,
+            },
+        )?;
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,9 +55,7 @@ pub(crate) fn model_name(profile: GuestSerialProfile) -> &'static str {
 }
 
 pub(crate) fn is_serial_model(model: &str) -> bool {
-    SERIAL_REGISTRATIONS
-        .iter()
-        .any(|registration| registration.model == model)
+    SERIAL_MODELS.contains(&model)
 }
 
 fn create_serial(
@@ -220,24 +217,29 @@ impl DeviceModel for SerialDeviceModel {
     }
 
     fn firmware(&self) -> DeviceFirmwareSpec {
-        let mut spec = match self.profile.model {
-            GuestSerialModel::Pl011 => DeviceFirmwareSpec::new("pl011")
-                .with_compatible("arm,pl011")
-                .with_acpi_hid("ARMH0011"),
-            GuestSerialModel::Uart16550 => DeviceFirmwareSpec::new("serial")
-                .with_compatible("ns16550a")
-                .with_acpi_hid("PNP0501"),
-        }
-        .with_register(ResourceSlot::new(REGISTERS_SLOT).expect("static serial slot is valid"))
-        .with_interrupt(ResourceSlot::new(IRQ_SLOT).expect("static serial slot is valid"))
-        .with_u32_property("clock-frequency", self.profile.clock_hz);
+        let registers = ResourceSlot::new(REGISTERS_SLOT).expect("static serial slot is valid");
+        let interrupt = ResourceSlot::new(IRQ_SLOT).expect("static serial slot is valid");
+        let (mut fdt, acpi) = match self.profile.model {
+            GuestSerialModel::Pl011 => (
+                FdtNodeSpec::new("pl011").with_compatible("arm,pl011"),
+                AcpiDeviceSpec::new("COM0", "ARMH0011"),
+            ),
+            GuestSerialModel::Uart16550 => (
+                FdtNodeSpec::new("serial").with_compatible("ns16550a"),
+                AcpiDeviceSpec::new("COM0", "PNP0501"),
+            ),
+        };
+        fdt = fdt
+            .with_register(registers.clone())
+            .with_interrupt(interrupt.clone())
+            .with_u32_property("clock-frequency", self.profile.clock_hz);
         if let GuestSerialTransport::Mmio {
             register_shift,
             register_width,
             ..
         } = self.profile.transport
         {
-            spec = spec
+            fdt = fdt
                 .with_u32_property("reg-shift", u32::from(register_shift))
                 .with_u32_property(
                     "reg-io-width",
@@ -245,7 +247,14 @@ impl DeviceModel for SerialDeviceModel {
                         .expect("an access width is at most eight bytes"),
                 );
         }
-        spec
+        DeviceFirmwareSpec::interfaces(
+            Some(std::vec![FdtContributionSpec::Console(fdt)]),
+            Some(std::vec![AcpiContributionSpec::Console(
+                acpi.with_register(registers)
+                    .with_interrupt(interrupt)
+                    .with_u32_property("clock-frequency", self.profile.clock_hz),
+            )]),
+        )
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {

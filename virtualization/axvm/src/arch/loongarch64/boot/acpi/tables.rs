@@ -5,6 +5,7 @@ use std::vec::Vec;
 use axdevice::FwCfgRamRegion;
 
 use super::{aml::*, config::*};
+use crate::boot::acpi::{AcpiBuildError, ResolvedAcpiDevice, encode_devices};
 
 const ACPI_OEM_ID: &[u8; 6] = b"BOCHS ";
 const ACPI_OEM_TABLE_ID: &[u8; 8] = b"BXPC    ";
@@ -23,10 +24,13 @@ pub(super) fn build_dsdt(
     tables: &mut Vec<u8>,
     serial: &LoongArchFwCfgSerialConfig,
     pci: &LoongArchFwCfgPciConfig,
-) {
+    configured_devices: &[ResolvedAcpiDevice],
+) -> Result<(), AcpiBuildError> {
     let start = begin_acpi_table(tables, b"DSDT", 1);
     tables.extend_from_slice(&build_loongarch_dsdt_aml(serial, pci));
+    tables.extend_from_slice(&encode_devices(configured_devices)?);
     end_acpi_table(tables, start);
+    Ok(())
 }
 
 pub(super) fn build_fadt(tables: &mut Vec<u8>) {

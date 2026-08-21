@@ -80,6 +80,7 @@ pub(crate) struct DeclaredDeviceNode {
     pub(crate) parent: Option<DeviceNodeId>,
     pub(crate) dependencies: Vec<DeviceNodeId>,
     pub(crate) firmware: super::DeviceFirmwareBinding,
+    pub(crate) firmware_spec: DeviceFirmwareSpec,
     pub(crate) model: Option<alloc::sync::Arc<dyn crate::DeviceModel>>,
     pub(crate) requirements: DeviceRequirements,
     pub(crate) host_mapping: Option<super::HostPassthroughMapping>,
@@ -97,6 +98,12 @@ impl DeviceNodeSpec {
                 node: self.id.to_string(),
             });
         }
+        self.firmware_spec
+            .validate()
+            .map_err(|error| DeviceGraphError::Declaration {
+                node: self.id.to_string(),
+                detail: error.to_string(),
+            })?;
         let requirements = match (&self.model, &self.requirements) {
             (Some(model), _) => {
                 model
@@ -120,6 +127,7 @@ impl DeviceNodeSpec {
             parent: self.parent.clone(),
             dependencies: self.dependencies.clone(),
             firmware: self.firmware.clone(),
+            firmware_spec: self.firmware_spec.clone(),
             model: self.model.clone(),
             requirements,
             host_mapping: self.host_mapping,

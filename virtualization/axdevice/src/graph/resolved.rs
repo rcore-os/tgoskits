@@ -12,6 +12,7 @@ pub struct ResolvedDeviceNode {
     parent: Option<DeviceNodeId>,
     dependencies: Vec<DeviceNodeId>,
     firmware: DeviceFirmwareBinding,
+    firmware_spec: DeviceFirmwareSpec,
     model: Option<Arc<dyn DeviceModel>>,
     host_mapping: Option<HostPassthroughMapping>,
 }
@@ -24,6 +25,7 @@ impl ResolvedDeviceNode {
             parent: node.parent,
             dependencies: node.dependencies,
             firmware: node.firmware,
+            firmware_spec: node.firmware_spec,
             model: node.model,
             host_mapping: node.host_mapping,
         }
@@ -54,11 +56,9 @@ impl ResolvedDeviceNode {
         &self.firmware
     }
 
-    /// Returns conventional firmware metadata from the same runtime model.
-    pub fn firmware(&self) -> DeviceFirmwareSpec {
-        self.model
-            .as_ref()
-            .map_or_else(DeviceFirmwareSpec::default, |model| model.firmware())
+    /// Returns the firmware declaration frozen when this node was created.
+    pub const fn firmware(&self) -> &DeviceFirmwareSpec {
+        &self.firmware_spec
     }
 
     /// Returns the exact model that declared this node.
@@ -129,8 +129,36 @@ impl ResolvedDeviceGraph {
         &self.resources
     }
 
+    /// Rejects a runtime model that declares platform nodes but no FDT form.
+    pub fn validate_fdt_support(&self) -> DeviceManagerResult {
+        self.validate_firmware_support("FDT", DeviceFirmwareSpec::fdt)
+    }
+
+    /// Rejects a runtime model that declares platform nodes but no ACPI form.
+    pub fn validate_acpi_support(&self) -> DeviceManagerResult {
+        self.validate_firmware_support("ACPI", DeviceFirmwareSpec::acpi)
+    }
+
     /// Returns the number of VM-lifetime reservations owned by non-runtime nodes.
     pub fn fixed_lease_count(&self) -> usize {
         self.fixed_leases.len()
+    }
+
+    fn validate_firmware_support<T: ?Sized>(
+        &self,
+        interface: &'static str,
+        contributions: impl Fn(&DeviceFirmwareSpec) -> Option<&T>,
+    ) -> DeviceManagerResult {
+        for node in &self.nodes {
+            if matches!(node.firmware(), DeviceFirmwareSpec::Interfaces { .. })
+                && contributions(node.firmware()).is_none()
+            {
+                return Err(DeviceManagerError::Unsupported {
+                    operation: "select guest firmware interface",
+                    detail: alloc::format!("device {} does not support {interface}", node.id()),
+                });
+            }
+        }
+        Ok(())
     }
 }

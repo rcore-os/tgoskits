@@ -133,7 +133,7 @@ pub struct AxVMConfigParams {
     /// Open-ended virtual-device requests parsed from guest configuration.
     pub virtual_device_requests: Vec<VirtualDeviceRequest>,
     /// Code-registered factories available to this VM.
-    pub virtual_device_catalog: Option<Arc<crate::ConfiguredDeviceCatalog>>,
+    pub virtual_device_catalog: Arc<crate::ConfiguredDeviceCatalog>,
 }
 
 impl AxVMConfig {
@@ -165,9 +165,7 @@ impl AxVMConfig {
                 .serial_backend_factory
                 .unwrap_or_else(|| Arc::new(NullSerialBackendFactory)),
             virtual_device_requests: params.virtual_device_requests,
-            virtual_device_catalog: params
-                .virtual_device_catalog
-                .unwrap_or_else(|| Arc::new(crate::ConfiguredDeviceCatalog::new())),
+            virtual_device_catalog: params.virtual_device_catalog,
         }
     }
 

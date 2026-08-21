@@ -71,14 +71,7 @@ pub(crate) fn append_configured_devices(
                 false,
             )
         } else {
-            match config
-                .virtual_device_catalog()
-                .default_fixed_resources(&request.model, &base_context)
-                .map_err(configured_error)?
-            {
-                Some(fixed) => base_context.clone().with_fixed_bindings(fixed),
-                None => base_context.clone(),
-            }
+            base_context.clone()
         };
         nodes.push(
             config
@@ -209,6 +202,10 @@ mod tests {
             Ok(DeviceRequirements::new())
         }
 
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
+        }
+
         fn build(
             &self,
             _context: &mut DeviceBuildContext<'_>,
@@ -333,7 +330,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             ivc.mmio(&registers).unwrap(),
-            (0x1000_0000, super::ivc::IVC_CHANNEL_SHARED_RANGE_SIZE)
+            (0x1000_0000, super::devices::IVC_CHANNEL_SHARED_RANGE_SIZE,)
         );
         assert_eq!(ivc.wired_irq(&notify).unwrap().input().value(), 32);
 

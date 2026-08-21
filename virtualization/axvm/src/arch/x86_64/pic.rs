@@ -21,6 +21,21 @@ impl DeviceModel for X86PicModel {
             )
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::interfaces(
+            None,
+            Some(std::vec![AcpiContributionSpec::InterruptController(
+                AcpiDeviceSpec::new("PIC0", "PNP0000")
+                    .with_register(
+                        ResourceSlot::new("master-registers").expect("static PIC slot is valid"),
+                    )
+                    .with_register(
+                        ResourceSlot::new("slave-registers").expect("static PIC slot is valid"),
+                    ),
+            )]),
+        )
+    }
+
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let master = context.pio(&ResourceSlot::new("master-registers")?)?;
         let slave = context.pio(&ResourceSlot::new("slave-registers")?)?;

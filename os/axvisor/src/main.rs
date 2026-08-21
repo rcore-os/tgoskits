@@ -41,8 +41,6 @@ mod guest_console;
 mod http;
 mod manager;
 mod shell;
-mod virtio_blk;
-mod virtio_net;
 
 #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
 fn init_panic_hook() {

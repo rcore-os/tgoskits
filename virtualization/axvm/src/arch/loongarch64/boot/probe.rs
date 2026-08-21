@@ -96,6 +96,8 @@ impl GuestPlatformBuilder {
             fw_cfg: self.fw_cfg.unwrap_or(defaults.fw_cfg),
             firmware_devices: self.firmware_devices.unwrap_or(defaults.firmware_devices),
             irq_routes,
+            configured_fdt_devices: Vec::new(),
+            configured_acpi_devices: Vec::new(),
         }
     }
 
