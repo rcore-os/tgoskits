@@ -172,6 +172,36 @@ fn incremental_selection_checks_changed_packages_and_affected_os_roots_only() {
 }
 
 #[test]
+fn incremental_selection_for_x86_apic_change_omits_unrelated_workspace_packages() {
+    let selected = incremental_clippy_selections(
+        vec![
+            "someboot".into(),
+            "somehal".into(),
+            "x86-apic-driver".into(),
+        ],
+        vec![
+            "ax-std".into(),
+            "someboot".into(),
+            "somehal".into(),
+            "starryos".into(),
+            "unrelated".into(),
+            "x86-apic-driver".into(),
+        ],
+    );
+
+    assert_eq!(
+        selected,
+        vec![
+            "someboot".to_string(),
+            "somehal".into(),
+            "x86-apic-driver".into(),
+            "ax-std".into(),
+            "starryos".into(),
+        ]
+    );
+}
+
+#[test]
 fn incremental_selection_adds_only_affected_os_root() {
     let selected = incremental_clippy_selections(
         vec!["alpha".into()],

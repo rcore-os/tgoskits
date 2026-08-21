@@ -1,10 +1,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, bail};
 use cargo_metadata::{Metadata, Package, PackageId};
+use toml::Value;
 
 use super::manifest::{ROOT_MANIFEST, RootManifestChange};
 
@@ -101,6 +103,7 @@ struct PackagePathIndex {
 
 struct PackagePathEntry {
     name: String,
+    manifest_path: PathBuf,
     rel_dir: PathBuf,
 }
 
@@ -139,6 +142,7 @@ impl PackagePathIndex {
                     })?;
                 Ok(PackagePathEntry {
                     name: package.name.to_string(),
+                    manifest_path: manifest,
                     rel_dir: rel_dir.to_path_buf(),
                 })
             })
@@ -183,7 +187,9 @@ impl PackagePathIndex {
                 {
                     RootManifestChange::Hard => return Ok(ChangedPackages::Full { path }),
                     RootManifestChange::LocalWorkspace(change) => {
-                        packages.extend(change.dependencies);
+                        packages.extend(change.local_packages);
+                        packages
+                            .extend(self.workspace_dependency_consumers(&change.dependency_keys)?);
                         packages.extend(
                             change
                                 .members
@@ -219,6 +225,85 @@ impl PackagePathIndex {
             .find(|package| path == package.rel_dir || path.starts_with(&package.rel_dir))
             .map(|package| package.name.as_str())
     }
+
+    fn workspace_dependency_consumers(
+        &self,
+        dependency_keys: &BTreeSet<String>,
+    ) -> anyhow::Result<BTreeSet<String>> {
+        if dependency_keys.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+
+        let mut consumers = BTreeSet::new();
+        for package in &self.packages {
+            let source = fs::read_to_string(&package.manifest_path).with_context(|| {
+                format!(
+                    "failed to read workspace package `{}` manifest {}",
+                    package.name,
+                    package.manifest_path.display()
+                )
+            })?;
+            let manifest: Value = toml::from_str(&source).with_context(|| {
+                format!(
+                    "failed to parse workspace package `{}` manifest {}",
+                    package.name,
+                    package.manifest_path.display()
+                )
+            })?;
+            if manifest_inherits_workspace_dependency(&manifest, dependency_keys) {
+                consumers.insert(package.name.clone());
+            }
+        }
+        Ok(consumers)
+    }
+}
+
+const DEPENDENCY_TABLES: &[&str] = &["dependencies", "dev-dependencies", "build-dependencies"];
+
+fn manifest_inherits_workspace_dependency(
+    manifest: &Value,
+    dependency_keys: &BTreeSet<String>,
+) -> bool {
+    if DEPENDENCY_TABLES
+        .iter()
+        .any(|table| dependency_table_inherits(manifest.get(*table), dependency_keys))
+    {
+        return true;
+    }
+
+    manifest
+        .get("target")
+        .and_then(Value::as_table)
+        .is_some_and(|targets| {
+            targets.values().any(|target| {
+                DEPENDENCY_TABLES
+                    .iter()
+                    .any(|table| dependency_table_inherits(target.get(*table), dependency_keys))
+            })
+        })
+}
+
+fn dependency_table_inherits(
+    dependencies: Option<&Value>,
+    dependency_keys: &BTreeSet<String>,
+) -> bool {
+    dependencies
+        .and_then(Value::as_table)
+        .is_some_and(|dependencies| {
+            dependency_keys.iter().any(|dependency_key| {
+                dependencies
+                    .get(dependency_key)
+                    .is_some_and(dependency_inherits_from_workspace)
+            })
+        })
+}
+
+fn dependency_inherits_from_workspace(dependency: &Value) -> bool {
+    dependency
+        .as_table()
+        .and_then(|dependency| dependency.get("workspace"))
+        .and_then(Value::as_bool)
+        == Some(true)
 }
 
 fn global_clippy_input(path: &Path) -> Option<GlobalClippyInput> {

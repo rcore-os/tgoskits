@@ -153,8 +153,8 @@ fn lockfile_change_keeps_incremental_selection_when_packages_changed() {
 
 #[test]
 fn root_cargo_toml_only_falls_back_to_full() {
-    // Root Cargo.toml is Hard: a manifest-only change with no code changes
-    // (e.g. a [workspace.dependencies] bump) must still fall back to Full.
+    // Without the semantic old/new root-manifest classification, the path-only
+    // selector must conservatively treat Cargo.toml as a hard global input.
     let (root, metadata, workspace_packages) = test_workspace();
     let selected = select_incremental_packages_for_paths(
         root.path(),
@@ -172,11 +172,9 @@ fn root_cargo_toml_only_falls_back_to_full() {
 
 #[test]
 fn root_cargo_toml_with_package_change_still_falls_back_to_full() {
-    // Root Cargo.toml is Hard: even when package source files are also in the
-    // diff (e.g. a new crate was added *and* a workspace dependency was
-    // bumped), the global manifest change requires a full run.  We cannot
-    // distinguish "only added a member" from "bumped a workspace dep" without
-    // parsing diff hunks, so Hard must always win.
+    // The production --since path supplies a semantic old/new root-manifest
+    // classification. Without it, a package path cannot make an otherwise
+    // unknown Cargo.toml change safe for incremental selection.
     let (root, metadata, workspace_packages) = test_workspace();
     let selected = select_incremental_packages_for_paths(
         root.path(),
