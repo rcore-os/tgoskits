@@ -18,30 +18,17 @@ pub(super) fn apply_perf_cargo_features(cargo: &mut Cargo, args: &ArgsPerf) {
     if perf_needs_frame_pointers(args) {
         cargo.env.insert("BACKTRACE".to_string(), "y".to_string());
     }
-    apply_perf_rustflags(cargo, args);
+    apply_perf_rustflags(cargo);
 }
 
-fn apply_perf_rustflags(cargo: &mut Cargo, args: &ArgsPerf) {
-    let mut flags = Vec::new();
-    if perf_needs_debuginfo(args) {
-        flags.push("-Cdebuginfo=2".to_string());
-        flags.push("-Cstrip=none".to_string());
-    }
-    if perf_needs_frame_pointers(args) {
-        flags.push("-Cforce-frame-pointers=yes".to_string());
-    }
+fn apply_perf_rustflags(cargo: &mut Cargo) {
+    let flags = crate::build::toolchain_rustflags(&cargo.env);
     if flags.is_empty() {
         return;
     }
 
-    cargo
-        .env
-        .insert("CARGO_ENCODED_RUSTFLAGS".to_string(), flags.join("\x1f"));
-    cargo.args.push("--config".to_string());
-    let rustflags = toml::Value::Array(flags.into_iter().map(toml::Value::String).collect());
-    cargo
-        .args
-        .push(format!("target.'{}'.rustflags={rustflags}", cargo.target));
+    let flags = flags.iter().map(String::as_str).collect::<Vec<_>>();
+    crate::build::append_cargo_rustflags(cargo, &flags);
 }
 
 pub(super) fn validate_args(args: &ArgsPerf) -> anyhow::Result<()> {
@@ -143,4 +130,60 @@ pub(super) fn perf_needs_frame_pointers(args: &ArgsPerf) -> bool {
     args.full_stack
         || args.force_frame_pointers
         || matches!(effective_callchain(args), PerfCallchain::Fp)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+    use ostool::build::config::Cargo;
+
+    use super::{ArgsPerf, apply_perf_cargo_features};
+
+    #[derive(Parser)]
+    struct PerfTestCli {
+        #[command(flatten)]
+        perf: ArgsPerf,
+    }
+
+    #[test]
+    fn perf_rustflags_preserve_inline_target_linker_contract() {
+        let args = PerfTestCli::parse_from([
+            "perf-test",
+            "--perf-debuginfo",
+            "--perf-force-frame-pointers",
+        ])
+        .perf;
+        let mut cargo = Cargo {
+            target: "x86_64-unknown-none".into(),
+            package: "starryos".into(),
+            args: vec![
+                "--config".into(),
+                concat!(
+                    "target.x86_64-unknown-none.rustflags=[",
+                    "\"-Crelocation-model=pic\", ",
+                    "\"-Clink-args=-Tlinker.x\"",
+                    "]"
+                )
+                .into(),
+            ],
+            ..Cargo::default()
+        };
+
+        apply_perf_cargo_features(&mut cargo, &args);
+
+        let rendered = cargo.args.join("\n");
+        assert!(rendered.contains("-Clink-args=-Tlinker.x"));
+        assert!(rendered.contains("-Cdebuginfo=2"));
+        assert!(rendered.contains("-Cforce-frame-pointers=yes"));
+        assert_eq!(
+            rendered
+                .matches("target.x86_64-unknown-none.rustflags=")
+                .count(),
+            1
+        );
+        assert!(
+            !cargo.env.contains_key("CARGO_ENCODED_RUSTFLAGS"),
+            "encoded rustflags would shadow the inline target linker contract"
+        );
+    }
 }

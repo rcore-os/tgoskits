@@ -13,21 +13,29 @@ sidebar_label: "自动 CI 测试"
 - `scripts/test/ci_plan.py` 展开配置并生成矩阵；
 - `.github/workflows/reusable-check-matrix.yml` 执行展开后的矩阵行。
 
-容器发布由 `.github/workflows/container-publish.yml` 独立处理。非主线分支 push
-由主 CI 的准备阶段检查 open PR，已有 PR 时准备阶段正常成功、后续矩阵标记为
-skipped。所有 pull request 事件都由 pull request run 验证；它会取消同一 PR 的旧
-pull request run，以及同一普通分支和 head commit 下仍在排队或运行的 push run；
-`main` 和 `dev` 的 push run 始终保留。这样首次创建 PR 和重跑 workflow 时都不会
-出现 push 与 pull request 互相等待、最终没有测试矩阵执行的情况。
+容器发布由 `.github/workflows/container-publish.yml` 独立处理。同仓分支 push 是
+对应 head commit 的首选验证；pull request 准备阶段会短暂重试尚未可见的同 SHA push
+run。匹配的 push 仍在 queued 或 in_progress 时，它已经拥有该 commit 的验证，pull
+request 将自己的后续矩阵标记为 skipped；push 已 completed 时，仍必须存在非 Plan、
+非 skipped/cancelled 的真实矩阵 job 才能复用。这样既避免 push 与 pull request 同时
+执行，也不会把历史上的 Plan-only push 当成完整验证。查询失败、fork PR、completed
+Plan-only push 或已取消的 push 都会 fail-open，由 pull request 正常规划并执行。
+
+pull request 不会取消当前 SHA 的 push，因此 GitHub 不会把正常去重显示为
+failing/cancelled checks。pull request run 仍只取消同一 PR 的旧 pull request run，
+即使本次矩阵复用 push 而 skipped，也会清理旧 commit 尚未完成的 pull request run；
+新 commit 的 push 同样会取消同一分支的旧 push run。`main` 和 `dev` 是例外：每个
+push commit 的 CI 都完整保留，后续提交不会取消仍在运行的旧 CI。旧 run 先收到普通
+cancel；短暂复查仍未完成时再 force-cancel，避免分组 job 的 `always()` 条件阻止清理。
 
 ## 触发条件
 
 | 事件 | 行为 |
 |------|------|
-| push 到 `main` / `dev` | 非文档变更运行完整矩阵 |
-| 其他分支 push | 没有 open PR 时运行完整矩阵 |
-| 首次创建 pull request | 按三点 diff 规划，并取消同 SHA 下仍未完成的 branch push run |
-| 更新或重开 pull request | planner 根据三点 diff 生成增量矩阵 |
+| push 到 `main` / `dev` | 非文档变更运行完整矩阵，并保留每个 commit 的完整 CI |
+| 其他分支 push | 非文档变更运行完整矩阵，作为同仓 PR 的首选验证 |
+| 首次创建 pull request | 同 SHA push 已拥有验证时跳过，否则按三点 diff 规划 |
+| 更新或重开 pull request | 取消旧 commit 的同事件 run；同 SHA push 已拥有验证时跳过，否则按三点 diff 规划 |
 | workflow dispatch | 使用指定的 `since_sha`，但仍运行完整矩阵 |
 
 纯 Markdown 变更不触发主 CI。`push` 和 `workflow_dispatch` 不缩小测试矩阵。
@@ -157,7 +165,10 @@ container image、preflight、cache、checkout depth、timeout、artifact 和命
 ## 本地检查
 
 ```bash
-python3 -m unittest scripts/test/test_ci_impact.py scripts/test/test_ci_plan.py
+python3 -m unittest \
+  scripts/test/test_ci_impact.py \
+  scripts/test/test_ci_plan.py \
+  scripts/test/test_ci_routing.py
 python3 scripts/test/check_ci_routing.py
 actionlint
 ```

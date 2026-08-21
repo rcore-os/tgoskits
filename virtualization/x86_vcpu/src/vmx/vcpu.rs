@@ -56,6 +56,82 @@ const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
 const X86_IOAPIC_BASE: usize = 0xfec0_0000;
 const X86_IOAPIC_SIZE: usize = 0x1000;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct VmxSyscallMsrState {
+    star: u64,
+    lstar: u64,
+    cstar: u64,
+    fmask: u64,
+    kernel_gs_base: u64,
+}
+
+trait VmxSyscallMsrBank {
+    fn read(&self) -> VmxSyscallMsrState;
+
+    /// # Safety
+    ///
+    /// The caller must prevent interrupts and migration until the host state is restored.
+    unsafe fn write(&mut self, state: VmxSyscallMsrState);
+}
+
+struct HardwareVmxSyscallMsrBank;
+
+impl VmxSyscallMsrBank for HardwareVmxSyscallMsrBank {
+    fn read(&self) -> VmxSyscallMsrState {
+        VmxSyscallMsrState {
+            star: Msr::IA32_STAR.read(),
+            lstar: Msr::IA32_LSTAR.read(),
+            cstar: Msr::IA32_CSTAR.read(),
+            fmask: Msr::IA32_FMASK.read(),
+            kernel_gs_base: Msr::IA32_KERNEL_GSBASE.read(),
+        }
+    }
+
+    unsafe fn write(&mut self, state: VmxSyscallMsrState) {
+        unsafe {
+            Msr::IA32_STAR.write(state.star);
+            Msr::IA32_LSTAR.write(state.lstar);
+            Msr::IA32_CSTAR.write(state.cstar);
+            Msr::IA32_FMASK.write(state.fmask);
+            Msr::IA32_KERNEL_GSBASE.write(state.kernel_gs_base);
+        }
+    }
+}
+
+/// Loads vCPU-owned syscall MSRs and returns the displaced host state.
+///
+/// # Safety
+///
+/// Interrupts and migration must remain disabled until [`leave_guest_syscall_msrs`] restores the
+/// returned host state.
+unsafe fn enter_guest_syscall_msrs(
+    guest: VmxSyscallMsrState,
+    bank: &mut impl VmxSyscallMsrBank,
+) -> VmxSyscallMsrState {
+    let host = bank.read();
+    unsafe {
+        bank.write(guest);
+    }
+    host
+}
+
+/// Saves vCPU-owned syscall MSRs and restores the host state displaced on entry.
+///
+/// # Safety
+///
+/// `host` must be the snapshot returned by the matching [`enter_guest_syscall_msrs`] call, with
+/// interrupts and migration disabled continuously between both calls.
+unsafe fn leave_guest_syscall_msrs(
+    guest: &mut VmxSyscallMsrState,
+    host: VmxSyscallMsrState,
+    bank: &mut impl VmxSyscallMsrBank,
+) {
+    *guest = bank.read();
+    unsafe {
+        bank.write(host);
+    }
+}
+
 #[derive(PartialEq, Eq, Debug)]
 pub enum VmCpuMode {
     Real,
@@ -114,6 +190,8 @@ pub struct VmxVcpu<H: X86HostOps> {
     vlapic: EmulatedLocalApic<H>,
     /// Guest CR2 is not saved or restored by VMX hardware.
     guest_cr2: usize,
+    /// Guest syscall MSRs that are not saved or restored by VMX hardware.
+    guest_syscall_msrs: VmxSyscallMsrState,
     /// Guest RAM regions used to read guest instructions and page tables.
     guest_memory_regions: Vec<X86GuestMemoryRegion>,
 
@@ -146,6 +224,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
             pending_events: VecDeque::with_capacity(8),
             vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
             guest_cr2: 0,
+            guest_syscall_msrs: VmxSyscallMsrState::default(),
             guest_memory_regions: Vec::new(),
             xstate: XState::new(),
             #[cfg(feature = "tracing")]
@@ -211,6 +290,12 @@ impl<H: X86HostOps> VmxVcpu<H> {
 
         // Run guest
         self.load_guest_xstate();
+        let mut syscall_msr_bank = HardwareVmxSyscallMsrBank;
+        // SAFETY: `X86Vcpu::run` requires its caller to pin the backend and disable host IRQs
+        // across the guest-entry window. This function restores the captured host state before
+        // returning to that caller.
+        let host_syscall_msrs =
+            unsafe { enter_guest_syscall_msrs(self.guest_syscall_msrs, &mut syscall_msr_bank) };
 
         #[cfg(feature = "tracing")]
         {
@@ -237,6 +322,15 @@ impl<H: X86HostOps> VmxVcpu<H> {
                 self.vmx_launch();
             }
             self.guest_cr2 = cr2();
+        }
+        // SAFETY: this is the matching exit half of the entry above, still inside the same pinned,
+        // IRQ-disabled backend run window.
+        unsafe {
+            leave_guest_syscall_msrs(
+                &mut self.guest_syscall_msrs,
+                host_syscall_msrs,
+                &mut syscall_msr_bank,
+            );
         }
         self.load_host_xstate();
         restore_host_interrupt_flag(self.host_rflags);
@@ -1899,6 +1993,10 @@ impl<H: X86HostOps> VmxVcpu<H> {
         Ok(())
     }
 
+    /// Runs this VMX vCPU until an exit is reported to the VMM.
+    ///
+    /// The caller must keep the vCPU bound to the current host CPU, prevent
+    /// migration, and keep host IRQs disabled until this method returns.
     pub fn run(&mut self) -> X86VcpuResult<X86VmExit> {
         match self.inner_run()? {
             Some(exit_info) => Ok(if exit_info.entry_failure {
@@ -2077,5 +2175,75 @@ impl<H: X86HostOps> VmxVcpu<H> {
 
     pub fn set_return_value(&mut self, val: usize) {
         self.regs_mut().rax = val as u64;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct FakeSyscallMsrBank {
+        current: VmxSyscallMsrState,
+    }
+
+    impl VmxSyscallMsrBank for FakeSyscallMsrBank {
+        fn read(&self) -> VmxSyscallMsrState {
+            self.current
+        }
+
+        unsafe fn write(&mut self, state: VmxSyscallMsrState) {
+            self.current = state;
+        }
+    }
+
+    #[test]
+    fn syscall_msrs_follow_the_vcpu_across_host_cpu_migration() {
+        let host_cpu_1 = VmxSyscallMsrState {
+            star: 0x11,
+            lstar: 0x12,
+            cstar: 0x13,
+            fmask: 0x14,
+            kernel_gs_base: 0x15,
+        };
+        let host_cpu_2 = VmxSyscallMsrState {
+            star: 0x21,
+            lstar: 0x22,
+            cstar: 0x23,
+            fmask: 0x24,
+            kernel_gs_base: 0x25,
+        };
+        let mut guest = VmxSyscallMsrState {
+            star: 0x31,
+            lstar: 0x32,
+            cstar: 0x33,
+            fmask: 0x34,
+            kernel_gs_base: 0x35,
+        };
+        let guest_after_cpu_1 = VmxSyscallMsrState {
+            star: 0x41,
+            lstar: 0x42,
+            cstar: 0x43,
+            fmask: 0x44,
+            kernel_gs_base: 0x45,
+        };
+
+        let mut cpu_1 = FakeSyscallMsrBank {
+            current: host_cpu_1,
+        };
+        let saved_host_cpu_1 = unsafe { enter_guest_syscall_msrs(guest, &mut cpu_1) };
+        assert_eq!(cpu_1.current, guest);
+        cpu_1.current = guest_after_cpu_1;
+        unsafe { leave_guest_syscall_msrs(&mut guest, saved_host_cpu_1, &mut cpu_1) };
+        assert_eq!(guest, guest_after_cpu_1);
+        assert_eq!(cpu_1.current, host_cpu_1);
+
+        let mut cpu_2 = FakeSyscallMsrBank {
+            current: host_cpu_2,
+        };
+        let saved_host_cpu_2 = unsafe { enter_guest_syscall_msrs(guest, &mut cpu_2) };
+        assert_eq!(cpu_2.current, guest_after_cpu_1);
+        unsafe { leave_guest_syscall_msrs(&mut guest, saved_host_cpu_2, &mut cpu_2) };
+        assert_eq!(cpu_2.current, host_cpu_2);
     }
 }

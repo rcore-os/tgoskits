@@ -114,6 +114,12 @@ impl CgroupNode {
         Ok(self.pids.current_text())
     }
 
+    /// Render the lifetime high-water mark from `pids.peak`.
+    pub fn pids_peak_text(&self) -> CgroupResult<String> {
+        self.require_pids_interface()?;
+        Ok(self.pids.peak_text())
+    }
+
     /// Render `pids.events`.
     pub fn pids_events_text(&self) -> CgroupResult<String> {
         self.require_pids_interface()?;
@@ -329,11 +335,13 @@ mod tests {
         assert_eq!(root.available_controllers(), ["pids"]);
         assert!(!child.has_pids_interface());
         assert_eq!(child.pids_max_text(), Err(CgroupError::NotFound));
+        assert_eq!(child.pids_peak_text(), Err(CgroupError::NotFound));
 
         root.write_subtree_control("+pids").unwrap();
 
         assert!(child.has_pids_interface());
         assert_eq!(child.pids_max_text(), Ok(String::from("max\n")));
+        assert_eq!(child.pids_peak_text(), Ok(String::from("0\n")));
     }
 
     #[test]

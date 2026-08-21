@@ -337,6 +337,8 @@ int main(void)
                         "child pids.max is hidden before parent enables pids");
     expect_path_missing(CGROUP2_PATH "/a/pids.current",
                         "child pids.current is hidden before parent enables pids");
+    expect_path_missing(CGROUP2_PATH "/a/pids.peak",
+                        "child pids.peak is hidden before parent enables pids");
     expect_path_missing(CGROUP2_PATH "/a/pids.events",
                         "child pids.events is hidden before parent enables pids");
     expect_mkdir_errno(CGROUP2_PATH "/a", EEXIST,

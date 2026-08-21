@@ -47,43 +47,110 @@ def main() -> int:
     if not route_step:
         errors.append("Plan CI must have a duplicate-event routing step")
     else:
-        push_route = shell_if_block(route_step, '"$EVENT_NAME" = "push"')
-        if not push_route:
-            errors.append("duplicate routing must identify branch push events")
+        pull_request_route = shell_if_block(
+            route_step, '"$EVENT_NAME" = "pull_request"'
+        )
+        if not pull_request_route:
+            errors.append("duplicate routing must identify pull request events")
         for fragment, message in (
             (
-                '[ "$REF_NAME" != "main" ]',
-                "main push CI must not be disabled by pull request routing",
+                '[ "$HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ]',
+                "pull request routing must identify same-repository branches",
             ),
             (
-                '[ "$REF_NAME" != "dev" ]',
-                "dev push CI must not be disabled by pull request routing",
+                "actions/workflows/ci.yml/runs",
+                "pull request routing must query runs from the same CI workflow",
             ),
             (
-                '[ "$GITHUB_REPOSITORY" = "rcore-os/tgoskits" ]',
-                "fork branch pushes must not query base-repository pull requests",
+                "-f event=push",
+                "pull request routing must only reuse push runs",
             ),
             (
-                "gh pr list",
-                "branch push routing must detect open pull requests",
+                '-f branch="$PR_HEAD_REF"',
+                "pull request routing must match the head branch",
+            ),
+            (
+                '-f head_sha="$HEAD_SHA"',
+                "pull request routing must match the head commit",
+            ),
+            (
+                "for ((attempt = 1; attempt <= 10; attempt++))",
+                "pull request routing must retry while its push run becomes visible",
+            ),
+            (
+                "sleep 2",
+                "push run discovery retries must remain bounded and observable",
+            ),
+            (
+                'actions/runs/${run_id}/jobs',
+                "completed push routing must inspect the push run matrix jobs",
+            ),
+            (
+                "--paginate",
+                "push matrix inspection must include every jobs page",
+            ),
+            (
+                '.name != "Plan CI"',
+                "a completed Plan-only push run must not suppress pull request CI",
+            ),
+            (
+                '.conclusion != "skipped"',
+                "a skipped push matrix must not suppress pull request CI",
+            ),
+            (
+                '.conclusion != "cancelled"',
+                "a cancelled push matrix must not suppress pull request CI",
+            ),
+            (
+                '"repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"',
+                "pull request routing must recheck the push run before skipping",
+            ),
+            (
+                '[.status, (.conclusion != "cancelled")] | @tsv',
+                "push run recheck must return its current lifecycle state",
+            ),
+            (
+                "queued|in_progress|waiting|requested)",
+                "only known unfinished push states may suppress pull request CI",
+            ),
+            (
+                "completed)",
+                "completed push runs must prove that matrix jobs exist",
+            ),
+            (
+                "*)",
+                "unknown push states must fail open",
             ),
             (
                 "should_run=false",
-                "an open PR must disable duplicate branch push CI",
+                "a matching canonical push run must skip duplicate pull request CI",
             ),
         ):
-            require_contains(errors, push_route, fragment, message)
-        if push_route.count("should_run=false") != 1:
+            require_contains(errors, pull_request_route, fragment, message)
+        if pull_request_route.count("should_run=false") != 1:
             errors.append(
-                "only branch push routing may disable CI; pull request events must run"
+                "only a pull request backed by a canonical push run may disable CI"
             )
-        for fragment in (
-            '"$EVENT_NAME" = "pull_request"',
-            "actions/workflows/ci.yml/runs",
+        if pull_request_route.count("--paginate") != 2:
+            errors.append("both push runs and push jobs queries must paginate")
+        query_failure_check = pull_request_route.find(
+            'if [ "$route_query_failed" = "true" ]'
+        )
+        reusable_run_check = pull_request_route.rfind(
+            'if [ -n "$reusable_push_runs" ]'
+        )
+        if (
+            query_failure_check == -1
+            or reusable_run_check == -1
+            or query_failure_check > reusable_run_check
         ):
+            errors.append(
+                "any push run query failure must fail open before reusing another run"
+            )
+        for fragment in ('"$EVENT_NAME" = "push"', "gh pr list"):
             if fragment in route_step:
                 errors.append(
-                    "pull request routing must not depend on a matching push run"
+                    "push events must remain canonical and must not be disabled by PR state"
                 )
 
     for fragment, message in (
@@ -104,11 +171,6 @@ def main() -> int:
             "Preflight must follow the planner decision",
         ),
         (
-            "gh pr list",
-            "the plan job must detect open pull requests",
-        ),
-        ("should_run=false", "an open PR must disable duplicate branch push CI"),
-        (
             "needs.plan_ci.outputs.should_run == 'true'",
             "matrix jobs must follow the branch routing decision",
         ),
@@ -120,17 +182,27 @@ def main() -> int:
         require_contains(errors, ci_workflow, fragment, message)
 
     cancel_step = named_step_block(plan_ci, "Cancel older queued or running runs")
-    for fragment, message in (
-        (
-            'HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}',
-            "stale-run cancellation must compare the pull request head commit",
-        ),
-        (
-            'PR_HEAD_REF: ${{ github.event.pull_request.head.ref || \'\' }}',
-            "stale-run cancellation must compare the pull request head branch",
-        ),
-    ):
-        require_contains(errors, cancel_step, fragment, message)
+    if "steps.route.outputs.should_run" in cancel_step:
+        errors.append(
+            "stale-run cleanup must run even when duplicate pull request CI is skipped"
+        )
+    for protected_ref in ("main", "dev"):
+        require_contains(
+            errors,
+            cancel_step,
+            f"github.ref != 'refs/heads/{protected_ref}'",
+            f"stale-run cleanup must preserve every {protected_ref} push run",
+        )
+    normal_cancel = cancel_step.find(
+        '"repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel"'
+    )
+    force_cancel = cancel_step.find(
+        '"repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/force-cancel"'
+    )
+    if normal_cancel == -1 or force_cancel == -1 or normal_cancel > force_cancel:
+        errors.append(
+            "stale-run cleanup must force-cancel runs that ignore normal cancellation"
+        )
 
     pull_request_selector, push_selector = shell_if_else_branches(
         ci_workflow,
@@ -148,36 +220,14 @@ def main() -> int:
                 ".pull_requests[]?",
                 "PR cleanup must select runs for the same pull request",
             ),
-            (
-                '.event == "push"',
-                "PR cleanup must select the matching branch push run",
-            ),
-            (
-                ".head_sha == env.HEAD_SHA",
-                "PR cleanup must compare the branch push head commit",
-            ),
-            (
-                ".head_branch == env.PR_HEAD_REF",
-                "PR cleanup must compare the branch push head branch",
-            ),
-            (
-                '.head_branch != "main"',
-                "PR cleanup must preserve main push CI",
-            ),
-            (
-                '.head_branch != "dev"',
-                "PR cleanup must preserve dev push CI",
-            ),
         ):
             require_contains(errors, pull_request_selector, fragment, message)
+        if '.event == "push"' in pull_request_selector:
+            errors.append("PR cleanup must not cancel matching push runs")
         for fragment, message in (
             (
-                '.event != "pull_request"',
-                "push cleanup must not cancel pull request runs",
-            ),
-            (
-                '.event != "pull_request_target"',
-                "push cleanup must not cancel pull request target runs",
+                ".event == env.EVENT_NAME",
+                "non-PR cleanup must only cancel runs from the same event",
             ),
         ):
             require_contains(errors, push_selector, fragment, message)
