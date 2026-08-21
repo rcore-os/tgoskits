@@ -14,7 +14,10 @@ use std::{
     time::Duration,
 };
 
-use ax_std::os::arceos::sync::{IrqSafeMutex, IrqSafeMutexGuard};
+use ax_std::os::arceos::{
+    guard::IrqSaveGuard,
+    sync::{IrqSafeMutex, IrqSafeMutexGuard},
+};
 use axdevice::*;
 use axdevice_base::*;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
@@ -443,6 +446,7 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
     }
 
     fn run(&mut self) -> BackendResult<Self::Exit> {
+        let _entry_irq_guard = IrqSaveGuard::new();
         x86_result(self.0.run())
     }
 
