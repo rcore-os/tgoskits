@@ -842,8 +842,8 @@ pub(crate) fn axtask_api_task_registry_functions_exist_hold_for_test() -> bool {
 
     #[cfg(feature = "multitask")]
     {
-        // In multitask mode, task_by_id(0) returns current task
-        let result = super::task_by_id(TaskId(0));
+        // In multitask mode, task_by_id(current task's id) returns the current task
+        let result = super::task_by_id(current().id());
         assert!(result.is_some() || result.is_none()); // Either is valid
     }
 
