@@ -37,7 +37,7 @@ pub(crate) fn prepare_cargo(cargo: &mut Cargo) {
     {
         cargo.features.push(COVERAGE_FEATURE.to_string());
     }
-    crate::build::append_encoded_rustflags(cargo, AXTEST_COVERAGE_RUSTFLAGS);
+    crate::build::append_cargo_rustflags(cargo, AXTEST_COVERAGE_RUSTFLAGS);
 }
 
 #[derive(Debug, Clone)]
@@ -47,12 +47,21 @@ pub(crate) struct AxtestCoveragePaths {
 }
 
 impl AxtestCoveragePaths {
-    pub(crate) fn new(workspace_root: &Path, package: &str, target: &str) -> anyhow::Result<Self> {
+    pub(crate) fn new(
+        workspace_root: &Path,
+        package: &str,
+        test: &str,
+        target: &str,
+    ) -> anyhow::Result<Self> {
         let arch_triple = Path::new(target)
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| sanitize_path_component(target));
-        let profraw_filename = format!("{package}-{arch_triple}.profraw");
+        let profraw_filename = format!(
+            "{}-{}-{arch_triple}.profraw",
+            sanitize_path_component(package),
+            sanitize_path_component(test)
+        );
         let dir = workspace_root.join("coverage");
         fs::create_dir_all(&dir)?;
         let profraw_path = dir.join(profraw_filename);
@@ -97,7 +106,7 @@ pub(crate) fn apply_qemu_monitor(
         "-D".to_string(),
         paths
             .profraw_path
-            .with_file_name("qemu.log")
+            .with_extension("qemu.log")
             .display()
             .to_string(),
     ]);
@@ -112,22 +121,19 @@ fn remove_stale_profraw(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Replace the QEMU success regex so that ostool waits for coverage extraction
-/// to complete (signaled by `AXTEST_COVERAGE_DONE`) instead of matching
-/// `AXTEST_SUITE_OK` prematurely.
+/// Keep the QEMU success contract tied to a marker emitted by the guest.
+///
+/// `AXTEST_COVERAGE_DONE` is emitted by the host capture thread after `memsave`
+/// completes, so it never appears in QEMU's serial stream and cannot be used by
+/// the QEMU runner as its success regex. Coverage completion is enforced by
+/// [`AxtestCoverageCaptureGuard::finish`] after the guest suite succeeds.
 pub(crate) fn update_success_regex(qemu: &mut QemuConfig) {
-    for regex in &mut qemu.success_regex {
-        if regex.contains(SUITE_OK_MARKER) {
-            *regex = regex.replace(SUITE_OK_MARKER, COVERAGE_DONE_MARKER);
-        }
-    }
-    // If no success regex contained the marker, add one for coverage done.
     if !qemu
         .success_regex
         .iter()
-        .any(|r| r.contains(COVERAGE_DONE_MARKER))
+        .any(|regex| regex.contains(SUITE_OK_MARKER))
     {
-        qemu.success_regex.push(COVERAGE_DONE_MARKER.to_string());
+        qemu.success_regex.push(SUITE_OK_MARKER.to_string());
     }
 }
 
@@ -507,3 +513,22 @@ mod capture {
 }
 
 pub(crate) use capture::AxtestCoverageCaptureGuard;
+
+#[cfg(test)]
+mod tests {
+    use ostool::run::qemu::QemuConfig;
+
+    use super::{SUITE_OK_MARKER, update_success_regex};
+
+    #[test]
+    fn coverage_keeps_the_guest_suite_success_contract() {
+        let mut qemu = QemuConfig {
+            success_regex: vec![SUITE_OK_MARKER.to_string()],
+            ..QemuConfig::default()
+        };
+
+        update_success_regex(&mut qemu);
+
+        assert_eq!(qemu.success_regex, [SUITE_OK_MARKER]);
+    }
+}

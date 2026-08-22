@@ -1,6 +1,6 @@
 [package]
 name = "axdevice"
-version = "0.5.7"
+version = "0.6.0"
 description = "A reusable, OS-agnostic device abstraction layer designed for virtual machines."
 homepage = "https://github.com/arceos-hypervisor/axdevice"
 repository = "https://github.com/arceos-hypervisor/axdevice"
@@ -34,7 +34,7 @@ name = "lookup_DeviceRuntime"
 harness = false
 
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test"] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 divan = "0.1.21"
 paste = "1.0"
 rand = { version = "0.10", features = ["std_rng"] }

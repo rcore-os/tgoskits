@@ -706,6 +706,11 @@ impl ElfLoader {
 
 static ELF_LOADER: Mutex<ElfLoader> = Mutex::new(ElfLoader::new());
 
+// Linux's exec path bounds chained binary-format rewrites and returns ELOOP
+// for a too-deep interpreter chain. Give StarryOS's recursive script loader
+// the same bounded failure behavior.
+const MAX_INTERPRETER_RECURSION: usize = 5;
+
 /// Clear the ELF cache.
 ///
 /// Useful for removing noises during memory leak detect.
@@ -743,23 +748,47 @@ pub fn load_user_app(
 ) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
     validate_exec_arg_size(args, envs)?;
 
+    load_user_app_with_depth(uspace, loc, path, args, envs, 0)
+}
+
+fn load_user_app_with_depth(
+    uspace: &mut AddrSpace,
+    loc: Location,
+    path: &str,
+    args: &[String],
+    envs: &[String],
+    interpreter_depth: usize,
+) -> StarryResult<(VirtAddr, VirtAddr, Vec<AuxEntry>)> {
     // `/proc/self/exe` is available in procfs; busybox can `readlink` it
     // to re-exec itself as a shell on ENOEXEC, provided the busybox build
     // includes that fallback (Alpine's prebuilt binary may not).
     if path.ends_with(".sh") {
+        if interpreter_depth >= MAX_INTERPRETER_RECURSION {
+            return Err(StarryError::FilesystemLoop);
+        }
         let new_args: Vec<String> = iter::once("/bin/sh".to_owned())
             .chain(args.iter().cloned())
             .collect();
         let sh = ax_fs_ng::vfs::current_fs_context()
             .lock()
             .resolve("/bin/sh")?;
-        return load_user_app(uspace, sh, "/bin/sh", &new_args, envs);
+        return load_user_app_with_depth(
+            uspace,
+            sh,
+            "/bin/sh",
+            &new_args,
+            envs,
+            interpreter_depth + 1,
+        );
     }
 
     let (entry, auxv) = match { ELF_LOADER.lock().load(uspace, loc)? } {
         Ok((entry, auxv)) => (entry, auxv),
         Err(data) => {
             if data.starts_with(b"#!") {
+                if interpreter_depth >= MAX_INTERPRETER_RECURSION {
+                    return Err(StarryError::FilesystemLoop);
+                }
                 let head = &data[2..data.len().min(256)];
                 let pos = head.iter().position(|c| *c == b'\n').unwrap_or(head.len());
                 let line =
@@ -777,7 +806,14 @@ pub fn load_user_app(
                 let interp = ax_fs_ng::vfs::current_fs_context()
                     .lock()
                     .resolve(&new_args[0])?;
-                return load_user_app(uspace, interp, &new_args[0], &new_args, envs);
+                return load_user_app_with_depth(
+                    uspace,
+                    interp,
+                    &new_args[0],
+                    &new_args,
+                    envs,
+                    interpreter_depth + 1,
+                );
             }
             return Err(StarryError::InvalidExecutable);
         }

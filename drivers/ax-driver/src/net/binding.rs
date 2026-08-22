@@ -2,6 +2,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 
+use dma_api::DeviceDma;
 use rd_net::{Interface, NetError};
 use rdrive::{Device, DriverGeneric, probe::OnProbeError};
 
@@ -63,7 +64,7 @@ impl BoundDevice for PlatformNetDevice {
 }
 
 pub trait PlatformDeviceNet {
-    fn register_net<T>(self, name: &'static str, dev: T) -> Option<usize>
+    fn register_net<T>(self, name: &'static str, dev: T, dma: DeviceDma) -> Option<usize>
     where
         T: Interface + 'static;
 
@@ -71,6 +72,7 @@ pub trait PlatformDeviceNet {
         self,
         name: &'static str,
         dev: T,
+        dma: DeviceDma,
         info: BindingInfo,
     ) -> Option<usize>
     where
@@ -78,23 +80,24 @@ pub trait PlatformDeviceNet {
 }
 
 impl PlatformDeviceNet for rdrive::PlatformDevice {
-    fn register_net<T>(self, name: &'static str, dev: T) -> Option<usize>
+    fn register_net<T>(self, name: &'static str, dev: T, dma: DeviceDma) -> Option<usize>
     where
         T: Interface + 'static,
     {
-        self.register_net_with_info(name, dev, BindingInfo::empty())
+        self.register_net_with_info(name, dev, dma, BindingInfo::empty())
     }
 
     fn register_net_with_info<T>(
         self,
         name: &'static str,
         dev: T,
+        dma: DeviceDma,
         info: BindingInfo,
     ) -> Option<usize>
     where
         T: Interface + 'static,
     {
-        register_net_with_info(self, name, dev, info)
+        register_net_with_info(self, name, dev, dma, info)
     }
 }
 
@@ -109,11 +112,17 @@ impl ProbeFdtNet for rdrive::probe::fdt::ProbeFdt<'_> {
     where
         T: Interface + 'static,
     {
+        let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
+            crate::binding_resolver::dma_coherency_from_fdt(self.info()),
+            dma_api::DmaConstraints::new(u64::MAX),
+        ));
         let info = binding_info_from_fdt(self.info())?;
         Ok(register_net_with_info(
             self.into_platform_device(),
             name,
             dev,
+            dma,
             info,
         ))
     }
@@ -130,11 +139,17 @@ impl ProbeAcpiNet for rdrive::probe::acpi::ProbeAcpi<'_> {
     where
         T: Interface + 'static,
     {
+        let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
+            crate::binding_resolver::dma_coherency_from_acpi(self.info())?,
+            dma_api::DmaConstraints::new(u64::MAX),
+        ));
         let info = binding_info_from_acpi(self.info())?;
         Ok(register_net_with_info(
             self.into_platform_device(),
             name,
             dev,
+            dma,
             info,
         ))
     }
@@ -163,11 +178,13 @@ impl ProbePciNet for rdrive::probe::pci::ProbePci<'_> {
     where
         T: Interface + 'static,
     {
+        let dma = crate::pci::device_dma(self.info(), u64::MAX);
         let info = binding_info_from_pci(self.info(), requirement)?;
         Ok(register_net_with_info(
             self.into_platform_device(),
             name,
             dev,
+            dma,
             info,
         ))
     }
@@ -177,11 +194,12 @@ fn register_net_with_info<T>(
     plat_dev: rdrive::PlatformDevice,
     name: &'static str,
     dev: T,
+    dma: DeviceDma,
     info: BindingInfo,
 ) -> Option<usize>
 where
     T: Interface + 'static,
 {
-    let net = rd_net::Net::new(dev, axklib::dma::op());
+    let net = rd_net::Net::new(dev, dma);
     register_bound_device(plat_dev, PlatformNetDevice::new(name, net, info))
 }

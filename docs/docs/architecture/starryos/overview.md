@@ -8,8 +8,6 @@ slug: /architecture/starryos
 
 StarryOS 是建立在 ArceOS 基础能力之上的组件化宏内核系统，继承了 ArceOS 的模块化、跨平台和 Rust 安全性，同时引入了更接近 Linux 的进程、线程、syscall、文件系统和 rootfs 语义。它介于"ArceOS 单内核应用运行时"与"完整 Linux 宏内核"之间。
 
-本文聚焦 StarryOS 的内部结构、syscall 分发机制和执行路径。若尚未运行过 StarryOS，建议先阅读 [StarryOS 快速上手](/docs/quickstart/starryos)。
-
 ## 系统定位
 
 

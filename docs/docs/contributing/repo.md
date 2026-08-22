@@ -146,7 +146,7 @@ url,branch,target_dir,category,description
 | `category` | 否 | 组件分类 | `ArceOS` |
 | `description` | 否 | 备注描述 | `CPU abstraction component` |
 
-### 3.3 查看组件清单
+### 3.3 查看组件列表
 
 查看当前配置可使用：
 

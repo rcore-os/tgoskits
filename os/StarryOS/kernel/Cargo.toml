@@ -1,6 +1,6 @@
 [package]
 name = "starry-kernel"
-version = "0.7.7"
+version = "0.8.0"
 edition.workspace = true
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 authors = [
@@ -12,6 +12,14 @@ authors = [
 ]
 repository.workspace = true
 license.workspace = true
+
+[package.metadata.docs.rs]
+targets = [
+    "x86_64-unknown-none",
+    "aarch64-unknown-none-softfloat",
+    "riscv64gc-unknown-none-elf",
+    "loongarch64-unknown-none-softfloat",
+]
 
 [[package.metadata.clippy.configurations]]
 name = "aarch64-system"
@@ -28,6 +36,7 @@ features = [
     "ax-runtime/rtc",
     "smp",
     "starry-kernel/input",
+    "starry-kernel/user-access-fastpath",
     "starry-kernel/vsock",
 ]
 
@@ -65,6 +74,12 @@ SMP = "4"
 [features]
 default = ["dynamic_debug"]
 dev-log = []
+# Lock-free user-copy fast path: probe the HW page table (aarch64 `AT S1E0R/W`)
+# so a syscall copy of already-present, EL0-permitted pages skips the aspace lock
+# and `populate_area`. Off by default; misses fall to the unchanged locked slow
+# path. The probe itself is always compiled (rides ax-cpu `uspace`); this gate
+# only enables its use. Only meaningful on aarch64 (other arches stub to false).
+user-access-fastpath = []
 ext4 = ["ax-fs-ng/ext4"]
 fat = ["ax-fs-ng/fat"]
 input = ["dep:ax-input", "ax-runtime/input"]
@@ -132,14 +147,12 @@ ax-runtime = { workspace = true, features = [
     "rtc",
     "ext4fs",
     "net",
-    "serial",
 ] }
 ax-task = { workspace = true, features = [
     "multitask",
     "task-ext",
     "tracepoint-hooks",
     "sched-rr",
-    "axtest",
 ] }
 rockchip-rga = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
@@ -215,18 +228,14 @@ sg200x-jpu = { workspace = true, optional = true }
 # 0.10 to match sg200x-bsp 0.7.x's internal tock-registers; the Writeable trait
 # must come from the same version as sg200x-bsp's ReadWrite types.
 tock-registers = { version = "0.10", optional = true }
-ktracepoint = "0.6"
+ax-tracepoint.workspace = true
 ksym = "0.6"
 kbpf-basic = "0.6"
 rbpf = { version = "0.4", default-features = false }
 
 [dev-dependencies]
-axtest.workspace = true
-axbacktrace = { workspace = true, features = ["axtest"] }
-ax-cpumask = { workspace = true, features = ["axtest"] }
-ax-driver = { workspace = true, features = ["axtest"] }
-ax-hal = { workspace = true, features = ["axtest"] }
-ax-std = { workspace = true, default-features = false, features = [
+axtest = { path = "../../../components/axtest/axtest" }
+ax-std = { path = "../../arceos/ulib/axstd", default-features = false, features = [
     "alloc",
     "fd",
     "ext-ld",
@@ -234,43 +243,15 @@ ax-std = { workspace = true, default-features = false, features = [
     "multitask",
     "irq",
 ] }
-ax-memory-addr = { workspace = true, features = ["axtest"] }
-ax-memory-set = { workspace = true, features = ["axtest"] }
-axfs-ng-vfs = { workspace = true, features = ["axtest"] }
-ax-io = { workspace = true, features = ["axtest"] }
-ax-lazyinit = { workspace = true, features = ["axtest"] }
-ax-net = { workspace = true, features = ["axtest"] }
-axpoll = { workspace = true, features = ["axtest"] }
-dma-api = { workspace = true, features = ["axtest"] }
-irq-framework = { workspace = true, features = ["axtest"] }
-kernutil = { workspace = true, features = ["axtest"] }
-mmio-api = { workspace = true, features = ["axtest"] }
-rdif-base = { workspace = true, features = ["axtest"] }
-rdif-block = { workspace = true, features = ["axtest"] }
-rdif-def = { workspace = true, features = ["axtest"] }
-rdif-display = { workspace = true, features = ["axtest"] }
-rdif-eth = { workspace = true, features = ["axtest"] }
-rdif-input = { workspace = true, features = ["axtest"] }
-rdif-intc = { workspace = true, features = ["axtest"] }
-rdif-msi = { workspace = true, features = ["axtest"] }
-rdif-pcie = { workspace = true, features = ["axtest"] }
-rdif-pinctrl = { workspace = true, features = ["axtest"] }
-rdif-power = { workspace = true, features = ["axtest"] }
-rdif-reset = { workspace = true, features = ["axtest"] }
-rdif-serial = { workspace = true, features = ["axtest"] }
-rdif-vsock = { workspace = true, features = ["axtest"] }
-ranges-ext.workspace = true
-rdrive = { workspace = true, features = ["axtest"] }
-rsext4 = { workspace = true, features = ["axtest"] }
-scope-local = { workspace = true, features = ["axtest"] }
-buddy-slab-allocator = { workspace = true, features = ["axtest"] }
-page-table-generic = { workspace = true }
 
 [[test]]
 name = "axtest_kernel"
 path = "tests/axtest_kernel.rs"
 harness = false
-required-features = ["axtest"]
+required-features = ["axtest", "smp"]
+
+[package.metadata.axtest]
+runtime = "starry"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86 = "0.52"

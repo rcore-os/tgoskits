@@ -6,7 +6,7 @@ mod selection;
 mod tests;
 
 pub(crate) use refs::changed_paths_since;
-pub(crate) use selection::{IncrementalPackageSelection, top_level_affected_workspace_packages};
+pub(crate) use selection::IncrementalPackageSelection;
 
 pub(crate) fn select_incremental_packages(
     workspace_root: &std::path::Path,

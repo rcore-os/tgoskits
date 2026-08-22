@@ -7,13 +7,12 @@ keywords = ["os", "dma"]
 license.workspace = true
 name = "dma-api"
 repository.workspace = true
-version = "0.9.5"
+version = "0.10.0"
 
 [features]
-axtest = ["dep:axtest"]
+host-test = ["ax-sync/host-test"]
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 ax-sync.workspace = true
 cfg-if.workspace = true
 derive_more.workspace = true
@@ -22,10 +21,12 @@ mbarrier = "0.1"
 thiserror.workspace = true
 
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test"] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+[[test]]
+name = "std"
+path = "tests/std.rs"
+required-features = ["host-test"]

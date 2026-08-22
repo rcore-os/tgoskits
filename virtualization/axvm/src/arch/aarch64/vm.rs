@@ -18,36 +18,29 @@ use crate::{
 
 impl Aarch64Arch {
     pub(crate) fn create_vm_resources(
-        config: AxVMConfig,
+        config: &mut AxVMConfig,
         _fw_cfg_payload: Arc<axdevice::FwCfgPayloadSlot>,
     ) -> AxVmResult<AxVMResources> {
-        let device_plan = Aarch64VmPlan::new(&config)?;
+        let device_plan = Aarch64VmPlan::new(config)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config, page_table, device_plan, |root_paddr| {
+        AxVMResources::from_page_table(config.id(), page_table, device_plan, |root_paddr| {
             nested_paging_config(root_paddr, levels, &placements)
         })
     }
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
-        vm.prepare_resources_with(|resources| {
-            let vcpu_mappings = resources
-                .config()
-                .phys_cpu_ls
-                .get_vcpu_affinities_pcpu_ids();
-            let placements = resources.vcpu_placements();
-            let timer_profile = resources.config().timer_profile().cloned().ok_or_else(|| {
+        vm.prepare_resources_with(|resources, config| {
+            let vcpu_mappings = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
+            let placements = resources.vcpu_placements(config);
+            let timer_profile = config.timer_profile().cloned().ok_or_else(|| {
                 AxVmError::invalid_config("AArch64 machine profile has no architectural timer")
             })?;
             let timer_config = timer_vm_config(&timer_profile, &vcpu_mappings)?;
             let host_irq_config = super::gic::host_irq_config()
                 .map_err(|error| AxVmError::interrupt("discover host IRQ CPU interface", error))?;
-            let dtb_addr = resources
-                .config()
-                .image_config()
-                .dtb_load_gpa
-                .unwrap_or_default();
+            let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
             let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
                 Ok(ArmVcpuCreateConfig {
                     mpidr_el1: placement.phys_cpu_id as _,
@@ -72,8 +65,8 @@ impl Aarch64Arch {
                 )?;
             }
 
-            resources.prepare_guest_address_space(vm.id(), &[])?;
-            vcpus.setup(resources, move |_config, _memory_regions| {
+            resources.prepare_guest_address_space(vm.id(), config, &[])?;
+            vcpus.setup(resources, config, move |_config, _memory_regions| {
                 Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config))
             })?;
 

@@ -7,16 +7,11 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-eth"
 repository.workspace = true
-version = "0.3.10"
+version = "0.4.0"
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 dma-api = { workspace = true }
 rdif-base = { workspace = true }
 thiserror = { version = "2", default-features = false }
 
 [features]
-axtest = ["dep:axtest"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

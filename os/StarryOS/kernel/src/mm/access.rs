@@ -3,17 +3,21 @@ use core::{
     alloc::Layout,
     ffi::c_char,
     hint::{spin_loop, unlikely},
-    mem::{MaybeUninit, transmute},
+    mem::{MaybeUninit, size_of, transmute},
     ptr, slice,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
 use ax_io::{IoError, prelude::*};
+#[cfg(feature = "user-access-fastpath")]
+use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
     cpu::{
+        UserAccessError, UserAtomicError, UserAtomicU32Op,
         asm::user_copy,
         trap::{PageFaultFlags, page_fault_handler},
+        user_atomic_u32, user_read_u32,
     },
     paging::MappingFlags,
 };
@@ -48,6 +52,73 @@ pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
     result
 }
 
+/// syscall-argument structs are far smaller than this; larger transfers take the
+/// slow path, where the aspace lock is amortized over a large copy anyway.
+#[cfg(feature = "user-access-fastpath")]
+const FASTPATH_MAX_PAGES: usize = 16;
+
+/// Lock-free eligibility probe for a user range: `true` iff every 4 KiB page
+/// covering `[start, start+len)` is already present and EL0-permitted for the
+/// requested access, so the caller can skip the aspace lock and `populate_area`.
+///
+/// A write requires the page present *and* EL0-writable, so a copy-on-write page
+/// (present read-only) correctly misses and routes to the slow path where the COW
+/// copy happens. Any miss / empty / oversized range / address-space overflow
+/// returns `false` and the caller takes the unchanged locked slow path.
+#[cfg(feature = "user-access-fastpath")]
+fn user_range_fast_ok(start: VirtAddr, len: usize, access_flags: MappingFlags) -> bool {
+    if len == 0 {
+        return false;
+    }
+    // Checked arithmetic, mirroring the slow path's `VirtAddrRange::try_from_start_size`
+    // + page rounding: reject to the slow path on any address-space overflow rather
+    // than relying on wrap semantics. `check_region` reaches this with a fully
+    // caller-controlled `start` and no prior range bound, so a hostile top-of-space
+    // pointer must not overflow here (which would panic under an overflow-checks
+    // build); it simply falls through to `can_access_range`, which rejects it.
+    let start = start.as_usize();
+    let Some(end) = start.checked_add(len) else {
+        return false;
+    };
+    let page_start = start & !(PAGE_SIZE_4K - 1);
+    let Some(page_end) = end
+        .checked_add(PAGE_SIZE_4K - 1)
+        .map(|v| v & !(PAGE_SIZE_4K - 1))
+    else {
+        return false;
+    };
+    // `end >= start` and both are rounded the same way, so `page_end >= page_start`.
+    let pages = (page_end - page_start) / PAGE_SIZE_4K;
+    // `pages == 0` is unreachable here: the `len == 0` early return plus
+    // `page_end > page_start` guarantee `pages >= 1`. It is kept as a defensive
+    // guard so the range cap still holds if either invariant is later removed.
+    if pages == 0 || pages > FASTPATH_MAX_PAGES {
+        return false;
+    }
+    // A write access requires the page to be present *and* EL0-writable; a
+    // copy-on-write page is present-read-only, so a write probe correctly misses
+    // and routes to the slow path where `populate_area` performs the COW copy.
+    let write = access_flags.contains(MappingFlags::WRITE);
+
+    // IRQs off across the whole probe: `PAR_EL1` is a per-CPU scratch register
+    // shared with any interrupt handler that also executes an `AT`. Disabling
+    // IRQs guarantees no other `AT` runs on this CPU between our `AT` and the
+    // `mrs` that reads the result. The range is capped, so the window is a
+    // handful of instructions.
+    let _guard = crate::sync::PreemptIrqSaveGuard::new();
+    let mut page = page_start;
+    while page < page_end {
+        // SAFETY: IRQs are disabled for the whole loop by the guard above, which
+        // is `user_access_ok_page`'s precondition (`PAR_EL1` not clobbered by a
+        // concurrent `AT` on this CPU).
+        if !unsafe { ax_runtime::hal::cpu::asm::user_access_ok_page(page, write) } {
+            return false;
+        }
+        page += PAGE_SIZE_4K;
+    }
+    true
+}
+
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> StarryResult<()> {
     let align = layout.align();
     if start.as_usize() & (align - 1) != 0 {
@@ -68,6 +139,15 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     if unsafe { aspace_arc.raw() }.is_owned_by_current() {
         return Err(StarryError::BadAddress);
     }
+
+    // Lock-free fast path: if every page is already present with the requested
+    // permission, the later dereference will not fault, so skip the aspace lock
+    // and `populate_area`. Misses fall through to the locked slow path.
+    #[cfg(feature = "user-access-fastpath")]
+    if user_range_fast_ok(start, layout.size(), access_flags) {
+        return Ok(());
+    }
+
     let mut aspace = aspace_arc.lock();
 
     if !aspace.can_access_range(start, layout.size(), access_flags) {
@@ -169,6 +249,63 @@ pub fn atomic_update_user_u32(
             }
         }
     })
+}
+
+/// Atomically updates a futex word without invoking the page-fault handler.
+pub fn atomic_update_user_u32_nofault(
+    ptr: *mut u32,
+    operation: UserAtomicU32Op,
+    argument: u32,
+) -> Result<u32, UserAtomicError> {
+    if ax_runtime::hal::irq::in_irq_context()
+        || !ptr.addr().is_multiple_of(size_of::<u32>())
+        || check_access(ptr.addr(), size_of::<u32>()).is_err()
+    {
+        return Err(UserAtomicError::Fault);
+    }
+
+    // SAFETY: the checks above establish alignment and the architecture user
+    // range contract. A concurrent mapping change is redirected through the
+    // dedicated nofault exception table.
+    unsafe { user_atomic_u32(ptr, operation, argument) }
+}
+
+/// Reads a futex word without invoking the page-fault handler.
+pub fn read_user_u32_nofault(ptr: *const u32) -> Result<u32, UserAccessError> {
+    if ax_runtime::hal::irq::in_irq_context()
+        || !ptr.addr().is_multiple_of(size_of::<u32>())
+        || check_access(ptr.addr(), size_of::<u32>()).is_err()
+    {
+        return Err(UserAccessError::Fault);
+    }
+
+    // SAFETY: the checks above establish alignment and the architecture user
+    // range contract. A concurrent mapping change is redirected through the
+    // dedicated nofault exception table.
+    unsafe { user_read_u32(ptr) }
+}
+
+/// Resolves and validates a readable futex word outside futex queue locks.
+pub fn fault_in_user_u32_read(ptr: *const u32) -> StarryResult<()> {
+    fault_in_user_u32(ptr.addr(), MappingFlags::READ)
+}
+
+/// Resolves and validates a writable futex word outside futex queue locks.
+pub fn fault_in_user_u32_write(ptr: *mut u32) -> StarryResult<()> {
+    fault_in_user_u32(ptr.addr(), MappingFlags::READ.union(MappingFlags::WRITE))
+}
+
+fn fault_in_user_u32(address: usize, access_flags: MappingFlags) -> StarryResult<()> {
+    if !address.is_multiple_of(size_of::<u32>()) {
+        return Err(StarryError::InvalidInput);
+    }
+    prepare_user_memory(
+        "fault in futex word",
+        address,
+        size_of::<u32>(),
+        access_flags,
+    )
+    .map_err(Into::into)
 }
 
 /// An immutable pointer to user space memory.
@@ -358,6 +495,14 @@ fn prepare_user_memory(op: &str, start: usize, len: usize, access_flags: Mapping
         return Err(VmError::AccessDenied);
     }
 
+    // Lock-free fast path: if every page is already present with the requested
+    // permission, the copy will not fault, so skip the aspace lock and
+    // `populate_area`. Misses fall through to the locked slow path.
+    #[cfg(feature = "user-access-fastpath")]
+    if user_range_fast_ok(start, len, access_flags) {
+        return Ok(());
+    }
+
     let mut aspace = aspace_arc.lock();
     if !aspace.can_access_range(start, len, access_flags) {
         return Err(VmError::AccessDenied);
@@ -543,7 +688,7 @@ where
                 // while all other CPUs are parked, then rely on the per-CPU
                 // sync callback to flush instruction state.
                 action(addr.as_mut_ptr());
-                return Ok(());
+                Ok(())
             }
 
             #[cfg(not(target_arch = "loongarch64"))]
@@ -579,7 +724,7 @@ fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     ax_runtime::hal::cache::sync_kernel_text(start, size);
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
     let user_base = USER_SPACE_BASE;
     let user_end = USER_SPACE_BASE + USER_SPACE_SIZE;
@@ -620,4 +765,58 @@ pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
         && check_access(user_base, USER_SPACE_SIZE).is_ok()
         && check_access(user_base, USER_SPACE_SIZE + 1).is_err()
         && check_access(user_end - 1, usize::MAX).is_err()
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use core::{mem::MaybeUninit, ptr::NonNull};
+
+    use starry_vm::{VmMutPtr, VmPtr, vm_load};
+
+    use super::*;
+
+    #[test]
+    fn vm_pointer_access_rejects_unmapped_addresses() {
+        let null_ptr = core::ptr::null::<u32>();
+        assert!(null_ptr.nullable().is_none());
+
+        let dangling = NonNull::<u32>::dangling();
+        assert!(dangling.nullable().is_some());
+        assert_eq!(dangling.as_ptr().vm_read(), Err(VmError::AccessDenied));
+        assert_eq!(dangling.vm_write(42), Err(VmError::AccessDenied));
+    }
+
+    #[test]
+    fn vm_slice_access_rejects_invalid_user_ranges() {
+        let mut one_byte = [MaybeUninit::<u8>::uninit()];
+        assert_eq!(
+            vm_read_slice(core::ptr::null::<u8>(), &mut one_byte),
+            Err(VmError::AccessDenied)
+        );
+        assert_eq!(
+            vm_write_slice(core::ptr::null_mut::<u8>(), &[1]),
+            Err(VmError::AccessDenied)
+        );
+        assert_eq!(vm_write_slice(core::ptr::null_mut::<u8>(), &[]), Ok(()));
+        assert_eq!(vm_read_slice(core::ptr::null::<u8>(), &mut []), Ok(()));
+    }
+
+    #[test]
+    fn vm_alloc_helpers_validate_inputs_before_copying() {
+        let mut unaligned = [0_u16; 2];
+        let unaligned_ptr = unaligned
+            .as_mut_ptr()
+            .cast::<u8>()
+            .wrapping_add(1)
+            .cast::<u16>();
+        assert_eq!(vm_load_until_nul(unaligned_ptr), Err(VmError::BadAddress));
+        assert_eq!(
+            vm_load(core::ptr::null::<u8>(), 1),
+            Err(VmError::AccessDenied)
+        );
+
+        let empty: Vec<u8> = vm_load(core::ptr::null::<u8>(), 0).unwrap();
+        assert!(empty.is_empty());
+    }
 }

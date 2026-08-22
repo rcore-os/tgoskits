@@ -1,6 +1,37 @@
 //! Cache, TLB, and modified-text synchronization helpers.
 
-use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+
+// The range API is normalized to 4 KiB pages. x86_64 and RISC-V use the
+// current Linux defaults; the other backends keep the page-table engine's
+// existing 32-entry bound until an architecture-specific cost model exists.
+#[cfg(target_arch = "x86_64")]
+const TLB_SINGLE_PAGE_FLUSH_CEILING: usize = 33;
+#[cfg(target_arch = "riscv64")]
+const TLB_SINGLE_PAGE_FLUSH_CEILING: usize = 64;
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+const TLB_SINGLE_PAGE_FLUSH_CEILING: usize = 32;
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64"
+)))]
+const TLB_SINGLE_PAGE_FLUSH_CEILING: usize = 32;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TlbRangeFlushMode {
+    Pages,
+    Full,
+}
+
+fn tlb_range_flush_mode(size: usize) -> TlbRangeFlushMode {
+    if size.div_ceil(PAGE_SIZE_4K) > TLB_SINGLE_PAGE_FLUSH_CEILING {
+        TlbRangeFlushMode::Full
+    } else {
+        TlbRangeFlushMode::Pages
+    }
+}
 
 /// Failure while synchronously invalidating a kernel TLB range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -21,16 +52,72 @@ pub enum TlbShootdownError {
 
 /// Flushes the TLB entries covering a virtual-address range on the current CPU.
 pub fn flush_tlb_range(start: VirtAddr, size: usize) {
+    if size == 0 {
+        return;
+    }
+    if tlb_range_flush_mode(size) == TlbRangeFlushMode::Full {
+        ax_cpu::asm::flush_tlb(None);
+        return;
+    }
     for offset in (0..size).step_by(PAGE_SIZE_4K) {
         ax_cpu::asm::flush_tlb(Some(start + offset));
     }
+}
+
+fn update_mmu_cache_with(vaddr: VirtAddr, update: impl FnOnce(VirtAddr)) {
+    update(vaddr.align_down_4k());
+}
+
+/// Synchronizes a page-table update performed by the local page-fault handler.
+///
+/// This is the architecture boundary corresponding to Linux's
+/// `update_mmu_cache()`: it is intentionally local and must not be replaced by
+/// a cross-CPU shootdown. Architectures that do not cache invalid translations
+/// implement it as a no-op.
+#[inline]
+pub fn update_mmu_cache(vaddr: VirtAddr) {
+    update_mmu_cache_with(vaddr, ax_cpu::asm::update_mmu_cache);
+}
+
+#[cfg(axtest)]
+/// Verifies page alignment at the local page-fault completion boundary.
+pub fn update_mmu_cache_alignment_for_test() -> bool {
+    use core::cell::Cell;
+
+    let calls = Cell::new(0);
+    let observed = Cell::new(VirtAddr::from(0));
+    update_mmu_cache_with(VirtAddr::from(0x4567), |vaddr| {
+        calls.set(calls.get() + 1);
+        observed.set(vaddr);
+    });
+    calls.get() == 1 && observed.get() == VirtAddr::from(0x4000)
 }
 
 /// Flushes the TLB entries covering a virtual-address range on all available CPUs.
 pub fn flush_tlb_range_all_cpus(start: VirtAddr, size: usize) -> Result<(), TlbShootdownError> {
     #[cfg(feature = "ipi")]
     let _guard = ax_sync::PreemptGuard::new();
-    flush_tlb_range_all_cpus_with(&AxHalTlbShootdown, start, size)
+    let cpu_count = crate::cpu_num().min(usize::BITS as usize);
+    let cpu_mask = if cpu_count == usize::BITS as usize {
+        usize::MAX
+    } else {
+        (1usize << cpu_count) - 1
+    };
+    flush_tlb_range_on_cpus_with(&AxHalTlbShootdown, cpu_mask, start, size)
+}
+
+/// Flushes a TLB range on the CPUs selected by `cpu_mask`.
+///
+/// Bit `n` targets logical CPU `n`. Offline CPUs are skipped because CPU
+/// teardown installs the offline root before withdrawing their online state.
+pub fn flush_tlb_range_on_cpus(
+    cpu_mask: usize,
+    start: VirtAddr,
+    size: usize,
+) -> Result<(), TlbShootdownError> {
+    #[cfg(feature = "ipi")]
+    let _guard = ax_sync::PreemptGuard::new();
+    flush_tlb_range_on_cpus_with(&AxHalTlbShootdown, cpu_mask, start, size)
 }
 
 trait TlbShootdown {
@@ -107,19 +194,23 @@ impl TlbShootdown for AxHalTlbShootdown {
     }
 }
 
-fn flush_tlb_range_all_cpus_with(
+fn flush_tlb_range_on_cpus_with(
     runtime: &impl TlbShootdown,
+    cpu_mask: usize,
     start: VirtAddr,
     size: usize,
 ) -> Result<(), TlbShootdownError> {
     let current_cpu = runtime.current_cpu();
     for cpu_id in 0..runtime.cpu_count() {
-        if cpu_id == current_cpu || !runtime.cpu_online(cpu_id) {
+        let selected = cpu_id < usize::BITS as usize && cpu_mask & (1usize << cpu_id) != 0;
+        if !selected || cpu_id == current_cpu || !runtime.cpu_online(cpu_id) {
             continue;
         }
         runtime.flush_remote(cpu_id, start, size)?;
     }
-    runtime.flush_local(start, size);
+    if current_cpu < usize::BITS as usize && cpu_mask & (1usize << current_cpu) != 0 {
+        runtime.flush_local(start, size);
+    }
     Ok(())
 }
 
@@ -240,7 +331,8 @@ mod tests {
             local_flushed: Cell::new(false),
         };
 
-        let result = flush_tlb_range_all_cpus_with(&runtime, VirtAddr::from(0x4000), 0x2000);
+        let result =
+            flush_tlb_range_on_cpus_with(&runtime, usize::MAX, VirtAddr::from(0x4000), 0x2000);
 
         assert_eq!(result, Err(TlbShootdownError::Timeout));
         assert_eq!(runtime.remote_cpu.get(), Some(1));
@@ -256,10 +348,41 @@ mod tests {
             local_flushed: Cell::new(false),
         };
 
-        let result = flush_tlb_range_all_cpus_with(&runtime, VirtAddr::from(0x4000), 0x2000);
+        let result =
+            flush_tlb_range_on_cpus_with(&runtime, usize::MAX, VirtAddr::from(0x4000), 0x2000);
 
         assert_eq!(result, Ok(()));
         assert_eq!(runtime.remote_cpu.get(), Some(2));
         assert!(runtime.local_flushed.get());
+    }
+
+    #[test]
+    fn targeted_tlb_shootdown_skips_unselected_remote_and_local_cpus() {
+        let runtime = ModelShootdown {
+            online: [true; 3],
+            remote_error: None,
+            remote_cpu: Cell::new(None),
+            local_flushed: Cell::new(false),
+        };
+
+        let result =
+            flush_tlb_range_on_cpus_with(&runtime, 1usize << 2, VirtAddr::from(0x4000), 0x2000);
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(runtime.remote_cpu.get(), Some(2));
+        assert!(!runtime.local_flushed.get());
+    }
+
+    #[test]
+    fn large_tlb_ranges_switch_to_one_full_invalidation() {
+        assert_eq!(tlb_range_flush_mode(0), TlbRangeFlushMode::Pages);
+        assert_eq!(
+            tlb_range_flush_mode(TLB_SINGLE_PAGE_FLUSH_CEILING * PAGE_SIZE_4K),
+            TlbRangeFlushMode::Pages
+        );
+        assert_eq!(
+            tlb_range_flush_mode((TLB_SINGLE_PAGE_FLUSH_CEILING + 1) * PAGE_SIZE_4K),
+            TlbRangeFlushMode::Full
+        );
     }
 }

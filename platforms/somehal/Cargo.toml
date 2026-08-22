@@ -7,19 +7,15 @@ keywords.workspace = true
 license.workspace = true
 name = "somehal"
 repository.workspace = true
-version = "0.8.3"
+version = "0.9.0"
 
 [features]
-axtest = []
 efi = ["someboot/efi"]
 hv = ["mmu", "someboot/hv", "dep:ax-cpu"]
 mmu = ["someboot/mmu"]
 thead-mae = ["someboot/thead-mae"]
 tls = ["someboot/tls"]
 uspace = ["mmu", "someboot/uspace"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
 anyhow = {workspace = true}
@@ -53,8 +49,7 @@ sbi-rt = { workspace = true, features = ["legacy"] }
 loongArch64 = "0.2"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-x2apic = "0.5"
-x86 = "0.52"
+x86-apic-driver = { workspace = true, features = ["rdif"] }
 
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test"] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

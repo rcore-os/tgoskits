@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 use core::{alloc::Layout, cell::UnsafeCell};
 
-use dma_api::{ContiguousBuffer, ContiguousBufferPool, DeviceDma, DmaDirection, DmaOp};
+use dma_api::{ContiguousBuffer, ContiguousBufferPool, DeviceDma, DmaDirection};
 use futures::task::AtomicWaker;
 pub use rdif_eth::{IrqHandler as InterfaceIrqHandler, *};
 
@@ -35,7 +35,7 @@ impl QueueWakerMap {
 
 struct NetInner {
     interface: UnsafeCell<Box<dyn Interface>>,
-    dma_op: &'static dyn DmaOp,
+    dma: DeviceDma,
     tx_wakers: QueueWakerMap,
     rx_wakers: QueueWakerMap,
 }
@@ -75,11 +75,11 @@ impl DriverGeneric for Net {
 }
 
 impl Net {
-    pub fn new(interface: impl Interface, dma_op: &'static dyn DmaOp) -> Self {
+    pub fn new(interface: impl Interface, dma: DeviceDma) -> Self {
         Self {
             inner: Arc::new(NetInner {
                 interface: UnsafeCell::new(Box::new(interface)),
-                dma_op,
+                dma,
                 tx_wakers: QueueWakerMap::new(),
                 rx_wakers: QueueWakerMap::new(),
             }),
@@ -136,7 +136,7 @@ impl Net {
             .create_tx_queue()
             .ok_or_else(|| other_error("failed to create tx queue"))?;
         let config = queue.config();
-        let pool = make_pool(self.inner.dma_op, config, DmaDirection::ToDevice)?;
+        let pool = make_pool(&self.inner.dma, config, DmaDirection::ToDevice)?;
         let waker = self.inner.tx_wakers.register(queue.id());
         drop(irq_guard);
 
@@ -156,7 +156,7 @@ impl Net {
             .create_rx_queue()
             .ok_or_else(|| other_error("failed to create rx queue"))?;
         let config = queue.config();
-        let pool = make_pool(self.inner.dma_op, config, DmaDirection::FromDevice)?;
+        let pool = make_pool(&self.inner.dma, config, DmaDirection::FromDevice)?;
         let waker = self.inner.rx_wakers.register(queue.id());
         drop(irq_guard);
 
@@ -241,14 +241,20 @@ impl WifiControlHandle {
 }
 
 fn make_pool(
-    dma_op: &'static dyn DmaOp,
+    device_dma: &DeviceDma,
     config: QueueConfig,
     direction: DmaDirection,
 ) -> Result<ContiguousBufferPool, NetError> {
     let layout = Layout::from_size_align(config.buf_size, config.align.max(1))
         .map_err(|_| other_error("invalid queue layout"))?;
-    let dma = DeviceDma::new_legacy(config.dma_mask, dma_op);
+    let dma = queue_dma(device_dma, config);
     Ok(dma.contiguous_buffer_pool(layout, direction, config.ring_size))
+}
+
+fn queue_dma(device_dma: &DeviceDma, config: QueueConfig) -> DeviceDma {
+    let mut constraints = device_dma.info().constraints();
+    constraints.addr_mask = constraints.addr_mask.min(config.dma_mask);
+    device_dma.with_constraints(constraints)
 }
 
 pub struct IrqHandler {
@@ -399,7 +405,7 @@ impl TxPending<'_> {
             .buff
             .as_ref()
             .expect("tx pending buffer should exist until submit succeeds");
-        buff.prepare_for_device(0, self.len);
+        buff.prepare_for_device(0..self.len);
         self.queue.interface.submit(DmaBuffer {
             virt: buff.as_ptr(),
             bus_addr: self.bus_addr,
@@ -443,7 +449,7 @@ impl RxQueue {
     fn submit_buffer(&mut self, buff: ContiguousBuffer) -> Result<(), NetError> {
         let bus_addr = buff.dma_addr().as_u64();
         let len = self.config.buf_size.min(buff.len());
-        buff.prepare_for_device(0, len);
+        buff.prepare_for_device(0..len);
         self.interface.submit(DmaBuffer {
             virt: buff.as_ptr(),
             bus_addr,
@@ -461,7 +467,7 @@ impl RxQueue {
             return Err(other_error("reclaimed unknown rx buffer"));
         };
         let packet_len = len.min(self.config.buf_size).min(buff.len());
-        buff.complete_for_cpu(0, packet_len);
+        buff.complete_for_cpu(0..packet_len);
         Ok(Some((buff, packet_len)))
     }
 
@@ -677,6 +683,42 @@ mod tests {
     }
 
     #[test]
+    fn queue_dma_preserves_device_coherency_while_narrowing_the_mask() {
+        static DMA: TestDma = TestDma;
+        let device = DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::Coherent,
+                dma_api::DmaConstraints::new(u64::MAX)
+                    .with_align(128)
+                    .with_boundary(4096)
+                    .with_max_segment_size(8192),
+            ),
+            &DMA,
+        );
+        let queue = queue_dma(
+            &device,
+            QueueConfig {
+                dma_mask: u32::MAX as u64,
+                align: 64,
+                buf_size: 2048,
+                ring_size: 32,
+            },
+        );
+
+        assert_eq!(queue.info().coherency(), dma_api::DmaCoherency::Coherent);
+        assert_eq!(
+            queue.info().constraints(),
+            dma_api::DmaConstraints {
+                addr_mask: u32::MAX as u64,
+                align: 128,
+                boundary: Some(4096),
+                max_segment_size: Some(8192),
+            }
+        );
+    }
+
+    #[test]
     fn irq_handler_fast_path_returns_events_without_waking_registered_wakers() {
         static DMA: TestDma = TestDma;
         let mut rx = IdList::none();
@@ -697,7 +739,14 @@ mod tests {
                     handle_calls: Arc::clone(&irq_calls),
                 })),
             },
-            &DMA,
+            DeviceDma::new(
+                dma_api::DmaDeviceInfo::new(
+                    dma_api::DmaDomainId::Direct,
+                    dma_api::DmaCoherency::NonCoherent,
+                    dma_api::DmaConstraints::new(u64::MAX),
+                ),
+                &DMA,
+            ),
         );
         let rx_wake_count = Arc::new(AtomicUsize::new(0));
         let tx_wake_count = Arc::new(AtomicUsize::new(0));
@@ -731,7 +780,14 @@ mod tests {
                 handle_calls,
                 owned_irq_handler: None,
             },
-            &DMA,
+            DeviceDma::new(
+                dma_api::DmaDeviceInfo::new(
+                    dma_api::DmaDomainId::Direct,
+                    dma_api::DmaCoherency::NonCoherent,
+                    dma_api::DmaConstraints::new(u64::MAX),
+                ),
+                &DMA,
+            ),
         );
 
         assert!(net.take_irq_handler().is_none());
@@ -758,7 +814,14 @@ mod tests {
                     handle_calls: Arc::clone(&owned_calls),
                 })),
             },
-            &DMA,
+            DeviceDma::new(
+                dma_api::DmaDeviceInfo::new(
+                    dma_api::DmaDomainId::Direct,
+                    dma_api::DmaCoherency::NonCoherent,
+                    dma_api::DmaConstraints::new(u64::MAX),
+                ),
+                &DMA,
+            ),
         );
 
         let mut irq = net.take_irq_handler().unwrap();

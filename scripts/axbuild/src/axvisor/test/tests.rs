@@ -1038,6 +1038,74 @@ fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
 }
 
 #[test]
+fn shell_command_failure_regex_ignores_smp_log_interleaving() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for path in [
+        "test-suit/axvisor/normal/qemu/smoke/qemu-aarch64.toml",
+        "test-suit/axvisor/normal/qemu/smoke/qemu-loongarch64.toml",
+        "test-suit/axvisor/normal/qemu/smoke/qemu-riscv64.toml",
+        "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-svm.toml",
+        "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-vmx.toml",
+        "test-suit/axvisor/normal/qemu-riscv-ipi/smp-ipi/qemu-riscv64.toml",
+    ] {
+        let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+        let config: QemuConfig = toml::from_str(&content).unwrap();
+        let pattern = config
+            .fail_regex
+            .iter()
+            .find(|pattern| pattern.contains("echo|cat|rm"))
+            .unwrap_or_else(|| panic!("{path} should reject shell command failures"));
+        let regex = regex::Regex::new(pattern).unwrap();
+
+        assert!(regex.is_match("cat: can't open '/missing': No such file or directory"));
+        assert!(regex.is_match("rm: can't remove '/missing': No such file or directory"));
+        assert!(
+            !regex.is_match("rm:axvm::host::arceos:373] Hardware virtualization enabled"),
+            "{path} must not interpret an SMP serial-log splice as a shell command failure"
+        );
+    }
+}
+
+#[test]
+fn aarch64_nvme_smoke_fail_regex_ignores_interleaved_kernel_logs() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let qemu_path = "test-suit/axvisor/normal/qemu/smoke/qemu-aarch64.toml";
+    let qemu = load_qemu_config(&workspace_root.join(qemu_path));
+    let fail_regexes = qemu
+        .fail_regex
+        .iter()
+        .map(|pattern| regex::Regex::new(pattern).unwrap())
+        .collect::<Vec<_>>();
+    let matches_failure = |output: &str| fail_regexes.iter().any(|regex| regex.is_match(output));
+
+    for interleaved_output in [
+        "rm:Core Waiting for all cores to enable hardware virtualization...",
+        "rm:370329Initializing AxVM timer wheel...",
+        "rm: Core Waiting for all cores to enable hardware virtualization...",
+        "rm: 370329Initializing AxVM timer wheel...",
+        "rm: s initializing hardware virtualization support...",
+    ] {
+        assert!(
+            !matches_failure(interleaved_output),
+            "{qemu_path} should not treat interleaved shell echo and kernel log as a failure: \
+             {interleaved_output}"
+        );
+    }
+
+    for shell_error in [
+        "rm: cannot remove '/tmp/axvisor-nvme-rw': Read-only file system",
+        "cat: /tmp/axvisor-nvme-rw: No such file or directory",
+        "echo: /tmp/axvisor-nvme-rw: No space left on device",
+    ] {
+        assert!(
+            matches_failure(shell_error),
+            "{qemu_path} should still reject a real shell command error: {shell_error}"
+        );
+    }
+}
+
+#[test]
 fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
     let root = tempdir().unwrap();
     write_qemu_build_config(

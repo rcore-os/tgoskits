@@ -30,7 +30,7 @@ fn set_current_cpu_enabled(enabled: bool) -> BackendResult {
 }
 
 fn discover_host_maintenance_intid() -> BackendResult<u32> {
-    let bytes = super::super::fdt::try_get_host_fdt().ok_or_else(|| {
+    let bytes = crate::boot::fdt::core::try_get_host_fdt().ok_or_else(|| {
         warn!("AArch64 VGIC requires a host FDT maintenance PPI");
         BackendError::Unsupported
     })?;

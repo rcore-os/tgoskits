@@ -9,12 +9,13 @@ extern crate std;
 mod membership;
 mod namespace;
 mod node;
+mod pids;
 
 use alloc::sync::Arc;
 use core::{fmt, num::NonZeroU64};
 
 use ax_lazyinit::LazyInit;
-pub use membership::{CgroupForkGuard, CgroupProvider};
+pub use membership::{CgroupChildKind, CgroupForkGuard, CgroupProvider, CgroupTaskExit};
 pub use namespace::CgroupNamespace;
 pub use node::{CgroupNode, CgroupPin};
 
@@ -59,6 +60,9 @@ pub enum CgroupError {
     /// The cgroup is still referenced, populated, or has a pending fork.
     #[error("cgroup is busy")]
     ResourceBusy,
+    /// A task creation would exceed a pids limit in this cgroup hierarchy.
+    #[error("cgroup pids limit exceeded")]
+    LimitExceeded,
     /// The supplied name, PID, or file content is invalid.
     #[error("invalid cgroup input")]
     InvalidInput,
@@ -99,9 +103,21 @@ pub fn attach_initial_process(pid: ProcessId) -> CgroupResult<()> {
     membership::attach_initial_process(root(), pid)
 }
 
-/// Prepare inherited membership for a non-thread child.
-pub fn begin_fork(parent: Arc<CgroupNode>, child_pid: ProcessId) -> CgroupResult<CgroupForkGuard> {
-    membership::begin_fork(parent, child_pid)
+/// Reserve a non-thread child directly in an explicit target cgroup.
+pub fn begin_process_at(
+    target: Arc<CgroupNode>,
+    child_pid: ProcessId,
+) -> CgroupResult<CgroupForkGuard> {
+    membership::begin_task_at(target, child_pid, child_pid, CgroupChildKind::Process)
+}
+
+/// Resolve a process's current cgroup and reserve a task charge atomically.
+pub fn begin_task(
+    process_pid: ProcessId,
+    child_tid: ProcessId,
+    child_kind: CgroupChildKind,
+) -> CgroupResult<CgroupForkGuard> {
+    membership::begin_task(process_pid, child_tid, child_kind)
 }
 
 /// Move a live process to another cgroup.
@@ -111,7 +127,25 @@ pub fn migrate_process(pid: ProcessId, target: Arc<CgroupNode>) -> CgroupResult<
 
 /// Release membership for a process whose final thread is exiting.
 pub fn exit_process(pid: ProcessId) -> CgroupResult<()> {
-    membership::exit_process(pid)
+    membership::exit_task(pid, pid, CgroupTaskExit::LastProcessTask)
+}
+
+/// Release one task charge and, for the final task, process membership.
+pub fn exit_task(
+    process_pid: ProcessId,
+    task_tid: ProcessId,
+    exit_kind: CgroupTaskExit,
+) -> CgroupResult<()> {
+    membership::exit_task(process_pid, task_tid, exit_kind)
+}
+
+/// Rename a task identity after Linux de-threading during execve.
+pub fn rename_task(
+    process_pid: ProcessId,
+    old_tid: ProcessId,
+    new_tid: ProcessId,
+) -> CgroupResult<()> {
+    membership::rename_task(process_pid, old_tid, new_tid)
 }
 
 /// Render `target` relative to an arbitrary cgroup namespace root.

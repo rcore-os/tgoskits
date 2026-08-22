@@ -19,6 +19,10 @@ enum CgroupFileKind {
     Controllers,
     Procs,
     SubtreeControl,
+    PidsMax,
+    PidsCurrent,
+    PidsPeak,
+    PidsEvents,
 }
 
 impl CgroupFileKind {
@@ -27,6 +31,10 @@ impl CgroupFileKind {
             "cgroup.controllers" => Some(Self::Controllers),
             "cgroup.procs" => Some(Self::Procs),
             "cgroup.subtree_control" => Some(Self::SubtreeControl),
+            "pids.max" => Some(Self::PidsMax),
+            "pids.current" => Some(Self::PidsCurrent),
+            "pids.peak" => Some(Self::PidsPeak),
+            "pids.events" => Some(Self::PidsEvents),
             _ => None,
         }
     }
@@ -36,22 +44,37 @@ impl CgroupFileKind {
             Self::Controllers => "cgroup.controllers",
             Self::Procs => "cgroup.procs",
             Self::SubtreeControl => "cgroup.subtree_control",
+            Self::PidsMax => "pids.max",
+            Self::PidsCurrent => "pids.current",
+            Self::PidsPeak => "pids.peak",
+            Self::PidsEvents => "pids.events",
         }
     }
 
     fn permission(self) -> NodePermission {
         let mode = match self {
-            Self::Controllers => 0o444,
-            Self::Procs | Self::SubtreeControl => 0o644,
+            Self::Controllers | Self::PidsCurrent | Self::PidsPeak | Self::PidsEvents => 0o444,
+            Self::Procs | Self::SubtreeControl | Self::PidsMax => 0o644,
         };
         NodePermission::from_bits_truncate(mode)
     }
+
+    fn is_available(self, cgroup: &CgroupNode) -> bool {
+        !matches!(
+            self,
+            Self::PidsMax | Self::PidsCurrent | Self::PidsPeak | Self::PidsEvents
+        ) || cgroup.has_pids_interface()
+    }
 }
 
-const CGROUP_FILES: [CgroupFileKind; 3] = [
+const CGROUP_FILES: [CgroupFileKind; 7] = [
     CgroupFileKind::Controllers,
     CgroupFileKind::Procs,
     CgroupFileKind::SubtreeControl,
+    CgroupFileKind::PidsMax,
+    CgroupFileKind::PidsCurrent,
+    CgroupFileKind::PidsPeak,
+    CgroupFileKind::PidsEvents,
 ];
 
 struct CgroupFile {
@@ -69,6 +92,14 @@ impl CgroupFile {
             CgroupFileKind::SubtreeControl => crate::cgroup::subtree_control_text(&self.cgroup)
                 .as_bytes()
                 .to_vec(),
+            CgroupFileKind::PidsMax => crate::cgroup::pids_max_text(&self.cgroup)?.into_bytes(),
+            CgroupFileKind::PidsCurrent => {
+                crate::cgroup::pids_current_text(&self.cgroup)?.into_bytes()
+            }
+            CgroupFileKind::PidsPeak => crate::cgroup::pids_peak_text(&self.cgroup)?.into_bytes(),
+            CgroupFileKind::PidsEvents => {
+                crate::cgroup::pids_events_text(&self.cgroup)?.into_bytes()
+            }
         })
     }
 }
@@ -95,6 +126,10 @@ impl DirectRwFsFileOps for CgroupFile {
             CgroupFileKind::Procs => crate::cgroup::write_procs(self.cgroup.clone(), buf)?,
             CgroupFileKind::SubtreeControl => {
                 crate::cgroup::write_subtree_control(&self.cgroup, buf)?
+            }
+            CgroupFileKind::PidsMax => crate::cgroup::write_pids_max(&self.cgroup, buf)?,
+            CgroupFileKind::PidsCurrent | CgroupFileKind::PidsPeak | CgroupFileKind::PidsEvents => {
+                return Err(VfsError::OperationNotPermitted);
             }
         }
         Ok(buf.len())
@@ -131,6 +166,9 @@ impl CgroupDir {
     }
 
     fn file_entry(&self, kind: CgroupFileKind) -> VfsResult<DirEntry> {
+        if !kind.is_available(&self.cgroup) {
+            return Err(VfsError::NotFound);
+        }
         let file = SpecialFsFile::new_regular_with_perm(
             self.fs.clone(),
             CgroupFile {
@@ -177,7 +215,9 @@ impl DirNodeOps for CgroupDir {
         names.push(DOT.to_string());
         names.push(DOTDOT.to_string());
         for kind in CGROUP_FILES {
-            names.push(kind.name().to_string());
+            if kind.is_available(&self.cgroup) {
+                names.push(kind.name().to_string());
+            }
         }
         names.extend(self.cgroup.child_names());
 
@@ -266,6 +306,7 @@ fn cgroup_error_to_vfs_error(error: CgroupError) -> VfsError {
         CgroupError::NotFound => VfsError::NotFound,
         CgroupError::AlreadyExists => VfsError::AlreadyExists,
         CgroupError::ResourceBusy => VfsError::ResourceBusy,
+        CgroupError::LimitExceeded => VfsError::WouldBlock,
         CgroupError::NoSuchProcess => VfsError::NotFound,
         CgroupError::DirectoryNotEmpty => VfsError::DirectoryNotEmpty,
     }

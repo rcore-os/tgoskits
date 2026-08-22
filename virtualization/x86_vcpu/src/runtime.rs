@@ -188,6 +188,11 @@ impl<H: X86HostOps> X86Vcpu<H> {
 
     /// Enter the guest until the selected backend reports a VM exit.
     ///
+    /// The caller must keep this vCPU bound to the current host CPU, prevent
+    /// migration, and keep host IRQs disabled until this method returns. VMX
+    /// uses this interval to switch host-owned syscall MSRs without exposing
+    /// guest state to host interrupt handlers or another physical CPU.
+    ///
     /// # Errors
     ///
     /// Propagates guest-entry and VM-exit decoding errors from the selected backend.
@@ -216,6 +221,21 @@ impl<H: X86HostOps> X86Vcpu<H> {
     /// Set one guest general-purpose register.
     pub fn set_gpr(&mut self, reg: usize, value: usize) {
         dispatch_vcpu!(self, set_gpr, reg, value)
+    }
+
+    /// Set one byte-encoded guest register while preserving adjacent bytes.
+    pub fn set_gpr_byte(&mut self, reg: X86ByteRegister, value: u8) {
+        dispatch_vcpu!(self, set_gpr_byte, reg, value)
+    }
+
+    /// Set one 16-bit guest register while preserving adjacent bytes.
+    pub fn set_gpr_word(&mut self, reg: usize, value: u16) {
+        dispatch_vcpu!(self, set_gpr_word, reg, value)
+    }
+
+    /// Set the architectural RSP according to the destination-operand width.
+    pub fn set_gpr_rsp(&mut self, width: X86AccessWidth, value: u64) {
+        dispatch_vcpu!(self, set_gpr_rsp, width, value)
     }
 
     /// Commits one string-I/O element after the VMM completed its memory and device access.

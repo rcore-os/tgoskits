@@ -7,7 +7,7 @@ use std::{format, sync::Arc, vec::Vec};
 
 use axdevice::{FwCfgKernelPayload, FwCfgPlatformConfig, FwCfgRamRegion, ResourceSlot};
 use axvmconfig::{GuestConfig, VMBootProtocol};
-pub use resources::{
+pub(crate) use resources::{
     LoongArchGuestIrqRoute, get_guest_irq_routes, prepare_uefi_fdt_config,
     prepare_uefi_runtime_config,
 };
@@ -18,30 +18,7 @@ use crate::{
     *,
 };
 
-pub const UEFI_FIRMWARE_FDT_BASE: usize = 0x0010_0000;
-
-pub struct ImageLoader<'a>(ImageLoaderCore<'a>);
-
-impl<'a> ImageLoader<'a> {
-    pub fn new(
-        main_memory: crate::VMMemoryRegion,
-        config: GuestConfig,
-        vm: AxVMRef,
-        provider: &'a dyn BootImageProvider,
-    ) -> Self {
-        Self(ImageLoaderCore::new(
-            main_memory,
-            config,
-            vm,
-            provider,
-            None,
-        ))
-    }
-
-    pub fn load(&mut self) -> AxVmResult {
-        self.0.load()
-    }
-}
+pub(crate) const UEFI_FIRMWARE_FDT_BASE: usize = 0x0010_0000;
 
 pub fn init() {
     resources::init();
@@ -238,6 +215,10 @@ fn resolved_fw_cfg(vm: &AxVMRef) -> AxVmResult<MmioRegion> {
 }
 
 impl BootImagePlatform for super::LoongArch64Arch {
+    fn make_guest_memory_visible(addr: ax_memory_addr::VirtAddr, size: usize) {
+        super::make_guest_memory_visible(addr, size);
+    }
+
     fn load_images_from_memory(
         loader: &mut ImageLoaderCore<'_>,
         images: StaticVmImage,
@@ -354,7 +335,10 @@ fn fill_vm_region(load_addr: GuestPhysAddr, size: usize, byte: u8, vm: AxVMRef) 
         // SAFETY: AxVM returned this writable guest-memory region and the fill
         // is bounded by its length.
         unsafe { std::ptr::write_bytes(region.as_mut_ptr(), byte, region.len()) };
-        crate::clean_dcache_range((region.as_ptr() as usize).into(), region.len());
+        crate::arch::current::make_guest_memory_visible(
+            (region.as_ptr() as usize).into(),
+            region.len(),
+        );
         filled_size += region.len();
     }
     if filled_size == size {

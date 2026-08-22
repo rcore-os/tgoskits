@@ -51,12 +51,12 @@ impl<T> Drop for Ring<T> {
 }
 
 /// The unique producer endpoint of a runtime-private SPSC ring.
-pub(super) struct Producer<T> {
+pub(crate) struct Producer<T> {
     ring: Arc<Ring<T>>,
 }
 
 impl<T> Producer<T> {
-    pub(super) fn push(&mut self, item: T) -> Result<(), T> {
+    pub(crate) fn push(&mut self, item: T) -> Result<(), T> {
         let tail = self.ring.tail.load(Ordering::Relaxed);
         let next = self.ring.advance(tail);
         if next == self.ring.head.load(Ordering::Acquire) {
@@ -69,7 +69,7 @@ impl<T> Producer<T> {
         Ok(())
     }
 
-    pub(super) fn write_room(&self) -> usize {
+    pub(crate) fn write_room(&self) -> usize {
         let head = self.ring.head.load(Ordering::Acquire);
         let tail = self.ring.tail.load(Ordering::Relaxed);
         if tail >= head {
@@ -81,12 +81,12 @@ impl<T> Producer<T> {
 }
 
 /// The unique consumer endpoint of a runtime-private SPSC ring.
-pub(super) struct Consumer<T> {
+pub(crate) struct Consumer<T> {
     ring: Arc<Ring<T>>,
 }
 
 impl<T> Consumer<T> {
-    pub(super) fn pop(&mut self) -> Option<T> {
+    pub(crate) fn pop(&mut self) -> Option<T> {
         let head = self.ring.head.load(Ordering::Relaxed);
         if head == self.ring.tail.load(Ordering::Acquire) {
             return None;
@@ -100,7 +100,7 @@ impl<T> Consumer<T> {
         Some(item)
     }
 
-    pub(super) fn drain(&mut self, out: &mut [T]) -> usize {
+    pub(crate) fn drain(&mut self, out: &mut [T]) -> usize {
         let mut count = 0;
         for slot in out {
             let Some(item) = self.pop() else {
@@ -112,16 +112,16 @@ impl<T> Consumer<T> {
         count
     }
 
-    pub(super) fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.ring.head.load(Ordering::Relaxed) == self.ring.tail.load(Ordering::Acquire)
     }
 
-    pub(super) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         while self.pop().is_some() {}
     }
 }
 
-pub(super) fn channel<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
+pub(crate) fn channel<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     assert!(capacity > 0, "SPSC capacity must be non-zero");
     let mut slots = Vec::with_capacity(capacity + 1);
     slots.resize_with(capacity + 1, Slot::uninit);

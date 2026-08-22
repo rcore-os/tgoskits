@@ -35,7 +35,14 @@ pub struct DmaBufFile {
 impl DmaBufFile {
     /// Allocate a page-aligned contiguous buffer of at least `len` bytes.
     pub fn alloc(len: usize) -> StarryResult<Self> {
-        Self::alloc_with_device(len, &axklib::dma::device_with_mask(DMA_BUF_MASK))
+        Self::alloc_with_device(
+            len,
+            &axklib::dma::device(dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(DMA_BUF_MASK),
+            )),
+        )
     }
 
     fn alloc_with_device(len: usize, dma: &dma_api::DeviceDma) -> StarryResult<Self> {
@@ -216,7 +223,7 @@ mod tests {
         ) -> Option<DmaAllocHandle> {
             ALLOC_MASK.store(constraints.addr_mask, Ordering::SeqCst);
             let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
-            Some(unsafe { DmaAllocHandle::new(ptr, 0x2000_u64.into(), layout) })
+            Some(unsafe { DmaAllocHandle::new(ptr, ptr, 0x2000_u64.into(), layout) })
         }
 
         unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
@@ -242,7 +249,14 @@ mod tests {
     fn dma_buf_preserves_dma32_size_address_and_arc_lifetime() {
         RELEASES.store(0, Ordering::SeqCst);
         ALLOC_MASK.store(0, Ordering::SeqCst);
-        let device = DeviceDma::new_legacy(DMA_BUF_MASK, &TEST_DMA);
+        let device = DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(DMA_BUF_MASK),
+            ),
+            &TEST_DMA,
+        );
         let file = DmaBufFile::alloc_with_device(1, &device).unwrap();
 
         assert_eq!(file.alloc.size, PAGE_SIZE_4K);

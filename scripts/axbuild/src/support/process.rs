@@ -1,5 +1,5 @@
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     io::{self, Write},
     path::Path,
     process::{Command, Stdio},
@@ -9,6 +9,9 @@ use anyhow::{Context, Result, bail};
 use colored::Colorize;
 
 pub trait ProcessExt {
+    /// Encodes an option and value as one argv element for parsers that would
+    /// otherwise interpret a hyphen-prefixed value as another option.
+    fn arg_option_value(&mut self, option: &str, value: &OsStr) -> &mut Self;
     fn exec(&mut self) -> Result<()>;
     fn exec_quiet(&mut self) -> Result<()>;
 }
@@ -57,6 +60,13 @@ fn find_optional_host_binary(name: &str) -> Option<std::path::PathBuf> {
 }
 
 impl ProcessExt for Command {
+    fn arg_option_value(&mut self, option: &str, value: &OsStr) -> &mut Self {
+        let mut argument = OsString::from(option);
+        argument.push("=");
+        argument.push(value);
+        self.arg(argument)
+    }
+
     fn exec(&mut self) -> Result<()> {
         print_command(self)?;
         let status = self
@@ -141,7 +151,24 @@ fn shell_escape(value: &OsStr) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
+    use std::{ffi::OsStr, process::Command};
+
+    use super::ProcessExt;
+
+    #[test]
+    fn option_values_are_one_argument_even_when_the_value_starts_with_a_hyphen() {
+        let mut command = Command::new("python3");
+
+        command
+            .arg_option_value("--qemu-arg", OsStr::new("-cpu"))
+            .arg_option_value("--shell-init-cmd", OsStr::new("--version"));
+
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args, ["--qemu-arg=-cpu", "--shell-init-cmd=--version"]);
+    }
 
     #[test]
     fn quiet_command_discards_success_output() {

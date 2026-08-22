@@ -248,20 +248,30 @@ impl AhciQueue {
                 ..DeviceInfo::new(self.geometry.blocks(), LOGICAL_BLOCK_SIZE)
             },
             limits: QueueLimits {
-                dma_mask: self.dma.dma_mask(),
-                dma_domain: self.dma.domain_id(),
-                dma_alignment: 2,
+                dma: {
+                    let current = self.dma.info().constraints();
+                    let queue_max_segment_size = if self.lba48 {
+                        MAX_TRANSFER_BYTES
+                    } else {
+                        MAX_LBA28_BLOCKS as usize * LOGICAL_BLOCK_SIZE
+                    };
+                    self.dma.info().with_constraints(dma_api::DmaConstraints {
+                        align: current.align.max(2),
+                        max_segment_size: Some(
+                            current
+                                .max_segment_size
+                                .map_or(queue_max_segment_size, |max| {
+                                    max.min(queue_max_segment_size)
+                                }),
+                        ),
+                        ..current
+                    })
+                },
                 dma_length_alignment: LOGICAL_BLOCK_SIZE,
-                segment_boundary: None,
                 max_inflight: scheduling_depth,
                 max_submit_batch: scheduling_depth,
                 max_blocks_per_request: max_blocks,
                 max_segments: 1,
-                max_segment_size: if self.lba48 {
-                    MAX_TRANSFER_BYTES
-                } else {
-                    MAX_LBA28_BLOCKS as usize * LOGICAL_BLOCK_SIZE
-                },
                 supported_flags,
                 supports_flush: self.supports_flush,
             },

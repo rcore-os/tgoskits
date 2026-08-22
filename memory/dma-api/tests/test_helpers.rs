@@ -70,6 +70,12 @@ pub struct TrackingDmaOp {
     fail_coherent_release: Arc<AtomicBool>,
 }
 
+impl Default for TrackingDmaOp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TrackingDmaOp {
     pub fn new() -> Self {
         Self {
@@ -161,7 +167,7 @@ impl TrackingDmaOp {
         let ptr = unsafe { alloc_zeroed(layout) };
         let cpu_addr = NonNull::new(ptr)?;
         let dma_addr = self.alloc_dma_addr(layout, constraints);
-        Some(unsafe { DmaAllocHandle::new(cpu_addr, dma_addr.into(), layout) })
+        Some(unsafe { DmaAllocHandle::new(cpu_addr, cpu_addr, dma_addr.into(), layout) })
     }
 }
 
@@ -320,6 +326,7 @@ impl DmaOp for TrackingDmaOp {
         offset: usize,
         size: usize,
         direction: DmaDirection,
+        _coherency: DmaCoherency,
     ) {
         self.operations
             .lock()
@@ -345,6 +352,7 @@ impl DmaOp for TrackingDmaOp {
         offset: usize,
         size: usize,
         direction: DmaDirection,
+        _coherency: DmaCoherency,
     ) {
         self.operations
             .lock()

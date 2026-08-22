@@ -10,16 +10,9 @@ pub(super) enum ClippyCheckKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) enum ClippyDepsMode {
-    NoDeps,
-    WithDeps,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct ClippyCheck {
     pub(super) package: String,
     pub(super) kind: ClippyCheckKind,
-    pub(super) deps_mode: ClippyDepsMode,
     pub(super) target: Option<String>,
     pub(super) env: Vec<(String, String)>,
 }
@@ -27,9 +20,19 @@ pub(super) struct ClippyCheck {
 impl ClippyCheck {
     pub(super) fn cargo_args(&self) -> Vec<String> {
         let mut args = match &self.kind {
-            ClippyCheckKind::Base => vec!["clippy".into(), "-p".into(), self.package.clone()],
+            ClippyCheckKind::Base => vec![
+                "clippy".into(),
+                "--no-deps".into(),
+                "-p".into(),
+                self.package.clone(),
+            ],
             ClippyCheckKind::Feature(feature) => {
-                let mut args = vec!["clippy".into(), "-p".into(), self.package.clone()];
+                let mut args = vec![
+                    "clippy".into(),
+                    "--no-deps".into(),
+                    "-p".into(),
+                    self.package.clone(),
+                ];
                 if feature == HOST_TEST_FEATURE {
                     args.push("--tests".into());
                 }
@@ -41,7 +44,12 @@ impl ClippyCheck {
                 args
             }
             ClippyCheckKind::Configuration { features, .. } => {
-                let mut args = vec!["clippy".into(), "-p".into(), self.package.clone()];
+                let mut args = vec![
+                    "clippy".into(),
+                    "--no-deps".into(),
+                    "-p".into(),
+                    self.package.clone(),
+                ];
                 if !features.is_empty() {
                     args.extend(["--features".into(), features.join(",")]);
                 }
@@ -53,15 +61,13 @@ impl ClippyCheck {
         {
             args = vec![
                 "clippy".into(),
+                "--no-deps".into(),
                 "-p".into(),
                 self.package.clone(),
                 "--no-default-features".into(),
                 "--features".into(),
                 AXSTD_STD_CLIPPY_FEATURES.into(),
             ];
-        }
-        if matches!(self.deps_mode, ClippyDepsMode::NoDeps) {
-            args.insert(1, "--no-deps".into());
         }
         if let Some(target) = &self.target {
             args.extend(["--target".into(), target.clone()]);

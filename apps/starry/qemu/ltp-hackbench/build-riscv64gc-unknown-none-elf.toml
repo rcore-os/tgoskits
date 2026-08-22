@@ -1,0 +1,7 @@
+target = "riscv64gc-unknown-none-elf"
+log = "Warn"
+max_cpu_num = 4
+features = [
+  "ax-driver/serial",
+  "ax-driver/nvme",
+]

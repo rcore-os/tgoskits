@@ -130,9 +130,8 @@ fn apk_add_fs_equivalence_qemu_case_covers_package_fs_ops() {
             config_path.display()
         );
         assert!(
-            args.iter().any(|arg| {
-                arg.contains(&format!("rootfs-{arch}-alpine.img")) && arg.contains(".tgos-images")
-            }),
+            args.iter()
+                .any(|arg| arg.contains(&format!("tmp/axbuild/rootfs/rootfs-{arch}-alpine.img"))),
             "{} must use the managed Alpine rootfs for {arch}",
             config_path.display()
         );
@@ -282,9 +281,8 @@ fn apk_net_equivalence_qemu_case_covers_apk_like_network_ops() {
             config_path.display()
         );
         assert!(
-            args.iter().any(|arg| {
-                arg.contains(&format!("rootfs-{arch}-alpine.img")) && arg.contains(".tgos-images")
-            }),
+            args.iter()
+                .any(|arg| arg.contains(&format!("tmp/axbuild/rootfs/rootfs-{arch}-alpine.img"))),
             "{} must use the managed Alpine rootfs for {arch}",
             config_path.display()
         );

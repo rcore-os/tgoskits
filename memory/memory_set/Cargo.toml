@@ -3,7 +3,7 @@ name = "ax-memory-set"
 description = "Data structures and operations for managing memory mappings"
 keywords = ["arceos", "virtual-memory", "memory-area", "mmap"]
 
-version = "0.6.14"
+version = "0.7.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>", "aarkegz <aarkegz@gmail.com>"]
@@ -11,12 +11,7 @@ categories = ["os", "memory-management", "no-std"]
 license = "Apache-2.0"
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 ax-memory-addr = { workspace = true }
 thiserror.workspace = true
 
 [features]
-axtest = ["dep:axtest"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

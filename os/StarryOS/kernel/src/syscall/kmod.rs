@@ -108,7 +108,7 @@ pub fn sys_delete_module(name_ptr: *const u8, _flags: u32) -> StarryResult<isize
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn kmod_flags_validation_rules_hold_for_test() -> bool {
     // Test finit_module flag validation: only flags=0 is valid
     let valid_flags = 0u32;

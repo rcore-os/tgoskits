@@ -44,7 +44,14 @@ mod tests {
     // static IRQ_STATUS: AtomicU32 = AtomicU32::new(0);
 
     // fn dma_device() -> DeviceDma {
-    //     DeviceDma::new_legacy(u32::MAX as u64, kernel_dma_op())
+    //     DeviceDma::new(
+    //         dma_api::DmaDeviceInfo::new(
+    //             dma_api::DmaDomainId::Direct,
+    //             dma_api::DmaCoherency::NonCoherent,
+    //             dma_api::DmaConstraints::new(u32::MAX as u64),
+    //         ),
+    //         kernel_dma_op(),
+    //     )
     // }
 
     // #[test]

@@ -35,6 +35,11 @@ fn prepare_secondary_boot_stack(slot: usize, cpu_id: usize) {
 pub fn start_secondary_cpus(primary_cpu_id: usize) {
     let mut slot = 0;
     let cpu_num = ax_hal::cpu_num();
+    assert_eq!(
+        ax_hal::mem::cpu_shared_memory_model(),
+        ax_hal::mem::CpuSharedMemoryModel::Coherent,
+        "SMP requires coherent cacheable memory shared by all CPUs"
+    );
     for i in 0..cpu_num {
         if i != primary_cpu_id && slot < cpu_num - 1 {
             prepare_secondary_boot_stack(slot, i);
@@ -87,6 +92,7 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     {
         let (stack_ptr, stack_size) = secondary_boot_stack_bounds(cpu_id);
         ax_task::init_scheduler_secondary(stack_ptr, stack_size);
+        super::preempt::release_bootstrap();
     }
 
     #[cfg(feature = "ipi")]
@@ -106,6 +112,13 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
         ax_hal::asm::flush_tlb(None);
         ax_ipi::mark_current_cpu_ready();
     }
+
+    // Publishing a log record is safe as soon as the per-CPU area exists, but
+    // waking the owner worker may select a run queue or send an IPI. Publish
+    // that separate capability only after this CPU has completed every
+    // scheduler, IRQ, and IPI prerequisite compiled into this runtime.
+    #[cfg(all(feature = "irq", feature = "multitask"))]
+    super::serial::mark_log_wake_ready(cpu_id);
 
     info!("Secondary CPU {cpu_id:x} init OK.");
     super::INITED_CPUS.fetch_add(1, Ordering::Release);

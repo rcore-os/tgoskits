@@ -20,7 +20,6 @@ const ARCEOS_UNIKERNEL_DEFAULT_CONSUMERS: &[&str] = &[
     "apps/arceos/thread_test/Cargo.toml",
     "apps/arceos/tokio_test/Cargo.toml",
     "test-suit/arceos/axtest/sg2002-usb-msc/Cargo.toml",
-    "test-suit/arceos/axtest/smoke/Cargo.toml",
     "test-suit/arceos/rust/Cargo.toml",
 ];
 

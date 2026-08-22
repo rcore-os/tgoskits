@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use arm_vcpu::*;
 use arm_vgic::{GicV3VcpuBinding, IntId, VgicCore};
-use ax_memory_addr::VirtAddr;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
 
 use super::*;
@@ -22,23 +21,18 @@ mod capabilities;
 pub(crate) mod fdt;
 mod firmware_plan;
 mod gic;
-mod images;
 mod npt;
 mod resource_pools;
-mod shared_mmio;
 mod shared_provider;
-#[path = "../../architecture/sysreg.rs"]
-mod sysreg;
 mod vgic;
 mod vm;
 mod vm_plan;
 pub(crate) use vm_plan::Aarch64VmPlan;
 mod vtimer;
 
-pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
-pub use images::ImageLoader;
-use sysreg::{SysRegReadExit, SysRegWriteExit};
 use vgic::Aarch64VgicRuntimeKey;
+
+use crate::architecture::sysreg::{self, SysRegReadExit, SysRegWriteExit};
 
 pub(crate) struct Aarch64Arch;
 
@@ -59,19 +53,11 @@ impl ArchOps for Aarch64Arch {
         arm_vcpu::has_hardware_support()
     }
 
-    fn clean_dcache_range(addr: VirtAddr, size: usize) {
-        aarch64_cpu_ext::cache::dcache_range(
-            aarch64_cpu_ext::cache::CacheOp::Clean,
-            addr.as_usize(),
-            size,
-        );
-    }
-
-    fn activate_devices(vm: &crate::AxVM) -> AxVmResult {
+    fn enter_runtime(vm: &crate::AxVM) -> AxVmResult {
         vgic_runtime(vm)?.activate()
     }
 
-    fn deactivate_devices(vm: &crate::AxVM) -> AxVmResult {
+    fn exit_runtime(vm: &crate::AxVM) -> AxVmResult {
         vgic_runtime(vm)?.deactivate()
     }
 
@@ -80,10 +66,6 @@ impl ArchOps for Aarch64Arch {
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
     ) -> AxVmResult {
         vcpu.get_arch_vcpu().prepare_timer_run()
-    }
-
-    fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
-        Self::deactivate_devices(vm)
     }
 
     fn handle_vcpu_exit_bound(
@@ -115,8 +97,9 @@ impl ArchOps for Aarch64Arch {
                     signed_ext,
                 },
             ),
-            ArmVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
+            ArmVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write(
                 vm,
+                vcpu,
                 MmioWriteExit {
                     addr: arm_guest_phys_addr_to_ax(addr),
                     width: arm_access_width_to_ax(width),
@@ -133,6 +116,7 @@ impl ArchOps for Aarch64Arch {
             ),
             ArmVmExit::SysRegWrite { addr, value } => sysreg::handle_write(
                 vm,
+                vcpu,
                 SysRegWriteExit {
                     addr: arm_sys_reg_addr_to_ax(addr),
                     value,

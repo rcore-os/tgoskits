@@ -14,7 +14,8 @@ use axvm_types::{HostPhysAddr, HostVirtAddr};
 use crate::AxVmError;
 use crate::{
     AxVmResult,
-    arch::{ArchOps, CurrentArch},
+    arch::current::CurrentArch,
+    architecture::ArchOps,
     host::{HostCpu, HostMemory, HostPlatform, HostTime},
 };
 
@@ -84,29 +85,19 @@ impl HostTime for ArceOsHost {
 
     #[cfg(not(test))]
     fn request_timer_deadline(&self, deadline_ns: u64) {
-        crate::arch::request_timer_deadline(deadline_ns);
+        crate::arch::current::request_timer_deadline(deadline_ns);
     }
 }
 
-/// Returns the platform IRQ owned by the runtime-selected physical console.
+/// Returns the platform IRQ reserved for the physical host console.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
     modules::ax_hal::console::irq_num()
 }
 
+#[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn dispatch_host_irq(vector: usize) {
     modules::ax_hal::irq::handle_irq(vector);
-}
-
-pub(crate) fn set_console_input_irq_enabled(enabled: bool) {
-    modules::ax_hal::console::set_input_irq_enabled(enabled);
-}
-
-pub(crate) fn read_console_bytes(bytes: &mut [u8]) -> usize {
-    modules::ax_hal::console::read_bytes(bytes)
-}
-
-pub(crate) fn write_console_bytes(bytes: &[u8]) {
-    modules::ax_hal::console::write_bytes(bytes);
 }
 
 impl HostCpu for ArceOsHost {
@@ -240,10 +231,10 @@ pub(crate) fn register_qemu_block_passthrough_irq(vm: &crate::AxVMRef) -> AxVmRe
 
     match route {
         Ok((host_irq, trigger)) => {
-            crate::register_x86_ioapic_irq_forwarding_route_with_trigger(
+            crate::arch::current::register_host_irq_forwarding_route_with_trigger(
                 vm, guest_gsi, host_irq, trigger,
             )?;
-            crate::register_x86_ioapic_irq_forwarding_activator(
+            crate::arch::current::register_host_irq_forwarding_activator(
                 vm,
                 guest_gsi,
                 unmask_qemu_block_passthrough_intx,
@@ -293,6 +284,7 @@ fn qemu_block_passthrough_pci_info() -> ax_driver::probe::pci::PciInfo {
         address: PciAddress::new(0, 0, device, function),
         interrupt_pin: pin,
         interrupt_line: 0,
+        dma_coherent: true,
         intx_route: Some(PciIntxRoute {
             root_device: device,
             root_function: function,
@@ -396,7 +388,7 @@ impl HostPlatform for ArceOsHost {
                 break;
             }
         }
-        CurrentArch::register_platform_irq_injector();
+        crate::arch::current::register_platform_irq_injector();
         let enabled_count = CORES.load(Ordering::Acquire);
         if enabled_count == cpu_count {
             info!("All cores have enabled hardware virtualization support.");

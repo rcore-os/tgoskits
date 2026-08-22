@@ -1,6 +1,6 @@
 [package]
 name = "ax-posix-api"
-version = "0.5.32"
+version = "0.5.33"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = [
@@ -19,9 +19,14 @@ license.workspace = true
 default = []
 
 smp = []
-irq = []
+irq = ["ax-api/irq", "ax-runtime/irq"]
 alloc = ["dep:ax-alloc"]
-multitask = ["alloc", "ax-task/multitask", "ax-runtime/multitask"]
+multitask = [
+  "alloc",
+  "ax-api/multitask",
+  "ax-task/multitask",
+  "ax-runtime/multitask",
+]
 lockdep = ["multitask", "ax-runtime/lockdep"]
 fd = ["alloc", "dep:scope-local"]
 fs = ["dep:ax-fs-ng", "fd"]
@@ -30,12 +35,12 @@ pipe = ["fd"]
 select = ["fd"]
 poll = ["fd"]
 epoll = ["fd"]
-serial = ["ax-runtime/serial"]
 eventfd = ["fd"]
 
 [dependencies]
 # ArceOS modules
 ax-alloc = { workspace = true, optional = true }
+ax-api.workspace = true
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true
 ax-log.workspace = true

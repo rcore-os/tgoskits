@@ -5,7 +5,15 @@ edition.workspace = true
 license.workspace = true
 name = "ax-task"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.6.7"
+version = "0.6.8"
+
+[package.metadata.docs.rs]
+targets = [
+  "x86_64-unknown-none",
+  "aarch64-unknown-none-softfloat",
+  "riscv64gc-unknown-none-elf",
+  "loongarch64-unknown-none-softfloat",
+]
 
 [features]
 default = []
@@ -48,7 +56,7 @@ host-test = [
   "ax-percpu?/host-test",
 ]
 test = ["host-test"]
-axtest = ["dep:axtest"]
+axtest = ["multitask", "preempt"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
@@ -66,7 +74,6 @@ ax-percpu = {workspace = true, optional = true}
 axpanic = {workspace = true, optional = true}
 ax-sched = { workspace = true, optional = true }
 ax-timer-list = {workspace = true, optional = true}
-axtest = {workspace = true, optional = true}
 axpoll = {workspace = true, optional = true}
 cfg-if.workspace = true
 extern-trait = { workspace = true, optional = true }
@@ -82,7 +89,20 @@ lock_api = {workspace = true, optional = true}
 sbi-rt = { workspace = true, features = ["legacy"] }
 
 [target.'cfg(not(target_os = "none"))'.dev-dependencies]
-ax-hal = { workspace = true, features = ["fp-simd"] }
+ax-hal = { path = "../axhal", features = ["fp-simd"] }
 
 [build-dependencies]
 quote = { workspace = true }
+
+[[test]]
+name = "axtest"
+path = "tests/axtest.rs"
+harness = false
+required-features = ["axtest"]
+
+[dev-dependencies.axtest]
+path = "../../../../components/axtest/axtest"
+
+[dev-dependencies.ax-std]
+path = "../../ulib/axstd"
+features = ["default"]

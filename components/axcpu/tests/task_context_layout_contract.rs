@@ -44,7 +44,7 @@ fn every_task_context_has_a_compile_time_layout_contract() {
             );
         }
     }
-    assert!(TASK_LOCAL.contains("current_header: usize"));
+    assert!(TASK_LOCAL.contains("context_header: usize"));
     assert!(TASK_LOCAL.contains("kernel_tls: KernelTlsBase"));
     assert!(TASK_LOCAL.contains("size_of::<TaskLocalState>()"));
 }
@@ -81,8 +81,8 @@ fn aarch64_switch_uses_only_rust_derived_task_offsets() {
             "AArch64 context switch must use the named `{field}` offset",
         );
     }
-    assert_task_local_derived_offset(AARCH64_CONTEXT, "current_header", "offset");
-    assert!(AARCH64_CONTEXT.contains("{current_header_offset}"));
+    assert_task_local_derived_offset(AARCH64_CONTEXT, "context_header", "offset");
+    assert!(AARCH64_CONTEXT.contains("{context_header_offset}"));
     for base in ["x0", "x1"] {
         assert!(!context_switch.contains(&format!("[{base}]")));
         for index in 0..=12 {
@@ -107,9 +107,9 @@ fn riscv_switch_uses_only_rust_derived_task_offsets() {
         );
     }
     assert_task_local_derived_offset(RISCV_CONTEXT, "kernel_tls", "index");
-    assert_task_local_derived_offset(RISCV_CONTEXT, "current_header", "index");
+    assert_task_local_derived_offset(RISCV_CONTEXT, "context_header", "index");
     assert!(RISCV_CONTEXT.contains("{kernel_tls_index}"));
-    assert!(RISCV_CONTEXT.contains("{current_header_index}"));
+    assert!(RISCV_CONTEXT.contains("{context_header_index}"));
     assert_no_numeric_macro_slots(context_switch, "a0", 0..=13);
     assert_no_numeric_macro_slots(context_switch, "a1", 0..=13);
 }
@@ -141,8 +141,8 @@ fn loongarch_switch_uses_only_rust_derived_task_offsets() {
         assert_rust_derived_offset(LOONGARCH_CONTEXT, field, "offset");
     }
     assert_task_local_derived_offset(LOONGARCH_CONTEXT, "kernel_tls", "offset");
-    assert_task_local_derived_offset(LOONGARCH_CONTEXT, "current_header", "offset");
-    assert!(LOONGARCH_CONTEXT.contains("{current_header_offset}"));
+    assert_task_local_derived_offset(LOONGARCH_CONTEXT, "context_header", "offset");
+    assert!(LOONGARCH_CONTEXT.contains("{context_header_offset}"));
     assert!(
         LOONGARCH_CONTEXT.contains("s0_offset = const offset_of!(TaskContext, s)"),
         "LoongArch saved-register array offsets must derive from its Rust field",

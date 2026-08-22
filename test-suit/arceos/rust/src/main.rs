@@ -48,7 +48,6 @@ fn main() {
         }
     }
     println!("ArceOS test suite run OK!");
-    ax_hal::power::system_off();
 }
 
 #[cfg(not(feature = "ax-std"))]

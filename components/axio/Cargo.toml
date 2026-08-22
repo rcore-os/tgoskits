@@ -1,6 +1,6 @@
 [package]
 name = "ax-io"
-version = "0.6.4"
+version = "0.6.5"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -11,14 +11,14 @@ license = "Apache-2.0"
 
 [features]
 alloc = []
-axtest = ["dep:axtest", "alloc"]
 default = []
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 heapless = "0.9"
 memchr = { version = "2", default-features = false }
 thiserror.workspace = true
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+[[test]]
+name = "std"
+path = "tests/std.rs"
+required-features = ["alloc"]

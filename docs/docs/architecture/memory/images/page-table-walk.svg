@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="280" viewBox="0 0 1100 280" role="img" aria-labelledby="title desc">
+  <title id="title">四级页表遍历</title><desc id="desc">从根页表经过四级索引定位目标物理页帧。</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0L0 6L9 3Z" fill="#475569"/></marker><style>.h{font:700 23px sans-serif;fill:#0f172a}.t{font:600 17px monospace;fill:#0f172a}.s{font:14px sans-serif;fill:#334155}.b{fill:#eff6ff;stroke:#3b82f6;stroke-width:2}.leaf{fill:#ecfdf5;stroke:#10b981;stroke-width:2}.l{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#a)}</style></defs>
+  <text x="550" y="35" text-anchor="middle" class="h">四级页表索引与目标页帧</text>
+  <rect x="35" y="95" width="140" height="70" rx="12" class="b"/><text x="105" y="124" text-anchor="middle" class="t">root</text><text x="105" y="148" text-anchor="middle" class="s">根页表帧</text>
+  <rect x="220" y="95" width="140" height="70" rx="12" class="b"/><text x="290" y="124" text-anchor="middle" class="t">L4[0x100]</text><text x="290" y="148" text-anchor="middle" class="s">下级表地址</text>
+  <rect x="405" y="95" width="140" height="70" rx="12" class="b"/><text x="475" y="124" text-anchor="middle" class="t">L3[0x000]</text><text x="475" y="148" text-anchor="middle" class="s">下级表地址</text>
+  <rect x="590" y="95" width="140" height="70" rx="12" class="b"/><text x="660" y="124" text-anchor="middle" class="t">L2[0x091]</text><text x="660" y="148" text-anchor="middle" class="s">下级表或大页</text>
+  <rect x="775" y="95" width="140" height="70" rx="12" class="b"/><text x="845" y="124" text-anchor="middle" class="t">L1[0x145]</text><text x="845" y="148" text-anchor="middle" class="s">4 KiB 叶子项</text>
+  <rect x="960" y="95" width="110" height="70" rx="12" class="leaf"/><text x="1015" y="124" text-anchor="middle" class="t">HPA</text><text x="1015" y="148" text-anchor="middle" class="s">paddr + flags</text>
+  <path d="M175 130H220M360 130H405M545 130H590M730 130H775M915 130H960" class="l"/>
+  <text x="550" y="225" text-anchor="middle" class="s">任一中间项为空时由 FrameAllocator 提供页表帧；已有大页项时不得继续下钻</text>
+</svg>

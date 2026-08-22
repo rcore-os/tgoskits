@@ -1,10 +1,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, bail};
 use cargo_metadata::{Metadata, Package, PackageId};
+use toml::Value;
 
 use super::manifest::{ROOT_MANIFEST, RootManifestChange};
 
@@ -101,6 +103,7 @@ struct PackagePathIndex {
 
 struct PackagePathEntry {
     name: String,
+    manifest_path: PathBuf,
     rel_dir: PathBuf,
 }
 
@@ -139,6 +142,7 @@ impl PackagePathIndex {
                     })?;
                 Ok(PackagePathEntry {
                     name: package.name.to_string(),
+                    manifest_path: manifest,
                     rel_dir: rel_dir.to_path_buf(),
                 })
             })
@@ -169,6 +173,13 @@ impl PackagePathIndex {
             if path.as_os_str().is_empty() {
                 continue;
             }
+            if path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            {
+                continue;
+            }
             if path == Path::new(ROOT_MANIFEST) {
                 match root_manifest_change
                     .clone()
@@ -176,7 +187,9 @@ impl PackagePathIndex {
                 {
                     RootManifestChange::Hard => return Ok(ChangedPackages::Full { path }),
                     RootManifestChange::LocalWorkspace(change) => {
-                        packages.extend(change.dependencies);
+                        packages.extend(change.local_packages);
+                        packages
+                            .extend(self.workspace_dependency_consumers(&change.dependency_keys)?);
                         packages.extend(
                             change
                                 .members
@@ -212,6 +225,85 @@ impl PackagePathIndex {
             .find(|package| path == package.rel_dir || path.starts_with(&package.rel_dir))
             .map(|package| package.name.as_str())
     }
+
+    fn workspace_dependency_consumers(
+        &self,
+        dependency_keys: &BTreeSet<String>,
+    ) -> anyhow::Result<BTreeSet<String>> {
+        if dependency_keys.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+
+        let mut consumers = BTreeSet::new();
+        for package in &self.packages {
+            let source = fs::read_to_string(&package.manifest_path).with_context(|| {
+                format!(
+                    "failed to read workspace package `{}` manifest {}",
+                    package.name,
+                    package.manifest_path.display()
+                )
+            })?;
+            let manifest: Value = toml::from_str(&source).with_context(|| {
+                format!(
+                    "failed to parse workspace package `{}` manifest {}",
+                    package.name,
+                    package.manifest_path.display()
+                )
+            })?;
+            if manifest_inherits_workspace_dependency(&manifest, dependency_keys) {
+                consumers.insert(package.name.clone());
+            }
+        }
+        Ok(consumers)
+    }
+}
+
+const DEPENDENCY_TABLES: &[&str] = &["dependencies", "dev-dependencies", "build-dependencies"];
+
+fn manifest_inherits_workspace_dependency(
+    manifest: &Value,
+    dependency_keys: &BTreeSet<String>,
+) -> bool {
+    if DEPENDENCY_TABLES
+        .iter()
+        .any(|table| dependency_table_inherits(manifest.get(*table), dependency_keys))
+    {
+        return true;
+    }
+
+    manifest
+        .get("target")
+        .and_then(Value::as_table)
+        .is_some_and(|targets| {
+            targets.values().any(|target| {
+                DEPENDENCY_TABLES
+                    .iter()
+                    .any(|table| dependency_table_inherits(target.get(*table), dependency_keys))
+            })
+        })
+}
+
+fn dependency_table_inherits(
+    dependencies: Option<&Value>,
+    dependency_keys: &BTreeSet<String>,
+) -> bool {
+    dependencies
+        .and_then(Value::as_table)
+        .is_some_and(|dependencies| {
+            dependency_keys.iter().any(|dependency_key| {
+                dependencies
+                    .get(dependency_key)
+                    .is_some_and(dependency_inherits_from_workspace)
+            })
+        })
+}
+
+fn dependency_inherits_from_workspace(dependency: &Value) -> bool {
+    dependency
+        .as_table()
+        .and_then(|dependency| dependency.get("workspace"))
+        .and_then(Value::as_bool)
+        == Some(true)
 }
 
 fn global_clippy_input(path: &Path) -> Option<GlobalClippyInput> {
@@ -311,101 +403,4 @@ fn affected_workspace_packages(
         .into_iter()
         .filter_map(|id| id_to_name.get(&id).cloned())
         .collect()
-}
-
-pub(crate) fn top_level_affected_workspace_packages(
-    metadata: &Metadata,
-    workspace_packages: &[Package],
-    affected: &BTreeSet<String>,
-) -> Vec<String> {
-    if affected.is_empty() {
-        return Vec::new();
-    }
-
-    let workspace_members = workspace_packages
-        .iter()
-        .map(|package| package.id.clone())
-        .collect::<BTreeSet<_>>();
-    let id_to_name = workspace_packages
-        .iter()
-        .map(|package| (package.id.clone(), package.name.to_string()))
-        .collect::<BTreeMap<_, _>>();
-    let name_to_id = id_to_name
-        .iter()
-        .map(|(id, name)| (name.clone(), id.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let affected_ids = affected
-        .iter()
-        .filter_map(|name| name_to_id.get(name).cloned())
-        .collect::<BTreeSet<_>>();
-
-    let Some(resolve) = &metadata.resolve else {
-        return affected.iter().cloned().collect();
-    };
-
-    // Forward dependency edges restricted to the affected set, plus the affected
-    // crates that some other affected crate depends on.
-    let mut affected_deps = BTreeMap::<PackageId, Vec<PackageId>>::new();
-    let mut depended_on_by_affected = BTreeSet::new();
-    for node in &resolve.nodes {
-        if !workspace_members.contains(&node.id) || !affected_ids.contains(&node.id) {
-            continue;
-        }
-        let deps = node
-            .deps
-            .iter()
-            .map(|dep| dep.pkg.clone())
-            .filter(|pkg| affected_ids.contains(pkg))
-            .collect::<Vec<_>>();
-        for pkg in &deps {
-            depended_on_by_affected.insert(pkg.clone());
-        }
-        affected_deps.insert(node.id.clone(), deps);
-    }
-
-    // Maximal crates (nothing in `affected` depends on them) cover the whole
-    // affected set via their with-deps run — as long as the graph is a DAG. A
-    // dependency cycle (only reachable through dev-dependencies) makes every
-    // member "depended on", so a cycle sitting at the top would be dropped from
-    // the frontier and silently left unlinted. Guarantee coverage instead: walk
-    // the forward closure of the roots and promote any still-uncovered crate to
-    // a root until every affected crate is reachable.
-    let mut roots = affected_ids
-        .difference(&depended_on_by_affected)
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut covered = BTreeSet::new();
-    for root in &roots {
-        extend_coverage(&affected_deps, root, &mut covered);
-    }
-    for id in &affected_ids {
-        if !covered.contains(id) {
-            roots.push(id.clone());
-            extend_coverage(&affected_deps, id, &mut covered);
-        }
-    }
-
-    roots.sort();
-    roots
-        .into_iter()
-        .filter_map(|id| id_to_name.get(&id).cloned())
-        .collect()
-}
-
-/// Mark `start` and every affected crate reachable from it (via the restricted
-/// `affected_deps` edges) as covered. Cycle-safe: the `covered` set doubles as
-/// the visited set.
-fn extend_coverage(
-    affected_deps: &BTreeMap<PackageId, Vec<PackageId>>,
-    start: &PackageId,
-    covered: &mut BTreeSet<PackageId>,
-) {
-    let mut stack = vec![start.clone()];
-    while let Some(id) = stack.pop() {
-        if covered.insert(id.clone())
-            && let Some(deps) = affected_deps.get(&id)
-        {
-            stack.extend(deps.iter().cloned());
-        }
-    }
 }

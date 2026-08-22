@@ -96,7 +96,7 @@ PATH="$PWD/target/qemu-k230-docker-build:$PATH" \
   cargo xtask starry app qemu -t k230-kpu-nncase --arch riscv64
 ```
 
-See `k230-kpu-nncase/README.md` and `docs/docs/architecture/driver/k230-kpu-nncase-runtime.md` for the
+See `k230-kpu-nncase/README.md` and `docs/docs/runtime/k230-kpu-nncase-runtime.md` for the
 asset preparation flow.
 
 ## macOS AArch64 Self-Build
@@ -115,7 +115,7 @@ qemu-system-aarch64 \
   -m 512M \
   -smp 1 \
   -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
-  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img,file.locking=off \
+  -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,file.locking=off \
   -kernel target/starry-macos-selfbuild/uploaded/starryos-aarch64-unknown-none-softfloat.bin \
   -netdev user,id=net0
 ```

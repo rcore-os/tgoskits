@@ -121,7 +121,7 @@ pub fn sys_arch_prctl(
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn thread_arch_prctl_code_rules_hold_for_test() -> bool {
     // Test ArchPrctlCode enum values
     #[cfg(target_arch = "x86_64")]

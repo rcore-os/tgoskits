@@ -4,8 +4,8 @@ use alloc::{boxed::Box, string::String, sync::Arc};
 
 use axaddrspace::GuestMemoryAccessor;
 use axdevice_base::{
-    BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, InterruptTriggerMode,
-    IrqLine, Resource,
+    BusKind, Device, DeviceAccess, DeviceContext, DeviceError, InterruptTriggerMode, IrqLine,
+    Resource,
 };
 use axvm_types::GuestPhysAddr;
 
@@ -75,44 +75,58 @@ where
         &self.resources
     }
 
-    fn access(
+    fn read(
         &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Mmio {
+        access: &DeviceAccess,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<u64, DeviceError> {
+        if access.bus() != BusKind::Mmio {
             return Err(DeviceError::InvalidInput {
                 operation: "access virtio-block device",
                 detail: String::from("virtio-block only supports MMIO accesses"),
             });
         }
 
-        let address = GuestPhysAddr::from(access.addr as usize);
-        if access.is_read {
-            let value = self
-                .model
-                .mmio_read(address, access.width)
-                .map_err(map_virtio_error)?;
-            Ok(BusResponse::Read {
-                value: value as u64,
-            })
-        } else {
-            let interrupt_before = self.model.interrupt_status();
-            let reassert_interrupt = self
-                .model
-                .mmio_write(address, access.width, access.data as usize)
-                .map_err(map_virtio_error)?;
-            let interrupt_after = self.model.interrupt_status();
-            if reassert_interrupt == BlockDeviceEvent::InterruptPending
-                || interrupt_after & !interrupt_before != 0
-            {
-                self.irq.pulse().map_err(|error| DeviceError::Backend {
-                    operation: "pulse virtio-block interrupt",
-                    detail: alloc::format!("{error}"),
-                })?;
-            }
-            Ok(BusResponse::Write)
+        self.model
+            .mmio_read(
+                GuestPhysAddr::from(access.address() as usize),
+                access.width(),
+            )
+            .map(|value| value as u64)
+            .map_err(map_virtio_error)
+    }
+
+    fn write(
+        &self,
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> Result<(), DeviceError> {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::InvalidInput {
+                operation: "access virtio-block device",
+                detail: String::from("virtio-block only supports MMIO accesses"),
+            });
         }
+        let interrupt_before = self.model.interrupt_status();
+        let reassert_interrupt = self
+            .model
+            .mmio_write(
+                GuestPhysAddr::from(access.address() as usize),
+                access.width(),
+                value as usize,
+            )
+            .map_err(map_virtio_error)?;
+        let interrupt_after = self.model.interrupt_status();
+        if reassert_interrupt == BlockDeviceEvent::InterruptPending
+            || interrupt_after & !interrupt_before != 0
+        {
+            self.irq.pulse().map_err(|error| DeviceError::Backend {
+                operation: "pulse virtio-block interrupt",
+                detail: alloc::format!("{error}"),
+            })?;
+        }
+        Ok(())
     }
 }
 

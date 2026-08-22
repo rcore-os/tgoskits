@@ -48,6 +48,15 @@ impl UnmountPlan {
             .any(|target| !target.mountpoint.children.lock().is_empty())
     }
 
+    fn has_same_targets(&self, expected: &[Arc<Mountpoint>]) -> bool {
+        self.targets.len() == expected.len()
+            && self.targets.iter().all(|target| {
+                expected
+                    .iter()
+                    .any(|mountpoint| Arc::ptr_eq(&target.mountpoint, mountpoint))
+            })
+    }
+
     fn revalidate_locked(&self) -> Result<(), UnmountCommitError> {
         if MOUNT_TOPOLOGY_VERSION.load(Ordering::Acquire) != self.topology_version {
             return Err(UnmountCommitError::TopologyChanged);
@@ -111,6 +120,29 @@ impl UnmountPlan {
 }
 
 impl Mountpoint {
+    /// Commits a normal unmount after filesystem callbacks have completed.
+    ///
+    /// A callback may overlap an unrelated mount-tree mutation. Replan under
+    /// the topology guard in that case, but commit only when the complete
+    /// target set is unchanged. A new target may belong to an unflushed
+    /// filesystem and therefore cannot join the current transaction.
+    pub(super) fn commit_normal_after_flush(self: &Arc<Self>, plan: UnmountPlan) -> VfsResult<()> {
+        debug_assert_eq!(plan.kind, UnmountKind::Normal);
+        let planned_targets: Vec<_> = plan.targets().cloned().collect();
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        match plan.commit_locked() {
+            Ok(()) => Ok(()),
+            Err(UnmountCommitError::TopologyChanged) => {
+                let current_plan = self.plan_unmount_locked(UnmountKind::Normal)?;
+                if !current_plan.has_same_targets(&planned_targets) {
+                    return Err(UnmountCommitError::TopologyChanged.into());
+                }
+                current_plan.commit_current_locked().map_err(VfsError::from)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub fn plan_unmount(self: &Arc<Self>, kind: UnmountKind) -> VfsResult<UnmountPlan> {
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         self.plan_unmount_locked(kind)

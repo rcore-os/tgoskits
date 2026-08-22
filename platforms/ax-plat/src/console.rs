@@ -19,6 +19,17 @@ pub enum ConsoleDeviceIdError {
 /// Result type returned by the platform console device selector.
 pub type ConsoleDeviceIdResult = core::result::Result<ConsoleDeviceId, ConsoleDeviceIdError>;
 
+/// Error returned by an invalid early/runtime console ownership transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ConsoleHandoffError {
+    /// The platform console is not in the state required by this transition.
+    #[error("invalid console ownership transition")]
+    InvalidState,
+}
+
+/// Result returned by console ownership transitions.
+pub type ConsoleHandoffResult = core::result::Result<(), ConsoleHandoffError>;
+
 bitflags! {
     /// Console input IRQ events returned by the platform.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,12 +60,17 @@ pub trait ConsoleIf {
     /// [`ConsoleDeviceIdError::NotSpecified`].
     fn device_id() -> ConsoleDeviceIdResult;
 
-    /// Hands platform console output ownership to a higher-level runtime driver.
-    ///
-    /// After this call, low-level console write paths must stop touching the
-    /// same hardware registers if the platform firmware console is backed by a
-    /// runtime-owned device.
-    fn claim_runtime_output();
+    /// Stops new low-level console accesses and drains in-flight accesses.
+    fn begin_runtime_handoff() -> ConsoleHandoffResult;
+
+    /// Publishes runtime ownership after configuration and routing succeed.
+    fn commit_runtime_handoff() -> ConsoleHandoffResult;
+
+    /// Restores low-level ownership after a recoverable preparation failure.
+    fn rollback_runtime_handoff() -> ConsoleHandoffResult;
+
+    /// Permanently prevents low-level access after an uncertain failure.
+    fn fail_runtime_handoff_closed();
 
     /// Returns the IRQ number for the console input interrupt.
     ///

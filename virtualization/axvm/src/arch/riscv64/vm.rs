@@ -18,26 +18,22 @@ pub(crate) type RiscvVmPlan = SimpleVmPlan;
 
 impl Riscv64Arch {
     pub(crate) fn create_vm_resources(
-        config: AxVMConfig,
+        config: &mut AxVMConfig,
         _fw_cfg_payload: std::sync::Arc<axdevice::FwCfgPayloadSlot>,
     ) -> AxVmResult<AxVMResources> {
-        let device_plan = plan_devices(&config)?;
+        let device_plan = plan_devices(config)?;
         let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids();
         let levels = guest_page_table_levels(&placements)?;
         let page_table = npt::NestedPageTable::new(levels)?;
-        AxVMResources::from_page_table(config, page_table, device_plan, |root_paddr| {
+        AxVMResources::from_page_table(config.id(), page_table, device_plan, |root_paddr| {
             nested_paging_config(root_paddr, levels)
         })
     }
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
-        vm.prepare_resources_with(|resources| {
-            let placements = resources.vcpu_placements();
-            let dtb_addr = resources
-                .config()
-                .image_config()
-                .dtb_load_gpa
-                .unwrap_or_default();
+        vm.prepare_resources_with(|resources, config| {
+            let placements = resources.vcpu_placements(config);
+            let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
             let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
                 Ok(RiscvVcpuCreateConfig {
                     hart_id: placement.phys_cpu_id,
@@ -48,8 +44,8 @@ impl Riscv64Arch {
             let interrupt_controller = devices
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
-            resources.prepare_guest_address_space(vm.id(), &[])?;
-            vcpus.setup(resources, build_vcpu_setup_config)?;
+            resources.prepare_guest_address_space(vm.id(), config, &[])?;
+            vcpus.setup(resources, config, build_vcpu_setup_config)?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
         })

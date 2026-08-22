@@ -8,8 +8,11 @@ use crate::PerCpuArea;
 ///
 /// # Safety
 ///
-/// Every returned pointer must address the declared `T` in the selected live
-/// area. Primitive providers must use the matching atomic representation.
+/// The returned offset must identify a live, properly aligned `T` in every
+/// initialized CPU area. Every returned pointer must address that same `T` in
+/// the selected live area.
+///
+/// Primitive providers must use the matching atomic representation.
 #[doc(hidden)]
 pub unsafe trait PerCpuSymbol<T> {
     fn offset() -> usize;
@@ -86,6 +89,35 @@ where
             unsafe { NonNull::new_unchecked((exclusive.area().base() + S::offset()) as *mut T) };
         operation(unsafe { pointer.as_mut() })
     }
+
+    /// Mutates the current CPU's object before a [`CpuPin`] exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`cpu_local::CpuLocalError::AreaNotInstalled`] before the current
+    /// CPU has installed its runtime area, or an address error for an invalid
+    /// symbol address.
+    ///
+    /// # Safety
+    ///
+    /// The caller must prevent migration, context switches, and local
+    /// IRQ/re-entry for the complete callback, and exclude every conflicting
+    /// remote access to this object. Offline CPU bootstrap satisfies the same
+    /// contract before interrupt publication.
+    #[doc(hidden)]
+    pub unsafe fn with_current_cpu_area_mut<R>(
+        &self,
+        operation: impl for<'value> FnOnce(&'value mut T) -> R,
+    ) -> Result<R, cpu_local::CpuLocalError> {
+        unsafe {
+            cpu_local::with_current_cpu_area(|area| {
+                // SAFETY: the unsafe provider contract guarantees that its
+                // offset addresses a live, aligned T in every CPU area.
+                let mut pointer = area.symbol_ptr::<T>(S::offset())?;
+                Ok(operation(pointer.as_mut()))
+            })?
+        }
+    }
 }
 
 impl<T, S> PerCpu<T, S>
@@ -101,6 +133,34 @@ where
     ) -> R {
         // SAFETY: T: Sync permits shared observation and the pin fixes address.
         operation(unsafe { S::current_ptr(pin).as_ref() })
+    }
+
+    /// Borrows the current CPU's object before a [`CpuPin`] exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`cpu_local::CpuLocalError::AreaNotInstalled`] before the current
+    /// CPU has installed its runtime area, or an address error for an invalid
+    /// symbol address.
+    ///
+    /// # Safety
+    ///
+    /// The caller must prevent migration and context switches for the complete
+    /// callback and exclude every conflicting mutation of this object. Offline
+    /// CPU bootstrap satisfies the same contract before interrupt publication.
+    #[doc(hidden)]
+    pub unsafe fn with_current_cpu_area<R>(
+        &self,
+        operation: impl for<'value> FnOnce(&'value T) -> R,
+    ) -> Result<R, cpu_local::CpuLocalError> {
+        unsafe {
+            cpu_local::with_current_cpu_area(|area| {
+                // SAFETY: the unsafe provider contract guarantees that its
+                // offset addresses a live, aligned T in every CPU area.
+                let pointer = area.symbol_ptr::<T>(S::offset())?;
+                Ok(operation(pointer.as_ref()))
+            })?
+        }
     }
 }
 

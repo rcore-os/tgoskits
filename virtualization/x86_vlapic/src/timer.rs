@@ -273,6 +273,16 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
     }
 
     pub fn stop_timer(&mut self) -> X86VlapicResult {
+        self.retire_timer();
+        Ok(())
+    }
+
+    /// Whether the timer mode is periodic.
+    pub fn is_periodic(&self) -> bool {
+        self.timer_mode() == TimerMode::Periodic
+    }
+
+    fn retire_timer(&mut self) {
         // TODO: maybe disable irq here?
         self.next_generation();
         self.last_start_ticks = 0;
@@ -283,23 +293,10 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
         if let Some(token) = self.cancel_token.take() {
             host::cancel_timer::<H>(token);
         }
-
-        Ok(())
-    }
-
-    /// Whether the timer mode is periodic.
-    pub fn is_periodic(&self) -> bool {
-        self.timer_mode() == TimerMode::Periodic
     }
 
     fn next_generation(&self) -> usize {
         self.shared.generation.fetch_add(1, Ordering::AcqRel) + 1
-    }
-
-    fn invalidate_timer(&self) {
-        self.next_generation();
-        self.shared.interval_ns.store(0, Ordering::Release);
-        self.shared.deadline_ns.store(0, Ordering::Release);
     }
 
     // /// Set LVT Timer Register.
@@ -346,7 +343,7 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
 
 impl<H: X86VlapicHostOps> Drop for ApicTimer<H> {
     fn drop(&mut self) {
-        self.invalidate_timer();
+        self.retire_timer();
     }
 }
 
@@ -415,11 +412,17 @@ fn next_periodic_deadline_ns(deadline_ns: u64, interval_ns: u64, now_ns: u64) ->
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use crate::{
         X86HostPhysAddr, X86HostVirtAddr, X86InterruptVector, X86TimerCallback, X86VcpuId,
-        X86VlapicHostOps, X86VlapicResult, X86VmId,
+        X86VlapicHostOps, X86VlapicResult, X86VmId, lock::SpinMutex,
         regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode, timer::ApicTimer,
     };
+
+    static NEXT_TIMER_TOKEN: AtomicUsize = AtomicUsize::new(1);
+    static ACTIVE_TIMERS: SpinMutex<Vec<(usize, X86TimerCallback)>> = SpinMutex::new(Vec::new());
 
     struct DummyHost;
 
@@ -442,11 +445,21 @@ mod tests {
             0
         }
 
-        fn register_timer(_deadline_nanos: u64, _callback: X86TimerCallback) -> Option<usize> {
-            None
+        fn register_timer(_deadline_nanos: u64, callback: X86TimerCallback) -> Option<usize> {
+            let token = NEXT_TIMER_TOKEN.fetch_add(1, Ordering::Relaxed);
+            ACTIVE_TIMERS.lock().push((token, callback));
+            Some(token)
         }
 
-        fn cancel_timer(_token: usize) {}
+        fn cancel_timer(token: usize) {
+            let mut timers = ACTIVE_TIMERS.lock();
+            if let Some(index) = timers
+                .iter()
+                .position(|(active_token, _)| *active_token == token)
+            {
+                let _ = timers.swap_remove(index);
+            }
+        }
 
         fn current_vm_id() -> X86VmId {
             0
@@ -573,5 +586,19 @@ mod tests {
         assert!(!timer2.is_started());
         assert_eq!(timer1.read_icr(), timer2.read_icr());
         assert_eq!(timer1.read_dcr(), timer2.read_dcr());
+    }
+
+    #[test]
+    fn dropping_started_timer_cancels_host_registration() {
+        NEXT_TIMER_TOKEN.store(1, Ordering::Relaxed);
+        ACTIVE_TIMERS.lock().clear();
+
+        let mut timer = ApicTimer::<DummyHost>::new(1, 0);
+        timer.write_icr(1).unwrap();
+        assert_eq!(ACTIVE_TIMERS.lock().len(), 1);
+
+        drop(timer);
+
+        assert!(ACTIVE_TIMERS.lock().is_empty());
     }
 }

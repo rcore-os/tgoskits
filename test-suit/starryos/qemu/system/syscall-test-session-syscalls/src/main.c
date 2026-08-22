@@ -251,7 +251,8 @@ static void test_setsid(void)
 #define SETSID_RACERS 8
 
 struct setsid_race_result {
-    pthread_barrier_t *start;
+    int ready_fd;
+    int release_fd;
     pid_t result;
     int error;
 };
@@ -259,12 +260,13 @@ struct setsid_race_result {
 static void *setsid_racer(void *opaque)
 {
     struct setsid_race_result *race = opaque;
-    int barrier_result = pthread_barrier_wait(race->start);
-    if (barrier_result != 0 && barrier_result != PTHREAD_BARRIER_SERIAL_THREAD) {
-        race->result = -1;
-        race->error = barrier_result;
-        return NULL;
-    }
+
+    /* A pipe gives every racer one explicit ready/release token.  Unlike a
+     * pthread barrier, this keeps the test's start protocol independent of
+     * the libc's futex/barrier implementation while still releasing all
+     * threads together from the parent worker. */
+    sync_child_ready(race->ready_fd);
+    wait_child_ready(race->release_fd);
 
     errno = 0;
     race->result = setsid();
@@ -281,22 +283,31 @@ static void test_concurrent_setsid(void)
     if (child < 0)
         return;
     if (child == 0) {
-        pthread_barrier_t start;
+        int ready[2];
+        int release[2];
         pthread_t threads[SETSID_RACERS];
         struct setsid_race_result results[SETSID_RACERS] = {0};
 
-        if (pthread_barrier_init(&start, NULL, SETSID_RACERS) != 0)
+        if (pipe(ready) != 0 || pipe(release) != 0)
             _exit(1);
         for (size_t i = 0; i < SETSID_RACERS; ++i) {
-            results[i].start = &start;
+            results[i].ready_fd = ready[1];
+            results[i].release_fd = release[0];
             if (pthread_create(&threads[i], NULL, setsid_racer, &results[i]) != 0)
                 _exit(1);
         }
+        for (size_t i = 0; i < SETSID_RACERS; ++i)
+            wait_child_ready(ready[0]);
+        for (size_t i = 0; i < SETSID_RACERS; ++i)
+            sync_child_ready(release[1]);
         for (size_t i = 0; i < SETSID_RACERS; ++i) {
             if (pthread_join(threads[i], NULL) != 0)
                 _exit(1);
         }
-        pthread_barrier_destroy(&start);
+        close(ready[0]);
+        close(ready[1]);
+        close(release[0]);
+        close(release[1]);
 
         size_t successes = 0;
         size_t permission_denied = 0;
