@@ -136,6 +136,7 @@ fn optional_pci_binding_info_can_be_empty() {
             interrupt_pin: 0,
             interrupt_line: 0,
             intx_route: None,
+            dma_coherent: false,
         },
         PciIrqRequirement::Optional,
     )
@@ -153,6 +154,7 @@ fn required_pci_binding_info_reports_unresolved_irq() {
             interrupt_pin: 0,
             interrupt_line: 0,
             intx_route: None,
+            dma_coherent: false,
         },
         PciIrqRequirement::Required,
     )

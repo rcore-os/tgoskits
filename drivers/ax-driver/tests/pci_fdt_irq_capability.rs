@@ -165,6 +165,7 @@ fn endpoint() -> PciInfo {
             root_function: 0,
             root_pin: 1,
         }),
+        dma_coherent: false,
     }
 }
 
