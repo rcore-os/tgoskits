@@ -141,6 +141,31 @@ impl<T> RTScheduler<T> {
     fn alloc_task_id(&self) -> isize {
         self.id_pool.fetch_add(1, Ordering::Release)
     }
+
+    /// Returns the number of ready tasks currently in the ready queue.
+    pub fn len(&self) -> usize {
+        self.ready_queue.len()
+    }
+
+    /// Returns whether the ready queue is empty.
+    pub fn is_empty(&self) -> bool {
+        self.ready_queue.is_empty()
+    }
+
+    /// Picks and removes the first ready task (in priority order) whose payload
+    /// satisfies `pred`, preserving the order of the remaining tasks.
+    /// Returns `None` if no ready task matches.
+    pub fn pick_stealable_task(
+        &mut self,
+        mut pred: impl FnMut(&T) -> bool,
+    ) -> Option<Arc<RTTask<T>>> {
+        let key = self
+            .ready_queue
+            .iter()
+            .find(|(_, task)| pred(task.inner()))
+            .map(|(key, _)| *key)?;
+        self.ready_queue.remove(&key)
+    }
 }
 
 impl<T> BaseScheduler for RTScheduler<T> {
