@@ -351,13 +351,13 @@ pub(crate) fn spawn_registered_vcpu_task(
     priority: Option<isize>,
 ) -> crate::AxTaskRef {
     crate::host::task::spawn_task_with(task, |task_ref| {
-        if let Some(prio) = priority {
-            if !crate::host::task::set_task_priority(task_ref, prio) {
-                debug!(
-                    "VM[{vm_id}] vCPU[{vcpu_id}] requested priority {prio} is not supported by \
-                     the current scheduler; using default"
-                );
-            }
+        if let Some(prio) = priority
+            && !crate::host::task::set_task_priority(task_ref, prio)
+        {
+            debug!(
+                "VM[{vm_id}] vCPU[{vcpu_id}] requested priority {prio} is not supported by the \
+                 current scheduler; using default"
+            );
         }
         runtime
             .add_vcpu_task(vcpu_id, task_ref.clone())
