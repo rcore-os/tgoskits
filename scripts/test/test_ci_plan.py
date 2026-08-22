@@ -121,6 +121,17 @@ class CiPlanTests(unittest.TestCase):
         self.assertFalse(plan["starry_required"])
         self.assertFalse(plan["axvisor_required"])
 
+    def test_incremental_clippy_uses_bounded_history_without_changing_other_checks(
+        self,
+    ) -> None:
+        plan = ci_plan.build_main_plan(self.upstream)
+        static_rows = self.assert_unique_ids(plan["static_matrix"]["include"])
+        test_rows = self.assert_unique_ids(main_test_rows(plan))
+
+        self.assertEqual(test_rows["run-clippy"]["fetch_depth"], "100")
+        self.assertEqual(static_rows["check-formatting"]["fetch_depth"], "1")
+        self.assertEqual(test_rows["test-with-std"]["fetch_depth"], "1")
+
     def test_pull_request_impact_package_selects_standalone_check(self) -> None:
         context = ci_plan.PlanContext(
             repository="rcore-os/tgoskits",
@@ -544,7 +555,7 @@ command = "true"
         self.assertFalse(static_rows["check-formatting"]["download_xtask_bin_artifact"])
         clippy = test_rows["run-clippy"]
         self.assertEqual(clippy["runs_on"], ["ubuntu-latest"])
-        self.assertEqual(clippy["fetch_depth"], "0")
+        self.assertEqual(clippy["fetch_depth"], "100")
         self.assertTrue(clippy["download_xtask_bin_artifact"])
 
     def test_starry_apps_schedule_and_manual_selection(self) -> None:

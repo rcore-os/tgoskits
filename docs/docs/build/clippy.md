@@ -75,6 +75,8 @@ Clippy 的代码按选择、展开、执行和报告划分，避免参数解析�
 
 `--since` 模式先通过 `support::git::select_incremental_packages` 计算直接变更包和完整反向依赖闭包，再选择 `changed ∪ (affected ∩ {ax-std, starryos})`。中间路径和其他顶层包不会进入 Clippy 计划；直接变更的 OS 根会去重。所有选中包都使用 `--no-deps` 并展开完整 feature、target 和命名配置矩阵。当 git diff 失败或路径越出 workspace 时回退到全量扫描，并在终端打印回退原因。
 
+CI 为 Incremental Clippy 单独获取最近 100 层 Git 历史。增量基线或 merge-base 超出该范围，或者 force-push 使历史断开时，Clippy 会保守回退到全 workspace 扫描；其他 CI 检查保持各自的 checkout 深度。
+
 `--no-deps` 只禁止 Clippy 检查依赖 crate；Cargo 仍会编译选中包完成类型检查所需的依赖。
 
 `skip_unsupported_packages` 会跳过当前不能裸 clippy 的包，目前包括：
