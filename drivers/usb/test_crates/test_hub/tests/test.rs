@@ -264,7 +264,12 @@ mod tests {
                     println!("irq: {irq:?}");
 
                     return Some(XhciInfo {
-                        usb: USBHost::new_xhci(addr, &KernelImpl).unwrap(),
+                        usb: USBHost::new_xhci(
+                            addr,
+                            crab_usb::DmaCoherency::NonCoherent,
+                            &KernelImpl,
+                        )
+                        .unwrap(),
                         irq,
                     });
                 }
@@ -311,7 +316,12 @@ mod tests {
                 let irq = node.irq_info();
 
                 return XhciInfo {
-                    usb: USBHost::new_xhci(addr, &KernelImpl).unwrap(),
+                    usb: USBHost::new_xhci(
+                        addr,
+                        crab_usb::DmaCoherency::NonCoherent,
+                        &KernelImpl,
+                    )
+                    .unwrap(),
                     irq,
                 };
             }

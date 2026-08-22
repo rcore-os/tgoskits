@@ -7,7 +7,7 @@ use axvm_types::VMId;
 
 use crate::{
     AxVmError, AxVmResult,
-    arch::ArchVCpu,
+    arch::current::ArchVCpu,
     ax_err,
     host::{HostPlatform, default_host},
     vcpu::with_current_vcpu,
@@ -32,12 +32,15 @@ pub(crate) fn push_existing_vm(vm: AxVMRef) -> bool {
         warn!("VM[{vm_id}] already exists, push VM failed");
         return false;
     }
-    registry.insert(vm_id, vm);
+    registry.insert(vm_id, vm.clone());
+    drop(registry);
+    crate::arch::current::register_vm_platform_resources(&vm);
     true
 }
 
 /// Remove a VM from the process-wide AxVM runtime registry.
 pub(crate) fn remove_existing_vm(vm_id: VMId) -> Option<AxVMRef> {
+    crate::arch::current::unregister_vm_platform_resources(vm_id);
     crate::runtime::vcpus::cleanup_vm_vcpus(vm_id);
     VM_REGISTRY.lock().remove(&vm_id)
 }

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.23...axbuild-v0.5.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+- *(ci)* add impact-based PR test matrix ([#2097](https://github.com/rcore-os/tgoskits/pull/2097))
+- add feature development and syscall compatibility guidelines ([#2095](https://github.com/rcore-os/tgoskits/pull/2095))
+- *(axvisor)* axum management HTTP control plane with VM lifecycle API ([#1909](https://github.com/rcore-os/tgoskits/pull/1909))
+- *(starry-nixos)* add Stage-2 NixOS userspace baseline ([#1923](https://github.com/rcore-os/tgoskits/pull/1923))
+- *(axvisor)* Implement inter-VM communication (IVC) demo and protocol enhancements ([#1834](https://github.com/rcore-os/tgoskits/pull/1834))
+
+### Fixed
+
+- *(axvisor)* tighten aarch64 smoke failure matching ([#2112](https://github.com/rcore-os/tgoskits/pull/2112))
+- *(axtask)* preserve scheduler-frame ownership across switches ([#2101](https://github.com/rcore-os/tgoskits/pull/2101))
+- *(starry-kernel)* unify PID namespace identity ownership ([#2023](https://github.com/rcore-os/tgoskits/pull/2023))
+- *(axbuild)* lint host-test targets with clippy ([#2022](https://github.com/rcore-os/tgoskits/pull/2022))
+- *(axbuild)* isolate managed QEMU rootfs writes ([#2018](https://github.com/rcore-os/tgoskits/pull/2018))
+- *(arm-gic-driver)* handle implicit GICv2 uniprocessor targets ([#2007](https://github.com/rcore-os/tgoskits/pull/2007))
+- *(rdrive)* make FDT assigned-clocks best-effort, not probe-fatal ([#2002](https://github.com/rcore-os/tgoskits/pull/2002))
+- *(axbuild)* preserve Axvisor QEMU group artifacts ([#1969](https://github.com/rcore-os/tgoskits/pull/1969))
+- *(axbuild)* suppress debugfs copy noise in Starry image builds ([#1964](https://github.com/rcore-os/tgoskits/pull/1964))
+- *(visionfive2)* restore booti and SD rootfs boot ([#1954](https://github.com/rcore-os/tgoskits/pull/1954))
+
+### Other
+
+- *(repo)* simplify internal dependency release checks ([#2127](https://github.com/rcore-os/tgoskits/pull/2127))
+- *(ci)* narrow clippy and deduplicate event runs ([#2126](https://github.com/rcore-os/tgoskits/pull/2126))
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(serial)* establish bounded owner-affine UART runtime ([#2076](https://github.com/rcore-os/tgoskits/pull/2076))
+- Refactor image storage and update CI output directory options ([#2025](https://github.com/rcore-os/tgoskits/pull/2025))
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- *(arceos)* guard task IPI progress under constrained TCG ([#2019](https://github.com/rcore-os/tgoskits/pull/2019))
+- *(repo)* move starry-process, starry-signal, and starry-vm to os/StarryOS ([#1974](https://github.com/rcore-os/tgoskits/pull/1974))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+- *(axvm)* layer RISC-V SBI IPI routing ([#1920](https://github.com/rcore-os/tgoskits/pull/1920))
+- *(axvisor)* validate x86 OVMF ACPI on VMX and SVM ([#1931](https://github.com/rcore-os/tgoskits/pull/1931))
+
 ### Fixed
 
 - *(axvisor)* preserve one QEMU executable per VM configuration build group

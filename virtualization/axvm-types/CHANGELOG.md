@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.7.3...axvm-types-v0.7.4) - 2026-08-20
+
+### Other
+
+- updated the following local packages: ax-memory-addr, ax-cpumask
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/axvm-types-v0.7.2...axvm-types-v0.7.3) - 2026-08-09
 
 ### Added

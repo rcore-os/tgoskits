@@ -89,7 +89,7 @@ pub fn sys_rseq(addr: *mut u8, len: usize, flags: u32, sig: u32) -> Result<isize
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn rseq_validation_rejects_invalid_arguments_for_test() -> bool {
     matches!(
         validate_rseq_args(core::ptr::null_mut(), RSEQ_AREA_SIZE, 0),
@@ -109,7 +109,7 @@ pub(crate) fn rseq_validation_rejects_invalid_arguments_for_test() -> bool {
     )
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn rseq_validation_rules_hold_for_test() -> bool {
     // Test validate_rseq_args validation logic
     // Null address should fail

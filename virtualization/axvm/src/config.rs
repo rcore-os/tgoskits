@@ -24,7 +24,7 @@ pub use axvm_types::{
 };
 use axvmconfig::VirtualDeviceRequest;
 
-use crate::{arch::*, machine::*};
+use crate::{arch::current::CurrentArch, architecture::MachinePlatform, machine::*};
 
 /// Policy used by AxVM when deriving runtime guest boot image addresses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -612,5 +612,20 @@ mod tests {
             config.replace_machine_plic(plic),
             Err(crate::AxVmError::InvalidConfig { .. })
         ));
+    }
+
+    #[test]
+    fn phys_cpu_list_pins_single_vcpu_to_isolated_core() {
+        // aarch64/riscv64 arceos-smp1.toml: cpu_num=1, phys_cpu_ids=[1] → physical Core 1.
+        let list = PhysCpuList::new(1, Some(vec![1]), None);
+        assert_eq!(list.get_vcpu_affinities_pcpu_ids(), vec![(0, None, 1)]);
+
+        // x86_64 arceos-smp1.toml: phys_cpu_sets=[2] → affinity mask 0b10 (Core 1).
+        let list = PhysCpuList::new(1, None, Some(vec![2]));
+        assert_eq!(list.get_vcpu_affinities_pcpu_ids(), vec![(0, Some(2), 0)]);
+
+        // Default: no pinning, vcpu id equals physical id.
+        let list = PhysCpuList::new(1, None, None);
+        assert_eq!(list.get_vcpu_affinities_pcpu_ids(), vec![(0, None, 0)]);
     }
 }

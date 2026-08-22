@@ -1,5 +1,5 @@
 [package]
-version = "0.5.6"
+version = "0.6.0"
 authors = [
   "Mingxian Su <aarkegz@gmail.com>",
   "DeBin Luo <luodeb@outlook.com>",
@@ -34,4 +34,4 @@ tock-registers = "0.10"
 thiserror = { workspace = true }
 
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test"] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

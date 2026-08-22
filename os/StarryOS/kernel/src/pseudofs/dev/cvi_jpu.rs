@@ -129,7 +129,11 @@ fn create_decoder() -> StarryResult<JpuDecoder> {
         map_mmio(TOP_BASE, TOP_MMIO_SIZE)?,
         map_mmio(VC_REG_BASE, REG_MMIO_SIZE)?,
     );
-    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
+        dma_api::DmaDomainId::Direct,
+        dma_api::DmaCoherency::NonCoherent,
+        dma_api::DmaConstraints::new(u32::MAX as u64),
+    ));
     // SAFETY: the mappings above cover the documented JPU, TOP, and VC
     // register spans for the lifetime of this global service. `CviJpu` is the
     // sole accessor and serializes every decode through its mutex.

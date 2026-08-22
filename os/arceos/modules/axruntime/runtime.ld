@@ -18,6 +18,11 @@ SECTIONS {
         _ex_table_end = .;
 
         . = ALIGN(0x10);
+        _nofault_ex_table_start = .;
+        KEEP(*(__nofault_ex_table))
+        _nofault_ex_table_end = .;
+
+        . = ALIGN(0x10);
         __axtest_array = .;
         KEEP(*(SORT(.axtest_array)))
         __axtest_array_end = .;

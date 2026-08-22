@@ -1,0 +1,279 @@
+//! Generic host-side probe runner for the AxVisor management HTTP control plane.
+//!
+//! Direction is host -> guest: the probe dials the axum management API running
+//! *inside* the AxVisor guest through QEMU user-mode networking hostfwd, and
+//! asserts the responses entirely host-side. The *test content* — the concrete
+//! requests, fixtures, and assertions — lives with the test-suit case as an
+//! executable probe asset (default `http_probe.py` in the case directory; see
+//! [`AxvisorHttpProbeConfig::probe_script`](super::types::AxvisorHttpProbeConfig::probe_script)).
+//! New HTTP scenarios or API-contract changes therefore edit the case asset,
+//! never this crate.
+//!
+//! This module is generic orchestration only: resolve the probe asset, spawn it
+//! once the forwarded port is reachable, and collect its exit code as the
+//! verdict. The runner's
+//! [`HostHttpProbeGuard`](super::host_probe::HostHttpProbeGuard) does the rest
+//! of the orchestration: wait for the forwarded port, invoke this probe, store
+//! its verdict, and quit QEMU over QMP.
+//!
+//! The probe asset is executed directly (its shebang selects the interpreter)
+//! with the environment:
+//!
+//! ```text
+//! AXVISOR_HTTP_BASE            http://127.0.0.1:<host_port> (forwarded)
+//! AXVISOR_HTTP_TOKEN           bearer token (may be empty)
+//! AXVISOR_HTTP_CASE_DIR        case directory (fixtures like `vm-memory.toml`)
+//! AXVISOR_HTTP_CONNECT_TIMEOUT seconds for the initial reachability wait
+//! AXVISOR_HTTP_REQUEST_TIMEOUT seconds per HTTP request
+//! ```
+//!
+//! Exit code 0 is a pass; any nonzero exit fails the case. The asset streams
+//! its own progress to the runner's stdout/stderr so CI logs show the steps.
+
+use std::{
+    path::Path,
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
+
+use anyhow::{Context, bail};
+
+use super::types::AxvisorHttpProbeConfig;
+
+/// Poll interval while waiting for the probe asset to exit.
+const PROBE_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Run the case's HTTP probe asset against one boot.
+///
+/// `addr` is the forwarded host address (`127.0.0.1:<port>`). `config` carries
+/// the bearer token, timeouts, and the probe-asset name; `case_dir` locates
+/// the asset (and its fixtures). `stop` is the shared abort flag: when the
+/// runner marks the case over (QEMU failure, timeout), a still-running asset is
+/// killed instead of waiting it out.
+pub(crate) fn run(
+    addr: &str,
+    config: &AxvisorHttpProbeConfig,
+    case_dir: &Path,
+    stop: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    let script = case_dir.join(&config.probe_script);
+    ensure_probe_asset(&script)?;
+    println!(
+        "  host http probe: running probe asset {}",
+        script.display()
+    );
+    let mut child = spawn_probe_asset(&script, addr, config, case_dir)?;
+    match wait_probe_asset(&mut child, &stop) {
+        Some(status) if status.success() => Ok(()),
+        Some(status) => bail!(
+            "probe asset {} exited with code {}",
+            script.display(),
+            status.code().unwrap_or(-1)
+        ),
+        None => bail!("probe asset {} was killed", script.display()),
+    }
+}
+
+/// Fail fast when the configured probe asset is missing, so a case that
+/// references a nonexistent asset errors clearly instead of spawning a `not
+/// found` and misreporting it as a probe failure.
+fn ensure_probe_asset(script: &Path) -> anyhow::Result<()> {
+    if !script.is_file() {
+        bail!(
+            "probe asset {} does not exist; add it to the case directory (or set \
+             [host_http_probe] probe_script)",
+            script.display()
+        );
+    }
+    Ok(())
+}
+
+/// Spawn the probe asset with the forwarded base URL, token, and timeouts as
+/// environment. The asset is executed directly so its shebang picks the
+/// interpreter; stdout/stderr are inherited so CI logs show the asset's steps.
+fn spawn_probe_asset(
+    script: &Path,
+    addr: &str,
+    config: &AxvisorHttpProbeConfig,
+    case_dir: &Path,
+) -> anyhow::Result<Child> {
+    Command::new(script)
+        .env("AXVISOR_HTTP_BASE", format!("http://{addr}"))
+        .env(
+            "AXVISOR_HTTP_TOKEN",
+            config.token.clone().unwrap_or_default(),
+        )
+        .env("AXVISOR_HTTP_CASE_DIR", case_dir)
+        .env(
+            "AXVISOR_HTTP_CONNECT_TIMEOUT",
+            config.connect_timeout_secs.to_string(),
+        )
+        .env(
+            "AXVISOR_HTTP_REQUEST_TIMEOUT",
+            config.request_timeout_secs.to_string(),
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| format!("failed to spawn probe asset {}", script.display()))
+}
+
+/// Wait for the probe asset to exit, killing it if the runner marks the case
+/// over. Returns `Some(status)` on a normal exit and `None` if it was killed.
+fn wait_probe_asset(child: &mut Child, stop: &AtomicBool) -> Option<ExitStatus> {
+    loop {
+        if stop.load(Ordering::Acquire) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        if let Some(status) = child.try_wait().ok().flatten() {
+            return Some(status);
+        }
+        thread::sleep(PROBE_EXIT_POLL_INTERVAL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use serde::Deserialize;
+
+    use super::{super::types::DEFAULT_PROBE_SCRIPT, *};
+
+    fn test_config(probe_script: PathBuf) -> AxvisorHttpProbeConfig {
+        AxvisorHttpProbeConfig {
+            guest_port: 8080,
+            connect_timeout_secs: 120,
+            request_timeout_secs: 5,
+            probe_script,
+            token: Some("t".into()),
+        }
+    }
+
+    /// Parse a `[host_http_probe]` section like
+    /// [`load_axvisor_http_probe_config`](super::super::qemu::load_axvisor_http_probe_config).
+    fn parse_probe_section(toml_body: &str) -> AxvisorHttpProbeConfig {
+        #[derive(Deserialize)]
+        struct ProbeSection {
+            #[serde(default)]
+            host_http_probe: Option<AxvisorHttpProbeConfig>,
+        }
+        toml::from_str::<ProbeSection>(toml_body)
+            .expect("probe section parses")
+            .host_http_probe
+            .expect("host_http_probe present")
+    }
+
+    /// Write an executable probe asset that records its environment and exits
+    /// with `code`.
+    #[cfg(unix)]
+    fn write_fixture_probe(dir: &Path, name: &str, code: i32) -> PathBuf {
+        use std::{fs, os::unix::fs::PermissionsExt};
+        let path = dir.join(name);
+        let script = format!(
+            "#!/bin/sh\nprintf '%s' \
+             \"$AXVISOR_HTTP_BASE|$AXVISOR_HTTP_TOKEN|$AXVISOR_HTTP_CASE_DIR\" > \
+             \"$AXVISOR_HTTP_CASE_DIR/env.txt\"\nexit {code}\n"
+        );
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn probe_script_defaults_to_http_probe_py() {
+        let config = parse_probe_section("[host_http_probe]\ntoken = \"t\"\n");
+        assert_eq!(config.probe_script, PathBuf::from(DEFAULT_PROBE_SCRIPT));
+    }
+
+    #[test]
+    fn probe_script_is_configurable() {
+        let config = parse_probe_section("[host_http_probe]\nprobe_script = \"custom_probe.sh\"\n");
+        assert_eq!(config.probe_script, PathBuf::from("custom_probe.sh"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_executes_the_case_probe_asset_with_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = write_fixture_probe(dir.path(), "http_probe.py", 0);
+        let config = test_config(PathBuf::from("http_probe.py"));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let result = run("127.0.0.1:12345", &config, dir.path(), stop);
+
+        assert!(result.is_ok(), "probe asset should pass: {result:?}");
+        // The generic mechanism really executed the asset and forwarded the
+        // env the asset needs to dial the guest API.
+        let recorded = std::fs::read_to_string(dir.path().join("env.txt")).unwrap();
+        assert_eq!(
+            recorded,
+            "http://127.0.0.1:12345|t|".to_string() + &dir.path().to_string_lossy()
+        );
+        assert!(probe.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_propagates_nonzero_probe_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        write_fixture_probe(dir.path(), "http_probe.py", 1);
+        let config = test_config(PathBuf::from("http_probe.py"));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let error = run("127.0.0.1:12345", &config, dir.path(), stop).unwrap_err();
+        assert!(error.to_string().contains("exited with code 1"));
+    }
+
+    #[test]
+    fn run_rejects_a_missing_probe_asset() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config(PathBuf::from("http_probe.py"));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let error = run("127.0.0.1:12345", &config, dir.path(), stop).unwrap_err();
+        assert!(error.to_string().contains("does not exist"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_kills_the_probe_asset_when_stop_is_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        write_fixture_probe(dir.path(), "http_probe.py", 0);
+        let config = test_config(PathBuf::from("http_probe.py"));
+        // The case is already over before the asset even starts.
+        let stop = Arc::new(AtomicBool::new(true));
+
+        let error = run("127.0.0.1:12345", &config, dir.path(), stop).unwrap_err();
+        assert!(error.to_string().contains("was killed"));
+    }
+
+    /// The generic mechanism must execute the actual case asset: the
+    /// `http-control-plane` test-suit case carries `http_probe.py` next to its
+    /// `qemu-aarch64.toml` and `vm-memory.toml` fixtures. This pins that
+    /// contract so a missing/renamed case asset fails this test, not the CI run.
+    #[test]
+    fn http_control_plane_case_carries_a_probe_asset() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let case_asset = workspace_root.join(
+            "test-suit/axvisor/normal/qemu-http-control-plane/http-control-plane/http_probe.py",
+        );
+        assert!(
+            case_asset.is_file(),
+            "http-control-plane case missing probe asset: {}",
+            case_asset.display()
+        );
+        // The default `[host_http_probe]` config resolves the asset by name, so
+        // the generic runner executes the real case asset unchanged.
+        let name = case_asset.file_name().and_then(|s| s.to_str()).unwrap();
+        assert_eq!(name, DEFAULT_PROBE_SCRIPT);
+    }
+}

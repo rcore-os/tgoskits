@@ -346,7 +346,7 @@ pub(crate) fn init_percpu() {
         .expect("AxVM timer worker CPU ID must fit the host CPU mask");
     worker.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(cpu_bit));
     crate::host::task::spawn_task(worker);
-    crate::arch::register_timer_source(deadline_source, notify);
+    crate::arch::current::register_timer_source(deadline_source, notify);
 }
 
 fn with_timer_wheels<R>(operation: impl FnOnce(&mut TimerWheels) -> R) -> R {

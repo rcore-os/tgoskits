@@ -1,17 +1,15 @@
-use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{format, string::String, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_lazyinit::LazyLock;
 use ax_runtime::{
-    RuntimeError,
-    hal::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
+    console::{self, TaskConsoleInput},
     serial::{
         Config, DataBits, Parity, RxItem, SerialRuntimeHandle, SerialRxSubscription,
-        SerialTxSender, StopBits,
+        SerialTaskOutput, StopBits,
     },
 };
 use axfs_ng_vfs::{VfsError, VfsResult};
-use rdrive::DeviceId as RDriveDeviceId;
 
 use super::{
     Tty,
@@ -53,14 +51,41 @@ struct SerialRegistry {
 struct SerialBackend {
     name: String,
     tty_name: String,
-    rdrive_device_id: RDriveDeviceId,
     number: usize,
     runtime: SerialRuntimeHandle,
-    tx: SerialTxSender,
-    rx: SerialRxSubscription,
+    output: SerialTaskOutput,
+    input: SerialInput,
+    is_console: bool,
     lifecycle_lock: Mutex<()>,
     started: AtomicBool,
-    output_lock: Mutex<()>,
+}
+
+enum SerialInput {
+    Console(TaskConsoleInput),
+    Port(SerialRxSubscription),
+}
+
+impl SerialInput {
+    fn drain(&self, out: &mut [RxItem]) -> usize {
+        match self {
+            Self::Console(input) => input.try_read(out),
+            Self::Port(input) => input.drain(out),
+        }
+    }
+
+    fn discard_pending(&self) -> ax_runtime::RuntimeResult {
+        match self {
+            Self::Console(input) => input.discard_pending(),
+            Self::Port(input) => input.discard_pending(),
+        }
+    }
+
+    fn poll_source(&self) -> Arc<axpoll::PollSet> {
+        match self {
+            Self::Console(input) => input.poll_source(),
+            Self::Port(input) => input.poll_source(),
+        }
+    }
 }
 
 struct NoConsole;
@@ -84,26 +109,6 @@ impl DeviceOps for NoConsole {
 
     fn as_any(&self) -> &dyn core::any::Any {
         self
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ConsoleCandidate {
-    number: usize,
-    device_id: RDriveDeviceId,
-}
-
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
-enum ConsoleSelection {
-    SelectedDevice(usize),
-    TtyS0Fallback(usize),
-}
-
-impl ConsoleSelection {
-    fn index(&self) -> usize {
-        match self {
-            Self::SelectedDevice(index) | Self::TtyS0Fallback(index) => *index,
-        }
     }
 }
 
@@ -141,9 +146,9 @@ pub fn bind_console_to(proc: &Process) -> StarryResult<()> {
     if let Some(index) = SERIAL_REGISTRY.console_index
         && let Some(entry) = SERIAL_REGISTRY.entries.get(index)
     {
+        entry.tty.bind_to(proc)?;
         entry.backend.ensure_started()?;
-        entry.backend.runtime.claim_console_output()?;
-        return entry.tty.bind_to(proc);
+        return Ok(());
     }
     Err(StarryError::NoSuchDevice)
 }
@@ -159,17 +164,10 @@ pub fn arm_console_irq() {
 impl SerialRegistry {
     fn discover() -> Self {
         let serials = ax_runtime::serial::runtimes();
-        let numbers = assign_tty_numbers(
-            serials
-                .iter()
-                .map(|serial| serial.info().alias_index)
-                .collect::<Vec<_>>()
-                .as_slice(),
-        );
 
         let mut entries = Vec::new();
-        for (serial, number) in serials.iter().cloned().zip(numbers) {
-            let Some(number) = number else {
+        for serial in serials.iter().cloned() {
+            let Some(number) = console::tty_number(&serial) else {
                 warn!(
                     "Skipping serial device {} at {} because ttyS number could not be assigned",
                     serial.info().name,
@@ -184,27 +182,10 @@ impl SerialRegistry {
         }
         entries.sort_by_key(|entry| entry.number);
 
-        let candidates = entries
-            .iter()
-            .map(|entry| ConsoleCandidate {
-                number: entry.number,
-                device_id: entry.backend.rdrive_device_id,
-            })
-            .collect::<Vec<_>>();
-        let console_selection =
-            select_console_candidate(&candidates, ax_runtime::hal::console::device_id());
-        let console_index = console_selection.as_ref().map(ConsoleSelection::index);
+        let console_index = entries.iter().position(|entry| entry.backend.is_console);
         if let Some(index) = console_index {
             let number = entries[index].number;
-            match console_selection {
-                Some(ConsoleSelection::SelectedDevice(_)) => {
-                    info!("/dev/console bound to ttyS{number}");
-                }
-                Some(ConsoleSelection::TtyS0Fallback(_)) => {
-                    info!("/dev/console bound to ttyS0");
-                }
-                None => {}
-            }
+            info!("/dev/console bound to runtime console ttyS{number}");
         } else {
             warn!("/dev/console has no serial TTY binding");
         }
@@ -220,24 +201,29 @@ fn new_serial_tty(number: usize, runtime: SerialRuntimeHandle) -> StarryResult<S
     let tty_name = format!("ttyS{number}");
     let info = runtime.info().clone();
     let name = info.name.clone();
-    let rdrive_device_id = info.device_id;
-    let tx = runtime.tx_sender();
-    let rx = runtime
-        .take_rx_subscription()
-        .ok_or(StarryError::BadState)?;
-    let input_source = rx.poll_source();
-    let output_source = tx.poll_source();
+    let is_console = console::is_active(&runtime);
+    let input = if is_console {
+        SerialInput::Console(console::take_input()?)
+    } else {
+        SerialInput::Port(
+            runtime
+                .take_rx_subscription()
+                .ok_or(StarryError::BadState)?,
+        )
+    };
+    let output = runtime.task_output();
+    let input_source = input.poll_source();
+    let output_source = output.poll_source();
     let backend = Arc::new(SerialBackend {
         name,
         tty_name: tty_name.clone(),
-        rdrive_device_id,
         number,
         runtime,
-        tx,
-        rx,
+        output,
+        input,
+        is_console,
         lifecycle_lock: Mutex::new(()),
-        started: AtomicBool::new(false),
-        output_lock: Mutex::new(()),
+        started: AtomicBool::new(is_console),
     });
 
     let terminal = Arc::new(Terminal::default());
@@ -291,12 +277,11 @@ impl SerialBackend {
 
     fn drain_tx(&self) -> StarryResult<()> {
         self.ensure_started()?;
-        let _guard = self.output_lock.lock();
-        Ok(self.tx.wait_idle()?)
+        Ok(self.output.wait_idle()?)
     }
 
     fn drain_rx(&self, out: &mut [RxItem]) -> usize {
-        self.rx.drain(out)
+        self.input.drain(out)
     }
 }
 
@@ -334,6 +319,13 @@ fn serial_config_from_termios(termios: &Termios2) -> Config {
     config
 }
 
+fn termios_requires_reconfigure(old: &Termios2, new: &Termios2) -> bool {
+    old.baudrate() != new.baudrate()
+        || old.data_bits() != new.data_bits()
+        || old.stop_bits() != new.stop_bits()
+        || old.parity() != new.parity()
+}
+
 impl TtyRead for SerialReader {
     fn read(&mut self, buf: &mut [u8]) -> usize {
         if !self.backend.started.load(Ordering::Acquire) {
@@ -364,7 +356,7 @@ impl TtyRead for SerialReader {
     }
 
     fn discard_input(&mut self) -> StarryResult<()> {
-        Ok(self.backend.rx.discard_pending()?)
+        Ok(self.backend.input.discard_pending()?)
     }
 }
 
@@ -380,19 +372,7 @@ impl TtyWrite for SerialWriter {
         if self.backend.ensure_started().is_err() {
             return;
         }
-        let _guard = self.backend.output_lock.lock();
-        let mut written = 0;
-        while written < buf.len() {
-            match self.backend.tx.try_write(&buf[written..]) {
-                Ok(count) => written += count,
-                Err(RuntimeError::WouldBlock) => {
-                    if self.backend.tx.wait_writable().is_err() {
-                        return;
-                    }
-                }
-                Err(_) => return,
-            }
-        }
+        let _ = self.backend.output.write_all(buf);
     }
 
     fn try_write(&self, buf: &[u8]) -> usize {
@@ -402,10 +382,7 @@ impl TtyWrite for SerialWriter {
         if self.backend.ensure_started().is_err() {
             return 0;
         }
-        let Some(_guard) = self.backend.output_lock.try_lock() else {
-            return 0;
-        };
-        self.backend.tx.try_write(buf).unwrap_or(0)
+        self.backend.output.try_write(buf).unwrap_or(0)
     }
 
     fn flush_echo_before_input(&self) -> bool {
@@ -422,198 +399,36 @@ impl TtyWrite for SerialWriter {
 
     fn discard_output(&self) -> StarryResult<()> {
         self.backend.ensure_started()?;
-        let _guard = self.backend.output_lock.lock();
-        Ok(self.backend.tx.discard_pending()?)
+        Ok(self.backend.output.discard_pending()?)
     }
 
-    fn termios_changed(&self, old: &Termios2, new: &Termios2) {
-        if old.baudrate() == new.baudrate()
-            && old.data_bits() == new.data_bits()
-            && old.stop_bits() == new.stop_bits()
-            && old.parity() == new.parity()
-        {
-            return;
+    fn termios_changed(&self, old: &Termios2, new: &Termios2) -> StarryResult<()> {
+        if !termios_requires_reconfigure(old, new) {
+            return Ok(());
         }
-        if self.backend.ensure_started().is_err() {
-            return;
-        }
-        if let Err(err) = self
+        self.backend.ensure_started()?;
+        Ok(self
             .backend
-            .runtime
-            .set_config(serial_config_from_termios(new))
-        {
-            warn!(
-                "{} failed to apply termios on {}: {:?}",
-                self.backend.tty_name, self.backend.name, err
-            );
-        }
-    }
-}
-
-fn assign_tty_numbers(alias_indices: &[Option<usize>]) -> Vec<Option<usize>> {
-    let mut assigned = vec![None; alias_indices.len()];
-    let mut used = Vec::new();
-
-    for (device_index, alias) in alias_indices.iter().copied().enumerate() {
-        let Some(number) = alias else {
-            continue;
-        };
-        if used.contains(&number) {
-            warn!("Duplicate FDT serial{number} alias ignored for later serial device");
-            continue;
-        }
-        assigned[device_index] = Some(number);
-        used.push(number);
+            .output
+            .reconfigure(Some(serial_config_from_termios(new)), false, || {})?)
     }
 
-    let mut next = 0usize;
-    for number in &mut assigned {
-        if number.is_some() {
-            continue;
-        }
-        while used.contains(&next) {
-            next += 1;
-        }
-        *number = Some(next);
-        used.push(next);
-    }
-
-    assigned
-}
-
-fn select_console_candidate(
-    candidates: &[ConsoleCandidate],
-    selected_device_id: ConsoleDeviceIdResult,
-) -> Option<ConsoleSelection> {
-    match selected_device_id {
-        Ok(device_id) => {
-            if let Some(index) = candidates
-                .iter()
-                .position(|candidate| candidate.device_id == device_id)
-            {
-                return Some(ConsoleSelection::SelectedDevice(index));
-            }
-            warn!("selected console device {device_id:?} did not match a discovered serial TTY");
-            None
-        }
-        Err(ConsoleDeviceIdError::NotSpecified) => candidates
-            .iter()
-            .position(|candidate| candidate.number == 0)
-            .map(ConsoleSelection::TtyS0Fallback),
-        Err(
-            err @ (ConsoleDeviceIdError::NoHardwareDevice | ConsoleDeviceIdError::DeviceNotFound),
-        ) => {
-            debug!("No hardware console TTY selected: {err:?}");
-            None
-        }
+    fn update_termios(
+        &self,
+        old: &Termios2,
+        new: &Termios2,
+        drain: bool,
+        publish: &mut dyn FnMut(),
+    ) -> StarryResult<()> {
+        self.backend.ensure_started()?;
+        let config =
+            termios_requires_reconfigure(old, new).then(|| serial_config_from_termios(new));
+        Ok(self.backend.output.reconfigure(config, drain, publish)?)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use rdrive::DeviceId as RDriveDeviceId;
-
-    use super::{
-        ConsoleCandidate, ConsoleDeviceIdError, ConsoleSelection, assign_tty_numbers,
-        select_console_candidate,
-    };
-
-    #[test]
-    fn aliases_keep_linux_ttys_numbering() {
-        assert_eq!(assign_tty_numbers(&[Some(0), Some(2)]), [Some(0), Some(2)]);
-    }
-
-    #[test]
-    fn unaliased_serials_take_first_free_ttys_numbers() {
-        assert_eq!(
-            assign_tty_numbers(&[Some(0), None, Some(2), None]),
-            [Some(0), Some(1), Some(2), Some(3)]
-        );
-    }
-
-    #[test]
-    fn duplicate_alias_keeps_first_device_and_reassigns_later_one() {
-        assert_eq!(
-            assign_tty_numbers(&[Some(1), Some(1), None]),
-            [Some(1), Some(0), Some(2)]
-        );
-    }
-
-    #[test]
-    fn matching_device_id_wins_over_ttys0_fallback() {
-        let tty_s0 = RDriveDeviceId::from(10);
-        let tty_s1 = RDriveDeviceId::from(11);
-        let candidates = [
-            ConsoleCandidate {
-                number: 0,
-                device_id: tty_s0,
-            },
-            ConsoleCandidate {
-                number: 1,
-                device_id: tty_s1,
-            },
-        ];
-
-        assert_eq!(
-            select_console_candidate(&candidates, Ok(tty_s1)),
-            Some(ConsoleSelection::SelectedDevice(1))
-        );
-    }
-
-    #[test]
-    fn unmatched_device_id_keeps_dev_console_unbound() {
-        let tty_s0 = RDriveDeviceId::from(10);
-        let missing = RDriveDeviceId::from(99);
-        let candidates = [ConsoleCandidate {
-            number: 0,
-            device_id: tty_s0,
-        }];
-
-        assert_eq!(select_console_candidate(&candidates, Ok(missing)), None);
-    }
-
-    #[test]
-    fn missing_device_id_falls_back_to_ttys0() {
-        let tty_s0 = RDriveDeviceId::from(10);
-        let candidates = [ConsoleCandidate {
-            number: 0,
-            device_id: tty_s0,
-        }];
-
-        assert_eq!(
-            select_console_candidate(&candidates, Err(ConsoleDeviceIdError::NotSpecified)),
-            Some(ConsoleSelection::TtyS0Fallback(0))
-        );
-    }
-
-    #[test]
-    fn no_ttys0_keeps_dev_console_unbound() {
-        let tty_s1 = RDriveDeviceId::from(11);
-        let candidates = [ConsoleCandidate {
-            number: 1,
-            device_id: tty_s1,
-        }];
-
-        assert_eq!(
-            select_console_candidate(&candidates, Err(ConsoleDeviceIdError::NotSpecified)),
-            None
-        );
-    }
-
-    #[test]
-    fn non_hardware_console_keeps_dev_console_unbound() {
-        let tty_s0 = RDriveDeviceId::from(10);
-        let candidates = [ConsoleCandidate {
-            number: 0,
-            device_id: tty_s0,
-        }];
-
-        assert_eq!(
-            select_console_candidate(&candidates, Err(ConsoleDeviceIdError::NoHardwareDevice)),
-            None
-        );
-    }
-
     #[test]
     fn zero_hardware_baudrate_uses_runtime_default() {
         assert_eq!(super::startup_baudrate(0), super::SERIAL_DEFAULT_BAUDRATE);

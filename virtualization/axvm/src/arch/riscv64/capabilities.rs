@@ -5,15 +5,34 @@ use std::{format, vec::Vec};
 use super::Riscv64Arch;
 use crate::{
     AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform},
+    architecture::{
+        Architecture, BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform,
+        capabilities::default_vcpu_affinities,
+    },
     ax_err_type,
 };
 
 impl HostTimePlatform for Riscv64Arch {}
 
+impl Architecture for Riscv64Arch {}
+
 impl MachinePlatform for Riscv64Arch {
     const MACHINE_ARCHITECTURE: crate::machine::MachineArchitecture =
         crate::machine::MachineArchitecture::Riscv64;
+
+    fn vcpu_affinities(
+        cpu_num: usize,
+        phys_cpu_ids: Option<&[usize]>,
+        phys_cpu_sets: Option<&[usize]>,
+    ) -> Vec<(usize, Option<usize>, usize)> {
+        let mut vcpus = default_vcpu_affinities(cpu_num, phys_cpu_ids, phys_cpu_sets);
+        if phys_cpu_sets.is_none() {
+            for (_, mask, phys_id) in &mut vcpus {
+                *mask = Some(1 << *phys_id);
+            }
+        }
+        vcpus
+    }
 }
 
 impl BootImagePlatform for Riscv64Arch {
@@ -24,7 +43,12 @@ impl BootImagePlatform for Riscv64Arch {
         let bytes = dtb.as_bytes();
         let source = std::ptr::NonNull::new(bytes.as_ptr() as *mut u8)
             .ok_or_else(|| ax_err_type!(InvalidData, "Guest DTB pointer is null"))?;
-        super::fdt::core::update_fdt(source, bytes.len(), loader.vm.clone(), &loader.config)
+        crate::boot::fdt::core::create::update_fdt(
+            source,
+            bytes.len(),
+            loader.vm.clone(),
+            &loader.config,
+        )
     }
 }
 
@@ -34,15 +58,15 @@ impl GuestBootPlatform for Riscv64Arch {
         vm_create_config: &mut axvmconfig::GuestConfig,
         provider: &dyn crate::boot::BootImageProvider,
     ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
-        super::fdt::core::prepare_dtb_guest(vm_config, vm_create_config, provider)
+        crate::boot::fdt::core::prepare_dtb_guest(vm_config, vm_create_config, provider)
     }
 }
 
-pub fn host_fdt_bootarg() -> usize {
+pub(crate) fn host_fdt_bootarg() -> usize {
     ax_std::os::arceos::modules::ax_hal::dtb::get_bootarg()
 }
 
-pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
+pub(crate) fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
     ax_std::os::arceos::modules::ax_hal::mem::phys_to_virt(paddr)
 }
 
@@ -54,9 +78,11 @@ pub(super) fn host_cpu_count() -> usize {
     ax_std::os::arceos::modules::ax_hal::cpu_num()
 }
 
-pub(super) fn decode_plic_source(specifier: &[u32]) -> Option<super::fdt::core::DecodedInterrupt> {
+pub(super) fn decode_plic_source(
+    specifier: &[u32],
+) -> Option<crate::boot::fdt::core::DecodedInterrupt> {
     let source = specifier.first().copied().filter(|source| *source != 0)?;
-    Some(super::fdt::core::DecodedInterrupt {
+    Some(crate::boot::fdt::core::DecodedInterrupt {
         source,
         trigger: axdevice_base::InterruptTriggerMode::LevelTriggered,
     })
@@ -67,7 +93,7 @@ pub(super) fn patch_runtime_fdt(
     vm: &crate::AxVMRef,
     crate_config: &axvmconfig::GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
-    let host_fdt = super::fdt::core::try_get_host_fdt()
+    let host_fdt = crate::boot::fdt::core::try_get_host_fdt()
         .map(fdt_edit::Fdt::from_bytes)
         .transpose()
         .map_err(|err| {
@@ -105,8 +131,8 @@ pub(super) fn patch_runtime_fdt(
             config.plic_profile().cloned(),
         )
     });
-    let guest_fdt = super::fdt::core::create::patch_guest_fdt_for_runtime(
-        super::fdt::core::create::GuestFdtRuntimePatch {
+    let guest_fdt = crate::boot::fdt::core::create::patch_guest_fdt_for_runtime(
+        crate::boot::fdt::core::create::GuestFdtRuntimePatch {
             fdt_bytes,
             memory_regions: &vm.memory_regions(),
             ivc_channels: &ivc_channels,

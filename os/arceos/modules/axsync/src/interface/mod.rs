@@ -103,6 +103,9 @@ pub trait ContextOps {
 
     /// Leaves `context` using the matching token.
     fn exit(context: u8, state: usize);
+
+    /// Leaves a preemption context at the final IRQ-return boundary.
+    fn exit_preempt_from_irq_return(state: usize);
 }
 
 /// Complete spin-lock acquisition and release operations.
@@ -186,6 +189,13 @@ pub(crate) fn context_exit(context: u8, state: usize) {
     return crate::host::context_exit(context, state);
     #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
     ax_crate_interface::call_interface!(ContextOps::exit, context, state);
+}
+
+pub(crate) fn preempt_exit_from_irq_return(state: usize) {
+    #[cfg(all(feature = "host-test", not(target_os = "none")))]
+    return crate::host::context_exit(CONTEXT_PREEMPT, state);
+    #[cfg(not(all(feature = "host-test", not(target_os = "none"))))]
+    ax_crate_interface::call_interface!(ContextOps::exit_preempt_from_irq_return, state);
 }
 
 pub(crate) fn spin_acquire(

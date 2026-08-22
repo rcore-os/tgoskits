@@ -115,6 +115,13 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     }
 }
 
+/// Makes a page-table entry installed by the local page-fault handler visible
+/// before retrying the faulting instruction.
+///
+/// x86 does not cache invalid leaf entries, so the page-table write is enough.
+#[inline]
+pub fn update_mmu_cache(_vaddr: VirtAddr) {}
+
 /// Reads the current kernel task's TLS base (`FS_BASE`).
 ///
 /// It is used to implement TLS (Thread Local Storage).
@@ -138,7 +145,7 @@ pub unsafe fn write_thread_pointer(kernel_tls: KernelTlsBase) {
 }
 
 #[cfg(feature = "uspace")]
-core::arch::global_asm!(include_str!("user_copy.S"));
+core::arch::global_asm!(include_str!("user_copy.S"), include_str!("user_atomic.S"),);
 
 #[cfg(feature = "uspace")]
 unsafe extern "C" {
@@ -152,4 +159,19 @@ unsafe extern "C" {
     /// Returns the number of bytes not copied. This means 0 indicates success,
     /// while a value > 0 indicates failure.
     pub fn user_copy(dst: *mut u8, src: *const u8, size: usize) -> usize;
+}
+
+/// Lock-free EL0/user access probe. No hardware address-translation probe is
+/// wired up on this architecture yet, so always report "not fast-path eligible"
+/// and let the caller take the locked slow path (correctness preserved).
+///
+/// # Safety
+///
+/// No precondition — this stub reads nothing and always returns `false`. It is
+/// `unsafe` only to share the signature of the aarch64 EL1 probe (which requires
+/// IRQs-off), so callers can use one `unsafe` block across all targets.
+#[cfg(feature = "uspace")]
+#[inline]
+pub unsafe fn user_access_ok_page(_vaddr: usize, _write: bool) -> bool {
+    false
 }

@@ -10,9 +10,7 @@ StarryNixOS 是一个显式选择、仅支持 x86_64 的 StarryOS 应用。它�
 systemd。这个边界用于验证真实发行版工作负载，但不代表 StarryOS 已完整兼容
 NixOS。
 
-本文记录需要长期维护的架构决策和接口契约。构建命令、当前兼容性例外和逐次运行
-证据分别记录在 `apps/starry/nixos/README.md` 与
-`apps/starry/nixos/compatibility.md`。
+构建命令位于 `apps/starry/nixos/README.md`，当前兼容性例外和运行证据位于 `apps/starry/nixos/compatibility.md`。
 
 ## 目标与非目标
 
@@ -171,11 +169,11 @@ flowchart LR
 | 兼容策略 | 真实启动驱动的 first-divergence 红绿回归 | 预先复制历史补丁、宽泛 mask 或伪造能力都会隐藏当前问题 |
 | 成功判断 | PID 1、provenance、activation、target、marker 的复合证据 | 单日志字符串、shell prompt 或 QEMU exit code 都可能产生假阳性 |
 
-## 验证与回滚
+## 测试与回滚
 
-设计级验证分为三层：builder self-test 和 manifest 检查保证制品边界，Axbuild 单元
+测试分为三层：builder self-test 和 manifest 检查保证制品边界，Axbuild 单元
 测试保证 rootfs 模式与失败语义，focused Starry QEMU 用例保证每项 Linux 兼容
-修复。最终必须通过完整 x86_64 app QEMU 验收；运行方法见应用 README。
+修复。完整 x86_64 app QEMU 的运行方法见应用 README。
 
 回滚时禁用或删除 StarryNixOS app 配置及其生成的 managed image 即可。由于 feature
 和 rootfs 模式都是 opt-in，回滚不修改共享 Alpine 镜像，也不改变其它 StarryOS

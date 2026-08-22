@@ -30,17 +30,21 @@ fn image_mode_is_additive_but_the_prefix_layout_is_not() {
     assert!(
         HEADER.contains("pub struct CpuAreaPrefix")
             && HEADER.contains("pub struct CpuRuntimeAnchor")
-            && HEADER.contains("pub struct BootThreadHeader")
-            && HEADER.contains("pub struct CurrentThreadHeader"),
+            && HEADER.contains("pub struct BootContextHeader")
+            && HEADER.contains("pub struct ExecutionContextHeader"),
         "the prefix must reserve runtime-anchor and boot-thread cache lines"
     );
     assert!(
         HEADER.contains("CPU_AREA_RUNTIME_ANCHOR_OFFSET")
-            && HEADER.contains("CPU_AREA_BOOT_THREAD_OFFSET")
+            && HEADER.contains("CPU_AREA_BOOT_CONTEXT_OFFSET")
             && HEADER.contains("size_of::<CpuAreaPrefix>() == 192"),
         "the prefix must keep runtime state at 64 and the boot header at 128"
     );
-    for type_name in ["CpuRuntimeAnchor", "CpuAreaPrefix", "CurrentThreadHeader"] {
+    for type_name in [
+        "CpuRuntimeAnchor",
+        "CpuAreaPrefix",
+        "ExecutionContextHeader",
+    ] {
         let definition = HEADER
             .split_once(&format!("pub struct {type_name}"))
             .unwrap_or_else(|| panic!("{type_name} must exist"))
@@ -56,25 +60,37 @@ fn image_mode_is_additive_but_the_prefix_layout_is_not() {
 }
 
 #[test]
-fn current_thread_header_is_task_owned_and_resource_free() {
+fn execution_context_header_is_scheduler_neutral_and_resource_free() {
     let header = HEADER
-        .split_once("pub struct CurrentThreadHeader")
-        .expect("CurrentThreadHeader must exist")
+        .split_once("pub struct ExecutionContextHeader")
+        .expect("ExecutionContextHeader must exist")
         .1
         .split_once("\n}")
-        .expect("CurrentThreadHeader must have a bounded definition")
+        .expect("ExecutionContextHeader must have a bounded definition")
         .0;
 
-    for field in ["context", "cpu_area", "binding_epoch", "architecture_state"] {
+    for field in [
+        "cpu_area",
+        "binding_epoch",
+        "architecture_state",
+        "preemption_state",
+    ] {
         assert!(
             header.contains(field),
-            "CurrentThreadHeader is missing {field}"
+            "ExecutionContextHeader is missing {field}"
         );
     }
-    for forbidden in ["kernel_tls", "stack", "TaskContext", "address_space"] {
+    for forbidden in [
+        "CurrentContext",
+        "RuntimeThreadCookie",
+        "kernel_tls",
+        "stack",
+        "TaskContext",
+        "address_space",
+    ] {
         assert!(
             !header.contains(forbidden),
-            "CurrentThreadHeader must not own {forbidden}"
+            "ExecutionContextHeader must not own {forbidden}"
         );
     }
 
@@ -85,8 +101,37 @@ fn current_thread_header_is_task_owned_and_resource_free() {
     ] {
         assert!(
             HEADER.contains(api),
-            "CurrentThreadHeader is missing `{api}`"
+            "ExecutionContextHeader is missing `{api}`"
         );
+    }
+}
+
+#[test]
+fn cpu_local_has_no_upper_layer_dependency_or_scheduler_vocabulary() {
+    for forbidden in ["ax-task", "ax-runtime"] {
+        assert!(
+            !MANIFEST.contains(forbidden),
+            "cpu-local must not depend on {forbidden}"
+        );
+    }
+    for forbidden in ["scheduler_", "RuntimeThreadCookie"] {
+        assert!(
+            !HEADER.contains(forbidden) && !REGISTER.contains(forbidden),
+            "cpu-local public mechanism still exposes {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn each_image_mode_selects_one_current_context_source() {
+    for (backend, linux, tls) in [
+        (X86_64, "RuntimeAnchor", "RuntimeAnchor"),
+        (AARCH64, "ArchitectureRegister", "ArchitectureRegister"),
+        (RISCV, "ArchitectureRegister", "RuntimeAnchor"),
+        (LOONGARCH64, "ArchitectureRegister", "RuntimeAnchor"),
+    ] {
+        assert!(backend.contains(&format!("linux_current: CurrentContextSource::{linux}")));
+        assert!(backend.contains(&format!("unikernel_tls: CurrentContextSource::{tls}")));
     }
 }
 

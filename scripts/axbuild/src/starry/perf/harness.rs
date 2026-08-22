@@ -18,10 +18,9 @@ use super::{
 };
 use crate::support::process::ProcessExt;
 
-const HARNESS_KIT_REPO: &str = "https://github.com/cg24-THU/tgoskit-harness_kit.git";
-const HARNESS_KIT_COMMIT: &str = "762c22725024a065e85b26e0b01121eccea651c0";
 const LEGACY_PERF_POSTPROCESS_ARCH_ARG: &str = r#"perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])"#;
 const X86_64_PERF_POSTPROCESS_ARCH_ARG: &str = r#"perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64", "x86_64"])"#;
+const HARNESS_KIT_PREBUILD: &str = "apps/common/prebuild-harness-kit.sh";
 
 pub(super) struct QperfTools {
     pub(super) plugin: PathBuf,
@@ -104,155 +103,48 @@ fn qperf_source_root(root: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn ensure_harness_kit_checkout(root: &Path) -> anyhow::Result<PathBuf> {
-    if let Some(checkout) = env::var_os("TGOSKIT_HARNESS_KIT_DIR").map(PathBuf::from) {
-        validate_harness_kit_override(&checkout)?;
-        return Ok(checkout);
-    }
-
-    let checkout = root
-        .join("target/tgoskit-harness-kit")
-        .join(HARNESS_KIT_COMMIT);
-    if checkout.join(".git").is_dir() {
-        let actual = git_stdout(Some(&checkout), &["rev-parse", "HEAD"])?;
-        if actual == HARNESS_KIT_COMMIT {
-            return Ok(checkout);
-        }
-        git_status(
-            Some(&checkout),
-            &["fetch", "--depth", "1", "origin", HARNESS_KIT_COMMIT],
-        )?;
-        git_status(
-            Some(&checkout),
-            &["checkout", "--detach", HARNESS_KIT_COMMIT],
-        )?;
-        git_status(Some(&checkout), &["reset", "--hard", HARNESS_KIT_COMMIT])?;
-        return Ok(checkout);
-    }
-
-    let parent = checkout.parent().ok_or_else(|| {
-        anyhow::anyhow!("invalid harness kit checkout path {}", checkout.display())
-    })?;
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let tmp_name = format!(
-        "{}.tmp-{}",
-        checkout
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("harness-kit"),
-        std::process::id()
-    );
-    let tmp_checkout = checkout.with_file_name(tmp_name);
-    if tmp_checkout.exists() {
-        fs::remove_dir_all(&tmp_checkout)
-            .with_context(|| format!("failed to remove {}", tmp_checkout.display()))?;
-    }
-
-    let clone_result = (|| -> anyhow::Result<()> {
-        git_status(None, &["init", "-q", path_str(&tmp_checkout)?])?;
-        git_status(
-            Some(&tmp_checkout),
-            &["remote", "add", "origin", HARNESS_KIT_REPO],
-        )?;
-        git_status(
-            Some(&tmp_checkout),
-            &["fetch", "--depth", "1", "origin", HARNESS_KIT_COMMIT],
-        )?;
-        git_status(Some(&tmp_checkout), &["checkout", "--detach", "FETCH_HEAD"])?;
-        let actual = git_stdout(Some(&tmp_checkout), &["rev-parse", "HEAD"])?;
-        if actual != HARNESS_KIT_COMMIT {
-            bail!("fetched harness kit {actual}, expected {HARNESS_KIT_COMMIT}");
-        }
-        Ok(())
-    })();
-
-    if clone_result.is_err() {
-        let _ = fs::remove_dir_all(&tmp_checkout);
-    }
-    clone_result?;
-    if checkout.exists() {
-        fs::remove_dir_all(&checkout)
-            .with_context(|| format!("failed to remove {}", checkout.display()))?;
-    }
-    fs::rename(&tmp_checkout, &checkout).with_context(|| {
-        format!(
-            "failed to move {} to {}",
-            tmp_checkout.display(),
-            checkout.display()
-        )
-    })?;
-    Ok(checkout)
-}
-
-fn validate_harness_kit_override(checkout: &Path) -> anyhow::Result<()> {
-    ensure_file(
-        &checkout.join("tools/qperf/Cargo.toml"),
-        "TGOSKIT_HARNESS_KIT_DIR qperf manifest",
-    )?;
-    ensure_file(
-        &checkout.join("tools/qperf/analyzer/Cargo.toml"),
-        "TGOSKIT_HARNESS_KIT_DIR qperf analyzer manifest",
-    )?;
-    ensure_file(
-        &checkout.join("tools/starry-syscall-harness/harness.py"),
-        "TGOSKIT_HARNESS_KIT_DIR harness script",
-    )?;
-
-    if !checkout.join(".git").is_dir() {
-        bail!(
-            "TGOSKIT_HARNESS_KIT_DIR={} is not a git checkout; cannot verify pinned harness kit \
-             commit {}. Use a read-only git checkout at the pinned commit, or unset the variable \
-             to let xtask manage target/tgoskit-harness-kit",
-            checkout.display(),
-            HARNESS_KIT_COMMIT
-        );
-    }
-
-    let actual = git_stdout(Some(checkout), &["rev-parse", "HEAD"])?;
-    if actual != HARNESS_KIT_COMMIT {
-        bail!(
-            "TGOSKIT_HARNESS_KIT_DIR={} is at commit {}, expected {}; the override path is \
-             read-only and will not be fetched, reset, or replaced",
-            checkout.display(),
-            actual,
-            HARNESS_KIT_COMMIT
-        );
-    }
-    Ok(())
-}
-
-fn git_status(cwd: Option<&Path>, args: &[&str]) -> anyhow::Result<()> {
-    let mut command = Command::new("git");
-    if let Some(cwd) = cwd {
-        command.arg("-C").arg(cwd);
-    }
-    let status = command
-        .args(args)
-        .status()
-        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
-    if !status.success() {
-        bail!("git {} failed with {status}", args.join(" "));
-    }
-    Ok(())
-}
-
-fn git_stdout(cwd: Option<&Path>, args: &[&str]) -> anyhow::Result<String> {
-    let mut command = Command::new("git");
-    if let Some(cwd) = cwd {
-        command.arg("-C").arg(cwd);
-    }
-    let output = command
-        .args(args)
+    let prebuild = root.join(HARNESS_KIT_PREBUILD);
+    ensure_file(&prebuild, "shared harness kit prebuild provider")?;
+    let output = Command::new(&prebuild)
+        .env("STARRY_WORKSPACE", root)
         .output()
-        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+        .with_context(|| format!("failed to run {}", prebuild.display()))?;
     if !output.status.success() {
-        bail!("git {} failed with {}", args.join(" "), output.status);
+        bail!(
+            "shared harness kit prebuild provider failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    checkout_path_from_stdout(output.stdout)
 }
 
-fn path_str(path: &Path) -> anyhow::Result<&str> {
-    path.to_str()
-        .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))
+fn checkout_path_from_stdout(mut stdout: Vec<u8>) -> anyhow::Result<PathBuf> {
+    if stdout.last() == Some(&b'\n') {
+        stdout.pop();
+        if stdout.last() == Some(&b'\r') {
+            stdout.pop();
+        }
+    }
+    if stdout.is_empty() {
+        bail!("shared harness kit prebuild provider returned an empty path");
+    }
+    if stdout.contains(&b'\n') || stdout.contains(&b'\r') || stdout.contains(&b'\0') {
+        bail!("shared harness kit prebuild provider returned an invalid path");
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+
+        Ok(PathBuf::from(OsString::from_vec(stdout)))
+    }
+    #[cfg(not(unix))]
+    {
+        let checkout = String::from_utf8(stdout)
+            .context("shared harness kit prebuild provider returned a non-UTF-8 path")?;
+        Ok(PathBuf::from(checkout))
+    }
 }
 
 pub(super) fn run_report_postprocess(
@@ -312,22 +204,20 @@ pub(super) fn run_report_postprocess(
         command.arg("--host-time");
     }
     if args.host_perf {
-        command
-            .arg("--host-perf")
-            .arg("--host-perf-events")
-            .arg(&args.host_perf_events);
+        command.arg("--host-perf");
+        command.arg_option_value("--host-perf-events", args.host_perf_events.as_ref());
     }
     if let Some(cmd) = &args.shell_init_cmd {
-        command.arg("--shell-init-cmd").arg(cmd);
+        command.arg_option_value("--shell-init-cmd", cmd.as_ref());
     }
     if let Some(prefix) = &args.shell_prefix {
-        command.arg("--shell-prefix").arg(prefix);
+        command.arg_option_value("--shell-prefix", prefix.as_ref());
     }
     if let Some(marker) = &args.start_marker {
-        command.arg("--start-marker").arg(marker);
+        command.arg_option_value("--start-marker", marker.as_ref());
     }
     if let Some(marker) = &args.stop_marker {
-        command.arg("--stop-marker").arg(marker);
+        command.arg_option_value("--stop-marker", marker.as_ref());
     }
     if let Some(timeout) = args.workload_timeout {
         command.arg("--workload-timeout").arg(timeout.to_string());
@@ -345,14 +235,12 @@ pub(super) fn run_report_postprocess(
         command.arg("--perf-force-frame-pointers");
     }
     if let Some(focus) = &args.focus {
-        command.arg("--focus").arg(focus);
+        command.arg_option_value("--focus", focus.as_ref());
     }
     if args.no_truncate {
         command.arg("--no-truncate");
     }
-    for qemu_arg in &args.qemu_args {
-        command.arg("--qemu-arg").arg(qemu_arg);
-    }
+    append_qemu_args(&mut command, &args.qemu_args);
     let status = command
         .status()
         .context("failed to run qperf report postprocess")?;
@@ -361,6 +249,12 @@ pub(super) fn run_report_postprocess(
     }
     ensure_report_outputs(outputs)?;
     Ok(harness)
+}
+
+fn append_qemu_args(command: &mut Command, qemu_args: &[String]) {
+    for qemu_arg in qemu_args {
+        command.arg_option_value("--qemu-arg", qemu_arg.as_ref());
+    }
 }
 
 fn report_harness(root: &Path, outputs: &PerfOutputs, arch: &str) -> anyhow::Result<PathBuf> {
@@ -438,7 +332,9 @@ fn workspace_harness_path(work_dir: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::add_x86_64_perf_postprocess_choice;
+    use std::process::Command;
+
+    use super::{add_x86_64_perf_postprocess_choice, append_qemu_args, checkout_path_from_stdout};
 
     #[test]
     fn x86_64_postprocess_shim_extends_only_the_perf_postprocess_arch_choice() {
@@ -453,5 +349,42 @@ perf_post_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "
         assert!(patched.contains(
             r#"perf_parser.add_argument("--arch", default="riscv64", choices=["riscv64", "loongarch64"])"#
         ));
+    }
+
+    #[test]
+    fn postprocess_qemu_args_encode_hyphen_prefixed_values_as_one_argument() {
+        let mut command = Command::new("python3");
+
+        append_qemu_args(&mut command, &["-cpu".into(), "max".into()]);
+
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(args, ["--qemu-arg=-cpu", "--qemu-arg=max"]);
+    }
+
+    #[test]
+    fn checkout_provider_path_preserves_trailing_spaces() {
+        let checkout = checkout_path_from_stdout(b"/tmp/harness kit \n".to_vec()).unwrap();
+
+        assert_eq!(checkout, std::path::Path::new("/tmp/harness kit "));
+    }
+
+    #[test]
+    fn checkout_provider_path_rejects_multiple_output_lines() {
+        let error = checkout_path_from_stdout(b"notice\n/tmp/harness\n".to_vec()).unwrap_err();
+
+        assert!(error.to_string().contains("invalid path"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checkout_provider_path_preserves_non_utf8_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let checkout = checkout_path_from_stdout(b"/tmp/harness-\xff\n".to_vec()).unwrap();
+
+        assert_eq!(checkout.as_os_str().as_bytes(), b"/tmp/harness-\xff");
     }
 }

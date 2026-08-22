@@ -2,6 +2,7 @@
 
 use std::{sync::Arc, vec::Vec};
 
+use ax_memory_addr::VirtAddr;
 use ax_std::os::arceos::modules::ax_task::IrqNotify;
 
 use crate::AxVmResult;
@@ -65,6 +66,14 @@ pub(crate) fn unsupported_target_cpu_capability(
 /// Architecture selection for fixed guest machine resources.
 pub(crate) trait MachinePlatform {
     const MACHINE_ARCHITECTURE: crate::machine::MachineArchitecture;
+
+    fn vcpu_affinities(
+        cpu_num: usize,
+        phys_cpu_ids: Option<&[usize]>,
+        phys_cpu_sets: Option<&[usize]>,
+    ) -> Vec<(usize, Option<usize>, usize)> {
+        default_vcpu_affinities(cpu_num, phys_cpu_ids, phys_cpu_sets)
+    }
 }
 
 /// Guest firmware preparation performed before common VM memory loading.
@@ -82,6 +91,9 @@ pub(crate) trait GuestBootPlatform {
 
 /// Architecture-specific guest image planning layered over common byte loading.
 pub(crate) trait BootImagePlatform {
+    /// Makes host writes to guest image memory visible to guest execution.
+    fn make_guest_memory_visible(_addr: VirtAddr, _size: usize) {}
+
     fn default_boot_firmware_load_gpa(
         _config: &axvmconfig::GuestConfig,
     ) -> Option<axvm_types::GuestPhysAddr> {
@@ -109,12 +121,49 @@ pub(crate) trait BootImagePlatform {
         Ok(())
     }
 
-    fn is_x86_linux_image_config(
-        _config: &axvmconfig::GuestConfig,
+    fn guest_boot_policy(
+        config: &axvmconfig::GuestConfig,
         _provider: &dyn crate::boot::BootImageProvider,
-    ) -> bool {
-        false
+    ) -> crate::config::GuestBootPolicy {
+        adjustable_guest_boot_policy(config)
     }
+}
+
+pub(crate) fn adjustable_guest_boot_policy(
+    config: &axvmconfig::GuestConfig,
+) -> crate::config::GuestBootPolicy {
+    crate::config::GuestBootPolicy::AdjustKernelForBootProtocol {
+        protocol: config.kernel.effective_boot_protocol(),
+    }
+}
+
+pub(crate) fn default_vcpu_affinities(
+    cpu_num: usize,
+    phys_cpu_ids: Option<&[usize]>,
+    phys_cpu_sets: Option<&[usize]>,
+) -> Vec<(usize, Option<usize>, usize)> {
+    let mut vcpus = Vec::with_capacity(cpu_num);
+    for vcpu_id in 0..cpu_num {
+        vcpus.push((vcpu_id, None, vcpu_id));
+    }
+
+    if let Some(phys_cpu_sets) = phys_cpu_sets {
+        for (vcpu_id, pcpu_mask_bitmap) in phys_cpu_sets.iter().enumerate() {
+            if let Some(vcpu) = vcpus.get_mut(vcpu_id) {
+                vcpu.1 = Some(*pcpu_mask_bitmap);
+            }
+        }
+    }
+
+    if let Some(phys_cpu_ids) = phys_cpu_ids {
+        for (vcpu_id, phys_id) in phys_cpu_ids.iter().enumerate() {
+            if let Some(vcpu) = vcpus.get_mut(vcpu_id) {
+                vcpu.2 = *phys_id;
+            }
+        }
+    }
+
+    vcpus
 }
 
 /// Architecture-specific host timer policy used by the ArceOS adapter.
@@ -182,6 +231,27 @@ mod tests {
                 capability: "IPA bits",
                 cpu_id: 2,
             })
+        );
+    }
+
+    #[test]
+    fn default_vcpu_affinities_preserve_explicit_placement() {
+        assert_eq!(
+            default_vcpu_affinities(1, Some(&[1]), None),
+            vec![(0, None, 1)]
+        );
+        assert_eq!(
+            default_vcpu_affinities(1, None, Some(&[2])),
+            vec![(0, Some(2), 0)]
+        );
+        assert_eq!(default_vcpu_affinities(1, None, None), vec![(0, None, 0)]);
+    }
+
+    #[test]
+    fn default_vcpu_affinities_fall_back_to_vcpu_ids() {
+        assert_eq!(
+            default_vcpu_affinities(2, None, None),
+            vec![(0, None, 0), (1, None, 1)]
         );
     }
 }

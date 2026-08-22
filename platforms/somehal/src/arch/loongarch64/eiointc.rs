@@ -96,7 +96,7 @@ fn register_eiointc(dev: PlatformDevice) -> Result<(), OnProbeError> {
     let intc = EioIntc::new(EIOINTC_VECTOR_COUNT);
     intc.init();
     EIOINTC_RUNTIME_VECTOR_COUNT.store(intc.vectors, Ordering::Release);
-    someboot::irq::irq_set_enable(someboot::irq::IrqId::new(EIOINTC_IRQ), true);
+    super::boot_irq_set_enable(someboot::irq::IrqId::new(EIOINTC_IRQ), true);
     let domain = crate::irq::alloc_irq_domain(
         dev.descriptor.device_id(),
         crate::irq::IrqDomainKind::LoongArchEioIntc,

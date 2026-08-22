@@ -4,26 +4,59 @@ A white-box unit testing framework for bare-metal `#![no_std]` environments in t
 
 Tests are registered at compile time via linker sections — no dynamic allocation, no runtime discovery. Results are reported in KTAP (Kernel Test Anything Protocol) format.
 
+Use axtest only when the assertion needs QEMU or a physical board: target-architecture behavior, IRQ/preemption/per-CPU state, kernel scheduling, real devices, or a kernel-owned filesystem. Algorithms, parsers, state machines, validation, formatting, and other deterministic host-compatible code must use ordinary Rust `#[test]` cases and `cargo test` (or `cargo xtask test`). A crate may use both styles after splitting at that boundary.
+
 Entry points are already configured in all three OSes. This guide covers how to write and run tests.
 
 ## Running Tests
 
 ```bash
+# Every workspace crate with a direct axtest dev-dependency
+cargo xtask ktest qemu
+
+# Only execution units that support x86_64
+cargo xtask ktest qemu --workspace --arch x86_64
+
 # StarryOS kernel
 cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64
 
 # Axvisor
 cargo xtask ktest qemu -p axvisor --test axtest --arch x86_64
 
-# Remote board
-cargo xtask ktest board -p starry-kernel --test axtest_kernel -b orangepi-5-plus
+# SG2002 board-only test
+cargo xtask ktest board -p arceos-axtest-sg2002-usb-msc \
+  --test axtest -b aka-00-sg2002
 ```
 
 ## Writing Test Cases
 
-Add `axtest.workspace = true` to your crate's `Cargo.toml`, then write a
-`harness = false` Cargo test target. The test file only needs the axtest module
-and test cases:
+After confirming that the case cannot run under the standard Rust harness, add a path-only direct `axtest` dev-dependency, then declare a
+`harness = false` Cargo test target. Keep axtest sources under `tests/`:
+
+```toml
+[features]
+axtest = []
+
+[dev-dependencies]
+axtest = { path = "<relative-path>/components/axtest/axtest" }
+ax-hal = { path = "<relative-path>/os/arceos/modules/axhal" }
+ax-std = { path = "<relative-path>/os/arceos/ulib/axstd" }
+
+[[test]]
+name = "axtest"
+path = "tests/axtest.rs"
+harness = false
+required-features = ["axtest"]
+```
+
+Adjust each path relative to the package manifest. Workspace-internal
+dev-dependencies must not specify `version` or use `workspace = true`, because
+Cargo keeps versioned dev-dependencies in the published manifest and can then
+reject the workspace's test-only dependency cycles. Path-only dev-dependencies
+are stripped during publication. Registry dev-dependencies may still specify a
+version normally.
+
+The test file only needs the axtest module and test cases:
 
 ```rust
 #![cfg_attr(target_os = "none", no_std)]
@@ -45,7 +78,8 @@ mod tests {
 The `#[axtest::tests]` macro registers every `#[test]` function in the inline
 module and generates the kernel test entry point. The entry point configures
 printing, runs the suite, emits `AXTEST_SUITE_OK` / `AXTEST_SUITE_FAIL`, dumps
-coverage when enabled, and powers the target off on success.
+coverage when enabled, and requests an orderly runtime shutdown on success so
+accepted console output is drained before the target powers off.
 
 ### Basic Test
 
@@ -240,24 +274,20 @@ AXTEST_SUMMARY pass=2 fail=0 skip=0 total=2
 ### Build Integration
 
 The `ktest` command builds kernel/QEMU/board tests as Cargo `[[test]]` targets with `harness = false`.
-It selects the package with `-p <package>`, the target with `--test <target>`, and injects `--cfg axtest` via `CARGO_ENCODED_RUSTFLAGS`:
+It discovers workspace packages through a direct axtest dev-dependency, expands each selected test target into one QEMU run per supported architecture, and injects `--cfg axtest` via `CARGO_ENCODED_RUSTFLAGS`:
 
 ```bash
 cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64
 cargo xtask ktest qemu -p axvisor --test axtest --arch x86_64
 ```
 
-QEMU configs use `success_regex` / `fail_regex` to match the output:
+The default runtime is ArceOS. StarryOS, Axvisor, and board-only packages declare
+`[package.metadata.axtest] runtime = "starry|axvisor|board"`. Supported QEMU
+architectures come from `[package.metadata.docs.rs].targets`; packages without
+that metadata run only on x86_64. `--arch` filters a workspace plan to packages
+that support the requested architecture.
 
-```toml
-# test-suit/<os>/axtest/qemu/smoke/qemu-aarch64.toml
-args = ["-nographic", "-cpu", "cortex-a72", "-machine", "virt,virtualization=on,gic-version=3", "-smp", "1", "-m", "128M"]
-timeout = 60
-success_regex = ["AXTEST_SUITE_OK"]
-fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "AXTEST_SUITE_FAIL", "AXTEST_CASE status=fail"]
-to_bin = true
-uefi = false
-```
+QEMU configs continue to own platform arguments, timeout, `to_bin`, UEFI, devices, and rootfs. The ktest runner additionally requires `AXTEST_SUITE_OK` and rejects panic, suite-failure, or case-failure markers.
 
 ## Coverage
 
@@ -281,7 +311,7 @@ The build tool will automatically:
 1. Add the `axtest/coverage` Cargo feature
 2. Inject `--cfg axtest_coverage`, `-Cinstrument-coverage`, `-Zno-profiler-runtime` into rustflags
 3. Set up a QEMU monitor socket for memory extraction
-4. Generate `<workspace>/coverage/<package>-<target>.profdata` and `<workspace>/coverage/<package>-<target>-html/index.html` when `--out-fmt html` is set
+4. Generate `<workspace>/coverage/<package>-<test>-<target>.profdata` and `<workspace>/coverage/<package>-<test>-<target>-html/index.html` when `--out-fmt html` is set
 
 ### How It Works
 
@@ -309,7 +339,7 @@ axtest::dump_coverage()
 
 ### Using the Profraw File
 
-The `.profraw` file is saved to `<workspace>/tmp/axbuild/axtest-coverage/<package>-<target>/coverage.profraw`.
+The `.profraw` file is saved to `<workspace>/coverage/<package>-<test>-<target>.profraw`.
 
 Convert and generate reports with standard LLVM tools:
 

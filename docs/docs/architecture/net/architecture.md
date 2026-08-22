@@ -12,10 +12,12 @@ sidebar_label: "总体架构"
 - **单协议栈核心**：所有 IP socket 共享一个 smoltcp `Interface` 和一个全局 `SocketSet`。
 - **多设备适配层**：`Router` 对 smoltcp 暴露一个 `phy::Device`，内部聚合 loopback 和多个 Ethernet 设备。
 - **控制面与数据面分离**：接口 registry、路由表和 DNS registry 独立于收发路径，可返回只读快照。
-- **专用 poll worker**：socket 热路径只请求 poll，由 `net-poll` worker 独占推进 smoltcp。
+- **串行 poll ownership**：普通 socket 热路径只请求 poll，`net-poll` worker 通常持有 opportunistic 所有权；UDP close 前的同步 egress flush 可申请 required 所有权，但任一时刻仍只有一个推进者。
 - **兼容 POSIX/Linux socket 语义**：支持 bind/listen/connect/accept、poll readiness、`SO_BINDTODEVICE`、TCP orphan teardown、Unix domain socket 和可选 vsock。
 
-## 核心设计
+开篇列表概括了单协议核心、多设备适配、控制面分离和统一 socket 语义四个基本约束。核心设计章节将这些约束落到 `Service`、`Router`、`NetControl` 与 `SocketSet` 的具体关系上。
+
+## 1. 核心设计
 
 `ax-net` 的核心选择是 **Single Interface + Router as Device**：不为每个网卡创建独立 smoltcp `Interface`，而是让所有 IP socket 共享一个 smoltcp `Interface` 和一个全局 `SocketSet`，再用 `Router` 作为虚拟 `Device` 聚合 loopback 与多个 Ethernet 设备。
 
@@ -31,75 +33,17 @@ sidebar_label: "总体架构"
 
 如果改成每设备一个 `Interface`/`SocketSet`，这些语义需要在多个协议栈实例之间重新仲裁，例如 wildcard listen 要在所有接口创建 listener，accept queue 要跨实例聚合，端口冲突也要引入中心协调。当前模型更符合多宿主主机上的普通 socket 语义。
 
-### 总体拓扑
+### 1.1 总体拓扑
 
-```mermaid
-flowchart TB
-    subgraph Api["Public API"]
-        Init["init_network() / init_vsock()"]
-        Query["interfaces() / default_routes() / arp_entries()"]
-        DnsApi["dns_servers() / dns_query()"]
-        Sockets["TcpSocket / UdpSocket / RawSocket / UnixSocket / VsockSocket"]
-        PollApi["request_poll()"]
-    end
+总体拓扑强调 `ax-net` 只有一个 smoltcp 协议核心，而 `Router` 在其下聚合 loopback 和多个 Ethernet 设备。图中的纵向层次同时标出 `NetControl`、`Service` 与设备 Worker 的所有权边界，便于判断新增功能应该进入公共 API、控制面还是数据面。
 
-    subgraph Control["Control plane"]
-        NetControl["NetControl"]
-        IfaceRegistry["Interface registry"]
-        Routes["RouteTable"]
-        DnsRegistry["DNS registry"]
-        Binding["DeviceBinding"]
-    end
+![ax-net 总体架构](images/network-architecture.svg)
 
-    subgraph Core["Single protocol core"]
-        Service["Service"]
-        SmolIface["smoltcp Interface"]
-        SocketSet["SocketSetWrapper"]
-        Listen["ListenTable"]
-        Orphan["TCP orphan reaper"]
-        DhcpClient["DHCP client states"]
-        DhcpServer["DHCP server"]
-    end
+图中最重要的约束是 `Service` 只有一个，而 Router 与设备 Worker 可以扩展到多个接口。组件分层会在这一拓扑基础上进一步说明每层的源码所有者和对外边界。
 
-    subgraph MultiDev["Router as MultiDevice"]
-        Router["Router implements smoltcp::phy::Device"]
-        RxBuffer["Router.rx_buffer"]
-        TxBuffer["Router.tx_buffer"]
-        RxQueue["shared RX queue"]
-        TxQueues["per-device TX queues"]
-    end
+### 1.2 组件分层
 
-    subgraph DeviceLayer["Device layer"]
-        Loopback["LoopbackDevice"]
-        Ethernet["EthernetDevice"]
-        RdNet["RdNetDriver"]
-        Hardware["rd-net / physical NIC"]
-    end
-
-    Api --> Control
-    Sockets --> SocketSet
-    PollApi --> Service
-    Control --> Service
-    Service --> SmolIface
-    Service --> DhcpClient
-    Service --> DhcpServer
-    Service --> Orphan
-    SmolIface --> Router
-    SocketSet --> SmolIface
-    Listen --> SocketSet
-    Router --> RxBuffer
-    Router --> TxBuffer
-    Router --> RxQueue
-    Router --> TxQueues
-    Router --> Routes
-    TxQueues --> Ethernet
-    RxQueue --> Router
-    Loopback --> Router
-    Ethernet --> RdNet
-    RdNet --> Hardware
-```
-
-### 组件分层
+组件分层按职责而非源码目录划分，目的是让维护者从行为快速定位到稳定边界和详细章节。表中的关键源码是每层的主要入口；跨层修改仍需检查 `Service`、`NetControl` 与 `Router` 之间是否引入新的状态复制或锁反向依赖。
 
 | 层级 | 主要职责 | 关键源码 | 详细文档 |
 | --- | --- | --- | --- |
@@ -112,7 +56,11 @@ flowchart TB
 | Configuration | 静态网络配置、DHCP、MTU、缓冲区、feature | `config.rs`, `consts.rs`, `Cargo.toml` | [配置参考](configuration.md) |
 | Integration and tests | OS 集成、启动流程、测试范围 | `ax-runtime`, `starry-kernel`, `ax-api` | [集成](integration.md), [测试](testing.md) |
 
-### TCP/IP 分层映射
+分层表用于定位职责，并不表示调用只能逐层向下：控制面快照会被 ABI 直接查询，设备事件也会跨层唤醒网络任务。下一节按 TCP/IP 语义重新映射同一组对象，用于区分协议职责与工程模块边界。
+
+### 1.3 TCP/IP 分层映射
+
+TCP/IP 分层映射用于区分 smoltcp 已提供的协议能力和 `ax-net` 在外围补充的系统语义。维护 socket 或设备代码时，应先确认变化属于传输、网络还是链路层，避免把 Linux ABI 适配下沉到驱动，或让上层直接依赖 smoltcp 内部类型。
 
 | TCP/IP 层 | ax-net 组件 | 主要职责 |
 | --- | --- | --- |
@@ -123,61 +71,27 @@ flowchart TB
 
 smoltcp 负责 TCP/IP 协议核心；`ax-net` 负责多接口、多设备、设备生命周期、socket 兼容语义和 OS 集成。
 
-## Public API
+## 2. 公共 API
 
 Public API 是上层 OS 模块进入 `ax-net` 的边界，主要定义在 `lib.rs`、`socket.rs` 和 `options.rs`。它不暴露 smoltcp 的内部类型，而是提供面向 ArceOS/StarryOS 的稳定能力：
 
 | API 类别 | 代表接口 | 架构作用 |
 | --- | --- | --- |
-| 初始化 | `init_network()`、`init_vsock()` | 建立 `Service`、`Router`、`NetControl`、设备 worker 和 net-poll worker |
-| 接口查询 | `interfaces()`、`interface_by_name()`、`ipv4_config()`、`default_routes()`、`arp_entries()` | 从控制面或设备层返回只读快照 |
+| 初始化 | `init_network()`、`init_vsock()` | 建立 `Service`、`Router`、`NetControl`、设备 worker 和 net-poll worker；vsock 取传入列表最后一个设备 |
+| 接口查询 | `interfaces()`、`interface_by_name()`、`ipv4_config()`、`default_routes()`、`arp_entries()`、`net_dev_stats()` | 从控制面或设备层返回只读快照 |
+| 运行期地址 | `set_interface_ipv4()`、`remove_interface_ipv4()` | 静态配置或精确删除单个接口 IPv4，并同步 connected route；不配置 gateway |
 | DNS | `dns_servers()`、`dns_query()`、`dns_query_timeout()` | 读取 DNS registry，并通过临时 smoltcp DNS socket 查询 |
 | Socket facade | `TcpSocket`、`UdpSocket`、`RawSocket`、`UnixSocket`、`VsockSocket` | 为 syscall/POSIX 层提供统一 socket backend |
-| Poll 触发 | `request_poll()` | 唤醒专用 net-poll worker，避免应用线程同步驱动协议栈 |
+| Poll 触发 | `request_poll()`、内部 `flush_egress()` | 普通路径唤醒 net-poll worker；UDP close 通过 required ownership 同步排空 |
 | Socket options | `GetSocketOption`、`SetSocketOption`、`Configurable` | 覆盖通用 `SO_*`、`TCP_*`、`IP_*` 选项 |
 
 Public API 的职责是做边界收敛：上层不需要知道某个 socket 是否由 smoltcp、Unix transport 或 vsock transport 实现，也不需要直接操作 `Service`、`Router` 或 `SocketSet`。具体 API 列表见 [API 参考](api.md)。
 
-## 控制面
+## 3. 控制面
 
 控制面负责“网络配置如何被发现、保存、查询和用于决策”。它不直接收发 packet，也不推进 smoltcp poll；数据面只在需要路由、接口地址或 DNS 信息时读取控制面快照。
 
-```mermaid
-flowchart TB
-    subgraph Sources["配置来源"]
-        Static["NetworkConfig / InterfaceConfig"]
-        DhcpAck["DHCP ACK"]
-        SocketBind["bind(addr) / SO_BINDTODEVICE"]
-    end
-
-    subgraph State["NetControl"]
-        Registry["Interface registry"]
-        Routes["SharedRouteTable"]
-        Dns["DNS registry"]
-    end
-
-    subgraph Consumers["消费者"]
-        Query["interfaces() / default_routes() / dns_servers()"]
-        Dispatch["Router::dispatch() route lookup"]
-        Socket["socket bind/connect/listen"]
-        DnsQuery["dns_query() server selection"]
-    end
-
-    Static --> Registry
-    Static --> Routes
-    Static --> Dns
-    DhcpAck --> Commit["commit_interface_update()"]
-    Commit --> Registry
-    Commit --> Routes
-    Commit --> Dns
-    SocketBind --> Binding["DeviceBinding"]
-    Binding --> Socket
-    Registry --> Query
-    Routes --> Query
-    Dns --> Query
-    Routes --> Dispatch
-    Routes --> DnsQuery
-```
+![ax-net 控制面架构](images/control-plane-architecture.svg)
 
 控制面由 `NetControl` 持有：
 
@@ -185,7 +99,9 @@ flowchart TB
 - `SharedRouteTable`：路由规则，按最长前缀、metric、插入顺序排序。
 - `DeviceBinding`：表达 `SO_BINDTODEVICE` 或本地地址绑定推导出的接口约束。
 
-### 初始化注册
+公共 API 列表说明上层只能通过初始化、快照、socket 和轮询入口使用网络栈，不能直接持有内部状态。控制面初始化注册负责把配置和设备转为这些 API 后续读取的权威快照。
+
+### 3.1 初始化注册
 
 `init_network()` 根据 `NetworkConfig` 和发现到的 Ethernet 设备创建接口 registry：
 
@@ -194,7 +110,9 @@ flowchart TB
 - 静态 IPv4、DHCP 开关、metric、DNS server 和默认路由在初始化时写入 `NetControl`。
 - `Router` 使用同一份 `SharedRouteTable`，所以控制面的路由更新会直接影响后续 TX dispatch。
 
-### 运行期更新
+初始化列表建立 loopback、设备 ID、静态/DHCP 角色和共享路由表，完成后所有查询都以此为基础。运行期更新只替换受影响接口的状态，不重新分配其他接口身份或重建整个协议核心。
+
+### 3.2 运行期更新
 
 DHCP client 在 `Service::poll()` 中运行。收到 DHCP ACK 后，`Service` 通过 `commit_interface_update()` 一次性提交：
 
@@ -205,13 +123,13 @@ DHCP client 在 `Service::poll()` 中运行。收到 DHCP ACK 后，`Service` �
 
 这里使用事务式更新，是为了避免外部查询看到“地址已更新但路由/DNS 还没更新”的中间状态。
 
-### 查询路径
+### 3.3 查询路径
 
 `interfaces()`、`interface_by_name()`、`interface_by_id()`、`ipv4_config()`、`default_routes()` 和 `dns_servers()` 都返回快照。调用方拿到的是当时的只读视图，不持有内部锁，也不应该假设快照会随 DHCP 或接口状态变化自动更新。
 
-### 路由选择
+### 3.4 路由选择
 
-路由表按以下优先级排序：
+共享 `RouteTable` 先按目标前缀长度选择最具体规则，再以 metric 和稳定插入顺序决定同级候选。socket 预选路还会应用源地址与 `DeviceBinding`，而 `Router::dispatch()` 使用 smoltcp 已选源地址再次确认实际出口。
 
 1. 最长前缀优先。
 2. 同前缀时低 metric 优先。
@@ -219,9 +137,9 @@ DHCP client 在 `Service::poll()` 中运行。收到 DHCP ACK 后，`Service` �
 
 普通查询使用 `select_route(dst)`，会过滤未 `UP` 的接口。TX dispatch 使用 `select_route_for_source(dst, src)`，同时匹配 smoltcp 已经选出的源地址，避免多宿主主机从错误接口发出带另一接口源地址的包。
 
-### 绑定约束
+### 3.5 绑定约束
 
-`DeviceBinding` 是控制面和 socket 语义的连接点：
+`DeviceBinding` 是控制面接口身份与 socket 语义之间的连接点，可由显式 `SO_BINDTODEVICE` 或具体本地地址推导得到。它只过滤当前 socket 的路由、readiness 和接收候选，不改变全局接口或路由状态。
 
 - `bind(具体本地地址)` 会推导该地址所属接口。
 - `SO_BINDTODEVICE` 会显式限制 socket 只使用某个接口。
@@ -229,16 +147,16 @@ DHCP client 在 `Service::poll()` 中运行。收到 DHCP ACK 后，`Service` �
 
 这些约束会影响 socket readiness 注册、端口/listen 语义和路由可用性过滤。更细的规则见[控制面](control.md)。
 
-## Single protocol core
+## 4. 单协议核心
 
 Single protocol core 是 `ax-net` 的协议状态中心，由 `Service`、smoltcp `Interface`、全局 `SocketSetWrapper`、`ListenTable`、DHCP 状态和 TCP orphan 回收共同组成。
 
-### Socket system
+### 4.1 Socket 系统
 
 IP socket 共享 smoltcp `SocketSet`，但 Linux/POSIX 语义由 `ax-net` 自己补齐：
 
 - `SocketOps` 统一 TCP/UDP/raw/Unix/vsock backend。
-- `GeneralOptions` 维护非阻塞、超时、`SO_REUSEADDR`、`SO_BINDTODEVICE` 等通用选项。
+- `GeneralOptions` 维护非阻塞、超时、`SO_REUSEADDR`/`SO_REUSEPORT`、`IP_MTU_DISCOVER`、`SO_BINDTODEVICE` 等通用选项。
 - `SocketSetWrapper` 增加 UDP bind 冲突仲裁。
 - `TCP_BOUND_PORTS` 和 `ListenTable` 共同维护 TCP bind/listen 端口语义。
 - `ListenTable` 在 RX snoop 阶段预创建 TCP socket，支持 accept queue 和 per-address listen。
@@ -246,29 +164,34 @@ IP socket 共享 smoltcp `SocketSet`，但 Linux/POSIX 语义由 `ax-net` 自己
 
 Unix domain socket 和 vsock 不走 smoltcp IP 层，但通过同一个 public socket facade 暴露给上层。细节见[Socket 系统](sockets.md)。
 
-### 专用 poll worker
+### 4.2 串行轮询所有权
 
-smoltcp 的 `Interface::poll()` 由 `net-poll` worker 独占推进。socket 操作、设备 IRQ/OOB RX 和 DNS 等路径只调用 `request_poll()` 触发唤醒，不在应用线程里同步驱动整个协议栈。
+`PollOwnership` 的原子状态保证 smoltcp 的 `Interface::poll()` 在任一时刻只有一个推进者。常规路径由 `net-poll` worker 申请 `Opportunistic` 所有权；socket 操作和 DNS 等路径调用 `request_poll()` 触发唤醒。唯一有意保留的同步例外是 UDP `Drop`：它调用 `flush_egress()`，等待 `Required` 所有权后排空 socket 待发队列，再移除 socket，保证最后一个 datagram 已进入 Router/设备路径。
 
 ```mermaid
 sequenceDiagram
     participant App as socket caller
     participant Wake as request_poll()
-    participant Worker as net-poll worker
+    participant Worker as net-poll / flush owner
     participant Service as Service::poll()
     participant Smol as smoltcp Interface
 
     App->>Wake: send/recv/connect/accept needs progress
     Wake->>Worker: notify NET_POLL_WAKE
-    Worker->>Service: poll_until_idle()
+    Worker->>Worker: CAS PollOwnership
+    Worker->>Service: poll_until_idle(ownership)
     Service->>Smol: Interface::poll()
     Service->>Service: DHCP/orphan/TX dispatch
     Smol-->>App: readiness waker wakes blocked caller
 ```
 
-这个模型避免应用线程和协议栈驱动线程互相抢协议栈锁，也保证 TCP 重传、keepalive、DHCP 和设备收包不会依赖某个应用线程继续运行。
+这个模型避免多个线程同时推进协议栈，也保证 TCP 重传、keepalive、DHCP 和设备收包不会依赖某个应用线程继续运行。UDP 同步 flush 期间，常规 worker 的 opportunistic 申请会失败并退出该轮，而不是并发 poll。
 
-## Router as MultiDevice
+![调用者、协议核心与设备线程的所有权边界](images/runtime-ownership.svg)
+
+实线表示 packet 或状态访问，虚线表示仅提交唤醒，红色同步路径则是 UDP close 前 required ownership 的例外。所有路径最终仍由同一 `PollOwnership` 串行化，因此多设备 Worker 不会并发进入 smoltcp。
+
+## 5. 多设备路由器
 
 `Router` 是 single protocol core 和真实设备之间的适配层。它位于 smoltcp 的 `phy::Device` 边界上，对上提供一个 IP medium 设备，对下管理多个 `DeviceHandle`。
 
@@ -276,7 +199,7 @@ sequenceDiagram
 | --- | --- |
 | `Router.rx_buffer` | smoltcp 从这里取 RX IP packet |
 | `Router.tx_buffer` | smoltcp 把待发送 IP packet 写到这里 |
-| `RouterQueues::rx` | 所有 Ethernet RX worker 共享的有界 RX 队列 |
+| `RouterQueues::rx` | 所有 Ethernet RX worker 共享的有界 RX 队列；暂满时 worker 保留本地批次并重试 |
 | `DeviceHandle.tx_queue` | 每个真实设备独立的有界 TX 队列 |
 | `RouteTable` | TX dispatch 的出接口和 next-hop 决策依据 |
 | loopback fast path | 回环包直接写入 `rx_buffer`，不经过设备 worker |
@@ -284,9 +207,9 @@ sequenceDiagram
 `Router::poll()` 负责把设备 RX 队列推进到 smoltcp RX buffer；`Router::dispatch()` 负责把 smoltcp TX buffer 中的包按路由分发到 loopback 或真实设备。更细的 worker、队列和 ARP 行为见[多设备实现](devices.md)。
 从驱动 buffer 到用户 buffer、从用户 buffer 到驱动 TX buffer 的完整内存链路见[内存与队列](memory.md)。
 
-## Device layer
+## 6. 设备层
 
-设备层把不同来源的网络设备统一成 `ax-net` 内部 `Device` trait：
+设备层通过内部 `Device` trait 统一 loopback、Ethernet 与 `rd-net` driver 的收发、配置、统计和 readiness 能力。链路层细节由 `EthernetDevice` 处理，Router 只观察 IP packet 与接口身份，因此协议核心不会依赖具体硬件类型。
 
 | 设备类型 | 主要源码 | 作用 |
 | --- | --- | --- |
@@ -297,9 +220,13 @@ sequenceDiagram
 
 这一层是协议栈和硬件驱动框架的能力边界。`ax-net` 不直接依赖 FDT、PCI、MMIO、DMA 或平台 IRQ ABI，而是通过 `EthernetDriver`、`EthernetIrqRegistrar` 和 OOB RX 通知机制接入实际设备。
 
-## 数据面流程
+## 7. 数据面流程
 
-### RX 路径
+数据面流程由设备 RX 汇聚、smoltcp 协议推进、Router TX 分发和控制协议 snoop 共同组成。下面的 RX/TX 流程图保留 packet 的实际移动顺序，而 DHCP/DNS 小节说明控制协议如何在同一串行 `Service::poll()` 中参与状态更新。
+
+### 7.1 RX 路径
+
+RX 路径从 NIC 的二层帧开始，经 `EthernetDevice::recv()` 解封装后进入共享 `RouterQueues::rx`，再由持有 `PollOwnership` 的线程写入 `Router.rx_buffer`。以下流程图突出设备并行接收与协议核心串行消费之间的队列边界，以及 DHCP/TCP SYN snoop 发生的位置。
 
 ```mermaid
 flowchart LR
@@ -314,9 +241,11 @@ flowchart LR
     Sock --> App["recv()/accept()/poll()"]
 ```
 
-RX worker 只负责从真实设备取包并推入共享 RX 队列。协议处理发生在 `Service::poll()` 内：先由 `Router::poll()` 把 RX 队列 drain 到 `rx_buffer`，再由 smoltcp `Interface::poll()` 交付给 TCP/UDP/raw socket。
+RX worker 只负责从真实设备取包并推入共享 RX 队列。每轮最多取 16 包；共享队列暂满时，尚未入队的包留在 worker 的本地批次中，yield 后重试，而不是立即计为丢包。协议处理发生在 `Service::poll()` 内：先由 `Router::poll()` 把 RX 队列 drain 到 `rx_buffer`，再由 smoltcp `Interface::poll()` 交付给 TCP/UDP/raw socket。
 
-### TX 路径
+### 7.2 TX 路径
+
+TX 路径由 socket buffer 中的待发数据触发，smoltcp 生成 IP packet 后先写入 `Router.tx_buffer`，随后 `Router::dispatch()` 按共享路由表选择 loopback 或具体 Ethernet 设备。流程中的 per-device TX queue 隔离协议推进和可能阻塞的驱动发送，因此 socket 热路径不直接持有设备锁。
 
 ```mermaid
 flowchart LR
@@ -334,10 +263,12 @@ flowchart LR
 
 普通 Ethernet 发送会进入设备 TX worker，由 `EthernetDevice` 完成 ARP 和 Ethernet frame 封装。loopback 不走外部设备队列：`Router::dispatch()` 选中 `InterfaceId::LOOPBACK` 时直接把 IP packet 注入 `rx_buffer`，因此本机回环连接可在同一个 poll 周期内继续推进。
 
-### DHCP 和 DNS
+### 7.3 控制协议
 
 DHCP client/server 都位于 `Service::poll()` 调度内，但不依赖 smoltcp 的普通 socket API：
 
 - DHCP client 由 per-interface `DhcpState` 维护 Discover/Request/Bound 状态，收到 ACK 后通过 `commit_interface_update()` 更新地址、路由和 DNS。
 - DHCP server 位于 `dhcp_server.rs`，面向 SoftAP 场景，手工解析/封装 DHCP/UDP/IPv4 包，并通过 `Router::send_on_device()` 发包。
 - DNS 查询使用 smoltcp `dns::Socket` 临时加入全局 `SocketSet`，查询完成后由 guard 自动移除。
+
+这些控制协议共享 Router ingress 身份与网络轮询所有权，但分别维护独立状态和超时。扩展协议能力时应保持控制面提交与普通 socket 数据路径解耦，并为新状态增加确定的生命周期验证。

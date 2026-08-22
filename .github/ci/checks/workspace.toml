@@ -1,15 +1,12 @@
-schema_version = 1
+schema_version = 3
 phase = "test"
 group = "Workspace"
+default_runner = "qcs"
 
 [[check]]
 id = "run-clippy"
 name = "Incremental Clippy"
-runs_on = ["self-hosted", "linux", "qcs"]
-environment = "host"
-self_hosted_owner = "rcore-os"
-fallback_environment = "base"
-fetch_depth = "full"
+fetch_depth = "100"
 download_xtask_bin_artifact = true
 command = '''
 cargo xtask clippy --since "$SINCE_REF"
@@ -18,10 +15,9 @@ cargo xtask clippy --since "$SINCE_REF"
 [[check]]
 id = "test-with-std"
 name = "std tests"
-runs_on = ["self-hosted", "linux", "qcs"]
-environment = "host"
-self_hosted_owner = "rcore-os"
-fallback_environment = "base"
 command = '''
 cargo xtask test
+'''
+pull_request_command = '''
+cargo xtask test --since "$SINCE_REF"
 '''

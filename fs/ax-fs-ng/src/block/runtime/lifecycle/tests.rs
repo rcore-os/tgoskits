@@ -40,7 +40,14 @@ impl DmaOp for TestDmaOp {
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
         let cpu_addr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
-        Some(unsafe { DmaAllocHandle::new(cpu_addr, (cpu_addr.as_ptr() as u64).into(), layout) })
+        Some(unsafe {
+            DmaAllocHandle::new(
+                cpu_addr,
+                cpu_addr,
+                (cpu_addr.as_ptr() as u64).into(),
+                layout,
+            )
+        })
     }
 
     unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
@@ -604,7 +611,14 @@ impl BlockIrqRegistrar for TestIrqRegistrar {
 }
 
 fn test_queue_info() -> QueueInfo {
-    let mut limits = QueueLimits::simple(512, u64::MAX);
+    let mut limits = QueueLimits::simple(
+        512,
+        dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
+            dma_api::DmaCoherency::NonCoherent,
+            dma_api::DmaConstraints::new(u64::MAX),
+        ),
+    );
     limits.max_inflight = 1;
     limits.supports_flush = true;
     QueueInfo {
@@ -615,7 +629,14 @@ fn test_queue_info() -> QueueInfo {
 }
 
 fn batching_queue_info() -> QueueInfo {
-    let mut limits = QueueLimits::simple(512, u64::MAX);
+    let mut limits = QueueLimits::simple(
+        512,
+        dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
+            dma_api::DmaCoherency::NonCoherent,
+            dma_api::DmaConstraints::new(u64::MAX),
+        ),
+    );
     limits.max_blocks_per_request = 1;
     limits.max_inflight = 4;
     limits.max_submit_batch = 4;

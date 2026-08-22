@@ -166,13 +166,23 @@ static void *thread_fork_exec_wait(void *arg)
 
     unlink(ctx->marker_path);
 
+    /*
+     * POSIX permits only async-signal-safe calls in the child of a
+     * multi-threaded fork before exec.  In particular, formatting the command
+     * there can inherit a libc lock held by another thread and turn this
+     * regression test into a host-libc-dependent deadlock.  Build the argv in
+     * the parent so the child performs only execve() or _exit().
+     */
+    char cmd[256];
+    int cmd_len = snprintf(cmd, sizeof(cmd),
+                           "echo THREAD_BUILDER_OK > %s", ctx->marker_path);
+    if (cmd_len < 0 || (size_t)cmd_len >= sizeof(cmd)) return NULL;
+    char *const argv[] = { "/bin/sh", "-c", cmd, NULL };
+
     pid_t pid = fork();
     if (pid < 0) return NULL;
 
     if (pid == 0) {
-        char cmd[256];
-        snprintf(cmd, sizeof(cmd), "echo THREAD_BUILDER_OK > %s", ctx->marker_path);
-        char *argv[] = { "/bin/sh", "-c", cmd, NULL };
         execve("/bin/sh", argv, environ);
         _exit(126);
     }

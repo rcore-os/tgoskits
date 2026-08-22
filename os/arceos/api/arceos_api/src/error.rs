@@ -3,7 +3,7 @@ use ax_fs_ng::VfsError;
 use ax_io::IoError;
 #[cfg(feature = "net")]
 use ax_net::NetError;
-#[cfg(feature = "serial")]
+#[cfg(all(feature = "irq", feature = "multitask"))]
 use ax_runtime::RuntimeError;
 
 /// Errors owned by the public ArceOS API facade.
@@ -18,7 +18,7 @@ pub enum ApiError {
     #[error(transparent)]
     Net(#[from] NetError),
     /// A runtime-owned console operation failed.
-    #[cfg(feature = "serial")]
+    #[cfg(all(feature = "irq", feature = "multitask"))]
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
     /// The scheduler rejected a priority update.
@@ -39,7 +39,7 @@ impl From<ApiError> for IoError {
             ApiError::Vfs(error) => vfs_error_to_io_error(error),
             #[cfg(feature = "net")]
             ApiError::Net(error) => error.into(),
-            #[cfg(feature = "serial")]
+            #[cfg(all(feature = "irq", feature = "multitask"))]
             ApiError::Runtime(error) => runtime_error_to_io_error(error),
             ApiError::PriorityUpdateFailed | ApiError::AffinityUpdateFailed => Self::BadState,
         }
@@ -81,9 +81,10 @@ fn vfs_error_to_io_error(error: VfsError) -> IoError {
     }
 }
 
-#[cfg(feature = "serial")]
+#[cfg(all(feature = "irq", feature = "multitask"))]
 fn runtime_error_to_io_error(error: RuntimeError) -> IoError {
     match error {
+        RuntimeError::ConsoleFailedClosed => IoError::BadState,
         RuntimeError::SerialNotStarted => IoError::BadState,
         RuntimeError::SerialControlBusy => IoError::ResourceBusy,
         RuntimeError::WouldBlock => IoError::WouldBlock,

@@ -245,7 +245,7 @@ mod tests {
             layout: Layout,
         ) -> Option<DmaAllocHandle> {
             let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
-            Some(unsafe { DmaAllocHandle::new(ptr, 0x4000_u64.into(), layout) })
+            Some(unsafe { DmaAllocHandle::new(ptr, ptr, 0x4000_u64.into(), layout) })
         }
 
         unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
@@ -270,9 +270,16 @@ mod tests {
     #[test]
     fn ion_buffer_preserves_size_address_and_last_arc_release() {
         RELEASES.store(0, Ordering::SeqCst);
-        let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA)
-            .coherent_array_zero_with_align::<u8>(123, 8)
-            .unwrap();
+        let dma = DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                DmaConstraints::new(u64::MAX),
+            ),
+            &TEST_DMA,
+        )
+        .coherent_array_zero_with_align::<u8>(123, 8)
+        .unwrap();
         let cpu_ptr = dma.as_ptr();
         let buffer = Arc::new(IonBuffer::new(dma, 123));
 

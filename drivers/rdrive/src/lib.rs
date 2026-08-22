@@ -22,9 +22,6 @@ mod lock;
 mod manager;
 mod osal;
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
-
 pub mod probe;
 pub mod register;
 

@@ -9,6 +9,7 @@ pub(super) const CONTROL_QUEUE_CAPACITY: usize = 32;
 
 pub(super) enum ControlOp {
     Start(Config),
+    AdoptFirmwareConsole,
     Shutdown,
     SetConfig(Config),
     DiscardRx,
@@ -26,39 +27,69 @@ impl ControlCommand {
     }
 }
 
+pub(super) struct DrainCompletion {
+    completion: Arc<CommandCompletion>,
+}
+
+impl DrainCompletion {
+    pub(super) fn complete(self, result: RuntimeResult) {
+        self.completion.complete(result);
+    }
+}
+
+pub(super) enum ControlRequest {
+    Command(ControlCommand),
+    DrainTx(DrainCompletion),
+}
+
 pub(super) struct ControlQueue {
-    commands: SpinLock<VecDeque<ControlCommand>>,
+    requests: SpinLock<VecDeque<ControlRequest>>,
 }
 
 impl ControlQueue {
     pub(super) fn new() -> Self {
         Self {
-            commands: SpinLock::new(VecDeque::with_capacity(CONTROL_QUEUE_CAPACITY)),
+            requests: SpinLock::new(VecDeque::with_capacity(CONTROL_QUEUE_CAPACITY)),
         }
     }
 
     pub(super) fn submit(&self, op: ControlOp, notify: &IrqNotify) -> RuntimeResult {
         let completion = Arc::new(CommandCompletion::new());
         {
-            let mut commands = self.commands.lock_irqsave();
-            if commands.len() == CONTROL_QUEUE_CAPACITY {
+            let mut requests = self.requests.lock_irqsave();
+            if requests.len() == CONTROL_QUEUE_CAPACITY {
                 return Err(RuntimeError::SerialControlBusy);
             }
-            commands.push_back(ControlCommand {
+            requests.push_back(ControlRequest::Command(ControlCommand {
                 op,
                 completion: completion.clone(),
-            });
+            }));
         }
         notify.notify();
         completion.wait()
     }
 
-    pub(super) fn try_pop(&self) -> Option<ControlCommand> {
-        self.commands.lock_irqsave().pop_front()
+    pub(super) fn submit_drain(&self, notify: &IrqNotify) -> RuntimeResult {
+        let completion = Arc::new(CommandCompletion::new());
+        {
+            let mut requests = self.requests.lock_irqsave();
+            if requests.len() == CONTROL_QUEUE_CAPACITY {
+                return Err(RuntimeError::SerialControlBusy);
+            }
+            requests.push_back(ControlRequest::DrainTx(DrainCompletion {
+                completion: completion.clone(),
+            }));
+        }
+        notify.notify();
+        completion.wait()
+    }
+
+    pub(super) fn try_pop(&self) -> Option<ControlRequest> {
+        self.requests.lock_irqsave().pop_front()
     }
 
     pub(super) fn has_pending(&self) -> bool {
-        !self.commands.lock_irqsave().is_empty()
+        !self.requests.lock_irqsave().is_empty()
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "rsext4"
-version = "0.7.8"
+version = "0.8.0"
 edition.workspace = true
 description = "A lightweight ext4 file system."
 authors = ["Dirinkbottle <2909128143@qq.com>"]
@@ -13,16 +13,16 @@ categories = ["filesystem"]
 license = "Apache-2.0"
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 bitflags = "2.10"
 log = "0.4"
 ax-sync = { workspace = true }
 
 [features]
 default = ["USE_MULTILEVEL_CACHE"]
-axtest = ["dep:axtest"]
 host-test = ["ax-sync/host-test"]
 USE_MULTILEVEL_CACHE = [] #启用多级缓存
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+[[test]]
+name = "std"
+path = "tests/std.rs"
+required-features = ["host-test"]

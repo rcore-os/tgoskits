@@ -5,7 +5,9 @@ use std::sync::Arc;
 use ax_std::os::arceos::modules::ax_task::IrqNotify;
 
 use super::LoongArch64Arch;
-use crate::architecture::{GuestBootPlatform, HostTimePlatform, MachinePlatform};
+use crate::architecture::{Architecture, GuestBootPlatform, HostTimePlatform, MachinePlatform};
+
+impl Architecture for LoongArch64Arch {}
 
 impl MachinePlatform for LoongArch64Arch {
     const MACHINE_ARCHITECTURE: crate::machine::MachineArchitecture =
@@ -44,12 +46,4 @@ impl HostTimePlatform for LoongArch64Arch {
             notify.notify_irq();
         });
     }
-}
-
-pub fn host_fdt_bootarg() -> usize {
-    ax_std::os::arceos::modules::ax_hal::dtb::get_bootarg()
-}
-
-pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
-    ax_std::os::arceos::modules::ax_hal::mem::phys_to_virt(paddr)
 }

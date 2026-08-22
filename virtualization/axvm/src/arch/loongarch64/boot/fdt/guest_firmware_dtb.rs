@@ -3,7 +3,7 @@ use std::{format, vec::Vec};
 use fdt_edit::{Fdt, Node, NodeId};
 
 use super::property::{prop_null, prop_string, prop_string_list, prop_u32, prop_u32_array};
-use crate::{AxVmResult, arch::guest_platform::GuestPlatform, ax_err_type};
+use crate::{AxVmResult, arch::loongarch64::boot::GuestPlatform, ax_err_type};
 
 const PHANDLE_CPU0: u32 = 0x8000;
 const PHANDLE_CPUIC: u32 = 0x8001;

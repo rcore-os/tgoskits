@@ -12,7 +12,7 @@ use ax_task::{SchedTracepoint, TaskId, task_by_id};
 
 use crate::task::AsThread;
 
-ktracepoint::define_event_trace!(
+ax_tracepoint::define_event_trace!(
     sched_switch,
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(sched),

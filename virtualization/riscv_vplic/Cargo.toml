@@ -1,6 +1,6 @@
 [package]
 name = "riscv_vplic"
-version = "0.4.23"
+version = "0.5.0"
 edition.workspace = true
 authors = ["Jingyu liu <liujingyu24s@ict.ac.cn>"]
 description = "RISCV Virtual PLIC implementation."
@@ -22,7 +22,7 @@ bitmaps = { version = "3.2", default-features = false }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-ax-sync = { workspace = true, features = ["host-test"] }
+ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
 
 [package.metadata.docs.rs]
 default-target = ["riscv64gc-unknown-none-elf"]

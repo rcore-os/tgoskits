@@ -330,7 +330,7 @@ impl Endpoint {
             let transfer_len = actual_lengths.iter().sum();
             transfer.iso_packet_actual_lengths = actual_lengths;
             if transfer_len > 0 && matches!(transfer.direction, Direction::In) {
-                transfer.complete_for_cpu_all();
+                transfer.complete_for_cpu();
             }
             transfer.transfer_len = transfer_len;
             trace!("ISO transfer data length: {}", transfer.transfer_len);
@@ -349,7 +349,7 @@ impl Endpoint {
         };
 
         if transfer_len > 0 && matches!(transfer.direction, Direction::In) {
-            transfer.complete_for_cpu_all();
+            transfer.complete_for_cpu();
         }
         transfer.transfer_len = transfer_len;
         trace!("Transfer data length: {}", transfer.transfer_len);
@@ -704,15 +704,16 @@ impl EndpointOp for Endpoint {
 
         let mut data_bus_addr = 0;
         if transfer.buffer_len() > 0 {
-            transfer.prepare_for_device_all();
+            transfer.prepare_for_device();
             data_bus_addr = transfer.dma_addr();
             let buffer_end = data_bus_addr + transfer.buffer_len() as u64;
-            if data_bus_addr > self.kernel.dma_mask() || buffer_end > self.kernel.dma_mask() {
+            let dma_mask = self.kernel.info().constraints().addr_mask;
+            if data_bus_addr > dma_mask || buffer_end > dma_mask {
                 return Err(TransferError::Other(anyhow!(
                     "DMA buffer [{:#x}, {:#x}) exceeds controller DMA mask {:#x}",
                     data_bus_addr,
                     buffer_end,
-                    self.kernel.dma_mask()
+                    dma_mask
                 )));
             }
         }
@@ -1111,7 +1112,7 @@ mod tests {
             let dma_addr = (current + align - 1) & !(align - 1);
             // SAFETY: `ptr` and `layout` describe the allocation above. The fake bus
             // address is deterministic and never reaches hardware.
-            Some(unsafe { DmaAllocHandle::new(ptr, dma_addr.into(), layout) })
+            Some(unsafe { DmaAllocHandle::new(ptr, ptr, dma_addr.into(), layout) })
         }
 
         unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
@@ -1150,6 +1151,17 @@ mod tests {
 
     static TEST_KERNEL: TestKernel = TestKernel;
 
+    fn test_kernel() -> Kernel {
+        Kernel::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(u64::MAX),
+            ),
+            &TEST_KERNEL,
+        )
+    }
+
     #[repr(align(64))]
     struct AlignedMmio([u32; 4096]);
 
@@ -1161,7 +1173,7 @@ mod tests {
         let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
         let slot_id = SlotId::from(1);
         let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = test_kernel();
         let command_ring =
             CommandRing::new(DmaDirection::Bidirectional, &kernel, registers).unwrap();
         let endpoint = Endpoint::new(slot_id, Dci::from(2), &kernel, bell, command_ring).unwrap();
@@ -1203,7 +1215,7 @@ mod tests {
         let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
         let slot_id = SlotId::from(1);
         let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = test_kernel();
         let command_ring =
             CommandRing::new(DmaDirection::Bidirectional, &kernel, registers.clone()).unwrap();
         let active = Endpoint::new(
@@ -1240,7 +1252,7 @@ mod tests {
         let registers = Arc::new(RwLock::new(XhciRegisters::new(mmio_base)));
         let slot_id = SlotId::from(1);
         let bell = Arc::new(Mutex::new(SlotBell::new(slot_id, registers.read().clone())));
-        let kernel = Kernel::new(u64::MAX, &TEST_KERNEL);
+        let kernel = test_kernel();
         let command_ring =
             CommandRing::new(DmaDirection::Bidirectional, &kernel, registers.clone()).unwrap();
         let old = Endpoint::new(

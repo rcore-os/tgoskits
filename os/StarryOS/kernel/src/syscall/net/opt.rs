@@ -687,7 +687,7 @@ pub fn sys_setsockopt(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn net_opt_normalization_rules_hold_for_test() -> bool {
     // normalize_ip_tos: strips ECN bits (lower 2 bits masked)
     assert!(normalize_ip_tos(0x00) == 0x00); // No TOS, no ECN

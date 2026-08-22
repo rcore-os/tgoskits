@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.4...rockchip-soc-v0.4.5) - 2026-08-20
+
+### Other
+
+- updated the following local packages: dma-api
+
 ## [0.4.4](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.3...rockchip-soc-v0.4.4) - 2026-08-09
 
 ### Added

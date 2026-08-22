@@ -1,0 +1,19 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "1",
+    "-m",
+    "512M",
+]
+fail_regex = [
+    "(?i)panic",
+    "sleeping or rescheduling is not allowed in atomic context",
+]
+success_regex = ["(?m)^CONSOLE_ATOMIC_OUTPUT_REGRESSION_PASSED\\s*$"]
+timeout = 60
+to_bin = true
+uefi = false

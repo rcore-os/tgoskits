@@ -216,13 +216,16 @@ impl ActiveScope {
 
 fn current_context_identity() -> usize {
     let _guard = PreemptGuard::new();
-    // SAFETY: the guard keeps the current thread header stable while its opaque
-    // identity is acquired. The header itself is pinned for the task lifetime,
-    // so this identity remains valid if the task later migrates during an
-    // initializer.
+    // SAFETY: the guard keeps the architecture-selected current context stable
+    // while its header address is acquired. That header stays pinned for the
+    // context lifetime, so the identity survives later migration.
     let context = unsafe {
-        ax_percpu::with_cpu_pin(|pin| pin.area().runtime_anchor().current_thread_raw())
-            .expect("scope-local access requires an installed CPU area")
+        ax_percpu::with_cpu_pin(|pin| {
+            cpu_local::current_context(pin)
+                .expect("scope-local current context must be valid")
+                .as_ptr() as usize
+        })
+        .expect("scope-local access requires an installed CPU area")
     };
     assert!(
         context > GlobalScopeState::Ready as usize,

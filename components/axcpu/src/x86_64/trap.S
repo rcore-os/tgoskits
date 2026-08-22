@@ -3,8 +3,6 @@
 
 .code64
 .equ NUM_INT, 256
-.equ IA32_FS_BASE, 0xc0000100
-.equ IA32_KERNEL_GS_BASE, 0xc0000102
 
 .altmacro
 .macro DEF_HANDLER, i
@@ -117,30 +115,10 @@ syscall_entry:
 .Lexit_user:
     PUSH_GENERAL_REGS
 
-    # The user register image is complete now, so caller-saved registers may be
-    # used to restore CPU-owned kernel state without corrupting user state.
-    mov     r8, [rsp + {trapframe_size}]
-
-    # After SWAPGS, IA32_KERNEL_GS_BASE contains the user-owned GS base.
-    mov     ecx, IA32_KERNEL_GS_BASE
-    rdmsr
-    shl     rdx, 32
-    or      rax, rdx
-    mov     [rsp + {user_gs_base_offset}], rax
-
-    mov     ecx, IA32_FS_BASE
-    rdmsr
-    shl     rdx, 32
-    or      rax, rdx
-    mov     [rsp + {user_fs_base_offset}], rax
-
-    mov     rax, [rsp + {kernel_fs_base_offset}]
-    mov     rdx, rax
-    shr     rdx, 32
-    mov     ecx, IA32_FS_BASE
-    wrmsr
-
-    # Return to Rust only after the task-owned kernel TLS base is live again.
+    # LinuxCurrent kernels do not own FS and CR4.FSGSBASE is disabled. The
+    # user TLS image therefore remains authoritative across the trap; only GS
+    # is swapped to the CPU area before returning to Rust.
+    mov     r8, [rsp + {kernel_stack_pointer_offset}]
     mov     rsp, r8
     pop     r15
     pop     r14
@@ -159,27 +137,8 @@ enter_user:
     push r13
     push r14
     push r15
-    # Save CPU state and install user-owned TLS inside this assembly-only
-    # window. No Rust executes while IA32_FS_BASE contains a user value.
-    mov     ecx, IA32_FS_BASE
-    rdmsr
-    shl     rdx, 32
-    or      rax, rdx
-    mov     [rdi + {kernel_fs_base_offset}], rax
 
-    mov     rax, [rdi + {user_gs_base_offset}]
-    mov     rdx, rax
-    shr     rdx, 32
-    mov     ecx, IA32_KERNEL_GS_BASE
-    wrmsr
-
-    mov     rax, [rdi + {user_fs_base_offset}]
-    mov     rdx, rax
-    shr     rdx, 32
-    mov     ecx, IA32_FS_BASE
-    wrmsr
-
-    mov [rdi + {trapframe_size}], rsp
+    mov [rdi + {kernel_stack_pointer_offset}], rsp
 
     mov rsp, rdi
     add rdi, {trapframe_size}

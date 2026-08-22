@@ -65,6 +65,30 @@ const SYSTEM_OPCODE: u32 = 0x73;
 #[cfg(feature = "sstc")]
 const CSR_STIMECMP: u16 = 0x14d;
 
+fn initial_guest_sstatus() -> sstatus::Sstatus {
+    let mut status = sstatus::Sstatus::from_bits(0);
+    status.set_sie(false);
+    status.set_spie(false);
+    status.set_spp(sstatus::SPP::Supervisor);
+    // The vCPU target exposes F/D, so HS must permit guest floating-point
+    // instructions. The guest still owns its architectural FS via `vsstatus`.
+    status.set_fs(sstatus::FS::Initial);
+    status
+}
+
+fn initial_guest_hstatus() -> hstatus::Hstatus {
+    let mut status = hstatus::Hstatus::from_bits(0);
+    status.set_spv(true);
+    status.set_vsxl(hstatus::VsxlValues::Vsxl64);
+    // HS accesses performed on behalf of the guest use VS supervisor
+    // privilege until a guest trap updates SPVP.
+    status.set_spvp(true);
+    status.set_vtvm(false);
+    status.set_vtw(false);
+    status.set_vtsr(false);
+    status
+}
+
 #[inline]
 fn instr_is_pseudo(ins: u32) -> bool {
     ins == TINST_PSEUDO_STORE || ins == TINST_PSEUDO_LOAD
@@ -153,28 +177,10 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
     /// Completes architecture-specific setup.
     pub fn setup(&mut self, _config: ()) -> RiscvVcpuResult {
-        // Set sstatus.
-        let mut sstatus = sstatus::read();
-        sstatus.set_sie(false);
-        sstatus.set_spie(false);
-        sstatus.set_spp(sstatus::SPP::Supervisor);
-        self.regs.guest_regs.sstatus = sstatus.bits();
-
-        // Set hstatus.
-        let mut hstatus = hstatus::read();
-        hstatus.set_spv(true);
-        hstatus.set_vsxl(hstatus::VsxlValues::Vsxl64);
-        // Set SPVP bit in order to accessing VS-mode memory from HS-mode.
-        hstatus.set_spvp(true);
-        // Let the guest execute its normal supervisor instructions without
-        // spuriously trapping them back to the hypervisor.
-        hstatus.set_vtvm(false);
-        hstatus.set_vtw(false);
-        hstatus.set_vtsr(false);
-        unsafe {
-            hstatus.write();
-        }
-        self.regs.guest_regs.hstatus = hstatus.bits();
+        // Setup only constructs guest-owned reset state. `_run_guest` owns the
+        // live host/guest CSR swap at the assembly entry/exit boundary.
+        self.regs.guest_regs.sstatus = initial_guest_sstatus().bits();
+        self.regs.guest_regs.hstatus = initial_guest_hstatus().bits();
 
         let mut hie = hie::Hie::from_bits(0);
         hie.set_vssie(true);
@@ -346,26 +352,24 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         self.set_virtual_interrupt_pending(vector, true)
     }
 
-    /// Synchronizes controller-derived VSEIP state for the bound vCPU.
+    /// Sets the controller-derived VSEIP line level for this vCPU.
     ///
     /// The virtual PLIC remains the owner of pending and delivery state. This
-    /// method only reflects its derived line value into the currently bound
-    /// hardware context and the vCPU's saved CSR image.
-    pub fn sync_bound_vseip(&mut self, asserted: bool) -> RiscvVcpuResult {
-        if !self.bound {
-            return Err(RiscvVcpuError::BadState);
-        }
+    /// method always updates the vCPU-owned saved CSR image and reflects the
+    /// line into hardware only while the vCPU is loaded on the current CPU.
+    pub fn set_vseip_level(&mut self, asserted: bool) {
         let mut saved = hvip::Hvip::from_bits(self.regs.virtual_hs_csrs.hvip);
         saved.set_vseip(asserted);
         self.regs.virtual_hs_csrs.hvip = saved.bits();
-        unsafe {
-            if asserted {
-                hvip::set_vseip();
-            } else {
-                hvip::clear_vseip();
+        if self.bound {
+            unsafe {
+                if asserted {
+                    hvip::set_vseip();
+                } else {
+                    hvip::clear_vseip();
+                }
             }
         }
-        Ok(())
     }
 
     /// Sets the guest return value register.
@@ -1241,6 +1245,28 @@ mod tests {
     }
 
     #[test]
+    fn setup_constructs_guest_status_without_accessing_host_csrs() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+
+        vcpu.setup(()).unwrap();
+
+        let sstatus = sstatus::Sstatus::from_bits(vcpu.regs.guest_regs.sstatus);
+        assert!(!sstatus.sie());
+        assert!(!sstatus.spie());
+        assert_eq!(sstatus.spp(), sstatus::SPP::Supervisor);
+        assert_eq!(sstatus.fs(), sstatus::FS::Initial);
+
+        let hstatus = hstatus::Hstatus::from_bits(vcpu.regs.guest_regs.hstatus);
+        let expected_hstatus = (2 << 32) | (1 << 8) | (1 << 7);
+        assert_eq!(hstatus.bits(), expected_hstatus);
+        assert!(hstatus.spv());
+        assert!(hstatus.spvp());
+        assert!(!hstatus.vtvm());
+        assert!(!hstatus.vtw());
+        assert!(!hstatus.vtsr());
+    }
+
+    #[test]
     fn legacy_ipi_completion_updates_only_a0() {
         let mut vcpu = RiscvVcpu::<TestHost>::default();
         let request = RiscvIpiRequest::new(1, 0, RiscvIpiAbi::Legacy);
@@ -1284,5 +1310,16 @@ mod tests {
             assert_eq!(vcpu.get_gpr(GprIndex::A0), expected.error);
             assert_eq!(vcpu.get_gpr(GprIndex::A1), expected.value);
         }
+    }
+
+    #[test]
+    fn controller_vseip_line_updates_saved_state_while_unbound() {
+        let mut vcpu = RiscvVcpu::<TestHost>::default();
+
+        vcpu.set_vseip_level(true);
+        assert!(hvip::Hvip::from_bits(vcpu.regs.virtual_hs_csrs.hvip).vseip());
+
+        vcpu.set_vseip_level(false);
+        assert!(!hvip::Hvip::from_bits(vcpu.regs.virtual_hs_csrs.hvip).vseip());
     }
 }

@@ -4,7 +4,7 @@ use core::ptr::NonNull;
 
 use heapless::{String, Vec};
 use rdif_serial::{
-    Config, ConfigError, RxSample, SerialEventSet, SplitUart, UartInfo, UartParts, UartPort,
+    Config, ConfigError, RxSample, SerialEventSet, SerialParts, SplitUart, UartInfo, UartPort,
 };
 
 use super::{
@@ -592,6 +592,10 @@ impl UartPort for RockchipFiqSerial {
         self.serial.tx_idle()
     }
 
+    fn mask(&mut self, sources: SerialEventSet) {
+        UartPort::mask(&mut self.serial, sources);
+    }
+
     fn mask_all(&mut self) {
         UartPort::mask_all(&mut self.serial);
     }
@@ -602,8 +606,9 @@ impl UartPort for RockchipFiqSerial {
 }
 
 impl SplitUart for RockchipFiqSerial {
-    type Port = Self;
+    type Control = Self;
     type Irq = Ns16550Irq<RockchipFiqPort>;
+    type EmergencyTx = super::Ns16550EmergencyTx<RockchipFiqPort>;
 
     fn runtime_info(&self) -> UartInfo {
         UartInfo {
@@ -613,12 +618,15 @@ impl SplitUart for RockchipFiqSerial {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq> {
+    fn split(self) -> SerialParts<Self::Control, Self::Irq, Self::EmergencyTx> {
         let irq = Ns16550Irq {
             base: self.serial.base,
             saved_lsr: LineStatusFlags::empty(),
         };
-        UartParts::new(self, irq)
+        let emergency_tx = super::Ns16550EmergencyTx {
+            base: self.serial.base,
+        };
+        SerialParts::new(self, irq, emergency_tx)
     }
 }
 

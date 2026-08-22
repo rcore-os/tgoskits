@@ -1,7 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
-#[cfg(all(axtest, feature = "axtest"))]
+#[cfg(test)]
 extern crate alloc;
 
 use core::{
@@ -12,10 +12,6 @@ use core::{
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicU8, Ordering},
 };
-
-#[cfg(all(axtest, feature = "axtest"))]
-/// Coverage tests for lazy initialization primitives.
-pub mod axtest;
 
 /// Not initialized yet.
 const UNINIT: u8 = 0;
@@ -117,6 +113,64 @@ impl<T> LazyInit<T> {
             // SAFETY: call_once either initialized the value in this call or
             // observed another completed initialization.
             unsafe { self.force_get() }
+        }
+    }
+
+    /// Gets a reference to the value, initializing it with `f` if needed.
+    ///
+    /// Unlike storing a `Result<T, E>` in this cell, an initialization error
+    /// leaves the cell uninitialized so a later caller can retry. Concurrent
+    /// callers wait for the current attempt and retry with their own
+    /// initializer if that attempt fails.
+    pub fn get_or_try_init<F, E>(&self, f: F) -> Result<&T, E>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        if self.is_inited() {
+            // SAFETY: the acquire load above observed the published value.
+            return Ok(unsafe { self.force_get() });
+        }
+
+        let mut initializer = Some(f);
+        loop {
+            match self.inited.compare_exchange_weak(
+                UNINIT,
+                INITIALIZING,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    let mut reset = InitializationReset::new(&self.inited);
+                    let initializer = initializer
+                        .take()
+                        .expect("initializer is consumed only by the winning caller");
+                    let value = initializer()?;
+                    // SAFETY: this caller exclusively owns the INITIALIZING
+                    // state and publishes the initialized value below.
+                    unsafe { (*self.data.get()).as_mut_ptr().write(value) };
+                    self.inited.store(INITED, Ordering::Release);
+                    reset.disarm();
+                    // SAFETY: this caller initialized and published the value.
+                    return Ok(unsafe { self.force_get() });
+                }
+                Err(INITIALIZING) => {
+                    while self.inited.load(Ordering::Acquire) == INITIALIZING {
+                        spin_loop();
+                    }
+                    if self.inited.load(Ordering::Acquire) == UNINIT {
+                        continue;
+                    }
+                    // SAFETY: the acquire load observed INITED.
+                    return Ok(unsafe { self.force_get() });
+                }
+                Err(INITED) => {
+                    // SAFETY: compare_exchange observed INITED with acquire
+                    // ordering.
+                    return Ok(unsafe { self.force_get() });
+                }
+                Err(UNINIT) => continue,
+                _ => unreachable!(),
+            }
         }
     }
 
@@ -281,6 +335,14 @@ impl<T> OnceLock<T> {
         self.0.get_or_init(initializer)
     }
 
+    /// Returns the stored value, retrying initialization after errors.
+    pub fn get_or_try_init<F, E>(&self, initializer: F) -> Result<&T, E>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        self.0.get_or_try_init(initializer)
+    }
+
     /// Returns the stored value, or `None` before initialization completes.
     pub fn get(&self) -> Option<&T> {
         self.0.get()
@@ -427,6 +489,19 @@ mod tests {
         static VALUE: LazyInit<u32> = LazyInit::new();
         assert_eq!(*VALUE.get_or_init(|| 123), 123);
         assert_eq!(*VALUE.get_or_init(|| 456), 123);
+    }
+
+    #[test]
+    fn fallible_initialization_does_not_publish_an_error() {
+        let value = OnceLock::new();
+
+        assert_eq!(
+            value.get_or_try_init(|| Err::<u32, _>("transient")),
+            Err("transient")
+        );
+        assert!(!value.is_initialized());
+        assert_eq!(value.get_or_try_init(|| Ok::<_, &str>(123)), Ok(&123));
+        assert_eq!(value.get_or_try_init(|| Ok::<_, &str>(456)), Ok(&123));
     }
 
     #[test]

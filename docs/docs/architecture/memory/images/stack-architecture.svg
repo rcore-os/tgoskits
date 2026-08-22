@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="590" viewBox="0 0 1100 590" role="img" aria-labelledby="title desc">
+  <title id="title">内核与用户栈来源架构</title><desc id="desc">展示最早栈、每 CPU 启动栈、内核任务栈和 Starry 用户栈的不同来源。</desc>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0L0 6L9 3Z" fill="#475569"/></marker><style>.h{font:700 24px sans-serif;fill:#0f172a}.t{font:600 18px sans-serif;fill:#0f172a}.s{font:14px sans-serif;fill:#334155}.src{fill:#fff7ed;stroke:#f97316;stroke-width:2}.stack{fill:#eff6ff;stroke:#3b82f6;stroke-width:2}.user{fill:#f5f3ff;stroke:#8b5cf6;stroke-width:2}.l{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#a)}</style></defs>
+  <text x="550" y="36" text-anchor="middle" class="h">栈资源来源与生命周期</text>
+  <rect x="60" y="80" width="280" height="80" rx="14" class="src"/><text x="200" y="112" text-anchor="middle" class="t">内核镜像 BSS</text><text x="200" y="138" text-anchor="middle" class="s">CPU0 最早期固定栈</text>
+  <rect x="410" y="80" width="280" height="80" rx="14" class="src"/><text x="550" y="112" text-anchor="middle" class="t">someboot early bump</text><text x="550" y="138" text-anchor="middle" class="s">全部 CPU boot stack</text>
+  <rect x="760" y="80" width="280" height="80" rx="14" class="src"/><text x="900" y="112" text-anchor="middle" class="t">ax-alloc Buddy / heap</text><text x="900" y="138" text-anchor="middle" class="s">运行时可释放内存</text>
+  <rect x="60" y="245" width="280" height="100" rx="16" class="stack"/><text x="200" y="279" text-anchor="middle" class="t">最早期栈</text><text x="200" y="306" text-anchor="middle" class="s">进入 someboot 前后短期使用</text><text x="200" y="329" text-anchor="middle" class="s">不由 allocator 回收</text>
+  <rect x="410" y="245" width="280" height="100" rx="16" class="stack"/><text x="550" y="279" text-anchor="middle" class="t">每 CPU 启动栈</text><text x="550" y="306" text-anchor="middle" class="s">与 metadata / linker data 同区</text><text x="550" y="329" text-anchor="middle" class="s">系统生命周期保留</text>
+  <rect x="760" y="220" width="280" height="75" rx="14" class="stack"/><text x="900" y="249" text-anchor="middle" class="t">普通内核任务栈</text><text x="900" y="274" text-anchor="middle" class="s">GlobalAlloc 或连续页 owner</text>
+  <rect x="760" y="320" width="280" height="75" rx="14" class="stack"/><text x="900" y="349" text-anchor="middle" class="t">带 guard 的内核栈</text><text x="900" y="374" text-anchor="middle" class="s">连续页 + 解除首个页映射</text>
+  <rect x="410" y="455" width="280" height="90" rx="16" class="user"/><text x="550" y="487" text-anchor="middle" class="t">Starry 用户栈 VMA</text><text x="550" y="514" text-anchor="middle" class="s">尾部页预填，其余缺页分配</text><text x="550" y="535" text-anchor="middle" class="s">RSS 只统计驻留页</text>
+  <path d="M200 160V245M550 160V245M900 160V220M900 160V320M820 395L620 455" class="l"/>
+</svg>

@@ -51,12 +51,20 @@ area self pointer、CPU index 和 current header。`T: Sync` 对象可在 pin �
 对象可变访问还必须持有 `ExclusiveCpu<'pin>`，证明迁移、IRQ/重入和冲突远端访问均
 已排除。远端访问显式接受 `PerCpuArea`，同步责任留给调用者。
 
+底层执行上下文所有者和离线 CPU 启动代码可在尚不能构造 `CpuPin` 时，通过隐藏的
+`with_current_cpu_area`、`with_current_cpu_area_mut` 回调访问当前 CPU 对象。这条路径
+直接选择架构拥有的 CPU 区域，不经当前执行上下文发布状态。调用方必须在整个回调
+期间禁止迁移和上下文切换；可变访问还必须排除 IRQ/重入及冲突远端访问。当前还没
+有运行时路径调用这些回调；它们为后续所有者保护和离线 CPU 启动集成预留。
+
 | 操作 | 必要保护 |
 | --- | --- |
 | 原子标量 | 禁止迁移；允许 IRQ |
 | `T: Sync` 共享对象 | 禁止迁移；对象自行同步 |
 | 本地可变对象 | 禁止迁移、IRQ/重入和冲突远端访问 |
-| 调度切换 | IRQ 关闭、禁止迁移、消费事务 token |
+| pin 前的 CPU 所有者对象 | 禁止迁移和上下文切换；可变访问还须排除 IRQ/重入及远端冲突 |
+| 上下文切换 | IRQ 关闭、禁止迁移、消费事务 token |
+| 抢占安全点 | IRQ 关闭；运行时取得调度 baton 后再释放 pending 状态 |
 | vCPU 运行 | 禁止迁移；退出汇编先恢复 host 寄存器 |
 | CPU 启动初始化 | CPU offline 且独占尚未构造的区域 |
 

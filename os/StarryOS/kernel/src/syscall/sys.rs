@@ -645,7 +645,7 @@ pub fn sys_getgroups(size: i32, list: *mut u32) -> StarryResult<isize> {
 /// Linux limits supplementary groups to 65536 (`NGROUPS_MAX`).
 const NGROUPS_MAX: usize = 65536;
 
-pub fn sys_setgroups(size: usize, list: *const u32) -> StarryResult<isize> {
+pub fn sys_setgroups(size: i32, list: *const u32) -> StarryResult<isize> {
     debug!("sys_setgroups <= size: {size}");
     let thread = current();
     let thread = thread.as_thread();
@@ -658,9 +658,10 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> StarryResult<isize> {
     if thread.setgroups_deny() {
         return Err(StarryError::OperationNotPermitted);
     }
-    if size > NGROUPS_MAX {
+    if (size as u32) > NGROUPS_MAX as u32 {
         return Err(StarryError::InvalidInput);
     }
+    let size = size as usize;
 
     let groups = if size > 0 {
         let mut buf: Vec<MaybeUninit<u32>> = vec![MaybeUninit::uninit(); size];
@@ -696,14 +697,15 @@ pub fn sys_uname(name: *mut new_utsname) -> StarryResult<isize> {
     Ok(0)
 }
 
-pub fn sys_sethostname(name: *const c_char, len: usize) -> StarryResult<isize> {
-    if len > 64 {
-        return Err(StarryError::InvalidInput);
-    }
+pub fn sys_sethostname(name: *const c_char, len: i32) -> StarryResult<isize> {
     let curr = current();
     if curr.as_thread().cred().euid != 0 {
         return Err(StarryError::OperationNotPermitted);
     }
+    if !(0..=64).contains(&len) {
+        return Err(StarryError::InvalidInput);
+    }
+    let len = len as usize;
     let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
     vm_read_slice(name.cast::<u8>(), &mut buf)?;
     let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
@@ -716,14 +718,15 @@ pub fn sys_sethostname(name: *const c_char, len: usize) -> StarryResult<isize> {
     Ok(0)
 }
 
-pub fn sys_setdomainname(name: *const c_char, len: usize) -> StarryResult<isize> {
-    if len > 64 {
-        return Err(StarryError::InvalidInput);
-    }
+pub fn sys_setdomainname(name: *const c_char, len: i32) -> StarryResult<isize> {
     let curr = current();
     if curr.as_thread().cred().euid != 0 {
         return Err(StarryError::OperationNotPermitted);
     }
+    if !(0..=64).contains(&len) {
+        return Err(StarryError::InvalidInput);
+    }
+    let len = len as usize;
     let mut buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); len];
     vm_read_slice(name.cast::<u8>(), &mut buf)?;
     let bytes: Vec<u8> = unsafe { buf.into_iter().map(|v| v.assume_init()).collect() };
@@ -1068,7 +1071,7 @@ pub fn sys_riscv_hwprobe(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
     // uid_valid: NOCHG (u32::MAX) is invalid, everything else is valid.
     uid_valid(0)
@@ -1089,7 +1092,7 @@ pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn sys_constants_and_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM};
 

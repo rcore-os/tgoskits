@@ -5,10 +5,7 @@ sidebar_label: "Panic 递归保护"
 
 # Panic 递归保护
 
-本文档说明在 TGOSKits / ArceOS / StarryOS 中引入 panic/oops 递归保护的目的、
-基本原理、当前解决的问题，以及后续可继续演进的方向。
-
-它关注的是 **异常路径健壮性**，而不是某个具体 bug 本身。
+TGOSKits、ArceOS 和 StarryOS 的 panic/oops 递归保护用于避免异常处理再次进入带锁输出、backtrace 或 panic 主路径，降低次生故障覆盖原始故障信息的风险。
 
 ## 目的与意义
 
@@ -189,9 +186,9 @@ panic/oops 递归保护的目的就是尽量减少第二类问题，让系统至
 - panic/oops 态下的打印路径先进入保守模式
 - backtrace 这类复杂诊断动作增加最小门控
 
-## 后续可能的改进
+## 当前限制
 
-当前实现已经建立了第一层保护，但它仍然是一个偏“最小闭环”的版本，后面还可以继续沿着同一思路演进。
+当前实现只覆盖 panic 主路径、异常态打印和 backtrace 门控，以下能力尚未统一。
 
 ### 1. 更细的 backtrace 策略
 
@@ -224,20 +221,10 @@ panic/oops 递归保护的目的就是尽量减少第二类问题，让系统至
 - lockdep fatal
 - trap/exception 中的致命收尾路径
 
-### 4. 更贴近真实场景的回归验证
+### 4. 系统级回归
 
 这类机制最终不能只靠 unit test 或单一回归 app 证明，还需要持续验证更贴近真实系统的问题链：
 
 - Starry lockdep 最小复现
 - ArceOS C test 中的 `httpclient` 等 system-level 场景
 - 更底层平台/console 路径的异常收尾表现
-
-## 文档边界
-
-本文档记录的是设计目标和机制分层，不固定以下实现细节：
-
-- 具体使用 `AtomicBool`、`AtomicUsize` 还是其他原子类型
-- 哪些路径应统一纳入 `oops_in_progress`
-- backtrace/console 降级策略的最终粒度
-
-这些细节应根据后续实现、平台行为和回归验证结果继续收敛。

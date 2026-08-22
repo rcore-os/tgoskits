@@ -34,7 +34,7 @@ use crate::{
 pub const FIOCLEX: u32 = 0x5451;
 pub const FIONCLEX: u32 = 0x5450;
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn ctl_ioctl_constants_hold_for_test() -> bool {
     // Verify ioctl command constants
     assert!(FIOCLEX == 0x5451);
@@ -151,7 +151,7 @@ pub fn sys_chroot(path: *const c_char) -> StarryResult<isize> {
     Ok(0)
 }
 
-ktracepoint::define_event_trace!(
+ax_tracepoint::define_event_trace!(
     sys_mkdirat,
     TP_kops(crate::tracepoint::KernelTraceAux),
     TP_system(syscalls),
@@ -274,7 +274,13 @@ pub fn sys_mknodat(
     Ok(res)
 }
 
-// Directory buffer for getdents64 syscall
+// Directory buffer for getdents64 syscall.
+//
+// Linux serializes directory entries directly into user memory. StarryOS needs
+// a temporary representation while iterating the VFS, so keep that allocation
+// bounded independently of the userspace `count` argument.
+const GETDENTS_BUFFER_SIZE: usize = 4096;
+
 struct DirBuffer {
     buf: Vec<u8>,
     offset: usize,
@@ -323,12 +329,13 @@ impl DirBuffer {
     }
 }
 
-pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> StarryResult<isize> {
+pub fn sys_getdents64(fd: i32, buf: *mut u8, len: u32) -> StarryResult<isize> {
     debug!("sys_getdents64 <= fd: {fd}, buf: {buf:?}, len: {len}");
 
-    let mut buffer = DirBuffer::new(len);
-
+    // Resolve the descriptor before allocating any user-controlled amount of
+    // kernel memory. A bad fd must return EBADF rather than consume `len` bytes.
     let dir = Directory::from_fd(fd)?;
+    let mut buffer = DirBuffer::new((len as usize).min(GETDENTS_BUFFER_SIZE));
     let mut dir_offset = dir.offset.lock();
 
     let mut has_remaining = false;
@@ -348,7 +355,9 @@ pub fn sys_getdents64(fd: i32, buf: *mut u8, len: usize) -> StarryResult<isize> 
         return Err(StarryError::InvalidInput);
     }
 
-    vm_write_slice(buf, &buffer.buf)?;
+    // The rest of the bounded scratch buffer is not part of this getdents
+    // result and must not overwrite bytes beyond the returned record stream.
+    vm_write_slice(buf, &buffer.buf[..buffer.offset])?;
 
     Ok(buffer.offset as _)
 }
@@ -449,9 +458,7 @@ pub fn sys_unlink(path: *const c_char) -> StarryResult<isize> {
     sys_unlinkat(AT_FDCWD, path, 0)
 }
 
-pub fn sys_getcwd(buf: *mut u8, size: isize) -> StarryResult<isize> {
-    let size: usize = size.try_into().map_err(|_| StarryError::BadAddress)?;
-
+pub fn sys_getcwd(buf: *mut u8, size: usize) -> StarryResult<isize> {
     let cwd = ax_fs_ng::vfs::current_fs_context()
         .lock()
         .current_dir()

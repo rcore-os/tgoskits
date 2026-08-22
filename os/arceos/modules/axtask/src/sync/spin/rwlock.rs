@@ -476,7 +476,7 @@ impl<G: GuardState, T: ?Sized> Drop for BaseSpinRwLockWriteGuard<'_, G, T> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         sync::{
             Arc,
@@ -484,6 +484,8 @@ mod tests {
         },
         thread,
     };
+
+    use super::{MAX_READER, READER, WRITER};
 
     type RwLock<T> = crate::sync::SpinRwLock<T>;
 
@@ -683,154 +685,113 @@ mod tests {
         let _write_b = lock_b.write();
         let _write_a = lock_a.write();
     }
-}
+    #[test]
+    fn rwlock_constants_hold() {
+        // RwLock state constants
+        const {
+            assert!(READER == 1);
+            assert!(WRITER == 1 << (usize::BITS - 1));
+            assert!(MAX_READER == 1 << (usize::BITS - 2));
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub fn rwlock_constants_hold_for_test() -> bool {
-    // RwLock state constants
-    assert!(READER == 1);
-    assert!(WRITER == 1 << (usize::BITS - 1));
-    assert!(MAX_READER == 1 << (usize::BITS - 2));
-
-    // WRITER should be much larger than READER
-    assert!(WRITER > READER);
-    // MAX_READER should be half of WRITER
-    assert!(MAX_READER == WRITER / 2);
-
-    true
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub fn rwlock_state_logic_hold_for_test() -> bool {
-    // Test the state encoding logic
-
-    // No readers or writers: state = 0
-    let idle: usize = 0;
-    assert!(idle & WRITER == 0); // No writer bit set
-    assert!(idle / READER == 0); // Zero readers
-
-    // One reader: state = READER
-    let one_reader = READER;
-    assert!(one_reader & WRITER == 0); // No writer bit set
-    assert!(one_reader / READER == 1); // One reader
-
-    // Two readers: state = 2 * READER
-    let two_readers = 2 * READER;
-    assert!(two_readers & WRITER == 0); // No writer bit set
-    assert!(two_readers / READER == 2); // Two readers
-
-    // Writer present: state has WRITER bit set
-    let writer_only = WRITER;
-    assert!(writer_only & WRITER != 0); // Writer bit set
-    assert!(writer_only % READER == 0); // No reader count in lower bits
-
-    // Writer + one reader (theoretical)
-    let writer_one_reader = WRITER + READER;
-    assert!(writer_one_reader & WRITER != 0); // Writer bit set
-
-    // Max readers without overflow
-    let max_readers = MAX_READER * READER;
-    assert!(max_readers < WRITER); // Should not overlap with writer bit
-    assert!(max_readers / READER == MAX_READER);
-
-    true
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn rwlock_constants_and_phantom_hold_for_test() -> bool {
-    // Test that constants are consistent
-    assert_eq!(READER, 1);
-    assert!(WRITER > MAX_READER);
-    assert!(MAX_READER > 0);
-
-    // Test PhantomData usage in BaseSpinRwLock
-    use core::marker::PhantomData;
-    let _phantom: PhantomData<()> = PhantomData;
-
-    true
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn rwlock_state_transitions_hold_for_test() -> bool {
-    // Test state transitions for read-write lock
-
-    // Initial state (unlocked)
-    let unlocked: usize = 0;
-    assert!(unlocked == 0);
-
-    // One reader acquired
-    let one_reader = READER;
-    assert!(one_reader == 1);
-
-    // Writer acquired
-    let writer_only = WRITER;
-    assert!(writer_only != 0);
-
-    true
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn rwlock_guard_types_hold_for_test() -> bool {
-    // Test that guard types exist
-    // BaseSpinRwLockReadGuard and BaseSpinRwLockWriteGuard
-
-    true
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn rwlock_lockdep_and_feature_config_hold_for_test() -> bool {
-    // Test LockdepAcquire behavior based on feature flag
-    #[cfg(feature = "lockdep")]
-    {
-        // With lockdep feature, LockdepAcquire is crate::sync::spin::lockdep::Lockdep
-        let _acquire = LockdepAcquire;
+            // WRITER should be much larger than READER
+            assert!(WRITER > READER);
+            // MAX_READER should be half of WRITER
+            assert!(MAX_READER == WRITER / 2);
+        }
     }
 
-    #[cfg(not(feature = "lockdep"))]
-    {
-        // Without lockdep feature, LockdepAcquire is a simple unit struct
-        let acquire = LockdepAcquire;
-        acquire.finish(true);
-        acquire.finish(false);
+    #[test]
+    fn rwlock_state_logic_hold() {
+        // Test the state encoding logic
+
+        // No readers or writers: state = 0
+        let idle: usize = 0;
+        assert!(idle & WRITER == 0); // No writer bit set
+        assert!(idle / READER == 0); // Zero readers
+
+        // One reader: state = READER
+        let one_reader = READER;
+        assert!(one_reader & WRITER == 0); // No writer bit set
+        assert!(one_reader / READER == 1); // One reader
+
+        // Two readers: state = 2 * READER
+        let two_readers = 2 * READER;
+        assert!(two_readers & WRITER == 0); // No writer bit set
+        assert!(two_readers / READER == 2); // Two readers
+
+        // Writer present: state has WRITER bit set
+        let writer_only = WRITER;
+        assert!(writer_only & WRITER != 0); // Writer bit set
+        assert!(writer_only & !WRITER == 0); // No reader count in lower bits
+
+        // Writer + one reader (theoretical)
+        let writer_one_reader = WRITER + READER;
+        assert!(writer_one_reader & WRITER != 0); // Writer bit set
+
+        // Max readers without overflow
+        let max_readers = MAX_READER * READER;
+        assert!(max_readers < WRITER); // Should not overlap with writer bit
+        assert!(max_readers / READER == MAX_READER);
     }
 
-    // Test that WRITER bit position is correct
-    assert_eq!(WRITER, 1usize << (usize::BITS - 1));
+    #[test]
+    fn rwlock_constants_and_phantom_hold() {
+        // Test that constants are consistent
+        assert_eq!(READER, 1);
+        const {
+            assert!(WRITER > MAX_READER);
+            assert!(MAX_READER > 0);
+        }
 
-    // Test MAX_READER calculation
-    assert_eq!(MAX_READER, 1usize << (usize::BITS - 2));
+        // Test PhantomData usage in BaseSpinRwLock
+        use core::marker::PhantomData;
+        let _phantom: PhantomData<()> = PhantomData;
+    }
 
-    true
-}
+    #[test]
+    fn rwlock_state_transitions_hold() {
+        // Test state transitions for read-write lock
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn rwlock_reader_writer_state_combinations_hold_for_test() -> bool {
-    // Test various reader/writer state combinations
+        // Initial state (unlocked)
+        let unlocked: usize = 0;
+        assert!(unlocked == 0);
 
-    // No readers, no writer
-    let empty: usize = 0;
-    assert!(empty & WRITER == 0);
-    assert!(empty & !WRITER == 0); // No readers either
+        // One reader acquired
+        let one_reader = READER;
+        assert!(one_reader == 1);
 
-    // One reader
-    let one_r = READER;
-    assert!(one_r & WRITER == 0); // No writer bit
-    assert!(one_r == 1);
+        // Writer acquired
+        let writer_only = WRITER;
+        assert!(writer_only != 0);
+    }
 
-    // Two readers
-    let two_r = 2 * READER;
-    assert!(two_r & WRITER == 0);
-    assert!(two_r == 2);
+    #[test]
+    fn rwlock_reader_writer_state_combinations_hold() {
+        // Test various reader/writer state combinations
 
-    // Writer only (no readers)
-    let w_only = WRITER;
-    assert!(w_only & WRITER != 0); // Writer bit set
-    assert!(w_only & !WRITER == 0); // No reader bits
+        // No readers, no writer
+        let empty: usize = 0;
+        assert!(empty & WRITER == 0);
+        assert!(empty & !WRITER == 0); // No readers either
 
-    // Max readers (without writer)
-    let max_r = MAX_READER;
-    assert!(max_r & WRITER == 0);
-    assert!(max_r > 0);
+        // One reader
+        let one_r = READER;
+        assert!(one_r & WRITER == 0); // No writer bit
+        assert!(one_r == 1);
 
-    true
+        // Two readers
+        let two_r = 2 * READER;
+        assert!(two_r & WRITER == 0);
+        assert!(two_r == 2);
+
+        // Writer only (no readers)
+        let w_only = WRITER;
+        assert!(w_only & WRITER != 0); // Writer bit set
+        assert!(w_only & !WRITER == 0); // No reader bits
+
+        // Max readers (without writer)
+        let max_r = MAX_READER;
+        assert!(max_r & WRITER == 0);
+        assert!(max_r > 0);
+    }
 }

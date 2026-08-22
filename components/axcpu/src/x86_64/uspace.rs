@@ -8,7 +8,7 @@ use core::{
 use ax_memory_addr::VirtAddr;
 use x86_64::{
     registers::{
-        control::Cr2,
+        control::{Cr2, Cr4, Cr4Flags},
         model_specific::{Efer, EferFlags, LStar, SFMask, Star},
         rflags::RFlags,
     },
@@ -26,12 +26,17 @@ pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
 #[repr(C, align(16))]
 pub struct UserContext {
     tf: TrapFrame,
-    /// FS Segment Base
+    /// User-owned FS segment base.
+    ///
+    /// `CR4.FSGSBASE` stays disabled, so userspace cannot modify this value
+    /// without an `arch_prctl`-style kernel operation updating this image.
     pub fs_base: u64,
-    /// GS Segment Base
+    /// User-owned GS segment base.
     pub gs_base: u64,
-    /// Kernel FS base saved and restored exclusively by `enter_user`.
-    kernel_fs_base: u64,
+    /// Kernel continuation stack saved while this context executes in ring 3.
+    kernel_stack_pointer: u64,
+    /// Explicitly initialized tail required by the 16-byte ABI alignment.
+    _reserved: u64,
 }
 
 const _: () = {
@@ -45,8 +50,11 @@ const _: () = {
     assert!(offset_of!(UserContext, fs_base) == size_of::<TrapFrame>());
     assert!(offset_of!(UserContext, gs_base) == size_of::<TrapFrame>() + size_of::<u64>());
     assert!(
-        offset_of!(UserContext, kernel_fs_base) == size_of::<TrapFrame>() + 2 * size_of::<u64>()
+        offset_of!(UserContext, kernel_stack_pointer)
+            == size_of::<TrapFrame>() + 2 * size_of::<u64>()
     );
+    assert!(offset_of!(UserContext, _reserved) == size_of::<TrapFrame>() + 3 * size_of::<u64>());
+    assert!(size_of::<UserContext>() == size_of::<TrapFrame>() + 4 * size_of::<u64>());
 };
 
 impl UserContext {
@@ -66,7 +74,8 @@ impl UserContext {
             },
             fs_base: 0,
             gs_base: 0,
-            kernel_fs_base: 0,
+            kernel_stack_pointer: 0,
+            _reserved: 0,
         }
     }
 
@@ -119,6 +128,7 @@ impl UserContext {
         assert_eq!(self.ss, gdt::UDATA.0 as _);
 
         crate::asm::disable_irqs();
+        super::local_state::install_current_user_tls(self.fs_base as _, self.gs_base as _);
 
         unsafe { enter_user(self) };
 
@@ -208,6 +218,11 @@ pub(super) fn init_syscall() {
         fn syscall_entry();
     }
 
+    assert!(
+        !Cr4::read().contains(Cr4Flags::FSGSBASE),
+        "LinuxCurrent user TLS requires trapping all FS/GS base changes"
+    );
+    super::local_state::initialize_cpu_user_tls();
     LStar::write(x86_64::VirtAddr::new_truncate(
         syscall_entry as *const () as usize as _,
     ));

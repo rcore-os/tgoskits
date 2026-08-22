@@ -16,7 +16,6 @@ mod clippy;
 pub mod context;
 pub mod image;
 mod ktest;
-mod lock_lint;
 mod rootfs;
 pub mod starry;
 mod support;
@@ -57,7 +56,7 @@ enum Commands {
         command: agent_review_bench::Command,
     },
     /// Run std tests for the configured workspace package whitelist
-    Test,
+    Test(test::std::StdTestArgs),
     /// Run statically linked workspace crate tests through qemu-user
     CrossTest(test::cross::CrossTestArgs),
     /// Run kernel axtest targets through QEMU or a remote board
@@ -66,8 +65,6 @@ enum Commands {
     Clippy(ClippyArgs),
     /// Run high-confidence atomic ordering checks for suspicious `Relaxed` synchronization
     SyncLint(SyncLintArgs),
-    /// Verify workspace lock dependencies and OS synchronization boundaries
-    LockLint,
     /// Remote board management via ostool-server
     Board {
         #[command(subcommand)]
@@ -124,12 +121,11 @@ where
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::AgentReviewBench { command } => agent_review_bench::execute(command).await,
-        Commands::Test => test::std::run_std_test_command(),
+        Commands::Test(args) => test::std::run_std_test_command(&args),
         Commands::CrossTest(args) => test::cross::run(args),
         Commands::Ktest(args) => ktest::run(args).await,
         Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
-        Commands::LockLint => lock_lint::run_lock_lint_command(),
         Commands::Board { command } => board::execute(command).await,
         Commands::Backtrace { command } => backtrace::execute(command),
         Commands::Image(args) => image::run(args).await,
@@ -164,6 +160,17 @@ mod tests {
                 command.join(" ")
             )
         });
+    }
+
+    #[test]
+    fn std_test_command_accepts_incremental_base() {
+        let cli = TestCli::try_parse_from(["xtask", "test", "--since", "origin/dev"])
+            .expect("test --since must parse");
+
+        match cli.command {
+            Commands::Test(args) => assert_eq!(args.since.as_deref(), Some("origin/dev")),
+            _ => panic!("expected std test command"),
+        }
     }
 
     #[test]
@@ -279,10 +286,22 @@ mod tests {
             "qemu",
             "-p",
             "starry-kernel",
+            "-p",
+            "axvisor",
             "--test",
             "axtest_kernel",
             "--arch",
             "x86_64",
+            "--features",
+            "alloc,irq",
+            "--no-default-features",
+            "--profile",
+            "dev",
+            "--target-dir",
+            "ktest-target",
+            "--locked",
+            "--offline",
+            "--no-fail-fast",
             "--qemu-config",
             "qemu.toml",
             "--coverage",
@@ -294,9 +313,16 @@ mod tests {
         match cli.command {
             Commands::Ktest(args) => match args.command {
                 ktest::Command::Qemu(args) => {
-                    assert_eq!(args.package, "starry-kernel");
-                    assert_eq!(args.test.as_deref(), Some("axtest_kernel"));
+                    assert_eq!(args.packages, ["starry-kernel", "axvisor"]);
+                    assert_eq!(args.tests, ["axtest_kernel"]);
                     assert_eq!(args.arch.as_deref(), Some("x86_64"));
+                    assert_eq!(args.features, ["alloc", "irq"]);
+                    assert!(args.no_default_features);
+                    assert_eq!(args.profile.as_deref(), Some("dev"));
+                    assert_eq!(args.target_dir, Some(PathBuf::from("ktest-target")));
+                    assert!(args.locked);
+                    assert!(args.offline);
+                    assert!(args.no_fail_fast);
                     assert_eq!(args.qemu_config, Some(PathBuf::from("qemu.toml")));
                     assert!(args.coverage);
                     assert_eq!(args.out_fmt, Some(ktest::KtestCoverageOutFmt::Html));
@@ -305,6 +331,30 @@ mod tests {
             },
             _ => panic!("expected ktest command"),
         }
+    }
+
+    #[test]
+    fn command_parses_bare_ktest_qemu_as_workspace_selection() {
+        let cli = TestCli::try_parse_from(["xtask", "ktest", "qemu"]).unwrap();
+
+        match cli.command {
+            Commands::Ktest(args) => match args.command {
+                ktest::Command::Qemu(args) => {
+                    assert!(!args.workspace);
+                    assert!(args.packages.is_empty());
+                    assert!(args.excludes.is_empty());
+                    assert!(args.tests.is_empty());
+                }
+                _ => panic!("expected ktest qemu command"),
+            },
+            _ => panic!("expected ktest command"),
+        }
+    }
+
+    #[test]
+    fn command_rejects_libtest_testname_and_trailing_arguments() {
+        assert!(TestCli::try_parse_from(["xtask", "ktest", "qemu", "case_name"]).is_err());
+        assert!(TestCli::try_parse_from(["xtask", "ktest", "qemu", "--", "--nocapture"]).is_err());
     }
 
     #[test]

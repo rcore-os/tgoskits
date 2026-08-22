@@ -57,7 +57,7 @@ fn with_observed_irq_entry<T>(
     let preempt_guard = ax_sync::PreemptGuard::new();
     let result = dispatch();
 
-    drop(preempt_guard); // rescheduling may occur when preemption is re-enabled.
+    preempt_guard.finish_irq_return(); // rescheduling may occur before the IRQ-return boundary.
     after_preempt_release();
     drop(irq_guard);
     result
@@ -72,14 +72,14 @@ pub fn init_common_irq_handler() {
     let _ = set_irq_handler(handle_irq);
 }
 
-#[cfg(axtest)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) struct IrqEntryStateObservation {
     pub(crate) dispatch_irqs_enabled: bool,
     pub(crate) after_preempt_release_irqs_enabled: bool,
     pub(crate) return_irqs_enabled: bool,
 }
 
-#[cfg(axtest)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) fn observe_irq_entry_state_for_test() -> IrqEntryStateObservation {
     let mut after_preempt_release_irqs_enabled = false;
     let dispatch_irqs_enabled = with_observed_irq_entry(

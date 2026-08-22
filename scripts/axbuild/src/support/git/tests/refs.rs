@@ -234,6 +234,13 @@ fn unresolved_short_sha_does_not_use_push_before_sha_fallback() {
 #[test]
 fn zero_since_root_manifest_change_uses_inferred_base() {
     let (root, metadata, workspace_packages) = test_workspace();
+    for package in ["alpha", "beta", "gamma"] {
+        std::fs::write(
+            root.path().join("crates").join(package).join("Cargo.toml"),
+            "",
+        )
+        .unwrap();
+    }
     run_git(root.path(), &["init"]);
     run_git(root.path(), &["config", "user.email", "test.com"]);
     run_git(root.path(), &["config", "user.name", "Test User"]);
@@ -279,6 +286,55 @@ fn zero_since_root_manifest_change_uses_inferred_base() {
         IncrementalPackageSelection::Packages {
             changed: vec!["alpha".into()],
             affected: vec!["alpha".into(), "beta".into(), "gamma".into()],
+        }
+    );
+}
+
+#[test]
+fn workspace_dependency_version_change_uses_real_git_diff() {
+    let (root, metadata, workspace_packages) = test_workspace();
+    std::fs::write(
+        root.path().join("crates/alpha/Cargo.toml"),
+        "[dependencies]\nshared = \"1\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("crates/beta/Cargo.toml"),
+        "[dependencies]\nshared.workspace = true\n",
+    )
+    .unwrap();
+    std::fs::write(root.path().join("crates/gamma/Cargo.toml"), "").unwrap();
+
+    run_git(root.path(), &["init"]);
+    run_git(root.path(), &["config", "user.email", "test@example.com"]);
+    run_git(root.path(), &["config", "user.name", "Test User"]);
+    std::fs::write(
+        root.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\", \
+         \"crates/gamma\"]\n\n[workspace.dependencies]\nshared = \"1\"\n",
+    )
+    .unwrap();
+    run_git(root.path(), &["add", "."]);
+    run_git(root.path(), &["commit", "-m", "base"]);
+    let base = git_stdout(root.path(), &["rev-parse", "HEAD"]);
+
+    run_git(root.path(), &["checkout", "-b", "feature"]);
+    std::fs::write(
+        root.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\", \
+         \"crates/gamma\"]\n\n[workspace.dependencies]\nshared = \"2\"\n",
+    )
+    .unwrap();
+    run_git(root.path(), &["commit", "-am", "update shared dependency"]);
+
+    let selected =
+        select_incremental_packages(root.path(), &metadata, &workspace_packages, &base).unwrap();
+
+    assert_eq!(
+        selected,
+        IncrementalPackageSelection::Packages {
+            changed: vec!["beta".into()],
+            affected: vec!["beta".into(), "gamma".into()],
         }
     );
 }
