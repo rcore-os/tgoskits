@@ -265,33 +265,41 @@ impl Device for RiscvPlicDevice {
         self.runtime.vplic.resources()
     }
 
-    fn access(
+    fn read(&self, access: &DeviceAccess, _context: &mut dyn DeviceContext) -> DeviceResult<u64> {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
+        }
+        self.runtime
+            .vplic
+            .read_register(
+                GuestPhysAddr::from_usize(access.address() as usize),
+                access.width(),
+            )
+            .map(|value| value as u64)
+    }
+
+    fn write(
         &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Mmio {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
+        access: &DeviceAccess,
+        value: u64,
+        _context: &mut dyn DeviceContext,
+    ) -> DeviceResult {
+        if access.bus() != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange {
+                addr: access.address(),
+            });
         }
-        let addr = GuestPhysAddr::from_usize(access.addr as usize);
-        if access.is_read {
-            self.runtime
-                .vplic
-                .read_register(addr, access.width)
-                .map(|value| BusResponse::Read {
-                    value: value as u64,
-                })
-        } else {
-            let completion = self.runtime.vplic.write_register_with_completion(
-                addr,
-                access.width,
-                access.data as usize,
-            )?;
-            if let Some(completion) = completion {
-                self.runtime.physical.complete_source(completion.source());
-            }
-            Ok(BusResponse::Write)
+        let completion = self.runtime.vplic.write_register_with_completion(
+            GuestPhysAddr::from_usize(access.address() as usize),
+            access.width(),
+            value as usize,
+        )?;
+        if let Some(completion) = completion {
+            self.runtime.physical.complete_source(completion.source());
         }
+        Ok(())
     }
 }
 

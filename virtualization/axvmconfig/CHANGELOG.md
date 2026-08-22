@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.8.4...axvmconfig-v0.8.5) - 2026-08-20
+
+### Added
+
+- *(axvisor)* Implement inter-VM communication (IVC) demo and protocol enhancements ([#1834](https://github.com/rcore-os/tgoskits/pull/1834))
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.8.3...axvmconfig-v0.8.4) - 2026-08-09
 
 ### Added

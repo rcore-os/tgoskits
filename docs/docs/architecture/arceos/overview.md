@@ -8,8 +8,6 @@ slug: /architecture/arceos
 
 ArceOS 是 TGOSKits 中的组件化 Unikernel，通过 Rust crate 与 Cargo feature 做编译期装配。它在仓库中同时扮演三种角色：独立运行时、示例应用平台，以及 StarryOS 和 Axvisor 的共享能力提供者。
 
-本文聚焦 ArceOS 的分层边界、Feature 装配机制、模块协作与启动流程。若仅需要运行示例，请先阅读 [ArceOS 快速上手](/docs/quickstart/arceos)。
-
 ## 系统定位
 
 ArceOS 在仓库中同时扮演三种角色：独立运行的 Unikernel、示例应用的平台，以及 StarryOS 和 Axvisor 的共享能力提供者。这种多重定位决定了它的模块化程度和接口设计——既要自身可用，又要便于上游系统复用。
@@ -50,10 +48,7 @@ flowchart LR
     optionalModules --> upperSystems
 ```
 
-理解此图可从两个方向入手：
-
-- **自下而上**：应用最终经由 `user lib -> API -> modules -> HAL/platform` 链路获取能力。
-- **自右向左**：StarryOS 和 Axvisor 复用的是底层模块能力，修改 `ax-hal`、`ax-task`、`ax-driver` 等模块可能同时影响多个系统。
+应用最终经由 `user lib -> API -> modules -> HAL/platform` 链路获取能力。StarryOS 和 Axvisor 直接复用底层模块，因此 `ax-hal`、`ax-task`、`ax-driver` 等模块的改动可能同时影响多个系统。
 
 ## 分层职责
 

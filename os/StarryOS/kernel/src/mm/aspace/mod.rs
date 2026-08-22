@@ -21,14 +21,25 @@ use crate::{
     sync::{LockdepMutexExt, Mutex},
 };
 
+fn complete_page_fault_with(
+    handled: bool,
+    vaddr: VirtAddr,
+    update_mmu_cache: impl FnOnce(VirtAddr),
+) -> bool {
+    if handled {
+        update_mmu_cache(vaddr);
+    }
+    handled
+}
+
 mod accounting;
 mod backend;
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::accounting::accounting_edge_cases_and_snapshot_rules_hold_for_test;
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::accounting::accounting_rss_kind_debug_and_default_hold_for_test;
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) use self::accounting::rss_kind_and_accounting_rules_hold_for_test;
 pub use self::{
     accounting::{CloneMapAccounting, MemoryAccounting, RssAccountingGuard},
@@ -607,7 +618,7 @@ impl AddrSpace {
                     Some(&self.rss),
                     &mut self.pt,
                 );
-                return match populate_result {
+                let handled = match populate_result {
                     Ok((n, callback)) => {
                         if let Some(cb) = callback {
                             cb(self);
@@ -624,6 +635,11 @@ impl AddrSpace {
                         false
                     }
                 };
+                return complete_page_fault_with(
+                    handled,
+                    vaddr,
+                    ax_runtime::hal::cache::update_mmu_cache,
+                );
             }
         }
         false
@@ -731,6 +747,23 @@ impl AddrSpace {
         }
         result
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn page_fault_completion_updates_only_success_for_test() -> bool {
+    use core::cell::Cell;
+
+    let calls = Cell::new(0);
+    let observed = Cell::new(VirtAddr::from(0));
+    let success = complete_page_fault_with(true, VirtAddr::from(0x4567), |vaddr| {
+        calls.set(calls.get() + 1);
+        observed.set(vaddr);
+    });
+    let rejected = complete_page_fault_with(false, VirtAddr::from(0x89ab), |_| {
+        calls.set(calls.get() + 1);
+    });
+
+    success && !rejected && calls.get() == 1 && observed.get() == VirtAddr::from(0x4567)
 }
 
 /// Increment how many [`crate::task::ProcessData`] slots refer to `aspace`.

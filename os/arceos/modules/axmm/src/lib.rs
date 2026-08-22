@@ -76,7 +76,7 @@ pub fn new_kernel_aspace() -> MmResult<AddrSpace> {
         // inserted into this address space because their low VA bits can alias
         // real page-table mappings such as vmap.
         if aspace.contains_range(vaddr, size) {
-            aspace.map_linear(vaddr, start, size, reg_flag_to_map_flag(r.flags))?;
+            aspace.map_boot_linear(vaddr, start, size, reg_flag_to_map_flag(r.flags))?;
         }
     }
     aspace

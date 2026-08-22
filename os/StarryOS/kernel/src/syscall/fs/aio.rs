@@ -1500,7 +1500,7 @@ pub fn sys_io_cancel(
     Ok(0)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn aio_iocb_validation_rules_hold_for_test() -> bool {
     // validate_iocb_common: rejects non-zero reserved2 and invalid flags.
     let valid_iocb = Iocb {

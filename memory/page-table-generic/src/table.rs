@@ -350,6 +350,20 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
             .as_usize()
             .checked_add(size)
             .ok_or_else(|| PagingError::address_overflow("protect_region"))?;
+        if size == 0 {
+            return Ok(());
+        }
+
+        // Linux splits only block mappings crossed by a protection boundary.
+        // Interior blocks remain large mappings and can be updated as a unit.
+        self.root
+            .split_leaf_for_boundary(start_vaddr, start_vaddr, Frame::<T, A>::PT_LEVEL)?;
+        self.root.split_leaf_for_boundary(
+            VirtAddr::from_usize(end - 1),
+            VirtAddr::from_usize(end),
+            Frame::<T, A>::PT_LEVEL,
+        )?;
+
         let mut vaddr = start_vaddr;
         while vaddr.as_usize() < end {
             match self.protect_page(vaddr, config) {

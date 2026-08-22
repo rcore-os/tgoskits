@@ -10,6 +10,7 @@ use page_table_generic::{
 
 const PAGE_SIZE_16K: usize = 0x4000;
 const BLOCK_SIZE_32M: usize = PAGE_SIZE_16K << 11;
+const BLOCK_SIZE_2M: usize = OpaqueMeta::PAGE_SIZE << OpaqueMeta::LEVEL_BITS[0];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct OpaqueConfig {
@@ -141,6 +142,51 @@ fn maps_and_protects_with_an_opaque_pte_config() {
         .protect_page(vaddr, OpaqueConfig { domain: 0x7f })
         .unwrap();
     assert_eq!(page_table.query(vaddr).unwrap().1.domain, 0x7f);
+}
+
+#[test]
+fn partial_protect_splits_a_huge_leaf_without_changing_neighbors() {
+    let mut page_table = PageTable::<OpaqueMeta, Fram4k>::new(Fram4k).unwrap();
+    let vaddr = VirtAddr::from_usize(BLOCK_SIZE_2M);
+    let paddr = PhysAddr::from_usize(BLOCK_SIZE_2M * 2);
+    let original = OpaqueConfig { domain: 0x2a };
+    let protected = OpaqueConfig { domain: 0x7f };
+
+    page_table
+        .map_region(
+            vaddr,
+            |current| paddr + (current - vaddr),
+            BLOCK_SIZE_2M,
+            original,
+            true,
+        )
+        .unwrap();
+    assert_eq!(page_table.query(vaddr).unwrap().2, BLOCK_SIZE_2M);
+
+    page_table
+        .protect_region(
+            vaddr + OpaqueMeta::PAGE_SIZE,
+            OpaqueMeta::PAGE_SIZE,
+            protected,
+        )
+        .unwrap();
+
+    assert_eq!(
+        page_table.query(vaddr + OpaqueMeta::PAGE_SIZE).unwrap(),
+        (
+            paddr + OpaqueMeta::PAGE_SIZE,
+            protected,
+            OpaqueMeta::PAGE_SIZE,
+        )
+    );
+    assert_eq!(page_table.query(vaddr).unwrap().1, original);
+    assert_eq!(
+        page_table
+            .query(vaddr + OpaqueMeta::PAGE_SIZE * 2)
+            .unwrap()
+            .1,
+        original
+    );
 }
 
 #[test]

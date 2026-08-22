@@ -28,7 +28,7 @@ pub use paging::Entry;
 pub(crate) use relocate::apply as relocate;
 
 use crate::{
-    ArchTrait,
+    ArchTrait, SystimerArch,
     arch::{addrspace::PAGE_OFFSET, trap::trap_addr},
     consts::VM_LOAD_ADDRESS,
     mem::{__kimage_va_to_pa, PageTableInfo},
@@ -62,33 +62,6 @@ impl ArchTrait for Arch {
         #[cfg(uspace)]
         elx::set_user_table(PageTableInfo { asid: 0, addr: 0 });
         elx::flush_tlb(None);
-    }
-
-    fn systimer_enable() {
-        elx::systick_enable();
-    }
-
-    fn systimer_irq_disable() {
-        // debug!("Disable systick irq");
-        elx::systick_irq_disable();
-    }
-
-    fn systimer_irq_enable() {
-        // debug!("Enable systick irq");
-        elx::systick_irq_enable();
-    }
-
-    fn systimer_irq_is_enabled() -> bool {
-        elx::systick_irq_is_enabled()
-    }
-
-    fn systimer_set_interval(ticks: usize) {
-        elx::systick_set_interval(ticks);
-    }
-
-    fn systimer_ack() {
-        // ARM generic timer doesn't need explicit ACK
-        // The interrupt is cleared when a new timer value is set
     }
 
     fn systimer_freq() -> usize {
@@ -154,14 +127,6 @@ impl ArchTrait for Arch {
 
     fn user_aspace_needs_kernel_mappings() -> bool {
         false
-    }
-
-    fn irq_is_enabled(_irq: crate::irq::IrqId) -> bool {
-        unimplemented!()
-    }
-
-    fn irq_set_enable(_irq: crate::irq::IrqId, _enable: bool) {
-        unimplemented!()
     }
 
     fn virt_to_phys(vaddr: *const u8) -> usize {
@@ -232,12 +197,12 @@ impl ArchTrait for Arch {
         aarch64_cpu_ext::cache::dcache_range(op.into(), addr, size);
     }
 
-    fn dma_coherent_before_make_uncached(addr: usize, size: usize) {
+    fn dma_coherent_before_map_uncached(addr: usize, size: usize) {
         Self::dcache_range(crate::DCacheOp::CleanInvalidate, addr, size);
         aarch64_dsb_sy();
     }
 
-    fn dma_coherent_before_restore_cached(_addr: usize, _size: usize) {
+    fn dma_coherent_before_unmap_uncached(_addr: usize, _size: usize) {
         aarch64_dsb_sy();
     }
 
@@ -258,6 +223,39 @@ impl ArchTrait for Arch {
             let _ = system_table;
             false
         }
+    }
+}
+
+impl SystimerArch for Arch {
+    fn systimer_irq_id() -> crate::irq::IrqId {
+        // Arm architectural timer INTIDs (GIC PPI range): 30 = EL1 physical,
+        // 27 = EL1 virtual, 26 = EL2 hypervisor physical.
+        let intid = match timer::aarch64_timer_mode() {
+            ArchTimerMode::El1Phys => 30,
+            ArchTimerMode::El1Virt => 27,
+            ArchTimerMode::El2HypPhys => 26,
+        };
+        crate::irq::IrqId::new(intid)
+    }
+
+    fn systimer_enable() {
+        elx::systick_enable();
+    }
+
+    fn systimer_irq_disable() {
+        elx::systick_irq_disable();
+    }
+
+    fn systimer_irq_enable() {
+        elx::systick_irq_enable();
+    }
+
+    fn systimer_irq_is_enabled() -> bool {
+        elx::systick_irq_is_enabled()
+    }
+
+    fn systimer_set_interval(ticks: usize) {
+        elx::systick_set_interval(ticks);
     }
 }
 

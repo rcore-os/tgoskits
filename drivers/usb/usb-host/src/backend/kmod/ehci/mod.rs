@@ -7,7 +7,7 @@ use core::{
 };
 
 use ax_sync::SpinLock as Mutex;
-use dma_api::{CoherentArray, CoherentBox};
+use dma_api::{CoherentArray, CoherentBox, DmaCoherency};
 use futures::{
     FutureExt,
     future::{BoxFuture, poll_fn},
@@ -758,7 +758,14 @@ unsafe impl Sync for Ehci {}
 impl Ehci {
     pub fn new(params: EhciNewParams) -> Result<Self> {
         let regs = EhciRegisters::new(params.mmio);
-        let kernel = Kernel::new(EHCI_DMA_MASK, params.kernel);
+        let kernel = Kernel::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(EHCI_DMA_MASK),
+            ),
+            params.kernel,
+        );
         let schedule = AsyncSchedule::new(&kernel, regs)?;
         let wakeups = TransferWakeups::new();
         let root_hub = EhciRootHub::new(regs, kernel.clone());
@@ -1622,7 +1629,7 @@ impl EhciEndpoint {
             return Err(TransferError::Other(anyhow!("EHCI transfer missing state")));
         };
         if actual_length > 0 && matches!(transfer.direction, Direction::In) {
-            transfer.complete_for_cpu_all();
+            transfer.complete_for_cpu();
         }
         Ok(TransferCompletion {
             request_id: id,
@@ -1647,7 +1654,7 @@ impl crate::backend::ty::ep::EndpointOp for EhciEndpoint {
 
         let transfer = Transfer::from_request(&self.kernel, request.clone())?;
         if transfer.buffer_len() > 0 && matches!(transfer.direction, Direction::Out) {
-            transfer.prepare_for_device_all();
+            transfer.prepare_for_device();
         }
         let mut submitted = self
             .build_qtds(&transfer, &request)
@@ -1842,7 +1849,7 @@ mod tests {
             let dma_addr = (current + align - 1) & !(align - 1);
             // SAFETY: `ptr`, `layout`, and the deterministic fake DMA address
             // describe the test allocation and never reach hardware.
-            Some(unsafe { DmaAllocHandle::new(ptr, dma_addr.into(), layout) })
+            Some(unsafe { DmaAllocHandle::new(ptr, ptr, dma_addr.into(), layout) })
         }
 
         unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
@@ -1873,6 +1880,17 @@ mod tests {
     }
 
     static TEST_KERNEL: TestKernel = TestKernel;
+
+    fn test_kernel() -> Kernel {
+        Kernel::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(EHCI_DMA_MASK),
+            ),
+            &TEST_KERNEL,
+        )
+    }
 
     #[test]
     fn port_status_reports_high_speed_only_when_enabled_and_line_status_is_k_state() {
@@ -1969,7 +1987,7 @@ mod tests {
 
     #[test]
     fn async_schedule_accepts_multiple_endpoint_queue_heads() {
-        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let kernel = test_kernel();
         let mut mmio = Box::new([0u32; 64]);
         let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
         let schedule = AsyncSchedule::new(&kernel, regs).unwrap();
@@ -1998,7 +2016,7 @@ mod tests {
 
     #[test]
     fn periodic_qh_waits_nine_microframes_before_reclaim() {
-        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let kernel = test_kernel();
         let mut mmio = Box::new([0u32; 64]);
         let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
         let schedule = AsyncSchedule::new(&kernel, regs).unwrap();
@@ -2022,7 +2040,7 @@ mod tests {
 
     #[test]
     fn async_qh_waits_for_two_iaa_cycles_before_reclaim() {
-        let kernel = Kernel::new(EHCI_DMA_MASK, &TEST_KERNEL);
+        let kernel = test_kernel();
         let mut mmio = Box::new([0u32; 64]);
         let regs = EhciRegisters::new(NonNull::new(mmio.as_mut_ptr().cast()).unwrap());
         let schedule = AsyncSchedule::new(&kernel, regs).unwrap();

@@ -338,6 +338,14 @@ mod tests {
         OwnedRequestBatch, QueueLimits, RequestFlags, RequestOp, SubmissionSink,
     };
 
+    fn test_dma() -> dma_api::DmaDeviceInfo {
+        dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
+            dma_api::DmaCoherency::NonCoherent,
+            dma_api::DmaConstraints::new(u64::MAX),
+        )
+    }
+
     #[derive(Default)]
     struct AcceptedIds(Vec<RequestId>);
 
@@ -358,7 +366,7 @@ mod tests {
             QueueInfo {
                 id: self.id(),
                 device: DeviceInfo::new(8, 512),
-                limits: QueueLimits::simple(512, u64::MAX),
+                limits: QueueLimits::simple(512, test_dma()),
             }
         }
 
@@ -449,6 +457,6 @@ mod tests {
         assert_eq!(result.disposition(), BatchSubmitDisposition::QueueFull);
         assert!(accepted.0.is_empty());
         assert_eq!(batch.len(), 2);
-        assert_eq!(QueueLimits::simple(512, u64::MAX).max_submit_batch, 1);
+        assert_eq!(QueueLimits::simple(512, test_dma()).max_submit_batch, 1);
     }
 }

@@ -1,4 +1,4 @@
-use core::fmt;
+use core::{fmt, ptr::NonNull};
 
 use ax_hal::{
     mem::phys_to_virt,
@@ -11,6 +11,16 @@ use ax_memory_addr::{
 use ax_memory_set::{MemoryArea, MemorySet};
 
 use crate::{MmError, MmResult, backend::Backend};
+
+#[derive(Clone, Copy)]
+enum LinearMappingKind {
+    Mutable,
+    Boot,
+}
+
+fn dma_alias_search_start(address_space_base: VirtAddr) -> VirtAddr {
+    VirtAddr::from_usize(address_space_base.as_usize().max(PAGE_SIZE_4K))
+}
 
 /// The virtual memory address space.
 pub struct AddrSpace {
@@ -117,6 +127,7 @@ impl AddrSpace {
         size: usize,
         flags: MappingFlags,
         unmap_overlap: bool,
+        kind: LinearMappingKind,
     ) -> MmResult {
         if !self.contains_range(start_vaddr, size) {
             return Err(MmError::InvalidInput(
@@ -128,9 +139,30 @@ impl AddrSpace {
         }
 
         let offset = start_vaddr.as_usize() - start_paddr.as_usize();
-        let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset));
+        let backend = match kind {
+            LinearMappingKind::Mutable => Backend::new_linear(offset),
+            LinearMappingKind::Boot => Backend::new_boot_linear(offset),
+        };
+        let area = MemoryArea::new(start_vaddr, size, flags, backend);
         self.areas.map(area, &mut self.pt, unmap_overlap)?;
         Ok(())
+    }
+
+    pub(crate) fn map_boot_linear(
+        &mut self,
+        start_vaddr: VirtAddr,
+        start_paddr: PhysAddr,
+        size: usize,
+        flags: MappingFlags,
+    ) -> MmResult {
+        self.map_linear_with_overlap(
+            start_vaddr,
+            start_paddr,
+            size,
+            flags,
+            false,
+            LinearMappingKind::Boot,
+        )
     }
 
     pub fn map_linear(
@@ -140,7 +172,56 @@ impl AddrSpace {
         size: usize,
         flags: MappingFlags,
     ) -> MmResult {
-        self.map_linear_with_overlap(start_vaddr, start_paddr, size, flags, false)
+        self.map_linear_with_overlap(
+            start_vaddr,
+            start_paddr,
+            size,
+            flags,
+            false,
+            LinearMappingKind::Mutable,
+        )
+    }
+
+    /// Maps contiguous pages through a new uncached kernel alias.
+    ///
+    /// The existing direct mapping is deliberately left unchanged. The caller
+    /// owns the returned alias and must remove it with
+    /// [`Self::unmap_dma_coherent_alias`] before releasing the physical pages.
+    pub fn map_dma_coherent_alias(
+        &mut self,
+        start_paddr: PhysAddr,
+        size: usize,
+    ) -> MmResult<NonNull<u8>> {
+        if !start_paddr.is_aligned_4k() || !is_aligned_4k(size) || size == 0 {
+            return Err(MmError::InvalidInput(
+                "DMA coherent range is not page aligned",
+            ));
+        }
+        start_paddr
+            .as_usize()
+            .checked_add(size)
+            .ok_or(MmError::InvalidInput("DMA coherent range overflows"))?;
+
+        let range = VirtAddrRange::new(self.base(), self.end());
+        let search_start = dma_alias_search_start(self.base());
+        let alias = self
+            .find_free_area(search_start, size, range)
+            .ok_or(MmError::NoMemory)?;
+        let alias_ptr = NonNull::new(alias.as_mut_ptr()).ok_or(MmError::BadState(
+            "DMA alias allocator returned the null page",
+        ))?;
+        self.map_linear(
+            alias,
+            start_paddr,
+            size,
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::UNCACHED,
+        )?;
+        Ok(alias_ptr)
+    }
+
+    /// Removes a DMA-coherent alias without releasing its physical pages.
+    pub fn unmap_dma_coherent_alias(&mut self, alias: NonNull<u8>, size: usize) -> MmResult {
+        self.unmap(VirtAddr::from_usize(alias.as_ptr() as usize), size)
     }
 
     /// Add or replace a linear mapping.
@@ -154,7 +235,14 @@ impl AddrSpace {
         size: usize,
         flags: MappingFlags,
     ) -> MmResult {
-        self.map_linear_with_overlap(start_vaddr, start_paddr, size, flags, true)
+        self.map_linear_with_overlap(
+            start_vaddr,
+            start_paddr,
+            size,
+            flags,
+            true,
+            LinearMappingKind::Mutable,
+        )
     }
 
     /// Add a new allocation mapping.
@@ -337,9 +425,13 @@ impl AddrSpace {
         if let Some(area) = self.areas.find(vaddr) {
             let orig_flags = area.flags();
             if orig_flags.contains(access_flags) {
-                return area
+                let handled = area
                     .backend()
                     .handle_page_fault(vaddr, orig_flags, &mut self.pt);
+                if handled {
+                    ax_hal::cache::update_mmu_cache(vaddr);
+                }
+                return handled;
             }
         }
         false
@@ -359,5 +451,21 @@ impl fmt::Debug for AddrSpace {
 impl Drop for AddrSpace {
     fn drop(&mut self) {
         self.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dma_alias_search_reserves_the_null_page() {
+        assert_eq!(
+            dma_alias_search_start(VirtAddr::from_usize(0)),
+            VirtAddr::from_usize(PAGE_SIZE_4K)
+        );
+
+        let high_base = VirtAddr::from_usize(0xffff_0000_0000_0000);
+        assert_eq!(dma_alias_search_start(high_base), high_base);
     }
 }

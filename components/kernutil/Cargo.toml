@@ -1,6 +1,6 @@
 [package]
 name = "kernutil"
-version = "0.2.4"
+version = "0.3.0"
 license.workspace = true
 categories.workspace = true
 description = "Utilities for kernel development."
@@ -9,13 +9,8 @@ keywords.workspace = true
 repository.workspace = true
 
 [dependencies]
-axtest = { workspace = true, optional = true }
 heapless = "0.9"
 ranges-ext = { workspace = true }
 num-align = "0.1"
 
 [features]
-axtest = ["dep:axtest"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

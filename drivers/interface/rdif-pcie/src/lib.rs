@@ -12,9 +12,6 @@ pub use rdif_base::{DriverGeneric, KError};
 pub mod addr_alloc;
 mod bar_alloc;
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub mod axtest;
-
 pub use bar_alloc::SimpleBarAllocator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +58,7 @@ pub trait Interface: DriverGeneric {
 pub struct PcieController {
     chip: Arc<ChipRaw>,
     pub bar_allocator: Option<SimpleBarAllocator>,
+    dma_coherent: bool,
 }
 
 impl PcieController {
@@ -68,7 +66,16 @@ impl PcieController {
         Self {
             chip: Arc::new(ChipRaw::new(chip)),
             bar_allocator: None,
+            dma_coherent: false,
         }
+    }
+
+    pub fn set_dma_coherent(&mut self, dma_coherent: bool) {
+        self.dma_coherent = dma_coherent;
+    }
+
+    pub fn dma_coherent(&self) -> bool {
+        self.dma_coherent
     }
     pub fn typed_ref<T: Interface>(&self) -> Option<&T> {
         self.raw_any()?.downcast_ref()

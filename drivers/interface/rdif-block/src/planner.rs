@@ -164,13 +164,19 @@ impl TransferPlan {
             return Err(BlkError::InvalidBlockIndex(lba));
         }
 
+        let max_segment_size = limits
+            .dma
+            .constraints()
+            .max_segment_size
+            .unwrap_or(usize::MAX);
+
         Ok(Self {
             next_lba: lba,
             byte_offset,
             remaining_bytes: byte_len,
             block_size,
             max_chunk_size,
-            max_segment_size: limits.max_segment_size,
+            max_segment_size,
         })
     }
 }
@@ -182,17 +188,22 @@ fn planned_transfer_size(
 ) -> Result<usize, BlkError> {
     let block_size = device.logical_block_size;
     let max_segments = limits.max_segments.min(caps.max_segments);
+    let max_segment_size = limits
+        .dma
+        .constraints()
+        .max_segment_size
+        .unwrap_or(usize::MAX);
     if block_size == 0
         || limits.max_blocks_per_request == 0
         || max_segments == 0
-        || limits.max_segment_size == 0
+        || max_segment_size == 0
         || caps.max_transfer_bytes == 0
     {
         return Err(BlkError::InvalidRequest);
     }
 
     let max_by_blocks = block_size.saturating_mul(limits.max_blocks_per_request as usize);
-    let max_by_segments = limits.max_segment_size.saturating_mul(max_segments);
+    let max_by_segments = max_segment_size.saturating_mul(max_segments);
     let max_chunk_size = [max_by_blocks, max_by_segments, caps.max_transfer_bytes]
         .into_iter()
         .min()
@@ -254,17 +265,20 @@ mod tests {
         max_segments: usize,
         max_segment_size: usize,
     ) -> QueueLimits {
+        let dma = dma_api::DmaDeviceInfo::new(
+            dma_api::DmaDomainId::Direct,
+            dma_api::DmaCoherency::NonCoherent,
+            dma_api::DmaConstraints::new(u64::MAX)
+                .with_align(512)
+                .with_max_segment_size(max_segment_size),
+        );
         QueueLimits {
-            dma_mask: u64::MAX,
-            dma_domain: dma_api::DmaDomainId::legacy_global(),
-            dma_alignment: 512,
+            dma,
             dma_length_alignment: 512,
-            segment_boundary: None,
             max_inflight: 1,
             max_submit_batch: 1,
             max_blocks_per_request,
             max_segments,
-            max_segment_size,
             supported_flags: RequestFlags::NONE,
             supports_flush: false,
         }
@@ -319,7 +333,14 @@ mod tests {
 
     #[test]
     fn simple_limits_allow_single_block_transfers() {
-        let info = queue_info_with(QueueLimits::simple(512, u64::MAX));
+        let info = queue_info_with(QueueLimits::simple(
+            512,
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(u64::MAX),
+            ),
+        ));
         let planner = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
         let plan = planner.plan(0, 2048).unwrap();
         let chunks: Vec<_> = plan.collect();
@@ -468,7 +489,14 @@ mod tests {
 
     #[test]
     fn transfer_planner_checks_range_when_creating_plan() {
-        let info = queue_info_with(QueueLimits::simple(512, u64::MAX));
+        let info = queue_info_with(QueueLimits::simple(
+            512,
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(u64::MAX),
+            ),
+        ));
         let planner = TransferPlanner::new(info.device, info.limits, test_runtime_caps()).unwrap();
 
         assert_eq!(

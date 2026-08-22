@@ -70,15 +70,21 @@ pub struct PciInfo {
     pub interrupt_pin: u8,
     pub interrupt_line: u8,
     pub intx_route: Option<PciIntxRoute>,
+    pub dma_coherent: bool,
 }
 
 impl PciInfo {
-    fn from_endpoint(endpoint: &EndpointRc, intx_route: Option<PciIntxRoute>) -> Self {
+    fn from_endpoint(
+        endpoint: &EndpointRc,
+        intx_route: Option<PciIntxRoute>,
+        dma_coherent: bool,
+    ) -> Self {
         Self {
             address: endpoint.address(),
             interrupt_pin: endpoint.interrupt_pin(),
             interrupt_line: endpoint.interrupt_line(),
             intx_route,
+            dma_coherent,
         }
     }
 }
@@ -153,10 +159,11 @@ impl PcieEnumterator {
         stop_if_fail: bool,
     ) -> Result<(), ProbeError> {
         let mut g = self.ctrl.lock().unwrap();
+        let dma_coherent = g.dma_coherent();
 
         for ep in enumerate_by_controller_with_info(&mut g, None) {
             debug!("PCIe endpiont: {}", ep.endpoint);
-            match self.probe_one(ep, registers, stop_if_fail) {
+            match self.probe_one(ep, registers, stop_if_fail, dma_coherent) {
                 Ok(_) => {} // Successfully probed, move to the next
                 Err(e) => {
                     if stop_if_fail {
@@ -176,6 +183,7 @@ impl PcieEnumterator {
         endpoint: EnumeratedEndpoint,
         registers: &[DriverRegister],
         stop_if_fail: bool,
+        dma_coherent: bool,
     ) -> Result<(), ProbeError> {
         let intx_route = endpoint.intx_route;
         let endpoint = endpoint.endpoint;
@@ -200,7 +208,7 @@ impl PcieEnumterator {
             desc.name = register.name;
             desc.irq_parent = self.ctrl.descriptor().irq_parent;
 
-            let info = PciInfo::from_endpoint(&endpoint, intx_route);
+            let info = PciInfo::from_endpoint(&endpoint, intx_route, dma_coherent);
             let plat_dev = PlatformDevice::new(desc);
             match (pci_probe)(ProbePci::new(info, &mut endpoint, plat_dev)) {
                 Ok(_) => {

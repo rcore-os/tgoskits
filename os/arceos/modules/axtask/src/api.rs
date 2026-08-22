@@ -84,20 +84,75 @@ pub fn current() -> CurrentTask {
 
 /// Disables preemption for the current task when preemption is configured.
 #[doc(hidden)]
-pub fn disable_preempt() {
+pub fn disable_preempt() -> usize {
     #[cfg(feature = "preempt")]
-    if let Some(curr) = current_may_uninit() {
-        curr.disable_preempt();
+    {
+        crate::runtime_preempt::enter()
+    }
+    #[cfg(not(feature = "preempt"))]
+    {
+        0
     }
 }
 
 /// Enables preemption for the current task when preemption is configured.
 #[doc(hidden)]
-pub fn enable_preempt() {
+pub fn enable_preempt(token: usize) {
     #[cfg(feature = "preempt")]
-    if let Some(curr) = current_may_uninit() {
-        curr.enable_preempt(true);
+    {
+        crate::runtime_preempt::exit(token);
     }
+    #[cfg(not(feature = "preempt"))]
+    let _ = token;
+}
+
+/// Enables preemption at the final IRQ-return boundary.
+#[doc(hidden)]
+pub fn enable_preempt_from_irq_return(token: usize) {
+    #[cfg(feature = "preempt")]
+    {
+        crate::runtime_preempt::exit_from_irq_return(token);
+    }
+    #[cfg(not(feature = "preempt"))]
+    let _ = token;
+}
+
+/// Reports scheduler work to the runtime preemption safe-point adapter.
+#[doc(hidden)]
+pub fn runtime_preemption_pending() -> bool {
+    #[cfg(feature = "preempt")]
+    {
+        current_may_uninit().is_some_and(|curr| curr.preemption_pending())
+    }
+    #[cfg(not(feature = "preempt"))]
+    {
+        false
+    }
+}
+
+/// Runs the legacy scheduler action after the runtime claims its baton.
+#[doc(hidden)]
+pub fn runtime_preempt_current() {
+    #[cfg(feature = "preempt")]
+    crate::task::TaskInner::current_check_preempt_pending();
+}
+
+/// Marks the current task for a deterministic preemption safe-point test.
+#[cfg(all(axtest, feature = "preempt"))]
+pub(crate) fn request_current_preemption_for_test() {
+    current().set_preempt_pending(true);
+}
+
+/// Records that the current task's first-entry scheduler frame was consumed.
+#[cfg(axtest)]
+pub(crate) fn record_initial_scheduler_frame_consumed_for_test() {
+    current().record_initial_scheduler_frame_consumed_for_test();
+}
+
+/// Reports whether the current task consumed its first-entry scheduler frame.
+#[cfg(axtest)]
+pub(crate) fn initial_scheduler_frame_consumed_for_test() -> bool {
+    current().initial_scheduler_frame_consumed_for_test()
 }
 
 #[cfg(feature = "lockdep")]
@@ -666,24 +721,7 @@ pub fn run_idle() -> ! {
     }
 }
 
-#[cfg(axtest)]
-pub(crate) fn axtask_api_constants_hold_for_test() -> bool {
-    // default_task_stack_size should return a non-zero value
-    let stack_size = default_task_stack_size();
-    assert!(stack_size > 0);
-    assert!(stack_size % 4096 == 0); // Should be page-aligned
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn axtask_api_function_existence_hold_for_test() -> bool {
-    // Verify key API functions exist and are callable
-    // (Actual task operations tested in integration tests)
-    true
-}
-
-#[cfg(axtest)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) fn axtask_api_atomic_context_structs_hold_for_test() -> bool {
     // Test that in_atomic_context function exists and returns bool
     let is_atomic = super::in_atomic_context();
@@ -693,60 +731,6 @@ pub(crate) fn axtask_api_atomic_context_structs_hold_for_test() -> bool {
     // Test that default_task_stack_size returns a reasonable value
     let stack_size = super::default_task_stack_size();
     assert!(stack_size > 0);
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn axtask_api_current_and_exit_hold_for_test() -> bool {
-    // Test that current() and exit() functions exist
-    // (Can't actually call exit() in tests, but verify they compile)
-
-    // Verify current_task exists as a concept
-    let _ = "current_task_exists";
-
-    // Test stack size alignment
-    let stack_size = super::default_task_stack_size();
-    assert!(stack_size % 16 == 0); // TASK_STACK_ALIGN
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn axtask_api_priority_constants_hold_for_test() -> bool {
-    // Test priority-related constants if they exist
-
-    // Test stack size is reasonable (at least 4KB)
-    let stack_size = super::default_task_stack_size();
-    assert!(stack_size >= 4096);
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn axtask_api_type_aliases_hold_for_test() -> bool {
-    // Test that type aliases exist and are usable
-    // AxTaskRef = Arc<AxTask>
-    // WeakAxTaskRef = Weak<AxTask>
-    let _type_check: Option<super::AxTaskRef> = None;
-    let _weak_check: Option<super::WeakAxTaskRef> = None;
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn axtask_api_scheduler_name_hold_for_test() -> bool {
-    // Test that Scheduler::scheduler_name() returns a non-empty string
-    let name = super::Scheduler::scheduler_name();
-    assert!(!name.is_empty());
-
-    true
-}
-
-#[cfg(axtest)]
-pub(crate) fn axtask_api_task_registry_functions_exist_hold_for_test() -> bool {
-    let _lookup: fn(super::TaskId) -> Option<super::AxTaskRef> = super::task_by_id;
-    let _wake: fn(super::TaskId) -> bool = super::wake_task_by_id;
 
     true
 }
@@ -771,5 +755,64 @@ mod tests {
         );
 
         assert!(initialized.get());
+    }
+}
+
+#[cfg(test)]
+mod std_tests {
+    use super::*;
+
+    fn axtask_api_constants_hold_for_test() -> bool {
+        // default_task_stack_size should return a non-zero value
+        let stack_size = default_task_stack_size();
+        assert!(stack_size > 0);
+        assert!(stack_size % 4096 == 0); // Should be page-aligned
+
+        true
+    }
+
+    fn axtask_api_type_aliases_hold_for_test() -> bool {
+        // Test that type aliases exist and are usable
+        // AxTaskRef = Arc<AxTask>
+        // WeakAxTaskRef = Weak<AxTask>
+        let _type_check: Option<super::AxTaskRef> = None;
+        let _weak_check: Option<super::WeakAxTaskRef> = None;
+
+        true
+    }
+
+    fn axtask_api_scheduler_name_hold_for_test() -> bool {
+        // Test that Scheduler::scheduler_name() returns a non-empty string
+        let name = super::Scheduler::scheduler_name();
+        assert!(!name.is_empty());
+
+        true
+    }
+
+    fn axtask_api_task_registry_functions_exist_hold_for_test() -> bool {
+        let _lookup: fn(super::TaskId) -> Option<super::AxTaskRef> = super::task_by_id;
+        let _wake: fn(super::TaskId) -> bool = super::wake_task_by_id;
+
+        true
+    }
+
+    #[test]
+    fn axtask_api_constants_hold() {
+        assert!(axtask_api_constants_hold_for_test());
+    }
+
+    #[test]
+    fn axtask_api_type_aliases_hold() {
+        assert!(axtask_api_type_aliases_hold_for_test());
+    }
+
+    #[test]
+    fn axtask_api_scheduler_name_hold() {
+        assert!(axtask_api_scheduler_name_hold_for_test());
+    }
+
+    #[test]
+    fn axtask_api_task_registry_functions_exist_hold() {
+        assert!(axtask_api_task_registry_functions_exist_hold_for_test());
     }
 }

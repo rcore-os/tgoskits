@@ -180,7 +180,7 @@ impl NodeOps for SimpleFsNode {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn dummy_stat_fs_fields_match_expected_defaults_for_test() -> bool {
     let stat = dummy_stat_fs(0xdead_beef);
     stat.fs_type == 0xdead_beef

@@ -6,7 +6,7 @@ use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 
 use ax_sync::SpinLock as Mutex;
 use descriptor::{RING_END, RxDesc, TxDesc};
-use dma_api::{DeviceDma, DmaOp};
+use dma_api::DeviceDma;
 use log::info;
 use mmio_api::{Mmio, MmioAddr, MmioOp};
 use queue::{QueueStart, QueueStartState, Rtl8125RxQueue, Rtl8125TxQueue};
@@ -105,14 +105,12 @@ impl Rtl8125 {
     pub fn new(
         bar_addr: impl Into<MmioAddr>,
         bar_size: usize,
-        dma_mask: u64,
-        dma_op: &'static dyn DmaOp,
+        dma: DeviceDma,
         mmio_op: &'static dyn MmioOp,
     ) -> Result<Self> {
         mmio_api::init(mmio_op);
         let mmio = mmio_api::ioremap(bar_addr.into(), bar_size.max(RTL8125_REGS_SIZE))?;
         let regs = Regs::new(mmio.as_nonnull_ptr());
-        let dma = DeviceDma::new_legacy(dma_mask, dma_op);
         let xid = rtl8125_xid(regs);
         let chip = chip_version(xid);
 
@@ -152,7 +150,8 @@ impl Rtl8125 {
 
         self.mac = self.read_mac_address()?;
         self.set_mac_address(self.mac);
-        self.regs.configure_cplus(self.dma.dma_mask());
+        self.regs
+            .configure_cplus(self.dma.info().constraints().addr_mask);
         self.regs.write_default_rx_config();
         self.regs.write_default_tx_config();
         self.regs.write_rx_max_size(RX_BUF_SIZE as u16 + 1);
@@ -251,7 +250,7 @@ impl Interface for Rtl8125 {
         Some(queue::boxed_tx(Rtl8125TxQueue {
             regs: self.regs,
             desc,
-            dma_mask: self.dma.dma_mask(),
+            dma_mask: self.dma.info().constraints().addr_mask,
             bus_addrs: [None; QUEUE_SIZE],
             next_submit: 0,
             next_reclaim: 0,
@@ -283,7 +282,7 @@ impl Interface for Rtl8125 {
         Some(queue::boxed_rx(Rtl8125RxQueue {
             regs: self.regs,
             desc,
-            dma_mask: self.dma.dma_mask(),
+            dma_mask: self.dma.info().constraints().addr_mask,
             start: self.queue_start.clone(),
             bus_addrs: [None; QUEUE_SIZE],
             next_submit: 0,

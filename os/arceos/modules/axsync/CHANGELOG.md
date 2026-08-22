@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.32](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.31...ax-sync-v0.5.32) - 2026-08-20
+
+### Fixed
+
+- *(axtask)* preserve scheduler-frame ownership across switches ([#2101](https://github.com/rcore-os/tgoskits/pull/2101))
+- *(ax-net)* avoid sleeping mutex under datagram spin lock ([#1963](https://github.com/rcore-os/tgoskits/pull/1963))
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+- *(sync)* move lock implementation into ax-task ([#1962](https://github.com/rcore-os/tgoskits/pull/1962))
+- *(sync)* unify lock primitives in ax-sync ([#1956](https://github.com/rcore-os/tgoskits/pull/1956))
+
 ## [0.5.31](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.30...ax-sync-v0.5.31) - 2026-08-09
 
 ### Other

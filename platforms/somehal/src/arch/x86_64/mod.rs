@@ -3,13 +3,13 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use rdif_intc::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use rdrive::{
-    DriverGeneric, module_driver,
+    module_driver,
     probe::{
         OnProbeError,
-        acpi::{AcpiId, AcpiIoApic, ProbeAcpi},
+        acpi::{AcpiId, ProbeAcpi},
     },
 };
-use x2apic::ioapic::{IoApic, IrqFlags, IrqMode};
+use x86_apic_driver::{IoApicIntc, VirtAddr, ioapic::IoApicInfo};
 
 use crate::{
     common::PlatOp,
@@ -18,16 +18,16 @@ use crate::{
 
 mod lapic;
 mod msi;
+pub mod timer;
 mod vector;
 
 #[cfg(test)]
-use vector::{APIC_IPI_VECTOR, APIC_TIMER_VECTOR, ioapic_gsi_irq_id};
+use vector::{APIC_ERROR_VECTOR, APIC_IPI_VECTOR, APIC_TIMER_VECTOR, ioapic_gsi_irq_id};
 use vector::{
     SPURIOUS_VECTOR, lapic_ipi_irq_id, lapic_timer_irq_id, local_vector_irq_id,
     validate_external_vector,
 };
 
-const MASKED_IOAPIC_PLACEHOLDER_VECTOR: u8 = 0x21;
 const IRQ_ROUTE_VALID: u64 = 1 << 63;
 
 static IOAPIC_CPU_IF: X86IoApicCpuInterface = X86IoApicCpuInterface::new();
@@ -98,283 +98,6 @@ fn decode_irq_id(encoded: u64) -> Option<IrqId> {
     Some(IrqId::new(domain, hwirq))
 }
 
-struct X86IoApicIntc {
-    ioapics: Vec<X86IoApic>,
-    routes: Vec<AcpiGsiRoute>,
-    vector_routes: Vec<(usize, IrqId)>,
-    destinations: Vec<(usize, u8)>,
-}
-
-impl X86IoApicIntc {
-    fn new(ioapics: &[AcpiIoApic]) -> Self {
-        Self {
-            ioapics: ioapics.iter().copied().map(X86IoApic::new).collect(),
-            routes: Vec::new(),
-            vector_routes: Vec::new(),
-            destinations: Vec::new(),
-        }
-    }
-
-    fn remember_vector_route(&mut self, vector: usize, irq: IrqId) -> Result<u8, IrqError> {
-        let vector_u8 = validate_external_vector(vector)?;
-        if let Some((_, existing)) = self
-            .vector_routes
-            .iter_mut()
-            .find(|(known_vector, _)| *known_vector == vector)
-        {
-            if *existing == irq {
-                return Ok(vector_u8);
-            }
-            return Err(IrqError::Busy);
-        }
-
-        IOAPIC_CPU_IF.remember_vector_route(vector, irq)?;
-        self.vector_routes.push((vector, irq));
-        Ok(vector_u8)
-    }
-
-    #[cfg(test)]
-    fn irq_for_vector(&self, vector: usize) -> Option<IrqId> {
-        self.vector_routes
-            .iter()
-            .find_map(|(known_vector, irq)| (*known_vector == vector).then_some(*irq))
-    }
-
-    fn remember_route(&mut self, route: AcpiGsiRoute) {
-        if let Some(existing) = self.routes.iter_mut().find(|r| {
-            r.controller_id == route.controller_id
-                && r.controller_address == route.controller_address
-                && r.gsi == route.gsi
-        }) {
-            *existing = route;
-        } else {
-            self.routes.push(route);
-        }
-    }
-
-    fn routes_for_gsi(&self, gsi: u32) -> Vec<AcpiGsiRoute> {
-        let routes: Vec<_> = self
-            .routes
-            .iter()
-            .copied()
-            .filter(|r| r.gsi == gsi)
-            .collect();
-        if !routes.is_empty() {
-            return routes;
-        }
-
-        rdrive::probe::acpi::with_acpi(|system| system.routing().resolve_gsi(gsi))
-            .flatten()
-            .into_iter()
-            .collect()
-    }
-
-    fn set_gsi_enable(&mut self, gsi: u32, enable: bool) -> bool {
-        let routes = self.routes_for_gsi(gsi);
-        if routes.is_empty() {
-            return false;
-        }
-
-        let mut applied = false;
-        for route in routes {
-            applied |= self.set_route_enable(&route, enable);
-        }
-        applied
-    }
-
-    fn set_route_enable(&mut self, route: &AcpiGsiRoute, enable: bool) -> bool {
-        let dest = self.destination_for_vector(route.vector);
-        for ioapic in &mut self.ioapics {
-            if ioapic.contains_route(route) {
-                return ioapic.set_route_enable(route, enable, dest).is_ok();
-            }
-        }
-        false
-    }
-
-    fn remember_destination(&mut self, vector: usize, dest: u8) {
-        if let Some((_, existing)) = self
-            .destinations
-            .iter_mut()
-            .find(|(known_vector, _)| *known_vector == vector)
-        {
-            *existing = dest;
-        } else {
-            self.destinations.push((vector, dest));
-        }
-    }
-
-    fn set_gsi_destination(&mut self, gsi: u32, dest: u8) -> bool {
-        let routes = self.routes_for_gsi(gsi);
-        if routes.is_empty() {
-            return false;
-        }
-
-        let mut applied = false;
-        for route in routes {
-            let mut route_applied = false;
-            for ioapic in &mut self.ioapics {
-                if ioapic.contains_route(&route) {
-                    ioapic.set_route_destination(&route, dest);
-                    route_applied = true;
-                    break;
-                }
-            }
-            if route_applied {
-                self.remember_destination(route.vector, dest);
-                applied = true;
-            }
-        }
-        applied
-    }
-
-    fn destination_for_vector(&self, vector: usize) -> u8 {
-        self.destinations
-            .iter()
-            .find_map(|(known_vector, dest)| (*known_vector == vector).then_some(*dest))
-            .unwrap_or(0)
-    }
-}
-
-struct X86IoApic {
-    info: AcpiIoApic,
-    ioapic: IoApic,
-}
-
-impl X86IoApic {
-    fn new(info: AcpiIoApic) -> Self {
-        let ioapic_base = someboot::mem::phys_to_virt(info.address as usize) as u64;
-        let mut ioapic = unsafe { IoApic::new(ioapic_base) };
-        let max_entry = unsafe { ioapic.max_table_entry() };
-        let redirection_entries = max_entry.saturating_add(1);
-
-        unsafe {
-            ioapic.init(MASKED_IOAPIC_PLACEHOLDER_VECTOR);
-            for input in 0..=max_entry {
-                let mut entry = ioapic.table_entry(input);
-                entry.set_flags(entry.flags() | IrqFlags::MASKED);
-                ioapic.set_table_entry(input, entry);
-            }
-        }
-
-        info!(
-            "ACPI IOAPIC initialized: id={} base={:#x} gsi_base={} entries={}",
-            info.id, info.address, info.gsi_base, redirection_entries
-        );
-
-        Self {
-            info: AcpiIoApic {
-                redirection_entries,
-                ..info
-            },
-            ioapic,
-        }
-    }
-
-    fn contains(&self, gsi: u32) -> bool {
-        let start = self.info.gsi_base;
-        let end = start.saturating_add(u32::from(self.info.redirection_entries));
-        (start..end).contains(&gsi)
-    }
-
-    fn contains_route(&self, route: &AcpiGsiRoute) -> bool {
-        u16::from(self.info.id) == route.controller_id
-            && u64::from(self.info.address) == route.controller_address
-            && self.contains(route.gsi)
-    }
-
-    fn set_route_enable(
-        &mut self,
-        route: &AcpiGsiRoute,
-        enable: bool,
-        dest: u8,
-    ) -> Result<(), IrqError> {
-        if !self.contains_route(route) {
-            return Err(IrqError::InvalidIrq);
-        }
-        let vector = u8::try_from(route.vector).map_err(|_| IrqError::InvalidIrq)?;
-
-        unsafe {
-            let input = route.controller_input;
-            let mut entry = self.ioapic.table_entry(input);
-            entry.set_vector(vector);
-            entry.set_mode(IrqMode::Fixed);
-            entry.set_flags(intx_flags(route.trigger, route.polarity) | IrqFlags::MASKED);
-            entry.set_dest(dest);
-            self.ioapic.set_table_entry(input, entry);
-
-            if enable {
-                self.ioapic.enable_irq(input);
-            }
-        }
-        Ok(())
-    }
-
-    fn set_route_destination(&mut self, route: &AcpiGsiRoute, dest: u8) {
-        if !self.contains_route(route) {
-            return;
-        }
-
-        unsafe {
-            let input = route.controller_input;
-            let mut entry = self.ioapic.table_entry(input);
-            entry.set_dest(dest);
-            self.ioapic.set_table_entry(input, entry);
-        }
-    }
-}
-
-impl DriverGeneric for X86IoApicIntc {
-    fn name(&self) -> &str {
-        "x86 ACPI IOAPIC"
-    }
-}
-
-impl rdif_intc::Interface for X86IoApicIntc {
-    fn supports_acpi_gsi(&self, route: &AcpiGsiRoute) -> bool {
-        route.controller == rdif_intc::AcpiGsiController::IoApic
-            && self
-                .ioapics
-                .iter()
-                .any(|ioapic| ioapic.contains_route(route))
-    }
-
-    fn translate_acpi(
-        &self,
-        route: &AcpiGsiRoute,
-    ) -> Result<rdif_intc::ControllerIrqTranslation, IrqError> {
-        if !self.supports_acpi_gsi(route) {
-            return Err(IrqError::Unsupported);
-        }
-        Ok(rdif_intc::ControllerIrqTranslation::new(HwIrq(route.gsi)))
-    }
-
-    fn configure_acpi(
-        &mut self,
-        translation: &rdif_intc::IrqTranslation,
-        route: &AcpiGsiRoute,
-    ) -> Result<(), IrqError> {
-        if translation.id.hwirq != HwIrq(route.gsi) {
-            return Err(IrqError::InvalidIrq);
-        }
-        self.remember_vector_route(route.vector, translation.id)?;
-        self.remember_route(*route);
-        if self.set_route_enable(route, false) {
-            Ok(())
-        } else {
-            Err(IrqError::Unsupported)
-        }
-    }
-
-    fn set_enabled(&mut self, hwirq: HwIrq, enabled: bool) -> Result<(), IrqError> {
-        if self.set_gsi_enable(hwirq.0, enabled) {
-            Ok(())
-        } else {
-            Err(IrqError::InvalidIrq)
-        }
-    }
-}
-
 fn probe_ioapic(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
     let (info, dev) = probe.into_parts();
     let ioapics = info.root.routing().io_apics();
@@ -385,7 +108,21 @@ fn probe_ioapic(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
     let owner = dev.descriptor.device_id();
     let domain = crate::irq::alloc_irq_domain(owner, crate::irq::IrqDomainKind::X86IoApic)
         .map_err(|err| OnProbeError::other(format!("failed to register IOAPIC domain: {err:?}")))?;
-    dev.register(rdif_intc::Intc::new(domain, X86IoApicIntc::new(ioapics)));
+    let infos: Vec<IoApicInfo> = ioapics
+        .iter()
+        .copied()
+        .map(|ioapic| IoApicInfo {
+            id: ioapic.id,
+            phys_address: u64::from(ioapic.address),
+            // SAFETY: the boot mapping of the ACPI-reported chip address is
+            // valid for the whole kernel lifetime and the redirection tables
+            // are untouched until this probe masks them.
+            mmio_base: VirtAddr::new(someboot::mem::phys_to_virt(ioapic.address as usize) as usize),
+            gsi_base: ioapic.gsi_base,
+        })
+        .collect();
+    let intc = unsafe { IoApicIntc::new(&infos) };
+    dev.register(rdif_intc::Intc::new(domain, intc));
     let msi = msi::X86MsiProvider::new(owner).map_err(|err| {
         OnProbeError::other(format!("failed to register x86 MSI domain: {err:?}"))
     })?;
@@ -403,7 +140,11 @@ impl PlatOp for Plat {
 
         if irq.domain == X86_LAPIC_DOMAIN {
             if irq.hwirq.0 == 0 {
-                someboot::irq::irq_set_enable(someboot::irq::systimer_irq(), enable);
+                if enable {
+                    timer::irq_enable();
+                } else {
+                    timer::irq_disable();
+                }
                 return Ok(());
             }
             return Err(IrqError::InvalidIrq);
@@ -412,7 +153,12 @@ impl PlatOp for Plat {
         if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86IoApic) {
             let intc = crate::irq::intc_by_domain(irq.domain)?;
             let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
-            return intc.set_enabled(irq.hwirq, enable);
+            return match intc.set_enabled(irq.hwirq, enable) {
+                // The GSI was never routed through configure_acpi; resolve
+                // its firmware routes on demand.
+                Err(IrqError::NotFound) => enable_unconfigured_gsi(&mut intc, irq.hwirq.0, enable),
+                other => other,
+            };
         }
         if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86Msi) {
             // MSI-X source masking is owned by the PCI endpoint table. The
@@ -458,15 +204,12 @@ impl PlatOp for Plat {
         let vector = lapic::ipi_vector(irq)?;
 
         match target {
-            crate::irq::IpiTarget::Current => lapic::send_ipi(
-                0,
-                lapic::ICR_FIXED_BASE | lapic::ICR_DEST_SELF | u32::from(vector),
-            ),
+            crate::irq::IpiTarget::Current => lapic::send_ipi(vector),
             crate::irq::IpiTarget::Cpu(cpu) => {
                 let apic_id = someboot::smp::cpu_idx_to_id(cpu.0).ok_or(IrqError::InvalidCpu)?;
                 lapic::send_ipi_to_apic_id(
                     u32::try_from(apic_id).map_err(|_| IrqError::InvalidCpu)?,
-                    lapic::ICR_FIXED_BASE | u32::from(vector),
+                    vector,
                 )
             }
         }
@@ -552,8 +295,9 @@ impl Drop for ActiveIrq {
 }
 
 fn resolve_acpi_gsi(gsi: u32) -> Result<IrqId, IrqError> {
-    let route = rdrive::probe::acpi::with_acpi(|system| system.routing().resolve_gsi(gsi))
-        .flatten()
+    let route = firmware_gsi_routes(gsi)
+        .into_iter()
+        .next()
         .ok_or(IrqError::InvalidIrq)?;
 
     resolve_acpi_route(route_to_irq_framework(route))
@@ -571,8 +315,49 @@ fn resolve_acpi_route(route: irq_framework::AcpiGsiRoute) -> Result<IrqId, IrqEr
     }
 
     let translation = intc.translate_acpi(&route)?;
-    intc.configure_acpi(&translation, &route)?;
-    Ok(translation.id)
+    // Pin the vector route in the dispatch cache before programming hardware
+    // so a conflicting route cannot claim an entry the cache already owns.
+    IOAPIC_CPU_IF.remember_vector_route(route.vector, translation.id)?;
+    match intc.configure_acpi(&translation, &route) {
+        Ok(()) => Ok(translation.id),
+        Err(err) => {
+            let _ = IOAPIC_CPU_IF.forget_vector_route(route.vector, translation.id);
+            Err(err)
+        }
+    }
+}
+
+/// Applies an enable/disable to a GSI that was never routed through
+/// `configure_acpi`, resolving its firmware routes on demand.
+fn enable_unconfigured_gsi(
+    intc: &mut rdif_intc::Intc,
+    gsi: u32,
+    enable: bool,
+) -> Result<(), IrqError> {
+    let routes = firmware_gsi_routes(gsi);
+    if routes.is_empty() {
+        return Err(IrqError::InvalidIrq);
+    }
+
+    let ioapic = intc
+        .typed_mut::<IoApicIntc>()
+        .ok_or(IrqError::Unsupported)?;
+    let mut applied = false;
+    for route in &routes {
+        applied |= ioapic.set_route_enable(route, enable);
+    }
+    if applied {
+        Ok(())
+    } else {
+        Err(IrqError::InvalidIrq)
+    }
+}
+
+fn firmware_gsi_routes(gsi: u32) -> Vec<AcpiGsiRoute> {
+    rdrive::probe::acpi::with_acpi(|system| system.routing().resolve_gsi(gsi))
+        .flatten()
+        .into_iter()
+        .collect()
 }
 
 fn route_to_irq_framework(route: AcpiGsiRoute) -> irq_framework::AcpiGsiRoute {
@@ -627,38 +412,27 @@ fn set_ioapic_gsi_destination(
     let intc = crate::irq::intc_by_domain(domain)?;
     let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
     let ioapic = intc
-        .typed_mut::<X86IoApicIntc>()
+        .typed_mut::<IoApicIntc>()
         .ok_or(IrqError::Unsupported)?;
-    Ok(ioapic.set_gsi_destination(gsi, dest))
+    if ioapic.set_gsi_destination(gsi, dest) {
+        return Ok(true);
+    }
+    // GSIs never routed through configure_acpi fall back to firmware routes.
+    let routes = firmware_gsi_routes(gsi);
+    let mut applied = false;
+    for route in &routes {
+        applied |= ioapic.set_route_destination(route, dest);
+    }
+    Ok(applied)
 }
 
 fn ioapic_irq_for_vector(vector: usize) -> Option<IrqId> {
     IOAPIC_CPU_IF.irq_for_vector(vector)
 }
 
-fn intx_flags(trigger: AcpiIrqTrigger, polarity: AcpiIrqPolarity) -> IrqFlags {
-    let mut flags = IrqFlags::empty();
-    if trigger == AcpiIrqTrigger::Level {
-        flags |= IrqFlags::LEVEL_TRIGGERED;
-    }
-    if polarity == AcpiIrqPolarity::ActiveLow {
-        flags |= IrqFlags::LOW_ACTIVE;
-    }
-    flags
-}
-
 #[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::*;
-
-    fn empty_ioapic_intc() -> X86IoApicIntc {
-        X86IoApicIntc {
-            ioapics: Vec::new(),
-            routes: Vec::new(),
-            vector_routes: Vec::new(),
-            destinations: Vec::new(),
-        }
-    }
 
     #[test]
     fn lapic_timer_and_ioapic_gsi_zero_are_different_irq_domains() {
@@ -681,17 +455,6 @@ mod tests {
     fn ioapic_gsi_irq_ids_preserve_host_gsi_as_hwirq() {
         assert_eq!(ioapic_gsi_irq_id(4).hwirq, HwIrq(4));
         assert_eq!(ioapic_gsi_irq_id(18).hwirq, HwIrq(18));
-    }
-
-    #[test]
-    fn ioapic_vector_reverse_route_does_not_assume_base_plus_gsi() {
-        let vector = rdrive::probe::acpi::PCI_INTX_VECTOR_BASE + 3;
-        let irq = ioapic_gsi_irq_id(18);
-        let mut intc = empty_ioapic_intc();
-        intc.remember_vector_route(vector, irq).unwrap();
-
-        assert_eq!(intc.irq_for_vector(vector), Some(irq));
-        assert_ne!(intc.irq_for_vector(vector), Some(ioapic_gsi_irq_id(3)));
     }
 
     #[test]
@@ -736,36 +499,40 @@ mod tests {
 
     #[test]
     fn vector_route_rejects_reserved_out_of_range_and_collision() {
-        let mut intc = empty_ioapic_intc();
+        let cpu_if = X86IoApicCpuInterface::new();
         assert_eq!(
-            intc.remember_vector_route(APIC_TIMER_VECTOR, ioapic_gsi_irq_id(1)),
+            cpu_if.remember_vector_route(APIC_TIMER_VECTOR, ioapic_gsi_irq_id(1)),
             Err(IrqError::Busy)
         );
         assert_eq!(
-            intc.remember_vector_route(APIC_IPI_VECTOR, ioapic_gsi_irq_id(1)),
+            cpu_if.remember_vector_route(APIC_IPI_VECTOR, ioapic_gsi_irq_id(1)),
             Err(IrqError::Busy)
         );
         assert_eq!(
-            intc.remember_vector_route(SPURIOUS_VECTOR, ioapic_gsi_irq_id(1)),
+            cpu_if.remember_vector_route(APIC_ERROR_VECTOR, ioapic_gsi_irq_id(1)),
             Err(IrqError::Busy)
         );
         assert_eq!(
-            intc.remember_vector_route(0x1f, ioapic_gsi_irq_id(1)),
+            cpu_if.remember_vector_route(SPURIOUS_VECTOR, ioapic_gsi_irq_id(1)),
             Err(IrqError::Busy)
         );
         assert_eq!(
-            intc.remember_vector_route(usize::from(u8::MAX) + 1, ioapic_gsi_irq_id(1)),
+            cpu_if.remember_vector_route(0x1f, ioapic_gsi_irq_id(1)),
+            Err(IrqError::Busy)
+        );
+        assert_eq!(
+            cpu_if.remember_vector_route(usize::from(u8::MAX) + 1, ioapic_gsi_irq_id(1)),
             Err(IrqError::InvalidIrq)
         );
 
         let vector = 0x72;
         let irq = ioapic_gsi_irq_id(7);
-        intc.remember_vector_route(vector, irq).unwrap();
+        cpu_if.remember_vector_route(vector, irq).unwrap();
         assert_eq!(
-            intc.remember_vector_route(vector, ioapic_gsi_irq_id(8)),
+            cpu_if.remember_vector_route(vector, ioapic_gsi_irq_id(8)),
             Err(IrqError::Busy)
         );
-        assert_eq!(intc.remember_vector_route(vector, irq), Ok(vector as u8));
+        assert_eq!(cpu_if.remember_vector_route(vector, irq), Ok(vector as u8));
     }
 
     #[test]
@@ -785,31 +552,6 @@ mod tests {
     }
 
     #[test]
-    fn xapic_destination_rejects_high_apic_ids_without_truncation() {
-        assert_eq!(lapic::xapic_destination(0xfe), Ok(0xfe00_0000));
-        assert_eq!(lapic::xapic_destination(0x100), Err(IrqError::InvalidCpu));
-    }
-
-    #[test]
-    fn x2apic_icr_encodes_full_destination_id() {
-        let icr = lapic::x2apic_icr(0x1234_5678, lapic::ICR_FIXED_BASE | APIC_IPI_VECTOR as u32);
-
-        assert_eq!(icr >> 32, 0x1234_5678);
-        assert_eq!(icr as u32, lapic::ICR_FIXED_BASE | APIC_IPI_VECTOR as u32);
-    }
-
-    #[test]
-    fn acpi_intx_flags_preserve_trigger_and_polarity() {
-        let level_low = intx_flags(AcpiIrqTrigger::Level, AcpiIrqPolarity::ActiveLow);
-        assert!(level_low.contains(IrqFlags::LEVEL_TRIGGERED));
-        assert!(level_low.contains(IrqFlags::LOW_ACTIVE));
-
-        let edge_high = intx_flags(AcpiIrqTrigger::Edge, AcpiIrqPolarity::ActiveHigh);
-        assert!(!edge_high.contains(IrqFlags::LEVEL_TRIGGERED));
-        assert!(!edge_high.contains(IrqFlags::LOW_ACTIVE));
-    }
-
-    #[test]
     fn acpi_route_conversion_preserves_trigger_and_polarity() {
         let route = AcpiGsiRoute {
             gsi: 10,
@@ -826,13 +568,12 @@ mod tests {
     }
 }
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn somehal_x86_64_constants_hold_for_test() -> bool {
-    // IRQ route constant
-    assert!(IRQ_ROUTE_VALID == 1 << 63);
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
 
-    // IOAPIC placeholder vector
-    assert!(MASKED_IOAPIC_PLACEHOLDER_VECTOR == 0x21);
-
-    true
+    #[test]
+    fn irq_route_constant_marks_valid_entries() {
+        assert_eq!(IRQ_ROUTE_VALID, 1 << 63);
+    }
 }

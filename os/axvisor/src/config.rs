@@ -155,12 +155,9 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     vm.prepare()
         .with_context(|| format!("prepare devices and vCPUs for VM[{vm_id}]"))?;
 
-    // Keep the local `Arc` for architecture-specific post-registration setup.
     if !axvm::register_vm(vm.clone()) {
         bail!("register VM[{vm_id}]: a VM with this ID already exists");
     }
-    #[cfg(target_arch = "loongarch64")]
-    crate::manager::register_loongarch_passthrough_irq_routes(vm_id);
 
     #[cfg(all(
         feature = "fs",
@@ -171,9 +168,8 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         )
     ))]
     if release_host_filesystem {
-        #[cfg(target_arch = "x86_64")]
-        axvm::host::x86::register_qemu_block_passthrough_irq(&vm)
-            .context("register x86 QEMU block passthrough IRQ route")?;
+        axvm::host::register_block_passthrough_irq(&vm)
+            .context("register host block passthrough IRQ route")?;
         HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
     }
 

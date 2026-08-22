@@ -35,6 +35,13 @@ static void *raw_mremap(void *old_addr, size_t old_size, size_t new_size,
     return (void *)ret;
 }
 
+static void *raw_mremap_word_flags(void *old_addr, size_t old_size, size_t new_size,
+                                   unsigned long flags, void *new_addr) {
+    long ret = syscall(SYS_mremap, old_addr, old_size, new_size, flags, new_addr);
+    if (ret == -1) return MAP_FAILED;
+    return (void *)ret;
+}
+
 int main(void)
 {
     const size_t PAGE = (size_t)sysconf(_SC_PAGE_SIZE);
@@ -209,6 +216,8 @@ int main(void)
                       EINVAL, "unknown flags (bit 3)");
             CHECK_ERR(raw_mremap(p, PAGE, PAGE, 0x100, NULL),
                       EINVAL, "unknown flags (bit 8)");
+            CHECK_ERR(raw_mremap_word_flags(p, PAGE, PAGE, 1UL << 32, NULL),
+                      EINVAL, "unknown flags in the upper word");
             CHECK_ERR(mremap(p, 2 * PAGE, 3 * PAGE, MREMAP_MAYMOVE),
                       EFAULT, "old_size exceeds VMA");
             CHECK_ERR(raw_mremap(p, 0, PAGE, MREMAP_MAYMOVE, NULL),

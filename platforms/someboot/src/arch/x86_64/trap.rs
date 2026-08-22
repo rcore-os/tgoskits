@@ -14,32 +14,11 @@ use x86::{
     segmentation::{BuildDescriptor, DescriptorBuilder, GateDescriptorBuilder, cs},
 };
 
-use super::irq::{LAPIC_SPURIOUS_VECTOR, LAPIC_TIMER_VECTOR};
-use crate::mem::{page_size, phys_to_virt};
+use crate::mem::page_size;
 
 const IA32_EFER: u32 = 0xc000_0080;
 const IA32_EFER_NXE: u64 = 1 << 11;
 
-const LAPIC_REG_EOI: u32 = 0x0b0;
-const LAPIC_REG_SVR: u32 = 0x0f0;
-const LAPIC_REG_LVT_TIMER: u32 = 0x320;
-const LAPIC_REG_TIMER_INIT_COUNT: u32 = 0x380;
-const LAPIC_REG_TIMER_CUR_COUNT: u32 = 0x390;
-const LAPIC_REG_TIMER_DIV: u32 = 0x3e0;
-const LAPIC_LVT_MASKED: u32 = 1 << 16;
-const LAPIC_LVT_TIMER_TSC_DEADLINE: u32 = 1 << 18;
-const LAPIC_SVR_ENABLE: u32 = 1 << 8;
-const LAPIC_BASE_MASK: u64 = 0xffff_f000;
-const IA32_APIC_BASE_ENABLE: u64 = 1 << 11;
-const IA32_APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
-const LAPIC_TIMER_DIVIDE_BY_16: u32 = 0b0011;
-const LAPIC_TIMER_MIN_DELTA_TICKS: u32 = 0x0f;
-const IA32_X2APIC_EOI: u32 = 0x80b;
-const IA32_X2APIC_SIVR: u32 = 0x80f;
-const IA32_X2APIC_LVT_TIMER: u32 = 0x832;
-const IA32_X2APIC_INIT_COUNT: u32 = 0x838;
-const IA32_X2APIC_CUR_COUNT: u32 = 0x839;
-const IA32_X2APIC_DIV_CONF: u32 = 0x83e;
 const PIT_CHANNEL2_PORT: u16 = 0x42;
 const PIT_COMMAND_PORT: u16 = 0x43;
 const PIT_CONTROL_PORT: u16 = 0x61;
@@ -54,22 +33,13 @@ const MIN_VALID_TSC_FREQ_HZ: u64 = 10_000_000;
 const MAX_VALID_TSC_FREQ_HZ: u64 = 10_000_000_000;
 
 static TSC_FREQ_HZ: AtomicU64 = AtomicU64::new(0);
-static APIC_COUNTS_PER_TSC_Q32: AtomicU64 = AtomicU64::new(0);
-static HAS_TSC_DEADLINE: AtomicBool = AtomicBool::new(false);
 static HAS_INVARIANT_TSC: AtomicBool = AtomicBool::new(false);
 static HAS_TSC_ADJUST: AtomicBool = AtomicBool::new(false);
-static LAPIC_READY: AtomicBool = AtomicBool::new(false);
 static TSC_INFO_STATE: AtomicU8 = AtomicU8::new(0);
 static TSC_ADJUST_REFERENCE_STATE: AtomicU8 = AtomicU8::new(0);
 static TSC_ADJUST_REFERENCE: AtomicU64 = AtomicU64::new(0);
 static TSC_ADJUST_CHANGED: AtomicBool = AtomicBool::new(false);
 static IDT_STATE: AtomicU8 = AtomicU8::new(0);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ApicMode {
-    XApic,
-    X2Apic,
-}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -104,48 +74,6 @@ pub fn init_local() {
     enable_nxe();
     enable_xsave_features();
     init_tsc_freq();
-    init_lapic();
-}
-
-pub fn timer_enable() {
-    ensure_lapic_ready();
-    set_lvt_masked(false);
-    write_lapic_reg(LAPIC_REG_LVT_TIMER, timer_lvt_value(false));
-}
-
-pub fn timer_irq_enable() {
-    ensure_lapic_ready();
-    set_lvt_masked(false);
-}
-
-pub fn timer_irq_disable() {
-    ensure_lapic_ready();
-    set_lvt_masked(true);
-}
-
-pub fn timer_irq_is_enabled() -> bool {
-    ensure_lapic_ready();
-    (read_lapic_reg(LAPIC_REG_LVT_TIMER) & LAPIC_LVT_MASKED) == 0
-}
-
-pub fn timer_set_deadline_in_ticks(ticks: usize) {
-    ensure_lapic_ready();
-    if has_tsc_deadline() {
-        let now = ticks_now();
-        let deadline = now.saturating_add(ticks.max(LAPIC_TIMER_MIN_DELTA_TICKS as usize) as u64);
-        unsafe {
-            wrmsr(msr::IA32_TSC_DEADLINE, deadline);
-        }
-    } else {
-        let counts = ticks_to_apic_counts(ticks.max(LAPIC_TIMER_MIN_DELTA_TICKS as usize) as u64);
-        write_lapic_reg(LAPIC_REG_TIMER_INIT_COUNT, counts);
-    }
-}
-
-pub fn timer_ack() {
-    if LAPIC_READY.load(Ordering::Relaxed) {
-        write_lapic_reg(LAPIC_REG_EOI, 0);
-    }
 }
 
 pub fn tsc_freq() -> usize {
@@ -246,9 +174,6 @@ fn init_tsc_freq() {
             warn!("x86_64 TSC frequency unavailable, fallback to {fallback} Hz");
             fallback
         });
-    let has_deadline = cpuid
-        .get_feature_info()
-        .is_some_and(|info| info.has_tsc_deadline());
     let has_invariant_tsc = cpuid
         .get_advanced_power_mgmt_info()
         .is_some_and(|info| info.has_invariant_tsc());
@@ -256,12 +181,8 @@ fn init_tsc_freq() {
         .get_extended_feature_info()
         .is_some_and(|info| info.has_tsc_adjust_msr());
 
-    HAS_TSC_DEADLINE.store(has_deadline, Ordering::Release);
     HAS_INVARIANT_TSC.store(has_invariant_tsc, Ordering::Release);
     HAS_TSC_ADJUST.store(has_tsc_adjust, Ordering::Release);
-    if !has_deadline {
-        warn!("x86_64 CPU has no TSC deadline timer, fallback to LAPIC one-shot");
-    }
 
     TSC_FREQ_HZ.store(freq_hz, Ordering::Release);
     TSC_INFO_STATE.store(2, Ordering::Release);
@@ -360,6 +281,9 @@ fn init_idt_once() {
         return;
     }
 
+    // The boot IDT carries only exception entries: the kernel's runtime IDT
+    // owns every interrupt vector, and no interrupt can be delivered before
+    // it is loaded because the boot path runs with interrupts disabled.
     unsafe {
         let selector = cs();
         set_gate(
@@ -380,18 +304,6 @@ fn init_idt_once() {
             page_fault_handler as *const () as usize as u64,
             false,
         );
-        set_gate(
-            LAPIC_TIMER_VECTOR as usize,
-            selector,
-            lapic_timer_handler as *const () as usize as u64,
-            false,
-        );
-        set_gate(
-            LAPIC_SPURIOUS_VECTOR as usize,
-            selector,
-            spurious_handler as *const () as usize as u64,
-            false,
-        );
     }
 
     IDT_STATE.store(2, Ordering::Release);
@@ -405,152 +317,6 @@ fn load_idt() {
         };
         dtables::lidt(&ptr);
     }
-}
-
-fn init_lapic() {
-    let mut base = unsafe { rdmsr(msr::IA32_APIC_BASE) };
-    base |= IA32_APIC_BASE_ENABLE;
-    if cpu_has_x2apic() {
-        base |= IA32_APIC_BASE_X2APIC_ENABLE;
-    }
-    unsafe {
-        wrmsr(msr::IA32_APIC_BASE, base);
-    }
-
-    write_lapic_reg(
-        LAPIC_REG_SVR,
-        LAPIC_SVR_ENABLE | LAPIC_SPURIOUS_VECTOR as u32,
-    );
-    write_lapic_reg(LAPIC_REG_TIMER_DIV, LAPIC_TIMER_DIVIDE_BY_16);
-    write_lapic_reg(LAPIC_REG_LVT_TIMER, timer_lvt_value(true));
-    if !has_tsc_deadline() {
-        calibrate_apic_timer_ratio();
-    }
-    timer_ack();
-
-    LAPIC_READY.store(true, Ordering::Release);
-}
-
-fn ensure_lapic_ready() {
-    assert!(
-        LAPIC_READY.load(Ordering::Acquire),
-        "local APIC is not initialized"
-    );
-}
-
-fn set_lvt_masked(masked: bool) {
-    let mut val = read_lapic_reg(LAPIC_REG_LVT_TIMER);
-    if masked {
-        val |= LAPIC_LVT_MASKED;
-    } else {
-        val &= !LAPIC_LVT_MASKED;
-    }
-    write_lapic_reg(LAPIC_REG_LVT_TIMER, val);
-}
-
-#[inline]
-fn has_tsc_deadline() -> bool {
-    HAS_TSC_DEADLINE.load(Ordering::Acquire)
-}
-
-#[inline]
-fn timer_lvt_value(masked: bool) -> u32 {
-    let mut val = LAPIC_TIMER_VECTOR as u32;
-    if masked {
-        val |= LAPIC_LVT_MASKED;
-    }
-    if has_tsc_deadline() {
-        val |= LAPIC_LVT_TIMER_TSC_DEADLINE;
-    }
-    val
-}
-
-fn calibrate_apic_timer_ratio() {
-    let wait_tsc = (tsc_freq() as u64 / 100).max(1); // target ~=10ms in TSC domain
-
-    write_lapic_reg(LAPIC_REG_TIMER_INIT_COUNT, u32::MAX);
-    let start_tsc = ticks_now();
-    loop {
-        if ticks_now().wrapping_sub(start_tsc) >= wait_tsc {
-            break;
-        }
-        core::hint::spin_loop();
-    }
-    let end_tsc = ticks_now();
-    let current = read_lapic_reg(LAPIC_REG_TIMER_CUR_COUNT);
-    write_lapic_reg(LAPIC_REG_TIMER_INIT_COUNT, 0);
-
-    let elapsed_tsc = end_tsc.wrapping_sub(start_tsc);
-    let elapsed_apic = (u32::MAX - current) as u64;
-    let q32 = if elapsed_tsc == 0 || elapsed_apic == 0 {
-        1u64 << 32
-    } else {
-        (((elapsed_apic as u128) << 32) / elapsed_tsc as u128) as u64
-    };
-    APIC_COUNTS_PER_TSC_Q32.store(q32, Ordering::Release);
-}
-
-fn ticks_to_apic_counts(ticks: u64) -> u32 {
-    let q32 = APIC_COUNTS_PER_TSC_Q32.load(Ordering::Acquire);
-    let q32 = if q32 == 0 { 1u64 << 32 } else { q32 };
-    let counts = ((ticks as u128 * q32 as u128) >> 32).max(1);
-    counts.clamp(LAPIC_TIMER_MIN_DELTA_TICKS as u128, u32::MAX as u128) as u32
-}
-
-fn read_lapic_reg(offset: u32) -> u32 {
-    match current_apic_mode() {
-        ApicMode::X2Apic => unsafe { rdmsr(x2apic_msr(offset)) as u32 },
-        ApicMode::XApic => {
-            let ptr = lapic_ptr(offset);
-            unsafe { ptr.read_volatile() }
-        }
-    }
-}
-
-fn write_lapic_reg(offset: u32, value: u32) {
-    match current_apic_mode() {
-        ApicMode::X2Apic => unsafe {
-            wrmsr(x2apic_msr(offset), u64::from(value));
-        },
-        ApicMode::XApic => {
-            let ptr = lapic_ptr(offset);
-            unsafe {
-                ptr.write_volatile(value);
-            }
-        }
-    }
-}
-
-fn cpu_has_x2apic() -> bool {
-    CpuId::new()
-        .get_feature_info()
-        .is_some_and(|info| info.has_x2apic())
-}
-
-fn current_apic_mode() -> ApicMode {
-    let base = unsafe { rdmsr(msr::IA32_APIC_BASE) };
-    if base & IA32_APIC_BASE_X2APIC_ENABLE != 0 {
-        ApicMode::X2Apic
-    } else {
-        ApicMode::XApic
-    }
-}
-
-fn x2apic_msr(offset: u32) -> u32 {
-    match offset {
-        LAPIC_REG_EOI => IA32_X2APIC_EOI,
-        LAPIC_REG_SVR => IA32_X2APIC_SIVR,
-        LAPIC_REG_LVT_TIMER => IA32_X2APIC_LVT_TIMER,
-        LAPIC_REG_TIMER_INIT_COUNT => IA32_X2APIC_INIT_COUNT,
-        LAPIC_REG_TIMER_CUR_COUNT => IA32_X2APIC_CUR_COUNT,
-        LAPIC_REG_TIMER_DIV => IA32_X2APIC_DIV_CONF,
-        _ => panic!("unsupported x2APIC register offset {offset:#x}"),
-    }
-}
-
-fn lapic_ptr(offset: u32) -> *mut u32 {
-    let base = unsafe { rdmsr(msr::IA32_APIC_BASE) & LAPIC_BASE_MASK } as usize;
-    unsafe { phys_to_virt(base).add(offset as usize) }.cast()
 }
 
 fn enable_nxe() {
@@ -609,12 +375,6 @@ extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_c
     panic!("x86_64 page fault @ {addr:#x}: {flags:?}, frame={frame:#x?}");
 }
 
-extern "x86-interrupt" fn lapic_timer_handler(_frame: InterruptStackFrame) {
-    timer_ack();
-}
-
-extern "x86-interrupt" fn spurious_handler(_frame: InterruptStackFrame) {}
-
 pub fn irq_local_enabled() -> bool {
     rflags::read().contains(rflags::RFlags::FLAGS_IF)
 }
@@ -640,97 +400,10 @@ pub fn set_cr3(addr: PhysAddr) {
     }
 }
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn trap_constants_and_structs_hold_for_test() -> bool {
-    // Test IA32_EFER constants
-    assert!(IA32_EFER == 0xc000_0080);
-    assert!(IA32_EFER_NXE == (1 << 11));
-
-    // Test LAPIC register addresses
-    assert!(LAPIC_REG_EOI == 0x0b0);
-    assert!(LAPIC_REG_SVR == 0x0f0);
-    assert!(LAPIC_REG_LVT_TIMER == 0x320);
-    assert!(LAPIC_REG_TIMER_INIT_COUNT == 0x380);
-    assert!(LAPIC_REG_TIMER_CUR_COUNT == 0x390);
-    assert!(LAPIC_REG_TIMER_DIV == 0x3e0);
-
-    // Test LAPIC bit constants
-    assert!(LAPIC_LVT_MASKED == (1 << 16));
-    assert!(LAPIC_LVT_TIMER_TSC_DEADLINE == (1 << 18));
-    assert!(LAPIC_SVR_ENABLE == (1 << 8));
-
-    // Test LAPIC base mask
-    assert!(LAPIC_BASE_MASK == 0xffff_f000);
-
-    // Test APIC base enable bits
-    assert!(IA32_APIC_BASE_ENABLE == (1 << 11));
-    assert!(IA32_APIC_BASE_X2APIC_ENABLE == (1 << 10));
-
-    // Test timer divide constant
-    assert!(LAPIC_TIMER_DIVIDE_BY_16 == 0b0011);
-
-    // Test x2APIC register addresses
-    assert!(IA32_X2APIC_EOI == 0x80b);
-    assert!(IA32_X2APIC_SIVR == 0x80f);
-    assert!(IA32_X2APIC_LVT_TIMER == 0x832);
-    assert!(IA32_X2APIC_INIT_COUNT == 0x838);
-    assert!(IA32_X2APIC_CUR_COUNT == 0x839);
-    assert!(IA32_X2APIC_DIV_CONF == 0x83e);
-
-    true
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn pit_and_tsc_constants_hold_for_test() -> bool {
-    // Test PIT port addresses
-    assert!(PIT_CHANNEL2_PORT == 0x42);
-    assert!(PIT_COMMAND_PORT == 0x43);
-    assert!(PIT_CONTROL_PORT == 0x61);
-
-    // Test PIT bit constants
-    assert!(PIT_CHANNEL2_GATE == 0x01);
-    assert!(PIT_SPEAKER_ENABLE == 0x02);
-    assert!(PIT_CHANNEL2_OUT == 0x20);
-    assert!(PIT_MODE0_CHANNEL2 == 0xb0);
-
-    // Test TSC calibration constants
-    assert!(PIT_TICK_RATE_HZ == 1_193_182);
-    assert!(TSC_PIT_CALIBRATION_MS == 50);
-    assert!(TSC_PIT_MAX_POLL_COUNT == 5_000_000);
-
-    // Test TSC frequency bounds
-    assert!(MIN_VALID_TSC_FREQ_HZ == 10_000_000);
-    assert!(MAX_VALID_TSC_FREQ_HZ == 10_000_000_000);
-
-    true
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn trap_idt_and_gate_constants_hold_for_test() -> bool {
-    // Test IDT-related constants if they exist
-    // Test that trap handler functions exist
-
-    true
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn trap_msr_and_efer_constants_hold_for_test() -> bool {
-    // Test MSR and EFER constants
-    assert!(IA32_EFER == 0xc000_0080);
-    assert!(IA32_EFER_NXE == (1 << 11));
-
-    true
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{classify_scheduler_counter, ticks_to_apic_counts};
+    use super::classify_scheduler_counter;
     use crate::timer::CounterStability;
-
-    #[test]
-    fn legacy_lapic_clamps_overdue_events_to_the_device_minimum() {
-        assert_eq!(ticks_to_apic_counts(1), 0x0f);
-    }
 
     #[test]
     fn only_proven_single_cpu_invariant_tsc_uses_the_stable_path() {
@@ -750,5 +423,29 @@ mod tests {
             classify_scheduler_counter(true, 1, false),
             CounterStability::Unstable
         );
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn trap_constants_hold() {
+        assert!(IA32_EFER == 0xc000_0080);
+        assert!(IA32_EFER_NXE == (1 << 11));
+
+        assert!(PIT_CHANNEL2_PORT == 0x42);
+        assert!(PIT_COMMAND_PORT == 0x43);
+        assert!(PIT_CONTROL_PORT == 0x61);
+        assert!(PIT_CHANNEL2_GATE == 0x01);
+        assert!(PIT_SPEAKER_ENABLE == 0x02);
+        assert!(PIT_CHANNEL2_OUT == 0x20);
+        assert!(PIT_MODE0_CHANNEL2 == 0xb0);
+        assert!(PIT_TICK_RATE_HZ == 1_193_182);
+        assert!(TSC_PIT_CALIBRATION_MS == 50);
+        assert!(TSC_PIT_MAX_POLL_COUNT == 5_000_000);
+        assert!(MIN_VALID_TSC_FREQ_HZ == 10_000_000);
+        assert!(MAX_VALID_TSC_FREQ_HZ == 10_000_000_000);
     }
 }

@@ -77,14 +77,14 @@ C 模块使用 Linux Kbuild Makefile 构建。axbuild **仅在所选架构与 ho
 
 ```bash
 # 构建所有模块（默认 riscv64）
-cargo starry kmod build
+cargo xtask starry kmod build
 
 # 构建指定模块
-cargo starry kmod build -m os/StarryOS/lkm/my-module
+cargo xtask starry kmod build -m os/StarryOS/lkm/my-module
 
 # 构建并注入 rootfs
-cargo starry kmod build --all --rootfs alpine
+cargo xtask starry kmod build --all --rootfs alpine
 
 # aarch64 模块
-cargo starry kmod build --arch aarch64 --all
+cargo xtask starry kmod build --arch aarch64 --all
 ```

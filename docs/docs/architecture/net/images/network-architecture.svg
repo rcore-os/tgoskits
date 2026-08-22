@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" role="img" aria-labelledby="title desc">
+  <title id="title">ax-net 总体架构</title>
+  <desc id="desc">从操作系统和运行时集成，经公共 API、控制面、单协议核心和多设备路由器，连接到 loopback、以太网驱动与物理网卡的分层架构。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#50657d"/>
+    </marker>
+    <style>
+      .layer{fill:#f8fafc;stroke:#8a9bb0;stroke-width:2}
+      .consumer{fill:#f0edff;stroke:#7457b6;stroke-width:2}
+      .api{fill:#eaf3ff;stroke:#3478c0;stroke-width:2}
+      .control{fill:#fff4df;stroke:#c98216;stroke-width:2}
+      .core{fill:#eaf8ef;stroke:#398a55;stroke-width:2}
+      .router{fill:#e9f7f8;stroke:#2b8792;stroke-width:2}
+      .device{fill:#fff0f0;stroke:#bf5555;stroke-width:2}
+      .title{font:700 25px sans-serif;fill:#1f3045}
+      .layer-title{font:700 18px sans-serif;fill:#31465f}
+      .text{font:600 16px sans-serif;fill:#26384d}
+      .small{font:14px sans-serif;fill:#455a72}
+      .edge{fill:none;stroke:#50657d;stroke-width:2.2;marker-end:url(#arrow)}
+      .indirect{fill:none;stroke:#7457b6;stroke-width:2;stroke-dasharray:7 5;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <text class="title" x="40" y="40">ax-net：单协议核心、多设备数据面</text>
+
+  <rect class="layer" x="30" y="62" width="1220" height="118" rx="18"/>
+  <text class="layer-title" x="50" y="91">使用方与集成层</text>
+  <rect class="consumer" x="70" y="108" width="300" height="48" rx="10"/>
+  <text class="text" x="143" y="138">ArceOS / ax-runtime</text>
+  <rect class="consumer" x="490" y="108" width="300" height="48" rx="10"/>
+  <text class="text" x="552" y="138">StarryOS Linux ABI</text>
+  <rect class="consumer" x="910" y="108" width="300" height="48" rx="10"/>
+  <text class="text" x="951" y="138">Axvisor http-axum（间接）</text>
+
+  <rect class="layer" x="30" y="202" width="1220" height="116" rx="18"/>
+  <text class="layer-title" x="50" y="231">公共边界</text>
+  <rect class="api" x="70" y="248" width="245" height="46" rx="10"/>
+  <text class="text" x="104" y="277">初始化 / 动态设备</text>
+  <rect class="api" x="350" y="248" width="245" height="46" rx="10"/>
+  <text class="text" x="398" y="277">SocketOps / sockets</text>
+  <rect class="api" x="630" y="248" width="245" height="46" rx="10"/>
+  <text class="text" x="663" y="277">接口 / 路由 / DNS</text>
+  <rect class="api" x="910" y="248" width="245" height="46" rx="10"/>
+  <text class="text" x="948" y="277">运行期地址 / poll</text>
+
+  <rect class="layer" x="30" y="340" width="1220" height="214" rx="18"/>
+  <text class="layer-title" x="50" y="369">ax-net 核心</text>
+  <rect class="control" x="70" y="397" width="330" height="124" rx="14"/>
+  <text class="text" x="174" y="427">NetControl</text>
+  <text class="small" x="105" y="455">接口注册表 · DNS registry</text>
+  <text class="small" x="105" y="480">SharedRouteTable · DeviceBinding</text>
+  <text class="small" x="105" y="505">DHCP 提交与运行期配置快照</text>
+
+  <rect class="core" x="475" y="397" width="330" height="124" rx="14"/>
+  <text class="text" x="573" y="427">Service（串行 poll）</text>
+  <text class="small" x="516" y="455">smoltcp Interface + SocketSet</text>
+  <text class="small" x="516" y="480">DHCP client/server · TCP listen</text>
+  <text class="small" x="516" y="505">orphan reaper · readiness wake</text>
+
+  <rect class="router" x="880" y="397" width="330" height="124" rx="14"/>
+  <text class="text" x="960" y="427">Router（MultiDevice）</text>
+  <text class="small" x="921" y="455">smoltcp::phy::Device 适配</text>
+  <text class="small" x="921" y="480">shared RX · per-device TX</text>
+  <text class="small" x="921" y="505">route dispatch · loopback inject</text>
+
+  <rect class="layer" x="30" y="576" width="1220" height="184" rx="18"/>
+  <text class="layer-title" x="50" y="605">设备运行时</text>
+  <rect class="device" x="70" y="630" width="245" height="92" rx="12"/>
+  <text class="text" x="132" y="661">LoopbackDevice</text>
+  <text class="small" x="100" y="688">IP packet 直接回注 Router</text>
+  <rect class="device" x="350" y="630" width="245" height="92" rx="12"/>
+  <text class="text" x="406" y="661">RX / TX workers</text>
+  <text class="small" x="386" y="688">有界队列 · WaitQueue</text>
+  <rect class="device" x="630" y="630" width="245" height="92" rx="12"/>
+  <text class="text" x="686" y="661">EthernetDevice</text>
+  <text class="small" x="673" y="688">ARP · L2 framing · stats</text>
+  <rect class="device" x="910" y="630" width="245" height="92" rx="12"/>
+  <text class="text" x="972" y="661">RdNetDriver / NIC</text>
+  <text class="small" x="955" y="688">IRQ handler · DMA queues</text>
+
+  <path class="edge" d="M220 156 V248"/>
+  <path class="edge" d="M640 156 V248"/>
+  <path class="indirect" d="M1060 156 V220 H473 V248"/>
+  <path class="edge" d="M193 294 V397"/>
+  <path class="edge" d="M473 294 V397"/>
+  <path class="edge" d="M753 294 V375 H235 V397"/>
+  <path class="edge" d="M1033 294 V397"/>
+  <path class="edge" d="M400 459 H475"/>
+  <path class="edge" d="M805 459 H880"/>
+  <path class="edge" d="M1045 521 V630"/>
+  <path class="edge" d="M880 495 H840 V600 H193 V630"/>
+  <path class="edge" d="M595 676 H630"/>
+  <path class="edge" d="M875 676 H910"/>
+</svg>

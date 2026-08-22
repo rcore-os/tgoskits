@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 name = "ax-runtime"
 repository = "https://github.com/rcore-os/tgoskits"
-version = "0.10.7"
+version = "0.11.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [features]
 default = []
@@ -17,6 +20,7 @@ host-test = [
   "ax-ipi?/host-test",
   "ax-percpu?/host-test",
   "ax-task/host-test",
+  "cpu-local/host-test",
 ]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task/ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
@@ -71,13 +75,6 @@ aic8800-wifi = [
   "dep:sdhci-cv1800",
 ]
 vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
-serial = [
-  "irq",
-  "multitask",
-  "ax-driver/serial",
-  "dep:axpoll",
-  "dep:rdif-serial",
-]
 
 [dependencies]
 aic8800 = {workspace = true, optional = true}
@@ -86,7 +83,7 @@ ax-alloc = {workspace = true}
 ax-crate-interface = {workspace = true}
 ax-ctor-bare = {workspace = true}
 ax-display = {workspace = true, optional = true}
-ax-driver = {workspace = true}
+ax-driver = {workspace = true, features = ["serial"]}
 ax-fs-ng = {workspace = true, optional = true}
 axfs-ng-vfs = {workspace = true, optional = true}
 ax-hal = {workspace = true}
@@ -101,8 +98,9 @@ ax-percpu = {workspace = true, optional = true}
 ax-plat = {workspace = true}
 ax-sync.workspace = true
 ax-task = {workspace = true, features = ["lock-api"]}
+cpu-local.workspace = true
 axbacktrace = {workspace = true}
-axpoll = {workspace = true, optional = true}
+axpoll.workspace = true
 axklib.workspace = true
 axpanic = {workspace = true}
 cfg-if = {workspace = true}
@@ -112,7 +110,7 @@ indoc = "2"
 irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }
 rdif-intc = { workspace = true, optional = true }
-rdif-serial = { workspace = true, optional = true }
+rdif-serial.workspace = true
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
 thiserror.workspace = true

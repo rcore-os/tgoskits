@@ -43,11 +43,6 @@ impl RequestFlags {
         self.0
     }
 
-    #[cfg(all(axtest, feature = "axtest"))]
-    pub(crate) const fn from_bits_for_test(bits: u32) -> Self {
-        Self(bits)
-    }
-
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -296,11 +291,16 @@ pub fn validate_owned_request_shape(
             }
             let data = request.data.as_ref().ok_or(BlkError::InvalidRequest)?;
             let segments = data.segments();
+            let dma = limits.dma;
+            let constraints = dma.constraints();
             if segments.is_empty()
                 || segments.len() > limits.max_segments
-                || data.domain_id() != limits.dma_domain
+                || data.domain_id() != dma.domain()
+                || data.coherency() != dma.coherency()
                 || segments.iter().any(|segment| {
-                    segment.len.get() > limits.max_segment_size
+                    constraints
+                        .max_segment_size
+                        .is_some_and(|max| segment.len.get() > max)
                         || !dma_segment_matches_limits(
                             segment.addr.as_u64(),
                             segment.len.get(),
@@ -324,6 +324,7 @@ pub fn validate_owned_request_shape(
 }
 
 fn dma_segment_matches_limits(bus: u64, len: usize, limits: QueueLimits) -> bool {
+    let constraints = limits.dma.constraints();
     let Some(last) = u64::try_from(len)
         .ok()
         .and_then(|len| len.checked_sub(1))
@@ -331,19 +332,19 @@ fn dma_segment_matches_limits(bus: u64, len: usize, limits: QueueLimits) -> bool
     else {
         return false;
     };
-    if bus & !limits.dma_mask != 0 || last & !limits.dma_mask != 0 {
+    if bus & !constraints.addr_mask != 0 || last & !constraints.addr_mask != 0 {
         return false;
     }
 
-    if limits.dma_alignment == 0
+    if constraints.align == 0
         || limits.dma_length_alignment == 0
-        || !bus.is_multiple_of(limits.dma_alignment as u64)
+        || !bus.is_multiple_of(constraints.align as u64)
         || !len.is_multiple_of(limits.dma_length_alignment)
     {
         return false;
     }
 
-    match limits.segment_boundary {
+    match constraints.boundary {
         None => true,
         Some(boundary) if boundary.is_power_of_two() => {
             let boundary_mask = !(boundary as u64 - 1);
@@ -382,6 +383,25 @@ mod tests {
 
     use super::*;
 
+    fn dma_info(
+        coherency: dma_api::DmaCoherency,
+        constraints: DmaConstraints,
+    ) -> dma_api::DmaDeviceInfo {
+        dma_api::DmaDeviceInfo::new(dma_api::DmaDomainId::Direct, coherency, constraints)
+    }
+
+    fn queue_limits(coherency: dma_api::DmaCoherency) -> QueueLimits {
+        QueueLimits::simple(512, dma_info(coherency, DmaConstraints::new(u64::MAX)))
+    }
+
+    fn queue_limits_with(constraints: DmaConstraints) -> QueueLimits {
+        let dma = dma_info(dma_api::DmaCoherency::NonCoherent, constraints);
+        QueueLimits {
+            dma,
+            ..QueueLimits::simple(512, dma)
+        }
+    }
+
     struct TestDma {
         addr: u64,
     }
@@ -397,7 +417,7 @@ mod tests {
             layout: Layout,
         ) -> Option<DmaAllocHandle> {
             let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
-            Some(unsafe { DmaAllocHandle::new(ptr, DmaAddr::from(self.addr), layout) })
+            Some(unsafe { DmaAllocHandle::new(ptr, ptr, DmaAddr::from(self.addr), layout) })
         }
 
         unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
@@ -433,7 +453,14 @@ mod tests {
 
     fn prepared(addr: u64, len: usize) -> PreparedDma {
         let dma = Box::leak(Box::new(TestDma { addr }));
-        let device = dma_api::DeviceDma::new_legacy(u64::MAX, dma);
+        let device = dma_api::DeviceDma::new(
+            dma_api::DmaDeviceInfo::new(
+                dma_api::DmaDomainId::Direct,
+                dma_api::DmaCoherency::NonCoherent,
+                dma_api::DmaConstraints::new(u64::MAX),
+            ),
+            dma,
+        );
         dma_api::CpuDmaBuffer::new_zero(
             &device,
             NonZeroUsize::new(len).unwrap(),
@@ -464,10 +491,11 @@ mod tests {
 
     #[test]
     fn request_shape_rejects_dma_address_outside_mask() {
-        let limits = QueueLimits {
-            dma_mask: 0xffff,
-            ..QueueLimits::simple(512, u64::MAX)
-        };
+        let limits = queue_limits_with(
+            DmaConstraints::new(0xffff)
+                .with_align(512)
+                .with_max_segment_size(512),
+        );
         assert_eq!(
             validate_owned_request_shape(
                 info_with(limits).device,
@@ -480,11 +508,11 @@ mod tests {
 
     #[test]
     fn request_shape_rejects_dma_range_tail_outside_mask() {
-        let limits = QueueLimits {
-            dma_mask: 0xffff,
-            dma_alignment: 1,
-            ..QueueLimits::simple(512, u64::MAX)
-        };
+        let limits = queue_limits_with(
+            DmaConstraints::new(0xffff)
+                .with_align(1)
+                .with_max_segment_size(512),
+        );
         assert_eq!(
             validate_owned_request_shape(
                 info_with(limits).device,
@@ -497,7 +525,7 @@ mod tests {
 
     #[test]
     fn request_shape_rejects_unaligned_dma_address() {
-        let limits = QueueLimits::simple(512, u64::MAX);
+        let limits = queue_limits(dma_api::DmaCoherency::NonCoherent);
         assert_eq!(
             validate_owned_request_shape(
                 info_with(limits).device,
@@ -509,13 +537,31 @@ mod tests {
     }
 
     #[test]
+    fn request_shape_rejects_dma_prepared_for_different_coherency() {
+        let limits = queue_limits(dma_api::DmaCoherency::Coherent);
+
+        assert_eq!(
+            validate_owned_request_shape(
+                info_with(limits).device,
+                limits,
+                &request_with(0x1000, 512),
+            ),
+            Err(BlkError::InvalidRequest)
+        );
+    }
+
+    #[test]
     fn request_shape_rejects_unaligned_dma_length() {
         let limits = QueueLimits {
-            dma_alignment: 1,
+            dma: dma_info(
+                dma_api::DmaCoherency::NonCoherent,
+                DmaConstraints::new(u64::MAX)
+                    .with_align(1)
+                    .with_max_segment_size(1024),
+            ),
             dma_length_alignment: 1024,
             max_blocks_per_request: 2,
-            max_segment_size: 1024,
-            ..QueueLimits::simple(512, u64::MAX)
+            ..queue_limits(dma_api::DmaCoherency::NonCoherent)
         };
         assert_eq!(
             validate_owned_request_shape(
@@ -530,11 +576,15 @@ mod tests {
     #[test]
     fn request_shape_rejects_segment_boundary_crossing() {
         let limits = QueueLimits {
-            dma_alignment: 1,
-            segment_boundary: Some(4096),
+            dma: dma_info(
+                dma_api::DmaCoherency::NonCoherent,
+                DmaConstraints::new(u64::MAX)
+                    .with_align(1)
+                    .with_boundary(4096)
+                    .with_max_segment_size(1024),
+            ),
             max_blocks_per_request: 2,
-            max_segment_size: 1024,
-            ..QueueLimits::simple(512, u64::MAX)
+            ..queue_limits(dma_api::DmaCoherency::NonCoherent)
         };
         assert_eq!(
             validate_owned_request_shape(
@@ -549,9 +599,14 @@ mod tests {
     #[test]
     fn request_shape_rejects_segment_larger_than_hardware_limit() {
         let limits = QueueLimits {
+            dma: dma_info(
+                dma_api::DmaCoherency::NonCoherent,
+                DmaConstraints::new(u64::MAX)
+                    .with_align(512)
+                    .with_max_segment_size(512),
+            ),
             max_blocks_per_request: 2,
-            max_segment_size: 512,
-            ..QueueLimits::simple(512, u64::MAX)
+            ..queue_limits(dma_api::DmaCoherency::NonCoherent)
         };
         assert_eq!(
             validate_owned_request_shape(
@@ -565,13 +620,30 @@ mod tests {
 
     #[test]
     fn request_shape_rejects_write_to_read_only_device() {
-        let limits = QueueLimits::simple(512, u64::MAX);
+        let limits = queue_limits(dma_api::DmaCoherency::NonCoherent);
         let mut info = info_with(limits);
         info.device.read_only = true;
 
         assert_eq!(
             validate_owned_request_shape(info.device, limits, &request_with(0x1000, 512),),
             Err(BlkError::NotSupported)
+        );
+    }
+
+    #[test]
+    fn request_validation_rejects_unknown_flags() {
+        let limits = queue_limits(dma_api::DmaCoherency::NonCoherent);
+        let request = OwnedRequest {
+            op: RequestOp::Flush,
+            lba: 0,
+            block_count: 0,
+            data: None,
+            flags: RequestFlags(1 << 24),
+        };
+
+        assert_eq!(
+            validate_owned_request(info_with(limits), &request),
+            Err(BlkError::InvalidRequest)
         );
     }
 }

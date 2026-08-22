@@ -1,112 +1,282 @@
 //! Physical host-console ownership.
 
-use anyhow::{Result, bail};
-use ax_std::os::arceos::modules::ax_task;
-use axvm::AxVMRef;
+use alloc::format;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-fn console_reader_isolation_cpu(
-    host_cpu_count: usize,
-    vcpu_masks: impl IntoIterator<Item = Option<usize>>,
-) -> Option<usize> {
-    let tracked_cpu_count = host_cpu_count.min(usize::BITS as usize);
-    if tracked_cpu_count == 0 {
-        return None;
-    }
+use anyhow::{Context, Result, anyhow, bail};
+use ax_std::os::arceos::modules::ax_runtime::console::{
+    self, ConsoleLogDropReport, ConsoleLogRecord, ConsoleLogSubscription, TaskConsoleInput,
+    TaskConsoleOutput,
+};
+use ax_std::os::arceos::{
+    modules::{
+        ax_runtime::{RuntimeError, RuntimeResult, emergency_console},
+        ax_task::IrqNotify,
+    },
+    sync::NoPreemptMutex,
+};
+use std::sync::{Mutex, OnceLock};
 
-    let online_bits = if tracked_cpu_count == usize::BITS as usize {
-        usize::MAX
-    } else {
-        (1usize << tracked_cpu_count) - 1
-    };
-    let guest_bits = vcpu_masks.into_iter().fold(0usize, |used, mask| {
-        let requested = mask.unwrap_or(online_bits) & online_bits;
-        // A missing, empty, or offline-only mask lets the runtime choose a
-        // fallback CPU, so no CPU can be proven host-only in that case.
-        used | if requested == 0 {
-            online_bits
-        } else {
-            requested
-        }
-    });
-    let host_only_bits = online_bits & !guest_bits;
-    (host_only_bits != 0).then(|| host_only_bits.trailing_zeros() as usize)
+use axvisor::console_mux::HostOutputQueue;
+
+const HOST_OUTPUT_QUEUE_CAPACITY: usize = 64 * 1024;
+const HOST_OUTPUT_BATCH_CAPACITY: usize = 512;
+
+struct HostConsole {
+    input: Option<TaskConsoleInput>,
+    logs: Option<ConsoleLogSubscription>,
+    #[cfg(feature = "test-console-atomic-output")]
+    test_output: TaskConsoleOutput,
 }
 
-/// Configures the polling owner for physical host-console input.
+struct HostOutput {
+    queue: NoPreemptMutex<HostOutputQueue<HOST_OUTPUT_QUEUE_CAPACITY>>,
+    ready: IrqNotify,
+    failed: AtomicBool,
+}
+
+struct HostOutputBatch {
+    bytes: [u8; HOST_OUTPUT_BATCH_CAPACITY],
+    len: usize,
+    dropped_bytes: usize,
+}
+
+static HOST_CONSOLE: OnceLock<HostConsole> = OnceLock::new();
+static HOST_CONSOLE_CONFIGURE: Mutex<()> = Mutex::new(());
+static HOST_OUTPUT: HostOutput = HostOutput::new();
+
+/// Takes the sole task-context input and log subscription before any vCPU starts.
 ///
-/// The console multiplexer remains the only physical UART reader. Input IRQs
-/// stay disabled until the host UART IRQ contract can transfer received bytes
-/// to that owner without introducing a second reader.
-pub(crate) fn configure_host_console_reader(vms: &[AxVMRef]) -> Result<()> {
-    axvm::host::console::set_input_irq_enabled(false);
+/// The returned runtime output capability is moved into one dedicated task.
+/// Every guest/vCPU producer only submits to [`HOST_OUTPUT`] and therefore can
+/// never acquire a sleepable lock or wait for UART backpressure.
+pub(crate) fn configure_host_console() -> Result<()> {
+    let _configure_guard = HOST_CONSOLE_CONFIGURE
+        .lock()
+        .map_err(|_| anyhow!("host console configuration lock was poisoned"))?;
+    if HOST_CONSOLE.get().is_some() {
+        bail!("host console has already been configured");
+    }
 
-    let isolation_cpu = console_reader_isolation_cpu(
-        axvm::host::cpu::count(),
-        vms.iter()
-            .flat_map(|vm| vm.vcpu_snapshots())
-            .map(|vcpu| vcpu.phys_cpu_set),
-    );
-
-    // Temporary polling and scheduler-isolation workaround.
-    //
-    // A pinned, continuously runnable vCPU can starve the polling console
-    // reader on the cooperative FIFO scheduler. The raw UART IRQ contract does
-    // not drain RX into a mux-owned queue or wake this task, so enabling it can
-    // leave a level source asserted without making the sole reader runnable.
-    // When the validated VM topology leaves a CPU outside every explicit vCPU
-    // mask, place the reader there before any vCPU task starts.
-    //
-    // This never rewrites a vCPU mask or guesses when a mask is absent. Remove
-    // the placement after same-CPU FIFO fairness guarantees host-service
-    // progress; re-enable RX IRQs only after the top half drains into a bounded
-    // mux-owned queue and performs an IRQ-safe task wake.
-    let Some(owner_cpu) = isolation_cpu else {
-        return Ok(());
+    let logs = match console::subscribe_logs() {
+        Ok(logs) => Some(logs),
+        Err(RuntimeError::OperationNotSupported) => None,
+        Err(error) => return Err(error).context("failed to subscribe to host console logs"),
     };
-    let owner_affinity = ax_task::AxCpuMask::one_shot(owner_cpu);
-    if !ax_task::set_current_affinity(owner_affinity) {
-        bail!("failed to pin the host console reader to CPU {owner_cpu}");
-    }
-    let actual_owner_cpu = axvm::host::cpu::current_id();
-    if actual_owner_cpu != owner_cpu {
-        bail!(
-            "host console reader affinity selected CPU {owner_cpu}, but migration ended on CPU \
-             {actual_owner_cpu}"
-        );
-    }
-
+    let input = match console::take_input() {
+        Ok(input) => Some(input),
+        Err(RuntimeError::OperationNotSupported) => None,
+        Err(error) => return Err(error).context("failed to take host console input"),
+    };
+    let output = console::output().context("failed to open host console output")?;
+    let host_console = HostConsole {
+        input,
+        logs,
+        #[cfg(feature = "test-console-atomic-output")]
+        test_output: output.clone(),
+    };
+    std::thread::Builder::new()
+        .name("axvisor-console-output".into())
+        .spawn(move || run_host_output_worker(output))
+        .context("failed to start host console output worker")?;
+    let Ok(()) = HOST_CONSOLE.set(host_console) else {
+        unreachable!("the configuration lock serializes the only HOST_CONSOLE publisher");
+    };
     Ok(())
+}
+
+fn host_console() -> Option<&'static HostConsole> {
+    HOST_CONSOLE.get()
 }
 
 /// Reads at most one byte from the physical host console.
 ///
-/// No other Axvisor component may call the platform console input API.
+/// No other Axvisor component may own the runtime RX subscription.
 pub(crate) fn read_host_byte() -> Option<u8> {
-    let mut byte = [0u8; 1];
-    (axvm::host::console::read_bytes(&mut byte) == 1).then_some(byte[0])
-}
-
-/// Yields between polling attempts so other runnable host tasks can progress.
-pub(crate) fn wait_for_host_input() {
-    std::thread::yield_now();
-}
-
-pub(super) fn write_host_bytes(bytes: &[u8]) {
-    axvm::host::console::write_bytes(bytes);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::console_reader_isolation_cpu;
-
-    #[test]
-    fn isolation_requires_a_cpu_excluded_by_every_vcpu() {
-        assert_eq!(
-            console_reader_isolation_cpu(4, [Some(0b0010), Some(0b1000)]),
-            Some(0)
-        );
-        assert_eq!(console_reader_isolation_cpu(4, [None]), None);
-        assert_eq!(console_reader_isolation_cpu(4, [Some(0)]), None);
-        assert_eq!(console_reader_isolation_cpu(4, [Some(usize::MAX)]), None);
+    let input = host_console()?.input.as_ref()?;
+    let mut item = [console::RxItem::default()];
+    while input.try_read(&mut item) != 0 {
+        if let console::RxItem::Byte { byte, .. } = item[0] {
+            return Some(byte);
+        }
     }
+    None
+}
+
+pub(crate) fn read_host_log() -> Option<ConsoleLogRecord> {
+    host_console()?.logs.as_ref()?.try_read()
+}
+
+pub(crate) fn take_host_log_drops() -> ConsoleLogDropReport {
+    host_console()
+        .and_then(|console| console.logs.as_ref())
+        .map_or_else(
+            ConsoleLogDropReport::default,
+            ConsoleLogSubscription::dropped,
+        )
+}
+
+/// Sleeps until physical input or a host log record is published.
+///
+pub(crate) fn wait_for_host_event() {
+    let Some(console) = host_console() else {
+        park_console_task();
+    };
+    let result = match (&console.input, &console.logs) {
+        (Some(input), Some(logs)) => input.wait_event(logs),
+        (Some(input), None) => input.wait_readable(),
+        (None, Some(logs)) => logs.wait_readable(),
+        (None, None) => park_console_task(),
+    };
+    if let Err(err) = result {
+        log::error!("runtime console stopped while Axvisor was running: {err}");
+        park_console_task();
+    }
+}
+
+fn park_console_task() -> ! {
+    static STOPPED: ax_std::os::arceos::modules::ax_task::WaitQueue =
+        ax_std::os::arceos::modules::ax_task::WaitQueue::new();
+    loop {
+        STOPPED.wait();
+    }
+}
+
+/// Submits bytes without allocating, sleeping, or touching UART registers.
+pub(crate) fn submit_host_bytes(bytes: &[u8]) {
+    if host_console().is_none() {
+        return;
+    }
+    HOST_OUTPUT.submit(bytes);
+}
+
+/// Builds one non-interleaved host-output transaction in the fixed queue.
+///
+/// `transaction` runs while the queue's non-sleeping lock is held. It must not
+/// allocate, sleep, or call back into a physical console API.
+pub(crate) fn submit_host_transaction(transaction: impl FnOnce(&mut dyn FnMut(&[u8]))) {
+    if host_console().is_none() {
+        return;
+    }
+    HOST_OUTPUT.submit_transaction(transaction);
+}
+
+fn run_host_output_worker(output: TaskConsoleOutput) {
+    loop {
+        HOST_OUTPUT.ready.wait();
+        if HOST_OUTPUT.failed.load(Ordering::Acquire) {
+            return;
+        }
+        loop {
+            let batch = HOST_OUTPUT.take_batch();
+            if batch.is_empty() {
+                break;
+            }
+            if let Err(error) = write_host_output_batch(&output, &batch) {
+                HOST_OUTPUT.failed.store(true, Ordering::Release);
+                let _ = emergency_console::write_fmt(format_args!(
+                    "\nAxvisor host console output stopped: {error}\n"
+                ));
+                return;
+            }
+        }
+    }
+}
+
+fn write_host_output_batch(output: &TaskConsoleOutput, batch: &HostOutputBatch) -> RuntimeResult {
+    if batch.dropped_bytes != 0 {
+        let report = format!(
+            "\n[Axvisor host console dropped {} queued bytes]\n",
+            batch.dropped_bytes
+        );
+        output.write_all(report.as_bytes())?;
+    }
+    output.write_all(&batch.bytes[..batch.len])?;
+    Ok(())
+}
+
+impl HostOutput {
+    const fn new() -> Self {
+        Self {
+            queue: NoPreemptMutex::new(HostOutputQueue::new()),
+            ready: IrqNotify::new(),
+            failed: AtomicBool::new(false),
+        }
+    }
+
+    fn submit(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        self.submit_transaction(|emit| emit(bytes));
+    }
+
+    fn submit_transaction(&self, transaction: impl FnOnce(&mut dyn FnMut(&[u8]))) {
+        if self.failed.load(Ordering::Acquire) {
+            return;
+        }
+
+        // No hard-IRQ path uses this queue. Disabling preemption is sufficient
+        // for vCPU callbacks and avoids extending local IRQ-off latency across
+        // a complete producer transaction.
+        let mut queue = self.queue.lock();
+        if self.failed.load(Ordering::Acquire) {
+            return;
+        }
+        let mut transaction_queue = queue.begin_transaction();
+        transaction(&mut |bytes| {
+            transaction_queue.enqueue(bytes);
+        });
+        let submitted = transaction_queue.has_activity();
+        drop(transaction_queue);
+        drop(queue);
+        if submitted {
+            self.ready.notify_irq();
+        }
+    }
+
+    fn take_batch(&self) -> HostOutputBatch {
+        let mut batch = HostOutputBatch {
+            bytes: [0; HOST_OUTPUT_BATCH_CAPACITY],
+            len: 0,
+            dropped_bytes: 0,
+        };
+        let mut queue = self.queue.lock();
+        batch.dropped_bytes = queue.take_dropped_bytes();
+        batch.len = queue.dequeue(&mut batch.bytes);
+        batch
+    }
+}
+
+impl HostOutputBatch {
+    fn is_empty(&self) -> bool {
+        self.len == 0 && self.dropped_bytes == 0
+    }
+}
+
+#[cfg(feature = "test-console-atomic-output")]
+/// Fills the bounded runtime ingress while the single owner CPU is held under
+/// `PreemptGuard`.
+pub(crate) fn fill_runtime_output_queue() {
+    static FRAME: [u8; 256] = [b'x'; 256];
+    const MAX_EXPECTED_RUNTIME_INGRESS: usize = 64 * 1024;
+
+    assert_eq!(
+        ax_std::os::arceos::modules::ax_hal::cpu_num(),
+        1,
+        "atomic-output regression requires the runtime owner and test on one CPU"
+    );
+    let mut accepted = 0;
+    while accepted <= MAX_EXPECTED_RUNTIME_INGRESS {
+        match host_console()
+            .expect("host console must be configured before running the regression")
+            .test_output
+            .try_write(&FRAME)
+        {
+            Ok(written) => accepted += written,
+            Err(RuntimeError::WouldBlock) => return,
+            Err(error) => panic!("failed to fill runtime output queue: {error}"),
+        }
+    }
+    panic!("runtime output accepted more than its bounded ingress contract");
 }

@@ -113,6 +113,7 @@ fn interrupt_domain_for_vm(vm: &crate::AxVMRef) -> Option<std::sync::Arc<X86Inte
         .ok()
 }
 
+#[cfg(feature = "host-fs")]
 fn require_interrupt_domain(
     vm: &crate::AxVMRef,
     operation: &'static str,
@@ -123,6 +124,7 @@ fn require_interrupt_domain(
     })
 }
 
+#[cfg(feature = "host-fs")]
 fn forwarding_route_error(
     vm_id: usize,
     guest_gsi: usize,
@@ -207,6 +209,7 @@ impl X86InterruptDomain {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "host-fs"))]
     fn register_forwarding_activator(
         &self,
         guest_gsi: usize,
@@ -504,20 +507,8 @@ pub fn drain_pending_wired_irqs(vm: &VMRef, vcpu: &VCpuRef) {
     }
 }
 
-pub fn register_ioapic_irq_forwarding_route(
-    vm: &crate::AxVMRef,
-    guest_gsi: usize,
-    host_irq: irq_framework::IrqId,
-) -> crate::AxVmResult {
-    register_ioapic_irq_forwarding_route_with_trigger(
-        vm,
-        guest_gsi,
-        host_irq,
-        InterruptTriggerMode::EdgeTriggered,
-    )
-}
-
-pub fn register_ioapic_irq_forwarding_route_with_trigger(
+#[cfg(feature = "host-fs")]
+pub(crate) fn register_ioapic_irq_forwarding_route_with_trigger(
     vm: &crate::AxVMRef,
     guest_gsi: usize,
     host_irq: irq_framework::IrqId,
@@ -542,7 +533,8 @@ pub fn register_ioapic_irq_forwarding_route_with_trigger(
     Ok(())
 }
 
-pub fn register_ioapic_irq_forwarding_activator(
+#[cfg(feature = "host-fs")]
+pub(crate) fn register_ioapic_irq_forwarding_activator(
     vm: &crate::AxVMRef,
     guest_gsi: usize,
     activator: IoApicForwardingActivator,

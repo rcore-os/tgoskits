@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.8...axklib-v0.8.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
+### Other
+
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+- Fix UVC asynchronous transfer lifecycle ([#1924](https://github.com/rcore-os/tgoskits/pull/1924))
+
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/axklib-v0.7.7...axklib-v0.7.8) - 2026-08-09
 
 ### Other

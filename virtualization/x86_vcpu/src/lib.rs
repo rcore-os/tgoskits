@@ -29,10 +29,13 @@ mod test_utils;
 #[cfg(test)]
 mod world_switch_tests;
 
+mod decode;
+mod pending_event;
 mod port_io;
 mod runtime;
 mod types;
 
+pub use decode::X86ByteRegister;
 pub use port_io::{X86PortIoDirection, X86PortIoStringExit};
 pub use runtime::{
     X86NestedPagingFormat, X86PerCpuState, X86Vcpu, apic_access_page_addr, apic_access_page_gpa,
@@ -87,6 +90,25 @@ pub struct X86InterceptedPortRange {
     pub length: u16,
 }
 
+/// Guest MMIO range that should trap and be routed through the VMM's resolved
+/// device runtime instead of the stage-2 page-fault path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct X86InterceptedMmioRange {
+    /// First guest physical address in the range.
+    pub base: X86GuestPhysAddr,
+    /// Number of bytes in the range.
+    pub size: usize,
+}
+
+impl X86InterceptedMmioRange {
+    /// Returns whether `addr` falls inside this range.
+    pub const fn contains(self, addr: X86GuestPhysAddr) -> bool {
+        let base = self.base.as_usize();
+        let addr = addr.as_usize();
+        addr >= base && addr - base < self.size
+    }
+}
+
 /// Guest RAM region backing for x86 vCPU helpers.
 #[derive(Clone, Copy, Debug)]
 pub struct X86GuestMemoryRegion {
@@ -103,6 +125,8 @@ pub struct X86GuestMemoryRegion {
 pub struct X86VcpuSetupConfig {
     /// I/O port ranges routed through the VM's resolved device runtime.
     pub intercepted_ports: [Option<X86InterceptedPortRange>; X86_MAX_INTERCEPTED_PORT_RANGES],
+    /// MMIO ranges routed through the VM's resolved device runtime.
+    pub intercepted_mmio: Vec<X86InterceptedMmioRange>,
     /// Guest RAM regions used by the VMX instruction decoder to read guest bytes.
     pub guest_memory_regions: Vec<X86GuestMemoryRegion>,
 }
@@ -111,6 +135,7 @@ impl Default for X86VcpuSetupConfig {
     fn default() -> Self {
         Self {
             intercepted_ports: [None; X86_MAX_INTERCEPTED_PORT_RANGES],
+            intercepted_mmio: Vec::new(),
             guest_memory_regions: Vec::new(),
         }
     }
@@ -146,6 +171,33 @@ impl X86VcpuSetupConfig {
     /// Iterates over device-owned I/O port ranges.
     pub fn intercepted_port_ranges(&self) -> impl Iterator<Item = X86InterceptedPortRange> + '_ {
         self.intercepted_ports.iter().filter_map(|range| *range)
+    }
+
+    /// Adds one device-owned MMIO range to the vCPU decode allow-list.
+    pub fn add_intercepted_mmio_range(
+        &mut self,
+        base: X86GuestPhysAddr,
+        size: usize,
+    ) -> X86VcpuResult {
+        if size == 0 {
+            return Err(X86VcpuError::InvalidInput);
+        }
+        if base.as_usize().checked_add(size - 1).is_none() {
+            return Err(X86VcpuError::InvalidInput);
+        }
+
+        let range = X86InterceptedMmioRange { base, size };
+        if self.intercepted_mmio.contains(&range) {
+            return Ok(());
+        }
+
+        self.intercepted_mmio.push(range);
+        Ok(())
+    }
+
+    /// Iterates over device-owned MMIO ranges.
+    pub fn intercepted_mmio_ranges(&self) -> impl Iterator<Item = X86InterceptedMmioRange> + '_ {
+        self.intercepted_mmio.iter().copied()
     }
 }
 
@@ -264,5 +316,51 @@ mod tests {
                 .unwrap();
         }
         assert!(config.add_intercepted_port_range(0x3000, 1).is_err());
+    }
+
+    #[test]
+    fn setup_config_records_intercepted_mmio_ranges() {
+        let mut config = X86VcpuSetupConfig::default();
+        let base = X86GuestPhysAddr::from_usize(0x8000_0000);
+
+        config.add_intercepted_mmio_range(base, 0x1000).unwrap();
+        config.add_intercepted_mmio_range(base, 0x1000).unwrap();
+
+        let ranges = config
+            .intercepted_mmio_ranges()
+            .collect::<std::vec::Vec<_>>();
+        assert_eq!(
+            ranges,
+            std::vec![X86InterceptedMmioRange { base, size: 0x1000 }]
+        );
+    }
+
+    #[test]
+    fn setup_config_rejects_invalid_intercepted_mmio_ranges() {
+        let mut config = X86VcpuSetupConfig::default();
+
+        assert!(
+            config
+                .add_intercepted_mmio_range(X86GuestPhysAddr::from_usize(0x8000_0000), 0)
+                .is_err()
+        );
+        assert!(
+            config
+                .add_intercepted_mmio_range(X86GuestPhysAddr::from_usize(usize::MAX), 0x1000)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn intercepted_mmio_range_contains_guest_physical_addresses() {
+        let range = X86InterceptedMmioRange {
+            base: X86GuestPhysAddr::from_usize(0x8000_0000),
+            size: 0x1000,
+        };
+
+        assert!(range.contains(X86GuestPhysAddr::from_usize(0x8000_0000)));
+        assert!(range.contains(X86GuestPhysAddr::from_usize(0x8000_0fff)));
+        assert!(!range.contains(X86GuestPhysAddr::from_usize(0x7fff_ffff)));
+        assert!(!range.contains(X86GuestPhysAddr::from_usize(0x8000_1000)));
     }
 }

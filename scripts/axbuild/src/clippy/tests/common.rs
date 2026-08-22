@@ -6,12 +6,7 @@ use std::{
 use cargo_metadata::{Metadata, Package};
 use serde_json::Value;
 
-use crate::clippy::{
-    check::{ClippyCheck, ClippyDepsMode},
-    expand::expand_clippy_checks,
-    runner::CargoRunner,
-    selection::SelectedClippyPackage,
-};
+use crate::clippy::{check::ClippyCheck, expand::expand_clippy_checks, runner::CargoRunner};
 
 pub(super) fn pkg(
     name: &str,
@@ -178,15 +173,7 @@ pub(super) fn metadata_for_packages(packages: &[Package]) -> Metadata {
 }
 
 pub(super) fn expand(packages: &[Package]) -> Vec<ClippyCheck> {
-    let selected = packages
-        .iter()
-        .cloned()
-        .map(|package| SelectedClippyPackage {
-            package,
-            deps_mode: ClippyDepsMode::NoDeps,
-        })
-        .collect::<Vec<_>>();
-    expand_clippy_checks(&selected, &metadata_for_packages(packages))
+    expand_clippy_checks(packages, &metadata_for_packages(packages))
         .expect("test package clippy checks should expand")
 }
 

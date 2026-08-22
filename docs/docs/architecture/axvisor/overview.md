@@ -8,7 +8,7 @@ slug: /architecture/axvisor
 
 Axvisor 是基于 ArceOS 的统一组件化 Type-I Hypervisor。它既非直接包裹 KVM 的用户态工具，也非单体式虚拟机管理程序，而是建立在 ArceOS 运行时、虚拟化组件库与分层配置系统之上的 Hypervisor 软件栈。
 
-本文聚焦 Axvisor 的组织原理、配置体系与关键执行路径。若需要先运行 QEMU 示例，请先阅读 [Axvisor 快速上手](/docs/quickstart/axvisor)；客户机配置、设备直通与强制虚拟串口的详细语义见 [Axvisor 客户机配置与 Machine 设备模型](/docs/architecture/axvisor-guest-machine)。
+本文聚焦 Axvisor 的组织原理、配置体系与关键执行路径。若需要先运行虚拟开发板示例，请先阅读 [Axvisor 快速上手](/docs/quickstart/axvisor)。客户机设计按职责分为[客户机配置](./guest-configuration.md)、[资源规划](./machine-profile.md)、[设备运行时](./device-runtime.md)和[客户机控制台](./guest-console.md)四篇文档。AxVM 内部怎样区分共同架构动作、部分架构能力和单一实现，见[《AxVM 分层能力接口设计》](https://github.com/rcore-os/tgoskits/blob/dev/docs/design/axvm-capability-layering.md)。
 
 ## 系统定位
 
@@ -100,18 +100,22 @@ fn main() {
 }
 ```
 
-运行时主线可概括为五步：检查硬件支持 → 使能虚拟化 → 初始化 VMM → 启动 VM 与完成等待任务 → 进入并发运行的管理 shell。`GuestConsoleMux` 是宿主控制台的唯一输入读取者，默认把输入附着到 ID 最小的运行中客户机；`Ctrl+Alt+H` 返回 shell，`Ctrl+Alt+[` 与 `Ctrl+Alt+]` 在运行中客户机之间循环切换。
+运行时主线可概括为五步：检查硬件支持 → 使能虚拟化 → 初始化 VMM → 启动 VM 与完成等待任务 → 进入并发运行的管理 shell。`GuestConsoleMux` 是宿主控制台的唯一输入读取者，默认把输入附着到 ID 最小的运行中客户机；`Ctrl+X` 后输入 `h` 返回 shell，输入 `[` 或 `]` 在运行中客户机之间循环切换。
 
 ### 架构适配
 
-`hal/arch/` 提供四套架构适配，每套实现各自架构的虚拟化启用、中断注入和上下文切换。aarch64 和 riscv64 是当前最成熟的两条路径，loongarch64 处于可用状态，x86_64 仍为 stub 占位。
+`hal/arch/` 提供四套宿主接入，AxVM 内部再为每种目标架构实现运行、机器、客户机启动、镜像装载和宿主时间等共同能力。通用虚拟处理器循环只依赖统一架构入口；处理器启动这类只有部分架构具备的动作由独立能力接口约束，没有该能力的架构无法误用。
+
+这种分层不依靠在通用代码中反复判断架构名称。架构目录根只负责选择四个目标模块，“当前目标”命名空间集中内部类型别名和转发；AxVM 不向 Axvisor 导出架构模块或架构专用函数。宿主文件系统释放、块设备直通准备和中断路由注册都通过架构无关的宿主服务入口完成，龙芯客户机中断路由随虚拟机注册与注销自动挂接和拆除。
+
+目标模块、专有寄存器和后端选择仍使用条件编译；领域能力的有无由实现列表表达。公共行为由默认方法提供，真实硬件差异由具体架构覆盖，只有一个实现的动作留在具体路径。完整判据见上文的分层能力设计。
 
 | 架构 | 虚拟化方式 | 中断注入 |
 | --- | --- | --- |
-| aarch64 | EL2 虚拟化 | GIC 中断注入 |
-| riscv64 | H 扩展 | PLIC 中断注入 |
-| loongarch64 | LVZ 虚拟化 | 中断注入 |
-| x86_64 | stub 占位 | — |
+| 六十四位 ARM | 第二异常级虚拟化 | 通用中断控制器注入 |
+| 精简指令集 V | 虚拟化扩展 | 平台级中断控制器注入 |
+| 龙芯 | 龙芯虚拟化扩展 | 扩展输入与平台中断级联注入 |
+| 六十四位 x86 | 英特尔与超微硬件虚拟化扩展 | 本地与输入输出高级可编程中断控制器注入 |
 
 ### 配置驱动的 VM 实例化
 
@@ -172,7 +176,7 @@ VM 配置定义每个 Guest 的资源分配与运行参数，包括 CPU 数量�
 | `[kernel]` | entry point、image location、kernel path、load address、memory regions |
 | `[devices]` | 结构化的 `passthrough` 与 `disabled` 物理设备选择器 |
 
-中断控制器、定时器和固件接口由架构创建；默认串口优先由 host FDT/ACPI 派生并以 machine profile 兜底。普通虚拟设备通过 `[[devices.virtual]]` 的 `id + model + options` 交给代码 catalog 创建 dyn model，`console0` 可按 ID 覆盖型号和语义参数，但配置始终不填写地址或中断号。`virtualized` 客户机只映射显式选择的物理设备；`passthrough` 客户机默认选择全部 guest-assignable 物理设备，再按最终解析后设备图为 RAM、禁用设备、宿主物理 UART、host replacement 和虚拟设备打洞。配置不接受旧 `vm_type`、`emu_devices`、裸地址/IRQ 或 `interrupt_mode` 字段。
+中断控制器、定时器和固件接口由架构创建；默认串口优先由 host FDT/ACPI 派生并以 machine profile 兜底。普通虚拟设备通过 `[[devices.virtual]]` 的 `id + model + options` 交给代码 catalog 创建 dyn model，`console0` 可按 ID 覆盖型号和语义参数，但配置始终不填写地址或中断号。`virtualized` 客户机只映射显式选择的物理设备；`passthrough` 客户机默认选择全部 guest-assignable 物理设备，再按最终解析后设备图为 RAM、禁用设备、宿主物理 UART、host replacement 和虚拟设备打孔。解析器只保留数字 `vm_type` 的只读兼容入口，序列化与 schema 统一使用 `guest_type`；`emu_devices`、裸地址/IRQ 和 `interrupt_mode` 等已移除字段会被拒绝。
 
 ## 关键执行流程
 

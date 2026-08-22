@@ -82,6 +82,9 @@ pub(super) fn all_qemu_case_groups(
     for group in
         test_suite::discover_group_names(arceos.app.workspace_root(), ARCEOS_TEST_SUITE_OS)?
     {
+        if group == ARCEOS_AXTEST_GROUP {
+            continue;
+        }
         let cases: Option<Vec<qemu_test::ListedQemuCase>> = match group.as_str() {
             ARCEOS_RUST_TEST_GROUP => rust_qemu_listed_cases(arceos, selected_case)
                 .ok()
@@ -89,20 +92,6 @@ pub(super) fn all_qemu_case_groups(
             ARCEOS_C_TEST_GROUP => c_qemu_listed_cases(arceos, selected_case)
                 .ok()
                 .filter(|v| !v.is_empty()),
-            ARCEOS_AXTEST_GROUP => {
-                let dir = arceos_test_group_dir(arceos.app.workspace_root(), &group);
-                match qemu_test::discover_all_qemu_cases_with_archs(
-                    &dir,
-                    selected_case,
-                    "ArceOS",
-                    &group,
-                ) {
-                    Ok(cases) if !cases.is_empty() => Some(cases),
-                    Ok(_) => None,
-                    Err(err) if qemu_list_error_is_ignorable(err.kind()) => None,
-                    Err(err) => return Err(anyhow::Error::new(err)),
-                }
-            }
             _ => {
                 let dir = arceos_test_group_dir(arceos.app.workspace_root(), &group);
                 match qemu_test::discover_all_qemu_cases_with_archs(

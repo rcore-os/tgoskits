@@ -44,7 +44,7 @@ QEMU 的 machine、CPU、UEFI、firmware 和 device 全部来自该文件。`--s
 
 基础 Cargo 构建保留 ELF。QEMU TOML 的 `to_bin` 决定运行阶段是否生成 BIN；例如仓库的 aarch64/riscv64/x86_64 默认配置均明确设置该值。x86_64 与 loongarch64 默认配置启用 UEFI 且请求 BIN。
 
-当应用或测试用例声明全局 `-snapshot` 且 QEMU 启用 UEFI 时，`apply_drive_snapshot_without_global_snapshot()` 删除全局标记，并给每个 `-drive` 加上 `snapshot=on`。这保留磁盘写时复制，同时避免全局 snapshot 破坏 EFI 可写设备的语义。
+应用和测试用例的 rootfs 写入语义由 QEMU TOML 的 `rootfs_write_policy` 与 `patch_rootfs()` 控制。测试路径固定使用 `discard`，应用路径默认 `discard` 但可显式声明 `persist`；`discard` 只让 rootfs drive 进入写时复制，避免全局 `-snapshot` 影响 EFI pflash/ESP 等非 rootfs 设备。
 
 ## 2. U-Boot 启动
 

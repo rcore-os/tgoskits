@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/rcore-os/tgoskits/compare/mmio-api-v0.2.4...mmio-api-v0.3.0) - 2026-08-20
+
+### Other
+
+- *(axtest)* standardize Cargo and QEMU test flow ([#2088](https://github.com/rcore-os/tgoskits/pull/2088))
+
 ## [0.2.4](https://github.com/rcore-os/tgoskits/compare/mmio-api-v0.2.3...mmio-api-v0.2.4) - 2026-08-09
 
 ### Other

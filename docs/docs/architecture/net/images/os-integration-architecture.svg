@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 680" role="img" aria-labelledby="title desc">
+  <title id="title">ArceOS、StarryOS 与 Axvisor 的网络集成边界</title>
+  <desc id="desc">ArceOS 运行时负责设备初始化，StarryOS 通过系统调用和 Linux ABI 使用 ax-net，Axvisor 仅在 http-axum feature 下经 ax-std net 间接使用 SocketOps。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#50657d"/></marker>
+    <style>
+      .panel{fill:#f8fafc;stroke:#91a0b2;stroke-width:2}.os{fill:#f0edff;stroke:#7457b6;stroke-width:2}
+      .adapter{fill:#eaf3ff;stroke:#3478c0;stroke-width:2}.api{fill:#fff4df;stroke:#c98216;stroke-width:2}
+      .core{fill:#eaf8ef;stroke:#398a55;stroke-width:2}.title{font:700 24px sans-serif;fill:#213247}
+      .heading{font:700 18px sans-serif;fill:#31465f}.text{font:600 15px sans-serif;fill:#26384d}.small{font:14px sans-serif;fill:#455a72}
+      .edge{fill:none;stroke:#50657d;stroke-width:2.1;marker-end:url(#arrow)}
+      .indirect{fill:none;stroke:#7457b6;stroke-width:2.1;stroke-dasharray:7 5;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <text class="title" x="35" y="40">三个项目共享 ax-net，但进入路径不同</text>
+
+  <rect class="panel" x="30" y="70" width="350" height="520" rx="18"/>
+  <text class="heading" x="55" y="102">ArceOS / platform</text>
+  <rect class="os" x="75" y="135" width="260" height="66" rx="11"/>
+  <text class="text" x="129" y="162">platform / driver probe</text><text class="small" x="139" y="184">发现 NIC 与 vsock</text>
+  <rect class="adapter" x="75" y="240" width="260" height="80" rx="11"/>
+  <text class="text" x="130" y="270">ax-runtime devices.rs</text><text class="small" x="116" y="295">解析配置并转交设备列表</text>
+  <rect class="api" x="75" y="360" width="260" height="116" rx="11"/>
+  <text class="text" x="112" y="389">init_network / init_vsock</text><text class="small" x="102" y="416">register_device_with_config</text><text class="small" x="116" y="441">唯一直接初始化入口</text>
+
+  <rect class="panel" x="445" y="70" width="350" height="520" rx="18"/>
+  <text class="heading" x="470" y="102">StarryOS</text>
+  <rect class="os" x="490" y="135" width="260" height="66" rx="11"/>
+  <text class="text" x="530" y="162">Linux / POSIX application</text><text class="small" x="535" y="184">socket、ioctl、netlink、proc</text>
+  <rect class="adapter" x="490" y="240" width="260" height="80" rx="11"/>
+  <text class="text" x="543" y="270">Starry syscall/net</text><text class="small" x="526" y="295">ABI 翻译、用户内存与 fd</text>
+  <rect class="api" x="490" y="360" width="260" height="116" rx="11"/>
+  <text class="text" x="541" y="389">SocketOps + query API</text><text class="small" x="520" y="416">接口、路由、ARP、统计</text><text class="small" x="521" y="441">运行期 IPv4 地址更新</text>
+
+  <rect class="panel" x="860" y="70" width="350" height="520" rx="18"/>
+  <text class="heading" x="885" y="102">Axvisor（间接）</text>
+  <rect class="os" x="905" y="135" width="260" height="66" rx="11"/>
+  <text class="text" x="961" y="162">http-axum feature</text><text class="small" x="958" y="184">管理面 HTTP 服务</text>
+  <rect class="adapter" x="905" y="240" width="260" height="80" rx="11"/>
+  <text class="text" x="992" y="270">ax-std/net</text><text class="small" x="942" y="295">标准库式 socket wrapper</text>
+  <rect class="api" x="905" y="360" width="260" height="116" rx="11"/>
+  <text class="text" x="984" y="389">SocketOps</text><text class="small" x="948" y="416">不直接初始化 ax-net</text><text class="small" x="935" y="441">不拥有独立协议核心</text>
+
+  <rect class="core" x="250" y="620" width="740" height="48" rx="14"/>
+  <text class="text" x="488" y="650">ax-net：NetControl + Service + Router</text>
+
+  <path class="edge" d="M205 201 V240"/><path class="edge" d="M205 320 V360"/><path class="edge" d="M205 476 V600 H420 V620"/>
+  <path class="edge" d="M620 201 V240"/><path class="edge" d="M620 320 V360"/><path class="edge" d="M620 476 V620"/>
+  <path class="indirect" d="M1035 201 V240"/><path class="indirect" d="M1035 320 V360"/><path class="indirect" d="M1035 476 V600 H820 V620"/>
+</svg>

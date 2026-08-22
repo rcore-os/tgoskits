@@ -24,15 +24,19 @@ pub use self::{
         set_ethernet_irq_registrar,
     },
     socket::{
-        CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions,
-        Shutdown, Socket, SocketAddrEx, SocketOps,
+        CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions,
+        Shutdown, Socket, SocketAddrEx, SocketCmsg, SocketOps,
     },
+    router::NetDevStats,
 };
+pub use error::{NetError, NetResult};
 ```
 
-## API 分层
+re-export 列表构成调用方可依赖的稳定表面，内部 `Service`、Router queue 与 smoltcp handle 均未公开。API 分层据此按能力和生命周期组织这些类型，而不是按内部模块目录暴露实现。
 
-public API 按生命周期和调用方分为：
+## 1. API 分层
+
+公共 API 按生命周期和调用方划分为初始化、驱动、socket、查询、运行期配置与名称解析边界。每类入口只暴露上层完成工作所需的能力，并把 `Service`、`NetControl`、`Router` 和 smoltcp 类型留在 crate 内部，避免调用者依赖锁与存储细节。
 
 - 初始化与配置 API：由 `ax-runtime` 或平台初始化代码调用。
 - 运行时查询 API：由系统 ABI、诊断接口、`/proc`、ioctl 等读取网络状态。
@@ -43,28 +47,17 @@ public API 按生命周期和调用方分为：
 
 API 边界如下：
 
-```mermaid
-flowchart TB
-    Runtime["ax-runtime / platform init"] --> Init["init_network() / init_vsock()"]
-    Drivers["NIC drivers"] --> DriverApi["EthernetDriver / IRQ registrar"]
-    Syscall["socket syscalls"] --> SocketApi["SocketOps / Socket enum"]
-    Abi["ioctl / proc / diagnostics"] --> QueryApi["interfaces() / routes / arp"]
-    Resolver["resolver"] --> DnsApi["dns_query() / dns_servers()"]
+![ax-net 公共 API 边界](images/api-boundaries.svg)
 
-    Init --> Internal["Service + NetControl + Router"]
-    DriverApi --> Internal
-    SocketApi --> Internal
-    QueryApi --> Internal
-    DnsApi --> Internal
-```
+图中的多个入口最终汇合到共享实现，但这不意味着调用者可以跨边界交换内部对象。初始化 API 负责创建所有者，查询 API 只返回快照，socket 与驱动 API 则通过 trait 或枚举表达受限能力。
 
-## 初始化与配置
+## 2. 初始化配置
 
 初始化 API 构造全局网络栈。它们是全局单例初始化入口，不返回 `Service` 或 `Router` 的可变引用。
 
-### NetworkConfig
+### 2.1 网络配置模型
 
-`NetworkConfig` 描述启动时的接口配置：
+`NetworkConfig` 描述启动阶段接口匹配、IPv4 来源、route metric 与 DNS 配置，是 `init_network()` 发布全局状态前校验的顶层输入。调用方传递拥有型结构，而不是逐项修改 `Service`，从而保证接口、路由和 DNS 可以作为一个一致配置构建。
 
 ```rust
 pub struct NetworkConfig {
@@ -110,7 +103,11 @@ pub struct StaticIpConfig {
 - `metric` 同时影响路由选择和 DNS server 排序。
 - `default_dns_servers` 是接口级 DNS 不可用时的 fallback 来源。
 
-### init_network
+字段列表显示 `NetworkConfig` 只描述期望状态，真正的全局所有者尚未创建。网络初始化入口负责校验并把这些配置原子转化为接口、路由、DNS 与设备 Worker。
+
+### 2.2 网络初始化
+
+`init_network()` 是 Ethernet 网络栈的唯一全局构造入口，它把 `EthernetDeviceList` 和 `NetworkConfig` 转换为共享的 `Service`、`NetControl`、`Router` 及设备 Worker。维护初始化代码时应保持配置校验、全局单例发布和后台任务启动的先后关系，因为 socket API 在该入口返回后会立即依赖这些对象。
 
 ```rust
 pub fn init_network(net_devs: EthernetDeviceList, config: NetworkConfig);
@@ -127,7 +124,9 @@ pub fn init_network(net_devs: EthernetDeviceList, config: NetworkConfig);
 
 `init_network()` 是一次性初始化入口，重复初始化会触发全局单例保护。
 
-### Poll Trigger
+### 2.3 轮询触发
+
+普通调用者通过 `request_poll()` 表达“协议状态需要继续推进”，而不直接持有 `SERVICE` 执行 smoltcp poll。这个边界把 socket 热路径与串行 `PollOwnership` 解耦，并让设备 Worker、定时器和应用线程复用同一唤醒机制。
 
 ```rust
 pub fn request_poll();
@@ -145,7 +144,9 @@ pub fn request_poll() {
 
 `publish_poll_request()` 使用 `swap(false→true)` 合并重复请求：只有从未 pending 变为 pending 的第一次调用会真正 `notify_one()`。这样 socket 热路径可以频繁请求协议推进，而不会在 worker 尚未消费请求时制造重复唤醒。
 
-### Vsock 初始化
+### 2.4 Vsock 初始化
+
+`init_vsock()` 只负责发布 vsock 设备并启动其连接管理运行时，不参与 Ethernet `Router` 或 smoltcp `Interface` 的初始化。当前实现从传入列表末尾取一个设备，因此调用方必须把设备选择视为显式约束，而不能假定函数会注册列表中的第一个或全部设备。
 
 ```rust
 #[cfg(feature = "vsock")]
@@ -159,20 +160,37 @@ pub type VsockDeviceList = Vec<VsockDevice>;
 
 vsock 不进入 smoltcp `SocketSet`，也不实现 `ax-net` 内部 IP `Device` trait。它通过 `rdif_vsock::Interface` 和 vsock connection manager 进入 AF_VSOCK socket backend。
 
-`init_vsock()` 只会注册传入列表中的第一个设备；列表为空时仅记录 warning，不创建“已初始化但无设备”的独立状态位。AF_VSOCK 后续操作若没有设备，会在 `device::vsock_*()` 路径返回 `NotFound`。
+`init_vsock()` 内部用 `pop()` 取传入列表的**最后一个**设备并注册，其余设备忽略；列表为空时仅记录 warning，不创建“已初始化但无设备”的独立状态位。AF_VSOCK 后续操作若没有设备，会在 `device::vsock_*()` 路径返回 `NotFound`。
 
-## 运行时查询
+## 3. 运行时查询
 
 查询 API 返回只读快照。调用方不应持有快照并假设其永久有效；DHCP、运行期设备注册或后续 link state 更新都可能改变接口、路由和 DNS 状态。
 
-### 接口快照
+### 3.1 接口快照
+
+接口查询 API 从 `NetControl` 返回拥有所有权的 `InterfaceInfo` 快照，使 ioctl、netlink 和诊断代码无需长期持有控制面读锁。`InterfaceId`、接口名、flags 和 IPv4 配置由同一次状态提交维护，调用方应通过这些入口查询，而不是复制另一份接口表。
 
 ```rust
 pub fn interfaces() -> Vec<InterfaceInfo>;
 pub fn interface_by_name(name: &str) -> Option<InterfaceInfo>;
 pub fn interface_by_id(id: InterfaceId) -> Option<InterfaceInfo>;
 pub fn ipv4_config(name: &str) -> Option<Ipv4InterfaceConfig>;
+pub fn net_dev_stats() -> Vec<NetDevStats>;
+pub fn set_interface_ipv4(
+    interface_id: InterfaceId,
+    ip: Ipv4Addr,
+    prefix_len: u8,
+) -> NetResult<()>;
+pub fn remove_interface_ipv4(
+    interface_id: InterfaceId,
+    ip: Ipv4Addr,
+    prefix_len: u8,
+) -> NetResult<()>;
 ```
+
+`set_interface_ipv4()` / `remove_interface_ipv4()` 是 StarryOS rtnetlink 使用的运行期控制入口。当前每个 Ethernet 接口最多保存一个 IPv4 地址：设置第二个地址返回 `AlreadyExists`，删除必须与现有地址和 prefix 完全一致。设置操作会移除该接口的 DHCP 状态、安装 connected route，但不会创建 default route 或 gateway；删除也会关闭该接口 DHCP 并移除它贡献的路由和 DHCP DNS。
+
+`NetDevStats` 按接口返回累计的 `rx/tx bytes`、`packets`、`errors` 和 `dropped`。Ethernet 的字节口径是“不含 FCS 的 L2 frame”，loopback 则按 IP packet 长度；见[多设备实现](devices.md#9-网卡统计)。
 
 `InterfaceId` 是稳定接口 ID，同时作为 StarryOS/Linux ifindex 来源：
 
@@ -211,7 +229,11 @@ let linux_ifindex = info.id.to_linux_ifindex();
 let id = InterfaceId::from_linux_ifindex(linux_ifindex).unwrap();
 ```
 
-### 路由快照
+示例强调名称只用于查找，跨 ABI 保存和比较应使用 `InterfaceId`。路由快照沿用同一接口身份，使 route dump 可以和 ioctl、AF_PACKET 结果稳定关联。
+
+### 3.2 路由快照
+
+路由查询将内部 `RouteTable` 的规则转换为稳定的 `RouteInfo`，其中 default route 与普通前缀路由共享 metric 和接口标识语义。该快照服务于 StarryOS route dump 和诊断展示，实际发包仍由 `Router::dispatch()` 在最新共享路由表上重新决策。
 
 ```rust
 pub fn default_routes() -> Vec<RouteInfo>;
@@ -231,7 +253,9 @@ pub struct RouteInfo {
 
 调用方可用它实现 route 诊断、默认网关展示或 Linux 兼容查询；socket 发送路径不应自行遍历 `RouteInfo`，而应通过 socket backend 调用控制面的 route decision。
 
-### ARP 快照
+### 3.3 ARP 快照
+
+`arp_entries()` 聚合各 Ethernet 设备当前可见的邻居缓存，并把驱动内部表示收敛为可供 procfs 或管理接口消费的 `ArpEntry`。返回值是瞬时快照，既不承诺缓存项持续有效，也不会把 ARP 生命周期控制权交给查询方。
 
 ```rust
 pub fn arp_entries() -> Vec<ArpEntry>;
@@ -251,11 +275,13 @@ pub struct ArpEntry {
 
 `device` 字段是真实接口名。loopback 不产生 ARP entry。
 
-## Socket Facade
+## 4. Socket 外观层
 
 socket API 统一 AF_INET、AF_UNIX 和 AF_VSOCK 的公共操作形状。协议细节由具体 backend 负责。
 
-### SocketAddrEx
+### 4.1 地址模型
+
+`SocketAddrEx` 统一承载 IP、Unix 和 vsock 地址，使 `SocketOps` 可以保持单一方法集合，同时让各后端在入口处验证地址族。这个枚举是 syscall 层与具体 transport 之间的类型边界，新增地址族时需要同步审视 bind、connect、name 查询和错误映射。
 
 ```rust
 pub enum SocketAddrEx {
@@ -268,15 +294,18 @@ pub enum SocketAddrEx {
 
 地址族不匹配时，`into_ip()`、`into_unix()`、`into_vsock()` 返回对应错误，调用方不需要手工 match 所有 backend。
 
-### Send/Recv Options
+### 4.2 收发选项
+
+`SendOptions` 和 `RecvOptions` 把 flags、目标地址及控制消息需求从 syscall 参数转换为后端可匹配的结构化输入。选项对象不仅影响复制行为，还决定 peek、非阻塞和 ancillary data 等用户可见语义，因此字段扩展必须同时核对各 transport 的支持矩阵。
 
 ```rust
-pub type CMsgData = Box<dyn Any + Send + Sync>;
+pub type CMsgData = Box<dyn CMsgPayload>;
 
 pub struct SendOptions {
     pub to: Option<SocketAddrEx>,
     pub flags: SendFlags,
     pub cmsg: Vec<CMsgData>,
+    pub sender_credentials: Option<UnixCredentials>,
 }
 
 pub struct RecvOptions<'a> {
@@ -304,20 +333,26 @@ bitflags! {
     pub struct RecvFlags: u32 {
         const PEEK = 0x01;
         const TRUNCATE = 0x02;
+        const OOB = 0x04;
         const DONTWAIT = 0x40;
     }
 }
 ```
 
+`CMsgPayload` 要求 `Clone` 能力，因而 Unix datagram/seqpacket 的 `MSG_PEEK` 可以复制辅助数据而不消费原消息。接收侧的内建 payload 包括 `IpCmsg::{Ipv4Ttl, Ipv4Tos, Ipv6TrafficClass}` 和 `SocketCmsg::{Credentials, Timestamp}`。`sender_credentials` 由 StarryOS 在实际发送点写入，避免 transport 伪造 pid/uid/gid。
+
 `Shutdown::{Read, Write, Both}` 表达 `shutdown(2)` 的半关闭方向。
 
-### SocketOps
+### 4.3 套接字能力
+
+`SocketOps` 定义所有 socket backend 必须提供的最小行为面，包括生命周期、地址操作、数据 I/O 和 readiness。上层只依赖这个 trait，TCP、UDP、raw、Unix 与 vsock 则在实现内部维护各自状态，避免 smoltcp 类型泄漏到系统调用层。
 
 ```rust
 pub trait SocketOps: Configurable {
     fn bind(&self, local_addr: SocketAddrEx) -> NetResult;
     fn connect(&self, remote_addr: SocketAddrEx) -> NetResult;
     fn listen(&self, _backlog: usize) -> NetResult;
+    fn is_listening(&self) -> bool;
     fn accept(&self) -> NetResult<Socket>;
     fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize>;
     fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> NetResult<usize>;
@@ -347,13 +382,15 @@ pub enum Socket {
 | --- | --- | --- |
 | `tcp::TcpSocket` | `TcpSocket::new()` | AF_INET / SOCK_STREAM |
 | `udp::UdpSocket` | `UdpSocket::new()` | AF_INET / SOCK_DGRAM |
-| `raw::RawSocket` | `RawSocket::new(ip_version, ip_protocol)` | AF_INET / SOCK_RAW |
-| `unix::UnixSocket` | `UnixSocket::new(Transport)` | AF_UNIX / stream,dgram |
+| `raw::RawSocket` | `RawSocket::new(ip_version, ip_protocol)`；`new_ipv4_ping()` | AF_INET/AF_INET6 SOCK_RAW；IPv4 ping SOCK_DGRAM |
+| `unix::UnixSocket` | `UnixSocket::new(Transport)` | AF_UNIX / stream、datagram、seqpacket |
 | `vsock::VsockSocket` | `VsockSocket::new()` | AF_VSOCK / stream |
 
-### 设备绑定
+能力表显示默认方法与 backend 覆盖之间的关系，未覆盖的操作必须返回稳定的 unsupported 错误。设备绑定属于 IP socket 共有的路由约束，因此单独通过 TCP、UDP 和 Raw Socket 的显式入口暴露。
 
-TCP、UDP 和 raw socket 提供直接绑定接口：
+### 4.4 设备绑定
+
+TCP、UDP 和 Raw Socket 都通过 `DeviceBinding` 表达显式 `SO_BINDTODEVICE` 或具体本地地址推导出的接口约束。绑定只过滤 socket 的路由、readiness 和接收候选，不修改全局 `RouteTable`，因此不同 socket 可以安全选择不同出口。
 
 ```rust
 impl TcpSocket {
@@ -377,11 +414,13 @@ pub struct DeviceBinding {
 
 绑定具体本地地址时，TCP/UDP/raw backend 也会通过控制面反查该地址所属接口，并把 route/waker 选择限制到对应接口。未绑定接口的 connect/sendto 由 route decision 自动选择源地址和出接口。
 
-## Socket Options
+## 5. Socket 选项
 
 socket option API 使用一个 get enum 和一个 set enum 表达 SO_*、TCP_* 和 IP_*。
 
-### Configurable
+### 5.1 选项配置边界
+
+`Configurable` 将 `getsockopt()` 和 `setsockopt()` 收敛为类型化枚举操作，并由 `Socket` 外观层分发到通用或协议专属状态。实现新的选项时应返回明确的 unsupported 或参数错误，不能通过静默保存一个后端永远不会消费的值伪装支持。
 
 ```rust
 #[enum_dispatch]
@@ -396,11 +435,14 @@ pub trait Configurable {
 
 `get_option()` / `set_option()` 在 backend 返回 `supported = false` 时映射为 `ENOPROTOOPT`，调用方不需要自己区分“协议不支持”和“选项值非法”。
 
-### Option 集合
+### 5.2 选项集合
+
+选项枚举是 Linux/POSIX 常量与 Rust 后端状态之间的稳定映射，`GeneralOptions` 只保存跨协议共享且确实会被读取的值。协议专属变体应由对应 socket 实现解释，这样调用方可以区分可读回显、实际影响协议行为和明确不支持三种情况。
 
 ```rust
 define_options! {
     ReuseAddress(bool),
+    ReusePort(bool),
     Error(i32),
     DontRoute(bool),
     SendBuffer(usize),
@@ -410,11 +452,13 @@ define_options! {
     ReceiveTimeout(Duration),
     SendBufferForce(usize),
     PassCredentials(bool),
+    ReceiveTimestamp(bool),
     PeerCredentials(UnixCredentials),
     SocketType(i32),
     SocketProtocol(i32),
     SocketDomain(i32),
     BindToDevice(Option<InterfaceId>),
+    Priority(i32),
 
     NoDelay(bool),
     MaxSegment(usize),
@@ -423,9 +467,15 @@ define_options! {
     TcpKeepCount(u32),
     TcpUserTimeout(u32),
     TcpInfo(TcpInfo),
+    TcpCongestionControl(TcpCongestionControl),
 
     Ttl(u8),
+    IpTos(u8),
+    RecvTtl(bool),
+    RecvTos(bool),
+    RecvTrafficClass(bool),
     RecvErr(bool),
+    IpMtuDiscover(u8),
 
     NonBlocking(bool),
 }
@@ -450,21 +500,25 @@ pub struct TcpInfo {
 }
 ```
 
-### Option 支持矩阵
+`TcpInfo` 结构包含 Linux ABI 期望的统一字段，但不同值来自 smoltcp 状态、`ax-net` 估算或暂不可用默认。选项支持矩阵先说明更广泛的 getsockopt/setsockopt 分发，再由状态信息小节解释这些 TCP 字段来源。
+
+### 5.3 选项支持矩阵
 
 `GetSocketOption` / `SetSocketOption` 是跨协议的分发格式，并不表示每个 backend 都支持所有 option。backend 返回 `supported = false` 时，统一映射为 `ENOPROTOOPT`；option 值非法时返回具体参数错误。
 
 | Option | 主要实现者 | 语义 |
 | --- | --- | --- |
-| `ReuseAddress` | `GeneralOptions`，UDP/TCP bind 路径读取 | UDP 设置后跳过 wrapper UDP bind side table；TCP 仍受 `TCP_BOUND_PORTS` 和 `ListenTable` 的 wildcard/specific 冲突规则约束 |
+| `ReuseAddress` | `GeneralOptions` | 当前仅保存并可读回；UDP/TCP 端口仲裁不会因此绕过冲突检查 |
+| `ReusePort` | `GeneralOptions` + UDP/TCP bind/listen 表 | 两者均为 wildcard 或具体地址相同且所有 owner 都启用时可共同绑定；TCP incoming 目前选择第一个匹配 listener，并未实现 Linux reuseport hash/load balancing |
 | `Error` | `GeneralOptions` / TCP override | 通用返回 0；TCP connect 失败后通过 pending error 返回并清理 |
 | `DontRoute` | 当前未实现为 socket option | `SetSocketOption::DontRoute` 会落到 `ENOPROTOOPT`；`MSG_DONTROUTE` 也尚未改变普通 route decision |
 | `SendBuffer` / `ReceiveBuffer` | TCP/UDP/raw/Unix stream 等具体 backend | IP socket 返回固定 buffer 预算；`GeneralOptions` 只接受 set buffer TODO，不实际调整已分配缓冲区 |
 | `SendBufferForce` | 当前未实现 | 返回 `ENOPROTOOPT` |
 | `KeepAlive` | TCP | TCP backend 同步到 smoltcp keep-alive 配置；非 TCP backend 返回不支持 |
 | `SendTimeout` / `ReceiveTimeout` | `GeneralOptions` | 被 `send_poller*` / `recv_poller*` 使用，决定阻塞等待超时 |
-| `PassCredentials` | Unix stream/datagram | 保存或接受 Linux `SO_PASSCRED` 语义；credentials 由 Unix transport 生成 |
-| `PeerCredentials` | Unix stream/datagram | 返回 `UnixCredentials { pid, uid, gid }`，uid/gid 当前使用内核默认值 |
+| `PassCredentials` | Unix stream/datagram/seqpacket | 接收端启用时传递发送任务的真实 credentials |
+| `ReceiveTimestamp` | Unix datagram/seqpacket | 在消息入队时记录 wall-clock timestamp，并作为 `SocketCmsg::Timestamp` 返回 |
+| `PeerCredentials` | Unix stream/datagram/seqpacket | 返回 transport 保存的 `UnixCredentials`；StarryOS 还投影稳定进程身份到调用者 PID namespace |
 | `SocketType` / `SocketProtocol` / `SocketDomain` | `GeneralOptions` | 由 socket 创建时写入，用于 `getsockopt()` 返回 Linux ABI 可见值 |
 | `BindToDevice` | `GeneralOptions` | 保存 `DeviceBinding`，影响 route lookup 和设备 waker 注册 |
 | `Priority` | `GeneralOptions` | 保存 `SO_PRIORITY`，只允许 `0..=6`；当前不影响 Router 或设备队列调度 |
@@ -473,15 +527,20 @@ pub struct TcpInfo {
 | `TcpKeepIdle` / `TcpKeepInterval` / `TcpKeepCount` | TCP | 校验 Linux 兼容范围后同步到 TCP keepalive 配置 |
 | `TcpUserTimeout` | TCP | 保存 Linux `TCP_USER_TIMEOUT` 兼容值 |
 | `TcpInfo` | TCP | 从 smoltcp socket 状态和本地默认值合成 `TCP_INFO` snapshot |
+| `TcpCongestionControl` | TCP | 当前只报告/接受 `None`，表示 smoltcp backend 未暴露 Linux 拥塞算法选择 |
 | `Ttl` | UDP / raw | UDP 映射 smoltcp hop limit；raw socket 使用该值构造发送 IP header |
 | `IpTos` | `GeneralOptions` + TCP/UDP/raw | ECN 位会被清除；TCP/UDP 在 Router dispatch 时按 socket policy 改写 header，raw 发送时直接改写 |
+| `RecvTtl` | `RawSocket` | 启用后通过 `IpCmsg::Ipv4Ttl` 返回 IPv4 hop limit |
 | `RecvTos` / `RecvTrafficClass` | `GeneralOptions` + UDP recv | UDP `recvmsg()` 可从 ingress packet metadata 生成 IPv4 TOS 或 IPv6 traffic-class cmsg |
 | `RecvErr` | `GeneralOptions` | `getsockopt()` 返回 false，`setsockopt()` 作为 TODO 占位接受但不保存；当前不提供完整 Linux error queue |
+| `IpMtuDiscover` | `GeneralOptions` | 接受并读回 Linux 模式 `0..=5`，默认 `WANT(1)`；当前不改变 DF/PMTU 数据面行为 |
 | `NonBlocking` | `GeneralOptions` | 与 `MSG_DONTWAIT` 不同，修改 socket 自身阻塞属性 |
 
-### TCP_INFO
+支持矩阵区分“选项存在”“可以读回”和“确实改变协议行为”，调用方不应把三者混为一谈。TCP 状态信息进一步把运行时观测字段分为精确、近似和暂不可用来源，以维持诊断结果可信度。
 
-`TcpInfo` 的字段来源分三类：
+### 5.4 TCP 状态信息
+
+`TcpInfo` 把 smoltcp 可观察状态、`ax-net` 自行维护的计时数据和当前无法精确提供的 Linux 字段汇总为 ABI 快照。字段来源必须明确分类，避免用固定零值或近似值冒充真实拥塞控制统计，误导诊断工具。
 
 - 直接来自 smoltcp：连接状态、收发队列长度、窗口估计等。
 - 来自 `tcp.rs` 默认值：MSS、PMTU、初始 RTO、reordering 等 Linux 兼容默认字段。
@@ -489,7 +548,7 @@ pub struct TcpInfo {
 
 因此 `TCP_INFO` 适合用于 Linux 兼容探测和调试，不应被上层当作完整 Linux TCP 栈的拥塞控制 ABI。
 
-## DNS 与名称解析
+## 6. 名称解析
 
 DNS API 位于 `lib.rs`，使用控制面的 DNS registry 和 route decision。
 
@@ -507,18 +566,22 @@ pub fn dns_query_timeout(name: &str, timeout: Duration) -> NetResult<Vec<IpAddr>
 - `dns_query_timeout()` 会跳过不可路由的 DNS server。
 - 查询期间临时创建 smoltcp DNS socket，结束后由 guard 从 `SOCKET_SET` 移除。
 
-## 设备驱动 API
+DNS 行为列表说明解析过程复用临时 smoltcp socket 和统一轮询，不形成独立 resolver 线程。设备驱动 API 位于更低边界，只提供 packet 与 readiness 能力，不参与名称解析策略。
+
+## 7. 设备驱动 API
 
 设备驱动 API 是 low-level NIC 和 `ax-net` 之间的能力边界。驱动提供 buffer 和 IRQ 语义，协议栈不依赖具体 DMA ring 或虚拟队列实现。
 
-### EthernetDriver
+### 7.1 以太网驱动边界
+
+`EthernetDriver` 是 `ax-net` 与具体 NIC 实现之间的能力边界，只暴露 MAC、MTU、收发和可选 IRQ/OOB readiness。`EthernetDevice` 在这一层之外完成 ARP、Ethernet framing 和统计，因此驱动不需要了解 `Router`、socket 或控制面对象。
 
 ```rust
 pub type EthernetDeviceList = Vec<Box<dyn EthernetDriver>>;
 
 pub trait EthernetDriver: Send + Sync {
     fn device_name(&self) -> &str;
-    fn irq_num(&self) -> Option<usize>;
+    fn irq_id(&self) -> Option<IrqId>;
     fn enable_irq(&mut self);
     fn disable_irq(&mut self);
     fn mac_address(&self) -> [u8; 6];
@@ -528,6 +591,7 @@ pub trait EthernetDriver: Send + Sync {
     fn receive(&mut self) -> NetDeviceResult<Box<dyn NetRxBuffer>>;
     fn recycle_rx_buffer(&mut self, rx_buf: &mut dyn NetRxBuffer) -> NetDeviceResult;
     fn handle_irq(&mut self) -> NetIrqEvents;
+    fn take_irq_handler(&mut self) -> Option<Box<dyn EthernetIrqHandler>>;
 }
 ```
 
@@ -550,7 +614,7 @@ pub trait NetTxBuffer: Send {
 
 `RdNetDriver` 是基于 `rd-net` 的标准适配实现。
 
-### Driver Buffer 与错误语义
+### 7.2 缓冲区错误语义
 
 `EthernetDriver` 把底层 NIC 的 DMA ring、virtqueue 或 `rd-net` queue 抽象为一次一个 packet 的 buffer ownership：
 
@@ -580,16 +644,20 @@ TX:
 
 `NetIrqEvents` 是 IRQ summary bitmask。`RX_READY`、`RX_ERROR`、`TX_DONE` 会唤醒相关 worker；`SPURIOUS` 表示没有需要网络栈处理的事件。
 
-### RdNetDriver 适配
+### 7.3 通用驱动适配
 
 `RdNetDriver` 持有 `rd_net::TxQueue`、`rd_net::RxQueue` 和少量 `pending_rx` 预取缓存。它的设计边界是：
 
 - RX 预取目标为 `RX_PREFETCH_TARGET = 1`，只减少一次收包路径上的驱动交互，不形成额外无界缓存。
-- TX 分配会把 frame 长度提升到 Ethernet 最小帧长 `ETH_ZLEN = 60`。
+- `alloc_tx_buffer()` 按请求长度分配；`transmit()` 在提交 `rd-net` 前将短帧补齐到 Ethernet 最小帧长 `ETH_ZLEN = 60`。
 - `rd_net::NetError::Retry` 映射为 `NetDeviceError::Again`，`NoMemory` / `NotSupported` 保留对应语义，link down 或其它底层错误映射为 `Io`。
 - `ax-net` 上层不依赖 `rd-net` 类型；其它 NIC driver 只要实现 `EthernetDriver` 即可接入。
 
-### IRQ 注册
+适配约束列表确保 `RdNetDriver` 只承担通用队列桥接，不把 ARP、Router 或控制面逻辑下沉。IRQ 注册则通过独立 capability 把平台中断动作接入同一个设备 Worker 唤醒模型。
+
+### 7.4 IRQ 注册
+
+IRQ 注册能力由 runtime 通过 `EthernetIrqRegistrar` 注入，设备初始化随后把 `take_irq_handler()` 返回的独立 handler 移交给平台 action。硬中断路径只负责确认事件并调用 `wake_net_task_irq()`，不能获取 Worker 正常收发所用的普通设备锁或直接进入协议 poll。
 
 ```rust
 pub fn set_ethernet_irq_registrar(registrar: &'static dyn EthernetIrqRegistrar);
@@ -598,15 +666,17 @@ pub trait EthernetIrqRegistrar: Send + Sync {
     fn register_shared(
         &self,
         name: &str,
-        irq: usize,
+        irq: IrqId,
         action: EthernetIrqAction,
     ) -> Result<Box<dyn EthernetIrqRegistration>, EthernetIrqRegistrationError>;
 }
 ```
 
-`EthernetIrqAction` 封装平台 IRQ 回调。IRQ handler 返回 `EthernetIrqOutcome::Wake` 时，Ethernet adapter 会唤醒设备 RX worker 和 net-poll 路径。
+有 IRQ 的 `RdNetDriver` 通过 `take_irq_handler()` 把独立拥有的 IRQ endpoint 移交给 `EthernetIrqAction`。因此硬 IRQ 回调不会获取正常收发所用的 driver `SpinLock`；它只确认/汇总事件并发布 readiness。返回 `EthernetIrqOutcome::Wake` 时，adapter 唤醒设备 RX worker 和 net-poll 路径。驱动未提供独立 handler 或平台未安装 registrar 时，设备退回 worker 的 10 ms 轮询兜底。
 
-### 动态设备注册
+### 7.5 动态设备注册
+
+`register_device_with_config()` 将运行期发现的静态 IPv4 设备纳入现有 `Service`，并同步接口 registry、smoltcp 地址、路由规则及设备 Worker。该 API 不是第二套初始化流程；它要求全局网络服务已经建立，并通过相同控制面提交边界保持查询状态与数据面一致。
 
 ```rust
 pub struct NetConfig {
@@ -631,7 +701,7 @@ pub fn wake_net_task_irq();
 
 `dedicated_poll = true` 时，设备 RX readiness 不走 Ethernet IRQ registrar，而由外部驱动线程调用 `wake_net_task_irq()` 唤醒 `net-poll` worker；Router 也会为这种 OOB RX 设备注册 readiness poll set，使 `{ifname}-rx` worker 重新检查设备。
 
-### Wi-Fi 控制 API
+### 7.6 Wi-Fi 控制 API
 
 运行期 Wi-Fi 模式切换使用单独的控制面句柄注册，不把无线 firmware 操作塞进数据面 driver 锁里：
 
@@ -654,7 +724,7 @@ pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> NetResult<()>;
 
 `reconfigure_wifi()` 先通过 `WifiControlHandle` 执行 STA connect 或 open SoftAP，再在 `Service` 锁内更新对应接口的 IPv4/DHCP 角色。STA 模式清空旧静态地址并启用 DHCP client；AP 模式安装静态地址并可选启用内置单客户端 DHCP server。
 
-## Unix Namespace API
+## 8. Unix 命名空间 API
 
 Unix path socket 需要外部文件系统 namespace provider：
 
@@ -664,11 +734,11 @@ pub fn register_unix_namespace(ns: impl UnixNamespace + 'static);
 
 abstract Unix socket 使用 `ax-net` 内部内存 namespace；path socket 通过注册的 `UnixNamespace` 完成路径绑定和解析。
 
-## 兼容语义
+## 9. 兼容语义
 
-这些 API 语义影响 syscall 层和测试用例，应作为稳定约定维护。
+兼容语义决定 syscall 层如何把 Linux/POSIX 行为映射到各 socket backend，覆盖地址冲突、临时端口与错误条件。它们不仅是返回值约定，也依赖端口 side table、`ListenTable` 和控制面绑定规则，因此需要作为跨模块稳定契约维护。
 
-### Per-address Bind/Listen
+### 9.1 按地址绑定与监听
 
 TCP listen 和 UDP bind 支持 Linux 风格 wildcard/specific-address 冲突：
 
@@ -676,15 +746,17 @@ TCP listen 和 UDP bind 支持 Linux 风格 wildcard/specific-address 冲突：
 - 两个具体地址只有地址相同时冲突。
 - TCP 由 `TCP_BOUND_PORTS` 和 `ListenTable` 共同维护。
 - UDP 由 `SocketSetWrapper` 的 `udp_binds` side table 维护。
-- `SO_REUSEADDR` 会影响 UDP wrapper side table 注册，但不绕过 smoltcp 自身状态检查。
+- `SO_REUSEADDR` 当前只保存兼容状态；真正允许相同 endpoint 共同绑定的是 `SO_REUSEPORT`。UDP side table 和 TCP bound/listen table 都继续执行冲突检查。
 
-### Ephemeral Port
+绑定冲突列表明确 wildcard 和具体地址的兼容边界，并区分 `SO_REUSEPORT` 与仅保存的 `SO_REUSEADDR`。临时端口分配必须在这些相同规则上选择未占用端口，而不能绕过 side table。
+
+### 9.2 临时端口
 
 TCP/UDP 在 bind port 为 `0` 时分配临时端口。临时端口范围从 `49152` 开始，符合 IANA dynamic/private port 下界。该分配器不是 public API，但影响 `bind(0)` 和自动 bind 行为。
 
-### Error Mapping
+### 9.3 错误映射
 
-常见错误约定：
+公共 API 使用 `AxError` 表达可由 syscall 层稳定翻译的失败条件，错误应反映地址、状态、资源或能力边界，而不是泄漏 smoltcp 内部枚举。以下约定是 backend 之间需要保持一致的最小映射，新增路径时应复用而非另造字符串错误。
 
 | 场景 | 错误 |
 | --- | --- |
@@ -695,9 +767,15 @@ TCP/UDP 在 bind port 为 `0` 时分配临时端口。临时端口范围从 `491
 | nonblocking 或 `MSG_DONTWAIT` 下 would block | `NetError::WouldBlock` |
 | 不支持的 socket option | Linux `ENOPROTOOPT` 映射 |
 
-### API 使用建议
+错误表给出跨 backend 需要一致的失败语义，上层 syscall 再把 `AxError` 转换为 Linux errno。使用建议将这些约定落实到查询、轮询和驱动接入方式，避免调用方绕开公共边界。
+
+### 9.4 API 使用建议
+
+调用方应优先使用快照查询、类型化 socket 能力和显式设备配置 API，避免越过公共边界持有内部锁或复刻协议状态。以下约束把初始化、查询、轮询和驱动错误分别留在各自负责的层中，也是后续扩展 API 时需要保持的兼容面。
 
 - 使用 `interfaces()`、`interface_by_name()`、`interface_by_id()` 和 `ipv4_config(name)` 查询接口状态。
 - socket 发送路径不要直接使用 `default_routes()` 自行选路，应交给 TCP/UDP/raw backend。
 - 设备驱动只实现 `EthernetDriver`，不要直接接触 `Router` 或 `SocketSet`。
-- 需要唤醒协议栈进度时调用 `request_poll()`，不要从调用者上下文同步 poll smoltcp。
+- 普通路径需要协议栈进度时调用 `request_poll()`；不要绕过 `PollOwnership` 直接同步 poll smoltcp。UDP 析构使用内部 `flush_egress()` 是受控例外。
+
+这些使用约束共同维持公共 API 的单向依赖：调用方提交配置或操作并接收快照与结构化错误，内部所有者负责锁、队列和协议进展。新 API 应保持相同边界，而不是暴露可变全局对象。

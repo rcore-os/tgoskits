@@ -83,7 +83,5 @@ pub use thin::{VmMutPtr, VmPtr};
 
 #[cfg(feature = "alloc")]
 mod alloc;
-#[cfg(all(axtest, feature = "alloc"))]
-pub use alloc::vm_alloc_is_zero_and_max_bytes_rules_hold_for_test;
 #[cfg(feature = "alloc")]
 pub use alloc::{vm_load, vm_load_any, vm_load_until_nul};

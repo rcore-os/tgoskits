@@ -131,3 +131,29 @@ fn rejects_missing_mapped_board_build_config() {
     assert!(err.contains("not under a build wrapper"));
     assert!(err.contains("smoke"));
 }
+
+#[test]
+fn sg2002_repository_dtbs_declare_noncoherent_dma() {
+    // SG2002 peripherals are DMA non-coherent: mainline Linux declares
+    // dma-noncoherent on the sg2002 soc node, while the vendor SDK device
+    // trees never do. The kernel resolves coherency from firmware, so a
+    // regenerated DTB that silently drops the property would make CV181x
+    // engines read stale cached descriptors. Property names live in the
+    // compiled DTB strings block, so a byte-level search is sufficient.
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for dtb in [
+        "os/StarryOS/configs/board/aka-00-sg2002.dtb",
+        "os/StarryOS/configs/board/licheerv-nano-sg2002.dtb",
+    ] {
+        let path = workspace_root.join(dtb);
+        let bytes = fs::read(&path)
+            .unwrap_or_else(|err| panic!("failed to read repository DTB {dtb}: {err}"));
+        assert!(
+            bytes
+                .windows(b"dma-noncoherent\0".len())
+                .any(|window| window == b"dma-noncoherent\0"),
+            "{dtb} must declare dma-noncoherent; SG2002 devices require it"
+        );
+    }
+}

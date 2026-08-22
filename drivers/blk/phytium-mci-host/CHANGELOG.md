@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/rcore-os/tgoskits/compare/phytium-mci-host-v0.3.5...phytium-mci-host-v0.4.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
 ## [0.3.5](https://github.com/rcore-os/tgoskits/compare/phytium-mci-host-v0.3.4...phytium-mci-host-v0.3.5) - 2026-08-09
 
 ### Other

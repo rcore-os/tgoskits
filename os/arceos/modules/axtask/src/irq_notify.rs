@@ -77,25 +77,38 @@ impl IrqNotify {
     }
 }
 
-#[cfg(axtest)]
-pub(crate) fn irq_notify_constructor_and_pending_hold_for_test() -> bool {
-    // Test IrqNotify::new() creates a non-pending instance
-    let notify = IrqNotify::new();
-    assert!(!notify.is_pending());
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
 
-    // Test Default trait
-    let default_notify = IrqNotify::default();
-    assert!(!default_notify.is_pending());
+    fn irq_notify_constructor_and_pending_hold_for_test() -> bool {
+        // Test IrqNotify::new() creates a non-pending instance
+        let notify = IrqNotify::new();
+        assert!(!notify.is_pending());
 
-    true
-}
+        // Test Default trait
+        let default_notify = IrqNotify::default();
+        assert!(!default_notify.is_pending());
 
-#[cfg(axtest)]
-pub(crate) fn irq_notify_drain_logic_hold_for_test() -> bool {
-    // Test drain on a fresh IrqNotify returns false (nothing pending)
-    let notify = IrqNotify::new();
-    assert!(!notify.drain()); // Nothing to drain
-    assert!(!notify.is_pending()); // Still not pending after drain
+        true
+    }
 
-    true
+    fn irq_notify_drain_logic_hold_for_test() -> bool {
+        // Test drain on a fresh IrqNotify returns false (nothing pending)
+        let notify = IrqNotify::new();
+        assert!(!notify.drain()); // Nothing to drain
+        assert!(!notify.is_pending()); // Still not pending after drain
+
+        true
+    }
+
+    #[test]
+    fn irq_notify_constructor_and_pending_hold() {
+        assert!(irq_notify_constructor_and_pending_hold_for_test());
+    }
+
+    #[test]
+    fn irq_notify_drain_logic_hold() {
+        assert!(irq_notify_drain_logic_hold_for_test());
+    }
 }

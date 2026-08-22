@@ -5,10 +5,7 @@ sidebar_label: "Task Stack Guard Page"
 
 # Task Stack Guard Page
 
-本文档记录 ArceOS task stack guard page 的设计讨论、第一阶段实现方向，
-以及后续向 Linux `VMAP_STACK` 风格演进时需要补齐的能力。
-
-它是现有 task stack canary 的增强机制，而不是替代机制。
+ArceOS task stack guard page 在越界访问时触发页故障，用于补充现有 task stack canary 的事后检查。当前实现尚未提供 Linux `VMAP_STACK` 风格的独立虚拟地址分配器。
 
 ## 背景
 
@@ -59,7 +56,7 @@ vmalloc/vmap 虚拟区间，在栈边界保留未映射页面。guard page 只�
 换句话说，`axmm` 已经有 vmap 的底层映射能力，但还缺 vmap-style 虚拟
 地址区间管理。
 
-## 第一阶段方案
+## 当前实现
 
 第一阶段采用最小实现：只增强动态分配的普通任务栈。
 
@@ -294,11 +291,11 @@ nightly、发布前或高风险内存管理改动后的手动验证：
 FEATURES=starry-kernel/stack-guard-page cargo xtask starry test qemu --arch riscv64
 ```
 
-## 后续演进计划
+## 尚未覆盖的能力
 
 第一阶段完成后，可以继续向更接近 Linux `VMAP_STACK` 的方向演进。
 
-### 1. 稳定当前动态任务栈方案
+### 1. 动态任务栈
 
 当前优先级最高的是把已接入的动态任务栈方案做稳：
 
@@ -374,7 +371,7 @@ x86_64 NMI/double-fault 类栈，应为它们建立独立的 guard page 方案�
 - 专用栈通常是 per-CPU 生命周期，TLB flush 和 metadata 可以按 per-CPU
   资源管理，而不是按 task 管理。
 
-### 6. 扩展测试覆盖
+### 6. 测试覆盖
 
 需要增加能稳定触发 guard page 的测试：
 
@@ -386,7 +383,7 @@ x86_64 NMI/double-fault 类栈，应为它们建立独立的 guard page 方案�
 测试用例应和 canary 测试区分：guard page 测试关注 page fault 即时触发，
 canary 测试关注调度切换或显式检查点发现破坏。
 
-## 当前结论
+## 实现取舍
 
 当前阶段采用简单方案是合理的：
 
@@ -395,5 +392,4 @@ canary 测试关注调度切换或显式检查点发现破坏。
 - 代价清晰：每个动态任务栈额外占用一个 4 KiB 物理页。
 - 它不会阻塞后续向真正 vmap-style 栈演进。
 
-后续如果任务数量较多、物理内存开销明显，或希望更接近 Linux 的长期设计，
-再补 kernel vmap allocator，把 guard page 从“额外物理页”改成“仅虚拟空洞”。
+当前方案用额外物理页换取较低的实现复杂度。kernel vmap allocator 尚未实现，因此 guard page 还不能表示为只占虚拟地址的空洞。

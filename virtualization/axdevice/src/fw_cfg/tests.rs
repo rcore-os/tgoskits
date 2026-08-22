@@ -44,6 +44,49 @@ fn dma_rejects_buffer_address_overflow() {
     assert!(validate_dma_buffer(GuestPhysAddr::from_usize(usize::MAX), 2).is_err());
 }
 
+#[test]
+fn dma_descriptor_fault_is_propagated_when_status_cannot_be_written() {
+    let fw_cfg = FwCfg::new(
+        GuestPhysAddr::from_usize(0),
+        0x20,
+        FwCfgKernelPayload::unsplit(Arc::from(&b"kernel"[..])),
+        None,
+        None,
+        1,
+        FwCfgPlatformConfig::default(),
+    );
+    let status_writes = Cell::new(0usize);
+
+    let error = fw_cfg
+        .process_dma(
+            GuestPhysAddr::from_usize(0x1ff1_48b0),
+            |_addr, _buffer| {
+                Err(DeviceManagerError::InvalidInput {
+                    operation: "read test guest memory",
+                    detail: "descriptor is not mapped".into(),
+                })
+            },
+            |_addr, status| {
+                assert_eq!(status, FW_CFG_DMA_CTL_ERROR.to_be_bytes());
+                status_writes.set(status_writes.get() + 1);
+                Err(DeviceManagerError::InvalidInput {
+                    operation: "write test guest memory",
+                    detail: "descriptor is not mapped".into(),
+                })
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        DeviceManagerError::InvalidInput {
+            operation: "read test guest memory",
+            ..
+        }
+    ));
+    assert_eq!(status_writes.get(), 1);
+}
+
 #[cfg(target_pointer_width = "64")]
 #[test]
 fn dma_address_register_preserves_high_half_and_resets_after_commit() {
@@ -83,17 +126,8 @@ struct TestGuestMemory {
 }
 
 #[cfg(feature = "host-test")]
-impl DeviceAccess for TestGuestMemory {
-    fn device_id(&self) -> axdevice_base::DeviceId {
-        axdevice_base::DeviceId::new(0)
-    }
-
-    fn read_guest_memory(
-        &mut self,
-        _grant: &DmaGrant,
-        addr: GuestPhysAddr,
-        data: &mut [u8],
-    ) -> DeviceResult {
+impl GuestMemoryAccess for TestGuestMemory {
+    fn read(&mut self, addr: GuestPhysAddr, data: &mut [u8]) -> DeviceResult {
         let start = addr.as_usize();
         let end = start
             .checked_add(data.len())
@@ -103,12 +137,7 @@ impl DeviceAccess for TestGuestMemory {
         Ok(())
     }
 
-    fn write_guest_memory(
-        &mut self,
-        _grant: &DmaGrant,
-        addr: GuestPhysAddr,
-        data: &[u8],
-    ) -> DeviceResult {
+    fn write(&mut self, addr: GuestPhysAddr, data: &[u8]) -> DeviceResult {
         let start = addr.as_usize();
         let end = start
             .checked_add(data.len())
@@ -117,6 +146,26 @@ impl DeviceAccess for TestGuestMemory {
         self.bytes[start..end].copy_from_slice(data);
         Ok(())
     }
+}
+
+#[cfg(feature = "host-test")]
+fn guest_access(bus: BusKind, address: u64, width: AccessWidth) -> DeviceAccess {
+    DeviceAccess::new(DeviceVcpuId::new(0), bus, address, width)
+}
+
+#[cfg(feature = "host-test")]
+fn read(runtime: &crate::DeviceRuntime, access: DeviceAccess) -> u64 {
+    runtime.try_read(&access).unwrap().unwrap()
+}
+
+#[cfg(feature = "host-test")]
+fn write(
+    runtime: &crate::DeviceRuntime,
+    access: DeviceAccess,
+    value: u64,
+    memory: Option<&mut dyn GuestMemoryAccess>,
+) {
+    assert!(runtime.try_write(&access, value, memory).unwrap());
 }
 
 #[cfg(feature = "host-test")]
@@ -146,14 +195,16 @@ fn dma_descriptor_uses_the_runtime_granted_memory_port() {
     memory.bytes[DESCRIPTOR + 4..DESCRIPTOR + 8].copy_from_slice(&4u32.to_be_bytes());
     memory.bytes[DESCRIPTOR + 8..DESCRIPTOR + 16].copy_from_slice(&(BUFFER as u64).to_be_bytes());
 
-    runtime
-        .handle_mmio_write_with_memory(
-            GuestPhysAddr::from_usize(BASE + FW_CFG_DMA_OFFSET),
+    write(
+        &runtime,
+        guest_access(
+            BusKind::Mmio,
+            (BASE + FW_CFG_DMA_OFFSET) as u64,
             AccessWidth::Qword,
-            (DESCRIPTOR as u64).swap_bytes() as usize,
-            &mut memory,
-        )
-        .unwrap();
+        ),
+        (DESCRIPTOR as u64).swap_bytes(),
+        Some(&mut memory),
+    );
 
     assert_eq!(&memory.bytes[BUFFER..BUFFER + 4], b"QEMU");
     assert_eq!(&memory.bytes[DESCRIPTOR..DESCRIPTOR + 4], &[0, 0, 0, 0]);
@@ -187,65 +238,63 @@ fn pio_selector_data_and_dma_share_one_fw_cfg_state() {
     let mut runtime = crate::DeviceRuntime::empty();
     runtime.register_bundle(bundle).unwrap();
 
-    runtime
-        .handle_port_write(
-            axdevice_base::Port::new(0x510),
-            AccessWidth::Word,
-            FW_CFG_SIGNATURE.swap_bytes() as usize,
-        )
-        .unwrap();
+    write(
+        &runtime,
+        guest_access(BusKind::Port, 0x510, AccessWidth::Word),
+        FW_CFG_SIGNATURE.swap_bytes() as u64,
+        None,
+    );
     let signature = (0..4)
         .map(|_| {
-            runtime
-                .handle_port_read(axdevice_base::Port::new(0x511), AccessWidth::Byte)
-                .unwrap() as u8
+            read(
+                &runtime,
+                guest_access(BusKind::Port, 0x511, AccessWidth::Byte),
+            ) as u8
         })
         .collect::<Vec<_>>();
     assert_eq!(signature, b"QEMU");
 
-    runtime
-        .handle_port_write(
-            axdevice_base::Port::new(0x510),
-            AccessWidth::Word,
-            FW_CFG_ID as usize,
-        )
-        .unwrap();
-    let version = (0..4).fold(0usize, |version, shift| {
+    write(
+        &runtime,
+        guest_access(BusKind::Port, 0x510, AccessWidth::Word),
+        FW_CFG_ID as u64,
+        None,
+    );
+    let version = (0..4).fold(0u64, |version, shift| {
         version
-            | runtime
-                .handle_port_read(axdevice_base::Port::new(0x511), AccessWidth::Byte)
-                .unwrap()
-                << (shift * 8)
+            | read(
+                &runtime,
+                guest_access(BusKind::Port, 0x511, AccessWidth::Byte),
+            ) << (shift * 8)
     });
-    assert_eq!(version, (FW_CFG_VERSION | FW_CFG_VERSION_DMA) as usize);
+    assert_eq!(version, (FW_CFG_VERSION | FW_CFG_VERSION_DMA) as u64);
 
-    runtime
-        .handle_port_write(
-            axdevice_base::Port::new(0x510),
-            AccessWidth::Word,
-            FW_CFG_KERNEL_SETUP_SIZE as usize,
-        )
-        .unwrap();
-    let setup_size = (0..4).fold(0usize, |size, shift| {
-        size | runtime
-            .handle_port_read(axdevice_base::Port::new(0x511), AccessWidth::Byte)
-            .unwrap()
-            << (shift * 8)
+    write(
+        &runtime,
+        guest_access(BusKind::Port, 0x510, AccessWidth::Word),
+        FW_CFG_KERNEL_SETUP_SIZE as u64,
+        None,
+    );
+    let setup_size = (0..4).fold(0u64, |size, shift| {
+        size | read(
+            &runtime,
+            guest_access(BusKind::Port, 0x511, AccessWidth::Byte),
+        ) << (shift * 8)
     });
-    assert_eq!(setup_size, b"setup".len());
+    assert_eq!(setup_size, b"setup".len() as u64);
 
-    runtime
-        .handle_port_write(
-            axdevice_base::Port::new(0x510),
-            AccessWidth::Word,
-            FW_CFG_KERNEL_SETUP_DATA as usize,
-        )
-        .unwrap();
+    write(
+        &runtime,
+        guest_access(BusKind::Port, 0x510, AccessWidth::Word),
+        FW_CFG_KERNEL_SETUP_DATA as u64,
+        None,
+    );
     let setup = (0..setup_size)
         .map(|_| {
-            runtime
-                .handle_port_read(axdevice_base::Port::new(0x511), AccessWidth::Byte)
-                .unwrap() as u8
+            read(
+                &runtime,
+                guest_access(BusKind::Port, 0x511, AccessWidth::Byte),
+            ) as u8
         })
         .collect::<Vec<_>>();
     assert_eq!(setup, b"setup");
@@ -257,14 +306,12 @@ fn pio_selector_data_and_dma_share_one_fw_cfg_state() {
     memory.bytes[DESCRIPTOR..DESCRIPTOR + 4].copy_from_slice(&control.to_be_bytes());
     memory.bytes[DESCRIPTOR + 4..DESCRIPTOR + 8].copy_from_slice(&4u32.to_be_bytes());
     memory.bytes[DESCRIPTOR + 8..DESCRIPTOR + 16].copy_from_slice(&(BUFFER as u64).to_be_bytes());
-    runtime
-        .handle_port_write_with_memory(
-            axdevice_base::Port::new(0x514),
-            AccessWidth::Qword,
-            (DESCRIPTOR as u64).swap_bytes() as usize,
-            &mut memory,
-        )
-        .unwrap();
+    write(
+        &runtime,
+        guest_access(BusKind::Port, 0x514, AccessWidth::Qword),
+        (DESCRIPTOR as u64).swap_bytes(),
+        Some(&mut memory),
+    );
     assert_eq!(&memory.bytes[BUFFER..BUFFER + 4], b"QEMU");
 }
 
@@ -296,35 +343,37 @@ fn pio_dma_fault_does_not_poison_the_next_32_bit_transfer() {
         bytes: alloc::vec![0; 0x200],
     };
 
-    runtime
-        .handle_port_write_with_memory(
-            axdevice_base::Port::new(0x514),
-            AccessWidth::Dword,
-            0xdead_beefu32.swap_bytes() as usize,
-            &mut memory,
+    write(
+        &runtime,
+        guest_access(BusKind::Port, 0x514, AccessWidth::Dword),
+        0xdead_beefu32.swap_bytes() as u64,
+        Some(&mut memory),
+    );
+    let error = runtime
+        .try_write(
+            &guest_access(BusKind::Port, 0x518, AccessWidth::Dword),
+            0x8000u32.swap_bytes() as u64,
+            Some(&mut memory),
         )
-        .unwrap();
-    runtime
-        .handle_port_write_with_memory(
-            axdevice_base::Port::new(0x518),
-            AccessWidth::Dword,
-            0x8000u32.swap_bytes() as usize,
-            &mut memory,
-        )
-        .unwrap();
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        DeviceManagerError::Access {
+            source: axdevice_base::DeviceError::OutOfRange { .. },
+            ..
+        }
+    ));
 
     let control = FW_CFG_DMA_CTL_SELECT | FW_CFG_DMA_CTL_READ;
     memory.bytes[DESCRIPTOR..DESCRIPTOR + 4].copy_from_slice(&control.to_be_bytes());
     memory.bytes[DESCRIPTOR + 4..DESCRIPTOR + 8].copy_from_slice(&4u32.to_be_bytes());
     memory.bytes[DESCRIPTOR + 8..DESCRIPTOR + 16].copy_from_slice(&(BUFFER as u64).to_be_bytes());
-    runtime
-        .handle_port_write_with_memory(
-            axdevice_base::Port::new(0x518),
-            AccessWidth::Dword,
-            (DESCRIPTOR as u32).swap_bytes() as usize,
-            &mut memory,
-        )
-        .unwrap();
+    write(
+        &runtime,
+        guest_access(BusKind::Port, 0x518, AccessWidth::Dword),
+        (DESCRIPTOR as u32).swap_bytes() as u64,
+        Some(&mut memory),
+    );
 
     assert_eq!(&memory.bytes[BUFFER..BUFFER + 4], b"QEMU");
 }

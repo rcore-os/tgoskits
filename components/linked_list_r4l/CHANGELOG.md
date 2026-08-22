@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7](https://github.com/rcore-os/tgoskits/compare/ax-linked-list-r4l-v0.5.6...ax-linked-list-r4l-v0.5.7) - 2026-08-20
+
+### Added
+
+- *(sched)* add len/is_empty/pick_stealable_task introspection for load balancing ([#1989](https://github.com/rcore-os/tgoskits/pull/1989))
+
 ## [0.5.6](https://github.com/rcore-os/tgoskits/compare/ax-linked-list-r4l-v0.5.5...ax-linked-list-r4l-v0.5.6) - 2026-06-11
 
 ### Fixed

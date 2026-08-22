@@ -143,9 +143,15 @@ pub fn sys_write(fd: i32, buf: *mut u8, len: usize) -> StarryResult<isize> {
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
     let file_like = get_file_like(fd)?;
     file_like.validate_write_len(len)?;
-    validate_user_read_buf(buf.cast_const(), len)?;
-    memfd_checks_before_stream_write(&file_like, len as u64)?;
+    // `copy_user_read_buf` validates the buffer itself (via `get_as_slice`), so a
+    // separate `validate_user_read_buf` here was a redundant second `check_region`
+    // (aspace lock + can_access_range + populate) on every write — dropped. Copy
+    // (which faults a bad buffer as EFAULT) runs *before* the memfd seal check
+    // (EPERM), matching Linux `generic_perform_write` (prefault precedes the
+    // shmem seal check) and `sys_writev`, so a sealed memfd + bad buffer still
+    // reports EFAULT, not EPERM.
     let data = copy_user_read_buf(buf.cast_const(), len)?;
+    memfd_checks_before_stream_write(&file_like, len as u64)?;
     Ok(file_like.write(&mut data.as_slice())? as _)
 }
 
@@ -393,6 +399,9 @@ pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> S
     const SYNC_FILE_RANGE_WAIT_AFTER: u32 = 4;
     const SYNC_FILE_RANGE_ALL: u32 =
         SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER;
+    // Linux resolves the descriptor before validating range arguments and
+    // flags, so an invalid descriptor takes precedence over EINVAL.
+    let any = get_file_like(fd)?;
     if offset < 0 || nbytes < 0 {
         return Err(StarryError::from(Errno::EINVAL));
     }
@@ -405,7 +414,6 @@ pub fn sys_sync_file_range(fd: c_int, offset: i64, nbytes: i64, flags: u32) -> S
     // stronger whole-file fdatasync-style flush (matches the advisory
     // nature documented in the man page). Invalid fds still surface the
     // underlying error (EBADF). Directory fds are accepted to match fsync.
-    let any = get_file_like(fd)?;
     if any.downcast_ref::<File>().is_none()
         && any.downcast_ref::<Directory>().is_none()
         && any.downcast_ref::<Memfd>().is_none()
@@ -1074,7 +1082,7 @@ pub fn sys_splice(
     isize::try_from(n).map_err(|_| StarryError::InvalidInput)
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn io_rwf_flags_validation_rules_hold_for_test() -> bool {
     // validate_rwf_flags: only flags==0 is accepted.
     validate_rwf_flags(0).is_ok()
@@ -1082,7 +1090,7 @@ pub(crate) fn io_rwf_flags_validation_rules_hold_for_test() -> bool {
         && validate_rwf_flags(u32::MAX).is_err()
 }
 
-#[cfg(axtest)]
+#[cfg(test)]
 pub(crate) fn io_offset_from_hilo_rules_hold_for_test() -> bool {
     // Test offset_from_hilo function
     // On 64-bit, offset_from_hilo should return pos_l directly

@@ -1,6 +1,6 @@
 [package]
 name = "starry-signal"
-version = "0.8.13"
+version = "0.8.14"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Signal management library for Starry OS"
@@ -25,5 +25,5 @@ strum = { version = "0.27", default-features = false, features = ["derive"] }
 thiserror.workspace = true
 
 [dev-dependencies]
-ax-runtime = { workspace = true, features = ["host-test", "smp", "lockdep", "multitask"] }
+ax-runtime = { path = "../../arceos/modules/axruntime", features = ["host-test", "smp", "lockdep", "multitask"] }
 extern-trait = { workspace = true }

@@ -1,32 +1,23 @@
-use super::vector::{APIC_IPI_VECTOR, lapic_ipi_irq_id};
+//! Runtime local-APIC glue for somehal.
+//!
+//! Register operations live in `x86-apic-driver`; this file only locates the
+//! APIC page through the boot mapping and maps driver errors onto
+//! `irq_framework` errors. The handle is plain configuration, so it is built
+//! per call — the same one-MSR-read cost the previous in-file implementation
+//! paid for per-call mode discovery.
+
+use x86_apic_driver::{
+    ApicError, LocalApicConfig, TimerDivide, TimerMode, VirtAddr, X86LocalApic,
+    local_apic::{apic_phys_base, cpu_has_tsc_deadline},
+};
+
+use super::vector::{
+    APIC_ERROR_VECTOR, APIC_IPI_VECTOR, APIC_TIMER_VECTOR, SPURIOUS_VECTOR, lapic_ipi_irq_id,
+};
 use crate::irq::{IrqError, IrqId};
 
-const LAPIC_REG_EOI: u32 = 0x0b0;
-const LAPIC_REG_ICR_LOW: u32 = 0x300;
-const LAPIC_REG_ICR_HIGH: u32 = 0x310;
-const ICR_DELIVERY_PENDING: u32 = 1 << 12;
-pub(super) const ICR_FIXED_BASE: u32 = 0x0000_4000;
-pub(super) const ICR_DEST_SELF: u32 = 0x0004_0000;
-const IPI_DELIVERY_WAIT_SPINS: usize = 1_000_000;
-
-const IA32_APIC_BASE_MSR: u32 = 0x1b;
-const IA32_APIC_BASE_X2APIC_ENABLE: u64 = 1 << 10;
-const IA32_X2APIC_EOI: u32 = 0x80b;
-const IA32_X2APIC_ICR: u32 = 0x830;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ApicMode {
-    XApic,
-    X2Apic,
-}
-
 pub(super) fn eoi() {
-    unsafe {
-        match current_apic_mode() {
-            ApicMode::X2Apic => x86::msr::wrmsr(IA32_X2APIC_EOI, 0),
-            ApicMode::XApic => lapic_write(LAPIC_REG_EOI, 0),
-        }
-    }
+    local_apic().eoi();
 }
 
 pub(super) fn ipi_vector(irq: IrqId) -> Result<u8, IrqError> {
@@ -37,92 +28,46 @@ pub(super) fn ipi_vector(irq: IrqId) -> Result<u8, IrqError> {
     }
 }
 
-fn current_apic_mode() -> ApicMode {
-    let base = unsafe { x86::msr::rdmsr(IA32_APIC_BASE_MSR) };
-    if base & IA32_APIC_BASE_X2APIC_ENABLE != 0 {
-        ApicMode::X2Apic
-    } else {
-        ApicMode::XApic
+pub(super) fn send_ipi_to_apic_id(apic_id: u32, vector: u8) -> Result<(), IrqError> {
+    local_apic()
+        .send_fixed_ipi(apic_id, vector)
+        .map_err(map_apic_error)
+}
+
+pub(super) fn send_ipi(vector: u8) -> Result<(), IrqError> {
+    local_apic().send_self_ipi(vector).map_err(map_apic_error)
+}
+
+/// Builds the local-APIC driver handle for the current CPU.
+pub(super) fn local_apic() -> X86LocalApic {
+    let mmio_base = VirtAddr::new(someboot::mem::phys_to_virt(apic_phys_base()) as usize);
+    // SAFETY: `apic_phys_base` reads the LAPIC page from IA32_APIC_BASE, and
+    // someboot's permanent direct mapping keeps the complete page valid for
+    // the kernel lifetime. The driver dereferences it only in xAPIC mode.
+    unsafe { X86LocalApic::new(lapic_config(), mmio_base) }
+}
+
+fn lapic_config() -> LocalApicConfig {
+    LocalApicConfig {
+        timer_vector: APIC_TIMER_VECTOR as u8,
+        error_vector: APIC_ERROR_VECTOR as u8,
+        spurious_vector: SPURIOUS_VECTOR as u8,
+        timer_mode: if cpu_has_tsc_deadline() {
+            TimerMode::TscDeadline
+        } else {
+            TimerMode::OneShot
+        },
+        timer_divide: TimerDivide::Div16,
+        timer_initial: 0,
     }
 }
 
-pub(super) fn xapic_destination(apic_id: u32) -> Result<u32, IrqError> {
-    let dest = u8::try_from(apic_id).map_err(|_| IrqError::InvalidCpu)?;
-    Ok(u32::from(dest) << 24)
-}
-
-pub(super) fn x2apic_icr(apic_id: u32, icr_low: u32) -> u64 {
-    (u64::from(apic_id) << 32) | u64::from(icr_low)
-}
-
-pub(super) fn send_ipi_to_apic_id(apic_id: u32, icr_low: u32) -> Result<(), IrqError> {
-    match current_apic_mode() {
-        ApicMode::X2Apic => send_x2apic_ipi(x2apic_icr(apic_id, icr_low)),
-        ApicMode::XApic => send_xapic_ipi(xapic_destination(apic_id)?, icr_low),
+fn map_apic_error(error: ApicError) -> IrqError {
+    match error {
+        ApicError::XapicDestinationOverflow(_) => IrqError::InvalidCpu,
+        ApicError::IpiDeliveryTimeout => IrqError::Timeout,
+        ApicError::LocalInterruptPinsUnmasked { .. } => IrqError::Controller,
+        ApicError::ApicUnsupported(_) => IrqError::Unsupported,
+        ApicError::InvalidIoApicInput(_) => IrqError::InvalidIrq,
     }
-}
-
-pub(super) fn send_ipi(destination: u32, icr_low: u32) -> Result<(), IrqError> {
-    match current_apic_mode() {
-        ApicMode::X2Apic => send_x2apic_ipi(u64::from(icr_low)),
-        ApicMode::XApic => send_xapic_ipi(destination, icr_low),
-    }
-}
-
-fn send_xapic_ipi(destination: u32, icr_low: u32) -> Result<(), IrqError> {
-    // x86 TSO orders earlier write-back stores before the APIC's UC MMIO
-    // doorbell, so no additional publication fence is required here.
-    unsafe {
-        lapic_write(LAPIC_REG_ICR_HIGH, destination);
-        lapic_write(LAPIC_REG_ICR_LOW, icr_low);
-    }
-    wait_xapic_delivery()
-}
-
-fn send_x2apic_ipi(icr: u64) -> Result<(), IrqError> {
-    // WRMSR preserves the required x86 publication order for the x2APIC
-    // doorbell; an MFENCE would add serialization without strengthening it.
-    unsafe {
-        x86::msr::wrmsr(IA32_X2APIC_ICR, icr);
-    }
-    wait_x2apic_delivery()
-}
-
-fn wait_xapic_delivery() -> Result<(), IrqError> {
-    for _ in 0..IPI_DELIVERY_WAIT_SPINS {
-        if unsafe { lapic_read(LAPIC_REG_ICR_LOW) } & ICR_DELIVERY_PENDING == 0 {
-            return Ok(());
-        }
-        core::hint::spin_loop();
-    }
-    Err(IrqError::Timeout)
-}
-
-fn wait_x2apic_delivery() -> Result<(), IrqError> {
-    for _ in 0..IPI_DELIVERY_WAIT_SPINS {
-        if unsafe { x86::msr::rdmsr(IA32_X2APIC_ICR) } & u64::from(ICR_DELIVERY_PENDING) == 0 {
-            return Ok(());
-        }
-        core::hint::spin_loop();
-    }
-    Err(IrqError::Timeout)
-}
-
-unsafe fn lapic_read(offset: u32) -> u32 {
-    let ptr = lapic_ptr(offset) as *const u32;
-    unsafe { ptr.read_volatile() }
-}
-
-unsafe fn lapic_write(offset: u32, value: u32) {
-    let ptr = lapic_ptr(offset);
-    unsafe {
-        ptr.write_volatile(value);
-    }
-}
-
-fn lapic_ptr(offset: u32) -> *mut u32 {
-    const IA32_APIC_BASE: u32 = 0x1b;
-    const LAPIC_BASE_MASK: u64 = 0xffff_f000;
-    let base = unsafe { x86::msr::rdmsr(IA32_APIC_BASE) & LAPIC_BASE_MASK } as usize;
-    unsafe { someboot::mem::phys_to_virt(base).add(offset as usize) }.cast()
 }

@@ -1,6 +1,6 @@
 [package]
 name = "ax-log"
-version = "0.5.20"
+version = "0.6.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -9,7 +9,7 @@ license.workspace = true
 
 [features]
 default = []
-host-test = ["ax-task/host-test"]
+host-test = []
 std = ["dep:chrono"]
 
 [dependencies]
@@ -17,5 +17,4 @@ axpanic.workspace = true
 cfg-if.workspace = true
 chrono = { workspace = true, default-features = true, optional = true }
 ax-crate-interface.workspace = true
-ax-task.workspace = true
 log.workspace = true

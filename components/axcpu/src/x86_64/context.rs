@@ -6,7 +6,7 @@ use core::{
 };
 
 use ax_memory_addr::VirtAddr;
-use cpu_local::{CurrentThreadHeader, PreparedThreadSwitch};
+use cpu_local::{ExecutionContextHeader, PreparedContextSwitch};
 
 use crate::{KernelTlsBase, TaskLocalState};
 
@@ -430,15 +430,15 @@ impl TaskContext {
         self.task_local.set_kernel_tls(kernel_tls);
     }
 
-    /// Sets the pinned task-owned current-thread header restored by the raw
+    /// Sets the pinned task-owned execution-context header restored by the raw
     /// switch tail in LinuxCurrent images.
-    pub fn set_current_header(&mut self, header: NonNull<CurrentThreadHeader>) {
-        self.task_local.set_current_header(header);
+    pub fn set_context_header(&mut self, header: NonNull<ExecutionContextHeader>) {
+        self.task_local.set_context_header(header);
     }
 
-    /// Returns the configured task-owned current-thread header.
-    pub const fn current_header(&self) -> Option<NonNull<CurrentThreadHeader>> {
-        self.task_local.current_header()
+    /// Returns the configured task-owned execution-context header.
+    pub const fn context_header(&self) -> Option<NonNull<ExecutionContextHeader>> {
+        self.task_local.context_header()
     }
 
     /// Changes the page table root restored for this task.
@@ -462,7 +462,7 @@ impl TaskContext {
         }
     }
 
-    /// Commits current-thread publication and performs the raw transfer.
+    /// Commits current-context publication and performs the raw transfer.
     ///
     /// # Safety
     ///
@@ -473,10 +473,10 @@ impl TaskContext {
     pub unsafe fn switch_to_prepared(
         &mut self,
         next_ctx: &Self,
-        prepared: PreparedThreadSwitch<'_>,
+        prepared: PreparedContextSwitch<'_>,
     ) {
         assert_eq!(
-            next_ctx.current_header(),
+            next_ctx.context_header(),
             Some(prepared.next_header()),
             "prepared switch token must belong to the next task context",
         );

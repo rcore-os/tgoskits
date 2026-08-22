@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/rockchip-rga-v0.1.8...rockchip-rga-v0.2.0) - 2026-08-20
+
+### Added
+
+- *(dma-api)* [**breaking**] add device DMA coherency with uncached-alias remap ([#2106](https://github.com/rcore-os/tgoskits/pull/2106))
+
+### Other
+
+- *(errors)* introduce domain-owned error boundaries ([#2024](https://github.com/rcore-os/tgoskits/pull/2024))
+
 ## [0.1.8](https://github.com/rcore-os/tgoskits/compare/rockchip-rga-v0.1.7...rockchip-rga-v0.1.8) - 2026-08-09
 
 ### Other

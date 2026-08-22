@@ -12,11 +12,18 @@ sidebar_label: "性能剖析"
 统一设置 `TGOS_OVMF_DIR`；该目录必须使用 Ostool 的 `<arch>/code.fd`、`vars.fd` 布局。
 建议在 x86_64 上同时使用 `--kernel-filter`，排除 UEFI 固件和用户态地址。
 
-## 剖析流程
+qperf 工具和报告脚本统一通过 `apps/common/prebuild-harness-kit.sh` 获取固定版本的
+harness kit；`cargo xtask starry perf` 与 `apps/qperf`、`apps/OScope-harness` 复用同一
+checkout。需要使用预先准备的只读 checkout 时，设置 `TGOSKIT_HARNESS_KIT_DIR`；该
+目录必须是文档所列固定提交的 Git checkout，且包含 qperf 与报告脚本。
+
+## 1. 剖析流程
+
+剖析流程先构建 qperf 工具链和 StarryOS 内核，再运行 QEMU 采样并生成报告。
 
 ```mermaid
 flowchart TD
-    A["cargo starry perf"] --> B["构建 qperf 工具链<br/>qperf + qperf-analyzer + flamegraph"]
+    A["cargo xtask starry perf"] --> B["构建 qperf 工具链<br/>qperf + qperf-analyzer + flamegraph"]
     B --> C["构建 StarryOS<br/>注入 qperf feature"]
     C --> D["准备 rootfs + QEMU 配置"]
     D --> E["运行 QEMU<br/>采集 trace buffer / 指令采样"]
@@ -29,7 +36,9 @@ flowchart TD
     J --> K["打印报告路径"]
 ```
 
-## 参数
+## 2. 参数
+
+`perf` 参数覆盖采样配置、guest 工作负载、host 侧统计和符号化输出。
 
 | 参数 | 说明 |
 |------|------|
@@ -52,9 +61,9 @@ flowchart TD
 | `--flamegraph` | 即使 `--format` 非 SVG 也生成火焰图 |
 | `--flamegraph-kind` | 火焰图格式：`Svg`（默认）/`Html`/`Folded` |
 | `--full-stack` | 保留本构建可采集的最深栈 |
-| `--callchain`/`--perf-callchain` | qperf callchain 模式：`Leaf`/`Fp`/`Logical` |
-| `--debuginfo`/`--perf-debuginfo` | 添加 DWARF 调试信息并保留符号 |
-| `--force-frame-pointers`/`--perf-force-frame-pointers` | 强制帧指针以支持 FP 解栈 |
+| `--perf-callchain`（别名 `--callchain`） | qperf callchain 模式：`Leaf`/`Fp`/`Logical` |
+| `--perf-debuginfo` | 添加 DWARF 调试信息并保留符号 |
+| `--perf-force-frame-pointers` | 强制帧指针以支持 FP 解栈 |
 | `--demangle` | 在 qperf-analyzer 中强制 Rust demangle |
 | `--no-truncate` | 火焰图中保留极小帧（min width 设为 0） |
 | `--include-kernel-symbols` | 包含内核符号（StarryOS 默认开启） |
@@ -65,22 +74,26 @@ flowchart TD
 | `--smp <N>` | CPU 核数 |
 | `--debug` | debug 构建 |
 
-## 采样模式
+## 3. 采样模式
+
+采样模式决定 qperf 从 trace buffer 读取样本，还是按指令级事件收集样本。
 
 | 模式 | 说明 |
 |------|------|
 | `Tb`（trace buffer，默认） | 从 qperf 的内核 trace buffer 读取采样，开销低 |
 | `Insn`（指令级） | 指令级采样，精度高但开销大 |
 
-## callchain 解栈模式
+## 4. Callchain 解栈模式
+
+Callchain 模式决定 analyzer 如何从采样点恢复调用栈。
 
 | 模式 | 说明 |
 |------|------|
 | `Leaf` | 最快，仅依赖采样点的 PC/LR |
-| `Fp` | 需要帧指针（配合 `--force-frame-pointers`） |
+| `Fp` | 需要帧指针（配合 `--perf-force-frame-pointers`） |
 | `Logical` | 逻辑推导，最完整但最慢 |
 
-## 输出产物
+## 5. 输出产物
 
 报告位于 `<output-dir>/perf/<arch>/latest/`，包含：
 
@@ -91,22 +104,24 @@ flowchart TD
 - phase/focus 火焰图（按采样窗口分段）
 - `report.md`/`report.json` 汇总报告与 `hotspots.csv`
 
-## 用法示例
+## 6. 用法示例
+
+以下示例覆盖默认采样、带采样窗口的 x86_64 boot 剖析、指令级采样和自定义工作负载。
 
 ```bash
 # 默认 riscv64 性能剖析（boot 用例）
-cargo starry perf
+cargo xtask starry perf
 
 # x86_64 内核 boot 剖析：出现 shell 后写入结束标记并停止 QEMU
-cargo starry perf --arch x86_64 --kernel-filter --format folded \
+cargo xtask starry perf --arch x86_64 --kernel-filter --format folded \
     --shell-init-cmd "echo QPERF_BOOT_DONE" \
     --stop-marker "QPERF_BOOT_DONE" --timeout 60
 
 # 指令级采样 + 帧指针解栈
-cargo starry perf --mode insn --callchain fp --force-frame-pointers
+cargo xtask starry perf --mode insn --perf-callchain fp --perf-force-frame-pointers
 
 # 自定义工作负载采样窗口
-cargo starry perf --shell-init-cmd "/bin/run_benchmark.sh" \
+cargo xtask starry perf --shell-init-cmd "/bin/run_benchmark.sh" \
     --start-marker "BENCH_START" --stop-marker "BENCH_END" \
     --workload-timeout 30
 ```
