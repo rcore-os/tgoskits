@@ -8,7 +8,8 @@ use ax_task::{
 use bytemuck::{Pod, Zeroable};
 use linux_raw_sys::general::{
     __kernel_clockid_t, CLOCK_MONOTONIC, CLOCK_REALTIME, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
-    SCHED_BATCH, SCHED_FIFO, SCHED_IDLE, SCHED_NORMAL, SCHED_RR, TIMER_ABSTIME, timespec,
+    SCHED_BATCH, SCHED_DEADLINE, SCHED_EXT, SCHED_FIFO, SCHED_IDLE, SCHED_NORMAL, SCHED_RR,
+    TIMER_ABSTIME, timespec,
 };
 use starry_vm::{VmMutPtr, VmPtr, vm_load, vm_write_slice};
 
@@ -261,6 +262,32 @@ pub fn sys_sched_getparam(pid: i32, param: *mut ()) -> StarryResult<isize> {
     Ok(0)
 }
 
+/// Returns the maximum priority supported by a Linux scheduling policy.
+///
+/// # Errors
+///
+/// Returns [`StarryError::InvalidInput`] when `policy` is not recognized.
+pub fn sys_sched_get_priority_max(policy: i32) -> StarryResult<isize> {
+    match policy as u32 {
+        SCHED_FIFO | SCHED_RR => Ok(99),
+        SCHED_NORMAL | SCHED_BATCH | SCHED_IDLE | SCHED_DEADLINE | SCHED_EXT => Ok(0),
+        _ => Err(StarryError::InvalidInput),
+    }
+}
+
+/// Returns the minimum priority supported by a Linux scheduling policy.
+///
+/// # Errors
+///
+/// Returns [`StarryError::InvalidInput`] when `policy` is not recognized.
+pub fn sys_sched_get_priority_min(policy: i32) -> StarryResult<isize> {
+    match policy as u32 {
+        SCHED_FIFO | SCHED_RR => Ok(1),
+        SCHED_NORMAL | SCHED_BATCH | SCHED_IDLE | SCHED_DEADLINE | SCHED_EXT => Ok(0),
+        _ => Err(StarryError::InvalidInput),
+    }
+}
+
 enum PrioritySelector {
     CurrentProcess,
     Process(TgidNumber),
@@ -442,8 +469,8 @@ fn set_priority_for_processes(
 #[cfg(test)]
 pub(crate) fn schedule_clock_and_sched_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{
-        CLOCK_MONOTONIC, CLOCK_REALTIME, SCHED_BATCH, SCHED_FIFO, SCHED_IDLE, SCHED_NORMAL,
-        SCHED_RR,
+        CLOCK_MONOTONIC, CLOCK_REALTIME, SCHED_BATCH, SCHED_DEADLINE, SCHED_EXT, SCHED_FIFO,
+        SCHED_IDLE, SCHED_NORMAL, SCHED_RR,
     };
 
     // Test clock_nanosleep clock_id validation
@@ -460,6 +487,29 @@ pub(crate) fn schedule_clock_and_sched_validation_rules_hold_for_test() -> bool 
     let valid_policies = [SCHED_NORMAL, SCHED_FIFO, SCHED_RR, SCHED_BATCH, SCHED_IDLE];
 
     assert!(valid_policies.contains(&SCHED_NORMAL));
+
+    for policy in [SCHED_FIFO, SCHED_RR] {
+        assert_eq!(sys_sched_get_priority_max(policy as i32), Ok(99));
+        assert_eq!(sys_sched_get_priority_min(policy as i32), Ok(1));
+    }
+    for policy in [
+        SCHED_NORMAL,
+        SCHED_BATCH,
+        SCHED_IDLE,
+        SCHED_DEADLINE,
+        SCHED_EXT,
+    ] {
+        assert_eq!(sys_sched_get_priority_max(policy as i32), Ok(0));
+        assert_eq!(sys_sched_get_priority_min(policy as i32), Ok(0));
+    }
+    assert!(matches!(
+        sys_sched_get_priority_max(1000),
+        Err(StarryError::InvalidInput)
+    ));
+    assert!(matches!(
+        sys_sched_get_priority_min(1000),
+        Err(StarryError::InvalidInput)
+    ));
 
     true
 }
