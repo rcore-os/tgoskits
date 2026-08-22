@@ -192,14 +192,15 @@ impl DeviceInner {
         let event_port: Arc<dyn ControllerEventPort> = controller.clone();
         let mut new_hctxs = Vec::new();
 
-        for queue in queues {
+        let mut queues = queues.into_iter();
+        while let Some(queue) = queues.next() {
             let queue_id = queue.id();
             if existing
                 .iter()
                 .chain(new_hctxs.iter())
                 .any(|hctx| hctx.id() == queue_id)
             {
-                self.retain_uninstalled_resources(new_hctxs, Vec::from([queue]));
+                self.retain_uninstalled_queue_batch(new_hctxs, queue, queues);
                 return Err(BlkError::InvalidRequest);
             }
             let cpu = (existing.len() + new_hctxs.len()) % online_cpus;
@@ -207,7 +208,7 @@ impl DeviceInner {
                 Ok(hctx) => new_hctxs.push(hctx),
                 Err(start_error) => {
                     let (error, queue) = start_error.into_parts();
-                    self.retain_uninstalled_resources(new_hctxs, Vec::from([queue]));
+                    self.retain_uninstalled_queue_batch(new_hctxs, queue, queues);
                     return Err(error);
                 }
             }
@@ -278,6 +279,18 @@ impl DeviceInner {
     ) {
         self.hctxs.lock().extend(hctxs);
         self.detached_queues.lock().extend(queues);
+    }
+
+    fn retain_uninstalled_queue_batch(
+        &self,
+        hctxs: Vec<Arc<Hctx>>,
+        current_queue: Box<dyn HardwareQueue>,
+        trailing_queues: impl Iterator<Item = Box<dyn HardwareQueue>>,
+    ) {
+        self.hctxs.lock().extend(hctxs);
+        let mut detached_queues = self.detached_queues.lock();
+        detached_queues.push(current_queue);
+        detached_queues.extend(trailing_queues);
     }
 
     fn register_endpoint(

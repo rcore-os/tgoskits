@@ -24,13 +24,16 @@ impl DmaOp for TestDmaOp {
         _constraints: DmaConstraints,
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
+        // SAFETY: `layout` is valid and the returned allocation is owned by the test DMA handle.
         let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+        // SAFETY: `ptr` names the allocation above for exactly `layout` bytes in this direct domain.
         Some(unsafe {
             DmaAllocHandle::new(ptr, ptr, (ptr.as_ptr() as usize as u64).into(), layout)
         })
     }
 
     unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+        // SAFETY: the DMA contract returns the same live allocation and layout produced above.
         unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
     }
 
@@ -39,10 +42,12 @@ impl DmaOp for TestDmaOp {
         constraints: DmaConstraints,
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
+        // SAFETY: coherent test allocations use the same ownership contract as contiguous ones.
         unsafe { self.alloc_contiguous(constraints, layout) }
     }
 
     unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
+        // SAFETY: `handle` was allocated by the matching coherent allocation method.
         unsafe { self.dealloc_contiguous(handle) };
         Ok(())
     }
@@ -56,6 +61,7 @@ impl DmaOp for TestDmaOp {
     ) -> Result<DmaMapHandle, DmaError> {
         let layout = Layout::from_size_align(size.get(), 1).map_err(DmaError::LayoutError)?;
         Ok(
+            // SAFETY: the caller guarantees `addr..addr + size` remains valid for this mapping.
             unsafe {
                 DmaMapHandle::new(addr, (addr.as_ptr() as usize as u64).into(), layout, None)
             },
@@ -82,6 +88,7 @@ fn ready_online_smp_does_not_reissue_resources_or_change_device_info() {
     let mut registers = vec![0_u64; 0x2000 / core::mem::size_of::<u64>()];
     registers[0] = 63;
     let config = Config::msix(4096, [0, 1, 2]).unwrap();
+    // SAFETY: the aligned register backing stays alive and exclusively borrowed for this test.
     let nvme = unsafe {
         Nvme::from_borrowed_registers_for_test(
             NonNull::new(registers.as_mut_ptr().cast()).unwrap(),
@@ -122,6 +129,7 @@ fn rearm_during_initialization_preserves_waiting_for_irq_state() {
     let mut registers = vec![0_u64; 0x2000 / core::mem::size_of::<u64>()];
     registers[0] = 63;
     let config = Config::msix(4096, [0, 1]).unwrap();
+    // SAFETY: the aligned register backing stays alive and exclusively borrowed for this test.
     let nvme = unsafe {
         Nvme::from_borrowed_registers_for_test(
             NonNull::new(registers.as_mut_ptr().cast()).unwrap(),
