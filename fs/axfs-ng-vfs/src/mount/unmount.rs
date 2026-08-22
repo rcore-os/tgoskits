@@ -111,6 +111,24 @@ impl UnmountPlan {
 }
 
 impl Mountpoint {
+    /// Commits a normal unmount after filesystem callbacks have completed.
+    ///
+    /// A callback may overlap an unrelated mount-tree mutation. Replan under
+    /// the topology guard in that case so validation and commit remain one
+    /// transaction without reporting a false `ResourceBusy` to the caller.
+    pub(super) fn commit_normal_after_flush(self: &Arc<Self>, plan: UnmountPlan) -> VfsResult<()> {
+        debug_assert_eq!(plan.kind, UnmountKind::Normal);
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        match plan.commit_locked() {
+            Ok(()) => Ok(()),
+            Err(UnmountCommitError::TopologyChanged) => self
+                .plan_unmount_locked(UnmountKind::Normal)?
+                .commit_current_locked()
+                .map_err(VfsError::from),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub fn plan_unmount(self: &Arc<Self>, kind: UnmountKind) -> VfsResult<UnmountPlan> {
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         self.plan_unmount_locked(kind)
