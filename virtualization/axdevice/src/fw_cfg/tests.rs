@@ -44,6 +44,49 @@ fn dma_rejects_buffer_address_overflow() {
     assert!(validate_dma_buffer(GuestPhysAddr::from_usize(usize::MAX), 2).is_err());
 }
 
+#[test]
+fn dma_descriptor_fault_is_propagated_when_status_cannot_be_written() {
+    let fw_cfg = FwCfg::new(
+        GuestPhysAddr::from_usize(0),
+        0x20,
+        FwCfgKernelPayload::unsplit(Arc::from(&b"kernel"[..])),
+        None,
+        None,
+        1,
+        FwCfgPlatformConfig::default(),
+    );
+    let status_writes = Cell::new(0usize);
+
+    let error = fw_cfg
+        .process_dma(
+            GuestPhysAddr::from_usize(0x1ff1_48b0),
+            |_addr, _buffer| {
+                Err(DeviceManagerError::InvalidInput {
+                    operation: "read test guest memory",
+                    detail: "descriptor is not mapped".into(),
+                })
+            },
+            |_addr, status| {
+                assert_eq!(status, FW_CFG_DMA_CTL_ERROR.to_be_bytes());
+                status_writes.set(status_writes.get() + 1);
+                Err(DeviceManagerError::InvalidInput {
+                    operation: "write test guest memory",
+                    detail: "descriptor is not mapped".into(),
+                })
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        DeviceManagerError::InvalidInput {
+            operation: "read test guest memory",
+            ..
+        }
+    ));
+    assert_eq!(status_writes.get(), 1);
+}
+
 #[cfg(target_pointer_width = "64")]
 #[test]
 fn dma_address_register_preserves_high_half_and_resets_after_commit() {
@@ -306,12 +349,20 @@ fn pio_dma_fault_does_not_poison_the_next_32_bit_transfer() {
         0xdead_beefu32.swap_bytes() as u64,
         Some(&mut memory),
     );
-    write(
-        &runtime,
-        guest_access(BusKind::Port, 0x518, AccessWidth::Dword),
-        0x8000u32.swap_bytes() as u64,
-        Some(&mut memory),
-    );
+    let error = runtime
+        .try_write(
+            &guest_access(BusKind::Port, 0x518, AccessWidth::Dword),
+            0x8000u32.swap_bytes() as u64,
+            Some(&mut memory),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        DeviceManagerError::Access {
+            source: axdevice_base::DeviceError::OutOfRange { .. },
+            ..
+        }
+    ));
 
     let control = FW_CFG_DMA_CTL_SELECT | FW_CFG_DMA_CTL_READ;
     memory.bytes[DESCRIPTOR..DESCRIPTOR + 4].copy_from_slice(&control.to_be_bytes());

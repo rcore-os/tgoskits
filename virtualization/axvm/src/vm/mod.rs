@@ -1135,15 +1135,22 @@ impl AxVM {
         }
     }
 
+    /// Runs a callback with a snapshot of the current runtime.
+    ///
+    /// The runtime is pinned by its `Arc`, but the lifecycle may advance after
+    /// the snapshot. The callback runs without the machine lock so runtime
+    /// wait-queue operations cannot invert the machine/wait-queue lock order.
     pub(crate) fn with_runtime<F, R>(&self, f: F) -> AxVmResult<R>
     where
         F: FnOnce(&Arc<VmRuntimeHandle>) -> AxVmResult<R>,
     {
-        let machine = self.machine.lock();
-        let runtime = machine
+        let runtime = self
+            .machine
+            .lock()
             .runtime()
+            .cloned()
             .ok_or_else(|| ax_err_type!(BadState, "VM runtime is not available"))?;
-        f(runtime)
+        f(&runtime)
     }
 
     #[cfg_attr(
