@@ -1104,7 +1104,7 @@ impl FsPollable for Location {
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::ToString;
+    use alloc::{boxed::Box, string::ToString};
     use core::{
         any::Any,
         sync::atomic::{AtomicUsize, Ordering},
@@ -1118,7 +1118,7 @@ mod tests {
     struct MockNode;
     struct TopologyChangingFs {
         self_ref: Weak<Self>,
-        unrelated_mount: Arc<Mountpoint>,
+        topology_change: Box<dyn Fn() + Send + Sync>,
         flushes: AtomicUsize,
     }
     struct TopologyChangingNode {
@@ -1186,7 +1186,7 @@ mod tests {
 
         fn flush(&self) -> VfsResult<()> {
             if self.flushes.fetch_add(1, Ordering::AcqRel) == 0 {
-                self.unrelated_mount.set_shared();
+                (self.topology_change)();
             }
             Ok(())
         }
@@ -1338,7 +1338,7 @@ mod tests {
         let unrelated_mount = Mountpoint::new_root(&parent_fs);
         let filesystem_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
             self_ref: self_ref.clone(),
-            unrelated_mount,
+            topology_change: Box::new(move || unrelated_mount.set_shared()),
             flushes: AtomicUsize::new(0),
         });
         let mounted_fs = Filesystem::new(filesystem_ops.clone());
@@ -1351,6 +1351,61 @@ mod tests {
 
         assert_eq!(filesystem_ops.flushes.load(Ordering::Acquire), 1);
         assert!(!parent.children.lock().contains_key(&target_entry.key()));
+    }
+
+    #[test]
+    fn unmount_rejects_a_replan_that_adds_an_unflushed_peer() {
+        let parent_fs = mock_filesystem();
+        let source_parent = Mountpoint::new_root(&parent_fs);
+        let peer_parent = Mountpoint::new_root(&parent_fs);
+        source_parent.set_shared();
+
+        let source_parent_root = source_parent.root_location();
+        let source_entry =
+            make_child_dir_entry(Some(source_parent_root.entry().clone()), "mount-target");
+        let source_target = Location::new(source_parent.clone(), source_entry.clone());
+        let peer_parent_root = peer_parent.root_location();
+        let peer_entry =
+            make_child_dir_entry(Some(peer_parent_root.entry().clone()), "mount-target");
+        let peer_target = Location::new(peer_parent.clone(), peer_entry.clone());
+
+        let source_parent_for_flush = source_parent.clone();
+        let peer_parent_for_flush = peer_parent.clone();
+        let source_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
+            self_ref: self_ref.clone(),
+            topology_change: Box::new(move || {
+                peer_parent_for_flush.join_shared_group(&source_parent_for_flush);
+            }),
+            flushes: AtomicUsize::new(0),
+        });
+        let peer_ops = Arc::new_cyclic(|self_ref| TopologyChangingFs {
+            self_ref: self_ref.clone(),
+            topology_change: Box::new(|| {}),
+            flushes: AtomicUsize::new(0),
+        });
+        let source_mount = source_target
+            .mount(&Filesystem::new(source_ops.clone()))
+            .expect("source mount succeeds");
+        let peer_mount = peer_target
+            .mount(&Filesystem::new(peer_ops.clone()))
+            .expect("peer mount succeeds");
+
+        assert_eq!(
+            source_mount.root_location().unmount(),
+            Err(VfsError::ResourceBusy)
+        );
+
+        assert_eq!(source_ops.flushes.load(Ordering::Acquire), 1);
+        assert_eq!(peer_ops.flushes.load(Ordering::Acquire), 0);
+        assert!(source_mount.location().is_some());
+        assert!(peer_mount.location().is_some());
+        assert!(
+            source_parent
+                .children
+                .lock()
+                .contains_key(&source_entry.key())
+        );
+        assert!(peer_parent.children.lock().contains_key(&peer_entry.key()));
     }
 
     /// The global root is unattached (its mount `location` is `None`), so the
