@@ -6,7 +6,7 @@ default_runner = "qcs"
 [[check]]
 id = "run-clippy"
 name = "Incremental Clippy"
-fetch_depth = "full"
+fetch_depth = "100"
 download_xtask_bin_artifact = true
 command = '''
 cargo xtask clippy --since "$SINCE_REF"

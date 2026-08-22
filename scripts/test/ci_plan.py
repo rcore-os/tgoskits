@@ -292,8 +292,13 @@ def _validate_check(
         raise PlanError(f"{location} timeout_minutes must be positive")
 
     fetch_depth = str(check.get("fetch_depth", "1"))
-    if fetch_depth not in {"0", "1", "2", "full"}:
-        raise PlanError(f"{location} has an unsupported fetch_depth")
+    if (
+        fetch_depth != "full"
+        and re.fullmatch(r"0|[1-9][0-9]*", fetch_depth) is None
+    ):
+        raise PlanError(
+            f"{location} fetch_depth must be 'full' or a non-negative integer"
+        )
 
     preflight = check.get("container_preflight")
     if preflight is not None and preflight not in SUPPORTED_PREFLIGHTS:
