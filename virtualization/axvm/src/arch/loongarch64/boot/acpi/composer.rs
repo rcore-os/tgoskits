@@ -52,7 +52,7 @@ fn build_acpi(
     build_facs(&mut tables);
 
     let dsdt = tables.len() as u32;
-    build_dsdt(&mut tables, serial, pci, configured_devices)?;
+    build_dsdt(&mut tables, serial, pci, interrupt, configured_devices)?;
     add_table_checksum(&mut loader, dsdt as usize, table_len(&tables, dsdt))?;
 
     let fadt = tables.len() as u32;

@@ -2,6 +2,8 @@
 
 use alloc::{string::String, vec::Vec};
 
+use axdevice_base::InterruptControllerId;
+
 use crate::*;
 
 /// One scalar or marker property understood by firmware composers.
@@ -132,7 +134,12 @@ pub enum FdtContributionSpec {
     /// An ordinary discoverable device.
     Conventional(FdtNodeSpec),
     /// An interrupt-controller provider.
-    InterruptController(FdtNodeSpec),
+    InterruptController {
+        /// Controller identity used by runtime interrupt endpoints.
+        controller: InterruptControllerId,
+        /// Firmware node describing this controller.
+        node: FdtNodeSpec,
+    },
     /// A timer provider.
     Timer(FdtNodeSpec),
     /// A PCI host bridge.
@@ -148,11 +155,11 @@ impl FdtContributionSpec {
     pub const fn node(&self) -> &FdtNodeSpec {
         match self {
             Self::Conventional(node)
-            | Self::InterruptController(node)
             | Self::Timer(node)
             | Self::PciHostBridge(node)
             | Self::Console(node)
             | Self::FirmwareTransport(node) => node,
+            Self::InterruptController { node, .. } => node,
         }
     }
 }
@@ -267,7 +274,12 @@ pub enum AcpiContributionSpec {
     /// An ordinary discoverable device.
     Conventional(AcpiDeviceSpec),
     /// An interrupt-controller provider.
-    InterruptController(AcpiDeviceSpec),
+    InterruptController {
+        /// Controller identity used by runtime interrupt endpoints.
+        controller: InterruptControllerId,
+        /// Firmware declaration describing this controller.
+        device: AcpiDeviceSpec,
+    },
     /// A timer provider.
     Timer(AcpiDeviceSpec),
     /// A PCI host bridge.
@@ -283,11 +295,11 @@ impl AcpiContributionSpec {
     pub const fn device(&self) -> &AcpiDeviceSpec {
         match self {
             Self::Conventional(device)
-            | Self::InterruptController(device)
             | Self::Timer(device)
             | Self::PciHostBridge(device)
             | Self::Console(device)
             | Self::FirmwareTransport(device) => device,
+            Self::InterruptController { device, .. } => device,
         }
     }
 }

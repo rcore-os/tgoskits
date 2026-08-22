@@ -263,7 +263,7 @@ fn add_configured_devices(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform)
         if !device.interrupts.is_empty() {
             let mut interrupts = Vec::with_capacity(device.interrupts.len() * 2);
             for interrupt in &device.interrupts {
-                if interrupt.controller.value() != 0 {
+                if interrupt.controller != platform.interrupt.controller {
                     return Err(crate::AxVmError::invalid_config(format!(
                         "device {} uses unsupported LoongArch interrupt controller {}",
                         device.id,
@@ -351,6 +351,20 @@ fn add_serial(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResu
         fdt,
         serial,
         prop_u32("clock-frequency", platform.serial.clock_hz),
+    )?;
+    set_prop(
+        fdt,
+        serial,
+        prop_u32("reg-shift", u32::from(platform.serial.register_shift)),
+    )?;
+    set_prop(
+        fdt,
+        serial,
+        prop_u32(
+            "reg-io-width",
+            u32::try_from(platform.serial.register_width.size())
+                .expect("a serial access width is at most eight bytes"),
+        ),
     )?;
     set_prop(fdt, serial, prop_u32("current-speed", platform.serial.baud))?;
     set_prop(fdt, serial, prop_u32("interrupt-parent", PHANDLE_PCH_PIC))?;

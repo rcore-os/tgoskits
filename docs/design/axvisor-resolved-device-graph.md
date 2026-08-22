@@ -131,6 +131,10 @@ pub trait DeviceModel: Send + Sync {
 
 普通设备由共享 composer 编码。FDT 使用 resolved register/interrupt slot 生成唯一的 unit-address 节点；ACPI 为多实例设备分配唯一 NameSeg 和 `_UID`。GIC、ITS、PCI、IOAPIC 等特殊拓扑仍由架构 adapter 编码，因为 phandle、MADT、PCI `_PRT` 和系统寄存器属于架构事实；但对应 model 同样必须声明 typed contribution，adapter 只能读取 resolved graph，不以空 firmware 默认值暗示“架构自行处理”。平台选择的接口缺失时立即失败，不回退到另一接口，也不静默忽略。
 
+`InterruptController` contribution 显式携带运行时 `InterruptControllerId`。解析后的 FDT/ACPI 中断保留 `(controller, input)` 两个维度：FDT adapter 将 controller 映射到对应 phandle，ACPI adapter 将 controller-local input 通过架构声明的 GSI base 映射到系统 GSI。只有单控制器的架构也必须校验 controller identity；不匹配时拒绝 VM，不能绑定默认 parent 或直接把 input 当作 GSI。
+
+固件解析会解析每一个特殊 contribution 的全部 register、interrupt 和属性 slot。架构 adapter 必须按 contribution 分类与固件身份消费所有特殊项，并在重复、缺失或尚不支持的分类出现时明确失败；不得用 graph 节点 ID 代替 contribution 选择，也不得通过过滤 `Conventional` 后 `continue` 来丢弃其余分类。
+
 ## Host 派生的默认串口
 
 默认串口按 `machine fallback -> host FDT/ACPI snapshot -> console0 -> 用户同 ID 覆盖` 解析。FDT snapshot 保存所选 UART 的型号、reg、IRQ、clock、节点路径、phandle、clock provider 和 stdout identity；ACPI snapshot 保存 SPCR 的型号、地址空间、reg、IRQ、clock、baud 和 namespace。snapshot 拥有全部数据，不保存 parser 引用或 AML 字节。

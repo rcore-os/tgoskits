@@ -348,13 +348,14 @@ impl DeviceModel for RiscvPlicFactory {
 
     fn firmware(&self) -> DeviceFirmwareSpec {
         DeviceFirmwareSpec::interfaces(
-            Some(std::vec![FdtContributionSpec::InterruptController(
-                FdtNodeSpec::new("plic")
+            Some(std::vec![FdtContributionSpec::InterruptController {
+                controller: axdevice_base::InterruptControllerId::new(0),
+                node: FdtNodeSpec::new("plic")
                     .with_compatible("riscv,plic0")
                     .with_register(
                         ResourceSlot::new("registers").expect("static PLIC slot is valid"),
                     ),
-            )]),
+            }]),
             None,
         )
     }

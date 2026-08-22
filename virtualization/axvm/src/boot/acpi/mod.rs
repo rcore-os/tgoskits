@@ -10,7 +10,13 @@ mod loader;
 #[cfg(any(target_arch = "x86_64", test))]
 pub(crate) use arena::AcpiAllocation;
 pub(crate) use arena::AcpiTableArena;
-pub(crate) use device::{ResolvedAcpiDevice, encode_devices, resolve_devices};
+#[cfg(target_arch = "x86_64")]
+pub(crate) use device::ResolvedAcpiInterrupt;
+pub(crate) use device::{
+    AcpiInterruptControllerMap, ResolvedAcpiDevice, ResolvedAcpiProperty, ResolvedAcpiRegister,
+    ResolvedAcpiSpecial, ResolvedAcpiSpecialKind, encode_devices_with_interrupt_controllers,
+    resolve_acpi_firmware,
+};
 pub use error::AcpiBuildError;
 #[cfg(any(target_arch = "x86_64", test))]
 pub(crate) use image::{AcpiImage, AcpiTableRecord, AcpiTableSet};

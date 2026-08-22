@@ -263,8 +263,14 @@ impl DeviceModel for Aarch64VgicFactory {
             }
         }
         DeviceFirmwareSpec::interfaces(
-            Some(std::vec![FdtContributionSpec::InterruptController(fdt)]),
-            Some(std::vec![AcpiContributionSpec::InterruptController(acpi)]),
+            Some(std::vec![FdtContributionSpec::InterruptController {
+                controller: self.plan.config().controller_id(),
+                node: fdt,
+            }]),
+            Some(std::vec![AcpiContributionSpec::InterruptController {
+                controller: self.plan.config().controller_id(),
+                device: acpi,
+            }]),
         )
     }
 

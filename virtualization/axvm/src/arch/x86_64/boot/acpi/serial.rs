@@ -18,6 +18,7 @@ pub(super) enum X86SerialRegisters {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct X86SerialPlan {
+    pub(super) id: String,
     pub(super) name: String,
     pub(super) namespace_path: Option<String>,
     pub(super) hid: String,
@@ -56,6 +57,7 @@ fn serial_plan(
     index: usize,
     serial: crate::machine::ResolvedSerialDevice,
 ) -> Result<X86SerialPlan, X86FirmwarePlanError> {
+    let id = serial.id().to_string();
     let profile = serial.profile();
     let registers = match profile.transport {
         crate::machine::GuestSerialTransport::Port { base, length } => {
@@ -86,6 +88,7 @@ fn serial_plan(
         .unwrap_or(&generated_name)
         .into();
     Ok(X86SerialPlan {
+        id,
         name,
         namespace_path,
         hid,

@@ -314,18 +314,20 @@ impl DeviceModel for LoongArchPchPicFactory {
 
     fn firmware(&self) -> DeviceFirmwareSpec {
         DeviceFirmwareSpec::interfaces(
-            Some(alloc::vec![FdtContributionSpec::InterruptController(
-                FdtNodeSpec::new("interrupt-controller")
+            Some(alloc::vec![FdtContributionSpec::InterruptController {
+                controller: axdevice_base::InterruptControllerId::new(0),
+                node: FdtNodeSpec::new("interrupt-controller")
                     .with_compatible("loongson,pch-pic-1.0")
                     .with_register(
                         ResourceSlot::new("registers").expect("static PCH-PIC slot is valid"),
                     ),
-            )]),
-            Some(alloc::vec![AcpiContributionSpec::InterruptController(
-                AcpiDeviceSpec::table("PCH0").with_register(
+            }]),
+            Some(alloc::vec![AcpiContributionSpec::InterruptController {
+                controller: axdevice_base::InterruptControllerId::new(0),
+                device: AcpiDeviceSpec::table("PCH0").with_register(
                     ResourceSlot::new("registers").expect("static PCH-PIC slot is valid"),
                 ),
-            )]),
+            }]),
         )
     }
 

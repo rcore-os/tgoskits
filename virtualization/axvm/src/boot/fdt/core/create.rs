@@ -507,6 +507,14 @@ fn fdt_interrupt_binding(
     gic_profile: Option<&crate::machine::GuestGicProfile>,
     plic_profile: Option<&crate::machine::GuestPlicProfile>,
 ) -> AxVmResult<FdtInterruptBinding> {
+    let machine_controller = axdevice_base::InterruptControllerId::new(0);
+    if interrupt.controller != machine_controller {
+        return Err(crate::AxVmError::invalid_config(std::format!(
+            "device FDT interrupt controller {} differs from machine controller {}",
+            interrupt.controller.value(),
+            machine_controller.value()
+        )));
+    }
     match (gic_profile, plic_profile) {
         (Some(gic), None) => {
             let parent = match gic.node_phandle {
@@ -929,6 +937,19 @@ mod tests {
                 .collect::<std::vec::Vec<_>>(),
             [0, 17, 1]
         );
+    }
+
+    #[test]
+    fn fdt_rejects_interrupt_controller_not_owned_by_machine_profile() {
+        let mut tree = FdtTree::new();
+        let mut device = virtio_device("virtblk0", 0x0a00_0200, 49);
+        device.interrupts[0].controller = InterruptControllerId::new(1);
+
+        let error =
+            super::install_resolved_fdt_devices(&mut tree, &[device], Some(&gic_profile(7)), None)
+                .unwrap_err();
+
+        assert!(error.to_string().contains("interrupt controller"));
     }
 
     #[test]

@@ -131,6 +131,7 @@ fn host_acpi_resources(
         .pch_pics()
         .first()
         .map(|pch_pic| InterruptTopology {
+            controller: axdevice_base::InterruptControllerId::new(0),
             eiointc_irq: defaults.interrupt.eiointc_irq,
             pch_pic: MmioRegion {
                 base: pch_pic.address,
@@ -249,6 +250,8 @@ impl QemuVirtDefaults {
             irq: 2,
             clock_hz: LoongArchFwCfgSerialConfig::default().clock_hz,
             baud: LoongArchFwCfgSerialConfig::default().baud,
+            register_shift: 0,
+            register_width: axdevice_base::AccessWidth::Byte,
         };
         let pci = PciHost {
             ecam: MmioRegion {
@@ -264,6 +267,7 @@ impl QemuVirtDefaults {
             intx_base: 16,
         };
         let interrupt = InterruptTopology {
+            controller: axdevice_base::InterruptControllerId::new(0),
             eiointc_irq: LoongArchFwCfgInterruptConfig::default().eiointc_irq as u32,
             pch_pic: MmioRegion {
                 base: LoongArchFwCfgInterruptConfig::default().pch_pic_base,

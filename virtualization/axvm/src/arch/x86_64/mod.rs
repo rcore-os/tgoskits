@@ -726,11 +726,12 @@ impl DeviceModel for X86IoApicModel {
     fn firmware(&self) -> DeviceFirmwareSpec {
         DeviceFirmwareSpec::interfaces(
             None,
-            Some(std::vec![AcpiContributionSpec::InterruptController(
-                AcpiDeviceSpec::table("IOAP").with_register(
+            Some(std::vec![AcpiContributionSpec::InterruptController {
+                controller: axdevice_base::InterruptControllerId::new(0),
+                device: AcpiDeviceSpec::table("IOAP").with_register(
                     ResourceSlot::new("registers").expect("static IOAPIC slot is valid"),
                 ),
-            )]),
+            }]),
         )
     }
 
