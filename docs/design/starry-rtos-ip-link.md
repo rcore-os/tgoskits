@@ -58,6 +58,12 @@ FDT 网卡节点、MAC/IP/路由初始化以及最小 echo 验证。默认采用
 两端必须实现 `CONTROL`、`STATUS`、`ERROR` 和 `HEARTBEAT`，并完成至少一次
 Linux/Starry → RTOS 控制请求及 RTOS → Linux/Starry 状态响应。
 
+当前端点实现为 [`apps/arceos/guest-ip-server`](../../apps/arceos/guest-ip-server/)
+和可放入 Starry/Linux rootfs 的
+[`linux-client.c`](../../apps/starry/guest-ip-link/linux-client.c)。客户端使用
+POSIX TCP socket，服务端使用 ArceOS `ax_std` socket；二者只通过 IP 网络交换
+协议帧。
+
 ### PR3：可靠性和异常恢复
 
 建议标题：`feat(net-reliability): add guest link recovery and fault handling`
@@ -78,6 +84,11 @@ Linux/Starry → RTOS 控制请求及 RTOS → Linux/Starry 状态响应。
 并输出以下指标：请求成功率、应用层错误、超时、重传/重连次数、恢复成功率、
 请求-响应延迟（至少 P50/P95）和有效应用吞吐量。失败必须以非零退出码传播到
 测试运行器。
+
+客户端当前输出 `GIPC_LINUX_STATUS` 和 `GIPC_LINUX_METRIC`，并由
+[`verify_metrics.py`](../../scripts/test/guest-ip-link/verify_metrics.py) 检查
+成功标志、超时/错误标志、正延迟和正有效吞吐量。长稳运行仍需在 PR4 的 QEMU
+流程中聚合多个请求，生成 P50/P95 和整体成功率。
 
 ## 4. 网络拓扑
 
