@@ -52,8 +52,6 @@ vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]
 
 CLI 传入的 `--vmconfigs` 非空时覆盖该配置中的 `vm_configs`；否则使用 Build Config 中的列表。
 
-QEMU AArch64 的 Zephyr 与 Linux VirtIO-net 客户机联通验证见
-[Zephyr and Linux VirtIO-Net Peers](./zephyr-linux-virtio-net.md)。
 相对 VM config 路径相对于 workspace 根解析；其中五个 `[kernel]` 镜像路径字段支持 Ostool
 变量，并按原 VM config 目录解析相对路径。最终解析后的配置写入 `AXVISOR_VM_CONFIGS`，以
 平台路径分隔符连接。
