@@ -1,0 +1,13 @@
+[package]
+name = "arceos-guest-ip-server"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[features]
+default = ["arceos"]
+arceos = ["dep:ax-std", "ax-std/arceos", "ax-std/net"]
+
+[dependencies]
+ax-std = { workspace = true, optional = true, features = ["default"] }
+guest-ip-protocol.workspace = true

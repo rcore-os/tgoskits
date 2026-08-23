@@ -348,7 +348,7 @@ pub fn decode_frame(input: &[u8]) -> Result<(Header, &[u8]), FrameError> {
     if input.len() < HEADER_LEN {
         return Err(FrameError::TruncatedHeader);
     }
-    let header = read_header(&input[..HEADER_LEN])?;
+    let header = decode_header(&input[..HEADER_LEN])?;
     if input.len() < HEADER_LEN + header.payload_len as usize {
         return Err(FrameError::TruncatedPayload);
     }
@@ -382,7 +382,11 @@ fn write_header(header: Header, output: &mut [u8]) {
     output[30..32].fill(0);
 }
 
-fn read_header(input: &[u8]) -> Result<Header, FrameError> {
+/// Decodes and validates only the fixed header.
+pub fn decode_header(input: &[u8]) -> Result<Header, FrameError> {
+    if input.len() < HEADER_LEN {
+        return Err(FrameError::TruncatedHeader);
+    }
     let magic = u32::from_be_bytes(input[0..4].try_into().unwrap());
     if magic != MAGIC {
         return Err(FrameError::InvalidMagic);
