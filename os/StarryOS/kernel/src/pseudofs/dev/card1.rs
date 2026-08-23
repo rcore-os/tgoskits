@@ -4,7 +4,7 @@ use core::{
     convert::TryFrom,
     ffi::CStr,
     mem,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     task::Context,
 };
 
@@ -66,6 +66,94 @@ static RKNPU_ACTION_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RKNPU_MEM_CREATE_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RKNPU_MEM_SYNC_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RKNPU_SUBMIT_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Cumulative and windowed ioctl timing aggregate for one ioctl kind.
+///
+/// The per-call logs above stop after `limit` entries, which hides where a
+/// long workload (e.g. a 490 MB model load issuing hundreds of ioctls)
+/// actually spends its time. Reporting here is count-driven (cumulative
+/// count reaching a power of two past `limit`), so it needs no time source
+/// and stays deterministic for tests. All fields are diagnostics counters:
+/// `Relaxed` ordering is sufficient because nothing synchronizes through
+/// them.
+struct IoctlStat {
+    kind: &'static str,
+    /// Cumulative count at which the next report is due.
+    limit: u64,
+    count: AtomicU64,
+    total_ns: AtomicU64,
+    max_ns: AtomicU64,
+    window_count: AtomicU64,
+    window_total_ns: AtomicU64,
+}
+
+impl IoctlStat {
+    const fn new(kind: &'static str, limit: u64) -> Self {
+        Self {
+            kind,
+            limit,
+            count: AtomicU64::new(0),
+            total_ns: AtomicU64::new(0),
+            max_ns: AtomicU64::new(0),
+            window_count: AtomicU64::new(0),
+            window_total_ns: AtomicU64::new(0),
+        }
+    }
+
+    /// Records one call. Returns `true` when the cumulative count just
+    /// reached the next power-of-two report boundary past `limit`.
+    fn record(&self, elapsed_ns: u64) -> bool {
+        let count = self.count.fetch_add(1, Ordering::Relaxed) + 1;
+        self.total_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
+        self.max_ns.fetch_max(elapsed_ns, Ordering::Relaxed);
+        self.window_count.fetch_add(1, Ordering::Relaxed);
+        self.window_total_ns
+            .fetch_add(elapsed_ns, Ordering::Relaxed);
+        count > self.limit && count.is_power_of_two()
+    }
+
+    /// Records one call and reports when a boundary was reached.
+    fn note(&self, elapsed_ns: u64) {
+        if self.record(elapsed_ns) {
+            self.report();
+        }
+    }
+
+    /// Logs one aggregate line (warn level so it survives the Info filter,
+    /// like the per-call logs) and resets the window counters.
+    fn report(&self) {
+        let count = self.count.load(Ordering::Relaxed);
+        let total_ns = self.total_ns.load(Ordering::Relaxed);
+        let max_ns = self.max_ns.load(Ordering::Relaxed);
+        let window_count = self.window_count.swap(0, Ordering::Relaxed);
+        let window_total_ns = self.window_total_ns.swap(0, Ordering::Relaxed);
+        let avg_us = |total: u64, n: u64| {
+            if n == 0 {
+                0.0
+            } else {
+                total as f64 / n as f64 / 1000.0
+            }
+        };
+        warn!(
+            "[perf] rknpu {} ioctl stat: n={} total={:.2}ms avg={:.1}us max={}us | window n={} \
+             total={:.2}ms avg={:.1}us",
+            self.kind,
+            count,
+            total_ns as f64 / 1e6,
+            avg_us(total_ns, count),
+            max_ns / 1000,
+            window_count,
+            window_total_ns as f64 / 1e6,
+            avg_us(window_total_ns, window_count),
+        );
+    }
+}
+
+static RKNPU_ACTION_STAT: IoctlStat = IoctlStat::new("action", RKNPU_ACTION_LOG_LIMIT as u64);
+static RKNPU_MEM_CREATE_STAT: IoctlStat =
+    IoctlStat::new("mem_create", RKNPU_MEM_CREATE_LOG_LIMIT as u64);
+static RKNPU_MEM_SYNC_STAT: IoctlStat = IoctlStat::new("mem_sync", RKNPU_MEM_SYNC_LOG_LIMIT as u64);
+static RKNPU_SUBMIT_STAT: IoctlStat = IoctlStat::new("submit", RKNPU_SUBMIT_LOG_LIMIT as u64);
 
 /// RKNPU command types
 #[repr(u32)]
@@ -220,6 +308,18 @@ impl DeviceOps for Card1 {
     /// Returns the node flags for the device
     fn flags(&self) -> NodeFlags {
         NodeFlags::NON_CACHEABLE
+    }
+
+    /// Called when the last file descriptor to this device is closed.
+    ///
+    /// librknnrt closes /dev/dri/card1 at `rknn_destroy`, which marks the end
+    /// of a workload: print the final cumulative aggregates here so the boot
+    /// log always carries a workload total.
+    fn close(&self, _exclusive: bool) {
+        RKNPU_SUBMIT_STAT.report();
+        RKNPU_MEM_CREATE_STAT.report();
+        RKNPU_MEM_SYNC_STAT.report();
+        RKNPU_ACTION_STAT.report();
     }
 
     /// Maps an exported GEM buffer selected by `handle << PAGE_SHIFT`.
@@ -393,6 +493,7 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
             match rknpu::submit(&mut submit_args).map_err(map_rknpu_err) {
                 Ok(()) => {
                     let submit_end_ns = monotonic_time_nanos();
+                    RKNPU_SUBMIT_STAT.note(submit_end_ns - submit_start_ns);
                     if log_index < RKNPU_SUBMIT_LOG_LIMIT {
                         warn!(
                             "rknpu submit ioctl[{log_index}] done: task_counter={} \
@@ -406,6 +507,7 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 }
                 Err(e) => {
                     let submit_end_ns = monotonic_time_nanos();
+                    RKNPU_SUBMIT_STAT.note(submit_end_ns - submit_start_ns);
                     warn!("rknpu submit ioctl failed: {:?}", e);
                     if log_index < RKNPU_SUBMIT_LOG_LIMIT {
                         warn!(
@@ -449,6 +551,7 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
             match rknpu::mem_create(&mut mem_create_args).map_err(map_rknpu_err) {
                 Ok(()) => {
                     let create_end_ns = monotonic_time_nanos();
+                    RKNPU_MEM_CREATE_STAT.note(create_end_ns - create_start_ns);
                     if log_index < RKNPU_MEM_CREATE_LOG_LIMIT {
                         warn!(
                             "rknpu mem_create ioctl[{log_index}] done: handle={} flags={:#x} \
@@ -468,6 +571,7 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 }
                 Err(e) => {
                     let create_end_ns = monotonic_time_nanos();
+                    RKNPU_MEM_CREATE_STAT.note(create_end_ns - create_start_ns);
                     warn!("rknpu mem_create ioctl failed: {:?}", e);
                     if log_index < RKNPU_MEM_CREATE_LOG_LIMIT {
                         warn!(
@@ -549,6 +653,7 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
             match rknpu::mem_sync(&mut mem_sync).map_err(map_rknpu_err) {
                 Ok(()) => {
                     let sync_end_ns = monotonic_time_nanos();
+                    RKNPU_MEM_SYNC_STAT.note(sync_end_ns - sync_start_ns);
                     if log_index < RKNPU_MEM_SYNC_LOG_LIMIT {
                         warn!(
                             "rknpu mem_sync ioctl[{log_index}] done: flags={:#x} offset={} \
@@ -562,6 +667,7 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 }
                 Err(e) => {
                     let sync_end_ns = monotonic_time_nanos();
+                    RKNPU_MEM_SYNC_STAT.note(sync_end_ns - sync_start_ns);
                     warn!("rknpu mem_sync ioctl failed: {:?}", e);
                     if log_index < RKNPU_MEM_SYNC_LOG_LIMIT {
                         warn!(
@@ -599,8 +705,10 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 action.flags, action.value
             );
 
+            let action_start_ns = monotonic_time_nanos();
             match rknpu::action(action.flags).map_err(map_rknpu_err) {
                 Ok(val) => {
+                    RKNPU_ACTION_STAT.note(monotonic_time_nanos() - action_start_ns);
                     action.value = val;
                     if log_index < RKNPU_ACTION_LOG_LIMIT {
                         warn!(
@@ -611,6 +719,7 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                     }
                 }
                 Err(e) => {
+                    RKNPU_ACTION_STAT.note(monotonic_time_nanos() - action_start_ns);
                     warn!("rknpu action ioctl failed: {:?}", e);
                     if log_index < RKNPU_ACTION_LOG_LIMIT {
                         warn!(
@@ -631,7 +740,6 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
     }
     Ok(0)
 }
-
 /// DRM_IOCTL_GEM_FLINK ioctl argument type
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -772,6 +880,46 @@ mod tests {
         assert_eq!(map_handle_from_offset(0x2000), Some(2));
         assert_eq!(map_handle_from_offset(0), None);
         assert_eq!(map_handle_from_offset(0x1001), None);
+    }
+
+    #[test]
+    fn ioctl_stat_reports_exactly_at_powers_of_two_past_limit() {
+        let stat = IoctlStat::new("test", 4);
+
+        // Counts 1..=4 are at or below the limit: never reported.
+        for _ in 0..4 {
+            assert!(!stat.record(100));
+        }
+        // Counts 5..=7 are past the limit but not powers of two.
+        for _ in 4..7 {
+            assert!(!stat.record(100));
+        }
+        // Count 8 is the first power-of-two boundary past the limit.
+        assert!(stat.record(100));
+        // Counts 9..=15 stay silent; 16 is the next boundary.
+        for _ in 8..15 {
+            assert!(!stat.record(100));
+        }
+        assert!(stat.record(100));
+        assert_eq!(stat.count.load(Ordering::Relaxed), 16);
+    }
+
+    #[test]
+    fn ioctl_stat_window_resets_and_max_is_monotone() {
+        let stat = IoctlStat::new("test", 1);
+
+        stat.record(100);
+        stat.record(900);
+        assert_eq!(stat.max_ns.load(Ordering::Relaxed), 900);
+        stat.report();
+        assert_eq!(stat.window_count.load(Ordering::Relaxed), 0);
+        assert_eq!(stat.window_total_ns.load(Ordering::Relaxed), 0);
+        // Cumulative fields survive the report.
+        assert_eq!(stat.count.load(Ordering::Relaxed), 2);
+        assert_eq!(stat.total_ns.load(Ordering::Relaxed), 1000);
+        // A later smaller sample cannot lower the max.
+        stat.record(50);
+        assert_eq!(stat.max_ns.load(Ordering::Relaxed), 900);
     }
 
     #[test]
