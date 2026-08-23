@@ -15,6 +15,13 @@ latency/throughput values with:
 python3 scripts/test/guest-ip-link/verify_metrics.py <guest.log>
 ```
 
+For a long-running log containing multiple client requests, compute success
+rate, timeout count, P50/P95 request latency, and average effective throughput:
+
+```bash
+python3 scripts/test/guest-ip-link/aggregate_metrics.py <guest.log>
+```
+
 The full QEMU flow is documented in
 `docs/design/starry-rtos-ip-link.md` and requires a Linux rootfs image and the
 ArceOS target toolchain. It injects `gipc-linux-client` into the rootfs by
