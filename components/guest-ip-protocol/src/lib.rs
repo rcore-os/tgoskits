@@ -18,6 +18,141 @@ pub const HEADER_LEN: usize = 32;
 /// Maximum application payload for one frame.
 pub const MAX_PAYLOAD: usize = 1200;
 
+/// Reliability policy for a request/response session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetryPolicy {
+    /// Time to wait for an ACK or response before retrying, in milliseconds.
+    pub timeout_ms: u64,
+    /// Maximum number of retransmissions after the first send.
+    pub max_retries: u8,
+}
+
+impl RetryPolicy {
+    /// Creates a bounded policy and rejects a zero timeout.
+    pub const fn new(timeout_ms: u64, max_retries: u8) -> Option<Self> {
+        if timeout_ms == 0 {
+            None
+        } else {
+            Some(Self {
+                timeout_ms,
+                max_retries,
+            })
+        }
+    }
+}
+
+/// State of one reliable request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PendingRequest {
+    /// Sequence being acknowledged.
+    pub sequence: u32,
+    /// Timestamp of the most recent send.
+    pub sent_at_ms: u64,
+    /// Number of retransmissions already attempted.
+    pub retries: u8,
+}
+
+/// Action required when polling a pending request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetryAction {
+    /// No deadline has elapsed.
+    Wait,
+    /// Retransmit the request and record the returned timestamp.
+    Retransmit,
+    /// The bounded retry budget is exhausted.
+    TimedOut,
+}
+
+/// Result of observing a received sequence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReceiveSequence {
+    /// The sequence advances the receive window.
+    New,
+    /// The sequence was already delivered and must not be executed again.
+    Duplicate,
+    /// The sequence is stale or out of order.
+    OutOfOrder,
+}
+
+/// Small reliable-session state machine shared by UDP and TCP endpoints.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReliableSession {
+    policy: RetryPolicy,
+    pending: Option<PendingRequest>,
+    last_received: Option<u32>,
+}
+
+impl ReliableSession {
+    /// Creates an idle session.
+    pub const fn new(policy: RetryPolicy) -> Self {
+        Self {
+            policy,
+            pending: None,
+            last_received: None,
+        }
+    }
+
+    /// Begins tracking a reliable request.
+    pub fn begin(&mut self, sequence: u32, now_ms: u64) -> bool {
+        if self.pending.is_some() {
+            return false;
+        }
+        self.pending = Some(PendingRequest {
+            sequence,
+            sent_at_ms: now_ms,
+            retries: 0,
+        });
+        true
+    }
+
+    /// Confirms the pending request if the sequence matches.
+    pub fn acknowledge(&mut self, sequence: u32) -> bool {
+        if self
+            .pending
+            .is_some_and(|pending| pending.sequence == sequence)
+        {
+            self.pending = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Polls the retry deadline.
+    pub fn poll_retry(&mut self, now_ms: u64) -> RetryAction {
+        let Some(mut pending) = self.pending else {
+            return RetryAction::Wait;
+        };
+        if now_ms.saturating_sub(pending.sent_at_ms) < self.policy.timeout_ms {
+            return RetryAction::Wait;
+        }
+        if pending.retries >= self.policy.max_retries {
+            self.pending = None;
+            return RetryAction::TimedOut;
+        }
+        pending.retries = pending.retries.saturating_add(1);
+        pending.sent_at_ms = now_ms;
+        self.pending = Some(pending);
+        RetryAction::Retransmit
+    }
+
+    /// Classifies a received sequence and advances the receive window for new data.
+    pub fn observe(&mut self, sequence: u32) -> ReceiveSequence {
+        match self.last_received {
+            None => {
+                self.last_received = Some(sequence);
+                ReceiveSequence::New
+            }
+            Some(previous) if sequence == previous => ReceiveSequence::Duplicate,
+            Some(previous) if sequence.wrapping_sub(previous) < (1 << 31) => {
+                self.last_received = Some(sequence);
+                ReceiveSequence::New
+            }
+            Some(_) => ReceiveSequence::OutOfOrder,
+        }
+    }
+}
+
 /// Application message kinds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -351,5 +486,26 @@ mod tests {
             decode_frame(&output[..length + 1]),
             Err(FrameError::PayloadLengthMismatch)
         );
+    }
+
+    #[test]
+    fn retries_then_times_out_with_a_bounded_budget() {
+        let policy = RetryPolicy::new(10, 1).unwrap();
+        let mut session = ReliableSession::new(policy);
+        assert!(session.begin(4, 100));
+        assert_eq!(session.poll_retry(109), RetryAction::Wait);
+        assert_eq!(session.poll_retry(110), RetryAction::Retransmit);
+        assert_eq!(session.poll_retry(119), RetryAction::Wait);
+        assert_eq!(session.poll_retry(120), RetryAction::TimedOut);
+    }
+
+    #[test]
+    fn duplicate_and_out_of_order_requests_are_not_new_work() {
+        let policy = RetryPolicy::new(1, 0).unwrap();
+        let mut session = ReliableSession::new(policy);
+        assert_eq!(session.observe(10), ReceiveSequence::New);
+        assert_eq!(session.observe(10), ReceiveSequence::Duplicate);
+        assert_eq!(session.observe(9), ReceiveSequence::OutOfOrder);
+        assert_eq!(session.observe(11), ReceiveSequence::New);
     }
 }
