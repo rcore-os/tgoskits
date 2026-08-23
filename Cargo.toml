@@ -21,6 +21,7 @@ members = [
     "components/axtest/axtest_macros",
     "components/cpu-local",
     "components/ax-cgroup",
+    "components/guest-ip-protocol",
     "components/ax-lazyinit",
     "components/axbacktrace",
     "components/axcpu",
@@ -120,6 +121,8 @@ exclude = [
 ]
 
 [workspace.dependencies]
+# Guest IP protocol shared by Starry/Linux and RTOS endpoint applications.
+guest-ip-protocol = { version = "0.1", path = "components/guest-ip-protocol" }
 # Local workspace crates
 # Keep local dependency requirements at major.minor precision so release-plz does not
 # propagate patch-only releases to dependent workspace crates.
