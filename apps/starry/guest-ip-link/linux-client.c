@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Minimal POSIX/Linux client for the Starry/Linux -> RTOS GIPC control path.
+// Minimal POSIX StarryOS client for the StarryOS -> ArceOS GIPC control path.
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -153,15 +153,15 @@ int main(int argc, char **argv) {
         }
         uint64_t elapsed_ns = monotonic_ns() - request_start;
         if (elapsed_ns == 0) elapsed_ns = 1;
-        printf("GIPC_LINUX_STATUS seq=%u payload=%u attempts=%u timeouts=%u\n",
+        printf("GIPC_STARRY_STATUS seq=%u payload=%u attempts=%u timeouts=%u\n",
                get_u32(response + 12), payload_len, attempt + 1, timeouts);
-        printf("GIPC_LINUX_METRIC success=1 errors=0 timeouts=%u rtt_ns=%llu throughput_bps=%llu\n",
+        printf("GIPC_STARRY_METRIC success=1 errors=0 timeouts=%u rtt_ns=%llu throughput_bps=%llu\n",
                timeouts,
                (unsigned long long)elapsed_ns,
                (unsigned long long)((payload_len * 1000000000ull) / elapsed_ns));
         close(fd);
         return 0;
     }
-    fprintf(stderr, "GIPC_LINUX_TIMEOUT attempts=3\n");
+    fprintf(stderr, "GIPC_STARRY_TIMEOUT attempts=3\n");
     return 1;
 }

@@ -1,4 +1,4 @@
-//! Minimal RTOS endpoint for the Starry/Linux guest IP protocol.
+//! Minimal ArceOS endpoint for the StarryOS guest IP protocol.
 
 #[cfg(feature = "arceos")]
 use std::{

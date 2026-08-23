@@ -1,9 +1,9 @@
-# Starry/Linux 与 RTOS 客户机 IP 通信设计
+# StarryOS 与 ArceOS 客户机 IP 通信设计
 
 ## 1. 目标与范围
 
 本设计在已有 AxVM FDT/PSCI 修复、AxVisor 双客户机 VirtIO-net 交换机和
-`axvirtio-common`/VirtIO-MMIO 基础上，建立 Starry/Linux 客户机与 RTOS 客户机
+`axvirtio-common`/VirtIO-MMIO 基础上，建立 StarryOS 客户机与 ArceOS 客户机
 之间可复现的双向 IP 通信链路。
 
 主数据通道必须是 TCP/UDP/IP 或等价的 IP 传输。共享内存、HyperCall、裸
@@ -24,8 +24,8 @@ MMIO 和 vsock 不得承载业务数据；如将来使用 vsock，只能用于�
 | `547f3266a` | AxVisor `virtio-net` DeviceModel、MMIO transport、内部二层交换机、DMA/IRQ 路径 |
 | `4c4c55cd2` | workspace 中的 VirtIO 公共基础和设备图集成；块设备不作为本通信链路 |
 
-新实现不复制 VirtIO 队列、MMIO、DMA grant 或交换机逻辑。Starry/Linux 和
-RTOS 端只通过标准网卡、IP、UDP/TCP socket 使用这些能力。
+新实现不复制 VirtIO 队列、MMIO、DMA grant 或交换机逻辑。StarryOS 和
+ArceOS 端只通过标准网卡、IP、TCP socket 使用这些能力。
 
 ## 3. PR 分层
 
@@ -34,15 +34,15 @@ RTOS 端只通过标准网卡、IP、UDP/TCP socket 使用这些能力。
 
 ### PR1：客户机网络接入和拓扑
 
-建议标题：`feat(axvisor): connect Starry and RTOS guests over existing virtio-net`
+建议标题：`feat(axvisor): connect StarryOS and ArceOS guests over existing virtio-net`
 
-复用已有 `virtio-net` 模型，为 Starry/Linux 和一个 RTOS 客户机增加 VM 配置、
+复用已有 `virtio-net` 模型，为 StarryOS 和 ArceOS 客户机增加 VM 配置、
 FDT 网卡节点、MAC/IP/路由初始化以及最小 echo 验证。默认采用进程内二层交换
 机；不使用宿主桥接、NAT 或物理上联。拓扑表和地址分配必须随 PR 提交。
 
 ### PR2：应用层协议和两端程序
 
-建议标题：`feat(net-protocol): add Starry and RTOS guest control protocol`
+建议标题：`feat(net-protocol): add StarryOS and ArceOS guest control protocol`
 
 协议采用一个固定版本的二进制帧。帧头字段如下：
 
@@ -56,10 +56,10 @@ FDT 网卡节点、MAC/IP/路由初始化以及最小 echo 验证。默认采用
 | checksum | 检测帧损坏 |
 
 两端必须实现 `CONTROL`、`STATUS`、`ERROR` 和 `HEARTBEAT`，并完成至少一次
-Linux/Starry → RTOS 控制请求及 RTOS → Linux/Starry 状态响应。
+StarryOS → ArceOS 控制请求及 ArceOS → StarryOS 状态响应。
 
 当前端点实现为 [`apps/arceos/guest-ip-server`](../../apps/arceos/guest-ip-server/)
-和可放入 Starry/Linux rootfs 的
+和可放入 StarryOS rootfs 的
 [`linux-client.c`](../../apps/starry/guest-ip-link/linux-client.c)。客户端使用
 POSIX TCP socket，服务端使用 ArceOS `ax_std` socket；二者只通过 IP 网络交换
 协议帧。
@@ -68,36 +68,32 @@ POSIX TCP socket，服务端使用 ArceOS `ax_std` socket；二者只通过 IP �
 
 建议标题：`feat(net-reliability): add guest link recovery and fault handling`
 
-本设计首选 UDP，以便显式验证可靠性协议。`CONTROL` 和需要响应的 `STATUS`
-使用序号、ACK、有限重传和超时；重复帧只确认一次且不能重复执行，乱序帧返回
-错误。心跳负责检测链路状态，链路恢复后重新建立会话。
-
-如果实现改用 TCP，必须使用同一协议头进行分帧，并实现连接/读写超时、断连检测、
+实现采用 TCP。必须使用同一协议头进行分帧，并实现连接/读写超时、断连检测、
 自动重连、未完成请求处置和异常恢复。不能因为 TCP 自带可靠字节流而省略这些
 应用层状态。
 
 ### PR4：端到端验证、指标和运行文档
 
-建议标题：`test(net): validate Starry and RTOS guest communication`
+建议标题：`test(net): validate StarryOS and ArceOS guest communication`
 
 该 PR 提供可复制的 QEMU/板卡流程、丢包和断链故障注入、pcap 或日志校验，
 并输出以下指标：请求成功率、应用层错误、超时、重传/重连次数、恢复成功率、
 请求-响应延迟（至少 P50/P95）和有效应用吞吐量。失败必须以非零退出码传播到
 测试运行器。
 
-客户端当前输出 `GIPC_LINUX_STATUS` 和 `GIPC_LINUX_METRIC`，并由
+客户端当前输出 `GIPC_STARRY_STATUS` 和 `GIPC_STARRY_METRIC`，并由
 [`verify_metrics.py`](../../scripts/test/guest-ip-link/verify_metrics.py) 检查
 成功标志、超时/错误标志、正延迟和正有效吞吐量。长稳运行仍需在 PR4 的 QEMU
 流程中聚合多个请求，生成 P50/P95 和整体成功率。
 
 QEMU 启动骨架位于
-`os/axvisor/scripts/run-qemu-aarch64-starry-rtos-gipc.sh`。它构建 RTOS
-服务端并启动既有 Linux VirtIO-net guest；默认使用 `debugfs` 将客户端注入
-Linux rootfs。设置 `GIPC_INJECT_CLIENT=0` 可关闭注入，或通过
-`GIPC_LINUX_CLIENT_BIN` 指定已构建客户端。启动后在 Linux shell 执行：
+`os/axvisor/scripts/run-qemu-aarch64-starry-rtos-gipc.sh`。它构建 ArceOS
+服务端并启动 StarryOS VirtIO-net guest；默认使用 `debugfs` 将客户端注入
+StarryOS rootfs。设置 `GIPC_INJECT_CLIENT=0` 可关闭注入，或通过
+`GIPC_STARRY_CLIENT_BIN` 指定已构建客户端。启动后在 StarryOS shell 执行：
 
 ```sh
-/usr/bin/gipc-linux-client 10.0.42.2
+/usr/bin/gipc-starry-client 10.0.42.2
 ```
 
 ## 4. 网络拓扑
@@ -105,7 +101,7 @@ Linux rootfs。设置 `GIPC_INJECT_CLIENT=0` 可关闭注入，或通过
 默认 QEMU 拓扑为两个互不共享宿主网络的 VirtIO-MMIO 端点：
 
 ```text
-Starry/Linux guest                         RTOS guest
+StarryOS guest                              ArceOS guest
   virtio-net0                                virtio-net0
   MAC 52:54:00:42:00:01                      MAC 52:54:00:42:00:02
   10.0.42.1/24                                10.0.42.2/24
@@ -113,7 +109,7 @@ Starry/Linux guest                         RTOS guest
            AxVisor in-process L2 switch
 ```
 
-业务端口由协议配置明确指定（默认 UDP `4242`）。两个 guest 在同一子网内直接
+业务端口由协议配置明确指定（TCP `4242`）。两个 guest 在同一子网内直接
 通信，不配置默认网关、NAT 或宿主桥；访问控制只允许对端 MAC/IP 和业务端口。
 任何使用桥接、NAT、TAP 或物理网口的变体必须另列拓扑和安全边界，不能隐式改变
 主测试路径。
