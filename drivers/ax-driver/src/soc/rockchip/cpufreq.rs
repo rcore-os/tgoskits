@@ -54,7 +54,7 @@
 //! one-shot guard because several `cpu@*` nodes match.
 
 use alloc::format;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use fdt_edit::Phandle;
 use log::{info, warn};
@@ -472,6 +472,12 @@ const A55_OPPS: &[Opp] = &[
 /// A55 1008 MHz and A76 1200 MHz are both element 2 (the 675 mV rung). The governor
 /// starts tracking here so its first move is relative to the known boot state; from
 /// idle it decays down the ring-scaled rungs and under load climbs the voltage ones.
+/// Also the governor's shed floor (`scaling_min_freq` equivalent): bursty-I/O
+/// workloads (e.g. a model load that blocks on SD reads most of the window)
+/// read as near-idle, and shedding below the boot OPP slows their per-block
+/// completion path far more than the idle power it saves — measured on
+/// OrangePi 5 Plus, a 490 MB model read went 25.4s (static 1200 MHz) vs
+/// 29.8s (shedding to 408 MHz between read bursts).
 const BOOT_OPP_IDX: usize = 2;
 
 /// The three DVFS domains (one little cluster, two big pairs).
@@ -756,6 +762,135 @@ pub fn governor_period_ms() -> u64 {
     GOV_PERIOD_MS
 }
 
+// ===========================================================================
+// Logical-CPU -> cluster attribution
+// ===========================================================================
+
+/// Governor busy attribution: `busy[i]` from the kernel is LOGICAL CPU `i`'s
+/// counter (enumeration order of the FDT `/cpus` children this kernel actually
+/// has), while a DVFS domain is a physical cluster. Hardcoding the physical
+/// ranges is only correct when every physical CPU is online: a passthrough
+/// guest with fewer vCPUs pinned elsewhere (e.g. SMP=1 on host cpu@400) would
+/// book its cpu0's busy under the A55 cluster — the workload then boosts the
+/// little cluster while the big cluster it runs on gets parked at 408 MHz.
+/// The map below is therefore built from the FDT cpu nodes' SCMI clock ids,
+/// which name the cluster each online CPU really belongs to.
+static CPU_CLUSTER: [AtomicU8; 8] = [const { AtomicU8::new(0) }; 8];
+static CPU_CLUSTER_READY: AtomicBool = AtomicBool::new(false);
+
+/// Maps an SCMI CPU-cluster clock id to its governor cluster index.
+/// 0 (A55) -> 0, 2 (A76 pair 0) -> 1, 3 (A76 pair 1) -> 2.
+fn cluster_index_from_clock_id(clock_id: u32) -> Option<usize> {
+    match clock_id {
+        id if id == A55_CLK_ID => Some(0),
+        id if id == A76_CLK_IDS[0] => Some(1),
+        id if id == A76_CLK_IDS[1] => Some(2),
+        _ => None,
+    }
+}
+
+/// Fills `CPU_CLUSTER` from the FDT: one entry per `/cpus` child (in document
+/// order = logical-CPU enumeration order), taken from that node's SCMI clock
+/// id. Returns the number of CPUs mapped.
+fn map_cpus_from_fdt() -> usize {
+    let Some(phandle) = scmi_clock_phandle() else {
+        return 0;
+    };
+    rdrive::with_fdt(|fdt| {
+        let mut mapped = 0usize;
+        for (cpu, node) in fdt
+            .find_compatible(&["arm,cortex-a55", "arm,cortex-a76"])
+            .into_iter()
+            .take(CPU_CLUSTER.len())
+            .enumerate()
+        {
+            let Some(cluster) = node
+                .clocks()
+                .into_iter()
+                .find(|c| c.phandle == phandle)
+                .and_then(|clock| clock.specifier.first().copied())
+                .and_then(cluster_index_from_clock_id)
+            else {
+                warn!(
+                    "cpufreq: cpu node {} has no recognizable SCMI cluster clock; it will not \
+                     drive the governor",
+                    node.name()
+                );
+                continue;
+            };
+            CPU_CLUSTER[cpu].store(cluster as u8 + 1, Ordering::Relaxed);
+            mapped += 1;
+        }
+        mapped
+    })
+    .unwrap_or(0)
+}
+
+/// Physical-topology fallback used when the FDT walk maps nothing (so bare
+/// metal with an unexpected FDT shape never changes behavior). This is the
+/// inverse of [`Cluster::cpus`]: cpu0-3 -> A55, 4/5 -> A76b0, 6/7 -> A76b1.
+fn map_cpus_from_physical_topology() {
+    for (ci, &cluster) in [Cluster::A55, Cluster::Big0, Cluster::Big1]
+        .iter()
+        .enumerate()
+    {
+        for cpu in cluster.cpus() {
+            if let Some(slot) = CPU_CLUSTER.get(cpu) {
+                slot.store(ci as u8 + 1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// Ensures the attribution map is built (once). FDT-sourced, falling back to
+/// the physical topology when the walk yields nothing.
+fn ensure_cpu_cluster_map() {
+    if CPU_CLUSTER_READY.swap(true, Ordering::Acquire) {
+        return;
+    }
+    if map_cpus_from_fdt() == 0 {
+        map_cpus_from_physical_topology();
+    }
+}
+
+/// Cluster index driving logical `cpu`, or `None` when no online CPU maps
+/// there (such a CPU's busy is simply not attributed anywhere).
+fn cluster_of_cpu(cpu: usize) -> Option<usize> {
+    let slot = CPU_CLUSTER
+        .get(cpu)?
+        .load(Ordering::Acquire)
+        .checked_sub(1)?;
+    Some(slot as usize)
+}
+
+/// Read-only boot diagnostic: log each CPU cluster's SCMI ring rate, the
+/// per-cluster OPP index, the governor state, and the current core's delivered
+/// frequency (PMU cycle counter). Changes no clock and no voltage — it answers
+/// "which cluster and what frequency is this kernel actually running on" for
+/// CPU-bound workload triage (e.g. comparing against native Linux).
+pub fn log_frequency_readout() {
+    let Some(phandle) = scmi_clock_phandle() else {
+        info!(
+            "cpufreq readout: SCMI clock provider not initialized; clusters left at firmware boot \
+             rates"
+        );
+        return;
+    };
+    let a55_mhz = read_mhz(phandle, Cluster::A55.clock_id());
+    let big0_mhz = read_mhz(phandle, Cluster::Big0.clock_id());
+    let big1_mhz = read_mhz(phandle, Cluster::Big1.clock_id());
+    info!(
+        "cpufreq readout: A55={a55_mhz} MHz, A76b0={big0_mhz} MHz, A76b1={big1_mhz} MHz, \
+         governor={} (gov_ready={}), opp_idx=({},{},{}), current-core delivered={} MHz",
+        governor_wanted(),
+        GOV_READY.load(Ordering::Relaxed),
+        IDX[0].load(Ordering::Relaxed),
+        IDX[1].load(Ordering::Relaxed),
+        IDX[2].load(Ordering::Relaxed),
+        measure_mhz(),
+    );
+}
+
 /// Pure ondemand policy, split out of [`governor_poll`] so the up/down/hold/prime
 /// decision is host-testable with no hardware or tick counters. Given each core's
 /// busy% over the last window (each already clamped to `0..=100`), the cluster's
@@ -765,8 +900,8 @@ pub fn governor_period_ms() -> u64 {
 ///   * any core at/above [`UP_THRESHOLD_PCT`] -> jump straight to the top OPP
 ///     (ondemand fast-attack; a cluster shares one clock, so its busiest core
 ///     drives it — averaging would bury a single saturated thread);
-///   * every core below [`DOWN_THRESHOLD_PCT`] -> shed exactly one step (never
-///     below index 0);
+///   * every core below [`DOWN_THRESHOLD_PCT`] -> shed exactly one step, floored
+///     at [`BOOT_OPP_IDX`];
 ///   * otherwise hold.
 fn next_opp_idx(core_pcts: &[u64], cur: usize, ladder_len: usize, priming: bool) -> usize {
     if priming || core_pcts.is_empty() || ladder_len == 0 {
@@ -776,7 +911,7 @@ fn next_opp_idx(core_pcts: &[u64], cur: usize, ladder_len: usize, priming: bool)
     let all_cores_low = core_pcts.iter().all(|&p| p < DOWN_THRESHOLD_PCT);
     if any_core_high {
         ladder_len - 1
-    } else if all_cores_low && cur > 0 {
+    } else if all_cores_low && cur > BOOT_OPP_IDX {
         cur - 1
     } else {
         cur
@@ -792,12 +927,15 @@ fn next_opp_idx(core_pcts: &[u64], cur: usize, ladder_len: usize, priming: bool)
 /// neither sleeps nor spawns — so this crate needs no dependency on
 /// ax-task/ax-hal (which would be a cyclic dep through axplat-dyn).
 ///
-/// `busy[i]` is CPU `i`'s counter; indices past the slice, or offline CPUs whose
-/// counter never advances, simply read as idle — conservative (never over-scales).
+/// `busy[i]` is LOGICAL CPU `i`'s counter, attributed to the cluster its FDT
+/// cpu node belongs to (see [`CPU_CLUSTER`]); unmapped CPUs, indices past the
+/// slice, and offline CPUs whose counter never advances simply contribute
+/// nothing — conservative (never over-scales).
 pub fn governor_poll(busy: &[u64]) {
     if !governor_wanted() {
         return;
     }
+    ensure_cpu_cluster_map();
 
     // Measure the ACTUAL window this poll covers, in scheduler ticks, from the
     // monotonic clock — not the nominal `GOV_PERIOD_MS`. If the governor task woke
@@ -815,45 +953,57 @@ pub fn governor_poll(busy: &[u64]) {
     // busy% reads ~0 — irrelevant, since the priming poll holds regardless.)
     let priming = !PRIMED.swap(true, Ordering::Relaxed);
 
+    // Score each online logical CPU into its mapped cluster. A cluster shares
+    // ONE clock, so a single saturated core is reason to raise the whole
+    // cluster — this matches Linux schedutil/ondemand, which drive a frequency
+    // domain from its busiest CPU. Averaging instead (an earlier bug) buried
+    // one CPU-bound thread among its idle siblings: a single thread on the
+    // 2-core A76 pair only reads 50%, below the up-threshold, so the cluster
+    // never boosted. Each CPU belongs to exactly one cluster, so every
+    // LAST_BUSY entry is refreshed exactly once per poll.
+    let mut peaks = [0u64; 3]; // busiest core per cluster, for the log lines
+    // RK3588 clusters have at most 4 cores (A55 cpu0-3; the big pairs have 2).
+    let mut core_pcts = [[0u64; 4]; 3];
+    let mut counts = [0usize; 3];
+    for cpu in 0..busy.len().min(LAST_BUSY.len()) {
+        // An unmapped CPU (no FDT cpu node / no recognizable cluster clock)
+        // must not drive any domain: skip it entirely instead of booking it
+        // as idle, which would drag a cluster's "all cores low" test down.
+        let Some(ci) = cluster_of_cpu(cpu) else {
+            continue;
+        };
+        let now = busy[cpu];
+        let last = LAST_BUSY[cpu].swap(now, Ordering::Relaxed);
+        // Per-core busy% = busy_ticks / actual window_ticks (one core), clamped.
+        let pct = ((now.saturating_sub(last) * 100) / window_ticks).min(100);
+        if pct > peaks[ci] {
+            peaks[ci] = pct;
+        }
+        if let Some(slot) = core_pcts[ci].get_mut(counts[ci]) {
+            *slot = pct;
+        }
+        counts[ci] += 1;
+    }
+
     for (ci, &cluster) in [Cluster::A55, Cluster::Big0, Cluster::Big1]
         .iter()
         .enumerate()
     {
-        // Score each core in the cluster individually this window. A cluster
-        // shares ONE clock, so a single saturated core is reason to raise the
-        // whole cluster — this matches Linux schedutil/ondemand, which drive a
-        // frequency domain from its busiest CPU. Averaging instead (an earlier
-        // bug) buried one CPU-bound thread among its idle siblings: a single
-        // thread on the 2-core A76 pair only reads 50%, below the up-threshold,
-        // so the cluster never boosted. Each CPU belongs to exactly one cluster,
-        // so every LAST_BUSY entry is refreshed exactly once per poll.
-        let mut peak_pct = 0u64; // busiest core, for the log line
-        // RK3588 clusters have at most 4 cores (A55 cpu0-3; the big pairs have 2).
-        let mut core_pcts = [0u64; 4];
-        let mut n = 0usize;
-        for cpu in cluster.cpus() {
-            let now = busy.get(cpu).copied().unwrap_or(0);
-            let last = LAST_BUSY[cpu].swap(now, Ordering::Relaxed);
-            // Per-core busy% = busy_ticks / actual window_ticks (one core), clamped.
-            let pct = ((now.saturating_sub(last) * 100) / window_ticks).min(100);
-            if pct > peak_pct {
-                peak_pct = pct;
-            }
-            if let Some(slot) = core_pcts.get_mut(n) {
-                *slot = pct;
-            }
-            n += 1;
-        }
+        // No online CPU maps to this domain (e.g. a small passthrough guest
+        // pinned elsewhere): leave its OPP where the boot path left it rather
+        // than reading the empty cluster as idle and down-clocking it forever.
+        let n = counts[ci];
         if n == 0 {
             continue;
         }
+        let peak_pct = peaks[ci];
 
         let opps = cluster.opps();
         let cur = IDX[ci].load(Ordering::Relaxed);
         // Pure up/down/hold/prime decision (host-tested); the priming poll only
         // seeds the baseline above and holds here.
         let new = next_opp_idx(
-            &core_pcts[..n.min(core_pcts.len())],
+            &core_pcts[ci][..n.min(core_pcts[ci].len())],
             cur,
             opps.len(),
             priming,
@@ -1091,6 +1241,34 @@ pub fn calibrate_cluster(cluster_idx: usize, intended_cpu: usize) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cluster_clock_ids_map_to_governor_cluster_indices() {
+        assert_eq!(cluster_index_from_clock_id(A55_CLK_ID), Some(0));
+        assert_eq!(cluster_index_from_clock_id(A76_CLK_IDS[0]), Some(1));
+        assert_eq!(cluster_index_from_clock_id(A76_CLK_IDS[1]), Some(2));
+        // SCMI id 1 is not a CPU-cluster clock on RK3588; neither is anything
+        // past the cluster ids.
+        assert_eq!(cluster_index_from_clock_id(1), None);
+        assert_eq!(cluster_index_from_clock_id(4), None);
+    }
+
+    #[test]
+    fn physical_topology_fallback_partitions_all_cpus() {
+        // The fallback must cover every CPU exactly once and agree with
+        // `Cluster::cpus()`, so a failed FDT walk cannot change bare-metal
+        // governor behavior.
+        map_cpus_from_physical_topology();
+        for (ci, &cluster) in [Cluster::A55, Cluster::Big0, Cluster::Big1]
+            .iter()
+            .enumerate()
+        {
+            for cpu in cluster.cpus() {
+                assert_eq!(cluster_of_cpu(cpu), Some(ci), "cpu {cpu}");
+            }
+        }
+        assert_eq!(cluster_of_cpu(CPU_CLUSTER.len()), None);
+    }
+
     // -----------------------------------------------------------------------
     // OPP transactional apply: ordering + commit-only-on-full-success
     //
@@ -1179,13 +1357,21 @@ mod tests {
     }
 
     #[test]
-    fn governor_all_idle_sheds_one_step() {
+    fn governor_all_idle_sheds_one_step_above_the_floor() {
+        // Shedding works while above the boot-OPP floor ...
+        assert_eq!(
+            next_opp_idx(&[0, 0], BOOT_OPP_IDX + 1, A76_OPPS.len(), false),
+            BOOT_OPP_IDX
+        );
+        // ... and stops AT the floor (bursty-I/O workloads read as idle between
+        // read bursts; going lower throttles their completion path).
         assert_eq!(
             next_opp_idx(&[0, 0], BOOT_OPP_IDX, A76_OPPS.len(), false),
-            BOOT_OPP_IDX - 1
+            BOOT_OPP_IDX
         );
         // Every A55 core just under the down-threshold sheds exactly one step
-        // (from the top of the ring-only A55 ladder down one rung).
+        // (from the top of the ring-only A55 ladder down one rung, still above
+        // the floor for that ladder).
         assert_eq!(
             next_opp_idx(
                 &[DOWN_THRESHOLD_PCT - 1; 4],
@@ -1198,7 +1384,9 @@ mod tests {
     }
 
     #[test]
-    fn governor_does_not_shed_below_bottom_opp() {
+    fn governor_does_not_shed_below_the_floor() {
+        // A state already below the floor (unreachable through the governor,
+        // kept for completeness) must not shed further.
         assert_eq!(next_opp_idx(&[0, 0], 0, A76_OPPS.len(), false), 0);
     }
 
