@@ -32,6 +32,10 @@ if [[ "${GIPC_INJECT_CLIENT:-1}" == "1" ]]; then
     }
     debugfs -w -R "rm /usr/bin/gipc-linux-client" "$rootfs" >/dev/null 2>&1 || true
     debugfs -w -R "write $linux_client /usr/bin/gipc-linux-client" "$rootfs" >/dev/null
+    debugfs -w -R "mkdir /etc/profile.d" "$rootfs" >/dev/null 2>&1 || true
+    debugfs -w -R "rm /etc/profile.d/99-gipc.sh" "$rootfs" >/dev/null 2>&1 || true
+    debugfs -w -R "write apps/starry/guest-ip-link/gipc-autostart.sh /etc/profile.d/99-gipc.sh" \
+        "$rootfs" >/dev/null
 fi
 
 exec cargo xtask axvisor qemu \

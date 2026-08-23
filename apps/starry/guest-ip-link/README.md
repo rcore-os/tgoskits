@@ -16,3 +16,7 @@ cc -std=c11 -Wall -Wextra -O2 linux-client.c -o /usr/bin/gipc-linux-client
 
 The successful run prints `GIPC_LINUX_STATUS` and `GIPC_LINUX_METRIC`; a failed
 run prints `GIPC_LINUX_TIMEOUT` or a protocol error and exits non-zero.
+
+The QEMU runner injects `gipc-autostart.sh` into `/etc/profile.d` by default,
+so the client runs once when the Linux guest opens a shell. Set
+`GIPC_AUTORUN=0` to disable this behavior and run the client manually.
