@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -125,43 +126,69 @@ static size_t encode_control(uint8_t *frame, uint32_t sequence, uint64_t timesta
     return GIPC_HEADER_LEN + sizeof(payload);
 }
 
-int main(int argc, char **argv) {
-    const char *address = argc > 1 ? argv[1] : "10.0.42.2";
+static int request_once(const char *address, uint32_t sequence, unsigned *attempts,
+                       unsigned *timeouts, unsigned *reconnects, unsigned *errors,
+                       uint64_t *rtt_ns, uint64_t *throughput_bps) {
     uint8_t frame[GIPC_HEADER_LEN + GIPC_MAX_PAYLOAD];
-    unsigned timeouts = 0;
-    uint64_t request_start = monotonic_ns();
     for (unsigned attempt = 0; attempt < 3; attempt++) {
         int fd = connect_peer(address);
-        if (fd < 0) { timeouts++; continue; }
-        size_t frame_len = encode_control(frame, 1, monotonic_ns());
+        (*attempts)++;
+        if (fd < 0) { (*timeouts)++; continue; }
+        if (attempt > 0) (*reconnects)++;
+        uint64_t request_start = monotonic_ns();
+        size_t frame_len = encode_control(frame, sequence, request_start);
         if (write_full(fd, frame, frame_len) != 0) {
-            close(fd); timeouts++; continue;
+            close(fd); (*timeouts)++; continue;
         }
         uint8_t response[GIPC_HEADER_LEN + GIPC_MAX_PAYLOAD];
         if (read_full(fd, response, GIPC_HEADER_LEN) != 0) {
-            close(fd); timeouts++; continue;
+            close(fd); (*timeouts)++; continue;
         }
         uint16_t payload_len = get_u16(response + 10);
         if (payload_len > GIPC_MAX_PAYLOAD ||
             read_full(fd, response + GIPC_HEADER_LEN, payload_len) != 0) {
-            close(fd); timeouts++; continue;
+            close(fd); (*timeouts)++; continue;
         }
         if (get_u32(response) != GIPC_MAGIC || response[4] != GIPC_VERSION ||
-            response[5] != GIPC_STATUS || get_u32(response + 12) != 1 ||
-            !verify_crc(response, GIPC_HEADER_LEN + payload_len)) {
-            close(fd); fprintf(stderr, "unexpected response type or sequence\n"); return 1;
+            get_u32(response + 12) != sequence || !verify_crc(response, GIPC_HEADER_LEN + payload_len)) {
+            close(fd); (*errors)++; fprintf(stderr, "GIPC_STARRY_ERROR code=protocol\n"); return -1;
+        }
+        if (response[5] == GIPC_ERROR) {
+            (*errors)++;
+            fprintf(stderr, "GIPC_STARRY_ERROR code=%u seq=%u\n", get_u16(response + 24), sequence);
+            close(fd); return -1;
+        }
+        if (response[5] != GIPC_STATUS) {
+            (*errors)++; close(fd); return -1;
         }
         uint64_t elapsed_ns = monotonic_ns() - request_start;
         if (elapsed_ns == 0) elapsed_ns = 1;
+        *rtt_ns = elapsed_ns;
+        *throughput_bps = (payload_len * 1000000000ull) / elapsed_ns;
         printf("GIPC_STARRY_STATUS seq=%u payload=%u attempts=%u timeouts=%u\n",
-               get_u32(response + 12), payload_len, attempt + 1, timeouts);
-        printf("GIPC_STARRY_METRIC success=1 errors=0 timeouts=%u rtt_ns=%llu throughput_bps=%llu\n",
-               timeouts,
-               (unsigned long long)elapsed_ns,
-               (unsigned long long)((payload_len * 1000000000ull) / elapsed_ns));
+               get_u32(response + 12), payload_len, *attempts, *timeouts);
         close(fd);
         return 0;
     }
-    fprintf(stderr, "GIPC_STARRY_TIMEOUT attempts=3\n");
-    return 1;
+    return -2;
+}
+
+int main(int argc, char **argv) {
+    const char *address = argc > 1 ? argv[1] : "10.0.42.2";
+    unsigned requests = argc > 2 ? (unsigned)strtoul(argv[2], NULL, 10) : 1;
+    if (requests == 0 || requests > 1000) { fprintf(stderr, "invalid request count\n"); return 2; }
+    unsigned timeouts = 0, attempts = 0, reconnects = 0, errors = 0, successes = 0;
+    uint64_t total_rtt = 0, total_throughput = 0;
+    for (unsigned i = 0; i < requests; i++) {
+        uint64_t rtt = 0, throughput = 0;
+        int result = request_once(address, i + 1, &attempts, &timeouts, &reconnects,
+                                  &errors, &rtt, &throughput);
+        if (result == 0) { successes++; total_rtt += rtt; total_throughput += throughput; }
+        else if (result == -2) fprintf(stderr, "GIPC_STARRY_TIMEOUT seq=%u attempts=3\n", i + 1);
+    }
+    printf("GIPC_STARRY_METRIC requests=%u success=%u success_rate=%u errors=%u timeouts=%u attempts=%u reconnects=%u recovery=%u rtt_ns=%llu throughput_bps=%llu\n",
+           requests, successes, successes == requests, errors, timeouts, attempts, reconnects,
+           (successes > 0 && reconnects > 0), (unsigned long long)(successes ? total_rtt / successes : 0),
+           (unsigned long long)(successes ? total_throughput / successes : 0));
+    return successes == requests ? 0 : 1;
 }

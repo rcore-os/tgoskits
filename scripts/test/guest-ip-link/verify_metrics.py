@@ -17,11 +17,13 @@ def main() -> int:
     if "GIPC_STARRY_STATUS" not in text or "GIPC_STARRY_METRIC" not in text:
         print("missing GIPC success markers", file=sys.stderr)
         return 1
-    if "GIPC_STARRY_TIMEOUT" in text or "GIPC_RTOS_ERROR" in text:
+    if "GIPC_STARRY_TIMEOUT" in text or "GIPC_RTOS_ERROR" in text or "GIPC_STARRY_ERROR" in text:
         print("guest IP-link reported a failure", file=sys.stderr)
         return 1
     match = re.search(r"GIPC_STARRY_METRIC .*?rtt_ns=(\d+) throughput_bps=(\d+)", text)
-    if match is None or int(match.group(1)) <= 0 or int(match.group(2)) <= 0:
+    success = re.search(r"GIPC_STARRY_METRIC .*?requests=(\d+) success=(\d+)", text)
+    if (match is None or int(match.group(1)) <= 0 or int(match.group(2)) <= 0 or
+            success is None or success.group(1) != success.group(2)):
         print("missing positive latency/throughput metrics", file=sys.stderr)
         return 1
     print("GIPC_METRICS_OK")

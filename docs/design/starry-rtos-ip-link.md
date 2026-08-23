@@ -141,3 +141,27 @@ StarryOS guest                              ArceOS guest
 命令和成功标志。PR1 可回滚到已有双 ArceOS VirtIO-net 测试；PR2/PR3 的协议
 能力通过独立 feature 或应用入口接入，不修改已有 VirtIO-net 公共 ABI；PR4
 只增加测试和文档时可以单独回滚，不影响客户机网络设备。
+## Guest bootstrap and observability
+
+StarryOS runs `gipc-network-init.sh` before the client. It brings up `eth0`,
+assigns `10.0.42.1/24`, and verifies the directly connected `10.0.42.0/24`
+route. The script fails closed when the interface or `ip` utility is missing;
+the client is not started with an unconfigured address. ArceOS configures its
+VirtIO interface as `10.0.42.2/24`. The application endpoint remains TCP
+`10.0.42.2:4242`.
+
+The TCP profile uses the framed request/response itself as delivery
+confirmation; it does not send a separate application ACK on a reliable TCP
+stream. A request carries a monotonically increasing sequence (one per
+process), and a response must echo it. The Starry client retries a request up
+to three times after connect, read, or write timeout/断连, counts reconnects,
+and reports an `ERROR` frame's protocol error code instead of treating it as a
+status. CRC, version, type, and sequence failures are application errors.
+
+Each client run emits `GIPC_STARRY_METRIC` with request count, successful
+responses, application errors, timeouts, attempts, reconnects, recovery, mean
+RTT, and effective payload throughput. `aggregate_metrics.py` computes success
+rate, error/timeout/recovery totals, RTT P50/P95, and average throughput, and
+returns non-zero when any request or application validation fails. The
+host-side test remains a deterministic protocol test; a real guest result
+requires the QEMU images/toolchain described in the validation section.
