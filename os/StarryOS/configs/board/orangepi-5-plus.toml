@@ -14,5 +14,5 @@ features = [
   "rknpu",
   "rk3588-pwm",
 ]
-log = "Info"
+log = "Warn"
 max_cpu_num = 8
