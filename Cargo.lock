@@ -337,6 +337,7 @@ dependencies = [
 name = "arceos-guest-ip-server"
 version = "0.1.0"
 dependencies = [
+ "ax-net",
  "ax-std",
  "guest-ip-protocol",
 ]
