@@ -10,7 +10,8 @@ use std::{
 use ax_std as _;
 #[cfg(feature = "arceos")]
 use guest_ip_protocol::{
-    ErrorCode, HEADER_LEN, Header, MAX_PAYLOAD, MessageType, decode_frame, encode_frame,
+    ErrorCode, HEADER_LEN, Header, MAX_PAYLOAD, MessageType, ReceiveSequence, ReliableSession,
+    RetryPolicy, decode_frame, encode_frame,
 };
 
 #[cfg(feature = "arceos")]
@@ -48,6 +49,9 @@ fn run() -> std::io::Result<()> {
 #[cfg(feature = "arceos")]
 fn serve_connection(stream: &mut TcpStream) -> std::io::Result<()> {
     let mut frame = [0u8; HEADER_LEN + MAX_PAYLOAD];
+    let policy =
+        RetryPolicy::new(1000, 3).ok_or_else(|| std::io::Error::other("invalid retry policy"))?;
+    let mut session = ReliableSession::new(policy);
     loop {
         let header = read_header(stream, &mut frame)?;
         let payload_len = header.payload_len as usize;
@@ -55,6 +59,19 @@ fn serve_connection(stream: &mut TcpStream) -> std::io::Result<()> {
         let frame_len = HEADER_LEN + payload_len;
         let (decoded, payload) = decode_frame(&frame[..frame_len])
             .map_err(|error| std::io::Error::other(format!("decode frame: {error}")))?;
+        match session.observe(decoded.sequence) {
+            ReceiveSequence::Duplicate => {
+                if decoded.message_type == MessageType::Control {
+                    send_status(stream, decoded.sequence, payload)?;
+                }
+                continue;
+            }
+            ReceiveSequence::OutOfOrder => {
+                send_error(stream, decoded.sequence, ErrorCode::InvalidSequence)?;
+                continue;
+            }
+            ReceiveSequence::New => {}
+        }
         match decoded.message_type {
             MessageType::Hello | MessageType::Heartbeat => {
                 send_status(stream, decoded.sequence, payload)?;

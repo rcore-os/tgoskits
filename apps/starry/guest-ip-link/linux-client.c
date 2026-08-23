@@ -75,10 +75,38 @@ static int read_full(int fd, void *buffer, size_t length) {
     return 0;
 }
 
+static int connect_peer(const char *address) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct timeval timeout = {.tv_sec = 1, .tv_usec = 0};
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0 ||
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) {
+        close(fd);
+        return -1;
+    }
+    struct sockaddr_in peer = {.sin_family = AF_INET, .sin_port = htons(GIPC_PORT)};
+    if (inet_pton(AF_INET, address, &peer.sin_addr) != 1 ||
+        connect(fd, (struct sockaddr *)&peer, sizeof(peer)) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
 static void put_u16(uint8_t *p, uint16_t value) { uint16_t wire = htons(value); memcpy(p, &wire, 2); }
 static void put_u32(uint8_t *p, uint32_t value) { uint32_t wire = htonl(value); memcpy(p, &wire, 4); }
 static uint16_t get_u16(const uint8_t *p) { uint16_t wire; memcpy(&wire, p, 2); return ntohs(wire); }
 static uint32_t get_u32(const uint8_t *p) { uint32_t wire; memcpy(&wire, p, 4); return ntohl(wire); }
+
+static int verify_crc(const uint8_t *frame, size_t length) {
+    if (length < GIPC_HEADER_LEN) return 0;
+    uint8_t copy[GIPC_HEADER_LEN + GIPC_MAX_PAYLOAD];
+    if (length > sizeof(copy)) return 0;
+    memcpy(copy, frame, length);
+    uint32_t expected = get_u32(copy + 26);
+    memset(copy + 26, 0, 4);
+    return expected == crc32(copy, length);
+}
 
 static size_t encode_control(uint8_t *frame, uint32_t sequence, uint64_t timestamp) {
     const uint8_t payload[8] = {0, 0, 0, 1, 0, 0, 0, 0};
@@ -99,31 +127,41 @@ static size_t encode_control(uint8_t *frame, uint32_t sequence, uint64_t timesta
 
 int main(int argc, char **argv) {
     const char *address = argc > 1 ? argv[1] : "10.0.42.2";
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) { perror("socket"); return 1; }
-
-    struct timeval timeout = {.tv_sec = 1, .tv_usec = 0};
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    struct sockaddr_in peer = {.sin_family = AF_INET, .sin_port = htons(GIPC_PORT)};
-    if (inet_pton(AF_INET, address, &peer.sin_addr) != 1 ||
-        connect(fd, (struct sockaddr *)&peer, sizeof(peer)) != 0) {
-        perror("connect"); close(fd); return 1;
-    }
-
     uint8_t frame[GIPC_HEADER_LEN + GIPC_MAX_PAYLOAD];
-    size_t frame_len = encode_control(frame, 1, monotonic_ns());
-    if (write_full(fd, frame, frame_len) != 0) { perror("send"); close(fd); return 1; }
-    uint8_t response[GIPC_HEADER_LEN + GIPC_MAX_PAYLOAD];
-    if (read_full(fd, response, GIPC_HEADER_LEN) != 0) { perror("header"); close(fd); return 1; }
-    uint16_t payload_len = get_u16(response + 10);
-    if (payload_len > GIPC_MAX_PAYLOAD || read_full(fd, response + GIPC_HEADER_LEN, payload_len) != 0) {
-        fprintf(stderr, "invalid response payload\n"); close(fd); return 1;
+    unsigned timeouts = 0;
+    uint64_t request_start = monotonic_ns();
+    for (unsigned attempt = 0; attempt < 3; attempt++) {
+        int fd = connect_peer(address);
+        if (fd < 0) { timeouts++; continue; }
+        size_t frame_len = encode_control(frame, 1, monotonic_ns());
+        if (write_full(fd, frame, frame_len) != 0) {
+            close(fd); timeouts++; continue;
+        }
+        uint8_t response[GIPC_HEADER_LEN + GIPC_MAX_PAYLOAD];
+        if (read_full(fd, response, GIPC_HEADER_LEN) != 0) {
+            close(fd); timeouts++; continue;
+        }
+        uint16_t payload_len = get_u16(response + 10);
+        if (payload_len > GIPC_MAX_PAYLOAD ||
+            read_full(fd, response + GIPC_HEADER_LEN, payload_len) != 0) {
+            close(fd); timeouts++; continue;
+        }
+        if (get_u32(response) != GIPC_MAGIC || response[4] != GIPC_VERSION ||
+            response[5] != GIPC_STATUS || get_u32(response + 12) != 1 ||
+            !verify_crc(response, GIPC_HEADER_LEN + payload_len)) {
+            close(fd); fprintf(stderr, "unexpected response type or sequence\n"); return 1;
+        }
+        uint64_t elapsed_ns = monotonic_ns() - request_start;
+        if (elapsed_ns == 0) elapsed_ns = 1;
+        printf("GIPC_LINUX_STATUS seq=%u payload=%u attempts=%u timeouts=%u\n",
+               get_u32(response + 12), payload_len, attempt + 1, timeouts);
+        printf("GIPC_LINUX_METRIC success=1 errors=0 timeouts=%u rtt_ns=%llu throughput_bps=%llu\n",
+               timeouts,
+               (unsigned long long)elapsed_ns,
+               (unsigned long long)((payload_len * 1000000000ull) / elapsed_ns));
+        close(fd);
+        return 0;
     }
-    if (get_u32(response) != GIPC_MAGIC || response[4] != GIPC_VERSION || response[5] != GIPC_STATUS) {
-        fprintf(stderr, "unexpected response type\n"); close(fd); return 1;
-    }
-    printf("GIPC_LINUX_STATUS seq=%u payload=%u\n", get_u32(response + 12), payload_len);
-    close(fd);
-    return 0;
+    fprintf(stderr, "GIPC_LINUX_TIMEOUT attempts=3\n");
+    return 1;
 }
