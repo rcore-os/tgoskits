@@ -271,7 +271,6 @@ impl ArchOps for Aarch64Arch {
                 return;
             }
         }
-        }
 
         crate::vm::wait_for_vcpu_event_if_idle(
             runtime,
