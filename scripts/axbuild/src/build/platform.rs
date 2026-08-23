@@ -75,6 +75,7 @@ pub(super) fn is_known_axstd_feature(feature: &str) -> bool {
             | "tracepoint-hooks"
             | "sched-rr"
             | "sched-cfs"
+            | "sched-rt-fifo"
             | "stack-guard-page"
             | "stack-protector"
             | "fs"

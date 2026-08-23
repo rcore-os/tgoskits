@@ -8,6 +8,8 @@ pub mod irq;
 pub mod parallel;
 #[cfg(any(feature = "task-priority", feature = "sched-cfs", feature = "sched-rr"))]
 pub mod priority;
+#[cfg(feature = "sched-rt-fifo")]
+pub mod rt_fifo;
 #[cfg(feature = "task-sleep")]
 pub mod sleep;
 #[cfg(feature = "task-smp-online")]

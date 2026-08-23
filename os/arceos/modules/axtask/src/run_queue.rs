@@ -1059,6 +1059,7 @@ impl AxRunQueue {
     fn new(cpu_id: usize) -> Self {
         let gc_task =
             TaskInner::new(gc_entry, "gc".into(), crate::default_task_stack_size()).into_arc();
+        gc_task.set_sched_priority(i32::MIN);
         // gc task should be pinned to the current CPU.
         gc_task.set_cpumask(AxCpuMask::one_shot(cpu_id));
 

@@ -49,6 +49,7 @@ tracepoint-hooks = ["multitask"]
 uspace = ["ax-hal/uspace"]
 
 sched-cfs = ["multitask", "preempt"]
+sched-rt-fifo = ["multitask", "preempt"]
 sched-rr = ["multitask", "preempt"]
 
 host-test = [
