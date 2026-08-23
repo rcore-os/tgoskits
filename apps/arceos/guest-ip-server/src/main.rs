@@ -21,11 +21,11 @@ const CONTROL_PAYLOAD_LEN: usize = 8;
 
 #[cfg(feature = "arceos")]
 fn main() {
+    println!("GIPC_RTOS_READY");
     if let Err(error) = run() {
         println!("GIPC_RTOS_ERROR {error}");
         return;
     }
-    println!("GIPC_RTOS_READY");
 }
 
 #[cfg(not(feature = "arceos"))]
@@ -40,10 +40,14 @@ fn run() -> std::io::Result<()> {
 
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, LISTEN_PORT))?;
     println!("GIPC_RTOS_LISTEN ip=10.0.42.2 port={LISTEN_PORT}");
-    let (mut stream, peer) = listener.accept()?;
-    serve_connection(&mut stream)?;
-    println!("GIPC_RTOS_PEER {peer}");
-    Ok(())
+    loop {
+        let (mut stream, peer) = listener.accept()?;
+        println!("GIPC_RTOS_CONNECTED peer={peer}");
+        match serve_connection(&mut stream) {
+            Ok(()) => println!("GIPC_RTOS_DISCONNECTED peer={peer}"),
+            Err(error) => println!("GIPC_RTOS_RECOVERABLE_ERROR peer={peer} error={error}"),
+        }
+    }
 }
 
 #[cfg(feature = "arceos")]
