@@ -92,8 +92,9 @@ POSIX TCP socket，服务端使用 ArceOS `ax_std` socket；二者只通过 IP �
 
 QEMU 启动骨架位于
 `os/axvisor/scripts/run-qemu-aarch64-starry-rtos-gipc.sh`。它构建 RTOS
-服务端并启动既有 Linux VirtIO-net guest；Linux rootfs 需要预先放置
-`gipc-linux-client`，启动后在 Linux shell 执行：
+服务端并启动既有 Linux VirtIO-net guest；默认使用 `debugfs` 将客户端注入
+Linux rootfs。设置 `GIPC_INJECT_CLIENT=0` 可关闭注入，或通过
+`GIPC_LINUX_CLIENT_BIN` 指定已构建客户端。启动后在 Linux shell 执行：
 
 ```sh
 /usr/bin/gipc-linux-client 10.0.42.2
