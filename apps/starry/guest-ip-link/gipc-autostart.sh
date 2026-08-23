@@ -7,8 +7,8 @@ if [ "${GIPC_AUTORUN:-1}" != "1" ]; then
 fi
 
 mkdir -p /run
-if [ -e /run/gipc-linux-client.done ]; then
+if [ -e /run/gipc-starry-client.done ]; then
     exit 0
 fi
-touch /run/gipc-linux-client.done
-exec /usr/bin/gipc-linux-client "${GIPC_PEER_IP:-10.0.42.2}"
+touch /run/gipc-starry-client.done
+exec /usr/bin/gipc-starry-client "${GIPC_PEER_IP:-10.0.42.2}"

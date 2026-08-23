@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile and exercise the Linux GIPC client against a deterministic peer."""
+"""Compile and exercise the StarryOS GIPC client against a deterministic peer."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def server() -> None:
 
 def main() -> None:
     with tempfile.TemporaryDirectory() as directory:
-        binary = pathlib.Path(directory) / "gipc-linux-client"
+        binary = pathlib.Path(directory) / "gipc-starry-client"
         subprocess.run(
             ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2", str(CLIENT), "-o", str(binary)],
             check=True,
@@ -74,9 +74,9 @@ def main() -> None:
             cwd=ROOT,
         )
         thread.join(timeout=2)
-        assert "GIPC_LINUX_STATUS seq=1" in result.stdout, result.stdout
+        assert "GIPC_STARRY_STATUS seq=1" in result.stdout, result.stdout
         assert "attempts=2 timeouts=1" in result.stdout, result.stdout
-        assert "GIPC_LINUX_METRIC" in result.stdout, result.stdout
+        assert "GIPC_STARRY_METRIC" in result.stdout, result.stdout
         print(result.stdout, end="")
 
 

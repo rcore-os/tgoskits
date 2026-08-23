@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 METRIC = re.compile(
-    r"GIPC_LINUX_METRIC .*?success=(?P<success>\d+) .*?"
+    r"GIPC_STARRY_METRIC .*?success=(?P<success>\d+) .*?"
     r"timeouts=(?P<timeouts>\d+) rtt_ns=(?P<rtt>\d+) throughput_bps=(?P<throughput>\d+)"
 )
 
