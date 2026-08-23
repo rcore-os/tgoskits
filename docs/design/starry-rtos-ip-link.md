@@ -90,6 +90,15 @@ POSIX TCP socket，服务端使用 ArceOS `ax_std` socket；二者只通过 IP �
 成功标志、超时/错误标志、正延迟和正有效吞吐量。长稳运行仍需在 PR4 的 QEMU
 流程中聚合多个请求，生成 P50/P95 和整体成功率。
 
+QEMU 启动骨架位于
+`os/axvisor/scripts/run-qemu-aarch64-starry-rtos-gipc.sh`。它构建 RTOS
+服务端并启动既有 Linux VirtIO-net guest；Linux rootfs 需要预先放置
+`gipc-linux-client`，启动后在 Linux shell 执行：
+
+```sh
+/usr/bin/gipc-linux-client 10.0.42.2
+```
+
 ## 4. 网络拓扑
 
 默认 QEMU 拓扑为两个互不共享宿主网络的 VirtIO-MMIO 端点：

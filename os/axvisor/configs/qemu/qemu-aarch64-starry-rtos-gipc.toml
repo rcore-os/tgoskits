@@ -1,0 +1,12 @@
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "4",
+  "-m", "4g",
+]
+fail_regex = ["(?i)panic", "GIPC_RTOS_ERROR", "GIPC_LINUX_TIMEOUT"]
+success_regex = ["GIPC_RTOS_READY"]
+timeout = 180
+to_bin = true
+uefi = false
