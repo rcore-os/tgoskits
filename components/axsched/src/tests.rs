@@ -227,6 +227,20 @@ fn rt_fifo_set_priority_affects_future_enqueue_order() {
 }
 
 #[test]
+fn rt_fifo_set_priority_reorders_ready_task() {
+    use alloc::sync::Arc;
+
+    let mut scheduler = RtFifoScheduler::<RtTestTask>::new();
+    let low = Arc::new(RtFifoTask::new(RtTestTask::new(1, 1)));
+    scheduler.add_task(low.clone());
+    scheduler.add_task(Arc::new(RtFifoTask::new(RtTestTask::new(2, 5))));
+
+    assert!(scheduler.set_priority(&low, 9));
+
+    assert_eq!(scheduler.pick_next_task().unwrap().inner().id, 1);
+}
+
+#[test]
 fn rt_fifo_tick_preempts_only_for_higher_priority_ready_task() {
     use alloc::sync::Arc;
 

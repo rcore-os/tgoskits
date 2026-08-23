@@ -30,10 +30,6 @@ impl<T> RtFifoTask<T> {
         }
     }
 
-    fn enqueue_order(&self) -> isize {
-        self.enqueue_order.load(Ordering::Acquire)
-    }
-
     fn set_enqueue_order(&self, order: isize) {
         self.enqueue_order.store(order, Ordering::Release);
     }
@@ -116,8 +112,12 @@ impl<T: RtPriority> BaseScheduler for RtFifoScheduler<T> {
     }
 
     fn remove_task(&mut self, task: &Self::SchedItem) -> Option<Self::SchedItem> {
-        self.ready_queue
-            .remove(&(core::cmp::Reverse(task.rt_priority()), task.enqueue_order()))
+        let key = self
+            .ready_queue
+            .iter()
+            .find(|(_, queued)| Arc::ptr_eq(queued, task))
+            .map(|(key, _)| *key)?;
+        self.ready_queue.remove(&key)
     }
 
     fn pick_next_task(&mut self) -> Option<Self::SchedItem> {
@@ -138,7 +138,17 @@ impl<T: RtPriority> BaseScheduler for RtFifoScheduler<T> {
     }
 
     fn set_priority(&mut self, task: &Self::SchedItem, prio: isize) -> bool {
-        task.set_rt_priority(prio)
+        let queued = self.remove_task(task);
+        if !task.set_rt_priority(prio) {
+            if let Some(task) = queued {
+                self.enqueue_task(task);
+            }
+            return false;
+        }
+        if let Some(task) = queued {
+            self.enqueue_task(task);
+        }
+        true
     }
 }
 

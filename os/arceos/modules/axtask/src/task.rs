@@ -126,8 +126,19 @@ pub struct TaskInner {
     /// Scheduling policy of the task.
     sched_policy: AtomicI32,
 
-    /// Scheduling priority of the task.
-    sched_priority: AtomicI32,
+    /// Base scheduling priority configured by the task or caller.
+    base_sched_priority: AtomicI32,
+
+    /// Effective scheduling priority after temporary scheduler boosts.
+    effective_sched_priority: AtomicI32,
+
+    /// Highest temporary mutex priority donation, or `i32::MIN` when absent.
+    #[cfg(feature = "sched-rt-fifo")]
+    donated_sched_priority: AtomicI32,
+
+    /// Task id of the mutex owner that this task is currently blocked on.
+    #[cfg(feature = "sched-rt-fifo")]
+    mutex_wait_owner_id: AtomicU64,
 
     /// Mark whether the task is in the wait queue.
     in_wait_queue: AtomicBool,
@@ -187,6 +198,11 @@ impl TaskId {
     fn new() -> Self {
         static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
         Self(ID_COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    #[cfg(feature = "sched-rt-fifo")]
+    pub(crate) const fn from_u64(id: u64) -> Self {
+        Self(id)
     }
 
     /// Convert the task ID to a `u64`.
@@ -340,12 +356,68 @@ impl TaskInner {
 
     #[inline]
     pub fn sched_priority(&self) -> i32 {
-        self.sched_priority.load(Ordering::Acquire)
+        self.effective_sched_priority.load(Ordering::Acquire)
     }
 
     #[inline]
     pub fn set_sched_priority(&self, prio: i32) {
-        self.sched_priority.store(prio, Ordering::Release)
+        self.base_sched_priority.store(prio, Ordering::Release);
+        self.refresh_effective_sched_priority();
+    }
+
+    #[inline]
+    #[cfg(feature = "sched-rt-fifo")]
+    pub(crate) fn donate_sched_priority(&self, priority: i32) {
+        let mut donated = self.donated_sched_priority.load(Ordering::Acquire);
+        while priority > donated {
+            match self.donated_sched_priority.compare_exchange_weak(
+                donated,
+                priority,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => donated = current,
+            }
+        }
+        self.refresh_effective_sched_priority();
+    }
+
+    #[inline]
+    #[cfg(feature = "sched-rt-fifo")]
+    pub(crate) fn clear_sched_priority_donation(&self) {
+        self.donated_sched_priority
+            .store(i32::MIN, Ordering::Release);
+        self.refresh_effective_sched_priority();
+    }
+
+    #[inline]
+    #[cfg(feature = "sched-rt-fifo")]
+    pub(crate) fn mutex_wait_owner_id(&self) -> u64 {
+        self.mutex_wait_owner_id.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    #[cfg(feature = "sched-rt-fifo")]
+    pub(crate) fn set_mutex_wait_owner_id(&self, owner_id: u64) {
+        self.mutex_wait_owner_id.store(owner_id, Ordering::Release);
+    }
+
+    #[inline]
+    #[cfg(feature = "sched-rt-fifo")]
+    pub(crate) fn clear_mutex_wait_owner_id(&self) {
+        self.mutex_wait_owner_id.store(0, Ordering::Release);
+    }
+
+    #[inline]
+    fn refresh_effective_sched_priority(&self) {
+        let base = self.base_sched_priority.load(Ordering::Acquire);
+        #[cfg(feature = "sched-rt-fifo")]
+        let donated = self.donated_sched_priority.load(Ordering::Acquire);
+        #[cfg(not(feature = "sched-rt-fifo"))]
+        let donated = i32::MIN;
+        self.effective_sched_priority
+            .store(base.max(donated), Ordering::Release);
     }
 
     /// Polls whether the task has been interrupted.
@@ -438,7 +510,12 @@ impl TaskInner {
             // By default, the task is allowed to run on all CPUs.
             cpumask: SpinLock::new(crate::api::cpu_mask_full()),
             sched_policy: AtomicI32::new(0),
-            sched_priority: AtomicI32::new(0),
+            base_sched_priority: AtomicI32::new(0),
+            effective_sched_priority: AtomicI32::new(0),
+            #[cfg(feature = "sched-rt-fifo")]
+            donated_sched_priority: AtomicI32::new(i32::MIN),
+            #[cfg(feature = "sched-rt-fifo")]
+            mutex_wait_owner_id: AtomicU64::new(0),
             in_wait_queue: AtomicBool::new(false),
             #[cfg(feature = "irq")]
             timer_ticket_id: AtomicU64::new(0),

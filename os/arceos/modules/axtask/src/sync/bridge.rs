@@ -562,6 +562,47 @@ fn current_task_id() -> u64 {
     id
 }
 
+#[cfg(all(feature = "multitask", feature = "sched-rt-fifo"))]
+fn donate_mutex_owner_priority(owner_id: u64) {
+    let waiter_priority = crate::current().sched_priority();
+    crate::current().set_mutex_wait_owner_id(owner_id);
+    donate_priority_chain(owner_id, waiter_priority, crate::current().id().as_u64());
+}
+
+#[cfg(all(feature = "multitask", feature = "sched-rt-fifo"))]
+fn donate_priority_chain(mut owner_id: u64, priority: i32, waiter_id: u64) {
+    for _ in 0..crate::build_info::CPU_CAPACITY.max(32) {
+        if owner_id == 0 || owner_id == waiter_id {
+            return;
+        }
+        let Some(owner) = crate::task_by_id(crate::TaskId::from_u64(owner_id)) else {
+            return;
+        };
+        owner.donate_sched_priority(priority);
+        crate::run_queue::requeue_task_after_priority_change(&owner);
+        owner_id = owner.mutex_wait_owner_id();
+    }
+}
+
+#[cfg(all(feature = "multitask", not(feature = "sched-rt-fifo")))]
+fn donate_mutex_owner_priority(_owner_id: u64) {}
+
+#[cfg(all(feature = "multitask", feature = "sched-rt-fifo"))]
+fn clear_current_mutex_priority_donation() {
+    crate::current().clear_sched_priority_donation();
+}
+
+#[cfg(all(feature = "multitask", feature = "sched-rt-fifo"))]
+fn clear_current_mutex_wait_owner() {
+    crate::current().clear_mutex_wait_owner_id();
+}
+
+#[cfg(all(feature = "multitask", not(feature = "sched-rt-fifo")))]
+fn clear_current_mutex_wait_owner() {}
+
+#[cfg(all(feature = "multitask", not(feature = "sched-rt-fifo")))]
+fn clear_current_mutex_priority_donation() {}
+
 #[cfg(feature = "multitask")]
 struct PendingMutexAcquire<'a> {
     owner_id: &'a AtomicU64,
@@ -622,6 +663,7 @@ pub fn mutex_acquire(request: MutexAcquireRequest<'_>) -> bool {
                         owner, current_id,
                         "task {current_id} tried to recursively acquire a mutex"
                     );
+                    donate_mutex_owner_priority(owner);
                     super::mutex::runtime_wait_until_unlocked(request.wait_queue, request.owner_id);
                 }
             }
@@ -630,6 +672,9 @@ pub fn mutex_acquire(request: MutexAcquireRequest<'_>) -> bool {
     pending.acquired = acquired;
     lockdep.finish(acquired);
     pending.acquired = false;
+    if acquired {
+        clear_current_mutex_wait_owner();
+    }
     acquired
 }
 
@@ -643,6 +688,7 @@ pub fn mutex_release(wait_queue: &AtomicPtr<()>, owner_id: &AtomicU64, lock_addr
         "task {current} tried to release a mutex owned by task {owner}"
     );
     lockdep_release("mutex", lock_addr, CONTEXT_PREEMPT, LOCK_MODE_EXCLUSIVE);
+    clear_current_mutex_priority_donation();
     owner_id.store(0, Ordering::Release);
     super::mutex::runtime_wake_one(wait_queue);
 }
