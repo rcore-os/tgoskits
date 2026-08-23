@@ -10,4 +10,5 @@ arceos = ["dep:ax-std", "ax-std/arceos", "ax-std/net"]
 
 [dependencies]
 ax-std = { workspace = true, optional = true, features = ["default"] }
+ax-net = { workspace = true }
 guest-ip-protocol.workspace = true
