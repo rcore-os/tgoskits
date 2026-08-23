@@ -32,9 +32,9 @@ fn main() {}
 
 #[cfg(feature = "arceos")]
 fn run() -> std::io::Result<()> {
-    let interface = ax_std::net::interface_by_name("eth0")
+    let interface = ax_net::interface_by_name("eth0")
         .ok_or_else(|| std::io::Error::other("eth0 was not discovered"))?;
-    ax_std::net::set_interface_ipv4(interface.id, Ipv4Addr::new(10, 0, 42, 2), 24)
+    ax_net::set_interface_ipv4(interface.id, Ipv4Addr::new(10, 0, 42, 2), 24)
         .map_err(|error| std::io::Error::other(format!("configure eth0: {error}")))?;
 
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, LISTEN_PORT))?;
