@@ -483,7 +483,28 @@ pub(crate) fn build_address_layout(
     }
 
     for device in passthrough_devices {
-        planner.add_passthrough_mapping(device.base_gpa, device.base_hpa, device.length)?;
+        let mut segments = alloc::vec![(device.base_gpa, device.base_hpa, device.length)];
+        for resource in emulated_resources {
+            let Resource::MmioRange { base, size } = *resource else {
+                continue;
+            };
+            let emulated_base = usize::try_from(base)
+                .map_err(|_| ax_err_type!(InvalidInput, "emulated MMIO base exceeds usize"))?;
+            let emulated_size = usize::try_from(size)
+                .map_err(|_| ax_err_type!(InvalidInput, "emulated MMIO size exceeds usize"))?;
+            let (emulated_base, emulated_size) = normalize_guest_range(
+                VmRegionKind::EmulatedDevice.name(),
+                emulated_base,
+                emulated_size,
+            )?;
+            segments = segments
+                .into_iter()
+                .flat_map(|segment| subtract_linear_segment(segment, emulated_base, emulated_size))
+                .collect();
+        }
+        for (base_gpa, base_hpa, length) in segments {
+            planner.add_passthrough_mapping(base_gpa, base_hpa, length)?;
+        }
     }
 
     for address in passthrough_addresses {
@@ -491,6 +512,31 @@ pub(crate) fn build_address_layout(
     }
 
     planner.finish()
+}
+
+fn subtract_linear_segment(
+    (base_gpa, base_hpa, length): (usize, usize, usize),
+    hole_base: usize,
+    hole_size: usize,
+) -> Vec<(usize, usize, usize)> {
+    let segment_end = base_gpa.saturating_add(length);
+    let hole_end = hole_base.saturating_add(hole_size);
+    if hole_end <= base_gpa || hole_base >= segment_end {
+        return alloc::vec![(base_gpa, base_hpa, length)];
+    }
+
+    let mut remaining = Vec::with_capacity(2);
+    if base_gpa < hole_base {
+        remaining.push((base_gpa, base_hpa, hole_base - base_gpa));
+    }
+    if hole_end < segment_end {
+        remaining.push((
+            hole_end,
+            base_hpa + (hole_end - base_gpa),
+            segment_end - hole_end,
+        ));
+    }
+    remaining
 }
 
 fn device_mapping_flags() -> MappingFlags {
@@ -848,6 +894,48 @@ mod tests {
         assert_eq!(layout.mappings().len(), 2);
         assert_eq!(layout.mappings()[0].hpa.as_usize(), 0x9000);
         assert_eq!(layout.mappings()[1].hpa.as_usize(), 0xb000);
+    }
+
+    #[test]
+    fn emulated_mmio_punches_hole_in_fdt_passthrough_device() {
+        let devices = [PassThroughDeviceConfig {
+            name: alloc::string::String::from("interrupt-controller"),
+            base_gpa: 0x1000,
+            base_hpa: 0x9000,
+            length: 0x4000,
+            irq_id: 0,
+        }];
+        let emulated = [Resource::MmioRange {
+            base: 0x2000,
+            size: 0x1000,
+        }];
+
+        let layout = build_address_layout(
+            AddressSpacePolicy::Virtualized,
+            GUEST_BASE,
+            GUEST_SIZE,
+            &devices,
+            &[],
+            &[],
+            &emulated,
+        )
+        .unwrap();
+
+        assert_eq!(layout.mappings().len(), 2);
+        assert_eq!(
+            (
+                layout.mappings()[0].gpa.as_usize(),
+                layout.mappings()[0].size
+            ),
+            (0x1000, 0x1000)
+        );
+        assert_eq!(
+            (
+                layout.mappings()[1].gpa.as_usize(),
+                layout.mappings()[1].size
+            ),
+            (0x3000, 0x2000)
+        );
     }
 
     #[test]

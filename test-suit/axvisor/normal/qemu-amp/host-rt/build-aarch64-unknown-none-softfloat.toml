@@ -1,0 +1,6 @@
+features = ["realtime-benchmark"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+realtime_cpu_id = 3
+vm_configs = []
+args = ["-nographic", "-cpu", "cortex-a72", "-machine", "virt,virtualization=on,gic-version=3", "-smp", "4", "-m", "8g"]

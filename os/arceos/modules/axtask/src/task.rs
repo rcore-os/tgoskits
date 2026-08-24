@@ -411,6 +411,21 @@ impl TaskInner {
     }
 }
 
+#[cfg(feature = "sched-rt-fifo")]
+impl ax_sched::RtPriority for TaskInner {
+    fn rt_priority(&self) -> isize {
+        self.sched_priority() as isize
+    }
+
+    fn set_rt_priority(&self, priority: isize) -> bool {
+        let Ok(priority) = i32::try_from(priority) else {
+            return false;
+        };
+        self.set_sched_priority(priority);
+        true
+    }
+}
+
 // private methods
 impl TaskInner {
     fn new_common(id: TaskId, name: String, kstack: TaskStack) -> Self {

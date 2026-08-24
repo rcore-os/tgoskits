@@ -1,0 +1,10 @@
+features = [
+  "ax-driver/rockchip-dwmmc",
+  "ax-driver/rockchip-sdhci",
+  "fs",
+  "realtime-benchmark",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+realtime_cpu_id = 3
+vm_configs = ["os/axvisor/configs/vms/orangepi-5-plus/starry-smp1.toml"]

@@ -19,6 +19,7 @@
 //!     - `multitask`: Enable multi-threading support.
 //!     - `sched-rr`: Use the Round-robin preemptive scheduler.
 //!     - `sched-cfs`: Use the Completely Fair Scheduler (CFS) preemptive scheduler.
+//!     - `sched-rt-fifo`: Use strict-priority FIFO scheduling for realtime tasks.
 //! - Upperlayer stacks
 //!     - `fs`: Enable file system support.
 //!     - `ext4fs`: Enable the ext4 filesystem.

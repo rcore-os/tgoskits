@@ -12,6 +12,7 @@ const DEFAULT_TASK_STACK_SIZE: usize = 0x40000;
 
 fn main() -> Result<()> {
     println!("cargo:rerun-if-env-changed=SMP");
+    println!("cargo:rerun-if-env-changed=REALTIME_CPU_ID");
 
     if cfg!(feature = "host-test") {
         let linker = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("host-test.ld");
@@ -29,10 +30,15 @@ fn main() -> Result<()> {
 fn build_info_source(config: TaskConfig) -> String {
     let cpu_capacity = config.cpu_capacity;
     let task_stack_size = config.task_stack_size;
+    let realtime_cpu_id = match config.realtime_cpu_id {
+        Some(cpu_id) => quote! { Some(#cpu_id) },
+        None => quote! { None },
+    };
 
     quote! {
         pub const CPU_CAPACITY: usize = #cpu_capacity;
         pub const DEFAULT_TASK_STACK_SIZE: usize = #task_stack_size;
+        pub const REALTIME_CPU_ID: Option<usize> = #realtime_cpu_id;
     }
     .to_string()
 }
@@ -41,6 +47,7 @@ fn build_info_source(config: TaskConfig) -> String {
 struct TaskConfig {
     cpu_capacity: usize,
     task_stack_size: usize,
+    realtime_cpu_id: Option<usize>,
 }
 
 impl TaskConfig {
@@ -48,6 +55,7 @@ impl TaskConfig {
         let mut config = Self {
             cpu_capacity: DEFAULT_CPU_CAPACITY,
             task_stack_size: DEFAULT_TASK_STACK_SIZE,
+            realtime_cpu_id: None,
         };
 
         if let Ok(smp) = env::var("SMP") {
@@ -55,8 +63,34 @@ impl TaskConfig {
                 .map_err(|err| invalid_data(format!("failed to parse SMP value `{smp}`: {err}")))?;
         }
 
+        if let Ok(value) = env::var("REALTIME_CPU_ID") {
+            config.realtime_cpu_id = parse_realtime_cpu_id(&value, config.cpu_capacity)?;
+        }
+
         Ok(config)
     }
+}
+
+fn parse_realtime_cpu_id(value: &str, cpu_capacity: usize) -> Result<Option<usize>> {
+    if value.trim() == "-1" {
+        return Ok(None);
+    }
+    if value.trim().starts_with('-') {
+        return Err(invalid_data(
+            "REALTIME_CPU_ID only accepts -1 as a negative value",
+        ));
+    }
+    let cpu_id = parse_usize(value).map_err(|err| {
+        invalid_data(format!(
+            "failed to parse REALTIME_CPU_ID value `{value}`: {err}"
+        ))
+    })?;
+    if cpu_id >= cpu_capacity {
+        return Err(invalid_data(format!(
+            "REALTIME_CPU_ID {cpu_id} exceeds CPU capacity {cpu_capacity}"
+        )));
+    }
+    Ok(Some(cpu_id))
 }
 
 fn parse_usize(value: &str) -> std::result::Result<usize, std::num::ParseIntError> {
@@ -89,11 +123,21 @@ mod tests {
             semantic_source(&build_info_source(TaskConfig {
                 cpu_capacity: DEFAULT_CPU_CAPACITY,
                 task_stack_size: DEFAULT_TASK_STACK_SIZE,
+                realtime_cpu_id: None,
             })),
             semantic_source(
                 "pub const CPU_CAPACITY: usize = 16usize; pub const DEFAULT_TASK_STACK_SIZE: \
                  usize = 262144usize;"
             )
         );
+    }
+
+    #[test]
+    fn realtime_cpu_id_validation() {
+        assert_eq!(parse_realtime_cpu_id("-1", 4).unwrap(), None);
+        assert_eq!(parse_realtime_cpu_id("3", 4).unwrap(), Some(3));
+        assert_eq!(parse_realtime_cpu_id("0x3", 4).unwrap(), Some(3));
+        assert!(parse_realtime_cpu_id("-2", 4).is_err());
+        assert!(parse_realtime_cpu_id("4", 4).is_err());
     }
 }

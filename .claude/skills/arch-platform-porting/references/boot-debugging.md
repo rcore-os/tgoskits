@@ -409,3 +409,9 @@ cargo xtask clippy --package ax-driver
 ```
 
 Adjust the package set to the actual diff. Documentation-only skill updates do not require clippy.
+## Realtime CPU Partition Checks
+
+When `REALTIME_CPU_ID` is enabled, confirm that the selected logical CPU is
+online, is not the boot CPU, and still completes the normal secondary CPU
+initialization path. Ordinary and vCPU affinity must exclude it; do not treat a
+successful all-CPU startup count as evidence that task placement is isolated.

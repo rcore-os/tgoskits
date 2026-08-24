@@ -1,0 +1,7 @@
+args = ["-nographic", "-cpu", "cortex-a72", "-machine", "virt,virtualization=on,gic-version=3", "-smp", "4", "-m", "8g"]
+uefi = false
+shell_prefix = ""
+shell_init_cmd = ""
+success_regex = ["AMP_RT_RESULT source=host"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 60

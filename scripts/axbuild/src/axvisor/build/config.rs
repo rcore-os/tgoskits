@@ -14,6 +14,9 @@ pub struct AxvisorBoardConfig {
     pub(crate) build_info: BuildInfo,
     #[serde(default)]
     pub vm_configs: Vec<PathBuf>,
+    /// Logical CPU reserved for host realtime tasks. `-1` disables reservation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realtime_cpu_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +24,7 @@ pub(super) struct LoadedAxvisorBuildConfig {
     pub(super) build_info: AxvisorBuildInfo,
     pub(super) target: String,
     pub(super) vm_configs: Vec<PathBuf>,
+    pub(super) realtime_cpu_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -53,6 +57,7 @@ impl AxvisorBoardConfig {
             build_info: self.build_info,
             target,
             vm_configs: self.vm_configs,
+            realtime_cpu_id: self.realtime_cpu_id,
         }
     }
 }
