@@ -144,6 +144,26 @@ pub fn axtest_normal_and_batch_linux_cfs_placement_weight() -> (u64, u64, u64, i
     crate::scheduler::exercise_normal_and_batch_linux_cfs_placement_weight()
 }
 
+/// Checks that a Linux `SCHED_IDLE` wakee never requests wakeup preemption.
+#[doc(hidden)]
+pub fn axtest_idle_wakee_does_not_preempt_idle_current() -> bool {
+    let current = SchedulingEntity::Fair(crate::FairEntity::test_state(
+        crate::Nice::ZERO,
+        crate::FairMode::Idle,
+        3_000,
+        3_100,
+    ));
+    let wakee = SchedulingEntity::Fair(crate::FairEntity::test_state(
+        crate::Nice::ZERO,
+        crate::FairMode::Idle,
+        1_000,
+        3_500,
+    ));
+    let idle_policy = SchedulePolicy::fair(crate::Nice::ZERO, crate::FairMode::Idle);
+
+    !crate::scheduler::wakeup_preempts(idle_policy, &current, false, idle_policy, &wakee, 2_000)
+}
+
 /// Observes whether switch-in/out publish `on_cpu` with stores or RMWs.
 #[doc(hidden)]
 pub fn axtest_on_cpu_publication_kinds() -> (u64, u64, u64, u64) {

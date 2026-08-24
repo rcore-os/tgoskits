@@ -512,9 +512,12 @@ fn fair_wakeup_preempts(
                 crate::scheduler::virtual_delta(wakee.vruntime(), fair_virtual_time),
                 crate::scheduler::virtual_delta(current.vruntime(), fair_virtual_time),
             );
-            if wakee_mode == FairMode::Idle && current_mode != FairMode::Idle {
+            // Linux rejects wakeup preemption from SCHED_IDLE even when the
+            // current entity is also idle. A non-idle wakee still immediately
+            // preempts an idle current before the SCHED_BATCH check below.
+            if wakee_mode == FairMode::Idle {
                 false
-            } else if wakee_mode != FairMode::Idle && current_mode == FairMode::Idle {
+            } else if current_mode == FairMode::Idle {
                 true
             } else if wakee_mode == FairMode::Batch
                 || wakee_entity

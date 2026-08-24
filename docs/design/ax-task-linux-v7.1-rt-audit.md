@@ -3609,6 +3609,18 @@ benchmark 配置的五轮结果。Linux `SCHED_IDLE` 也使用同一 CFS queue�
 本分支仍把 `IdleFair` 独立 accounting，属于后续需要用独立红绿回归关闭的较大语义差异，
 不在本次 Normal/Batch 修复中顺带改动。
 
+Linux v7.1 `wakeup_preempt_entity()` 还在 EEVDF 比较前处理 policy：非 idle wakee 可以立即
+抢占 idle current，但 `normal_policy()` 明确阻止 `SCHED_BATCH` 与 `SCHED_IDLE` wakee
+主动请求 wakeup preemption。ax-task 已经覆盖 Batch 和“Idle wakee 对普通 current”的分支，
+却让“Idle wakee 对 Idle current”继续进入 eligibility/deadline 比较；因此当 current
+ineligible、wakee eligible 时会错误请求一次调度。确定性 ArceOS QEMU 回归构造这一状态，
+旧代码得到 17/18、唯一失败即该抢占判断。现在 policy 顺序与 Linux 相同：任何 Idle wakee
+先拒绝抢占，随后才处理非 idle wakee 对 Idle current、Batch 与普通 EEVDF 判断；同一测试
+为 18/18。targeted clippy 为 7/7；最终代码串行通过 x86_64、AArch64、RISC-V 与
+LoongArch64 四架构完整 ArceOS QEMU Rust/C suite，LoongArch64 专属 unaligned-fixup 也通过。
+该修复关闭 SCHED_IDLE 正确性差分，但不解释只使用 SCHED_NORMAL 的 hackbench 主性能
+差距，不能作为端到端性能改善结论。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

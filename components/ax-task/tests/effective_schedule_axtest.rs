@@ -136,6 +136,11 @@ fn normal_and_batch_share_one_linux_cfs_placement_average() {
 }
 
 #[axtest]
+fn idle_wakee_does_not_preempt_idle_current() {
+    ax_assert!(ax_task::axtest_idle_wakee_does_not_preempt_idle_current());
+}
+
+#[axtest]
 fn on_cpu_switch_publications_are_linux_style_stores() {
     let (set_next_rmw, set_next_store, finish_rmw, finish_store) =
         ax_task::axtest_on_cpu_publication_kinds();
