@@ -806,7 +806,19 @@ pub fn request_current_owner_work() -> Result<(), crate::TaskError> {
 pub fn request_current_reschedule() -> Result<(), crate::TaskError> {
     let _pin = crate::lock::PreemptScope::enter();
     let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
-    remote.request_remote_reschedule();
+    remote.request_remote_reschedule(crate::system::RescheduleKind::Immediate);
+    Ok(())
+}
+
+/// Publishes one Linux lazy-preemption request for an online CPU.
+pub fn request_cpu_lazy_reschedule(cpu: u32) -> Result<(), crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let cpu = crate::CpuId::new(cpu);
+    let system = crate::facade::runtime_task_system()?;
+    let remote = system
+        .cpu_remote(cpu)
+        .ok_or(crate::TaskError::CpuOffline(cpu.as_u32()))?;
+    remote.request_remote_reschedule(crate::system::RescheduleKind::Lazy);
     Ok(())
 }
 
@@ -1050,9 +1062,9 @@ pub(crate) fn publish_preempt_before_bounded_owner_control_rearm(cpu: crate::Cpu
     // Force the exact Linux independence check after the rq decision boundary:
     // TIF_NEED_RESCHED may become sticky here, but it cannot stand in for the
     // remaining wake-list membership.
-    remote.request_reschedule();
+    remote.request_reschedule(crate::system::RescheduleKind::Immediate);
     assert!(
-        remote.preemption_requested(),
+        remote.immediate_preemption_requested(),
         "the rearm probe must leave its independent preemption request sticky"
     );
 }

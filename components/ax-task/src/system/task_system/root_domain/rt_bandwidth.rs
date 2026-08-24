@@ -80,9 +80,9 @@ impl RootDomain {
             }
             rescheduled = true;
             if remote.owner() == cpu {
-                remote.request_reschedule();
+                remote.request_reschedule(RescheduleKind::Immediate);
             } else {
-                remote.request_remote_reschedule();
+                remote.request_remote_reschedule(RescheduleKind::Immediate);
             }
         }
 

@@ -124,6 +124,14 @@ pub use scheduler_events::{
 };
 #[cfg(feature = "irq")]
 pub(crate) use scheduler_events::{on_clock_event, publish_scheduler_tick};
+
+/// Drains scheduler work and leaves IRQs disabled for atomic userspace entry.
+///
+/// The caller must invoke the architecture `UserContext::run()` immediately
+/// after this succeeds; that path restores the saved userspace IRQ state.
+pub fn prepare_user_return() -> Result<(), TaskError> {
+    crate::guard::prepare_user_return()
+}
 #[cfg(all(feature = "qperf-metrics", any(feature = "ipi", feature = "wake-ipi")))]
 pub(crate) use scheduler_events::{record_scheduler_ipi_consume, record_scheduler_ipi_send};
 pub use spawn::{

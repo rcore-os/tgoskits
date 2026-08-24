@@ -154,6 +154,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         mut transaction: OwnerRqTxn<'_>,
         current: &ThreadCore,
+        request_scope: SchedulerRequestScope,
     ) -> Result<SchedulerOutcome, TaskError> {
         let runtime_overrun_work = self.sync_owner_current_dispatch_in_rq(&mut transaction);
         let deadline_rq_observation =
@@ -183,11 +184,13 @@ impl TaskSystem {
                 SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
             )?;
         }
-        Ok(if cpu.needs_reschedule() || cpu.has_remote_work() {
-            SchedulerOutcome::OwnerWorkPending
-        } else {
-            SchedulerOutcome::Quiescent
-        })
+        Ok(
+            if cpu.scheduler_request_pending(request_scope) || cpu.has_remote_work() {
+                SchedulerOutcome::OwnerWorkPending
+            } else {
+                SchedulerOutcome::Quiescent
+            },
+        )
     }
 
     /// Requests one owner-mediated pull from the busiest remote CPU.
@@ -428,7 +431,7 @@ impl TaskSystem {
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         let remote = Arc::clone(cpu.remote());
-        let initial_request = remote.claim_scheduler_request();
+        let initial_request = remote.claim_scheduler_request(SchedulerRequestScope::All);
         // SAFETY: propagated from the selected entry contract.
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
@@ -444,11 +447,11 @@ impl TaskSystem {
         let clock = transaction.clock();
         let now_ns = clock.wall().as_nanos();
         transaction.adopt_scheduler_request(initial_request);
-        transaction.merge_scheduler_request();
+        transaction.merge_scheduler_request(SchedulerRequestScope::All);
         let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
         // Runtime accounting is part of this unconditional scheduling
         // decision, exactly like Linux update_curr() preceding pick_next.
-        transaction.merge_scheduler_request();
+        transaction.merge_scheduler_request(SchedulerRequestScope::All);
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();
@@ -519,7 +522,12 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         current: &ThreadHandle,
     ) -> Result<SchedulerOutcome, TaskError> {
-        self.schedule_if_requested_owner(cpu, current.runtime_core_arc(), OwnerRqEntry::IrqSave)
+        self.schedule_if_requested_owner(
+            cpu,
+            current.runtime_core_arc(),
+            OwnerRqEntry::IrqSave,
+            SchedulerRequestScope::All,
+        )
     }
 
     /// Services scheduler work while the runtime owns the IRQ-off baton.
@@ -531,8 +539,14 @@ impl TaskSystem {
         &self,
         cpu: Pin<&mut CpuLocal>,
         current: &CurrentThreadRef,
+        request_scope: SchedulerRequestScope,
     ) -> Result<SchedulerOutcome, TaskError> {
-        self.schedule_if_requested_owner(cpu, current.runtime_core(), OwnerRqEntry::SchedulerFrame)
+        self.schedule_if_requested_owner(
+            cpu,
+            current.runtime_core(),
+            OwnerRqEntry::SchedulerFrame,
+            request_scope,
+        )
     }
 
     fn schedule_if_requested_owner(
@@ -540,10 +554,11 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         current: &ThreadCore,
         rq_entry: OwnerRqEntry,
+        request_scope: SchedulerRequestScope,
     ) -> Result<SchedulerOutcome, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         let remote = Arc::clone(cpu.remote());
-        let initial_request = remote.claim_scheduler_request();
+        let initial_request = remote.claim_scheduler_request(request_scope);
         // SAFETY: propagated from the selected entry contract.
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
@@ -561,7 +576,15 @@ impl TaskSystem {
         // This claim is the decision boundary: requests published by current
         // accounting participate in this pass; later sticky publications stay
         // set for the scheduler loop's final recheck.
-        let request = transaction.merge_scheduler_request();
+        let mut request = transaction.merge_scheduler_request(request_scope);
+        if request_scope == SchedulerRequestScope::Immediate
+            && request.immediate_preempt_requested()
+        {
+            // Once an ordinary request enters `__schedule()`, Linux clears
+            // both task flags. Claim a concurrent/lower-priority lazy request
+            // as part of that same scheduling decision.
+            request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
+        }
         if transaction
             .current()
             .map(|dispatch| dispatch.runtime_core_arc().state())
@@ -572,11 +595,11 @@ impl TaskSystem {
             // doorbell so an IRQ-return `while need_resched` loop can return to
             // `commit_park`. A real preemption request is kept separately and
             // restored only if the park is cancelled.
-            cpu.defer_park_preemption(request.preempt_requested());
+            cpu.defer_park_preemption(request);
             transaction.commit_and_finish_scheduler_request();
             return Ok(SchedulerOutcome::ParkingDeferred);
         }
-        let switch_requested = request.preempt_requested();
+        let switch_requested = request.preemption_requested();
         let previous = transaction.current_thread();
         if transaction
             .current()
@@ -587,7 +610,12 @@ impl TaskSystem {
         if !switch_requested
             || self.lone_realtime_preemption_keeps_dispatch(&mut transaction, previous_core_hint)
         {
-            return self.finish_owner_no_switch(cpu.as_mut(), transaction, previous_core_hint);
+            return self.finish_owner_no_switch(
+                cpu.as_mut(),
+                transaction,
+                previous_core_hint,
+                request_scope,
+            );
         }
         if self.owner_schedule_out_is_rq_owned(&transaction, previous_core_hint) {
             let now_ns = transaction.clock().wall().as_nanos();
@@ -635,8 +663,8 @@ impl TaskSystem {
         if transaction.current().is_some() {
             let _settled = transaction.settle_current(0);
         }
-        let request = transaction.merge_scheduler_request();
-        if !request.preempt_requested() {
+        let request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
+        if !request.preemption_requested() {
             task_runtime::fatal_invariant(0x5343_120a, cpu.owner().as_u32() as usize);
         }
         let clock = transaction.clock();
@@ -712,7 +740,7 @@ impl TaskSystem {
     ) -> Result<ScheduleDecision, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         let remote = Arc::clone(cpu.remote());
-        let initial_request = remote.claim_scheduler_request();
+        let initial_request = remote.claim_scheduler_request(SchedulerRequestScope::All);
         // SAFETY: propagated from the selected entry contract.
         unsafe { self.complete_context_switch_owner(cpu.as_mut(), rq_entry)? };
         self.drain_owner_work(cpu.as_mut())?;
@@ -733,7 +761,7 @@ impl TaskSystem {
         crate::task_test_hooks::complete_current_dispatch_accounting_probe(current.id());
         // A forced yield consumes a slice-expiration request discovered while
         // accounting the outgoing task in this same scheduling pass.
-        let request = transaction.merge_scheduler_request();
+        let request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
         if transaction
             .current()
             .is_none_or(|dispatch| !core::ptr::eq(dispatch.runtime_core(), previous_core_hint))
@@ -757,7 +785,7 @@ impl TaskSystem {
         let clock = transaction.clock();
         let now_ns = clock.wall().as_nanos();
         let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
-        transaction.merge_scheduler_request();
+        transaction.merge_scheduler_request(SchedulerRequestScope::All);
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
         let previous_endpoint = transaction.current_switch_endpoint();

@@ -455,14 +455,14 @@ impl TaskSystem {
             );
             core.set_wake_cpu_hint(owner);
             dispatch::OwnerReadyEnqueue {
-                preempts_current: false,
+                reschedule: None,
                 scheduler_deadline_refresh_required: false,
             }
         } else {
             self.link_owner_ready_thread_locked(owner, transaction, &core, sched, reason)
         };
-        if enqueue.preempts_current {
-            cpu.request_reschedule();
+        if let Some(kind) = enqueue.reschedule {
+            cpu.request_reschedule(kind);
         }
         // This transaction is already inside the owner scheduling decision;
         // its final deadline derivation consumes any enqueue refresh edge.
@@ -701,7 +701,7 @@ impl TaskSystem {
                 }
                 None => {
                     if delayed_retry_required {
-                        cpu.request_reschedule();
+                        cpu.request_reschedule(RescheduleKind::Immediate);
                     }
                     break None;
                 }

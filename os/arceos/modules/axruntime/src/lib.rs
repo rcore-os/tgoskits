@@ -110,8 +110,9 @@ pub use error::{RuntimeError, RuntimeResult};
 #[cfg(feature = "task-test-hooks")]
 #[doc(hidden)]
 pub use guard::{
-    reset_ordinary_preempt_exit_slow_path_count, reset_preempt_guard_context_resolution_count,
-    take_ordinary_preempt_exit_slow_path_count, take_preempt_guard_context_resolution_count,
+    install_user_return_boundary_hook, reset_ordinary_preempt_exit_slow_path_count,
+    reset_preempt_guard_context_resolution_count, take_ordinary_preempt_exit_slow_path_count,
+    take_preempt_guard_context_resolution_count,
 };
 
 /// Drains task-console output before shutting down the whole system.

@@ -50,14 +50,18 @@ pub(crate) fn record_scheduler_ipi_consume() {
 #[cfg(feature = "irq")]
 pub(crate) fn on_clock_event(
     now: ax_task::runtime::MonotonicInstant,
+    scheduler_tick: ax_task::SchedulerTickStatus,
 ) -> ax_task::TaskClockEventOutcome {
     TASK_TIMER_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
-    account_clock_event(now)
+    account_clock_event(now, scheduler_tick)
 }
 
 #[cfg(feature = "irq")]
-fn account_clock_event(now: ax_task::runtime::MonotonicInstant) -> ax_task::TaskClockEventOutcome {
-    match ax_task::on_clock_event(now, TASK_CLOCK_EVENT_IRQ_BUDGET) {
+fn account_clock_event(
+    now: ax_task::runtime::MonotonicInstant,
+    scheduler_tick: ax_task::SchedulerTickStatus,
+) -> ax_task::TaskClockEventOutcome {
+    match ax_task::on_clock_event(now, TASK_CLOCK_EVENT_IRQ_BUDGET, scheduler_tick) {
         Ok(outcome) => outcome,
         Err(error) => panic!("task clockevent accounting failed: {error}"),
     }

@@ -321,7 +321,7 @@ impl TaskSystem {
             core.notify_affinity_waiters();
         }
         if must_migrate {
-            cpu.request_reschedule();
+            cpu.request_reschedule(RescheduleKind::Immediate);
         }
         Ok(must_migrate)
     }

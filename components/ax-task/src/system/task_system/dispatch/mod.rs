@@ -80,14 +80,14 @@ impl OwnerDispatchCommit {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct OwnerEnqueueCommit {
-    preempts_current: bool,
+    reschedule: Option<RescheduleKind>,
     scheduler_deadline_refresh_required: bool,
     effective_policy: SchedulePolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::system::task_system) struct OwnerReadyEnqueue {
-    pub(in crate::system::task_system) preempts_current: bool,
+    pub(in crate::system::task_system) reschedule: Option<RescheduleKind>,
     pub(in crate::system::task_system) scheduler_deadline_refresh_required: bool,
 }
 

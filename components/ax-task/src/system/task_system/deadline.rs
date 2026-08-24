@@ -197,7 +197,7 @@ impl TaskSystem {
             self.finish_owner_enqueue(
                 cpu,
                 EnqueueReason::Replenished,
-                preempts_current,
+                preempts_current.then_some(RescheduleKind::Immediate),
                 false,
                 None,
             );

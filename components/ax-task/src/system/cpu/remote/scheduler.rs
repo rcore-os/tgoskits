@@ -4,10 +4,11 @@ use super::*;
 
 const REQUEST_PREEMPT: u64 = 1 << 0;
 const REQUEST_OWNER_WORK: u64 = 1 << 1;
-const REQUEST_REASON_MASK: u64 = REQUEST_PREEMPT | REQUEST_OWNER_WORK;
-const REQUEST_ENTRY_MASK: u64 = REQUEST_PREEMPT | REQUEST_OWNER_WORK;
+const REQUEST_PREEMPT_LAZY: u64 = 1 << 2;
+const REQUEST_REASON_MASK: u64 = REQUEST_PREEMPT | REQUEST_PREEMPT_LAZY | REQUEST_OWNER_WORK;
 const REQUEST_IDLE_POLLING: u64 = 1 << 3;
 const REQUEST_PARK_PREEMPT_DEFERRED: u64 = 1 << 4;
+const REQUEST_PARK_PREEMPT_LAZY_DEFERRED: u64 = 1 << 5;
 const DEFERRED_SCHEDULER_WORK_OFFLINE_INVARIANT: u32 = 0x4453_574f;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,6 +22,44 @@ pub(super) enum SchedulerRequestDelivery {
     /// remains in the sticky request bits and the owner inbox, matching
     /// Linux's split between `TIF_NEED_RESCHED`/`wake_list` and the IPI.
     DoorbellRequired,
+}
+
+/// Linux PREEMPT_RT's two reschedule classes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RescheduleKind {
+    /// `TIF_NEED_RESCHED`: consumed by preempt-enable and IRQ return.
+    Immediate,
+    /// `TIF_NEED_RESCHED_LAZY`: consumed at an explicit scheduling point,
+    /// return to userspace, or after the periodic tick promotes it.
+    Lazy,
+}
+
+impl RescheduleKind {
+    const fn request_bit(self) -> u64 {
+        match self {
+            Self::Immediate => REQUEST_PREEMPT,
+            Self::Lazy => REQUEST_PREEMPT_LAZY,
+        }
+    }
+}
+
+/// Which logical preemption classes one scheduler entry may consume.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SchedulerRequestScope {
+    /// A kernel preempt-enable or IRQ-return safe point. Lazy Fair requests
+    /// remain pending unless an ordinary request makes `__schedule()` run.
+    Immediate,
+    /// An explicit schedule/block/yield or return-to-userspace safe point.
+    All,
+}
+
+impl SchedulerRequestScope {
+    const fn claim_mask(self) -> u64 {
+        match self {
+            Self::Immediate => REQUEST_PREEMPT | REQUEST_OWNER_WORK,
+            Self::All => REQUEST_REASON_MASK,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,17 +78,27 @@ impl SchedulerRequestPublication {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SchedulerRequestClaim {
-    preempt: bool,
+    immediate_preempt: bool,
+    lazy_preempt: bool,
 }
 
 impl SchedulerRequestClaim {
-    pub(crate) const fn preempt_requested(self) -> bool {
-        self.preempt
+    pub(crate) const fn immediate_preempt_requested(self) -> bool {
+        self.immediate_preempt
+    }
+
+    pub(crate) const fn lazy_preempt_requested(self) -> bool {
+        self.lazy_preempt
+    }
+
+    pub(crate) const fn preemption_requested(self) -> bool {
+        self.immediate_preempt || self.lazy_preempt
     }
 
     pub(crate) const fn merge(self, other: Self) -> Self {
         Self {
-            preempt: self.preempt || other.preempt,
+            immediate_preempt: self.immediate_preempt || other.immediate_preempt,
+            lazy_preempt: self.lazy_preempt || other.lazy_preempt,
         }
     }
 }
@@ -77,25 +126,33 @@ impl CpuRemote {
     }
 
     /// Publishes a sticky owner-CPU reschedule request.
-    pub(crate) fn request_reschedule(&self) {
+    pub(crate) fn request_reschedule(&self, kind: RescheduleKind) {
         let Some(_publication) = self.begin_publication() else {
             return;
         };
-        let _ = self.request_reschedule_owned();
+        let _ = self.request_reschedule_owned(kind);
     }
 
-    fn request_reschedule_owned(&self) -> Option<SchedulerRequestPublication> {
-        self.publish_scheduler_request_owned(REQUEST_PREEMPT)
+    fn request_reschedule_owned(
+        &self,
+        kind: RescheduleKind,
+    ) -> Option<SchedulerRequestPublication> {
+        self.publish_scheduler_request_owned(kind.request_bit())
     }
 
-    /// Publishes a remote preemption and rings the target doorbell only after
-    /// the runqueue transaction has become visible.
-    pub(crate) fn request_remote_reschedule(&self) {
+    /// Publishes a remote preemption after the runqueue transaction is visible.
+    ///
+    /// Like Linux `__resched_curr()`, only an ordinary request rings a remote
+    /// reschedule IPI. A lazy request remains a logical task flag; idle
+    /// preemption is classified as ordinary while the target rq is locked.
+    pub(crate) fn request_remote_reschedule(&self, kind: RescheduleKind) {
         let Some(_publication) = self.begin_owner_delivery() else {
             return;
         };
         let _irq = IrqScope::enter();
-        if let Some(publication) = self.request_reschedule_owned() {
+        if let Some(publication) = self.request_reschedule_owned(kind)
+            && kind == RescheduleKind::Immediate
+        {
             self.deliver_scheduler_work_owned(publication);
         }
     }
@@ -106,13 +163,13 @@ impl CpuRemote {
     /// One rq transaction may make both facts true. They share transport but
     /// remain separate sticky bits, matching Linux's rule that scheduler state
     /// and deferred work are visible before the IPI.
-    pub(crate) fn request_remote_reschedule_with_scheduler_work(&self) {
+    pub(crate) fn request_remote_reschedule_with_scheduler_work(&self, kind: RescheduleKind) {
         let Some(_publication) = self.begin_owner_delivery() else {
             return;
         };
         let _irq = IrqScope::enter();
         if let Some(publication) =
-            self.publish_scheduler_request_owned(REQUEST_PREEMPT | REQUEST_OWNER_WORK)
+            self.publish_scheduler_request_owned(kind.request_bit() | REQUEST_OWNER_WORK)
         {
             self.deliver_scheduler_work_owned(publication);
         }
@@ -146,9 +203,9 @@ impl CpuRemote {
             return false;
         };
         let _irq = IrqScope::enter();
-        let Some(publication) =
-            self.publish_scheduler_request_owned(REQUEST_PREEMPT | REQUEST_OWNER_WORK)
-        else {
+        let Some(publication) = self.publish_scheduler_request_owned(
+            RescheduleKind::Immediate.request_bit() | REQUEST_OWNER_WORK,
+        ) else {
             return false;
         };
         self.deliver_scheduler_work_owned(publication);
@@ -282,22 +339,55 @@ impl CpuRemote {
         self.scheduler_request.request.load(Ordering::Acquire) & REQUEST_REASON_MASK != 0
     }
 
+    /// Returns whether a kernel preempt-enable or IRQ-return boundary must
+    /// enter the scheduler. Lazy Fair preemption alone is intentionally
+    /// excluded, matching Linux's folded architecture need-resched word.
+    pub(crate) fn needs_immediate_scheduler_work(&self) -> bool {
+        self.scheduler_request.request.load(Ordering::Acquire)
+            & (REQUEST_PREEMPT | REQUEST_OWNER_WORK)
+            != 0
+    }
+
+    pub(crate) fn scheduler_request_pending(&self, scope: SchedulerRequestScope) -> bool {
+        self.scheduler_request.request.load(Ordering::Acquire) & scope.claim_mask() != 0
+    }
+
     /// Returns whether a sticky preemption request owns scheduler progress.
     ///
     /// Unlike [`Self::needs_reschedule`], owner-only deferred work does not
     /// transfer ownership of the current task's runtime clockevent.
-    pub(crate) fn preemption_requested(&self) -> bool {
+    pub(crate) fn immediate_preemption_requested(&self) -> bool {
         self.scheduler_request.request.load(Ordering::Acquire) & REQUEST_PREEMPT != 0
     }
 
-    pub(crate) fn claim_scheduler_request(&self) -> SchedulerRequestClaim {
+    pub(crate) fn claim_scheduler_request(
+        &self,
+        scope: SchedulerRequestScope,
+    ) -> SchedulerRequestClaim {
         let request = self
             .scheduler_request
             .request
-            .fetch_and(!REQUEST_ENTRY_MASK, Ordering::AcqRel);
+            .fetch_and(!scope.claim_mask(), Ordering::AcqRel);
         SchedulerRequestClaim {
-            preempt: request & REQUEST_PREEMPT != 0,
+            immediate_preempt: request & REQUEST_PREEMPT != 0,
+            lazy_preempt: request & REQUEST_PREEMPT_LAZY != 0
+                && scope == SchedulerRequestScope::All,
         }
+    }
+
+    /// Promotes Linux's lazy thread flag at the periodic scheduler tick.
+    ///
+    /// The caller is the target CPU's timer owner, so no physical delivery is
+    /// needed; IRQ return observes the newly published ordinary request.
+    pub(crate) fn promote_lazy_reschedule(&self) -> bool {
+        let request = self.scheduler_request.request.load(Ordering::Acquire);
+        if request & REQUEST_PREEMPT_LAZY == 0 {
+            return false;
+        }
+        self.scheduler_request
+            .request
+            .fetch_or(REQUEST_PREEMPT, Ordering::AcqRel);
+        true
     }
 
     pub(crate) fn finish_scheduler_request(&self) {
@@ -316,9 +406,9 @@ impl CpuRemote {
 
     #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn take_preempt_requested(&self) -> bool {
-        let claim = self.claim_scheduler_request();
+        let claim = self.claim_scheduler_request(SchedulerRequestScope::All);
         self.finish_scheduler_request();
-        claim.preempt_requested()
+        claim.preemption_requested()
     }
 
     #[cfg(any(test, feature = "task-test-hooks", all(axtest, feature = "axtest")))]
@@ -326,23 +416,34 @@ impl CpuRemote {
         self.scheduler_request.request.load(Ordering::Acquire) & REQUEST_OWNER_WORK != 0
     }
 
-    pub(crate) fn defer_park_preemption(&self, requested: bool) {
-        if requested {
+    pub(crate) fn defer_park_preemption(&self, request: SchedulerRequestClaim) {
+        let mut deferred = 0;
+        if request.immediate_preempt_requested() {
+            deferred |= REQUEST_PARK_PREEMPT_DEFERRED;
+        }
+        if request.lazy_preempt_requested() {
+            deferred |= REQUEST_PARK_PREEMPT_LAZY_DEFERRED;
+        }
+        if deferred != 0 {
             self.scheduler_request
                 .request
-                .fetch_or(REQUEST_PARK_PREEMPT_DEFERRED, Ordering::Release);
+                .fetch_or(deferred, Ordering::Release);
         }
     }
 
     pub(crate) fn finish_park_preemption(&self, resume_running: bool) {
-        let deferred = self
-            .scheduler_request
-            .request
-            .fetch_and(!REQUEST_PARK_PREEMPT_DEFERRED, Ordering::AcqRel)
-            & REQUEST_PARK_PREEMPT_DEFERRED
-            != 0;
-        if resume_running && deferred {
-            let _ = self.request_reschedule_owned();
+        let deferred = self.scheduler_request.request.fetch_and(
+            !(REQUEST_PARK_PREEMPT_DEFERRED | REQUEST_PARK_PREEMPT_LAZY_DEFERRED),
+            Ordering::AcqRel,
+        );
+        if !resume_running {
+            return;
+        }
+        if deferred & REQUEST_PARK_PREEMPT_DEFERRED != 0 {
+            let _ = self.request_reschedule_owned(RescheduleKind::Immediate);
+        }
+        if deferred & REQUEST_PARK_PREEMPT_LAZY_DEFERRED != 0 {
+            let _ = self.request_reschedule_owned(RescheduleKind::Lazy);
         }
     }
 

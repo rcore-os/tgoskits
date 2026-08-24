@@ -1,12 +1,13 @@
 use std::{
     os::arceos::{
         api::task::{self as task_api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        guard::PreemptGuard,
         modules::{
             ax_hal::percpu::this_cpu_id,
             ax_task::{ThreadWakeHandle, current_thread_handle, task_test_hooks},
         },
         sync::InterruptibleMutexExt,
-        task::{RtPriority, SchedulePolicy, current_thread_id, set_thread_policy},
+        task::{FairMode, Nice, RtPriority, SchedulePolicy, current_thread_id, set_thread_policy},
     },
     sync::{
         Arc, Mutex,
@@ -102,9 +103,87 @@ pub fn run() -> crate::TestResult {
     owner_change_after_origin_registration();
     owner_exit_after_waiter_snapshot();
     wait_token_retains_initial_owner_lifetime();
+    fair_wake_does_not_preempt_mutex_owner();
     owner_spin_allows_higher_priority_preemption();
     final_waiter_cancel_races_with_slow_release();
     Ok(())
+}
+
+fn fair_wake_does_not_preempt_mutex_owner() {
+    static FAIR_WAKE_WAIT: AxWaitQueueHandle = AxWaitQueueHandle::new();
+
+    let mutex = Arc::new(Mutex::new(()));
+    let waiter_ready = Arc::new(AtomicBool::new(false));
+    let release_waiter = Arc::new(AtomicBool::new(false));
+    let waiter_ran = Arc::new(AtomicBool::new(false));
+    let waiter_acquired = Arc::new(AtomicBool::new(false));
+    let waiter = {
+        let mutex = Arc::clone(&mutex);
+        let waiter_ready = Arc::clone(&waiter_ready);
+        let release_waiter = Arc::clone(&release_waiter);
+        let waiter_ran = Arc::clone(&waiter_ran);
+        let waiter_acquired = Arc::clone(&waiter_acquired);
+        thread::spawn(move || {
+            pin_current_to_cpu(0);
+            waiter_ready.store(true, Ordering::Release);
+            task_api::ax_wait_queue_wait_until(
+                &FAIR_WAKE_WAIT,
+                || release_waiter.load(Ordering::Acquire),
+                None,
+            );
+            waiter_ran.store(true, Ordering::Release);
+            drop(mutex.lock());
+            waiter_acquired.store(true, Ordering::Release);
+        })
+    };
+    let waiter_id = waiter.thread().id().as_u64().get();
+    wait_until(
+        || waiter_ready.load(Ordering::Acquire) && task_test_hooks::thread_is_blocked(waiter_id),
+        "Fair wake waiter did not block",
+    );
+
+    let preempted_before_unlock = Arc::new(AtomicBool::new(false));
+    let owner = {
+        let mutex = Arc::clone(&mutex);
+        let release_waiter = Arc::clone(&release_waiter);
+        let waiter_ran = Arc::clone(&waiter_ran);
+        let preempted_before_unlock = Arc::clone(&preempted_before_unlock);
+        thread::spawn(move || {
+            pin_current_to_cpu(0);
+            let current = current_thread_id().expect("Fair wake owner needs a thread id");
+            set_thread_policy(current, SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+                .expect("failed to install Fair idle policy on the mutex owner");
+            thread::yield_now();
+
+            let mutex_guard = mutex.lock();
+            let preempt_guard = PreemptGuard::new();
+            release_waiter.store(true, Ordering::Release);
+            assert_eq!(
+                task_api::ax_wait_queue_wake(&FAIR_WAKE_WAIT, 1),
+                1,
+                "Fair wake must select the blocked waiter"
+            );
+            // Linux PREEMPT_RT publishes this Fair wake as
+            // TIF_NEED_RESCHED_LAZY. The final preempt-enable boundary must
+            // therefore return to the lock owner instead of scheduling the
+            // waiter into the still-held mutex.
+            drop(preempt_guard);
+            preempted_before_unlock.store(waiter_ran.load(Ordering::Acquire), Ordering::Release);
+            drop(mutex_guard);
+            thread::yield_now();
+        })
+    };
+
+    owner.join().unwrap();
+    waiter.join().unwrap();
+    assert!(
+        !preempted_before_unlock.load(Ordering::Acquire),
+        "a Fair wake must remain lazy until the mutex owner leaves its kernel critical section"
+    );
+    assert!(
+        waiter_acquired.load(Ordering::Acquire),
+        "the Fair waiter must acquire the mutex after the owner unlocks"
+    );
 }
 
 fn final_waiter_cancel_races_with_slow_release() {

@@ -119,7 +119,7 @@ pub(in crate::system::cpu) enum RqCurrentUpdate {
     DedicatedIdle,
     Task {
         charge: DispatchCharge,
-        request_reschedule: bool,
+        reschedule: Option<RescheduleKind>,
         realtime: bool,
         rt_quota_exempt: bool,
     },
@@ -134,6 +134,23 @@ enum CurrentAccountingEvent {
 impl WakePreemptionDecision {
     pub(crate) const fn requests_reschedule(self) -> bool {
         matches!(self, Self::DedicatedIdlePreempted | Self::WakeeSelected)
+    }
+
+    /// Maps the class decision to Linux PREEMPT_RT's reschedule flag.
+    pub(crate) const fn reschedule_kind(
+        self,
+        wakee_policy: SchedulePolicy,
+    ) -> Option<RescheduleKind> {
+        match self {
+            Self::KeepCurrent | Self::QueuedCandidateSelected => None,
+            // Linux always upgrades an idle-current wake to ordinary
+            // `TIF_NEED_RESCHED`, even when the waking class is Fair.
+            Self::DedicatedIdlePreempted => Some(RescheduleKind::Immediate),
+            Self::WakeeSelected => Some(match wakee_policy {
+                SchedulePolicy::Fair { .. } => RescheduleKind::Lazy,
+                _ => RescheduleKind::Immediate,
+            }),
+        }
     }
 }
 
@@ -868,11 +885,14 @@ impl CpuRunQueueState {
         };
         let deadline_runtime_reschedule =
             matches!(policy, SchedulePolicy::Deadline(_)) && charge.slice_expired;
+        let request_reschedule =
+            deadline_runtime_reschedule || deadline_replenish_reschedule || class_tick_reschedule;
         Ok(RqCurrentUpdate::Task {
             charge,
-            request_reschedule: deadline_runtime_reschedule
-                || deadline_replenish_reschedule
-                || class_tick_reschedule,
+            reschedule: request_reschedule.then_some(match policy {
+                SchedulePolicy::Fair { .. } => RescheduleKind::Lazy,
+                _ => RescheduleKind::Immediate,
+            }),
             realtime: matches!(
                 policy,
                 SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
@@ -1004,9 +1024,7 @@ impl CpuRunQueueState {
             .expect("test RR runtime update must succeed")
         {
             RqCurrentUpdate::DedicatedIdle => panic!("test RR current must not become idle"),
-            RqCurrentUpdate::Task {
-                request_reschedule, ..
-            } => request_reschedule,
+            RqCurrentUpdate::Task { reschedule, .. } => reschedule.is_some(),
         };
         let PickTaskResult::Continue(update_next) = run_queue
             .queue
@@ -1021,9 +1039,7 @@ impl CpuRunQueueState {
             .expect("test RR scheduler tick must succeed")
         {
             RqCurrentUpdate::DedicatedIdle => panic!("test RR current must not become idle"),
-            RqCurrentUpdate::Task {
-                request_reschedule, ..
-            } => request_reschedule,
+            RqCurrentUpdate::Task { reschedule, .. } => reschedule.is_some(),
         };
         let PickTaskResult::Continue(tick_next) = run_queue
             .queue

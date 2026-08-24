@@ -273,32 +273,32 @@ impl TaskSystem {
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_rt_policy_delivery_requirements(
             core.id(),
-            applied.preempts_current,
+            applied.reschedule.is_some(),
             applied.rt_period_started,
         );
         let owner_work_required =
             applied.scheduler_deadline_refresh_required || applied.rt_period_started;
-        if applied.preempts_current || owner_work_required {
+        if applied.reschedule.is_some() || owner_work_required {
             #[cfg(feature = "task-test-hooks")]
             crate::task_test_hooks::record_rt_policy_request_publication(core.id());
         }
-        match (applied.preempts_current, owner_work_required) {
-            (true, true) => {
+        match (applied.reschedule, owner_work_required) {
+            (Some(kind), true) => {
                 // Preemption and owner-deadline facts belong to one rq transaction.
                 // Publish both logical reasons before a single physical edge.
-                remote.request_remote_reschedule_with_scheduler_work();
+                remote.request_remote_reschedule_with_scheduler_work(kind);
                 #[cfg(feature = "task-test-hooks")]
                 {
                     crate::task_test_hooks::record_rt_policy_reschedule(core.id());
                     crate::task_test_hooks::record_rt_policy_owner_work(core.id());
                 }
             }
-            (true, false) => {
-                remote.request_remote_reschedule();
+            (Some(kind), false) => {
+                remote.request_remote_reschedule(kind);
                 #[cfg(feature = "task-test-hooks")]
                 crate::task_test_hooks::record_rt_policy_reschedule(core.id());
             }
-            (false, true) => {
+            (None, true) => {
                 // Scheduler deadlines are pinned to the rq owner. Ask that
                 // owner to derive its physical timer; a remote setter must
                 // not program another CPU's comparator directly.
@@ -306,7 +306,7 @@ impl TaskSystem {
                 #[cfg(feature = "task-test-hooks")]
                 crate::task_test_hooks::record_rt_policy_owner_work(core.id());
             }
-            (false, false) => {}
+            (None, false) => {}
         }
         Ok(())
     }

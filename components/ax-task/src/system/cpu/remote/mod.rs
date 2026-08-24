@@ -26,7 +26,7 @@ pub(crate) use run_queue::{
     CpuRunQueueState, EqualRtWakeAction, OwnerRqEnqueue, RunQueueGuardSource,
     WakePreemptionContext, WakePreemptionDecision,
 };
-pub(crate) use scheduler::SchedulerRequestClaim;
+pub(crate) use scheduler::{RescheduleKind, SchedulerRequestClaim, SchedulerRequestScope};
 
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 std::thread_local! {

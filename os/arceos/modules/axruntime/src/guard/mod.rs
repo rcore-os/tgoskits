@@ -2,9 +2,52 @@
 
 mod state;
 
+#[cfg(feature = "task-test-hooks")]
+use core::{
+    ptr,
+    sync::atomic::{AtomicPtr, Ordering},
+};
+
 #[cfg(any(feature = "multitask", test))]
 use state::SchedulerBatonState;
 use state::{RuntimeGuardState, RuntimeIrqState, RuntimePreemptState};
+
+#[cfg(feature = "task-test-hooks")]
+type UserReturnBoundaryHook = fn();
+
+#[cfg(feature = "task-test-hooks")]
+static USER_RETURN_BOUNDARY_HOOK: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+
+/// Installs the one process-wide user-return boundary probe.
+///
+/// The hook runs after the final no-work snapshot and must not allocate,
+/// block, or enter the scheduler. It is never replaced or removed.
+#[cfg(feature = "task-test-hooks")]
+pub fn install_user_return_boundary_hook(hook: UserReturnBoundaryHook) {
+    let hook = hook as *mut ();
+    assert_eq!(
+        USER_RETURN_BOUNDARY_HOOK.compare_exchange(
+            ptr::null_mut(),
+            hook,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(ptr::null_mut()),
+        "user-return boundary hook already installed"
+    );
+}
+
+#[cfg(feature = "task-test-hooks")]
+fn run_user_return_boundary_hook() {
+    let hook = USER_RETURN_BOUNDARY_HOOK.load(Ordering::Acquire);
+    if hook.is_null() {
+        return;
+    }
+    // SAFETY: installation preserves the function-pointer representation and
+    // the process-wide hook is never replaced or removed.
+    let hook = unsafe { core::mem::transmute::<*mut (), UserReturnBoundaryHook>(hook) };
+    hook();
+}
 
 #[ax_percpu::def_percpu]
 static RUNTIME_GUARD_STATE: RuntimeGuardState = RuntimeGuardState::new();
@@ -54,6 +97,43 @@ pub(crate) fn release_bootstrap_preemption() {
     );
     ax_task::schedule_current_cpu()
         .unwrap_or_else(|error| panic!("bootstrap scheduler entry failed: {error}"));
+}
+
+/// Services scheduler work and retains IRQ exclusion through userspace entry.
+///
+/// On success, the caller must enter `ax_hal::cpu::uspace::UserContext::run`
+/// immediately. Its architecture return instruction restores the saved user
+/// IRQ state, matching Linux's final IRQ-off `exit_to_user_mode_loop()` check.
+#[cfg(feature = "multitask")]
+pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
+    if !ax_hal::asm::irqs_enabled() || in_hard_irq() {
+        return Err(ax_task::TaskError::UnsafeContext);
+    }
+
+    loop {
+        ax_hal::asm::disable_irqs();
+        // SAFETY: raw IRQ exclusion pins this complete CPU-remote observation.
+        let pending = match unsafe { ax_task::current_needs_reschedule_pinned() } {
+            Ok(pending) => pending,
+            Err(error) => {
+                ax_hal::asm::enable_irqs();
+                return Err(error);
+            }
+        };
+        if !pending {
+            #[cfg(feature = "task-test-hooks")]
+            run_user_return_boundary_hook();
+            // Keep IRQs disabled. UserContext::run() enters the architecture
+            // return path without exposing a kernel IRQ window after this
+            // final no-work snapshot.
+            return Ok(());
+        }
+
+        ax_hal::asm::enable_irqs();
+        // The ordinary task entry consumes both request classes. Recheck with
+        // IRQs disabled after it returns, like exit_to_user_mode_loop().
+        ax_task::schedule_current_cpu()?;
+    }
 }
 
 /// Validates a public scheduler entry before it can publish task state.
@@ -140,9 +220,9 @@ pub(crate) fn exit_irq(owner: &'static str) {
         let needs_reschedule = state.irq.depth == 1 && {
             // SAFETY: raw IRQ exclusion retains the same CPU while this
             // query observes the current CpuRemote's sticky request.
-            unsafe { ax_task::current_needs_reschedule_pinned() }.unwrap_or_else(|error| {
-                panic!("IRQ guard exit lost the current scheduler owner: {error:?}")
-            })
+            unsafe { ax_task::current_needs_immediate_scheduler_work_pinned() }.unwrap_or_else(
+                |error| panic!("IRQ guard exit lost the current scheduler owner: {error:?}"),
+            )
         };
         if needs_reschedule {
             publish_preemption_pending(true);
@@ -447,9 +527,9 @@ fn exit_scheduler_frame_guard_inner(
     let needs_reschedule = {
         // SAFETY: the scheduler baton and raw IRQ exclusion retain this CPU
         // through the current endpoint observation.
-        unsafe { ax_task::current_needs_reschedule_pinned() }.unwrap_or_else(|error| {
-            panic!("scheduler tail lost the current scheduler owner: {error:?}")
-        })
+        unsafe { ax_task::current_needs_immediate_scheduler_work_pinned() }.unwrap_or_else(
+            |error| panic!("scheduler tail lost the current scheduler owner: {error:?}"),
+        )
     };
     publish_preemption_pending(needs_reschedule);
     with_guard_state_mut(|state| state.exit_scheduler_preempt(owner));

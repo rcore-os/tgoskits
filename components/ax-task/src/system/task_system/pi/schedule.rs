@@ -247,7 +247,9 @@ impl TaskSystem {
         };
         transaction.commit();
         match followup {
-            Some(PiRqFollowup::RemoteReschedule) => remote.request_remote_reschedule(),
+            Some(PiRqFollowup::RemoteReschedule) => {
+                remote.request_remote_reschedule(RescheduleKind::Immediate)
+            }
             Some(PiRqFollowup::SchedulerWork) => remote.request_scheduler_work(),
             None => {}
         }

@@ -191,10 +191,17 @@ pub(crate) fn begin_current_park_with_permit(
 pub fn on_clock_event(
     now: MonotonicInstant,
     budget: usize,
+    scheduler_tick: SchedulerTickStatus,
 ) -> Result<TaskClockEventOutcome, TaskError> {
     let system = runtime_task_system()?;
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    if scheduler_tick == SchedulerTickStatus::Elapsed {
+        // Linux PREEMPT_RT promotes TIF_NEED_RESCHED_LAZY before invoking the
+        // current class's periodic task_tick hook. A new lazy request created
+        // by that hook remains lazy until the following promotion point.
+        cpu.promote_lazy_reschedule();
+    }
     let (charge, clock, current) = system.task_tick_current_until_with_clock(cpu.as_mut(), 0)?;
     system.service_rt_period(&cpu, now);
     let hard = system.service_due_hard_timers(cpu.as_mut(), now)?;
@@ -214,6 +221,14 @@ pub fn on_clock_event(
             observed_ns: clock.task().as_nanos(),
         },
     })
+}
+
+/// Whether the claimed physical clockevent also advanced the periodic
+/// scheduler tick.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SchedulerTickStatus {
+    NotElapsed,
+    Elapsed,
 }
 
 /// Samples CPU time and publishes extension work for a periodic scheduler tick

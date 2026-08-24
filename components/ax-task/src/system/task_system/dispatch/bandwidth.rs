@@ -110,7 +110,7 @@ impl TaskSystem {
             crate::task_test_hooks::record_wake_fair_vtime_update(core.id());
             run_queue.update_fair_virtual_time(current_fair);
         }
-        let preempts_current = if reason.checks_preemption_after_enqueue() {
+        let reschedule = if reason.checks_preemption_after_enqueue() {
             let fair_virtual_time = enqueue
                 .entity()
                 .fair()
@@ -123,9 +123,9 @@ impl TaskSystem {
                     fair_virtual_time,
                     wake_context,
                 )
-                .requests_reschedule()
+                .reschedule_kind(policy)
         } else {
-            false
+            None
         };
         core.publish_effective_schedule(policy, enqueue.entity());
         if sched.placement.on_cpu() == Some(owner) {
@@ -137,7 +137,7 @@ impl TaskSystem {
         }
         core.set_wake_cpu_hint(owner);
         OwnerReadyEnqueue {
-            preempts_current,
+            reschedule,
             scheduler_deadline_refresh_required: enqueue.scheduler_deadline_refresh_required(),
         }
     }
@@ -146,17 +146,19 @@ impl TaskSystem {
         &self,
         cpu: Pin<&mut CpuLocal>,
         reason: EnqueueReason,
-        preempts_current: bool,
+        reschedule: Option<RescheduleKind>,
         scheduler_deadline_refresh_required: bool,
         effective_policy: Option<SchedulePolicy>,
     ) {
-        if reason.checks_preemption_after_enqueue() && preempts_current {
-            cpu.request_reschedule();
+        if reason.checks_preemption_after_enqueue()
+            && let Some(kind) = reschedule
+        {
+            cpu.request_reschedule(kind);
         }
         if let Some(policy) = effective_policy {
             let _started = self.activate_owner_rt_period_for_policy(cpu.owner(), policy);
         }
-        if !preempts_current
+        if reschedule.is_none()
             && (scheduler_deadline_refresh_required || self.rt_deadline_push_pending(cpu.remote()))
         {
             cpu.remote().kick_scheduler_work();

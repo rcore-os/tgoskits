@@ -48,8 +48,8 @@ impl CpuLocal {
     }
 
     /// Publishes a sticky reschedule request from task or IRQ context.
-    pub(crate) fn request_reschedule(&self) {
-        self.remote.request_reschedule();
+    pub(crate) fn request_reschedule(&self, kind: RescheduleKind) {
+        self.remote.request_reschedule(kind);
     }
 
     pub(crate) fn request_scheduler_work(&self) {
@@ -75,6 +75,14 @@ impl CpuLocal {
     /// Tests the sticky reschedule request without clearing it.
     pub(crate) fn needs_reschedule(&self) -> bool {
         self.remote.needs_reschedule()
+    }
+
+    pub(crate) fn scheduler_request_pending(&self, scope: SchedulerRequestScope) -> bool {
+        self.remote.scheduler_request_pending(scope)
+    }
+
+    pub(crate) fn promote_lazy_reschedule(&self) -> bool {
+        self.remote.promote_lazy_reschedule()
     }
 
     /// Returns the bounded scheduler safe-point work budget.
@@ -199,8 +207,8 @@ impl CpuLocal {
         self.dispatch.switch_handoff.as_ref()
     }
 
-    pub(crate) fn defer_park_preemption(&self, requested: bool) {
-        self.remote.defer_park_preemption(requested);
+    pub(crate) fn defer_park_preemption(&self, request: SchedulerRequestClaim) {
+        self.remote.defer_park_preemption(request);
     }
 
     pub(crate) fn finish_park_preemption(&self, resume_running: bool) {

@@ -8,14 +8,14 @@ use std::{
                 percpu::this_cpu_id,
             },
             ax_runtime::{
-                reset_preempt_guard_context_resolution_count,
-                take_preempt_guard_context_resolution_count,
+                install_user_return_boundary_hook, reset_preempt_guard_context_resolution_count,
+                take_preempt_guard_context_resolution_count, task::prepare_user_return,
             },
             ax_task::{
                 CurrentParkStart, FairMode, Nice, RtPriority, SchedulePolicy, ThreadId,
-                ThreadWakeHandle, WakeResult, begin_current_park, current_thread_handle,
-                schedule_current_cpu, set_thread_policy, task_test_hooks, thread_policy,
-                thread_runtime,
+                ThreadWakeHandle, WakeResult, begin_current_park, current_cpu_needs_resched,
+                current_thread_handle, schedule_current_cpu, set_thread_policy, task_test_hooks,
+                thread_policy, thread_runtime,
             },
         },
         task::current_thread_id,
@@ -32,6 +32,78 @@ use std::{
 const NUM_TASKS: usize = 10;
 const SWITCH_HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
 static FINISHED_TASKS: AtomicUsize = AtomicUsize::new(0);
+static USER_RETURN_BOUNDARY_STAGE: AtomicUsize = AtomicUsize::new(0);
+
+const USER_RETURN_BOUNDARY_IDLE: usize = 0;
+const USER_RETURN_BOUNDARY_ENTERED: usize = 1;
+const USER_RETURN_BOUNDARY_PUBLISHED: usize = 2;
+const USER_RETURN_BOUNDARY_FAILED: usize = 3;
+
+fn pause_at_user_return_boundary() {
+    assert_eq!(
+        USER_RETURN_BOUNDARY_STAGE.compare_exchange(
+            USER_RETURN_BOUNDARY_IDLE,
+            USER_RETURN_BOUNDARY_ENTERED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(USER_RETURN_BOUNDARY_IDLE),
+        "the user-return boundary probe must run exactly once"
+    );
+    loop {
+        match USER_RETURN_BOUNDARY_STAGE.load(Ordering::Acquire) {
+            USER_RETURN_BOUNDARY_PUBLISHED => return,
+            USER_RETURN_BOUNDARY_FAILED => {
+                panic!("the remote lazy publication failed at the user-return boundary")
+            }
+            USER_RETURN_BOUNDARY_ENTERED => hint::spin_loop(),
+            stage => panic!("invalid user-return boundary stage {stage}"),
+        }
+    }
+}
+
+fn exercise_user_return_boundary(target_cpu: usize, publisher_cpu: usize) {
+    while current_cpu_needs_resched().expect("the target CPU scheduler state must be readable") {
+        schedule_current_cpu().expect("the target CPU must drain stale scheduler work");
+    }
+    install_user_return_boundary_hook(pause_at_user_return_boundary);
+    let publisher = thread::spawn(move || {
+        if ax_set_current_affinity(AxCpuMask::one_shot(publisher_cpu)).is_err()
+            || this_cpu_id() != publisher_cpu
+        {
+            USER_RETURN_BOUNDARY_STAGE.store(USER_RETURN_BOUNDARY_FAILED, Ordering::Release);
+            return false;
+        }
+        while USER_RETURN_BOUNDARY_STAGE.load(Ordering::Acquire) == USER_RETURN_BOUNDARY_IDLE {
+            thread::yield_now();
+        }
+        if task_test_hooks::request_cpu_lazy_reschedule(target_cpu as u32).is_err() {
+            USER_RETURN_BOUNDARY_STAGE.store(USER_RETURN_BOUNDARY_FAILED, Ordering::Release);
+            return false;
+        }
+        USER_RETURN_BOUNDARY_STAGE.store(USER_RETURN_BOUNDARY_PUBLISHED, Ordering::Release);
+        true
+    });
+
+    prepare_user_return().expect("the task context must prepare its final userspace return");
+    let returned_with_irqs_enabled = irqs_enabled();
+    if !returned_with_irqs_enabled {
+        enable_irqs();
+    }
+    assert!(
+        publisher
+            .join()
+            .expect("the user-return publisher must exit normally"),
+        "the user-return publisher must target the requested CPU"
+    );
+    assert!(
+        !returned_with_irqs_enabled,
+        "the final no-work snapshot must remain IRQ-excluded through the architecture user return"
+    );
+    if current_cpu_needs_resched().expect("the injected lazy request must remain observable") {
+        schedule_current_cpu().expect("the test must drain its injected lazy request");
+    }
+}
 
 fn thread_id_from_raw(raw: u64) -> ThreadId {
     ThreadId::from_parts(raw as u32, (raw >> 32) as u32)
@@ -491,6 +563,7 @@ pub fn run() -> crate::TestResult {
     let target_cpu = this_cpu_id();
     assert!(ax_set_current_affinity(AxCpuMask::one_shot(target_cpu)).is_ok());
     let noise_cpu = (target_cpu + 1) % cpu_count;
+    exercise_user_return_boundary(target_cpu, noise_cpu);
     let current = current_thread_id().expect("task-yield runner must have a task identity");
     assert!(
         irqs_enabled(),

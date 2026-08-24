@@ -7,9 +7,10 @@ use crate::{
     CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, CurrentExitPermit, CurrentThreadToken,
     IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWaitToken, ParkCommit, ParkPrepare,
     PiMutexClaimOutcome, PiMutexLockResult, PiMutexRef, PiWaitCancelOutcome, PiWaitToken,
-    RtPriority, ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem,
-    ThreadBuilder, ThreadCore, ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot,
-    ThreadState, ThreadWakeHandle, WaitQueue, WaitWakeClaim, WaitWakeDelivery, WakeResult,
+    RtPriority, ScheduleDecision, SchedulePolicy, SchedulerOutcome, SchedulerRequestScope,
+    TaskError, TaskSystem, ThreadBuilder, ThreadCore, ThreadExtensionLease, ThreadHandle, ThreadId,
+    ThreadRuntimeSnapshot, ThreadState, ThreadWakeHandle, WaitQueue, WaitWakeClaim,
+    WaitWakeDelivery, WakeResult,
     executor::CoroutineHeader,
     inbox::PublishResult,
     lock::PreemptScope,
@@ -38,8 +39,8 @@ mod task_work;
 
 pub use deadline::{
     CurrentParkDisposition, CurrentParkResume, CurrentParkStart, PreparedCurrentPark,
-    SchedulerTickStamp, TaskClockEventOutcome, begin_current_park, on_clock_event,
-    publish_scheduler_tick,
+    SchedulerTickStamp, SchedulerTickStatus, TaskClockEventOutcome, begin_current_park,
+    on_clock_event, publish_scheduler_tick,
 };
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 use deadline::{arm_current_park_deadline, cancel_current_park_deadline, prepare_current_park};
@@ -170,6 +171,18 @@ pub unsafe fn current_needs_reschedule_pinned() -> Result<bool, TaskError> {
     Ok(current_cpu_remote()
         .ok_or(TaskError::NotInitialized)?
         .needs_reschedule())
+}
+
+/// Tests only scheduler work consumed by kernel preempt-enable/IRQ return.
+///
+/// # Safety
+///
+/// The caller must prevent migration until it has finished the decision that
+/// uses this snapshot.
+pub unsafe fn current_needs_immediate_scheduler_work_pinned() -> Result<bool, TaskError> {
+    Ok(current_cpu_remote()
+        .ok_or(TaskError::NotInitialized)?
+        .needs_immediate_scheduler_work())
 }
 
 /// Validates that the caller may publish a waiter or block its current thread.

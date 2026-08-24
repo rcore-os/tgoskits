@@ -269,8 +269,11 @@ impl<'a> OwnerRqTxn<'a> {
         cpu.scheduler_deadline_rq_observation_in_run_queue(self.run_queue())
     }
 
-    pub(crate) fn claim_scheduler_request(&mut self) -> SchedulerRequestClaim {
-        let claim = self.remote.claim_scheduler_request();
+    pub(crate) fn claim_scheduler_request(
+        &mut self,
+        scope: SchedulerRequestScope,
+    ) -> SchedulerRequestClaim {
+        let claim = self.remote.claim_scheduler_request(scope);
         self.request = Some(self.request.map_or(claim, |current| current.merge(claim)));
         self.request
             .expect("scheduler request claim was just installed")
@@ -283,8 +286,11 @@ impl<'a> OwnerRqTxn<'a> {
         );
     }
 
-    pub(crate) fn merge_scheduler_request(&mut self) -> SchedulerRequestClaim {
-        self.claim_scheduler_request()
+    pub(crate) fn merge_scheduler_request(
+        &mut self,
+        scope: SchedulerRequestScope,
+    ) -> SchedulerRequestClaim {
+        self.claim_scheduler_request(scope)
     }
 
     pub(crate) fn current(&self) -> Option<&CurrentDispatch> {
@@ -777,7 +783,7 @@ impl<'a> OwnerRqTxn<'a> {
             RqCurrentUpdate::DedicatedIdle => DispatchCharge::default(),
             RqCurrentUpdate::Task {
                 charge,
-                request_reschedule,
+                reschedule,
                 realtime,
                 rt_quota_exempt,
             } => {
@@ -793,8 +799,10 @@ impl<'a> OwnerRqTxn<'a> {
                     self.run_queue_mut().set_rt_throttled(true);
                 }
                 self.remote.charge_busy_runtime(runtime_ns);
-                if request_reschedule || (rt_throttled && !rt_quota_exempt) {
-                    self.remote.request_reschedule();
+                if rt_throttled && !rt_quota_exempt {
+                    self.remote.request_reschedule(RescheduleKind::Immediate);
+                } else if let Some(kind) = reschedule {
+                    self.remote.request_reschedule(kind);
                 }
                 charge
             }

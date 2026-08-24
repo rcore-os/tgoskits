@@ -3684,6 +3684,99 @@ suite，LoongArch64 专属 unaligned-fixup 也通过。AArch64 的第一次完�
 finding，继续保留为后续压力运行的观察项。`ax-task` 当前只为 x86_64 声明独立 ktest target，
 该 QEMU axtest 为 18/18；targeted clippy 为 7/7。
 
+### 2026-08-25 PREEMPT_RT 惰性重调度边界
+
+Linux v7.1 `kernel/sched/core.c::__resched_curr()` 为调度请求保留两种不同语义：普通
+`TIF_NEED_RESCHED` 同时写入架构 folded preempt word，远程发布时发送 reschedule IPI；
+`TIF_NEED_RESCHED_LAZY` 只写 task flag，既不触发 kernel preempt-enable，也不发送远程
+reschedule IPI。唯一例外是 dedicated idle current：lazy 请求会当场提升为普通请求，避免
+空闲 CPU 延迟执行已经 runnable 的工作。Fair 的 `update_curr()` 与
+`wakeup_preempt_fair()` 使用 `resched_curr_lazy()`；RT、Deadline、跨 class 抢占、迁移及
+带宽/deadline 到期继续使用普通 `resched_curr()`。
+
+消费边界同样不能合并。Linux 的 kernel preempt-enable 与 IRQ return 只观察普通请求；
+`kernel/entry/common.c::__exit_to_user_mode_loop()` 在最后返回用户态前同时观察两个 TIF；
+`kernel/sched/core.c::sched_tick()` 在调用 class `task_tick()` 之前，把已经存在的 lazy 请求
+提升为普通请求；真正进入 `__schedule()` 后 `clear_tsk_need_resched()` 同时清除两种 task
+flag。由本次 tick 新产生的 Fair 请求仍保持 lazy，直到下一用户返回、显式 schedule 或后续
+周期 tick。这个顺序使 Fair wake 可以选择更好的 EEVDF 候选，但不会在任意内核锁临界区的
+最终 preempt-enable 上立刻把锁持有者切走。
+
+旧 ax-task 只有一个 `REQUEST_PREEMPT`：Fair wake 一旦选中 wakee，就同时触发 folded
+preemption state，并在 `PreemptGuard` 最终退出时立即调度。确定性 ArceOS QEMU 回归把
+owner 与 Fair waiter 固定在 CPU0，令 owner 持有真实 `std::sync::Mutex` 与最后一层
+`PreemptGuard` 后唤醒 waiter；将 `AX_SCHEDULER_TICK_MS` 拉长到 1000 ms 放大窗口。只加
+测试时，旧实现稳定触发
+`a Fair wake must remain lazy until the mutex owner leaves its kernel critical section`：waiter
+在 owner 解锁前已经运行并再次阻塞于同一 mutex。这不是寄存器快路径常数，而是错误的
+调度语义制造额外 preempt/block 往返。
+
+现在 scheduler request 以 `RescheduleKind::{Immediate, Lazy}` 为唯一 typed 事实源，不保留
+旧布尔兼容入口。Fair wake 与 Fair class tick 发布 Lazy；dedicated idle、RT/Deadline、PI、
+migration、bandwidth 与硬 deadline 发布 Immediate。远程 Lazy 不取得物理 IPI edge；若同一
+runqueue 事务还产生 owner work，只为 owner work 送门铃，owner-work drain 不能顺带消费
+Lazy。preempt-enable、IRQ guard exit、IRQ return 和 scheduler tail 只 claim Immediate；显式
+schedule/block/yield 与 Starry 四架构共用的 `uctx.run()` 前用户返回边界 claim 两种请求。
+park 事务分别保存并恢复两种请求，普通请求真正进入 scheduler 时再一并 claim Lazy，与
+Linux `__schedule()` 清除两个 TIF 的规则一致。
+
+物理 clockevent firing 现在显式携带 `SchedulerTickStatus`，只有该 firing 确实跨过 periodic
+tick 时才先提升既有 Lazy，再执行 current class tick；task soft deadline、提前到达或仅处理
+硬 timer 的 clockevent 都不能伪造这次提升。相同 1 秒节拍 QEMU 回归在修复后通过，waiter
+只在 owner 解锁后的显式调度点取得 mutex。`ax-task`、`ax-runtime` 与 `starry-kernel` 的
+targeted clippy 均通过；hackbench/qperf 对照仍以本节代码的最终测量记录为准。这项修复关闭
+的是 Linux RT 调度边界差分，不能在正式数据出来前宣称整体性能已经对齐。
+
+### 2026-08-25 用户返回的 IRQ-off 决策边界
+
+Linux v7.1 `kernel/entry/common.c::__exit_to_user_mode_loop()` 在 IRQ enabled 状态处理
+`_TIF_NEED_RESCHED` 与 `_TIF_NEED_RESCHED_LAZY`，随后固定执行 `local_irq_disable()` 并重读
+thread flags；只要仍有工作就循环。最终无 work 的判断保持 IRQ disabled，直接交给架构返回
+指令恢复用户态 IRQ 状态。这个边界同样适用于 PREEMPT_RT：远程 lazy publication 不发送
+reschedule IPI，因此不能在最后一次快照与用户态返回之间重新打开一个内核 IRQ 窗口。
+
+旧 Starry/ax-runtime 在 IRQ-off 快照为 false 后先 `enable_irqs()`，再从 Rust helper 返回并调用
+`UserContext::run()`。远端若在这个窗口发布 Lazy，请求虽保持 sticky，却不会用 IPI 把该窗口
+闭合，只能等后续 tick；1 秒节拍会把这类非 Linux 延迟直接放大。确定性真实 QEMU 回归在
+最终 false 快照处暂停目标 CPU，由另一 CPU 发布 Lazy。只加测试时，x86_64 稳定触发
+`the final no-work snapshot must remain IRQ-excluded through the architecture user return`。
+
+runtime 现在按 Linux 顺序循环：IRQ-off 读取两类请求，有 work 时开 IRQ 进入普通 task
+scheduler，返回后再次关 IRQ重读；最终 false 分支不再开 IRQ。Starry 紧接着调用四架构共用
+的 `UserContext::run()`，其 x86_64 `iretq/sysretq`、AArch64 `eret`、RISC-V `sret` 和
+LoongArch64 `ertn` 从保存的用户上下文恢复 IRQ 状态。修复没有把 Lazy 升级为 Immediate，
+也没有增加轮询或 timeout；相同 1 秒节拍 QEMU 回归在最终代码上通过。
+
+### 2026-08-25 Linux idle/nohz 退出先于调度
+
+Linux v7.1 的 `kernel/sched/idle.c::do_idle()` 不允许唤醒中断直接把 idle task 切走。
+唤醒 IPI 只设置 ordinary need-resched 并退出 idle instruction；idle loop 随后固定执行
+`preempt_set_need_resched()`、`tick_nohz_idle_exit()`、清 polling、flush remote wake-list，
+最后才进入 `schedule_idle()`。`kernel/time/tick-sched.c::tick_nohz_idle_exit()` 在 IRQ-off
+事务中退出 nohz idle 并恢复或重评估停止的周期 tick。该所有权顺序是 Linux 通用 idle
+语义，PREEMPT_RT 没有用另一条 IRQ-return 快速调度路径绕过它。
+
+ArceOS 的四架构 `wait_for_irqs_disabled()` 都在 WFI/HLT 返回窗口恢复中断。旧 runtime
+因此允许唤醒 IPI 的 `IrqReturnPreemptGuard` 在 `TaskRuntime::wait_for_interrupt()` 返回到
+Rust、执行 `restart_current_scheduler_tick_after_idle()` 之前直接切走 dedicated idle。
+新任务虽然已经运行，CPU 的 periodic tick 却仍是 Stopped；它随后把普通 Fair 任务唤醒到
+同 CPU 的 SCHED_IDLE 等价 current 时只会得到 Linux 正确的 Lazy 请求。该请求不发 IPI，
+而本应把它提升为 ordinary 的下一次周期 tick 又已丢失，最终形成永久未调度，而不是一次
+寄存器访问慢或 tick 周期内的正常延迟。
+
+确定性 ArceOS QEMU 回归先确认目标 rq 只剩 dedicated idle，再启动一个 Fair-Idle occupier
+触发 nohz idle 退出，随后投递一个普通 Fair probe。只加测试时，x86_64 稳定触发
+`idle scheduled out before restarting the tick needed by a lazy Fair wake`；旧实现永远无法靠
+周期 tick 自愈。runtime 现在像 Linux idle task 一样，从 idle polling/nohz 事务开始到 tick
+恢复结束始终持有一层 preemption ownership。IRQ-return 仍可发布 sticky ordinary 请求，
+但不能在 tick 恢复前消费它；退出该 ownership 后才允许进入 scheduler。没有把 Fair Lazy
+升级成 Immediate，没有增加轮询、超时兜底或第二个 tick 状态源。相同 focused 用例在
+x86_64、AArch64、RISC-V 与 LoongArch64 四架构真实 QEMU 均通过。
+
+上述惰性重调度、用户返回和 idle/nohz 三项修复组成的最终代码又串行通过
+`cargo xtask arceos test qemu --arch <arch>` 的 x86_64、AArch64、RISC-V 与 LoongArch64
+完整 Rust/C suite；LoongArch64 专属 unaligned-fixup 同样通过。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

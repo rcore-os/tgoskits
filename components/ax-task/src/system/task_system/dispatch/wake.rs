@@ -770,7 +770,7 @@ impl TaskSystem {
                 enqueue.scheduler_deadline_refresh_required(),
             );
         }
-        let preempts_current = preemption.requests_reschedule();
+        let reschedule = preemption.reschedule_kind(policy);
         core.publish_effective_schedule(policy, enqueue.entity());
         core.set_wake_cpu_hint(target);
         if sched.transition(core, ThreadState::Running).is_err() {
@@ -780,13 +780,13 @@ impl TaskSystem {
         run_queue.commit();
         drop(sched_guard);
         drop(publication);
-        match (preempts_current, owner_work_required) {
-            (true, true) => remote.request_remote_reschedule_with_scheduler_work(),
-            (true, false) => remote.request_remote_reschedule(),
-            (false, true) => {
+        match (reschedule, owner_work_required) {
+            (Some(kind), true) => remote.request_remote_reschedule_with_scheduler_work(kind),
+            (Some(kind), false) => remote.request_remote_reschedule(kind),
+            (None, true) => {
                 remote.kick_scheduler_work();
             }
-            (false, false) => {}
+            (None, false) => {}
         }
         WakeResult::Notified
     }
@@ -937,7 +937,7 @@ impl TaskSystem {
                         current,
                         wakee_policy: policy,
                         wakee_affinity: &sched.affinity.affinity,
-                        reschedule_pending: remote.preemption_requested(),
+                        reschedule_pending: remote.immediate_preemption_requested(),
                     })
                 });
         let preemption = run_queue.wakeup_preempt_with_intent(
@@ -954,7 +954,8 @@ impl TaskSystem {
         );
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_wake_entity_read(core.id(), 0);
-        let preempts_current = preemption.requests_reschedule();
+        let reschedule = preemption.reschedule_kind(policy);
+        let preempts_current = reschedule.is_some();
         core.publish_effective_schedule(policy, enqueue.entity());
         core.set_wake_cpu_hint(target);
         if sched.transition(core, ThreadState::Running).is_err() {
@@ -992,7 +993,7 @@ impl TaskSystem {
         }
         if deadline_wake {
             if preempts_current {
-                remote.request_reschedule();
+                remote.request_reschedule(RescheduleKind::Immediate);
             }
             // The reserved Deadline refresh is already an owner-control
             // publication. Its scheduler-work bit covers RT/DL push and a new
@@ -1000,13 +1001,13 @@ impl TaskSystem {
             self.publish_owner_deadline_refresh_reserved(core, target, publication);
         } else {
             drop(publication);
-            match (preempts_current, owner_work_required) {
-                (true, true) => remote.request_remote_reschedule_with_scheduler_work(),
-                (true, false) => remote.request_remote_reschedule(),
-                (false, true) => {
+            match (reschedule, owner_work_required) {
+                (Some(kind), true) => remote.request_remote_reschedule_with_scheduler_work(kind),
+                (Some(kind), false) => remote.request_remote_reschedule(kind),
+                (None, true) => {
                     remote.kick_scheduler_work();
                 }
-                (false, false) => {}
+                (None, false) => {}
             }
         }
         WakeResult::Notified
@@ -1031,7 +1032,7 @@ impl TaskSystem {
         self.finish_owner_enqueue(
             cpu,
             reason,
-            commit.preempts_current,
+            commit.reschedule,
             commit.scheduler_deadline_refresh_required,
             Some(commit.effective_policy),
         );
@@ -1095,7 +1096,7 @@ impl TaskSystem {
                 .unwrap_or(false);
             transaction.commit();
             return Ok(OwnerEnqueueCommit {
-                preempts_current,
+                reschedule: preempts_current.then_some(RescheduleKind::Immediate),
                 scheduler_deadline_refresh_required: false,
                 effective_policy: policy,
             });
@@ -1107,7 +1108,11 @@ impl TaskSystem {
             .unwrap_or(false);
         transaction.commit();
         Ok(OwnerEnqueueCommit {
-            preempts_current: enqueue.preempts_current || timer_preempts,
+            reschedule: if timer_preempts {
+                Some(RescheduleKind::Immediate)
+            } else {
+                enqueue.reschedule
+            },
             scheduler_deadline_refresh_required: enqueue.scheduler_deadline_refresh_required,
             effective_policy: policy,
         })

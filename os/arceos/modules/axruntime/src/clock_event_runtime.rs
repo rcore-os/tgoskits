@@ -309,7 +309,13 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
         #[cfg(feature = "multitask")]
         let now = monotonic_now();
         #[cfg(feature = "multitask")]
-        let outcome = crate::task::on_clock_event(now);
+        let scheduler_tick = if firing.periodic_tick() {
+            ax_task::SchedulerTickStatus::Elapsed
+        } else {
+            ax_task::SchedulerTickStatus::NotElapsed
+        };
+        #[cfg(feature = "multitask")]
+        let outcome = crate::task::on_clock_event(now, scheduler_tick);
         #[cfg(feature = "multitask")]
         if firing.periodic_tick() {
             crate::task::publish_scheduler_tick(

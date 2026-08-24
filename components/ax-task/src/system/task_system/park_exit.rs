@@ -353,7 +353,7 @@ impl TaskSystem {
         {
             self.service_expired_park_deadline(event)?;
         }
-        let initial_request = remote.claim_scheduler_request();
+        let initial_request = remote.claim_scheduler_request(SchedulerRequestScope::All);
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let previous_core_hint = Arc::clone(current);
@@ -392,7 +392,7 @@ impl TaskSystem {
             transaction.owns_runtime_irq_scope(),
         );
         transaction.adopt_scheduler_request(initial_request);
-        let scheduler_request = transaction.merge_scheduler_request();
+        let scheduler_request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
         let clock = transaction.clock();
         let now_ns = clock.wall().as_nanos();
         #[cfg(feature = "task-test-hooks")]
@@ -426,7 +426,7 @@ impl TaskSystem {
             token.mark_resolved();
             return Ok(ParkCommit::Notified);
         }
-        cpu.defer_park_preemption(scheduler_request.preempt_requested());
+        cpu.defer_park_preemption(scheduler_request);
         let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_park_profile_stage(3);
@@ -541,7 +541,7 @@ impl TaskSystem {
         // This branch commits a real switch, so the request generated while
         // settling the outgoing dispatch belongs to this decision. The
         // resumed branch above deliberately leaves it for the next pass.
-        transaction.merge_scheduler_request();
+        transaction.merge_scheduler_request(SchedulerRequestScope::All);
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_park_profile_stage(5);
         let next = self.pick_owner_next_in_rq(
@@ -636,7 +636,7 @@ impl TaskSystem {
             transaction.owns_runtime_irq_scope(),
         );
         transaction.adopt_scheduler_request(initial_request);
-        let scheduler_request = transaction.merge_scheduler_request();
+        let scheduler_request = transaction.merge_scheduler_request(SchedulerRequestScope::All);
         let clock = transaction.clock();
         let now_ns = clock.wall().as_nanos();
         #[cfg(feature = "task-test-hooks")]
@@ -658,7 +658,7 @@ impl TaskSystem {
             return Ok(Some(ParkCommit::Notified));
         }
 
-        cpu.defer_park_preemption(scheduler_request.preempt_requested());
+        cpu.defer_park_preemption(scheduler_request);
         let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_park_profile_stage(3);
@@ -729,7 +729,7 @@ impl TaskSystem {
         if outgoing.thread() != previous_core.id() || outgoing.into_active().is_some() {
             task_runtime::fatal_invariant(0x504b_1117, previous_core.id().as_u64() as usize);
         }
-        transaction.merge_scheduler_request();
+        transaction.merge_scheduler_request(SchedulerRequestScope::All);
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_park_profile_stage(5);
         let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
@@ -943,7 +943,7 @@ impl TaskSystem {
         }
 
         let remote = Arc::clone(cpu.remote());
-        let initial_request = remote.claim_scheduler_request();
+        let initial_request = remote.claim_scheduler_request(SchedulerRequestScope::All);
         // SAFETY: propagated from the selected entry contract.
         let mut exited_sched = unsafe { rq_entry.lock_thread_sched(exited_core.sched()) };
         // SAFETY: propagated from the selected entry contract.
@@ -960,11 +960,11 @@ impl TaskSystem {
             return Err(TaskError::StaleThreadId);
         }
         transaction.adopt_scheduler_request(initial_request);
-        transaction.merge_scheduler_request();
+        transaction.merge_scheduler_request(SchedulerRequestScope::All);
         let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
         // Exit necessarily selects a replacement, so accounting requests from
         // the outgoing task are consumed by this decision.
-        transaction.merge_scheduler_request();
+        transaction.merge_scheduler_request(SchedulerRequestScope::All);
         let previous_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x4558_0007, exiting.as_u64() as usize)
         });

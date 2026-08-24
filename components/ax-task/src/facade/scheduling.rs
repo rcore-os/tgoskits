@@ -51,6 +51,13 @@ fn schedule_current_cpu_with_entry(
     mut entry: RuntimeSchedulerEntry,
 ) -> Result<SchedulerOutcome, TaskError> {
     loop {
+        let request_scope = match entry {
+            RuntimeSchedulerEntry::Task => SchedulerRequestScope::All,
+            RuntimeSchedulerEntry::PreemptExit
+            | RuntimeSchedulerEntry::IrqReturn
+            | RuntimeSchedulerEntry::IrqGuardExit
+            | RuntimeSchedulerEntry::IrqReturnContinuation => SchedulerRequestScope::Immediate,
+        };
         let mut scheduler_frame =
             RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Preempt, entry)?;
         let system = runtime_task_system()?;
@@ -58,7 +65,7 @@ fn schedule_current_cpu_with_entry(
             let mut cpu = runtime_current_cpu_mut(&mut scheduler_frame)?;
             // SAFETY: RuntimeSchedulerFrameGuard owns the IRQ-off scheduler baton.
             let current_state = unsafe { cpu.scheduler_current_lifecycle_state() };
-            if !cpu.needs_reschedule() && !cpu.has_remote_work() {
+            if !cpu.scheduler_request_pending(request_scope) && !cpu.has_remote_work() {
                 if current_state == Some(ThreadState::Parking) {
                     SchedulerOutcome::ParkingDeferred
                 } else {
@@ -67,13 +74,20 @@ fn schedule_current_cpu_with_entry(
             } else {
                 let current = current_thread_ref()?;
                 // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
-                unsafe { system.schedule_if_requested_in_scheduler_frame(cpu.as_mut(), &current)? }
+                unsafe {
+                    system.schedule_if_requested_in_scheduler_frame(
+                        cpu.as_mut(),
+                        &current,
+                        request_scope,
+                    )?
+                }
             }
         };
         if let Some(decision) = outcome.decision() {
             execute_switch_plan(&mut scheduler_frame, decision);
         }
-        let needs_reschedule = runtime_current_cpu_mut(&mut scheduler_frame)?.needs_reschedule();
+        let needs_reschedule =
+            runtime_current_cpu_mut(&mut scheduler_frame)?.scheduler_request_pending(request_scope);
         let repeat = preempt_schedule_needs_repeat(outcome, needs_reschedule);
         drop(scheduler_frame);
         if !repeat {

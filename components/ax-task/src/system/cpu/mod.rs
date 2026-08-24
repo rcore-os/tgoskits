@@ -38,7 +38,8 @@ pub use remote::{CpuLifecycleState, CpuLocalOwnerBorrow, CpuRemote};
 pub(crate) use remote::{
     CpuRemotePublication, CpuRunQueueState, DeadlineBaseGuardSource, EqualRtWakeAction,
     IdlePullReservation, KtimerClaimClass, OwnerRqEnqueue, PreparedMigrationDelivery,
-    RunQueueGuardSource, SchedulerRequestClaim, WakePreemptionContext, WakePreemptionDecision,
+    RescheduleKind, RunQueueGuardSource, SchedulerRequestClaim, SchedulerRequestScope,
+    WakePreemptionContext, WakePreemptionDecision,
 };
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(crate) use remote::{reset_rt_bandwidth_lock_acquisitions, rt_bandwidth_lock_acquisitions};

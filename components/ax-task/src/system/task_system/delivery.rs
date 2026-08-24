@@ -6,7 +6,7 @@ use crate::system::OwnerRqTaskState;
 
 pub(super) struct OwnerPolicyApply {
     pub(super) commit: PolicyGenerationCommit,
-    pub(super) preempts_current: bool,
+    pub(super) reschedule: Option<RescheduleKind>,
     pub(super) scheduler_deadline_refresh_required: bool,
     pub(super) rt_period_started: bool,
     pub(super) effective_policy: SchedulePolicy,
@@ -122,7 +122,7 @@ impl TaskSystem {
                     rt_quota_exempt,
                 );
                 dispatch::OwnerReadyEnqueue {
-                    preempts_current: true,
+                    reschedule: Some(RescheduleKind::Immediate),
                     scheduler_deadline_refresh_required: false,
                 }
             }
@@ -159,7 +159,7 @@ impl TaskSystem {
                     sched.placement.finish_delayed_dequeue(owner);
                 }
                 dispatch::OwnerReadyEnqueue {
-                    preempts_current: false,
+                    reschedule: None,
                     // Removing/reinserting a delayed node can move a Fair
                     // runtime boundary in either direction or remove it.
                     scheduler_deadline_refresh_required: true,
@@ -168,7 +168,7 @@ impl TaskSystem {
             OwnerRqTaskState::Inactive => {
                 core.sched().install_active(sched, active);
                 dispatch::OwnerReadyEnqueue {
-                    preempts_current: false,
+                    reschedule: None,
                     scheduler_deadline_refresh_required: false,
                 }
             }
@@ -182,7 +182,7 @@ impl TaskSystem {
             && self.activate_owner_rt_period_for_policy(owner, effective_policy);
         Ok(OwnerPolicyApply {
             commit,
-            preempts_current: enqueue.preempts_current,
+            reschedule: enqueue.reschedule,
             scheduler_deadline_refresh_required: enqueue.scheduler_deadline_refresh_required,
             rt_period_started,
             effective_policy,
@@ -421,7 +421,7 @@ impl TaskSystem {
                 core.notify_affinity_waiters();
             }
             if target != owner {
-                cpu.request_reschedule();
+                cpu.request_reschedule(RescheduleKind::Immediate);
             }
             return Ok(());
         }

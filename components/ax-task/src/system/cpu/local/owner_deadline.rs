@@ -186,7 +186,10 @@ impl CpuLocal {
                 due,
                 SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
             )?;
-        self.as_ref().get_ref().remote.request_reschedule();
+        self.as_ref()
+            .get_ref()
+            .remote
+            .request_reschedule(RescheduleKind::Immediate);
         let owner_index = usize::try_from(owner.as_u32())
             .expect("a runtime CPU identity must fit the local architecture");
         crate::task_test_hooks::arm_deadline_publication_probe(owner_index);
@@ -225,7 +228,7 @@ impl CpuLocal {
             Some(SchedulerDeadlineRqClockEvent::Due)
         );
         if scheduler_due {
-            this.remote.request_reschedule();
+            this.remote.request_reschedule(RescheduleKind::Immediate);
         }
         let fair_balance_due = if rq_observation.has_periodic_fair_balance_work {
             let due = this.dispatch.publish_fair_balance_due(monotonic_now);
@@ -280,7 +283,7 @@ impl CpuLocal {
         // fired class-runtime edge has left the physical timer base. The
         // scheduler claim is the next owner and will derive a fresh deadline
         // from the selected rq state before returning with IRQs enabled.
-        let scheduler = (!this.remote.preemption_requested())
+        let scheduler = (!this.remote.immediate_preemption_requested())
             .then(|| {
                 rq_observation
                     .clock_event

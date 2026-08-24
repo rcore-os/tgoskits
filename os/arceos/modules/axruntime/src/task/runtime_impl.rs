@@ -322,6 +322,12 @@ impl_task_runtime! {
         }
 
         fn wait_for_interrupt() {
+            // Linux keeps the idle task non-preemptible from do_idle() through
+            // tick_nohz_idle_exit() and enters schedule_idle() only afterwards.
+            // Keep the same ownership across the IRQ-enabled WFI window: an
+            // interrupt may publish need-resched, but its return path cannot
+            // switch away before this scope restores the stopped tick.
+            let idle_exit_guard = crate::sync::PreemptGuard::new();
             ax_hal::asm::disable_irqs();
             unsafe {
                 // SAFETY: local IRQs remain disabled through the immediately
@@ -338,6 +344,7 @@ impl_task_runtime! {
             {
                 crate::clock_event_runtime::restart_current_scheduler_tick_after_idle(now);
                 ax_hal::asm::enable_irqs();
+                drop(idle_exit_guard);
                 return;
             }
 
@@ -354,6 +361,7 @@ impl_task_runtime! {
             {
                 crate::clock_event_runtime::restart_current_scheduler_tick_after_idle(now);
                 ax_hal::asm::enable_irqs();
+                drop(idle_exit_guard);
                 return;
             }
 
@@ -373,6 +381,7 @@ impl_task_runtime! {
                 crate::clock_event_runtime::restart_current_scheduler_tick_after_idle(now);
             }
             drop(irq_guard);
+            drop(idle_exit_guard);
         }
 
         fn allocate_stack(_request: StackRequest) -> RuntimeHandleResult {

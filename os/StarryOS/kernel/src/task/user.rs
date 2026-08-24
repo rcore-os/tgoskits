@@ -125,6 +125,11 @@ pub fn new_user_task(
                 }
             }
 
+            ax_runtime::task::prepare_user_return()
+                .expect("return-to-user scheduler work must run in task context");
+            // `prepare_user_return()` retains raw IRQ exclusion after its final
+            // scheduler-work snapshot. `run()` immediately completes the
+            // architecture return and restores the saved userspace IRQ state.
             let reason = uctx.run();
 
             // The periodic tick interrupted userspace while User was still

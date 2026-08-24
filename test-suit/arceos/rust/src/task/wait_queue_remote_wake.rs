@@ -838,6 +838,46 @@ fn exercise_rt_direct_waker_waits_for_switch_tail(sleeper_cpu: usize, waker_cpu:
     );
 }
 
+fn exercise_nohz_idle_exit_restarts_tick_before_lazy_fair_wake(target_cpu: usize) {
+    let idle_started = Instant::now();
+    while task_test_hooks::cpu_nr_running(target_cpu as u32)
+        .expect("the nohz target rq summary must be readable")
+        != 0
+    {
+        assert!(
+            idle_started.elapsed() < OCCUPIER_CURRENT_TIMEOUT,
+            "the nohz regression requires a dedicated-idle target CPU"
+        );
+        thread::yield_now();
+    }
+
+    // The first wake leaves Linux's dedicated idle only after
+    // tick_nohz_idle_exit(). The second, ordinary Fair wake is deliberately
+    // lazy against the running SCHED_IDLE-equivalent occupier and therefore
+    // proves that the periodic tick was restarted before idle scheduled out.
+    let occupier = TargetOccupier::spawn(target_cpu);
+    let probe_ran = Arc::new(AtomicBool::new(false));
+    let worker_probe_ran = Arc::clone(&probe_ran);
+    let probe = thread::spawn(move || {
+        pin_current_to_cpu(target_cpu);
+        worker_probe_ran.store(true, Ordering::Release);
+    });
+
+    let probe_started = Instant::now();
+    while !probe_ran.load(Ordering::Acquire) {
+        assert!(
+            probe_started.elapsed() < WORKER_READY_TIMEOUT,
+            "idle scheduled out before restarting the tick needed by a lazy Fair wake"
+        );
+        thread::yield_now();
+    }
+
+    occupier.stop();
+    probe
+        .join()
+        .expect("the lazy Fair probe must exit normally");
+}
+
 fn exercise_rt_migratable_waker_waits_for_switch_tail(sleeper_cpu: usize, waker_cpu: usize) {
     let occupier = TargetOccupier::spawn(sleeper_cpu);
     let wake_handle = Arc::new(Mutex::new(None::<ThreadWakeHandle>));
@@ -1559,6 +1599,7 @@ pub fn run() -> crate::TestResult {
     reset_sleeper_state(sleeper_cpu);
 
     pin_current_to_cpu(waker_cpu);
+    exercise_nohz_idle_exit_restarts_tick_before_lazy_fair_wake(sleeper_cpu);
     exercise_notified_park_runtime(waker_cpu, sleeper_cpu);
     exercise_rt_park_uses_detached_publication_without_task_lock(waker_cpu, sleeper_cpu);
     exercise_rt_park_does_not_wait_for_task_lock(waker_cpu, sleeper_cpu, migrated_cpu);
