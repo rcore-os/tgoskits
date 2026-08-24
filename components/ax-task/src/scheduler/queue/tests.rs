@@ -123,6 +123,69 @@ fn delayed_wake_preserves_linux_lag_after_requeue_placement() {
     assert_eq!(total_weight, 3 * u64::from(Nice::ZERO.weight()));
 }
 
+pub(super) fn normal_and_batch_share_linux_cfs_placement_weight() -> (u64, u64, u64, i64) {
+    const TIMING_GRANULARITY_NS: u64 = 1_000;
+
+    let mut queue = RunQueue::new();
+    let normal = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+    queue
+        .enqueue_test(
+            ThreadId::from_parts(0, 1),
+            normal,
+            SchedulingEntity::Fair(FairEntity::test_state(
+                Nice::ZERO,
+                FairMode::Normal,
+                1_000,
+                1_100,
+            )),
+            0,
+            EnqueueReason::Preempted,
+        )
+        .unwrap();
+    queue.update_fair_virtual_time(None);
+
+    let current = FairEntity::test_state(Nice::ZERO, FairMode::Batch, 1_000, 1_100);
+    let mut wakee = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 900, 1_000);
+    wakee.capture_sleep_lag(queue.virtual_time(), TIMING_GRANULARITY_NS);
+    let (queue_weight, current_weight) = queue.fair_placement_weights(wakee, Some(current));
+    wakee
+        .place_after_activation(
+            queue.virtual_time(),
+            queue_weight.saturating_add(current_weight),
+        )
+        .unwrap();
+    let placed_vruntime = wakee.vruntime();
+
+    queue
+        .enqueue_test(
+            ThreadId::from_parts(1, 1),
+            normal,
+            SchedulingEntity::Fair(wakee),
+            0,
+            EnqueueReason::Preempted,
+        )
+        .unwrap();
+    queue.update_fair_virtual_time(Some(current));
+    let effective_lag = virtual_delta(queue.virtual_time(), placed_vruntime);
+    queue.fair.assert_invariants();
+    (queue_weight, current_weight, placed_vruntime, effective_lag)
+}
+
+#[cfg_attr(test, test)]
+fn normal_and_batch_share_one_linux_cfs_placement_average() {
+    let (queue_weight, current_weight, placed_vruntime, effective_lag) =
+        normal_and_batch_share_linux_cfs_placement_weight();
+    let zero_weight = u64::from(Nice::ZERO.weight());
+
+    assert_eq!(queue_weight, zero_weight);
+    assert_eq!(
+        current_weight, zero_weight,
+        "Linux SCHED_NORMAL and SCHED_BATCH share one cfs_rq current weight"
+    );
+    assert_eq!(placed_vruntime, 850);
+    assert_eq!(effective_lag, 100);
+}
+
 #[cfg_attr(test, test)]
 #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn fair_wakeup_preemption_requires_the_wakee_to_be_the_eevdf_pick() {

@@ -124,6 +124,18 @@ fn delayed_wake_preserves_linux_lag_after_requeue_placement() {
 }
 
 #[axtest]
+fn normal_and_batch_share_one_linux_cfs_placement_average() {
+    let (queue_weight, current_weight, placed_vruntime, effective_lag) =
+        ax_task::axtest_normal_and_batch_linux_cfs_placement_weight();
+    let zero_weight = u64::from(ax_task::Nice::ZERO.weight());
+
+    ax_assert_eq!(queue_weight, zero_weight);
+    ax_assert_eq!(current_weight, zero_weight);
+    ax_assert_eq!(placed_vruntime, 850);
+    ax_assert_eq!(effective_lag, 100);
+}
+
+#[axtest]
 fn on_cpu_switch_publications_are_linux_style_stores() {
     let (set_next_rmw, set_next_store, finish_rmw, finish_store) =
         ax_task::axtest_on_cpu_publication_kinds();

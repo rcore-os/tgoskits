@@ -3591,6 +3591,24 @@ LoongArch64 四架构完整 ArceOS QEMU Rust/C 测试。把 `AX_SCHEDULER_TICK_M
 tick 兜底。该检查点只确认 Linux EEVDF lag 与唤醒进度语义；在重新运行同配置 hackbench
 前，不把这项语义修复宣称为已关闭约五倍的端到端性能差距。
 
+同一 placement 审计还发现，Linux v7.1 的 `fair_policy()` 同时接受 `SCHED_NORMAL` 与
+`SCHED_BATCH`；两种 policy 共用同一个 `cfs_rq`、`avg_vruntime()` 和 current entity 权重，
+Batch 只改变抢占/交互策略，不从 placement weighted average 中移除 current。旧 ax-task
+却要求 `current.mode() == wakee.mode()` 才计入 current weight。确定性回归构造一个
+`vruntime=1000` 的 Normal queued peer、同 vruntime 的 Batch current 和保存 `vlag=100`
+的 Normal wakee：旧实现把 current weight 错算为 0 而不是 1024，placement vruntime 为
+800，重插后的有效 lag 变成 133；QEMU axtest 在旧代码上稳定失败。
+
+现在 Normal 与 Batch 的 placement 共用同一 Fair queue 的 current weight。相同测试得到
+queue/current weight 为 1024/1024、placement vruntime 为 850，重插后有效 lag 恢复为
+100；ax-task QEMU axtest 为 17/17，targeted clippy 为 7/7，最终代码再次串行通过
+x86_64、AArch64、RISC-V 与 LoongArch64 四架构完整 ArceOS QEMU Rust/C 测试。
+修复后的 x86_64 hackbench smoke 分别为 process 1C/4C 0.678/0.445 秒、thread 1C/4C
+0.779/0.349 秒；它只说明这项正确性修复没有单独关闭正式基线中约五倍的差距，不能替代
+benchmark 配置的五轮结果。Linux `SCHED_IDLE` 也使用同一 CFS queue、仅赋予极小权重；
+本分支仍把 `IdleFair` 独立 accounting，属于后续需要用独立红绿回归关闭的较大语义差异，
+不在本次 Normal/Batch 修复中顺带改动。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

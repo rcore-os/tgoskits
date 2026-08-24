@@ -316,5 +316,10 @@ pub(crate) fn exercise_delayed_wake_linux_lag_after_requeue_placement() -> (i64,
     tests::delayed_wake_linux_lag_after_requeue_placement()
 }
 
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn exercise_normal_and_batch_linux_cfs_placement_weight() -> (u64, u64, u64, i64) {
+    tests::normal_and_batch_share_linux_cfs_placement_weight()
+}
+
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests;

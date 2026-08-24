@@ -332,7 +332,7 @@ impl RunQueue {
             self.fair.total_weight()
         };
         let current_weight = current_fair
-            .filter(|current| current.mode() == fair.mode())
+            .filter(|current| (current.mode() == FairMode::Idle) == (fair.mode() == FairMode::Idle))
             .map_or(0, |current| u64::from(current.weight()));
         (queue_weight, current_weight)
     }

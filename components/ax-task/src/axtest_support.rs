@@ -138,6 +138,12 @@ pub fn axtest_delayed_wake_linux_lag_after_requeue_placement() -> (i64, usize, u
     crate::scheduler::exercise_delayed_wake_linux_lag_after_requeue_placement()
 }
 
+/// Observes placement across Linux's shared Normal/Batch CFS average.
+#[doc(hidden)]
+pub fn axtest_normal_and_batch_linux_cfs_placement_weight() -> (u64, u64, u64, i64) {
+    crate::scheduler::exercise_normal_and_batch_linux_cfs_placement_weight()
+}
+
 /// Observes whether switch-in/out publish `on_cpu` with stores or RMWs.
 #[doc(hidden)]
 pub fn axtest_on_cpu_publication_kinds() -> (u64, u64, u64, u64) {
