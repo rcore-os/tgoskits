@@ -75,3 +75,29 @@ scripts/competition/task123.sh suite full
 8. 结尾展示 `TASK123_SUITE_PASS`、证据目录、`git-head.txt`、日志和两份 pcap。
 
 正式录屏前可以完成下载和 `build full`，避免把大部分视频浪费在编译上；但正式视频中的运行场景、PASS 标志和证据目录应现场生成，并展示它们对应的 commit。终端字号建议 18–22，窗口只保留命令和关键日志，长编译过程可剪辑但不要剪掉运行开始、故障注入、恢复和最终 PASS。
+
+## RK3588 NPU 混合拓扑（实板）
+
+上面的 `task123.sh` 是可移植 QEMU 验收入口。实板 NPU 场景使用独立入口，
+避免在没有板卡时让 `doctor` 或 CI 错误地要求 Rockchip SDK：
+
+```bash
+# 组装 fixed/RKNN 的 Starry /proc/initrd 原始 cpio
+scripts/task3/build-hybrid-scene-payload.sh --help
+
+# 用相同 StarryOS/Zephyr 拓扑生成 RR 与 FP-RR 两个 RAM-boot FIT
+STARRY_INITRD=tmp/hybrid-rknn.cpio \
+  scripts/board/build-atk-zephyr-task123-unified.sh tmp/hybrid-board
+
+# 严格采集与分析 30,000 个 10 ms 样本
+python3 scripts/test/rt-partition/run-hybrid-latency.py \
+  tmp/hybrid-rr-stress.log --samples 30000
+python3 scripts/test/rt-partition/analyze-hybrid-latency.py \
+  tmp/hybrid-rr-stress.log --samples 30000 \
+  --output tmp/hybrid-rr-stress-analysis
+```
+
+完整拓扑、外部 RKNN 运行包的边界和 RAM-only 回滚方式见
+`docs/design/atk-dlrk3588-npu-hybrid.md`。场景策略和同侧时钟测量方法见
+`docs/design/task3-continuous-scene-ab.md`。实板 30k 与 fixed/RKNN 3+3 的
+精简量化结果见 `results/atk-dlrk3588-npu-hybrid-20260824/README.md`。

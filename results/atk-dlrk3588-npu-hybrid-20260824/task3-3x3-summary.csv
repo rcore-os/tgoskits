@@ -1,0 +1,3 @@
+arm,runs,events_per_run,correct_actions_per_run,vehicle_recall,hazard_recall,mean_control_status_rtt_ms,sd_control_status_rtt_ms,mean_input_status_ms,sd_input_status_ms,mean_inference_ms,sd_inference_ms
+fixed-perception,3,12,8,NA,0.0,68.278,2.164,68.285,2.124,NA,NA
+RKNN-NPU,3,12,12,1.0,1.0,162.472,9.155,273.215,2.544,46.389,0.091
