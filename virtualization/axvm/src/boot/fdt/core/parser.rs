@@ -1035,6 +1035,17 @@ mod tests {
             .unwrap()
             .set_property(prop_u32("#size-cells", 2));
 
+        // `setup_guest_fdt_from_vmm` always rebuilds the guest CPU subtree.
+        // This UART-focused fixture selects no physical CPUs below, but still
+        // needs the structurally required parent node for that pipeline.
+        let cpus = fdt.add_node(root, Node::new("cpus"));
+        fdt.node_mut(cpus)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(cpus)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 0));
+
         let intc = fdt.add_node(root, Node::new("interrupt-controller@0"));
         fdt.node_mut(intc)
             .unwrap()
