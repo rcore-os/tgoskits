@@ -455,6 +455,21 @@ impl Nvme {
         self.bar
     }
 
+    /// Creates an NVMe owner over caller-owned register storage for unit tests.
+    ///
+    /// # Safety
+    ///
+    /// `bar` must point to a naturally aligned, initialized register aperture
+    /// large enough for [`NvmeReg`] and must outlive the returned owner.
+    #[cfg(test)]
+    pub(crate) unsafe fn from_borrowed_registers_for_test(
+        bar: NonNull<u8>,
+        dma: DeviceDma,
+        config: Config,
+    ) -> Result<Self> {
+        Self::new_with_bar(bar.cast(), None, dma, config)
+    }
+
     pub(crate) fn unmask_interrupt_source(&mut self, source_id: usize) -> Result<()> {
         let valid = source_id == self.admin_interrupt_source()
             || self

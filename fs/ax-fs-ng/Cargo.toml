@@ -9,6 +9,7 @@ license.workspace = true
 
 [features]
 axtest = ["vfs"]
+host-test = ["ax-sync/host-test"]
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
 vfs = ["ax-sync/sleep"]

@@ -2,7 +2,7 @@ use dma_api::{DmaConstraints, DmaDeviceInfo};
 
 use crate::request::RequestFlags;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceInfo {
     pub num_blocks: u64,
     pub logical_block_size: usize,
@@ -25,7 +25,7 @@ impl DeviceInfo {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueLimits {
     /// Complete DMA identity and constraints of the physical device served by this queue.
     pub dma: DmaDeviceInfo,
@@ -103,7 +103,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueInfo {
     pub id: usize,
     pub device: DeviceInfo,

@@ -44,3 +44,9 @@ rockchip-jpeg
 rockchip-npu
 rockchip-rga
 dwmmc-host
+ax-fs-ng
+ahci-driver
+nvme-driver
+rdif-block
+sdmmc-protocol
+axbuild

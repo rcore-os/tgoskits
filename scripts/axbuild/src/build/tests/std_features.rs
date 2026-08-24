@@ -61,6 +61,44 @@ fn axfs_vfs_enables_sleepable_mutexes() {
 }
 
 #[test]
+fn axfs_ng_axtest_excludes_the_host_sync_backend() {
+    let workspace = crate::context::workspace_root_path().unwrap();
+    let manifest_path = workspace.join("fs/ax-fs-ng/Cargo.toml");
+    let manifest: toml::Value =
+        toml::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let host_test_features = manifest["features"]["host-test"]
+        .as_array()
+        .expect("ax-fs-ng must expose an explicit host-test feature");
+
+    assert!(
+        host_test_features
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|feature| feature == "ax-sync/host-test"),
+        "{} must enable the host synchronization backend only through host-test",
+        manifest_path.display()
+    );
+
+    let dev_ax_sync_features = manifest
+        .get("dev-dependencies")
+        .and_then(toml::Value::as_table)
+        .and_then(|dependencies| dependencies.get("ax-sync"))
+        .and_then(toml::Value::as_table)
+        .and_then(|dependency| dependency.get("features"))
+        .and_then(toml::Value::as_array);
+    assert!(
+        dev_ax_sync_features.is_none_or(|features| {
+            features
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .all(|feature| feature != "host-test")
+        }),
+        "{} must not enable ax-sync/host-test for bare-metal axtest targets",
+        manifest_path.display()
+    );
+}
+
+#[test]
 fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
     let mut features = vec![
         "ax-driver/nvme".to_string(),
