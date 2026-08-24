@@ -303,11 +303,31 @@ fn qemu_config_selection_prefers_exact_arch_config() {
 #[tokio::test]
 async fn qemu_case_uses_starry_default_arch_without_an_arch_argument() {
     let root = tempdir().unwrap();
+    write_test_image_config(root.path());
     write_case_file(
         root.path(),
         "qemu/apt",
         "qemu-riscv64.toml",
-        "args = []\nuefi = false\nto_bin = true\nsuccess_regex = []\nfail_regex = []\n",
+        r#"args = [
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/.tgos-images/rootfs-riscv64-test.img",
+]
+uefi = false
+to_bin = true
+success_regex = []
+fail_regex = []
+
+[rootfs_preparation]
+mode = "app-owned"
+builder = "build-rootfs.sh"
+target_arch = "riscv64"
+"#,
+    );
+    write_case_file(
+        root.path(),
+        "qemu/apt",
+        "build-rootfs.sh",
+        "#!/bin/sh\nset -eu\nprintf 'test-rootfs' >\"$STARRY_ROOTFS\"\n",
     );
     let app = discover_apps(root.path())
         .unwrap()

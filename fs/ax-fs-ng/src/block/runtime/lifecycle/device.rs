@@ -49,9 +49,13 @@ impl DeviceInner {
     pub(super) fn selected_queue_info(&self) -> Option<QueueInfo> {
         self.select_cpu_channel().map(|channel| {
             let mut info = channel.hctx.info();
-            info.device = *self.info.lock();
+            info.device = self.published_device_info();
             info
         })
+    }
+
+    pub(super) fn published_device_info(&self) -> DeviceInfo {
+        self.device_info.lock().published()
     }
 
     pub(super) fn enter_data_submissions(
@@ -167,8 +171,16 @@ impl DeviceInner {
     ) -> Result<Vec<usize>, BlkError> {
         let queues = update.take_queues();
         let endpoints = update.take_irq_endpoints();
-        if let Some(info) = update.take_device_info() {
-            *self.info.lock() = info;
+        let device_info_result = match update.take_device_info() {
+            Some(info) => self.device_info.lock().observe(info),
+            None => Ok(()),
+        };
+        if let Err(error) = device_info_result {
+            // The endpoints were never registered, but the queues may
+            // already be DMA-visible and must survive until shutdown.
+            self.retain_uninstalled_resources(Vec::new(), queues);
+            drop(endpoints);
+            return Err(error);
         }
         let online_cpus = runtime_ops()
             .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
@@ -180,14 +192,15 @@ impl DeviceInner {
         let event_port: Arc<dyn ControllerEventPort> = controller.clone();
         let mut new_hctxs = Vec::new();
 
-        for queue in queues {
+        let mut queues = queues.into_iter();
+        while let Some(queue) = queues.next() {
             let queue_id = queue.id();
             if existing
                 .iter()
                 .chain(new_hctxs.iter())
                 .any(|hctx| hctx.id() == queue_id)
             {
-                self.retain_uninstalled_resources(new_hctxs, Vec::from([queue]));
+                self.retain_uninstalled_queue_batch(new_hctxs, queue, queues);
                 return Err(BlkError::InvalidRequest);
             }
             let cpu = (existing.len() + new_hctxs.len()) % online_cpus;
@@ -195,7 +208,7 @@ impl DeviceInner {
                 Ok(hctx) => new_hctxs.push(hctx),
                 Err(start_error) => {
                     let (error, queue) = start_error.into_parts();
-                    self.retain_uninstalled_resources(new_hctxs, Vec::from([queue]));
+                    self.retain_uninstalled_queue_batch(new_hctxs, queue, queues);
                     return Err(error);
                 }
             }
@@ -233,8 +246,10 @@ impl DeviceInner {
             self.retain_uninstalled_resources(new_hctxs, Vec::new());
             return Err(BlkError::InvalidRequest);
         }
-        let rebuild_cpu_channels = !candidates.is_empty()
-            && (!new_hctxs.is_empty() || self.cpu_channels.lock().len() < online_cpus);
+        let ready = update.controller_state() == ControllerState::Ready;
+        let rebuild_cpu_channels = ready
+            && !candidates.is_empty()
+            && (!new_hctxs.is_empty() || self.cpu_channels.lock().len() != online_cpus);
         let new_cpu_channels = if rebuild_cpu_channels {
             match create_cpu_channels(&candidates, online_cpus) {
                 Ok(channels) => Some(channels),
@@ -247,7 +262,6 @@ impl DeviceInner {
         } else {
             None
         };
-
         // One installed registration is authoritative for one physical source.
         // Replacement endpoints are complete routing snapshots and the driver
         // keeps the source masked until the controller receives `Rearm`.
@@ -285,6 +299,12 @@ impl DeviceInner {
         }
         drop(replaced);
 
+        if ready {
+            for hctx in &candidates {
+                hctx.freeze_queue_info();
+            }
+            self.device_info.lock().freeze();
+        }
         self.hctxs.lock().extend(new_hctxs);
         if let Some(new_cpu_channels) = new_cpu_channels {
             let old_channels = core::mem::replace(&mut *self.cpu_channels.lock(), new_cpu_channels);
@@ -293,7 +313,7 @@ impl DeviceInner {
             }
         }
         self.irq_registrations.lock().extend(new_registrations);
-        if update.controller_state() == ControllerState::Ready && !self.hctxs.lock().is_empty() {
+        if ready && !self.hctxs.lock().is_empty() {
             self.mark_ready();
         }
         Ok(rearm_sources)
@@ -306,6 +326,18 @@ impl DeviceInner {
     ) {
         self.hctxs.lock().extend(hctxs);
         self.detached_queues.lock().extend(queues);
+    }
+
+    fn retain_uninstalled_queue_batch(
+        &self,
+        hctxs: Vec<Arc<Hctx>>,
+        current_queue: Box<dyn HardwareQueue>,
+        trailing_queues: impl Iterator<Item = Box<dyn HardwareQueue>>,
+    ) {
+        self.hctxs.lock().extend(hctxs);
+        let mut detached_queues = self.detached_queues.lock();
+        detached_queues.push(current_queue);
+        detached_queues.extend(trailing_queues);
     }
 
     fn register_endpoint(
@@ -420,15 +452,6 @@ impl DeviceInner {
             .online_cpu_count()
             .max(1);
         let target = cpus.min(self.max_io_queues).min(MAX_RUNTIME_HCTX);
-        let current = self.hctxs.lock().len();
-        if target <= current {
-            self.ensure_cpu_channels(cpus)?;
-            info!(
-                "block device {} online with {} hctxs across {} CPUs",
-                self.name, current, cpus
-            );
-            return Ok(());
-        }
         let state = match self.controller.call(ControllerEvent::OnlineSmp {
             target_queues: target,
         }) {
@@ -449,19 +472,6 @@ impl DeviceInner {
         } else {
             Err(BlkError::Io)
         }
-    }
-
-    fn ensure_cpu_channels(&self, online_cpus: usize) -> Result<(), BlkError> {
-        if self.cpu_channels.lock().len() >= online_cpus {
-            return Ok(());
-        }
-        let hctxs = self.hctxs.lock().clone();
-        let new_channels = create_cpu_channels(&hctxs, online_cpus)?;
-        let old_channels = core::mem::replace(&mut *self.cpu_channels.lock(), new_channels);
-        for channel in old_channels {
-            channel.channel.close();
-        }
-        Ok(())
     }
 
     pub(super) fn shutdown(&self) -> usize {
@@ -542,7 +552,10 @@ impl HctxObserver for DeviceInner {
                 if result.is_ok() {
                     BLOCK_READS.fetch_add(1, Ordering::Relaxed);
                     BLOCK_SECTORS_READ.fetch_add(
-                        sectors_for_blocks(self.info.lock().logical_block_size, block_count),
+                        sectors_for_blocks(
+                            self.published_device_info().logical_block_size,
+                            block_count,
+                        ),
                         Ordering::Relaxed,
                     );
                 }
@@ -555,7 +568,10 @@ impl HctxObserver for DeviceInner {
                 if result.is_ok() {
                     BLOCK_WRITES.fetch_add(1, Ordering::Relaxed);
                     BLOCK_SECTORS_WRITTEN.fetch_add(
-                        sectors_for_blocks(self.info.lock().logical_block_size, block_count),
+                        sectors_for_blocks(
+                            self.published_device_info().logical_block_size,
+                            block_count,
+                        ),
                         Ordering::Relaxed,
                     );
                 }
@@ -572,6 +588,36 @@ impl HctxObserver for DeviceInner {
 
     fn hctx_failed(&self, _hctx_id: usize, _error: BlkError) {
         self.mark_failed();
+    }
+}
+
+pub(super) struct DeviceInfoEpoch {
+    published: DeviceInfo,
+    frozen: bool,
+}
+
+impl DeviceInfoEpoch {
+    pub(super) const fn new(published: DeviceInfo) -> Self {
+        Self {
+            published,
+            frozen: false,
+        }
+    }
+
+    pub(super) const fn published(&self) -> DeviceInfo {
+        self.published
+    }
+
+    pub(super) fn observe(&mut self, observed: DeviceInfo) -> Result<(), BlkError> {
+        if self.frozen && observed != self.published {
+            return Err(BlkError::InvalidRequest);
+        }
+        self.published = observed;
+        Ok(())
+    }
+
+    pub(super) fn freeze(&mut self) {
+        self.frozen = true;
     }
 }
 

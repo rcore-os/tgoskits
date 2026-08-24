@@ -17,7 +17,7 @@ use core::{
 
 use ax_lazyinit::OnceLock;
 use controller::{ControllerPort, run_controller};
-use device::CpuSubmissionChannel;
+use device::{CpuSubmissionChannel, DeviceInfoEpoch};
 use irq_framework::IrqId;
 #[cfg(any(feature = "ext4", feature = "fat"))]
 use rdif_block::RequestFlags;
@@ -512,7 +512,7 @@ impl Drop for BlockDeviceHandle {
 
 struct DeviceInner {
     name: String,
-    info: Mutex<DeviceInfo>,
+    device_info: Mutex<DeviceInfoEpoch>,
     max_io_queues: usize,
     irq_ownership: IrqOwnership,
     irq_sources: Vec<BlockIrqSource>,
@@ -604,7 +604,7 @@ impl BlockDeviceHandle {
         });
         let inner = Arc::new(DeviceInner {
             name,
-            info: Mutex::new(info),
+            device_info: Mutex::new(DeviceInfoEpoch::new(info)),
             max_io_queues,
             irq_ownership,
             irq_sources: irqs,
@@ -673,7 +673,7 @@ impl BlockDeviceHandle {
     }
 
     pub fn device_info(&self) -> DeviceInfo {
-        *self.inner.info.lock()
+        self.inner.published_device_info()
     }
 
     /// Enqueues one DMA-owning request on the current CPU software channel.
@@ -720,7 +720,7 @@ impl BlockDeviceHandle {
             return Err(BatchSubmitError::new(BlkError::Io, requests));
         };
         let mut info = cpu_channel.hctx.info();
-        info.device = *self.inner.info.lock();
+        info.device = self.inner.published_device_info();
         let validation_error = requests
             .iter()
             .find_map(|request| validate_owned_request(info, request).err());

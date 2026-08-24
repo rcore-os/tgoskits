@@ -206,10 +206,7 @@ fn resolve_pci_irq_from_fdt(fdt: &Fdt, info: PciInfo) -> Result<BindingIrq, OnPr
             interrupt.interrupt_parent, info.address
         ))
     })?;
-    Ok(BindingIrq::fdt_interrupt_with_controller(
-        parent,
-        interrupt.parent_irq,
-    ))
+    crate::binding_resolver::binding_irq_from_fdt_interrupt(parent, interrupt.parent_irq)
 }
 
 fn pci_interrupt_map_entry(

@@ -9,6 +9,10 @@
 
 extern crate alloc;
 
+// Link the external host lock/task provider into unit-test binaries.
+#[cfg(test)]
+use ax_runtime as _;
+
 #[macro_use]
 extern crate log;
 
