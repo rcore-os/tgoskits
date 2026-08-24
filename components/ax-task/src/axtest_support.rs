@@ -132,6 +132,12 @@ pub fn axtest_pinned_realtime_membership_visits() -> (usize, usize, usize, usize
     crate::scheduler::exercise_pinned_realtime_membership_visits()
 }
 
+/// Observes delayed-wake lag after Linux-style dequeue/place/reinsert.
+#[doc(hidden)]
+pub fn axtest_delayed_wake_linux_lag_after_requeue_placement() -> (i64, usize, usize, u64) {
+    crate::scheduler::exercise_delayed_wake_linux_lag_after_requeue_placement()
+}
+
 /// Observes whether switch-in/out publish `on_cpu` with stores or RMWs.
 #[doc(hidden)]
 pub fn axtest_on_cpu_publication_kinds() -> (u64, u64, u64, u64) {

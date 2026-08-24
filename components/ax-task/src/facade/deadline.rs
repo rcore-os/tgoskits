@@ -167,13 +167,18 @@ pub(crate) fn begin_current_park_with_permit(
     _permit: &BlockingPermit,
 ) -> Result<CurrentParkStart, TaskError> {
     let system = runtime_task_system()?;
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::begin_park_prepare_runtime_cpu_probe(current_thread_id()?);
     // `current` is migration-stable only while task preemption is disabled.
     // Keep this lighter than the CPU/rq owner protocol: the pin exists solely
     // to make the independent task_cpu/on_rq and on_cpu publications one
     // current-task observation before PARKING becomes visible.
     let _current_pin = PreemptScope::enter();
     let thread = current_thread_core_arc()?;
-    match system.prepare_current_park(&thread)? {
+    let prepare = system.prepare_current_park(&thread);
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::complete_park_prepare_runtime_cpu_probe(thread.id());
+    match prepare? {
         ParkPrepare::Notified => Ok(CurrentParkStart::Notified),
         ParkPrepare::Prepared(ticket) => Ok(CurrentParkStart::Prepared(PreparedCurrentPark {
             thread,

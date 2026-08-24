@@ -203,10 +203,6 @@ fn test_raw_fifo_park_handoff_diagnostics() {
         current.as_u64(),
         worker_wake.thread_id().as_u64(),
     );
-    let deadline_derivations_before =
-        task_test_hooks::current_schedule_selection_deadline_derivations()
-            .expect("raw FIFO handoff must observe its selection deadline baseline");
-
     for index in 0..FIFO_HANDOFF_SAMPLES {
         let wake_phase = index * 2 + 1;
         assert_eq!(PHASE.load(Ordering::Acquire), wake_phase);
@@ -230,8 +226,10 @@ fn test_raw_fifo_park_handoff_diagnostics() {
                 Some(task_test_hooks::RunnableHandoffTransitions {
                     running_to_ready: 0,
                     ready_to_running: 0,
+                    schedule_selection_deadline_derivations: 0,
                 }),
-                "Linux TASK_RUNNING does not change across an ordinary runnable FIFO handoff"
+                "Linux keeps TASK_RUNNING stable and reuses the clockevent across an ordinary \
+                 runnable FIFO handoff"
             );
         }
         let resumed_phase = PHASE.load(Ordering::Acquire);
@@ -241,14 +239,6 @@ fn test_raw_fifo_park_handoff_diagnostics() {
             assert_eq!(resumed_phase, wake_phase + 1);
         }
     }
-    let deadline_derivations_after =
-        task_test_hooks::current_schedule_selection_deadline_derivations()
-            .expect("raw FIFO handoff must observe its final selection deadline count");
-    assert_eq!(
-        deadline_derivations_after - deadline_derivations_before,
-        0,
-        "plain FIFO-to-FIFO switches without timer work must reuse the published clockevent"
-    );
     set_thread_policy(current, SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
         .expect("raw FIFO controller must restore its Fair policy");
     worker.join().unwrap();

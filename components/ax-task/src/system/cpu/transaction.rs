@@ -455,10 +455,11 @@ impl<'a> OwnerRqTxn<'a> {
     pub(crate) fn reactivate_delayed_fair(
         &mut self,
         thread: ThreadId,
+        current_fair: Option<FairEntity>,
         timing_granularity_ns: u64,
     ) -> OwnerRqEnqueue {
         self.run_queue_mut()
-            .reactivate_delayed_fair(thread, timing_granularity_ns)
+            .reactivate_delayed_fair(thread, current_fair, timing_granularity_ns)
             .unwrap_or_else(|| task_runtime::fatal_invariant(0x5251_1015, thread.as_u64() as usize))
     }
 

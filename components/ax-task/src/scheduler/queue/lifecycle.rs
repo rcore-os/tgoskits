@@ -130,18 +130,23 @@ impl RunQueue {
         let SchedulingEntity::Fair(fair) = thread.active.entity_mut() else {
             return Err(TaskError::InvalidConfiguration);
         };
+        let id = thread.id;
         let virtual_time = self.virtual_time_for_mode(fair.mode());
         let (queue_weight, current_weight) = self.fair_placement_weights(*fair, current_fair);
-        fair.reactivate_delayed_after_transfer(
+        fair.place_delayed_after_transfer(
             virtual_time,
             queue_weight.saturating_add(current_weight),
-            timing_granularity_ns,
         )?;
         self.nr_running = self
             .nr_running
             .checked_add(1)
             .ok_or(TaskError::InvalidConfiguration)?;
-        Ok(self.link_fair(thread, false))
+        self.link_fair(thread, true);
+        self.update_fair_virtual_time(current_fair);
+        let entity = self
+            .reactivate_delayed_fair(id, current_fair, timing_granularity_ns)
+            .expect("a newly linked delayed Fair transfer must reactivate");
+        Ok(entity)
     }
 
     /// Physically removes a Fair sleeper selected after delayed dequeue.
@@ -184,23 +189,21 @@ impl RunQueue {
     pub(crate) fn reactivate_delayed_fair(
         &mut self,
         id: ThreadId,
+        current_fair: Option<FairEntity>,
         timing_granularity_ns: u64,
     ) -> Option<SchedulingEntity> {
         let class = self.membership_class(id)?;
-        let virtual_time = match class {
-            QueueMembershipClass::Fair => self.fair.virtual_time(),
-            QueueMembershipClass::IdleFair => self.idle_fair.virtual_time(),
-            _ => return None,
-        };
         let entity = match class {
-            QueueMembershipClass::Fair => {
-                self.fair
-                    .reactivate_delayed(id, virtual_time, timing_granularity_ns)?
-            }
-            QueueMembershipClass::IdleFair => {
-                self.idle_fair
-                    .reactivate_delayed(id, virtual_time, timing_granularity_ns)?
-            }
+            QueueMembershipClass::Fair => self.fair.reactivate_delayed(
+                id,
+                current_fair.filter(|current| current.mode() != FairMode::Idle),
+                timing_granularity_ns,
+            )?,
+            QueueMembershipClass::IdleFair => self.idle_fair.reactivate_delayed(
+                id,
+                current_fair.filter(|current| current.mode() == FairMode::Idle),
+                timing_granularity_ns,
+            )?,
             _ => unreachable!(),
         };
         self.refresh_class_pushable(id, self.linked_current());

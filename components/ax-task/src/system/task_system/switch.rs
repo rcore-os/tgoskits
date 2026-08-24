@@ -190,6 +190,8 @@ impl TaskSystem {
             crate::task_test_hooks::complete_deadline_publication(cpu.owner());
             return decision;
         }
+        #[cfg(feature = "task-test-hooks")]
+        let deadline_derivations_before = cpu.remote().schedule_selection_deadline_derivations();
         let timer_result = if run_queue_changed {
             self.program_local_timer(
                 cpu.as_mut(),
@@ -205,6 +207,14 @@ impl TaskSystem {
         if timer_result.is_err() {
             task_runtime::fatal_invariant(0x5343_0002, decision.next().as_u64() as usize);
         }
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_runnable_handoff_deadline_derivations(
+            decision.previous(),
+            decision.next(),
+            cpu.remote()
+                .schedule_selection_deadline_derivations()
+                .saturating_sub(deadline_derivations_before),
+        );
         decision
     }
 

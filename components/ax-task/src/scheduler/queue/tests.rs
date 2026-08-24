@@ -2,6 +2,7 @@ use super::{membership::SequenceAllocationError, *};
 use crate::{
     CurrentClassState, CurrentDispatch, CurrentDispatchState, CurrentSchedule, DeadlineFlags,
     DeadlinePolicy, FairEntity, FairMode, Nice, RqTaskTime, RtPriority,
+    scheduler::fair::virtual_delta,
 };
 
 fn pick_next(queue: &mut RunQueue, eligibility: RtEligibility) -> PickedThread {
@@ -41,6 +42,85 @@ fn pick_linked_current(queue: &mut RunQueue) -> ThreadId {
     );
     queue.install_current(dispatch);
     thread
+}
+
+fn enqueue_delayed_fair_test(
+    queue: &mut RunQueue,
+    id: ThreadId,
+    policy: SchedulePolicy,
+    fair: FairEntity,
+) {
+    queue.prepare_thread_slot(id.slot() as usize);
+    let sched = Arc::new(crate::ThreadSchedCell::new_test(id, policy));
+    let core = Arc::new(ThreadCore::new(id, policy, sched, None, None, None, None));
+    queue.enqueue_delayed_fair_current(QueuedThread::new(
+        id,
+        ActiveSchedulingState::new(policy, SchedulingEntity::Fair(fair)),
+        core,
+        false,
+        true,
+        RqTaskMetadata::test(1),
+    ));
+    queue.nr_running += 1;
+}
+
+pub(super) fn delayed_wake_linux_lag_after_requeue_placement() -> (i64, usize, usize, u64) {
+    const TIMING_GRANULARITY_NS: u64 = 1_000;
+
+    let mut queue = RunQueue::new();
+    let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+    for slot in 0..2 {
+        queue
+            .enqueue_test(
+                ThreadId::from_parts(slot, 1),
+                policy,
+                SchedulingEntity::Fair(FairEntity::test_state(
+                    Nice::ZERO,
+                    FairMode::Normal,
+                    0,
+                    100,
+                )),
+                0,
+                EnqueueReason::Preempted,
+            )
+            .unwrap();
+    }
+
+    let delayed = ThreadId::from_parts(2, 1);
+    let mut delayed_entity = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 300, 400);
+    delayed_entity.begin_delayed_dequeue(200, TIMING_GRANULARITY_NS);
+    enqueue_delayed_fair_test(&mut queue, delayed, policy, delayed_entity);
+    queue.update_fair_virtual_time(None);
+    assert_eq!(queue.virtual_time(), 100);
+
+    let reactivated = queue
+        .reactivate_delayed_fair(delayed, None, TIMING_GRANULARITY_NS)
+        .expect("the delayed entity must remain linked until its wake");
+    queue.update_fair_virtual_time(None);
+    let reactivated = reactivated
+        .fair()
+        .expect("a delayed Fair wake must retain its Fair entity");
+
+    let virtual_lag = virtual_delta(queue.virtual_time(), reactivated.vruntime());
+    let nr_running = queue.nr_running();
+    let queued = queue.len();
+    let total_weight = queue.fair.total_weight();
+    queue.fair.assert_invariants();
+    (virtual_lag, nr_running, queued, total_weight)
+}
+
+#[cfg_attr(test, test)]
+fn delayed_wake_preserves_linux_lag_after_requeue_placement() {
+    let (virtual_lag, nr_running, queued, total_weight) =
+        delayed_wake_linux_lag_after_requeue_placement();
+
+    assert_eq!(
+        virtual_lag, -100,
+        "Linux place_entity must inflate saved lag so reinsert does not dilute it"
+    );
+    assert_eq!(nr_running, 3);
+    assert_eq!(queued, 3);
+    assert_eq!(total_weight, 3 * u64::from(Nice::ZERO.weight()));
 }
 
 #[cfg_attr(test, test)]

@@ -310,5 +310,11 @@ pub(crate) fn exercise_pinned_realtime_membership_visits() -> (usize, usize, usi
     )
 }
 
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn exercise_delayed_wake_linux_lag_after_requeue_placement() -> (i64, usize, usize, u64)
+{
+    tests::delayed_wake_linux_lag_after_requeue_placement()
+}
+
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests;

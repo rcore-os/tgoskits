@@ -316,12 +316,13 @@ impl FairEntity {
             .min(0)
     }
 
-    /// Linux `requeue_delayed_entity()` on a wake-before-final-dequeue race.
-    pub(crate) fn reactivate_delayed(
-        &mut self,
+    /// Returns the lag that requires Linux `requeue_delayed_entity()` to
+    /// dequeue, place, and reinsert this entity.
+    pub(crate) fn delayed_requeue_lag(
+        self,
         virtual_time: u64,
         timing_granularity_ns: u64,
-    ) -> Result<(), TaskError> {
+    ) -> Result<Option<i64>, TaskError> {
         let FairPlacement::Delayed {
             virtual_lag: saved_lag,
         } = self.placement
@@ -337,14 +338,35 @@ impl FairEntity {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_fair_delayed_wake_lag(lag);
         let placed_vruntime = virtual_time.wrapping_sub(lag as u64);
-        if placed_vruntime != self.vruntime {
-            self.vruntime = placed_vruntime;
-            self.remaining_request_ns = self.service_request_ns;
-            self.virtual_deadline = self
-                .vruntime
-                .wrapping_add(weighted_delta(self.service_request_ns, self.nice.weight()));
-            self.protected_until_vruntime = self.vruntime;
+        Ok((placed_vruntime != self.vruntime).then_some(lag))
+    }
+
+    /// Clears delayed state when Linux keeps the existing tree position.
+    pub(crate) fn clear_delayed(&mut self) -> Result<(), TaskError> {
+        if !matches!(self.placement, FairPlacement::Delayed { .. }) {
+            return Err(TaskError::InvalidConfiguration);
         }
+        self.placement = FairPlacement::Active;
+        Ok(())
+    }
+
+    /// Places a delayed entity against the post-dequeue weighted average.
+    pub(crate) fn place_reactivated_delayed(
+        &mut self,
+        virtual_time: u64,
+        runnable_weight: u64,
+        saved_lag: i64,
+    ) -> Result<(), TaskError> {
+        if !matches!(self.placement, FairPlacement::Delayed { .. }) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        let placement_lag = self.inflated_placement_lag(saved_lag, runnable_weight);
+        self.vruntime = virtual_time.wrapping_sub(placement_lag as u64);
+        self.remaining_request_ns = self.service_request_ns;
+        self.virtual_deadline = self
+            .vruntime
+            .wrapping_add(weighted_delta(self.service_request_ns, self.nice.weight()));
+        self.protected_until_vruntime = self.vruntime;
         self.placement = FairPlacement::Active;
         Ok(())
     }
@@ -386,17 +408,6 @@ impl FairEntity {
         self.protected_until_vruntime = self.vruntime;
         self.placement = FairPlacement::Delayed { virtual_lag };
         Ok(())
-    }
-
-    /// Handles a wake which overtakes the destination's delayed migration inbox.
-    pub(crate) fn reactivate_delayed_after_transfer(
-        &mut self,
-        virtual_time: u64,
-        runnable_weight: u64,
-        timing_granularity_ns: u64,
-    ) -> Result<(), TaskError> {
-        self.place_delayed_after_transfer(virtual_time, runnable_weight)?;
-        self.reactivate_delayed(virtual_time, timing_granularity_ns)
     }
 
     fn inflated_placement_lag(self, saved_lag: i64, runnable_weight: u64) -> i64 {

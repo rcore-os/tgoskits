@@ -472,15 +472,16 @@ impl CpuRunQueueState {
     pub(crate) fn reactivate_delayed_fair(
         &mut self,
         thread: ThreadId,
+        current_fair: Option<FairEntity>,
         timing_granularity_ns: u64,
     ) -> Option<OwnerRqEnqueue> {
         let runtime_timer_required_before = self.current_runtime_timer_required();
         let runtime_timer_delta_before = runtime_timer_required_before
             .then(|| self.current_runtime_timer_delta_ns())
             .flatten();
-        let entity = self
-            .queue
-            .reactivate_delayed_fair(thread, timing_granularity_ns)?;
+        let entity =
+            self.queue
+                .reactivate_delayed_fair(thread, current_fair, timing_granularity_ns)?;
         self.tighten_current_fair_slice_protection(&entity);
         let runtime_timer_required_after = self.current_runtime_timer_required();
         let runtime_timer_delta_after = runtime_timer_required_after

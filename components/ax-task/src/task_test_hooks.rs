@@ -120,6 +120,7 @@ static RUNNABLE_HANDOFF_OUTGOING_TARGET: AtomicU64 = AtomicU64::new(0);
 static RUNNABLE_HANDOFF_INCOMING_TARGET: AtomicU64 = AtomicU64::new(0);
 static RUNNABLE_HANDOFF_RUNNING_TO_READY: AtomicU64 = AtomicU64::new(0);
 static RUNNABLE_HANDOFF_READY_TO_RUNNING: AtomicU64 = AtomicU64::new(0);
+static RUNNABLE_HANDOFF_DEADLINE_DERIVATIONS: AtomicU64 = AtomicU64::new(0);
 static RUNNABLE_HANDOFF_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static NO_SWITCH_THREAD_LOCK_TARGET: AtomicU64 = AtomicU64::new(0);
 static NO_SWITCH_THREAD_LOCK_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -401,11 +402,12 @@ pub fn exercise_preempt_guard() {
     drop(crate::lock::PreemptScope::enter());
 }
 
-/// Enters and exits nested ordinary preemption scopes through the real runtime.
-pub fn exercise_nested_preempt_guards() {
+/// Observes the nested exit while an outer ordinary preemption scope remains live.
+pub fn exercise_nested_preempt_guard_inner_exit(observe: impl FnOnce()) {
     let outer = crate::lock::PreemptScope::enter();
     let inner = crate::lock::PreemptScope::enter();
     drop(inner);
+    observe();
     drop(outer);
 }
 
@@ -705,6 +707,8 @@ pub struct RunnableHandoffTransitions {
     pub running_to_ready: u64,
     /// Incoming `Ready -> Running` publications.
     pub ready_to_running: u64,
+    /// Scheduler-deadline derivations performed by this exact handoff.
+    pub schedule_selection_deadline_derivations: u64,
 }
 
 /// Arms lifecycle accounting for one real runnable-to-runnable handoff.
@@ -726,6 +730,7 @@ pub fn arm_runnable_handoff_transition_probe(outgoing: u64, incoming: u64) {
     RUNNABLE_HANDOFF_INCOMING_TARGET.store(incoming, Ordering::Relaxed);
     RUNNABLE_HANDOFF_RUNNING_TO_READY.store(0, Ordering::Relaxed);
     RUNNABLE_HANDOFF_READY_TO_RUNNING.store(0, Ordering::Relaxed);
+    RUNNABLE_HANDOFF_DEADLINE_DERIVATIONS.store(0, Ordering::Relaxed);
     RUNNABLE_HANDOFF_STAGE.store(STAGE_ARMED, Ordering::Release);
 }
 
@@ -745,11 +750,28 @@ pub fn take_runnable_handoff_transitions() -> Option<RunnableHandoffTransitions>
     let transitions = RunnableHandoffTransitions {
         running_to_ready: RUNNABLE_HANDOFF_RUNNING_TO_READY.load(Ordering::Relaxed),
         ready_to_running: RUNNABLE_HANDOFF_READY_TO_RUNNING.load(Ordering::Relaxed),
+        schedule_selection_deadline_derivations: RUNNABLE_HANDOFF_DEADLINE_DERIVATIONS
+            .load(Ordering::Relaxed),
     };
     RUNNABLE_HANDOFF_OUTGOING_TARGET.store(0, Ordering::Relaxed);
     RUNNABLE_HANDOFF_INCOMING_TARGET.store(0, Ordering::Relaxed);
     RUNNABLE_HANDOFF_STAGE.store(STAGE_IDLE, Ordering::Release);
     Some(transitions)
+}
+
+pub(crate) fn record_runnable_handoff_deadline_derivations(
+    outgoing: Option<ThreadId>,
+    incoming: ThreadId,
+    derivations: u64,
+) {
+    if RUNNABLE_HANDOFF_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || outgoing.map(ThreadId::as_u64)
+            != Some(RUNNABLE_HANDOFF_OUTGOING_TARGET.load(Ordering::Relaxed))
+        || incoming.as_u64() != RUNNABLE_HANDOFF_INCOMING_TARGET.load(Ordering::Relaxed)
+    {
+        return;
+    }
+    RUNNABLE_HANDOFF_DEADLINE_DERIVATIONS.fetch_add(derivations, Ordering::Relaxed);
 }
 
 pub(crate) fn record_runnable_handoff_transition(
@@ -815,7 +837,9 @@ pub fn current_scheduler_deadline_derivations() -> Result<u64, crate::TaskError>
     Ok(remote.scheduler_deadline_derivations())
 }
 
-/// Returns scheduler deadline derivations caused specifically by switch selection.
+/// Returns the current CPU's cumulative switch-selection deadline derivations.
+///
+/// This count is not scoped to a task or scheduler transaction.
 pub fn current_schedule_selection_deadline_derivations() -> Result<u64, crate::TaskError> {
     let _pin = crate::lock::PreemptScope::enter();
     let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
@@ -2554,14 +2578,44 @@ pub fn arm_park_prepare_runtime_cpu_probe(thread: u64) {
     );
     PARK_PREPARE_RUNTIME_CPU_TARGET.store(thread, Ordering::Relaxed);
     PARK_PREPARE_RUNTIME_CPU_ENTRIES.store(0, Ordering::Relaxed);
-    PARK_PREPARE_RUNTIME_CPU_STAGE.store(STAGE_ARMED, Ordering::Release);
+    PARK_PREPARE_RUNTIME_CPU_STAGE.store(STAGE_WAITING_FOR_TRANSACTION, Ordering::Release);
+}
+
+pub(crate) fn begin_park_prepare_runtime_cpu_probe(thread: ThreadId) {
+    if PARK_PREPARE_RUNTIME_CPU_TARGET.load(Ordering::Acquire) != thread.as_u64() {
+        return;
+    }
+    let _ = PARK_PREPARE_RUNTIME_CPU_STAGE.compare_exchange(
+        STAGE_WAITING_FOR_TRANSACTION,
+        STAGE_ARMED,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
+
+pub(crate) fn complete_park_prepare_runtime_cpu_probe(thread: ThreadId) {
+    if PARK_PREPARE_RUNTIME_CPU_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || PARK_PREPARE_RUNTIME_CPU_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        PARK_PREPARE_RUNTIME_CPU_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "the park-prepare RuntimeCpu probe completed in an invalid stage"
+    );
 }
 
 /// Takes `RuntimeCpu` IRQ-owner entries used to publish one park state.
 pub fn take_park_prepare_runtime_cpu_entries() -> Option<u64> {
     if PARK_PREPARE_RUNTIME_CPU_STAGE
         .compare_exchange(
-            STAGE_ARMED,
+            STAGE_COMPLETE,
             STAGE_CONFIGURING,
             Ordering::AcqRel,
             Ordering::Acquire,

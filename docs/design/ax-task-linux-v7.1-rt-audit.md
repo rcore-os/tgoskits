@@ -3553,6 +3553,44 @@ accounting 执行一次 `take_current -> install_current`，在没有真实 sche
 transaction。后续必须继续沿这些固定 scheduler transaction 与 Linux rq/current 生命周期
 收敛，不能把 ext4/rootfs 加入特殊超时、轮询或唤醒兜底。
 
+### 2026-08-24 delayed wake 的 EEVDF lag 保持
+
+Linux v7.1 `kernel/sched/fair.c:update_entity_lag()` 在 delayed entity 仍链接于
+`cfs_rq` 时，以包含该 entity 与 current 的 `avg_vruntime()` 更新 `vlag`，并按
+`DELAY_ZERO` 约束为 `max(current_lag, saved_lag)` 后再截到非正值。
+`requeue_delayed_entity()` 只有在该 lag 对应的 vruntime 与现有位置不同时，才先减少
+`nr_queued` 并从 EEVDF tree 删除 entity；随后 `place_entity()` 使用删除后的
+`avg_vruntime()`，再按 `(W + w_i) / W` 放大 placement lag，最后重新入树并恢复
+`nr_queued`。这个顺序保证 entity 加回 weighted average 后的有效 lag 仍等于删除前保存值。
+
+旧 ax-task 把两个阶段合并成一次原地 vruntime 修改：它以仍包含 wakee 的 V 计算位置，
+却没有先从 AVL 与 weighted-average accounting 删除 wakee，也没有执行 Linux
+`place_entity()` 的 lag inflation。确定性回归构造两个 `vruntime=0` 的同权重 peer 和一个
+`vruntime=300`、在 `V=200` 时保存 `vlag=-100` 的 delayed wakee；唤醒前实际
+`V=100`，`DELAY_ZERO` 仍应保留 `-100`。旧实现重排后的有效 lag 稳定为 `-134`，同一
+QEMU axtest 因此先失败；Linux 顺序应先删除 wakee、得到 `V=0`，按三比二把 placement
+lag 放大为 `-150`，重插后得到 `V=50`、有效 lag 恰为 `-100`。
+
+现在 delayed wake 先在 entity 仍链接时计算是否需要重排；位置不变时只清除 delayed
+状态，不重置 request/deadline。需要重排时由 Fair queue 唯一 owner 删除 entity，重算不含
+wakee、但包含同一 Fair class current 的 V 与 W，执行 lag inflation 后重新插入。wake
+追过 rq migration inbox 的路径不再使用近似的二次 placement，而是先按迁移保存状态链接到
+目标 rq，再复用同一 dequeue/place/reinsert 状态转换；过程中不增加兼容队列或第二份 lag
+状态。
+
+完整 LoongArch 测试同时暴露了三处测试观测窗口过宽，而不是 Linux 语义失败：普通
+FIFO-to-FIFO handoff 的 clockevent 断言原来读取整颗 CPU 的累计 derivation，nested preempt
+guard 断言错误地把可能执行 Linux final-zero slow path 的 outer exit 也计入，park-prepare
+probe 则从测试调用点一直覆盖到目标 transaction。现在它们分别只观察精确 handoff、inner
+decrement-only exit 和 park prepare transaction；生产调度、preemption 与 clockevent 条件未为
+测试放宽。
+
+修复后的 ax-task QEMU axtest 为 16/16；最终代码串行完成 x86_64、AArch64、RISC-V 与
+LoongArch64 四架构完整 ArceOS QEMU Rust/C 测试。把 `AX_SCHEDULER_TICK_MS` 拉长到
+1000 ms 后，LoongArch64 remote wait-queue wake 仍在 69 ms 内完成，证明该唤醒没有等待周期
+tick 兜底。该检查点只确认 Linux EEVDF lag 与唤醒进度语义；在重新运行同配置 hackbench
+前，不把这项语义修复宣称为已关闭约五倍的端到端性能差距。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

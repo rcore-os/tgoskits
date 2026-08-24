@@ -251,7 +251,7 @@ const SELECTED_TESTS: &[TestCase] = &[
     #[cfg(feature = "task-preempt-guard")]
     TestCase::new(
         "task-preempt-guard",
-        "ordinary preemption exit stays on the decrement-only path",
+        "nested preemption exit stays on the decrement-only path",
         run_task_preempt_guard,
     ),
     #[cfg(all(

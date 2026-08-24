@@ -872,8 +872,11 @@ impl TaskSystem {
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_wake_fair_vtime_update(core.id());
         run_queue.update_fair_virtual_time(current_fair);
-        let enqueue =
-            run_queue.reactivate_delayed_fair(core.id(), self.config.timing_granularity_ns());
+        let enqueue = run_queue.reactivate_delayed_fair(
+            core.id(),
+            current_fair,
+            self.config.timing_granularity_ns(),
+        );
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_wake_fair_vtime_update(core.id());
         run_queue.update_fair_virtual_time(current_fair);

@@ -113,6 +113,17 @@ fn pinned_realtime_membership_updates_do_not_scan_the_active_fifo() {
 }
 
 #[axtest]
+fn delayed_wake_preserves_linux_lag_after_requeue_placement() {
+    let (virtual_lag, nr_running, queued, total_weight) =
+        ax_task::axtest_delayed_wake_linux_lag_after_requeue_placement();
+
+    ax_assert_eq!(virtual_lag, -100);
+    ax_assert_eq!(nr_running, 3);
+    ax_assert_eq!(queued, 3);
+    ax_assert_eq!(total_weight, 3 * u64::from(ax_task::Nice::ZERO.weight()));
+}
+
+#[axtest]
 fn on_cpu_switch_publications_are_linux_style_stores() {
     let (set_next_rmw, set_next_store, finish_rmw, finish_store) =
         ax_task::axtest_on_cpu_publication_kinds();

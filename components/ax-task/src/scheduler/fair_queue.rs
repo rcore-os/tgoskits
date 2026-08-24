@@ -314,15 +314,56 @@ impl FairRunQueue {
     pub(super) fn reactivate_delayed(
         &mut self,
         id: ThreadId,
-        virtual_time: u64,
+        current: Option<FairEntity>,
         timing_granularity_ns: u64,
     ) -> Option<SchedulingEntity> {
+        let (generation, key) = self.keys.get(id.slot() as usize).and_then(|entry| *entry)?;
+        if generation != id.generation() {
+            return None;
+        }
+        let fair = fair_entity(
+            find_node(self.root.as_deref(), key)
+                .expect("fair identity index must match its tree")
+                .thread(),
+        );
+        let requeue_lag = fair
+            .delayed_requeue_lag(self.virtual_time(), timing_granularity_ns)
+            .ok()?;
+
+        let Some(saved_lag) = requeue_lag else {
+            let (entity, migration_capable) = {
+                let node = find_node_mut(self.root.as_deref_mut(), key)
+                    .expect("fair identity index must match its tree");
+                let thread = node
+                    .thread
+                    .as_mut()
+                    .expect("linked fair node must own one scheduling entity");
+                let SchedulingEntity::Fair(fair) = thread.active.entity_mut() else {
+                    unreachable!("FairRunQueue can contain only Fair entities")
+                };
+                fair.clear_delayed()
+                    .expect("the indexed Fair entity was observed delayed under the same rq lock");
+                (thread.active.entity().clone(), thread.migration_capable)
+            };
+            if migration_capable {
+                self.migratable_count = self
+                    .migratable_count
+                    .checked_add(1)
+                    .expect("fair migratable count must fit usize");
+            }
+            return Some(entity);
+        };
+
         let mut thread = self.take_delayed(id)?;
+        let placement_virtual_time = self.update_virtual_time(current);
+        let runnable_weight = self
+            .total_weight()
+            .saturating_add(current.map_or(0, |entity| u64::from(entity.weight())));
         let SchedulingEntity::Fair(fair) = thread.active.entity_mut() else {
             unreachable!("FairRunQueue can contain only Fair entities")
         };
-        fair.reactivate_delayed(virtual_time, timing_granularity_ns)
-            .ok()?;
+        fair.place_reactivated_delayed(placement_virtual_time, runnable_weight, saved_lag)
+            .expect("a removed delayed Fair entity must retain delayed placement state");
         let entity = thread.active.entity().clone();
         self.insert(thread);
         Some(entity)
