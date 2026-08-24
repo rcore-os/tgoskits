@@ -55,7 +55,7 @@ pub(crate) use x86_64::fdt;
 /// Architecture-specific public compatibility exports.
 pub mod platform {
     #[cfg(target_arch = "aarch64")]
-    pub use super::aarch64::{host_fdt_bootarg, host_phys_to_virt};
+    pub use super::aarch64::{host_bootargs, host_fdt_bootarg, host_phys_to_virt};
     #[cfg(target_arch = "loongarch64")]
     pub use super::loongarch64::irq::{
         register_guest_irq_route as register_loongarch_guest_irq_route,
@@ -88,7 +88,7 @@ pub(crate) type ArchPerCpu = <CurrentArch as ArchOps>::PerCpu;
 pub(crate) type ArchNestedPageTable = <CurrentArch as ArchOps>::NestedPageTable;
 
 pub(crate) fn register_timer_source(
-    deadline_source: std::sync::Arc<crate::timer::PublishedTimerDeadline>,
+    deadline_source: &'static crate::timer::PublishedTimerDeadline,
     notify: std::sync::Arc<ax_std::os::arceos::modules::ax_task::IrqNotify>,
 ) {
     CurrentArch::register_timer_source(deadline_source, notify);

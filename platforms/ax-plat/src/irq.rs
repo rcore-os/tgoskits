@@ -171,6 +171,25 @@ static IRQ_REGISTRY: OnceLock<Registry<PlatIrqOps>> = OnceLock::new();
 static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(0);
 static IRQ_CONTEXT_CPUS: AtomicUsize = AtomicUsize::new(0);
 
+/// Owns the current CPU's platform IRQ-context publication.
+///
+/// Nested entries preserve the outer publication and only the outermost guard
+/// clears it. Callers must keep migration disabled for the guard's lifetime.
+pub struct IrqContextGuard {
+    bit: Option<usize>,
+    clear_on_drop: bool,
+}
+
+impl Drop for IrqContextGuard {
+    fn drop(&mut self) {
+        if self.clear_on_drop
+            && let Some(bit) = self.bit
+        {
+            IRQ_CONTEXT_CPUS.fetch_and(!bit, Ordering::AcqRel);
+        }
+    }
+}
+
 fn registry() -> &'static Registry<PlatIrqOps> {
     IRQ_REGISTRY.call_once(|| Registry::new(PlatIrqOps))
 }
@@ -188,6 +207,31 @@ pub fn in_irq_context() -> bool {
         })
     }
     .expect("the current CPU-local area must remain bound")
+}
+
+/// Returns whether the current CPU is dispatching an IRQ action while the
+/// caller already prevents migration.
+///
+/// This avoids recursively acquiring a preemption guard from the preemption
+/// enable path itself. Callers must hold a preemption-disable reference or an
+/// equivalent CPU-pinning guarantee across this call.
+pub fn in_irq_context_preempt_disabled() -> bool {
+    in_irq_context_on(current_cpu_preempt_disabled())
+}
+
+/// Publishes that the current CPU is executing an IRQ action.
+///
+/// The caller must keep migration disabled until the returned guard is
+/// dropped. The common IRQ entry path satisfies this with its preemption guard.
+pub fn enter_irq_context() -> IrqContextGuard {
+    let bit = irq_context_bit(current_cpu_preempt_disabled());
+    let was_in_irq = bit
+        .map(|bit| IRQ_CONTEXT_CPUS.fetch_or(bit, Ordering::AcqRel) & bit != 0)
+        .unwrap_or(false);
+    IrqContextGuard {
+        bit,
+        clear_on_drop: !was_in_irq,
+    }
 }
 
 /// Requests an IRQ action through the dynamic IRQ framework.
@@ -291,6 +335,13 @@ fn in_irq_context_on(cpu: CpuId) -> bool {
     irq_context_bit(cpu)
         .map(|bit| IRQ_CONTEXT_CPUS.load(Ordering::Acquire) & bit != 0)
         .unwrap_or(false)
+}
+
+fn current_cpu_preempt_disabled() -> CpuId {
+    // SAFETY: both callers require the current execution context to remain
+    // pinned for the complete lookup.
+    unsafe { ax_percpu::with_cpu_pin(|pin| CpuId(crate::percpu::this_cpu_id_pinned(pin))) }
+        .expect("the current CPU-local area must remain bound")
 }
 
 fn irq_context_bit(cpu: CpuId) -> Option<usize> {

@@ -12,6 +12,9 @@ use crate::{
 };
 
 static TIMER_TICKET_ID: AtomicU64 = AtomicU64::new(1);
+const MAX_TIMER_STATS_CPUS: usize = 64;
+static HARDWARE_TIMER_IRQ_COUNTS: [AtomicU64; MAX_TIMER_STATS_CPUS] =
+    [const { AtomicU64::new(0) }; MAX_TIMER_STATS_CPUS];
 
 percpu_static! {
     TIMER_LIST: TimerList<TaskWakeupEvent> = TimerList::new(),
@@ -127,6 +130,9 @@ pub(crate) fn note_programmed_deadline_nanos(deadline_nanos: u64) {
 }
 
 pub(crate) fn begin_hardware_timer_irq() {
+    if let Some(count) = HARDWARE_TIMER_IRQ_COUNTS.get(ax_hal::percpu::this_cpu_id()) {
+        count.fetch_add(1, Ordering::Relaxed);
+    }
     // Temporary compatibility guard: the scheduler timer path does not yet
     // track the hardware comparator's programmed, pending, and active states
     // separately. Until that state machine exists, a nonzero deadline remains
@@ -139,6 +145,12 @@ pub(crate) fn begin_hardware_timer_irq() {
     // acknowledge path explicitly consumes the comparator's pending state
     // without relying on a comparator rewrite.
     note_programmed_deadline_nanos(0);
+}
+
+pub fn hardware_timer_irq_count(cpu_id: usize) -> u64 {
+    HARDWARE_TIMER_IRQ_COUNTS
+        .get(cpu_id)
+        .map_or(0, |count| count.load(Ordering::Relaxed))
 }
 
 fn timer_request_requires_reprogramming(
@@ -155,6 +167,7 @@ pub(crate) fn maybe_reprogram_timer(deadline: TimeValue) {
         let reprogram = timer_request_requires_reprogramming(programmed, deadline_nanos);
         if reprogram {
             PROGRAMMED_DEADLINE_NANOS.write_current(pin, deadline_nanos);
+            ax_hal::time::enable_timer_irq();
             ax_hal::time::set_oneshot_timer(deadline_nanos);
         }
     });

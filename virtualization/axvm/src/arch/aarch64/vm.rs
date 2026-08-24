@@ -40,7 +40,10 @@ impl Aarch64Arch {
             let timer_profile = resources.config().timer_profile().cloned().ok_or_else(|| {
                 AxVmError::invalid_config("AArch64 machine profile has no architectural timer")
             })?;
-            let timer_config = timer_vm_config(&timer_profile, &vcpu_mappings)?;
+            let physical_timer_exposed = !resources.config().aarch64_virtual_timer_only();
+            let wfi_policy = resources.config().aarch64_wfi_policy();
+            let timer_config =
+                timer_vm_config(&timer_profile, &vcpu_mappings, physical_timer_exposed)?;
             let host_irq_config = super::gic::host_irq_config()
                 .map_err(|error| AxVmError::interrupt("discover host IRQ CPU interface", error))?;
             let dtb_addr = resources
@@ -49,9 +52,13 @@ impl Aarch64Arch {
                 .dtb_load_gpa
                 .unwrap_or_default();
             let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
+                // The guest-visible MPIDR is decoupled from the physical CPU
+                // placement: vCPU i always sees affinity i, no matter which
+                // pCPU it runs on. Placement only decides the pCPU.
                 Ok(ArmVcpuCreateConfig {
-                    mpidr_el1: placement.phys_cpu_id as _,
+                    mpidr_el1: placement.id as _,
                     dtb_addr: dtb_addr.as_usize(),
+                    advance_hvc_smc_pc: resources.config().advance_hvc_smc_pc(),
                 })
             })?;
             let devices = PreparedDevices::build_planned(resources, vm.device_access_ports())?;
@@ -73,14 +80,60 @@ impl Aarch64Arch {
             }
 
             resources.prepare_guest_address_space(vm.id(), &[])?;
-            vcpus.setup(resources, move |_config, _memory_regions| {
-                Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config))
+            let dedicated_cpu_mask = ax_std::os::arceos::modules::ax_runtime::dedicated_cpu_mask();
+            vcpus.setup(resources, move |vcpu_id, _config, _memory_regions| {
+                let placement = placements
+                    .iter()
+                    .find(|placement| placement.id == vcpu_id)
+                    .ok_or_else(|| {
+                        AxVmError::invalid_config(std::format!(
+                            "missing placement for AArch64 vCPU {vcpu_id}"
+                        ))
+                    })?;
+                let trap_wfi = super::wfi::resolve_trap_wfi(
+                    wfi_policy,
+                    vcpu_placed_on_dedicated_cpu(placement, dedicated_cpu_mask),
+                    super::wfi::TIMER_WAKE_CAPABILITIES,
+                    physical_timer_exposed,
+                )?;
+                Ok(ArmVcpuSetupConfig::new(timer_config, host_irq_config).with_trap_wfi(trap_wfi))
             })?;
 
             let interrupt_controller: Arc<dyn axdevice_base::VirtualInterruptController> =
                 vgic_runtime.core().clone();
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
         })
+    }
+}
+
+/// Whether this vCPU lands on a host CPU whose periodic tick is silenced.
+const fn vcpu_placed_on_dedicated_cpu(
+    placement: &VcpuPlacement,
+    dedicated_cpu_mask: usize,
+) -> bool {
+    placement.phys_cpu_id < usize::BITS as usize
+        && dedicated_cpu_mask & (1usize << placement.phys_cpu_id) != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dedicated_wfi_policy_is_resolved_per_vcpu_placement() {
+        let housekeeping = VcpuPlacement {
+            id: 0,
+            phys_cpu_set: None,
+            phys_cpu_id: 2,
+        };
+        let realtime = VcpuPlacement {
+            id: 1,
+            phys_cpu_set: None,
+            phys_cpu_id: 3,
+        };
+
+        assert!(!vcpu_placed_on_dedicated_cpu(&housekeeping, 1 << 3));
+        assert!(vcpu_placed_on_dedicated_cpu(&realtime, 1 << 3));
     }
 }
 
@@ -144,6 +197,7 @@ fn nested_paging_config(
 fn timer_vm_config(
     profile: &GuestTimerProfile,
     vcpu_mappings: &[(usize, Option<usize>, usize)],
+    physical_timer_exposed: bool,
 ) -> AxVmResult<ArmTimerVmConfig> {
     let target_frequencies = crate::architecture::capabilities::recorded_target_cpu_capabilities(
         "AArch64 architectural counter frequency",
@@ -176,10 +230,12 @@ fn timer_vm_config(
         .clock_frequency_hz
         .map(u64::from)
         .unwrap_or(hardware_frequency);
-    ArmTimerVmConfig::new(guest_frequency, super::vtimer::physical_counter(), 0).map_err(|error| {
-        AxVmError::unsupported(
-            "configure AArch64 architectural timers",
-            std::format!("{error:?}"),
-        )
-    })
+    ArmTimerVmConfig::new(guest_frequency, super::vtimer::physical_counter(), 0)
+        .map(|config| config.with_physical_timer_enabled(physical_timer_exposed))
+        .map_err(|error| {
+            AxVmError::unsupported(
+                "configure AArch64 architectural timers",
+                std::format!("{error:?}"),
+            )
+        })
 }

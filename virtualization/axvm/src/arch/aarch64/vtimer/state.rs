@@ -25,6 +25,7 @@ const NANOS_PER_SECOND: u128 = 1_000_000_000;
 struct HostTimerActivation {
     token: usize,
     owner_cpu: usize,
+    accepted_ns: u64,
 }
 
 /// Bridges one vCPU's canonical timer contexts into its private VGIC lines.
@@ -105,12 +106,23 @@ impl Aarch64TimerBinding {
         if super::super::gic::host_irq_intid(token) != self.host_virtual_timer_intid {
             return false;
         }
+        let accepted_ns = default_host()
+            .monotonic_time()
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
         let activation = HostTimerActivation {
             token,
             owner_cpu: default_host().this_cpu_id(),
+            accepted_ns,
         };
         let mut active = self.host_activation.lock();
-        if active.is_some() {
+        let overlaps_active = active.is_some();
+        crate::runtime::vcpus::note_vtimer_direct_ack(
+            self.vcpu.raw(),
+            accepted_ns,
+            overlaps_active,
+        );
+        if overlaps_active {
             drop(active);
             super::super::gic::deactivate_host_irq(token);
         } else {
@@ -131,12 +143,16 @@ impl Aarch64TimerBinding {
         self: &Arc<Self>,
         snapshot: ArmTimerSnapshot,
     ) -> VgicResult {
+        let vcpu_id = self.vcpu.raw();
+        crate::runtime::vcpus::note_vtimer_arm(vcpu_id);
         self.invalidate_wait();
         let now_counter = physical_counter();
         if self.publish_levels(snapshot, now_counter)? {
+            crate::runtime::vcpus::note_vtimer_immediate(vcpu_id);
             return Ok(());
         }
         let Some(deadline_counter) = snapshot.earliest_deadline(now_counter) else {
+            crate::runtime::vcpus::note_vtimer_no_deadline(vcpu_id);
             return Ok(());
         };
 
@@ -152,6 +168,8 @@ impl Aarch64TimerBinding {
                 let Some(binding) = binding.upgrade() else {
                     return;
                 };
+                let vcpu_id = binding.vcpu.raw();
+                crate::runtime::vcpus::note_vtimer_callback(vcpu_id);
                 if binding
                     .wait_generation
                     .compare_exchange(
@@ -162,9 +180,26 @@ impl Aarch64TimerBinding {
                     )
                     .is_err()
                 {
+                    crate::runtime::vcpus::note_vtimer_stale_callback(vcpu_id);
                     return;
                 }
                 binding.scheduled.lock().take();
+                let callback_ns = default_host()
+                    .monotonic_time()
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64;
+                crate::runtime::vcpus::note_vtimer_notification(vcpu_id, callback_ns);
+                // The saved timer state was sampled when the guest entered
+                // WFI, before this deadline expired. Publish the now-asserted
+                // PPI before waking the vCPU so its next VGIC load already
+                // contains the timer delivery instead of waiting for another
+                // unrelated VM exit to synchronize the level.
+                if let Err(error) = binding.publish_levels(snapshot, physical_counter()) {
+                    warn!(
+                        "failed to publish VM[{}] vCPU {} architectural timer at wake: {error:?}",
+                        binding.vm_id, vcpu_id
+                    );
+                }
                 if let Err(error) =
                     crate::runtime::vcpus::notify_vcpu(binding.vm_id, binding.vcpu.raw())
                 {
@@ -176,6 +211,7 @@ impl Aarch64TimerBinding {
                 }
             }),
         );
+        crate::runtime::vcpus::note_vtimer_registered(vcpu_id);
 
         let (stale, previous) = {
             let mut scheduled = self.scheduled.lock();
@@ -195,6 +231,7 @@ impl Aarch64TimerBinding {
 
     /// Invalidates and remotely cancels any scheduled wait callback.
     pub(in crate::arch::aarch64) fn invalidate_wait(&self) {
+        crate::runtime::vcpus::note_vtimer_invalidation(self.vcpu.raw());
         self.wait_generation.fetch_add(1, Ordering::AcqRel);
         let scheduled = self.scheduled.lock().take();
         if let Some(handle) = scheduled {
@@ -240,6 +277,10 @@ impl Aarch64TimerBinding {
         let current_cpu = default_host().this_cpu_id();
         if activation.owner_cpu == current_cpu {
             super::super::gic::deactivate_host_irq(activation.token);
+            crate::runtime::vcpus::note_vtimer_activation_hold(
+                self.vcpu.raw(),
+                activation.accepted_ns,
+            );
             return Ok(());
         }
 
@@ -255,7 +296,9 @@ impl Aarch64TimerBinding {
                 "cannot run completion on owner CPU {}: {error:?}",
                 activation.owner_cpu
             ),
-        })
+        })?;
+        crate::runtime::vcpus::note_vtimer_activation_hold(self.vcpu.raw(), activation.accepted_ns);
+        Ok(())
     }
 }
 

@@ -18,12 +18,43 @@ pub(crate) mod vcpus;
 
 mod dispatcher;
 mod queue;
+mod trace;
+
+/// Maximum number of pending software interrupts retained per vCPU.
+pub(crate) const VCPU_INTERRUPT_QUEUE_CAPACITY: usize = 64;
+/// Host priority for guest vCPU run loops.
+pub(crate) const VCPU_TASK_PRIORITY: i32 = 90;
+/// Host priority for the periodic virtual-interrupt injector.
+pub(crate) const VIRQ_INJECTOR_TASK_PRIORITY: i32 = 90;
+/// Host priority for the deferred interrupt-controller vCPU kick worker.
+///
+/// Controller callbacks can publish a kick while a vCPU is spinning on a
+/// remote guest CPU. The worker must outrank that producer or fixed-priority
+/// FIFO can keep the worker ready indefinitely and leave the target vCPU in
+/// WFI with an already-pending interrupt.
+pub(crate) const VCPU_KICK_WORKER_TASK_PRIORITY: i32 = VCPU_TASK_PRIORITY + 1;
+/// Host priority for the per-CPU timer worker.
+///
+/// The worker must run when its pinned vCPU blocks, but remain below the vCPU
+/// so a timer notification immediately hands the CPU back to guest execution.
+/// Equal-priority FIFO workers can keep the vCPU from making progress after a
+/// no-deadline WFI, while a higher-priority worker can starve the guest under a
+/// sustained timer stream.
+#[cfg(not(feature = "timer-worker-priority-boost"))]
+pub(crate) const TIMER_WORKER_TASK_PRIORITY: i32 = VCPU_TASK_PRIORITY - 1;
+/// Experimental priority used only with a one-callback-per-wake budget.
+#[cfg(feature = "timer-worker-priority-boost")]
+pub(crate) const TIMER_WORKER_TASK_PRIORITY: i32 = VCPU_TASK_PRIORITY + 1;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Re-exported for [`VmRuntimeHandle`](crate::vm::VmRuntimeHandle) which will
 // embed the dispatcher as a field and expose it to the vCPU run loop.
 #[allow(unused_imports)]
 pub(crate) use dispatcher::VcpuIrqDispatcher;
+pub(crate) use trace::VirqTraceKind;
+#[cfg(feature = "realtime-trace")]
+pub(crate) use trace::VirqTraceRing;
 
 use crate::{AxVmError, AxVmResult, StopReason, VmStatus, ax_err};
 
@@ -110,29 +141,17 @@ pub fn start_vm(vm_id: usize) -> AxVmResult {
 
 /// Wake the primary vCPU of a VM.
 ///
-/// Single-vCPU guests retain pending device work across the WFI boundary.
-/// SMP guests keep the legacy wake-only behavior until AxVM provides a
-/// per-vCPU wait queue that can target vCPU0.
+/// Pending device work is retained across the WFI boundary and delivered to
+/// vCPU0, the sole device-poll owner.
 pub fn notify_vm(vm_id: usize) -> AxVmResult {
     let vm = vm_by_id(vm_id)?;
-    let vcpu_num = vm.vcpu_num();
-    vm.with_runtime(|runtime| {
-        notify_runtime_for_device_poll(runtime, vcpu_num);
-        Ok(())
-    })
+    let runtime = vm.runtime_snapshot()?;
+    notify_runtime_for_device_poll(&runtime);
+    Ok(())
 }
 
-fn notify_runtime_for_device_poll(runtime: &crate::vm::VmRuntimeHandle, vcpu_num: usize) {
-    if vcpu_num == 1 {
-        runtime.notify_device_poll();
-    } else {
-        // The runtime wait queue is shared by all vCPUs, so notify_one cannot
-        // target vCPU0. Keep the legacy wake semantics for SMP guests until a
-        // dedicated per-vCPU wake path is available; publishing the shared
-        // device-poll flag here could keep a secondary vCPU spinning while
-        // the primary vCPU remains asleep.
-        runtime.notify_one();
-    }
+fn notify_runtime_for_device_poll(runtime: &crate::vm::VmRuntimeHandle) {
+    runtime.notify_device_poll();
 }
 
 pub fn stop_vm(vm_id: usize) -> AxVmResult {
@@ -181,6 +200,26 @@ const fn missing_vm_error(vm_id: usize) -> AxVmError {
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "timer-worker-priority-boost"))]
+    #[test]
+    fn timer_worker_runs_one_priority_below_latency_critical_guest_tasks() {
+        assert_eq!(TIMER_WORKER_TASK_PRIORITY, VCPU_TASK_PRIORITY - 1);
+        assert!(TIMER_WORKER_TASK_PRIORITY < VIRQ_INJECTOR_TASK_PRIORITY);
+    }
+
+    #[cfg(feature = "timer-worker-priority-boost")]
+    #[test]
+    fn boosted_timer_worker_outranks_guest_vcpus_by_one_level() {
+        assert_eq!(TIMER_WORKER_TASK_PRIORITY, VCPU_TASK_PRIORITY + 1);
+        assert_eq!(TIMER_WORKER_TASK_PRIORITY, VCPU_KICK_WORKER_TASK_PRIORITY);
+    }
+
+    #[test]
+    fn deferred_vcpu_kick_worker_outranks_guest_vcpus() {
+        assert_eq!(VCPU_KICK_WORKER_TASK_PRIORITY, VCPU_TASK_PRIORITY + 1);
+        assert_eq!(VCPU_KICK_WORKER_TASK_PRIORITY, 91);
+    }
+
     #[test]
     fn reset_counts_replacement_runtime_for_every_restartable_state() {
         for status in [
@@ -204,13 +243,13 @@ mod tests {
     }
 
     #[test]
-    fn smp_notification_does_not_publish_a_shared_device_poll_request() {
+    fn smp_notification_publishes_a_vcpu0_device_poll_request() {
         let runtime = crate::vm::VmRuntimeHandle::new();
         let observed_generation = runtime.notification_generation();
 
-        notify_runtime_for_device_poll(&runtime, 2);
+        notify_runtime_for_device_poll(&runtime);
 
-        assert!(!runtime.device_poll_requested());
+        assert!(runtime.device_poll_requested());
         assert_ne!(runtime.notification_generation(), observed_generation);
     }
 
@@ -218,7 +257,7 @@ mod tests {
     fn single_vcpu_notification_publishes_a_device_poll_request() {
         let runtime = crate::vm::VmRuntimeHandle::new();
 
-        notify_runtime_for_device_poll(&runtime, 1);
+        notify_runtime_for_device_poll(&runtime);
 
         assert!(runtime.device_poll_requested());
     }

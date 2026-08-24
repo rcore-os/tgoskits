@@ -1,0 +1,20 @@
+# Final P2 Zephyr managed Guest. The image is a raw binary linked at the
+# beginning of the second host-DTB carveout.
+[base]
+id = 2
+name = "task2-p2-zephyr"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0]
+
+[kernel]
+entry_point = 0xA000_117C
+image_location = "memory"
+kernel_path = "${workspace}/tmp/net-dual-guest/zephyr-task2/zephyr-task2.bin"
+kernel_load_addr = 0xA000_0000
+dtb_load_addr = 0xA7F0_0000
+memory_regions = [[0xA000_0000, 0x2000_0000, 0x7, 2]]
+
+[devices]
+passthrough = [{ path = "/virtio_mmio@a003c00" }]
+disabled = []

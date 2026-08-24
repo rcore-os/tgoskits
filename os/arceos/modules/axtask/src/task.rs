@@ -95,6 +95,11 @@ pub struct TaskInner {
     /// Scheduling priority of the task.
     sched_priority: AtomicI32,
 
+    /// Scheduler tick at which this task most recently became runnable.
+    ready_since_tick: AtomicU64,
+    /// Largest observed runnable wait, in scheduler ticks.
+    max_ready_wait_ticks: AtomicU64,
+
     /// Mark whether the task is in the wait queue.
     in_wait_queue: AtomicBool,
 
@@ -314,6 +319,21 @@ impl TaskInner {
         self.sched_priority.store(prio, Ordering::Release)
     }
 
+    pub(crate) fn mark_ready_at_tick(&self, tick: u64) {
+        self.ready_since_tick.store(tick, Ordering::Release);
+    }
+
+    pub(crate) fn take_ready_wait_ticks(&self, tick: u64) -> u64 {
+        let since = self.ready_since_tick.swap(0, Ordering::AcqRel);
+        let wait = if since == 0 { 0 } else { tick.saturating_sub(since) };
+        self.max_ready_wait_ticks.fetch_max(wait, Ordering::Relaxed);
+        wait
+    }
+
+    pub fn max_ready_wait_ticks(&self) -> u64 {
+        self.max_ready_wait_ticks.load(Ordering::Acquire)
+    }
+
     /// Polls whether the task has been interrupted.
     #[inline]
     pub fn poll_interrupt(&self, cx: &Context) -> Poll<()> {
@@ -377,6 +397,21 @@ impl TaskInner {
     }
 }
 
+#[cfg(any(
+    feature = "sched-rt",
+    feature = "sched-prio-rr",
+    feature = "sched-prio-rr-20ms"
+))]
+impl ax_sched::SchedPriority for TaskInner {
+    fn sched_priority(&self) -> isize {
+        TaskInner::sched_priority(self) as isize
+    }
+
+    fn set_sched_priority(&self, priority: isize) {
+        TaskInner::set_sched_priority(self, priority as i32);
+    }
+}
+
 // private methods
 impl TaskInner {
     fn new_common(id: TaskId, name: String, kstack: TaskStack) -> Self {
@@ -387,10 +422,13 @@ impl TaskInner {
             is_init: false,
             entry: Cell::new(None),
             state: AtomicU8::new(TaskState::Ready as u8),
-            // By default, the task is allowed to run on all CPUs.
-            cpumask: SpinLock::new(crate::api::cpu_mask_full()),
+            // Dedicated CPUs accept only tasks that opt in with an explicit
+            // affinity (vCPUs and required per-CPU runtime workers).
+            cpumask: SpinLock::new(crate::api::default_task_cpu_mask()),
             sched_policy: AtomicI32::new(0),
             sched_priority: AtomicI32::new(0),
+            ready_since_tick: AtomicU64::new(0),
+            max_ready_wait_ticks: AtomicU64::new(0),
             in_wait_queue: AtomicBool::new(false),
             #[cfg(feature = "irq")]
             timer_ticket_id: AtomicU64::new(0),
@@ -617,7 +655,15 @@ impl TaskInner {
     #[inline]
     #[cfg(feature = "preempt")]
     pub(crate) fn enable_preempt(&self, resched: bool) {
-        if self.preempt_disable_count.fetch_sub(1, Ordering::Release) == 1 && resched {
+        #[cfg(feature = "irq")]
+        let defer_for_irq = resched && ax_hal::irq::in_irq_context_preempt_disabled();
+        #[cfg(not(feature = "irq"))]
+        let defer_for_irq = false;
+
+        if self.preempt_disable_count.fetch_sub(1, Ordering::Release) == 1
+            && resched
+            && !defer_for_irq
+        {
             // Keep local IRQs masked until the preemption check has completely
             // unwound. A device IRQ may wake a pinned maintenance task and
             // immediately become pending again when that task rearms the

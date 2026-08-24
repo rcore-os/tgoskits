@@ -35,6 +35,7 @@ pub struct ArmTimerVmConfig {
     frequency: u64,
     virtual_offset: u64,
     physical_offset: u64,
+    physical_timer_enabled: bool,
 }
 
 impl ArmTimerVmConfig {
@@ -51,7 +52,14 @@ impl ArmTimerVmConfig {
             frequency,
             virtual_offset,
             physical_offset,
+            physical_timer_enabled: true,
         })
+    }
+
+    /// Enables or disables the software-emulated guest physical timer.
+    pub const fn with_physical_timer_enabled(mut self, enabled: bool) -> Self {
+        self.physical_timer_enabled = enabled;
+        self
     }
 
     /// Validates one nonzero counter frequency shared by all target CPUs.
@@ -78,6 +86,11 @@ impl ArmTimerVmConfig {
     /// Returns the offset subtracted from `CNTPCT_EL0` for the emulated physical counter.
     pub const fn physical_offset(self) -> u64 {
         self.physical_offset
+    }
+
+    /// Returns whether guest `CNTP_*` accesses are part of the VM contract.
+    pub const fn physical_timer_enabled(self) -> bool {
+        self.physical_timer_enabled
     }
 
     const fn offset(self, kind: ArmTimerKind) -> u64 {
@@ -200,6 +213,12 @@ impl ArmTimerSnapshot {
 
     /// Returns whether one timer currently asserts its PPI level.
     pub const fn irq_asserted(self, kind: ArmTimerKind, physical_counter: u64) -> bool {
+        if !self.config.physical_timer_enabled() {
+            match kind {
+                ArmTimerKind::Physical => return false,
+                ArmTimerKind::Virtual => {}
+            }
+        }
         self.context(kind)
             .irq_asserted(self.config.guest_counter(kind, physical_counter))
     }
@@ -211,11 +230,15 @@ impl ArmTimerSnapshot {
         let virtual_deadline =
             self.virtual_timer
                 .host_deadline(ArmTimerKind::Virtual, self.config, virtual_counter);
-        let physical_deadline = self.physical_timer.host_deadline(
-            ArmTimerKind::Physical,
-            self.config,
-            physical_guest_counter,
-        );
+        let physical_deadline = if self.config.physical_timer_enabled() {
+            self.physical_timer.host_deadline(
+                ArmTimerKind::Physical,
+                self.config,
+                physical_guest_counter,
+            )
+        } else {
+            None
+        };
         match (virtual_deadline, physical_deadline) {
             (Some(virtual_deadline), Some(physical_deadline)) => {
                 let virtual_distance = virtual_deadline.wrapping_sub(physical_counter);
@@ -281,6 +304,7 @@ impl ArmVcpuTimer {
                 frequency: 0,
                 virtual_offset: 0,
                 physical_offset: 0,
+                physical_timer_enabled: true,
             },
             virtual_timer: ArmTimerContext {
                 compare_value: 0,
@@ -335,6 +359,7 @@ impl ArmVcpuTimer {
         if self.loaded != 0 {
             return Err(ArmVcpuError::BadState);
         }
+        self.ensure_kind_enabled(kind)?;
         Ok(match kind {
             ArmTimerKind::Virtual => &mut self.virtual_timer,
             ArmTimerKind::Physical => &mut self.physical_timer,
@@ -351,6 +376,7 @@ impl ArmVcpuTimer {
         if self.loaded != 0 {
             return Err(ArmVcpuError::BadState);
         }
+        self.ensure_kind_enabled(kind)?;
         Ok(self.config.guest_counter(kind, physical_counter))
     }
 
@@ -379,6 +405,7 @@ impl ArmVcpuTimer {
         if self.loaded != 0 {
             return Err(ArmVcpuError::BadState);
         }
+        self.ensure_kind_enabled(kind)?;
         Ok(match kind {
             ArmTimerKind::Virtual => self.virtual_timer,
             ArmTimerKind::Physical => self.physical_timer,
@@ -455,6 +482,13 @@ impl ArmVcpuTimer {
         }
         self.virtual_timer.reset();
         self.physical_timer.reset();
+        Ok(())
+    }
+
+    fn ensure_kind_enabled(&self, kind: ArmTimerKind) -> ArmVcpuResult {
+        if kind == ArmTimerKind::Physical && !self.config.physical_timer_enabled() {
+            return Err(ArmVcpuError::InvalidInput);
+        }
         Ok(())
     }
 
@@ -689,6 +723,29 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn virtual_only_timer_contract_rejects_physical_timer_state() {
+        let config = ArmTimerVmConfig::new(24_000_000, 0x1000, 0)
+            .unwrap()
+            .with_physical_timer_enabled(false);
+        let mut timer = ArmVcpuTimer::new(config, 0);
+
+        assert_eq!(
+            timer.read_control(ArmTimerKind::Physical, 0),
+            Err(ArmVcpuError::InvalidInput)
+        );
+        assert_eq!(
+            timer.write_control(ArmTimerKind::Physical, ENABLE),
+            Err(ArmVcpuError::InvalidInput)
+        );
+        assert!(
+            !timer
+                .snapshot()
+                .unwrap()
+                .irq_asserted(ArmTimerKind::Physical, u64::MAX)
+        );
     }
 
     #[test]

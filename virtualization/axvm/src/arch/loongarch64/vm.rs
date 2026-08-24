@@ -75,7 +75,9 @@ impl LoongArch64Arch {
                 .devices()
                 .interrupt_controller(axdevice_base::InterruptControllerId::new(0))?;
             resources.prepare_guest_address_space(vm.id(), &[])?;
-            vcpus.setup(resources, build_vcpu_setup_config)?;
+            vcpus.setup(resources, |_vcpu_id, config, memory_regions| {
+                build_vcpu_setup_config(config, memory_regions)
+            })?;
 
             Ok(PreparedVm::new(vcpus, devices, interrupt_controller))
         })

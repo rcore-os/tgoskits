@@ -1796,6 +1796,15 @@ fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc
 }
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
+    if let Some(initrd) = ax_runtime::hal::dtb::get_initrd() {
+        // Keep the boot-provided image read-only.  This gives userspace a
+        // zero-copy path to consume an initramfs even when it is not selected
+        // as StarryOS's root filesystem.
+        root.add(
+            "initrd",
+            SimpleFile::new_regular(fs.clone(), move || Ok(initrd)),
+        );
+    }
     root.add(
         "mounts",
         SimpleFile::new_regular(fs.clone(), || {

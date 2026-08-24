@@ -19,6 +19,15 @@ pub fn enable_timer_irq() {
     crate::platform::enable_timer_irq();
 }
 
+#[cfg(feature = "irq")]
+pub fn disable_timer_irq() {
+    #[cfg(any(test, feature = "host-test"))]
+    {}
+
+    #[cfg(not(any(test, feature = "host-test")))]
+    crate::platform::disable_timer_irq();
+}
+
 pub fn try_init_epoch_offset(epoch_time_nanos: u64) -> bool {
     #[cfg(any(test, feature = "host-test"))]
     {

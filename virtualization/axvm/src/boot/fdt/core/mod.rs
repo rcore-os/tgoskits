@@ -60,7 +60,17 @@ fn resolve_machine_resources_from_host(
     })?;
     let machine = crate::machine::current_machine_profile(vm_config.phys_cpu_ls.cpu_num());
     let current = vm_config.serial_profile();
-    if let Some(interrupt_encoding) = machine.serial_fdt_interrupt {
+    let serial_is_explicit = vm_config
+        .virtual_device_requests()
+        .iter()
+        .any(|request| request.id == "console0");
+    if serial_is_explicit {
+        info!(
+            "VM[{}] keeps its explicitly configured virtual UART profile: {:?}",
+            vm_config.id(),
+            current
+        );
+    } else if let Some(interrupt_encoding) = machine.serial_fdt_interrupt {
         if let Some(resolved) =
             serial::host_selected_serial(&host_fdt, current, interrupt_encoding)?
         {

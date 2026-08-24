@@ -220,6 +220,24 @@ fn boot_protocol_name(protocol: VMBootProtocol) -> &'static str {
     }
 }
 
+/// Selects how the AArch64 guest `WFI` instruction is handled.
+///
+/// `Auto` preserves the platform policy: shared vCPUs and guests with an
+/// emulated timer trap `WFI`, while a dedicated `CNTV`-only guest may wait in
+/// hardware. The explicit variants exist for controlled latency experiments.
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Aarch64WfiPolicy {
+    /// Use the safe platform default derived from CPU placement and timers.
+    #[default]
+    Auto,
+    /// Always trap guest `WFI` and use the host software wake path.
+    Trap,
+    /// Allow guest `WFI` to remain in hardware when every enabled timer wakes it.
+    Passthrough,
+}
+
 /// The configuration structure for the guest VM base info.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -252,7 +270,44 @@ pub struct VMBaseConfig {
     ///
     ///   It will phrase an error if the number of vCpus is not equal to the length of `phys_cpu_sets` array.
     pub phys_cpu_sets: Option<Vec<usize>>,
+    /// Host scheduler priority assigned to every vCPU task of this VM.
+    ///
+    /// Higher values run first when the priority-aware scheduler is enabled.
+    /// The default (90) preserves the historical behavior; deployments that
+    /// share a pCPU can assign a higher value to a latency-sensitive guest.
+    #[serde(default)]
+    pub host_sched_priority: Option<i32>,
+    /// Declares that an AArch64 guest uses only the virtual architectural
+    /// timer (`CNTV_*`) and must not access the physical timer (`CNTP_*`).
+    ///
+    /// Dedicated vCPUs may leave WFI untrapped only when this contract is
+    /// enabled, because CNTV has a direct hardware wake path while CNTP is
+    /// software-emulated. Defaults to `false` for compatibility and safety.
+    pub aarch64_virtual_timer_only: bool,
+    /// Selects how the AArch64 guest `WFI` instruction is handled.
+    ///
+    /// The default preserves the capability-gated platform policy. `trap` is
+    /// intended for A/B isolation of the software wake path; `passthrough`
+    /// is accepted only when the vCPU is dedicated and every exposed timer
+    /// has a hardware wake path.
+    pub aarch64_wfi_policy: Aarch64WfiPolicy,
+    /// Whether the AArch64 trap layer must advance the exception PC past the
+    /// trapping `hvc`/`smc` instruction before resuming the guest.
+    ///
+    /// ARM DDI 0487 defines the preferred exception return address for HVC as
+    /// the following instruction, so QEMU (and spec-conforming emulators)
+    /// report ELR_EL2 already past the trap and must set this to `false`.
+    /// Some physical platforms report the trapping instruction itself and
+    /// need `true`. Defaults to `true` so existing physical-board configs
+    /// keep the legacy behavior.
+    #[serde(default = "default_true")]
+    pub advance_hvc_smc_pc: bool,
 }
+
+fn default_true() -> bool {
+    true
+}
+
 
 /// The configuration structure for the guest VM kernel.
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
@@ -477,6 +532,9 @@ impl PhysicalDeviceRef {
 #[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GuestDevices {
+    /// Whether a passthrough guest with no explicit physical-device selection
+    /// inherits the host device-tree root. `None` preserves legacy behavior.
+    pub inherit_host_devices: Option<bool>,
     /// Physical devices explicitly assigned to the guest.
     pub passthrough: Vec<PhysicalDeviceRef>,
     /// Physical devices removed from a passthrough guest's default assignment.
@@ -491,6 +549,11 @@ pub struct GuestDevices {
 }
 
 impl GuestDevices {
+    /// Returns whether the compatibility root assignment should be added.
+    pub fn inherits_host_devices(&self) -> bool {
+        self.inherit_host_devices.unwrap_or(true)
+    }
+
     fn validate(&self) -> AxVmConfigResult {
         for device in self.passthrough.iter().chain(&self.disabled) {
             device.validate()?;

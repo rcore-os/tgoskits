@@ -4,6 +4,11 @@ args = [
   "-nographic",
   "-cpu",
   "cortex-a53",
+  # StarryOS AArch64 uses the GICv3 interrupt path on QEMU virt.  Without an
+  # explicit version QEMU may select GICv2, whose route model rejects the
+  # logical CPU target during early boot.
+  "-machine",
+  "virt,gic-version=3",
   "-device",
   "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
   "-drive",

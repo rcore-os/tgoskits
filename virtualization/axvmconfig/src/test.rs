@@ -33,6 +33,7 @@ memory_regions = [
 ]
 
 [devices]
+inherit_host_devices = false
 passthrough = [
     { path = "/soc/ethernet@1000" },
 ]
@@ -51,6 +52,10 @@ fn parses_structured_guest_config() {
     assert_eq!(config.base.cpu_num, 2);
     assert_eq!(config.base.phys_cpu_ids, Some(vec![0x500, 0x501]));
     assert_eq!(config.base.phys_cpu_sets, Some(vec![3, 4]));
+    assert_eq!(config.base.host_sched_priority, None);
+    assert!(!config.base.aarch64_virtual_timer_only);
+    assert_eq!(config.base.aarch64_wfi_policy, Aarch64WfiPolicy::Auto);
+    assert_eq!(config.devices.inherit_host_devices, Some(false));
 
     assert_eq!(config.kernel.entry_point, 0xdeadbeef);
     assert_eq!(config.kernel.configured_memory_region_count, 1);
@@ -71,6 +76,45 @@ fn parses_structured_guest_config() {
             path: "/soc/gpio@2000".into(),
         }]
     );
+}
+
+#[test]
+fn parses_virtual_timer_only_contract() {
+    let config = GuestConfig::from_toml(
+        r#"
+[base]
+aarch64_virtual_timer_only = true
+"#,
+    )
+    .unwrap();
+
+    assert!(config.base.aarch64_virtual_timer_only);
+}
+
+#[test]
+fn parses_explicit_wfi_policy() {
+    let config = GuestConfig::from_toml(
+        r#"
+[base]
+aarch64_wfi_policy = "trap"
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(config.base.aarch64_wfi_policy, Aarch64WfiPolicy::Trap);
+}
+
+#[test]
+fn parses_explicit_host_scheduler_priority() {
+    let config = GuestConfig::from_toml(
+        r#"
+[base]
+host_sched_priority = 80
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(config.base.host_sched_priority, Some(80));
 }
 
 #[test]
@@ -144,6 +188,7 @@ fn guest_type_owns_address_space_policy() {
     );
 
     let devices = GuestDevices {
+        inherit_host_devices: None,
         passthrough: vec![PhysicalDeviceRef {
             path: "/soc/net@1000".into(),
         }],
@@ -157,6 +202,20 @@ fn guest_type_owns_address_space_policy() {
         unresolved.iter().all(|device| device.name != "/"),
         "the config layer must not invent an unresolved root selector"
     );
+}
+
+#[test]
+fn passthrough_host_device_inheritance_defaults_to_legacy_behavior() {
+    assert!(GuestDevices::default().inherits_host_devices());
+
+    let config = GuestConfig::from_toml(
+        r#"
+[devices]
+inherit_host_devices = false
+"#,
+    )
+    .unwrap();
+    assert!(!config.devices.inherits_host_devices());
 }
 
 #[test]
@@ -271,8 +330,9 @@ fn menuconfig_schema_exposes_only_structured_device_selectors() {
         .get("properties")
         .and_then(|value| value.as_object())
         .unwrap();
-    assert_eq!(device_properties.len(), 3);
+    assert_eq!(device_properties.len(), 4);
     assert!(device_properties.contains_key("disabled"));
+    assert!(device_properties.contains_key("inherit_host_devices"));
     assert!(device_properties.contains_key("passthrough"));
     assert!(device_properties.contains_key("virtual"));
 
@@ -281,6 +341,7 @@ fn menuconfig_schema_exposes_only_structured_device_selectors() {
         .and_then(|value| value.as_object())
         .unwrap();
     assert!(base_properties.contains_key("guest_type"));
+    assert!(base_properties.contains_key("aarch64_virtual_timer_only"));
     assert!(!base_properties.contains_key("vm_type"));
 
     let root_properties = schema

@@ -2,7 +2,8 @@
 /docs/_build/
 
 # PyBuilder
-/target/
+/target
+**/target/
 
 # Jupyter Notebook
 /.ipynb_checkpoints
@@ -72,3 +73,4 @@ loongarch64-axvisor-guest-tests.md
 /logs/offline-monitor/
 /images/linux-qemu/
 offline-monitor-analysis*.html
+tmp/rt-partition/

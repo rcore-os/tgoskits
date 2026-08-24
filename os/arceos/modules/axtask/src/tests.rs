@@ -16,7 +16,7 @@ use axpoll::{IoEvents, Pollable};
 #[cfg(feature = "irq")]
 use crate::IrqNotify;
 #[cfg(feature = "preempt")]
-use crate::sync::{PreemptGuard, SpinLock};
+use crate::sync::PreemptGuard;
 use crate::{WaitQueue, api as ax_task, current};
 
 type TestResult = Result<(), Box<dyn core::any::Any + Send>>;

@@ -83,6 +83,15 @@ impl AxVMResources {
         )?;
 
         for mapping in address_layout.mappings() {
+            if matches!(mapping.kind, VmRegionKind::Passthrough) {
+                info!(
+                    "VM[{vm_id}] stage2 passthrough: GPA {:#x}..{:#x} -> HPA {:#x}..{:#x}",
+                    mapping.gpa.as_usize(),
+                    mapping.gpa.as_usize() + mapping.size,
+                    mapping.hpa.as_usize(),
+                    mapping.hpa.as_usize() + mapping.size,
+                );
+            }
             debug!(
                 "VM[{vm_id}] stage2 {:?}: [{:#x}, {:#x}) -> [{:#x}, {:#x}) {:?}",
                 mapping.kind,

@@ -33,18 +33,32 @@ mod banner;
 mod config;
 mod guest_console;
 mod manager;
+#[cfg(feature = "openrace-realtime")]
+mod realtime_probe;
+mod rt_burner;
 mod shell;
+mod virtio_blk;
 mod virtio_net;
 
-#[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
+#[cfg(any(
+    feature = "backtrace",
+    feature = "test-panic-no-backtrace",
+    feature = "rt-scheduler"
+))]
 fn init_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        eprintln!("{info}");
+        let _ = ax_std::os::arceos::api::stdio::ax_console_write_fmt(format_args!("{info}\n"));
         // When the `backtrace` feature is NOT enabled, axbacktrace is compiled
         // without `alloc` → Inner::Disabled → BT_ERROR requires_alloc.
         // When the `backtrace` feature IS enabled, axbacktrace captures real
         // frames (alloc=true, frames enumerated).
-        eprintln!("{}", axbacktrace::Backtrace::capture().kind("panic"));
+        #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
+        {
+            let _ = ax_std::os::arceos::api::stdio::ax_console_write_fmt(format_args!(
+                "{}\n",
+                axbacktrace::Backtrace::capture().kind("panic")
+            ));
+        }
     }));
 }
 
@@ -57,7 +71,11 @@ fn init_panic_hook() {
 /// 3. Build and start configured guest VMs.
 /// 4. Run the VM completion waiter and management console concurrently.
 fn main() {
-    #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
+    #[cfg(any(
+        feature = "backtrace",
+        feature = "test-panic-no-backtrace",
+        feature = "rt-scheduler"
+    ))]
     init_panic_hook();
 
     // Test-only panic paths — gated behind dedicated features so they never
@@ -70,6 +88,11 @@ fn main() {
 
     banner::print_logo();
 
+    let dedicated = ax_std::os::arceos::modules::ax_runtime::dedicated_cpu_mask();
+    if dedicated != 0 {
+        info!("RT partition host CPU mask established: {dedicated:#b}");
+    }
+
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
@@ -78,8 +101,11 @@ fn main() {
     let default_vms = manager::AxvmManager::vm_list();
     guest_console::configure_host_console_reader(&default_vms)
         .unwrap_or_else(|error| panic!("failed to configure host console input: {error:#}"));
+    rt_burner::start();
     let started_vms = manager.launch_default_vms();
     guest_console::attach_default(started_vms);
+    #[cfg(feature = "openrace-realtime")]
+    realtime_probe::start();
 
     std::thread::Builder::new()
         .name("axvisor-vm-wait".into())

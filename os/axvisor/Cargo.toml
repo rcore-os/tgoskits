@@ -47,6 +47,15 @@ stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
 test-backtrace-panic = ["backtrace"]
 test-panic-no-backtrace = ["dep:axbacktrace"]
+openrace-realtime = ["axvm/realtime-trace"]
+timer-latency-stats = ["axvm/timer-latency-stats"]
+rr-scheduler = ["ax-std/sched-rr"]
+rt-scheduler = ["ax-std/sched-rt"]
+fp-rr-scheduler = ["ax-std/sched-prio-rr"]
+fp-rr-20ms-scheduler = ["ax-std/sched-prio-rr-20ms"]
+global-timer-wheel = ["axvm/global-timer-wheel"]
+no-vcpu-exit-yield = ["axvm/no-vcpu-exit-yield"]
+timer-worker-priority-boost = ["axvm/timer-worker-priority-boost"]
 
 [dependencies]
 shlex.workspace = true
@@ -59,6 +68,7 @@ anyhow.workspace = true
 log = "0.4"
 
 # System dependent modules provided by ArceOS.
+ax-api.workspace = true
 ax-std = { workspace = true, default-features = false, features = [
   "alloc",
   "fd",
@@ -71,6 +81,7 @@ ax-std = { workspace = true, default-features = false, features = [
   "hv",
   "tls",
   "std-compat",
+  # "ipi",
 ] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
@@ -80,6 +91,7 @@ axvm-types.workspace = true
 axdevice.workspace = true
 axdevice_base.workspace = true
 axvirtio-common.workspace = true
+axvirtio-blk.workspace = true
 axvirtio-net.workspace = true
 toml.workspace = true
 ax-driver = { workspace = true, optional = true }

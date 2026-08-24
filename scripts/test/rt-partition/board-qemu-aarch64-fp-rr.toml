@@ -1,0 +1,12 @@
+# Task1 direct Guest-shared scheduler experiment.
+# This profile differs from the fixed-priority profile only by selecting
+# fixed-priority round-robin within each priority level.
+features = [
+    "fp-rr-scheduler",
+    "timer-latency-stats",
+    # "ax-driver/nvme",
+    # "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

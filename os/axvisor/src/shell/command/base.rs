@@ -317,6 +317,11 @@ fn do_exit(cmd: &ParsedCommand) {
     super::shutdown(exit_code);
 }
 
+fn do_reboot(_cmd: &ParsedCommand) {
+    println!("Resetting the board...");
+    super::reboot();
+}
+
 fn do_log(cmd: &ParsedCommand) {
     let args = &cmd.positional_args;
 
@@ -600,6 +605,14 @@ pub fn build_base_cmd(tree: &mut BTreeMap<String, CommandNode>) {
                     .with_short('L')
                     .with_long("logical"),
             ),
+    );
+
+    // reboot Command
+    tree.insert(
+        "reboot".to_string(),
+        CommandNode::new("Reset the whole board")
+            .with_handler(do_reboot)
+            .with_usage("reboot"),
     );
 
     // uname Command

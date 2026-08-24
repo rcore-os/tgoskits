@@ -57,6 +57,7 @@ impl PreparedVcpus {
         &self,
         resources: &AxVMResources,
         mut build_config: impl FnMut(
+            usize,
             &crate::config::AxVMConfig,
             &[crate::vm::VMMemoryRegion],
         ) -> AxVmResult<
@@ -64,7 +65,8 @@ impl PreparedVcpus {
         >,
     ) -> AxVmResult {
         for vcpu in &self.vcpus {
-            let setup_config = build_config(&resources.config, &resources.memory_regions)?;
+            let setup_config =
+                build_config(vcpu.id(), &resources.config, &resources.memory_regions)?;
             let entry = if vcpu.id() == 0 {
                 resources.config.bsp_entry()
             } else {

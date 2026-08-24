@@ -1,21 +1,28 @@
 //! Host-console multiplexing for mandatory guest virtual serial devices.
 
 use alloc::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
     vec::Vec,
 };
 
 use anyhow::{Result, bail};
 use axvm::{SerialBackend, SerialBackendFactory, VMId, VmStatus};
-use core::ops::Bound::{Excluded, Unbounded};
+use core::{
+    ops::Bound::{Excluded, Unbounded},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use log::warn;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use super::host::write_host_bytes;
 
+mod endpoint;
+mod host_output;
 mod output;
 
+use endpoint::GuestConsoleEndpoint;
+use host_output::HostOutputQueue;
 use output::GuestOutputMux;
 
 const CTRL_X: u8 = 0x18;
@@ -40,6 +47,28 @@ pub enum ConsoleInputEvent {
     NoRunningGuest,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GuestConsoleCounts {
+    pub vm_id: VMId,
+    pub active: bool,
+    pub input_enqueued: usize,
+    pub input_drained: usize,
+    pub input_dropped: usize,
+    pub input_pending: usize,
+    pub output_enqueued: usize,
+    pub output_drained: usize,
+    pub output_dropped: usize,
+    pub output_pending: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ConsoleStatsSnapshot {
+    pub attached: Option<VMId>,
+    pub flush_calls: usize,
+    pub host_write_bytes: usize,
+    pub guests: Vec<GuestConsoleCounts>,
+}
+
 #[derive(Debug)]
 struct RoutedInput {
     event: ConsoleInputEvent,
@@ -60,10 +89,14 @@ pub struct GuestConsoleMux {
 #[derive(Debug)]
 struct ConsoleCore {
     state: Mutex<ConsoleState>,
-    /// Serializes host writes with backend replacement and invalidation.
+    /// Serializes physical writes performed by housekeeping paths.
     ///
-    /// Code that needs both locks must acquire `output_lock` before `state`.
+    /// Guest UART exits never acquire this lock or the global control-state
+    /// lock; they only stage output in their endpoint ring, so a slow physical
+    /// console or console attachment operation cannot block a vCPU.
     output_lock: Mutex<()>,
+    flush_calls: AtomicUsize,
+    host_write_bytes: AtomicUsize,
 }
 
 #[derive(Debug, Default)]
@@ -74,6 +107,7 @@ struct ConsoleState {
     last_attached: Option<VMId>,
     shortcut_prefix_pending: bool,
     output: GuestOutputMux,
+    host_output: HostOutputQueue,
     next_backend_generation: u64,
 }
 
@@ -83,14 +117,14 @@ struct BackendGeneration(u64);
 #[derive(Debug, Default)]
 struct GuestState {
     backend_generation: Option<BackendGeneration>,
-    input: VecDeque<u8>,
+    endpoint: Option<Arc<GuestConsoleEndpoint>>,
 }
 
 #[derive(Debug)]
 struct GuestSerialBackend {
-    vm_id: VMId,
+    #[cfg(any(test, axtest))]
     generation: BackendGeneration,
-    core: Arc<ConsoleCore>,
+    endpoint: Arc<GuestConsoleEndpoint>,
 }
 
 #[derive(Debug)]
@@ -105,6 +139,8 @@ impl GuestConsoleMux {
             core: Arc::new(ConsoleCore {
                 state: Mutex::new(ConsoleState::default()),
                 output_lock: Mutex::new(()),
+                flush_calls: AtomicUsize::new(0),
+                host_write_bytes: AtomicUsize::new(0),
             }),
         }
     }
@@ -132,8 +168,10 @@ impl GuestConsoleMux {
             running, output, ..
         } = &mut *state;
         output.reconcile_running(running);
+        state.host_output.push(&host_output);
+        let host_output = state.host_output.take();
         drop(state);
-        write_host_bytes(&host_output);
+        write_host_bytes(&host_output.into_bytes());
         detached
     }
 
@@ -149,7 +187,9 @@ impl GuestConsoleMux {
         state.running.remove(&vm_id);
         if let Some(guest) = state.guests.get_mut(&vm_id) {
             guest.backend_generation = None;
-            guest.input.clear();
+            if let Some(endpoint) = guest.endpoint.take() {
+                endpoint.deactivate();
+            }
         }
         state.output.reset_guest(vm_id);
         let detached = state.attached == Some(vm_id);
@@ -160,8 +200,10 @@ impl GuestConsoleMux {
         } else {
             Vec::new()
         };
+        state.host_output.push(&host_output);
+        let host_output = state.host_output.take();
         drop(state);
-        write_host_bytes(&host_output);
+        write_host_bytes(&host_output.into_bytes());
         detached
     }
 
@@ -169,7 +211,11 @@ impl GuestConsoleMux {
         let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
         state.running.remove(&vm_id);
-        state.guests.remove(&vm_id);
+        if let Some(guest) = state.guests.remove(&vm_id)
+            && let Some(endpoint) = guest.endpoint
+        {
+            endpoint.deactivate();
+        }
         state.output.reset_guest(vm_id);
         if state.last_attached == Some(vm_id) {
             state.last_attached = None;
@@ -182,8 +228,10 @@ impl GuestConsoleMux {
         } else {
             Vec::new()
         };
+        state.host_output.push(&host_output);
+        let host_output = state.host_output.take();
         drop(state);
-        write_host_bytes(&host_output);
+        write_host_bytes(&host_output.into_bytes());
         detached
     }
 
@@ -210,8 +258,10 @@ impl GuestConsoleMux {
         state.last_attached = Some(vm_id);
         state.shortcut_prefix_pending = false;
         let host_output = state.output.buffer_all();
+        state.host_output.push(&host_output);
+        let host_output = state.host_output.take();
         drop(state);
-        write_host_bytes(&host_output);
+        write_host_bytes(&host_output.into_bytes());
         true
     }
 
@@ -224,8 +274,10 @@ impl GuestConsoleMux {
         let mut state = self.core.lock_state();
         (state.attached == Some(vm_id)).then_some(())?;
         let replay = state.output.select_foreground(vm_id);
+        state.host_output.push(&replay);
+        let host_output = state.host_output.take();
         drop(state);
-        write_host_bytes(&replay);
+        write_host_bytes(&host_output.into_bytes());
         Some(replay)
     }
 
@@ -268,8 +320,10 @@ impl GuestConsoleMux {
         } else {
             route_literal_input(&mut state, &[byte], ConsoleInputEvent::ShellByte(byte))
         };
+        state.host_output.push(&routed.host_output);
+        let host_output = state.host_output.take();
         drop(state);
-        write_host_bytes(&routed.host_output);
+        write_host_bytes(&host_output.into_bytes());
         routed
     }
 }
@@ -353,8 +407,16 @@ impl ConsoleCore {
 
     fn create_serial_backend(self: &Arc<Self>, vm_id: VMId) -> Arc<GuestSerialBackend> {
         let _output_guard = self.lock_output();
+        let endpoint = Arc::new(GuestConsoleEndpoint::new());
         let generation = {
             let mut state = self.lock_state();
+            if let Some(previous) = state
+                .guests
+                .get_mut(&vm_id)
+                .and_then(|guest| guest.endpoint.take())
+            {
+                previous.deactivate();
+            }
             state.next_backend_generation = state
                 .next_backend_generation
                 .checked_add(1)
@@ -364,43 +426,22 @@ impl ConsoleCore {
                 vm_id,
                 GuestState {
                     backend_generation: Some(generation),
-                    ..GuestState::default()
+                    endpoint: Some(endpoint.clone()),
                 },
             );
             state.output.reset_guest(vm_id);
             generation
         };
+        #[cfg(not(any(test, axtest)))]
+        let _ = generation;
         Arc::new(GuestSerialBackend {
-            vm_id,
+            #[cfg(any(test, axtest))]
             generation,
-            core: self.clone(),
+            endpoint,
         })
     }
 
-    fn read_guest_input(
-        &self,
-        vm_id: VMId,
-        generation: BackendGeneration,
-        buffer: &mut [u8],
-    ) -> usize {
-        let mut state = self.lock_state();
-        let Some(guest) = state
-            .guests
-            .get_mut(&vm_id)
-            .filter(|guest| guest.backend_generation == Some(generation))
-        else {
-            return 0;
-        };
-        let read_len = buffer.len().min(guest.input.len());
-        for byte in &mut buffer[..read_len] {
-            *byte = guest
-                .input
-                .pop_front()
-                .expect("guest input queue length was checked");
-        }
-        read_len
-    }
-
+    #[cfg(any(test, axtest))]
     fn format_guest_output(
         &self,
         vm_id: VMId,
@@ -416,27 +457,97 @@ impl ConsoleCore {
         Some(state.output.format(vm_id, multiple_running, bytes))
     }
 
-    fn write_guest_output(&self, vm_id: VMId, generation: BackendGeneration, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
+    fn flush_host_output(&self) {
+        self.flush_calls.fetch_add(1, Ordering::Relaxed);
+        let _output_guard = self.lock_output();
+        let endpoints = {
+            let state = self.lock_state();
+            state
+                .guests
+                .iter()
+                .filter_map(|(&vm_id, guest)| {
+                    Some((vm_id, guest.backend_generation?, guest.endpoint.clone()?))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        for (vm_id, generation, endpoint) in endpoints {
+            let batch = endpoint.take_output();
+            if batch.is_empty() {
+                continue;
+            }
+            let bytes = batch.into_bytes();
+            let mut state = self.lock_state();
+            let current = state.guests.get(&vm_id).is_some_and(|guest| {
+                guest.backend_generation == Some(generation)
+                    && guest
+                        .endpoint
+                        .as_ref()
+                        .is_some_and(|current| Arc::ptr_eq(current, &endpoint))
+            });
+            if !current {
+                continue;
+            }
+            let multiple_running = state.running.len() > 1;
+            let output = state.output.format(vm_id, multiple_running, &bytes);
+            state.host_output.push(&output);
         }
 
-        let _output_guard = self.lock_output();
-        if let Some(output) = self.format_guest_output(vm_id, generation, bytes) {
-            write_host_bytes(&output);
+        loop {
+            let output = self.lock_state().host_output.take();
+            if output.is_empty() {
+                break;
+            }
+            let bytes = output.into_bytes();
+            self.host_write_bytes
+                .fetch_add(bytes.len(), Ordering::Relaxed);
+            write_host_bytes(&bytes);
+        }
+    }
+
+    fn stats_snapshot(&self) -> ConsoleStatsSnapshot {
+        let state = self.lock_state();
+        let attached = state.attached;
+        let endpoints = state
+            .guests
+            .iter()
+            .filter_map(|(&vm_id, guest)| Some((vm_id, guest.endpoint.clone()?)))
+            .collect::<Vec<_>>();
+        drop(state);
+
+        ConsoleStatsSnapshot {
+            attached,
+            flush_calls: self.flush_calls.load(Ordering::Relaxed),
+            host_write_bytes: self.host_write_bytes.load(Ordering::Relaxed),
+            guests: endpoints
+                .into_iter()
+                .map(|(vm_id, endpoint)| {
+                    let snapshot = endpoint.snapshot();
+                    GuestConsoleCounts {
+                        vm_id,
+                        active: snapshot.active,
+                        input_enqueued: snapshot.input_enqueued,
+                        input_drained: snapshot.input_drained,
+                        input_dropped: snapshot.input_dropped,
+                        input_pending: snapshot.input_pending,
+                        output_enqueued: snapshot.output_enqueued,
+                        output_drained: snapshot.output_drained,
+                        output_dropped: snapshot.output_dropped,
+                        output_pending: snapshot.output_pending,
+                    }
+                })
+                .collect(),
         }
     }
 }
 
 impl SerialBackend for GuestSerialBackend {
     fn write(&self, bytes: &[u8]) {
-        self.core
-            .write_guest_output(self.vm_id, self.generation, bytes);
+        self.endpoint.write_output(bytes);
     }
 
     fn read(&self, buffer: &mut [u8]) -> usize {
-        self.core
-            .read_guest_input(self.vm_id, self.generation, buffer)
+        self.endpoint.read_input(buffer)
     }
 }
 
@@ -447,9 +558,13 @@ impl SerialBackendFactory for GuestSerialBackendFactory {
 }
 
 fn enqueue_guest_input(state: &mut ConsoleState, vm_id: VMId, bytes: &[u8]) {
-    let guest = state.guests.entry(vm_id).or_default();
-    let available = INPUT_QUEUE_CAPACITY.saturating_sub(guest.input.len());
-    guest.input.extend(bytes.iter().copied().take(available));
+    if let Some(endpoint) = state
+        .guests
+        .get(&vm_id)
+        .and_then(|guest| guest.endpoint.as_ref())
+    {
+        endpoint.push_input(bytes);
+    }
 }
 
 /// Returns the factory that provisions one backend per VM device generation.
@@ -523,6 +638,15 @@ pub fn reconcile_vm_states() -> Option<VMId> {
 /// Return the currently attached guest, if any.
 pub fn attached_vm() -> Option<VMId> {
     GUEST_CONSOLE_MUX.attached_vm()
+}
+
+/// Flushes staged guest output from the housekeeping console path.
+pub fn flush_host_output() {
+    GUEST_CONSOLE_MUX.core.flush_host_output();
+}
+
+pub(crate) fn stats_snapshot() -> ConsoleStatsSnapshot {
+    GUEST_CONSOLE_MUX.core.stats_snapshot()
 }
 
 #[cfg(test)]

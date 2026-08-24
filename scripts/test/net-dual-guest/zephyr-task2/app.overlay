@@ -1,0 +1,32 @@
+/* The board's generic PCIe node is not part of this MMIO-only Guest.  Disable
+ * both the host controller and its E1000 child; this also prevents the board
+ * Kconfig from selecting PCIe support for the image. */
+/ {
+	chosen {
+		zephyr,uart-pipe = &uart0;
+	};
+};
+
+&pcie {
+	status = "disabled";
+};
+
+&eth0 {
+	status = "disabled";
+};
+
+/* Zephyr 4.x's qemu_cortex_a53 board already declares the 32 QEMU
+ * virtio-mmio windows.  The socket-pair topology uses slot 30 (GIC SPI 46). */
+&virtio_mmio31 {
+	status = "disabled";
+};
+
+&virtio_mmio30 {
+	status = "okay";
+
+	virtio_net: virtio-net {
+		compatible = "virtio,net";
+		status = "okay";
+		local-mac-address = [52 54 00 12 34 02];
+	};
+};

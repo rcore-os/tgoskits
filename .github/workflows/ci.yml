@@ -442,6 +442,15 @@ jobs:
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
+          - name: Task2/Task3 protocol contract regression
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: bash scripts/test/net-dual-guest/run-ci-regression.sh
+            cache_key: ""
+            container_image: base
+            fetch_depth: "1"
+            limit_to_owner: ""
+            main_pr_only: false
           - name: Test axvisor aarch64 qemu (smoke + axtest + timer stress)
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
@@ -450,6 +459,8 @@ jobs:
             command: |
               echo "==> axvisor aarch64 smoke"
               cargo xtask axvisor test qemu --arch aarch64 --test-case smoke
+              echo "==> axvisor aarch64 virtio-blk ArceOS guest"
+              timeout 240s apps/arceos/virtio-blk-test/run.sh
               echo "==> axvisor aarch64 axtest"
               cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
               echo "==> pull qemu-aarch64 image"

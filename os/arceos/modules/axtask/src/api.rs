@@ -5,7 +5,10 @@ use alloc::{
     string::String,
     sync::{Arc, Weak},
 };
-use core::fmt;
+use core::{
+    fmt,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use ax_memory_addr::VirtAddr;
 
@@ -19,7 +22,8 @@ pub use crate::task::{AxTaskExt, TaskExt};
 #[cfg_attr(doc, doc(cfg(all(feature = "multitask", feature = "irq"))))]
 #[cfg(feature = "irq")]
 pub use crate::timers::{
-    register_timer_callback, register_timer_deadline_source, register_timer_irq_callback,
+    hardware_timer_irq_count, register_timer_callback, register_timer_deadline_source,
+    register_timer_irq_callback,
 };
 #[cfg_attr(doc, doc(cfg(feature = "multitask")))]
 pub use crate::{
@@ -41,13 +45,41 @@ static TASK_REGISTRY: ax_lazyinit::LazyLock<crate::sync::SpinRwLock<BTreeMap<u64
 /// The wrapper type for [`ax_cpumask::CpuMask`] with SMP configuration.
 pub type AxCpuMask = ax_cpumask::CpuMask<{ crate::build_info::CPU_CAPACITY }>;
 
+/// CPUs reserved for explicitly pinned tasks such as dedicated guest vCPUs.
+static DEDICATED_CPU_MASK: AtomicUsize = AtomicUsize::new(0);
+
+/// Excludes `mask` from the default affinity of newly created host tasks.
+///
+/// Per-CPU runtime tasks and guest vCPU tasks set an explicit affinity after
+/// construction, so they remain eligible for their owning CPU.
+pub fn set_dedicated_cpu_mask(mask: usize) {
+    DEDICATED_CPU_MASK.store(mask, Ordering::Release);
+}
+
+pub(crate) fn current_cpu_is_dedicated() -> bool {
+    let cpu_id = ax_hal::percpu::this_cpu_id();
+    cpu_id < usize::BITS as usize
+        && DEDICATED_CPU_MASK.load(Ordering::Acquire) & (1usize << cpu_id) != 0
+}
+
 /// Returns the default stack size used by task creation helpers.
 pub fn default_task_stack_size() -> usize {
     crate::build_info::DEFAULT_TASK_STACK_SIZE
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(feature = "sched-rr")] {
+    if #[cfg(feature = "sched-prio-rr-20ms")] {
+        const MAX_TIME_SLICE: usize = 2;
+        pub(crate) type AxTask = ax_sched::PriorityRRTask<TaskInner, MAX_TIME_SLICE>;
+        pub(crate) type Scheduler = ax_sched::PriorityRRScheduler<TaskInner, MAX_TIME_SLICE>;
+    } else if #[cfg(feature = "sched-prio-rr")] {
+        const MAX_TIME_SLICE: usize = 5;
+        pub(crate) type AxTask = ax_sched::PriorityRRTask<TaskInner, MAX_TIME_SLICE>;
+        pub(crate) type Scheduler = ax_sched::PriorityRRScheduler<TaskInner, MAX_TIME_SLICE>;
+    } else if #[cfg(feature = "sched-rt")] {
+        pub(crate) type AxTask = ax_sched::PriorityTask<TaskInner>;
+        pub(crate) type Scheduler = ax_sched::PriorityScheduler<TaskInner>;
+    } else if #[cfg(feature = "sched-rr")] {
         const MAX_TIME_SLICE: usize = 5;
         pub(crate) type AxTask = ax_sched::RRTask<TaskInner, MAX_TIME_SLICE>;
         pub(crate) type Scheduler = ax_sched::RRScheduler<TaskInner, MAX_TIME_SLICE>;
@@ -58,6 +90,30 @@ cfg_if::cfg_if! {
         // If no scheduler features are set, use FIFO as the default.
         pub(crate) type AxTask = ax_sched::FifoTask<TaskInner>;
         pub(crate) type Scheduler = ax_sched::FifoScheduler<TaskInner>;
+    }
+}
+
+/// Returns fixed-priority round-robin mechanism counters when that scheduler is active.
+pub fn priority_rr_scheduler_stats() -> Option<ax_sched::PriorityRRStats> {
+    #[cfg(any(feature = "sched-prio-rr", feature = "sched-prio-rr-20ms"))]
+    {
+        Some(ax_sched::priority_rr_stats_snapshot())
+    }
+    #[cfg(not(any(feature = "sched-prio-rr", feature = "sched-prio-rr-20ms")))]
+    {
+        None
+    }
+}
+
+/// Returns the configured FP-RR quantum in scheduler ticks.
+pub const fn priority_rr_scheduler_quantum_ticks() -> Option<usize> {
+    #[cfg(any(feature = "sched-prio-rr", feature = "sched-prio-rr-20ms"))]
+    {
+        Some(MAX_TIME_SLICE)
+    }
+    #[cfg(not(any(feature = "sched-prio-rr", feature = "sched-prio-rr-20ms")))]
+    {
+        None
     }
 }
 
@@ -158,6 +214,21 @@ pub(crate) fn cpu_mask_full() -> AxCpuMask {
     });
 
     *CPU_MASK_FULL
+}
+
+pub(crate) fn default_task_cpu_mask() -> AxCpuMask {
+    let mut cpumask = cpu_mask_full();
+    let dedicated = DEDICATED_CPU_MASK.load(Ordering::Acquire);
+    for cpu_id in 0..crate::build_info::CPU_CAPACITY.min(usize::BITS as usize) {
+        if dedicated & (1usize << cpu_id) != 0 {
+            cpumask.set(cpu_id, false);
+        }
+    }
+    assert!(
+        !cpumask.is_empty(),
+        "dedicated CPU mask must leave at least one housekeeping CPU"
+    );
+    cpumask
 }
 
 /// Initializes the task scheduler for secondary CPUs.

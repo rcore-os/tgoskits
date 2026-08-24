@@ -10,10 +10,10 @@ pub use ax_plat::irq::{
     IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, IrqTrigger, LEGACY_IRQ_DOMAIN,
     LOONGARCH_EIOINTC_DOMAIN, LOONGARCH_PCH_PIC_DOMAIN, RISCV_PLIC_DOMAIN, ShareMode, TrapVector,
     X86_IOAPIC_DOMAIN, X86_LAPIC_DOMAIN, cpu_online, disable_irq, dispatch_irq, enable_irq,
-    free_irq, handle, in_irq_context, init_boot_irqs, irq_status, is_cpu_online, legacy_irq,
-    legacy_irq_raw, prepare_irq_context, request_irq, request_percpu_irq, request_shared_irq,
-    resolve_irq_source, resolve_percpu_irq, run_on_cpu_sync, set_enable, set_run_on_cpu_sync,
-    set_trigger, synchronize_irq, try_legacy_irq,
+    enter_irq_context, free_irq, handle, in_irq_context, in_irq_context_preempt_disabled,
+    init_boot_irqs, irq_status, is_cpu_online, legacy_irq, legacy_irq_raw, prepare_irq_context,
+    request_irq, request_percpu_irq, request_shared_irq, resolve_irq_source, resolve_percpu_irq,
+    run_on_cpu_sync, set_enable, set_run_on_cpu_sync, set_trigger, synchronize_irq, try_legacy_irq,
 };
 #[cfg(feature = "ipi")]
 pub use ax_plat::irq::{IpiTarget, send_ipi};
@@ -40,6 +40,25 @@ pub fn handle_irq(vector: usize) -> bool {
     )
 }
 
+/// Dispatches an IRQ whose controller acknowledgement is already owned by the
+/// caller, then completes that acknowledgement before IRQ-tail preemption.
+///
+/// Hypervisor IRQ exits cannot call [`handle_irq`]: the GIC token was already
+/// acknowledged before the architecture state was restored. This entry point
+/// supplies the same IRQ-context and preemption-release ordering without a
+/// second controller acknowledgement. `complete` must perform the matching
+/// EOI/deactivate operation for the caller-owned token.
+pub fn dispatch_acknowledged_irq(irq: IrqId, complete: impl FnOnce()) -> IrqOutcome {
+    with_irq_entry(
+        || {},
+        || {
+            let outcome = dispatch_irq(irq);
+            complete();
+            outcome
+        },
+    )
+}
+
 fn with_irq_entry<T>(prepare: impl FnOnce(), dispatch: impl FnOnce() -> T) -> T {
     with_observed_irq_entry(prepare, dispatch, || {})
 }
@@ -55,8 +74,13 @@ fn with_observed_irq_entry<T>(
     let irq_guard = ax_sync::IrqSaveGuard::new();
     prepare();
     let preempt_guard = ax_sync::PreemptGuard::new();
+    let irq_context_guard = enter_irq_context();
     let result = dispatch();
 
+    // A pending wakeup may turn into a context switch when preemption is
+    // released. Withdraw the IRQ-context publication first so the incoming
+    // task is never observed as executing inside the completed hard IRQ.
+    drop(irq_context_guard);
     drop(preempt_guard); // rescheduling may occur when preemption is re-enabled.
     after_preempt_release();
     drop(irq_guard);

@@ -1,0 +1,14 @@
+# Task1 scheduler A/B baseline. This profile differs from the RT profile only
+# in selecting round-robin scheduling instead of fixed-priority FIFO.
+features = [
+    "rr-scheduler",
+    "timer-latency-stats",
+    # "ax-driver/nvme",
+    # "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []
+
+# [env]
+# BACKTRACE = "y"

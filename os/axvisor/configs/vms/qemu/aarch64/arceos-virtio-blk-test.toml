@@ -1,0 +1,27 @@
+[base]
+id = 1
+name = "arceos-virtio-blk-test"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+phys_cpu_sets = [1]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-virtio-blk-test.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+memory_regions = [
+  [0x8000_0000, 0x2000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "virtblk0"
+model = "virtio-blk"
+backend = "ramdisk"
+capacity = "2MiB"

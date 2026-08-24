@@ -57,7 +57,14 @@ impl AssignedSpiRoutes {
             let mut registrations = routes.registrations.lock();
             for binding in &routes.bindings {
                 match AssignedSpiRouteRegistration::install(binding) {
-                    Ok(registration) => registrations.push(registration),
+                    Ok(registration) => {
+                        info!(
+                            "registered assigned AArch64 SPI route host_intid={} guest_intid={}",
+                            binding.irq.value(),
+                            binding.irq.value()
+                        );
+                        registrations.push(registration);
+                    }
                     Err(error) => {
                         registrations.clear();
                         return Err(error);

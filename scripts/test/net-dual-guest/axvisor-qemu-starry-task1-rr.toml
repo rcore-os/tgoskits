@@ -1,0 +1,10 @@
+# Task 1 StarryOS/Zephyr A/B baseline. The FP-RR arm differs only in the
+# scheduler feature selected below.
+features = [
+    "rr-scheduler",
+    "ax-driver/nvme",
+    "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

@@ -1,3 +1,5 @@
+.arch armv8-a+fp+simd
+
 .macro SAVE_REGS_FROM_EL1
     # Currently `sp` points to the address of `ArmVcpu.host.stack_top`.
     sub     sp, sp, {trap_frame_size}
@@ -57,9 +59,56 @@
     msr     tpidr_el0, x9
 .endm
 
+.macro SAVE_GUEST_FPU_FROM_EL1
+    stp     q0, q1, [sp, {guest_fpsimd_offset}]
+    stp     q2, q3, [sp, {guest_fpsimd_offset} + 32]
+    stp     q4, q5, [sp, {guest_fpsimd_offset} + 64]
+    stp     q6, q7, [sp, {guest_fpsimd_offset} + 96]
+    stp     q8, q9, [sp, {guest_fpsimd_offset} + 128]
+    stp     q10, q11, [sp, {guest_fpsimd_offset} + 160]
+    stp     q12, q13, [sp, {guest_fpsimd_offset} + 192]
+    stp     q14, q15, [sp, {guest_fpsimd_offset} + 224]
+    stp     q16, q17, [sp, {guest_fpsimd_offset} + 256]
+    stp     q18, q19, [sp, {guest_fpsimd_offset} + 288]
+    stp     q20, q21, [sp, {guest_fpsimd_offset} + 320]
+    stp     q22, q23, [sp, {guest_fpsimd_offset} + 352]
+    stp     q24, q25, [sp, {guest_fpsimd_offset} + 384]
+    stp     q26, q27, [sp, {guest_fpsimd_offset} + 416]
+    stp     q28, q29, [sp, {guest_fpsimd_offset} + 448]
+    stp     q30, q31, [sp, {guest_fpsimd_offset} + 480]
+    mrs     x9, fpsr
+    str     x9, [sp, {guest_fpsr_offset}]
+    mrs     x9, fpcr
+    str     x9, [sp, {guest_fpcr_offset}]
+.endm
+
+.macro RESTORE_GUEST_FPU_INTO_EL1
+    ldp     q0, q1, [sp, {guest_fpsimd_offset}]
+    ldp     q2, q3, [sp, {guest_fpsimd_offset} + 32]
+    ldp     q4, q5, [sp, {guest_fpsimd_offset} + 64]
+    ldp     q6, q7, [sp, {guest_fpsimd_offset} + 96]
+    ldp     q8, q9, [sp, {guest_fpsimd_offset} + 128]
+    ldp     q10, q11, [sp, {guest_fpsimd_offset} + 160]
+    ldp     q12, q13, [sp, {guest_fpsimd_offset} + 192]
+    ldp     q14, q15, [sp, {guest_fpsimd_offset} + 224]
+    ldp     q16, q17, [sp, {guest_fpsimd_offset} + 256]
+    ldp     q18, q19, [sp, {guest_fpsimd_offset} + 288]
+    ldp     q20, q21, [sp, {guest_fpsimd_offset} + 320]
+    ldp     q22, q23, [sp, {guest_fpsimd_offset} + 352]
+    ldp     q24, q25, [sp, {guest_fpsimd_offset} + 384]
+    ldp     q26, q27, [sp, {guest_fpsimd_offset} + 416]
+    ldp     q28, q29, [sp, {guest_fpsimd_offset} + 448]
+    ldp     q30, q31, [sp, {guest_fpsimd_offset} + 480]
+    ldr     x9, [sp, {guest_fpsr_offset}]
+    msr     fpsr, x9
+    ldr     x9, [sp, {guest_fpcr_offset}]
+    msr     fpcr, x9
+.endm
+
 .macro SAVE_VCPU_REGS_FROM_EL1
     SAVE_REGS_FROM_EL1
     SAVE_VCPU_RUNTIME_FROM_EL1
+    SAVE_GUEST_FPU_FROM_EL1
 .endm
 
 .macro ACK_PENDING_HOST_IRQ
@@ -92,6 +141,7 @@
     msr     sp_el0, x9
     msr     elr_el2, x10
     msr     spsr_el2, x11
+    RESTORE_GUEST_FPU_INTO_EL1
 
     ldr     x30,      [sp, 30 * 8]
     ldp     x28, x29, [sp, 28 * 8]
@@ -178,6 +228,7 @@
     SAVE_REGS_FROM_EL1
     ACK_PENDING_HOST_IRQ
     SAVE_VCPU_RUNTIME_FROM_EL1
+    SAVE_GUEST_FPU_FROM_EL1
     mov     x0, {exception_irq}
     bl      vmexit_trampoline
     # vmexit_trampoline returns directly to ArmVcpu::run.

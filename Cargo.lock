@@ -388,6 +388,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "arceos-task2-net"
+version = "0.1.0"
+dependencies = [
+ "ax-errno",
+ "ax-net",
+ "ax-std",
+ "task2-net-protocol",
+ "task3-model",
+ "task3-ncnn",
+]
+
+[[package]]
 name = "arceos-test-suit"
 version = "0.3.1"
 dependencies = [
@@ -413,6 +425,15 @@ version = "0.1.0"
 dependencies = [
  "ax-std",
  "tokio",
+]
+
+[[package]]
+name = "arceos-virtio-blk-test"
+version = "0.1.0"
+dependencies = [
+ "ax-driver",
+ "ax-std",
+ "virtio-drivers",
 ]
 
 [[package]]
@@ -1501,6 +1522,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "axvirtio-blk"
+version = "0.1.0"
+dependencies = [
+ "ax-memory-addr",
+ "ax-sync",
+ "axaddrspace",
+ "axdevice_base",
+ "axvirtio-common",
+ "axvm-types",
+ "log",
+]
+
+[[package]]
 name = "axvirtio-common"
 version = "0.1.0"
 dependencies = [
@@ -1529,6 +1563,7 @@ name = "axvisor"
 version = "0.5.24"
 dependencies = [
  "anyhow",
+ "ax-api",
  "ax-driver",
  "ax-hal",
  "ax-std",
@@ -1538,6 +1573,7 @@ dependencies = [
  "axdevice",
  "axdevice_base",
  "axtest",
+ "axvirtio-blk",
  "axvirtio-common",
  "axvirtio-net",
  "axvm",
@@ -1584,6 +1620,7 @@ dependencies = [
  "cpu-local",
  "extern-trait",
  "fdt-edit",
+ "fdt-parser",
  "fdt-raw",
  "irq-framework",
  "log",
@@ -8181,6 +8218,24 @@ dependencies = [
  "filetime",
  "libc",
  "xattr",
+]
+
+[[package]]
+name = "task2-net-protocol"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "task3-model"
+version = "0.1.0"
+
+[[package]]
+name = "task3-ncnn"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

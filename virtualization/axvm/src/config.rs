@@ -37,6 +37,18 @@ pub enum GuestBootPolicy {
     AdjustKernelForBootProtocol { protocol: VMBootProtocol },
 }
 
+/// Selects how the AArch64 guest `WFI` instruction is handled.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Aarch64WfiPolicy {
+    /// Derive the safe policy from vCPU placement and timer wake capability.
+    #[default]
+    Auto,
+    /// Always trap `WFI` and arm the software timer wake path.
+    Trap,
+    /// Leave `WFI` in hardware after validating direct wake capability.
+    Passthrough,
+}
+
 /// A part of `AxVMConfig`, which represents a `VCpu`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AxVCpuConfig {
@@ -104,9 +116,17 @@ pub struct AxVMConfig {
     gic_profile: Option<GuestGicProfile>,
     plic_profile: Option<GuestPlicProfile>,
     timer_profile: Option<GuestTimerProfile>,
+    aarch64_virtual_timer_only: bool,
+    aarch64_wfi_policy: Aarch64WfiPolicy,
+    /// Host scheduler priority assigned to each vCPU task of this VM.
+    host_sched_priority: i32,
     serial_backend_factory: Arc<dyn SerialBackendFactory>,
     virtual_device_requests: Vec<VirtualDeviceRequest>,
     virtual_device_catalog: Arc<crate::ConfiguredDeviceCatalog>,
+    /// Whether the AArch64 trap layer must advance the exception PC past a
+    /// trapping `hvc`/`smc` before resuming the guest. See
+    /// [`AxVMConfigParams::advance_hvc_smc_pc`].
+    advance_hvc_smc_pc: bool,
 }
 
 /// Parameters used to build an [`AxVMConfig`].
@@ -133,6 +153,22 @@ pub struct AxVMConfigParams {
     pub virtual_device_requests: Vec<VirtualDeviceRequest>,
     /// Code-registered factories available to this VM.
     pub virtual_device_catalog: Option<Arc<crate::ConfiguredDeviceCatalog>>,
+    /// Whether the AArch64 trap layer must advance the exception PC past a
+    /// trapping `hvc`/`smc` before resuming the guest.
+    ///
+    /// ARM DDI 0487 defines the preferred exception return address for HVC as
+    /// the following instruction, so QEMU (and spec-conforming emulators)
+    /// report ELR_EL2 already past the trap and need `false`. Some physical
+    /// platforms report the trapping instruction itself and need `true`.
+    /// Defaults to `true` so physical-board configs keep the legacy behavior.
+    pub advance_hvc_smc_pc: bool,
+    /// Whether this AArch64 guest is contractually limited to `CNTV_*`.
+    pub aarch64_virtual_timer_only: bool,
+    /// How this AArch64 guest handles `WFI`.
+    pub aarch64_wfi_policy: Aarch64WfiPolicy,
+    /// Optional host scheduler priority. `None` keeps the compatibility
+    /// default used by existing programmatic callers.
+    pub host_sched_priority: Option<i32>,
 }
 
 impl AxVMConfig {
@@ -159,6 +195,9 @@ impl AxVMConfig {
             gic_profile: machine.gic,
             plic_profile: machine.plic,
             timer_profile: machine.timer,
+            aarch64_virtual_timer_only: params.aarch64_virtual_timer_only,
+            aarch64_wfi_policy: params.aarch64_wfi_policy,
+            host_sched_priority: params.host_sched_priority.unwrap_or(90),
             serial_backend_factory: params
                 .serial_backend_factory
                 .unwrap_or_else(|| Arc::new(NullSerialBackendFactory)),
@@ -166,6 +205,7 @@ impl AxVMConfig {
             virtual_device_catalog: params
                 .virtual_device_catalog
                 .unwrap_or_else(|| Arc::new(crate::ConfiguredDeviceCatalog::new())),
+            advance_hvc_smc_pc: params.advance_hvc_smc_pc,
         }
     }
 
@@ -182,6 +222,11 @@ impl AxVMConfig {
     /// Returns VM id.
     pub fn id(&self) -> usize {
         self.id
+    }
+
+    /// Returns the host scheduler priority for this VM's vCPU tasks.
+    pub const fn host_sched_priority(&self) -> i32 {
+        self.host_sched_priority
     }
 
     /// Returns VM name.
@@ -389,6 +434,16 @@ impl AxVMConfig {
         self.timer_profile.as_ref()
     }
 
+    /// Returns whether the guest is forbidden from accessing `CNTP_*`.
+    pub const fn aarch64_virtual_timer_only(&self) -> bool {
+        self.aarch64_virtual_timer_only
+    }
+
+    /// Returns the requested AArch64 `WFI` handling policy.
+    pub const fn aarch64_wfi_policy(&self) -> Aarch64WfiPolicy {
+        self.aarch64_wfi_policy
+    }
+
     /// Replaces the virtual PLIC window with host firmware resources.
     pub fn replace_machine_plic(&mut self, profile: GuestPlicProfile) -> crate::AxVmResult {
         if self.plic_profile.is_none() {
@@ -399,6 +454,12 @@ impl AxVMConfig {
         profile.validate_for_vcpus(self.phys_cpu_ls.cpu_num())?;
         self.plic_profile = Some(profile);
         Ok(())
+    }
+
+    /// Whether the AArch64 trap layer must advance the exception PC past a
+    /// trapping `hvc`/`smc` before resuming the guest.
+    pub fn advance_hvc_smc_pc(&self) -> bool {
+        self.advance_hvc_smc_pc
     }
 
     /// Returns host firmware resources retained by the virtual PLIC.

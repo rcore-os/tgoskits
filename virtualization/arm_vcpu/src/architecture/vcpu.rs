@@ -66,6 +66,8 @@ pub struct ArmVcpu<H: ArmHostOps> {
     timer: ArmVcpuTimer,
     /// The MPIDR_EL1 value for the vCPU.
     mpidr: u64,
+    /// See [`ArmVcpuCreateConfig::advance_hvc_smc_pc`].
+    advance_hvc_smc_pc: bool,
     _host: PhantomData<fn() -> H>,
 }
 
@@ -153,7 +155,7 @@ const _: () = {
 };
 
 /// Configuration for creating a new [`ArmVcpu`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ArmVcpuCreateConfig {
     /// The MPIDR_EL1 value for the new vCPU,
     /// which is used to identify the CPU in a multiprocessor system.
@@ -162,6 +164,27 @@ pub struct ArmVcpuCreateConfig {
     pub mpidr_el1: u64,
     /// The address of the device tree blob.
     pub dtb_addr: usize,
+    /// Whether the trap layer must advance the exception PC past the
+    /// trapping `hvc`/`smc` instruction.
+    ///
+    /// ARM DDI 0487 defines the preferred exception return address for HVC
+    /// as the instruction after the `hvc`, so QEMU and spec-conforming
+    /// implementations report ELR_EL2 already pointing past the trap and
+    /// this flag must be `false`. Some physical platforms report the trapping
+    /// instruction itself and require the advance (`true`). Set it from the
+    /// platform capability; keep it `true` when the platform is unknown so
+    /// physical-board behavior stays the legacy default.
+    pub advance_hvc_smc_pc: bool,
+}
+
+impl Default for ArmVcpuCreateConfig {
+    fn default() -> Self {
+        Self {
+            mpidr_el1: 0,
+            dtb_addr: 0,
+            advance_hvc_smc_pc: true,
+        }
+    }
 }
 
 /// Fixed EL2 setup policy for a new [`ArmVcpu`].
@@ -173,6 +196,7 @@ pub struct ArmVcpuCreateConfig {
 pub struct ArmVcpuSetupConfig {
     timer: ArmTimerVmConfig,
     host_irq: ArmHostIrqConfig,
+    trap_wfi: bool,
 }
 
 impl ArmVcpuSetupConfig {
@@ -180,8 +204,25 @@ impl ArmVcpuSetupConfig {
     /// host interrupt-controller interface.
     ///
     /// Every vCPU in one VM must receive the same immutable configuration.
+    /// `trap_wfi` defaults to `true`; use [`Self::with_trap_wfi`] to opt a
+    /// dedicated vCPU out of WFI trapping.
     pub const fn new(timer: ArmTimerVmConfig, host_irq: ArmHostIrqConfig) -> Self {
-        Self { timer, host_irq }
+        Self {
+            timer,
+            host_irq,
+            trap_wfi: true,
+        }
+    }
+
+    /// Sets whether guest WFI instructions trap to EL2.
+    ///
+    /// A vCPU that exclusively owns a physical CPU keeps WFI untrapped so an
+    /// idle guest waits in place with the lowest possible wake latency and
+    /// without a per-WFI VM exit; shared cores must keep trapping so a
+    /// sleeping vCPU yields the physical CPU to other host tasks.
+    pub const fn with_trap_wfi(mut self, trap_wfi: bool) -> Self {
+        self.trap_wfi = trap_wfi;
+        self
     }
 
     /// Returns the VM-wide timer configuration.
@@ -192,6 +233,11 @@ impl ArmVcpuSetupConfig {
     /// Returns the host IRQ interface consumed by the world-switch assembly.
     pub const fn host_irq(self) -> ArmHostIrqConfig {
         self.host_irq
+    }
+
+    /// Returns whether guest WFI instructions trap to EL2.
+    pub const fn trap_wfi(self) -> bool {
+        self.trap_wfi
     }
 }
 
@@ -207,6 +253,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             guest_system_regs: GuestSystemRegisters::default(),
             timer: ArmVcpuTimer::unconfigured(),
             mpidr: config.mpidr_el1,
+            advance_hvc_smc_pc: config.advance_hvc_smc_pc,
             _host: PhantomData,
         })
     }
@@ -322,12 +369,14 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             self.guest_system_regs.vtcr_el2 = vtcr_for_config(levels, gpa_bits, pa_bits);
         }
 
-        let hcr_el2 = HCR_EL2::VM::Enable
+        let mut hcr_el2 = HCR_EL2::VM::Enable
             + HCR_EL2::TSC::EnableTrapEl1SmcToEl2
-            + HCR_EL2::TWI::SET
             + HCR_EL2::RW::EL1IsAarch64
             + HCR_EL2::IMO::EnableVirtualIRQ
             + HCR_EL2::FMO::EnableVirtualFIQ;
+        if config.trap_wfi() {
+            hcr_el2 += HCR_EL2::TWI::SET;
+        }
 
         self.guest_system_regs.hcr_el2 = hcr_el2.into();
 
@@ -447,7 +496,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         }
 
         let result = match exit_reason {
-            TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
+            TrapKind::Synchronous => handle_exception_sync(&mut self.ctx, self.advance_hvc_smc_pc),
             TrapKind::Irq => {
                 let raw_ack = core::mem::replace(&mut self.host.pending_irq_ack, u32::MAX);
                 Ok(ArmVmExit::ExternalInterrupt {
@@ -518,40 +567,40 @@ impl<H: ArmHostOps> ArmVcpu<H> {
                     .timer
                     .guest_counter(ArmTimerKind::Physical, physical_counter())?;
                 self.set_gpr(reg, counter as usize);
-                Ok(Some(ArmVmExit::Nothing))
+                Ok(Some(ArmVmExit::PhysicalTimerSysReg))
             }
             (SYSREG_CNTP_TVAL_EL0, false) => {
                 let value = self
                     .timer
                     .read_tval(ArmTimerKind::Physical, physical_counter())?;
                 self.set_gpr(reg, value as usize);
-                Ok(Some(ArmVmExit::Nothing))
+                Ok(Some(ArmVmExit::PhysicalTimerSysReg))
             }
             (SYSREG_CNTP_CTL_EL0, false) => {
                 let value = self
                     .timer
                     .read_control(ArmTimerKind::Physical, physical_counter())?;
                 self.set_gpr(reg, value as usize);
-                Ok(Some(ArmVmExit::Nothing))
+                Ok(Some(ArmVmExit::PhysicalTimerSysReg))
             }
             (SYSREG_CNTP_CVAL_EL0, false) => {
                 let value = self.timer.read_compare(ArmTimerKind::Physical)?;
                 self.set_gpr(reg, value as usize);
-                Ok(Some(ArmVmExit::Nothing))
+                Ok(Some(ArmVmExit::PhysicalTimerSysReg))
             }
             (SYSREG_CNTP_TVAL_EL0, true) => {
                 self.timer
                     .write_tval(ArmTimerKind::Physical, physical_counter(), value as u32)?;
-                Ok(Some(ArmVmExit::Nothing))
+                Ok(Some(ArmVmExit::PhysicalTimerSysReg))
             }
             (SYSREG_CNTP_CTL_EL0, true) => {
                 self.timer
                     .write_control(ArmTimerKind::Physical, value as u32)?;
-                Ok(Some(ArmVmExit::Nothing))
+                Ok(Some(ArmVmExit::PhysicalTimerSysReg))
             }
             (SYSREG_CNTP_CVAL_EL0, true) => {
                 self.timer.write_compare(ArmTimerKind::Physical, value)?;
-                Ok(Some(ArmVmExit::Nothing))
+                Ok(Some(ArmVmExit::PhysicalTimerSysReg))
             }
             (SYSREG_CNTFRQ_EL0 | SYSREG_CNTPCT_EL0, true) => Err(crate::ArmVcpuError::InvalidInput),
             (SYSREG_ICC_SGI1R_EL1, true) => {

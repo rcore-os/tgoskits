@@ -1,0 +1,23 @@
+# P2-SWITCH: dual-guest link through the in-hypervisor virtio-net switch.
+# Axvisor emulates one virtio-mmio endpoint per guest and forwards frames
+# between the two ports inside the hypervisor. No QEMU netdev, socket pair,
+# proxy, or host-DTB carveout is involved; QMP remains only for run control
+# (quit).
+args = [
+  "-display", "none",
+  "-monitor", "none",
+  "-serial", "unix:${workspace}/tmp/net-dual-guest/serial-switch.sock,server,nowait",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "1",
+  "-m", "8g",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-append", "root=/dev/nvme0n1 rw init=/init",
+  "-snapshot",
+  "-qmp", "unix:${workspace}/tmp/net-dual-guest/qmp-switch.sock,server,nowait",
+]
+fail_regex = ["TASK2_ERROR=", "(?i)panic"]
+success_regex = ["TASK2_STATUS_RECEIVED"]
+to_bin = true
+uefi = false

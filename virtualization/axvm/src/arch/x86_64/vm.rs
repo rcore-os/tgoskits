@@ -59,7 +59,7 @@ impl X86_64Arch {
             resources.prepare_guest_address_space(vm.id(), &ARCH_OWNED_REGIONS)?;
             resources.map_arch_address_space()?;
             let intercepted_ports = resources.resolved_port_intercepts()?;
-            vcpus.setup(resources, |config, memory_regions| {
+            vcpus.setup(resources, |_vcpu_id, config, memory_regions| {
                 build_vcpu_setup_config(config, memory_regions, &intercepted_ports)
             })?;
 

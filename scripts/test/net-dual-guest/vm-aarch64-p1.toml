@@ -1,0 +1,26 @@
+# Single-guest P1 AxVisor VM configuration.
+#
+# The current AArch64 selector identifies the PCI controller as one FDT node;
+# this is sufficient for a single-guest smoke test, but it is not a two-guest
+# PCI-function isolation proof.
+
+[base]
+id = 1
+name = "task2-p1"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "${workspace}/tmp/net-dual-guest/arceos-task2-net-p1.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+memory_regions = [
+  [0x8000_0000, 0x4000_0000, 0x7, 1],
+]
+
+[devices]
+passthrough = [{ path = "/pcie@10000000" }]
+disabled = []

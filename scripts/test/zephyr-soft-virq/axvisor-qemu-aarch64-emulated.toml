@@ -1,0 +1,35 @@
+[base]
+id = 2
+name = "zephyr-qemu-software-virq-emulated"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [3]
+
+[kernel]
+entry_point = 0x4000_10b4
+image_location = "memory"
+kernel_path = "/tmp/zephyr-soft-virq-build/zephyr/zephyr.bin"
+kernel_load_addr = 0x4000_0000
+dtb_load_addr = 0x47e0_0000
+memory_regions = [
+  [0x4000_0000, 0x0800_0000, 0x7, 0],
+]
+
+[devices]
+interrupt_mode = "emulated"
+
+# QEMU virt GICv3 guest addresses. Keep the distributor and one redistributor
+# in the emulated device map so the guest configures the same virtual GIC whose
+# list registers receive the software vIRQ.
+emu_devices = [
+  ["gppt-gicd", 0x0800_0000, 0x1_0000, 0, 0x21, []],
+  ["gppt-gicr", 0x080a_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 3]],
+]
+
+passthrough_devices = [
+  ["/pl011@9000000"],
+  ["/intc@8000000"],
+  ["/timer"],
+]
+passthrough_addresses = []
+excluded_devices = []

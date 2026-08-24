@@ -1,0 +1,55 @@
+diff --git a/components/drivers/pic/pic-gicv3.c b/components/drivers/pic/pic-gicv3.c
+index 7a11f35de..81d327bd4 100644
+--- a/components/drivers/pic/pic-gicv3.c
++++ b/components/drivers/pic/pic-gicv3.c
+@@ -541,6 +541,11 @@ static rt_err_t gicv3_irq_set_affinity(struct rt_pic_irq *pirq, rt_bitmap_t *aff
+     return ret;
+ }
+ 
++rt_ubase_t rt_pic_arch_timer_virtual_irq(void)
++{
++    return _gic.parent.irq_start + (27 - GIC_SGI_NR);
++}
++
+ static rt_err_t gicv3_irq_set_triger_mode(struct rt_pic_irq *pirq, rt_uint32_t mode)
+ {
+     void *base;
+@@ -992,6 +997,11 @@ static void gicv3_init(void)
+     _gic.parent.ops = &gicv3_ops;
+ 
+     rt_pic_linear_irq(&_gic.parent, _gic.irq_nr - GIC_SGI_NR);
++    /* Expose the virtual timer PPI (INTID 27) so guests can use CNTV.
++     * The GIC handler derives the irq slot from the IAR as
++     * irq_start + (hwirq - GIC_SGI_NR), so the probe must install its ISR
++     * on that derived slot rather than on the raw INTID. */
++    rt_pic_config_irq(&_gic.parent, 27 - GIC_SGI_NR, 27);
+     gic_common_sgi_config(_gic.dist_base, &_gic.parent, 0);
+ 
+     rt_pic_add_traps(gicv3_handler, &_gic);
+diff --git a/components/drivers/serial/dev_serial.c b/components/drivers/serial/dev_serial.c
+index 45bf97c32..d41e8b387 100644
+--- a/components/drivers/serial/dev_serial.c
++++ b/components/drivers/serial/dev_serial.c
+@@ -1253,6 +1253,7 @@ static rt_err_t rt_serial_control(struct rt_device *dev,
+                     p_winsize->ws_col = 80;
+                     p_winsize->ws_row = 24;
+                 }
++#ifdef RT_USING_FINSH
+                 else
+                 {
+                     #include <shell.h>
+@@ -1320,6 +1321,14 @@ static rt_err_t rt_serial_control(struct rt_device *dev,
+                     p_winsize->ws_row = atoi(row_s);
+                 #undef _TIO_BUFLEN
+                 }
++#else
++                else
++                {
++                    /* FINSH is disabled; report the default window size. */
++                    p_winsize->ws_col = 80;
++                    p_winsize->ws_row = 24;
++                }
++#endif
+ 
+                 p_winsize->ws_xpixel = 0;/* unused */
+                 p_winsize->ws_ypixel = 0;/* unused */

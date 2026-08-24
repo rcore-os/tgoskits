@@ -1,0 +1,23 @@
+# AxVisor single-Guest StarryOS smoke configuration.
+#
+# pCPU0 is reserved for the AxVisor host and pCPU1 runs the passthrough
+# StarryOS vCPU.  Keep a dedicated serial socket: relying on -nographic/stdout
+# loses the guest boot transcript when axbuild terminates early.
+args = [
+  "-display", "none",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3,dumpdtb=${workspace}/tmp/net-dual-guest/qemu-starry-host.dtb",
+  "-smp", "2",
+  "-m", "8g",
+  "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+  "-netdev", "user,id=net-starry,net=10.0.42.0/24",
+  "-device", "virtio-net-pci,netdev=net-starry,addr=0x4,mac=52:54:00:12:34:15",
+  "-qmp", "unix:${workspace}/tmp/net-dual-guest/qmp-starry-smoke.sock,server,nowait",
+  "-serial", "unix:${workspace}/tmp/net-dual-guest/serial-starry-smoke.sock,server,nowait",
+]
+fail_regex = ["(?i)panic", "VM[1].*(failed|error)"]
+success_regex = ["VM[1] boot success", "StarryOS"]
+timeout = 180
+to_bin = true
+uefi = false

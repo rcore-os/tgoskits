@@ -75,6 +75,88 @@ const ARRAY_REPEAT_VALUE: MaybeUninit<NonNull<AxRunQueue>> = MaybeUninit::uninit
 pub(crate) static BUSY_TICKS: [core::sync::atomic::AtomicU64; crate::build_info::CPU_CAPACITY] =
     [const { core::sync::atomic::AtomicU64::new(0) }; crate::build_info::CPU_CAPACITY];
 
+/// Monotonic scheduler tick used for task wait diagnostics.
+static SCHED_TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Returns whether a requested local wakeup should preempt the current task.
+///
+/// RR/FIFO schedulers preserve their existing eager-reschedule behavior. A
+/// fixed-priority scheduler, however, must not turn an equal- or lower-priority
+/// wakeup into an immediate context switch while a runnable task is already
+/// executing: doing so at every IRQ tail creates scheduler churn without
+/// making a more urgent task runnable. An idle CPU is the exception; it must
+/// leave the idle task even when the woken task carries the minimum priority.
+#[inline]
+#[cfg(any(
+    feature = "sched-rt",
+    feature = "sched-prio-rr",
+    feature = "sched-prio-rr-20ms"
+))]
+fn fixed_priority_wake_should_preempt(
+    current_is_idle: bool,
+    wake_priority: i32,
+    current_priority: i32,
+) -> bool {
+    current_is_idle || wake_priority > current_priority
+}
+
+#[inline]
+fn wake_should_preempt_current(wake_priority: i32) -> bool {
+    #[cfg(feature = "irq")]
+    if !ax_hal::irq::in_irq_context_preempt_disabled() {
+        return true;
+    }
+    #[cfg(any(
+        feature = "sched-rt",
+        feature = "sched-prio-rr",
+        feature = "sched-prio-rr-20ms"
+    ))]
+    {
+        let current = crate::current();
+        fixed_priority_wake_should_preempt(
+            current.is_idle(),
+            wake_priority,
+            current.sched_priority(),
+        )
+    }
+    #[cfg(not(any(
+        feature = "sched-rt",
+        feature = "sched-prio-rr",
+        feature = "sched-prio-rr-20ms"
+    )))]
+    {
+        let _ = wake_priority;
+        true
+    }
+}
+
+#[cfg(all(
+    test,
+    any(
+        feature = "sched-rt",
+        feature = "sched-prio-rr",
+        feature = "sched-prio-rr-20ms"
+    )
+))]
+mod priority_wake_tests {
+    #[test]
+    fn higher_priority_wakeup_requests_tail_preemption() {
+        assert!(super::fixed_priority_wake_should_preempt(false, 90, 89));
+    }
+
+    #[test]
+    fn equal_or_lower_wakeup_does_not_request_tail_preemption() {
+        assert!(!super::fixed_priority_wake_should_preempt(false, 90, 90));
+        assert!(!super::fixed_priority_wake_should_preempt(false, 89, 90));
+    }
+
+    #[test]
+    fn idle_cpu_always_leaves_the_idle_task() {
+        assert!(super::fixed_priority_wake_should_preempt(true, 0, 0));
+        assert!(super::fixed_priority_wake_should_preempt(true, 0, 90));
+    }
+}
+
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
     let (stack_ptr, stack_size) = ax_hal::mem::boot_stack_bounds(this_cpu_id());
@@ -187,13 +269,12 @@ pub fn handle_ipi_reschedule() {
     if !take_remote_reschedule_pending_for_current_cpu() {
         return;
     }
-    #[cfg(all(feature = "preempt", feature = "host-test"))]
+    #[cfg(feature = "preempt")]
     if let Some(curr) = crate::current_may_uninit() {
+        // The IPI action still runs in hard-IRQ context. Publish the request
+        // here and let the common IRQ exit path perform the context switch
+        // after it has cleared the platform IRQ-context marker.
         curr.set_force_resched_pending(true);
-    }
-    #[cfg(all(feature = "preempt", not(feature = "host-test")))]
-    if crate::current_may_uninit().is_some() {
-        CurrentRunQueueRef::<RawState>::force_resched_from_irq();
     }
 }
 
@@ -690,9 +771,25 @@ impl<G: GuardState> AxRunQueueRef<G> {
         assert!(task.is_ready());
         #[cfg(feature = "smp")]
         task.set_cpu_id(cpu_id as _);
+        task.mark_ready_at_tick(SCHED_TICKS.load(core::sync::atomic::Ordering::Relaxed));
         // SAFETY: `AxRunQueueRef<G>` has already entered the run-queue
         // critical section represented by `G`.
-        unsafe { self.inner.scheduler.lock_raw() }.add_task(task);
+        let mut scheduler = unsafe { self.inner.scheduler.lock_raw() };
+        #[cfg(any(
+            feature = "sched-rt",
+            feature = "sched-prio-rr",
+            feature = "sched-prio-rr-20ms"
+        ))]
+        if !scheduler.set_priority(&task, task.sched_priority() as isize) {
+            debug!(
+                "task {} requested invalid fixed priority {}; using {}",
+                task.id_name(),
+                task.sched_priority(),
+                ax_sched::MIN_PRIORITY
+            );
+            let _ = scheduler.set_priority(&task, ax_sched::MIN_PRIORITY);
+        }
+        scheduler.add_task(task);
         #[cfg(all(feature = "smp", feature = "ipi"))]
         kick_remote_cpu(cpu_id);
     }
@@ -702,6 +799,7 @@ impl<G: GuardState> AxRunQueueRef<G> {
     /// This function does nothing if the task is not in [`TaskState::Blocked`],
     /// which means the task is already unblocked by other cores.
     pub fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
+        let wake_priority = task.sched_priority();
         let task_id_name = if log::log_enabled!(log::Level::Debug) {
             Some(task.id_name())
         } else {
@@ -724,7 +822,7 @@ impl<G: GuardState> AxRunQueueRef<G> {
             }
             // Note: when the task is unblocked on another CPU's run queue,
             // we just ignore the `resched` flag.
-            if resched && cpu_id == this_cpu_id() {
+            if resched && cpu_id == this_cpu_id() && wake_should_preempt_current(wake_priority) {
                 #[cfg(feature = "preempt")]
                 crate::current().set_preempt_pending(true);
             }
@@ -741,6 +839,7 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
     /// See [`AxRunQueueRef::unblock_task`] for the state-transition details.
     #[cfg(feature = "irq")]
     pub(crate) fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
+        let wake_priority = task.sched_priority();
         let task_id_name = if log::log_enabled!(log::Level::Debug) {
             Some(task.id_name())
         } else {
@@ -755,7 +854,7 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
             if let Some(task_id_name) = task_id_name {
                 debug!("task unblock: {task_id_name} on run_queue {cpu_id}");
             }
-            if resched {
+            if resched && wake_should_preempt_current(wake_priority) {
                 #[cfg(feature = "preempt")]
                 crate::current().set_preempt_pending(true);
             }
@@ -765,6 +864,7 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
     #[cfg(feature = "irq")]
     pub fn scheduler_timer_tick(&mut self) {
         let curr = &self.current_task;
+        SCHED_TICKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         if !curr.is_idle() {
             // Ondemand-governor load accounting: this CPU ran a real (non-idle)
             // task this tick. Already IRQ + preempt off here; a single relaxed
@@ -893,17 +993,6 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
         } else {
             curr.set_force_resched_pending(true);
         }
-    }
-
-    #[cfg(all(
-        feature = "smp",
-        feature = "ipi",
-        feature = "preempt",
-        not(feature = "host-test")
-    ))]
-    fn force_resched_from_irq() {
-        let mut rq = current_run_queue::<RawState>();
-        rq.force_resched_with_preempt_count(0);
     }
 
     /// Exit the current task with the specified exit code.
@@ -1123,6 +1212,7 @@ impl AxRunQueue {
             // TODO: priority
             #[cfg(feature = "smp")]
             task.set_cpu_id(self.cpu_id as _);
+            task.mark_ready_at_tick(SCHED_TICKS.load(core::sync::atomic::Ordering::Relaxed));
             // SAFETY: the caller holds the run-queue context guard.
             unsafe { self.scheduler.lock_raw() }.put_prev_task(task, preempt);
             true
@@ -1174,6 +1264,18 @@ impl AxRunQueue {
         #[cfg(feature = "preempt")]
         next_task.set_preempt_pending(false);
         next_task.set_state(TaskState::Running);
+        let wait_ticks = next_task.take_ready_wait_ticks(
+            SCHED_TICKS.load(core::sync::atomic::Ordering::Relaxed),
+        );
+        if wait_ticks >= u64::MAX && next_task.id_name().contains("VM[") {
+            warn!(
+                "scheduler wait: task={} priority={} wait_ticks={} max_wait_ticks={}",
+                next_task.id_name(),
+                next_task.sched_priority(),
+                wait_ticks,
+                next_task.max_ready_wait_ticks(),
+            );
+        }
         if prev_task.ptr_eq(&next_task) {
             return;
         }
@@ -1315,7 +1417,11 @@ fn gc_entry() {
         unsafe {
             ax_hal::percpu::with_cpu_pin(|pin| {
                 WAIT_FOR_EXIT.with_current(pin, |wait| {
-                    let _timeout = wait.wait_timeout(core::time::Duration::from_millis(100));
+                    if crate::api::current_cpu_is_dedicated() {
+                        wait.wait();
+                    } else {
+                        let _timeout = wait.wait_timeout(core::time::Duration::from_millis(100));
+                    }
                 })
             })
         }
@@ -1462,6 +1568,7 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
         TaskStack::borrowed(stack_ptr, stack_size, TASK_STACK_ALIGN),
     )
     .into_arc();
+    idle_task.set_cpumask(AxCpuMask::one_shot(cpu_id));
     idle_task.set_state(TaskState::Running);
     // SAFETY: the secondary CPU remains offline and IRQ-disabled throughout
     // its scheduler initialization.

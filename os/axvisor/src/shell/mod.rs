@@ -75,6 +75,7 @@ pub fn console_init() {
     }
 
     loop {
+        crate::guest_console::flush_host_output();
         if let Some(vm_id) = crate::guest_console::reconcile_vm_states() {
             println!();
             println!("[Axvisor] VM[{vm_id}] stopped; returning to the management shell");

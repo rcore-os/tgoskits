@@ -54,7 +54,113 @@ pub fn setup_guest_fdt_from_vmm(
 
     reserve_excluded_device_ranges(vm_cfg, crate_config, fdt_bytes)?;
     let passthrough_device_names = super::device::find_all_passthrough_devices(vm_cfg, &fdt);
-    super::create::create_guest_fdt(&fdt, &passthrough_device_names, crate_config)
+    info!(
+        "VM[{}] generated-FDT passthrough paths: {:?}",
+        vm_cfg.id(),
+        passthrough_device_names
+    );
+    for node_id in fdt.iter_node_ids() {
+        let path = fdt.path_of(node_id);
+        if path.contains("pcie") || path.contains("pci") || path.contains("nvme") {
+            if let Some(node) = fdt.node(node_id) {
+                let compatibles = node.compatibles().collect::<Vec<_>>();
+                let regs = node_regs(&fdt, node_id)
+                    .into_iter()
+                    .map(|reg| (reg.address, reg.size))
+                    .collect::<Vec<_>>();
+                let properties = [
+                    "compatible",
+                    "reg",
+                    "ranges",
+                    "interrupt-map",
+                    "interrupt-map-mask",
+                    "msi-parent",
+                    "msi-map",
+                    "dma-ranges",
+                    "bus-range",
+                ]
+                .into_iter()
+                .filter_map(|name| node.get_property(name).map(|property| (name, property.data.len())))
+                .collect::<Vec<_>>();
+                info!(
+                    "VM[{}] host-FDT PCI node path={} name={} compatible={:?} reg={:?} properties={:?}",
+                    vm_cfg.id(),
+                    path,
+                    node.name(),
+                    compatibles,
+                    regs,
+                    properties
+                );
+            }
+        }
+    }
+    let guest_fdt = super::create::create_guest_fdt(&fdt, &passthrough_device_names, crate_config)?;
+    info!(
+        "VM[{}] generated guest-FDT bytes={}",
+        vm_cfg.id(),
+        guest_fdt.len()
+    );
+    if let Ok(guest) = Fdt::from_bytes(&guest_fdt) {
+        let guest_paths = guest
+            .iter_node_ids()
+            .map(|node_id| guest.path_of(node_id))
+            .filter(|path| path.contains("pcie") || path.contains("pci") || path.contains("nvme"))
+            .collect::<Vec<_>>();
+        info!(
+            "VM[{}] generated guest-FDT PCI paths: {:?}",
+            vm_cfg.id(),
+            guest_paths
+        );
+        for node_id in guest.iter_node_ids() {
+            let path = guest.path_of(node_id);
+            if !(path.contains("pcie") || path.contains("pci") || path.contains("nvme")) {
+                continue;
+            }
+            if let Some(node) = guest.node(node_id) {
+                let compatibles = node.compatibles().collect::<Vec<_>>();
+                let regs = node_regs(&guest, node_id)
+                    .into_iter()
+                    .map(|reg| (reg.address, reg.size))
+                    .collect::<Vec<_>>();
+                let properties = [
+                    "ranges",
+                    "interrupt-map",
+                    "interrupt-map-mask",
+                    "msi-parent",
+                    "msi-map",
+                    "interrupts",
+                    "bus-range",
+                    "#address-cells",
+                    "#size-cells",
+                    "dma-ranges",
+                ]
+                .into_iter()
+                .filter_map(|name| {
+                    node.get_property(name)
+                        .map(|property| (name, property.data.len()))
+                })
+                .collect::<Vec<_>>();
+                info!(
+                    "VM[{}] guest-FDT PCI property-count={} property-names={:?}",
+                    vm_cfg.id(),
+                    properties.len(),
+                    properties.iter().map(|(name, _)| *name).collect::<Vec<_>>()
+                );
+                info!(
+                    "VM[{}] generated guest-FDT PCI node path={} name={} compatible={:?} reg={:?} properties={:?}",
+                    vm_cfg.id(),
+                    path,
+                    node.name(),
+                    compatibles,
+                    regs,
+                    properties
+                );
+            }
+        }
+    } else {
+        warn!("VM[{}] generated guest-FDT could not be reparsed", vm_cfg.id());
+    }
+    Ok(guest_fdt)
 }
 
 fn is_reserved_memory_path(node_path: &str) -> bool {
@@ -596,6 +702,10 @@ pub fn parse_passthrough_devices_address(
     let selected_paths = super::device::find_all_passthrough_devices(vm_cfg, &fdt)
         .into_iter()
         .collect::<BTreeSet<_>>();
+    info!(
+        "passthrough address discovery selected paths: {:?}",
+        selected_paths
+    );
     vm_cfg.clear_pass_through_devices();
     let reserved_regions: Vec<VmMemConfig> = reserved_memory_regions(crate_cfg).cloned().collect();
 
@@ -648,6 +758,10 @@ pub fn parse_passthrough_devices_address(
             }
         }
     }
+    info!(
+        "passthrough address discovery resolved assignments: {:?}",
+        vm_cfg.pass_through_devices()
+    );
     Ok(())
 }
 
