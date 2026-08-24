@@ -6,6 +6,13 @@ use crate::BlockResult;
 
 pub mod runtime;
 
+#[cfg(any(feature = "ext4", feature = "fat"))]
+pub(crate) mod cache;
+
+#[cfg(any(feature = "ext4", feature = "fat"))]
+use cache::BufferedBlockDevice;
+#[cfg(any(feature = "ext4", feature = "fat"))]
+pub use cache::sync_all_block_caches;
 use runtime::BlockDeviceHandle;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,5 +192,34 @@ impl FsBlockDevice for NativeHandleBlockDevice {
 pub(crate) fn boxed_native_handle_block_device(
     handle: Arc<BlockDeviceHandle>,
 ) -> Box<dyn FsBlockDevice> {
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    if let Some(cached) = cached_block_device(handle.clone()) {
+        return cached;
+    }
+    // Also the fallback when the cache cannot wrap a malformed geometry,
+    // and the only path when no filesystem consumer is enabled.
     Box::new(NativeHandleBlockDevice::new(handle))
+}
+
+/// Wraps the device in its shared cache tree, keyed by the handle's
+/// address. The wrapper keeps its own `Arc` clone alive, so the key stays
+/// valid as long as any cached consumer of the device exists.
+#[cfg(any(feature = "ext4", feature = "fat"))]
+fn cached_block_device(handle: Arc<BlockDeviceHandle>) -> Option<Box<dyn FsBlockDevice>> {
+    let device_key = Arc::as_ptr(&handle) as usize;
+    let endpoint = Box::new(NativeHandleBlockDevice::new(handle.clone()));
+    match BufferedBlockDevice::with_device_key(
+        device_key,
+        endpoint,
+        NativeHandleBlockDevice::new(handle),
+    ) {
+        Ok(buffered) => Some(Box::new(buffered)),
+        // Only a malformed device geometry (non power-of-two block size)
+        // reaches this arm; keep the device usable uncached rather than
+        // failing boot, but leave a loud trace.
+        Err(error) => {
+            error!("block cache unavailable, using uncached device: {error:?}");
+            None
+        }
+    }
 }

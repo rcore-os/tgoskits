@@ -41,6 +41,8 @@ fn register_mounted_filesystem(fs: Filesystem) {
     MOUNTED_FILESYSTEMS.lock().push(fs);
 }
 
+#[cfg(any(feature = "ext4", feature = "fat"))]
+pub use block::sync_all_block_caches;
 pub use block::{
     BlockRegion,
     runtime::{
