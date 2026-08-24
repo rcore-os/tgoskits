@@ -54,6 +54,7 @@ pub mod net;
         feature = "sched-cfs",
         feature = "sched-rr",
         feature = "task-affinity",
+        feature = "task-fair-idle-pull",
         feature = "task-ipi",
         feature = "task-irq",
         feature = "task-kernel-timer",
@@ -121,6 +122,11 @@ test_runner!("net-loopback", run_net_loopback, net::loopback::run);
 test_runner!("sched-cfs", run_sched_cfs, task::priority::run);
 test_runner!("sched-rr", run_sched_rr, task::priority::run);
 test_runner!("task-affinity", run_task_affinity, task::affinity::run);
+test_runner!(
+    "task-fair-idle-pull",
+    run_task_fair_idle_pull,
+    task::fair_idle_pull::run
+);
 test_runner!("task-ipi", run_task_ipi, task::ipi::run);
 test_runner!("task-irq", run_task_irq, task::irq::run);
 test_runner!(
@@ -226,6 +232,12 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "task-affinity")]
     TestCase::new("task-affinity", "task CPU affinity", run_task_affinity),
+    #[cfg(feature = "task-fair-idle-pull")]
+    TestCase::new(
+        "task-fair-idle-pull",
+        "Fair backlog migration at idle entry",
+        run_task_fair_idle_pull,
+    ),
     #[cfg(feature = "task-ipi")]
     TestCase::new(
         "task-ipi",

@@ -135,6 +135,7 @@ static OWNER_CONTROL_REARM_NODES: [InboxNode; crate::DEFAULT_BATCH_LIMIT + 1] =
 static OWNER_CONTROL_COALESCING_NODE: InboxNode = InboxNode::new(InboxKind::OwnerControl);
 static OWNER_CONTROL_PENDING_REQUEST_NODE: InboxNode = InboxNode::new(InboxKind::OwnerControl);
 static FAIR_DELAY_DEQUEUE_TARGET: AtomicU64 = AtomicU64::new(0);
+static FAIR_IDLE_PULL_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
 static PARK_PROFILE_HOOK: AtomicUsize = AtomicUsize::new(0);
 static LINKED_PICK_FULL_SNAPSHOT_COUNT: AtomicU64 = AtomicU64::new(0);
 static LINKED_PICK_FULL_SNAPSHOT_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
@@ -1110,6 +1111,49 @@ pub fn cpu_nr_running(cpu: u32) -> Result<usize, crate::TaskError> {
         .cpu_remote(cpu)
         .ok_or(crate::TaskError::CpuOffline(cpu.as_u32()))?;
     Ok(remote.load_summary().nr_running())
+}
+
+/// Enables or suppresses periodic Fair balancing on the current CPU.
+///
+/// This isolates Linux-style new-idle balancing from the independent periodic
+/// source push in a real SMP runtime test. Enabling restores the runtime's
+/// configured balance interval.
+pub fn set_current_fair_periodic_balance(enabled: bool) -> Result<(), crate::TaskError> {
+    let system = crate::facade::runtime_task_system()?;
+    let mut irq = crate::facade::RuntimeIrqGuard::enter();
+    let mut cpu = crate::facade::runtime_current_cpu_mut(&mut irq)?;
+    system.set_fair_periodic_balance_for_test(cpu.as_mut(), enabled);
+    Ok(())
+}
+
+/// Returns the Fair source selected for one real idle CPU, if any.
+pub fn fair_idle_pull_source(cpu: u32) -> Result<Option<u32>, crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let cpu = crate::CpuId::new(cpu);
+    let system = crate::facade::runtime_task_system()?;
+    system
+        .cpu_remote(cpu)
+        .ok_or(crate::TaskError::CpuOffline(cpu.as_u32()))?;
+    Ok(system
+        .fair_idle_pull_source_for_test(cpu)
+        .map(crate::CpuId::as_u32))
+}
+
+/// Clears the first-success probe for a Fair migration requested by idle entry.
+pub fn reset_fair_idle_pull_migration() {
+    FAIR_IDLE_PULL_TARGET_CPU.store(0, Ordering::Release);
+}
+
+/// Returns the first target of a Fair migration requested by idle entry.
+pub fn fair_idle_pull_migration_target() -> Option<u32> {
+    let encoded = FAIR_IDLE_PULL_TARGET_CPU.load(Ordering::Acquire);
+    (encoded != 0).then_some((encoded - 1) as u32)
+}
+
+pub(crate) fn record_fair_idle_pull_migration(target: crate::CpuId) {
+    let encoded = u64::from(target.as_u32()) + 1;
+    let _ =
+        FAIR_IDLE_PULL_TARGET_CPU.compare_exchange(0, encoded, Ordering::AcqRel, Ordering::Acquire);
 }
 
 /// Exercises the production publication used after moving a Deadline

@@ -1,7 +1,7 @@
 use super::{membership::SequenceAllocationError, *};
 use crate::{
-    CurrentClassState, CurrentDispatch, CurrentDispatchState, CurrentSchedule, DeadlineFlags,
-    DeadlinePolicy, FairEntity, FairMode, Nice, RqTaskTime, RtPriority,
+    CpuId, CpuSet, CurrentClassState, CurrentDispatch, CurrentDispatchState, CurrentSchedule,
+    DeadlineFlags, DeadlinePolicy, FairEntity, FairMode, Nice, RqTaskTime, RtPriority,
     scheduler::fair::virtual_delta,
 };
 
@@ -1025,7 +1025,7 @@ fn balance_scan_does_not_expand_past_its_entry_candidate_set() {
 
 #[cfg_attr(test, test)]
 #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
-fn rt_and_deadline_pushable_membership_tracks_migration_capability() {
+fn rt_and_deadline_pushable_membership_tracks_affinity() {
     let mut queue = RunQueue::new();
     let rt = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
     let deadline =
@@ -1053,14 +1053,18 @@ fn rt_and_deadline_pushable_membership_tracks_migration_capability() {
         )
         .unwrap();
 
+    let mut pinned = CpuSet::empty(2);
+    assert!(pinned.insert(CpuId::new(0)));
+    let pinned = Arc::new(pinned);
     for id in [rt_id, deadline_id] {
-        assert!(queue.update_migration_capability(id, false));
+        assert!(queue.update_affinity(id, Arc::clone(&pinned)));
     }
     assert!(!queue.has_pushable_realtime());
     assert!(!queue.has_pushable_deadline());
 
+    let full = Arc::new(CpuSet::all(2));
     for id in [rt_id, deadline_id] {
-        assert!(queue.update_migration_capability(id, true));
+        assert!(queue.update_affinity(id, Arc::clone(&full)));
     }
     assert!(queue.has_pushable_realtime());
     assert!(queue.has_pushable_deadline());

@@ -637,16 +637,12 @@ impl<'a> OwnerRqTxn<'a> {
         self.scheduler_queue_mut().set_next_task(picked);
     }
 
-    pub(crate) fn update_migration_capability(
-        &mut self,
-        thread: ThreadId,
-        migration_capable: bool,
-    ) {
+    pub(crate) fn update_thread_affinity(&mut self, thread: ThreadId, affinity: Arc<CpuSet>) {
         if !self
-            .scheduler_queue_mut()
-            .update_migration_capability(thread, migration_capable)
+            .run_queue_mut()
+            .update_thread_affinity(thread, affinity)
         {
-            task_runtime::fatal_invariant(0x5251_1009, thread.as_u64() as usize);
+            task_runtime::fatal_invariant(0x5251_100e, thread.as_u64() as usize);
         }
     }
 

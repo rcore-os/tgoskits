@@ -731,6 +731,20 @@ impl CpuRunQueueState {
         self.membarrier_state = next_membarrier_state;
     }
 
+    pub(crate) fn update_thread_affinity(
+        &mut self,
+        thread: ThreadId,
+        affinity: Arc<CpuSet>,
+    ) -> bool {
+        let current_updated = self
+            .queue
+            .current_mut()
+            .filter(|current| current.thread() == thread)
+            .map(|current| current.update_affinity(Arc::clone(&affinity)))
+            .is_some();
+        self.queue.update_affinity(thread, affinity) || current_updated
+    }
+
     pub(crate) fn detach_current_schedule(
         &mut self,
         thread: ThreadId,

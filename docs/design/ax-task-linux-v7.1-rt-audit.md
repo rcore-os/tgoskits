@@ -3407,12 +3407,14 @@ effective class，`start_rt_bandwidth()` 消费该状态转换的结果，不会
 一同交给 `finish_owner_enqueue()`；后者只在该 policy 需要 RT bandwidth 时启动 period，不再建立
 第二个 rq 事实源。
 
-性能红测还暴露了另一套不完整的 Fair idle-pull：root-domain source mask 只表示
+该检查点的性能红测还暴露了另一套不完整的 Fair idle-pull：root-domain source mask 只表示
 `has_pushable_fair`，却绕过已有 `balance_fair()` 拥有的 affinity、imbalance、target readiness 与
 backoff 状态机。它不能证明存在对当前 idle CPU 有效的迁移，反而每次 non-idle -> idle 都制造
 一次重复扫描。该 Fair 分支已删除：root-domain idle pull 只保留 RT/Deadline 的 pushable owner
 index，Fair 继续由唯一的 `balance_fair()` 状态机负责。这不是用超时或负载门限屏蔽问题，
-而是清理语义不完整的第二实现。
+而是清理语义不完整的第二实现。后续“Linux Fair new-idle balance”检查点在复用同一 owner
+transfer 状态机、补齐 rq affinity 快照与异步重试语义后重新接入 Fair；不是恢复这里删除的
+旁路实现。
 
 两项修复组合前，RISC-V Starry `test-ext4-inode-unique` 在 120 秒内只进行到
 `1837/2048`，投影耗时约 133.8 秒。组合后同一正式用例完成 `2048/2048`，测试主体
@@ -3784,6 +3786,44 @@ task 指针，但独立的 push/balance 扫描仍可在另一 CPU 上观察同�
 pick scope、远端 CPU 注入同一目标的 balance snapshot，旧 probe 固定得到 1。probe 现在绑定
 被测 owner CPU，远端观察不计数，而 owner CPU 内任何完整 entity 复制仍会失败；同一 focused
 用例转绿后，上述四架构完整 suite 均在最终代码上重新通过。
+
+### 2026-08-25 Linux Fair new-idle balance
+
+Linux v7.1 `kernel/sched/fair.c::sched_balance_newidle()` 在目标 rq 即将进入 idle 时立即执行
+`SD_BALANCE_NEWIDLE` 扫描，不受周期 balance deadline 限制；它在源 rq 锁内筛选允许目标 CPU、
+不在运行且可 detach 的 Fair task，分离源/目标 rq 的 detach/attach 事务，并在重新取得目标 rq
+后复查期间是否已有本地任务到达。PREEMPT_RT 的 newly-idle pass 成功 detach 一个 task 后即停止，
+避免在调度临界区无界批量搬运。没有可迁移候选或观察到 stale source 只结束或重试当前 scan，
+不会把逻辑请求在无关 owner-work publication 开始时清除。
+
+旧 ax-task 的 idle-entry source 只包含 Deadline/RT overload，普通 Fair backlog 因而永远不能启动
+new-idle pull；它只能等待独立的周期 source push。第一次确定性真实 SMP QEMU 红测把两个普通
+Fair worker 放在 CPU0，并让 CPU1 从有任务转为空闲，旧实现稳定得到
+`fair_idle_pull_source(1) == None`。接入 Fair source 后同一测试仍保持红色，进一步定位到 affinity
+更新只修改 `ThreadSchedState`：当前/queued rq snapshot 仍保留旧的单 CPU mask，
+`has_pushable_fair()` 因而错误地把已扩展到全 CPU 的 worker 判断为不可迁移。Linux 的
+`set_cpus_allowed_ptr()` 在 task/rq locking 规则下同步更新调度器正在使用的 affinity 事实，不能让
+placement state 与 rq candidate view 长期分叉。
+
+现在当前任务与远端 reconciliation 都在 owner rq transaction 内同时更新 `ThreadSchedState`、
+`CurrentDispatch` 和相应 class queue snapshot；Fair/RT/Deadline 的 pushable membership 由完整
+`CpuSet` 重新派生，不再只更新一个脱离 metadata 的布尔兼容值。idle source 按 Deadline、RT、
+Fair class 顺序选择；Fair 从已发布 rq 中按 demand、runnable 数和稳定 CPU tie-break 选最忙 source，
+但真正 candidate 仍交给唯一的 owner-side balance transfer 路径完成 affinity、running、pending
+migration、timer、target readiness 与 detach/attach 复核，没有第二套 Fair mutation 实现。
+
+source snapshot 过期、候选 pinned 或 transfer 需要重试时，target 保留独立的 sticky retry；只有
+idle owner 的 balance pass 显式取得它时才消费。每次新的 idle entry 清空本轮 visited source，
+incoming runnable admission 则取消尚未提交的 idle pull。这样对应 Linux 每次 new-idle 进入都是
+新的 scan，同时避免旧 owner-control edge 把尚未观察的逻辑 retry 清掉。
+
+同一 QEMU 回归在最终实现上确认三件事：CPU1 能从真实 root-domain 观察到 CPU0 Fair backlog，
+迁移原因确为 `IdlePull`，且 carrier 最终实际在 CPU1 执行。测试仅在确认 source 后暂时关闭 CPU0
+的独立周期 Fair balance，以隔离被测 new-idle 路径，结束时恢复配置；生产代码没有 timeout、轮询
+或 test-only 调度分支。最终代码串行通过 x86_64、AArch64、RISC-V、LoongArch64 的完整 ArceOS
+Rust/C QEMU suite，LoongArch64 unaligned-fixup 也通过；`ax-task` host tests 与 targeted clippy
+继续作为提交门禁。该检查点修复的是四架构共用的 idle placement 语义，hackbench/qperf 与 Linux
+RT 的剩余吞吐差距仍需用提交后的正式测量继续关闭。
 
 ## 模块化结果
 

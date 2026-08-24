@@ -9,7 +9,7 @@ use super::{
     queue::{QueuedThread, QueuedThreadSnapshot},
     virtual_before, virtual_delta, virtual_min,
 };
-use crate::{FairEntity, SchedulingEntity, ThreadId};
+use crate::{CpuSet, FairEntity, SchedulingEntity, ThreadId};
 
 pub(super) enum FairPick {
     Runnable(QueuedThread),
@@ -369,11 +369,7 @@ impl FairRunQueue {
         Some(entity)
     }
 
-    pub(super) fn update_migration_capability(
-        &mut self,
-        id: ThreadId,
-        migration_capable: bool,
-    ) -> bool {
+    pub(super) fn update_affinity(&mut self, id: ThreadId, affinity: Arc<CpuSet>) -> bool {
         let Some((generation, key)) = self.keys.get(id.slot() as usize).and_then(|entry| *entry)
         else {
             return false;
@@ -385,11 +381,14 @@ impl FairRunQueue {
             .expect("fair identity index must match its tree");
         let delayed = fair_entity(node.thread()).is_delayed();
         let counted = node.thread().migration_capable && !delayed;
+        let migration_capable = affinity.is_migration_capable();
         let next_counted = migration_capable && !delayed;
-        node.thread
+        let thread = node
+            .thread
             .as_mut()
-            .expect("linked fair node must own one scheduling entity")
-            .migration_capable = migration_capable;
+            .expect("linked fair node must own one scheduling entity");
+        thread.metadata.affinity = affinity;
+        thread.migration_capable = migration_capable;
         match (counted, next_counted) {
             (false, true) => self.migratable_count += 1,
             (true, false) => {

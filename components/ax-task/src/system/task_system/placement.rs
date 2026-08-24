@@ -267,7 +267,7 @@ impl TaskSystem {
         let owner = cpu.owner();
         let must_migrate = !affinity.contains(owner);
         let remote = Arc::clone(cpu.remote());
-        let transaction = OwnerRqTxn::begin(self, &remote);
+        let mut transaction = OwnerRqTxn::begin(self, &remote);
         if transaction.current_thread() != Some(current)
             || transaction
                 .current_core()
@@ -309,6 +309,7 @@ impl TaskSystem {
         };
         sched.affinity.affinity_generation = generation;
         sched.affinity.affinity = Arc::new(affinity);
+        transaction.update_thread_affinity(current, Arc::clone(&sched.affinity.affinity));
         sched
             .placement
             .request_migration(must_migrate.then_some(target));

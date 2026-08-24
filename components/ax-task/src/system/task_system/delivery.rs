@@ -362,10 +362,7 @@ impl TaskSystem {
                 .then(|| self.prepare_owner_migration(core, owner, target))
                 .transpose()?;
             let mut transaction = OwnerRqTxn::begin(self, &remote);
-            transaction.update_migration_capability(
-                core.id(),
-                sched.affinity.affinity.is_migration_capable(),
-            );
+            transaction.update_thread_affinity(core.id(), Arc::clone(&sched.affinity.affinity));
             if target == owner {
                 sched.placement.request_migration(None);
                 let completed = Self::complete_affinity_if_satisfied_locked(core, &sched);
@@ -412,6 +409,10 @@ impl TaskSystem {
         }
 
         if on_cpu == Some(owner) {
+            let remote = Arc::clone(cpu.remote());
+            let mut transaction = OwnerRqTxn::begin(self, &remote);
+            transaction.update_thread_affinity(core.id(), Arc::clone(&sched.affinity.affinity));
+            transaction.commit();
             sched
                 .placement
                 .request_migration((target != owner).then_some(target));
@@ -537,7 +538,7 @@ impl TaskSystem {
                 };
                 if !source_has_candidate {
                     drop(claim);
-                    target_remote.kick_scheduler_work();
+                    target_remote.request_idle_pull_retry();
                     continue;
                 }
                 if !claim.commit() {
@@ -553,10 +554,10 @@ impl TaskSystem {
                 match migrated {
                     Ok(BalanceTransferOutcome::Migrated(_)) => {}
                     Ok(BalanceTransferOutcome::NoCandidate | BalanceTransferOutcome::Retry) => {
-                        target_remote.kick_scheduler_work();
+                        target_remote.request_idle_pull_retry();
                     }
                     Err(error) => {
-                        target_remote.kick_scheduler_work();
+                        target_remote.request_idle_pull_retry();
                         return Err(error);
                     }
                 }

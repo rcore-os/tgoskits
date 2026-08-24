@@ -3,6 +3,7 @@
 mod rt_bandwidth;
 
 use core::{
+    cmp::Reverse,
     ops::Deref,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -203,12 +204,18 @@ impl RootDomain {
     pub(super) fn has_idle_pull_source(&self) -> bool {
         self.overload.any_class(RootDomainPushClass::Deadline)
             || self.overload.any_class(RootDomainPushClass::Realtime)
+            || self.runqueues.iter().any(|remote| {
+                remote.accepts_placement()
+                    && remote.is_scheduler_ready()
+                    && remote.load_summary().has_pushable_fair()
+            })
     }
 
-    /// Selects an overloaded rq for an idle target from the class-specific
-    /// root-domain masks. Deadline is considered before fixed-priority RT,
-    /// matching Linux's class order; Fair load balancing remains a separate
-    /// sched-domain decision.
+    /// Selects one rq for Linux-style new-idle balancing.
+    ///
+    /// Deadline and fixed-priority RT use their root-domain overload indexes.
+    /// Fair follows them in scheduler-class order and selects the busiest
+    /// published rq, standing in for Linux's sched-domain busiest-group scan.
     pub(super) fn find_idle_pull_source(
         &self,
         target: CpuId,
@@ -224,7 +231,37 @@ impl RootDomain {
                 return Some((source, class.scheduling_class()));
             }
         }
-        None
+        self.find_fair_idle_pull_source(target, visited)
+            .map(|source| (source, SchedulingClass::Fair))
+    }
+
+    pub(super) fn find_fair_idle_pull_source(
+        &self,
+        target: CpuId,
+        visited: &CpuSet,
+    ) -> Option<CpuId> {
+        self.runqueues
+            .iter()
+            .enumerate()
+            .filter_map(|(index, remote)| {
+                let source = CpuId::new(index as u32);
+                if source == target
+                    || visited.contains(source)
+                    || !remote.accepts_placement()
+                    || !remote.is_scheduler_ready()
+                {
+                    return None;
+                }
+                let load = remote.load_summary();
+                load.has_pushable_fair().then_some((
+                    load.fair_demand(),
+                    load.nr_running(),
+                    Reverse(source),
+                    source,
+                ))
+            })
+            .max_by_key(|(demand, runnable, tie_break, _)| (*demand, *runnable, *tie_break))
+            .map(|(_, _, _, source)| source)
     }
 
     fn push_iterator(&self, class: RootDomainPushClass) -> &RootDomainPushIterator {

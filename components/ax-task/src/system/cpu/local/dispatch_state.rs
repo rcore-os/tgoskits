@@ -61,6 +61,7 @@ impl OwnerDispatchState {
 
     pub(crate) fn arm_idle_pull(&mut self) {
         self.idle_pull_pending = true;
+        self.idle_pull_visited.clear();
     }
 
     pub(crate) const fn idle_pull_pending(&self) -> bool {

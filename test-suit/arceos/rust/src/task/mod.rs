@@ -1,5 +1,7 @@
 #[cfg(feature = "task-affinity")]
 pub mod affinity;
+#[cfg(feature = "task-fair-idle-pull")]
+pub mod fair_idle_pull;
 #[cfg(feature = "task-ipi")]
 pub mod ipi;
 #[cfg(feature = "task-irq")]

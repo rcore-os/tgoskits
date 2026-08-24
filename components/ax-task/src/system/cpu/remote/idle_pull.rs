@@ -18,12 +18,14 @@ const IDLE_PULL_PUBLISHER_OVERFLOW_INVARIANT: u32 = 0x4944_4c50;
 #[derive(Debug)]
 pub(super) struct IdlePullState {
     state: AtomicU64,
+    retry_requested: AtomicBool,
 }
 
 impl IdlePullState {
     pub(super) const fn new() -> Self {
         Self {
             state: AtomicU64::new(INITIAL_IDLE_PULL_STATE),
+            retry_requested: AtomicBool::new(false),
         }
     }
 }
@@ -155,6 +157,9 @@ impl CpuRemote {
     }
 
     pub(crate) fn cancel_idle_pull_if_uncommitted(&self) {
+        self.idle_pull
+            .retry_requested
+            .store(false, Ordering::Release);
         let mut current = self.idle_pull.state.load(Ordering::Acquire);
         loop {
             match current & IDLE_PULL_PHASE_MASK {
@@ -216,10 +221,27 @@ impl CpuRemote {
             })
     }
 
+    /// Continues one asynchronous new-idle scan after a stale or pinned source.
+    pub(crate) fn request_idle_pull_retry(&self) {
+        self.idle_pull
+            .retry_requested
+            .store(true, Ordering::Release);
+        self.kick_scheduler_work();
+    }
+
+    pub(crate) fn idle_pull_retry_pending(&self) -> bool {
+        self.idle_pull.retry_requested.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn take_idle_pull_retry(&self) -> bool {
+        self.idle_pull.retry_requested.swap(false, Ordering::AcqRel)
+    }
+
     pub(super) fn idle_pull_is_quiescent(&self) -> bool {
         self.idle_pull.state.load(Ordering::Acquire)
             & (IDLE_PULL_PHASE_MASK | IDLE_PULL_PUBLISHER_MASK)
             == IDLE_PULL_IDLE
+            && !self.idle_pull_retry_pending()
     }
 
     #[cfg(any(test, all(axtest, feature = "axtest")))]

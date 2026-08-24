@@ -227,6 +227,10 @@ impl CurrentDispatch {
         self.class.rt_quota_exempt = rt_quota_exempt;
     }
 
+    pub(crate) fn update_affinity(&mut self, affinity: Arc<CpuSet>) {
+        self.task.metadata.affinity = affinity;
+    }
+
     pub(crate) const fn metadata(&self) -> &RqTaskMetadata {
         &self.task.metadata
     }

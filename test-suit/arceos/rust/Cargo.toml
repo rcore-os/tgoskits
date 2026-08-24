@@ -16,6 +16,12 @@ task-yield = ["task-runtime", "ax-std/task-test-hooks"]
 sched-rr = ["task-runtime", "ax-std/alloc"]
 sched-cfs = ["task-runtime", "ax-std/alloc"]
 task-affinity = ["task-runtime", "ax-std/task-test-hooks"]
+task-fair-idle-pull = [
+    "task-runtime",
+    "ax-std/alloc",
+    "ax-std/irq",
+    "ax-std/task-test-hooks",
+]
 task-wait-queue = ["task-runtime", "ax-std/irq", "ax-std/task-test-hooks"]
 task-wait-queue-remote-wake = [
     "task-runtime",
@@ -66,6 +72,7 @@ all = [
     "memtest",
     "task-yield",
     "task-affinity",
+    "task-fair-idle-pull",
     "task-wait-queue",
     "task-wait-queue-remote-wake",
     "task-ipi",

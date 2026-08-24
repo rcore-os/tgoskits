@@ -216,7 +216,10 @@ impl TaskSystem {
         let reservation = match target_remote.begin_idle_pull() {
             IdlePullReservation::Started(reservation) => reservation,
             IdlePullReservation::AlreadyPending => return Ok(true),
-            IdlePullReservation::Busy => return Ok(false),
+            IdlePullReservation::Busy => {
+                target_remote.request_idle_pull_retry();
+                return Ok(true);
+            }
         };
         if !cpu.idle_pull_eligible() || cpu.has_remote_work() {
             target_remote.cancel_idle_pull(reservation);

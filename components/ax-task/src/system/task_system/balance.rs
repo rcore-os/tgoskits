@@ -459,6 +459,10 @@ impl TaskSystem {
                 self.config.balance_interval_ns(),
             );
         }
+        #[cfg(feature = "task-test-hooks")]
+        if migrated_fair && reason == BalanceReason::IdlePull {
+            crate::task_test_hooks::record_fair_idle_pull_migration(target);
+        }
         Ok(BalanceTransferOutcome::Migrated(core.id()))
     }
 
@@ -481,6 +485,29 @@ impl TaskSystem {
         self.commit_owner_balance_transfer(cpu, selection)
     }
 
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn fair_idle_pull_source_for_test(&self, target: CpuId) -> Option<CpuId> {
+        let visited = CpuSet::empty(self.config.cpu_count());
+        self.root_domain
+            .find_fair_idle_pull_source(target, &visited)
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn set_fair_periodic_balance_for_test(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        enabled: bool,
+    ) {
+        if enabled {
+            cpu.as_mut().reset_fair_balance(
+                task_runtime::monotonic_now(),
+                self.config.balance_interval_ns(),
+            );
+        } else {
+            cpu.as_mut().clear_fair_balance();
+        }
+    }
+
     /// Returns whether this owner has scheduler-class balance work to service.
     ///
     /// The owner has just published a coherent runqueue snapshot. Like Linux's
@@ -492,11 +519,13 @@ impl TaskSystem {
             return false;
         }
         let idle_pull_pending = cpu.remote().idle_thread() == Some(next)
-            && cpu.idle_pull_pending()
-            // Linux `sched_balance_newidle()` skips the pass when the root
-            // domain has no overloaded source. Keep the one-shot armed so a
-            // later source publication can drive the real pull.
-            && self.root_domain.has_idle_pull_source();
+            && (cpu.remote().idle_pull_retry_pending()
+                || (cpu.idle_pull_pending()
+                    // Linux `sched_balance_newidle()` skips the pass when the
+                    // root domain has no overloaded source. Keep the one-shot
+                    // armed so a later source publication can drive the real
+                    // pull.
+                    && self.root_domain.has_idle_pull_source()));
         if idle_pull_pending || cpu.fair_balance_pending() {
             return true;
         }
@@ -568,8 +597,9 @@ impl TaskSystem {
         let class_pull_required = idle
             && (self.root_domain.cpu_has_rt_deadline_overload(cpu.owner())
                 || self.root_domain.push_target_pending(cpu.owner()));
-        let idle_pull_required =
-            idle && (cpu.as_mut().take_idle_pull_pending() || class_pull_required);
+        let retry_idle_pull = idle && cpu.remote().take_idle_pull_retry();
+        let idle_pull_required = idle
+            && (cpu.as_mut().take_idle_pull_pending() || retry_idle_pull || class_pull_required);
         let push_claim = self.root_domain.claim_rt_deadline_push(cpu.owner());
         let balance = (|| -> Result<(Option<ThreadId>, Option<ThreadId>), TaskError> {
             if idle {

@@ -44,6 +44,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "sched-cfs",
     "sched-rr",
     "task-affinity",
+    "task-fair-idle-pull",
     "task-ipi",
     "task-irq",
     "task-kernel-timer",

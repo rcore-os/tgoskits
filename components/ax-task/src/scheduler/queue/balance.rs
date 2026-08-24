@@ -1,4 +1,5 @@
 use super::*;
+use crate::CpuSet;
 
 /// One owner-safe-point scan with an entry-bounded candidate budget.
 pub(crate) struct BalanceScan {
@@ -48,49 +49,51 @@ impl RunQueue {
         }
     }
 
-    pub(crate) fn update_migration_capability(
-        &mut self,
-        id: ThreadId,
-        migration_capable: bool,
-    ) -> bool {
+    pub(crate) fn update_affinity(&mut self, id: ThreadId, affinity: Arc<CpuSet>) -> bool {
         let Some(class) = self.membership_class(id) else {
             return false;
         };
+        let migration_capable = affinity.is_migration_capable();
         match class {
             QueueMembershipClass::Stop => {
-                self.stop
+                let thread = self
+                    .stop
                     .as_mut()
-                    .expect("stop membership must retain the stopper task")
-                    .migration_capable = false;
+                    .expect("stop membership must retain the stopper task");
+                thread.metadata.affinity = affinity;
+                thread.migration_capable = false;
             }
             QueueMembershipClass::Deadline(key) => {
-                self.deadline
+                let thread = self
+                    .deadline
                     .get_mut(key)
-                    .expect("Deadline membership must retain its queue node")
-                    .migration_capable = migration_capable;
+                    .expect("Deadline membership must retain its queue node");
+                thread.metadata.affinity = affinity;
+                thread.migration_capable = migration_capable;
                 self.deadline.refresh_pushable(id, self.linked_current());
             }
             QueueMembershipClass::DeadlineThrottled => {
-                self.deadline
+                let thread = self
+                    .deadline
                     .throttled_mut(id)
-                    .expect("throttled Deadline membership must retain its entity")
-                    .migration_capable = migration_capable;
+                    .expect("throttled Deadline membership must retain its entity");
+                thread.metadata.affinity = affinity;
+                thread.migration_capable = migration_capable;
             }
             QueueMembershipClass::Realtime(key) => {
-                self.rt
+                let thread = self
+                    .rt
                     .get_mut(key)
-                    .expect("RT membership must retain its queue node")
-                    .migration_capable = migration_capable;
+                    .expect("RT membership must retain its queue node");
+                thread.metadata.affinity = affinity;
+                thread.migration_capable = migration_capable;
                 self.rt.refresh_pushable(key, self.linked_current());
             }
             QueueMembershipClass::Fair => {
-                assert!(self.fair.update_migration_capability(id, migration_capable));
+                assert!(self.fair.update_affinity(id, affinity));
             }
             QueueMembershipClass::IdleFair => {
-                assert!(
-                    self.idle_fair
-                        .update_migration_capability(id, migration_capable)
-                );
+                assert!(self.idle_fair.update_affinity(id, affinity));
             }
         }
         true
