@@ -154,7 +154,7 @@ fn register_liointc(
     // observe it. The parent cascade remains disabled until afterwards.
     REGISTERED.store(true, Ordering::Release);
     for cascade_irq in cascade_irqs.into_iter().flatten() {
-        someboot::irq::irq_set_enable(someboot::irq::IrqId::new(cascade_irq), true);
+        super::boot_irq_set_enable(someboot::irq::IrqId::new(cascade_irq), true);
     }
     Ok(())
 }

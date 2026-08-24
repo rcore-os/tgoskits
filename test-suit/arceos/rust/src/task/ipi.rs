@@ -393,6 +393,16 @@ fn verify_pending_owner_control_coalesces_scheduler_request() {
     );
 }
 
+fn verify_fresh_owner_control_head_rearms_a_pending_request() {
+    let generations = task_test_hooks::publish_owner_control_after_pending_request()
+        .expect("failed to publish owner control after a pending request");
+    assert_eq!(
+        generations.after_head_publication,
+        generations.pending_request + 1,
+        "a fresh owner-control inbox head must own a new scheduler delivery generation"
+    );
+}
+
 fn verify_sticky_scheduler_reasons_coalesce() {
     let owner_work = task_test_hooks::request_current_owner_work_twice()
         .expect("failed to publish duplicate current-CPU owner work");
@@ -493,10 +503,11 @@ pub fn run() -> crate::TestResult {
     TARGET_CPU.store(target_cpu, Ordering::Relaxed);
     pin_current_to_cpu(sender_cpus[0]);
     verify_sticky_scheduler_reasons_coalesce();
+    verify_fresh_owner_control_head_rearms_a_pending_request();
     verify_pending_owner_control_coalesces_scheduler_request();
     verify_bounded_owner_control_uses_one_successor_generation();
-    verify_remote_owner_work_delivery(sender_cpus[0], target_cpu);
     verify_detached_deadline_owner_uses_one_publication(target_cpu);
+    verify_remote_owner_work_delivery(sender_cpus[0], target_cpu);
     exercise_irq_masked_idle_wake(target_cpu, sender_cpus[0]);
     verify_self_ipi_delivery(sender_cpus[0]);
 

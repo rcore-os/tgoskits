@@ -255,6 +255,10 @@ impl DeviceModel for SharedProviderModel {
         )
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::None
+    }
+
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let (base, length) = context.mmio(&ResourceSlot::new("registers")?)?;
         if base != self.region.base as u64 || length != self.region.length as u64 {

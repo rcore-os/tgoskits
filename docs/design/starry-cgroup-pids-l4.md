@@ -13,11 +13,12 @@ implementation lets a process move into a non-root pids-enabled cgroup, set
 `pids.max`, and observe that the next task-creating `fork` or `clone` fails
 with `EAGAIN` once the hierarchical limit is exhausted. The counters must
 remain balanced across fork rollback, thread exit, process exit, and process
-migration.
+migration. The read-only `pids.peak` interface reports the highest
+`pids.current` value reached during the cgroup node's lifetime.
 
 This is deliberately not a CPU, memory, cpuset, or I/O implementation. It
 does not add cgroup v2 threaded mode, delegation, notifications,
-`pids.events.local`, `pids.peak`, controller disabling, or the cgroup core's
+`pids.events.local`, controller disabling, or the cgroup core's
 no-internal-process rule. Those features require their own observable behavior
 and validation.
 
@@ -56,9 +57,13 @@ thread accounting, migration serialization, reservation rollback, or
 ## State, ownership, and synchronization
 
 Every `CgroupNode` owns a private pids state. The state retains a task count,
-an optional maximum, and the hierarchical `pids.events` max counter. Counts
-and max events are maintained for the affected non-root ancestors so they
-match the cgroup v2 hierarchy before an interface becomes visible.
+its lifetime high-water mark, an optional maximum, and the hierarchical
+`pids.events` max counter. Counts, peaks, and max events are maintained for
+the affected non-root ancestors so they match the cgroup v2 hierarchy before
+an interface becomes visible. Each successful per-node checked or migration
+charge raises the peak atomically; rollback and task exit lower only
+`pids.current`. As in Linux's hierarchical try-charge path, a lower node may
+retain a peak from a charge that an ancestor later rejects.
 The root owns accounting state but does not expose `pids.*` files; those files
 exist only in non-root cgroups whose parent enabled pids in
 `cgroup.subtree_control`.
@@ -135,18 +140,22 @@ existing entry points:
 The cgroupfs interface is observed through existing `mount`, `openat`, `read`,
 `write`, and `getdents64` paths. The change adds dynamic controller and
 `pids.*` entries to the existing cgroup2 filesystem adapter; it does not alter
-the generic syscall ABI. The QEMU cases validate file visibility, permissions,
-input errors, `cgroup.procs` migration, and read-back results.
+the generic syscall ABI. `pids.peak` is exposed beside the other non-root pids
+files after the parent enables the controller and is read-only. The QEMU cases
+validate file visibility, permissions, input errors, `cgroup.procs` migration,
+and read-back results.
 
 ## Validation evidence
 
 Host tests cover parse and read-back behavior, hierarchical charges, CAS limit
-races, pre-publication and post-publication rollback, thread accounting,
-idempotent exit, de-thread rename, and migration above a limit. The Starry QEMU
-system test performs the user-visible sequence of
+races, peak updates after checked and unchecked charges, stable peak values
+after uncharge and migration, pre-publication and post-publication rollback,
+thread accounting, idempotent exit, de-thread rename, and migration above a
+limit. The Starry QEMU system test performs the user-visible sequence of
 enabling pids, migration, `pids.max` update, successful first fork, failed
 second fork with `EAGAIN`, a rejected raw `clone(CLONE_PARENT_SETTID)`,
-hierarchical event observation, and counter recovery after exit. The grouped
+hierarchical event observation, counter recovery after exit, and a persistent
+`pids.peak` high-water mark. The grouped
 `cgroup-basic` case also verifies that a successful
 `clone3(CLONE_INTO_CGROUP)` publishes the child in the target cgroup. The pids
 case verifies that a target with `pids.max=0` rejects that clone3 request,

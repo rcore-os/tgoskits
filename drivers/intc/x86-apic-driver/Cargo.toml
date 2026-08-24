@@ -1,0 +1,27 @@
+[package]
+name = "x86-apic-driver"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A driver for the x86 local APIC and I/O APIC interrupt controllers."
+authors = ["周睿 <zrufo747@outlook.com>"]
+repository.workspace = true
+keywords = ["x86_64", "driver", "apic", "interrupt-controller"]
+categories = ["embedded", "no-std", "hardware-support"]
+
+[package.metadata.docs.rs]
+# Build docs on x86_64 so that platform-specific modules are included
+targets = ["x86_64-unknown-linux-gnu"]
+all-features = true
+
+[features]
+rdif = ["dep:rdif-intc"]
+
+[dependencies]
+log.workspace = true
+thiserror.workspace = true
+rdif-intc = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x2apic.workspace = true
+x86.workspace = true

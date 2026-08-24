@@ -181,12 +181,16 @@ int main(void)
                    "pids.max is absent before parent enables pids");
     expect_missing(CGROUP2_PATH "/pids.max",
                    "root does not expose pids interface files");
+    expect_missing(CGROUP2_PATH "/pids.peak",
+                   "root does not expose pids.peak");
     CHECK(write_text(CGROUP2_PATH "/cgroup.subtree_control", "+pids") == 0,
           "enable pids for child cgroups");
     CHECK(access(PRE_ENABLE_PATH "/pids.max", F_OK) == 0,
           "existing child gains pids.max after enable");
     CHECK(access(PRE_ENABLE_PATH "/pids.current", F_OK) == 0,
           "existing child gains pids.current after enable");
+    CHECK(access(PRE_ENABLE_PATH "/pids.peak", F_OK) == 0,
+          "existing child gains pids.peak after enable");
     CHECK(access(PRE_ENABLE_PATH "/pids.events", F_OK) == 0,
           "existing child gains pids.events after enable");
     CHECK(mkdir(CHILD_PATH, 0755) == 0 || errno == EEXIST,
@@ -195,6 +199,8 @@ int main(void)
           "child exposes pids.max");
     CHECK(access(CHILD_PATH "/pids.current", F_OK) == 0,
           "child exposes pids.current");
+    CHECK(access(CHILD_PATH "/pids.peak", F_OK) == 0,
+          "child exposes pids.peak");
     CHECK(access(CHILD_PATH "/pids.events", F_OK) == 0,
           "child exposes pids.events");
     expect_text(CHILD_PATH "/pids.max", "max\n",
@@ -205,8 +211,12 @@ int main(void)
                 "invalid pids.max write leaves limit unchanged");
     expect_text(CHILD_PATH "/pids.events", "max 0\n",
                 "pids.events starts at zero");
+    expect_text(CHILD_PATH "/pids.peak", "0\n",
+                "pids.peak starts at zero");
     expect_write_permission_denied(CHILD_PATH "/pids.current", "0",
                                    "pids.current is read-only");
+    expect_write_permission_denied(CHILD_PATH "/pids.peak", "0",
+                                   "pids.peak is read-only");
     expect_write_permission_denied(CHILD_PATH "/pids.events", "max 0",
                                    "pids.events is read-only");
 
@@ -214,6 +224,8 @@ int main(void)
           "migrate current process into child");
     CHECK(read_number(CHILD_PATH "/pids.current") == 1,
           "migration charges the current task");
+    CHECK(read_number(CHILD_PATH "/pids.peak") == 1,
+          "migration raises pids.peak");
     CHECK(write_text(CHILD_PATH "/pids.max", "2") == 0,
           "set pids.max to two tasks");
     expect_text(CHILD_PATH "/pids.max", "2\n",
@@ -251,6 +263,8 @@ int main(void)
     }
     CHECK(read_number(CHILD_PATH "/pids.current") == 2,
           "pids.current includes parent and held child");
+    CHECK(read_number(CHILD_PATH "/pids.peak") == 2,
+          "held child raises pids.peak");
 
     void *clone_stack = malloc(CLONE_STACK_SIZE);
     CHECK(clone_stack != NULL, "allocate clone stack");
@@ -284,10 +298,14 @@ int main(void)
     CHECK(waitpid(first, NULL, 0) == first, "child exit is observed");
     CHECK(read_number(CHILD_PATH "/pids.current") == 1,
           "child exit releases one pids charge");
+    CHECK(read_number(CHILD_PATH "/pids.peak") == 2,
+          "child exit does not lower pids.peak");
     CHECK(write_text(CGROUP2_PATH "/cgroup.procs", "0") == 0,
           "echo 0 returns current process to root");
     CHECK(read_number(CHILD_PATH "/pids.current") == 0,
           "migration back to root releases child charge");
+    CHECK(read_number(CHILD_PATH "/pids.peak") == 2,
+          "migration back does not lower pids.peak");
 
     CHECK(mkdir(CLONE_INTO_PATH, 0755) == 0 || errno == EEXIST,
           "create clone3 target cgroup");
@@ -321,6 +339,8 @@ int main(void)
     }
     CHECK(read_number(CLONE_INTO_PATH "/pids.current") == 0,
           "denied clone3 leaves target pids.current unchanged");
+    CHECK(read_number(CLONE_INTO_PATH "/pids.peak") == 0,
+          "denied clone3 at the target limit leaves pids.peak unchanged");
     expect_text(CLONE_INTO_PATH "/pids.events", "max 1\n",
                 "clone3 target records its own limit failure");
     CHECK(rmdir(CLONE_INTO_PATH) == 0,
@@ -355,6 +375,10 @@ int main(void)
           "ancestor charge remains stable after denied nested fork");
     CHECK(read_number(NESTED_CHILD_PATH "/pids.current") == 1,
           "leaf charge rolls back after ancestor rejects fork");
+    CHECK(read_number(NESTED_PARENT_PATH "/pids.peak") == 1,
+          "ancestor rejection does not raise ancestor pids.peak");
+    CHECK(read_number(NESTED_CHILD_PATH "/pids.peak") == 2,
+          "leaf pids.peak retains the rolled-back hierarchical charge");
     expect_text(NESTED_PARENT_PATH "/pids.events", "max 1\n",
                 "ancestor records the denied nested fork");
     expect_text(NESTED_CHILD_PATH "/pids.events", "max 0\n",
@@ -382,6 +406,10 @@ int main(void)
           "migration back clears ancestor pids charge");
     CHECK(read_number(NESTED_CHILD_PATH "/pids.current") == 0,
           "migration back clears leaf pids charge");
+    CHECK(read_number(NESTED_PARENT_PATH "/pids.peak") == 1,
+          "migration back preserves ancestor pids.peak");
+    CHECK(read_number(NESTED_CHILD_PATH "/pids.peak") == 2,
+          "migration back preserves leaf pids.peak");
 
     printf("------------------------------------------------\n");
     printf("  DONE: %d pass, %d fail\n", pass_count, fail_count);

@@ -331,3 +331,31 @@ pub(crate) fn memory_owner_replacement_preserves_pinned_snapshot_for_test() -> b
         && previous_value.load(Ordering::Acquire) == 7
         && *owner.snapshot() == 9
 }
+
+#[cfg(axtest)]
+pub(crate) fn thread_page_table_lease_follows_task_lifetime_for_test() -> bool {
+    let Ok(mut aspace) = crate::mm::new_user_aspace_empty() else {
+        return false;
+    };
+    if crate::mm::copy_from_kernel(&mut aspace).is_err() {
+        return false;
+    }
+
+    let aspace = Arc::new(PiMutex::new(aspace));
+    crate::mm::attach_process_slot(&aspace);
+    let task_aspace = match scheduler_address_space(aspace.clone()) {
+        Ok(task_aspace) => task_aspace,
+        Err(_) => {
+            crate::mm::release_process_slot(&aspace);
+            return false;
+        }
+    };
+    let weak_aspace = Arc::downgrade(&aspace);
+
+    crate::mm::release_process_slot(&aspace);
+    drop(aspace);
+    let retained_until_task_detach = weak_aspace.upgrade().is_some();
+
+    drop(task_aspace);
+    retained_until_task_detach && weak_aspace.upgrade().is_none()
+}

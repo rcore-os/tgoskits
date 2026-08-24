@@ -435,6 +435,7 @@ name = "arceos-virtio-blk-test"
 version = "0.1.0"
 dependencies = [
  "ax-driver",
+ "ax-hal",
  "ax-std",
  "virtio-drivers",
 ]
@@ -1583,13 +1584,8 @@ dependencies = [
  "ax-std",
  "axbacktrace",
  "axbuild",
- "axdevice",
- "axdevice_base",
  "axtest",
  "axum",
- "axvirtio-blk",
- "axvirtio-common",
- "axvirtio-net",
  "axvm",
  "axvm-types",
  "axvmconfig",
@@ -1615,6 +1611,7 @@ dependencies = [
  "arm-gic-driver",
  "arm_vcpu",
  "arm_vgic",
+ "ax-api",
  "ax-cpumask",
  "ax-crate-interface",
  "ax-driver",
@@ -1627,6 +1624,9 @@ dependencies = [
  "axdevice_base",
  "axhvc",
  "axklib",
+ "axvirtio-blk",
+ "axvirtio-common",
+ "axvirtio-net",
  "axvm-types",
  "axvmconfig",
  "bit_field",
@@ -1649,6 +1649,7 @@ dependencies = [
  "riscv_vplic",
  "serde",
  "thiserror 2.0.20",
+ "toml 1.1.4+spec-1.1.0",
  "x86",
  "x86_vcpu",
  "x86_vlapic",
@@ -7835,8 +7836,7 @@ dependencies = [
  "somehal-macros",
  "thiserror 2.0.20",
  "tock-registers 0.10.1",
- "x2apic",
- "x86",
+ "x86-apic-driver",
 ]
 
 [[package]]
@@ -9808,6 +9808,17 @@ dependencies = [
  "bit_field",
  "bitflags 1.3.2",
  "raw-cpuid 10.7.0",
+]
+
+[[package]]
+name = "x86-apic-driver"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "rdif-intc",
+ "thiserror 2.0.20",
+ "x2apic",
+ "x86",
 ]
 
 [[package]]

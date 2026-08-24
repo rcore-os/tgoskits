@@ -975,7 +975,7 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) {
         Sysno::capget => sys_capget(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::capset => sys_capset(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::umask => sys_umask(current, uctx.arg0() as _),
-        Sysno::personality => sys_personality(current, uctx.arg0()),
+        Sysno::personality => sys_personality(current, uctx.arg0() as u32),
         Sysno::setreuid => sys_setreuid(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setregid => sys_setregid(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setresuid => sys_setresuid(
@@ -1053,7 +1053,7 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) {
         ),
         Sysno::ptrace => sys_ptrace(
             current,
-            uctx.arg0() as _,
+            uctx.arg0() as isize,
             uctx.arg1(),
             uctx.arg2(),
             uctx.arg3(),
@@ -1153,7 +1153,7 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) {
             uctx.arg1() as _,
             uctx.arg2() as _,
         ),
-        Sysno::getgroups => sys_getgroups(current, uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::getgroups => sys_getgroups(current, uctx.arg0() as i32, uctx.arg1() as _),
         Sysno::setgroups => sys_setgroups(current, uctx.arg0() as _, uctx.arg1() as _),
         Sysno::setfsuid => sys_setfsuid(current, uctx.arg0() as _),
         Sysno::setfsgid => sys_setfsgid(current, uctx.arg0() as _),

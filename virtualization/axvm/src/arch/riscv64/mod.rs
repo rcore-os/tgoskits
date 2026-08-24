@@ -93,7 +93,7 @@ impl ArchOps for Riscv64Arch {
                 reg,
                 reg_width,
                 signed_ext,
-            } => handle_riscv_mmio_read(
+            } => super::handle_mmio_read(
                 vm,
                 vcpu,
                 MmioReadExit {
@@ -104,7 +104,7 @@ impl ArchOps for Riscv64Arch {
                     signed_ext,
                 },
             ),
-            RiscvVmExit::MmioWrite { addr, width, data } => handle_riscv_mmio_write(
+            RiscvVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write(
                 vm,
                 vcpu,
                 MmioWriteExit {
@@ -204,26 +204,6 @@ impl ArchOps for Riscv64Arch {
     }
 }
 
-fn handle_riscv_mmio_read(
-    vm: &crate::AxVMRef,
-    vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>,
-    exit: MmioReadExit,
-) -> AxVmResult<BoundVcpuExit<RiscvDeferredRunWork>> {
-    let result = super::handle_mmio_read(vm, vcpu, exit)?;
-    sync_vplic_vseip(vm, vcpu)?;
-    Ok(result)
-}
-
-fn handle_riscv_mmio_write(
-    vm: &crate::AxVMRef,
-    vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>,
-    exit: MmioWriteExit,
-) -> AxVmResult<BoundVcpuExit<RiscvDeferredRunWork>> {
-    let result = super::handle_mmio_write(vm, vcpu, exit)?;
-    sync_vplic_vseip(vm, vcpu)?;
-    Ok(result)
-}
-
 fn vplic_runtime(vm: &crate::AxVM) -> AxVmResult<Arc<irq::RiscvPlicRuntime>> {
     vm.get_devices()?
         .services()
@@ -275,7 +255,6 @@ fn handle_riscv_nested_page_fault(
             _ => false,
         };
         if handled {
-            sync_vplic_vseip(vm, vcpu)?;
             return Ok(BoundVcpuExit::Continue);
         }
     }

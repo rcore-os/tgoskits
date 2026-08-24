@@ -68,6 +68,7 @@ pub(crate) use self::{
     process_memory::{
         memory_owner_replacement_preserves_pinned_snapshot_for_test,
         memory_owner_snapshot_avoids_irq_lock_for_test,
+        thread_page_table_lease_follows_task_lifetime_for_test,
     },
     process_policy::resource_limit_read_is_nonblocking_for_test,
     process_ptrace::{

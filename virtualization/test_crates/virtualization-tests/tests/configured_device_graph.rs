@@ -30,7 +30,6 @@ static BUILT: Mutex<Vec<(u64, usize, String)>> = Mutex::new(Vec::new());
 const BLOCK_LIKE_REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
     model: "virtio-blk-like",
     create: create_block_like,
-    default_fixed_resources: None,
 };
 
 fn create_block_like(
@@ -91,11 +90,21 @@ impl DeviceModel for BlockLikeModel {
     }
 
     fn firmware(&self) -> DeviceFirmwareSpec {
-        DeviceFirmwareSpec::new("virtio")
-            .with_compatible("virtio,mmio")
-            .with_acpi_hid("LNRO0005")
-            .with_register(ResourceSlot::new("registers").unwrap())
-            .with_interrupt(ResourceSlot::new("irq").unwrap())
+        let registers = ResourceSlot::new("registers").unwrap();
+        let interrupt = ResourceSlot::new("irq").unwrap();
+        DeviceFirmwareSpec::interfaces(
+            Some(vec![FdtContributionSpec::Conventional(
+                FdtNodeSpec::new("virtio")
+                    .with_compatible("virtio,mmio")
+                    .with_register(registers.clone())
+                    .with_interrupt(interrupt.clone()),
+            )]),
+            Some(vec![AcpiContributionSpec::Conventional(
+                AcpiDeviceSpec::new_indexed("VB", "LNRO0005")
+                    .with_register(registers)
+                    .with_interrupt(interrupt),
+            )]),
+        )
     }
 
     fn build(
@@ -151,6 +160,10 @@ impl DeviceModel for ControllerModel {
         Ok(DeviceRequirements::new())
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::None
+    }
+
     fn build(
         &self,
         _context: &mut DeviceBuildContext<'_>,
@@ -184,7 +197,9 @@ capacity = "20GiB"
     .unwrap();
     BUILT.lock().unwrap().clear();
     let mut catalog = ConfiguredDeviceCatalog::new();
-    catalog.register(BLOCK_LIKE_REGISTRATION).unwrap();
+    catalog
+        .register(module_path!(), BLOCK_LIKE_REGISTRATION)
+        .unwrap();
 
     let controller_id = DeviceNodeId::new("controller").unwrap();
     let context = DeviceInstantiationContext::new()
@@ -216,12 +231,18 @@ capacity = "20GiB"
         .filter(|node| node.id().as_str().starts_with("data"))
     {
         let firmware = node.firmware();
-        assert_eq!(firmware.node_name().map(String::as_str), Some("virtio"));
-        assert_eq!(firmware.compatible(), ["virtio,mmio"]);
-        assert_eq!(firmware.acpi_hid().map(String::as_str), Some("LNRO0005"));
+        let [FdtContributionSpec::Conventional(fdt)] = firmware.fdt().unwrap() else {
+            panic!("block-like model must expose one conventional FDT node");
+        };
+        let [AcpiContributionSpec::Conventional(acpi)] = firmware.acpi().unwrap() else {
+            panic!("block-like model must expose one conventional ACPI node");
+        };
+        assert_eq!(fdt.node_name(), "virtio");
+        assert_eq!(fdt.compatible(), ["virtio,mmio"]);
+        assert_eq!(acpi.hid(), Some("LNRO0005"));
         let resources = graph.resources_for(node.id()).unwrap();
-        assert!(resources.mmio(&firmware.register_slots()[0]).is_ok());
-        assert!(resources.wired_irq(&firmware.interrupt_slots()[0]).is_ok());
+        assert!(resources.mmio(&fdt.register_slots()[0]).is_ok());
+        assert!(resources.wired_irq(&fdt.interrupt_slots()[0]).is_ok());
     }
 
     let mut runtime = axdevice::DeviceRuntimeBuilder::new(Default::default());
@@ -255,7 +276,8 @@ model = "ivc-channel"
     )
     .unwrap();
 
-    let catalog = ConfiguredDeviceCatalog::new();
+    let mut catalog = ConfiguredDeviceCatalog::new();
+    axvm::machine::register_devices(&mut catalog).unwrap();
     let controller_id = DeviceNodeId::new("controller").unwrap();
     let context = DeviceInstantiationContext::new()
         .with_default_wired_controller(controller_id.clone(), InterruptControllerId::new(0));
@@ -292,21 +314,30 @@ model = "ivc-channel"
         .nodes()
         .find(|node| node.id() == &ivc_id)
         .expect("IVC node is present in the resolved graph");
-    let firmware = ivc_node.firmware();
+    let [FdtContributionSpec::Conventional(fdt)] = ivc_node.firmware().fdt().unwrap() else {
+        panic!("IVC model must expose one conventional FDT node");
+    };
+    assert_eq!(fdt.node_name(), "ivc-channel");
+    assert_eq!(fdt.compatible(), ["axvisor,ivc-channel"]);
     assert_eq!(
-        firmware.node_name().map(String::as_str),
-        Some("ivc-channel")
+        fdt.properties(),
+        [
+            DeviceFirmwareProperty::InterruptInput {
+                name: "axvisor,notify-irq".into(),
+                slot: notify.clone(),
+            },
+            DeviceFirmwareProperty::String {
+                name: "status".into(),
+                value: "okay".into(),
+            },
+            DeviceFirmwareProperty::U32 {
+                name: "axvisor,ivc-version".into(),
+                value: 1,
+            },
+        ]
     );
-    assert_eq!(firmware.compatible(), ["axvisor,ivc-channel"]);
-    assert_eq!(
-        firmware.properties(),
-        [DeviceFirmwareProperty::U32 {
-            name: "axvisor,ivc-version".into(),
-            value: 1
-        }]
-    );
-    assert_eq!(firmware.register_slots(), [registers]);
-    assert_eq!(firmware.interrupt_slots(), [notify]);
+    assert_eq!(fdt.register_slots(), [registers]);
+    assert_eq!(fdt.interrupt_slots(), [notify]);
 
     let mut runtime = axdevice::DeviceRuntimeBuilder::new(Default::default());
     for node in graph.nodes() {
@@ -334,18 +365,56 @@ notify_irq = 160
     let context = DeviceInstantiationContext::new()
         .with_default_wired_controller(controller_id, InterruptControllerId::new(0));
 
+    let mut catalog = ConfiguredDeviceCatalog::new();
+    axvm::machine::register_devices(&mut catalog).unwrap();
     assert!(matches!(
-        ConfiguredDeviceCatalog::new().instantiate_node(request, &context),
+        catalog.instantiate_node(request, &context),
         Err(ConfiguredDeviceError::InvalidOptions { .. })
+    ));
+}
+
+#[test]
+fn axvm_catalog_owns_common_virtio_models() {
+    let config = GuestConfig::from_toml(
+        r#"
+[devices]
+[[devices.virtual]]
+id = "disk0"
+model = "virtio-blk"
+backend = "ramdisk"
+capacity = "2MiB"
+
+[[devices.virtual]]
+id = "net0"
+model = "virtio-net"
+guest_mac = [2, 0, 0, 0, 0, 1]
+"#,
+    )
+    .unwrap();
+    let context = DeviceInstantiationContext::new().with_default_wired_controller(
+        DeviceNodeId::new("controller").unwrap(),
+        InterruptControllerId::new(0),
+    );
+    let mut catalog = ConfiguredDeviceCatalog::new();
+    axvm::machine::register_devices(&mut catalog).unwrap();
+
+    assert!(
+        catalog
+            .instantiate_node(&config.devices.virtual_devices[0], &context)
+            .is_ok()
+    );
+    assert!(matches!(
+        catalog.instantiate_node(&config.devices.virtual_devices[1], &context),
+        Err(ConfiguredDeviceError::Instantiation { .. })
     ));
 }
 
 #[test]
 fn configured_catalog_rejects_ambiguous_or_untyped_requests() {
     let mut catalog = ConfiguredDeviceCatalog::new();
-    catalog.register(BLOCK_LIKE_REGISTRATION).unwrap();
+    catalog.register("first", BLOCK_LIKE_REGISTRATION).unwrap();
     assert!(matches!(
-        catalog.register(BLOCK_LIKE_REGISTRATION),
+        catalog.register("second", BLOCK_LIKE_REGISTRATION),
         Err(ConfiguredDeviceError::DuplicateModel { .. })
     ));
 
@@ -392,5 +461,32 @@ cache = "writeback"
     assert!(matches!(
         catalog.instantiate_node(&unknown_option.devices.virtual_devices[0], &context),
         Err(ConfiguredDeviceError::InvalidOptions { .. })
+    ));
+}
+
+#[test]
+fn axvm_common_registration_rolls_back_the_complete_batch() {
+    let conflicting_registration = ConfiguredModelRegistration {
+        model: "ivc-channel",
+        create: create_block_like,
+    };
+    let mut catalog = ConfiguredDeviceCatalog::new();
+    catalog
+        .register("preexisting-owner", conflicting_registration)
+        .unwrap();
+
+    assert!(matches!(
+        axvm::machine::register_devices(&mut catalog),
+        Err(ConfiguredDeviceError::DuplicateModel { .. })
+    ));
+
+    let serial = VirtualDeviceRequest {
+        id: "serial0".into(),
+        model: "pl011-mmio".into(),
+        options: toml::Table::new(),
+    };
+    assert!(matches!(
+        catalog.instantiate_node(&serial, &DeviceInstantiationContext::new()),
+        Err(ConfiguredDeviceError::UnknownVirtualDeviceModel { .. })
     ));
 }

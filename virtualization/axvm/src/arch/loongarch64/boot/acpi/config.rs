@@ -53,6 +53,7 @@ impl Default for LoongArchFwCfgPciConfig {
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::arch::loongarch64::boot) struct LoongArchFwCfgInterruptConfig {
+    pub(in crate::arch::loongarch64::boot) controller: axdevice_base::InterruptControllerId,
     pub(in crate::arch::loongarch64::boot) eiointc_irq: u8,
     pub(in crate::arch::loongarch64::boot) pch_msi_base: u64,
     pub(in crate::arch::loongarch64::boot) pch_msi_start: u32,
@@ -65,6 +66,7 @@ pub(in crate::arch::loongarch64::boot) struct LoongArchFwCfgInterruptConfig {
 impl Default for LoongArchFwCfgInterruptConfig {
     fn default() -> Self {
         Self {
+            controller: axdevice_base::InterruptControllerId::new(0),
             eiointc_irq: 3,
             pch_msi_base: 0x2ff0_0000,
             pch_msi_start: 0x40,
@@ -106,6 +108,7 @@ pub(in crate::arch::loongarch64::boot) fn interrupt_config(
     platform: &GuestPlatform,
 ) -> LoongArchFwCfgInterruptConfig {
     LoongArchFwCfgInterruptConfig {
+        controller: platform.interrupt.controller,
         eiointc_irq: platform.interrupt.eiointc_irq as u8,
         pch_msi_base: platform.interrupt.pch_msi.base,
         pch_msi_start: platform.interrupt.acpi_msi_start,

@@ -290,13 +290,13 @@ pub fn sys_umask(current: &crate::task::UserTaskRef, mask: u32) -> crate::Starry
 
 pub fn sys_personality(
     current: &crate::task::UserTaskRef,
-    persona: usize,
+    persona: u32,
 ) -> crate::StarryResult<isize> {
     let curr = current;
     let proc_data = &curr.as_thread().proc_data;
     let old = proc_data.personality();
-    if persona as u32 != PERSONALITY_GET {
-        proc_data.replace_personality(persona);
+    if persona != PERSONALITY_GET {
+        proc_data.replace_personality(persona as usize);
     }
     Ok(old as isize)
 }

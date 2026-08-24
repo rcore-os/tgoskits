@@ -23,6 +23,21 @@ impl DeviceModel for X86AcpiPmTimerModel {
             )
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::interfaces(
+            None,
+            Some(std::vec![AcpiContributionSpec::Timer(
+                AcpiDeviceSpec::new("PMTM", "ACPI0008")
+                    .with_register(
+                        ResourceSlot::new("registers").expect("static PM timer slot is valid"),
+                    )
+                    .with_interrupt(
+                        ResourceSlot::new("sci").expect("static PM timer slot is valid"),
+                    ),
+            )]),
+        )
+    }
+
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let range = context.pio(&ResourceSlot::new("registers")?)?;
         let expected = (

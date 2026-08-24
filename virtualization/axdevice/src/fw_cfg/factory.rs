@@ -182,6 +182,38 @@ impl DeviceModel for FwCfgPayloadFactory {
         Ok(requirements)
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        let registers = ResourceSlot::new("registers").expect("static fw_cfg slot is valid");
+        match self.transport {
+            FwCfgTransport::Mmio => DeviceFirmwareSpec::interfaces(
+                Some(alloc::vec![FdtContributionSpec::FirmwareTransport(
+                    FdtNodeSpec::new("fw_cfg")
+                        .with_compatible("qemu,fw-cfg-mmio")
+                        .with_register(registers)
+                        .with_empty_property("dma-coherent"),
+                )]),
+                Some(alloc::vec![AcpiContributionSpec::FirmwareTransport(
+                    AcpiDeviceSpec::new("FWCF", "QEMU0002").with_register(
+                        ResourceSlot::new("registers").expect("static fw_cfg slot is valid"),
+                    ),
+                )]),
+            ),
+            FwCfgTransport::Pio => DeviceFirmwareSpec::interfaces(
+                None,
+                Some(alloc::vec![AcpiContributionSpec::FirmwareTransport(
+                    AcpiDeviceSpec::new("FWCF", "QEMU0002")
+                        .with_register(
+                            ResourceSlot::new("selector-data")
+                                .expect("static fw_cfg slot is valid"),
+                        )
+                        .with_register(
+                            ResourceSlot::new("dma").expect("static fw_cfg slot is valid"),
+                        ),
+                )]),
+            ),
+        }
+    }
+
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let payload = self.payload()?;
         if self.base != payload.base || self.size != payload.size {

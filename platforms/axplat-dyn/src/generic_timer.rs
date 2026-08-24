@@ -192,7 +192,7 @@ impl ax_plat::time::TimeIf for GenericTimer {
 
     #[cfg(feature = "irq")]
     fn cancel_oneshot_timer() {
-        somehal::timer::stop_oneshot();
+        somehal::timer::cancel_oneshot();
     }
 }
 

@@ -133,6 +133,7 @@ static OWNER_CONTROL_REARM_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static OWNER_CONTROL_REARM_NODES: [InboxNode; crate::DEFAULT_BATCH_LIMIT + 1] =
     [const { InboxNode::new(InboxKind::OwnerControl) }; crate::DEFAULT_BATCH_LIMIT + 1];
 static OWNER_CONTROL_COALESCING_NODE: InboxNode = InboxNode::new(InboxKind::OwnerControl);
+static OWNER_CONTROL_PENDING_REQUEST_NODE: InboxNode = InboxNode::new(InboxKind::OwnerControl);
 static FAIR_DELAY_DEQUEUE_TARGET: AtomicU64 = AtomicU64::new(0);
 static PARK_PROFILE_HOOK: AtomicUsize = AtomicUsize::new(0);
 static LINKED_PICK_FULL_SNAPSHOT_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -898,6 +899,46 @@ pub fn publish_coalesced_owner_control_twice()
         before,
         after_first_publication,
         after_coalesced_publication,
+    })
+}
+
+/// Scheduler-request generations when a fresh owner-control inbox head is
+/// published after an older owner-work request lost its physical edge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OwnerControlPendingRequestGenerations {
+    /// Generation owned by the older sticky owner-work request.
+    pub pending_request: u64,
+    /// Generation after the fresh inbox head became visible.
+    pub after_head_publication: u64,
+}
+
+/// Publishes a fresh owner-control inbox head while the sticky owner-work bit
+/// from an older delivery is still set.
+pub fn publish_owner_control_after_pending_request()
+-> Result<OwnerControlPendingRequestGenerations, crate::TaskError> {
+    let pin = crate::lock::PreemptScope::enter();
+    let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
+    let owner = remote.owner();
+    remote.request_scheduler_work();
+    let (pending_request, ..) = remote.scheduler_request_state_for_test();
+    let message = InboxMessage::deadline_refresh_with_payload(
+        ThreadId::from_parts(u32::MAX - 1, 1),
+        owner,
+        0,
+        0,
+    );
+    // SAFETY: this process-lifetime fixture is never moved.
+    let node = unsafe { Pin::new_unchecked(&OWNER_CONTROL_PENDING_REQUEST_NODE) };
+    assert_eq!(
+        remote.publish_owner_control(node, message),
+        PublishResult::Published,
+        "the pending-request fixture must begin detached"
+    );
+    let (after_head_publication, ..) = remote.scheduler_request_state_for_test();
+    drop(pin);
+    Ok(OwnerControlPendingRequestGenerations {
+        pending_request,
+        after_head_publication,
     })
 }
 

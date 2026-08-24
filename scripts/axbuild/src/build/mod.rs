@@ -31,8 +31,8 @@ pub(crate) use config_file::{
 #[cfg(test)]
 pub(crate) use info::toolchain_rustflags_for_features;
 pub(crate) use info::{
-    ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, BuildInfo, append_encoded_rustflags,
-    build_info_enables_backtrace_path, env_truthy,
+    ARCEOS_LINKER_SCRIPT, BareKernelLinkMode, BuildInfo, append_cargo_rustflags,
+    build_info_enables_backtrace_path, env_truthy, toolchain_rustflags,
 };
 use info::{PIE_TARGET_DIR, STD_TARGET_DIR, TARGET_JSON_ROOT};
 #[cfg(test)]

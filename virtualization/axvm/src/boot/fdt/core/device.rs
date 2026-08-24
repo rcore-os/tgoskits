@@ -102,11 +102,21 @@ pub fn find_all_passthrough_devices(vm_cfg: &AxVMConfig, fdt: &Fdt) -> Vec<Strin
     if !all_excluded_devices.is_empty() {
         let excluded_set: BTreeSet<String> = all_excluded_devices.into_iter().collect();
         all_device_names.retain(|device_name| {
-            let should_keep = !excluded_set.contains(device_name);
-            if !should_keep {
+            let directly_excluded = excluded_set.contains(device_name);
+            let covers_excluded_subtree = !directly_excluded
+                && excluded_device_path.iter().any(|excluded_path| {
+                    node_cache.contains_key(excluded_path)
+                        && is_path_or_ancestor(device_name, excluded_path)
+                });
+            if directly_excluded {
                 info!("Excluding device: {device_name}");
+            } else if covers_excluded_subtree {
+                info!(
+                    "Excluding passthrough ancestor {device_name} because it covers a disabled \
+                     device subtree"
+                );
             }
-            should_keep
+            !directly_excluded && !covers_excluded_subtree
         });
     }
 
@@ -118,6 +128,13 @@ pub fn find_all_passthrough_devices(vm_cfg: &AxVMConfig, fdt: &Fdt) -> Vec<Strin
         all_device_names.len().saturating_sub(initial_device_count)
     );
     all_device_names
+}
+
+fn is_path_or_ancestor(candidate: &str, path: &str) -> bool {
+    candidate == path
+        || path
+            .strip_prefix(candidate)
+            .is_some_and(|suffix| candidate == "/" || suffix.starts_with('/'))
 }
 
 pub fn build_optimized_node_cache(fdt: &Fdt) -> NodeCache {

@@ -146,6 +146,16 @@ impl CpuRemote {
         self.publish_scheduler_request_owned(REQUEST_OWNER_WORK)
     }
 
+    /// Publishes a new owner-work generation for a fresh inbox head.
+    ///
+    /// The sticky owner-work bit may belong to an older physical doorbell that
+    /// the target IRQ handler has already claimed. An empty-to-nonempty inbox
+    /// transition therefore owns a new logical generation even when that bit
+    /// is still set, so the runtime can acquire a fresh delivery edge.
+    pub(super) fn publish_owner_inbox_head_owned(&self) -> SchedulerRequestPublication {
+        self.force_scheduler_request_owned(REQUEST_OWNER_WORK)
+    }
+
     fn publish_scheduler_request_owned(&self, reason: u64) -> Option<SchedulerRequestPublication> {
         debug_assert_ne!(reason & REQUEST_REASON_MASK, 0);
         let publication = self.scheduler_request.request.try_update(

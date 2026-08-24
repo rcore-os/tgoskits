@@ -574,17 +574,28 @@ mod tests {
         thread.publish().unwrap();
         thread.commit();
 
+        assert_eq!(source.pids_current_text().unwrap(), "2\n");
+        assert_eq!(source.pids_peak_text().unwrap(), "2\n");
+        assert_eq!(parent.pids_current_text().unwrap(), "2\n");
+        assert_eq!(parent.pids_peak_text().unwrap(), "2\n");
         membership.migrate(pid, Arc::clone(&target)).unwrap();
 
         assert_eq!(source.pids_current_text().unwrap(), "0\n");
+        assert_eq!(source.pids_peak_text().unwrap(), "2\n");
         assert_eq!(target.pids_current_text().unwrap(), "2\n");
+        assert_eq!(target.pids_peak_text().unwrap(), "2\n");
         assert_eq!(parent.pids_current_text().unwrap(), "2\n");
+        assert_eq!(parent.pids_peak_text().unwrap(), "2\n");
         membership
             .exit_task(pid, tid, CgroupTaskExit::Thread)
             .unwrap();
         membership
             .exit_task(pid, pid, CgroupTaskExit::LastProcessTask)
             .unwrap();
+        assert_eq!(target.pids_current_text().unwrap(), "0\n");
+        assert_eq!(target.pids_peak_text().unwrap(), "2\n");
+        assert_eq!(parent.pids_current_text().unwrap(), "0\n");
+        assert_eq!(parent.pids_peak_text().unwrap(), "2\n");
     }
 
     #[test]
@@ -693,6 +704,39 @@ mod tests {
         membership
             .exit_task(pid, pid, CgroupTaskExit::LastProcessTask)
             .unwrap();
+    }
+
+    #[test]
+    fn ancestor_rejection_rolls_back_current_but_retains_leaf_peak() {
+        let _guard = setup();
+        let root = crate::root();
+        let parent = root.create_child("peak-rollback-parent").unwrap();
+        root.write_subtree_control("+pids").unwrap();
+        parent.write_subtree_control("+pids").unwrap();
+        let child = parent.create_child("peak-rollback-child").unwrap();
+        let pid = process_id(1034);
+        let tid = process_id(1035);
+        let mut membership = commit_process(&child, pid);
+        parent.write_pids_max("1").unwrap();
+
+        assert!(matches!(
+            membership.begin_task(pid, tid, CgroupChildKind::Thread),
+            Err(CgroupError::LimitExceeded)
+        ));
+        assert_eq!(parent.pids_current_text().unwrap(), "1\n");
+        assert_eq!(parent.pids_peak_text().unwrap(), "1\n");
+        assert_eq!(child.pids_current_text().unwrap(), "1\n");
+        assert_eq!(child.pids_peak_text().unwrap(), "2\n");
+        assert_eq!(parent.pids_events_text().unwrap(), "max 1\n");
+        assert_eq!(child.pids_events_text().unwrap(), "max 0\n");
+
+        membership
+            .exit_task(pid, pid, CgroupTaskExit::LastProcessTask)
+            .unwrap();
+        assert_eq!(parent.pids_current_text().unwrap(), "0\n");
+        assert_eq!(parent.pids_peak_text().unwrap(), "1\n");
+        assert_eq!(child.pids_current_text().unwrap(), "0\n");
+        assert_eq!(child.pids_peak_text().unwrap(), "2\n");
     }
 
     #[test]

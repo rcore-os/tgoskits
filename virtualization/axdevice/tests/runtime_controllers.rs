@@ -126,6 +126,10 @@ impl DeviceModel for IrqFactory {
         Ok(requirements)
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::None
+    }
+
     fn build(
         &self,
         context: &mut DeviceBuildContext<'_>,

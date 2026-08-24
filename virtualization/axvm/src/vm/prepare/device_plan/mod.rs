@@ -86,7 +86,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        AxVmError,
+        AxVmError, ConfiguredDeviceCatalog,
         config::{AxVMConfigParams, PhysCpuList},
         configured::append_configured_devices,
     };
@@ -101,6 +101,10 @@ mod tests {
                 0x1000,
                 ResourceRequest::Fixed(0x8000_0000),
             )
+        }
+
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
         }
 
         fn build(
@@ -123,6 +127,10 @@ mod tests {
             )
         }
 
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::None
+        }
+
         fn build(
             &self,
             _context: &mut DeviceBuildContext<'_>,
@@ -131,10 +139,17 @@ mod tests {
         }
     }
 
+    fn registered_catalog() -> Arc<ConfiguredDeviceCatalog> {
+        let mut catalog = ConfiguredDeviceCatalog::new();
+        crate::machine::register_devices(&mut catalog).unwrap();
+        Arc::new(catalog)
+    }
+
     fn config_with_ivc() -> AxVMConfig {
         AxVMConfig::new(AxVMConfigParams {
             id: 1,
             phys_cpu_ls: PhysCpuList::new(1, None, None),
+            virtual_device_catalog: registered_catalog(),
             memory_regions: vec![VmMemConfig {
                 gpa: 0x8000_0000,
                 size: 0x1000_0000,

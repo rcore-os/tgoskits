@@ -11,12 +11,13 @@ use crate::{
     task::{PidIdentity, PidIdentityId, PidView, ProcessData, Tgid, TgidNumber, UserTaskRef},
 };
 
-const INTERFACE_FILES: [&str; 6] = [
+const INTERFACE_FILES: [&str; 7] = [
     "cgroup.procs",
     "cgroup.controllers",
     "cgroup.subtree_control",
     "pids.max",
     "pids.current",
+    "pids.peak",
     "pids.events",
 ];
 
@@ -137,6 +138,10 @@ pub fn pids_max_text(node: &CgroupNode) -> Result<String, StarryError> {
 
 pub fn pids_current_text(node: &CgroupNode) -> Result<String, StarryError> {
     node.pids_current_text().map_err(StarryError::from)
+}
+
+pub fn pids_peak_text(node: &CgroupNode) -> Result<String, StarryError> {
+    node.pids_peak_text().map_err(StarryError::from)
 }
 
 pub fn pids_events_text(node: &CgroupNode) -> Result<String, StarryError> {

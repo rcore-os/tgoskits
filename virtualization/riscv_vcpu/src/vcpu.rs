@@ -14,7 +14,7 @@
 
 use core::marker::PhantomData;
 
-use riscv::register::{scause, sie, sstatus};
+use riscv::register::{scause, sstatus};
 use riscv_decode::{
     Instruction,
     types::{IType, SType},
@@ -262,23 +262,18 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
     /// Runs the vCPU until a host-visible exit occurs.
     pub fn run(&mut self) -> RiscvVcpuResult<RiscvVmExit> {
+        let host_interrupts_enabled = sstatus::read().sie();
         unsafe {
+            // Match Linux KVM's entry contract: only the global interrupt bit
+            // belongs to the world-switch boundary. The physical SIE source
+            // mask remains owned by the host IRQ runtime across guest runs.
             sstatus::clear_sie();
-            sie::set_sext();
-            sie::set_ssoft();
-            // Keep the host runtime's supervisor-timer enable state instead of
-            // forcing it on for every VM entry. Guest deadlines use `vstimecmp`
-            // and must not alter this host-owned interrupt line.
-        }
-        unsafe {
             // Safe to run the guest as it only touches memory assigned to it by being owned
             // by its page table
             _run_guest(&mut self.regs);
-        }
-        unsafe {
-            sie::clear_sext();
-            sie::clear_ssoft();
-            sstatus::set_sie();
+            if host_interrupts_enabled {
+                sstatus::set_sie();
+            }
         }
         self.vmexit_handler()
     }

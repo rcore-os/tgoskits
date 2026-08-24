@@ -61,44 +61,6 @@ pub fn aarch64_timer_mode() -> ArchTimerMode {
     unsafe { ArchTimerMode::from_raw(ARCH_TIMER_MODE) }
 }
 
-/// Prepares the platform one-shot timer without making timer IRQs observable.
-pub fn prepare_oneshot() {
-    crate::arch::Arch::systimer_prepare_oneshot();
-}
-
-/// Disable the platform system timer to stop timer IRQs.
-pub fn irq_disable() {
-    crate::arch::Arch::systimer_irq_disable();
-}
-
-/// Stops the platform one-shot timer and discards its programmed event.
-pub fn stop_oneshot() {
-    crate::arch::Arch::systimer_stop_oneshot();
-}
-
-/// Restores a stopped one-shot timer using the architecture's required order.
-pub fn resume_oneshot_in_ticks(ticks: usize) {
-    crate::arch::Arch::systimer_resume_oneshot(ticks);
-}
-
-pub fn irq_enable() {
-    crate::arch::Arch::systimer_irq_enable();
-}
-
-pub fn irq_is_enabled() -> bool {
-    crate::arch::Arch::systimer_irq_is_enabled()
-}
-
-/// Configure the system timer with the desired interval.
-pub fn set_next_event(interval: Duration) {
-    let ticks = duration_to_ticks(interval);
-    crate::arch::Arch::systimer_set_interval(ticks);
-}
-
-pub fn set_next_event_in_ticks(ticks: usize) {
-    crate::arch::Arch::systimer_set_interval(ticks);
-}
-
 #[cfg(any(target_arch = "aarch64", test))]
 pub(crate) fn resume_masked_level_oneshot(
     program_comparator: impl FnOnce(),
@@ -213,12 +175,6 @@ pub(crate) mod loongarch64_interval {
     pub(crate) const fn stopped_ticks() -> usize {
         usize::MAX & !(ALIGNMENT - 1)
     }
-}
-
-/// Acknowledge and clear the timer interrupt.
-/// This must be called in the timer interrupt handler.
-pub fn ack() {
-    crate::arch::Arch::systimer_ack();
 }
 
 pub fn since_boot() -> Duration {

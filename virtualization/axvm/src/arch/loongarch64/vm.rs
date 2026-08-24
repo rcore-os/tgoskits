@@ -94,6 +94,7 @@ fn plan_devices(
                 PCH_PIC_BASE,
                 PCH_PIC_SIZE,
                 Arc::new(LoongArchDomainFactory { vm_id: config.id() }),
+                Arc::new(super::irq::LoongArchPchPicOutputSink::new(config.id())),
             )),
         ),
         DeviceNodeSpec::virtual_device(

@@ -9,7 +9,7 @@ phys_cpu_sets = [1, 2, 4]
 
 # VM kernel configuration.
 [kernel]
-cmdline = "earlycon=sbi console=ttyS0,115200 init=/bin/sh root=/dev/vda rw initcall_blacklist=nvme_init"
+cmdline = "earlycon=sbi console=ttyS0,115200 init=/bin/sh root=/dev/vda rw"
 entry_point = 0x9020_0000
 image_location = "fs"
 kernel_path = "/guest/linux/linux-qemu"
@@ -23,4 +23,4 @@ memory_regions = [
 
 [devices]
 passthrough = []
-disabled = []
+disabled = [{ path = "/soc/pci@30000000" }]

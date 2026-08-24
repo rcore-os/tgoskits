@@ -659,10 +659,14 @@ pub fn sys_setfsgid(current: &crate::task::UserTaskRef, fsgid: u32) -> crate::St
 
 pub fn sys_getgroups(
     current: &crate::task::UserTaskRef,
-    size: usize,
+    size: i32,
     list: *mut u32,
 ) -> crate::StarryResult<isize> {
     debug!("sys_getgroups <= size: {size}");
+    if size < 0 {
+        return Err(StarryError::InvalidInput);
+    }
+    let size = size as usize;
     let cred = current.as_thread().cred();
     let ngroups = cred.groups.len();
     if size == 0 {

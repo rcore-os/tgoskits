@@ -1,6 +1,6 @@
 # Axvisor 解析后设备图与客户机固件
 
-状态：PR #1718 的实现基线
+状态：当前实现基线
 
 本文描述设备图、资源和固件的所有权边界。架构共同能力、部分能力、默认行为与单一实现的放置规则，见[《AxVM 分层能力接口设计》](./axvm-capability-layering.md)。两份设计共同约束 AxVM：能力接口回答“谁能做什么”，解析后设备图回答“已经分配了什么、由谁持有”。
 
@@ -46,14 +46,17 @@ FDT / ACPI 片段       DeviceRuntime
 ```toml
 [[devices.virtual]]
 id = "data0"
-model = "virtio-blk-mmio"
+model = "virtio-blk"
 capacity = "20GiB"
-backend = { type = "file", path = "/images/data.raw" }
+backend = "file"
+path = "/images/data.raw"
 ```
 
 `VirtualDeviceRequest` 只保留稳定 ID、规范 model 名和剩余 TOML table。它禁止用户填写 MMIO、PIO、IRQ、MSI 或 LPI 数字。catalog 中的 `ConfiguredModelRegistration` 保存规范 model 名和普通构造函数指针；构造函数使用带 `deny_unknown_fields` 的类型化结构解析 options，并直接返回 `DeviceNodeSpec`。未知 model、重复注册、重复设备 ID 和未知选项都明确失败，不存在额外 factory trait 或 instance 包装层。
 
-catalog 由代码显式构造；不使用 linker section、全局静态发现、动态库或外部插件。新增标准设备只增加自己的模块并在标准 catalog 注册一次，不修改设备类型枚举或四个架构的中心 `match`。本 PR 不注册真正的 virtio-blk，因此上例会返回 `UnknownVirtualDeviceModel`，不会伪装成功。
+catalog 由代码显式构造；`ConfiguredDeviceCatalog::new()` 始终为空，不隐藏任何默认 model。`axvm::machine::register_devices()` 通过普通 Rust `mod` 和函数调用注册 AxVM 拥有的 serial、IVC、virtio-blk 与 virtio-net，并以事务方式提交整批 registration；任一 model 冲突时 catalog 保持调用前状态。应用只把 VM 请求和必填 catalog 传入 `AxVMConfigParams`。注册记录 `module_path!()` owner，重复 model 会同时报告原 owner 与冲突 owner。不使用 linker section、全局静态发现、宏扫描、动态库或外部插件。
+
+通用设备实现位于 `virtualization/axvm/src/configured/devices/`。新增只使用现有资源类型和固件 contribution 的通用设备时，只增加设备模块，并在该目录的显式注册文件添加 `mod` 与 `register()` 调用；不修改 Axvisor、VM config assembly、四架构 VM-exit 或 FDT/ACPI composer。
 
 `DeviceInstantiationContext` 只暴露架构和默认 wired/MSI 域等小型能力，不暴露架构内部对象、裸 IRQ 或设备管理器。
 
@@ -65,9 +68,7 @@ catalog 由代码显式构造；不使用 linker section、全局静态发现、
 pub trait DeviceModel: Send + Sync {
     fn requirements(&self) -> DeviceManagerResult<DeviceRequirements>;
 
-    fn firmware(&self) -> DeviceFirmwareSpec {
-        DeviceFirmwareSpec::default()
-    }
+    fn firmware(&self) -> DeviceFirmwareSpec;
 
     fn build(
         &self,
@@ -76,7 +77,7 @@ pub trait DeviceModel: Send + Sync {
 }
 ```
 
-`requirements()` 是纯声明阶段，只能返回命名资源槽和能力需求；`firmware()` 返回简单、拥有所有权的节点元数据；`build()` 只能通过 `mmio("slot")`、`pio("slot")`、`irq("slot")`、`msi("slot")` 等接口消费计划签发的 claim。模型自己的类型化配置捕获在具体结构体中，不保存原始 TOML，也不重新查找 factory。
+`requirements()` 是纯声明阶段，只能返回命名资源槽和能力需求；`firmware()` 必须显式返回 `None`，或者 `Interfaces { fdt, acpi }`。FDT-only、ACPI-only 和双支持都可表达；两个 interface 都缺失或已声明 interface 的 contribution 为空会在 graph declaration 阶段失败。`DeviceNodeSpec` 创建时只调用一次 `firmware()` 并冻结结果，后续 resolved graph、composer 与 runtime 不再回调 model。`build()` 只能通过 `mmio("slot")`、`pio("slot")`、`irq("slot")`、`msi("slot")` 等接口消费计划签发的 claim。模型自己的类型化配置捕获在具体结构体中，不保存原始 TOML，也不重新查找 factory。
 
 这里删除的是“每新增设备就增长”的设备类型 enum。`DeviceNodeKind`、`ResourceRequest`、trigger/sharing 等封闭且稳定的领域枚举继续保留。
 
@@ -126,9 +127,13 @@ pub trait DeviceModel: Send + Sync {
 
 ## 固件模型
 
-节点不再挂第二组 FDT/ACPI dyn trait。`DeviceModel::firmware()` 只返回 `DeviceFirmwareSpec`：节点名、compatible/HID、资源槽和简单属性。架构 composer 将它与同一节点的 `ResolvedDeviceResources` 组合成最终 FDT/AML；固件代码不能重新分配资源、按设备类型匹配或 downcast 运行时设备。
+节点不再挂第二组 FDT/ACPI dyn trait。`DeviceModel::firmware()` 返回由 `FdtContributionSpec` / `AcpiContributionSpec` 分类的 typed contribution：普通设备、中断控制器、timer、PCI host bridge、console 或 firmware transport。架构选择 FDT 或 ACPI 后，先验证图中每个 `Interfaces` 设备支持该接口，再把 contribution 中的 slot 解析为最终地址、IRQ 与 controller identity。固件代码不能重新分配资源、按 model 匹配、注入 raw DTS/AML 或 downcast 运行时设备。
 
-串口等简单设备直接使用这份通用元数据。GIC、ITS、PCI、IOAPIC 等特殊拓扑仍由架构计划处理，因为 phandle、MADT、PCI `_PRT` 和系统寄存器属于架构事实；特殊实现仍只能读取 resolved graph。
+普通设备由共享 composer 编码。FDT 使用 resolved register/interrupt slot 生成唯一的 unit-address 节点；ACPI 为多实例设备分配唯一 NameSeg 和 `_UID`。GIC、ITS、PCI、IOAPIC 等特殊拓扑仍由架构 adapter 编码，因为 phandle、MADT、PCI `_PRT` 和系统寄存器属于架构事实；但对应 model 同样必须声明 typed contribution，adapter 只能读取 resolved graph，不以空 firmware 默认值暗示“架构自行处理”。平台选择的接口缺失时立即失败，不回退到另一接口，也不静默忽略。
+
+`InterruptController` contribution 显式携带运行时 `InterruptControllerId`。解析后的 FDT/ACPI 中断保留 `(controller, input)` 两个维度：FDT adapter 将 controller 映射到对应 phandle，ACPI adapter 将 controller-local input 通过架构声明的 GSI base 映射到系统 GSI。只有单控制器的架构也必须校验 controller identity；不匹配时拒绝 VM，不能绑定默认 parent 或直接把 input 当作 GSI。
+
+固件解析会解析每一个特殊 contribution 的全部 register、interrupt 和属性 slot。架构 adapter 必须按 contribution 分类与固件身份消费所有特殊项，并在重复、缺失或尚不支持的分类出现时明确失败；不得用 graph 节点 ID 代替 contribution 选择，也不得通过过滤 `Conventional` 后 `continue` 来丢弃其余分类。
 
 ## Host 派生的默认串口
 
@@ -136,7 +141,9 @@ pub trait DeviceModel: Send + Sync {
 
 用户不写 `console0` 时保留 host 优先和 machine 兜底行为。同 ID 请求完整替换 model/options：型号和 transport 兼容时继续使用 host fixed binding 与 identity，不兼容时丢弃 host identity，按普通虚拟设备自动分配资源。其他 ID 新增串口。每个 VM 最多一个 `host-console` backend owner，当前不能关闭默认串口。
 
-VGIC、vPLIC、IOAPIC 等控制器不是 catalog 设备；它们由架构创建并先注册到同一个 `DeviceRuntime`。所有 MMIO/PIO exit 只查询 runtime 区间索引一次并调用 `Arc<dyn Device>::access`，未命中后的行为由架构策略决定。VGICv3 ICC 等系统寄存器仍属于 vCPU binding，不伪装成 MMIO。
+VGIC、vPLIC、IOAPIC 等控制器不是用户 catalog 设备；它们由架构在一处显式创建，并先注册到同一个 `DeviceRuntime`。所有 MMIO/PIO/SysReg 设备访问只查询 runtime 区间索引一次并调用 `Arc<dyn Device>::read/write`，未命中后的行为由架构策略决定。VM-exit 不按设备类型、model、ID 或固定地址分派，也不 downcast。VGICv3 ICC 等 vCPU architectural interface 仍属于 vCPU binding，不伪装成 MMIO。
+
+vPLIC 在自己的 `Device::read/write` 成功后发布 VSEIP 状态；LoongArch PCH-PIC 的 runtime wrapper 在自己的访问完成后发布 controller output。架构 VM-exit 因而不再执行设备专属 post-access hook。架构仍保留 exit-reason match、指令解码、寄存器写回、x86 未映射端口语义，以及 RISC-V/LoongArch nested-page-fault fallback。
 
 透传 VM 以 host identity map 为基线，再扣除客户机 RAM、启动数据、虚拟 MMIO、host replacement 捕获区和架构保留区。LoongArch 等架构不得在早期代码中再次枚举“虚拟设备地址”；最终设备图统一完成扣洞。无法表示的重叠直接导致启动失败。
 

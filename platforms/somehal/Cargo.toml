@@ -49,8 +49,7 @@ sbi-rt = { workspace = true, features = ["legacy"] }
 loongArch64 = "0.2"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
-x2apic = "0.5"
-x86 = "0.52"
+x86-apic-driver = { workspace = true, features = ["rdif"] }
 
 [dev-dependencies]
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }

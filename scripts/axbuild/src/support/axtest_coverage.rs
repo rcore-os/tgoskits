@@ -37,7 +37,7 @@ pub(crate) fn prepare_cargo(cargo: &mut Cargo) {
     {
         cargo.features.push(COVERAGE_FEATURE.to_string());
     }
-    crate::build::append_encoded_rustflags(cargo, AXTEST_COVERAGE_RUSTFLAGS);
+    crate::build::append_cargo_rustflags(cargo, AXTEST_COVERAGE_RUSTFLAGS);
 }
 
 #[derive(Debug, Clone)]

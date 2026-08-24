@@ -95,29 +95,6 @@ HVIP 的保存副本由 `riscv_vcpu` 独占；只有当前绑定到硬件的 vCP
 
 ## vCPU CSR 执行所有权
 
-<<<<<<< HEAD
-`RiscvVcpu::setup()` 只构造 guest-owned reset state，不得读取 host `sstatus`/`hstatus`
-后改写其局部字段，也不得在 setup 阶段写 live `hstatus`。host 与 guest 的
-`sstatus`/`hstatus` 只能在 `_run_guest` 汇编入口/出口边界对称交换，与 Linux KVM
-`host_context`/guest context 分离一致。否则 setup 对当前 pCPU 的污染会在 guest 退出时
-被当成 host context 保存，回到 Axvisor 任务后把普通 host 指令当成 guest 执行。
-
-guest target 公开 F/D 扩展，因此 HS-level `sstatus.FS` 的 reset 值必须为 `Initial`，
-允许 guest 执行浮点指令；guest 的架构 FS 状态仍由 `vsstatus` 拥有。这不是从 host 拷贝
-FS 作为默认值，而是按 guest ISA 构造确定的 reset state。纯函数回归
-`guest_reset_status_is_independent_from_host_execution_state` 约束了该边界。
-
-调试时必须区分两类连续故障：旧实现先在 WFI 返回后触发 host
-`InstructionFault`，`sepc == stval` 指向 `ArceOsTaskRuntime::wait_for_interrupt()` 的下一条
-指令，这是 host CSR 所有权被 setup 污染；删除 live `hstatus` 写后，guest 再暴露浮点
-illegal instruction，这是 guest ISA 与 FS reset 不一致。两者分别修正后，RISC-V Axvisor
-`smp-ipi` 正式用例与 `normal` 组均通过。
-
-`smp-ipi` 只验证 vCPU/SBI IPI，客户机不应再接管 host 正在使用的 PCI/NVMe。当前用例
-通过 `initcall_blacklist=nvme_init` 避免 guest probe 该 host-owned endpoint，并继续以
-virtio-blk `/dev/vda` 挂载测试 rootfs。这是范围明确的测试隔离，不是设备所有权架构修复；
-host/guest PCI 可见性、MMIO 与 FDT 发布必须在 issue #2016 中统一处理。
-=======
 `RiscvVcpu::setup()` 只构造 guest-owned reset state，不得读取或写入当前 pCPU 的 live
 `sstatus`/`hstatus`。host 与 guest 的状态只由 `_run_guest` 汇编入口/出口边界对称交换；
 否则 setup 对 host CSR 的修改会在 guest 退出时被保存为 host context，回到 Axvisor 任务后
@@ -131,7 +108,24 @@ guest target 公开 F/D 扩展，因此 HS-level `sstatus.FS` 的 reset 值为 `
 调试时需要区分两个信号：guest WFI 返回后立即出现 host `InstructionFault`，通常说明
 host/guest status 交换边界被污染；guest 内稍后出现浮点 illegal instruction，则需要检查
 guest ISA 与 reset FS 状态是否一致。两类问题都不能通过复制当前 host CSR 位来规避。
->>>>>>> origin/dev
+
+物理 `sie` source mask 属于 host IRQ runtime，不属于 vCPU world switch。`RiscvVcpu::run()`
+只允许暂时清除全局 `sstatus.SIE`，并在 `_run_guest` 返回后恢复入口时的全局开关状态；它
+不得按 guest entry/exit 设置或清除 `sie.SSIE`、`sie.STIE`、`sie.SEIE`。guest 的虚拟中断
+使能和 pending 状态分别由 `vsie`、`hie`、`hvip` 拥有。Linux v7.1 KVM 同样只通过
+`arch/riscv/include/asm/irqflags.h` 的 `local_irq_disable()` 管理全局 `sstatus.SIE`；
+`arch/riscv/include/asm/kvm_host.h` 的 `kvm_cpu_context` 与
+`arch/riscv/kvm/vcpu_switch.S` 的 `__kvm_riscv_switch_to` 都不保存或改写物理
+`sie`/`sip`。
+
+违反该边界会形成确定的宿主丢唤醒：调度请求 generation 已发布、物理 IPI edge 已 armed、
+`sip.SSIP` 已 pending，但空闲核的 `sie.SSIE == 0`，因此 WFI 永远不会返回。这里不能通过
+重复响铃或放宽 scheduler 测试修补；必须保留 host IRQ runtime 建立的 source mask。
+
+`smp-ipi` guest 只验证 vCPU/SBI IPI，不得继承 host 正在使用的 PCI/NVMe root。该 VM
+配置显式禁用 `/soc/pci@30000000`，guest 继续通过虚拟 `virtio-blk` 的 `/dev/vda` 挂载
+rootfs；generated FDT 的 exclusion 必须覆盖默认 root passthrough，不能依赖 Linux
+`initcall_blacklist` 形成兼容层。
 
 ## 验证与回滚
 
@@ -150,6 +144,17 @@ cargo xtask cross-test --arch riscv64 \
   --package riscv_vcpu --lib \
   setup_constructs_guest_status_without_accessing_host_csrs
 ```
+
+vCPU run 的 host interrupt source 所有权使用独立契约回归：
+
+```bash
+cargo xtask cross-test --arch riscv64 \
+  --package riscv_vcpu --lib \
+  vcpu_run_does_not_overwrite_host_interrupt_source_mask
+```
+
+该回归在旧实现上稳定失败；修复后还必须重复运行真实 Axvisor `smp-ipi` QEMU 用例，确认
+Linux guest 的三核启动、SBI IPI 与非零 IPI 计数同时成立。
 
 `riscv_vcpu` 用例验证 legacy 与 SBI v0.2 completion 对 A0/A1 的不同写回；AxVM
 RISC-V router 用例验证广播、零 mask、目标顺序、hart ID 溢出、未映射 hart、重复

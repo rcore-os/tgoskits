@@ -14,7 +14,10 @@ use std::{
     time::Duration,
 };
 
-use ax_std::os::arceos::sync::{IrqSafeMutex, IrqSafeMutexGuard};
+use ax_std::os::arceos::{
+    guard::IrqSaveGuard,
+    sync::{IrqSafeMutex, IrqSafeMutexGuard},
+};
 use axdevice::*;
 use axdevice_base::*;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
@@ -541,6 +544,7 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
     }
 
     fn run(&mut self) -> BackendResult<Self::Exit> {
+        let _entry_irq_guard = IrqSaveGuard::new();
         x86_result(self.0.run())
     }
 
@@ -817,6 +821,18 @@ impl DeviceModel for X86IoApicModel {
         fixed_mmio_declaration(self.base, self.length, "declare x86 virtual IOAPIC")
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::interfaces(
+            None,
+            Some(std::vec![AcpiContributionSpec::InterruptController {
+                controller: axdevice_base::InterruptControllerId::new(0),
+                device: AcpiDeviceSpec::table("IOAP").with_register(
+                    ResourceSlot::new("registers").expect("static IOAPIC slot is valid"),
+                ),
+            }]),
+        )
+    }
+
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let (base, length) =
             consume_mmio_config(context, self.base, self.length, "build x86 virtual IOAPIC")?;
@@ -861,6 +877,21 @@ impl DeviceModel for X86PitModel {
                 1,
                 ResourceRequest::Fixed(speaker.start.number()),
             )
+    }
+
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::interfaces(
+            None,
+            Some(std::vec![AcpiContributionSpec::Timer(
+                AcpiDeviceSpec::new("PIT0", "PNP0100")
+                    .with_register(
+                        ResourceSlot::new("timer-registers").expect("static PIT slot is valid"),
+                    )
+                    .with_register(
+                        ResourceSlot::new("speaker-control").expect("static PIT slot is valid"),
+                    ),
+            )]),
+        )
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
