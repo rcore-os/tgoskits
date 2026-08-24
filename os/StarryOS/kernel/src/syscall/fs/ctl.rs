@@ -899,6 +899,11 @@ pub fn sys_sync() -> StarryResult<isize> {
         .lock()
         .root_dir()
         .sync(false)?;
+    // The root sync above only reaches the root filesystem's device path;
+    // write back block-cache dirt of every device (other partitions) and
+    // issue their flush barriers.
+    #[cfg(any(feature = "ext4", feature = "fat"))]
+    ax_fs_ng::sync_all_block_caches()?;
     Ok(0)
 }
 
