@@ -1,7 +1,7 @@
 use ax_api::net::{self as api, AxUdpSocketHandle};
 
 use super::{SocketAddr, ToSocketAddrs};
-use crate::{StdError, StdResult};
+use crate::{StdError, StdResult, io};
 
 /// A UDP socket.
 pub struct UdpSocket(AxUdpSocketHandle);
@@ -40,7 +40,7 @@ impl UdpSocket {
     /// Nonblocking mode allows protocol runtimes to service retransmission
     /// and liveness timers while no datagram is queued.
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
-        api::ax_udp_set_nonblocking(&self.0, nonblocking)
+        Ok(api::ax_udp_set_nonblocking(&self.0, nonblocking)?)
     }
 
     /// Receives a single datagram message on the socket. On success, returns

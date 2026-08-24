@@ -229,11 +229,14 @@ const TARGET_STEPS: [(u64, i32); 3] = [(0, 300), (5_000, 800), (15_000, 500)];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExecutionMode {
     Endpoint,
+    #[cfg(any(not(feature = "arceos"), test))]
     ModelOnly,
+    #[cfg(any(not(feature = "arceos"), test))]
     ModelLoop,
 }
 
 impl ExecutionMode {
+    #[cfg(any(not(feature = "arceos"), test))]
     fn parse(first_argument: Option<&str>, has_extra_argument: bool) -> Result<Self, &'static str> {
         if has_extra_argument {
             return Err("task2-net accepts at most one run-mode argument");

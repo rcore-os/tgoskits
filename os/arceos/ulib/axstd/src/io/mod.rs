@@ -2,7 +2,7 @@
 
 mod stdio;
 
-pub use ax_io::{BufRead, BufReader, Error, Read, Seek, SeekFrom, Write, prelude};
+pub use ax_io::{BufRead, BufReader, Error, ErrorKind, Read, Seek, SeekFrom, Write, prelude};
 
 #[doc(hidden)]
 pub use self::stdio::__print_impl;
