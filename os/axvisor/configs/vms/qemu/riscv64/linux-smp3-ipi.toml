@@ -23,4 +23,7 @@ memory_regions = [
 
 [devices]
 passthrough = []
-disabled = []
+# The guest rootfs is the dedicated virtio-mmio block device. Keep the host
+# PCI bridge and its NVMe rootfs controller out of the guest DTB because their
+# physical interrupt routes remain owned by Axvisor.
+disabled = [{ path = "/soc/pci@30000000" }]

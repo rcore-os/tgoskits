@@ -38,6 +38,12 @@ path = "tests/axtest.rs"
 harness = false
 required-features = ["axtest", "fs"]
 
+[[test]]
+name = "guest_console_axtest"
+path = "tests/guest_console_axtest.rs"
+harness = false
+required-features = ["axtest", "test-guest-console-lifecycle"]
+
 [package.metadata.axtest]
 runtime = "axvisor"
 
@@ -56,6 +62,7 @@ test-backtrace-panic = ["backtrace"]
 test-panic-no-backtrace = ["dep:axbacktrace"]
 test-console-interleave = ["dep:ax-log"]
 test-console-atomic-output = ["ax-std/sched-rr"]
+test-guest-console-lifecycle = []
 # axum-based management HTTP server (see src/http/ for the Router).
 # Off by default. Replaces the hand-rolled pilot, which is intentionally not
 # carried forward.

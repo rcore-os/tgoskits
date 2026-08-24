@@ -20,7 +20,7 @@ fn submit_shell_format(args: core::fmt::Arguments<'_>, newline: bool) {
     if newline {
         output.push('\n');
     }
-    crate::guest_console::submit_host_bytes(output.as_bytes());
+    crate::guest_console::submit_host_text(output.as_bytes());
 }
 
 macro_rules! print {

@@ -6,7 +6,8 @@ fn host_log_record_terminates_an_open_guest_line() {
     let mux = GuestConsoleMux::new();
     {
         let mut state = mux.core.lock_state();
-        assert_eq!(state.output.format(1, false, b"guest> "), b"guest> ");
+        state.output.enter_interactive(1);
+        assert_eq!(state.output.format(1, b"guest> "), b"guest> ");
     }
 
     assert_eq!(
@@ -41,12 +42,55 @@ fn route_shortcut(mux: &GuestConsoleMux, suffix: u8) -> ConsoleInputEvent {
     mux.route_host_byte(suffix).event
 }
 
+fn attach_guest(mux: &GuestConsoleMux, running: impl IntoIterator<Item = VMId>, vm_id: VMId) {
+    mux.set_running(running);
+    assert!(mux.attach(vm_id));
+    assert!(mux.activate(vm_id).is_some());
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn new_mux_starts_in_the_shell_and_buffers_guest_output() {
+    let mux = GuestConsoleMux::new();
+    let backend = mux.core.create_serial_backend(1);
+    mux.set_running([1]);
+
+    assert_eq!(mux.attached_vm(), None);
+    assert_eq!(
+        mux.core
+            .format_guest_output(1, backend.generation, b"boot log\n"),
+        Some(Vec::new())
+    );
+    assert_eq!(mux.core.lock_state().output.pending_len(1), 9);
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn activating_guest_replays_buffered_log_once() {
+    let mux = GuestConsoleMux::new();
+    let backend = mux.core.create_serial_backend(1);
+    mux.set_running([1]);
+    assert_eq!(
+        mux.core
+            .format_guest_output(1, backend.generation, b"boot log\n"),
+        Some(Vec::new())
+    );
+
+    assert!(mux.attach(1));
+    assert_eq!(mux.activate(1), Some(b"boot log\n".to_vec()));
+    assert_eq!(mux.core.lock_state().output.pending_len(1), 0);
+
+    assert_eq!(route_shortcut(&mux, b'h'), ConsoleInputEvent::Detached(1));
+    assert!(mux.attach(1));
+    assert_eq!(mux.activate(1), Some(Vec::new()));
+}
+
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
 fn ctrl_x_h_detaches_the_foreground_guest() {
     let mux = GuestConsoleMux::new();
     mux.core.create_serial_backend(7);
-    assert_eq!(mux.attach_default([7]), Some(7));
+    attach_guest(&mux, [7], 7);
 
     assert_eq!(mux.route_host_byte(0x18).event, ConsoleInputEvent::Consumed);
     assert_eq!(
@@ -62,7 +106,7 @@ fn lowest_running_vm_is_default_and_input_only_reaches_foreground() {
     let backend_1 = mux.core.create_serial_backend(1);
     let backend_2 = mux.core.create_serial_backend(2);
 
-    assert_eq!(mux.attach_default([2, 1]), Some(1));
+    attach_guest(&mux, [2, 1], 1);
     assert_eq!(mux.route_host_byte(b'x').event, ConsoleInputEvent::Consumed);
 
     let mut input = [0u8; 2];
@@ -109,7 +153,7 @@ fn console_shortcuts_detach_and_cycle_running_guests() {
     for vm_id in [2, 7, 10] {
         mux.core.create_serial_backend(vm_id);
     }
-    assert_eq!(mux.attach_default([10, 2, 7]), Some(2));
+    attach_guest(&mux, [10, 2, 7], 2);
 
     assert_eq!(route_shortcut(&mux, b']'), ConsoleInputEvent::Attached(7));
     assert_eq!(route_shortcut(&mux, b']'), ConsoleInputEvent::Attached(10));
@@ -124,7 +168,7 @@ fn console_shortcuts_detach_and_cycle_running_guests() {
 fn non_shortcut_ctrl_x_sequences_reach_the_current_console() {
     let mux = GuestConsoleMux::new();
     let backend = mux.core.create_serial_backend(7);
-    assert_eq!(mux.attach_default([7]), Some(7));
+    attach_guest(&mux, [7], 7);
 
     assert_eq!(route_shortcut(&mux, b'z'), ConsoleInputEvent::Consumed);
     let mut input = [0u8; 2];
@@ -143,7 +187,7 @@ fn non_shortcut_ctrl_x_sequences_reach_the_current_console() {
 fn doubled_ctrl_x_reaches_the_current_console_as_one_byte() {
     let mux = GuestConsoleMux::new();
     let backend = mux.core.create_serial_backend(7);
-    assert_eq!(mux.attach_default([7]), Some(7));
+    attach_guest(&mux, [7], 7);
 
     assert_eq!(route_shortcut(&mux, CTRL_X), ConsoleInputEvent::Consumed);
     let mut input = [0u8; 2];
@@ -156,7 +200,7 @@ fn doubled_ctrl_x_reaches_the_current_console_as_one_byte() {
 fn stopping_foreground_guest_returns_to_shell() {
     let mux = GuestConsoleMux::new();
     mux.core.create_serial_backend(3);
-    mux.attach_default([3]);
+    attach_guest(&mux, [3], 3);
 
     assert_eq!(mux.set_running([]), Some(3));
     assert_eq!(mux.attached_vm(), None);
@@ -167,10 +211,10 @@ fn stopping_foreground_guest_returns_to_shell() {
 fn stopped_or_removed_guest_invalidates_its_serial_backend_generation() {
     let mux = GuestConsoleMux::new();
     let backend = mux.core.create_serial_backend(4);
-    assert_eq!(mux.attach_default([4]), Some(4));
+    attach_guest(&mux, [4], 4);
     assert_eq!(mux.route_host_byte(b'x').event, ConsoleInputEvent::Consumed);
 
-    assert!(mux.mark_stopped(4));
+    assert_eq!(mux.set_running([]), Some(4));
 
     let mut input = [0u8; 1];
     assert_eq!(backend.read(&mut input), 0);
@@ -188,159 +232,33 @@ fn stopped_or_removed_guest_invalidates_its_serial_backend_generation() {
 
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
-fn multiple_running_guests_receive_line_prefixes() {
-    let mux = GuestConsoleMux::new();
-    let backend_1 = mux.core.create_serial_backend(1);
-    mux.set_running([1]);
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"boot\n"),
-        Some(b"boot\n".to_vec())
-    );
-
-    let backend_2 = mux.core.create_serial_backend(2);
-    mux.set_running([1, 2]);
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"ready\nprompt"),
-        Some(b"[VM 1] ready\n".to_vec())
-    );
-    assert_eq!(
-        mux.core
-            .format_guest_output(2, backend_2.generation, b"other\n"),
-        Some(b"[VM 2] other\n".to_vec())
-    );
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"> \n"),
-        Some(b"[VM 1] prompt> \n".to_vec())
-    );
-}
-
-#[cfg_attr(axtest, axtest::axtest)]
-#[cfg_attr(not(axtest), test)]
-fn default_attachment_preempts_an_unterminated_background_fragment() {
+fn shell_buffers_each_running_guests_output() {
     let mux = GuestConsoleMux::new();
     let backend_1 = mux.core.create_serial_backend(1);
     let backend_2 = mux.core.create_serial_backend(2);
     mux.set_running([1, 2]);
+
     assert_eq!(
         mux.core
-            .format_guest_output(2, backend_2.generation, b"background"),
+            .format_guest_output(1, backend_1.generation, b"first\n"),
         Some(Vec::new())
     );
-
-    assert_eq!(mux.attach_default([1, 2]), Some(1));
     assert_eq!(
         mux.core
-            .format_guest_output(1, backend_1.generation, b"ready\n"),
-        Some(b"[VM 1] ready\n".to_vec())
+            .format_guest_output(2, backend_2.generation, b"second\n"),
+        Some(Vec::new())
     );
+    assert_eq!(mux.core.lock_state().output.pending_len(1), 6);
+    assert_eq!(mux.core.lock_state().output.pending_len(2), 7);
 }
 
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
-fn foreground_input_preempts_an_unterminated_background_fragment() {
+fn switching_guests_replays_unseen_background_log() {
     let mux = GuestConsoleMux::new();
     let backend_1 = mux.core.create_serial_backend(1);
     let backend_2 = mux.core.create_serial_backend(2);
-    assert_eq!(mux.attach_default([1, 2]), Some(1));
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"ready\n"),
-        Some(b"[VM 1] ready\n".to_vec())
-    );
-    assert_eq!(
-        mux.core
-            .format_guest_output(2, backend_2.generation, b"~ # "),
-        Some(Vec::new())
-    );
-
-    assert_eq!(mux.route_host_byte(b'x').event, ConsoleInputEvent::Consumed);
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"echo\n"),
-        Some(b"echo\n".to_vec())
-    );
-}
-
-#[cfg_attr(axtest, axtest::axtest)]
-#[cfg_attr(not(axtest), test)]
-fn foreground_command_result_preempts_after_its_echo_completed() {
-    let mux = GuestConsoleMux::new();
-    let backend_1 = mux.core.create_serial_backend(1);
-    let backend_2 = mux.core.create_serial_backend(2);
-    assert_eq!(mux.attach_default([1, 2]), Some(1));
-    assert_eq!(
-        mux.core
-            .format_guest_output(2, backend_2.generation, b"~ # "),
-        Some(Vec::new())
-    );
-
-    assert_eq!(mux.route_host_byte(b'x').event, ConsoleInputEvent::Consumed);
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"x\n"),
-        Some(b"x\n".to_vec())
-    );
-    assert_eq!(
-        mux.core
-            .format_guest_output(2, backend_2.generation, b"waiting"),
-        Some(Vec::new())
-    );
-
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"RESULT\n"),
-        Some(b"RESULT\n".to_vec())
-    );
-}
-
-#[cfg_attr(axtest, axtest::axtest)]
-#[cfg_attr(not(axtest), test)]
-fn first_foreground_input_enters_interactive_exclusive_mode() {
-    let mux = GuestConsoleMux::new();
-    let backend_1 = mux.core.create_serial_backend(1);
-    let backend_2 = mux.core.create_serial_backend(2);
-    assert_eq!(mux.attach_default([1, 2]), Some(1));
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"vm1 booted\n"),
-        Some(b"[VM 1] vm1 booted\n".to_vec())
-    );
-    assert_eq!(
-        mux.core
-            .format_guest_output(2, backend_2.generation, b"vm2 booted\n"),
-        Some(b"[VM 2] vm2 booted\n".to_vec())
-    );
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"~ # "),
-        Some(Vec::new())
-    );
-
-    let routed = mux.route_host_byte(b'x');
-    assert_eq!(routed.event, ConsoleInputEvent::Consumed);
-    assert_eq!(routed.host_output, b"~ # ");
-    assert_eq!(
-        mux.core
-            .format_guest_output(2, backend_2.generation, b"background\n"),
-        Some(Vec::new())
-    );
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"result\n"),
-        Some(b"result\n".to_vec())
-    );
-}
-
-#[cfg_attr(axtest, axtest::axtest)]
-#[cfg_attr(not(axtest), test)]
-fn switching_guests_replays_background_log_before_direct_output() {
-    let mux = GuestConsoleMux::new();
-    let backend_1 = mux.core.create_serial_backend(1);
-    let backend_2 = mux.core.create_serial_backend(2);
-    assert_eq!(mux.attach_default([1, 2]), Some(1));
+    attach_guest(&mux, [1, 2], 1);
 
     assert_eq!(mux.route_host_byte(b'x').event, ConsoleInputEvent::Consumed);
     assert_eq!(
@@ -369,6 +287,7 @@ fn switching_guests_replays_background_log_before_direct_output() {
         mux.activate(2),
         Some(b"background\nbefore activation\n".to_vec())
     );
+    assert_eq!(mux.core.lock_state().output.pending_len(2), 29);
     assert_eq!(
         mux.core
             .format_guest_output(2, backend_2.generation, b"direct\n"),
@@ -381,7 +300,7 @@ fn switching_guests_replays_background_log_before_direct_output() {
 fn detaching_buffers_all_guest_output() {
     let mux = GuestConsoleMux::new();
     let backend = mux.core.create_serial_backend(1);
-    assert_eq!(mux.attach_default([1]), Some(1));
+    attach_guest(&mux, [1], 1);
     assert_eq!(mux.route_host_byte(b'x').event, ConsoleInputEvent::Consumed);
     assert_eq!(
         mux.core.format_guest_output(1, backend.generation, b"~ # "),
@@ -404,11 +323,34 @@ fn detaching_buffers_all_guest_output() {
 
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
+fn dynamically_started_guest_buffers_output_in_the_shell() {
+    let mux = GuestConsoleMux::new();
+    let existing = mux.core.create_serial_backend(1);
+    attach_guest(&mux, [1], 1);
+    assert_eq!(mux.route_host_byte(b'x').event, ConsoleInputEvent::Consumed);
+    assert_eq!(route_shortcut(&mux, b'h'), ConsoleInputEvent::Detached(1));
+
+    let dynamic = mux.core.create_serial_backend(2);
+    mux.mark_running(2);
+    assert_eq!(
+        mux.core
+            .format_guest_output(2, dynamic.generation, b"dynamic boot\n"),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        mux.core
+            .format_guest_output(1, existing.generation, b"normal output\n"),
+        Some(Vec::new())
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
 fn switching_guests_terminates_unfinished_foreground_output() {
     let mux = GuestConsoleMux::new();
     let backend_1 = mux.core.create_serial_backend(1);
     mux.core.create_serial_backend(2);
-    assert_eq!(mux.attach_default([1, 2]), Some(1));
+    attach_guest(&mux, [1, 2], 1);
     assert_eq!(mux.route_host_byte(b'x').event, ConsoleInputEvent::Consumed);
     assert_eq!(
         mux.core
@@ -428,43 +370,11 @@ fn switching_guests_terminates_unfinished_foreground_output() {
 
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
-fn guest_switch_preempts_an_unterminated_background_fragment() {
-    let mux = GuestConsoleMux::new();
-    let backend_1 = mux.core.create_serial_backend(1);
-    let backend_2 = mux.core.create_serial_backend(2);
-    assert_eq!(mux.attach_default([1, 2]), Some(1));
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"ready\n"),
-        Some(b"[VM 1] ready\n".to_vec())
-    );
-    assert_eq!(
-        mux.core
-            .format_guest_output(1, backend_1.generation, b"~ # "),
-        Some(Vec::new())
-    );
-
-    assert_eq!(
-        mux.route_host_byte(CTRL_X).event,
-        ConsoleInputEvent::Consumed
-    );
-    let switched = mux.route_host_byte(b']');
-    assert_eq!(switched.event, ConsoleInputEvent::Attached(2));
-    assert_eq!(mux.activate(2), Some(Vec::new()));
-    assert_eq!(
-        mux.core
-            .format_guest_output(2, backend_2.generation, b"ready\n"),
-        Some(b"ready\n".to_vec())
-    );
-}
-
-#[cfg_attr(axtest, axtest::axtest)]
-#[cfg_attr(not(axtest), test)]
 fn replacement_backend_invalidates_the_previous_vm_generation() {
     let mux = GuestConsoleMux::new();
     let stale_backend = mux.core.create_serial_backend(8);
     let current_backend = mux.core.create_serial_backend(8);
-    mux.attach_default([8]);
+    attach_guest(&mux, [8], 8);
     mux.route_host_byte(b'x');
 
     let mut input = [0u8; 1];
@@ -485,7 +395,7 @@ fn stale_backends_leave_output_arbitration_unchanged() {
 
     let stopped = mux.core.create_serial_backend(1);
     mux.set_running([1]);
-    mux.mark_stopped(1);
+    mux.set_running([]);
     let stopped_snapshot = mux.core.lock_state().output.snapshot();
     stopped.write(b"late stopped output");
     assert_eq!(mux.core.lock_state().output.snapshot(), stopped_snapshot);

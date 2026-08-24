@@ -118,9 +118,17 @@ impl LogRecord {
                 let seconds = meta.timestamp_nanos / 1_000_000_000;
                 let micros = meta.timestamp_nanos % 1_000_000_000 / 1_000;
                 if let Some(task_id) = meta.task_id {
-                    write!(formatter, "[{seconds:>3}.{micros:06} {cpu_id}:{task_id} ")?;
+                    write!(
+                        formatter,
+                        "{}[{seconds:>3}.{micros:06} {cpu_id}:{task_id} ",
+                        crate::STRUCTURED_LOG_PREFIX_COLOR
+                    )?;
                 } else {
-                    write!(formatter, "[{seconds:>3}.{micros:06} {cpu_id} ")?;
+                    write!(
+                        formatter,
+                        "{}[{seconds:>3}.{micros:06} {cpu_id} ",
+                        crate::STRUCTURED_LOG_PREFIX_COLOR
+                    )?;
                 }
             }
             formatter.write_fmt(args)?;
@@ -874,7 +882,10 @@ mod tests {
 
         let mut reader = mailbox.reader();
         let record = reader.take(OWNER).unwrap().record;
-        assert_eq!(record.bytes(), b"[ 12.345678 0:42 module:7] message\r\n");
+        assert_eq!(
+            record.bytes(),
+            b"\x1b[37m[ 12.345678 0:42 module:7] message\r\n"
+        );
         assert_eq!(record.kind(), LogRecordKind::Log);
     }
 }

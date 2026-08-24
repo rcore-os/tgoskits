@@ -139,6 +139,8 @@ fn ax_app_entry() {
 
 struct LogIfImpl;
 
+const STRUCTURED_LOG_PREFIX_COLOR: &str = "\u{1b}[37m";
+
 #[cfg(feature = "paging")]
 fn runtime_page_fault_handler(
     addr: ax_memory_addr::VirtAddr,
@@ -158,18 +160,22 @@ impl ax_log::LogIf for LogIfImpl {
         meta: ax_log::RecordMeta,
         args: core::fmt::Arguments<'_>,
     ) -> ax_log::PublishStatus {
-        #[cfg(not(all(feature = "irq", feature = "multitask")))]
-        let _ = meta;
         #[cfg(all(feature = "irq", feature = "multitask"))]
         if let Some(status) = serial::try_publish_record(meta, args) {
             return status;
         }
+        let context = RuntimeLogContext::for_record(meta);
         #[cfg(all(feature = "irq", feature = "multitask"))]
-        if let Some(status) = console::try_publish_without_runtime(args) {
+        if let Some(status) = console::try_publish_without_runtime(meta, context, args) {
             return status;
         }
+        let record = FallbackRecord {
+            meta,
+            context,
+            args,
+        };
         let mut writer = PlatformConsoleWriter::default();
-        if core::fmt::write(&mut writer, args).is_ok() {
+        if core::fmt::write(&mut writer, format_args!("{record}")).is_ok() {
             ax_log::PublishStatus::Published
         } else {
             ax_log::PublishStatus::Dropped
@@ -187,6 +193,104 @@ impl ax_log::LogIf for LogIfImpl {
             let _ = core::fmt::write(&mut writer, args);
             writer.written
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeLogContext {
+    timestamp: core::time::Duration,
+    cpu_id: Option<usize>,
+    task_id: Option<u64>,
+}
+
+impl RuntimeLogContext {
+    const fn new(
+        timestamp: core::time::Duration,
+        cpu_id: Option<usize>,
+        task_id: Option<u64>,
+    ) -> Self {
+        Self {
+            timestamp,
+            cpu_id,
+            task_id,
+        }
+    }
+
+    fn for_record(meta: ax_log::RecordMeta) -> Self {
+        if meta.kind() == ax_log::RecordKind::Log {
+            Self::new(
+                ax_hal::time::monotonic_time(),
+                current_log_cpu_id(),
+                current_log_task_id(),
+            )
+        } else {
+            Self::new(core::time::Duration::ZERO, None, None)
+        }
+    }
+}
+
+fn current_log_cpu_id() -> Option<usize> {
+    #[cfg(feature = "smp")]
+    {
+        let _guard = ax_sync::PreemptGuard::new();
+        // SAFETY: the preemption guard prevents migration for the complete
+        // lookup. Before this CPU installs its CPU-local area, the typed pin
+        // boundary returns `AreaNotInstalled`, which is represented as `None`.
+        unsafe { ax_hal::percpu::with_cpu_pin(ax_hal::percpu::this_cpu_id_pinned) }.ok()
+    }
+    #[cfg(not(feature = "smp"))]
+    {
+        Some(0)
+    }
+}
+
+fn current_log_task_id() -> Option<u64> {
+    #[cfg(feature = "multitask")]
+    {
+        ax_task::current_may_uninit().map(|task| task.id().as_u64())
+    }
+    #[cfg(not(feature = "multitask"))]
+    {
+        None
+    }
+}
+
+fn write_fallback_record(
+    output: &mut impl core::fmt::Write,
+    meta: ax_log::RecordMeta,
+    context: RuntimeLogContext,
+    args: core::fmt::Arguments<'_>,
+) -> core::fmt::Result {
+    if meta.kind() == ax_log::RecordKind::Log {
+        let seconds = context.timestamp.as_secs();
+        let micros = context.timestamp.subsec_micros();
+        match (context.cpu_id, context.task_id) {
+            (Some(cpu_id), Some(task_id)) => write!(
+                output,
+                "{STRUCTURED_LOG_PREFIX_COLOR}[{seconds:>3}.{micros:06} {cpu_id}:{task_id} "
+            )?,
+            (Some(cpu_id), None) => write!(
+                output,
+                "{STRUCTURED_LOG_PREFIX_COLOR}[{seconds:>3}.{micros:06} {cpu_id} "
+            )?,
+            (None, _) => write!(
+                output,
+                "{STRUCTURED_LOG_PREFIX_COLOR}[{seconds:>3}.{micros:06} "
+            )?,
+        }
+    }
+    output.write_fmt(args)
+}
+
+struct FallbackRecord<'a> {
+    meta: ax_log::RecordMeta,
+    context: RuntimeLogContext,
+    args: core::fmt::Arguments<'a>,
+}
+
+impl core::fmt::Display for FallbackRecord<'_> {
+    fn fmt(&self, output: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write_fallback_record(output, self.meta, self.context, self.args)
     }
 }
 
@@ -728,6 +832,10 @@ fn init_tls() {
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
+
+    use super::{RuntimeLogContext, write_fallback_record};
+
     #[cfg(feature = "irq")]
     #[test]
     fn timer_programming_catches_up_after_a_slow_irq() {
@@ -755,5 +863,35 @@ mod tests {
     #[test]
     fn fs_init_accepts_bootargs_without_fs_feature() {
         crate::fs::init(Some("root=/dev/nvme0n1"));
+    }
+
+    #[test]
+    fn fallback_structured_log_keeps_available_runtime_metadata() {
+        let cases = [
+            (
+                RuntimeLogContext::new(Duration::new(12, 345_678_000), Some(2), Some(7)),
+                "\u{1b}[37m[ 12.345678 2:7 module:64] message\n",
+            ),
+            (
+                RuntimeLogContext::new(Duration::new(12, 345_678_000), Some(2), None),
+                "\u{1b}[37m[ 12.345678 2 module:64] message\n",
+            ),
+            (
+                RuntimeLogContext::new(Duration::new(12, 345_678_000), None, None),
+                "\u{1b}[37m[ 12.345678 module:64] message\n",
+            ),
+        ];
+
+        for (context, expected) in cases {
+            let mut output = String::new();
+            write_fallback_record(
+                &mut output,
+                ax_log::RecordMeta::log(),
+                context,
+                format_args!("module:64] message\n"),
+            )
+            .unwrap();
+            assert_eq!(output, expected);
+        }
     }
 }

@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use riscv::register::sie;
+#[cfg(feature = "sstc")]
+use riscv_h::register::henvcfg;
 use riscv_h::register::{hedeleg, hideleg, hvip};
 
 use crate::{
@@ -25,6 +27,8 @@ use crate::{
 pub struct RiscvPerCpu {
     cpu_id: usize,
     enabled: bool,
+    #[cfg(feature = "sstc")]
+    previous_henvcfg: usize,
 }
 
 impl RiscvPerCpu {
@@ -33,6 +37,8 @@ impl RiscvPerCpu {
         Ok(Self {
             cpu_id,
             enabled: false,
+            #[cfg(feature = "sstc")]
+            previous_henvcfg: 0,
         })
     }
 
@@ -43,8 +49,21 @@ impl RiscvPerCpu {
 
     /// Enables RISC-V hypervisor state on this CPU.
     pub fn hardware_enable(&mut self) -> RiscvVcpuResult {
+        if self.enabled {
+            return Err(RiscvVcpuError::BadState);
+        }
         if !has_hardware_support() {
             return Err(RiscvVcpuError::Unsupported);
+        }
+        #[cfg(feature = "sstc")]
+        unsafe {
+            let previous = henvcfg::read();
+            henvcfg::write(henvcfg_with_guest_sstc(previous));
+            if henvcfg::read() & HENVCFG_STCE == 0 {
+                henvcfg::write(previous);
+                return Err(RiscvVcpuError::Unsupported);
+            }
+            self.previous_henvcfg = previous;
         }
         unsafe {
             setup_csrs();
@@ -56,12 +75,17 @@ impl RiscvPerCpu {
 
     /// Disables guest-visible hypervisor state owned by this CPU state object.
     pub fn hardware_disable(&mut self) -> RiscvVcpuResult {
+        if !self.enabled {
+            return Err(RiscvVcpuError::BadState);
+        }
         unsafe {
             hvip::clear_vssip();
             hvip::clear_vstip();
             hvip::clear_vseip();
             core::arch::asm!("csrw hgatp, x0");
             core::arch::riscv64::hfence_gvma_all();
+            #[cfg(feature = "sstc")]
+            henvcfg::write(self.previous_henvcfg);
         }
         self.enabled = false;
         Ok(())
@@ -80,6 +104,14 @@ impl RiscvPerCpu {
             _ => 0,
         }
     }
+}
+
+#[cfg(feature = "sstc")]
+const HENVCFG_STCE: usize = 1 << 63;
+
+#[cfg(feature = "sstc")]
+const fn henvcfg_with_guest_sstc(value: usize) -> usize {
+    value | HENVCFG_STCE
 }
 
 /// Backward-compatible per-CPU alias.
@@ -108,5 +140,17 @@ unsafe fn setup_csrs() {
         sie::set_sext();
         sie::set_ssoft();
         sie::set_stimer();
+    }
+}
+
+#[cfg(all(test, feature = "sstc"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enabling_guest_sstc_preserves_other_henvcfg_bits() {
+        let existing = 1 << 7;
+
+        assert_eq!(henvcfg_with_guest_sstc(existing), existing | (1 << 63));
     }
 }

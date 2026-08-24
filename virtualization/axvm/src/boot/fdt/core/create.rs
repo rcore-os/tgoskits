@@ -47,61 +47,72 @@ pub fn create_guest_fdt(
         })
         .collect::<Vec<_>>();
 
+    let policy = GeneratedNodePolicy {
+        fdt,
+        passthrough_device_names,
+        phys_cpu_ids,
+        machine_interrupt_providers: &machine_interrupt_providers,
+        disabled_devices: &crate_config.devices.disabled,
+    };
     let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
-        should_keep_generated_node(
-            fdt,
-            node_id,
-            path,
-            node,
-            passthrough_device_names,
-            phys_cpu_ids,
-            &machine_interrupt_providers,
-        )
+        policy.should_keep(node_id, path, node)
     })?;
     prune_dangling_interrupts_extended(fdt, &mut guest_tree)?;
     Ok(guest_tree.finish())
 }
 
-fn should_keep_generated_node(
-    fdt: &Fdt,
-    node_id: NodeId,
-    node_path: &str,
-    node: &Node,
-    passthrough_device_names: &[String],
-    phys_cpu_ids: &[usize],
-    machine_interrupt_providers: &[String],
-) -> bool {
-    if node.name().starts_with("memory") {
-        return false;
-    }
+struct GeneratedNodePolicy<'a> {
+    fdt: &'a Fdt,
+    passthrough_device_names: &'a [String],
+    phys_cpu_ids: &'a [usize],
+    machine_interrupt_providers: &'a [String],
+    disabled_devices: &'a [axvmconfig::PhysicalDeviceRef],
+}
 
-    if node_path == "/cpus" || node_path.starts_with("/cpus/cpu-map") {
-        return true;
-    }
+impl GeneratedNodePolicy<'_> {
+    fn should_keep(&self, node_id: NodeId, node_path: &str, node: &Node) -> bool {
+        if node.name().starts_with("memory") {
+            return false;
+        }
 
-    if node_path.starts_with("/cpus/cpu@") {
-        return need_cpu_node(phys_cpu_ids, fdt, node_id, node_path);
-    }
+        if node_path == "/cpus" || node_path.starts_with("/cpus/cpu-map") {
+            return true;
+        }
 
-    if machine_interrupt_providers
-        .iter()
-        .any(|controller| is_path_or_ancestor(node_path, controller))
-    {
-        return true;
-    }
+        if node_path.starts_with("/cpus/cpu@") {
+            return need_cpu_node(self.phys_cpu_ids, self.fdt, node_id, node_path);
+        }
 
-    if node
-        .compatibles()
-        .any(|compatible| matches!(compatible, "arm,psci" | "arm,psci-0.2" | "arm,psci-1.0"))
-    {
-        return true;
-    }
+        if self
+            .machine_interrupt_providers
+            .iter()
+            .any(|controller| is_path_or_ancestor(node_path, controller))
+        {
+            return true;
+        }
 
-    passthrough_device_names
-        .iter()
-        .any(|device_path| device_path == node_path)
-        || is_descendant_of_passthrough_device(node_path, passthrough_device_names)
-        || is_ancestor_of_passthrough_device(node_path, passthrough_device_names)
+        if node
+            .compatibles()
+            .any(|compatible| matches!(compatible, "arm,psci" | "arm,psci-0.2" | "arm,psci-1.0"))
+        {
+            return true;
+        }
+
+        if self.disabled_devices.iter().any(|device| {
+            node_path == device.path
+                || node_path
+                    .strip_prefix(&device.path)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        }) {
+            return false;
+        }
+
+        self.passthrough_device_names
+            .iter()
+            .any(|device_path| device_path == node_path)
+            || is_descendant_of_passthrough_device(node_path, self.passthrough_device_names)
+            || is_ancestor_of_passthrough_device(node_path, self.passthrough_device_names)
+    }
 }
 
 fn is_machine_interrupt_provider(node: &Node) -> bool {
@@ -676,7 +687,7 @@ mod tests {
     use axdevice_base::{
         ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger,
     };
-    use axvmconfig::GuestConfig;
+    use axvmconfig::{GuestConfig, GuestDevices, PhysicalDeviceRef};
     use fdt_edit::{Fdt, Node, Property};
     use fdt_raw::RegInfo;
 
@@ -1157,6 +1168,39 @@ mod tests {
         assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_some());
         assert!(reparsed.get_by_path_id("/cpus/cpu@0").is_none());
         assert!(reparsed.get_by_path_id("/cpus/cpu@101").is_none());
+    }
+
+    #[test]
+    fn generated_fdt_removes_explicitly_disabled_passthrough_subtrees() {
+        let mut fdt = test_fdt("cpu@0=0");
+        let soc = fdt.add_node(fdt.root_id(), Node::new("soc"));
+        let pci = fdt.add_node(soc, Node::new("pci@30000000"));
+        fdt.add_node(pci, Node::new("nvme@0"));
+        fdt.add_node(soc, Node::new("virtio_mmio@10001000"));
+        let cfg = GuestConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(std::vec![0]),
+                ..Default::default()
+            },
+            devices: GuestDevices {
+                disabled: std::vec![PhysicalDeviceRef {
+                    path: "/soc/pci@30000000".into(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let selected = std::vec![
+            "/soc/pci@30000000".into(),
+            "/soc/pci@30000000/nvme@0".into(),
+            "/soc/virtio_mmio@10001000".into(),
+        ];
+
+        let dtb = super::create_guest_fdt(&fdt, &selected, &cfg).unwrap();
+        let guest = Fdt::from_bytes(&dtb).unwrap();
+
+        assert!(guest.get_by_path_id("/soc/pci@30000000").is_none());
+        assert!(guest.get_by_path_id("/soc/virtio_mmio@10001000").is_some());
     }
 
     #[test]

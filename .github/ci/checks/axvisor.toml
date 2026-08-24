@@ -15,6 +15,8 @@ echo "==> axvisor aarch64 virtio-blk ArceOS guest"
 timeout 240s apps/arceos/virtio-blk-test/run.sh
 echo "==> axvisor aarch64 axtest"
 cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64
+echo "==> axvisor aarch64 guest console lifecycle axtest"
+cargo xtask ktest qemu -p axvisor --test guest_console_axtest --arch aarch64
 echo "==> pull qemu-aarch64 image"
 cargo xtask image pull qemu-aarch64 --extract-dir tmp/axbuild/images
 echo "==> axvisor aarch64 gicv2 timer stress"

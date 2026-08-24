@@ -95,7 +95,7 @@ fn main() {
     guest_console::configure_host_console()
         .unwrap_or_else(|error| panic!("failed to configure host console: {error:#}"));
 
-    guest_console::submit_host_bytes(banner::STARTUP);
+    guest_console::submit_host_text(banner::STARTUP);
 
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()
@@ -125,9 +125,7 @@ fn main() {
     // `Ready`) and the management plane boots them on demand, so nothing is
     // launched or waited on here.
     #[cfg(not(feature = "no-auto-start"))]
-    let started_vms = manager.launch_default_vms();
-    #[cfg(not(feature = "no-auto-start"))]
-    guest_console::attach_default(started_vms);
+    manager.launch_default_vms();
 
     #[cfg(not(feature = "no-auto-start"))]
     std::thread::Builder::new()

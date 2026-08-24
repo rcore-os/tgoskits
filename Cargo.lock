@@ -6824,6 +6824,9 @@ checksum = "07aac72f95e774476db82916d79f2d303191310393830573c1ab5c821b21660a"
 name = "riscv_vcpu"
 version = "0.6.1"
 dependencies = [
+ "ax-hal",
+ "ax-std",
+ "axtest",
  "bitflags 2.13.1",
  "log",
  "memoffset",

@@ -150,6 +150,11 @@ pub(crate) fn submit_host_bytes(bytes: &[u8]) {
     HOST_OUTPUT.submit(bytes);
 }
 
+/// Submits terminal text while preserving one atomic queue transaction.
+pub(crate) fn submit_host_text(bytes: &[u8]) {
+    submit_host_transaction(|emit| axvisor::console_mux::emit_text_with_crlf(bytes, emit));
+}
+
 /// Builds one non-interleaved host-output transaction in the fixed queue.
 ///
 /// `transaction` runs while the queue's non-sleeping lock is held. It must not

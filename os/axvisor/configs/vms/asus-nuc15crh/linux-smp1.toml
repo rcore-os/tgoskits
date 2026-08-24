@@ -9,8 +9,9 @@ name = "linux-asus-nuc15crh"
 guest_type = "passthrough"
 # The number of virtual CPUs.
 cpu_num = 1
-# Guest vm physical cpu sets.
-phys_cpu_sets = [1]
+# Keep CPU0 available for the Axvisor management shell and console workers.
+# `phys_cpu_sets` entries are affinity bitmaps, so 0b10 selects CPU1.
+phys_cpu_sets = [2]
 
 #
 # Vm kernel configs

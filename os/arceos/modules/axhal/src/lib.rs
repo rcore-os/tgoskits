@@ -65,10 +65,10 @@ pub mod paging;
 /// Console input and output.
 pub mod console {
     pub use ax_plat::console::{
-        ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleHandoffError,
-        ConsoleHandoffResult, begin_runtime_handoff, commit_runtime_handoff, device_id,
-        fail_runtime_handoff_closed, read_bytes, rollback_runtime_handoff, write_bytes,
-        write_text_bytes,
+        CONSOLE_LOCK, ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult,
+        ConsoleHandoffError, ConsoleHandoffResult, begin_runtime_handoff, commit_runtime_handoff,
+        device_id, fail_runtime_handoff_closed, read_bytes, rollback_runtime_handoff, write_bytes,
+        write_serialized_bytes, write_text_bytes, write_text_fmt,
     };
     #[cfg(feature = "irq")]
     pub use ax_plat::console::{ConsoleIrqEvent, handle_irq, irq_num, set_input_irq_enabled};

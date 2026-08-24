@@ -20,7 +20,19 @@ targets = ["riscv64gc-unknown-none-elf"]
 
 [features]
 default = []
+axtest = []
 sstc = []
+
+[[test]]
+name = "axtest"
+path = "tests/axtest.rs"
+harness = false
+required-features = ["sstc"]
+
+[dev-dependencies]
+axtest.workspace = true
+ax-std = { workspace = true, features = ["default"] }
+ax-hal.workspace = true
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 log = "0.4"

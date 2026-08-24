@@ -447,14 +447,16 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         {
             self.regs.vs_csrs.vstimecmp = deadline;
         }
-        sbi_rt::set_timer(deadline as u64);
         self.set_virtual_interrupt_pending(S_TIMER, false)?;
+        #[cfg(feature = "sstc")]
         unsafe {
-            // The guest has consumed the current VS timer event and programmed
-            // a new deadline, so clear the injected VS timer pending bit and
-            // re-arm HS timer delivery for the next expiration.
-            #[cfg(feature = "sstc")]
+            // STCE gives VS its own compare register and VSTIP signal. Do not
+            // overwrite the HS comparator owned by the host runtime.
             vstimecmp::write(deadline);
+        }
+        #[cfg(not(feature = "sstc"))]
+        unsafe {
+            sbi_rt::set_timer(deadline as u64);
             sie::set_stimer();
         }
         Ok(())
@@ -825,12 +827,20 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             }
             Trap::Exception(Exception::VirtualInstruction) => self.handle_virtual_instruction(),
             Trap::Interrupt(Interrupt::SupervisorTimer) => {
-                // Forward the elapsed timer to VS and stop taking the same HS
-                // timer interrupt repeatedly until software programs a new one.
-                self.inject_interrupt(S_TIMER)?;
-                unsafe { sie::clear_stimer() };
-
-                Ok(RiscvVmExit::Nothing)
+                #[cfg(feature = "sstc")]
+                {
+                    Ok(RiscvVmExit::ExternalInterrupt {
+                        vector: S_TIMER as _,
+                    })
+                }
+                #[cfg(not(feature = "sstc"))]
+                {
+                    // The emulated timer shares the HS comparator, so forward
+                    // its expiration to VS and wait for the next guest arm.
+                    self.inject_interrupt(S_TIMER)?;
+                    unsafe { sie::clear_stimer() };
+                    Ok(RiscvVmExit::Nothing)
+                }
             }
             Trap::Interrupt(Interrupt::SupervisorSoft) => {
                 // Host IPIs and scheduler wakeups use SSIP. Route them through
@@ -984,10 +994,8 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         }
 
         if let Some(new_value) = new_value {
-            // Linux is using the advertised `sstc` path (`csrw stimecmp,...`).
-            // We currently emulate that CSR access rather than exposing direct
-            // hardware STCE, so this path must also program the underlying HS
-            // timer instead of only updating saved VS state.
+            // This fallback is reachable only if a platform traps an access
+            // despite accepting STCE during per-CPU virtualization setup.
             self.program_guest_timer(new_value)?;
         }
 

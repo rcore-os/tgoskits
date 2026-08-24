@@ -6,7 +6,7 @@ use ax_std::os::arceos::sync::IrqSafeMutex as Mutex;
 use axvm_types::VMId;
 
 use crate::{
-    AxVmError, AxVmResult,
+    AxVmError, AxVmResult, VmStatus,
     arch::current::ArchVCpu,
     ax_err,
     host::{HostPlatform, default_host},
@@ -41,8 +41,14 @@ pub(crate) fn push_existing_vm(vm: AxVMRef) -> bool {
 /// Remove a VM from the process-wide AxVM runtime registry.
 pub(crate) fn remove_existing_vm(vm_id: VMId) -> Option<AxVMRef> {
     crate::arch::current::unregister_vm_platform_resources(vm_id);
-    crate::runtime::vcpus::cleanup_vm_vcpus(vm_id);
+    if get_vm_by_id(vm_id).is_some_and(|vm| runtime_cleanup_required(vm.status())) {
+        crate::runtime::vcpus::cleanup_vm_vcpus(vm_id);
+    }
     VM_REGISTRY.lock().remove(&vm_id)
+}
+
+const fn runtime_cleanup_required(status: VmStatus) -> bool {
+    !matches!(status, VmStatus::Destroying | VmStatus::Destroyed)
 }
 
 /// Return a VM from the process-wide AxVM runtime registry.
@@ -198,4 +204,28 @@ impl AxvmRuntime {
 /// Register a prepared VM in the AxVM runtime.
 pub fn register_vm(vm: AxVMRef) -> bool {
     crate::runtime::register_vm(vm)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_cleanup_required;
+    use crate::VmStatus;
+
+    #[test]
+    fn registry_removal_skips_runtime_cleanup_after_destroy() {
+        assert!(!runtime_cleanup_required(VmStatus::Destroying));
+        assert!(!runtime_cleanup_required(VmStatus::Destroyed));
+
+        for status in [
+            VmStatus::Ready,
+            VmStatus::Running,
+            VmStatus::Paused,
+            VmStatus::Pausing,
+            VmStatus::Stopping,
+            VmStatus::Stopped,
+            VmStatus::Failed,
+        ] {
+            assert!(runtime_cleanup_required(status), "status: {status:?}");
+        }
+    }
 }

@@ -70,16 +70,37 @@ struct ConsoleCore {
     output_lock: NoPreemptMutex<()>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ConsoleState {
     guests: BTreeMap<VMId, GuestState>,
+    /// VMs that may be selected for interactive console attachment.
     running: BTreeSet<VMId>,
+    /// VMs whose serial backends remain valid while they can still emit output.
+    output_active: BTreeSet<VMId>,
     attached: Option<VMId>,
     last_attached: Option<VMId>,
     shortcut_prefix_pending: bool,
     output: GuestOutputMux,
     host_logs: HostLogBacklog,
     next_backend_generation: u64,
+}
+
+impl Default for ConsoleState {
+    fn default() -> Self {
+        let mut output = GuestOutputMux::default();
+        output.buffer_all();
+        Self {
+            guests: BTreeMap::new(),
+            running: BTreeSet::new(),
+            output_active: BTreeSet::new(),
+            attached: None,
+            last_attached: None,
+            shortcut_prefix_pending: false,
+            output,
+            host_logs: HostLogBacklog::default(),
+            next_backend_generation: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,12 +136,37 @@ impl GuestConsoleMux {
         }
     }
 
+    #[cfg(test)]
     fn set_running(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
+        let running = running.into_iter().collect::<BTreeSet<_>>();
+        self.set_vm_states(running.clone(), running)
+    }
+
+    fn set_vm_states(
+        &self,
+        running: impl IntoIterator<Item = VMId>,
+        output_active: impl IntoIterator<Item = VMId>,
+    ) -> Option<VMId> {
         let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
-        state.running.clear();
-        for vm_id in running {
-            state.running.insert(vm_id);
+        state.running = running.into_iter().collect();
+        let mut output_active = output_active.into_iter().collect::<BTreeSet<_>>();
+        output_active.extend(state.running.iter().copied());
+
+        let terminal = state
+            .output_active
+            .difference(&output_active)
+            .copied()
+            .collect::<Vec<_>>();
+        for vm_id in terminal {
+            if let Some(guest) = state.guests.get_mut(&vm_id) {
+                guest.backend_generation = None;
+                guest.input.clear();
+                guest.input_overflow_reported = false;
+            }
+        }
+        state.output_active = output_active;
+        for vm_id in state.output_active.clone() {
             state.guests.entry(vm_id).or_default();
             state.output.register_guest(vm_id);
         }
@@ -128,19 +174,22 @@ impl GuestConsoleMux {
         let detached = state
             .attached
             .filter(|vm_id| !state.running.contains(vm_id));
-        let host_output = if detached.is_some() {
+        let mut host_output = if detached.is_some() {
             state.attached = None;
             state.shortcut_prefix_pending = false;
-            let mut output = state.output.buffer_all();
-            append_host_log_replay(&mut state, &mut output);
-            output
+            state.output.buffer_all()
         } else {
             Vec::new()
         };
         let ConsoleState {
-            running, output, ..
+            output_active,
+            output,
+            ..
         } = &mut *state;
-        output.reconcile_running(running);
+        host_output.extend(output.reconcile_running(output_active));
+        if detached.is_some() {
+            append_host_log_replay(&mut state, &mut host_output);
+        }
         drop(state);
         submit_host_bytes(&host_output);
         detached
@@ -149,39 +198,16 @@ impl GuestConsoleMux {
     fn mark_running(&self, vm_id: VMId) {
         let mut state = self.core.lock_state();
         state.running.insert(vm_id);
+        state.output_active.insert(vm_id);
         state.guests.entry(vm_id).or_default();
         state.output.register_guest(vm_id);
-    }
-
-    fn mark_stopped(&self, vm_id: VMId) -> bool {
-        let _output_guard = self.core.lock_output();
-        let mut state = self.core.lock_state();
-        state.running.remove(&vm_id);
-        if let Some(guest) = state.guests.get_mut(&vm_id) {
-            guest.backend_generation = None;
-            guest.input.clear();
-            guest.input_overflow_reported = false;
-        }
-        state.output.reset_guest(vm_id);
-        let detached = state.attached == Some(vm_id);
-        let host_output = if detached {
-            state.attached = None;
-            state.shortcut_prefix_pending = false;
-            let mut output = state.output.buffer_all();
-            append_host_log_replay(&mut state, &mut output);
-            output
-        } else {
-            Vec::new()
-        };
-        drop(state);
-        submit_host_bytes(&host_output);
-        detached
     }
 
     fn remove(&self, vm_id: VMId) -> bool {
         let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
         state.running.remove(&vm_id);
+        state.output_active.remove(&vm_id);
         state.guests.remove(&vm_id);
         state.output.reset_guest(vm_id);
         if state.last_attached == Some(vm_id) {
@@ -200,19 +226,6 @@ impl GuestConsoleMux {
         drop(state);
         submit_host_bytes(&host_output);
         detached
-    }
-
-    fn attach_default(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
-        self.set_running(running);
-        let _output_guard = self.core.lock_output();
-        let mut state = self.core.lock_state();
-        let vm_id = state.running.first().copied()?;
-        state.attached = Some(vm_id);
-        state.last_attached = Some(vm_id);
-        state.shortcut_prefix_pending = false;
-        state.output.start_boot_multiplex();
-        state.output.request_preemption(vm_id);
-        Some(vm_id)
     }
 
     fn attach(&self, vm_id: VMId) -> bool {
@@ -468,12 +481,11 @@ impl ConsoleCore {
         bytes: &[u8],
     ) -> Option<Vec<u8>> {
         let mut state = self.lock_state();
-        let multiple_running = state.running.len() > 1;
         state
             .guests
             .get(&vm_id)
             .filter(|guest| guest.backend_generation == Some(generation))?;
-        Some(state.output.format(vm_id, multiple_running, bytes))
+        Some(state.output.format(vm_id, bytes))
     }
 
     fn write_guest_output(&self, vm_id: VMId, generation: BackendGeneration, bytes: &[u8]) {
@@ -484,17 +496,13 @@ impl ConsoleCore {
         let _output_guard = self.lock_output();
         submit_host_transaction(|emit| {
             let mut state = self.lock_state();
-            let multiple_running = state.running.len() > 1;
             let Some(guest) = state.guests.get(&vm_id) else {
                 return;
             };
             if guest.backend_generation != Some(generation) {
                 return;
             }
-            let formatted =
-                state
-                    .output
-                    .format_registered_into(vm_id, multiple_running, bytes, emit);
+            let formatted = state.output.format_registered_into(vm_id, bytes, emit);
             debug_assert!(formatted, "active backend output state must be registered");
         });
     }
@@ -561,18 +569,6 @@ pub fn route_host_log(
     GUEST_CONSOLE_MUX.route_host_log(record, dropped_records, dropped_bytes)
 }
 
-/// Attach the lowest-ID member of the default running VM set.
-#[cfg_attr(
-    feature = "no-auto-start",
-    expect(
-        dead_code,
-        reason = "only the auto-start boot path attaches the console to a default running VM"
-    )
-)]
-pub fn attach_default(running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
-    GUEST_CONSOLE_MUX.attach_default(running)
-}
-
 /// Attach one running VM to the host console.
 pub fn attach(vm_id: VMId) -> Result<()> {
     let Some(vm) = crate::manager::AxvmManager::vm_by_id(vm_id) else {
@@ -598,11 +594,6 @@ pub fn mark_running(vm_id: VMId) {
     GUEST_CONSOLE_MUX.mark_running(vm_id);
 }
 
-/// Record a VM transition away from Running.
-pub fn mark_stopped(vm_id: VMId) -> bool {
-    GUEST_CONSOLE_MUX.mark_stopped(vm_id)
-}
-
 /// Remove all console state associated with a deleted VM.
 pub fn remove(vm_id: VMId) -> bool {
     GUEST_CONSOLE_MUX.remove(vm_id)
@@ -610,11 +601,19 @@ pub fn remove(vm_id: VMId) -> bool {
 
 /// Reconcile console attachment and prefixing against the actual VM registry.
 pub fn reconcile_vm_states() -> Option<VMId> {
-    let running = crate::manager::AxvmManager::vm_list()
+    let vm_states = crate::manager::AxvmManager::vm_list()
         .into_iter()
-        .filter(|vm| vm.status() == VmStatus::Running)
-        .map(|vm| vm.id());
-    GUEST_CONSOLE_MUX.set_running(running)
+        .map(|vm| (vm.id(), vm.status()))
+        .collect::<Vec<_>>();
+    let running = vm_states
+        .iter()
+        .filter(|(_, status)| *status == VmStatus::Running)
+        .map(|(vm_id, _)| *vm_id);
+    let output_active = vm_states
+        .iter()
+        .filter(|(_, status)| matches!(status, VmStatus::Running | VmStatus::Stopping))
+        .map(|(vm_id, _)| *vm_id);
+    GUEST_CONSOLE_MUX.set_vm_states(running, output_active)
 }
 
 /// Return the currently attached guest, if any.
@@ -622,5 +621,9 @@ pub fn attached_vm() -> Option<VMId> {
     GUEST_CONSOLE_MUX.attached_vm()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "test-guest-console-lifecycle")))]
+mod tests;
+
+#[cfg(all(test, feature = "test-guest-console-lifecycle"))]
+#[path = "stop_lifecycle_test.rs"]
 mod tests;
