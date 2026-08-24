@@ -247,32 +247,16 @@ pub fn equal_slice_wakeup_preserves_current_protection() -> bool {
     )
 }
 
-/// Checks Linux v7.1 `WF_SYNC` batching against migration cost.
-pub fn sync_wakeup_obeys_migration_cost() -> bool {
+/// Checks Linux v7.1's default `WF_SYNC` EEVDF preemption decision.
+pub fn sync_wakeup_uses_default_eevdf_without_next_buddy() -> bool {
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
     let current =
         SchedulingEntity::Fair(FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 2_000));
     let wakee = SchedulingEntity::Fair(FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 1_000));
-    let migration_cost_ns = 500_000;
 
     crate::scheduler::wakeup_preempts(policy, &current, false, policy, &wakee, 2_000)
-        && !crate::scheduler::sync_wakeup_preempts(
-            policy,
-            &current,
-            false,
-            policy,
-            &wakee,
-            2_000,
-            crate::scheduler::SyncWakeupContext::new(migration_cost_ns - 1, migration_cost_ns),
-        )
-        && crate::scheduler::sync_wakeup_preempts(
-            policy,
-            &current,
-            false,
-            policy,
-            &wakee,
-            2_000,
-            crate::scheduler::SyncWakeupContext::new(migration_cost_ns, migration_cost_ns),
+        && crate::scheduler::default_sync_wakeup_preempts(
+            policy, &current, false, policy, &wakee, 2_000,
         )
 }
 

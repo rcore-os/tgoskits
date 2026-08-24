@@ -62,7 +62,7 @@ impl TaskSystem {
             core,
             sched,
             reason,
-            WakePreemptionContext::new(WakeIntent::Normal, 0, EqualRtWakeAction::PreserveFifoOrder),
+            WakePreemptionContext::new(WakeIntent::Normal, EqualRtWakeAction::PreserveFifoOrder),
         )
     }
 

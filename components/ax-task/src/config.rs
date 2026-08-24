@@ -4,8 +4,6 @@
 pub const NORMALIZED_FAIR_SLICE_NS: u64 = 700_000;
 /// Default scheduler timing granularity used to bound EEVDF lag.
 pub const DEFAULT_TIMING_GRANULARITY_NS: u64 = 1_000_000;
-/// Linux v7.1 default runtime window for honoring a synchronous wake hint.
-pub const DEFAULT_MIGRATION_COST_NS: u64 = 500_000;
 /// Default periodic fair balancing interval in nanoseconds.
 pub const DEFAULT_BALANCE_INTERVAL_NS: u64 = 10_000_000;
 /// Default round-robin quantum in nanoseconds.
@@ -61,7 +59,6 @@ pub struct TaskSystemConfig {
     cpu_count: usize,
     fair_slice_ns: u64,
     timing_granularity_ns: u64,
-    migration_cost_ns: u64,
     balance_interval_ns: u64,
     rr_quantum_ns: u64,
     rt_period_ns: u64,
@@ -79,7 +76,6 @@ impl TaskSystemConfig {
             cpu_count,
             fair_slice_ns: NORMALIZED_FAIR_SLICE_NS * linux_logarithmic_cpu_factor(cpu_count),
             timing_granularity_ns: DEFAULT_TIMING_GRANULARITY_NS,
-            migration_cost_ns: DEFAULT_MIGRATION_COST_NS,
             balance_interval_ns: DEFAULT_BALANCE_INTERVAL_NS,
             rr_quantum_ns: DEFAULT_RR_QUANTUM_NS,
             rt_period_ns: DEFAULT_RT_PERIOD_NS,
@@ -104,11 +100,6 @@ impl TaskSystemConfig {
     /// Returns the scheduler timing granularity used to bound EEVDF lag.
     pub const fn timing_granularity_ns(self) -> u64 {
         self.timing_granularity_ns
-    }
-
-    /// Returns the Linux synchronous-wake batching window.
-    pub const fn migration_cost_ns(self) -> u64 {
-        self.migration_cost_ns
     }
 
     /// Returns the balancing interval.
@@ -163,12 +154,6 @@ impl TaskSystemConfig {
         self
     }
 
-    /// Overrides the Linux synchronous-wake batching window.
-    pub const fn with_migration_cost_ns(mut self, migration_cost_ns: u64) -> Self {
-        self.migration_cost_ns = migration_cost_ns;
-        self
-    }
-
     /// Enables Linux-style RT group bandwidth with an explicit period and quota.
     pub const fn with_rt_bandwidth(mut self, period_ns: u64, runtime_ns: u64) -> Self {
         self.rt_period_ns = period_ns;
@@ -214,12 +199,6 @@ mod tests {
     #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn default_rr_quantum_matches_linux_v71() {
         assert_eq!(TaskSystemConfig::new(1).rr_quantum_ns(), 100_000_000);
-    }
-
-    #[cfg_attr(test, test)]
-    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
-    fn default_migration_cost_matches_linux_v71() {
-        assert_eq!(TaskSystemConfig::new(1).migration_cost_ns(), 500_000);
     }
 
     #[cfg_attr(test, test)]

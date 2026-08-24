@@ -889,11 +889,7 @@ impl TaskSystem {
             policy,
             enqueue.entity(),
             fair_virtual_time,
-            WakePreemptionContext::new(
-                intent,
-                self.config.migration_cost_ns(),
-                EqualRtWakeAction::PreserveFifoOrder,
-            ),
+            WakePreemptionContext::new(intent, EqualRtWakeAction::PreserveFifoOrder),
         );
         #[cfg(feature = "task-test-hooks")]
         {
@@ -1079,7 +1075,7 @@ impl TaskSystem {
             policy,
             enqueue.entity(),
             fair_virtual_time,
-            WakePreemptionContext::new(intent, self.config.migration_cost_ns(), equal_rt_action),
+            WakePreemptionContext::new(intent, equal_rt_action),
         );
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_equal_rt_wake_reschedule(

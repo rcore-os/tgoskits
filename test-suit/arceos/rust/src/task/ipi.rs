@@ -491,8 +491,8 @@ pub fn run() -> crate::TestResult {
         "an equal-slice Fair wakeup broke Linux RUN_TO_PARITY protection"
     );
     assert!(
-        task_test_hooks::sync_wakeup_obeys_migration_cost(),
-        "a synchronous Fair wakeup ignored Linux migration-cost batching"
+        task_test_hooks::sync_wakeup_uses_default_eevdf_without_next_buddy(),
+        "a synchronous Fair wakeup did not use Linux's default EEVDF preemption"
     );
     let cpu_num = thread::available_parallelism().unwrap().get();
     if cpu_num < 2 {

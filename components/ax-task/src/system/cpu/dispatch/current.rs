@@ -251,14 +251,6 @@ impl CurrentDispatch {
         }
     }
 
-    /// Returns runtime charged since this task became `rq->curr`.
-    ///
-    /// After the owner settles the runqueue clock, this is Linux's
-    /// `rq_clock_task(rq) - se->exec_start` input to `preempt_sync()`.
-    pub(crate) const fn dispatch_runtime_ns(&self) -> u64 {
-        self.accounting.charged_runtime_ns
-    }
-
     pub(crate) fn new(
         state: CurrentDispatchState,
         runtime_core: &Arc<ThreadCore>,

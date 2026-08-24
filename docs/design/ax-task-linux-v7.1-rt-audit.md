@@ -3621,6 +3621,34 @@ LoongArch64 四架构完整 ArceOS QEMU Rust/C suite，LoongArch64 专属 unalig
 该修复关闭 SCHED_IDLE 正确性差分，但不解释只使用 SCHED_NORMAL 的 hackbench 主性能
 差距，不能作为端到端性能改善结论。
 
+Linux v7.1 的 `WF_SYNC` 也不能脱离 feature 默认值单独解读。`kernel/sched/features.h`
+默认关闭 `NEXT_BUDDY`；`kernel/sched/fair.c:wakeup_preempt_fair()` 只有在该 feature
+开启且 `set_preempt_buddy()` 接受新 buddy 时，才调用 `preempt_sync()`。因此默认内核中，
+同步唤醒仍参与 CPU placement，但目标 rq 上的 wakeup preemption 直接使用普通 EEVDF
+判断，不受 `sysctl_sched_migration_cost` 抑制。旧 ax-task 忽略了这层 feature gate，把每次
+同步 Fair wake 都送入 migration-cost 判断；在 current 运行不足 500 us 时，即使 wakee
+eligible 且 deadline 更早也拒绝抢占。Starry pipe 使用 `notify_one_sync()`，所以该差分会
+直接延迟 producer/consumer 交接，而不是寄存器快速路径上的常数开销。
+
+确定性 ArceOS QEMU 回归构造一个仍受普通 EEVDF 选中的 earlier-deadline wakee，并要求
+同步唤醒得到同一判断。只修改测试时，旧生产代码稳定触发
+`a synchronous Fair wakeup did not use Linux's default EEVDF preemption`；修复后同一
+`task-ipi` 用例通过。现在 `WF_SYNC` 只保留在 wake target/CPU placement 选择中，目标 rq
+不再携带虚假的 migration-cost preemption context。`TaskSystemConfig` 中仅服务于该错误
+路径且没有调用方的 migration-cost 配置、current dispatch 的对应 runtime accessor 及测试
+一并删除，没有留下旧语义兼容层。targeted clippy 为 7/7，ax-task x86_64 QEMU axtest
+为 18/18；最终代码串行通过 x86_64、AArch64、RISC-V 与 LoongArch64 四架构完整
+ArceOS QEMU Rust/C suite，LoongArch64 专属 unaligned-fixup 也通过。
+
+同一正式 x86_64 benchmark 配置的五轮 hackbench 中位数为 process 1C/4C
+54.947/27.084 秒、thread 1C/4C 59.464/26.959 秒，SMP speedup 分别为 2.028x 与
+2.205x。相对上一检查点的 49.398/25.680 与 59.952/23.434 秒，变化分别为
++11.23%、+5.47%、-0.81%、+15.04%；因此不能把本项语义修复宣称为性能改善。与同配置
+Linux v7.1 PREEMPT_RT 的 10.540/6.559 与 5.161/2.402 秒相比，仍慢 5.21x、4.13x、
+11.52x、11.22x。WF_SYNC 修复关闭了一个真实默认语义错误，但主要性能根因仍在每次
+pipe block/wake/switch 的通用固定工作；后续继续用 qperf 分解 owner-rq、deadline 与
+guard transaction，不回退到错误的 migration-cost batching，也不转向架构寄存器快路径。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

@@ -404,82 +404,28 @@ pub(crate) fn wakeup_preempts(
     )
 }
 
-/// Linux `WF_SYNC` Fair wakeup-preemption decision.
+/// Linux v7.1's default `WF_SYNC` wakeup-preemption decision.
 ///
-/// The extra runtime inputs model `rq_clock_task(rq) - se->exec_start` and
-/// `sysctl_sched_migration_cost`. This entry point is kept separate from an
-/// ordinary wake so callers cannot accidentally apply the sleep-soon hint to
-/// IRQ, timer, or generic notification wakeups.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SyncWakeupContext {
-    current_runtime_ns: u64,
-    migration_cost_ns: u64,
-}
-
-impl SyncWakeupContext {
-    pub(crate) const fn new(current_runtime_ns: u64, migration_cost_ns: u64) -> Self {
-        Self {
-            current_runtime_ns,
-            migration_cost_ns,
-        }
-    }
-}
-
-pub(crate) fn sync_wakeup_preempts(
+/// `preempt_sync()` is nested under the disabled-by-default `NEXT_BUDDY`
+/// feature. ax-task does not implement that buddy state, so a synchronous wake
+/// uses the ordinary class/EEVDF decision. `WF_SYNC` still affects CPU
+/// selection before the task reaches its target runqueue.
+pub(crate) fn default_sync_wakeup_preempts(
     current_policy: SchedulePolicy,
     current_entity: &SchedulingEntity,
     current_is_idle: bool,
     wakee_policy: SchedulePolicy,
     wakee_entity: &SchedulingEntity,
     fair_virtual_time: u64,
-    context: SyncWakeupContext,
 ) -> bool {
-    let ordinary = || {
-        wakeup_preempts(
-            current_policy,
-            current_entity,
-            current_is_idle,
-            wakee_policy,
-            wakee_entity,
-            fair_virtual_time,
-        )
-    };
-    if current_is_idle {
-        return ordinary();
-    }
-    let (
-        SchedulePolicy::Fair {
-            mode: current_mode, ..
-        },
-        SchedulePolicy::Fair {
-            mode: wakee_mode, ..
-        },
-        Some(current),
-        Some(wakee),
-    ) = (
+    wakeup_preempts(
         current_policy,
+        current_entity,
+        current_is_idle,
         wakee_policy,
-        current_entity.fair(),
-        wakee_entity.fair(),
+        wakee_entity,
+        fair_virtual_time,
     )
-    else {
-        return ordinary();
-    };
-
-    // Linux resolves idle-policy precedence and PREEMPT_SHORT before it
-    // considers WF_SYNC. An eligible shorter request must therefore keep the
-    // ordinary decision even while the sleep-soon batching window is open.
-    if current_mode != wakee_mode || wakee.has_shorter_slice_than(current) {
-        return ordinary();
-    }
-    if wakee_mode == FairMode::Batch || !wakee.is_eligible(fair_virtual_time) {
-        return false;
-    }
-
-    // `preempt_sync()` suppresses the ordinary EEVDF pick while the waker is
-    // still inside `sysctl_sched_migration_cost`. Once the window expires it
-    // forces a reschedule only for this wakee's earlier virtual deadline.
-    context.current_runtime_ns >= context.migration_cost_ns && wakee.deadline_precedes(current)
 }
 
 fn fair_wakeup_preempts(
@@ -659,17 +605,15 @@ mod tests {
         ));
     }
 
-    /// Linux v7.1 honors `WF_SYNC` while the waker has run for less than
-    /// `sysctl_sched_migration_cost`, then permits an earlier-deadline wakee
-    /// to force rescheduling once that batching window expires.
+    /// Linux v7.1 defaults `NEXT_BUDDY` off, so `WF_SYNC` does not activate
+    /// `preempt_sync()` and keeps the ordinary EEVDF preemption result.
     #[cfg_attr(test, test)]
     #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
-    fn sync_wake_suppresses_early_fair_preemption_until_migration_cost() {
+    fn sync_wake_uses_ordinary_eevdf_without_next_buddy() {
         let mut current = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 2_000, 3_000);
         current.cancel_slice_protection();
         let wakee = fair(1_000, 1_500);
         let current = SchedulingEntity::Fair(current);
-        let migration_cost_ns = 500_000;
 
         assert!(wakeup_preempts(
             normal_fair_policy(),
@@ -679,23 +623,13 @@ mod tests {
             &wakee,
             2_000,
         ));
-        assert!(!sync_wakeup_preempts(
+        assert!(default_sync_wakeup_preempts(
             normal_fair_policy(),
             &current,
             false,
             normal_fair_policy(),
             &wakee,
             2_000,
-            SyncWakeupContext::new(migration_cost_ns - 1, migration_cost_ns),
-        ));
-        assert!(sync_wakeup_preempts(
-            normal_fair_policy(),
-            &current,
-            false,
-            normal_fair_policy(),
-            &wakee,
-            2_000,
-            SyncWakeupContext::new(migration_cost_ns, migration_cost_ns),
         ));
     }
 }

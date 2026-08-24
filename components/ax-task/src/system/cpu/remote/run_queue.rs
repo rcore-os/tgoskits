@@ -71,25 +71,19 @@ pub(crate) enum EqualRtWakeAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WakePreemptionContext {
     intent: WakeIntent,
-    migration_cost_ns: u64,
     equal_rt_action: EqualRtWakeAction,
 }
 
 impl WakePreemptionContext {
-    pub(crate) const fn new(
-        intent: WakeIntent,
-        migration_cost_ns: u64,
-        equal_rt_action: EqualRtWakeAction,
-    ) -> Self {
+    pub(crate) const fn new(intent: WakeIntent, equal_rt_action: EqualRtWakeAction) -> Self {
         Self {
             intent,
-            migration_cost_ns,
             equal_rt_action,
         }
     }
 
     const fn normal() -> Self {
-        Self::new(WakeIntent::Normal, 0, EqualRtWakeAction::PreserveFifoOrder)
+        Self::new(WakeIntent::Normal, EqualRtWakeAction::PreserveFifoOrder)
     }
 }
 
@@ -1229,7 +1223,6 @@ impl CpuRunQueueState {
             return WakePreemptionDecision::DedicatedIdlePreempted;
         }
         let current_policy = current.schedule_policy();
-        let current_runtime_ns = current.dispatch_runtime_ns();
         if context.equal_rt_action == EqualRtWakeAction::RequeueWakeeAndReschedule {
             if policy.rt_priority() != current_policy.rt_priority()
                 || policy.rt_priority().is_none()
@@ -1246,17 +1239,13 @@ impl CpuRunQueueState {
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_wake_entity_read(wakee, 0);
         let preempts = if context.intent.is_sync() {
-            crate::scheduler::sync_wakeup_preempts(
+            crate::scheduler::default_sync_wakeup_preempts(
                 current_policy,
                 &current_entity,
                 false,
                 policy,
                 entity,
                 fair_virtual_time,
-                crate::scheduler::SyncWakeupContext::new(
-                    current_runtime_ns,
-                    context.migration_cost_ns,
-                ),
             )
         } else {
             crate::scheduler::wakeup_preempts(

@@ -14,7 +14,7 @@ mod realtime;
 mod task;
 
 pub(crate) use balance::BalanceScan;
-pub(crate) use class::{SchedulerClass, SyncWakeupContext, sync_wakeup_preempts, wakeup_preempts};
+pub(crate) use class::{SchedulerClass, default_sync_wakeup_preempts, wakeup_preempts};
 use deadline::{DeadlineQueueKey, DeadlineRunQueue};
 use realtime::{RealtimeQueueKey, RealtimeRunQueue};
 pub(crate) use task::{
