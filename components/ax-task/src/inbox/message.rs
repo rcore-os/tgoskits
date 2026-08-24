@@ -19,8 +19,6 @@ pub enum InboxKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum InboxOperation {
-    /// Complete a remote wake after the previous owner releases `on_cpu`.
-    Wake,
     /// Transfer physical runqueue ownership between CPUs.
     Migration,
     /// Reconcile a thread's latest affinity with physical placement.
@@ -66,26 +64,6 @@ impl InboxMessage {
         balance_class: None,
         payload: 0,
     };
-
-    /// Creates a Linux `ttwu_queue_wakelist()` owner-side wake request.
-    pub const fn wake_with_payload(
-        thread_id: ThreadId,
-        owner: CpuId,
-        sync: bool,
-        payload: usize,
-    ) -> Self {
-        Self {
-            kind: InboxKind::OwnerControl,
-            operation: InboxOperation::Wake,
-            thread_id,
-            source_cpu: owner.as_u32(),
-            target_cpu: owner.as_u32(),
-            generation: sync as u64,
-            placement_demand: 0,
-            balance_class: None,
-            payload,
-        }
-    }
 
     /// Creates an owner-to-owner migration transfer for deterministic fixtures.
     #[cfg(any(test, all(axtest, feature = "axtest")))]
@@ -213,11 +191,6 @@ impl InboxMessage {
         } else {
             None
         }
-    }
-
-    /// Reports whether an owner-side wake carries Linux `WF_SYNC`.
-    pub const fn wake_is_sync(self) -> bool {
-        self.operation as u8 == InboxOperation::Wake as u8 && self.generation != 0
     }
 
     /// Creates a deferred resource-reclaim request.

@@ -73,8 +73,6 @@ static SWITCH_TAIL_STATE_OBSERVED_ON_CPU: AtomicU8 = AtomicU8::new(0);
 static SWITCH_TAIL_STATE_ORDER_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static POLICY_SWITCH_HANDOFF_TARGET: AtomicU64 = AtomicU64::new(0);
 static POLICY_SWITCH_HANDOFF_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
-static OWNER_WAKE_PUBLICATION_TARGET: AtomicU64 = AtomicU64::new(0);
-static OWNER_WAKE_PUBLICATION_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static DEADLINE_PUBLICATION_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_RT_PERIOD_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
@@ -170,8 +168,6 @@ const STAGE_COMPLETE: u8 = 3;
 const STAGE_SWITCH_HANDOFF_PAUSED: u8 = 3;
 const STAGE_SWITCH_HANDOFF_UPDATE_WAITING: u8 = 4;
 const STAGE_SWITCH_HANDOFF_RELEASED: u8 = 5;
-const STAGE_OWNER_WAKE_PUBLISHED: u8 = 3;
-const STAGE_OWNER_WAKE_RELEASED: u8 = 4;
 const STAGE_DIRECT_WAKE_FAILURE_PAUSED: u8 = 3;
 const STAGE_DIRECT_WAKE_FAILURE_RELEASED: u8 = 4;
 const STAGE_DIRECT_WAKE_ON_RQ_PAUSED: u8 = 3;
@@ -2165,62 +2161,6 @@ pub(crate) fn pause_policy_switch_handoff(previous: ThreadId) {
     }
     POLICY_SWITCH_HANDOFF_TARGET.store(0, Ordering::Relaxed);
     POLICY_SWITCH_HANDOFF_STAGE.store(STAGE_IDLE, Ordering::Release);
-}
-
-/// Arms a pause after one Linux TTWU wake-list publication has completed.
-pub fn arm_owner_wake_publication_probe(thread: ThreadId) {
-    assert_eq!(
-        OWNER_WAKE_PUBLICATION_STAGE.compare_exchange(
-            STAGE_IDLE,
-            STAGE_CONFIGURING,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ),
-        Ok(STAGE_IDLE),
-        "only one owner wake publication probe may be armed"
-    );
-    OWNER_WAKE_PUBLICATION_TARGET.store(thread.as_u64(), Ordering::Relaxed);
-    OWNER_WAKE_PUBLICATION_STAGE.store(STAGE_ARMED, Ordering::Release);
-}
-
-/// Returns whether the selected wake-list entry is durable but its publisher
-/// has not yet returned through the outer task-context wake API.
-pub fn owner_wake_publication_paused() -> bool {
-    OWNER_WAKE_PUBLICATION_STAGE.load(Ordering::Acquire) == STAGE_OWNER_WAKE_PUBLISHED
-}
-
-/// Releases the publisher after the test has observed the durable wake-list entry.
-pub fn release_owner_wake_publication() {
-    assert_eq!(
-        OWNER_WAKE_PUBLICATION_STAGE.compare_exchange(
-            STAGE_OWNER_WAKE_PUBLISHED,
-            STAGE_OWNER_WAKE_RELEASED,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ),
-        Ok(STAGE_OWNER_WAKE_PUBLISHED),
-        "owner wake publication release requires a completed publication"
-    );
-}
-
-pub(crate) fn pause_after_owner_wake_publication(thread: ThreadId) {
-    if OWNER_WAKE_PUBLICATION_TARGET.load(Ordering::Acquire) != thread.as_u64()
-        || OWNER_WAKE_PUBLICATION_STAGE
-            .compare_exchange(
-                STAGE_ARMED,
-                STAGE_OWNER_WAKE_PUBLISHED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-    {
-        return;
-    }
-    while OWNER_WAKE_PUBLICATION_STAGE.load(Ordering::Acquire) != STAGE_OWNER_WAKE_RELEASED {
-        core::hint::spin_loop();
-    }
-    OWNER_WAKE_PUBLICATION_TARGET.store(0, Ordering::Relaxed);
-    OWNER_WAKE_PUBLICATION_STAGE.store(STAGE_IDLE, Ordering::Release);
 }
 
 /// Arms a real park commit immediately after its final wake check.

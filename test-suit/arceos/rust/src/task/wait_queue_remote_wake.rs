@@ -711,7 +711,7 @@ fn exercise_direct_wake_retries_failed_delivery(sleeper_cpu: usize) {
         .expect("direct-wake worker must exit normally");
 }
 
-fn exercise_rt_waker_queues_before_switch_tail(sleeper_cpu: usize, waker_cpu: usize) {
+fn exercise_rt_direct_waker_waits_for_switch_tail(sleeper_cpu: usize, waker_cpu: usize) {
     let wake_handle = Arc::new(Mutex::new(None::<ThreadWakeHandle>));
     let may_wake = Arc::new(AtomicBool::new(false));
     let waker_ready = Arc::new(AtomicBool::new(false));
@@ -793,29 +793,40 @@ fn exercise_rt_waker_queues_before_switch_tail(sleeper_cpu: usize, waker_cpu: us
     let _ = scheduler_wait_test_hooks::take_scheduler_wait_snapshot();
     may_wake.store(true, Ordering::Release);
     let wake_started = Instant::now();
-    while !wake_returned.load(Ordering::Acquire) {
+    let observed_on_cpu_wait = loop {
+        let waits = scheduler_wait_test_hooks::take_scheduler_wait_snapshot();
+        if waits.on_cpu_waits != 0 {
+            break true;
+        }
+        if wake_returned.load(Ordering::Acquire) {
+            break false;
+        }
         assert!(
             wake_started.elapsed() < REMOTE_WAKE_PROGRESS_TIMEOUT,
-            "Linux TTWU_QUEUE must let a remote waker return while switch tail retains on_cpu"
+            "Linux PREEMPT_RT direct wake did not reach its bounded on_cpu wait"
         );
         thread::yield_now();
-    }
-    let waits = scheduler_wait_test_hooks::take_scheduler_wait_snapshot();
-    assert_eq!(
-        waits.on_cpu_waits, 0,
-        "a remote outgoing-task wake must queue on its owner instead of spinning on on_cpu"
-    );
+    };
+    let returned_before_tail = wake_returned.load(Ordering::Acquire);
     task_test_hooks::release_policy_switch_handoff_after_observation();
 
     assert_eq!(
         waker.join().expect("switch-tail waker must exit normally"),
         WakeResult::Notified,
-        "the direct waker must publish one owner wake-list entry"
+        "the direct waker must activate the sleeper after switch tail"
     );
     sleeper
         .join()
         .expect("switch-tail sleeper must resume and exit normally");
     let _ = scheduler_wait_test_hooks::take_scheduler_wait_snapshot();
+    assert!(
+        observed_on_cpu_wait,
+        "Linux PREEMPT_RT disables TTWU_QUEUE, so the direct waker must wait for on_cpu"
+    );
+    assert!(
+        !returned_before_tail,
+        "Linux PREEMPT_RT keeps activation in the waker until switch tail clears on_cpu"
+    );
     assert!(
         sleeper_resumed.load(Ordering::Acquire),
         "the directly activated sleeper must resume after switch tail"
@@ -827,7 +838,7 @@ fn exercise_rt_waker_queues_before_switch_tail(sleeper_cpu: usize, waker_cpu: us
     );
 }
 
-fn exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu: usize, waker_cpu: usize) {
+fn exercise_rt_migratable_waker_waits_for_switch_tail(sleeper_cpu: usize, waker_cpu: usize) {
     let occupier = TargetOccupier::spawn(sleeper_cpu);
     let wake_handle = Arc::new(Mutex::new(None::<ThreadWakeHandle>));
     let may_wake = Arc::new(AtomicBool::new(false));
@@ -846,7 +857,7 @@ fn exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu: usize, waker_cpu:
         let wake_handle = worker_wake_handle
             .lock()
             .clone()
-            .expect("busy-owner sleeper must publish a wake handle");
+            .expect("migratable sleeper must publish a wake handle");
         let result = wake_handle.wake_from_task();
         worker_wake_returned.store(true, Ordering::Release);
         result
@@ -855,7 +866,7 @@ fn exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu: usize, waker_cpu:
     while !waker_ready.load(Ordering::Acquire) {
         assert!(
             waker_ready_started.elapsed() < WORKER_READY_TIMEOUT,
-            "busy-owner waker did not become ready"
+            "migratable waker did not become ready"
         );
         thread::yield_now();
     }
@@ -867,12 +878,12 @@ fn exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu: usize, waker_cpu:
     let worker_resumed = Arc::clone(&sleeper_resumed);
     let sleeper = thread::spawn(move || {
         pin_current_to_cpu(sleeper_cpu);
-        let current = current_thread_handle().expect("busy-owner sleeper must have a task handle");
+        let current = current_thread_handle().expect("migratable sleeper must have a task handle");
         set_thread_policy(
             current.id(),
             SchedulePolicy::fifo(RtPriority::new(10).expect("priority 10 must be valid")),
         )
-        .expect("busy-owner sleeper must accept its FIFO policy");
+        .expect("migratable sleeper must accept its FIFO policy");
         let mut affinity = AxCpuMask::new();
         affinity.set(sleeper_cpu, true);
         affinity.set(waker_cpu, true);
@@ -885,17 +896,17 @@ fn exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu: usize, waker_cpu:
             sleeper_cpu,
             "expanding affinity must retain the allowed current CPU"
         );
-        let park = match begin_current_park().expect("busy-owner sleeper must prepare its park") {
+        let park = match begin_current_park().expect("migratable sleeper must prepare its park") {
             CurrentParkStart::Prepared(park) => park,
             CurrentParkStart::Notified => {
-                panic!("busy-owner sleeper consumed an unexpected notification")
+                panic!("migratable sleeper consumed an unexpected notification")
             }
         };
         task_test_hooks::arm_policy_switch_handoff_probe(current.id().as_u64());
         *sleeper_wake_handle.lock() = Some(current.wake_handle());
         worker_ready.store(true, Ordering::Release);
         park.commit()
-            .expect("the busy-owner wake must resume its sleeper");
+            .expect("the migratable wake must resume its sleeper");
         worker_resumed.store(true, Ordering::Release);
     });
 
@@ -903,7 +914,7 @@ fn exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu: usize, waker_cpu:
     while !sleeper_ready.load(Ordering::Acquire) {
         assert!(
             sleeper_ready_started.elapsed() < WORKER_READY_TIMEOUT,
-            "busy-owner sleeper did not publish its wake handle"
+            "migratable sleeper did not publish its wake handle"
         );
         thread::yield_now();
     }
@@ -911,7 +922,7 @@ fn exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu: usize, waker_cpu:
     while !task_test_hooks::policy_switch_handoff_paused() {
         assert!(
             handoff_started.elapsed() < REMOTE_WAKE_PROGRESS_TIMEOUT,
-            "busy-owner sleeper did not reach the committed handoff window"
+            "migratable sleeper did not reach the committed handoff window"
         );
         thread::yield_now();
     }
@@ -935,7 +946,7 @@ fn exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu: usize, waker_cpu:
         }
         assert!(
             wake_started.elapsed() < REMOTE_WAKE_PROGRESS_TIMEOUT,
-            "busy-owner wake did not choose a bounded TTWU path"
+            "migratable PREEMPT_RT wake did not reach its bounded on_cpu wait"
         );
         thread::yield_now();
     };
@@ -943,20 +954,20 @@ fn exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu: usize, waker_cpu:
     task_test_hooks::release_policy_switch_handoff_after_observation();
 
     assert_eq!(
-        waker.join().expect("busy-owner waker must exit normally"),
+        waker.join().expect("migratable waker must exit normally"),
         WakeResult::Notified
     );
     sleeper
         .join()
-        .expect("busy-owner sleeper must resume and exit normally");
+        .expect("migratable sleeper must resume and exit normally");
     occupier.stop();
     assert!(
         observed_on_cpu_wait,
-        "Linux TTWU_QUEUE must not stack a migratable wakee on a busy same-domain owner"
+        "Linux PREEMPT_RT direct activation must wait for a migratable wakee's on_cpu release"
     );
     assert!(
         !returned_before_tail,
-        "a busy same-domain owner requires tail completion before wake placement"
+        "a PREEMPT_RT waker must retain activation until switch tail completes"
     );
     assert!(
         sleeper_resumed.load(Ordering::Acquire),
@@ -964,7 +975,7 @@ fn exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu: usize, waker_cpu:
     );
 }
 
-fn exercise_rt_wait_claim_queues_before_switch_tail(sleeper_cpu: usize, waker_cpu: usize) {
+fn exercise_rt_wait_claim_waker_waits_for_switch_tail(sleeper_cpu: usize, waker_cpu: usize) {
     let idle_started = Instant::now();
     while task_test_hooks::cpu_nr_running(sleeper_cpu as u32)
         .expect("the wait-claim target rq summary must be readable")
@@ -1014,7 +1025,6 @@ fn exercise_rt_wait_claim_queues_before_switch_tail(sleeper_cpu: usize, waker_cp
         )
         .expect("wait-claim switch-tail sleeper must accept FIFO policy");
         task_test_hooks::arm_policy_switch_handoff_probe(current.id().as_u64());
-        task_test_hooks::arm_owner_wake_publication_probe(current.id());
         assert!(
             !api::ax_wait_queue_wait(&SWITCH_WAKE_WQ, None),
             "an untimed wait-claim park must not report a timeout"
@@ -1034,45 +1044,50 @@ fn exercise_rt_wait_claim_queues_before_switch_tail(sleeper_cpu: usize, waker_cp
         task_test_hooks::cpu_nr_running(sleeper_cpu as u32)
             .expect("the old owner's committed rq summary must be readable"),
         0,
-        "Linux same-domain TTWU_QUEUE requires the outgoing wakee to be the owner's last runnable \
-         task"
+        "the regression requires the outgoing wakee to be the owner's last runnable task"
     );
 
     let _ = scheduler_wait_test_hooks::take_scheduler_wait_snapshot();
     may_wake.store(true, Ordering::Release);
-    let publication_started = Instant::now();
-    while !task_test_hooks::owner_wake_publication_paused() {
+    let wake_started = Instant::now();
+    let observed_on_cpu_wait = loop {
+        let waits = scheduler_wait_test_hooks::take_scheduler_wait_snapshot();
+        if waits.on_cpu_waits != 0 {
+            break true;
+        }
+        if wake_returned.load(Ordering::Acquire) {
+            break false;
+        }
         assert!(
-            publication_started.elapsed() < OCCUPIER_CURRENT_TIMEOUT,
-            "the remote wait-claim waker did not publish its Linux TTWU_QUEUE entry"
+            wake_started.elapsed() < REMOTE_WAKE_PROGRESS_TIMEOUT,
+            "wait-claim PREEMPT_RT wake did not reach its bounded on_cpu wait"
         );
         thread::yield_now();
-    }
-    assert!(
-        !wake_returned.load(Ordering::Acquire),
-        "the publication probe must stop the outer wake API from returning"
-    );
-    let waits = scheduler_wait_test_hooks::take_scheduler_wait_snapshot();
-    assert_eq!(
-        waits.on_cpu_waits, 0,
-        "a remote wait-claim wake must queue on its owner instead of spinning on on_cpu"
-    );
+    };
+    let returned_before_tail = wake_returned.load(Ordering::Acquire);
     task_test_hooks::release_policy_switch_handoff_after_observation();
-    task_test_hooks::release_owner_wake_publication();
 
     assert_eq!(
         waker
             .join()
             .expect("wait-claim switch-tail waker must exit"),
         1,
-        "the owner wake-list must retain the selected wait claim"
+        "the direct waker must retain the selected wait claim"
     );
     sleeper
         .join()
         .expect("wait-claim switch-tail sleeper must resume and exit");
     assert!(
+        observed_on_cpu_wait,
+        "Linux PREEMPT_RT wait-claim wake must wait for on_cpu"
+    );
+    assert!(
+        !returned_before_tail,
+        "the wait-claim wake API must not return before direct activation is possible"
+    );
+    assert!(
         resumed.load(Ordering::Acquire),
-        "the owner must activate the selected wait claim after switch tail"
+        "the waker must activate the selected wait claim after switch tail"
     );
 }
 
@@ -1191,7 +1206,7 @@ fn exercise_delayed_fair_wake_before_switch_tail(sleeper_cpu: usize, waker_cpu: 
 
     assert!(
         observed_existing_rq,
-        "Linux handles on_rq before considering the outgoing on_cpu wake list"
+        "Linux handles on_rq before waiting for the outgoing on_cpu claim"
     );
     assert!(
         task_test_hooks::take_direct_wake_on_rq_observation(),
@@ -1554,14 +1569,13 @@ pub fn run() -> crate::TestResult {
     );
     exercise_wait_claim_does_not_block_rt_publication(waker_cpu, sleeper_cpu, migrated_cpu);
     exercise_direct_wake_retries_failed_delivery(sleeper_cpu);
-    exercise_rt_waker_queues_before_switch_tail(sleeper_cpu, migrated_cpu);
-    exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu, migrated_cpu);
-    // The preceding busy-owner case deliberately leaves another task on
+    exercise_rt_direct_waker_waits_for_switch_tail(sleeper_cpu, migrated_cpu);
+    exercise_rt_migratable_waker_waits_for_switch_tail(sleeper_cpu, migrated_cpu);
+    // The preceding migratable-wake case deliberately leaves another task on
     // `sleeper_cpu` until its exit switch tail completes. Use the otherwise
-    // untouched final CPU for the last-runnable TTWU_QUEUE case so the test
-    // establishes Linux's `rq->nr_running == 0` precondition rather than
+    // untouched final CPU for the last-runnable wait-claim case rather than
     // racing task-exit cleanup from the previous scenario.
-    exercise_rt_wait_claim_queues_before_switch_tail(isolated_cpu, migrated_cpu);
+    exercise_rt_wait_claim_waker_waits_for_switch_tail(isolated_cpu, migrated_cpu);
     exercise_delayed_fair_wake_before_switch_tail(sleeper_cpu, migrated_cpu);
     let sleeper = RemoteSleeper::spawn(sleeper_cpu);
     let sleeper_id = sleeper.thread_id();

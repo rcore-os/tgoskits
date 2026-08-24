@@ -597,36 +597,6 @@ impl TaskSystem {
             let target = message
                 .target_cpu()
                 .ok_or(TaskError::InvalidConfiguration)?;
-            if operation == InboxOperation::Wake {
-                if source != owner || target != owner {
-                    return Err(TaskError::CpuOwnerMismatch {
-                        expected: target.as_u32(),
-                        actual: owner.as_u32(),
-                    });
-                }
-                let sched = core.sched().lock();
-                if sched.lifecycle.state() != ThreadState::Waking
-                    || sched.placement.queued_cpu().is_some()
-                    || sched.placement.on_cpu().is_some()
-                {
-                    return Err(TaskError::InvalidConfiguration);
-                }
-                let publication = cpu
-                    .remote()
-                    .begin_owner_delivery()
-                    .ok_or(TaskError::CpuOffline(owner.as_u32()))?;
-                let intent = if message.wake_is_sync() {
-                    WakeIntent::Sync
-                } else {
-                    WakeIntent::Normal
-                };
-                if self.activate_waking_thread_locked(&core, sched, owner, publication, intent)
-                    != WakeResult::Notified
-                {
-                    task_runtime::fatal_invariant(0x574b_0021, core.id().as_u64() as usize);
-                }
-                continue;
-            }
             if operation == InboxOperation::DeadlineRefresh {
                 if source != owner || target != owner {
                     return Err(TaskError::CpuOwnerMismatch {

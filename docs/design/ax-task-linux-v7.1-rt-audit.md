@@ -3649,6 +3649,41 @@ Linux v7.1 PREEMPT_RT 的 10.540/6.559 与 5.161/2.402 秒相比，仍慢 5.21x�
 pipe block/wake/switch 的通用固定工作；后续继续用 qperf 分解 owner-rq、deadline 与
 guard transaction，不回退到错误的 migration-cost batching，也不转向架构寄存器快路径。
 
+### 2026-08-24 PREEMPT_RT 关闭 `TTWU_QUEUE`
+
+Linux v7.1 `kernel/sched/features.h` 在 `CONFIG_PREEMPT_RT` 下把 `TTWU_QUEUE` 设为
+false；`kernel/sched/core.c::ttwu_queue_wakelist()` 因而直接返回 false。
+`try_to_wake_up()` 仍在 task lock 下发布 `TASK_WAKING`，随后以 acquire 语义等待
+`p->on_cpu` 被 switch tail release-clear，再由同一个 waker 锁目标 rq 并调用
+`ttwu_queue()` 完成激活。PREEMPT_RT 不允许 waker 把该事务转交给旧 owner 后提前返回：
+task lock 串行化 wake state，`on_cpu` 的 release/acquire 配对关闭 outgoing stack 窗口，
+目标 rq lock 则原子提交 runnable membership，三者之间没有额外的 owner wake-list 状态。
+
+本分支一度为 outgoing task 是旧 rq 最后一个 runnable entity 的情形重新加入
+`InboxOperation::Wake`、每 task intrusive wake node 和 owner-side drain，并用
+`rq->nr_running == 0` 决定转交。该逻辑对应非 RT 的 `TTWU_QUEUE`，不是 Linux RT；历史
+CI 在 `170a9284a8` 上要求“remote wait-claim waker 必须在 switch tail 前返回”的断言也因此
+把错误语义当成了目标。确定性 ArceOS QEMU 回归现在暂停真实 switch tail，令远程 direct
+waker 进入同一个 wake API，并要求它先观察到 `on_cpu` 等待且绝不提前返回。只改测试时，
+旧生产代码稳定触发
+`Linux PREEMPT_RT disables TTWU_QUEUE, so the direct waker must wait for on_cpu`；
+删除非 RT 转交路径后，同一测试由 waker 在 tail 完成后直接激活并通过。
+
+修复彻底删除了 wake 专用 message、intrusive node、publication hook 和 owner drain 分支；
+通用 owner-control inbox 只继续承载 migration、affinity 与 deadline 生命周期事务，task-context
+`ThreadWakeBatch` 也继续作为批量 API 的本地收集结构，两者都不是 `TTWU_QUEUE` 兼容层。
+固定 affinity、可迁移 affinity、wait-claim last-runnable 和 delayed-Fair `on_rq` 四个窗口
+都验证 PREEMPT_RT direct-waker ownership，其中 delayed-Fair 仍先处理已有 `on_rq`，不会
+错误等待尚未释放的 `on_cpu` claim。
+
+同一 focused 回归在 x86_64、AArch64、RISC-V 与 LoongArch64 四架构真实 QEMU 均通过；
+最终代码又串行通过四架构 `cargo xtask arceos test qemu --arch <arch>` 的完整 Rust/C
+suite，LoongArch64 专属 unaligned-fixup 也通过。AArch64 的第一次完整运行曾在测试等待
+`delayed-rq waker did not start` 时超时，随后两次相同完整命令均通过；本轮没有放宽 1 秒
+观察窗口，也没有用 timeout/polling 改生产代码。该单次现象没有形成可复现的 scheduler
+finding，继续保留为后续压力运行的观察项。`ax-task` 当前只为 x86_64 声明独立 ktest target，
+该 QEMU axtest 为 18/18；targeted clippy 为 7/7。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

@@ -257,8 +257,7 @@ impl ThreadWakeHandle {
     /// Wakes from task context when the caller expects to block shortly.
     ///
     /// This is Linux's `WF_SYNC` contract. It remains a scheduling hint: the
-    /// waker either commits the destination runqueue activation or transfers
-    /// it to the outgoing task's owner-side wake list.
+    /// waker commits the destination runqueue activation before returning.
     pub fn wake_sync(&self) -> WakeResult {
         debug_assert!(!crate::runtime::task_runtime::in_hard_irq());
         self.core.wake(WakeIntent::Sync)
@@ -313,8 +312,7 @@ impl WakeIntent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WakeResult {
     /// This call completed a logical wake transaction. The thread is runnable,
-    /// retained a park notification, has owner-CPU activation committed, or
-    /// has a durable owner-side wake-list entry.
+    /// retained a park notification, or has owner-CPU activation committed.
     Notified,
     /// An unresolved park-transition notification already represents this event.
     AlreadyPending,
@@ -478,7 +476,6 @@ pub(crate) struct ThreadCore {
     wake_cpu_hint: AtomicU32,
     affinity_update_node: InboxNode,
     deadline_refresh_node: InboxNode,
-    wake_list_node: InboxNode,
     wake_batch_next: AtomicPtr<ThreadCore>,
     wake_batch_linked: AtomicBool,
     sleep_timer: TaskDeadlineNode,
@@ -533,7 +530,6 @@ impl ThreadCore {
             wake_cpu_hint: AtomicU32::new(u32::MAX),
             affinity_update_node: InboxNode::new(InboxKind::OwnerControl),
             deadline_refresh_node: InboxNode::new(InboxKind::OwnerControl),
-            wake_list_node: InboxNode::new(InboxKind::OwnerControl),
             wake_batch_next: AtomicPtr::new(core::ptr::null_mut()),
             wake_batch_linked: AtomicBool::new(false),
             sleep_timer: TaskDeadlineNode::for_thread(id),
@@ -555,10 +551,6 @@ impl ThreadCore {
 
     pub(crate) const fn pi_wait_nodes(&self) -> &PiWaitNodeStorage {
         &self.pi_wait_nodes
-    }
-
-    pub(crate) const fn wake_list_node(&self) -> &InboxNode {
-        &self.wake_list_node
     }
 
     /// Mutates lockdep state owned by this currently executing thread.
