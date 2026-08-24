@@ -47,7 +47,11 @@ pub const USE_MULTILEVEL_CACHE: bool = cfg!(feature = "USE_MULTILEVEL_CACHE");
 /// Maximum number of inode-table cache entries.
 pub const INODE_CACHE_MAX: usize = 128;
 /// Maximum number of data-block cache entries.
-pub const DATABLOCK_CACHE_MAX: usize = 128;
+///
+/// Kept small for read-modify-write hot blocks and truncate-generation
+/// bookkeeping only; bulk read capacity is provided by the block-layer
+/// cache below this crate.
+pub const DATABLOCK_CACHE_MAX: usize = 32;
 /// Maximum number of bitmap cache entries.
 pub const BITMAP_CACHE_MAX: usize = 128;
 
