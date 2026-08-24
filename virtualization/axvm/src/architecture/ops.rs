@@ -258,7 +258,7 @@ fn drain_and_inject_dispatched_interrupts<A: ArchOps>(
     owner: u64,
     vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
 ) -> Option<Arc<crate::vm::VmRuntimeHandle>> {
-    let runtime = match vm.with_runtime(|runtime| Ok(runtime.clone())) {
+    let runtime = match vm.runtime_handle() {
         Ok(runtime) => runtime,
         Err(err) => {
             warn!(
