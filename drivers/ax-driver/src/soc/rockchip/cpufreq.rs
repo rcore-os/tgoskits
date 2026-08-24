@@ -53,10 +53,10 @@
 //! that node would never get an `on_probe`), and applies exactly once via a
 //! one-shot guard because several `cpu@*` nodes match.
 
-use alloc::format;
+use alloc::{format, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use fdt_edit::Phandle;
+use fdt_edit::{NodeType, Phandle};
 use log::{info, warn};
 
 use crate::{probe::OnProbeError, register::ProbeFdt, soc::scmi};
@@ -767,14 +767,17 @@ pub fn governor_period_ms() -> u64 {
 // ===========================================================================
 
 /// Governor busy attribution: `busy[i]` from the kernel is LOGICAL CPU `i`'s
-/// counter (enumeration order of the FDT `/cpus` children this kernel actually
-/// has), while a DVFS domain is a physical cluster. Hardcoding the physical
-/// ranges is only correct when every physical CPU is online: a passthrough
-/// guest with fewer vCPUs pinned elsewhere (e.g. SMP=1 on host cpu@400) would
-/// book its cpu0's busy under the A55 cluster — the workload then boosts the
-/// little cluster while the big cluster it runs on gets parked at 408 MHz.
-/// The map below is therefore built from the FDT cpu nodes' SCMI clock ids,
-/// which name the cluster each online CPU really belongs to.
+/// counter, and logical indices are assigned by the KERNEL's cpu list (boot
+/// hart first, then the remaining firmware cpu ids) — NOT by the FDT's
+/// document order. A passthrough guest pinned as `phys_cpu_ids = [0x400,
+/// 0x000]` still lists `/cpus` in host-DT order (cpu@0 before cpu@400) while
+/// its logical CPU 0 executes on the A76 cpu@400: mapping by node position
+/// books big-core load under the A55 cluster, boosting the little cluster
+/// while the big one running the workload is never scaled. The map below is
+/// therefore keyed by each FDT cpu node's `reg` (the firmware hardware id)
+/// resolved through the kernel's own hardware-id -> logical-index capability
+/// ([`axklib::cpu::resolve_logical_index`]), plus that node's SCMI clock id,
+/// which names the cluster each online CPU really belongs to.
 static CPU_CLUSTER: [AtomicU8; 8] = [const { AtomicU8::new(0) }; 8];
 static CPU_CLUSTER_READY: AtomicBool = AtomicBool::new(false);
 
@@ -789,39 +792,127 @@ fn cluster_index_from_clock_id(clock_id: u32) -> Option<usize> {
     }
 }
 
-/// Fills `CPU_CLUSTER` from the FDT: one entry per `/cpus` child (in document
-/// order = logical-CPU enumeration order), taken from that node's SCMI clock
-/// id. Returns the number of CPUs mapped.
+/// One FDT cpu node distilled to what attribution needs: the firmware
+/// hardware id (`reg`) and the SCMI clock id naming the cluster it belongs to.
+#[derive(Clone, Copy)]
+struct CpuNodeTopology {
+    hardware_id: usize,
+    clock_id: u32,
+}
+
+/// Reads one `/cpus` cpu node's `reg` hardware id and SCMI cluster clock.
+/// Warns and returns `None` when either is missing — such a node cannot drive
+/// the governor.
+fn cpu_node_topology(node: &NodeType<'_>, phandle: Phandle) -> Option<CpuNodeTopology> {
+    let hardware_id = node
+        .regs()
+        .into_iter()
+        .next()
+        .map(|reg| reg.address as usize)
+        .or_else(|| {
+            warn!(
+                "cpufreq: cpu node {} has no reg hardware id; it will not drive the governor",
+                node.name()
+            );
+            None
+        })?;
+    let clock_id = node
+        .clocks()
+        .into_iter()
+        .find(|clock| clock.phandle == phandle)
+        .and_then(|clock| clock.specifier.first().copied())
+        .or_else(|| {
+            warn!(
+                "cpufreq: cpu node {} has no recognizable SCMI cluster clock; it will not drive \
+                 the governor",
+                node.name()
+            );
+            None
+        })?;
+    Some(CpuNodeTopology {
+        hardware_id,
+        clock_id,
+    })
+}
+
+/// Pure core of [`map_cpus_from_fdt`]: books each FDT cpu node's cluster
+/// (named by its SCMI clock id) under the logical CPU index the KERNEL runs
+/// that node's hardware id as, via `resolve`. Document order is irrelevant —
+/// the kernel, not the FDT, owns logical numbering (boot hart first). A node
+/// whose hardware id no online CPU runs, whose clock names no CPU cluster, or
+/// whose logical index falls outside `store`'s map books nothing
+/// (conservative: its busy drives no domain). Returns how many entries
+/// `store` accepted.
+fn store_cpu_clusters(
+    nodes: &[CpuNodeTopology],
+    resolve: impl Fn(usize) -> Option<usize>,
+    mut store: impl FnMut(usize, usize) -> bool,
+) -> usize {
+    let mut stored = 0usize;
+    for node in nodes {
+        let Some(cluster) = cluster_index_from_clock_id(node.clock_id) else {
+            continue;
+        };
+        let Some(logical_cpu) = resolve(node.hardware_id) else {
+            continue;
+        };
+        if store(logical_cpu, cluster) {
+            stored += 1;
+        }
+    }
+    stored
+}
+
+/// The kernel's hardware-id -> logical-CPU-index mapping. The kernel — not the
+/// FDT — assigns logical indices (boot hart first, then the remaining firmware
+/// cpu ids), so attribution must ask it rather than assume `/cpus` document
+/// order; a passthrough guest's FDT keeps host-DT order even when its vCPUs are
+/// pinned non-monotonically.
+fn resolve_logical_cpu(hardware_id: usize) -> Option<usize> {
+    axklib::cpu::resolve_logical_index(hardware_id)
+}
+
+/// Fills `CPU_CLUSTER` from the FDT: for each `/cpus` cpu node, book the
+/// cluster its SCMI clock id names under the logical index the kernel resolves
+/// the node's `reg` hardware id to, then log the map once so a mis-attributed
+/// boot (wrong cluster pinned/boosted) is diagnosable from the console.
+/// Returns the number of logical CPUs mapped.
 fn map_cpus_from_fdt() -> usize {
     let Some(phandle) = scmi_clock_phandle() else {
         return 0;
     };
     rdrive::with_fdt(|fdt| {
-        let mut mapped = 0usize;
-        for (cpu, node) in fdt
+        let nodes: Vec<CpuNodeTopology> = fdt
             .find_compatible(&["arm,cortex-a55", "arm,cortex-a76"])
             .into_iter()
-            .take(CPU_CLUSTER.len())
-            .enumerate()
-        {
-            let Some(cluster) = node
-                .clocks()
-                .into_iter()
-                .find(|c| c.phandle == phandle)
-                .and_then(|clock| clock.specifier.first().copied())
-                .and_then(cluster_index_from_clock_id)
-            else {
-                warn!(
-                    "cpufreq: cpu node {} has no recognizable SCMI cluster clock; it will not \
-                     drive the governor",
-                    node.name()
-                );
-                continue;
-            };
-            CPU_CLUSTER[cpu].store(cluster as u8 + 1, Ordering::Relaxed);
-            mapped += 1;
-        }
-        mapped
+            .filter_map(|node| cpu_node_topology(&node, phandle))
+            .collect();
+        let stored =
+            store_cpu_clusters(
+                &nodes,
+                resolve_logical_cpu,
+                |logical_cpu, cluster| match CPU_CLUSTER.get(logical_cpu) {
+                    Some(slot) => {
+                        slot.store(cluster as u8 + 1, Ordering::Relaxed);
+                        true
+                    }
+                    None => false,
+                },
+            );
+        let clusters = [Cluster::A55, Cluster::Big0, Cluster::Big1];
+        info!(
+            "cpufreq: busy attribution {}",
+            (0..CPU_CLUSTER.len())
+                .filter_map(|cpu| {
+                    Some(format!(
+                        "cpu{cpu}->{}",
+                        clusters[cluster_of_cpu(cpu)?].name()
+                    ))
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        stored
     })
     .unwrap_or(0)
 }
@@ -927,8 +1018,8 @@ fn next_opp_idx(core_pcts: &[u64], cur: usize, ladder_len: usize, priming: bool)
 /// neither sleeps nor spawns — so this crate needs no dependency on
 /// ax-task/ax-hal (which would be a cyclic dep through axplat-dyn).
 ///
-/// `busy[i]` is LOGICAL CPU `i`'s counter, attributed to the cluster its FDT
-/// cpu node belongs to (see [`CPU_CLUSTER`]); unmapped CPUs, indices past the
+/// `busy[i]` is LOGICAL CPU `i`'s counter, attributed to the cluster the kernel
+/// runs that CPU on (see [`CPU_CLUSTER`]); unmapped CPUs, indices past the
 /// slice, and offline CPUs whose counter never advances simply contribute
 /// nothing — conservative (never over-scales).
 pub fn governor_poll(busy: &[u64]) {
@@ -1270,6 +1361,145 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Busy attribution: the kernel owns logical numbering, not FDT order
+    // -----------------------------------------------------------------------
+
+    /// Kernel mapping for a passthrough guest pinned as `phys_cpu_ids =
+    /// [0x400, 0x000]`: the guest FDT still lists `/cpus` in host-DT order
+    /// (cpu@0 first), but the boot hart cpu@400 is logical CPU 0 and cpu@0 is
+    /// logical CPU 1.
+    fn boot_first_resolver(hardware_id: usize) -> Option<usize> {
+        match hardware_id {
+            0x400 => Some(0),
+            0x000 => Some(1),
+            _ => None,
+        }
+    }
+
+    /// Books attribution into a local map, so the mapping logic is testable
+    /// without touching the global `CPU_CLUSTER`.
+    fn book_into_map(
+        nodes: &[CpuNodeTopology],
+        resolve: impl Fn(usize) -> Option<usize>,
+        map: &mut [Option<usize>; 8],
+    ) -> usize {
+        let mut store = |logical_cpu: usize, cluster: usize| match map.get_mut(logical_cpu) {
+            Some(slot) => {
+                *slot = Some(cluster);
+                true
+            }
+            None => false,
+        };
+        store_cpu_clusters(nodes, resolve, &mut store)
+    }
+
+    #[test]
+    fn non_monotonic_pin_books_busy_under_the_cluster_it_runs_on() {
+        let a55 = cluster_index_from_clock_id(A55_CLK_ID).unwrap();
+        let big0 = cluster_index_from_clock_id(A76_CLK_IDS[0]).unwrap();
+        // FDT document order (host-DT order): cpu@0 (A55) before cpu@400 (A76).
+        let nodes = [
+            CpuNodeTopology {
+                hardware_id: 0x000,
+                clock_id: A55_CLK_ID,
+            },
+            CpuNodeTopology {
+                hardware_id: 0x400,
+                clock_id: A76_CLK_IDS[0],
+            },
+        ];
+        let mut map = [None; 8];
+        let stored = book_into_map(&nodes, boot_first_resolver, &mut map);
+        assert_eq!(stored, 2);
+        // busy[0] executes on the A76 cpu@400; busy[1] on the A55 cpu@0.
+        assert_eq!(map[0], Some(big0), "logical CPU 0 runs the big core");
+        assert_eq!(map[1], Some(a55), "logical CPU 1 runs the little core");
+    }
+
+    #[test]
+    fn identity_order_books_each_cpu_under_its_own_cluster() {
+        // Bare metal: all 8 CPUs online, boot hart == first FDT node, so the
+        // kernel's mapping is document position. Every cluster's members must
+        // agree with `Cluster::cpus()`.
+        let nodes: Vec<CpuNodeTopology> = (0..8)
+            .map(|position| CpuNodeTopology {
+                hardware_id: position * 0x100,
+                clock_id: match position {
+                    0..=3 => A55_CLK_ID,
+                    4 | 5 => A76_CLK_IDS[0],
+                    _ => A76_CLK_IDS[1],
+                },
+            })
+            .collect();
+        let mut map = [None; 8];
+        let stored = book_into_map(&nodes, |hw| Some(hw / 0x100), &mut map);
+        assert_eq!(stored, 8);
+        for (ci, &cluster) in [Cluster::A55, Cluster::Big0, Cluster::Big1]
+            .iter()
+            .enumerate()
+        {
+            for cpu in cluster.cpus() {
+                assert_eq!(map[cpu], Some(ci), "cpu {cpu}");
+            }
+        }
+    }
+
+    #[test]
+    fn single_vcpu_pin_books_under_its_pinned_cluster() {
+        // The PR's motivating guest: SMP=1 pinned to the A76 cpu@400.
+        let nodes = [CpuNodeTopology {
+            hardware_id: 0x400,
+            clock_id: A76_CLK_IDS[0],
+        }];
+        let mut map = [None; 8];
+        let stored = book_into_map(&nodes, |hw| (hw == 0x400).then_some(0), &mut map);
+        assert_eq!(stored, 1);
+        assert_eq!(
+            map[0],
+            Some(cluster_index_from_clock_id(A76_CLK_IDS[0]).unwrap())
+        );
+        assert_eq!(map[1], None, "no other CPU may drive a domain");
+    }
+
+    #[test]
+    fn offline_hardware_id_books_nowhere() {
+        // A cpu node the kernel does not run must not leak onto any logical
+        // index — its busy simply drives no domain.
+        let nodes = [
+            CpuNodeTopology {
+                hardware_id: 0x000,
+                clock_id: A55_CLK_ID,
+            },
+            CpuNodeTopology {
+                hardware_id: 0x600,
+                clock_id: A76_CLK_IDS[1],
+            },
+        ];
+        let mut map = [None; 8];
+        let stored = book_into_map(&nodes, |hw| (hw == 0x600).then_some(0), &mut map);
+        assert_eq!(stored, 1);
+        assert_eq!(
+            map[0],
+            Some(cluster_index_from_clock_id(A76_CLK_IDS[1]).unwrap())
+        );
+        assert_eq!(map[1], None);
+        assert!(map[2..].iter().all(|slot| slot.is_none()));
+    }
+
+    #[test]
+    fn out_of_range_logical_index_is_refused() {
+        // A resolver answering past the map must be refused, not panic.
+        let nodes = [CpuNodeTopology {
+            hardware_id: 0x000,
+            clock_id: A55_CLK_ID,
+        }];
+        let mut map = [None; 8];
+        let stored = book_into_map(&nodes, |_| Some(9), &mut map);
+        assert_eq!(stored, 0);
+        assert!(map.iter().all(|slot| slot.is_none()));
+    }
+
+    // -----------------------------------------------------------------------
     // OPP transactional apply: ordering + commit-only-on-full-success
     //
     // These pin the two prior state-machine fixes: `apply_opp` orders the levers
@@ -1369,9 +1599,11 @@ mod tests {
             next_opp_idx(&[0, 0], BOOT_OPP_IDX, A76_OPPS.len(), false),
             BOOT_OPP_IDX
         );
-        // Every A55 core just under the down-threshold sheds exactly one step
-        // (from the top of the ring-only A55 ladder down one rung, still above
-        // the floor for that ladder).
+        // Every A55 core just under the down-threshold still HOLDS: the A55
+        // top rung is its boot OPP (the ring-only ladder's highest ring), so
+        // the floor pins the A55 there. (An expectation of
+        // `A55_OPPS.len() - 2` here contradicted the floor policy; it never
+        // ran before because the host-test build of this feature was broken.)
         assert_eq!(
             next_opp_idx(
                 &[DOWN_THRESHOLD_PCT - 1; 4],
@@ -1379,7 +1611,7 @@ mod tests {
                 A55_OPPS.len(),
                 false
             ),
-            A55_OPPS.len() - 2
+            BOOT_OPP_IDX
         );
     }
 

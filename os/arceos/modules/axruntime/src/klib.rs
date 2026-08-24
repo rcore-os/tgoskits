@@ -341,6 +341,14 @@ impl_trait! {
                 Err(IrqError::Unsupported)
             }
         }
+
+        /// Resolves a firmware CPU id (the FDT cpu node `reg`) to the runtime
+        /// logical CPU index via the platform topology mapping, which is the
+        /// same list the kernel used to assign per-CPU state (boot hart first,
+        /// then the remaining firmware cpu ids).
+        fn cpu_resolve_logical_index(hardware_id: usize) -> Option<usize> {
+            ax_hal::topology::resolve_cpu_index(hardware_id)
+        }
     }
 }
 
