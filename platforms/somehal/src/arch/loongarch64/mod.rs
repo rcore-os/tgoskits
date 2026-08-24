@@ -8,9 +8,7 @@ use crate::{
 
 mod eiointc;
 mod ipi_command;
-mod irq_common;
 mod liointc;
-mod liointc_cpu_interface;
 mod pch_pic;
 
 use crate::irq_routing::{RawIrq, classify_cpu_irq, cpu_local_hwirq_is_runtime_irq};
@@ -42,12 +40,6 @@ fn checked_cpu_local_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
     } else {
         Err(IrqError::InvalidIrq)
     }
-}
-
-fn eiointc_irq(external: usize) -> IrqId {
-    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::LoongArchEioIntc)
-        .expect("LoongArch EIOINTC IRQ domain is not registered");
-    IrqId::new(domain, HwIrq(external as u32))
 }
 
 fn is_loongarch_external_domain(domain: crate::irq::IrqDomainId) -> bool {
@@ -128,7 +120,9 @@ impl PlatOp for Plat {
             return Err(IrqError::InvalidIrq);
         }
 
-        if is_loongarch_external_domain(irq.domain) {
+        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::LoongArchPchPic) {
+            pch_pic::set_irq_enabled(irq, enable)
+        } else if is_loongarch_external_domain(irq.domain) {
             crate::irq::set_controller_irq_enabled(irq, enable)
         } else {
             Err(IrqError::InvalidIrq)
@@ -197,8 +191,14 @@ impl PlatOp for Plat {
                     debug!("Spurious LoongArch EIOINTC interrupt");
                     return None;
                 };
-                let irq = pch_pic::irq_for_external_vector(external)
-                    .unwrap_or_else(|| eiointc_irq(external));
+                let irq = if let Some(irq) = pch_pic::irq_for_external_vector(external) {
+                    irq
+                } else if let Some(irq) = eiointc::irq_id(external) {
+                    irq
+                } else {
+                    warn!("EIOINTC vector {external:?} arrived before domain publication");
+                    return None;
+                };
                 Some(ActiveIrq::new(irq, Completion::EioIntc { irq: external }))
             }
             RawIrq::Unknown => {
@@ -253,8 +253,12 @@ impl PlatOp for Plat {
 
 enum Completion {
     None,
-    EioIntc { irq: usize },
-    LioIntc { irq: IrqId },
+    EioIntc {
+        irq: loongarch_intc_driver::EioVector,
+    },
+    LioIntc {
+        irq: IrqId,
+    },
 }
 
 pub struct ActiveIrq {

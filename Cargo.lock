@@ -4914,6 +4914,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "loongarch-intc-driver"
+version = "0.1.0"
+dependencies = [
+ "loongArch64",
+ "mmio-api",
+ "rdif-intc",
+ "thiserror 2.0.20",
+ "tock-registers 0.10.1",
+]
+
+[[package]]
 name = "loongarch_vcpu"
 version = "0.5.16"
 dependencies = [
@@ -7757,6 +7768,7 @@ dependencies = [
  "kernutil",
  "log",
  "loongArch64",
+ "loongarch-intc-driver",
  "mmio-api",
  "page-table-generic",
  "rdif-intc",
