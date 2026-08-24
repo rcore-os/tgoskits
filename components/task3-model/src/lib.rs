@@ -25,6 +25,7 @@
 #![no_std]
 
 pub mod perception;
+pub mod video_safety;
 
 /// History window length consumed by the model input.
 pub const WINDOW: usize = 64;

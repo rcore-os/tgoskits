@@ -14,6 +14,7 @@ pub struct Detection {
     pub class_id: u16,
     pub confidence_milli: u16,
     pub center_x_milli: u16,
+    pub center_y_milli: u16,
     pub area_milli: u16,
 }
 
@@ -42,6 +43,7 @@ pub unsafe fn infer(
         class_id: 0,
         confidence_milli: 0,
         center_x_milli: 0,
+        center_y_milli: 0,
         area_milli: 0,
     };
     let mut infer_us = 0;

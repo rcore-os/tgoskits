@@ -16,6 +16,7 @@ pub struct YoloDetection {
     pub class_id: u16,
     pub confidence_milli: u16,
     pub center_x_milli: u16,
+    pub center_y_milli: u16,
     pub area_milli: u16,
 }
 
@@ -42,12 +43,14 @@ pub const fn yolo_fixture_detection(sample: u32) -> Option<YoloDetection> {
             class_id: 75,
             confidence_milli: 832,
             center_x_milli: 419,
+            center_y_milli: 503,
             area_milli: 61,
         }),
         _ => Some(YoloDetection {
             class_id: 58,
             confidence_milli: 871,
             center_x_milli: 805,
+            center_y_milli: 506,
             area_milli: 29,
         }),
     }
@@ -177,6 +180,7 @@ pub fn top_yolo_detection(
         class_id: class_id.min(u16::MAX as usize) as u16,
         confidence_milli: scaled_milli(score.clamp(0.0, 1.0)),
         center_x_milli: scaled_milli(normalized_x),
+        center_y_milli: scaled_milli((cy / input_height as f32).clamp(0.0, 1.0)),
         area_milli: scaled_milli(normalized_area),
     }))
 }
@@ -203,7 +207,7 @@ pub fn yolo_detection_to_target(
     if detection.confidence_milli > 1000 {
         return PerceptionDecision::Reject(PerceptionRejectReason::InvalidConfidence);
     }
-    if detection.center_x_milli > 1000 {
+    if detection.center_x_milli > 1000 || detection.center_y_milli > 1000 {
         return PerceptionDecision::Reject(PerceptionRejectReason::InvalidCoordinate);
     }
     if detection.area_milli > 1000 {
@@ -246,6 +250,7 @@ mod tests {
             class_id: 1,
             confidence_milli: 900,
             center_x_milli,
+            center_y_milli: 500,
             area_milli: 200,
         }
     }
@@ -259,6 +264,7 @@ mod tests {
                 class_id: 75,
                 confidence_milli: 832,
                 center_x_milli: 419,
+                center_y_milli: 503,
                 area_milli: 61,
             })
         );
@@ -268,6 +274,7 @@ mod tests {
                 class_id: 58,
                 confidence_milli: 871,
                 center_x_milli: 805,
+                center_y_milli: 506,
                 area_milli: 29,
             })
         );
@@ -333,6 +340,13 @@ mod tests {
         );
 
         let mut invalid = detection(500);
+        invalid.center_y_milli = 1001;
+        assert_eq!(
+            yolo_detection_to_target(invalid, 500, YoloPolicy::task3_default()),
+            PerceptionDecision::Reject(PerceptionRejectReason::InvalidCoordinate)
+        );
+
+        let mut invalid = detection(500);
         invalid.confidence_milli = 1001;
         assert_eq!(
             yolo_detection_to_target(invalid, 500, YoloPolicy::task3_default()),
@@ -379,6 +393,7 @@ mod tests {
                 class_id: 0,
                 confidence_milli: 900,
                 center_x_milli: 750,
+                center_y_milli: 375,
                 area_milli: 63,
             }))
         );

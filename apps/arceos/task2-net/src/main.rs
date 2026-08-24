@@ -31,6 +31,9 @@ use task2_net_protocol::{
     PollEvent, ReceiveEvent, RetryPolicy, SessionError, SessionId, StatusMessage, StatusState,
 };
 
+#[cfg(not(feature = "arceos"))]
+mod rknn_control;
+
 const LOCAL_PORT: u16 = match option_env!("TASK2_LOCAL_PORT") {
     None => 4242,
     Some(port) => {
@@ -94,6 +97,11 @@ const TASK3_MODEL_PATH: &str = match option_env!("TASK3_MODEL_PATH") {
     Some(path) => path,
     None => "/usr/share/task3-yolo",
 };
+#[cfg(not(feature = "arceos"))]
+const TASK3_RKNN_CONTROL_PATH: &str = match option_env!("TASK3_RKNN_CONTROL_PATH") {
+    Some(path) => path,
+    None => "/run/rknn-control.txt",
+};
 const TASK3_NCNN_PARAM_PATH: &[u8] = b"/usr/share/task3-yolo/yolo11n.ncnn.param\0";
 const TASK3_NCNN_MODEL_PATH: &[u8] = b"/usr/share/task3-yolo/yolo11n.ncnn.bin\0";
 const TASK3_NCNN_INPUT_PATH: &[u8] = b"/usr/share/task3-yolo/input.ppm\0";
@@ -123,6 +131,8 @@ enum ModelKind {
     Baseline,
     Cnn,
     Yolo,
+    FixedPerception,
+    Rknn,
 }
 
 impl ModelKind {
@@ -136,7 +146,11 @@ impl ModelKind {
             "baseline" => Self::Baseline,
             "cnn" => Self::Cnn,
             "yolo" => Self::Yolo,
-            _ => return Err("TASK3_MODEL must be baseline, cnn, or yolo"),
+            "fixed-perception" => Self::FixedPerception,
+            "rknn" => Self::Rknn,
+            _ => {
+                return Err("TASK3_MODEL must be baseline, cnn, yolo, fixed-perception, or rknn");
+            }
         };
         Ok(model)
     }
@@ -146,6 +160,8 @@ impl ModelKind {
             Self::Baseline => "baseline",
             Self::Cnn => "cnn",
             Self::Yolo => "yolo11n.ncnn",
+            Self::FixedPerception => "fixed-perception",
+            Self::Rknn => "yolov8.rknn",
         }
     }
 
@@ -154,6 +170,8 @@ impl ModelKind {
             Self::Baseline => "p-controller-v1",
             Self::Cnn => "task3-temporal-cnn-m0",
             Self::Yolo => "ultralytics-yolo11n-ncnn",
+            Self::FixedPerception => "continuous-scene-v1",
+            Self::Rknn => "rockchip-yolov8-rknn-external",
         }
     }
 
@@ -162,6 +180,8 @@ impl ModelKind {
             Self::Baseline => "none",
             Self::Cnn => "embedded:task3-model/model.json",
             Self::Yolo => "manifest:yolo11n.ncnn",
+            Self::FixedPerception => "manifest:task3-continuous-scene",
+            Self::Rknn => "external:rknn-control-v2",
         }
     }
 }
@@ -221,6 +241,40 @@ mod scenario {
     /// rate limiter).  The MVP control period is 5-10 Hz, so the loop never
     /// sends a CONTROL faster than this even when the peer RTT is short.
     pub const MIN_CYCLE_MS: u64 = 100;
+}
+
+const SCENE_EVENT_IDS: [&str; 12] = [
+    "road-0375",
+    "road-0380",
+    "road-0385",
+    "road-0390",
+    "road-0395",
+    "road-0400",
+    "hazard-0000",
+    "hazard-0010",
+    "hazard-0020",
+    "road-0405",
+    "explicit-reset",
+    "road-0410",
+];
+
+#[derive(Clone, Copy, Debug)]
+struct SceneCommand {
+    event_index: usize,
+    event_id: &'static str,
+    generation: u64,
+    action: ControlAction,
+    value: i32,
+    outcome: &'static str,
+    inference_start_ns: u64,
+    inference_end_ns: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingScene {
+    event_index: usize,
+    event_id: &'static str,
+    inference_start_ns: u64,
 }
 
 /// Trajectory of the fixed target: `[(start_ms, value), ...]`.
@@ -534,6 +588,12 @@ struct Controller {
     pending_send: bool,
     last_target: i32,
     #[cfg(not(feature = "arceos"))]
+    last_rknn_generation: u64,
+    scene_event_cursor: usize,
+    #[cfg(not(feature = "arceos"))]
+    video_safety: task3_model::video_safety::VideoSafetyController,
+    pending_scene: Option<PendingScene>,
+    #[cfg(not(feature = "arceos"))]
     yolo_worker: Option<YoloInferenceWorker>,
 }
 
@@ -611,6 +671,15 @@ impl Controller {
             // anchor fixed makes its target values match the golden JSON;
             // the bounded policy still limits every individual step.
             last_target: 500,
+            #[cfg(not(feature = "arceos"))]
+            last_rknn_generation: 0,
+            scene_event_cursor: 0,
+            #[cfg(not(feature = "arceos"))]
+            video_safety: task3_model::video_safety::VideoSafetyController::new(
+                500,
+                task3_model::video_safety::VideoSafetyPolicy::task3_default(),
+            ),
+            pending_scene: None,
             #[cfg(not(feature = "arceos"))]
             yolo_worker: None,
         }
@@ -693,6 +762,7 @@ impl Controller {
                     class_id: value.class_id,
                     confidence_milli: value.confidence_milli,
                     center_x_milli: value.center_x_milli,
+                    center_y_milli: value.center_y_milli,
                     area_milli: value.area_milli,
                 }),
                 elapsed,
@@ -786,6 +856,154 @@ impl Controller {
         let _ = now_ms;
     }
 
+    fn fixed_scene_command(&mut self) -> Option<SceneCommand> {
+        let event_index = self.scene_event_cursor + 1;
+        let event_id = *SCENE_EVENT_IDS.get(self.scene_event_cursor)?;
+        let timestamp_ns = monotonic_ns();
+        let (action, value, outcome) = if event_index == 11 {
+            (ControlAction::Reset, 0, "reset")
+        } else {
+            (ControlAction::SetOutput, 500, "fixed")
+        };
+        Some(SceneCommand {
+            event_index,
+            event_id,
+            generation: event_index as u64,
+            action,
+            value,
+            outcome,
+            inference_start_ns: timestamp_ns,
+            inference_end_ns: timestamp_ns,
+        })
+    }
+
+    #[cfg(not(feature = "arceos"))]
+    fn poll_rknn_scene_command(
+        &mut self,
+        request_id: u32,
+        now_ms: u64,
+    ) -> Result<Option<SceneCommand>, &'static str> {
+        let event_index = self.scene_event_cursor + 1;
+        let Some(&event_id) = SCENE_EVENT_IDS.get(self.scene_event_cursor) else {
+            return Ok(None);
+        };
+        if event_index == 11 {
+            let timestamp_ns = monotonic_ns();
+            let decision = self
+                .video_safety
+                .update(task3_model::video_safety::SceneInput::Reset);
+            if !matches!(
+                decision,
+                task3_model::video_safety::SceneDecision::Reset { .. }
+            ) {
+                return Err("continuous scene reset did not reset the safety state");
+            }
+            return Ok(Some(SceneCommand {
+                event_index,
+                event_id,
+                generation: self.last_rknn_generation,
+                action: ControlAction::Reset,
+                value: 0,
+                outcome: "reset",
+                inference_start_ns: timestamp_ns,
+                inference_end_ns: timestamp_ns,
+            }));
+        }
+
+        let input = match rknn_control::read(TASK3_RKNN_CONTROL_PATH) {
+            Ok(input) => input,
+            Err("event record is unavailable") => return Ok(None),
+            Err(error) => {
+                println!("TASK3_RKNN_RECORD_REJECTED error={error}");
+                return Err(error);
+            }
+        };
+        if input.generation == self.last_rknn_generation {
+            return Ok(None);
+        }
+        if input.generation < self.last_rknn_generation {
+            return Err("RKNN generation moved backwards");
+        }
+        let image_ordinal = if event_index < 11 {
+            event_index
+        } else {
+            event_index - 1
+        };
+        if input.generation != self.last_rknn_generation + 1
+            || usize::from(input.event_index) != image_ordinal
+            || input.event_id != event_id
+        {
+            return Err("RKNN event sequence does not match the frozen scene");
+        }
+        self.last_rknn_generation = input.generation;
+        let scene_input = match input.kind {
+            rknn_control::EventKind::Detection(detection) => {
+                println!(
+                    "TASK3_DETECTION event_index={event_index} event_id={event_id} class={} \
+                     confidence_milli={} center_x_milli={} center_y_milli={} area_milli={} \
+                     request={request_id}",
+                    detection.class_id,
+                    detection.confidence_milli,
+                    detection.center_x_milli,
+                    detection.center_y_milli,
+                    detection.area_milli
+                );
+                task3_model::video_safety::SceneInput::Detection(detection)
+            }
+            rknn_control::EventKind::NoDetection => {
+                task3_model::video_safety::SceneInput::NoDetection
+            }
+            rknn_control::EventKind::Fixed { .. } | rknn_control::EventKind::Reset => {
+                return Err("RKNN arm received an incompatible event kind");
+            }
+        };
+        let (action, value, outcome) = match self.video_safety.update(scene_input) {
+            task3_model::video_safety::SceneDecision::Track { target, .. } => {
+                self.last_target = target;
+                (ControlAction::SetOutput, target, "track")
+            }
+            task3_model::video_safety::SceneDecision::Hold { target, .. } => {
+                (ControlAction::SetOutput, target, "hold")
+            }
+            task3_model::video_safety::SceneDecision::Stop {
+                newly_latched: true,
+                ..
+            } => (ControlAction::Stop, 0, "stop-hazard"),
+            task3_model::video_safety::SceneDecision::Stop {
+                newly_latched: false,
+                ..
+            } => (ControlAction::Stop, 0, "stop-latched"),
+            task3_model::video_safety::SceneDecision::Reset { .. } => {
+                return Err("detection unexpectedly produced Reset");
+            }
+        };
+        println!(
+            "TASK3_RKNN_INPUT elapsed_ms={now_ms} generation={} event_index={event_index} \
+             event_id={event_id} outcome={outcome} infer_start_ns={} infer_end_ns={} \
+             request={request_id}",
+            input.generation, input.inference_start_ns, input.inference_end_ns
+        );
+        Ok(Some(SceneCommand {
+            event_index,
+            event_id,
+            generation: input.generation,
+            action,
+            value,
+            outcome,
+            inference_start_ns: input.inference_start_ns,
+            inference_end_ns: input.inference_end_ns,
+        }))
+    }
+
+    #[cfg(feature = "arceos")]
+    fn poll_rknn_scene_command(
+        &mut self,
+        _request_id: u32,
+        _now_ms: u64,
+    ) -> Result<Option<SceneCommand>, &'static str> {
+        Ok(None)
+    }
+
     fn send_next(
         &mut self,
         socket: &UdpSocket,
@@ -805,7 +1023,7 @@ impl Controller {
         }
         let request_id = next_request_id(self.request_id);
         let requested_target = self.target_for(now_ms);
-        let (target, output) = match self.model {
+        let (action, target, output, scene) = match self.model {
             ModelKind::Yolo => {
                 let Some((target, infer_us)) = self.poll_yolo_target(request_id, now_ms) else {
                     return Ok(());
@@ -816,7 +1034,7 @@ impl Controller {
                      model=yolo11n.ncnn target={}",
                     request_id, output, infer_us, target
                 );
-                (target, output)
+                (ControlAction::SetOutput, target, output, None)
             }
             ModelKind::Cnn => {
                 let (output, infer_us) = self.ai_output(requested_target);
@@ -824,18 +1042,33 @@ impl Controller {
                     "TASK3_INFER elapsed_ms={now_ms} sample={} output={} infer_us={} model=cnn",
                     request_id, output, infer_us
                 );
-                (requested_target, output)
+                (ControlAction::SetOutput, requested_target, output, None)
             }
-            ModelKind::Baseline => (
-                requested_target,
-                self.baseline_output(requested_target, self.last_state),
-            ),
+            ModelKind::FixedPerception => {
+                let Some(command) = self.fixed_scene_command() else {
+                    return Ok(());
+                };
+                (command.action, command.value, command.value, Some(command))
+            }
+            ModelKind::Rknn => {
+                let Some(command) = self
+                    .poll_rknn_scene_command(request_id, now_ms)
+                    .map_err(SendNextError::Fatal)?
+                else {
+                    return Ok(());
+                };
+                (command.action, command.value, command.value, Some(command))
+            }
+            ModelKind::Baseline => {
+                let output = self.baseline_output(requested_target, self.last_state);
+                (ControlAction::SetOutput, requested_target, output, None)
+            }
         };
         self.request_id = request_id;
         self.push_output(output);
 
         let mut payload = [0; 12];
-        let command = ControlMessage::new(ControlAction::SetOutput, output, self.request_id)
+        let command = ControlMessage::new(action, output, self.request_id)
             .map_err(|_| SendNextError::Fatal("invalid Task-3 control command"))?;
         let payload_len = command
             .encode(&mut payload)
@@ -857,16 +1090,41 @@ impl Controller {
         self.request_sent_at_ms = now_ms;
         self.next_send_at_ms = now_ms + scenario::MIN_CYCLE_MS;
         self.pending_send = false;
-        println!(
-            "TASK3_CONTROL_SENT elapsed_ms={now_ms} request={} value={} target={} state={} seq={} \
-             model={}",
-            self.request_id,
-            output,
-            target,
-            self.last_state,
-            transmission.sequence().get(),
-            self.model.name()
-        );
+        if let Some(scene) = scene {
+            self.scene_event_cursor += 1;
+            self.pending_scene = Some(PendingScene {
+                event_index: scene.event_index,
+                event_id: scene.event_id,
+                inference_start_ns: scene.inference_start_ns,
+            });
+            println!(
+                "TASK3_CONTROL_SENT elapsed_ms={now_ms} event_index={} event_id={} source={} \
+                 generation={} request={} action={:?} value={} outcome={} infer_start_ns={} \
+                 infer_end_ns={} seq={}",
+                scene.event_index,
+                scene.event_id,
+                self.model.name(),
+                scene.generation,
+                self.request_id,
+                action,
+                output,
+                scene.outcome,
+                scene.inference_start_ns,
+                scene.inference_end_ns,
+                transmission.sequence().get()
+            );
+        } else {
+            println!(
+                "TASK3_CONTROL_SENT elapsed_ms={now_ms} request={} value={} target={} state={} \
+                 seq={} model={}",
+                self.request_id,
+                output,
+                target,
+                self.last_state,
+                transmission.sequence().get(),
+                self.model.name()
+            );
+        }
         Ok(())
     }
 
@@ -904,15 +1162,44 @@ impl Controller {
         let rtt_ms = now_ms.saturating_sub(self.request_sent_at_ms);
         self.last_state = state;
         self.push_state(state);
-        println!(
-            "TASK3_STATUS_RECEIVED elapsed_ms={now_ms} request={} value={} state={} sample={} \
-             rtt_ms={}",
-            status.last_control_request(),
-            status.value(),
-            state,
-            self.sample_count,
-            rtt_ms
-        );
+        if let Some(scene) = self.pending_scene.take() {
+            if status.last_control_request() != self.request_id {
+                return Err("scene STATUS request does not match CONTROL");
+            }
+            let status_ns = monotonic_ns();
+            let end_to_end_us = status_ns.saturating_sub(scene.inference_start_ns) / 1_000;
+            println!(
+                "TASK3_STATUS_RECEIVED elapsed_ms={now_ms} event_index={} event_id={} request={} \
+                 value={} state={} protocol_state={:?} rtt_ms={} status_ns={} end_to_end_us={}",
+                scene.event_index,
+                scene.event_id,
+                status.last_control_request(),
+                status.value(),
+                state,
+                status.state(),
+                rtt_ms,
+                status_ns,
+                end_to_end_us
+            );
+            if scene.event_index == SCENE_EVENT_IDS.len() {
+                println!(
+                    "TASK3_EXPERIMENT_COMPLETE source={} events={} statuses={} elapsed_ms={now_ms}",
+                    self.model.name(),
+                    SCENE_EVENT_IDS.len(),
+                    self.sample_count
+                );
+            }
+        } else {
+            println!(
+                "TASK3_STATUS_RECEIVED elapsed_ms={now_ms} request={} value={} state={} sample={} \
+                 rtt_ms={}",
+                status.last_control_request(),
+                status.value(),
+                state,
+                self.sample_count,
+                rtt_ms
+            );
+        }
         Ok(())
     }
 }
@@ -1191,6 +1478,39 @@ fn configure_network(_local_ip: Ipv4Addr) -> Result<(), &'static str> {
 
 fn now_ms(start: &Instant) -> u64 {
     start.elapsed().as_millis() as u64
+}
+
+#[cfg(not(feature = "arceos"))]
+#[repr(C)]
+struct ClockTimespec {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
+#[cfg(not(feature = "arceos"))]
+unsafe extern "C" {
+    fn clock_gettime(clock_id: i32, time: *mut ClockTimespec) -> i32;
+}
+
+#[cfg(not(feature = "arceos"))]
+fn monotonic_ns() -> u64 {
+    const CLOCK_MONOTONIC: i32 = 1;
+    let mut time = ClockTimespec {
+        seconds: 0,
+        nanoseconds: 0,
+    };
+    // SAFETY: `time` points to writable storage with the Linux `timespec`
+    // layout, and CLOCK_MONOTONIC does not retain the pointer.
+    let result = unsafe { clock_gettime(CLOCK_MONOTONIC, &mut time) };
+    if result != 0 || time.seconds < 0 || time.nanoseconds < 0 {
+        return 0;
+    }
+    time.seconds as u64 * 1_000_000_000 + time.nanoseconds as u64
+}
+
+#[cfg(feature = "arceos")]
+const fn monotonic_ns() -> u64 {
+    0
 }
 
 const fn next_request_id(current: u32) -> u32 {

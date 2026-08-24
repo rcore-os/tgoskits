@@ -28,6 +28,7 @@ struct Options {
     int infer_every = 1;
     int report_interval_sec = 5;
     int min_confidence = 25;
+    int validation_loops = 1;
     bool profile = false;
     bool profile_frames = false;
     bool set_core_mask = true;
@@ -38,6 +39,7 @@ struct Options {
     const char *validate_list_path = NULL;
     const char *expected_path = NULL;
     const char *write_expected_path = NULL;
+    const char *control_output_path = NULL;
 };
 
 struct MemoryStats {
@@ -76,6 +78,13 @@ static double monotonic_sec()
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
 }
 
+static uint64_t monotonic_ns()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
 static void print_usage(const char *argv0)
 {
     printf("Usage: %s [OPTIONS]\n", argv0);
@@ -95,6 +104,8 @@ static void print_usage(const char *argv0)
     printf("  --validate-list <PATH>         validate fixed images from list without starting UVC\n");
     printf("  --expected <PATH>              read committed validation expected file\n");
     printf("  --write-expected <PATH>        write validation expected file for maintenance\n");
+    printf("  --validation-loops <N>         repeat fixed-image validation N times [default: 1]\n");
+    printf("  --control-output <PATH>        atomically publish each validated RKNN decision\n");
 }
 
 static bool parse_int_arg(const char *name, const char *value, int *out)
@@ -231,6 +242,12 @@ static bool parse_args(int argc, char **argv, Options *options)
         } else if (strcmp(arg, "--write-expected") == 0 && value != NULL) {
             options->write_expected_path = value;
             ++i;
+        } else if (strcmp(arg, "--validation-loops") == 0 && value != NULL) {
+            if (!parse_int_arg(arg, value, &options->validation_loops)) return false;
+            ++i;
+        } else if (strcmp(arg, "--control-output") == 0 && value != NULL) {
+            options->control_output_path = value;
+            ++i;
         } else if (strcmp(arg, "--profile") == 0) {
             options->profile = true;
         } else if (strcmp(arg, "--profile-frames") == 0) {
@@ -247,8 +264,17 @@ static bool parse_args(int argc, char **argv, Options *options)
         return false;
     }
     if (options->validate_list_path == NULL &&
-        (options->expected_path != NULL || options->write_expected_path != NULL)) {
-        printf("--expected and --write-expected require --validate-list\n");
+        (options->expected_path != NULL || options->write_expected_path != NULL ||
+         options->control_output_path != NULL || options->validation_loops != 1)) {
+        printf("--expected, --write-expected, --control-output, and --validation-loops require --validate-list\n");
+        return false;
+    }
+    if (options->validation_loops <= 0) {
+        printf("--validation-loops must be a positive integer\n");
+        return false;
+    }
+    if (options->write_expected_path != NULL && options->validation_loops != 1) {
+        printf("--write-expected requires --validation-loops 1\n");
         return false;
     }
     return true;
@@ -446,6 +472,80 @@ static void print_validation_messages(int index, const char *path, const std::ve
     }
 }
 
+static bool publish_control_decision(const Options &options, uint64_t generation, int image_index,
+                                     const char *image_path, int image_width, int image_height,
+                                     uint64_t inference_start_ns, uint64_t inference_end_ns,
+                                     const std::vector<rknn_validation::DetectionEntry> &detections)
+{
+    if (options.control_output_path == NULL) {
+        return true;
+    }
+    if (image_width <= 0 || image_height <= 0) {
+        return false;
+    }
+    const char *basename = strrchr(image_path, '/');
+    basename = basename != NULL ? basename + 1 : image_path;
+    std::string event_id(basename);
+    size_t extension = event_id.rfind('.');
+    if (extension != std::string::npos) {
+        event_id.resize(extension);
+    }
+    const rknn_validation::DetectionEntry *best = NULL;
+    for (size_t i = 0; i < detections.size(); i++) {
+        if (best == NULL || detections[i].score_q10000 > best->score_q10000) {
+            best = &detections[i];
+        }
+    }
+    std::string temporary_path = std::string(options.control_output_path) + ".tmp";
+    FILE *file = fopen(temporary_path.c_str(), "w");
+    if (file == NULL) {
+        printf("RKNN_CONTROL_PUBLISH_FAIL generation=%llu reason=open path=%s\n",
+               (unsigned long long)generation, options.control_output_path);
+        return false;
+    }
+    if (best == NULL) {
+        fprintf(file,
+                "version=2 generation=%llu event_index=%d event_id=%s kind=no_detection infer_start_ns=%llu infer_end_ns=%llu\n",
+                (unsigned long long)generation, image_index + 1, event_id.c_str(),
+                (unsigned long long)inference_start_ns, (unsigned long long)inference_end_ns);
+    } else {
+        int center_x = best->left + (best->right - best->left) / 2;
+        int center_y = best->top + (best->bottom - best->top) / 2;
+        int width = std::max(0, best->right - best->left);
+        int height = std::max(0, best->bottom - best->top);
+        int center_x_milli = std::max(0, std::min(1000, center_x * 1000 / image_width));
+        int center_y_milli = std::max(0, std::min(1000, center_y * 1000 / image_height));
+        int area_milli = std::max(0, std::min(1000,
+            (int)((int64_t)width * height * 1000 / ((int64_t)image_width * image_height))));
+        fprintf(file,
+                "version=2 generation=%llu event_index=%d event_id=%s kind=detection infer_start_ns=%llu infer_end_ns=%llu class=%d confidence_milli=%d center_x_milli=%d center_y_milli=%d area_milli=%d\n",
+                (unsigned long long)generation, image_index + 1, event_id.c_str(),
+                (unsigned long long)inference_start_ns, (unsigned long long)inference_end_ns,
+                best->cls_id, best->score_q10000 / 10, center_x_milli, center_y_milli,
+                area_milli);
+    }
+    bool ok = fflush(file) == 0;
+    if (ok) {
+        ok = fsync(fileno(file)) == 0;
+    }
+    if (fclose(file) != 0) {
+        ok = false;
+    }
+    if (ok) {
+        ok = rename(temporary_path.c_str(), options.control_output_path) == 0;
+    }
+    if (!ok) {
+        printf("RKNN_CONTROL_PUBLISH_FAIL generation=%llu reason=write path=%s\n",
+               (unsigned long long)generation, options.control_output_path);
+        return false;
+    }
+    printf("RKNN_CONTROL_EVENT version=2 generation=%llu image=%d event_id=%s kind=%s infer_start_ns=%llu infer_end_ns=%llu\n",
+           (unsigned long long)generation, image_index, event_id.c_str(),
+           best != NULL ? "detection" : "no_detection",
+           (unsigned long long)inference_start_ns, (unsigned long long)inference_end_ns);
+    return true;
+}
+
 static int run_validation(const Options &options, rknn_app_context_t *app_ctx)
 {
     std::string error;
@@ -487,7 +587,9 @@ static int run_validation(const Options &options, rknn_app_context_t *app_ctx)
            (unsigned long long)images.size(),
            options.write_expected_path != NULL ? "write_expected" : "compare_expected");
 
-    for (size_t i = 0; i < images.size(); i++) {
+    uint64_t generation = 0;
+    for (int loop = 0; loop < options.validation_loops; loop++) {
+      for (size_t i = 0; i < images.size(); i++) {
         image_buffer_t image;
         memset(&image, 0, sizeof(image));
         int ret = read_image(images[i].path.c_str(), &image);
@@ -503,6 +605,7 @@ static int run_validation(const Options &options, rknn_app_context_t *app_ctx)
         memset(&results, 0, sizeof(results));
         rknn_inference_profile_t profile;
         memset(&profile, 0, sizeof(profile));
+        uint64_t inference_start_ns = monotonic_ns();
         if (options.profile) {
             ret = inference_yolov8_model_with_thresholds_profile(
                 app_ctx,
@@ -520,6 +623,7 @@ static int run_validation(const Options &options, rknn_app_context_t *app_ctx)
                 NMS_THRESH);
         }
 
+        uint64_t inference_end_ns = monotonic_ns();
         if (ret != 0) {
             printf("UVC_RKNN_VALIDATE_FAIL image=%llu path=%s reason=inference ret=%d\n",
                    (unsigned long long)i,
@@ -584,7 +688,16 @@ static int run_validation(const Options &options, rknn_app_context_t *app_ctx)
             }
         }
 
+        generation++;
+        if (!publish_control_decision(options, generation, (int)i, images[i].path.c_str(),
+                                      image.width, image.height, inference_start_ns,
+                                      inference_end_ns, actual)) {
+            free(image.virt_addr);
+            return 1;
+        }
+
         free(image.virt_addr);
+      }
     }
 
     if (options.write_expected_path != NULL) {
@@ -600,7 +713,15 @@ static int run_validation(const Options &options, rknn_app_context_t *app_ctx)
     if (options.profile) {
         print_profile_summary(&profile_samples);
     }
-    printf("UVC_RKNN_VALIDATE_PASS images=%llu\n", (unsigned long long)images.size());
+    printf("UVC_RKNN_VALIDATE_PASS images=%llu loops=%d inferences=%llu\n",
+           (unsigned long long)images.size(), options.validation_loops,
+           (unsigned long long)images.size() * (unsigned long long)options.validation_loops);
+    // Keep the publisher process alive briefly after the final atomic record.
+    // The T2N1 consumer must finish the last CONTROL/STATUS exchange before
+    // StarryOS emits its child-exit log on the shared debug UART.
+    if (options.control_output_path != NULL) {
+        sleep(2);
+    }
     return 0;
 }
 
@@ -619,7 +740,7 @@ int main(int argc, char **argv)
 
     printf("YOLOv8 UVC RKNN Benchmark\n");
     printf("=========================\n");
-    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d report_interval=%d min_confidence=%d core_mask=%s profile=%d profile_frames=%d validate_list=%s expected=%s write_expected=%s\n",
+    printf("model=%s label=%s device=%d size=%dx%d fps=%d duration=%d infer_every=%d report_interval=%d min_confidence=%d core_mask=%s profile=%d profile_frames=%d validate_list=%s expected=%s write_expected=%s validation_loops=%d control_output=%s\n",
            options.model_path,
            options.label_path,
            options.device,
@@ -635,7 +756,9 @@ int main(int argc, char **argv)
            options.profile_frames ? 1 : 0,
            options.validate_list_path != NULL ? options.validate_list_path : "none",
            options.expected_path != NULL ? options.expected_path : "none",
-           options.write_expected_path != NULL ? options.write_expected_path : "none");
+           options.write_expected_path != NULL ? options.write_expected_path : "none",
+           options.validation_loops,
+           options.control_output_path != NULL ? options.control_output_path : "none");
 
     int ret = init_post_process(options.label_path);
     if (ret != 0) {
