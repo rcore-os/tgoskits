@@ -4,6 +4,7 @@ set -euo pipefail
 
 benchmark_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 builder=$benchmark_dir/build-starry-rootfs.sh
+probe_builder=$benchmark_dir/build-probe.sh
 kernel_builder=$benchmark_dir/build-starry-kernel.sh
 soak_builder=$benchmark_dir/prepare-starry-soak.sh
 noise_builder=$benchmark_dir/build-aarch64-noise-guest.sh
@@ -16,6 +17,12 @@ formal_runner=$benchmark_dir/run-formal-campaign.sh
 host_toolchain_preparer=$benchmark_dir/prepare-freestanding-c-toolchain.sh
 host_toolchain_test=$benchmark_dir/tests/test_host_toolchain.sh
 stage_runner_test=$benchmark_dir/tests/test_stage_starry_board.sh
+board_runner=$benchmark_dir/board/board-runner.sh
+board_dtb_builder=$benchmark_dir/board/build-guest-dtb.sh
+board_harvester=$benchmark_dir/board/harvest-result.sh
+board_dtb_preparer=$benchmark_dir/board/prepare-service-dtb.sh
+board_linux_restorer=$benchmark_dir/board/restore-linux.sh
+board_serial_command=$benchmark_dir/board/serial-command.sh
 guest_runner=$benchmark_dir/guest/starry_rt_compat_run.sh
 capture_runner=$benchmark_dir/guest/starry_rt_capture_run.sh
 irq_analyzer=$benchmark_dir/analyze_irq_trace.py
@@ -43,6 +50,7 @@ fail() {
 }
 
 bash -n "$builder"
+bash -n "$probe_builder"
 bash -n "$kernel_builder"
 bash -n "$soak_builder"
 bash -n "$noise_builder"
@@ -50,6 +58,11 @@ bash -n "$stage_runner"
 bash -n "$harvest_runner"
 bash -n "$formal_runner"
 bash -n "$host_toolchain_preparer"
+for board_helper in \
+    "$board_runner" "$board_dtb_builder" "$board_harvester" \
+    "$board_dtb_preparer" "$board_linux_restorer" "$board_serial_command"; do
+    bash -n "$board_helper"
+done
 sh -n "$guest_runner"
 sh -n "$capture_runner"
 python3 -m py_compile "$irq_analyzer"
@@ -60,6 +73,11 @@ python3 -m py_compile "$formal_receipt"
 bash "$host_toolchain_test"
 bash "$stage_runner_test"
 "$formal_runner" --help >/dev/null
+"$probe_builder" --help >/dev/null
+excluded_root=competition
+if grep -R -n --exclude-dir=__pycache__ "$excluded_root/" "$benchmark_dir" >/dev/null; then
+    fail "formal benchmark scripts must not depend on the excluded competition tree"
+fi
 grep -q 'sha256sum -c preregistration.sha256' "$formal_runner" || \
     fail "formal campaign must verify the immutable preregistration checksum"
 grep -Fq 'export STARRY_RT_HOST_TOOLCHAIN_MANIFEST=$result_root/build/host-toolchain.json' \

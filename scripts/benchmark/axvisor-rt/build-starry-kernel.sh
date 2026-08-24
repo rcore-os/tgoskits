@@ -3,7 +3,7 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-workspace=$(git -C "$script_dir" rev-parse --show-toplevel)
+workspace=$(cd -- "$script_dir/../../.." && pwd)
 host_toolchain_preparer=$script_dir/prepare-freestanding-c-toolchain.sh
 toolchain=${STARRY_RT_TOOLCHAIN:-nightly-2026-07-15}
 config=${STARRY_RT_CONFIG:-$script_dir/config/starry-aarch64-rt.toml}

@@ -2,7 +2,8 @@
 
 Status: implemented and validated on QEMU/AArch64
 
-Scope: `competition/rt-baseline/` and its reproducibility/evidence contract
+Scope: the tracked AxVisor RTOS guest configurations and their reproducibility
+contract
 
 ## Problem and users
 

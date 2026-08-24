@@ -28,7 +28,8 @@
 
 检查的既有能力包括：
 
-- `competition/ivc/run-control-campaign.sh formal` 的预注册顺序与 fail-closed 思路；
+- `scripts/benchmark/axvisor-rt/run-formal-campaign.sh` 的预注册顺序与
+  fail-closed 思路；
 - `stage-starry-board.sh`、OrangePi `board-runner.sh`、
   `harvest-starry-board.sh` 的 Linux staging、冷启动、snapshot 和恢复边界；
 - `compare_starry_board.py` 与 `aggregate_starry_board.py` 的单对和 M2 聚合语义；
@@ -123,7 +124,7 @@ AXVISOR_RT_FORMAL_SLOT_COMPLETE
 AXVISOR_RT_FORMAL_CAMPAIGN_COMPLETE
 ```
 
-完整命令见 `competition/reproduce.md`。单元测试覆盖脏树/制品漂移、板卡变更、
+完整命令见 `scripts/benchmark/axvisor-rt/README.md`。单元测试覆盖脏树/制品漂移、板卡变更、
 乱序收据、pair/soak 合同和归档哈希不一致；shell 集成测试保证正式入口、staging、
 harvest 与基础 runner 合同继续连通。
 

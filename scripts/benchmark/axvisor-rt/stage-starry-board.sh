@@ -3,7 +3,7 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-workspace=$(git -C "$script_dir" rev-parse --show-toplevel)
+workspace=$(cd -- "$script_dir/../../.." && pwd)
 board_type=${ORANGEPI_BOARD_TYPE:-OrangePi-5-Plus}
 ssh_target=${ORANGEPI_SSH_TARGET:-orangepi@192.168.31.33}
 ssh_identity=${ORANGEPI_SSH_IDENTITY:-${HOME}/.ssh/orangepi_automation}
@@ -12,7 +12,7 @@ unset ORANGEPI_SUDO_PASSWORD
 guest_dir=${ORANGEPI_RT_GUEST_DIR:-/home/orangepi/axvisor-guest}
 result_image=${ORANGEPI_RT_RESULT_IMAGE:-/home/rt}
 kernel=$workspace/tmp/axvisor-rt/starryos-rt.bin
-dtb=$workspace/tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb
+dtb=$workspace/tmp/axvisor-rt/guest-dtb/starry-orangepi-5-plus.dtb
 rootfs=$workspace/tmp/axvisor-rt/starry-rt-capture-rootfs.img
 rootfs_name=starry-rt-capture-rootfs.img
 noise_guest=

@@ -21,7 +21,7 @@ SPEC.loader.exec_module(record_metadata)
 
 
 class RepositoryStateTests(unittest.TestCase):
-    def test_fingerprints_tracked_and_untracked_source_without_result_artifacts(
+    def test_fingerprints_tracked_and_all_nonstandard_untracked_source(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -66,7 +66,7 @@ class RepositoryStateTests(unittest.TestCase):
 
             changed = record_metadata.repository_state(workspace)
             self.assertTrue(changed["dirty"])
-            self.assertEqual(changed["untracked_source_file_count"], 2)
+            self.assertEqual(changed["untracked_source_file_count"], 4)
             self.assertNotEqual(
                 changed["source_snapshot_sha256"], clean["source_snapshot_sha256"]
             )
@@ -75,7 +75,7 @@ class RepositoryStateTests(unittest.TestCase):
             self.assertEqual(
                 excluded["source_snapshot_sha256"], changed["source_snapshot_sha256"]
             )
-            self.assertEqual(excluded["untracked_source_file_count"], 2)
+            self.assertEqual(excluded["untracked_source_file_count"], 4)
 
             (workspace / "source.py").write_text("VALUE = 2\n", encoding="utf-8")
             updated = record_metadata.repository_state(workspace)

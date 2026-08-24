@@ -102,7 +102,6 @@ vCPU0 设备轮询
   ```
 
   VM3 必须没有默认路由，并发送 100 个定向广播探测包。VM1 在七秒观察窗口内
-  不得收到任何探测包，同时 VM1/VM2 仍需完成 64 KiB TCP 交换。保留的 QEMU
-  证据及其准确限制记录在
-  [`competition/results/axvisor-isolation-reference`](../../competition/results/axvisor-isolation-reference/).
+  不得收到任何探测包，同时 VM1/VM2 仍需完成 64 KiB TCP 交换。QEMU 原始日志、
+  环境信息与哈希应作为外部测试制品保存，不提交到代码分支。
 - 对每个改动的 crate 运行 `cargo fmt` 和定向 clippy。

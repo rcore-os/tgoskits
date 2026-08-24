@@ -45,9 +45,10 @@ Idle showed the same mixed pattern: dispatch tails improved, while several
 maxima did not. The soak's largest observed periodic jitter was 6,690,800 ns.
 
 These observations support deterministic placement and selected dispatch-tail
-improvement only. Summaries, provenance, compressed raw logs, CPU load, exact
-intervals, and limitations are retained in
-[`competition/results/axvisor-rt-reference`](../../competition/results/axvisor-rt-reference/).
+improvement only. Use the immutable campaign workflow in
+[`scripts/benchmark/axvisor-rt`](../../scripts/benchmark/axvisor-rt/README.md)
+to capture summaries, provenance, compressed raw logs, CPU load, exact
+intervals, and limitations outside the source tree.
 
 ## Round-robin status: experimental under passthrough
 

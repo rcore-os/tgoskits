@@ -5,11 +5,10 @@ AArch64 partition profile. It intentionally contains no captured latency
 values. A run writes raw console output, provenance metadata, and a derived JSON
 summary under `tmp/axvisor-rt/` or a caller-selected output directory.
 
-The final shared/partitioned idle, CPU-stress, and partitioned-soak artifacts
-are retained separately in
-[`competition/results/axvisor-rt-reference`](../../../competition/results/axvisor-rt-reference/).
-That comparison is a same-source policy-off/policy-on experiment and has mixed
-tail results; it must not be described as universal latency improvement.
+Generated shared/partitioned idle, CPU-stress, and partitioned-soak artifacts
+must be retained outside the source branch. This is a same-source
+policy-off/policy-on experiment and may have mixed tail results; it must not be
+described as universal latency improvement.
 
 ## Measurement boundaries
 
@@ -61,19 +60,16 @@ interrupt from those CPUs.
 
 Prerequisites are `qemu-system-aarch64`, `debugfs`, Python 3, the normal AxVisor
 build dependencies, and either `aarch64-linux-musl-gcc` or a prebuilt static
-AArch64 copy of the probe. Pull the normal QEMU AArch64 image first, then pass
-the Alpine rootfs image without modifying it. The exact 718,296-byte probe used
-by the retained campaign is
-[`competition/results/axvisor-rt-reference/axvisor-rt-probe`](../../../competition/results/axvisor-rt-reference/axvisor-rt-probe),
-with SHA-256
-`8b3f6e7471dc9ecf60d5b64ab5f3c3a4657af8743fde1aa6b1772358c62806da`:
+AArch64 copy of the probe. Build the tracked probe source first, then pull the
+normal QEMU AArch64 image and pass the Alpine rootfs image without modifying it:
 
 ```sh
 cargo xtask image pull --arch aarch64
+scripts/benchmark/axvisor-rt/build-probe.sh
 
 scripts/benchmark/axvisor-rt/run.sh \
   --rootfs tmp/axbuild/rootfs/rootfs-aarch64-alpine.img \
-  --probe competition/results/axvisor-rt-reference/axvisor-rt-probe \
+  --probe tmp/axvisor-rt/axvisor-rt-probe \
   --profile partitioned \
   --iterations 10000 \
   --warmup 100 \
@@ -94,13 +90,10 @@ evidence. The runner refuses to overwrite an existing result artifact.
 
 The repository fingerprint asks Git for collapsed untracked roots and expands
 only those roots itself. It prunes `.git`, `target`, `tmp`, `build`, `build-*`,
-`__pycache__`, `competition/results`, and `docs/competition`; tracked changes
-remain covered by `git diff --binary HEAD`. This keeps generated build and
-evidence trees out of provenance without hiding tracked edits. Use the retained
-artifact with `--probe` for a byte-identical probe input. The producing compiler
-version was not separately captured, so no compiler-version provenance is
-claimed for that binary; if it is rebuilt, record the compiler version and new
-probe hash.
+and `__pycache__`; tracked changes remain covered by `git diff --binary HEAD`.
+This keeps generated build trees out of provenance without hiding tracked
+edits. Retain the probe hash and compiler version with each external evidence
+set.
 
 Use `--workload cpu-stress` for the harness-controlled CPU 1 load. Use
 `--workload external:<safe-label>` only when a separately arranged load was
@@ -160,14 +153,18 @@ console, harvest, summary, and file-identity set can create the immutable
 `receipt.json`. Failed attempts remain under `attempts/` and do not advance the
 campaign.
 
+The `prepare` action builds `tmp/axvisor-rt/axvisor-rt-probe` from the tracked
+C source with `aarch64-linux-musl-gcc`; set `CC` to another static AArch64 musl
+compiler when needed. The probe binary is an external build artifact and is
+bound into the preregistration by size and SHA-256.
+
 The twelve slots are ten pair halves from five pairs in AB/BA/AB/BA/AB order,
 followed by one shared and one partitioned soak. `run-all` is resumable because
 it delegates to `run-next`, and `aggregate` refuses incomplete evidence or an
 M2 gate failure.
 The design and alternatives are recorded in
-[`book/design/axvisor-rt-formal-campaign.md`](../../../book/design/axvisor-rt-formal-campaign.md).
-The exact physical-board commands are in
-[`competition/reproduce.md`](../../../competition/reproduce.md#7-正式活动规则).
+[`docs/design/axvisor-rt-formal-campaign.md`](../../../docs/design/axvisor-rt-formal-campaign.md).
+Use `run-formal-campaign.sh --help` for the exact physical-board entry points.
 
 Board Linux must grant passwordless `sudo` only for the fixed `sync` and
 `reboot` commands used by the board runner. Staging removes the two exact stale

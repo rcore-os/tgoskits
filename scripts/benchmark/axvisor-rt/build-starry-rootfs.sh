@@ -3,8 +3,8 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-workspace=$(git -C "$script_dir" rev-parse --show-toplevel)
-probe=$workspace/competition/results/axvisor-rt-reference/axvisor-rt-probe
+workspace=$(cd -- "$script_dir/../../.." && pwd)
+probe=$workspace/tmp/axvisor-rt/axvisor-rt-probe
 base_rootfs=
 output=$workspace/tmp/axvisor-rt/starry-rt-compat-rootfs.img
 mode=compat

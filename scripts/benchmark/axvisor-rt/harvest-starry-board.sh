@@ -3,7 +3,7 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-workspace=$(git -C "$script_dir" rev-parse --show-toplevel)
+workspace=$(cd -- "$script_dir/../../.." && pwd)
 analyzer=$script_dir/analyze_starry_board.py
 irq_analyzer=$script_dir/analyze_irq_trace.py
 board_type=${ORANGEPI_BOARD_TYPE:-OrangePi-5-Plus}

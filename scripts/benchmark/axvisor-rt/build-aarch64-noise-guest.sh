@@ -3,7 +3,7 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-workspace=$(git -C "$script_dir" rev-parse --show-toplevel)
+workspace=$(cd -- "$script_dir/../../.." && pwd)
 source_file=$script_dir/guest/aarch64_rt_noise.S
 output=$workspace/tmp/axvisor-rt/aarch64-rt-noise.bin
 duration_seconds=180

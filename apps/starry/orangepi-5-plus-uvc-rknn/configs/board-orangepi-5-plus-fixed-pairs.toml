@@ -1,5 +1,5 @@
 board_type = "OrangePi-5-Plus"
-dtb_file = "tmp/competition/vision/orangepi-5-plus-starry.dtb"
+dtb_file = "tmp/starry/vision/orangepi-5-plus-starry.dtb"
 shell_prefix = "root@starry:/root #"
 shell_init_cmd = '''
 set -eu

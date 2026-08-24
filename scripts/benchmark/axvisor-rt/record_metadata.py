@@ -39,10 +39,7 @@ PRUNED_DIRECTORY_NAMES = {
     "build",
     "__pycache__",
 }
-GENERATED_EVIDENCE_DIRECTORIES = (
-    Path("competition/results"),
-    Path("docs/competition"),
-)
+GENERATED_EVIDENCE_DIRECTORIES: tuple[Path, ...] = ()
 GIT_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 
 

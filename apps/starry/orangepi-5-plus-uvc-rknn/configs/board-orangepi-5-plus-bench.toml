@@ -1,5 +1,5 @@
 board_type = "OrangePi-5-Plus"
-dtb_file = "tmp/competition/vision/orangepi-5-plus-starry.dtb"
+dtb_file = "tmp/starry/vision/orangepi-5-plus-starry.dtb"
 shell_prefix = "root@starry:/root #"
 shell_init_cmd = '''
 echo UVC_RKNN_BENCH_BEGIN && cd /home/orangepi/rknn_yolov8_image && ./rknn_yolov8_bench --validate-list validation/images.txt --expected validation/expected.txt --min-confidence 25 --core-mask all --profile && ./rknn_yolov8_bench --fps 30 --infer-every 1 --duration-sec 60 --report-interval-sec 5 --min-confidence 25 --core-mask all --profile && echo UVC_RKNN_BENCH_DONE

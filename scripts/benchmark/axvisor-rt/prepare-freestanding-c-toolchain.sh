@@ -3,7 +3,7 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-workspace=$(git -C "$script_dir" rev-parse --show-toplevel)
+workspace=$(cd -- "$script_dir/../../.." && pwd)
 gnu_cc=${STARRY_RT_AARCH64_GNU_CC:-aarch64-linux-gnu-gcc}
 gnu_ar=${STARRY_RT_AARCH64_GNU_AR:-aarch64-linux-gnu-ar}
 sysroot=${STARRY_RT_AARCH64_GNU_SYSROOT:-}

@@ -5,8 +5,8 @@ set -euo pipefail
 case_dir=$(cd "$(dirname "$0")" && pwd)
 workspace=$(cd "$case_dir/../../.." && pwd)
 source_dtb="$workspace/os/StarryOS/configs/board/orangepi-5-plus.dtb"
-target_dtb="$workspace/tmp/competition/vision/orangepi-5-plus-starry.dtb"
-prepare_dtb="$workspace/competition/ivc/orangepi/prepare-service-dtb.sh"
+target_dtb="$workspace/tmp/starry/vision/orangepi-5-plus-starry.dtb"
+prepare_dtb="$workspace/scripts/benchmark/axvisor-rt/board/prepare-service-dtb.sh"
 
 # This is the observed SD-card root on the competition board. Override it fo
 # another card; a stable GPT identifier prevents the eMMC `misc` partition from

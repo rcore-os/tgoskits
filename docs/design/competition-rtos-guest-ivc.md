@@ -2,7 +2,8 @@
 
 Status: implemented and validated on QEMU/AArch64
 
-Scope: QEMU/AArch64 AxVisor guests under `competition/ivc/`
+Scope: QEMU/AArch64 AxVisor guests and the tracked `tools/ivcproto` protocol
+implementation
 
 ## Problem and users
 

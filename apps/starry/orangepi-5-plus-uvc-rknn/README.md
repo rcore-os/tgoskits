@@ -218,11 +218,10 @@ cargo xtask starry app board -t orangepi-5-plus-uvc-rknn \
   -b OrangePi-5-Plus
 ```
 
-The competition evidence analyzer and five-pair comparison contract are in
-[`competition/vision`](../../../competition/vision/README.md). They bind each
-accepted summary to the console and RKNN artifact hashes and reject duplicate
-runs or undeclared configuration drift. Formal board evidence must additionally
-retain the staged rootfs manifest or a board-side model hash.
+For a five-pair comparison, retain every console log and bind each accepted
+summary to the RKNN binary, model, board configuration, and staged rootfs
+hashes. Reject duplicate runs or undeclared configuration drift; keep these
+generated evidence artifacts outside the code branch.
 
 The same bounded smoke-test command is also stored in
 `board-orangepi-5-plus.toml`, so this direct board command runs the default

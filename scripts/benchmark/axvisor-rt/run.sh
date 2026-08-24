@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-workspace_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
+workspace_root="$(cd -- "$script_dir/../../.." && pwd)"
 
 rootfs=""
 output_dir=""

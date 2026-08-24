@@ -6,15 +6,16 @@ formal_sudo_password=${ORANGEPI_SUDO_PASSWORD-}
 unset ORANGEPI_SUDO_PASSWORD
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-workspace=$(git -C "$script_dir" rev-parse --show-toplevel)
+workspace=$(cd -- "$script_dir/../../.." && pwd)
 contract=$script_dir/formal_campaign.py
 kernel_builder=$script_dir/build-starry-kernel.sh
 host_toolchain_preparer=$script_dir/prepare-freestanding-c-toolchain.sh
 rootfs_builder=$script_dir/build-starry-rootfs.sh
+probe_builder=$script_dir/build-probe.sh
 soak_builder=$script_dir/prepare-starry-soak.sh
-dtb_builder=$workspace/competition/ivc/starry/build-guest-dtb.sh
+dtb_builder=$script_dir/board/build-guest-dtb.sh
 stage_runner=$script_dir/stage-starry-board.sh
-board_runner=$workspace/competition/ivc/orangepi/board-runner.sh
+board_runner=$script_dir/board/board-runner.sh
 harvest_runner=$script_dir/harvest-starry-board.sh
 pair_comparator=$script_dir/compare_starry_board.py
 campaign_aggregator=$script_dir/aggregate_starry_board.py
@@ -23,8 +24,8 @@ pair_kernel=$workspace/tmp/axvisor-rt/starryos-rt.bin
 pair_rootfs=$workspace/tmp/axvisor-rt/starry-rt-capture-rootfs.img
 soak_kernel=$workspace/tmp/axvisor-rt/starryos-rt-soak.bin
 soak_rootfs=$workspace/tmp/axvisor-rt/starry-rt-soak-rootfs.img
-guest_dtb=$workspace/tmp/competition/ivc/starry/starry-orangepi-5-plus.dtb
-probe=$workspace/competition/results/axvisor-rt-reference/axvisor-rt-probe
+guest_dtb=$workspace/tmp/axvisor-rt/guest-dtb/starry-orangepi-5-plus.dtb
+probe=$workspace/tmp/axvisor-rt/axvisor-rt-probe
 
 usage() {
     cat <<'EOF'
@@ -182,10 +183,10 @@ for command_name in cmp date git jq mktemp mv python3 realpath sha256sum tee; do
         fail "required command is missing: $command_name"
 done
 for input_path in \
-    "$contract" "$kernel_builder" "$rootfs_builder" "$soak_builder" \
+    "$contract" "$kernel_builder" "$rootfs_builder" "$probe_builder" "$soak_builder" \
     "$host_toolchain_preparer" \
     "$dtb_builder" "$stage_runner" "$board_runner" "$harvest_runner" \
-    "$pair_comparator" "$campaign_aggregator" "$probe"; do
+    "$pair_comparator" "$campaign_aggregator"; do
     [[ -r "$input_path" ]] || fail "required campaign input is unreadable: $input_path"
 done
 if [[ "$action" != prepare ]]; then
@@ -222,6 +223,7 @@ case "$action" in
         mkdir -p "$result_root/build"
         export STARRY_RT_HOST_TOOLCHAIN_MANIFEST=$result_root/build/host-toolchain.json
 
+        bash "$probe_builder" 2>&1 | tee "$result_root/build/probe.log"
         bash "$kernel_builder" 2>&1 | tee "$result_root/build/pair-kernel.log"
         bash "$rootfs_builder" \
             --base-rootfs "$base_rootfs" \

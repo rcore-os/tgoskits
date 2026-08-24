@@ -3,7 +3,7 @@
 set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-workspace=$(git -C "$script_dir" rev-parse --show-toplevel)
+workspace=$(cd -- "$script_dir/../../.." && pwd)
 kernel_builder=$script_dir/build-starry-kernel.sh
 rootfs_builder=$script_dir/build-starry-rootfs.sh
 kernel_config=$script_dir/config/starry-aarch64-rt-soak.toml
