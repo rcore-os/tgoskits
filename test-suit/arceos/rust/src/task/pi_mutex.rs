@@ -1,7 +1,10 @@
 use std::{
     os::arceos::{
         api::task::{self as task_api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
-        modules::{ax_hal::percpu::this_cpu_id, ax_task::task_test_hooks},
+        modules::{
+            ax_hal::percpu::this_cpu_id,
+            ax_task::{ThreadWakeHandle, current_thread_handle, task_test_hooks},
+        },
         sync::InterruptibleMutexExt,
         task::{RtPriority, SchedulePolicy, current_thread_id, set_thread_policy},
     },
@@ -130,13 +133,20 @@ fn final_waiter_cancel_races_with_slow_release() {
     let start_waiter = Arc::new(AtomicBool::new(false));
     let interrupt_waiter = Arc::new(AtomicBool::new(false));
     let waiter_cancelled = Arc::new(AtomicBool::new(false));
+    let waiter_wake = Arc::new(Mutex::new(None::<ThreadWakeHandle>));
     let waiter = {
         let mutex = Arc::clone(&mutex);
         let start_waiter = Arc::clone(&start_waiter);
         let interrupt_waiter = Arc::clone(&interrupt_waiter);
         let waiter_cancelled = Arc::clone(&waiter_cancelled);
+        let waiter_wake = Arc::clone(&waiter_wake);
         thread::spawn(move || {
             pin_current_to_cpu(1);
+            *waiter_wake.lock() = Some(
+                current_thread_handle()
+                    .expect("PI cancel-race waiter must have a task handle")
+                    .wake_handle(),
+            );
             while !start_waiter.load(Ordering::Acquire) {
                 core::hint::spin_loop();
             }
@@ -165,6 +175,11 @@ fn final_waiter_cancel_races_with_slow_release() {
         "PI slow release did not observe the cancelable waiter",
     );
     interrupt_waiter.store(true, Ordering::Release);
+    let _wake_result = waiter_wake
+        .lock()
+        .clone()
+        .expect("PI cancel-race waiter must publish its wake handle")
+        .wake_from_task();
     wait_until(
         || waiter_cancelled.load(Ordering::Acquire),
         "PI waiter did not cancel while slow release was paused",

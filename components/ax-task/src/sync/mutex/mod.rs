@@ -52,7 +52,11 @@ pub trait InterruptibleMutexExt<T: ?Sized> {
     ///
     /// A published ownerless handoff wins over interruption. The returned
     /// guard therefore has the same acquire-before-signal ordering as Linux
-    /// `mutex_lock_interruptible()` under PREEMPT_RT.
+    /// `mutex_lock_interruptible()` under PREEMPT_RT. The interruption
+    /// publisher must also wake the waiting task, just as Linux
+    /// `signal_wake_up_state()` sets `TIF_SIGPENDING` and wakes
+    /// `TASK_INTERRUPTIBLE`; this predicate is not polled while the task is
+    /// asleep.
     fn lock_interruptible<F>(
         &self,
         should_interrupt: F,
