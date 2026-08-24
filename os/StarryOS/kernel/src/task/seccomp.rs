@@ -14,7 +14,8 @@ use syscalls::Sysno;
 
 use crate::{StarryError, StarryResult};
 
-const BPF_MAXINSNS: usize = 4096;
+/// Linux's maximum number of classic-BPF instructions in one seccomp filter.
+pub(crate) const SECCOMP_BPF_MAX_INSNS: usize = 4096;
 const BPF_MEMWORDS: usize = 16;
 
 const BPF_CLASS_MASK: u16 = 0x07;
@@ -229,7 +230,7 @@ impl SeccompState {
 impl SeccompFilter {
     /// Validate and construct a seccomp filter from userspace BPF instructions.
     pub fn new(insns: Vec<SockFilter>) -> StarryResult<Self> {
-        if insns.is_empty() || insns.len() > BPF_MAXINSNS {
+        if insns.is_empty() || insns.len() > SECCOMP_BPF_MAX_INSNS {
             return Err(StarryError::InvalidInput);
         }
         Ok(Self { insns })
@@ -644,7 +645,7 @@ pub(crate) fn seccomp_filter_construction_rules_hold_for_test() -> bool {
             k: SECCOMP_RET_ALLOW,
         }])
         .is_ok()
-        // Exactly BPF_MAXINSNS instructions is the boundary and is accepted.
+        // Exactly SECCOMP_BPF_MAX_INSNS instructions is the boundary and is accepted.
         && SeccompFilter::new(vec![
             SockFilter {
                 code: BPF_RET,
@@ -652,10 +653,10 @@ pub(crate) fn seccomp_filter_construction_rules_hold_for_test() -> bool {
                 jf: 0,
                 k: SECCOMP_RET_ALLOW,
             };
-            BPF_MAXINSNS
+            SECCOMP_BPF_MAX_INSNS
         ])
         .is_ok()
-        // One instruction above BPF_MAXINSNS is rejected.
+        // One instruction above SECCOMP_BPF_MAX_INSNS is rejected.
         && SeccompFilter::new(vec![
             SockFilter {
                 code: BPF_RET,
@@ -663,7 +664,7 @@ pub(crate) fn seccomp_filter_construction_rules_hold_for_test() -> bool {
                 jf: 0,
                 k: SECCOMP_RET_ALLOW,
             };
-            BPF_MAXINSNS + 1
+            SECCOMP_BPF_MAX_INSNS + 1
         ])
         .is_err()
 }
@@ -725,7 +726,7 @@ pub(crate) fn seccomp_action_and_precedence_rules_hold_for_test() -> bool {
 #[cfg(test)]
 pub(crate) fn seccomp_bpf_constants_hold_for_test() -> bool {
     // BPF limits
-    assert!(BPF_MAXINSNS == 4096);
+    assert!(SECCOMP_BPF_MAX_INSNS == 4096);
     assert!(BPF_MEMWORDS == 16);
 
     // BPF class constants

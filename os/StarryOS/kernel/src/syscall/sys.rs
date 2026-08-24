@@ -18,7 +18,7 @@ use crate::mm::UserPtr;
 use crate::{
     Errno, StarryError, StarryResult,
     sync::Mutex,
-    task::{AsThread, SockFilter, SockFprog, get_task_by_number, processes},
+    task::{AsThread, SECCOMP_BPF_MAX_INSNS, SockFilter, SockFprog, get_task_by_number, processes},
 };
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
@@ -927,18 +927,32 @@ fn check_seccomp_install_permission() -> StarryResult<()> {
     if thread.no_new_privs() || thread.cred().has_cap_sys_admin() {
         Ok(())
     } else {
-        Err(StarryError::OperationNotPermitted)
+        Err(StarryError::PermissionDenied)
     }
 }
 
-fn read_seccomp_filter(args: *const ()) -> StarryResult<Vec<SockFilter>> {
+fn read_seccomp_filter_header(args: *const ()) -> StarryResult<SockFprog> {
     if args.is_null() {
         return Err(StarryError::BadAddress);
     }
-    let prog = unsafe { (args as *const SockFprog).vm_read_uninit()?.assume_init() };
-    if prog.len == 0 || prog.filter.is_null() {
+    Ok(unsafe { (args as *const SockFprog).vm_read_uninit()?.assume_init() })
+}
+
+fn validate_seccomp_filter_len(prog: SockFprog) -> StarryResult<()> {
+    if prog.len == 0 || usize::from(prog.len) > SECCOMP_BPF_MAX_INSNS {
         return Err(StarryError::InvalidInput);
     }
+    Ok(())
+}
+
+fn validate_seccomp_filter_pointer(prog: SockFprog) -> StarryResult<()> {
+    if prog.filter.is_null() {
+        return Err(StarryError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn read_seccomp_filter_instructions(prog: SockFprog) -> StarryResult<Vec<SockFilter>> {
     let mut raw = vec![MaybeUninit::<SockFilter>::uninit(); prog.len as usize];
     vm_read_slice(prog.filter, &mut raw)?;
     Ok(raw
@@ -991,8 +1005,14 @@ pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> StarryResult<isize> 
             current().as_thread().install_seccomp_strict()?;
         }
         SECCOMP_SET_MODE_FILTER => {
+            // Linux copies and validates the sock_fprog header before it checks
+            // authorization, but does not dereference the instruction pointer
+            // until after that check. Keep the same observable error order.
+            let prog = read_seccomp_filter_header(args)?;
+            validate_seccomp_filter_len(prog)?;
             check_seccomp_install_permission()?;
-            let filter = read_seccomp_filter(args)?;
+            validate_seccomp_filter_pointer(prog)?;
+            let filter = read_seccomp_filter_instructions(prog)?;
             let curr = current();
             let thread = curr.as_thread();
             thread.append_seccomp_filter(filter)?;
