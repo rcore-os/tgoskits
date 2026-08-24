@@ -1359,7 +1359,8 @@ impl AxVM {
     /// count restarts from zero. The control plane uses it to distinguish a
     /// genuine wake from a mere status flip.
     pub fn guest_entry_count(&self) -> u64 {
-        self.with_runtime(|runtime| Ok(runtime.guest_entry_count()))
+        self.runtime_handle()
+            .map(|runtime| runtime.guest_entry_count())
             .unwrap_or(0)
     }
 
@@ -1377,7 +1378,8 @@ impl AxVM {
     /// resume sent before it advances can be absorbed while the vCPU is still
     /// running the guest (it never parked, so it never re-enters either).
     pub fn guest_park_count(&self) -> u64 {
-        self.with_runtime(|runtime| Ok(runtime.guest_park_count()))
+        self.runtime_handle()
+            .map(|runtime| runtime.guest_park_count())
             .unwrap_or(0)
     }
 
