@@ -28,7 +28,7 @@ pub(super) fn inject_migration_publication_race(system: &TaskSystem, target: Cpu
 impl TaskSystem {
     /// Reads the unique scheduler-class state while holding `p->pi_lock`.
     ///
-    /// A detached or migrating task owns the state in `ThreadPolicyState`.
+    /// A detached or migrating task owns the state in its task-stable slot.
     /// A queued or running task owns it in exactly one rq. This mirrors
     /// Linux's `task_rq_lock()` rule instead of copying current state back into
     /// the task merely to answer an affinity request.
@@ -37,7 +37,7 @@ impl TaskSystem {
         core: &Arc<ThreadCore>,
         sched: &ThreadSchedState,
     ) -> Result<(SchedulePolicy, SchedulingEntity), TaskError> {
-        if let Some(active) = sched.policy.active_option() {
+        if let Some(active) = core.sched().active_option(sched) {
             return Ok((active.policy(), active.entity().clone()));
         }
         let owner = sched
@@ -67,7 +67,10 @@ impl TaskSystem {
             .into_iter()
             .flatten()
             .all(|cpu| sched.affinity.affinity.contains(cpu));
-        placement_is_allowed && core.publish_affinity_completion(sched.affinity.affinity_generation)
+        if !placement_is_allowed {
+            return false;
+        }
+        core.publish_affinity_completion(sched.affinity.affinity_generation)
     }
 
     pub(super) fn prepare_owner_migration(

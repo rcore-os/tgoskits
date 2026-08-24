@@ -323,7 +323,10 @@ pub(crate) fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::Ir
         let outcome = crate::task::on_clock_event(now);
         #[cfg(feature = "multitask")]
         if firing.periodic_tick() {
-            crate::task::publish_scheduler_tick(outcome.scheduler_tick_stamp());
+            crate::task::publish_scheduler_tick(
+                outcome.scheduler_tick_stamp(),
+                periodic_interval_nanos(),
+            );
         }
         firing.finish(
             #[cfg(feature = "multitask")]

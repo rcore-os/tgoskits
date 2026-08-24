@@ -48,8 +48,16 @@ pub enum Backend {
 impl MappingBackend for Backend {
     type Addr = VirtAddr;
     type Flags = MappingFlags;
+    type MutationContext = ();
     type PageTable = PageTable;
-    fn map(&self, start: VirtAddr, size: usize, flags: MappingFlags, pt: &mut PageTable) -> bool {
+    fn map(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+        _context: &mut (),
+        pt: &mut PageTable,
+    ) -> bool {
         match *self {
             Self::Linear { pa_va_offset } => {
                 self.map_linear(start, size, flags, pt, pa_va_offset, false)
@@ -61,7 +69,7 @@ impl MappingBackend for Backend {
         }
     }
 
-    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut PageTable) -> bool {
+    fn unmap(&self, start: VirtAddr, size: usize, _context: &mut (), pt: &mut PageTable) -> bool {
         match *self {
             Self::Linear { pa_va_offset } | Self::BootLinear { pa_va_offset } => {
                 self.unmap_linear(start, size, pt, pa_va_offset)
@@ -75,6 +83,7 @@ impl MappingBackend for Backend {
         start: Self::Addr,
         size: usize,
         new_flags: Self::Flags,
+        _context: &mut (),
         page_table: &mut Self::PageTable,
     ) -> bool {
         page_table.protect_region(start, size, new_flags).is_ok()

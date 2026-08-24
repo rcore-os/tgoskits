@@ -302,6 +302,12 @@ impl<'lock> PiMutexAlgorithm<'lock> {
             }
 
             #[cfg(feature = "task-test-hooks")]
+            if crate::task_test_hooks::pi_cancel_release_observed(token.thread_id().into()) {
+                // Keep the interruptible acquisition in its outer loop so it
+                // can observe cancellation without parking in this forced race.
+                return true;
+            }
+            #[cfg(feature = "task-test-hooks")]
             crate::task_test_hooks::record_pi_owner_spin(token.thread_id().into());
             core::hint::spin_loop();
         }
@@ -368,6 +374,8 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         match core_result(unsafe { core.try_release_owned() }, "try PI mutex release") {
             PiMutexOwnedRelease::Released => {}
             PiMutexOwnedRelease::Contended(owner) => {
+                #[cfg(feature = "task-test-hooks")]
+                crate::task_test_hooks::release_observed_cancelable_waiter(owner.into());
                 // SAFETY: `owner` came from this core's owner-authorized release
                 // result and the raw-mutex contract remains active.
                 unsafe { Self::unlock_contended(core, owner) };

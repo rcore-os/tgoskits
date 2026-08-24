@@ -1,6 +1,7 @@
 //! Deadline bandwidth ownership and rq attachment transactions.
 
 use super::*;
+use crate::WakePreemptionContext;
 
 impl TaskSystem {
     pub(in crate::system::task_system) fn activate_owner_rt_period_for_policy(
@@ -8,10 +9,11 @@ impl TaskSystem {
         owner: CpuId,
         policy: SchedulePolicy,
     ) -> bool {
-        policy.rt_priority().is_some()
-            && self
-                .root_domain
-                .activate_rt_period(owner, task_runtime::monotonic_now())
+        if policy.rt_priority().is_none() || !self.rt_bandwidth_enabled() {
+            return false;
+        }
+        self.root_domain
+            .activate_rt_period(owner, task_runtime::monotonic_now)
     }
 
     pub(in crate::system::task_system) fn link_owner_throttled_deadline_locked(
@@ -21,8 +23,10 @@ impl TaskSystem {
         sched: &mut ThreadSchedState,
         owner: CpuId,
     ) {
-        let policy = sched.policy.active().policy();
-        let entity = sched.policy.active().entity().clone();
+        let active = core.sched().active(sched);
+        let policy = active.policy();
+        let entity = active.entity().clone();
+        drop(active);
         if !matches!(policy, SchedulePolicy::Deadline(_)) || !entity.is_deadline_throttled() {
             task_runtime::fatal_invariant(0x574b_1110, core.id().as_u64() as usize);
         }
@@ -30,7 +34,7 @@ impl TaskSystem {
         let metadata = sched.rq_task_metadata().unwrap_or_else(|_| {
             task_runtime::fatal_invariant(0x574b_1111, core.id().as_u64() as usize)
         });
-        let active = sched.policy.take_active();
+        let active = core.sched().take_active(sched);
         run_queue.enqueue_throttled_deadline(QueuedThread::new(
             core.id(),
             active,
@@ -52,15 +56,42 @@ impl TaskSystem {
         sched: &mut ThreadSchedState,
         reason: EnqueueReason,
     ) -> OwnerReadyEnqueue {
-        let policy = sched.policy.active().policy();
-        let current_fair = run_queue
-            .current_scheduling_entity()
-            .and_then(|entity| entity.fair());
-        run_queue.update_fair_virtual_time(current_fair);
+        self.link_owner_ready_thread_locked_with_context(
+            owner,
+            run_queue,
+            core,
+            sched,
+            reason,
+            WakePreemptionContext::new(WakeIntent::Normal, 0, EqualRtWakeAction::PreserveFifoOrder),
+        )
+    }
+
+    pub(in crate::system::task_system) fn link_owner_ready_thread_locked_with_context(
+        &self,
+        owner: CpuId,
+        run_queue: &mut OwnerRqTxn<'_>,
+        core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
+        reason: EnqueueReason,
+        wake_context: WakePreemptionContext,
+    ) -> OwnerReadyEnqueue {
+        let active = core.sched().active(sched);
+        let policy = active.policy();
+        let maintains_fair_virtual_time = active.entity().fair().is_some();
+        drop(active);
+        let current_fair = if maintains_fair_virtual_time {
+            let current_fair = run_queue.current_fair_contender();
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_wake_fair_vtime_update(core.id());
+            run_queue.update_fair_virtual_time(current_fair);
+            current_fair
+        } else {
+            None
+        };
         let metadata = sched.rq_task_metadata().unwrap_or_else(|_| {
             task_runtime::fatal_invariant(0x574b_1102, core.id().as_u64() as usize)
         });
-        let active = sched.policy.take_active();
+        let active = core.sched().take_active(sched);
         let enqueue = run_queue.enqueue_task(
             QueuedThread::new(
                 core.id(),
@@ -74,14 +105,24 @@ impl TaskSystem {
             current_fair,
         );
         Self::activate_deadline_bandwidth_locked(core, sched, run_queue, owner);
-        run_queue.update_fair_virtual_time(current_fair);
+        if maintains_fair_virtual_time {
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_wake_fair_vtime_update(core.id());
+            run_queue.update_fair_virtual_time(current_fair);
+        }
         let preempts_current = if reason.checks_preemption_after_enqueue() {
             let fair_virtual_time = enqueue
                 .entity()
                 .fair()
                 .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
             run_queue
-                .wakeup_preempt(core.id(), policy, enqueue.entity(), fair_virtual_time)
+                .wakeup_preempt_with_intent(
+                    core.id(),
+                    policy,
+                    enqueue.entity(),
+                    fair_virtual_time,
+                    wake_context,
+                )
                 .requests_reschedule()
         } else {
             false
@@ -213,7 +254,7 @@ impl TaskSystem {
         run_queue: &mut OwnerRqTxn<'_>,
     ) {
         let owner = cpu.owner();
-        let base_entity = if let Some(active) = sched.policy.active_option() {
+        let base_entity = if let Some(active) = core.sched().active_option(sched) {
             active.base_entity().clone()
         } else {
             run_queue

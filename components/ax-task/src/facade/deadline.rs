@@ -19,7 +19,7 @@ pub enum CurrentParkStart {
 #[must_use = "a prepared current-thread park must be committed or cancelled"]
 #[derive(Debug)]
 pub struct PreparedCurrentPark {
-    thread: ThreadHandle,
+    thread: Arc<ThreadCore>,
     ticket: Option<crate::ParkTicket>,
 }
 
@@ -28,6 +28,16 @@ pub struct PreparedCurrentPark {
 pub struct CurrentParkResume {
     generation: u64,
     deadline_expired: bool,
+    disposition: CurrentParkDisposition,
+}
+
+/// Scheduler disposition of one completed current-thread park transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CurrentParkDisposition {
+    /// A scheduler notification cancelled the park before schedule-out.
+    NotifiedBeforeBlock,
+    /// The current thread committed `Blocked`, switched out, and later resumed.
+    BlockedAndResumed,
 }
 
 impl CurrentParkResume {
@@ -39,6 +49,19 @@ impl CurrentParkResume {
     /// Reports whether an armed task deadline physically expired before cleanup.
     pub const fn deadline_expired(self) -> bool {
         self.deadline_expired
+    }
+
+    /// Returns whether this park switched out or was cancelled before blocking.
+    pub const fn disposition(self) -> CurrentParkDisposition {
+        self.disposition
+    }
+
+    /// Reports whether a scheduler notification cancelled schedule-out.
+    pub const fn was_notified_before_block(self) -> bool {
+        matches!(
+            self.disposition,
+            CurrentParkDisposition::NotifiedBeforeBlock
+        )
     }
 }
 
@@ -53,7 +76,7 @@ impl PreparedCurrentPark {
     /// External waiter queues should publish only this restricted capability,
     /// not a full scheduler thread handle.
     pub fn wake_handle(&self) -> ThreadWakeHandle {
-        self.thread.wake_handle()
+        ThreadWakeHandle::from_core(Arc::clone(&self.thread))
     }
 
     /// Returns this park attempt's monotonically increasing generation.
@@ -65,7 +88,7 @@ impl PreparedCurrentPark {
 
     /// Arms an absolute deadline in the runtime's finite monotonic domain.
     pub fn arm_deadline(&mut self, deadline: MonotonicDeadline) -> Result<(), TaskError> {
-        let thread = self.thread.clone();
+        let thread = Arc::clone(&self.thread);
         let ticket = self
             .ticket
             .as_mut()
@@ -81,18 +104,22 @@ impl PreparedCurrentPark {
             .expect("prepared park ticket remains owned");
         let generation = ticket.generation();
         let deadline_armed = ticket.has_deadline();
-        if let Err(error) = commit_current_park(&self.thread, &mut ticket) {
-            let deadline_result = cancel_current_park_deadline(&self.thread, &mut ticket);
-            if cancel_current_park(&self.thread, &mut ticket).is_err() {
-                task_runtime::fatal_invariant(0x5041_0002, self.thread.id().as_u64() as usize);
+        let disposition = match commit_current_park(&self.thread, &mut ticket) {
+            Ok(disposition) => disposition,
+            Err(error) => {
+                let deadline_result = cancel_current_park_deadline(&self.thread, &mut ticket);
+                if cancel_current_park(&self.thread, &mut ticket).is_err() {
+                    task_runtime::fatal_invariant(0x5041_0002, self.thread.id().as_u64() as usize);
+                }
+                let _cancelled = deadline_result?;
+                return Err(error);
             }
-            let _cancelled = deadline_result?;
-            return Err(error);
-        }
+        };
         let deadline_cancelled = cancel_current_park_deadline(&self.thread, &mut ticket)?;
         Ok(CurrentParkResume {
             generation,
             deadline_expired: deadline_armed && !deadline_cancelled,
+            disposition,
         })
     }
 
@@ -140,10 +167,13 @@ pub(crate) fn begin_current_park_with_permit(
     _permit: &BlockingPermit,
 ) -> Result<CurrentParkStart, TaskError> {
     let system = runtime_task_system()?;
-    let thread = current_thread_handle()?;
-    let mut irq = RuntimeIrqGuard::enter();
-    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    match system.prepare_park(cpu.as_mut(), &thread)? {
+    // `current` is migration-stable only while task preemption is disabled.
+    // Keep this lighter than the CPU/rq owner protocol: the pin exists solely
+    // to make the independent task_cpu/on_rq and on_cpu publications one
+    // current-task observation before PARKING becomes visible.
+    let _current_pin = PreemptScope::enter();
+    let thread = current_thread_core_arc()?;
+    match system.prepare_current_park(&thread)? {
         ParkPrepare::Notified => Ok(CurrentParkStart::Notified),
         ParkPrepare::Prepared(ticket) => Ok(CurrentParkStart::Prepared(PreparedCurrentPark {
             thread,
@@ -160,7 +190,7 @@ pub fn on_clock_event(
     let system = runtime_task_system()?;
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    let (charge, clock, current) = system.charge_current_until_with_clock(cpu.as_mut(), 0)?;
+    let (charge, clock, current) = system.task_tick_current_until_with_clock(cpu.as_mut(), 0)?;
     system.service_rt_period(&cpu, now);
     let hard = system.service_due_hard_timers(cpu.as_mut(), now)?;
     let batch = cpu.as_mut().on_task_clock_event(now, budget);
@@ -181,14 +211,17 @@ pub fn on_clock_event(
     })
 }
 
-/// Publishes extension work for a periodic scheduler tick already accounted by
-/// [`on_clock_event`].
+/// Samples CPU time and publishes extension work for a periodic scheduler tick
+/// already accounted by [`on_clock_event`].
 ///
 /// The opaque stamp binds this publication to the exact `rq->curr` and task
 /// clock sampled by the preceding owner-rq transaction. Physical clockevent
 /// sources therefore do not pass compatibility booleans into task deadline
 /// processing, and a delayed publication cannot silently target a new task.
-pub fn publish_scheduler_tick(stamp: SchedulerTickStamp) -> Result<(), TaskError> {
+pub fn publish_scheduler_tick(stamp: SchedulerTickStamp, tick_ns: u64) -> Result<(), TaskError> {
+    if tick_ns == 0 {
+        return Err(TaskError::InvalidConfiguration);
+    }
     let system = runtime_task_system()?;
     let mut irq = RuntimeIrqGuard::enter();
     let cpu = runtime_current_cpu_mut(&mut irq)?;
@@ -198,25 +231,23 @@ pub fn publish_scheduler_tick(stamp: SchedulerTickStamp) -> Result<(), TaskError
             actual: cpu.owner().as_u32(),
         });
     }
-    system.publish_current_scheduler_tick_work(&cpu, stamp.thread, stamp.observed_ns)
+    system.publish_current_scheduler_tick_work(&cpu, stamp.thread, stamp.observed_ns, tick_ns)
 }
 
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(crate) fn prepare_current_park(
     _permit: &BlockingPermit,
-) -> Result<(ThreadHandle, ParkPrepare), TaskError> {
-    let current = current_thread_handle()?;
-    let mut irq = RuntimeIrqGuard::enter();
+) -> Result<(Arc<ThreadCore>, ParkPrepare), TaskError> {
+    let current = current_thread_core_arc()?;
     let system = runtime_task_system()?;
-    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    let prepare = system.prepare_park(cpu.as_mut(), &current)?;
+    let prepare = system.prepare_current_park(&current)?;
     Ok((current, prepare))
 }
 
 pub(crate) fn commit_current_park(
-    current: &ThreadHandle,
+    current: &Arc<ThreadCore>,
     ticket: &mut crate::ParkTicket,
-) -> Result<(), TaskError> {
+) -> Result<CurrentParkDisposition, TaskError> {
     validate_blocking_context()?;
     let mut scheduler_frame = RuntimeSchedulerFrameGuard::enter(
         RuntimeScheduleOrigin::Block,
@@ -229,25 +260,25 @@ pub(crate) fn commit_current_park(
         unsafe { system.commit_park_in_scheduler_frame(cpu.as_mut(), current, ticket)? }
     };
     match commit {
-        ParkCommit::Notified => Ok(()),
+        ParkCommit::Notified => Ok(CurrentParkDisposition::NotifiedBeforeBlock),
         ParkCommit::Blocked(decision) => {
             execute_switch_plan(&mut scheduler_frame, decision);
-            Ok(())
+            Ok(CurrentParkDisposition::BlockedAndResumed)
         }
     }
 }
 
 pub(crate) fn cancel_current_park(
-    current: &ThreadHandle,
+    current: &Arc<ThreadCore>,
     ticket: &mut crate::ParkTicket,
 ) -> Result<(), TaskError> {
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-    runtime_task_system()?.cancel_park(cpu.as_mut(), current, ticket)
+    runtime_task_system()?.cancel_current_park(cpu.as_mut(), current, ticket)
 }
 
 pub(crate) fn arm_current_park_deadline(
-    thread: &ThreadHandle,
+    thread: &Arc<ThreadCore>,
     ticket: &mut crate::ParkTicket,
     deadline: MonotonicDeadline,
 ) -> Result<(), TaskError> {
@@ -287,7 +318,7 @@ pub(crate) fn arm_current_park_deadline(
                 | crate::timer::TaskDeadlineError::KindMismatch => TaskError::InvalidConfiguration,
             })?;
         let token = registration.token();
-        thread.core.register_sleep_timer(owner, token.generation());
+        thread.register_sleep_timer(owner, token.generation());
         let update = match CpuLocal::update_scheduler_deadline_registration_publication(
             &mut deadline_base,
             non_timer,
@@ -295,7 +326,7 @@ pub(crate) fn arm_current_park_deadline(
             Ok(update) => update,
             Err(error) => {
                 let removed = deadline_base.queue.cancel(&registration);
-                let completed = thread.core.complete_sleep_timer(token.generation());
+                let completed = thread.complete_sleep_timer(token.generation());
                 if !removed || !completed {
                     task_runtime::fatal_invariant(0x5444_0005, thread.id().as_u64() as usize);
                 }
@@ -314,7 +345,7 @@ pub(crate) fn arm_current_park_deadline(
 }
 
 pub(crate) fn cancel_current_park_deadline(
-    thread: &ThreadHandle,
+    thread: &Arc<ThreadCore>,
     ticket: &mut crate::ParkTicket,
 ) -> Result<bool, TaskError> {
     if ticket.thread() != thread.id() {
@@ -327,7 +358,7 @@ pub(crate) fn cancel_current_park_deadline(
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
     let actual = cpu.owner();
-    let Some(expected) = thread.core.sleep_timer_cpu_for(token.generation()) else {
+    let Some(expected) = thread.sleep_timer_cpu_for(token.generation()) else {
         // Expiration physically removes the queue entry and clears the core's
         // matching generation before the owner thread resumes. Only that
         // terminal state permits consuming the ticket without queue access.
@@ -363,12 +394,7 @@ pub(crate) fn cancel_current_park_deadline(
                 true
             }
             (None, true) => false,
-            (None, false)
-                if thread
-                    .core
-                    .sleep_timer_cpu_for(token.generation())
-                    .is_none() =>
-            {
+            (None, false) if thread.sleep_timer_cpu_for(token.generation()).is_none() => {
                 if !ticket.clear_deadline(token) {
                     task_runtime::fatal_invariant(0x5444_0003, thread.id().as_u64() as usize);
                 }
@@ -378,7 +404,7 @@ pub(crate) fn cancel_current_park_deadline(
                 task_runtime::fatal_invariant(0x5444_0006, thread.id().as_u64() as usize)
             }
         };
-        if !thread.core.complete_sleep_timer(token.generation()) || !ticket.clear_deadline(token) {
+        if !thread.complete_sleep_timer(token.generation()) || !ticket.clear_deadline(token) {
             task_runtime::fatal_invariant(0x5444_0004, thread.id().as_u64() as usize);
         }
         return Ok(cancelled);
@@ -408,19 +434,13 @@ pub(crate) fn cancel_current_park_deadline(
         let cancellation = match (cancellation, expired) {
             (Some(cancellation), _) => cancellation,
             (None, true) => {
-                if !thread.core.complete_sleep_timer(token.generation())
-                    || !ticket.clear_deadline(token)
+                if !thread.complete_sleep_timer(token.generation()) || !ticket.clear_deadline(token)
                 {
                     task_runtime::fatal_invariant(0x5444_0004, thread.id().as_u64() as usize);
                 }
                 return Ok(false);
             }
-            (None, false)
-                if thread
-                    .core
-                    .sleep_timer_cpu_for(token.generation())
-                    .is_none() =>
-            {
+            (None, false) if thread.sleep_timer_cpu_for(token.generation()).is_none() => {
                 if !ticket.clear_deadline(token) {
                     task_runtime::fatal_invariant(0x5444_0003, thread.id().as_u64() as usize);
                 }
@@ -446,7 +466,7 @@ pub(crate) fn cancel_current_park_deadline(
     publication_probe.complete();
     task_runtime::publish_scheduler_deadline(update);
     cancellation.commit();
-    if !thread.core.complete_sleep_timer(token.generation()) || !ticket.clear_deadline(token) {
+    if !thread.complete_sleep_timer(token.generation()) || !ticket.clear_deadline(token) {
         task_runtime::fatal_invariant(0x5444_0004, thread.id().as_u64() as usize);
     }
     Ok(true)

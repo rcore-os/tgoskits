@@ -91,12 +91,15 @@ impl TaskSystem {
         );
         let (extension, resources) = unpublished.into_owned_parts();
         let switch_extension = extension.as_ref().map(ThreadExtension::as_view);
+        let scheduler_tick_cpu_time = extension
+            .as_ref()
+            .and_then(ThreadExtension::scheduler_tick_cpu_time);
         let scheduler_tick_work = extension
             .as_ref()
             .and_then(ThreadExtension::scheduler_tick_work);
         let sched = Arc::new(ThreadSchedCell::new(
             id,
-            ThreadSchedState::new(ThreadSchedInit {
+            ThreadSchedInit {
                 policy: ThreadPolicyInit { policy, entity },
                 placement: ThreadPlacementInit {
                     initial_cpu,
@@ -110,13 +113,14 @@ impl TaskSystem {
                     context: resources.context(),
                     address_space: resources.address_space(),
                 },
-            }),
+            },
         ));
         let core = Arc::new(ThreadCore::new(
             id,
             policy,
             Arc::clone(&sched),
             switch_extension,
+            scheduler_tick_cpu_time,
             scheduler_tick_work,
             Some(Arc::clone(&self.task_work)),
         ));
@@ -195,15 +199,15 @@ impl TaskSystem {
         Ok(ThreadHandle::from_core(core))
     }
 
-    /// Transitions a new or waking thread to `Ready`.
+    /// Publishes a new or waking thread as Linux-style `TASK_RUNNING`.
     pub fn make_ready(&self, thread: ThreadId) -> Result<(), TaskError> {
         let state = self.state.lock();
         let record = state.thread_record(thread)?;
         let mut sched = record.sched.lock();
-        sched.transition(&record.core, ThreadState::Ready)
+        sched.transition(&record.core, ThreadState::Running)
     }
 
-    /// Performs the initial ready transition before the owner CPU is online.
+    /// Performs the initial runnable transition before the owner CPU is online.
     ///
     /// # Safety
     ///
@@ -214,7 +218,7 @@ impl TaskSystem {
         let record = state.thread_record(thread)?;
         // SAFETY: forwarded from this method's offline boot-owner contract.
         let mut sched = unsafe { record.sched.lock_bootstrap() };
-        sched.transition(&record.core, ThreadState::Ready)
+        sched.transition(&record.core, ThreadState::Running)
     }
 
     /// Installs the CPU's already-running bootstrap execution context.
@@ -267,7 +271,7 @@ impl TaskSystem {
             // SAFETY: the CPU is still offline under the boot owner's raw IRQ
             // exclusion.
             let mut sched = unsafe { core.sched().lock_bootstrap() };
-            sched.transition(&core, ThreadState::Ready)?;
+            sched.transition(&core, ThreadState::Running)?;
             let remote = Arc::clone(cpu.remote());
             // SAFETY: the CPU is still offline under the boot owner's raw IRQ
             // exclusion and cannot enter the runtime IRQ-exit service.
@@ -371,8 +375,8 @@ impl TaskSystem {
         // SAFETY: install_idle_core is reached only from the offline bootstrap
         // transaction above.
         let mut sched = unsafe { core.sched().lock_bootstrap() };
-        let policy = sched.policy.active().policy();
-        if sched.lifecycle.state() != ThreadState::Ready
+        let policy = core.sched().active(&sched).policy();
+        if sched.lifecycle.state() != ThreadState::Running
             || !matches!(
                 policy,
                 SchedulePolicy::Fair {
@@ -389,7 +393,7 @@ impl TaskSystem {
         }
         let metadata = sched.rq_task_metadata()?;
         let rt_quota_exempt = sched.is_pi_boosted_rt_owner_for(policy);
-        let active = sched.policy.take_active();
+        let active = core.sched().take_active(&mut sched);
         // SAFETY: the CPU remains offline and boot-owned through this direct
         // init_idle-style rq transaction.
         unsafe {

@@ -1226,6 +1226,8 @@ dependencies = [
 name = "ax-task"
 version = "0.7.0"
 dependencies = [
+ "ax-hal",
+ "ax-std",
  "axpanic",
  "axtest",
  "cfg-if",

@@ -1,0 +1,34 @@
+args = [
+  "-nographic",
+  "-no-reboot",
+  "-cpu",
+  "Haswell,+avx",
+  "-m",
+  "512M",
+  "-smp",
+  "2",
+  "-device",
+  "nvme,serial=deadbeef,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+]
+uefi = true
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = '''
+/usr/bin/uaccess-lock-regression
+status=$?
+if [ "$status" -eq 0 ]; then
+    echo STARRY_UACCESS_LOCK_REGRESSION_PASSED
+else
+    echo "STARRY_UACCESS_LOCK_REGRESSION_FAILED: status=$status"
+    exit "$status"
+fi
+'''
+success_regex = ["(?m)^STARRY_UACCESS_LOCK_REGRESSION_PASSED\\s*$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^lockdep fatal violation\\s*$",
+  "(?m)^STARRY_UACCESS_LOCK_REGRESSION_FAILED:",
+]
+timeout = 180

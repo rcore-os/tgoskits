@@ -1,12 +1,29 @@
 //! Task-embedded runqueue linkage and immutable rq snapshots.
 
 use alloc::{boxed::Box, sync::Arc};
-use core::{cell::UnsafeCell, fmt};
+use core::{cell::UnsafeCell, fmt, ops::ControlFlow};
 
 use super::{deadline, deadline_pushable, realtime};
 use crate::{
     ActiveSchedulingState, CpuSet, SchedulePolicy, SchedulingEntity, ThreadCore, ThreadId,
 };
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+std::thread_local! {
+    static FULL_SNAPSHOT_CONSTRUCTIONS: core::cell::Cell<usize> = const {
+        core::cell::Cell::new(0)
+    };
+}
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+pub(super) fn reset_full_snapshot_constructions() {
+    FULL_SNAPSHOT_CONSTRUCTIONS.set(0);
+}
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+pub(super) fn full_snapshot_constructions() -> usize {
+    FULL_SNAPSHOT_CONSTRUCTIONS.get()
+}
 
 /// Task-control facts published into one owner rq transaction.
 #[derive(Clone, Debug)]
@@ -164,20 +181,20 @@ pub(crate) struct QueuedThreadSnapshot {
     pub(crate) entity: SchedulingEntity,
     pub(crate) base_entity: SchedulingEntity,
     pub(crate) core: Arc<ThreadCore>,
-    pub(crate) rt_quota_exempt: bool,
-    pub(crate) metadata: RqTaskMetadata,
 }
 
 impl From<&QueuedThread> for QueuedThreadSnapshot {
     fn from(thread: &QueuedThread) -> Self {
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_linked_pick_full_snapshot(thread.id);
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
+        FULL_SNAPSHOT_CONSTRUCTIONS.set(FULL_SNAPSHOT_CONSTRUCTIONS.get().saturating_add(1));
         Self {
             id: thread.id,
             policy: thread.active.policy(),
             entity: thread.active.entity().clone(),
             base_entity: thread.active.base_entity().clone(),
             core: Arc::clone(&thread.core),
-            rt_quota_exempt: thread.rt_quota_exempt,
-            metadata: thread.metadata.clone(),
         }
     }
 }
@@ -192,12 +209,47 @@ impl QueuedThreadSnapshot {
     }
 }
 
+/// Minimal identity returned by Linux-style RT/Deadline class selection.
+///
+/// The scheduling entities remain linked in their rq-owned intrusive nodes
+/// while the task is current. Selection therefore carries only the facts
+/// needed to validate placement and install `rq->curr`; balance observations
+/// continue to use [`QueuedThreadSnapshot`] when they need entity state.
+#[derive(Debug)]
+pub(crate) struct LinkedPickedThread {
+    pub(crate) id: ThreadId,
+    pub(crate) policy: SchedulePolicy,
+    pub(crate) core: Arc<ThreadCore>,
+    pub(crate) rt_quota_exempt: bool,
+    pub(crate) metadata: RqTaskMetadata,
+}
+
+impl From<&QueuedThread> for LinkedPickedThread {
+    fn from(thread: &QueuedThread) -> Self {
+        Self {
+            id: thread.id,
+            policy: thread.active.policy(),
+            core: Arc::clone(&thread.core),
+            rt_quota_exempt: thread.rt_quota_exempt,
+            metadata: thread.metadata.clone(),
+        }
+    }
+}
+
 /// Result of one class pick under the owner rq lock.
 #[derive(Debug)]
 pub(crate) enum PickedThread {
     Owned(QueuedThread),
-    Linked(QueuedThreadSnapshot),
+    Linked(LinkedPickedThread),
 }
+
+/// One scheduler-class selection before Linux delayed dequeue is resolved.
+///
+/// `Break` returns the delayed task whose dequeue must be completed before the
+/// class scan can continue; `Continue` carries the runnable selection. Using
+/// control flow directly keeps the hot runnable result inline without adding
+/// one heap allocation merely to balance enum variant sizes.
+pub(crate) type PickTaskResult = ControlFlow<Arc<ThreadCore>, PickedThread>;
 
 impl PickedThread {
     pub(crate) const fn id(&self) -> ThreadId {

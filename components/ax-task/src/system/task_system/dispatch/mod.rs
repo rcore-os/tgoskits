@@ -15,6 +15,7 @@ pub(super) struct PolicyGenerationCommit {
 pub(super) enum PolicyApplication {
     Current { owner_now_ns: u64 },
     Queued,
+    DelayedFair,
     Inactive,
 }
 
@@ -23,6 +24,7 @@ impl PolicyApplication {
         match state {
             OwnerRqTaskState::Current => Self::Current { owner_now_ns },
             OwnerRqTaskState::Queued { .. } => Self::Queued,
+            OwnerRqTaskState::DelayedFair { .. } => Self::DelayedFair,
             OwnerRqTaskState::Inactive => Self::Inactive,
         }
     }
@@ -70,6 +72,10 @@ pub(super) struct OwnerDispatchCommit {
 
 impl OwnerDispatchCommit {
     const NONE: Self = Self { overrun_work: None };
+
+    pub(super) const fn has_deferred_task_lock_work(&self) -> bool {
+        self.overrun_work.is_some()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

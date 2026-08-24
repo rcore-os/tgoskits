@@ -5,13 +5,20 @@ use crate::{
 };
 
 fn pick_next(queue: &mut RunQueue, eligibility: RtEligibility) -> PickedThread {
-    let picked = queue.pick_next_task(eligibility).unwrap();
+    let PickTaskResult::Continue(picked) = queue.pick_next_task(eligibility, false).unwrap() else {
+        panic!("unit queues do not install delayed Fair sleepers")
+    };
     queue.set_next_task(&picked);
     picked
 }
 
 fn pick_linked_current(queue: &mut RunQueue) -> ThreadId {
-    let picked = queue.pick_next_task(RtEligibility::Runnable).unwrap();
+    let PickTaskResult::Continue(picked) = queue
+        .pick_next_task(RtEligibility::Runnable, false)
+        .unwrap()
+    else {
+        panic!("unit queues do not install delayed Fair sleepers")
+    };
     assert!(
         matches!(picked, PickedThread::Linked(_)),
         "only RT and Deadline retain their running entity in the class structure"
@@ -277,8 +284,9 @@ fn lone_round_robin_quantum_does_not_request_reschedule() {
         .unwrap();
     assert_eq!(pick_linked_current(&mut queue), thread);
 
-    let (charge, ..) = queue.charge_current(100, 100, 0, 0, 1, 0).unwrap();
-    let tick = SchedulerClass::Realtime.task_tick(&mut queue, thread, policy, charge);
+    let (charge, _, current_entity, _) = queue.charge_current(100, 100, 0, 0, 1, 0).unwrap();
+    let tick =
+        SchedulerClass::Realtime.task_tick(&mut queue, thread, policy, &current_entity, charge);
 
     assert!(
         !tick.request_reschedule,
@@ -286,10 +294,9 @@ fn lone_round_robin_quantum_does_not_request_reschedule() {
     );
     assert!(
         !queue
-            .rt
-            .get(priority.get(), thread)
+            .queued_thread_including_current(thread)
             .unwrap()
-            .entity()
+            .entity
             .round_robin_quantum_expired(),
         "the lone RR task must start a fresh quantum in place"
     );
@@ -316,8 +323,9 @@ fn competing_round_robin_quantum_rotates_the_active_queue() {
     }
     assert_eq!(pick_linked_current(&mut queue), current);
 
-    let (charge, ..) = queue.charge_current(100, 100, 0, 0, 1, 0).unwrap();
-    let tick = SchedulerClass::Realtime.task_tick(&mut queue, current, policy, charge);
+    let (charge, _, current_entity, _) = queue.charge_current(100, 100, 0, 0, 1, 0).unwrap();
+    let tick =
+        SchedulerClass::Realtime.task_tick(&mut queue, current, policy, &current_entity, charge);
 
     assert!(tick.request_reschedule);
     assert_eq!(
@@ -333,10 +341,12 @@ fn lone_fair_slice_expiry_only_updates_accounting() {
     let mut queue = RunQueue::new();
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
     let current = ThreadId::from_parts(0, 1);
+    let current_entity = SchedulingEntity::new(policy, 1, 0);
     let tick = SchedulerClass::Fair.task_tick(
         &mut queue,
         current,
         policy,
+        &current_entity,
         DispatchCharge {
             slice_expired: true,
             ..DispatchCharge::default()
@@ -364,10 +374,12 @@ fn competing_fair_slice_expiry_requests_reschedule() {
             EnqueueReason::Wake,
         )
         .unwrap();
+    let current_entity = SchedulingEntity::new(policy, 1, 0);
     let tick = SchedulerClass::Fair.task_tick(
         &mut queue,
         current,
         policy,
+        &current_entity,
         DispatchCharge {
             slice_expired: true,
             ..DispatchCharge::default()
@@ -500,6 +512,16 @@ fn fair_migration_preserves_positive_lag_and_active_deadline() {
         (entity.vruntime(), entity.virtual_deadline()),
         (1_800, 1_850),
         "migration must restore source vlag and relative deadline on the destination rq"
+    );
+}
+
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+fn realtime_migration_does_not_maintain_fair_virtual_time() {
+    let (fair_virtual_time, after) = exercise_realtime_migration_fair_virtual_time();
+    assert_eq!(
+        after, fair_virtual_time,
+        "migrating an RT entity must not maintain the unrelated Fair runqueue",
     );
 }
 
@@ -781,6 +803,40 @@ fn realtime_pushable_selection_does_not_rescan_the_active_fifo() {
         0,
         "pushable selection must not rescan the active RT FIFO"
     );
+}
+
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+fn pinned_realtime_membership_updates_do_not_scan_the_active_fifo() {
+    let mut queue = RunQueue::new();
+    let policy = SchedulePolicy::fifo(RtPriority::new(80).unwrap());
+    for slot in 0..64 {
+        queue
+            .enqueue_rt_migration_test(ThreadId::from_parts(slot, 1), policy, false, false)
+            .unwrap();
+    }
+    assert!(!queue.has_pushable_realtime());
+
+    let tail = ThreadId::from_parts(64, 1);
+    super::realtime::reset_realtime_queue_visits();
+    queue
+        .enqueue_rt_migration_test(tail, policy, false, false)
+        .unwrap();
+    assert_eq!(
+        super::realtime::realtime_active_iter_visits(),
+        0,
+        "a pinned RT enqueue must not search for pushable membership"
+    );
+    assert_eq!(super::realtime::realtime_pushable_iter_visits(), 0);
+
+    super::realtime::reset_realtime_queue_visits();
+    assert_eq!(queue.dequeue(tail).unwrap().id, tail);
+    assert_eq!(
+        super::realtime::realtime_active_iter_visits(),
+        0,
+        "task-embedded RT linkage must support direct dequeue"
+    );
+    assert_eq!(super::realtime::realtime_pushable_iter_visits(), 0);
 }
 
 #[cfg_attr(test, test)]
@@ -1119,6 +1175,46 @@ fn realtime_running_entity_remains_linked_in_the_active_array() {
 
 #[cfg_attr(test, test)]
 #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+fn linked_pick_does_not_copy_complete_scheduler_entities() {
+    let policies = [
+        SchedulePolicy::fifo(RtPriority::new(10).unwrap()),
+        SchedulePolicy::deadline(DeadlinePolicy::new(1, 2, 3, DeadlineFlags::NONE).unwrap()),
+    ];
+
+    for (slot, policy) in policies.into_iter().enumerate() {
+        let mut queue = RunQueue::new();
+        let mut entity = SchedulingEntity::new(policy, 1_000, 0);
+        if matches!(policy, SchedulePolicy::Deadline(_)) {
+            entity.activate_deadline(0);
+        }
+        queue
+            .enqueue_test(
+                ThreadId::from_parts(slot as u32, 1),
+                policy,
+                entity,
+                0,
+                EnqueueReason::Wake,
+            )
+            .unwrap();
+
+        reset_full_snapshot_constructions();
+        let PickTaskResult::Continue(picked) = queue
+            .pick_next_task(RtEligibility::Runnable, false)
+            .unwrap()
+        else {
+            panic!("RT and Deadline picks cannot be delayed Fair entities")
+        };
+        assert!(matches!(picked, PickedThread::Linked(_)));
+        assert_eq!(
+            full_snapshot_constructions(),
+            0,
+            "Linux-style linked picks must not copy entity and base-entity state"
+        );
+    }
+}
+
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
 fn deadline_running_entity_remains_linked_in_the_active_tree() {
     let mut queue = RunQueue::new();
     let policy =
@@ -1169,7 +1265,9 @@ fn rt_class_throttle_is_all_or_nothing() {
         .unwrap();
 
     assert!(
-        queue.pick_next_task(RtEligibility::Throttled).is_none(),
+        queue
+            .pick_next_task(RtEligibility::Throttled, false)
+            .is_none(),
         "Linux skips a throttled RT class only when no boosted entity keeps the rq runnable"
     );
     assert_eq!(

@@ -28,7 +28,6 @@ pub(super) struct ClassEnqueue {
 #[derive(Clone, Copy)]
 pub(crate) struct ClassTick {
     pub(crate) request_reschedule: bool,
-    pub(crate) realtime: bool,
 }
 
 impl SchedulerClass {
@@ -89,7 +88,7 @@ impl SchedulerClass {
             if !matches!(reason, EnqueueReason::Wake | EnqueueReason::Yield)
                 && fair.request_exhausted()
             {
-                fair.renew_request(virtual_time);
+                fair.renew_request();
             }
         }
         let entity = thread.active.entity().clone();
@@ -110,16 +109,7 @@ impl SchedulerClass {
                 }
                 QueueMembershipClass::Deadline(run_queue.deadline.insert(thread))
             }
-            Self::Realtime => {
-                let priority = thread
-                    .active
-                    .policy()
-                    .rt_priority()
-                    .expect("RT class policy must carry a fixed priority");
-                let queued_priority = run_queue.rt.enqueue(thread, reason);
-                debug_assert_eq!(queued_priority, priority.get());
-                QueueMembershipClass::Realtime(priority.get())
-            }
+            Self::Realtime => QueueMembershipClass::Realtime(run_queue.rt.enqueue(thread, reason)),
             Self::Fair => {
                 run_queue.fair.insert(thread);
                 QueueMembershipClass::Fair
@@ -147,9 +137,7 @@ impl SchedulerClass {
         match (self, membership) {
             (Self::Stop, QueueMembershipClass::Stop) => run_queue.stop.take(),
             (Self::Deadline, QueueMembershipClass::Deadline(key)) => run_queue.deadline.remove(key),
-            (Self::Realtime, QueueMembershipClass::Realtime(priority)) => {
-                run_queue.rt.remove(priority, id)
-            }
+            (Self::Realtime, QueueMembershipClass::Realtime(key)) => run_queue.rt.remove(key),
             (Self::Fair, QueueMembershipClass::Fair) => run_queue.fair.remove(id),
             (Self::IdleFair, QueueMembershipClass::IdleFair) => run_queue.idle_fair.remove(id),
             _ => task_runtime::fatal_invariant(0x5251_1001, id.as_u64() as usize),
@@ -195,14 +183,34 @@ impl SchedulerClass {
         self,
         run_queue: &mut RunQueue,
         rt_eligibility: RtEligibility,
-    ) -> Option<PickedThread> {
+        skip_delayed: bool,
+    ) -> Option<PickTaskResult> {
         match self {
-            Self::Stop => run_queue.stop.take().map(PickedThread::Owned),
-            Self::Deadline => run_queue.deadline.select_first().map(PickedThread::Linked),
-            Self::Realtime => matches!(rt_eligibility, RtEligibility::Runnable)
-                .then(|| run_queue.rt.select())
-                .flatten()
-                .map(PickedThread::Linked),
+            Self::Stop => run_queue
+                .stop
+                .take()
+                .map(PickedThread::Owned)
+                .map(PickTaskResult::Continue),
+            Self::Deadline => {
+                #[cfg(feature = "task-test-hooks")]
+                let _snapshot_scope =
+                    crate::task_test_hooks::enter_linked_pick_full_snapshot_scope();
+                let picked = run_queue.deadline.select_first();
+                picked
+                    .map(PickedThread::Linked)
+                    .map(PickTaskResult::Continue)
+            }
+            Self::Realtime => {
+                #[cfg(feature = "task-test-hooks")]
+                let _snapshot_scope =
+                    crate::task_test_hooks::enter_linked_pick_full_snapshot_scope();
+                let picked = matches!(rt_eligibility, RtEligibility::Runnable)
+                    .then(|| run_queue.rt.select())
+                    .flatten();
+                picked
+                    .map(PickedThread::Linked)
+                    .map(PickTaskResult::Continue)
+            }
             Self::Fair | Self::IdleFair => {
                 run_queue.update_fair_virtual_time(None);
                 let queue = if self == Self::IdleFair {
@@ -211,10 +219,18 @@ impl SchedulerClass {
                     &mut run_queue.fair
                 };
                 let virtual_time = queue.virtual_time();
-                (!queue.is_empty())
-                    .then(|| queue.pick_eligible(virtual_time))
-                    .flatten()
-                    .map(PickedThread::Owned)
+                let mut thread = match queue.pick_eligible(virtual_time, skip_delayed)? {
+                    FairPick::Runnable(thread) => thread,
+                    FairPick::Delayed(core) => {
+                        return Some(PickTaskResult::Break(core));
+                    }
+                };
+                let shortest_competing_slice_ns = queue.min_service_request_ns();
+                let SchedulingEntity::Fair(fair) = thread.active.entity_mut() else {
+                    unreachable!("FairRunQueue can select only Fair entities")
+                };
+                fair.set_slice_protection(shortest_competing_slice_ns);
+                Some(PickTaskResult::Continue(PickedThread::Owned(thread)))
             }
         }
     }
@@ -249,9 +265,9 @@ impl SchedulerClass {
                 run_queue.replace_membership_class(id, QueueMembershipClass::Deadline(new_key));
                 Ok(entity)
             }
-            (Self::Realtime, QueueMembershipClass::Realtime(priority)) => run_queue
+            (Self::Realtime, QueueMembershipClass::Realtime(key)) => run_queue
                 .rt
-                .put_prev_current(priority, id, reason)
+                .put_prev_current(key, reason)
                 .ok_or(TaskError::NotReady),
             _ => Err(TaskError::InvalidConfiguration),
         }
@@ -278,6 +294,7 @@ impl SchedulerClass {
         run_queue: &mut RunQueue,
         current: ThreadId,
         policy: SchedulePolicy,
+        current_entity: &SchedulingEntity,
         charge: DispatchCharge,
     ) -> ClassTick {
         ClassTick {
@@ -288,10 +305,17 @@ impl SchedulerClass {
                 // throttled task may keep running.
                 Self::Deadline => charge.slice_expired,
                 Self::Realtime => match policy {
-                    SchedulePolicy::RoundRobin { priority, .. } if charge.slice_expired => {
+                    SchedulePolicy::RoundRobin { .. } if charge.slice_expired => {
+                        let key = match run_queue.membership_class(current) {
+                            Some(QueueMembershipClass::Realtime(key)) => key,
+                            _ => task_runtime::fatal_invariant(
+                                0x5251_1010,
+                                current.as_u64() as usize,
+                            ),
+                        };
                         run_queue
                             .rt
-                            .task_tick_round_robin(priority.get(), current, policy)
+                            .task_tick_round_robin(key, policy)
                             .unwrap_or_else(|| {
                                 task_runtime::fatal_invariant(
                                     0x5251_1010,
@@ -302,14 +326,17 @@ impl SchedulerClass {
                     SchedulePolicy::RoundRobin { .. } | SchedulePolicy::Fifo { .. } => false,
                     _ => task_runtime::fatal_invariant(0x5251_1011, current.as_u64() as usize),
                 },
-                // Linux EEVDF's periodic tick only updates accounting. A
-                // slice hrtick requests reschedule when another entity of the
-                // same Fair mode is queued; a lone current keeps running.
-                Self::Fair => charge.slice_expired && run_queue.has_fair(),
-                Self::IdleFair => charge.slice_expired && run_queue.has_idle_fair(),
+                // Linux v7.1 requests lazy rescheduling when either the full
+                // request expires or RUN_TO_PARITY protection ends. A lone
+                // current still keeps running without a Fair clockevent.
+                Self::Fair => {
+                    fair_tick_requests_reschedule(run_queue.has_fair(), current_entity, charge)
+                }
+                Self::IdleFair => {
+                    fair_tick_requests_reschedule(run_queue.has_idle_fair(), current_entity, charge)
+                }
                 Self::Stop => false,
             },
-            realtime: matches!(self, Self::Realtime),
         }
     }
 
@@ -377,6 +404,84 @@ pub(crate) fn wakeup_preempts(
     )
 }
 
+/// Linux `WF_SYNC` Fair wakeup-preemption decision.
+///
+/// The extra runtime inputs model `rq_clock_task(rq) - se->exec_start` and
+/// `sysctl_sched_migration_cost`. This entry point is kept separate from an
+/// ordinary wake so callers cannot accidentally apply the sleep-soon hint to
+/// IRQ, timer, or generic notification wakeups.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SyncWakeupContext {
+    current_runtime_ns: u64,
+    migration_cost_ns: u64,
+}
+
+impl SyncWakeupContext {
+    pub(crate) const fn new(current_runtime_ns: u64, migration_cost_ns: u64) -> Self {
+        Self {
+            current_runtime_ns,
+            migration_cost_ns,
+        }
+    }
+}
+
+pub(crate) fn sync_wakeup_preempts(
+    current_policy: SchedulePolicy,
+    current_entity: &SchedulingEntity,
+    current_is_idle: bool,
+    wakee_policy: SchedulePolicy,
+    wakee_entity: &SchedulingEntity,
+    fair_virtual_time: u64,
+    context: SyncWakeupContext,
+) -> bool {
+    let ordinary = || {
+        wakeup_preempts(
+            current_policy,
+            current_entity,
+            current_is_idle,
+            wakee_policy,
+            wakee_entity,
+            fair_virtual_time,
+        )
+    };
+    if current_is_idle {
+        return ordinary();
+    }
+    let (
+        SchedulePolicy::Fair {
+            mode: current_mode, ..
+        },
+        SchedulePolicy::Fair {
+            mode: wakee_mode, ..
+        },
+        Some(current),
+        Some(wakee),
+    ) = (
+        current_policy,
+        wakee_policy,
+        current_entity.fair(),
+        wakee_entity.fair(),
+    )
+    else {
+        return ordinary();
+    };
+
+    // Linux resolves idle-policy precedence and PREEMPT_SHORT before it
+    // considers WF_SYNC. An eligible shorter request must therefore keep the
+    // ordinary decision even while the sleep-soon batching window is open.
+    if current_mode != wakee_mode || wakee.has_shorter_slice_than(current) {
+        return ordinary();
+    }
+    if wakee_mode == FairMode::Batch || !wakee.is_eligible(fair_virtual_time) {
+        return false;
+    }
+
+    // `preempt_sync()` suppresses the ordinary EEVDF pick while the waker is
+    // still inside `sysctl_sched_migration_cost`. Once the window expires it
+    // forces a reschedule only for this wakee's earlier virtual deadline.
+    context.current_runtime_ns >= context.migration_cost_ns && wakee.deadline_precedes(current)
+}
+
 fn fair_wakeup_preempts(
     current_policy: SchedulePolicy,
     current_entity: &SchedulingEntity,
@@ -396,6 +501,17 @@ fn fair_wakeup_preempts(
                 SchedulePolicy::Fair { mode, .. } => mode,
                 _ => unreachable!("fair scheduler class requires a fair policy"),
             };
+            let wakee = wakee_entity
+                .fair()
+                .expect("fair policy must own a fair scheduling entity");
+            let current = current_entity
+                .fair()
+                .expect("fair policy must own a fair scheduling entity");
+            #[cfg(feature = "qperf-metrics")]
+            crate::metrics::record_fair_wake_distances(
+                crate::scheduler::virtual_delta(wakee.vruntime(), fair_virtual_time),
+                crate::scheduler::virtual_delta(current.vruntime(), fair_virtual_time),
+            );
             if wakee_mode == FairMode::Idle && current_mode != FairMode::Idle {
                 false
             } else if wakee_mode != FairMode::Idle && current_mode == FairMode::Idle {
@@ -403,28 +519,42 @@ fn fair_wakeup_preempts(
             } else if wakee_mode == FairMode::Batch
                 || wakee_entity
                     .fair()
-                    .is_none_or(|fair| !fair.is_eligible(fair_virtual_time))
+                    .is_some_and(|fair| !fair.is_eligible(fair_virtual_time))
             {
+                #[cfg(feature = "qperf-metrics")]
+                crate::metrics::record_fair_wake_wakee_ineligible();
                 false
             } else {
-                let wakee = wakee_entity
-                    .fair()
-                    .expect("fair policy must own a fair scheduling entity");
-                let current = current_entity
-                    .fair()
-                    .expect("fair policy must own a fair scheduling entity");
-                // Linux v7.1 `wakeup_preempt_fair()` defaults to
-                // `PREEMPT_WAKEUP_PICK`: `pick_next_entity()` decides. An
-                // eligible wakee whose virtual deadline precedes the running
-                // entity's is the EEVDF pick and preempts immediately, and an
-                // ineligible current can never be the pick, so any eligible
-                // wakee preempts it. Requiring the current request to be
-                // exhausted first degenerates wake handoffs into full-slice
-                // rotation paced only by the slice clockevent.
-                !current.is_eligible(fair_virtual_time) || wakee.deadline_precedes(current)
+                if !current.is_eligible(fair_virtual_time) {
+                    #[cfg(feature = "qperf-metrics")]
+                    crate::metrics::record_fair_wake_current_ineligible();
+                    true
+                } else if current.slice_is_protected() && !wakee.has_shorter_slice_than(current) {
+                    #[cfg(feature = "qperf-metrics")]
+                    crate::metrics::record_fair_wake_current_protected();
+                    false
+                } else {
+                    // PREEMPT_SHORT bypasses protection, but the wakee must
+                    // still win the ordinary eligible EEVDF deadline pick.
+                    let precedes = wakee.deadline_precedes(current);
+                    #[cfg(feature = "qperf-metrics")]
+                    crate::metrics::record_fair_wake_deadline(precedes);
+                    precedes
+                }
             }
         }
     }
+}
+
+fn fair_tick_requests_reschedule(
+    has_queued_peer: bool,
+    current_entity: &SchedulingEntity,
+    charge: DispatchCharge,
+) -> bool {
+    let fair = current_entity
+        .fair()
+        .expect("Fair task_tick requires a Fair current entity");
+    has_queued_peer && (charge.slice_expired || !fair.slice_is_protected())
 }
 
 fn deadline_key(entity: &SchedulingEntity) -> u64 {
@@ -452,19 +582,16 @@ mod tests {
         SchedulePolicy::fair(Nice::ZERO, FairMode::Normal)
     }
 
-    /// Linux v7.1 `wakeup_preempt_fair()` defaults to `PREEMPT_WAKEUP_PICK`:
-    /// `pick_next_entity()` decides, so an eligible wakee whose virtual
-    /// deadline precedes the running entity's preempts immediately. The
-    /// running entity's request must not have to be exhausted first, or wake
-    /// handoffs degenerate into full-slice rotation driven only by the slice
-    /// clockevent.
+    /// Linux v7.1 `RUN_TO_PARITY` keeps an eligible current inside its
+    /// protected slice even when an equal-slice wakee owns the earlier
+    /// virtual deadline.
     #[cfg_attr(test, test)]
     #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
-    fn eligible_wakee_with_earlier_deadline_preempts_mid_request_current() {
+    fn equal_slice_wakee_does_not_break_current_slice_protection() {
         let current = fair(2_000, 3_000);
         let wakee = fair(1_000, 1_500);
 
-        assert!(wakeup_preempts(
+        assert!(!wakeup_preempts(
             normal_fair_policy(),
             &current,
             false,
@@ -507,6 +634,65 @@ mod tests {
             normal_fair_policy(),
             &wakee,
             2_000,
+        ));
+    }
+
+    /// Linux v7.1 `PREEMPT_SHORT` bypasses RUN_TO_PARITY when the shorter
+    /// wakee is itself the earlier eligible EEVDF request.
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn shorter_slice_wakee_can_break_current_slice_protection() {
+        let mut current = FairEntity::new(Nice::ZERO, FairMode::Normal, 100, 2_000);
+        current.set_slice_protection(None);
+        let wakee = FairEntity::new(Nice::ZERO, FairMode::Normal, 50, 1_000);
+
+        assert!(wakeup_preempts(
+            normal_fair_policy(),
+            &SchedulingEntity::Fair(current),
+            false,
+            normal_fair_policy(),
+            &SchedulingEntity::Fair(wakee),
+            2_000,
+        ));
+    }
+
+    /// Linux v7.1 honors `WF_SYNC` while the waker has run for less than
+    /// `sysctl_sched_migration_cost`, then permits an earlier-deadline wakee
+    /// to force rescheduling once that batching window expires.
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn sync_wake_suppresses_early_fair_preemption_until_migration_cost() {
+        let mut current = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 2_000, 3_000);
+        current.cancel_slice_protection();
+        let wakee = fair(1_000, 1_500);
+        let current = SchedulingEntity::Fair(current);
+        let migration_cost_ns = 500_000;
+
+        assert!(wakeup_preempts(
+            normal_fair_policy(),
+            &current,
+            false,
+            normal_fair_policy(),
+            &wakee,
+            2_000,
+        ));
+        assert!(!sync_wakeup_preempts(
+            normal_fair_policy(),
+            &current,
+            false,
+            normal_fair_policy(),
+            &wakee,
+            2_000,
+            SyncWakeupContext::new(migration_cost_ns - 1, migration_cost_ns),
+        ));
+        assert!(sync_wakeup_preempts(
+            normal_fair_policy(),
+            &current,
+            false,
+            normal_fair_policy(),
+            &wakee,
+            2_000,
+            SyncWakeupContext::new(migration_cost_ns, migration_cost_ns),
         ));
     }
 }

@@ -87,6 +87,9 @@ ipi = ["ax-runtime/ipi"]
 loongarch64-low-va = []
 memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
 qperf-metrics = ["ax-runtime/qperf-metrics"]
+# Exposes a debugfs-only synchronization hook used by the real userspace QEMU
+# regression for faultable user copies. Production builds must not enable it.
+uaccess-lock-regression = []
 rknpu = ["ax-driver/rknpu"]
 jpeg = ["ax-driver/jpeg"]
 rga = ["ax-driver/rga", "dep:rockchip-rga"]

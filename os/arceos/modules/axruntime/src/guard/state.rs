@@ -4,6 +4,8 @@ pub(super) struct RuntimeGuardState {
     pub(super) preempt: RuntimePreemptState,
     #[cfg(feature = "task-test-hooks")]
     preempt_guard_context_resolutions: usize,
+    #[cfg(feature = "task-test-hooks")]
+    ordinary_preempt_exit_slow_path_entries: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,6 +126,8 @@ impl RuntimeGuardState {
             preempt: RuntimePreemptState::new(),
             #[cfg(feature = "task-test-hooks")]
             preempt_guard_context_resolutions: 0,
+            #[cfg(feature = "task-test-hooks")]
+            ordinary_preempt_exit_slow_path_entries: 0,
         }
     }
 
@@ -140,6 +144,21 @@ impl RuntimeGuardState {
     #[cfg(feature = "task-test-hooks")]
     pub(super) fn take_preempt_guard_context_resolutions(&mut self) -> usize {
         core::mem::take(&mut self.preempt_guard_context_resolutions)
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(super) fn record_ordinary_preempt_exit_slow_path(&mut self) {
+        self.ordinary_preempt_exit_slow_path_entries += 1;
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(super) fn reset_ordinary_preempt_exit_slow_path_entries(&mut self) {
+        self.ordinary_preempt_exit_slow_path_entries = 0;
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(super) fn take_ordinary_preempt_exit_slow_path_entries(&mut self) -> usize {
+        core::mem::take(&mut self.ordinary_preempt_exit_slow_path_entries)
     }
 
     #[cfg(any(feature = "multitask", test))]

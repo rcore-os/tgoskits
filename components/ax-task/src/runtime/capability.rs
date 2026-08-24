@@ -766,9 +766,9 @@ impl CurrentThreadPublication {
 
     pub(crate) fn from_core(identity: crate::ThreadId, core: &Arc<crate::ThreadCore>) -> Self {
         let owner = Arc::as_ptr(core).expose_provenance();
-        // SAFETY: `core` supplies the live Arc allocation. Consumers may
-        // dereference this address only through `acquire_handle` while the
-        // matching runtime context remains the caller's executing task.
+        // SAFETY: `core` supplies the live Arc allocation. Consumers may use
+        // this address only through the checked current-publication accessors
+        // while the matching runtime context remains the executing task.
         let owner = unsafe { CurrentThreadOwnerHandle::from_raw(owner) };
         Self {
             identity: ThreadIdentityV1::new(identity.slot(), identity.generation()),
@@ -814,6 +814,25 @@ impl CurrentThreadPublication {
     /// selected current task context. The scheduler must retain that thread's
     /// owner-side `Arc` while the caller can execute or resume this operation.
     pub(crate) unsafe fn acquire_handle(self) -> Result<crate::ThreadHandle, crate::TaskError> {
+        let core = unsafe {
+            // SAFETY: this method has the same current-context ownership
+            // contract as `acquire_scheduler_core`.
+            self.acquire_scheduler_core()?
+        };
+        Ok(crate::ThreadHandle::from_core(core))
+    }
+
+    /// Acquires a scheduler-internal strong reference without publishing an
+    /// external management lifetime lease.
+    ///
+    /// # Safety
+    ///
+    /// The runtime must have copied the publication from the architecture-
+    /// selected current task context. The scheduler must retain that thread's
+    /// owner-side `Arc` while the caller can execute or resume this operation.
+    pub(crate) unsafe fn acquire_scheduler_core(
+        self,
+    ) -> Result<Arc<crate::ThreadCore>, crate::TaskError> {
         if !self.identity.is_bound() {
             return Err(crate::TaskError::NoRunnableThread);
         }
@@ -827,12 +846,11 @@ impl CurrentThreadPublication {
         // SAFETY: the increment above created exactly one strong reference for
         // this reconstruction.
         let core = unsafe { Arc::from_raw(core) };
-        let handle = crate::ThreadHandle::from_core(core);
         let expected = crate::ThreadId::from_parts(self.identity.slot, self.identity.generation);
-        if handle.id() != expected {
+        if core.id() != expected {
             return Err(crate::TaskError::InvalidRuntimeHandle);
         }
-        Ok(handle)
+        Ok(core)
     }
 }
 
@@ -858,7 +876,7 @@ impl ThreadIdentityV1 {
 ///
 /// Contexts are created before the scheduler allocates a generation-bearing
 /// thread ID. The scheduler submits this value exactly once after ID allocation
-/// and before the thread can become `Ready`. The publication keeps only a
+/// and before the thread can become runnable. The publication keeps only a
 /// pointer-sized owner address; it does not transfer an Arc or external reaper
 /// lease across the trait-FFI boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

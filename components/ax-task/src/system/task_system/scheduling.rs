@@ -1,6 +1,67 @@
 //! Owner scheduling entry points, runtime charging, and load balancing requests.
 
 use super::{dispatch::OwnerDispatchCommit, *};
+use crate::{PickTaskResult, RtEligibility};
+
+pub(crate) fn lone_current_yield_keeps_dispatch(
+    entity: Option<&SchedulingEntity>,
+    rt_effectively_throttled: bool,
+) -> bool {
+    match entity {
+        Some(SchedulingEntity::Fair(_)) => true,
+        Some(SchedulingEntity::Fifo | SchedulingEntity::RoundRobin { .. }) => {
+            !rt_effectively_throttled
+        }
+        Some(SchedulingEntity::KernelStop | SchedulingEntity::Deadline(_)) | None => false,
+    }
+}
+
+fn realtime_current_remains_selected(transaction: &mut OwnerRqTxn<'_>) -> bool {
+    if !lone_current_yield_keeps_dispatch(
+        transaction.current_scheduling_entity(),
+        transaction.rt_is_effectively_throttled(),
+    ) {
+        return false;
+    }
+    let Some((current, priority)) = transaction.current().and_then(|current| {
+        current
+            .schedule_policy()
+            .rt_priority()
+            .map(|priority| (current.thread(), priority.get()))
+    }) else {
+        return false;
+    };
+    if transaction.highest_rt_priority() != Some(priority)
+        || transaction.rt_count_at_priority(priority) != 1
+    {
+        return false;
+    }
+
+    // Ask the same class chain used by the eventual owner selection. The
+    // unique highest-priority RT node is current, but Stop or Deadline may
+    // still precede it. Lower-priority RT and Fair tasks cannot displace it.
+    let Some(PickTaskResult::Continue(picked)) =
+        transaction.pick_next_task(RtEligibility::Runnable, false)
+    else {
+        task_runtime::fatal_invariant(0x5343_1217, current.as_u64() as usize)
+    };
+    let remains_selected = picked.id() == current;
+    transaction.rollback_pick(picked);
+    remains_selected
+}
+
+fn owner_yield_keeps_current_dispatch(transaction: &mut OwnerRqTxn<'_>) -> bool {
+    match transaction.current_scheduling_entity() {
+        Some(SchedulingEntity::Fair(_)) => transaction.nr_queued() == 0,
+        Some(SchedulingEntity::Fifo | SchedulingEntity::RoundRobin { .. }) => {
+            // Linux `yield_task_rt()` moves current only within its own
+            // priority list. With no peer at that priority, the normal class
+            // pick still selects current unless a higher class is runnable.
+            realtime_current_remains_selected(transaction)
+        }
+        Some(SchedulingEntity::KernelStop | SchedulingEntity::Deadline(_)) | None => false,
+    }
+}
 
 struct RequestedPreemptionCommit {
     decision: ScheduleDecision,
@@ -25,7 +86,7 @@ impl TaskSystem {
         mut transaction: OwnerRqTxn<'_>,
         state: RequestedPreemptionState,
     ) -> RequestedPreemptionCommit {
-        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, state.previous);
+        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
         let next_core = next.core;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5343_1206, next_core.id().as_u64() as usize)
@@ -45,7 +106,11 @@ impl TaskSystem {
         };
         let deadline_rq_observation =
             transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-        transaction.commit_and_acknowledge_scheduler_request();
+        self.commit_owner_switch_selection(
+            cpu.as_mut(),
+            transaction,
+            !migrated && !state.dispatch.has_deferred_task_lock_work(),
+        );
         let decision = Self::owner_switch_plan(
             state.previous_core.as_ref(),
             state.previous_endpoint,
@@ -73,6 +138,56 @@ impl TaskSystem {
             commit.decision,
             commit.deadline_rq_observation,
         ))
+    }
+
+    fn lone_realtime_preemption_keeps_dispatch(
+        &self,
+        transaction: &mut OwnerRqTxn<'_>,
+        current: &ThreadCore,
+    ) -> bool {
+        self.owner_schedule_out_is_rq_owned(transaction, current)
+            && realtime_current_remains_selected(transaction)
+    }
+
+    fn finish_owner_no_switch(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        mut transaction: OwnerRqTxn<'_>,
+        current: &ThreadCore,
+    ) -> Result<SchedulerOutcome, TaskError> {
+        let runtime_overrun_work = self.sync_owner_current_dispatch_in_rq(&mut transaction);
+        let deadline_rq_observation =
+            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
+        transaction.commit_and_acknowledge_scheduler_request();
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::complete_no_switch_thread_lock_probe(current.id());
+        if let Some(core) = runtime_overrun_work {
+            self.publish_deadline_overrun_work(core);
+        }
+        let run_queue_changed =
+            if self.owner_balance_work_pending(cpu.as_ref().get_ref(), current.id()) {
+                self.service_owner_balance(cpu.as_mut(), current.id())?
+                    .run_queue_changed()
+            } else {
+                false
+            };
+        if run_queue_changed {
+            self.program_local_timer(
+                cpu.as_mut(),
+                SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
+            )?;
+        } else {
+            self.program_local_timer_from_rq_observation(
+                cpu.as_mut(),
+                deadline_rq_observation,
+                SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
+            )?;
+        }
+        Ok(if cpu.needs_reschedule() || cpu.has_remote_work() {
+            SchedulerOutcome::OwnerWorkPending
+        } else {
+            SchedulerOutcome::Quiescent
+        })
     }
 
     /// Requests one owner-mediated pull from the busiest remote CPU.
@@ -250,6 +365,34 @@ impl TaskSystem {
         ))
     }
 
+    pub(crate) fn task_tick_current_until_with_clock(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        reclaimed_ns: u64,
+    ) -> Result<(ChargeOutcome, RunQueueClockSnapshot, ThreadId), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
+        if !cpu.is_online() {
+            return Err(TaskError::CpuOffline(cpu.owner().as_u32()));
+        }
+        let remote = Arc::clone(cpu.remote());
+        let mut transaction = OwnerRqTxn::begin(self, &remote);
+        let clock = transaction.clock();
+        let Some(thread) = transaction.current_thread() else {
+            transaction.commit();
+            return Err(TaskError::NoRunnableThread);
+        };
+        let charge = transaction.task_tick_current_until(reclaimed_ns);
+        transaction.commit();
+        Ok((
+            ChargeOutcome {
+                slice_expired: charge.slice_expired,
+                deadline_overrun: charge.deadline_overrun,
+            },
+            clock,
+            thread,
+        ))
+    }
+
     /// Reports Linux `!rt_rq_throttled(rq)` for the owner runqueue.
     pub fn rt_run_queue_may_run(&self, cpu: Pin<&mut CpuLocal>) -> Result<bool, TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
@@ -302,7 +445,7 @@ impl TaskSystem {
         let now_ns = clock.wall().as_nanos();
         transaction.adopt_scheduler_request(initial_request);
         transaction.merge_scheduler_request();
-        let dispatch_commit = self.commit_owner_current_dispatch_in_rq(&mut transaction);
+        let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
         // Runtime accounting is part of this unconditional scheduling
         // decision, exactly like Linux update_curr() preceding pick_next.
         transaction.merge_scheduler_request();
@@ -328,7 +471,7 @@ impl TaskSystem {
             );
             migration = schedule_out.migration;
         }
-        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, previous);
+        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
         let next_core = next.core;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5343_1203, next_core.id().as_u64() as usize)
@@ -348,7 +491,11 @@ impl TaskSystem {
         };
         let deadline_rq_observation =
             transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-        transaction.commit_and_acknowledge_scheduler_request();
+        self.commit_owner_switch_selection(
+            cpu.as_mut(),
+            transaction,
+            !migrated && !dispatch_commit.has_deferred_task_lock_work(),
+        );
         drop(previous_sched);
         let decision = Self::owner_switch_plan(
             previous_core.as_ref(),
@@ -436,52 +583,25 @@ impl TaskSystem {
         {
             task_runtime::fatal_invariant(0x5343_1204, cpu.owner().as_u32() as usize);
         }
-        if !switch_requested {
-            let runtime_overrun_work = self.sync_owner_current_dispatch_in_rq(&mut transaction);
-            let deadline_rq_observation =
-                transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-            transaction.commit_and_acknowledge_scheduler_request();
-            #[cfg(feature = "task-test-hooks")]
-            crate::task_test_hooks::complete_no_switch_thread_lock_probe(previous_core_hint.id());
-            if let Some(core) = runtime_overrun_work {
-                self.publish_deadline_overrun_work(core);
-            }
-            let current = previous.expect("a current core must retain its thread identity");
-            let run_queue_changed =
-                if self.owner_balance_work_pending(cpu.as_ref().get_ref(), current) {
-                    self.service_owner_balance(cpu.as_mut(), current)?
-                        .run_queue_changed()
-                } else {
-                    false
-                };
-            if run_queue_changed {
-                self.program_local_timer(
-                    cpu.as_mut(),
-                    SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
-                )?;
-            } else {
-                self.program_local_timer_from_rq_observation(
-                    cpu.as_mut(),
-                    deadline_rq_observation,
-                    SchedulerDeadlineDerivationSource::ScheduleNoSwitch,
-                )?;
-            }
-            return Ok(if cpu.needs_reschedule() || cpu.has_remote_work() {
-                SchedulerOutcome::OwnerWorkPending
-            } else {
-                SchedulerOutcome::Quiescent
-            });
+        if !switch_requested
+            || self.lone_realtime_preemption_keeps_dispatch(&mut transaction, previous_core_hint)
+        {
+            return self.finish_owner_no_switch(cpu.as_mut(), transaction, previous_core_hint);
         }
-        if self.owner_preemption_is_rq_owned(&transaction, previous_core_hint) {
+        if self.owner_schedule_out_is_rq_owned(&transaction, previous_core_hint) {
             let now_ns = transaction.clock().wall().as_nanos();
             let previous_core = transaction.current_core();
             let previous_endpoint = transaction.current_switch_endpoint();
-            let dispatch_commit =
-                self.commit_owner_settled_current_dispatch_in_rq(&mut transaction);
+            let dispatch_commit = self.sync_owner_settled_current_dispatch_in_rq(&mut transaction);
             let outgoing = previous_core.as_ref().map(Arc::clone).unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5343_1204, cpu.owner().as_u32() as usize)
             });
-            self.schedule_out_owner_preempt_in_rq(cpu.as_mut(), &mut transaction, outgoing);
+            self.schedule_out_owner_rq_owned(
+                cpu.as_mut(),
+                &mut transaction,
+                outgoing,
+                EnqueueReason::Preempted,
+            );
             let commit = self.commit_requested_preemption_in_rq(
                 cpu.as_mut(),
                 transaction,
@@ -529,7 +649,7 @@ impl TaskSystem {
         {
             task_runtime::fatal_invariant(0x5343_1204, cpu.owner().as_u32() as usize);
         }
-        let dispatch_commit = self.commit_owner_settled_current_dispatch_in_rq(&mut transaction);
+        let dispatch_commit = self.sync_owner_settled_current_dispatch_in_rq(&mut transaction);
         let mut migration = None;
         if let Some(core) = previous_core.as_ref() {
             let schedule_out = self.schedule_out_owner_running_in_rq(
@@ -597,21 +717,45 @@ impl TaskSystem {
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let previous_core_hint = current;
-        // SAFETY: propagated from the selected entry contract.
-        let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
+        // Probe rq ownership before taking the current task lock. Linux's
+        // ordinary sched_yield path holds only rq->lock; task state is needed
+        // only for migration, Deadline, or other task-control work.
         // SAFETY: propagated from the selected entry contract.
         let mut transaction = unsafe { rq_entry.begin(self, &remote) };
-        let clock = transaction.clock();
-        let now_ns = clock.wall().as_nanos();
         transaction.adopt_scheduler_request(initial_request);
-        transaction.merge_scheduler_request();
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::begin_current_dispatch_accounting_probe(current.id());
-        let dispatch_commit = self.commit_owner_current_dispatch_in_rq(&mut transaction);
+        if transaction.current().is_some() {
+            let _settled = transaction.settle_current(0);
+        }
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::complete_current_dispatch_accounting_probe(current.id());
         // A forced yield consumes a slice-expiration request discovered while
         // accounting the outgoing task in this same scheduling pass.
+        let request = transaction.merge_scheduler_request();
+        if transaction
+            .current()
+            .is_none_or(|dispatch| !core::ptr::eq(dispatch.runtime_core(), previous_core_hint))
+        {
+            task_runtime::fatal_invariant(0x5343_1207, cpu.owner().as_u32() as usize);
+        }
+        if self.owner_schedule_out_is_rq_owned(&transaction, previous_core_hint) {
+            return Ok(self.yield_current_rq_owned(cpu.as_mut(), transaction, previous_core_hint));
+        }
+        // Preserve requests merged by the rq-owned probe while restoring the
+        // full p->pi_lock -> rq order for exceptional task-control work.
+        transaction.commit();
+
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_yield_thread_lock(previous_core_hint.id());
+        // SAFETY: propagated from the selected entry contract.
+        let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
+        // SAFETY: propagated from the selected entry contract.
+        let mut transaction = unsafe { rq_entry.begin(self, &remote) };
+        transaction.adopt_scheduler_request(request);
+        let clock = transaction.clock();
+        let now_ns = clock.wall().as_nanos();
+        let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
         transaction.merge_scheduler_request();
         let previous = transaction.current_thread();
         let previous_core = transaction.current_core();
@@ -625,22 +769,38 @@ impl TaskSystem {
         if let Some(core) = previous_core.as_ref() {
             let owner = cpu.owner();
             let continuing_dispatch = {
-                matches!(
-                    transaction.current_scheduling_entity(),
-                    Some(SchedulingEntity::Fair(_))
-                ) && transaction
-                    .task_state(core.id(), core.sched().placement())
-                    .is_current()
+                owner_yield_keeps_current_dispatch(&mut transaction)
+                    && transaction
+                        .task_state(core.id(), core.sched().placement())
+                        .is_current()
                     && core.sched().placement().requested_migration().is_none()
                     && previous_sched.affinity.affinity.contains(owner)
-                    && transaction.nr_queued() == 0
             };
             if continuing_dispatch {
-                // Linux `yield_task_fair()` returns before changing the active
-                // EEVDF request when this is the only runnable entity. Moving
-                // the owner through Ready and the runqueue here would
-                // forfeit its request even though no peer could consume the
-                // yielded service.
+                // Linux `yield_task_fair()` returns immediately for a lone
+                // Fair task. `yield_task_rt()` moves a lone FIFO/RR list node
+                // to the same list tail, then `pick_next_task()` selects the
+                // unchanged `rq->curr`; `put_prev_set_next_task()` therefore
+                // performs no lifecycle transition. Keep the current
+                // dispatch in both cases instead of manufacturing a
+                // Running -> Ready -> Running cycle. Effective RT throttling
+                // remains a real reason to leave the current dispatch.
+                #[cfg(feature = "task-test-hooks")]
+                crate::task_test_hooks::record_lone_yield_runtime_state(
+                    core.id(),
+                    core.runtime_snapshot(Some(
+                        transaction
+                            .current()
+                            .unwrap_or_else(|| {
+                                task_runtime::fatal_invariant(
+                                    0x5343_1211,
+                                    core.id().as_u64() as usize,
+                                )
+                            })
+                            .runtime_interval_ns(clock.task().as_nanos()),
+                    ))
+                    .is_running(),
+                );
                 let deadline_rq_observation =
                     transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
                 transaction.commit_and_acknowledge_scheduler_request();
@@ -663,6 +823,8 @@ impl TaskSystem {
                 );
                 let decision =
                     self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
+                #[cfg(feature = "task-test-hooks")]
+                crate::task_test_hooks::complete_yield_thread_lock_probe(core.id());
                 return Ok(decision);
             }
         }
@@ -688,11 +850,6 @@ impl TaskSystem {
                     if !current_entity.yield_deadline_job() {
                         task_runtime::fatal_invariant(0x5343_120d, core.id().as_u64() as usize);
                     }
-                    sched
-                        .transition(core, ThreadState::Ready)
-                        .unwrap_or_else(|_| {
-                            task_runtime::fatal_invariant(0x5343_120e, core.id().as_u64() as usize)
-                        });
                     transaction
                         .throttle_current_deadline(core.id())
                         .unwrap_or_else(|_| {
@@ -730,7 +887,7 @@ impl TaskSystem {
                 migration = schedule_out.migration;
             }
         }
-        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, previous);
+        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
         let next_core = next.core;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x5343_1210, next_core.id().as_u64() as usize)
@@ -750,7 +907,11 @@ impl TaskSystem {
         };
         let deadline_rq_observation =
             transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-        transaction.commit_and_acknowledge_scheduler_request();
+        self.commit_owner_switch_selection(
+            cpu.as_mut(),
+            transaction,
+            !migrated && !dispatch_commit.has_deferred_task_lock_work(),
+        );
         drop(previous_sched);
         let decision = Self::owner_switch_plan(
             previous_core.as_ref(),
@@ -762,6 +923,114 @@ impl TaskSystem {
         );
         self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
         let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::complete_yield_thread_lock_probe(previous_core_hint.id());
         Ok(decision)
+    }
+
+    /// Implements Linux's rq-owned ordinary yield path.
+    fn yield_current_rq_owned(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        mut transaction: OwnerRqTxn<'_>,
+        previous_core_hint: &ThreadCore,
+    ) -> ScheduleDecision {
+        let clock = transaction.clock();
+        let now_ns = clock.wall().as_nanos();
+        let dispatch_commit = self.sync_owner_settled_current_dispatch_in_rq(&mut transaction);
+        let previous = transaction.current_thread();
+        let previous_core = transaction.current_core();
+        let previous_endpoint = transaction.current_switch_endpoint();
+        if previous_core
+            .as_ref()
+            .is_none_or(|core| !core::ptr::eq(core.as_ref(), previous_core_hint))
+        {
+            task_runtime::fatal_invariant(0x5343_1212, cpu.owner().as_u32() as usize);
+        }
+
+        let core = previous_core.as_ref().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1213, cpu.owner().as_u32() as usize)
+        });
+        let placement = core.sched().placement();
+        let continuing_dispatch = owner_yield_keeps_current_dispatch(&mut transaction)
+            && transaction.task_state(core.id(), placement).is_current();
+        if continuing_dispatch {
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_lone_yield_runtime_state(
+                core.id(),
+                core.runtime_snapshot(Some(
+                    transaction
+                        .current()
+                        .unwrap_or_else(|| {
+                            task_runtime::fatal_invariant(0x5343_1214, core.id().as_u64() as usize)
+                        })
+                        .runtime_interval_ns(clock.task().as_nanos()),
+                ))
+                .is_running(),
+            );
+            let deadline_rq_observation =
+                transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
+            transaction.commit_and_acknowledge_scheduler_request();
+            let endpoint = previous_endpoint.unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5343_1215, core.id().as_u64() as usize)
+            });
+            let decision = Self::owner_switch_plan(
+                Some(core),
+                Some(endpoint),
+                core,
+                endpoint,
+                SwitchReason::Yield,
+                now_ns,
+            );
+            self.finish_owner_dispatch_commit(
+                cpu.as_mut(),
+                dispatch_commit,
+                clock.wall().as_nanos(),
+            );
+            let decision =
+                self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::complete_yield_thread_lock_probe(core.id());
+            return decision;
+        }
+
+        self.schedule_out_owner_rq_owned(
+            cpu.as_mut(),
+            &mut transaction,
+            Arc::clone(core),
+            EnqueueReason::Yield,
+        );
+        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
+        let next_core = next.core;
+        let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x5343_1216, next_core.id().as_u64() as usize)
+        });
+        Self::stage_switch_handoff(
+            cpu.as_mut(),
+            previous,
+            previous_core.as_ref().map(Arc::clone),
+            Arc::clone(&next_core),
+            None,
+        );
+        let deadline_rq_observation =
+            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
+        self.commit_owner_switch_selection(
+            cpu.as_mut(),
+            transaction,
+            !dispatch_commit.has_deferred_task_lock_work(),
+        );
+        let decision = Self::owner_switch_plan(
+            previous_core.as_ref(),
+            previous_endpoint,
+            &next_core,
+            next_endpoint,
+            SwitchReason::Yield,
+            now_ns,
+        );
+        self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
+        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::complete_yield_thread_lock_probe(previous_core_hint.id());
+        decision
     }
 }

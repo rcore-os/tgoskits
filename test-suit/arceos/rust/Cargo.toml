@@ -15,8 +15,8 @@ task-runtime = ["ax-std", "ax-std/multitask"]
 task-yield = ["task-runtime", "ax-std/task-test-hooks"]
 sched-rr = ["task-runtime", "ax-std/alloc"]
 sched-cfs = ["task-runtime", "ax-std/alloc"]
-task-affinity = ["task-runtime"]
-task-wait-queue = ["task-runtime", "ax-std/irq"]
+task-affinity = ["task-runtime", "ax-std/task-test-hooks"]
+task-wait-queue = ["task-runtime", "ax-std/irq", "ax-std/task-test-hooks"]
 task-wait-queue-remote-wake = [
     "task-runtime",
     "ax-std/irq",
@@ -35,6 +35,7 @@ task-kernel-timer = ["task-runtime", "ax-std/irq", "ax-std/task-test-hooks"]
 task-tls = ["task-runtime", "ax-std/tls", "ax-std/alloc"]
 task-parallel = ["task-runtime", "dep:rand", "ax-std/alloc", "ax-std/irq"]
 task-pi-mutex = ["task-runtime", "ax-std/task-test-hooks"]
+task-preempt-guard = ["task-runtime", "ax-std/task-test-hooks"]
 task-priority = ["task-runtime", "ax-std/alloc"]
 task-rt-policy = [
     "task-runtime",
@@ -73,6 +74,7 @@ all = [
     "task-tls",
     "task-parallel",
     "task-pi-mutex",
+    "task-preempt-guard",
     "task-priority",
     "task-rt-policy",
     "task-sleep",

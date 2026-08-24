@@ -26,9 +26,9 @@ impl RunQueue {
                 .get(key)
                 .map(QueuedThread::entity_snapshot)
                 .ok_or(TaskError::InvalidConfiguration)?,
-            Some(QueueMembershipClass::Realtime(priority)) => self
+            Some(QueueMembershipClass::Realtime(key)) => self
                 .rt
-                .get(priority, id)
+                .get(key)
                 .map(QueuedThread::entity_snapshot)
                 .ok_or(TaskError::InvalidConfiguration)?,
             _ => current
@@ -55,10 +55,10 @@ impl RunQueue {
                     .entity_mut();
                 dispatch.charge_linked(entity, runtime_ns, now_ns, reclaimed_ns)
             }
-            Some(QueueMembershipClass::Realtime(priority)) => {
+            Some(QueueMembershipClass::Realtime(key)) => {
                 let entity = &mut self
                     .rt
-                    .get_mut(priority, id)
+                    .get_mut(key)
                     .ok_or(TaskError::InvalidConfiguration)?
                     .active
                     .entity_mut();
@@ -72,9 +72,9 @@ impl RunQueue {
                 .get(key)
                 .map(QueuedThread::entity_snapshot)
                 .ok_or(TaskError::InvalidConfiguration)?,
-            Some(QueueMembershipClass::Realtime(priority)) => self
+            Some(QueueMembershipClass::Realtime(key)) => self
                 .rt
-                .get(priority, id)
+                .get(key)
                 .map(QueuedThread::entity_snapshot)
                 .ok_or(TaskError::InvalidConfiguration)?,
             _ => self
@@ -197,6 +197,14 @@ impl RunQueue {
         !self.idle_fair.is_empty()
     }
 
+    pub(crate) fn min_fair_service_request_ns(&self, mode: FairMode) -> Option<u64> {
+        if mode == FairMode::Idle {
+            self.idle_fair.min_service_request_ns()
+        } else {
+            self.fair.min_service_request_ns()
+        }
+    }
+
     pub(crate) fn fair_wakee_is_selected(
         &self,
         wakee: ThreadId,
@@ -263,18 +271,19 @@ impl RunQueue {
         self.fair.has_migratable()
     }
 
-    pub(super) fn refresh_class_pushable(
-        &mut self,
-        thread: ThreadId,
-        policy: SchedulePolicy,
-        current: Option<ThreadId>,
-    ) {
-        match policy {
-            SchedulePolicy::Deadline(_) => self.deadline.refresh_pushable(thread, current),
-            SchedulePolicy::Fifo { priority } | SchedulePolicy::RoundRobin { priority, .. } => {
-                self.rt.refresh_pushable(thread, priority.get(), current);
+    pub(super) fn refresh_class_pushable(&mut self, thread: ThreadId, current: Option<ThreadId>) {
+        match self.membership_class(thread) {
+            Some(QueueMembershipClass::Deadline(_)) => {
+                self.deadline.refresh_pushable(thread, current)
             }
-            SchedulePolicy::KernelStop | SchedulePolicy::Fair { .. } => {}
+            Some(QueueMembershipClass::Realtime(key)) => self.rt.refresh_pushable(key, current),
+            Some(
+                QueueMembershipClass::Stop
+                | QueueMembershipClass::DeadlineThrottled
+                | QueueMembershipClass::Fair
+                | QueueMembershipClass::IdleFair,
+            )
+            | None => {}
         }
     }
 }

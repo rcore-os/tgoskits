@@ -251,21 +251,12 @@ impl CurrentDispatch {
         }
     }
 
-    pub(crate) fn should_preempt(
-        &self,
-        current_entity: &SchedulingEntity,
-        woken_policy: SchedulePolicy,
-        woken_entity: &SchedulingEntity,
-        fair_virtual_time: u64,
-    ) -> bool {
-        crate::scheduler::wakeup_preempts(
-            self.schedule_policy(),
-            current_entity,
-            matches!(self.class.role, DispatchRole::DedicatedIdle),
-            woken_policy,
-            woken_entity,
-            fair_virtual_time,
-        )
+    /// Returns runtime charged since this task became `rq->curr`.
+    ///
+    /// After the owner settles the runqueue clock, this is Linux's
+    /// `rq_clock_task(rq) - se->exec_start` input to `preempt_sync()`.
+    pub(crate) const fn dispatch_runtime_ns(&self) -> u64 {
+        self.accounting.charged_runtime_ns
     }
 
     pub(crate) fn new(
@@ -274,7 +265,6 @@ impl CurrentDispatch {
         now: RqTaskTime,
     ) -> Self {
         let now_ns = now.as_nanos();
-        runtime_core.begin_runtime_accounting(now_ns);
         Self {
             task: CurrentTaskIdentity {
                 thread: state.thread,
@@ -346,7 +336,7 @@ impl CurrentDispatch {
     pub(crate) fn runtime_timer_delta_for(entity: &SchedulingEntity) -> Option<u64> {
         match entity {
             SchedulingEntity::KernelStop => None,
-            SchedulingEntity::Fair(fair) => Some(fair.remaining_request_ns()),
+            SchedulingEntity::Fair(fair) => Some(fair.runtime_timer_delta_ns()),
             SchedulingEntity::Fifo => None,
             SchedulingEntity::RoundRobin {
                 remaining_quantum_ns,

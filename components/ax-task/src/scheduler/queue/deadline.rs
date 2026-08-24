@@ -3,7 +3,10 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::cmp::Ordering;
 
-use super::{QueuedThread, QueuedThreadSnapshot, deadline_pushable::DeadlinePushableTasks};
+use super::{
+    LinkedPickedThread, QueuedThread, QueuedThreadSnapshot,
+    deadline_pushable::DeadlinePushableTasks,
+};
 use crate::{
     DeadlineBandwidthSnapshot, SchedulingEntity, TaskError, ThreadCore, ThreadId,
     runtime::task_runtime,
@@ -428,10 +431,10 @@ impl DeadlineRunQueue {
         find_node_mut(self.root.as_deref_mut(), key).and_then(|node| node.thread.as_mut())
     }
 
-    pub(super) fn select_first(&self) -> Option<QueuedThreadSnapshot> {
+    pub(super) fn select_first(&self) -> Option<LinkedPickedThread> {
         #[cfg(any(test, all(axtest, feature = "axtest")))]
         super::record_deadline_runqueue_visit();
-        self.first().map(QueuedThreadSnapshot::from)
+        self.first().map(LinkedPickedThread::from)
     }
 
     pub(super) fn put_prev_current(

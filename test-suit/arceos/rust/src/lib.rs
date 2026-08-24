@@ -59,6 +59,7 @@ pub mod net;
         feature = "task-kernel-timer",
         feature = "task-parallel",
         feature = "task-pi-mutex",
+        feature = "task-preempt-guard",
         feature = "task-priority",
         feature = "task-rt-policy",
         feature = "task-sleep",
@@ -129,6 +130,11 @@ test_runner!(
 );
 test_runner!("task-parallel", run_task_parallel, task::parallel::run);
 test_runner!("task-pi-mutex", run_task_pi_mutex, task::pi_mutex::run);
+test_runner!(
+    "task-preempt-guard",
+    run_task_preempt_guard,
+    task::preempt_guard::run
+);
 test_runner!("task-priority", run_task_priority, task::priority::run);
 test_runner!("task-rt-policy", run_task_rt_policy, task::rt_policy::run);
 test_runner!("task-sleep", run_task_sleep, task::sleep::run);
@@ -242,6 +248,12 @@ const SELECTED_TESTS: &[TestCase] = &[
         "PI mutex late wake after waiter exit",
         run_task_pi_mutex,
     ),
+    #[cfg(feature = "task-preempt-guard")]
+    TestCase::new(
+        "task-preempt-guard",
+        "ordinary preemption exit stays on the decrement-only path",
+        run_task_preempt_guard,
+    ),
     #[cfg(all(
         feature = "task-priority",
         not(any(feature = "sched-cfs", feature = "sched-rr"))
@@ -254,7 +266,7 @@ const SELECTED_TESTS: &[TestCase] = &[
     #[cfg(feature = "task-rt-policy")]
     TestCase::new(
         "task-rt-policy",
-        "running FIFO policy crosses RT periods",
+        "default FIFO bypasses disabled RT bandwidth",
         run_task_rt_policy,
     ),
     #[cfg(feature = "task-sleep")]

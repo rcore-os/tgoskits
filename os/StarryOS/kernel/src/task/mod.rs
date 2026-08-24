@@ -54,7 +54,7 @@ pub(crate) use self::{
     pid::{
         dropped_exit_path_lease_keeps_unfinished_work_pending_for_test,
         exit_path_completion_precedes_task_transfer_for_test,
-        pid_identity_state_machine_rules_hold_for_test,
+        pid_identity_state_machine_rules_hold_for_test, root_namespace_init_owns_shutdown_for_test,
     },
     posix_timer::{
         posix_timer_active_gate_rules_hold_for_test,
@@ -65,7 +65,18 @@ pub(crate) use self::{
     },
     process_cgroup::task_exit_transaction_holds_membership_lock_for_test,
     process_identity::reaped_process_handle_retains_exact_identity_for_test,
-    process_ptrace::inactive_ptrace_syscall_gate_is_lock_free_for_test,
+    process_memory::{
+        memory_owner_replacement_preserves_pinned_snapshot_for_test,
+        memory_owner_snapshot_avoids_irq_lock_for_test,
+    },
+    process_policy::resource_limit_read_is_nonblocking_for_test,
+    process_ptrace::{
+        inactive_ptrace_pending_event_gate_is_nonblocking_for_test,
+        inactive_ptrace_syscall_gate_is_lock_free_for_test,
+    },
+    scheduler_identity::published_scheduler_identity_check_is_read_only_for_test,
+    thread::inactive_one_shot_flag_consumption_is_read_only_for_test,
+    timer::zero_process_cpu_time_delta_avoids_publication_for_test,
 };
 #[cfg(test)]
 pub(crate) use self::{
@@ -92,6 +103,7 @@ pub(crate) use self::{
         alarm_generation_rules_hold_for_test, cpu_interval_timers_avoid_wall_alarms_for_test,
         interval_timer_arm_uses_current_snapshot_for_test,
         itimer_type_signo_and_time_conversion_rules_hold_for_test,
+        process_cpu_high_water_preserves_runtime_total_for_test,
         scheduler_tick_group_accounting_is_aggregate_for_test,
         scheduler_tick_sampling_avoids_owner_writer_for_test,
         user_kernel_transitions_remain_task_local_for_test,

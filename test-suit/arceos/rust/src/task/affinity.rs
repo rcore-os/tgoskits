@@ -1,7 +1,8 @@
 use std::{
     os::arceos::{
         api::task::{AxCpuMask, ax_set_current_affinity},
-        modules::ax_hal::percpu::this_cpu_id,
+        modules::{ax_hal::percpu::this_cpu_id, ax_task::task_test_hooks},
+        task::current_thread_id,
     },
     sync::atomic::{AtomicUsize, Ordering},
     thread,
@@ -22,6 +23,30 @@ fn online_cpu_mask(cpu_num: usize) -> AxCpuMask {
 pub fn run() -> crate::TestResult {
     FINISHED_TASKS.store(0, Ordering::Release);
     let available_cpus = thread::available_parallelism().unwrap().get();
+    if available_cpus > 1 {
+        let current = current_thread_id().expect("the affinity test must run as a scheduler task");
+        let source_cpu = this_cpu_id();
+        let mut migration_mask = online_cpu_mask(available_cpus);
+        migration_mask.set(source_cpu, false);
+        task_test_hooks::arm_switch_tail_irq_owner_probe(current.as_u64());
+        assert!(
+            ax_set_current_affinity(migration_mask).is_ok(),
+            "the switch-tail probe must migrate its current task"
+        );
+        assert_ne!(this_cpu_id(), source_cpu);
+        assert_eq!(
+            task_test_hooks::take_switch_tail_irq_owner_entries(),
+            Some(task_test_hooks::SwitchTailIrqOwnerEntries {
+                thread_sched_acquired: 1,
+                thread_sched: 0,
+                run_queue: 0,
+                rq_reacquired: 1,
+                rq_baton_consumed: 0,
+            }),
+            "one Linux finish_task_switch migration tail must use one task/rq transaction"
+        );
+        assert!(ax_set_current_affinity(online_cpu_mask(available_cpus)).is_ok());
+    }
     let mut workers = std::vec::Vec::new();
     for i in 0..NUM_TASKS {
         let cpu_id = i % available_cpus;

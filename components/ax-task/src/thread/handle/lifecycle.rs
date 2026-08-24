@@ -63,6 +63,13 @@ impl ThreadCore {
         self.affinity_completion.notify_waiters();
     }
 
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn affinity_is_settled_on_cpu_for_test(&self, cpu: CpuId) -> bool {
+        self.sched
+            .affinity_settlement_generation_for_test(cpu)
+            .is_some_and(|generation| self.affinity_completion.completed_generation() >= generation)
+    }
+
     /// Enters one owner-side delivery section that must not overlap exit.
     pub(crate) fn try_scheduler_activity(&self) -> Option<ThreadSchedulerActivity<'_>> {
         let preempt = crate::runtime::enter_preempt_guard(

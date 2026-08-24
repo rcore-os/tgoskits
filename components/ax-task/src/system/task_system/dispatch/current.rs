@@ -24,7 +24,7 @@ impl TaskSystem {
         )
     }
 
-    pub(in crate::system::task_system) fn commit_owner_current_dispatch_in_rq(
+    pub(in crate::system::task_system) fn settle_owner_current_dispatch_in_rq(
         &self,
         transaction: &mut OwnerRqTxn<'_>,
     ) -> OwnerDispatchCommit {
@@ -32,14 +32,14 @@ impl TaskSystem {
             return OwnerDispatchCommit::NONE;
         }
         let _charge = transaction.settle_current(0);
-        self.commit_owner_settled_current_dispatch_in_rq(transaction)
+        self.sync_owner_settled_current_dispatch_in_rq(transaction)
     }
 
-    /// Finalizes a current dispatch already settled at this transaction's rq
-    /// clock. The caller must use this form when that accounting participates
-    /// in the scheduler-request decision, so it is not repeated after the
-    /// decision claim has been merged.
-    pub(in crate::system::task_system) fn commit_owner_settled_current_dispatch_in_rq(
+    /// Synchronizes a current dispatch already settled at this transaction's
+    /// rq clock. The running interval remains live until selection proves that
+    /// a different task will replace it, matching Linux's `next == prev`
+    /// short-circuit in `put_prev_set_next_task()`.
+    pub(in crate::system::task_system) fn sync_owner_settled_current_dispatch_in_rq(
         &self,
         transaction: &mut OwnerRqTxn<'_>,
     ) -> OwnerDispatchCommit {
@@ -48,7 +48,6 @@ impl TaskSystem {
         }
         let current = transaction.current_thread();
         let current_core = transaction.current_core();
-        let task_now_ns = transaction.clock().task().as_nanos();
         let owner = transaction.owner();
         let Some(dispatch) = transaction.current_mut() else {
             task_runtime::fatal_invariant(0x5251_1101, owner.as_u32() as usize);
@@ -58,9 +57,24 @@ impl TaskSystem {
         {
             task_runtime::fatal_invariant(0x5251_1102, dispatch.thread().as_u64() as usize);
         }
-        dispatch.finish_runtime_accounting(task_now_ns);
         let overrun_work = Self::sync_runtime_dispatch_state(dispatch);
         OwnerDispatchCommit { overrun_work }
+    }
+
+    /// Verifies that selection installed the staged incoming `rq->curr`.
+    pub(in crate::system::task_system) fn validate_owner_runtime_switch_out(
+        &self,
+        cpu: &CpuLocal,
+        transaction: &OwnerRqTxn<'_>,
+    ) {
+        let Some(handoff) = cpu.switch_handoff() else {
+            return;
+        };
+        if transaction.current_thread() != Some(handoff.incoming().id())
+            || Arc::ptr_eq(handoff.previous(), handoff.incoming())
+        {
+            task_runtime::fatal_invariant(0x5251_1105, cpu.owner().as_u32() as usize);
+        }
     }
 
     pub(in crate::system::task_system) fn finish_owner_dispatch_commit(
@@ -101,7 +115,6 @@ impl TaskSystem {
     }
 
     fn sync_runtime_dispatch_state(dispatch: &mut CurrentDispatch) -> Option<Arc<ThreadCore>> {
-        let _charged_runtime_ns = dispatch.take_charged_runtime_ns();
         let overrun_core = dispatch.deadline_overrun_core();
         dispatch.take_deadline_overrun().then_some(overrun_core)
     }

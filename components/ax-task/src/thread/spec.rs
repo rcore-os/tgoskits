@@ -3,8 +3,8 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use crate::{
-    CpuId, SchedulePolicy, SchedulerTickGate, SchedulerTickTaskWork, SchedulerTickWork,
-    SchedulerTickWorkDisposition, TaskError, ThreadHandle, ThreadId,
+    CpuId, SchedulePolicy, SchedulerTickCpuTime, SchedulerTickGate, SchedulerTickTaskWork,
+    SchedulerTickWork, SchedulerTickWorkDisposition, TaskError, ThreadHandle, ThreadId,
     runtime::{
         AddressSpaceHandle, AddressSpaceToken, ExecutionContextHandle, StackHandle, TlsHandle,
         task_runtime,
@@ -332,6 +332,7 @@ pub struct ThreadExtension {
     data: usize,
     ops: &'static ThreadExtensionOps,
     running_policy_applied_hook: Option<RunningPolicyAppliedHook>,
+    scheduler_tick_cpu_time: Option<Arc<SchedulerTickCpuTime>>,
     scheduler_tick_work: Option<SchedulerTickWork>,
 }
 
@@ -350,8 +351,18 @@ impl ThreadExtension {
             data,
             ops,
             running_policy_applied_hook: None,
+            scheduler_tick_cpu_time: None,
             scheduler_tick_work: None,
         }
+    }
+
+    /// Attaches IRQ-safe user/system CPU-time sampling to this thread.
+    ///
+    /// The scheduler retains the capability and charges it directly from each
+    /// periodic tick. No OS callback or deferred task work runs in hard IRQ.
+    pub fn with_scheduler_tick_cpu_time(mut self, accounting: Arc<SchedulerTickCpuTime>) -> Self {
+        self.scheduler_tick_cpu_time = Some(accounting);
+        self
     }
 
     /// Adds a bounded callback for base-policy changes applied to a running thread.
@@ -442,6 +453,14 @@ impl ThreadExtension {
         self.scheduler_tick_work
             .as_ref()
             .map(SchedulerTickWork::gate)
+    }
+
+    /// Clones the IRQ-safe CPU-time sampling capability.
+    ///
+    /// Runtime extension composition uses this to preserve the inner OS
+    /// capability on the outer scheduler-owned extension.
+    pub fn scheduler_tick_cpu_time(&self) -> Option<Arc<SchedulerTickCpuTime>> {
+        self.scheduler_tick_cpu_time.as_ref().map(Arc::clone)
     }
 
     /// Forwards one scheduler-tick task-work callback to this extension.

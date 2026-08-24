@@ -277,6 +277,16 @@ pub fn futex_empty_wake_op_leaves_fixed_buckets_empty() -> bool {
 }
 
 #[cfg(axtest)]
+pub fn process_memory_owner_snapshot_avoids_irq_lock() -> bool {
+    super::task::memory_owner_snapshot_avoids_irq_lock_for_test()
+}
+
+#[cfg(axtest)]
+pub fn process_memory_owner_replacement_preserves_pinned_snapshot() -> bool {
+    super::task::memory_owner_replacement_preserves_pinned_snapshot_for_test()
+}
+
+#[cfg(axtest)]
 pub fn futex_keys_follow_mm_and_backing_identity() -> bool {
     super::task::futex_keys_follow_mm_and_backing_identity_for_test()
 }
@@ -304,6 +314,11 @@ pub fn futex_park_notification_rechecks_condition() -> bool {
 #[cfg(axtest)]
 pub fn futex_wake_completion_is_scheduler_driven() -> bool {
     super::syscall::futex_wake_completion_is_scheduler_driven_for_test()
+}
+
+#[cfg(axtest)]
+pub fn futex_retry_keeps_original_deadline() -> bool {
+    super::syscall::futex_retry_keeps_original_deadline_for_test()
 }
 
 #[cfg(axtest)]
@@ -383,6 +398,11 @@ pub fn dropped_exit_path_lease_keeps_unfinished_work_pending() -> bool {
 }
 
 #[cfg(axtest)]
+pub fn root_namespace_init_owns_shutdown() -> bool {
+    super::task::root_namespace_init_owns_shutdown_for_test()
+}
+
+#[cfg(axtest)]
 pub fn exit_path_completion_precedes_task_transfer() -> bool {
     super::task::exit_path_completion_precedes_task_transfer_for_test()
 }
@@ -453,8 +473,38 @@ pub fn user_kernel_transitions_remain_task_local() -> bool {
 }
 
 #[cfg(axtest)]
+pub fn process_cpu_high_water_preserves_runtime_total() -> bool {
+    super::task::process_cpu_high_water_preserves_runtime_total_for_test()
+}
+
+#[cfg(axtest)]
+pub fn zero_process_cpu_time_delta_avoids_publication() -> bool {
+    super::task::zero_process_cpu_time_delta_avoids_publication_for_test()
+}
+
+#[cfg(axtest)]
+pub fn published_scheduler_identity_check_is_read_only() -> bool {
+    super::task::published_scheduler_identity_check_is_read_only_for_test()
+}
+
+#[cfg(axtest)]
+pub fn inactive_one_shot_flag_consumption_is_read_only() -> bool {
+    super::task::inactive_one_shot_flag_consumption_is_read_only_for_test()
+}
+
+#[cfg(axtest)]
 pub fn inactive_ptrace_syscall_gate_is_lock_free() -> bool {
     super::task::inactive_ptrace_syscall_gate_is_lock_free_for_test()
+}
+
+#[cfg(axtest)]
+pub fn inactive_ptrace_pending_event_gate_is_nonblocking() -> bool {
+    super::task::inactive_ptrace_pending_event_gate_is_nonblocking_for_test()
+}
+
+#[cfg(axtest)]
+pub fn resource_limit_read_is_nonblocking() -> bool {
+    super::task::resource_limit_read_is_nonblocking_for_test()
 }
 
 #[cfg(axtest)]
@@ -764,6 +814,11 @@ pub fn reaping_identity_is_not_publicly_resolvable() -> bool {
 #[cfg(axtest)]
 pub fn pid_identity_state_machine_rules_hold() -> bool {
     super::task::pid_identity_state_machine_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub fn untraced_wait_avoids_root_pid_snapshot() -> bool {
+    super::syscall::untraced_wait_avoids_root_pid_snapshot_for_test()
 }
 
 #[cfg(test)]

@@ -3,8 +3,8 @@ use alloc::sync::Arc;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 
-use super::{AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, pages_in};
-use crate::{StarryResult, sync::PiMutex};
+use super::{Backend, BackendOps, CloneMapContext, MemoryAccounting, TlbGather, pages_in};
+use crate::StarryResult;
 
 /// Linear mapping backend.
 ///
@@ -46,6 +46,7 @@ impl BackendOps for LinearBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
+        _gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         let pa_range =
@@ -59,6 +60,7 @@ impl BackendOps for LinearBackend {
         &self,
         range: VirtAddrRange,
         _acct: Option<&MemoryAccounting>,
+        _gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         let pa_range =
@@ -78,10 +80,7 @@ impl BackendOps for LinearBackend {
         &self,
         _range: VirtAddrRange,
         _flags: MappingFlags,
-        _old_pt: &mut PageTable,
-        _new_pt: &mut PageTable,
-        _new_aspace: &Arc<PiMutex<AddrSpace>>,
-        _acct: CloneMapAccounting<'_>,
+        _context: CloneMapContext<'_>,
     ) -> StarryResult<Backend> {
         Ok(Backend::Linear(self.clone()))
     }

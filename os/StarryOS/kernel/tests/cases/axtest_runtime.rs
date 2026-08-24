@@ -37,6 +37,16 @@ fn dropped_exit_path_lease_keeps_unfinished_work_pending() {
 }
 
 #[axtest]
+fn root_namespace_init_owns_shutdown() {
+    ax_assert!(axtest_exports::root_namespace_init_owns_shutdown());
+}
+
+#[axtest]
+fn untraced_wait_avoids_root_pid_snapshot() {
+    ax_assert!(axtest_exports::untraced_wait_avoids_root_pid_snapshot());
+}
+
+#[axtest]
 fn exit_path_completion_precedes_task_transfer() {
     ax_assert!(axtest_exports::exit_path_completion_precedes_task_transfer());
 }
@@ -112,8 +122,48 @@ fn user_kernel_cpu_time_transitions_stay_task_local() {
 }
 
 #[axtest]
+fn process_cpu_high_water_does_not_double_count_reclassified_residual() {
+    ax_assert!(axtest_exports::process_cpu_high_water_preserves_runtime_total());
+}
+
+#[axtest]
+fn zero_process_cpu_time_delta_does_not_publish_atomic_updates() {
+    ax_assert!(axtest_exports::zero_process_cpu_time_delta_avoids_publication());
+}
+
+#[axtest]
+fn scheduler_switch_identity_check_is_read_only_after_publication() {
+    ax_assert!(axtest_exports::published_scheduler_identity_check_is_read_only());
+}
+
+#[axtest]
+fn inactive_one_shot_flags_do_not_issue_atomic_updates() {
+    ax_assert!(axtest_exports::inactive_one_shot_flag_consumption_is_read_only());
+}
+
+#[axtest]
 fn untraced_syscall_boundary_skips_ptrace_maps() {
     ax_assert!(axtest_exports::inactive_ptrace_syscall_gate_is_lock_free());
+}
+
+#[axtest]
+fn untraced_return_path_does_not_wait_for_pending_ptrace_events() {
+    ax_assert!(axtest_exports::inactive_ptrace_pending_event_gate_is_nonblocking());
+}
+
+#[axtest]
+fn resource_limit_reads_do_not_wait_for_policy_writers() {
+    ax_assert!(axtest_exports::resource_limit_read_is_nonblocking());
+}
+
+#[axtest]
+fn process_memory_owner_snapshot_avoids_irq_lock() {
+    ax_assert!(axtest_exports::process_memory_owner_snapshot_avoids_irq_lock());
+}
+
+#[axtest]
+fn process_memory_owner_replacement_preserves_pinned_snapshot() {
+    ax_assert!(axtest_exports::process_memory_owner_replacement_preserves_pinned_snapshot());
 }
 
 #[axtest]
@@ -149,6 +199,11 @@ fn futex_park_notification_rechecks_condition() {
 #[axtest]
 fn futex_wake_completion_is_scheduler_driven() {
     ax_assert!(axtest_exports::futex_wake_completion_is_scheduler_driven());
+}
+
+#[axtest]
+fn futex_retry_keeps_original_deadline() {
+    ax_assert!(axtest_exports::futex_retry_keeps_original_deadline());
 }
 
 #[axtest]

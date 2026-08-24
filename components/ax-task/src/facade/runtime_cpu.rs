@@ -11,23 +11,27 @@ pub(crate) fn wake_thread_direct(
     system.wake_thread_direct(Arc::clone(core), preferred)
 }
 
-pub(crate) fn wake_thread_from_current_cpu(core: &Arc<ThreadCore>) -> WakeResult {
+pub(crate) fn wake_thread_from_current_cpu(
+    core: &Arc<ThreadCore>,
+    intent: crate::WakeIntent,
+) -> WakeResult {
     let Ok(system) = runtime_task_system() else {
         return WakeResult::Unavailable;
     };
-    system.wake_thread_from_current_cpu(Arc::clone(core))
+    system.wake_thread_from_current_cpu(Arc::clone(core), intent)
 }
 
 pub(crate) fn wake_wait_claim_from_task(
     core: &Arc<ThreadCore>,
     claim: &WaitWakeClaim,
+    intent: crate::WakeIntent,
 ) -> WaitWakeDelivery {
     debug_assert!(!task_runtime::in_hard_irq());
     let Ok(system) = runtime_task_system() else {
         claim.cancel_selected();
         return WaitWakeDelivery::Unavailable;
     };
-    system.wake_wait_claim_from_current_cpu(Arc::clone(core), claim)
+    system.wake_wait_claim_from_current_cpu(Arc::clone(core), claim, intent)
 }
 
 pub(crate) fn runtime_task_system() -> Result<&'static TaskSystem, TaskError> {

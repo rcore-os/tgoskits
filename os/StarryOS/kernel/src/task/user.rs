@@ -91,35 +91,49 @@ pub fn new_user_task(
             // un-interceptable SIGKILL cannot be replaced by a racing `_exit(0)`.
             while check_signals(&curr, &mut uctx, None, None) {}
         }
+        // Linux's tick accounting classifies the interrupted context. Publish
+        // User before the first entry so the initial userspace interval cannot
+        // remain in the unaccounted None state.
+        set_timer_state(thr, TimerState::User);
         while !thr.pending_exit() {
-            let tid = thr.tid();
-            let is_ptraced =
-                thr.proc_data.is_ptrace_traceme() || thr.proc_data.is_ptrace_attached();
-            if thr.proc_data.is_ptrace_singlestep_for(tid) && is_ptraced {
-                #[cfg(any(
-                    target_arch = "riscv64",
-                    target_arch = "aarch64",
-                    target_arch = "loongarch64"
-                ))]
-                {
-                    // An IRQ can return here after the stepped branch reached
-                    // the planted breakpoint PC but before the breakpoint trap
-                    // was delivered. Report that as the completed single-step
-                    // instead of restoring the breakpoint and running past it.
-                    if crate::syscall::ptrace_complete_singlestep_breakpoint_if_at_ip(
-                        &thr.proc_data,
-                        tid,
-                        &mut uctx,
-                    ) && ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx).is_some()
+            if thr.proc_data.has_ptrace_singlestep_work() {
+                let tid = thr.tid();
+                let is_ptraced =
+                    thr.proc_data.is_ptrace_traceme() || thr.proc_data.is_ptrace_attached();
+                if thr.proc_data.is_ptrace_singlestep_for(tid) && is_ptraced {
+                    #[cfg(any(
+                        target_arch = "riscv64",
+                        target_arch = "aarch64",
+                        target_arch = "loongarch64"
+                    ))]
                     {
-                        continue;
+                        // An IRQ can return here after the stepped branch reached
+                        // the planted breakpoint PC but before the breakpoint trap
+                        // was delivered. Report that as the completed single-step
+                        // instead of restoring the breakpoint and running past it.
+                        if crate::syscall::ptrace_complete_singlestep_breakpoint_if_at_ip(
+                            &thr.proc_data,
+                            tid,
+                            &mut uctx,
+                        ) && ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx).is_some()
+                        {
+                            continue;
+                        }
                     }
-                }
 
-                crate::syscall::ptrace_setup_singlestep(&thr.proc_data, tid, &mut uctx);
+                    crate::syscall::ptrace_setup_singlestep(&thr.proc_data, tid, &mut uctx);
+                }
             }
 
             let reason = uctx.run();
+
+            // The periodic tick interrupted userspace while User was still
+            // published. Settle that sample before switching the lightweight
+            // mode to Kernel. Syscall entry itself intentionally does no clock
+            // accounting, matching Linux's non-vtime configuration.
+            if matches!(reason, ReturnReason::Interrupt) {
+                thr.account_cpu_time_now();
+            }
 
             set_timer_state(thr, TimerState::Kernel);
 
@@ -133,8 +147,8 @@ pub fn new_user_task(
 
             match reason {
                 ReturnReason::Syscall => {
-                    let ptrace_trace = thr.proc_data.ptrace.syscall_trace_if_active(tid);
-                    if matches!(ptrace_trace, Some(SyscallTraceState::Entry))
+                    let ptrace_trace = thr.proc_data.ptrace.syscall_trace_if_active(|| thr.tid());
+                    if matches!(ptrace_trace, Some((_, SyscallTraceState::Entry)))
                         && let Some(resume_signo) =
                             ptrace_syscall_stop_current(thr, Signo::SIGTRAP, &mut uctx, saved_sysno)
                     {
@@ -153,7 +167,7 @@ pub fn new_user_task(
                     }
 
                     handle_syscall(&curr, &mut uctx);
-                    if ptrace_trace.is_some() {
+                    if let Some((tid, _)) = ptrace_trace {
                         if stop_for_pending_ptrace_event(thr, &mut uctx) {
                             continue;
                         }
@@ -387,7 +401,11 @@ fn ptrace_exit_event_code(sysno: usize, arg0: usize) -> Option<i32> {
 }
 
 fn stop_for_pending_ptrace_event(thr: &super::Thread, uctx: &mut UserContext) -> bool {
-    thr.proc_data.has_ptrace_pending_event_for(thr.tid())
+    if !thr.proc_data.has_ptrace_pending_event() {
+        return false;
+    }
+    let tid = thr.tid();
+    thr.proc_data.has_ptrace_pending_event_for(tid)
         && ptrace_stop_current(thr, Signo::SIGTRAP, uctx).is_some()
 }
 

@@ -1,7 +1,5 @@
 //! `rq->clock_task` dispatch accounting and GRUB charge calculation.
 
-use alloc::sync::Arc;
-
 use super::{CurrentClassState, CurrentDispatch};
 use crate::{SchedulerTimestamp, SchedulingEntity};
 
@@ -9,7 +7,6 @@ struct DispatchChargeState<'a> {
     accumulated_deadline_overrun: &'a mut bool,
     accounted_until_ns: &'a mut u64,
     charged_runtime_ns: &'a mut u64,
-    runtime_core: &'a crate::thread::ThreadCore,
 }
 
 impl CurrentDispatch {
@@ -19,7 +16,6 @@ impl CurrentDispatch {
         now_ns: u64,
         reclaimed_ns: u64,
     ) -> DispatchCharge {
-        let runtime_core = Arc::clone(&self.task.runtime_core);
         let Some(CurrentClassState::Owned(active)) = &mut self.class.schedule else {
             crate::runtime::task_runtime::fatal_invariant(
                 0x4355_0001,
@@ -32,7 +28,6 @@ impl CurrentDispatch {
                 accumulated_deadline_overrun: &mut self.class.deadline_overrun,
                 accounted_until_ns: &mut self.accounting.accounted_until_ns,
                 charged_runtime_ns: &mut self.accounting.charged_runtime_ns,
-                runtime_core: &runtime_core,
             },
             runtime_ns,
             now_ns,
@@ -47,7 +42,6 @@ impl CurrentDispatch {
         now_ns: u64,
         reclaimed_ns: u64,
     ) -> DispatchCharge {
-        let runtime_core = Arc::clone(&self.task.runtime_core);
         let Some(CurrentClassState::Linked { policy: _ }) = self.class.schedule else {
             crate::runtime::task_runtime::fatal_invariant(
                 0x4355_0002,
@@ -60,7 +54,6 @@ impl CurrentDispatch {
                 accumulated_deadline_overrun: &mut self.class.deadline_overrun,
                 accounted_until_ns: &mut self.accounting.accounted_until_ns,
                 charged_runtime_ns: &mut self.accounting.charged_runtime_ns,
-                runtime_core: &runtime_core,
             },
             runtime_ns,
             now_ns,
@@ -77,7 +70,6 @@ impl CurrentDispatch {
     ) -> DispatchCharge {
         *state.charged_runtime_ns = state.charged_runtime_ns.saturating_add(runtime_ns);
         *state.accounted_until_ns = now_ns;
-        state.runtime_core.charge_runtime(runtime_ns, now_ns);
         let (slice_expired, deadline_overrun, deadline_replenished) = {
             let mut slice_expired = entity.charge(runtime_ns, 0, reclaimed_ns);
             let deadline_overrun = slice_expired
@@ -113,12 +105,15 @@ impl CurrentDispatch {
         self.accounting.accounted_until_ns = now_ns;
     }
 
-    pub(crate) fn finish_runtime_accounting(&self, now_ns: u64) {
-        self.runtime_core().finish_runtime_accounting(now_ns);
+    pub(crate) fn finish_runtime_interval(&mut self) {
+        let runtime_ns = core::mem::take(&mut self.accounting.charged_runtime_ns);
+        self.task.runtime_core.commit_runtime_interval(runtime_ns);
     }
 
-    pub(crate) fn take_charged_runtime_ns(&mut self) -> u64 {
-        core::mem::take(&mut self.accounting.charged_runtime_ns)
+    pub(crate) fn runtime_interval_ns(&self, now_ns: u64) -> u64 {
+        self.accounting
+            .charged_runtime_ns
+            .saturating_add(self.unaccounted_runtime(now_ns))
     }
 
     pub(crate) fn take_deadline_overrun(&mut self) -> bool {

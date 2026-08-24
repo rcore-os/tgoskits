@@ -50,6 +50,12 @@ enum SchedulerDeadlineRqClockEvent {
     After(core::time::Duration),
 }
 
+impl SchedulerDeadlineRqObservation {
+    pub(crate) const fn clock_event_due(self) -> bool {
+        matches!(self.clock_event, Some(SchedulerDeadlineRqClockEvent::Due))
+    }
+}
+
 impl SchedulerDeadlineRqClockEvent {
     fn physical_deadline(self, monotonic_now: MonotonicInstant) -> MonotonicDeadline {
         match self {
@@ -83,6 +89,67 @@ impl SchedulerDeadlinePublicationOutcome {
 }
 
 impl CpuLocal {
+    /// Returns whether every deadline source already has the publication that
+    /// this rq observation would derive without sampling the clock.
+    ///
+    /// Linux does not restart hrtick or the RT period timer for a plain
+    /// FIFO-to-FIFO switch. A class runtime event is relative to rq clock and
+    /// therefore still requires a fresh sample. Fair balance and the root RT
+    /// period are already absolute deadlines, so the coherent deadline-base
+    /// snapshot can prove that they and the task/kernel timer heads are
+    /// unchanged. A concurrent timer writer publishes its changed base, while
+    /// a newly activated or migrated root RT period retains owner work for a
+    /// later derivation.
+    pub(crate) fn can_reuse_scheduler_deadline_for_rq_observation(
+        &self,
+        rq_observation: SchedulerDeadlineRqObservation,
+    ) -> bool {
+        if rq_observation.clock_event.is_some() {
+            return false;
+        }
+        let fair_balance = rq_observation
+            .has_periodic_fair_balance_work
+            .then(|| self.dispatch.fair_balance_deadline())
+            .flatten();
+        let rt_period = self.rt_bandwidth.deadline_for(self.owner);
+        let non_timer = [fair_balance, rt_period].into_iter().flatten().min();
+        self.remote.deadline_publication_snapshot_matches(non_timer)
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn exercise_fifo_switch_rt_deadline_for_test(&self) -> (bool, u64, u64) {
+        const PERIOD_NS: u64 = 1_000;
+        const RUNTIME_NS: u64 = 950;
+
+        {
+            let mut bandwidth = self.remote.lock_rt_bandwidth();
+            bandwidth.enable(PERIOD_NS, RUNTIME_NS);
+            assert!(!bandwidth.account(100));
+        }
+        let now = MonotonicInstant::from_nanos(100)
+            .expect("a task-test monotonic sample must be representable");
+        assert!(self.rt_bandwidth.activate(self.owner, || now));
+        let period_before = self
+            .rt_bandwidth
+            .deadline_for(self.owner)
+            .expect("an active RT period must publish its deadline")
+            .as_nanos();
+        let config = TaskSystemConfig::new(1).with_rt_bandwidth(PERIOD_NS, RUNTIME_NS);
+        let run_queue = CpuRunQueueState::fifo_handoff_current_for_scheduler_deadline_test(config);
+        let observation = self.scheduler_deadline_rq_observation_in_run_queue(&run_queue);
+        let period_after = self
+            .rt_bandwidth
+            .deadline_for(self.owner)
+            .expect("an RT quota observation must not consume the root period")
+            .as_nanos();
+
+        (
+            observation.clock_event.is_some(),
+            period_before,
+            period_after,
+        )
+    }
+
     #[cfg(feature = "task-test-hooks")]
     pub(crate) fn exercise_due_scheduler_deadline_republication_for_test(
         mut self: Pin<&mut Self>,
@@ -210,7 +277,7 @@ impl CpuLocal {
         let this = self.as_ref().get_ref();
         // Linux's hrtick callback returns HRTIMER_NORESTART after task_tick().
         // Once that callback has published a sticky preemption request, the
-        // fired runtime/RT-quota edge has left the physical timer base. The
+        // fired class-runtime edge has left the physical timer base. The
         // scheduler claim is the next owner and will derive a fresh deadline
         // from the selected rq state before returning with IRQs enabled.
         let scheduler = (!this.remote.preemption_requested())
@@ -342,8 +409,9 @@ impl CpuLocal {
     fn record_scheduler_deadline_derivation(&self, source: SchedulerDeadlineDerivationSource) {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_scheduler_deadline_derivation(source);
-        #[cfg(any(test, all(axtest, feature = "axtest")))]
-        self.remote.record_scheduler_deadline_derivation_for_test();
+        #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
+        self.remote
+            .record_scheduler_deadline_derivation_for_test(source);
         #[cfg(not(feature = "qperf-metrics"))]
         let _ = source;
     }
@@ -424,26 +492,15 @@ impl CpuLocal {
         let current_thread = run_queue.current_thread();
         let idle = run_queue.idle();
         let current_is_idle = current_thread.is_some() && current_thread == idle;
-        if !current_is_idle && let Some(dispatch) = run_queue.current() {
-            if run_queue.current_runtime_timer_required()
-                && let Some(delta_ns) = run_queue.current_runtime_timer_delta_ns()
-            {
-                if delta_ns == 0 {
-                    due = true;
-                } else {
-                    next = earliest(next, core::time::Duration::from_nanos(delta_ns));
-                }
-            }
-            if dispatch.is_rt()
-                && !dispatch.rt_quota_exempt()
-                && !run_queue.rt_is_throttled()
-                && let Some(remaining) = self.remote.lock_rt_bandwidth().runtime_until_throttle()
-            {
-                if remaining == 0 {
-                    due = true;
-                } else {
-                    next = earliest(next, core::time::Duration::from_nanos(remaining));
-                }
+        if !current_is_idle
+            && run_queue.current().is_some()
+            && run_queue.current_runtime_timer_required()
+            && let Some(delta_ns) = run_queue.current_runtime_timer_delta_ns()
+        {
+            if delta_ns == 0 {
+                due = true;
+            } else {
+                next = earliest(next, core::time::Duration::from_nanos(delta_ns));
             }
         }
         let clock_event = if due {

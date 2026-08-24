@@ -12,7 +12,8 @@ use core::{
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::time::monotonic_time;
 use ax_std::os::arceos::task::{
-    self as scheduler, CurrentParkStart, MonotonicInstant, ThreadWakeBatch,
+    self as scheduler, CurrentParkDisposition, CurrentParkStart, MonotonicDeadline,
+    MonotonicInstant, ThreadWakeBatch,
 };
 
 use crate::{
@@ -83,6 +84,10 @@ fn classify_park_notification(
     } else {
         Ok(ParkNotificationAction::RecheckCondition)
     }
+}
+
+fn park_disposition_requires_condition_recheck(disposition: CurrentParkDisposition) -> bool {
+    disposition == CurrentParkDisposition::NotifiedBeforeBlock
 }
 
 fn finish_infallible_wait(result: Result<bool, FutexWaitError>) -> crate::StarryResult<bool> {
@@ -444,6 +449,10 @@ impl WaitQueue {
             {
                 Self::cancel_waiter(self, &task, generation);
                 return Err(FutexAccessError::Operation(crate::Errno::ETIMEDOUT).into());
+            }
+            if park_disposition_requires_condition_recheck(resume.disposition()) {
+                Self::cancel_waiter(self, &task, generation);
+                return Err(FutexWaitError::SchedulerNotification);
             }
 
             park = match self.begin_repark(&task, generation)? {
@@ -867,14 +876,13 @@ impl ResolvedFutex {
         }
     }
 
-    pub(crate) fn wait_nofault_for(
+    pub(crate) fn wait_nofault_until(
         &self,
         task: &UserTaskRef,
         bitset: u32,
-        timeout: Option<Duration>,
+        deadline: Option<MonotonicDeadline>,
         condition: impl FnOnce() -> Result<bool, FutexAccessError> + Unpin,
     ) -> Result<bool, FutexWaitError> {
-        let deadline = timeout.map(|timeout| scheduler_monotonic_now().deadline_after(timeout));
         let task = task.clone();
         let (_, bucket) = self.domain.domain().bucket(&self.key);
         let (generation, mut park) = {
@@ -944,6 +952,10 @@ impl ResolvedFutex {
             {
                 cancel_futex_waiter(&task, generation);
                 return Err(FutexAccessError::Operation(crate::Errno::ETIMEDOUT).into());
+            }
+            if park_disposition_requires_condition_recheck(resume.disposition()) {
+                cancel_futex_waiter(&task, generation);
+                return Err(FutexWaitError::SchedulerNotification);
             }
 
             park = match scheduler::begin_current_park() {
@@ -1427,4 +1439,6 @@ pub(crate) fn park_notification_rechecks_condition_for_test() -> bool {
             finish_infallible_wait(Err(FutexWaitError::SchedulerNotification)),
             Ok(false)
         )
+        && park_disposition_requires_condition_recheck(CurrentParkDisposition::NotifiedBeforeBlock)
+        && !park_disposition_requires_condition_recheck(CurrentParkDisposition::BlockedAndResumed)
 }

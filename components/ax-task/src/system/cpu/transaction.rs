@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::{
-    BalanceScan, EnqueueReason, FairEntity, PickedThread, QueuedThreadSnapshot, RtEligibility,
+    BalanceScan, EnqueueReason, FairEntity, PickTaskResult, PickedThread, QueuedThreadSnapshot,
+    RtEligibility,
     system::{
         task_system::{SwitchEndpoint, TaskSystem},
         thread_sched::{SchedulerPlacement, ThreadSchedCell, ThreadSchedState},
@@ -14,12 +15,13 @@ use crate::{
 ///
 /// `Queued { outgoing: true }` is the legal switch-handoff window where the
 /// task has left `rq->curr` but still retains its `p->on_cpu` stack claim.
-/// Keeping this state typed prevents callers from reconstructing current
-/// identity from placement metadata.
+/// `DelayedFair` keeps Linux's distinct `on_rq && sched_delayed` state from
+/// being mistaken for runnable queue membership by policy and PI updates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::system) enum OwnerRqTaskState {
     Current,
     Queued { outgoing: bool },
+    DelayedFair { outgoing: bool },
     Inactive,
 }
 
@@ -34,6 +36,10 @@ impl OwnerRqTaskState {
 
     pub(in crate::system) const fn is_runnable(self) -> bool {
         matches!(self, Self::Current | Self::Queued { .. })
+    }
+
+    pub(in crate::system) const fn is_delayed_fair(self) -> bool {
+        matches!(self, Self::DelayedFair { .. })
     }
 }
 
@@ -103,6 +109,31 @@ pub(crate) struct OwnerRqTxn<'a> {
     request: Option<SchedulerRequestClaim>,
     context: OwnerRqContext,
     finished: bool,
+}
+
+/// Raw owner-rq lock ownership inherited by an incoming switch tail.
+///
+/// Linux carries `rq->lock` through `switch_to()` and releases it only after
+/// `finish_task(prev)` clears `prev->on_cpu`. This token represents the same
+/// bounded ownership interval without retaining mutable access to rq state.
+#[derive(Debug)]
+pub(crate) struct RqSwitchBaton {
+    owner: CpuId,
+    _raw: RawTicketBaton<CpuRunQueueState>,
+}
+
+impl RqSwitchBaton {
+    pub(crate) const fn owner(&self) -> CpuId {
+        self.owner
+    }
+
+    pub(crate) fn finish(self, owner: CpuId) -> Result<(), TaskError> {
+        if self.owner != owner {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        drop(self);
+        Ok(())
+    }
 }
 
 impl<'a> OwnerRqTxn<'a> {
@@ -268,6 +299,10 @@ impl<'a> OwnerRqTxn<'a> {
         self.run_queue().current_scheduling_entity()
     }
 
+    pub(crate) fn current_fair_contender(&self) -> Option<FairEntity> {
+        self.run_queue().current_fair_contender()
+    }
+
     pub(crate) fn current_scheduling_entity_mut(&mut self) -> Option<&mut SchedulingEntity> {
         self.run_queue_mut().current_scheduling_entity_mut()
     }
@@ -284,14 +319,31 @@ impl<'a> OwnerRqTxn<'a> {
     }
 
     pub(crate) fn wakeup_preempt(
-        &self,
+        &mut self,
         wakee: ThreadId,
         policy: SchedulePolicy,
         entity: &SchedulingEntity,
         fair_virtual_time: u64,
     ) -> WakePreemptionDecision {
-        self.run_queue()
+        self.run_queue_mut()
             .wakeup_preempt(wakee, policy, entity, fair_virtual_time)
+    }
+
+    pub(crate) fn wakeup_preempt_with_intent(
+        &mut self,
+        wakee: ThreadId,
+        policy: SchedulePolicy,
+        entity: &SchedulingEntity,
+        fair_virtual_time: u64,
+        context: WakePreemptionContext,
+    ) -> WakePreemptionDecision {
+        self.run_queue_mut().wakeup_preempt_with_intent(
+            wakee,
+            policy,
+            entity,
+            fair_virtual_time,
+            context,
+        )
     }
 
     pub(crate) fn capture_current_fair_migration(
@@ -321,6 +373,8 @@ impl<'a> OwnerRqTxn<'a> {
                 task_runtime::fatal_invariant(0x5251_1011, thread.as_u64() as usize);
             }
             OwnerRqTaskState::Current
+        } else if queued && self.is_delayed_fair(thread) {
+            OwnerRqTaskState::DelayedFair { outgoing: on_cpu }
         } else if queued {
             OwnerRqTaskState::Queued { outgoing: on_cpu }
         } else {
@@ -374,6 +428,40 @@ impl<'a> OwnerRqTxn<'a> {
             .deactivate_unlinked_current(thread);
     }
 
+    pub(crate) fn delay_dequeue_unlinked_current(
+        &mut self,
+        thread: ThreadId,
+        timing_granularity_ns: u64,
+        force: bool,
+    ) -> Option<SchedulingEntity> {
+        self.run_queue_mut()
+            .delay_dequeue_unlinked_current(thread, timing_granularity_ns, force)
+    }
+
+    pub(crate) fn is_delayed_fair(&self, thread: ThreadId) -> bool {
+        self.run_queue().is_delayed_fair(thread)
+    }
+
+    pub(crate) fn finish_delayed_fair_dequeue(
+        &mut self,
+        thread: ThreadId,
+        timing_granularity_ns: u64,
+    ) -> QueuedThread {
+        self.run_queue_mut()
+            .finish_delayed_fair_dequeue(thread, timing_granularity_ns)
+            .unwrap_or_else(|| task_runtime::fatal_invariant(0x5251_1014, thread.as_u64() as usize))
+    }
+
+    pub(crate) fn reactivate_delayed_fair(
+        &mut self,
+        thread: ThreadId,
+        timing_granularity_ns: u64,
+    ) -> OwnerRqEnqueue {
+        self.run_queue_mut()
+            .reactivate_delayed_fair(thread, timing_granularity_ns)
+            .unwrap_or_else(|| task_runtime::fatal_invariant(0x5251_1015, thread.as_u64() as usize))
+    }
+
     pub(crate) fn throttle_current_deadline(
         &mut self,
         thread: ThreadId,
@@ -396,6 +484,52 @@ impl<'a> OwnerRqTxn<'a> {
         self.scheduler_queue_mut()
             .reclassify_task(thread)
             .unwrap_or_else(|| task_runtime::fatal_invariant(0x5251_1008, thread.as_u64() as usize))
+    }
+
+    pub(crate) fn take_delayed_fair_for_update(&mut self, thread: ThreadId) -> QueuedThread {
+        self.run_queue_mut()
+            .take_delayed_fair_for_update(thread)
+            .unwrap_or_else(|| task_runtime::fatal_invariant(0x5251_1016, thread.as_u64() as usize))
+    }
+
+    pub(crate) fn restore_delayed_fair_after_update(
+        &mut self,
+        thread: QueuedThread,
+    ) -> SchedulingEntity {
+        self.run_queue_mut()
+            .restore_delayed_fair_after_update(thread)
+    }
+
+    pub(crate) fn finish_detached_delayed_fair(
+        &mut self,
+        active: &mut ActiveSchedulingState,
+        timing_granularity_ns: u64,
+    ) {
+        self.run_queue_mut()
+            .finish_detached_delayed_fair(active, timing_granularity_ns);
+    }
+
+    pub(crate) fn enqueue_delayed_fair_transfer(
+        &mut self,
+        thread: QueuedThread,
+        current_fair: Option<FairEntity>,
+    ) -> OwnerRqEnqueue {
+        let id = thread.id;
+        self.run_queue_mut()
+            .enqueue_delayed_fair_transfer(thread, current_fair)
+            .unwrap_or_else(|_| task_runtime::fatal_invariant(0x5251_1017, id.as_u64() as usize))
+    }
+
+    pub(crate) fn enqueue_reactivated_delayed_fair_transfer(
+        &mut self,
+        thread: QueuedThread,
+        current_fair: Option<FairEntity>,
+        timing_granularity_ns: u64,
+    ) -> OwnerRqEnqueue {
+        let id = thread.id;
+        self.run_queue_mut()
+            .enqueue_reactivated_delayed_fair_transfer(thread, current_fair, timing_granularity_ns)
+            .unwrap_or_else(|_| task_runtime::fatal_invariant(0x5251_1018, id.as_u64() as usize))
     }
 
     pub(crate) fn enqueue_task(
@@ -479,8 +613,13 @@ impl<'a> OwnerRqTxn<'a> {
             .detach_for_transfer(thread, current_fair, timing_granularity_ns)
     }
 
-    pub(crate) fn pick_next_task(&mut self, rt_eligibility: RtEligibility) -> Option<PickedThread> {
-        self.scheduler_queue_mut().pick_next_task(rt_eligibility)
+    pub(crate) fn pick_next_task(
+        &mut self,
+        rt_eligibility: RtEligibility,
+        skip_delayed: bool,
+    ) -> Option<PickTaskResult> {
+        self.scheduler_queue_mut()
+            .pick_next_task(rt_eligibility, skip_delayed)
     }
 
     pub(crate) fn rollback_pick(&mut self, picked: PickedThread) {
@@ -608,24 +747,47 @@ impl<'a> OwnerRqTxn<'a> {
 
     pub(crate) fn charge_current(&mut self, runtime_ns: u64, reclaimed_ns: u64) -> DispatchCharge {
         let deadline_extra_bw_scaled = self.remote.deadline_extra_bw_scaled();
-        let accounting = self
+        let update = self
+            .run_queue_mut()
+            .update_current(runtime_ns, reclaimed_ns, deadline_extra_bw_scaled)
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x5251_1001, self.remote.owner().as_u32() as usize)
+            });
+        self.apply_current_update(runtime_ns, update)
+    }
+
+    pub(crate) fn task_tick_current(
+        &mut self,
+        runtime_ns: u64,
+        reclaimed_ns: u64,
+    ) -> DispatchCharge {
+        let deadline_extra_bw_scaled = self.remote.deadline_extra_bw_scaled();
+        let update = self
             .run_queue_mut()
             .task_tick_current(runtime_ns, reclaimed_ns, deadline_extra_bw_scaled)
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5251_1001, self.remote.owner().as_u32() as usize)
             });
-        match accounting {
-            RqCurrentTick::DedicatedIdle => DispatchCharge::default(),
-            RqCurrentTick::Task {
+        self.apply_current_update(runtime_ns, update)
+    }
+
+    fn apply_current_update(&mut self, runtime_ns: u64, update: RqCurrentUpdate) -> DispatchCharge {
+        match update {
+            RqCurrentUpdate::DedicatedIdle => DispatchCharge::default(),
+            RqCurrentUpdate::Task {
                 charge,
                 request_reschedule,
                 realtime,
                 rt_quota_exempt,
             } => {
+                let already_throttled = self.run_queue().rt_is_throttled();
                 let rt_throttled = realtime
-                    && self
-                        .system
-                        .charge_rt_runtime(self.remote.owner(), runtime_ns);
+                    && self.system.rt_bandwidth_enabled()
+                    && self.system.charge_rt_runtime(
+                        self.remote.owner(),
+                        runtime_ns,
+                        already_throttled,
+                    );
                 if rt_throttled {
                     self.run_queue_mut().set_rt_throttled(true);
                 }
@@ -659,6 +821,17 @@ impl<'a> OwnerRqTxn<'a> {
             })
             .unaccounted_runtime(now_ns);
         self.charge_current(runtime_ns, reclaimed_ns)
+    }
+
+    pub(crate) fn task_tick_current_until(&mut self, reclaimed_ns: u64) -> DispatchCharge {
+        let now_ns = self.clock.task().as_nanos();
+        let runtime_ns = self
+            .current()
+            .unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x5251_1002, self.remote.owner().as_u32() as usize)
+            })
+            .unaccounted_runtime(now_ns);
+        self.task_tick_current(runtime_ns, reclaimed_ns)
     }
 
     /// Commits every rq-derived publication exactly once and releases the rq.
@@ -721,6 +894,42 @@ impl<'a> OwnerRqTxn<'a> {
         self.finished = true;
         drop(self.run_queue.take());
         remote.acknowledge_scheduler_request(claim);
+    }
+
+    /// Publishes the selected rq state but transfers its raw lock to switch
+    /// tail instead of releasing it in the outgoing scheduler context.
+    ///
+    /// The scheduler request is acknowledged while rq remains locked. A newer
+    /// request generation is therefore preserved for the next pass, while the
+    /// decision's exact claim cannot race the physical switch handoff.
+    pub(crate) fn commit_and_handoff_scheduler_request(mut self) -> RqSwitchBaton {
+        if self.context != OwnerRqContext::SchedulerFrame {
+            task_runtime::fatal_invariant(0x5251_1011, self.remote.owner().as_u32() as usize);
+        }
+        let claim = self
+            .request
+            .take()
+            .expect("a scheduler rq transaction must merge its decision claim");
+        let remote = self.remote;
+        let run_queue = self
+            .run_queue
+            .as_ref()
+            .expect("an unfinished rq transaction must retain its lock");
+        self.system.publish_run_queue_summary(remote, run_queue);
+        self.finished = true;
+        let guard = self
+            .run_queue
+            .take()
+            .expect("an unfinished rq transaction must retain its lock");
+        remote.acknowledge_scheduler_request(claim);
+        // SAFETY: scheduler-frame construction guarantees that this guard has
+        // no owned irqsave scope. CpuLocal retains both the lock allocation and
+        // the outer IRQ-off scheduler baton until switch-tail completion.
+        let raw = unsafe { guard.into_raw_baton() };
+        RqSwitchBaton {
+            owner: remote.owner(),
+            _raw: raw,
+        }
     }
 }
 

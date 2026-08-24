@@ -327,34 +327,70 @@ fn waitable_processes(
             .collect::<Vec<_>>(),
     };
 
-    for data in processes() {
-        let traced = data
-            .ptrace_tracer_identity()
-            .is_some_and(|identity| identity.id() == tracer);
-        let proc = data.proc.clone();
-        if traced
-            && target.matches_process_or_thread(&proc)
-            && filter.matches_process(&proc, current_tid)
-            && !candidates
-                .iter()
-                .any(|candidate| candidate.pid() == proc.pid())
-        {
-            candidates.push(proc);
+    // Linux walks the waiter's local `children` and `ptraced` lists. Until
+    // Starry grows the same reverse ptrace index, keep the global lookup only
+    // as a traced-process slow path. The identity gate is sticky and is
+    // published before any tracee points at this tracer, so false is an
+    // authoritative reason to skip both root PID snapshots.
+    if proc.identity().may_have_ptrace_tracees() {
+        for data in processes() {
+            let traced = data
+                .ptrace_tracer_identity()
+                .is_some_and(|identity| identity.id() == tracer);
+            let proc = data.proc.clone();
+            if traced
+                && target.matches_process_or_thread(&proc)
+                && filter.matches_process(&proc, current_tid)
+                && !candidates
+                    .iter()
+                    .any(|candidate| candidate.pid() == proc.pid())
+            {
+                candidates.push(proc);
+            }
         }
-    }
 
-    for zombie in traced_zombies_for(tracer) {
-        if target.matches(&zombie)
-            && filter.matches_process(&zombie, current_tid)
-            && !candidates
-                .iter()
-                .any(|candidate| candidate.pid() == zombie.pid())
-        {
-            candidates.push(zombie);
+        for zombie in traced_zombies_for(tracer) {
+            if target.matches(&zombie)
+                && filter.matches_process(&zombie, current_tid)
+                && !candidates
+                    .iter()
+                    .any(|candidate| candidate.pid() == zombie.pid())
+            {
+                candidates.push(zombie);
+            }
         }
     }
 
     candidates
+}
+
+#[cfg(axtest)]
+pub(crate) fn untraced_wait_avoids_root_pid_snapshot_for_test() -> bool {
+    use crate::task::{new_test_pid_namespace, new_test_process_identity};
+
+    let namespace = new_test_pid_namespace();
+    let (identity, tgid) = new_test_process_identity(&namespace);
+    let process = Process::new_for_axtest(identity.clone());
+    ROOT_PID_NS.reset_published_members_snapshot_calls_for_test();
+
+    let candidates = waitable_processes(
+        &process,
+        &WaitTarget::Any,
+        identity.id(),
+        TidNumber::from(process.pid().pid_number()),
+        WaitChildFilter {
+            wall: true,
+            clone: false,
+            no_thread: false,
+        },
+    );
+    let snapshot_calls = ROOT_PID_NS.published_members_snapshot_calls_for_test();
+
+    drop(candidates);
+    drop(process);
+    identity.mark_task_exited().complete();
+    tgid.release();
+    snapshot_calls == 0
 }
 
 pub fn sys_waitpid(

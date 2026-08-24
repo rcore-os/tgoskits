@@ -486,7 +486,7 @@ mod tests {
     fn test_core(id: ThreadId) -> Arc<ThreadCore> {
         let policy = SchedulePolicy::default();
         let sched = Arc::new(ThreadSchedCell::new_test(id, policy));
-        Arc::new(ThreadCore::new(id, policy, sched, None, None, None))
+        Arc::new(ThreadCore::new(id, policy, sched, None, None, None, None))
     }
 
     fn key(primary: u64) -> PiWaitKey {

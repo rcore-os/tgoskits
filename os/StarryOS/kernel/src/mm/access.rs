@@ -682,6 +682,8 @@ fn prepare_user_memory(
     }
     check_access(start, len)?;
     debug_assert_ne!(len, 0, "empty user-memory ranges require no preparation");
+    #[cfg(feature = "uaccess-lock-regression")]
+    super::record_eager_user_memory_preparation();
 
     let start = VirtAddr::from(start);
     let end = start + len;
@@ -743,13 +745,15 @@ unsafe impl VmIo for UserMemoryProvider<'_> {
         if buf.is_empty() {
             return Ok(());
         }
-        prepare_user_memory(self.task, "read", start, buf.len(), MappingFlags::READ)?;
+        check_access(start, buf.len())?;
         let failed_at = access_user_memory(self.task, || unsafe {
             user_copy(buf.as_mut_ptr() as *mut _, start as _, buf.len())
         })?;
         if unlikely(failed_at != 0) {
             Err(VmError::AccessDenied)
         } else {
+            #[cfg(feature = "uaccess-lock-regression")]
+            super::record_user_copy_completed();
             Ok(())
         }
     }
@@ -758,13 +762,15 @@ unsafe impl VmIo for UserMemoryProvider<'_> {
         if buf.is_empty() {
             return Ok(());
         }
-        prepare_user_memory(self.task, "write", start, buf.len(), MappingFlags::WRITE)?;
+        check_access(start, buf.len())?;
         let failed_at = access_user_memory(self.task, || unsafe {
             user_copy(start as _, buf.as_ptr() as *const _, buf.len())
         })?;
         if unlikely(failed_at != 0) {
             Err(VmError::AccessDenied)
         } else {
+            #[cfg(feature = "uaccess-lock-regression")]
+            super::record_user_copy_completed();
             Ok(())
         }
     }

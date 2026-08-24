@@ -58,7 +58,17 @@ struct RootDomainOverloadMask {
 #[derive(Debug)]
 struct RootDomainPushIterator {
     state: PreemptTicketLock<RootDomainPushState>,
+    /// Zero means no published target; otherwise this is `CpuId + 1`.
+    ///
+    /// The serialized state remains authoritative for claim and completion.
+    /// This atomic mirrors only the Linux `irq_work`-style fact needed by the
+    /// ordinary switch path, so an unrelated CPU never waits on `rto_lock` to
+    /// discover that it has no push callback to run.
+    published_target: AtomicUsize,
 }
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+static ROOT_PUSH_STATE_LOCK_ACQUISITIONS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RootDomainPushClass {
@@ -224,10 +234,33 @@ impl RootDomain {
         }
     }
 
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
+    pub(super) fn push_requested_generation_for_test(&self, class: RootDomainPushClass) -> u64 {
+        self.push_iterator(class).lock_state().requested_generation
+    }
+
+    #[cfg(any(test, all(axtest, feature = "axtest")))]
+    pub(super) fn push_target_pending_lock_acquisitions_for_test(
+        &self,
+        source: CpuId,
+    ) -> (bool, usize) {
+        ROOT_PUSH_STATE_LOCK_ACQUISITIONS.store(0, Ordering::Relaxed);
+        let pending = self.push_target_pending(source);
+        let acquisitions = ROOT_PUSH_STATE_LOCK_ACQUISITIONS.load(Ordering::Relaxed);
+        (pending, acquisitions)
+    }
+
     pub(super) fn request_rt_deadline_push(&self, class: RootDomainPushClass, requester: CpuId) {
+        // Linux gates `pull_rt_task()`/`pull_dl_task()` on the root-domain
+        // overload count before starting or extending the serialized push
+        // iterator. A priority drop with no pushable source is not work and
+        // must not contend on the iterator or create a phantom generation.
+        if !self.overload.any_class(class) {
+            return;
+        }
         let push = self.push_iterator(class);
         let target = {
-            let mut state = push.state.lock();
+            let mut state = push.lock_state();
             state.requested_generation = state
                 .requested_generation
                 .checked_add(1)
@@ -246,21 +279,18 @@ impl RootDomain {
     pub(super) fn push_target_pending(&self, source: CpuId) -> bool {
         [RootDomainPushClass::Deadline, RootDomainPushClass::Realtime]
             .into_iter()
-            .any(|class| {
-                matches!(
-                    self.push_iterator(class).state.lock().phase,
-                    RootDomainPushPhase::Published(target) if target == source
-                )
-            })
+            .any(|class| self.push_iterator(class).has_published_target(source))
     }
 
     pub(super) fn claim_rt_deadline_push(&self, source: CpuId) -> Option<RootDomainPushClaim> {
         for class in [RootDomainPushClass::Deadline, RootDomainPushClass::Realtime] {
-            let mut state = self.push_iterator(class).state.lock();
+            let push = self.push_iterator(class);
+            let mut state = push.lock_state();
             if state.phase != RootDomainPushPhase::Published(source) {
                 continue;
             }
             state.phase = RootDomainPushPhase::Claimed(source);
+            push.clear_published_target();
             return Some(RootDomainPushClaim {
                 source,
                 generation: state.scan_generation,
@@ -272,7 +302,8 @@ impl RootDomain {
 
     pub(super) fn finish_rt_deadline_push(&self, claim: RootDomainPushClaim, made_progress: bool) {
         let target = {
-            let mut state = self.push_iterator(claim.class).state.lock();
+            let push = self.push_iterator(claim.class);
+            let mut state = push.lock_state();
             assert_eq!(
                 state.phase,
                 RootDomainPushPhase::Claimed(claim.source),
@@ -289,7 +320,7 @@ impl RootDomain {
                     .get(claim.source.as_usize())
                     .is_some_and(|remote| remote.is_online())
             {
-                state.phase = RootDomainPushPhase::Published(claim.source);
+                push.publish_target(&mut state, Some(claim.source));
                 Some(claim.source)
             } else {
                 state.cursor = Some(claim.source);
@@ -399,7 +430,7 @@ impl RootDomain {
             state.cursor = None;
             return self.publish_next_push_target(class, state, current);
         }
-        state.phase = RootDomainPushPhase::Idle;
+        self.push_iterator(class).publish_target(state, None);
         None
     }
 
@@ -410,7 +441,7 @@ impl RootDomain {
         excluded: CpuId,
     ) -> Option<CpuId> {
         if !self.overload.any_class(class) {
-            state.phase = RootDomainPushPhase::Idle;
+            self.push_iterator(class).publish_target(state, None);
             return None;
         }
         let target = self
@@ -418,7 +449,7 @@ impl RootDomain {
             .find_next_class(class, state.cursor, excluded, |cpu| {
                 self.runqueues[cpu.as_usize()].is_online()
             });
-        state.phase = target.map_or(RootDomainPushPhase::Idle, RootDomainPushPhase::Published);
+        self.push_iterator(class).publish_target(state, target);
         target
     }
 
@@ -431,7 +462,7 @@ impl RootDomain {
                 return;
             }
             target = {
-                let mut state = self.push_iterator(class).state.lock();
+                let mut state = self.push_iterator(class).lock_state();
                 if state.phase != RootDomainPushPhase::Published(source) {
                     return;
                 }
@@ -522,7 +553,35 @@ impl RootDomainPushIterator {
                 cursor: None,
                 phase: RootDomainPushPhase::Idle,
             }),
+            published_target: AtomicUsize::new(0),
         }
+    }
+
+    fn lock_state(&self) -> PreemptTicketGuard<'_, RootDomainPushState> {
+        #[cfg(any(test, all(axtest, feature = "axtest")))]
+        ROOT_PUSH_STATE_LOCK_ACQUISITIONS.fetch_add(1, Ordering::Relaxed);
+        self.state.lock()
+    }
+
+    fn target_token(source: CpuId) -> usize {
+        source
+            .as_usize()
+            .checked_add(1)
+            .expect("a root-domain push target must fit the configured CPU topology")
+    }
+
+    fn publish_target(&self, state: &mut RootDomainPushState, target: Option<CpuId>) {
+        state.phase = target.map_or(RootDomainPushPhase::Idle, RootDomainPushPhase::Published);
+        let token = target.map_or(0, Self::target_token);
+        self.published_target.store(token, Ordering::Release);
+    }
+
+    fn clear_published_target(&self) {
+        self.published_target.store(0, Ordering::Release);
+    }
+
+    fn has_published_target(&self, source: CpuId) -> bool {
+        self.published_target.load(Ordering::Acquire) == Self::target_token(source)
     }
 }
 

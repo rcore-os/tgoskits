@@ -2,13 +2,13 @@
 
 use alloc::{collections::VecDeque, sync::Arc};
 use core::{
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence},
     time::Duration,
 };
 
 use crate::{
     CurrentParkStart, TaskError, ThreadId, ThreadWakeHandle, WaitWakeClaim, WaitWakeClaimState,
-    WaitWakeDelivery,
+    WaitWakeDelivery, WakeIntent,
     facade::{acquire_blocking_permit, begin_current_park_with_permit},
     lock::{PreemptScope, PreemptTicketLock},
     runtime::{MonotonicDeadline, task_runtime},
@@ -40,6 +40,7 @@ pub fn sleep_until(deadline: MonotonicDeadline) {
 pub struct WaitQueue {
     waiters: PreemptTicketLock<VecDeque<Waiter>>,
     notification_generation: AtomicU64,
+    active_wait_attempts: AtomicUsize,
 }
 
 impl WaitQueue {
@@ -48,6 +49,7 @@ impl WaitQueue {
         Self {
             waiters: PreemptTicketLock::new(VecDeque::new()),
             notification_generation: AtomicU64::new(0),
+            active_wait_attempts: AtomicUsize::new(0),
         }
     }
 
@@ -164,12 +166,28 @@ impl WaitQueue {
     /// Panics in hard IRQ context. IRQ producers must use
     /// [`crate::IrqWaitCell`] to wake one fixed service thread.
     pub fn notify_one(&self) -> bool {
-        assert_task_context_notification();
-        let _preempt = PreemptScope::enter();
-        self.notify_one_preempt_disabled()
+        self.notify_one_with_intent(WakeIntent::Normal)
     }
 
-    fn notify_one_preempt_disabled(&self) -> bool {
+    /// Selects one waiter with Linux `WF_SYNC` scheduling intent.
+    ///
+    /// The selected waiter becomes runnable immediately. The hint only tells
+    /// Fair placement and wakeup preemption that this task-context producer
+    /// expects to block shortly after publishing the condition.
+    pub fn notify_one_sync(&self) -> bool {
+        self.notify_one_with_intent(WakeIntent::Sync)
+    }
+
+    fn notify_one_with_intent(&self, intent: WakeIntent) -> bool {
+        assert_task_context_notification();
+        if !self.may_have_active_wait_attempts() {
+            return false;
+        }
+        let _preempt = PreemptScope::enter();
+        self.notify_one_preempt_disabled(intent)
+    }
+
+    fn notify_one_preempt_disabled(&self, intent: WakeIntent) -> bool {
         let (notification_generation, mut selected) = {
             let mut waiters = self.waiters.lock();
             let previous_generation = self
@@ -187,7 +205,7 @@ impl WaitQueue {
                 return false;
             };
 
-            let delivery = wake.deliver_wait_claim_from_task(&claim);
+            let delivery = wake.deliver_wait_claim_from_task(&claim, intent);
             let mut waiters = self.waiters.lock();
             let index = waiters
                 .iter()
@@ -226,8 +244,11 @@ impl WaitQueue {
     /// completion against timeout cleanup.
     pub fn notify_all(&self) {
         assert_task_context_notification();
+        if !self.may_have_active_wait_attempts() {
+            return;
+        }
         let _preempt = PreemptScope::enter();
-        while self.notify_one_preempt_disabled() {}
+        while self.notify_one_preempt_disabled(WakeIntent::Normal) {}
     }
 
     fn wait_once(&self, deadline: Option<MonotonicDeadline>) -> Result<WaitOutcome, TaskError> {
@@ -253,6 +274,7 @@ impl WaitQueue {
         // Validate sleepability before taking the queue's non-sleeping
         // publication lock. This permit cannot escape the park attempt.
         let permit = acquire_blocking_permit()?;
+        let _active_attempt = ActiveWaitAttempt::begin(&self.active_wait_attempts);
         let observed_generation = if let Some(condition) = condition {
             let generation = self.notification_generation.load(Ordering::Acquire);
             if condition() {
@@ -294,6 +316,44 @@ impl WaitQueue {
             WaiterRemoval::OtherWake => WaitOutcome::OtherWake,
             WaiterRemoval::Missing | WaiterRemoval::Delivered => WaitOutcome::Notified,
         })
+    }
+
+    fn may_have_active_wait_attempts(&self) -> bool {
+        // This is the same store/full-barrier/load pairing used by Linux's
+        // wq_has_sleeper(). A producer publishes its condition before this
+        // fence. A waiter publishes the attempt through a SeqCst RMW before
+        // checking the condition. Therefore either this load observes the
+        // attempt and the notifier takes the queue lock, or the waiter observes
+        // the producer state before it may park.
+        fence(Ordering::SeqCst);
+        self.active_wait_attempts.load(Ordering::SeqCst) != 0
+    }
+}
+
+struct ActiveWaitAttempt<'a> {
+    active_wait_attempts: &'a AtomicUsize,
+}
+
+impl<'a> ActiveWaitAttempt<'a> {
+    fn begin(active_wait_attempts: &'a AtomicUsize) -> Self {
+        active_wait_attempts
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |attempts| {
+                attempts.checked_add(1)
+            })
+            .unwrap_or_else(|_| panic!("wait-queue active-attempt count exhausted"));
+        Self {
+            active_wait_attempts,
+        }
+    }
+}
+
+impl Drop for ActiveWaitAttempt<'_> {
+    fn drop(&mut self) {
+        self.active_wait_attempts
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |attempts| {
+                attempts.checked_sub(1)
+            })
+            .unwrap_or_else(|_| panic!("wait-queue active-attempt count underflow"));
     }
 }
 

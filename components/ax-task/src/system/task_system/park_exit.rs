@@ -1,6 +1,6 @@
 //! Park, current-thread exit, and physical switch-tail completion.
 
-#[cfg(any(test, all(axtest, feature = "axtest")))]
+#[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
 use core::sync::atomic::Ordering;
 
 use super::*;
@@ -22,20 +22,52 @@ static PARK_COMMIT_WAKE_RACE_ENTERED: core::sync::atomic::AtomicBool =
 static PARK_COMMIT_WAKE_RACE_COMPLETED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-#[cfg(any(test, all(axtest, feature = "axtest")))]
+#[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
 static PARK_AFTER_FINAL_WAKE_CHECK_ARMED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(any(test, all(axtest, feature = "axtest")))]
+#[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
 static PARK_AFTER_FINAL_WAKE_CHECK_SYSTEM: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
-#[cfg(any(test, all(axtest, feature = "axtest")))]
+#[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
 static PARK_AFTER_FINAL_WAKE_CHECK_THREAD: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
-#[cfg(any(test, all(axtest, feature = "axtest")))]
+#[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
 static PARK_AFTER_FINAL_WAKE_CHECK_ENTERED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(any(test, all(axtest, feature = "axtest")))]
+#[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
 static PARK_AFTER_FINAL_WAKE_CHECK_COMPLETED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "task-test-hooks")]
+static PARK_AFTER_BLOCKED_PUBLICATION_ARMED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(feature = "task-test-hooks")]
+static PARK_AFTER_BLOCKED_PUBLICATION_SYSTEM: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "task-test-hooks")]
+static PARK_AFTER_BLOCKED_PUBLICATION_THREAD: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "task-test-hooks")]
+static PARK_AFTER_BLOCKED_PUBLICATION_ENTERED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(feature = "task-test-hooks")]
+static PARK_AFTER_BLOCKED_PUBLICATION_COMPLETED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "task-test-hooks")]
+static PARK_BEFORE_ACTIVE_PUBLICATION_ARMED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(feature = "task-test-hooks")]
+static PARK_BEFORE_ACTIVE_PUBLICATION_SYSTEM: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "task-test-hooks")]
+static PARK_BEFORE_ACTIVE_PUBLICATION_THREAD: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "task-test-hooks")]
+static PARK_BEFORE_ACTIVE_PUBLICATION_ENTERED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+#[cfg(feature = "task-test-hooks")]
+static PARK_BEFORE_ACTIVE_PUBLICATION_COMPLETED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 #[cfg(any(test, all(axtest, feature = "axtest")))]
@@ -80,8 +112,8 @@ fn park_commit_wake_race_hook(system: &TaskSystem, thread: ThreadId) {
     }
 }
 
-#[cfg(any(test, all(axtest, feature = "axtest")))]
-pub(super) fn arm_park_after_final_wake_check(system: &TaskSystem, thread: ThreadId) {
+#[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
+pub(crate) fn arm_park_after_final_wake_check(system: &TaskSystem, thread: ThreadId) {
     PARK_AFTER_FINAL_WAKE_CHECK_ENTERED.store(false, Ordering::Release);
     PARK_AFTER_FINAL_WAKE_CHECK_COMPLETED.store(false, Ordering::Release);
     assert!(
@@ -95,17 +127,17 @@ pub(super) fn arm_park_after_final_wake_check(system: &TaskSystem, thread: Threa
     PARK_AFTER_FINAL_WAKE_CHECK_THREAD.store(thread.as_u64(), Ordering::Release);
 }
 
-#[cfg(any(test, all(axtest, feature = "axtest")))]
-pub(super) fn park_after_final_wake_check_entered() -> bool {
+#[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
+pub(crate) fn park_after_final_wake_check_entered() -> bool {
     PARK_AFTER_FINAL_WAKE_CHECK_ENTERED.load(Ordering::Acquire)
 }
 
-#[cfg(any(test, all(axtest, feature = "axtest")))]
-pub(super) fn complete_park_after_final_wake_check() {
+#[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
+pub(crate) fn complete_park_after_final_wake_check() {
     PARK_AFTER_FINAL_WAKE_CHECK_COMPLETED.store(true, Ordering::Release);
 }
 
-#[cfg(any(test, all(axtest, feature = "axtest")))]
+#[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
 fn park_after_final_wake_check_hook(system: &TaskSystem, thread: ThreadId) {
     if PARK_AFTER_FINAL_WAKE_CHECK_SYSTEM.load(Ordering::Acquire)
         != (system as *const TaskSystem).expose_provenance()
@@ -118,6 +150,90 @@ fn park_after_final_wake_check_hook(system: &TaskSystem, thread: ThreadId) {
     }
     PARK_AFTER_FINAL_WAKE_CHECK_ENTERED.store(true, Ordering::Release);
     while !PARK_AFTER_FINAL_WAKE_CHECK_COMPLETED.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(feature = "task-test-hooks")]
+pub(crate) fn arm_park_after_blocked_publication(system: &TaskSystem, thread: ThreadId) {
+    PARK_AFTER_BLOCKED_PUBLICATION_ENTERED.store(false, Ordering::Release);
+    PARK_AFTER_BLOCKED_PUBLICATION_COMPLETED.store(false, Ordering::Release);
+    assert!(
+        !PARK_AFTER_BLOCKED_PUBLICATION_ARMED.swap(true, Ordering::AcqRel),
+        "only one deterministic blocked-publication park race may be armed"
+    );
+    PARK_AFTER_BLOCKED_PUBLICATION_SYSTEM.store(
+        (system as *const TaskSystem).expose_provenance(),
+        Ordering::Release,
+    );
+    PARK_AFTER_BLOCKED_PUBLICATION_THREAD.store(thread.as_u64(), Ordering::Release);
+}
+
+#[cfg(feature = "task-test-hooks")]
+pub(crate) fn park_after_blocked_publication_entered() -> bool {
+    PARK_AFTER_BLOCKED_PUBLICATION_ENTERED.load(Ordering::Acquire)
+}
+
+#[cfg(feature = "task-test-hooks")]
+pub(crate) fn complete_park_after_blocked_publication() {
+    PARK_AFTER_BLOCKED_PUBLICATION_COMPLETED.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "task-test-hooks")]
+fn park_after_blocked_publication_hook(system: &TaskSystem, thread: ThreadId) {
+    if PARK_AFTER_BLOCKED_PUBLICATION_SYSTEM.load(Ordering::Acquire)
+        != (system as *const TaskSystem).expose_provenance()
+        || PARK_AFTER_BLOCKED_PUBLICATION_THREAD.load(Ordering::Acquire) != thread.as_u64()
+    {
+        return;
+    }
+    if !PARK_AFTER_BLOCKED_PUBLICATION_ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    PARK_AFTER_BLOCKED_PUBLICATION_ENTERED.store(true, Ordering::Release);
+    while !PARK_AFTER_BLOCKED_PUBLICATION_COMPLETED.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(feature = "task-test-hooks")]
+pub(crate) fn arm_park_before_active_publication(system: &TaskSystem, thread: ThreadId) {
+    PARK_BEFORE_ACTIVE_PUBLICATION_ENTERED.store(false, Ordering::Release);
+    PARK_BEFORE_ACTIVE_PUBLICATION_COMPLETED.store(false, Ordering::Release);
+    assert!(
+        !PARK_BEFORE_ACTIVE_PUBLICATION_ARMED.swap(true, Ordering::AcqRel),
+        "only one deterministic pre-publication park race may be armed"
+    );
+    PARK_BEFORE_ACTIVE_PUBLICATION_SYSTEM.store(
+        (system as *const TaskSystem).expose_provenance(),
+        Ordering::Release,
+    );
+    PARK_BEFORE_ACTIVE_PUBLICATION_THREAD.store(thread.as_u64(), Ordering::Release);
+}
+
+#[cfg(feature = "task-test-hooks")]
+pub(crate) fn park_before_active_publication_entered() -> bool {
+    PARK_BEFORE_ACTIVE_PUBLICATION_ENTERED.load(Ordering::Acquire)
+}
+
+#[cfg(feature = "task-test-hooks")]
+pub(crate) fn complete_park_before_active_publication() {
+    PARK_BEFORE_ACTIVE_PUBLICATION_COMPLETED.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "task-test-hooks")]
+fn park_before_active_publication_hook(system: &TaskSystem, thread: ThreadId) {
+    if PARK_BEFORE_ACTIVE_PUBLICATION_SYSTEM.load(Ordering::Acquire)
+        != (system as *const TaskSystem).expose_provenance()
+        || PARK_BEFORE_ACTIVE_PUBLICATION_THREAD.load(Ordering::Acquire) != thread.as_u64()
+    {
+        return;
+    }
+    if !PARK_BEFORE_ACTIVE_PUBLICATION_ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    PARK_BEFORE_ACTIVE_PUBLICATION_ENTERED.store(true, Ordering::Release);
+    while !PARK_BEFORE_ACTIVE_PUBLICATION_COMPLETED.load(Ordering::Acquire) {
         core::hint::spin_loop();
     }
 }
@@ -151,11 +267,30 @@ impl TaskSystem {
         self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let core = Arc::clone(current.runtime_core_arc());
+        let core = current.runtime_core_arc();
         let placement = core.sched().placement();
+        if placement.queued_cpu() != Some(cpu.owner()) || placement.on_cpu() != Some(cpu.owner()) {
+            return Err(TaskError::StaleThreadId);
+        }
+        self.prepare_current_park(core)
+    }
+
+    /// Publishes the current task's wait state before its later schedule pass.
+    ///
+    /// The runtime's current-thread publication is the architecture-context
+    /// identity, like Linux `current`. Resumed and fresh task contexts complete
+    /// switch tail before calling task code, so this state publication neither
+    /// reclaims `CpuLocal` nor repeats switch-tail completion.
+    pub(crate) fn prepare_current_park(
+        &self,
+        current: &Arc<ThreadCore>,
+    ) -> Result<ParkPrepare, TaskError> {
+        let core = Arc::clone(current);
+        let placement = core.sched().placement();
+        let queued_cpu = placement.queued_cpu();
         if core.state() != ThreadState::Running
-            || placement.queued_cpu() != Some(cpu.owner())
-            || placement.on_cpu() != Some(cpu.owner())
+            || queued_cpu.is_none()
+            || placement.on_cpu() != queued_cpu
         {
             return Err(TaskError::StaleThreadId);
         }
@@ -177,7 +312,12 @@ impl TaskSystem {
         current: &ThreadHandle,
         token: &mut ParkTicket,
     ) -> Result<ParkCommit, TaskError> {
-        self.commit_park_owner(cpu, current, token, OwnerRqEntry::IrqSave)
+        self.commit_park_owner(
+            cpu,
+            current.runtime_core_arc(),
+            token,
+            OwnerRqEntry::IrqSave,
+        )
     }
 
     /// Commits park while the runtime owns the IRQ-off scheduler baton.
@@ -188,7 +328,7 @@ impl TaskSystem {
     pub(crate) unsafe fn commit_park_in_scheduler_frame(
         &self,
         cpu: Pin<&mut CpuLocal>,
-        current: &ThreadHandle,
+        current: &Arc<ThreadCore>,
         token: &mut ParkTicket,
     ) -> Result<ParkCommit, TaskError> {
         self.commit_park_owner(cpu, current, token, OwnerRqEntry::SchedulerFrame)
@@ -197,10 +337,12 @@ impl TaskSystem {
     fn commit_park_owner(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
-        current: &ThreadHandle,
+        current: &Arc<ThreadCore>,
         token: &mut ParkTicket,
         rq_entry: OwnerRqEntry,
     ) -> Result<ParkCommit, TaskError> {
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(0);
         if token.is_resolved() || current.id() != token.thread() {
             return Err(TaskError::StaleThreadId);
         }
@@ -214,9 +356,31 @@ impl TaskSystem {
         let initial_request = remote.claim_scheduler_request();
         self.drain_owner_work(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
-        let previous_core_hint = Arc::clone(current.runtime_core_arc());
+        let previous_core_hint = Arc::clone(current);
         #[cfg(any(test, all(axtest, feature = "axtest")))]
         park_commit_wake_race_hook(self, previous_core_hint.id());
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(1);
+        if matches!(
+            previous_core_hint.effective_policy_snapshot(),
+            SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+        ) && !previous_core_hint
+            .sched()
+            .placement()
+            .has_pending_migration()
+            && let Some(commit) = self.try_commit_park_rt_in_rq(
+                cpu.as_mut(),
+                token,
+                &remote,
+                &previous_core_hint,
+                initial_request,
+                rq_entry,
+            )?
+        {
+            return Ok(commit);
+        }
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_thread_sched_acquisition(previous_core_hint.id());
         // SAFETY: propagated from the selected entry contract.
         let mut previous_sched = unsafe { rq_entry.lock_thread_sched(previous_core_hint.sched()) };
         // SAFETY: propagated from the selected entry contract.
@@ -231,6 +395,8 @@ impl TaskSystem {
         let scheduler_request = transaction.merge_scheduler_request();
         let clock = transaction.clock();
         let now_ns = clock.wall().as_nanos();
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(2);
         if transaction.current_thread() != Some(token.thread()) {
             transaction.commit_and_acknowledge_scheduler_request();
             return Err(TaskError::StaleThreadId);
@@ -261,14 +427,16 @@ impl TaskSystem {
             return Ok(ParkCommit::Notified);
         }
         cpu.defer_park_preemption(scheduler_request.preempt_requested());
-        let dispatch_commit = self.commit_owner_current_dispatch_in_rq(&mut transaction);
+        let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(3);
         let previous_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x504b_1102, previous_core.id().as_u64() as usize)
         });
         let resumed = {
             let placement = previous_core.sched().placement();
             let sched = &mut *previous_sched;
-            #[cfg(any(test, all(axtest, feature = "axtest")))]
+            #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
             park_after_final_wake_check_hook(self, previous_core.id());
             // Lifecycle and wake publication share one atomic word. A wake
             // that observes Parking sets PARK_NOTIFIED in that word; this CAS
@@ -297,23 +465,41 @@ impl TaskSystem {
                 // A wake cannot cross this point while the thread lock is
                 // held; all following rq and placement changes are one owner
                 // commit and cannot return a partial block.
-                let active = if transaction.is_linked_current(previous_core.id()) {
-                    transaction
-                        .deactivate_task(previous_core.id())
-                        .into_active()
+                #[cfg(feature = "task-test-hooks")]
+                let force_delayed =
+                    crate::task_test_hooks::force_fair_delay_dequeue(previous_core.id(), false);
+                #[cfg(not(feature = "task-test-hooks"))]
+                let force_delayed = false;
+                let timing_granularity_ns = self.config.timing_granularity_ns();
+                let delayed = !transaction.is_linked_current(previous_core.id())
+                    && transaction
+                        .delay_dequeue_unlinked_current(
+                            previous_core.id(),
+                            timing_granularity_ns,
+                            force_delayed,
+                        )
+                        .is_some();
+                if delayed {
+                    placement.delay_dequeue_current(cpu.owner());
                 } else {
-                    transaction.deactivate_unlinked_current(previous_core.id());
-                    transaction
-                        .take_current()
-                        .and_then(CurrentDispatch::into_active)
-                        .unwrap_or_else(|| {
-                            task_runtime::fatal_invariant(
-                                0x504b_1105,
-                                previous_core.id().as_u64() as usize,
-                            )
-                        })
-                };
-                sched.policy.install_active(active);
+                    let active = if transaction.is_linked_current(previous_core.id()) {
+                        transaction
+                            .deactivate_task(previous_core.id())
+                            .into_active()
+                    } else {
+                        transaction.deactivate_unlinked_current(previous_core.id());
+                        transaction
+                            .take_current()
+                            .and_then(CurrentDispatch::into_active)
+                            .unwrap_or_else(|| {
+                                task_runtime::fatal_invariant(
+                                    0x504b_1105,
+                                    previous_core.id().as_u64() as usize,
+                                )
+                            })
+                    };
+                    previous_core.sched().install_active(sched, active);
+                }
                 self.mark_owner_deadline_non_contending_in_rq(
                     &previous_core,
                     sched,
@@ -321,16 +507,18 @@ impl TaskSystem {
                     now_ns,
                     &mut transaction,
                 );
-                let timing_granularity_ns = self.config.timing_granularity_ns();
-                if let Some(fair) = sched.policy.active().base_entity().fair() {
-                    let virtual_time = transaction.virtual_time_for_mode(fair.mode());
-                    sched
-                        .policy
-                        .active_mut()
-                        .base_entity_mut()
-                        .capture_fair_sleep_lag(virtual_time, timing_granularity_ns);
+                if !delayed {
+                    let mut active = previous_core.sched().active(sched);
+                    if let Some(fair) = active.base_entity().fair() {
+                        let virtual_time = transaction.virtual_time_for_mode(fair.mode());
+                        active
+                            .base_entity_mut()
+                            .capture_fair_sleep_lag(virtual_time, timing_granularity_ns);
+                    }
                 }
-                placement.block_current(cpu.owner());
+                if !delayed {
+                    placement.block_current(cpu.owner());
+                }
                 false
             }
         };
@@ -346,13 +534,21 @@ impl TaskSystem {
             token.mark_resolved();
             return Ok(ParkCommit::Notified);
         }
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(4);
         cpu.finish_park_preemption(false);
         transaction.take_current();
         // This branch commits a real switch, so the request generated while
         // settling the outgoing dispatch belongs to this decision. The
         // resumed branch above deliberately leaves it for the next pass.
         transaction.merge_scheduler_request();
-        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, Some(token.thread()));
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(5);
+        let next = self.pick_owner_next_in_rq(
+            cpu.as_mut(),
+            &mut transaction,
+            Some((&previous_core, &mut previous_sched)),
+        );
         let next_core = next.core;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x504b_1107, next_core.id().as_u64() as usize)
@@ -364,9 +560,19 @@ impl TaskSystem {
             Arc::clone(&next_core),
             None,
         );
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(11);
         let deadline_rq_observation =
             transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-        transaction.commit_and_acknowledge_scheduler_request();
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(12);
+        self.commit_owner_switch_selection(
+            cpu.as_mut(),
+            transaction,
+            !dispatch_commit.has_deferred_task_lock_work(),
+        );
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(13);
         drop(previous_sched);
         let decision = Self::owner_switch_plan(
             Some(&previous_core),
@@ -378,8 +584,189 @@ impl TaskSystem {
         );
         self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
         let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(14);
         token.mark_resolved();
         Ok(ParkCommit::Blocked(decision))
+    }
+
+    /// Implements Linux's ordinary FIFO/RR `__schedule()` block transition.
+    ///
+    /// A non-PI RT current remains linked in its rq class node, so `rq->lock`
+    /// provides the class mutation boundary exactly as it does in Linux
+    /// `__schedule()`. Task-control writers retain the `task lock -> rq` order;
+    /// this path never acquires the task lock in reverse. Instead, a move-only
+    /// marker makes task-lock readers wait while rq removal, placement, and the
+    /// detached entity owner are published as one transition. Special classes,
+    /// PI, Deadline bandwidth, and migration use the full path directly.
+    fn try_commit_park_rt_in_rq(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        token: &mut ParkTicket,
+        remote: &Arc<CpuRemote>,
+        previous_core: &Arc<ThreadCore>,
+        initial_request: crate::system::cpu::SchedulerRequestClaim,
+        rq_entry: OwnerRqEntry,
+    ) -> Result<Option<ParkCommit>, TaskError> {
+        let owner = cpu.owner();
+        let placement = previous_core.sched().placement();
+        // SAFETY: propagated from `commit_park_owner`'s selected entry
+        // contract. The returned transaction does not outlive this helper.
+        let mut transaction = unsafe { rq_entry.begin(self, remote) };
+        let eligible = transaction.current().is_some_and(|current| {
+            current.thread() == token.thread()
+                && Arc::ptr_eq(current.runtime_core_arc(), previous_core)
+                && current.is_rt()
+                && !current.rt_quota_exempt()
+                && current.metadata().deadline_bandwidth_scaled == 0
+        }) && transaction.is_linked_current(previous_core.id())
+            && previous_core.state() == ThreadState::Parking
+            && placement.queued_cpu() == Some(owner)
+            && placement.on_cpu() == Some(owner)
+            && !placement.has_pending_migration();
+        if !eligible {
+            transaction.commit();
+            return Ok(None);
+        }
+
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_irq_owner_scopes(
+            previous_core.id(),
+            false,
+            transaction.owns_runtime_irq_scope(),
+        );
+        transaction.adopt_scheduler_request(initial_request);
+        let scheduler_request = transaction.merge_scheduler_request();
+        let clock = transaction.clock();
+        let now_ns = clock.wall().as_nanos();
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(2);
+
+        if previous_core.park_generation() != token.generation() {
+            transaction.commit_and_acknowledge_scheduler_request();
+            return Err(TaskError::StaleThreadId);
+        }
+        if previous_core.take_park_notification() {
+            previous_core
+                .transition_state(ThreadState::Running)
+                .unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x504b_1111, previous_core.id().as_u64() as usize)
+                });
+            cpu.finish_park_preemption(true);
+            transaction.commit_and_acknowledge_scheduler_request();
+            token.mark_resolved();
+            return Ok(Some(ParkCommit::Notified));
+        }
+
+        cpu.defer_park_preemption(scheduler_request.preempt_requested());
+        let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(3);
+        if dispatch_commit.has_deferred_task_lock_work() {
+            task_runtime::fatal_invariant(0x504b_1112, previous_core.id().as_u64() as usize);
+        }
+        let previous_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x504b_1113, previous_core.id().as_u64() as usize)
+        });
+        #[cfg(feature = "task-test-hooks")]
+        park_before_active_publication_hook(self, previous_core.id());
+        let publication = previous_core
+            .sched()
+            .begin_active_publication()
+            .unwrap_or_else(|| {
+                task_runtime::fatal_invariant(0x504b_1119, previous_core.id().as_u64() as usize)
+            });
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_publication_serialization(
+            previous_core.id(),
+            false,
+            true,
+        );
+        #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
+        park_after_final_wake_check_hook(self, previous_core.id());
+        if previous_core
+            .publish_blocked_from_parking()
+            .unwrap_or_else(|_| {
+                task_runtime::fatal_invariant(0x504b_1114, previous_core.id().as_u64() as usize)
+            })
+            == ParkPublication::Notified
+        {
+            drop(publication);
+            transaction.commit_and_acknowledge_scheduler_request();
+            self.finish_owner_dispatch_commit(
+                cpu.as_mut(),
+                dispatch_commit,
+                clock.wall().as_nanos(),
+            );
+            cpu.finish_park_preemption(true);
+            token.mark_resolved();
+            return Ok(Some(ParkCommit::Notified));
+        }
+
+        if previous_core.state() != ThreadState::Blocked
+            || placement.queued_cpu() != Some(owner)
+            || placement.on_cpu() != Some(owner)
+        {
+            task_runtime::fatal_invariant(0x504b_1115, previous_core.id().as_u64() as usize);
+        }
+        #[cfg(feature = "task-test-hooks")]
+        park_after_blocked_publication_hook(self, previous_core.id());
+        let active = transaction
+            .deactivate_task(previous_core.id())
+            .into_active();
+        placement.block_current(owner);
+        // Publish the detached owner only after `on_rq = NONE` and `on_cpu =
+        // NONE`. A task-lock reader that acquired before the marker waits in
+        // `DetachedActiveState::take`; a later reader waits before inspecting
+        // task state. Neither can observe a Blocked RT task without its owner.
+        publication.finish(active);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(4);
+        cpu.finish_park_preemption(false);
+        let outgoing = transaction.take_current().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x504b_1116, previous_core.id().as_u64() as usize)
+        });
+        if outgoing.thread() != previous_core.id() || outgoing.into_active().is_some() {
+            task_runtime::fatal_invariant(0x504b_1117, previous_core.id().as_u64() as usize);
+        }
+        transaction.merge_scheduler_request();
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(5);
+        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
+        let next_core = next.core;
+        let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
+            task_runtime::fatal_invariant(0x504b_1118, next_core.id().as_u64() as usize)
+        });
+        Self::stage_switch_handoff(
+            cpu.as_mut(),
+            Some(token.thread()),
+            Some(Arc::clone(previous_core)),
+            Arc::clone(&next_core),
+            None,
+        );
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(11);
+        let deadline_rq_observation =
+            transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(12);
+        self.commit_owner_switch_selection(cpu.as_mut(), transaction, true);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(13);
+        let decision = Self::owner_switch_plan(
+            Some(previous_core),
+            Some(previous_endpoint),
+            &next_core,
+            next_endpoint,
+            SwitchReason::Blocked,
+            now_ns,
+        );
+        self.finish_owner_dispatch_commit(cpu.as_mut(), dispatch_commit, clock.wall().as_nanos());
+        let decision = self.finish_owner_selection(cpu.as_mut(), decision, deadline_rq_observation);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(14);
+        token.mark_resolved();
+        Ok(Some(ParkCommit::Blocked(decision)))
     }
 
     /// Cancels a prepared park because an independent grant won the race.
@@ -389,12 +776,21 @@ impl TaskSystem {
         current: &ThreadHandle,
         token: &mut ParkTicket,
     ) -> Result<(), TaskError> {
+        self.cancel_current_park(cpu, current.runtime_core_arc(), token)
+    }
+
+    pub(crate) fn cancel_current_park(
+        &self,
+        cpu: Pin<&mut CpuLocal>,
+        current: &Arc<ThreadCore>,
+        token: &mut ParkTicket,
+    ) -> Result<(), TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
         if token.is_resolved() || current.id() != token.thread() {
             return Err(TaskError::StaleThreadId);
         }
         self.ensure_owner_cpu_online(&cpu)?;
-        let core = Arc::clone(current.runtime_core_arc());
+        let core = Arc::clone(current);
         if core.park_generation() != token.generation() {
             return Err(TaskError::StaleThreadId);
         }
@@ -565,7 +961,7 @@ impl TaskSystem {
         }
         transaction.adopt_scheduler_request(initial_request);
         transaction.merge_scheduler_request();
-        let dispatch_commit = self.commit_owner_current_dispatch_in_rq(&mut transaction);
+        let dispatch_commit = self.settle_owner_current_dispatch_in_rq(&mut transaction);
         // Exit necessarily selects a replacement, so accounting requests from
         // the outgoing task are consumed by this decision.
         transaction.merge_scheduler_request();
@@ -607,7 +1003,7 @@ impl TaskSystem {
             held
         };
         transaction.take_current();
-        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, Some(exiting));
+        let next = self.pick_owner_next_in_rq(cpu.as_mut(), &mut transaction, None);
         let next_core = next.core;
         let next_endpoint = transaction.current_switch_endpoint().unwrap_or_else(|| {
             task_runtime::fatal_invariant(0x4558_0008, exiting.as_u64() as usize)
@@ -619,6 +1015,7 @@ impl TaskSystem {
             Arc::clone(&next_core),
             None,
         );
+        self.validate_owner_runtime_switch_out(cpu.as_ref().get_ref(), &transaction);
         let deadline_rq_observation =
             transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
         transaction.commit_and_acknowledge_scheduler_request();
@@ -700,40 +1097,15 @@ impl TaskSystem {
         let incoming = Arc::clone(initial_handoff.incoming());
         let migration_target = initial_handoff.migration_target();
         let runtime_tail_finished = initial_handoff.runtime_tail_is_finished();
+        let rq_baton_retained = initial_handoff.has_rq_baton();
         if previous_core.id() == incoming.id()
             || previous_core.sched().placement().on_cpu() != Some(owner)
             || incoming.sched().placement().queued_cpu() != Some(owner)
             || incoming.sched().placement().on_cpu() != Some(owner)
+            || (migration_target.is_some() && rq_baton_retained)
         {
             return Err(TaskError::InvalidConfiguration);
         }
-        if migration_target.is_some() {
-            let placement = previous_core.sched().placement();
-            // SAFETY: propagated from this method's selected entry contract.
-            let sched = unsafe { rq_entry.lock_thread_sched(previous_core.sched()) };
-            let remote = Arc::clone(cpu.remote());
-            // SAFETY: propagated from this method's selected entry contract.
-            let transaction = unsafe { rq_entry.begin(self, &remote) };
-            #[cfg(feature = "task-test-hooks")]
-            crate::task_test_hooks::record_switch_tail_irq_owner_scopes(
-                previous_core.id(),
-                sched.owns_runtime_irq_scope(),
-                transaction.owns_runtime_irq_scope(),
-            );
-            let validation = self.validate_switch_handoff_state(
-                owner,
-                transaction.deadline_bandwidth(),
-                initial_handoff,
-                placement,
-                &sched,
-            );
-            if let Err(error) = validation {
-                transaction.commit();
-                return Err(error);
-            }
-            transaction.commit();
-        }
-
         if !runtime_tail_finished {
             let reclaim_ready = task_runtime::finish_context_switch_tail();
             if cpu
@@ -744,7 +1116,6 @@ impl TaskSystem {
                 task_runtime::fatal_invariant(0x5357_0001, previous_core.id().as_u64() as usize);
             }
         }
-
         let handoff = cpu
             .as_ref()
             .get_ref()
@@ -760,6 +1131,8 @@ impl TaskSystem {
         let (migration_target, previous_exited, affinity_completed) = if migration_target.is_some()
         {
             let placement = previous_core.sched().placement();
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_switch_tail_thread_sched_acquisition(previous_core.id());
             // SAFETY: propagated from this method's selected entry contract.
             let mut sched = unsafe { rq_entry.lock_thread_sched(handoff.previous().sched()) };
             let remote = Arc::clone(cpu.remote());
@@ -770,6 +1143,8 @@ impl TaskSystem {
                 previous_core.id(),
                 sched.owns_runtime_irq_scope(),
                 transaction.owns_runtime_irq_scope(),
+                true,
+                false,
             );
             let validation = self.validate_switch_handoff_state(
                 owner,
@@ -812,28 +1187,51 @@ impl TaskSystem {
             // Publishing the release inside the owner rq transaction keeps a
             // concurrent owner transaction (policy update classification and
             // re-link, wake, affinity reconcile) from observing `on_cpu`
-            // flipping mid-transaction. The task lock is taken only after the
-            // transaction commits: a waker spinning in
-            // `wait_until_not_on_cpu()` holds that lock while waiting for
-            // exactly this release, so the tail must never block on it first.
-            let remote = Arc::clone(cpu.remote());
-            // SAFETY: propagated from this method's selected entry contract.
-            let transaction = unsafe { rq_entry.begin(self, &remote) };
-            previous_core.sched().placement().finish_task(owner);
-            transaction.commit();
-            // SAFETY: propagated from this method's selected entry contract.
-            let sched = unsafe { rq_entry.lock_thread_sched(previous_core.sched()) };
+            // flipping mid-transaction. Like Linux, ordinary switch tail does
+            // not reopen `p->pi_lock`: remote affinity changes are serialized
+            // through the rq owner's inbox, while current-task changes request
+            // migration and rescheduling before reaching this tail.
+            let previous_exited = if rq_baton_retained {
+                let previous_exited = previous_core.state() == ThreadState::Exited;
+                #[cfg(feature = "task-test-hooks")]
+                crate::task_test_hooks::record_switch_tail_state_observation(
+                    previous_core.id(),
+                    previous_core.sched().placement().on_cpu() == Some(owner),
+                );
+                previous_core.sched().placement().finish_task(owner);
+                if cpu.as_mut().finish_switch_rq_baton(previous_core.id()) != Ok(true) {
+                    task_runtime::fatal_invariant(
+                        0x5357_0005,
+                        previous_core.id().as_u64() as usize,
+                    );
+                }
+                previous_exited
+            } else {
+                let remote = Arc::clone(cpu.remote());
+                // SAFETY: propagated from this method's selected entry contract.
+                let transaction = unsafe { rq_entry.begin(self, &remote) };
+                let previous_exited = previous_core.state() == ThreadState::Exited;
+                #[cfg(feature = "task-test-hooks")]
+                crate::task_test_hooks::record_switch_tail_state_observation(
+                    previous_core.id(),
+                    previous_core.sched().placement().on_cpu() == Some(owner),
+                );
+                previous_core.sched().placement().finish_task(owner);
+                transaction.commit();
+                previous_exited
+            };
             #[cfg(feature = "task-test-hooks")]
             crate::task_test_hooks::record_switch_tail_irq_owner_scopes(
                 previous_core.id(),
-                sched.owns_runtime_irq_scope(),
                 false,
+                false,
+                !rq_baton_retained,
+                rq_baton_retained,
             );
-            let previous_exited = sched.lifecycle.state() == ThreadState::Exited;
-            let affinity_completed =
-                Self::complete_affinity_if_satisfied_locked(&previous_core, &sched);
-            (None, previous_exited, affinity_completed)
+            (None, previous_exited, false)
         };
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::complete_switch_tail_irq_owner_probe(previous_core.id());
         if affinity_completed {
             previous_core.notify_affinity_waiters();
         }
@@ -863,7 +1261,8 @@ impl TaskSystem {
         if previous_exited {
             self.task_work.publish();
         }
-        Ok(SwitchInCompletion::for_core(&incoming))
+        let completion = SwitchInCompletion::for_core(&incoming);
+        Ok(completion)
     }
 
     fn validate_switch_handoff_state(
@@ -885,7 +1284,8 @@ impl TaskSystem {
                 if target != reserved_target {
                     return Err(TaskError::InvalidConfiguration);
                 }
-                if sched.lifecycle.state() != ThreadState::Ready || placement.queued_cpu().is_some()
+                if sched.lifecycle.state() != ThreadState::Running
+                    || placement.queued_cpu().is_some()
                 {
                     return Err(TaskError::InvalidConfiguration);
                 }

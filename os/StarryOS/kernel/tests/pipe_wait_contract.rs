@@ -1,33 +1,35 @@
 //! Source-level contract for Linux-style pipe blocking ownership.
 
 const PIPE: &str = include_str!("../src/file/pipe.rs");
-const FUTURE: &str = include_str!("../src/task/future.rs");
 
 #[test]
-fn ready_pipe_io_bypasses_the_blocking_future_path() {
+fn blocking_pipe_io_uses_the_pipe_wait_queues_directly() {
     let shared = struct_body(PIPE, "struct Shared");
     let read = function_body(PIPE, "fn read(&self,");
     let write = function_body(PIPE, "fn write_with_broken_pipe_handler(");
+    let sync_wake = function_body(PIPE, "fn wake_pipe_waiter_sync(");
 
     assert!(
-        !shared.contains("WaitQueue"),
-        "pipe readiness must keep one waiter-selection owner in PollSet"
+        shared.contains("wait_rx: WaitQueue") && shared.contains("wait_tx: WaitQueue"),
+        "blocking pipe I/O must sleep directly on Linux-style read/write wait queues"
     );
-    for operation in [read, write] {
-        let fast_path = operation
-            .find("operation(ExclusivePollWake::Unselected)")
-            .expect("pipe I/O must attempt the operation synchronously");
-        let blocking_path = operation
-            .find("block_on_user(")
-            .expect("blocking pipe I/O must retain the cancellation-safe future path");
+    for (operation, wait_queue) in [(read, "wait_rx.wait_until"), (write, "wait_tx.wait_until")] {
         assert!(
-            fast_path < blocking_path,
-            "ready pipe I/O must finish before constructing a future executor"
+            operation.contains(wait_queue),
+            "blocking pipe I/O must park on its endpoint wait queue"
+        );
+        assert!(
+            operation.contains("take_interrupt()"),
+            "direct pipe waits must preserve interruptible syscall semantics"
+        );
+        assert!(
+            !operation.contains("block_on_user(") && !operation.contains("poll_io_with_wake("),
+            "blocking pipe I/O must not construct a coroutine and a second wait queue"
         );
     }
     assert!(
-        FUTURE.contains("pub enum ExclusivePollWake"),
-        "exclusive wake selection remains the shared PollSet slow-path contract"
+        sync_wake.contains("notify_one_sync()") && sync_wake.contains("poll_set.wake_with"),
+        "pipe handoff must synchronously wake one blocking consumer and retained poll observers"
     );
 }
 

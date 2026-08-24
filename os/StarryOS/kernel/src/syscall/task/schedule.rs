@@ -403,10 +403,8 @@ fn apply_scheduler_update(
     check_sched_permission(current, pid)?;
     let task = scheduler_task(current, pid)?;
     let caller = current.as_thread().cred();
-    let (rlimit_rtprio, rlimit_nice) = {
-        let limits = task.as_thread().proc_data.rlimits();
-        (limits[RLIMIT_RTPRIO].current, limits[RLIMIT_NICE].current)
-    };
+    let rlimit_rtprio = task.as_thread().proc_data.rlimit_current(RLIMIT_RTPRIO);
+    let rlimit_nice = task.as_thread().proc_data.rlimit_current(RLIMIT_NICE);
     check_policy_permission(
         SchedulerPermission {
             owns_target: true,
@@ -759,8 +757,10 @@ fn check_setpriority_permission(
         return Err(StarryError::OperationNotPermitted);
     }
     if nice < task.as_thread().nice() {
-        let rlimit_nice = task.as_thread().proc_data.rlimits()[RLIMIT_NICE]
-            .current
+        let rlimit_nice = task
+            .as_thread()
+            .proc_data
+            .rlimit_current(RLIMIT_NICE)
             .min(40);
         let lowest_allowed = 20_i64 - rlimit_nice as i64;
         if i64::from(nice) < lowest_allowed {

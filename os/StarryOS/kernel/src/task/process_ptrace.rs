@@ -105,6 +105,67 @@ struct PtracePendingEvent {
     msg: PtraceEventMessage,
 }
 
+/// Pending ptrace work published to tracees returning to userspace.
+///
+/// A false `present` value is authoritative and keeps the ordinary untraced
+/// return path lock-free, matching Linux's task-work flag gate. A true value
+/// only selects the slow path; the map remains the source of truth for one
+/// exact thread.
+struct PtracePendingEvents {
+    present: AtomicBool,
+    events: PiMutex<BTreeMap<TidNumber, PtracePendingEvent>>,
+}
+
+impl PtracePendingEvents {
+    fn new() -> Self {
+        Self {
+            present: AtomicBool::new(false),
+            events: PiMutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn insert(&self, tid: TidNumber, event: PtracePendingEvent) {
+        let mut events = self.events.lock();
+        events.insert(tid, event);
+        // The event contents become visible before userspace-return observers
+        // enter the slow path.
+        self.present.store(true, Ordering::Release);
+    }
+
+    fn remove(&self, tid: TidNumber) -> Option<PtracePendingEvent> {
+        let mut events = self.events.lock();
+        let event = events.remove(&tid);
+        if events.is_empty() {
+            self.present.store(false, Ordering::Release);
+        }
+        event
+    }
+
+    fn clear(&self) {
+        let mut events = self.events.lock();
+        events.clear();
+        self.present.store(false, Ordering::Release);
+    }
+
+    fn contains_key(&self, tid: TidNumber) -> bool {
+        if !self.present() {
+            return false;
+        }
+        self.events.lock().contains_key(&tid)
+    }
+
+    fn is_empty(&self) -> bool {
+        if !self.present() {
+            return true;
+        }
+        self.events.lock().is_empty()
+    }
+
+    fn present(&self) -> bool {
+        self.present.load(Ordering::Acquire)
+    }
+}
+
 /// Ptrace state owned by one process generation.
 pub(super) struct ProcessPtraceState {
     tracer_identity: PiMutex<Option<Arc<PidIdentity>>>,
@@ -119,7 +180,7 @@ pub(super) struct ProcessPtraceState {
     singlestep_tid: AtomicU32,
     syscall_trace: PiMutex<BTreeMap<TidNumber, SyscallTraceState>>,
     options: AtomicUsize,
-    pending_event: PiMutex<BTreeMap<TidNumber, PtracePendingEvent>>,
+    pending_events: PtracePendingEvents,
     ss_saved_insn: PiMutex<BTreeMap<TidNumber, (usize, usize)>>,
     stop_fp_data: PiMutex<BTreeMap<TidNumber, PtraceStopFpData>>,
 }
@@ -139,14 +200,14 @@ impl ProcessPtraceState {
             singlestep_tid: AtomicU32::new(0),
             syscall_trace: PiMutex::new(BTreeMap::new()),
             options: AtomicUsize::new(0),
-            pending_event: PiMutex::new(BTreeMap::new()),
+            pending_events: PtracePendingEvents::new(),
             ss_saved_insn: PiMutex::new(BTreeMap::new()),
             stop_fp_data: PiMutex::new(BTreeMap::new()),
         }
     }
 
     fn publish_stop(&self, tid: TidNumber, signo: Signo, uctx: &UserContext, kind: PtraceStopKind) {
-        let pending_event = self.pending_event.lock().remove(&tid);
+        let pending_event = self.pending_events.remove(tid);
         let stop = PtraceStopRecord::new(signo, uctx, kind, pending_event);
         self.stops.lock().insert(tid, stop);
         self.selected_tid.store(tid.get(), Ordering::Release);
@@ -157,27 +218,73 @@ impl ProcessPtraceState {
     /// As in Linux's `syscall_work`, an untraced task takes a lock-free fast
     /// path. Traced tasks retain their entry/exit state across the stop; the
     /// tracer advances it only when resuming that exact syscall stop.
-    pub(super) fn syscall_trace_if_active(&self, tid: TidNumber) -> Option<SyscallTraceState> {
+    pub(super) fn syscall_trace_if_active(
+        &self,
+        resolve_tid: impl FnOnce() -> TidNumber,
+    ) -> Option<(TidNumber, SyscallTraceState)> {
         if !self.traceme.load(Ordering::Acquire)
             && self.attach_mode.load(Ordering::Acquire) == PtraceAttachMode::None as u8
         {
             return None;
         }
-        Some(
+        let tid = resolve_tid();
+        Some((
+            tid,
             self.syscall_trace
                 .lock()
                 .get(&tid)
                 .copied()
                 .unwrap_or_default(),
-        )
+        ))
+    }
+
+    fn has_pending_event_for(&self, tid: TidNumber) -> bool {
+        self.pending_events.contains_key(tid)
     }
 }
 
 #[cfg(axtest)]
 pub(crate) fn inactive_ptrace_syscall_gate_is_lock_free_for_test() -> bool {
-    ProcessPtraceState::new()
-        .syscall_trace_if_active(TidNumber::try_from(1).unwrap())
-        .is_none()
+    let tid_resolved = AtomicBool::new(false);
+    let inactive = ProcessPtraceState::new().syscall_trace_if_active(|| {
+        tid_resolved.store(true, Ordering::Release);
+        TidNumber::try_from(1).unwrap()
+    });
+    inactive.is_none() && !tid_resolved.load(Ordering::Acquire)
+}
+
+#[cfg(axtest)]
+pub(crate) fn inactive_ptrace_pending_event_gate_is_nonblocking_for_test() -> bool {
+    use alloc::string::String;
+
+    let state = Arc::new(ProcessPtraceState::new());
+    let started = Arc::new(AtomicBool::new(false));
+    let completed = Arc::new(AtomicBool::new(false));
+    let worker_state = Arc::clone(&state);
+    let worker_started = Arc::clone(&started);
+    let worker_completed = Arc::clone(&completed);
+    let pending_events = state.pending_events.events.lock();
+    let worker = super::try_spawn_kernel_thread(
+        move || {
+            worker_started.store(true, Ordering::Release);
+            let tid = TidNumber::try_from(1).unwrap();
+            worker_completed.store(!worker_state.has_pending_event_for(tid), Ordering::Release);
+        },
+        String::from("ptrace-inactive-fast-path"),
+    )
+    .expect("failed to spawn ptrace fast-path test worker");
+
+    while !started.load(Ordering::Acquire) {
+        super::yield_now();
+    }
+    for _ in 0..4 {
+        super::yield_now();
+    }
+    let completed_while_pending_events_locked = completed.load(Ordering::Acquire);
+
+    drop(pending_events);
+    super::join_kernel_thread(worker);
+    completed_while_pending_events_locked
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -237,6 +344,9 @@ impl ProcessData {
     }
 
     pub fn set_ptrace_tracer(&self, tracer: &Arc<PidIdentity>) {
+        // Publish the tracer-side gate first. A waiter that still observes
+        // false cannot race with an already visible tracee relationship.
+        tracer.mark_ptrace_tracee_registered();
         *self.ptrace.tracer_identity.lock() = Some(tracer.clone());
     }
 
@@ -343,7 +453,7 @@ impl ProcessData {
             }
         }
 
-        if !self.ptrace.pending_event.lock().is_empty() {
+        if !self.ptrace.pending_events.is_empty() {
             return None;
         }
 
@@ -501,7 +611,7 @@ impl ProcessData {
         self.ptrace.selected_tid.store(0, Ordering::Release);
         self.ptrace.resume_signo.lock().clear();
         self.ptrace.resume_signal_bypass.lock().clear();
-        self.ptrace.pending_event.lock().clear();
+        self.ptrace.pending_events.clear();
         self.ptrace.singlestep_tid.store(0, Ordering::Release);
         self.ptrace.syscall_trace.lock().clear();
         self.ptrace.ss_saved_insn.lock().clear();
@@ -555,6 +665,15 @@ impl ProcessData {
 
     pub fn is_ptrace_singlestep_for(&self, tid: TidNumber) -> bool {
         self.ptrace.singlestep_tid.load(Ordering::Acquire) == tid.get()
+    }
+
+    /// Returns whether any thread has a pending single-step setup.
+    ///
+    /// This is only a lock-free slow-path selector. The stored TID remains the
+    /// source of truth and must be compared after resolving the current
+    /// thread's root-namespace TID.
+    pub fn has_ptrace_singlestep_work(&self) -> bool {
+        self.ptrace.singlestep_tid.load(Ordering::Acquire) != 0
     }
 
     pub fn set_ptrace_syscall_trace_for(&self, tid: TidNumber, trace: bool) {
@@ -621,7 +740,7 @@ impl ProcessData {
     }
 
     pub fn set_ptrace_pending_event(&self, tid: TidNumber, event: u32, msg: usize) {
-        self.ptrace.pending_event.lock().insert(
+        self.ptrace.pending_events.insert(
             tid,
             PtracePendingEvent {
                 event,
@@ -631,7 +750,7 @@ impl ProcessData {
     }
 
     pub fn set_ptrace_pending_pid_event(&self, tid: TidNumber, event: u32, pid: PidSnapshot) {
-        self.ptrace.pending_event.lock().insert(
+        self.ptrace.pending_events.insert(
             tid,
             PtracePendingEvent {
                 event,
@@ -641,7 +760,15 @@ impl ProcessData {
     }
 
     pub fn has_ptrace_pending_event_for(&self, tid: TidNumber) -> bool {
-        self.ptrace.pending_event.lock().contains_key(&tid)
+        self.ptrace.has_pending_event_for(tid)
+    }
+
+    /// Returns whether any thread has pending ptrace event work.
+    ///
+    /// A true result selects the per-TID map lookup; it does not imply that
+    /// the current thread owns the event.
+    pub fn has_ptrace_pending_event(&self) -> bool {
+        self.ptrace.pending_events.present()
     }
 
     pub fn ptrace_event(&self) -> Option<u32> {
@@ -855,7 +982,7 @@ mod tests {
             assert_pi_mutex(&state.resume_signo);
             assert_pi_mutex(&state.resume_signal_bypass);
             assert_pi_mutex(&state.syscall_trace);
-            assert_pi_mutex(&state.pending_event);
+            assert_pi_mutex(&state.pending_events.events);
             assert_pi_mutex(&state.ss_saved_insn);
             assert_pi_mutex(&state.stop_fp_data);
         }
@@ -876,5 +1003,15 @@ mod tests {
         assert!(stop.kind.is_syscall());
         #[cfg(target_arch = "x86_64")]
         assert_eq!(stop.kind.syscall_number(), Some(39));
+    }
+
+    #[test]
+    fn inactive_syscall_gate_does_not_resolve_tid() {
+        let state = ProcessPtraceState::new();
+        assert!(
+            state
+                .syscall_trace_if_active(|| panic!("inactive ptrace work resolved a tid"))
+                .is_none()
+        );
     }
 }

@@ -3,7 +3,7 @@ use super::*;
 pub(super) enum PiParkAttempt {
     Complete,
     Retry,
-    Prepared(ThreadHandle, crate::ParkTicket),
+    Prepared(Arc<ThreadCore>, crate::ParkTicket),
 }
 
 /// Enters the scheduler-owned PI mutex slow path.
@@ -34,7 +34,7 @@ pub fn pi_park_current_once(token: &PiWaitToken) -> Result<(), TaskError> {
         cancel_current_park(&current, &mut ticket)?;
         return Ok(());
     }
-    commit_current_park(&current, &mut ticket)
+    commit_current_park(&current, &mut ticket).map(|_| ())
 }
 
 pub(super) fn prepare_pi_park_attempt(
@@ -42,7 +42,7 @@ pub(super) fn prepare_pi_park_attempt(
     token: &PiWaitToken,
 ) -> Result<PiParkAttempt, TaskError> {
     let _permit = acquire_blocking_permit()?;
-    let current = current_thread_handle()?;
+    let current = current_thread_core_arc()?;
     if current.id() != token.thread_id().into() {
         return Err(TaskError::InvalidPiState);
     }
@@ -52,7 +52,7 @@ pub(super) fn prepare_pi_park_attempt(
     if token.can_claim() || token.is_granted() {
         return Ok(PiParkAttempt::Complete);
     }
-    match system.prepare_park(cpu.as_mut(), &current)? {
+    match system.prepare_current_park(&current)? {
         ParkPrepare::Notified => Ok(PiParkAttempt::Retry),
         ParkPrepare::Prepared(ticket) => Ok(PiParkAttempt::Prepared(current, ticket)),
     }

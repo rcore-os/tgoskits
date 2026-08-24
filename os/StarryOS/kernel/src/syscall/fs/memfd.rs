@@ -143,6 +143,27 @@ pub fn memfd_checks_before_stream_write(
     memfd_check_write_seal(file_like)
 }
 
+/// Preserves Linux's EFAULT-before-seal ordering for scalar stream writes.
+///
+/// Non-memfd streams keep the user buffer as an I/O cursor and therefore skip
+/// eager address-space preparation. A memfd can reject the write before
+/// consuming that cursor, so its input range must be validated first.
+pub fn memfd_checks_before_stream_write_from_user(
+    file_like: &Arc<dyn FileLike>,
+    current: &crate::task::UserTaskRef,
+    buf: *const u8,
+    len: usize,
+) -> StarryResult<()> {
+    if len == 0 {
+        return Ok(());
+    }
+    let Some(memfd) = memfd_from_file_like(file_like) else {
+        return Ok(());
+    };
+    crate::mm::UserConstPtr::<u8>::from(buf).validate_slice(current, len)?;
+    memfd.check_write_seal()
+}
+
 pub fn memfd_checks_before_write_at(
     file_like: &Arc<dyn FileLike>,
     _offset: u64,

@@ -4,8 +4,6 @@ use super::*;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TimerState {
-    /// Fallback state.
-    None   = 0,
     /// The timer is running in user space.
     User   = 1,
     /// The timer is running in kernel space.
@@ -13,35 +11,33 @@ pub enum TimerState {
 }
 
 impl TimerState {
-    fn from_raw(raw: u8) -> Self {
-        match raw {
-            1 => Self::User,
-            2 => Self::Kernel,
-            _ => Self::None,
+    fn scheduler_tick_mode(self) -> scheduler::SchedulerTickMode {
+        match self {
+            Self::User => scheduler::SchedulerTickMode::User,
+            Self::Kernel => scheduler::SchedulerTickMode::System,
         }
     }
 }
 
-/// Writer-serialized virtual-time accounting updated from execution hooks and
-/// scheduler policy transactions.
+/// Linux-style tick classification paired with precise scheduler runtime.
 ///
-/// Execution transitions normally run on the task's CPU, but Linux-compatible
-/// policy changes may update a running task while another CPU owns the syscall.
-/// A non-sleeping writer gate serializes those two sources, while a sequence
-/// counter gives remote readers a coherent snapshot. Deferred scheduler-tick
-/// work remains read-only and publishes sampled totals through per-task
-/// high-water marks instead of becoming another writer.
+/// With virtual accounting disabled, syscall boundaries publish only the
+/// User/System mode consumed by the next periodic scheduler tick. Scheduler
+/// switch hooks independently maintain precise total runtime and RT continuity.
+/// Readers combine both streams through Linux's monotonic `cputime_adjust()`
+/// algorithm instead of reclassifying a running residual by its latest mode.
 pub struct CpuTimeAccounting {
-    user_ns: AtomicU64,
-    system_ns: AtomicU64,
+    scheduler_tick_cpu_time: Arc<scheduler::SchedulerTickCpuTime>,
     published_user_ns: AtomicU64,
     published_system_ns: AtomicU64,
+    runtime_ns: AtomicU64,
+    published_runtime_ns: AtomicU64,
     last_account_ns: AtomicU64,
     realtime_continuous_ns: AtomicU64,
     realtime_reset_generation: AtomicU64,
     writer_gate: SpinLock<()>,
+    adjusted: SpinLock<CpuTimeHighWater>,
     sequence: AtomicU64,
-    state: AtomicU8,
     running: AtomicBool,
     realtime_policy: AtomicBool,
 }
@@ -54,17 +50,20 @@ impl Default for CpuTimeAccounting {
 
 impl CpuTimeAccounting {
     pub(crate) fn new() -> Self {
+        let scheduler_tick_cpu_time = Arc::new(scheduler::SchedulerTickCpuTime::new());
+        scheduler_tick_cpu_time.set_mode(scheduler::SchedulerTickMode::System);
         Self {
-            user_ns: AtomicU64::new(0),
-            system_ns: AtomicU64::new(0),
+            scheduler_tick_cpu_time,
             published_user_ns: AtomicU64::new(0),
             published_system_ns: AtomicU64::new(0),
+            runtime_ns: AtomicU64::new(0),
+            published_runtime_ns: AtomicU64::new(0),
             last_account_ns: AtomicU64::new(0),
             realtime_continuous_ns: AtomicU64::new(0),
             realtime_reset_generation: AtomicU64::new(0),
             writer_gate: SpinLock::new(()),
+            adjusted: SpinLock::new(CpuTimeHighWater::ZERO),
             sequence: AtomicU64::new(0),
-            state: AtomicU8::new(TimerState::None as u8),
             running: AtomicBool::new(false),
             realtime_policy: AtomicBool::new(false),
         }
@@ -73,19 +72,30 @@ impl CpuTimeAccounting {
     /// Returns the current user time and system time as a tuple of `TimeValue`.
     pub fn output(&self) -> (TimeValue, TimeValue) {
         let snapshot = self.snapshot_at(monotonic_time_nanos() as u64);
+        let adjusted = adjust_cpu_time(
+            snapshot.raw_user_ns,
+            snapshot.raw_system_ns,
+            snapshot.runtime_ns,
+            &self.adjusted,
+        );
         (
-            time_value_from_nanos(snapshot.user_ns),
-            time_value_from_nanos(snapshot.system_ns),
+            time_value_from_nanos(adjusted.user_ns),
+            time_value_from_nanos(adjusted.system_ns),
         )
     }
 
-    /// Accounts and updates the current task's user/kernel execution state.
+    pub(crate) fn scheduler_tick_cpu_time(&self) -> Arc<scheduler::SchedulerTickCpuTime> {
+        Arc::clone(&self.scheduler_tick_cpu_time)
+    }
+
+    /// Publishes the current task's user/kernel execution state.
     ///
-    /// The task-owned syscall path keeps this transition local. Process-wide
-    /// publication is batched at scheduler tick and switch boundaries.
+    /// Like Linux tick accounting with `CONFIG_VIRT_CPU_ACCOUNTING_GEN=n`, a
+    /// syscall transition does not read a clock or enter the vtime writer. The
+    /// next scheduler accounting boundary samples the latest published mode.
     pub(crate) fn set_state(&self, state: TimerState) {
-        let _writer = self.begin_write();
-        self.set_state_locked(state, monotonic_time_nanos() as u64);
+        self.scheduler_tick_cpu_time
+            .set_mode(state.scheduler_tick_mode());
     }
 
     pub(crate) fn scheduler_switch_in(&self, realtime_policy: bool) {
@@ -125,14 +135,14 @@ impl CpuTimeAccounting {
     ///
     /// This runs from deferred task work, not hard IRQ. It reads the owner
     /// sequence and publishes only the newly observed per-task totals into the
-    /// process aggregate. It never changes task vtime or contends for writer
-    /// ownership.
+    /// process aggregate. It never changes task runtime or contends with the
+    /// IRQ-off scheduler switch writer.
     pub(crate) fn sample_scheduler_tick_at(&self, observed_ns: u64) -> CpuTimeDelta {
         self.publish_snapshot_delta(self.snapshot_at(observed_ns))
     }
 
-    fn account_now_at(&self, now_ns: u64) -> CpuTimeDelta {
-        self.account_running_until(now_ns)
+    fn account_now_at(&self, now_ns: u64) {
+        self.account_running_until(now_ns);
     }
 
     #[cfg(any(test, axtest))]
@@ -148,7 +158,7 @@ impl CpuTimeAccounting {
         self.running.store(true, Ordering::Release);
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, axtest))]
     fn scheduler_switch_out_at(
         &self,
         reason: scheduler::SwitchReason,
@@ -161,29 +171,22 @@ impl CpuTimeAccounting {
         self.publish_committed_delta()
     }
 
-    fn scheduler_switch_out_locked(
-        &self,
-        reason: scheduler::SwitchReason,
-        now_ns: u64,
-    ) -> CpuTimeDelta {
-        let delta = self.account_running_until(now_ns);
+    fn scheduler_switch_out_locked(&self, reason: scheduler::SwitchReason, now_ns: u64) {
+        self.account_running_until(now_ns);
         self.running.store(false, Ordering::Release);
         if reason == scheduler::SwitchReason::Blocked {
             self.reset_realtime_continuous();
         }
-        delta
     }
 
     #[cfg(any(test, axtest))]
-    fn set_state_at(&self, state: TimerState, now_ns: u64) {
-        let _writer = self.begin_write();
-        self.set_state_locked(state, now_ns);
+    fn set_state_at(&self, state: TimerState, _now_ns: u64) {
+        self.set_state(state);
     }
 
-    fn set_state_locked(&self, state: TimerState, now_ns: u64) -> CpuTimeDelta {
-        let delta = self.account_running_until(now_ns);
-        self.state.store(state as u8, Ordering::Release);
-        delta
+    #[cfg(any(test, axtest))]
+    fn sample_scheduler_tick_for_test(&self, tick_ns: u64) {
+        self.scheduler_tick_cpu_time.sample_for_test(tick_ns);
     }
 
     #[cfg(test)]
@@ -195,47 +198,34 @@ impl CpuTimeAccounting {
         self.publish_committed_delta()
     }
 
-    fn set_realtime_policy_locked(&self, realtime_policy: bool, now_ns: u64) -> CpuTimeDelta {
-        let delta = self.account_running_until(now_ns);
+    fn set_realtime_policy_locked(&self, realtime_policy: bool, now_ns: u64) {
+        self.account_running_until(now_ns);
         let leaving_realtime = self.realtime_policy.load(Ordering::Relaxed) && !realtime_policy;
         self.realtime_policy
             .store(realtime_policy, Ordering::Release);
         if leaving_realtime {
             self.reset_realtime_continuous();
         }
-        delta
     }
 
-    fn account_running_until(&self, now_ns: u64) -> CpuTimeDelta {
+    fn account_running_until(&self, now_ns: u64) {
         if !self.running.load(Ordering::Acquire) {
             self.last_account_ns.store(now_ns, Ordering::Release);
-            return CpuTimeDelta::ZERO;
+            return;
         }
         let previous = self.last_account_ns.fetch_max(now_ns, Ordering::AcqRel);
         let delta = now_ns.saturating_sub(previous);
         if delta == 0 {
-            return CpuTimeDelta::ZERO;
+            return;
         }
+        self.runtime_ns
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |runtime| {
+                Some(runtime.saturating_add(delta))
+            })
+            .expect("infallible CPU runtime update failed");
         if self.realtime_policy.load(Ordering::Acquire) {
             self.realtime_continuous_ns
                 .fetch_add(delta, Ordering::Relaxed);
-        }
-        match TimerState::from_raw(self.state.load(Ordering::Acquire)) {
-            TimerState::User => {
-                self.user_ns.fetch_add(delta, Ordering::Relaxed);
-                CpuTimeDelta {
-                    user_ns: delta,
-                    system_ns: 0,
-                }
-            }
-            TimerState::Kernel => {
-                self.system_ns.fetch_add(delta, Ordering::Relaxed);
-                CpuTimeDelta {
-                    user_ns: 0,
-                    system_ns: delta,
-                }
-            }
-            TimerState::None => CpuTimeDelta::ZERO,
         }
     }
 
@@ -243,12 +233,15 @@ impl CpuTimeAccounting {
     pub(crate) fn unpublished_delta_at(&self, now_ns: u64) -> CpuTimeDelta {
         let snapshot = self.snapshot_at(now_ns);
         CpuTimeDelta {
-            user_ns: snapshot
-                .user_ns
+            raw_user_ns: snapshot
+                .raw_user_ns
                 .saturating_sub(self.published_user_ns.load(Ordering::Acquire)),
-            system_ns: snapshot
-                .system_ns
+            raw_system_ns: snapshot
+                .raw_system_ns
                 .saturating_sub(self.published_system_ns.load(Ordering::Acquire)),
+            runtime_ns: snapshot
+                .runtime_ns
+                .saturating_sub(self.published_runtime_ns.load(Ordering::Acquire)),
         }
     }
 
@@ -261,24 +254,18 @@ impl CpuTimeAccounting {
     pub(super) fn snapshot_at(&self, now_ns: u64) -> CpuTimeSnapshot {
         loop {
             let sequence = self.read_sequence_begin();
+            let tick = self.scheduler_tick_cpu_time.snapshot();
             let mut snapshot = CpuTimeSnapshot {
-                user_ns: self.user_ns.load(Ordering::Relaxed),
-                system_ns: self.system_ns.load(Ordering::Relaxed),
+                raw_user_ns: tick.user_ns(),
+                raw_system_ns: tick.system_ns(),
+                runtime_ns: self.runtime_ns.load(Ordering::Relaxed),
                 realtime_continuous_ns: self.realtime_continuous_ns.load(Ordering::Relaxed),
                 realtime_reset_generation: self.realtime_reset_generation.load(Ordering::Relaxed),
                 realtime_policy: self.realtime_policy.load(Ordering::Relaxed),
             };
             if self.running.load(Ordering::Relaxed) {
                 let residual = now_ns.saturating_sub(self.last_account_ns.load(Ordering::Relaxed));
-                match TimerState::from_raw(self.state.load(Ordering::Relaxed)) {
-                    TimerState::User => {
-                        snapshot.user_ns = snapshot.user_ns.saturating_add(residual);
-                    }
-                    TimerState::Kernel => {
-                        snapshot.system_ns = snapshot.system_ns.saturating_add(residual);
-                    }
-                    TimerState::None => {}
-                }
+                snapshot.runtime_ns = snapshot.runtime_ns.saturating_add(residual);
                 if self.realtime_policy.load(Ordering::Relaxed) {
                     snapshot.realtime_continuous_ns =
                         snapshot.realtime_continuous_ns.saturating_add(residual);
@@ -291,24 +278,41 @@ impl CpuTimeAccounting {
     }
 
     fn publish_committed_delta(&self) -> CpuTimeDelta {
+        let tick = self.scheduler_tick_cpu_time.snapshot();
         self.publish_totals(
-            self.user_ns.load(Ordering::Acquire),
-            self.system_ns.load(Ordering::Acquire),
+            tick.user_ns(),
+            tick.system_ns(),
+            self.runtime_ns.load(Ordering::Acquire),
         )
     }
 
     fn publish_snapshot_delta(&self, snapshot: CpuTimeSnapshot) -> CpuTimeDelta {
-        self.publish_totals(snapshot.user_ns, snapshot.system_ns)
+        self.publish_totals(
+            snapshot.raw_user_ns,
+            snapshot.raw_system_ns,
+            snapshot.runtime_ns,
+        )
     }
 
-    fn publish_totals(&self, user_ns: u64, system_ns: u64) -> CpuTimeDelta {
-        let previous_user = self.published_user_ns.fetch_max(user_ns, Ordering::AcqRel);
+    fn publish_totals(
+        &self,
+        raw_user_ns: u64,
+        raw_system_ns: u64,
+        runtime_ns: u64,
+    ) -> CpuTimeDelta {
+        let previous_user = self
+            .published_user_ns
+            .fetch_max(raw_user_ns, Ordering::AcqRel);
         let previous_system = self
             .published_system_ns
-            .fetch_max(system_ns, Ordering::AcqRel);
+            .fetch_max(raw_system_ns, Ordering::AcqRel);
+        let previous_runtime = self
+            .published_runtime_ns
+            .fetch_max(runtime_ns, Ordering::AcqRel);
         CpuTimeDelta {
-            user_ns: user_ns.saturating_sub(previous_user),
-            system_ns: system_ns.saturating_sub(previous_system),
+            raw_user_ns: raw_user_ns.saturating_sub(previous_user),
+            raw_system_ns: raw_system_ns.saturating_sub(previous_system),
+            runtime_ns: runtime_ns.saturating_sub(previous_runtime),
         }
     }
 
@@ -360,8 +364,9 @@ impl Drop for CpuTimeWriter<'_> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CpuTimeSnapshot {
-    pub(super) user_ns: u64,
-    pub(super) system_ns: u64,
+    pub(super) raw_user_ns: u64,
+    pub(super) raw_system_ns: u64,
+    pub(super) runtime_ns: u64,
     pub(super) realtime_continuous_ns: u64,
     pub(super) realtime_reset_generation: u64,
     pub(super) realtime_policy: bool,
@@ -369,22 +374,70 @@ pub(super) struct CpuTimeSnapshot {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CpuTimeDelta {
-    user_ns: u64,
-    system_ns: u64,
+    raw_user_ns: u64,
+    raw_system_ns: u64,
+    runtime_ns: u64,
 }
 
 impl CpuTimeDelta {
     pub(crate) const ZERO: Self = Self {
-        user_ns: 0,
-        system_ns: 0,
+        raw_user_ns: 0,
+        raw_system_ns: 0,
+        runtime_ns: 0,
     };
 
     pub(crate) fn add(self, other: Self) -> Self {
         Self {
-            user_ns: self.user_ns.saturating_add(other.user_ns),
-            system_ns: self.system_ns.saturating_add(other.system_ns),
+            raw_user_ns: self.raw_user_ns.saturating_add(other.raw_user_ns),
+            raw_system_ns: self.raw_system_ns.saturating_add(other.raw_system_ns),
+            runtime_ns: self.runtime_ns.saturating_add(other.runtime_ns),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CpuTimeHighWater {
+    user_ns: u64,
+    system_ns: u64,
+}
+
+impl CpuTimeHighWater {
+    const ZERO: Self = Self {
+        user_ns: 0,
+        system_ns: 0,
+    };
+}
+
+fn adjust_cpu_time(
+    raw_user_ns: u64,
+    raw_system_ns: u64,
+    runtime_ns: u64,
+    high_water: &SpinLock<CpuTimeHighWater>,
+) -> CpuTimeHighWater {
+    let mut previous = high_water.lock();
+    if previous.user_ns.saturating_add(previous.system_ns) >= runtime_ns {
+        return *previous;
+    }
+
+    // Linux assumes userspace until the first system tick. Once both buckets
+    // have samples, scale their ratio to the scheduler's precise runtime.
+    let mut system_ns = if raw_system_ns == 0 {
+        0
+    } else if raw_user_ns == 0 {
+        runtime_ns
+    } else {
+        let raw_total = raw_user_ns as u128 + raw_system_ns as u128;
+        ((raw_system_ns as u128 * runtime_ns as u128) / raw_total) as u64
+    };
+    system_ns = system_ns.max(previous.system_ns).min(runtime_ns);
+    let mut user_ns = runtime_ns - system_ns;
+    if user_ns < previous.user_ns {
+        user_ns = previous.user_ns;
+        system_ns = runtime_ns - user_ns;
+    }
+
+    *previous = CpuTimeHighWater { user_ns, system_ns };
+    *previous
 }
 
 /// Monotonic process-wide CPU accounting.
@@ -395,10 +448,12 @@ impl CpuTimeDelta {
 /// every live task's unpublished totals. A monotonic high-water mark closes the
 /// publication handoff window without waiting for a task that was switched out.
 pub struct ProcessCpuTimeAccounting {
-    user_ns: AtomicU64,
-    system_ns: AtomicU64,
-    observed_user_ns: AtomicU64,
-    observed_system_ns: AtomicU64,
+    raw_user_ns: AtomicU64,
+    raw_system_ns: AtomicU64,
+    runtime_ns: AtomicU64,
+    adjusted: SpinLock<CpuTimeHighWater>,
+    #[cfg(axtest)]
+    publication_rmws: AtomicU64,
 }
 
 impl Default for ProcessCpuTimeAccounting {
@@ -410,10 +465,12 @@ impl Default for ProcessCpuTimeAccounting {
 impl ProcessCpuTimeAccounting {
     pub(crate) const fn new() -> Self {
         Self {
-            user_ns: AtomicU64::new(0),
-            system_ns: AtomicU64::new(0),
-            observed_user_ns: AtomicU64::new(0),
-            observed_system_ns: AtomicU64::new(0),
+            raw_user_ns: AtomicU64::new(0),
+            raw_system_ns: AtomicU64::new(0),
+            runtime_ns: AtomicU64::new(0),
+            adjusted: SpinLock::new(CpuTimeHighWater::ZERO),
+            #[cfg(axtest)]
+            publication_rmws: AtomicU64::new(0),
         }
     }
 
@@ -422,8 +479,17 @@ impl ProcessCpuTimeAccounting {
     }
 
     fn record_delta(&self, delta: CpuTimeDelta) {
-        self.user_ns.fetch_add(delta.user_ns, Ordering::Release);
-        self.system_ns.fetch_add(delta.system_ns, Ordering::Release);
+        if delta == CpuTimeDelta::ZERO {
+            return;
+        }
+        #[cfg(axtest)]
+        self.publication_rmws.fetch_add(3, Ordering::Relaxed);
+        self.raw_user_ns
+            .fetch_add(delta.raw_user_ns, Ordering::Release);
+        self.raw_system_ns
+            .fetch_add(delta.raw_system_ns, Ordering::Release);
+        self.runtime_ns
+            .fetch_add(delta.runtime_ns, Ordering::Release);
     }
 
     pub(crate) fn snapshot_with_live(
@@ -447,22 +513,30 @@ impl ProcessCpuTimeAccounting {
         live_residual: &mut impl FnMut(u64) -> CpuTimeDelta,
     ) -> ProcessCpuTimeSnapshot {
         let committed = CpuTimeDelta {
-            user_ns: self.user_ns.load(Ordering::Acquire),
-            system_ns: self.system_ns.load(Ordering::Acquire),
+            raw_user_ns: self.raw_user_ns.load(Ordering::Acquire),
+            raw_system_ns: self.raw_system_ns.load(Ordering::Acquire),
+            runtime_ns: self.runtime_ns.load(Ordering::Acquire),
         };
         let sampled = committed.add(live_residual(now_ns));
+        let adjusted = adjust_cpu_time(
+            sampled.raw_user_ns,
+            sampled.raw_system_ns,
+            sampled.runtime_ns,
+            &self.adjusted,
+        );
         ProcessCpuTimeSnapshot {
-            user_ns: self
-                .observed_user_ns
-                .fetch_max(sampled.user_ns, Ordering::AcqRel)
-                .max(sampled.user_ns),
-            system_ns: self
-                .observed_system_ns
-                .fetch_max(sampled.system_ns, Ordering::AcqRel)
-                .max(sampled.system_ns),
+            user_ns: adjusted.user_ns,
+            system_ns: adjusted.system_ns,
             sampled_at_ns: now_ns,
         }
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn zero_process_cpu_time_delta_avoids_publication_for_test() -> bool {
+    let accounting = ProcessCpuTimeAccounting::new();
+    accounting.record_transition(|| CpuTimeDelta::ZERO);
+    accounting.publication_rmws.load(Ordering::Relaxed) == 0
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -508,6 +582,8 @@ pub(super) fn scheduler_tick_group_accounting_is_aggregate_for_test() -> bool {
         return false;
     }
 
+    first.sample_scheduler_tick_for_test(10);
+    second.sample_scheduler_tick_for_test(10);
     process.record_transition(|| {
         let writer = first.begin_write();
         first.account_now_at(10);
@@ -534,14 +610,22 @@ pub(super) fn scheduler_tick_sampling_avoids_owner_writer_for_test() -> bool {
     accounting.set_state_at(TimerState::User, 0);
     accounting.scheduler_switch_in_at(false, 0);
 
-    let sequence = accounting.sequence.load(Ordering::Acquire);
-    accounting.sample_scheduler_tick_at(10)
-        == (CpuTimeDelta {
-            user_ns: 10,
-            system_ns: 0,
-        })
-        && accounting.sequence.load(Ordering::Acquire) == sequence
-        && accounting.user_ns.load(Ordering::Acquire) == 0
+    let sequence_before_irq_sample = accounting.sequence.load(Ordering::Acquire);
+    accounting.sample_scheduler_tick_for_test(10);
+    let irq_sample_avoided_writer =
+        accounting.sequence.load(Ordering::Acquire) == sequence_before_irq_sample;
+    let published = accounting.sample_scheduler_tick_at(10);
+    let deferred_publication_avoided_writer =
+        accounting.sequence.load(Ordering::Acquire) == sequence_before_irq_sample;
+
+    irq_sample_avoided_writer
+        && deferred_publication_avoided_writer
+        && published
+            == (CpuTimeDelta {
+                raw_user_ns: 10,
+                raw_system_ns: 0,
+                runtime_ns: 10,
+            })
 }
 
 #[cfg(axtest)]
@@ -549,15 +633,45 @@ pub(super) fn user_kernel_transitions_remain_task_local_for_test() -> bool {
     let accounting = CpuTimeAccounting::new();
     accounting.set_state_at(TimerState::User, 0);
     accounting.scheduler_switch_in_at(false, 0);
+    accounting.sample_scheduler_tick_for_test(10);
+    accounting.sample_scheduler_tick_at(10);
     accounting.set_state_at(TimerState::Kernel, 10);
 
-    accounting.published_user_ns.load(Ordering::Acquire) == 0
+    let snapshot = accounting.snapshot_at(15);
+    accounting.published_user_ns.load(Ordering::Acquire) == 10
         && accounting.published_system_ns.load(Ordering::Acquire) == 0
+        && snapshot.raw_user_ns == 10
+        && snapshot.raw_system_ns == 0
+        && snapshot.runtime_ns == 15
         && accounting.unpublished_delta_at(15)
             == (CpuTimeDelta {
-                user_ns: 10,
-                system_ns: 5,
+                raw_user_ns: 0,
+                raw_system_ns: 0,
+                runtime_ns: 5,
             })
+}
+
+#[cfg(axtest)]
+pub(super) fn process_cpu_high_water_preserves_runtime_total_for_test() -> bool {
+    let process = ProcessCpuTimeAccounting::new();
+    let accounting = CpuTimeAccounting::new();
+    accounting.set_state_at(TimerState::User, 0);
+    process.record_transition(|| {
+        accounting.scheduler_switch_in_at(false, 0);
+        CpuTimeDelta::ZERO
+    });
+
+    let first = process.snapshot_at_with_live(10, &mut |now| accounting.unpublished_delta_at(now));
+    accounting.set_state_at(TimerState::Kernel, 10);
+    process.record_transition(|| {
+        accounting.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 15)
+    });
+    let second = process.snapshot_committed_at(15);
+
+    first.user_ns.saturating_add(first.system_ns) == 10
+        && second.user_ns >= first.user_ns
+        && second.system_ns >= first.system_ns
+        && second.user_ns.saturating_add(second.system_ns) == 15
 }
 
 include!("accounting/tests.rs");

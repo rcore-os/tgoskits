@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-#[cfg(feature = "qperf-metrics")]
+#[cfg(any(feature = "qperf-metrics", feature = "uaccess-lock-regression"))]
 use super::SimpleFile;
 use super::{DirMaker, DirMapping, SimpleDir, SimpleFs};
 
@@ -16,6 +16,33 @@ fn debugfs_builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     let tracing = crate::tracepoint::init_tracing_dir(fs.clone());
     root.add("tracing", tracing);
+    #[cfg(feature = "uaccess-lock-regression")]
+    root.add(
+        "uaccess_lock_regression",
+        SimpleFile::new_regular(
+            fs.clone(),
+            super::RwFile::new(
+                |operation| -> axfs_ng_vfs::VfsResult<Option<alloc::vec::Vec<u8>>> {
+                    match operation {
+                        super::SimpleFileOperation::Read => Ok(Some(alloc::vec![
+                            0;
+                            crate::mm::observe_user_copy_test_state()
+                        ])),
+                        super::SimpleFileOperation::Write(b"hold") => {
+                            if crate::mm::hold_address_space_until_user_copy() {
+                                Ok(None)
+                            } else {
+                                Err(axfs_ng_vfs::VfsError::InvalidInput)
+                            }
+                        }
+                        super::SimpleFileOperation::Write(_) => {
+                            Err(axfs_ng_vfs::VfsError::InvalidInput)
+                        }
+                    }
+                },
+            ),
+        ),
+    );
     #[cfg(feature = "qperf-metrics")]
     root.add(
         "scheduler_metrics",
@@ -30,7 +57,14 @@ fn render_scheduler_metrics() -> alloc::string::String {
 
     let metrics = ax_runtime::task::qperf_runtime_scheduler_metrics_snapshot();
     let task = metrics.task;
+    let pipe = crate::file::pipe_qperf_metrics_snapshot();
     let mut output = alloc::string::String::new();
+    writeln!(output, "pipe_read_calls {}", pipe.read_calls).unwrap();
+    writeln!(output, "pipe_read_waits {}", pipe.read_waits).unwrap();
+    writeln!(output, "pipe_read_bytes {}", pipe.read_bytes).unwrap();
+    writeln!(output, "pipe_write_calls {}", pipe.write_calls).unwrap();
+    writeln!(output, "pipe_write_waits {}", pipe.write_waits).unwrap();
+    writeln!(output, "pipe_write_bytes {}", pipe.write_bytes).unwrap();
     writeln!(
         output,
         "current_thread_handle_queries {}",
@@ -425,6 +459,146 @@ fn render_scheduler_metrics() -> alloc::string::String {
     .unwrap();
     writeln!(
         output,
+        "fair_wake_wakee_ineligible {}",
+        task.fair_wake_wakee_ineligible
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_wake_current_ineligible {}",
+        task.fair_wake_current_ineligible
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_wake_current_protected {}",
+        task.fair_wake_current_protected
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_wake_deadline_precedes {}",
+        task.fair_wake_deadline_precedes
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_wake_deadline_loses {}",
+        task.fair_wake_deadline_loses
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_sleep_lag_positive {}",
+        task.fair_sleep_lag_positive
+    )
+    .unwrap();
+    writeln!(output, "fair_sleep_lag_zero {}", task.fair_sleep_lag_zero).unwrap();
+    writeln!(
+        output,
+        "fair_sleep_lag_negative {}",
+        task.fair_sleep_lag_negative
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_sleep_wake_lag_positive {}",
+        task.fair_sleep_wake_lag_positive
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_sleep_wake_lag_zero {}",
+        task.fair_sleep_wake_lag_zero
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_sleep_wake_lag_negative {}",
+        task.fair_sleep_wake_lag_negative
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_delayed_wake_lag_zero {}",
+        task.fair_delayed_wake_lag_zero
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_delayed_wake_lag_negative {}",
+        task.fair_delayed_wake_lag_negative
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_wake_wakee_debt_total_ns {}",
+        task.fair_wake_wakee_debt_total_ns
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_wake_current_debt_total_ns {}",
+        task.fair_wake_current_debt_total_ns
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_wake_current_credit_total_ns {}",
+        task.fair_wake_current_credit_total_ns
+    )
+    .unwrap();
+    writeln!(output, "fair_yield_eligible {}", task.fair_yield_eligible).unwrap();
+    writeln!(
+        output,
+        "fair_yield_ineligible {}",
+        task.fair_yield_ineligible
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_yield_forfeit_total_ns {}",
+        task.fair_yield_forfeit_total_ns
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_yield_debt_total_ns {}",
+        task.fair_yield_debt_total_ns
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_delayed_begin_count {}",
+        task.fair_delayed_begin_count
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_delayed_begin_debt_total_ns {}",
+        task.fair_delayed_begin_debt_total_ns
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_delayed_wake_saved_debt_total_ns {}",
+        task.fair_delayed_wake_saved_debt_total_ns
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_delayed_wake_actual_debt_total_ns {}",
+        task.fair_delayed_wake_actual_debt_total_ns
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "fair_delayed_wake_saved_clamp_count {}",
+        task.fair_delayed_wake_saved_clamp_count
+    )
+    .unwrap();
+    writeln!(
+        output,
         "task_work_publish_calls {}",
         task.task_work_publish_calls
     )
@@ -634,6 +808,31 @@ mod tests {
                 "direct_wake_preemptions",
                 "direct_wake_current_kept",
                 "direct_wake_queued_candidate_selected",
+                "fair_wake_wakee_ineligible",
+                "fair_wake_current_ineligible",
+                "fair_wake_current_protected",
+                "fair_wake_deadline_precedes",
+                "fair_wake_deadline_loses",
+                "fair_sleep_lag_positive",
+                "fair_sleep_lag_zero",
+                "fair_sleep_lag_negative",
+                "fair_sleep_wake_lag_positive",
+                "fair_sleep_wake_lag_zero",
+                "fair_sleep_wake_lag_negative",
+                "fair_delayed_wake_lag_zero",
+                "fair_delayed_wake_lag_negative",
+                "fair_wake_wakee_debt_total_ns",
+                "fair_wake_current_debt_total_ns",
+                "fair_wake_current_credit_total_ns",
+                "fair_yield_eligible",
+                "fair_yield_ineligible",
+                "fair_yield_forfeit_total_ns",
+                "fair_yield_debt_total_ns",
+                "fair_delayed_begin_count",
+                "fair_delayed_begin_debt_total_ns",
+                "fair_delayed_wake_saved_debt_total_ns",
+                "fair_delayed_wake_actual_debt_total_ns",
+                "fair_delayed_wake_saved_clamp_count",
                 "task_work_publish_calls",
                 "task_work_publish_edges",
                 "task_work_pending_consumed",

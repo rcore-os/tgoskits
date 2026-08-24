@@ -91,29 +91,7 @@ impl CpuRemote {
     }
 
     fn request_reschedule_owned(&self) -> Option<SchedulerRequestPublication> {
-        let publication = self.scheduler_request.request.try_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |word| {
-                if word & REQUEST_PREEMPT != 0 {
-                    return None;
-                }
-                let generation = request_generation(word).checked_add(1)?;
-                if generation > REQUEST_GENERATION_MAX {
-                    return None;
-                }
-                Some(
-                    (generation << REQUEST_GENERATION_SHIFT)
-                        | (word & REQUEST_FLAGS_MASK)
-                        | REQUEST_PREEMPT,
-                )
-            },
-        );
-        match publication {
-            Ok(previous) => Some(Self::scheduler_request_publication(previous)),
-            Err(current) if current & REQUEST_PREEMPT != 0 => None,
-            Err(_) => panic!("scheduler request generation exhausted"),
-        }
+        self.publish_scheduler_request_owned(REQUEST_PREEMPT)
     }
 
     /// Publishes a remote preemption and rings the target doorbell only after
@@ -139,9 +117,11 @@ impl CpuRemote {
             return;
         };
         let _irq = IrqScope::enter();
-        let publication =
-            self.publish_scheduler_request_owned(REQUEST_PREEMPT | REQUEST_OWNER_WORK);
-        self.deliver_scheduler_work_owned(publication);
+        if let Some(publication) =
+            self.publish_scheduler_request_owned(REQUEST_PREEMPT | REQUEST_OWNER_WORK)
+        {
+            self.deliver_scheduler_work_owned(publication);
+        }
     }
 
     pub(crate) fn request_scheduler_work(&self) {
@@ -158,15 +138,40 @@ impl CpuRemote {
             return false;
         };
         let _irq = IrqScope::enter();
-        let publication = self.request_scheduler_work_owned();
-        self.deliver_scheduler_work_owned(publication)
+        self.request_scheduler_work_owned()
+            .is_none_or(|publication| self.deliver_scheduler_work_owned(publication))
     }
 
-    pub(super) fn request_scheduler_work_owned(&self) -> SchedulerRequestPublication {
+    pub(super) fn request_scheduler_work_owned(&self) -> Option<SchedulerRequestPublication> {
         self.publish_scheduler_request_owned(REQUEST_OWNER_WORK)
     }
 
-    fn publish_scheduler_request_owned(&self, reason: u64) -> SchedulerRequestPublication {
+    fn publish_scheduler_request_owned(&self, reason: u64) -> Option<SchedulerRequestPublication> {
+        debug_assert_ne!(reason & REQUEST_REASON_MASK, 0);
+        let publication = self.scheduler_request.request.try_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |word| {
+                if word & reason == reason {
+                    return None;
+                }
+                let generation = request_generation(word).checked_add(1)?;
+                if generation > REQUEST_GENERATION_MAX {
+                    return None;
+                }
+                Some(
+                    (generation << REQUEST_GENERATION_SHIFT) | (word & REQUEST_FLAGS_MASK) | reason,
+                )
+            },
+        );
+        match publication {
+            Ok(previous) => Some(Self::scheduler_request_publication(previous)),
+            Err(current) if current & reason == reason => None,
+            Err(_) => panic!("scheduler request generation exhausted"),
+        }
+    }
+
+    fn force_scheduler_request_owned(&self, reason: u64) -> SchedulerRequestPublication {
         debug_assert_ne!(reason & REQUEST_REASON_MASK, 0);
         let previous = self
             .scheduler_request
@@ -202,8 +207,8 @@ impl CpuRemote {
     }
 
     pub(super) fn kick_scheduler_work_owned(&self) -> bool {
-        let publication = self.request_scheduler_work_owned();
-        self.deliver_scheduler_work_owned(publication)
+        self.request_scheduler_work_owned()
+            .is_none_or(|publication| self.deliver_scheduler_work_owned(publication))
     }
 
     /// Rearms the physical doorbell after an owner-side bounded drain.
@@ -220,7 +225,7 @@ impl CpuRemote {
             );
         };
         let _irq = IrqScope::enter();
-        let _publication = self.request_scheduler_work_owned();
+        let _publication = self.force_scheduler_request_owned(REQUEST_OWNER_WORK);
         self.ring_scheduler_doorbell();
     }
 
@@ -298,6 +303,11 @@ impl CpuRemote {
         if self.has_remote_work() && request & REQUEST_ENTRY_MASK == 0 {
             self.request_scheduler_work();
         }
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_bounded_owner_control_ack(
+            self.owner,
+            self.scheduler_request_state_for_test().0,
+        );
     }
 
     #[cfg(any(test, all(axtest, feature = "axtest")))]

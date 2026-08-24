@@ -27,6 +27,9 @@ use crate::{StarryError, StarryResult, sync::IrqMutex};
 static NEXT_IDENTITY_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_NAMESPACE_ID: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(axtest)]
+static PUBLISHED_MEMBERS_SNAPSHOT_CALLS: AtomicU64 = AtomicU64::new(0);
+
 /// Serializes reservation publication, identity removal, and shutdown.
 static PUBLICATION_GATE: IrqMutex<()> = IrqMutex::new(());
 
@@ -263,10 +266,6 @@ impl PidNamespace {
         self.id
     }
 
-    pub const fn level(&self) -> u32 {
-        self.level
-    }
-
     pub fn parent(&self) -> Option<PidNamespaceRef> {
         self.parent.clone()
     }
@@ -432,7 +431,11 @@ impl PidNamespace {
     /// Starts the namespace-init exit transaction from its last live thread.
     ///
     /// `executor` is the TID identity that must finish the transaction before
-    /// its normal task-exit path can retire that identity.
+    /// its normal task-exit path can retire that identity. Linux keeps the
+    /// global init alive forever, while Starry joins PID 1 and tears the whole
+    /// system down when its userspace command completes. The root namespace
+    /// therefore uses this same exclusive shutdown transaction instead of
+    /// attempting an impossible ordinary reparent-to-self transition.
     pub fn begin_shutdown(
         &self,
         init: PidIdentityId,
@@ -440,8 +443,7 @@ impl PidNamespace {
     ) -> Option<PidNamespaceShutdown<'_>> {
         let _publication = PUBLICATION_GATE.lock();
         let mut state = self.state.lock();
-        if self.level == 0
-            || state.lifecycle != PidNamespaceLifecycle::Active
+        if state.lifecycle != PidNamespaceLifecycle::Active
             || state.init_identity != Some(init)
             || !state.by_identity.contains_key(&executor)
         {
@@ -456,6 +458,8 @@ impl PidNamespace {
     }
 
     pub fn published_members(&self) -> Vec<Arc<PidIdentity>> {
+        #[cfg(axtest)]
+        PUBLISHED_MEMBERS_SNAPSHOT_CALLS.fetch_add(1, Ordering::Relaxed);
         let _publication = PUBLICATION_GATE.lock();
         self.state
             .lock()
@@ -464,6 +468,16 @@ impl PidNamespace {
             .filter(|slot| slot.state == PidSlotState::Published)
             .filter_map(|slot| slot.identity.clone())
             .collect()
+    }
+
+    #[cfg(axtest)]
+    pub(crate) fn reset_published_members_snapshot_calls_for_test(&self) {
+        PUBLISHED_MEMBERS_SNAPSHOT_CALLS.store(0, Ordering::Relaxed);
+    }
+
+    #[cfg(axtest)]
+    pub(crate) fn published_members_snapshot_calls_for_test(&self) -> u64 {
+        PUBLISHED_MEMBERS_SNAPSHOT_CALLS.load(Ordering::Relaxed)
     }
 
     fn finish_shutdown(&self, init: PidIdentityId) {
@@ -599,6 +613,7 @@ impl PidReservation {
             id: identity_id,
             bindings: identity_bindings,
             thread_pidfd_event: Arc::new(PollSet::new()),
+            ptrace_tracees_registered: AtomicBool::new(false),
             state: IrqMutex::new(PidIdentityState {
                 publication: PidIdentityPublication::Reserved,
                 runtime: RuntimeTaskLink::Reserved,
@@ -736,6 +751,15 @@ pub struct PidIdentity {
     id: PidIdentityId,
     bindings: Arc<[PidBinding]>,
     thread_pidfd_event: Arc<PollSet>,
+    /// Sticky publication that this process generation has owned a tracee.
+    ///
+    /// Linux keeps a per-tracer `ptraced` list. Starry has not yet moved the
+    /// relationship into that identity-owned reverse index, so traced waits
+    /// still use the root PID table as their authoritative slow path. A false
+    /// value is nevertheless authoritative: no tracee relation could have
+    /// been published before this release store, allowing ordinary wait and
+    /// exit paths to avoid a global PID snapshot entirely.
+    ptrace_tracees_registered: AtomicBool,
     state: IrqMutex<PidIdentityState>,
 }
 
@@ -756,12 +780,29 @@ impl PidIdentity {
         self.id
     }
 
+    pub(crate) fn mark_ptrace_tracee_registered(&self) {
+        self.ptrace_tracees_registered
+            .store(true, Ordering::Release);
+    }
+
+    pub(crate) fn may_have_ptrace_tracees(&self) -> bool {
+        self.ptrace_tracees_registered.load(Ordering::Acquire)
+    }
+
     pub fn active_namespace(&self) -> PidNamespaceRef {
         self.bindings
             .last()
             .expect("published identity has no PID binding")
             .namespace
             .clone()
+    }
+
+    /// Returns this identity's number in its immutable active namespace.
+    pub(crate) fn active_number(&self) -> PidNumber {
+        self.bindings
+            .last()
+            .expect("published identity has no PID binding")
+            .number
     }
 
     pub fn visible_number(&self, observer: &PidNamespaceRef) -> Option<PidNumber> {
@@ -1751,6 +1792,38 @@ pub(crate) fn dropped_exit_path_lease_keeps_unfinished_work_pending_for_test() -
     let slot_retained = namespace.retains_identity_slot_for_test(identity.id());
     identity.complete_exit_path();
     pending && slot_retained && !namespace.retains_identity_slot_for_test(identity.id())
+}
+
+#[cfg(axtest)]
+pub(crate) fn root_namespace_init_owns_shutdown_for_test() -> bool {
+    let root = Arc::new(PidNamespace::new_root());
+    let init = PidReservation::reserve(&root, PidReservationKind::ProcessLeader)
+        .unwrap()
+        .publish()
+        .unwrap();
+    let tid = init.acquire_role::<Tid>().unwrap();
+    let tgid = init.acquire_role::<Tgid>().unwrap();
+
+    let Some(shutdown) = root.begin_shutdown(init.id(), init.id()) else {
+        return false;
+    };
+    if root.lifecycle() != PidNamespaceLifecycle::ShuttingDown
+        || !matches!(
+            PidReservation::reserve(&root, PidReservationKind::Thread),
+            Err(StarryError::NoMemory)
+        )
+    {
+        return false;
+    }
+
+    shutdown.wait_for_descendants_exit();
+    let shutdown_completed = root.lifecycle() == PidNamespaceLifecycle::Dead
+        && root.lookup_identity(init.id()).is_none();
+    init.mark_task_exited().complete();
+    tid.release();
+    tgid.release();
+    drop(shutdown);
+    shutdown_completed
 }
 
 #[cfg(axtest)]

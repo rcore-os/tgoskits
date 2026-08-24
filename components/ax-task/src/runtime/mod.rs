@@ -59,6 +59,16 @@ pub(crate) enum IrqGuardSource {
 
 pub(crate) fn enter_preempt_guard(source: PreemptGuardSource) -> PreemptGuardToken {
     let token = task_runtime::preempt_guard_enter();
+    #[cfg(feature = "task-test-hooks")]
+    {
+        let identity = task_runtime::current_thread_publication().identity();
+        if identity.is_bound() {
+            crate::task_test_hooks::record_current_preempt_guard(crate::ThreadId::from_parts(
+                identity.slot,
+                identity.generation,
+            ));
+        }
+    }
     #[cfg(feature = "qperf-metrics")]
     crate::metrics::record_runtime_preempt_guard_entry(source, token.is_none());
     #[cfg(not(feature = "qperf-metrics"))]
@@ -68,6 +78,15 @@ pub(crate) fn enter_preempt_guard(source: PreemptGuardSource) -> PreemptGuardTok
 
 pub(crate) fn enter_irq_guard(source: IrqGuardSource) -> IrqGuardToken {
     let token = task_runtime::irq_guard_enter();
+    #[cfg(feature = "task-test-hooks")]
+    if source as usize == IrqGuardSource::RuntimeCpu as usize {
+        let identity = task_runtime::current_thread_publication().identity();
+        if identity.is_bound() {
+            crate::task_test_hooks::record_park_prepare_runtime_cpu_entry(
+                crate::ThreadId::from_parts(identity.slot, identity.generation),
+            );
+        }
+    }
     #[cfg(feature = "task-test-hooks")]
     if source as usize == IrqGuardSource::RootRtPeriodDeadlineObservationTicket as usize {
         // SAFETY: the runtime IRQ token acquired above pins this operation to

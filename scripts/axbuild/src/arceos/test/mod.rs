@@ -49,6 +49,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "task-kernel-timer",
     "task-parallel",
     "task-pi-mutex",
+    "task-preempt-guard",
     "task-priority",
     "task-rt-policy",
     "task-sleep",

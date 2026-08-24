@@ -1,6 +1,7 @@
 //! User-memory copy APIs must express both input-validity and output-byte invariants.
 
 const ACCESS: &str = include_str!("../src/mm/access.rs");
+const FS_IO: &str = include_str!("../src/syscall/fs/io.rs");
 const NET_FILE: &str = include_str!("../src/file/net.rs");
 const NET_IO: &str = include_str!("../src/syscall/net/io.rs");
 const RGA: &str = include_str!("../src/pseudofs/dev/rga.rs");
@@ -65,6 +66,24 @@ fn socket_payloads_cross_transport_locks_through_kernel_staging_buffers() {
     assert!(recv_impl.contains("socket.recv_to_user("));
     assert!(!send_impl.contains("socket.send(\n"));
     assert!(!recv_impl.contains("socket.recv(\n"));
+}
+
+#[test]
+fn scalar_stream_write_preserves_the_user_buffer_as_an_io_cursor() {
+    let syscall = section(FS_IO, "pub fn sys_write(", "\n}\n\npub fn sys_writev");
+
+    assert!(
+        syscall.contains("memfd_checks_before_stream_write_from_user("),
+        "write must preserve EFAULT-before-seal ordering only for memfd-backed files"
+    );
+    assert!(
+        syscall.contains("VmBytes::new(current, buf.cast_const(), len)"),
+        "write must stream from the user buffer through the existing IoSrc boundary"
+    );
+    assert!(
+        !syscall.contains("copy_user_read_buf"),
+        "write must not allocate and copy the complete payload before the file consumes it"
+    );
 }
 
 #[test]

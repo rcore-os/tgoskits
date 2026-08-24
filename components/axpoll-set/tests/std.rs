@@ -107,6 +107,29 @@ fn axpoll_exclusive_wake_keeps_other_matching_waiters() {
 }
 
 #[test]
+fn axpoll_custom_wake_policy_receives_the_selected_waker() {
+    let poll_set = PollSet::new();
+    let counter = WakeCounter::new();
+    let waker = counter_waker(&counter);
+    let mut registrar = PollRegistrar::<ExclusiveConsumer>::new(&waker);
+    let callbacks = AtomicUsize::new(0);
+
+    unsafe { registrar.register_exclusive(&poll_set, IoEvents::IN) };
+    assert_eq!(
+        unsafe {
+            poll_set.wake_with(IoEvents::IN, |waker| {
+                callbacks.fetch_add(1, Ordering::AcqRel);
+                waker.wake();
+            })
+        },
+        1
+    );
+    assert_eq!(callbacks.load(Ordering::Acquire), 1);
+    assert_eq!(counter.count(), 1);
+    assert_eq!(unsafe { poll_set.wake(IoEvents::IN) }, 0);
+}
+
+#[test]
 fn axpoll_unbounded_registration_and_drop_rules_hold() {
     let poll_set = PollSet::new();
     let counters = (0..65).map(|_| WakeCounter::new()).collect::<Vec<_>>();

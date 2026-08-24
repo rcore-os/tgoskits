@@ -21,6 +21,7 @@ const NO_RT_PERIOD_DEADLINE: u64 = u64::MAX;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RtRunQueueBandwidth {
     enabled: bool,
+    period_ns: u64,
     runtime_ns: u64,
     time_ns: u64,
 }
@@ -30,6 +31,7 @@ impl RtRunQueueBandwidth {
     pub(crate) const fn new(period_ns: u64, runtime_ns: u64) -> Self {
         Self {
             enabled: runtime_ns < period_ns,
+            period_ns,
             runtime_ns,
             time_ns: 0,
         }
@@ -38,6 +40,7 @@ impl RtRunQueueBandwidth {
     pub(crate) const fn offline() -> Self {
         Self {
             enabled: false,
+            period_ns: 0,
             runtime_ns: 0,
             time_ns: 0,
         }
@@ -47,6 +50,7 @@ impl RtRunQueueBandwidth {
     /// accounting before this rq becomes visible in the online span.
     pub(crate) fn enable(&mut self, period_ns: u64, runtime_ns: u64) {
         self.enabled = runtime_ns < period_ns;
+        self.period_ns = period_ns;
         self.runtime_ns = runtime_ns;
         self.time_ns = 0;
     }
@@ -55,6 +59,7 @@ impl RtRunQueueBandwidth {
     /// have been reclaimed under the root bandwidth lock.
     pub(crate) fn disable(&mut self) {
         self.enabled = false;
+        self.period_ns = 0;
         self.runtime_ns = 0;
         self.time_ns = 0;
     }
@@ -74,7 +79,7 @@ impl RtRunQueueBandwidth {
     }
 
     pub(crate) fn should_throttle(&mut self) -> bool {
-        if !self.enabled || self.time_ns <= self.runtime_ns {
+        if !self.enabled || self.runtime_ns >= self.period_ns || self.time_ns <= self.runtime_ns {
             return false;
         }
         if self.runtime_ns == 0 {
@@ -89,11 +94,16 @@ impl RtRunQueueBandwidth {
     }
 
     /// Returns time until the strict Linux throttle edge.
+    #[cfg(any(test, feature = "task-test-hooks", all(axtest, feature = "axtest")))]
     pub(crate) const fn runtime_until_throttle(self) -> Option<u64> {
-        if !self.enabled {
+        if !self.enabled || self.runtime_ns >= self.period_ns {
             None
         } else {
-            Some(self.runtime_ns - self.time_ns + 1)
+            Some(
+                self.runtime_ns
+                    .saturating_add(1)
+                    .saturating_sub(self.time_ns),
+            )
         }
     }
 
@@ -127,7 +137,11 @@ impl RtRunQueueBandwidth {
     }
 
     pub(crate) fn borrow_runtime(&mut self, amount: u64, period_ns: u64) {
-        assert!(self.enabled && self.runtime_ns.saturating_add(amount) <= period_ns);
+        assert!(
+            self.enabled
+                && self.period_ns == period_ns
+                && self.runtime_ns.saturating_add(amount) <= period_ns
+        );
         self.runtime_ns += amount;
     }
 
@@ -201,6 +215,10 @@ impl RootRtBandwidth {
         self.runtime_ns
     }
 
+    pub(crate) const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub(crate) fn lock_runtime(&self) -> crate::lock::IrqTicketGuard<'_, ()> {
         self.runtime_lock
             .lock(crate::runtime::IrqGuardSource::RootRtRuntimeTicket)
@@ -212,7 +230,11 @@ impl RootRtBandwidth {
     }
 
     /// Starts the root period on the CPU that activated RT work.
-    pub(crate) fn activate(&self, cpu: CpuId, now: MonotonicInstant) -> bool {
+    pub(crate) fn activate(
+        &self,
+        cpu: CpuId,
+        sample_now: impl FnOnce() -> MonotonicInstant,
+    ) -> bool {
         if !self.enabled {
             return false;
         }
@@ -221,12 +243,25 @@ impl RootRtBandwidth {
             .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket);
         let started = state.deadline.is_none();
         if started {
+            // Linux samples the hrtimer clock only while starting an inactive
+            // period. Repeated enqueue/wake activation of an active period
+            // still enters the state lock to preserve the firing handshake,
+            // but must not take an unrelated monotonic-clock sample.
+            let now = sample_now();
             state.generation = state
                 .generation
                 .checked_add(1)
                 .expect("root RT bandwidth generation exhausted");
             state.owner = Some(cpu);
-            let deadline = now.deadline_after(core::time::Duration::from_nanos(self.period_ns));
+            // Linux `do_start_rt_bandwidth()` restarts an idle period timer
+            // with `hrtimer_forward_now(timer, 0)`: it kicks the callback at
+            // the minimum timer resolution so stale per-rq runtime is updated
+            // before newly runnable RT work consumes another full period.
+            // The shared clockevent domain has no independent hrtimer
+            // resolution, so publish an already-due deadline and let the
+            // callback establish the following `now + period` boundary.
+            let deadline = MonotonicDeadline::from_nanos(now.as_nanos())
+                .expect("a validated monotonic sample must be a valid deadline");
             state.deadline = Some(deadline);
             // Linux exposes the period through the hrtimer expiry rather than
             // making every scheduler decision re-enter rt_runtime_lock. This
@@ -335,4 +370,30 @@ impl RootRtBandwidth {
         self.state
             .lock(crate::runtime::IrqGuardSource::RootRtPeriodTicket)
     }
+}
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+pub(crate) fn exercise_active_rt_bandwidth_reactivation_clock_samples() -> (usize, bool, bool) {
+    let cpu = CpuId::new(0);
+    let bandwidth = RootRtBandwidth::new(TaskSystemConfig::new(1).with_rt_bandwidth(1_000, 950));
+    let mut samples = 0usize;
+    let origin =
+        MonotonicInstant::from_nanos(100).expect("the monotonic origin must be representable");
+
+    assert!(bandwidth.activate(cpu, || {
+        samples += 1;
+        origin
+    }));
+    let initial_deadline = bandwidth.deadline_for(cpu);
+    let restarted = bandwidth.activate(cpu, || {
+        samples += 1;
+        MonotonicInstant::from_nanos(200)
+            .expect("the second monotonic sample must be representable")
+    });
+
+    (
+        samples,
+        restarted,
+        bandwidth.deadline_for(cpu) == initial_deadline,
+    )
 }

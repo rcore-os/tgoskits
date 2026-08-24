@@ -177,6 +177,8 @@ pub(super) fn execute_switch_plan(
     if previous.context().is_none() || next.context().is_none() {
         task_runtime::fatal_invariant(2, next.thread().as_u64() as usize);
     }
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::record_park_profile_stage(15);
     // Match Linux's sched_switch observation point: the trace runs while the
     // previous extension is still the published current task, but after all
     // scheduler locks have been released and the switch decision is final.
@@ -188,7 +190,10 @@ pub(super) fn execute_switch_plan(
         reason: decision.switch_reason() as u32,
     });
     #[cfg(feature = "task-test-hooks")]
-    crate::task_test_hooks::pause_policy_switch_handoff(previous.thread());
+    {
+        crate::task_test_hooks::pause_policy_switch_handoff(previous.thread());
+        crate::task_test_hooks::record_park_profile_stage(16);
+    }
     if let Some(extension) = previous.extension() {
         // SAFETY: ThreadExtension construction guarantees callback validity;
         // TaskSystem released every internal lock and the scheduler baton
@@ -201,19 +206,29 @@ pub(super) fn execute_switch_plan(
             )
         };
     }
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::record_park_profile_stage(17);
     prepare_next_address_space(
         previous.address_space(),
         next.address_space(),
         next.thread(),
     );
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::record_park_profile_stage(18);
     #[cfg(feature = "qperf-metrics")]
     crate::metrics::record_context_switch(decision.switch_reason());
     let switch = ContextSwitch::new(previous.context(), next.context())
         .unwrap_or_else(|| task_runtime::fatal_invariant(6, next.thread().as_u64() as usize));
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::record_park_profile_stage(19);
     // SAFETY: the scheduler committed both endpoint states before releasing its
     // locks. Runtime handles remain live, and local IRQs stay disabled here.
     unsafe { task_runtime::switch_context(switch) };
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::record_park_profile_stage(20);
     scheduler_frame.refresh_current_cpu();
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::record_park_profile_stage(21);
     // SAFETY: the scheduler frame retains its IRQ-off baton across the
     // architecture switch and through switch-tail completion.
     if unsafe { complete_current_context_switch_tail_in_scheduler_frame(scheduler_frame) }.is_err()
@@ -255,13 +270,22 @@ pub(super) fn prepare_next_address_space(
     activate_next_address_space(address_space, thread);
 }
 
-pub(super) fn complete_current_context_switch_tail(
+/// Completes a fresh context's switch tail below its transferred scheduler
+/// baton.
+///
+/// # Safety
+///
+/// The caller must be the first instruction sequence of a freshly switched-in
+/// context and must retain the transferred IRQ-off scheduler baton until this
+/// function returns.
+pub(super) unsafe fn complete_current_context_switch_tail(
     pin: &mut impl RuntimeCpuPin,
 ) -> Result<(), TaskError> {
     let system = runtime_task_system()?;
     let completion = {
         let mut cpu = runtime_current_cpu_mut(pin)?;
-        system.complete_context_switch(cpu.as_mut())?
+        // SAFETY: forwarded from this helper's transferred-baton contract.
+        unsafe { system.complete_context_switch_in_scheduler_frame(cpu.as_mut())? }
     };
     completion.finish();
     Ok(())
@@ -282,7 +306,11 @@ unsafe fn complete_current_context_switch_tail_in_scheduler_frame(
         // SAFETY: forwarded from this helper's scheduler-frame contract.
         unsafe { system.complete_context_switch_in_scheduler_frame(cpu.as_mut())? }
     };
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::record_park_profile_stage(22);
     completion.finish();
+    #[cfg(feature = "task-test-hooks")]
+    crate::task_test_hooks::record_park_profile_stage(23);
     Ok(())
 }
 

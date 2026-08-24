@@ -83,6 +83,9 @@ pub(crate) fn get_user_task_by_number(tid: TidNumber) -> StarryResult<UserTaskRe
 /// `ptrace_stop_current()` so it can continue without consulting the dead
 /// tracer again.
 pub fn detach_live_tracees_of(tracer: &Arc<PidIdentity>) {
+    if !tracer.may_have_ptrace_tracees() {
+        return;
+    }
     for tracee in processes() {
         if !tracee
             .ptrace_tracer_identity()
@@ -468,22 +471,23 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         crate::syscall::release_pid_flock_locks(process_identity_id);
 
         // PID namespace init owns the only namespace-shutdown transaction.
-        // Close child publication before SIGKILL is delivered so no fork can
-        // escape the victim snapshot. Normal exits atomically reparent through
-        // the process topology transaction instead.
+        // This includes root PID 1: unlike Linux's immortal global init,
+        // Starry joins PID 1 and shuts the system down when its userspace
+        // command completes. Close child publication before SIGKILL is
+        // delivered so no fork can escape the victim snapshot. Normal exits
+        // atomically reparent through the process topology transaction instead.
         let pid_ns = thr.active_pid_namespace();
         let identity = thr.proc_data.identity();
         let shutdown_executor = thr.pid_identity();
-        let namespace_shutdown =
-            if pid_ns.level() > 0 && pid_ns.init_identity() == Some(identity.id()) {
-                Some(
-                    pid_ns
-                        .begin_shutdown(identity.id(), shutdown_executor.id())
-                        .expect("PID namespace init failed to enter shutdown"),
-                )
-            } else {
-                None
-            };
+        let namespace_shutdown = if pid_ns.init_identity() == Some(identity.id()) {
+            Some(
+                pid_ns
+                    .begin_shutdown(identity.id(), shutdown_executor.id())
+                    .expect("PID namespace init failed to enter shutdown"),
+            )
+        } else {
+            None
+        };
         let children_snapshot = if namespace_shutdown.is_some() {
             process
                 .begin_namespace_shutdown_relations()

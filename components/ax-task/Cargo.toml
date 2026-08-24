@@ -10,6 +10,12 @@ description = "OS-independent IRQ-safe SMP task scheduling core"
 [lib]
 test = false
 
+[[test]]
+name = "effective_schedule_axtest"
+path = "tests/effective_schedule_axtest.rs"
+harness = false
+required-features = ["axtest"]
+
 [features]
 default = []
 axtest = ["dep:axtest"]
@@ -31,6 +37,9 @@ trait-ffi = "0.2.11"
 sbi-rt = { workspace = true, features = ["legacy"] }
 
 [dev-dependencies]
+axtest.workspace = true
+ax-hal.workspace = true
+ax-std = { workspace = true, features = ["default"] }
 loom.workspace = true
 
 [lints.rust]

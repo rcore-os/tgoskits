@@ -31,8 +31,16 @@ impl RunQueue {
         self.fixed_placement_demand = self
             .fixed_placement_demand
             .saturating_add(fixed_placement_demand(policy));
-        self.refresh_class_pushable(id, policy, None);
+        self.refresh_class_pushable(id, None);
         Ok(entity)
+    }
+
+    /// Moves one queued RT wakee ahead of its equal-priority current.
+    pub(crate) fn requeue_realtime_wakee_head(&mut self, id: ThreadId) -> bool {
+        let Some(QueueMembershipClass::Realtime(key)) = self.membership_class(id) else {
+            return false;
+        };
+        self.rt.requeue_head(key)
     }
 
     pub(crate) fn detach_for_transfer(
@@ -44,8 +52,14 @@ impl RunQueue {
         if self.linked_current() == Some(id) {
             return None;
         }
-        self.update_fair_virtual_time(current_fair);
         let class = self.membership_class(id)?;
+        let is_fair = matches!(
+            class,
+            QueueMembershipClass::Fair | QueueMembershipClass::IdleFair
+        );
+        if is_fair {
+            self.update_fair_virtual_time(current_fair);
+        }
         if class == QueueMembershipClass::DeadlineThrottled {
             // Linux keeps a throttled DL task at
             // `TASK_ON_RQ_QUEUED`, but it is absent from both the DL rb-tree
@@ -67,15 +81,21 @@ impl RunQueue {
             .fixed_placement_demand
             .saturating_sub(fixed_placement_demand(thread.active.policy()));
         self.unregister_membership(thread.id);
-        self.refresh_class_pushable(thread.id, thread.active.policy(), self.linked_current());
-        self.update_fair_virtual_time(current_fair);
+        self.refresh_class_pushable(thread.id, self.linked_current());
+        if is_fair {
+            self.update_fair_virtual_time(current_fair);
+        }
         Some(thread)
     }
 
-    pub(crate) fn pick_next_task(&mut self, rt_eligibility: RtEligibility) -> Option<PickedThread> {
+    pub(crate) fn pick_next_task(
+        &mut self,
+        rt_eligibility: RtEligibility,
+        skip_delayed: bool,
+    ) -> Option<PickTaskResult> {
         SchedulerClass::PICK_ORDER
             .into_iter()
-            .find_map(|class| class.pick_task(self, rt_eligibility))
+            .find_map(|class| class.pick_task(self, rt_eligibility, skip_delayed))
     }
 
     /// Linux `set_next_task()`: commits one class pick as current.
@@ -84,6 +104,6 @@ impl RunQueue {
             .fixed_placement_demand
             .saturating_sub(fixed_placement_demand(picked.policy()));
         SchedulerClass::for_policy(picked.policy()).set_next_task(self, picked);
-        self.refresh_class_pushable(picked.id(), picked.policy(), Some(picked.id()));
+        self.refresh_class_pushable(picked.id(), Some(picked.id()));
     }
 }

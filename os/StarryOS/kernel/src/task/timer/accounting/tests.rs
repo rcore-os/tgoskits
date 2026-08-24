@@ -36,8 +36,9 @@ mod tests {
         assert_eq!(
             completed_rx.recv_timeout(StdDuration::from_secs(1)),
             Ok(CpuTimeDelta {
-                user_ns: 10,
-                system_ns: 0,
+                raw_user_ns: 0,
+                raw_system_ns: 0,
+                runtime_ns: 10,
             })
         );
         policy_writer.join().unwrap();
@@ -83,7 +84,8 @@ mod tests {
         accounting.set_realtime_policy_at(false, 2_000_000);
         let fair = accounting.snapshot_at(3_000_000);
         assert_eq!(fair.realtime_continuous_ns, 0);
-        assert_eq!(fair.system_ns, 3_000_000);
+        assert_eq!(fair.runtime_ns, 3_000_000);
+        assert_eq!(fair.raw_system_ns, 0);
 
         accounting.set_realtime_policy_at(true, 3_000_000);
         assert_eq!(
@@ -104,20 +106,49 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_tick_sampling_is_read_only() {
+    fn hard_irq_tick_sampling_avoids_the_runtime_writer() {
         let accounting = CpuTimeAccounting::new();
         accounting.set_state_at(TimerState::User, 0);
         accounting.scheduler_switch_in_at(false, 0);
 
         let sequence = accounting.sequence.load(Ordering::Acquire);
+        accounting.sample_scheduler_tick_for_test(10);
+        assert_eq!(accounting.sequence.load(Ordering::Acquire), sequence);
         assert_eq!(
             accounting.sample_scheduler_tick_at(10),
             CpuTimeDelta {
+                raw_user_ns: 10,
+                raw_system_ns: 0,
+                runtime_ns: 10,
+            }
+        );
+    }
+
+    #[test]
+    fn adjusted_cpu_time_matches_linux_monotonic_runtime_contract() {
+        let high_water = SpinLock::new(CpuTimeHighWater::ZERO);
+
+        assert_eq!(
+            adjust_cpu_time(0, 0, 10, &high_water),
+            CpuTimeHighWater {
                 user_ns: 10,
                 system_ns: 0,
             }
         );
-        assert_eq!(accounting.sequence.load(Ordering::Acquire), sequence);
-        assert_eq!(accounting.user_ns.load(Ordering::Acquire), 0);
+        assert_eq!(
+            adjust_cpu_time(10, 10, 20, &high_water),
+            CpuTimeHighWater {
+                user_ns: 10,
+                system_ns: 10,
+            }
+        );
+        assert_eq!(
+            adjust_cpu_time(1, 9, 15, &high_water),
+            CpuTimeHighWater {
+                user_ns: 10,
+                system_ns: 10,
+            },
+            "a stale runtime sample must return the prior high-water mark"
+        );
     }
 }

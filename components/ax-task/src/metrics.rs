@@ -81,6 +81,31 @@ pub struct QperfSchedulerMetricsSnapshot {
     pub direct_wake_preemptions: u64,
     pub direct_wake_current_kept: u64,
     pub direct_wake_queued_candidate_selected: u64,
+    pub fair_wake_wakee_ineligible: u64,
+    pub fair_wake_current_ineligible: u64,
+    pub fair_wake_current_protected: u64,
+    pub fair_wake_deadline_precedes: u64,
+    pub fair_wake_deadline_loses: u64,
+    pub fair_sleep_lag_positive: u64,
+    pub fair_sleep_lag_zero: u64,
+    pub fair_sleep_lag_negative: u64,
+    pub fair_sleep_wake_lag_positive: u64,
+    pub fair_sleep_wake_lag_zero: u64,
+    pub fair_sleep_wake_lag_negative: u64,
+    pub fair_delayed_wake_lag_zero: u64,
+    pub fair_delayed_wake_lag_negative: u64,
+    pub fair_wake_wakee_debt_total_ns: u64,
+    pub fair_wake_current_debt_total_ns: u64,
+    pub fair_wake_current_credit_total_ns: u64,
+    pub fair_yield_eligible: u64,
+    pub fair_yield_ineligible: u64,
+    pub fair_yield_forfeit_total_ns: u64,
+    pub fair_yield_debt_total_ns: u64,
+    pub fair_delayed_begin_count: u64,
+    pub fair_delayed_begin_debt_total_ns: u64,
+    pub fair_delayed_wake_saved_debt_total_ns: u64,
+    pub fair_delayed_wake_actual_debt_total_ns: u64,
+    pub fair_delayed_wake_saved_clamp_count: u64,
     pub task_work_publish_calls: u64,
     pub task_work_publish_edges: u64,
     pub task_work_pending_consumed: u64,
@@ -119,6 +144,31 @@ struct QperfSchedulerMetrics {
     direct_wake_preemptions: AtomicU64,
     direct_wake_current_kept: AtomicU64,
     direct_wake_queued_candidate_selected: AtomicU64,
+    fair_wake_wakee_ineligible: AtomicU64,
+    fair_wake_current_ineligible: AtomicU64,
+    fair_wake_current_protected: AtomicU64,
+    fair_wake_deadline_precedes: AtomicU64,
+    fair_wake_deadline_loses: AtomicU64,
+    fair_sleep_lag_positive: AtomicU64,
+    fair_sleep_lag_zero: AtomicU64,
+    fair_sleep_lag_negative: AtomicU64,
+    fair_sleep_wake_lag_positive: AtomicU64,
+    fair_sleep_wake_lag_zero: AtomicU64,
+    fair_sleep_wake_lag_negative: AtomicU64,
+    fair_delayed_wake_lag_zero: AtomicU64,
+    fair_delayed_wake_lag_negative: AtomicU64,
+    fair_wake_wakee_debt_total_ns: AtomicU64,
+    fair_wake_current_debt_total_ns: AtomicU64,
+    fair_wake_current_credit_total_ns: AtomicU64,
+    fair_yield_eligible: AtomicU64,
+    fair_yield_ineligible: AtomicU64,
+    fair_yield_forfeit_total_ns: AtomicU64,
+    fair_yield_debt_total_ns: AtomicU64,
+    fair_delayed_begin_count: AtomicU64,
+    fair_delayed_begin_debt_total_ns: AtomicU64,
+    fair_delayed_wake_saved_debt_total_ns: AtomicU64,
+    fair_delayed_wake_actual_debt_total_ns: AtomicU64,
+    fair_delayed_wake_saved_clamp_count: AtomicU64,
     task_work_publish_calls: AtomicU64,
     task_work_publish_edges: AtomicU64,
     task_work_pending_consumed: AtomicU64,
@@ -172,6 +222,31 @@ impl QperfSchedulerMetrics {
             direct_wake_preemptions: AtomicU64::new(0),
             direct_wake_current_kept: AtomicU64::new(0),
             direct_wake_queued_candidate_selected: AtomicU64::new(0),
+            fair_wake_wakee_ineligible: AtomicU64::new(0),
+            fair_wake_current_ineligible: AtomicU64::new(0),
+            fair_wake_current_protected: AtomicU64::new(0),
+            fair_wake_deadline_precedes: AtomicU64::new(0),
+            fair_wake_deadline_loses: AtomicU64::new(0),
+            fair_sleep_lag_positive: AtomicU64::new(0),
+            fair_sleep_lag_zero: AtomicU64::new(0),
+            fair_sleep_lag_negative: AtomicU64::new(0),
+            fair_sleep_wake_lag_positive: AtomicU64::new(0),
+            fair_sleep_wake_lag_zero: AtomicU64::new(0),
+            fair_sleep_wake_lag_negative: AtomicU64::new(0),
+            fair_delayed_wake_lag_zero: AtomicU64::new(0),
+            fair_delayed_wake_lag_negative: AtomicU64::new(0),
+            fair_wake_wakee_debt_total_ns: AtomicU64::new(0),
+            fair_wake_current_debt_total_ns: AtomicU64::new(0),
+            fair_wake_current_credit_total_ns: AtomicU64::new(0),
+            fair_yield_eligible: AtomicU64::new(0),
+            fair_yield_ineligible: AtomicU64::new(0),
+            fair_yield_forfeit_total_ns: AtomicU64::new(0),
+            fair_yield_debt_total_ns: AtomicU64::new(0),
+            fair_delayed_begin_count: AtomicU64::new(0),
+            fair_delayed_begin_debt_total_ns: AtomicU64::new(0),
+            fair_delayed_wake_saved_debt_total_ns: AtomicU64::new(0),
+            fair_delayed_wake_actual_debt_total_ns: AtomicU64::new(0),
+            fair_delayed_wake_saved_clamp_count: AtomicU64::new(0),
             task_work_publish_calls: AtomicU64::new(0),
             task_work_publish_edges: AtomicU64::new(0),
             task_work_pending_consumed: AtomicU64::new(0),
@@ -431,6 +506,47 @@ impl QperfSchedulerMetrics {
             direct_wake_queued_candidate_selected: self
                 .direct_wake_queued_candidate_selected
                 .load(Ordering::Relaxed),
+            fair_wake_wakee_ineligible: self.fair_wake_wakee_ineligible.load(Ordering::Relaxed),
+            fair_wake_current_ineligible: self.fair_wake_current_ineligible.load(Ordering::Relaxed),
+            fair_wake_current_protected: self.fair_wake_current_protected.load(Ordering::Relaxed),
+            fair_wake_deadline_precedes: self.fair_wake_deadline_precedes.load(Ordering::Relaxed),
+            fair_wake_deadline_loses: self.fair_wake_deadline_loses.load(Ordering::Relaxed),
+            fair_sleep_lag_positive: self.fair_sleep_lag_positive.load(Ordering::Relaxed),
+            fair_sleep_lag_zero: self.fair_sleep_lag_zero.load(Ordering::Relaxed),
+            fair_sleep_lag_negative: self.fair_sleep_lag_negative.load(Ordering::Relaxed),
+            fair_sleep_wake_lag_positive: self.fair_sleep_wake_lag_positive.load(Ordering::Relaxed),
+            fair_sleep_wake_lag_zero: self.fair_sleep_wake_lag_zero.load(Ordering::Relaxed),
+            fair_sleep_wake_lag_negative: self.fair_sleep_wake_lag_negative.load(Ordering::Relaxed),
+            fair_delayed_wake_lag_zero: self.fair_delayed_wake_lag_zero.load(Ordering::Relaxed),
+            fair_delayed_wake_lag_negative: self
+                .fair_delayed_wake_lag_negative
+                .load(Ordering::Relaxed),
+            fair_wake_wakee_debt_total_ns: self
+                .fair_wake_wakee_debt_total_ns
+                .load(Ordering::Relaxed),
+            fair_wake_current_debt_total_ns: self
+                .fair_wake_current_debt_total_ns
+                .load(Ordering::Relaxed),
+            fair_wake_current_credit_total_ns: self
+                .fair_wake_current_credit_total_ns
+                .load(Ordering::Relaxed),
+            fair_yield_eligible: self.fair_yield_eligible.load(Ordering::Relaxed),
+            fair_yield_ineligible: self.fair_yield_ineligible.load(Ordering::Relaxed),
+            fair_yield_forfeit_total_ns: self.fair_yield_forfeit_total_ns.load(Ordering::Relaxed),
+            fair_yield_debt_total_ns: self.fair_yield_debt_total_ns.load(Ordering::Relaxed),
+            fair_delayed_begin_count: self.fair_delayed_begin_count.load(Ordering::Relaxed),
+            fair_delayed_begin_debt_total_ns: self
+                .fair_delayed_begin_debt_total_ns
+                .load(Ordering::Relaxed),
+            fair_delayed_wake_saved_debt_total_ns: self
+                .fair_delayed_wake_saved_debt_total_ns
+                .load(Ordering::Relaxed),
+            fair_delayed_wake_actual_debt_total_ns: self
+                .fair_delayed_wake_actual_debt_total_ns
+                .load(Ordering::Relaxed),
+            fair_delayed_wake_saved_clamp_count: self
+                .fair_delayed_wake_saved_clamp_count
+                .load(Ordering::Relaxed),
             task_work_publish_calls: self.task_work_publish_calls.load(Ordering::Relaxed),
             task_work_publish_edges: self.task_work_publish_edges.load(Ordering::Relaxed),
             task_work_pending_consumed: self.task_work_pending_consumed.load(Ordering::Relaxed),
@@ -566,6 +682,119 @@ pub(crate) fn record_direct_wake_queued_candidate_selected() {
     QPERF_SCHEDULER_METRICS
         .direct_wake_queued_candidate_selected
         .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_fair_wake_wakee_ineligible() {
+    QPERF_SCHEDULER_METRICS
+        .fair_wake_wakee_ineligible
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_fair_wake_current_ineligible() {
+    QPERF_SCHEDULER_METRICS
+        .fair_wake_current_ineligible
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_fair_wake_current_protected() {
+    QPERF_SCHEDULER_METRICS
+        .fair_wake_current_protected
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_fair_wake_deadline(precedes: bool) {
+    let counter = if precedes {
+        &QPERF_SCHEDULER_METRICS.fair_wake_deadline_precedes
+    } else {
+        &QPERF_SCHEDULER_METRICS.fair_wake_deadline_loses
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_fair_sleep_lag(virtual_lag: i64) {
+    let counter = match virtual_lag.cmp(&0) {
+        core::cmp::Ordering::Greater => &QPERF_SCHEDULER_METRICS.fair_sleep_lag_positive,
+        core::cmp::Ordering::Equal => &QPERF_SCHEDULER_METRICS.fair_sleep_lag_zero,
+        core::cmp::Ordering::Less => &QPERF_SCHEDULER_METRICS.fair_sleep_lag_negative,
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_fair_sleep_wake_lag(virtual_lag: i64) {
+    let counter = match virtual_lag.cmp(&0) {
+        core::cmp::Ordering::Greater => &QPERF_SCHEDULER_METRICS.fair_sleep_wake_lag_positive,
+        core::cmp::Ordering::Equal => &QPERF_SCHEDULER_METRICS.fair_sleep_wake_lag_zero,
+        core::cmp::Ordering::Less => &QPERF_SCHEDULER_METRICS.fair_sleep_wake_lag_negative,
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_fair_delayed_wake_lag(virtual_lag: i64) {
+    let counter = if virtual_lag == 0 {
+        &QPERF_SCHEDULER_METRICS.fair_delayed_wake_lag_zero
+    } else {
+        debug_assert!(virtual_lag < 0);
+        &QPERF_SCHEDULER_METRICS.fair_delayed_wake_lag_negative
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_fair_wake_distances(wakee_delta: i64, current_delta: i64) {
+    if wakee_delta > 0 {
+        QPERF_SCHEDULER_METRICS
+            .fair_wake_wakee_debt_total_ns
+            .fetch_add(wakee_delta as u64, Ordering::Relaxed);
+    }
+    if current_delta > 0 {
+        QPERF_SCHEDULER_METRICS
+            .fair_wake_current_debt_total_ns
+            .fetch_add(current_delta as u64, Ordering::Relaxed);
+    } else {
+        QPERF_SCHEDULER_METRICS
+            .fair_wake_current_credit_total_ns
+            .fetch_add(current_delta.unsigned_abs(), Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_fair_yield(eligible: bool, forfeited_ns: u64, debt_ns: u64) {
+    let counter = if eligible {
+        &QPERF_SCHEDULER_METRICS.fair_yield_eligible
+    } else {
+        &QPERF_SCHEDULER_METRICS.fair_yield_ineligible
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+    QPERF_SCHEDULER_METRICS
+        .fair_yield_forfeit_total_ns
+        .fetch_add(forfeited_ns, Ordering::Relaxed);
+    if !eligible {
+        QPERF_SCHEDULER_METRICS
+            .fair_yield_debt_total_ns
+            .fetch_add(debt_ns, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_fair_delayed_begin(virtual_lag: i64) {
+    debug_assert!(virtual_lag <= 0);
+    QPERF_SCHEDULER_METRICS
+        .fair_delayed_begin_count
+        .fetch_add(1, Ordering::Relaxed);
+    QPERF_SCHEDULER_METRICS
+        .fair_delayed_begin_debt_total_ns
+        .fetch_add(virtual_lag.unsigned_abs(), Ordering::Relaxed);
+}
+
+pub(crate) fn record_fair_delayed_wake_refresh(saved_lag: i64, actual_lag: i64) {
+    QPERF_SCHEDULER_METRICS
+        .fair_delayed_wake_saved_debt_total_ns
+        .fetch_add(saved_lag.min(0).unsigned_abs(), Ordering::Relaxed);
+    QPERF_SCHEDULER_METRICS
+        .fair_delayed_wake_actual_debt_total_ns
+        .fetch_add(actual_lag.min(0).unsigned_abs(), Ordering::Relaxed);
+    if saved_lag > actual_lag {
+        QPERF_SCHEDULER_METRICS
+            .fair_delayed_wake_saved_clamp_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 pub(crate) fn record_task_work_publish(edge: bool) {

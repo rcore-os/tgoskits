@@ -5,11 +5,12 @@ use crate::{
 
 #[inline(never)]
 pub fn sys_getpid(current: &UserTaskRef) -> StarryResult<isize> {
-    let thr = current.as_thread();
-    PidView::new(thr.active_pid_namespace())
-        .visible_process_number(&thr.proc_data.identity())
-        .map(|pid| pid.get() as isize)
-        .ok_or(StarryError::NoSuchProcess)
+    Ok(current
+        .as_thread()
+        .proc_data
+        .identity()
+        .active_number()
+        .get() as isize)
 }
 
 pub fn sys_getppid(current: &crate::task::UserTaskRef) -> crate::StarryResult<isize> {

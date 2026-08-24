@@ -3,12 +3,20 @@
 use super::*;
 
 impl RootDomain {
+    pub(in crate::system::task_system) fn rt_bandwidth_enabled(&self) -> bool {
+        self.rt_bandwidth.enabled()
+    }
+
     pub(in crate::system::task_system) fn activate_rt_period(
         &self,
         cpu: CpuId,
-        now: MonotonicInstant,
+        sample_now: impl FnOnce() -> MonotonicInstant,
     ) -> bool {
-        self.rt_bandwidth.activate(cpu, now)
+        #[cfg(feature = "task-test-hooks")]
+        if !self.rt_bandwidth.enabled() {
+            crate::task_test_hooks::record_disabled_rt_bandwidth_activation_entry(cpu);
+        }
+        self.rt_bandwidth.activate(cpu, sample_now)
     }
 
     /// Runs the Linux `do_sched_rt_period_timer()` transaction.
@@ -41,11 +49,18 @@ impl RootDomain {
                 continue;
             }
             let mut transaction = OwnerRqTxn::begin(system, remote);
+            let charged_runtime_active = remote.lock_rt_bandwidth().time_ns() != 0;
+            if !charged_runtime_active {
+                let runtime_active = transaction.rt_is_throttled();
+                let runnable = transaction.has_runnable_rt();
+                keep_active |= runtime_active || runnable;
+                transaction.commit();
+                continue;
+            }
             if transaction.rt_is_throttled() {
-                // Linux balances a throttled rq before subtracting the elapsed
-                // periods. A loan obtained here changes the period quantum
-                // used by replenishment and can make the rq runnable without
-                // waiting for another period edge.
+                // Linux balances a charged, throttled rq before subtracting
+                // elapsed periods. A zero rt_time never enters balance_runtime
+                // and therefore cannot borrow quota or clear throttling here.
                 self.balance_rt_runtime(remote.owner());
             }
             let mut bandwidth = remote.lock_rt_bandwidth();
@@ -79,10 +94,29 @@ impl RootDomain {
     /// The rq caller owns local execution accounting; the root lock is entered
     /// only on the quota edge and serializes transfers among independent
     /// per-rq runtime locks.
-    pub(super) fn charge_rt_runtime(&self, cpu: CpuId, runtime_ns: u64) -> bool {
+    pub(super) fn charge_rt_runtime(
+        &self,
+        cpu: CpuId,
+        runtime_ns: u64,
+        already_throttled: bool,
+    ) -> bool {
+        #[cfg(feature = "task-test-hooks")]
+        if !self.rt_bandwidth.enabled() {
+            crate::task_test_hooks::record_disabled_rt_bandwidth_charge_entry(cpu);
+        }
+        if !self.rt_bandwidth.enabled() {
+            return false;
+        }
         let remote = &self.runqueues[cpu.as_usize()];
         if !remote.lock_rt_bandwidth().account(runtime_ns) {
             return false;
+        }
+        // Linux `sched_rt_runtime_exceeded()` keeps accounting PI-boosted
+        // execution on a throttled rq, but returns before `balance_runtime()`.
+        // A sticky throttle therefore cannot repeatedly borrow runtime or scan
+        // the root-domain span on every later charge.
+        if already_throttled {
+            return true;
         }
         self.balance_rt_runtime(cpu);
         remote.lock_rt_bandwidth().should_throttle()
@@ -183,11 +217,106 @@ impl RootDomain {
 }
 
 impl TaskSystem {
+    pub(crate) fn rt_bandwidth_enabled(&self) -> bool {
+        self.root_domain.rt_bandwidth_enabled()
+    }
+
     pub(crate) fn service_rt_period(&self, cpu: &CpuLocal, now: MonotonicInstant) -> bool {
         self.root_domain.service_rt_period(self, cpu.owner(), now)
     }
 
-    pub(crate) fn charge_rt_runtime(&self, cpu: CpuId, runtime_ns: u64) -> bool {
-        self.root_domain.charge_rt_runtime(cpu, runtime_ns)
+    pub(crate) fn charge_rt_runtime(
+        &self,
+        cpu: CpuId,
+        runtime_ns: u64,
+        already_throttled: bool,
+    ) -> bool {
+        self.root_domain
+            .charge_rt_runtime(cpu, runtime_ns, already_throttled)
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn already_throttled_rt_charge_preserves_runtime_loans() -> bool {
+        const PERIOD_NS: u64 = 1_000;
+        const RUNTIME_NS: u64 = 500;
+
+        let config = TaskSystemConfig::new(2).with_rt_bandwidth(PERIOD_NS, RUNTIME_NS);
+        let runqueues = (0..config.cpu_count())
+            .map(|index| CpuRemote::create(CpuId::new(index as u32), config))
+            .collect::<Vec<_>>();
+        let root_domain = RootDomain::new(config, runqueues.clone());
+        for remote in &runqueues {
+            root_domain.enable_rt_runtime(remote.owner());
+            assert!(
+                remote.mark_online(),
+                "test runqueue must become online once"
+            );
+        }
+
+        let receiver = CpuId::new(0);
+        let donor = CpuId::new(1);
+        runqueues[receiver.as_usize()]
+            .lock_run_queue(RunQueueGuardSource::RtAccounting)
+            .set_rt_throttled(true);
+        let receiver_runtime = runqueues[receiver.as_usize()]
+            .lock_rt_bandwidth()
+            .runtime_ns();
+        let donor_runtime = runqueues[donor.as_usize()].lock_rt_bandwidth().runtime_ns();
+
+        let throttled = root_domain.charge_rt_runtime(receiver, RUNTIME_NS + 1, true);
+        let receiver_bandwidth = *runqueues[receiver.as_usize()].lock_rt_bandwidth();
+        let donor_bandwidth = *runqueues[donor.as_usize()].lock_rt_bandwidth();
+
+        throttled
+            && receiver_bandwidth.time_ns() == RUNTIME_NS + 1
+            && receiver_bandwidth.runtime_ns() == receiver_runtime
+            && donor_bandwidth.runtime_ns() == donor_runtime
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn zero_rt_time_period_preserves_throttle_and_runtime_loans() -> bool {
+        const PERIOD_NS: u64 = 1_000;
+        const RUNTIME_NS: u64 = 500;
+
+        let config = TaskSystemConfig::new(2).with_rt_bandwidth(PERIOD_NS, RUNTIME_NS);
+        let system = TaskSystem::new(config).expect("test task system must be valid");
+        let receiver = CpuId::new(0);
+        let donor = CpuId::new(1);
+        let receiver_cpu = system
+            .create_cpu_local(receiver)
+            .expect("test receiver CPU-local scheduler must be created");
+        for remote in &system.cpu_remotes {
+            system.root_domain.enable_rt_runtime(remote.owner());
+            assert!(
+                remote.mark_online(),
+                "test runqueue must become online once"
+            );
+        }
+
+        system.cpu_remotes[receiver.as_usize()]
+            .lock_run_queue(RunQueueGuardSource::RtAccounting)
+            .set_rt_throttled(true);
+        let receiver_runtime = system.cpu_remotes[receiver.as_usize()]
+            .lock_rt_bandwidth()
+            .runtime_ns();
+        let donor_runtime = system.cpu_remotes[donor.as_usize()]
+            .lock_rt_bandwidth()
+            .runtime_ns();
+        let origin =
+            MonotonicInstant::from_nanos(0).expect("the monotonic origin must be representable");
+        assert!(system.root_domain.activate_rt_period(receiver, || origin));
+
+        let rescheduled = system.service_rt_period(receiver_cpu.as_ref().get_ref(), origin);
+        let receiver_throttled = system.cpu_remotes[receiver.as_usize()]
+            .lock_run_queue(RunQueueGuardSource::RtAccounting)
+            .rt_is_throttled();
+        let receiver_bandwidth = *system.cpu_remotes[receiver.as_usize()].lock_rt_bandwidth();
+        let donor_bandwidth = *system.cpu_remotes[donor.as_usize()].lock_rt_bandwidth();
+
+        !rescheduled
+            && receiver_throttled
+            && receiver_bandwidth.time_ns() == 0
+            && receiver_bandwidth.runtime_ns() == receiver_runtime
+            && donor_bandwidth.runtime_ns() == donor_runtime
     }
 }

@@ -102,7 +102,7 @@ impl UserTaskRef {
         // runtime extension. The handle is retained by the returned adapter.
         let data = unsafe { extension_data_from_raw(extension_data) };
         data.thread
-            .bind_scheduler_id(handle.id())
+            .validate_scheduler_id(handle.id())
             .map_err(|_| scheduler::TaskError::InvalidRuntimeHandle)?;
         Ok(Some(Self {
             scheduler: handle,
@@ -675,6 +675,7 @@ where
     F: FnOnce() + Send + 'static,
 {
     let scheduler_tick_gate = thread.proc_data.scheduler_tick_gate();
+    let scheduler_tick_cpu_time = thread.cpu_time().scheduler_tick_cpu_time();
     let irq_identity = IrqTaskIdentity::new(&thread, &name);
     let data = Box::into_raw(Box::new(StarryUserTaskExtension {
         thread,
@@ -687,6 +688,7 @@ where
     // invokes `starry_user_task_drop` exactly once from task/reaper context.
     let extension = unsafe {
         scheduler::ThreadExtension::new(data, &STARRY_USER_TASK_EXTENSION_OPS)
+            .with_scheduler_tick_cpu_time(scheduler_tick_cpu_time)
             .with_running_policy_applied_hook(starry_user_task_policy_applied)
             .with_scheduler_tick_work(scheduler_tick_gate, starry_user_task_scheduler_tick)
     };
@@ -734,6 +736,14 @@ where
             context_state.scheduler_state.affinity,
         )?
     };
+    let scheduler_id = prepared.thread_handle().id();
+    // SAFETY: `data` was created above for this scheduler extension, and the
+    // prepared token still owns that extension until it is staged or dropped.
+    let extension_data = unsafe { extension_data_from_raw(data) };
+    extension_data
+        .thread
+        .bind_scheduler_id(scheduler_id)
+        .map_err(|_| scheduler::TaskError::InvalidRuntimeHandle)?;
     Ok(PreparedUserTask {
         scheduler: prepared,
         extension_data: data,

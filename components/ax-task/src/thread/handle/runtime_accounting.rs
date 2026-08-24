@@ -3,72 +3,45 @@
 use super::*;
 
 impl ThreadCore {
-    pub(crate) fn begin_runtime_accounting(&self, now_ns: u64) {
-        self.begin_runtime_write();
-        self.runtime_accounted_until_ns
-            .store(now_ns, Ordering::Relaxed);
-        self.runtime_running.store(true, Ordering::Relaxed);
-        self.finish_runtime_write();
+    pub(crate) fn commit_runtime_interval(&self, runtime_ns: u64) {
+        if runtime_ns == 0 {
+            return;
+        }
+        self.committed_runtime_ns
+            .try_update(Ordering::Release, Ordering::Relaxed, |committed| {
+                Some(committed.saturating_add(runtime_ns))
+            })
+            .expect("runtime commit update always supplies a value");
     }
 
-    pub(crate) fn charge_runtime(&self, runtime_ns: u64, now_ns: u64) {
-        self.begin_runtime_write();
-        let total = self.charged_runtime_ns.load(Ordering::Relaxed);
-        self.charged_runtime_ns
-            .store(total.saturating_add(runtime_ns), Ordering::Relaxed);
-        self.runtime_accounted_until_ns
-            .store(now_ns, Ordering::Relaxed);
-        self.finish_runtime_write();
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn runtime_committed_ns_for_test(&self) -> u64 {
+        self.committed_runtime_ns.load(Ordering::Acquire)
     }
 
-    pub(crate) fn finish_runtime_accounting(&self, now_ns: u64) {
-        self.begin_runtime_write();
-        self.runtime_accounted_until_ns
-            .store(now_ns, Ordering::Relaxed);
-        self.runtime_running.store(false, Ordering::Relaxed);
-        self.finish_runtime_write();
-    }
-
-    pub(crate) fn runtime_snapshot(&self, running_now_ns: Option<u64>) -> ThreadRuntimeSnapshot {
-        loop {
-            let sequence = self.runtime_sequence.load(Ordering::Acquire);
-            if sequence & 1 != 0 {
-                core::hint::spin_loop();
-                continue;
-            }
-            let charged = self.charged_runtime_ns.load(Ordering::Relaxed);
-            let accounted_until = self.runtime_accounted_until_ns.load(Ordering::Relaxed);
-            let running = self.runtime_running.load(Ordering::Relaxed);
-            if self.runtime_sequence.load(Ordering::Acquire) == sequence {
-                let residual = if running {
-                    SchedulerTimestamp::from_nanos(
-                        running_now_ns
-                            .expect("a running thread snapshot must hold its runqueue clock"),
-                    )
-                    .since(SchedulerTimestamp::from_nanos(accounted_until))
-                } else {
-                    0
-                };
-                return ThreadRuntimeSnapshot {
-                    charged_runtime_ns: charged.saturating_add(residual),
-                    running,
-                };
-            }
+    pub(crate) fn runtime_snapshot(
+        &self,
+        running_interval_ns: Option<u64>,
+    ) -> ThreadRuntimeSnapshot {
+        let committed = self.committed_runtime_ns.load(Ordering::Acquire);
+        ThreadRuntimeSnapshot {
+            charged_runtime_ns: committed.saturating_add(running_interval_ns.unwrap_or_default()),
+            running: running_interval_ns.is_some(),
         }
     }
 
-    fn begin_runtime_write(&self) {
-        let sequence = self.runtime_sequence.fetch_add(1, Ordering::AcqRel);
-        debug_assert_eq!(sequence & 1, 0, "runtime accounting has multiple writers");
-    }
-
-    fn finish_runtime_write(&self) {
-        let sequence = self.runtime_sequence.fetch_add(1, Ordering::Release);
-        debug_assert_eq!(sequence & 1, 1, "runtime accounting writer lost ownership");
+    pub(crate) fn sample_scheduler_tick_cpu_time(&self, tick_ns: u64) {
+        if let Some(accounting) = &self.scheduler_tick_cpu_time {
+            accounting.sample(tick_ns);
+        }
     }
 
     pub(crate) fn transition_state(&self, next: ThreadState) -> Result<(), TaskError> {
+        #[cfg(feature = "task-test-hooks")]
+        let previous = self.state.state();
         self.state.transition(next)?;
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_runnable_handoff_transition(self.id, previous, next);
         if next == ThreadState::Exited {
             self.reap_signal.mark_exited();
         }

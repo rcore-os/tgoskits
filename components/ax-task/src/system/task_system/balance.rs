@@ -1,6 +1,8 @@
 //! Owner-runqueue load publication and SMP balancing.
 
 use super::*;
+#[cfg(all(axtest, feature = "axtest"))]
+use crate::{Nice, RtPriority};
 
 /// One owner-selected migration candidate and destination.
 ///
@@ -392,7 +394,7 @@ impl TaskSystem {
                 !remote.accepts_placement()
                     || sched.affinity.affinity.contains(CpuId::new(index as u32))
             });
-        if sched.lifecycle.state() != ThreadState::Ready
+        if sched.lifecycle.state() != ThreadState::Running
             || sched.placement.queued_cpu() != Some(source)
             || sched.placement.has_pending_migration()
             || sched.placement.on_cpu().is_some()
@@ -427,9 +429,7 @@ impl TaskSystem {
         let remote = Arc::clone(cpu.remote());
         let mut transaction = OwnerRqTxn::begin(self, &remote);
         let detached = {
-            let current_fair = transaction
-                .current_scheduling_entity()
-                .and_then(|entity| entity.fair());
+            let current_fair = transaction.current_fair_contender();
             let Some(detached) = transaction.detach_for_transfer(
                 core.id(),
                 current_fair,
@@ -446,7 +446,8 @@ impl TaskSystem {
             cpu.remote(),
             &mut transaction,
         );
-        sched.policy.install_active(detached.into_active());
+        core.sched()
+            .install_active(&mut sched, detached.into_active());
         sched.placement.begin_migration(source, target);
         core.set_wake_cpu_hint(target);
         transaction.commit();
@@ -490,13 +491,70 @@ impl TaskSystem {
         if task_runtime::in_hard_irq() {
             return false;
         }
-        if (cpu.remote().idle_thread() == Some(next) && cpu.idle_pull_pending())
-            || cpu.fair_balance_pending()
-        {
+        let idle_pull_pending = cpu.remote().idle_thread() == Some(next)
+            && cpu.idle_pull_pending()
+            // Linux `sched_balance_newidle()` skips the pass when the root
+            // domain has no overloaded source. Keep the one-shot armed so a
+            // later source publication can drive the real pull.
+            && self.root_domain.has_idle_pull_source();
+        if idle_pull_pending || cpu.fair_balance_pending() {
             return true;
         }
-        self.root_domain.cpu_has_rt_deadline_overload(cpu.owner())
-            || self.root_domain.push_target_pending(cpu.owner())
+        rt_deadline_balance_work_pending(self.root_domain.push_target_pending(cpu.owner()))
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn no_switch_ignores_persistent_rt_overload() -> bool {
+        !rt_deadline_balance_work_pending(false)
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn schedule_selection_ignores_persistent_rt_overload() -> bool {
+        !rt_deadline_balance_work_pending(false)
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn priority_drop_without_overload_push_generations() -> (u64, u64) {
+        let system = Self::new(TaskSystemConfig::new(2))
+            .expect("the root-domain push regression requires a valid scheduler");
+        let class = RootDomainPushClass::Realtime;
+        let before = system.root_domain.push_requested_generation_for_test(class);
+        let fifo = SchedulePolicy::fifo(
+            RtPriority::new(80).expect("the regression priority must be a valid POSIX RT value"),
+        );
+        system.notify_overloaded_owners_after_priority_drop(
+            CpuId::new(0),
+            Some(fifo.scheduling_urgency()),
+            SchedulePolicy::default().scheduling_urgency(),
+        );
+        let after = system.root_domain.push_requested_generation_for_test(class);
+        (before, after)
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn clean_push_target_query_lock_acquisitions() -> (bool, usize) {
+        let system = Self::new(TaskSystemConfig::new(2))
+            .expect("the root-domain push regression requires a valid scheduler");
+        system
+            .root_domain
+            .push_target_pending_lock_acquisitions_for_test(CpuId::new(0))
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn empty_idle_entry_balance_pending() -> bool {
+        let system = Self::new(TaskSystemConfig::new(2))
+            .expect("the idle-balance regression requires a valid scheduler");
+        let mut cpu = system
+            .create_cpu_local(CpuId::new(0))
+            .expect("the idle-balance regression requires a CPU-local scheduler");
+        let idle = system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::LOWEST, FairMode::Idle)),
+            )
+            .expect("the idle-balance regression requires an installed idle thread");
+        cpu.as_mut().arm_idle_pull();
+        system.owner_balance_work_pending(cpu.as_ref().get_ref(), idle.id())
     }
 
     pub(super) fn service_owner_balance(
@@ -640,4 +698,8 @@ impl TaskSystem {
         }
         Ok(result.migrated())
     }
+}
+
+const fn rt_deadline_balance_work_pending(push_target_pending: bool) -> bool {
+    push_target_pending
 }

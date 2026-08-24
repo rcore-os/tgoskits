@@ -19,5 +19,10 @@ pub(crate) fn futex_wake_completion_is_scheduler_driven_for_test() -> bool {
     futex::futex_wake_completion_is_scheduler_driven_for_test()
 }
 
+#[cfg(axtest)]
+pub(crate) fn futex_retry_keeps_original_deadline_for_test() -> bool {
+    futex::futex_retry_keeps_original_deadline_for_test()
+}
+
 #[cfg(test)]
 pub(crate) use self::rseq::rseq_validation_rules_hold_for_test;

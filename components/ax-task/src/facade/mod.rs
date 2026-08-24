@@ -37,8 +37,9 @@ mod scheduling;
 mod task_work;
 
 pub use deadline::{
-    CurrentParkResume, CurrentParkStart, PreparedCurrentPark, SchedulerTickStamp,
-    TaskClockEventOutcome, begin_current_park, on_clock_event, publish_scheduler_tick,
+    CurrentParkDisposition, CurrentParkResume, CurrentParkStart, PreparedCurrentPark,
+    SchedulerTickStamp, TaskClockEventOutcome, begin_current_park, on_clock_event,
+    publish_scheduler_tick,
 };
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 use deadline::{arm_current_park_deadline, cancel_current_park_deadline, prepare_current_park};
@@ -148,6 +149,14 @@ fn current_thread_ref() -> Result<CurrentThreadRef, TaskError> {
     // context. The non-Send borrow remains inside one synchronous facade
     // operation and the operation cannot exit the current thread.
     unsafe { publication.borrow_current() }
+}
+
+fn current_thread_core_arc() -> Result<Arc<ThreadCore>, TaskError> {
+    let publication = current_thread_publication()?;
+    // SAFETY: the runtime publication belongs to this architecture context.
+    // The returned Arc is scheduler-internal and remains in the synchronous
+    // current-thread operation; it does not acquire an external lease.
+    unsafe { publication.acquire_scheduler_core() }
 }
 
 /// Tests the current CPU's sticky reschedule request while migration is pinned.
@@ -381,7 +390,9 @@ pub fn idle_current_cpu_once() -> Result<(), TaskError> {
 pub unsafe fn finish_initial_context_switch() -> Result<(), TaskError> {
     validate_task_context()?;
     let mut irq = RuntimeIrqGuard::enter();
-    complete_current_context_switch_tail(&mut irq)?;
+    // SAFETY: this trampoline inherits the transferred scheduler baton and
+    // the runtime IRQ guard retains its raw IRQ-off state through completion.
+    unsafe { complete_current_context_switch_tail(&mut irq)? };
     drop(irq);
     task_runtime::finish_initial_context_switch();
     Ok(())

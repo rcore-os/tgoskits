@@ -1,8 +1,14 @@
 //! Allocation-free raw waker implementation.
 
-use core::task::{RawWaker, RawWakerVTable, Waker};
+use core::{
+    mem::ManuallyDrop,
+    ptr,
+    task::{RawWaker, RawWakerVTable, Waker},
+};
 
-use super::coroutine::{CoroutineHeader, release_reference, retain_reference, schedule};
+use super::coroutine::{
+    CoroutineHeader, release_reference, retain_reference, schedule, schedule_sync,
+};
 
 static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_waker, wake, wake_by_ref, drop_waker);
 
@@ -24,6 +30,25 @@ pub(super) unsafe fn coroutine_waker(header: *mut CoroutineHeader) -> Waker {
         // `raw` owns exactly the reference retained above and uses the matching
         // vtable to release it.
         Waker::from_raw(raw)
+    }
+}
+
+/// Consumes a Waker with Linux `WF_SYNC` semantics when it belongs to this
+/// executor, otherwise preserves the standard Waker contract.
+pub(super) fn wake_sync(waker: Waker) {
+    if !ptr::eq(waker.vtable(), &VTABLE) {
+        waker.wake();
+        return;
+    }
+
+    let header = waker.data().cast_mut().cast::<CoroutineHeader>();
+    let _waker = ManuallyDrop::new(waker);
+    unsafe {
+        // Matching this private vtable proves that the data pointer owns one
+        // coroutine-header reference. This path consumes and releases exactly
+        // the same reference as the ordinary raw `wake` callback.
+        schedule_sync(header);
+        release_reference(header);
     }
 }
 

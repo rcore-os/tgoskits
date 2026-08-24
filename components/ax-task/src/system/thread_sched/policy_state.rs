@@ -14,28 +14,21 @@ pub(in crate::system) struct PendingPolicyUpdate {
 }
 
 /// Owner-applied base policy plus at most one remote update transaction.
-///
-/// `active` is populated only while the complete task scheduling state is
-/// detached from every rq and CPU. Base and inherited class entities travel
-/// together inside that value; this task-control object never owns a second
-/// parked copy.
 #[derive(Debug)]
 pub(in crate::system) struct ThreadPolicyState {
     pub(in crate::system) base: SchedulePolicy,
     update_generation: u64,
     pending: Option<PendingPolicyUpdate>,
     pub(in crate::system) dispatch_generation: u64,
-    active: Option<ActiveSchedulingState>,
 }
 
 impl ThreadPolicyState {
-    pub(super) fn new(policy: SchedulePolicy, entity: SchedulingEntity) -> Self {
+    pub(super) const fn new(policy: SchedulePolicy) -> Self {
         Self {
             base: policy,
             update_generation: 1,
             pending: None,
             dispatch_generation: 1,
-            active: Some(ActiveSchedulingState::new(policy, entity)),
         }
     }
 
@@ -89,39 +82,5 @@ impl ThreadPolicyState {
 
     pub(in crate::system) fn discard_pending_update(&mut self) {
         self.pending = None;
-    }
-
-    pub(in crate::system) fn active(&self) -> &ActiveSchedulingState {
-        self.active
-            .as_ref()
-            .expect("detached task must own its active scheduling state")
-    }
-
-    pub(in crate::system) const fn active_option(&self) -> Option<&ActiveSchedulingState> {
-        self.active.as_ref()
-    }
-
-    pub(in crate::system) fn active_mut(&mut self) -> &mut ActiveSchedulingState {
-        self.active
-            .as_mut()
-            .expect("detached task must own its active scheduling state")
-    }
-
-    pub(in crate::system) fn take_active(&mut self) -> ActiveSchedulingState {
-        self.active
-            .take()
-            .expect("active scheduling state must have exactly one owner")
-    }
-
-    pub(in crate::system) fn install_active(&mut self, active: ActiveSchedulingState) {
-        assert!(
-            self.active.replace(active).is_none(),
-            "active scheduling state cannot have two owners"
-        );
-    }
-
-    #[cfg(any(test, all(axtest, feature = "axtest")))]
-    pub(in crate::system) const fn owns_active(&self) -> bool {
-        self.active.is_some()
     }
 }

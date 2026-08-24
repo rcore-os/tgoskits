@@ -364,18 +364,29 @@ impl LocalClockEvent {
         }
         let selected = self.selected_deadline();
         if let Some(armed) = self.armed_deadline {
-            // A programmed comparator remains the physical owner until its IRQ
-            // handler claims the edge. Replacing an elapsed comparator with a
-            // later deadline may clear an already-pending interrupt on SBI and
-            // other one-shot backends. An earlier deadline may safely preempt
-            // it; a later or removed logical deadline is reconciled after the
-            // outstanding edge enters the firing transaction.
-            let Some(earlier) = selected.filter(|deadline| *deadline < armed) else {
-                return ClockEventAction::None;
-            };
-            self.armed_deadline = Some(earlier);
-            self.phase = ClockEventPhase::Armed;
-            return ClockEventAction::Program(earlier);
+            // The physical comparator represents the current logical minimum,
+            // not the task which happened to arm it. Linux hrtick restarts a
+            // queued timer when a context switch moves the active request in
+            // either direction. Keeping the previous task's later-invalidated
+            // slice edge would turn every blocking switch into a stale IRQ.
+            //
+            // Local IRQ exclusion serializes this state transition with the
+            // handler. A residual hardware edge which raced the reprogram is
+            // merely claimed as an early edge and reconciled once more.
+            match selected {
+                Some(deadline) if deadline == armed => return ClockEventAction::None,
+                Some(deadline) => {
+                    self.armed_deadline = Some(deadline);
+                    self.phase = ClockEventPhase::Armed;
+                    return ClockEventAction::Program(deadline);
+                }
+                None => {
+                    self.armed_deadline = None;
+                    self.phase = ClockEventPhase::Idle;
+                    self.device_state = ClockEventDeviceState::Stopped;
+                    return ClockEventAction::Stop;
+                }
+            }
         }
 
         match selected {
@@ -579,13 +590,9 @@ mod tests {
             ClockEventAction::None
         );
 
-        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::None);
-        assert_eq!(event.armed_deadline(), Some(deadline(100)));
-
-        let firing = fire_due(&mut event, 100);
         assert_eq!(
-            event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Resume(deadline(1_000))
+            event.stop_scheduler_tick_for_idle(),
+            ClockEventAction::Program(deadline(1_000))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(1_000)));
     }
@@ -594,18 +601,10 @@ mod tests {
     fn idle_exit_restarts_the_tick_on_its_original_phase() {
         let mut event = LocalClockEvent::offline();
         event.online(deadline(100));
-        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::None);
+        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::Stop);
 
         assert_eq!(
             event.restart_scheduler_tick_after_idle(instant(149), 25),
-            ClockEventAction::None
-        );
-        assert_eq!(event.armed_deadline(), Some(deadline(100)));
-
-        let firing = fire_due(&mut event, 149);
-        assert!(!event.advance_periodic(instant(149), 25));
-        assert_eq!(
-            event.finish_firing(firing, ClockEventRearm::Immediate),
             ClockEventAction::Resume(deadline(150))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(150)));
@@ -615,16 +614,8 @@ mod tests {
     fn repeated_idle_iteration_keeps_the_scheduler_tick_stopped() {
         let mut event = LocalClockEvent::offline();
         event.online(deadline(100));
+        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::Stop);
         assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::None);
-        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::None);
-        assert_eq!(event.phase(), ClockEventPhase::Armed);
-        assert_eq!(event.armed_deadline(), Some(deadline(100)));
-
-        let firing = fire_due(&mut event, 100);
-        assert_eq!(
-            event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::None
-        );
         assert_eq!(event.phase(), ClockEventPhase::Idle);
         assert_eq!(event.armed_deadline(), None);
     }
@@ -666,7 +657,31 @@ mod tests {
     }
 
     #[test]
-    fn later_selected_deadlines_wait_for_the_outstanding_physical_owner() {
+    fn later_live_scheduler_deadline_replaces_a_future_slice_edge() {
+        let mut event = LocalClockEvent::offline();
+        assert_eq!(
+            event.online(deadline(500)),
+            ClockEventAction::Resume(deadline(500))
+        );
+        assert_eq!(
+            event.publish_scheduler(1, Some(scheduler_deadline(300))),
+            ClockEventAction::Program(deadline(300))
+        );
+        assert!(
+            !event.has_immediate_work(instant(250)),
+            "the obsolete slice edge must still be reprogrammable"
+        );
+
+        assert_eq!(
+            event.publish_scheduler(2, Some(scheduler_deadline(400))),
+            ClockEventAction::Program(deadline(400)),
+            "a new current task must replace the previous task's future slice edge"
+        );
+        assert_eq!(event.armed_deadline(), Some(deadline(400)));
+    }
+
+    #[test]
+    fn logical_minimum_reprograms_when_scheduler_deadlines_move_later() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(500)),
@@ -678,22 +693,17 @@ mod tests {
         );
         assert_eq!(
             event.publish_scheduler(2, Some(scheduler_deadline(400))),
-            ClockEventAction::None
+            ClockEventAction::Program(deadline(400))
         );
-        assert_eq!(event.armed_deadline(), Some(deadline(300)));
-        assert_eq!(event.publish_scheduler(3, None), ClockEventAction::None);
-        assert_eq!(event.armed_deadline(), Some(deadline(300)));
-
-        let firing = fire_due(&mut event, 300);
         assert_eq!(
-            event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::Resume(deadline(500))
+            event.publish_scheduler(3, None),
+            ClockEventAction::Program(deadline(500))
         );
         assert_eq!(event.armed_deadline(), Some(deadline(500)));
     }
 
     #[test]
-    fn later_deadline_cannot_overwrite_an_outstanding_hardware_edge() {
+    fn residual_edge_after_later_reprogram_is_reconciled_as_early() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(500)),
@@ -710,11 +720,14 @@ mod tests {
 
         assert_eq!(
             event.publish_scheduler(2, Some(scheduler_deadline(400))),
-            ClockEventAction::None,
-            "a later deadline must not clear an earlier pending comparator edge"
+            ClockEventAction::Program(deadline(400)),
+            "the elapsed edge no longer represents a live logical deadline"
         );
-        assert_eq!(event.armed_deadline(), Some(deadline(300)));
+        assert_eq!(event.armed_deadline(), Some(deadline(400)));
 
+        // A backend may still deliver the old pending edge after the
+        // comparator was moved. It is an early firing for the new logical
+        // minimum and must rearm that same deadline without consuming it.
         let firing = fire_due(&mut event, 350);
         assert_eq!(
             event.finish_firing(firing, ClockEventRearm::Immediate),
@@ -734,28 +747,21 @@ mod tests {
     }
 
     #[test]
-    fn removing_the_only_deadline_stops_after_the_physical_edge_is_consumed() {
+    fn removing_the_only_deadline_stops_the_obsolete_physical_edge() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(deadline(1_000)),
             ClockEventAction::Resume(deadline(1_000))
         );
-        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::None);
+        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::Stop);
         assert_eq!(
             event.publish_scheduler(1, Some(scheduler_deadline(300))),
-            ClockEventAction::Program(deadline(300))
+            ClockEventAction::Resume(deadline(300))
         );
-        assert_eq!(event.publish_scheduler(2, None), ClockEventAction::None);
-        assert_eq!(event.phase(), ClockEventPhase::Armed);
-        assert_eq!(event.armed_deadline(), Some(deadline(300)));
-
-        let firing = fire_due(&mut event, 300);
-        assert_eq!(
-            event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::None
-        );
+        assert_eq!(event.publish_scheduler(2, None), ClockEventAction::Stop);
         assert_eq!(event.phase(), ClockEventPhase::Idle);
         assert_eq!(event.armed_deadline(), None);
+        assert_eq!(event.claim_irq(instant(300)), ClockEventIrqClaim::Ignored);
     }
 
     #[test]
@@ -919,19 +925,10 @@ mod tests {
     }
 
     #[test]
-    fn stale_edge_after_idle_entry_is_consumed_before_the_device_stops() {
+    fn idle_entry_stops_the_edge_and_ignores_a_residual_irq() {
         let mut event = LocalClockEvent::offline();
         event.online(deadline(500));
-        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::None);
-
-        let firing = match event.claim_irq(instant(100)) {
-            ClockEventIrqClaim::Firing(firing) => firing,
-            claim => panic!("outstanding idle edge was not claimed: {claim:?}"),
-        };
-        assert_eq!(
-            event.finish_firing(firing, ClockEventRearm::Immediate),
-            ClockEventAction::None
-        );
+        assert_eq!(event.stop_scheduler_tick_for_idle(), ClockEventAction::Stop);
         assert_eq!(event.phase(), ClockEventPhase::Idle);
         assert_eq!(event.armed_deadline(), None);
         assert_eq!(event.claim_irq(instant(100)), ClockEventIrqClaim::Ignored);

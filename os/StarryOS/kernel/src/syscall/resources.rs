@@ -7,7 +7,7 @@ use linux_raw_sys::general::{__kernel_old_timeval, RLIM_NLIMITS, rlimit64, rusag
 use crate::{
     StarryError, StarryResult,
     mm::{UserPtr, VmPtr},
-    task::{ProcessData, TgidNumber, Thread, UserTaskRef, get_user_process_data_by_number},
+    task::{ProcessData, Rlimit, TgidNumber, Thread, UserTaskRef, get_user_process_data_by_number},
     time::TimeValueLike,
 };
 
@@ -30,7 +30,7 @@ pub fn sys_prlimit64(
     }
 
     if let Some(old_limit) = old_limit.nullable() {
-        let limit = &proc_data.rlimits()[resource];
+        let limit = proc_data.rlimit(resource);
         let old_limit = UserPtr::<rlimit64>::from(old_limit);
         old_limit.write_field(current, offset_of!(rlimit64, rlim_cur), limit.current)?;
         old_limit.write_field(current, offset_of!(rlimit64, rlim_max), limit.max)?;
@@ -43,18 +43,18 @@ pub fn sys_prlimit64(
             return Err(StarryError::InvalidInput);
         }
 
-        let limit = &mut proc_data.rlimits_mut()[resource];
+        let limit = proc_data.rlimit_update(resource);
+        let previous = limit.snapshot();
         // Raising the hard limit requires CAP_SYS_RESOURCE.
         // TODO: has_cap_sys_resource() is currently euid==0 until a
         // fine-grained capability bitmap is implemented (see cred.rs).
-        if new_limit.rlim_max > limit.max {
+        if new_limit.rlim_max > previous.max {
             let cred = current.as_thread().cred();
             if !cred.has_cap_sys_resource() {
                 return Err(StarryError::OperationNotPermitted);
             }
         }
-        limit.max = new_limit.rlim_max;
-        limit.current = new_limit.rlim_cur;
+        limit.replace(Rlimit::new(new_limit.rlim_cur, new_limit.rlim_max));
     }
 
     Ok(0)

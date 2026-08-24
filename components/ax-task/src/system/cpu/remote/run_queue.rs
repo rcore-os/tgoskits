@@ -1,7 +1,7 @@
 use core::ops::Deref;
 
 use super::*;
-use crate::{EnqueueReason, FairEntity, SchedulerClass};
+use crate::{EnqueueReason, FairEntity, SchedulerClass, WakeIntent};
 
 /// Typed reason for entering the per-CPU runqueue with irqsave semantics.
 ///
@@ -58,6 +58,41 @@ pub(crate) enum WakePreemptionDecision {
     QueuedCandidateSelected,
 }
 
+/// Target-rq action selected by Linux's equal-priority RT wakeup rule.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EqualRtWakeAction {
+    /// Preserve FIFO order because the current cannot move or the wakee can.
+    PreserveFifoOrder,
+    /// Put the wakee first so the next schedule can push the current away.
+    RequeueWakeeAndReschedule,
+}
+
+/// Linux wake flags and target-rq facts that qualify wakeup preemption.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WakePreemptionContext {
+    intent: WakeIntent,
+    migration_cost_ns: u64,
+    equal_rt_action: EqualRtWakeAction,
+}
+
+impl WakePreemptionContext {
+    pub(crate) const fn new(
+        intent: WakeIntent,
+        migration_cost_ns: u64,
+        equal_rt_action: EqualRtWakeAction,
+    ) -> Self {
+        Self {
+            intent,
+            migration_cost_ns,
+            equal_rt_action,
+        }
+    }
+
+    const fn normal() -> Self {
+        Self::new(WakeIntent::Normal, 0, EqualRtWakeAction::PreserveFifoOrder)
+    }
+}
+
 /// Owner-rq facts committed by one runnable-task insertion.
 ///
 /// Preemption remains a complete-rq decision made after insertion. This
@@ -86,7 +121,7 @@ impl OwnerRqEnqueue {
 /// through task utilization or RT bandwidth accounting. Encoding that split
 /// in the result prevents callers from reconstructing idle identity after the
 /// class hook has advanced its execution timestamp.
-pub(in crate::system::cpu) enum RqCurrentTick {
+pub(in crate::system::cpu) enum RqCurrentUpdate {
     DedicatedIdle,
     Task {
         charge: DispatchCharge,
@@ -94,6 +129,12 @@ pub(in crate::system::cpu) enum RqCurrentTick {
         realtime: bool,
         rt_quota_exempt: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CurrentAccountingEvent {
+    RuntimeUpdate,
+    SchedulerTick,
 }
 
 impl WakePreemptionDecision {
@@ -176,12 +217,131 @@ impl CpuRunQueueState {
         current_fair: Option<FairEntity>,
     ) -> Result<OwnerRqEnqueue, TaskError> {
         let runtime_timer_required_before = self.current_runtime_timer_required();
+        let runtime_timer_delta_before = runtime_timer_required_before
+            .then(|| self.current_runtime_timer_delta_ns())
+            .flatten();
         let entity = self.queue.enqueue_task(thread, reason, current_fair)?;
+        self.tighten_current_fair_slice_protection(&entity);
+        let runtime_timer_required_after = self.current_runtime_timer_required();
+        let runtime_timer_delta_after = runtime_timer_required_after
+            .then(|| self.current_runtime_timer_delta_ns())
+            .flatten();
         Ok(OwnerRqEnqueue {
             entity,
-            scheduler_deadline_refresh_required: !runtime_timer_required_before
-                && self.current_runtime_timer_required(),
+            scheduler_deadline_refresh_required: runtime_timer_required_after
+                && (!runtime_timer_required_before
+                    || runtime_timer_delta_after < runtime_timer_delta_before),
         })
+    }
+
+    pub(in crate::system::cpu) fn take_delayed_fair_for_update(
+        &mut self,
+        thread: ThreadId,
+    ) -> Option<QueuedThread> {
+        let current_fair = self.current_fair_contender();
+        self.queue.update_fair_virtual_time(current_fair);
+        let delayed = self.queue.take_delayed_fair_for_update(thread)?;
+        self.queue.update_fair_virtual_time(current_fair);
+        Some(delayed)
+    }
+
+    pub(in crate::system::cpu) fn restore_delayed_fair_after_update(
+        &mut self,
+        thread: QueuedThread,
+    ) -> SchedulingEntity {
+        let current_fair = self.current_fair_contender();
+        self.queue.update_fair_virtual_time(current_fair);
+        let entity = self.queue.restore_delayed_fair_after_update(thread);
+        self.tighten_current_fair_slice_protection(&entity);
+        self.queue.update_fair_virtual_time(current_fair);
+        entity
+    }
+
+    pub(in crate::system::cpu) fn finish_detached_delayed_fair(
+        &mut self,
+        active: &mut ActiveSchedulingState,
+        timing_granularity_ns: u64,
+    ) {
+        let current_fair = self.current_fair_contender();
+        self.queue
+            .finish_detached_delayed_fair(active, timing_granularity_ns);
+        self.queue.update_fair_virtual_time(current_fair);
+    }
+
+    pub(in crate::system::cpu) fn enqueue_delayed_fair_transfer(
+        &mut self,
+        thread: QueuedThread,
+        current_fair: Option<FairEntity>,
+    ) -> Result<OwnerRqEnqueue, TaskError> {
+        let runtime_timer_required_before = self.current_runtime_timer_required();
+        let runtime_timer_delta_before = runtime_timer_required_before
+            .then(|| self.current_runtime_timer_delta_ns())
+            .flatten();
+        let entity = self
+            .queue
+            .enqueue_delayed_fair_transfer(thread, current_fair)?;
+        self.tighten_current_fair_slice_protection(&entity);
+        let runtime_timer_required_after = self.current_runtime_timer_required();
+        let runtime_timer_delta_after = runtime_timer_required_after
+            .then(|| self.current_runtime_timer_delta_ns())
+            .flatten();
+        Ok(OwnerRqEnqueue {
+            entity,
+            scheduler_deadline_refresh_required: runtime_timer_required_before
+                != runtime_timer_required_after
+                || runtime_timer_delta_before != runtime_timer_delta_after,
+        })
+    }
+
+    pub(in crate::system::cpu) fn enqueue_reactivated_delayed_fair_transfer(
+        &mut self,
+        thread: QueuedThread,
+        current_fair: Option<FairEntity>,
+        timing_granularity_ns: u64,
+    ) -> Result<OwnerRqEnqueue, TaskError> {
+        let runtime_timer_required_before = self.current_runtime_timer_required();
+        let runtime_timer_delta_before = runtime_timer_required_before
+            .then(|| self.current_runtime_timer_delta_ns())
+            .flatten();
+        let entity = self.queue.enqueue_reactivated_delayed_fair_transfer(
+            thread,
+            current_fair,
+            timing_granularity_ns,
+        )?;
+        self.tighten_current_fair_slice_protection(&entity);
+        let runtime_timer_required_after = self.current_runtime_timer_required();
+        let runtime_timer_delta_after = runtime_timer_required_after
+            .then(|| self.current_runtime_timer_delta_ns())
+            .flatten();
+        Ok(OwnerRqEnqueue {
+            entity,
+            scheduler_deadline_refresh_required: runtime_timer_required_after
+                && (!runtime_timer_required_before
+                    || runtime_timer_delta_after < runtime_timer_delta_before),
+        })
+    }
+
+    fn tighten_current_fair_slice_protection(&mut self, wakee_entity: &SchedulingEntity) {
+        let Some(wakee) = wakee_entity
+            .fair()
+            .filter(|fair| fair.mode() == FairMode::Normal)
+        else {
+            return;
+        };
+        let Some(shortest_queued_slice_ns) = self.queue.min_fair_service_request_ns(wakee.mode())
+        else {
+            return;
+        };
+        let Some(current) = self
+            .current_scheduling_entity_mut()
+            .and_then(|entity| match entity {
+                SchedulingEntity::Fair(fair) if fair.mode() == wakee.mode() => Some(fair),
+                _ => None,
+            })
+        else {
+            return;
+        };
+        current.update_slice_protection(shortest_queued_slice_ns);
     }
 
     #[cfg(any(test, all(axtest, feature = "axtest")))]
@@ -209,6 +369,23 @@ impl CpuRunQueueState {
             .or_else(|| current.owned_scheduling_entity_ref())
     }
 
+    /// Returns the running Fair entity that participates in EEVDF accounting.
+    ///
+    /// Linux keeps its dedicated idle task in `idle_sched_class`, completely
+    /// outside `cfs_rq::{curr, sum_weight, sum_w_vruntime}`. Our idle dispatch
+    /// still owns a Fair-shaped policy entity for uniform task metadata, so
+    /// every Fair accounting boundary must exclude it explicitly.
+    pub(crate) fn current_fair_contender(&self) -> Option<FairEntity> {
+        if self
+            .current()
+            .is_some_and(CurrentDispatch::is_dedicated_idle)
+        {
+            return None;
+        }
+        self.current_scheduling_entity()
+            .and_then(SchedulingEntity::fair)
+    }
+
     pub(crate) fn current_scheduling_entity_mut(&mut self) -> Option<&mut SchedulingEntity> {
         let thread = self.current_thread()?;
         if self.queue.is_linked_current(thread) {
@@ -226,17 +403,95 @@ impl CpuRunQueueState {
         if self.current_thread() != Some(thread) || self.queue.is_linked_current(thread) {
             return Err(TaskError::InvalidConfiguration);
         }
-        let current_fair = self
-            .current_scheduling_entity()
-            .and_then(|entity| entity.fair());
+        let current_fair = self.current_fair_contender();
         self.queue.update_fair_virtual_time(current_fair);
         let dispatch = self.queue.take_current().ok_or(TaskError::NotReady)?;
         let queued = dispatch
             .into_queued_thread()
             .ok_or(TaskError::InvalidConfiguration)?;
         let queued_entity = self.queue.enqueue_task(queued, reason, current_fair)?;
-        self.queue.update_fair_virtual_time(current_fair);
+        // The requeued current is now part of the Fair tree. Including its old
+        // snapshot again would count one task twice and move V away from the
+        // weighted average used by Linux EEVDF eligibility.
+        self.queue.update_fair_virtual_time(None);
         Ok(queued_entity)
+    }
+
+    /// Retains an ineligible Fair sleeper on-rq like Linux DELAY_DEQUEUE.
+    pub(crate) fn delay_dequeue_unlinked_current(
+        &mut self,
+        thread: ThreadId,
+        timing_granularity_ns: u64,
+        force: bool,
+    ) -> Option<SchedulingEntity> {
+        if self.current_thread() != Some(thread) || self.queue.is_linked_current(thread) {
+            return None;
+        }
+        let fair = self.current_fair_contender()?;
+        self.queue.update_fair_virtual_time(Some(fair));
+        let virtual_time = self.queue.virtual_time_for_mode(fair.mode());
+        #[cfg(feature = "task-test-hooks")]
+        let (fair, virtual_time) = if force && fair.is_eligible(virtual_time) {
+            let SchedulingEntity::Fair(current) = self.current_scheduling_entity_mut()? else {
+                return None;
+            };
+            current.force_ineligible_for_delayed_dequeue(virtual_time);
+            let fair = *current;
+            self.queue.update_fair_virtual_time(Some(fair));
+            (fair, self.queue.virtual_time_for_mode(fair.mode()))
+        } else {
+            (fair, virtual_time)
+        };
+        if !force && fair.is_eligible(virtual_time) {
+            return None;
+        }
+        let SchedulingEntity::Fair(current) = self.current_scheduling_entity_mut()? else {
+            return None;
+        };
+        current.begin_delayed_dequeue(virtual_time, timing_granularity_ns);
+        let dispatch = self.queue.take_current()?;
+        let queued = dispatch.into_queued_thread()?;
+        let entity = self.queue.enqueue_delayed_fair_current(queued);
+        self.queue.update_fair_virtual_time(None);
+        Some(entity)
+    }
+
+    pub(crate) fn is_delayed_fair(&self, thread: ThreadId) -> bool {
+        self.queue.is_delayed_fair(thread)
+    }
+
+    pub(crate) fn finish_delayed_fair_dequeue(
+        &mut self,
+        thread: ThreadId,
+        timing_granularity_ns: u64,
+    ) -> Option<QueuedThread> {
+        self.queue
+            .finish_delayed_fair_dequeue(thread, timing_granularity_ns)
+    }
+
+    pub(crate) fn reactivate_delayed_fair(
+        &mut self,
+        thread: ThreadId,
+        timing_granularity_ns: u64,
+    ) -> Option<OwnerRqEnqueue> {
+        let runtime_timer_required_before = self.current_runtime_timer_required();
+        let runtime_timer_delta_before = runtime_timer_required_before
+            .then(|| self.current_runtime_timer_delta_ns())
+            .flatten();
+        let entity = self
+            .queue
+            .reactivate_delayed_fair(thread, timing_granularity_ns)?;
+        self.tighten_current_fair_slice_protection(&entity);
+        let runtime_timer_required_after = self.current_runtime_timer_required();
+        let runtime_timer_delta_after = runtime_timer_required_after
+            .then(|| self.current_runtime_timer_delta_ns())
+            .flatten();
+        Some(OwnerRqEnqueue {
+            entity,
+            scheduler_deadline_refresh_required: runtime_timer_required_after
+                && (!runtime_timer_required_before
+                    || runtime_timer_delta_after < runtime_timer_delta_before),
+        })
     }
 
     pub(crate) fn install_current(&mut self, current: CurrentDispatch) {
@@ -526,6 +781,21 @@ impl CpuRunQueueState {
     }
 
     /// Accounts the running task in place under the rq lock.
+    pub(in crate::system::cpu) fn update_current(
+        &mut self,
+        runtime_ns: u64,
+        reclaimed_ns: u64,
+        deadline_extra_bw_scaled: u64,
+    ) -> Result<RqCurrentUpdate, TaskError> {
+        self.update_current_for_event(
+            runtime_ns,
+            reclaimed_ns,
+            deadline_extra_bw_scaled,
+            CurrentAccountingEvent::RuntimeUpdate,
+        )
+    }
+
+    /// Applies one Linux scheduler tick after accounting the running task.
     ///
     /// RT and Deadline entities remain linked in their class structure, while
     /// Fair/stop entities remain in `CurrentDispatch`. A clock tick therefore
@@ -536,7 +806,22 @@ impl CpuRunQueueState {
         runtime_ns: u64,
         reclaimed_ns: u64,
         deadline_extra_bw_scaled: u64,
-    ) -> Result<RqCurrentTick, TaskError> {
+    ) -> Result<RqCurrentUpdate, TaskError> {
+        self.update_current_for_event(
+            runtime_ns,
+            reclaimed_ns,
+            deadline_extra_bw_scaled,
+            CurrentAccountingEvent::SchedulerTick,
+        )
+    }
+
+    fn update_current_for_event(
+        &mut self,
+        runtime_ns: u64,
+        reclaimed_ns: u64,
+        deadline_extra_bw_scaled: u64,
+        event: CurrentAccountingEvent,
+    ) -> Result<RqCurrentUpdate, TaskError> {
         let now_ns = self
             .clock
             .snapshot()
@@ -549,7 +834,7 @@ impl CpuRunQueueState {
                 .current_mut()
                 .expect("current identity must retain its dispatch")
                 .account_dedicated_idle_until(now_ns);
-            return Ok(RqCurrentTick::DedicatedIdle);
+            return Ok(RqCurrentUpdate::DedicatedIdle);
         }
 
         let bandwidth = self.queue.deadline_bandwidth();
@@ -567,19 +852,200 @@ impl CpuRunQueueState {
         } else {
             false
         };
-        self.queue.update_fair_virtual_time(current_entity.fair());
-        let class_tick = SchedulerClass::for_policy(policy).task_tick(
-            &mut self.queue,
-            current_thread,
-            policy,
+        if let Some(current_fair) = current_entity.fair() {
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_current_fair_vtime_update(current_thread);
+            self.queue.update_fair_virtual_time(Some(current_fair));
+        }
+        let class_tick_reschedule = match event {
+            CurrentAccountingEvent::RuntimeUpdate => false,
+            CurrentAccountingEvent::SchedulerTick => {
+                SchedulerClass::for_policy(policy)
+                    .task_tick(
+                        &mut self.queue,
+                        current_thread,
+                        policy,
+                        &current_entity,
+                        charge,
+                    )
+                    .request_reschedule
+            }
+        };
+        let deadline_runtime_reschedule =
+            matches!(policy, SchedulePolicy::Deadline(_)) && charge.slice_expired;
+        Ok(RqCurrentUpdate::Task {
             charge,
-        );
-        Ok(RqCurrentTick::Task {
-            charge,
-            request_reschedule: class_tick.request_reschedule || deadline_replenish_reschedule,
-            realtime: class_tick.realtime,
+            request_reschedule: deadline_runtime_reschedule
+                || deadline_replenish_reschedule
+                || class_tick_reschedule,
+            realtime: matches!(
+                policy,
+                SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
+            ),
             rt_quota_exempt,
         })
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn fifo_handoff_current_for_scheduler_deadline_test(
+        config: TaskSystemConfig,
+    ) -> Self {
+        use crate::{
+            ActiveSchedulingState, CurrentClassState, CurrentDispatchState, PickTaskResult,
+            RqTaskTime, RtEligibility, RtPriority, SchedulingEntity,
+        };
+
+        let priority = RtPriority::new(10).expect("test priority must be valid");
+        let policy = SchedulePolicy::fifo(priority);
+        let current = ThreadId::from_parts(0, 1);
+        let peer = ThreadId::from_parts(1, 1);
+        let mut run_queue = Self::new(CpuId::new(0), config);
+
+        for thread in [current, peer] {
+            run_queue.prepare_thread_slot(thread.slot() as usize);
+            let sched = Arc::new(crate::ThreadSchedCell::new_test(thread, policy));
+            let core = Arc::new(ThreadCore::new(
+                thread, policy, sched, None, None, None, None,
+            ));
+            let queued = QueuedThread::new(
+                thread,
+                ActiveSchedulingState::new(policy, SchedulingEntity::new(policy, 1, 0)),
+                core,
+                false,
+                false,
+                RqTaskMetadata::test(1),
+            );
+            let _enqueue = run_queue
+                .enqueue_task(queued, EnqueueReason::Wake, None)
+                .expect("test FIFO task must enqueue");
+        }
+
+        let PickTaskResult::Continue(picked) = run_queue
+            .queue
+            .pick_next_task(RtEligibility::Runnable, false)
+            .expect("test FIFO queue must have a runnable task")
+        else {
+            panic!("FIFO test setup must not select a delayed Fair task");
+        };
+        assert_eq!(picked.id(), current);
+        let metadata = picked.metadata().clone();
+        let core = Arc::clone(picked.core());
+        run_queue.queue.set_next_task(&picked);
+        run_queue.install_current(CurrentDispatch::new(
+            CurrentDispatchState {
+                thread: current,
+                schedule: CurrentClassState::Linked { policy },
+                metadata,
+                rt_quota_exempt: false,
+            },
+            &core,
+            RqTaskTime::test(0),
+        ));
+        run_queue
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn exercise_rr_runtime_update_for_test()
+    -> (ThreadId, ThreadId, ThreadId, bool, ThreadId, bool) {
+        use crate::{
+            ActiveSchedulingState, CurrentClassState, CurrentDispatchState, PickTaskResult,
+            RqTaskTime, RtEligibility, RtPriority, SchedulerTimestamp, SchedulingEntity,
+            runtime::RqClockSample,
+        };
+
+        let priority = RtPriority::new(10).expect("test priority must be valid");
+        let policy = SchedulePolicy::round_robin_with_quantum(priority, 100)
+            .expect("test quantum must be valid");
+        let current = ThreadId::from_parts(0, 1);
+        let peer = ThreadId::from_parts(1, 1);
+        let mut run_queue = Self::new(CpuId::new(0), TaskSystemConfig::new(1));
+
+        for thread in [current, peer] {
+            run_queue.prepare_thread_slot(thread.slot() as usize);
+            let sched = Arc::new(crate::ThreadSchedCell::new_test(thread, policy));
+            let core = Arc::new(ThreadCore::new(
+                thread, policy, sched, None, None, None, None,
+            ));
+            let queued = QueuedThread::new(
+                thread,
+                ActiveSchedulingState::new(policy, SchedulingEntity::new(policy, 1, 0)),
+                core,
+                false,
+                false,
+                RqTaskMetadata::test(1),
+            );
+            let _enqueue = run_queue
+                .enqueue_task(queued, EnqueueReason::Wake, None)
+                .expect("test RR task must enqueue");
+        }
+
+        let PickTaskResult::Continue(picked) = run_queue
+            .queue
+            .pick_next_task(RtEligibility::Runnable, false)
+            .expect("test RR queue must have a runnable task")
+        else {
+            panic!("RR test setup must not select a delayed Fair task");
+        };
+        assert_eq!(picked.id(), current);
+        let metadata = picked.metadata().clone();
+        let core = Arc::clone(picked.core());
+        run_queue.queue.set_next_task(&picked);
+        run_queue.install_current(CurrentDispatch::new(
+            CurrentDispatchState {
+                thread: current,
+                schedule: CurrentClassState::Linked { policy },
+                metadata,
+                rt_quota_exempt: false,
+            },
+            &core,
+            RqTaskTime::test(0),
+        ));
+        run_queue
+            .clock
+            .update(RqClockSample::new(SchedulerTimestamp::from_nanos(100), 0));
+
+        let update_request_reschedule = match run_queue
+            .update_current(100, 0, 0)
+            .expect("test RR runtime update must succeed")
+        {
+            RqCurrentUpdate::DedicatedIdle => panic!("test RR current must not become idle"),
+            RqCurrentUpdate::Task {
+                request_reschedule, ..
+            } => request_reschedule,
+        };
+        let PickTaskResult::Continue(update_next) = run_queue
+            .queue
+            .pick_next_task(RtEligibility::Runnable, false)
+            .expect("test RR queue must remain runnable")
+        else {
+            panic!("RR runtime update must not create delayed Fair state");
+        };
+
+        let tick_request_reschedule = match run_queue
+            .task_tick_current(0, 0, 0)
+            .expect("test RR scheduler tick must succeed")
+        {
+            RqCurrentUpdate::DedicatedIdle => panic!("test RR current must not become idle"),
+            RqCurrentUpdate::Task {
+                request_reschedule, ..
+            } => request_reschedule,
+        };
+        let PickTaskResult::Continue(tick_next) = run_queue
+            .queue
+            .pick_next_task(RtEligibility::Runnable, false)
+            .expect("test RR queue must remain runnable")
+        else {
+            panic!("RR scheduler tick must not create delayed Fair state");
+        };
+
+        (
+            current,
+            peer,
+            update_next.id(),
+            update_request_reschedule,
+            tick_next.id(),
+            tick_request_reschedule,
+        )
     }
 
     #[cfg(any(test, all(axtest, feature = "axtest")))]
@@ -731,11 +1197,29 @@ impl CpuRunQueueState {
     /// entity. Comparing only the wakee with current creates needless
     /// reschedule IPIs when an older queued contender would be selected.
     pub(crate) fn wakeup_preempt(
-        &self,
+        &mut self,
         wakee: ThreadId,
         policy: SchedulePolicy,
         entity: &SchedulingEntity,
         fair_virtual_time: u64,
+    ) -> WakePreemptionDecision {
+        self.wakeup_preempt_with_intent(
+            wakee,
+            policy,
+            entity,
+            fair_virtual_time,
+            WakePreemptionContext::normal(),
+        )
+    }
+
+    /// Applies wakeup preemption while preserving Linux wake flags.
+    pub(crate) fn wakeup_preempt_with_intent(
+        &mut self,
+        wakee: ThreadId,
+        policy: SchedulePolicy,
+        entity: &SchedulingEntity,
+        fair_virtual_time: u64,
+        context: WakePreemptionContext,
     ) -> WakePreemptionDecision {
         let Some(current) = self.current() else {
             return WakePreemptionDecision::WakeeSelected;
@@ -743,15 +1227,50 @@ impl CpuRunQueueState {
         if current.is_dedicated_idle() {
             return WakePreemptionDecision::DedicatedIdlePreempted;
         }
+        let current_policy = current.schedule_policy();
+        let current_runtime_ns = current.dispatch_runtime_ns();
+        if context.equal_rt_action == EqualRtWakeAction::RequeueWakeeAndReschedule {
+            if policy.rt_priority() != current_policy.rt_priority()
+                || policy.rt_priority().is_none()
+                || !self.queue.requeue_realtime_wakee_head(wakee)
+            {
+                task_runtime::fatal_invariant(0x5251_0004, wakee.as_u64() as usize);
+            }
+            return WakePreemptionDecision::WakeeSelected;
+        }
         let current_entity = self
             .current_scheduling_entity()
+            .cloned()
             .expect("current dispatch must have one rq-owned scheduling entity");
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_wake_entity_read(wakee, 0);
-        if !current.should_preempt(current_entity, policy, entity, fair_virtual_time) {
+        let preempts = if context.intent.is_sync() {
+            crate::scheduler::sync_wakeup_preempts(
+                current_policy,
+                &current_entity,
+                false,
+                policy,
+                entity,
+                fair_virtual_time,
+                crate::scheduler::SyncWakeupContext::new(
+                    current_runtime_ns,
+                    context.migration_cost_ns,
+                ),
+            )
+        } else {
+            crate::scheduler::wakeup_preempts(
+                current_policy,
+                &current_entity,
+                false,
+                policy,
+                entity,
+                fair_virtual_time,
+            )
+        };
+        if !preempts {
             return WakePreemptionDecision::KeepCurrent;
         }
-        match policy {
+        let decision = match policy {
             SchedulePolicy::Fair { mode, .. } => {
                 if self
                     .queue
@@ -763,8 +1282,43 @@ impl CpuRunQueueState {
                 }
             }
             _ => WakePreemptionDecision::WakeeSelected,
+        };
+        if decision == WakePreemptionDecision::WakeeSelected
+            && fair_preemption_cancels_protection(current_policy, &current_entity, policy, entity)
+            && let Some(SchedulingEntity::Fair(current)) = self.current_scheduling_entity_mut()
+        {
+            current.cancel_slice_protection();
         }
+        decision
     }
+}
+
+fn fair_preemption_cancels_protection(
+    current_policy: SchedulePolicy,
+    current_entity: &SchedulingEntity,
+    wakee_policy: SchedulePolicy,
+    wakee_entity: &SchedulingEntity,
+) -> bool {
+    let (
+        SchedulePolicy::Fair {
+            mode: current_mode, ..
+        },
+        SchedulePolicy::Fair {
+            mode: wakee_mode, ..
+        },
+        Some(current),
+        Some(wakee),
+    ) = (
+        current_policy,
+        wakee_policy,
+        current_entity.fair(),
+        wakee_entity.fair(),
+    )
+    else {
+        return false;
+    };
+    (current_mode == FairMode::Idle && wakee_mode != FairMode::Idle)
+        || (current_mode == wakee_mode && wakee.has_shorter_slice_than(current))
 }
 
 impl Deref for CpuRunQueueState {
@@ -772,5 +1326,119 @@ impl Deref for CpuRunQueueState {
 
     fn deref(&self) -> &Self::Target {
         &self.queue
+    }
+}
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+mod tests {
+    use super::*;
+    use crate::{
+        ActiveSchedulingState, CurrentClassState, CurrentDispatchState, FairMode, Nice,
+        PickTaskResult, PickedThread, RqTaskMetadata, RqTaskTime, RtEligibility, SchedulingEntity,
+    };
+
+    fn fair_thread(thread: ThreadId, entity: FairEntity) -> QueuedThread {
+        let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+        let sched = Arc::new(crate::ThreadSchedCell::new_test(thread, policy));
+        let core = Arc::new(ThreadCore::new(
+            thread, policy, sched, None, None, None, None,
+        ));
+        QueuedThread::new(
+            thread,
+            ActiveSchedulingState::new(policy, SchedulingEntity::Fair(entity)),
+            core,
+            false,
+            true,
+            RqTaskMetadata::test(1),
+        )
+    }
+
+    fn install_fair_current(
+        run_queue: &mut CpuRunQueueState,
+        thread: ThreadId,
+        entity: FairEntity,
+    ) {
+        run_queue.prepare_thread_slot(thread.slot() as usize);
+        let _enqueue = run_queue
+            .enqueue_task(fair_thread(thread, entity), EnqueueReason::Wake, None)
+            .unwrap();
+        let PickTaskResult::Continue(picked) = run_queue
+            .queue
+            .pick_next_task(RtEligibility::Runnable, false)
+            .unwrap()
+        else {
+            panic!("test setup does not install delayed Fair sleepers")
+        };
+        run_queue.queue.set_next_task(&picked);
+        let PickedThread::Owned(thread) = picked else {
+            panic!("a Fair pick must transfer its scheduling state")
+        };
+        let QueuedThread {
+            id,
+            active,
+            core,
+            rt_quota_exempt,
+            metadata,
+            ..
+        } = thread;
+        let dispatch = CurrentDispatch::new(
+            CurrentDispatchState {
+                thread: id,
+                schedule: CurrentClassState::Owned(active),
+                metadata,
+                rt_quota_exempt,
+            },
+            &core,
+            RqTaskTime::test(0),
+        );
+        run_queue.install_current(dispatch);
+    }
+
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn fair_put_prev_counts_the_requeued_current_once() {
+        let current = ThreadId::from_parts(0, 1);
+        let peer = ThreadId::from_parts(1, 1);
+        let mut run_queue = CpuRunQueueState::new(CpuId::new(0), TaskSystemConfig::new(1));
+        run_queue.set_virtual_time_for_test(0);
+        install_fair_current(
+            &mut run_queue,
+            current,
+            FairEntity::new(Nice::ZERO, FairMode::Normal, 100, 0),
+        );
+        run_queue.prepare_thread_slot(peer.slot() as usize);
+        let current_fair = run_queue
+            .current_scheduling_entity()
+            .and_then(|entity| entity.fair())
+            .unwrap();
+        let _enqueue = run_queue
+            .enqueue_task(
+                fair_thread(peer, FairEntity::new(Nice::ZERO, FairMode::Normal, 100, 0)),
+                EnqueueReason::Wake,
+                Some(current_fair),
+            )
+            .unwrap();
+
+        run_queue
+            .put_prev_unlinked_current(current, EnqueueReason::Yield)
+            .unwrap();
+
+        let current_vruntime = run_queue
+            .scheduling_entity(current)
+            .and_then(|entity| entity.fair())
+            .unwrap()
+            .vruntime();
+        let peer_vruntime = run_queue
+            .scheduling_entity(peer)
+            .and_then(|entity| entity.fair())
+            .unwrap()
+            .vruntime();
+        assert_eq!(current_vruntime, 50);
+        assert_eq!(peer_vruntime, 0);
+        assert_eq!(
+            run_queue.virtual_time(),
+            (current_vruntime + peer_vruntime) / 2,
+            "the old current snapshot must not be counted after its new entity is requeued"
+        );
     }
 }

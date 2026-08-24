@@ -1,9 +1,10 @@
-use core::mem::align_of;
+use core::mem::{align_of, size_of};
 
 use ax_runtime::hal::{
     cpu::{UserAccessError, UserAtomicError, UserAtomicU32Op},
     time::{TimeValue, monotonic_time, wall_time},
 };
+use ax_std::os::arceos::task::MonotonicDeadline;
 use linux_raw_sys::general::{
     FUTEX_CLOCK_REALTIME, FUTEX_CMP_REQUEUE, FUTEX_OP_ADD, FUTEX_OP_ANDN, FUTEX_OP_CMP_EQ,
     FUTEX_OP_CMP_GE, FUTEX_OP_CMP_GT, FUTEX_OP_CMP_LE, FUTEX_OP_CMP_LT, FUTEX_OP_CMP_NE,
@@ -14,7 +15,7 @@ use linux_raw_sys::general::{
 use crate::{
     StarryError, StarryResult,
     mm::{
-        VmMutPtr, VmPtr, atomic_update_user_u32_nofault, fault_in_user_u32_read,
+        VmMutPtr, VmPtr, atomic_update_user_u32_nofault, check_access, fault_in_user_u32_read,
         fault_in_user_u32_write, read_user_u32_nofault,
     },
     task::{
@@ -43,6 +44,29 @@ struct ParsedFutexOp {
     command: FutexCommand,
     key_mode: FutexKeyMode,
     clock_realtime: bool,
+}
+
+#[derive(Clone, Copy)]
+struct FutexWaitDeadline {
+    monotonic: Option<MonotonicDeadline>,
+}
+
+impl FutexWaitDeadline {
+    fn from_remaining(remaining: Option<TimeValue>, now: TimeValue) -> Self {
+        Self {
+            monotonic: remaining
+                .map(|timeout| MonotonicDeadline::from_duration(now.saturating_add(timeout))),
+        }
+    }
+
+    fn monotonic(self) -> Option<MonotonicDeadline> {
+        self.monotonic
+    }
+
+    #[cfg(axtest)]
+    fn deadline_for_attempt(self, _now: TimeValue) -> Option<MonotonicDeadline> {
+        self.monotonic
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -76,6 +100,21 @@ fn validate_futex_word(current: &UserTaskRef, uaddr: *const u32) -> crate::Starr
             Err(FutexAccessError::Operation(error)) => return Err(error.into()),
         }
     }
+}
+
+fn validate_futex_wake_key(
+    current: &UserTaskRef,
+    uaddr: *const u32,
+    key_mode: FutexKeyMode,
+) -> crate::StarryResult<()> {
+    if matches!(key_mode, FutexKeyMode::Private) {
+        // Linux private futex keys contain only current->mm and the virtual
+        // address. Wake therefore performs access_ok() but never dereferences
+        // the futex word or resolves its VMA.
+        return check_access(uaddr.addr(), size_of::<u32>()).map_err(Into::into);
+    }
+
+    validate_futex_word(current, uaddr)
 }
 
 fn sign_extend_12(value: u32) -> i32 {
@@ -204,11 +243,8 @@ fn parse_futex_op(futex_op: u32) -> StarryResult<ParsedFutexOp> {
     };
 
     let clock_realtime = flags & FUTEX_CLOCK_REALTIME != 0;
-    if clock_realtime && command == FutexCommand::WakeOp {
+    if clock_realtime && command != FutexCommand::WaitBitset {
         return Err(StarryError::Unsupported);
-    }
-    if clock_realtime && !matches!(command, FutexCommand::Wait | FutexCommand::WaitBitset) {
-        return Err(StarryError::InvalidInput);
     }
 
     let key_mode = if flags & FUTEX_PRIVATE_FLAG != 0 {
@@ -284,12 +320,11 @@ pub fn sys_futex(
 
     match op.command {
         FutexCommand::Wait | FutexCommand::WaitBitset => {
-            // Fast path
-            if uaddr.vm_read(current)? != value {
-                return Err(crate::StarryError::WouldBlock);
-            }
-
-            let timeout = futex_wait_timeout(current, &op, timeout)?;
+            let deadline = FutexWaitDeadline::from_remaining(
+                futex_wait_timeout(current, &op, timeout)?,
+                monotonic_time(),
+            )
+            .monotonic();
 
             let bitset = if op.command == FutexCommand::WaitBitset {
                 value3
@@ -300,7 +335,7 @@ pub fn sys_futex(
 
             loop {
                 let futex = context.resolve(uaddr.addr(), op.key_mode);
-                match futex.wait_nofault_for(context.task(), bitset, timeout, || {
+                match futex.wait_nofault_until(context.task(), bitset, deadline, || {
                     futex_read_user_nofault(uaddr).map(|observed| observed == value)
                 }) {
                     Ok(true) => break,
@@ -323,7 +358,7 @@ pub fn sys_futex(
         }
         FutexCommand::Wake | FutexCommand::WakeBitset => {
             let wake_count = assert_non_negative_i32(value)? as usize;
-            validate_futex_word(current, uaddr)?;
+            validate_futex_wake_key(current, uaddr, op.key_mode)?;
 
             let futex = FutexContext::new(current).resolve(uaddr.addr(), op.key_mode);
             let bitset = if op.command == FutexCommand::WakeBitset {
@@ -486,4 +521,13 @@ pub(crate) fn futex_wake_completion_is_scheduler_driven_for_test() -> bool {
     crate::task::reset_yield_now_calls_for_test();
     let result = complete_futex_wake(1);
     matches!(result, Ok(1)) && crate::task::yield_now_calls_for_test() == 0
+}
+
+#[cfg(axtest)]
+pub(crate) fn futex_retry_keeps_original_deadline_for_test() -> bool {
+    let first_now = TimeValue::from_secs(10);
+    let retry_now = first_now + TimeValue::from_millis(25);
+    let timeout = FutexWaitDeadline::from_remaining(Some(TimeValue::from_millis(100)), first_now);
+
+    timeout.deadline_for_attempt(first_now) == timeout.deadline_for_attempt(retry_now)
 }

@@ -241,6 +241,8 @@ impl TaskSystem {
             #[cfg(feature = "task-test-hooks")]
             crate::task_test_hooks::registered_waiter(waiter);
             #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::cancel_release_waiter_registered(waiter);
+            #[cfg(feature = "task-test-hooks")]
             crate::task_test_hooks::owner_lifetime_registered(waiter);
             return Ok(PiMutexLockResult::Waiting(unsafe {
                 // SAFETY: both waiter-tree edges are committed and retain this
@@ -297,12 +299,31 @@ impl TaskSystem {
         let _preempt = PreemptScope::enter();
         let old_owner_core = self.pi_thread_core(old_owner)?;
         let mut wakes = ThreadWakeBatch::new();
-        let selected_id = {
+        let selected_id = loop {
             let mutex_core = lock.core();
             let lock_state = lock_pi_mutex_waiters(lock);
             let snapshot = mutex_core.owner_snapshot();
-            if snapshot.owner() != Some(old_owner.into()) || !snapshot.has_waiters() {
+            if snapshot.owner() != Some(old_owner.into()) {
                 return Err(TaskError::InvalidPiState);
+            }
+            if !snapshot.has_waiters() {
+                if !lock_state.waiters.is_empty() {
+                    return Err(TaskError::InvalidPiState);
+                }
+                // Match Linux rt_mutex_slowunlock(): once the final waiter
+                // cancels, drop wait_lock before the owner-word CAS. A waiter
+                // which marks the owner in that window makes the CAS fail, so
+                // slow unlock retakes wait_lock and selects the new top waiter.
+                drop(lock_state);
+                let released = unsafe {
+                    // SAFETY: `old_owner` came from the owner-authorized raw
+                    // release transition, and this loop retains that authority.
+                    mutex_core.try_release_for_thread(old_owner)
+                }?;
+                if released {
+                    return Ok(());
+                }
+                continue;
             }
             let selected_entry = lock_state
                 .waiters
@@ -335,7 +356,7 @@ impl TaskSystem {
             let selected_id = selected.id();
             let _queued = wakes.push(ThreadWakeHandle::from_core(selected));
             drop(lock_state);
-            selected_id
+            break selected_id;
         };
         self.recompute_pi_cleanup_chain(old_owner, selected_id)
             .unwrap_or_else(|_| {

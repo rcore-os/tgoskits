@@ -23,7 +23,7 @@ use crate::{
 };
 
 fn check_nfds_limit(current: &crate::task::UserTaskRef, nfds: usize) -> crate::StarryResult<()> {
-    let nofile = current.as_thread().proc_data.rlimits()[RLIMIT_NOFILE].current;
+    let nofile = current.as_thread().proc_data.rlimit_current(RLIMIT_NOFILE);
     if nfds as u64 > nofile {
         Err(StarryError::InvalidInput)
     } else {

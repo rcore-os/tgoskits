@@ -1,9 +1,116 @@
 //! Scheduler-tick-gated extension work executed in ordinary task context.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use super::ThreadId;
+
+/// Execution mode sampled by the periodic scheduler tick.
+///
+/// This is the OS-independent equivalent of Linux's `user_mode(regs)` result.
+/// An OS publishes mode transitions without reading a clock; the scheduler
+/// tick then charges exactly one configured tick to the current mode.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SchedulerTickMode {
+    /// The attached accounting domain is not currently classifiable.
+    Inactive = 0,
+    /// The thread is executing userspace.
+    User     = 1,
+    /// The thread is executing kernel code.
+    System   = 2,
+}
+
+impl SchedulerTickMode {
+    const fn from_raw(raw: u8) -> Self {
+        match raw {
+            1 => Self::User,
+            2 => Self::System,
+            _ => Self::Inactive,
+        }
+    }
+}
+
+/// IRQ-safe tick-sampled user/system CPU time for one scheduler thread.
+///
+/// The object is retained by both the OS task and [`super::ThreadExtension`].
+/// Only the current CPU samples it, while syscall and exception boundaries may
+/// publish the next mode concurrently through one release store.
+#[derive(Debug)]
+pub struct SchedulerTickCpuTime {
+    mode: AtomicU8,
+    user_ns: AtomicU64,
+    system_ns: AtomicU64,
+}
+
+impl SchedulerTickCpuTime {
+    /// Creates an inactive accounting stream.
+    pub const fn new() -> Self {
+        Self {
+            mode: AtomicU8::new(SchedulerTickMode::Inactive as u8),
+            user_ns: AtomicU64::new(0),
+            system_ns: AtomicU64::new(0),
+        }
+    }
+
+    /// Publishes the mode to be sampled by the next periodic tick.
+    pub fn set_mode(&self, mode: SchedulerTickMode) {
+        self.mode.store(mode as u8, Ordering::Release);
+    }
+
+    /// Returns the raw tick-accounted totals.
+    pub fn snapshot(&self) -> SchedulerTickCpuTimeSnapshot {
+        SchedulerTickCpuTimeSnapshot {
+            user_ns: self.user_ns.load(Ordering::Acquire),
+            system_ns: self.system_ns.load(Ordering::Acquire),
+        }
+    }
+
+    pub(crate) fn sample(&self, tick_ns: u64) {
+        let total = match SchedulerTickMode::from_raw(self.mode.load(Ordering::Acquire)) {
+            SchedulerTickMode::Inactive => return,
+            SchedulerTickMode::User => &self.user_ns,
+            SchedulerTickMode::System => &self.system_ns,
+        };
+        total
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_add(tick_ns))
+            })
+            .expect("infallible scheduler-tick CPU-time update failed");
+    }
+
+    /// Samples one tick in tests without constructing a task system.
+    #[cfg(any(test, axtest))]
+    #[doc(hidden)]
+    pub fn sample_for_test(&self, tick_ns: u64) {
+        self.sample(tick_ns);
+    }
+}
+
+impl Default for SchedulerTickCpuTime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Coherent-enough raw totals from independent monotonic tick counters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchedulerTickCpuTimeSnapshot {
+    user_ns: u64,
+    system_ns: u64,
+}
+
+impl SchedulerTickCpuTimeSnapshot {
+    /// Returns tick-sampled userspace CPU time.
+    pub const fn user_ns(self) -> u64 {
+        self.user_ns
+    }
+
+    /// Returns tick-sampled kernel CPU time.
+    pub const fn system_ns(self) -> u64 {
+        self.system_ns
+    }
+}
 
 /// Shared process or subsystem interest in scheduler-tick task work.
 ///
@@ -158,5 +265,30 @@ impl SchedulerTickWorkClaim {
         thread: ThreadId,
     ) -> SchedulerTickWorkDisposition {
         unsafe { self.work.invoke(data, thread, self.observed_ns) }
+    }
+}
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+mod tests {
+    use super::*;
+
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn periodic_tick_samples_only_the_published_execution_mode() {
+        let accounting = SchedulerTickCpuTime::new();
+
+        accounting.sample(10);
+        accounting.set_mode(SchedulerTickMode::User);
+        accounting.sample(10);
+        accounting.set_mode(SchedulerTickMode::System);
+        accounting.sample(10);
+
+        assert_eq!(
+            accounting.snapshot(),
+            SchedulerTickCpuTimeSnapshot {
+                user_ns: 10,
+                system_ns: 10,
+            }
+        );
     }
 }

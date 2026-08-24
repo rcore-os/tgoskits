@@ -137,6 +137,11 @@ pub(crate) fn user_kernel_transitions_remain_task_local_for_test() -> bool {
 }
 
 #[cfg(axtest)]
+pub(crate) fn process_cpu_high_water_preserves_runtime_total_for_test() -> bool {
+    accounting::process_cpu_high_water_preserves_runtime_total_for_test()
+}
+
+#[cfg(axtest)]
 pub(crate) fn alarm_generation_rules_hold_for_test() -> bool {
     alarm::stale_alarm_cancellation_preserves_new_generation_for_test()
 }

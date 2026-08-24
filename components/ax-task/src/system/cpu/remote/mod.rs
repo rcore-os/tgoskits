@@ -21,9 +21,10 @@ pub(crate) use idle_pull::IdlePullReservation;
 pub use lifecycle::CpuLifecycleState;
 pub(crate) use lifecycle::{CpuRemotePublication, OwnedCpuRemotePublication};
 pub use owner::CpuLocalOwnerBorrow;
-pub(in crate::system::cpu) use run_queue::RqCurrentTick;
+pub(in crate::system::cpu) use run_queue::RqCurrentUpdate;
 pub(crate) use run_queue::{
-    CpuRunQueueState, OwnerRqEnqueue, RunQueueGuardSource, WakePreemptionDecision,
+    CpuRunQueueState, EqualRtWakeAction, OwnerRqEnqueue, RunQueueGuardSource,
+    WakePreemptionContext, WakePreemptionDecision,
 };
 pub(crate) use scheduler::SchedulerRequestClaim;
 
@@ -72,8 +73,10 @@ pub struct CpuRemote {
     owner_current_thread_rq_observations: AtomicU64,
     #[cfg(any(test, all(axtest, feature = "axtest")))]
     owner_runnable_rq_observations: AtomicU64,
-    #[cfg(any(test, all(axtest, feature = "axtest")))]
+    #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
     scheduler_deadline_derivations: AtomicU64,
+    #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
+    schedule_selection_deadline_derivations: AtomicU64,
 }
 
 impl CpuRemote {
@@ -101,8 +104,10 @@ impl CpuRemote {
             owner_current_thread_rq_observations: AtomicU64::new(0),
             #[cfg(any(test, all(axtest, feature = "axtest")))]
             owner_runnable_rq_observations: AtomicU64::new(0),
-            #[cfg(any(test, all(axtest, feature = "axtest")))]
+            #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
             scheduler_deadline_derivations: AtomicU64::new(0),
+            #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
+            schedule_selection_deadline_derivations: AtomicU64::new(0),
         })
     }
 
@@ -168,15 +173,28 @@ impl CpuRemote {
         self.owner_runnable_rq_observations.load(Ordering::Relaxed)
     }
 
-    #[cfg(any(test, all(axtest, feature = "axtest")))]
-    pub(crate) fn record_scheduler_deadline_derivation_for_test(&self) {
+    #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
+    pub(crate) fn record_scheduler_deadline_derivation_for_test(
+        &self,
+        source: SchedulerDeadlineDerivationSource,
+    ) {
         self.scheduler_deadline_derivations
             .fetch_add(1, Ordering::Relaxed);
+        if matches!(source, SchedulerDeadlineDerivationSource::ScheduleSelection) {
+            self.schedule_selection_deadline_derivations
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 
-    #[cfg(any(test, all(axtest, feature = "axtest")))]
+    #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
     pub(crate) fn scheduler_deadline_derivations(&self) -> u64 {
         self.scheduler_deadline_derivations.load(Ordering::Relaxed)
+    }
+
+    #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
+    pub(crate) fn schedule_selection_deadline_derivations(&self) -> u64 {
+        self.schedule_selection_deadline_derivations
+            .load(Ordering::Relaxed)
     }
 
     /// Acquires the rq under an already-active IRQ-off CPU owner.

@@ -219,28 +219,24 @@ impl PreemptExitOrigin {
 
 #[cfg(feature = "multitask")]
 fn exit_lock_preempt(origin: PreemptExitOrigin, token: cpu_local::PreemptionToken) {
-    let irqs_were_enabled = ax_hal::asm::irqs_enabled();
     let irq_return = origin.is_irq_return();
     assert!(
-        !irq_return || !irqs_were_enabled,
+        !irq_return || !ax_hal::asm::irqs_enabled(),
         "IRQ-return preemption exit requires hardware IRQs disabled"
     );
-
-    // Linux performs the final preempt-count decrement and pending observation
-    // under one local execution boundary. Keep IRQs disabled while the linear
-    // token is rebound to the resumed CPU owner, finished, and either released
-    // or converted into the scheduler baton.
-    ax_hal::asm::disable_irqs();
-    let token =
-        with_current_cpu_pin(|pin| cpu_local::handoff_preemption_after_context_switch(pin, token))
-            .unwrap_or_else(|error| panic!("context-switch preemption handoff failed: {error}"));
-
     let cpu_local::PreemptionExit::Pending(pending) = cpu_local::finish_preemption(token) else {
-        if !irq_return && irqs_were_enabled {
-            ax_hal::asm::enable_irqs();
-        }
         return;
     };
+
+    // Like Linux's preempt_count_dec_and_test(), only the final pending exit
+    // enters the IRQ-excluded scheduling path. The retained depth pins this
+    // execution until the scheduler baton or pending.release() consumes it.
+    let irqs_were_enabled = ax_hal::asm::irqs_enabled();
+    ax_hal::asm::disable_irqs();
+    #[cfg(feature = "task-test-hooks")]
+    if !irq_return {
+        with_guard_state_mut(RuntimeGuardState::record_ordinary_preempt_exit_slow_path);
+    }
 
     let must_schedule = with_guard_state_mut(|state| {
         let must_schedule = preempt_exit_needs_schedule(
@@ -324,6 +320,20 @@ pub fn reset_preempt_guard_context_resolution_count() {
 #[cfg(feature = "task-test-hooks")]
 pub fn take_preempt_guard_context_resolution_count() -> usize {
     with_irq_excluded_guard_state_mut(|state| state.take_preempt_guard_context_resolutions())
+}
+
+#[cfg(feature = "task-test-hooks")]
+pub fn reset_ordinary_preempt_exit_slow_path_count() {
+    with_irq_excluded_guard_state_mut(|state| {
+        state.reset_ordinary_preempt_exit_slow_path_entries();
+    });
+}
+
+#[cfg(feature = "task-test-hooks")]
+pub fn take_ordinary_preempt_exit_slow_path_count() -> usize {
+    with_irq_excluded_guard_state_mut(
+        RuntimeGuardState::take_ordinary_preempt_exit_slow_path_entries,
+    )
 }
 
 #[cfg(all(feature = "multitask", not(test)))]

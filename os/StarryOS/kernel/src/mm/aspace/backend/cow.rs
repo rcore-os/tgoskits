@@ -13,14 +13,15 @@ use ax_runtime::hal::{
     paging::{MappingFlags, PageTable, PagingError},
 };
 
+#[cfg(axtest)]
+use super::{AddrSpace, CloneMapAccounting};
 use super::{
-    AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
-    PopulateCallback, RssKind, alloc_frame, dealloc_frame, pages_in,
+    Backend, BackendFileInfo, BackendOps, CloneMapContext, MemoryAccounting, PopulateCallback,
+    RssKind, TlbGather, alloc_frame, dealloc_frame, pages_in,
 };
-use crate::{
-    StarryError, StarryResult,
-    sync::{IrqMutex, PiMutex},
-};
+#[cfg(axtest)]
+use crate::sync::PiMutex;
+use crate::{StarryError, StarryResult, sync::IrqMutex};
 
 struct FrameRefCnt {
     /// Number of address spaces sharing this frame COW. A `u8` overflowed at 255
@@ -158,6 +159,11 @@ pub struct CowBackend {
     /// `mprotect(+W)` or a writable `mmap` (per-aspace; fork inherits via
     /// [`Clone`]).
     write_upgraded: Cell<bool>,
+}
+
+struct CowFaultPermissions {
+    vma: MappingFlags,
+    pte: MappingFlags,
 }
 
 impl Clone for CowBackend {
@@ -379,9 +385,9 @@ impl CowBackend {
         &self,
         vaddr: VirtAddr,
         paddr: PhysAddr,
-        vma_flags: MappingFlags,
-        pte_flags: MappingFlags,
+        permissions: CowFaultPermissions,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> crate::StarryResult {
         let shootdown_range = super::super::tlb::checked_range(vaddr, self.size)?;
@@ -398,10 +404,10 @@ impl CowBackend {
         );
         match frame_count.count {
             1 => {
-                pt.protect_page(vaddr, vma_flags)?;
-                super::super::tlb::record_range_for_shootdown(shootdown_range);
-                let defer_write =
-                    self.cow_deferred_file_write(vma_flags, pte_flags) && self.write_upgraded.get();
+                pt.protect_page(vaddr, permissions.vma)?;
+                gather.record_range(shootdown_range);
+                let defer_write = self.cow_deferred_file_write(permissions.vma, permissions.pte)
+                    && self.write_upgraded.get();
                 if defer_write && let Some(acct) = acct {
                     self.reclassify_or_adopt_cow_write(acct, vaddr);
                 }
@@ -416,20 +422,18 @@ impl CowBackend {
                         self.size as _,
                     );
                 }
-                if let Err(err) = pt.remap_page(vaddr, new_frame, vma_flags) {
+                if let Err(err) = pt.remap_page(vaddr, new_frame, permissions.vma) {
                     self.deinit_frame(new_frame);
                     return Err(err.into());
                 }
-                super::super::tlb::record_range_for_shootdown(shootdown_range);
+                gather.record_range(shootdown_range);
                 if self.file.is_some()
                     && let Some(acct) = acct
                 {
                     self.reclassify_or_adopt_cow_write(acct, vaddr);
                 }
                 drop(frame_count);
-                super::super::tlb::defer_frame_until_shootdown(DeferredFrameRelease::new(
-                    paddr, self.size, frame_ref,
-                ));
+                gather.defer_frame(DeferredFrameRelease::new(paddr, self.size, frame_ref));
             }
         }
 
@@ -444,6 +448,7 @@ impl CowBackend {
         &self,
         addr: VirtAddr,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         if let Ok((frame, _flags, page_size)) = pt.unmap_page(addr) {
@@ -455,9 +460,7 @@ impl CowBackend {
                 .lock()
                 .get_frame_ref(frame)
                 .ok_or(crate::StarryError::BadAddress)?;
-            super::super::tlb::defer_frame_until_shootdown(DeferredFrameRelease::new(
-                frame, self.size, frame_ref,
-            ));
+            gather.defer_frame(DeferredFrameRelease::new(frame, self.size, frame_ref));
         }
         Ok(())
     }
@@ -505,6 +508,7 @@ impl CowBackend {
 
 struct CowCloneTransaction<'a> {
     parent_page_table: &'a mut PageTable,
+    gather: &'a mut TlbGather,
     parent_original_flags: Vec<(VirtAddr, MappingFlags)>,
     rollback: PageTableCowCloneRollback<'a>,
     start: VirtAddr,
@@ -516,6 +520,7 @@ struct CowCloneTransaction<'a> {
 impl<'a> CowCloneTransaction<'a> {
     fn new(
         parent_page_table: &'a mut PageTable,
+        gather: &'a mut TlbGather,
         child_page_table: &'a mut PageTable,
         child_acct: Option<&'a MemoryAccounting>,
         start: VirtAddr,
@@ -523,6 +528,7 @@ impl<'a> CowCloneTransaction<'a> {
     ) -> Self {
         Self {
             parent_page_table,
+            gather,
             parent_original_flags: Vec::new(),
             rollback: PageTableCowCloneRollback {
                 page_table: child_page_table,
@@ -562,10 +568,8 @@ impl<'a> CowCloneTransaction<'a> {
         // shared with the unpublished child. Other CPUs may still hold a stale
         // writable translation, so the range must join the active shootdown
         // gather before the cloned address space is published.
-        super::super::tlb::record_range_for_shootdown(super::super::tlb::checked_range(
-            vaddr,
-            self.page_size,
-        )?);
+        self.gather
+            .record_range(super::super::tlb::checked_range(vaddr, self.page_size)?);
         Ok(())
     }
 
@@ -593,7 +597,7 @@ impl Drop for CowCloneTransaction<'_> {
                     // briefly appeared read-only; flush CPUs that may have
                     // filled a stale read-only translation of it.
                     match super::super::tlb::checked_range(vaddr, self.page_size) {
-                        Ok(range) => super::super::tlb::record_range_for_shootdown(range),
+                        Ok(range) => self.gather.record_range(range),
                         Err(_) => {
                             warn!("failed to record rollback shootdown for {vaddr:?}");
                         }
@@ -657,6 +661,7 @@ impl BackendOps for CowBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
+        _gather: &mut TlbGather,
         _pt: &mut PageTable,
     ) -> StarryResult {
         debug!("Cow::map: {range:?} {flags:?}",);
@@ -670,6 +675,7 @@ impl BackendOps for CowBackend {
         &self,
         _range: VirtAddrRange,
         new_flags: MappingFlags,
+        _gather: &mut TlbGather,
         _pt: &mut PageTable,
     ) -> StarryResult {
         if self.file.is_some() && new_flags.contains(MappingFlags::WRITE) {
@@ -682,11 +688,12 @@ impl BackendOps for CowBackend {
         &self,
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         debug!("Cow::unmap: {range:?}");
         for addr in pages_in(range, self.size)? {
-            self.unmap_page(addr, acct, pt)?;
+            self.unmap_page(addr, acct, gather, pt)?;
         }
         Ok(())
     }
@@ -697,6 +704,7 @@ impl BackendOps for CowBackend {
         flags: MappingFlags,
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult<(usize, Option<PopulateCallback>)> {
         let mut pages = 0;
@@ -711,7 +719,17 @@ impl BackendOps for CowBackend {
                     if access_flags.contains(MappingFlags::WRITE)
                         && !page_flags.contains(MappingFlags::WRITE)
                     {
-                        self.handle_cow_fault(addr, paddr, flags, page_flags, acct, pt)?;
+                        self.handle_cow_fault(
+                            addr,
+                            paddr,
+                            CowFaultPermissions {
+                                vma: flags,
+                                pte: page_flags,
+                            },
+                            acct,
+                            gather,
+                            pt,
+                        )?;
                         pages += 1;
                     } else if page_flags.contains(access_flags) {
                         pages += 1;
@@ -749,16 +767,26 @@ impl BackendOps for CowBackend {
         &self,
         range: VirtAddrRange,
         flags: MappingFlags,
-        old_pt: &mut PageTable,
-        new_pt: &mut PageTable,
-        _new_aspace: &Arc<PiMutex<AddrSpace>>,
-        acct: CloneMapAccounting<'_>,
+        context: CloneMapContext<'_>,
     ) -> StarryResult<Backend> {
+        let CloneMapContext {
+            gather,
+            parent_page_table,
+            child_page_table,
+            accounting,
+            ..
+        } = context;
         let cow_flags = flags - MappingFlags::WRITE;
-        let parent_acct = acct.parent;
-        let child_acct = acct.child;
-        let mut transaction =
-            CowCloneTransaction::new(old_pt, new_pt, child_acct, range.start, self.size);
+        let parent_acct = accounting.parent;
+        let child_acct = accounting.child;
+        let mut transaction = CowCloneTransaction::new(
+            parent_page_table,
+            gather,
+            child_page_table,
+            child_acct,
+            range.start,
+            self.size,
+        );
 
         for vaddr in pages_in(range, self.size)? {
             match transaction.parent_page_table.query(vaddr) {
@@ -946,9 +974,12 @@ fn cow_clone_map_failure_restores_resources() -> bool {
         ..
     } = &mut *child;
 
-    let result = backend.clone_map(
-        VirtAddrRange::from_start_size(start, mapping_size),
-        flags,
+    // The clone transaction can temporarily write-protect parent PTEs and its
+    // failure path restores them. Keep both mutations in one explicit gather,
+    // just like the production `AddrSpace::try_clone` transaction.
+    let mut gather = TlbGather::new();
+    let context = CloneMapContext::new(
+        &mut gather,
         parent_pt,
         child_pt,
         &child_aspace,
@@ -957,6 +988,14 @@ fn cow_clone_map_failure_restores_resources() -> bool {
             child: Some(&*child_rss),
         },
     );
+    let result = backend.clone_map(
+        VirtAddrRange::from_start_size(start, mapping_size),
+        flags,
+        context,
+    );
+    if gather.finish(0).is_err() {
+        return false;
+    }
 
     fn frame_ref_count(paddr: PhysAddr) -> Option<u32> {
         let frame = FRAME_TABLE.lock().get_frame_ref(paddr)?;

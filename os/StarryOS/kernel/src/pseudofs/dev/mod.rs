@@ -149,7 +149,7 @@ impl DeviceOps for Null {
     }
 
     fn flags(&self) -> NodeFlags {
-        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM
+        NodeFlags::NON_CACHEABLE | NodeFlags::STREAM | NodeFlags::BLOCKING
     }
 }
 

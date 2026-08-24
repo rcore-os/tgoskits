@@ -6,7 +6,7 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use core::{
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -28,6 +28,8 @@ mod common;
 mod itimer;
 mod rttime;
 
+#[cfg(axtest)]
+pub(crate) use accounting::zero_process_cpu_time_delta_avoids_publication_for_test;
 pub use accounting::{CpuTimeAccounting, ProcessCpuTimeAccounting, TimerState};
 pub(crate) use accounting::{CpuTimeDelta, ProcessCpuTimeSnapshot};
 pub(crate) use alarm::{AlarmChange, AlarmSlot, AlarmToken};

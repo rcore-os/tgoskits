@@ -33,25 +33,25 @@ pub(crate) use local::{
 };
 #[cfg(feature = "task-test-hooks")]
 pub(crate) use remote::CpuDeadlineState;
-use remote::RqCurrentTick;
+use remote::RqCurrentUpdate;
 pub use remote::{CpuLifecycleState, CpuLocalOwnerBorrow, CpuRemote};
 pub(crate) use remote::{
-    CpuRemotePublication, CpuRunQueueState, DeadlineBaseGuardSource, IdlePullReservation,
-    KtimerClaimClass, OwnerRqEnqueue, PreparedMigrationDelivery, RunQueueGuardSource,
-    SchedulerRequestClaim, WakePreemptionDecision,
+    CpuRemotePublication, CpuRunQueueState, DeadlineBaseGuardSource, EqualRtWakeAction,
+    IdlePullReservation, KtimerClaimClass, OwnerRqEnqueue, PreparedMigrationDelivery,
+    RunQueueGuardSource, SchedulerRequestClaim, WakePreemptionContext, WakePreemptionDecision,
 };
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 pub(crate) use remote::{reset_rt_bandwidth_lock_acquisitions, rt_bandwidth_lock_acquisitions};
 pub use snapshot::CpuSnapshot;
 pub(in crate::system) use transaction::OwnerRqTaskState;
-pub(crate) use transaction::{OwnerRqEntry, OwnerRqTxn};
+pub(crate) use transaction::{OwnerRqEntry, OwnerRqTxn, RqSwitchBaton};
 
 use crate::{
     ActiveSchedulingState, CpuId, CpuSet, FairMode, QueuedThread, RootRtBandwidth, RqTaskMetadata,
-    RtRunQueueBandwidth, RunQueue, SchedulePolicy, SchedulingEntity, TaskError, TaskSystemConfig,
-    ThreadId, ThreadState,
+    RtPriority, RtRunQueueBandwidth, RunQueue, SchedulePolicy, SchedulingEntity, TaskError,
+    TaskSystemConfig, ThreadId, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult, SchedulerInbox},
-    lock::{IrqOwner, IrqScope, IrqTicketGuard, IrqTicketLock},
+    lock::{IrqOwner, IrqScope, IrqTicketGuard, IrqTicketLock, RawTicketBaton},
     runtime::{
         AddressSpaceMembarrierState, MonotonicDeadline, MonotonicInstant, RuntimeCpuId,
         RuntimeStatus, SchedulerDeadlineUpdate, task_runtime,

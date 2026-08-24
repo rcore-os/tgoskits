@@ -134,6 +134,40 @@ impl CpuLocal {
         Ok(())
     }
 
+    pub(crate) fn install_switch_rq_baton(
+        self: Pin<&mut Self>,
+        baton: RqSwitchBaton,
+    ) -> Result<(), TaskError> {
+        if baton.owner() != self.owner() {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.dispatch_state_mut()
+            .switch_handoff
+            .as_mut()
+            .ok_or(TaskError::InvalidConfiguration)?
+            .install_rq_baton(baton)
+    }
+
+    pub(crate) fn finish_switch_rq_baton(
+        self: Pin<&mut Self>,
+        previous: ThreadId,
+    ) -> Result<bool, TaskError> {
+        let owner = self.owner();
+        let handoff = self
+            .dispatch_state_mut()
+            .switch_handoff
+            .as_mut()
+            .ok_or(TaskError::InvalidConfiguration)?;
+        if handoff.previous().id() != previous {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        let Some(baton) = handoff.take_rq_baton() else {
+            return Ok(false);
+        };
+        baton.finish(owner)?;
+        Ok(true)
+    }
+
     pub(crate) fn finish_switch_runtime_tail(
         mut self: Pin<&mut Self>,
         previous: ThreadId,

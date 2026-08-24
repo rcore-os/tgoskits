@@ -22,6 +22,7 @@ pub struct CpuLoadSummary {
     pub(super) nr_running: usize,
     pub(super) fair_demand: u64,
     pub(super) workload_demand: u64,
+    pub(super) current_workload_demand: u64,
     pub(super) fair_pushable: bool,
 }
 
@@ -96,6 +97,11 @@ impl CpuLoadSummary {
     /// utilization tracking is available.
     pub const fn workload_demand(self) -> u64 {
         self.workload_demand
+    }
+
+    /// Returns the demand contributed by this CPU's non-idle current task.
+    pub const fn current_workload_demand(self) -> u64 {
+        self.current_workload_demand
     }
 
     /// Reports whether this CPU has migratable Fair work.

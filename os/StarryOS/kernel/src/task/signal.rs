@@ -400,11 +400,11 @@ pub fn check_signals(
 }
 
 fn queue_rttime_limit_signal(thr: &Thread) {
-    let (soft_limit_us, hard_limit_us) = {
-        let limits = thr.proc_data.rlimits();
-        let limit = &limits[RLIMIT_RTTIME];
-        (limit.current, limit.max)
-    };
+    let limit = thr.proc_data.rlimit(RLIMIT_RTTIME);
+    let (soft_limit_us, hard_limit_us) = (limit.current, limit.max);
+    if soft_limit_us == u64::MAX {
+        return;
+    }
     let action = thr
         .rttime()
         .lock()

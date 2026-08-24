@@ -299,6 +299,12 @@ static void test_futex_basic(void)
                         FUTEX_WAIT | FUTEX_PRIVATE_FLAG, 1, NULL, NULL, 0),
               EAGAIN, "FUTEX_WAIT returns EAGAIN when value differs");
 
+    CHECK_ERR(raw_futex((uint32_t *)&futex_word,
+                        FUTEX_WAIT | FUTEX_PRIVATE_FLAG, 1,
+                        (const struct timespec *)(uintptr_t)1, NULL, 0),
+              EFAULT,
+              "FUTEX_WAIT validates timeout before comparing the futex value");
+
     const struct timespec timeout = {
         .tv_sec = 0,
         .tv_nsec = 20 * 1000 * 1000,
@@ -345,8 +351,8 @@ static void test_futex_op_flag_validation(void)
     CHECK_ERR(raw_futex((uint32_t *)&futex_word,
                         FUTEX_WAIT | FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME,
                         0, &rel_timeout, NULL, 0),
-              ETIMEDOUT,
-              "Linux ABI: FUTEX_WAIT accepts CLOCK_REALTIME with relative timeout");
+              ENOSYS,
+              "Linux ABI: FUTEX_WAIT rejects CLOCK_REALTIME");
     CHECK_ERR(raw_futex((uint32_t *)&futex_word,
                         FUTEX_WAIT_BITSET | FUTEX_PRIVATE_FLAG |
                             FUTEX_CLOCK_REALTIME,
@@ -356,16 +362,16 @@ static void test_futex_op_flag_validation(void)
     CHECK_ERR(raw_futex((uint32_t *)&futex_word,
                         FUTEX_WAKE | FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME,
                         1, NULL, NULL, 0),
-              EINVAL, "Linux ABI: FUTEX_WAKE rejects CLOCK_REALTIME");
+              ENOSYS, "Linux ABI: FUTEX_WAKE rejects CLOCK_REALTIME");
     CHECK_ERR(raw_futex((uint32_t *)&futex_word,
                         FUTEX_WAKE_BITSET | FUTEX_PRIVATE_FLAG |
                             FUTEX_CLOCK_REALTIME,
                         1, NULL, NULL, FUTEX_BITSET_MATCH_ANY),
-              EINVAL, "Linux ABI: FUTEX_WAKE_BITSET rejects CLOCK_REALTIME");
+              ENOSYS, "Linux ABI: FUTEX_WAKE_BITSET rejects CLOCK_REALTIME");
     CHECK_ERR(raw_futex((uint32_t *)&futex_word,
                         FUTEX_REQUEUE | FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME,
                         0, futex_count_arg(0), (uint32_t *)&requeue_dst, 0),
-              EINVAL, "Linux ABI: FUTEX_REQUEUE rejects CLOCK_REALTIME");
+              ENOSYS, "Linux ABI: FUTEX_REQUEUE rejects CLOCK_REALTIME");
     CHECK_ERR(raw_futex((uint32_t *)&futex_word,
                         FUTEX_WAIT | FUTEX_PRIVATE_FLAG, 0, &rel_timeout,
                         NULL, 0),
@@ -392,6 +398,15 @@ static void test_futex_address_and_count_validation(void)
               EFAULT, "Linux ABI: FUTEX_WAKE(NULL) returns EFAULT");
     CHECK_ERR(raw_futex(unaligned, FUTEX_WAKE, 1, NULL, NULL, 0),
               EINVAL, "Linux ABI: FUTEX_WAKE rejects an unaligned uaddr");
+    CHECK_RET(raw_futex(bad_page, FUTEX_WAKE | FUTEX_PRIVATE_FLAG, 1,
+                        NULL, NULL, 0),
+              0,
+              "Linux ABI: private FUTEX_WAKE does not read the futex word");
+    CHECK_RET(raw_futex(bad_page,
+                        FUTEX_WAKE_BITSET | FUTEX_PRIVATE_FLAG, 1,
+                        NULL, NULL, FUTEX_BITSET_MATCH_ANY),
+              0,
+              "Linux ABI: private FUTEX_WAKE_BITSET does not read the futex word");
     CHECK_ERR(raw_futex((uint32_t *)&futex_word, FUTEX_WAKE,
                         (uint32_t)-1, NULL, NULL, 0),
               EINVAL, "Linux ABI: FUTEX_WAKE rejects a negative count");
@@ -825,7 +840,7 @@ static void test_futex_bitset(void)
                         FUTEX_WAKE_BITSET | FUTEX_PRIVATE_FLAG |
                             FUTEX_CLOCK_REALTIME,
                         1, NULL, NULL, FUTEX_BITSET_MATCH_ANY),
-              EINVAL, "Linux ABI: WAKE_BITSET|CLOCK_REALTIME is invalid");
+              ENOSYS, "Linux ABI: WAKE_BITSET|CLOCK_REALTIME is unsupported");
 }
 
 static void *robust_query_thread(void *arg)

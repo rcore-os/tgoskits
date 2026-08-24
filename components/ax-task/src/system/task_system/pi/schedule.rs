@@ -1,9 +1,6 @@
 //! PI scheduling-class resolution and rq-owned priority updates.
 
 use super::*;
-#[cfg(feature = "task-test-hooks")]
-use crate::system::OwnerRqTaskState;
-
 impl TaskSystem {
     pub(in crate::system::task_system) fn resolved_pi_schedule_update(
         &self,
@@ -74,9 +71,9 @@ impl TaskSystem {
         }
         let rq_state = transaction.task_state(core.id(), &sched.placement);
         let owner_now_ns = transaction.clock().wall().as_nanos();
-        let source_fair = sched
-            .policy
-            .active_option()
+        let source_fair = core
+            .sched()
+            .active_option(sched)
             .and_then(|active| active.base_entity().fair())
             .or_else(|| {
                 transaction
@@ -115,10 +112,41 @@ impl TaskSystem {
             core.publish_effective_schedule(policy, &entity);
             return PiRqFollowup::RemoteReschedule;
         }
+        if rq_state.is_delayed_fair() {
+            let active = transaction
+                .take_delayed_fair_for_update(core.id())
+                .into_active();
+            let mut active =
+                apply_pi_schedule_update(sched, active, update, owner_now_ns, fair_placement)
+                    .unwrap_or_else(|_| {
+                        task_runtime::fatal_invariant(0x5049_120c, core.id().as_u64() as usize)
+                    });
+            let policy = active.policy();
+            let entity = active.entity().clone();
+            if entity.fair().is_some_and(|fair| fair.is_delayed()) {
+                let metadata = sched.rq_task_metadata().unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x5049_120d, core.id().as_u64() as usize)
+                });
+                let queued = QueuedThread::new(
+                    core.id(),
+                    active,
+                    Arc::clone(core),
+                    false,
+                    sched.affinity.affinity.is_migration_capable(),
+                    metadata,
+                );
+                let _entity = transaction.restore_delayed_fair_after_update(queued);
+            } else {
+                transaction
+                    .finish_detached_delayed_fair(&mut active, self.config.timing_granularity_ns());
+                core.sched().install_active(sched, active);
+                sched.placement.finish_delayed_dequeue(owner);
+            }
+            core.publish_effective_schedule(policy, &entity);
+            return PiRqFollowup::SchedulerWork;
+        }
         if rq_state.is_queued() {
-            let current_fair = transaction
-                .current_scheduling_entity()
-                .and_then(|entity| entity.fair());
+            let current_fair = transaction.current_fair_contender();
             let active = transaction.reclassify_task(core.id()).into_active();
             let active =
                 apply_pi_schedule_update(sched, active, update, owner_now_ns, fair_placement)
@@ -143,20 +171,16 @@ impl TaskSystem {
                 EnqueueReason::PolicyChanged,
                 current_fair,
             );
-            #[cfg(feature = "task-test-hooks")]
-            if matches!(rq_state, OwnerRqTaskState::Queued { outgoing: true }) {
-                crate::task_test_hooks::record_pi_outgoing_reclassification(core.id());
-            }
             core.publish_effective_schedule(policy, &entity);
             return PiRqFollowup::RemoteReschedule;
         }
-        let active = sched.policy.take_active();
+        let active = core.sched().take_active(sched);
         let active = apply_pi_schedule_update(sched, active, update, owner_now_ns, fair_placement)
             .unwrap_or_else(|_| {
                 task_runtime::fatal_invariant(0x5049_120b, core.id().as_u64() as usize)
             });
         core.publish_effective_schedule(active.policy(), active.entity());
-        sched.policy.install_active(active);
+        core.sched().install_active(sched, active);
         PiRqFollowup::SchedulerWork
     }
 
@@ -187,9 +211,9 @@ impl TaskSystem {
         if transaction.current().is_some() {
             let _settled = transaction.settle_current(0);
         }
-        let base_entity = sched
-            .policy
-            .active_option()
+        let base_entity = core
+            .sched()
+            .active_option(sched)
             .map(|active| active.base_entity().clone())
             .or_else(|| transaction.base_scheduling_entity(core.id()));
         let Some(base_entity) = base_entity else {

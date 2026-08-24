@@ -29,7 +29,6 @@ struct OwnerDeadlineReconcile<'a> {
 }
 
 pub(crate) struct KtimerServiceBatch {
-    #[cfg(any(test, all(axtest, feature = "axtest")))]
     processed: usize,
     pending: bool,
     update: Option<SchedulerDeadlineUpdate>,
@@ -59,7 +58,6 @@ impl KernelTimerCompletionBatch {
 }
 
 impl KtimerServiceBatch {
-    #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) const fn processed(&self) -> usize {
         self.processed
     }
@@ -214,13 +212,23 @@ impl TaskSystem {
         scheduler_now_ns: u64,
         run_queue: &mut OwnerRqTxn<'_>,
     ) -> Option<bool> {
+        let owner = cpu.owner();
+        if sched.deadline.bandwidth.reservation_owner() != Some(owner)
+            && sched.deadline.cbs_timer.is_none()
+            && sched.deadline.zero_lag_timer.is_none()
+        {
+            // Linux keeps CBS and inactive timers in the Deadline class. A
+            // non-DL schedule-out or enqueue has no Deadline timer state to
+            // refresh; retained registrations still pass through so their
+            // old owner can cancel them before releasing rq ownership.
+            return None;
+        }
         let monotonic_now = task_runtime::monotonic_now();
         let mut owner_enqueue = None;
 
         loop {
-            let owner = cpu.owner();
             let owns_bandwidth = sched.deadline.bandwidth.reservation_owner() == Some(owner);
-            let owner_entity = if let Some(active) = sched.policy.active_option() {
+            let owner_entity = if let Some(active) = core.sched().active_option(sched) {
                 active.base_entity().clone()
             } else {
                 run_queue
@@ -323,7 +331,7 @@ impl TaskSystem {
 
         if due.cbs_expired {
             let rq_throttled = run_queue.is_deadline_throttled_member(core.id());
-            let base_entity = if let Some(active) = sched.policy.active_option() {
+            let base_entity = if let Some(active) = core.sched().active_option(sched) {
                 active.base_entity().clone()
             } else {
                 run_queue
@@ -342,9 +350,8 @@ impl TaskSystem {
             if replenish_due {
                 deadline.replenish(due.scheduler_now_ns);
                 let updated = SchedulingEntity::Deadline(deadline.clone());
-                if let Some(active) = sched.policy.active_option() {
-                    let _ = active;
-                    sched.policy.active_mut().replace_base_entity(updated);
+                if let Some(mut active) = core.sched().active_option(sched) {
+                    active.replace_base_entity(updated);
                 } else {
                     let updated_in_rq = if rq_throttled && !deadline.is_throttled() {
                         replenish = true;
@@ -374,7 +381,7 @@ impl TaskSystem {
         }
 
         if replenish {
-            if sched.lifecycle.state() != ThreadState::Ready
+            if sched.lifecycle.state() != ThreadState::Running
                 || sched.placement.queued_cpu() != Some(cpu.owner())
                 || sched.placement.on_cpu().is_some()
             {
@@ -465,7 +472,7 @@ impl TaskSystem {
         let sched = core.sched().lock();
         let pi_boosted = sched.pi.deadline_donor.is_some();
         let donor = sched.pi.deadline_donor;
-        let local_entity = sched.policy.active_option().map(|active| {
+        let local_entity = core.sched().active_option(&sched).map(|active| {
             if pi_boosted {
                 active.entity().clone()
             } else {
@@ -608,12 +615,12 @@ impl TaskSystem {
         Ok((batch.drained(), dispatched))
     }
 
-    /// Runs one PREEMPT_RT `ktimers/%u` task-context pass.
+    /// Selects one PREEMPT_RT `ktimers/%u` task-context callback.
     ///
     /// Hard IRQ has already moved a bounded set of soft expirations into the
-    /// per-CPU deadline base. This pass may promote more due soft entries, wake
-    /// their generation-bearing park owners, and then publish the one next
-    /// physical deadline selected from the authoritative base.
+    /// per-CPU deadline base. The worker repeats this operation up to its batch
+    /// limit, running each callback outside the base lock, before publishing a
+    /// remaining-work generation and yielding.
     pub(crate) fn service_ktimer_work(
         &self,
         mut cpu: Pin<&mut CpuLocal>,
@@ -643,9 +650,6 @@ impl TaskSystem {
             }
             None => {}
         }
-        if pending {
-            cpu.remote().publish_ktimer_work();
-        }
         // A claimed callback may return a new deadline for the same stable
         // entry. Keep the expired hardware edge authoritative until the
         // callback completes, then publish one combined complete/rearm update.
@@ -666,7 +670,6 @@ impl TaskSystem {
                 .map(|execution| execution.handle(cpu.owner())),
         );
         Ok(KtimerServiceBatch {
-            #[cfg(any(test, all(axtest, feature = "axtest")))]
             processed: usize::from(
                 kernel_timer.is_some() || task_timer.is_some() || completed_timer.is_some(),
             ),
@@ -911,6 +914,15 @@ impl TaskSystem {
         rq_observation: SchedulerDeadlineRqObservation,
         source: SchedulerDeadlineDerivationSource,
     ) -> Result<(), TaskError> {
+        if cpu
+            .as_ref()
+            .get_ref()
+            .can_reuse_scheduler_deadline_for_rq_observation(rq_observation)
+        {
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::complete_deadline_publication(cpu.owner());
+            return Ok(());
+        }
         let monotonic_now = task_runtime::monotonic_now();
         let Some(update) = cpu
             .as_mut()

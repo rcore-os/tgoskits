@@ -14,8 +14,8 @@ pub use wake_batch::ThreadWakeBatch;
 
 use crate::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, ParkPublication, PiWaitNodeStorage,
-    PiWaitState, RtPriority, RunQueueNodeStorage, SchedulePolicy, SchedulerTickWork,
-    SchedulerTickWorkClaim, SchedulerTimestamp, SchedulingKey, SchedulingUrgency, TaskError,
+    PiWaitState, RtPriority, RunQueueNodeStorage, SchedulePolicy, SchedulerTickCpuTime,
+    SchedulerTickWork, SchedulerTickWorkClaim, SchedulingKey, SchedulingUrgency, TaskError,
     ThreadAffinityCompletion, ThreadExtensionView, ThreadId, ThreadLifecycle, ThreadSchedCell,
     ThreadState, WakePublication,
     inbox::{InboxKind, InboxNode},
@@ -170,10 +170,6 @@ impl ThreadHandle {
         self.core.assigned_cpu()
     }
 
-    pub(crate) fn sleep_timer(&self) -> &TaskDeadlineNode {
-        &self.core.sleep_timer
-    }
-
     pub(crate) fn extension_view(&self) -> Option<crate::ThreadExtensionView> {
         self.core.extension_view()
     }
@@ -255,7 +251,17 @@ impl ThreadWakeHandle {
     /// This IRQ-safe operation may acquire the thread scheduler lock and the
     /// selected CPU's raw runqueue lock.
     pub fn wake(&self) -> WakeResult {
-        self.core.wake()
+        self.core.wake(WakeIntent::Normal)
+    }
+
+    /// Wakes from task context when the caller expects to block shortly.
+    ///
+    /// This is Linux's `WF_SYNC` contract. It remains a scheduling hint: the
+    /// waker either commits the destination runqueue activation or transfers
+    /// it to the outgoing task's owner-side wake list.
+    pub fn wake_sync(&self) -> WakeResult {
+        debug_assert!(!crate::runtime::task_runtime::in_hard_irq());
+        self.core.wake(WakeIntent::Sync)
     }
 
     #[cfg(any(test, all(axtest, feature = "axtest")))]
@@ -265,14 +271,15 @@ impl ThreadWakeHandle {
 
     /// Wakes from ordinary task context.
     pub fn wake_from_task(&self) -> WakeResult {
-        self.core.wake()
+        self.core.wake(WakeIntent::Normal)
     }
 
     pub(crate) fn deliver_wait_claim_from_task(
         &self,
         claim: &crate::WaitWakeClaim,
+        intent: WakeIntent,
     ) -> crate::WaitWakeDelivery {
-        crate::facade::wake_wait_claim_from_task(&self.core, claim)
+        crate::facade::wake_wait_claim_from_task(&self.core, claim, intent)
     }
 
     /// Returns the thread that owns this wake header.
@@ -282,19 +289,32 @@ impl ThreadWakeHandle {
 }
 
 impl ThreadCore {
-    fn wake(self: &Arc<Self>) -> WakeResult {
+    fn wake(self: &Arc<Self>, intent: WakeIntent) -> WakeResult {
         if self.state() == ThreadState::Exited {
             return WakeResult::Exited;
         }
-        crate::facade::wake_thread_from_current_cpu(self)
+        crate::facade::wake_thread_from_current_cpu(self, intent)
     }
 }
 
-/// Result of an IRQ-safe direct wake publication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WakeIntent {
+    Normal,
+    Sync,
+}
+
+impl WakeIntent {
+    pub(crate) const fn is_sync(self) -> bool {
+        matches!(self, Self::Sync)
+    }
+}
+
+/// Result of an IRQ-safe wake publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WakeResult {
-    /// This call completed a wake transaction. The thread is runnable already,
-    /// became runnable, or retained the notification for a park transition.
+    /// This call completed a logical wake transaction. The thread is runnable,
+    /// retained a park notification, has owner-CPU activation committed, or
+    /// has a durable owner-side wake-list entry.
     Notified,
     /// An unresolved park-transition notification already represents this event.
     AlreadyPending,
@@ -304,7 +324,7 @@ pub enum WakeResult {
     Unavailable,
 }
 
-/// Lock-free snapshot of one thread's charged CPU runtime.
+/// Runqueue-coherent snapshot of one thread's charged CPU runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ThreadRuntimeSnapshot {
     charged_runtime_ns: u64,
@@ -437,6 +457,7 @@ pub(crate) struct ThreadCore {
     // Immutable after publication. Every handle retaining this copy also pins
     // the registry-owned extension destructor through the reaper Arc contract.
     extension: Option<ThreadExtensionView>,
+    scheduler_tick_cpu_time: Option<Arc<SchedulerTickCpuTime>>,
     scheduler_tick_work: Option<SchedulerTickWork>,
     scheduler_tick_work_generation: AtomicU64,
     scheduler_tick_observed_ns: AtomicU64,
@@ -457,6 +478,7 @@ pub(crate) struct ThreadCore {
     wake_cpu_hint: AtomicU32,
     affinity_update_node: InboxNode,
     deadline_refresh_node: InboxNode,
+    wake_list_node: InboxNode,
     wake_batch_next: AtomicPtr<ThreadCore>,
     wake_batch_linked: AtomicBool,
     sleep_timer: TaskDeadlineNode,
@@ -465,10 +487,7 @@ pub(crate) struct ThreadCore {
     sleep_timer_cpu: AtomicU32,
     sleep_timer_generation: AtomicU64,
     migration_node: InboxNode,
-    runtime_sequence: AtomicU64,
-    charged_runtime_ns: AtomicU64,
-    runtime_accounted_until_ns: AtomicU64,
-    runtime_running: AtomicBool,
+    committed_runtime_ns: AtomicU64,
     #[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
     held_locks: ThreadHeldLocks,
     pi_wait_state: PiWaitState,
@@ -480,6 +499,7 @@ impl ThreadCore {
         policy: SchedulePolicy,
         sched: Arc<ThreadSchedCell>,
         extension: Option<ThreadExtensionView>,
+        scheduler_tick_cpu_time: Option<Arc<SchedulerTickCpuTime>>,
         scheduler_tick_work: Option<SchedulerTickWork>,
         task_work: Option<Arc<TaskWorkDoorbell>>,
     ) -> Self {
@@ -492,6 +512,7 @@ impl ThreadCore {
             runqueue_nodes: RunQueueNodeStorage::new(),
             pi_wait_nodes: PiWaitNodeStorage::new(),
             extension,
+            scheduler_tick_cpu_time,
             scheduler_tick_work,
             scheduler_tick_work_generation: AtomicU64::new(0),
             scheduler_tick_observed_ns: AtomicU64::new(0),
@@ -512,6 +533,7 @@ impl ThreadCore {
             wake_cpu_hint: AtomicU32::new(u32::MAX),
             affinity_update_node: InboxNode::new(InboxKind::OwnerControl),
             deadline_refresh_node: InboxNode::new(InboxKind::OwnerControl),
+            wake_list_node: InboxNode::new(InboxKind::OwnerControl),
             wake_batch_next: AtomicPtr::new(core::ptr::null_mut()),
             wake_batch_linked: AtomicBool::new(false),
             sleep_timer: TaskDeadlineNode::for_thread(id),
@@ -520,10 +542,7 @@ impl ThreadCore {
             sleep_timer_cpu: AtomicU32::new(u32::MAX),
             sleep_timer_generation: AtomicU64::new(0),
             migration_node: InboxNode::new(InboxKind::OwnerControl),
-            runtime_sequence: AtomicU64::new(0),
-            charged_runtime_ns: AtomicU64::new(0),
-            runtime_accounted_until_ns: AtomicU64::new(0),
-            runtime_running: AtomicBool::new(false),
+            committed_runtime_ns: AtomicU64::new(0),
             #[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
             held_locks: ThreadHeldLocks::new(),
             pi_wait_state: PiWaitState::new(),
@@ -536,6 +555,10 @@ impl ThreadCore {
 
     pub(crate) const fn pi_wait_nodes(&self) -> &PiWaitNodeStorage {
         &self.pi_wait_nodes
+    }
+
+    pub(crate) const fn wake_list_node(&self) -> &InboxNode {
+        &self.wake_list_node
     }
 
     /// Mutates lockdep state owned by this currently executing thread.
@@ -560,6 +583,33 @@ mod wake_state;
 
 use policy::AtomicPolicy;
 
+/// Returns effective-key publication generations around an unchanged FIFO update.
+#[doc(hidden)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+pub fn axtest_unchanged_fifo_effective_key_generations() -> (usize, usize) {
+    let policy = SchedulePolicy::fifo(RtPriority::new(10).expect("constant RT priority is valid"));
+    let sched = Arc::new(ThreadSchedCell::new_test(
+        ThreadId::from_parts(0, 1),
+        policy,
+    ));
+    let core = ThreadCore::new(
+        ThreadId::from_parts(0, 1),
+        policy,
+        sched,
+        None,
+        None,
+        None,
+        None,
+    );
+    let entity = crate::SchedulingEntity::new(policy, 1, 0);
+    let initial_generation = core.effective_key_sequence.load(Ordering::Acquire);
+
+    core.publish_effective_schedule(policy, &entity);
+
+    let final_generation = core.effective_key_sequence.load(Ordering::Acquire);
+    (initial_generation, final_generation)
+}
+
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
     use alloc::sync::Arc;
@@ -568,7 +618,7 @@ mod tests {
 
     fn test_core(id: ThreadId, policy: SchedulePolicy) -> Arc<ThreadCore> {
         let sched = Arc::new(ThreadSchedCell::new_test(id, policy));
-        Arc::new(ThreadCore::new(id, policy, sched, None, None, None))
+        Arc::new(ThreadCore::new(id, policy, sched, None, None, None, None))
     }
 
     #[cfg(any(feature = "lockdep", all(axtest, feature = "axtest")))]
@@ -608,6 +658,18 @@ mod tests {
 
         assert_eq!(core.wake_cpu_hint(), Some(CpuId::new(1)));
         assert_eq!(core.assigned_cpu(), Some(CpuId::new(0)));
+    }
+
+    #[cfg_attr(test, test)]
+    #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+    fn unchanged_fifo_effective_key_is_not_republished() {
+        let (initial_generation, final_generation) =
+            axtest_unchanged_fifo_effective_key_generations();
+
+        assert_eq!(
+            final_generation, initial_generation,
+            "an unchanged FIFO key must remain owned by its existing publication"
+        );
     }
 
     #[cfg_attr(test, test)]

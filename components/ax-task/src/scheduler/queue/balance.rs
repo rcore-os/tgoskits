@@ -76,29 +76,21 @@ impl RunQueue {
                     .expect("throttled Deadline membership must retain its entity")
                     .migration_capable = migration_capable;
             }
-            QueueMembershipClass::Realtime(priority) => {
+            QueueMembershipClass::Realtime(key) => {
                 self.rt
-                    .get_mut(priority, id)
+                    .get_mut(key)
                     .expect("RT membership must retain its queue node")
                     .migration_capable = migration_capable;
-                self.rt
-                    .refresh_pushable(id, priority, self.linked_current());
+                self.rt.refresh_pushable(key, self.linked_current());
             }
             QueueMembershipClass::Fair => {
-                let mut thread = self
-                    .fair
-                    .remove(id)
-                    .expect("fair membership must retain its queue node");
-                thread.migration_capable = migration_capable;
-                self.fair.insert(thread);
+                assert!(self.fair.update_migration_capability(id, migration_capable));
             }
             QueueMembershipClass::IdleFair => {
-                let mut thread = self
-                    .idle_fair
-                    .remove(id)
-                    .expect("idle-fair membership must retain its queue node");
-                thread.migration_capable = migration_capable;
-                self.idle_fair.insert(thread);
+                assert!(
+                    self.idle_fair
+                        .update_migration_capability(id, migration_capable)
+                );
             }
         }
         true
@@ -134,13 +126,13 @@ impl RunQueue {
                 self.deadline.find_first_pushable_matching(&mut eligible)
             }
             Some(SchedulingClass::Realtime) => self.rt.find_first_pushable_matching(&mut eligible),
-            Some(SchedulingClass::Fair) => self.fair.find_first_matching(&mut eligible),
+            Some(SchedulingClass::Fair) => self.fair.find_first_migratable_matching(&mut eligible),
             Some(SchedulingClass::Stop | SchedulingClass::Idle) => None,
             None => self
                 .deadline
                 .find_first_pushable_matching(&mut eligible)
                 .or_else(|| self.rt.find_first_pushable_matching(&mut eligible))
-                .or_else(|| self.fair.find_first_matching(&mut eligible)),
+                .or_else(|| self.fair.find_first_migratable_matching(&mut eligible)),
         }?;
         scan.remaining -= 1;
         self.mark_balance_candidate(candidate.id, scan.epoch);
@@ -171,9 +163,7 @@ impl RunQueue {
                 self.deadline.get(key).map(QueuedThreadSnapshot::from)
             }
             QueueMembershipClass::DeadlineThrottled => None,
-            QueueMembershipClass::Realtime(priority) => {
-                self.rt.get(priority, id).map(QueuedThreadSnapshot::from)
-            }
+            QueueMembershipClass::Realtime(key) => self.rt.get(key).map(QueuedThreadSnapshot::from),
             QueueMembershipClass::Fair => {
                 self.fair.find_first_matching(&mut |thread| thread.id == id)
             }

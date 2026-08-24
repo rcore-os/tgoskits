@@ -64,7 +64,7 @@ fn account_clock_event(now: ax_task::runtime::MonotonicInstant) -> ax_task::Task
 }
 
 #[cfg(feature = "irq")]
-pub(crate) fn publish_scheduler_tick(stamp: ax_task::SchedulerTickStamp) {
-    ax_task::publish_scheduler_tick(stamp)
+pub(crate) fn publish_scheduler_tick(stamp: ax_task::SchedulerTickStamp, tick_ns: u64) {
+    ax_task::publish_scheduler_tick(stamp, tick_ns)
         .unwrap_or_else(|error| panic!("scheduler tick publication failed: {error}"));
 }

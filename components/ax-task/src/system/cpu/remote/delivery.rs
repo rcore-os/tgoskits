@@ -140,14 +140,11 @@ impl CpuRemote {
         if migration && result != PublishResult::Published {
             self.release_incoming_migration_demand(message.placement_demand());
         }
-        if matches!(
-            result,
-            PublishResult::Published | PublishResult::AlreadyPending
-        ) {
-            let publication = self.request_scheduler_work_owned();
-            if head_became_non_empty {
-                self.deliver_scheduler_work_owned(publication);
-            }
+        if result == PublishResult::Published
+            && let Some(publication) = self.request_scheduler_work_owned()
+            && head_became_non_empty
+        {
+            self.deliver_scheduler_work_owned(publication);
         }
         result
     }

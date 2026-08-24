@@ -11,6 +11,8 @@ use ax_std::os::arceos::task::ThreadId;
 /// identities after a registry slot has been reused.
 pub(super) struct SchedulerIdentity {
     id: AtomicU64,
+    #[cfg(axtest)]
+    bind_attempts: AtomicU64,
 }
 
 impl SchedulerIdentity {
@@ -18,6 +20,8 @@ impl SchedulerIdentity {
     pub(super) const fn unbound() -> Self {
         Self {
             id: AtomicU64::new(0),
+            #[cfg(axtest)]
+            bind_attempts: AtomicU64::new(0),
         }
     }
 
@@ -32,6 +36,8 @@ impl SchedulerIdentity {
     /// Repeating the same publication is harmless. A different identity means
     /// one Starry thread object was attached to two scheduler records.
     pub(super) fn bind(&self, id: ThreadId) -> crate::StarryResult<()> {
+        #[cfg(axtest)]
+        self.bind_attempts.fetch_add(1, Ordering::Relaxed);
         let raw = id.as_u64();
         debug_assert_ne!(raw, 0, "a published scheduler identity cannot be zero");
         match self
@@ -43,6 +49,28 @@ impl SchedulerIdentity {
             Err(_) => Err(crate::StarryError::BadState),
         }
     }
+
+    /// Checks that a scheduler callback names this published thread.
+    pub(super) fn validate_bound(&self, id: ThreadId) -> crate::StarryResult<()> {
+        if self.id.load(Ordering::Acquire) == id.as_u64() {
+            Ok(())
+        } else {
+            Err(crate::StarryError::BadState)
+        }
+    }
+}
+
+#[cfg(axtest)]
+pub(crate) fn published_scheduler_identity_check_is_read_only_for_test() -> bool {
+    let identity = SchedulerIdentity::unbound();
+    let id = ThreadId::from_parts(7, 3);
+    if identity.bind(id).is_err() {
+        return false;
+    }
+    let attempts_after_publication = identity.bind_attempts.load(Ordering::Relaxed);
+
+    identity.validate_bound(id).is_ok()
+        && identity.bind_attempts.load(Ordering::Relaxed) == attempts_after_publication
 }
 
 #[cfg(any(test, target_arch = "aarch64"))]

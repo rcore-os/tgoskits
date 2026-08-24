@@ -14,14 +14,17 @@ mod realtime;
 mod task;
 
 pub(crate) use balance::BalanceScan;
-pub(crate) use class::{SchedulerClass, wakeup_preempts};
+pub(crate) use class::{SchedulerClass, SyncWakeupContext, sync_wakeup_preempts, wakeup_preempts};
 use deadline::{DeadlineQueueKey, DeadlineRunQueue};
-use realtime::RealtimeRunQueue;
+use realtime::{RealtimeQueueKey, RealtimeRunQueue};
 pub(crate) use task::{
-    PickedThread, QueuedThread, QueuedThreadSnapshot, RqTaskMetadata, RunQueueNodeStorage,
+    LinkedPickedThread, PickTaskResult, PickedThread, QueuedThread, QueuedThreadSnapshot,
+    RqTaskMetadata, RunQueueNodeStorage,
 };
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+use task::{full_snapshot_constructions, reset_full_snapshot_constructions};
 
-use super::fair_queue::FairRunQueue;
+use super::fair_queue::{FairPick, FairRunQueue};
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 use crate::ActiveSchedulingState;
 use crate::{
@@ -118,7 +121,7 @@ enum QueueMembershipClass {
     /// Linux `p->on_rq == TASK_ON_RQ_QUEUED` while `dl_throttled` keeps the
     /// entity outside `dl_rq->root` and `rq->nr_running`.
     DeadlineThrottled,
-    Realtime(u8),
+    Realtime(RealtimeQueueKey),
     Fair,
     IdleFair,
 }
@@ -229,7 +232,9 @@ impl RunQueue {
     }
 
     pub(crate) fn take_current(&mut self) -> Option<CurrentDispatch> {
-        self.current.take()
+        let mut current = self.current.take()?;
+        current.finish_runtime_interval();
+        Some(current)
     }
 
     fn linked_current(&self) -> Option<ThreadId> {
@@ -240,6 +245,69 @@ impl RunQueue {
         )
         .then_some(current)
     }
+}
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+pub(crate) fn exercise_realtime_migration_fair_virtual_time() -> (u64, u64) {
+    let fair_policy = SchedulePolicy::fair(crate::Nice::ZERO, FairMode::Normal);
+    let rt_policy = SchedulePolicy::fifo(crate::RtPriority::new(10).unwrap());
+    let fair_peer = ThreadId::from_parts(0, 1);
+    let migrating = ThreadId::from_parts(1, 1);
+    let mut source = RunQueue::new();
+    source
+        .enqueue_test(
+            fair_peer,
+            fair_policy,
+            SchedulingEntity::Fair(FairEntity::test_state(
+                crate::Nice::ZERO,
+                FairMode::Normal,
+                100,
+                200,
+            )),
+            0,
+            EnqueueReason::Preempted,
+        )
+        .unwrap();
+    source.enqueue_rt_test(migrating, rt_policy, false).unwrap();
+    let before = source.virtual_time();
+    let unrelated_current =
+        FairEntity::test_state(crate::Nice::ZERO, FairMode::Normal, 1_000, 1_100);
+
+    let detached = source
+        .detach_for_transfer(migrating, Some(unrelated_current), 500_000)
+        .unwrap();
+    assert_eq!(detached.active.policy(), rt_policy);
+    (before, source.virtual_time())
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn exercise_pinned_realtime_membership_visits() -> (usize, usize, usize, usize) {
+    let mut queue = RunQueue::new();
+    let policy = SchedulePolicy::fifo(crate::RtPriority::new(80).unwrap());
+    for slot in 0..64 {
+        queue
+            .enqueue_rt_migration_test(ThreadId::from_parts(slot, 1), policy, false, false)
+            .unwrap();
+    }
+
+    let tail = ThreadId::from_parts(64, 1);
+    realtime::reset_realtime_queue_visits();
+    queue
+        .enqueue_rt_migration_test(tail, policy, false, false)
+        .unwrap();
+    let enqueue_active = realtime::realtime_active_iter_visits();
+    let enqueue_pushable = realtime::realtime_pushable_iter_visits();
+
+    realtime::reset_realtime_queue_visits();
+    assert_eq!(queue.dequeue(tail).unwrap().id, tail);
+    let dequeue_active = realtime::realtime_active_iter_visits();
+    let dequeue_pushable = realtime::realtime_pushable_iter_visits();
+    (
+        enqueue_active,
+        enqueue_pushable,
+        dequeue_active,
+        dequeue_pushable,
+    )
 }
 
 #[cfg(any(test, all(axtest, feature = "axtest")))]

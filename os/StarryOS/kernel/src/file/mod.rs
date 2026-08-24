@@ -73,6 +73,8 @@ pub(crate) use self::epoll_topology::push_topology_item_preserves_order_and_grow
 #[cfg(test)]
 pub(crate) use self::fs::metadata_to_kstat_conversion_rules_hold_for_test;
 pub(crate) use self::mount_table::{MountTableFile, notify_mount_namespace_changed};
+#[cfg(feature = "qperf-metrics")]
+pub(crate) use self::pipe::qperf_metrics_snapshot as pipe_qperf_metrics_snapshot;
 #[cfg(axtest)]
 pub(crate) use self::pipe::{
     peer_close_with_multiple_readers_is_visible_for_test,
@@ -525,7 +527,10 @@ pub fn prepare_file_like(
     file: Arc<dyn FileLike>,
     cloexec: bool,
 ) -> StarryResult<PreparedFileDescriptor> {
-    let max_nofile = current_user_task().as_thread().proc_data.rlimits()[RLIMIT_NOFILE].current;
+    let max_nofile = current_user_task()
+        .as_thread()
+        .proc_data
+        .rlimit_current(RLIMIT_NOFILE);
     let table = current_fd_table();
     PreparedFileDescriptor::prepare_in(
         table,
@@ -560,7 +565,10 @@ pub fn fd_is_path(fd: c_int) -> bool {
 
 /// Add a file to the file descriptor table.
 pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> crate::StarryResult<c_int> {
-    let max_nofile = current_user_task().as_thread().proc_data.rlimits()[RLIMIT_NOFILE].current;
+    let max_nofile = current_user_task()
+        .as_thread()
+        .proc_data
+        .rlimit_current(RLIMIT_NOFILE);
     let fd_table = current_fd_table();
     let mut table = fd_table.write();
     if table.count() as u64 >= max_nofile {

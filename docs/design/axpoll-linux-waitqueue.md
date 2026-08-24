@@ -74,6 +74,11 @@ on `ax-runtime` or `ax-task`. An
 architecture may replace a lower wake-delivery primitive without changing the
 queue contract or any upper-layer caller.
 
+`PollSet::wake_with()` keeps that separation explicit: selection, registration
+ownership, and cancellation remain in `axpoll-set`, while an OS adapter may
+consume each selected standard `Waker` through a scheduler-aware delivery
+function. Unknown Waker implementations must retain ordinary wake behavior.
+
 Filesystem nodes implement `axpoll::Pollable` directly. `axfs-ng-vfs` and
 `ax-fs-ng` do not define parallel filesystem event bits or a second poll trait,
 and their production dependency graph does not depend on `ax-runtime`. Host
@@ -130,6 +135,11 @@ wakes a reader on the empty-to-nonempty transition. `pipe_poll()` registers
 non-exclusive observers before checking state and sets `poll_usage`; once poll
 has observed the pipe, Linux intentionally preserves broader reader notification
 for epoll compatibility even when a write begins with a non-empty pipe.
+
+Those data/space handoffs use `wake_up_interruptible_sync_poll()`. Its `WF_SYNC`
+hint makes the scheduler discount a waker that promises to sleep soon and keeps
+EEVDF from forcing an early ping-pong preemption inside the migration-cost
+window. Terminal close notifications remain ordinary wake-all transitions.
 
 These are waitqueue semantics, not x86 behavior. Architecture code may optimize
 the final task notification, but it must not select different waiters.
@@ -236,6 +246,8 @@ preserves first-exclusive fairness. No temporary vector or stack capacity is
 needed. Registration and selection are task/deferred-only. Hard IRQ never calls
 an erased `Waker`; it publishes readiness and uses the runtime's typed IRQ-to-task
 notification capability, after which the same `wake()` transaction runs.
+For Linux pipe handoffs, `wake_with()` invokes the ArceOS executor's synchronous
+wake adapter at step 3; it does not change which entries the transaction chose.
 
 The registry lock orders registration visibility and wake selection, but it is
 not the readiness data lock. Each source must publish readiness before `wake()`

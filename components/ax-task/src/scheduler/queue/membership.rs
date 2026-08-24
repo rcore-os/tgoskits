@@ -21,9 +21,7 @@ impl RunQueue {
             QueueMembershipClass::DeadlineThrottled => {
                 self.deadline.throttled(id).map(QueuedThreadSnapshot::from)
             }
-            QueueMembershipClass::Realtime(priority) => {
-                self.rt.get(priority, id).map(QueuedThreadSnapshot::from)
-            }
+            QueueMembershipClass::Realtime(key) => self.rt.get(key).map(QueuedThreadSnapshot::from),
             QueueMembershipClass::Fair => {
                 self.fair.find_first_matching(&mut |thread| thread.id == id)
             }

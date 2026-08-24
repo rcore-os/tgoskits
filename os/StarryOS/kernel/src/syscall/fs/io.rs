@@ -12,7 +12,7 @@ use syscalls::Sysno;
 
 use super::memfd::{
     memfd_check_resize_seals, memfd_check_write_seal, memfd_checks_before_stream_write,
-    memfd_checks_before_write_at,
+    memfd_checks_before_stream_write_from_user, memfd_checks_before_write_at,
 };
 use crate::{
     Errno, StarryError, StarryResult,
@@ -21,7 +21,9 @@ use crate::{
         memfd::{F_SEAL_ANY_WRITE, F_SEAL_GROW, Memfd},
     },
     ipc::mqueue::MqDescriptor,
-    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, VmMutPtr, VmPtr, vm_load_path_string},
+    mm::{
+        IoVec, IoVectorBuf, UserConstPtr, VmBytes, VmBytesMut, VmMutPtr, VmPtr, vm_load_path_string,
+    },
 };
 
 /// Get a [`File`] from fd, converting type-mismatch errors to ESPIPE.
@@ -160,16 +162,12 @@ pub fn sys_write(
     debug!("sys_write <= fd: {fd}, buf: {buf:p}, len: {len}");
     let file_like = get_file_like(fd)?;
     file_like.validate_write_len(len)?;
-    // `copy_user_read_buf` validates the buffer itself (via `get_as_slice`), so a
-    // separate `validate_user_read_buf` here was a redundant second `check_region`
-    // (aspace lock + can_access_range + populate) on every write — dropped. Copy
-    // (which faults a bad buffer as EFAULT) runs *before* the memfd seal check
-    // (EPERM), matching Linux `generic_perform_write` (prefault precedes the
-    // shmem seal check) and `sys_writev`, so a sealed memfd + bad buffer still
-    // reports EFAULT, not EPERM.
-    let data = copy_user_read_buf(current, buf.cast_const(), len)?;
-    memfd_checks_before_stream_write(&file_like, len as u64)?;
-    Ok(file_like.write(&mut data.as_slice())? as _)
+    // Linux imports one user iterator and lets the file consume it directly.
+    // Only memfd needs an eager access check because EFAULT precedes a seal
+    // rejection; ordinary streams must not copy the complete payload into an
+    // allocation before the file knows how much it can accept.
+    memfd_checks_before_stream_write_from_user(&file_like, current, buf.cast_const(), len)?;
+    Ok(file_like.write(&mut VmBytes::new(current, buf.cast_const(), len))? as _)
 }
 
 pub fn sys_writev(

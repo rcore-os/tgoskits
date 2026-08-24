@@ -23,6 +23,7 @@ impl TaskSystem {
         cpu: &CpuLocal,
         expected: ThreadId,
         observed_ns: u64,
+        tick_ns: u64,
     ) -> Result<(), TaskError> {
         let Some(core) = cpu.current_core() else {
             return Err(TaskError::NoRunnableThread);
@@ -30,6 +31,7 @@ impl TaskSystem {
         if core.id() != expected {
             return Err(TaskError::StaleThreadId);
         }
+        core.sample_scheduler_tick_cpu_time(tick_ns);
         self.publish_scheduler_tick_work(&core, observed_ns);
         Ok(())
     }

@@ -26,12 +26,6 @@ struct Entry {
     mode: RegistrationMode,
 }
 
-impl Entry {
-    fn wake(self) {
-        self.waker.wake();
-    }
-}
-
 struct Inner {
     entries: Vec<Entry>,
     next_id: u64,
@@ -127,7 +121,12 @@ impl PollState {
         self.0.lock().unregister(id);
     }
 
-    fn wake(&self, ready: IoEvents, mut exclusive_budget: usize) -> usize {
+    fn wake_with(
+        &self,
+        ready: IoEvents,
+        mut exclusive_budget: usize,
+        wake: &mut impl FnMut(Waker),
+    ) -> usize {
         let boundary = self.0.lock().wake_boundary();
         let mut woke = 0;
         loop {
@@ -141,7 +140,7 @@ impl PollState {
             if entry.mode == RegistrationMode::Exclusive {
                 exclusive_budget -= 1;
             }
-            entry.wake();
+            wake(entry.waker);
             woke += 1;
         }
     }
@@ -157,7 +156,7 @@ impl PollState {
             let Some(entry) = entry else {
                 return;
             };
-            entry.wake();
+            entry.waker.wake();
         }
     }
 }
@@ -210,7 +209,28 @@ impl PollSet {
         let Some(state) = self.0.get() else {
             return 0;
         };
-        state.wake(ready, 1)
+        state.wake_with(ready, 1, &mut Waker::wake)
+    }
+
+    /// Wakes matching registrations through a caller-selected Waker policy.
+    ///
+    /// Every matching shared observer and one matching exclusive consumer is
+    /// removed and passed by value to `wake`. The callback runs after the
+    /// readiness-queue lock is released. This permits an OS adapter to attach
+    /// scheduler intent such as Linux `WF_SYNC` without coupling this generic
+    /// readiness crate to one task implementation.
+    ///
+    /// # Safety
+    ///
+    /// This method is task/deferred-context only. Readiness must be published
+    /// first through synchronization observed by the consumer's readiness
+    /// check, and the caller must not hold a lock that the callback may
+    /// re-enter.
+    pub unsafe fn wake_with(&self, ready: IoEvents, mut wake: impl FnMut(Waker)) -> usize {
+        let Some(state) = self.0.get() else {
+            return 0;
+        };
+        state.wake_with(ready, 1, &mut wake)
     }
 
     /// Wakes every matching shared observer and exclusive consumer.
@@ -226,7 +246,7 @@ impl PollSet {
         let Some(state) = self.0.get() else {
             return 0;
         };
-        state.wake(ready, usize::MAX)
+        state.wake_with(ready, usize::MAX, &mut Waker::wake)
     }
 }
 

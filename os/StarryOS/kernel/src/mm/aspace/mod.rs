@@ -153,16 +153,13 @@ impl AddrSpace {
     fn mutate_with_tlb_gather<R>(
         &mut self,
         ranges: &[(VirtAddr, usize)],
-        operation: impl FnOnce(&mut Self) -> crate::StarryResult<R>,
+        operation: impl FnOnce(&mut Self, &mut tlb::TlbGather) -> crate::StarryResult<R>,
     ) -> crate::StarryResult<R> {
         let mut gather = tlb::TlbGather::new();
         for &(start, size) in ranges {
             gather.record_range(tlb::checked_range(start, size)?);
         }
-        let operation_result = {
-            let _guard = tlb::TlbGatherGuard::enter(&mut gather);
-            operation(self)
-        };
+        let operation_result = operation(self, &mut gather);
 
         // Snapshot after the PTE mutation. A CPU that published itself before
         // the mutation is included; a CPU entering after the snapshot installs
@@ -224,17 +221,19 @@ impl AddrSpace {
             return Err(StarryError::InvalidInput);
         }
 
-        let _rss = RssAccountingGuard::enter(&self.rss);
-        let offset = start_vaddr.as_usize() as isize - start_paddr.as_usize() as isize;
-        let area = MemoryArea::new(
-            start_vaddr,
-            size,
-            flags,
-            Backend::new_linear(start_vaddr, offset, false),
-        );
-        self.areas.map(area, &mut self.pt, false)?;
-        self.vm_stat.on_map((size / PAGE_SIZE_4K) as u64);
-        Ok(())
+        self.mutate_with_tlb_gather(&[], |aspace, gather| {
+            let _rss = RssAccountingGuard::enter(&aspace.rss);
+            let offset = start_vaddr.as_usize() as isize - start_paddr.as_usize() as isize;
+            let area = MemoryArea::new(
+                start_vaddr,
+                size,
+                flags,
+                Backend::new_linear(start_vaddr, offset, false),
+            );
+            aspace.areas.map(area, gather, &mut aspace.pt, false)?;
+            aspace.vm_stat.on_map((size / PAGE_SIZE_4K) as u64);
+            Ok(())
+        })
     }
 
     pub fn map(
@@ -259,18 +258,25 @@ impl AddrSpace {
     ) -> StarryResult {
         self.validate_region(start, size)?;
 
-        {
-            let _rss = RssAccountingGuard::enter(&self.rss);
-            let area =
-                MemoryArea::new_with_reported_flags(start, size, flags, reported_flags, backend);
-            self.areas.map(area, &mut self.pt, false)?;
-        }
-        self.vm_stat.on_map((size / PAGE_SIZE_4K) as u64);
-        if populate {
-            self.populate_area(start, size, flags)?;
-        }
-        crate::syscall::memfd_on_after_map(self, start);
-        Ok(())
+        self.mutate_with_tlb_gather(&[], |aspace, gather| {
+            {
+                let _rss = RssAccountingGuard::enter(&aspace.rss);
+                let area = MemoryArea::new_with_reported_flags(
+                    start,
+                    size,
+                    flags,
+                    reported_flags,
+                    backend,
+                );
+                aspace.areas.map(area, gather, &mut aspace.pt, false)?;
+            }
+            aspace.vm_stat.on_map((size / PAGE_SIZE_4K) as u64);
+            if populate {
+                aspace.populate_area_inner(start, size, flags, gather)?;
+            }
+            crate::syscall::memfd_on_after_map(aspace, start);
+            Ok(())
+        })
     }
 
     /// Populates the area with physical frames, returning false if the area
@@ -282,8 +288,8 @@ impl AddrSpace {
         access_flags: MappingFlags,
     ) -> StarryResult {
         self.validate_region(start, size)?;
-        self.mutate_with_tlb_gather(&[], |aspace| {
-            aspace.populate_area_inner(start, size, access_flags)
+        self.mutate_with_tlb_gather(&[], |aspace, gather| {
+            aspace.populate_area_inner(start, size, access_flags, gather)
         })
     }
 
@@ -292,6 +298,7 @@ impl AddrSpace {
         mut start: VirtAddr,
         size: usize,
         access_flags: MappingFlags,
+        gather: &mut tlb::TlbGather,
     ) -> crate::StarryResult {
         let end = start + size;
 
@@ -307,6 +314,7 @@ impl AddrSpace {
                     flags,
                     access_flags,
                     Some(&self.rss),
+                    gather,
                     &mut self.pt,
                 )?;
                 (area.end(), callback)
@@ -338,12 +346,17 @@ impl AddrSpace {
     /// the VMA metadata intact (Linux `MADV_DONTNEED` / `MADV_FREE` semantics).
     pub fn discard_range(&mut self, start: VirtAddr, size: usize) -> StarryResult {
         self.validate_region(start, size)?;
-        self.mutate_with_tlb_gather(&[(start, size)], |aspace| {
-            aspace.discard_range_inner(start, size)
+        self.mutate_with_tlb_gather(&[(start, size)], |aspace, gather| {
+            aspace.discard_range_inner(start, size, gather)
         })
     }
 
-    fn discard_range_inner(&mut self, start: VirtAddr, size: usize) -> crate::StarryResult {
+    fn discard_range_inner(
+        &mut self,
+        start: VirtAddr,
+        size: usize,
+        gather: &mut tlb::TlbGather,
+    ) -> crate::StarryResult {
         let end = start + size;
 
         let mut frags: alloc::vec::Vec<(VirtAddrRange, Backend)> = alloc::vec::Vec::new();
@@ -369,7 +382,7 @@ impl AddrSpace {
 
         let _rss = RssAccountingGuard::enter(&self.rss);
         for (range, backend) in frags {
-            BackendOps::unmap(&backend, range, Some(&self.rss), &mut self.pt)?;
+            BackendOps::unmap(&backend, range, Some(&self.rss), gather, &mut self.pt)?;
         }
 
         Ok(())
@@ -381,10 +394,17 @@ impl AddrSpace {
     /// aligned.
     pub fn unmap(&mut self, start: VirtAddr, size: usize) -> StarryResult {
         self.validate_region(start, size)?;
-        self.mutate_with_tlb_gather(&[(start, size)], |aspace| aspace.unmap_inner(start, size))
+        self.mutate_with_tlb_gather(&[(start, size)], |aspace, gather| {
+            aspace.unmap_inner(start, size, gather)
+        })
     }
 
-    fn unmap_inner(&mut self, start: VirtAddr, size: usize) -> crate::StarryResult {
+    fn unmap_inner(
+        &mut self,
+        start: VirtAddr,
+        size: usize,
+        gather: &mut tlb::TlbGather,
+    ) -> crate::StarryResult {
         // Compute the actual mapped bytes being removed (unmap is already O(n)).
         let end = start + size;
         let removed_pages: u64 = self
@@ -400,7 +420,7 @@ impl AddrSpace {
 
         let _rss = RssAccountingGuard::enter(&self.rss);
         crate::syscall::memfd_on_aspace_unmap_range(self, start, size);
-        self.areas.unmap(start, size, &mut self.pt)?;
+        self.areas.unmap(start, size, gather, &mut self.pt)?;
         self.vm_stat.on_unmap(removed_pages);
         Ok(())
     }
@@ -450,7 +470,7 @@ impl AddrSpace {
     /// Uses direct PTE map/unmap (not [`BackendOps::unmap`]) so Cow RSS charges
     /// migrate via [`MemoryAccounting::move_charge`] instead of remove+record.
     pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) -> crate::StarryResult {
-        self.mutate_with_tlb_gather(&[(src, size), (dst, size)], |aspace| {
+        self.mutate_with_tlb_gather(&[(src, size), (dst, size)], |aspace, _gather| {
             aspace.move_pages_inner(src, dst, size)
         })
     }
@@ -512,11 +532,16 @@ impl AddrSpace {
         {
             return Err(StarryError::NoMemory);
         }
-        let _rss = RssAccountingGuard::enter(&self.rss);
-        self.areas
-            .extend_area(addr, additional_size, &mut self.pt)?;
-        self.vm_stat.on_map((additional_size / PAGE_SIZE_4K) as u64);
-        Ok(())
+        self.mutate_with_tlb_gather(&[], |aspace, gather| {
+            let _rss = RssAccountingGuard::enter(&aspace.rss);
+            aspace
+                .areas
+                .extend_area(addr, additional_size, gather, &mut aspace.pt)?;
+            aspace
+                .vm_stat
+                .on_map((additional_size / PAGE_SIZE_4K) as u64);
+            Ok(())
+        })
     }
 
     /// To process data in this area with the given function.
@@ -592,8 +617,8 @@ impl AddrSpace {
         reported_flags: MappingFlags,
     ) -> StarryResult {
         self.validate_region(start, size)?;
-        self.mutate_with_tlb_gather(&[(start, size)], |aspace| {
-            aspace.protect_with_reported_flags_inner(start, size, flags, reported_flags)
+        self.mutate_with_tlb_gather(&[(start, size)], |aspace, gather| {
+            aspace.protect_with_reported_flags_inner(start, size, flags, reported_flags, gather)
         })
     }
 
@@ -603,6 +628,7 @@ impl AddrSpace {
         size: usize,
         flags: MappingFlags,
         reported_flags: MappingFlags,
+        gather: &mut tlb::TlbGather,
     ) -> crate::StarryResult {
         let touched_memfds =
             crate::syscall::memfd_collect_metas_touching_mprotect_range(self, start, size);
@@ -611,6 +637,7 @@ impl AddrSpace {
             start,
             size,
             |_, _| Some((flags, reported_flags)),
+            gather,
             &mut self.pt,
         )?;
         crate::syscall::memfd_resync_shared_writable_counts_after_mprotect(self, &touched_memfds);
@@ -621,10 +648,10 @@ impl AddrSpace {
     /// Removes all mappings in the address space.
     pub fn clear(&mut self) {
         let range = (self.base(), self.size());
-        self.mutate_with_tlb_gather(&[range], |aspace| {
+        self.mutate_with_tlb_gather(&[range], |aspace, gather| {
             crate::syscall::memfd_release_all_shared_writable_counts_for_aspace(aspace);
             let _rss = RssAccountingGuard::enter(&aspace.rss);
-            aspace.areas.clear(&mut aspace.pt)?;
+            aspace.areas.clear(gather, &mut aspace.pt)?;
             aspace.vm_stat.on_clear();
             Ok(())
         })
@@ -673,8 +700,8 @@ impl AddrSpace {
     /// Returns `true` if the page fault is handled successfully (not a real
     /// fault).
     pub fn handle_page_fault(&mut self, vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
-        match self.mutate_with_tlb_gather(&[], |aspace| {
-            aspace.handle_page_fault_inner(vaddr, access_flags)
+        match self.mutate_with_tlb_gather(&[], |aspace, gather| {
+            aspace.handle_page_fault_inner(vaddr, access_flags, gather)
         }) {
             Ok(handled) => {
                 complete_page_fault_with(handled, vaddr, ax_runtime::hal::cache::update_mmu_cache)
@@ -690,6 +717,7 @@ impl AddrSpace {
         &mut self,
         vaddr: VirtAddr,
         access_flags: PageFaultFlags,
+        gather: &mut tlb::TlbGather,
     ) -> crate::StarryResult<bool> {
         if !self.va_range.contains(vaddr) {
             return Ok(false);
@@ -704,6 +732,7 @@ impl AddrSpace {
                     flags,
                     access_flags,
                     Some(&self.rss),
+                    gather,
                     &mut self.pt,
                 );
                 return match populate_result {
@@ -741,7 +770,10 @@ impl AddrSpace {
         self.mutate_with_tlb_gather(&[], Self::try_clone_inner)
     }
 
-    fn try_clone_inner(&mut self) -> crate::StarryResult<Arc<PiMutex<Self>>> {
+    fn try_clone_inner(
+        &mut self,
+        gather: &mut tlb::TlbGather,
+    ) -> crate::StarryResult<Arc<PiMutex<Self>>> {
         let new_aspace = Arc::new(PiMutex::new(Self::new_empty(self.base(), self.size())?));
         let new_aspace_clone = new_aspace.clone();
 
@@ -755,9 +787,8 @@ impl AddrSpace {
 
         let self_modify = &mut self.pt;
         for area in self.areas.iter() {
-            let new_backend = area.backend().clone_map(
-                area.va_range(),
-                area.flags(),
+            let clone_context = backend::CloneMapContext::new(
+                gather,
                 self_modify,
                 &mut guard.pt,
                 &new_aspace_clone,
@@ -765,7 +796,10 @@ impl AddrSpace {
                     parent: Some(parent_acct),
                     child: Some(child_acct),
                 },
-            )?;
+            );
+            let new_backend =
+                area.backend()
+                    .clone_map(area.va_range(), area.flags(), clone_context)?;
 
             let new_area = MemoryArea::new_with_reported_flags(
                 area.start(),
@@ -779,7 +813,7 @@ impl AddrSpace {
                 let aspace = guard.deref_mut();
                 let rss_ptr = core::ptr::addr_of!(aspace.rss);
                 let _rss = RssAccountingGuard::enter(unsafe { &*rss_ptr });
-                aspace.areas.map(new_area, &mut aspace.pt, false)?;
+                aspace.areas.map(new_area, gather, &mut aspace.pt, false)?;
             }
             crate::syscall::memfd_on_after_map(&guard, start);
         }

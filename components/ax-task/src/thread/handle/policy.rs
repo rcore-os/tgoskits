@@ -12,16 +12,48 @@ impl ThreadCore {
         policy: SchedulePolicy,
         entity: &crate::SchedulingEntity,
     ) {
-        self.effective_key_sequence.fetch_add(1, Ordering::AcqRel);
-        self.effective_policy.store(policy);
         let absolute_deadline_ns = entity
             .deadline()
             .and_then(crate::DeadlineEntity::absolute_deadline_ns);
+        if self.effective_schedule_matches(policy, absolute_deadline_ns) {
+            return;
+        }
+
+        // Every writer owns this thread's scheduler guard. The sequence only
+        // publishes a coherent snapshot to lock-free readers; it does not
+        // serialize competing writers.
+        self.effective_key_sequence.fetch_add(1, Ordering::AcqRel);
+        self.effective_policy.store(policy);
         self.effective_deadline_active
             .store(absolute_deadline_ns.is_some(), Ordering::Relaxed);
         self.effective_deadline_ns
             .store(absolute_deadline_ns.unwrap_or(0), Ordering::Relaxed);
         self.effective_key_sequence.fetch_add(1, Ordering::Release);
+    }
+
+    fn effective_schedule_matches(
+        &self,
+        expected_policy: SchedulePolicy,
+        expected_deadline_ns: Option<u64>,
+    ) -> bool {
+        loop {
+            let sequence = self.effective_key_sequence.load(Ordering::Acquire);
+            if sequence & 1 != 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+            let policy = self.effective_policy.load();
+            let deadline_active = self.effective_deadline_active.load(Ordering::Relaxed);
+            let deadline_ns = self.effective_deadline_ns.load(Ordering::Relaxed);
+            if self.effective_key_sequence.load(Ordering::Acquire) != sequence {
+                continue;
+            }
+            let deadline_matches = match expected_deadline_ns {
+                Some(expected) => deadline_active && deadline_ns == expected,
+                None => !deadline_active,
+            };
+            return policy == expected_policy && deadline_matches;
+        }
     }
 
     pub(crate) fn effective_placement_demand(&self) -> u64 {
@@ -118,6 +150,10 @@ impl ThreadCore {
 
     pub(crate) const fn deadline_cbs_timer(&self) -> &TaskDeadlineNode {
         &self.deadline_cbs_timer
+    }
+
+    pub(crate) const fn sleep_timer(&self) -> &TaskDeadlineNode {
+        &self.sleep_timer
     }
 
     pub(crate) const fn deadline_zero_lag_timer(&self) -> &TaskDeadlineNode {

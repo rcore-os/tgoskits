@@ -18,6 +18,8 @@ mod process_tests {
             second.scheduler_switch_in_at(false, 0);
             CpuTimeDelta::ZERO
         });
+        first.sample_scheduler_tick_for_test(10);
+        second.sample_scheduler_tick_for_test(10);
 
         let mut live = |now| {
             first
@@ -36,6 +38,7 @@ mod process_tests {
         process.record_transition(|| {
             first.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 10)
         });
+        second.sample_scheduler_tick_for_test(5);
         assert_eq!(
             process.snapshot_at_with_live(15, &mut live),
             ProcessCpuTimeSnapshot {
@@ -69,6 +72,7 @@ mod process_tests {
             task.scheduler_switch_in_at(false, 0);
             CpuTimeDelta::ZERO
         });
+        task.sample_scheduler_tick_for_test(10);
         let mut live = |now| task.unpublished_delta_at(now);
         assert_eq!(
             process.snapshot_at_with_live(10, &mut live),
@@ -145,6 +149,8 @@ mod process_tests {
             second.scheduler_switch_in_at(false, 0);
             CpuTimeDelta::ZERO
         });
+        first.sample_scheduler_tick_for_test(10);
+        second.sample_scheduler_tick_for_test(10);
 
         assert_eq!(
             process.snapshot_committed_at(10),

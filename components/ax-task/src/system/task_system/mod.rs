@@ -40,12 +40,22 @@ pub use outcome::{
     ScheduleDecision, SchedulerOutcome, SwitchInCompletion,
 };
 pub(crate) use park_exit::CurrentExitPermit;
+#[cfg(feature = "task-test-hooks")]
+pub(crate) use park_exit::{
+    arm_park_after_blocked_publication, arm_park_after_final_wake_check,
+    arm_park_before_active_publication, complete_park_after_blocked_publication,
+    complete_park_after_final_wake_check, complete_park_before_active_publication,
+    park_after_blocked_publication_entered, park_after_final_wake_check_entered,
+    park_before_active_publication_entered,
+};
 use priority_index::RootDomainPriorityIndex;
 use registry::{
     CpuRegistration, DeadlineCallbackClaim, DetachedThreadRecord, TaskSystemState, ThreadRecord,
     ThreadSlot,
 };
 use root_domain::{DeadlineBandwidthRebuild, RootDomain, RootDomainPushClass, RootDomainState};
+#[cfg(feature = "task-test-hooks")]
+pub(crate) use scheduling::lone_current_yield_keeps_dispatch;
 use thread_callbacks::ThreadCallbackState;
 
 use super::thread_sched::{
@@ -67,7 +77,7 @@ use crate::{
     ThreadExtension, ThreadExtensionBorrow, ThreadExtensionLease, ThreadExtensionView,
     ThreadHandle, ThreadId, ThreadResources, ThreadRuntimeSnapshot, ThreadSchedulerActivity,
     ThreadSpec, ThreadState, ThreadWakeBatch, ThreadWakeHandle, WaitWakeClaim, WaitWakeDelivery,
-    WakeResult,
+    WakeIntent, WakeResult,
     executor::CoroutineHeader,
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, IrqTicketLock, PreemptTicketLock},
@@ -80,9 +90,9 @@ use crate::{
     },
     system::cpu::{
         CpuRunQueueState, CurrentClassState, CurrentDispatch, CurrentDispatchState,
-        DeadlineBaseGuardSource, HardTimerServiceClaim, IdlePullReservation, KtimerServiceClaim,
-        OwnerRqEntry, OwnerRqTxn, PreparedMigrationDelivery, RqTaskTime, RunQueueClockSnapshot,
-        RunQueueGuardSource, SchedulerDeadlineRqObservation,
+        DeadlineBaseGuardSource, EqualRtWakeAction, HardTimerServiceClaim, IdlePullReservation,
+        KtimerServiceClaim, OwnerRqEntry, OwnerRqTxn, PreparedMigrationDelivery, RqTaskTime,
+        RunQueueClockSnapshot, RunQueueGuardSource, SchedulerDeadlineRqObservation,
     },
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
     timer::{

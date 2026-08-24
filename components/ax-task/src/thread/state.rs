@@ -15,9 +15,12 @@ const WAKE_STATE_PUBLISHED: u8 = WAKE_PENDING | PARK_NOTIFIED;
 pub enum ThreadState {
     /// Allocated but not admitted to a run queue.
     New     = 0,
-    /// Eligible to run or already present in a run queue.
+    /// Legacy runnable encoding retained for trace and API compatibility.
+    ///
+    /// The scheduler does not publish this value. New runnable states use
+    /// [`ThreadState::Running`] and placement distinguishes queued/current.
     Ready   = 1,
-    /// Currently executing on a CPU.
+    /// Linux-style `TASK_RUNNING`, whether queued or executing on a CPU.
     Running = 2,
     /// Publishing a block operation while racing with wake-up.
     Parking = 3,
@@ -176,24 +179,18 @@ pub(crate) const fn decode_state(state: u8) -> ThreadState {
 pub(crate) const fn transition_is_valid(from: ThreadState, to: ThreadState) -> bool {
     matches!(
         (from, to),
-        (ThreadState::New, ThreadState::Ready | ThreadState::Exited)
+        (ThreadState::New, ThreadState::Running | ThreadState::Exited)
             | (
                 ThreadState::Ready,
                 ThreadState::Running | ThreadState::Exited
             )
             | (
                 ThreadState::Running,
-                ThreadState::Ready
-                    | ThreadState::Parking
-                    | ThreadState::Blocked
-                    | ThreadState::Exited
+                ThreadState::Parking | ThreadState::Exited
             )
             | (
                 ThreadState::Parking,
-                ThreadState::Running
-                    | ThreadState::Blocked
-                    | ThreadState::Waking
-                    | ThreadState::Ready
+                ThreadState::Running | ThreadState::Blocked | ThreadState::Waking
             )
             | (
                 ThreadState::Blocked,
@@ -201,7 +198,7 @@ pub(crate) const fn transition_is_valid(from: ThreadState, to: ThreadState) -> b
             )
             | (
                 ThreadState::Waking,
-                ThreadState::Ready | ThreadState::Exited
+                ThreadState::Running | ThreadState::Exited
             )
     )
 }
@@ -214,19 +211,18 @@ mod tests {
     #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn accepts_the_documented_wake_transition() {
         let lifecycle = ThreadLifecycle::new();
-        lifecycle.transition(ThreadState::Ready).unwrap();
         lifecycle.transition(ThreadState::Running).unwrap();
         lifecycle.transition(ThreadState::Parking).unwrap();
         lifecycle.transition(ThreadState::Waking).unwrap();
-        lifecycle.transition(ThreadState::Ready).unwrap();
-        assert_eq!(lifecycle.state(), ThreadState::Ready);
+        lifecycle.transition(ThreadState::Running).unwrap();
+        assert_eq!(lifecycle.state(), ThreadState::Running);
     }
 
     #[cfg_attr(test, test)]
     #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
-    fn rejects_ready_to_blocked_shortcut() {
+    fn rejects_runnable_to_blocked_shortcut() {
         assert!(!transition_is_valid(
-            ThreadState::Ready,
+            ThreadState::Running,
             ThreadState::Blocked
         ));
     }
@@ -235,7 +231,6 @@ mod tests {
     #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn wake_publication_atomically_defeats_blocked_publication() {
         let lifecycle = ThreadLifecycle::new();
-        lifecycle.transition(ThreadState::Ready).unwrap();
         lifecycle.transition(ThreadState::Running).unwrap();
         lifecycle.transition(ThreadState::Parking).unwrap();
         assert_eq!(lifecycle.publish_wake().state(), ThreadState::Parking);
@@ -251,7 +246,6 @@ mod tests {
     #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
     fn blocked_publication_wins_before_late_wake() {
         let lifecycle = ThreadLifecycle::new();
-        lifecycle.transition(ThreadState::Ready).unwrap();
         lifecycle.transition(ThreadState::Running).unwrap();
         lifecycle.transition(ThreadState::Parking).unwrap();
         assert_eq!(

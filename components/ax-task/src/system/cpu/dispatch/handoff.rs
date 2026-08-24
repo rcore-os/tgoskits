@@ -9,6 +9,7 @@ pub(crate) struct SwitchHandoff {
     previous: Arc<ThreadCore>,
     incoming: Arc<ThreadCore>,
     migration: Option<PreparedMigrationDelivery>,
+    rq_baton: Option<RqSwitchBaton>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,7 +36,27 @@ impl SwitchHandoff {
             previous,
             incoming,
             migration,
+            rq_baton: None,
         }
+    }
+
+    pub(crate) fn install_rq_baton(&mut self, baton: RqSwitchBaton) -> Result<(), TaskError> {
+        if self.phase != SwitchHandoffPhase::Prepared
+            || self.migration.is_some()
+            || self.rq_baton.is_some()
+        {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.rq_baton = Some(baton);
+        Ok(())
+    }
+
+    pub(crate) const fn has_rq_baton(&self) -> bool {
+        self.rq_baton.is_some()
+    }
+
+    pub(crate) fn take_rq_baton(&mut self) -> Option<RqSwitchBaton> {
+        self.rq_baton.take()
     }
 
     pub(crate) fn previous(&self) -> &Arc<ThreadCore> {
@@ -65,6 +86,9 @@ impl SwitchHandoff {
     }
 
     pub(crate) fn into_runtime_finished(self) -> Result<CompletedSwitchHandoff, TaskError> {
+        if self.rq_baton.is_some() {
+            return Err(TaskError::InvalidConfiguration);
+        }
         let SwitchHandoffPhase::RuntimeTailFinished { reclaim_ready } = self.phase else {
             return Err(TaskError::InvalidConfiguration);
         };

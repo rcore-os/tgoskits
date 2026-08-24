@@ -4,11 +4,16 @@
 //! feature. It controls the real task system; it does not install a modeled
 //! runtime or own a second scheduler state.
 
-use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use core::{
+    pin::Pin,
+    sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
+};
 
 use crate::{
-    DispatchCharge, FairMode, Nice, RunQueue, SchedulePolicy, SchedulerClass, TaskError,
-    TaskSystemConfig, ThreadId, ThreadState,
+    DispatchCharge, FairEntity, FairMode, Nice, RootRtBandwidth, RtRunQueueBandwidth, RunQueue,
+    SchedulePolicy, SchedulerClass, SchedulingEntity, TaskError, TaskSystemConfig, ThreadId,
+    ThreadState,
+    inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
     runtime::MonotonicDeadline,
     system::CpuDeadlineState,
     timer::{TaskDeadlineKind, TaskDeadlineNode},
@@ -16,6 +21,9 @@ use crate::{
 
 static TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
 static PI_RELEASE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static PI_CANCEL_RELEASE_OWNER: AtomicU64 = AtomicU64::new(0);
+static PI_CANCEL_RELEASE_WAITER: AtomicU64 = AtomicU64::new(0);
+static PI_CANCEL_RELEASE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static TARGET_CHAIN_TOP: AtomicU64 = AtomicU64::new(0);
 static PI_CHAIN_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static PI_OWNER_EXIT_TARGET_WAITER: AtomicU64 = AtomicU64::new(0);
@@ -30,15 +38,41 @@ static WAKE_ENTITY_READ_COPY_TARGET: AtomicU64 = AtomicU64::new(0);
 static WAKE_ENTITY_READ_COUNT: AtomicU64 = AtomicU64::new(0);
 static WAKE_ENTITY_READ_COPY_COUNT: AtomicU64 = AtomicU64::new(0);
 static WAKE_ENTITY_READ_COPY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static WAKE_FAIR_VTIME_TARGET: AtomicU64 = AtomicU64::new(0);
+static WAKE_FAIR_VTIME_UPDATE_COUNT: AtomicU64 = AtomicU64::new(0);
+static WAKE_FAIR_VTIME_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static CURRENT_FAIR_VTIME_TARGET: AtomicU64 = AtomicU64::new(0);
+static CURRENT_FAIR_VTIME_UPDATE_COUNT: AtomicU64 = AtomicU64::new(0);
+static CURRENT_FAIR_VTIME_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static DIRECT_WAKE_FAILURE_TARGET: AtomicU64 = AtomicU64::new(0);
+static DIRECT_WAKE_FAILURE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static DIRECT_WAKE_COALESCED_BLOCKED: AtomicU8 = AtomicU8::new(0);
+static DIRECT_WAKE_ON_RQ_TARGET: AtomicU64 = AtomicU64::new(0);
+static DIRECT_WAKE_ON_RQ_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static WAKE_OWNER_DEADLINE_REFRESH_TARGET: AtomicU64 = AtomicU64::new(0);
 static WAKE_OWNER_DEADLINE_REFRESH_REQUIRED: AtomicU8 = AtomicU8::new(0);
 static WAKE_OWNER_DEADLINE_REFRESH_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static EQUAL_RT_WAKE_TARGET: AtomicU64 = AtomicU64::new(0);
+static EQUAL_RT_WAKE_RESCHEDULE: AtomicU8 = AtomicU8::new(0);
+static EQUAL_RT_WAKE_INJECT_OWNER_WORK: AtomicU8 = AtomicU8::new(0);
+static EQUAL_RT_WAKE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static RT_WAKE_PLACEMENT_TARGET: AtomicU64 = AtomicU64::new(0);
+static RT_WAKE_PLACEMENT_CPU: AtomicU64 = AtomicU64::new(0);
+static RT_WAKE_PLACEMENT_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static PARK_PREPARE_RUNTIME_CPU_TARGET: AtomicU64 = AtomicU64::new(0);
+static PARK_PREPARE_RUNTIME_CPU_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static PARK_PREPARE_RUNTIME_CPU_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static PARK_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
+static PARK_THREAD_SCHED_ACQUIRE_COUNT: AtomicU64 = AtomicU64::new(0);
 static SWITCH_TAIL_IRQ_OWNER_PROBE: IrqOwnerProbe = IrqOwnerProbe::new();
+static SWITCH_TAIL_THREAD_SCHED_ACQUIRE_COUNT: AtomicU64 = AtomicU64::new(0);
+static SWITCH_TAIL_RQ_REACQUIRE_COUNT: AtomicU64 = AtomicU64::new(0);
+static SWITCH_TAIL_RQ_BATON_COUNT: AtomicU64 = AtomicU64::new(0);
+static SWITCH_TAIL_STATE_ORDER_TARGET: AtomicU64 = AtomicU64::new(0);
+static SWITCH_TAIL_STATE_OBSERVED_ON_CPU: AtomicU8 = AtomicU8::new(0);
+static SWITCH_TAIL_STATE_ORDER_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static POLICY_SWITCH_HANDOFF_TARGET: AtomicU64 = AtomicU64::new(0);
 static POLICY_SWITCH_HANDOFF_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
-static PI_OUTGOING_RECLASS_TARGET: AtomicU64 = AtomicU64::new(0);
-static PI_OUTGOING_RECLASS_COUNT: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_PUBLICATION_RT_PERIOD_OBSERVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
@@ -48,6 +82,9 @@ static DEADLINE_PUBLICATION_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static DEADLINE_SOFT_EXPIRY_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_SOFT_EXPIRY_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static DEADLINE_SOFT_EXPIRY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static KTIMER_PENDING_YIELD_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
+static KTIMER_PENDING_YIELD_COUNT: AtomicU64 = AtomicU64::new(0);
+static KTIMER_PENDING_YIELD_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static KTIMER_SELECTION_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
 static KTIMER_SELECTION_TARGET_TIMER: AtomicU64 = AtomicU64::new(0);
 static KTIMER_SELECTION_BASE_ENTRIES: AtomicU64 = AtomicU64::new(0);
@@ -57,15 +94,60 @@ static RT_POLICY_DELIVERY_REQUIRED: AtomicU8 = AtomicU8::new(0);
 static RT_POLICY_DELIVERY_EVENTS: AtomicU8 = AtomicU8::new(0);
 static RT_POLICY_REQUEST_PUBLICATIONS: AtomicU64 = AtomicU64::new(0);
 static RT_POLICY_DELIVERY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static DISABLED_RT_BANDWIDTH_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
+static DISABLED_RT_BANDWIDTH_ACTIVATION_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static DISABLED_RT_BANDWIDTH_CHARGE_ENTRIES: AtomicU64 = AtomicU64::new(0);
+static DISABLED_RT_BANDWIDTH_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static CURRENT_HANDLE_QUERY_TARGET: AtomicU64 = AtomicU64::new(0);
 static CURRENT_HANDLE_QUERY_COUNT: AtomicU64 = AtomicU64::new(0);
 static CURRENT_HANDLE_QUERY_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static CURRENT_PREEMPT_GUARD_TARGET: AtomicU64 = AtomicU64::new(0);
+static CURRENT_PREEMPT_GUARD_COUNT: AtomicU64 = AtomicU64::new(0);
+static CURRENT_PREEMPT_GUARD_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static CURRENT_DISPATCH_DETACH_TARGET: AtomicU64 = AtomicU64::new(0);
 static CURRENT_DISPATCH_DETACH_COUNT: AtomicU64 = AtomicU64::new(0);
 static CURRENT_DISPATCH_DETACH_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static LONE_YIELD_RUNTIME_TARGET: AtomicU64 = AtomicU64::new(0);
+static LONE_YIELD_RUNTIME_RUNNING: AtomicU8 = AtomicU8::new(0);
+static LONE_YIELD_RUNTIME_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static LONE_PREEMPT_TRANSITION_TARGET: AtomicU64 = AtomicU64::new(0);
+static LONE_PREEMPT_PUT_PREV_COUNT: AtomicU64 = AtomicU64::new(0);
+static LONE_PREEMPT_SET_NEXT_COUNT: AtomicU64 = AtomicU64::new(0);
+static LONE_PREEMPT_TRANSITION_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static RUNNABLE_HANDOFF_OUTGOING_TARGET: AtomicU64 = AtomicU64::new(0);
+static RUNNABLE_HANDOFF_INCOMING_TARGET: AtomicU64 = AtomicU64::new(0);
+static RUNNABLE_HANDOFF_RUNNING_TO_READY: AtomicU64 = AtomicU64::new(0);
+static RUNNABLE_HANDOFF_READY_TO_RUNNING: AtomicU64 = AtomicU64::new(0);
+static RUNNABLE_HANDOFF_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static NO_SWITCH_THREAD_LOCK_TARGET: AtomicU64 = AtomicU64::new(0);
 static NO_SWITCH_THREAD_LOCK_COUNT: AtomicU64 = AtomicU64::new(0);
 static NO_SWITCH_THREAD_LOCK_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static YIELD_THREAD_LOCK_TARGET: AtomicU64 = AtomicU64::new(0);
+static YIELD_THREAD_LOCK_COUNT: AtomicU64 = AtomicU64::new(0);
+static YIELD_THREAD_LOCK_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static OWNER_CONTROL_REARM_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
+static OWNER_CONTROL_REARM_BASELINE: AtomicU64 = AtomicU64::new(0);
+static OWNER_CONTROL_REARM_AFTER_DRAIN: AtomicU64 = AtomicU64::new(0);
+static OWNER_CONTROL_REARM_AFTER_ACK: AtomicU64 = AtomicU64::new(0);
+static OWNER_CONTROL_REARM_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static OWNER_CONTROL_REARM_NODES: [InboxNode; crate::DEFAULT_BATCH_LIMIT + 1] =
+    [const { InboxNode::new(InboxKind::OwnerControl) }; crate::DEFAULT_BATCH_LIMIT + 1];
+static OWNER_CONTROL_COALESCING_NODE: InboxNode = InboxNode::new(InboxKind::OwnerControl);
+static FAIR_DELAY_DEQUEUE_TARGET: AtomicU64 = AtomicU64::new(0);
+static PARK_PROFILE_HOOK: AtomicUsize = AtomicUsize::new(0);
+static LINKED_PICK_FULL_SNAPSHOT_COUNT: AtomicU64 = AtomicU64::new(0);
+static LINKED_PICK_FULL_SNAPSHOT_TARGET_A: AtomicU64 = AtomicU64::new(0);
+static LINKED_PICK_FULL_SNAPSHOT_TARGET_B: AtomicU64 = AtomicU64::new(0);
+static LINKED_PICK_FULL_SNAPSHOT_SCOPE: AtomicUsize = AtomicUsize::new(0);
+static THREAD_SCHED_PUBLICATION_WAIT_TARGET: AtomicU64 = AtomicU64::new(0);
+static THREAD_SCHED_PUBLICATION_WAIT_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static THREAD_SCHED_LOCK_HOLD_TARGET: AtomicU64 = AtomicU64::new(0);
+static THREAD_SCHED_LOCK_HOLD_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static PARK_PUBLICATION_SERIALIZATION_TARGET: AtomicU64 = AtomicU64::new(0);
+static PARK_PUBLICATION_SERIALIZATION_OUTCOME: AtomicU8 = AtomicU8::new(0);
+static PARK_PUBLICATION_SERIALIZATION_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static WAIT_CLAIM_BEFORE_WAKE_TARGET: AtomicU64 = AtomicU64::new(0);
+static WAIT_CLAIM_BEFORE_WAKE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 
 const STAGE_IDLE: u8 = 0;
 const STAGE_CONFIGURING: u8 = 1;
@@ -83,7 +165,21 @@ const STAGE_OWNER_CAPTURED: u8 = 3;
 const STAGE_OWNER_EXITED: u8 = 4;
 const STAGE_COMPLETE: u8 = 3;
 const STAGE_SWITCH_HANDOFF_PAUSED: u8 = 3;
-const STAGE_SWITCH_HANDOFF_RELEASED: u8 = 4;
+const STAGE_SWITCH_HANDOFF_UPDATE_WAITING: u8 = 4;
+const STAGE_SWITCH_HANDOFF_RELEASED: u8 = 5;
+const STAGE_DIRECT_WAKE_FAILURE_PAUSED: u8 = 3;
+const STAGE_DIRECT_WAKE_FAILURE_RELEASED: u8 = 4;
+const STAGE_DIRECT_WAKE_ON_RQ_PAUSED: u8 = 3;
+const STAGE_DIRECT_WAKE_ON_RQ_RELEASED: u8 = 4;
+const STAGE_DIRECT_WAKE_ON_RQ_COMPLETE: u8 = 5;
+const STAGE_OWNER_CONTROL_DRAINED: u8 = 3;
+const STAGE_OWNER_CONTROL_ACKNOWLEDGED: u8 = 4;
+const STAGE_WAIT_CLAIM_PAUSED: u8 = 3;
+const STAGE_WAIT_CLAIM_RELEASED: u8 = 4;
+const STAGE_THREAD_SCHED_LOCK_HELD: u8 = 3;
+const STAGE_THREAD_SCHED_LOCK_RELEASED: u8 = 4;
+const PARK_PUBLICATION_TASK_LOCK_BUSY: u8 = 1 << 0;
+const PARK_PUBLICATION_STARTED: u8 = 1 << 1;
 const RT_POLICY_RESCHEDULE: u8 = 1 << 0;
 const RT_POLICY_OWNER_WORK: u8 = 1 << 1;
 
@@ -114,16 +210,181 @@ pub fn softirq_activation_preserves_hard_deadline() -> bool {
 pub fn lone_fair_slice_expiry_only_updates_accounting() -> bool {
     let mut queue = RunQueue::configured(u64::MAX, 1);
     let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+    let current_entity =
+        SchedulingEntity::Fair(FairEntity::new(Nice::ZERO, FairMode::Normal, 1, 0));
     let tick = SchedulerClass::Fair.task_tick(
         &mut queue,
         ThreadId::from_parts(1, 1),
         policy,
+        &current_entity,
         DispatchCharge {
             slice_expired: true,
             ..DispatchCharge::default()
         },
     );
     !tick.request_reschedule
+}
+
+/// Checks Linux v7.1 RUN_TO_PARITY for an equal-slice Fair wakeup.
+pub fn equal_slice_wakeup_preserves_current_protection() -> bool {
+    let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+    let mut current = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 2_000);
+    current.set_slice_protection(None);
+    let wakee = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 1_000);
+
+    !crate::scheduler::wakeup_preempts(
+        policy,
+        &SchedulingEntity::Fair(current),
+        false,
+        policy,
+        &SchedulingEntity::Fair(wakee),
+        2_000,
+    )
+}
+
+/// Checks Linux v7.1 `WF_SYNC` batching against migration cost.
+pub fn sync_wakeup_obeys_migration_cost() -> bool {
+    let policy = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+    let current =
+        SchedulingEntity::Fair(FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 2_000));
+    let wakee = SchedulingEntity::Fair(FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 1_000));
+    let migration_cost_ns = 500_000;
+
+    crate::scheduler::wakeup_preempts(policy, &current, false, policy, &wakee, 2_000)
+        && !crate::scheduler::sync_wakeup_preempts(
+            policy,
+            &current,
+            false,
+            policy,
+            &wakee,
+            2_000,
+            crate::scheduler::SyncWakeupContext::new(migration_cost_ns - 1, migration_cost_ns),
+        )
+        && crate::scheduler::sync_wakeup_preempts(
+            policy,
+            &current,
+            false,
+            policy,
+            &wakee,
+            2_000,
+            crate::scheduler::SyncWakeupContext::new(migration_cost_ns, migration_cost_ns),
+        )
+}
+
+/// Checks that renewing an EEVDF request preserves positive lag.
+pub fn fair_request_renewal_preserves_lag() -> bool {
+    let mut entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 0);
+    entity
+        .place_after_activation(0, 0)
+        .expect("test entity must accept its initial placement");
+    assert!(entity.charge(500, 0));
+
+    entity.renew_request();
+
+    entity.vruntime() == 500 && entity.virtual_deadline() == 1_500
+}
+
+/// Checks Linux's two deadline renewals when an expired Fair task yields.
+pub fn expired_fair_request_yield_forfeits_new_request() -> bool {
+    let mut entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 100, 0);
+    entity
+        .place_after_activation(0, 0)
+        .expect("test entity must accept its initial placement");
+    entity.renew_request();
+    assert!(entity.charge(100, 0));
+
+    entity.yield_request(100);
+
+    entity.vruntime() == 200 && entity.virtual_deadline() == 300
+}
+
+/// Checks Linux's no-switch yield rule for a lone current Fair or RT task.
+pub fn lone_current_yield_preserves_linux_dispatch() -> bool {
+    let fair = SchedulingEntity::Fair(FairEntity::new(Nice::ZERO, FairMode::Normal, 1_000, 0));
+    let fifo = SchedulingEntity::Fifo;
+    let round_robin = SchedulingEntity::RoundRobin {
+        remaining_quantum_ns: 1_000,
+    };
+
+    crate::system::lone_current_yield_keeps_dispatch(Some(&fair), false)
+        && crate::system::lone_current_yield_keeps_dispatch(Some(&fifo), false)
+        && crate::system::lone_current_yield_keeps_dispatch(Some(&round_robin), false)
+        && !crate::system::lone_current_yield_keeps_dispatch(Some(&fifo), true)
+        && !crate::system::lone_current_yield_keeps_dispatch(Some(&round_robin), true)
+        && !crate::system::lone_current_yield_keeps_dispatch(
+            Some(&SchedulingEntity::KernelStop),
+            false,
+        )
+}
+
+/// Checks Linux's immediate period kick when idle RT bandwidth restarts.
+pub fn inactive_rt_bandwidth_restart_kicks_period_immediately() -> bool {
+    let cpu = crate::CpuId::new(0);
+    let bandwidth = RootRtBandwidth::new(TaskSystemConfig::new(1).with_rt_bandwidth(1_000, 950));
+    let period_ns = bandwidth.period_ns();
+    let origin = crate::runtime::MonotonicInstant::from_nanos(0)
+        .expect("the monotonic origin must be representable");
+
+    assert!(bandwidth.activate(cpu, || origin));
+    let initial_deadline = bandwidth
+        .deadline_for(cpu)
+        .expect("RT activation must publish a period deadline");
+    let initial_firing = bandwidth
+        .begin_period(
+            cpu,
+            crate::runtime::MonotonicInstant::from_nanos(initial_deadline.as_nanos())
+                .expect("the initial RT deadline must be representable"),
+        )
+        .expect("the initial RT period must fire at its published deadline");
+    bandwidth.finish_period(initial_firing, false);
+
+    let restart_ns = period_ns * 2 + period_ns / 2;
+    let restart = crate::runtime::MonotonicInstant::from_nanos(restart_ns)
+        .expect("the RT restart sample must be representable");
+    assert!(bandwidth.activate(cpu, || restart));
+    bandwidth.deadline_for(cpu).is_some_and(|deadline| {
+        // Linux uses hrtimer_forward_now(timer, 0) when restarting an idle
+        // bandwidth timer. Its minimum hrtimer-resolution delay is represented
+        // by an already-due clockevent in this scheduler's deadline domain.
+        deadline.as_nanos() == restart_ns
+    })
+}
+
+/// Checks Linux's no-throttle rule after a runqueue borrows one full RT period.
+pub fn borrowed_full_rt_period_has_no_throttle_edge() -> bool {
+    const PERIOD_NS: u64 = 100;
+    let mut bandwidth = RtRunQueueBandwidth::offline();
+    bandwidth.enable(PERIOD_NS, PERIOD_NS / 2);
+
+    assert!(bandwidth.account(PERIOD_NS / 2 + 1));
+    bandwidth.borrow_runtime(PERIOD_NS / 2, PERIOD_NS);
+    assert_eq!(bandwidth.runtime_ns(), PERIOD_NS);
+    assert!(bandwidth.account(PERIOD_NS / 2));
+
+    !bandwidth.should_throttle() && bandwidth.runtime_until_throttle().is_none()
+}
+
+/// Checks that an already-throttled rq cannot borrow more root RT runtime.
+pub fn already_throttled_rt_charge_preserves_runtime_loans() -> bool {
+    crate::TaskSystem::already_throttled_rt_charge_preserves_runtime_loans()
+}
+
+/// Checks that an empty RT ledger neither rebalances nor clears throttling.
+pub fn zero_rt_time_period_preserves_throttle_and_runtime_loans() -> bool {
+    crate::TaskSystem::zero_rt_time_period_preserves_throttle_and_runtime_loans()
+}
+
+/// Checks Linux's 10 us lower bound for a Fair hrtick request.
+pub fn fair_hrtick_uses_linux_minimum_delta() -> bool {
+    FairEntity::new(Nice::ZERO, FairMode::Normal, 1, 0).runtime_timer_delta_ns() == 10_000
+}
+
+/// Checks that Linux hrtick follows the EEVDF request deadline, not `vprot`.
+pub fn fair_hrtick_tracks_request_deadline() -> bool {
+    let mut entity = FairEntity::new(Nice::ZERO, FairMode::Normal, 100_000, 10_000);
+    entity.set_slice_protection(Some(25_000));
+
+    entity.slice_is_protected() && entity.runtime_timer_delta_ns() == 100_000
 }
 
 /// Reports the real runtime execution context for target-side timer tests.
@@ -134,6 +395,14 @@ pub fn in_hard_irq_context() -> bool {
 /// Enters and exits one ordinary preemption scope through the real runtime.
 pub fn exercise_preempt_guard() {
     drop(crate::lock::PreemptScope::enter());
+}
+
+/// Enters and exits nested ordinary preemption scopes through the real runtime.
+pub fn exercise_nested_preempt_guards() {
+    let outer = crate::lock::PreemptScope::enter();
+    let inner = crate::lock::PreemptScope::enter();
+    drop(inner);
+    drop(outer);
 }
 
 /// Arms external-handle accounting for one real scheduler thread.
@@ -181,6 +450,54 @@ pub(crate) fn record_current_handle_query(thread: ThreadId) {
         && CURRENT_HANDLE_QUERY_TARGET.load(Ordering::Relaxed) == thread.as_u64()
     {
         CURRENT_HANDLE_QUERY_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Arms preemption-guard accounting for one real scheduler thread.
+pub fn arm_current_preempt_guard_probe(thread: u64) {
+    assert_ne!(
+        thread, 0,
+        "a current preemption-guard probe identity must be non-zero"
+    );
+    assert_eq!(
+        CURRENT_PREEMPT_GUARD_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one current preemption-guard probe may be armed"
+    );
+    CURRENT_PREEMPT_GUARD_TARGET.store(thread, Ordering::Relaxed);
+    CURRENT_PREEMPT_GUARD_COUNT.store(0, Ordering::Relaxed);
+    CURRENT_PREEMPT_GUARD_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes preemption-guard entries made by the armed scheduler thread.
+pub fn take_current_preempt_guard_count() -> Option<u64> {
+    if CURRENT_PREEMPT_GUARD_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let count = CURRENT_PREEMPT_GUARD_COUNT.load(Ordering::Relaxed);
+    CURRENT_PREEMPT_GUARD_TARGET.store(0, Ordering::Relaxed);
+    CURRENT_PREEMPT_GUARD_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(count)
+}
+
+pub(crate) fn record_current_preempt_guard(thread: ThreadId) {
+    if CURRENT_PREEMPT_GUARD_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && CURRENT_PREEMPT_GUARD_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        CURRENT_PREEMPT_GUARD_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -254,6 +571,205 @@ pub(crate) fn record_current_dispatch_detach(thread: ThreadId) {
     }
 }
 
+/// Arms a runtime-publication probe for one real lone-current yield.
+pub fn arm_lone_yield_runtime_probe(thread: u64) {
+    assert_ne!(thread, 0, "a lone-yield probe identity must be non-zero");
+    assert_eq!(
+        LONE_YIELD_RUNTIME_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one lone-yield runtime probe may be armed"
+    );
+    LONE_YIELD_RUNTIME_TARGET.store(thread, Ordering::Relaxed);
+    LONE_YIELD_RUNTIME_RUNNING.store(0, Ordering::Relaxed);
+    LONE_YIELD_RUNTIME_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes whether a real lone-current yield retained its running publication.
+pub fn take_lone_yield_runtime_running() -> Option<bool> {
+    if LONE_YIELD_RUNTIME_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let running = LONE_YIELD_RUNTIME_RUNNING.load(Ordering::Relaxed) != 0;
+    LONE_YIELD_RUNTIME_TARGET.store(0, Ordering::Relaxed);
+    LONE_YIELD_RUNTIME_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(running)
+}
+
+pub(crate) fn record_lone_yield_runtime_state(thread: ThreadId, running: bool) {
+    if LONE_YIELD_RUNTIME_TARGET.load(Ordering::Acquire) != thread.as_u64()
+        || LONE_YIELD_RUNTIME_STAGE
+            .compare_exchange(
+                STAGE_ARMED,
+                STAGE_CONFIGURING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+    {
+        return;
+    }
+    LONE_YIELD_RUNTIME_RUNNING.store(u8::from(running), Ordering::Relaxed);
+    LONE_YIELD_RUNTIME_STAGE.store(STAGE_COMPLETE, Ordering::Release);
+}
+
+/// Lifecycle operations observed while one lone current task services preemption.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LonePreemptionTransitions {
+    /// Linux `put_prev_task()` equivalents applied to the current task.
+    pub put_prev: u64,
+    /// Linux `set_next_task()` equivalents applied to the selected task.
+    pub set_next: u64,
+}
+
+/// Arms lifecycle-operation accounting for one lone-current preemption pass.
+pub fn arm_lone_preemption_transition_probe(thread: u64) {
+    assert_ne!(
+        thread, 0,
+        "a lone-preemption probe identity must be non-zero"
+    );
+    assert_eq!(
+        LONE_PREEMPT_TRANSITION_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one lone-preemption transition probe may be armed"
+    );
+    LONE_PREEMPT_TRANSITION_TARGET.store(thread, Ordering::Relaxed);
+    LONE_PREEMPT_PUT_PREV_COUNT.store(0, Ordering::Relaxed);
+    LONE_PREEMPT_SET_NEXT_COUNT.store(0, Ordering::Relaxed);
+    LONE_PREEMPT_TRANSITION_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes lifecycle operations from the armed lone-current preemption pass.
+pub fn take_lone_preemption_transitions() -> Option<LonePreemptionTransitions> {
+    if LONE_PREEMPT_TRANSITION_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let transitions = LonePreemptionTransitions {
+        put_prev: LONE_PREEMPT_PUT_PREV_COUNT.load(Ordering::Relaxed),
+        set_next: LONE_PREEMPT_SET_NEXT_COUNT.load(Ordering::Relaxed),
+    };
+    LONE_PREEMPT_TRANSITION_TARGET.store(0, Ordering::Relaxed);
+    LONE_PREEMPT_TRANSITION_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(transitions)
+}
+
+pub(crate) fn record_lone_preemption_put_prev(thread: ThreadId) {
+    if LONE_PREEMPT_TRANSITION_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && LONE_PREEMPT_TRANSITION_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        LONE_PREEMPT_PUT_PREV_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_lone_preemption_set_next(thread: ThreadId) {
+    if LONE_PREEMPT_TRANSITION_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && LONE_PREEMPT_TRANSITION_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        LONE_PREEMPT_SET_NEXT_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Runnable lifecycle publications observed across one real task handoff.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RunnableHandoffTransitions {
+    /// Outgoing `Running -> Ready` publications.
+    pub running_to_ready: u64,
+    /// Incoming `Ready -> Running` publications.
+    pub ready_to_running: u64,
+}
+
+/// Arms lifecycle accounting for one real runnable-to-runnable handoff.
+pub fn arm_runnable_handoff_transition_probe(outgoing: u64, incoming: u64) {
+    assert_ne!(outgoing, 0, "a runnable handoff identity must be non-zero");
+    assert_ne!(incoming, 0, "a runnable handoff identity must be non-zero");
+    assert_ne!(outgoing, incoming, "a handoff requires distinct tasks");
+    assert_eq!(
+        RUNNABLE_HANDOFF_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one runnable handoff probe may be armed"
+    );
+    RUNNABLE_HANDOFF_OUTGOING_TARGET.store(outgoing, Ordering::Relaxed);
+    RUNNABLE_HANDOFF_INCOMING_TARGET.store(incoming, Ordering::Relaxed);
+    RUNNABLE_HANDOFF_RUNNING_TO_READY.store(0, Ordering::Relaxed);
+    RUNNABLE_HANDOFF_READY_TO_RUNNING.store(0, Ordering::Relaxed);
+    RUNNABLE_HANDOFF_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes lifecycle publications from the armed runnable handoff.
+pub fn take_runnable_handoff_transitions() -> Option<RunnableHandoffTransitions> {
+    if RUNNABLE_HANDOFF_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let transitions = RunnableHandoffTransitions {
+        running_to_ready: RUNNABLE_HANDOFF_RUNNING_TO_READY.load(Ordering::Relaxed),
+        ready_to_running: RUNNABLE_HANDOFF_READY_TO_RUNNING.load(Ordering::Relaxed),
+    };
+    RUNNABLE_HANDOFF_OUTGOING_TARGET.store(0, Ordering::Relaxed);
+    RUNNABLE_HANDOFF_INCOMING_TARGET.store(0, Ordering::Relaxed);
+    RUNNABLE_HANDOFF_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(transitions)
+}
+
+pub(crate) fn record_runnable_handoff_transition(
+    thread: ThreadId,
+    from: ThreadState,
+    to: ThreadState,
+) {
+    if RUNNABLE_HANDOFF_STAGE.load(Ordering::Acquire) != STAGE_ARMED {
+        return;
+    }
+    if RUNNABLE_HANDOFF_OUTGOING_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+        && from == ThreadState::Running
+        && to == ThreadState::Ready
+    {
+        RUNNABLE_HANDOFF_RUNNING_TO_READY.fetch_add(1, Ordering::Relaxed);
+    }
+    if RUNNABLE_HANDOFF_INCOMING_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+        && from == ThreadState::Ready
+        && to == ThreadState::Running
+    {
+        RUNNABLE_HANDOFF_READY_TO_RUNNING.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Arms task-lock accounting for one real scheduler no-switch pass.
 pub fn arm_no_switch_thread_lock_probe(thread: u64) {
     assert_ne!(thread, 0, "a no-switch probe identity must be non-zero");
@@ -280,6 +796,224 @@ pub fn request_current_owner_work() -> Result<(), crate::TaskError> {
     Ok(())
 }
 
+/// Publishes one preemption request for the current CPU.
+pub fn request_current_reschedule() -> Result<(), crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
+    remote.request_remote_reschedule();
+    Ok(())
+}
+
+/// Returns the current CPU's completed scheduler-deadline derivation count.
+pub fn current_scheduler_deadline_derivations() -> Result<u64, crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
+    Ok(remote.scheduler_deadline_derivations())
+}
+
+/// Returns scheduler deadline derivations caused specifically by switch selection.
+pub fn current_schedule_selection_deadline_derivations() -> Result<u64, crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
+    Ok(remote.schedule_selection_deadline_derivations())
+}
+
+/// Generations after two publications of the same sticky scheduler reason.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchedulerRequestCoalescingGenerations {
+    /// Generation after the first publication.
+    pub after_first: u64,
+    /// Generation after the duplicate publication.
+    pub after_duplicate: u64,
+}
+
+/// Publishes the current CPU's sticky owner-work reason twice in one guard.
+pub fn request_current_owner_work_twice()
+-> Result<SchedulerRequestCoalescingGenerations, crate::TaskError> {
+    let pin = crate::lock::PreemptScope::enter();
+    let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
+    remote.request_scheduler_work();
+    let (after_first, ..) = remote.scheduler_request_state_for_test();
+    remote.request_scheduler_work();
+    let (after_duplicate, ..) = remote.scheduler_request_state_for_test();
+    drop(pin);
+    Ok(SchedulerRequestCoalescingGenerations {
+        after_first,
+        after_duplicate,
+    })
+}
+
+/// Publishes the current CPU's coupled preempt/owner-work reasons twice.
+pub fn request_current_combined_scheduler_work_twice()
+-> Result<SchedulerRequestCoalescingGenerations, crate::TaskError> {
+    let pin = crate::lock::PreemptScope::enter();
+    let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
+    remote.request_remote_reschedule_with_scheduler_work();
+    let (after_first, ..) = remote.scheduler_request_state_for_test();
+    remote.request_remote_reschedule_with_scheduler_work();
+    let (after_duplicate, ..) = remote.scheduler_request_state_for_test();
+    drop(pin);
+    Ok(SchedulerRequestCoalescingGenerations {
+        after_first,
+        after_duplicate,
+    })
+}
+
+/// Scheduler-request generations around one coalesced owner-control node.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OwnerControlCoalescingGenerations {
+    /// Generation before the node was first published.
+    pub before: u64,
+    /// Generation after the node gained inbox membership.
+    pub after_first_publication: u64,
+    /// Generation after the same pending node was published again.
+    pub after_coalesced_publication: u64,
+}
+
+/// Publishes the same owner-control node twice before its owner may drain it.
+pub fn publish_coalesced_owner_control_twice()
+-> Result<OwnerControlCoalescingGenerations, crate::TaskError> {
+    let pin = crate::lock::PreemptScope::enter();
+    let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
+    let owner = remote.owner();
+    let message =
+        InboxMessage::deadline_refresh_with_payload(ThreadId::from_parts(u32::MAX, 1), owner, 0, 0);
+    let (before, ..) = remote.scheduler_request_state_for_test();
+    // SAFETY: this process-lifetime fixture is never moved.
+    let node = unsafe { Pin::new_unchecked(&OWNER_CONTROL_COALESCING_NODE) };
+    assert_eq!(
+        remote.publish_owner_control(node, message),
+        PublishResult::Published,
+        "the coalescing fixture must begin detached"
+    );
+    let (after_first_publication, ..) = remote.scheduler_request_state_for_test();
+    assert_eq!(
+        remote.publish_owner_control(node, message),
+        PublishResult::AlreadyPending,
+        "the second publication must coalesce into the pending node"
+    );
+    let (after_coalesced_publication, ..) = remote.scheduler_request_state_for_test();
+    drop(pin);
+    Ok(OwnerControlCoalescingGenerations {
+        before,
+        after_first_publication,
+        after_coalesced_publication,
+    })
+}
+
+/// Scheduler-request generations around one bounded owner-control remainder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OwnerControlRearmGenerations {
+    /// Generation after producers published the complete batch.
+    pub baseline: u64,
+    /// Generation after the first bounded owner drain returned.
+    pub after_drain: u64,
+    /// Generation after the owner acknowledged the drained request.
+    pub after_ack: u64,
+}
+
+/// Publishes one more owner-control message than a scheduler pass may drain.
+pub fn publish_bounded_owner_control_remainder() -> Result<(), crate::TaskError> {
+    assert_eq!(
+        OWNER_CONTROL_REARM_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one owner-control rearm probe may be armed"
+    );
+    let pin = crate::lock::PreemptScope::enter();
+    let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
+    let owner = remote.owner();
+    for (index, node) in OWNER_CONTROL_REARM_NODES.iter().enumerate() {
+        let thread = ThreadId::from_parts(index as u32 + 1, 1);
+        let message = InboxMessage::deadline_refresh_with_payload(thread, owner, 0, 0);
+        // SAFETY: the process-lifetime fixture array is never moved.
+        let node = unsafe { Pin::new_unchecked(node) };
+        assert_eq!(
+            remote.publish_owner_control(node, message),
+            PublishResult::Published,
+            "every fixture node must own one distinct inbox membership"
+        );
+    }
+    let (baseline, ..) = remote.scheduler_request_state_for_test();
+    OWNER_CONTROL_REARM_TARGET_CPU.store(owner.as_u32() as u64, Ordering::Relaxed);
+    OWNER_CONTROL_REARM_BASELINE.store(baseline, Ordering::Relaxed);
+    OWNER_CONTROL_REARM_AFTER_DRAIN.store(0, Ordering::Relaxed);
+    OWNER_CONTROL_REARM_AFTER_ACK.store(0, Ordering::Relaxed);
+    OWNER_CONTROL_REARM_STAGE.store(STAGE_ARMED, Ordering::Release);
+    drop(pin);
+    Ok(())
+}
+
+/// Takes the generations once the real owner transaction has acknowledged them.
+pub fn take_bounded_owner_control_rearm() -> Option<OwnerControlRearmGenerations> {
+    if OWNER_CONTROL_REARM_STAGE
+        .compare_exchange(
+            STAGE_OWNER_CONTROL_ACKNOWLEDGED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let generations = OwnerControlRearmGenerations {
+        baseline: OWNER_CONTROL_REARM_BASELINE.load(Ordering::Relaxed),
+        after_drain: OWNER_CONTROL_REARM_AFTER_DRAIN.load(Ordering::Relaxed),
+        after_ack: OWNER_CONTROL_REARM_AFTER_ACK.load(Ordering::Relaxed),
+    };
+    OWNER_CONTROL_REARM_TARGET_CPU.store(0, Ordering::Relaxed);
+    OWNER_CONTROL_REARM_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(generations)
+}
+
+pub(crate) fn record_bounded_owner_control_drain(
+    cpu: crate::CpuId,
+    pending: bool,
+    generation: u64,
+) {
+    if !pending
+        || OWNER_CONTROL_REARM_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || OWNER_CONTROL_REARM_TARGET_CPU.load(Ordering::Relaxed) != cpu.as_u32() as u64
+    {
+        return;
+    }
+    OWNER_CONTROL_REARM_AFTER_DRAIN.store(generation, Ordering::Relaxed);
+    assert_eq!(
+        OWNER_CONTROL_REARM_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_OWNER_CONTROL_DRAINED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "owner-control remainder completed in an invalid stage"
+    );
+}
+
+pub(crate) fn record_bounded_owner_control_ack(cpu: crate::CpuId, generation: u64) {
+    if OWNER_CONTROL_REARM_STAGE.load(Ordering::Acquire) != STAGE_OWNER_CONTROL_DRAINED
+        || OWNER_CONTROL_REARM_TARGET_CPU.load(Ordering::Relaxed) != cpu.as_u32() as u64
+    {
+        return;
+    }
+    OWNER_CONTROL_REARM_AFTER_ACK.store(generation, Ordering::Relaxed);
+    assert_eq!(
+        OWNER_CONTROL_REARM_STAGE.compare_exchange(
+            STAGE_OWNER_CONTROL_DRAINED,
+            STAGE_OWNER_CONTROL_ACKNOWLEDGED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_OWNER_CONTROL_DRAINED),
+        "owner-control acknowledgement completed in an invalid stage"
+    );
+}
+
 /// Publishes owner work for one online CPU and reports whether its scheduler
 /// delivery contract was completed.
 pub fn request_cpu_owner_work(cpu: u32) -> Result<bool, crate::TaskError> {
@@ -290,6 +1024,17 @@ pub fn request_cpu_owner_work(cpu: u32) -> Result<bool, crate::TaskError> {
         .cpu_remote(cpu)
         .ok_or(crate::TaskError::CpuOffline(cpu.as_u32()))?;
     Ok(remote.request_scheduler_work_for_test())
+}
+
+/// Returns Linux `rq->nr_running` from one CPU's last committed rq summary.
+pub fn cpu_nr_running(cpu: u32) -> Result<usize, crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let cpu = crate::CpuId::new(cpu);
+    let system = crate::facade::runtime_task_system()?;
+    let remote = system
+        .cpu_remote(cpu)
+        .ok_or(crate::TaskError::CpuOffline(cpu.as_u32()))?;
+    Ok(remote.load_summary().nr_running())
 }
 
 /// Exercises the production publication used after moving a Deadline
@@ -362,6 +1107,69 @@ pub(crate) fn complete_no_switch_thread_lock_probe(thread: ThreadId) {
     );
 }
 
+/// Arms task-lock accounting for one real scheduler yield pass.
+pub fn arm_yield_thread_lock_probe(thread: u64) {
+    assert_ne!(thread, 0, "a yield probe identity must be non-zero");
+    assert_eq!(
+        YIELD_THREAD_LOCK_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one yield task-lock probe may be armed"
+    );
+    YIELD_THREAD_LOCK_TARGET.store(thread, Ordering::Relaxed);
+    YIELD_THREAD_LOCK_COUNT.store(0, Ordering::Relaxed);
+    YIELD_THREAD_LOCK_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes task-lock entries from the armed scheduler yield pass.
+pub fn take_yield_thread_lock_count() -> Option<u64> {
+    if YIELD_THREAD_LOCK_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let count = YIELD_THREAD_LOCK_COUNT.load(Ordering::Relaxed);
+    YIELD_THREAD_LOCK_TARGET.store(0, Ordering::Relaxed);
+    YIELD_THREAD_LOCK_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(count)
+}
+
+pub(crate) fn record_yield_thread_lock(thread: ThreadId) {
+    if YIELD_THREAD_LOCK_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && YIELD_THREAD_LOCK_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        YIELD_THREAD_LOCK_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn complete_yield_thread_lock_probe(thread: ThreadId) {
+    if YIELD_THREAD_LOCK_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || YIELD_THREAD_LOCK_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        YIELD_THREAD_LOCK_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "the yield task-lock probe completed in an invalid stage"
+    );
+}
+
 struct IrqOwnerProbe {
     target: AtomicU64,
     thread_sched_entries: AtomicU64,
@@ -425,10 +1233,13 @@ impl IrqOwnerProbe {
         Some(entries)
     }
 
+    fn matches(&self, target: ThreadId) -> bool {
+        self.stage.load(Ordering::Acquire) == STAGE_ARMED
+            && self.target.load(Ordering::Relaxed) == target.as_u64()
+    }
+
     fn record(&self, target: ThreadId, thread_sched: bool, run_queue: bool, name: &str) {
-        if self.stage.load(Ordering::Acquire) != STAGE_ARMED
-            || self.target.load(Ordering::Relaxed) != target.as_u64()
-        {
+        if !self.matches(target) {
             return;
         }
         self.thread_sched_entries
@@ -982,18 +1793,97 @@ pub(crate) fn record_rt_policy_request_publication(thread: ThreadId) {
     }
 }
 
+/// Arms one CPU for disabled root-RT-bandwidth entry accounting.
+pub fn arm_disabled_rt_bandwidth_probe(cpu: usize) {
+    let target = u64::try_from(cpu)
+        .expect("an RT-bandwidth probe CPU must fit u64")
+        .checked_add(1)
+        .expect("an RT-bandwidth probe CPU identity must fit u64");
+    assert_eq!(
+        DISABLED_RT_BANDWIDTH_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one disabled RT-bandwidth probe may be armed"
+    );
+    DISABLED_RT_BANDWIDTH_TARGET_CPU.store(target, Ordering::Relaxed);
+    DISABLED_RT_BANDWIDTH_ACTIVATION_ENTRIES.store(0, Ordering::Relaxed);
+    DISABLED_RT_BANDWIDTH_CHARGE_ENTRIES.store(0, Ordering::Relaxed);
+    DISABLED_RT_BANDWIDTH_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Calls into disabled root RT bandwidth observed on one CPU.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DisabledRtBandwidthEntries {
+    /// Attempts to start a root RT period while bandwidth control was disabled.
+    pub activation: u64,
+    /// Attempts to charge root RT runtime while bandwidth control was disabled.
+    pub charge: u64,
+}
+
+/// Takes disabled root-RT-bandwidth entries for the armed CPU.
+pub fn take_disabled_rt_bandwidth_entries() -> Option<DisabledRtBandwidthEntries> {
+    if DISABLED_RT_BANDWIDTH_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let entries = DisabledRtBandwidthEntries {
+        activation: DISABLED_RT_BANDWIDTH_ACTIVATION_ENTRIES.load(Ordering::Relaxed),
+        charge: DISABLED_RT_BANDWIDTH_CHARGE_ENTRIES.load(Ordering::Relaxed),
+    };
+    DISABLED_RT_BANDWIDTH_TARGET_CPU.store(0, Ordering::Relaxed);
+    DISABLED_RT_BANDWIDTH_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(entries)
+}
+
+fn disabled_rt_bandwidth_probe_matches(cpu: crate::CpuId) -> bool {
+    DISABLED_RT_BANDWIDTH_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && DISABLED_RT_BANDWIDTH_TARGET_CPU.load(Ordering::Relaxed) == u64::from(cpu.as_u32()) + 1
+}
+
+pub(crate) fn record_disabled_rt_bandwidth_activation_entry(cpu: crate::CpuId) {
+    if disabled_rt_bandwidth_probe_matches(cpu) {
+        DISABLED_RT_BANDWIDTH_ACTIVATION_ENTRIES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_disabled_rt_bandwidth_charge_entry(cpu: crate::CpuId) {
+    if disabled_rt_bandwidth_probe_matches(cpu) {
+        DISABLED_RT_BANDWIDTH_CHARGE_ENTRIES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Arms one real context-switch tail for IRQ-owner accounting.
 pub fn arm_switch_tail_irq_owner_probe(previous: u64) {
+    SWITCH_TAIL_THREAD_SCHED_ACQUIRE_COUNT.store(0, Ordering::Relaxed);
+    SWITCH_TAIL_RQ_REACQUIRE_COUNT.store(0, Ordering::Relaxed);
+    SWITCH_TAIL_RQ_BATON_COUNT.store(0, Ordering::Relaxed);
     SWITCH_TAIL_IRQ_OWNER_PROBE.arm(previous, "switch-tail");
 }
 
 /// Runtime IRQ-owner entries observed inside one real switch tail.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SwitchTailIrqOwnerEntries {
+    /// Previous-task scheduler locks acquired after the architecture switch.
+    pub thread_sched_acquired: u64,
     /// Entries taken by the previous thread scheduler lock.
     pub thread_sched: u64,
     /// Entries taken by a migration runqueue transaction.
     pub run_queue: u64,
+    /// New rq acquisitions performed after the architecture switch.
+    pub rq_reacquired: u64,
+    /// Selection-owned rq lock batons consumed after the architecture switch.
+    pub rq_baton_consumed: u64,
 }
 
 /// Takes task-sched and rq runtime IRQ-owner entries for the switch tail.
@@ -1001,17 +1891,117 @@ pub fn take_switch_tail_irq_owner_entries() -> Option<SwitchTailIrqOwnerEntries>
     SWITCH_TAIL_IRQ_OWNER_PROBE
         .take()
         .map(|entries| SwitchTailIrqOwnerEntries {
+            thread_sched_acquired: SWITCH_TAIL_THREAD_SCHED_ACQUIRE_COUNT
+                .swap(0, Ordering::Relaxed),
             thread_sched: entries.thread_sched,
             run_queue: entries.run_queue,
+            rq_reacquired: SWITCH_TAIL_RQ_REACQUIRE_COUNT.swap(0, Ordering::Relaxed),
+            rq_baton_consumed: SWITCH_TAIL_RQ_BATON_COUNT.swap(0, Ordering::Relaxed),
         })
+}
+
+pub(crate) fn record_switch_tail_thread_sched_acquisition(previous: ThreadId) {
+    if SWITCH_TAIL_IRQ_OWNER_PROBE.stage.load(Ordering::Acquire) == STAGE_ARMED
+        && SWITCH_TAIL_IRQ_OWNER_PROBE.target.load(Ordering::Relaxed) == previous.as_u64()
+    {
+        SWITCH_TAIL_THREAD_SCHED_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 pub(crate) fn record_switch_tail_irq_owner_scopes(
     previous: ThreadId,
     thread_sched: bool,
     run_queue: bool,
+    rq_reacquired: bool,
+    rq_baton_consumed: bool,
 ) {
-    SWITCH_TAIL_IRQ_OWNER_PROBE.record(previous, thread_sched, run_queue, "switch-tail");
+    if !SWITCH_TAIL_IRQ_OWNER_PROBE.matches(previous) {
+        return;
+    }
+    if rq_reacquired {
+        SWITCH_TAIL_RQ_REACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+    if rq_baton_consumed {
+        SWITCH_TAIL_RQ_BATON_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+    SWITCH_TAIL_IRQ_OWNER_PROBE
+        .thread_sched_entries
+        .fetch_add(u64::from(thread_sched), Ordering::Relaxed);
+    SWITCH_TAIL_IRQ_OWNER_PROBE
+        .run_queue_entries
+        .fetch_add(u64::from(run_queue), Ordering::Relaxed);
+}
+
+pub(crate) fn complete_switch_tail_irq_owner_probe(previous: ThreadId) {
+    if !SWITCH_TAIL_IRQ_OWNER_PROBE.matches(previous) {
+        return;
+    }
+    assert_eq!(
+        SWITCH_TAIL_IRQ_OWNER_PROBE.stage.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "switch-tail IRQ-owner scopes completed in an invalid stage"
+    );
+}
+
+/// Arms the Linux `prev->__state` before `prev->on_cpu = 0` ordering probe.
+pub fn arm_switch_tail_state_order_probe(previous: u64) {
+    assert_ne!(previous, 0, "a switch-tail state identity must be non-zero");
+    assert_eq!(
+        SWITCH_TAIL_STATE_ORDER_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one switch-tail state-order probe may be armed"
+    );
+    SWITCH_TAIL_STATE_ORDER_TARGET.store(previous, Ordering::Relaxed);
+    SWITCH_TAIL_STATE_OBSERVED_ON_CPU.store(0, Ordering::Relaxed);
+    SWITCH_TAIL_STATE_ORDER_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes whether outgoing state was observed before releasing `on_cpu`.
+pub fn take_switch_tail_state_observed_while_on_cpu() -> Option<bool> {
+    if SWITCH_TAIL_STATE_ORDER_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let observed = SWITCH_TAIL_STATE_OBSERVED_ON_CPU.load(Ordering::Relaxed) != 0;
+    SWITCH_TAIL_STATE_ORDER_TARGET.store(0, Ordering::Relaxed);
+    SWITCH_TAIL_STATE_ORDER_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(observed)
+}
+
+pub(crate) fn record_switch_tail_state_observation(previous: ThreadId, on_cpu: bool) {
+    if SWITCH_TAIL_STATE_ORDER_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || SWITCH_TAIL_STATE_ORDER_TARGET.load(Ordering::Relaxed) != previous.as_u64()
+    {
+        return;
+    }
+    SWITCH_TAIL_STATE_OBSERVED_ON_CPU.store(u8::from(on_cpu), Ordering::Relaxed);
+    assert_eq!(
+        SWITCH_TAIL_STATE_ORDER_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "switch-tail state ordering completed in an invalid stage"
+    );
 }
 
 /// Arms a pause after one yielding task has left `rq->curr` but before its
@@ -1038,8 +2028,28 @@ pub fn policy_switch_handoff_paused() -> bool {
     POLICY_SWITCH_HANDOFF_STAGE.load(Ordering::Acquire) == STAGE_SWITCH_HANDOFF_PAUSED
 }
 
-/// Releases the target after a concurrent policy update has completed.
+/// Returns whether the concurrent policy writer reached the owner-rq boundary.
+pub fn policy_switch_handoff_update_waiting() -> bool {
+    POLICY_SWITCH_HANDOFF_STAGE.load(Ordering::Acquire) == STAGE_SWITCH_HANDOFF_UPDATE_WAITING
+}
+
+/// Releases the switch tail after the policy writer reached the retained rq lock.
 pub fn release_policy_switch_handoff() {
+    assert_eq!(
+        POLICY_SWITCH_HANDOFF_STAGE.compare_exchange(
+            STAGE_SWITCH_HANDOFF_UPDATE_WAITING,
+            STAGE_SWITCH_HANDOFF_RELEASED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_SWITCH_HANDOFF_UPDATE_WAITING),
+        "policy handoff release must follow the owner-rq update attempt"
+    );
+}
+
+/// Releases a paused switch handoff when the test only needs to observe the
+/// committed pre-switch window and has no concurrent policy writer.
+pub fn release_policy_switch_handoff_after_observation() {
     assert_eq!(
         POLICY_SWITCH_HANDOFF_STAGE.compare_exchange(
             STAGE_SWITCH_HANDOFF_PAUSED,
@@ -1048,7 +2058,23 @@ pub fn release_policy_switch_handoff() {
             Ordering::Acquire,
         ),
         Ok(STAGE_SWITCH_HANDOFF_PAUSED),
-        "policy handoff release must follow the paused switch"
+        "observed policy handoff release requires a paused switch"
+    );
+}
+
+pub(crate) fn record_policy_switch_handoff_update_attempt(thread: ThreadId) {
+    if POLICY_SWITCH_HANDOFF_TARGET.load(Ordering::Acquire) != thread.as_u64() {
+        return;
+    }
+    assert_eq!(
+        POLICY_SWITCH_HANDOFF_STAGE.compare_exchange(
+            STAGE_SWITCH_HANDOFF_PAUSED,
+            STAGE_SWITCH_HANDOFF_UPDATE_WAITING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_SWITCH_HANDOFF_PAUSED),
+        "policy writer reached the switch handoff outside the paused rq window"
     );
 }
 
@@ -1075,51 +2101,386 @@ pub(crate) fn pause_policy_switch_handoff(previous: ThreadId) {
     POLICY_SWITCH_HANDOFF_STAGE.store(STAGE_IDLE, Ordering::Release);
 }
 
-/// Arms PI reclassification accounting for one outgoing task which has left
-/// `rq->curr` but still retains its switch-tail `on_cpu` claim.
-pub fn arm_pi_outgoing_reclassification_probe(thread: u64) {
-    assert_ne!(thread, 0, "a PI outgoing identity must be non-zero");
-    PI_OUTGOING_RECLASS_COUNT.store(0, Ordering::Relaxed);
+/// Arms a real park commit immediately after its final wake check.
+pub fn arm_park_after_final_wake_check(thread: ThreadId) -> Result<(), TaskError> {
+    let system = crate::facade::runtime_task_system()?;
+    crate::system::arm_park_after_final_wake_check(system, thread);
+    Ok(())
+}
+
+/// Returns whether the armed park commit reached the post-accounting window.
+pub fn park_after_final_wake_check_entered() -> bool {
+    crate::system::park_after_final_wake_check_entered()
+}
+
+/// Releases the armed park commit after a concurrent wake was published.
+pub fn complete_park_after_final_wake_check() {
+    crate::system::complete_park_after_final_wake_check();
+}
+
+/// Arms one real park immediately after `Blocked` becomes visible while its
+/// active entity is still owned by the rq publication transaction.
+pub fn arm_park_after_blocked_publication(thread: ThreadId) -> Result<(), TaskError> {
+    let system = crate::facade::runtime_task_system()?;
+    crate::system::arm_park_after_blocked_publication(system, thread);
+    Ok(())
+}
+
+/// Returns whether the armed park reached the blocked-publication window.
+pub fn park_after_blocked_publication_entered() -> bool {
+    crate::system::park_after_blocked_publication_entered()
+}
+
+/// Releases the armed blocked-publication park transaction.
+pub fn complete_park_after_blocked_publication() {
+    crate::system::complete_park_after_blocked_publication();
+}
+
+/// Arms a real FIFO/RR park immediately before it reserves detached entity
+/// publication under its owner rq.
+pub fn arm_park_before_active_publication(thread: ThreadId) -> Result<(), TaskError> {
+    let system = crate::facade::runtime_task_system()?;
+    crate::system::arm_park_before_active_publication(system, thread);
+    Ok(())
+}
+
+/// Returns whether the armed park reached its pre-publication rq window.
+pub fn park_before_active_publication_entered() -> bool {
+    crate::system::park_before_active_publication_entered()
+}
+
+/// Releases the armed park to reserve and publish its detached entity.
+pub fn complete_park_before_active_publication() {
+    crate::system::complete_park_before_active_publication();
+}
+
+/// Pauses one selected wait-queue claim after it owns delivery but before its
+/// sticky wake publication.
+pub fn arm_wait_claim_before_wake(thread: ThreadId) {
+    assert_ne!(thread.as_u64(), 0, "a wait-claim target must be live");
     assert_eq!(
-        PI_OUTGOING_RECLASS_TARGET.compare_exchange(
-            0,
-            thread,
-            Ordering::Release,
-            Ordering::Relaxed,
+        WAIT_CLAIM_BEFORE_WAKE_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
         ),
-        Ok(0),
-        "only one PI outgoing reclassification probe may be armed"
+        Ok(STAGE_IDLE),
+        "only one selected wait claim may be paused"
+    );
+    WAIT_CLAIM_BEFORE_WAKE_TARGET.store(thread.as_u64(), Ordering::Relaxed);
+    WAIT_CLAIM_BEFORE_WAKE_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the selected wait claim reached the pre-wake window.
+pub fn wait_claim_before_wake_entered() -> bool {
+    WAIT_CLAIM_BEFORE_WAKE_STAGE.load(Ordering::Acquire) == STAGE_WAIT_CLAIM_PAUSED
+}
+
+/// Releases the selected wait claim to publish its sticky wake.
+pub fn complete_wait_claim_before_wake() {
+    assert_eq!(
+        WAIT_CLAIM_BEFORE_WAKE_STAGE.compare_exchange(
+            STAGE_WAIT_CLAIM_PAUSED,
+            STAGE_WAIT_CLAIM_RELEASED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_WAIT_CLAIM_PAUSED),
+        "the selected wait claim was not paused"
     );
 }
 
-/// Returns whether the armed outgoing task completed a PI reclassification.
-pub fn pi_outgoing_reclassification_observed() -> bool {
-    PI_OUTGOING_RECLASS_COUNT.load(Ordering::Acquire) != 0
+pub(crate) fn pause_wait_claim_before_wake(thread: ThreadId) {
+    if WAIT_CLAIM_BEFORE_WAKE_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || WAIT_CLAIM_BEFORE_WAKE_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        WAIT_CLAIM_BEFORE_WAKE_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_WAIT_CLAIM_PAUSED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "the selected wait claim reached an invalid stage"
+    );
+    while WAIT_CLAIM_BEFORE_WAKE_STAGE.load(Ordering::Acquire) < STAGE_WAIT_CLAIM_RELEASED {
+        core::hint::spin_loop();
+    }
+    WAIT_CLAIM_BEFORE_WAKE_TARGET.store(0, Ordering::Relaxed);
+    WAIT_CLAIM_BEFORE_WAKE_STAGE.store(STAGE_IDLE, Ordering::Release);
 }
 
-/// Takes the number of PI reclassifications observed for the armed task.
-pub fn take_pi_outgoing_reclassification_count() -> Option<u64> {
-    let target = PI_OUTGOING_RECLASS_TARGET.swap(0, Ordering::AcqRel);
-    if target == 0 {
+/// Arms observation of a task-lock caller waiting for detached entity
+/// publication on the selected thread.
+pub fn arm_thread_sched_publication_wait(thread: ThreadId) {
+    assert_ne!(thread.as_u64(), 0, "a publication-wait target must be live");
+    assert_eq!(
+        THREAD_SCHED_PUBLICATION_WAIT_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one task-lock publication wait may be armed"
+    );
+    THREAD_SCHED_PUBLICATION_WAIT_TARGET.store(thread.as_u64(), Ordering::Relaxed);
+    THREAD_SCHED_PUBLICATION_WAIT_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the target task-lock caller reached publication wait.
+pub fn thread_sched_publication_wait_entered() -> bool {
+    THREAD_SCHED_PUBLICATION_WAIT_STAGE.load(Ordering::Acquire) == STAGE_COMPLETE
+}
+
+/// Returns whether the selected task scheduler lock can be acquired without
+/// waiting while its detached entity publication remains pending.
+pub fn thread_sched_lock_available(thread: ThreadId) -> Result<bool, TaskError> {
+    let available = thread_sched_lock_available_now(thread)?;
+    assert_eq!(
+        THREAD_SCHED_PUBLICATION_WAIT_STAGE.compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_IDLE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_COMPLETE),
+        "the task-lock availability probe completed before its waiter entered"
+    );
+    Ok(available)
+}
+
+/// Returns whether the selected task scheduler lock can be acquired now.
+pub fn thread_sched_lock_available_now(thread: ThreadId) -> Result<bool, TaskError> {
+    let system = crate::facade::runtime_task_system()?;
+    let handle = system.thread_handle(thread)?;
+    Ok(handle.runtime_core_arc().sched().try_lock_state_for_test())
+}
+
+pub(crate) fn record_thread_sched_publication_wait(thread: ThreadId) {
+    if THREAD_SCHED_PUBLICATION_WAIT_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || THREAD_SCHED_PUBLICATION_WAIT_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        THREAD_SCHED_PUBLICATION_WAIT_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "target task-lock publication wait reached an invalid stage"
+    );
+    THREAD_SCHED_PUBLICATION_WAIT_TARGET.store(0, Ordering::Relaxed);
+}
+
+/// Arms one real task scheduler lock holder for the selected thread.
+pub fn arm_thread_sched_lock_hold(thread: ThreadId) {
+    assert_ne!(thread.as_u64(), 0, "a task-lock hold target must be live");
+    assert_eq!(
+        THREAD_SCHED_LOCK_HOLD_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one task scheduler lock holder may be armed"
+    );
+    THREAD_SCHED_LOCK_HOLD_TARGET.store(thread.as_u64(), Ordering::Relaxed);
+    THREAD_SCHED_LOCK_HOLD_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Acquires and holds the selected thread's real scheduler lock until released.
+pub fn hold_thread_sched_lock(thread: ThreadId) -> Result<(), TaskError> {
+    let system = crate::facade::runtime_task_system()?;
+    let handle = system.thread_handle(thread)?;
+    handle.runtime_core_arc().sched().hold_lock_for_test();
+    Ok(())
+}
+
+/// Returns whether the selected task scheduler lock is currently held.
+pub fn thread_sched_lock_hold_entered() -> bool {
+    THREAD_SCHED_LOCK_HOLD_STAGE.load(Ordering::Acquire) == STAGE_THREAD_SCHED_LOCK_HELD
+}
+
+/// Releases the selected task scheduler lock holder.
+pub fn complete_thread_sched_lock_hold() {
+    assert_eq!(
+        THREAD_SCHED_LOCK_HOLD_STAGE.compare_exchange(
+            STAGE_THREAD_SCHED_LOCK_HELD,
+            STAGE_THREAD_SCHED_LOCK_RELEASED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_THREAD_SCHED_LOCK_HELD),
+        "the selected task scheduler lock is not held"
+    );
+}
+
+pub(crate) fn pause_thread_sched_lock_hold(thread: ThreadId) {
+    if THREAD_SCHED_LOCK_HOLD_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || THREAD_SCHED_LOCK_HOLD_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    assert_eq!(
+        THREAD_SCHED_LOCK_HOLD_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_THREAD_SCHED_LOCK_HELD,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "the task scheduler lock holder reached an invalid stage"
+    );
+    while THREAD_SCHED_LOCK_HOLD_STAGE.load(Ordering::Acquire) < STAGE_THREAD_SCHED_LOCK_RELEASED {
+        core::hint::spin_loop();
+    }
+    THREAD_SCHED_LOCK_HOLD_TARGET.store(0, Ordering::Relaxed);
+    THREAD_SCHED_LOCK_HOLD_STAGE.store(STAGE_IDLE, Ordering::Release);
+}
+
+/// Arms observation of the rq-only RT park publication decision.
+pub fn arm_park_publication_serialization(thread: ThreadId) {
+    assert_ne!(thread.as_u64(), 0, "an RT publication target must be live");
+    assert_eq!(
+        PARK_PUBLICATION_SERIALIZATION_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one RT publication serialization probe may be armed"
+    );
+    PARK_PUBLICATION_SERIALIZATION_TARGET.store(thread.as_u64(), Ordering::Relaxed);
+    PARK_PUBLICATION_SERIALIZATION_OUTCOME.store(0, Ordering::Relaxed);
+    PARK_PUBLICATION_SERIALIZATION_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the selected rq-only RT park recorded its publication decision.
+pub fn park_publication_serialization_observed() -> bool {
+    PARK_PUBLICATION_SERIALIZATION_STAGE.load(Ordering::Acquire) == STAGE_COMPLETE
+}
+
+/// The task-lock state observed before an rq-only RT park publication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParkPublicationSerialization {
+    /// The selected task scheduler lock was already owned by another CPU.
+    pub task_lock_busy: bool,
+    /// The rq-only path started detached-entity publication despite that observation.
+    pub publication_started: bool,
+}
+
+/// Takes the selected rq-only RT park publication decision.
+pub fn take_park_publication_serialization() -> Option<ParkPublicationSerialization> {
+    PARK_PUBLICATION_SERIALIZATION_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_IDLE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .ok()?;
+    let outcome = PARK_PUBLICATION_SERIALIZATION_OUTCOME.load(Ordering::Relaxed);
+    Some(ParkPublicationSerialization {
+        task_lock_busy: outcome & PARK_PUBLICATION_TASK_LOCK_BUSY != 0,
+        publication_started: outcome & PARK_PUBLICATION_STARTED != 0,
+    })
+}
+
+pub(crate) fn park_publication_serialization_armed(thread: ThreadId) -> bool {
+    PARK_PUBLICATION_SERIALIZATION_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && PARK_PUBLICATION_SERIALIZATION_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+}
+
+pub(crate) fn record_park_publication_serialization(
+    thread: ThreadId,
+    task_lock_busy: bool,
+    publication_started: bool,
+) {
+    if !park_publication_serialization_armed(thread) {
+        return;
+    }
+    let outcome = (u8::from(task_lock_busy) * PARK_PUBLICATION_TASK_LOCK_BUSY)
+        | (u8::from(publication_started) * PARK_PUBLICATION_STARTED);
+    PARK_PUBLICATION_SERIALIZATION_OUTCOME.store(outcome, Ordering::Relaxed);
+    PARK_PUBLICATION_SERIALIZATION_TARGET.store(0, Ordering::Relaxed);
+    assert_eq!(
+        PARK_PUBLICATION_SERIALIZATION_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::Release,
+            Ordering::Relaxed,
+        ),
+        Ok(STAGE_ARMED),
+        "the RT publication serialization probe reached an invalid stage"
+    );
+}
+
+/// Arms one current-task park preparation for CPU-owner accounting.
+pub fn arm_park_prepare_runtime_cpu_probe(thread: u64) {
+    assert_ne!(thread, 0, "a park-prepare task identity must be non-zero");
+    assert_eq!(
+        PARK_PREPARE_RUNTIME_CPU_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one park-prepare RuntimeCpu probe may be armed"
+    );
+    PARK_PREPARE_RUNTIME_CPU_TARGET.store(thread, Ordering::Relaxed);
+    PARK_PREPARE_RUNTIME_CPU_ENTRIES.store(0, Ordering::Relaxed);
+    PARK_PREPARE_RUNTIME_CPU_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes `RuntimeCpu` IRQ-owner entries used to publish one park state.
+pub fn take_park_prepare_runtime_cpu_entries() -> Option<u64> {
+    if PARK_PREPARE_RUNTIME_CPU_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
         return None;
     }
-    Some(PI_OUTGOING_RECLASS_COUNT.swap(0, Ordering::AcqRel))
+    let entries = PARK_PREPARE_RUNTIME_CPU_ENTRIES.load(Ordering::Relaxed);
+    PARK_PREPARE_RUNTIME_CPU_TARGET.store(0, Ordering::Relaxed);
+    PARK_PREPARE_RUNTIME_CPU_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(entries)
 }
 
-pub(crate) fn record_pi_outgoing_reclassification(thread: ThreadId) {
-    if PI_OUTGOING_RECLASS_TARGET.load(Ordering::Acquire) == thread.as_u64() {
-        PI_OUTGOING_RECLASS_COUNT.fetch_add(1, Ordering::Release);
+pub(crate) fn record_park_prepare_runtime_cpu_entry(thread: ThreadId) {
+    if PARK_PREPARE_RUNTIME_CPU_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && PARK_PREPARE_RUNTIME_CPU_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        PARK_PREPARE_RUNTIME_CPU_ENTRIES.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 /// Arms one real running-to-blocked park for IRQ-owner accounting.
 pub fn arm_park_irq_owner_probe(thread: u64) {
+    PARK_THREAD_SCHED_ACQUIRE_COUNT.store(0, Ordering::Relaxed);
     PARK_IRQ_OWNER_PROBE.arm(thread, "park");
 }
 
 /// Runtime IRQ-owner entries observed inside one real park transaction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ParkIrqOwnerEntries {
+    /// Physical acquisitions of the target task scheduler lock.
+    pub thread_sched_acquired: u64,
     /// Entries taken by the target thread scheduler lock.
     pub thread_sched: u64,
     /// Entries taken by the scheduler-frame runqueue transaction.
@@ -1131,13 +2492,165 @@ pub fn take_park_irq_owner_entries() -> Option<ParkIrqOwnerEntries> {
     PARK_IRQ_OWNER_PROBE
         .take()
         .map(|entries| ParkIrqOwnerEntries {
+            thread_sched_acquired: PARK_THREAD_SCHED_ACQUIRE_COUNT.load(Ordering::Relaxed),
             thread_sched: entries.thread_sched,
             run_queue: entries.run_queue,
         })
 }
 
+pub(crate) fn record_park_thread_sched_acquisition(thread: ThreadId) {
+    if PARK_IRQ_OWNER_PROBE.matches(thread) {
+        PARK_THREAD_SCHED_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn record_park_irq_owner_scopes(thread: ThreadId, thread_sched: bool, run_queue: bool) {
     PARK_IRQ_OWNER_PROBE.record(thread, thread_sched, run_queue, "park");
+}
+
+/// Arms one direct wake to pause while holding the blocked task lock and then
+/// fail its CPU-publication reservation.
+pub fn arm_direct_wake_delivery_failure(thread: u64) {
+    assert_ne!(thread, 0, "a direct-wake failure identity must be non-zero");
+    assert_eq!(
+        DIRECT_WAKE_FAILURE_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one direct-wake failure may be armed"
+    );
+    DIRECT_WAKE_FAILURE_TARGET.store(thread, Ordering::Relaxed);
+    DIRECT_WAKE_COALESCED_BLOCKED.store(0, Ordering::Relaxed);
+    DIRECT_WAKE_FAILURE_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the selected wake is paused while owning the task lock.
+pub fn direct_wake_delivery_failure_paused() -> bool {
+    DIRECT_WAKE_FAILURE_STAGE.load(Ordering::Acquire) == STAGE_DIRECT_WAKE_FAILURE_PAUSED
+}
+
+/// Returns whether another wake coalesced while the target remained blocked.
+pub fn direct_wake_coalesced_blocked_observed() -> bool {
+    DIRECT_WAKE_COALESCED_BLOCKED.load(Ordering::Acquire) != 0
+}
+
+/// Releases the selected wake so its delivery reservation fails.
+pub fn release_direct_wake_delivery_failure() {
+    assert_eq!(
+        DIRECT_WAKE_FAILURE_STAGE.compare_exchange(
+            STAGE_DIRECT_WAKE_FAILURE_PAUSED,
+            STAGE_DIRECT_WAKE_FAILURE_RELEASED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_DIRECT_WAKE_FAILURE_PAUSED),
+        "direct-wake failure release must follow the paused transaction"
+    );
+}
+
+pub(crate) fn pause_and_fail_direct_wake_delivery(thread: ThreadId) -> bool {
+    if DIRECT_WAKE_FAILURE_TARGET.load(Ordering::Acquire) != thread.as_u64()
+        || DIRECT_WAKE_FAILURE_STAGE
+            .compare_exchange(
+                STAGE_ARMED,
+                STAGE_DIRECT_WAKE_FAILURE_PAUSED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+    {
+        return false;
+    }
+    while DIRECT_WAKE_FAILURE_STAGE.load(Ordering::Acquire) != STAGE_DIRECT_WAKE_FAILURE_RELEASED {
+        core::hint::spin_loop();
+    }
+    DIRECT_WAKE_FAILURE_TARGET.store(0, Ordering::Relaxed);
+    DIRECT_WAKE_FAILURE_STAGE.store(STAGE_IDLE, Ordering::Release);
+    true
+}
+
+pub(crate) fn record_direct_wake_coalesced_blocked(thread: ThreadId) {
+    if DIRECT_WAKE_FAILURE_TARGET.load(Ordering::Acquire) == thread.as_u64()
+        && DIRECT_WAKE_FAILURE_STAGE.load(Ordering::Acquire) == STAGE_DIRECT_WAKE_FAILURE_PAUSED
+    {
+        DIRECT_WAKE_COALESCED_BLOCKED.store(1, Ordering::Release);
+    }
+}
+
+/// Arms one direct wake to report that it retained Linux `TASK_ON_RQ_QUEUED`.
+pub fn arm_direct_wake_on_rq_probe(thread: u64) {
+    assert_ne!(thread, 0, "a direct-wake on-rq identity must be non-zero");
+    assert_eq!(
+        DIRECT_WAKE_ON_RQ_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one direct-wake on-rq probe may be armed"
+    );
+    DIRECT_WAKE_ON_RQ_TARGET.store(thread, Ordering::Relaxed);
+    DIRECT_WAKE_ON_RQ_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the selected wake is paused before taking its existing rq.
+pub fn direct_wake_on_rq_paused() -> bool {
+    DIRECT_WAKE_ON_RQ_STAGE.load(Ordering::Acquire) == STAGE_DIRECT_WAKE_ON_RQ_PAUSED
+}
+
+/// Releases the selected wake after switch tail has dropped the existing rq.
+pub fn release_direct_wake_on_rq_probe() {
+    assert_eq!(
+        DIRECT_WAKE_ON_RQ_STAGE.compare_exchange(
+            STAGE_DIRECT_WAKE_ON_RQ_PAUSED,
+            STAGE_DIRECT_WAKE_ON_RQ_RELEASED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_DIRECT_WAKE_ON_RQ_PAUSED),
+        "direct-wake on-rq release must follow the paused transaction"
+    );
+}
+
+/// Takes and resets one completed existing-rq observation.
+pub fn take_direct_wake_on_rq_observation() -> bool {
+    if DIRECT_WAKE_ON_RQ_STAGE
+        .compare_exchange(
+            STAGE_DIRECT_WAKE_ON_RQ_COMPLETE,
+            STAGE_IDLE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return false;
+    }
+    DIRECT_WAKE_ON_RQ_TARGET.store(0, Ordering::Relaxed);
+    true
+}
+
+pub(crate) fn record_direct_wake_on_rq(thread: ThreadId) {
+    if DIRECT_WAKE_ON_RQ_TARGET.load(Ordering::Acquire) != thread.as_u64() {
+        return;
+    }
+    assert_eq!(
+        DIRECT_WAKE_ON_RQ_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_DIRECT_WAKE_ON_RQ_PAUSED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "direct wake reached its existing rq outside the armed probe"
+    );
+    while DIRECT_WAKE_ON_RQ_STAGE.load(Ordering::Acquire) != STAGE_DIRECT_WAKE_ON_RQ_RELEASED {
+        core::hint::spin_loop();
+    }
+    DIRECT_WAKE_ON_RQ_STAGE.store(STAGE_DIRECT_WAKE_ON_RQ_COMPLETE, Ordering::Release);
 }
 
 /// Arms one real blocked-to-runnable wake for IRQ-owner accounting.
@@ -1168,6 +2681,107 @@ pub fn take_wake_irq_owner_entries() -> Option<WakeIrqOwnerEntries> {
 pub fn thread_is_blocked(thread: u64) -> bool {
     let thread = ThreadId::from_parts(thread as u32, (thread >> 32) as u32);
     crate::thread_handle(thread).is_ok_and(|handle| handle.state() == ThreadState::Blocked)
+}
+
+/// Forces one real Fair park to take Linux's delayed-dequeue branch.
+pub fn arm_fair_delay_dequeue(thread: u64) {
+    assert_ne!(thread, 0, "a delayed-dequeue identity must be non-zero");
+    assert_eq!(
+        FAIR_DELAY_DEQUEUE_TARGET
+            .compare_exchange(0, thread, Ordering::Release, Ordering::Relaxed,),
+        Ok(0),
+        "only one Fair delayed-dequeue probe may be armed"
+    );
+}
+
+/// Returns whether a blocked Fair task still owns Linux `TASK_ON_RQ_QUEUED`.
+pub fn thread_is_delayed_fair(thread: u64) -> bool {
+    let thread = ThreadId::from_parts(thread as u32, (thread >> 32) as u32);
+    crate::thread_handle(thread).is_ok_and(|handle| {
+        handle.state() == ThreadState::Blocked
+            && handle
+                .runtime_core_arc()
+                .sched()
+                .retains_delayed_fair_membership_for_test()
+    })
+}
+
+/// Returns whether a single-CPU affinity update has left no rq transfer pending.
+pub fn thread_affinity_is_settled_on_cpu(thread: u64, cpu: u32) -> bool {
+    let thread = ThreadId::from_parts(thread as u32, (thread >> 32) as u32);
+    crate::thread_handle(thread).is_ok_and(|handle| {
+        handle
+            .runtime_core_arc()
+            .affinity_is_settled_on_cpu_for_test(crate::CpuId::new(cpu))
+    })
+}
+
+/// Returns whether Linux `TASK_ON_RQ_MIGRATING` names the requested CPU.
+pub fn thread_has_committed_migration_to_cpu(thread: u64, cpu: u32) -> bool {
+    let thread = ThreadId::from_parts(thread as u32, (thread >> 32) as u32);
+    crate::thread_handle(thread).is_ok_and(|handle| {
+        handle
+            .runtime_core_arc()
+            .sched()
+            .has_committed_migration_to_cpu_for_test(crate::CpuId::new(cpu))
+    })
+}
+
+pub(crate) fn force_fair_delay_dequeue(thread: ThreadId, natural: bool) -> bool {
+    FAIR_DELAY_DEQUEUE_TARGET
+        .compare_exchange(thread.as_u64(), 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+        || natural
+}
+
+/// Arms accounting for premature ktimer-worker yields on one real CPU.
+pub fn arm_ktimer_pending_yield_probe(cpu: usize) {
+    assert_eq!(
+        KTIMER_PENDING_YIELD_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one ktimer pending-yield probe may be armed"
+    );
+    KTIMER_PENDING_YIELD_TARGET_CPU.store(cpu as u64, Ordering::Relaxed);
+    KTIMER_PENDING_YIELD_COUNT.store(0, Ordering::Relaxed);
+    KTIMER_PENDING_YIELD_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns premature ktimer-worker yields observed while the probe is armed.
+pub fn ktimer_pending_yield_count() -> Option<u64> {
+    (KTIMER_PENDING_YIELD_STAGE.load(Ordering::Acquire) == STAGE_ARMED)
+        .then(|| KTIMER_PENDING_YIELD_COUNT.load(Ordering::Relaxed))
+}
+
+/// Takes the premature ktimer-worker yield count and disarms the probe.
+pub fn take_ktimer_pending_yield_count() -> Option<u64> {
+    if KTIMER_PENDING_YIELD_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let count = KTIMER_PENDING_YIELD_COUNT.load(Ordering::Relaxed);
+    KTIMER_PENDING_YIELD_TARGET_CPU.store(0, Ordering::Relaxed);
+    KTIMER_PENDING_YIELD_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(count)
+}
+
+pub(crate) fn record_ktimer_pending_yield(cpu: crate::CpuId) {
+    if KTIMER_PENDING_YIELD_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && KTIMER_PENDING_YIELD_TARGET_CPU.load(Ordering::Relaxed) == u64::from(cpu.as_u32())
+    {
+        KTIMER_PENDING_YIELD_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 pub(crate) fn record_wake_irq_owner_scopes(thread: ThreadId, thread_sched: bool, run_queue: bool) {
@@ -1229,6 +2843,235 @@ pub(crate) fn record_wake_entity_read(thread: ThreadId, copies: u64) {
         WAKE_ENTITY_READ_COUNT.fetch_add(1, Ordering::Relaxed);
         WAKE_ENTITY_READ_COPY_COUNT.fetch_add(copies, Ordering::Relaxed);
     }
+}
+
+/// Arms Fair virtual-time maintenance accounting for one real direct wake.
+pub fn arm_wake_fair_vtime_probe(thread: u64) {
+    assert_ne!(
+        thread, 0,
+        "a wake Fair-vtime probe identity must be non-zero"
+    );
+    assert_eq!(
+        WAKE_FAIR_VTIME_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one wake Fair-vtime probe may be armed"
+    );
+    WAKE_FAIR_VTIME_TARGET.store(thread, Ordering::Relaxed);
+    WAKE_FAIR_VTIME_UPDATE_COUNT.store(0, Ordering::Relaxed);
+    WAKE_FAIR_VTIME_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes Fair virtual-time maintenance entries made by the armed direct wake.
+pub fn take_wake_fair_vtime_updates() -> Option<u64> {
+    if WAKE_FAIR_VTIME_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let count = WAKE_FAIR_VTIME_UPDATE_COUNT.load(Ordering::Relaxed);
+    WAKE_FAIR_VTIME_TARGET.store(0, Ordering::Relaxed);
+    WAKE_FAIR_VTIME_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(count)
+}
+
+pub(crate) fn record_wake_fair_vtime_update(thread: ThreadId) {
+    if WAKE_FAIR_VTIME_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && WAKE_FAIR_VTIME_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        WAKE_FAIR_VTIME_UPDATE_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Arms Fair virtual-time maintenance accounting for one running thread.
+pub fn arm_current_fair_vtime_probe(thread: u64) {
+    assert_ne!(
+        thread, 0,
+        "a current Fair-vtime probe identity must be non-zero"
+    );
+    assert_eq!(
+        CURRENT_FAIR_VTIME_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one current Fair-vtime probe may be armed"
+    );
+    CURRENT_FAIR_VTIME_TARGET.store(thread, Ordering::Relaxed);
+    CURRENT_FAIR_VTIME_UPDATE_COUNT.store(0, Ordering::Relaxed);
+    CURRENT_FAIR_VTIME_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes Fair virtual-time maintenance entries made for the armed current.
+pub fn take_current_fair_vtime_updates() -> Option<u64> {
+    if CURRENT_FAIR_VTIME_STAGE
+        .compare_exchange(
+            STAGE_ARMED,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let count = CURRENT_FAIR_VTIME_UPDATE_COUNT.load(Ordering::Relaxed);
+    CURRENT_FAIR_VTIME_TARGET.store(0, Ordering::Relaxed);
+    CURRENT_FAIR_VTIME_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(count)
+}
+
+pub(crate) fn record_current_fair_vtime_update(thread: ThreadId) {
+    if CURRENT_FAIR_VTIME_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && CURRENT_FAIR_VTIME_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+    {
+        CURRENT_FAIR_VTIME_UPDATE_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Arms preemption accounting for one real equal-priority RT wake.
+pub fn arm_equal_rt_wake_probe(thread: u64) {
+    arm_equal_rt_wake_probe_inner(thread, false);
+}
+
+/// Arms an equal-priority RT wake with owner-only work pending at the rq decision.
+pub fn arm_equal_rt_wake_with_owner_work_probe(thread: u64) {
+    arm_equal_rt_wake_probe_inner(thread, true);
+}
+
+fn arm_equal_rt_wake_probe_inner(thread: u64, inject_owner_work: bool) {
+    assert_ne!(
+        thread, 0,
+        "an equal-priority RT wake identity must be non-zero"
+    );
+    assert_eq!(
+        EQUAL_RT_WAKE_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one equal-priority RT wake probe may be armed"
+    );
+    EQUAL_RT_WAKE_TARGET.store(thread, Ordering::Relaxed);
+    EQUAL_RT_WAKE_RESCHEDULE.store(0, Ordering::Relaxed);
+    EQUAL_RT_WAKE_INJECT_OWNER_WORK.store(u8::from(inject_owner_work), Ordering::Relaxed);
+    EQUAL_RT_WAKE_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes whether the armed equal-priority RT wake requested rescheduling.
+pub fn take_equal_rt_wake_reschedule() -> Option<bool> {
+    if EQUAL_RT_WAKE_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let requested = EQUAL_RT_WAKE_RESCHEDULE.load(Ordering::Relaxed) != 0;
+    EQUAL_RT_WAKE_TARGET.store(0, Ordering::Relaxed);
+    EQUAL_RT_WAKE_INJECT_OWNER_WORK.store(0, Ordering::Relaxed);
+    EQUAL_RT_WAKE_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(requested)
+}
+
+pub(crate) fn take_equal_rt_wake_owner_work_injection(thread: ThreadId) -> bool {
+    EQUAL_RT_WAKE_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && EQUAL_RT_WAKE_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+        && EQUAL_RT_WAKE_INJECT_OWNER_WORK.swap(0, Ordering::AcqRel) != 0
+}
+
+pub(crate) fn record_equal_rt_wake_reschedule(thread: ThreadId, requested: bool) {
+    if EQUAL_RT_WAKE_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || EQUAL_RT_WAKE_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    EQUAL_RT_WAKE_RESCHEDULE.store(u8::from(requested), Ordering::Relaxed);
+    assert_eq!(
+        EQUAL_RT_WAKE_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "the equal-priority RT wake probe completed in an invalid stage"
+    );
+}
+
+/// Arms target-CPU observation for one real RT wake transaction.
+pub fn arm_rt_wake_placement_probe(thread: u64) {
+    assert_ne!(thread, 0, "an RT wake identity must be non-zero");
+    assert_eq!(
+        RT_WAKE_PLACEMENT_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one RT wake placement probe may be armed"
+    );
+    RT_WAKE_PLACEMENT_TARGET.store(thread, Ordering::Relaxed);
+    RT_WAKE_PLACEMENT_CPU.store(0, Ordering::Relaxed);
+    RT_WAKE_PLACEMENT_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes the CPU selected by the armed RT wake transaction.
+pub fn take_rt_wake_placement_cpu() -> Option<u32> {
+    if RT_WAKE_PLACEMENT_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let encoded = RT_WAKE_PLACEMENT_CPU.load(Ordering::Relaxed);
+    RT_WAKE_PLACEMENT_TARGET.store(0, Ordering::Relaxed);
+    RT_WAKE_PLACEMENT_CPU.store(0, Ordering::Relaxed);
+    RT_WAKE_PLACEMENT_STAGE.store(STAGE_IDLE, Ordering::Release);
+    encoded.checked_sub(1).map(|cpu| cpu as u32)
+}
+
+pub(crate) fn record_rt_wake_placement(thread: ThreadId, target: crate::CpuId) {
+    if RT_WAKE_PLACEMENT_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || RT_WAKE_PLACEMENT_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    RT_WAKE_PLACEMENT_CPU.store(u64::from(target.as_u32()) + 1, Ordering::Relaxed);
+    assert_eq!(
+        RT_WAKE_PLACEMENT_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "the RT wake placement probe completed in an invalid stage"
+    );
 }
 
 /// Arms owner-deadline refresh accounting for one real direct wake.
@@ -1329,6 +3172,52 @@ pub fn allow_pi_release_wake() {
         ),
         Ok(STAGE_WAITER_MAY_CLAIM),
         "PI late wake must follow waiter claim and exit"
+    );
+}
+
+/// Arms the Linux rtmutex slow-unlock race with the final waiter cancellation.
+pub fn arm_pi_cancel_during_release(owner: u64, waiter: u64) {
+    assert_ne!(owner, 0, "a PI cancel-race owner identity must be non-zero");
+    assert_ne!(
+        waiter, 0,
+        "a PI cancel-race waiter identity must be non-zero"
+    );
+    assert_eq!(
+        PI_CANCEL_RELEASE_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one PI cancel/release interleaving may be armed"
+    );
+    PI_CANCEL_RELEASE_OWNER.store(owner, Ordering::Relaxed);
+    PI_CANCEL_RELEASE_WAITER.store(waiter, Ordering::Relaxed);
+    PI_CANCEL_RELEASE_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Returns whether the final waiter committed its PI registration.
+pub fn pi_cancel_waiter_registered() -> bool {
+    PI_CANCEL_RELEASE_STAGE.load(Ordering::Acquire) == STAGE_WAITER_REGISTERED
+}
+
+/// Returns whether unlock observed the waiter bit and paused before slow release.
+pub fn pi_release_observed_cancelable_waiter() -> bool {
+    PI_CANCEL_RELEASE_STAGE.load(Ordering::Acquire) == STAGE_RELEASE_BEFORE_WAKE
+}
+
+/// Lets unlock retry after the final waiter has cancelled its registration.
+pub fn allow_pi_release_after_waiter_cancel() {
+    assert_eq!(
+        PI_CANCEL_RELEASE_STAGE.compare_exchange(
+            STAGE_RELEASE_BEFORE_WAKE,
+            STAGE_RELEASE_MAY_WAKE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_RELEASE_BEFORE_WAKE),
+        "PI slow release must observe the waiter before cancellation completes"
     );
 }
 
@@ -1551,6 +3440,53 @@ pub(crate) fn registered_waiter(waiter: ThreadId) {
     }
 }
 
+pub(crate) fn cancel_release_waiter_registered(waiter: ThreadId) {
+    if PI_CANCEL_RELEASE_WAITER.load(Ordering::Relaxed) != waiter.as_u64()
+        || PI_CANCEL_RELEASE_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+    {
+        return;
+    }
+    assert_eq!(
+        PI_CANCEL_RELEASE_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_WAITER_REGISTERED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "PI cancel-race waiter registered in an invalid stage"
+    );
+}
+
+pub(crate) fn pi_cancel_release_observed(waiter: ThreadId) -> bool {
+    PI_CANCEL_RELEASE_WAITER.load(Ordering::Relaxed) == waiter.as_u64()
+        && PI_CANCEL_RELEASE_STAGE.load(Ordering::Acquire) == STAGE_RELEASE_BEFORE_WAKE
+}
+
+pub(crate) fn release_observed_cancelable_waiter(owner: ThreadId) {
+    if PI_CANCEL_RELEASE_OWNER.load(Ordering::Relaxed) != owner.as_u64()
+        || PI_CANCEL_RELEASE_STAGE.load(Ordering::Acquire) != STAGE_WAITER_REGISTERED
+    {
+        return;
+    }
+    assert_eq!(
+        PI_CANCEL_RELEASE_STAGE.compare_exchange(
+            STAGE_WAITER_REGISTERED,
+            STAGE_RELEASE_BEFORE_WAKE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_WAITER_REGISTERED),
+        "PI cancel-race release observed waiters in an invalid stage"
+    );
+    while PI_CANCEL_RELEASE_STAGE.load(Ordering::Acquire) != STAGE_RELEASE_MAY_WAKE {
+        core::hint::spin_loop();
+    }
+    PI_CANCEL_RELEASE_OWNER.store(0, Ordering::Relaxed);
+    PI_CANCEL_RELEASE_WAITER.store(0, Ordering::Relaxed);
+    PI_CANCEL_RELEASE_STAGE.store(STAGE_IDLE, Ordering::Release);
+}
+
 pub(crate) fn release_before_wake(waiter: ThreadId) {
     if PI_RELEASE_STAGE.load(Ordering::Acquire) != STAGE_WAITER_REGISTERED
         || TARGET_WAITER.load(Ordering::Relaxed) != waiter.as_u64()
@@ -1641,4 +3577,63 @@ pub(crate) fn owner_lifetime_registered(waiter: ThreadId) {
     }
     PI_OWNER_LIFETIME_TARGET_WAITER.store(0, Ordering::Relaxed);
     PI_OWNER_LIFETIME_STAGE.store(STAGE_IDLE, Ordering::Release);
+}
+
+/// Installs one process-wide callback for temporary target-side park profiling.
+pub fn install_park_profile_hook(hook: fn(u8)) {
+    let hook = hook as usize;
+    match PARK_PROFILE_HOOK.compare_exchange(0, hook, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => {}
+        Err(installed) => assert_eq!(installed, hook, "park profile hook already installed"),
+    }
+}
+
+pub(crate) fn record_park_profile_stage(stage: u8) {
+    let hook = PARK_PROFILE_HOOK.load(Ordering::Acquire);
+    if hook == 0 {
+        return;
+    }
+    // SAFETY: installation accepts exactly this function-pointer type and the
+    // process-wide diagnostic hook is never replaced or removed.
+    let hook = unsafe { core::mem::transmute::<usize, fn(u8)>(hook) };
+    hook(stage);
+}
+
+/// Arms complete-rq-snapshot accounting for two RT/Deadline handoff peers.
+pub fn arm_linked_pick_full_snapshot_probe(first: ThreadId, second: ThreadId) {
+    LINKED_PICK_FULL_SNAPSHOT_COUNT.store(0, Ordering::Release);
+    LINKED_PICK_FULL_SNAPSHOT_TARGET_A.store(first.as_u64(), Ordering::Release);
+    LINKED_PICK_FULL_SNAPSHOT_TARGET_B.store(second.as_u64(), Ordering::Release);
+}
+
+/// Takes the number of complete rq snapshots copied for the armed peers.
+pub fn take_linked_pick_full_snapshot_count() -> u64 {
+    LINKED_PICK_FULL_SNAPSHOT_TARGET_A.store(0, Ordering::Release);
+    LINKED_PICK_FULL_SNAPSHOT_TARGET_B.store(0, Ordering::Release);
+    LINKED_PICK_FULL_SNAPSHOT_COUNT.swap(0, Ordering::AcqRel)
+}
+
+pub(crate) fn record_linked_pick_full_snapshot(thread: ThreadId) {
+    if LINKED_PICK_FULL_SNAPSHOT_SCOPE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let thread = thread.as_u64();
+    if thread == LINKED_PICK_FULL_SNAPSHOT_TARGET_A.load(Ordering::Acquire)
+        || thread == LINKED_PICK_FULL_SNAPSHOT_TARGET_B.load(Ordering::Acquire)
+    {
+        LINKED_PICK_FULL_SNAPSHOT_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) struct LinkedPickFullSnapshotScope;
+
+impl Drop for LinkedPickFullSnapshotScope {
+    fn drop(&mut self) {
+        LINKED_PICK_FULL_SNAPSHOT_SCOPE.fetch_sub(1, Ordering::Release);
+    }
+}
+
+pub(crate) fn enter_linked_pick_full_snapshot_scope() -> LinkedPickFullSnapshotScope {
+    LINKED_PICK_FULL_SNAPSHOT_SCOPE.fetch_add(1, Ordering::AcqRel);
+    LinkedPickFullSnapshotScope
 }

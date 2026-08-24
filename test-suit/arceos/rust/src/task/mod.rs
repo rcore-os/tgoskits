@@ -10,6 +10,8 @@ pub mod kernel_timer;
 pub mod parallel;
 #[cfg(feature = "task-pi-mutex")]
 pub mod pi_mutex;
+#[cfg(feature = "task-preempt-guard")]
+pub mod preempt_guard;
 #[cfg(any(feature = "task-priority", feature = "sched-cfs", feature = "sched-rr"))]
 pub mod priority;
 #[cfg(feature = "task-rt-policy")]

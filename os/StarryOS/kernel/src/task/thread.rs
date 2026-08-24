@@ -9,9 +9,9 @@ use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWr
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
 use super::{
-    CpuTimeAccounting, CpuTimeDelta, Cred, ExitPathLease, PidIdentity, PidNamespaceRef,
-    PidRoleLease, ProcessData, ROOT_PID_NS, RttimeWatchdog, SeccompDecision, SeccompState,
-    SeccompStateStore, SockFilter, Tid, TidNumber, TimerState, UserTaskRef,
+    CpuTimeAccounting, Cred, ExitPathLease, PidIdentity, PidNamespaceRef, PidRoleLease,
+    ProcessData, ROOT_PID_NS, RttimeWatchdog, SeccompDecision, SeccompState, SeccompStateStore,
+    SockFilter, Tid, TidNumber, TimerState, UserTaskRef,
     bounded_stack::BoundedStack,
     futex::ThreadWaitState,
     interruption::{InterruptSnapshot, InterruptState},
@@ -129,8 +129,8 @@ struct ThreadLifecycle {
     user_memory_access: UserMemoryAccessDepth,
     block_next_signal_check: NextSignalCheckBlock,
     exit_event: Arc<PollSet>,
-    exit_request: AtomicBool,
-    deadline_overrun: AtomicBool,
+    exit_request: OneShotFlag,
+    deadline_overrun: OneShotFlag,
     rseq_area: AtomicUsize,
     rseq_signature: AtomicU32,
 }
@@ -146,8 +146,8 @@ impl ThreadLifecycle {
             user_memory_access: UserMemoryAccessDepth::new(),
             block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: Arc::default(),
-            exit_request: AtomicBool::new(false),
-            deadline_overrun: AtomicBool::new(false),
+            exit_request: OneShotFlag::new(),
+            deadline_overrun: OneShotFlag::new(),
             rseq_area: AtomicUsize::new(0),
             rseq_signature: AtomicU32::new(0),
         }
@@ -220,20 +220,59 @@ impl ThreadTrace {
     }
 }
 
+/// A coalescing publication consumed exactly once by its owner thread.
+struct OneShotFlag {
+    pending: AtomicBool,
+    #[cfg(axtest)]
+    consume_rmws: AtomicUsize,
+}
+
+impl OneShotFlag {
+    const fn new() -> Self {
+        Self {
+            pending: AtomicBool::new(false),
+            #[cfg(axtest)]
+            consume_rmws: AtomicUsize::new(0),
+        }
+    }
+
+    fn publish(&self) {
+        self.pending.store(true, Ordering::Release);
+    }
+
+    fn is_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire)
+    }
+
+    fn consume(&self) -> bool {
+        if !self.is_pending() {
+            return false;
+        }
+        #[cfg(axtest)]
+        self.consume_rmws.fetch_add(1, Ordering::Relaxed);
+        self.pending.swap(false, Ordering::AcqRel)
+    }
+
+    #[cfg(axtest)]
+    fn consume_rmw_count(&self) -> usize {
+        self.consume_rmws.load(Ordering::Relaxed)
+    }
+}
+
 /// A one-shot flag that suppresses exactly one signal check.
-struct NextSignalCheckBlock(AtomicBool);
+struct NextSignalCheckBlock(OneShotFlag);
 
 impl NextSignalCheckBlock {
     const fn new() -> Self {
-        Self(AtomicBool::new(false))
+        Self(OneShotFlag::new())
     }
 
     fn block(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0.publish();
     }
 
     fn unblock(&self) -> bool {
-        self.0.swap(false, Ordering::AcqRel)
+        self.0.consume()
     }
 }
 
@@ -447,21 +486,25 @@ impl Thread {
         self.identity.scheduler.bind(id)
     }
 
+    pub(crate) fn validate_scheduler_id(
+        &self,
+        id: ax_std::os::arceos::task::ThreadId,
+    ) -> crate::StarryResult<()> {
+        self.identity.scheduler.validate_bound(id)
+    }
+
     pub(super) fn scheduler_switch_in(
         &self,
         id: ax_std::os::arceos::task::ThreadId,
         realtime_policy: bool,
         cpu_pin: &CpuPin<'_>,
     ) {
-        if self.bind_scheduler_id(id).is_err() {
+        if self.validate_scheduler_id(id).is_err() {
             panic!("Starry thread was rebound to a different scheduler identity");
         }
-        self.proc_data.record_cpu_time_transition(|| {
-            self.accounting
-                .cpu_time
-                .scheduler_switch_in(realtime_policy);
-            CpuTimeDelta::ZERO
-        });
+        self.accounting
+            .cpu_time
+            .scheduler_switch_in(realtime_policy);
         // SAFETY: the scheduler switch baton pins this CPU and retains the
         // thread-owned ProcessData until the matching switch-out callback.
         unsafe { self.scope.activate_pinned(cpu_pin) };
@@ -568,29 +611,25 @@ impl Thread {
 
     /// Consumes one pending thread-only exit request.
     pub fn take_exit_request(&self) -> bool {
-        self.lifecycle.exit_request.swap(false, Ordering::AcqRel)
+        self.lifecycle.exit_request.consume()
     }
 
     /// Probes a pending thread-only exit request without consuming it.
     pub fn has_exit_request(&self) -> bool {
-        self.lifecycle.exit_request.load(Ordering::Acquire)
+        self.lifecycle.exit_request.is_pending()
     }
 
     /// Requests a thread-only exit at the next signal safe point.
     pub fn set_exit_request(&self) {
-        self.lifecycle.exit_request.store(true, Ordering::Release);
+        self.lifecycle.exit_request.publish();
     }
 
     pub(super) fn publish_deadline_overrun(&self) {
-        self.lifecycle
-            .deadline_overrun
-            .store(true, Ordering::Release);
+        self.lifecycle.deadline_overrun.publish();
     }
 
     pub(super) fn take_deadline_overrun(&self) -> bool {
-        self.lifecycle
-            .deadline_overrun
-            .swap(false, Ordering::AcqRel)
+        self.lifecycle.deadline_overrun.consume()
     }
 
     pub(crate) fn enter_user_memory_access(&self) -> UserMemoryAccessGuard<'_> {
@@ -844,6 +883,16 @@ impl Thread {
     pub(crate) fn perf_context(&self) -> &crate::perf::task_context::ThreadPerfContext {
         &self.trace.perf
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn inactive_one_shot_flag_consumption_is_read_only_for_test() -> bool {
+    let flag = OneShotFlag::new();
+    if flag.consume() {
+        return false;
+    }
+    flag.publish();
+    flag.consume() && !flag.consume() && flag.consume_rmw_count() == 1
 }
 
 #[cfg(test)]

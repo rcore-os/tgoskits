@@ -151,7 +151,7 @@ impl TaskSystem {
             .lock_run_queue(RunQueueGuardSource::Lifecycle)
             .has_runnable_rt()
         {
-            self.root_domain.activate_rt_period(id, monotonic_now);
+            self.root_domain.activate_rt_period(id, || monotonic_now);
         }
         Ok(())
     }

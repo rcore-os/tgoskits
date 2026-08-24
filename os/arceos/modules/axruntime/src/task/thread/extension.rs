@@ -14,6 +14,7 @@ pub(in crate::task) unsafe fn runtime_thread_extension(data: usize) -> ThreadExt
     let os_extension = unsafe { runtime_thread_data_from_raw(data) }
         .os_extension
         .as_ref();
+    let scheduler_tick_cpu_time = os_extension.and_then(ThreadExtension::scheduler_tick_cpu_time);
     let scheduler_tick_gate = os_extension.and_then(ThreadExtension::scheduler_tick_work_gate);
     let forwards_running_policy = os_extension
         .and_then(ThreadExtension::running_policy_applied_hook)
@@ -21,6 +22,9 @@ pub(in crate::task) unsafe fn runtime_thread_extension(data: usize) -> ThreadExt
     // SAFETY: the caller transfers one live `RuntimeThreadData` allocation
     // whose final destruction right belongs to this outer extension.
     let mut extension = unsafe { ThreadExtension::new(data, &RUNTIME_THREAD_EXTENSION_OPS) };
+    if let Some(accounting) = scheduler_tick_cpu_time {
+        extension = extension.with_scheduler_tick_cpu_time(accounting);
+    }
     if let Some(gate) = scheduler_tick_gate {
         // SAFETY: the outer callback retains `RuntimeThreadData` and forwards
         // exactly one generation-authorized publication, with the IRQ-observed

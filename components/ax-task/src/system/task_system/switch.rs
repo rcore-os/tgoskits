@@ -1,19 +1,49 @@
 //! Owner selection, schedule-out, and switch-handoff construction.
 
 use super::*;
-use crate::scheduler::RtEligibility;
+use crate::scheduler::{PickTaskResult, RtEligibility};
 
 pub(super) struct OwnerScheduleOut {
     pub(super) migration: Option<PreparedMigrationDelivery>,
 }
 
 impl TaskSystem {
+    /// Completes selection either by releasing rq locally or by installing the
+    /// Linux-style raw rq lock baton into a real non-migrating switch handoff.
+    pub(super) fn commit_owner_switch_selection(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        transaction: OwnerRqTxn<'_>,
+        retain_rq_lock: bool,
+    ) {
+        self.validate_owner_runtime_switch_out(cpu.as_ref().get_ref(), &transaction);
+        let retain_rq_lock = should_retain_owner_rq_baton(
+            retain_rq_lock,
+            cpu.as_ref().get_ref().switch_handoff().is_some(),
+        );
+        if retain_rq_lock {
+            let baton = transaction.commit_and_handoff_scheduler_request();
+            cpu.as_mut()
+                .install_switch_rq_baton(baton)
+                .unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x5343_111a, cpu.owner().as_u32() as usize)
+                });
+        } else {
+            transaction.commit_and_acknowledge_scheduler_request();
+        }
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn balance_callback_preserves_owner_rq_baton() -> bool {
+        should_retain_owner_rq_baton(true, true)
+    }
+
     /// Returns whether ordinary preemption can complete under the rq lock.
     ///
     /// Linux's `__schedule()` handles the common put-prev path with only
     /// `rq->lock`. Ax-task needs the task scheduler lock only when a migration
     /// request or Deadline timer ownership must cross the task/rq boundary.
-    pub(super) fn owner_preemption_is_rq_owned(
+    pub(super) fn owner_schedule_out_is_rq_owned(
         &self,
         transaction: &OwnerRqTxn<'_>,
         core: &ThreadCore,
@@ -32,11 +62,12 @@ impl TaskSystem {
     }
 
     /// Performs the common Linux `put_prev_task()` path with rq as sole owner.
-    pub(super) fn schedule_out_owner_preempt_in_rq(
+    pub(super) fn schedule_out_owner_rq_owned(
         &self,
         cpu: Pin<&mut CpuLocal>,
         transaction: &mut OwnerRqTxn<'_>,
         core: Arc<ThreadCore>,
+        reason: EnqueueReason,
     ) {
         self.ensure_owner_cpu_online(&cpu).unwrap_or_else(|_| {
             task_runtime::fatal_invariant(0x5343_1118, cpu.owner().as_u32() as usize)
@@ -46,9 +77,17 @@ impl TaskSystem {
         if core.state() != ThreadState::Running
             || placement.queued_cpu() != Some(owner)
             || placement.on_cpu() != Some(owner)
-            || !self.owner_preemption_is_rq_owned(transaction, &core)
+            || !self.owner_schedule_out_is_rq_owned(transaction, &core)
         {
             task_runtime::fatal_invariant(0x5343_1119, core.id().as_u64() as usize);
+        }
+        if !matches!(reason, EnqueueReason::Preempted | EnqueueReason::Yield) {
+            task_runtime::fatal_invariant(0x5343_111b, core.id().as_u64() as usize);
+        }
+
+        #[cfg(feature = "task-test-hooks")]
+        if matches!(reason, EnqueueReason::Preempted) {
+            crate::task_test_hooks::record_lone_preemption_put_prev(core.id());
         }
 
         // Pairs prior task accesses with publication of a different rq->curr.
@@ -61,10 +100,6 @@ impl TaskSystem {
                 task_runtime::fatal_invariant(0x5343_1107, core.id().as_u64() as usize)
             });
             transaction.return_idle_schedule(core.id(), active);
-            core.transition_state(ThreadState::Ready)
-                .unwrap_or_else(|_| {
-                    task_runtime::fatal_invariant(0x5343_1108, core.id().as_u64() as usize)
-                });
             placement.put_prev_idle(owner);
             return;
         }
@@ -75,12 +110,8 @@ impl TaskSystem {
             .unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5343_1111, core.id().as_u64() as usize)
             });
-        core.transition_state(ThreadState::Ready)
-            .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x5343_110c, core.id().as_u64() as usize)
-            });
         let queued_entity = if transaction.is_linked_current(core.id()) {
-            let queued_entity = transaction.put_prev_task(core.id(), EnqueueReason::Preempted);
+            let queued_entity = transaction.put_prev_task(core.id(), reason);
             let dispatch = transaction.take_current().unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5343_1105, core.id().as_u64() as usize)
             });
@@ -89,7 +120,7 @@ impl TaskSystem {
             }
             queued_entity
         } else {
-            transaction.put_prev_unlinked_current(core.id(), EnqueueReason::Preempted)
+            transaction.put_prev_unlinked_current(core.id(), reason)
         };
         placement.put_prev(owner);
         core.publish_effective_schedule(policy, &queued_entity);
@@ -123,9 +154,21 @@ impl TaskSystem {
         {
             cpu.as_mut().arm_idle_pull();
         }
-        let run_queue_changed = if self
-            .owner_balance_work_pending(cpu.as_ref().get_ref(), decision.next())
-        {
+        let rq_baton_retained = cpu
+            .as_ref()
+            .get_ref()
+            .switch_handoff()
+            .is_some_and(|handoff| handoff.has_rq_baton());
+        let balance_pending =
+            self.owner_balance_work_pending(cpu.as_ref().get_ref(), decision.next());
+        let run_queue_changed = if rq_baton_retained && balance_pending {
+            // A balance request can race selection publication. Keep it sticky
+            // for the first safe point after switch tail; balance paths may
+            // open owner rq transactions and therefore cannot run under the
+            // inherited raw rq lock.
+            cpu.request_scheduler_work();
+            false
+        } else if balance_pending {
             match self.service_owner_balance(cpu.as_mut(), decision.next()) {
                 Ok(outcome) => outcome.run_queue_changed(),
                 Err(_) => {
@@ -135,6 +178,18 @@ impl TaskSystem {
         } else {
             false
         };
+        let deadline_derivation_required = selection_deadline_derivation_required(
+            decision.requires_context_switch(),
+            decision.switch_reason(),
+            rq_observation.clock_event_due(),
+            balance_pending,
+            run_queue_changed,
+        );
+        if !deadline_derivation_required {
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::complete_deadline_publication(cpu.owner());
+            return decision;
+        }
         let timer_result = if run_queue_changed {
             self.program_local_timer(
                 cpu.as_mut(),
@@ -151,6 +206,39 @@ impl TaskSystem {
             task_runtime::fatal_invariant(0x5343_0002, decision.next().as_u64() as usize);
         }
         decision
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn lone_yield_reuses_scheduler_deadline() -> bool {
+        !selection_deadline_derivation_required(false, SwitchReason::Yield, false, false, false)
+            && selection_deadline_derivation_required(
+                false,
+                SwitchReason::Yield,
+                true,
+                false,
+                false,
+            )
+            && selection_deadline_derivation_required(
+                false,
+                SwitchReason::Yield,
+                false,
+                true,
+                false,
+            )
+            && selection_deadline_derivation_required(
+                true,
+                SwitchReason::Yield,
+                false,
+                false,
+                false,
+            )
+            && selection_deadline_derivation_required(
+                false,
+                SwitchReason::Preempted,
+                false,
+                false,
+                false,
+            )
     }
 
     /// Commits one running owner either to its local queue, a migration
@@ -240,10 +328,6 @@ impl TaskSystem {
                 task_runtime::fatal_invariant(0x5343_1107, core.id().as_u64() as usize)
             });
             transaction.return_idle_schedule(core.id(), active);
-            core.transition_state(ThreadState::Ready)
-                .unwrap_or_else(|_| {
-                    task_runtime::fatal_invariant(0x5343_1108, core.id().as_u64() as usize)
-                });
             placement.put_prev_idle(owner);
             return OwnerScheduleOut { migration: None };
         }
@@ -258,13 +342,13 @@ impl TaskSystem {
             let active = dispatch.into_active().unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5343_110a, core.id().as_u64() as usize)
             });
-            sched.policy.install_active(active);
+            core.sched().install_active(sched, active);
         }
 
         if let Some((target, migration)) = prepared_migration {
             if retained_current {
                 let active = transaction.deactivate_task(core.id()).into_active();
-                sched.policy.install_active(active);
+                core.sched().install_active(sched, active);
                 let dispatch = transaction.take_current().unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1105, core.id().as_u64() as usize)
                 });
@@ -274,11 +358,6 @@ impl TaskSystem {
             } else {
                 transaction.deactivate_unlinked_current(core.id());
             }
-            sched
-                .transition(&core, ThreadState::Ready)
-                .unwrap_or_else(|_| {
-                    task_runtime::fatal_invariant(0x5343_1109, core.id().as_u64() as usize)
-                });
             placement.begin_migration(owner, target);
             core.set_wake_cpu_hint(target);
             return OwnerScheduleOut {
@@ -294,7 +373,7 @@ impl TaskSystem {
                     task_runtime::fatal_invariant(0x5343_110a, core.id().as_u64() as usize)
                 })
         } else {
-            sched.policy.active().entity().clone()
+            core.sched().active(sched).entity().clone()
         };
         if current_entity.is_deadline_throttled() {
             if !retained_current {
@@ -311,11 +390,6 @@ impl TaskSystem {
             if dispatch.thread() != core.id() || dispatch.into_active().is_some() {
                 task_runtime::fatal_invariant(0x5343_1106, core.id().as_u64() as usize);
             }
-            sched
-                .transition(&core, ThreadState::Ready)
-                .unwrap_or_else(|_| {
-                    task_runtime::fatal_invariant(0x5343_110b, core.id().as_u64() as usize)
-                });
             // A throttled DL task remains TASK_ON_RQ_QUEUED while its class
             // entity is absent from the EDF tree and rq->nr_running.
             placement.put_prev(owner);
@@ -353,15 +427,9 @@ impl TaskSystem {
             }
         }
 
-        // Hide the outgoing dispatch while queue placement computes EEVDF
-        // virtual time, but retain it until enqueue commits. A typed enqueue
-        // failure can therefore restore the Running owner without publishing
-        // a transient `current = None` state.
-        sched
-            .transition(&core, ThreadState::Ready)
-            .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x5343_110c, core.id().as_u64() as usize)
-            });
+        // Keep Linux `TASK_RUNNING` while queue placement computes EEVDF
+        // virtual time. The retained dispatch remains available until enqueue
+        // commits, so no second lifecycle fact is needed for put-prev.
         let enqueue = if retained_current {
             let queued_entity = transaction.put_prev_task(core.id(), reason);
             let dispatch = transaction.take_current().unwrap_or_else(|| {
@@ -531,14 +599,14 @@ impl TaskSystem {
         &self,
         cpu: Pin<&mut CpuLocal>,
         transaction: &mut OwnerRqTxn<'_>,
-        _outgoing: Option<ThreadId>,
+        outgoing_delayed: Option<(&ThreadCore, &mut ThreadSchedState)>,
     ) -> OwnerNext {
         let rt_eligibility = if !transaction.rt_is_effectively_throttled() {
             RtEligibility::Runnable
         } else {
             RtEligibility::Throttled
         };
-        self.pick_owner_next_with_rt_eligibility(cpu, transaction, rt_eligibility)
+        self.pick_owner_next_with_rt_eligibility(cpu, transaction, rt_eligibility, outgoing_delayed)
     }
 
     /// Selects the sole bootstrap task before RT runtime and root-domain
@@ -551,7 +619,7 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         transaction: &mut OwnerRqTxn<'_>,
     ) -> OwnerNext {
-        self.pick_owner_next_with_rt_eligibility(cpu, transaction, RtEligibility::Runnable)
+        self.pick_owner_next_with_rt_eligibility(cpu, transaction, RtEligibility::Runnable, None)
     }
 
     fn pick_owner_next_with_rt_eligibility(
@@ -559,15 +627,83 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         transaction: &mut OwnerRqTxn<'_>,
         rt_eligibility: RtEligibility,
+        mut outgoing_delayed: Option<(&ThreadCore, &mut ThreadSchedState)>,
     ) -> OwnerNext {
         let owner = cpu.owner();
-        let Some(queued) = transaction.pick_next_task(rt_eligibility) else {
+        let mut skip_delayed = false;
+        let mut delayed_retry_required = false;
+        let queued = loop {
+            let picked = transaction.pick_next_task(rt_eligibility, skip_delayed);
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_park_profile_stage(6);
+            match picked {
+                Some(PickTaskResult::Continue(queued)) => break Some(queued),
+                Some(PickTaskResult::Break(core)) => {
+                    if let Some((outgoing, sched)) = outgoing_delayed.as_mut()
+                        && core::ptr::eq(*outgoing, core.as_ref())
+                    {
+                        let placement = core.sched().placement();
+                        if sched.lifecycle.state() != ThreadState::Blocked
+                            || placement.queued_cpu() != Some(owner)
+                            || !transaction.is_delayed_fair(core.id())
+                        {
+                            task_runtime::fatal_invariant(0x5343_1119, core.id().as_u64() as usize);
+                        }
+                        let thread = transaction.finish_delayed_fair_dequeue(
+                            core.id(),
+                            self.config.timing_granularity_ns(),
+                        );
+                        core.sched().install_active(sched, thread.into_active());
+                        placement.finish_delayed_dequeue(owner);
+                        core.set_wake_cpu_hint(owner);
+                        skip_delayed = false;
+                        continue;
+                    }
+                    // Normal ordering is p->pi_lock then rq. Linux can finish
+                    // delayed dequeue directly because sched_entity lives in
+                    // task_struct; ax-task must return its owned active state
+                    // to task control. The inverse try-lock never waits: a
+                    // concurrent waker holding the task lock wins. Keep a
+                    // preemption generation pending if no other entity can be
+                    // selected, so task-lock contention cannot strand a
+                    // non-empty rq on the dedicated idle task.
+                    let Some(mut sched) = (unsafe { core.sched().try_lock_from_owner_rq() }) else {
+                        skip_delayed = true;
+                        delayed_retry_required = true;
+                        continue;
+                    };
+                    let placement = core.sched().placement();
+                    if sched.lifecycle.state() != ThreadState::Blocked
+                        || placement.queued_cpu() != Some(owner)
+                        || !transaction.is_delayed_fair(core.id())
+                    {
+                        task_runtime::fatal_invariant(0x5343_1119, core.id().as_u64() as usize);
+                    }
+                    let thread = transaction.finish_delayed_fair_dequeue(
+                        core.id(),
+                        self.config.timing_granularity_ns(),
+                    );
+                    core.sched()
+                        .install_active(&mut sched, thread.into_active());
+                    placement.finish_delayed_dequeue(owner);
+                    core.set_wake_cpu_hint(owner);
+                    skip_delayed = false;
+                }
+                None => {
+                    if delayed_retry_required {
+                        cpu.request_reschedule();
+                    }
+                    break None;
+                }
+            }
+        };
+        let Some(queued) = queued else {
             let (core, active, metadata, rt_quota_exempt) =
                 transaction.take_idle_schedule().unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1110, owner.as_u32() as usize)
                 });
             let placement = core.sched().placement();
-            if core.state() != ThreadState::Ready
+            if core.state() != ThreadState::Running
                 || placement.queued_cpu() != Some(owner)
                 || placement.on_cpu().is_some_and(|cpu| cpu != owner)
                 || placement.requested_migration().is_some()
@@ -575,10 +711,6 @@ impl TaskSystem {
                 task_runtime::fatal_invariant(0x5343_1111, core.id().as_u64() as usize);
             }
             placement.set_next_idle(owner);
-            core.transition_state(ThreadState::Running)
-                .unwrap_or_else(|_| {
-                    task_runtime::fatal_invariant(0x5343_1112, core.id().as_u64() as usize)
-                });
             let dispatch = Self::owner_dispatch_from_rq(
                 &core,
                 CurrentClassState::Owned(active),
@@ -593,7 +725,7 @@ impl TaskSystem {
         let core = Arc::clone(queued.core());
         let placement = core.sched().placement();
         let metadata = queued.metadata().clone();
-        if core.state() != ThreadState::Ready
+        if core.state() != ThreadState::Running
             || placement.queued_cpu() != Some(owner)
             || placement.requested_migration().is_some()
             || !metadata.affinity.contains(owner)
@@ -601,8 +733,12 @@ impl TaskSystem {
             transaction.rollback_pick(queued);
             task_runtime::fatal_invariant(0x5343_1113, core.id().as_u64() as usize);
         }
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(7);
         let rt_quota_exempt = queued.rt_quota_exempt();
         transaction.set_next_task(&queued);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(8);
         let schedule = match queued {
             PickedThread::Owned(thread) => CurrentClassState::Owned(thread.active),
             PickedThread::Linked(thread) => CurrentClassState::Linked {
@@ -610,10 +746,10 @@ impl TaskSystem {
             },
         };
         placement.set_next_task(owner);
-        core.transition_state(ThreadState::Running)
-            .unwrap_or_else(|_| {
-                task_runtime::fatal_invariant(0x5343_1114, core.id().as_u64() as usize)
-            });
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_lone_preemption_set_next(core.id());
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(9);
         let dispatch = Self::owner_dispatch_from_rq(
             &core,
             schedule,
@@ -622,6 +758,8 @@ impl TaskSystem {
             transaction.clock().task(),
         );
         transaction.install_current(dispatch);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_park_profile_stage(10);
         OwnerNext { core }
     }
 
@@ -672,4 +810,22 @@ impl TaskSystem {
             timestamp_ns,
         }
     }
+}
+
+fn should_retain_owner_rq_baton(retain_requested: bool, handoff_prepared: bool) -> bool {
+    retain_requested && handoff_prepared
+}
+
+const fn selection_deadline_derivation_required(
+    requires_context_switch: bool,
+    reason: SwitchReason,
+    clock_event_due: bool,
+    balance_pending: bool,
+    run_queue_changed: bool,
+) -> bool {
+    run_queue_changed
+        || balance_pending
+        || requires_context_switch
+        || !matches!(reason, SwitchReason::Yield)
+        || clock_event_due
 }

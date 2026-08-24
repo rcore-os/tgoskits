@@ -69,17 +69,38 @@ fn ktimer_service_loop(owner: CpuId) -> Result<(), TaskError> {
             waiter.wait(remote.ktimer_event())?;
             continue;
         };
-        let pass = service_current_ktimer_pass(owner);
+        let mut processed = 0;
+        let pending = loop {
+            let pass = service_current_ktimer_pass(owner)?;
+            processed += pass.processed;
+            if !pass.pending || pass.processed == 0 || processed >= pass.limit {
+                break pass.pending;
+            }
+        };
+        if pending {
+            // The worker owns forward progress while the claim is active. One
+            // publication at the batch boundary is enough to retain a bounded
+            // remainder across the voluntary scheduling point.
+            remote.publish_ktimer_work();
+        }
         remote.complete_ktimer_work(claim);
-        if pass? {
+        if pending {
+            #[cfg(feature = "task-test-hooks")]
+            crate::task_test_hooks::record_ktimer_pending_yield(owner);
             let _decision = yield_current_cpu()?;
         }
     }
 }
 
-fn service_current_ktimer_pass(owner: CpuId) -> Result<bool, TaskError> {
+struct KtimerServicePass {
+    processed: usize,
+    pending: bool,
+    limit: usize,
+}
+
+fn service_current_ktimer_pass(owner: CpuId) -> Result<KtimerServicePass, TaskError> {
     let system = runtime_task_system()?;
-    let (pending, mut kernel_timer, mut task_timer, completed_timer) = {
+    let (processed, pending, limit, mut kernel_timer, mut task_timer, completed_timer) = {
         let mut irq = RuntimeIrqGuard::enter();
         let mut cpu = runtime_current_cpu_mut(&mut irq)?;
         if cpu.owner() != owner {
@@ -93,7 +114,9 @@ fn service_current_ktimer_pass(owner: CpuId) -> Result<bool, TaskError> {
             task_runtime::publish_scheduler_deadline(update);
         }
         (
+            batch.processed(),
             batch.pending(),
+            cpu.batch_limit(),
             batch.take_kernel_timer(),
             batch.take_task_timer(),
             batch.take_completed_timer(),
@@ -156,5 +179,9 @@ fn service_current_ktimer_pass(owner: CpuId) -> Result<bool, TaskError> {
         }
         drop(completion.take_completed());
     }
-    Ok(pending)
+    Ok(KtimerServicePass {
+        processed,
+        pending,
+        limit,
+    })
 }

@@ -15,9 +15,17 @@ type MockMemorySet = MemorySet<MockBackend>;
 impl MappingBackend for MockBackend {
     type Addr = VirtAddr;
     type Flags = MockFlags;
+    type MutationContext = ();
     type PageTable = MockPageTable;
 
-    fn map(&self, start: VirtAddr, size: usize, flags: MockFlags, pt: &mut MockPageTable) -> bool {
+    fn map(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        flags: MockFlags,
+        _context: &mut (),
+        pt: &mut MockPageTable,
+    ) -> bool {
         for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
             if *entry != 0 {
                 return false;
@@ -27,7 +35,13 @@ impl MappingBackend for MockBackend {
         true
     }
 
-    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut MockPageTable) -> bool {
+    fn unmap(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        _context: &mut (),
+        pt: &mut MockPageTable,
+    ) -> bool {
         for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
             if *entry == 0 {
                 return false;
@@ -42,6 +56,7 @@ impl MappingBackend for MockBackend {
         start: VirtAddr,
         size: usize,
         new_flags: MockFlags,
+        _context: &mut (),
         pt: &mut MockPageTable,
     ) -> bool {
         for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
@@ -97,6 +112,7 @@ fn test_map_unmap() {
     for start in (0..MAX_ADDR).step_by(0x2000) {
         assert_ok!(set.map(
             MemoryArea::new(start.into(), 0x1000, 1, MockBackend),
+            &mut (),
             &mut pt,
             false,
         ));
@@ -105,6 +121,7 @@ fn test_map_unmap() {
     for start in (0x1000..MAX_ADDR).step_by(0x2000) {
         assert_ok!(set.map(
             MemoryArea::new(start.into(), 0x1000, 2, MockBackend),
+            &mut (),
             &mut pt,
             false,
         ));
@@ -126,6 +143,7 @@ fn test_map_unmap() {
     assert_err!(
         set.map(
             MemoryArea::new(0x4000.into(), 0x4000, 3, MockBackend),
+            &mut (),
             &mut pt,
             false
         ),
@@ -134,6 +152,7 @@ fn test_map_unmap() {
     // Unmap overlapped areas before adding the new mapping [0x4000, 0x8000).
     assert_ok!(set.map(
         MemoryArea::new(0x4000.into(), 0x4000, 3, MockBackend),
+        &mut (),
         &mut pt,
         true
     ));
@@ -150,10 +169,10 @@ fn test_map_unmap() {
     }
 
     // Unmap areas in the middle.
-    assert_ok!(set.unmap(0x4000.into(), 0x8000, &mut pt));
+    assert_ok!(set.unmap(0x4000.into(), 0x8000, &mut (), &mut pt));
     assert_eq!(set.len(), 8);
     // Unmap the remaining areas, including the unmapped ranges.
-    assert_ok!(set.unmap(0.into(), MAX_ADDR * 2, &mut pt));
+    assert_ok!(set.unmap(0.into(), MAX_ADDR * 2, &mut (), &mut pt));
     assert_eq!(set.len(), 0);
     for &e in &pt[0..MAX_ADDR] {
         assert_eq!(e, 0);
@@ -169,6 +188,7 @@ fn test_unmap_split() {
     for start in (0..MAX_ADDR).step_by(0x2000) {
         assert_ok!(set.map(
             MemoryArea::new(start.into(), 0x1000, 1, MockBackend),
+            &mut (),
             &mut pt,
             false,
         ));
@@ -178,7 +198,7 @@ fn test_unmap_split() {
     // Unmap [0xc00, 0x2400), [0x2c00, 0x4400), [0x4c00, 0x6400), ...
     // The areas are shrinked at the left and right boundaries.
     for start in (0..MAX_ADDR).step_by(0x2000) {
-        assert_ok!(set.unmap((start + 0xc00).into(), 0x1800, &mut pt));
+        assert_ok!(set.unmap((start + 0xc00).into(), 0x1800, &mut (), &mut pt));
     }
     dump_memory_set(&set);
     assert_eq!(set.len(), 8);
@@ -199,7 +219,7 @@ fn test_unmap_split() {
     // Unmap [0x800, 0x900), [0x2800, 0x2900), [0x4800, 0x4900), ...
     // The areas are split into two areas.
     for start in (0..MAX_ADDR).step_by(0x2000) {
-        assert_ok!(set.unmap((start + 0x800).into(), 0x100, &mut pt));
+        assert_ok!(set.unmap((start + 0x800).into(), 0x100, &mut (), &mut pt));
     }
     dump_memory_set(&set);
     assert_eq!(set.len(), 16);
@@ -230,7 +250,7 @@ fn test_unmap_split() {
     drop(iter);
 
     // Unmap all areas.
-    assert_ok!(set.unmap(0.into(), MAX_ADDR, &mut pt));
+    assert_ok!(set.unmap(0.into(), MAX_ADDR, &mut (), &mut pt));
     assert_eq!(set.len(), 0);
     for &e in &pt[0..MAX_ADDR] {
         assert_eq!(e, 0);
@@ -255,6 +275,7 @@ fn test_protect() {
     for start in (0..MAX_ADDR).step_by(0x2000) {
         assert_ok!(set.map(
             MemoryArea::new(start.into(), 0x1000, 0x7, MockBackend),
+            &mut (),
             &mut pt,
             false,
         ));
@@ -264,7 +285,13 @@ fn test_protect() {
     // Protect [0xc00, 0x2400), [0x2c00, 0x4400), [0x4c00, 0x6400), ...
     // The areas are split into two areas.
     for start in (0..MAX_ADDR).step_by(0x2000) {
-        assert_ok!(set.protect((start + 0xc00).into(), 0x1800, update_flags(0x1), &mut pt));
+        assert_ok!(set.protect(
+            (start + 0xc00).into(),
+            0x1800,
+            update_flags(0x1),
+            &mut (),
+            &mut pt
+        ));
     }
     dump_memory_set(&set);
     assert_eq!(set.len(), 23);
@@ -289,7 +316,13 @@ fn test_protect() {
     // Protect [0x800, 0x900), [0x2800, 0x2900), [0x4800, 0x4900), ...
     // The areas are split into three areas.
     for start in (0..MAX_ADDR).step_by(0x2000) {
-        assert_ok!(set.protect((start + 0x800).into(), 0x100, update_flags(0x13), &mut pt));
+        assert_ok!(set.protect(
+            (start + 0x800).into(),
+            0x100,
+            update_flags(0x13),
+            &mut (),
+            &mut pt
+        ));
     }
     dump_memory_set(&set);
     assert_eq!(set.len(), 39);
@@ -319,12 +352,18 @@ fn test_protect() {
 
     // Test skip [0x880, 0x900), [0x2880, 0x2900), [0x4880, 0x4900), ...
     for start in (0..MAX_ADDR).step_by(0x2000) {
-        assert_ok!(set.protect((start + 0x880).into(), 0x80, update_flags(0x3), &mut pt));
+        assert_ok!(set.protect(
+            (start + 0x880).into(),
+            0x80,
+            update_flags(0x3),
+            &mut (),
+            &mut pt
+        ));
     }
     assert_eq!(set.len(), 39);
 
     // Unmap all areas.
-    assert_ok!(set.unmap(0.into(), MAX_ADDR, &mut pt));
+    assert_ok!(set.unmap(0.into(), MAX_ADDR, &mut (), &mut pt));
     assert_eq!(set.len(), 0);
     for &e in &pt[0..MAX_ADDR] {
         assert_eq!(e, 0);
@@ -340,6 +379,7 @@ fn test_find_free_area() {
     for start in (0..MAX_ADDR).step_by(0x2000) {
         assert_ok!(set.map(
             MemoryArea::new(start.into(), 0x1000, 1, MockBackend),
+            &mut (),
             &mut pt,
             false,
         ));

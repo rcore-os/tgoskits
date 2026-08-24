@@ -5,7 +5,7 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
-use super::{IrqScope, RawTicketGuard, RawTicketLock};
+use super::{IrqScope, RawTicketBaton, RawTicketGuard, RawTicketLock};
 use crate::runtime::IrqGuardSource;
 
 /// A non-sleeping lock for scheduler state shared with hard-IRQ producers.
@@ -63,6 +63,21 @@ impl<T> IrqTicketLock<T> {
         }
     }
 
+    /// Tries to lock scheduler state below an existing IRQ-off baton.
+    ///
+    /// # Safety
+    ///
+    /// Local IRQs must remain disabled until a returned guard is dropped. The
+    /// caller must never turn a failed try-lock into a wait while retaining a
+    /// lock whose normal order is below this one.
+    pub(crate) unsafe fn try_lock_irq_disabled(&self) -> Option<IrqTicketGuard<'_, T>> {
+        self.raw.try_lock().map(|raw| IrqTicketGuard {
+            raw: Some(raw),
+            irq: None,
+            _not_send: PhantomData,
+        })
+    }
+
     /// Acquires a nested ticket under a borrowed outer IRQ owner.
     ///
     /// This is the typed equivalent of Linux taking `p->pi_lock` with
@@ -77,7 +92,7 @@ impl<T> IrqTicketLock<T> {
     }
 
     /// Attempts acquisition and restores local IRQ state on failure.
-    #[cfg(any(test, all(axtest, feature = "axtest")))]
+    #[cfg(any(test, all(axtest, feature = "axtest"), feature = "task-test-hooks"))]
     pub(crate) fn try_lock(&self, source: IrqGuardSource) -> Option<IrqTicketGuard<'_, T>> {
         let irq = IrqScope::enter_ticket_lock(source);
         self.raw.try_lock().map(|raw| IrqTicketGuard {
@@ -119,6 +134,25 @@ impl<T> IrqTicketGuard<'_, T> {
                 _not_send: PhantomData,
             },
         )
+    }
+
+    /// Transfers only the held raw ticket to an incoming scheduler context.
+    ///
+    /// # Safety
+    ///
+    /// This guard must have been acquired below an already-active scheduler
+    /// IRQ baton. That outer baton must retain local IRQ exclusion across the
+    /// architecture switch and until the returned raw baton is dropped.
+    pub(crate) unsafe fn into_raw_baton(mut self) -> RawTicketBaton<T> {
+        if self.irq.is_some() {
+            panic!("an irqsave ticket cannot cross a context switch");
+        }
+        let raw = self
+            .raw
+            .take()
+            .expect("IRQ ticket guard always owns its raw guard");
+        // SAFETY: forwarded from this method's scheduler-frame contract.
+        unsafe { raw.into_baton() }
     }
 
     #[cfg(feature = "task-test-hooks")]

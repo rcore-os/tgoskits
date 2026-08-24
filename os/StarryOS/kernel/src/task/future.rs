@@ -318,13 +318,6 @@ pub enum ExclusivePollWake {
     Notified,
 }
 
-impl ExclusivePollWake {
-    /// Returns whether an exclusive source selected this attempt.
-    pub const fn was_notified(self) -> bool {
-        matches!(self, Self::Notified)
-    }
-}
-
 /// Wraps a non-blocking operation and reports exclusive wake ownership.
 ///
 /// Consumptive sources use the notification marker to hand remaining

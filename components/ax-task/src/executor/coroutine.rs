@@ -15,7 +15,7 @@ use core::{
 };
 
 use super::SharedExecutor;
-use crate::{ThreadId, inbox::InboxNode, runtime::task_runtime};
+use crate::{ThreadId, WakeIntent, inbox::InboxNode, runtime::task_runtime};
 
 pub(super) const RUN_QUEUED: usize = 1 << 0;
 pub(super) const POLLING: usize = 1 << 1;
@@ -217,6 +217,26 @@ where
 /// `header` must point to a pinned coroutine allocation for which the caller owns
 /// a live reference until this function returns.
 pub(super) unsafe fn schedule(header: *mut CoroutineHeader) {
+    unsafe {
+        // The standard Waker contract carries no sleep-soon scheduler hint.
+        schedule_with_intent(header, WakeIntent::Normal);
+    }
+}
+
+/// Coalesces and publishes one Linux `WF_SYNC` ready notification.
+///
+/// # Safety
+///
+/// `header` must point to a pinned coroutine allocation for which the caller
+/// owns a live reference until this function returns. The caller must be in
+/// task context and expect to block shortly.
+pub(super) unsafe fn schedule_sync(header: *mut CoroutineHeader) {
+    unsafe {
+        schedule_with_intent(header, WakeIntent::Sync);
+    }
+}
+
+unsafe fn schedule_with_intent(header: *mut CoroutineHeader, intent: WakeIntent) {
     let header_ref = unsafe {
         // Every caller owns a live reference for the duration of publication.
         &*header
@@ -239,7 +259,7 @@ pub(super) unsafe fn schedule(header: *mut CoroutineHeader) {
     }
 
     retain_reference(header_ref);
-    if !header_ref.executor.publish_ready(header) {
+    if !header_ref.executor.publish_ready(header, intent) {
         header_ref.state.fetch_and(!RUN_QUEUED, Ordering::AcqRel);
         unsafe {
             // Closing rejected this publication, so the retained queue reference

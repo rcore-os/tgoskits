@@ -13,8 +13,8 @@ use axfs_ng_vfs::{Location, VfsError};
 use weak_map::StrongRef;
 
 use super::{
-    AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
-    PopulateCallback, RssKind, pages_in,
+    AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapContext, MemoryAccounting,
+    PopulateCallback, RssKind, TlbGather, pages_in,
 };
 use crate::{StarryError, StarryResult, sync::PiMutex};
 
@@ -87,7 +87,9 @@ impl FileBackendInner {
     }
 
     fn on_evict(self: &Arc<Self>, pn: u32, aspace: &mut AddrSpace) -> bool {
-        match aspace.mutate_with_tlb_gather(&[], |aspace| self.unmap_evicted_page(pn, aspace)) {
+        match aspace.mutate_with_tlb_gather(&[], |aspace, gather| {
+            self.unmap_evicted_page(pn, aspace, gather)
+        }) {
             Ok(()) => true,
             Err(error) => {
                 warn!("Failed to finish page-cache eviction TLB transaction: {error}");
@@ -100,6 +102,7 @@ impl FileBackendInner {
         self: &Arc<Self>,
         pn: u32,
         aspace: &mut AddrSpace,
+        gather: &mut TlbGather,
     ) -> crate::StarryResult {
         let vaddr = {
             let file_data = self.file_data.lock();
@@ -134,7 +137,7 @@ impl FileBackendInner {
         };
         if unmapped {
             aspace.rss().dec(kind, 1);
-            super::super::tlb::record_range_for_shootdown(shootdown_range);
+            gather.record_range(shootdown_range);
         }
         Ok(())
     }
@@ -320,6 +323,7 @@ impl BackendOps for FileBackend {
         _range: VirtAddrRange,
         flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
+        _gather: &mut TlbGather,
         _pt: &mut PageTable,
     ) -> StarryResult {
         self.check_flags(flags)
@@ -329,6 +333,7 @@ impl BackendOps for FileBackend {
         &self,
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
+        _gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         let kind = self.rss_kind();
@@ -353,6 +358,7 @@ impl BackendOps for FileBackend {
         &self,
         _range: VirtAddrRange,
         new_flags: MappingFlags,
+        _gather: &mut TlbGather,
         _pt: &mut PageTable,
     ) -> StarryResult {
         self.check_flags(new_flags)
@@ -364,6 +370,7 @@ impl BackendOps for FileBackend {
         flags: MappingFlags,
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult<(usize, Option<PopulateCallback>)> {
         let mut pages = 0;
@@ -393,7 +400,7 @@ impl BackendOps for FileBackend {
                         let shootdown_range = super::super::tlb::checked_range(addr, PAGE_SIZE_4K)?;
                         self.0.cache.mark_mmap_dirty_page(pn)?;
                         pt.remap_page(addr, paddr, flags)?;
-                        super::super::tlb::record_range_for_shootdown(shootdown_range);
+                        gather.record_range(shootdown_range);
                         pages += 1;
                     } else if page_flags.contains(access_flags) {
                         pages += 1;
@@ -458,10 +465,10 @@ impl BackendOps for FileBackend {
                         })
                         .collect();
                     let evicted = to_be_evicted;
-                    let result = aspace.mutate_with_tlb_gather(&[], |aspace| {
+                    let result = aspace.mutate_with_tlb_gather(&[], |aspace, gather| {
                         for (pn, _) in &evicted {
                             for owner in &owners {
-                                owner.unmap_evicted_page(*pn, aspace)?;
+                                owner.unmap_evicted_page(*pn, aspace, gather)?;
                             }
                         }
                         Ok(())
@@ -481,13 +488,12 @@ impl BackendOps for FileBackend {
         &self,
         _range: VirtAddrRange,
         _flags: MappingFlags,
-        _old_pt: &mut PageTable,
-        _new_pt: &mut PageTable,
-        new_aspace: &Arc<PiMutex<AddrSpace>>,
-        _acct: CloneMapAccounting<'_>,
+        context: CloneMapContext<'_>,
     ) -> StarryResult<Backend> {
         let start = self.0.file_data.lock().start;
-        Ok(Backend::File(self.with_start(start, new_aspace)))
+        Ok(Backend::File(
+            self.with_start(start, context.child_address_space),
+        ))
     }
 
     fn split(&mut self, align_diff: usize) -> Option<Backend> {

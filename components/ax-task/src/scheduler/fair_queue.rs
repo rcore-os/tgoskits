@@ -9,7 +9,12 @@ use super::{
     queue::{QueuedThread, QueuedThreadSnapshot},
     virtual_before, virtual_delta, virtual_min,
 };
-use crate::{FairEntity, ThreadId};
+use crate::{FairEntity, SchedulingEntity, ThreadId};
+
+pub(super) enum FairPick {
+    Runnable(QueuedThread),
+    Delayed(Arc<crate::ThreadCore>),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FairQueueKey {
@@ -59,6 +64,7 @@ pub(crate) struct FairNode {
     right: FairLink,
     height: usize,
     min_vruntime: u64,
+    min_service_request_ns: u64,
 }
 
 impl FairNode {
@@ -74,12 +80,15 @@ impl FairNode {
             right: None,
             height: 1,
             min_vruntime: 0,
+            min_service_request_ns: 0,
         })
     }
 
     fn reset(&mut self, thread: QueuedThread) {
         self.key = FairQueueKey::for_thread(&thread);
-        self.min_vruntime = fair_entity(&thread).vruntime();
+        let fair = fair_entity(&thread);
+        self.min_vruntime = fair.vruntime();
+        self.min_service_request_ns = fair.service_request_ns();
         self.thread = Some(thread);
         self.left = None;
         self.right = None;
@@ -104,11 +113,16 @@ impl FairNode {
             min_vruntime = virtual_min(min_vruntime, right);
         }
         self.min_vruntime = min_vruntime;
+        self.min_service_request_ns = link_min_service_request_ns(&self.left)
+            .into_iter()
+            .chain(link_min_service_request_ns(&self.right))
+            .fold(fair_entity(self.thread()).service_request_ns(), u64::min);
     }
 }
 
 /// A fair-class queue ordered by virtual deadline and augmented by minimum
-/// vruntime. The augmentation makes earliest-eligible selection logarithmic.
+/// vruntime and service request. The augmentations keep eligible selection
+/// logarithmic and expose Linux RUN_TO_PARITY's shortest queued slice in O(1).
 #[derive(Debug)]
 pub(super) struct FairRunQueue {
     root: FairLink,
@@ -159,6 +173,10 @@ impl FairRunQueue {
         self.zero_vruntime
     }
 
+    pub(super) fn min_service_request_ns(&self) -> Option<u64> {
+        self.root.as_deref().map(|node| node.min_service_request_ns)
+    }
+
     #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(super) fn set_virtual_time_for_test(&mut self, virtual_time: u64) {
         let delta = virtual_delta(virtual_time, self.zero_vruntime);
@@ -166,6 +184,22 @@ impl FairRunQueue {
     }
 
     pub(super) fn insert(&mut self, thread: QueuedThread) {
+        assert!(
+            !fair_entity(&thread).is_delayed(),
+            "ordinary Fair insertion cannot consume delayed dequeue state"
+        );
+        self.insert_entry(thread);
+    }
+
+    pub(super) fn insert_delayed(&mut self, thread: QueuedThread) {
+        assert!(
+            fair_entity(&thread).is_delayed(),
+            "delayed Fair insertion requires entity-owned delayed state"
+        );
+        self.insert_entry(thread);
+    }
+
+    fn insert_entry(&mut self, thread: QueuedThread) {
         let key = FairQueueKey::for_thread(&thread);
         let slot = thread.id.slot() as usize;
         assert!(
@@ -179,7 +213,7 @@ impl FairRunQueue {
             "fair runqueue cannot contain one thread twice"
         );
         self.add_weighted_entity(fair_entity(&thread));
-        if thread.migration_capable {
+        if thread.migration_capable && !fair_entity(&thread).is_delayed() {
             self.migratable_count = self
                 .migratable_count
                 .checked_add(1)
@@ -197,6 +231,10 @@ impl FairRunQueue {
     }
 
     pub(super) fn remove(&mut self, thread: ThreadId) -> Option<QueuedThread> {
+        self.remove_entry(thread)
+    }
+
+    fn remove_entry(&mut self, thread: ThreadId) -> Option<QueuedThread> {
         let indexed = self.keys.get_mut(thread.slot() as usize)?.take()?;
         if indexed.0 != thread.generation() {
             self.keys[thread.slot() as usize] = Some(indexed);
@@ -208,7 +246,7 @@ impl FairRunQueue {
         let removed = removed.expect("fair runqueue identity index must match its tree");
         let removed = Self::return_removed(removed);
         self.remove_weighted_entity(fair_entity(&removed));
-        if removed.migration_capable {
+        if removed.migration_capable && !fair_entity(&removed).is_delayed() {
             self.migratable_count = self
                 .migratable_count
                 .checked_sub(1)
@@ -218,29 +256,130 @@ impl FairRunQueue {
         Some(removed)
     }
 
-    pub(super) fn pick_eligible(&mut self, virtual_time: u64) -> Option<QueuedThread> {
-        let key = earliest_eligible_key(self.root.as_deref(), virtual_time)?;
-        let indexed = self.keys[key.thread.slot() as usize]
-            .take()
-            .expect("eligible fair node must remain indexed");
-        assert_eq!(indexed, (key.thread.generation(), key));
-        let (root, removed) = remove_node(self.root.take(), key);
-        self.root = root;
-        let removed = removed.expect("eligible fair key must remain present until owner removal");
-        let removed = Self::return_removed(removed);
-        self.remove_weighted_entity(fair_entity(&removed));
-        if removed.migration_capable {
-            self.migratable_count = self
-                .migratable_count
-                .checked_sub(1)
-                .expect("fair migratable count must match queue membership");
+    pub(super) fn pick_eligible(
+        &mut self,
+        virtual_time: u64,
+        skip_delayed: bool,
+    ) -> Option<FairPick> {
+        let key = earliest_eligible_key(self.root.as_deref(), virtual_time, skip_delayed)?;
+        let node = find_node(self.root.as_deref(), key)
+            .expect("eligible fair key must remain present until owner selection");
+        if fair_entity(node.thread()).is_delayed() {
+            return Some(FairPick::Delayed(Arc::clone(&node.thread().core)));
         }
-        self.len -= 1;
-        Some(removed)
+        let thread = self
+            .remove_entry(key.thread)
+            .expect("eligible fair identity must remain indexed");
+        Some(FairPick::Runnable(thread))
     }
 
     pub(super) fn earliest_eligible(&self, virtual_time: u64) -> Option<ThreadId> {
-        earliest_eligible_key(self.root.as_deref(), virtual_time).map(|key| key.thread)
+        earliest_eligible_key(self.root.as_deref(), virtual_time, true).map(|key| key.thread)
+    }
+
+    pub(super) fn is_delayed(&self, thread: ThreadId) -> bool {
+        let Some((generation, key)) = self
+            .keys
+            .get(thread.slot() as usize)
+            .and_then(|entry| *entry)
+        else {
+            return false;
+        };
+        generation == thread.generation()
+            && find_node(self.root.as_deref(), key)
+                .is_some_and(|node| fair_entity(node.thread()).is_delayed())
+    }
+
+    pub(super) fn take_delayed(&mut self, thread: ThreadId) -> Option<QueuedThread> {
+        self.is_delayed(thread)
+            .then(|| self.remove_entry(thread))
+            .flatten()
+    }
+
+    pub(super) fn finish_delayed_dequeue(
+        &mut self,
+        thread: ThreadId,
+        virtual_time: u64,
+        timing_granularity_ns: u64,
+    ) -> Option<QueuedThread> {
+        let mut thread = self.take_delayed(thread)?;
+        let SchedulingEntity::Fair(fair) = thread.active.entity_mut() else {
+            unreachable!("FairRunQueue can contain only Fair entities")
+        };
+        fair.finish_delayed_dequeue(virtual_time, timing_granularity_ns)
+            .ok()?;
+        Some(thread)
+    }
+
+    pub(super) fn reactivate_delayed(
+        &mut self,
+        id: ThreadId,
+        virtual_time: u64,
+        timing_granularity_ns: u64,
+    ) -> Option<SchedulingEntity> {
+        let mut thread = self.take_delayed(id)?;
+        let SchedulingEntity::Fair(fair) = thread.active.entity_mut() else {
+            unreachable!("FairRunQueue can contain only Fair entities")
+        };
+        fair.reactivate_delayed(virtual_time, timing_granularity_ns)
+            .ok()?;
+        let entity = thread.active.entity().clone();
+        self.insert(thread);
+        Some(entity)
+    }
+
+    pub(super) fn update_migration_capability(
+        &mut self,
+        id: ThreadId,
+        migration_capable: bool,
+    ) -> bool {
+        let Some((generation, key)) = self.keys.get(id.slot() as usize).and_then(|entry| *entry)
+        else {
+            return false;
+        };
+        if generation != id.generation() {
+            return false;
+        }
+        let node = find_node_mut(self.root.as_deref_mut(), key)
+            .expect("fair identity index must match its tree");
+        let delayed = fair_entity(node.thread()).is_delayed();
+        let counted = node.thread().migration_capable && !delayed;
+        let next_counted = migration_capable && !delayed;
+        node.thread
+            .as_mut()
+            .expect("linked fair node must own one scheduling entity")
+            .migration_capable = migration_capable;
+        match (counted, next_counted) {
+            (false, true) => self.migratable_count += 1,
+            (true, false) => {
+                self.migratable_count = self
+                    .migratable_count
+                    .checked_sub(1)
+                    .expect("fair migratable count must match queue membership")
+            }
+            _ => {}
+        }
+        true
+    }
+
+    pub(super) fn mark_balance_candidate(&mut self, id: ThreadId, scan_epoch: u64) -> bool {
+        let Some((generation, key)) = self.keys.get(id.slot() as usize).and_then(|entry| *entry)
+        else {
+            return false;
+        };
+        if generation != id.generation() {
+            return false;
+        }
+        let node = find_node_mut(self.root.as_deref_mut(), key)
+            .expect("fair identity index must match its tree");
+        if fair_entity(node.thread()).is_delayed() {
+            return false;
+        }
+        node.thread
+            .as_mut()
+            .expect("linked fair node must own one scheduling entity")
+            .balance_scan_epoch = scan_epoch;
+        true
     }
 
     pub(super) fn find_first_matching(
@@ -248,6 +387,14 @@ impl FairRunQueue {
         predicate: &mut impl FnMut(&QueuedThread) -> bool,
     ) -> Option<QueuedThreadSnapshot> {
         find_first_matching(self.root.as_deref(), predicate).map(QueuedThreadSnapshot::from)
+    }
+
+    pub(super) fn find_first_migratable_matching(
+        &self,
+        predicate: &mut impl FnMut(&QueuedThread) -> bool,
+    ) -> Option<QueuedThreadSnapshot> {
+        find_first_runnable_matching(self.root.as_deref(), predicate)
+            .map(QueuedThreadSnapshot::from)
     }
 
     pub(super) fn update_virtual_time(&mut self, current: Option<FairEntity>) -> u64 {
@@ -307,6 +454,7 @@ impl FairRunQueue {
         removed.right = None;
         removed.height = 1;
         removed.min_vruntime = 0;
+        removed.min_service_request_ns = 0;
         unsafe {
             // SAFETY: the node is physically unlinked before the placement
             // transaction can publish this thread to another runqueue.
@@ -326,6 +474,7 @@ impl FairRunQueue {
         );
         assert_eq!(summary.sum_weighted_delta, self.sum_weighted_delta);
         assert_eq!(summary.total_weight, self.total_weight);
+        assert_eq!(summary.migratable_count, self.migratable_count);
     }
 }
 
@@ -343,6 +492,10 @@ fn link_height(link: &FairLink) -> usize {
 
 fn link_min_vruntime(link: &FairLink) -> Option<u64> {
     link.as_deref().map(|node| node.min_vruntime)
+}
+
+fn link_min_service_request_ns(link: &FairLink) -> Option<u64> {
+    link.as_deref().map(|node| node.min_service_request_ns)
 }
 
 fn balance_factor(node: &FairNode) -> isize {
@@ -459,7 +612,11 @@ fn take_min(mut root: Box<FairNode>) -> (FairLink, Box<FairNode>) {
     (Some(rebalance(root)), minimum)
 }
 
-fn earliest_eligible_key(node: Option<&FairNode>, virtual_time: u64) -> Option<FairQueueKey> {
+fn earliest_eligible_key(
+    node: Option<&FairNode>,
+    virtual_time: u64,
+    skip_delayed: bool,
+) -> Option<FairQueueKey> {
     let node = node?;
     #[cfg(any(test, all(axtest, feature = "axtest")))]
     record_fair_runqueue_visit();
@@ -467,10 +624,13 @@ fn earliest_eligible_key(node: Option<&FairNode>, virtual_time: u64) -> Option<F
         .left
         .as_deref()
         .is_some_and(|left| !virtual_before(virtual_time, left.min_vruntime))
+        && let Some(key) = earliest_eligible_key(node.left.as_deref(), virtual_time, skip_delayed)
     {
-        return earliest_eligible_key(node.left.as_deref(), virtual_time);
+        return Some(key);
     }
-    if fair_entity(node.thread()).is_eligible(virtual_time) {
+    if fair_entity(node.thread()).is_eligible(virtual_time)
+        && !(skip_delayed && fair_entity(node.thread()).is_delayed())
+    {
         return Some(node.key);
     }
     if node
@@ -478,9 +638,27 @@ fn earliest_eligible_key(node: Option<&FairNode>, virtual_time: u64) -> Option<F
         .as_deref()
         .is_some_and(|right| !virtual_before(virtual_time, right.min_vruntime))
     {
-        return earliest_eligible_key(node.right.as_deref(), virtual_time);
+        return earliest_eligible_key(node.right.as_deref(), virtual_time, skip_delayed);
     }
     None
+}
+
+fn find_node(node: Option<&FairNode>, key: FairQueueKey) -> Option<&FairNode> {
+    let node = node?;
+    match key.cmp(&node.key) {
+        Ordering::Less => find_node(node.left.as_deref(), key),
+        Ordering::Greater => find_node(node.right.as_deref(), key),
+        Ordering::Equal => Some(node),
+    }
+}
+
+fn find_node_mut(node: Option<&mut FairNode>, key: FairQueueKey) -> Option<&mut FairNode> {
+    let node = node?;
+    match key.cmp(&node.key) {
+        Ordering::Less => find_node_mut(node.left.as_deref_mut(), key),
+        Ordering::Greater => find_node_mut(node.right.as_deref_mut(), key),
+        Ordering::Equal => Some(node),
+    }
 }
 
 fn find_first_matching<'queue>(
@@ -493,14 +671,29 @@ fn find_first_matching<'queue>(
         .or_else(|| find_first_matching(node.right.as_deref(), predicate))
 }
 
+fn find_first_runnable_matching<'queue>(
+    node: Option<&'queue FairNode>,
+    predicate: &mut impl FnMut(&QueuedThread) -> bool,
+) -> Option<&'queue QueuedThread> {
+    let node = node?;
+    find_first_runnable_matching(node.left.as_deref(), predicate)
+        .or_else(|| {
+            (!fair_entity(node.thread()).is_delayed() && predicate(node.thread()))
+                .then_some(node.thread())
+        })
+        .or_else(|| find_first_runnable_matching(node.right.as_deref(), predicate))
+}
+
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 #[derive(Clone, Copy)]
 struct ValidationSummary {
     count: usize,
     height: usize,
     min_vruntime: Option<u64>,
+    min_service_request_ns: Option<u64>,
     sum_weighted_delta: i128,
     total_weight: i128,
+    migratable_count: usize,
 }
 
 #[cfg(any(test, all(axtest, feature = "axtest")))]
@@ -514,8 +707,10 @@ fn validate_node(
             count: 0,
             height: 0,
             min_vruntime: None,
+            min_service_request_ns: None,
             sum_weighted_delta: 0,
             total_weight: 0,
+            migratable_count: 0,
         };
     };
     let left = validate_node(node.left.as_deref(), previous, zero_vruntime);
@@ -529,17 +724,30 @@ fn validate_node(
         .into_iter()
         .chain(right.min_vruntime)
         .fold(fair.vruntime(), virtual_min);
+    let min_service_request_ns = left
+        .min_service_request_ns
+        .into_iter()
+        .chain(right.min_service_request_ns)
+        .fold(fair.service_request_ns(), u64::min);
     assert_eq!(node.height, height);
     assert_eq!(node.min_vruntime, min_vruntime);
+    assert_eq!(node.min_service_request_ns, min_service_request_ns);
     assert!(left.height.abs_diff(right.height) <= 1);
     let weight = i128::from(fair.weight());
     ValidationSummary {
         count: left.count.saturating_add(right.count).saturating_add(1),
         height,
         min_vruntime: Some(min_vruntime),
+        min_service_request_ns: Some(min_service_request_ns),
         sum_weighted_delta: left.sum_weighted_delta
             + right.sum_weighted_delta
             + i128::from(virtual_delta(fair.vruntime(), zero_vruntime)) * weight,
         total_weight: left.total_weight + right.total_weight + weight,
+        migratable_count: left
+            .migratable_count
+            .saturating_add(right.migratable_count)
+            .saturating_add(usize::from(
+                node.thread().migration_capable && !fair.is_delayed(),
+            )),
     }
 }

@@ -28,22 +28,33 @@ impl TaskSystem {
             (Arc::clone(&record.core), Arc::clone(&record.sched))
         };
         let sched = sched_cell.lock();
-        let running_now_ns = if let Some(cpu) = sched.placement.assigned_cpu() {
+        let snapshot = if let Some(cpu) = sched.placement.assigned_cpu() {
             let remote = self
                 .cpu_remotes
                 .get(cpu.as_usize())
                 .ok_or(TaskError::InvalidCpu(cpu.as_u32()))?;
             let transaction = OwnerRqTxn::begin(self, remote);
             let rq_state = transaction.task_state(thread, &sched.placement);
-            let now_ns = rq_state
-                .is_current()
-                .then(|| transaction.clock().task().as_nanos());
+            let running_interval_ns = if rq_state.is_current() {
+                let dispatch = transaction
+                    .current()
+                    .filter(|dispatch| dispatch.thread() == thread);
+                Some(
+                    dispatch
+                        .unwrap_or_else(|| {
+                            task_runtime::fatal_invariant(0x5251_1210, thread.as_u64() as usize)
+                        })
+                        .runtime_interval_ns(transaction.clock().task().as_nanos()),
+                )
+            } else {
+                None
+            };
+            let snapshot = core.runtime_snapshot(running_interval_ns);
             transaction.commit();
-            now_ns
+            snapshot
         } else {
-            None
+            core.runtime_snapshot(None)
         };
-        let snapshot = core.runtime_snapshot(running_now_ns);
         Ok(snapshot)
     }
 

@@ -18,7 +18,7 @@ use core::{
     marker::PhantomData,
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 pub use coroutine::{CoroutineHeader, CoroutineId};
@@ -35,6 +35,17 @@ use crate::{
 
 /// Maximum number of futures polled by one executor turn.
 pub const DEFAULT_POLL_BATCH: usize = 64;
+
+/// Wakes a coroutine with Linux `WF_SYNC` scheduling semantics.
+///
+/// The hint is honored only for this executor's Wakers. Other Waker
+/// implementations receive an ordinary wake, preserving generic readiness
+/// interoperability. Callers must be in task context and expect to block
+/// shortly after publishing the readiness transition.
+pub fn wake_waker_sync(waker: Waker) {
+    debug_assert!(!task_runtime::in_hard_irq());
+    waker::wake_sync(waker);
+}
 
 const NOTIFIED: usize = 1 << 0;
 const PARKING: usize = 1 << 1;
@@ -591,7 +602,11 @@ impl SharedExecutor {
         }
     }
 
-    pub(super) fn publish_ready(&self, header: *mut CoroutineHeader) -> bool {
+    pub(super) fn publish_ready(
+        &self,
+        header: *mut CoroutineHeader,
+        intent: crate::WakeIntent,
+    ) -> bool {
         let Some(_publisher) = self.begin_ready_publish_guard() else {
             return false;
         };
@@ -600,7 +615,7 @@ impl SharedExecutor {
             // queue reference keeps the allocation alive until consumption.
             self.ready.push(header);
         }
-        self.notify_owner();
+        self.notify_owner(intent);
         true
     }
 
@@ -649,10 +664,14 @@ impl SharedExecutor {
         debug_assert_ne!(previous & READY_PUBLISHER_COUNT_MASK, 0);
     }
 
-    fn notify_owner(&self) {
+    fn notify_owner(&self, intent: crate::WakeIntent) {
         let previous = self.park_state.fetch_or(NOTIFIED, Ordering::AcqRel);
         if previous & PARKED != 0 {
-            let _result = self.owner_wake.wake();
+            let _result = if intent.is_sync() {
+                self.owner_wake.wake_sync()
+            } else {
+                self.owner_wake.wake()
+            };
         }
     }
 

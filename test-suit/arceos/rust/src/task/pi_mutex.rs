@@ -2,6 +2,7 @@ use std::{
     os::arceos::{
         api::task::{self as task_api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
         modules::{ax_hal::percpu::this_cpu_id, ax_task::task_test_hooks},
+        sync::InterruptibleMutexExt,
         task::{RtPriority, SchedulePolicy, current_thread_id, set_thread_policy},
     },
     sync::{
@@ -99,7 +100,79 @@ pub fn run() -> crate::TestResult {
     owner_exit_after_waiter_snapshot();
     wait_token_retains_initial_owner_lifetime();
     owner_spin_allows_higher_priority_preemption();
+    final_waiter_cancel_races_with_slow_release();
     Ok(())
+}
+
+fn final_waiter_cancel_races_with_slow_release() {
+    let mutex = Arc::new(Mutex::new(()));
+    let owner_locked = Arc::new(AtomicBool::new(false));
+    let release_owner = Arc::new(AtomicBool::new(false));
+    let owner = {
+        let mutex = Arc::clone(&mutex);
+        let owner_locked = Arc::clone(&owner_locked);
+        let release_owner = Arc::clone(&release_owner);
+        thread::spawn(move || {
+            pin_current_to_cpu(0);
+            let guard = mutex.lock();
+            owner_locked.store(true, Ordering::Release);
+            while !release_owner.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+            drop(guard);
+        })
+    };
+    wait_until(
+        || owner_locked.load(Ordering::Acquire),
+        "PI cancel-race owner did not acquire the lock",
+    );
+
+    let start_waiter = Arc::new(AtomicBool::new(false));
+    let interrupt_waiter = Arc::new(AtomicBool::new(false));
+    let waiter_cancelled = Arc::new(AtomicBool::new(false));
+    let waiter = {
+        let mutex = Arc::clone(&mutex);
+        let start_waiter = Arc::clone(&start_waiter);
+        let interrupt_waiter = Arc::clone(&interrupt_waiter);
+        let waiter_cancelled = Arc::clone(&waiter_cancelled);
+        thread::spawn(move || {
+            pin_current_to_cpu(1);
+            while !start_waiter.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+            assert!(
+                mutex
+                    .lock_interruptible(|| interrupt_waiter.load(Ordering::Acquire))
+                    .is_err(),
+                "the final PI waiter must cancel before handoff"
+            );
+            waiter_cancelled.store(true, Ordering::Release);
+        })
+    };
+    task_test_hooks::arm_pi_cancel_during_release(
+        owner.thread().id().as_u64().get(),
+        waiter.thread().id().as_u64().get(),
+    );
+    start_waiter.store(true, Ordering::Release);
+    wait_until(
+        task_test_hooks::pi_cancel_waiter_registered,
+        "PI cancel-race waiter did not register",
+    );
+
+    release_owner.store(true, Ordering::Release);
+    wait_until(
+        task_test_hooks::pi_release_observed_cancelable_waiter,
+        "PI slow release did not observe the cancelable waiter",
+    );
+    interrupt_waiter.store(true, Ordering::Release);
+    wait_until(
+        || waiter_cancelled.load(Ordering::Acquire),
+        "PI waiter did not cancel while slow release was paused",
+    );
+    task_test_hooks::allow_pi_release_after_waiter_cancel();
+    waiter.join().unwrap();
+    owner.join().unwrap();
+    drop(mutex.lock());
 }
 
 fn wait_token_retains_initial_owner_lifetime() {
