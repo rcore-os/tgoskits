@@ -1,6 +1,0 @@
-run,index,image_id,image_sha256,truth_target,expected,source,outcome,request,infer_us,detected_target,sent_target,state_before,state_after,rtt_ms
-1,1,vase-left,570d32eef9a9f5fd7101c5058b625ef62469e5ba778a77c38da675bea4752cf9,321,accept,yolo,accepted,1,1603730,321,400,300,310,96
-1,2,vase-center,608c8a61ff0bb43e5a8613f1f6f8aa08af74b084363610ed2b526ad925e4cb6f,421,accept,yolo,accepted,2,1624018,421,421,310,322,301
-1,3,vase-right,f9d70fd3e0f85185ce8e45b2d714d8b4083833da73cdaeac5d981abc890ef698,521,accept,yolo,accepted,3,1623915,521,521,322,364,256
-1,4,no-target,a50f32c63aff52e8abab6c82bbd8e202512ab23ff12e213d6833aa719af56bc9,,reject,yolo,rejected,4,1625179,,,,,
-1,5,small-target,a6a77909aed2ed499df3ccd54d5db3384a2de0cfcaa799b15e1c896c7a058370,500,reject,yolo,rejected,5,1628069,,,,,
