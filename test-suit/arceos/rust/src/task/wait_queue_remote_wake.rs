@@ -965,6 +965,18 @@ fn exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu: usize, waker_cpu:
 }
 
 fn exercise_rt_wait_claim_queues_before_switch_tail(sleeper_cpu: usize, waker_cpu: usize) {
+    let idle_started = Instant::now();
+    while task_test_hooks::cpu_nr_running(sleeper_cpu as u32)
+        .expect("the wait-claim target rq summary must be readable")
+        != 0
+    {
+        assert!(
+            idle_started.elapsed() < OCCUPIER_CURRENT_TIMEOUT,
+            "the wait-claim target CPU must be idle before installing its last runnable task"
+        );
+        thread::yield_now();
+    }
+
     let may_wake = Arc::new(AtomicBool::new(false));
     let waker_ready = Arc::new(AtomicBool::new(false));
     let wake_returned = Arc::new(AtomicBool::new(false));
@@ -1528,6 +1540,7 @@ pub fn run() -> crate::TestResult {
     let waker_cpu = 0;
     let sleeper_cpu = 1;
     let migrated_cpu = 2;
+    let isolated_cpu = cpu_num - 1;
     reset_sleeper_state(sleeper_cpu);
 
     pin_current_to_cpu(waker_cpu);
@@ -1543,7 +1556,12 @@ pub fn run() -> crate::TestResult {
     exercise_direct_wake_retries_failed_delivery(sleeper_cpu);
     exercise_rt_waker_queues_before_switch_tail(sleeper_cpu, migrated_cpu);
     exercise_busy_owner_does_not_take_rt_wake_list(sleeper_cpu, migrated_cpu);
-    exercise_rt_wait_claim_queues_before_switch_tail(sleeper_cpu, migrated_cpu);
+    // The preceding busy-owner case deliberately leaves another task on
+    // `sleeper_cpu` until its exit switch tail completes. Use the otherwise
+    // untouched final CPU for the last-runnable TTWU_QUEUE case so the test
+    // establishes Linux's `rq->nr_running == 0` precondition rather than
+    // racing task-exit cleanup from the previous scenario.
+    exercise_rt_wait_claim_queues_before_switch_tail(isolated_cpu, migrated_cpu);
     exercise_delayed_fair_wake_before_switch_tail(sleeper_cpu, migrated_cpu);
     let sleeper = RemoteSleeper::spawn(sleeper_cpu);
     let sleeper_id = sleeper.thread_id();
