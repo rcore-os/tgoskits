@@ -3777,6 +3777,14 @@ x86_64、AArch64、RISC-V 与 LoongArch64 四架构真实 QEMU 均通过。
 `cargo xtask arceos test qemu --arch <arch>` 的 x86_64、AArch64、RISC-V 与 LoongArch64
 完整 Rust/C suite；LoongArch64 专属 unaligned-fixup 同样通过。
 
+合入最新远端检查点后的第一次 AArch64 完整运行还暴露了测试观测所有权错误：RT linked-pick
+的完整 entity 复制计数偶发为 1。Linux v7.1 的 `pick_task_rt()` 与 `pick_task_dl()` 直接返回
+task 指针，但独立的 push/balance 扫描仍可在另一 CPU 上观察同一 task；原有进程级 probe
+把该远端 snapshot 错算成正在执行的 owner-CPU pick。确定性双 CPU 回归令 owner CPU 保持
+pick scope、远端 CPU 注入同一目标的 balance snapshot，旧 probe 固定得到 1。probe 现在绑定
+被测 owner CPU，远端观察不计数，而 owner CPU 内任何完整 entity 复制仍会失败；同一 focused
+用例转绿后，上述四架构完整 suite 均在最终代码上重新通过。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

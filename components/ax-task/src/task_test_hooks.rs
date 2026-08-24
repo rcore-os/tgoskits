@@ -6,7 +6,7 @@
 
 use core::{
     pin::Pin,
-    sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 
 use crate::{
@@ -137,6 +137,7 @@ static OWNER_CONTROL_PENDING_REQUEST_NODE: InboxNode = InboxNode::new(InboxKind:
 static FAIR_DELAY_DEQUEUE_TARGET: AtomicU64 = AtomicU64::new(0);
 static PARK_PROFILE_HOOK: AtomicUsize = AtomicUsize::new(0);
 static LINKED_PICK_FULL_SNAPSHOT_COUNT: AtomicU64 = AtomicU64::new(0);
+static LINKED_PICK_FULL_SNAPSHOT_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
 static LINKED_PICK_FULL_SNAPSHOT_TARGET_A: AtomicU64 = AtomicU64::new(0);
 static LINKED_PICK_FULL_SNAPSHOT_TARGET_B: AtomicU64 = AtomicU64::new(0);
 static LINKED_PICK_FULL_SNAPSHOT_SCOPE: AtomicUsize = AtomicUsize::new(0);
@@ -3704,21 +3705,52 @@ pub(crate) fn record_park_profile_stage(stage: u8) {
 }
 
 /// Arms complete-rq-snapshot accounting for two RT/Deadline handoff peers.
-pub fn arm_linked_pick_full_snapshot_probe(first: ThreadId, second: ThreadId) {
+pub fn arm_linked_pick_full_snapshot_probe(cpu: crate::CpuId, first: ThreadId, second: ThreadId) {
     LINKED_PICK_FULL_SNAPSHOT_COUNT.store(0, Ordering::Release);
+    LINKED_PICK_FULL_SNAPSHOT_TARGET_CPU
+        .store(u64::from(cpu.as_u32()).saturating_add(1), Ordering::Release);
     LINKED_PICK_FULL_SNAPSHOT_TARGET_A.store(first.as_u64(), Ordering::Release);
     LINKED_PICK_FULL_SNAPSHOT_TARGET_B.store(second.as_u64(), Ordering::Release);
 }
 
 /// Takes the number of complete rq snapshots copied for the armed peers.
 pub fn take_linked_pick_full_snapshot_count() -> u64 {
+    LINKED_PICK_FULL_SNAPSHOT_TARGET_CPU.store(0, Ordering::Release);
     LINKED_PICK_FULL_SNAPSHOT_TARGET_A.store(0, Ordering::Release);
     LINKED_PICK_FULL_SNAPSHOT_TARGET_B.store(0, Ordering::Release);
     LINKED_PICK_FULL_SNAPSHOT_COUNT.swap(0, Ordering::AcqRel)
 }
 
+/// Holds one linked-pick accounting scope for a deterministic SMP probe.
+pub fn hold_linked_pick_full_snapshot_scope(entered: &AtomicBool, release: &AtomicBool) {
+    let _scope = enter_linked_pick_full_snapshot_scope();
+    entered.store(true, Ordering::Release);
+    while !release.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+}
+
+/// Records a synthetic balance snapshot for the deterministic SMP probe.
+pub fn record_linked_pick_full_snapshot_for_test(thread: ThreadId) {
+    record_linked_pick_full_snapshot(thread);
+}
+
+fn linked_pick_full_snapshot_probe_matches_current_cpu() -> bool {
+    let target = LINKED_PICK_FULL_SNAPSHOT_TARGET_CPU.load(Ordering::Acquire);
+    if target == 0 {
+        return false;
+    }
+    // SAFETY: scheduler snapshot construction holds the owner transaction's
+    // IRQ pin. The public deterministic probe requires its caller to retain a
+    // preemption pin while invoking the same observation path.
+    let current = unsafe { crate::runtime::task_runtime::current_cpu_id() };
+    target == u64::from(current.as_u32()).saturating_add(1)
+}
+
 pub(crate) fn record_linked_pick_full_snapshot(thread: ThreadId) {
-    if LINKED_PICK_FULL_SNAPSHOT_SCOPE.load(Ordering::Acquire) == 0 {
+    if !linked_pick_full_snapshot_probe_matches_current_cpu()
+        || LINKED_PICK_FULL_SNAPSHOT_SCOPE.load(Ordering::Acquire) == 0
+    {
         return;
     }
     let thread = thread.as_u64();
@@ -3729,15 +3761,22 @@ pub(crate) fn record_linked_pick_full_snapshot(thread: ThreadId) {
     }
 }
 
-pub(crate) struct LinkedPickFullSnapshotScope;
+pub(crate) struct LinkedPickFullSnapshotScope {
+    active: bool,
+}
 
 impl Drop for LinkedPickFullSnapshotScope {
     fn drop(&mut self) {
-        LINKED_PICK_FULL_SNAPSHOT_SCOPE.fetch_sub(1, Ordering::Release);
+        if self.active {
+            LINKED_PICK_FULL_SNAPSHOT_SCOPE.fetch_sub(1, Ordering::Release);
+        }
     }
 }
 
 pub(crate) fn enter_linked_pick_full_snapshot_scope() -> LinkedPickFullSnapshotScope {
-    LINKED_PICK_FULL_SNAPSHOT_SCOPE.fetch_add(1, Ordering::AcqRel);
-    LinkedPickFullSnapshotScope
+    let active = linked_pick_full_snapshot_probe_matches_current_cpu();
+    if active {
+        LINKED_PICK_FULL_SNAPSHOT_SCOPE.fetch_add(1, Ordering::AcqRel);
+    }
+    LinkedPickFullSnapshotScope { active }
 }

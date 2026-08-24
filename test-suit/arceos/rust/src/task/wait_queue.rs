@@ -1,17 +1,17 @@
 use std::{
     os::arceos::{
         api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
-        guard::IrqSaveGuard,
+        guard::{IrqSaveGuard, PreemptGuard},
         modules::{
             ax_hal::{
                 percpu::this_cpu_id,
                 time::{current_ticks, ticks_to_nanos},
             },
             ax_task::{
-                CurrentParkStart, FairMode, Nice, RtPriority, SchedulePolicy, ThreadWakeHandle,
-                WakeResult, begin_current_park, current_thread_handle, current_thread_id,
-                runtime::SchedSwitchRecord, scheduler_wait_test_hooks, set_thread_policy,
-                task_test_hooks,
+                CpuId, CurrentParkStart, FairMode, Nice, RtPriority, SchedulePolicy,
+                ThreadWakeHandle, WakeResult, begin_current_park, current_thread_handle,
+                current_thread_id, runtime::SchedSwitchRecord, scheduler_wait_test_hooks,
+                set_thread_policy, task_test_hooks,
             },
         },
         task::install_sched_switch_trace_hook,
@@ -62,11 +62,49 @@ fn record_raw_profile_park_stage(stage: u8) {
 pub fn run() -> crate::TestResult {
     test_park_prepare_skips_runtime_cpu_owner();
     test_empty_wake_skips_scheduler_guards();
+    test_linked_pick_probe_is_cpu_local();
     test_same_cpu_fifo_handoff_diagnostics();
     test_raw_fifo_park_handoff_diagnostics();
     test_wait();
     test_wait_timeout_until();
     Ok(())
+}
+
+fn test_linked_pick_probe_is_cpu_local() {
+    let cpu_count = thread::available_parallelism().unwrap().get();
+    assert!(cpu_count >= 2, "task-wait-queue requires at least two CPUs");
+    let owner_cpu = this_cpu_id();
+    let remote_cpu = (owner_cpu + 1) % cpu_count;
+    let target = current_thread_id().expect("the test thread must be scheduler-owned");
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let remote_entered = Arc::clone(&entered);
+    let remote_release = Arc::clone(&release);
+    let remote = thread::spawn(move || {
+        assert!(ax_set_current_affinity(AxCpuMask::one_shot(remote_cpu)).is_ok());
+        assert_eq!(this_cpu_id(), remote_cpu);
+        while !remote_entered.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+        }
+        let _preempt = PreemptGuard::new();
+        task_test_hooks::record_linked_pick_full_snapshot_for_test(target);
+        remote_release.store(true, Ordering::Release);
+    });
+
+    task_test_hooks::arm_linked_pick_full_snapshot_probe(
+        CpuId::new(owner_cpu as u32),
+        target,
+        target,
+    );
+    let preempt = PreemptGuard::new();
+    task_test_hooks::hold_linked_pick_full_snapshot_scope(&entered, &release);
+    drop(preempt);
+    remote.join().unwrap();
+    assert_eq!(
+        task_test_hooks::take_linked_pick_full_snapshot_count(),
+        0,
+        "a remote balance snapshot must not be attributed to the owner CPU's linked RT pick"
+    );
 }
 
 fn test_park_prepare_skips_runtime_cpu_owner() {
@@ -198,7 +236,11 @@ fn test_raw_fifo_park_handoff_diagnostics() {
         SchedulePolicy::fifo(RtPriority::new(10).expect("priority 10 must be valid")),
     )
     .expect("raw FIFO controller must accept its RT policy");
-    task_test_hooks::arm_linked_pick_full_snapshot_probe(current, worker_wake.thread_id());
+    task_test_hooks::arm_linked_pick_full_snapshot_probe(
+        CpuId::new(cpu as u32),
+        current,
+        worker_wake.thread_id(),
+    );
     task_test_hooks::arm_runnable_handoff_transition_probe(
         current.as_u64(),
         worker_wake.thread_id().as_u64(),
