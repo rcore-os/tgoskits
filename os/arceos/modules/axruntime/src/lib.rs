@@ -552,7 +552,7 @@ pub fn periodic_scheduler_tick_count(cpu_id: usize) -> Option<u64> {
         .map(|count| count.load(Ordering::Relaxed))
 }
 
-#[cfg(any(feature = "multitask", test))]
+#[cfg(any(all(feature = "irq", feature = "multitask"), test))]
 fn record_periodic_scheduler_tick(cpu_id: usize, scheduler_tick: bool) {
     if scheduler_tick && let Some(count) = PERIODIC_SCHEDULER_TICKS.get(cpu_id) {
         count.fetch_add(1, Ordering::Relaxed);
