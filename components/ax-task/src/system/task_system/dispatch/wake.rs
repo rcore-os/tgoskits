@@ -255,6 +255,8 @@ impl TaskSystem {
             task_runtime::fatal_invariant(0x574b_001e, result as usize);
         }
         drop(sched_guard);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::pause_after_owner_wake_publication(core.id());
         WakeResult::Notified
     }
 

@@ -1002,6 +1002,7 @@ fn exercise_rt_wait_claim_queues_before_switch_tail(sleeper_cpu: usize, waker_cp
         )
         .expect("wait-claim switch-tail sleeper must accept FIFO policy");
         task_test_hooks::arm_policy_switch_handoff_probe(current.id().as_u64());
+        task_test_hooks::arm_owner_wake_publication_probe(current.id());
         assert!(
             !api::ax_wait_queue_wait(&SWITCH_WAKE_WQ, None),
             "an untimed wait-claim park must not report a timeout"
@@ -1017,23 +1018,35 @@ fn exercise_rt_wait_claim_queues_before_switch_tail(sleeper_cpu: usize, waker_cp
         );
         thread::yield_now();
     }
+    assert_eq!(
+        task_test_hooks::cpu_nr_running(sleeper_cpu as u32)
+            .expect("the old owner's committed rq summary must be readable"),
+        0,
+        "Linux same-domain TTWU_QUEUE requires the outgoing wakee to be the owner's last runnable \
+         task"
+    );
 
     let _ = scheduler_wait_test_hooks::take_scheduler_wait_snapshot();
     may_wake.store(true, Ordering::Release);
-    let wake_started = Instant::now();
-    while !wake_returned.load(Ordering::Acquire) {
+    let publication_started = Instant::now();
+    while !task_test_hooks::owner_wake_publication_paused() {
         assert!(
-            wake_started.elapsed() < REMOTE_WAKE_PROGRESS_TIMEOUT,
-            "Linux TTWU_QUEUE must let a remote wait-claim waker return before switch tail"
+            publication_started.elapsed() < OCCUPIER_CURRENT_TIMEOUT,
+            "the remote wait-claim waker did not publish its Linux TTWU_QUEUE entry"
         );
         thread::yield_now();
     }
+    assert!(
+        !wake_returned.load(Ordering::Acquire),
+        "the publication probe must stop the outer wake API from returning"
+    );
     let waits = scheduler_wait_test_hooks::take_scheduler_wait_snapshot();
     assert_eq!(
         waits.on_cpu_waits, 0,
         "a remote wait-claim wake must queue on its owner instead of spinning on on_cpu"
     );
     task_test_hooks::release_policy_switch_handoff_after_observation();
+    task_test_hooks::release_owner_wake_publication();
 
     assert_eq!(
         waker
