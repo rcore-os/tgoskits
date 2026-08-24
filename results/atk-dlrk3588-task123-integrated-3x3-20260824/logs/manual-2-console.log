@@ -1,0 +1,1332 @@
+
+TASK123_RUNNER mode=manual scheduler=fp-rr shared_pcpu=0x100 rtos=rtthread rtos_priority=90 starry_priority=89 ram_only=true
+## reserved-memory:
+  axvisor-guest@40000000: addr=40000000 size=40000000
+  cma: addr=10000000 size=8000000
+  drm-logo@00000000: addr=edf00000 size=106000
+  ramoops@110000: addr=110000 size=f0000
+Adding bank: 0x00200000 - 0x08400000 (size: 0x08200000)3/5097.832 ms
+
+Starting kernel ...
+
+storagemedia=emmc androidboot.storagemedia=emmc androidboot.mode=normal  rw rootwait androidboot.verifiedbootstate=orange earlycon=uart8250,mmio32,0xfeb50000 console=ttyFIQ0 irqchip.gicv3_pseudo_nmi=0 root=PARTLABEL=rootfs
+VM Load @PA:0x400000
+VM Load Offset: 0xffff000080400000
+Memory Map:
+  Rsv    0x00000000110000 - 0x00000000200000 (960 KiB)
+  Free   0x00000000200000 - 0x00000000400000 (2 MiB)
+  KImg   0x00000000400000 - 0x00000003800000 (52 MiB)
+  Free   0x00000003800000 - 0x00000008300000 (75 MiB)
+  Rsv    0x00000008300000 - 0x00000008347000 (284 KiB)
+  Free   0x00000008347000 - 0x00000008400000 (740 KiB)
+  Free   0x00000009400000 - 0x00000010000000 (108 MiB)
+  Rsv    0x00000010000000 - 0x00000018000000 (128 MiB)
+  Free   0x00000018000000 - 0x00000040000000 (640 MiB)
+  Rsv    0x00000040000000 - 0x00000080000000 (1 GiB)
+  Free   0x00000080000000 - 0x000000edf00000 (1.72 GiB)
+  Rsv    0x000000edf00000 - 0x000000ee006000 (1.02 MiB)
+  Free   0x000000ee006000 - 0x000000f0000000 (31.98 MiB)
+  Free   0x00000100000000 - 0x00000200000000 (4 GiB)
+  Free   0x000002f0000000 - 0x00000300000000 (256 MiB)
+Initialize RAM allocator: 0x3800000..0x8300000
+Reserving CPU-local areas
+CPU-local area stride: 0x44000 bytes
+Total CPU-local allocation: 0x220000 bytes (8 CPUs)
+Flushed RAM used range to memory map: 0x3800000..0x3847000, current: 0x3847000
+Flushed RAM used range to memory map: 0x3847000..0x3a67000, current: 0x3a67000
+CPU-local areas allocated at 0x3847000 - 0x3a67000
+EL: 2
+Mapping early memory regions...
+Ram                 : [0x0000000000200000, 0x0000000008400000) -> [0x0000000000200000, 0x0000000008400000) (130 MiB)
+Ram                 : [0x0000000009400000, 0x00000000f0000000) -> [0x0000000009400000, 0x00000000f0000000) (3.61 GiB)
+Ram                 : [0x0000000100000000, 0x0000000200000000) -> [0x0000000100000000, 0x0000000200000000) (4 GiB)
+Ram                 : [0x00000002f0000000, 0x0000000300000000) -> [0x00000002f0000000, 0x0000000300000000) (256 MiB)
+KImage              : [0x0000ffff80000000, 0x0000ffff83400000) -> [0x0000000000400000, 0x0000000003800000) (52 MiB)
+PerCpu              : [0x0000ff0003847000, 0x0000ff0003a67000) -> [0x0000000003847000, 0x0000000003a67000) (2.12 MiB)
+Debug serial        : [0x00000000feb50000, 0x00000000feb51000) -> [0x00000000feb50000, 0x00000000feb51000) (4 KiB)
+Boot page table at physical address: PA:0x3a67000
+Setting up table registers...
+MMU Entry point at physical address: 0x676888
+Trap vector at 0xffff80279000
+Memory Map:
+  Rsv    0x00000000110000 - 0x00000000200000 (960 KiB)
+  Free   0x00000000200000 - 0x00000000400000 (2 MiB)
+  KImg   0x00000000400000 - 0x00000003800000 (52 MiB)
+  Rsv    0x00000003800000 - 0x00000003847000 (284 KiB)
+  PerCPU 0x00000003847000 - 0x00000003a67000 (2.12 MiB)
+  Rsv    0x00000003a67000 - 0x00000003a73000 (48 KiB)
+  Free   0x00000003a73000 - 0x00000008300000 (72.55 MiB)
+  Rsv    0x00000008300000 - 0x00000008347000 (284 KiB)
+  Free   0x00000008347000 - 0x00000008400000 (740 KiB)
+  Free   0x00000009400000 - 0x00000010000000 (108 MiB)
+  Rsv    0x00000010000000 - 0x00000018000000 (128 MiB)
+  Free   0x00000018000000 - 0x00000040000000 (640 MiB)
+  Rsv    0x00000040000000 - 0x00000080000000 (1 GiB)
+  Free   0x00000080000000 - 0x000000edf00000 (1.72 GiB)
+  Rsv    0x000000edf00000 - 0x000000ee006000 (1.02 MiB)
+  Free   0x000000ee006000 - 0x000000f0000000 (31.98 MiB)
+  MMIO   0x000000feb50000 - 0x000000feb51000 (4 KiB)
+  Free   0x00000100000000 - 0x00000200000000 (4 GiB)
+  Free   0x000002f0000000 - 0x00000300000000 (256 MiB)
+Jumping to main entry point at 0xffff80262c38 with SP 0x0000ff000388b000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = ATK-DLRK3588 Board
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 8
+
+[37m[  7.765267 ax_runtime:220] [32mLogging is enabled.[m
+[m[37m[  7.765752 ax_runtime:221] [32mPrimary CPU 0 started, arg = 0x3800000.[m
+[m[37m[  7.766390 ax_runtime:223] [32mFound physcial memory regions:[m
+[m[37m[  7.767012 ax_runtime:225] [32m  [PA:0x110000, PA:0x200000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  7.767898 ax_runtime:225] [32m  [PA:0x200000, PA:0x400000) free memory (READ | WRITE | FREE)[m
+[m[37m[  7.768708 ax_runtime:225] [32m  [PA:0x400000, PA:0x3800000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  7.769608 ax_runtime:225] [32m  [PA:0x3800000, PA:0x3847000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  7.770515 ax_runtime:225] [32m  [PA:0x3847000, PA:0x3a67000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  7.771423 ax_runtime:225] [32m  [PA:0x3a67000, PA:0x3a73000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  7.772330 ax_runtime:225] [32m  [PA:0x3a73000, PA:0x8300000) free memory (READ | WRITE | FREE)[m
+[m[37m[  7.773155 ax_runtime:225] [32m  [PA:0x8300000, PA:0x8347000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  7.774063 ax_runtime:225] [32m  [PA:0x8347000, PA:0x8400000) free memory (READ | WRITE | FREE)[m
+[m[37m[  7.774888 ax_runtime:225] [32m  [PA:0x9400000, PA:0x10000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  7.775720 ax_runtime:225] [32m  [PA:0x10000000, PA:0x18000000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  7.776643 ax_runtime:225] [32m  [PA:0x18000000, PA:0x40000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  7.777483 ax_runtime:225] [32m  [PA:0x40000000, PA:0x80000000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  7.778405 ax_runtime:225] [32m  [PA:0x80000000, PA:0xedf00000) free memory (READ | WRITE | FREE)[m
+[m[37m[  7.779245 ax_runtime:225] [32m  [PA:0xedf00000, PA:0xee006000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  7.780168 ax_runtime:225] [32m  [PA:0xee006000, PA:0xf0000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  7.781008 ax_runtime:225] [32m  [PA:0xfeb50000, PA:0xfeb51000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  7.781893 ax_runtime:225] [32m  [PA:0x100000000, PA:0x200000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  7.782748 ax_runtime:225] [32m  [PA:0x2f0000000, PA:0x300000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  7.783603 ax_runtime:375] [32mInitialize global memory allocator...[m
+[m[37m[  7.784226 ax_runtime:376] [32m  use buddy-slab-allocator allocator.[m
+[m[37m[  7.784849 ax_alloc::buddy_slab:158] [32mInitialize global memory allocator, start_vaddr: 0x100000000, size: 0x100000000[m
+[m[37m[  7.788522 ax_alloc::buddy_slab:424] [32mglobal allocator initialized[m
+[m[37m[  7.789142 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x200000, size: 0x200000[m
+[m[37m[  7.789983 buddy_slab_allocator::global:151] [32mGlobalAllocator: skip region 0x200000+0x200000, no allocator-visible memory after 2097152 alignment[m
+[m[37m[  7.791205 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x3a73000, size: 0x488d000[m
+[m[37m[  7.792107 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x8347000, size: 0xb9000[m
+[m[37m[  7.792938 buddy_slab_allocator::global:151] [32mGlobalAllocator: skip region 0x8347000+0xb9000, no allocator-visible memory after 2097152 alignment[m
+[m[37m[  7.794160 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x9400000, size: 0x6c00000[m
+[m[37m[  7.795086 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x18000000, size: 0x28000000[m
+[m[37m[  7.796363 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x80000000, size: 0x6df00000[m
+[m[37m[  7.798366 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0xee006000, size: 0x1ffa000[m
+[m[37m[  7.799239 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x2f0000000, size: 0x10000000[m
+[m[37m[  7.800276 ax_runtime:260] [32mkernel aspace: [VA:0x0, VA:0xffffffffffffffff)[m
+[m[37m[  7.800957 ax_mm:103] [32mInitialize virtual memory management...[m
+[m[37m[  8.661036 ax_runtime:272] [32mInitialize platform devices...[m
+[m[37m[  8.717095 someboot::arch::power:23] [32mPower management method : SMC[m
+[m[37m[  8.717733 somehal::driver:5] [32mInitializing rdrive with FDT at 0x3800000[m
+[m[37m[  8.902155 ax_driver::soc::rockchip::pinctrl:301] [32mRockchip RK3588 pinctrl registered successfully[m
+[m[37m[  9.010709 somehal::arch::gic::v3:274] [32mGICv3 CPU 0 EOI mode: two_step=true[m
+[m[37m[  9.117575 ax_task::api:193] [32mInitialize scheduling...[m
+[m[37m[  9.118166 ax_task::api:201] [32m  use Fixed-priority round-robin scheduler.[m
+[m[37m[  9.118844 ax_runtime:300] [32mInitialize interrupt handlers...[m
+[m[37m[  9.119470 ax_runtime::devices:2] [32mProbe platform devices...[m
+[m[37m[  9.224976 ax_driver::soc::rockchip::cru::rk3588:60] [32mRK3588 CRU reg: addr=0xfd7c0000, size=0x5c000, rockchip,grf=<0x7a>[m
+[m[37m[  9.226064 rockchip_soc::variants::rk3588::cru:123] [32mCRU@fd7c0000: Initializing and verifying clock configuration...[m
+[m[37m[  9.227061 rockchip_soc::variants::rk3588::cru:174] [33m⚠ CRU@fd7c0000: ACLK_BUS_ROOT div mismatch! u-boot: 3, current: 4[m
+[m[37m[  9.228102 rockchip_soc::variants::rk3588::cru:248] [32m✓ CRU@fd7c0000: Clock configuration verified[m
+[m[37m[  9.228989 ax_driver::soc::rockchip::cru::rk3588:79] [32mRK3588 CRU clock/reset registered successfully[m
+[m[37m[  9.231665 ax_driver::soc::rockchip::pm:78] [32mRockchip power-domain provider registered successfully[m
+[m[37m[ 10.026531 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("core") (0x13a)[m
+[m[37m[ 10.027468 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("bus") (0x138)[m
+[m[37m[ 10.028386 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("axi") (0x139)[m
+[m[37m[ 10.029304 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("block") (0x13b)[m
+[m[37m[ 10.030251 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("timer") (0x13c)[m
+[m[37m[ 10.031201 ax_driver::block::rockchip::sdhci_rk3588:167] [32mrockchip-sdhci probe: node=mmc@fe2e0000, addr=0xfe2e0000, size=0x10000[m
+[m[37m[ 10.032394 ax_driver::block::rockchip::sdhci_rk3588:182] [32mrockchip-sdhci: using external CRU clock[m
+[m[37m[ 10.033282 ax_driver::block::rockchip::sdhci_rk3588:197] [32mrockchip-sdhci: defer eMMC protocol initialization to IRQ-driven hctx[m
+[m[37m[ 10.034604 ax_driver::block::rockchip::sdhci_rk3588:201] [32mrockchip-sdhci block device registered irq=None[m
+[m[37m[ 10.035693 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op ResetAll[m
+[m[37m[ 10.036551 ax_fs_ng::block::runtime::hctx:177] [32mblock hctx 0 bound to CPU 0 with hardware depth 1[m
+[m[37m[ 10.037450 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device rockchip-sdhci IRQ source 0 (IrqId { domain: IrqDomainId(7), hwirq: HwIrq(237) }) fixed to CPU 0 for queue mask 0x1[m
+[m[37m[ 10.039196 ax_driver::block::rockchip::sdhci_rk3588:245] [32mrockchip-sdhci: RK3588 DWCMSHC vendor reset area1=0x500[m
+[m[37m[ 10.040207 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op PowerOn[m
+[m[37m[ 10.051013 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op SwitchVoltage(V330)[m
+[m[37m[ 10.057327 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetBusWidth(Bit1)[m
+[m[37m[ 10.058191 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetClock(Identification)[m
+[m[37m[ 10.059229 ax_driver::block::rockchip::sdhci_rk3588:119] [32mrockchip-sdhci: core clock set to 375000 Hz[m
+[m[37m[ 10.102351 sdmmc_protocol::sdio::init::state_machine::identify:264] [32msdio: detected Mmc ocr=0xc0ff8080[m
+[m[37m[ 10.104747 sdmmc_protocol::sdio::init::state_machine::identify:338] [32msdio: CSD capacity_blocks=None[m
+[m[37m[ 10.117718 sdmmc_protocol::sdio::init::state_machine::mmc:38] [32msdio: EXT_CSD sector_count=122159104[m
+[m[37m[ 10.121055 ax_driver::block::rockchip::sdhci_rk3588:119] [32mrockchip-sdhci: core clock set to 50000000 Hz[m
+[m[37m[ 10.122207 sdmmc_protocol::sdio::init::state_machine::mmc:314] [32msdio: MMC speed selected HighSpeed bus_width=Bit8[m
+[m[37m[ 10.123390 sdmmc_protocol::sdio::init::state_machine::mmc:340] [32msdio: enabled 1024 KiB volatile write cache[m
+[m[37m[ 10.124452 sdmmc_protocol::sdio::init::state_machine:233] [32msdio: init done kind=Mmc sd_v2=false high_capacity=true rca=0x1 ocr=0xc0ff8080 host_bus_width=Bit8 ext_csd_bus_width=Some(Sdr1) ext_csd_timing=Some(Compat)[m
+[m[37m[ 10.126191 sdmmc_protocol::rdif::queue:172] [32msdmmc block init complete: kind=Mmc high_capacity=true rca=1 capacity_blocks=122159104 cache_enabled=true[m
+[m[37m[ 10.150209 ax_fs_ng::root:348] [32m    partition 1 name=Some("uboot") fs=None lba 16384..24576[m
+[m[37m[ 10.151533 ax_fs_ng::root:348] [32m    partition 2 name=Some("misc") fs=None lba 24576..32768[m
+[m[37m[ 10.152701 ax_fs_ng::root:348] [32m    partition 3 name=Some("boot") fs=None lba 32768..163840[m
+[m[37m[ 10.153877 ax_fs_ng::root:348] [32m    partition 4 name=Some("recovery") fs=None lba 163840..425984[m
+[m[37m[ 10.155011 ax_fs_ng::root:348] [32m    partition 5 name=Some("backup") fs=None lba 425984..491520[m
+[m[37m[ 10.156040 ax_fs_ng::root:348] [32m    partition 6 name=Some("rootfs") fs=Some(Ext4) lba 491520..29851648[m
+[m[37m[ 10.157133 ax_fs_ng::root:348] [32m    partition 7 name=Some("oem") fs=Some(Ext4) lba 29851648..30113792[m
+[m[37m[ 10.158219 ax_fs_ng::root:348] [32m    partition 8 name=Some("userdata") fs=Some(Ext4) lba 30113792..122159071[m
+[m[37m[ 10.159154 ax_fs_ng::root:364] [32m  block device 0 (rockchip-sdhci) has Gpt partition table with 8 partitions[m
+[m[37m[ 10.160128 ax_fs_ng::root:462] [32m  matched root by PARTLABEL on disk0 partition 6 (rootfs, fs=ext4, lba 491520..29851648)[m
+[m[37m[ 10.161169 ax_fs_ng:86] [32mInitialize filesystem subsystem...[m
+[m[37m[ 10.161738 ax_fs_ng:87] [32m  selected root device: disk0 partition 6 (rootfs, fs=ext4, lba 491520..29851648)[m
+[m[37m[ 10.163310 rsext4::crc32c::arm64:54] [33mID_AA64ISAR0_EL1[19:16]: 0x1[m
+[m[37m[ 10.163933 rsext4::crc32c::arm64:57] [33mHardware CRC32C support detected.[m
+[m[37m[ 10.177150 rsext4::ext4::mount:331] [32m/lost+found exists (superblock hint inode=11)[m
+[m[37m[ 10.178762 rsext4::ext4::mount:466] [32mExt4 filesystem mounted[m
+[m[37m[ 10.179339 rsext4::ext4::mount:467] [32m  - block size: 4096 bytes[m
+[m[37m[ 10.179958 rsext4::ext4::mount:468] [32m  - total blocks: 3670016[m
+[m[37m[ 10.180549 rsext4::ext4::mount:469] [32m  - free blocks: 3298218[m
+[m[37m[ 10.181141 rsext4::ext4::mount:470] [32m  - total inodes: 847616[m
+[m[37m[ 10.181734 rsext4::ext4::mount:471] [32m  - free inodes: 833536[m
+[m[37m[ 10.182319 rsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[m[37m[ 10.187972 rsext4::ext4::mount:550] [32mExt4 filesystem mounted[m
+[m[37m[ 10.188573 ax_fs_ng:99] [32m  filesystem type: "ext4"[m
+[m[37m[ 10.190609 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0000 expected=0x0589 desc_size=64 block_bitmap=8196 inode_bitmap=24580 inode_table=40964 free_blocks=57348 free_inodes=0 used_dirs=8196 itable_unused=0 flags=0x1 block_bitmap_csum=0x0 inode_bitmap_csum=0x0[m
+[m[37m[ 10.193082 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[ 10.193847 ax_fs_ng::fs::ext4::rsext4::fs:127] [33mext4 journal replay failed with EUCLEAN; retrying read-only without journal replay[m
+[m[37m[ 10.194978 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0000 expected=0x0589 desc_size=64 block_bitmap=8196 inode_bitmap=24580 inode_table=40964 free_blocks=57348 free_inodes=0 used_dirs=8196 itable_unused=0 flags=0x1 block_bitmap_csum=0x0 inode_bitmap_csum=0x0[m
+[m[37m[ 10.197449 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[ 10.198220 ax_fs_ng::root:622] [33m  failed to initialize filesystem for partition disk0 partition 7 (oem, fs=ext4, lba 29851648..30113792): AxErrorKind::Io[m
+[m[37m[ 10.200235 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0a8d expected=0x16fe desc_size=64 block_bitmap=262145 inode_bitmap=262161 inode_table=262177 free_blocks=3808 free_inodes=1088 used_dirs=0 itable_unused=1088 flags=0x5 block_bitmap_csum=0x4c1cbc8f inode_bitmap_csum=0xe0e99c72[m
+[m[37m[ 10.202857 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[ 10.203622 ax_fs_ng::fs::ext4::rsext4::fs:127] [33mext4 journal replay failed with EUCLEAN; retrying read-only without journal replay[m
+[m[37m[ 10.204753 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0a8d expected=0x16fe desc_size=64 block_bitmap=262145 inode_bitmap=262161 inode_table=262177 free_blocks=3808 free_inodes=1088 used_dirs=0 itable_unused=1088 flags=0x5 block_bitmap_csum=0x4c1cbc8f inode_bitmap_csum=0xe0e99c72[m
+[m[37m[ 10.207374 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[ 10.208143 ax_fs_ng::root:622] [33m  failed to initialize filesystem for partition disk0 partition 8 (userdata, fs=ext4, lba 30113792..122159071): AxErrorKind::Io[m
+[mI/TC: Secondary CPU 1 initializing
+I/TC: Secondary CPU 1 switching to normal world boot
+[37m[ 10.213547 somehal::arch::gic::v3:274] [32mGICv3 CPU 1 EOI mode: two_step=true[m
+[m[37m[ 10.214250 ax_runtime::mp:79] [32mSecondary CPU 1 started.[m
+[m[37m[ 10.214856 ax_runtime::mp:110] [32mSecondary CPU 1 init OK.[m
+[mI/TC: Secondary CPU 2 initializing
+I/TC: Secondary CPU 2 switching to normal world boot
+[37m[ 10.218044 somehal::arch::gic::v3:274] [32mGICv3 CPU 2 EOI mode: two_step=true[m
+[m[37m[ 10.218740 ax_runtime::mp:79] [32mSecondary CPU 2 started.[m
+[m[37m[ 10.219343 ax_runtime::mp:110] [32mSecondary CPU 2 init OK.[m
+[mI/TC: Secondary CPU 3 initializing
+I/TC: Secondary CPU 3 switching to normal world boot
+[37m[ 10.222536 somehal::arch::gic::v3:274] [32mGICv3 CPU 3 EOI mode: two_step=true[m
+[m[37m[ 10.223232 ax_runtime::mp:79] [32mSecondary CPU 3 started.[m
+[m[37m[ 10.223833 ax_runtime::mp:110] [32mSecondary CPU 3 init OK.[m
+[mI/TC: Secondary CPU 4 initializing
+I/TC: Secondary CPU 4 switching to normal world boot
+[37m[ 10.227014 somehal::arch::gic::v3:274] [32mGICv3 CPU 4 EOI mode: two_step=true[m
+[m[37m[ 10.227706 ax_runtime::mp:79] [32mSecondary CPU 4 started.[m
+[m[37m[ 10.228291 ax_runtime::mp:110] [32mSecondary CPU 4 init OK.[m
+[mI/TC: Secondary CPU 5 initializing
+I/TC: Secondary CPU 5 switching to normal world boot
+[37m[ 10.231499 somehal::arch::gic::v3:274] [32mGICv3 CPU 5 EOI mode: two_step=true[m
+[m[37m[ 10.232191 ax_runtime::mp:79] [32mSecondary CPU 5 started.[m
+[m[37m[ 10.232775 ax_runtime::mp:110] [32mSecondary CPU 5 init OK.[m
+[mI/TC: Secondary CPU 6 initializing
+I/TC: Secondary CPU 6 switching to normal world boot
+[37m[ 10.235972 somehal::arch::gic::v3:274] [32mGICv3 CPU 6 EOI mode: two_step=true[m
+[m[37m[ 10.236664 ax_runtime::mp:79] [32mSecondary CPU 6 started.[m
+[m[37m[ 10.237248 ax_runtime::mp:110] [32mSecondary CPU 6 init OK.[m
+[mI/TC: Secondary CPU 7 initializing
+I/TC: Secondary CPU 7 switching to normal world boot
+[37m[ 10.240456 somehal::arch::gic::v3:274] [32mGICv3 CPU 7 EOI mode: two_step=true[m
+[m[37m[ 10.241147 ax_runtime::mp:79] [32mSecondary CPU 7 started.[m
+[m[37m[ 10.241149 ax_runtime:348] [32mPrimary CPU 0 init OK.[m
+[m[37m[ 10.241732 ax_runtime::mp:110] [32mSecondary CPU 7 init OK.[m
+[m[37m[ 10.242808 0:2 ax_fs_ng::block::runtime::lifecycle::device:369] [32mblock device rockchip-sdhci online with 1 hctxs across 8 CPUs[m
+[m
+
+       d8888            888     888  d8b
+      d88888            888     888  Y8P
+     d88P888            888     888
+    d88P 888  888  888  Y88b   d88P  888  .d8888b    .d88b.   888d888
+   d88P  888  `Y8bd8P'   Y88b d88P   888  88K       d88""88b  888P"
+  d88P   888    X88K      Y88o88P    888  "Y8888b.  888  888  888
+ d8888888888  .d8""8b.     Y888P     888       X88  Y88..88P  888
+d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
+
+
+by AxVisor Team
+
+[37m[ 10.247571 0:2 axvisor:96] [32mStarting virtualization...[m
+[m[37m[ 10.248111 0:2 axvm::host::arceos:335] [32mEnabling hardware virtualization support on all cores...[m
+[m[37m[ 10.248966 0:2 axvm::host::arceos:341] [32mCore 0 is initializing hardware virtualization support...[m
+[m[37m[ 10.249839 0:2 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.366917 0:2 axvm::host::arceos:343] [32mHardware virtualization support enabled on core 0[m
+[m[37m[ 10.367750 1:21 axvm::host::arceos:353] [32mCore 1 is initializing hardware virtualization support...[m
+[m[37m[ 10.367863 0:2 axvm::host::arceos:370] [32mWaiting for all cores to enable hardware virtualization...[m
+[m[37m[ 10.367767 2:22 axvm::host::arceos:353] [32mCore 2 is initializing hardware virtualization support...[m
+[m[37m[ 10.367801 4:24 axvm::host::arceos:353] [32mCore 4 is initializing hardware virtualization support...[m
+[m[37m[ 10.367785 3:23 axvm::host::arceos:353] [32mCore 3 is initializing hardware virtualization support...[m
+[m[37m[ 10.370363 2:22 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.367849 6:26 axvm::host::arceos:353] [32mCore 6 is initializing hardware virtualization support...[m
+[m[37m[ 10.367819 5:25 axvm::host::arceos:353] [32mCore 5 is initializing hardware virtualization support...[m
+[m[37m[ 10.367867 7:27 axvm::host::arceos:353] [32mCore 7 is initializing hardware virtualization support...[m
+[m[37m[ 10.373592 6:26 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.375338 7:27 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.368613 1:21 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.372759 2:22 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 2 (2/8)[m
+[m[37m[ 10.377265 1:21 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 1 (5/8)[m
+[m[37m[ 10.376613 7:27 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 7 (4/8)[m
+[m[37m[ 10.375986 6:26 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 6 (3/8)[m
+[m[37m[ 10.372093 3:23 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.371228 4:24 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.381316 3:23 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 3 (6/8)[m
+[m[37m[ 10.381928 4:24 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 4 (7/8)[m
+[m[37m[ 10.374468 5:25 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.384269 5:25 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 5 (8/8)[m
+[m[37m[ 10.384271 0:2 axvm::host::arceos:381] [32mAll cores have enabled hardware virtualization support.[m
+[m[37m[ 10.386054 0:2 axvisor::manager:145] [32mNOT find dir: /guest/vm_default in filesystem[m
+[m[37m[ 10.386807 0:2 axvisor::config:91] [32mUsing static VM configs.[m
+[m[37m[ 10.473601 0:2 axvm::arch::aarch64::fdt::core:78] [32mVM[1] virtual UART follows the host-selected UART: GuestSerialProfile { model: Uart16550, transport: Mmio { base: 4273274880, length: 256, register_shift: 2, register_width: Dword }, irq: 365, clock_hz: 24000000 }[m
+[m[37m[ 10.477722 0:2 axvm::arch::aarch64::fdt::core:89] [32mVM[1] virtual GIC follows host firmware resources: GuestGicProfile { compatible: "arm,gic-v3", node_path: "/interrupt-controller@fe600000", node_phandle: Some(1), distributor: GuestMmioRegion { base: 4267704320, length: 65536 }, cpu_region: Redistributors(GuestGicRedistributorProfile { regions: [GuestMmioRegion { base: 4268228608, length: 1048576 }], stride: 131072 }), its: [GuestItsProfile { id: ItsId(0), node_path: "/interrupt-controller@fe600000/msi-controller@fe640000", node_phandle: Some(275), registers: GuestMmioRegion { base: 4267966464, length: 131072 } }, GuestItsProfile { id: ItsId(1), node_path: "/interrupt-controller@fe600000/msi-controller@fe660000", node_phandle: Some(457), registers: GuestMmioRegion { base: 4268097536, length: 131072 } }] }[m
+[m[37m[ 10.484297 0:2 axvm::arch::aarch64::fdt::core:103] [32mVM[1] architectural timer follows host firmware PPIs[m
+[m[37m[ 10.606296 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m[37m[ 10.607327 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@100, node_id: 0x100, hardware_cpu_id: 0x100[m
+[m[37m[ 10.608397 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@200, node_id: 0x200, hardware_cpu_id: 0x200[m
+[m[37m[ 10.609484 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@300, node_id: 0x300, hardware_cpu_id: 0x300[m
+[m[37m[ 10.610555 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@400, node_id: 0x400, hardware_cpu_id: 0x400[m
+[m[37m[ 10.611628 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@500, node_id: 0x500, hardware_cpu_id: 0x500[m
+[m[37m[ 10.612697 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@600, node_id: 0x600, hardware_cpu_id: 0x600[m
+[m[37m[ 10.613767 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@700, node_id: 0x700, hardware_cpu_id: 0x700[m
+[m[37m[ 10.630284 0:2 axvm::arch::aarch64::fdt::core::parser:555] [32mFound 8 host CPU nodes[m
+[m[37m[ 10.631036 0:2 axvm::arch::aarch64::fdt::core:154] [32mVM[1] DTB not found, generating from the VM configuration[m
+[m[37m[ 10.987133 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/pcie@fe150000", "/pcie@fe160000", "/pcie@fe170000", "/pcie@fe180000", "/pcie@fe190000", "/interrupt-controller@fe600000", "/serial@fd890000", "/serial@feb40000", "/serial@feb50000", "/serial@feb60000", "/serial@feb70000", "/serial@feb80000", "/serial@feb90000", "/serial@feba0000", "/serial@febb0000", "/serial@febc0000", "/timer", "/timer@feae0000", "/pcie@fe150000/legacy-interrupt-controller", "/pcie@fe160000/legacy-interrupt-controller", "/pcie@fe170000/legacy-interrupt-controller", "/pcie@fe180000/legacy-interrupt-controller", "/pcie@fe190000/legacy-interrupt-controller", "/interrupt-controller@fe600000/msi-controller@fe640000", "/interrupt-controller@fe600000/msi-controller@fe660000"][m
+[m[37m[ 10.993431 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /interrupt-controller@fe600000[m
+[m[37m[ 10.994373 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /interrupt-controller@fe600000/msi-controller@fe640000[m
+[m[37m[ 10.995497 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /interrupt-controller@fe600000/msi-controller@fe660000[m
+[m[37m[ 10.996638 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /pcie@fe150000[m
+[m[37m[ 10.997456 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /pcie@fe150000/legacy-interrupt-controller[m
+[m[37m[ 10.998491 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /pcie@fe160000[m
+[m[37m[ 10.999316 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /pcie@fe160000/legacy-interrupt-controller[m
+[m[37m[ 11.000366 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /pcie@fe170000[m
+[m[37m[ 11.001185 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /pcie@fe170000/legacy-interrupt-controller[m
+[m[37m[ 11.002220 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /pcie@fe180000[m
+[m[37m[ 11.003045 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /pcie@fe180000/legacy-interrupt-controller[m
+[m[37m[ 11.004079 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /pcie@fe190000[m
+[m[37m[ 11.004904 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /pcie@fe190000/legacy-interrupt-controller[m
+[m[37m[ 11.006055 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /serial@fd890000[m
+[m[37m[ 11.006888 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /serial@feb40000[m
+[m[37m[ 11.007728 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /serial@feb50000[m
+[m[37m[ 11.008568 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /serial@feb60000[m
+[m[37m[ 11.009408 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /serial@feb70000[m
+[m[37m[ 11.010261 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /serial@feb80000[m
+[m[37m[ 11.011094 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /serial@feb90000[m
+[m[37m[ 11.011934 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /serial@feba0000[m
+[m[37m[ 11.012774 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /serial@febb0000[m
+[m[37m[ 11.013614 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /serial@febc0000[m
+[m[37m[ 11.014483 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /timer[m
+[m[37m[ 11.015241 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /timer@feae0000[m
+[m[37m[ 11.025816 0:2 axvm::arch::aarch64::fdt::core::parser:57] [32mVM[1] generated-FDT passthrough paths: ["/__symbols__", "/adc-keys", "/adc-keys/esc-key", "/adc-keys/menu-key", "/adc-keys/vol-down-key", "/adc-keys/vol-up-key", "/aliases", "/arm-pmu", "/av1d@fdc70000", "/avsd-plus@fdb51000", "/backlight", "/backlight1", "/bt-sco", "/bt-sound", "/bt-sound/simple-audio-card,codec", "/bt-sound/simple-audio-card,cpu", "/can@fea50000", "/can@fea60000", "/can@fea70000", "/chosen", "/clock-controller@fd7c0000", "/clocks", "/clocks/aclk_av1_pre@fd7c0910", "/clocks/aclk_hdcp0_pre@fd7c08dc", "/clocks/aclk_hdcp1_pre@fd7c08ec", "/clocks/aclk_isp1_pre@fd7c0868", "/clocks/aclk_jpeg_decoder_pre@fd7c08b0", "/clocks/aclk_rkvdec0_pre@fd7c08a0", "/clocks/aclk_rkvdec1_pre@fd7c08a4", "/clocks/aclk_rkvenc1_pre@fd7c08c0", "/clocks/aclk_usb@fd7c08a8", "/clocks/aclk_vdpu_low_pre@fd7c08b0", "/clocks/hclk_isp1_pre@fd7c0868", "/clocks/hclk_nvm@fd7c087c", "/clocks/hclk_rkvdec0_pre@fd7c08a0", "/clocks/hclk_rkvdec1_pre@fd7c08a4", "/clocks/hclk_rkvenc1_pre@fd7c08c0", "/clocks/hclk_sdio_pre@fd7c092c", "/clocks/hclk_usb@fd7c08a8", "/clocks/hclk_vo0@fd7c08dc", "/clocks/hclk_vo1@fd7c08ec", "/clocks/mclkin-i2s0", "/clocks/mclkin-i2s1", "/clocks/mclkin-i2s2", "/clocks/mclkin-i2s3", "/clocks/mclkout-i2s0@fd58c318", "/clocks/mclkout-i2s1@fd58a000", "/clocks/mclkout-i2s1@fd58c318", "/clocks/mclkout-i2s2@fd58c318", "/clocks/mclkout-i2s3@fd58c318", "/clocks/pclk_av1_pre@fd7c0910", "/clocks/pclk_vo0_grf@fd7c08dc", "/clocks/pclk_vo1_grf@fd7c08ec", "/clocks/spll", "/clocks/xin24m", "/clocks/xin32k", "/cluster0-opp-table", "/cluster0-opp-table/opp-1008000000", "/cluster0-opp-table/opp-1200000000", "/cluster0-opp-table/opp-1416000000", "/cluster0-opp-table/opp-1608000000", "/cluster0-opp-table/opp-1800000000", "/cluster0-opp-table/opp-408000000", "/cluster0-opp-table/opp-600000000", "/cluster0-opp-table/opp-816000000", "/cluster0-opp-table/opp-j-1296000000", "/cluster0-opp-table/opp-j-m-1008000000", "/cluster0-opp-table/opp-j-m-1200000000[m<log truncated>
+[37m[ 11.048148 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe180000 name=pcie@fe180000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262985728, Some(65536)), (44035997696, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 11.051198 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe180000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 11.052844 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe190000 name=pcie@fe190000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4263051264, Some(65536)), (44040192000, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 11.055872 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe190000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 11.063043 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie20x1 name=pcie20x1 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.064343 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1m0-pins name=pcie20x1m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.065812 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1m1-pins name=pcie20x1m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.067282 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1-2-button-rstn name=pcie20x1-2-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.068855 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30phy name=pcie30phy compatible=[] reg=[] properties=[][m
+[m[37m[ 11.070185 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30phy/pcie30phy-pins name=pcie30phy-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.071646 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1 name=pcie30x1 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.072943 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m0-pins name=pcie30x1m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.074413 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m1-pins name=pcie30x1m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.075881 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m2-pins name=pcie30x1m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.077351 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1-0-button-rstn name=pcie30x1-0-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.078925 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1-1-button-rstn name=pcie30x1-1-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.080513 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2 name=pcie30x2 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.081809 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m0-pins name=pcie30x2m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.083279 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m1-pins name=pcie30x2m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.084749 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m2-pins name=pcie30x2m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.086217 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m3-pins name=pcie30x2m3-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.087686 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2-button-rstn name=pcie30x2-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.089229 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4 name=pcie30x4 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.090539 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m0-pins name=pcie30x4m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.092009 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m1-pins name=pcie30x4m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.093479 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m2-pins name=pcie30x4m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.094948 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m3-pins name=pcie30x4m3-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.096416 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4-button-rstn name=pcie30x4-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.101434 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/wireless-wlan/pcie-wifi-gpio name=pcie-wifi-gpio compatible=[] reg=[] properties=[][m
+[m[37m[ 11.102950 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie name=pcie compatible=[] reg=[] properties=[][m
+[m[37m[ 11.104188 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie/pcie30x4-clkreqn-m1 name=pcie30x4-clkreqn-m1 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.106455 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe150000 name=pcie@fe150000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262789120, Some(65536)), (44023414784, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 11.109513 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe150000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 11.111158 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe160000 name=pcie@fe160000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262854656, Some(65536)), (44027609088, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 11.114187 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe160000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 11.115832 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe170000 name=pcie@fe170000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262920192, Some(65536)), (44031803392, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 11.118860 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe170000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 11.121237 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie20-avdd0v85 name=pcie20-avdd0v85 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 11.122850 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie20-avdd1v8 name=pcie20-avdd1v8 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 11.124447 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie30-avdd0v75 name=pcie30-avdd0v75 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 11.126059 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie30-avdd1v8 name=pcie30-avdd1v8 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 11.127676 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/vcc3v3-pcie30 name=vcc3v3-pcie30 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 11.456405 0:2 axvm::arch::aarch64::fdt::core::parser:98] [32mVM[1] generated guest-FDT bytes=276196[m
+[m[37m[ 11.572426 0:2 axvm::arch::aarch64::fdt::core::parser:109] [32mVM[1] generated guest-FDT PCI paths: ["/pinctrl/pcie20x1", "/pinctrl/pcie20x1/pcie20x1m0-pins", "/pinctrl/pcie20x1/pcie20x1m1-pins", "/pinctrl/pcie20x1/pcie20x1-2-button-rstn", "/pinctrl/pcie30phy", "/pinctrl/pcie30phy/pcie30phy-pins", "/pinctrl/pcie30x1", "/pinctrl/pcie30x1/pcie30x1m0-pins", "/pinctrl/pcie30x1/pcie30x1m1-pins", "/pinctrl/pcie30x1/pcie30x1m2-pins", "/pinctrl/pcie30x1/pcie30x1-0-button-rstn", "/pinctrl/pcie30x1/pcie30x1-1-button-rstn", "/pinctrl/pcie30x2", "/pinctrl/pcie30x2/pcie30x2m0-pins", "/pinctrl/pcie30x2/pcie30x2m1-pins", "/pinctrl/pcie30x2/pcie30x2m2-pins", "/pinctrl/pcie30x2/pcie30x2m3-pins", "/pinctrl/pcie30x2/pcie30x2-button-rstn", "/pinctrl/pcie30x4", "/pinctrl/pcie30x4/pcie30x4m0-pins", "/pinctrl/pcie30x4/pcie30x4m1-pins", "/pinctrl/pcie30x4/pcie30x4m2-pins", "/pinctrl/pcie30x4/pcie30x4m3-pins", "/pinctrl/pcie30x4/pcie30x4-button-rstn", "/pinctrl/wireless-wlan/pcie-wifi-gpio", "/pinctrl/pcie", "/pinctrl/pcie/pcie30x4-clkreqn-m1", "/pcie20-avdd0v85", "/pcie20-avdd1v8", "/pcie30-avdd0v75", "/pcie30-avdd1v8", "/vcc3v3-pcie30"][m
+[m[37m[ 11.592490 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.593475 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie20x1 name=pcie20x1 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.594870 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.595853 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1m0-pins name=pcie20x1m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.597420 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.598402 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1m1-pins name=pcie20x1m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.599983 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.600965 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1-2-button-rstn name=pcie20x1-2-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.602636 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.603618 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30phy name=pcie30phy compatible=[] reg=[] properties=[][m
+[m[37m[ 11.605027 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.606009 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30phy/pcie30phy-pins name=pcie30phy-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.607567 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.608549 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x1 name=pcie30x1 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.609957 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.610939 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m0-pins name=pcie30x1m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.612506 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.613488 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m1-pins name=pcie30x1m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.615054 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.616036 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m2-pins name=pcie30x1m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.617601 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.618582 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1-0-button-rstn name=pcie30x1-0-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.620266 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.621249 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1-1-button-rstn name=pcie30x1-1-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.622919 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.623901 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x2 name=pcie30x2 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.625294 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.626276 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m0-pins name=pcie30x2m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.627842 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.628824 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m1-pins name=pcie30x2m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.630403 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.631385 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m2-pins name=pcie30x2m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.632951 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.633933 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m3-pins name=pcie30x2m3-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.635498 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.636480 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2-button-rstn name=pcie30x2-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.638120 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.639102 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x4 name=pcie30x4 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.640508 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.641490 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m0-pins name=pcie30x4m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.643056 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.644038 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m1-pins name=pcie30x4m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.645604 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.646586 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m2-pins name=pcie30x4m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.648152 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.649134 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m3-pins name=pcie30x4m3-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.650714 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.651696 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4-button-rstn name=pcie30x4-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.656719 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.657702 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/wireless-wlan/pcie-wifi-gpio name=pcie-wifi-gpio compatible=[] reg=[] properties=[][m
+[m[37m[ 11.659313 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.660311 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie name=pcie compatible=[] reg=[] properties=[][m
+[m[37m[ 11.661640 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.662623 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pinctrl/pcie/pcie30x4-clkreqn-m1 name=pcie30x4-clkreqn-m1 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.665664 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.666647 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pcie20-avdd0v85 name=pcie20-avdd0v85 compatible=["regulator-fixed"] reg=[] properties=[][m
+[m[37m[ 11.668217 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.669199 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pcie20-avdd1v8 name=pcie20-avdd1v8 compatible=["regulator-fixed"] reg=[] properties=[][m
+[m[37m[ 11.670768 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.671750 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pcie30-avdd0v75 name=pcie30-avdd0v75 compatible=["regulator-fixed"] reg=[] properties=[][m
+[m[37m[ 11.673320 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.674302 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/pcie30-avdd1v8 name=pcie30-avdd1v8 compatible=["regulator-fixed"] reg=[] properties=[][m
+[m[37m[ 11.675877 0:2 axvm::arch::aarch64::fdt::core::parser:143] [32mVM[1] guest-FDT PCI property-count=0 property-names=[][m
+[m[37m[ 11.676859 0:2 axvm::arch::aarch64::fdt::core::parser:149] [32mVM[1] generated guest-FDT PCI node path=/vcc3v3-pcie30 name=vcc3v3-pcie30 compatible=["regulator-fixed"] reg=[] properties=[][m
+[m[37m[ 12.075297 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/pcie@fe150000", "/pcie@fe160000", "/pcie@fe170000", "/pcie@fe180000", "/pcie@fe190000", "/interrupt-controller@fe600000", "/serial@fd890000", "/serial@feb40000", "/serial@feb50000", "/serial@feb60000", "/serial@feb70000", "/serial@feb80000", "/serial@feb90000", "/serial@feba0000", "/serial@febb0000", "/serial@febc0000", "/timer", "/timer@feae0000", "/interrupt-controller@fe600000/msi-controller@fe640000", "/interrupt-controller@fe600000/msi-controller@fe660000"][m
+[m[37m[ 12.079818 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /interrupt-controller@fe600000[m
+[m[37m[ 12.080759 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /interrupt-controller@fe600000/msi-controller@fe640000[m
+[m[37m[ 12.081883 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /interrupt-controller@fe600000/msi-controller@fe660000[m
+[m[37m[ 12.328782 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/pcie@fe150000", "/pcie@fe160000", "/pcie@fe170000", "/pcie@fe180000", "/pcie@fe190000", "/interrupt-controller@fe600000", "/serial@fd890000", "/serial@feb40000", "/serial@feb50000", "/serial@feb60000", "/serial@feb70000", "/serial@feb80000", "/serial@feb90000", "/serial@feba0000", "/serial@febb0000", "/serial@febc0000", "/timer", "/timer@feae0000", "/interrupt-controller@fe600000/msi-controller@fe640000", "/interrupt-controller@fe600000/msi-controller@fe660000"][m
+[m[37m[ 12.333304 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /interrupt-controller@fe600000[m
+[m[37m[ 12.334245 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /interrupt-controller@fe600000/msi-controller@fe640000[m
+[m[37m[ 12.335369 0:2 axvm::arch::aarch64::fdt::core::device:107] [32mExcluding device: /interrupt-controller@fe600000/msi-controller@fe660000[m
+[m[37m[ 12.347359 0:2 axvm::arch::aarch64::fdt::core::parser:705] [32mpassthrough address discovery selected paths: {"/__symbols__", "/adc-keys", "/adc-keys/esc-key", "/adc-keys/menu-key", "/adc-keys/vol-down-key", "/adc-keys/vol-up-key", "/aliases", "/arm-pmu", "/av1d@fdc70000", "/avsd-plus@fdb51000", "/backlight", "/backlight1", "/bt-sco", "/bt-sound", "/bt-sound/simple-audio-card,codec", "/bt-sound/simple-audio-card,cpu", "/can@fea50000", "/can@fea60000", "/can@fea70000", "/chosen", "/clock-controller@fd7c0000", "/clocks", "/clocks/aclk_av1_pre@fd7c0910", "/clocks/aclk_hdcp0_pre@fd7c08dc", "/clocks/aclk_hdcp1_pre@fd7c08ec", "/clocks/aclk_isp1_pre@fd7c0868", "/clocks/aclk_jpeg_decoder_pre@fd7c08b0", "/clocks/aclk_rkvdec0_pre@fd7c08a0", "/clocks/aclk_rkvdec1_pre@fd7c08a4", "/clocks/aclk_rkvenc1_pre@fd7c08c0", "/clocks/aclk_usb@fd7c08a8", "/clocks/aclk_vdpu_low_pre@fd7c08b0", "/clocks/hclk_isp1_pre@fd7c0868", "/clocks/hclk_nvm@fd7c087c", "/clocks/hclk_rkvdec0_pre@fd7c08a0", "/clocks/hclk_rkvdec1_pre@fd7c08a4", "/clocks/hclk_rkvenc1_pre@fd7c08c0", "/clocks/hclk_sdio_pre@fd7c092c", "/clocks/hclk_usb@fd7c08a8", "/clocks/hclk_vo0@fd7c08dc", "/clocks/hclk_vo1@fd7c08ec", "/clocks/mclkin-i2s0", "/clocks/mclkin-i2s1", "/clocks/mclkin-i2s2", "/clocks/mclkin-i2s3", "/clocks/mclkout-i2s0@fd58c318", "/clocks/mclkout-i2s1@fd58a000", "/clocks/mclkout-i2s1@fd58c318", "/clocks/mclkout-i2s2@fd58c318", "/clocks/mclkout-i2s3@fd58c318", "/clocks/pclk_av1_pre@fd7c0910", "/clocks/pclk_vo0_grf@fd7c08dc", "/clocks/pclk_vo1_grf@fd7c08ec", "/clocks/spll", "/clocks/xin24m", "/clocks/xin32k", "/cluster0-opp-table", "/cluster0-opp-table/opp-1008000000", "/cluster0-opp-table/opp-1200000000", "/cluster0-opp-table/opp-1416000000", "/cluster0-opp-table/opp-1608000000", "/cluster0-opp-table/opp-1800000000", "/cluster0-opp-table/opp-408000000", "/cluster0-opp-table/opp-600000000", "/cluster0-opp-table/opp-816000000", "/cluster0-opp-table/opp-j-1296000000", "/cluster0-opp-table/opp-j-m-1008000000", "/cluster0-opp-table/opp-j-m-12[m<log truncated>
+[37m[ 12.394138 0:2 axvm::arch::aarch64::fdt::core::parser:761] [32mpassthrough address discovery resolved assignments: [HostDeviceAssignment { name: "hclk_vo1@fd7c08ec", base_gpa: 4252764396, base_hpa: 4252764396, length: 16 }, HostDeviceAssignment { name: "aclk_vdpu_low_pre@fd7c08b0", base_gpa: 4252764336, base_hpa: 4252764336, length: 16 }, HostDeviceAssignment { name: "hclk_vo0@fd7c08dc", base_gpa: 4252764380, base_hpa: 4252764380, length: 16 }, HostDeviceAssignment { name: "hclk_usb@fd7c08a8", base_gpa: 4252764328, base_hpa: 4252764328, length: 16 }, HostDeviceAssignment { name: "hclk_nvm@fd7c087c", base_gpa: 4252764284, base_hpa: 4252764284, length: 16 }, HostDeviceAssignment { name: "aclk_usb@fd7c08a8", base_gpa: 4252764328, base_hpa: 4252764328, length: 16 }, HostDeviceAssignment { name: "hclk_isp1_pre@fd7c0868", base_gpa: 4252764264, base_hpa: 4252764264, length: 16 }, HostDeviceAssignment { name: "aclk_isp1_pre@fd7c0868", base_gpa: 4252764264, base_hpa: 4252764264, length: 16 }, HostDeviceAssignment { name: "aclk_rkvdec0_pre@fd7c08a0", base_gpa: 4252764320, base_hpa: 4252764320, length: 16 }, HostDeviceAssignment { name: "hclk_rkvdec0_pre@fd7c08a0", base_gpa: 4252764320, base_hpa: 4252764320, length: 16 }, HostDeviceAssignment { name: "aclk_rkvdec1_pre@fd7c08a4", base_gpa: 4252764324, base_hpa: 4252764324, length: 16 }, HostDeviceAssignment { name: "hclk_rkvdec1_pre@fd7c08a4", base_gpa: 4252764324, base_hpa: 4252764324, length: 16 }, HostDeviceAssignment { name: "aclk_jpeg_decoder_pre@fd7c08b0", base_gpa: 4252764336, base_hpa: 4252764336, length: 16 }, HostDeviceAssignment { name: "aclk_rkvenc1_pre@fd7c08c0", base_gpa: 4252764352, base_hpa: 4252764352, length: 16 }, HostDeviceAssignment { name: "hclk_rkvenc1_pre@fd7c08c0", base_gpa: 4252764352, base_hpa: 4252764352, length: 16 }, HostDeviceAssignment { name: "aclk_hdcp0_pre@fd7c08dc", base_gpa: 4252764380, base_hpa: 4252764380, length: 16 }, HostDeviceAssignment { name: "aclk_hdcp1_pre@fd7c08ec", base_gpa: 4252764396, base_hpa: 4252[m<log truncated>
+[37m[ 12.445779 0:2 axvisor::config:266] [32mCreating VM[1] "atk-task123-starry"[m
+[m[37m[ 12.566440 0:2 axvm::vm:1133] [32mVM created: id=1[m
+[m[37m[ 12.567268 0:2 axvisor::config:278] [32mVM[1] created success, loading images...[m
+[m[37m[ 12.606334 0:2 axvm::boot::images:137] [32mLoading ramdisk image from memory (32055708 bytes) into GPA @0x7c000000[m
+[m[37m[ 13.147209 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=0[m
+[m[37m[ 13.148109 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=1[m
+[m[37m[ 13.148807 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=2[m
+[m[37m[ 13.149513 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=3[m
+[m[37m[ 13.150220 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=4[m
+[m[37m[ 13.151004 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=5[m
+[m[37m[ 13.151800 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=6[m
+[m[37m[ 13.152790 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0x0..0x110000 -> HPA 0x0..0x110000[m
+[m[37m[ 13.153892 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0x200000..0xa000000 -> HPA 0x200000..0xa000000[m
+[m[37m[ 13.155008 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xa001000..0x10000000 -> HPA 0xa001000..0x10000000[m
+[m[37m[ 13.156316 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0x18000000..0x40000000 -> HPA 0x18000000..0x40000000[m
+[m[37m[ 13.157531 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0x80000000..0xedf00000 -> HPA 0x80000000..0xedf00000[m
+[m[37m[ 13.158958 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xee006000..0xf0000000 -> HPA 0xee006000..0xf0000000[m
+[m[37m[ 13.160267 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xf5000000..0xfd7c0000 -> HPA 0xf5000000..0xfd7c0000[m
+[m[37m[ 13.161572 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfd81c000..0xfd890000 -> HPA 0xfd81c000..0xfd890000[m
+[m[37m[ 13.162761 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfd891000..0xfe150000 -> HPA 0xfd891000..0xfe150000[m
+[m[37m[ 13.164136 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfe1a0000..0xfe600000 -> HPA 0xfe1a0000..0xfe600000[m
+[m[37m[ 13.165310 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfe610000..0xfe640000 -> HPA 0xfe610000..0xfe640000[m
+[m[37m[ 13.166472 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfe780000..0xfeae0000 -> HPA 0xfe780000..0xfeae0000[m
+[m[37m[ 13.167732 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfeae1000..0xfeb40000 -> HPA 0xfeae1000..0xfeb40000[m
+[m[37m[ 13.168905 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfeb41000..0xfeb50000 -> HPA 0xfeb41000..0xfeb50000[m
+[m[37m[ 13.170055 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfeb51000..0xfeb60000 -> HPA 0xfeb51000..0xfeb60000[m
+[m[37m[ 13.171208 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfeb61000..0xfeb70000 -> HPA 0xfeb61000..0xfeb70000[m
+[m[37m[ 13.172358 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfeb71000..0xfeb80000 -> HPA 0xfeb71000..0xfeb80000[m
+[m[37m[ 13.173508 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfeb81000..0xfeb90000 -> HPA 0xfeb81000..0xfeb90000[m
+[m[37m[ 13.174658 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfeb91000..0xfeba0000 -> HPA 0xfeb91000..0xfeba0000[m
+[m[37m[ 13.175807 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfeba1000..0xfebb0000 -> HPA 0xfeba1000..0xfebb0000[m
+[m[37m[ 13.176957 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfebb1000..0xfebc0000 -> HPA 0xfebb1000..0xfebc0000[m
+[m[37m[ 13.178107 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xfebc1000..0x900000000 -> HPA 0xfebc1000..0x900000000[m
+[m[37m[ 13.183102 0:2 axvm::vm::prepare::address_space:87] [32mVM[1] stage2 passthrough: GPA 0xa41400000..0x8000000000 -> HPA 0xa41400000..0x8000000000[m
+[m[37m[ 13.240453 0:2 axvm::vm::prepare:82] [32mVM setup: id=1[m
+[m[37m[ 13.326208 0:2 axvm::arch::aarch64::fdt::core:68] [32mVM[2] keeps its explicitly configured virtual UART profile: GuestSerialProfile { model: Pl011, transport: Mmio { base: 150994944, length: 4096, register_shift: 0, register_width: Dword }, irq: 33, clock_hz: 24000000 }[m
+[m[37m[ 13.330683 0:2 axvm::arch::aarch64::fdt::core:89] [32mVM[2] virtual GIC follows host firmware resources: GuestGicProfile { compatible: "arm,gic-v3", node_path: "/interrupt-controller@fe600000", node_phandle: Some(1), distributor: GuestMmioRegion { base: 4267704320, length: 65536 }, cpu_region: Redistributors(GuestGicRedistributorProfile { regions: [GuestMmioRegion { base: 4268228608, length: 1048576 }], stride: 131072 }), its: [GuestItsProfile { id: ItsId(0), node_path: "/interrupt-controller@fe600000/msi-controller@fe640000", node_phandle: Some(275), registers: GuestMmioRegion { base: 4267966464, length: 131072 } }, GuestItsProfile { id: ItsId(1), node_path: "/interrupt-controller@fe600000/msi-controller@fe660000", node_phandle: Some(457), registers: GuestMmioRegion { base: 4268097536, length: 131072 } }] }[m
+[m[37m[ 13.337267 0:2 axvm::arch::aarch64::fdt::core:103] [32mVM[2] architectural timer follows host firmware PPIs[m
+[m[37m[ 13.460142 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m[37m[ 13.461172 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@100, node_id: 0x100, hardware_cpu_id: 0x100[m
+[m[37m[ 13.462242 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@200, node_id: 0x200, hardware_cpu_id: 0x200[m
+[m[37m[ 13.463313 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@300, node_id: 0x300, hardware_cpu_id: 0x300[m
+[m[37m[ 13.464383 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@400, node_id: 0x400, hardware_cpu_id: 0x400[m
+[m[37m[ 13.465455 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@500, node_id: 0x500, hardware_cpu_id: 0x500[m
+[m[37m[ 13.466525 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@600, node_id: 0x600, hardware_cpu_id: 0x600[m
+[m[37m[ 13.467594 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@700, node_id: 0x700, hardware_cpu_id: 0x700[m
+[m[37m[ 13.484161 0:2 axvm::arch::aarch64::fdt::core::parser:555] [32mFound 8 host CPU nodes[m
+[m[37m[ 13.484913 0:2 axvm::arch::aarch64::fdt::core:154] [32mVM[2] DTB not found, generating from the VM configuration[m
+[m[37m[ 13.800123 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/interrupt-controller@fe600000", "/serial@fd890000", "/serial@feb40000", "/serial@feb50000", "/serial@feb60000", "/serial@feb70000", "/serial@feb80000", "/serial@feb90000", "/serial@feba0000", "/serial@febb0000", "/serial@febc0000", "/timer", "/timer@feae0000", "/interrupt-controller@fe600000/msi-controller@fe640000", "/interrupt-controller@fe600000/msi-controller@fe660000"][m
+[m[37m[ 13.809447 0:2 axvm::arch::aarch64::fdt::core::parser:57] [32mVM[2] generated-FDT passthrough paths: [][m
+[m[37m[ 13.816733 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe180000 name=pcie@fe180000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262985728, Some(65536)), (44035997696, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 13.819783 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe180000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 13.821429 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe190000 name=pcie@fe190000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4263051264, Some(65536)), (44040192000, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 13.824457 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe190000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 13.831665 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie20x1 name=pcie20x1 compatible=[] reg=[] properties=[][m
+[m[37m[ 13.832964 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1m0-pins name=pcie20x1m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.834433 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1m1-pins name=pcie20x1m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.835903 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1-2-button-rstn name=pcie20x1-2-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 13.837476 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30phy name=pcie30phy compatible=[] reg=[] properties=[][m
+[m[37m[ 13.838787 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30phy/pcie30phy-pins name=pcie30phy-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.840262 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1 name=pcie30x1 compatible=[] reg=[] properties=[][m
+[m[37m[ 13.841560 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m0-pins name=pcie30x1m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.843029 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m1-pins name=pcie30x1m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.844498 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m2-pins name=pcie30x1m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.845967 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1-0-button-rstn name=pcie30x1-0-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 13.847541 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1-1-button-rstn name=pcie30x1-1-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 13.849115 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2 name=pcie30x2 compatible=[] reg=[] properties=[][m
+[m[37m[ 13.850425 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m0-pins name=pcie30x2m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.851895 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m1-pins name=pcie30x2m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.853365 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m2-pins name=pcie30x2m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.854834 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m3-pins name=pcie30x2m3-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.856303 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2-button-rstn name=pcie30x2-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 13.857846 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4 name=pcie30x4 compatible=[] reg=[] properties=[][m
+[m[37m[ 13.859143 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m0-pins name=pcie30x4m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.860625 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m1-pins name=pcie30x4m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.862095 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m2-pins name=pcie30x4m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.863565 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m3-pins name=pcie30x4m3-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 13.865033 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4-button-rstn name=pcie30x4-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 13.870057 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/wireless-wlan/pcie-wifi-gpio name=pcie-wifi-gpio compatible=[] reg=[] properties=[][m
+[m[37m[ 13.871572 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie name=pcie compatible=[] reg=[] properties=[][m
+[m[37m[ 13.872810 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie/pcie30x4-clkreqn-m1 name=pcie30x4-clkreqn-m1 compatible=[] reg=[] properties=[][m
+[m[37m[ 13.875080 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe150000 name=pcie@fe150000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262789120, Some(65536)), (44023414784, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 13.878110 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe150000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 13.879783 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe160000 name=pcie@fe160000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262854656, Some(65536)), (44027609088, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 13.882812 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe160000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 13.884457 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe170000 name=pcie@fe170000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262920192, Some(65536)), (44031803392, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 13.887485 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe170000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 13.889867 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie20-avdd0v85 name=pcie20-avdd0v85 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 13.891479 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie20-avdd1v8 name=pcie20-avdd1v8 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 13.893076 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie30-avdd0v75 name=pcie30-avdd0v75 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 13.894688 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie30-avdd1v8 name=pcie30-avdd1v8 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 13.896306 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/vcc3v3-pcie30 name=vcc3v3-pcie30 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 13.918978 0:2 axvm::arch::aarch64::fdt::core::parser:98] [32mVM[2] generated guest-FDT bytes=1500[m
+[m[37m[ 13.920349 0:2 axvm::arch::aarch64::fdt::core::parser:109] [32mVM[2] generated guest-FDT PCI paths: [][m
+[m[37m[ 13.995287 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/interrupt-controller@fe600000", "/serial@fd890000", "/serial@feb40000", "/serial@feb50000", "/serial@feb60000", "/serial@feb70000", "/serial@feb80000", "/serial@feb90000", "/serial@feba0000", "/serial@febb0000", "/serial@febc0000", "/timer", "/timer@feae0000", "/interrupt-controller@fe600000/msi-controller@fe640000", "/interrupt-controller@fe600000/msi-controller@fe660000"][m
+[m[37m[ 13.999301 0:2 axvisor::config:266] [32mCreating VM[2] "atk-task123-rtthread"[m
+[m[37m[ 14.000795 0:2 axvm::vm:1133] [32mVM created: id=2[m
+[m[37m[ 14.458989 0:2 axvisor::config:278] [32mVM[2] created success, loading images...[m
+[m[37m[ 14.467662 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=0[m
+[m[37m[ 14.468363 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=1[m
+[m[37m[ 14.469067 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=2[m
+[m[37m[ 14.469771 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=3[m
+[m[37m[ 14.470554 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=4[m
+[m[37m[ 14.471339 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=5[m
+[m[37m[ 14.472133 0:2 axvm::vm::prepare:82] [32mVM setup: id=2[m
+[m[37m[ 14.472719 0:2 axvm::runtime:73] [32mInitializing VMM...[m
+[m[37m[ 14.473252 0:2 rsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[m[37m[ 14.481485 0:2 rsext4::ext4::sync:43] [32mFilesystem unmounted cleanly[m
+[m[37m[ 14.482416 0:2 axvm::host::arceos:199] [32mReleased 1 host filesystem block IRQ registration(s) during shutdown[m
+[m[37m[ 14.483355 0:2 axvisor::manager:119] [32mHost filesystem cleanly unmounted before guest passthrough devices start[m
+[m[37m[ 14.484337 0:2 axvm::runtime:84] [32mVMM starting, booting VMs...[m
+[m[37m[ 14.484932 0:2 axvm::vm:1365] [32mStarting VM[1][m
+[m[37m[ 14.485405 0:2 axvm::runtime::vcpus:1058] [32mSpawning task for VM[1] VCpu[0][m
+[m[37m[ 14.486112 0:2 axvm::runtime::vcpus:1077] [32mVCpu task Task(35, "VM[1]-VCpu[0]") created priority=89 cpumask: [1, ][m
+[m[37m[ 14.489902 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=105 guest_intid=105[m
+[m[37m[ 14.490954 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=126 guest_intid=126[m
+[m[37m[ 14.492010 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=125 guest_intid=125[m
+[m[37m[ 14.493068 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=124 guest_intid=124[m
+[m[37m[ 14.494125 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=252 guest_intid=252[m
+[m[37m[ 14.495185 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=247 guest_intid=247[m
+[m[37m[ 14.496240 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=248 guest_intid=248[m
+[m[37m[ 14.497298 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=250 guest_intid=250[m
+[m[37m[ 14.498355 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=251 guest_intid=251[m
+[m[37m[ 14.499415 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=401 guest_intid=401[m
+[m[37m[ 14.500470 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=403 guest_intid=403[m
+[m[37m[ 14.501528 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=406 guest_intid=406[m
+[m[37m[ 14.502585 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=399 guest_intid=399[m
+[m[37m[ 14.503643 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=413 guest_intid=413[m
+[m[37m[ 14.504700 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=415 guest_intid=415[m
+[m[37m[ 14.505758 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=418 guest_intid=418[m
+[m[37m[ 14.506815 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=411 guest_intid=411[m
+[m[37m[ 14.507876 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=254 guest_intid=254[m
+[m[37m[ 14.508930 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=425 guest_intid=425[m
+[m[37m[ 14.509988 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=423 guest_intid=423[m
+[m[37m[ 14.511045 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=424 guest_intid=424[m
+[m[37m[ 14.512103 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=349 guest_intid=349[m
+[m[37m[ 14.513161 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=376 guest_intid=376[m
+[m[37m[ 14.514218 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=377 guest_intid=377[m
+[m[37m[ 14.515275 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=142 guest_intid=142[m
+[m[37m[ 14.516333 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=143 guest_intid=143[m
+[m[37m[ 14.517390 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=144 guest_intid=144[m
+[m[37m[ 14.518448 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=152 guest_intid=152[m
+[m[37m[ 14.519505 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=151 guest_intid=151[m
+[m[37m[ 14.520563 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=150 guest_intid=150[m
+[m[37m[ 14.521620 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=146 guest_intid=146[m
+[m[37m[ 14.522678 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=147 guest_intid=147[m
+[m[37m[ 14.523735 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=148 guest_intid=148[m
+[m[37m[ 14.524796 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=161 guest_intid=161[m
+[m[37m[ 14.525850 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=162 guest_intid=162[m
+[m[37m[ 14.526907 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=154 guest_intid=154[m
+[m[37m[ 14.527965 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=153 guest_intid=153[m
+[m[37m[ 14.529023 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=156 guest_intid=156[m
+[m[37m[ 14.530080 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=155 guest_intid=155[m
+[m[37m[ 14.531138 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=158 guest_intid=158[m
+[m[37m[ 14.532195 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=157 guest_intid=157[m
+[m[37m[ 14.533253 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=160 guest_intid=160[m
+[m[37m[ 14.534310 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=159 guest_intid=159[m
+[m[37m[ 14.535367 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=149 guest_intid=149[m
+[m[37m[ 14.536425 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=133 guest_intid=133[m
+[m[37m[ 14.537483 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=131 guest_intid=131[m
+[m[37m[ 14.538540 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=132 guest_intid=132[m
+[m[37m[ 14.539598 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=136 guest_intid=136[m
+[m[37m[ 14.540655 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=134 guest_intid=134[m
+[m[37m[ 14.541713 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=135 guest_intid=135[m
+[m[37m[ 14.542770 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=127 guest_intid=127[m
+[m[37m[ 14.543828 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=128 guest_intid=128[m
+[m[37m[ 14.544885 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=129 guest_intid=129[m
+[m[37m[ 14.545943 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=130 guest_intid=130[m
+[m[37m[ 14.547000 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=140 guest_intid=140[m
+[m[37m[ 14.548058 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=139 guest_intid=139[m
+[m[37m[ 14.549115 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=138 guest_intid=138[m
+[m[37m[ 14.550172 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=141 guest_intid=141[m
+[m[37m[ 14.551230 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=167 guest_intid=167[m
+[m[37m[ 14.552288 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=169 guest_intid=169[m
+[m[37m[ 14.553345 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=170 guest_intid=170[m
+[m[37m[ 14.554403 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=163 guest_intid=163[m
+[m[37m[ 14.555460 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=165 guest_intid=165[m
+[m[37m[ 14.556518 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=166 guest_intid=166[m
+[m[37m[ 14.557575 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=164 guest_intid=164[m
+[m[37m[ 14.558638 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=168 guest_intid=168[m
+[m[37m[ 14.559690 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=171 guest_intid=171[m
+[m[37m[ 14.560748 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=172 guest_intid=172[m
+[m[37m[ 14.561805 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=173 guest_intid=173[m
+[m[37m[ 14.562863 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=174 guest_intid=174[m
+[m[37m[ 14.563920 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=187 guest_intid=187[m
+[m[37m[ 14.564977 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=145 guest_intid=145[m
+[m[37m[ 14.566035 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=175 guest_intid=175[m
+[m[37m[ 14.567093 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=176 guest_intid=176[m
+[m[37m[ 14.568150 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=177 guest_intid=177[m
+[m[37m[ 14.569208 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=178 guest_intid=178[m
+[m[37m[ 14.570265 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=179 guest_intid=179[m
+[m[37m[ 14.571323 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=180 guest_intid=180[m
+[m[37m[ 14.572380 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=181 guest_intid=181[m
+[m[37m[ 14.573438 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=182 guest_intid=182[m
+[m[37m[ 14.574495 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=183 guest_intid=183[m
+[m[37m[ 14.575553 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=184 guest_intid=184[m
+[m[37m[ 14.576610 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=185 guest_intid=185[m
+[m[37m[ 14.577668 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=186 guest_intid=186[m
+[m[37m[ 14.578725 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=188 guest_intid=188[m
+[m[37m[ 14.579783 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=227 guest_intid=227[m
+[m[37m[ 14.580840 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=216 guest_intid=216[m
+[m[37m[ 14.581898 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=228 guest_intid=228[m
+[m[37m[ 14.582955 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=217 guest_intid=217[m
+[m[37m[ 14.584013 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=221 guest_intid=221[m
+[m[37m[ 14.585070 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=231 guest_intid=231[m
+[m[37m[ 14.586128 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=199 guest_intid=199[m
+[m[37m[ 14.587185 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=200 guest_intid=200[m
+[m[37m[ 14.588243 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=191 guest_intid=191[m
+[m[37m[ 14.589300 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=193 guest_intid=193[m
+[m[37m[ 14.590357 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=192 guest_intid=192[m
+[m[37m[ 14.591415 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=201 guest_intid=201[m
+[m[37m[ 14.592473 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=202 guest_intid=202[m
+[m[37m[ 14.593530 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=203 guest_intid=203[m
+[m[37m[ 14.594588 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=204 guest_intid=204[m
+[m[37m[ 14.595645 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=392 guest_intid=392[m
+[m[37m[ 14.596702 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=195 guest_intid=195[m
+[m[37m[ 14.597760 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=305 guest_intid=305[m
+[m[37m[ 14.598818 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=307 guest_intid=307[m
+[m[37m[ 14.599875 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=238 guest_intid=238[m
+[m[37m[ 14.600933 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=235 guest_intid=235[m
+[m[37m[ 14.601990 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=236 guest_intid=236[m
+[m[37m[ 14.603048 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=237 guest_intid=237[m
+[m[37m[ 14.604105 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=241 guest_intid=241[m
+[m[37m[ 14.605163 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=432 guest_intid=432[m
+[m[37m[ 14.606220 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=212 guest_intid=212[m
+[m[37m[ 14.607278 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=213 guest_intid=213[m
+[m[37m[ 14.608335 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=214 guest_intid=214[m
+[m[37m[ 14.609393 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=215 guest_intid=215[m
+[m[37m[ 14.610450 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=234 guest_intid=234[m
+[m[37m[ 14.611507 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=225 guest_intid=225[m
+[m[37m[ 14.612565 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=226 guest_intid=226[m
+[m[37m[ 14.613623 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=118 guest_intid=118[m
+[m[37m[ 14.614680 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=119 guest_intid=119[m
+[m[37m[ 14.615738 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=120 guest_intid=120[m
+[m[37m[ 14.616795 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=121 guest_intid=121[m
+[m[37m[ 14.617853 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=373 guest_intid=373[m
+[m[37m[ 14.618910 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=374 guest_intid=374[m
+[m[37m[ 14.619968 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=375 guest_intid=375[m
+[m[37m[ 14.621025 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=117 guest_intid=117[m
+[m[37m[ 14.622083 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=350 guest_intid=350[m
+[m[37m[ 14.623140 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=351 guest_intid=351[m
+[m[37m[ 14.624198 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=352 guest_intid=352[m
+[m[37m[ 14.625255 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=353 guest_intid=353[m
+[m[37m[ 14.626320 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=354 guest_intid=354[m
+[m[37m[ 14.627371 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=347 guest_intid=347[m
+[m[37m[ 14.628428 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=358 guest_intid=358[m
+[m[37m[ 14.629485 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=359 guest_intid=359[m
+[m[37m[ 14.630543 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=360 guest_intid=360[m
+[m[37m[ 14.631600 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=361 guest_intid=361[m
+[m[37m[ 14.632658 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=378 guest_intid=378[m
+[m[37m[ 14.633715 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=379 guest_intid=379[m
+[m[37m[ 14.634773 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=380 guest_intid=380[m
+[m[37m[ 14.635830 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=381 guest_intid=381[m
+[m[37m[ 14.636888 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=382 guest_intid=382[m
+[m[37m[ 14.637945 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=383 guest_intid=383[m
+[m[37m[ 14.639003 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=429 guest_intid=429[m
+[m[37m[ 14.640060 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=430 guest_intid=430[m
+[m[37m[ 14.641118 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=93 guest_intid=93[m
+[m[37m[ 14.642160 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=94 guest_intid=94[m
+[m[37m[ 14.643202 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=95 guest_intid=95[m
+[m[37m[ 14.644245 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=96 guest_intid=96[m
+[m[37m[ 14.645288 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=101 guest_intid=101[m
+[m[37m[ 14.646345 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=102 guest_intid=102[m
+[m[37m[ 14.647403 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=103 guest_intid=103[m
+[m[37m[ 14.648460 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=104 guest_intid=104[m
+[m[37m[ 14.649518 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=355 guest_intid=355[m
+[m[37m[ 14.650575 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=356 guest_intid=356[m
+[m[37m[ 14.651633 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=357 guest_intid=357[m
+[m[37m[ 14.652690 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=362 guest_intid=362[m
+[m[37m[ 14.653748 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=109 guest_intid=109[m
+[m[37m[ 14.654805 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=110 guest_intid=110[m
+[m[37m[ 14.655863 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=111 guest_intid=111[m
+[m[37m[ 14.656920 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=112 guest_intid=112[m
+[m[37m[ 14.657978 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=122 guest_intid=122[m
+[m[37m[ 14.659035 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=123 guest_intid=123[m
+[m[37m[ 14.660093 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=309 guest_intid=309[m
+[m[37m[ 14.661150 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=310 guest_intid=310[m
+[m[37m[ 14.662208 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=311 guest_intid=311[m
+[m[37m[ 14.663265 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=312 guest_intid=312[m
+[m[37m[ 14.664323 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=313 guest_intid=313[m
+[m[37m[ 14.665380 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=253 guest_intid=253[m
+[m[37m[ 14.666438 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=426 guest_intid=426[m
+[m[37m[ 14.667495 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=230 guest_intid=230[m
+[m[37m[ 14.668553 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=220 guest_intid=220[m
+[m[37m[ 14.669610 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=229 guest_intid=229[m
+[m[37m[ 14.670668 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=218 guest_intid=218[m
+[m[37m[ 14.671725 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=219 guest_intid=219[m
+[m[37m[ 14.672783 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=222 guest_intid=222[m
+[m[37m[ 14.673840 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=232 guest_intid=232[m
+[m[37m[ 14.674898 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=233 guest_intid=233[m
+[m[37m[ 14.675955 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=194 guest_intid=194[m
+[m[37m[ 14.677012 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=205 guest_intid=205[m
+[m[37m[ 14.678070 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=206 guest_intid=206[m
+[m[37m[ 14.679128 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=207 guest_intid=207[m
+[m[37m[ 14.680186 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=208 guest_intid=208[m
+[m[37m[ 14.681243 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=393 guest_intid=393[m
+[m[37m[ 14.682300 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=196 guest_intid=196[m
+[m[37m[ 14.683358 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=209 guest_intid=209[m
+[m[37m[ 14.684415 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=468 guest_intid=468[m
+[m[37m[ 14.685473 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=211 guest_intid=211[m
+[m[37m[ 14.686530 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=259 guest_intid=259[m
+[m[37m[ 14.687588 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=258 guest_intid=258[m
+[m[37m[ 14.688645 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=266 guest_intid=266[m
+[m[37m[ 14.689703 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=265 guest_intid=265[m
+[m[37m[ 14.690760 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=306 guest_intid=306[m
+[m[37m[ 14.691818 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=455 guest_intid=455[m
+[m[37m[ 14.692937 0:2 axvm::runtime:92] [32mVM[1] boot success[m
+[m[37m[ 14.692941 1:35 axvm::runtime::vcpus:1132] [32mVM[1] VCpu[0] waiting for running[m
+[m[37m[ 14.693454 0:2 axvm::vm:1365] [32mStarting VM[2][m
+[m[37m[ 14.694170 1:35 axvm::runtime::vcpus:1170] [32mVM[1] VCpu[0] running...[m
+[m[37m[ 14.694642 0:2 axvm::runtime::vcpus:1058] [32mSpawning task for VM[2] VCpu[0][m
+[m[37m[ 14.695991 0:2 axvm::runtime::vcpus:1077] [32mVCpu task Task(37, "VM[2]-VCpu[0]") created priority=90 cpumask: [1, ][m
+[m[37m[ 14.697023 0:2 axvm::runtime:92] [32mVM[2] boot success[m
+[m[37m[ 14.697062 1:37 axvm::runtime::vcpus:1132] [32mVM[2] VCpu[0] waiting for running[m
+[m[37m[ 14.697590 0:2 axvisor:115] [32m[OK] Default guest initialized[m
+[m[37m[ 14.698255 1:37 axvm::runtime::vcpus:1170] [32mVM[2] VCpu[0] running...[m
+[m[VM 2] [32m[I/rtdm.ofw] Booting RT-Thread on physical CPU 0x0[0m
+[VM 2] [32m[I/rtdm.ofw] Machine model: ATK-DLRK3588 Board[0m
+[VM 2] [32m[I/rtdm.ofw] Memory node(0) ranges: 0x00000000a0000000 - 0x00000000c0000000[0m
+[VM 2] [32m[I/dma.pool] coherent-pool: Reserved 2.0 MiB at 0x00000000bf600000[0m
+[VM 2] [32m[I/dma.pool] cma: Reserved 6.0 MiB at 0x00000000bf800000[0m
+[VM 2] [32m[I/mm.memblock] System memory:[0m
+[VM 2] [32m[I/mm.memblock]   memory@a0000000          [0x00000000a0000000, 0x00000000c0000000][0m
+[VM 2] [32m[I/mm.memblock] Reserved memory:[0m
+[VM 2] [32m[I/mm.memblock]   kernel                   [0x00000000a0080000, 0x00000000a0230000][0m
+[VM 2] [32m[I/mm.memblock]   memheap                  [0x00000000a0230000, 0x00000000a4230000][0m
+[VM 2] [32m[I/mm.memblock]   init-page                [0x00000000a4230000, 0x00000000a4430000][0m
+[VM 2] [32m[I/mm.memblock]   fdt                      [0x00000000a4430000, 0x00000000a4431000][0m
+[VM 2] [32m[I/mm.memblock]   dma-pool                 [0x00000000bf600000, 0x00000000c0000000][0m
+[VM 2] [32m[I/mm.memblock] physical memory region [0x00000000a0000000-0x00000000a0080000] installed to system page[0m
+[VM 2] [33m[W/mm.aspace] _mm_aspace_map_phy: not in range[0m
+[VM 2] [32m[I/mm.memblock] physical memory region [0x00000000a4431000-0x00000000bf600000] installed to system page[0m
+[VM 2] [32m[I/mm.memblock] 454 MB memory installed to system page[0m
+[VM 2] [32m[I/osi.psci] Using PSCI v1.1 Function IDs[0m
+[VM 2] [32m[I/rtdm.ofw] Console: uart0 (pl011@9000000)[0m
+[VM 2] 
+[VM 2]  \ | /
+[VM 2] - RT -     Thread Operating System
+[VM 2]  / | \     5.3.0 build Aug 23 2026 15:35:09
+[VM 2]  2006 - 2024 Copyright by RT-Thread team
+[VM 2] lwIP-2.0.3 initialized!
+[VM 2] [32m[I/sal.skt] Socket Abstraction Layer initialize success.[0m
+[VM 2] [32m[I/rtdm.mnt] File system initialization done[0m
+[VM 2] TASK2_MAIN_START
+[VM 2] TASK2_SOCKET_CREATE
+[VM 2] TASK2_SOCKET_CREATED fd=4
+[VM 2] TASK2_NET_CONFIGURED interface=virtio-net ip=10.0.42.2/24
+[VM 2] TASK2_READY role=managed local=10.0.42.2:4242 peer=10.0.42.15:4242
+[37m[ 14.900107 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[37m[ 14.997670 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[VM 1] console=ttyS2
+[VM 1] VM Load @PA:0x40000000
+[VM 1] VM Load Offset: 0xc0000000
+[37m[ 15.386829 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[VM 1] Memory Map:
+[VM 1]   Rsv    0x00000000110000 - 0x00000000200000 (960 KiB)
+[VM 1]   Rsv    0x00000010000000 - 0x00000018000000 (128 MiB)
+[VM 1]   KImg   0x00000040000000 - 0x00000041000000 (16 MiB)
+[VM 1]   Free   0x00000041000000 - 0x0000007c000000 (944 MiB)
+[VM 1]   Rsv    0x0000007c000000 - 0x0000007de93000 (30.57 MiB)
+[VM 1]   Free   0x0000007de93000 - 0x00000080000000 (33.43 MiB)
+[VM 1]   Rsv    0x000000edf00000 - 0x000000ee006000 (1.02 MiB)
+[VM 1] Initialize RAM allocator: 0x41000000..0x7c000000
+[VM 1] Reserving CPU-local areas
+[VM 1] CPU-local area stride: 0x41000 bytes
+[VM 1] Total CPU-local allocation: 0x41000 bytes (1 CPUs)
+[VM 1] Flushed RAM used range to memory map: 0x41000000..0x41044000, current: 0x41044000
+[VM 1] Flushed RAM used range to memory map: 0x41044000..0x41085000, current: 0x41085000
+[VM 1] CPU-local areas allocated at 0x41044000 - 0x41085000
+[VM 1] EL: 1
+[VM 1] Mapping early memory regions...
+[VM 1] Ram                 : [0xffff000040000000, 0xffff000080000000) -> [0x0000000040000000, 0x0000000080000000) (1 GiB)
+[VM 1] KImage              : [0xffffffff80000000, 0xffffffff81000000) -> [0x0000000040000000, 0x0000000041000000) (16 MiB)
+[VM 1] PerCpu              : [0xffffff0041044000, 0xffffff0041085000) -> [0x0000000041044000, 0x0000000041085000) (260 KiB)
+[VM 1] Debug serial        : [0xffff0000feb50000, 0xffff0000feb51000) -> [0x00000000feb50000, 0x00000000feb51000) (4 KiB)
+[VM 1] Boot page table at physical address: PA:0x41085000
+[VM 1] Setting up table registers...
+[VM 1] MMU Entry point at physical address: 0x4039d140
+[37m[ 15.976225 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[VM 1] Trap vector at 0xffffffff8039a800
+[VM 1] Memory Map:
+[VM 1]   Rsv    0x00000000110000 - 0x00000000200000 (960 KiB)
+[VM 1]   Rsv    0x00000010000000 - 0x00000018000000 (128 MiB)
+[VM 1]   KImg   0x00000040000000 - 0x00000041000000 (16 MiB)
+[VM 1]   Rsv    0x00000041000000 - 0x00000041044000 (272 KiB)
+[VM 1]   PerCPU 0x00000041044000 - 0x00000041085000 (260 KiB)
+[VM 1]   Rsv    0x00000041085000 - 0x0000004108e000 (36 KiB)
+[VM 1]   Free   0x0000004108e000 - 0x0000007c000000 (943.45 MiB)
+[VM 1]   Rsv    0x0000007c000000 - 0x0000007de93000 (30.57 MiB)
+[VM 1]   Free   0x0000007de93000 - 0x00000080000000 (33.43 MiB)
+[VM 1]   Rsv    0x000000edf00000 - 0x000000ee006000 (1.02 MiB)
+[VM 1]   MMIO   0x000000feb50000 - 0x000000feb51000 (4 KiB)
+[VM 1] Jumping to main entry point at 0xffffffff80381534 with SP 0xffffff0041085000
+[VM 1] 
+[VM 1]        d8888                            .d88888b.   .d8888b.
+[VM 1]       d88888                           d88P" "Y88b d88P  Y88b
+[VM 1]      d88P888                           888     888 Y88b.
+[VM 1]     d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+[VM 1]    d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+[VM 1]   d88P   888 888     888      88888888 888     888       "888
+[VM 1]  d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+[VM 1] d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+[VM 1] 
+[VM 1] arch = aarch64
+[VM 1] platform = ATK-DLRK3588 Board
+[VM 1] target = aarch64-unknown-none-softfloat
+[VM 1] build_mode = 
+[VM 1] log_level = info
+[VM 1] backtrace = false
+[VM 1] smp = 1
+[VM 1] 
+[VM 1] [37m[  2.932512 ax_runtime:220] [32mLogging is enabled.[m
+[VM 1] [m[37m[  2.937274 ax_runtime:221] [32mPrimary CPU 0 started, arg = 0x41000000.[m
+[VM 1] [m[37m[  2.943589 ax_runtime:223] [32mFound physcial memory regions:[m
+[VM 1] [m[37m[  2.949501 ax_runtime:225] [32m  [PA:0x110000, PA:0x200000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[VM 1] [m[37m[  2.958225 ax_runtime:225] [32m  [PA:0x10000000, PA:0x18000000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[VM 1] [m[37m[  2.967159 ax_runtime:225] [32m  [PA:0x40000000, PA:0x41000000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[VM 1] [m[37m[  2.976110 ax_runtime:225] [32m  [PA:0x41000000, PA:0x41044000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[VM 1] [m[37m[  2.985406 ax_runtime:225] [32m  [PA:0x41044000, PA:0x41085000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[VM 1] [m[37m[  2.994823 ax_runtime:225] [32m  [PA:0x41085000, PA:0x4108e000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[VM 1] [m[37m[  3.003858 ax_runtime:225] [32m  [PA:0x4108e000, PA:0x7c000000) free memory (READ | WRITE | FREE)[m
+[VM 1] [m[37m[  3.012014 ax_runtime:225] [32m  [PA:0x7c000000, PA:0x7de93000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[VM 1] [m[37m[  3.020971 ax_runtime:225] [32m  [PA:0x7de93000, PA:0x80000000) free memory (READ | WRITE | FREE)[m
+[VM 1] [m[37m[  3.029119 ax_runtime:225] [32m  [PA:0xedf00000, PA:0xee006000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[VM 1] [m[37m[  3.038401 ax_runtime:225] [32m  [PA:0xfeb50000, PA:0xfeb51000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[VM 1] [m[37m[  3.046999 ax_runtime:375] [32mInitialize global memory allocator...[m
+[VM 1] [m[37m[  3.053093 ax_runtime:376] [32m  use buddy-slab-allocator allocator.[m
+[VM 1] [m[37m[  3.059142 ax_alloc::buddy_slab:158] [32mInitialize global memory allocator, start_vaddr: 0xffff00004108e000, size: 0x3af72000[m
+[VM 1] [m[37m[  3.070389 ax_alloc::buddy_slab:424] [32mglobal allocator initialized[m
+[VM 1] [m[37m[  3.076514 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0xffff00007de93000, size: 0x216d000[m
+[VM 1] [m[37m[  3.085981 ax_runtime:260] [32mkernel aspace: [VA:0xffff000000000000, VA:0xffffffffffffffff)[m
+[VM 1] [m[37m[  3.094217 ax_mm:103] [32mInitialize virtual memory management...[m
+[VM 1] [m[37m[  3.233550 ax_runtime:272] [32mInitialize platform devices...[m
+[VM 1] [m[37m[  3.284845 someboot::arch::power:23] [32mPower management method : SMC[m
+[VM 1] [m[37m[  3.291165 somehal::driver:5] [32mInitializing rdrive with FDT at 0xffff000041000000[m
+[VM 1] [m[37m[  3.460794 ax_driver::soc::rockchip::pinctrl:301] [32mRockchip RK3588 pinctrl registered successfully[m
+[37m[ 16.835465 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[VM 1] [m[37m[  3.725799 ax_task::api:193] [32mInitialize scheduling...[m
+[VM 1] [m[37m[  3.731237 ax_task::api:201] [32m  use Round-robin scheduler.[m
+[VM 1] [m[37m[  3.736786 ax_runtime:300] [32mInitialize interrupt handlers...[m
+[VM 1] [m[37m[  3.742906 ax_runtime::devices:2] [32mProbe platform devices...[m
+[VM 1] [m[37m[  3.873655 ax_driver::serial::ns16550:49] [32mProbing NS16550 serial device: serial@feb50000[m
+[VM 1] [m[37m[  3.882302 ax_driver::serial::ns16550:92] [32mNS16550 serial@0xffff0000feb50000 registered successfully[m
+[VM 1] [m[37m[  3.892422 rdrive:222] [33mProbe failed for [fdt]: other error: /serial@feb50000 is not a snps,dw-apb-uart node[m
+[VM 1] [m[37m[  3.908889 ax_driver::soc::scmi:54] [33m[scmi] SCMI shmem phandle 69 cannot be resolved by rdrive; using RK3588 shmem fallback 0x10f000+0x100[m
+[VM 1] [m[37m[  3.921859 ax_driver::soc::scmi:84] [32mSCMI clock protocol registered: path=/firmware/scmi/protocol@14, phandle=Some(Phandle(14)), protocol=0x14[m
+[VM 1] [m[37m[  3.935368 ax_driver::soc::scmi:93] [32mSCMI SMC registered: smc_id=0x82000010, shmem_phandle=69, shmem=0x10f000+0x100[m
+[VM 1] [m[37m[  3.946784 ax_driver::soc::rockchip::cru::rk3588:60] [32mRK3588 CRU reg: addr=0xfd7c0000, size=0x5c000, rockchip,grf=<0x7a>[m
+[VM 1] [m[37m[  3.958084 rockchip_soc::variants::rk3588::cru:123] [32mCRU@ffff0000fd7c0000: Initializing and verifying clock configuration...[m
+[VM 1] [m[37m[  3.969711 rockchip_soc::variants::rk3588::cru:174] [33m⚠ CRU@ffff0000fd7c0000: ACLK_BUS_ROOT div mismatch! u-boot: 3, current: 4[m
+[VM 1] [m[37m[  3.982269 rockchip_soc::variants::rk3588::cru:248] [32m✓ CRU@ffff0000fd7c0000: Clock configuration verified[m
+[VM 1] [m[37m[  3.992834 ax_driver::soc::rockchip::cru::rk3588:79] [32mRK3588 CRU clock/reset registered successfully[m
+[VM 1] [m[37m[  4.003819 ax_driver::soc::rockchip::pm:78] [32mRockchip power-domain provider registered successfully[m
+[37m[ 17.416899 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[37m[ 17.960189 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[VM 1] [m[37m[  4.826957 ax_driver::soc::rockchip::cpufreq:151] [32mcpufreq: A55 1008->1008, A76 1008->1200 MHz[m
+[VM 1] [m[37m[  4.835881 ax_driver::soc::rockchip::pmic_i2c:508] [32mpmic_i2c: ungated i2c0 clocks (PMU_CLKGATE_CON(2)@0xfd7f0808 <- 0x00060000); gate bits now 0x0 (0 == enabled)[m
+[VM 1] [m[37m[  4.850357 ax_driver::soc::rockchip::pmic_i2c:542] [32mpmic_i2c: de-asserted i2c0 reset (PMU_SOFTRST_CON(2)@0xfd7f0a08 <- 0x00060000); reset bits now 0x0 (0 == released)[m
+[VM 1] [m[37m[  4.918073 ax_driver::soc::rockchip::pinctrl::rdif_glue:108] [33mUnknown pinconf property: input-schmitt-enable[m
+[VM 1] [m[37m[  4.928406 ax_driver::soc::rockchip::pinctrl::rdif_glue:108] [33mUnknown pinconf property: input-schmitt-enable[m
+[VM 1] [m[37m[  4.938824 ax_driver::soc::rockchip::pmic_i2c:592] [32mpmic_i2c: applied i2c0 pinctrl-0 (scl GPIO0_D1 / sda GPIO0_D2 -> func3) via rockchip pinctrl[m
+[VM 1] [m[37m[  4.986454 ax_driver::soc::rockchip::pmic_i2c:270] [32mpmic_i2c: rk3x_i2c@0xfd880000 ready (clkdiv=0x7c007c)[m
+[VM 1] [m[37m[  4.996991 ax_driver::soc::rockchip::cpufreq:281] [32mcpufreq: A76 big0 rail boot voltage = 675000 uV[m
+[VM 1] [m[37m[  5.006679 ax_driver::soc::rockchip::cpufreq:281] [32mcpufreq: A76 big1 rail boot voltage = 675000 uV[m
+[VM 1] [m[37m[  5.016157 ax_driver::soc::rockchip::pmic_spi:619] [32mpmic_spi: ungated SPI2 PCLK+CLK (CRU 0xfd7c0838 <= 0x21000000)[m
+[VM 1] [m[37m[  5.026539 ax_driver::soc::rockchip::pmic_spi:650] [32mpmic_spi: de-asserted SPI2 P+core reset (CRU 0xfd7c0a38 <= 0x21000000)[m
+[VM 1] [m[37m[  5.090070 ax_driver::soc::rockchip::pmic_spi:702] [32mpmic_spi: applied spi2 pinctrl-0 (spi2m2 clk/mosi/miso/cs0 mux+pull+drive) via rockchip pinctrl[m
+[VM 1] [m[37m[  5.103547 ax_driver::soc::rockchip::pmic_spi:720] [32mpmic_spi: GPIO0 DDR_L=0x00008000 B3(bit11)=0 (0=input) — forcing B3 input[m
+[VM 1] [m[37m[  5.149292 ax_driver::soc::rockchip::pmic_spi:748] [32mpmic_spi: PMU1_IOC 00=00001120 04=00000110 08=00001010 0c=00000000 10=00001111 14=00000111 18=00001011 1c=00000000 20=0000ff01 24=000000fc 28=000000ff 2c=0000000f 30=00000000 34=00000000 40=00000008[m
+[VM 1] [m[37m[  5.172356 ax_driver::soc::rockchip::pmic_spi:767] [32mpmic_spi: B3/MISO decoded: mux=1 (want 1) drive=1 pull=3 (want 3) smt=0 (want 0)[m
+[VM 1] [m[37m[  5.184664 ax_driver::soc::rockchip::pmic_spi:363] [32mpmic_spi: SPI2 baud divisor preserved from U-Boot (200)[m
+[VM 1] [m[37m[  5.194121 ax_driver::soc::rockchip::pmic_spi:506] [32mpmic_spi: RK806 probe: chip_name(0x5A)=Some(0) chip_ver(0x5B)=Some(0) dcdc2_raw_rx=[00, 1b, 00, 00] (xfer_ok=true)[m
+[VM 1] [m[37m[  5.208746 ax_driver::soc::rockchip::pmic_spi:526] [32mpmic_spi: read-shape distinct: tx=[00, 5a, a5, 3c] rx=[00, 5a, a5, 3c] ok=true[m
+[VM 1] [m[37m[  5.220611 ax_driver::soc::rockchip::pmic_spi:531] [32mpmic_spi: read-shape long6: tx=[00, 5a, 00, 00, 00, 00] rx=[00, 5a, 00, 00, 00, 00] ok=true[m
+[VM 1] [m[37m[  5.234029 ax_driver::soc::rockchip::pmic_spi:837] [32mpmic_spi: RK806/SPI2 bound at 0xfeb20000[m
+[VM 1] [m[37m[  5.242528 ax_driver::soc::rockchip::pmic_spi:848] [32mpmic_spi: A55 vdd_cpu_lit = 500000 uV (buck2 vsel 0x00)[m
+[VM 1] [m[37m[  5.253030 ax_driver::soc::rockchip::cpufreq:293] [32mcpufreq: A55 rail boot voltage = 500000 uV[m
+[VM 1] [m[37m[  5.261966 ax_driver::soc::rockchip::cpufreq:309] [32mcpufreq: A76 rails -> 675000 uV (big0 ok=true, big1 ok=true)[m
+[VM 1] [m[37m[  5.272814 ax_driver::soc::rockchip::pmic_spi:848] [32mpmic_spi: A55 vdd_cpu_lit = 500000 uV (buck2 vsel 0x00)[m
+[VM 1] [m[37m[  5.281993 ax_driver::soc::rockchip::cpufreq:322] [33mcpufreq: A55 boot voltage not trustworthy (Some(500000) uV); skipping A55 write until spi2/RK806 bring-up completes (A76 unaffected)[m
+[VM 1] [m[37m[  5.299320 ax_driver::soc::rockchip::cpufreq:350] [32mcpufreq: ondemand governor armed (A76 I2C up; a55_spi=true, A55 ring-only)[m
+[VM 1] [m[37m[  5.365910 ax_driver::usb::ehci:62] [32mRockchip EHCI driver initialized successfully for usb@fc800000 with irq None[m
+[37m[ 18.581144 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[VM 1] [m[37m[  5.467831 ax_driver::usb::ehci:62] [32mRockchip EHCI driver initialized successfully for usb@fc880000 with irq None[m
+[VM 1] [m[37m[  5.604512 ax_driver::pwm::rockchip:99] [32mRockchip PWM registered: node=pwm@fd8b0010 base=0xfd8b0010[m
+[VM 1] [m[37m[  5.614835 ax_driver::pwm::rockchip:99] [32mRockchip PWM registered: node=pwm@fd8b0030 base=0xfd8b0030[m
+[VM 1] [m[37m[  5.625244 ax_driver::rknpu:82] [32mRK3588 NPU fixed clock rate: 800000000 Hz[m
+[VM 1] [m[37m[  5.632077 ax_driver::rknpu:66] [32mNPU registered successfully[m
+[VM 1] [m[37m[  5.639846 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("biu") (0x17)[m
+[VM 1] [m[37m[  5.650181 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("ciu") (0x9)[m
+[VM 1] [m[37m[  5.659980 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("ciu-drive") (0x2c2)[m
+[VM 1] [m[37m[  5.670692 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("ciu-sample") (0x2c3)[m
+[VM 1] [m[37m[  5.768797 ax_driver::block::rockchip::sd:182] [32m[mmc@fe2c0000] vqmmc-supply phandle Phandle(283) is not a fixed GPIO regulator; skip pinctrl enable[m
+[VM 1] [m[37m[  5.782337 ax_driver::block::rockchip::sd:119] [32mrockchip-dwmmc probe: node=mmc@fe2c0000, addr=0xfe2c0000, size=0x4000[m
+[VM 1] [m[37m[  5.793963 ax_driver::block::rockchip::sd:131] [32mrockchip-dwmmc: using ciu reference clock 49500000 Hz[m
+[VM 1] [m[37m[  5.803365 ax_driver::block::rockchip::sd::phase:41] [32mrockchip-dwmmc: RK3588 SDMMC phase configured: drive=90deg sample=0deg parent=49500000Hz[m
+[VM 1] [m[37m[  5.816053 ax_driver::block::rockchip::sd:156] [32mrockchip-dwmmc: defer protocol initialization to IRQ-driven hctx[m
+[VM 1] [m[37m[  5.826796 ax_driver::block::rockchip::sd:161] [32mrockchip-dwmmc block device registered irq=None[m
+[VM 1] [m[37m[  5.837155 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("core") (0x13a)[m
+[VM 1] [m[37m[  5.846935 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("bus") (0x138)[m
+[VM 1] [m[37m[  5.856435 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("axi") (0x139)[m
+[VM 1] [m[37m[  5.866171 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("block") (0x13b)[m
+[VM 1] [m[37m[  5.876164 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("timer") (0x13c)[m
+[VM 1] [m[37m[  5.886142 ax_driver::block::rockchip::sdhci_rk3588:167] [32mrockchip-sdhci probe: node=mmc@fe2e0000, addr=0xfe2e0000, size=0x10000[m
+[VM 1] [m[37m[  5.897608 ax_driver::block::rockchip::sdhci_rk3588:182] [32mrockchip-sdhci: using external CRU clock[m
+[VM 1] [m[37m[  5.906598 ax_driver::block::rockchip::sdhci_rk3588:197] [32mrockchip-sdhci: defer eMMC protocol initialization to IRQ-driven hctx[m
+[VM 1] [m[37m[  5.918433 ax_driver::block::rockchip::sdhci_rk3588:201] [32mrockchip-sdhci block device registered irq=None[m
+[VM 1] [m[37m[  5.929476 ax_driver::pwm::rockchip:99] [32mRockchip PWM registered: node=pwm@febf0030 base=0xfebf0030[m
+[VM 1] [m[37m[  5.941222 ax_driver::virtio:177] [32mprobing virtio-mmio node virtio_mmio@a000000 at PA 0xa000000, size 0x200[m
+[VM 1] [m[37m[  5.951972 ax_driver::virtio:184] [32mmapped virtio-mmio at VA 0xffff00000a000000[m
+[VM 1] [m[37m[  5.960509 virtio_drivers::device::net::dev_raw:33] [32mnegotiated_features Features(MAC | STATUS | VERSION_1)[m
+[VM 1] [m[37m[  5.972104 ax_driver::virtio::net:394] [32mregistered virtio network device irq=None[m
+[VM 1] [m[37m[  5.980459 rdrive:222] [33mProbe failed for [fdt]: other error: [] has no USB2 PHY GRF parent[m
+[VM 1] [m[37m[  5.990332 ax_runtime::serial:489] [32mserial runtime NS16550 UART ready: cpu=0, irq=Some(Source(FdtInterrupt(FdtIrqSpec { controller: 596, cells: [0, 333, 4] }))), polling=false[m
+[VM 1] [mBoot at 1970-01-01 00:00:06.006124541 UTC
+[VM 1] 
+[VM 1] [37m[  6.009985 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op ResetAll[m
+[VM 1] [m[37m[  6.018854 ax_fs_ng::block::runtime::hctx:177] [32mblock hctx 0 bound to CPU 0 with hardware depth 1[m
+[VM 1] [m[37m[  6.028351 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device rockchip-dwmmc IRQ source 0 (IrqId { domain: IrqDomainId(7), hwirq: HwIrq(235) }) fixed to CPU 0 for queue mask 0x1[m
+[VM 1] [m[37m[  6.046871 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op PowerOn[m
+[VM 1] [m[37m[  6.065558 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op SwitchVoltage(V330)[m
+[VM 1] [m[37m[  6.074438 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetBusWidth(Bit1)[m
+[VM 1] [m[37m[  6.083252 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetClock(Identification)[m
+[VM 1] [m[37m[  6.093305 ax_driver::block::rockchip::sd:70] [32mrockchip-dwmmc: ciu clock set target=400000 Hz cclkin=800000 Hz bus=400000 Hz[m
+[VM 1] [m[37m[  6.116083 sdmmc_protocol::sdio::init::state_machine:154] [33msdio: init state PostIdentificationClockDelay aborted (NoCard), resetting host[m
+[VM 1] [m[37m[  6.129260 ax_fs_ng::block::runtime::lifecycle:135] [33mfailed to start IRQ-driven block controller: Io[m
+[VM 1] [m[37m[  6.139105 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op ResetAll[m
+[VM 1] [m[37m[  6.148042 ax_fs_ng::block::runtime::hctx:177] [32mblock hctx 0 bound to CPU 0 with hardware depth 1[m
+[VM 1] [m[37m[  6.157591 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device rockchip-sdhci IRQ source 0 (IrqId { domain: IrqDomainId(7), hwirq: HwIrq(237) }) fixed to CPU 0 for queue mask 0x1[m
+[VM 1] [m[37m[  6.175509 ax_driver::block::rockchip::sdhci_rk3588:245] [32mrockchip-sdhci: RK3588 DWCMSHC vendor reset area1=0x500[m
+[VM 1] [m[37m[  6.186058 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op PowerOn[m
+[VM 1] [m[37m[  6.204642 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op SwitchVoltage(V330)[m
+[VM 1] [m[37m[  6.219824 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetBusWidth(Bit1)[m
+[VM 1] [m[37m[  6.229189 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetClock(Identification)[m
+[VM 1] [m[37m[  6.239646 ax_driver::block::rockchip::sdhci_rk3588:119] [32mrockchip-sdhci: core clock set to 375000 Hz[m
+[VM 1] [m[37m[  6.293599 sdmmc_protocol::sdio::init::state_machine::identify:264] [32msdio: detected Mmc ocr=0xc0ff8080[m
+[VM 1] [m[37m[  6.304737 sdmmc_protocol::sdio::init::state_machine::identify:338] [32msdio: CSD capacity_blocks=None[m
+[VM 1] [m[37m[  6.327055 sdmmc_protocol::sdio::init::state_machine::mmc:38] [32msdio: EXT_CSD sector_count=122159104[m
+[VM 1] [m[37m[  6.340380 ax_driver::block::rockchip::sdhci_rk3588:119] [32mrockchip-sdhci: core clock set to 50000000 Hz[m
+[VM 1] [m[37m[  6.350985 sdmmc_protocol::sdio::init::state_machine::mmc:314] [32msdio: MMC speed selected HighSpeed bus_width=Bit8[m
+[VM 1] [m[37m[  6.362443 sdmmc_protocol::sdio::init::state_machine::mmc:340] [32msdio: enabled 1024 KiB volatile write cache[m
+[VM 1] [m[37m[  6.373274 sdmmc_protocol::sdio::init::state_machine:233] [32msdio: init done kind=Mmc sd_v2=false high_capacity=true rca=0x1 ocr=0xc0ff8080 host_bus_width=Bit8 ext_csd_bus_width=Some(Sdr1) ext_csd_timing=Some(Compat)[m
+[VM 1] [m[37m[  6.391919 sdmmc_protocol::rdif::queue:172] [32msdmmc block init complete: kind=Mmc high_capacity=true rca=1 capacity_blocks=122159104 cache_enabled=true[m
+[VM 1] [m[37m[  6.432376 ax_fs_ng::root:348] [32m    partition 1 name=Some("uboot") fs=None lba 16384..24576[m
+[VM 1] [m[37m[  6.442454 ax_fs_ng::root:348] [32m    partition 2 name=Some("misc") fs=None lba 24576..32768[m
+[VM 1] [m[37m[  6.451849 ax_fs_ng::root:348] [32m    partition 3 name=Some("boot") fs=None lba 32768..163840[m
+[VM 1] [m[37m[  6.461075 ax_fs_ng::root:348] [32m    partition 4 name=Some("recovery") fs=None lba 163840..425984[m
+[VM 1] [m[37m[  6.470858 ax_fs_ng::root:348] [32m    partition 5 name=Some("backup") fs=None lba 425984..491520[m
+[VM 1] [m[37m[  6.480665 ax_fs_ng::root:348] [32m    partition 6 name=Some("rootfs") fs=Some(Ext4) lba 491520..29851648[m
+[VM 1] [m[37m[  6.491018 ax_fs_ng::root:348] [32m    partition 7 name=Some("oem") fs=Some(Ext4) lba 29851648..30113792[m
+[VM 1] [m[37m[  6.501155 ax_fs_ng::root:348] [32m    partition 8 name=Some("userdata") fs=Some(Ext4) lba 30113792..122159071[m
+[VM 1] [m[37m[  6.511829 ax_fs_ng::root:364] [32m  block device 0 (rockchip-sdhci) has Gpt partition table with 8 partitions[m
+[VM 1] [m[37m[  6.522488 ax_fs_ng::root:517] [32m  falling back to PARTLABEL=rootfs[m
+[VM 1] [m[37m[  6.529515 ax_fs_ng:86] [32mInitialize filesystem subsystem...[m
+[VM 1] [m[37m[  6.535890 ax_fs_ng:87] [32m  selected root device: disk0 partition 6 (rootfs, fs=ext4, lba 491520..29851648)[m
+[VM 1] [m[37m[  6.546938 rsext4::crc32c::arm64:54] [33mID_AA64ISAR0_EL1[19:16]: 0x1[m
+[VM 1] [m[37m[  6.553462 rsext4::crc32c::arm64:57] [33mHardware CRC32C support detected.[m
+[VM 1] [m[37m[  6.572547 rsext4::ext4::mount:331] [32m/lost+found exists (superblock hint inode=11)[m
+[VM 1] [m[37m[  6.582561 rsext4::ext4::mount:466] [32mExt4 filesystem mounted[m
+[VM 1] [m[37m[  6.589180 rsext4::ext4::mount:467] [32m  - block size: 4096 bytes[m
+[VM 1] [m[37m[  6.595852 rsext4::ext4::mount:468] [32m  - total blocks: 3670016[m
+[VM 1] [m[37m[  6.601753 rsext4::ext4::mount:469] [32m  - free blocks: 3298218[m
+[VM 1] [m[37m[  6.608323 rsext4::ext4::mount:470] [32m  - total inodes: 847616[m
+[VM 1] [m[37m[  6.614414 rsext4::ext4::mount:471] [32m  - free inodes: 833536[m
+[VM 1] [m[37m[  6.620201 rsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[VM 1] [m[37m[  6.635786 rsext4::ext4::mount:550] [32mExt4 filesystem mounted[m
+[VM 1] [m[37m[  6.641560 ax_fs_ng:99] [32m  filesystem type: "ext4"[m
+[VM 1] [m[37m[  6.650415 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0000 expected=0x0589 desc_size=64 block_bitmap=8196 inode_bitmap=24580 inode_table=40964 free_blocks=57348 free_inodes=0 used_dirs=8196 itable_unused=0 flags=0x1 block_bitmap_csum=0x0 inode_bitmap_csum=0x0[m
+[VM 1] [m[37m[  6.680846 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[VM 1] [m[37m[  6.688978 ax_fs_ng::fs::ext4::rsext4::fs:127] [33mext4 journal replay failed with EUCLEAN; retrying read-only without journal replay[m
+[VM 1] [m[37m[  6.701159 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0000 expected=0x0589 desc_size=64 block_bitmap=8196 inode_bitmap=24580 inode_table=40964 free_blocks=57348 free_inodes=0 used_dirs=8196 itable_unused=0 flags=0x1 block_bitmap_csum=0x0 inode_bitmap_csum=0x0[m
+[VM 1] [m[37m[  6.731711 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[VM 1] [m[37m[  6.740248 ax_fs_ng::root:622] [33m  failed to initialize filesystem for partition disk0 partition 7 (oem, fs=ext4, lba 29851648..30113792): AxErrorKind::Io[m
+[VM 1] [m[37m[  6.756156 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0a8d expected=0x16fe desc_size=64 block_bitmap=262145 inode_bitmap=262161 inode_table=262177 free_blocks=3808 free_inodes=1088 used_dirs=0 itable_unused=1088 flags=0x5 block_bitmap_csum=0x4c1cbc8f inode_bitmap_csum=0xe0e99c72[m
+[VM 1] [m[37m[  6.787137 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[VM 1] [m[37m[  6.795583 ax_fs_ng::fs::ext4::rsext4::fs:127] [33mext4 journal replay failed with EUCLEAN; retrying read-only without journal replay[m
+[VM 1] [m[37m[  6.807317 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0a8d expected=0x16fe desc_size=64 block_bitmap=262145 inode_bitmap=262161 inode_table=262177 free_blocks=3808 free_inodes=1088 used_dirs=0 itable_unused=1088 flags=0x5 block_bitmap_csum=0x4c1cbc8f inode_bitmap_csum=0xe0e99c72[m
+[VM 1] [m[37m[  6.838795 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[VM 1] [m[37m[  6.846863 ax_fs_ng::root:622] [33m  failed to initialize filesystem for partition disk0 partition 8 (userdata, fs=ext4, lba 30113792..122159071): AxErrorKind::Io[m
+[VM 1] [m[37m[  6.864983 ax_net:192] [32mInitialize network subsystem...[m
+[VM 1] [m[37m[  6.870630 ax_net:212] [32m  use NIC 0: "virtio-net"[m
+[VM 1] [m[37m[  6.877171 ax_runtime::irq:120] [32mregistered eth0 irq IrqId { domain: IrqDomainId(7), hwirq: HwIrq(48) }[m
+[VM 1] [m[37m[  6.887127 ax_net:238] [32meth0:[m
+[VM 1] [m[37m[  6.890586 ax_net:239] [32m  id:   2[m
+[VM 1] [m[37m[  6.895101 ax_net:240] [32m  mac:  52-54-00-12-34-15[m
+[VM 1] [m[37m[  6.900036 ax_net:257] [32m  mode: dhcp[m
+[VM 1] [m[37m[  6.904421 ax_net:295] [32mDevice: lo[m
+[VM 1] [m[37m[  6.908308 ax_net:295] [32mDevice: eth0[m
+[VM 1] [m[37m[  6.912299 ax_net::service:606] [32meth0: DHCP enabled[m
+[VM 2] msh />TASK2_SAFE state=Safe event=HeartbeatTimeout
+[VM 1] [m[37m[  8.962053 ax_net:992] [33mDHCP bootstrap timed out[m
+[VM 1] [m[37m[  8.967525 ax_runtime:348] [32mPrimary CPU 0 init OK.[m
+[VM 1] [m[37m[  8.973225 0:2 ax_fs_ng::block::runtime::lifecycle::device:369] [32mblock device rockchip-sdhci online with 1 hctxs across 1 CPUs[m
+[VM 1] [m[37m[  8.984698 0:2 ktracepoint:282] [32mtracepoint_data_start: 0xffffffff80597e90, tracepoint_data_end: 0xffffffff80597ef0[m
+[VM 1] [m[37m[  8.995624 0:2 ktracepoint:297] [32mtracepoint_data_len: 6[m
+[VM 1] [m[37m[  9.001281 0:2 ktracepoint:314] [32mtracepoint registered: sched:sched_process_exit[m
+[VM 1] [m[37m[  9.009750 0:2 ktracepoint:314] [32mtracepoint registered: sched:sched_process_fork[m
+[VM 1] [m[37m[  9.018026 0:2 ktracepoint:314] [32mtracepoint registered: sched:sched_switch[m
+[VM 1] [m[37m[  9.025470 0:2 ktracepoint:314] [32mtracepoint registered: syscalls:sys_clone[m
+[VM 1] [m[37m[  9.032924 0:2 ktracepoint:314] [32mtracepoint registered: syscalls:sys_enter_openat[m
+[VM 1] [m[37m[  9.040212 0:2 ktracepoint:314] [32mtracepoint registered: syscalls:sys_mkdirat[m
+[VM 1] [mInitialized 6 tracepoints
+[VM 1] kmod subsystem initialized
+[VM 1] [37m[  9.053034 0:2 starry_kernel::pseudofs:86] [32mInitialize pseudofs...[m
+[VM 1] [m[37m[  9.059389 0:2 starry_kernel::pseudofs::dev::tty::serial:256] [32mttyS2 registered: path=/serial@feb50000, alias=Some(2), paddr=0xfeb50000, irq=Some(Source(FdtInterrupt(FdtIrqSpec { controller: 596, cells: [0, 333, 4] })))[m
+[VM 1] [m[37m[  9.079340 0:2 starry_kernel::pseudofs::dev::tty::serial:201] [32m/dev/console bound to ttyS2[m
+[VM 1] [m[37m[  9.089831 0:2 starry_kernel::pseudofs:80] [32mMounted devfs at /dev[m
+[VM 1] [m[37m[  9.096439 0:2 starry_kernel::pseudofs::usbfs:55] [32musbfs: initializing manager[m
+[VM 1] [m[37m[  9.104410 0:2 starry_kernel::pseudofs::usbfs::manager:1437] [32musbfs: preparing host 272 as bus 1[m
+[VM 1] [m[37m[  9.113159 0:2 starry_kernel::pseudofs::usbfs::manager:1437] [32musbfs: preparing host 274 as bus 2[m
+[VM 1] [m[37m[  9.121775 0:2 starry_kernel::pseudofs::usbfs::manager:1486] [32musbfs: discovered 2 USB host(s)[m
+[VM 1] [m[37m[  9.131180 0:2 starry_kernel::pseudofs::usbfs::irq:92] [32musbfs: registering IRQ callback for IRQ IrqId { domain: IrqDomainId(7), hwirq: HwIrq(247) } (bus 1, host 272)[m
+[VM 1] [m[37m[  9.146601 0:2 starry_kernel::pseudofs::usbfs::irq:92] [32musbfs: registering IRQ callback for IRQ IrqId { domain: IrqDomainId(7), hwirq: HwIrq(250) } (bus 2, host 274)[m
+[VM 1] [m[37m[  9.161528 0:2 starry_kernel::pseudofs::usbfs::manager:1275] [32musbfs: initializing host on bus 1[m
+[VM 1] [m[37m[  9.291104 0:2 starry_kernel::pseudofs::usbfs::manager:1319] [32musbfs: host on bus 1 initialized[m
+[VM 1] [m[37m[  9.300850 0:2 starry_kernel::pseudofs::usbfs::manager:1275] [32musbfs: initializing host on bus 2[m
+[VM 1] [m[37m[  9.430993 0:2 starry_kernel::pseudofs::usbfs::manager:1319] [32musbfs: host on bus 2 initialized[m
+[VM 1] [m[37m[  9.440383 0:2 starry_kernel::pseudofs::usbfs::manager:1339] [32musbfs: 2 host(s) ready[m
+[VM 1] [m[37m[  9.448734 0:2 starry_kernel::pseudofs::usbfs:74] [32musbfs: spawning refresh task[m
+[VM 1] [m[37m[  9.456319 0:2 starry_kernel::pseudofs::usbfs:38] [32musbfs: creating filesystem instance[m
+[VM 1] [m[37m[  9.465155 0:2 starry_kernel::pseudofs:80] [32mMounted usbfs at /dev/bus/usb[m
+[VM 1] [m[37m[  9.472370 0:2 starry_kernel::pseudofs:80] [32mMounted tmpfs at /dev/shm[m
+[VM 1] [m[37m[  9.481379 0:2 starry_kernel::pseudofs:80] [32mMounted tmpfs at /tmp[m
+[VM 1] [m[37m[  9.488314 0:2 starry_kernel::pseudofs:80] [32mMounted mqueue at /dev/mqueue[m
+[VM 1] [m[37m[  9.503667 0:2 starry_kernel::dyn_debug:61] [32mdebug_init: initializing dynamic debug sites[m
+[VM 1] [m[37m[  9.512601 0:2 starry_kernel::dyn_debug:64] [32mdebug_init: found 193 dynamic debug sites[m
+[VM 1] [m[37m[  9.521738 0:2 starry_kernel::pseudofs::proc:74] [32mRead kallsyms, size: 1563KB[m
+[VM 1] [m[37m[  9.551669 0:2 starry_kernel::pseudofs:80] [32mMounted proc at /proc[m
+[VM 1] [m[37m[  9.559172 0:2 starry_kernel::pseudofs:80] [32mMounted sysfs at /sys[m
+[VM 1] [m[37m[  9.566423 0:2 starry_kernel::pseudofs:80] [32mMounted sysfs at /sys/bus/usb[m
+[VM 1] [m[37m[  9.573643 0:2 starry_kernel::pseudofs:80] [32mMounted debug at /sys/kernel/debug[m
+[VM 1] [m[37m[  9.581511 0:2 starry_kernel::task::timer:331] [32mInitialize alarm...[m
+[VM 1] [m[37m[  9.588926 0:2 starry_kernel::entry:178] [32mInitialize cpufreq ondemand governor...[m
+[VM 1] [m[37m[  9.619396 0:18 starry_kernel::task::user:70] [32mEnter user space: ip=0x60116880, sp=0x3fffffff620[m
+[VM 1] [m[37m[  9.798804 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b0 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[VM 1] [m[37m[  9.799662 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b1 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[VM 1] [m[37m[  9.900751 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b0 peak=0% opp 1->0 = 408 MHz @ 675 mV[m
+[VM 1] [m[37m[  9.901607 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b1 peak=0% opp 1->0 = 408 MHz @ 675 mV[m
+[VM 1] [mWelcome to [96m[1mStarry OS[0m!
+[VM 1] [37m[  9.999305 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[  9.999383 0:19 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[VM 1] [mHOSTNAME=starry
+[VM 1] PWD=/
+[VM 1] HOME=/root
+[VM 1] TERM=xterm-256color
+[VM 1] USER=root
+[VM 1] SHLVL=1
+[VM 1] PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+[VM 1] _=/usr/bin/env
+[VM 1] [37m[ 10.063095 0:19 starry_kernel::task::ops:398] [32mTask(19, "env") exit with code: 0[m
+[VM 1] [m[37m[ 10.072339 0:19 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 10.122078 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m
+[VM 1] Use [1m[3mapk[0m to install packages.
+[VM 1] 
+[VM 1] [37m[ 10.148995 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 10.149067 0:20 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[VM 1] [m[37m[ 10.204715 0:20 starry_kernel::task::ops:398] [32mTask(20, "mkdir") exit with code: 256[m
+[VM 1] [m[37m[ 10.214379 0:20 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 10.222589 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 10.225815 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 10.246932 0:21 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[VM 1] [m[37m[ 10.280120 0:21 starry_kernel::task::ops:398] [32mTask(21, "mkdir") exit with code: 256[m
+[VM 1] [m[37m[ 10.290125 0:21 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 10.298677 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 10.301718 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 10.322578 0:22 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[VM 1] [m[37m[ 10.355494 0:22 starry_kernel::task::ops:398] [32mTask(22, "mkdir") exit with code: 256[m
+[VM 1] [m[37m[ 10.365605 0:22 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 10.374176 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 10.390878 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 10.390946 0:23 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffeb00[m
+[VM 1] [m[37m[ 10.451680 0:23 starry_kernel::task::ops:398] [32mTask(23, "touch") exit with code: 0[m
+[VM 1] [m[37m[ 10.461262 0:23 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 10.469645 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 10.472856 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 10.494539 0:24 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffeb00[m
+[VM 1] [m[37m[ 10.539859 0:24 starry_kernel::task::ops:398] [32mTask(24, "touch") exit with code: 0[m
+[VM 1] [m[37m[ 10.549474 0:24 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 10.557761 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 10.574597 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 10.574664 0:25 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[VM 1] [m[37m[ 10.627302 0:25 starry_kernel::task::ops:398] [32mTask(25, "touch") exit with code: 0[m
+[VM 1] [m[37m[ 10.637157 0:25 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 10.645208 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 10.648831 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 10.670671 0:26 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[VM 1] [m[37m[ 10.712359 0:26 starry_kernel::task::ops:398] [32mTask(26, "touch") exit with code: 0[m
+[VM 1] [m[37m[ 10.722341 0:26 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 10.730599 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 10.734269 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 10.755498 0:27 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[VM 1] [m[37m[ 10.797587 0:27 starry_kernel::task::ops:398] [32mTask(27, "touch") exit with code: 0[m
+[VM 1] [m[37m[ 10.807324 0:27 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 10.815438 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 10.819063 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 10.839951 0:28 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[VM 1] [m[37m[ 10.883221 0:28 starry_kernel::task::ops:398] [32mTask(28, "touch") exit with code: 0[m
+[VM 1] [m[37m[ 10.893112 0:28 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 10.901283 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 10.904531 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 10.925854 0:29 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[VM 1] [m[37m[ 10.968832 0:29 starry_kernel::task::ops:398] [32mTask(29, "touch") exit with code: 0[m
+[VM 1] [m[37m[ 10.978874 0:29 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 10.987294 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 10.990432 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 11.011200 0:30 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[VM 1] [m[37m[ 11.064010 0:30 starry_kernel::task::ops:398] [32mTask(30, "touch") exit with code: 0[m
+[VM 1] [m[37m[ 11.073468 0:30 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 11.081612 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 11.084863 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 11.105948 0:31 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[VM 1] [m[37m[ 11.148927 0:31 starry_kernel::task::ops:398] [32mTask(31, "touch") exit with code: 0[m
+[VM 1] [m[37m[ 11.158905 0:31 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 11.167397 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 11.170560 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 11.191782 0:32 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[VM 1] [m[37m[ 11.234756 0:32 starry_kernel::task::ops:398] [32mTask(32, "touch") exit with code: 0[m
+[VM 1] [m[37m[ 11.244780 0:32 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 11.253007 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 11.272289 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 11.272366 0:33 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[VM 1] [m[37m[ 11.320806 0:33 starry_kernel::task::ops:398] [32mTask(33, "cat") exit with code: 0[m
+[VM 1] [m[37m[ 11.330243 0:33 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 11.338726 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [m[37m[ 11.501743 0:34 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe060[m
+[VM 1] [m[37m[ 11.572177 0:34 starry_kernel::task::ops:398] [32mTask(34, "groups") exit with code: 0[m
+[VM 1] [m[37m[ 11.572333 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[VM 1] [m[37m[ 11.592530 0:34 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[VM 1] [m[37m[ 11.601214 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[VM 1] [mroot@starry:/root # [37m[ 11.993587 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=10% opp 2->1 = 816 MHz @ 675 mV[m
+[VM 1] [m[37m[ 12.094611 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=10% opp 1->0 = 408 MHz @ 675 mV[m
+[mwc -c /proc/initrd; sha256sum /proc/initrd; mkd[37m[ 12.299801 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=100% opp 0->2 = 1021 MHz @ 675 mV[m
+[mir -p /tmp/t1 23; cd /tmp/t123; gzip -dc /proc/initrd | cpio -id; mount --bind /tmp/t123/usr/s hare /usr/share; ip addr add[37m[ 12.601062 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[m 10.0.42.15/24 dev eth0 2>/dev/null || true; echo TA SK123_SETUP_DONE
+[37m[ 12.779856 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 12.779945 0:35 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe7b0[m
+[m[37m[ 12.943467 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=100% opp 1->2 = 1021 MHz @ 675 mV[m
+[m32055708 /proc/initrd
+[37m[ 13.046888 0:35 starry_kernel::task::ops:398] [32mTask(35, "wc") exit with code: 0[m
+[m[37m[ 13.058801 0:35 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 13.067448 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.087148 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.087222 0:36 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe7e0[m
+[m4e36263479d045b6a7f1d84ec3981949efc64e0aa4de82c1c91a81c05a732da5  /proc/initrd
+[37m[ 13.851561 0:36 starry_kernel::task::ops:398] [32mTask(36, "sha256sum") exit with code: 0[m
+[m[37m[ 13.862580 0:36 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 13.871429 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.876103 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.900387 0:37 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe9d0[m
+[m[37m[ 13.938095 0:37 starry_kernel::task::ops:398] [32mTask(37, "mkdir") exit with code: 0[m
+[m[37m[ 13.947650 0:37 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 13.956360 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.963934 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.989475 0:38 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffead0[m
+[m[37m[ 13.989762 0:39 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffead0[m
+[m[37m[ 21.330918 0:38 starry_kernel::task::ops:398] [32mTask(38, "busybox") exit with code: 0[m
+[m[37m[ 21.341395 0:38 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 21.350178 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m209861 blocks
+[37m[ 21.365269 0:39 starry_kernel::task::ops:398] [32mTask(39, "busybox") exit with code: 0[m
+[m[37m[ 21.376650 0:39 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 21.385617 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 21.405121 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 21.405194 0:40 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffefa0[m
+[m[37m[ 21.535469 0:40 starry_kernel::task::ops:398] [32mTask(40, "mount") exit with code: 0[m
+[m[37m[ 21.545838 0:40 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 21.554758 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 21.574663 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 21.574735 0:41 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffefa0[m
+[m[37m[ 21.667264 0:41 starry_kernel::task::ops:398] [32mTask(41, "ip") exit with code: 0[m
+[m[37m[ 21.677160 0:41 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 21.685382 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[mTASK123_SETUP_DONE
+root@starry:/tmp/t123 # [37m[ 21.708468 0:9 ax_net::device::ethernet:486] [32meth0: ARP 10.0.42.2 -> 52-54-00-12-34-02[m
+[m[37m[ 21.802496 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=20% opp 2->1 = 816 MHz @ 675 mV[m
+[m/tmp/t123/bin/task2-net manual
+[37m[ 21.880984 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 21.881086 0:42 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3fffffff540[m
+[mTASK3_EXPERIMENT_READY run_mode=manual source=manual frozen_target=500 samples=5
+TASK3_MANUAL_STARTED request=1 target=500 phase=startup
+[37m[ 21.890484 0:42 ax_net::udp:288] [32mUDP socket #0: bound on *:4242[m
+[mSTARRY_T2N1_READY local=0.0.0.0:4242 peer=10.0.42.2:4242 session=0x54525432 mode=manual
+TASK3_SAMPLE sample=1 image_id=vase-left image_sha256=570d32eef9a9f5fd7101c5058b625ef62469e5ba778a77c38da675bea4752cf9 truth_target=321 expected=accept source=manual outcome=accepted request=1 elapsed_ms=0
+TASK3_MANUAL_INPUT source=manual target=500 infer_us=0 request=1 elapsed_ms=0
+TASK3_MANUAL_TARGET source=manual target=500 infer_us=0 request=1
+STARRY_T2N1_CONTROL_SENT seq=1 value=500 request=1 elapsed_ms=0
+TASK3_CONTROL_SENT elapsed_ms=0 sample=1 image_id=vase-left source=manual request=1 value=500 truth_target=321 state=300 seq=1
+[37m[ 22.033283 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=80% opp 1->2 = 1021 MHz @ 675 mV[m
+[mSTARRY_T2N1_ACK seq=1
+STARRY_T2N1_STATUS_DELIVERED seq=1 bytes=12 request=1 state=Active value=345 rtt_ms=162
+TASK3_STATUS_RECEIVED elapsed_ms=162 sample=1 image_id=vase-left request=1 value=500 state_before=300 state_after=345 rtt_ms=162
+STARRY_T2N1_PASS
+[37m[ 22.233893 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[ 22.334355 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=10% opp 1->0 = 408 MHz @ 675 mV[m
+[mTASK3_MANUAL_STARTED request=2 target=500 elapsed_ms=1172
+[37m[ 23.080540 0:43 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 23.081528 0:43 starry_kernel::task::ops:398] [32mTask(43, "task2-net") exit with code: 0[m
+[mTASK3_SAMPLE sample=2 image_id=vase-center image_sha256=608c8a61ff0bb43e5a8613f1f6f8aa08af74b084363610ed2b526ad925e4cb6f truth_target=421 expected=accept source=manual outcome=accepted request=2 elapsed_ms=1190
+TASK3_MANUAL_INPUT source=manual target=500 infer_us=0 request=2 elapsed_ms=1190
+TASK3_MANUAL_TARGET source=manual target=500 infer_us=0 request=2
+STARRY_T2N1_CONTROL_SENT seq=2 value=500 request=2 elapsed_ms=1190
+TASK3_CONTROL_SENT elapsed_ms=1190 sample=2 image_id=vase-center source=manual request=2 value=500 truth_target=421 state=345 seq=2
+[37m[ 23.149867 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=80% opp 0->2 = 1021 MHz @ 675 mV[m
+[mSTARRY_T2N1_ACK seq=2
+STARRY_T2N1_STATUS_DELIVERED seq=2 bytes=12 request=2 state=Active value=370 rtt_ms=153
+TASK3_STATUS_RECEIVED elapsed_ms=1343 sample=2 image_id=vase-center request=2 value=500 state_before=345 state_after=370 rtt_ms=153
+[37m[ 23.352944 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=20% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[ 23.453484 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=10% opp 1->0 = 408 MHz @ 675 mV[m
+[mTASK3_MANUAL_STARTED request=3 target=500 elapsed_ms=2348
+[37m[ 24.256727 0:44 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 24.257425 0:44 starry_kernel::task::ops:398] [32mTask(44, "task2-net") exit with code: 0[m
+[mTASK3_SAMPLE sample=3 image_id=vase-right image_sha256=f9d70fd3e0f85185ce8e45b2d714d8b4083833da73cdaeac5d981abc890ef698 truth_target=521 expected=accept source=manual outcome=accepted request=3 elapsed_ms=2366
+TASK3_MANUAL_INPUT source=manual target=500 infer_us=0 request=3 elapsed_ms=2366
+TASK3_MANUAL_TARGET source=manual target=500 infer_us=0 request=3
+STARRY_T2N1_CONTROL_SENT seq=3 value=500 request=3 elapsed_ms=2366
+TASK3_CONTROL_SENT elapsed_ms=2366 sample=3 image_id=vase-right source=manual request=3 value=500 truth_target=521 state=370 seq=3
+STARRY_T2N1_ACK seq=3
+STARRY_T2N1_STATUS_DELIVERED seq=3 bytes=12 request=3 state=Active value=384 rtt_ms=275
+TASK3_STATUS_RECEIVED elapsed_ms=2641 sample=3 image_id=vase-right request=3 value=500 state_before=370 state_after=384 rtt_ms=275
+TASK3_MANUAL_STARTED request=4 target=500 elapsed_ms=3641
+[37m[ 25.551209 0:45 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 25.551908 0:45 starry_kernel::task::ops:398] [32mTask(45, "task2-net") exit with code: 0[m
+[mTASK3_SAMPLE sample=4 image_id=no-target image_sha256=a50f32c63aff52e8abab6c82bbd8e202512ab23ff12e213d6833aa719af56bc9 truth_target=none expected=reject source=manual outcome=accepted request=4 elapsed_ms=3661
+TASK3_MANUAL_INPUT source=manual target=500 infer_us=0 request=4 elapsed_ms=3661
+TASK3_MANUAL_TARGET source=manual target=500 infer_us=0 request=4
+STARRY_T2N1_CONTROL_SENT seq=4 value=500 request=4 elapsed_ms=3661
+TASK3_CONTROL_SENT elapsed_ms=3661 sample=4 image_id=no-target source=manual request=4 value=500 truth_target=none state=384 seq=4
+STARRY_T2N1_ACK seq=4
+STARRY_T2N1_STATUS_DELIVERED seq=4 bytes=12 request=4 state=Active value=392 rtt_ms=276
+TASK3_STATUS_RECEIVED elapsed_ms=3937 sample=4 image_id=no-target request=4 value=500 state_before=384 state_after=392 rtt_ms=276
+TASK3_MANUAL_STARTED request=5 target=500 elapsed_ms=4944
+[37m[ 26.852491 0:46 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 26.853634 0:46 starry_kernel::task::ops:398] [32mTask(46, "task2-net") exit with code: 0[m
+[mTASK3_SAMPLE sample=5 image_id=small-target image_sha256=a6a77909aed2ed499df3ccd54d5db3384a2de0cfcaa799b15e1c896c7a058370 truth_target=500 expected=reject source=manual outcome=accepted request=5 elapsed_ms=4962
+TASK3_MANUAL_INPUT source=manual target=500 infer_us=0 request=5 elapsed_ms=4962
+TASK3_MANUAL_TARGET source=manual target=500 infer_us=0 request=5
+STARRY_T2N1_CONTROL_SENT seq=5 value=500 request=5 elapsed_ms=4962
+TASK3_CONTROL_SENT elapsed_ms=4962 sample=5 image_id=small-target source=manual request=5 value=500 truth_target=500 state=392 seq=5
+STARRY_T2N1_ACK seq=5
+STARRY_T2N1_STATUS_DELIVERED seq=5 bytes=12 request=5 state=Active value=396 rtt_ms=284
+TASK3_STATUS_RECEIVED elapsed_ms=5246 sample=5 image_id=small-target request=5 value=500 state_before=392 state_after=396 rtt_ms=284
+TASK3_EXPERIMENT_COMPLETE run_mode=manual samples=5 elapsed_ms=5246
+[37m[ 27.294573 0:13 starry_kernel::task::signal:679] [32mSend signal SIGINT to process group 42[m
+[m[37m[ 27.294621 0:13 starry_kernel::task::signal:605] [32mSend signal SIGINT to process 42[m
+[m^C[37m[ 27.353779 0:42 starry_kernel::task::ops:398] [32mTask(42, "task2-net") exit with code: 2[m
+[m[37m[ 27.388150 0:42 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m
+[37m[ 27.418515 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[mroot@starry:/tmp/t123 # 
+
+[Axvisor] detached VM[1] console
+Welcome to AxVisor Shell!
+Type 'help' to see available commands
+Use UP/DOWN arrows to navigate command history
+Console shortcuts:
+  Ctrl+X, then h  return to the Axvisor shell
+  Ctrl+X, then [  attach the previous running guest
+  Ctrl+X, then ]  attach the next running guest
+
+[2Kaxvisor:/$ [2Kaxvisor:/$ r[2Kaxvisor:/$ rt[2Kaxvisor:/$ rt [2Kaxvisor:/$ rt s[2Kaxvisor:/$ rt st[2Kaxvisor:/$ rt sta[2Kaxvisor:/$ rt stat
+FP-RR scheduler counters:
+  quantum_ticks=5 quantum_expiries=35 same_priority_rotations=34 slice_preserving_preemptions=30204 voluntary_requeues=1632566 idle_quantum_skips=4853 lower_priority_services=45
+RT vCPU wait counters:
+  vcpu=0 post_vmexit_yields=41089 parks=8754 wakes=8586 notify_woke=8577 vtimer_arms=17393 vtimer_immediate=54 vtimer_no_deadline=0 vtimer_registered=17339 vtimer_callbacks=5046 vtimer_stale_callbacks=8 vtimer_notifications=5038 vtimer_invalidations=329741 callback_to_wake_samples=0 callback_to_wake_overflow=0 callback_to_wake_p50_ns=0 callback_to_wake_p99_ns=0 callback_to_wake_p99_9_ns=0 callback_to_wake_max_ns=0 callback_to_run_dispatch_samples=0 callback_to_run_dispatch_overflow=0 callback_to_run_dispatch_p50_ns=0 callback_to_run_dispatch_p99_ns=0 callback_to_run_dispatch_p99_9_ns=0 callback_to_run_dispatch_max_ns=0 callback_to_guest_entry_samples=0 callback_to_guest_entry_overflow=0 callback_to_guest_entry_p50_ns=0 callback_to_guest_entry_p99_ns=0 callback_to_guest_entry_p99_9_ns=0 callback_to_guest_entry_max_ns=0 direct_acks=6115 direct_overlaps=0 direct_to_run_dispatch_samples=0 direct_to_run_dispatch_overflow=0 direct_to_run_dispatch_p50_ns=0 direct_to_run_dispatch_p99_ns=0 direct_to_run_dispatch_p99_9_ns=0 direct_to_run_dispatch_max_ns=0 direct_to_guest_entry_samples=0 direct_to_guest_entry_overflow=0 direct_to_guest_entry_p50_ns=0 direct_to_guest_entry_p99_ns=0 direct_to_guest_entry_p99_9_ns=0 direct_to_guest_entry_max_ns=0 activation_hold_samples=0 activation_hold_overflow=0 activation_hold_p50_ns=0 activation_hold_p99_ns=0 activation_hold_p99_9_ns=0 activation_hold_max_ns=0
+  lr_skips=0
+RT device-poll counters:
+  vm=1 published=269 kicked=269 consumed=268 pending=false
+  vm=2 published=0 kicked=0 consumed=0 pending=false
+RT AxVM timer counters:
+  cpu=1 now_ns=40860539041 wheel_next_ns=40863905791 published_ns=40863905791 registered=17339 cancelled=12291 expired=5046 worker_wakes=4944 expiry_batches=5005 expiry_late_samples=0 expiry_late_overflow=0 expiry_late_p50_ns=0 expiry_late_p99_ns=0 expiry_late_p99_9_ns=0 expiry_late_max_ns=0 lock_acquisitions=74404 lock_wait_total_ns=17648484 lock_wait_max_ns=77583 lock_hold_total_ns=113266758 lock_hold_max_ns=12834
+RT host hardware timer IRQ counters:
+  cpu=0 irqs=3690
+  cpu=1 irqs=8519
+  cpu=2 irqs=3371
+  cpu=3 irqs=3371
+  cpu=4 irqs=3371
+  cpu=5 irqs=3369
+  cpu=6 irqs=3370
+  cpu=7 irqs=3369
+RT console counters: attached=None flush_calls=1545041 host_write_bytes=55817
+  vm=1 active=true input_enqueued=269 input_drained=269 input_dropped=0 input_pending=0 output_enqueued=50987 output_drained=50987 output_dropped=0 output_pending=0
+  vm=2 active=true input_enqueued=0 input_drained=0 input_dropped=0 input_pending=0 output_enqueued=3872 output_drained=3872 output_dropped=0 output_pending=0
+axvisor:/$ [2Kaxvisor:/$ v[2Kaxvisor:/$ vm[2Kaxvisor:/$ vm [2Kaxvisor:/$ vm l[2Kaxvisor:/$ vm li[2Kaxvisor:/$ vm lis[2Kaxvisor:/$ vm list
+VM ID  NAME            STATUS       VCPU            MEMORY     VCPU STATE          
+------ --------------- ------------ --------------- ---------- --------------------
+1      atk-task123-starry running      0               1GB        Free:1              
+2      atk-task123-rtthread running      0               512MB      Free:1              
+axvisor:/$ 

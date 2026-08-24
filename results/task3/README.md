@@ -1,10 +1,10 @@
 # Task-3 证据归档
 
 > 当前主证据不在本历史目录，而在
-> `results/atk-dlrk3588-task123-integrated-ab-20260824/`。该目录记录了
-> RK3588 物理板上的真实图片、Guest 内 AArch64 ncnn/YOLO、T2N1
-> `CONTROL`、RTOS 虚拟 plant 动作以及同 request ID `STATUS`。
-> 三张有效图片完成 3/3 闭环，两张无效图片完成 2/2 安全拒绝。
+> `results/atk-dlrk3588-task123-integrated-3x3-20260824/`。该目录记录了
+> RK3588 物理板上的 manual 3 次 + YOLO 3 次重复实验：真实图片、Guest 内
+> AArch64 ncnn/YOLO、T2N1 `CONTROL`、RTOS 虚拟 plant 动作以及同 request ID
+> `STATUS`。三轮合计 9/9 个有效图片闭环，6/6 个无效图片安全拒绝。
 >
 > 本目录以下内容仅保留早期 QEMU temporal-CNN、fixture replay、
 > 协议故障和定量实验的历史证据。它们可用于说明协议、安全
