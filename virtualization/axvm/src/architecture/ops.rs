@@ -183,7 +183,7 @@ fn drain_and_inject_dispatched_interrupts<A: ArchOps>(
     vcpu_id: usize,
     vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
 ) {
-    let runtime = match vm.with_runtime(|runtime| Ok(runtime.clone())) {
+    let runtime = match vm.runtime_handle() {
         Ok(runtime) => runtime,
         Err(err) => {
             warn!(

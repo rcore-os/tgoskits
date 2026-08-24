@@ -195,6 +195,15 @@ pub(crate) fn wait_for_vcpu_event_if_idle(
     wait_until(&wake_condition);
 }
 
+fn clone_runtime_handle<R>(
+    machine: &Machine<R, Arc<VmRuntimeHandle>>,
+) -> AxVmResult<Arc<VmRuntimeHandle>> {
+    machine
+        .runtime()
+        .cloned()
+        .ok_or_else(|| ax_err_type!(BadState, "VM runtime is not available"))
+}
+
 pub(crate) fn dispatch_vcpu_interrupt_with(
     enqueue: impl FnOnce() -> AxVmResult<usize>,
     notify: impl FnOnce(),
@@ -968,14 +977,14 @@ impl WakeAccessPort for AxVmDeviceAccessPorts {
                 ),
             });
         }
-        vm.with_runtime(|runtime| {
-            runtime.notify_all();
-            Ok(())
-        })
-        .map_err(|error| axdevice::DeviceManagerError::InvalidState {
-            operation: "wake vCPU from device access",
-            detail: format!("{error}"),
-        })
+        let runtime =
+            vm.runtime_handle()
+                .map_err(|error| axdevice::DeviceManagerError::InvalidState {
+                    operation: "wake vCPU from device access",
+                    detail: format!("{error}"),
+                })?;
+        runtime.notify_all();
+        Ok(())
     }
 }
 
@@ -989,10 +998,9 @@ impl StopAccessPort for AxVmDeviceAccessPorts {
             operation: "request VM stop from device access",
             detail: format!("{error}"),
         })?;
-        if let Ok(()) = vm.with_runtime(|runtime| {
+        if let Ok(runtime) = vm.runtime_handle() {
             runtime.notify_all();
-            Ok(())
-        }) {}
+        }
         Ok(())
     }
 }
@@ -1135,22 +1143,16 @@ impl AxVM {
         }
     }
 
-    /// Runs a callback with a snapshot of the current runtime.
+    /// Returns an owned runtime handle without retaining the VM machine lock.
     ///
     /// The runtime is pinned by its `Arc`, but the lifecycle may advance after
-    /// the snapshot. The callback runs without the machine lock so runtime
-    /// wait-queue operations cannot invert the machine/wait-queue lock order.
-    pub(crate) fn with_runtime<F, R>(&self, f: F) -> AxVmResult<R>
-    where
-        F: FnOnce(&Arc<VmRuntimeHandle>) -> AxVmResult<R>,
-    {
-        let runtime = self
-            .machine
-            .lock()
-            .runtime()
-            .cloned()
-            .ok_or_else(|| ax_err_type!(BadState, "VM runtime is not available"))?;
-        f(&runtime)
+    /// this snapshot. Callers may enter scheduler, wait-queue, device, or
+    /// callback code only after this method returns. Keeping the machine lock
+    /// acquisition inside this accessor prevents runtime notifications from
+    /// accidentally running while `vm.machine` is held.
+    pub(crate) fn runtime_handle(&self) -> AxVmResult<Arc<VmRuntimeHandle>> {
+        let machine = self.machine.lock();
+        clone_runtime_handle(&machine)
     }
 
     #[cfg_attr(
@@ -1219,7 +1221,8 @@ impl AxVM {
     /// it must be read only as a monotone "a vCPU has entered" signal, not as an
     /// exact "still running" count.
     pub fn running_vcpu_count(&self) -> usize {
-        self.with_runtime(|runtime| Ok(runtime.running_halting_vcpu_count()))
+        self.runtime_handle()
+            .map(|runtime| runtime.running_halting_vcpu_count())
             .unwrap_or(0)
     }
 
@@ -1462,17 +1465,15 @@ impl AxVM {
                     wait_for_running_vm_quiesce(|| self.running_vcpu_count(), || self.stopping())?;
                 }
                 self.stop(reason)?;
-                if let Ok(()) = self.with_runtime(|runtime| {
+                if let Ok(runtime) = self.runtime_handle() {
                     runtime.notify_all();
-                    Ok(())
-                }) {}
+                }
                 self.wait_until_stopped()?;
             }
             VmStatus::Stopping => {
-                if let Ok(()) = self.with_runtime(|runtime| {
+                if let Ok(runtime) = self.runtime_handle() {
                     runtime.notify_all();
-                    Ok(())
-                }) {}
+                }
                 self.wait_until_stopped()?;
             }
             VmStatus::Stopped | VmStatus::Ready => {}
@@ -2094,6 +2095,151 @@ mod tests {
     };
 
     use super::*;
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn runtime_snapshot_can_be_used_after_machine_lock_release() {
+        let runtime = Arc::new(VmRuntimeHandle::new());
+        let machine = IrqSafeMutex::new(Machine::Running {
+            resources: (),
+            runtime: runtime.clone(),
+        });
+
+        let snapshot = {
+            let machine = machine.lock();
+            clone_runtime_handle(&machine).unwrap()
+        };
+
+        let machine_guard = machine
+            .try_lock()
+            .expect("runtime snapshot must not retain the machine lock");
+        drop(machine_guard);
+        assert!(Arc::ptr_eq(&snapshot, &runtime));
+
+        let generation = snapshot.notification_generation();
+        snapshot.notify_all();
+        assert_ne!(snapshot.notification_generation(), generation);
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn runtime_snapshot_selects_replacement_after_restart() {
+        let old_runtime = Arc::new(VmRuntimeHandle::new());
+        let new_runtime = Arc::new(VmRuntimeHandle::new());
+        let machine = IrqSafeMutex::new(Machine::Running {
+            resources: (),
+            runtime: old_runtime.clone(),
+        });
+
+        let old_snapshot = {
+            let machine = machine.lock();
+            clone_runtime_handle(&machine).unwrap()
+        };
+        {
+            let mut machine = machine.lock();
+            machine
+                .request_stop_with(StopReason::Forced, |_, _| Ok(()))
+                .unwrap();
+            machine.finish_stop().unwrap();
+            drop(machine.take_stopped_runtime().unwrap());
+            machine.reset_with(|_| Ok(())).unwrap();
+            machine.start_with(|_| Ok(new_runtime.clone())).unwrap();
+        }
+        let new_snapshot = {
+            let machine = machine.lock();
+            clone_runtime_handle(&machine).unwrap()
+        };
+
+        assert!(Arc::ptr_eq(&old_snapshot, &old_runtime));
+        assert!(Arc::ptr_eq(&new_snapshot, &new_runtime));
+        assert!(!Arc::ptr_eq(&old_snapshot, &new_snapshot));
+
+        let new_generation = new_snapshot.notification_generation();
+        old_snapshot.notify_all();
+        assert_eq!(new_snapshot.notification_generation(), new_generation);
+        new_snapshot.notify_all();
+        assert_ne!(new_snapshot.notification_generation(), new_generation);
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn runtime_notification_does_not_form_machine_wait_queue_cycle() {
+        let runtime = Arc::new(VmRuntimeHandle::new());
+        let machine = Arc::new(IrqSafeMutex::new(Machine::Running {
+            resources: (),
+            runtime,
+        }));
+        let wait_queue_lock = Arc::new(std::sync::Mutex::new(()));
+        let (wfi_ready_tx, wfi_ready_rx) = std::sync::mpsc::channel();
+        let (snapshot_ready_tx, snapshot_ready_rx) = std::sync::mpsc::channel();
+        let (wfi_done_tx, wfi_done_rx) = std::sync::mpsc::channel();
+        let (notify_done_tx, notify_done_rx) = std::sync::mpsc::channel();
+
+        let wfi_machine = machine.clone();
+        let wfi_wait_queue_lock = wait_queue_lock.clone();
+        let wfi = std::thread::spawn(move || {
+            let wait_queue_guard = wfi_wait_queue_lock.lock().unwrap();
+            wfi_ready_tx.send(()).unwrap();
+            snapshot_ready_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("notifier did not finish the runtime snapshot");
+
+            let machine_guard = wfi_machine
+                .try_lock()
+                .expect("WFI could not acquire machine after notifier snapshot");
+            drop(machine_guard);
+            drop(wait_queue_guard);
+            wfi_done_tx.send(()).unwrap();
+        });
+
+        let notify_machine = machine.clone();
+        let notify_wait_queue_lock = wait_queue_lock.clone();
+        let notifier = std::thread::spawn(move || {
+            wfi_ready_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("WFI did not acquire the wait-queue lock");
+            let runtime = {
+                let machine = notify_machine.lock();
+                clone_runtime_handle(&machine).unwrap()
+            };
+            snapshot_ready_tx.send(()).unwrap();
+
+            let _wait_queue_guard = notify_wait_queue_lock.lock().unwrap();
+            runtime.notify_all();
+            notify_done_tx.send(()).unwrap();
+        });
+
+        wfi_done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("WFI side stalled in the machine/wait-queue ordering test");
+        notify_done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("notifier stalled in the machine/wait-queue ordering test");
+        wfi.join().unwrap();
+        notifier.join().unwrap();
+    }
+
+    #[test]
+    fn legacy_runtime_closure_api_is_absent_from_axvm_call_sites() {
+        let forbidden = concat!("with_", "runtime");
+        let sources = [
+            ("vm/mod.rs", include_str!("mod.rs")),
+            ("runtime/mod.rs", include_str!("../runtime/mod.rs")),
+            ("runtime/hvc.rs", include_str!("../runtime/hvc.rs")),
+            ("runtime/vcpus.rs", include_str!("../runtime/vcpus.rs")),
+            (
+                "architecture/ops.rs",
+                include_str!("../architecture/ops.rs"),
+            ),
+        ];
+
+        for (path, source) in sources {
+            assert!(
+                !source.contains(forbidden),
+                "{path} reintroduced the legacy runtime closure API"
+            );
+        }
+    }
 
     #[test]
     fn write_guest_bytes_to_chunks_writes_only_remaining_bytes() {
