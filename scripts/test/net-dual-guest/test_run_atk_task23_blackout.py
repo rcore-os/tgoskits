@@ -1,7 +1,9 @@
 import importlib.util
+import sys
+import types
+import unittest
 from pathlib import Path
-
-import pytest
+from unittest import mock
 
 
 RUNNER_PATH = (
@@ -10,7 +12,8 @@ RUNNER_PATH = (
 SPEC = importlib.util.spec_from_file_location("run_atk_task23_blackout", RUNNER_PATH)
 assert SPEC is not None and SPEC.loader is not None
 RUNNER = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(RUNNER)
+with mock.patch.dict(sys.modules, {"serial": types.ModuleType("serial")}):
+    SPEC.loader.exec_module(RUNNER)
 RUNNER_SOURCE = RUNNER_PATH.read_text()
 
 
@@ -30,32 +33,6 @@ def complete_log() -> bytes:
             b"atk-task123-zephyr running",
         )
     )
-
-
-def test_validator_accepts_complete_ordered_recovery_evidence() -> None:
-    RUNNER.validate_evidence(complete_log())
-
-
-def test_runner_uses_the_physical_axvisor_console_command() -> None:
-    assert 'f"vm console {vm_id}"' in RUNNER_SOURCE
-    assert 'self.command(f"vm attach {vm_id}"' not in RUNNER_SOURCE
-    assert r"Attached VM\[[12]\] console" in RUNNER_SOURCE
-
-
-def test_validator_rejects_missing_zephyr_recovery_control() -> None:
-    with pytest.raises(RuntimeError, match="TASK2_CONTROL_RECEIVED"):
-        RUNNER.validate_evidence(
-            complete_log().replace(b"TASK2_CONTROL_RECEIVED request=2\n", b"")
-        )
-
-
-def test_validator_rejects_recovery_before_blackout_is_lifted() -> None:
-    log = complete_log().replace(
-        b"virtnet: blackout OFF\nSTARRY_T2N1_RECOVERED state=Active",
-        b"STARRY_T2N1_RECOVERED state=Active\nvirtnet: blackout OFF",
-    )
-    with pytest.raises(RuntimeError, match="missing evidence marker"):
-        RUNNER.validate_evidence(log)
 
 
 class RecordingConsole:
@@ -78,12 +55,35 @@ class RecordingConsole:
         self.calls.append(("expect", expression, timeout))
 
 
-def test_blackout_transitions_preserve_output_received_while_attaching() -> None:
-    console = RecordingConsole()
+class RunAtKTask23BlackoutTests(unittest.TestCase):
+    def test_validator_accepts_complete_ordered_recovery_evidence(self) -> None:
+        RUNNER.validate_evidence(complete_log())
 
-    RUNNER.enter_blackout(console)
-    RUNNER.leave_blackout_and_verify_recovery(console)
+    def test_runner_uses_the_physical_axvisor_console_command(self) -> None:
+        self.assertIn('f"vm console {vm_id}"', RUNNER_SOURCE)
+        self.assertNotIn('self.command(f"vm attach {vm_id}"', RUNNER_SOURCE)
+        self.assertIn(r"Attached VM\[[12]\] console", RUNNER_SOURCE)
 
-    for index, call in enumerate(console.calls[:-1]):
-        if call[0] == "attach":
-            assert console.calls[index + 1][0] == "expect"
+    def test_validator_rejects_missing_zephyr_recovery_control(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "TASK2_CONTROL_RECEIVED"):
+            RUNNER.validate_evidence(
+                complete_log().replace(b"TASK2_CONTROL_RECEIVED request=2\n", b"")
+            )
+
+    def test_validator_rejects_recovery_before_blackout_is_lifted(self) -> None:
+        log = complete_log().replace(
+            b"virtnet: blackout OFF\nSTARRY_T2N1_RECOVERED state=Active",
+            b"STARRY_T2N1_RECOVERED state=Active\nvirtnet: blackout OFF",
+        )
+        with self.assertRaisesRegex(RuntimeError, "missing evidence marker"):
+            RUNNER.validate_evidence(log)
+
+    def test_blackout_transitions_preserve_output_received_while_attaching(self) -> None:
+        console = RecordingConsole()
+
+        RUNNER.enter_blackout(console)
+        RUNNER.leave_blackout_and_verify_recovery(console)
+
+        for index, call in enumerate(console.calls[:-1]):
+            if call[0] == "attach":
+                self.assertEqual(console.calls[index + 1][0], "expect")

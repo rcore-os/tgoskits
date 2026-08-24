@@ -5,6 +5,7 @@ import importlib.util
 import io
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,7 +16,10 @@ SPEC = importlib.util.spec_from_file_location("run_atk_task1_yolo_arm", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 RUNNER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = RUNNER
-SPEC.loader.exec_module(RUNNER)
+SERIAL_STUB = types.ModuleType("serial")
+SERIAL_STUB.Serial = object
+with mock.patch.dict(sys.modules, {"serial": SERIAL_STUB}):
+    SPEC.loader.exec_module(RUNNER)
 
 
 class RunAtkTask1YoloArmTest(unittest.TestCase):
