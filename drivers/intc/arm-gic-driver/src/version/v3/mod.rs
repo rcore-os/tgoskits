@@ -5,18 +5,27 @@ use aarch64_cpu::{
     registers::{CurrentEL, MPIDR_EL1},
 };
 use log::*;
+use tock_registers::registers::ReadWrite;
 pub use tock_registers::{LocalRegisterCopy, interfaces::*};
 
 mod gicd;
 mod gicr;
 mod its;
 
+#[cfg(test)]
+pub(crate) mod test_layout {
+    pub(crate) use super::gicr::{LPI, RedistributorV3, RedistributorV4, SGI};
+}
+
 use gicd::*;
 use gicr::*;
 pub use its::*;
 
-use crate::version::{IrqVecReadable, IrqVecWriteable};
 pub use crate::{IntId, VirtAddr, define::Trigger, sys_reg::*};
+use crate::{
+    define::{NmiAttributeSlot, nmi_attribute_slot},
+    version::{IrqVecReadable, IrqVecWriteable},
+};
 
 /// SGI target specification for GICv3.
 ///
@@ -212,6 +221,48 @@ impl Affinity {
     pub fn current() -> Self {
         Self::from_mpidr(MPIDR_EL1.get())
     }
+}
+
+/// Per-interrupt delivery attribute provided by FEAT_GICv3_NMI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NmiAttribute {
+    /// Deliver the interrupt through the regular maskable interrupt path.
+    Maskable,
+    /// Deliver the interrupt as a non-maskable interrupt.
+    NonMaskable,
+}
+
+impl From<bool> for NmiAttribute {
+    fn from(nmi: bool) -> Self {
+        if nmi {
+            Self::NonMaskable
+        } else {
+            Self::Maskable
+        }
+    }
+}
+
+/// Failure while accessing a GICv3.3 NMI delivery attribute.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum NmiAttributeError {
+    /// The requested INTID has no standard NMI attribute register.
+    #[error("{intid:?} has no GICv3 NMI attribute")]
+    UnsupportedIntId { intid: IntId },
+    /// The requested SPI is outside the range implemented by this Distributor.
+    #[error("{intid:?} is not implemented by this GIC")]
+    UnimplementedIntId { intid: IntId },
+    /// The Distributor does not advertise FEAT_GICv3_NMI.
+    #[error("the GIC does not implement FEAT_GICv3_NMI")]
+    Unsupported,
+    /// No Redistributor frame matches the current CPU affinity.
+    #[error("the current CPU redistributor was not found")]
+    CurrentRedistributorNotFound,
+    /// The requested attribute did not survive register readback.
+    #[error("{intid:?} rejected the requested {attribute:?} attribute")]
+    AttributeNotWritable {
+        intid: IntId,
+        attribute: NmiAttribute,
+    },
 }
 
 /// GICv3 driver implementation.
@@ -464,6 +515,73 @@ impl Gic {
         self.gicd().has_lpis()
     }
 
+    /// Return whether the Distributor advertises FEAT_GICv3_NMI.
+    ///
+    /// This check only reads `GICD_TYPER.NMI`; it never probes capability by
+    /// writing an interrupt's live attribute register.
+    pub fn supports_nmi(&self) -> bool {
+        self.gicd().supports_nmi()
+    }
+
+    /// Report NMI attribute availability without modifying GIC state.
+    ///
+    /// This compatibility API returns `(private, shared)`. `private` requires
+    /// both FEAT_GICv3_NMI and a Redistributor frame matching the current CPU;
+    /// `shared` reflects the architectural `GICD_TYPER.NMI` capability.
+    pub fn probe_nmi_attribute_support(&self) -> (bool, bool) {
+        let shared = self.supports_nmi();
+        let private = shared && self.current_rd_opt().is_some();
+        (private, shared)
+    }
+
+    /// Set the GICv3.3 NMI delivery attribute for an SGI, PPI, or SPI.
+    ///
+    /// Private interrupts are programmed in the current CPU's
+    /// `GICR_INMIR0`; SPIs are programmed in `GICD_INMIR<n>`. The operation
+    /// preserves every sibling interrupt attribute in the same register and
+    /// verifies the requested bit by reading it back.
+    ///
+    /// The caller must serialize GIC configuration and configure the
+    /// interrupt as Group 1 before selecting [`NmiAttribute::NonMaskable`].
+    /// Group 0 or inaccessible attribute fields can be RAZ/WI and produce
+    /// [`NmiAttributeError::AttributeNotWritable`]. CPU FEAT_NMI enablement and
+    /// NMI acknowledgement remain responsibilities of the OS integration.
+    pub fn set_nmi_attribute(
+        &mut self,
+        intid: IntId,
+        attribute: NmiAttribute,
+    ) -> Result<(), NmiAttributeError> {
+        let (register, mask) = self.nmi_attribute_register(intid)?;
+        let current = register.get();
+        let requested = nmi_attribute_register_value(current, mask, attribute);
+        if requested != current {
+            register.set(requested);
+            barrier::dsb(barrier::SY);
+        }
+
+        if nmi_attribute_from_register(register.get(), mask) == attribute {
+            Ok(())
+        } else {
+            Err(NmiAttributeError::AttributeNotWritable { intid, attribute })
+        }
+    }
+
+    /// Read the GICv3.3 NMI delivery attribute for an SGI, PPI, or SPI.
+    pub fn nmi_attribute(&self, intid: IntId) -> Result<NmiAttribute, NmiAttributeError> {
+        let (register, mask) = self.nmi_attribute_register(intid)?;
+        Ok(nmi_attribute_from_register(register.get(), mask))
+    }
+
+    /// Set or clear an NMI attribute using the legacy boolean interface.
+    pub fn set_nmi_attr(&mut self, intid: IntId, nmi: bool) -> Result<(), NmiAttributeError> {
+        self.set_nmi_attribute(intid, nmi.into())
+    }
+
+    /// Read an NMI attribute using the legacy boolean interface.
+    pub fn is_nmi(&self, intid: IntId) -> Result<bool, NmiAttributeError> {
+        Ok(self.nmi_attribute(intid)? == NmiAttribute::NonMaskable)
+    }
+
     pub fn redistributor_count(&self) -> usize {
         self.rd_slice().iter().count()
     }
@@ -548,6 +666,39 @@ impl Gic {
 
     fn current_rd(&self) -> NonNull<RedistributorV3> {
         current_rd_from(self.gicr)
+    }
+
+    fn current_rd_opt(&self) -> Option<NonNull<RedistributorV3>> {
+        current_rd_from_opt(self.gicr)
+    }
+
+    fn nmi_attribute_register(
+        &self,
+        intid: IntId,
+    ) -> Result<(&ReadWrite<u32>, u32), NmiAttributeError> {
+        let slot =
+            nmi_attribute_slot(intid).ok_or(NmiAttributeError::UnsupportedIntId { intid })?;
+        if !self.supports_nmi() {
+            return Err(NmiAttributeError::Unsupported);
+        }
+
+        match slot {
+            NmiAttributeSlot::Redistributor { mask } => {
+                let redistributor = self
+                    .current_rd_opt()
+                    .ok_or(NmiAttributeError::CurrentRedistributorNotFound)?;
+                // SAFETY: `current_rd_opt` only returns a frame inside the
+                // caller-provided, permanently mapped Redistributor region.
+                let register = unsafe { &redistributor.as_ref().sgi.INMIR0 };
+                Ok((register, mask))
+            }
+            NmiAttributeSlot::Distributor { register, mask } => {
+                if intid.to_u32() >= self.gicd().max_spi_num() {
+                    return Err(NmiAttributeError::UnimplementedIntId { intid });
+                }
+                Ok((&self.gicd().INMIR[register], mask))
+            }
+        }
     }
 
     /// Get a CPU interface for the current CPU.
@@ -957,7 +1108,11 @@ fn rd_slice_from(gicr: VirtAddr) -> RDv3Slice {
 }
 
 fn current_rd_from(gicr: VirtAddr) -> NonNull<RedistributorV3> {
-    let want = (MPIDR_EL1.get() & 0xFFFFFF) as u32;
+    current_rd_from_opt(gicr).unwrap_or_else(|| panic!("No current redistributor"))
+}
+
+fn current_rd_from_opt(gicr: VirtAddr) -> Option<NonNull<RedistributorV3>> {
+    let want = redistributor_affinity_from_mpidr(MPIDR_EL1.get());
 
     for rd in rd_slice_from(gicr).iter() {
         let affi = unsafe { rd.as_ref() }
@@ -965,10 +1120,29 @@ fn current_rd_from(gicr: VirtAddr) -> NonNull<RedistributorV3> {
             .TYPER
             .read(gicr::TYPER::Affinity) as u32;
         if affi == want {
-            return rd;
+            return Some(rd);
         }
     }
-    panic!("No current redistributor")
+    None
+}
+
+fn redistributor_affinity_from_mpidr(mpidr: u64) -> u32 {
+    Affinity::from_mpidr(mpidr).affinity()
+}
+
+fn nmi_attribute_from_register(value: u32, mask: u32) -> NmiAttribute {
+    if value & mask == 0 {
+        NmiAttribute::Maskable
+    } else {
+        NmiAttribute::NonMaskable
+    }
+}
+
+fn nmi_attribute_register_value(current: u32, mask: u32, attribute: NmiAttribute) -> u32 {
+    match attribute {
+        NmiAttribute::Maskable => current & !mask,
+        NmiAttribute::NonMaskable => current | mask,
+    }
 }
 
 /// Every CPU interface has its own GICC registers
@@ -1288,4 +1462,45 @@ pub fn send_sgi(sgi_id: IntId, target: SGITarget) {
         }
     }
     barrier::isb(barrier::SY);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nmi_support_uses_gicd_typer_bit_9() {
+        assert!(!gicd::supports_nmi_from_typer(1 << 6));
+        assert!(gicd::supports_nmi_from_typer(1 << 9));
+    }
+
+    #[test]
+    fn redistributor_affinity_preserves_aff3() {
+        let mpidr = (0x12_u64 << 32) | (0x34 << 16) | (0x56 << 8) | 0x78;
+        assert_eq!(redistributor_affinity_from_mpidr(mpidr), 0x1234_5678);
+    }
+
+    #[test]
+    fn nmi_attribute_updates_preserve_sibling_bits() {
+        let original = (1 << 2) | (1 << 19);
+        let mask = 1 << 14;
+        let with_nmi = nmi_attribute_register_value(original, mask, NmiAttribute::NonMaskable);
+
+        assert_eq!(with_nmi, original | mask);
+        assert_eq!(
+            nmi_attribute_register_value(with_nmi, mask, NmiAttribute::Maskable),
+            original
+        );
+        assert_eq!(
+            nmi_attribute_from_register(with_nmi, mask),
+            NmiAttribute::NonMaskable
+        );
+    }
+
+    #[test]
+    fn x_kernel_compatibility_methods_keep_the_migrated_signatures() {
+        let _: fn(&Gic) -> (bool, bool) = Gic::probe_nmi_attribute_support;
+        let _: fn(&mut Gic, IntId, bool) -> Result<(), NmiAttributeError> = Gic::set_nmi_attr;
+        let _: fn(&Gic, IntId) -> Result<bool, NmiAttributeError> = Gic::is_nmi;
+    }
 }

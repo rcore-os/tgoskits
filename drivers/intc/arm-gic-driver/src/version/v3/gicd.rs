@@ -96,6 +96,10 @@ const GICD_ICACTIVER: usize = 0x0380;
 const GICD_IPRIORITYR: usize = 0x0400;
 const GICD_ICFGR: usize = 0x0c00;
 
+pub(crate) const fn supports_nmi_from_typer(typer: u32) -> bool {
+    typer & TYPER::NMI::SET.value != 0
+}
+
 #[inline(always)]
 fn reg32_addr(base: *const DistributorReg, offset: usize, index: usize) -> *mut u32 {
     (base as usize + offset + index * core::mem::size_of::<u32>()) as *mut u32
@@ -487,47 +491,19 @@ impl DistributorReg {
         }
     }
 
-    /// Configure non-maskable interrupt
-    pub fn set_nmi(&self, intid: u32, nmi: bool) {
-        if (32..1020).contains(&intid) {
-            let reg_idx = (intid / 32) as usize;
-            let bit_idx = intid % 32;
-
-            if reg_idx < self.INMIR.len() {
-                let current = self.INMIR[reg_idx].get();
-                if nmi {
-                    self.INMIR[reg_idx].set(current | (1 << bit_idx));
-                } else {
-                    self.INMIR[reg_idx].set(current & !(1 << bit_idx));
-                }
-            }
-        }
-    }
-
-    /// Check if interrupt is configured as NMI
-    pub fn is_nmi(&self, intid: u32) -> bool {
-        if (32..1020).contains(&intid) {
-            let reg_idx = (intid / 32) as usize;
-            let bit_idx = intid % 32;
-
-            if reg_idx < self.INMIR.len() {
-                let current = self.INMIR[reg_idx].get();
-                return (current & (1 << bit_idx)) != 0;
-            }
-        }
-        false
-    }
-
     /// Check if Extended SPI range is supported
     pub fn has_extended_spi(&self) -> bool {
-        // Check if TYPER2.ESPI is implemented and set
-        self.TYPER2.read(TYPER2::NMI) != 0 // Using NMI bit as placeholder since ESPI is not defined yet
+        self.TYPER.is_set(TYPER::ESPI)
     }
 
-    /// Get the Extended SPI range if supported
+    /// Get the encoded Extended SPI range.
     pub fn extended_spi_range(&self) -> u32 {
-        // This would read TYPER2.ESPI_range field when implemented
-        0 // Placeholder return
+        self.TYPER.read(TYPER::ESPI_range)
+    }
+
+    /// Check if the GIC implements FEAT_GICv3_NMI.
+    pub fn supports_nmi(&self) -> bool {
+        supports_nmi_from_typer(self.TYPER.get())
     }
 
     /// Check if Message-based SPIs are supported
@@ -640,6 +616,10 @@ register_bitfields! [
         ITLinesNumber OFFSET(0) NUMBITS(5) [],
         /// Number of CPU interfaces implemented minus one
         CPUNumber OFFSET(5) NUMBITS(3) [],
+        /// Extended SPI range supported
+        ESPI OFFSET(8) NUMBITS(1) [],
+        /// Non-maskable interrupt property supported
+        NMI OFFSET(9) NUMBITS(1) [],
         /// Indicates whether the GIC implements Security Extensions
         SecurityExtn OFFSET(10) NUMBITS(1) [
             SingleSecurity = 0,
@@ -653,8 +633,10 @@ register_bitfields! [
         A3V OFFSET(24) NUMBITS(1) [],
         /// No1ofN behavior supported
         No1N OFFSET(25) NUMBITS(1) [],
-        /// Common not Private base supported
-        CommonLPIAff OFFSET(26) NUMBITS(2) [],
+        /// Range selector supported for SGI generation
+        RSS OFFSET(26) NUMBITS(1) [],
+        /// Encoded Extended SPI range
+        ESPI_range OFFSET(27) NUMBITS(5) [],
         /// Message based SPIs supported
         MBIS OFFSET(16) NUMBITS(1) [],
         /// Low Power Interrupt supported
@@ -665,12 +647,12 @@ register_bitfields! [
 
     /// Type Modifier Register
     pub TYPER2 [
-        /// Virtual LPIs supported
-        VIL OFFSET(0) NUMBITS(1) [],
         /// Virtual command queue interface supported
-        VID OFFSET(1) NUMBITS(5) [],
-        /// NMI support
-        NMI OFFSET(6) NUMBITS(1) [],
+        VID OFFSET(0) NUMBITS(5) [],
+        /// Virtual LPIs supported
+        VIL OFFSET(7) NUMBITS(1) [],
+        /// Non-architected SGIs are supported
+        nASSGIcap OFFSET(8) NUMBITS(1) [],
     ],
 
     /// Status Register

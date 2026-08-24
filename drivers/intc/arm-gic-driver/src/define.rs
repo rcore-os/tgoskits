@@ -80,6 +80,28 @@ pub const SPECIAL_RANGE: Range<u32> = Range {
     end: 1024,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NmiAttributeSlot {
+    Redistributor { mask: u32 },
+    Distributor { register: usize, mask: u32 },
+}
+
+pub(crate) fn nmi_attribute_slot(intid: IntId) -> Option<NmiAttributeSlot> {
+    let raw = intid.to_u32();
+    if SGI_RANGE.contains(&raw) || PPI_RANGE.contains(&raw) {
+        Some(NmiAttributeSlot::Redistributor {
+            mask: 1 << (raw % 32),
+        })
+    } else if SPI_RANGE.contains(&raw) {
+        Some(NmiAttributeSlot::Distributor {
+            register: (raw / 32) as usize,
+            mask: 1 << (raw % 32),
+        })
+    } else {
+        None
+    }
+}
+
 /// Error returned when a raw INTID is not valid for the probed GIC.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CheckedIntIdError;
