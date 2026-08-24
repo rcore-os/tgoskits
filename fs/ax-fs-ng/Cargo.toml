@@ -8,7 +8,7 @@ description = "ArceOS filesystem module"
 license.workspace = true
 
 [features]
-axtest = []
+axtest = ["vfs"]
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
 vfs = ["ax-sync/sleep"]
