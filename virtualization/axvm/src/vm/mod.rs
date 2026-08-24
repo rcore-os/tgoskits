@@ -627,7 +627,6 @@ impl VmRuntimeHandle {
     /// Before the private queue is published by [`Self::add_vcpu_task`] the
     /// task waits on the legacy VM-wide queue; [`Self::notify_vcpu`] wakes
     /// whichever queue the waiter is on, so the two sides stay symmetric.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn wait_vcpu_until(&self, vcpu_id: usize, condition: impl Fn() -> bool) {
         let wait_queue = self.vcpu_wait_queues.lock().get(&vcpu_id).cloned();
         match wait_queue {
@@ -821,10 +820,39 @@ impl VcpuEventWaitSnapshot {
         runtime.device_poll_requested()
             || runtime.notification_generation() != self.notification_generation
     }
+
+    /// Returns whether a vCPU has work that makes entering its wait queue unsafe.
+    ///
+    /// The dispatcher check is required even when the wake generation matches:
+    /// an interrupt may have been queued immediately before this snapshot.
+    pub(crate) fn has_pending_vcpu_event(&self, runtime: &VmRuntimeHandle, vcpu_id: usize) -> bool {
+        self.has_pending_event(runtime) || runtime.irq_dispatcher.has_pending(vcpu_id)
+    }
 }
 
 #[cfg(all(test, feature = "host-test"))]
 mod runtime_handle_tests {
+
+    #[test]
+    fn interrupt_queued_before_wait_snapshot_prevents_vcpu_sleep() {
+        let runtime = VmRuntimeHandle::new();
+        runtime.irq_dispatcher.register_test_vcpu(0, 0);
+        runtime
+            .irq_dispatcher
+            .enqueue(
+                0,
+                crate::irq::model::PendingVcpuInterrupt {
+                    id: crate::irq::model::VirtualInterruptId(0xec),
+                    trigger: crate::InterruptTriggerMode::EdgeTriggered,
+                },
+            )
+            .unwrap();
+
+        let snapshot = runtime.vcpu_event_wait_snapshot();
+
+        assert!(!snapshot.has_pending_event(&runtime));
+        assert!(snapshot.has_pending_vcpu_event(&runtime, 0));
+    }
 
     #[test]
     fn runtime_cpu_on_success_publishes_online_count_before_ack() {

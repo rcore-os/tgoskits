@@ -42,15 +42,22 @@ pub(crate) trait ArchOps {
 
     fn wait_for_vcpu_event(
         vm: &crate::AxVMRef,
-        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         runtime: &crate::vm::VmRuntimeHandle,
     ) {
         let wait_snapshot = runtime.vcpu_event_wait_snapshot();
+        if wait_snapshot.has_pending_vcpu_event(runtime, vcpu.id()) {
+            return;
+        }
         crate::vm::wait_for_vcpu_event_if_idle(
             runtime,
             &wait_snapshot,
             || vm.running(),
-            |condition| runtime.wait_until(condition),
+            |condition| {
+                runtime.wait_vcpu_until(vcpu.id(), || {
+                    condition() || runtime.irq_dispatcher().has_pending(vcpu.id())
+                })
+            },
         );
     }
 
