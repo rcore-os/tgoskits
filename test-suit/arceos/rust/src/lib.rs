@@ -52,6 +52,7 @@ pub mod net;
     feature = "ax-std",
     any(
         feature = "sched-cfs",
+        feature = "sched-rt-fifo",
         feature = "sched-rr",
         feature = "task-affinity",
         feature = "task-ipi",
@@ -115,6 +116,7 @@ test_runner!("lockdep-detect", run_lockdep_detect, lockdep::detect::run);
 test_runner!("memtest", run_memtest, mem::test::run);
 test_runner!("net-loopback", run_net_loopback, net::loopback::run);
 test_runner!("sched-cfs", run_sched_cfs, task::priority::run);
+test_runner!("sched-rt-fifo", run_sched_rt_fifo, task::rt_fifo::run);
 test_runner!("sched-rr", run_sched_rr, task::priority::run);
 test_runner!("task-affinity", run_task_affinity, task::affinity::run);
 test_runner!("task-ipi", run_task_ipi, task::ipi::run);
@@ -202,6 +204,12 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "sched-cfs")]
     TestCase::new("sched-cfs", "CFS scheduling priority smoke", run_sched_cfs),
+    #[cfg(feature = "sched-rt-fifo")]
+    TestCase::new(
+        "sched-rt-fifo",
+        "realtime FIFO two-thread priority smoke",
+        run_sched_rt_fifo,
+    ),
     #[cfg(feature = "sched-rr")]
     TestCase::new(
         "sched-rr",

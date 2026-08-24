@@ -47,7 +47,10 @@ pub fn default_task_stack_size() -> usize {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(feature = "sched-rr")] {
+    if #[cfg(feature = "sched-rt-fifo")] {
+        pub(crate) type AxTask = ax_sched::RtFifoTask<TaskInner>;
+        pub(crate) type Scheduler = ax_sched::RtFifoScheduler<TaskInner>;
+    } else if #[cfg(feature = "sched-rr")] {
         const MAX_TIME_SLICE: usize = 5;
         pub(crate) type AxTask = ax_sched::RRTask<TaskInner, MAX_TIME_SLICE>;
         pub(crate) type Scheduler = ax_sched::RRScheduler<TaskInner, MAX_TIME_SLICE>;

@@ -42,6 +42,7 @@ const ARCEOS_RUST_QEMU_FEATURES: &[&str] = &[
     "memtest",
     "net-loopback",
     "sched-cfs",
+    "sched-rt-fifo",
     "sched-rr",
     "task-affinity",
     "task-ipi",

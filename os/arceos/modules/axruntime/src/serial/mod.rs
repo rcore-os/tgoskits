@@ -845,6 +845,8 @@ fn build_runtime(
         alloc::format!("serial{index}-maint"),
         ax_task::default_task_stack_size(),
     );
+    #[cfg(feature = "sched-rt-fifo")]
+    task.set_sched_priority(40);
     task.set_cpumask(AxCpuMask::one_shot(primary_cpu));
 
     if let Some(binding) = shared.info.irq.clone() {

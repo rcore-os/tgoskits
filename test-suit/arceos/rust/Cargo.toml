@@ -7,35 +7,93 @@ publish = false
 [features]
 default = []
 std = []
-# Every kernel test reaches ax-std through this feature, so it owns the ArceOS
-# baseline instead of relying on axbuild to add it for the selected test case.
-ax-std = ["dep:ax-driver", "dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
-memtest = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask"]
-task-yield = ["ax-std", "ax-std/multitask"]
-sched-rr = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/sched-rr"]
-sched-cfs = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/sched-cfs"]
-task-affinity = ["ax-std", "ax-std/multitask"]
-task-wait-queue = ["ax-std", "ax-std/multitask", "ax-std/irq"]
-task-wait-queue-remote-wake = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
-task-ipi = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
-task-irq = ["ax-std", "ax-std/multitask", "ax-std/irq"]
-task-tls = ["ax-std", "ax-std/tls", "ax-std/alloc", "ax-std/multitask"]
-task-parallel = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask", "ax-std/irq"]
-task-priority = ["ax-std", "ax-std/alloc", "ax-std/multitask"]
-task-sleep = ["ax-std", "ax-std/multitask", "ax-std/irq"]
-task-smp-online = ["ax-std", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
-task-stack-guard-page = ["ax-std", "ax-std/multitask", "ax-std/paging", "ax-std/stack-guard-page"]
-net-loopback = ["ax-std", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
-fs-basic = ["ax-std", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs"]
-debug-backtrace = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
-debug-panic-path = ["ax-std", "dep:axbacktrace", "ax-std/backtrace"]
-display-basic = ["ax-std", "ax-driver/virtio-gpu", "dep:embedded-graphics", "ax-std/display"]
-eventfd-epoll = ["ax-std", "ax-std/fd"]
-exception-breakpoint = ["ax-std"]
-exception-page-fault = ["ax-std", "ax-std/paging"]
-lockdep-baseline = ["ax-std", "dep:axfs-ng-vfs", "ax-std/alloc", "ax-std/multitask"]
-lockdep-detect = [
+# Every kernel test reaches ax-std through this feature. The default ArceOS
+# baseline remains separate so SMP-only assumptions do not leak into explicitly
+# single-CPU scheduler cases.
+ax-std = ["dep:ax-driver", "dep:ax-hal", "dep:ax-std"]
+ax-std-arceos = ["ax-std", "ax-std/arceos"]
+memtest = ["ax-std-arceos", "dep:rand", "ax-std/alloc", "ax-std/multitask"]
+task-yield = ["ax-std-arceos", "ax-std/multitask"]
+sched-rr = [
+    "ax-std-arceos",
+    "ax-std/alloc",
+    "ax-std/multitask",
+    "ax-std/sched-rr",
+]
+sched-cfs = [
+    "ax-std-arceos",
+    "ax-std/alloc",
+    "ax-std/multitask",
+    "ax-std/sched-cfs",
+]
+sched-rt-fifo = [
     "ax-std",
+    "ax-std/irq",
+    "ax-std/paging",
+    "ax-std/std-compat",
+    "ax-std/alloc",
+    "ax-std/multitask",
+    "ax-std/sched-rt-fifo",
+]
+task-affinity = ["ax-std-arceos", "ax-std/multitask"]
+task-wait-queue = ["ax-std-arceos", "ax-std/multitask", "ax-std/irq"]
+task-wait-queue-remote-wake = [
+    "ax-std-arceos",
+    "ax-std/multitask",
+    "ax-std/irq",
+    "ax-std/ipi",
+]
+task-ipi = [
+    "ax-std-arceos",
+    "ax-std/alloc",
+    "ax-std/multitask",
+    "ax-std/irq",
+    "ax-std/ipi",
+]
+task-irq = ["ax-std-arceos", "ax-std/multitask", "ax-std/irq"]
+task-tls = [
+    "ax-std-arceos",
+    "ax-std/tls",
+    "ax-std/alloc",
+    "ax-std/multitask",
+]
+task-parallel = [
+    "ax-std-arceos",
+    "dep:rand",
+    "ax-std/alloc",
+    "ax-std/multitask",
+    "ax-std/irq",
+]
+task-priority = ["ax-std-arceos", "ax-std/alloc", "ax-std/multitask"]
+task-sleep = ["ax-std-arceos", "ax-std/multitask", "ax-std/irq"]
+task-smp-online = ["ax-std-arceos", "ax-std/multitask", "ax-std/irq", "ax-std/ipi"]
+task-stack-guard-page = [
+    "ax-std-arceos",
+    "ax-std/multitask",
+    "ax-std/paging",
+    "ax-std/stack-guard-page",
+]
+net-loopback = ["ax-std-arceos", "ax-driver/virtio-net", "ax-std/net", "ax-std/dns"]
+fs-basic = ["ax-std-arceos", "ax-driver/nvme", "ax-std/alloc", "ax-std/fatfs"]
+debug-backtrace = ["ax-std-arceos", "dep:axbacktrace", "ax-std/backtrace"]
+debug-panic-path = ["ax-std-arceos", "dep:axbacktrace", "ax-std/backtrace"]
+display-basic = [
+    "ax-std-arceos",
+    "ax-driver/virtio-gpu",
+    "dep:embedded-graphics",
+    "ax-std/display",
+]
+eventfd-epoll = ["ax-std-arceos", "ax-std/fd"]
+exception-breakpoint = ["ax-std-arceos"]
+exception-page-fault = ["ax-std-arceos", "ax-std/paging"]
+lockdep-baseline = [
+    "ax-std-arceos",
+    "dep:axfs-ng-vfs",
+    "ax-std/alloc",
+    "ax-std/multitask",
+]
+lockdep-detect = [
+    "ax-std-arceos",
     "dep:axfs-ng-vfs",
     "axfs-ng-vfs/lockdep",
     "ax-std/alloc",
