@@ -1,0 +1,740 @@
+
+TASK123_RUNNER mode=yolo scheduler=fp-rr shared_pcpu=0x100 rtthread_priority=90 starry_priority=89 ram_only=true
+SPI route host_intid=125 guest_intid=125[m
+[m[37m[ 14.548048 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=124 guest_intid=124[m
+[m[37m[ 14.549105 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=252 guest_intid=252[m
+[m[37m[ 14.550165 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=247 guest_intid=247[m
+[m[37m[ 14.551220 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=248 guest_intid=248[m
+[m[37m[ 14.552278 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=250 guest_intid=250[m
+[m[37m[ 14.553335 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=251 guest_intid=251[m
+[m[37m[ 14.554395 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=401 guest_intid=401[m
+[m[37m[ 14.555450 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=403 guest_intid=403[m
+[m[37m[ 14.556508 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=406 guest_intid=406[m
+[m[37m[ 14.557565 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=399 guest_intid=399[m
+[m[37m[ 14.558623 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=413 guest_intid=413[m
+[m[37m[ 14.559680 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=415 guest_intid=415[m
+[m[37m[ 14.560738 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=418 guest_intid=418[m
+[m[37m[ 14.561795 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=411 guest_intid=411[m
+[m[37m[ 14.562855 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=254 guest_intid=254[m
+[m[37m[ 14.563910 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=425 guest_intid=425[m
+[m[37m[ 14.564968 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=423 guest_intid=423[m
+[m[37m[ 14.566025 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=424 guest_intid=424[m
+[m[37m[ 14.567083 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=349 guest_intid=349[m
+[m[37m[ 14.568140 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=376 guest_intid=376[m
+[m[37m[ 14.569198 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=377 guest_intid=377[m
+[m[37m[ 14.570255 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=142 guest_intid=142[m
+[m[37m[ 14.571313 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=143 guest_intid=143[m
+[m[37m[ 14.572370 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=144 guest_intid=144[m
+[m[37m[ 14.573428 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=152 guest_intid=152[m
+[m[37m[ 14.574485 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=151 guest_intid=151[m
+[m[37m[ 14.575543 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=150 guest_intid=150[m
+[m[37m[ 14.576600 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=146 guest_intid=146[m
+[m[37m[ 14.577658 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=147 guest_intid=147[m
+[m[37m[ 14.578715 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=148 guest_intid=148[m
+[m[37m[ 14.579776 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=161 guest_intid=161[m
+[m[37m[ 14.580830 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=162 guest_intid=162[m
+[m[37m[ 14.581888 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=154 guest_intid=154[m
+[m[37m[ 14.582945 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=153 guest_intid=153[m
+[m[37m[ 14.584003 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=156 guest_intid=156[m
+[m[37m[ 14.585060 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=155 guest_intid=155[m
+[m[37m[ 14.586118 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=158 guest_intid=158[m
+[m[37m[ 14.587175 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=157 guest_intid=157[m
+[m[37m[ 14.588233 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=160 guest_intid=160[m
+[m[37m[ 14.589290 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=159 guest_intid=159[m
+[m[37m[ 14.590348 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=149 guest_intid=149[m
+[m[37m[ 14.591405 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=133 guest_intid=133[m
+[m[37m[ 14.592463 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=131 guest_intid=131[m
+[m[37m[ 14.593520 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=132 guest_intid=132[m
+[m[37m[ 14.594578 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=136 guest_intid=136[m
+[m[37m[ 14.595635 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=134 guest_intid=134[m
+[m[37m[ 14.596693 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=135 guest_intid=135[m
+[m[37m[ 14.597750 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=127 guest_intid=127[m
+[m[37m[ 14.598807 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=128 guest_intid=128[m
+[m[37m[ 14.599865 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=129 guest_intid=129[m
+[m[37m[ 14.600923 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=130 guest_intid=130[m
+[m[37m[ 14.601980 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=140 guest_intid=140[m
+[m[37m[ 14.603037 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=139 guest_intid=139[m
+[m[37m[ 14.604095 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=138 guest_intid=138[m
+[m[37m[ 14.605152 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=141 guest_intid=141[m
+[m[37m[ 14.606210 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=167 guest_intid=167[m
+[m[37m[ 14.607268 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=169 guest_intid=169[m
+[m[37m[ 14.608325 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=170 guest_intid=170[m
+[m[37m[ 14.609383 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=163 guest_intid=163[m
+[m[37m[ 14.610440 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=165 guest_intid=165[m
+[m[37m[ 14.611498 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=166 guest_intid=166[m
+[m[37m[ 14.612555 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=164 guest_intid=164[m
+[m[37m[ 14.613618 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=168 guest_intid=168[m
+[m[37m[ 14.614670 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=171 guest_intid=171[m
+[m[37m[ 14.615728 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=172 guest_intid=172[m
+[m[37m[ 14.616785 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=173 guest_intid=173[m
+[m[37m[ 14.617843 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=174 guest_intid=174[m
+[m[37m[ 14.618900 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=187 guest_intid=187[m
+[m[37m[ 14.619958 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=145 guest_intid=145[m
+[m[37m[ 14.621015 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=175 guest_intid=175[m
+[m[37m[ 14.622073 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=176 guest_intid=176[m
+[m[37m[ 14.623130 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=177 guest_intid=177[m
+[m[37m[ 14.624188 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=178 guest_intid=178[m
+[m[37m[ 14.625245 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=179 guest_intid=179[m
+[m[37m[ 14.626303 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=180 guest_intid=180[m
+[m[37m[ 14.627360 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=181 guest_intid=181[m
+[m[37m[ 14.628418 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=182 guest_intid=182[m
+[m[37m[ 14.629475 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=183 guest_intid=183[m
+[m[37m[ 14.630533 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=184 guest_intid=184[m
+[m[37m[ 14.631590 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=185 guest_intid=185[m
+[m[37m[ 14.632648 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=186 guest_intid=186[m
+[m[37m[ 14.633705 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=188 guest_intid=188[m
+[m[37m[ 14.634763 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=227 guest_intid=227[m
+[m[37m[ 14.635820 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=216 guest_intid=216[m
+[m[37m[ 14.636878 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=228 guest_intid=228[m
+[m[37m[ 14.637935 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=217 guest_intid=217[m
+[m[37m[ 14.638993 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=221 guest_intid=221[m
+[m[37m[ 14.640050 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=231 guest_intid=231[m
+[m[37m[ 14.641108 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=199 guest_intid=199[m
+[m[37m[ 14.642165 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=200 guest_intid=200[m
+[m[37m[ 14.643222 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=191 guest_intid=191[m
+[m[37m[ 14.644280 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=193 guest_intid=193[m
+[m[37m[ 14.645338 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=192 guest_intid=192[m
+[m[37m[ 14.646395 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=201 guest_intid=201[m
+[m[37m[ 14.647453 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=202 guest_intid=202[m
+[m[37m[ 14.648510 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=203 guest_intid=203[m
+[m[37m[ 14.649568 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=204 guest_intid=204[m
+[m[37m[ 14.650625 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=392 guest_intid=392[m
+[m[37m[ 14.651683 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=195 guest_intid=195[m
+[m[37m[ 14.652740 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=305 guest_intid=305[m
+[m[37m[ 14.653797 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=307 guest_intid=307[m
+[m[37m[ 14.654855 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=238 guest_intid=238[m
+[m[37m[ 14.655913 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=235 guest_intid=235[m
+[m[37m[ 14.656970 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=236 guest_intid=236[m
+[m[37m[ 14.658028 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=237 guest_intid=237[m
+[m[37m[ 14.659085 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=241 guest_intid=241[m
+[m[37m[ 14.660143 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=432 guest_intid=432[m
+[m[37m[ 14.661200 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=212 guest_intid=212[m
+[m[37m[ 14.662257 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=213 guest_intid=213[m
+[m[37m[ 14.663315 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=214 guest_intid=214[m
+[m[37m[ 14.664373 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=215 guest_intid=215[m
+[m[37m[ 14.665430 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=234 guest_intid=234[m
+[m[37m[ 14.666488 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=225 guest_intid=225[m
+[m[37m[ 14.667545 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=226 guest_intid=226[m
+[m[37m[ 14.668603 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=118 guest_intid=118[m
+[m[37m[ 14.669660 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=119 guest_intid=119[m
+[m[37m[ 14.670718 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=120 guest_intid=120[m
+[m[37m[ 14.671775 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=121 guest_intid=121[m
+[m[37m[ 14.672833 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=373 guest_intid=373[m
+[m[37m[ 14.673890 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=374 guest_intid=374[m
+[m[37m[ 14.674948 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=375 guest_intid=375[m
+[m[37m[ 14.676005 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=117 guest_intid=117[m
+[m[37m[ 14.677063 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=350 guest_intid=350[m
+[m[37m[ 14.678120 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=351 guest_intid=351[m
+[m[37m[ 14.679178 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=352 guest_intid=352[m
+[m[37m[ 14.680235 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=353 guest_intid=353[m
+[m[37m[ 14.681300 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=354 guest_intid=354[m
+[m[37m[ 14.682350 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=347 guest_intid=347[m
+[m[37m[ 14.683408 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=358 guest_intid=358[m
+[m[37m[ 14.684465 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=359 guest_intid=359[m
+[m[37m[ 14.685523 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=360 guest_intid=360[m
+[m[37m[ 14.686580 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=361 guest_intid=361[m
+[m[37m[ 14.687638 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=378 guest_intid=378[m
+[m[37m[ 14.688695 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=379 guest_intid=379[m
+[m[37m[ 14.689753 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=380 guest_intid=380[m
+[m[37m[ 14.690810 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=381 guest_intid=381[m
+[m[37m[ 14.691867 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=382 guest_intid=382[m
+[m[37m[ 14.692925 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=383 guest_intid=383[m
+[m[37m[ 14.693983 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=429 guest_intid=429[m
+[m[37m[ 14.695040 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=430 guest_intid=430[m
+[m[37m[ 14.696098 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=93 guest_intid=93[m
+[m[37m[ 14.697140 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=94 guest_intid=94[m
+[m[37m[ 14.698183 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=95 guest_intid=95[m
+[m[37m[ 14.699225 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=96 guest_intid=96[m
+[m[37m[ 14.700268 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=101 guest_intid=101[m
+[m[37m[ 14.701325 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=102 guest_intid=102[m
+[m[37m[ 14.702382 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=103 guest_intid=103[m
+[m[37m[ 14.703440 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=104 guest_intid=104[m
+[m[37m[ 14.704498 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=355 guest_intid=355[m
+[m[37m[ 14.705555 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=356 guest_intid=356[m
+[m[37m[ 14.706613 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=357 guest_intid=357[m
+[m[37m[ 14.707670 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=362 guest_intid=362[m
+[m[37m[ 14.708728 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=109 guest_intid=109[m
+[m[37m[ 14.709785 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=110 guest_intid=110[m
+[m[37m[ 14.710842 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=111 guest_intid=111[m
+[m[37m[ 14.711900 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=112 guest_intid=112[m
+[m[37m[ 14.712958 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=122 guest_intid=122[m
+[m[37m[ 14.714015 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=123 guest_intid=123[m
+[m[37m[ 14.715073 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=309 guest_intid=309[m
+[m[37m[ 14.716130 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=310 guest_intid=310[m
+[m[37m[ 14.717188 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=311 guest_intid=311[m
+[m[37m[ 14.718245 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=312 guest_intid=312[m
+[m[37m[ 14.719303 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=313 guest_intid=313[m
+[m[37m[ 14.720360 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=253 guest_intid=253[m
+[m[37m[ 14.721418 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=426 guest_intid=426[m
+[m[37m[ 14.722475 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=230 guest_intid=230[m
+[m[37m[ 14.723533 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=220 guest_intid=220[m
+[m[37m[ 14.724590 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=229 guest_intid=229[m
+[m[37m[ 14.725647 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=218 guest_intid=218[m
+[m[37m[ 14.726705 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=219 guest_intid=219[m
+[m[37m[ 14.727763 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=222 guest_intid=222[m
+[m[37m[ 14.728820 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=232 guest_intid=232[m
+[m[37m[ 14.729877 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=233 guest_intid=233[m
+[m[37m[ 14.730935 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=194 guest_intid=194[m
+[m[37m[ 14.731993 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=205 guest_intid=205[m
+[m[37m[ 14.733050 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=206 guest_intid=206[m
+[m[37m[ 14.734108 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=207 guest_intid=207[m
+[m[37m[ 14.735165 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=208 guest_intid=208[m
+[m[37m[ 14.736222 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=393 guest_intid=393[m
+[m[37m[ 14.737280 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=196 guest_intid=196[m
+[m[37m[ 14.738338 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=209 guest_intid=209[m
+[m[37m[ 14.739395 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=468 guest_intid=468[m
+[m[37m[ 14.740452 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=211 guest_intid=211[m
+[m[37m[ 14.741510 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=259 guest_intid=259[m
+[m[37m[ 14.742568 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=258 guest_intid=258[m
+[m[37m[ 14.743625 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=266 guest_intid=266[m
+[m[37m[ 14.744683 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=265 guest_intid=265[m
+[m[37m[ 14.745740 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=306 guest_intid=306[m
+[m[37m[ 14.746798 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=455 guest_intid=455[m
+[m[37m[ 14.747919 0:2 axvm::runtime:92] [32mVM[1] boot success[m
+[m[37m[ 14.747923 1:35 axvm::runtime::vcpus:1132] [32mVM[1] VCpu[0] waiting for running[m
+[m[37m[ 14.748437 0:2 axvm::vm:1365] [32mStarting VM[2][m
+[m[37m[ 14.749153 1:35 axvm::runtime::vcpus:1170] [32mVM[1] VCpu[0] running...[m
+[m[37m[ 14.749625 0:2 axvm::runtime::vcpus:1058] [32mSpawning task for VM[2] VCpu[0][m
+[m[37m[ 14.750975 0:2 axvm::runtime::vcpus:1077] [32mVCpu task Task(37, "VM[2]-VCpu[0]") created priority=90 cpumask: [1, ][m
+[m[37m[ 14.752007 0:2 axvm::runtime:92] [32mVM[2] boot success[m
+[m[37m[ 14.752034 1:37 axvm::runtime::vcpus:1132] [32mVM[2] VCpu[0] waiting for running[m
+[m[37m[ 14.752574 0:2 axvisor:115] [32m[OK] Default guest initialized[m
+[m[37m[ 14.753239 1:37 axvm::runtime::vcpus:1170] [32mVM[2] VCpu[0] running...[m
+[m[37m[ 14.954526 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[37m[ 15.053472 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[mconsole=ttyS2
+VM Load @PA:0x40000000
+VM Load Offset: 0xc0000000
+[37m[ 15.442615 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[mMemory Map:
+  Rsv    0x00000000110000 - 0x00000000200000 (960 KiB)
+  Rsv    0x00000010000000 - 0x00000018000000 (128 MiB)
+  KImg   0x00000040000000 - 0x00000041000000 (16 MiB)
+  Free   0x00000041000000 - 0x0000007c000000 (944 MiB)
+  Rsv    0x0000007c000000 - 0x0000007de93000 (30.57 MiB)
+  Free   0x0000007de93000 - 0x00000080000000 (33.43 MiB)
+  Rsv    0x000000edf00000 - 0x000000ee006000 (1.02 MiB)
+Initialize RAM allocator: 0x41000000..0x7c000000
+Reserving CPU-local areas
+CPU-local area stride: 0x41000 bytes
+Total CPU-local allocation: 0x41000 bytes (1 CPUs)
+Flushed RAM used range to memory map: 0x41000000..0x41044000, current: 0x41044000
+Flushed RAM used range to memory map: 0x41044000..0x41085000, current: 0x41085000
+CPU-local areas allocated at 0x41044000 - 0x41085000
+EL: 1
+Mapping early memory regions...
+Ram                 : [0xffff000040000000, 0xffff000080000000) -> [0x0000000040000000, 0x0000000080000000) (1 GiB)
+KImage              : [0xffffffff80000000, 0xffffffff81000000) -> [0x0000000040000000, 0x0000000041000000) (16 MiB)
+PerCpu              : [0xffffff0041044000, 0xffffff0041085000) -> [0x0000000041044000, 0x0000000041085000) (260 KiB)
+Debug serial        : [0xffff0000feb50000, 0xffff0000feb51000) -> [0x00000000feb50000, 0x00000000feb51000) (4 KiB)
+Boot page tabl[37m[ 16.001558 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[me at physical address: PA:0x41085000
+Setting up table registers...
+MMU Entry point at physical address: 0x4039d140
+Trap vector at 0xffffffff8039a800
+Memory Map:
+  Rsv    0x00000000110000 - 0x00000000200000 (960 KiB)
+  Rsv    0x00000010000000 - 0x00000018000000 (128 MiB)
+  KImg   0x00000040000000 - 0x00000041000000 (16 MiB)
+  Rsv    0x00000041000000 - 0x00000041044000 (272 KiB)
+  PerCPU 0x00000041044000 - 0x00000041085000 (260 KiB)
+  Rsv    0x00000041085000 - 0x0000004108e000 (36 KiB)
+  Free   0x0000004108e000 - 0x0000007c000000 (943.45 MiB)
+  Rsv    0x0000007c000000 - 0x0000007de93000 (30.57 MiB)
+  Free   0x0000007de93000 - 0x00000080000000 (33.43 MiB)
+  Rsv    0x000000edf00000 - 0x000000ee006000 (1.02 MiB)
+  MMIO   0x000000feb50000 - 0x000000feb51000 (4 KiB)
+Jumping to main entry point at 0xffffffff80381534 with SP 0xffffff0041085000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = ATK-DLRK3588 Board
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 1
+
+[37m[  2.935700 ax_runtime:220] [32mLogging is enabled.[m
+[m[37m[  2.940523 ax_runtime:221] [32mPrimary CPU 0 started, arg = 0x41000000.[m
+[m[37m[  2.946899 ax_runtime:223] [32mFound physcial memory regions:[m
+[m[37m[  2.952909 ax_runtime:225] [32m  [PA:0x110000, PA:0x200000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  2.961783 ax_runtime:225] [32m  [PA:0x10000000, PA:0x18000000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  2.970900 ax_runtime:225] [32m  [PA:0x40000000, PA:0x41000000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  2.980383 ax_runtime:225] [32m  [PA:0x41000000, PA:0x41044000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  2.989942 ax_runtime:225] [32m  [PA:0x41044000, PA:0x41085000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  2.999135 ax_runtime:225] [32m  [PA:0x41085000, PA:0x4108e000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  3.008252 ax_runtime:225] [32m  [PA:0x4108e000, PA:0x7c000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  3.016568 ax_runtime:225] [32m  [PA:0x7c000000, PA:0x7de93000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  3.025681 ax_runtime:225] [32m  [PA:0x7de93000, PA:0x80000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  3.033979 ax_runtime:225] [32m  [PA:0xedf00000, PA:0xee006000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  3.043105 ax_runtime:225] [32m  [PA:0xfeb50000, PA:0xfeb51000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  3.051859 ax_runtime:375] [32mInitialize global memory allocator...[m
+[m[37m[  3.058013 ax_runtime:376] [32m  use buddy-slab-allocator allocator.[m
+[m[37m[  3.064171 ax_alloc::buddy_slab:158] [32mInitialize global memory allocator, start_vaddr: 0xffff00004108e000, size: 0x3af72000[m
+[m[37m[  3.075231 ax_alloc::buddy_slab:424] [32mglobal allocator initialized[m
+[m[37m[  3.081867 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0xffff00007de93000, size: 0x216d000[m
+[m[37m[  3.091025 ax_runtime:260] [32mkernel aspace: [VA:0xffff000000000000, VA:0xffffffffffffffff)[m
+[m[37m[  3.099296 ax_mm:103] [32mInitialize virtual memory management...[m
+[m[37m[  3.238307 ax_runtime:272] [32mInitialize platform devices...[m
+[m[37m[  3.289096 someboot::arch::power:23] [32mPower management method : SMC[m
+[m[37m[  3.295858 somehal::driver:5] [32mInitializing rdrive with FDT at 0xffff000041000000[m
+[m[37m[  3.466416 ax_driver::soc::rockchip::pinctrl:301] [32mRockchip RK3588 pinctrl registered successfully[m
+[m[37m[ 16.691601 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[37m[  3.732702 ax_task::api:193] [32mInitialize scheduling...[m
+[m[37m[  3.738116 ax_task::api:201] [32m  use Round-robin scheduler.[m
+[m[37m[  3.743802 ax_runtime:300] [32mInitialize interrupt handlers...[m
+[m[37m[  3.750057 ax_runtime::devices:2] [32mProbe platform devices...[m
+[m[37m[  3.880240 ax_driver::serial::ns16550:49] [32mProbing NS16550 serial device: serial@feb50000[m
+[m[37m[  3.888489 ax_driver::serial::ns16550:92] [32mNS16550 serial@0xffff0000feb50000 registered successfully[m
+[m[37m[  3.898782 rdrive:222] [33mProbe failed for [fdt]: other error: /serial@feb50000 is not a snps,dw-apb-uart node[m
+[m[37m[  3.915328 ax_driver::soc::scmi:54] [33m[scmi] SCMI shmem phandle 69 cannot be resolved by rdrive; using RK3588 shmem fallback 0x10f000+0x100[m
+[m[37m[  3.928248 ax_driver::soc::scmi:84] [32mSCMI clock protocol registered: path=/firmware/scmi/protocol@14, phandle=Some(Phandle(14)), protocol=0x14[m
+[m[37m[  3.941998 ax_driver::soc::scmi:93] [32mSCMI SMC registered: smc_id=0x82000010, shmem_phandle=69, shmem=0x10f000+0x100[m
+[m[37m[  3.953438 ax_driver::soc::rockchip::cru::rk3588:60] [32mRK3588 CRU reg: addr=0xfd7c0000, size=0x5c000, rockchip,grf=<0x7a>[m
+[m[37m[  3.964450 rockchip_soc::variants::rk3588::cru:123] [32mCRU@ffff0000fd7c0000: Initializing and verifying clock configuration...[m
+[m[37m[  3.976179 rockchip_soc::variants::rk3588::cru:174] [33m⚠ CRU@ffff0000fd7c0000: ACLK_BUS_ROOT div mismatch! u-boot: 3, current: 4[m
+[m[37m[  3.988634 rockchip_soc::variants::rk3588::cru:248] [32m✓ CRU@ffff0000fd7c0000: Clock configuration verified[m
+[m[37m[  3.999244 ax_driver::soc::rockchip::cru::rk3588:79] [32mRK3588 CRU clock/reset registered successfully[m
+[m[37m[  4.011383 ax_driver::soc::rockchip::pm:78] [32mRockchip power-domain provider registered successfully[m
+[m[37m[ 17.426866 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[37m[ 17.970330 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[37m[  4.834739 ax_driver::soc::rockchip::cpufreq:151] [32mcpufreq: A55 1008->1008, A76 1008->1200 MHz[m
+[m[37m[  4.844013 ax_driver::soc::rockchip::pmic_i2c:508] [32mpmic_i2c: ungated i2c0 clocks (PMU_CLKGATE_CON(2)@0xfd7f0808 <- 0x00060000); gate bits now 0x0 (0 == enabled)[m
+[m[37m[  4.858836 ax_driver::soc::rockchip::pmic_i2c:542] [32mpmic_i2c: de-asserted i2c0 reset (PMU_SOFTRST_CON(2)@0xfd7f0a08 <- 0x00060000); reset bits now 0x0 (0 == released)[m
+[m[37m[  4.926328 ax_driver::soc::rockchip::pinctrl::rdif_glue:108] [33mUnknown pinconf property: input-schmitt-enable[m
+[m[37m[  4.936649 ax_driver::soc::rockchip::pinctrl::rdif_glue:108] [33mUnknown pinconf property: input-schmitt-enable[m
+[m[37m[  4.947263 ax_driver::soc::rockchip::pmic_i2c:592] [32mpmic_i2c: applied i2c0 pinctrl-0 (scl GPIO0_D1 / sda GPIO0_D2 -> func3) via rockchip pinctrl[m
+[m[37m[  4.995136 ax_driver::soc::rockchip::pmic_i2c:270] [32mpmic_i2c: rk3x_i2c@0xfd880000 ready (clkdiv=0x7c007c)[m
+[m[37m[  5.005770 ax_driver::soc::rockchip::cpufreq:281] [32mcpufreq: A76 big0 rail boot voltage = 675000 uV[m
+[m[37m[  5.015785 ax_driver::soc::rockchip::cpufreq:281] [32mcpufreq: A76 big1 rail boot voltage = 675000 uV[m
+[m[37m[  5.025556 ax_driver::soc::rockchip::pmic_spi:619] [32mpmic_spi: ungated SPI2 PCLK+CLK (CRU 0xfd7c0838 <= 0x21000000)[m
+[m[37m[  5.036330 ax_driver::soc::rockchip::pmic_spi:650] [32mpmic_spi: de-asserted SPI2 P+core reset (CRU 0xfd7c0a38 <= 0x21000000)[m
+[m[37m[  5.100251 ax_driver::soc::rockchip::pmic_spi:702] [32mpmic_spi: applied spi2 pinctrl-0 (spi2m2 clk/mosi/miso/cs0 mux+pull+drive) via rockchip pinctrl[m
+[m[37m[  5.113586 ax_driver::soc::rockchip::pmic_spi:720] [32mpmic_spi: GPIO0 DDR_L=0x00008000 B3(bit11)=0 (0=input) — forcing B3 input[m
+[m[37m[  5.160005 ax_driver::soc::rockchip::pmic_spi:748] [32mpmic_spi: PMU1_IOC 00=00001120 04=00000110 08=00001010 0c=00000000 10=00001111 14=00000111 18=00001011 1c=00000000 20=0000ff01 24=000000fc 28=000000ff 2c=0000000f 30=00000000 34=00000000 40=00000008[m
+[m[37m[  5.182055 ax_driver::soc::rockchip::pmic_spi:767] [32mpmic_spi: B3/MISO decoded: mux=1 (want 1) drive=1 pull=3 (want 3) smt=0 (want 0)[m
+[m[37m[  5.194223 ax_driver::soc::rockchip::pmic_spi:363] [32mpmic_spi: SPI2 baud divisor preserved from U-Boot (200)[m
+[m[37m[  5.204648 ax_driver::soc::rockchip::pmic_spi:506] [32mpmic_spi: RK806 probe: chip_name(0x5A)=Some(0) chip_ver(0x5B)=Some(0) dcdc2_raw_rx=[00, 1b, 00, 00] (xfer_ok=true)[m
+[m[37m[  5.220344 ax_driver::soc::rockchip::pmic_spi:526] [32mpmic_spi: read-shape distinct: tx=[00, 5a, a5, 3c] rx=[00, 5a, a5, 3c] ok=true[m
+[m[37m[  5.231985 ax_driver::soc::rockchip::pmic_spi:531] [32mpmic_spi: read-shape long6: tx=[00, 5a, 00, 00, 00, 00] rx=[00, 5a, 00, 00, 00, 00] ok=true[m
+[m[37m[  5.244639 ax_driver::soc::rockchip::pmic_spi:837] [32mpmic_spi: RK806/SPI2 bound at 0xfeb20000[m
+[m[37m[  5.253309 ax_driver::soc::rockchip::pmic_spi:848] [32mpmic_spi: A55 vdd_cpu_lit = 500000 uV (buck2 vsel 0x00)[m
+[m[37m[  5.263477 ax_driver::soc::rockchip::cpufreq:293] [32mcpufreq: A55 rail boot voltage = 500000 uV[m
+[m[37m[  5.273205 ax_driver::soc::rockchip::cpufreq:309] [32mcpufreq: A76 rails -> 675000 uV (big0 ok=true, big1 ok=true)[m
+[m[37m[  5.283705 ax_driver::soc::rockchip::pmic_spi:848] [32mpmic_spi: A55 vdd_cpu_lit = 500000 uV (buck2 vsel 0x00)[m
+[m[37m[  5.293986 ax_driver::soc::rockchip::cpufreq:322] [33mcpufreq: A55 boot voltage not trustworthy (Some(500000) uV); skipping A55 write until spi2/RK806 bring-up completes (A76 unaffected)[m
+[m[37m[  5.310479 ax_driver::soc::rockchip::cpufreq:350] [32mcpufreq: ondemand governor armed (A76 I2C up; a55_spi=true, A55 ring-only)[m
+[m[37m[ 18.545054 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[37m[  5.378034 ax_driver::usb::ehci:62] [32mRockchip EHCI driver initialized successfully for usb@fc800000 with irq None[m
+[m[37m[  5.478943 ax_driver::usb::ehci:62] [32mRockchip EHCI driver initialized successfully for usb@fc880000 with irq None[m
+[m[37m[  5.615740 ax_driver::pwm::rockchip:99] [32mRockchip PWM registered: node=pwm@fd8b0010 base=0xfd8b0010[m
+[m[37m[  5.626702 ax_driver::pwm::rockchip:99] [32mRockchip PWM registered: node=pwm@fd8b0030 base=0xfd8b0030[m
+[m[37m[  5.637747 ax_driver::rknpu:82] [32mRK3588 NPU fixed clock rate: 800000000 Hz[m
+[m[37m[  5.645308 ax_driver::rknpu:66] [32mNPU registered successfully[m
+[m[37m[  5.652979 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("biu") (0x17)[m
+[m[37m[  5.662885 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("ciu") (0x9)[m
+[m[37m[  5.672667 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("ciu-drive") (0x2c2)[m
+[m[37m[  5.682997 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("ciu-sample") (0x2c3)[m
+[m[37m[  5.780497 ax_driver::block::rockchip::sd:182] [32m[mmc@fe2c0000] vqmmc-supply phandle Phandle(283) is not a fixed GPIO regulator; skip pinctrl enable[m
+[m[37m[  5.793661 ax_driver::block::rockchip::sd:119] [32mrockchip-dwmmc probe: node=mmc@fe2c0000, addr=0xfe2c0000, size=0x4000[m
+[m[37m[  5.804745 ax_driver::block::rockchip::sd:131] [32mrockchip-dwmmc: using ciu reference clock 49500000 Hz[m
+[m[37m[  5.814568 ax_driver::block::rockchip::sd::phase:41] [32mrockchip-dwmmc: RK3588 SDMMC phase configured: drive=90deg sample=0deg parent=49500000Hz[m
+[m[37m[  5.827728 ax_driver::block::rockchip::sd:156] [32mrockchip-dwmmc: defer protocol initialization to IRQ-driven hctx[m
+[m[37m[  5.838987 ax_driver::block::rockchip::sd:161] [32mrockchip-dwmmc block device registered irq=None[m
+[m[37m[  5.849758 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("core") (0x13a)[m
+[m[37m[  5.860142 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("bus") (0x138)[m
+[m[37m[  5.869306 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("axi") (0x139)[m
+[m[37m[  5.879567 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("block") (0x13b)[m
+[m[37m[  5.890418 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("timer") (0x13c)[m
+[m[37m[  5.899727 ax_driver::block::rockchip::sdhci_rk3588:167] [32mrockchip-sdhci probe: node=mmc@fe2e0000, addr=0xfe2e0000, size=0x10000[m
+[m[37m[  5.912356 ax_driver::block::rockchip::sdhci_rk3588:182] [32mrockchip-sdhci: using external CRU clock[m
+[m[37m[  5.921253 ax_driver::block::rockchip::sdhci_rk3588:197] [32mrockchip-sdhci: defer eMMC protocol initialization to IRQ-driven hctx[m
+[m[37m[  5.932953 ax_driver::block::rockchip::sdhci_rk3588:201] [32mrockchip-sdhci block device registered irq=None[m
+[m[37m[  5.943552 ax_driver::pwm::rockchip:99] [32mRockchip PWM registered: node=pwm@febf0030 base=0xfebf0030[m
+[m[37m[  5.954851 ax_driver::virtio:177] [32mprobing virtio-mmio node virtio_mmio@a000000 at PA 0xa00[37m[ 19.165588 1:35 axvisor::virtio_net:625] [33mvirtio-net drops an ingress frame: NotReady[m
+[m0000, size 0x200[m
+[m[37m[  5.966231 ax_driver::virtio:184] [32mmapped virtio-mmio at VA 0xffff00000a000000[m
+[m[37m[  5.974855 virtio_drivers::device::net::dev_raw:33] [32mnegotiated_features Features(MAC | STATUS | VERSION_1)[m
+[m[37m[  5.986430 ax_driver::virtio::net:394] [32mregistered virtio network device irq=None[m
+[m[37m[  5.995018 rdrive:222] [33mProbe failed for [fdt]: other error: [] has no USB2 PHY GRF parent[m
+[m[37m[  6.004384 ax_runtime::serial:489] [32mserial runtime NS16550 UART ready: cpu=0, irq=Some(Source(FdtInterrupt(FdtIrqSpec { controller: 596, cells: [0, 333, 4] }))), polling=false[m
+[mBoot at 1970-01-01 00:00:06.020315 UTC
+
+[37m[  6.024067 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op ResetAll[m
+[m[37m[  6.032479 ax_fs_ng::block::runtime::hctx:177] [32mblock hctx 0 bound to CPU 0 with hardware depth 1[m
+[m[37m[  6.041803 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device rockchip-dwmmc IRQ source 0 (IrqId { domain: IrqDomainId(7), hwirq: HwIrq(235) }) fixed to CPU 0 for queue mask 0x1[m
+[m[37m[  6.059627 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op PowerOn[m
+[m[37m[  6.079317 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op SwitchVoltage(V330)[m
+[m[37m[  6.089039 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetBusWidth(Bit1)[m
+[m[37m[  6.098322 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetClock(Identification)[m
+[m[37m[  6.108880 ax_driver::block::rockchip::sd:70] [32mrockchip-dwmmc: ciu clock set target=400000 Hz cclkin=800000 Hz bus=400000 Hz[m
+[m[37m[  6.132391 sdmmc_protocol::sdio::init::state_machine:154] [33msdio: init state PostIdentificationClockDelay aborted (NoCard), resetting host[m
+[m[37m[  6.145255 ax_fs_ng::block::runtime::lifecycle:135] [33mfailed to start IRQ-driven block controller: Io[m
+[m[37m[  6.155166 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op ResetAll[m
+[m[37m[  6.163991 ax_fs_ng::block::runtime::hctx:177] [32mblock hctx 0 bound to CPU 0 with hardware depth 1[m
+[m[37m[  6.173630 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device rockchip-sdhci IRQ source 0 (IrqId { domain: IrqDomainId(7), hwirq: HwIrq(237) }) fixed to CPU 0 for queue mask 0x1[m
+[m[37m[  6.191563 ax_driver::block::rockchip::sdhci_rk3588:245] [32mrockchip-sdhci: RK3588 DWCMSHC vendor reset area1=0x500[m
+[m[37m[  6.202107 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op PowerOn[m
+[m[37m[  6.220640 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op SwitchVoltage(V330)[m
+[m[37m[  6.234763 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetBusWidth(Bit1)[m
+[m[37m[  6.244104 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetClock(Identification)[m
+[m[37m[  6.254605 ax_driver::block::rockchip::sdhci_rk3588:119] [32mrockchip-sdhci: core clock set to 375000 Hz[m
+[m[37m[  6.308401 sdmmc_protocol::sdio::init::state_machine::identify:264] [32msdio: detected Mmc ocr=0xc0ff8080[m
+[m[37m[  6.320077 sdmmc_protocol::sdio::init::state_machine::identify:338] [32msdio: CSD capacity_blocks=None[m
+[m[37m[  6.342266 sdmmc_protocol::sdio::init::state_machine::mmc:38] [32msdio: EXT_CSD sector_count=122159104[m
+[m[37m[  6.355287 ax_driver::block::rockchip::sdhci_rk3588:119] [32mrockchip-sdhci: core clock set to 50000000 Hz[m
+[m[37m[  6.365685 sdmmc_protocol::sdio::init::state_machine::mmc:314] [32msdio: MMC speed selected HighSpeed bus_width=Bit8[m
+[m[37m[  6.376866 sdmmc_protocol::sdio::init::state_machine::mmc:340] [32msdio: enabled 1024 KiB volatile write cache[m
+[m[37m[  6.387710 sdmmc_protocol::sdio::init::state_machine:233] [32msdio: init done kind=Mmc sd_v2=false high_capacity=true rca=0x1 ocr=0xc0ff8080 host_bus_width=Bit8 ext_csd_bus_width=Some(Sdr1) ext_csd_timing=Some(Compat)[m
+[m[37m[  6.406964 sdmmc_protocol::rdif::queue:172] [32msdmmc block init complete: kind=Mmc high_capacity=true rca=1 capacity_blocks=122159104 cache_enabled=true[m
+[m[37m[  6.446507 ax_fs_ng::root:348] [32m    partition 1 name=Some("uboot") fs=None lba 16384..24576[m
+[m[37m[  6.455844 ax_fs_ng::root:348] [32m    partition 2 name=Some("misc") fs=None lba 24576..32768[m
+[m[37m[  6.464737 ax_fs_ng::root:348] [32m    partition 3 name=Some("boot") fs=None lba 32768..163840[m
+[m[37m[  6.474566 ax_fs_ng::root:348] [32m    partition 4 name=Some("recovery") fs=None lba 163840..425984[m
+[m[37m[  6.484174 ax_fs_ng::root:348] [32m    partition 5 name=Some("backup") fs=None lba 425984..491520[m
+[m[37m[  6.493587 ax_fs_ng::root:348] [32m    partition 6 name=Some("rootfs") fs=Some(Ext4) lba 491520..29851648[m
+[m[37m[  6.503665 ax_fs_ng::root:348] [32m    partition 7 name=Some("oem") fs=Some(Ext4) lba 29851648..30113792[m
+[m[37m[  6.513506 ax_fs_ng::root:348] [32m    partition 8 name=Some("userdata") fs=Some(Ext4) lba 30113792..122159071[m
+[m[37m[  6.523743 ax_fs_ng::root:364] [32m  block device 0 (rockchip-sdhci) has Gpt partition table with 8 partitions[m
+[m[37m[  6.534031 ax_fs_ng::root:517] [32m  falling back to PARTLABEL=rootfs[m
+[m[37m[  6.540984 ax_fs_ng:86] [32mInitialize filesystem subsystem...[m
+[m[37m[  6.546693 ax_fs_ng:87] [32m  selected root device: disk0 partition 6 (rootfs, fs=ext4, lba 491520..29851648)[m
+[m[37m[  6.558639 rsext4::crc32c::arm64:54] [33mID_AA64ISAR0_EL1[19:16]: 0x1[m
+[m[37m[  6.565983 rsext4::crc32c::arm64:57] [33mHardware CRC32C support detected.[m
+[m[37m[  6.585917 rsext4::ext4::mount:331] [32m/lost+found exists (superblock hint inode=11)[m
+[m[37m[  6.595823 rsext4::ext4::mount:466] [32mExt4 filesystem mounted[m
+[m[37m[  6.601959 rsext4::ext4::mount:467] [32m  - block size: 4096 bytes[m
+[m[37m[  6.607989 rsext4::ext4::mount:468] [32m  - total blocks: 3670016[m
+[m[37m[  6.614789 rsext4::ext4::mount:469] [32m  - free blocks: 3298220[m
+[m[37m[  6.621063 rsext4::ext4::mount:470] [32m  - total inodes: 847616[m
+[m[37m[  6.626929 rsext4::ext4::mount:471] [32m  - free inodes: 833538[m
+[m[37m[  6.633925 rsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[m[37m[  6.648304 rsext4::ext4::mount:550] [32mExt4 filesystem mounted[m
+[m[37m[  6.655182 ax_fs_ng:99] [32m  filesystem type: "ext4"[m
+[m[37m[  6.663576 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0000 expected=0x0589 desc_size=64 block_bitmap=8196 inode_bitmap=24580 inode_table=40964 free_blocks=57348 free_inodes=0 used_dirs=8196 itable_unused=0 flags=0x1 block_bitmap_csum=0x0 inode_bitmap_csum=0x0[m
+[m[37m[  6.690697 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[  6.698269 ax_fs_ng::fs::ext4::rsext4::fs:127] [33mext4 journal replay failed with EUCLEAN; retrying read-only without journal replay[m
+[m[37m[  6.711287 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0000 expected=0x0589 desc_size=64 block_bitmap=8196 inode_bitmap=24580 inode_table=40964 free_blocks=57348 free_inodes=0 used_dirs=8196 itable_unused=0 flags=0x1 block_bitmap_csum=0x0 inode_bitmap_csum=0x0[m
+[m[37m[  6.737678 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[  6.745953 ax_fs_ng::root:622] [33m  failed to initialize filesystem for partition disk0 partition 7 (oem, fs=ext4, lba 29851648..30113792): AxErrorKind::Io[m
+[m[37m[  6.762336 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0a8d expected=0x16fe desc_size=64 block_bitmap=262145 inode_bitmap=262161 inode_table=262177 free_blocks=3808 free_inodes=1088 used_dirs=0 itable_unused=1088 flags=0x5 block_bitmap_csum=0x4c1cbc8f inode_bitmap_csum=0xe0e99c72[m
+[m[37m[  6.790941 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[  6.798505 ax_fs_ng::fs::ext4::rsext4::fs:127] [33mext4 journal replay failed with EUCLEAN; retrying read-only without journal replay[m
+[m[37m[  6.811028 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0a8d expected=0x16fe desc_size=64 block_bitmap=262145 inode_bitmap=262161 inode_table=262177 free_blocks=3808 free_inodes=1088 used_dirs=0 itable_unused=1088 flags=0x5 block_bitmap_csum=0x4c1cbc8f inode_bitmap_csum=0xe0e99c72[m
+[m[37m[  6.839317 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[  6.847732 ax_fs_ng::root:622] [33m  failed to initialize filesystem for partition disk0 partition 8 (userdata, fs=ext4, lba 30113792..122159071): AxErrorKind::Io[m
+[m[37m[  6.866395 ax_net:192] [32mInitialize network subsystem...[m
+[m[37m[  6.872959 ax_net:212] [32m  use NIC 0: "virtio-net"[m
+[m[37m[  6.878649 ax_runtime::irq:120] [32mregistered eth0 irq IrqId { domain: IrqDomainId(7), hwirq: HwIrq(48) }[m
+[m[37m[  6.889038 ax_net:238] [32meth0:[m
+[m[37m[  6.893103 ax_net:239] [32m  id:   2[m
+[m[37m[  6.896898 ax_net:240] [32m  mac:  52-54-00-12-34-15[m
+[m[37m[  6.902279 ax_net:257] [32m  mode: dhcp[m
+[m[37m[  6.906318 ax_net:295] [32mDevice: lo[m
+[m[37m[  6.910677 ax_net:295] [32mDevice: eth0[m
+[m[37m[  6.914754 ax_net::service:606] [32meth0: DHCP enabled[m
+[m[37m[  8.968092 ax_net:992] [33mDHCP bootstrap timed out[m
+[m[37m[  8.973682 ax_runtime:348] [32mPrimary CPU 0 init OK.[m
+[m[37m[  8.979639 0:2 ax_fs_ng::block::runtime::lifecycle::device:369] [32mblock device rockchip-sdhci online with 1 hctxs across 1 CPUs[m
+[m[37m[  8.991707 0:2 ktracepoint:282] [32mtracepoint_data_start: 0xffffffff80597e90, tracepoint_data_end: 0xffffffff80597ef0[m
+[m[37m[  9.002499 0:2 ktracepoint:297] [32mtracepoint_data_len: 6[m
+[m[37m[  9.008285 0:2 ktracepoint:314] [32mtracepoint registered: sched:sched_process_exit[m
+[m[37m[  9.016452 0:2 ktracepoint:314] [32mtracepoint registered: sched:sched_process_fork[m
+[m[37m[  9.024585 0:2 ktracepoint:314] [32mtracepoint registered: sched:sched_switch[m
+[m[37m[  9.032487 0:2 ktracepoint:314] [32mtracepoint registered: syscalls:sys_clone[m
+[m[37m[  9.040169 0:2 ktracepoint:314] [32mtracepoint registered: syscalls:sys_enter_openat[m
+[m[37m[  9.047873 0:2 ktracepoint:314] [32mtracepoint registered: syscalls:sys_mkdirat[m
+[mInitialized 6 tracepoints
+kmod subsystem initialized
+[37m[  9.060380 0:2 starry_kernel::pseudofs:86] [32mInitialize pseudofs...[m
+[m[37m[  9.066776 0:2 starry_kernel::pseudofs::dev::tty::serial:256] [32mttyS2 registered: path=/serial@feb50000, alias=Some(2), paddr=0xfeb50000, irq=Some(Source(FdtInterrupt(FdtIrqSpec { controller: 596, cells: [0, 333, 4] })))[m
+[m[37m[  9.086896 0:2 starry_kernel::pseudofs::dev::tty::serial:201] [32m/dev/console bound to ttyS2[m
+[m[37m[  9.097512 0:2 starry_kernel::pseudofs:80] [32mMounted devfs at /dev[m
+[m[37m[  9.104273 0:2 starry_kernel::pseudofs::usbfs:55] [32musbfs: initializing manager[m
+[m[37m[  9.112276 0:2 starry_kernel::pseudofs::usbfs::manager:1437] [32musbfs: preparing host 272 as bus 1[m
+[m[37m[  9.121798 0:2 starry_kernel::pseudofs::usbfs::manager:1437] [32musbfs: preparing host 274 as bus 2[m
+[m[37m[  9.131610 0:2 starry_kernel::pseudofs::usbfs::manager:1486] [32musbfs: discovered 2 USB host(s)[m
+[m[37m[  9.140449 0:2 starry_kernel::pseudofs::usbfs::irq:92] [32musbfs: registering IRQ callback for IRQ IrqId { domain: IrqDomainId(7), hwirq: HwIrq(247) } (bus 1, host 272)[m
+[m[37m[  9.155279 0:2 starry_kernel::pseudofs::usbfs::irq:92] [32musbfs: registering IRQ callback for IRQ IrqId { domain: IrqDomainId(7), hwirq: HwIrq(250) } (bus 2, host 274)[m
+[m[37m[  9.170695 0:2 starry_kernel::pseudofs::usbfs::manager:1275] [32musbfs: initializing host on bus 1[m
+[m[37m[  9.299376 0:2 starry_kernel::pseudofs::usbfs::manager:1319] [32musbfs: host on bus 1 initialized[m
+[m[37m[  9.308817 0:2 starry_kernel::pseudofs::usbfs::manager:1275] [32musbfs: initializing host on bus 2[m
+[m[37m[  9.438347 0:2 starry_kernel::pseudofs::usbfs::manager:1319] [32musbfs: host on bus 2 initialized[m
+[m[37m[  9.447955 0:2 starry_kernel::pseudofs::usbfs::manager:1339] [32musbfs: 2 host(s) ready[m
+[m[37m[  9.456513 0:2 starry_kernel::pseudofs::usbfs:74] [32musbfs: spawning refresh task[m
+[m[37m[  9.464310 0:2 starry_kernel::pseudofs::usbfs:38] [32musbfs: creating filesystem instance[m
+[m[37m[  9.473347 0:2 starry_kernel::pseudofs:80] [32mMounted usbfs at /dev/bus/usb[m
+[m[37m[  9.480670 0:2 starry_kernel::pseudofs:80] [32mMounted tmpfs at /dev/shm[m
+[m[37m[  9.488787 0:2 starry_kernel::pseudofs:80] [32mMounted tmpfs at /tmp[m
+[m[37m[  9.495833 0:2 starry_kernel::pseudofs:80] [32mMounted mqueue at /dev/mqueue[m
+[m[37m[  9.510545 0:2 starry_kernel::dyn_debug:61] [32mdebug_init: initializing dynamic debug sites[m
+[m[37m[  9.519482 0:2 starry_kernel::dyn_debug:64] [32mdebug_init: found 193 dynamic debug sites[m
+[m[37m[  9.528082 0:2 starry_kernel::pseudofs::proc:74] [32mRead kallsyms, size: 1563KB[m
+[m[37m[  9.557821 0:2 starry_kernel::pseudofs:80] [32mMounted proc at /proc[m
+[m[37m[  9.565685 0:2 starry_kernel::pseudofs:80] [32mMounted sysfs at /sys[m
+[m[37m[  9.573258 0:2 starry_kernel::pseudofs:80] [32mMounted sysfs at /sys/bus/usb[m
+[m[37m[  9.580592 0:2 starry_kernel::pseudofs:80] [32mMounted debug at /sys/kernel/debug[m
+[m[37m[  9.588301 0:2 starry_kernel::task::timer:331] [32mInitialize alarm...[m
+[m[37m[  9.595274 0:2 starry_kernel::entry:178] [32mInitialize cpufreq ondemand governor...[m
+[m[37m[  9.625317 0:18 starry_kernel::task::user:70] [32mEnter user space: ip=0x60116880, sp=0x3fffffff620[m
+[m[37m[  9.805530 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b0 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[  9.806389 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b1 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[  9.907556 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b0 peak=0% opp 1->0 = 408 MHz @ 675 mV[m
+[m[37m[  9.908894 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b1 peak=0% opp 1->0 = 408 MHz @ 675 mV[m
+[mWelcome to [96m[1mStarry OS[0m!
+[37m[ 10.005139 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.005217 0:19 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[mHOSTNAME=starry
+PWD=/
+HOME=/root
+TERM=xterm-256color
+USER=root
+SHLVL=1
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+_=/usr/bin/env
+[37m[ 10.067090 0:19 starry_kernel::task::ops:398] [32mTask(19, "env") exit with code: 0[m
+[m[37m[ 10.076123 0:19 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.125477 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m
+Use [1m[3mapk[0m to install packages.
+
+[37m[ 10.152696 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.152769 0:20 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[m[37m[ 10.211316 0:20 starry_kernel::task::ops:398] [32mTask(20, "mkdir") exit with code: 256[m
+[m[37m[ 10.221068 0:20 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.229280 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.232495 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.254426 0:21 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[m[37m[ 10.288350 0:21 starry_kernel::task::ops:398] [32mTask(21, "mkdir") exit with code: 256[m
+[m[37m[ 10.298372 0:21 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.306950 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.310754 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.331455 0:22 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[m[37m[ 10.364908 0:22 starry_kernel::task::ops:398] [32mTask(22, "mkdir") exit with code: 256[m
+[m[37m[ 10.375013 0:22 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.382992 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.400050 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.400117 0:23 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffeb00[m
+[m[37m[ 10.461425 0:23 starry_kernel::task::ops:398] [32mTask(23, "touch") exit with code: 0[m
+[m[37m[ 10.471369 0:23 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.479116 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.482780 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.505184 0:24 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffeb00[m
+[m[37m[ 10.548377 0:24 starry_kernel::task::ops:398] [32mTask(24, "touch") exit with code: 0[m
+[m[37m[ 10.558694 0:24 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.567539 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.583643 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.583709 0:25 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.635528 0:25 starry_kernel::task::ops:398] [32mTask(25, "touch") exit with code: 0[m
+[m[37m[ 10.645033 0:25 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.653006 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.656397 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.677837 0:26 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.721215 0:26 starry_kernel::task::ops:398] [32mTask(26, "touch") exit with code: 0[m
+[m[37m[ 10.731079 0:26 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.738817 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.742491 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.763996 0:27 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.806954 0:27 starry_kernel::task::ops:398] [32mTask(27, "touch") exit with code: 0[m
+[m[37m[ 10.816815 0:27 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.825067 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.828144 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.849778 0:28 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.891963 0:28 starry_kernel::task::ops:398] [32mTask(28, "touch") exit with code: 0[m
+[m[37m[ 10.901741 0:28 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.909516 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.913071 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.934090 0:29 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.976603 0:29 starry_kernel::task::ops:398] [32mTask(29, "touch") exit with code: 0[m
+[m[37m[ 10.986422 0:29 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.994444 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.997970 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 11.019071 0:30 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 11.061890 0:30 starry_kernel::task::ops:398] [32mTask(30, "touch") exit with code: 0[m
+[m[37m[ 11.071696 0:30 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 11.080088 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 11.083175 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 11.104463 0:31 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 11.147180 0:31 starry_kernel::task::ops:398] [32mTask(31, "touch") exit with code: 0[m
+[m[37m[ 11.156934 0:31 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 11.165004 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 11.168645 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 11.189706 0:32 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 11.232322 0:32 starry_kernel::task::ops:398] [32mTask(32, "touch") exit with code: 0[m
+[m[37m[ 11.242044 0:32 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 11.250503 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 11.270966 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 11.271033 0:33 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[m[37m[ 11.321373 0:33 starry_kernel::task::ops:398] [32mTask(33, "cat") exit with code: 0[m
+[m[37m[ 11.331093 0:33 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 11.338889 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 11.490827 0:34 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe060[m
+[m[37m[ 11.560289 0:34 starry_kernel::task::ops:398] [32mTask(34, "groups") exit with code: 0[m
+[m[37m[ 11.560445 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 11.580969 0:34 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 11.589075 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[mroot@starry:/root # [37m[ 11.933745 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=10% opp 2->1 = 816 MHz @ 675 mV[m
+[mwc -c /proc/initrd; sha256sum /proc/initrd; mkdir -p /tmp/t1 23; cd /tmp/t123; gzip -dc /proc/initrd | cpio -id; mount --bind /tmp/t123/usr/s hare /usr/share; ip addr add 10.0.42.15/24 dev eth0 2>/dev/null || true; echo TA SK123_SETUP_DONE
+[37m[ 12.600321 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 12.600411 0:35 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe7b0[m
+[m[37m[ 12.760233 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=100% opp 1->2 = 1021 MHz @ 675 mV[m
+[m32055708 /proc/initrd
+[37m[ 12.867580 0:35 starry_kernel::task::ops:398] [32mTask(35, "wc") exit with code: 0[m
+[m[37m[ 12.879137 0:35 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 12.887757 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 12.907206 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 12.907280 0:36 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe7e0[m
+[m4e36263479d045b6a7f1d84ec3981949efc64e0aa4de82c1c91a81c05a732da5  /proc/initrd
+[37m[ 13.668368 0:36 starry_kernel::task::ops:398] [32mTask(36, "sha256sum") exit with code: 0[m
+[m[37m[ 13.679737 0:36 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 13.688175 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.692493 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.717274 0:37 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe9d0[m
+[m[37m[ 13.754314 0:37 starry_kernel::task::ops:398] [32mTask(37, "mkdir") exit with code: 0[m
+[m[37m[ 13.764171 0:37 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 13.772983 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.780560 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.805055 0:38 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffead0[m
+[m[37m[ 13.805343 0:39 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffead0[m
+[m[37m[ 21.114213 0:38 starry_kernel::task::ops:398] [32mTask(38, "busybox") exit with code: 0[m
+[m[37m[ 21.124564 0:38 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 21.133428 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m209861 blocks
+[37m[ 21.148403 0:39 starry_kernel::task::ops:398] [32mTask(39, "busybox") exit with code: 0[m
+[m[37m[ 21.160567 0:39 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 21.168961 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 21.188008 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 21.188080 0:40 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffefa0[m
+[m[37m[ 21.319327 0:40 starry_kernel::task::ops:398] [32mTask(40, "mount") exit with code: 0[m
+[m[37m[ 21.330198 0:40 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 21.338731 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 21.358333 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 21.358407 0:41 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffefa0[m
+[m[37m[ 21.450049 0:41 starry_kernel::task::ops:398] [32mTask(41, "ip") exit with code: 0[m
+[m[37m[ 21.459707 0:41 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 21.468303 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[mTASK123_SETUP_DONE
+root@starry:/tmp/t123 # /tmp/t123/bin/[37m[ 21.660330 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=10% opp 2->1 = 816 MHz @ 675 mV[m
+[mtask2-net yolo
+[37m[ 21.702400 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 21.702502 0:42 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3fffffff540[m
+[mTASK3_MODEL_READY model=yolo11n.ncnn runtime=ncnn ncnn_revision=946fe3fb14a8dff8c06df763f67be522167b2f00 param_sha256=d2c0adf8939dc9ce02964ce8ada104447768ffd8e3bffad8fa11e2e61e709c1f bin_sha256=0ae562447923999779b12b4f91f96b9ef263add8c9902d10e22e6dd6a2932c12 input_sha256=608c8a61ff0bb43e5a8613f1f6f8aa08af74b084363610ed2b526ad925e4cb6f input_manifest_sha256=3406b58bb1920dba66462b982304294324bc5d4cdb3ed80f14e4c6ba595dd47b mode=in-guest run_mode=yolo samples=5
+TASK3_INFER_STARTED model=yolo11n.ncnn request=1 phase=startup
+[37m[ 21.803707 0:9 ax_net::device::ethernet:486] [32meth0: ARP 10.0.42.2 -> 52-54-00-12-34-02[m
+[m[37m[ 21.851140 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=89% opp 1->2 = 1021 MHz @ 675 mV[m
+[m[37m[ 24.239265 0:42 ax_net::udp:288] [32mUDP socket #0: bound on *:4242[m
+[mSTARRY_T2N1_READY local=0.0.0.0:4242 peer=10.0.42.2:4242 session=0x54525432 mode=yolo
+TASK3_SAMPLE sample=1 image_id=vase-left image_sha256=570d32eef9a9f5fd7101c5058b625ef62469e5ba778a77c38da675bea4752cf9 truth_target=321 expected=accept source=yolo outcome=accepted request=1 elapsed_ms=0
+TASK3_INFER model=yolo11n.ncnn source=yolo infer_us=1603047 request=1 elapsed_ms=0
+TASK3_DETECTION model=yolo11n.ncnn class=75 confidence_milli=828 center_x_milli=321 area_milli=63 target=400 request=1
+STARRY_T2N1_CONTROL_SENT seq=1 value=400 request=1 elapsed_ms=0
+TASK3_CONTROL_SENT elapsed_ms=0 sample=1 image_id=vase-left source=yolo request=1 value=400 truth_target=321 state=300 seq=1
+STARRY_T2N1_ACK seq=1
+STARRY_T2N1_STATUS_DELIVERED seq=1 bytes=12 request=1 state=Active value=310 rtt_ms=96
+TASK3_STATUS_RECEIVED elapsed_ms=96 sample=1 image_id=vase-left request=1 value=400 state_before=300 state_after=310 rtt_ms=96
+STARRY_T2N1_PASS
+[37m[ 24.404263 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=20% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[ 24.504906 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=20% opp 1->0 = 408 MHz @ 675 mV[m
+[mTASK3_INFER_STARTED model=yolo11n.ncnn request=2 elapsed_ms=1103
+[37m[ 25.364107 0:43 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 25.490577 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=82% opp 0->2 = 1021 MHz @ 675 mV[m
+[m[37m[ 27.906149 0:43 starry_kernel::task::ops:398] [32mTask(43, "task2-net") exit with code: 0[m
+[mTASK3_SAMPLE sample=2 image_id=vase-center image_sha256=608c8a61ff0bb43e5a8613f1f6f8aa08af74b084363610ed2b526ad925e4cb6f truth_target=421 expected=accept source=yolo outcome=accepted request=2 elapsed_ms=3501
+TASK3_INFER model=yolo11n.ncnn source=yolo infer_us=1623796 request=2 elapsed_ms=3501
+TASK3_DETECTION model=yolo11n.ncnn class=75 confidence_milli=843 center_x_milli=421 area_milli=63 target=421 request=2
+STARRY_T2N1_CONTROL_SENT seq=2 value=421 request=2 elapsed_ms=3501
+TASK3_CONTROL_SENT elapsed_ms=3501 sample=2 image_id=vase-center source=yolo request=2 value=421 truth_target=421 state=310 seq=2
+STARRY_T2N1_ACK seq=2
+STARRY_T2N1_STATUS_DELIVERED seq=2 bytes=12 request=2 state=Active value=322 rtt_ms=260
+TASK3_STATUS_RECEIVED elapsed_ms=3761 sample=2 image_id=vase-center request=2 value=421 state_before=310 state_after=322 rtt_ms=260
+[37m[ 28.090952 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=20% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[ 28.191587 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=10% opp 1->0 = 408 MHz @ 675 mV[m
+[mTASK3_INFER_STARTED model=yolo11n.ncnn request=3 elapsed_ms=4768
+[37m[ 29.028344 0:44 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 29.150753 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=93% opp 0->2 = 1021 MHz @ 675 mV[m
+[m[37m[ 31.563074 0:44 starry_kernel::task::ops:398] [32mTask(44, "task2-net") exit with code: 0[m
+[mTASK3_SAMPLE sample=3 image_id=vase-right image_sha256=f9d70fd3e0f85185ce8e45b2d714d8b4083833da73cdaeac5d981abc890ef698 truth_target=521 expected=accept source=yolo outcome=accepted request=3 elapsed_ms=7120
+TASK3_INFER model=yolo11n.ncnn source=yolo infer_us=1624559 request=3 elapsed_ms=7120
+TASK3_DETECTION model=yolo11n.ncnn class=75 confidence_milli=842 center_x_milli=521 area_milli=63 target=521 request=3
+STARRY_T2N1_CONTROL_SENT seq=3 value=521 request=3 elapsed_ms=7120
+TASK3_CONTROL_SENT elapsed_ms=7120 sample=3 image_id=vase-right source=yolo request=3 value=521 truth_target=521 state=322 seq=3
+STARRY_T2N1_ACK seq=3
+STARRY_T2N1_STATUS_DELIVERED seq=3 bytes=12 request=3 state=Active value=364 rtt_ms=301
+TASK3_STATUS_RECEIVED elapsed_ms=7421 sample=3 image_id=vase-right request=3 value=521 state_before=322 state_after=364 rtt_ms=301
+[37m[ 31.778865 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=10% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[ 31.879503 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=20% opp 1->0 = 408 MHz @ 675 mV[m
+[mTASK3_INFER_STARTED model=yolo11n.ncnn request=4 elapsed_ms=8427
+[37m[ 32.687996 0:45 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 32.851057 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=100% opp 0->2 = 1021 MHz @ 675 mV[m
+[m[37m[ 35.260716 0:45 starry_kernel::task::ops:398] [32mTask(45, "task2-net") exit with code: 0[m
+[mTASK3_INFER model=yolo11n.ncnn source=yolo infer_us=1623121 request=4 elapsed_ms=10820
+TASK3_SAMPLE sample=4 image_id=no-target image_sha256=a50f32c63aff52e8abab6c82bbd8e202512ab23ff12e213d6833aa719af56bc9 truth_target=none expected=reject source=yolo outcome=rejected request=4 elapsed_ms=10820
+TASK3_MODEL_REJECTED model=yolo11n.ncnn reason=Perception { reason: LowConfidence, infer_us: 1623121 } action=safe request=4 elapsed_ms=10820
+STARRY_T2N1_SAFE source=model reason=Perception { reason: LowConfidence, infer_us: 1623121 } elapsed_ms=10820
+[37m[ 35.413346 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[ 35.513982 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=10% opp 1->0 = 408 MHz @ 675 mV[m
+[mTASK3_INFER_STARTED model=yolo11n.ncnn request=5 elapsed_ms=11822
+[37m[ 36.082198 0:46 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 36.323500 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=100% opp 0->2 = 1021 MHz @ 675 mV[m
+[m[37m[ 38.718466 0:46 starry_kernel::task::ops:398] [32mTask(46, "task2-net") exit with code: 0[m
+[mTASK3_INFER model=yolo11n.ncnn source=yolo infer_us=1633174 request=5 elapsed_ms=14280
+TASK3_SAMPLE sample=5 image_id=small-target image_sha256=a6a77909aed2ed499df3ccd54d5db3384a2de0cfcaa799b15e1c896c7a058370 truth_target=500 expected=reject source=yolo outcome=rejected request=5 elapsed_ms=14280
+TASK3_MODEL_REJECTED model=yolo11n.ncnn reason=Perception { reason: SmallArea, infer_us: 1633174 } action=safe request=5 elapsed_ms=14280
+STARRY_T2N1_SAFE source=model reason=Perception { reason: SmallArea, infer_us: 1633174 } elapsed_ms=14280
+TASK3_EXPERIMENT_COMPLETE run_mode=yolo samples=5 elapsed_ms=14280
+[37m[ 38.877517 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=10% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[ 38.963179 0:13 starry_kernel::task::signal:679] [32mSend signal SIGINT to process group 42[m
+[m[37m[ 38.963200 0:13 starry_kernel::task::signal:605] [32mSend signal SIGINT to process 42[m
+[m^C[37m[ 38.990140 0:42 starry_kernel::task::ops:398] [32mTask(42, "task2-net") exit with code: 2[m
+[m[37m[ 39.004815 0:42 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m
+[37m[ 39.015800 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[mroot@starry:/tmp/t123 # 
+
+[Axvisor] detached VM[1] console
+Welcome to AxVisor Shell!
+Type 'help' to see available commands
+Use UP/DOWN arrows to navigate command history
+Console shortcuts:
+  Ctrl+X, then h  return to the Axvisor shell
+  Ctrl+X, then [  attach the previous running guest
+  Ctrl+X, then ]  attach the next running guest
+
+[2Kaxvisor:/$ [2Kaxvisor:/$ r[2Kaxvisor:/$ rt[2Kaxvisor:/$ rt [2Kaxvisor:/$ rt s[2Kaxvisor:/$ rt st[2Kaxvisor:/$ rt sta[2Kaxvisor:/$ rt stat
+FP-RR scheduler counters:
+  quantum_ticks=5 quantum_expiries=39 same_priority_rotations=35 slice_preserving_preemptions=36544 voluntary_requeues=2555078 idle_quantum_skips=7134 lower_priority_services=84
+RT vCPU wait counters:
+  vcpu=0 post_vmexit_yields=53643 parks=11038 wakes=10847 notify_woke=10840 vtimer_arms=21959 vtimer_immediate=43 vtimer_no_deadline=0 vtimer_registered=21916 vtimer_callbacks=6076 vtimer_stale_callbacks=5 vtimer_notifications=6071 vtimer_invalidations=370320 callback_to_wake_samples=0 callback_to_wake_overflow=0 callback_to_wake_p50_ns=0 callback_to_wake_p99_ns=0 callback_to_wake_p99_9_ns=0 callback_to_wake_max_ns=0 callback_to_run_dispatch_samples=0 callback_to_run_dispatch_overflow=0 callback_to_run_dispatch_p50_ns=0 callback_to_run_dispatch_p99_ns=0 callback_to_run_dispatch_p99_9_ns=0 callback_to_run_dispatch_max_ns=0 callback_to_guest_entry_samples=0 callback_to_guest_entry_overflow=0 callback_to_guest_entry_p50_ns=0 callback_to_guest_entry_p99_ns=0 callback_to_guest_entry_p99_9_ns=0 callback_to_guest_entry_max_ns=0 direct_acks=7804 direct_overlaps=0 direct_to_run_dispatch_samples=0 direct_to_run_dispatch_overflow=0 direct_to_run_dispatch_p50_ns=0 direct_to_run_dispatch_p99_ns=0 direct_to_run_dispatch_p99_9_ns=0 direct_to_run_dispatch_max_ns=0 direct_to_guest_entry_samples=0 direct_to_guest_entry_overflow=0 direct_to_guest_entry_p50_ns=0 direct_to_guest_entry_p99_ns=0 direct_to_guest_entry_p99_9_ns=0 direct_to_guest_entry_max_ns=0 activation_hold_samples=0 activation_hold_overflow=0 activation_hold_p50_ns=0 activation_hold_p99_ns=0 activation_hold_p99_9_ns=0 activation_hold_max_ns=0
+  lr_skips=0
+RT device-poll counters:
+  vm=1 published=268 kicked=268 consumed=266 pending=false
+  vm=2 published=0 kicked=0 consumed=0 pending=false
+RT AxVM timer counters:
+  cpu=1 now_ns=52583143291 wheel_next_ns=52586706459 published_ns=52586706459 registered=21916 cancelled=15839 expired=6076 worker_wakes=5975 expiry_batches=6044 expiry_late_samples=0 expiry_late_overflow=0 expiry_late_p50_ns=0 expiry_late_p99_ns=0 expiry_late_p99_9_ns=0 expiry_late_max_ns=0 lock_acquisitions=92593 lock_wait_total_ns=20078772 lock_wait_max_ns=35875 lock_hold_total_ns=130635146 lock_hold_max_ns=12833
+RT host hardware timer IRQ counters:
+  cpu=0 irqs=4986
+  cpu=1 irqs=10814
+  cpu=2 irqs=4655
+  cpu=3 irqs=4655
+  cpu=4 irqs=4654
+  cpu=5 irqs=4654
+  cpu=6 irqs=4653
+  cpu=7 irqs=4653
+RT console counters: attached=None flush_calls=2447106 host_write_bytes=51639
+  vm=1 active=true input_enqueued=268 input_drained=268 input_dropped=0 input_pending=0 output_enqueued=51757 output_drained=51757 output_dropped=0 output_pending=0
+  vm=2 active=true input_enqueued=0 input_drained=0 input_dropped=0 input_pending=0 output_enqueued=5283 output_drained=5283 output_dropped=0 output_pending=0
+axvisor:/$ [2Kaxvisor:/$ v[2Kaxvisor:/$ vm[2Kaxvisor:/$ vm [2Kaxvisor:/$ vm l[2Kaxvisor:/$ vm li[2Kaxvisor:/$ vm lis[2Kaxvisor:/$ vm list
+VM ID  NAME            STATUS       VCPU            MEMORY     VCPU STATE          
+------ --------------- ------------ --------------- ---------- --------------------
+1      atk-task123-starry running      0               1GB        Free:1              
+2      atk-task123-rtthread running      0               512MB      Free:1              
+axvisor:/$ 

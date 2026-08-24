@@ -1,0 +1,28 @@
+# P2-SWITCH Linux controller guest. Memory is MAP_ALLOC: the virtual
+# virtio-net endpoint has no DMA passthrough requirement, so no host-DTB
+# carveout or identity mapping is needed.
+[base]
+id = 1
+name = "task2-p2-switch-linux"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0]
+
+[kernel]
+entry_point = 0x8000_0000
+image_location = "memory"
+kernel_path = "${workspace}/tmp/net-dual-guest/linux-task2/linux-qemu"
+kernel_load_addr = 0x8000_0000
+dtb_load_addr = 0x9F00_0000
+ramdisk_path = "${workspace}/tmp/net-dual-guest/linux-task2/task2-linux-initramfs.cpio.gz"
+ramdisk_load_addr = 0x9C00_0000
+memory_regions = [[0x8000_0000, 0x2000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x01]

@@ -1,4 +1,6 @@
 use super::*;
+use core::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
@@ -214,6 +216,66 @@ fn multiple_running_guests_receive_line_prefixes() {
         mux.core
             .format_guest_output(1, backend_1.generation, b"> \n"),
         Some(b"[VM 1] prompt> \n".to_vec())
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn guest_write_does_not_wait_for_the_physical_host_writer() {
+    let mux = GuestConsoleMux::new();
+    let backend = mux.core.create_serial_backend(1);
+    mux.set_running([1]);
+    let host_writer = mux.core.lock_output();
+    let completed = Arc::new(AtomicBool::new(false));
+    let writer_completed = completed.clone();
+
+    let writer = std::thread::spawn(move || {
+        backend.write(b"ready\n");
+        writer_completed.store(true, Ordering::Release);
+    });
+    for _ in 0..1024 {
+        if completed.load(Ordering::Acquire) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    let completed_without_host_writer = completed.load(Ordering::Acquire);
+
+    drop(host_writer);
+    writer.join().expect("join guest writer");
+    assert!(
+        completed_without_host_writer,
+        "guest UART output waited for the physical host writer"
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn guest_write_does_not_wait_for_console_control_state() {
+    let mux = GuestConsoleMux::new();
+    let backend = mux.core.create_serial_backend(1);
+    mux.set_running([1]);
+    let control_state = mux.core.lock_state();
+    let completed = Arc::new(AtomicBool::new(false));
+    let writer_completed = completed.clone();
+
+    let writer = std::thread::spawn(move || {
+        backend.write(b"ready\n");
+        writer_completed.store(true, Ordering::Release);
+    });
+    for _ in 0..1024 {
+        if completed.load(Ordering::Acquire) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    let completed_without_control_state = completed.load(Ordering::Acquire);
+
+    drop(control_state);
+    writer.join().expect("join guest writer");
+    assert!(
+        completed_without_control_state,
+        "guest UART output waited for the console control-state lock"
     );
 }
 

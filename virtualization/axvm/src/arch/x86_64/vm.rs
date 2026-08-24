@@ -56,7 +56,7 @@ impl X86_64Arch {
             resources.map_arch_address_space()?;
             let intercepted_ports = resources.resolved_port_intercepts()?;
             let intercepted_mmio = resources.resolved_mmio_intercepts()?;
-            vcpus.setup(resources, config, |config, memory_regions| {
+            vcpus.setup(resources, config, |_vcpu_id, config, memory_regions| {
                 build_vcpu_setup_config(
                     config,
                     memory_regions,

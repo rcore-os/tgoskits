@@ -1,0 +1,62 @@
+   Compiling syn v3.0.3
+   Compiling task3-model v0.1.0 (/home/huhu/tgoskits-starry/components/task3-model)
+   Compiling thiserror-impl v2.0.20
+   Compiling thiserror v2.0.20
+   Compiling task2-net-protocol v0.1.0 (/home/huhu/tgoskits-starry/components/task2-net-protocol)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.33s
+     Running unittests src/lib.rs (target/debug/deps/task2_net_protocol-41217a02577e1444)
+
+running 21 tests
+test frame::tests::reliable_frame_round_trips ... ok
+test frame::tests::sequence_wrap_skips_reserved_zero ... ok
+test payload::tests::control_payload_rejects_nonzero_reserved_bits ... ok
+test frame::tests::acknowledgement_requires_nonzero_sequence ... ok
+test payload::tests::control_payload_round_trips ... ok
+test frame::tests::parser_rejects_unknown_flags_after_checksum_is_recomputed ... ok
+test frame::tests::corrupted_payload_fails_checksum_validation ... ok
+test payload::tests::heartbeat_payload_round_trips ... ok
+test payload::tests::status_payload_round_trips ... ok
+test payload::tests::stop_rejects_a_nonzero_value ... ok
+test session::tests::duplicate_delivery_is_acked_without_replaying_application_data ... ok
+test session::tests::heartbeat_timeout_and_recovery_are_observable ... ok
+test session::tests::invalid_payload_forces_safe_mode_and_emits_error ... ok
+test session::tests::out_of_order_enters_safe_mode_and_reports_expected_sequence ... ok
+test session::tests::recovery_resynchronises_reliable_stream_after_safe_mode ... ok
+test session::tests::reliable_exchange_is_delivered_once_and_acknowledged ... ok
+test session::tests::invalid_heartbeat_forces_safe_mode_and_emits_error ... ok
+test session::tests::reliable_retransmission_does_not_suppress_heartbeat ... ok
+test session::tests::retry_exhaustion_enters_safe_state ... ok
+test session::tests::reliable_session_mismatch_correlates_rejected_sequence ... ok
+test session::tests::session_mismatch_is_rejected_with_error_without_changing_state ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/task3_model-c3f9021e119c0a90)
+
+running 11 tests
+test golden_vectors::window_build_matches_reference ... ok
+test perception::tests::clamps_single_frame_target_step ... ok
+test perception::tests::decodes_highest_yolov8_candidate ... ok
+test perception::tests::fixture_replay_matches_archived_detection_sequence ... ok
+test perception::tests::fixture_replay_targets_match_manifest_contract_anchor ... ok
+test perception::tests::maps_center_and_preserves_detection_metadata ... ok
+test perception::tests::rejects_invalid_policy_range ... ok
+test perception::tests::rejects_low_confidence_and_small_area ... ok
+test perception::tests::rejects_malformed_or_non_finite_yolov8_output ... ok
+test perception::tests::rejects_out_of_range_normalized_fields ... ok
+test golden_vectors::golden_vectors_match_reference ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+   Doc-tests task2_net_protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests task3_model
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

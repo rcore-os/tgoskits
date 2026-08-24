@@ -343,6 +343,27 @@ impl<R, H> Machine<R, H> {
         }
     }
 
+    /// Completes the stop on behalf of the last vCPU leaving the run loop.
+    ///
+    /// vCPU tasks leave the run loop through two doors: observing the VM-wide
+    /// `Stopping` state, or the guest turning the vCPU off through PSCI
+    /// `CPU_OFF`. Once the last task is gone, no one is left to observe
+    /// `Stopping` later, so the departing vCPU must drive the machine all the
+    /// way to `Stopped`. `reason` is only recorded when the machine had not
+    /// been asked to stop yet, which happens when a guest powers its final CPU
+    /// off while the VM is still `Running`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AxVmError::InvalidTransition`] when the machine is being
+    /// destroyed or has already failed, where no stop can be recorded.
+    pub fn finish_stop_from_last_vcpu(&mut self, reason: StopReason) -> AxVmResult {
+        if !matches!(self.status(), VmStatus::Stopping | VmStatus::Stopped) {
+            self.request_stop_with(reason, |_, _| Ok(()))?;
+        }
+        self.finish_stop()
+    }
+
     pub fn finish_stop(&mut self) -> AxVmResult {
         let old = std::mem::replace(self, Machine::Switching);
         match old {
@@ -597,6 +618,70 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        assert_eq!(machine.status(), VmStatus::Destroyed);
+    }
+
+    #[test]
+    fn last_vcpu_stop_completes_a_pending_stop_request() {
+        let mut machine = Machine::Ready(7usize);
+        machine.start_with(|resources| Ok(*resources + 1)).unwrap();
+        machine
+            .request_stop_with(StopReason::Forced, |_, _| Ok(()))
+            .unwrap();
+        assert_eq!(machine.status(), VmStatus::Stopping);
+
+        machine
+            .finish_stop_from_last_vcpu(StopReason::SystemDown)
+            .unwrap();
+
+        assert_eq!(machine.status(), VmStatus::Stopped);
+    }
+
+    #[test]
+    fn last_vcpu_stop_stops_a_running_vm_whose_final_cpu_powered_off() {
+        let mut machine = Machine::Ready(7usize);
+        machine.start_with(|resources| Ok(*resources + 1)).unwrap();
+        assert_eq!(machine.status(), VmStatus::Running);
+
+        machine
+            .finish_stop_from_last_vcpu(StopReason::SystemDown)
+            .unwrap();
+
+        assert_eq!(machine.status(), VmStatus::Stopped);
+        assert_eq!(machine.take_stopped_runtime(), Some(8));
+    }
+
+    #[test]
+    fn last_vcpu_stop_is_idempotent_on_an_already_stopped_vm() {
+        let mut machine = Machine::Ready(7usize);
+        machine.start_with(|resources| Ok(*resources + 1)).unwrap();
+        machine
+            .finish_stop_from_last_vcpu(StopReason::SystemDown)
+            .unwrap();
+
+        machine
+            .finish_stop_from_last_vcpu(StopReason::Forced)
+            .unwrap();
+
+        assert_eq!(machine.status(), VmStatus::Stopped);
+    }
+
+    #[test]
+    fn last_vcpu_stop_rejects_a_destroyed_machine_without_changing_state() {
+        let mut machine = Machine::<usize>::Destroyed;
+
+        let err = machine
+            .finish_stop_from_last_vcpu(StopReason::SystemDown)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            AxVmError::InvalidTransition {
+                from: VmStatus::Destroyed,
+                to: VmStatus::Stopping,
+                operation: "request_stop"
+            }
+        ));
         assert_eq!(machine.status(), VmStatus::Destroyed);
     }
 

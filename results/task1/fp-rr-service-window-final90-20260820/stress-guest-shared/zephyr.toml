@@ -1,0 +1,38 @@
+# RT-PARTITION Zephyr guest: real-time partition configuration.
+#
+# One shot, the RT partition knobs (T1.2):
+#   1. Passthrough GIC and virtual timer (guest_type = "passthrough",
+#      machine profile passes the vGIC/vtimer through with split EOI).
+#   2. Dedicated pCPU: phys_cpu_ids = [1] exclusively owns physical CPU 1.
+#   3. Dedicated (no-tick) host CPU: launch with `dedicated_cpus=1` in the
+#      host bootargs so axruntime never programs a periodic timer on pCPU 1
+#      (T1.1). QEMU -append carries the `dedicated_cpus=1` knob.
+#   4. Capability-gated WFI policy: CNTV is restored to hardware by the world
+#      switch, but guest CNTP is currently software-emulated. Therefore WFI
+#      remains trapped even on a dedicated pCPU, so either exposed guest timer
+#      can wake the vCPU. TWI may be cleared only after every exposed timer has
+#      a hardware wake path.
+#
+# Expected steady-state evidence: host periodic timer exits disappear on pCPU
+# 1. Guest timer and WFI exits remain explainable until CNTP gains a hardware
+# wake path; this configuration does not claim an unconditional zero-exit VM.
+[base]
+id = 2
+name = "rt-partition-zephyr"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+aarch64_virtual_timer_only = true
+
+[kernel]
+entry_point = 0xa0001044
+image_location = "memory"
+kernel_path = "/home/huhu/tgoskits-rt/tmp/rt-partition/zephyr-periodic.bin"
+kernel_load_addr = 0xA000_0000
+dtb_load_addr = 0xA7F0_0000
+memory_regions = [[0xA000_0000, 0x2000_0000, 0x7, 0]]
+
+[devices]
+inherit_host_devices = false
+passthrough = []
+disabled = []

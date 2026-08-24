@@ -411,6 +411,21 @@ impl TaskInner {
     }
 }
 
+#[cfg(any(
+    feature = "sched-rt",
+    feature = "sched-prio-rr",
+    feature = "sched-prio-rr-20ms"
+))]
+impl ax_sched::SchedPriority for TaskInner {
+    fn sched_priority(&self) -> isize {
+        TaskInner::sched_priority(self) as isize
+    }
+
+    fn set_sched_priority(&self, priority: isize) {
+        TaskInner::set_sched_priority(self, priority as i32);
+    }
+}
+
 // private methods
 impl TaskInner {
     fn new_common(id: TaskId, name: String, kstack: TaskStack) -> Self {
@@ -421,8 +436,9 @@ impl TaskInner {
             is_init: false,
             entry: Cell::new(None),
             state: AtomicU8::new(TaskState::Ready as u8),
-            // By default, the task is allowed to run on all CPUs.
-            cpumask: SpinLock::new(crate::api::cpu_mask_full()),
+            // Dedicated CPUs accept only tasks that opt in with an explicit
+            // affinity (vCPUs and required per-CPU runtime workers).
+            cpumask: SpinLock::new(crate::api::default_task_cpu_mask()),
             sched_policy: AtomicI32::new(0),
             sched_priority: AtomicI32::new(0),
             in_wait_queue: AtomicBool::new(false),

@@ -1,0 +1,7 @@
+features = [
+  "fp-rr-scheduler",
+  "timer-latency-stats",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

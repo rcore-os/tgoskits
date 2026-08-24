@@ -1,0 +1,15 @@
+args = [
+  "-display", "none",
+  "-monitor", "none",
+  "-serial", "unix:/home/huhu/tgoskits-rt/tmp/rt-partition/serial-stress-guest-shared.sock,server,nowait",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "4",
+  "-m", "8g",
+
+  "-qmp", "unix:/home/huhu/tgoskits-rt/tmp/rt-partition/qmp-stress-guest-shared.sock,server,nowait",
+]
+fail_regex = ["TASK2_ERROR=", "RT_CYCLICTEST_ERROR", "(?i)panic"]
+success_regex = ["RT_CYCLICTEST_COMPLETE", "PERIODIC LATENCY COMPLETE"]
+to_bin = true
+uefi = false

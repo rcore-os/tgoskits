@@ -58,6 +58,11 @@ pub mod time;
 #[cfg(all(axtest, feature = "axtest"))]
 #[doc(hidden)]
 pub mod axtest_support {
+    /// Records the acknowledged-IRQ tail lifecycle in execution order.
+    pub fn observe_acknowledged_irq_entry_order_for_test() -> [u8; 5] {
+        super::irq::observe_acknowledged_irq_entry_order_for_test()
+    }
+
     /// Observes IRQ state during dispatch, preemption release, and return.
     pub fn observe_irq_entry_state_for_test() -> (bool, bool, bool) {
         let observation = super::irq::observe_irq_entry_state_for_test();

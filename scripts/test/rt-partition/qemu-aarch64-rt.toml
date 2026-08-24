@@ -1,0 +1,25 @@
+# RT-PARTITION: dual-guest real-time partition topology.
+#
+# Host is QEMU virt with 4 physical CPUs. The topology (T0.4 allocation):
+#   pCPU 0 : hypervisor itself, virtio-net switch, shell, housekeeping
+#   pCPU 1 : Zephyr RT guest (1 vCPU, dedicated)
+#   pCPU 2,3 : Linux guest (2 vCPUs; guest CPU1 is isolated for measurement,
+#              while guest CPU0 handles load and IRQs)
+#
+# Serial console via UNIX socket so the Zephyr periodic sampler and the
+# Linux kernel log can be captured separately by the runner.
+args = [
+  "-display", "none",
+  "-monitor", "none",
+  "-serial", "unix:${workspace}/tmp/rt-partition/serial-rt.sock,server,nowait",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "4",
+  "-m", "8g",
+  "-append", "dedicated_cpus=1",
+  "-qmp", "unix:${workspace}/tmp/rt-partition/qmp-rt.sock,server,nowait",
+]
+fail_regex = ["TASK2_ERROR=", "(?i)panic"]
+success_regex = ["RT_CYCLICTEST_COMPLETE", "PERIODIC LATENCY COMPLETE"]
+to_bin = true
+uefi = false

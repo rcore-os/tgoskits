@@ -201,7 +201,7 @@ impl core::fmt::Write for PlatformConsoleWriter {
     }
 }
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Number of CPUs that have completed initialization.
 static INITED_CPUS: AtomicUsize = AtomicUsize::new(0);
@@ -316,6 +316,8 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     } else {
         warn!("rdrive is not initialized; skip pre-kernel driver probe");
     }
+
+    init_dedicated_cpus(ax_hal::boot::bootargs(), ax_hal::cpu_num());
 
     #[cfg(feature = "multitask")]
     {
@@ -508,6 +510,99 @@ fn periodic_interval_nanos() -> u64 {
 #[ax_percpu::def_percpu]
 static NEXT_PERIODIC_DEADLINE_NANOS: u64 = 0;
 
+/// Bitmask of physical CPUs whose periodic scheduler tick is disabled.
+///
+/// Opt-in: the default empty mask keeps the legacy periodic timer behavior
+/// unchanged. Dedicated CPUs keep event-driven one-shot host timers through
+/// `program_next_timer`, so task and VM wakeups still arrive on time.
+static DEDICATED_CPU_MASK: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(feature = "smp")]
+const PERIODIC_TICK_CPU_CAPACITY: usize = build_info::CPU_CAPACITY;
+#[cfg(not(feature = "smp"))]
+const PERIODIC_TICK_CPU_CAPACITY: usize = 1;
+
+static PERIODIC_SCHEDULER_TICKS: [AtomicU64; PERIODIC_TICK_CPU_CAPACITY] =
+    [const { AtomicU64::new(0) }; PERIODIC_TICK_CPU_CAPACITY];
+
+/// Disables the periodic scheduler tick on the physical CPUs set in `mask`.
+///
+/// Intended for real-time partitions where one pCPU is exclusively owned by
+/// a guest vCPU: the tick would otherwise force a VM exit every `ticks_per_sec`
+/// and inject a constant latency source.
+pub fn set_dedicated_cpus(mask: usize) {
+    DEDICATED_CPU_MASK.store(mask, Ordering::Release);
+    #[cfg(feature = "multitask")]
+    ax_task::set_dedicated_cpu_mask(mask);
+}
+
+/// Returns the bitmask passed to [`set_dedicated_cpus`].
+pub fn dedicated_cpu_mask() -> usize {
+    DEDICATED_CPU_MASK.load(Ordering::Acquire)
+}
+
+/// Returns the number of periodic scheduler ticks observed on `cpu_id`.
+///
+/// Event-driven timer IRQs used for task or VM deadlines are deliberately not
+/// included, so a dedicated CPU can prove that its periodic tick stayed off
+/// while still servicing guest timer wakeups.
+pub fn periodic_scheduler_tick_count(cpu_id: usize) -> Option<u64> {
+    PERIODIC_SCHEDULER_TICKS
+        .get(cpu_id)
+        .map(|count| count.load(Ordering::Relaxed))
+}
+
+#[cfg(any(feature = "multitask", test))]
+fn record_periodic_scheduler_tick(cpu_id: usize, scheduler_tick: bool) {
+    if scheduler_tick && let Some(count) = PERIODIC_SCHEDULER_TICKS.get(cpu_id) {
+        count.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(feature = "irq")]
+fn current_cpu_is_dedicated() -> bool {
+    let mask = DEDICATED_CPU_MASK.load(Ordering::Acquire);
+    cpu_in_dedicated_mask(mask, ax_hal::percpu::this_cpu_id())
+}
+
+/// Whether `cpu_id` is present in a dedicated-CPU bitmask.
+#[cfg(any(feature = "irq", test))]
+fn cpu_in_dedicated_mask(mask: usize, cpu_id: usize) -> bool {
+    cpu_id < usize::BITS as usize && mask & (1usize << cpu_id) != 0
+}
+
+fn dedicated_cpus_from_bootargs(bootargs: Option<&str>, cpu_num: usize) -> usize {
+    let mut mask = 0usize;
+    let Some(bootargs) = bootargs else {
+        return mask;
+    };
+
+    for argument in bootargs.split_ascii_whitespace() {
+        let Some(list) = argument.strip_prefix("dedicated_cpus=") else {
+            continue;
+        };
+        for entry in list.split(',') {
+            if let Ok(cpu_id) = entry.parse::<usize>()
+                && cpu_id < cpu_num.min(usize::BITS as usize)
+            {
+                mask |= 1usize << cpu_id;
+            }
+        }
+    }
+
+    // CPU0 owns boot, device discovery, the shell, and ordinary host workers.
+    // Keeping it out of the dedicated set also guarantees a housekeeping CPU.
+    mask & !1usize
+}
+
+fn init_dedicated_cpus(bootargs: Option<&str>, cpu_num: usize) {
+    let requested = dedicated_cpus_from_bootargs(bootargs, cpu_num);
+    set_dedicated_cpus(requested);
+    if requested != 0 {
+        info!("Dedicated (no-tick) host CPUs: {requested:#b}");
+    }
+}
+
 #[cfg(feature = "irq")]
 fn with_periodic_deadline<R>(
     operation: impl for<'scope> FnOnce(&ax_percpu::CpuPin<'scope>) -> R,
@@ -522,16 +617,24 @@ fn with_periodic_deadline<R>(
 #[cfg(feature = "irq")]
 fn init_timer() {
     ax_hal::time::enable_timer_irq();
-    let now_ns = ax_hal::time::monotonic_time_nanos();
-    with_periodic_deadline(|pin| {
-        NEXT_PERIODIC_DEADLINE_NANOS
-            .write_current(pin, now_ns.saturating_add(periodic_interval_nanos()));
-    });
+    if !current_cpu_is_dedicated() {
+        let now_ns = ax_hal::time::monotonic_time_nanos();
+        with_periodic_deadline(|pin| {
+            NEXT_PERIODIC_DEADLINE_NANOS
+                .write_current(pin, now_ns.saturating_add(periodic_interval_nanos()));
+        });
+    }
     program_next_timer();
 }
 
 #[cfg(feature = "irq")]
 fn advance_periodic_timer(now_ns: u64) -> bool {
+    if current_cpu_is_dedicated() {
+        // Dedicated CPUs never renew the periodic deadline; the tick
+        // responsibility (timeslice rotation, busy statistics) does not
+        // exist on a core that runs a single vCPU task.
+        return false;
+    }
     let mut deadline = with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.read_current(pin));
     if deadline == 0 {
         with_periodic_deadline(|pin| {
@@ -582,6 +685,29 @@ fn select_timer_deadline(
 
 #[cfg(feature = "irq")]
 fn program_next_timer() {
+    #[cfg(feature = "multitask")]
+    let task_deadline = ax_task::next_timer_deadline_nanos();
+    if current_cpu_is_dedicated() {
+        // Event-driven only: arm a one-shot timer for the nearest task/VM
+        // event and leave the timer unprogrammed when none is pending. Ignore
+        // an already-expired publication just like the periodic path below:
+        // timer callbacks have already had a chance to consume it, and
+        // rearming it would create an immediate-interrupt loop.
+        #[cfg(feature = "multitask")]
+        if let Some(task_deadline) =
+            task_deadline.filter(|deadline| *deadline > ax_hal::time::monotonic_time_nanos())
+        {
+            ax_hal::time::enable_timer_irq();
+            ax_hal::time::set_oneshot_timer(task_deadline);
+            ax_task::note_programmed_timer_deadline_nanos(task_deadline);
+        } else {
+            ax_task::note_programmed_timer_deadline_nanos(0);
+            ax_hal::time::disable_timer_irq();
+        }
+        #[cfg(not(feature = "multitask"))]
+        ax_hal::time::disable_timer_irq();
+        return;
+    }
     let mut periodic_deadline =
         with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.read_current(pin));
     if periodic_deadline == 0 {
@@ -628,6 +754,8 @@ fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     #[cfg(not(feature = "multitask"))]
     let _ = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
     #[cfg(feature = "multitask")]
+    record_periodic_scheduler_tick(ax_hal::percpu::this_cpu_id(), scheduler_tick);
+    #[cfg(feature = "multitask")]
     ax_task::on_timer_irq(scheduler_tick);
     program_next_timer();
     ax_hal::irq::IrqReturn::Handled
@@ -659,6 +787,11 @@ fn init_tls() {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        cpu_in_dedicated_mask, dedicated_cpus_from_bootargs, periodic_scheduler_tick_count,
+        record_periodic_scheduler_tick,
+    };
+
     #[cfg(feature = "irq")]
     #[test]
     fn timer_programming_catches_up_after_a_slow_irq() {
@@ -686,5 +819,64 @@ mod tests {
     #[test]
     fn fs_init_accepts_bootargs_without_fs_feature() {
         crate::fs::init(Some("root=/dev/nvme0n1"));
+    }
+
+    #[test]
+    fn dedicated_mask_marks_only_selected_cpus() {
+        let mask = (1usize << 1) | (1usize << 3);
+        assert!(cpu_in_dedicated_mask(mask, 1));
+        assert!(cpu_in_dedicated_mask(mask, 3));
+        assert!(!cpu_in_dedicated_mask(mask, 0));
+        assert!(!cpu_in_dedicated_mask(mask, 2));
+        assert!(!cpu_in_dedicated_mask(mask, 4));
+    }
+
+    #[test]
+    fn empty_dedicated_mask_keeps_every_cpu_periodic() {
+        assert!(!cpu_in_dedicated_mask(0, 0));
+        assert!(!cpu_in_dedicated_mask(0, 15));
+    }
+
+    #[test]
+    fn out_of_range_cpu_id_is_never_dedicated() {
+        let all = usize::MAX;
+        assert!(!cpu_in_dedicated_mask(all, usize::BITS as usize));
+        assert!(!cpu_in_dedicated_mask(all, usize::BITS as usize + 1));
+    }
+
+    #[test]
+    fn dedicated_bootarg_is_parsed_before_scheduler_start() {
+        assert_eq!(
+            dedicated_cpus_from_bootargs(Some("root=/dev/vda dedicated_cpus=1,3"), 4),
+            (1usize << 1) | (1usize << 3)
+        );
+    }
+
+    #[test]
+    fn dedicated_bootarg_keeps_cpu_zero_for_housekeeping() {
+        assert_eq!(
+            dedicated_cpus_from_bootargs(Some("dedicated_cpus=0,1,2,3"), 4),
+            0b1110
+        );
+    }
+
+    #[test]
+    fn dedicated_bootarg_ignores_invalid_and_offline_cpus() {
+        assert_eq!(
+            dedicated_cpus_from_bootargs(Some("dedicated_cpus=1,nope,8"), 4),
+            0b10
+        );
+        assert_eq!(dedicated_cpus_from_bootargs(None, 4), 0);
+    }
+
+    #[test]
+    fn periodic_tick_counter_excludes_event_driven_timer_irqs() {
+        let before = periodic_scheduler_tick_count(0).unwrap();
+
+        record_periodic_scheduler_tick(0, false);
+        assert_eq!(periodic_scheduler_tick_count(0), Some(before));
+
+        record_periodic_scheduler_tick(0, true);
+        assert_eq!(periodic_scheduler_tick_count(0), Some(before + 1));
     }
 }

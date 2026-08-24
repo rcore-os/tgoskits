@@ -1,0 +1,2 @@
+scenario=model-rejected frames=12 kinds={5: 12}
+PASS: StarryOS/Zephyr scenario model-rejected

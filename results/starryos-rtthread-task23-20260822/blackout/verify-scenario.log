@@ -1,0 +1,2 @@
+scenario=blackout frames=16 kinds={5: 8, 1: 2, 4: 4, 2: 2}
+PASS: StarryOS/Zephyr scenario blackout

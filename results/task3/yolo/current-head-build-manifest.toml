@@ -1,0 +1,55 @@
+schema_version = 1
+generated_at = "2026-08-21T09:34:06+08:00"
+git_head = "7422db5cc08b5d0d16f10976e4daab303ee5276a"
+branch = "openrace/task1-rt-partition"
+
+[model]
+name = "yolo11n.onnx"
+mode = "embedded:fixture-replay"
+artifact_sha256 = "634279b40c07c6391472c51ad45b81ebc48706a9a1fe72dd3396322acd0c053b"
+fixture_validation = "pass"
+
+[controller]
+target = "aarch64-unknown-linux-musl"
+sha256 = "dd7b3bfcd17bb092aa36f6ba88a020909b02cb2ec6d0296f32e525a88dfcebdd"
+
+[managed]
+target = "aarch64-unknown-linux-musl"
+sha256 = "5d862b2cfe7e0dd12bdbe4dbd529014c46425795358e04d9ce83efa17c658cf3"
+
+[linux_kernel]
+source_path = "/home/huhu/tgoskits-net/tmp/axbuild/rootfs/qemu-aarch64/linux/linux-qemu"
+sha256 = "4c6c73892466bc47a42c9646930b93945fd1ee2e0e45340ae3013275b7839fad"
+provenance = "existing local QEMU kernel artifact; not rebuilt by this validation"
+
+[base_initramfs]
+source_path = "/home/huhu/tgoskits-realtime/tmp/initramfs-custom"
+sha256 = "465c403ff3ae1fa157f8633e5a6632998f5256cf852d34f008875030b65fcd57"
+
+[yolo_initramfs]
+sha256 = "5e947966e8f113c703cf02d65b2a38f1555e75bf2d7d7c7e42ba31236bebc20b"
+
+[contract_validation]
+task2_ci_gate = "pass"
+task2_protocol_tests = 21
+python_network_tests = 14
+cnn_compile_check = "pass"
+yolo_compile_check = "pass"
+
+[qemu_validation]
+status = "pass"
+attempted_command = "MIN_ELAPSED_MS=12000 bash scripts/task3/run-task3-switch.sh current-head-yolo-capture ai"
+evidence_dir = "results/task3/switch/current-head-yolo-capture"
+linux_pcap_sha256 = "484642ced477f20e2fd09261e638167e1a7bd846a1bab65622b23959e606bb1c"
+rtos_pcap_sha256 = "ec424697d6094d73968d04236f8377bf64f5c52f18e95aa36eaf15b4f6561669"
+run_log_sha256 = "6d466657b4ced08441cbda852d7f9d2c599ac95aa8ff4f503eaf789b966b6dde"
+qmp_exit = "pass"
+
+[zephyr]
+expected_image = "tmp/net-dual-guest/zephyr-task2/zephyr-task2.bin"
+image_status = "pass"
+source_path = "/tmp/zephyrproject/zephyr-4.4.2"
+cached_source_commit = "dccb09599635bdff17633fa7e9dab014b91dce90"
+sdk_path = "/tmp/zephyr-sdk-1.0.1"
+sdk_version = "1.0.1"
+image_sha256 = "49ca61bc847835e61a03f94fb619fca01b49f02157d347b0fc0a9806f7fcb433"

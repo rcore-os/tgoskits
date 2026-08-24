@@ -21,3 +21,15 @@ cargo xtask test
 pull_request_command = '''
 cargo xtask test --since "$SINCE_REF"
 '''
+
+[[check]]
+id = "test-competition-task123"
+name = "Competition Task 1-3 host regressions"
+command = '''
+cargo test -p task2-net-protocol
+cargo test -p task3-model
+cargo test -p task3-ncnn
+cargo test -p arceos-task2-net --no-default-features
+python3 -m unittest discover -s scripts/test/net-dual-guest -p 'test_*.py'
+python3 -m unittest discover -s scripts/test/rt-partition -p 'test_*.py'
+'''

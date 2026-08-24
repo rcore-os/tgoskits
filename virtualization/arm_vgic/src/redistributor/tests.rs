@@ -13,6 +13,7 @@ fn software_level_delivery_preserves_eoi_maintenance_in_list_register() {
     let mut redistributor = RedistributorState::new(
         GicVcpuId::new(0),
         GicAffinity::new(0, 0, 0, 0),
+        GicAffinity::new(0, 0, 0, 0),
         4,
         0,
         Arc::new(NoopWake),
@@ -50,6 +51,7 @@ fn software_level_delivery_preserves_eoi_maintenance_in_list_register() {
 fn physical_delivery_uses_only_preallocated_queue_slots() {
     let mut redistributor = RedistributorState::new(
         GicVcpuId::new(0),
+        GicAffinity::new(0, 0, 0, 0),
         GicAffinity::new(0, 0, 0, 0),
         4,
         4,

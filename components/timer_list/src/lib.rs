@@ -72,13 +72,15 @@ impl<E: TimerEvent> TimerList<E> {
         self.events.push(TimerEventWrapper { deadline, event });
     }
 
-    /// Cancel all events that meet the condition.
-    pub fn cancel<F>(&mut self, condition: F)
+    /// Cancels all events that meet the condition and returns the number removed.
+    pub fn cancel<F>(&mut self, condition: F) -> usize
     where
         F: Fn(&E) -> bool,
     {
         // TODO: performance optimization
+        let previous_len = self.events.len();
         self.events.retain(|e| !condition(&e.event));
+        previous_len - self.events.len()
     }
 
     /// Get the deadline of the most recent event.

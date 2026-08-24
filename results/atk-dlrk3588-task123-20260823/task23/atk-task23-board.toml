@@ -1,0 +1,9 @@
+# Keep Task 2/3 on the default FIFO scheduler. Enabling rr-scheduler caused
+# reproducible EL2/host-timer failures during the dual-guest control workload.
+features = [
+  "ax-driver/rockchip-sdhci",
+  "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

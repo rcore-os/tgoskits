@@ -1,0 +1,7 @@
+diff --git a/src/cyclictest/cyclictest.c b/src/cyclictest/cyclictest.c
+--- a/src/cyclictest/cyclictest.c
++++ b/src/cyclictest/cyclictest.c
+@@ -58,0 +59 @@
++#ifdef __GLIBC__
+@@ -59,0 +61 @@
++#endif

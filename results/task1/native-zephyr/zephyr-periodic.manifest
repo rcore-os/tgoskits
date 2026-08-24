@@ -1,0 +1,9 @@
+entry_point=0x40001044
+linked_base=0x0000000040000000
+zephyr_commit=36940db938a8f4a1e919496793ed439850a221c2
+source_commit=a2b11542b3841975d03bf0e3abde16ab3e05ad60
+board=qemu_cortex_a53
+sample_count=300
+start_gated=0
+toolchain=11.2.1
+sha256=b25775cec36c884f5e80e2c08ee4cc15e94303dc697917db35807df7e03cc54d

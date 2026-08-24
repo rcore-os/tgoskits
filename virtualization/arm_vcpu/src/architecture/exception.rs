@@ -59,6 +59,9 @@ core::arch::global_asm!(
     exception_sync = const EXCEPTION_SYNC,
     exception_irq = const EXCEPTION_IRQ,
     trap_frame_size = const crate::ARM_VCPU_TRAP_FRAME_SIZE,
+    guest_fpsimd_offset = const super::context_frame::GUEST_FPSIMD_OFFSET,
+    guest_fpsr_offset = const super::context_frame::GUEST_FPSR_OFFSET,
+    guest_fpcr_offset = const super::context_frame::GUEST_FPCR_OFFSET,
     guest_tpidr_el0_offset = const super::vcpu::ARM_VCPU_GUEST_TPIDR_EL0_OFFSET,
     host_tpidr_el0_offset = const super::vcpu::ARM_VCPU_HOST_TPIDR_EL0_OFFSET,
     host_irq_interface_offset = const super::vcpu::ARM_VCPU_HOST_IRQ_INTERFACE_OFFSET,
@@ -103,7 +106,14 @@ core::arch::global_asm!(
 /// details about the exception including the instruction pointer, faulting address, exception
 /// syndrome register (ESR), and system control registers.
 pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
-    match exception_class() {
+    handle_exception_sync_for_class(ctx, exception_class())
+}
+
+fn handle_exception_sync_for_class(
+    ctx: &mut TrapFrame,
+    exception_class: Option<ESR_EL2::EC::Value>,
+) -> ArmVcpuResult<ArmVmExit> {
+    match exception_class {
         Some(ESR_EL2::EC::Value::TrappedWFIorWFE) => {
             let next_pc = ctx.exception_pc() + exception_next_instruction_step();
             ctx.set_exception_pc(next_pc);
@@ -117,14 +127,9 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
         }
         Some(ESR_EL2::EC::Value::HVC64) => {
             // HVC records the preferred return address (the instruction after
-            // `hvc`) in ELR_EL2, so the handlers must preserve this PC.
-            // The `#imm` argument when triggering a hvc call, currently not used.
-            let _hvc_arg_imm16 = ESR_EL2.read(ESR_EL2::ISS);
-
-            if let Some(result) = handle_hvc_psci_version(ctx) {
-                return result;
-            }
-
+            // `hvc`) in ELR_EL2, so the handler must preserve this PC. All
+            // PSCI calls, including PSCI_VERSION, leave the architecture layer
+            // as hypercall exits and are handled by the common VMM runtime.
             handle_hvc64_exception(ctx)
         }
         Some(ESR_EL2::EC::Value::TrappedMsrMrs) => handle_system_register(ctx),
@@ -132,9 +137,8 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
             // An SMC trapped by HCR_EL2.TSC is a Trap exception, whose
             // preferred return address is the `smc` itself. Advance past it
             // before resuming the guest.
-            let elr = ctx.exception_pc();
-            let val = elr + exception_next_instruction_step();
-            ctx.set_exception_pc(val);
+            let next_pc = ctx.exception_pc() + exception_next_instruction_step();
+            ctx.set_exception_pc(next_pc);
             handle_smc64_exception(ctx)
         }
         _ => {
@@ -155,21 +159,7 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     }
 }
 
-fn handle_hvc_psci_version(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
-    const PSCI_VERSION_32: u64 = 0x8400_0000;
-    const PSCI_VERSION_0_2: usize = 0x0000_0002;
-
-    if ctx.gpr[0] != PSCI_VERSION_32 {
-        return None;
-    }
-
-    ctx.set_gpr(0, PSCI_VERSION_0_2);
-    Some(Ok(ArmVmExit::Nothing))
-}
-
 fn handle_hvc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
-    // The low-level AArch64 trap entry already saves the guest return PC for
-    // HVC exits. Advancing it here would skip the instruction after `hvc`.
     // Is this a psci call?
     //
     // By convention, a psci call can use either the `hvc` or the `smc` instruction.
@@ -411,39 +401,73 @@ mod tests {
     use super::*;
 
     const PSCI_VERSION_32: u64 = 0x8400_0000;
+    const PSCI_CPU_ON_32: u64 = 0x8400_0003;
     const GENERIC_HVC_NR: u64 = 0x1234_5678;
     const TEST_PC: usize = 0x8020_0000;
 
     #[test]
-    fn hvc_psci_version_preserves_exception_pc() {
+    fn hvc_psci_version_dispatches_to_common_runtime_and_preserves_exception_pc() {
         let mut ctx = TrapFrame::default();
         ctx.set_exception_pc(TEST_PC);
         ctx.set_gpr(0, PSCI_VERSION_32 as usize);
 
-        let exit = handle_hvc_psci_version(&mut ctx)
-            .expect("PSCI version HVC should produce a result")
-            .expect("PSCI version HVC should be handled");
+        let exit = handle_exception_sync_for_class(&mut ctx, Some(ESR_EL2::EC::Value::HVC64))
+            .expect("PSCI version HVC should produce a VM exit");
 
+        // The preferred exception return address for HVC is already the next
+        // instruction after `hvc`; the trap layer must not advance it again.
         assert_eq!(ctx.exception_pc(), TEST_PC);
-        assert_eq!(ctx.gpr[0], 0x2);
-        assert!(matches!(exit, ArmVmExit::Nothing));
+        assert!(matches!(
+            exit,
+            ArmVmExit::Hypercall {
+                nr: PSCI_VERSION_32,
+                args: [0, 0, 0, 0, 0, 0],
+            }
+        ));
     }
 
     #[test]
-    fn generic_hvc_exit_preserves_exception_pc() {
+    fn generic_hvc_dispatch_preserves_exception_pc() {
         let mut ctx = TrapFrame::default();
         ctx.set_exception_pc(TEST_PC);
         ctx.set_gpr(0, GENERIC_HVC_NR as usize);
         ctx.set_gpr(1, 1);
         ctx.set_gpr(2, 2);
 
-        let exit = handle_hvc64_exception(&mut ctx).expect("generic HVC should produce VM exit");
+        let exit = handle_exception_sync_for_class(&mut ctx, Some(ESR_EL2::EC::Value::HVC64))
+            .expect("generic HVC should produce VM exit");
 
+        // The preferred exception return address for HVC is already the next
+        // instruction after `hvc`; the trap layer must not advance it again.
         assert_eq!(ctx.exception_pc(), TEST_PC);
         assert!(matches!(
             exit,
             ArmVmExit::Hypercall {
                 nr: GENERIC_HVC_NR,
+                args: [1, 2, _, _, _, _],
+            }
+        ));
+    }
+
+    #[test]
+    fn smc_psci_dispatch_advances_exception_pc() {
+        let mut ctx = TrapFrame::default();
+        ctx.set_exception_pc(TEST_PC);
+        ctx.set_gpr(0, PSCI_CPU_ON_32 as usize);
+        ctx.set_gpr(1, 1);
+        ctx.set_gpr(2, 2);
+
+        let exit = handle_exception_sync_for_class(&mut ctx, Some(ESR_EL2::EC::Value::SMC64))
+            .expect("PSCI SMC should produce VM exit");
+
+        assert_eq!(
+            ctx.exception_pc(),
+            TEST_PC + exception_next_instruction_step()
+        );
+        assert!(matches!(
+            exit,
+            ArmVmExit::Hypercall {
+                nr: PSCI_CPU_ON_32,
                 args: [1, 2, _, _, _, _],
             }
         ));

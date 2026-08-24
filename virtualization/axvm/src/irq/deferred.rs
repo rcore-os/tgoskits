@@ -51,6 +51,10 @@ impl DeferredVcpuKick {
             std::format!("VM[{}]-irq-kick", self.vm_id),
             KICK_WORKER_STACK_SIZE,
         );
+        // This worker closes the dependency chain between a controller-owned
+        // pending interrupt and a blocked target vCPU. It must preempt a vCPU
+        // that may be spinning while waiting for the target guest CPU.
+        task.set_sched_priority(crate::runtime::VCPU_KICK_WORKER_TASK_PRIORITY);
         *worker = Some(crate::host::task::spawn_task(task));
         self.worker_started.store(true, Ordering::Release);
         if self.pending_vcpus.load(Ordering::Acquire) != 0 {

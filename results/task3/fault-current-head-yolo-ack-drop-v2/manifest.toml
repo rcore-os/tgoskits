@@ -1,0 +1,9 @@
+label = "current-head-yolo-ack-drop-v2"
+mode = "yolo"
+fault = "ack-drop"
+git_head = "5bb5c79573bc5fbdbd0f6b1ea37d4f34e2215b38"
+guest_log_sha256 = "91d71166631e08b81a02d271dc54f37b22d747ad0cb9f172a3c9208e1d887742"
+proxy_log_sha256 = "ab6d604cbf3aadb47b2db030b3caa1872cc01f10d177e132c87d2b69f9c01eae"
+linux_pcap_sha256 = "b1d8e5d7fe4f95b52efc3f3cc5dff1763d45e02b5d90a281ffa6cddf9d1eacb2"
+rtos_pcap_sha256 = "e873641b51c6b6e19740a486efc5acf66e5a4bcc4aa2f84e748c255137b2a81f"
+dropped_ack = 1

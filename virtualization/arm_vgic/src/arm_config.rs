@@ -98,6 +98,7 @@ pub struct VgicV2Config {
     distributor: VgicMmioRegion,
     cpu_interface: VgicMmioRegion,
     vcpu_affinities: Vec<GicAffinity>,
+    vcpu_physical_affinities: Vec<GicAffinity>,
     spi_count: usize,
     list_register_count: usize,
     priority_bits: u8,
@@ -116,6 +117,7 @@ impl VgicV2Config {
             controller_id,
             distributor,
             cpu_interface,
+            vcpu_physical_affinities: vcpu_affinities.clone(),
             vcpu_affinities,
             spi_count: 988,
             list_register_count: 4,
@@ -124,6 +126,21 @@ impl VgicV2Config {
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Sets the per-vCPU physical routing affinities.
+    ///
+    /// These affinities target the physical GIC redistributor or CPU
+    /// interface a vCPU is placed on; they may differ from the guest-visible
+    /// [`vcpu_affinities`](Self::vcpu_affinities) when vCPU numbers and
+    /// physical CPU numbers are decoupled.
+    pub fn with_vcpu_physical_affinities(
+        mut self,
+        vcpu_physical_affinities: Vec<GicAffinity>,
+    ) -> VgicResult<Self> {
+        self.vcpu_physical_affinities = vcpu_physical_affinities;
+        self.validate()?;
+        Ok(self)
     }
 
     /// Sets the implemented SPI count.
@@ -174,6 +191,11 @@ impl VgicV2Config {
         &self.vcpu_affinities
     }
 
+    /// Returns per-vCPU physical routing affinities in vCPU-ID order.
+    pub fn vcpu_physical_affinities(&self) -> &[GicAffinity] {
+        &self.vcpu_physical_affinities
+    }
+
     /// Returns assigned physical SPIs.
     pub fn assigned_spis(&self) -> &[AssignedSpiConfig] {
         &self.assigned_spis
@@ -204,6 +226,7 @@ impl VgicV2Config {
             });
         }
         validate_unique_affinities(&self.vcpu_affinities)?;
+        validate_physical_affinities(&self.vcpu_affinities, &self.vcpu_physical_affinities)?;
         validate_common_capabilities(self.spi_count, self.list_register_count, self.priority_bits)?;
         validate_assigned_spis(
             &self.assigned_spis,
@@ -221,6 +244,7 @@ pub struct VgicV3Config {
     redistributors: Vec<VgicMmioRegion>,
     redistributor_stride: u64,
     vcpu_affinities: Vec<GicAffinity>,
+    vcpu_physical_affinities: Vec<GicAffinity>,
     spi_count: usize,
     lpi_limit: u32,
     list_register_count: usize,
@@ -243,6 +267,7 @@ impl VgicV3Config {
             distributor,
             redistributors,
             redistributor_stride,
+            vcpu_physical_affinities: vcpu_affinities.clone(),
             vcpu_affinities,
             spi_count: 988,
             lpi_limit: LPI_INTID_MAX,
@@ -253,6 +278,21 @@ impl VgicV3Config {
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Sets the per-vCPU physical routing affinities.
+    ///
+    /// These affinities target the physical GIC redistributor or CPU
+    /// interface a vCPU is placed on; they may differ from the guest-visible
+    /// [`vcpu_affinities`](Self::vcpu_affinities) when vCPU numbers and
+    /// physical CPU numbers are decoupled.
+    pub fn with_vcpu_physical_affinities(
+        mut self,
+        vcpu_physical_affinities: Vec<GicAffinity>,
+    ) -> VgicResult<Self> {
+        self.vcpu_physical_affinities = vcpu_physical_affinities;
+        self.validate()?;
+        Ok(self)
     }
 
     /// Sets the implemented SPI count.
@@ -322,6 +362,11 @@ impl VgicV3Config {
         &self.vcpu_affinities
     }
 
+    /// Returns per-vCPU physical routing affinities in vCPU-ID order.
+    pub fn vcpu_physical_affinities(&self) -> &[GicAffinity] {
+        &self.vcpu_physical_affinities
+    }
+
     /// Returns guest-visible ITS descriptors.
     pub fn its(&self) -> &[ItsConfig] {
         &self.its
@@ -359,6 +404,7 @@ impl VgicV3Config {
             });
         }
         validate_unique_affinities(&self.vcpu_affinities)?;
+        validate_physical_affinities(&self.vcpu_affinities, &self.vcpu_physical_affinities)?;
         validate_common_capabilities(self.spi_count, self.list_register_count, self.priority_bits)?;
         let frames = self
             .redistributors
@@ -449,6 +495,14 @@ impl ArmVgicConfig {
         }
     }
 
+    /// Returns per-vCPU physical routing affinities in vCPU-ID order.
+    pub fn vcpu_physical_affinities(&self) -> &[GicAffinity] {
+        match self {
+            Self::V2(config) => config.vcpu_physical_affinities(),
+            Self::V3(config) => config.vcpu_physical_affinities(),
+        }
+    }
+
     /// Returns assigned physical SPIs.
     pub fn assigned_spis(&self) -> &[AssignedSpiConfig] {
         match self {
@@ -515,6 +569,32 @@ fn validate_unique_affinities(affinities: &[GicAffinity]) -> VgicResult {
         if affinities[..index].contains(affinity) {
             return Err(VgicError::InvalidConfig {
                 detail: alloc::format!("vCPU affinity {affinity:?} is duplicated"),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_physical_affinities(
+    affinities: &[GicAffinity],
+    physical_affinities: &[GicAffinity],
+) -> VgicResult {
+    if physical_affinities.len() != affinities.len() {
+        return Err(VgicError::InvalidConfig {
+            detail: alloc::format!(
+                "physical routing affinities length {} does not match vCPU affinity length {}",
+                physical_affinities.len(),
+                affinities.len()
+            ),
+        });
+    }
+    for (index, affinity) in physical_affinities.iter().enumerate() {
+        if physical_affinities[..index].contains(affinity) {
+            return Err(VgicError::InvalidConfig {
+                detail: alloc::format!(
+                    "vCPU {} physical routing affinity {affinity:?} is duplicated",
+                    index
+                ),
             });
         }
     }

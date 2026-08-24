@@ -1,0 +1,29 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-machine",
+    "virt,gic-version=3",
+    "-device",
+    # This single-Guest case prepares the dual-Guest rootfs. Keep the validated
+    # legacy-INTx fallback; generic NVMe MSI-X/LPI passthrough is out of scope.
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=1",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0,net=10.0.42.0/24,dhcpstart=10.0.42.15",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/t2n1-run.sh"
+# No Zephyr peer exists in this preparation smoke. Success means the endpoint
+# remains alive and enters observable Safe state after retry exhaustion; the
+# actual Task-2/Task-3 acceptance is the separate real dual-Guest run.
+success_regex = ["(?m)^STARRY_T2N1_SAFE source=protocol reason=RetryExhausted"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^STARRY_T2N1_FAIL\\b"]
+timeout = 60

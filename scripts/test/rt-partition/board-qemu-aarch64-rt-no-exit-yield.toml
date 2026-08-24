@@ -1,0 +1,10 @@
+# Task1 post-VM-exit yield A/B modified profile. It differs from the RT board
+# only by disabling the unconditional scheduler round trip after each VM exit.
+features = [
+    "rt-scheduler",
+    "timer-latency-stats",
+    "no-vcpu-exit-yield",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

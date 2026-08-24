@@ -1,0 +1,26 @@
+# Task 1 Zephyr managed Guest. It shares pCPU1 with StarryOS and has the same
+# priority used by the existing Task 1 direct-contention experiment.
+[base]
+id = 2
+name = "task1-zephyr-shared"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+host_sched_priority = 90
+
+[kernel]
+entry_point = 0xA000_117C
+image_location = "memory"
+kernel_path = "${workspace}/tmp/net-dual-guest/zephyr-task2/zephyr-task2.bin"
+kernel_load_addr = 0xA000_0000
+dtb_load_addr = 0xA7F0_0000
+memory_regions = [[0xA000_0000, 0x2000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x02]

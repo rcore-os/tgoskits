@@ -1,0 +1,3 @@
+results/starryos-rtthread-task23-20260822/drop-ack/starry.pcap: packets=39 arp=11 udp=20 tagged=0 task2=17 kinds={5: 8, 1: 3, 2: 2, 4: 4}
+results/starryos-rtthread-task23-20260822/drop-ack/rtthread.pcap: packets=39 arp=11 udp=20 tagged=0 task2=17 kinds={5: 8, 1: 3, 2: 2, 4: 4}
+PASS

@@ -6,7 +6,7 @@ use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 
 use super::{BoundVcpuExit, VcpuRunAction};
-use crate::{AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
+use crate::{AxVmError, AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
 
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
@@ -99,6 +99,14 @@ pub(crate) trait ArchOps {
         interrupt: PendingVcpuInterrupt,
     ) -> AxVmResult {
         vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
+    }
+
+    /// Returns true when the backend cannot currently accept another edge for
+    /// `vector` (for example the GIC list register for it is already pending
+    /// or active). Drain loops re-queue such interrupts instead of dropping
+    /// them.
+    fn is_virtual_interrupt_busy(_vector: usize) -> bool {
+        false
     }
 
     /// Releases architecture runtime state after the VM's last vCPU exits.
@@ -195,9 +203,75 @@ fn drain_and_inject_dispatched_interrupts<A: ArchOps>(
             return;
         }
     };
-    inject_drained_interrupts::<A>(runtime.irq_dispatcher(), vm.id(), vcpu_id, vcpu);
+    runtime.trace_virq_event(vm.id(), crate::runtime::VirqTraceKind::Running, vcpu_id, 0);
+    pop_and_inject(
+        runtime.irq_dispatcher(),
+        vcpu_id,
+        |vector| A::is_virtual_interrupt_busy(vector),
+        |interrupt| {
+            runtime.trace_virq_event(
+                vm.id(),
+                crate::runtime::VirqTraceKind::Inject,
+                vcpu_id,
+                interrupt.id.0,
+            );
+            A::inject_vcpu_interrupt(vcpu, interrupt)
+        },
+    );
 }
 
+/// Pops one injectable edge at a time under the queue lock and injects it.
+///
+/// A blocked head edge stays queued, so same-vector batches cannot be drained
+/// and then dropped on a busy list register. When `inject` reports a retryable
+/// failure (for example the backend ran out of list registers between the busy
+/// check and the write), the edge is re-queued and the loop stops for this
+/// round instead of being lost.
+fn pop_and_inject<F, G>(
+    dispatcher: &crate::runtime::VcpuIrqDispatcher,
+    vcpu_id: usize,
+    is_busy: F,
+    mut inject: G,
+) where
+    F: Fn(usize) -> bool,
+    G: FnMut(PendingVcpuInterrupt) -> AxVmResult,
+{
+    while let Some(interrupt) =
+        dispatcher.pop_if(vcpu_id, |interrupt| is_busy(interrupt.id.0 as usize))
+    {
+        let vector = interrupt.id.0 as usize;
+        match inject(interrupt) {
+            Ok(()) => {}
+            Err(error) if is_retryable_injection_error(&error) => {
+                if !dispatcher.requeue_retry(vcpu_id, interrupt) {
+                    warn!(
+                        "vCPU {vcpu_id} retry slot already occupied; dropping retry edge \
+                         vector={vector:#x}"
+                    );
+                }
+                break;
+            }
+            Err(error) => {
+                warn!(
+                    "vCPU {vcpu_id} dropped interrupt after terminal injection failure \
+                     vector={vector:#x}: {error:?}"
+                );
+            }
+        }
+    }
+}
+
+fn is_retryable_injection_error(error: &AxVmError) -> bool {
+    matches!(
+        error,
+        AxVmError::ResourceConflict {
+            resource: "interrupt backend",
+            ..
+        }
+    )
+}
+
+#[cfg(test)]
 fn inject_drained_interrupts<A: ArchOps>(
     dispatcher: &crate::runtime::VcpuIrqDispatcher,
     vm_id: usize,
@@ -450,5 +524,213 @@ mod tests {
         RecordingArch::on_last_vcpu_exit(&vm).unwrap();
 
         assert_eq!(EXIT_RUNTIME_CALLS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn pop_and_inject_requeues_edge_on_retryable_backend_failure() {
+        let injections = Arc::new(IrqSafeMutex::new(InjectionLog {
+            failing_vector: Some(0x42),
+            ..Default::default()
+        }));
+        let vcpu = AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap();
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        for id in [0x41u32, 0x42, 0x43] {
+            dispatcher
+                .enqueue(
+                    0,
+                    PendingVcpuInterrupt {
+                        id: VirtualInterruptId(id),
+                        trigger: InterruptTriggerMode::EdgeTriggered,
+                    },
+                )
+                .unwrap();
+        }
+
+        pop_and_inject(
+            &dispatcher,
+            0,
+            |_| false,
+            |interrupt| {
+                vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
+            },
+        );
+
+        // 0x41 injected; 0x42 was attempted and failed (recorded, then kept in
+        // the retry slot rather than dropped); the loop stops before 0x43.
+        assert_eq!(
+            injections.lock().attempts,
+            vec![
+                (0x41, InterruptTriggerMode::EdgeTriggered),
+                (0x42, InterruptTriggerMode::EdgeTriggered),
+            ]
+        );
+        let remaining = dispatcher.drain(0);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id.0, 0x43);
+        // The failed edge survives in the retry slot.
+        let retried = dispatcher.pop_if(0, |_| false).unwrap();
+        assert_eq!(retried.id.0, 0x42);
+    }
+
+    #[test]
+    fn retry_slot_holds_edge_outside_bounded_queue() {
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        for id in 0..crate::runtime::VCPU_INTERRUPT_QUEUE_CAPACITY as u32 {
+            dispatcher
+                .enqueue(
+                    0,
+                    PendingVcpuInterrupt {
+                        id: VirtualInterruptId(id),
+                        trigger: InterruptTriggerMode::EdgeTriggered,
+                    },
+                )
+                .unwrap();
+        }
+
+        assert!(dispatcher.requeue_retry(
+            0,
+            PendingVcpuInterrupt {
+                id: VirtualInterruptId(999),
+                trigger: InterruptTriggerMode::EdgeTriggered,
+            }
+        ));
+
+        // The retry edge is served first and does not depend on queue
+        // capacity, while the full queue still rejects new producers.
+        assert_eq!(dispatcher.pop_if(0, |_| false).unwrap().id.0, 999);
+        assert!(
+            dispatcher
+                .enqueue(
+                    0,
+                    PendingVcpuInterrupt {
+                        id: VirtualInterruptId(1000),
+                        trigger: InterruptTriggerMode::EdgeTriggered,
+                    }
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn retry_slot_keeps_blocked_edge() {
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        dispatcher.requeue_retry(
+            0,
+            PendingVcpuInterrupt {
+                id: VirtualInterruptId(7),
+                trigger: InterruptTriggerMode::EdgeTriggered,
+            },
+        );
+
+        assert!(
+            dispatcher
+                .pop_if(0, |interrupt| interrupt.id.0 == 7)
+                .is_none()
+        );
+        assert_eq!(dispatcher.pop_if(0, |_| false).unwrap().id.0, 7);
+    }
+
+    #[test]
+    fn retry_slot_counts_as_pending_for_wait_condition() {
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        assert!(!dispatcher.has_pending(0));
+
+        dispatcher.requeue_retry(
+            0,
+            PendingVcpuInterrupt {
+                id: VirtualInterruptId(7),
+                trigger: InterruptTriggerMode::EdgeTriggered,
+            },
+        );
+
+        // A retry edge is pending work: the vCPU must not park until it is
+        // delivered, otherwise the edge is stranded when producers stop.
+        assert!(dispatcher.has_pending(0));
+
+        assert!(dispatcher.pop_if(0, |_| false).is_some());
+        assert!(!dispatcher.has_pending(0));
+    }
+
+    #[test]
+    fn retained_blocked_edge_is_retried_after_backend_releases() {
+        let injections = Arc::new(IrqSafeMutex::new(InjectionLog::default()));
+        let vcpu = AxVCpu::<RecordingVcpu>::new(1, 0, None, injections.clone()).unwrap();
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        dispatcher
+            .enqueue(
+                0,
+                PendingVcpuInterrupt {
+                    id: VirtualInterruptId(0x51),
+                    trigger: InterruptTriggerMode::EdgeTriggered,
+                },
+            )
+            .unwrap();
+
+        let backend_busy = Arc::new(IrqSafeMutex::new(true));
+
+        // Round 1: the last enqueued edge finds the LR busy and stays queued;
+        // has_pending stays true so the vCPU cannot park.
+        let busy = Arc::clone(&backend_busy);
+        pop_and_inject(
+            &dispatcher,
+            0,
+            move |vector| *busy.lock() && vector == 0x51,
+            |interrupt| {
+                vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
+            },
+        );
+        assert!(injections.lock().attempts.is_empty());
+        assert!(dispatcher.has_pending(0));
+
+        // Round 2: the LR is released; the retained edge is drained and
+        // injected instead of being stranded.
+        *backend_busy.lock() = false;
+        pop_and_inject(
+            &dispatcher,
+            0,
+            |_| false,
+            |interrupt| {
+                vcpu.inject_interrupt_with_trigger(interrupt.id.0 as usize, interrupt.trigger)
+            },
+        );
+        assert_eq!(
+            injections.lock().attempts,
+            vec![(0x51, InterruptTriggerMode::EdgeTriggered)]
+        );
+        assert!(!dispatcher.has_pending(0));
+    }
+
+    #[test]
+    fn terminal_backend_failure_does_not_keep_vcpu_pending() {
+        let dispatcher = crate::runtime::VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 2);
+        dispatcher
+            .enqueue(
+                0,
+                PendingVcpuInterrupt {
+                    id: VirtualInterruptId(0x61),
+                    trigger: InterruptTriggerMode::EdgeTriggered,
+                },
+            )
+            .unwrap();
+
+        pop_and_inject(
+            &dispatcher,
+            0,
+            |_| false,
+            |_| {
+                Err(AxVmError::invalid_input(
+                    "inject vCPU interrupt",
+                    "invalid vector",
+                ))
+            },
+        );
+
+        assert!(!dispatcher.has_pending(0));
     }
 }

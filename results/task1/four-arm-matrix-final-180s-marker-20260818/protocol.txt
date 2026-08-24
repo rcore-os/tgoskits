@@ -1,0 +1,8 @@
+experiment=task1-four-arm-separation
+arms=shared-rr,shared-fixed,partition-rr,partition-fixed
+duration_sec=180
+repeats=3
+zephyr_sample_count=3000
+shared_burner=1:10:53
+partition_burner=0:10:53
+order=shared-rr,shared-fixed,partition-rr,partition-fixed / partition-fixed,partition-rr,shared-fixed,shared-rr

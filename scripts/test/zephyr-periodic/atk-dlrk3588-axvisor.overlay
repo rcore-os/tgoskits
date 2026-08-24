@@ -1,0 +1,14 @@
+/*
+ * AxVisor exposes the RK3588 host GIC register windows to virtualized guests.
+ * The PL011 console remains at the standard QEMU-virt address, while the ARM
+ * architectural timer uses the standard virtual-timer PPI.
+ */
+
+&gic {
+	reg = <0x0 0xfe600000 0x0 0x10000>,
+	      <0x0 0xfe680000 0x0 0x100000>;
+};
+
+&its {
+	status = "disabled";
+};

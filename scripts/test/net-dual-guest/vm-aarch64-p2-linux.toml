@@ -1,0 +1,22 @@
+# Final P2 Linux controller Guest. Its complete 512 MiB range is a host-DTB
+# carveout and is therefore identity-mapped with MAP_RESERVED.
+[base]
+id = 1
+name = "task2-p2-linux"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0]
+
+[kernel]
+entry_point = 0x8000_0000
+image_location = "memory"
+kernel_path = "${workspace}/tmp/net-dual-guest/linux-task2/linux-qemu"
+kernel_load_addr = 0x8000_0000
+dtb_load_addr = 0x9F00_0000
+ramdisk_path = "${workspace}/tmp/net-dual-guest/linux-task2/task2-linux-initramfs.cpio.gz"
+ramdisk_load_addr = 0x9C00_0000
+memory_regions = [[0x8000_0000, 0x2000_0000, 0x7, 2]]
+
+[devices]
+passthrough = [{ path = "/virtio_mmio@a003e00" }]
+disabled = []

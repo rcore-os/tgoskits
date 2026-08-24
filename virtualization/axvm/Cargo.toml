@@ -18,6 +18,17 @@ host-test = [
 ]
 sstc = ["riscv_vcpu/sstc"]
 tls = ["ax-std/tls", "cpu-local/tls"]
+realtime-trace = []
+timer-latency-stats = []
+# Measurement-only compatibility mode for the Task 1 timer-wheel A/B. The
+# default remains the production per-CPU lock layout.
+global-timer-wheel = []
+# Measurement-only mode for isolating the unconditional scheduler round trip
+# after each completed VM exit. The default preserves the compatibility yield.
+no-vcpu-exit-yield = []
+# Measurement-only candidate that lets the per-CPU timer worker preempt a
+# running vCPU. Work is bounded to one expired callback per wake.
+timer-worker-priority-boost = []
 
 [dependencies]
 log = "0.4"
@@ -60,6 +71,7 @@ axvirtio-common = { workspace = true }
 axvirtio-net = { workspace = true }
 axvmconfig = { workspace = true, default-features = false }
 fdt-edit = { workspace = true }
+fdt-parser = "0.4"
 fdt-raw = { workspace = true }
 toml = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]

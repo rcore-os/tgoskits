@@ -1,0 +1,705 @@
+00: addr=edf00000 size=106000
+  ramoops@110000: addr=110000 size=f0000
+Adding bank: 0x00200000 - 0x08400000 (size: 0x08200000)kchip pinctrl[m
+[VM 1] [m[37m[  4.961462 ax_driver::soc::rockchip::pmic_spi:720] [32mpmic_spi: GPIO0 DDR_L=0x00008000 B3(bit11)=0 (0=input) — forcing B3 input[m
+[m[37m[  5.006917 ax_driver::soc::rockchip::pmic_spi:748] [32mpmic_spi: PMU1_IOC 00=00001120 04=00000110 08=00001010 0c=00000000 10=00001111 14=00000111 18=00001011 1c=00000000 20=0000ff01 24=000000fc 28=000000ff 2c=0000000f 30=00000000 34=00000000 40=00000008[m
+[m[37m[  5.028170 ax_driver::soc::rockchip::pmic_spi:767] [32mpmic_spi: B3/MISO decoded: mux=1 (want 1) drive=1 pull=3 (want 3) smt=0 (want 0)[m
+[m[37m[  5.039762 ax_driver::soc::rockchip::pmic_spi:363] [32mpmic_spi: SPI2 baud divisor preserved from U-Boot (200)[m
+[m[37m[  5.049597 ax_driver::soc::rockchip::pmic_spi:506] [32mpmic_spi: RK806 probe: chip_name(0x5A)=Some(0) chip_ver(0x5B)=Some(0) dcdc2_raw_rx=[00, 1b, 00, 00] (xfer_ok=true)[m
+[m[37m[  5.064296 ax_driver::soc::rockchip::pmic_spi:526] [32mpmic_spi: read-shape distinct: tx=[00, 5a, a5, 3c] rx=[00, 5a, a5, 3c] ok=true[m
+[m[37m[  5.076362 ax_driver::soc::rockchip::pmic_spi:531] [32mpmic_spi: read-shape long6: tx=[00, 5a, 00, 00, 00, 00] rx=[00, 5a, 00, 00, 00, 00] ok=true[m
+[m[37m[  5.089654 ax_driver::soc::rockchip::pmic_spi:837] [32mpmic_spi: RK806/SPI2 bound at 0xfeb20000[m
+[m[37m[  5.098197 ax_driver::soc::rockchip::pmic_spi:848] [32mpmic_spi: A55 vdd_cpu_lit = 500000 uV (buck2 vsel 0x00)[m
+[m[37m[  5.107847 ax_driver::soc::rockchip::cpufreq:293] [32mcpufreq: A55 rail boot voltage = 500000 uV[m
+[m[37m[  5.116936 ax_driver::soc::rockchip::cpufreq:309] [32mcpufreq: A76 rails -> 675000 uV (big0 ok=true, big1 ok=true)[m
+[m[37m[  5.126516 ax_driver::soc::rockchip::pmic_spi:848] [32mpmic_spi: A55 vdd_cpu_lit = 500000 uV (buck2 vsel 0x00)[m
+[m[37m[  5.137051 ax_driver::soc::rockchip::cpufreq:322] [33mcpufreq: A55 boot voltage not trustworthy (Some(500000) uV); skipping A55 write until spi2/RK806 bring-up completes (A76 unaffected)[m
+[m[37m[  5.152799 ax_driver::soc::rockchip::cpufreq:350] [32mcpufreq: ondemand governor armed (A76 I2C up; a55_spi=true, A55 ring-only)[m
+[m[37m[  5.218268 ax_driver::usb::ehci:62] [32mRockchip EHCI driver initialized successfully for usb@fc800000 with irq None[m
+[m[37m[  5.316082 ax_driver::usb::ehci:62] [32mRockchip EHCI driver initialized successfully for usb@fc880000 with irq None[m
+[m[37m[  5.449142 ax_driver::pwm::rockchip:99] [32mRockchip PWM registered: node=pwm@fd8b0010 base=0xfd8b0010[m
+[m[37m[  5.459328 ax_driver::pwm::rockchip:99] [32mRockchip PWM registered: node=pwm@fd8b0030 base=0xfd8b0030[m
+[m[37m[  5.470053 ax_driver::rknpu:82] [32mRK3588 NPU fixed clock rate: 800000000 Hz[m
+[m[37m[  5.477264 ax_driver::rknpu:66] [32mNPU registered successfully[m
+[m[37m[  5.484283 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("biu") (0x17)[m
+[m[37m[  5.494394 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("ciu") (0x9)[m
+[m[37m[  5.504347 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("ciu-drive") (0x2c2)[m
+[m[37m[  5.514798 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2c0000] enabled SDMMC clock Some("ciu-sample") (0x2c3)[m
+[m[37m[  5.610436 ax_driver::block::rockchip::sd:182] [32m[mmc@fe2c0000] vqmmc-supply phandle Phandle(283) is not a fixed GPIO regulator; skip pinctrl enable[m
+[m[37m[  5.623545 ax_driver::block::rockchip::sd:119] [32mrockchip-dwmmc probe: node=mmc@fe2c0000, addr=0xfe2c0000, size=0x4000[m
+[m[37m[  5.634887 ax_driver::block::rockchip::sd:131] [32mrockchip-dwmmc: using ciu reference clock 49500000 Hz[m
+[m[37m[  5.644890 ax_driver::block::rockchip::sd::phase:41] [32mrockchip-dwmmc: RK3588 SDMMC phase configured: drive=90deg sample=0deg parent=49500000Hz[m
+[m[37m[  5.658210 ax_driver::block::rockchip::sd:156] [32mrockchip-dwmmc: defer protocol initialization to IRQ-driven hctx[m
+[m[37m[  5.668455 ax_driver::block::rockchip::sd:161] [32mrockchip-dwmmc block device registered irq=None[m
+[m[37m[  5.678342 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("core") (0x13a)[m
+[m[37m[  5.687954 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("bus") (0x138)[m
+[m[37m[  5.697334 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("axi") (0x139)[m
+[m[37m[  5.706421 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("block") (0x13b)[m
+[m[37m[  5.717108 ax_driver::block::rockchip::clock:12] [32m[mmc@fe2e0000] enabled SDHCI clock Some("timer") (0x13c)[m
+[m[37m[  5.726866 ax_driver::block::rockchip::sdhci_rk3588:167] [32mrockchip-sdhci probe: node=mmc@fe2e0000, addr=0xfe2e0000, size=0x10000[m
+[m[37m[  5.738224 ax_driver::block::rockchip::sdhci_rk3588:182] [32mrockchip-sdhci: using external CRU clock[m
+[m[37m[  5.747388 ax_driver::block::rockchip::sdhci_rk3588:197] [32mrockchip-sdhci: defer eMMC protocol initialization to IRQ-driven hctx[m
+[m[37m[  5.758825 ax_driver::block::rockchip::sdhci_rk3588:201] [32mrockchip-sdhci block device registered irq=None[m
+[m[37m[  5.769241 ax_driver::pwm::rockchip:99] [32mRockchip PWM registered: node=pwm@febf0030 base=0xfebf0030[m
+[m[37m[  5.780338 ax_driver::virtio:177] [32mprobing virtio-mmio node virtio_mmio@a000000 at PA 0xa000000, size 0x200[m
+[m[37m[  5.790218 ax_driver::virtio:184] [32mmapped virtio-mmio at VA 0xffff00000a000000[m
+[m[37m[  5.798274 virtio_drivers::device::net::dev_raw:33] [32mnegotiated_features Features(MAC | STATUS | VERSION_1)[m
+[m[37m[  5.809284 ax_driver::virtio::net:394] [32mregistered virtio network device irq=None[m
+[m[37m[  5.817091 rdrive:222] [33mProbe failed for [fdt]: other error: [] has no USB2 PHY GRF parent[m
+[m[37m[  5.825919 ax_runtime::serial:489] [32mserial runtime NS16550 UART ready: cpu=0, irq=Some(Source(FdtInterrupt(FdtIrqSpec { controller: 596, cells: [0, 333, 4] }))), polling=false[m
+[mBoot at 1970-01-01 00:00:05.841880916 UTC
+
+[37m[  5.845960 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op ResetAll[m
+[m[37m[  5.854747 ax_fs_ng::block::runtime::hctx:177] [32mblock hctx 0 bound to CPU 0 with hardware depth 1[m
+[m[37m[  5.864621 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device rockchip-dwmmc IRQ source 0 (IrqId { domain: IrqDomainId(7), hwirq: HwIrq(235) }) fixed to CPU 0 for queue mask 0x1[m
+[m[37m[  5.883103 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op PowerOn[m
+[m[37m[  5.901944 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op SwitchVoltage(V330)[m
+[m[37m[  5.911192 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetBusWidth(Bit1)[m
+[m[37m[  5.920122 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetClock(Identification)[m
+[m[37m[  5.929986 ax_driver::block::rockchip::sd:70] [32mrockchip-dwmmc: ciu clock set target=400000 Hz cclkin=800000 Hz bus=400000 Hz[m
+[m[37m[  5.952867 sdmmc_protocol::sdio::init::state_machine:154] [33msdio: init state PostIdentificationClockDelay aborted (NoCard), resetting host[m
+[m[37m[  5.965957 ax_fs_ng::block::runtime::lifecycle:135] [33mfailed to start IRQ-driven block controller: Io[m
+[m[37m[  5.975935 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op ResetAll[m
+[m[37m[  5.984709 ax_fs_ng::block::runtime::hctx:177] [32mblock hctx 0 bound to CPU 0 with hardware depth 1[m
+[m[37m[  5.994600 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device rockchip-sdhci IRQ source 0 (IrqId { domain: IrqDomainId(7), hwirq: HwIrq(237) }) fixed to CPU 0 for queue mask 0x1[m
+[m[37m[  6.012737 ax_driver::block::rockchip::sdhci_rk3588:245] [32mrockchip-sdhci: RK3588 DWCMSHC vendor reset area1=0x500[m
+[m[37m[  6.023407 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op PowerOn[m
+[m[37m[  6.042222 sdmmc_protocol::sdio::init::state_machine:102] [32msdio: submit bus op SwitchVoltage(V330)[m
+[m[37m[  6.057068 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetBusWidth(Bit1)[m
+[m[37m[  6.065437 sdmmc_protocol::sdio::init::state_machine:63] [32msdio: submit bus op SetClock(Identification)[m
+[m[37m[  6.076082 ax_driver::block::rockchip::sdhci_rk3588:119] [32mrockchip-sdhci: core clock set to 375000 Hz[m
+[m[37m[  6.129964 sdmmc_protocol::sdio::init::state_machine::identify:264] [32msdio: detected Mmc ocr=0xc0ff8080[m
+[m[37m[  6.140948 sdmmc_protocol::sdio::init::state_machine::identify:338] [32msdio: CSD capacity_blocks=None[m
+[m[37m[  6.163181 sdmmc_protocol::sdio::init::state_machine::mmc:38] [32msdio: EXT_CSD sector_count=122159104[m
+[m[37m[  6.176305 ax_driver::block::rockchip::sdhci_rk3588:119] [32mrockchip-sdhci: core clock set to 50000000 Hz[m
+[m[37m[  6.187404 sdmmc_protocol::sdio::init::state_machine::mmc:314] [32msdio: MMC speed selected HighSpeed bus_width=Bit8[m
+[m[37m[  6.198199 sdmmc_protocol::sdio::init::state_machine::mmc:340] [32msdio: enabled 1024 KiB volatile write cache[m
+[m[37m[  6.208045 sdmmc_protocol::sdio::init::state_machine:233] [32msdio: init done kind=Mmc sd_v2=false high_capacity=true rca=0x1 ocr=0xc0ff8080 host_bus_width=Bit8 ext_csd_bus_width=Some(Sdr1) ext_csd_timing=Some(Compat)[m
+[m[37m[  6.226432 sdmmc_protocol::rdif::queue:172] [32msdmmc block init complete: kind=Mmc high_capacity=true rca=1 capacity_blocks=122159104 cache_enabled=true[m
+[m[37m[  6.265066 ax_fs_ng::root:348] [32m    partition 1 name=Some("uboot") fs=None lba 16384..24576[m
+[m[37m[  6.274510 ax_fs_ng::root:348] [32m    partition 2 name=Some("misc") fs=None lba 24576..32768[m
+[m[37m[  6.283623 ax_fs_ng::root:348] [32m    partition 3 name=Some("boot") fs=None lba 32768..163840[m
+[m[37m[  6.292930 ax_fs_ng::root:348] [32m    partition 4 name=Some("recovery") fs=None lba 163840..425984[m
+[m[37m[  6.302272 ax_fs_ng::root:348] [32m    partition 5 name=Some("backup") fs=None lba 425984..491520[m
+[m[37m[  6.311451 ax_fs_ng::root:348] [32m    partition 6 name=Some("rootfs") fs=Some(Ext4) lba 491520..29851648[m
+[m[37m[  6.321262 ax_fs_ng::root:348] [32m    partition 7 name=Some("oem") fs=Some(Ext4) lba 29851648..30113792[m
+[m[37m[  6.330828 ax_fs_ng::root:348] [32m    partition 8 name=Some("userdata") fs=Some(Ext4) lba 30113792..122159071[m
+[m[37m[  6.340698 ax_fs_ng::root:364] [32m  block device 0 (rockchip-sdhci) has Gpt partition table with 8 partitions[m
+[m[37m[  6.350664 ax_fs_ng::root:517] [32m  falling back to PARTLABEL=rootfs[m
+[m[37m[  6.357328 ax_fs_ng:86] [32mInitialize filesystem subsystem...[m
+[m[37m[  6.363121 ax_fs_ng:87] [32m  selected root device: disk0 partition 6 (rootfs, fs=ext4, lba 491520..29851648)[m
+[m[37m[  6.374503 rsext4::crc32c::arm64:54] [33mID_AA64ISAR0_EL1[19:16]: 0x1[m
+[m[37m[  6.381284 rsext4::crc32c::arm64:57] [33mHardware CRC32C support detected.[m
+[m[37m[  6.400701 rsext4::ext4::mount:331] [32m/lost+found exists (superblock hint inode=11)[m
+[m[37m[  6.410114 rsext4::ext4::mount:466] [32mExt4 filesystem mounted[m
+[m[37m[  6.415907 rsext4::ext4::mount:467] [32m  - block size: 4096 bytes[m
+[m[37m[  6.422606 rsext4::ext4::mount:468] [32m  - total blocks: 3670016[m
+[m[37m[  6.428993 rsext4::ext4::mount:469] [32m  - free blocks: 3298220[m
+[m[37m[  6.434835 rsext4::ext4::mount:470] [32m  - total inodes: 847616[m
+[m[37m[  6.441494 rsext4::ext4::mount:471] [32m  - free inodes: 833538[m
+[m[37m[  6.447643 rsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[m[37m[  6.461791 rsext4::ext4::mount:550] [32mExt4 filesystem mounted[m
+[m[37m[  6.467940 ax_fs_ng:99] [32m  filesystem type: "ext4"[m
+[m[37m[  6.475703 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0000 expected=0x0589 desc_size=64 block_bitmap=8196 inode_bitmap=24580 inode_table=40964 free_blocks=57348 free_inodes=0 used_dirs=8196 itable_unused=0 flags=0x1 block_bitmap_csum=0x0 inode_bitmap_csum=0x0[m
+[m[37m[  6.502728 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[  6.511001 ax_fs_ng::fs::ext4::rsext4::fs:127] [33mext4 journal replay failed with EUCLEAN; retrying read-only without journal replay[m
+[m[37m[  6.522853 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0000 expected=0x0589 desc_size=64 block_bitmap=8196 inode_bitmap=24580 inode_table=40964 free_blocks=57348 free_inodes=0 used_dirs=8196 itable_unused=0 flags=0x1 block_bitmap_csum=0x0 inode_bitmap_csum=0x0[m
+[m[37m[  6.549592 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[  6.557711 ax_fs_ng::root:622] [33m  failed to initialize filesystem for partition disk0 partition 7 (oem, fs=ext4, lba 29851648..30113792): AxErrorKind::Io[m
+[m[37m[  6.572937 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0a8d expected=0x16fe desc_size=64 block_bitmap=262145 inode_bitmap=262161 inode_table=262177 free_blocks=3808 free_inodes=1088 used_dirs=0 itable_unused=1088 flags=0x5 block_bitmap_csum=0x4c1cbc8f inode_bitmap_csum=0xe0e99c72[m
+[m[37m[  6.601310 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[  6.609347 ax_fs_ng::fs::ext4::rsext4::fs:127] [33mext4 journal replay failed with EUCLEAN; retrying read-only without journal replay[m
+[m[37m[  6.620919 rsext4::blockgroup_description::desc:109] [31mGroup descriptor checksum mismatch: group=0 stored=0x0a8d expected=0x16fe desc_size=64 block_bitmap=262145 inode_bitmap=262161 inode_table=262177 free_blocks=3808 free_inodes=1088 used_dirs=0 itable_unused=1088 flags=0x5 block_bitmap_csum=0x4c1cbc8f inode_bitmap_csum=0xe0e99c72[m
+[m[37m[  6.649227 rsext4::ext4::mount:554] [31mMount failed: EUCLEAN: Structure needs cleaning[m
+[m[37m[  6.657172 ax_fs_ng::root:622] [33m  failed to initialize filesystem for partition disk0 partition 8 (userdata, fs=ext4, lba 30113792..122159071): AxErrorKind::Io[m
+[m[37m[  6.675508 ax_net:192] [32mInitialize network subsystem...[m
+[m[37m[  6.681887 ax_net:212] [32m  use NIC 0: "virtio-net"[m
+[m[37m[  6.687900 ax_runtime::irq:120] [32mregistered eth0 irq IrqId { domain: IrqDomainId(7), hwirq: HwIrq(48) }[m
+[m[37m[  6.697213 ax_net:238] [32meth0:[m
+[m[37m[  6.700695 ax_net:239] [32m  id:   2[m
+[m[37m[  6.704466 ax_net:240] [32m  mac:  52-54-00-12-34-15[m
+[m[37m[  6.709988 ax_net:257] [32m  mode: dhcp[m
+[m[37m[  6.713993 ax_net:295] [32mDevice: lo[m
+[m[37m[  6.718324 ax_net:295] [32mDevice: eth0[m
+[m[37m[  6.722361 ax_net::service:606] [32meth0: DHCP enabled[m
+[m[37m[  8.769235 ax_net:992] [33mDHCP bootstrap timed out[m
+[m[37m[  8.774666 ax_runtime:348] [32mPrimary CPU 0 init OK.[m
+[m[37m[  8.780268 0:2 ax_fs_ng::block::runtime::lifecycle::device:369] [32mblock device rockchip-sdhci online with 1 hctxs across 1 CPUs[m
+[m[37m[  8.791676 0:2 ktracepoint:282] [32mtracepoint_data_start: 0xffffffff80597e90, tracepoint_data_end: 0xffffffff80597ef0[m
+[m[37m[  8.802300 0:2 ktracepoint:297] [32mtracepoint_data_len: 6[m
+[m[37m[  8.808367 0:2 ktracepoint:314] [32mtracepoint registered: sched:sched_process_exit[m
+[m[37m[  8.816567 0:2 ktracepoint:314] [32mtracepoint registered: sched:sched_process_fork[m
+[m[37m[  8.824743 0:2 ktracepoint:314] [32mtracepoint registered: sched:sched_switch[m
+[m[37m[  8.832293 0:2 ktracepoint:314] [32mtracepoint registered: syscalls:sys_clone[m
+[m[37m[  8.840089 0:2 ktracepoint:314] [32mtracepoint registered: syscalls:sys_enter_openat[m
+[m[37m[  8.847856 0:2 ktracepoint:314] [32mtracepoint registered: syscalls:sys_mkdirat[m
+[mInitialized 6 tracepoints
+kmod subsystem initialized
+[37m[  8.860503 0:2 starry_kernel::pseudofs:86] [32mInitialize pseudofs...[m
+[m[37m[  8.867284 0:2 starry_kernel::pseudofs::dev::tty::serial:256] [32mttyS2 registered: path=/serial@feb50000, alias=Some(2), paddr=0xfeb50000, irq=Some(Source(FdtInterrupt(FdtIrqSpec { controller: 596, cells: [0, 333, 4] })))[m
+[m[37m[  8.885901 0:2 starry_kernel::pseudofs::dev::tty::serial:201] [32m/dev/console bound to ttyS2[m
+[m[37m[  8.896600 0:2 starry_kernel::pseudofs:80] [32mMounted devfs at /dev[m
+[m[37m[  8.903562 0:2 starry_kernel::pseudofs::usbfs:55] [32musbfs: initializing manager[m
+[m[37m[  8.911528 0:2 starry_kernel::pseudofs::usbfs::manager:1437] [32musbfs: preparing host 272 as bus 1[m
+[m[37m[  8.920830 0:2 starry_kernel::pseudofs::usbfs::manager:1437] [32musbfs: preparing host 274 as bus 2[m
+[m[37m[  8.930352 0:2 starry_kernel::pseudofs::usbfs::manager:1486] [32musbfs: discovered 2 USB host(s)[m
+[m[37m[  8.939081 0:2 starry_kernel::pseudofs::usbfs::irq:92] [32musbfs: registering IRQ callback for IRQ IrqId { domain: IrqDomainId(7), hwirq: HwIrq(247) } (bus 1, host 272)[m
+[m[37m[  8.953702 0:2 starry_kernel::pseudofs::usbfs::irq:92] [32musbfs: registering IRQ callback for IRQ IrqId { domain: IrqDomainId(7), hwirq: HwIrq(250) } (bus 2, host 274)[m
+[m[37m[  8.969042 0:2 starry_kernel::pseudofs::usbfs::manager:1275] [32musbfs: initializing host on bus 1[m
+[m[37m[  9.098151 0:2 starry_kernel::pseudofs::usbfs::manager:1319] [32musbfs: host on bus 1 initialized[m
+[m[37m[  9.106623 0:2 starry_kernel::pseudofs::usbfs::manager:1275] [32musbfs: initializing host on bus 2[m
+[m[37m[  9.236427 0:2 starry_kernel::pseudofs::usbfs::manager:1319] [32musbfs: host on bus 2 initialized[m
+[m[37m[  9.245935 0:2 starry_kernel::pseudofs::usbfs::manager:1339] [32musbfs: 2 host(s) ready[m
+[m[37m[  9.254326 0:2 starry_kernel::pseudofs::usbfs:74] [32musbfs: spawning refresh task[m
+[m[37m[  9.262497 0:2 starry_kernel::pseudofs::usbfs:38] [32musbfs: creating filesystem instance[m
+[m[37m[  9.271224 0:2 starry_kernel::pseudofs:80] [32mMounted usbfs at /dev/bus/usb[m
+[m[37m[  9.278514 0:2 starry_kernel::pseudofs:80] [32mMounted tmpfs at /dev/shm[m
+[m[37m[  9.286541 0:2 starry_kernel::pseudofs:80] [32mMounted tmpfs at /tmp[m
+[m[37m[  9.293504 0:2 starry_kernel::pseudofs:80] [32mMounted mqueue at /dev/mqueue[m
+[m[37m[  9.307840 0:2 starry_kernel::dyn_debug:61] [32mdebug_init: initializing dynamic debug sites[m
+[m[37m[  9.316475 0:2 starry_kernel::dyn_debug:64] [32mdebug_init: found 193 dynamic debug sites[m
+[m[37m[  9.325190 0:2 starry_kernel::pseudofs::proc:74] [32mRead kallsyms, size: 1563KB[m
+[m[37m[  9.354025 0:2 starry_kernel::pseudofs:80] [32mMounted proc at /proc[m
+[m[37m[  9.361679 0:2 starry_kernel::pseudofs:80] [32mMounted sysfs at /sys[m
+[m[37m[  9.368842 0:2 starry_kernel::pseudofs:80] [32mMounted sysfs at /sys/bus/usb[m
+[m[37m[  9.376040 0:2 starry_kernel::pseudofs:80] [32mMounted debug at /sys/kernel/debug[m
+[m[37m[  9.384100 0:2 starry_kernel::task::timer:331] [32mInitialize alarm...[m
+[m[37m[  9.391267 0:2 starry_kernel::entry:178] [32mInitialize cpufreq ondemand governor...[m
+[m[37m[  9.421691 0:18 starry_kernel::task::user:70] [32mEnter user space: ip=0x60116880, sp=0x3fffffff620[m
+[m[37m[  9.600687 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b0 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[  9.601665 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b1 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[  9.702844 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b0 peak=0% opp 1->0 = 408 MHz @ 675 mV[m
+[m[37m[  9.703823 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A76b1 peak=0% opp 1->0 = 408 MHz @ 675 mV[m
+[mWelcome to [96m[1mStarry OS[0m!
+[37m[  9.788003 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[  9.788081 0:19 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[mHOSTNAME=starry
+PWD=/
+HOME=/root
+TERM=xterm-256color
+USER=root
+SHLVL=1
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+_=/usr/bin/env
+[37m[  9.850851 0:19 starry_kernel::task::ops:398] [32mTask(19, "env") exit with code: 0[m
+[m[37m[  9.859943 0:19 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[  9.910133 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m
+Use [1m[3mapk[0m to install packages.
+
+[37m[  9.935329 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[  9.935400 0:20 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[m[37m[  9.994161 0:20 starry_kernel::task::ops:398] [32mTask(20, "mkdir") exit with code: 256[m
+[m[37m[ 10.004224 0:20 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.012462 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.015907 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.037132 0:21 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[m[37m[ 10.070283 0:21 starry_kernel::task::ops:398] [32mTask(21, "mkdir") exit with code: 256[m
+[m[37m[ 10.080229 0:21 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.088353 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.091484 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.112140 0:22 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[m[37m[ 10.144661 0:22 starry_kernel::task::ops:398] [32mTask(22, "mkdir") exit with code: 256[m
+[m[37m[ 10.154536 0:22 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.163293 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.178975 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.179043 0:23 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffeb00[m
+[m[37m[ 10.242968 0:23 starry_kernel::task::ops:398] [32mTask(23, "touch") exit with code: 0[m
+[m[37m[ 10.251988 0:23 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.260551 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.263547 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.284740 0:24 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffeb00[m
+[m[37m[ 10.328733 0:24 starry_kernel::task::ops:398] [32mTask(24, "touch") exit with code: 0[m
+[m[37m[ 10.338389 0:24 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.346548 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.363149 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.363301 0:25 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.413974 0:25 starry_kernel::task::ops:398] [32mTask(25, "touch") exit with code: 0[m
+[m[37m[ 10.423546 0:25 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.431695 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.434950 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.455496 0:26 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.496861 0:26 starry_kernel::task::ops:398] [32mTask(26, "touch") exit with code: 0[m
+[m[37m[ 10.506397 0:26 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.514821 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.518204 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.538923 0:27 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.581597 0:27 starry_kernel::task::ops:398] [32mTask(27, "touch") exit with code: 0[m
+[m[37m[ 10.591008 0:27 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.599173 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.602352 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.623165 0:28 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.665008 0:28 starry_kernel::task::ops:398] [32mTask(28, "touch") exit with code: 0[m
+[m[37m[ 10.674521 0:28 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.682748 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.686029 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.707724 0:29 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.750976 0:29 starry_kernel::task::ops:398] [32mTask(29, "touch") exit with code: 0[m
+[m[37m[ 10.760673 0:29 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.768830 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.771995 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.792202 0:30 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.833855 0:30 starry_kernel::task::ops:398] [32mTask(30, "touch") exit with code: 0[m
+[m[37m[ 10.843343 0:30 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.851874 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.855051 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.876519 0:31 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 10.919191 0:31 starry_kernel::task::ops:398] [32mTask(31, "touch") exit with code: 0[m
+[m[37m[ 10.928751 0:31 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 10.936462 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 10.940045 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 10.961045 0:32 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe910[m
+[m[37m[ 11.002203 0:32 starry_kernel::task::ops:398] [32mTask(32, "touch") exit with code: 0[m
+[m[37m[ 11.011415 0:32 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 11.019967 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 11.039793 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 11.039859 0:33 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffecf0[m
+[m[37m[ 11.088765 0:33 starry_kernel::task::ops:398] [32mTask(33, "cat") exit with code: 0[m
+[m[37m[ 11.098131 0:33 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 11.106029 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[m[37m[ 11.250555 0:34 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe060[m
+[m[37m[ 11.320308 0:34 starry_kernel::task::ops:398] [32mTask(34, "groups") exit with code: 0[m
+[m[37m[ 11.320461 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(0x0)[m
+[m[37m[ 11.340796 0:34 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 11.348971 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG)[m
+[mroot@starry:/root # wc -c /proc/initrd; sha256sum /proc/initrd; mkdir -p /tmp/t1 ; cd /tmp/t1; gzip -dc /proc/initrd | cpio -id; mount --bind /tmp/t1/usr/share / usr/share; ip addr add 10.0.42.15/24 dev eth0 2>/dev/null || true; echo TASK1_SE TUP_DONE
+[37m[ 12.189485 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 12.189559 0:35 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe7b0[m
+[m27400910 /proc/initrd
+[37m[ 12.388539 0:35 starry_kernel::task::ops:398] [32mTask(35, "wc") exit with code: 0[m
+[m[37m[ 12.399963 0:35 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 12.408256 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 12.428074 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 12.428149 0:36 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe7e0[m
+[me61b388e1abbe872ab401ec305329ae144c2c5660bcc664a180c21ab9f67e5b8  /proc/initrd
+[37m[ 13.090128 0:36 starry_kernel::task::ops:398] [32mTask(36, "sha256sum") exit with code: 0[m
+[m[37m[ 13.101075 0:36 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 13.109400 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.113745 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.137881 0:37 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe9d0[m
+[m[37m[ 13.173727 0:37 starry_kernel::task::ops:398] [32mTask(37, "mkdir") exit with code: 0[m
+[m[37m[ 13.183607 0:37 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 13.192207 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.199480 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 13.223717 0:38 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffead0[m
+[m[37m[ 13.224003 0:39 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffead0[m
+[m[37m[ 18.513992 0:38 starry_kernel::task::ops:398] [32mTask(38, "busybox") exit with code: 0[m
+[m[37m[ 18.524570 0:38 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 18.533438 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m145981 blocks
+[37m[ 18.547797 0:39 starry_kernel::task::ops:398] [32mTask(39, "busybox") exit with code: 0[m
+[m[37m[ 18.559319 0:39 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 18.568237 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 18.587202 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 18.587270 0:40 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffefa0[m
+[m[37m[ 18.713637 0:40 starry_kernel::task::ops:398] [32mTask(40, "mount") exit with code: 0[m
+[m[37m[ 18.724138 0:40 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 18.732858 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 18.752020 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 18.752090 0:41 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffefa0[m
+[m[37m[ 18.840399 0:41 starry_kernel::task::ops:398] [32mTask(41, "ip") exit with code: 0[m
+[m[37m[ 18.849837 0:41 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 18.858053 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[mTASK1_SETUP_DONE
+root@starry:/tmp/t1 # [37m[ 18.975744 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[m/tmp/t1/bin/task2-net model-only
+[37m[ 19.095207 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 19.095327 0:42 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3fffffff540[m
+[m[37m[ 19.102487 0:42 ax_net::udp:288] [32mUDP socket #0: bound on 10.0.42.15:4242[m
+[mTASK2_READY role=controller local=10.0.42.15:4242 peer=10.0.42.2:4242
+TASK3_MODEL_READY model=yolo11n.ncnn runtime=ncnn ncnn_revision=946fe3fb14a8dff8c06df763f67be522167b2f00 param_sha256=d2c0adf8939dc9ce02964ce8ada104447768ffd8e3bffad8fa11e2e61e709c1f bin_sha256=0ae562447923999779b12b4f91f96b9ef263add8c9902d10e22e6dd6a2932c12 input_sha256=608c8a61ff0bb43e5a8613f1f6f8aa08af74b084363610ed2b526ad925e4cb6f path=/usr/share/task3-yolo mode=in-guest input=rgb-resize-640x640-normalize-1/255 threads=1
+TASK3_MODEL_POLICY min_confidence_milli=600 min_area_milli=10 max_target_step=100
+TASK3_INFER_STARTED elapsed_ms=0 sample=1 model=yolo11n.ncnn
+[37m[ 19.151340 0:43 starry_kernel::task::user:70] [32mEnter user space: ip=0x8a0978, sp=0x21ca50[m
+[m[37m[ 19.248930 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=100% opp 1->2 = 1021 MHz @ 675 mV[m
+[m
+
+[Axvisor] detached VM[1] console
+Welcome to AxVisor Shell!
+Type 'help' to see available commands
+Use UP/DOWN arrows to navigate command history
+Console shortcuts:
+  Ctrl+X, then h  return to the Axvisor shell
+  Ctrl+X, then [  attach the previous running guest
+  Ctrl+X, then ]  attach the next running guest
+
+[2Kaxvisor:/$ [2Kaxvisor:/$ v[2Kaxvisor:/$ vm[2Kaxvisor:/$ vm [2Kaxvisor:/$ vm l[2Kaxvisor:/$ vm li[2Kaxvisor:/$ vm lis[2Kaxvisor:/$ vm list
+VM ID  NAME            STATUS       VCPU            MEMORY     VCPU STATE          
+------ --------------- ------------ --------------- ---------- --------------------
+1      atk-task1-starry-shared running      0               1GB        Run:1               
+2      atk-task1-rtthread-periodic-shared running      0               512MB      Free:1              
+axvisor:/$ [2Kaxvisor:/$ v[2Kaxvisor:/$ vm[2Kaxvisor:/$ vm [2Kaxvisor:/$ vm c[2Kaxvisor:/$ vm co[2Kaxvisor:/$ vm con[2Kaxvisor:/$ vm cons[2Kaxvisor:/$ vm conso[2Kaxvisor:/$ vm consol[2Kaxvisor:/$ vm console[2Kaxvisor:/$ vm console [2Kaxvisor:/$ vm console 2
+✓ Attached VM[2] console; use Ctrl+X, then h to return to the shell
+PERIODIC LATENCY START
+sequence,timestamp_ns,deadline_ns,actual_ns,jitter_ns
+0,30793000,10000000,30793000,20793000
+1,70175000,40793000,70175000,29382000
+2,109998583,80175000,109998583,29823583
+3,149647458,119998583,149647458,29648875
+4,180434916,159647458,180434916,20787458
+5,210017791,190434916,210017791,19582875
+6,239746500,220017791,239746500,19728708
+7,270146041,249746500,270146041,20399541
+8,319180458,280146041,319180458,39034416
+9,350122791,329180458,350122791,20942333
+10,380177291,360122791,380177291,20054500
+11,420000583,390177291,420000583,29823291
+12,450433958,430000583,450433958,20433375
+13,490128916,460433958,490128916,29694958
+14,529439166,500128916,529439166,29310250
+15,560124250,539439166,560124250,20685083
+16,590130333,570124250,590130333,20006083
+17,630111708,600130333,630111708,29981375
+18,670144708,640111708,670144708,30033000
+19,710139791,680144708,710139791,29995083
+20,740156083,720139791,740156083,20016291
+21,779860666,750156083,779860666,29704583
+22,810002666,789860666,810002666,20142000
+23,830141375,820002666,830141375,10138708
+24,869766625,840141375,869766625,29625250
+25,900005166,879766625,900005166,20238541
+26,929506958,910005166,929506958,19501791
+27,949476791,939506958,949476791,9969833
+28,970153916,959476791,970153916,10677125
+29,999496166,980153916,999496166,19342250
+30,1029989333,1009496166,1029989333,20493166
+31,1070009500,1039989333,1070009500,30020166
+32,1099311791,1080009500,1099311791,19302291
+33,1130151750,1109311791,1130151750,20839958
+34,1170028125,1140151750,1170028125,29876375
+35,1200166041,1180028125,1200166041,20137916
+36,1239656250,1210166041,1239656250,29490208
+37,1270613750,1249656250,1270613750,20957500
+38,1309988458,1280613750,1309988458,29374708
+39,1340129875,1319988458,1340129875,20141416
+40,1380123791,1350129875,1380123791,29993916
+41,1419124291,1390123791,1419124291,29000500
+42,1450611166,1429124291,1450611166,21486875
+43,1461045833,1460611166,1461045833,434666
+44,1471544375,1471045833,1471544375,498541
+45,1481837000,1481544375,1481837000,292625
+46,1492121458,1491837000,1492121458,284458
+47,1502405625,1502121458,1502405625,284166
+48,1512691833,1512405625,1512691833,286208
+49,1522972791,1522691833,1522972791,280958
+50,1533257541,1532972791,1533257541,284750
+51,1543653125,1543257541,1543653125,395583
+52,1553944875,1553653125,1553944875,291750
+53,1564229625,1563944875,1564229625,284750
+54,1574514958,1574229625,1574514958,285333
+55,1593255333,1584514958,1593255333,8740375
+56,1603799375,1603255333,1603799375,544041
+57,1614162291,1613799375,1614162291,362916
+58,1624524333,1624162291,1624524333,362041
+59,1634877333,1634524333,1634877333,353000
+60,1645435666,1644877333,1645435666,558333
+61,1656015000,1655435666,1656015000,579333
+62,1666410000,1666015000,1666410000,395000
+63,1676774083,1676410000,1676774083,364083
+64,1712806291,1686774083,1712806291,26032208
+65,1724795833,1722806291,1724795833,1989541
+66,1736118625,1734795833,1736118625,1322791
+67,1747404666,1746118625,1747404666,1286041
+68,1758266625,1757404666,1758266625,861958
+69,1769165625,1768266625,1769165625,899000
+70,1787587291,1779165625,1787587291,8421666
+71,1799783041,1797587291,1799783041,2195750
+72,1811644250,1809783041,1811644250,1861208
+73,1822622875,1821644250,1822622875,978625
+74,1833618416,1832622875,1833618416,995541
+75,1845110083,1843618416,1845110083,1491666
+76,1856439875,1855110083,1856439875,1329791
+77,1867305625,1866439875,1867305625,865750
+78,1878174583,1877305625,1878174583,868958
+79,1889039166,1888174583,1889039166,864583
+80,1900255791,1899039166,1900255791,1216625
+81,1911644500,1910255791,1911644500,1388708
+82,1922513750,1921644500,1922513750,869250
+83,1933381541,1932513750,1933381541,867791
+84,1944249916,1943381541,1944249916,868375
+85,1955124125,1954249916,1955124125,874208
+86,1965996291,1965124125,1965996291,872166
+87,1976864958,1975996291,1976864958,868666
+88,1988043666,1986864958,1988043666,1178708
+89,1998914083,1998043666,1998914083,870416
+90,2009815708,2008914083,2009815708,901625
+91,2021250500,2019815708,2021250500,1434791
+92,2032124416,2031250500,2032124416,873916
+93,2042994250,2042124416,2042994250,869833
+94,2053879833,2052994250,2053879833,885583
+95,2064769500,2063879833,2064769500,889666
+96,2075634666,2074769500,2075634666,865166
+97,2086629333,2085634666,2086629333,994666
+98,2097495958,2096629333,2097495958,866625
+99,2108615750,2107495958,2108615750,1119791
+100,2119772291,2118615750,2119772291,1156541
+101,2131435458,2129772291,2131435458,1663166
+102,2142683000,2141435458,2142683000,1247541
+103,2153944541,2152683000,2153944541,1261541
+104,2165194416,2163944541,2165194416,1249875
+105,2176454791,2175194416,2176454791,1260375
+106,2187634666,2186454791,2187634666,1179875
+107,2198509458,2197634666,2198509458,874791
+108,2209816791,2208509458,2209816791,1307333
+109,2221275791,2219816791,2221275791,1459000
+110,2232524208,2231275791,2232524208,1248416
+111,2243777291,2242524208,2243777291,1253083
+112,2254769625,2253777291,2254769625,992333
+113,2265754083,2264769625,2265754083,984458
+114,2276748750,2275754083,2276748750,994666
+115,2289877541,2286748750,2289877541,3128791
+116,2302479291,2299877541,2302479291,2601750
+117,2313881125,2312479291,2313881125,1401833
+118,2325252625,2323881125,2325252625,1371500
+119,2336689166,2335252625,2336689166,1436541
+120,2348487375,2346689166,2348487375,1798208
+121,2359746875,2358487375,2359746875,1259500
+122,2371364833,2369746875,2371364833,1617958
+123,2382246041,2381364833,2382246041,881208
+124,2393115000,2392246041,2393115000,868958
+125,2404006125,2403115000,2404006125,891125
+126,2414884125,2414006125,2414884125,878000
+127,2426202833,2424884125,2426202833,1318708
+128,2437339250,2436202833,2437339250,1136416
+129,2448767916,2447339250,2448767916,1428666
+130,2460511291,2458767916,2460511291,1743375
+131,2471685625,2470511291,2471685625,1174333
+132,2482572666,2481685625,2482572666,887041
+133,2493450375,2492572666,2493450375,877708
+134,2528477791,2503450375,2528477791,25027416
+135,2540193458,2538477791,2540193458,1715666
+136,2552017916,2550193458,2552017916,1824458
+137,2563306291,2562017916,2563306291,1288375
+138,2574170291,2573306291,2574170291,864000
+139,2585020875,2584170291,2585020875,850583
+140,2595862125,2595020875,2595862125,841250
+141,2606706583,2605862125,2606706583,844458
+142,2617568833,2616706583,2617568833,862250
+143,2629197583,2627568833,2629197583,1628750
+144,2640964583,2639197583,2640964583,1767000
+145,2651889250,2650964583,2651889250,924666
+146,2662743041,2661889250,2662743041,853791
+147,2673581666,2672743041,2673581666,838625
+148,2684421458,2683581666,2684421458,839791
+149,2695268833,2694421458,2695268833,847375
+150,2706112125,2705268833,2706112125,843291
+151,2716960958,2716112125,2716960958,848833
+152,2727812125,2726960958,2727812125,851166
+153,2738641708,2737812125,2738641708,829583
+154,2749527000,2748641708,2749527000,885291
+155,2760943125,2759527000,2760943125,1416125
+156,2772401541,2770943125,2772401541,1458416
+157,2783563916,2782401541,2783563916,1162375
+158,2796648375,2793563916,2796648375,3084458
+159,2808154916,2806648375,2808154916,1506541
+160,2820297583,2818154916,2820297583,2142666
+161,2831939458,2830297583,2831939458,1641875
+162,2842773416,2841939458,2842773416,833958
+163,2853621083,2852773416,2853621083,847666
+164,2864470208,2863621083,2864470208,849125
+165,2875356375,2874470208,2875356375,886166
+166,2886929416,2885356375,2886929416,1573041
+167,2898372666,2896929416,2898372666,1443250
+168,2909530666,2908372666,2909530666,1158000
+169,2921000750,2919530666,2921000750,1470083
+170,2932056666,2931000750,2932056666,1055916
+171,2942904625,2942056666,2942904625,847958
+172,2954147500,2952904625,2954147500,1242875
+173,2965124375,2964147500,2965124375,976875
+174,2976044958,2975124375,2976044958,920583
+175,2987356958,2986044958,2987356958,1312000
+176,2998521958,2997356958,2998521958,1165000
+177,3009566500,3008521958,3009566500,1044541
+178,3020987000,3019566500,3020987000,1420500
+179,3031848666,3030987000,3031848666,861666
+180,3042718208,3041848666,3042718208,869541
+181,3054222708,3052718208,3054222708,1504500
+182,3065083500,3064222708,3065083500,860791
+183,3075942833,3075083500,3075942833,859333
+184,3086791083,3085942833,3086791083,848250
+185,3097754541,3096791083,3097754541,963458
+186,3108616500,3107754541,3108616500,861958
+187,3119515791,3118616500,3119515791,899291
+188,3130942125,3129515791,3130942125,1426333
+189,3141932416,3140942125,3141932416,990291
+190,3152926791,3151932416,3152926791,994375
+191,3163935166,3162926791,3163935166,1008375
+192,3174920791,3173935166,3174920791,985625
+193,3185921291,3184920791,3185921291,1000500
+194,3196907208,3195921291,3196907208,985916
+195,3208223875,3206907208,3208223875,1316666
+196,3220099666,3218223875,3220099666,1875791
+197,3231915958,3230099666,3231915958,1816291
+198,3242795708,3241915958,3242795708,879750
+199,3253675166,3252795708,3253675166,879458
+200,3264569791,3263675166,3264569791,894625
+201,3275454791,3274569791,3275454791,885000
+202,3296354166,3285454791,3296354166,10899375
+203,3308173375,3306354166,3308173375,1819208
+204,3319601166,3318173375,3319601166,1427791
+205,3332046291,3329601166,3332046291,2445125
+206,3343323291,3342046291,3343323291,1277000
+207,3354192541,3353323291,3354192541,869250
+208,3365063541,3364192541,3365063541,871000
+209,3375923166,3375063541,3375923166,859625
+210,3386785708,3385923166,3386785708,862541
+211,3397652916,3396785708,3397652916,867208
+212,3408522458,3407652916,3408522458,869541
+213,3419588000,3418522458,3419588000,1065541
+214,3430972041,3429588000,3430972041,1384041
+215,3441840708,3440972041,3441840708,868666
+216,3452708208,3451840708,3452708208,867500
+217,3463586791,3462708208,3463586791,878583
+218,3474455750,3473586791,3474455750,868958
+219,3485321208,3484455750,3485321208,865458
+220,3496192791,3495321208,3496192791,871583
+221,3507062333,3506192791,3507062333,869541
+222,3517941208,3517062333,3517941208,878875
+223,3528797625,3527941208,3528797625,856416
+224,3561513875,3538797625,3561513875,22716250
+225,3572920375,3571513875,3572920375,1406500
+226,3584229458,3582920375,3584229458,1309083
+227,3595074791,3594229458,3595074791,845333
+228,3605929458,3605074791,3605929458,854666
+229,3616783250,3615929458,3616783250,853791
+230,3627638208,3626783250,3627638208,854958
+231,3638489666,3637638208,3638489666,851458
+232,3649378750,3648489666,3649378750,889083
+233,3661318125,3659378750,3661318125,1939375
+234,3672635666,3671318125,3672635666,1317541
+235,3683482750,3682635666,3683482750,847083
+236,3694310875,3693482750,3694310875,828125
+237,3705209875,3704310875,3705209875,899000
+238,3716043250,3715209875,3716043250,833375
+239,3726874583,3726043250,3726874583,831333
+240,3737673833,3736874583,3737673833,799250
+241,3748527625,3747673833,3748527625,853791
+242,3759573333,3758527625,3759573333,1045708
+243,3770978666,3769573333,3770978666,1405333
+244,3781846750,3780978666,3781846750,868083
+245,3792714250,3791846750,3792714250,867500
+246,3806360166,3802714250,3806360166,3645916
+247,3818023041,3816360166,3818023041,1662875
+248,3829349625,3828023041,3829349625,1326583
+249,3840986833,3839349625,3840986833,1637208
+250,3852951875,3850986833,3852951875,1965041
+251,3864267666,3862951875,3864267666,1315791
+252,3875674458,3874267666,3875674458,1406791
+253,3886529708,3885674458,3886529708,855250
+254,3897359875,3896529708,3897359875,830166
+255,3908205500,3907359875,3908205500,845625
+256,3919050541,3918205500,3919050541,845041
+257,3937061250,3929050541,3937061250,8010708
+258,3948357500,3947061250,3948357500,1296250
+259,3959414291,3958357500,3959414291,1056791
+260,3970994041,3969414291,3970994041,1579750
+261,3981961291,3980994041,3981961291,967250
+262,3993250541,3991961291,3993250541,1289250
+263,4004127375,4003250541,4004127375,876833
+264,4014989333,4014127375,4014989333,861958
+265,4025798208,4024989333,4025798208,808875
+266,4037014833,4035798208,4037014833,1216625
+267,4048125875,4047014833,4048125875,1111041
+268,4058987833,4058125875,4058987833,861958
+269,4069885958,4068987833,4069885958,898125
+270,4081256000,4079885958,4081256000,1370041
+271,4092129041,4091256000,4092129041,873041
+272,4102998875,4102129041,4102998875,869833
+273,4113869583,4112998875,4113869583,870708
+274,4124737666,4123869583,4124737666,868083
+275,4135596125,4134737666,4135596125,858458
+276,4146451666,4145596125,4146451666,855541
+277,4157302541,4156451666,4157302541,850875
+278,4168169750,4167302541,4168169750,867208
+279,4179027041,4178169750,4179027041,857291
+280,4189917583,4189027041,4189917583,890541
+281,4201292291,4199917583,4201292291,1374708
+282,4212156291,4211292291,4212156291,864000
+283,4223022333,4222156291,4223022333,866041
+284,4233894500,4233022333,4233894500,872166
+285,4244757041,4243894500,4244757041,862541
+286,4255699791,4254757041,4255699791,942750
+287,4267252416,4265699791,4267252416,1552625
+288,4278414500,4277252416,4278414500,1162083
+289,4289599916,4288414500,4289599916,1185416
+290,4300996500,4299599916,4300996500,1396583
+291,4323640333,4310996500,4323640333,12643833
+292,4335006291,4333640333,4335006291,1365958
+293,4346860208,4345006291,4346860208,1853916
+294,4358252416,4356860208,4358252416,1392208
+295,4369787833,4368252416,4369787833,1535416
+296,4381193750,4379787833,4381193750,1405916
+297,4392312958,4391193750,4392312958,1119208
+298,4403261833,4402312958,4403261833,948875
+299,4414129625,4413261833,4414129625,867791
+PERIODIC LATENCY COMPLETE samples=300
+
+[Axvisor] detached VM[2] console
+[2Kaxvisor:/$ [2Kaxvisor:/$ r[2Kaxvisor:/$ rt[2Kaxvisor:/$ rt [2Kaxvisor:/$ rt s[2Kaxvisor:/$ rt st[2Kaxvisor:/$ rt sta[2Kaxvisor:/$ rt stat
+RT vCPU wait counters:
+  vcpu=0 post_vmexit_yields=35590 parks=5987 wakes=5775 notify_woke=5771 vtimer_arms=11805 vtimer_immediate=68 vtimer_no_deadline=0 vtimer_registered=11737 vtimer_callbacks=4214 vtimer_stale_callbacks=2 vtimer_notifications=4212 vtimer_invalidations=340605 callback_to_wake_samples=0 callback_to_wake_overflow=0 callback_to_wake_p50_ns=0 callback_to_wake_p99_ns=0 callback_to_wake_p99_9_ns=0 callback_to_wake_max_ns=0 callback_to_run_dispatch_samples=0 callback_to_run_dispatch_overflow=0 callback_to_run_dispatch_p50_ns=0 callback_to_run_dispatch_p99_ns=0 callback_to_run_dispatch_p99_9_ns=0 callback_to_run_dispatch_max_ns=0 callback_to_guest_entry_samples=0 callback_to_guest_entry_overflow=0 callback_to_guest_entry_p50_ns=0 callback_to_guest_entry_p99_ns=0 callback_to_guest_entry_p99_9_ns=0 callback_to_guest_entry_max_ns=0 direct_acks=6262 direct_overlaps=0 direct_to_run_dispatch_samples=0 direct_to_run_dispatch_overflow=0 direct_to_run_dispatch_p50_ns=0 direct_to_run_dispatch_p99_ns=0 direct_to_run_dispatch_p99_9_ns=0 direct_to_run_dispatch_max_ns=0 direct_to_guest_entry_samples=0 direct_to_guest_entry_overflow=0 direct_to_guest_entry_p50_ns=0 direct_to_guest_entry_p99_ns=0 direct_to_guest_entry_p99_9_ns=0 direct_to_guest_entry_max_ns=0 activation_hold_samples=0 activation_hold_overflow=0 activation_hold_p50_ns=0 activation_hold_p99_ns=0 activation_hold_p99_9_ns=0 activation_hold_max_ns=0
+  lr_skips=0
+RT device-poll counters:
+  vm=1 published=263 kicked=263 consumed=263 pending=false
+  vm=2 published=1 kicked=1 consumed=1 pending=false
+RT AxVM timer counters:
+  cpu=1 now_ns=42156946916 wheel_next_ns=42158470875 published_ns=42158470875 registered=11737 cancelled=7521 expired=4214 worker_wakes=4180 expiry_batches=4199 expiry_late_samples=0 expiry_late_overflow=0 expiry_late_p50_ns=0 expiry_late_p99_ns=0 expiry_late_p99_9_ns=0 expiry_late_max_ns=0 lock_acquisitions=61343 lock_wait_total_ns=15450847 lock_wait_max_ns=35875 lock_hold_total_ns=76955284 lock_hold_max_ns=12833
+RT host hardware timer IRQ counters:
+  cpu=0 irqs=3735
+  cpu=1 irqs=7975
+  cpu=2 irqs=3423
+  cpu=3 irqs=3422
+  cpu=4 irqs=3421
+  cpu=5 irqs=3421
+  cpu=6 irqs=3421
+  cpu=7 irqs=3421
+RT console counters: attached=None flush_calls=1664335 host_write_bytes=60689
+  vm=1 active=true input_enqueued=263 input_drained=263 input_dropped=0 input_pending=0 output_enqueued=46273 output_drained=46273 output_dropped=0 output_pending=0
+  vm=2 active=true input_enqueued=1 input_drained=1 input_dropped=0 input_pending=0 output_enqueued=15275 output_drained=15275 output_dropped=0 output_pending=0
+axvisor:/$ [2Kaxvisor:/$ v[2Kaxvisor:/$ vm[2Kaxvisor:/$ vme[2Kaxvisor:/$ vmex[2Kaxvisor:/$ vmexi[2Kaxvisor:/$ vmexit[2Kaxvisor:/$ vmexit [2Kaxvisor:/$ vmexit s[2Kaxvisor:/$ vmexit st[2Kaxvisor:/$ vmexit sta[2Kaxvisor:/$ vmexit stat
+VM-exit counters per physical CPU (13 reasons):
+  cpu         irq     timer      mmio       wfi   hvc-smc    sysregcntp-sysreg    gic-if       sgi    cpu-up  sys-down   nothing     other
+    1       19873      6327    128808      6070         -         -      3582         -         -         -         -        40         -
+Host periodic scheduler ticks (event-driven timer IRQs excluded):
+  cpu   0:       3203
+  cpu   1:       3133
+  cpu   2:       3133
+  cpu   3:       3133
+  cpu   4:       3131
+  cpu   5:       3132
+  cpu   6:       3131
+  cpu   7:       3131
+axvisor:/$ [2Kaxvisor:/$ v[2Kaxvisor:/$ vm[2Kaxvisor:/$ vm [2Kaxvisor:/$ vm l[2Kaxvisor:/$ vm li[2Kaxvisor:/$ vm lis[2Kaxvisor:/$ vm list
+VM ID  NAME            STATUS       VCPU            MEMORY     VCPU STATE          
+------ --------------- ------------ --------------- ---------- --------------------
+1      atk-task1-starry-shared running      0               1GB        Free:1              
+2      atk-task1-rtthread-periodic-shared running      0               512MB      Free:1              
+axvisor:/$ [2Kaxvisor:/$ v[2Kaxvisor:/$ vm[2Kaxvisor:/$ vm [2Kaxvisor:/$ vm c[2Kaxvisor:/$ vm co[2Kaxvisor:/$ vm con[2Kaxvisor:/$ vm cons[2Kaxvisor:/$ vm conso[2Kaxvisor:/$ vm consol[2Kaxvisor:/$ vm console[2Kaxvisor:/$ vm console [2Kaxvisor:/$ vm console 1
+✓ Attached VM[1] console; use Ctrl+X, then h to return to the shell
+[37m[ 19.516925 0:10 ax_net::device::ethernet:406] [32meth0: requesting ARP for 10.0.42.2[m
+[m[37m[ 20.536309 0:10 ax_net::device::ethernet:406] [32meth0: requesting ARP for 10.0.42.2[m
+[m[37m[ 21.596456 0:43 starry_kernel::task::ops:398] [32mTask(43, "task2-net") exit with code: 0[m
+[mTASK3_DETECTION model=yolo11n.ncnn class=75 confidence_milli=843 center_x_milli=421 area_milli=63 target=421
+TASK3_INFER elapsed_ms=2354 sample=1 output=242 infer_us=1569971 model=yolo11n.ncnn target=421
+TASK3_CONTROL_SENT elapsed_ms=2354 request=1 value=242 target=421 state=300 seq=1 model=yolo11n.ncnn
+[37m[ 21.629169 0:10 ax_net::device::ethernet:406] [32meth0: requesting ARP for 10.0.42.2[m
+[m[37m[ 21.766964 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[ 21.867576 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=20% opp 1->0 = 408 MHz @ 675 mV[m
+[mTASK2_RETRANSMIT seq=1 attempt=1
+TASK2_RETRANSMIT seq=1 attempt=2
+[37m[ 22.687300 0:10 ax_net::device::ethernet:406] [32meth0: requesting ARP for 10.0.42.2[m
+[mTASK2_RETRANSMIT seq=1 attempt=3
+TASK2_RETRANSMIT seq=1 attempt=4
+[37m[ 23.718836 0:10 ax_net::device::ethernet:406] [32meth0: requesting ARP for 10.0.42.2[m
+[mTASK2_RETRANSMIT seq=1 attempt=5
+TASK2_SAFE state=Safe event=HeartbeatTimeout
+TASK2_SAFE state=Safe event=RetryExhausted { sequence: SequenceNumber(1) }
+[37m[ 24.756381 0:10 ax_net::device::ethernet:406] [32meth0: requesting ARP for 10.0.42.2[m
+[m[37m[ 25.796458 0:10 ax_net::device::ethernet:406] [32meth0: requesting ARP for 10.0.42.2[m
+[m[37m[ 26.840524 0:10 ax_net::device::ethernet:406] [32meth0: requesting ARP for 10.0.42.2[m
+[m[37m[ 27.863533 0:10 ax_net::device::ethernet:406] [32meth0: requesting ARP for 10.0.42.2[m
+[m[37m[ 28.884764 0:10 ax_net::device::ethernet:406] [32meth0: requesting ARP for 10.0.42.2[m
+[m
+
+[Axvisor] detached VM[1] console
+[2Kaxvisor:/$ 

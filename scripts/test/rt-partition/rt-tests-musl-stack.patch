@@ -1,0 +1,8 @@
+diff --git a/src/cyclictest/cyclictest.c b/src/cyclictest/cyclictest.c
+--- a/src/cyclictest/cyclictest.c
++++ b/src/cyclictest/cyclictest.c
+@@ -2151 +2152,0 @@ int main(int argc, char **argv)
+-			void *currstk;
+@@ -2162 +2163 @@ int main(int argc, char **argv)
+-			if (pthread_attr_getstack(&attr, &currstk, &stksize))
++			if (pthread_attr_getstacksize(&attr, &stksize))

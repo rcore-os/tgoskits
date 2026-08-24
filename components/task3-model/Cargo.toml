@@ -1,0 +1,8 @@
+[package]
+name = "task3-model"
+version = "0.1.0"
+edition = "2021"
+description = "Task-3 1D temporal CNN forward inference for the Linux guest controller"
+license = "MIT OR Apache-2.0"
+
+[dependencies]

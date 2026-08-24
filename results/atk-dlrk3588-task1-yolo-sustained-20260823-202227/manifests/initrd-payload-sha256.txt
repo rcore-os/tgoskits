@@ -1,0 +1,3 @@
+d2c0adf8939dc9ce02964ce8ada104447768ffd8e3bffad8fa11e2e61e709c1f  usr/share/task3-yolo/yolo11n.ncnn.param
+0ae562447923999779b12b4f91f96b9ef263add8c9902d10e22e6dd6a2932c12  usr/share/task3-yolo/yolo11n.ncnn.bin
+608c8a61ff0bb43e5a8613f1f6f8aa08af74b084363610ed2b526ad925e4cb6f  usr/share/task3-yolo/input.ppm

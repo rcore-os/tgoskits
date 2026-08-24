@@ -45,6 +45,12 @@ pub trait SwitchPort: Send + Sync {
     /// is removed from the table, but a stale `Arc` may still be held briefly
     /// by the uplink worker; this gate makes such references benign.
     fn is_active(&self) -> bool;
+    /// Permanently rejects new ingress for this port generation.
+    ///
+    /// The switch calls this after removing the port from both registry
+    /// indices.  Any forwarding decision that already cloned the endpoint can
+    /// therefore finish safely without delivering into a torn-down VM.
+    fn deactivate(&self);
     /// Pushes a frame toward the guest RX queue of this port.
     ///
     /// Returns `false` when the port's bounded ingress is full or the port is
@@ -156,15 +162,20 @@ impl VirtualSwitch {
     /// Removes a port from both indices. Idempotent: a second removal (e.g.
     /// explicit deactivate after RAII drop) is a no-op.
     pub fn unregister(&self, id: SwitchPortId) {
-        let mut registry = self.registry.lock_irqsave();
-        let Some(port) = registry.by_id.remove(&id) else {
-            return;
+        let port = {
+            let mut registry = self.registry.lock_irqsave();
+            let Some(port) = registry.by_id.remove(&id) else {
+                return;
+            };
+            // Remove the MAC index only if it still points at this generation;
+            // a newer generation must not lose its entry because of an old one.
+            if registry.by_mac.get(&port.guest_mac()) == Some(&id) {
+                registry.by_mac.remove(&port.guest_mac());
+            }
+            port
         };
-        // Remove the MAC index only if it still points at this generation; a
-        // newer generation must not lose its entry because of an old one.
-        if registry.by_mac.get(&port.guest_mac()) == Some(&id) {
-            registry.by_mac.remove(&port.guest_mac());
-        }
+        // Never invoke a port callback under the registry lock.
+        port.deactivate();
     }
 
     /// Returns a snapshot of all active port identities, in stable order. The
@@ -508,6 +519,9 @@ mod tests {
         fn is_active(&self) -> bool {
             self.active.load(Ordering::Acquire)
         }
+        fn deactivate(&self) {
+            self.active.store(false, Ordering::Release);
+        }
         fn deliver_ingress(&self, frame: &[u8]) -> bool {
             if !self.is_active() {
                 return false;
@@ -676,6 +690,7 @@ mod tests {
         assert_eq!(a.delivered().len(), 1);
 
         drop(ra);
+        assert!(!a.is_active());
         // After A's registration is dropped, only B receives the broadcast.
         switch.switch_from_uplink(&frame([0xff; 6], MAC_HOST));
         assert_eq!(a.delivered().len(), 1); // unchanged

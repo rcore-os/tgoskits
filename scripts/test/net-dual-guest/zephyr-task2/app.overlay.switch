@@ -1,0 +1,36 @@
+/* Overlay for the in-hypervisor virtio-net switch topology: the endpoint is
+ * the hypervisor-generated virtio-mmio node at 0x0a00_0000 with wired IRQ 48,
+ * which matches the QEMU virt machine's slot 0 (GIC_SPI 16) base/IRQ layout.
+ *
+ * Build with TASK2_ZEPHYR_VIRTIO_SLOT=0 to select this overlay. */
+
+/* Zephyr's QEMU networking choice enables the generic UART pipe helper even
+ * though this Guest uses virtio-net. Bind that helper to the console UART so
+ * the driver remains linkable; no SLIP traffic is used. */
+/ {
+	chosen {
+		zephyr,uart-pipe = &uart0;
+	};
+};
+
+/* The board's generic PCIe node is not part of this MMIO-only Guest.  Disable
+ * both the host controller and its E1000 child; this also prevents the board
+ * Kconfig from selecting PCIe support for the image. */
+&pcie {
+	status = "disabled";
+};
+
+&eth0 {
+	status = "disabled";
+};
+
+/* The switch topology uses the first AxVisor virtio-mmio window. */
+&virtio_mmio0 {
+	status = "okay";
+
+	virtio_net: virtio-net {
+		compatible = "virtio,net";
+		status = "okay";
+		local-mac-address = [52 54 00 12 34 02];
+	};
+};

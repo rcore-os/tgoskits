@@ -1,0 +1,3 @@
+scheduler,runs,median_samples,median_runtime_seconds,median_mean_ns,median_p50_ns,median_p99_ns,median_p99_9_ns,median_max_ns,median_over_1ms,median_over_10ms,median_deadline_misses,median_inference_samples,median_inference_mean_us,median_inference_p95_us,median_inference_p99_us,median_inference_max_us,median_inferences_per_minute
+rr,2,300.0,3.002,2485302.5,1997840.0,5291696.0,6498808.0,6498808.0,229.0,0.0,0.0,5.0,1530172.5,1561303.5,1561303.5,1561303.5,25.702
+fp-rr,2,300.0,3.0,94568.5,88224.0,117200.0,1746608.0,1746608.0,1.0,0.0,0.0,5.0,1560966.5,1653751.0,1653751.0,1653751.0,25.15

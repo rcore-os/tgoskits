@@ -1,0 +1,26 @@
+[base]
+id = 2
+name = "atk-task1-rtthread-periodic-sustained"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x100]
+host_sched_priority = 90
+
+[kernel]
+entry_point = 0xA008_0000
+image_location = "memory"
+kernel_load_addr = 0xA008_0000
+kernel_path = "/home/huhu/atk-bringup/task1-yolo-sustained-20260823-202227/inputs/rtthread/rtthread-periodic.bin"
+dtb_load_addr = 0xA7F0_0000
+cmdline = "console=ttyAMA0"
+memory_regions = [
+    [0xA000_0000, 0x2000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "console0"
+model = "pl011-mmio"

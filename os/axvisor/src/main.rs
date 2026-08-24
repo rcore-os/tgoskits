@@ -40,19 +40,38 @@ mod guest_console;
 #[cfg(feature = "http-axum")]
 mod http;
 mod manager;
+#[cfg(feature = "openrace-realtime")]
+mod realtime_probe;
+mod rt_burner;
 mod shell;
 
-#[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
+#[cfg(any(
+    feature = "backtrace",
+    feature = "test-panic-no-backtrace",
+    feature = "rt-scheduler"
+))]
 fn init_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         // When the `backtrace` feature is NOT enabled, axbacktrace is compiled
         // without `alloc` → Inner::Disabled → BT_ERROR requires_alloc.
         // When the `backtrace` feature IS enabled, axbacktrace captures real
         // frames (alloc=true, frames enumerated).
-        let backtrace = axbacktrace::Backtrace::capture().kind("panic");
-        let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(
-            format_args!("{info}\n{backtrace}\n"),
-        );
+        #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
+        {
+            let backtrace = axbacktrace::Backtrace::capture().kind("panic");
+            let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(
+                format_args!("{info}\n{backtrace}\n"),
+            );
+        }
+        #[cfg(all(
+            feature = "rt-scheduler",
+            not(any(feature = "backtrace", feature = "test-panic-no-backtrace"))
+        ))]
+        {
+            let _ = ax_std::os::arceos::modules::ax_runtime::emergency_console::write_fmt(
+                format_args!("{info}\n"),
+            );
+        }
     }));
 }
 
@@ -81,7 +100,11 @@ fn init_atomic_output_panic_hook() {
 fn main() {
     #[cfg(feature = "test-console-atomic-output")]
     init_atomic_output_panic_hook();
-    #[cfg(any(feature = "backtrace", feature = "test-panic-no-backtrace"))]
+    #[cfg(any(
+        feature = "backtrace",
+        feature = "test-panic-no-backtrace",
+        feature = "rt-scheduler"
+    ))]
     init_panic_hook();
 
     // Test-only panic paths — gated behind dedicated features so they never
@@ -94,15 +117,21 @@ fn main() {
 
     guest_console::configure_host_console()
         .unwrap_or_else(|error| panic!("failed to configure host console: {error:#}"));
+    guest_console::start_output_housekeeping()
+        .unwrap_or_else(|error| panic!("failed to start guest console housekeeping: {error:#}"));
 
     guest_console::submit_host_bytes(banner::STARTUP);
+
+    let dedicated = ax_std::os::arceos::modules::ax_runtime::dedicated_cpu_mask();
+    if dedicated != 0 {
+        info!("RT partition host CPU mask established: {dedicated:#b}");
+    }
 
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
 
     manager.init_default_vms();
-
     // The management HTTP server accepts connections in a loop and needs its
     // own task so neither the shell nor the VMM blocks it. It is spawned first
     // so the management API is ready as early as possible. `ax_std::thread::spawn`
@@ -124,10 +153,14 @@ fn main() {
     // With `no-auto-start` the default VMs are only created (staying in
     // `Ready`) and the management plane boots them on demand, so nothing is
     // launched or waited on here.
+    rt_burner::start();
+
     #[cfg(not(feature = "no-auto-start"))]
     let started_vms = manager.launch_default_vms();
     #[cfg(not(feature = "no-auto-start"))]
     guest_console::attach_default(started_vms);
+    #[cfg(all(feature = "openrace-realtime", not(feature = "no-auto-start")))]
+    realtime_probe::start();
 
     #[cfg(not(feature = "no-auto-start"))]
     std::thread::Builder::new()

@@ -14,6 +14,9 @@ axpoll
 ax-sched
 axvm
 axvmconfig
+task2-net-protocol
+task3-model
+task3-ncnn
 ax-cpumask
 irq-framework
 ax-lazyinit

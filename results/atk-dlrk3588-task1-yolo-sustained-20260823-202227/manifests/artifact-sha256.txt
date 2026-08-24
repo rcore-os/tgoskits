@@ -1,0 +1,11 @@
+f138be25b22fa0545d56d5dbd2a593bebddcad8ff6b70672ab708475e1776728  /home/huhu/atk-bringup/task1-yolo-sustained-20260823-202227/images/axvisor-task1-yolo-fp-rr.bin
+f5e64ab8459732a14c4d16e3373417dbfad2c2257913ac21601a22af128f18e3  /home/huhu/atk-bringup/task1-yolo-sustained-20260823-202227/images/axvisor-task1-yolo-fp-rr.elf
+2397594edc0b5482c83e9ce88288f86a53219dba2da59412995e56e6713dc5d9  /home/huhu/atk-bringup/task1-yolo-sustained-20260823-202227/images/axvisor-task1-yolo-fp-rr.fit
+2c7a4389456f345f82f8dc3df17e449a83232d9da59aca2bb5212faebb6c781d  /home/huhu/atk-bringup/task1-yolo-sustained-20260823-202227/images/axvisor-task1-yolo-rr.bin
+62929d0b859f102e707f309bd035a09e14738404744440fabe245f3419b5d310  /home/huhu/atk-bringup/task1-yolo-sustained-20260823-202227/images/axvisor-task1-yolo-rr.elf
+a482d035a7efd26c564b7b931071e32eb26c9b06954a68275b6e5c38cf0093e6  /home/huhu/atk-bringup/task1-yolo-sustained-20260823-202227/images/axvisor-task1-yolo-rr.fit
+648f3002d93f61eeaa44307d6b3f28a52dfa0d14c7da90ff4429716734b4cbc8  /home/huhu/atk-bringup/task1-yolo-sustained-20260823-202227/inputs/controller/task2-net
+15db5f595a75dd3418d76252013ff6b5d27b7bb4c8c85889567231b9867ee452  /home/huhu/atk-bringup/task1-yolo-sustained-20260823-202227/inputs/task2-linux-initramfs.cpio.gz
+bf257944d700de2d85c59475ab39d616a53efa75590a247d8001ba038f1ac00b  /home/huhu/atk-bringup/task1-yolo-sustained-20260823-202227/inputs/rtthread/rtthread-periodic.bin
+de398456718997c321b0a9b44a817909a5a9394064965ef668e690c1c9917807  /home/huhu/atk-bringup/atk-dlrk3588-starry.dtb
+cdedbe583a55e2f5a030345819fdc1d3bf0c202c5c707fbd1e104146e71c1ef1  /home/huhu/tgoskits-starry/target/aarch64-unknown-none-softfloat/release/starryos.bin

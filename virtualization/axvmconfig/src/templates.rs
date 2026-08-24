@@ -65,6 +65,9 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> GuestConfig {
             // Assign sequential CPU IDs starting from 0
             phys_cpu_ids: Some((0..params.cpu_num).collect()),
             phys_cpu_sets: None,
+            host_sched_priority: Some(90),
+            aarch64_virtual_timer_only: false,
+            aarch64_wfi_policy: Aarch64WfiPolicy::Auto,
         },
         // Kernel and boot configuration
         kernel: VMKernelConfig {

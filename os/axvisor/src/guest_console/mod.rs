@@ -18,6 +18,7 @@ pub(crate) use host::{
 )]
 pub(crate) use mux::attach_default;
 pub(crate) use mux::{
-    ConsoleInputEvent, activate, attach, attached_vm, mark_running, mark_stopped,
-    reconcile_vm_states, remove, route_host_byte, route_host_log, serial_backend_factory,
+    ConsoleInputEvent, activate, attach, attached_vm, flush_host_output, mark_running,
+    mark_stopped, reconcile_vm_states, remove, route_host_byte, route_host_log,
+    serial_backend_factory, start_output_housekeeping, stats_snapshot,
 };

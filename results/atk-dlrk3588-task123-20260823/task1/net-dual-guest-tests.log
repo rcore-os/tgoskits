@@ -1,0 +1,39 @@
+test_qemu_dtb_randomness_is_disabled (test_prepare_p2_host_dtb.PrepareP2HostDtbTests.test_qemu_dtb_randomness_is_disabled) ... ok
+test_coalesced_lines_are_not_dropped (test_qmp_link.QmpLinkTests.test_coalesced_lines_are_not_dropped) ... ok
+test_dump_pcap_streams_guest_records_and_writes_both_files (test_serial_console.SerialConsoleTest.test_dump_pcap_streams_guest_records_and_writes_both_files) ... ok
+test_expectation_failure_collects_forensics_before_returning (test_serial_console.SerialConsoleTest.test_expectation_failure_collects_forensics_before_returning) ... error: missing gate
+ok
+test_poll_reads_tracks_attachment_marker_split_across_receives (test_serial_console.SerialConsoleTest.test_poll_reads_tracks_attachment_marker_split_across_receives) ... ok
+test_qmp_forensics_persists_each_requested_snapshot (test_serial_console.SerialConsoleTest.test_qmp_forensics_persists_each_requested_snapshot) ... ok
+test_send_until_retries_gate_byte_until_marker_arrives (test_serial_console.SerialConsoleTest.test_send_until_retries_gate_byte_until_marker_arrives) ... ok
+test_watchdog_failure_collects_forensics_before_returning (test_serial_console.SerialConsoleTest.test_watchdog_failure_collects_forensics_before_returning) ... error: stalled
+ok
+test_interleaved_guest_serial_fragments_are_searchable (test_verify_fault_pcap.VerifyFaultPcapTests.test_interleaved_guest_serial_fragments_are_searchable) ... ok
+test_identity_mapping_and_stage2_mmio_are_observable (test_verify_isolation.VerifyIsolationTests.test_identity_mapping_and_stage2_mmio_are_observable) ... ok
+test_identity_mapping_does_not_accept_missing_runtime_map (test_verify_isolation.VerifyIsolationTests.test_identity_mapping_does_not_accept_missing_runtime_map) ... ok
+test_empty_capture_fails (test_verify_pcap.VerifyPcapTests.test_empty_capture_fails) ... ok
+test_legacy_probe_does_not_satisfy_require_task2 (test_verify_pcap.VerifyPcapTests.test_legacy_probe_does_not_satisfy_require_task2) ... ok
+test_single_capture_is_valid_input_for_p1 (test_verify_pcap.VerifyPcapTests.test_single_capture_is_valid_input_for_p1) ... ok
+test_two_captures_require_matching_task2_sequence_signatures (test_verify_pcap.VerifyPcapTests.test_two_captures_require_matching_task2_sequence_signatures) ... ok
+test_valid_task2_capture_passes_and_bad_crc_is_not_task2 (test_verify_pcap.VerifyPcapTests.test_valid_task2_capture_passes_and_bad_crc_is_not_task2) ... ok
+test_fp_rr_log_requires_nonzero_bounded_service_counter (test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_fp_rr_log_requires_nonzero_bounded_service_counter) ... ok
+test_guest_artifact_hashes_must_match (test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_guest_artifact_hashes_must_match) ... ok
+test_host_configs_may_differ_only_by_scheduler_feature (test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_host_configs_may_differ_only_by_scheduler_feature) ... ok
+test_repository_task1_configs_define_the_required_single_variable_ab (test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_repository_task1_configs_define_the_required_single_variable_ab) ... ok
+test_rootfs_content_must_match_endpoint_script_and_yolo_assets (test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_rootfs_content_must_match_endpoint_script_and_yolo_assets) ... ok
+test_rtt_summary_uses_nearest_rank_p95 (test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_rtt_summary_uses_nearest_rank_p95) ... ok
+test_blackout_accepts_control_markers_before_and_after_recovery (test_verify_starry_task23.VerifyStarryTask23Tests.test_blackout_accepts_control_markers_before_and_after_recovery) ... ok
+test_blackout_requires_both_safe_states_and_completed_recovery_cycle (test_verify_starry_task23.VerifyStarryTask23Tests.test_blackout_requires_both_safe_states_and_completed_recovery_cycle) ... ok
+test_invalid_parameter_injection_is_proven_by_wire_capture (test_verify_starry_task23.VerifyStarryTask23Tests.test_invalid_parameter_injection_is_proven_by_wire_capture) ... ok
+test_out_of_order_injection_is_proven_by_wire_capture (test_verify_starry_task23.VerifyStarryTask23Tests.test_out_of_order_injection_is_proven_by_wire_capture) ... ok
+test_retry_exhaustion_requires_five_retries_and_no_ack (test_verify_starry_task23.VerifyStarryTask23Tests.test_retry_exhaustion_requires_five_retries_and_no_ack) ... ok
+test_yolo_model_rejection_keeps_heartbeat_but_emits_no_control (test_verify_starry_task23.VerifyStarryTask23Tests.test_yolo_model_rejection_keeps_heartbeat_but_emits_no_control) ... ok
+
+----------------------------------------------------------------------
+Ran 28 tests in 0.559s
+
+OK
+pcap: wrote 1 frames to /tmp/tmpeu9t1ri7/switch.vm1.pcap
+pcap: wrote 1 frames to /tmp/tmpeu9t1ri7/switch.vm2.pcap
+/tmp/tmp2qa7z3b9/p1.pcap: packets=1 arp=0 udp=1 tagged=0 task2=1 kinds={1: 1}
+PASS

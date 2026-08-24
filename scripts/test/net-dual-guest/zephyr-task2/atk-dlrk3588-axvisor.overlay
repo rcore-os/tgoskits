@@ -1,0 +1,14 @@
+/*
+ * AxVisor exposes the RK3588 GIC register windows to this virtualized Guest.
+ * The PL011 console and slot-0 virtio-mmio device remain at their QEMU-virt
+ * guest addresses because AxVisor creates both as virtual devices.
+ */
+
+&gic {
+	reg = <0x0 0xfe600000 0x0 0x10000>,
+	      <0x0 0xfe680000 0x0 0x100000>;
+};
+
+&its {
+	status = "disabled";
+};

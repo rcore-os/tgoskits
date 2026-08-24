@@ -174,16 +174,20 @@ pub(crate) trait HostTimePlatform {
     }
 
     fn register_timer_source(
-        deadline_source: Arc<crate::timer::PublishedTimerDeadline>,
+        deadline_source: &'static crate::timer::PublishedTimerDeadline,
         notify: Arc<IrqNotify>,
     ) {
-        let published_deadline = deadline_source.clone();
+        let published_deadline = deadline_source;
         ax_std::os::arceos::modules::ax_task::register_timer_deadline_source(move || {
             published_deadline.deadline_nanos()
         });
         ax_std::os::arceos::modules::ax_task::register_timer_irq_callback(move |now| {
-            deadline_source.clear_if_elapsed(now.as_nanos().min(u64::MAX as u128) as u64);
-            notify.notify_irq();
+            let now_nanos = now.as_nanos().min(u64::MAX as u128) as u64;
+            let axvm_deadline_due = deadline_source.is_due(now_nanos);
+            deadline_source.clear_if_elapsed(now_nanos);
+            if axvm_deadline_due {
+                notify.notify_irq();
+            }
         });
     }
 }
