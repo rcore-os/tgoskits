@@ -41,6 +41,8 @@ extern crate alloc;
 #[cfg(target_arch = "x86_64")]
 pub mod ioapic;
 #[cfg(target_arch = "x86_64")]
+pub mod legacy_pic;
+#[cfg(target_arch = "x86_64")]
 pub mod local_apic;
 pub mod msi;
 #[cfg(all(target_arch = "x86_64", feature = "rdif"))]
@@ -115,9 +117,19 @@ pub enum ApicError {
         lint1: u32,
     },
 
+    /// The local APIC LINT0 entry did not retain the requested ExtINT state.
+    #[error(
+        "local APIC LINT0 rejected ExtINT configuration (expected {expected:#x}, read {actual:#x})"
+    )]
+    Lint0ExtIntConfiguration { expected: u32, actual: u32 },
+
     /// The I/O APIC input pin is outside this chip's redirection table.
     #[error("I/O APIC input {0} is outside the redirection table")]
     InvalidIoApicInput(u8),
+
+    /// The legacy PIC IRQ is outside the PC/AT range 0..16.
+    #[error("legacy PIC IRQ {0} is outside the PC/AT range")]
+    InvalidLegacyPicIrq(u8),
 
     /// The CPU does not expose a usable local APIC.
     #[error("local APIC unsupported: {0}")]

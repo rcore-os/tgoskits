@@ -40,6 +40,8 @@ const INVALID_IRQ_DOMAIN: u16 = u16::MAX;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IrqDomainKind {
     X86IoApic,
+    /// PC/AT 8259 interrupt-controller domain used by an explicit x86 platform policy.
+    X86LegacyPic,
     X86Msi,
     AArch64Gic,
     RiscvPlic,
@@ -95,6 +97,7 @@ fn irq_routes() -> SpinLockIrqSaveGuard<'static, Vec<IrqRoute>> {
     IRQ_ROUTES.lock()
 }
 static X86_IOAPIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
+static X86_LEGACY_PIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static X86_MSI_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static AARCH64_GIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static RISCV_PLIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
@@ -206,6 +209,7 @@ fn register_domain(
 fn domain_slot(kind: IrqDomainKind) -> Option<&'static AtomicU16> {
     match kind {
         IrqDomainKind::X86IoApic => Some(&X86_IOAPIC_DOMAIN_SLOT),
+        IrqDomainKind::X86LegacyPic => Some(&X86_LEGACY_PIC_DOMAIN_SLOT),
         IrqDomainKind::X86Msi => Some(&X86_MSI_DOMAIN_SLOT),
         IrqDomainKind::AArch64Gic => Some(&AARCH64_GIC_DOMAIN_SLOT),
         IrqDomainKind::RiscvPlic => Some(&RISCV_PLIC_DOMAIN_SLOT),
@@ -563,6 +567,14 @@ pub fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {
     Plat::resolve_irq_source(source)
 }
 
+#[cfg(target_arch = "x86_64")]
+/// Resolves an explicitly selected legacy-PIC console vector.
+///
+/// Returns `None` when the platform keeps the ordinary IOAPIC console path.
+pub fn x86_legacy_pic_console_irq(vector: usize) -> Option<Result<IrqId, IrqError>> {
+    crate::arch::legacy_pic_console_irq(vector)
+}
+
 pub fn send_ipi_to_cpu(cpu_id: usize) -> Result<(), IrqError> {
     Plat::send_ipi_to_cpu(cpu_id)
 }
@@ -580,6 +592,7 @@ mod tests {
         irq_routes().clear();
         for kind in [
             IrqDomainKind::X86IoApic,
+            IrqDomainKind::X86LegacyPic,
             IrqDomainKind::X86Msi,
             IrqDomainKind::AArch64Gic,
             IrqDomainKind::RiscvPlic,

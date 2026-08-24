@@ -149,6 +149,33 @@ impl X86LocalApic {
         }
     }
 
+    /// Configures LINT0 as the legacy 8259 ExtINT input on the current CPU.
+    ///
+    /// The caller selects whether the pin is armed. Firmware-provided polarity
+    /// and trigger flags are preserved; only the vector, delivery mode, and
+    /// mask fields owned by this transition are changed.
+    pub fn set_lint0_extint(&self, enabled: bool) -> Result<(), ApicError> {
+        let current =
+            unsafe { read_lvt(self.xapic_mmio_base, XAPIC_REG_LVT_LINT0, X2APIC_LVT_LINT0) };
+        let expected = lint0_extint_entry(current, enabled);
+        unsafe {
+            write_lvt(
+                self.xapic_mmio_base,
+                XAPIC_REG_LVT_LINT0,
+                X2APIC_LVT_LINT0,
+                expected,
+            );
+        }
+        let actual =
+            unsafe { read_lvt(self.xapic_mmio_base, XAPIC_REG_LVT_LINT0, X2APIC_LVT_LINT0) };
+        const EXTINT_READBACK_MASK: u32 = (0x7 << 8) | LVT_MASKED;
+        if actual & EXTINT_READBACK_MASK == expected & EXTINT_READBACK_MASK {
+            Ok(())
+        } else {
+            Err(ApicError::Lint0ExtIntConfiguration { expected, actual })
+        }
+    }
+
     /// Returns the local APIC id of the current CPU.
     pub fn apic_id(&self) -> u32 {
         let lapic = self.instance();
@@ -409,6 +436,19 @@ fn masked_local_interrupt_pins(lint0: u32, lint1: u32) -> (u32, u32) {
     (lint0 | LVT_MASKED, lint1 | LVT_MASKED)
 }
 
+fn lint0_extint_entry(lint0: u32, enabled: bool) -> u32 {
+    const VECTOR_MASK: u32 = 0xff;
+    const DELIVERY_MODE_MASK: u32 = 0x7 << 8;
+    const EXTINT: u32 = 0x7 << 8;
+
+    let configured = (lint0 & !(VECTOR_MASK | DELIVERY_MODE_MASK | LVT_MASKED)) | EXTINT;
+    if enabled {
+        configured
+    } else {
+        configured | LVT_MASKED
+    }
+}
+
 fn local_interrupt_pins_are_masked(lint0: u32, lint1: u32) -> bool {
     lint0 & LVT_MASKED != 0 && lint1 & LVT_MASKED != 0
 }
@@ -478,5 +518,24 @@ mod tests {
             masked_lint0 & !LVT_MASKED,
             masked_lint1
         ));
+    }
+
+    #[test]
+    fn lint0_extint_configuration_preserves_pin_flags_and_controls_only_delivery_and_mask() {
+        const DELIVERY_MODE_MASK: u32 = 0x7 << 8;
+        const EXTINT: u32 = 0x7 << 8;
+        let firmware_lint0 = 0x1_0000 | 0xa000 | 0x455;
+
+        let enabled = lint0_extint_entry(firmware_lint0, true);
+        let disabled = lint0_extint_entry(firmware_lint0, false);
+
+        assert_eq!(enabled & DELIVERY_MODE_MASK, EXTINT);
+        assert_eq!(enabled & LVT_MASKED, 0);
+        assert_eq!(disabled & DELIVERY_MODE_MASK, EXTINT);
+        assert_ne!(disabled & LVT_MASKED, 0);
+        assert_eq!(
+            enabled & !(DELIVERY_MODE_MASK | LVT_MASKED | 0xff),
+            firmware_lint0 & !(DELIVERY_MODE_MASK | LVT_MASKED | 0xff)
+        );
     }
 }

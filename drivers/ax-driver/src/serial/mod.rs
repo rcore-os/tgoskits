@@ -127,7 +127,7 @@ pub fn take_serial_devices() -> Vec<SerialDevice> {
         return Vec::new();
     }
 
-    rdrive::get_list::<PlatformSerialDevice>()
+    let mut serials = rdrive::get_list::<PlatformSerialDevice>()
         .into_iter()
         .filter_map(|dev| match SerialDevice::try_from(dev) {
             Ok(serial) => Some(serial),
@@ -136,7 +136,61 @@ pub fn take_serial_devices() -> Vec<SerialDevice> {
                 None
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    append_spcr_serial_if_missing(&mut serials);
+    serials
+}
+
+fn append_spcr_serial_if_missing(serials: &mut Vec<SerialDevice>) {
+    let console = match rdrive::acpi_serial_console() {
+        Ok(Some(console)) => console,
+        Ok(None) => return,
+        Err(err) => {
+            warn!("failed to read ACPI SPCR serial console: {err:?}");
+            return;
+        }
+    };
+    let Ok(register_base) = usize::try_from(console.registers.base) else {
+        warn!(
+            "ACPI SPCR serial base {:#x} does not fit the platform address width",
+            console.registers.base
+        );
+        return;
+    };
+    if serials
+        .iter()
+        .any(|serial| serial.info.paddr == register_base)
+    {
+        return;
+    }
+    let (probe, spec) = match ns16550::uart_from_spcr(&console) {
+        Ok(Some(serial)) => serial,
+        Ok(None) => return,
+        Err(err) => {
+            warn!("failed to create runtime serial from ACPI SPCR: {err:?}");
+            return;
+        }
+    };
+    let Some(device_id) = rdrive::acpi_spcr_console_device_id() else {
+        warn!("ACPI SPCR serial console has no stable device identity");
+        return;
+    };
+    let firmware_path = console.namespace_path.unwrap_or_else(|| "ACPI:SPCR".into());
+    let ProbedUart { hardware, parts } = probe;
+    serials.push(SerialDevice {
+        info: SerialDeviceInfo {
+            name: hardware.name.into(),
+            device_id,
+            firmware_path,
+            alias_index: Some(0),
+            paddr: spec.register_base,
+            initial_baudrate: spec.initial_baudrate,
+            irq: Some(BindingIrq::from(spec.irq_route)),
+        },
+        port: parts.port,
+        irq: parts.irq,
+        register_gate: parts.register_gate,
+    });
 }
 
 struct SerialFirmwareInfo {

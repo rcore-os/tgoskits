@@ -4,7 +4,10 @@ use log::info;
 use rdrive::{
     probe::{
         OnProbeError,
-        acpi::{AcpiId, AcpiInfo, ProbeAcpi},
+        acpi::{
+            AcpiGsiRoute, AcpiId, AcpiInfo, AcpiSerialAddressSpace, AcpiSerialConsole,
+            AcpiSerialInterface, ProbeAcpi,
+        },
     },
     register::ProbeFdt,
 };
@@ -17,6 +20,85 @@ use super::{
 
 const ACPI_NS16550_CLOCK: u32 = 1_843_200;
 const ACPI_NS16550_REG_WIDTH: usize = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SpcrNs16550Spec {
+    pub address_space: AcpiSerialAddressSpace,
+    pub register_base: usize,
+    pub register_size: usize,
+    pub register_width: usize,
+    pub clock_hz: u32,
+    pub initial_baudrate: u32,
+    pub irq_route: AcpiGsiRoute,
+}
+
+pub(super) fn spcr_ns16550_spec(console: &AcpiSerialConsole) -> Option<SpcrNs16550Spec> {
+    if console.interface != AcpiSerialInterface::Uart16550 {
+        return None;
+    }
+    let register_width = match console.access_size {
+        1 => 1,
+        2 => 2,
+        3 => 4,
+        4 => 8,
+        _ => ACPI_NS16550_REG_WIDTH,
+    };
+    Some(SpcrNs16550Spec {
+        address_space: console.address_space,
+        register_base: usize::try_from(console.registers.base).ok()?,
+        register_size: usize::try_from(console.registers.size).ok()?,
+        register_width,
+        clock_hz: console.clock_hz.unwrap_or(ACPI_NS16550_CLOCK),
+        initial_baudrate: console.baud_rate.unwrap_or(115_200),
+        irq_route: console.irq_route?,
+    })
+}
+
+pub(super) fn uart_from_spcr(
+    console: &AcpiSerialConsole,
+) -> Result<Option<(ProbedUart, SpcrNs16550Spec)>, OnProbeError> {
+    let Some(spec) = spcr_ns16550_spec(console) else {
+        return Ok(None);
+    };
+    let raw = match spec.address_space {
+        AcpiSerialAddressSpace::Memory => {
+            let size = spec
+                .register_size
+                .max(spec.register_width.saturating_mul(8));
+            let mmio_base = crate::mmio::iomap(spec.register_base, size)?;
+            erase_uart(serial_ns16550::Ns16550::new_mmio(
+                mmio_base,
+                spec.clock_hz,
+                spec.register_width,
+            ))
+        }
+        AcpiSerialAddressSpace::Io => return uart_from_spcr_io(spec),
+    };
+    Ok(Some((raw, spec)))
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+fn uart_from_spcr_io(
+    spec: SpcrNs16550Spec,
+) -> Result<Option<(ProbedUart, SpcrNs16550Spec)>, OnProbeError> {
+    let port = u16::try_from(spec.register_base).map_err(|_| {
+        OnProbeError::other(format!(
+            "SPCR has invalid NS16550 I/O base {:#x}",
+            spec.register_base
+        ))
+    })?;
+    let raw = erase_uart(serial_ns16550::Ns16550::new_port(port, spec.clock_hz));
+    Ok(Some((raw, spec)))
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+fn uart_from_spcr_io(
+    _spec: SpcrNs16550Spec,
+) -> Result<Option<(ProbedUart, SpcrNs16550Spec)>, OnProbeError> {
+    Err(OnProbeError::other(
+        "SPCR NS16550 I/O ports are unsupported on this architecture",
+    ))
+}
 
 model_register!(
     name: "NS16550 serial",
@@ -177,4 +259,71 @@ fn acpi_mmio_serial(info: &AcpiInfo<'_>) -> Result<AcpiSerialResource, OnProbeEr
         serial_ns16550::Ns16550::new_mmio(mmio_base, ACPI_NS16550_CLOCK, ACPI_NS16550_REG_WIDTH);
     let serial = erase_uart(raw);
     Ok(AcpiSerialResource { serial, paddr })
+}
+
+#[cfg(test)]
+mod tests {
+    use rdrive::probe::acpi::AcpiResourceRange;
+
+    use super::*;
+
+    #[test]
+    fn derives_runtime_ns16550_from_spcr_without_aml_namespace() {
+        let console = AcpiSerialConsole {
+            interface: AcpiSerialInterface::Uart16550,
+            address_space: AcpiSerialAddressSpace::Io,
+            registers: AcpiResourceRange {
+                base: 0x3f8,
+                size: 8,
+            },
+            access_size: 1,
+            irq: Some(4),
+            irq_route: Some(AcpiGsiRoute {
+                gsi: 4,
+                vector: 0x34,
+                controller: rdrive::probe::acpi::AcpiGsiController::IoApic,
+                controller_id: 2,
+                controller_address: 0xfec0_0000,
+                controller_input: 4,
+                trigger: rdrive::probe::acpi::AcpiIrqTrigger::Edge,
+                polarity: rdrive::probe::acpi::AcpiIrqPolarity::ActiveHigh,
+            }),
+            baud_rate: Some(115_200),
+            clock_hz: None,
+            namespace_path: None,
+        };
+
+        assert_eq!(
+            spcr_ns16550_spec(&console),
+            Some(SpcrNs16550Spec {
+                address_space: AcpiSerialAddressSpace::Io,
+                register_base: 0x3f8,
+                register_size: 8,
+                register_width: 1,
+                clock_hz: ACPI_NS16550_CLOCK,
+                initial_baudrate: 115_200,
+                irq_route: console.irq_route.unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_spcr_fallback_without_interrupt_source() {
+        let console = AcpiSerialConsole {
+            interface: AcpiSerialInterface::Uart16550,
+            address_space: AcpiSerialAddressSpace::Io,
+            registers: AcpiResourceRange {
+                base: 0x3f8,
+                size: 8,
+            },
+            access_size: 1,
+            irq: None,
+            irq_route: None,
+            baud_rate: Some(115_200),
+            clock_hz: None,
+            namespace_path: None,
+        };
+
+        assert_eq!(spcr_ns16550_spec(&console), None);
+    }
 }

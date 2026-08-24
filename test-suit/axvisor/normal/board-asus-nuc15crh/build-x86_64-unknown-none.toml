@@ -1,4 +1,4 @@
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2", RDRIVE_ACPI_LOAD_AML = "0" }
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2", RDRIVE_ACPI_LOAD_AML = "0", AX_X86_LEGACY_PIC_CONSOLE = "1" }
 features = []
 log = "Info"
 target = "x86_64-unknown-none"

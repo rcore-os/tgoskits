@@ -288,6 +288,13 @@ pub fn acpi_spcr_console_device_id() -> Option<DeviceId> {
     probe::acpi::spcr_console_device_id()
 }
 
+/// Returns the firmware-selected ACPI serial console, if SPCR is available.
+pub fn acpi_serial_console() -> Result<Option<probe::acpi::AcpiSerialConsole>, error::DriverError> {
+    probe::acpi::try_system()
+        .map(probe::acpi::System::serial_console)
+        .unwrap_or(Ok(None))
+}
+
 pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
     probe::fdt::try_system().map(|system| f(system.fdt()))
 }

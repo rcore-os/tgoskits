@@ -17,6 +17,7 @@ use crate::{
 };
 
 mod lapic;
+mod legacy_pic;
 mod msi;
 pub mod timer;
 mod vector;
@@ -134,6 +135,9 @@ impl PlatOp for Plat {
     type ActiveIrq = ActiveIrq;
 
     fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError> {
+        if legacy_pic::owns_console_irq(irq) {
+            return legacy_pic::set_console_irq_enabled(enable);
+        }
         if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
             return Ok(());
         }
@@ -174,6 +178,14 @@ impl PlatOp for Plat {
     }
 
     fn irq_set_affinity(irq: IrqId, affinity: crate::irq::IrqAffinity) -> Result<(), IrqError> {
+        if legacy_pic::owns_console_irq(irq) {
+            return match affinity {
+                crate::irq::IrqAffinity::Any | crate::irq::IrqAffinity::Fixed { cpu_id: 0 } => {
+                    Ok(())
+                }
+                crate::irq::IrqAffinity::Fixed { .. } => Err(IrqError::InvalidCpu),
+            };
+        }
         if irq.domain == X86_LAPIC_DOMAIN || irq.domain == CPU_LOCAL_IRQ_DOMAIN {
             return Err(IrqError::Unsupported);
         }
@@ -225,11 +237,15 @@ impl PlatOp for Plat {
         }
 
         if let Some(irq) = local_vector_irq_id(raw) {
-            return Some(ActiveIrq::new(irq));
+            return Some(ActiveIrq::new(irq, None));
+        }
+
+        if let Some(irq) = legacy_pic::irq_for_vector(raw) {
+            return Some(ActiveIrq::new(irq, Some(legacy_pic::COM1_IRQ)));
         }
 
         match ioapic_irq_for_vector(raw) {
-            Some(irq) => Some(ActiveIrq::new(irq)),
+            Some(irq) => Some(ActiveIrq::new(irq, None)),
             None => {
                 warn!("unrouted x86 interrupt vector {raw:#x}");
                 lapic::eoi();
@@ -276,11 +292,15 @@ impl PlatOp for Plat {
 
 pub struct ActiveIrq {
     irq: IrqId,
+    legacy_pic_irq: Option<u8>,
 }
 
 impl ActiveIrq {
-    const fn new(irq: IrqId) -> Self {
-        Self { irq }
+    const fn new(irq: IrqId, legacy_pic_irq: Option<u8>) -> Self {
+        Self {
+            irq,
+            legacy_pic_irq,
+        }
     }
 
     pub fn id(&self) -> IrqId {
@@ -290,8 +310,17 @@ impl ActiveIrq {
 
 impl Drop for ActiveIrq {
     fn drop(&mut self) {
+        if let Some(irq) = self.legacy_pic_irq
+            && let Err(error) = legacy_pic::eoi(irq)
+        {
+            warn!("failed to complete legacy PIC IRQ {irq}: {error:?}");
+        }
         lapic::eoi();
     }
+}
+
+pub(crate) fn legacy_pic_console_irq(vector: usize) -> Option<Result<IrqId, IrqError>> {
+    legacy_pic::selected_for_vector(vector).then(legacy_pic::console_irq_id)
 }
 
 fn resolve_acpi_gsi(gsi: u32) -> Result<IrqId, IrqError> {
@@ -304,6 +333,9 @@ fn resolve_acpi_gsi(gsi: u32) -> Result<IrqId, IrqError> {
 }
 
 fn resolve_acpi_route(route: irq_framework::AcpiGsiRoute) -> Result<IrqId, IrqError> {
+    if let Some(legacy_pic_irq) = legacy_pic::resolve_acpi_route(&route) {
+        return legacy_pic_irq;
+    }
     let route = route_to_rdif(route);
     let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::X86IoApic)
         .ok_or(IrqError::Unsupported)?;

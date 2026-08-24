@@ -26,7 +26,7 @@ use acpi::{
         interrupt::{InterruptModel, Polarity, TriggerMode},
         pci::PciConfigRegions,
     },
-    sdt::spcr::{Spcr, SpcrInterfaceType},
+    sdt::spcr::{Spcr, SpcrInterfaceType, SpcrInterruptType},
 };
 use ax_lazyinit::OnceLock;
 use ax_sync::SpinLock as Mutex;
@@ -224,6 +224,16 @@ impl AcpiRouting {
             .route(gsi, self.default_trigger(gsi), self.default_polarity(gsi))
     }
 
+    /// Resolves a PC-AT IRQ through any MADT interrupt-source override.
+    pub fn resolve_isa_irq(&self, irq: u8) -> Option<AcpiGsiRoute> {
+        let gsi = self
+            .isa_overrides
+            .iter()
+            .find(|irq_override| irq_override.source == irq)
+            .map_or(u32::from(irq), |irq_override| irq_override.gsi);
+        self.resolve_gsi(gsi)
+    }
+
     fn gsi_sources(&self) -> impl Iterator<Item = AcpiGsiSource> + '_ {
         self.io_apics
             .iter()
@@ -292,10 +302,12 @@ mod tests {
     use super::{
         AcpiGsiController, AcpiHandler, AcpiId, AcpiIoApic, AcpiIrqPolarity, AcpiIrqTrigger,
         AcpiIsaIrqOverride, AcpiPchPic, AcpiPciEcam, AcpiPciNamespace, AcpiPciRoot,
-        AcpiResourceRange, AcpiRoot, AcpiRouting, LinkIrqResource, LinkIrqResourceKind, Mutex,
-        PciLinkAllocator, System, apply_pci_root_dma_coherency, inherited_device_cca,
-        irq_descriptor_gsi, is_buffer_field_to_field_unit_store_gap, pci_irq_descriptor_gsi,
+        AcpiResourceRange, AcpiRoot, AcpiRouting, DeviceId, LinkIrqResource, LinkIrqResourceKind,
+        Mutex, OnceLock, PciLinkAllocator, SpcrInterrupt, SpcrInterruptType, System,
+        apply_pci_root_dma_coherency, inherited_device_cca, irq_descriptor_gsi,
+        is_buffer_field_to_field_unit_store_gap, pci_irq_descriptor_gsi,
         pci_link_irq_field_candidates, route_with_irq_descriptor_flags, select_pci_link_irq,
+        select_spcr_interrupt,
     };
     use crate::register::{DriverRegister, ProbeKind, ProbeLevel, ProbePriority};
 
@@ -399,6 +411,7 @@ mod tests {
             probed_names: Mutex::new(alloc::collections::BTreeSet::new()),
             populated_paths: Mutex::new(alloc::collections::BTreeMap::new()),
             populated_resources: Mutex::new(alloc::collections::BTreeMap::new()),
+            spcr_fallback_device_id: OnceLock::new(),
         }
     }
 
@@ -720,6 +733,55 @@ mod tests {
     }
 
     #[test]
+    fn legacy_irq_resolution_applies_isa_source_override() {
+        let mut routing = AcpiRouting::new();
+        routing.add_io_apic(AcpiIoApic {
+            id: 0,
+            address: 0xfec0_0000,
+            gsi_base: 0,
+            redirection_entries: 24,
+        });
+        routing.add_isa_irq_override(AcpiIsaIrqOverride {
+            source: 4,
+            gsi: 20,
+            trigger: AcpiIrqTrigger::Level,
+            polarity: AcpiIrqPolarity::ActiveLow,
+        });
+
+        let route = routing
+            .resolve_isa_irq(4)
+            .expect("legacy IRQ 4 should follow its MADT source override");
+        assert_eq!(route.gsi, 20);
+        assert_eq!(route.controller_input, 20);
+        assert_eq!(route.trigger, AcpiIrqTrigger::Level);
+        assert_eq!(route.polarity, AcpiIrqPolarity::ActiveLow);
+    }
+
+    #[test]
+    fn spcr_uses_nonzero_raw_interrupt_when_firmware_omits_interrupt_type() {
+        assert_eq!(
+            select_spcr_interrupt(SpcrInterruptType::empty(), 0, 18),
+            Some(SpcrInterrupt::Gsi(18))
+        );
+        assert_eq!(
+            select_spcr_interrupt(SpcrInterruptType::empty(), 4, 0),
+            Some(SpcrInterrupt::IsaIrq(4))
+        );
+    }
+
+    #[test]
+    fn synthetic_spcr_device_id_is_stable_without_namespace_population() {
+        let system = test_system();
+
+        let first = system.stable_spcr_device_id(None);
+        let second = system.stable_spcr_device_id(None);
+        let later_discovered = system.stable_spcr_device_id(Some(DeviceId::new()));
+
+        assert_eq!(first, second);
+        assert_eq!(first, later_discovered);
+    }
+
+    #[test]
     fn pci_link_irq_selects_prs_when_crs_is_unassigned() {
         let current = LinkIrqResource {
             kind: LinkIrqResourceKind::ExtendedIrq,
@@ -873,10 +935,47 @@ pub struct AcpiSerialConsole {
     pub address_space: AcpiSerialAddressSpace,
     pub registers: AcpiResourceRange,
     pub access_size: u8,
+    /// Firmware interrupt number retained for guest platform snapshots.
     pub irq: Option<u32>,
+    /// Host controller route after applying ACPI interrupt-source overrides.
+    pub irq_route: Option<AcpiGsiRoute>,
     pub baud_rate: Option<u32>,
     pub clock_hz: Option<u32>,
     pub namespace_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpcrInterrupt {
+    Gsi(u32),
+    IsaIrq(u8),
+}
+
+fn spcr_interrupt(spcr: &Spcr) -> Option<SpcrInterrupt> {
+    select_spcr_interrupt(
+        spcr.interrupt_type(),
+        spcr.irq,
+        spcr.global_system_interrupt,
+    )
+}
+
+fn select_spcr_interrupt(
+    interrupt_type: SpcrInterruptType,
+    irq: u8,
+    global_system_interrupt: u32,
+) -> Option<SpcrInterrupt> {
+    if !interrupt_type
+        .difference(SpcrInterruptType::DUAL_8259)
+        .is_empty()
+    {
+        return Some(SpcrInterrupt::Gsi(global_system_interrupt));
+    }
+    interrupt_type
+        .contains(SpcrInterruptType::DUAL_8259)
+        .then_some(SpcrInterrupt::IsaIrq(irq))
+        .or_else(|| {
+            (global_system_interrupt != 0).then_some(SpcrInterrupt::Gsi(global_system_interrupt))
+        })
+        .or_else(|| (irq != 0).then_some(SpcrInterrupt::IsaIrq(irq)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1300,6 +1399,7 @@ pub struct System {
     probed_names: Mutex<BTreeSet<&'static str>>,
     populated_paths: Mutex<BTreeMap<String, DeviceId>>,
     populated_resources: Mutex<BTreeMap<AcpiResourceAddress, DeviceId>>,
+    spcr_fallback_device_id: OnceLock<DeviceId>,
 }
 
 unsafe impl Send for System {}
@@ -1364,6 +1464,7 @@ impl System {
             probed_names: Mutex::new(BTreeSet::new()),
             populated_paths: Mutex::new(BTreeMap::new()),
             populated_resources: Mutex::new(BTreeMap::new()),
+            spcr_fallback_device_id: OnceLock::new(),
         })
     }
 
@@ -1387,13 +1488,19 @@ impl System {
         let tables = unsafe { AcpiTables::from_rsdp(self.handler.clone(), self.handler.root.rsdp) }
             .map_err(acpi_error)
             .ok()?;
-        tables
+        let spcr = tables
             .find_tables::<Spcr>()
-            .filter(|spcr| is_supported_spcr_interface(spcr.interface_type()))
-            .find_map(|spcr| {
-                spcr_namespace_device_id(self, &spcr)
-                    .or_else(|| spcr_resource_device_id(self, &spcr))
-            })
+            .find(|spcr| is_supported_spcr_interface(spcr.interface_type()))?;
+        let discovered =
+            spcr_namespace_device_id(self, &spcr).or_else(|| spcr_resource_device_id(self, &spcr));
+        Some(self.stable_spcr_device_id(discovered))
+    }
+
+    fn stable_spcr_device_id(&self, discovered: Option<DeviceId>) -> DeviceId {
+        if let Some(cached) = self.spcr_fallback_device_id.get() {
+            return *cached;
+        }
+        discovered.unwrap_or_else(|| *self.spcr_fallback_device_id.call_once(DeviceId::new))
     }
 
     pub fn resource_devices(&self) -> Result<Vec<AcpiResourceDevice>, ProbeError> {
@@ -1433,6 +1540,17 @@ impl System {
             .map_err(|error| DriverError::Unknown(format!("invalid host SPCR namespace: {error}")))?
             .trim_end_matches('\0')
             .to_string();
+        let interrupt = spcr_interrupt(&spcr);
+        let irq = spcr
+            .global_system_interrupt()
+            .or_else(|| spcr.irq().map(u32::from));
+        if irq.is_none() && interrupt.is_some() {
+            log::warn!("host SPCR omits interrupt-type flags; using its nonzero raw IRQ/GSI field");
+        }
+        let irq_route = interrupt.and_then(|interrupt| match interrupt {
+            SpcrInterrupt::Gsi(gsi) => self.routing.resolve_gsi(gsi),
+            SpcrInterrupt::IsaIrq(irq) => self.routing.resolve_isa_irq(irq),
+        });
         Ok(Some(AcpiSerialConsole {
             interface,
             address_space,
@@ -1441,9 +1559,8 @@ impl System {
                 size: spcr_uart_register_size(address.access_size),
             },
             access_size: address.access_size,
-            irq: spcr
-                .global_system_interrupt()
-                .or_else(|| spcr.irq().map(u32::from)),
+            irq,
+            irq_route,
             baud_rate: spcr.baud_rate().map(|value| value.get()),
             clock_hz: spcr.uart_clock_frequency().map(|value| value.get()),
             namespace_path: (!namespace_path.is_empty() && namespace_path != ".")

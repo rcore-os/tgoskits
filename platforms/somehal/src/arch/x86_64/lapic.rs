@@ -20,6 +20,12 @@ pub(super) fn eoi() {
     local_apic().eoi();
 }
 
+pub(super) fn set_lint0_extint(enabled: bool) -> Result<(), IrqError> {
+    local_apic()
+        .set_lint0_extint(enabled)
+        .map_err(map_apic_error)
+}
+
 pub(super) fn ipi_vector(irq: IrqId) -> Result<u8, IrqError> {
     if irq == lapic_ipi_irq_id() {
         Ok(APIC_IPI_VECTOR as u8)
@@ -67,7 +73,9 @@ fn map_apic_error(error: ApicError) -> IrqError {
         ApicError::XapicDestinationOverflow(_) => IrqError::InvalidCpu,
         ApicError::IpiDeliveryTimeout => IrqError::Timeout,
         ApicError::LocalInterruptPinsUnmasked { .. } => IrqError::Controller,
+        ApicError::Lint0ExtIntConfiguration { .. } => IrqError::Controller,
         ApicError::ApicUnsupported(_) => IrqError::Unsupported,
         ApicError::InvalidIoApicInput(_) => IrqError::InvalidIrq,
+        ApicError::InvalidLegacyPicIrq(_) => IrqError::InvalidIrq,
     }
 }

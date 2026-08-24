@@ -49,7 +49,6 @@ pub(crate) fn take_input() -> RuntimeResult<RawConsoleInput> {
 
 fn init_raw_input() -> RuntimeResult<Arc<RawInputRuntime>> {
     let irq = ax_hal::console::irq_num().ok_or(RuntimeError::OperationNotSupported)?;
-    ax_hal::console::set_input_irq_enabled(false);
     let (mut producer, consumer) = crate::serial::spsc::channel(RAW_RX_CAPACITY);
     let runtime = Arc::new(RawInputRuntime {
         available: SpinLock::new(Some(consumer)),
@@ -63,25 +62,35 @@ fn init_raw_input() -> RuntimeResult<Arc<RawInputRuntime>> {
         ax_hal::irq::IrqRequest::new(move |_| handle_raw_input_irq(&mut producer, &irq_runtime))
             .share_mode(ax_hal::irq::ShareMode::Shared)
             .auto_enable(ax_hal::irq::AutoEnable::No);
-    let handle = match ax_hal::irq::request_irq(irq, request) {
-        Ok(handle) => handle,
-        Err(error) => {
-            // Leave the device source masked: no handler owns this IRQ yet.
-            // `get_or_try_init` permits a later caller to retry registration.
-            ax_hal::console::set_input_irq_enabled(false);
-            return Err(error.into());
-        }
-    };
-    ax_hal::console::set_input_irq_enabled(true);
-    if let Err(error) = ax_hal::irq::enable_irq(handle) {
-        ax_hal::console::set_input_irq_enabled(false);
-        if let Err(free_error) = ax_hal::irq::free_irq(handle) {
-            warn!("failed to release raw console IRQ after enable failure: {free_error:?}");
-        }
-        return Err(error.into());
-    }
+    let handle = activate_raw_input_irq(
+        ax_hal::console::set_input_irq_enabled,
+        || ax_hal::irq::request_irq(irq, request),
+        ax_hal::irq::enable_irq,
+        |handle| {
+            if let Err(free_error) = ax_hal::irq::free_irq(handle) {
+                warn!("failed to release raw console IRQ after enable failure: {free_error:?}");
+            }
+        },
+    )?;
     runtime.irq_handle.call_once(|| handle);
     Ok(runtime)
+}
+
+fn activate_raw_input_irq<H: Copy, E>(
+    mut set_source_enabled: impl FnMut(bool),
+    request_line: impl FnOnce() -> Result<H, E>,
+    enable_line: impl FnOnce(H) -> Result<(), E>,
+    release_line: impl FnOnce(H),
+) -> Result<H, E> {
+    set_source_enabled(false);
+    let handle = request_line()?;
+    if let Err(error) = enable_line(handle) {
+        set_source_enabled(false);
+        release_line(handle);
+        return Err(error);
+    }
+    set_source_enabled(true);
+    Ok(handle)
 }
 
 fn handle_raw_input_irq(
@@ -208,7 +217,56 @@ impl Drop for RawConsoleInput {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{rc::Rc, vec::Vec};
+    use core::cell::RefCell;
+
     use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ActivationStep {
+        MaskSource,
+        RequestLine,
+        EnableLine,
+        UnmaskSource,
+    }
+
+    #[test]
+    fn raw_input_enables_controller_before_uart_source() {
+        let steps = Rc::new(RefCell::new(Vec::new()));
+        let source_steps = steps.clone();
+        let request_steps = steps.clone();
+        let enable_steps = steps.clone();
+
+        activate_raw_input_irq(
+            move |enabled| {
+                source_steps.borrow_mut().push(if enabled {
+                    ActivationStep::UnmaskSource
+                } else {
+                    ActivationStep::MaskSource
+                });
+            },
+            move || {
+                request_steps.borrow_mut().push(ActivationStep::RequestLine);
+                Ok::<_, ()>(7usize)
+            },
+            move |_| {
+                enable_steps.borrow_mut().push(ActivationStep::EnableLine);
+                Ok::<_, ()>(())
+            },
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(
+            *steps.borrow(),
+            [
+                ActivationStep::MaskSource,
+                ActivationStep::RequestLine,
+                ActivationStep::EnableLine,
+                ActivationStep::UnmaskSource,
+            ]
+        );
+    }
 
     #[test]
     fn raw_irq_queue_preserves_bytes_and_reports_overflow() {

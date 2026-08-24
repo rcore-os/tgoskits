@@ -7,6 +7,9 @@ use ax_plat::console::{
 
 #[cfg(all(feature = "irq", target_arch = "x86_64"))]
 fn console_irq(raw: usize) -> Option<ax_plat::irq::IrqId> {
+    if let Some(legacy_pic_irq) = somehal::irq::x86_legacy_pic_console_irq(raw) {
+        return legacy_pic_irq.ok();
+    }
     if let Some(gsi) = raw.checked_sub(rdrive::probe::acpi::PCI_INTX_VECTOR_BASE) {
         ax_plat::irq::resolve_irq_source(ax_plat::irq::IrqSource::AcpiGsi(gsi as u32)).ok()
     } else {

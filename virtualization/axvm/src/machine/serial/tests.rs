@@ -13,6 +13,7 @@ fn host_spcr_serial_becomes_owned_guest_snapshot() {
         },
         access_size: 3,
         irq: Some(33),
+        irq_route: None,
         baud_rate: Some(115_200),
         clock_hz: Some(48_000_000),
         namespace_path: Some("\\_SB_.COM0".into()),
