@@ -1,0 +1,3 @@
+results/rtthread-task23-invalid-parameter-20260822/starry.pcap: packets=36 arp=11 udp=17 tagged=0 task2=14 kinds={5: 8, 1: 2, 3: 1, 4: 2, 2: 1}
+results/rtthread-task23-invalid-parameter-20260822/rtthread.pcap: packets=36 arp=11 udp=17 tagged=0 task2=14 kinds={5: 8, 1: 2, 3: 1, 4: 2, 2: 1}
+PASS

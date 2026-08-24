@@ -1,0 +1,2 @@
+scenario=retry-exhausted frames=16 kinds={5: 8, 1: 6, 2: 1, 4: 1}
+PASS: StarryOS/Zephyr scenario retry-exhausted

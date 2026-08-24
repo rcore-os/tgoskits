@@ -1,0 +1,19 @@
+detach
+expect 30 Welcome to AxVisor Shell!
+cmd virtnet capture on
+expect 20 virtnet: capture ON
+attach 1
+expect 120 root@starry:/root #
+cmd (sleep 2; sh /usr/bin/t2n1-run.sh normal) &
+expect 30 TASK3_MODEL_READY model=yolo11n.ncnn
+attach 2
+expect 120 TASK2_FAULT_DROP_ACK seq=1
+attach 1
+expect 30 STARRY_T2N1_RETRANSMIT seq=1 attempt=1
+expect 30 STARRY_T2N1_ACK seq=1
+expect 30 STARRY_T2N1_PASS
+attach 2
+expect 30 TASK2_FAULT_DROP_ACK_RECOVERED duplicate_seq=1
+detach
+dump-pcap /home/huhu/tgoskits-starry/tmp/net-dual-guest/starry-task23-current
+qmp-quit /home/huhu/tgoskits-starry/tmp/net-dual-guest/qmp-starry-rtthread-msix1-capture.sock

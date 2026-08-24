@@ -1,0 +1,172 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.31s
+     Running `target/debug/tg-xtask axvisor qemu --config scripts/test/net-dual-guest/axvisor-qemu-debug.toml --qemu-config scripts/test/net-dual-guest/qemu-aarch64-starry-rtthread-switch-msix1-capture.toml --vmconfigs scripts/test/net-dual-guest/vm-aarch64-starry-switch.toml --vmconfigs scripts/test/net-dual-guest/vm-aarch64-p2-switch-rtthread.toml --rootfs tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img`
+[2026-08-22T12:30:30Z INFO  axbuild::context] Workspace root: /home/huhu/tgoskits-starry
+[2026-08-22T12:30:30Z INFO  axbuild::context] Workspace member dir for axvisor: /home/huhu/tgoskits-starry/os/axvisor
+Using build config: scripts/test/net-dual-guest/axvisor-qemu-debug.toml
+[2026-08-22T12:30:31Z INFO  ostool::run::qemu] Using QEMU config file: scripts/test/net-dual-guest/qemu-aarch64-starry-rtthread-switch-msix1-capture.toml
+[axbuild] qemu build+run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=scripts/test/net-dual-guest/axvisor-qemu-debug.toml ...
+sh -c /home/huhu/tgoskits-starry/tmp/axbuild/std/prebuild/prebuild-aarch64-unknown-linux-musl-9265c4d76e3ae598.sh
+AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+AXVISOR_VM_CONFIGS=/home/huhu/tgoskits-starry/tmp/axbuild/axvisor/resolved-vm-configs/55a66f1688343cee512b3be9e51dbb9be3c3106548058d07dd974d73e2976b39.toml:/home/huhu/tgoskits-starry/tmp/axbuild/axvisor/resolved-vm-configs/9743cc21afb06f7bdbe0fe0b1ab2fbe1d8d4b19e45185d36a9b9323af9014de6.toml
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+CC_aarch64_unknown_linux_musl=aarch64-linux-musl-cc
+CFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+CXXFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+cargo build --config /home/huhu/tgoskits-starry/tmp/axbuild/std/config-aarch64-unknown-linux-musl-dynamic.toml -p axvisor --target scripts/targets/std/pie/aarch64-unknown-linux-musl.json -Z unstable-options --target-dir /home/huhu/tgoskits-starry/target --features ax-std/fs,ax-std/nvme,fs,log/release_max_level_info -Z json-target-spec --bin axvisor --release --message-format json-render-diagnostics
+warning: unused variable: `callback_ns`
+   --> virtualization/axvm/src/runtime/vcpus.rs:281:56
+    |
+281 | pub(crate) fn note_vtimer_notification(vcpu_id: usize, callback_ns: u64) {
+    |                                                        ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_callback_ns`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `accepted_ns`
+   --> virtualization/axvm/src/runtime/vcpus.rs:294:54
+    |
+294 | pub(crate) fn note_vtimer_direct_ack(vcpu_id: usize, accepted_ns: u64, overlaps_active: bool) {
+    |                                                      ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_accepted_ns`
+
+warning: unused variable: `vcpu_id`
+   --> virtualization/axvm/src/runtime/vcpus.rs:310:43
+    |
+310 | pub(crate) fn note_vtimer_activation_hold(vcpu_id: usize, accepted_ns: u64) {
+    |                                           ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_vcpu_id`
+
+warning: unused variable: `accepted_ns`
+   --> virtualization/axvm/src/runtime/vcpus.rs:310:59
+    |
+310 | pub(crate) fn note_vtimer_activation_hold(vcpu_id: usize, accepted_ns: u64) {
+    |                                                           ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_accepted_ns`
+
+warning: unused variable: `vcpu_id`
+   --> virtualization/axvm/src/runtime/vcpus.rs:323:29
+    |
+323 | fn note_vtimer_run_dispatch(vcpu_id: usize) {
+    |                             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_vcpu_id`
+
+warning: unused variable: `vcpu_id`
+   --> virtualization/axvm/src/runtime/vcpus.rs:357:39
+    |
+357 | pub(crate) fn note_vtimer_guest_entry(vcpu_id: usize) {
+    |                                       ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_vcpu_id`
+
+warning: associated function `after_external_interrupt` is never used
+   --> virtualization/axvm/src/architecture/ops.rs:121:8
+    |
+ 12 | pub(crate) trait ArchOps {
+    |                  ------- associated function in this trait
+...
+121 |     fn after_external_interrupt(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `host_console_irq` is never used
+  --> virtualization/axvm/src/host/arceos.rs:96:15
+   |
+96 | pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: function `dispatch_host_irq` is never used
+   --> virtualization/axvm/src/host/arceos.rs:100:15
+    |
+100 | pub(crate) fn dispatch_host_irq(vector: usize) {
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: function `with_vm` is never used
+  --> virtualization/axvm/src/manager.rs:70:15
+   |
+70 | pub(crate) fn with_vm<F, R>(vm_id: VMId, f: F) -> Option<R>
+   |               ^^^^^^^
+
+warning: function `active_vcpu_mask` is never used
+  --> virtualization/axvm/src/manager.rs:79:15
+   |
+79 | pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: function `inject_interrupt` is never used
+  --> virtualization/axvm/src/manager.rs:91:15
+   |
+91 | pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: variant `Generic` is never constructed
+  --> virtualization/axvm/src/runtime/hvc.rs:26:5
+   |
+25 | pub(crate) enum HyperCallAbi {
+   |                 ------------ variant in this enum
+26 |     Generic,
+   |     ^^^^^^^
+   |
+   = note: `HyperCallAbi` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: function `cancel_timer` is never used
+   --> virtualization/axvm/src/timer.rs:402:15
+    |
+402 | pub(crate) fn cancel_timer(token: usize) {
+    |               ^^^^^^^^^^^^
+
+warning: function `timer_token_owner` is never used
+   --> virtualization/axvm/src/timer.rs:541:10
+    |
+541 | const fn timer_token_owner(token: usize) -> usize {
+    |          ^^^^^^^^^^^^^^^^^
+
+warning: associated items `with_planned_device_graph`, `try_handle_port_write`, `handle_nested_page_fault`, and `debug_nested_page_fault` are never used
+    --> virtualization/axvm/src/vm/mod.rs:1304:19
+     |
+1111 | impl AxVM {
+     | --------- associated items in this implementation
+...
+1304 |     pub(crate) fn with_planned_device_graph<F, R>(&self, f: F) -> AxVmResult<R>
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1607 |     pub(crate) fn try_handle_port_write(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+1620 |     pub(crate) fn handle_nested_page_fault(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1635 |     fn debug_nested_page_fault(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `SimpleVmPlan` is never constructed
+  --> virtualization/axvm/src/vm/prepare/device_plan/mod.rs:60:19
+   |
+60 | pub(crate) struct SimpleVmPlan(VmDevicePlan);
+   |                   ^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> virtualization/axvm/src/vm/prepare/device_plan/mod.rs:63:25
+   |
+62 | impl SimpleVmPlan {
+   | ----------------- associated function in this implementation
+63 |     pub(crate) const fn new(devices: VmDevicePlan) -> Self {
+   |                         ^^^
+
+warning: `axvm` (lib) generated 18 warnings (run `cargo fix --lib -p axvm` to apply 6 suggestions)
+   Compiling axvisor v0.5.24 (/home/huhu/tgoskits-starry/os/axvisor)
+    Finished `release` profile [optimized] target(s) in 1.89s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/huhu/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Converting ELF to BIN format...
+  elf: /media/huhu/TOSHIBA_EXT/tgoskits-starry-target/aarch64-unknown-linux-musl/release/axvisor
+  bin: /media/huhu/TOSHIBA_EXT/tgoskits-starry-target/aarch64-unknown-linux-musl/release/axvisor.bin
+/home/huhu/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /media/huhu/TOSHIBA_EXT/tgoskits-starry-target/aarch64-unknown-linux-musl/release/axvisor /media/huhu/TOSHIBA_EXT/tgoskits-starry-target/aarch64-unknown-linux-musl/release/axvisor.bin
+qemu-system-aarch64 -display none -monitor none -serial unix:/home/huhu/tgoskits-starry/tmp/net-dual-guest/serial-starry-rtthread-msix1-capture.sock,server,nowait -cpu cortex-a72 -machine virt,virtualization=on,gic-version=3 -smp 2 -m 8g -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=1 -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img -append root=/dev/nvme0n1 rw init=/init -snapshot -qmp unix:/home/huhu/tgoskits-starry/tmp/net-dual-guest/qmp-starry-rtthread-msix1-capture.sock,server,nowait -kernel /media/huhu/TOSHIBA_EXT/tgoskits-starry-target/aarch64-unknown-linux-musl/release/axvisor.bin
+[axbuild] qemu build+run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=scripts/test/net-dual-guest/axvisor-qemu-debug.toml ... done (17.17s)
+'expect 120 root@starry:/root #'
+[driver] step: 'cmd (sleep 2; sh /usr/bin/t2n1-run.sh model-rejected) &'
+[driver] step: 'expect 30 TASK3_MODEL_READY model=yolo11n.ncnn'
+[driver] step: 'attach 1'
+[driver] step: 'expect 30 TASK3_MODEL_REJECTED.*reason=InjectedInvalidOutput'
+[driver] step: 'expect 30 STARRY_T2N1_SAFE source=model reason=InjectedInvalidOutput'
+[driver] step: 'hold 3'
+[driver] step: 'send-until 10 1 \\x18h axvisor:/\\$'
+[driver] step: 'dump-pcap /home/huhu/tgoskits-starry/tmp/net-dual-guest/starry-task23-current'
+[driver] step: 'qmp-quit /home/huhu/tgoskits-starry/tmp/net-dual-guest/qmp-starry-rtthread-msix1-capture.sock'

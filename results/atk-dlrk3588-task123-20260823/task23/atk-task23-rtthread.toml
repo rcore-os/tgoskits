@@ -1,0 +1,31 @@
+[base]
+id = 2
+name = "atk-task23-rtthread"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [0x100]
+host_sched_priority = 90
+
+[kernel]
+entry_point = 0xA008_0000
+image_location = "memory"
+kernel_load_addr = 0xA008_0000
+kernel_path = "/home/huhu/tgoskits-starry/tmp/net-dual-guest/rtthread-task2/rtthread-task2.bin"
+dtb_load_addr = 0xA7F0_0000
+cmdline = "console=ttyAMA0"
+memory_regions = [
+    [0xA000_0000, 0x2000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "console0"
+model = "pl011-mmio"
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x02]

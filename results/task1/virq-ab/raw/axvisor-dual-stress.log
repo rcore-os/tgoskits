@@ -1,0 +1,779 @@
+[2026-08-07T15:03:54Z INFO  axbuild::context] Workspace root: /home/huhu/tgoskits
+[2026-08-07T15:03:54Z INFO  axbuild::context] Workspace member dir for axvisor: /home/huhu/tgoskits/os/axvisor
+Using build config: os/axvisor/configs/board/qemu-aarch64.toml
+[2026-08-07T15:03:54Z INFO  ostool::run::qemu] Using QEMU config file: os/axvisor/configs/qemu/qemu-aarch64.toml
+[axbuild] qemu build+run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=os/axvisor/configs/board/qemu-aarch64.toml ...
+sh -c /home/huhu/tgoskits/tmp/axbuild/std/prebuild/prebuild-aarch64-unknown-linux-musl-0afc99e573635eeb.sh
+AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+AXVISOR_VM_CONFIGS=/home/huhu/tgoskits/os/axvisor/tmp/vmconfigs/day4-linux-stress-aarch64.toml:/home/huhu/tgoskits/os/axvisor/tmp/vmconfigs/day4-zephyr-periodic-aarch64.toml
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+CC_aarch64_unknown_linux_musl=aarch64-linux-musl-cc
+CFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+CXXFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+cargo build --config /home/huhu/tgoskits/tmp/axbuild/std/config-aarch64-unknown-linux-musl-dynamic.toml -p axvisor --target scripts/targets/std/pie/aarch64-unknown-linux-musl.json -Z unstable-options --target-dir /home/huhu/tgoskits/target --features ax-std/fs,ax-std/nvme,fs,log/release_max_level_info -Z json-target-spec --bin axvisor --release --message-format json-render-diagnostics
+   Compiling axvisor v0.5.23 (/home/huhu/tgoskits/os/axvisor)
+   Compiling axvm v0.5.25 (/home/huhu/tgoskits/virtualization/axvm)
+warning: unused import: `NestedPageTableOps`
+  --> virtualization/axvm/src/vm/mod.rs:33:30
+   |
+33 | use axaddrspace::{AddrSpace, NestedPageTableOps};
+   |                              ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `with_vm` is never used
+  --> virtualization/axvm/src/manager.rs:58:15
+   |
+58 | pub(crate) fn with_vm<F, R>(vm_id: VMId, f: F) -> Option<R>
+   |               ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `active_vcpu_mask` is never used
+  --> virtualization/axvm/src/manager.rs:67:15
+   |
+67 | pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: function `inject_interrupt` is never used
+  --> virtualization/axvm/src/manager.rs:79:15
+   |
+79 | pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: variant `Generic` is never constructed
+  --> virtualization/axvm/src/runtime/hvc.rs:30:5
+   |
+29 | pub(crate) enum HyperCallAbi {
+   |                 ------------ variant in this enum
+30 |     Generic,
+   |     ^^^^^^^
+   |
+   = note: `HyperCallAbi` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `handle_nested_page_fault` and `debug_nested_page_fault` are never used
+    --> virtualization/axvm/src/vm/mod.rs:1203:19
+     |
+ 762 | impl AxVM {
+     | --------- associated items in this implementation
+...
+1203 |     pub(crate) fn handle_nested_page_fault(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1218 |     fn debug_nested_page_fault(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `axvm` (lib) generated 6 warnings
+    Finished `release` profile [optimized] target(s) in 4.41s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/huhu/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Converting ELF to BIN format...
+  elf: /home/huhu/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor
+  bin: /home/huhu/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor.bin
+/home/huhu/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /home/huhu/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor /home/huhu/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor.bin
+qemu-system-aarch64 -nographic -cpu cortex-a72 -machine virt,virtualization=on,gic-version=3 -smp 4 -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 -drive id=disk0,if=none,format=raw,file=tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img -append root=/dev/nvme0n1 rw init=/bin/sh -m 8g -kernel /home/huhu/tgoskits/target/aarch64-unknown-linux-musl/release/axvisor.bin
+root=/dev/nvme0n1 rw init=/bin/sh
+VM Load @0x40200000
+VM Load Offset: 0xffff0000c0200000
+Memory Map:
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000044a00000 (72 MiB)
+  Free   0x00000044a00000 - 0x00000240000000 (7.93 GiB)
+Initialize RAM allocator: 0x44a00000..0x240000000
+Reserving CPU-local areas
+CPU-local area stride: 0x44000 bytes
+Total CPU-local allocation: 0x110000 bytes (4 CPUs)
+Flushed RAM used range to memory map: 0x44a00000..0x44b00000, current: 0x44b00000
+Flushed RAM used range to memory map: 0x44b00000..0x44c10000, current: 0x44c10000
+CPU-local areas allocated at 0x44b00000 - 0x44c10000
+EL: 2
+Mapping early memory regions...
+Ram                 : [0x0000000040000000, 0x0000000240000000) -> [0x0000000040000000, 0x0000000240000000) (8 GiB)
+KImage              : [0x0000ffff80000000, 0x0000ffff84800000) -> [0x0000000040200000, 0x0000000044a00000) (72 MiB)
+PerCpu              : [0x0000ff0044b00000, 0x0000ff0044c10000) -> [0x0000000044b00000, 0x0000000044c10000) (1.06 MiB)
+Debug serial        : [0x0000000009000000, 0x0000000009001000) -> [0x0000000009000000, 0x0000000009001000) (4 KiB)
+Boot page table at physical address: 0x44c10000
+Setting up table registers...
+MMU Entry point at physical address: 0x403900d0
+Trap vector at 0xffff80191000
+Memory Map:
+  MMIO   0x00000009000000 - 0x00000009001000 (4 KiB)
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000044a00000 (72 MiB)
+  Rsv    0x00000044a00000 - 0x00000044b00000 (1 MiB)
+  PerCPU 0x00000044b00000 - 0x00000044c10000 (1.06 MiB)
+  Rsv    0x00000044c10000 - 0x00000044c1a000 (40 KiB)
+  Free   0x00000044c1a000 - 0x00000240000000 (7.93 GiB)
+Jumping to main entry point at 0xffff80177f08 with SP 0x0000ff0044b44000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = linux,dummy-virt
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 4
+
+[37m[  0.059605 ax_runtime:219] [32mLogging is enabled.[m
+[m[37m[  0.060056 ax_runtime:220] [32mPrimary CPU 0 started, arg = 0x44a00000.[m
+[m[37m[  0.060157 ax_runtime:222] [32mFound physcial memory regions:[m
+[m[37m[  0.061282 ax_runtime:224] [32m  [PA:0x9000000, PA:0x9001000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.061544 ax_runtime:224] [32m  [PA:0x40000000, PA:0x40200000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.061681 ax_runtime:224] [32m  [PA:0x40200000, PA:0x44a00000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.061798 ax_runtime:224] [32m  [PA:0x44a00000, PA:0x44b00000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.061911 ax_runtime:224] [32m  [PA:0x44b00000, PA:0x44c10000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.062023 ax_runtime:224] [32m  [PA:0x44c10000, PA:0x44c1a000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.062135 ax_runtime:224] [32m  [PA:0x44c1a000, PA:0x240000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.062259 ax_runtime:372] [32mInitialize global memory allocator...[m
+[m[37m[  0.062358 ax_runtime:373] [32m  use buddy-slab-allocator allocator.[m
+[m[37m[  0.062587 ax_alloc::buddy_slab:158] [32mInitialize global memory allocator, start_vaddr: 0x44c1a000, size: 0x1fb3e6000[m
+[m[37m[  0.070981 ax_alloc::buddy_slab:410] [32mglobal allocator initialized[m
+[m[37m[  0.071161 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x40000000, size: 0x200000[m
+[m[37m[  0.071324 buddy_slab_allocator::global:143] [32mGlobalAllocator: skip region 0x40000000+0x200000, no allocator-visible memory after 2097152 alignment[m
+[m[37m[  0.071631 ax_runtime:259] [32mkernel aspace: [VA:0x0, VA:0xffffffffffffffff)[m
+[m[37m[  0.071816 ax_mm:92] [32mInitialize virtual memory management...[m
+[m[37m[  0.533136 ax_runtime:271] [32mInitialize platform devices...[m
+[m[37m[  0.539667 someboot::arch::power:23] [32mPower management method : SMC[m
+[m[37m[  0.539872 somehal::driver:5] [32mInitializing rdrive with FDT at 0x44a00000[m
+[m[37m[  0.551373 somehal::arch::gic::v3:245] [32mGICv3 CPU 0 EOI mode: two_step=false[m
+[m[37m[  0.558657 ax_task::api:146] [32mInitialize scheduling...[m
+[m[37m[  0.560070 ax_task::api:154] [32m  use FIFO scheduler.[m
+[m[37m[  0.560162 ax_runtime:297] [32mInitialize interrupt handlers...[m
+[m[37m[  0.562133 ax_runtime::devices:2] [32mProbe platform devices...[m
+[m[37m[  0.583284 ax_driver::block::nvme:42] [32mNVMe PCI endpoint 0000:00:02.0: BAR0=0x8000004000..0x8000008000, int_pin=1, int_line=0[m
+[m[37m[  0.597728 nvme_driver::nvme:161] [32mNVME @0x8000004000 deferred init, version: 1.4.0[m
+[m[37m[  0.598401 ax_driver::block::nvme:74] [32mNVMe block device registered at 0000:00:02.0 with 65 MSI-X vectors[m
+[m[37m[  0.604238 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 0 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(0) }) fixed to CPU 0 for queue mask 0x0[m
+[m[37m[  0.637564 ax_fs_ng::block::runtime::hctx:173] [32mblock hctx 0 bound to CPU 0 with hardware depth 63[m
+[m[37m[  0.638106 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 1 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(1) }) fixed to CPU 0 for queue mask 0x1[m
+[m[37m[  0.645681 ax_fs_ng::root:341] [32m    raw device fs=Some(Ext4)[m
+[m[37m[  0.645892 ax_fs_ng::root:372] [32m  block device 0 (nvme) has no usable partition table; treating the whole disk as a candidate[m
+[m[37m[  0.646407 ax_fs_ng::root:481] [32m  matched root by raw device path on disk0 raw device[m
+[m[37m[  0.646904 ax_fs_ng:79] [32mInitialize filesystem subsystem...[m
+[m[37m[  0.646998 ax_fs_ng:80] [32m  selected root device: disk0 raw device[m
+[m[37m[  0.667264 rsext4::ext4::mount:327] [32m/lost+found exists (superblock hint inode=11)[m
+[m[37m[  0.669181 rsext4::ext4::mount:462] [32mExt4 filesystem mounted[m
+[m[37m[  0.669277 rsext4::ext4::mount:463] [32m  - block size: 4096 bytes[m
+[m[37m[  0.669372 rsext4::ext4::mount:464] [32m  - total blocks: 524288[m
+[m[37m[  0.669483 rsext4::ext4::mount:465] [32m  - free blocks: 109364[m
+[m[37m[  0.669583 rsext4::ext4::mount:466] [32m  - total inodes: 131072[m
+[m[37m[  0.669677 rsext4::ext4::mount:467] [32m  - free inodes: 125257[m
+[m[37m[  0.669812 rsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[m[37m[  0.693209 rsext4::ext4::mount:546] [32mExt4 filesystem mounted[m
+[m[37m[  0.693895 ax_fs_ng:92] [32m  filesystem type: "ext4"[m
+[m[37m[  0.705931 somehal::arch::gic::v3:245] [32mGICv3 CPU 1 EOI mode: two_step=false[m
+[m[37m[  0.706415 ax_runtime::mp:79] [32mSecondary CPU 1 started.[m
+[m[37m[  0.707440 ax_runtime::mp:107] [32mSecondary CPU 1 init OK.[m
+[m[37m[  0.716086 somehal::arch::gic::v3:245] [32mGICv3 CPU 2 EOI mode: two_step=false[m
+[m[37m[  0.716290 ax_runtime::mp:79] [32mSecondary CPU 2 started.[m
+[m[37m[  0.716574 ax_runtime::mp:107] [32mSecondary CPU 2 init OK.[m
+[m[37m[  0.727718 somehal::arch::gic::v3:245] [32mGICv3 CPU 3 EOI mode: two_step=false[m
+[m[37m[  0.727928 ax_runtime::mp:79] [32mSecondary CPU 3 started.[m
+[m[37m[  0.727997 ax_runtime:345] [32mPrimary CPU 0 init OK.[m
+[m[37m[  0.728254 ax_runtime::mp:107] [32mSecondary CPU 3 init OK.[m
+[m
+
+       d8888            888     888  d8b
+      d88888            888     888  Y8P
+     d88P888            888     888
+    d88P 888  888  888  Y88b   d88P  888  .d8888b    .d88b.   888d888
+   d88P  888  `Y8bd8P'   Y88b d88P   888  88K       d88""88b  888P"
+  d88P   888    X88K      Y88o88P    888  "Y8888b.  888  888  888
+ d8888888888  .d8""8b.     Y888P     888       X88  Y88..88P  888
+d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
+
+
+by AxVisor Team
+
+[37m[  0.731175 0:2 axvisor:73] [32mStarting virtualization...[m
+[m[37m[  0.731359 0:2 axvm::host::arceos:205] [32mEnabling hardware virtualization support on all cores...[m
+[m[37m[  0.731514 0:2 axvm::host::arceos:211] [32mCore 0 is initializing hardware virtualization support...[m
+[m[37m[  0.731671 0:2 axvm::timer:219] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.732659 0:2 axvm::host::arceos:213] [32mHardware virtualization support enabled on core 0[m
+[m[37m[  0.733244 0:2 axvm::host::arceos:239] [32mWaiting for all cores to enable hardware virtualization...[m
+[m[37m[  0.733289 1:12 axvm::host::arceos:223] [32mCore 1 is initializing hardware virtualization support...[m
+[m[37m[  0.733356 2:13 axvm::host::arceos:223] [32mCore 2 is initializing hardware virtualization support...[m
+[m[37m[  0.733416 3:14 axvm::host::arceos:223] [32mCore 3 is initializing hardware virtualization support...[m
+[m[37m[  0.733555 1:12 axvm::timer:219] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.733665 2:13 axvm::timer:219] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.733889 3:14 axvm::timer:219] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.734224 2:13 axvm::host::arceos:226] [32mHardware virtualization support enabled on core 2[m
+[m[37m[  0.734201 1:12 axvm::host::arceos:226] [32mHardware virtualization support enabled on core 1[m
+[m[37m[  0.734304 3:14 axvm::host::arceos:226] [32mHardware virtualization support enabled on core 3[m
+[m[37m[  0.734824 0:2 axvm::host::arceos:255] [32mAll cores have enabled hardware virtualization support.[m
+[m[37m[  0.740030 0:2 axvisor::manager:135] [32mNOT find dir: /guest/vm_default in filesystem[m
+[m[37m[  0.740252 0:2 axvisor::config:102] [32mUsing static VM configs.[m
+[m[37m[  0.751836 0:2 axvm::arch::aarch64::fdt::core::parser:386] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m[37m[  0.752111 0:2 axvm::arch::aarch64::fdt::core::parser:386] [32mCPU node: /cpus/cpu@1, node_id: 0x1, hardware_cpu_id: 0x1[m
+[m[37m[  0.752277 0:2 axvm::arch::aarch64::fdt::core::parser:386] [32mCPU node: /cpus/cpu@2, node_id: 0x2, hardware_cpu_id: 0x2[m
+[m[37m[  0.752410 0:2 axvm::arch::aarch64::fdt::core::parser:386] [32mCPU node: /cpus/cpu@3, node_id: 0x3, hardware_cpu_id: 0x3[m
+[m[37m[  0.752612 0:2 axvm::arch::aarch64::fdt::core::parser:393] [32mFound 4 host CPU nodes[m
+[m[37m[  0.753090 0:2 axvm::arch::aarch64::fdt::core:77] [32mVM[1] DTB not found, generating from the VM configuration[m
+[m[37m[  0.759855 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: [][m
+[m[37m[  0.768998 0:2 axvisor::config:149] [32mCreating VM[1] "linux-qemu-day4-stress"[m
+[m[37m[  0.769863 0:2 axvm::vm:782] [32mVM created: id=1[m
+[m[37m[  1.035545 0:2 axvisor::config:161] [32mVM[1] created success, loading images...[m
+[m[37m[  1.143212 0:2 axvm::boot::images:140] [32mLoading ramdisk image from memory (18070758 bytes) into GPA @0x88000000[m
+[m[37m[  1.189609 0:2 axvm::vm::prepare:146] [32mVM setup: id=1[m
+[m[37m[  1.192389 0:2 axvm::arch::aarch64::fdt::core::parser:386] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m[37m[  1.192538 0:2 axvm::arch::aarch64::fdt::core::parser:386] [32mCPU node: /cpus/cpu@1, node_id: 0x1, hardware_cpu_id: 0x1[m
+[m[37m[  1.192674 0:2 axvm::arch::aarch64::fdt::core::parser:386] [32mCPU node: /cpus/cpu@2, node_id: 0x2, hardware_cpu_id: 0x2[m
+[m[37m[  1.192807 0:2 axvm::arch::aarch64::fdt::core::parser:386] [32mCPU node: /cpus/cpu@3, node_id: 0x3, hardware_cpu_id: 0x3[m
+[m[37m[  1.192953 0:2 axvm::arch::aarch64::fdt::core::parser:393] [32mFound 4 host CPU nodes[m
+[m[37m[  1.193053 0:2 axvm::arch::aarch64::fdt::core:77] [32mVM[2] DTB not found, generating from the VM configuration[m
+[m[37m[  1.195785 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: [][m
+[m[37m[  1.200317 0:2 axvisor::config:149] [32mCreating VM[2] "zephyr-qemu-day4-periodic"[m
+[m[37m[  1.200445 0:2 axvm::vm:782] [32mVM created: id=2[m
+[m[37m[  1.333331 0:2 axvisor::config:161] [32mVM[2] created success, loading images...[m
+[m[37m[  1.336077 0:2 axvm::vm::prepare:146] [32mVM setup: id=2[m
+[m[37m[  1.336454 0:2 axvm::runtime:42] [32mInitializing VMM...[m
+[m[37m[  1.336581 0:2 axvm::runtime:47] [32mVMM starting, booting VMs...[m
+[m[37m[  1.336900 0:2 axvm::vm:964] [32mStarting VM[1][m
+[m[37m[  1.337222 0:2 axvm::runtime::vcpus:381] [32mSpawning task for VM[1] VCpu[0][m
+[m[37m[  1.337712 0:2 axvm::runtime::vcpus:398] [32mVCpu task Task(15, "VM[1]-VCpu[0]") created cpumask: [1, ][m
+[m[37m[  1.338573 0:2 axvm::runtime:53] [32mVM[1] boot success[m
+[m[37m[  1.338659 0:2 axvm::vm:964] [32mStarting VM[2][m
+[m[37m[  1.338723 0:2 axvm::runtime::vcpus:381] [32mSpawning task for VM[2] VCpu[0][m
+[m[37m[  1.338828 0:2 axvm::runtime::vcpus:398] [32mVCpu task Task(16, "VM[2]-VCpu[0]") created cpumask: [3, ][m
+[m[37m[  1.338972 0:2 axvm::runtime:53] [32mVM[2] boot success[m
+[m[37m[  1.348054 1:15 axvm::runtime::vcpus:452] [32mVM[1] VCpu[0] waiting for running[m
+[m[37m[  1.348382 1:15 axvm::runtime::vcpus:490] [32mVM[1] VCpu[0] running...[m
+[m[37m[  1.348536 3:16 axvm::runtime::vcpus:452] [32mVM[2] VCpu[0] waiting for running[m
+[m[37m[  1.348714 3:16 axvm::runtime::vcpus:490] [32mVM[2] VCpu[0] running...[m
+[m*** Booting Zephyr OS build aa37fa1ebc92 ***
+sequence,timestamp_ns,deadline_ns,actual_ns,jitter_ns
+0,10869792,28008768,28878560,869792
+1,20130608,38008768,38139376,130608
+[37m[  1.376221 1:15 axvm::runtime::hvc:251] [32mVM[1] PSCI_VERSION[m
+[m2,30158224,48008768,48166992,158224
+3,40258272,58008768,58267040,258272
+4,50240896,68008768,68249664,240896
+5,60231104,78008768,78239872,231104
+6,70247472,88008768,88256240,247472
+7,80241536,98008768,98250304,241536
+8,90162928,108008768,108171696,162928
+9,100163440,118008768,118172208,163440
+10,110240192,128008768,128248960,240192
+11,120167440,138008768,138176208,167440
+[37m[  1.483603 1:15 axvm::runtime::hvc:271] [32mVM[1] PSCI_CPU_ON target=0x2 entry=0x8229858c context=0x0[m
+[m[37m[ 12 1.48,4299130238 1:1496,148008765 ax8,vm14824::runtime:72:v64cpus:381,238] [496
+32mSpawning task for VM[1] VCpu[1][m
+[m[37m[  1.484572 1:15 axvm::runtime::vcpus:398] [32mVCpu task Task(17, "VM[1]-VCpu[1]") created cpumask: [2, ][m
+[m[37m[  1.486789 2:17 axvm::runtime::vcpus:452] [32mVM[1] VCpu[1] waiting for running[m
+[m[37m[  1.487484 2:17 axvm::runtime::vcpus:490] [32mVM[1] VCpu[1] running...[m
+[m13,140197024,158008768,158205792,197024
+14,150201024,168008768,168209792,201024
+15,160169104,178008768,178177872,169104
+16,170094288,188008768,188103056,94288
+17,180208048,198008768,198216816,208048
+18,190213488,208008768,208222256,213488
+19,200216000,218008768,218224768,216000
+20,210213232,228008768,228222000,213232
+21,220088960,238008768,238097728,88960
+22,230231168,248008768,248239936,231168
+23,240074224,258008768,258082992,74224
+24,250090320,268008768,268099088,90320
+25,260098144,278008768,278106912,98144
+26,270162480,288008768,288171248,162480
+27,280295232,298008768,298304000,295232
+[    0.000000] Booting Linux on physical CPU 0x0000000001 [0x410fd083]
+[    0.000000] Linux version 7.1.0-rc2-g74fe02ce122a-dirty (runner@s1lqc) (aarch64-linux-gnu-gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #6 SMP PREEMPT Wed Aug  5 07:35:15 UTC 2026
+[    0.000000] KASLR disabled due to lack of seed
+[    0.000000] Machine model: linux,dummy-virt
+[    0.000000] efi: UEFI not found.
+[    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[    0.000000] NUMA: Faking a node at [mem 0x0000000080000000-0x000000008fffffff]
+[    0.000000] NODE_DATA(0) allocated [mem 0x8ff88500-0x8ff8abff]
+[    0.000000] cma: Reserved 32 MiB at 0x000000008d000000
+[    0.000000] psci: probing for conduit method from DT.
+[    0.000000] psci: PSCIv0.2 detected in firmware.
+[    0.000000] psci: Using standard PSCI v0.2 function IDs
+[    0.000000] psci: Trusted OS migration not required
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000080000000-0x000000008fffffff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000080000000-0x000000008fffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000080000000-0x000000008fffffff]
+[    0.000000] percpu: Embedded 26 pages/cpu s66584 r8192 d31720 u106496
+[    0.000000] Detected PIPT I-cache on CPU0
+[    0.000000] CPU features: detected: GICv3 CPU interface
+[    0.000000] CPU features: detected: Spectre-v2
+[    0.000000] CPU features: detected: Spectre-v3a
+[    0.000000] CPU features: detected: Spectre-v4
+[    0.000000] CPU features: detected: Spectre-BHB
+[    0.000000] CPU features: detected: ARM erratum 1742098
+[    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Kernel command line: console=ttyAMA0 rdinit=/stress-init
+[    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.000000] Dentry cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[    0.000000] software IO TLB: area num 2.
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size roundup to 0MB
+[    0.000000] software IO TLB: mapped [mem 0x000000008fe5e000-0x000000008fede000] (0MB)
+[    0.000000] Fallback order for Node 0: 0 
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 65536
+[    0.000000] Policy zone: DMA
+[    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1
+[    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[    0.000000] rcu: 	RCU event tracing is enabled.
+[    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=2.
+[    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[    0.000000] 	Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2
+[    0.000000] RCU Tasks: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] GICv3: 256 SPIs implemented
+[    0.000000] GICv3: 0 Extended SPIs implemented
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv3: GICv3 features: 16 PPIs
+[    0.000000] GICv3: GICD_CTLR.DS=1, SCR_EL3.FIQ=0
+[    0.000000] GICv3: CPU0: found redistributor 1 region 0:0x00000000080c0000
+[    0.000000] ITS [mem 0x08080000-0x0809ffff]
+[    0.000000] ITS@0x0000000008080000: allocated 8192 Devices @83860000 (indirect, esz 8, psz 64K, shr 1)
+[    0.000000] ITS@0x0000000008080000: allocated 8192 Interrupt Collections @83870000 (flat, esz 8, psz 64K, shr 1)
+[    0.000000] GICv3: Expected reserved range [0x000000023e860000:0x000000023e86ffff], not found
+[    0.000000] GICv3: using LPI property table @0x0000000083880000
+[    0.000000] GICv3: CPU0: Booted with LPIs enabled, memory probably corrupted
+[    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000083890000
+[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.000000] arch_timer: cp15 timer running at 62.50MHz (virt).
+[    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+[    0.000056] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+[    0.007202] Console: colour dummy device 80x25
+[    0.009275] Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=250000)
+28,290281504,308008768,308290272,281504
+[    0.010000] pid_max: default: 32768 minimum: 301
+[    0.013173] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.013205] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.020096] VFS: Finished mounting rootfs on nullfs
+[    0.037111] /cpus/cpu-map/socket0/cluster0/core0: Can't get CPU for leaf core
+[    0.038035] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[    0.046811] rcu: Hierarchical SRCU implementation.
+[    0.046840] rcu: 	Max phase no-delay instances is 1000.
+[    0.047822] Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+[    0.049619] fsl-mc MSI: its@8080000 domain created
+[    0.050499] EFI services will not be available.
+[    0.051253] smp: Bringing up secondary CPUs ...
+[    0.058199] Detected PIPT I-cache on CPU1
+[    0.059144] GICv3: CPU1: found redistributor 2 region 0:0x00000000080e0000
+[    0.059219] GICv3: CPU1: Booted with LPIs enabled, memory probably corrupted
+[    0.059315] GICv3: CPU1: using allocated LPI pending table @0x00000000838a0000
+[    0.059504] CPU1: Booted secondary processor 0x0000000002 [0x410fd083]
+[    0.062953] smp: Brought up 1 node, 2 CPUs
+[    0.062985] SMP: Total of 2 processors activated.
+[    0.063009] CPU: All CPU(s) started at EL1
+[    0.063245] CPU features: detected: 32-bit EL0 Support
+[    0.063255] CPU features: detected: 32-bit EL1 Support
+[    0.063308] CPU features: detected: CRC32 instructions
+[    0.063447] CPU features: detected: PMUv3
+[    0.072017] alternatives: applying system-wide alternatives
+[    0.091996] Memory: 151508K/262144K available (18752K kernel code, 5242K rwdata, 14508K rodata, 12672K init, 718K bss, 75580K reserved, 32768K cma-reserved)
+[    0.113839] devtmpfs: initialized
+[    0.130021] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    0.130500] posixtimers hash table entries: 1024 (order: 2, 16384 bytes, linear)
+[    0.130746] futex hash table entries: 512 (32768 bytes on 1 NUMA nodes, total 32 KiB, linear).
+[    0.132801] 19728 pages in range for non-PLT usage
+[    0.132837] 511248 pages in range for PLT usage
+[    0.144874] DMI: not present or invalid.
+[    0.163465] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.174723] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    0.175031] audit: initializing netlink subsys (disabled)
+[    0.176597] audit: type=2000 audit(0.160:1): state=initialized audit_enabled=0 res=1
+[    0.180086] thermal_sys: Registered thermal governor 'step_wise'
+[    0.180116] thermal_sys: Registered thermal governor 'power_allocator'
+[    0.180581] cpuidle: using governor menu
+[    0.181555] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[    0.182175] ASID allocator initialised with 65536 entries
+[    0.186617] Serial: AMBA PL011 UART driver
+[    0.202397] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+[    0.205556] printk: console [ttyAMA0] enabled
+[    0.221594] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.221655] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.221691] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[    0.221704] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[    0.221719] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.221728] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.221750] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[    0.221761] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+29,300147328,318008768,318156096,147328
+[    0.230442] ACPI: Interpreter disabled.
+30,310200160,328008768,328208928,200160
+[    0.235197] iommu: Default domain type: Translated
+[    0.235253] iommu: DMA domain TLB invalidation policy: strict mode
+[    0.236915] SCSI subsystem initialized
+[    0.238800] usbcore: registered new interface driver usbfs
+[    0.239052] usbcore: registered new interface driver hub
+[    0.239168] usbcore: registered new device driver usb
+[    0.239836] pps_core: LinuxPPS API ver. 1 registered
+[    0.239861] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.239911] PTP clock support registered
+[    0.240155] EDAC MC: Ver: 3.0.0
+[    0.241430] scmi_core: SCMI protocol bus registered
+[    0.243064] FPGA manager framework
+31,320271328,338008768,338280096,271328
+[    0.251433] vgaarb: loaded
+[    0.253415] clocksource: Switched to clocksource arch_sys_counter
+32,330200048,348008768,348208816,200048
+[    0.254979] VFS: Disk quotas dquot_6.6.0
+[    0.255084] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[    0.256834] pnp: PnP ACPI: disabled
+33,340308176,358008768,358316944,308176
+34,350162992,368008768,368171760,162992
+[    0.280680] NET: Registered PF_INET protocol family
+[    0.281829] IP idents hash table entries: 4096 (order: 3, 32768 bytes, linear)
+35,360183040,378008768,378191808,183040
+[    0.284931] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[    0.285260] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.285340] TCP established hash table entries: 2048 (order: 2, 16384 bytes, linear)
+[    0.285507] TCP bind hash table entries: 2048 (order: 4, 65536 bytes, linear)
+[    0.285614] TCP: Hash tables configured (established 2048 bind 2048)
+[    0.286652] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[    0.287953] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.290454] RPC: Registered named UNIX socket transport module.
+[    0.290523] RPC: Registered udp transport module.
+[    0.290540] RPC: Registered tcp transport module.
+[    0.290551] RPC: Registered tcp-with-tls transport module.
+[    0.290561] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[    0.290667] PCI: CLS 0 bytes, default 64
+36,370174864,388008768,388183632,174864
+[    0.293686] kvm [1]: HYP mode not available
+[    0.294882] Unpacking initramfs...
+[    0.296581] Initialise system trusted keyrings
+[    0.298112] workingset: timestamp_bits=42 (anon: 38) max_order=16 bucket_order=0 (anon: 0)
+[    0.300011] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+37,380261456,398008768,398270224,261456
+[    0.305993] NFS: Registering the id_resolver key type
+[    0.306310] Key type id_resolver registered
+[    0.306376] Key type id_legacy registered
+[    0.306671] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[    0.306785] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[    0.307362] 9p: Installing v9fs 9p2000 file system support
+[    0.308989] Key type asymmetric registered
+[    0.309102] Asymmetric key parser 'x509' registered
+[    0.309366] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[    0.309523] io scheduler mq-deadline registered
+[    0.309593] io scheduler kyber registered
+[    0.309861] io scheduler bfq registered
+38,390156512,408008768,408165280,156512
+[    0.319228] ledtrig-cpu: registered to indicate activity on CPUs
+39,400285296,418008768,418294064,285296
+40,410161760,428008768,428170528,161760
+41,420266816,438008768,438275584,266816
+[    0.349860] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+42,430140816,448008768,448149584,140816
+[    0.356573] msm_serial: driver initialized
+[    0.357635] SuperH (H)SCI(F) driver initialized
+[    0.357780] STM32 USART driver initialized
+43,440177232,458008768,458186000,177232
+[    0.373584] loop: module loaded
+44,450157440,468008768,468166208,157440
+[    0.375175] megasas: 07.734.00.00-rc1
+45,460215472,478008768,478224240,215472
+[    0.384769] tun: Universal TUN/TAP device driver, 1.6
+[    0.386537] thunder_xcv, ver 1.0
+[    0.386661] thunder_bgx, ver 1.0
+[    0.386756] nicpf, ver 1.0
+[    0.388646] e1000: Intel(R) PRO/1000 Network Driver
+[    0.388685] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[    0.388776] e1000e: Intel(R) PRO/1000 Network Driver
+[    0.388791] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[    0.388861] igb: Intel(R) Gigabit Ethernet Network Driver
+[    0.388869] igb: Copyright (c) 2007-2014 Intel Corporation.
+[    0.388949] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[    0.388958] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[    0.389484] sky2: driver version 1.30
+[    0.391307] VFIO - User Level meta-driver version: 0.3
+46,470159472,488008768,488168240,159472
+[    0.395716] usbcore: registered new interface driver usb-storage
+[    0.399151] i2c_dev: i2c /dev entries driver
+47,480273344,498008768,498282112,273344
+[    0.410309] usbcore: registered new interface driver usbhid
+[    0.410499] usbhid: USB HID core driver
+48,490160320,508008768,508169088,160320
+[    0.417179] NET: Registered PF_INET6 protocol family
+49,500287968,518008768,518296736,287968
+[    0.427198] Segment Routing with IPv6
+[    0.427418] In-situ OAM (IOAM) with IPv6
+[    0.427855] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.430227] NET: Registered PF_PACKET protocol family
+[    0.431309] 9pnet: Installing 9P2000 support
+[    0.431588] Key type dns_resolver registered
+50,510160880,528008768,528169648,160880
+51,520260224,538008768,538268992,260224
+[    0.448483] registered taskstats version 1
+[    0.452212] Loading compiled-in X.509 certificates
+52,530197152,548008768,548205920,197152
+53,540264400,558008768,558273168,264400
+[    0.465115] Demotion targets for Node 0: null
+[    0.471152] clk: Disabling unused clocks
+[    0.471375] PM: genpd: Disabling unused power domains
+54,550153104,568008768,568161872,153104
+55,560257408,578008768,578266176,257408
+56,570113952,588008768,588122720,113952
+57,580218016,598008768,598226784,218016
+58,590112288,608008768,608121056,112288
+59,600217472,618008768,618226240,217472
+60,610108400,628008768,628117168,108400
+61,620210656,638008768,638219424,210656
+62,630100656,648008768,648109424,100656
+63,640208544,658008768,658217312,208544
+64,650100384,668008768,668109152,100384
+65,660163728,678008768,678172496,163728
+66,670106752,688008768,688115520,106752
+67,680213248,698008768,698222016,213248
+68,690117376,708008768,708126144,117376
+69,700207584,718008768,718216352,207584
+70,710105008,728008768,728113776,105008
+71,720209376,738008768,738218144,209376
+72,730096560,748008768,748105328,96560
+73,740204784,758008768,758213552,204784
+74,750103696,768008768,768112464,103696
+75,760129024,778008768,778137792,129024
+76,770115328,788008768,788124096,115328
+77,780208304,798008768,798217072,208304
+78,790107696,808008768,808116464,107696
+79,800213280,818008768,818222048,213280
+80,810110160,828008768,828118928,110160
+81,820211792,838008768,838220560,211792
+82,830100912,848008768,848109680,100912
+83,840207136,858008768,858215904,207136
+84,850107840,868008768,868116608,107840
+[    0.776710] Freeing initrd memory: 17644K
+85,860148352,878008768,878157120,148352
+86,870112080,888008768,888120848,112080
+87,880216112,898008768,898224880,216112
+88,890217120,908008768,908225888,217120
+89,900228880,918008768,918237648,228880
+90,910152576,928008768,928161344,152576
+[    0.840831] Freeing unused kernel memory: 12672K
+[    0.842195] Run /stress-init as init process
+91,920249888,938008768,938258656,249888
+92,930170384,948008768,948179152,170384
+93,940241120,958008768,958249888,241120
+LINUX STRESS START workers=2
+94,950167456,968008768,968176224,167456
+95,960166864,978008768,978175632,166864
+96,970164160,988008768,988172928,164160
+97,980242576,998008768,998251344,242576
+98,990369440,1008008768,1008378208,369440
+99,1000239520,1018008768,1018248288,239520
+100,1010149360,1028008768,1028158128,149360
+101,1020239856,1038008768,1038248624,239856
+102,1030226128,1048008768,1048234896,226128
+103,1040251664,1058008768,1058260432,251664
+104,1050146576,1068008768,1068155344,146576
+105,1060258656,1078008768,1078267424,258656
+106,1070242880,1088008768,1088251648,242880
+107,1080168096,1098008768,1098176864,168096
+108,1090121104,1108008768,1108129872,121104
+109,1100232576,1118008768,1118241344,232576
+110,1110149024,1128008768,1128157792,149024
+111,1120260432,1138008768,1138269200,260432
+112,1130166512,1148008768,1148175280,166512
+113,1140244192,1158008768,1158252960,244192
+114,1150151104,1168008768,1168159872,151104
+115,1160177968,1178008768,1178186736,177968
+116,1170150160,1188008768,1188158928,150160
+117,1180244352,1198008768,1198253120,244352
+118,1190140912,1208008768,1208149680,140912
+119,1200239232,1218008768,1218248000,239232
+120,1210146032,1228008768,1228154800,146032
+121,1220225424,1238008768,1238234192,225424
+122,1230149392,1248008768,1248158160,149392
+123,1240239952,1258008768,1258248720,239952
+124,1250144000,1268008768,1268152768,144000
+125,1260274224,1278008768,1278282992,274224
+126,1270145824,1288008768,1288154592,145824
+127,1280263296,1298008768,1298272064,263296
+128,1290148944,1308008768,1308157712,148944
+129,1300238272,1318008768,1318247040,238272
+130,1310143888,1328008768,1328152656,143888
+131,1320230912,1338008768,1338239680,230912
+132,1330148320,1348008768,1348157088,148320
+133,1340230336,1358008768,1358239104,230336
+134,1350146768,1368008768,1368155536,146768
+135,1360250544,1378008768,1378259312,250544
+136,1370155728,1388008768,1388164496,155728
+137,1380232656,1398008768,1398241424,232656
+138,1390152832,1408008768,1408161600,152832
+139,1400245136,1418008768,1418253904,245136
+140,1410149696,1428008768,1428158464,149696
+141,1420238240,1438008768,1438247008,238240
+142,1430146000,1448008768,1448154768,146000
+143,1440164128,1458008768,1458172896,164128
+144,1450236864,1468008768,1468245632,236864
+145,1460250928,1478008768,1478259696,250928
+146,1470151472,1488008768,1488160240,151472
+147,1480234704,1498008768,1498243472,234704
+148,1490164352,1508008768,1508173120,164352
+149,1500186384,1518008768,1518195152,186384
+150,1510234032,1528008768,1528242800,234032
+151,1520239024,1538008768,1538247792,239024
+152,1530240384,1548008768,1548249152,240384
+153,1540164192,1558008768,1558172960,164192
+154,1550229072,1568008768,1568237840,229072
+155,1560164112,1578008768,1578172880,164112
+156,1570153936,1588008768,1588162704,153936
+157,1580235680,1598008768,1598244448,235680
+158,1590161520,1608008768,1608170288,161520
+159,1600169328,1618008768,1618178096,169328
+160,1610223824,1628008768,1628232592,223824
+161,1620245696,1638008768,1638254464,245696
+162,1630162256,1648008768,1648171024,162256
+163,1640166064,1658008768,1658174832,166064
+164,1650234832,1668008768,1668243600,234832
+165,1660268144,1678008768,1678276912,268144
+166,1670155136,1688008768,1688163904,155136
+167,1680234144,1698008768,1698242912,234144
+168,1690158944,1708008768,1708167712,158944
+169,1700249392,1718008768,1718258160,249392
+170,1710147600,1728008768,1728156368,147600
+171,1720264864,1738008768,1738273632,264864
+172,1730145824,1748008768,1748154592,145824
+173,1740163376,1758008768,1758172144,163376
+174,1750147520,1768008768,1768156288,147520
+175,1760160048,1778008768,1778168816,160048
+176,1770196128,1788008768,1788204896,196128
+177,1780240480,1798008768,1798249248,240480
+178,1790165632,1808008768,1808174400,165632
+179,1800161840,1818008768,1818170608,161840
+180,1810146208,1828008768,1828154976,146208
+181,1820235920,1838008768,1838244688,235920
+182,1830150608,1848008768,1848159376,150608
+183,1840176592,1858008768,1858185360,176592
+184,1850147024,1868008768,1868155792,147024
+185,1860124352,1878008768,1878133120,124352
+186,1870244496,1888008768,1888253264,244496
+187,1880178128,1898008768,1898186896,178128
+188,1890236896,1908008768,1908245664,236896
+189,1900167536,1918008768,1918176304,167536
+190,1910145744,1928008768,1928154512,145744
+191,1920326368,1938008768,1938335136,326368
+192,1930163056,1948008768,1948171824,163056
+193,1940242096,1958008768,1958250864,242096
+194,1950145728,1968008768,1968154496,145728
+195,1960266512,1978008768,1978275280,266512
+196,1970154640,1988008768,1988163408,154640
+197,1980100864,1998008768,1998109632,100864
+198,1990157600,2008008768,2008166368,157600
+199,2000244272,2018008768,2018253040,244272
+200,2010145760,2028008768,2028154528,145760
+201,2020239904,2038008768,2038248672,239904
+202,2030224336,2048008768,2048233104,224336
+203,2040165280,2058008768,2058174048,165280
+204,2050224096,2068008768,2068232864,224096
+205,2060285440,2078008768,2078294208,285440
+206,2070162944,2088008768,2088171712,162944
+207,2080246688,2098008768,2098255456,246688
+208,2090149792,2108008768,2108158560,149792
+209,2100172912,2118008768,2118181680,172912
+210,2110141568,2128008768,2128150336,141568
+211,2120238272,2138008768,2138247040,238272
+212,2130156928,2148008768,2148165696,156928
+213,2140237200,2158008768,2158245968,237200
+214,2150147824,2168008768,2168156592,147824
+215,2160266672,2178008768,2178275440,266672
+216,2170148928,2188008768,2188157696,148928
+217,2180234272,2198008768,2198243040,234272
+218,2190153120,2208008768,2208161888,153120
+219,2200251840,2218008768,2218260608,251840
+220,2210150496,2228008768,2228159264,150496
+221,2220171248,2238008768,2238180016,171248
+222,2230170304,2248008768,2248179072,170304
+223,2240235168,2258008768,2258243936,235168
+224,2250148192,2268008768,2268156960,148192
+225,2260283952,2278008768,2278292720,283952
+226,2270149024,2288008768,2288157792,149024
+227,2280229904,2298008768,2298238672,229904
+228,2290153152,2308008768,2308161920,153152
+229,2300191648,2318008768,2318200416,191648
+230,2310148512,2328008768,2328157280,148512
+231,2320231424,2338008768,2338240192,231424
+232,2330156704,2348008768,2348165472,156704
+233,2340245680,2358008768,2358254448,245680
+234,2350149472,2368008768,2368158240,149472
+235,2360289184,2378008768,2378297952,289184
+236,2370156688,2388008768,2388165456,156688
+237,2380270240,2398008768,2398279008,270240
+238,2390148480,2408008768,2408157248,148480
+239,2400271712,2418008768,2418280480,271712
+240,2410162240,2428008768,2428171008,162240
+241,2420262112,2438008768,2438270880,262112
+242,2430173392,2448008768,2448182160,173392
+243,2440269504,2458008768,2458278272,269504
+244,2450162048,2468008768,2468170816,162048
+245,2460287680,2478008768,2478296448,287680
+246,2470166768,2488008768,2488175536,166768
+247,2480272480,2498008768,2498281248,272480
+248,2490158320,2508008768,2508167088,158320
+249,2500269600,2518008768,2518278368,269600
+250,2510162816,2528008768,2528171584,162816
+251,2520262016,2538008768,2538270784,262016
+252,2530179872,2548008768,2548188640,179872
+253,2540264928,2558008768,2558273696,264928
+254,2550156992,2568008768,2568165760,156992
+255,2560189520,2578008768,2578198288,189520
+256,2570184544,2588008768,2588193312,184544
+257,2580266944,2598008768,2598275712,266944
+258,2590151760,2608008768,2608160528,151760
+259,2600267424,2618008768,2618276192,267424
+260,2610165232,2628008768,2628174000,165232
+261,2620264912,2638008768,2638273680,264912
+262,2630157728,2648008768,2648166496,157728
+263,2640268400,2658008768,2658277168,268400
+264,2650159712,2668008768,2668168480,159712
+265,2660316304,2678008768,2678325072,316304
+266,2670165472,2688008768,2688174240,165472
+267,2680196448,2698008768,2698205216,196448
+268,2690155664,2708008768,2708164432,155664
+269,2700169712,2718008768,2718178480,169712
+270,2710156912,2728008768,2728165680,156912
+271,2720269744,2738008768,2738278512,269744
+272,2730167952,2748008768,2748176720,167952
+273,2740279776,2758008768,2758288544,279776
+274,2750164000,2768008768,2768172768,164000
+275,2760284656,2778008768,2778293424,284656
+276,2770166400,2788008768,2788175168,166400
+277,2780264896,2798008768,2798273664,264896
+278,2790169632,2808008768,2808178400,169632
+279,2800272912,2818008768,2818281680,272912
+280,2810162592,2828008768,2828171360,162592
+281,2820268192,2838008768,2838276960,268192
+282,2830165472,2848008768,2848174240,165472
+283,2840271296,2858008768,2858280064,271296
+284,2850159232,2868008768,2868168000,159232
+285,2860164576,2878008768,2878173344,164576
+286,2870168176,2888008768,2888176944,168176
+287,2880262016,2898008768,2898270784,262016
+288,2890159872,2908008768,2908168640,159872
+289,2900266592,2918008768,2918275360,266592
+290,2910152048,2928008768,2928160816,152048
+291,2920138336,2938008768,2938147104,138336
+292,2930157664,2948008768,2948166432,157664
+293,2940263440,2958008768,2958272208,263440
+294,2950153600,2968008768,2968162368,153600
+295,2960283648,2978008768,2978292416,283648
+296,2970162896,2988008768,2988171664,162896
+297,2980266720,2998008768,2998275488,266720
+298,2990156128,3008008768,3008164896,156128
+299,3000169792,3018008768,3018178560,169792
+PERIODIC LATENCY COMPLETE samples=300

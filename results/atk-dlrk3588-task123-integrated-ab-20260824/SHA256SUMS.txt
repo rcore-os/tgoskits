@@ -1,0 +1,17 @@
+5e00e98157e9d1b755be19cb67f322b6b677a3419ca8cb6930f48a7980cc1373  ./README.md
+04cf2f5f08c2ff712f551fdb3db6d309c406253643d7d5fd46b163730c5d3562  ./configs/atk-task123-board.toml
+d908308d470bf3173f465e2c80b1a15244587966e4c9a3d8654c0042bb44f3ac  ./configs/atk-task123-rtthread.toml
+223fbf1a010cf53828ffdb2ffc196f5833db4de1c2b0cf74865d982a540f4990  ./configs/atk-task123-starry.toml
+c9f3ad496850e2427e654be24554fd3814de6bfa778cc53d3d4b95e5f95ccca2  ./configs/axvisor-task123-integrated-fp-rr.its
+3406b58bb1920dba66462b982304294324bc5d4cdb3ed80f14e4c6ba595dd47b  ./configs/task3-ab-manifest.tsv
+17ec95a036cc43b4e1a03f2e3562e63317afe2da2a0f8e1b975da260ac8947d9  ./logs/manual-boot.log
+fafac618000e822ec37e24d61fce7969a7d47e7df405964253203eb610088a3e  ./logs/manual-console.log
+fe8a302b004f6e8584e397d5483ab580b92731acade6b909b5624e505be7e8b9  ./logs/manual-console.log.metadata.txt
+eeff02a93f9720d3c66a6ca0a0265eb567bf78915c2dfc2c8dd61bf425f436f8  ./logs/yolo-boot.log
+f878f8f7d6c9e1702cdcb825d45174922c3ed6ab38f361e21fd36c690b08d6d6  ./logs/yolo-console.log
+14300c6dc1f18ef8a2d26ec1f81f990dbe86513674ef12ca3e8c1cb190763542  ./logs/yolo-console.log.metadata.txt
+858a528f0165ea2259db54c7765244f649dd2e2bbe2162236ce9718831640a5b  ./metrics/manual.csv
+968bec7d55acc35ef817f33be5058fda7635362d8fc1ef2a7e136c2403ff2cf0  ./metrics/summary.csv
+096fc7dca476683c297f6b09fadd612e8e139ae86a0d8de5275d68bb902ecda4  ./metrics/summary.json
+6832e64da0972cd1ab144bd2bc3b75129cb2a494796b5e633a2cea4057ae213d  ./metrics/yolo.csv
+bf8e02b119be061d2417f6748c8209e3435811960c626a5f09eca2e9b9f0b8c6  ./task3-inputs-preview.png

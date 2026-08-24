@@ -1,0 +1,100 @@
+{
+  "model": {
+    "name": "yolo11n.onnx",
+    "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.onnx",
+    "sha256": "634279b40c07c6391472c51ad45b81ebc48706a9a1fe72dd3396322acd0c053b",
+    "input_size": [
+      640,
+      640
+    ]
+  },
+  "contract": {
+    "min_confidence_milli": 600,
+    "min_area_milli": 10,
+    "max_target_step": 100,
+    "current_target": 500
+  },
+  "records": [
+    {
+      "image": "apps/starry/aka00-tennis-yolo/validation/tennis-ball-close.jpg",
+      "image_sha256": "73060d738a991c8a93d04a43ff228b7c200472e58605575ff9adce224af66507",
+      "size": [
+        1279,
+        1706
+      ],
+      "output_shape": [
+        84,
+        8400
+      ],
+      "detection": null,
+      "decision": {
+        "decision": "reject",
+        "reason": "no_detection"
+      }
+    },
+    {
+      "image": "apps/starry/aka00-tennis-yolo/validation/tennis-ball-plant.jpg",
+      "image_sha256": "6a3e4bb91eb93fd85b66a6d0e16dbba1185287e777a5ec93becdbb8ae8bb4614",
+      "size": [
+        1279,
+        1706
+      ],
+      "output_shape": [
+        84,
+        8400
+      ],
+      "detection": {
+        "class_id": 75,
+        "confidence_milli": 832,
+        "center_x_milli": 419,
+        "center_y_milli": 409,
+        "area_milli": 61,
+        "box_input_xywh": [
+          281.0787353515625,
+          261.910888671875,
+          143.33084106445312,
+          130.75291442871094
+        ],
+        "source_row": 8169
+      },
+      "decision": {
+        "decision": "target",
+        "target": 419,
+        "class_id": 75,
+        "confidence_milli": 832
+      }
+    },
+    {
+      "image": "apps/starry/aka00-tennis-yolo/validation/tennis-ball-black-box.jpg",
+      "image_sha256": "9acae9866cff94c79bd3b644531657b33d33114005500f17a934599b0eeaa250",
+      "size": [
+        1279,
+        1706
+      ],
+      "output_shape": [
+        84,
+        8400
+      ],
+      "detection": {
+        "class_id": 58,
+        "confidence_milli": 871,
+        "center_x_milli": 805,
+        "center_y_milli": 256,
+        "area_milli": 29,
+        "box_input_xywh": [
+          466.37200927734375,
+          163.88226318359375,
+          112.43722534179688,
+          77.8519287109375
+        ],
+        "source_row": 6868
+      },
+      "decision": {
+        "decision": "target",
+        "target": 600,
+        "class_id": 58,
+        "confidence_milli": 871
+      }
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+...error: missing gate
+....error: stalled
+...............
+----------------------------------------------------------------------
+Ran 22 tests in 0.554s
+
+OK
+pcap: wrote 1 frames to /tmp/tmpp2dmz3ug/switch.vm1.pcap
+pcap: wrote 1 frames to /tmp/tmpp2dmz3ug/switch.vm2.pcap
+/tmp/tmpl_0xfw5t/p1.pcap: packets=1 arp=0 udp=1 tagged=0 task2=1 kinds={1: 1}
+PASS

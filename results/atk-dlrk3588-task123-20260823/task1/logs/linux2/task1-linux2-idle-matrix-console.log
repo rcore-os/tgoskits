@@ -1,0 +1,953 @@
+00: addr=edf00000 size=106000
+  ramoops@110000: addr=110000 size=f0000
+Adding bank: 0x00200000 - 0x08400000 (size: 0x08200000)nk: 0x2f0000000 - 0x300000000 (size: 0x10000000)
+Total: 5849.249/6186.39 ms
+
+Starting kernel ...
+
+storagemedia=emmc androidboot.storagemedia=emmc androidboot.mode=normal  rw rootwait androidboot.verifiedbootstate=orange earlycon=uart8250,mmio32,0xfeb50000 console=ttyFIQ0 irqchip.gicv3_pseudo_nmi=0 root=PARTLABEL=rootfs
+VM Load @PA:0x400000
+VM Load Offset: 0xffff000080400000
+Memory Map:
+  Rsv    0x00000000110000 - 0x00000000200000 (960 KiB)
+  Free   0x00000000200000 - 0x00000000400000 (2 MiB)
+  KImg   0x00000000400000 - 0x00000005000000 (76 MiB)
+  Free   0x00000005000000 - 0x00000008300000 (51 MiB)
+  Rsv    0x00000008300000 - 0x00000008347000 (284 KiB)
+  Free   0x00000008347000 - 0x00000008400000 (740 KiB)
+  Free   0x00000009400000 - 0x00000010000000 (108 MiB)
+  Rsv    0x00000010000000 - 0x00000018000000 (128 MiB)
+  Free   0x00000018000000 - 0x00000040000000 (640 MiB)
+  Rsv    0x00000040000000 - 0x00000080000000 (1 GiB)
+  Free   0x00000080000000 - 0x000000edf00000 (1.72 GiB)
+  Rsv    0x000000edf00000 - 0x000000ee006000 (1.02 MiB)
+  Free   0x000000ee006000 - 0x000000f0000000 (31.98 MiB)
+  Free   0x00000100000000 - 0x00000200000000 (4 GiB)
+  Free   0x000002f0000000 - 0x00000300000000 (256 MiB)
+Initialize RAM allocator: 0x5000000..0x8300000
+Reserving CPU-local areas
+CPU-local area stride: 0x45000 bytes
+Total CPU-local allocation: 0x228000 bytes (8 CPUs)
+Flushed RAM used range to memory map: 0x5000000..0x5047000, current: 0x5047000
+Flushed RAM used range to memory map: 0x5047000..0x526f000, current: 0x526f000
+CPU-local areas allocated at 0x5047000 - 0x526f000
+EL: 2
+Mapping early memory regions...
+Ram                 : [0x0000000000200000, 0x0000000008400000) -> [0x0000000000200000, 0x0000000008400000) (130 MiB)
+Ram                 : [0x0000000009400000, 0x00000000f0000000) -> [0x0000000009400000, 0x00000000f0000000) (3.61 GiB)
+Ram                 : [0x0000000100000000, 0x0000000200000000) -> [0x0000000100000000, 0x0000000200000000) (4 GiB)
+Ram                 : [0x00000002f0000000, 0x0000000300000000) -> [0x00000002f0000000, 0x0000000300000000) (256 MiB)
+KImage              : [0x0000ffff80000000, 0x0000ffff84c00000) -> [0x0000000000400000, 0x0000000005000000) (76 MiB)
+PerCpu              : [0x0000ff0005047000, 0x0000ff000526f000) -> [0x0000000005047000, 0x000000000526f000) (2.16 MiB)
+Debug serial        : [0x00000000feb50000, 0x00000000feb51000) -> [0x00000000feb50000, 0x00000000feb51000) (4 KiB)
+Boot page table at physical address: PA:0x526f000
+Setting up table registers...
+MMU Entry point at physical address: 0x5cadcc
+Trap vector at 0xffff801cd800
+Memory Map:
+  Rsv    0x00000000110000 - 0x00000000200000 (960 KiB)
+  Free   0x00000000200000 - 0x00000000400000 (2 MiB)
+  KImg   0x00000000400000 - 0x00000005000000 (76 MiB)
+  Rsv    0x00000005000000 - 0x00000005047000 (284 KiB)
+  PerCPU 0x00000005047000 - 0x0000000526f000 (2.16 MiB)
+  Rsv    0x0000000526f000 - 0x0000000527b000 (48 KiB)
+  Free   0x0000000527b000 - 0x00000008300000 (48.52 MiB)
+  Rsv    0x00000008300000 - 0x00000008347000 (284 KiB)
+  Free   0x00000008347000 - 0x00000008400000 (740 KiB)
+  Free   0x00000009400000 - 0x00000010000000 (108 MiB)
+  Rsv    0x00000010000000 - 0x00000018000000 (128 MiB)
+  Free   0x00000018000000 - 0x00000040000000 (640 MiB)
+  Rsv    0x00000040000000 - 0x00000080000000 (1 GiB)
+  Free   0x00000080000000 - 0x000000edf00000 (1.72 GiB)
+  Rsv    0x000000edf00000 - 0x000000ee006000 (1.02 MiB)
+  Free   0x000000ee006000 - 0x000000f0000000 (31.98 MiB)
+  MMIO   0x000000feb50000 - 0x000000feb51000 (4 KiB)
+  Free   0x00000100000000 - 0x00000200000000 (4 GiB)
+  Free   0x000002f0000000 - 0x00000300000000 (256 MiB)
+Jumping to main entry point at 0xffff801b7248 with SP 0x0000ff000508c000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = ATK-DLRK3588 Board
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 8
+
+[37m[  8.835950 ax_runtime:220] [32mLogging is enabled.[m
+[m[37m[  8.836436 ax_runtime:221] [32mPrimary CPU 0 started, arg = 0x5000000.[m
+[m[37m[  8.837073 ax_runtime:223] [32mFound physcial memory regions:[m
+[m[37m[  8.837695 ax_runtime:225] [32m  [PA:0x110000, PA:0x200000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  8.838581 ax_runtime:225] [32m  [PA:0x200000, PA:0x400000) free memory (READ | WRITE | FREE)[m
+[m[37m[  8.839391 ax_runtime:225] [32m  [PA:0x400000, PA:0x5000000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  8.840291 ax_runtime:225] [32m  [PA:0x5000000, PA:0x5047000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  8.841199 ax_runtime:225] [32m  [PA:0x5047000, PA:0x526f000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  8.842106 ax_runtime:225] [32m  [PA:0x526f000, PA:0x527b000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  8.843014 ax_runtime:225] [32m  [PA:0x527b000, PA:0x8300000) free memory (READ | WRITE | FREE)[m
+[m[37m[  8.843839 ax_runtime:225] [32m  [PA:0x8300000, PA:0x8347000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  8.844746 ax_runtime:225] [32m  [PA:0x8347000, PA:0x8400000) free memory (READ | WRITE | FREE)[m
+[m[37m[  8.845571 ax_runtime:225] [32m  [PA:0x9400000, PA:0x10000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  8.846404 ax_runtime:225] [32m  [PA:0x10000000, PA:0x18000000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  8.847326 ax_runtime:225] [32m  [PA:0x18000000, PA:0x40000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  8.848166 ax_runtime:225] [32m  [PA:0x40000000, PA:0x80000000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  8.849089 ax_runtime:225] [32m  [PA:0x80000000, PA:0xedf00000) free memory (READ | WRITE | FREE)[m
+[m[37m[  8.849929 ax_runtime:225] [32m  [PA:0xedf00000, PA:0xee006000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  8.850851 ax_runtime:225] [32m  [PA:0xee006000, PA:0xf0000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  8.851691 ax_runtime:225] [32m  [PA:0xfeb50000, PA:0xfeb51000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  8.852576 ax_runtime:225] [32m  [PA:0x100000000, PA:0x200000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  8.853431 ax_runtime:225] [32m  [PA:0x2f0000000, PA:0x300000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  8.854286 ax_runtime:375] [32mInitialize global memory allocator...[m
+[m[37m[  8.854909 ax_runtime:376] [32m  use buddy-slab-allocator allocator.[m
+[m[37m[  8.855532 ax_alloc::buddy_slab:158] [32mInitialize global memory allocator, start_vaddr: 0x100000000, size: 0x100000000[m
+[m[37m[  8.859204 ax_alloc::buddy_slab:424] [32mglobal allocator initialized[m
+[m[37m[  8.859825 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x200000, size: 0x200000[m
+[m[37m[  8.860665 buddy_slab_allocator::global:151] [32mGlobalAllocator: skip region 0x200000+0x200000, no allocator-visible memory after 2097152 alignment[m
+[m[37m[  8.861888 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x527b000, size: 0x3085000[m
+[m[37m[  8.862775 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x8347000, size: 0xb9000[m
+[m[37m[  8.863605 buddy_slab_allocator::global:151] [32mGlobalAllocator: skip region 0x8347000+0xb9000, no allocator-visible memory after 2097152 alignment[m
+[m[37m[  8.864828 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x9400000, size: 0x6c00000[m
+[m[37m[  8.865753 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x18000000, size: 0x28000000[m
+[m[37m[  8.867030 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x80000000, size: 0x6df00000[m
+[m[37m[  8.869033 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0xee006000, size: 0x1ffa000[m
+[m[37m[  8.869907 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x2f0000000, size: 0x10000000[m
+[m[37m[  8.870943 ax_runtime:260] [32mkernel aspace: [VA:0x0, VA:0xffffffffffffffff)[m
+[m[37m[  8.871625 ax_mm:103] [32mInitialize virtual memory management...[m
+[m[37m[  9.732613 ax_runtime:272] [32mInitialize platform devices...[m
+[m[37m[  9.788671 someboot::arch::power:23] [32mPower management method : SMC[m
+[m[37m[  9.789308 somehal::driver:5] [32mInitializing rdrive with FDT at 0x5000000[m
+[m[37m[ 10.015285 somehal::arch::gic::v3:274] [32mGICv3 CPU 0 EOI mode: two_step=true[m
+[m[37m[ 10.118498 ax_task::api:193] [32mInitialize scheduling...[m
+[m[37m[ 10.119100 ax_task::api:201] [32m  use Fixed-priority round-robin scheduler.[m
+[m[37m[ 10.119778 ax_runtime:300] [32mInitialize interrupt handlers...[m
+[m[37m[ 10.120403 ax_runtime::devices:2] [32mProbe platform devices...[m
+[mI/TC: Secondary CPU 1 initializing
+I/TC: Secondary CPU 1 switching to normal world boot
+[37m[ 10.226015 somehal::arch::gic::v3:274] [32mGICv3 CPU 1 EOI mode: two_step=true[m
+[m[37m[ 10.226718 ax_runtime::mp:79] [32mSecondary CPU 1 started.[m
+[m[37m[ 10.227321 ax_runtime::mp:110] [32mSecondary CPU 1 init OK.[m
+[mI/TC: Secondary CPU 2 initializing
+I/TC: Secondary CPU 2 switching to normal world boot
+[37m[ 10.231946 somehal::arch::gic::v3:274] [32mGICv3 CPU 2 EOI mode: two_step=true[m
+[m[37m[ 10.232643 ax_runtime::mp:79] [32mSecondary CPU 2 started.[m
+[m[37m[ 10.233245 ax_runtime::mp:110] [32mSecondary CPU 2 init OK.[m
+[mI/TC: Secondary CPU 3 initializing
+I/TC: Secondary CPU 3 switching to normal world boot
+[37m[ 10.237850 somehal::arch::gic::v3:274] [32mGICv3 CPU 3 EOI mode: two_step=true[m
+[m[37m[ 10.238545 ax_runtime::mp:79] [32mSecondary CPU 3 started.[m
+[m[37m[ 10.239146 ax_runtime::mp:110] [32mSecondary CPU 3 init OK.[m
+[mI/TC: Secondary CPU 4 initializing
+I/TC: Secondary CPU 4 switching to normal world boot
+[37m[ 10.243761 somehal::arch::gic::v3:274] [32mGICv3 CPU 4 EOI mode: two_step=true[m
+[m[37m[ 10.244454 ax_runtime::mp:79] [32mSecondary CPU 4 started.[m
+[m[37m[ 10.245036 ax_runtime::mp:110] [32mSecondary CPU 4 init OK.[m
+[mI/TC: Secondary CPU 5 initializing
+I/TC: Secondary CPU 5 switching to normal world boot
+[37m[ 10.249657 somehal::arch::gic::v3:274] [32mGICv3 CPU 5 EOI mode: two_step=true[m
+[m[37m[ 10.250349 ax_runtime::mp:79] [32mSecondary CPU 5 started.[m
+[m[37m[ 10.250932 ax_runtime::mp:110] [32mSecondary CPU 5 init OK.[m
+[mI/TC: Secondary CPU 6 initializing
+I/TC: Secondary CPU 6 switching to normal world boot
+[37m[ 10.255562 somehal::arch::gic::v3:274] [32mGICv3 CPU 6 EOI mode: two_step=true[m
+[m[37m[ 10.256254 ax_runtime::mp:79] [32mSecondary CPU 6 started.[m
+[m[37m[ 10.256836 ax_runtime::mp:110] [32mSecondary CPU 6 init OK.[m
+[mI/TC: Secondary CPU 7 initializing
+I/TC: Secondary CPU 7 switching to normal world boot
+[37m[ 10.261465 somehal::arch::gic::v3:274] [32mGICv3 CPU 7 EOI mode: two_step=true[m
+[m[37m[ 10.262157 ax_runtime::mp:79] [32mSecondary CPU 7 started.[m
+[m[37m[ 10.262158 ax_runtime:348] [32mPrimary CPU 0 init OK.[m
+[m[37m[ 10.262739 ax_runtime::mp:110] [32mSecondary CPU 7 init OK.[m
+[m
+
+       d8888            888     888  d8b
+      d88888            888     888  Y8P
+     d88P888            888     888
+    d88P 888  888  888  Y88b   d88P  888  .d8888b    .d88b.   888d888
+   d88P  888  `Y8bd8P'   Y88b d88P   888  88K       d88""88b  888P"
+  d88P   888    X88K      Y88o88P    888  "Y8888b.  888  888  888
+ d8888888888  .d8""8b.     Y888P     888       X88  Y88..88P  888
+d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
+
+
+by AxVisor Team
+
+[37m[ 10.267465 0:2 axvisor:96] [32mStarting virtualization...[m
+[m[37m[ 10.268006 0:2 axvm::host::arceos:335] [32mEnabling hardware virtualization support on all cores...[m
+[m[37m[ 10.268861 0:2 axvm::host::arceos:341] [32mCore 0 is initializing hardware virtualization support...[m
+[m[37m[ 10.269723 0:2 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.385921 0:2 axvm::host::arceos:343] [32mHardware virtualization support enabled on core 0[m
+[m[37m[ 10.386753 1:19 axvm::host::arceos:353] [32mCore 1 is initializing hardware virtualization support...[m
+[m[37m[ 10.386788 3:21 axvm::host::arceos:353] [32mCore 3 is initializing hardware virtualization support...[m
+[m[37m[ 10.386865 0:2 axvm::host::arceos:370] [32mWaiting for all cores to enable hardware virtualization...[m
+[m[37m[ 10.386770 2:20 axvm::host::arceos:353] [32mCore 2 is initializing hardware virtualization support...[m
+[m[37m[ 10.386851 6:24 axvm::host::arceos:353] [32mCore 6 is initializing hardware virtualization support...[m
+[m[37m[ 10.386833 5:23 axvm::host::arceos:353] [32mCore 5 is initializing hardware virtualization support...[m
+[m[37m[ 10.391096 6:24 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.387626 1:19 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.390226 2:20 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.393259 1:19 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 1 (3/8)[m
+[m[37m[ 10.393899 2:20 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 2 (4/8)[m
+[m[37m[ 10.391971 5:23 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.388486 3:21 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.392617 6:24 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 6 (2/8)[m
+[m[37m[ 10.386804 4:22 axvm::host::arceos:353] [32mCore 4 is initializing hardware virtualization support...[m
+[m[37m[ 10.396870 3:21 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 3 (6/8)[m
+[m[37m[ 10.386868 7:25 axvm::host::arceos:353] [32mCore 7 is initializing hardware virtualization support...[m
+[m[37m[ 10.398556 4:22 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.400281 7:25 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[ 10.396218 5:23 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 5 (5/8)[m
+[m[37m[ 10.401557 0:2 axvm::host::arceos:381] [32mAll cores have enabled hardware virtualization support.[m
+[m[37m[ 10.400925 4:22 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 4 (7/8)[m
+[m[37m[ 10.403239 0:2 axvisor::config:91] [32mUsing static VM configs.[m
+[m[37m[ 10.401555 7:25 axvm::host::arceos:357] [32mHardware virtualization support enabled on core 7 (8/8)[m
+[m[37m[ 10.489520 0:2 axvm::arch::aarch64::fdt::core:68] [32mVM[1] keeps its explicitly configured virtual UART profile: GuestSerialProfile { model: Pl011, transport: Mmio { base: 150994944, length: 4096, register_shift: 0, register_width: Dword }, irq: 33, clock_hz: 24000000 }[m
+[m[37m[ 10.493918 0:2 axvm::arch::aarch64::fdt::core:89] [32mVM[1] virtual GIC follows host firmware resources: GuestGicProfile { compatible: "arm,gic-v3", node_path: "/interrupt-controller@fe600000", node_phandle: Some(1), distributor: GuestMmioRegion { base: 4267704320, length: 65536 }, cpu_region: Redistributors(GuestGicRedistributorProfile { regions: [GuestMmioRegion { base: 4268228608, length: 1048576 }], stride: 131072 }), its: [GuestItsProfile { id: ItsId(0), node_path: "/interrupt-controller@fe600000/msi-controller@fe640000", node_phandle: Some(275), registers: GuestMmioRegion { base: 4267966464, length: 131072 } }, GuestItsProfile { id: ItsId(1), node_path: "/interrupt-controller@fe600000/msi-controller@fe660000", node_phandle: Some(457), registers: GuestMmioRegion { base: 4268097536, length: 131072 } }] }[m
+[m[37m[ 10.500490 0:2 axvm::arch::aarch64::fdt::core:103] [32mVM[1] architectural timer follows host firmware PPIs[m
+[m[37m[ 10.623139 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m[37m[ 10.624169 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@100, node_id: 0x100, hardware_cpu_id: 0x100[m
+[m[37m[ 10.625239 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@200, node_id: 0x200, hardware_cpu_id: 0x200[m
+[m[37m[ 10.626309 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@300, node_id: 0x300, hardware_cpu_id: 0x300[m
+[m[37m[ 10.627378 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@400, node_id: 0x400, hardware_cpu_id: 0x400[m
+[m[37m[ 10.628450 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@500, node_id: 0x500, hardware_cpu_id: 0x500[m
+[m[37m[ 10.629519 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@600, node_id: 0x600, hardware_cpu_id: 0x600[m
+[m[37m[ 10.630608 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@700, node_id: 0x700, hardware_cpu_id: 0x700[m
+[m[37m[ 10.647042 0:2 axvm::arch::aarch64::fdt::core::parser:555] [32mFound 8 host CPU nodes[m
+[m[37m[ 10.647795 0:2 axvm::arch::aarch64::fdt::core:154] [32mVM[1] DTB not found, generating from the VM configuration[m
+[m[37m[ 10.959763 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/interrupt-controller@fe600000", "/serial@fd890000", "/serial@feb40000", "/serial@feb50000", "/serial@feb60000", "/serial@feb70000", "/serial@feb80000", "/serial@feb90000", "/serial@feba0000", "/serial@febb0000", "/serial@febc0000", "/timer", "/timer@feae0000", "/interrupt-controller@fe600000/msi-controller@fe640000", "/interrupt-controller@fe600000/msi-controller@fe660000"][m
+[m[37m[ 10.969105 0:2 axvm::arch::aarch64::fdt::core::parser:57] [32mVM[1] generated-FDT passthrough paths: [][m
+[m[37m[ 10.976393 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe180000 name=pcie@fe180000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262985728, Some(65536)), (44035997696, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 10.979427 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe180000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 10.981090 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe190000 name=pcie@fe190000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4263051264, Some(65536)), (44040192000, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 10.984117 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe190000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 10.991300 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie20x1 name=pcie20x1 compatible=[] reg=[] properties=[][m
+[m[37m[ 10.992599 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1m0-pins name=pcie20x1m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 10.994068 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1m1-pins name=pcie20x1m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 10.995537 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1-2-button-rstn name=pcie20x1-2-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 10.997110 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30phy name=pcie30phy compatible=[] reg=[] properties=[][m
+[m[37m[ 10.998421 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30phy/pcie30phy-pins name=pcie30phy-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 10.999881 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1 name=pcie30x1 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.001192 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m0-pins name=pcie30x1m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.002662 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m1-pins name=pcie30x1m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.004131 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m2-pins name=pcie30x1m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.005601 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1-0-button-rstn name=pcie30x1-0-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.007175 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1-1-button-rstn name=pcie30x1-1-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.008748 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2 name=pcie30x2 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.010045 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m0-pins name=pcie30x2m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.011528 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m1-pins name=pcie30x2m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.012998 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m2-pins name=pcie30x2m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.014467 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m3-pins name=pcie30x2m3-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.015936 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2-button-rstn name=pcie30x2-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.017479 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4 name=pcie30x4 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.018775 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m0-pins name=pcie30x4m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.020244 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m1-pins name=pcie30x4m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.021727 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m2-pins name=pcie30x4m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.023198 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m3-pins name=pcie30x4m3-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 11.024666 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4-button-rstn name=pcie30x4-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 11.029671 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/wireless-wlan/pcie-wifi-gpio name=pcie-wifi-gpio compatible=[] reg=[] properties=[][m
+[m[37m[ 11.031199 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie name=pcie compatible=[] reg=[] properties=[][m
+[m[37m[ 11.032438 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pinctrl/pcie/pcie30x4-clkreqn-m1 name=pcie30x4-clkreqn-m1 compatible=[] reg=[] properties=[][m
+[m[37m[ 11.034708 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe150000 name=pcie@fe150000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262789120, Some(65536)), (44023414784, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 11.037738 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe150000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 11.039384 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe160000 name=pcie@fe160000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262854656, Some(65536)), (44027609088, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 11.042426 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe160000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 11.044071 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe170000 name=pcie@fe170000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262920192, Some(65536)), (44031803392, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 11.047099 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie@fe170000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 11.049460 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie20-avdd0v85 name=pcie20-avdd0v85 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 11.051087 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie20-avdd1v8 name=pcie20-avdd1v8 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 11.052684 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie30-avdd0v75 name=pcie30-avdd0v75 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 11.054296 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/pcie30-avdd1v8 name=pcie30-avdd1v8 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 11.055914 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[1] host-FDT PCI node path=/vcc3v3-pcie30 name=vcc3v3-pcie30 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 11.078807 0:2 axvm::arch::aarch64::fdt::core::parser:98] [32mVM[1] generated guest-FDT bytes=1792[m
+[m[37m[ 11.080257 0:2 axvm::arch::aarch64::fdt::core::parser:109] [32mVM[1] generated guest-FDT PCI paths: [][m
+[m[37m[ 11.155769 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/interrupt-controller@fe600000", "/serial@fd890000", "/serial@feb40000", "/serial@feb50000", "/serial@feb60000", "/serial@feb70000", "/serial@feb80000", "/serial@feb90000", "/serial@feba0000", "/serial@febb0000", "/serial@febc0000", "/timer", "/timer@feae0000", "/interrupt-controller@fe600000/msi-controller@fe640000", "/interrupt-controller@fe600000/msi-controller@fe660000"][m
+[m[37m[ 11.159858 0:2 axvisor::config:266] [32mCreating VM[1] "atk-task1-linux-2vcpu-idle"[m
+[m[37m[ 11.161260 0:2 axvm::vm:1133] [32mVM created: id=1[m
+[m[37m[ 12.077191 0:2 axvisor::config:278] [32mVM[1] created success, loading images...[m
+[m[37m[ 12.215067 0:2 axvm::boot::images:137] [32mLoading ramdisk image from memory (19652747 bytes) into GPA @0x84000000[m
+[m[37m[ 12.272304 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=0[m
+[m[37m[ 12.273006 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=1[m
+[m[37m[ 12.273709 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=2[m
+[m[37m[ 12.274414 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=3[m
+[m[37m[ 12.275197 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=4[m
+[m[37m[ 12.276005 0:2 axvm::vm::prepare:82] [32mVM setup: id=1[m
+[m[37m[ 12.360925 0:2 axvm::arch::aarch64::fdt::core:68] [32mVM[2] keeps its explicitly configured virtual UART profile: GuestSerialProfile { model: Pl011, transport: Mmio { base: 150994944, length: 4096, register_shift: 0, register_width: Dword }, irq: 33, clock_hz: 24000000 }[m
+[m[37m[ 12.365612 0:2 axvm::arch::aarch64::fdt::core:89] [32mVM[2] virtual GIC follows host firmware resources: GuestGicProfile { compatible: "arm,gic-v3", node_path: "/interrupt-controller@fe600000", node_phandle: Some(1), distributor: GuestMmioRegion { base: 4267704320, length: 65536 }, cpu_region: Redistributors(GuestGicRedistributorProfile { regions: [GuestMmioRegion { base: 4268228608, length: 1048576 }], stride: 131072 }), its: [GuestItsProfile { id: ItsId(0), node_path: "/interrupt-controller@fe600000/msi-controller@fe640000", node_phandle: Some(275), registers: GuestMmioRegion { base: 4267966464, length: 131072 } }, GuestItsProfile { id: ItsId(1), node_path: "/interrupt-controller@fe600000/msi-controller@fe660000", node_phandle: Some(457), registers: GuestMmioRegion { base: 4268097536, length: 131072 } }] }[m
+[m[37m[ 12.372205 0:2 axvm::arch::aarch64::fdt::core:103] [32mVM[2] architectural timer follows host firmware PPIs[m
+[m[37m[ 12.494840 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m[37m[ 12.495870 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@100, node_id: 0x100, hardware_cpu_id: 0x100[m
+[m[37m[ 12.496941 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@200, node_id: 0x200, hardware_cpu_id: 0x200[m
+[m[37m[ 12.498011 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@300, node_id: 0x300, hardware_cpu_id: 0x300[m
+[m[37m[ 12.499081 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@400, node_id: 0x400, hardware_cpu_id: 0x400[m
+[m[37m[ 12.500153 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@500, node_id: 0x500, hardware_cpu_id: 0x500[m
+[m[37m[ 12.501241 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@600, node_id: 0x600, hardware_cpu_id: 0x600[m
+[m[37m[ 12.502311 0:2 axvm::arch::aarch64::fdt::core::parser:548] [32mCPU node: /cpus/cpu@700, node_id: 0x700, hardware_cpu_id: 0x700[m
+[m[37m[ 12.518820 0:2 axvm::arch::aarch64::fdt::core::parser:555] [32mFound 8 host CPU nodes[m
+[m[37m[ 12.519572 0:2 axvm::arch::aarch64::fdt::core:154] [32mVM[2] DTB not found, generating from the VM configuration[m
+[m[37m[ 12.832611 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/interrupt-controller@fe600000", "/serial@fd890000", "/serial@feb40000", "/serial@feb50000", "/serial@feb60000", "/serial@feb70000", "/serial@feb80000", "/serial@feb90000", "/serial@feba0000", "/serial@febb0000", "/serial@febc0000", "/timer", "/timer@feae0000", "/interrupt-controller@fe600000/msi-controller@fe640000", "/interrupt-controller@fe600000/msi-controller@fe660000"][m
+[m[37m[ 12.841971 0:2 axvm::arch::aarch64::fdt::core::parser:57] [32mVM[2] generated-FDT passthrough paths: [][m
+[m[37m[ 12.849506 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe180000 name=pcie@fe180000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262985728, Some(65536)), (44035997696, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 12.852557 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe180000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 12.854205 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe190000 name=pcie@fe190000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4263051264, Some(65536)), (44040192000, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 12.857233 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe190000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 12.864584 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie20x1 name=pcie20x1 compatible=[] reg=[] properties=[][m
+[m[37m[ 12.865885 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1m0-pins name=pcie20x1m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.867355 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1m1-pins name=pcie20x1m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.868826 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie20x1/pcie20x1-2-button-rstn name=pcie20x1-2-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 12.870413 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30phy name=pcie30phy compatible=[] reg=[] properties=[][m
+[m[37m[ 12.871740 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30phy/pcie30phy-pins name=pcie30phy-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.873201 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1 name=pcie30x1 compatible=[] reg=[] properties=[][m
+[m[37m[ 12.874498 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m0-pins name=pcie30x1m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.875969 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m1-pins name=pcie30x1m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.877439 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1m2-pins name=pcie30x1m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.878909 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1-0-button-rstn name=pcie30x1-0-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 12.880498 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x1/pcie30x1-1-button-rstn name=pcie30x1-1-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 12.882072 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2 name=pcie30x2 compatible=[] reg=[] properties=[][m
+[m[37m[ 12.883370 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m0-pins name=pcie30x2m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.884840 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m1-pins name=pcie30x2m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.886311 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m2-pins name=pcie30x2m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.887781 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2m3-pins name=pcie30x2m3-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.889251 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x2/pcie30x2-button-rstn name=pcie30x2-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 12.890807 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4 name=pcie30x4 compatible=[] reg=[] properties=[][m
+[m[37m[ 12.892105 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m0-pins name=pcie30x4m0-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.893576 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m1-pins name=pcie30x4m1-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.895046 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m2-pins name=pcie30x4m2-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.896517 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4m3-pins name=pcie30x4m3-pins compatible=[] reg=[] properties=[][m
+[m[37m[ 12.897986 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie30x4/pcie30x4-button-rstn name=pcie30x4-button-rstn compatible=[] reg=[] properties=[][m
+[m[37m[ 12.903062 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/wireless-wlan/pcie-wifi-gpio name=pcie-wifi-gpio compatible=[] reg=[] properties=[][m
+[m[37m[ 12.904577 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie name=pcie compatible=[] reg=[] properties=[][m
+[m[37m[ 12.905816 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pinctrl/pcie/pcie30x4-clkreqn-m1 name=pcie30x4-clkreqn-m1 compatible=[] reg=[] properties=[][m
+[m[37m[ 12.908106 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe150000 name=pcie@fe150000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262789120, Some(65536)), (44023414784, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 12.911152 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe150000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 12.912798 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe160000 name=pcie@fe160000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262854656, Some(65536)), (44027609088, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 12.915828 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe160000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 12.917473 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe170000 name=pcie@fe170000 compatible=["rockchip,rk3588-pcie", "snps,dw-pcie"] reg=[(4262920192, Some(65536)), (44031803392, Some(4194304))] properties=[("compatible", 34), ("reg", 32), ("ranges", 112), ("interrupt-map", 96), ("interrupt-map-mask", 16), ("msi-map", 16), ("bus-range", 8)][m
+[m[37m[ 12.920528 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie@fe170000/legacy-interrupt-controller name=legacy-interrupt-controller compatible=[] reg=[] properties=[][m
+[m[37m[ 12.922921 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie20-avdd0v85 name=pcie20-avdd0v85 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 12.924534 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie20-avdd1v8 name=pcie20-avdd1v8 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 12.926130 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie30-avdd0v75 name=pcie30-avdd0v75 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 12.927741 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/pcie30-avdd1v8 name=pcie30-avdd1v8 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 12.929359 0:2 axvm::arch::aarch64::fdt::core::parser:85] [32mVM[2] host-FDT PCI node path=/vcc3v3-pcie30 name=vcc3v3-pcie30 compatible=["regulator-fixed"] reg=[] properties=[("compatible", 16)][m
+[m[37m[ 12.951865 0:2 axvm::arch::aarch64::fdt::core::parser:98] [32mVM[2] generated guest-FDT bytes=1500[m
+[m[37m[ 12.953119 0:2 axvm::arch::aarch64::fdt::core::parser:109] [32mVM[2] generated guest-FDT PCI paths: [][m
+[m[37m[ 13.028248 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/interrupt-controller@fe600000", "/serial@fd890000", "/serial@feb40000", "/serial@feb50000", "/serial@feb60000", "/serial@feb70000", "/serial@feb80000", "/serial@feb90000", "/serial@feba0000", "/serial@febb0000", "/serial@febc0000", "/timer", "/timer@feae0000", "/interrupt-controller@fe600000/msi-controller@fe640000", "/interrupt-controller@fe600000/msi-controller@fe660000"][m
+[m[37m[ 13.032277 0:2 axvisor::config:266] [32mCreating VM[2] "atk-task1-rtthread-periodic-shared"[m
+[m[37m[ 13.033733 0:2 axvm::vm:1133] [32mVM created: id=2[m
+[m[37m[ 13.491961 0:2 axvisor::config:278] [32mVM[2] created success, loading images...[m
+[m[37m[ 13.499663 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=0[m
+[m[37m[ 13.500364 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=1[m
+[m[37m[ 13.501067 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=2[m
+[m[37m[ 13.501771 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=3[m
+[m[37m[ 13.502554 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=4[m
+[m[37m[ 13.503355 0:2 axvm::vm::prepare:82] [32mVM setup: id=2[m
+[m[37m[ 13.503923 0:2 axvm::runtime:73] [32mInitializing VMM...[m
+[m[37m[ 13.504470 0:2 axvm::runtime:84] [32mVMM starting, booting VMs...[m
+[m[37m[ 13.505064 0:2 axvm::vm:1365] [32mStarting VM[1][m
+[m[37m[ 13.505537 0:2 axvm::runtime::vcpus:1058] [32mSpawning task for VM[1] VCpu[0][m
+[m[37m[ 13.506244 0:2 axvm::runtime::vcpus:1077] [32mVCpu task Task(33, "VM[1]-VCpu[0]") created priority=89 cpumask: [2, ][m
+[m[37m[ 13.507462 0:2 axvm::runtime:92] [32mVM[1] boot success[m
+[m[37m[ 13.507466 2:33 axvm::runtime::vcpus:1132] [32mVM[1] VCpu[0] waiting for running[m
+[m[37m[ 13.507979 0:2 axvm::vm:1365] [32mStarting VM[2][m
+[m[37m[ 13.508695 2:33 axvm::runtime::vcpus:1170] [32mVM[1] VCpu[0] running...[m
+[m[37m[ 13.509167 0:2 axvm::runtime::vcpus:1058] [32mSpawning task for VM[2] VCpu[0][m
+[m[37m[ 13.510531 0:2 axvm::runtime::vcpus:1077] [32mVCpu task Task(35, "VM[2]-VCpu[0]") created priority=90 cpumask: [1, ][m
+[m[37m[ 13.511568 0:2 axvm::runtime:92] [32mVM[2] boot success[m
+[m[37m[ 13.511576 1:35 axvm::runtime::vcpus:1132] [32mVM[2] VCpu[0] waiting for running[m
+[m[37m[ 13.512137 0:2 axvisor:115] [32m[OK] Default guest initialized[m
+[m[37m[ 13.512802 1:35 axvm::runtime::vcpus:1170] [32mVM[2] VCpu[0] running...[m
+[m[37m[ 13.520713 2:33 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0x80000000[m
+[m[37m[ 13.521684 2:33 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc4000001[m
+[m[37m[ 13.522480 2:33 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc400000e[m
+[m[37m[ 13.523293 2:33 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc4000012[m
+[m[37m[ 13.524086 2:33 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc4000015[m
+[m[37m[ 13.572964 2:33 axvm::runtime::hvc:280] [32mVM[1] PSCI_CPU_ON target=0x1 entry=0x8228158c context=0x0[m
+[m[37m[ 13.573869 2:33 axvm::runtime::vcpus:1058] [32mSpawning task for VM[1] VCpu[1][m
+[m[37m[ 13.574585 2:33 axvm::runtime::vcpus:1077] [32mVCpu task Task(38, "VM[1]-VCpu[1]") created priority=89 cpumask: [3, ][m
+[m[37m[ 13.575605 3:38 axvm::runtime::vcpus:1132] [32mVM[1] VCpu[1] waiting for running[m
+[m[37m[ 13.576329 3:38 axvm::runtime::vcpus:1170] [32mVM[1] VCpu[1] running...[m
+[m[VM 2] [32m[I/rtdm.ofw] Booting RT-Thread on physical CPU 0x0[0m
+[VM 2] [32m[I/rtdm.ofw] Machine model: ATK-DLRK3588 Board[0m
+[VM 2] [32m[I/rtdm.ofw] Memory node(0) ranges: 0x00000000a0000000 - 0x00000000c0000000[0m
+[VM 2] [32m[I/dma.pool] coherent-pool: Reserved 2.0 MiB at 0x00000000bf600000[0m
+[VM 2] [32m[I/dma.pool] cma: Reserved 6.0 MiB at 0x00000000bf800000[0m
+[VM 1] [    0.000000] KASLR disabled due to lack of seed
+[VM 2] [32m[I/mm.memblock] System memory:[0m
+[VM 1] [    0.000000] Housekeeping: nohz unsupported. Build with CONFIG_NO_HZ_FULL
+[VM 2] [32m[I/mm.memblock]   memory@a0000000          [0x00000000a0000000, 0x00000000c0000000][0m
+[VM 2] [32m[I/mm.memblock] Reserved memory:[0m
+[VM 2] [32m[I/mm.memblock]   kernel                   [0x00000000a0080000, 0x00000000a01de000][0m
+[VM 2] [32m[I/mm.memblock]   memheap                  [0x00000000a01de000, 0x00000000a41de000][0m
+[VM 2] [32m[I/mm.memblock]   init-page                [0x00000000a41de000, 0x00000000a43de000][0m
+[VM 2] [32m[I/mm.memblock]   fdt                      [0x00000000a43de000, 0x00000000a43df000][0m
+[VM 2] [32m[I/mm.memblock]   dma-pool                 [0x00000000bf600000, 0x00000000c0000000][0m
+[VM 2] [32m[I/mm.memblock] physical memory region [0x00000000a0000000-0x00000000a0080000] installed to system page[0m
+[VM 2] [33m[W/mm.aspace] _mm_aspace_map_phy: not in range[0m
+[VM 2] [32m[I/mm.memblock] physical memory region [0x00000000a43df000-0x00000000bf600000] installed to system page[0m
+[VM 2] [32m[I/mm.memblock] 455 MB memory installed to system page[0m
+[VM 2] [32m[I/osi.psci] Using PSCI v1.1 Function IDs[0m
+[VM 2] [32m[I/rtdm.ofw] Console: uart0 (pl011@9000000)[0m
+[VM 2] 
+[VM 2]  \ | /
+[VM 2] - RT -     Thread Operating System
+[VM 2]  / | \     5.3.0 build Aug 23 2026 13:52:32
+[VM 2]  2006 - 2024 Copyright by RT-Thread team
+[VM 2] [32m[I/rtdm.mnt] File system initialization done[0m
+[VM 2] PERIODIC LATENCY READY
+[VM 1] [    0.196004] OF: /cpus/cpu@0: could not find phandle 14
+[VM 1] [    0.200408] cpu cpu0: OPP table can't be empty
+[VM 1] RT_INIT scenario=idle cpu=1 load_cpu=0 loops=0 duration_sec=20 interval_us=1000 maxlat_us=20000 priority=90 trace=disabled trace_buffer_kb=8192 start_delay_sec=2 hold_after_complete=0
+[VM 1] RT_CPUS total=2
+[VM 1] RT_SCHED_PROBE_START
+[VM 1] pid 1's current scheduling policy: SCHED_OTHER
+[VM 1] pid 1's current scheduling priority: 0
+[VM 1] RT_SCHED_PROBE_OK
+[VM 1] RT_WAIT_BEFORE_TEST seconds=2
+[VM 1] RT_CYCLICTEST_START
+[VM 1] RT_CYCLICTEST_TIMING_START uptime_s=2.90
+[VM 1] RT_PROGRESS uptime_s=2.90
+
+[Axvisor] detached VM[1] console
+Welcome to AxVisor Shell!
+Type 'help' to see available commands
+Use UP/DOWN arrows to navigate command history
+Console shortcuts:
+  Ctrl+X, then h  return to the Axvisor shell
+  Ctrl+X, then [  attach the previous running guest
+  Ctrl+X, then ]  attach the next running guest
+Note: Running with limited features (filesystem support disabled).
+
+[2Kaxvisor:$ [2Kaxvisor:$ v[2Kaxvisor:$ vm[2Kaxvisor:$ vm [2Kaxvisor:$ vm l[2Kaxvisor:$ vm li[2Kaxvisor:$ vm lis[2Kaxvisor:$ vm list
+VM ID  NAME            STATUS       VCPU            MEMORY     VCPU STATE          
+------ --------------- ------------ --------------- ---------- --------------------
+1      atk-task1-linux-2vcpu-idle running      0,1             1GB        Free:2              
+2      atk-task1-rtthread-periodic-shared running      0               512MB      Free:1              
+axvisor:$ [2Kaxvisor:$ v[2Kaxvisor:$ vm[2Kaxvisor:$ vme[2Kaxvisor:$ vmex[2Kaxvisor:$ vmexi[2Kaxvisor:$ vmexit[2Kaxvisor:$ vmexit [2Kaxvisor:$ vmexit s[2Kaxvisor:$ vmexit st[2Kaxvisor:$ vmexit sta[2Kaxvisor:$ vmexit stat
+VM-exit counters per physical CPU (13 reasons):
+  cpu         irq     timer      mmio       wfi   hvc-smc    sysregcntp-sysreg    gic-if       sgi    cpu-up  sys-down   nothing     other
+    1         670         -      4363       660         -         -      1134         -         -         -         -         2         -
+    2         361       265      2284        50         7         -         -         -       150         -         -         7         -
+    3         773       769        64       788         -         -         -         -        19         -         -         -         -
+Host periodic scheduler ticks (event-driven timer IRQs excluded):
+  cpu   0:        684
+  cpu   1:        684
+  cpu   2:        683
+  cpu   3:        683
+  cpu   4:        682
+  cpu   5:        682
+  cpu   6:        681
+  cpu   7:        680
+axvisor:$ [2Kaxvisor:$ v[2Kaxvisor:$ vm[2Kaxvisor:$ vm [2Kaxvisor:$ vm c[2Kaxvisor:$ vm co[2Kaxvisor:$ vm con[2Kaxvisor:$ vm cons[2Kaxvisor:$ vm conso[2Kaxvisor:$ vm consol[2Kaxvisor:$ vm console[2Kaxvisor:$ vm console [2Kaxvisor:$ vm console 2
+✓ Attached VM[2] console; use Ctrl+X, then h to return to the shell
+PERIODIC LATENCY START
+sequence,timestamp_ns,deadline_ns,actual_ns,jitter_ns
+0,10502041,10000000,10502041,502041
+1,20948958,20502041,20948958,446916
+2,31222916,30948958,31222916,273958
+3,41522250,41222916,41522250,299333
+4,51832083,51522250,51832083,309833
+5,62141916,61832083,62141916,309833
+6,72442708,72141916,72442708,300791
+7,82742333,82442708,82742333,299625
+8,93039041,92742333,93039041,296708
+9,103338666,103039041,103338666,299625
+10,113645291,113338666,113645291,306625
+11,123944625,123645291,123944625,299333
+12,134250375,133944625,134250375,305750
+13,144556125,144250375,144556125,305750
+14,154855458,154556125,154855458,299333
+15,165153916,164855458,165153916,298458
+16,175461708,175153916,175461708,307791
+17,185761916,185461708,185761916,300208
+18,196060083,195761916,196060083,298166
+19,206359708,206060083,206359708,299625
+20,216669541,216359708,216669541,309833
+21,226969458,226669541,226969458,299916
+22,237267333,236969458,237267333,297875
+23,247577458,247267333,247577458,310125
+24,257876208,257577458,257876208,298750
+25,268177583,267876208,268177583,301375
+26,278486250,278177583,278486250,308666
+27,288783833,288486250,288783833,297583
+28,299082291,298783833,299082291,298458
+29,309388041,309082291,309388041,305750
+30,319698458,319388041,319698458,310416
+31,330015583,329698458,330015583,317125
+32,340311125,340015583,340311125,295541
+33,350620083,350311125,350620083,308958
+34,360917375,360620083,360917375,297291
+35,371216708,370917375,371216708,299333
+36,381518666,381216708,381518666,301958
+37,391817125,391518666,391817125,298458
+38,402129000,401817125,402129000,311875
+39,412429500,412129000,412429500,300500
+40,422728833,422429500,422728833,299333
+41,433024375,432728833,433024375,295541
+42,443322833,443024375,443322833,298458
+43,453633833,453322833,453633833,311000
+44,463932291,463633833,463932291,298458
+45,474238916,473932291,474238916,306625
+46,484551666,484238916,484551666,312750
+47,494848666,494551666,494848666,297000
+48,505147125,504848666,505147125,298458
+49,515457833,515147125,515457833,310708
+50,525759791,525457833,525759791,301958
+51,536058833,535759791,536058833,299041
+52,546362250,546058833,546362250,303416
+53,556671791,556362250,556671791,309541
+54,566969958,566671791,566969958,298166
+55,577266958,576969958,577266958,297000
+56,587578833,587266958,587578833,311875
+57,597877583,597578833,597877583,298750
+58,608176916,607877583,608176916,299333
+59,618485875,618176916,618485875,308958
+60,628784041,628485875,628784041,298166
+61,639084250,638784041,639084250,300208
+62,649389125,649084250,649389125,304875
+63,659698375,659389125,659698375,309250
+64,670021916,669698375,670021916,323541
+65,680320958,680021916,680320958,299041
+66,690625541,690320958,690625541,304583
+67,700923125,700625541,700923125,297583
+68,711219833,710923125,711219833,296708
+69,721521791,721219833,721521791,301958
+70,731819083,731521791,731819083,297291
+71,742127458,741819083,742127458,308375
+72,752427666,752127458,752427666,300208
+73,762728750,762427666,762728750,301083
+74,773023708,772728750,773023708,294958
+75,783321291,783023708,783321291,297583
+76,793632291,793321291,793632291,311000
+77,803930458,803632291,803930458,298166
+78,814237666,813930458,814237666,307208
+79,824552458,824237666,824552458,314791
+80,834851791,834552458,834851791,299333
+81,845148500,844851791,845148500,296708
+82,855457750,855148500,855457750,309250
+83,865760583,865457750,865760583,302833
+84,876071875,875760583,876071875,311291
+85,886371500,886071875,886371500,299625
+86,896677833,896371500,896677833,306333
+87,906975708,906677833,906975708,297875
+88,917274166,916975708,917274166,298458
+89,927581083,927274166,927581083,306916
+90,937879250,937581083,937879250,298166
+91,948178875,947879250,948178875,299625
+92,958487250,958178875,958487250,308375
+93,968787166,968487250,968787166,299916
+94,979085625,978787166,979085625,298458
+95,989392250,989085625,989392250,306625
+96,999699458,999392250,999699458,307208
+97,1010017750,1009699458,1010017750,318291
+98,1020316500,1020017750,1020316500,298750
+99,1030619916,1030316500,1030619916,303416
+100,1040917208,1040619916,1040917208,297291
+101,1051213041,1050917208,1051213041,295833
+102,1061520250,1061213041,1061520250,307208
+103,1071816666,1071520250,1071816666,296416
+104,1082123000,1081816666,1082123000,306333
+105,1092431958,1092123000,1092431958,308958
+106,1102743541,1102431958,1102743541,311583
+107,1113053375,1112743541,1113053375,309833
+108,1123360875,1123053375,1123360875,307500
+109,1133669541,1133360875,1133669541,308666
+110,1143967125,1143669541,1143967125,297583
+111,1154263833,1153967125,1154263833,296708
+112,1164576875,1164263833,1164576875,313041
+113,1174874458,1174576875,1174874458,297583
+114,1185172041,1184874458,1185172041,297583
+115,1195485375,1195172041,1195485375,313333
+116,1205784416,1205485375,1205784416,299041
+117,1216080833,1215784416,1216080833,296416
+118,1226381625,1226080833,1226381625,300791
+119,1236685625,1236381625,1236685625,304000
+120,1246982625,1246685625,1246982625,297000
+121,1257280500,1256982625,1257280500,297875
+122,1267588583,1267280500,1267588583,308083
+123,1277888208,1277588583,1277888208,299625
+124,1288184916,1287888208,1288184916,296708
+125,1298489208,1298184916,1298489208,304291
+126,1308785041,1308489208,1308785041,295833
+127,1319080875,1318785041,1319080875,295833
+128,1329383708,1329080875,1329383708,302833
+129,1339690041,1339383708,1339690041,306333
+130,1350004541,1349690041,1350004541,314500
+131,1360300666,1360004541,1360300666,296125
+132,1370611958,1370300666,1370611958,311291
+133,1381131208,1380611958,1381131208,519250
+134,1391622166,1391131208,1391622166,490958
+135,1402079000,1401622166,1402079000,456833
+136,1412343333,1412079000,1412343333,264333
+137,1422638291,1422343333,1422638291,294958
+138,1432888916,1432638291,1432888916,250625
+139,1443195833,1442888916,1443195833,306916
+140,1453506833,1453195833,1453506833,311000
+141,1463806750,1463506833,1463806750,299916
+142,1474117458,1473806750,1474117458,310708
+143,1484417958,1484117458,1484417958,300500
+144,1494722541,1494417958,1494722541,304583
+145,1505020708,1504722541,1505020708,298166
+146,1515318000,1515020708,1515318000,297291
+147,1525622291,1525318000,1525622291,304291
+148,1535919875,1535622291,1535919875,297583
+149,1546231166,1545919875,1546231166,311291
+150,1556546833,1556231166,1556546833,315666
+151,1566844708,1566546833,1566844708,297875
+152,1577144041,1576844708,1577144041,299333
+153,1587452708,1587144041,1587452708,308666
+154,1597754375,1597452708,1597754375,301666
+155,1608054583,1607754375,1608054583,300208
+156,1618357708,1618054583,1618357708,303125
+157,1628665500,1628357708,1628665500,307791
+158,1638963666,1638665500,1638963666,298166
+159,1649263583,1648963666,1649263583,299916
+160,1659576916,1659263583,1659576916,313333
+161,1669887916,1669576916,1669887916,311000
+162,1680183166,1679887916,1680183166,295250
+163,1690488625,1690183166,1690488625,305458
+164,1700785333,1700488625,1700785333,296708
+165,1711082625,1710785333,1711082625,297291
+166,1721386333,1721082625,1721386333,303708
+167,1731695291,1731386333,1731695291,308958
+168,1741997833,1741695291,1741997833,302541
+169,1752295416,1751997833,1752295416,297583
+170,1762607583,1762295416,1762607583,312166
+171,1772903125,1772607583,1772903125,295541
+172,1783202458,1782903125,1783202458,299333
+173,1793512291,1793202458,1793512291,309833
+174,1803813666,1803512291,1803813666,301375
+175,1814122625,1813813666,1814122625,308958
+176,1824427500,1824122625,1824427500,304875
+177,1834728875,1834427500,1834728875,301375
+178,1845025000,1844728875,1845025000,296125
+179,1855323166,1855025000,1855323166,298166
+180,1865630958,1865323166,1865630958,307791
+181,1875930000,1875630958,1875930000,299041
+182,1886236041,1885930000,1886236041,306041
+183,1896551708,1896236041,1896551708,315666
+184,1906849000,1906551708,1906849000,297291
+185,1917148041,1916849000,1917148041,299041
+186,1927453208,1927148041,1927453208,305166
+187,1937754875,1937453208,1937754875,301666
+188,1948054500,1947754875,1948054500,299625
+189,1958353833,1958054500,1958353833,299333
+190,1968664833,1968353833,1968664833,311000
+191,1978963000,1978664833,1978963000,298166
+192,1989260875,1988963000,1989260875,297875
+193,1999573333,1999260875,1999573333,312458
+194,2009885208,2009573333,2009885208,311875
+195,2020184250,2019885208,2020184250,299041
+196,2030489416,2030184250,2030489416,305166
+197,2040786708,2040489416,2040786708,297291
+198,2051084000,2050786708,2051084000,297291
+199,2061385958,2061084000,2061385958,301958
+200,2071694041,2071385958,2071694041,308083
+201,2081996875,2081694041,2081996875,302833
+202,2092295625,2091996875,2092295625,298750
+203,2102608958,2102295625,2102608958,313333
+204,2112908000,2112608958,2112908000,299041
+205,2123206750,2122908000,2123206750,298750
+206,2133509291,2133206750,2133509291,302541
+207,2143806875,2143509291,2143806875,297583
+208,2154116125,2153806875,2154116125,309250
+209,2164421291,2164116125,2164421291,305166
+210,2174725291,2174421291,2174725291,304000
+211,2185021416,2184725291,2185021416,296125
+212,2195320166,2195021416,2195320166,298750
+213,2205630875,2205320166,2205630875,310708
+214,2215930500,2215630875,2215930500,299625
+215,2226233916,2225930500,2226233916,303416
+216,2236546666,2236233916,2236546666,312750
+217,2246846291,2246546666,2246846291,299625
+218,2257145916,2256846291,2257145916,299625
+219,2267456625,2267145916,2267456625,310708
+220,2277758875,2277456625,2277758875,302250
+221,2288058791,2287758875,2288058791,299916
+222,2298359291,2298058791,2298359291,300500
+223,2308669416,2308359291,2308669416,310125
+224,2318967291,2318669416,2318967291,297875
+225,2329265458,2328967291,2329265458,298166
+226,2339577333,2339265458,2339577333,311875
+227,2349890375,2349577333,2349890375,313041
+228,2360187083,2359890375,2360187083,296708
+229,2370496333,2370187083,2370496333,309250
+230,2380794500,2380496333,2380794500,298166
+231,2391094125,2390794500,2391094125,299625
+232,2401395208,2401094125,2401395208,301083
+233,2411696875,2411395208,2411696875,301666
+234,2421996500,2421696875,2421996500,299625
+235,2432296708,2431996500,2432296708,300208
+236,2442605958,2442296708,2442605958,309250
+237,2452917541,2452605958,2452917541,311583
+238,2463225041,2462917541,2463225041,307500
+239,2473531083,2473225041,2473531083,306041
+240,2483830125,2483531083,2483830125,299041
+241,2494139083,2493830125,2494139083,308958
+242,2504443083,2504139083,2504443083,304000
+243,2514746208,2514443083,2514746208,303125
+244,2525043500,2524746208,2525043500,297291
+245,2535341958,2535043500,2535341958,298458
+246,2545649750,2545341958,2545649750,307791
+247,2555947916,2555649750,2555947916,298166
+248,2566256875,2565947916,2566256875,308958
+249,2576578958,2576256875,2576578958,322083
+250,2586878000,2586578958,2586878000,299041
+251,2597175000,2596878000,2597175000,297000
+252,2607484833,2607175000,2607484833,309833
+253,2617785625,2617484833,2617785625,300791
+254,2628084375,2627785625,2628084375,298750
+255,2638389250,2638084375,2638389250,304875
+256,2648695583,2648389250,2648695583,306333
+257,2658994916,2658695583,2658994916,299333
+258,2669296000,2668994916,2669296000,301083
+259,2679607583,2679296000,2679607583,311583
+260,2689986250,2689607583,2689986250,378666
+261,2700283833,2699986250,2700283833,297583
+262,2710586666,2710283833,2710586666,302833
+263,2720883375,2720586666,2720883375,296708
+264,2731178916,2730883375,2731178916,295541
+265,2741487000,2741178916,2741487000,308083
+266,2751784875,2751487000,2751784875,297875
+267,2762314333,2761784875,2762314333,529458
+268,2772805291,2772314333,2772805291,490958
+269,2783256583,2782805291,2783256583,451291
+270,2793535208,2793256583,2793535208,278625
+271,2803826375,2803535208,2803826375,291166
+272,2814148458,2813826375,2814148458,322083
+273,2824455083,2824148458,2824455083,306625
+274,2834757625,2834455083,2834757625,302541
+275,2845054333,2844757625,2845054333,296708
+276,2855352208,2855054333,2855352208,297875
+277,2865655625,2865352208,2865655625,303416
+278,2875954958,2875655625,2875954958,299333
+279,2886261583,2885954958,2886261583,306625
+280,2896572583,2896261583,2896572583,311000
+281,2906869000,2906572583,2906869000,296416
+282,2917169791,2916869000,2917169791,300791
+283,2927481375,2927169791,2927481375,311583
+284,2937781000,2937481375,2937781000,299625
+285,2948080333,2947781000,2948080333,299333
+286,2958377041,2958080333,2958377041,296708
+287,2968681916,2968377041,2968681916,304875
+288,2978978916,2978681916,2978978916,297000
+289,2989277375,2988978916,2989277375,298458
+290,2999584875,2999277375,2999584875,307500
+291,3009901416,3009584875,3009901416,316541
+292,3020195500,3019901416,3020195500,294083
+293,3030503875,3030195500,3030503875,308375
+294,3040800875,3040503875,3040800875,297000
+295,3051097875,3050800875,3051097875,297000
+296,3061399833,3061097875,3061399833,301958
+297,3071702375,3071399833,3071702375,302541
+298,3082000541,3081702375,3082000541,298166
+299,3092300458,3092000541,3092300458,299916
+PERIODIC LATENCY COMPLETE samples=300
+
+[Axvisor] detached VM[2] console
+[2Kaxvisor:$ [2Kaxvisor:$ r[2Kaxvisor:$ rt[2Kaxvisor:$ rt [2Kaxvisor:$ rt s[2Kaxvisor:$ rt st[2Kaxvisor:$ rt sta[2Kaxvisor:$ rt stat
+FP-RR scheduler counters:
+  quantum_ticks=5 quantum_expiries=21 same_priority_rotations=21 slice_preserving_preemptions=26395 voluntary_requeues=655608 idle_quantum_skips=1347 lower_priority_services=6
+RT vCPU wait counters:
+  vcpu=0 post_vmexit_yields=7742 parks=2085 wakes=2068 notify_woke=2067 vtimer_arms=4156 vtimer_immediate=7 vtimer_no_deadline=0 vtimer_registered=4149 vtimer_callbacks=1070 vtimer_stale_callbacks=0 vtimer_notifications=1070 vtimer_invalidations=86094 callback_to_wake_samples=1068 callback_to_wake_overflow=0 callback_to_wake_p50_ns=16000 callback_to_wake_p99_ns=34000 callback_to_wake_p99_9_ns=35000 callback_to_wake_max_ns=34708 callback_to_run_dispatch_samples=1070 callback_to_run_dispatch_overflow=0 callback_to_run_dispatch_p50_ns=21000 callback_to_run_dispatch_p99_ns=40000 callback_to_run_dispatch_p99_9_ns=41000 callback_to_run_dispatch_max_ns=71167 callback_to_guest_entry_samples=1069 callback_to_guest_entry_overflow=0 callback_to_guest_entry_p50_ns=43000 callback_to_guest_entry_p99_ns=66000 callback_to_guest_entry_p99_9_ns=68000 callback_to_guest_entry_max_ns=67375 direct_acks=902 direct_overlaps=0 direct_to_run_dispatch_samples=902 direct_to_run_dispatch_overflow=0 direct_to_run_dispatch_p50_ns=8000 direct_to_run_dispatch_p99_ns=11000 direct_to_run_dispatch_p99_9_ns=20000 direct_to_run_dispatch_max_ns=19542 direct_to_guest_entry_samples=902 direct_to_guest_entry_overflow=0 direct_to_guest_entry_p50_ns=26000 direct_to_guest_entry_p99_ns=35000 direct_to_guest_entry_p99_9_ns=44000 direct_to_guest_entry_max_ns=43459 activation_hold_samples=902 activation_hold_overflow=2 activation_hold_p50_ns=51000 activation_hold_p99_ns=207000 activation_hold_p99_9_ns=13781541 activation_hold_max_ns=13781541
+  vcpu=1 post_vmexit_yields=21483 parks=7121 wakes=7074 notify_woke=7072 vtimer_arms=14203 vtimer_immediate=31 vtimer_no_deadline=0 vtimer_registered=14172 vtimer_callbacks=7053 vtimer_stale_callbacks=0 vtimer_notifications=7053 vtimer_invalidations=57345 callback_to_wake_samples=7044 callback_to_wake_overflow=0 callback_to_wake_p50_ns=26000 callback_to_wake_p99_ns=28000 callback_to_wake_p99_9_ns=33000 callback_to_wake_max_ns=37333 callback_to_run_dispatch_samples=7053 callback_to_run_dispatch_overflow=0 callback_to_run_dispatch_p50_ns=29000 callback_to_run_dispatch_p99_ns=31000 callback_to_run_dispatch_p99_9_ns=40000 callback_to_run_dispatch_max_ns=40833 callback_to_guest_entry_samples=7053 callback_to_guest_entry_overflow=0 callback_to_guest_entry_p50_ns=50000 callback_to_guest_entry_p99_ns=56000 callback_to_guest_entry_p99_9_ns=69000 callback_to_guest_entry_max_ns=77875 direct_acks=7179 direct_overlaps=0 direct_to_run_dispatch_samples=7179 direct_to_run_dispatch_overflow=0 direct_to_run_dispatch_p50_ns=6000 direct_to_run_dispatch_p99_ns=7000 direct_to_run_dispatch_p99_9_ns=7000 direct_to_run_dispatch_max_ns=12250 direct_to_guest_entry_samples=7179 direct_to_guest_entry_overflow=0 direct_to_guest_entry_p50_ns=24000 direct_to_guest_entry_p99_ns=27000 direct_to_guest_entry_p99_9_ns=32000 direct_to_guest_entry_max_ns=41416 activation_hold_samples=7179 activation_hold_overflow=0 activation_hold_p50_ns=54000 activation_hold_p99_ns=63000 activation_hold_p99_9_ns=76000 activation_hold_max_ns=989042
+  lr_skips=0
+RT device-poll counters:
+  vm=1 published=0 kicked=0 consumed=0 pending=false
+  vm=2 published=1 kicked=1 consumed=1 pending=false
+RT AxVM timer counters:
+  cpu=1 now_ns=21944281916 wheel_next_ns=21946186709 published_ns=21946186709 registered=3975 cancelled=2978 expired=996 worker_wakes=996 expiry_batches=996 expiry_late_samples=996 expiry_late_overflow=0 expiry_late_p50_ns=13000 expiry_late_p99_ns=15000 expiry_late_p99_9_ns=25000 expiry_late_max_ns=24292 lock_acquisitions=14027 lock_wait_total_ns=2474291 lock_wait_max_ns=584 lock_hold_total_ns=17245971 lock_hold_max_ns=7000
+  cpu=2 now_ns=21944281916 wheel_next_ns=22317450709 published_ns=22317450709 registered=174 cancelled=99 expired=74 worker_wakes=73 expiry_batches=74 expiry_late_samples=74 expiry_late_overflow=0 expiry_late_p50_ns=14000 expiry_late_p99_ns=20000 expiry_late_p99_9_ns=20000 expiry_late_max_ns=19333 lock_acquisitions=2457 lock_wait_total_ns=559744 lock_wait_max_ns=9917 lock_hold_total_ns=1218286 lock_hold_max_ns=7000
+  cpu=3 now_ns=21944281916 wheel_next_ns=21944884666 published_ns=21944884666 registered=14174 cancelled=7119 expired=7054 worker_wakes=7047 expiry_batches=7054 expiry_late_samples=7054 expiry_late_overflow=0 expiry_late_p50_ns=16000 expiry_late_p99_ns=17000 expiry_late_p99_9_ns=17000 expiry_late_max_ns=27167 lock_acquisitions=58192 lock_wait_total_ns=10348043 lock_wait_max_ns=584 lock_hold_total_ns=54224685 lock_hold_max_ns=6708
+RT host hardware timer IRQ counters:
+  cpu=0 irqs=1278
+  cpu=1 irqs=2289
+  cpu=2 irqs=1364
+  cpu=3 irqs=8393
+  cpu=4 irqs=1290
+  cpu=5 irqs=1289
+  cpu=6 irqs=1289
+  cpu=7 irqs=1288
+RT console counters: attached=None flush_calls=585560 host_write_bytes=15824
+  vm=1 active=true input_enqueued=0 input_drained=0 input_dropped=0 input_pending=0 output_enqueued=690 output_drained=690 output_dropped=0 output_pending=0
+  vm=2 active=true input_enqueued=1 input_drained=1 input_dropped=0 input_pending=0 output_enqueued=14854 output_drained=14854 output_dropped=0 output_pending=0
+axvisor:$ [2Kaxvisor:$ v[2Kaxvisor:$ vm[2Kaxvisor:$ vme[2Kaxvisor:$ vmex[2Kaxvisor:$ vmexi[2Kaxvisor:$ vmexit[2Kaxvisor:$ vmexit [2Kaxvisor:$ vmexit s[2Kaxvisor:$ vmexit st[2Kaxvisor:$ vmexit sta[2Kaxvisor:$ vmexit stat
+VM-exit counters per physical CPU (13 reasons):
+  cpu         irq     timer      mmio       wfi   hvc-smc    sysregcntp-sysreg    gic-if       sgi    cpu-up  sys-down   nothing     other
+    1    2304@320.2/s   600@117.6/s 30791@5178.2/s  2040@270.4/s         -         -  2129@195.0/s         -         -         -         -         2         -
+    2     400@7.6/s   302@7.2/s      2284    91@8.0/s         7         -         -         -       150         -         -         7         -
+    3    7489@1315.9/s  7484@1315.7/s        64  7423@1300.0/s         -         -         -         -    23@0.8/s         -         -         -         -
+Host periodic scheduler ticks (event-driven timer IRQs excluded):
+  cpu   0:       1194 (99.927/s)
+  cpu   1:       1194 (99.927/s)
+  cpu   2:       1194 (100.123/s)
+  cpu   3:       1193 (99.927/s)
+  cpu   4:       1193 (100.123/s)
+  cpu   5:       1192 (99.927/s)
+  cpu   6:       1191 (99.927/s)
+  cpu   7:       1191 (100.123/s)
+axvisor:$ [2Kaxvisor:$ v[2Kaxvisor:$ vm[2Kaxvisor:$ vm [2Kaxvisor:$ vm c[2Kaxvisor:$ vm co[2Kaxvisor:$ vm con[2Kaxvisor:$ vm cons[2Kaxvisor:$ vm conso[2Kaxvisor:$ vm consol[2Kaxvisor:$ vm console[2Kaxvisor:$ vm console [2Kaxvisor:$ vm console 1
+✓ Attached VM[1] console; use Ctrl+X, then h to return to the shell
+RT_PROGRESS uptime_s=12.91
+RT_PROGRESS uptime_s=22.92
+WARN: stat /dev/cpu_dma_latency failed: No such file or directory
+# Histogram
+000058 000001
+000059 000006
+000060 000018
+000061 000019
+000062 000016
+000063 000027
+000064 000028
+000065 000015
+000066 000016
+000067 000012
+000068 000003
+000069 000001
+000070 000003
+000071 000003
+000073 000001
+000080 000001
+000096 000001
+000114 000002
+000115 000001
+000119 000002
+000121 000001
+000122 000005
+000123 000010
+000124 000009
+000125 000006
+000126 000007
+000127 000015
+000128 000022
+000129 000022
+000130 000027
+000131 000022
+000132 000020
+000133 000010
+000134 000003
+000135 000006
+000136 000002
+000138 000002
+000144 000001
+000146 000001
+000147 000001
+000148 000001
+000150 000001
+000152 000001
+000156 000001
+000159 000001
+000161 000001
+000163 000002
+000164 000002
+000166 000002
+000168 000002
+000170 000002
+000172 000002
+000173 000001
+000175 000003
+000176 000006
+000177 000003
+000178 000013
+000179 000024
+000180 000011
+000181 000009
+000182 000009
+000183 000005
+000184 000005
+000185 000001
+000186 000016
+000187 000053
+000188 000147
+000189 000495
+000190 001506
+000191 003676
+000192 004544
+000193 003676
+000194 002027
+000195 000946
+000196 000383
+000197 000232
+000198 000181
+000199 000213
+000200 000222
+000201 000257
+000202 000222
+000203 000203
+000204 000150
+000205 000106
+000206 000072
+000207 000037
+000208 000021
+000209 000002
+000210 000003
+000211 000002
+000212 000001
+000213 000001
+000220 000001
+000221 000001
+000222 000001
+000226 000001
+000228 000001
+000246 000001
+000300 000001
+000306 000001
+000307 000001
+000308 000013
+000309 000012
+000310 000018
+000311 000036
+000312 000019
+000313 000016
+000314 000003
+000316 000001
+000317 000002
+000335 000001
+# Min Latencies: 00058
+# Avg Latencies: 00191
+# Max Latencies: 00335
+# Histogram Overflows: 00000
+# Histogram Overflow at cycle number:
+# Thread 0: 
+
+RT_CYCLICTEST_TIMING_END uptime_s=23.14
+RT_CYCLICTEST_COMPLETE
+RT_INIT_DONE scenario=idle
+RT_CPUSTAT sample=0 cpu=cpu0 user=0 nice=0 system=88 idle=198 iowait=0 irq=1 softirq=0 steal=0
+RT_CPUSTAT sample=0 cpu=cpu1 user=0 nice=0 system=0 idle=290 iowait=0 irq=0 softirq=0 steal=0
+RT_CPUSTAT sample=1 cpu=cpu0 user=0 nice=0 system=89 idle=698 iowait=0 irq=2 softirq=0 steal=0
+RT_CPUSTAT sample=1 cpu=cpu1 user=0 nice=0 system=1 idle=745 iowait=0 irq=38 softirq=0 steal=0
+RT_CPUSTAT sample=2 cpu=cpu0 user=0 nice=0 system=89 idle=1197 iowait=0 irq=2 softirq=0 steal=0
+RT_CPUSTAT sample=2 cpu=cpu1 user=0 nice=0 system=1 idle=1200 iowait=0 irq=75 softirq=0 steal=0
+RT_CPUSTAT sample=3 cpu=cpu0 user=0 nice=0 system=90 idle=1697 iowait=0 irq=2 softirq=0 steal=0
+RT_CPUSTAT sample=3 cpu=cpu1 user=0 nice=0 system=1 idle=1654 iowait=0 irq=113 softirq=0 steal=0
+RT_CPUSTAT sample=4 cpu=cpu0 user=0 nice=0 system=90 idle=2196 iowait=0 irq=2 softirq=0 steal=0
+RT_CPUSTAT sample=4 cpu=cpu1 user=0 nice=0 system=2 idle=2109 iowait=0 irq=151 softirq=0 steal=0
+
+[Axvisor] detached VM[1] console
+[2Kaxvisor:$ [2Kaxvisor:$ v[2Kaxvisor:$ vm[2Kaxvisor:$ vm [2Kaxvisor:$ vm l[2Kaxvisor:$ vm li[2Kaxvisor:$ vm lis[2Kaxvisor:$ vm list
+VM ID  NAME            STATUS       VCPU            MEMORY     VCPU STATE          
+------ --------------- ------------ --------------- ---------- --------------------
+1      atk-task1-linux-2vcpu-idle running      0,1             1GB        Free:2              
+2      atk-task1-rtthread-periodic-shared running      0               512MB      Free:1              
+axvisor:$ [2Kaxvisor:$ v[2Kaxvisor:$ vm[2Kaxvisor:$ vme[2Kaxvisor:$ vmex[2Kaxvisor:$ vmexi[2Kaxvisor:$ vmexit[2Kaxvisor:$ vmexit [2Kaxvisor:$ vmexit s[2Kaxvisor:$ vmexit st[2Kaxvisor:$ vmexit sta[2Kaxvisor:$ vmexit stat
+VM-exit counters per physical CPU (13 reasons):
+  cpu         irq     timer      mmio       wfi   hvc-smc    sysregcntp-sysreg    gic-if       sgi    cpu-up  sys-down   nothing     other
+    1    5319@196.6/s       600     30791  5038@195.5/s         -         -  5129@195.6/s         -         -         -         -         2         -
+    2     596@12.8/s   479@11.5/s  8595@411.5/s   230@9.1/s         7         -         -         -   151@0.1/s         -         -         7         -
+    3   26376@1231.4/s 26369@1231.2/s        64 26033@1213.3/s         -         -         -         -    37@0.9/s         -         -         -         -
+Host periodic scheduler ticks (event-driven timer IRQs excluded):
+  cpu   0:       2728 (100.011/s)
+  cpu   1:       2728 (100.011/s)
+  cpu   2:       2728 (100.011/s)
+  cpu   3:       2727 (100.011/s)
+  cpu   4:       2726 (99.946/s)
+  cpu   5:       2726 (100.011/s)
+  cpu   6:       2725 (100.011/s)
+  cpu   7:       2725 (100.011/s)
+axvisor:$ 

@@ -1,0 +1,3 @@
+results/rtthread-task23-model-rejected-20260822/starry.pcap: packets=30 arp=11 udp=15 tagged=0 task2=12 kinds={5: 12}
+results/rtthread-task23-model-rejected-20260822/rtthread.pcap: packets=30 arp=11 udp=15 tagged=0 task2=12 kinds={5: 12}
+PASS

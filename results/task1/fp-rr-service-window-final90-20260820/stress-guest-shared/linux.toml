@@ -1,0 +1,36 @@
+# RT-PARTITION Linux guest: 2 vCPUs pinned to physical CPUs 2 and 3.
+#
+# Load addresses follow the validated gicv3-timer-stress layout
+# (linux-qemu at 0x8020_0000, DTB at 0x8000_0000, initramfs at 0x8400_0000).
+# Guest CPU 1 is isolated from the kernel scheduler and runs the measurement
+# task; guest CPU 0 handles stress workers and kernel IRQs. The runner derives
+# `isolcpus`, `nohz_full`, and `irqaffinity` from its RT_CPU setting.
+[base]
+id = 1
+name = "rt-partition-linux"
+guest_type = "virtualized"
+cpu_num = 2
+phys_cpu_ids = [1, 2]
+host_sched_priority = 89
+aarch64_virtual_timer_only = false
+aarch64_wfi_policy = "auto"
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "/home/huhu/tgoskits-rt/tmp/rt-partition/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+ramdisk_path = "${workspace}/tmp/rt-partition/rt-linux-initramfs.cpio.gz"
+ramdisk_load_addr = 0x8400_0000
+cmdline = "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=7 isolcpus=0 nohz_full=0 irqaffinity=1 rt_scenario=stress-guest-shared rt_cpu=0 rt_load_cpu=1 rt_loops=0 rt_duration_sec=90 rt_interval_us=1000 rt_maxlat_us=20000 rt_priority=90 rt_trace=disabled rt_trace_buffer_kb=8192 rt_start_delay_sec=5"
+memory_regions = [[0x8000_0000, 0x4000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x01]

@@ -1,0 +1,35 @@
+[base]
+id = 1
+name = "atk-task1-starry-shared"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [0x100]
+host_sched_priority = 89
+
+[kernel]
+entry_point = 0x4008_0000
+image_location = "memory"
+kernel_load_addr = 0x4008_0000
+kernel_path = "/home/huhu/tgoskits-starry/target/aarch64-unknown-none-softfloat/release/starryos.bin"
+dtb_load_addr = 0x4000_0000
+ramdisk_path = "/home/huhu/tgoskits-starry/tmp/net-dual-guest/linux-task2/task2-linux-initramfs.cpio.gz"
+ramdisk_load_addr = 0x7C00_0000
+cmdline = "console=ttyS2"
+memory_regions = [
+    [0x4000_0000, 0x4000_0000, 0x7, 2],
+]
+
+[devices]
+passthrough = []
+disabled = [
+    { path = "/pcie@fe150000" },
+    { path = "/pcie@fe160000" },
+    { path = "/pcie@fe170000" },
+    { path = "/pcie@fe180000" },
+    { path = "/pcie@fe190000" },
+]
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x15]

@@ -1,0 +1,8 @@
+timer-wheel single-variable A/B
+global_pairs_per_second=195291
+percpu_pairs_per_second=449316
+throughput_speedup=2.301x
+lock_wait_max_reduction_pct=45.086
+lock_wait_total_reduction_pct=93.928
+expiry_p99_reduction_pct=-3.946
+expiry_max_reduction_pct=-13.243

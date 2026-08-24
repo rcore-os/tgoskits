@@ -1,0 +1,159 @@
+
+TASK123_RUNNER mode=manual scheduler=fp-rr shared_pcpu=0x100 rtthread_priority=90 starry_priority=89 ram_only=true
+00: addr=edf00000 size=106000
+  ramoops@110000: addr=110000 size=f0000
+Adding bank: 0x00200000 - 0x08400000 (size: 0x08200000)@ 675 mV[m
+[m
+root@starry:/root # wc -c /proc/initrd; sha256sum /proc/[37m[ 14.203837 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=100% opp 0->2 = 1021 MHz @ 675 mV[m
+[minitrd; mkdir -p /tmp/t1 23; cd /tmp/t123; gzip -dc /proc/initrd | cpio -id; mount --bind /tmp/t123/usr/s hare /usr/share; ip addr add 10.0.42.15/24 dev eth0 2>/dev/null || true; echo TA SK123_SETUP_DONE
+[37m[ 14.725260 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 14.725335 0:35 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe7b0[m
+[m32055708 /proc/initrd
+[37m[ 14.952450 0:35 starry_kernel::task::ops:398] [32mTask(35, "wc") exit with code: 0[m
+[m[37m[ 14.964387 0:35 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 14.972646 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 14.992574 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 14.992651 0:36 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe7e0[m
+[m4e36263479d045b6a7f1d84ec3981949efc64e0aa4de82c1c91a81c05a732da5  /proc/initrd
+[37m[ 15.764030 0:36 starry_kernel::task::ops:398] [32mTask(36, "sha256sum") exit with code: 0[m
+[m[37m[ 15.775234 0:36 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 15.783728 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 15.788137 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 15.812244 0:37 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffe9d0[m
+[m[37m[ 15.849443 0:37 starry_kernel::task::ops:398] [32mTask(37, "mkdir") exit with code: 0[m
+[m[37m[ 15.858914 0:37 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 15.867945 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 15.875259 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 15.900784 0:38 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffead0[m
+[m[37m[ 15.901072 0:39 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffead0[m
+[m[37m[ 23.190398 0:38 starry_kernel::task::ops:398] [32mTask(38, "busybox") exit with code: 0[m
+[m[37m[ 23.201575 0:38 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 23.210675 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m209861 blocks
+[37m[ 23.225485 0:39 starry_kernel::task::ops:398] [32mTask(39, "busybox") exit with code: 0[m
+[m[37m[ 23.237270 0:39 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 23.246525 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 23.265827 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 23.265899 0:40 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffefa0[m
+[m[37m[ 23.397381 0:40 starry_kernel::task::ops:398] [32mTask(40, "mount") exit with code: 0[m
+[m[37m[ 23.408247 0:40 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 23.417053 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[m[37m[ 23.436529 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 23.436600 0:41 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3ffffffefa0[m
+[m[37m[ 23.528870 0:41 starry_kernel::task::ops:398] [32mTask(41, "ip") exit with code: 0[m
+[m[37m[ 23.538767 0:41 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m[37m[ 23.546556 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[mTASK123_SETUP_DONE
+root@starry:/tmp/t123 # [37m[ 23.690765 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=0% opp 2->1 = 816 MHz @ 675 mV[m
+[m/tmp/t123/bin/task2-net manual
+[37m[ 23.835056 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WUNTRACED | WCONTINUED)[m
+[m[37m[ 23.835157 0:42 starry_kernel::task::user:70] [32mEnter user space: ip=0x223184, sp=0x3fffffff540[m
+[mTASK3_EXPERIMENT_READY run_mode=manual source=manual frozen_target=500 samples=5
+TASK3_MANUAL_STARTED request=1 target=500 phase=startup
+[37m[ 23.843688 0:42 ax_net::udp:288] [32mUDP socket #0: bound on *:4242[m
+[mSTARRY_T2N1_READY local=0.0.0.0:4242 peer=10.0.42.2:4242 session=0x54525432 mode=manual
+TASK3_SAMPLE sample=1 image_id=vase-left image_sha256=570d32eef9a9f5fd7101c5058b625ef62469e5ba778a77c38da675bea4752cf9 truth_target=321 expected=accept source=manual outcome=accepted request=1 elapsed_ms=0
+TASK3_MANUAL_INPUT source=manual target=500 infer_us=0 request=1 elapsed_ms=0
+TASK3_MANUAL_TARGET source=manual target=500 infer_us=0 request=1
+STARRY_T2N1_CONTROL_SENT seq=1 value=500 request=1 elapsed_ms=0
+TASK3_CONTROL_SENT elapsed_ms=0 sample=1 image_id=vase-left source=manual request=1 value=500 truth_target=321 state=300 seq=1
+[37m[ 23.892236 0:9 ax_net::device::ethernet:486] [32meth0: ARP 10.0.42.2 -> 52-54-00-12-34-02[m
+[m[37m[ 23.893540 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=90% opp 1->2 = 1021 MHz @ 675 mV[m
+[mSTARRY_T2N1_ACK seq=1
+STARRY_T2N1_STATUS_DELIVERED seq=1 bytes=12 request=1 state=Active value=345 rtt_ms=142
+TASK3_STATUS_RECEIVED elapsed_ms=142 sample=1 image_id=vase-left request=1 value=500 state_before=300 state_after=345 rtt_ms=142
+STARRY_T2N1_PASS
+[37m[ 24.106679 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=10% opp 2->1 = 816 MHz @ 675 mV[m
+[m[37m[ 24.207160 0:17 ax_driver::soc::rockchip::cpufreq:872] [32mgov: A55 peak=20% opp 1->0 = 408 MHz @ 675 mV[m
+[mTASK3_MANUAL_STARTED request=2 target=500 elapsed_ms=1151
+[37m[ 25.013833 0:43 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 25.015285 0:43 starry_kernel::task::ops:398] [32mTask(43, "task2-net") exit with code: 0[m
+[mTASK3_SAMPLE sample=2 image_id=vase-center image_sha256=608c8a61ff0bb43e5a8613f1f6f8aa08af74b084363610ed2b526ad925e4cb6f truth_target=421 expected=accept source=manual outcome=accepted request=2 elapsed_ms=1171
+TASK3_MANUAL_INPUT source=manual target=500 infer_us=0 request=2 elapsed_ms=1171
+TASK3_MANUAL_TARGET source=manual target=500 infer_us=0 request=2
+STARRY_T2N1_CONTROL_SENT seq=2 value=500 request=2 elapsed_ms=1171
+TASK3_CONTROL_SENT elapsed_ms=1171 sample=2 image_id=vase-center source=manual request=2 value=500 truth_target=421 state=345 seq=2
+STARRY_T2N1_ACK seq=2
+STARRY_T2N1_STATUS_DELIVERED seq=2 bytes=12 request=2 state=Active value=370 rtt_ms=274
+TASK3_STATUS_RECEIVED elapsed_ms=1445 sample=2 image_id=vase-center request=2 value=500 state_before=345 state_after=370 rtt_ms=274
+TASK3_MANUAL_STARTED request=3 target=500 elapsed_ms=2450
+[37m[ 26.310685 0:44 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 26.311613 0:44 starry_kernel::task::ops:398] [32mTask(44, "task2-net") exit with code: 0[m
+[mTASK3_SAMPLE sample=3 image_id=vase-right image_sha256=f9d70fd3e0f85185ce8e45b2d714d8b4083833da73cdaeac5d981abc890ef698 truth_target=521 expected=accept source=manual outcome=accepted request=3 elapsed_ms=2467
+TASK3_MANUAL_INPUT source=manual target=500 infer_us=0 request=3 elapsed_ms=2467
+TASK3_MANUAL_TARGET source=manual target=500 infer_us=0 request=3
+STARRY_T2N1_CONTROL_SENT seq=3 value=500 request=3 elapsed_ms=2467
+TASK3_CONTROL_SENT elapsed_ms=2467 sample=3 image_id=vase-right source=manual request=3 value=500 truth_target=521 state=370 seq=3
+STARRY_T2N1_ACK seq=3
+STARRY_T2N1_STATUS_DELIVERED seq=3 bytes=12 request=3 state=Active value=384 rtt_ms=278
+TASK3_STATUS_RECEIVED elapsed_ms=2745 sample=3 image_id=vase-right request=3 value=500 state_before=370 state_after=384 rtt_ms=278
+TASK3_MANUAL_STARTED request=4 target=500 elapsed_ms=3745
+[37m[ 27.606316 0:45 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 27.607019 0:45 starry_kernel::task::ops:398] [32mTask(45, "task2-net") exit with code: 0[m
+[mTASK3_SAMPLE sample=4 image_id=no-target image_sha256=a50f32c63aff52e8abab6c82bbd8e202512ab23ff12e213d6833aa719af56bc9 truth_target=none expected=reject source=manual outcome=accepted request=4 elapsed_ms=3763
+TASK3_MANUAL_INPUT source=manual target=500 infer_us=0 request=4 elapsed_ms=3763
+TASK3_MANUAL_TARGET source=manual target=500 infer_us=0 request=4
+STARRY_T2N1_CONTROL_SENT seq=4 value=500 request=4 elapsed_ms=3763
+TASK3_CONTROL_SENT elapsed_ms=3763 sample=4 image_id=no-target source=manual request=4 value=500 truth_target=none state=384 seq=4
+STARRY_T2N1_ACK seq=4
+STARRY_T2N1_STATUS_DELIVERED seq=4 bytes=12 request=4 state=Active value=392 rtt_ms=283
+TASK3_STATUS_RECEIVED elapsed_ms=4046 sample=4 image_id=no-target request=4 value=500 state_before=384 state_after=392 rtt_ms=283
+TASK3_MANUAL_STARTED request=5 target=500 elapsed_ms=5050
+[37m[ 28.913104 0:46 starry_kernel::task::user:70] [32mEnter user space: ip=0x8ab6e0, sp=0x21da50[m
+[m[37m[ 28.913803 0:46 starry_kernel::task::ops:398] [32mTask(46, "task2-net") exit with code: 0[m
+[mTASK3_SAMPLE sample=5 image_id=small-target image_sha256=a6a77909aed2ed499df3ccd54d5db3384a2de0cfcaa799b15e1c896c7a058370 truth_target=500 expected=reject source=manual outcome=accepted request=5 elapsed_ms=5070
+TASK3_MANUAL_INPUT source=manual target=500 infer_us=0 request=5 elapsed_ms=5070
+TASK3_MANUAL_TARGET source=manual target=500 infer_us=0 request=5
+STARRY_T2N1_CONTROL_SENT seq=5 value=500 request=5 elapsed_ms=5070
+TASK3_CONTROL_SENT elapsed_ms=5070 sample=5 image_id=small-target source=manual request=5 value=500 truth_target=500 state=392 seq=5
+STARRY_T2N1_ACK seq=5
+STARRY_T2N1_STATUS_DELIVERED seq=5 bytes=12 request=5 state=Active value=396 rtt_ms=275
+TASK3_STATUS_RECEIVED elapsed_ms=5345 sample=5 image_id=small-target request=5 value=500 state_before=392 state_after=396 rtt_ms=275
+TASK3_EXPERIMENT_COMPLETE run_mode=manual samples=5 elapsed_ms=5345
+[37m[ 29.452291 0:13 starry_kernel::task::signal:679] [32mSend signal SIGINT to process group 42[m
+[m[37m[ 29.452338 0:13 starry_kernel::task::signal:605] [32mSend signal SIGINT to process 42[m
+[m^C[37m[ 29.506501 0:42 starry_kernel::task::ops:398] [32mTask(42, "task2-net") exit with code: 2[m
+[m[37m[ 29.542227 0:42 starry_kernel::task::signal:605] [32mSend signal SIGCHLD to process 1[m
+[m
+[37m[ 29.571332 0:18 starry_kernel::syscall::task::wait:245] [32msys_waitpid <= pid: -1, options: WaitPidOptions(WNOHANG | WUNTRACED | WCONTINUED)[m
+[mroot@starry:/tmp/t123 # 
+
+[Axvisor] detached VM[1] console
+Welcome to AxVisor Shell!
+Type 'help' to see available commands
+Use UP/DOWN arrows to navigate command history
+Console shortcuts:
+  Ctrl+X, then h  return to the Axvisor shell
+  Ctrl+X, then [  attach the previous running guest
+  Ctrl+X, then ]  attach the next running guest
+
+[2Kaxvisor:/$ [2Kaxvisor:/$ r[2Kaxvisor:/$ rt[2Kaxvisor:/$ rt [2Kaxvisor:/$ rt s[2Kaxvisor:/$ rt st[2Kaxvisor:/$ rt sta[2Kaxvisor:/$ rt stat
+FP-RR scheduler counters:
+  quantum_ticks=5 quantum_expiries=35 same_priority_rotations=34 slice_preserving_preemptions=32680 voluntary_requeues=1681041 idle_quantum_skips=5516 lower_priority_services=44
+RT vCPU wait counters:
+  vcpu=0 post_vmexit_yields=44291 parks=9657 wakes=9449 notify_woke=9440 vtimer_arms=19163 vtimer_immediate=60 vtimer_no_deadline=0 vtimer_registered=19103 vtimer_callbacks=5759 vtimer_stale_callbacks=10 vtimer_notifications=5749 vtimer_invalidations=336127 callback_to_wake_samples=0 callback_to_wake_overflow=0 callback_to_wake_p50_ns=0 callback_to_wake_p99_ns=0 callback_to_wake_p99_9_ns=0 callback_to_wake_max_ns=0 callback_to_run_dispatch_samples=0 callback_to_run_dispatch_overflow=0 callback_to_run_dispatch_p50_ns=0 callback_to_run_dispatch_p99_ns=0 callback_to_run_dispatch_p99_9_ns=0 callback_to_run_dispatch_max_ns=0 callback_to_guest_entry_samples=0 callback_to_guest_entry_overflow=0 callback_to_guest_entry_p50_ns=0 callback_to_guest_entry_p99_ns=0 callback_to_guest_entry_p99_9_ns=0 callback_to_guest_entry_max_ns=0 direct_acks=6724 direct_overlaps=0 direct_to_run_dispatch_samples=0 direct_to_run_dispatch_overflow=0 direct_to_run_dispatch_p50_ns=0 direct_to_run_dispatch_p99_ns=0 direct_to_run_dispatch_p99_9_ns=0 direct_to_run_dispatch_max_ns=0 direct_to_guest_entry_samples=0 direct_to_guest_entry_overflow=0 direct_to_guest_entry_p50_ns=0 direct_to_guest_entry_p99_ns=0 direct_to_guest_entry_p99_9_ns=0 direct_to_guest_entry_max_ns=0 activation_hold_samples=0 activation_hold_overflow=0 activation_hold_p50_ns=0 activation_hold_p99_ns=0 activation_hold_p99_9_ns=0 activation_hold_max_ns=0
+  lr_skips=0
+RT device-poll counters:
+  vm=1 published=270 kicked=270 consumed=268 pending=false
+  vm=2 published=0 kicked=0 consumed=0 pending=false
+RT AxVM timer counters:
+  cpu=1 now_ns=43266528875 wheel_next_ns=43269117041 published_ns=43269117041 registered=19103 cancelled=13343 expired=5759 worker_wakes=5644 expiry_batches=5702 expiry_late_samples=0 expiry_late_overflow=0 expiry_late_p50_ns=0 expiry_late_p99_ns=0 expiry_late_p99_9_ns=0 expiry_late_max_ns=0 lock_acquisitions=81265 lock_wait_total_ns=21208698 lock_wait_max_ns=25375 lock_hold_total_ns=137463487 lock_hold_max_ns=13125
+RT host hardware timer IRQ counters:
+  cpu=0 irqs=3916
+  cpu=1 irqs=9496
+  cpu=2 irqs=3609
+  cpu=3 irqs=3609
+  cpu=4 irqs=3606
+  cpu=5 irqs=3608
+  cpu=6 irqs=3607
+  cpu=7 irqs=3606
+RT console counters: attached=None flush_calls=1587344 host_write_bytes=55242
+  vm=1 active=true input_enqueued=270 input_drained=270 input_dropped=0 input_pending=0 output_enqueued=50412 output_drained=50412 output_dropped=0 output_pending=0
+  vm=2 active=true input_enqueued=0 input_drained=0 input_dropped=0 input_pending=0 output_enqueued=3962 output_drained=3962 output_dropped=0 output_pending=0
+axvisor:/$ [2Kaxvisor:/$ v[2Kaxvisor:/$ vm[2Kaxvisor:/$ vm [2Kaxvisor:/$ vm l[2Kaxvisor:/$ vm li[2Kaxvisor:/$ vm lis[2Kaxvisor:/$ vm list
+VM ID  NAME            STATUS       VCPU            MEMORY     VCPU STATE          
+------ --------------- ------------ --------------- ---------- --------------------
+1      atk-task123-starry running      0               1GB        Free:1              
+2      atk-task123-rtthread running      0               512MB      Free:1              
+axvisor:/$ 
+TASK123_RUNNER status=failed error=RuntimeError('expected 5 samples, observed 1')

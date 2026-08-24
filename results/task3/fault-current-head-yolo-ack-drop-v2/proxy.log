@@ -1,0 +1,6 @@
+2026-08-21T03:09:29.228485+00:00 PROXY_READY linux_port=12731 rtos_port=12732 drop_direction=rtos-to-linux drop_kind=4 drop_count=1 injection=none blackout_start_ms=None blackout_duration_ms=0
+2026-08-21T03:09:36.713824+00:00 PROXY_CONNECTED
+2026-08-21T03:09:42.088365+00:00 PROXY_DROP direction=rtos-to-linux kind=ack sequence=0 ack=1 remaining=0
+2026-08-21T03:09:56.270358+00:00 PROXY_EOF direction=linux-to-rtos
+2026-08-21T03:09:56.270635+00:00 PROXY_EOF direction=rtos-to-linux
+2026-08-21T03:09:56.270761+00:00 PROXY_SUMMARY dropped=1 blackout_dropped=0 forwarded=341
