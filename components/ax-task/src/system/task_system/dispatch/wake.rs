@@ -833,6 +833,8 @@ impl TaskSystem {
             );
         }
         let reschedule = preemption.reschedule_kind(policy);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_fair_wake_reschedule_kind(core.id(), reschedule);
         core.publish_effective_schedule(policy, enqueue.entity());
         core.set_wake_cpu_hint(target);
         if sched.transition(core, ThreadState::Running).is_err() {
@@ -1027,6 +1029,8 @@ impl TaskSystem {
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_wake_entity_read(core.id(), 0);
         let reschedule = preemption.reschedule_kind(policy);
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_fair_wake_reschedule_kind(core.id(), reschedule);
         let preempts_current = reschedule.is_some();
         core.publish_effective_schedule(policy, enqueue.entity());
         core.set_wake_cpu_hint(target);

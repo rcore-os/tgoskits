@@ -60,6 +60,9 @@ static FAIR_NEED_RESCHED_WAKE_TARGET: AtomicU64 = AtomicU64::new(0);
 static FAIR_NEED_RESCHED_WAKE_RESCHEDULE: AtomicU8 = AtomicU8::new(0);
 static FAIR_NEED_RESCHED_WAKE_INJECT: AtomicU8 = AtomicU8::new(0);
 static FAIR_NEED_RESCHED_WAKE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static FAIR_WAKE_RESCHEDULE_TARGET: AtomicU64 = AtomicU64::new(0);
+static FAIR_WAKE_RESCHEDULE_KIND: AtomicU8 = AtomicU8::new(0);
+static FAIR_WAKE_RESCHEDULE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static WAKE_PLACEMENT_TARGET: AtomicU64 = AtomicU64::new(0);
 static WAKE_PLACEMENT_CPU: AtomicU64 = AtomicU64::new(0);
 static WAKE_PLACEMENT_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
@@ -3303,6 +3306,83 @@ pub(crate) fn record_fair_need_resched_wake_reschedule(thread: ThreadId, request
         ),
         Ok(STAGE_ARMED),
         "the Fair need-resched wake probe completed in an invalid stage"
+    );
+}
+
+/// The reschedule class selected by one real Fair wake transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FairWakeRescheduleKind {
+    None,
+    Immediate,
+    Lazy,
+}
+
+/// Arms exact reschedule-class observation for one real Fair wake.
+pub fn arm_fair_wake_reschedule_probe(thread: u64) {
+    assert_ne!(thread, 0, "a Fair wake identity must be non-zero");
+    assert_eq!(
+        FAIR_WAKE_RESCHEDULE_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one Fair wake reschedule probe may be armed"
+    );
+    FAIR_WAKE_RESCHEDULE_TARGET.store(thread, Ordering::Relaxed);
+    FAIR_WAKE_RESCHEDULE_KIND.store(0, Ordering::Relaxed);
+    FAIR_WAKE_RESCHEDULE_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes the reschedule class selected by the armed Fair wake.
+pub fn take_fair_wake_reschedule_kind() -> Option<FairWakeRescheduleKind> {
+    if FAIR_WAKE_RESCHEDULE_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let kind = match FAIR_WAKE_RESCHEDULE_KIND.load(Ordering::Relaxed) {
+        0 => FairWakeRescheduleKind::None,
+        1 => FairWakeRescheduleKind::Immediate,
+        2 => FairWakeRescheduleKind::Lazy,
+        _ => unreachable!("the Fair wake probe stored an invalid reschedule kind"),
+    };
+    FAIR_WAKE_RESCHEDULE_TARGET.store(0, Ordering::Relaxed);
+    FAIR_WAKE_RESCHEDULE_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(kind)
+}
+
+pub(crate) fn record_fair_wake_reschedule_kind(
+    thread: ThreadId,
+    kind: Option<crate::system::RescheduleKind>,
+) {
+    if FAIR_WAKE_RESCHEDULE_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || FAIR_WAKE_RESCHEDULE_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    let kind = match kind {
+        None => 0,
+        Some(crate::system::RescheduleKind::Immediate) => 1,
+        Some(crate::system::RescheduleKind::Lazy) => 2,
+    };
+    FAIR_WAKE_RESCHEDULE_KIND.store(kind, Ordering::Relaxed);
+    assert_eq!(
+        FAIR_WAKE_RESCHEDULE_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "the Fair wake reschedule probe completed in an invalid stage"
     );
 }
 

@@ -103,13 +103,13 @@ pub fn run() -> crate::TestResult {
     owner_change_after_origin_registration();
     owner_exit_after_waiter_snapshot();
     wait_token_retains_initial_owner_lifetime();
-    fair_wake_does_not_preempt_mutex_owner();
+    fair_wake_stays_lazy_while_immediate_work_preempts_mutex_owner();
     owner_spin_allows_higher_priority_preemption();
     final_waiter_cancel_races_with_slow_release();
     Ok(())
 }
 
-fn fair_wake_does_not_preempt_mutex_owner() {
+fn fair_wake_stays_lazy_while_immediate_work_preempts_mutex_owner() {
     static FAIR_WAKE_WAIT: AxWaitQueueHandle = AxWaitQueueHandle::new();
 
     let mutex = Arc::new(Mutex::new(()));
@@ -157,16 +157,24 @@ fn fair_wake_does_not_preempt_mutex_owner() {
 
             let mutex_guard = mutex.lock();
             let preempt_guard = PreemptGuard::new();
+            task_test_hooks::arm_fair_wake_reschedule_probe(waiter_id);
             release_waiter.store(true, Ordering::Release);
             assert_eq!(
                 task_api::ax_wait_queue_wake(&FAIR_WAKE_WAIT, 1),
                 1,
                 "Fair wake must select the blocked waiter"
             );
-            // Linux PREEMPT_RT publishes this Fair wake as
-            // TIF_NEED_RESCHED_LAZY. The final preempt-enable boundary must
-            // therefore return to the lock owner instead of scheduling the
-            // waiter into the still-held mutex.
+            assert_eq!(
+                task_test_hooks::take_fair_wake_reschedule_kind(),
+                Some(task_test_hooks::FairWakeRescheduleKind::Lazy),
+                "Linux wakeup_preempt_fair must publish TIF_NEED_RESCHED_LAZY"
+            );
+            // A sleeping PREEMPT_RT mutex is not a preemption-disable region.
+            // Publish an independent ordinary request to prove that the
+            // preempt-enable boundary may switch even though this Fair wake
+            // itself remained lazy.
+            task_test_hooks::request_current_reschedule()
+                .expect("the independent immediate request must be published");
             drop(preempt_guard);
             preempted_before_unlock.store(waiter_ran.load(Ordering::Acquire), Ordering::Release);
             drop(mutex_guard);
@@ -177,8 +185,8 @@ fn fair_wake_does_not_preempt_mutex_owner() {
     owner.join().unwrap();
     waiter.join().unwrap();
     assert!(
-        !preempted_before_unlock.load(Ordering::Acquire),
-        "a Fair wake must remain lazy until the mutex owner leaves its kernel critical section"
+        preempted_before_unlock.load(Ordering::Acquire),
+        "an independent ordinary request must preempt a sleeping mutex owner"
     );
     assert!(
         waiter_acquired.load(Ordering::Acquire),

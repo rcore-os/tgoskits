@@ -3927,6 +3927,40 @@ waker 候选为 `0 + 1024`，大于 previous 的 820，稳定保留 CPU0。探�
 LoongArch64 的完整 ArceOS Rust/C QEMU suite 全部通过，LoongArch64 unaligned-fixup 同样通过；
 `cargo test -p ax-task`、ax-task 7/7 clippy 与 ArceOS test-suite 36/36 clippy 也全部通过。
 
+提交 `336a462e22` 后按固定 4-vCPU TCG、1 group、1000 loops、预热加 5 轮中位数协议重测：
+process 为 1C 10.893 s、4C 20.784 s（0.524x），thread 为 1C 19.689 s、4C 18.685 s
+（1.053x）。相对上一检查点分别改善约 12%、9%、19% 与 18%，但 Linux RT 同协议仍为
+10.540/6.559 s 与 5.161/2.402 s；process 4C、thread 1C/4C 的差距仍约 3.17x、3.81x、
+7.78x。相同 SMP4 qperf 的 process/100 窗口没有显示数量级变化，跨 CPU rq transaction、
+scheduler IPI 与 thread scheduler-lock 的放大仍是后续通用路径重点，不能用单轮正式中位数改善
+宣称性能问题已经关闭。
+
+### 2026-08-25 Linux Fair lazy wake 与 sleeping PI mutex
+
+Linux v7.1 `kernel/sched/fair.c::wakeup_preempt_fair()` 选择 Fair wakee 时调用
+`resched_curr_lazy()`，只发布 `TIF_NEED_RESCHED_LAZY`；`kernel/sched/core.c::sched_tick()` 会在
+周期 tick 中把已有 lazy flag 提升为 ordinary `TIF_NEED_RESCHED`。同时，PREEMPT_RT 的 sleeping
+mutex 不把整个持锁区变成 preemption-disable region：如果另一个 ordinary request 已存在，最外层
+`preempt_enable()` 仍可进入调度，waiter 随后可以再次阻塞在尚未释放的 mutex 上。因此“本次 Fair
+wake 是 lazy”和“mutex 解锁前绝不会发生任何调度”不是同一个断言。
+
+CI job `97623897273` 的 RISC-V 完整 suite 命中了旧测试的时间窗口：测试在 wake 后释放
+`PreemptGuard`，再用一个普通原子读反推此次 wake 的 reschedule class。期间只要 scheduler tick
+提升 lazy flag，或已有独立 ordinary request，waiter 就会合法运行并让旧断言失败。focused QEMU
+本地可能通过并不能消除该竞争。为了把错误判据变成确定性红测，同一场景在仍持有外层
+`PreemptGuard` 时显式发布一个独立 ordinary request；旧断言随后稳定失败，证明它错误地把所有
+preempt-enable 切换都归因于 Fair wake。
+
+测试探针现在直接绑定 wakee identity，并在真实 enqueue transaction 的 class decision 之后记录
+该次 wake 的 `None`、`Immediate` 或 `Lazy` 结果，不读取事后已经合并的 CPU request bits，也不
+安装 fake scheduler。相同 PI mutex 场景断言 Fair wake 精确选择 `Lazy`，再发布独立 ordinary
+request；释放外层 preempt guard 后 waiter 必须实际运行并在 mutex 上重新阻塞，owner 解锁后才
+成功取得 mutex。旧错误判据在该确定性注入下为红，相同最终场景在 RISC-V 真实 SMP QEMU 转绿。
+这没有放宽生产 wake、PI 或抢占语义，而是分别验证 Linux 的两类 request 与 sleeping-lock 边界。
+最终代码重新串行通过 x86_64、RISC-V、AArch64、LoongArch64 的完整 ArceOS Rust/C QEMU
+suite，LoongArch64 unaligned-fixup 同样通过；ax-task host/loom tests、ax-task 7/7 clippy 与
+ArceOS test-suite 36/36 clippy 也全部通过。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；
