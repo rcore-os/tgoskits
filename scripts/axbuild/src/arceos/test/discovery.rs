@@ -85,7 +85,7 @@ pub(super) fn load_arceos_test_suit_qemu_case(
     target: &str,
     feature: &str,
 ) -> anyhow::Result<ArceosRustQemuCase> {
-    let build_config_path = arceos_test_suit_build_config_path(root, target)?;
+    let build_config_path = arceos_test_suit_case_build_config_path(root, target, feature)?;
     let qemu_config_path = arceos_test_suit_case_qemu_config_path(root, arch, feature)?;
     let host_http_server = qemu_test::load_qemu_case_host_http_server(&qemu_config_path)?;
     Ok(ArceosRustQemuCase {
@@ -112,6 +112,22 @@ pub(super) fn arceos_test_suit_build_config_path(
     target: &str,
 ) -> anyhow::Result<PathBuf> {
     build_config_path(root, target, "ArceOS rust test suite")
+}
+
+pub(super) fn arceos_test_suit_case_build_config_path(
+    root: &Path,
+    target: &str,
+    case: &str,
+) -> anyhow::Result<PathBuf> {
+    let case_path = root
+        .join("cases")
+        .join(case)
+        .join(format!("build-{target}.toml"));
+    if case_path.is_file() {
+        Ok(case_path)
+    } else {
+        arceos_test_suit_build_config_path(root, target)
+    }
 }
 
 pub(super) fn arceos_test_suit_qemu_config_path(
@@ -271,5 +287,25 @@ mod tests {
             arceos_test_suit_case_qemu_config_path(root.path(), "riscv64", "task-yield").unwrap();
 
         assert_eq!(selected, suite_config);
+    }
+
+    #[test]
+    fn arceos_rust_case_prefers_its_build_config() {
+        let root = tempdir().unwrap();
+        let suite_config = root.path().join("build-x86_64-unknown-none.toml");
+        fs::write(&suite_config, "max_cpu_num = 4\n").unwrap();
+        let case_dir = root.path().join("cases/sched-rt-fifo");
+        fs::create_dir_all(&case_dir).unwrap();
+        let case_config = case_dir.join("build-x86_64-unknown-none.toml");
+        fs::write(&case_config, "max_cpu_num = 1\n").unwrap();
+
+        let selected = arceos_test_suit_case_build_config_path(
+            root.path(),
+            "x86_64-unknown-none",
+            "sched-rt-fifo",
+        )
+        .unwrap();
+
+        assert_eq!(selected, case_config);
     }
 }

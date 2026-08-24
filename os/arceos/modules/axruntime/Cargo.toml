@@ -37,6 +37,7 @@ irq = [
 multitask = ["ax-task/multitask", "ax-sync/sleep"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
+sched-rt-fifo = ["multitask", "ax-task/sched-rt-fifo"]
 smp = ["ax-hal/smp", "ax-task/smp"]
 uspace = ["ax-hal/uspace", "ax-task/uspace"]
 lockdep = ["multitask", "ax-task/lockdep", "ax-fs-ng?/lockdep"]

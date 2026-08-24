@@ -145,12 +145,16 @@ impl RawMutex {
                 Ordering::Acquire,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return,
+                Ok(_) => {
+                    clear_current_mutex_wait_owner();
+                    return;
+                }
                 Err(owner_id) => {
                     assert_ne!(
                         owner_id, current_id,
                         "task {current_id} tried to recursively acquire a mutex"
                     );
+                    donate_owner_priority(owner_id);
                     ActiveMutexOps::wait_until_unlocked(&self.wait_queue, &self.owner_id);
                 }
             }
@@ -177,6 +181,10 @@ impl RawMutex {
         #[cfg(feature = "lockdep")]
         lockdep.finish(acquired);
 
+        if acquired {
+            clear_current_mutex_wait_owner();
+        }
+
         acquired
     }
 
@@ -192,6 +200,7 @@ impl RawMutex {
         #[cfg(feature = "lockdep")]
         crate::sync::lockdep::mutex::release(self);
 
+        clear_current_priority_donation();
         self.owner_id.store(0, Ordering::Release);
         ActiveMutexOps::wake_one(&self.wait_queue);
     }
@@ -208,6 +217,47 @@ impl RawMutex {
         unsafe { self.unlock() };
     }
 }
+
+#[cfg(feature = "sched-rt-fifo")]
+fn donate_owner_priority(owner_id: u64) {
+    let waiter_priority = crate::current().sched_priority();
+    crate::current().set_mutex_wait_owner_id(owner_id);
+    donate_priority_chain(owner_id, waiter_priority, crate::current().id().as_u64());
+}
+
+#[cfg(feature = "sched-rt-fifo")]
+fn donate_priority_chain(mut owner_id: u64, priority: i32, waiter_id: u64) {
+    for _ in 0..crate::build_info::CPU_CAPACITY.max(32) {
+        if owner_id == 0 || owner_id == waiter_id {
+            return;
+        }
+        let Some(owner) = crate::task_by_id(crate::TaskId::from_u64(owner_id)) else {
+            return;
+        };
+        owner.donate_sched_priority(priority);
+        crate::run_queue::requeue_task_after_priority_change(&owner);
+        owner_id = owner.mutex_wait_owner_id();
+    }
+}
+
+#[cfg(not(feature = "sched-rt-fifo"))]
+fn donate_owner_priority(_owner_id: u64) {}
+
+#[cfg(feature = "sched-rt-fifo")]
+fn clear_current_priority_donation() {
+    crate::current().clear_sched_priority_donation();
+}
+
+#[cfg(not(feature = "sched-rt-fifo"))]
+fn clear_current_priority_donation() {}
+
+#[cfg(feature = "sched-rt-fifo")]
+fn clear_current_mutex_wait_owner() {
+    crate::current().clear_mutex_wait_owner_id();
+}
+
+#[cfg(not(feature = "sched-rt-fifo"))]
+fn clear_current_mutex_wait_owner() {}
 
 impl Default for RawMutex {
     fn default() -> Self {

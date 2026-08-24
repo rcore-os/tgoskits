@@ -607,6 +607,11 @@ pub(crate) fn select_wake_run_queue<G: GuardState>(task: &AxTaskRef) -> AxRunQue
     }
 }
 
+#[cfg(feature = "sched-rt-fifo")]
+pub(crate) fn requeue_task_after_priority_change(task: &AxTaskRef) {
+    select_run_queue::<crate::sync::PreemptIrqSaveState>(task).requeue_task(task);
+}
+
 /// [`AxRunQueue`] represents a run queue for global system or a specific CPU.
 pub(crate) struct AxRunQueue {
     /// The ID of the CPU this run queue is associated with.
@@ -730,6 +735,15 @@ impl<G: GuardState> AxRunQueueRef<G> {
             }
             #[cfg(all(feature = "smp", feature = "ipi"))]
             kick_remote_cpu(cpu_id);
+        }
+    }
+
+    #[cfg(feature = "sched-rt-fifo")]
+    fn requeue_task(&mut self, task: &AxTaskRef) {
+        // SAFETY: `AxRunQueueRef<G>` owns the target run-queue critical section.
+        let mut scheduler = unsafe { self.inner.scheduler.lock_raw() };
+        if let Some(task) = scheduler.remove_task(task) {
+            scheduler.add_task(task);
         }
     }
 }
@@ -1059,6 +1073,7 @@ impl AxRunQueue {
     fn new(cpu_id: usize) -> Self {
         let gc_task =
             TaskInner::new(gc_entry, "gc".into(), crate::default_task_stack_size()).into_arc();
+        gc_task.set_sched_priority(i32::MIN);
         // gc task should be pinned to the current CPU.
         gc_task.set_cpumask(AxCpuMask::one_shot(cpu_id));
 

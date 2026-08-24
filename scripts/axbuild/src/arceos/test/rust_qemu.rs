@@ -365,6 +365,7 @@ mod tests {
             ARCEOS_RUST_LOCKDEP_DETECT_FEATURE,
             "net-loopback",
             "sched-cfs",
+            "sched-rt-fifo",
             "sched-rr",
             ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE,
         ] {

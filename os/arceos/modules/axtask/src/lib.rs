@@ -34,6 +34,9 @@
     test_runner(crate::bare_metal_test_runner)
 )]
 
+#[cfg(all(feature = "sched-rt-fifo", feature = "smp"))]
+compile_error!("sched-rt-fifo currently supports only SMP=1; disable the smp feature");
+
 #[cfg(all(feature = "host-test", not(target_os = "none")))]
 extern crate std;
 
