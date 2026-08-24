@@ -1,0 +1,96 @@
+board_type = "OrangePi-5-Plus"
+dtb_file = "tmp/competition/vision/orangepi-5-plus-starry.dtb"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = '''
+set -eu
+cd /home/orangepi/rknn_yolov8_image
+emit() {
+  echo "$@"
+  sleep 1
+}
+model_digest=$(sha256sum model/yolov8.rknn)
+model_digest=${model_digest%% *}
+sleep 2
+emit VISION_FIXED_CAMPAIGN_BEGIN os=starry pairs=5
+emit VISION_FIXED_MODEL_SHA256 "$model_digest"
+metric_value() {
+  metric_key=$1
+  for metric_field in $profile_line; do
+    case "$metric_field" in
+      "$metric_key"=*)
+        printf '%s\n' "${metric_field#*=}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+for pair in 1 2 3 4 5; do
+  if [ $((pair % 2)) -eq 1 ]; then
+    order=AB
+    first=0
+    second=all
+  else
+    order=BA
+    first=all
+    second=0
+  fi
+  for core_mask in "$first" "$second"; do
+    emit VISION_FIXED_RUN_BEGIN pair=$pair order=$order core_mask=$core_mask
+    run_log=/tmp/vision-fixed-$pair-$core_mask.log
+    if ./rknn_yolov8_bench \
+        --validate-list validation/images.txt \
+        --expected validation/expected.txt \
+        --min-confidence 25 \
+        --profile \
+        --core-mask "$core_mask" >"$run_log" 2>&1; then
+      profile_line=$(grep '^UVC_RKNN_BENCH_PROFILE_RESULT ' "$run_log")
+      grep -q '^UVC_RKNN_VALIDATE_PASS images=3$' "$run_log"
+      profile_samples=$(metric_value profile_samples)
+      perf_run_query_errors=$(metric_value perf_run_query_errors)
+      total_ms_avg=$(metric_value total_ms_avg)
+      total_ms_p95=$(metric_value total_ms_p95)
+      letterbox_ms_avg=$(metric_value letterbox_ms_avg)
+      letterbox_ms_p95=$(metric_value letterbox_ms_p95)
+      rknn_perf_run_ms_avg=$(metric_value rknn_perf_run_ms_avg)
+      rknn_perf_run_ms_p95=$(metric_value rknn_perf_run_ms_p95)
+      [ "$profile_samples" = 3 ]
+      [ "$perf_run_query_errors" = 0 ]
+      emit VISION_FIXED_CHECK pair=$pair core=$core_mask \
+        samples=3 query_errors=0
+      emit VISION_FIXED_VALUE pair=$pair core=$core_mask \
+        metric=total_avg value=$total_ms_avg
+      emit VISION_FIXED_VALUE pair=$pair core=$core_mask \
+        metric=total_p95 value=$total_ms_p95
+      emit VISION_FIXED_VALUE pair=$pair core=$core_mask \
+        metric=letterbox_avg value=$letterbox_ms_avg
+      emit VISION_FIXED_VALUE pair=$pair core=$core_mask \
+        metric=letterbox_p95 value=$letterbox_ms_p95
+      emit VISION_FIXED_VALUE pair=$pair core=$core_mask \
+        metric=npu_avg value=$rknn_perf_run_ms_avg
+      emit VISION_FIXED_VALUE pair=$pair core=$core_mask \
+        metric=npu_p95 value=$rknn_perf_run_ms_p95
+      emit UVC_RKNN_VALIDATE_PASS images=3
+    else
+      cat "$run_log"
+      emit VISION_FIXED_RUN_FAIL pair=$pair core_mask=$core_mask
+      exit 1
+    fi
+    emit VISION_FIXED_RUN_END pair=$pair core_mask=$core_mask
+  done
+done
+emit VISION_FIXED_CAMPAIGN_DONE os=starry pairs=5
+'''
+success_regex = [
+  "(?m)^(?:root@starry:[^\\r\\n]* # )?VISION_FIXED_CAMPAIGN_DONE os=starry pairs=5$",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^rknn_init fail!.*$",
+  "(?m)^read_image fail!.*$",
+  "(?m)^inference_yolov8_model fail!.*$",
+  "(?m)^UVC_RKNN_VALIDATE_FAIL .*$",
+  "(?i)error while loading shared libraries",
+  "(?i)(rknn_yolov8_image|rknn_yolov8_bench|sh): .*not found",
+]
+timeout = 240

@@ -50,6 +50,9 @@ fn resolve_machine_resources_from_host(
     vm_config: &mut AxVMConfig,
     host_fdt_bytes: Option<&[u8]>,
 ) -> AxVmResult {
+    if !should_follow_host_machine_resources(vm_config) {
+        return Ok(());
+    }
     let Some(host_fdt_bytes) = host_fdt_bytes else {
         return Ok(());
     };
@@ -105,6 +108,10 @@ fn resolve_machine_resources_from_host(
         vm_config.replace_machine_plic(plic)?;
     }
     Ok(())
+}
+
+fn should_follow_host_machine_resources(vm_config: &AxVMConfig) -> bool {
+    vm_config.uses_passthrough_address_space()
 }
 
 pub(crate) fn selected_guest_fdt_policy() -> GuestFdtPolicy {
@@ -237,5 +244,33 @@ fn get_developer_provided_dtb(
             InvalidInput,
             "Unsupported image_location; use \"memory\" or enable fs feature for \"fs\""
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AddressSpacePolicy, AxVMConfigParams, PhysCpuList};
+
+    #[test]
+    fn virtualized_guest_keeps_portable_machine_resources() {
+        let config = config_with_address_space_policy(AddressSpacePolicy::Virtualized);
+
+        assert!(!should_follow_host_machine_resources(&config));
+    }
+
+    #[test]
+    fn passthrough_guest_follows_host_machine_resources() {
+        let config = config_with_address_space_policy(AddressSpacePolicy::Passthrough);
+
+        assert!(should_follow_host_machine_resources(&config));
+    }
+
+    fn config_with_address_space_policy(address_space_policy: AddressSpacePolicy) -> AxVMConfig {
+        AxVMConfig::new(AxVMConfigParams {
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
+            address_space_policy,
+            ..Default::default()
+        })
     }
 }

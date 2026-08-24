@@ -18,6 +18,8 @@ host-test = [
     "vpci-test-device",
 ]
 vpci-test-device = []
+rt-trace = []
+rt-trace-soak = ["rt-trace"]
 sstc = ["riscv_vcpu/sstc"]
 tls = ["ax-std/tls", "cpu-local/tls"]
 
@@ -51,6 +53,7 @@ ax-api = { workspace = true, optional = true }
 # System dependent modules provided by ArceOS-Hypervisor.
 axaddrspace = { workspace = true }
 axvm-types = { workspace = true }
+axvm-net = { workspace = true }
 axhvc = { workspace = true }
 axdevice = { workspace = true }
 axdevice_base = { workspace = true }
@@ -85,4 +88,5 @@ rdrive.workspace = true
 rdif-clk.workspace = true
 
 [dev-dependencies]
-rdif-clk = { path = "../../drivers/interface/rdif-clk" }
+rdif-clk.workspace = true
+toml.workspace = true

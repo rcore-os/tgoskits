@@ -18,9 +18,12 @@ pub use poll::*;
 pub(crate) mod time;
 pub use time::*;
 
-/// Errors owned by task waiting and notification operations.
+/// Errors owned by task runtime operations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum TaskError {
+    /// A task operation received an invalid input.
+    #[error("invalid task input")]
+    InvalidInput,
     /// A signal or explicit task notification interrupted the wait.
     #[error(transparent)]
     Interrupted(#[from] Interrupted),

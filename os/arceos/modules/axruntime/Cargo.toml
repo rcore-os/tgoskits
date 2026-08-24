@@ -24,6 +24,10 @@ ipi = ["dep:ax-ipi", "ax-hal/ipi", "ax-task/ipi"]
 # CPUs can wake and re-enter the scheduler. This intentionally does not enable
 # the ax-ipi callback queue.
 wake-ipi = ["ax-hal/ipi"]
+# Fixed-capacity architectural timer IRQ entry trace for RT evidence builds.
+# This is opt-in because the preallocated buffer reserves several MiB.
+rt-irq-trace = []
+rt-irq-trace-soak = ["rt-irq-trace"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
 smp = ["ax-hal/smp", "ax-task/smp"]

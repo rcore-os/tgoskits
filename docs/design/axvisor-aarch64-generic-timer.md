@@ -62,6 +62,8 @@ Axvisor 不引入 Linux hrtimer、nested virtualization、VHE 专用切换或 us
 
 AArch64 hypervisor host 会在每个 GICv2 或 GICv3 CPU interface 上启用 split EOI 模式。因此 `EOIR` 只执行 priority drop，`DIR` 才是显式完成边界。普通 host IRQ dispatch 通过 `ActiveIrq::drop` 同时完成这两个操作，从而保持原有单阶段行为。AxVM 所有的 PPI 和 SPI 使用同一 host 模式，但会把已 acknowledge 的 activation 保留至虚拟中断退休。Timer PPI 把 opaque token 保存在 timer binding 中；assigned SPI 则通过 HW-backed LR 指明物理中断源，不再维护第二份软件 pending 状态。只在 AxVM fast path 启用 split EOI 是错误的，因为该模式属于 CPU interface 状态，并与普通 host IRQ dispatch 共享。
 
+GICv3 的 `ICC_EOIR0_EL1`、`ICC_EOIR1_EL1` 和 `ICC_DIR_EL1` system-register 写入后必须执行 `ISB`，再返回调用者、开放 host IRQ 或切换到不执行同步指令的 CPU-bound host task。该屏障使 priority drop 或 deactivation 在后续中断投递和 level resampling 前可观察。缺少它时，已 EOIR 但仍保留的 CNTV activation 可能继续阻挡同优先级的 host 调度中断；后者来自独立的 `CNTHP` PPI，因此不能通过改写 host timer 选择来修复。
+
 不属于客户机的已 acknowledge 中断仍沿普通 host IRQ 图处理。Raw GIC parent INTID 会先经已安装的 parent-to-leaf route 解析，再执行 dispatch，因此 ITS LPI 能到达其 MSI/MSI-X leaf handler。GICv3 发出 `DIR` 时保留完整的 24-bit 架构 INTID；只有经过独立校验的设备直通契约限制为可分配 SPI。
 
 VGIC 退休会在释放 controller lock 后调用一个 typed backend 操作。这是单一所有者的生命周期边界，不是通用 callback registry，也不是第二条 pending queue。
@@ -137,11 +139,13 @@ CNTV host 中断处理分为以下阶段：
 1. AxVM 在 hypervisor 生命周期内只 claim 一次架构 virtual-timer PPI，在每个 pCPU 上把它配置为 level-triggered，并为 host context race 保留一个固定且无分配的 fallback；
 2. host GIC CPU interface 已处于 split EOI 模式；
 3. lower-EL IRQ 汇编在停止 CNTV 前 acknowledge CPU-local PPI；
-4. 切回 host 后的 Rust 对捕获的 acknowledgement 执行 priority drop，并记录其 opaque token 与 owner pCPU；
+4. 切回 host 后的 Rust 对捕获的 acknowledgement 执行 priority drop；GICv3 在 `EOIR` 后执行 `ISB`，再记录其 opaque token 与 owner pCPU；
 5. timer snapshot publication 更新 virtual PPI level；
 6. VGIC 拥有投递以及客户机 enable/active 状态；
 7. GICv2 EOI/DIR 或 GICv3 LR/TDIR 退休会在 controller lock 释放后到达 typed backend 退休边界；
 8. host token 在 owner pCPU 上 deactivate。
+
+Host 调度时钟在 EL2 使用 `CNTHP` 及其独立 PPI；它不与 Guest `CNTV` 复用 comparator 或 INTID。保留 Guest CNTV activation 与 host 调度并行的必要条件，是 split-EOI priority drop 在恢复 host IRQ 投递前已经同步完成。可选方案中，提前 `DIR` 会破坏 VGIC 对 pending/active/EOI 的单一所有权，忙循环内插入主动 `yield` 只会掩盖不可抢占问题，二者均不采用。
 
 拉低 timer line 不会完成 host activation。当客户机先清除 CVAL 或 CTL、再写 DIR 时，virtual line 可能已为低电平，但此前的投递在架构上仍是 active；因此这一点不可省略。
 
@@ -220,6 +224,7 @@ Runtime vCPU 绑定和 FDT 安装校验并消费同一份 `GuestTimerProfile`；
 - owner-aware timer cancel、迁移 epoch 与 stale wait generation；
 - GICv2 和 GICv3 hypervisor host CPU interface 都启用 split EOI；
 - GICv2 EOI/DIR 与 GICv3 TDIR 退休；
+- GICv3 `EOIR0`、`EOIR1` 与 `DIR` completion 写入均在返回前执行 `ISB`；
 - GICv2/GICv3 HW-backed assigned-SPI LR identity，以及普通硬件退休不重复 host deactivation；
 - 替代 physical acknowledgement 能跨越 stale LR snapshot 保留；
 - trapped DIR 总在 level resampling 前到达 physical deactivation；

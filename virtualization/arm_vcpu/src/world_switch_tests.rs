@@ -1,4 +1,5 @@
 const EXCEPTION_ASSEMBLY: &str = include_str!("architecture/exception.S");
+const EXCEPTION_RUST: &str = include_str!("architecture/exception.rs");
 const CONTEXT_FRAME: &str = include_str!("architecture/context_frame.rs");
 const VCPU: &str = include_str!("architecture/vcpu.rs");
 
@@ -121,11 +122,10 @@ fn exception_vector_table_preserves_the_architectural_slot_layout() {
 
 #[test]
 fn tls_switch_occurs_only_inside_the_final_assembly_windows() {
-    let restore = section(
-        CONTEXT_FRAME,
-        "    pub unsafe fn restore(&self)",
-        "    }\n}",
-    );
+    let restore = CONTEXT_FRAME
+        .split_once("    pub unsafe fn restore(&self)")
+        .expect("missing guest system-register restore implementation")
+        .1;
     let store = section(
         CONTEXT_FRAME,
         "    pub unsafe fn store(&mut self)",
@@ -166,4 +166,40 @@ fn tls_switch_occurs_only_inside_the_final_assembly_windows() {
     assert!(!entry.contains("bl      "));
     assert!(VCPU.contains("offset_of!(HostRuntimeContext, tpidr_el0)"));
     assert!(CONTEXT_FRAME.contains("offset_of!(GuestSystemRegisters, tpidr_el0)"));
+}
+
+#[test]
+fn exception_vector_switch_occurs_only_inside_guest_assembly_windows() {
+    let exit = section(
+        EXCEPTION_RUST,
+        "unsafe extern \"C\" fn vmexit_trampoline() -> ! {",
+        "/// Deal with invalid aarch64 exception.",
+    );
+    assert_in_order(
+        exit,
+        &[
+            "\"mov sp, x10\"",
+            "\"ldr x11, [x9, {host_vbar_el2_delta}]\"",
+            "\"msr vbar_el2, x11\"",
+            "\"isb\"",
+            "restore_regs_from_stack!()",
+            "\"ret\"",
+        ],
+    );
+
+    let entry = section(
+        EXCEPTION_ASSEMBLY,
+        ".macro RESTORE_GUEST_REGS_INTO_EL1",
+        ".endm",
+    );
+    assert_in_order(
+        entry,
+        &[
+            "msr     tpidr_el0, x9",
+            "adr     x9, exception_vector_base_vcpu",
+            "msr     vbar_el2, x9",
+            "isb",
+            "ldp     x8, x9, [sp, 8 * 8]",
+        ],
+    );
 }

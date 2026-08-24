@@ -48,6 +48,7 @@ struct HostRuntimeContext {
     stack_top: u64,
     sp_el0: u64,
     tpidr_el0: u64,
+    vbar_el2: u64,
     irq_interface: u64,
     irq_cpu_interface_base: usize,
     pending_irq_ack: u32,
@@ -97,6 +98,10 @@ pub const ARM_VCPU_HOST_SP_EL0_OFFSET: usize = core::mem::offset_of!(AssemblyArm
 pub(crate) const ARM_VCPU_HOST_TPIDR_EL0_OFFSET: usize =
     core::mem::offset_of!(AssemblyArmVcpu, host)
         + core::mem::offset_of!(HostRuntimeContext, tpidr_el0);
+/// Offset of the host-owned `VBAR_EL2` slot within [`ArmVcpu`].
+pub(crate) const ARM_VCPU_HOST_VBAR_EL2_OFFSET: usize =
+    core::mem::offset_of!(AssemblyArmVcpu, host)
+        + core::mem::offset_of!(HostRuntimeContext, vbar_el2);
 pub(crate) const ARM_VCPU_HOST_IRQ_INTERFACE_OFFSET: usize =
     core::mem::offset_of!(AssemblyArmVcpu, host)
         + core::mem::offset_of!(HostRuntimeContext, irq_interface);
@@ -137,6 +142,10 @@ const _: () = {
     );
     assert!(
         ARM_VCPU_HOST_TPIDR_EL0_OFFSET == ARM_VCPU_HOST_SP_EL0_OFFSET + core::mem::size_of::<u64>()
+    );
+    assert!(
+        ARM_VCPU_HOST_VBAR_EL2_OFFSET
+            == ARM_VCPU_HOST_TPIDR_EL0_OFFSET + core::mem::size_of::<u64>()
     );
     assert!(ARM_VCPU_HOST_IRQ_INTERFACE_OFFSET.is_multiple_of(core::mem::align_of::<u64>()));
     assert!(
@@ -382,6 +391,11 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             // guest value. No Rust executes with guest TPIDR_EL0 live.
             "mrs x9, tpidr_el0",
             "str x9, [x10, {host_tpidr_el0_delta}]",
+            // Keep the host trap owner installed except for the assembly-only
+            // guest execution window. A current-EL exception must never enter
+            // the guest vector while ordinary host Rust is running.
+            "mrs x9, vbar_el2",
+            "str x9, [x10, {host_vbar_el2_delta}]",
             // Go to `context_vm_entry` with x0 pointing to `self.host.stack_top`.
             "mov x0, x10",
             "b context_vm_entry",
@@ -389,6 +403,8 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             "b {run_guest_panic}",
             host_stack_top_offset = const ARM_VCPU_HOST_STACK_TOP_OFFSET,
             host_tpidr_el0_delta = const ARM_VCPU_HOST_TPIDR_EL0_OFFSET
+                - ARM_VCPU_HOST_STACK_TOP_OFFSET,
+            host_vbar_el2_delta = const ARM_VCPU_HOST_VBAR_EL2_OFFSET
                 - ARM_VCPU_HOST_STACK_TOP_OFFSET,
             run_guest_panic = sym Self::run_guest_panic,
         );
@@ -642,10 +658,11 @@ pub(crate) fn max_gpt_level(pa_bits: usize) -> usize {
 }
 
 fn vtcr_for_config(levels: usize, gpa_bits: usize, pa_bits: usize) -> u64 {
-    let mut val = match levels {
-        4 => VTCR_EL2::SL0::Granule4KBLevel0 + VTCR_EL2::T0SZ.val((64 - gpa_bits) as u64),
-        _ => VTCR_EL2::SL0::Granule4KBLevel1 + VTCR_EL2::T0SZ.val((64 - gpa_bits) as u64),
-    };
+    let mut val = VTCR_EL2::RES1.val(1)
+        + match levels {
+            4 => VTCR_EL2::SL0::Granule4KBLevel0 + VTCR_EL2::T0SZ.val((64 - gpa_bits) as u64),
+            _ => VTCR_EL2::SL0::Granule4KBLevel1 + VTCR_EL2::T0SZ.val((64 - gpa_bits) as u64),
+        };
 
     match pa_bits {
         52..=64 => val += VTCR_EL2::PS::PA_52B_4PB,

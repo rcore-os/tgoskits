@@ -1,0 +1,28 @@
+[base]
+id = 1
+name = "starry-rt-compat-orangepi"
+guest_type = "virtualized"
+cpu_num = 2
+phys_cpu_ids = [0x100, 0x200]
+phys_cpu_sets = [0x2, 0x4]
+dedicated_cpus = true
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/home/orangepi/axvisor-guest/starryos.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+dtb_path = "/home/orangepi/axvisor-guest/starry-orangepi-5-plus.dtb"
+cmdline = "console=ttyAMA0,115200 earlycon=pl011,0x09000000 root=/dev/vda rw"
+
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+virtual = [
+  { id = "disk0", model = "virtio-blk-mmio", image_path = "/home/orangepi/axvisor-guest/starry-rt-compat-rootfs.img" },
+]

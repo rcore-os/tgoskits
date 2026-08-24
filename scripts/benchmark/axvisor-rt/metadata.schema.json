@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rcore-os.org/schemas/axvisor-rt-run-metadata-v1.json",
+  "title": "AxVisor real-time benchmark run metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "repository",
+    "host",
+    "qemu",
+    "guest",
+    "benchmark",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": ["planned", "capture_running", "capture_complete", "failed"]
+    },
+    "started_at": { "type": ["string", "null"], "format": "date-time" },
+    "finished_at": { "type": ["string", "null"], "format": "date-time" },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "dirty",
+        "source_snapshot_sha256",
+        "tracked_diff_sha256",
+        "untracked_source_file_count",
+        "untracked_source_manifest_sha256"
+      ],
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "dirty": { "type": "boolean" },
+        "source_snapshot_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "tracked_diff_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "untracked_source_file_count": { "type": "integer", "minimum": 0 },
+        "untracked_source_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "release", "machine"],
+      "properties": {
+        "system": { "type": "string", "minLength": 1 },
+        "release": { "type": "string", "minLength": 1 },
+        "machine": { "type": "string", "minLength": 1 }
+      }
+    },
+    "qemu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binary",
+        "version",
+        "acceleration",
+        "machine",
+        "cpu",
+        "host_cpu_count",
+        "exit_code"
+      ],
+      "properties": {
+        "binary": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "acceleration": { "const": "tcg" },
+        "machine": { "const": "virt,virtualization=on,gic-version=3" },
+        "cpu": { "const": "cortex-a72" },
+        "host_cpu_count": { "const": 4 },
+        "exit_code": { "type": ["integer", "null"] }
+      }
+    },
+    "guest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "architecture",
+        "vcpu_count",
+        "profile",
+        "dedicated_host_cpu_ids",
+        "vm_config"
+      ],
+      "properties": {
+        "architecture": { "const": "aarch64" },
+        "vcpu_count": { "const": 2 },
+        "profile": { "enum": ["partitioned", "shared"] },
+        "dedicated_host_cpu_ids": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "uniqueItems": true
+        },
+        "vm_config": { "type": "string", "minLength": 1 }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "profile": { "const": "partitioned" },
+            "dedicated_host_cpu_ids": {
+              "prefixItems": [{ "const": 2 }, { "const": 3 }],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "vm_config": {
+              "const": "os/axvisor/configs/vms/qemu/aarch64/linux-smp2-dedicated.toml"
+            }
+          }
+        },
+        {
+          "properties": {
+            "profile": { "const": "shared" },
+            "dedicated_host_cpu_ids": { "maxItems": 0 },
+            "vm_config": {
+              "const": "os/axvisor/configs/vms/qemu/aarch64/linux-smp2-shared.toml"
+            }
+          }
+        }
+      ]
+    },
+    "benchmark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "iterations",
+        "warmup_iterations",
+        "period_ns",
+        "guest_cpu",
+        "fifo_priority",
+        "workload",
+        "metrics"
+      ],
+      "properties": {
+        "iterations": { "type": "integer", "minimum": 1 },
+        "warmup_iterations": { "type": "integer", "minimum": 0 },
+        "period_ns": { "type": "integer", "minimum": 1 },
+        "guest_cpu": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "fifo_priority": { "type": "integer", "minimum": 0, "maximum": 98 },
+        "workload": {
+          "type": "string",
+          "pattern": "^(idle|cpu-stress|external:[A-Za-z0-9][A-Za-z0-9._-]*)$"
+        },
+        "metrics": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            { "const": "periodic_jitter" },
+            { "const": "dispatch_latency" },
+            { "const": "emulated_irq_response" }
+          ],
+          "items": false
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input_rootfs": { "$ref": "#/$defs/artifact" },
+        "injected_rootfs_pre_run": { "$ref": "#/$defs/artifact" },
+        "probe": { "$ref": "#/$defs/artifact" },
+        "guest_runner": { "$ref": "#/$defs/artifact" },
+        "raw_log": { "$ref": "#/$defs/artifact" },
+        "axvisor_config": { "$ref": "#/$defs/artifact" },
+        "vm_config": { "$ref": "#/$defs/artifact" },
+        "qemu_config": { "$ref": "#/$defs/artifact" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "planned" } } },
+      "then": {
+        "properties": {
+          "started_at": { "type": "null" },
+          "finished_at": { "type": "null" },
+          "qemu": { "properties": { "exit_code": { "type": "null" } } },
+          "artifacts": { "maxProperties": 0 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "capture_running" } } },
+      "then": {
+        "properties": {
+          "started_at": { "type": "string" },
+          "finished_at": { "type": "null" },
+          "qemu": { "properties": { "exit_code": { "type": "null" } } },
+          "artifacts": {
+            "required": [
+              "input_rootfs",
+              "injected_rootfs_pre_run",
+              "probe",
+              "guest_runner",
+              "axvisor_config",
+              "vm_config",
+              "qemu_config"
+            ],
+            "not": { "required": ["raw_log"] }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "capture_complete" } } },
+      "then": {
+        "properties": {
+          "started_at": { "type": "string" },
+          "finished_at": { "type": "string" },
+          "qemu": { "properties": { "exit_code": { "const": 0 } } },
+          "artifacts": {
+            "required": [
+              "input_rootfs",
+              "injected_rootfs_pre_run",
+              "probe",
+              "guest_runner",
+              "raw_log",
+              "axvisor_config",
+              "vm_config",
+              "qemu_config"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "failed" } } },
+      "then": {
+        "properties": {
+          "started_at": { "type": "string" },
+          "finished_at": { "type": "string" },
+          "qemu": {
+            "properties": {
+              "exit_code": { "type": "integer", "not": { "const": 0 } }
+            }
+          },
+          "artifacts": {
+            "required": [
+              "input_rootfs",
+              "injected_rootfs_pre_run",
+              "probe",
+              "guest_runner",
+              "raw_log",
+              "axvisor_config",
+              "vm_config",
+              "qemu_config"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

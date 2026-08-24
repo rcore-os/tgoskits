@@ -52,6 +52,14 @@ pub trait HostMemory {
 pub trait HostTime {
     /// Read monotonic host time.
     fn monotonic_time(&self) -> Duration;
+
+    /// Read the raw host architectural counter used by RT traces.
+    #[cfg(feature = "rt-trace")]
+    fn current_ticks(&self) -> u64;
+
+    /// Convert raw host counter ticks to nanoseconds.
+    #[cfg(feature = "rt-trace")]
+    fn ticks_to_nanos(&self, ticks: u64) -> u64;
 }
 
 /// Typed host deadline capability used by AxVM architectural and device timers.
@@ -104,6 +112,10 @@ pub trait HostCpu {
 
     /// Current host CPU ID.
     fn this_cpu_id(&self) -> usize;
+
+    /// Return cumulative architectural-idle ticks for one host CPU.
+    #[cfg(feature = "rt-trace")]
+    fn idle_time_ticks(&self, cpu_id: usize, now_ticks: u64) -> Option<u64>;
 }
 
 /// Host platform lifecycle and virtualization controls.

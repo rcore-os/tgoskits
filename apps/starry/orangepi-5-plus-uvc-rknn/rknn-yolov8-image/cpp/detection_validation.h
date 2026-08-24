@@ -1,6 +1,8 @@
 #ifndef RKNN_YOLOV8_IMAGE_DETECTION_VALIDATION_H_
 #define RKNN_YOLOV8_IMAGE_DETECTION_VALIDATION_H_
 
+#include <stdint.h>
+
 #include <string>
 #include <vector>
 
@@ -18,6 +20,20 @@ struct DetectionEntry {
 
     DetectionEntry();
     DetectionEntry(int cls_id, int score_q10000, int left, int top, int right, int bottom);
+};
+
+enum class SortingAction {
+    Hold = 0,
+    SortLeft = 1,
+    SortRight = 2,
+};
+
+struct SortingDecision {
+    SortingAction action;
+    bool detection_present;
+    DetectionEntry detection;
+
+    SortingDecision();
 };
 
 struct ValidationImage {
@@ -59,6 +75,18 @@ bool ReadExpectedFile(const std::string &path, ExpectedFile *expected, std::stri
 bool WriteExpectedFile(const std::string &path, const ExpectedFile &expected, std::string *error);
 
 std::vector<DetectionEntry> ConvertDetections(const object_detect_result_list &results);
+
+SortingDecision SelectSortingDecision(const std::vector<DetectionEntry> &detections,
+                                      int target_class_id,
+                                      int calibration_x);
+
+const char *SortingActionName(SortingAction action);
+
+std::string FormatVisionDecisionRecord(uint64_t frame_id,
+                                       uint64_t captured_at_us,
+                                       uint64_t inference_finished_at_us,
+                                       uint32_t ttl_us,
+                                       const SortingDecision &decision);
 
 double DetectionIoU(const DetectionEntry &a, const DetectionEntry &b);
 bool ValidateDetections(const ExpectedImage &expected, const std::vector<DetectionEntry> &actual,

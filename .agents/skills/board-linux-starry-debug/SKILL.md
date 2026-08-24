@@ -51,6 +51,8 @@ cargo xtask board connect -b OrangePi-5-Plus
 
 `board connect` 会持有租约，直到外层进程退出。在串口中的 Linux 命令行退出登录，并不一定会释放板卡。
 
+板卡在取得租约前就无响应时，使用 `board-power-control` 技能查询 Orange Pi 5 Plus 智能插座。只有确认没有文件系统写入或板卡测试正在运行后，才能执行冷启动断电循环。
+
 ## Linux 部署流程
 
 只有前述选择条件成立时才执行本流程。

@@ -24,7 +24,10 @@ pub use axvm_types::{
 };
 use axvmconfig::VirtualDeviceRequest;
 
-use crate::{arch::current::CurrentArch, architecture::MachinePlatform, machine::*};
+use crate::{
+    NullVirtioBlockImageProvider, VirtioBlockImageProvider, arch::current::CurrentArch,
+    architecture::MachinePlatform, machine::*,
+};
 
 /// Policy used by AxVM when deriving runtime guest boot image addresses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -106,6 +109,7 @@ pub struct AxVMConfig {
     plic_profile: Option<GuestPlicProfile>,
     timer_profile: Option<GuestTimerProfile>,
     serial_backend_factory: Arc<dyn SerialBackendFactory>,
+    virtio_block_image_provider: Arc<dyn VirtioBlockImageProvider>,
     virtual_device_requests: Vec<VirtualDeviceRequest>,
     virtual_device_catalog: Arc<crate::ConfiguredDeviceCatalog>,
 }
@@ -130,6 +134,8 @@ pub struct AxVMConfigParams {
     pub serial_profile: Option<GuestSerialProfile>,
     /// App-owned backend factory for the mandatory virtual serial device.
     pub serial_backend_factory: Option<Arc<dyn SerialBackendFactory>>,
+    /// App-owned source for file-seeded volatile virtio block images.
+    pub virtio_block_image_provider: Option<Arc<dyn VirtioBlockImageProvider>>,
     /// Open-ended virtual-device requests parsed from guest configuration.
     pub virtual_device_requests: Vec<VirtualDeviceRequest>,
     /// Code-registered factories available to this VM.
@@ -164,6 +170,9 @@ impl AxVMConfig {
             serial_backend_factory: params
                 .serial_backend_factory
                 .unwrap_or_else(|| Arc::new(NullSerialBackendFactory)),
+            virtio_block_image_provider: params
+                .virtio_block_image_provider
+                .unwrap_or_else(|| Arc::new(NullVirtioBlockImageProvider)),
             virtual_device_requests: params.virtual_device_requests,
             virtual_device_catalog: params.virtual_device_catalog,
         }
@@ -174,7 +183,7 @@ impl AxVMConfig {
         Self::new(AxVMConfigParams {
             id,
             name: String::from(name),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             ..Default::default()
         })
     }
@@ -428,6 +437,11 @@ impl AxVMConfig {
         self.serial_backend_factory.clone()
     }
 
+    /// Returns the application-owned source for configured block images.
+    pub fn virtio_block_image_provider(&self) -> Arc<dyn VirtioBlockImageProvider> {
+        self.virtio_block_image_provider.clone()
+    }
+
     pub(crate) fn virtual_device_requests(&self) -> &[VirtualDeviceRequest] {
         &self.virtual_device_requests
     }
@@ -473,6 +487,8 @@ pub struct PhysCpuList {
     cpu_num: usize,
     phys_cpu_ids: Option<Vec<usize>>,
     phys_cpu_sets: Option<Vec<usize>>,
+    /// Whether the pCPUs assigned to this VM are dedicated (partition scheduling).
+    dedicated: bool,
 }
 
 impl PhysCpuList {
@@ -481,12 +497,19 @@ impl PhysCpuList {
         cpu_num: usize,
         phys_cpu_ids: Option<Vec<usize>>,
         phys_cpu_sets: Option<Vec<usize>>,
+        dedicated: bool,
     ) -> Self {
         Self {
             cpu_num,
             phys_cpu_ids,
             phys_cpu_sets,
+            dedicated,
         }
+    }
+
+    /// Returns whether this VM's pCPUs are dedicated (exclusive, partition scheduling).
+    pub fn dedicated(&self) -> bool {
+        self.dedicated
     }
 
     /// Returns vCpu id list and its corresponding pCpu affinity list, as well as its physical id.
@@ -576,7 +599,7 @@ mod tests {
     #[test]
     fn controller_replacements_require_machine_capabilities() {
         let mut config = AxVMConfig::new(AxVMConfigParams {
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            phys_cpu_ls: PhysCpuList::new(1, None, None, false),
             ..Default::default()
         });
         let gic = GuestGicProfile {
@@ -615,15 +638,15 @@ mod tests {
     #[test]
     fn phys_cpu_list_pins_single_vcpu_to_isolated_core() {
         // aarch64/riscv64 arceos-smp1.toml: cpu_num=1, phys_cpu_ids=[1] → physical Core 1.
-        let list = PhysCpuList::new(1, Some(vec![1]), None);
+        let list = PhysCpuList::new(1, Some(vec![1]), None, false);
         assert_eq!(list.get_vcpu_affinities_pcpu_ids(), vec![(0, None, 1)]);
 
         // x86_64 arceos-smp1.toml: phys_cpu_sets=[2] → affinity mask 0b10 (Core 1).
-        let list = PhysCpuList::new(1, None, Some(vec![2]));
+        let list = PhysCpuList::new(1, None, Some(vec![2]), false);
         assert_eq!(list.get_vcpu_affinities_pcpu_ids(), vec![(0, Some(2), 0)]);
 
         // Default: no pinning, vcpu id equals physical id.
-        let list = PhysCpuList::new(1, None, None);
+        let list = PhysCpuList::new(1, None, None, false);
         assert_eq!(list.get_vcpu_affinities_pcpu_ids(), vec![(0, None, 0)]);
     }
 }

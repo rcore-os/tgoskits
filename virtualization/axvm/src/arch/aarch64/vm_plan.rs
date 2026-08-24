@@ -62,6 +62,10 @@ impl Aarch64VmPlan {
         self.firmware.gic()
     }
 
+    pub(crate) const fn interrupt_controller(&self) -> axdevice_base::InterruptControllerId {
+        self.firmware.interrupt_controller()
+    }
+
     pub(crate) const fn serial_profile(&self) -> GuestSerialProfile {
         self.firmware.serial()
     }

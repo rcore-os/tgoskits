@@ -1,0 +1,36 @@
+[package]
+name = "ivcproto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = ["std"]
+std = []
+rknn = ["std"]
+onnxruntime = ["std"]
+
+[dependencies]
+libc.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+anyhow = { workspace = true, features = ["std"] }
+
+[[bin]]
+name = "ivcproto"
+path = "src/bin/ivcproto.rs"
+required-features = ["std"]
+
+[[bin]]
+name = "ivc-vision-controller"
+path = "src/bin/ivc_vision_controller.rs"
+required-features = ["std"]
+
+[[bin]]
+name = "ivc-vision-actuator"
+path = "src/bin/ivc_vision_actuator.rs"
+required-features = ["std"]

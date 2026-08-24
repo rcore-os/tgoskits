@@ -1,0 +1,8 @@
+features = []
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = [
+  "os/axvisor/configs/vms/qemu/aarch64/arceos-virtio-net-isolation-vm1.toml",
+  "os/axvisor/configs/vms/qemu/aarch64/arceos-virtio-net-isolation-vm2.toml",
+  "os/axvisor/configs/vms/qemu/aarch64/arceos-virtio-net-isolation-vm3.toml",
+]

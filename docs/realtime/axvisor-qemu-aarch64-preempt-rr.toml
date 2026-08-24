@@ -1,0 +1,9 @@
+features = [
+    "ept-level-4",
+    "ax-driver/virtio-blk",
+    "fs",
+    "ax-std/sched-rr",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

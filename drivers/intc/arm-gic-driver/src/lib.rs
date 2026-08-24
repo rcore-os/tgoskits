@@ -19,6 +19,7 @@
 //! If you're working on a non-ARM platform, most of this driver's functionality
 //! will not be available at compile time.
 
+mod cpu_interface;
 pub(crate) mod define;
 pub mod sys_reg;
 

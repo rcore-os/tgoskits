@@ -70,6 +70,17 @@ impl GuestOutputMux {
         self.mode = OutputMode::BootMultiplex;
     }
 
+    /// Restores line-safe multi-guest output and drains complete buffered lines.
+    pub fn resume_boot_multiplex(
+        &mut self,
+        preferred_vm: usize,
+        multiple_running: bool,
+    ) -> Vec<u8> {
+        self.start_boot_multiplex();
+        self.request_preemption(preferred_vm);
+        self.format(preferred_vm, multiple_running, &[])
+    }
+
     /// Gives one interactive guest direct access to the host console.
     pub fn enter_interactive(&mut self, vm_id: usize) {
         self.mode = OutputMode::Interactive {

@@ -11,11 +11,16 @@ use ax_memory_addr::VirtAddr;
 
 #[cfg(feature = "lockdep")]
 pub use crate::lockdep::{HeldLock, HeldLockStack};
-pub(crate) use crate::run_queue::{current_run_queue, select_run_queue, select_wake_run_queue};
-use crate::sync::PreemptIrqSaveState;
+pub(crate) use crate::run_queue::{
+    current_run_queue, run_queue_for_cpu, select_run_queue, select_wake_run_queue,
+};
 #[cfg_attr(doc, doc(cfg(feature = "task-ext")))]
 #[cfg(feature = "task-ext")]
 pub use crate::task::{AxTaskExt, TaskExt};
+use crate::{
+    future::{TaskError, TaskResult},
+    sync::PreemptIrqSaveState,
+};
 pub use crate::{
     interrupt::InterruptSnapshot,
     task::{CurrentTask, TaskId, TaskInner, TaskState},
@@ -45,6 +50,14 @@ pub type AxCpuMask = ax_cpumask::CpuMask<{ crate::build_info::CPU_CAPACITY }>;
 /// Returns the default stack size used by task creation helpers.
 pub fn default_task_stack_size() -> usize {
     crate::build_info::DEFAULT_TASK_STACK_SIZE
+}
+
+/// Reports whether the configured scheduler preempts runnable tasks by time slice.
+///
+/// FIFO is cooperative and therefore returns `false`; RR and CFS return `true`.
+#[doc(hidden)]
+pub const fn scheduler_preempts_runnable_tasks() -> bool {
+    cfg!(any(feature = "sched-rr", feature = "sched-cfs"))
 }
 
 cfg_if::cfg_if! {
@@ -271,6 +284,102 @@ fn initialize_task_before_schedule<T>(
 ) {
     initialize(task);
     schedule(task);
+}
+
+#[derive(Debug)]
+enum PreparedTaskPlacement {
+    SchedulerDefault,
+    InitialCpu(usize),
+}
+
+/// A registered task that has not yet been added to a run queue.
+///
+/// This two-phase form lets a subsystem publish its task bookkeeping before
+/// another CPU can begin executing the task.
+#[must_use = "a prepared task remains non-runnable until it is activated"]
+pub struct PreparedTask {
+    task: AxTaskRef,
+    placement: PreparedTaskPlacement,
+}
+
+impl fmt::Debug for PreparedTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreparedTask")
+            .field("task_id", &self.task.id().as_u64())
+            .field("placement", &self.placement)
+            .finish()
+    }
+}
+
+impl PreparedTask {
+    /// Returns the task reference that will be activated.
+    pub fn task_ref(&self) -> &AxTaskRef {
+        &self.task
+    }
+}
+
+/// Registers a task without making it runnable.
+pub fn prepare_task(task: TaskInner) -> PreparedTask {
+    prepare_task_with_placement(task, PreparedTaskPlacement::SchedulerDefault)
+}
+
+/// Registers a task for later activation on a specific initial CPU.
+///
+/// The initial CPU controls only the first run-queue insertion. The task keeps
+/// its full affinity mask for later scheduler-owned wakeups and migrations.
+///
+/// # Errors
+///
+/// Returns [`TaskError::InvalidInput`] when `initial_cpu` is outside the
+/// configured CPU range or excluded by the task's affinity.
+pub fn prepare_task_with_initial_cpu(
+    task: TaskInner,
+    initial_cpu: usize,
+) -> TaskResult<PreparedTask> {
+    validate_initial_cpu(task.cpumask(), initial_cpu)?;
+    Ok(prepare_task_with_placement(
+        task,
+        PreparedTaskPlacement::InitialCpu(initial_cpu),
+    ))
+}
+
+fn prepare_task_with_placement(task: TaskInner, placement: PreparedTaskPlacement) -> PreparedTask {
+    let task = task.into_arc();
+    register_task(&task);
+    PreparedTask { task, placement }
+}
+
+fn validate_initial_cpu(cpumask: AxCpuMask, initial_cpu: usize) -> TaskResult {
+    if initial_cpu >= ax_hal::cpu_num() || !cpumask.get(initial_cpu) {
+        Err(TaskError::InvalidInput)
+    } else {
+        Ok(())
+    }
+}
+
+/// Makes a prepared task runnable and returns its task reference.
+///
+/// # Errors
+///
+/// Returns [`TaskError::InvalidInput`] when a requested initial CPU is outside
+/// the configured CPU range or is no longer allowed by the task's affinity.
+pub fn activate_task(prepared: PreparedTask) -> TaskResult<AxTaskRef> {
+    let PreparedTask { task, placement } = prepared;
+    match placement {
+        PreparedTaskPlacement::SchedulerDefault => {
+            select_run_queue::<PreemptIrqSaveState>(&task).add_task(task.clone());
+        }
+        PreparedTaskPlacement::InitialCpu(initial_cpu) => {
+            validate_initial_cpu(task.cpumask(), initial_cpu)?;
+            run_queue_for_cpu::<PreemptIrqSaveState>(initial_cpu).add_task(task.clone());
+        }
+    }
+    Ok(task)
+}
+
+/// Adds a task to a specific initial run queue and returns its reference.
+pub fn spawn_task_with_initial_cpu(task: TaskInner, initial_cpu: usize) -> TaskResult<AxTaskRef> {
+    prepare_task_with_initial_cpu(task, initial_cpu).and_then(activate_task)
 }
 
 /// Spawns a new task with the given parameters.
@@ -654,7 +763,11 @@ pub fn run_idle() -> ! {
         yield_now_unchecked();
         trace!("idle task: waiting for IRQs...");
         #[cfg(not(feature = "host-test"))]
-        ax_hal::asm::wait_for_irqs();
+        {
+            crate::idle_accounting::begin_idle_wait(ax_hal::time::current_ticks());
+            ax_hal::asm::wait_for_irqs();
+            crate::idle_accounting::finish_current_idle_wait(ax_hal::time::current_ticks());
+        }
     }
 }
 
@@ -678,6 +791,24 @@ mod tests {
         );
 
         assert!(initialized.get());
+    }
+
+    #[test]
+    fn initial_cpu_must_exist_and_be_allowed_by_affinity() {
+        assert!(ax_hal::cpu_num() > 0);
+
+        let mut cpu_zero = super::AxCpuMask::new();
+        cpu_zero.set(0, true);
+        assert!(super::validate_initial_cpu(cpu_zero, 0).is_ok());
+
+        assert!(matches!(
+            super::validate_initial_cpu(super::AxCpuMask::new(), 0),
+            Err(super::TaskError::InvalidInput)
+        ));
+        assert!(matches!(
+            super::validate_initial_cpu(super::cpu_mask_full(), ax_hal::cpu_num()),
+            Err(super::TaskError::InvalidInput)
+        ));
     }
 }
 

@@ -1,0 +1,30 @@
+[base]
+id = 1
+name = "starry-rt-soak-shared-orangepi"
+guest_type = "virtualized"
+cpu_num = 2
+phys_cpu_ids = [0x100, 0x200]
+# Match the formal shared placement while reserving enough guest memory to
+# render and compress the enlarged lossless IRQ trace after the 30-minute run.
+phys_cpu_sets = [0x2, 0x4]
+dedicated_cpus = false
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_path = "/home/orangepi/axvisor-guest/starryos.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+dtb_path = "/home/orangepi/axvisor-guest/starry-orangepi-5-plus.dtb"
+cmdline = "console=ttyAMA0,115200 earlycon=pl011,0x09000000 root=/dev/vda rw"
+
+memory_regions = [
+  [0x8000_0000, 0x2000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+virtual = [
+  { id = "disk0", model = "virtio-blk-mmio", image_path = "/home/orangepi/axvisor-guest/starry-rt-soak-rootfs.img" },
+]

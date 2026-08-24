@@ -1641,6 +1641,7 @@ dependencies = [
  "axvirtio-blk",
  "axvirtio-common",
  "axvirtio-net",
+ "axvm-net",
  "axvm-types",
  "axvmconfig",
  "bit_field",
@@ -1667,6 +1668,13 @@ dependencies = [
  "x86",
  "x86_vcpu",
  "x86_vlapic",
+]
+
+[[package]]
+name = "axvm-net"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -4457,6 +4465,15 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "ivcproto"
+version = "0.5.15"
+dependencies = [
+ "anyhow",
+ "libc",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "jiff"

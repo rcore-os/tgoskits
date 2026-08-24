@@ -14,6 +14,7 @@ mod devices;
 
 pub use append::DefaultVirtualDeviceIntent;
 pub(crate) use append::append_configured_devices;
+pub use devices::legacy_virtio_blk::{NullVirtioBlockImageProvider, VirtioBlockImageProvider};
 
 pub(crate) fn register_devices(
     catalog: &mut ConfiguredDeviceCatalog,
@@ -96,6 +97,7 @@ pub struct DeviceInstantiationContext {
     firmware_binding: DeviceFirmwareBinding,
     serial_profile: Option<crate::machine::GuestSerialProfile>,
     serial_backend_factory: Arc<dyn SerialBackendFactory>,
+    virtio_block_image_provider: Arc<dyn VirtioBlockImageProvider>,
     host_console_by_default: bool,
 }
 
@@ -108,6 +110,7 @@ impl DeviceInstantiationContext {
             firmware_binding: DeviceFirmwareBinding::None,
             serial_profile: None,
             serial_backend_factory: Arc::new(NullSerialBackendFactory),
+            virtio_block_image_provider: Arc::new(NullVirtioBlockImageProvider),
             host_console_by_default: false,
         }
     }
@@ -171,6 +174,19 @@ impl DeviceInstantiationContext {
 
     pub(crate) fn serial_backend_factory(&self) -> Arc<dyn SerialBackendFactory> {
         self.serial_backend_factory.clone()
+    }
+
+    /// Selects the application-owned source for legacy configured block images.
+    pub fn with_virtio_block_image_provider(
+        mut self,
+        provider: Arc<dyn VirtioBlockImageProvider>,
+    ) -> Self {
+        self.virtio_block_image_provider = provider;
+        self
+    }
+
+    pub(crate) fn virtio_block_image_provider(&self) -> &dyn VirtioBlockImageProvider {
+        self.virtio_block_image_provider.as_ref()
     }
 
     pub(crate) const fn host_console_by_default(&self) -> bool {

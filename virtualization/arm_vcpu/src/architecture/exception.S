@@ -108,6 +108,11 @@
     # instructions restore guest GPRs and return directly; no helper runs.
     ldr     x9, [sp, {guest_tpidr_el0_offset}]
     msr     tpidr_el0, x9
+    # Install the guest-exit vector only after every host-owned register is
+    # prepared. The remaining instructions restore GPRs and ERET directly.
+    adr     x9, exception_vector_base_vcpu
+    msr     vbar_el2, x9
+    isb
     ldp     x8, x9, [sp, 8 * 8]
     ldp     x6, x7, [sp, 6 * 8]
     ldp     x4, x5, [sp, 4 * 8]

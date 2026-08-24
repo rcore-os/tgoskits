@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add allowlisted CDC ACM support for the SO-100 CH343 USB Control adapter,
+  including separate control/data interface ownership and 8N1 line coding.
+
 ## [0.1.4](https://github.com/rcore-os/tgoskits/compare/usb-serial-v0.1.3...usb-serial-v0.1.4) - 2026-08-20
 
 ### Other

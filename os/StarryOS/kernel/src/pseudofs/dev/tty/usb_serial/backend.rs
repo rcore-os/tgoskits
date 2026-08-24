@@ -27,8 +27,31 @@ impl UsbSerialPortInfo {
         self.chip.name()
     }
 
-    pub(super) fn interface(&self) -> u8 {
-        self.port.interface
+    pub(super) fn control_interface(&self) -> u8 {
+        self.port.control_interface
+    }
+
+    pub(super) fn data_interface(&self) -> u8 {
+        self.port.data_interface
+    }
+
+    pub(super) fn claim_interfaces(&self, handle: &UsbDeviceHandle) -> StarryResult<()> {
+        handle.claim_interface(self.control_interface(), 0)?;
+        if self.data_interface() == self.control_interface() {
+            return Ok(());
+        }
+        if let Err(err) = handle.claim_interface(self.data_interface(), 0) {
+            let _ = handle.release_interface(self.control_interface());
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    pub(super) fn release_interfaces(&self, handle: &UsbDeviceHandle) {
+        if self.data_interface() != self.control_interface() {
+            let _ = handle.release_interface(self.data_interface());
+        }
+        let _ = handle.release_interface(self.control_interface());
     }
 
     pub(super) fn bulk_in(&self) -> u8 {

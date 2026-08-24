@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "run_id": "replace-with-run-id",
+  "status": "planned",
+  "started_at": null,
+  "finished_at": null,
+  "repository": {
+    "commit": "0000000000000000000000000000000000000000",
+    "dirty": false,
+    "source_snapshot_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "tracked_diff_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "untracked_source_file_count": 0,
+    "untracked_source_manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "host": {
+    "system": "replace-with-host-system",
+    "release": "replace-with-host-release",
+    "machine": "replace-with-host-machine"
+  },
+  "qemu": {
+    "binary": "qemu-system-aarch64",
+    "version": "replace-with-qemu-version",
+    "acceleration": "tcg",
+    "machine": "virt,virtualization=on,gic-version=3",
+    "cpu": "cortex-a72",
+    "host_cpu_count": 4,
+    "exit_code": null
+  },
+  "guest": {
+    "architecture": "aarch64",
+    "vcpu_count": 2,
+    "profile": "partitioned",
+    "dedicated_host_cpu_ids": [2, 3],
+    "vm_config": "os/axvisor/configs/vms/qemu/aarch64/linux-smp2-dedicated.toml"
+  },
+  "benchmark": {
+    "iterations": 10000,
+    "warmup_iterations": 100,
+    "period_ns": 1000000,
+    "guest_cpu": 0,
+    "fifo_priority": 80,
+    "workload": "idle",
+    "metrics": [
+      "periodic_jitter",
+      "dispatch_latency",
+      "emulated_irq_response"
+    ]
+  },
+  "artifacts": {}
+}

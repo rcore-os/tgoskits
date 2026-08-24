@@ -140,6 +140,8 @@ fn host_timer_ppi_fallback(_context: irq::IrqContext) -> irq::IrqReturn {
     // AxVM world-switch path. If it races with host context, the ordinary host
     // IRQ transaction performs priority-drop/deactivate after this fixed,
     // allocation-free handler returns.
+    #[cfg(feature = "rt-trace")]
+    crate::rt_trace::record_unowned_virtual_timer_irq();
     irq::IrqReturn::Handled
 }
 

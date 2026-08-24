@@ -50,7 +50,20 @@ host-xtask = []
 axtest = []
 fs = ["ax-std/ext4fs", "ax-std/fatfs", "axvm/host-fs"]
 vpci-test-device = ["axvm/vpci-test-device"]
+rt-trace = ["axvm/rt-trace"]
+rt-trace-soak = ["rt-trace", "axvm/rt-trace-soak"]
 sstc = ["axvm/sstc"]
+rockchip-soc = ["ax-driver/rockchip-soc"]
+rockchip-sdhci = ["ax-driver/rockchip-sdhci", "ax-driver/rockchip-soc"]
+rockchip-dwmmc = ["ax-driver/rockchip-dwmmc", "ax-driver/rockchip-soc"]
+phytium-mci = ["ax-driver/phytium-mci"]
+sdmmc = [
+    "ax-driver/rockchip-sdhci",
+    "ax-driver/rockchip-soc",
+    "ax-driver/phytium-mci",
+]
+rockchip-pm = ["ax-driver/rockchip-pm"]
+rk3588-npu-handoff = ["ax-driver/rk3588-npu-handoff"]
 stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
 test-backtrace-panic = ["backtrace"]

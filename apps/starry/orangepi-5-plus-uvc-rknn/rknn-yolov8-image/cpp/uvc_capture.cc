@@ -35,12 +35,18 @@ static bool load_symbol(void *lib, const char *name, void **out)
 
 bool load_uvc_api(UvcApi *api)
 {
-    const char *candidates[] = {"libuvc.so", "/usr/local/lib/libuvc.so", "/usr/lib/aarch64-linux-gnu/libuvc.so", NULL};
+    const char *candidates[] = {
+        "libuvc.so.0",
+        "libuvc.so",
+        "/usr/local/lib/libuvc.so",
+        "/usr/lib/aarch64-linux-gnu/libuvc.so",
+        NULL,
+    };
     for (int i = 0; candidates[i] != NULL && api->lib == NULL; ++i) {
         api->lib = dlopen(candidates[i], RTLD_NOW | RTLD_LOCAL);
     }
     if (api->lib == NULL) {
-        printf("dlopen libuvc.so failed: %s\n", dlerror());
+        printf("dlopen libuvc failed: %s\n", dlerror());
         return false;
     }
 
@@ -74,6 +80,17 @@ static bool looks_like_mjpeg(const unsigned char *data, size_t size)
            data[size - 2] == 0xff && data[size - 1] == 0xd9;
 }
 
+static uint64_t monotonic_us()
+{
+    struct timespec timestamp;
+    if (clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0 || timestamp.tv_sec < 0 ||
+        timestamp.tv_nsec < 0) {
+        return 0;
+    }
+    return (uint64_t)timestamp.tv_sec * UINT64_C(1000000) +
+           (uint64_t)timestamp.tv_nsec / UINT64_C(1000);
+}
+
 static void frame_callback(UvcFrame *frame, void *ptr)
 {
     if (frame == NULL || ptr == NULL || frame->data == NULL || frame->data_bytes == 0) {
@@ -90,6 +107,10 @@ static void frame_callback(UvcFrame *frame, void *ptr)
     }
 
     SharedState *state = reinterpret_cast<SharedState *>(ptr);
+    const uint64_t captured_at_us = monotonic_us();
+    if (captured_at_us == 0) {
+        return;
+    }
     std::lock_guard<std::mutex> guard(state->mutex);
     state->captured++;
     state->bytes += frame->data_bytes;
@@ -97,6 +118,7 @@ static void frame_callback(UvcFrame *frame, void *ptr)
         state->dropped++;
     }
     state->latest.id = state->captured;
+    state->latest.captured_at_us = captured_at_us;
     state->latest.sequence = frame->sequence;
     state->latest.width = frame->width;
     state->latest.height = frame->height;

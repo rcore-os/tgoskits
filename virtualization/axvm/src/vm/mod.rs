@@ -34,6 +34,10 @@ use ax_std::{os::arceos::sync::IrqSafeMutex, sync::Mutex as SleepMutex};
 use axaddrspace::{AddrSpace, NestedPageTableOps};
 use axdevice::*;
 use axdevice_base::*;
+use axvm_net::{
+    MAX_SWITCH_PORTS, MacAddress, PortId, RouteDecision, SegmentId, SwitchPort, SwitchTopology,
+    TopologyError,
+};
 use axvm_types::*;
 
 use crate::{
@@ -52,10 +56,15 @@ use crate::{
 };
 
 pub(crate) mod boot;
+mod event;
 pub(crate) mod memory;
 pub(crate) mod prepare;
+mod reset_memory;
 #[cfg(any(test, target_arch = "aarch64"))]
 mod timer_wait;
+pub(crate) use event::{
+    VcpuEventChannel, wait_for_vcpu_event_if_idle, wait_for_vcpu_event_if_idle_with,
+};
 pub use memory::PreparedMemoryLayout;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use timer_wait::{VcpuTimerWaitGeneration, VcpuTimerWaitToken};
@@ -69,6 +78,66 @@ type VCpu = AxVCpu<crate::arch::current::ArchVCpu>;
 pub(crate) type AxVCpuRef<A = crate::arch::current::ArchVCpu> = Arc<AxVCpu<A>>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
+
+struct SwitchPortBinding {
+    port: SwitchPort,
+    vm: AxVMRef,
+    device: Arc<VirtioNetPort>,
+}
+
+struct SwitchPortSnapshot {
+    bindings: Vec<SwitchPortBinding>,
+}
+
+fn collect_switch_ports() -> Result<SwitchPortSnapshot, TopologyError> {
+    // Both snapshot APIs return owned Arcs after releasing their registry or
+    // machine lock. No broad lock is retained across routing or RX callbacks.
+    let mut bindings = Vec::new();
+    for vm in crate::get_vm_list() {
+        let devices = match vm.get_devices() {
+            Ok(devices) => devices,
+            Err(error) => {
+                crate::network::record_skipped_vm_snapshots(1);
+                debug!(
+                    "virtual switch skipped unavailable VM[{}] device snapshot: {error}",
+                    vm.id()
+                );
+                continue;
+            }
+        };
+        for device in devices.services().all::<VirtioNetPortKey>() {
+            if bindings.len() == MAX_SWITCH_PORTS {
+                return Err(TopologyError::TooManyPorts {
+                    count: MAX_SWITCH_PORTS + 1,
+                    max: MAX_SWITCH_PORTS,
+                });
+            }
+            bindings
+                .try_reserve(1)
+                .map_err(|_| TopologyError::AllocationFailed)?;
+            let port = SwitchPort {
+                id: PortId(bindings.len()),
+                segment: SegmentId(device.segment_id()),
+                mac: MacAddress(device.mac()),
+            };
+            bindings.push(SwitchPortBinding {
+                port,
+                vm: Arc::clone(&vm),
+                device,
+            });
+        }
+    }
+    Ok(SwitchPortSnapshot { bindings })
+}
+
+fn build_switch_topology(bindings: &[SwitchPortBinding]) -> Result<SwitchTopology, TopologyError> {
+    let mut ports = Vec::new();
+    ports
+        .try_reserve_exact(bindings.len())
+        .map_err(|_| TopologyError::AllocationFailed)?;
+    ports.extend(bindings.iter().map(|binding| binding.port));
+    SwitchTopology::new(&ports)
+}
 
 pub(crate) struct VmGuestMemoryAccess<'a> {
     vm: &'a AxVM,
@@ -181,9 +250,9 @@ pub(crate) enum PendingInterrupt {
 /// Runtime-only resources owned by Running/Paused/Stopping lifecycle states.
 pub(crate) struct VmRuntimeHandle {
     wait_queue: Arc<crate::WaitQueue>,
+    vcpu_event_channels: Box<[VcpuEventChannel]>,
     #[cfg(target_arch = "aarch64")]
     vcpu_timer_wait_queues: IrqSafeMutex<BTreeMap<usize, Arc<crate::WaitQueue>>>,
-    notification_generation: AtomicUsize,
     vcpu_task_list: IrqSafeMutex<BTreeMap<usize, crate::AxTaskRef>>,
     cpu_on_start_acks: StdMutex<BTreeMap<usize, Arc<crate::runtime::vcpus::CpuOnStartAck>>>,
     cpu_off_exit_reservations: StdMutex<BTreeSet<usize>>,
@@ -235,10 +304,6 @@ pub(crate) struct VmRuntimeHandle {
     vcpu_wake_count: Arc<AtomicU64>,
 }
 
-pub(crate) struct VcpuEventWaitSnapshot {
-    notification_generation: usize,
-}
-
 #[cfg(target_arch = "aarch64")]
 pub(crate) struct VcpuTimerWakeHandle {
     wait_queue: Arc<crate::WaitQueue>,
@@ -256,31 +321,6 @@ impl VcpuTimerWakeHandle {
         self.wait_queue.wait_until(condition);
     }
 }
-
-pub(crate) fn wait_for_vcpu_event_if_idle(
-    runtime: &VmRuntimeHandle,
-    wait_snapshot: &VcpuEventWaitSnapshot,
-    vm_running: impl Fn() -> bool,
-    wait_until: impl FnOnce(&dyn Fn() -> bool),
-) {
-    wait_for_vcpu_event_if_idle_with(runtime, wait_snapshot, vm_running, || false, wait_until);
-}
-
-pub(crate) fn wait_for_vcpu_event_if_idle_with(
-    runtime: &VmRuntimeHandle,
-    wait_snapshot: &VcpuEventWaitSnapshot,
-    vm_running: impl Fn() -> bool,
-    additional_ready: impl Fn() -> bool,
-    wait_until: impl FnOnce(&dyn Fn() -> bool),
-) {
-    let wake_condition =
-        || !vm_running() || wait_snapshot.has_pending_event(runtime) || additional_ready();
-    if wake_condition() {
-        return;
-    }
-    wait_until(&wake_condition);
-}
-
 fn clone_runtime_handle<R>(
     machine: &Machine<R, Arc<VmRuntimeHandle>>,
 ) -> AxVmResult<Arc<VmRuntimeHandle>> {
@@ -289,14 +329,13 @@ fn clone_runtime_handle<R>(
         .cloned()
         .ok_or_else(|| ax_err_type!(BadState, "VM runtime is not available"))
 }
-
 pub(crate) fn dispatch_vcpu_interrupt_with(
     enqueue: impl FnOnce() -> AxVmResult<usize>,
-    notify: impl FnOnce(),
+    notify: impl FnOnce() -> AxVmResult,
     send_ipi: impl FnOnce(usize),
 ) -> AxVmResult {
     let pcpu_id = enqueue()?;
-    notify();
+    notify()?;
     send_ipi(pcpu_id);
     Ok(())
 }
@@ -336,12 +375,15 @@ fn wait_for_running_vm_quiesce(
 }
 
 impl VmRuntimeHandle {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(vcpu_count: usize) -> Self {
         Self {
             wait_queue: Arc::new(crate::WaitQueue::new()),
+            vcpu_event_channels: (0..vcpu_count)
+                .map(|_| VcpuEventChannel::new())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
             #[cfg(target_arch = "aarch64")]
             vcpu_timer_wait_queues: IrqSafeMutex::new(BTreeMap::new()),
-            notification_generation: AtomicUsize::new(0),
             vcpu_task_list: IrqSafeMutex::new(BTreeMap::new()),
             cpu_on_start_acks: StdMutex::new(BTreeMap::new()),
             cpu_off_exit_reservations: StdMutex::new(BTreeSet::new()),
@@ -522,7 +564,7 @@ impl VmRuntimeHandle {
     ) -> AxVmResult {
         dispatch_vcpu_interrupt_with(
             || self.irq_dispatcher.enqueue(vcpu_id, interrupt),
-            || self.notify_all(),
+            || self.notify_vcpu_event(vcpu_id),
             crate::host::task::send_ipi,
         )
     }
@@ -558,30 +600,36 @@ impl VmRuntimeHandle {
         }
     }
 
-    pub(crate) fn notification_generation(&self) -> usize {
-        self.notification_generation.load(Ordering::Acquire)
+    pub(crate) fn vcpu_event_channel(&self, vcpu_id: usize) -> AxVmResult<&VcpuEventChannel> {
+        self.vcpu_event_channels.get(vcpu_id).ok_or_else(|| {
+            ax_err_type!(
+                NotFound,
+                format!("vCPU {vcpu_id} event channel is not configured")
+            )
+        })
     }
 
-    pub(crate) fn vcpu_event_wait_snapshot(&self) -> VcpuEventWaitSnapshot {
-        VcpuEventWaitSnapshot {
-            notification_generation: self.notification_generation(),
+    pub(crate) fn notify_vcpu_event(&self, vcpu_id: usize) -> AxVmResult {
+        self.vcpu_wake_count.fetch_add(1, Ordering::Relaxed);
+        self.vcpu_event_channel(vcpu_id)?.notify();
+        #[cfg(target_arch = "aarch64")]
+        if let Some(wait_queue) = self.vcpu_timer_wait_queues.lock().get(&vcpu_id) {
+            wait_queue.notify_one(false);
         }
+        Ok(())
     }
 
     pub(crate) fn notify_one(&self) {
-        self.vcpu_wake_count.fetch_add(1, Ordering::Relaxed);
-        self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_one(false);
-        #[cfg(target_arch = "aarch64")]
-        if let Some(wait_queue) = self.vcpu_timer_wait_queues.lock().get(&0) {
-            wait_queue.notify_one(false);
-        }
+        let _ = self.notify_vcpu_event(0);
     }
 
     pub(crate) fn notify_all(&self) {
         self.vcpu_wake_count.fetch_add(1, Ordering::Relaxed);
-        self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_all(false);
+        for channel in &self.vcpu_event_channels {
+            channel.notify();
+        }
         #[cfg(target_arch = "aarch64")]
         for wait_queue in self.vcpu_timer_wait_queues.lock().values() {
             wait_queue.notify_all(false);
@@ -589,11 +637,12 @@ impl VmRuntimeHandle {
     }
 
     /// Publishes pending device work before waking the primary vCPU.
-    pub(crate) fn notify_device_poll(&self) {
+    pub(crate) fn notify_device_poll(&self) -> AxVmResult {
         self.device_poll_requested.store(true, Ordering::Release);
-        self.notify_one();
+        self.notify_vcpu_event(0)
     }
 
+    #[cfg(any(target_arch = "aarch64", test))]
     pub(crate) fn device_poll_requested(&self) -> bool {
         self.device_poll_requested.load(Ordering::Acquire)
     }
@@ -699,19 +748,12 @@ impl VmRuntimeHandle {
     }
 }
 
-impl VcpuEventWaitSnapshot {
-    pub(crate) fn has_pending_event(&self, runtime: &VmRuntimeHandle) -> bool {
-        runtime.device_poll_requested()
-            || runtime.notification_generation() != self.notification_generation
-    }
-}
-
 #[cfg(all(test, feature = "host-test"))]
 mod runtime_handle_tests {
 
     #[test]
     fn runtime_cpu_on_success_publishes_online_count_before_ack() {
-        let runtime = VmRuntimeHandle::new();
+        let runtime = VmRuntimeHandle::new(2);
         let ack = crate::runtime::vcpus::CpuOnStartAck::new();
 
         runtime.mark_vcpu_running();
@@ -725,7 +767,7 @@ mod runtime_handle_tests {
 
     #[test]
     fn runtime_cpu_on_ack_rejects_duplicate_and_can_be_removed() {
-        let runtime = VmRuntimeHandle::new();
+        let runtime = VmRuntimeHandle::new(2);
         let first = Arc::new(crate::runtime::vcpus::CpuOnStartAck::new());
         let second = Arc::new(crate::runtime::vcpus::CpuOnStartAck::new());
 
@@ -741,7 +783,7 @@ mod runtime_handle_tests {
 
     #[test]
     fn runtime_deferred_reset_request_is_single_consumer() {
-        let runtime = VmRuntimeHandle::new();
+        let runtime = VmRuntimeHandle::new(1);
 
         assert!(!runtime.take_deferred_reset_request());
         assert!(runtime.request_deferred_reset());
@@ -753,7 +795,7 @@ mod runtime_handle_tests {
 
     #[test]
     fn runtime_cpu_off_reservation_rejects_second_parallel_last_vcpu() {
-        let runtime = VmRuntimeHandle::new();
+        let runtime = VmRuntimeHandle::new(2);
 
         runtime.mark_vcpu_running();
         runtime.mark_vcpu_running();
@@ -771,7 +813,7 @@ mod runtime_handle_tests {
 
     #[test]
     fn remove_vcpu_task_clears_pending_interrupts_and_dispatcher_registration() {
-        let runtime = VmRuntimeHandle::new();
+        let runtime = VmRuntimeHandle::new(4);
 
         runtime.pending_interrupts.lock().entry(3).or_default();
         runtime.irq_dispatcher.register_test_vcpu(3, 11);
@@ -795,7 +837,7 @@ mod runtime_handle_tests {
         // vCPU task, not per-vCPU. Two increments attributed to distinct vCPU
         // ids advance a single shared counter, so the control plane observes
         // "at least one vCPU made progress", never a per-vCPU guarantee.
-        let runtime = VmRuntimeHandle::new();
+        let runtime = VmRuntimeHandle::new(2);
         assert_eq!(runtime.guest_entry_count(), 0);
         assert_eq!(runtime.guest_park_count(), 0);
 
@@ -808,7 +850,7 @@ mod runtime_handle_tests {
         assert_eq!(runtime.guest_park_count(), 1);
 
         // Monotonic: a later reset rebuilds the runtime and restarts from zero.
-        let rebuilt = VmRuntimeHandle::new();
+        let rebuilt = VmRuntimeHandle::new(2);
         assert_eq!(rebuilt.guest_entry_count(), 0);
         assert_eq!(rebuilt.guest_park_count(), 0);
     }
@@ -822,7 +864,7 @@ mod runtime_handle_tests {
         // guest never ran. The run loop itself is exercised by the
         // qemu-http-control-plane probe; this asserts the counter's
         // publish/no-publish contract at the handle level.
-        let runtime = VmRuntimeHandle::new();
+        let runtime = VmRuntimeHandle::new(1);
         assert_eq!(runtime.guest_entry_count(), 0);
 
         // First entry succeeds.
@@ -834,6 +876,20 @@ mod runtime_handle_tests {
         // `Err`); model the failure as "no publish call at all" and confirm the
         // previously published value is preserved.
         assert_eq!(runtime.guest_entry_count(), 1);
+    }
+
+    #[test]
+    fn runtime_broadcast_advances_every_vcpu_event_channel() {
+        let runtime = VmRuntimeHandle::new(2);
+        let first = runtime.vcpu_event_channel(0).unwrap();
+        let second = runtime.vcpu_event_channel(1).unwrap();
+        let first_snapshot = first.snapshot();
+        let second_snapshot = second.snapshot();
+
+        runtime.notify_all();
+
+        assert!(first_snapshot.has_pending_event(first));
+        assert!(second_snapshot.has_pending_event(second));
     }
 }
 
@@ -1203,8 +1259,12 @@ impl WakeAccessPort for AxVmDeviceAccessPorts {
                     operation: "wake vCPU from device access",
                     detail: format!("{error}"),
                 })?;
-        runtime.notify_all();
-        Ok(())
+        runtime.notify_vcpu_event(vcpu_id).map_err(|error| {
+            axdevice::DeviceManagerError::InvalidState {
+                operation: "wake vCPU from device access",
+                detail: format!("{error}"),
+            }
+        })
     }
 }
 
@@ -1266,6 +1326,7 @@ pub struct AxVM {
     /// Lifecycle and runtime state reached from both task and interrupt context.
     machine: IrqSafeMutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
     fw_cfg_payload: Arc<FwCfgPayloadSlot>,
+    reset_memory_snapshot: IrqSafeMutex<Option<Arc<reset_memory::GuestMemorySnapshot>>>,
 }
 
 impl AxVM {
@@ -1291,6 +1352,7 @@ impl AxVM {
             config: SleepMutex::new(config),
             machine: IrqSafeMutex::new(Machine::Ready(resources)),
             fw_cfg_payload,
+            reset_memory_snapshot: IrqSafeMutex::new(None),
         });
 
         info!("VM created: id={}", result.id());
@@ -1591,8 +1653,8 @@ impl AxVM {
         let primary_vcpu = self
             .vcpu(0)
             .ok_or_else(|| ax_err_type!(BadState, "VM primary vCPU is not prepared"))?;
-        let primary_task = crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu);
-        let runtime = Arc::new(VmRuntimeHandle::new());
+        let primary_task = crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu)?.prepare()?;
+        let runtime = Arc::new(VmRuntimeHandle::new(self.vcpu_num()));
 
         self.with_resources(|resources| {
             resources
@@ -1619,13 +1681,38 @@ impl AxVM {
             };
         }
 
-        crate::runtime::vcpus::spawn_registered_vcpu_task(
-            self.id(),
-            0,
-            runtime.clone(),
-            primary_task,
-        );
+        let task_ref = primary_task.task_ref().clone();
+        if let Err(error) = runtime.add_vcpu_task(0, task_ref) {
+            return match self.rollback_start_without_vcpu() {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(AxVmError::lifecycle_rollback(
+                    "publish primary vCPU task",
+                    error,
+                    rollback,
+                )),
+            };
+        }
+        if let Err(error) = primary_task.activate() {
+            runtime.remove_vcpu_task(0);
+            return match self.rollback_start_without_vcpu() {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(AxVmError::lifecycle_rollback(
+                    "activate primary vCPU task",
+                    error,
+                    rollback,
+                )),
+            };
+        }
         Ok(())
+    }
+
+    fn rollback_start_without_vcpu(&self) -> AxVmResult {
+        {
+            let mut machine = self.machine.lock();
+            machine.request_stop_with(StopReason::Forced, |_, _| Ok(()))?;
+            machine.finish_stop()?;
+        }
+        crate::arch::current::CurrentArch::exit_runtime(self)
     }
 
     /// Returns if the VM is running.
@@ -1695,13 +1782,13 @@ impl AxVM {
         Ok(())
     }
 
-    fn wait_until_stopped(&self) -> AxVmResult {
+    fn wait_until_stopped(&self, mut wait_step: impl FnMut()) -> AxVmResult {
         const MAX_YIELDS: usize = 10_000;
         for _ in 0..MAX_YIELDS {
             match self.status() {
                 VmStatus::Stopped | VmStatus::Ready => return Ok(()),
                 VmStatus::Stopping | VmStatus::Running | VmStatus::Paused | VmStatus::Pausing => {
-                    crate::host::task::yield_now();
+                    wait_step();
                 }
                 status => {
                     return ax_err!(
@@ -1718,6 +1805,14 @@ impl AxVM {
     }
 
     fn stop_and_join_runtime(&self, reason: StopReason) -> AxVmResult {
+        self.stop_and_join_runtime_with(reason, crate::host::task::yield_now)
+    }
+
+    fn stop_and_join_runtime_with(
+        &self,
+        reason: StopReason,
+        mut wait_step: impl FnMut(),
+    ) -> AxVmResult {
         match self.status() {
             VmStatus::Running | VmStatus::Paused => {
                 // A request-stop accepted in the start->stop window strands the
@@ -1734,13 +1829,13 @@ impl AxVM {
                 if let Ok(runtime) = self.runtime_handle() {
                     runtime.notify_all();
                 }
-                self.wait_until_stopped()?;
+                self.wait_until_stopped(&mut wait_step)?;
             }
             VmStatus::Stopping => {
                 if let Ok(runtime) = self.runtime_handle() {
                     runtime.notify_all();
                 }
-                self.wait_until_stopped()?;
+                self.wait_until_stopped(&mut wait_step)?;
             }
             VmStatus::Stopped | VmStatus::Ready => {}
             status => {
@@ -1760,8 +1855,18 @@ impl AxVM {
     /// Resets the VM by discarding runtime-only state, rebuilding vCPUs/devices,
     /// and starting from a fresh `Running` state.
     pub fn reset(self: &Arc<Self>) -> AxVmResult {
+        self.reset_with_wait(crate::host::task::yield_now)
+    }
+
+    /// Resets the VM while delegating each stop-wait iteration to the caller.
+    ///
+    /// A non-yielding callback is suitable only when the caller runs on a host
+    /// CPU that is not assigned to this VM; otherwise it can prevent the vCPU
+    /// tasks from observing the stop request.
+    pub fn reset_with_wait(self: &Arc<Self>, mut wait_step: impl FnMut()) -> AxVmResult {
         info!("Resetting VM[{}]", self.id());
-        self.stop_and_join_runtime(StopReason::Forced)?;
+        self.stop_and_join_runtime_with(StopReason::Forced, &mut wait_step)?;
+        self.restore_reset_memory()?;
 
         self.machine.lock().reset_with(|resources| {
             resources
@@ -1787,6 +1892,40 @@ impl AxVM {
         self.get_devices()
             .map(|devices| devices.devices().count())
             .unwrap_or(0)
+    }
+
+    /// Copies one volatile virtio block backing after the VM has stopped.
+    ///
+    /// Backings are ordered by their resolved graph registration order. The
+    /// returned bytes are independent of subsequent VM resets or guest writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the VM is stopped or when `index` does not name
+    /// a configured virtio block backing.
+    pub fn snapshot_virtio_block_backing(&self, index: usize) -> AxVmResult<Vec<u8>> {
+        let machine = self.machine.lock();
+        let status = machine.status();
+        ensure_block_snapshot_status(self.id(), status)?;
+        let resources = machine
+            .resources()
+            .ok_or_else(|| ax_err_type!(BadState, "VM resources are not available"))?;
+        let devices = resources.devices()?;
+        let backing = devices
+            .services()
+            .all::<VirtioBlockBackendKey>()
+            .into_iter()
+            .nth(index)
+            .ok_or_else(|| {
+                AxVmError::invalid_input(
+                    "snapshot virtio block backing",
+                    format_args!(
+                        "VM[{}] has no virtio block backing at index {index}",
+                        self.id()
+                    ),
+                )
+            })?;
+        Ok(backing.snapshot())
     }
 
     /// Queue a QEMU fw_cfg device that will be attached during VM initialization.
@@ -1827,10 +1966,134 @@ impl AxVM {
 
     pub(crate) fn try_write_device(&self, access: &DeviceAccess, value: u64) -> AxVmResult<bool> {
         let devices = self.get_devices()?;
+        let tx_port = if access.bus() == BusKind::Mmio {
+            usize::try_from(access.address())
+                .ok()
+                .map(GuestPhysAddr::from_usize)
+                .and_then(|address| {
+                    devices
+                        .services()
+                        .all::<VirtioNetPortKey>()
+                        .into_iter()
+                        .find(|port| port.is_tx_notification(address, value as u32))
+                })
+        } else {
+            None
+        };
         let mut memory = VmGuestMemoryAccess { vm: self };
-        devices
+        let handled = devices
             .try_write(access, value, Some(&mut memory))
-            .map_err(Into::into)
+            .map_err(AxVmError::from)?;
+        if handled && let Some(port) = tx_port {
+            self.drive_virtio_net_tx(&port)?;
+        }
+        Ok(handled)
+    }
+
+    /// Routes frames completed by one access-scoped virtio-net TX operation.
+    fn drive_virtio_net_tx(&self, port: &Arc<VirtioNetPort>) -> AxVmResult {
+        crate::network::record_tx_notification();
+        let frames = port.take_transmitted_frames();
+        if frames.is_empty() {
+            crate::network::record_empty_tx_notification();
+            return Ok(());
+        }
+        for frame in &frames {
+            crate::network::record_transmission(frame.len());
+        }
+
+        let snapshot = match collect_switch_ports() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                crate::network::record_topology_failure(frames.len());
+                warn!("virtual switch port snapshot failed; dropping TX batch: {error}");
+                return Ok(());
+            }
+        };
+        let bindings = snapshot.bindings;
+        let topology = match build_switch_topology(&bindings) {
+            Ok(topology) => topology,
+            Err(error) => {
+                crate::network::record_topology_failure(frames.len());
+                warn!("virtual switch topology is unusable; dropping TX batch: {error}");
+                return Ok(());
+            }
+        };
+        let Some(ingress) = bindings
+            .iter()
+            .find(|binding| binding.vm.id() == self.id() && Arc::ptr_eq(&binding.device, port))
+            .map(|binding| binding.port.id)
+        else {
+            crate::network::record_topology_failure(frames.len());
+            warn!(
+                "VM[{}] virtio-net at {:#x} is absent from the switch snapshot; dropping TX batch",
+                self.id(),
+                port.base().as_usize()
+            );
+            return Ok(());
+        };
+
+        for frame in &frames {
+            let decision = topology.route(ingress, frame);
+            crate::network::record_route(&decision);
+            match decision {
+                RouteDecision::Forward { targets, .. } => {
+                    for target in targets {
+                        let Some(binding) =
+                            bindings.iter().find(|binding| binding.port.id == target)
+                        else {
+                            crate::network::record_delivery_error();
+                            warn!("virtual switch produced missing target port {target:?}");
+                            continue;
+                        };
+                        match binding.vm.deliver_rx_frame_to(&binding.device, frame) {
+                            Ok(true) => {
+                                crate::network::record_forwarded_copy();
+                            }
+                            Ok(false) => crate::network::record_unavailable_rx_buffer(),
+                            Err(error) => {
+                                crate::network::record_delivery_error();
+                                warn!(
+                                    "virtual switch delivery to VM[{}] port {:?} failed: {error}",
+                                    binding.vm.id(),
+                                    binding.port.id
+                                );
+                            }
+                        }
+                    }
+                }
+                RouteDecision::Drop(reason) => {
+                    debug!(
+                        "virtual switch dropped frame from VM[{}] port {ingress:?}: {reason:?}",
+                        self.id()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Delivers one Ethernet frame to a selected port in this VM.
+    fn deliver_rx_frame_to(&self, port: &Arc<VirtioNetPort>, frame: &[u8]) -> AxVmResult<bool> {
+        Ok(port.deliver_rx(
+            &|gpa, buffer| {
+                self.read_from_guest(gpa, buffer).map_err(|error| {
+                    DeviceManagerError::Device(DeviceError::Backend {
+                        operation: "read guest memory for virtio-net RX",
+                        detail: std::format!("{error}"),
+                    })
+                })
+            },
+            &|gpa, buffer| {
+                self.write_to_guest(gpa, buffer).map_err(|error| {
+                    DeviceManagerError::Device(DeviceError::Backend {
+                        operation: "write guest memory for virtio-net RX",
+                        detail: std::format!("{error}"),
+                    })
+                })
+            },
+            frame,
+        )?)
     }
 
     pub(crate) fn handle_nested_page_fault(
@@ -1991,6 +2254,15 @@ impl AxVM {
             .iter()
             .filter_map(|vcpu| vcpu.guest_mpidr().map(|mpidr| (vcpu.id(), mpidr)))
             .collect()
+    }
+
+    /// Returns whether this VM's physical CPUs are dedicated (partition scheduling).
+    ///
+    /// When `true`, the pCPUs this VM's vCPUs are pinned to are reserved exclusively for
+    /// this VM; other VMs' vCPU tasks are kept off those pCPUs (see vCPU task allocation).
+    pub fn cpus_dedicated(&self) -> bool {
+        self.with_resources(|resources| Ok(resources.phys_cpu_ls.dedicated()))
+            .unwrap_or(false)
     }
 
     /// Maps a region of host physical memory to guest physical memory.
@@ -2351,6 +2623,16 @@ impl Drop for AxVM {
     }
 }
 
+fn ensure_block_snapshot_status(vm_id: usize, status: VmStatus) -> AxVmResult {
+    if status != VmStatus::Stopped {
+        return Err(AxVmError::invalid_state(
+            "snapshot virtio block backing",
+            format_args!("VM[{vm_id}] is {status}"),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{cell::RefCell, sync::atomic::AtomicBool};
@@ -2362,10 +2644,21 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn block_snapshot_requires_a_stopped_vm() {
+        assert!(ensure_block_snapshot_status(7, VmStatus::Stopped).is_ok());
+
+        let error = ensure_block_snapshot_status(7, VmStatus::Running).unwrap_err();
+
+        assert!(matches!(error, AxVmError::InvalidState { .. }));
+        assert!(error.to_string().contains("VM[7]"));
+        assert!(error.to_string().contains("running"));
+    }
+
     #[cfg(feature = "host-test")]
     #[test]
     fn runtime_snapshot_can_be_used_after_machine_lock_release() {
-        let runtime = Arc::new(VmRuntimeHandle::new());
+        let runtime = Arc::new(VmRuntimeHandle::new(1));
         let machine = IrqSafeMutex::new(Machine::Running {
             resources: (),
             runtime: runtime.clone(),
@@ -2382,16 +2675,17 @@ mod tests {
         drop(machine_guard);
         assert!(Arc::ptr_eq(&snapshot, &runtime));
 
-        let generation = snapshot.notification_generation();
+        let event_channel = snapshot.vcpu_event_channel(0).unwrap();
+        let event_snapshot = event_channel.snapshot();
         snapshot.notify_all();
-        assert_ne!(snapshot.notification_generation(), generation);
+        assert!(event_snapshot.has_pending_event(event_channel));
     }
 
     #[cfg(feature = "host-test")]
     #[test]
     fn runtime_snapshot_selects_replacement_after_restart() {
-        let old_runtime = Arc::new(VmRuntimeHandle::new());
-        let new_runtime = Arc::new(VmRuntimeHandle::new());
+        let old_runtime = Arc::new(VmRuntimeHandle::new(1));
+        let new_runtime = Arc::new(VmRuntimeHandle::new(1));
         let machine = IrqSafeMutex::new(Machine::Running {
             resources: (),
             runtime: old_runtime.clone(),
@@ -2420,17 +2714,18 @@ mod tests {
         assert!(Arc::ptr_eq(&new_snapshot, &new_runtime));
         assert!(!Arc::ptr_eq(&old_snapshot, &new_snapshot));
 
-        let new_generation = new_snapshot.notification_generation();
+        let new_channel = new_snapshot.vcpu_event_channel(0).unwrap();
+        let new_event_snapshot = new_channel.snapshot();
         old_snapshot.notify_all();
-        assert_eq!(new_snapshot.notification_generation(), new_generation);
+        assert!(!new_event_snapshot.has_pending_event(new_channel));
         new_snapshot.notify_all();
-        assert_ne!(new_snapshot.notification_generation(), new_generation);
+        assert!(new_event_snapshot.has_pending_event(new_channel));
     }
 
     #[cfg(feature = "host-test")]
     #[test]
     fn runtime_notification_does_not_form_machine_wait_queue_cycle() {
-        let runtime = Arc::new(VmRuntimeHandle::new());
+        let runtime = Arc::new(VmRuntimeHandle::new(1));
         let machine = Arc::new(IrqSafeMutex::new(Machine::Running {
             resources: (),
             runtime,
@@ -2555,7 +2850,7 @@ mod tests {
 
     #[test]
     fn runtime_pending_interrupts_are_per_vcpu_and_drained_once() {
-        let runtime = VmRuntimeHandle::new();
+        let runtime = VmRuntimeHandle::new(2);
 
         assert_eq!(
             runtime
@@ -2586,7 +2881,10 @@ mod tests {
                 events.borrow_mut().push("enqueue");
                 Ok(3)
             },
-            || events.borrow_mut().push("notify"),
+            || {
+                events.borrow_mut().push("notify");
+                Ok(())
+            },
             |cpu_id| {
                 assert_eq!(cpu_id, 3);
                 events.borrow_mut().push("ipi");
@@ -2613,6 +2911,7 @@ mod tests {
             || {
                 assert_eq!(dispatcher.drain(0), std::vec![interrupt]);
                 events.borrow_mut().push("notify");
+                Ok(())
             },
             |_| events.borrow_mut().push("ipi"),
         )
@@ -2630,7 +2929,10 @@ mod tests {
                 events.borrow_mut().push("enqueue");
                 Err(ax_err_type!(NotFound, "vCPU task not found"))
             },
-            || events.borrow_mut().push("notify"),
+            || {
+                events.borrow_mut().push("notify");
+                Ok(())
+            },
             |_| events.borrow_mut().push("ipi"),
         );
 
@@ -2640,74 +2942,17 @@ mod tests {
 
     #[test]
     fn runtime_notification_advances_wake_generation_without_waiters() {
-        let runtime = VmRuntimeHandle::new();
-        let observed = runtime.notification_generation();
+        let runtime = VmRuntimeHandle::new(1);
         let observed_wakes = runtime.vcpu_wake_count();
 
         runtime.notify_one();
 
-        assert_ne!(runtime.notification_generation(), observed);
         assert_eq!(runtime.vcpu_wake_count(), observed_wakes + 1);
     }
 
     #[test]
-    fn vcpu_wake_before_park_is_observed_by_the_wait_generation() {
-        let runtime = VmRuntimeHandle::new();
-        let snapshot = runtime.vcpu_event_wait_snapshot();
-        let entered_wait = AtomicBool::new(false);
-
-        runtime.notify_all();
-        wait_for_vcpu_event_if_idle(
-            &runtime,
-            &snapshot,
-            || true,
-            |_| {
-                entered_wait.store(true, Ordering::Relaxed);
-            },
-        );
-
-        assert!(!entered_wait.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn timer_completion_before_park_is_observed_by_the_waiter() {
-        let runtime = VmRuntimeHandle::new();
-        let snapshot = runtime.vcpu_event_wait_snapshot();
-        let completed = AtomicBool::new(true);
-        let entered_wait = AtomicBool::new(false);
-
-        wait_for_vcpu_event_if_idle_with(
-            &runtime,
-            &snapshot,
-            || true,
-            || completed.load(Ordering::Acquire),
-            |_| entered_wait.store(true, Ordering::Relaxed),
-        );
-
-        assert!(!entered_wait.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn timer_completion_at_the_park_boundary_is_rechecked() {
-        let runtime = VmRuntimeHandle::new();
-        let snapshot = runtime.vcpu_event_wait_snapshot();
-        let completed = AtomicBool::new(false);
-
-        wait_for_vcpu_event_if_idle_with(
-            &runtime,
-            &snapshot,
-            || true,
-            || completed.load(Ordering::Acquire),
-            |condition| {
-                completed.store(true, Ordering::Release);
-                assert!(condition());
-            },
-        );
-    }
-
-    #[test]
     fn runtime_records_the_first_lifecycle_error_once() {
-        let runtime = VmRuntimeHandle::new();
+        let runtime = VmRuntimeHandle::new(1);
         let first = AxVmError::interrupt("deactivate architecture devices", "first failure");
         let second = AxVmError::device("finish VM stop", "second failure");
 
@@ -2916,6 +3161,7 @@ pub(crate) fn destroyed_vm_for_test(id: VMId) -> AxVMRef {
         config: SleepMutex::new(config),
         machine: IrqSafeMutex::new(Machine::Destroyed),
         fw_cfg_payload: Arc::new(FwCfgPayloadSlot::new()),
+        reset_memory_snapshot: IrqSafeMutex::new(None),
     })
 }
 

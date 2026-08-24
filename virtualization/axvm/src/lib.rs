@@ -33,13 +33,18 @@ pub mod layout;
 pub mod lifecycle;
 pub mod machine;
 mod manager;
+mod network;
 mod npt;
 mod percpu;
+#[cfg(feature = "rt-trace")]
+pub mod rt_trace;
 mod runtime;
 mod sync;
 mod task;
 mod vcpu;
 mod vm;
+#[cfg(feature = "rt-trace")]
+mod wake_trace;
 
 pub mod config;
 
@@ -52,7 +57,7 @@ pub use axvm_types::{
 pub use configured::{
     ConfiguredDeviceCatalog, ConfiguredDeviceError, ConfiguredModelConstructor,
     ConfiguredModelRegistration, DefaultVirtualDeviceIntent, DeviceInstantiationContext,
-    FixedDeviceBindings, FixedWiredBinding,
+    FixedDeviceBindings, FixedWiredBinding, NullVirtioBlockImageProvider, VirtioBlockImageProvider,
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};
@@ -65,6 +70,7 @@ pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, dispatch_current_vcpu_interrupt, get_vm_by_id,
     get_vm_list, inject_current_vcpu_interrupt, notify_vm_vcpu, register_vm,
 };
+pub use network::{VirtualSwitchMetrics, virtual_switch_metrics};
 pub(crate) use task::{AsVCpuTask, VCpuTask};
 pub use vm::{
     AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot,

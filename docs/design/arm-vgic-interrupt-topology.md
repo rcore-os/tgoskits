@@ -133,7 +133,7 @@ VGIC runtime 与 FDT 使用同一个不可变 profile/config：
 - phandle 保持或一致重写；
 - host replacement 与物理 SPI 保持地址和 INTID 身份。
 
-普通设备固件模型读取解析后的 MMIO/IRQ/MSI slot，不重新分配。固件中出现的每个数字必须能回溯到 `ResolvedDeviceGraph` 或不可变架构计划。
+普通设备固件模型读取解析后的 MMIO/IRQ/MSI slot，不重新分配。machine patch 不得按配置 model 名称预建这些节点；graph composer 在架构拓扑安装完成后统一生成节点，并在默认 GIC 无 phandle 时先分配 phandle，再写入 `interrupt-parent`。固件中出现的每个数字必须能回溯到 `ResolvedDeviceGraph` 或不可变架构计划。
 
 ## 锁顺序与锁外动作
 

@@ -1910,6 +1910,15 @@ fn unsupported_limit_sysctl_file(fs: &Arc<SimpleFs>, value: &'static str) -> Arc
 
 fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
     let mut root = DirMapping::new();
+    #[cfg(feature = "rt-irq-trace")]
+    root.add("axvisor_rt_timer_trace", {
+        let seq_obj = SeqObject::new(render_axvisor_rt_timer_trace);
+        SpecialFsFile::new_regular_with_perm(
+            fs.clone(),
+            seq_obj,
+            NodePermission::from_bits_truncate(0o444),
+        )
+    });
     root.add(
         "mounts",
         SimpleFile::new_regular(fs.clone(), || {
@@ -2339,6 +2348,40 @@ fn builder(fs: Arc<SimpleFs>, view: PidView) -> DirMaker {
         view,
     };
     SimpleDir::new_maker(fs, Arc::new(proc_dir.chain(root)))
+}
+
+#[cfg(feature = "rt-irq-trace")]
+fn render_axvisor_rt_timer_trace() -> VfsResult<String> {
+    let snapshot = ax_runtime::rt_irq_trace::stop_and_snapshot();
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "AXVISOR_RT_GUEST_IRQ_TRACE schema=1 counter_frequency_hz={} start_ticks={} end_ticks={} \
+         records={} dropped={} incomplete={}",
+        snapshot.counter_frequency_hz,
+        snapshot.start_ticks,
+        snapshot.end_ticks,
+        snapshot.record_count,
+        snapshot.dropped,
+        snapshot.incomplete,
+    );
+    for index in 0..snapshot.record_count {
+        let Some(record) = snapshot.record(index) else {
+            continue;
+        };
+        let _ = writeln!(
+            output,
+            "AXVISOR_RT_GUEST_IRQ schema=1 sequence={} vcpu={} irq={} guest_entry_ticks={} \
+             handler_ticks={}",
+            record.sequence, record.vcpu_id, record.irq, record.entry_ticks, record.handler_ticks,
+        );
+    }
+    let _ = writeln!(
+        output,
+        "AXVISOR_RT_GUEST_IRQ_TRACE_COMPLETE schema=1 records={}",
+        snapshot.record_count
+    );
+    Ok(output)
 }
 
 pub struct SeqWriter<W: core::fmt::Write> {

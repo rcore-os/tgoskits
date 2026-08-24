@@ -79,7 +79,9 @@ pub mod pci;
 pub mod pwm;
 #[cfg(feature = "rga")]
 pub mod rga;
-#[cfg(feature = "rknpu")]
+// Exclusive guest handoff must win if Cargo feature unification enables both
+// paths; the host submit interface must never bind the same NPU resources.
+#[cfg(all(feature = "rknpu", not(feature = "rk3588-npu-handoff")))]
 pub mod rknpu;
 #[cfg(feature = "serial")]
 pub mod serial;

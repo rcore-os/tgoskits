@@ -1,0 +1,7 @@
+features = [
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "rt-irq-trace-soak",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"

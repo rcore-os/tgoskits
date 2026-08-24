@@ -1,0 +1,31 @@
+# QEMU AArch64 Linux guest with two vCPUs reserved on host CPUs 2 and 3.
+
+[base]
+id = 1
+name = "linux-qemu-smp2-dedicated"
+guest_type = "passthrough"
+cpu_num = 2
+# AArch64 guest FDT preparation resolves these host CPU IDs into scheduler masks.
+phys_cpu_ids = [2, 3]
+phys_cpu_sets = [0x4, 0x8]
+dedicated_cpus = true
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "${workspace}/tmp/axbuild/images/qemu-aarch64/linux/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+ramdisk_path = "${workspace}/tmp/axbuild/axvisor/qemu-partition/initramfs-aarch64.cpio.gz"
+ramdisk_load_addr = 0x8400_0000
+cmdline = "console=ttyAMA0,115200 earlycon=pl011,0x09000000 rdinit=/init devtmpfs.mount=1 loglevel=7 axvisor.smp_case=dedicated-smp2"
+
+# (`base_paddr`, `size`, `flags`, `map_type`), where map type 0 allocates
+# isolated host memory for the guest partition.
+memory_regions = [
+  [0x8000_0000, 0x1000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []

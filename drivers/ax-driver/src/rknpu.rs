@@ -1,6 +1,7 @@
 use alloc::{format, sync::Arc, vec::Vec};
 use core::any::Any;
 
+use fdt_edit::Node;
 use log::info;
 use rdrive::{
     probe::{OnProbeError, fdt::FdtInfo},
@@ -17,6 +18,13 @@ use crate::mmio::iomap;
 const RK3588_NPU_CLOCK_NAME: &str = "clk_npu";
 // Highest RK3588 NPU OPP that needs no more than the firmware-provided 750 mV.
 const RK3588_NPU_FIXED_RATE_HZ: u64 = 800_000_000;
+const HOST_PREPARED_RESOURCES_PROPERTY: &str = "tgos,host-prepared-resources";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NpuClockControl {
+    DriverManaged,
+    HostPrepared,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
@@ -42,7 +50,7 @@ crate::model_register!(
 
 fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let (info, plat_dev) = probe.into_parts();
-    configure_fixed_clock(&info)?;
+    prepare_npu_clock(&info)?;
     let regs = info.node.regs();
 
     let config = RknpuConfig {
@@ -72,6 +80,27 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     plat_dev.register(npu);
     info!("NPU registered successfully");
     Ok(())
+}
+
+fn prepare_npu_clock(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
+    match npu_clock_control(info.node.as_node()) {
+        NpuClockControl::DriverManaged => configure_fixed_clock(info),
+        NpuClockControl::HostPrepared => {
+            info!("RK3588 NPU clock programming skipped: resources were prepared by the host");
+            Ok(())
+        }
+    }
+}
+
+fn npu_clock_control(node: &Node) -> NpuClockControl {
+    if node
+        .get_property(HOST_PREPARED_RESOURCES_PROPERTY)
+        .is_some()
+    {
+        NpuClockControl::HostPrepared
+    } else {
+        NpuClockControl::DriverManaged
+    }
 }
 
 fn configure_fixed_clock(info: &FdtInfo<'_>) -> Result<(), OnProbeError> {
@@ -165,4 +194,26 @@ where
         .try_lock()
         .map_err(|_| Error::Busy)?;
     f(&mut npu)
+}
+
+#[cfg(test)]
+mod tests {
+    use fdt_edit::{Node, Property};
+
+    use super::*;
+
+    #[test]
+    fn host_prepared_resource_contract_skips_guest_clock_programming() {
+        let mut node = Node::new("npu@fdab0000");
+        node.add_property(Property::new(HOST_PREPARED_RESOURCES_PROPERTY, Vec::new()));
+
+        assert_eq!(npu_clock_control(&node), NpuClockControl::HostPrepared);
+    }
+
+    #[test]
+    fn ordinary_board_node_keeps_driver_managed_clock_programming() {
+        let node = Node::new("npu@fdab0000");
+
+        assert_eq!(npu_clock_control(&node), NpuClockControl::DriverManaged);
+    }
 }

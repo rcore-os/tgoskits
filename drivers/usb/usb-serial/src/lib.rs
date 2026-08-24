@@ -7,6 +7,7 @@ use usb_if::{
     transfer::Direction,
 };
 
+pub mod cdc_acm;
 pub mod cp210x;
 
 /// OS-side capability for class/vendor control OUT transfers.
@@ -34,19 +35,31 @@ pub struct UsbDeviceId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UsbSerialPort {
-    pub interface: u8,
+    /// Interface receiving chip/class control requests.
+    pub control_interface: u8,
+    /// Interface owning the bulk data endpoints.
+    pub data_interface: u8,
     pub bulk_in: u8,
     pub bulk_out: u8,
 }
 
+impl UsbSerialPort {
+    /// Returns whether the serial function spans separate control and data interfaces.
+    pub const fn is_composite(self) -> bool {
+        self.control_interface != self.data_interface
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UsbSerialChip {
+    CdcAcm,
     Cp210x,
 }
 
 impl UsbSerialChip {
     pub fn name(self) -> &'static str {
         match self {
+            Self::CdcAcm => "cdc-acm",
             Self::Cp210x => "cp210x",
         }
     }
@@ -58,6 +71,7 @@ impl UsbSerialChip {
         baud: u32,
     ) -> Result<(), T::Error> {
         match self {
+            Self::CdcAcm => cdc_acm::init(control, port, baud),
             Self::Cp210x => cp210x::init(control, port, baud),
         }
     }
@@ -69,6 +83,7 @@ impl UsbSerialChip {
         baud: u32,
     ) -> Result<(), T::Error> {
         match self {
+            Self::CdcAcm => cdc_acm::set_baud(control, port, baud),
             Self::Cp210x => cp210x::set_baud(control, port, baud),
         }
     }
@@ -82,10 +97,17 @@ pub struct UsbSerialPortMatch {
 
 /// Probe the built-in USB serial chip families against a raw descriptor blob.
 pub fn probe_supported_port(descriptor_blob: &[u8]) -> Option<UsbSerialPortMatch> {
-    cp210x::probe(descriptor_blob).map(|port| UsbSerialPortMatch {
-        chip: UsbSerialChip::Cp210x,
-        port,
-    })
+    cdc_acm::probe(descriptor_blob)
+        .map(|port| UsbSerialPortMatch {
+            chip: UsbSerialChip::CdcAcm,
+            port,
+        })
+        .or_else(|| {
+            cp210x::probe(descriptor_blob).map(|port| UsbSerialPortMatch {
+                chip: UsbSerialChip::Cp210x,
+                port,
+            })
+        })
 }
 
 pub fn device_id_from_descriptor_blob(blob: &[u8]) -> Option<UsbDeviceId> {
@@ -135,7 +157,8 @@ fn bulk_pair_from_interface(interface: &InterfaceDescriptor) -> Option<UsbSerial
     }
 
     Some(UsbSerialPort {
-        interface: interface.interface_number,
+        control_interface: interface.interface_number,
+        data_interface: interface.interface_number,
         bulk_in: bulk_in?,
         bulk_out: bulk_out?,
     })
@@ -224,7 +247,8 @@ mod tests {
         assert_eq!(
             bulk_pair_for_interface(&blob, |interface| interface.class == 0xff),
             Some(UsbSerialPort {
-                interface: 3,
+                control_interface: 3,
+                data_interface: 3,
                 bulk_in: 0x81,
                 bulk_out: 0x02,
             })
@@ -260,7 +284,8 @@ mod tests {
             Some(UsbSerialPortMatch {
                 chip: UsbSerialChip::Cp210x,
                 port: UsbSerialPort {
-                    interface: 3,
+                    control_interface: 3,
+                    data_interface: 3,
                     bulk_in: 0x82,
                     bulk_out: 0x01,
                 }

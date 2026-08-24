@@ -50,7 +50,7 @@ pub fn init<T: ControlTransfer>(
         control,
         CP210X_IFC_ENABLE,
         CP210X_UART_ENABLE,
-        port.interface,
+        port.control_interface,
         &mut [],
     )?;
     set_baud(control, port, baud)?;
@@ -58,7 +58,7 @@ pub fn init<T: ControlTransfer>(
         control,
         CP210X_SET_LINE_CTL,
         CP210X_BITS_DATA_8,
-        port.interface,
+        port.control_interface,
         &mut [],
     )?;
     cp210x_request(
@@ -68,11 +68,17 @@ pub fn init<T: ControlTransfer>(
             | CP210X_CONTROL_RTS
             | CP210X_CONTROL_WRITE_DTR
             | CP210X_CONTROL_WRITE_RTS,
-        port.interface,
+        port.control_interface,
         &mut [],
     )?;
     let mut flow = [0u8; 16];
-    cp210x_request(control, CP210X_SET_FLOW, 0, port.interface, &mut flow)?;
+    cp210x_request(
+        control,
+        CP210X_SET_FLOW,
+        0,
+        port.control_interface,
+        &mut flow,
+    )?;
     Ok(())
 }
 
@@ -82,7 +88,13 @@ pub fn set_baud<T: ControlTransfer>(
     baud: u32,
 ) -> Result<(), T::Error> {
     let mut data = baud.to_le_bytes();
-    cp210x_request(control, CP210X_SET_BAUDRATE, 0, port.interface, &mut data)?;
+    cp210x_request(
+        control,
+        CP210X_SET_BAUDRATE,
+        0,
+        port.control_interface,
+        &mut data,
+    )?;
     Ok(())
 }
 
@@ -178,7 +190,8 @@ mod tests {
         assert_eq!(
             probe(&blob),
             Some(UsbSerialPort {
-                interface: 1,
+                control_interface: 1,
+                data_interface: 1,
                 bulk_in: 0x82,
                 bulk_out: 0x01,
             })
@@ -207,7 +220,8 @@ mod tests {
     fn init_emits_cp210x_control_sequence() {
         let recorder = Recorder::default();
         let port = UsbSerialPort {
-            interface: 2,
+            control_interface: 2,
+            data_interface: 2,
             bulk_in: 0x82,
             bulk_out: 0x01,
         };

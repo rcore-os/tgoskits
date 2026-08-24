@@ -35,6 +35,12 @@ pub mod cpu {
     }
 }
 
+/// Flush pending host filesystem state to its backing devices.
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+pub fn sync_filesystems() -> crate::AxVmResult {
+    arceos::sync_host_filesystems()
+}
+
 /// Shut down host filesystems before their devices are transferred to a guest.
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 pub fn shutdown_filesystems() -> crate::AxVmResult {

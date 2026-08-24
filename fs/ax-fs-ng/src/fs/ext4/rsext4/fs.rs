@@ -389,9 +389,13 @@ impl FilesystemOps for Ext4Filesystem {
 #[cfg(test)]
 mod tests {
     use alloc::{sync::Arc, vec::Vec};
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
     use std::sync::Mutex as StdMutex;
 
+    use axfs_ng_vfs::MetadataUpdate;
     use rsext4::{
         EXT4_SUPER_MAGIC, MkfsOptions, SUPERBLOCK_OFFSET, SUPERBLOCK_SIZE, endian::DiskFormat,
         superblock::Ext4Superblock,
@@ -576,6 +580,26 @@ mod tests {
         filesystem.sync_to_disk().expect("sync read-only mount");
 
         assert_eq!(flushes.load(Ordering::Relaxed), before + 1);
+    }
+
+    #[test]
+    fn metadata_update_does_not_force_device_flush() {
+        let (filesystem, flushes) = test_filesystem(false);
+        let before = flushes.load(Ordering::Relaxed);
+
+        filesystem
+            .root_dir()
+            .update_metadata(MetadataUpdate {
+                atime: Some(Duration::from_secs(1_700_000_000)),
+                ..Default::default()
+            })
+            .expect("update root metadata");
+
+        assert_eq!(
+            flushes.load(Ordering::Relaxed),
+            before,
+            "metadata updates and close(2) must not imply a full filesystem sync"
+        );
     }
 
     #[test]

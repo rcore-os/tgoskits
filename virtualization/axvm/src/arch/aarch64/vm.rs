@@ -124,10 +124,9 @@ fn nested_paging_config(
         )
     })? as usize;
 
-    let gpa_bits = match levels {
-        3 => 39,
-        4 => 48,
-        _ => return ax_err!(InvalidInput, "unsupported AArch64 stage-2 levels"),
+    let Some(gpa_bits) = crate::architecture::aarch64_stage2::stage2_gpa_bits(levels, pa_bits)
+    else {
+        return ax_err!(InvalidInput, "unsupported AArch64 stage-2 levels");
     };
     Ok(NestedPagingConfig::new(
         root_paddr, levels, gpa_bits, pa_bits,

@@ -1,0 +1,23 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-append",
+  "console=ttyAMA0,115200 earlycon=pl011,0x09000000 rdinit=/init devtmpfs.mount=1 loglevel=7",
+  "-m",
+  "8g",
+]
+fail_regex = [
+  "(?m)^AXVISOR_DEDICATED_PARTITION_FAIL.*$",
+  "(?m)^AXVISOR_GUEST_ASSERTION_CASE_UNKNOWN\\s*$",
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+]
+success_regex = ["(?m)^AXVISOR_DEDICATED_PARTITION_PASS\\s*$"]
+timeout = 180
+to_bin = true
+uefi = false

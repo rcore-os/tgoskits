@@ -1,0 +1,8 @@
+features = ["ax-std/sched-rr"]
+log = "Info"
+max_cpu_num = 4
+target = "aarch64-unknown-none-softfloat"
+vm_configs = ["os/axvisor/configs/vms/qemu/aarch64/linux-smp2-dedicated.toml"]
+
+[env]
+AXVISOR_TEST_BUSYBOX_INITRAMFS = "tmp/axbuild/axvisor/qemu-partition/initramfs-aarch64.cpio.gz"

@@ -14,6 +14,7 @@ use alloc::{format, vec::Vec};
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
     feature = "starfive-jh7110-dwmmc",
+    feature = "virtio-blk",
     feature = "xhci-mmio"
 ))]
 use dma_api::DmaCoherency;
@@ -39,6 +40,7 @@ use crate::{BindingInfo, BindingIrq};
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
     feature = "starfive-jh7110-dwmmc",
+    feature = "virtio-blk",
     feature = "xhci-mmio"
 ))]
 pub(crate) fn dma_coherency_from_fdt(info: &FdtInfo<'_>) -> DmaCoherency {
@@ -71,6 +73,7 @@ pub(crate) fn dma_coherency_from_fdt(info: &FdtInfo<'_>) -> DmaCoherency {
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
     feature = "starfive-jh7110-dwmmc",
+    feature = "virtio-blk",
     feature = "xhci-mmio"
 ))]
 fn next_dma_parent<'a>(
@@ -111,6 +114,7 @@ fn next_dma_parent<'a>(
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
     feature = "starfive-jh7110-dwmmc",
+    feature = "virtio-blk",
     feature = "xhci-mmio"
 ))]
 fn dma_mem_interconnect_phandle<'a>(
@@ -146,6 +150,7 @@ fn dma_mem_interconnect_phandle<'a>(
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
     feature = "starfive-jh7110-dwmmc",
+    feature = "virtio-blk",
     feature = "xhci-mmio"
 ))]
 const fn platform_default_dma_coherency() -> DmaCoherency {

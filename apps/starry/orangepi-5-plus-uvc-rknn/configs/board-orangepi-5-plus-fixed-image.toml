@@ -1,0 +1,21 @@
+board_type = "OrangePi-5-Plus"
+dtb_file = "tmp/competition/vision/orangepi-5-plus-starry.dtb"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = '''
+echo UVC_RKNN_FIXED_IMAGE_BEGIN && cd /home/orangepi/rknn_yolov8_image && ./rknn_yolov8_bench --validate-list validation/images.txt --expected validation/expected.txt --min-confidence 25 --core-mask all --profile && echo UVC_RKNN_FIXED_IMAGE_DONE
+'''
+success_regex = [
+  "(?m)^UVC_RKNN_VALIDATE_PASS images=3$",
+  "(?m)^UVC_RKNN_BENCH_PROFILE_RESULT .*profile_samples=3 .*perf_run_query_errors=0.*$",
+  "(?m)^UVC_RKNN_FIXED_IMAGE_DONE$",
+]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?m)^rknn_init fail!.*$",
+  "(?m)^read_image fail!.*$",
+  "(?m)^inference_yolov8_model fail!.*$",
+  "(?m)^UVC_RKNN_VALIDATE_FAIL .*$",
+  "(?i)error while loading shared libraries",
+  "(?i)(rknn_yolov8_image|rknn_yolov8_bench|sh): .*not found",
+]
+timeout = 180

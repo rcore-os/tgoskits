@@ -73,6 +73,12 @@ const ESC: u8 = 0x1b; // ESC key
 
 const MAX_LINE_LEN: usize = 256;
 
+/// Stable marker consumed by board automation once the default VM run has
+/// finished and the management shell can accept its post-run command.
+pub const AUTOMATION_READY_MARKER: &str = "AXVISOR_SHELL_READY";
+const AUTOMATION_READY_MARKER_COPIES: usize = 5;
+const AUTOMATION_READY_MARKER_INTERVAL_MS: u64 = 100;
+
 enum InputState {
     Normal,
     Escape,
@@ -158,6 +164,22 @@ fn route_pending_host_log(
     }
     crate::guest_console::submit_host_bytes(&transaction);
     true
+}
+
+/// Publish the post-run management-shell readiness contract.
+///
+/// Final vCPU messages and the shell share the physical UART. Repeating the
+/// marker makes at least one complete line observable when those last messages
+/// overlap without changing when the shell becomes eligible for automation.
+pub fn publish_automation_ready() {
+    for copy_index in 0..AUTOMATION_READY_MARKER_COPIES {
+        println!("{AUTOMATION_READY_MARKER}");
+        if copy_index + 1 < AUTOMATION_READY_MARKER_COPIES {
+            std::thread::sleep(core::time::Duration::from_millis(
+                AUTOMATION_READY_MARKER_INTERVAL_MS,
+            ));
+        }
+    }
 }
 
 // Initialize the console shell.
