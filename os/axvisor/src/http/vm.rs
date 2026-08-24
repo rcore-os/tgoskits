@@ -107,10 +107,36 @@ pub async fn vm_stop(
     vm_action(&id_str, VmAction::Stop)
 }
 
+/// `POST /api/vms/{id}/pause` — request a VM pause.
+///
+/// `pause` has the same request semantics as `stop`: the status flips to
+/// `Paused` synchronously while the running vCPUs park at their next run-loop
+/// iteration, so the response marks `async: true`.
+pub async fn vm_pause(
+    _token: ApiToken,
+    Path(id_str): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    vm_action(&id_str, VmAction::Pause)
+}
+
+/// `POST /api/vms/{id}/resume` — resume a paused VM.
+///
+/// The status flips back to `Running` synchronously and the parked vCPUs are
+/// woken, so the response marks `async: false`; the guest re-executes once the
+/// vCPU tasks re-enter the guest.
+pub async fn vm_resume(
+    _token: ApiToken,
+    Path(id_str): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    vm_action(&id_str, VmAction::Resume)
+}
+
 /// A lifecycle action on a VM.
 enum VmAction {
     Start,
     Stop,
+    Pause,
+    Resume,
 }
 
 /// Drive one lifecycle action, mapping host errors to HTTP status codes.
@@ -135,6 +161,8 @@ fn vm_action(id_str: &str, action: VmAction) -> Result<Json<Value>, StatusCode> 
     let result = match action {
         VmAction::Start => AxvmManager::start_vm(id),
         VmAction::Stop => AxvmManager::stop_vm(id),
+        VmAction::Pause => AxvmManager::pause_vm(id),
+        VmAction::Resume => AxvmManager::resume_vm(id),
     };
     match result {
         Ok(()) => Ok(Json(vm_action_json(id, action))),
@@ -155,7 +183,7 @@ fn vm_action_json(id: usize, action: VmAction) -> Value {
     json!({
         "ok": true,
         "status": status,
-        "async": matches!(action, VmAction::Stop),
+        "async": matches!(action, VmAction::Stop | VmAction::Pause),
     })
 }
 
@@ -212,6 +240,21 @@ fn vm_json(vm: &AxVMRef, with_vcpus: bool) -> Value {
             })
             .collect();
         json["vcpu_states"] = json!(vcpus);
+        // VM-level aggregate re-execution evidence: the vCPU run loop increments
+        // this *only* after a successful `run_vcpu`, so a resume that only
+        // flips the status without re-entering the guest (or a failed entry
+        // that returns `Err` before the guest runs) does not move it. The probe
+        // asserts this count advances after every resume. It is an aggregate
+        // across all vCPU tasks, so it proves *at least one* vCPU re-executed.
+        json["guest_entry_count"] = json!(vm.guest_entry_count());
+        // Pause-observation signal: the vCPU run loop increments this only when
+        // a vCPU has genuinely parked in the suspend wait (published from inside
+        // the wait condition, so the signal appears only once the vCPU is
+        // actually blocked). This observes *a* vCPU park, not full quiescence —
+        // there is no pause-completion API. The control plane waits for it after
+        // each pause before resuming; a resume sent earlier is absorbed while
+        // the vCPU is still running the guest and this counter does not advance.
+        json["guest_park_count"] = json!(vm.guest_park_count());
     }
     json
 }

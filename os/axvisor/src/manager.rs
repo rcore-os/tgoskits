@@ -75,6 +75,11 @@ impl AxvmManager {
         AxvmRuntime::stop_vm(vm_id).with_context(|| format!("stop VM[{vm_id}]"))
     }
 
+    /// Pause a VM by ID.
+    pub fn pause_vm(vm_id: VMId) -> Result<()> {
+        AxvmRuntime::pause_vm(vm_id).with_context(|| format!("pause VM[{vm_id}]"))
+    }
+
     /// Resume a VM by ID.
     pub fn resume_vm(vm_id: VMId) -> Result<()> {
         AxvmRuntime::resume_vm(vm_id).with_context(|| format!("resume VM[{vm_id}]"))

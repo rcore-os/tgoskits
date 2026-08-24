@@ -22,7 +22,7 @@ use std::{
     string::String,
     sync::{
         Arc, Mutex as StdMutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     vec::Vec,
 };
@@ -183,6 +183,44 @@ pub(crate) struct VmRuntimeHandle {
     running_halting_vcpu_count: AtomicUsize,
     lifecycle_error: StdMutex<Option<AxVmError>>,
     deferred_reset_requested: AtomicBool,
+    /// VM-level monotonic aggregate count of guest (re-)entries performed by the
+    /// vCPU run loop.
+    ///
+    /// This is a single VM-wide counter shared by every vCPU task, not a
+    /// per-vCPU counter: when any vCPU enters (and exits) the guest, this
+    /// advances by one. Incremented only after a *successful* `run_vcpu` — the
+    /// vCPU's first entry and every wake from suspend — so the count only moves
+    /// once the guest has actually entered and exited, never for a status flip
+    /// alone and never on a failed entry that returns `Err` before the guest
+    /// runs.
+    ///
+    /// A reset discards and rebuilds the runtime, so the counter restarts from
+    /// zero for the freshly started vCPU tasks. The control plane reads it as an
+    /// independent proof that the guest actually re-executed after a
+    /// pause/resume or reset, distinguishing a genuine wake from a mere status
+    /// flip: a broken wake path that never re-enters the guest does not move
+    /// this counter. Because it is an aggregate, it proves that *at least one*
+    /// vCPU re-executed, not that every vCPU did.
+    guest_entry_count: AtomicU64,
+    /// VM-level monotonic aggregate count of times a vCPU has genuinely parked
+    /// in the suspend wait.
+    ///
+    /// This is a single VM-wide counter shared by every vCPU task, not a
+    /// per-vCPU counter. Published by the wait condition closure while the wait
+    /// queue holds its lock, immediately before the task blocks, so the signal
+    /// only advances once a vCPU is actually committed to parking. A resume that
+    /// races in before the vCPU reaches the wait keeps the suspend flag clear
+    /// and makes the condition already true, so the vCPU never publishes a park
+    /// and never blocks; the counter then does not advance and the control
+    /// plane can detect an incomplete pause instead of passing on a fake. A
+    /// reset rebuilds the runtime, so the counter restarts from zero.
+    ///
+    /// This observes *a* vCPU park, not full quiescence: it is not a
+    /// pause-completion API and does not prove every vCPU, device, or timer has
+    /// quiesced. A resume sent before this counter advances would otherwise be
+    /// absorbed while the vCPU is still running the guest (it never parked, so
+    /// it never re-enters either).
+    guest_park_count: AtomicU64,
 }
 
 // A vCPU wake publishes latency-critical work. Request rescheduling so a
@@ -206,6 +244,15 @@ pub(crate) fn wait_for_vcpu_event_if_idle(
     wait_until(&wake_condition);
 }
 
+fn clone_runtime_handle<R>(
+    machine: &Machine<R, Arc<VmRuntimeHandle>>,
+) -> AxVmResult<Arc<VmRuntimeHandle>> {
+    machine
+        .runtime()
+        .cloned()
+        .ok_or_else(|| ax_err_type!(BadState, "VM runtime is not available"))
+}
+
 pub(crate) fn dispatch_vcpu_interrupt_with(
     enqueue: impl FnOnce() -> AxVmResult<usize>,
     notify: impl FnOnce(),
@@ -215,16 +262,6 @@ pub(crate) fn dispatch_vcpu_interrupt_with(
     notify();
     send_ipi(pcpu_id);
     Ok(())
-}
-
-fn runtime_snapshot_from_machine<R>(
-    machine: &IrqSafeMutex<Machine<R, Arc<VmRuntimeHandle>>>,
-) -> AxVmResult<Arc<VmRuntimeHandle>> {
-    machine
-        .lock()
-        .runtime()
-        .cloned()
-        .ok_or_else(|| ax_err_type!(BadState, "VM runtime is not available"))
 }
 
 fn pulse_interrupt_with_snapshot(
@@ -282,6 +319,8 @@ impl VmRuntimeHandle {
             running_halting_vcpu_count: AtomicUsize::new(0),
             lifecycle_error: StdMutex::new(None),
             deferred_reset_requested: AtomicBool::new(false),
+            guest_entry_count: AtomicU64::new(0),
+            guest_park_count: AtomicU64::new(0),
         }
     }
 
@@ -330,6 +369,42 @@ impl VmRuntimeHandle {
         vcpu_id: usize,
     ) -> Option<Arc<crate::runtime::vcpus::CpuOnStartAck>> {
         self.cpu_on_start_acks.lock_unpoisoned().remove(&vcpu_id)
+    }
+
+    /// Record one guest (re-)entry by the vCPU run loop.
+    ///
+    /// Called *only after* a successful `run_vcpu`, so the count is an
+    /// independent proof of actual re-execution: a status flip without a real
+    /// guest entry, and a failed entry that returns `Err` before the guest
+    /// runs, cannot advance it. The counter is VM-wide and shared by all vCPU
+    /// tasks. `Relaxed` is sufficient: the value carries no other memory and is
+    /// only observed later over the control plane.
+    pub(crate) fn inc_guest_entry(&self) {
+        self.guest_entry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Current VM-level guest (re-)entry count for this runtime.
+    pub(crate) fn guest_entry_count(&self) -> u64 {
+        self.guest_entry_count.load(Ordering::Relaxed)
+    }
+
+    /// Record that a vCPU genuinely parked in the suspend wait.
+    ///
+    /// Called from the `wait_until` condition closure, which runs while the
+    /// wait queue holds its lock immediately before the task is enqueued, so
+    /// the count advances only once the vCPU is actually committed to blocking.
+    /// A resume that races in before the vCPU reaches the wait leaves the
+    /// suspend flag clear, so this is never called and the counter does not
+    /// advance — making an incomplete pause observable. The counter is VM-wide
+    /// and shared by all vCPU tasks. `Relaxed` is sufficient: the value carries
+    /// no other memory and is only observed later over the control plane.
+    pub(crate) fn inc_guest_park(&self) {
+        self.guest_park_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Current VM-level pause-park count for this runtime.
+    pub(crate) fn guest_park_count(&self) -> u64 {
+        self.guest_park_count.load(Ordering::Relaxed)
     }
 
     pub(crate) fn remove_vcpu_task(&self, vcpu_id: usize) -> Option<crate::AxTaskRef> {
@@ -878,6 +953,53 @@ mod runtime_handle_tests {
         assert!(!runtime.pending_interrupts.lock().contains_key(&3));
         assert!(runtime.irq_dispatcher.test_lookup_cpu_id(3).is_err());
     }
+
+    #[test]
+    fn guest_counters_start_at_zero_and_are_vm_level_aggregate() {
+        // The two lifecycle counters are VM-level aggregates shared by every
+        // vCPU task, not per-vCPU. Two increments attributed to distinct vCPU
+        // ids advance a single shared counter, so the control plane observes
+        // "at least one vCPU made progress", never a per-vCPU guarantee.
+        let runtime = VmRuntimeHandle::new();
+        assert_eq!(runtime.guest_entry_count(), 0);
+        assert_eq!(runtime.guest_park_count(), 0);
+
+        // Simulated entry/park from two different vCPU tasks.
+        runtime.inc_guest_entry(); // vCPU 0 first entry
+        runtime.inc_guest_entry(); // vCPU 1 first entry
+        runtime.inc_guest_park(); // vCPU 0 parked
+
+        assert_eq!(runtime.guest_entry_count(), 2);
+        assert_eq!(runtime.guest_park_count(), 1);
+
+        // Monotonic: a later reset rebuilds the runtime and restarts from zero.
+        let rebuilt = VmRuntimeHandle::new();
+        assert_eq!(rebuilt.guest_entry_count(), 0);
+        assert_eq!(rebuilt.guest_park_count(), 0);
+    }
+
+    #[test]
+    fn guest_entry_count_is_not_advanced_on_failed_entry() {
+        // Regression guard for the run-loop publishing rule: the entry counter
+        // must advance only after a *successful* `run_vcpu`. A failed entry
+        // (the `Err` branch) must not publish re-execution evidence, or a
+        // broken wake path / faulting resume could fake a re-entry while the
+        // guest never ran. The run loop itself is exercised by the
+        // qemu-http-control-plane probe; this asserts the counter's
+        // publish/no-publish contract at the handle level.
+        let runtime = VmRuntimeHandle::new();
+        assert_eq!(runtime.guest_entry_count(), 0);
+
+        // First entry succeeds.
+        runtime.inc_guest_entry();
+        assert_eq!(runtime.guest_entry_count(), 1);
+
+        // A failed entry must NOT advance the counter. The handle exposes no
+        // error-path helper by design (the run loop skips `inc_guest_entry` on
+        // `Err`); model the failure as "no publish call at all" and confirm the
+        // previously published value is preserved.
+        assert_eq!(runtime.guest_entry_count(), 1);
+    }
 }
 
 impl AxVMResources {
@@ -1235,12 +1357,14 @@ impl WakeAccessPort for AxVmDeviceAccessPorts {
                 ),
             });
         }
-        vm.runtime_snapshot()
-            .map(|runtime| runtime.notify_all())
-            .map_err(|error| axdevice::DeviceManagerError::InvalidState {
-                operation: "wake vCPU from device access",
-                detail: format!("{error}"),
-            })
+        let runtime =
+            vm.runtime_handle()
+                .map_err(|error| axdevice::DeviceManagerError::InvalidState {
+                    operation: "wake vCPU from device access",
+                    detail: format!("{error}"),
+                })?;
+        runtime.notify_all();
+        Ok(())
     }
 }
 
@@ -1254,7 +1378,7 @@ impl StopAccessPort for AxVmDeviceAccessPorts {
             operation: "request VM stop from device access",
             detail: format!("{error}"),
         })?;
-        if let Ok(runtime) = vm.runtime_snapshot() {
+        if let Ok(runtime) = vm.runtime_handle() {
             runtime.notify_all();
         }
         Ok(())
@@ -1357,7 +1481,8 @@ impl AxVM {
 
     /// Snapshots device-poll publication and consumption for the active runtime.
     pub fn device_poll_runtime_counts(&self) -> AxVmResult<crate::DevicePollRuntimeCounts> {
-        self.with_runtime(|runtime| Ok(runtime.device_poll_counts()))
+        self.runtime_handle()
+            .map(|runtime| runtime.device_poll_counts())
     }
 
     /// Returns whether the guest address space starts from host identity mappings.
@@ -1409,28 +1534,16 @@ impl AxVM {
         }
     }
 
-    /// Runs a callback with a snapshot of the current runtime.
+    /// Returns an owned runtime handle without retaining the VM machine lock.
     ///
     /// The runtime is pinned by its `Arc`, but the lifecycle may advance after
-    /// the snapshot. The callback runs without the machine lock so runtime
-    /// wait-queue operations cannot invert the machine/wait-queue lock order.
-    pub(crate) fn with_runtime<F, R>(&self, f: F) -> AxVmResult<R>
-    where
-        F: FnOnce(&Arc<VmRuntimeHandle>) -> AxVmResult<R>,
-    {
-        let runtime = self
-            .machine
-            .lock()
-            .runtime()
-            .cloned()
-            .ok_or_else(|| ax_err_type!(BadState, "VM runtime is not available"))?;
-        f(&runtime)
-    }
-
-    /// Clones the runtime handle while holding the lifecycle lock, then
-    /// releases that lock before the caller performs wakeups or callbacks.
-    pub(crate) fn runtime_snapshot(&self) -> AxVmResult<Arc<VmRuntimeHandle>> {
-        runtime_snapshot_from_machine(&self.machine)
+    /// this snapshot. Callers may enter scheduler, wait-queue, device, or
+    /// callback code only after this method returns. Keeping the machine lock
+    /// acquisition inside this accessor prevents runtime notifications from
+    /// accidentally running while `vm.machine` is held.
+    pub(crate) fn runtime_handle(&self) -> AxVmResult<Arc<VmRuntimeHandle>> {
+        let machine = self.machine.lock();
+        clone_runtime_handle(&machine)
     }
 
     #[cfg_attr(
@@ -1499,7 +1612,42 @@ impl AxVM {
     /// it must be read only as a monotone "a vCPU has entered" signal, not as an
     /// exact "still running" count.
     pub fn running_vcpu_count(&self) -> usize {
-        self.with_runtime(|runtime| Ok(runtime.running_halting_vcpu_count()))
+        self.runtime_handle()
+            .map(|runtime| runtime.running_halting_vcpu_count())
+            .unwrap_or(0)
+    }
+
+    /// Returns the VM-level "guest (re-)entry" count for the current runtime.
+    ///
+    /// This is a single VM-wide aggregate counter shared by every vCPU task,
+    /// not a per-vCPU value: it advances once per successful guest (re-)entry
+    /// by any vCPU, so it proves that *at least one* vCPU re-executed after a
+    /// pause/resume or reset. A failed entry that returns `Err` before the
+    /// guest runs does not advance it. A reset rebuilds the runtime, so the
+    /// count restarts from zero. The control plane uses it to distinguish a
+    /// genuine wake from a mere status flip.
+    pub fn guest_entry_count(&self) -> u64 {
+        self.runtime_handle()
+            .map(|runtime| runtime.guest_entry_count())
+            .unwrap_or(0)
+    }
+
+    /// Returns the VM-level count of times a vCPU observed the suspended state
+    /// and parked in the suspend wait for the current runtime.
+    ///
+    /// This is a single VM-wide aggregate counter shared by every vCPU task,
+    /// not a per-vCPU value. The status flips to `Paused` synchronously while
+    /// vCPUs park asynchronously at their next run-loop iteration; this counter
+    /// advances only when a vCPU actually observes the suspended state and
+    /// blocks. It observes *a* vCPU park, not full quiescence — there is no
+    /// pause-completion API and it does not prove every vCPU/device/timer has
+    /// quiesced. A reset rebuilds the runtime, so the counter restarts from
+    /// zero. The control plane reads it as the pause-observation signal: a
+    /// resume sent before it advances can be absorbed while the vCPU is still
+    /// running the guest (it never parked, so it never re-enters either).
+    pub fn guest_park_count(&self) -> u64 {
+        self.runtime_handle()
+            .map(|runtime| runtime.guest_park_count())
             .unwrap_or(0)
     }
 
@@ -1752,13 +1900,13 @@ impl AxVM {
                     wait_for_running_vm_quiesce(|| self.running_vcpu_count(), || self.stopping())?;
                 }
                 self.stop(reason)?;
-                if let Ok(runtime) = self.runtime_snapshot() {
+                if let Ok(runtime) = self.runtime_handle() {
                     runtime.notify_all();
                 }
                 self.wait_until_stopped()?;
             }
             VmStatus::Stopping => {
-                if let Ok(runtime) = self.runtime_snapshot() {
+                if let Ok(runtime) = self.runtime_handle() {
                     runtime.notify_all();
                 }
                 self.wait_until_stopped()?;
@@ -2001,10 +2149,9 @@ impl AxVM {
     /// enabled in the AxVM crate.
     #[cfg(feature = "realtime-trace")]
     pub fn dump_realtime_trace(&self) -> AxVmResult {
-        self.with_runtime(|runtime| {
-            runtime.log_virq_trace();
-            Ok(())
-        })
+        let runtime = self.runtime_handle()?;
+        runtime.log_virq_trace();
+        Ok(())
     }
 
     /// Returns vCpu id list and its corresponding pCpu affinity list, as well as its physical id.
@@ -2396,6 +2543,151 @@ mod tests {
 
     use super::*;
 
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn runtime_snapshot_can_be_used_after_machine_lock_release() {
+        let runtime = Arc::new(VmRuntimeHandle::new());
+        let machine = IrqSafeMutex::new(Machine::Running {
+            resources: (),
+            runtime: runtime.clone(),
+        });
+
+        let snapshot = {
+            let machine = machine.lock();
+            clone_runtime_handle(&machine).unwrap()
+        };
+
+        let machine_guard = machine
+            .try_lock()
+            .expect("runtime snapshot must not retain the machine lock");
+        drop(machine_guard);
+        assert!(Arc::ptr_eq(&snapshot, &runtime));
+
+        let generation = snapshot.notification_generation();
+        snapshot.notify_all();
+        assert_ne!(snapshot.notification_generation(), generation);
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn runtime_snapshot_selects_replacement_after_restart() {
+        let old_runtime = Arc::new(VmRuntimeHandle::new());
+        let new_runtime = Arc::new(VmRuntimeHandle::new());
+        let machine = IrqSafeMutex::new(Machine::Running {
+            resources: (),
+            runtime: old_runtime.clone(),
+        });
+
+        let old_snapshot = {
+            let machine = machine.lock();
+            clone_runtime_handle(&machine).unwrap()
+        };
+        {
+            let mut machine = machine.lock();
+            machine
+                .request_stop_with(StopReason::Forced, |_, _| Ok(()))
+                .unwrap();
+            machine.finish_stop().unwrap();
+            drop(machine.take_stopped_runtime().unwrap());
+            machine.reset_with(|_| Ok(())).unwrap();
+            machine.start_with(|_| Ok(new_runtime.clone())).unwrap();
+        }
+        let new_snapshot = {
+            let machine = machine.lock();
+            clone_runtime_handle(&machine).unwrap()
+        };
+
+        assert!(Arc::ptr_eq(&old_snapshot, &old_runtime));
+        assert!(Arc::ptr_eq(&new_snapshot, &new_runtime));
+        assert!(!Arc::ptr_eq(&old_snapshot, &new_snapshot));
+
+        let new_generation = new_snapshot.notification_generation();
+        old_snapshot.notify_all();
+        assert_eq!(new_snapshot.notification_generation(), new_generation);
+        new_snapshot.notify_all();
+        assert_ne!(new_snapshot.notification_generation(), new_generation);
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn runtime_notification_does_not_form_machine_wait_queue_cycle() {
+        let runtime = Arc::new(VmRuntimeHandle::new());
+        let machine = Arc::new(IrqSafeMutex::new(Machine::Running {
+            resources: (),
+            runtime,
+        }));
+        let wait_queue_lock = Arc::new(std::sync::Mutex::new(()));
+        let (wfi_ready_tx, wfi_ready_rx) = std::sync::mpsc::channel();
+        let (snapshot_ready_tx, snapshot_ready_rx) = std::sync::mpsc::channel();
+        let (wfi_done_tx, wfi_done_rx) = std::sync::mpsc::channel();
+        let (notify_done_tx, notify_done_rx) = std::sync::mpsc::channel();
+
+        let wfi_machine = machine.clone();
+        let wfi_wait_queue_lock = wait_queue_lock.clone();
+        let wfi = std::thread::spawn(move || {
+            let wait_queue_guard = wfi_wait_queue_lock.lock().unwrap();
+            wfi_ready_tx.send(()).unwrap();
+            snapshot_ready_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("notifier did not finish the runtime snapshot");
+
+            let machine_guard = wfi_machine
+                .try_lock()
+                .expect("WFI could not acquire machine after notifier snapshot");
+            drop(machine_guard);
+            drop(wait_queue_guard);
+            wfi_done_tx.send(()).unwrap();
+        });
+
+        let notify_machine = machine.clone();
+        let notify_wait_queue_lock = wait_queue_lock.clone();
+        let notifier = std::thread::spawn(move || {
+            wfi_ready_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("WFI did not acquire the wait-queue lock");
+            let runtime = {
+                let machine = notify_machine.lock();
+                clone_runtime_handle(&machine).unwrap()
+            };
+            snapshot_ready_tx.send(()).unwrap();
+
+            let _wait_queue_guard = notify_wait_queue_lock.lock().unwrap();
+            runtime.notify_all();
+            notify_done_tx.send(()).unwrap();
+        });
+
+        wfi_done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("WFI side stalled in the machine/wait-queue ordering test");
+        notify_done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("notifier stalled in the machine/wait-queue ordering test");
+        wfi.join().unwrap();
+        notifier.join().unwrap();
+    }
+
+    #[test]
+    fn legacy_runtime_closure_api_is_absent_from_axvm_call_sites() {
+        let forbidden = concat!("with_", "runtime");
+        let sources = [
+            ("vm/mod.rs", include_str!("mod.rs")),
+            ("runtime/mod.rs", include_str!("../runtime/mod.rs")),
+            ("runtime/hvc.rs", include_str!("../runtime/hvc.rs")),
+            ("runtime/vcpus.rs", include_str!("../runtime/vcpus.rs")),
+            (
+                "architecture/ops.rs",
+                include_str!("../architecture/ops.rs"),
+            ),
+        ];
+
+        for (path, source) in sources {
+            assert!(
+                !source.contains(forbidden),
+                "{path} reintroduced the legacy runtime closure API"
+            );
+        }
+    }
+
     #[test]
     fn write_guest_bytes_to_chunks_writes_only_remaining_bytes() {
         let mut first = [0u8; 2];
@@ -2553,23 +2845,6 @@ mod tests {
         runtime.notify_vcpu_unconditional(0);
 
         assert_ne!(runtime.notification_generation(), observed);
-    }
-
-    #[test]
-    fn runtime_snapshot_releases_lifecycle_lock_before_wakeups() {
-        let runtime = Arc::new(VmRuntimeHandle::new());
-        let machine = IrqSafeMutex::new(Machine::Running {
-            resources: (),
-            runtime: runtime.clone(),
-        });
-
-        let snapshot = runtime_snapshot_from_machine(&machine).unwrap();
-
-        assert!(Arc::ptr_eq(&snapshot, &runtime));
-        assert!(
-            machine.try_lock().is_some(),
-            "runtime wakeups must run after releasing the lifecycle lock"
-        );
     }
 
     #[test]

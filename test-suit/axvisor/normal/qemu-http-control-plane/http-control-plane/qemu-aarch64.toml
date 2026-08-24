@@ -20,11 +20,11 @@ args = [
 # `[host_http_probe]` makes the runner append hostfwd netdev + virtio-net-pci
 # device and execute the probe asset (`http_probe.py`, next to this file) over
 # real TCP. The asset drives the default VM (id 1, `vm-memory.toml`, kept
-# `Ready` by `no-auto-start`) through the full contract —
-# list/detail/auth/error/start/stop/delete/recreate — with polling, then quits
-# QEMU over QMP; the runner collects the asset's exit code as the verdict. The
-# test content is owned by this case and can evolve here without touching the
-# axbuild runner.
+# `Ready` by `no-auto-start`) through the whole control-plane contract —
+# list/detail/auth/error/start/pause/resume/stop/delete/recreate — with
+# polling, then quits QEMU over QMP; the runner collects the asset's exit code
+# as the verdict. The test content is owned by this case and can evolve here
+# without touching the axbuild runner.
 # `success_regex` is empty because the probe result, not serial output, is the
 # verdict; a guest panic still fails via `fail_regex`.
 fail_regex = [

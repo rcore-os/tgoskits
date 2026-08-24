@@ -19,6 +19,8 @@ use axfs_ng_vfs::{FileNode, Location, VfsError, VfsResult};
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 use lru::LruCache;
 use readahead::ReadAheadState;
+#[cfg(all(axtest, feature = "axtest", feature = "vfs"))]
+pub(crate) use reclaim::reclaim_releases_registry_spin_lock_for_test;
 #[cfg(feature = "vfs")]
 pub use reclaim::{page_cache_reclaim, sync_all_cached_files};
 

@@ -7,7 +7,8 @@
 # `id = 1`: the runtime can only realize guest images baked into the hypervisor,
 # so the typed probe's `POST /api/vms/create` body uses this same config, whose
 # `base.id` re-matches the embedded image. `phys_cpu_ids = [1]` keeps the vCPU on
-# Core 1 while the management console runs on Core 0.
+# Core 1 while the management console runs on Core 0 — the exact configuration
+# that makes a resume wake (parked vCPU on a pinned non-primary CPU) observable.
 [base]
 id = 1
 name = "linux-http-control-plane"

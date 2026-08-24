@@ -32,14 +32,32 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
 
     let mut reclaimed = 0;
     let target = num_pages.max(16) * 2;
-    let mut file_count = 0;
-    let Some(guard) = GLOBAL_CACHED_FILES.try_read() else {
-        return 0;
+    let mut visited_files = 0;
+    let scan_len = {
+        let Some(registry) = GLOBAL_CACHED_FILES.try_read() else {
+            return 0;
+        };
+        registry.len()
     };
-    for file in guard.iter() {
+
+    // Clone one Arc at a time so file locks are taken after the registry spin
+    // guard is released, without allocating a second Vec under memory pressure.
+    // Concurrent pruning may move an entry between indices; reclaim is a
+    // best-effort scan, so a later allocator retry can revisit a skipped entry.
+    for index in 0..scan_len {
+        let file = {
+            let Some(registry) = GLOBAL_CACHED_FILES.try_read() else {
+                break;
+            };
+            registry.get(index).cloned()
+        };
+        let Some(file) = file else {
+            continue;
+        };
+
         let freed = file.try_evict_clean_pages(target - reclaimed);
         reclaimed += freed;
-        file_count += 1;
+        visited_files += 1;
         if reclaimed >= target {
             break;
         }
@@ -48,7 +66,7 @@ pub fn page_cache_reclaim(num_pages: usize) -> usize {
     if reclaimed > 0 {
         debug!(
             "page_cache_reclaim: evicted {} clean pages across {} files",
-            reclaimed, file_count
+            reclaimed, visited_files
         );
     }
     reclaimed
@@ -129,5 +147,62 @@ impl CachedFileShared {
             }
         }
         evicted
+    }
+}
+
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+pub(crate) fn reclaim_releases_registry_spin_lock_for_test() -> bool {
+    const RECLAIM_PAGES: usize = 32;
+
+    let file = Arc::new(CachedFileShared::new_unbounded(
+        (RECLAIM_PAGES * crate::os::memory::PAGE_SIZE) as u64,
+    ));
+    for page_number in 0..RECLAIM_PAGES as u32 {
+        let Ok(page) = PageCache::new() else {
+            return false;
+        };
+        file.page_cache.lock().put(page_number, page);
+    }
+
+    let registry_was_unlocked = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&registry_was_unlocked);
+    file.evict_listeners
+        .lock()
+        .push_back(alloc::boxed::Box::new(super::EvictListener {
+            listener: Arc::new(move |_, _| {
+                observed.store(GLOBAL_CACHED_FILES.try_write().is_some(), Ordering::Release);
+                true
+            }),
+            writeback_protect: Arc::new(|_| true),
+            link: intrusive_collections::LinkedListAtomicLink::new(),
+        }));
+
+    let registered = Arc::clone(&file);
+    GLOBAL_CACHED_FILES.write().insert(0, registered);
+
+    let reclaimed = page_cache_reclaim(1);
+    let registered = {
+        let mut registry = GLOBAL_CACHED_FILES.write();
+        let index = registry
+            .iter()
+            .position(|cached| Arc::ptr_eq(cached, &file))
+            .expect("reclaim test cached file disappeared from the registry");
+        registry.remove(index)
+    };
+    drop(registered);
+
+    reclaimed == RECLAIM_PAGES && registry_was_unlocked.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::os::memory::test_support::with_test_page_provider;
+
+    #[test]
+    fn reclaim_releases_registry_spin_lock_before_sleepable_file_locks() {
+        with_test_page_provider(true, |_| {
+            assert!(reclaim_releases_registry_spin_lock_for_test());
+        });
     }
 }

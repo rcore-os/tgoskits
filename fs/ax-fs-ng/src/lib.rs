@@ -37,6 +37,12 @@ pub mod axtest_support {
     pub fn block_irq_outcome_and_ready_hold_for_test() -> bool {
         super::os::block_irq_outcome_and_ready_hold_for_test()
     }
+
+    /// Checks that page reclaim drops its registry spin lock before file locks.
+    #[cfg(feature = "vfs")]
+    pub fn reclaim_releases_registry_spin_lock_for_test() -> bool {
+        super::file::reclaim_releases_registry_spin_lock_for_test()
+    }
 }
 
 #[cfg(feature = "fat")]
