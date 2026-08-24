@@ -308,6 +308,35 @@ sequenceDiagram
 
 三项改动并非无需适配即可直接叠加：#2160 当前独立 RT executor 方向与 #2161/#2162 的 `axtask` 依赖存在架构差异。本方案选择以 #2161 为第一阶段调度基础，复用 #2160 的 CPU 所有权和隔离原则，将 realtime CPU 改造成受限单核 `axtask` domain，再接入 #2162 的有效优先级和 donation。这样才能形成“CPU 分区、RT 调度、锁等待、IRQ 隔离和有界通信”一致的完整链路，并支撑任务三中双轮足机器人 8ms 平衡闭环。
 
+### 3.11 PR #2175 交付映射与复现入口
+
+本阶段实现已汇总到上游 PR [#2175](https://github.com/rcore-os/tgoskits/pull/2175)，基线为 `rcore-os/tgoskits` 的 `dev` 分支。PR 的实现内容与任务一的关系如下：
+
+| 交付内容 | 代码/配置位置 | 验收意义 |
+| --- | --- | --- |
+| 编译期实时核选择 | `scripts/axbuild/src/axvisor/build/`、各 `build-*.toml` 的 `realtime_cpu_id` | 不依赖环境变量，`-1` 可关闭实时域 |
+| 实时任务 API 与 RT FIFO | `os/arceos/modules/axtask`、`components/axsched/src/rt_fifo.rs` | 创建任务时自动绑定实时核，不暴露 CPU mask |
+| AArch64 Starry AMP | `test-suit/axvisor/normal/qemu-amp/starry-host-amp/` | 验证 Starry guest 与 host RT 同时启动 |
+| RK3588 板级入口 | `test-suit/axvisor/normal/board-orangepi-5-plus/starry-host-amp/` | 提供 OrangePi 5 Plus 的构建和运行配方 |
+| guest 设备与 DMA 边界 | `virtualization/axvm`、`os/axvisor/configs/vms/qemu/aarch64/starry-smp1.toml` | 保留 FDT 控制台、隔离 GIC、保证 NVMe DMA |
+
+QEMU 联合验证命令：
+
+```bash
+cargo xtask starry build --config test-suit/axvisor/guest-build/starry-aarch64-amp.toml --smp 1
+cargo xtask axvisor test qemu --arch aarch64 -g normal -c qemu-amp/starry-host-amp
+```
+
+RK3588/OrangePi 5 Plus 运行入口：
+
+```bash
+cargo xtask axvisor build --arch aarch64 \
+  --config test-suit/axvisor/normal/board-orangepi-5-plus/starry-host-amp/build-aarch64-unknown-none-softfloat.toml
+cargo xtask axvisor test board --board orangepi-5-plus-starry-host-amp
+```
+
+板级命令需要 OrangePi-5-Plus 板卡租约及现有 Linux rootfs/guest 资源；QEMU 输出仅作为软件隔离和启动契约证据，不能替代 RK3588 实测的最大延迟、抖动和 deadline miss 数据。
+
 ### 3.11 当前实现与 AArch64 QEMU 证据
 
 已实现版本的构建入口是 `test-suit/axvisor/guest-build/starry-aarch64-amp.toml`，其中通过 `realtime_cpu_id = 3` 在编译期选择实时核；配置为 `-1` 时不创建实时域。Starry 联合用例使用 `qemu-system-aarch64` 的 `cortex-a72` 和 `aarch64-unknown-none-softfloat` 目标，guest FDT 保留 `/chosen`、`/aliases`，GICD/GICR 采用 partial passthrough，并对模拟 MMIO 自动打孔。NVMe DMA 使用 `MAP_RESERVED` 恒等映射的 guest RAM，避免 `MAP_ALLOC` 仅有 CPU 映射的问题。
