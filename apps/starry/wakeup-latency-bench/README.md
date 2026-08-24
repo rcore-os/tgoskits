@@ -41,6 +41,19 @@ StarryOS：
 cargo xtask starry app qemu -t wakeup-latency-bench --arch x86_64
 ```
 
+排查周期 tick 是否掩盖调度进展缺陷时，可以把主动 CPU 的 scheduler tick 间隔临时
+拉长到 1 秒：
+
+```bash
+AX_SCHEDULER_TICK_MS=1000 \
+  cargo xtask starry app qemu -t wakeup-latency-bench --arch x86_64
+```
+
+`AX_SCHEDULER_TICK_MS` 是编译期毫秒配置，默认值为 10。它只控制 active CPU 的周期
+调度唤醒源，不是任务切换延迟上限；Linux 风格的 NOHZ idle 会停止这个周期事件，而
+明确的 task deadline 仍由独立的一次性 clockevent 驱动。因此，1 秒配置用于放大“只能
+被后续周期 tick 推进”的缺陷，不能用来证明 idle 丢门铃问题不存在。
+
 单场景剖析直接调用二进制；`--policy` 和 `--case` 都是显式选择器，不接受隐式
 别名：
 

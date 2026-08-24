@@ -12,22 +12,11 @@ pub(crate) fn monotonic_now() -> ax_task::runtime::MonotonicInstant {
 }
 
 #[cfg(feature = "irq")]
-fn ticks_per_sec() -> u64 {
-    crate::build_info::TICKS_PER_SEC as u64
-}
-
-#[cfg(feature = "irq")]
 fn periodic_interval_nanos() -> u64 {
-    let ticks_per_sec = ticks_per_sec();
-    assert_ne!(
-        ticks_per_sec, 0,
-        "scheduler tick frequency must be non-zero"
-    );
-    let interval = ax_hal::time::NANOS_PER_SEC / ticks_per_sec;
-    assert_ne!(
-        interval, 0,
-        "scheduler tick frequency exceeds nanosecond resolution"
-    );
+    // This is the periodic wakeup source for an active CPU, not a task-switch
+    // latency bound. Linux-style NOHZ idle explicitly stops this clockevent.
+    let interval = crate::build_info::SCHEDULER_TICK_INTERVAL_NANOS;
+    assert_ne!(interval, 0, "scheduler tick interval must be non-zero");
     interval
 }
 
@@ -441,6 +430,20 @@ mod tests {
         assert_eq!(
             clockevent.claim_irq(instant(1)),
             crate::clock_event::ClockEventIrqClaim::Ignored
+        );
+    }
+
+    #[cfg(feature = "irq")]
+    #[test]
+    fn scheduler_tick_interval_honors_build_configuration() {
+        let configured_milliseconds = option_env!("AX_SCHEDULER_TICK_MS")
+            .unwrap_or("10")
+            .parse::<u64>()
+            .expect("test scheduler tick interval must be decimal milliseconds");
+
+        assert_eq!(
+            super::periodic_interval_nanos(),
+            configured_milliseconds * 1_000_000
         );
     }
 
