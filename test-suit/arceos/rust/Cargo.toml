@@ -22,6 +22,11 @@ task-fair-idle-pull = [
     "ax-std/irq",
     "ax-std/task-test-hooks",
 ]
+task-fair-wake-idle-sibling = [
+    "task-runtime",
+    "ax-std/irq",
+    "ax-std/task-test-hooks",
+]
 task-wait-queue = ["task-runtime", "ax-std/irq", "ax-std/task-test-hooks"]
 task-wait-queue-remote-wake = [
     "task-runtime",
@@ -73,6 +78,7 @@ all = [
     "task-yield",
     "task-affinity",
     "task-fair-idle-pull",
+    "task-fair-wake-idle-sibling",
     "task-wait-queue",
     "task-wait-queue-remote-wake",
     "task-ipi",

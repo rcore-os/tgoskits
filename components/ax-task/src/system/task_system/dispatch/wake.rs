@@ -295,14 +295,48 @@ impl TaskSystem {
             .is_some()
     }
 
-    /// Selects between the waking and previous CPU using Linux wake-affine's
-    /// load rule.
+    /// Mirrors Linux `select_idle_sibling()` for the current flat root domain.
     ///
-    /// This scheduler currently exposes one flat root domain and no cache or
-    /// capacity topology. An ordinary wake moves only to a strictly lighter
-    /// waker CPU and preserves previous-CPU locality on ties. For `WF_SYNC`,
-    /// Linux discounts the current waker because it promises to sleep soon
-    /// and biases a load tie toward that CPU.
+    /// Linux first tests the wake-affine target, then the previous CPU, then
+    /// scans their LLC domain. ArceOS does not publish cache or capacity
+    /// topology yet, so every eligible CPU in the root domain is a sibling.
+    /// An incoming migration reservation makes an otherwise empty rq busy:
+    /// another wake transaction has already selected that CPU.
+    fn select_fair_idle_sibling(
+        &self,
+        affinity: &CpuSet,
+        previous: Option<CpuId>,
+        target: CpuId,
+    ) -> CpuId {
+        let is_idle = |cpu: CpuId| {
+            affinity.contains(cpu)
+                && self.cpu_remotes.get(cpu.as_usize()).is_some_and(|remote| {
+                    remote.accepts_placement()
+                        && remote.is_scheduler_ready()
+                        && remote.placement_demand() == 0
+                })
+        };
+        if is_idle(target) {
+            return target;
+        }
+        if let Some(previous) = previous.filter(|previous| *previous != target)
+            && is_idle(previous)
+        {
+            return previous;
+        }
+        affinity
+            .iter()
+            .find(|cpu| *cpu != target && Some(*cpu) != previous && is_idle(*cpu))
+            .unwrap_or(target)
+    }
+
+    /// Mirrors Linux Fair `select_task_rq_fair()` for a blocked wake.
+    ///
+    /// Wake-affine first selects between the waking and previous CPU using
+    /// current load. Linux then invokes `select_idle_sibling()` for `WF_TTWU`;
+    /// omitting that second stage stacks wakees on busy CPUs while siblings
+    /// remain idle. For `WF_SYNC`, wake-affine discounts the current waker and
+    /// biases a load tie toward that CPU before the same idle-sibling stage.
     fn select_fair_wake_cpu(
         &self,
         affinity: &CpuSet,
@@ -319,7 +353,7 @@ impl TaskSystem {
         };
         let waker = waker.filter(|cpu| eligible(*cpu));
         let previous = previous.filter(|cpu| eligible(*cpu));
-        match (waker, previous) {
+        let target = match (waker, previous) {
             (Some(waker), Some(previous)) if waker != previous => {
                 let waker_remote = &self.cpu_remotes[waker.as_usize()];
                 let waker_demand = if intent.is_sync() {
@@ -338,7 +372,8 @@ impl TaskSystem {
             }
             (Some(cpu), _) | (_, Some(cpu)) => Some(cpu),
             (None, None) => self.select_fair_active_cpu(affinity, None),
-        }
+        }?;
+        Some(self.select_fair_idle_sibling(affinity, previous, target))
     }
 
     /// Wakes a blocked thread from an explicitly modeled test CPU.
@@ -486,7 +521,7 @@ impl TaskSystem {
                 continue;
             };
             #[cfg(feature = "task-test-hooks")]
-            crate::task_test_hooks::record_rt_wake_placement(core.id(), target);
+            crate::task_test_hooks::record_wake_placement(core.id(), target);
             let transition = match Self::consume_wake_locked(&core, &mut sched) {
                 Ok(transition) => transition,
                 Err(_) => task_runtime::fatal_invariant(0x574b_0002, core.id().as_u64() as usize),
@@ -660,7 +695,7 @@ impl TaskSystem {
                     return WaitWakeDelivery::Unavailable;
                 };
                 #[cfg(feature = "task-test-hooks")]
-                crate::task_test_hooks::record_rt_wake_placement(core.id(), target);
+                crate::task_test_hooks::record_wake_placement(core.id(), target);
                 if !claim.deliver_selected() {
                     return WaitWakeDelivery::Cancelled;
                 }

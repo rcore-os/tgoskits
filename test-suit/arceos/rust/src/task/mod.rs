@@ -2,6 +2,8 @@
 pub mod affinity;
 #[cfg(feature = "task-fair-idle-pull")]
 pub mod fair_idle_pull;
+#[cfg(feature = "task-fair-wake-idle-sibling")]
+pub mod fair_wake_idle_sibling;
 #[cfg(feature = "task-ipi")]
 pub mod ipi;
 #[cfg(feature = "task-irq")]

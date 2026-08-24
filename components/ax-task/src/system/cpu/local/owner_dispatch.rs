@@ -57,6 +57,8 @@ impl CpuLocal {
     }
 
     pub(crate) fn arm_idle_pull(self: Pin<&mut Self>) {
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_fair_idle_pull_failure_idle_entry(self.owner());
         self.dispatch_state_mut().arm_idle_pull();
     }
 

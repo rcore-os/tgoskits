@@ -234,7 +234,7 @@ USB/vsock 控制器协议属于外围驱动；除非它们违反上述调度交�
 | 领域 | Linux 对照 | 核心不变量 | 当前结论 |
 | --- | --- | --- | --- |
 | placement | `try_to_wake_up()`、rq locking | rq 独占 queued/running，CPU switch baton 独占 outgoing stack | 已删除 `target_cpu` CPU 身份双真相和 task 级 `SwitchingOut/ExitedAwaitingTail`；线程只保存最终 rq/migration placement 与独立 `on_cpu` 发布位，outgoing stack 生命周期唯一归 per-CPU `SwitchHandoff` |
-| Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护 | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务 |
+| Fair/EEVDF | `avg_vruntime()`、`place_entity()`、`pick_eevdf()`、`select_task_rq_fair()` | 唯一加权平均 V；sleep/migration 保存 `vlag`；eligible current 保留请求保护；blocked wake 在 wake-affine 后继续选择 idle sibling | 已删除旧 wakeup granularity 与重复单调 V，迁移使用 detach 事务；平坦 root-domain 已补齐 idle-sibling wake placement |
 | RT/DL 选核 | `cpupri`、`cpudl`、`rto_mask/rto_count`、`dlo_mask/dlo_count`、`RT_PUSH_IPI` | 优先级与 load 正交；DL runnable CPU 属于 cpupri HIGHER；只有可迁移候选才能发布 overload；RT 与 DL 各自维护 root-domain push iterator | root-domain cpupri/cpudl 已接入 wake placement；cpupri 包含 101 个桶，DL current/queued 发布 HIGHER；pushable membership 在 rq 事务内直接发布 RT/DL overload mask/count；两类 priority-drop 各自通过 generation-bearing iterator 串行通知 owner，不广播 IPI，也不跨类选择候选 |
 | 远程投递 | `try_to_wake_up()`、`ttwu_queue()`、`resched_curr()`、`irq_work_claim()` | PREEMPT_RT 关闭 `TTWU_QUEUE`，waker 直接锁目标 rq 激活；仅实际需要抢占时发送 reschedule IPI；IPI claim 必须先于 callback/drain | 已删除 task-level remote-wake inbox；migration/control 继续使用 typed owner inbox；runtime 门铃改为 generation + physical edge ownership，coalescing 只返回成功，不再把 `Busy` 暴露为模糊的 transport 状态 |
 | CPU 生命周期 | `sched_cpu_deactivate()`、`dl_bw_deactivate()`、`sched_cpu_dying()` | 先验证剩余 Deadline capacity，再关 placement、drain producer，最后 offline | `Online/Inactive/Draining/Offline` 已实现；Deadline 过量预留会在 topology mutation 前拒绝 CPU down |
@@ -3829,6 +3829,42 @@ idle 事件时偷偷迁移第二个候选，而新的 CPU1 busy-to-idle 转换�
 Rust/C QEMU suite，LoongArch64 unaligned-fixup 也通过；`ax-task` host tests 与 targeted clippy
 继续作为提交门禁。该检查点修复的是四架构共用的 idle placement 语义，hackbench/qperf 与 Linux
 RT 的剩余吞吐差距仍需用提交后的正式测量继续关闭。
+
+### 2026-08-25 Linux Fair blocked-wake idle sibling
+
+Linux v7.1 `kernel/sched/fair.c::select_task_rq_fair()` 对 `WF_TTWU` 先用
+`wake_affine()` 在 waker CPU 与 previous CPU 之间选择初始 target，随后无条件进入
+`select_idle_sibling()`：依次检查 target、同 cache domain 的 previous CPU，再扫描 LLC
+domain 的空闲 CPU。`WF_SYNC` 只影响前一阶段的 waker 负载折扣与 tie bias，不会取消后一阶段。
+因此只在 waker/previous 二选一并不是一个较粗略但等价的优化，而会在两者都 busy 时把 wakee
+堆回繁忙 rq，同时让同一 scheduling domain 的 CPU 保持 idle。
+
+旧 ax-task 的 `select_fair_wake_cpu()` 正好停在 wake-affine 阶段。确定性真实 SMP QEMU 回归把
+被测 Fair wakee 的 previous CPU 设为 CPU0，并在它阻塞后分别让 CPU0 和 waker CPU1 各运行一个
+同负载 Fair current，同时确认 CPU2/3 的真实 `rq->nr_running` 均为 0。测试探针直接记录 wake
+事务在 enqueue 前选定的 CPU，不以任务事后运行位置反推。只加入测试时，旧实现稳定选中 busy
+CPU0，并触发
+`Linux select_idle_sibling must choose an idle CPU instead of busy CPU0`。
+
+现在 Fair blocked wake 保留既有 wake-affine 作为初始 target，再按 Linux 顺序检查 target、
+previous 与当前平坦 root-domain 中的其余 affinity-eligible CPU。ArceOS 尚未发布 cache/capacity
+topology，因此本阶段把 root-domain 内所有 CPU 视为 sibling；未来引入 topology 时应缩小为对应
+LLC domain，而不是复制第二套 placement 入口。CPU 必须已经 scheduler-ready 且接受 placement，
+`placement_demand == 0` 才视为 idle；其中 incoming migration reservation 对应另一 wake/migration
+事务已经选中该 rq，防止多个并发选择者把同一尚未 enqueue 的 CPU 都误判为空闲。找不到 idle
+sibling 时仍返回 wake-affine target，不增加重试、IPI 或兼容 fallback。相同 focused QEMU 用例
+修复后在 15 ms 内通过，目标为 CPU2/3。最终代码串行通过 x86_64、AArch64、RISC-V 与
+LoongArch64 的完整 ArceOS Rust/C QEMU suite，LoongArch64 unaligned-fixup 同样通过；
+`cargo test -p ax-task`、ax-task 7/7 clippy、ArceOS test-suite 36/36 clippy、rustfmt 与
+`git diff --check` 也全部通过。
+
+正式未插桩 hackbench 按与 Linux v7.1 RT 基线相同的 4-vCPU TCG、1 group、1000 loops、
+预热加 5 轮中位数协议重测：process 为 1C 13.120 s、4C 22.492 s（0.583x），thread 为
+1C 21.633 s、4C 20.020 s（1.080x）。相比上一检查点的 11.111/20.991 s 与
+19.400/19.305 s 没有性能收益，process 仍明显反向扩展，也仍远慢于同协议 Linux RT 的
+10.540/6.559 s 与 5.161/2.402 s。因此本检查点只认定为确定性 Linux placement 语义修复，
+不能把它包装成性能优化；剩余根因继续从四架构共用的 block/wake/switch、Fair migration
+与跨轮次状态回收差分排查，不转向架构寄存器快速路径。
 
 ## 模块化结果
 

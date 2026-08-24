@@ -152,10 +152,10 @@ fn higher_priority_rt_wake_stays_on_previous_cpu(cpu_count: usize) {
     assert_eq!(this_cpu_id(), 0);
 
     let worker_id = worker.thread().id().as_u64().get();
-    task_test_hooks::arm_rt_wake_placement_probe(worker_id);
+    task_test_hooks::arm_wake_placement_probe(worker_id);
     WAKE.store(true, Ordering::Release);
     assert_eq!(api::ax_wait_queue_wake(&WAKE_WAIT, 1), 1);
-    let target = task_test_hooks::take_rt_wake_placement_cpu()
+    let target = task_test_hooks::take_wake_placement_cpu()
         .expect("the RT wake placement probe must complete");
     assert_eq!(
         target, 0,

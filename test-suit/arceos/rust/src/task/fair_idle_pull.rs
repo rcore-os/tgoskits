@@ -19,12 +19,14 @@ use std::{
     vec::Vec,
 };
 
-const WORKERS_PER_CPU: usize = 2;
+const REMOTE_OCCUPIERS: usize = 1;
+const SOURCE_WORKERS: usize = 4;
 const PROGRESS_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct CooperativeWorkers {
     stop: Arc<AtomicBool>,
     ready: Arc<AtomicUsize>,
+    worker_count: usize,
     handles: Vec<KernelThreadHandle>,
 }
 
@@ -32,6 +34,7 @@ impl CooperativeWorkers {
     fn spawn_pinned(
         cpu: usize,
         cpu_count: usize,
+        worker_count: usize,
         expand_affinity: bool,
         observed_cpus: Arc<AtomicUsize>,
     ) -> Self {
@@ -39,8 +42,8 @@ impl CooperativeWorkers {
         let ready = Arc::new(AtomicUsize::new(0));
         let mut affinity = CpuSet::empty(cpu_count);
         assert!(affinity.insert(CpuId::new(cpu as u32)));
-        let mut handles = Vec::with_capacity(WORKERS_PER_CPU);
-        for _ in 0..WORKERS_PER_CPU {
+        let mut handles = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
             let stop = Arc::clone(&stop);
             let ready = Arc::clone(&ready);
             let observed_cpus = Arc::clone(&observed_cpus);
@@ -66,13 +69,14 @@ impl CooperativeWorkers {
         Self {
             stop,
             ready,
+            worker_count,
             handles,
         }
     }
 
     fn wait_ready(&self) {
         wait_until(
-            || self.ready.load(Ordering::Acquire) == WORKERS_PER_CPU,
+            || self.ready.load(Ordering::Acquire) == self.worker_count,
             "cooperative Fair workers did not become runnable",
         );
     }
@@ -127,19 +131,31 @@ pub fn run() -> crate::TestResult {
         || this_cpu_id() == 0,
         "test owner did not settle on the Fair source CPU",
     );
+    task_test_hooks::set_current_fair_periodic_balance(false)
+        .expect("the test owner must isolate new-idle balance from periodic source push");
 
     let observed_cpus = Arc::new(AtomicUsize::new(0));
     let occupier_cpus = Arc::new(AtomicUsize::new(0));
     let mut remote_occupiers = Vec::with_capacity(cpu_count - 1);
     for cpu in 1..cpu_count {
-        let occupiers =
-            CooperativeWorkers::spawn_pinned(cpu, cpu_count, false, Arc::clone(&occupier_cpus));
+        let occupiers = CooperativeWorkers::spawn_pinned(
+            cpu,
+            cpu_count,
+            REMOTE_OCCUPIERS,
+            false,
+            Arc::clone(&occupier_cpus),
+        );
         occupiers.wait_ready();
         remote_occupiers.push(occupiers);
     }
 
-    let source_workers =
-        CooperativeWorkers::spawn_pinned(0, cpu_count, true, Arc::clone(&observed_cpus));
+    let source_workers = CooperativeWorkers::spawn_pinned(
+        0,
+        cpu_count,
+        SOURCE_WORKERS,
+        true,
+        Arc::clone(&observed_cpus),
+    );
     source_workers.wait_ready();
     assert_eq!(
         task_test_hooks::fair_idle_pull_source(1)
@@ -148,8 +164,6 @@ pub fn run() -> crate::TestResult {
         "Linux newidle balance must discover a Fair backlog before periodic balance"
     );
 
-    task_test_hooks::set_current_fair_periodic_balance(false)
-        .expect("the test owner must isolate new-idle balance from periodic source push");
     task_test_hooks::reset_fair_idle_pull_migration();
     task_test_hooks::fail_next_fair_idle_pull_transfer(1);
     remote_occupiers.remove(0).stop_and_join();
@@ -162,22 +176,31 @@ pub fn run() -> crate::TestResult {
         0,
         "Linux newidle balance must end a failed pass instead of kicking the idle CPU to retry"
     );
-    assert_eq!(
-        task_test_hooks::fair_idle_pull_migration_target(),
-        None,
-        "the failed newidle pass must not migrate a second candidate without a new idle event"
+    let idle_entries = task_test_hooks::fair_idle_pull_failure_idle_entries();
+    let migration_target = task_test_hooks::fair_idle_pull_migration_target();
+    assert!(
+        idle_entries > 1 || migration_target.is_none(),
+        "the failed newidle pass migrated a second candidate without a new idle event: \
+         idle_entries={idle_entries}, target={migration_target:?}"
     );
 
-    let target_occupiers =
-        CooperativeWorkers::spawn_pinned(1, cpu_count, false, Arc::clone(&occupier_cpus));
-    target_occupiers.wait_ready();
-    task_test_hooks::reset_fair_idle_pull_migration();
-    target_occupiers.stop_and_join();
-    wait_for_idle_pull(&observed_cpus);
+    if migration_target.is_none() {
+        let target_occupiers = CooperativeWorkers::spawn_pinned(
+            1,
+            cpu_count,
+            REMOTE_OCCUPIERS,
+            false,
+            Arc::clone(&occupier_cpus),
+        );
+        target_occupiers.wait_ready();
+        target_occupiers.stop_and_join();
+        wait_for_idle_pull(&observed_cpus);
+    }
     wait_until(
         || observed_cpus.load(Ordering::Acquire) & (1usize << 1) != 0,
         "the Fair idle-pull carrier did not execute on CPU1",
     );
+    task_test_hooks::reset_fair_idle_pull_migration();
 
     source_workers.stop_and_join();
     for occupiers in remote_occupiers {

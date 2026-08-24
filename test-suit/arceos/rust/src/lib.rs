@@ -55,6 +55,7 @@ pub mod net;
         feature = "sched-rr",
         feature = "task-affinity",
         feature = "task-fair-idle-pull",
+        feature = "task-fair-wake-idle-sibling",
         feature = "task-ipi",
         feature = "task-irq",
         feature = "task-kernel-timer",
@@ -126,6 +127,11 @@ test_runner!(
     "task-fair-idle-pull",
     run_task_fair_idle_pull,
     task::fair_idle_pull::run
+);
+test_runner!(
+    "task-fair-wake-idle-sibling",
+    run_task_fair_wake_idle_sibling,
+    task::fair_wake_idle_sibling::run
 );
 test_runner!("task-ipi", run_task_ipi, task::ipi::run);
 test_runner!("task-irq", run_task_irq, task::irq::run);
@@ -237,6 +243,12 @@ const SELECTED_TESTS: &[TestCase] = &[
         "task-fair-idle-pull",
         "Fair backlog migration at idle entry",
         run_task_fair_idle_pull,
+    ),
+    #[cfg(feature = "task-fair-wake-idle-sibling")]
+    TestCase::new(
+        "task-fair-wake-idle-sibling",
+        "Fair wake selects an idle sibling",
+        run_task_fair_wake_idle_sibling,
     ),
     #[cfg(feature = "task-ipi")]
     TestCase::new(

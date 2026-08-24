@@ -56,9 +56,9 @@ static EQUAL_RT_WAKE_TARGET: AtomicU64 = AtomicU64::new(0);
 static EQUAL_RT_WAKE_RESCHEDULE: AtomicU8 = AtomicU8::new(0);
 static EQUAL_RT_WAKE_INJECT_OWNER_WORK: AtomicU8 = AtomicU8::new(0);
 static EQUAL_RT_WAKE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
-static RT_WAKE_PLACEMENT_TARGET: AtomicU64 = AtomicU64::new(0);
-static RT_WAKE_PLACEMENT_CPU: AtomicU64 = AtomicU64::new(0);
-static RT_WAKE_PLACEMENT_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static WAKE_PLACEMENT_TARGET: AtomicU64 = AtomicU64::new(0);
+static WAKE_PLACEMENT_CPU: AtomicU64 = AtomicU64::new(0);
+static WAKE_PLACEMENT_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static PARK_PREPARE_RUNTIME_CPU_TARGET: AtomicU64 = AtomicU64::new(0);
 static PARK_PREPARE_RUNTIME_CPU_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static PARK_PREPARE_RUNTIME_CPU_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
@@ -140,6 +140,7 @@ static FAIR_IDLE_PULL_FAIL_NEXT_TRANSFER: AtomicBool = AtomicBool::new(false);
 static FAIR_IDLE_PULL_FAILURE_AWAITING_COMPLETION: AtomicBool = AtomicBool::new(false);
 static FAIR_IDLE_PULL_FAILURE_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
 static FAIR_IDLE_PULL_FAILURE_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
+static FAIR_IDLE_PULL_FAILURE_IDLE_ENTRIES: AtomicU64 = AtomicU64::new(0);
 static FAIR_IDLE_PULL_RETRY_KICKS: AtomicU64 = AtomicU64::new(0);
 static PARK_PROFILE_HOOK: AtomicUsize = AtomicUsize::new(0);
 static LINKED_PICK_FULL_SNAPSHOT_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -1147,6 +1148,8 @@ pub fn fair_idle_pull_source(cpu: u32) -> Result<Option<u32>, crate::TaskError> 
 /// Clears the first-success probe for a Fair migration requested by idle entry.
 pub fn reset_fair_idle_pull_migration() {
     FAIR_IDLE_PULL_TARGET_CPU.store(0, Ordering::Release);
+    FAIR_IDLE_PULL_FAILURE_TARGET_CPU.store(0, Ordering::Release);
+    FAIR_IDLE_PULL_FAILURE_IDLE_ENTRIES.store(0, Ordering::Release);
 }
 
 /// Returns the first target of a Fair migration requested by idle entry.
@@ -1164,6 +1167,7 @@ pub(crate) fn record_fair_idle_pull_migration(target: crate::CpuId) {
 /// Makes the next committed Fair idle pull report one transient failure.
 pub fn fail_next_fair_idle_pull_transfer(target_cpu: u32) {
     FAIR_IDLE_PULL_RETRY_KICKS.store(0, Ordering::Release);
+    FAIR_IDLE_PULL_FAILURE_IDLE_ENTRIES.store(0, Ordering::Release);
     FAIR_IDLE_PULL_FAILURE_COMPLETIONS.store(0, Ordering::Release);
     FAIR_IDLE_PULL_FAILURE_TARGET_CPU.store(u64::from(target_cpu) + 1, Ordering::Release);
     FAIR_IDLE_PULL_FAILURE_AWAITING_COMPLETION.store(false, Ordering::Release);
@@ -1178,6 +1182,17 @@ pub fn fair_idle_pull_failure_completed() -> bool {
 /// Counts target scheduler kicks requested while handling the injected failure.
 pub fn fair_idle_pull_retry_kicks() -> u64 {
     FAIR_IDLE_PULL_RETRY_KICKS.load(Ordering::Acquire)
+}
+
+/// Counts real idle entries on the target while the failure probe is active.
+pub fn fair_idle_pull_failure_idle_entries() -> u64 {
+    FAIR_IDLE_PULL_FAILURE_IDLE_ENTRIES.load(Ordering::Acquire)
+}
+
+pub(crate) fn record_fair_idle_pull_failure_idle_entry(cpu: crate::CpuId) {
+    if FAIR_IDLE_PULL_FAILURE_TARGET_CPU.load(Ordering::Acquire) == u64::from(cpu.as_u32()) + 1 {
+        FAIR_IDLE_PULL_FAILURE_IDLE_ENTRIES.fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 pub(crate) fn take_fair_idle_pull_transfer_failure() -> bool {
@@ -1199,7 +1214,6 @@ pub(crate) fn record_fair_idle_pull_failure_scheduler_kick(cpu: crate::CpuId) {
 pub(crate) fn complete_fair_idle_pull_transfer_failure() {
     if FAIR_IDLE_PULL_FAILURE_AWAITING_COMPLETION.swap(false, Ordering::AcqRel) {
         FAIR_IDLE_PULL_FAILURE_COMPLETIONS.fetch_add(1, Ordering::AcqRel);
-        FAIR_IDLE_PULL_FAILURE_TARGET_CPU.store(0, Ordering::Release);
     }
 }
 
@@ -3213,27 +3227,27 @@ pub(crate) fn record_equal_rt_wake_reschedule(thread: ThreadId, requested: bool)
     );
 }
 
-/// Arms target-CPU observation for one real RT wake transaction.
-pub fn arm_rt_wake_placement_probe(thread: u64) {
-    assert_ne!(thread, 0, "an RT wake identity must be non-zero");
+/// Arms target-CPU observation for one real blocked-to-runnable wake transaction.
+pub fn arm_wake_placement_probe(thread: u64) {
+    assert_ne!(thread, 0, "a wake identity must be non-zero");
     assert_eq!(
-        RT_WAKE_PLACEMENT_STAGE.compare_exchange(
+        WAKE_PLACEMENT_STAGE.compare_exchange(
             STAGE_IDLE,
             STAGE_CONFIGURING,
             Ordering::AcqRel,
             Ordering::Acquire,
         ),
         Ok(STAGE_IDLE),
-        "only one RT wake placement probe may be armed"
+        "only one wake placement probe may be armed"
     );
-    RT_WAKE_PLACEMENT_TARGET.store(thread, Ordering::Relaxed);
-    RT_WAKE_PLACEMENT_CPU.store(0, Ordering::Relaxed);
-    RT_WAKE_PLACEMENT_STAGE.store(STAGE_ARMED, Ordering::Release);
+    WAKE_PLACEMENT_TARGET.store(thread, Ordering::Relaxed);
+    WAKE_PLACEMENT_CPU.store(0, Ordering::Relaxed);
+    WAKE_PLACEMENT_STAGE.store(STAGE_ARMED, Ordering::Release);
 }
 
-/// Takes the CPU selected by the armed RT wake transaction.
-pub fn take_rt_wake_placement_cpu() -> Option<u32> {
-    if RT_WAKE_PLACEMENT_STAGE
+/// Takes the CPU selected by the armed wake transaction.
+pub fn take_wake_placement_cpu() -> Option<u32> {
+    if WAKE_PLACEMENT_STAGE
         .compare_exchange(
             STAGE_COMPLETE,
             STAGE_CONFIGURING,
@@ -3244,29 +3258,29 @@ pub fn take_rt_wake_placement_cpu() -> Option<u32> {
     {
         return None;
     }
-    let encoded = RT_WAKE_PLACEMENT_CPU.load(Ordering::Relaxed);
-    RT_WAKE_PLACEMENT_TARGET.store(0, Ordering::Relaxed);
-    RT_WAKE_PLACEMENT_CPU.store(0, Ordering::Relaxed);
-    RT_WAKE_PLACEMENT_STAGE.store(STAGE_IDLE, Ordering::Release);
+    let encoded = WAKE_PLACEMENT_CPU.load(Ordering::Relaxed);
+    WAKE_PLACEMENT_TARGET.store(0, Ordering::Relaxed);
+    WAKE_PLACEMENT_CPU.store(0, Ordering::Relaxed);
+    WAKE_PLACEMENT_STAGE.store(STAGE_IDLE, Ordering::Release);
     encoded.checked_sub(1).map(|cpu| cpu as u32)
 }
 
-pub(crate) fn record_rt_wake_placement(thread: ThreadId, target: crate::CpuId) {
-    if RT_WAKE_PLACEMENT_STAGE.load(Ordering::Acquire) != STAGE_ARMED
-        || RT_WAKE_PLACEMENT_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+pub(crate) fn record_wake_placement(thread: ThreadId, target: crate::CpuId) {
+    if WAKE_PLACEMENT_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || WAKE_PLACEMENT_TARGET.load(Ordering::Relaxed) != thread.as_u64()
     {
         return;
     }
-    RT_WAKE_PLACEMENT_CPU.store(u64::from(target.as_u32()) + 1, Ordering::Relaxed);
+    WAKE_PLACEMENT_CPU.store(u64::from(target.as_u32()) + 1, Ordering::Relaxed);
     assert_eq!(
-        RT_WAKE_PLACEMENT_STAGE.compare_exchange(
+        WAKE_PLACEMENT_STAGE.compare_exchange(
             STAGE_ARMED,
             STAGE_COMPLETE,
             Ordering::AcqRel,
             Ordering::Acquire,
         ),
         Ok(STAGE_ARMED),
-        "the RT wake placement probe completed in an invalid stage"
+        "the wake placement probe completed in an invalid stage"
     );
 }
 
