@@ -875,13 +875,13 @@ impl<'a> OwnerRqTxn<'a> {
         drop(self.run_queue.take());
     }
 
-    /// Commits the rq state before acknowledging the scheduler request epoch.
+    /// Commits the rq state before the final scheduler-work recheck.
     ///
-    /// Only a claim explicitly adopted or merged before the scheduler made its
-    /// decision belongs to this acknowledgement. A request published after
-    /// that decision remains a newer generation for the next scheduler pass.
-    pub(crate) fn commit_and_acknowledge_scheduler_request(mut self) {
-        let claim = self
+    /// A request published after the decision sets a sticky entry bit for the
+    /// next pass. Owner-inbox work that remains after this transaction is
+    /// explicitly rearmed after the rq state becomes visible.
+    pub(crate) fn commit_and_finish_scheduler_request(mut self) {
+        let _claim = self
             .request
             .take()
             .expect("a scheduler rq transaction must merge its decision claim");
@@ -893,20 +893,20 @@ impl<'a> OwnerRqTxn<'a> {
         self.system.publish_run_queue_summary(remote, run_queue);
         self.finished = true;
         drop(self.run_queue.take());
-        remote.acknowledge_scheduler_request(claim);
+        remote.finish_scheduler_request();
     }
 
     /// Publishes the selected rq state but transfers its raw lock to switch
     /// tail instead of releasing it in the outgoing scheduler context.
     ///
-    /// The scheduler request is acknowledged while rq remains locked. A newer
-    /// request generation is therefore preserved for the next pass, while the
-    /// decision's exact claim cannot race the physical switch handoff.
-    pub(crate) fn commit_and_handoff_scheduler_request(mut self) -> RqSwitchBaton {
+    /// Scheduler work is rechecked while rq remains locked. A concurrent
+    /// publication leaves its sticky bit set for the next pass, while the
+    /// selected switch cannot race the physical handoff.
+    pub(crate) fn commit_and_handoff_scheduler_work(mut self) -> RqSwitchBaton {
         if self.context != OwnerRqContext::SchedulerFrame {
             task_runtime::fatal_invariant(0x5251_1011, self.remote.owner().as_u32() as usize);
         }
-        let claim = self
+        let _claim = self
             .request
             .take()
             .expect("a scheduler rq transaction must merge its decision claim");
@@ -921,7 +921,7 @@ impl<'a> OwnerRqTxn<'a> {
             .run_queue
             .take()
             .expect("an unfinished rq transaction must retain its lock");
-        remote.acknowledge_scheduler_request(claim);
+        remote.finish_scheduler_request();
         // SAFETY: scheduler-frame construction guarantees that this guard has
         // no owned irqsave scope. CpuLocal retains both the lock allocation and
         // the outer IRQ-off scheduler baton until switch-tail completion.

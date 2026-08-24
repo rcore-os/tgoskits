@@ -126,7 +126,6 @@ static YIELD_THREAD_LOCK_TARGET: AtomicU64 = AtomicU64::new(0);
 static YIELD_THREAD_LOCK_COUNT: AtomicU64 = AtomicU64::new(0);
 static YIELD_THREAD_LOCK_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static OWNER_CONTROL_REARM_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
-static OWNER_CONTROL_REARM_BASELINE: AtomicU64 = AtomicU64::new(0);
 static OWNER_CONTROL_REARM_AFTER_DRAIN: AtomicU64 = AtomicU64::new(0);
 static OWNER_CONTROL_REARM_AFTER_ACK: AtomicU64 = AtomicU64::new(0);
 static OWNER_CONTROL_REARM_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
@@ -819,108 +818,103 @@ pub fn current_schedule_selection_deadline_derivations() -> Result<u64, crate::T
     Ok(remote.schedule_selection_deadline_derivations())
 }
 
-/// Generations after two publications of the same sticky scheduler reason.
+/// Logical publications after requesting the same sticky scheduler reason twice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SchedulerRequestCoalescingGenerations {
-    /// Generation after the first publication.
-    pub after_first: u64,
-    /// Generation after the duplicate publication.
-    pub after_duplicate: u64,
+pub struct SchedulerRequestCoalescingPublications {
+    /// Whether the first request changed the sticky scheduler state.
+    pub first: bool,
+    /// Whether the duplicate request changed the sticky scheduler state.
+    pub duplicate: bool,
 }
 
 /// Publishes the current CPU's sticky owner-work reason twice in one guard.
 pub fn request_current_owner_work_twice()
--> Result<SchedulerRequestCoalescingGenerations, crate::TaskError> {
+-> Result<SchedulerRequestCoalescingPublications, crate::TaskError> {
     let pin = crate::lock::PreemptScope::enter();
     let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
-    remote.request_scheduler_work();
-    let (after_first, ..) = remote.scheduler_request_state_for_test();
-    remote.request_scheduler_work();
-    let (after_duplicate, ..) = remote.scheduler_request_state_for_test();
+    let first = remote.request_scheduler_work_transition_for_test();
+    let duplicate = remote.request_scheduler_work_transition_for_test();
     drop(pin);
-    Ok(SchedulerRequestCoalescingGenerations {
-        after_first,
-        after_duplicate,
-    })
+    Ok(SchedulerRequestCoalescingPublications { first, duplicate })
 }
 
 /// Publishes the current CPU's coupled preempt/owner-work reasons twice.
 pub fn request_current_combined_scheduler_work_twice()
--> Result<SchedulerRequestCoalescingGenerations, crate::TaskError> {
+-> Result<SchedulerRequestCoalescingPublications, crate::TaskError> {
     let pin = crate::lock::PreemptScope::enter();
     let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
-    remote.request_remote_reschedule_with_scheduler_work();
-    let (after_first, ..) = remote.scheduler_request_state_for_test();
-    remote.request_remote_reschedule_with_scheduler_work();
-    let (after_duplicate, ..) = remote.scheduler_request_state_for_test();
+    let first = remote.request_combined_scheduler_work_transition_for_test();
+    let duplicate = remote.request_combined_scheduler_work_transition_for_test();
     drop(pin);
-    Ok(SchedulerRequestCoalescingGenerations {
-        after_first,
-        after_duplicate,
-    })
+    Ok(SchedulerRequestCoalescingPublications { first, duplicate })
 }
 
-/// Scheduler-request generations around one coalesced owner-control node.
+/// Logical head publications around one coalesced owner-control node.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct OwnerControlCoalescingGenerations {
-    /// Generation before the node was first published.
-    pub before: u64,
-    /// Generation after the node gained inbox membership.
-    pub after_first_publication: u64,
-    /// Generation after the same pending node was published again.
-    pub after_coalesced_publication: u64,
+pub struct OwnerControlCoalescingPublications {
+    /// Whether an older sticky owner-work request existed at the head edge.
+    pub previous_owner_work: bool,
+    /// Whether the first membership owned the empty-to-nonempty head edge.
+    pub first_head: bool,
+    /// Whether the already-pending duplicate owned another head edge.
+    pub duplicate_head: bool,
 }
 
 /// Publishes the same owner-control node twice before its owner may drain it.
 pub fn publish_coalesced_owner_control_twice()
--> Result<OwnerControlCoalescingGenerations, crate::TaskError> {
+-> Result<OwnerControlCoalescingPublications, crate::TaskError> {
     let pin = crate::lock::PreemptScope::enter();
     let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
     let owner = remote.owner();
     let message =
         InboxMessage::deadline_refresh_with_payload(ThreadId::from_parts(u32::MAX, 1), owner, 0, 0);
-    let (before, ..) = remote.scheduler_request_state_for_test();
+    // An unrelated sticky request may already exist when a new inbox head is
+    // published. Linux attributes the notification to the llist head edge,
+    // never to a delta in a shared scheduler counter.
+    remote.defer_scheduler_work();
     // SAFETY: this process-lifetime fixture is never moved.
     let node = unsafe { Pin::new_unchecked(&OWNER_CONTROL_COALESCING_NODE) };
+    let (first_result, first_publication) =
+        remote.publish_owner_control_observed_for_test(node, message);
     assert_eq!(
-        remote.publish_owner_control(node, message),
+        first_result,
         PublishResult::Published,
         "the coalescing fixture must begin detached"
     );
-    let (after_first_publication, ..) = remote.scheduler_request_state_for_test();
+    let (duplicate_result, duplicate_publication) =
+        remote.publish_owner_control_observed_for_test(node, message);
     assert_eq!(
-        remote.publish_owner_control(node, message),
+        duplicate_result,
         PublishResult::AlreadyPending,
         "the second publication must coalesce into the pending node"
     );
-    let (after_coalesced_publication, ..) = remote.scheduler_request_state_for_test();
+    let previous_owner_work =
+        first_publication.is_some_and(|publication| publication.previous_owner_work_requested());
     drop(pin);
-    Ok(OwnerControlCoalescingGenerations {
-        before,
-        after_first_publication,
-        after_coalesced_publication,
+    Ok(OwnerControlCoalescingPublications {
+        previous_owner_work,
+        first_head: first_publication.is_some(),
+        duplicate_head: duplicate_publication.is_some(),
     })
 }
 
-/// Scheduler-request generations when a fresh owner-control inbox head is
-/// published after an older owner-work request lost its physical edge.
+/// Head publication when an older sticky owner-work request already exists.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct OwnerControlPendingRequestGenerations {
-    /// Generation owned by the older sticky owner-work request.
-    pub pending_request: u64,
-    /// Generation after the fresh inbox head became visible.
-    pub after_head_publication: u64,
+pub struct OwnerControlPendingRequestPublication {
+    /// Whether the head transition observed the older sticky request.
+    pub previous_owner_work: bool,
+    /// Whether the fresh membership owned a head notification.
+    pub head: bool,
 }
 
 /// Publishes a fresh owner-control inbox head while the sticky owner-work bit
 /// from an older delivery is still set.
 pub fn publish_owner_control_after_pending_request()
--> Result<OwnerControlPendingRequestGenerations, crate::TaskError> {
+-> Result<OwnerControlPendingRequestPublication, crate::TaskError> {
     let pin = crate::lock::PreemptScope::enter();
     let remote = crate::facade::current_cpu_remote().ok_or(crate::TaskError::NotInitialized)?;
     let owner = remote.owner();
     remote.request_scheduler_work();
-    let (pending_request, ..) = remote.scheduler_request_state_for_test();
     let message = InboxMessage::deadline_refresh_with_payload(
         ThreadId::from_parts(u32::MAX - 1, 1),
         owner,
@@ -929,28 +923,27 @@ pub fn publish_owner_control_after_pending_request()
     );
     // SAFETY: this process-lifetime fixture is never moved.
     let node = unsafe { Pin::new_unchecked(&OWNER_CONTROL_PENDING_REQUEST_NODE) };
+    let (result, publication) = remote.publish_owner_control_observed_for_test(node, message);
     assert_eq!(
-        remote.publish_owner_control(node, message),
+        result,
         PublishResult::Published,
         "the pending-request fixture must begin detached"
     );
-    let (after_head_publication, ..) = remote.scheduler_request_state_for_test();
     drop(pin);
-    Ok(OwnerControlPendingRequestGenerations {
-        pending_request,
-        after_head_publication,
+    Ok(OwnerControlPendingRequestPublication {
+        previous_owner_work: publication
+            .is_some_and(|publication| publication.previous_owner_work_requested()),
+        head: publication.is_some(),
     })
 }
 
-/// Scheduler-request generations around one bounded owner-control remainder.
+/// Sticky owner-work state around one bounded owner-control remainder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct OwnerControlRearmGenerations {
-    /// Generation after producers published the complete batch.
-    pub baseline: u64,
-    /// Generation after the first bounded owner drain returned.
-    pub after_drain: u64,
-    /// Generation after the owner acknowledged the drained request.
-    pub after_ack: u64,
+pub struct OwnerControlRearmState {
+    /// Whether owner work was still armed immediately after the bounded drain.
+    pub after_drain: bool,
+    /// Whether the final transaction rearmed the remaining inbox work.
+    pub after_ack: bool,
 }
 
 /// Publishes one more owner-control message than a scheduler pass may drain.
@@ -979,9 +972,7 @@ pub fn publish_bounded_owner_control_remainder() -> Result<(), crate::TaskError>
             "every fixture node must own one distinct inbox membership"
         );
     }
-    let (baseline, ..) = remote.scheduler_request_state_for_test();
     OWNER_CONTROL_REARM_TARGET_CPU.store(owner.as_u32() as u64, Ordering::Relaxed);
-    OWNER_CONTROL_REARM_BASELINE.store(baseline, Ordering::Relaxed);
     OWNER_CONTROL_REARM_AFTER_DRAIN.store(0, Ordering::Relaxed);
     OWNER_CONTROL_REARM_AFTER_ACK.store(0, Ordering::Relaxed);
     OWNER_CONTROL_REARM_STAGE.store(STAGE_ARMED, Ordering::Release);
@@ -989,8 +980,8 @@ pub fn publish_bounded_owner_control_remainder() -> Result<(), crate::TaskError>
     Ok(())
 }
 
-/// Takes the generations once the real owner transaction has acknowledged them.
-pub fn take_bounded_owner_control_rearm() -> Option<OwnerControlRearmGenerations> {
+/// Takes the sticky-state observations after the real owner transaction rearm.
+pub fn take_bounded_owner_control_rearm() -> Option<OwnerControlRearmState> {
     if OWNER_CONTROL_REARM_STAGE
         .compare_exchange(
             STAGE_OWNER_CONTROL_ACKNOWLEDGED,
@@ -1002,20 +993,19 @@ pub fn take_bounded_owner_control_rearm() -> Option<OwnerControlRearmGenerations
     {
         return None;
     }
-    let generations = OwnerControlRearmGenerations {
-        baseline: OWNER_CONTROL_REARM_BASELINE.load(Ordering::Relaxed),
-        after_drain: OWNER_CONTROL_REARM_AFTER_DRAIN.load(Ordering::Relaxed),
-        after_ack: OWNER_CONTROL_REARM_AFTER_ACK.load(Ordering::Relaxed),
+    let state = OwnerControlRearmState {
+        after_drain: OWNER_CONTROL_REARM_AFTER_DRAIN.load(Ordering::Relaxed) != 0,
+        after_ack: OWNER_CONTROL_REARM_AFTER_ACK.load(Ordering::Relaxed) != 0,
     };
     OWNER_CONTROL_REARM_TARGET_CPU.store(0, Ordering::Relaxed);
     OWNER_CONTROL_REARM_STAGE.store(STAGE_IDLE, Ordering::Release);
-    Some(generations)
+    Some(state)
 }
 
 pub(crate) fn record_bounded_owner_control_drain(
     cpu: crate::CpuId,
     pending: bool,
-    generation: u64,
+    owner_work_requested: bool,
 ) {
     if !pending
         || OWNER_CONTROL_REARM_STAGE.load(Ordering::Acquire) != STAGE_ARMED
@@ -1023,7 +1013,11 @@ pub(crate) fn record_bounded_owner_control_drain(
     {
         return;
     }
-    OWNER_CONTROL_REARM_AFTER_DRAIN.store(generation, Ordering::Relaxed);
+    assert!(
+        !owner_work_requested,
+        "the bounded drain must have claimed its original owner-work request"
+    );
+    OWNER_CONTROL_REARM_AFTER_DRAIN.store(u64::from(owner_work_requested), Ordering::Relaxed);
     assert_eq!(
         OWNER_CONTROL_REARM_STAGE.compare_exchange(
             STAGE_ARMED,
@@ -1036,13 +1030,32 @@ pub(crate) fn record_bounded_owner_control_drain(
     );
 }
 
-pub(crate) fn record_bounded_owner_control_ack(cpu: crate::CpuId, generation: u64) {
+pub(crate) fn publish_preempt_before_bounded_owner_control_rearm(cpu: crate::CpuId) {
     if OWNER_CONTROL_REARM_STAGE.load(Ordering::Acquire) != STAGE_OWNER_CONTROL_DRAINED
         || OWNER_CONTROL_REARM_TARGET_CPU.load(Ordering::Relaxed) != cpu.as_u32() as u64
     {
         return;
     }
-    OWNER_CONTROL_REARM_AFTER_ACK.store(generation, Ordering::Relaxed);
+    let remote = crate::facade::current_cpu_remote()
+        .expect("the bounded-drain rearm probe must run on an initialized owner CPU");
+    assert_eq!(remote.owner(), cpu);
+    // Force the exact Linux independence check after the rq decision boundary:
+    // TIF_NEED_RESCHED may become sticky here, but it cannot stand in for the
+    // remaining wake-list membership.
+    remote.request_reschedule();
+    assert!(
+        remote.preemption_requested(),
+        "the rearm probe must leave its independent preemption request sticky"
+    );
+}
+
+pub(crate) fn record_bounded_owner_control_ack(cpu: crate::CpuId, owner_work_requested: bool) {
+    if OWNER_CONTROL_REARM_STAGE.load(Ordering::Acquire) != STAGE_OWNER_CONTROL_DRAINED
+        || OWNER_CONTROL_REARM_TARGET_CPU.load(Ordering::Relaxed) != cpu.as_u32() as u64
+    {
+        return;
+    }
+    OWNER_CONTROL_REARM_AFTER_ACK.store(u64::from(owner_work_requested), Ordering::Relaxed);
     assert_eq!(
         OWNER_CONTROL_REARM_STAGE.compare_exchange(
             STAGE_OWNER_CONTROL_DRAINED,
@@ -1080,7 +1093,7 @@ pub fn cpu_nr_running(cpu: u32) -> Result<usize, crate::TaskError> {
 
 /// Exercises the production publication used after moving a Deadline
 /// reservation away from its previous owner CPU.
-pub fn exercise_detached_deadline_owner_work(cpu: u32) -> Result<u64, crate::TaskError> {
+pub fn exercise_detached_deadline_owner_work(cpu: u32) -> Result<bool, crate::TaskError> {
     let _pin = crate::lock::PreemptScope::enter();
     let cpu = crate::CpuId::new(cpu);
     let system = crate::facade::runtime_task_system()?;

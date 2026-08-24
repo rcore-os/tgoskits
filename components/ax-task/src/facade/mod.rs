@@ -354,20 +354,28 @@ pub fn current_cpu_needs_resched() -> Result<bool, TaskError> {
     unsafe { current_needs_reschedule_pinned() }
 }
 
+/// Clears the current CPU's idle-polling state at the runtime sleep boundary.
+///
+/// # Safety
+///
+/// The runtime must have disabled local interrupts and must prevent migration
+/// through the immediately following sticky-work and clockevent recheck. This
+/// is Linux's `current_clr_polling_and_test()` boundary: work published before
+/// the clear is found by that recheck, while work published afterwards must
+/// own a physical interrupt edge.
+#[doc(hidden)]
+pub unsafe fn finish_current_cpu_idle_polling() -> Result<(), TaskError> {
+    let remote = current_cpu_remote().ok_or(TaskError::NotInitialized)?;
+    remote.finish_idle_wait();
+    Ok(())
+}
+
 /// Executes one lossless idle publication/recheck/WFI iteration.
 pub fn idle_current_cpu_once() -> Result<(), TaskError> {
     validate_schedule_context(RuntimeScheduleOrigin::Preempt)?;
     let may_wait = {
         let cpu = runtime_current_cpu()?;
-        let may_wait = cpu.prepare_idle_wait();
-        if may_wait {
-            // Linux clears TIF_POLLING_NRFLAG before the architecture sleep
-            // commit. Work published before this transition is observed by
-            // the runtime's final IRQ-disabled recheck; work published after
-            // it must create a physical interrupt edge.
-            cpu.finish_idle_wait();
-        }
-        may_wait
+        cpu.prepare_idle_wait()
     };
     if may_wait {
         task_runtime::wait_for_interrupt();

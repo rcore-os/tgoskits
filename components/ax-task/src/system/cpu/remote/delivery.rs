@@ -7,6 +7,19 @@ pub(super) struct RemoteDeliveryState {
     balance_request_node: InboxNode,
 }
 
+#[cfg(feature = "task-test-hooks")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OwnerControlSchedulerPublication {
+    previous_owner_work: bool,
+}
+
+#[cfg(feature = "task-test-hooks")]
+impl OwnerControlSchedulerPublication {
+    pub(crate) const fn previous_owner_work_requested(self) -> bool {
+        self.previous_owner_work
+    }
+}
+
 /// A fully reserved queued-task migration publication.
 ///
 /// The target CPU hotplug lease and the task's intrusive inbox reservation are
@@ -127,6 +140,17 @@ impl CpuRemote {
         node: Pin<&'static InboxNode>,
         message: InboxMessage,
     ) -> PublishResult {
+        self.publish_owner_control_owned_observed(node, message).0
+    }
+
+    fn publish_owner_control_owned_observed(
+        &self,
+        node: Pin<&'static InboxNode>,
+        message: InboxMessage,
+    ) -> (
+        PublishResult,
+        Option<super::scheduler::SchedulerRequestPublication>,
+    ) {
         let _irq = IrqScope::enter();
         let _idle_pull_work = self.begin_idle_pull_work();
         let migration = message.operation() == InboxOperation::Migration;
@@ -140,11 +164,30 @@ impl CpuRemote {
         if migration && result != PublishResult::Published {
             self.release_incoming_migration_demand(message.placement_demand());
         }
-        if result == PublishResult::Published && head_became_non_empty {
+        let scheduler_publication = if result == PublishResult::Published && head_became_non_empty {
             let publication = self.publish_owner_inbox_head_owned();
             self.deliver_scheduler_work_owned(publication);
-        }
-        result
+            Some(publication)
+        } else {
+            None
+        };
+        (result, scheduler_publication)
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn publish_owner_control_observed_for_test(
+        &self,
+        node: Pin<&'static InboxNode>,
+        message: InboxMessage,
+    ) -> (PublishResult, Option<OwnerControlSchedulerPublication>) {
+        let Some(_remote_publication) = self.begin_publication() else {
+            return (PublishResult::WrongKind, None);
+        };
+        let (result, publication) = self.publish_owner_control_owned_observed(node, message);
+        let publication = publication.map(|publication| OwnerControlSchedulerPublication {
+            previous_owner_work: publication.previous_owner_work_requested(),
+        });
+        (result, publication)
     }
 
     pub(crate) fn balance_request_node(&self) -> Pin<&'static InboxNode> {

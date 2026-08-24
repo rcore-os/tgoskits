@@ -398,20 +398,20 @@ impl TaskSystem {
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_park_profile_stage(2);
         if transaction.current_thread() != Some(token.thread()) {
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             return Err(TaskError::StaleThreadId);
         }
         let Some(previous_core) = transaction.current_core() else {
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             return Err(TaskError::NoRunnableThread);
         };
         if !Arc::ptr_eq(&previous_core, &previous_core_hint) {
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             return Err(TaskError::InvalidConfiguration);
         }
         let generation = previous_core.park_generation();
         if generation != token.generation() {
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             return Err(TaskError::StaleThreadId);
         }
         let notified = previous_core.take_park_notification();
@@ -422,7 +422,7 @@ impl TaskSystem {
                     task_runtime::fatal_invariant(0x504b_1101, previous_core.id().as_u64() as usize)
                 });
             cpu.finish_park_preemption(true);
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             token.mark_resolved();
             return Ok(ParkCommit::Notified);
         }
@@ -523,7 +523,7 @@ impl TaskSystem {
             }
         };
         if resumed {
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             drop(previous_sched);
             self.finish_owner_dispatch_commit(
                 cpu.as_mut(),
@@ -643,7 +643,7 @@ impl TaskSystem {
         crate::task_test_hooks::record_park_profile_stage(2);
 
         if previous_core.park_generation() != token.generation() {
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             return Err(TaskError::StaleThreadId);
         }
         if previous_core.take_park_notification() {
@@ -653,7 +653,7 @@ impl TaskSystem {
                     task_runtime::fatal_invariant(0x504b_1111, previous_core.id().as_u64() as usize)
                 });
             cpu.finish_park_preemption(true);
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             token.mark_resolved();
             return Ok(Some(ParkCommit::Notified));
         }
@@ -692,7 +692,7 @@ impl TaskSystem {
             == ParkPublication::Notified
         {
             drop(publication);
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             self.finish_owner_dispatch_commit(
                 cpu.as_mut(),
                 dispatch_commit,
@@ -956,7 +956,7 @@ impl TaskSystem {
                 .is_none_or(|core| !Arc::ptr_eq(&core, &exited_core))
         {
             transaction.adopt_scheduler_request(initial_request);
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             return Err(TaskError::StaleThreadId);
         }
         transaction.adopt_scheduler_request(initial_request);
@@ -1018,7 +1018,7 @@ impl TaskSystem {
         self.validate_owner_runtime_switch_out(cpu.as_ref().get_ref(), &transaction);
         let deadline_rq_observation =
             transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-        transaction.commit_and_acknowledge_scheduler_request();
+        transaction.commit_and_finish_scheduler_request();
         drop(exited_sched);
         let decision = Self::owner_switch_plan(
             Some(&exited_core),

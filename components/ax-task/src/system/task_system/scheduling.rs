@@ -158,7 +158,7 @@ impl TaskSystem {
         let runtime_overrun_work = self.sync_owner_current_dispatch_in_rq(&mut transaction);
         let deadline_rq_observation =
             transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-        transaction.commit_and_acknowledge_scheduler_request();
+        transaction.commit_and_finish_scheduler_request();
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::complete_no_switch_thread_lock_probe(current.id());
         if let Some(core) = runtime_overrun_work {
@@ -559,7 +559,8 @@ impl TaskSystem {
             let _settled = transaction.settle_current(0);
         }
         // This claim is the decision boundary: requests published by current
-        // accounting participate in this pass; later generations do not.
+        // accounting participate in this pass; later sticky publications stay
+        // set for the scheduler loop's final recheck.
         let request = transaction.merge_scheduler_request();
         if transaction
             .current()
@@ -572,7 +573,7 @@ impl TaskSystem {
             // `commit_park`. A real preemption request is kept separately and
             // restored only if the park is cancelled.
             cpu.defer_park_preemption(request.preempt_requested());
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             return Ok(SchedulerOutcome::ParkingDeferred);
         }
         let switch_requested = request.preempt_requested();
@@ -616,9 +617,9 @@ impl TaskSystem {
             );
             return Ok(self.finish_requested_preemption(cpu.as_mut(), commit));
         }
-        // Preserve the merged claim locally while releasing rq. The request
-        // generation remains unacknowledged, so publications in this gap are
-        // merged by the second transaction instead of being lost.
+        // Preserve the merged preemption decision while releasing rq.
+        // Publications in this gap leave their sticky bits set and are merged
+        // by the second transaction instead of being lost.
         transaction.commit();
 
         #[cfg(feature = "task-test-hooks")]
@@ -803,7 +804,7 @@ impl TaskSystem {
                 );
                 let deadline_rq_observation =
                     transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-                transaction.commit_and_acknowledge_scheduler_request();
+                transaction.commit_and_finish_scheduler_request();
                 drop(previous_sched);
                 let endpoint = previous_endpoint.unwrap_or_else(|| {
                     task_runtime::fatal_invariant(0x5343_1209, core.id().as_u64() as usize)
@@ -970,7 +971,7 @@ impl TaskSystem {
             );
             let deadline_rq_observation =
                 transaction.scheduler_deadline_rq_observation(cpu.as_ref().get_ref());
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
             let endpoint = previous_endpoint.unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5343_1215, core.id().as_u64() as usize)
             });

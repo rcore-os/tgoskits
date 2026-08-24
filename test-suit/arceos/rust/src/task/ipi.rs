@@ -350,27 +350,27 @@ fn verify_remote_owner_work_delivery(sender_cpu: usize, target_cpu: usize) {
 
 fn verify_detached_deadline_owner_uses_one_publication(target_cpu: usize) {
     let target_cpu = u32::try_from(target_cpu).expect("test CPU id must fit in u32");
-    assert_eq!(
+    assert!(
         task_test_hooks::exercise_detached_deadline_owner_work(target_cpu)
             .expect("failed to publish detached Deadline owner work"),
-        1,
-        "one Deadline reservation detach must publish one owner-work generation",
+        "one Deadline reservation detach must complete its owner-work delivery",
     );
 }
 
-fn verify_bounded_owner_control_uses_one_successor_generation() {
+fn verify_bounded_owner_control_rearms_sticky_work() {
     task_test_hooks::publish_bounded_owner_control_remainder()
         .expect("failed to publish a bounded owner-control remainder");
     for _ in 0..256 {
-        if let Some(generations) = task_test_hooks::take_bounded_owner_control_rearm() {
-            assert_eq!(
-                generations.after_drain, generations.baseline,
-                "the bounded drain must leave successor publication to its final acknowledgement"
+        if let Some(state) = task_test_hooks::take_bounded_owner_control_rearm() {
+            assert!(
+                !state.after_drain,
+                "the claimed owner-work bit must stay clear while the probe publishes an \
+                 independent preemption request"
             );
-            assert_eq!(
-                generations.after_ack,
-                generations.baseline + 1,
-                "one owner-control remainder must publish exactly one successor generation"
+            assert!(
+                state.after_ack,
+                "a bounded owner-control remainder must rearm sticky owner work independently of \
+                 preemption"
             );
             return;
         }
@@ -380,42 +380,48 @@ fn verify_bounded_owner_control_uses_one_successor_generation() {
 }
 
 fn verify_pending_owner_control_coalesces_scheduler_request() {
-    let generations = task_test_hooks::publish_coalesced_owner_control_twice()
+    let publications = task_test_hooks::publish_coalesced_owner_control_twice()
         .expect("failed to publish one coalesced owner-control node");
-    assert_eq!(
-        generations.after_first_publication,
-        generations.before + 1,
-        "one new owner-control membership must publish one scheduler generation"
+    assert!(
+        publications.previous_owner_work,
+        "the deterministic interleaving must retain unrelated sticky owner work"
     );
-    assert_eq!(
-        generations.after_coalesced_publication, generations.after_first_publication,
-        "an already-pending owner-control node must not create scheduler work"
+    assert!(
+        publications.first_head,
+        "one new owner-control membership must own the inbox head notification"
+    );
+    assert!(
+        !publications.duplicate_head,
+        "an already-pending owner-control node must not own another head notification"
     );
 }
 
 fn verify_fresh_owner_control_head_rearms_a_pending_request() {
-    let generations = task_test_hooks::publish_owner_control_after_pending_request()
+    let publication = task_test_hooks::publish_owner_control_after_pending_request()
         .expect("failed to publish owner control after a pending request");
-    assert_eq!(
-        generations.after_head_publication,
-        generations.pending_request + 1,
-        "a fresh owner-control inbox head must own a new scheduler delivery generation"
+    assert!(
+        publication.previous_owner_work,
+        "the fresh head must observe the older sticky owner-work request"
+    );
+    assert!(
+        publication.head,
+        "a fresh owner-control inbox head must own a new physical notification attempt"
     );
 }
 
 fn verify_sticky_scheduler_reasons_coalesce() {
     let owner_work = task_test_hooks::request_current_owner_work_twice()
         .expect("failed to publish duplicate current-CPU owner work");
-    assert_eq!(
-        owner_work.after_duplicate, owner_work.after_first,
-        "a pending owner-work reason must not create another generation"
+    assert!(
+        owner_work.first && !owner_work.duplicate,
+        "a pending owner-work reason must suppress a duplicate logical publication"
     );
 
     let combined = task_test_hooks::request_current_combined_scheduler_work_twice()
         .expect("failed to publish duplicate combined scheduler work");
-    assert_eq!(
-        combined.after_duplicate, combined.after_first,
-        "pending preempt/owner-work reasons must share their existing generation"
+    assert!(
+        combined.first && !combined.duplicate,
+        "pending preempt/owner-work reasons must remain one sticky publication"
     );
 }
 
@@ -505,7 +511,7 @@ pub fn run() -> crate::TestResult {
     verify_sticky_scheduler_reasons_coalesce();
     verify_fresh_owner_control_head_rearms_a_pending_request();
     verify_pending_owner_control_coalesces_scheduler_request();
-    verify_bounded_owner_control_uses_one_successor_generation();
+    verify_bounded_owner_control_rearms_sticky_work();
     verify_detached_deadline_owner_uses_one_publication(target_cpu);
     verify_remote_owner_work_delivery(sender_cpus[0], target_cpu);
     exercise_irq_masked_idle_wake(target_cpu, sender_cpus[0]);

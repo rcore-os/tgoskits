@@ -449,7 +449,7 @@ impl TaskSystem {
         let drained = self.drain_owner_control_inner(cpu.as_mut())?;
         if drained.pending {
             // This standalone PI safe point has no scheduler transaction whose
-            // final acknowledgement can publish the successor generation.
+            // final recheck can rearm the detached bounded remainder.
             cpu.defer_scheduler_work();
         }
         Ok(drained)
@@ -762,10 +762,9 @@ impl TaskSystem {
     ///
     /// Owner-control inboxes, rather than `need_resched`, are the source of
     /// truth for migration, policy, and deferred owner work. A bounded
-    /// owner-work remainder is assigned a fresh logical
-    /// generation by the scheduler transaction's final acknowledgement. Like
-    /// Linux `irq_work_single()`, the drain itself only consumes the claimed
-    /// batch.
+    /// owner-work remainder is rearmed by the scheduler transaction's final
+    /// recheck. Like Linux `irq_work_single()`, the drain itself only consumes
+    /// the claimed batch.
     pub(super) fn drain_owner_work(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<(), TaskError> {
         let policy_pending = cpu.remote().owner_control_inbox().has_pending();
         let _drain = policy_pending
@@ -775,7 +774,7 @@ impl TaskSystem {
         crate::task_test_hooks::record_bounded_owner_control_drain(
             cpu.owner(),
             _drain.is_some_and(OwnerControlDrain::pending),
-            cpu.remote().scheduler_request_state_for_test().0,
+            cpu.remote().owner_work_requested_for_test(),
         );
         Ok(())
     }

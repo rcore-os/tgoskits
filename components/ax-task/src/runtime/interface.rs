@@ -68,8 +68,8 @@ pub trait TaskRuntime {
     ///
     /// This is the runtime equivalent of Linux's `need_resched()` safe-point
     /// query. It must read the architecture-selected current state without
-    /// disabling preemption, claiming scheduler work, or acknowledging a
-    /// scheduler-request generation. A `false` result is only a snapshot.
+    /// disabling preemption or claiming scheduler work. A `false` result is
+    /// only a snapshot.
     fn current_preemption_pending() -> bool;
 
     /// Returns the Arc-backed [`crate::CpuRemote`] endpoint for `cpu`.
@@ -294,24 +294,27 @@ pub trait TaskRuntime {
 
     /// Notifies `cpu` after the scheduler has published owner work.
     ///
-    /// The logical request generation remains owned by ax-task. The runtime
-    /// transports only a coalescible physical edge, matching Linux's split
-    /// between `TIF_NEED_RESCHED`/rq state and the reschedule IPI. Success
+    /// Sticky scheduler flags and owner inbox membership remain owned by
+    /// ax-task. The runtime transports only a coalescible physical edge,
+    /// matching Linux's split between `TIF_NEED_RESCHED`/wake-list state and
+    /// the reschedule or call-function IPI. Success
     /// means either a fresh edge was sent or an in-flight edge already covers
     /// this publication; every other status is an unrecoverable lifecycle
     /// violation.
     fn notify_scheduler_cpu(cpu: RuntimeCpuId) -> RuntimeStatus;
 
-    /// Commits one local interrupt wait after the scheduler clears polling.
+    /// Commits one local interrupt wait after the scheduler publishes polling.
     ///
-    /// The implementation must disable local interrupts, recheck sticky task
-    /// work and physical clockevent state, stop the periodic scheduler tick,
-    /// and use the architecture's atomic IRQ-enable-and-wait primitive only
-    /// when all sources remain idle. Task deadlines stay armed while the
-    /// scheduler tick is stopped. Work published before polling was cleared is
-    /// observed by this final recheck; work published afterwards owns a
-    /// physical interrupt edge. The tick must restart before runnable work can
-    /// leave the idle loop, but may remain stopped across non-scheduling IRQs.
+    /// The implementation must disable local interrupts, call
+    /// `finish_current_cpu_idle_polling`, and immediately recheck sticky task
+    /// work and physical clockevent state before stopping the periodic tick or
+    /// sleeping. It may use the architecture's atomic IRQ-enable-and-wait
+    /// primitive only when all sources remain idle. Task deadlines stay armed
+    /// while the scheduler tick is stopped. Work published before polling was
+    /// cleared is observed by the final recheck; work published afterwards
+    /// owns a physical interrupt edge. The tick must restart before runnable
+    /// work can leave the idle loop, but may remain stopped across
+    /// non-scheduling IRQs.
     fn wait_for_interrupt();
 
     /// Allocates a guarded stack satisfying `request`.

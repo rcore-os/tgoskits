@@ -323,6 +323,13 @@ impl_task_runtime! {
 
         fn wait_for_interrupt() {
             ax_hal::asm::disable_irqs();
+            unsafe {
+                // SAFETY: local IRQs remain disabled through the immediately
+                // following task-work and clockevent recheck, matching Linux
+                // `current_clr_polling_and_test()`.
+                ax_task::finish_current_cpu_idle_polling()
+            }
+            .expect("idle handoff requires an initialized current CPU");
             let mut now = crate::clock_event_runtime::monotonic_now();
             let mut needs_reschedule = ax_task::current_cpu_needs_resched()
                 .expect("idle handoff requires an initialized current CPU");

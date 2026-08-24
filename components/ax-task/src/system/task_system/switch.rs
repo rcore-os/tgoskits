@@ -22,14 +22,14 @@ impl TaskSystem {
             cpu.as_ref().get_ref().switch_handoff().is_some(),
         );
         if retain_rq_lock {
-            let baton = transaction.commit_and_handoff_scheduler_request();
+            let baton = transaction.commit_and_handoff_scheduler_work();
             cpu.as_mut()
                 .install_switch_rq_baton(baton)
                 .unwrap_or_else(|_| {
                     task_runtime::fatal_invariant(0x5343_111a, cpu.owner().as_u32() as usize)
                 });
         } else {
-            transaction.commit_and_acknowledge_scheduler_request();
+            transaction.commit_and_finish_scheduler_request();
         }
     }
 

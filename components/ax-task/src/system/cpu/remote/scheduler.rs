@@ -8,32 +8,37 @@ const REQUEST_REASON_MASK: u64 = REQUEST_PREEMPT | REQUEST_OWNER_WORK;
 const REQUEST_ENTRY_MASK: u64 = REQUEST_PREEMPT | REQUEST_OWNER_WORK;
 const REQUEST_IDLE_POLLING: u64 = 1 << 3;
 const REQUEST_PARK_PREEMPT_DEFERRED: u64 = 1 << 4;
-const REQUEST_GENERATION_SHIFT: u32 = 8;
-const REQUEST_FLAGS_MASK: u64 = (1 << REQUEST_GENERATION_SHIFT) - 1;
-const REQUEST_GENERATION_MAX: u64 = u64::MAX >> REQUEST_GENERATION_SHIFT;
 const DEFERRED_SCHEDULER_WORK_OFFLINE_INVARIANT: u32 = 0x4453_574f;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SchedulerRequestDelivery {
-    /// The owner is in the IRQ-disabled idle polling region and will observe
-    /// the sticky work bit before committing to sleep.
+    /// The owner is in the idle polling protocol and will observe the sticky
+    /// work bit before committing to sleep.
     PollingOwner,
     /// The runtime must notify the shared physical IPI delivery edge.
     ///
-    /// The logical request generation remains entirely in ax-task. The
-    /// runtime transports only a coalescible edge and cannot acknowledge or
-    /// replace that logical state.
+    /// The runtime transports only a coalescible edge. Logical ownership
+    /// remains in the sticky request bits and the owner inbox, matching
+    /// Linux's split between `TIF_NEED_RESCHED`/`wake_list` and the IPI.
     DoorbellRequired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchedulerRequestPublication {
     delivery: SchedulerRequestDelivery,
+    #[cfg(feature = "task-test-hooks")]
+    previous_owner_work: bool,
+}
+
+impl SchedulerRequestPublication {
+    #[cfg(feature = "task-test-hooks")]
+    pub(super) const fn previous_owner_work_requested(self) -> bool {
+        self.previous_owner_work
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SchedulerRequestClaim {
-    generation: u64,
     preempt: bool,
 }
 
@@ -44,11 +49,6 @@ impl SchedulerRequestClaim {
 
     pub(crate) const fn merge(self, other: Self) -> Self {
         Self {
-            generation: if self.generation > other.generation {
-                self.generation
-            } else {
-                other.generation
-            },
             preempt: self.preempt || other.preempt,
         }
     }
@@ -57,20 +57,14 @@ impl SchedulerRequestClaim {
 #[derive(Debug)]
 pub(super) struct SchedulerRequestState {
     request: AtomicU64,
-    acknowledged_generation: AtomicU64,
 }
 
 impl SchedulerRequestState {
     pub(super) const fn new() -> Self {
         Self {
             request: AtomicU64::new(0),
-            acknowledged_generation: AtomicU64::new(0),
         }
     }
-}
-
-const fn request_generation(word: u64) -> u64 {
-    word >> REQUEST_GENERATION_SHIFT
 }
 
 impl CpuRemote {
@@ -110,8 +104,8 @@ impl CpuRemote {
     /// physical scheduler doorbell.
     ///
     /// One rq transaction may make both facts true. They share transport but
-    /// remain separate sticky bits in one logical generation, matching Linux's
-    /// rule that scheduler state and deferred work are visible before the IPI.
+    /// remain separate sticky bits, matching Linux's rule that scheduler state
+    /// and deferred work are visible before the IPI.
     pub(crate) fn request_remote_reschedule_with_scheduler_work(&self) {
         let Some(_publication) = self.begin_owner_delivery() else {
             return;
@@ -133,6 +127,34 @@ impl CpuRemote {
         self.request_scheduler_work_delivery()
     }
 
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn request_scheduler_work_transition_for_test(&self) -> bool {
+        let Some(_publication) = self.begin_owner_delivery() else {
+            return false;
+        };
+        let _irq = IrqScope::enter();
+        let Some(publication) = self.request_scheduler_work_owned() else {
+            return false;
+        };
+        self.deliver_scheduler_work_owned(publication);
+        true
+    }
+
+    #[cfg(feature = "task-test-hooks")]
+    pub(crate) fn request_combined_scheduler_work_transition_for_test(&self) -> bool {
+        let Some(_publication) = self.begin_owner_delivery() else {
+            return false;
+        };
+        let _irq = IrqScope::enter();
+        let Some(publication) =
+            self.publish_scheduler_request_owned(REQUEST_PREEMPT | REQUEST_OWNER_WORK)
+        else {
+            return false;
+        };
+        self.deliver_scheduler_work_owned(publication);
+        true
+    }
+
     fn request_scheduler_work_delivery(&self) -> bool {
         let Some(_publication) = self.begin_owner_delivery() else {
             return false;
@@ -146,57 +168,31 @@ impl CpuRemote {
         self.publish_scheduler_request_owned(REQUEST_OWNER_WORK)
     }
 
-    /// Publishes a new owner-work generation for a fresh inbox head.
+    /// Publishes scheduler state for a fresh owner-inbox head.
     ///
-    /// The sticky owner-work bit may belong to an older physical doorbell that
-    /// the target IRQ handler has already claimed. An empty-to-nonempty inbox
-    /// transition therefore owns a new logical generation even when that bit
-    /// is still set, so the runtime can acquire a fresh delivery edge.
+    /// Like Linux `llist_add()`, the empty-to-nonempty inbox transition itself
+    /// owns a physical notification attempt. It must therefore return a
+    /// publication even when the sticky owner-work bit was already set: that
+    /// older bit may belong to an IPI edge the target has already claimed.
     pub(super) fn publish_owner_inbox_head_owned(&self) -> SchedulerRequestPublication {
-        self.force_scheduler_request_owned(REQUEST_OWNER_WORK)
+        let previous = self
+            .scheduler_request
+            .request
+            .fetch_or(REQUEST_OWNER_WORK, Ordering::AcqRel);
+        Self::scheduler_request_publication(previous)
     }
 
     fn publish_scheduler_request_owned(&self, reason: u64) -> Option<SchedulerRequestPublication> {
         debug_assert_ne!(reason & REQUEST_REASON_MASK, 0);
-        let publication = self.scheduler_request.request.try_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |word| {
-                if word & reason == reason {
-                    return None;
-                }
-                let generation = request_generation(word).checked_add(1)?;
-                if generation > REQUEST_GENERATION_MAX {
-                    return None;
-                }
-                Some(
-                    (generation << REQUEST_GENERATION_SHIFT) | (word & REQUEST_FLAGS_MASK) | reason,
-                )
-            },
-        );
-        match publication {
-            Ok(previous) => Some(Self::scheduler_request_publication(previous)),
-            Err(current) if current & reason == reason => None,
-            Err(_) => panic!("scheduler request generation exhausted"),
-        }
-    }
-
-    fn force_scheduler_request_owned(&self, reason: u64) -> SchedulerRequestPublication {
-        debug_assert_ne!(reason & REQUEST_REASON_MASK, 0);
         let previous = self
             .scheduler_request
             .request
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |word| {
-                let generation = request_generation(word).checked_add(1)?;
-                if generation > REQUEST_GENERATION_MAX {
-                    return None;
-                }
-                Some(
-                    (generation << REQUEST_GENERATION_SHIFT) | (word & REQUEST_FLAGS_MASK) | reason,
-                )
-            })
-            .unwrap_or_else(|_| panic!("scheduler request generation exhausted"));
-        Self::scheduler_request_publication(previous)
+            .fetch_or(reason, Ordering::AcqRel);
+        if previous & reason == reason {
+            None
+        } else {
+            Some(Self::scheduler_request_publication(previous))
+        }
     }
 
     fn scheduler_request_publication(previous: u64) -> SchedulerRequestPublication {
@@ -205,7 +201,11 @@ impl CpuRemote {
         } else {
             SchedulerRequestDelivery::DoorbellRequired
         };
-        SchedulerRequestPublication { delivery }
+        SchedulerRequestPublication {
+            delivery,
+            #[cfg(feature = "task-test-hooks")]
+            previous_owner_work: previous & REQUEST_OWNER_WORK != 0,
+        }
     }
 
     pub(crate) fn kick_scheduler_work(&self) -> bool {
@@ -235,7 +235,9 @@ impl CpuRemote {
             );
         };
         let _irq = IrqScope::enter();
-        let _publication = self.force_scheduler_request_owned(REQUEST_OWNER_WORK);
+        self.scheduler_request
+            .request
+            .fetch_or(REQUEST_OWNER_WORK, Ordering::Release);
         self.ring_scheduler_doorbell();
     }
 
@@ -277,13 +279,7 @@ impl CpuRemote {
 
     /// Tests the sticky reschedule request without consuming it.
     pub fn needs_reschedule(&self) -> bool {
-        let request = self.scheduler_request.request.load(Ordering::Acquire);
-        request & REQUEST_REASON_MASK != 0
-            || request_generation(request)
-                != self
-                    .scheduler_request
-                    .acknowledged_generation
-                    .load(Ordering::Acquire)
+        self.scheduler_request.request.load(Ordering::Acquire) & REQUEST_REASON_MASK != 0
     }
 
     /// Returns whether a sticky preemption request owns scheduler progress.
@@ -300,43 +296,34 @@ impl CpuRemote {
             .request
             .fetch_and(!REQUEST_ENTRY_MASK, Ordering::AcqRel);
         SchedulerRequestClaim {
-            generation: request_generation(request),
             preempt: request & REQUEST_PREEMPT != 0,
         }
     }
 
-    pub(crate) fn acknowledge_scheduler_request(&self, claim: SchedulerRequestClaim) {
-        self.scheduler_request
-            .acknowledged_generation
-            .store(claim.generation, Ordering::Release);
+    pub(crate) fn finish_scheduler_request(&self) {
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::publish_preempt_before_bounded_owner_control_rearm(self.owner);
         let request = self.scheduler_request.request.load(Ordering::Acquire);
-        if self.has_remote_work() && request & REQUEST_ENTRY_MASK == 0 {
+        if self.has_remote_work() && request & REQUEST_OWNER_WORK == 0 {
             self.request_scheduler_work();
         }
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_bounded_owner_control_ack(
             self.owner,
-            self.scheduler_request_state_for_test().0,
+            self.owner_work_requested_for_test(),
         );
     }
 
     #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn take_preempt_requested(&self) -> bool {
         let claim = self.claim_scheduler_request();
-        self.acknowledge_scheduler_request(claim);
+        self.finish_scheduler_request();
         claim.preempt_requested()
     }
 
     #[cfg(any(test, feature = "task-test-hooks", all(axtest, feature = "axtest")))]
-    pub(crate) fn scheduler_request_state_for_test(&self) -> (u64, u64, u64) {
-        let request = self.scheduler_request.request.load(Ordering::Acquire);
-        (
-            request_generation(request),
-            self.scheduler_request
-                .acknowledged_generation
-                .load(Ordering::Acquire),
-            request & REQUEST_REASON_MASK,
-        )
+    pub(crate) fn owner_work_requested_for_test(&self) -> bool {
+        self.scheduler_request.request.load(Ordering::Acquire) & REQUEST_OWNER_WORK != 0
     }
 
     pub(crate) fn defer_park_preemption(&self, requested: bool) {
@@ -391,8 +378,5 @@ impl CpuRemote {
 
     pub(super) fn reset_scheduler_for_offline(&self) {
         self.scheduler_request.request.store(0, Ordering::Relaxed);
-        self.scheduler_request
-            .acknowledged_generation
-            .store(0, Ordering::Relaxed);
     }
 }
