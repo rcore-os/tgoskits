@@ -222,28 +222,24 @@ fn commit(ifname: &str) -> StarryResult<usize> {
     match mode {
         StagedMode::Station => {
             let ssid = pending.ssid.ok_or(StarryError::InvalidInput)?;
-            let ssid = core::str::from_utf8(&ssid).map_err(|_| StarryError::InvalidInput)?;
+            let ssid = String::from_utf8(ssid).map_err(|_| StarryError::InvalidInput)?;
             let password = pending.passphrase.unwrap_or_default();
-            ax_net::reconfigure_wifi(
-                ifname,
-                ax_net::WifiMode::Station {
-                    ssid,
-                    password: &password,
-                },
-            )?;
+            ax_net::reconfigure_wifi(ifname, ax_net::WifiTransaction::connect(ssid, password))?;
         }
         StagedMode::AccessPoint => {
             let ssid = pending.ssid.ok_or(StarryError::InvalidInput)?;
             let channel = pending.channel.unwrap_or(AP_CHANNEL_DEFAULT);
             ax_net::reconfigure_wifi(
                 ifname,
-                ax_net::WifiMode::AccessPoint {
-                    ssid: &ssid,
+                ax_net::WifiTransaction::open_access_point(
+                    ssid,
                     channel,
-                    ip: AP_SERVER_IP,
-                    prefix_len: AP_PREFIX_LEN,
-                    dhcp_client_ip: Some(AP_CLIENT_IP),
-                },
+                    ax_net::WifiLinkPolicy {
+                        ip: AP_SERVER_IP,
+                        prefix_len: AP_PREFIX_LEN,
+                        dhcp_server_client_ip: Some(AP_CLIENT_IP),
+                    },
+                ),
             )?;
         }
     }

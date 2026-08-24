@@ -1,13 +1,10 @@
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
-use atomic_waker::AtomicWaker;
 use ax_sync::SpinLock as Mutex;
+use rd_net::DmaBuffer;
 
-use crate::{
-    common::SDIOWIFI_INTR_CONFIG_REG,
-    fdrv::core::{pollset::PollSet, sdio_transport::SdioTransport},
-};
+use crate::{common::SDIOWIFI_INTR_CONFIG_REG, fdrv::core::sdio_transport::SdioTransport};
 
 /// 总线状态
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -23,6 +20,9 @@ pub struct TxFrame {
     /// true: data 为完整 802.11 管理帧(raw)，按 TXU_CNTRL_MGMT 发送，
     /// 固件不做以太网→802.11 转换；false: data 为以太网帧。
     pub is_mgmt: bool,
+    /// Runtime DMA ownership returned only after the SDIO FIFO consumes this
+    /// frame. Internal management/control frames carry no token.
+    pub completion: Option<DmaBuffer>,
 }
 
 /// 连接状态
@@ -79,7 +79,6 @@ pub struct CmdState {
     pub expected_cfm_id: AtomicU16,
     pub rsp_error: AtomicBool,
     pub rsp_queue: Mutex<VecDeque<Vec<u8>>>,
-    pub rsp_pollset: PollSet,
 }
 
 impl Default for CmdState {
@@ -96,23 +95,18 @@ impl CmdState {
             expected_cfm_id: AtomicU16::new(0),
             rsp_error: AtomicBool::new(false),
             rsp_queue: Mutex::new(VecDeque::new()),
-            rsp_pollset: PollSet::new(),
         }
     }
 }
 
 /// RX 状态
 pub struct RxState {
-    /// SDIO 卡中断唤醒。由 ISR (`sdio1_irq_handler`) 唤醒、RX 线程注册，
-    /// 是唯一跨中断/线程共享的唤醒点，故用无锁的 `AtomicWaker`（单 waiter）。
-    pub irq_waker: AtomicWaker,
+    /// Published by the move-only hard endpoint and consumed by the fixed-CPU
+    /// queue executor.
     pub irq_pending: AtomicBool,
     pub data_queue: Mutex<VecDeque<Vec<u8>>>,
-    pub data_pollset: PollSet,
     pub eapol_queue: Mutex<VecDeque<Vec<u8>>>,
-    pub eapol_pollset: PollSet,
     pub tx_cfm_queue: Mutex<VecDeque<Vec<u8>>>,
-    pub tx_cfm_pollset: PollSet,
 }
 
 impl Default for RxState {
@@ -124,14 +118,10 @@ impl Default for RxState {
 impl RxState {
     pub fn new() -> Self {
         Self {
-            irq_waker: AtomicWaker::new(),
             irq_pending: AtomicBool::new(false),
             data_queue: Mutex::new(VecDeque::new()),
-            data_pollset: PollSet::new(),
             eapol_queue: Mutex::new(VecDeque::new()),
-            eapol_pollset: PollSet::new(),
             tx_cfm_queue: Mutex::new(VecDeque::new()),
-            tx_cfm_pollset: PollSet::new(),
         }
     }
 }
@@ -140,9 +130,8 @@ impl RxState {
 pub struct TxState {
     pub queue: Mutex<VecDeque<TxFrame>>,
     pub pktcnt: AtomicU32,
-    pub wake_pollset: PollSet,
+    pub completed: Mutex<VecDeque<DmaBuffer>>,
     pub ind_queue: Mutex<VecDeque<Vec<u8>>>,
-    pub ind_pollset: PollSet,
 }
 
 impl Default for TxState {
@@ -156,9 +145,8 @@ impl TxState {
         Self {
             queue: Mutex::new(VecDeque::new()),
             pktcnt: AtomicU32::new(0),
-            wake_pollset: PollSet::new(),
+            completed: Mutex::new(VecDeque::new()),
             ind_queue: Mutex::new(VecDeque::new()),
-            ind_pollset: PollSet::new(),
         }
     }
 }
@@ -174,7 +162,6 @@ pub type RegisteredSta = ([u8; 6], u8, bool, u8);
 /// 线程里 send_cmd 会死锁。
 pub struct ApState {
     pub assoc_queue: Mutex<VecDeque<Vec<u8>>>,
-    pub assoc_pollset: PollSet,
     /// 待从固件 STA 表删除的 sta_idx 队列。deauth/disassoc 在 RX 线程触发,但
     /// MM_STA_DEL_REQ 走 send_cmd 阻塞等 CFM(CFM 由 RX 线程处理)——在 RX 线程里
     /// 直接发会死锁,故入队交给 AP worker 线程执行(与 assoc_queue 同理)。
@@ -199,7 +186,6 @@ impl ApState {
     pub fn new() -> Self {
         Self {
             assoc_queue: Mutex::new(VecDeque::new()),
-            assoc_pollset: PollSet::new(),
             sta_del_queue: Mutex::new(VecDeque::new()),
             registered_stas: Mutex::new(Vec::new()),
         }
@@ -243,84 +229,21 @@ impl WifiBus {
         })
     }
 
-    /// 关闭总线，停止所有线程
+    /// Quiesces the owner-controlled bus and rejects future work.
     pub fn shutdown(self: &Arc<Self>) {
         *self.state.lock() = BusState::Down;
 
         let _ = self.transport.write_byte(1, SDIOWIFI_INTR_CONFIG_REG, 0x00);
         self.transport.disable_irq();
 
-        self.tx.wake_pollset.wake();
         self.tx.queue.lock().clear();
-
-        self.rx.irq_waker.wake();
-
+        self.tx.completed.lock().clear();
         self.rx.data_queue.lock().clear();
-
-        self.ap.assoc_pollset.wake();
         self.ap.assoc_queue.lock().clear();
-
         self.cmd.rsp_error.store(true, Ordering::Release);
-        self.cmd.rsp_pollset.wake();
-        self.rx.tx_cfm_pollset.wake();
-
-        self.rx.eapol_pollset.wake();
         self.rx.eapol_queue.lock().clear();
-
-        self.tx.ind_pollset.wake();
         self.tx.ind_queue.lock().clear();
-
-        clear_global_bus();
 
         log::debug!("[wifi-bus] shutdown complete");
     }
-}
-
-/// 全局 WifiBus 引用
-static WIFI_BUS_PTR: AtomicUsize = AtomicUsize::new(0);
-
-pub fn set_global_bus(bus: &Arc<WifiBus>) {
-    let ptr = Arc::into_raw(Arc::clone(bus));
-    let old = WIFI_BUS_PTR.swap(ptr as usize, Ordering::AcqRel);
-    if old != 0 {
-        unsafe {
-            Arc::from_raw(old as *const WifiBus);
-        }
-    }
-}
-
-pub fn get_global_bus() -> Option<&'static WifiBus> {
-    let ptr = WIFI_BUS_PTR.load(Ordering::Acquire);
-    if ptr == 0 {
-        None
-    } else {
-        unsafe { Some(&*(ptr as *const WifiBus)) }
-    }
-}
-
-pub fn clear_global_bus() {
-    let old = WIFI_BUS_PTR.swap(0, Ordering::AcqRel);
-    if old != 0 {
-        unsafe {
-            Arc::from_raw(old as *const WifiBus);
-        }
-    }
-}
-
-use core::sync::atomic::AtomicU64;
-pub(crate) static IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// PLIC IRQ #38 处理函数
-///
-/// 约束：不持锁、不分配堆、不调度。仅操作 Atomic + mask_card_irq + waker.wake()
-pub fn sdio1_irq_handler() {
-    IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
-
-    let Some(bus) = get_global_bus() else { return };
-
-    // 屏蔽 CARD_INT，防止电平触发导致 ISR 重入
-    bus.transport.mask_card_irq();
-
-    bus.rx.irq_pending.store(true, Ordering::Release);
-    bus.rx.irq_waker.wake();
 }

@@ -27,7 +27,7 @@ sidebar_label: "测试与限制"
 
 ### 2.1 运行方式
 
-`ax-net` 单元测试通过 `host-test` feature 编译可在宿主机执行的路由、绑定和控制面逻辑，不启动 QEMU 或真实 NIC。该命令适合快速验证纯 Rust 状态转换，但不能替代 StarryOS ABI 或设备 Worker 的端到端覆盖。
+`ax-net` 单元测试通过 `host-test` feature 编译可在宿主机执行的路由、绑定、控制面、poll-group 状态机与 generation 逻辑，不启动 QEMU 或真实 NIC。该命令适合快速验证纯 Rust 状态转换，但不能替代 StarryOS ABI 或 queue executor/真实 IRQ 的端到端覆盖。
 
 ```bash
 cargo test -p ax-net --features host-test
@@ -132,7 +132,7 @@ TCP 监听表测试位于 `listen_table.rs`，验证 wildcard/具体地址 liste
 | `socket_priority_matches_unprivileged_linux_range` | `SO_PRIORITY` 只接受 `0..=6` |
 | `ip_tos_storage_masks_user_controlled_ecn_bits` | `IP_TOS` 清除用户可控 ECN 位 |
 
-轮询、Ethernet 与统计还有专门覆盖：`synchronous_flush_waits_for_active_poll_owner` 验证 required ownership；`poll_timeout_wakes_devices_as_polling_fallback` 验证定时兜底；`send_to_wire_len_respects_eth_zlen_padding`、ARP deferred frame、malformed frame 和 pending buffer 测试验证 `/proc/net/dev` 的 L2 长度/error/drop 口径。`net/ax-net/tests/std.rs` 的 6 个 public API 集成测试仅在 `host-test` feature 下构建。
+queue runtime 与统计还有专门覆盖：protocol generation 测试验证同步 flush 不取得第二 ownership；状态机穷举验证 `MISSED`、rearm window 与 `DISABLED` 不可复活；source affinity 测试验证 shared IRQ 同 CPU、独立 source 可分布；源码契约测试确认 queue executor 没有 periodic timeout。Ethernet 的 padding、ARP deferred frame、malformed frame 和 pending buffer 测试继续验证 `/proc/net/dev` 的 L2 长度/error/drop 口径。`net/ax-net/tests/std.rs` 的 6 个 public API 集成测试仅在 `host-test` feature 下构建。
 
 `DeviceBinding` 使用 atomic raw ifindex 保存，这个测试验证 public 语义不会因为内部原子编码而丢失。
 
@@ -165,6 +165,7 @@ Socket 数据面用例从 StarryOS 用户态调用真实 syscall，覆盖连接�
 | --- | --- | --- |
 | `syscall-test-socket-dataplane` | `test-suit/starryos/qemu/system/syscall-test-socket-dataplane` | TCP/UDP/raw socket 数据面基础行为 |
 | `bugfix-bug-tcp-send-no-epoll-notify` | `test-suit/starryos/qemu/system/bugfix-bug-tcp-send-no-epoll-notify` | TCP send 后 epoll waiter 唤醒 |
+| `test-tcp-napi-runtime` | `test-suit/starryos/qemu/system/test-tcp-napi-runtime` | blocking/nonblocking connect+accept、send/recv、poll/epoll、peer close、socket wait 的 signal/EINTR |
 | `bugfix-bug-ip-mtu-discover-udp-flush` | `test-suit/starryos/qemu/system/bugfix-bug-ip-mtu-discover-udp-flush` | `IP_MTU_DISCOVER` 读回和 UDP send 后立即 close 的交付 |
 | `syscall-test-so-reuseport` | `test-suit/starryos/qemu/system/syscall-test-so-reuseport` | TCP/UDP `SO_REUSEPORT` 共同绑定边界 |
 | `c-regression-test-icmp-ping-socket` | `test-suit/starryos/qemu/system/c-regression-test-icmp-ping-socket` | IPv4 ICMP ping datagram socket |
@@ -198,6 +199,18 @@ AF_PACKET 测试关注接口选择、二层地址和 frame 收发，与普通 `S
 Unix 辅助数据与 record 语义由 `syscall-test-seqpacket`、`bugfix-unix-passcred`、`bugfix-socket-timestamp`、`test-unix-msg-peek`、`test-unix-scm-rights` 和 `test-unix-cmsg-byte-marks` 覆盖，均位于 `test-suit/starryos/qemu/system/`。
 
 这些 system 测试验证的是 StarryOS Linux ABI 层是否正确使用 `ax_net::interfaces()`、`InterfaceId`、`arp_entries()` 和 socket facade。它们不替代 `ax-net` crate 单元测试；两者覆盖层级不同。
+
+### 3.5 E1000 SMP4 queue runtime
+
+`qemu-e1000/system` 是独立的 x86_64 分组，使用 `ax-driver/intel-net`、四个 vCPU 和一块 QEMU E1000，避免默认 virtio-net 掩盖 E1000 的 IRQ、mask/rearm 与 queue-0 poll group 路径。
+
+```bash
+cargo xtask starry test qemu --arch x86_64 -c qemu-e1000/system
+```
+
+guest 用例 `test-e1000-napi-runtime` 等待 DHCP，然后 fork 两个进程并发从 QEMU user-network gateway 下载 payload。每个进程必须读取并逐字节校验完整的 4 MiB body；成功标记为 `E1000_NAPI_TEST_PASSED`。这能捕获只完成 DHCP、短包可用但 burst 期间 IRQ 未正确 rearm，或者两个 socket 并发时 queue/protocol generation 停止推进的问题。
+
+rootfs 参数补全按 `-device` 的 `netdev=net0` 连接关系识别已有网卡，而不是维护 virtio/E1000 型号白名单。`ensure_disk_boot_net_preserves_custom_network_device_bound_to_net0` 固定该契约，防止测试配置被额外注入同名默认 NIC 后在 QEMU 启动前失败。
 
 ## 4. 双网卡集成测试
 
@@ -338,7 +351,7 @@ guest 检查代码在同一 case 中验证接口、路由、绑定和并行请�
 - `eth0` 和 `eth1` 能通过独立 DHCP 获取不同网段地址。
 - route table 同时存在 `10.0.2.0/24` 和 `10.0.3.0/24` connected route。
 - `curl --interface` 通过 Linux ABI 映射到接口绑定，限制 route lookup。
-- 串行和并发下载验证 per-device TX queue、共享 RX queue、device worker 和 net-poll worker 可以持续推进。
+- 串行和并发下载验证独立 poll group、SPSC frame/token pipeline 与唯一 protocol executor 可以持续推进。
 - `apk fetch -R` 下载较大的包集合并写入磁盘，验证较长 TCP 流、DNS、默认路由和文件写入路径的组合稳定性。
 - `apk verify` 验证 APK 内置签名/完整性元数据，`sha256sum -c` 验证落盘文件再次读取后的内容一致性。
 
@@ -372,7 +385,7 @@ guest 检查代码在同一 case 中验证接口、路由、绑定和并行请�
 | --- | --- |
 | `eth1 did not get 10.0.3.15` | 第二个 virtio-net 是否被 runtime 收集；默认 DHCP 是否应用到未显式配置接口；DHCP packet ingress `InterfaceId` 是否分发正确 |
 | eth0 成功、eth1 curl 失败 | `SO_BINDTODEVICE` / `curl --interface` 是否映射到 eth1；route table 是否有 `10.0.3.0/24` connected route |
-| 串行成功、并发失败 | RX/TX worker 是否被正确唤醒；队列是否满；net-poll worker 是否持续 poll |
+| 串行成功、并发失败 | 目标 group 是否被正确 schedule；SPSC 是否 backpressure；protocol generation 是否持续完成 |
 | 下载字节数小于 1 MiB | TCP receive/send readiness、host HTTP server 暴露、QEMU user net 或 curl 超时 |
 | `apk fetch too small` | APK package 依赖集合是否变化；`APK_STRESS_MIN_BYTES` 是否需要随 Alpine 版本调整 |
 | `apk verify failed` 或 `sha256sum -c` 失败 | 长连接下载、TCP 重组、文件写入或读回路径存在数据损坏 |
@@ -454,7 +467,7 @@ AF_PACKET、ioctl、netlink 与 procfs 视图不一致通常意味着某个 ABI 
 - `dual-net` 使用 QEMU user networking，不覆盖 tap/bridge、真实 NIC IRQ/DMA、RSS 或多队列网卡。
 - `dual-net` 验证双 DHCP 和接口绑定下载，但不验证 link down/up、热插拔和运行期 route 删除。
 - StarryOS system 测试覆盖 Linux ABI 观测面，不直接检查 `Router` 内部队列长度或每包分配情况。
-- vsock、DHCP server 和真实 OOB RX/IRQ 硬件路径仍需要更多专门测试资产；Unix cmsg 已有 system 回归，但 crate 内部单元覆盖仍较少。
+- vsock、DHCP server 和真实板卡 IRQ/DMA 路径仍需要更多专门测试资产；Unix cmsg 已有 system 回归，但 crate 内部单元覆盖仍较少。
 
 覆盖限制列表表明物理 IRQ、长期 lease 和压力场景仍需要板卡或专门测试，不能从 QEMU system 结果推断。协议功能限制进一步界定当前主路径本身尚未承诺的 IPv6 与组播能力。
 
@@ -472,10 +485,10 @@ AF_PACKET、ioctl、netlink 与 procfs 视图不一致通常意味着某个 ABI 
 
 ### 6.3 架构限制
 
-架构限制决定压力测试结果应如何解释：设备 Worker 可以并行，但协议核心和全局 `SocketSet` 仍由单个推进者串行访问。以下约束提示性能回归定位应区分队列、锁竞争、拷贝与协议 poll，而不是简单归因于某个 driver。
+架构限制决定压力测试结果应如何解释：独立 IRQ domain 的 queue/DMA 可以并行，但协议核心和全局 `SocketSet` 仍由单个推进者串行访问。以下约束提示性能回归定位应区分 queue budget、SPSC backpressure、拷贝与 protocol poll，而不是简单归因于某个 driver。
 
 - 协议核心仍是单 smoltcp `Interface + SocketSet`，TCP/UDP 状态机本身不多核并行。
-- 多设备 dataplane 通过 worker 和有界队列解耦，但不是 RSS/NAPI 多队列模型。
+- 多设备 dataplane 已使用 queue-level NAPI 状态机；当前生产 backend 仍只发布 queue-0 group，未启用 RSS 或真实硬件多队列。
 - loopback 已有直接注入快路径，但普通设备 RX/TX 仍存在必要的 packet copy。
 - 尚未实现端到端 zero-copy；这需要 rd-net buffer ownership、packet pool 和 smoltcp token 共同改造。
 - StarryOS network namespace 当前主要是可见性过滤，不是完整 per-namespace network stack。

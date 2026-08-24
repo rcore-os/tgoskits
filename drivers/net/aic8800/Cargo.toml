@@ -28,9 +28,6 @@ ax-sync = { workspace = true }
 log = { workspace = true }
 
 sdio-host = { workspace = true }
-sdhci-cv1800 = { workspace = true }
-
-atomic-waker = { workspace = true }
 
 rdif-eth = { workspace = true }
 rd-net = { workspace = true }

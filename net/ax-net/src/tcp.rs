@@ -16,7 +16,7 @@
 //!
 //! Socket methods never synchronously drive the full interface poll loop.
 //! Instead they mutate the smoltcp socket, call `request_poll()`, register
-//! wakers through `PollSet`, and let the dedicated net-poll worker advance
+//! wakers through `PollSet`, and let the unique protocol executor advance
 //! timers, handshakes, retransmission, and close states.
 //!
 //! # Related Side Tables
@@ -906,7 +906,7 @@ impl Drop for TcpSocket {
             SOCKET_SET.remove(self.handle);
         }
 
-        // Wake net-poll worker to process teardown
+        // Ask the unique protocol executor to process teardown.
         crate::request_poll();
     }
 }
@@ -939,7 +939,7 @@ const fn empty_endpoint() -> IpListenEndpoint {
 }
 
 impl TcpSocket {
-    /// Starts an active open and leaves completion to the net-poll worker.
+    /// Starts an active open and leaves completion to the protocol executor.
     fn start_connect(&self, remote_addr: SocketAddr) -> NetResult {
         self.state
             .lock(State::Idle)

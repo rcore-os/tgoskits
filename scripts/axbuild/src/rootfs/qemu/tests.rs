@@ -676,6 +676,40 @@ fn ensure_disk_boot_net_preserves_existing_netdev_options() {
 }
 
 #[test]
+fn ensure_disk_boot_net_preserves_custom_network_device_bound_to_net0() {
+    let rootfs = Path::new("/tmp/new-rootfs.img");
+    let mut qemu = QemuConfig {
+        args: vec![
+            "-device".to_string(),
+            "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
+            "-drive".to_string(),
+            "id=disk0,if=none,format=raw,file=/tmp/old-rootfs.img".to_string(),
+            "-device".to_string(),
+            "e1000,netdev=net0".to_string(),
+            "-netdev".to_string(),
+            "user,id=net0".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    patch_rootfs(&mut qemu, rootfs, RootfsPatchMode::EnsureDiskBootNet);
+
+    assert_eq!(
+        qemu.args,
+        vec![
+            "-device".to_string(),
+            "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
+            "-drive".to_string(),
+            "id=disk0,if=none,format=raw,file=/tmp/new-rootfs.img".to_string(),
+            "-device".to_string(),
+            "e1000,netdev=net0".to_string(),
+            "-netdev".to_string(),
+            "user,id=net0".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn ensure_disk_boot_net_accepts_custom_rootfs_drive_device() {
     let rootfs = Path::new("/tmp/new-rootfs.img");
     let mut qemu = QemuConfig {

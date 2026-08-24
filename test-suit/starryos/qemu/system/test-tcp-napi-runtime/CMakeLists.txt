@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-tcp-napi-runtime C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(test-tcp-napi-runtime src/main.c)
+target_compile_options(test-tcp-napi-runtime PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-tcp-napi-runtime RUNTIME DESTINATION usr/bin/starry-test-suit)

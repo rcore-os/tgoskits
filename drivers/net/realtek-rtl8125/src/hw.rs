@@ -127,14 +127,6 @@ impl Rtl8125 {
         }
     }
 
-    pub(crate) fn maybe_start_queues(&mut self) {
-        crate::queue::try_start_queues(
-            self.regs,
-            self.dma.info().constraints().addr_mask,
-            &self.queue_start,
-        );
-    }
-
     fn enable_rxdv_gate(&self) {
         self.regs.enable_rxdv_gate();
         spin_delay(2_000);

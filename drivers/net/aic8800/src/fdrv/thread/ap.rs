@@ -1,4 +1,4 @@
-//! AP worker 线程
+//! AP owner-CPU state progression.
 //!
 //! 处理 AP 模式下的关联流程。RX 线程收到 AssocReq 后把整帧入队
 //! `bus.ap.assoc_queue`，本线程取出后：
@@ -6,77 +6,49 @@
 //!   2. ME_STA_ADD_REQ 注册 STA，拿固件分配的 sta_idx
 //!   3. 构造并发送 Assoc Response (status=0, 带 AID)
 //!
-//! 必须独立于 RX 线程：ME_STA_ADD 走 send_cmd 阻塞等 CFM，而 CFM 由
-//! RX 线程接收处理 —— 在 RX 线程里调 send_cmd 会死锁。
+//! The network queue executor calls this module after draining RX. Commands
+//! cooperatively advance TX/RX on that same CPU, so no independent AP task or
+//! periodic reconciliation worker exists.
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{sync::atomic::Ordering, task::Poll};
+use alloc::{sync::Arc, vec::Vec};
+use core::sync::atomic::Ordering;
 
 use crate::fdrv::{
-    consts::{CONTROL_PORT_MAX_RETRY, CONTROL_PORT_RECONCILE_MS, MAX_REGISTERED_STAS},
-    core::bus::{BusState, WifiBus},
+    consts::{CONTROL_PORT_MAX_RETRY, MAX_REGISTERED_STAS},
+    core::bus::WifiBus,
     protocol::{send_me_sta_add_req, send_mm_sta_del_req, send_set_control_port_req},
     thread::tx::enqueue_mgmt_frame,
 };
 
-/// 启动 AP worker 线程
-pub fn start(bus: Arc<WifiBus>) {
-    log::debug!("[wifi-ap] worker thread starting");
-    crate::runtime::runtime().spawn_poll_task(
-        "wifi-ap",
-        Box::new(move |cx| {
-            if *bus.state.lock() == BusState::Down {
-                return Poll::Ready(());
-            }
-
-            // 先处理 STA 删除(deauth/disassoc 后释放固件 STA 槽位),再处理新关联,
-            // 这样新 STA 能复用刚释放的低位 sta_idx(下行单一 sta_idx 路由只对低位
-            // 槽位可靠)。仅 DC/DW:D80/8801 不做槽位回收(固件自管理),队列恒空。
-            if bus.transport.is_dual_pipe() {
-                loop {
-                    let del_idx = bus.ap.sta_del_queue.lock().pop_front();
-                    match del_idx {
-                        Some(idx) => {
-                            if let Err(e) = send_mm_sta_del_req(&bus, idx, 0) {
-                                log::warn!("[wifi-ap] MM_STA_DEL sta_idx={} failed: {:?}", idx, e);
-                            }
-                        }
-                        None => break,
-                    }
-                }
-            }
-
-            // 取出所有待处理的关联请求
-            loop {
-                let assoc_req = bus.ap.assoc_queue.lock().pop_front();
-                match assoc_req {
-                    Some(mpdu) => handle_assoc_req(&bus, &mpdu),
-                    None => break,
-                }
-            }
-
-            // 控制端口对账:对所有尚未授权的 STA 主动重试打开控制端口。不依赖手机
-            // 重传 AssocReq——手机关联成功后通常不再发 AssocReq,若首次 authorize
-            // 命令超时,数据面会永久不通(ping/SSH 不通)。这里兜底直到成功或到上限。
-            // 仅 DC/DW:D80/8801 走原有路径(关联时一次性 authorize,无周期对账)。
-            let has_pending = if bus.transport.is_dual_pipe() {
-                reconcile_control_ports(&bus)
-            } else {
-                false
+/// Advances bounded AP work on the queue executor.
+pub fn process_pending(bus: &Arc<WifiBus>, budget: usize) -> usize {
+    let mut processed = 0;
+    if bus.transport.is_dual_pipe() {
+        while processed < budget {
+            let Some(index) = bus.ap.sta_del_queue.lock().pop_front() else {
+                break;
             };
-
-            bus.ap.assoc_pollset.register(cx.waker());
-            // 注册后再检查一次，避免错过唤醒
-            if !bus.ap.assoc_queue.lock().is_empty() {
-                cx.waker().wake_by_ref();
-            } else if has_pending {
-                // 仍有未授权 STA:周期性自唤醒重试,直到全部授权或到重试上限。
-                crate::runtime::runtime().sleep_ms(CONTROL_PORT_RECONCILE_MS);
-                cx.waker().wake_by_ref();
+            if let Err(error) = send_mm_sta_del_req(bus, index, 0) {
+                log::warn!("[wifi-ap] MM_STA_DEL sta_idx={} failed: {:?}", index, error);
             }
-            Poll::Pending
-        }),
-    );
+            processed += 1;
+        }
+    }
+
+    while processed < budget {
+        let Some(mpdu) = bus.ap.assoc_queue.lock().pop_front() else {
+            break;
+        };
+        handle_assoc_req(bus, &mpdu);
+        processed += 1;
+    }
+
+    // Reconciliation is event-driven: retry only while processing a real AP
+    // event. No timer or self-wake is installed.
+    if processed != 0 && bus.transport.is_dual_pipe() {
+        let _ = reconcile_control_ports(bus);
+    }
+    processed
 }
 
 /// 处理一个关联请求：注册 STA + 回 Assoc Response。

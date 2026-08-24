@@ -9,7 +9,7 @@
 //! 密钥命令 → key.rs
 
 use alloc::{sync::Arc, vec, vec::Vec};
-use core::{sync::atomic::Ordering, task::Poll};
+use core::sync::atomic::Ordering;
 
 use crate::{
     common::SDIO_TYPE_CFG_CMD_RSP,
@@ -88,13 +88,12 @@ fn prepare_cmd_send(bus: &Arc<WifiBus>, expected_cfm_id: u16) {
         .store(expected_cfm_id, Ordering::Release);
 }
 
-/// 通过 TX 线程发送 CMD 帧
-fn send_cmd_via_tx_thread(bus: &Arc<WifiBus>, frame: Vec<u8>) {
+/// Queues one command for the owner-CPU TX progression.
+fn queue_cmd(bus: &Arc<WifiBus>, frame: Vec<u8>) {
     let mut cmd_slot = bus.cmd.pending.lock();
     *cmd_slot = Some(frame);
     bus.cmd.pending_flag.store(true, Ordering::Release);
     drop(cmd_slot);
-    bus.tx.wake_pollset.wake();
 }
 
 /// 验证 CFM 并提取参数
@@ -143,7 +142,6 @@ fn try_get_cfm_from_queue(
                 for r in redirected {
                     ind.push_back(r);
                 }
-                bus.tx.ind_pollset.wake();
             }
             return Some(Ok(rsp[LmacMsg::SIZE..].to_vec()));
         } else {
@@ -156,39 +154,8 @@ fn try_get_cfm_from_queue(
         for r in redirected {
             ind.push_back(r);
         }
-        bus.tx.ind_pollset.wake();
     }
     None
-}
-
-/// 异步等待 CFM 响应（不含超时逻辑，由外部 timeout 包装器提供）
-/// 轮询体：等待指定 CFM ID 的响应。返回 `Poll::Ready` 携带结果。
-fn poll_cfm_response(
-    bus: &Arc<WifiBus>,
-    expected_cfm_id: u16,
-    out: &mut Option<Result<Vec<u8>, CmdError>>,
-    cx: &mut core::task::Context<'_>,
-) -> Poll<()> {
-    if bus.cmd.rsp_error.load(Ordering::Acquire) || *bus.state.lock() == BusState::Down {
-        *out = Some(Err(CmdError::BusDown));
-        return Poll::Ready(());
-    }
-
-    if let Some(result) = try_get_cfm_from_queue(bus, expected_cfm_id) {
-        *out = Some(result);
-        return Poll::Ready(());
-    }
-
-    // 注册 waker，等待 RX 线程通过 rsp_pollset.wake() 唤醒
-    bus.cmd.rsp_pollset.register(cx.waker());
-
-    // 双重检查
-    if let Some(result) = try_get_cfm_from_queue(bus, expected_cfm_id) {
-        *out = Some(result);
-        return Poll::Ready(());
-    }
-
-    Poll::Pending
 }
 
 // ===== 公共 CMD API =====
@@ -225,22 +192,26 @@ pub fn send_cmd_with_cfm_id(
 
     let frame = build_cmd_frame(msg_id, dest_id, param, bus.transport.is_v3());
     prepare_cmd_send(bus, expected_cfm_id);
-    send_cmd_via_tx_thread(bus, frame);
+    queue_cmd(bus, frame);
 
-    // 通过注入的 runtime 阻塞等待：同时由 rsp_pollset 唤醒和超时定时器驱动。
-    let mut cfm: Option<Result<Vec<u8>, CmdError>> = None;
-    let result = match runtime().block_until(Some(tout), &mut |cx| {
-        poll_cfm_response(bus, expected_cfm_id, &mut cfm, cx)
-    }) {
-        Ok(()) => cfm.unwrap_or(Err(CmdError::Timeout)),
-        Err(_) => {
+    let deadline = runtime().now_nanos() + tout * 1_000_000;
+    let result = loop {
+        if bus.cmd.rsp_error.load(Ordering::Acquire) || *bus.state.lock() == BusState::Down {
+            break Err(CmdError::BusDown);
+        }
+        if let Some(result) = try_get_cfm_from_queue(bus, expected_cfm_id) {
+            break result;
+        }
+        let _ = crate::fdrv::thread::progress_io(bus);
+        if runtime().now_nanos() >= deadline {
             log::error!(
                 "[cmd_mgr] TIMEOUT waiting for cfm 0x{:04x} ({}ms)",
                 expected_cfm_id,
                 tout
             );
-            Err(CmdError::Timeout)
+            break Err(CmdError::Timeout);
         }
+        runtime().yield_now();
     };
 
     bus.cmd.expected_cfm_id.store(0, Ordering::Release);
@@ -264,62 +235,32 @@ pub fn send_cmd_no_cfm(
     }
 
     let frame = build_cmd_frame(msg_id, dest_id, param, bus.transport.is_v3());
-    {
-        let mut cmd_slot = bus.cmd.pending.lock();
-        *cmd_slot = Some(frame);
-        bus.cmd.pending_flag.store(true, Ordering::Release);
+    queue_cmd(bus, frame);
+    let _ = crate::fdrv::thread::progress_io(bus);
+    if bus.cmd.pending_flag.load(Ordering::Acquire) {
+        Err(CmdError::Timeout)
+    } else {
+        Ok(())
     }
-    bus.tx.wake_pollset.wake();
-
-    Ok(())
 }
 
 // ===== EAPOL 发送 =====
 
-/// 轮询体：从 eapol_queue 取出 EAPOL 帧。
-fn poll_eapol(
-    bus: &Arc<WifiBus>,
-    out: &mut Option<Vec<u8>>,
-    cx: &mut core::task::Context<'_>,
-) -> Poll<()> {
-    {
-        let mut queue = bus.rx.eapol_queue.lock();
-        if let Some(eapol) = queue.pop_front() {
-            queue.clear();
-            *out = Some(eapol);
-            return Poll::Ready(());
-        }
-    }
-
-    bus.rx.eapol_pollset.register(cx.waker());
-
-    {
-        let mut queue = bus.rx.eapol_queue.lock();
-        if let Some(eapol) = queue.pop_front() {
-            queue.clear();
-            *out = Some(eapol);
-            return Poll::Ready(());
-        }
-    }
-
-    Poll::Pending
-}
-
 /// 等待 EAPOL 帧（从 eapol_queue 中取出）
 pub fn wait_for_eapol(bus: &Arc<WifiBus>, timeout_ms: u64) -> Result<Vec<u8>, CmdError> {
-    let mut eapol: Option<Vec<u8>> = None;
-    match runtime().block_until(Some(timeout_ms), &mut |cx| poll_eapol(bus, &mut eapol, cx)) {
-        Ok(()) => match eapol {
-            Some(e) => Ok(e),
-            None => {
-                log::error!("[cmd_mgr] EAPOL wait returned empty");
-                Err(CmdError::Timeout)
-            }
-        },
-        Err(_) => {
-            log::error!("[cmd_mgr] EAPOL wait timed out");
-            Err(CmdError::Timeout)
+    let deadline = runtime().now_nanos() + timeout_ms * 1_000_000;
+    loop {
+        let eapol = bus.rx.eapol_queue.lock().pop_front();
+        if let Some(eapol) = eapol {
+            bus.rx.eapol_queue.lock().clear();
+            return Ok(eapol);
         }
+        let _ = crate::fdrv::thread::progress_io(bus);
+        if runtime().now_nanos() >= deadline {
+            log::error!("[cmd_mgr] EAPOL wait timed out");
+            return Err(CmdError::Timeout);
+        }
+        runtime().yield_now();
     }
 }
 
@@ -426,24 +367,15 @@ fn perform_eapol_flow_control(bus: &WifiBus) -> Result<(), CmdError> {
 fn send_eapol_frame_to_sdio(bus: &Arc<WifiBus>, buf: &[u8]) -> Result<(), CmdError> {
     let transport = &bus.transport;
 
-    transport.mask_card_irq();
-
-    if let Err(e) = perform_eapol_flow_control(bus) {
-        transport.unmask_card_irq();
-        return Err(e);
-    }
+    perform_eapol_flow_control(bus)?;
 
     // V3(D80)的写 FIFO 地址是 0x10,V2(8801)是 0x07。必须用 transport 的
     // V3 感知方法,与 CMD/DATA/MGMT 帧路径一致——之前这里写死了 V2 常量,
     // 导致 D80 上 M2 被写到错误 SDIO 地址,固件收不到,4 次握手卡死。
     if let Err(e) = transport.write_fifo(1, transport.wr_fifo_addr(), buf) {
         log::error!("[cmd_mgr] EAPOL TX write_fifo failed: {:?}", e);
-        transport.unmask_card_irq();
         return Err(CmdError::SdioError);
     }
-
-    bus.rx.irq_waker.wake();
-    transport.unmask_card_irq();
 
     Ok(())
 }

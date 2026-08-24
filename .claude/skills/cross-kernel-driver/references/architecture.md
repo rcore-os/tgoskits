@@ -157,7 +157,11 @@ The IRQ fast path should:
 - return a stable event object
 - avoid blocking, long work, and broad locks
 
-OS Glue converts events into wakeups, future wakers, worker scheduling, or pending polling flags.
+OS Glue converts events into the consumer runtime's execution primitive. For
+network devices this choice is not open-ended: the callback may only publish
+the matching `NetPollGroup` to its fixed-CPU queue executor. Arbitrary wakers,
+pending polling flags, wake-all fanout, and remote IRQ continuation violate the
+network ownership contract.
 
 ### IRQ Callback Ownership Pattern
 
@@ -182,6 +186,36 @@ When applying this pattern:
 - Keep task-side service/config methods on a separate control endpoint. If they also touch registers, protect them with the same owner CPU, local IRQ exclusion, device interrupt mask, or documented borrow gate that prevents IRQ reentry.
 
 This ownership model is useful beyond serial ports: block completion queues, network RX/TX interrupt endpoints, input devices, accelerators, and mailbox controllers all benefit when "the IRQ handler" is not a shared runtime object.
+
+### Network affinity-domain specialization
+
+Network runtime parts add a stricter CPU invariant to the generic endpoint
+split. All poll groups connected through the same physical IRQ belong to one
+affinity domain. The runtime selects one online `owner_cpu`, pins its queue
+executor before IRQ registration, and registers every action for that `IrqId`
+with fixed affinity on the same CPU. Per-queue MSI-X sources may form separate
+domains and use different CPUs.
+
+The hard endpoint performs only bounded mask/ack/snapshot. The owner executor
+alone handles RX reclaim/refill, TX submit/completion, DMA synchronization,
+budget accounting, and `rearm_and_check()`. The observable invariant is:
+
+```text
+last_irq_cpu == last_poll_cpu == owner_cpu
+irq_to_poll_remote_wake == 0
+```
+
+If the platform cannot route the IRQ, the executor cannot be pinned, a shared
+action has incompatible affinity, or the device lacks atomic mask/rearm, fail
+the entire physical-network publication. Never replace that failure with
+`IrqAffinity::Any`, a remote IPI, periodic queue polling, an OOB callback, or a
+device-specific kicker.
+
+For SDIO Wi-Fi, move the nested controller source into the network hard
+endpoint and keep controller CARD_INT rearm in task context. Firmware commands,
+FIFO drain, TX progression, and Wi-Fi reconfiguration are owner-CPU
+transactions. An unvalidated chip variant must fail probe rather than regain a
+legacy polling path.
 
 ### Control / IRQ / Queue Endpoint Pattern
 
@@ -268,6 +302,11 @@ Runtime wrappers can then choose:
 - IRQ-driven wakeup
 - `Future::poll`
 - worker thread/task per queue
+
+Those choices are generic driver options, not network fallbacks. The production
+network runtime uses an interrupt-activated, fixed-CPU poll-group executor with
+bounded batches and an atomic drain/rearm check; it has no polling-only or
+periodic-worker mode.
 
 Avoid a single global `Driver::poll` if the hardware naturally exposes multiple queues or engines. Avoid a "big object + big lock + callbacks" shape unless the device is truly that simple.
 

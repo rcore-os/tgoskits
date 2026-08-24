@@ -1,7 +1,6 @@
 //! WiFi 连接/断连命令和 indication 等待
 
 use alloc::{sync::Arc, vec, vec::Vec};
-use core::task::Poll;
 
 use crate::{
     fdrv::{
@@ -129,30 +128,17 @@ pub fn wait_for_indication(
 ) -> Result<Vec<u8>, CmdError> {
     let deadline = runtime().now_nanos() + timeout_ms * 1_000_000;
 
-    let mut out: Option<Result<Vec<u8>, CmdError>> = None;
-    // 超时由 poll 体内部的 deadline 判定，故 block_until 不另设超时。
-    let _ = runtime().block_until(None, &mut |cx| {
+    loop {
         if check_timeout_and_log_queue(bus, target_msg_id, deadline) {
-            out = Some(Err(CmdError::Timeout));
-            return Poll::Ready(());
+            return Err(CmdError::Timeout);
         }
 
         if let Some(result) = try_find_message_in_queue(bus, target_msg_id, abort_msg_ids) {
-            out = Some(result);
-            return Poll::Ready(());
+            return result;
         }
-
-        bus.tx.ind_pollset.register(cx.waker());
-
-        if let Some(result) = try_find_message_in_queue(bus, target_msg_id, abort_msg_ids) {
-            out = Some(result);
-            return Poll::Ready(());
-        }
-
-        cx.waker().wake_by_ref();
-        Poll::Pending
-    });
-    out.unwrap_or(Err(CmdError::Timeout))
+        let _ = crate::fdrv::thread::progress_io(bus);
+        runtime().yield_now();
+    }
 }
 
 // ===== 连接/断连命令 =====

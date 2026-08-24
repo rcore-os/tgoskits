@@ -4,34 +4,40 @@ AIC8800 系列 WiFi 芯片驱动核心，通过 SDIO 总线通信。**OS 无关*
 依赖任何操作系统运行时；定时、休眠、让步、任务派生等能力通过 `aic8800::WifiRuntime`
 trait 注入，由上层 OS glue 在初始化时调用 `aic8800::set_runtime` 安装。
 
-支持芯片：AIC8801、AIC8800DC、AIC8800D80、AIC8800D80X2。
+队列中断路径当前支持 AIC8801、AIC8800D80、AIC8800D80X2。AIC8800DC/DW
+的 command/FIFO function ownership 与本地 vendor 驱动证据不一致，probe 会明确
+失败；不会回退到 kicker 或周期轮询。
 
 ## 用法
 
-平台相关的资源（MMIO 映射、SDHCI 枚举、IRQ 注册）由上层 OS glue 负责；本 crate 从
-一个已就绪的 SDIO host 开始完成芯片侧 bring-up，并返回一个 `AicWifiNetDev`——它
-同时是数据面（`rd_net::Net` 设备）和控制面（实现 `rd_net::WifiControl`）。
+平台相关的资源（MMIO 映射、SDHCI 枚举）由上层 OS glue 负责；本 crate 从一个已
+就绪且 IRQ source 尚未取走的 SDIO host 开始完成芯片侧 bring-up，并返回可消费一次的
+`AicWifiNetDev`。`NetDevice::into_parts()` 将它拆成 RX/TX queue、SDHCI hard-IRQ
+endpoint、task-context rearm control、general control 与 owner-CPU Wi-Fi control。
 
 ```rust
 // 1. OS glue 注入运行时能力（一次，进程级）
 aic8800::set_runtime(MY_RUNTIME);
 
-// 2. 用已枚举好的 SDIO host 探测芯片，得到设备句柄
-let mut wifi = aic8800::probe(sdio)?;   // -> AicWifiNetDev
+// 2. 用已枚举好的 SDIO host 探测芯片，得到一次性设备
+let wifi = aic8800::probe(sdio)?; // -> AicWifiNetDev
 
-// 3. SoftAP 或 STA（rd_net::WifiControl）
-wifi.start_ap_open(b"MyAP", 6)?;          // 开放 SoftAP
-// wifi.connect("SSID", "password")?;     // 或连接 STA
+// 3. 选择启动事务；实际 SDIO 控制在 fixed-CPU queue owner 上执行
+let wifi = wifi.with_startup_transaction(
+    rd_net::WifiTransaction::open_access_point(b"MyAP".to_vec(), 6),
+);
 
-// 4. 把设备交给 ax-driver 注册进 rd-net / ax-net 设备模型
+// 4. OS glue 连同物理 IRQ binding 交给 NetworkRuntimeBuilder 原子发布
 ```
 
 运行时能力通过 trait 注入，不直接依赖 OS crate：
 
-- `aic8800::WifiRuntime` — `now_nanos` / `sleep_ms` / `yield_now` /
-  轮询任务派生等，由 OS glue 实现并经 `set_runtime` 安装。
-- 接收数据帧的唤醒走 `rd_net::WifiControl::set_rx_wake` 注册的回调（SDIO Wi-Fi
-  走带外 RX，不经以太网 IRQ 框架）。
+- `aic8800::WifiRuntime` — `now_nanos` / `sleep_ms` / `yield_now`，由 OS glue
+  实现并经 `set_runtime` 安装；它不提供后台 RX/TX task 或周期 timer。
+- SDHCI CARD_INT source move 到 `NetHardIrqEndpoint`。hard IRQ 只 mask/status
+  snapshot；同 CPU queue owner drain FIFO、推进命令/RX/TX/AP 并执行原子 rearm。
+- STA/AP 重配置使用 `WifiTransaction` 进入有界 owner queue，调用者不能直接访问
+  SDIO/MMIO。
 
 ## 模块
 
@@ -48,11 +54,11 @@ src/
 │   └── protocol/       #   IPC 传输层 (SDIO CMD53 内存读写)
 └── fdrv/               # WiFi 驱动核心
     ├── consts.rs       #   协议常量
-    ├── core/           #   总线管理、SDIO 传输、初始化、PollSet
+    ├── core/           #   总线管理、SDIO 传输、初始化
     ├── crypto/         #   WPA2-PSK 四次握手 (PRF、AES-CCM、MIC)
     ├── net/            #   网络设备适配 (rd-net / rdif-eth)
     ├── protocol/       #   LMAC 命令/响应、扫描、连接、密钥安装
-    ├── thread/         #   RX/TX/AP 轮询任务
+    ├── thread/         #   owner executor 调用的有界 RX/TX/AP 推进函数
     └── wifi/           #   高级 API (WifiClient) 和连接管理
 ```
 
@@ -82,7 +88,6 @@ tarball。`build.rs` 在编译时把它们准备到 `OUT_DIR/firmware/`，`src/f
 
 ## 依赖
 
-- `sdio-host-cv1800` — SDIO 总线抽象 trait
-- `sdhci-cv1800` — SG2002 SDHCI 控制器实现
+- `sdio-host-cv1800` — SDIO 总线、move-only IRQ source 与原子 rearm 抽象
 - `rd-net` / `rdif-eth` / `dma-api` — 网络设备能力与 `WifiControl` 控制面 trait
 - `aes`, `hmac`, `sha1`, `pbkdf2` — WPA2 密钥派生

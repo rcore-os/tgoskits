@@ -97,13 +97,41 @@ fn resolve_input_irq(
 
 #[cfg(feature = "net")]
 pub(crate) fn init_net() {
-    #[cfg(feature = "irq")]
-    ax_net::set_ethernet_irq_registrar(&crate::irq::NET_IRQ_REGISTRAR);
     register_unix_namespace();
     let config = parse_network_config();
-    let (nics, wireless) = collect_net_devices();
-    ax_net::init_network(nics, config);
-    register_wireless_devices(wireless);
+
+    if !rdrive::is_initialized() {
+        ax_net::init_network(None, alloc::vec::Vec::new(), config);
+        return;
+    }
+
+    #[cfg(not(feature = "irq"))]
+    {
+        if rdrive::get_list::<ax_driver::net::PlatformNetDevice>()
+            .next()
+            .is_some()
+        {
+            panic!("physical network devices require interrupt support");
+        }
+        ax_net::init_network(None, alloc::vec::Vec::new(), config);
+    }
+
+    #[cfg(feature = "irq")]
+    {
+        let devices = collect_net_devices();
+        if devices.is_empty() {
+            ax_net::init_network(None, alloc::vec::Vec::new(), config);
+            return;
+        }
+        let (runtime, ports) = ax_net::NetworkRuntimeBuilder::new(
+            devices,
+            &crate::irq::NET_IRQ_REGISTRAR,
+            ax_hal::cpu_num(),
+        )
+        .build()
+        .unwrap_or_else(|error| panic!("failed to initialize network queue runtime: {error}"));
+        ax_net::init_network(Some(runtime), ports, config);
+    }
 }
 
 #[cfg(all(feature = "net", feature = "fs"))]
@@ -121,98 +149,38 @@ fn parse_network_config() -> ax_net::NetworkConfig {
     ax_net::NetworkConfig::default()
 }
 
-/// A wireless device that registers *after* `init_network`: its already-wrapped
-/// driver plus the link policy (static IP + optional DHCP-server lease) the
-/// board reported for it.
-#[cfg(feature = "net")]
-type WirelessDevice = (
-    alloc::boxed::Box<dyn ax_net::EthernetDriver>,
-    ax_net::NetConfig,
-);
-
-/// Wraps one probed net device, splitting it into either a plain NIC (for the
-/// `init_network` device list) or a wireless device (registered separately with
-/// its link policy).
-///
-/// A wireless device is just a `PlatformNetDevice` whose underlying `Interface`
-/// exposes a [`rd_net::WifiControl`] (via `Net::wifi_control`). We read its link
-/// policy and wire its out-of-band RX callback here, then wrap the same
-/// `rd_net::Net` data plane every NIC uses. Keeping the Wi-Fi specifics on the
-/// device (not in the stack) is what lets the protocol stack stay link-agnostic.
-#[cfg(feature = "net")]
-fn adapt_net_device(
-    net: rd_net::Net,
-    name: &'static str,
-    irq: Option<ax_driver::BindingIrq>,
-    nics: &mut alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>>,
-    wireless: &mut alloc::vec::Vec<WirelessDevice>,
-) {
-    // If this device has a wireless control plane, wire its out-of-band RX wake
-    // and read the link policy the board attached to it.
-    let policy = if let Some(ctrl) = net.wifi_control() {
-        // SDIO Wi-Fi RX is out-of-band (not the ethernet IRQ framework); the
-        // chip's RX-data callback wakes the stack's dedicated poll task.
-        ctrl.set_rx_wake(ax_net::wake_net_task_irq);
-        ctrl.link_policy()
-    } else {
-        None
-    };
-
-    // Capture a standalone control-plane handle *before* the `Net` is consumed
-    // into the data-plane driver, so runtime mode switching can reach this
-    // device's `WifiControl` by name (see `ax_net::reconfigure_wifi`).
-    if let Some(handle) = net.wifi_control_handle() {
-        ax_net::register_wifi_control(name, handle);
-    }
-
-    let irq = resolve_net_irq(name, irq);
-    let driver = ax_net::RdNetDriver::new(name, net, irq)
-        .unwrap_or_else(|err| panic!("failed to adapt net device {name}: {err:?}"));
-    let driver = alloc::boxed::Box::new(driver) as alloc::boxed::Box<dyn ax_net::EthernetDriver>;
-
-    match policy {
-        Some(p) => wireless.push((
-            driver,
-            ax_net::NetConfig {
-                name: name.into(),
-                ip: p.ip,
-                prefix_len: p.prefix_len,
-                dhcp_server_client_ip: p.dhcp_server_client_ip,
-                dedicated_poll: true,
-            },
-        )),
-        None => nics.push(driver),
-    }
-}
-
 #[cfg(all(feature = "net", feature = "irq"))]
-fn resolve_net_irq(name: &str, irq: Option<ax_driver::BindingIrq>) -> Option<irq_framework::IrqId> {
-    let irq = irq?;
-    match crate::irq::resolve_binding_irq(irq) {
-        Ok(id) => Some(id),
-        Err(err) => {
-            warn!("failed to resolve net IRQ for {name}: {err:?}");
-            None
+fn collect_net_devices() -> alloc::vec::Vec<ax_net::NetworkDeviceInput> {
+    let mut devices = alloc::vec::Vec::new();
+    for device in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
+        let taken = ax_driver::net::take_net_device(device)
+            .unwrap_or_else(|error| panic!("failed to take network device: {error}"));
+        let name = alloc::string::String::from(taken.name);
+        let prepared = rd_net::prepare_device(taken.prepared_device, taken.dma)
+            .unwrap_or_else(|error| panic!("failed to prepare network device {name}: {error}"));
+        let mut irq_sources = alloc::vec::Vec::with_capacity(taken.irq_sources.len());
+        for source in taken.irq_sources {
+            let source_id = u16::try_from(source.source_id).unwrap_or_else(|_| {
+                panic!(
+                    "network device {name} IRQ source {} exceeds the source-id width",
+                    source.source_id
+                )
+            });
+            let irq = crate::irq::resolve_binding_irq(source.irq).unwrap_or_else(|error| {
+                panic!("failed to resolve network device {name} IRQ source {source_id}: {error:?}")
+            });
+            irq_sources.push(ax_net::ResolvedNetIrqSource {
+                source_id: rd_net::NetIrqSourceId::new(source_id),
+                irq,
+            });
         }
+        devices.push(ax_net::NetworkDeviceInput {
+            name,
+            device: prepared,
+            irq_sources,
+        });
     }
-}
-
-#[cfg(all(feature = "net", not(feature = "irq")))]
-fn resolve_net_irq(
-    _name: &str,
-    _irq: Option<ax_driver::BindingIrq>,
-) -> Option<irq_framework::IrqId> {
-    None
-}
-
-/// Registers wireless devices that carry a link policy with the
-/// already-initialized network stack (static IP + optional DHCP server +
-/// dedicated out-of-band RX poll). Plain NICs are handled by `init_network`.
-#[cfg(feature = "net")]
-fn register_wireless_devices(wireless: alloc::vec::Vec<WirelessDevice>) {
-    for (driver, config) in wireless {
-        ax_net::register_device_with_config(driver, config);
-    }
+    devices
 }
 
 #[cfg(feature = "vsock")]
@@ -224,22 +192,4 @@ pub(crate) fn init_vsock() {
     let devices = ax_driver::vsock::take_vsock_devices()
         .unwrap_or_else(|err| panic!("failed to open vsock devices: {err:?}"));
     ax_net::init_vsock(devices);
-}
-
-#[cfg(feature = "net")]
-fn collect_net_devices() -> (
-    alloc::vec::Vec<alloc::boxed::Box<dyn ax_net::EthernetDriver>>,
-    alloc::vec::Vec<WirelessDevice>,
-) {
-    let mut nics = alloc::vec::Vec::new();
-    let mut wireless = alloc::vec::Vec::new();
-    if !rdrive::is_initialized() {
-        return (nics, wireless);
-    }
-    for dev in rdrive::get_list::<ax_driver::net::PlatformNetDevice>() {
-        let (net, name, irq) = ax_driver::net::take_rd_net_device(dev)
-            .unwrap_or_else(|err| panic!("failed to open net device: {err:?}"));
-        adapt_net_device(net, name, irq, &mut nics, &mut wireless);
-    }
-    (nics, wireless)
 }

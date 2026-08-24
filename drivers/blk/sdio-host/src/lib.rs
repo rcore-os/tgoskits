@@ -12,13 +12,41 @@ use alloc::sync::Arc;
 
 use error::SdioError;
 
+/// Bounded result of one SDIO controller hard-IRQ probe.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SdioIrqStatus {
+    /// This controller did not assert the shared physical IRQ.
+    Spurious,
+    /// The card interrupt was asserted and has been masked for task-context
+    /// draining.
+    CardPending,
+}
+
+/// Move-only SDIO controller interrupt source.
+///
+/// The source is extracted exactly once from its host and moved into the OS IRQ
+/// callback. Implementations may only read bounded status and mask/ack the card
+/// source; CMD52/CMD53 and payload work remain in task context.
+pub trait SdioIrqSource: Send + 'static {
+    /// Probes and masks one controller interrupt.
+    fn handle_irq(&mut self) -> SdioIrqStatus;
+}
+
 /// SDIO Card Interrupt 控制（无锁，ISR 安全）
 ///
 /// mask/unmask 是单次 MMIO 写操作，不涉及控制器状态机，
 /// 因此不需要与 CMD52/CMD53 互斥。
 pub trait SdioCardIrq: Send + Sync {
     fn mask_card_irq(&self);
-    fn unmask_card_irq(&self);
+
+    /// Unmasks CARD_INT and immediately checks the controller status in the
+    /// same task-context operation. If the card is already pending, the
+    /// implementation must mask CARD_INT again before returning `true`.
+    ///
+    /// This closes the drain-to-rearm window without relying on a timer or on
+    /// the controller synthesizing a new edge for an already asserted card
+    /// interrupt.
+    fn rearm_and_check_card_irq(&self) -> bool;
 }
 
 /// SDIO 主机控制器抽象
@@ -76,4 +104,7 @@ pub trait SdioHost: Send + Sync {
 
     /// 创建无锁的 Card IRQ 控制句柄
     fn card_irq_ctrl(&self) -> Option<Arc<dyn SdioCardIrq>>;
+
+    /// Extracts the controller hard-IRQ source exactly once.
+    fn take_irq_source(&mut self) -> Option<alloc::boxed::Box<dyn SdioIrqSource>>;
 }

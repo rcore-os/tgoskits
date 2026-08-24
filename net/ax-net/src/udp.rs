@@ -21,7 +21,7 @@
 //!
 //! # Polling
 //!
-//! UDP send/recv operations request the shared net-poll worker after socket
+//! UDP send/recv operations request the unique protocol executor after socket
 //! state changes. They do not run the interface poll loop directly.
 
 use alloc::{boxed::Box, vec, vec::Vec};

@@ -377,9 +377,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(feature = "input")]
     devices::init_input();
 
-    #[cfg(feature = "net")]
-    devices::init_net();
-
     #[cfg(feature = "vsock")]
     devices::init_vsock();
 
@@ -406,6 +403,13 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     #[cfg(all(feature = "smp", feature = "ipi"))]
     fs::online_smp();
+
+    // Queue-level network IRQ ownership is selected from the complete online
+    // CPU set.  Every target scheduler, IRQ CPU state, and synchronous IPI
+    // route must therefore be ready before fixed-affinity workers handshake
+    // and physical IRQ actions are registered.
+    #[cfg(feature = "net")]
+    devices::init_net();
 
     ax_app_entry();
     terminate();
