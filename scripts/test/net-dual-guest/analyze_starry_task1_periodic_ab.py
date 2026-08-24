@@ -51,7 +51,10 @@ def read_run(path: Path, arm: str, rtos_name: str) -> Metrics:
     for marker in required:
         if marker not in log:
             raise ValueError(f"{log_path}: missing marker {marker!r}")
-    inference = re.search(r"TASK3_INFER model=yolo11n\.ncnn infer_us=(\d+) request=1\b", log)
+    inference = re.search(
+        r"TASK3_INFER model=yolo11n\.ncnn[^\r\n]*\binfer_us=(\d+)[^\r\n]*\brequest=1\b",
+        log,
+    )
     if inference is None:
         raise ValueError(f"{log_path}: real YOLO inference did not complete")
     jitter = [value for _, value in samples]

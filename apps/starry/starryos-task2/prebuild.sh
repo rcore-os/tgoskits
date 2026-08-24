@@ -5,29 +5,16 @@ app_dir="${STARRY_APP_DIR:?prebuild: STARRY_APP_DIR is required}"
 overlay_dir="${STARRY_OVERLAY_DIR:?prebuild: STARRY_OVERLAY_DIR is required}"
 arch="${STARRY_ARCH:?prebuild: STARRY_ARCH is required}"
 workspace="${STARRY_WORKSPACE:?prebuild: STARRY_WORKSPACE is required}"
+source "$workspace/scripts/lib/task123-tools.sh"
 
 case "$arch" in
     aarch64) triple="aarch64-linux-musl" ;;
     *) echo "prebuild: starryos-task2 currently supports only aarch64" >&2; exit 1 ;;
 esac
 
-cc="${CROSS_CC:-/home/huhu/.local/toolchains/${triple}-cross/bin/${triple}-gcc}"
-if [[ ! -x "$cc" ]]; then
-    if command -v "${triple}-gcc" >/dev/null 2>&1; then
-        cc="$(command -v "${triple}-gcc")"
-    else
-        echo "prebuild: no musl compiler for $triple" >&2
-        exit 1
-    fi
-fi
-cxx="${CROSS_CXX:-/home/huhu/.local/toolchains/${triple}-cross/bin/${triple}-g++}"
-ar="${CROSS_AR:-/home/huhu/.local/toolchains/${triple}-cross/bin/${triple}-ar}"
-for tool in "$cxx" "$ar"; do
-    if [[ ! -x "$tool" ]]; then
-        echo "prebuild: missing musl cross tool: $tool" >&2
-        exit 1
-    fi
-done
+cc="$(resolve_task123_tool CROSS_CC "${triple}-gcc")"
+cxx="$(resolve_task123_tool CROSS_CXX "${triple}-g++")"
+ar="$(resolve_task123_tool CROSS_AR "${triple}-ar")"
 
 ncnn_prefix="${NCNN_PREFIX:-$workspace/tmp/task3-yolo/ncnn-aarch64/install}"
 yolo_assets="${TASK3_YOLO_ASSETS:-$workspace/tmp/task3-yolo/ncnn-model}"

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-base_initramfs="${BASE_INITRAMFS:-/home/huhu/tgoskits-realtime/tmp/initramfs-custom}"
+base_initramfs="${BASE_INITRAMFS:-$repo_root/tmp/net-dual-guest/base-initramfs.cpio.gz}"
 task2_binary="${TASK2_BINARY:-$repo_root/tmp/net-dual-guest/linux-task2/controller/task2-net}"
 model_dir="${TASK3_NCNN_MODEL_DIR:-$repo_root/tmp/task3-yolo/ncnn-model}"
 ab_manifest="$repo_root/scripts/task3/task3-ab-manifest.tsv"
@@ -17,6 +17,9 @@ expected_input_sha256="608c8a61ff0bb43e5a8613f1f6f8aa08af74b084363610ed2b526ad92
 for input in "$base_initramfs" "$task2_binary" "$template"; do
     if [[ ! -f "$input" ]]; then
         printf 'error: required input is missing: %s\n' "$input" >&2
+        if [[ "$input" == "$base_initramfs" ]]; then
+            printf 'error: set BASE_INITRAMFS or place it at %s\n' "$base_initramfs" >&2
+        fi
         exit 1
     fi
 done

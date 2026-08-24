@@ -14,7 +14,6 @@ args = [
   "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
   "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
   "-append", "root=/dev/nvme0n1 rw init=/init",
-  "-snapshot",
   "-qmp", "unix:${workspace}/tmp/net-dual-guest/qmp-switch.sock,server,nowait",
 ]
 fail_regex = ["TASK2_ERROR=", "(?i)panic"]

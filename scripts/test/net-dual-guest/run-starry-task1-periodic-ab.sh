@@ -11,15 +11,16 @@ rr_host="$repo_root/scripts/test/net-dual-guest/axvisor-qemu-starry-task1-rr.tom
 fp_host="$repo_root/scripts/test/net-dual-guest/axvisor-qemu-starry-task1-fp-rr.toml"
 qemu_config="$repo_root/scripts/test/net-dual-guest/qemu-aarch64-starry-zephyr-task1-capture.toml"
 starry_vm="$repo_root/scripts/test/net-dual-guest/vm-aarch64-starry-task1-shared.toml"
-zephyr_vm="$repo_root/scripts/test/net-dual-guest/vm-aarch64-zephyr-periodic-task1-shared.toml"
+zephyr_vm_template="$repo_root/scripts/test/net-dual-guest/vm-aarch64-zephyr-periodic-task1-shared.toml"
 analyzer="$repo_root/scripts/test/net-dual-guest/analyze_starry_task1_periodic_ab.py"
 runtime_dir="$repo_root/tmp/net-dual-guest"
-qemu_sock="$runtime_dir/qmp-starry-zephyr-msix1-capture.sock"
-serial_sock="$runtime_dir/serial-starry-zephyr-msix1-capture.sock"
+socket_dir="/tmp/tgoskits-task123"
+qemu_sock="$socket_dir/qmp-starry-zephyr-msix1-capture.sock"
+serial_sock="$socket_dir/serial-starry-zephyr-msix1-capture.sock"
 periodic_dir="$repo_root/tmp/starry-task1-periodic"
 periodic_bin="$periodic_dir/zephyr-periodic.bin"
 periodic_manifest="$periodic_dir/zephyr-periodic.manifest"
-rootfs="$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img"
+rootfs="${STARRY_TASK23_ROOTFS:-$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img}"
 run_pid=""
 
 [[ "$repeats" =~ ^[1-9][0-9]*$ ]] || {
@@ -77,6 +78,9 @@ stop_owned_run() {
 trap stop_owned_run EXIT
 
 mkdir -p "$output_root"
+zephyr_vm="$output_root/vm-zephyr.runtime.toml"
+python3 "$repo_root/scripts/test/net-dual-guest/render_vm_entry.py" \
+    "$periodic_manifest" "$zephyr_vm_template" "$zephyr_vm"
 git -C "$repo_root" rev-parse HEAD > "$output_root/git-head.txt"
 cp "$periodic_manifest" "$output_root/zephyr-periodic.manifest"
 cat > "$output_root/protocol.txt" <<EOF
@@ -130,7 +134,7 @@ raw g
 expect 10 PERIODIC LATENCY START
 expect 60 PERIODIC LATENCY COMPLETE samples=300
 attach 1
-expect 180 TASK3_INFER model=yolo11n.ncnn infer_us=.*request=1
+expect 180 TASK3_INFER model=yolo11n.ncnn .*infer_us=.*request=1
 detach
 cmd rt stat
 expect 30 RT vCPU wait counters:

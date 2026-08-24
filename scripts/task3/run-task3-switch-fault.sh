@@ -15,6 +15,7 @@ set -euo pipefail
 # Usage: run-task3-switch-fault.sh <label> [baseline|cnn|yolo]
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+rootfs="${STARRY_TASK23_ROOTFS:-$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img}"
 label="${1:?label required}"
 mode="${2:-yolo}"
 workdir="$repo_root/tmp/net-dual-guest"
@@ -94,7 +95,7 @@ nohup cargo xtask axvisor qemu \
     --qemu-config scripts/test/net-dual-guest/qemu-aarch64-p2-switch.toml \
     --vmconfigs scripts/test/net-dual-guest/vm-aarch64-p2-switch-linux.toml \
     --vmconfigs scripts/test/net-dual-guest/vm-aarch64-p2-switch-rtos.toml \
-    --rootfs "$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img" \
+    --rootfs "$rootfs" \
     > "$build_log" 2>&1 &
 run_pid=$!
 

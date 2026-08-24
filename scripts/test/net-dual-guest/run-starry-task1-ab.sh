@@ -34,8 +34,9 @@ if [[ -e "$output_root" ]]; then
     printf 'error: output already exists: %s\n' "$output_root" >&2
     exit 2
 fi
-if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]]; then
-    printf 'error: tracked worktree changes exist; commit before collecting Task 1 evidence\n' >&2
+if [[ "${ALLOW_DIRTY:-0}" != 1 ]] &&
+    [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]]; then
+    printf 'error: tracked worktree changes exist; commit them or set ALLOW_DIRTY=1 for a diagnostic run\n' >&2
     exit 1
 fi
 

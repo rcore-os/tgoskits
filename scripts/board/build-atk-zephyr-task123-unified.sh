@@ -14,8 +14,8 @@ template_dir="$repo_root/scripts/board/task123-zephyr"
 output_dir=""
 starry_kernel="${STARRY_KERNEL:-$repo_root/target/aarch64-unknown-none-softfloat/release/starryos.bin}"
 starry_initrd="${STARRY_INITRD:-$repo_root/tmp/atk-task123-integrated-ab-20260824/task2-linux-initramfs.cpio.gz}"
-host_dtb="${ATK_HOST_DTB:-/home/huhu/atk-bringup/atk-dlrk3588-starry.dtb}"
-zephyr_base="${ZEPHYR_BASE:-/home/huhu/toolchains/zephyrproject/zephyr-$ZEPHYR_COMMIT}"
+host_dtb="${ATK_HOST_DTB:-$repo_root/tmp/board/atk-dlrk3588-starry.dtb}"
+zephyr_base="${ZEPHYR_BASE:-$repo_root/.deps/zephyr-$ZEPHYR_COMMIT}"
 axvisor_elf="$repo_root/target/aarch64-unknown-linux-musl/release/axvisor"
 
 main() {

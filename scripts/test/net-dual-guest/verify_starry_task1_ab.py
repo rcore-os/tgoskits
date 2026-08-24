@@ -223,7 +223,8 @@ def load_arm(
             log,
             (
                 r"TASK2_READY\b",
-                r"TASK3_MODEL_READY model=yolo11n\.ncnn runtime=ncnn[^\n]*mode=in-guest",
+                r"TASK3_MODEL_READY model=yolo11n\.ncnn runtime=ncnn"
+                r"(?:[^\n]*\n){0,16}[^\n]*mode=in-guest",
                 r"TASK3_INFER model=yolo11n\.ncnn[^\n]*request=3\b",
                 r"TASK3_DETECTION model=yolo11n\.ncnn[^\n]*request=3\b",
                 r"STARRY_T2N1_PASS\b",

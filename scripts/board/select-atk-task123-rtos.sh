@@ -6,7 +6,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-zephyr_dir="${ATK_ZEPHYR_TASK123_DIR:-/home/huhu/atk-bringup/zephyr-task123-unified-20260824}"
+zephyr_dir="${ATK_ZEPHYR_TASK123_DIR:-$repo_root/tmp/atk-task123-zephyr-unified}"
 rtthread_dir="${ATK_RTTHREAD_TASK123_DIR:-$repo_root/tmp/atk-task123-integrated-ab-20260824}"
 rtos=""
 scheduler=""

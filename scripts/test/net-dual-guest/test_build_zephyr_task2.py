@@ -33,11 +33,20 @@ def test_relative_output_paths_are_canonicalized_before_cmake() -> None:
 
 
 def test_task2_slot_metadata_matches_the_selected_virtio_window() -> None:
-    assert 'fdt_path="/virtio_mmio@a000000"' in BUILD_SCRIPT
-    assert "guest_irq=48" in BUILD_SCRIPT
+    assert 'fdt_path="/virtio_mmio@b000000"' in BUILD_SCRIPT
+    assert "host_hwirq=0" in BUILD_SCRIPT
+    assert "guest_irq=32" in BUILD_SCRIPT
     assert 'fdt_path="/virtio_mmio@a003c00"' in BUILD_SCRIPT
     assert "guest_irq=78" in BUILD_SCRIPT
     assert 'printf \'guest_irq = %s\\n\' "$guest_irq"' in BUILD_SCRIPT
+
+
+def test_switch_overlay_matches_axvisor_aarch64_auto_resources() -> None:
+    overlay = (ROOT / "zephyr-task2/app.overlay.switch").read_text()
+
+    assert "virtio_mmio@b000000" in overlay
+    assert "0x0b000000" in overlay
+    assert "interrupts = <0x0 0x0 0x2 0xa0>;" in overlay
 
 
 def test_physical_overlay_uses_the_rk3588_guest_gic_contract() -> None:

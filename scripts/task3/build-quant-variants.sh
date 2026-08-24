@@ -8,7 +8,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out_root="${OUT_ROOT:-$repo_root/tmp/task3-quant}"
 runtime_dir="${RUNTIME_DIR:-$repo_root/tmp/net-dual-guest/linux-task2}"
-base_initramfs="${BASE_INITRAMFS:-/home/huhu/tgoskits-realtime/tmp/initramfs-custom}"
+base_initramfs="${BASE_INITRAMFS:-$repo_root/tmp/net-dual-guest/base-initramfs.cpio.gz}"
 
 if [[ ! -f "$base_initramfs" ]]; then
     echo "error: BASE_INITRAMFS is missing: $base_initramfs" >&2

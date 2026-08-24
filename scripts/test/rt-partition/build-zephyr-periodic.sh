@@ -5,8 +5,10 @@ set -euo pipefail
 # identity-mapped guest address and stage a raw image plus reproducibility data.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-zephyr_base="${ZEPHYR_BASE:-/tmp/zephyrproject}"
-cross_prefix="${CROSS_COMPILE:-$HOME/.local/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-}"
+source "$repo_root/scripts/lib/task123-tools.sh"
+zephyr_revision="dccb09599635bdff17633fa7e9dab014b91dce90"
+zephyr_base="${ZEPHYR_BASE:-$repo_root/.deps/zephyr-$zephyr_revision}"
+cross_prefix="$(resolve_task123_cross_prefix)"
 app_dir="${repo_root}/scripts/test/zephyr-periodic"
 out_dir="${OUT_DIR:-${repo_root}/tmp/rt-partition}"
 build_dir="${BUILD_DIR:-${out_dir}/zephyr-periodic-build}"
@@ -61,6 +63,11 @@ if [[ -n "$extra_overlay" ]]; then
     overlay_files+=("$(realpath "$extra_overlay")")
 fi
 overlay_list="$(IFS=";"; printf "%s" "${overlay_files[*]}")"
+
+# Zephyr 4.4.2's standalone-checkout path omits this companion file when the
+# source is not inside a west workspace.
+mkdir -p "$build_dir/Kconfig"
+printf 'set(kconfig_env_dirs)\n' > "$build_dir/Kconfig/kconfig_module_dirs.cmake"
 
 ZEPHYR_BASE="$zephyr_base" cmake -S "$app_dir" -B "$build_dir" -G Ninja \
     -DBOARD=qemu_cortex_a53 \

@@ -4,7 +4,7 @@
 args = [
   "-display", "none",
   "-monitor", "none",
-  "-serial", "unix:${workspace}/tmp/net-dual-guest/serial-starry-rtthread-task1-periodic-capture.sock,server",
+  "-serial", "unix:/tmp/tgoskits-task123/serial-starry-rtthread-task1-periodic-capture.sock,server",
   "-cpu", "cortex-a72",
   "-machine", "virt,virtualization=on,gic-version=3",
   "-smp", "2",
@@ -12,8 +12,7 @@ args = [
   "-device", "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=1",
   "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
   "-append", "root=/dev/nvme0n1 rw init=/init",
-  "-snapshot",
-  "-qmp", "unix:${workspace}/tmp/net-dual-guest/qmp-starry-rtthread-task1-periodic-capture.sock,server,nowait",
+  "-qmp", "unix:/tmp/tgoskits-task123/qmp-starry-rtthread-task1-periodic-capture.sock,server,nowait",
 ]
 fail_regex = ["TASK2_ERROR=", "(?i)panic"]
 success_regex = ["NEVER_MATCH_EVIDENCE_CAPTURE"]

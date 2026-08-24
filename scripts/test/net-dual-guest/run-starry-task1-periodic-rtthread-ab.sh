@@ -15,12 +15,13 @@ starry_vm="$repo_root/scripts/test/net-dual-guest/vm-aarch64-starry-task1-shared
 rtos_vm="$repo_root/scripts/test/net-dual-guest/vm-aarch64-rtthread-periodic-task1-shared.toml"
 analyzer="$repo_root/scripts/test/net-dual-guest/analyze_starry_task1_periodic_ab.py"
 runtime_dir="$repo_root/tmp/net-dual-guest"
-qemu_sock="$runtime_dir/qmp-starry-rtthread-task1-periodic-capture.sock"
-serial_sock="$runtime_dir/serial-starry-rtthread-task1-periodic-capture.sock"
+socket_dir="/tmp/tgoskits-task123"
+qemu_sock="$socket_dir/qmp-starry-rtthread-task1-periodic-capture.sock"
+serial_sock="$socket_dir/serial-starry-rtthread-task1-periodic-capture.sock"
 periodic_dir="$repo_root/tmp/starry-task1-periodic-rtthread"
 periodic_bin="$periodic_dir/rtthread-periodic.bin"
 periodic_manifest="$periodic_dir/rtthread-periodic.manifest"
-rootfs="${STARRY_TASK23_ROOTFS:-$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img}"
+rootfs="${STARRY_TASK23_ROOTFS:-$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img}"
 run_pid=""
 
 [[ "$repeats" =~ ^[1-9][0-9]*$ ]] || {

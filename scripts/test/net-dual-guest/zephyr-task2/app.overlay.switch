@@ -1,6 +1,7 @@
 /* Overlay for the in-hypervisor virtio-net switch topology: the endpoint is
- * the hypervisor-generated virtio-mmio node at 0x0a00_0000 with wired IRQ 48,
- * which matches the QEMU virt machine's slot 0 (GIC_SPI 16) base/IRQ layout.
+ * the first AxVisor AArch64 auto-resource slot at 0x0b00_0000 with wired IRQ
+ * 32 (GIC_SPI 0).  Unlike the socket-pair topology, this is not one of QEMU's
+ * built-in virtio-mmio slots.
  *
  * Build with TASK2_ZEPHYR_VIRTIO_SLOT=0 to select this overlay. */
 
@@ -24,13 +25,24 @@
 	status = "disabled";
 };
 
-/* The switch topology uses the first AxVisor virtio-mmio window. */
+/* Do not probe QEMU's first built-in virtio-mmio window. */
 &virtio_mmio0 {
-	status = "okay";
+	status = "disabled";
+};
+
+/* Zephyr uses a compiled devicetree, so describe the same resources that
+ * AxVisor's AArch64 automatic allocator assigns to its first virtual device. */
+&{/soc} {
+	virtio_mmio_switch: virtio_mmio@b000000 {
+		compatible = "virtio,mmio";
+		reg = <0x0 0x0b000000 0x0 0x200>;
+		interrupts = <0x0 0x0 0x2 0xa0>;
+		status = "okay";
 
 	virtio_net: virtio-net {
 		compatible = "virtio,net";
 		status = "okay";
 		local-mac-address = [52 54 00 12 34 02];
+	};
 	};
 };

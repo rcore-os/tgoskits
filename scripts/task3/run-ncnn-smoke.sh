@@ -2,9 +2,10 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$repo_root/scripts/lib/task123-tools.sh"
 ncnn_prefix="${NCNN_PREFIX:-$repo_root/tmp/task3-yolo/ncnn-aarch64/install}"
-cross_cxx="${CROSS_CXX:-/home/huhu/.local/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++}"
-cross_qemu="${QEMU_AARCH64:-/home/huhu/.local/bin/qemu-aarch64}"
+cross_cxx="$(resolve_task123_tool CROSS_CXX aarch64-linux-musl-g++)"
+cross_qemu="$(resolve_task123_tool QEMU_AARCH64 qemu-aarch64)"
 out_dir="${OUT_DIR:-$repo_root/tmp/task3-yolo/ncnn-smoke}"
 input_path="${1:-$repo_root/tmp/task3-yolo/ncnn-model/input.ppm}"
 if [[ ! -f "$input_path" ]]; then

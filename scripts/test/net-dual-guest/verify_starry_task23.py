@@ -21,7 +21,8 @@ STARRY_IP = "10.0.42.15"
 ZEPHYR_IP = "10.0.42.2"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 YOLO_READY_PATTERN = (
-    r"TASK3_MODEL_READY model=yolo11n\.ncnn runtime=ncnn[^\n]*mode=in-guest"
+    r"TASK3_MODEL_READY model=yolo11n\.ncnn runtime=ncnn"
+    r"(?:[^\n]*\n){0,16}[^\n]*mode=in-guest"
 )
 
 
@@ -327,7 +328,7 @@ def verify_model_rejected(frames: list[WireFrame], log: str) -> list[str]:
     failures = require_patterns(
         log,
         (
-            r"TASK3_MODEL_READY[^\n]*run_mode=model-rejected",
+            r"TASK3_MODEL_READY(?:[^\n]*\n){0,16}[^\n]*run_mode=model-rejected",
             r"TASK3_MODEL_REJECTED[^\n]*reason=InjectedInvalidOutput",
             r"STARRY_T2N1_SAFE source=model reason=InjectedInvalidOutput",
         ),

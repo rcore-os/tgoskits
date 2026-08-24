@@ -2,12 +2,11 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-default_zephyr_base="/home/huhu/toolchains/zephyrproject/zephyr-dccb09599635bdff17633fa7e9dab014b91dce90"
-if [[ ! -d "$default_zephyr_base" && -d /tmp/zephyrproject/zephyr-4.4.2 ]]; then
-    default_zephyr_base="/tmp/zephyrproject/zephyr-4.4.2"
-fi
+source "$repo_root/scripts/lib/task123-tools.sh"
+zephyr_revision="dccb09599635bdff17633fa7e9dab014b91dce90"
+default_zephyr_base="$repo_root/.deps/zephyr-$zephyr_revision"
 zephyr_base="${ZEPHYR_BASE:-$default_zephyr_base}"
-cross_prefix="${CROSS_COMPILE:-/home/huhu/.local/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-}"
+cross_prefix="$(resolve_task123_cross_prefix)"
 out_dir="${OUT_DIR:-$repo_root/tmp/net-dual-guest/zephyr-task2}"
 build_dir="${BUILD_DIR:-$out_dir/cargo-target}"
 source_dir="$repo_root/scripts/test/net-dual-guest/zephyr-task2"
@@ -20,9 +19,9 @@ periodic_sample_count="${TASK1_ZEPHYR_SAMPLE_COUNT:-300}"
 case "$virtio_slot" in
     0)
         device_overlay="$source_dir/app.overlay.switch"
-        fdt_path="/virtio_mmio@a000000"
-        host_hwirq=16
-        guest_irq=48
+        fdt_path="/virtio_mmio@b000000"
+        host_hwirq=0
+        guest_irq=32
         ;;
     30)
         device_overlay="$source_dir/app.overlay"
@@ -56,9 +55,9 @@ memory_size_value=$((memory_size))
 memory_base="$(printf '0x%08x' "$memory_base_value")"
 memory_size="$(printf '0x%08x' "$memory_size_value")"
 
-if [[ ! -d "$zephyr_base" || ! -x "${cross_prefix}gcc" ]]; then
-    printf 'error: Zephyr source or cross compiler is missing (%s, %s)\n' \
-        "$zephyr_base" "${cross_prefix}gcc" >&2
+if [[ ! -d "$zephyr_base" ]]; then
+    printf 'error: Zephyr source is missing: %s; set ZEPHYR_BASE or place revision %s under .deps\n' \
+        "$zephyr_base" "$zephyr_revision" >&2
     exit 1
 fi
 if [[ -n "$extra_overlay" && ! -f "$extra_overlay" ]]; then

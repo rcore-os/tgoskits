@@ -16,14 +16,17 @@ rtos_image="${STARRY_TASK23_RTOS_IMAGE:-${rtos_name}-task2.bin}"
 runtime_tag="${STARRY_TASK23_RUNTIME_TAG:-starry-zephyr-msix1-capture}"
 rtos_source_dir="${STARRY_TASK23_RTOS_SOURCE_DIR:-}"
 collect_rt_stat="${STARRY_TASK23_COLLECT_RT_STAT:-0}"
+serial_socket_timeout="${STARRY_TASK23_SERIAL_SOCKET_TIMEOUT:-300}"
 runtime_dir="$repo_root/tmp/net-dual-guest"
-qemu_sock="$runtime_dir/qmp-${runtime_tag}.sock"
-serial_sock="$runtime_dir/serial-${runtime_tag}.sock"
+socket_dir="/tmp/tgoskits-task123"
+qemu_sock="$socket_dir/qmp-${runtime_tag}.sock"
+serial_sock="$socket_dir/serial-${runtime_tag}.sock"
 capture_prefix="$runtime_dir/starry-task23-current"
 steps="$output_dir/steps.txt"
 run_log="$output_dir/run.log"
 build_log="$output_dir/build.log"
 run_pid=""
+runtime_rootfs=""
 
 case "$rtos_name" in
     zephyr|rtthread) ;;
@@ -41,6 +44,10 @@ case "$collect_rt_stat" in
         exit 2
         ;;
 esac
+if [[ ! "$serial_socket_timeout" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'error: STARRY_TASK23_SERIAL_SOCKET_TIMEOUT must be positive\n' >&2
+    exit 2
+fi
 
 resolve_config_path() {
     if [[ "$1" == /* ]]; then
@@ -91,7 +98,7 @@ if [[ -d "$output_dir" ]] && find "$output_dir" -mindepth 1 -print -quit | grep 
     printf 'error: output directory is not empty: %s\n' "$output_dir" >&2
     exit 1
 fi
-mkdir -p "$output_dir"
+mkdir -p "$output_dir" "$socket_dir"
 
 if [[ "${ALLOW_DIRTY:-0}" != 1 ]] &&
     [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]]; then
@@ -127,7 +134,7 @@ if ! grep -q "^fault_mode = \"$expected_fault_mode\"$" "$selected_rtos_dir/manif
     exit 1
 fi
 
-rootfs="$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img"
+rootfs="${STARRY_TASK23_ROOTFS:-$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img}"
 endpoint="$repo_root/target/starryos-task2-rust/aarch64-unknown-linux-musl/release/starryos-task2-endpoint"
 endpoint_script="$repo_root/apps/starry/starryos-task2/t2n1-run.sh"
 yolo_assets="$repo_root/tmp/task3-yolo/ncnn-model"
@@ -144,6 +151,11 @@ for artifact in \
         exit 1
     fi
 done
+if ! e2fsck -fn "$rootfs" > "$output_dir/rootfs-preflight.log" 2>&1; then
+    printf 'error: base rootfs failed the read-only filesystem check: %s\n' "$rootfs" >&2
+    tail -20 "$output_dir/rootfs-preflight.log" >&2
+    exit 1
+fi
 
 host_endpoint_sha256="$(sha256sum "$endpoint" | awk '{print $1}')"
 rootfs_endpoint_sha256="$(
@@ -213,6 +225,9 @@ stop_owned_run() {
             [[ -n "$owner_pid" ]] && kill -TERM "$owner_pid" 2>/dev/null || true
         done < <(lsof -t -- "$socket_path" 2>/dev/null || true)
     done
+    if [[ -n "$runtime_rootfs" ]]; then
+        rm -f -- "$runtime_rootfs"
+    fi
 }
 trap stop_owned_run EXIT
 
@@ -228,6 +243,29 @@ rm -f -- "$capture_prefix.vm1.pcap" "$capture_prefix.vm2.pcap"
 mkdir -p "$runtime_dir/${rtos_name}-task2"
 cp "$selected_rtos_dir/$rtos_image" "$runtime_dir/${rtos_name}-task2/$rtos_image"
 cp "$selected_rtos_dir/manifest.toml" "$runtime_dir/${rtos_name}-task2/manifest.toml"
+runtime_rtos_vm_config="$output_dir/rtos.runtime.toml"
+python3 "$repo_root/scripts/test/net-dual-guest/render_vm_entry.py" \
+    "$selected_rtos_dir/manifest.toml" \
+    "$rtos_vm_config_path" \
+    "$runtime_rtos_vm_config"
+
+# The outer StarryOS filesystem is writable.  Every AxVisor run therefore gets
+# a disposable copy: a timeout or forced QEMU exit must not corrupt the clean
+# image used by later scenarios.
+runtime_rootfs="$runtime_dir/runtime-rootfs-${runtime_tag}-$$.img"
+cp --reflink=auto --sparse=always "$rootfs" "$runtime_rootfs"
+runtime_qemu_config="$output_dir/qemu.runtime.toml"
+python3 - "$qemu_config_path" "$runtime_qemu_config" "$runtime_rootfs" <<'PY'
+import sys
+from pathlib import Path
+
+source, output, rootfs = map(Path, sys.argv[1:])
+text = source.read_text()
+marker = "file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img"
+if marker not in text:
+    raise SystemExit(f"error: QEMU config does not contain the expected rootfs marker: {source}")
+output.write_text(text.replace(marker, f"file={rootfs.resolve()}"))
+PY
 
 {
     if [[ "$collect_rt_stat" == 1 ]]; then
@@ -327,25 +365,28 @@ cp "$selected_rtos_dir/manifest.toml" "$runtime_dir/${rtos_name}-task2/manifest.
     printf 'rtos_variant=%s\n' "$rtos_variant"
     printf 'host_config=%s\n' "$host_config"
     printf 'qemu_config=%s\n' "$qemu_config"
+    printf 'runtime_qemu_config=%s\n' "$runtime_qemu_config"
     printf 'starry_vm_config=%s\n' "$starry_vm_config"
     printf 'rtos_vm_config=%s\n' "$rtos_vm_config"
+    printf 'runtime_rtos_vm_config=%s\n' "$runtime_rtos_vm_config"
     printf 'collect_rt_stat=%s\n' "$collect_rt_stat"
-    printf 'command=cargo xtask axvisor qemu --config %s --qemu-config %s --vmconfigs %s --vmconfigs %s --rootfs tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img\n' \
-        "$host_config" "$qemu_config" "$starry_vm_config" "$rtos_vm_config"
+    printf 'command=cargo xtask axvisor qemu --config %s --qemu-config %s --vmconfigs %s --vmconfigs %s --rootfs %s\n' \
+        "$host_config" "$runtime_qemu_config" "$starry_vm_config" "$runtime_rtos_vm_config" "$runtime_rootfs"
 } > "$output_dir/command.txt"
 
 (
     cd "$repo_root"
     cargo xtask axvisor qemu \
         --config "$host_config" \
-        --qemu-config "$qemu_config" \
+        --qemu-config "$runtime_qemu_config" \
         --vmconfigs "$starry_vm_config" \
-        --vmconfigs "$rtos_vm_config" \
-        --rootfs tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
+        --vmconfigs "$runtime_rtos_vm_config" \
+        --rootfs "$runtime_rootfs"
 ) > "$build_log" 2>&1 &
 run_pid=$!
 
-for _ in $(seq 1 1200); do
+serial_deadline=$((SECONDS + serial_socket_timeout))
+while ((SECONDS < serial_deadline)); do
     [[ -S "$serial_sock" ]] && break
     if ! kill -0 "$run_pid" 2>/dev/null; then
         printf 'error: AxVisor exited before serial socket creation\n' >&2

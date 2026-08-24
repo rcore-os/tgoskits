@@ -7,6 +7,7 @@ set -euo pipefail
 # Usage: run-task3-experiment.sh <label> [ai|baseline]
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+rootfs="${STARRY_TASK23_ROOTFS:-$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img}"
 label="${1:?label required}"
 mode="${2:?mode required: ai or baseline}"
 min_elapsed_ms="${MIN_ELAPSED_MS:-35000}"
@@ -28,7 +29,7 @@ nohup cargo xtask axvisor qemu \
     --qemu-config scripts/test/net-dual-guest/qemu-aarch64-p2.toml \
     --vmconfigs scripts/test/net-dual-guest/vm-aarch64-p2-linux.toml \
     --vmconfigs scripts/test/net-dual-guest/vm-aarch64-p2-rtos.toml \
-    --rootfs "$repo_root/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img" \
+    --rootfs "$rootfs" \
     > "$log" 2>&1 &
 run_pid=$!
 

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-qemu_bin="${QEMU_AARCH64:-/home/huhu/.local/bin/qemu-system-aarch64}"
+source "$repo_root/scripts/lib/task123-tools.sh"
+qemu_bin="$(resolve_task123_tool QEMU_SYSTEM_AARCH64 qemu-system-aarch64)"
 out_dir="${OUT_DIR:-$repo_root/tmp/net-dual-guest}"
 base_dtb="$out_dir/qemu-p2-host-base.dtb"
 carved_dtb="$out_dir/qemu-p2-host-carved.dtb"

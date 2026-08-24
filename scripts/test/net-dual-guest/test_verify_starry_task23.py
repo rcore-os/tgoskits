@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -209,6 +210,25 @@ class VerifyStarryTask23Tests(unittest.TestCase):
         )
 
         self.assertEqual(VERIFY.verify_model_rejected(frames, log), [])
+
+    def test_model_ready_allows_one_interleaved_kernel_log_line(self) -> None:
+        log = (
+            "TASK3_MODEL_READY model=yolo11n.ncnn runtime=ncnn bin_sha256=abc"
+            "[ 1.0] eth0: ARP request\n"
+            "def mode=in-guest run_mode=model-rejected samples=0"
+        )
+
+        self.assertIsNotNone(re.search(VERIFY.YOLO_READY_PATTERN, log))
+        self.assertEqual(
+            VERIFY.require_patterns(
+                log,
+                (
+                    r"TASK3_MODEL_READY(?:[^\n]*\n){0,16}[^\n]*"
+                    r"run_mode=model-rejected",
+                ),
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":

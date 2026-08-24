@@ -131,14 +131,14 @@ CRC errors, invalid parameters, duplicate frames, and out-of-order frames.
 
 The dual-guest link runs over Axvisor's internal L2 switch
 (`[[devices.virtual]] model = "virtio-net"`). Each guest drives a
-hypervisor-emulated virtio-mmio endpoint at `0x0a00_0000` (wired IRQ 48,
-matching the QEMU virt machine slot-0 layout); frames are forwarded between
+hypervisor-emulated virtio-mmio endpoint at `0x0b00_0000` (guest IRQ 32,
+matching AxVisor's first automatic AArch64 virtio window); frames are forwarded between
 the two ports inside the hypervisor, so no QEMU netdev, socket pair, or
 host-DTB carveout exists in the data path.
 
 | Item | Linux guest | RTOS guest |
 |---|---|---|
-| Endpoint | virtual `virtio_mmio@a000000` (IRQ 48) | virtual `virtio_mmio@a000000` (IRQ 48) |
+| Endpoint | virtual `virtio_mmio@b000000` (IRQ 32) | virtual `virtio_mmio@b000000` (IRQ 32) |
 | MAC address | `52:54:00:12:34:01` | `52:54:00:12:34:02` |
 | IPv4 address | `10.0.42.15/24` | `10.0.42.2/24` |
 | UDP service | `4242` | `4242` |
@@ -146,7 +146,8 @@ host-DTB carveout exists in the data path.
 The Zephyr guest selects QEMU's `virtio_mmio0` slot via
 `zephyr-task2/app.overlay.switch`, which is the same base address and GIC SPI
 (16) the hypervisor's generated FDT publishes. Build it with
-`TASK2_ZEPHYR_VIRTIO_SLOT=0`; the default (`app.overlay`, slot 30) serves the
+`TASK2_ZEPHYR_VIRTIO_SLOT=0`; this selects AxVisor's first AArch64 automatic
+virtio window (`0x0b000000`, guest IRQ 32). The default (`app.overlay`, slot 30) serves the
 QEMU socket-pair topology.
 
 The second RTOS endpoint uses RT-Thread commit

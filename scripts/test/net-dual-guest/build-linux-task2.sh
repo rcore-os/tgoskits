@@ -7,18 +7,15 @@ set -euo pipefail
 # copies of the same compile-time configuration.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$repo_root/scripts/lib/task123-tools.sh"
 out_dir="${OUT_DIR:-$repo_root/tmp/net-dual-guest/linux-task2}"
-cross_cc="${CROSS_CC:-/home/huhu/.local/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc}"
-cross_cxx="${CROSS_CXX:-/home/huhu/.local/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++}"
-cross_ar="${CROSS_AR:-/home/huhu/.local/toolchains/aarch64-linux-musl-cross/bin/aarch64-linux-musl-ar}"
+cross_cc="$(resolve_task123_tool CROSS_CC aarch64-linux-musl-gcc)"
+cross_cxx="$(resolve_task123_tool CROSS_CXX aarch64-linux-musl-g++)"
+cross_ar="$(resolve_task123_tool CROSS_AR aarch64-linux-musl-ar)"
 ncnn_prefix="${NCNN_PREFIX:-$repo_root/tmp/task3-yolo/ncnn-aarch64/install}"
 target_triple="aarch64-unknown-linux-musl"
 expected_ncnn_revision="946fe3fb14a8dff8c06df763f67be522167b2f00"
 
-if [[ ! -x "$cross_cc" ]]; then
-    printf 'error: cross linker is not executable: %s\n' "$cross_cc" >&2
-    exit 1
-fi
 command -v sha256sum >/dev/null || {
     printf 'error: sha256sum is required\n' >&2
     exit 1
