@@ -73,9 +73,12 @@ pub use interrupt::{ControllerRegistration, InterruptRegistrationError};
 // not part of the architecture-neutral framework core.
 pub use loongarch_pch_pic::{
     LoongArchInterruptDomainFactory, LoongArchPchPic, LoongArchPchPicFactory, PchPicOutputEvent,
-    PchPicOutputPort, PchPicOutputPortKey,
+    PchPicOutputPort, PchPicOutputPortKey, PchPicOutputSink,
 };
-pub use model::{DeviceFirmwareProperty, DeviceFirmwareSpec, DeviceModel};
+pub use model::{
+    AcpiContributionSpec, AcpiDeviceSpec, DeviceFirmwareProperty, DeviceFirmwareSpec, DeviceModel,
+    FdtContributionSpec, FdtNodeSpec,
+};
 pub use registration::{
     DeviceBundle, DeviceLifecycle, DeviceRegistration, DmaPollableDeviceOps, PollableDeviceOps,
 };

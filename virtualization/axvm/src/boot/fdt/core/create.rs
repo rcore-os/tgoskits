@@ -15,15 +15,18 @@
 use std::{ptr::NonNull, string::String, vec::Vec};
 
 use ax_memory_addr::MemoryAddr;
+use axdevice_base::InterruptTrigger;
 use axvmconfig::GuestConfig;
 use fdt_edit::{Fdt, Node, NodeId, Property};
 use fdt_raw::RegInfo;
 
-use super::tree::{FdtTree, GuestMemorySpec, prop_string, prop_u32_list};
+use super::tree::{FdtTree, GuestMemorySpec, prop_string};
+pub(crate) use crate::boot::fdt::device::{
+    ResolvedFdtDevice, ResolvedFdtInterrupt, ResolvedFdtProperty,
+};
 use crate::{
     AxVMRef, AxVmResult, GuestPhysAddr, VMMemoryRegion, ax_err_type,
     boot::images::load_vm_image_from_memory,
-    machine::{GuestIvcChannel, GuestSerialFdtInterrupt},
 };
 
 pub fn create_guest_fdt(
@@ -334,7 +337,7 @@ fn load_patched_fdt(vm: AxVMRef, new_fdt_bytes: Vec<u8>) -> AxVmResult {
 pub(crate) struct GuestFdtRuntimePatch<'a> {
     pub(crate) fdt_bytes: &'a [u8],
     pub(crate) memory_regions: &'a [VMMemoryRegion],
-    pub(crate) ivc_channels: &'a [GuestIvcChannel],
+    pub(crate) devices: &'a [ResolvedFdtDevice],
     pub(crate) crate_config: &'a GuestConfig,
     pub(crate) serial_profile: crate::machine::GuestSerialProfile,
     pub(crate) serial_identity: Option<&'a crate::machine::GuestSerialFdtIdentity>,
@@ -350,7 +353,7 @@ pub(crate) fn patch_guest_fdt_for_runtime(patch: GuestFdtRuntimePatch<'_>) -> Ax
     let GuestFdtRuntimePatch {
         fdt_bytes,
         memory_regions,
-        ivc_channels,
+        devices,
         crate_config,
         serial_profile,
         serial_identity,
@@ -377,9 +380,7 @@ pub(crate) fn patch_guest_fdt_for_runtime(patch: GuestFdtRuntimePatch<'_>) -> Ax
         gic_profile,
         plic_profile,
     )?;
-    tree.add_ivc_channel_nodes(ivc_channels, gic_profile, plic_profile)?;
-    install_configured_virtio_net(&mut tree, crate_config, gic_profile, plic_profile)?;
-    install_configured_virtio_blk(&mut tree, crate_config, gic_profile, plic_profile)?;
+    install_resolved_fdt_devices(&mut tree, devices, gic_profile, plic_profile)?;
     super::timer::install_machine_timer(&mut tree, timer_profile)?;
     super::serial::install_machine_serial(&mut tree, serial_profile, serial_identity)?;
     for serial in additional_serials {
@@ -392,130 +393,81 @@ pub(crate) fn patch_guest_fdt_for_runtime(patch: GuestFdtRuntimePatch<'_>) -> Ax
     Ok(bytes)
 }
 
-fn install_configured_virtio_net(
+fn install_resolved_fdt_devices(
     tree: &mut FdtTree,
-    config: &GuestConfig,
+    devices: &[ResolvedFdtDevice],
     gic_profile: Option<&crate::machine::GuestGicProfile>,
     plic_profile: Option<&crate::machine::GuestPlicProfile>,
 ) -> AxVmResult {
-    if !config
-        .devices
-        .virtual_devices
-        .iter()
-        .any(|device| device.model == "virtio-net")
-    {
-        return Ok(());
+    for device in devices {
+        let path = device.registers.first().map_or_else(
+            || std::format!("/{}-{}", device.node_name, device.id),
+            |(base, _)| std::format!("/{}@{base:x}", device.node_name),
+        );
+        let node_id = tree.ensure_path(&path)?;
+        tree.set_property(
+            node_id,
+            string_list_property("compatible", &device.compatible),
+        )?;
+        if !device.registers.is_empty() {
+            let registers = device
+                .registers
+                .iter()
+                .map(|(base, size)| RegInfo::new(*base, Some(*size)))
+                .collect::<Vec<_>>();
+            tree.inner_mut()
+                .view_typed_mut(node_id)
+                .ok_or_else(|| ax_err_type!(InvalidData, "new configured FDT node is missing"))?
+                .set_regs(&registers);
+        }
+        if !device.interrupts.is_empty() {
+            let mut parent = None;
+            let mut cells = Vec::new();
+            for interrupt in &device.interrupts {
+                let binding = fdt_interrupt_binding(tree, *interrupt, gic_profile, plic_profile)?;
+                if parent
+                    .replace(binding.parent())
+                    .is_some_and(|value| value != binding.parent())
+                {
+                    return Err(crate::AxVmError::invalid_config(std::format!(
+                        "device {} uses multiple FDT interrupt parents",
+                        device.id
+                    )));
+                }
+                cells.extend_from_slice(binding.cells());
+            }
+            tree.set_property(
+                node_id,
+                u32_property(
+                    "interrupt-parent",
+                    parent.expect("nonempty interrupts have parent"),
+                ),
+            )?;
+            tree.set_property(node_id, u32_list_property("interrupts", &cells))?;
+        }
+        for property in &device.properties {
+            let property = match property {
+                ResolvedFdtProperty::Empty(name) => Property::new(name, std::vec![]),
+                ResolvedFdtProperty::U32(name, value) => u32_property(name, *value),
+                ResolvedFdtProperty::String(name, value) => prop_string(name, value),
+            };
+            tree.set_property(node_id, property)?;
+        }
+        info!(
+            "Adding resolved virtual-device FDT node {path} for {}",
+            device.id
+        );
     }
-
-    const BASE: u32 = 0x0a00_0000;
-    const SIZE: u32 = 0x200;
-    let interrupt = virtio_interrupt_binding(gic_profile, plic_profile, 48)?;
-    let node_id = tree.ensure_path("/virtio_mmio@a000000")?;
-    tree.set_property(
-        node_id,
-        super::tree::prop_string("compatible", "virtio,mmio"),
-    )?;
-    tree.inner_mut()
-        .view_typed_mut(node_id)
-        .ok_or_else(|| ax_err_type!(InvalidData, "new virtio-net node is missing"))?
-        .set_regs(&[RegInfo::new(BASE as u64, Some(SIZE as u64))]);
-    tree.set_property(node_id, u32_list_property("interrupts", &interrupt.cells()))?;
-    tree.set_property(
-        node_id,
-        u32_list_property("interrupt-parent", &[interrupt.parent()]),
-    )?;
-    tree.set_property(node_id, Property::new("dma-coherent", std::vec![]))?;
     Ok(())
 }
 
-fn install_configured_virtio_blk(
-    tree: &mut FdtTree,
-    config: &GuestConfig,
-    gic_profile: Option<&crate::machine::GuestGicProfile>,
-    plic_profile: Option<&crate::machine::GuestPlicProfile>,
-) -> AxVmResult {
-    if !config
-        .devices
-        .virtual_devices
-        .iter()
-        .any(|device| device.model == "virtio-blk")
-    {
-        return Ok(());
+fn string_list_property(name: &str, values: &[String]) -> Property {
+    let mut bytes = Vec::new();
+    for value in values {
+        bytes.extend_from_slice(value.as_bytes());
+        bytes.push(0);
     }
-
-    let interrupt = virtio_interrupt_binding(gic_profile, plic_profile, 49)?;
-    let node_id = tree.ensure_path("/virtio_mmio@a000200")?;
-    tree.set_property(
-        node_id,
-        super::tree::prop_string("compatible", "virtio,mmio"),
-    )?;
-    tree.inner_mut()
-        .view_typed_mut(node_id)
-        .ok_or_else(|| ax_err_type!(InvalidData, "new virtio-blk node is missing"))?
-        .set_regs(&[RegInfo::new(0x0a00_0200, Some(0x200))]);
-    tree.set_property(node_id, u32_list_property("interrupts", &interrupt.cells()))?;
-    tree.set_property(
-        node_id,
-        u32_list_property("interrupt-parent", &[interrupt.parent()]),
-    )?;
-    tree.set_property(node_id, Property::new("dma-coherent", std::vec![]))?;
-    Ok(())
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum VirtioInterruptBinding {
-    Gic { parent: u32, spi: u32 },
-    Plic { parent: u32, source: u32 },
-}
-
-impl VirtioInterruptBinding {
-    const fn parent(self) -> u32 {
-        match self {
-            Self::Gic { parent, .. } | Self::Plic { parent, .. } => parent,
-        }
-    }
-
-    fn cells(self) -> Vec<u32> {
-        // GIC firmware describes controller inputs as SPIs relative to 32,
-        // while a PLIC binding uses the controller input directly.
-        match self {
-            Self::Gic { spi, .. } => std::vec![0, spi, 1],
-            Self::Plic { source, .. } => std::vec![source],
-        }
-    }
-}
-
-fn virtio_interrupt_binding(
-    gic_profile: Option<&crate::machine::GuestGicProfile>,
-    plic_profile: Option<&crate::machine::GuestPlicProfile>,
-    controller_input: u32,
-) -> AxVmResult<VirtioInterruptBinding> {
-    let spi = controller_input
-        .checked_sub(32)
-        .ok_or_else(|| ax_err_type!(InvalidData, "virtio interrupt input is not a GIC SPI"))?;
-    match (gic_profile, plic_profile) {
-        (Some(gic), None) => gic
-            .node_phandle
-            .map(|parent| VirtioInterruptBinding::Gic { parent, spi })
-            .ok_or_else(|| ax_err_type!(InvalidData, "guest GIC has no phandle for virtio device")),
-        (None, Some(plic)) => plic
-            .node_phandle
-            .map(|parent| VirtioInterruptBinding::Plic {
-                parent,
-                source: controller_input,
-            })
-            .ok_or_else(|| {
-                ax_err_type!(InvalidData, "guest PLIC has no phandle for virtio device")
-            }),
-        (Some(_), Some(_)) => Err(ax_err_type!(
-            InvalidData,
-            "virtio device cannot select between guest GIC and PLIC"
-        )),
-        (None, None) => Err(ax_err_type!(
-            InvalidData,
-            "virtio device requires a guest GIC or PLIC interrupt controller"
-        )),
-    }
+    Property::new(name, bytes)
 }
 
 fn u32_list_property(name: &str, values: &[u32]) -> Property {
@@ -528,63 +480,13 @@ fn u32_property(name: &str, value: u32) -> Property {
     u32_list_property(name, &[value])
 }
 
-impl FdtTree {
-    fn add_ivc_channel_nodes(
-        &mut self,
-        channels: &[GuestIvcChannel],
-        gic_profile: Option<&crate::machine::GuestGicProfile>,
-        plic_profile: Option<&crate::machine::GuestPlicProfile>,
-    ) -> AxVmResult {
-        for channel in channels {
-            self.add_ivc_channel_node(channel, gic_profile, plic_profile)?;
-        }
-        Ok(())
-    }
-
-    fn add_ivc_channel_node(
-        &mut self,
-        channel: &GuestIvcChannel,
-        gic_profile: Option<&crate::machine::GuestGicProfile>,
-        plic_profile: Option<&crate::machine::GuestPlicProfile>,
-    ) -> AxVmResult {
-        let node_id = self.ensure_path(&format!("/ivc-channel@{:x}", channel.base_gpa))?;
-        info!(
-            "Adding guest IVC channel FDT node /ivc-channel@{:x}",
-            channel.base_gpa
-        );
-        self.set_property(node_id, prop_string("compatible", "axvisor,ivc-channel"))?;
-        self.set_property(node_id, prop_string("status", "okay"))?;
-        self.set_property(node_id, prop_u32_list("axvisor,ivc-version", &[1]))?;
-
-        let interrupt = ivc_interrupt_binding(self, channel.notify_irq, gic_profile, plic_profile)?;
-        self.set_property(
-            node_id,
-            prop_u32_list("interrupt-parent", &[interrupt.parent()]),
-        )?;
-        self.set_property(node_id, prop_u32_list("interrupts", interrupt.cells()))?;
-        self.set_property(
-            node_id,
-            prop_u32_list("axvisor,notify-irq", &[channel.notify_irq]),
-        )?;
-
-        self.inner_mut()
-            .view_typed_mut(node_id)
-            .ok_or_else(|| ax_err_type!(InvalidData, "new IVC channel node is missing"))?
-            .set_regs(&[RegInfo::new(
-                channel.base_gpa as u64,
-                Some(channel.length as u64),
-            )]);
-        Ok(())
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum IvcInterruptBinding {
+enum FdtInterruptBinding {
     GicSpi { parent: u32, cells: [u32; 3] },
     PlicSource { parent: u32, cells: [u32; 1] },
 }
 
-impl IvcInterruptBinding {
+impl FdtInterruptBinding {
     const fn parent(self) -> u32 {
         match self {
             Self::GicSpi { parent, .. } | Self::PlicSource { parent, .. } => parent,
@@ -599,51 +501,74 @@ impl IvcInterruptBinding {
     }
 }
 
-fn ivc_interrupt_binding(
+fn fdt_interrupt_binding(
     tree: &mut FdtTree,
-    input: u32,
+    interrupt: ResolvedFdtInterrupt,
     gic_profile: Option<&crate::machine::GuestGicProfile>,
     plic_profile: Option<&crate::machine::GuestPlicProfile>,
-) -> AxVmResult<IvcInterruptBinding> {
+) -> AxVmResult<FdtInterruptBinding> {
+    let machine_controller = axdevice_base::InterruptControllerId::new(0);
+    if interrupt.controller != machine_controller {
+        return Err(crate::AxVmError::invalid_config(std::format!(
+            "device FDT interrupt controller {} differs from machine controller {}",
+            interrupt.controller.value(),
+            machine_controller.value()
+        )));
+    }
     match (gic_profile, plic_profile) {
-        (Some(_), None) => {
-            let parent = ivc_interrupt_controller_phandle(tree, GuestSerialFdtInterrupt::GicSpi)?;
-            let spi = input.checked_sub(32).ok_or_else(|| {
-                ax_err_type!(InvalidData, "IVC notify interrupt is not a GIC SPI")
+        (Some(gic), None) => {
+            let parent = match gic.node_phandle {
+                Some(parent) => parent,
+                None => interrupt_controller_phandle(tree, FdtInterruptEncoding::GicSpi)?,
+            };
+            let spi = interrupt.input.checked_sub(32).ok_or_else(|| {
+                ax_err_type!(InvalidData, "resolved interrupt input is not a GIC SPI")
             })?;
-            Ok(IvcInterruptBinding::GicSpi {
+            let flags = match interrupt.trigger {
+                InterruptTrigger::EdgeTriggered => 1,
+                InterruptTrigger::LevelTriggered => 4,
+            };
+            Ok(FdtInterruptBinding::GicSpi {
                 parent,
-                cells: [0, spi, 1],
+                cells: [0, spi, flags],
             })
         }
-        (None, Some(_)) => {
-            let parent =
-                ivc_interrupt_controller_phandle(tree, GuestSerialFdtInterrupt::PlicSource)?;
-            if input == 0 {
+        (None, Some(plic)) => {
+            let parent = match plic.node_phandle {
+                Some(parent) => parent,
+                None => interrupt_controller_phandle(tree, FdtInterruptEncoding::PlicSource)?,
+            };
+            if interrupt.input == 0 {
                 return Err(ax_err_type!(
                     InvalidData,
-                    "IVC notify interrupt is not a valid PLIC source"
+                    "resolved interrupt is not a valid PLIC source"
                 ));
             }
-            Ok(IvcInterruptBinding::PlicSource {
+            Ok(FdtInterruptBinding::PlicSource {
                 parent,
-                cells: [input],
+                cells: [interrupt.input],
             })
         }
         (Some(_), Some(_)) => Err(ax_err_type!(
             InvalidData,
-            "IVC notify cannot select between guest GIC and PLIC"
+            "device interrupt cannot select between guest GIC and PLIC"
         )),
         (None, None) => Err(ax_err_type!(
             InvalidData,
-            "IVC notify requires a guest interrupt controller profile"
+            "device interrupt requires a guest interrupt controller profile"
         )),
     }
 }
 
-fn ivc_interrupt_controller_phandle(
+#[derive(Clone, Copy)]
+enum FdtInterruptEncoding {
+    GicSpi,
+    PlicSource,
+}
+
+fn interrupt_controller_phandle(
     tree: &mut FdtTree,
-    encoding: GuestSerialFdtInterrupt,
+    encoding: FdtInterruptEncoding,
 ) -> AxVmResult<u32> {
     let controller = tree
         .inner()
@@ -656,14 +581,14 @@ fn ivc_interrupt_controller_phandle(
                 return false;
             }
             node.compatibles().any(|compatible| match encoding {
-                GuestSerialFdtInterrupt::GicSpi => compatible.contains("gic"),
-                GuestSerialFdtInterrupt::PlicSource => compatible.contains("plic"),
+                FdtInterruptEncoding::GicSpi => compatible.contains("gic"),
+                FdtInterruptEncoding::PlicSource => compatible.contains("plic"),
             })
         })
         .ok_or_else(|| {
             ax_err_type!(
                 InvalidData,
-                "guest FDT has no interrupt controller for IVC notify"
+                "guest FDT has no matching interrupt controller"
             )
         })?;
 
@@ -734,7 +659,13 @@ pub(crate) fn calculate_dtb_load_addr(vm: AxVMRef, fdt_size: usize) -> AxVmResul
 
 #[cfg(test)]
 mod tests {
-    use axvmconfig::{GuestConfig, VirtualDeviceRequest};
+    use std::sync::Arc;
+
+    use axdevice::*;
+    use axdevice_base::{
+        ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTrigger,
+    };
+    use axvmconfig::GuestConfig;
     use fdt_edit::{Fdt, Node, Property};
     use fdt_raw::RegInfo;
 
@@ -781,24 +712,89 @@ mod tests {
         fdt
     }
 
-    fn virtio_net_config() -> GuestConfig {
-        let mut config = GuestConfig::default();
-        config.devices.virtual_devices.push(VirtualDeviceRequest {
-            id: "virtnet0".into(),
-            model: "virtio-net".into(),
-            options: Default::default(),
-        });
-        config
+    fn virtio_device(id: &str, base: u64, input: u32) -> super::ResolvedFdtDevice {
+        super::ResolvedFdtDevice {
+            id: id.into(),
+            node_name: "virtio_mmio".into(),
+            compatible: std::vec!["virtio,mmio".into()],
+            registers: std::vec![(base, 0x200)],
+            interrupts: std::vec![super::ResolvedFdtInterrupt {
+                controller: axdevice_base::InterruptControllerId::new(0),
+                input,
+                trigger: axdevice_base::InterruptTrigger::EdgeTriggered,
+            }],
+            properties: std::vec![super::ResolvedFdtProperty::Empty("dma-coherent".into())],
+        }
     }
 
-    fn virtio_blk_config() -> GuestConfig {
-        let mut config = GuestConfig::default();
-        config.devices.virtual_devices.push(VirtualDeviceRequest {
-            id: "virtblk0".into(),
-            model: "virtio-blk".into(),
-            options: Default::default(),
-        });
-        config
+    struct PlannedVirtioModel;
+
+    impl DeviceModel for PlannedVirtioModel {
+        fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+            DeviceRequirements::new()
+                .with_mmio(
+                    ResourceSlot::new("registers")?,
+                    0x200,
+                    0x200,
+                    ResourceRequest::Auto,
+                )?
+                .with_wired_irq(
+                    ResourceSlot::new("irq")?,
+                    InterruptControllerId::new(0),
+                    InterruptTrigger::EdgeTriggered,
+                    InterruptSharing::Exclusive,
+                    ResourceRequest::Auto,
+                )
+        }
+
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            DeviceFirmwareSpec::interfaces(
+                Some(std::vec![FdtContributionSpec::Conventional(
+                    FdtNodeSpec::new("virtio_mmio")
+                        .with_compatible("virtio,mmio")
+                        .with_register(ResourceSlot::new("registers").unwrap())
+                        .with_interrupt(ResourceSlot::new("irq").unwrap()),
+                )]),
+                None,
+            )
+        }
+
+        fn build(
+            &self,
+            _context: &mut DeviceBuildContext<'_>,
+        ) -> DeviceManagerResult<DeviceBundle> {
+            unreachable!("FDT resolution test does not build devices")
+        }
+    }
+
+    #[test]
+    fn graph_resolves_one_fdt_node_per_device_instance() {
+        let mut builder = DeviceGraphBuilder::new();
+        for id in ["blk0", "blk1"] {
+            builder
+                .add(DeviceNodeSpec::virtual_device(
+                    DeviceNodeId::new(id).unwrap(),
+                    Arc::new(PlannedVirtioModel),
+                ))
+                .unwrap();
+        }
+        let mut pools = ResourcePools::new();
+        pools.add_auto_mmio(0x0a00_0000..0x0a00_1000).unwrap();
+        pools
+            .add_auto_controller_inputs(
+                InterruptControllerId::new(0),
+                ControllerInputId::new(48)..ControllerInputId::new(50),
+            )
+            .unwrap();
+        let graph = builder.declare().unwrap().resolve(pools).unwrap();
+
+        let devices = crate::boot::fdt::device::resolve_fdt_devices(&graph).unwrap();
+
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].registers, [(0x0a00_0000, 0x200)]);
+        assert_eq!(devices[0].interrupts[0].input, 48);
+        assert_eq!(devices[1].registers, [(0x0a00_0200, 0x200)]);
+        assert_eq!(devices[1].interrupts[0].input, 49);
     }
 
     fn gic_profile(phandle: u32) -> GuestGicProfile {
@@ -830,9 +826,9 @@ mod tests {
     #[test]
     fn riscv_virtio_net_uses_one_cell_plic_interrupt_binding() {
         let mut tree = FdtTree::new();
-        super::install_configured_virtio_net(
+        super::install_resolved_fdt_devices(
             &mut tree,
-            &virtio_net_config(),
+            &[virtio_device("virtnet0", 0x0a00_0000, 48)],
             None,
             Some(&plic_profile(9)),
         )
@@ -859,9 +855,9 @@ mod tests {
     #[test]
     fn aarch64_virtio_net_uses_three_cell_gic_interrupt_binding() {
         let mut tree = FdtTree::new();
-        super::install_configured_virtio_net(
+        super::install_resolved_fdt_devices(
             &mut tree,
-            &virtio_net_config(),
+            &[virtio_device("virtnet0", 0x0a00_0000, 48)],
             Some(&gic_profile(7)),
             None,
         )
@@ -888,9 +884,9 @@ mod tests {
     #[test]
     fn riscv_virtio_blk_uses_one_cell_plic_interrupt_binding() {
         let mut tree = FdtTree::new();
-        super::install_configured_virtio_blk(
+        super::install_resolved_fdt_devices(
             &mut tree,
-            &virtio_blk_config(),
+            &[virtio_device("virtblk0", 0x0a00_0200, 49)],
             None,
             Some(&plic_profile(9)),
         )
@@ -917,9 +913,9 @@ mod tests {
     #[test]
     fn aarch64_virtio_blk_uses_three_cell_gic_interrupt_binding() {
         let mut tree = FdtTree::new();
-        super::install_configured_virtio_blk(
+        super::install_resolved_fdt_devices(
             &mut tree,
-            &virtio_blk_config(),
+            &[virtio_device("virtblk0", 0x0a00_0200, 49)],
             Some(&gic_profile(7)),
             None,
         )
@@ -941,6 +937,19 @@ mod tests {
                 .collect::<std::vec::Vec<_>>(),
             [0, 17, 1]
         );
+    }
+
+    #[test]
+    fn fdt_rejects_interrupt_controller_not_owned_by_machine_profile() {
+        let mut tree = FdtTree::new();
+        let mut device = virtio_device("virtblk0", 0x0a00_0200, 49);
+        device.interrupts[0].controller = InterruptControllerId::new(1);
+
+        let error =
+            super::install_resolved_fdt_devices(&mut tree, &[device], Some(&gic_profile(7)), None)
+                .unwrap_err();
+
+        assert!(error.to_string().contains("interrupt controller"));
     }
 
     #[test]
@@ -1010,7 +1019,7 @@ mod tests {
         let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
             fdt_bytes: &dtb,
             memory_regions: &[],
-            ivc_channels: &[],
+            devices: &[],
             crate_config: &cfg,
             serial_profile: serial,
             serial_identity: None,
@@ -1030,7 +1039,7 @@ mod tests {
         let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
             fdt_bytes: &dtb,
             memory_regions: &[],
-            ivc_channels: &[],
+            devices: &[],
             crate_config: &cfg,
             serial_profile: serial,
             serial_identity: None,
@@ -1059,10 +1068,21 @@ mod tests {
             .unwrap();
         let dtb = tree.finish();
         let cfg = GuestConfig::default();
-        let ivc_channels = std::vec![crate::machine::GuestIvcChannel {
-            base_gpa: 0xbff0_0000,
-            length: 0x1_0000,
-            notify_irq: 60,
+        let devices = std::vec![super::ResolvedFdtDevice {
+            id: "ivc0".into(),
+            node_name: "ivc-channel".into(),
+            compatible: std::vec!["axvisor,ivc-channel".into()],
+            registers: std::vec![(0xbff0_0000, 0x1_0000)],
+            interrupts: std::vec![super::ResolvedFdtInterrupt {
+                controller: axdevice_base::InterruptControllerId::new(0),
+                input: 60,
+                trigger: axdevice_base::InterruptTrigger::EdgeTriggered,
+            }],
+            properties: std::vec![
+                super::ResolvedFdtProperty::String("status".into(), "okay".into()),
+                super::ResolvedFdtProperty::U32("axvisor,ivc-version".into(), 1),
+                super::ResolvedFdtProperty::U32("axvisor,notify-irq".into(), 60),
+            ],
         }];
         let serial = crate::machine::current_machine_profile(1).serial;
         let gic = gic_profile(7);
@@ -1070,7 +1090,7 @@ mod tests {
         let patched = super::patch_guest_fdt_for_runtime(super::GuestFdtRuntimePatch {
             fdt_bytes: &dtb,
             memory_regions: &[],
-            ivc_channels: &ivc_channels,
+            devices: &devices,
             crate_config: &cfg,
             serial_profile: serial,
             serial_identity: None,

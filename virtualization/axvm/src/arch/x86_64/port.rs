@@ -130,6 +130,10 @@ impl DeviceModel for HostPortPassthroughDeviceModel {
         )
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::None
+    }
+
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let (base, length) = context.pio(&ResourceSlot::new("registers")?)?;
         if base != self.base || length != self.length {

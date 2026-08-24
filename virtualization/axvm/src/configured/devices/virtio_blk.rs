@@ -1,8 +1,18 @@
 //! Configured VirtIO MMIO block device backed by memory or a file.
 
-use alloc::{collections::VecDeque, format, string::String, sync::Arc, vec, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Mutex;
+#[cfg(feature = "fs")]
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "fs")]
+use std::collections::VecDeque;
+use std::{
+    boxed::Box,
+    format,
+    string::String,
+    sync::{Arc, Mutex},
+    vec,
+    vec::Vec,
+};
 
 use axdevice::*;
 use axdevice_base::{
@@ -11,15 +21,14 @@ use axdevice_base::{
 };
 use axvirtio_blk::{BlockBackend, BlockDeviceEvent, VirtioBlockConfig, VirtioMmioBlockDevice};
 use axvirtio_common::{GuestMemory, NoGuestMemoryAccessor, VirtioError, VirtioResult};
-use axvm::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
 use axvm_types::GuestPhysAddr;
 use axvmconfig::VirtualDeviceRequest;
 
+use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
+
 const MMIO_SLOT: &str = "mmio";
 const IRQ_SLOT: &str = "irq";
-const MMIO_BASE: u64 = 0x0a00_0200;
 const MMIO_SIZE: u64 = 0x200;
-const IRQ_INPUT: usize = 49;
 const SECTOR_SIZE: usize = 512;
 const DEFAULT_CAPACITY_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -27,8 +36,13 @@ const DEFAULT_CAPACITY_BYTES: u64 = 2 * 1024 * 1024;
 pub const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
     model: "virtio-blk",
     create: create_device_node,
-    default_fixed_resources: None,
 };
+
+pub(super) fn register(
+    catalog: &mut crate::ConfiguredDeviceCatalog,
+) -> Result<(), ConfiguredDeviceError> {
+    catalog.register(module_path!(), REGISTRATION)
+}
 
 fn create_device_node(
     id: DeviceNodeId,
@@ -208,28 +222,41 @@ impl DeviceModel for VirtioBlkModel {
             .with_mmio(
                 ResourceSlot::new(MMIO_SLOT)?,
                 MMIO_SIZE,
-                4,
-                ResourceRequest::Fixed(MMIO_BASE),
+                MMIO_SIZE,
+                ResourceRequest::Auto,
             )?
             .with_wired_irq(
                 ResourceSlot::new(IRQ_SLOT)?,
                 self.controller,
                 InterruptTrigger::EdgeTriggered,
                 InterruptSharing::Exclusive,
-                ResourceRequest::Fixed(axdevice_base::ControllerInputId::new(IRQ_INPUT)),
+                ResourceRequest::Auto,
             )
     }
 
     fn firmware(&self) -> DeviceFirmwareSpec {
-        DeviceFirmwareSpec::new("virtio_mmio")
-            .with_compatible("virtio,mmio")
-            .with_register(ResourceSlot::new(MMIO_SLOT).expect("static slot is valid"))
-            .with_interrupt(ResourceSlot::new(IRQ_SLOT).expect("static slot is valid"))
+        let registers = ResourceSlot::new(MMIO_SLOT).expect("static slot is valid");
+        let interrupt = ResourceSlot::new(IRQ_SLOT).expect("static slot is valid");
+        DeviceFirmwareSpec::interfaces(
+            Some(std::vec![FdtContributionSpec::Conventional(
+                FdtNodeSpec::new("virtio_mmio")
+                    .with_compatible("virtio,mmio")
+                    .with_register(registers.clone())
+                    .with_interrupt(interrupt.clone())
+                    .with_empty_property("dma-coherent"),
+            )]),
+            Some(std::vec![AcpiContributionSpec::Conventional(
+                AcpiDeviceSpec::new_indexed("VB", "LNRO0005")
+                    .with_register(registers)
+                    .with_interrupt(interrupt),
+            )]),
+        )
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let (base, size) = context.mmio(MMIO_SLOT)?;
         let irq = context.irq(IRQ_SLOT)?;
+        let irq_id = irq.input().value() as u32;
         let backend = self
             .backend
             .lock()
@@ -246,8 +273,10 @@ impl DeviceModel for VirtioBlkModel {
                     "device model was built more than once",
                 )
             })?;
-        let mut config = VirtioBlockConfig::default();
-        config.capacity = backend.capacity_sectors();
+        let config = VirtioBlockConfig {
+            capacity: backend.capacity_sectors(),
+            ..Default::default()
+        };
         let model = Arc::new(
             VirtioMmioBlockDevice::new(
                 GuestPhysAddr::from(base as usize),
@@ -270,7 +299,7 @@ impl DeviceModel for VirtioBlkModel {
             resources: vec![
                 Resource::MmioRange { base, size },
                 Resource::IrqLine {
-                    line: IRQ_INPUT as u32,
+                    line: irq_id,
                     trigger: axdevice_base::InterruptTriggerMode::EdgeTriggered,
                 },
             ]
@@ -331,14 +360,14 @@ fn open_file_backend(
             )
         })?
         .size;
-    let capacity = configured_capacity.unwrap_or_else(|| {
+    let capacity = configured_capacity.unwrap_or({
         if existing_len == 0 {
             DEFAULT_CAPACITY_BYTES
         } else {
             existing_len
         }
     });
-    if capacity == 0 || capacity % SECTOR_SIZE as u64 != 0 {
+    if capacity == 0 || !capacity.is_multiple_of(SECTOR_SIZE as u64) {
         return Err(invalid_device_config(
             "validate virtio-blk backing file",
             "backing file capacity must be a positive multiple of 512 bytes",
@@ -380,7 +409,7 @@ fn open_file_backend(
 ) -> DeviceManagerResult<VirtioBlkBackend> {
     Err(invalid_device_config(
         "open virtio-blk backing file",
-        &format!("file backend `{path}` requires the AxVisor `fs` feature"),
+        &format!("file backend `{path}` requires the AxVM `fs` feature"),
     ))
 }
 
@@ -503,7 +532,8 @@ impl FileBackend {
                             }
                             Ok(written) => {
                                 error!(
-                                    "virtio-blk file write-back was short: wrote {written} of {} bytes",
+                                    "virtio-blk file write-back was short: wrote {written} of {} \
+                                     bytes",
                                     write.bytes.len()
                                 );
                                 worker_failed.store(true, Ordering::Release);
@@ -662,7 +692,7 @@ struct VirtioBlkRuntimeDevice {
     irq: IrqLine,
     grant: DmaGrant,
     queue_pending: AtomicBool,
-    resources: alloc::boxed::Box<[Resource]>,
+    resources: Box<[Resource]>,
 }
 
 impl Device for VirtioBlkRuntimeDevice {

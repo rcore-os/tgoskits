@@ -29,7 +29,8 @@ Axvisor 的模拟设备由 Hypervisor 在软件中实现，客户机通过 MMIO�
 | `virtualization/axdevice/src/registration.rs` | `DeviceBundle`、pollable、DMA pollable、lifecycle、interrupt-controller 能力 | 设备构建与 VM 生命周期 |
 | `virtualization/axdevice/src/fw_cfg/*`、`serial/*`、`x86/*` | 通用和 x86 设备实现 | 设备构建与访问 |
 | `virtualization/axvmconfig/src/lib.rs` | `GuestDevices`、`VirtualDeviceRequest` 配置入口 | TOML 解析 |
-| `virtualization/axvm/src/configured*` | `ConfiguredDeviceCatalog`、默认串口、IVC model 构造 | 配置请求转设备图节点 |
+| `virtualization/axvm/src/configured*` | 空 `ConfiguredDeviceCatalog`、显式注册与 configured device 构造 | 配置请求转设备图节点 |
+| `virtualization/axvm/src/configured/devices/*` | AxVM-owned IVC、virtio-blk、virtio-net model 与 runtime glue | 配置实例化、设备构建与访问 |
 | `virtualization/axvm/src/vm/prepare/device_plan/*` | 设备图合成、guest RAM 保留、host passthrough 节点、资源池接入 | VM prepare |
 | `virtualization/axvm/src/arch/*` | 架构默认节点、资源池、固件 plan、VM-exit 接入 | VM prepare 与 vCPU 运行期 |
 
@@ -94,7 +95,7 @@ model = "ivc-channel"
 
 普通虚拟设备配置不得填写 `base_gpa`、`mmio_base`、`pio_base`、`irq_id`、`msi_device_id`、`msi_event_id`、`lpi_id` 等框架资源字段。这些值如果来自用户，会在 `VirtualDeviceRequest::validate()` 中被拒绝；如果确实需要固定资源，必须由 machine profile、host firmware snapshot 或架构内部节点产生 `FixedDeviceBindings` 或 fixed `DeviceRequirement`。
 
-默认 catalog 注册的用户可选 model 如下。
+AxVM 公共注册入口显式注册的用户可选 model 如下。
 
 | model | 设备语义 | 资源声明 |
 | --- | --- | --- |
@@ -102,8 +103,10 @@ model = "ivc-channel"
 | `uart16550-mmio` | MMIO 16550 串口 | MMIO `registers` + wired IRQ `irq` |
 | `uart16550-pio` | x86 PIO 16550 串口 | PIO `registers` + wired IRQ `irq` |
 | `ivc-channel` | Axvisor IVC 共享窗口与通知端点 | MMIO `registers` + wired IRQ `notify` |
+| `virtio-blk` | VirtIO MMIO 块设备 | auto MMIO `mmio` + wired IRQ `irq` |
+| `virtio-net` | VirtIO MMIO 网卡与 AxVM 内部交换机端口 | auto MMIO `mmio` + wired IRQ `irq` |
 
-`ConfiguredDeviceCatalog` 是开放边界，外部可以通过 `ConfiguredModelRegistration` 注册更多 model。未注册 model 返回 `UnknownVirtualDeviceModel`，prepare 阶段会明确失败。
+`ConfiguredDeviceCatalog::new()` 创建空 catalog。Axvisor 构造 VM 参数时显式调用 `axvm::machine::register_devices()`，但不拥有上述通用设备的 model、backend 或 runtime 实现。未注册 model 返回 `UnknownVirtualDeviceModel`，prepare 阶段会明确失败。
 
 ### 1.3 总体流程
 
@@ -173,15 +176,16 @@ backend = { type = "null" }
 
 ### 2.3 `ConfiguredDeviceCatalog`
 
-`ConfiguredDeviceCatalog` 保存 `model -> ConfiguredModelRegistration`。注册项包含普通构造函数和一个可选的 `default_fixed_resources` 回调。默认 catalog 会注册串口和 IVC；其他 model 需要由使用方显式扩展 catalog。
+`ConfiguredDeviceCatalog` 保存 `model -> (owner, ConfiguredModelRegistration)`。catalog 本身始终为空；每个 owning layer 通过普通 Rust 代码调用 `register(owner, registration)`。AxVM 的公共注册文件使用显式 `mod` 和 `register()` 调用装入 serial、IVC、virtio-blk 与 virtio-net。重复 model 的错误同时报告第一个 owner 和冲突 owner。
 
 ```rust
 pub struct ConfiguredModelRegistration {
     pub model: &'static str,
     pub create: ConfiguredModelConstructor,
-    pub default_fixed_resources: Option<ConfiguredDefaultFixedResources>,
 }
 ```
+
+不使用注册宏、build script 扫描、linker section 或兼容 alias。新增只使用现有资源与固件 contribution 的 AxVM 通用设备时，只修改 `configured/devices/<device>.rs` 和同目录 `mod.rs` 中的显式 `mod`/`register()` 两处；Axvisor 只提供 `GuestConfig`、串口 backend factory 等 VM 参数。
 
 构造函数接收已验证的 `DeviceNodeId`、原始 request 和 `DeviceInstantiationContext`。它负责解析 options、选择默认 wired/MSI 域、接入固定资源绑定，并返回一个 `DeviceNodeSpec`。普通构造函数不直接分配地址或中断，也不接触 `DeviceRuntime`。
 
@@ -238,15 +242,13 @@ runtime-backed 节点持有 `Arc<dyn DeviceModel>`。`HostPassthrough` 节点只
 pub trait DeviceModel: Send + Sync {
     fn requirements(&self) -> DeviceManagerResult<DeviceRequirements>;
 
-    fn firmware(&self) -> DeviceFirmwareSpec {
-        DeviceFirmwareSpec::default()
-    }
+    fn firmware(&self) -> DeviceFirmwareSpec;
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle>;
 }
 ```
 
-`requirements()` 只声明命名 slot 和资源需求；`firmware()` 用同一批 slot 描述常规 FDT/ACPI 绑定；`build()` 只能通过 `DeviceBuildContext` 消费规划好的资源，然后返回原子 `DeviceBundle`。
+`requirements()` 只声明命名 slot 和资源需求；`firmware()` 必须显式返回 `None` 或 `Interfaces { fdt, acpi }`，并用同一批 slot 描述 typed FDT/ACPI contribution；`build()` 只能通过 `DeviceBuildContext` 消费规划好的资源，然后返回原子 `DeviceBundle`。`DeviceNodeSpec` 创建时对 `firmware()` 求值一次并冻结；declare/resolve/composer 不再回调 model。`Interfaces` 两侧都为 `None`，或已声明一侧却给出空 contribution，都会在 declaration 阶段失败。
 
 ### 3.3 资源需求类型
 
@@ -536,7 +538,7 @@ reset 和 resume 按注册顺序执行，suspend 按逆序执行。pollable 去�
 
 ## 7. 固件生成
 
-`ResolvedDeviceGraph` 是固件和 runtime 的共同输入。普通 model 的 `firmware()` 返回 `DeviceFirmwareSpec`，其中只引用 slot 名；固件 composer 再用同一份 resolved resources 生成 `reg`、`interrupts`、ACPI `_CRS` 或 SPCR 等数据。
+`ResolvedDeviceGraph` 是固件和 runtime 的共同输入。普通和架构 model 的 `firmware()` 都返回 `DeviceFirmwareSpec`，按 conventional device、interrupt controller、timer、PCI host bridge、console 和 firmware transport 分类，其中只引用 slot 名；固件 composer 再用同一份 resolved resources 生成 `reg`、`interrupts`、ACPI `_CRS` 或架构表数据。
 
 | 固件信息 | 来源 |
 | --- | --- |
@@ -546,7 +548,7 @@ reset 和 resume 按注册顺序执行，suspend 按逆序执行。pollable 去�
 | host FDT/ACPI identity | `DeviceFirmwareBinding` |
 | 架构特殊表 | 架构 firmware plan，例如 GIC、MADT、IOAPIC、SPCR |
 
-GIC、PLIC、IOAPIC、PCI root、MADT、`_PRT` 等不是普通 catalog 的特殊字符串分支。它们由架构 plan 创建专用 model 或 composer，但仍尽量读取 resolved graph，而不是维护第二套地址/IRQ 表。
+平台选择 FDT 或 ACPI 后会先检查所有 `Interfaces` 节点是否支持该接口；缺失即报错，不回退、不静默忽略。共享 FDT/ACPI composer 只匹配 contribution 类别，不匹配 model/name/ID。FDT 节点名从 resolved register 形成唯一 unit address；ACPI 多实例使用 model 声明的 indexed NameSeg 前缀分配唯一名称和 `_UID`。GIC、PLIC、IOAPIC、PCI root、MADT、`_PRT` 等由架构 adapter 编码，但相应 model 仍显式提供 typed contribution，不能用空默认值或第二套地址/IRQ 表绕过设备图。
 
 ## 8. 现有设备实现
 
@@ -560,10 +562,14 @@ GIC、PLIC、IOAPIC、PCI root、MADT、`_PRT` 等不是普通 catalog 的特殊
 | `uart16550-mmio` | 16550 MMIO 设备，wired IRQ，串口 service/固件元数据 | 同上 |
 | `uart16550-pio` | 16550 PIO 设备，wired IRQ，x86 端口访问 | `clock_hz`、`backend` |
 | `ivc-channel` | IVC aperture allocator service + wired notify endpoint service | options 为空且拒绝未知字段 |
+| `virtio-blk` | VirtIO MMIO block runtime + DMA grant/poller；ramdisk 或 file backend | `capacity`/`capacity_sectors`、`backend`、`path` |
+| `virtio-net` | VirtIO MMIO net runtime + DMA grant/poller；连接 AxVM 内部 L2 switch | `guest_mac` |
 
 串口 backend 目前支持 `{ type = "host-console" }` 和 `{ type = "null" }`。`host-console` 每台 VM 只能有一个 owner。
 
 `ivc-channel` 不注册可直接读写的 `Device`；它通过 service 提供共享 MMIO aperture 分配器和 notify endpoint。判断 IVC 是否生效不能只看 `device_count()`。
+
+virtio-blk/net 的 model、MMIO transport、DMA 接线、IRQ 和 backend glue 都由 AxVM 拥有；Axvisor 不再维护单独的 `virtual_devices` 模块或 model registration。两者的 MMIO/IRQ 均来自 auto pool，因此多实例按 graph ID 确定性分配，固件节点与实例一一对应。
 
 ### 8.2 `fw_cfg`
 
@@ -629,7 +635,7 @@ LoongArch64 默认节点包括 PCH-PIC 和 MMIO `fw_cfg`。
 | `console0` 等串口 | fixed 或 auto MMIO + PCH input | 虚拟串口 |
 | `ivc-channel` | auto MMIO + PCH input | IVC service |
 
-PCH-PIC 内部保存 mask、edge、polarity、route entry、ISR 等状态；寄存器访问通过 `DeviceRuntime`，控制器输出通过 `PchPicOutputPortKey` service 供架构中断路径使用。
+PCH-PIC 内部保存 mask、edge、polarity、route entry、ISR 等状态；寄存器访问通过 `DeviceRuntime`，访问产生的输出由设备包装层经 typed sink 发布，外部 IRQ 路径则通过 `PchPicOutputPortKey` service 操作控制器输入。
 
 ## 9. 配置、测试与故障定位
 

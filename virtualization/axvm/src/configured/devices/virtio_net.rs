@@ -1,8 +1,14 @@
 //! Configured VirtIO MMIO network devices connected by an internal L2 switch.
 
-use alloc::{collections::VecDeque, format, string::String, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::{
+    boxed::Box,
+    collections::VecDeque,
+    format,
+    string::String,
+    sync::{Arc, Mutex, MutexGuard},
+    vec::Vec,
+};
 
 use axdevice::*;
 use axdevice_base::{
@@ -15,9 +21,10 @@ use axvirtio_net::{
     VirtioNetConfig,
     switch::{SwitchPort, SwitchPortId, SwitchPortRegistration, VirtualSwitch},
 };
-use axvm::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
 use axvm_types::GuestPhysAddr;
 use axvmconfig::VirtualDeviceRequest;
+
+use crate::{ConfiguredDeviceError, ConfiguredModelRegistration, DeviceInstantiationContext};
 
 const MMIO_SLOT: &str = "mmio";
 const IRQ_SLOT: &str = "irq";
@@ -31,8 +38,13 @@ static INTERNAL_SWITCH: Mutex<Option<Arc<VirtualSwitch>>> = Mutex::new(None);
 pub const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
     model: "virtio-net",
     create: create_device_node,
-    default_fixed_resources: None,
 };
+
+pub(super) fn register(
+    catalog: &mut crate::ConfiguredDeviceCatalog,
+) -> Result<(), ConfiguredDeviceError> {
+    catalog.register(module_path!(), REGISTRATION)
+}
 
 fn create_device_node(
     id: DeviceNodeId,
@@ -114,23 +126,35 @@ impl DeviceModel for VirtioNetModel {
             .with_mmio(
                 ResourceSlot::new(MMIO_SLOT)?,
                 MMIO_SIZE,
-                4,
-                ResourceRequest::Fixed(0x0a00_0000),
+                MMIO_SIZE,
+                ResourceRequest::Auto,
             )?
             .with_wired_irq(
                 ResourceSlot::new(IRQ_SLOT)?,
                 self.controller,
                 InterruptTrigger::EdgeTriggered,
                 InterruptSharing::Exclusive,
-                ResourceRequest::Fixed(axdevice_base::ControllerInputId::new(48)),
+                ResourceRequest::Auto,
             )
     }
 
     fn firmware(&self) -> DeviceFirmwareSpec {
-        DeviceFirmwareSpec::new("virtio_mmio")
-            .with_compatible("virtio,mmio")
-            .with_register(ResourceSlot::new(MMIO_SLOT).expect("static slot is valid"))
-            .with_interrupt(ResourceSlot::new(IRQ_SLOT).expect("static slot is valid"))
+        let registers = ResourceSlot::new(MMIO_SLOT).expect("static slot is valid");
+        let interrupt = ResourceSlot::new(IRQ_SLOT).expect("static slot is valid");
+        DeviceFirmwareSpec::interfaces(
+            Some(std::vec![FdtContributionSpec::Conventional(
+                FdtNodeSpec::new("virtio_mmio")
+                    .with_compatible("virtio,mmio")
+                    .with_register(registers.clone())
+                    .with_interrupt(interrupt.clone())
+                    .with_empty_property("dma-coherent"),
+            )]),
+            Some(std::vec![AcpiContributionSpec::Conventional(
+                AcpiDeviceSpec::new_indexed("VN", "LNRO0005")
+                    .with_register(registers)
+                    .with_interrupt(interrupt),
+            )]),
+        )
     }
 
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
@@ -177,7 +201,7 @@ impl DeviceModel for VirtioNetModel {
             grant: grant.clone(),
             endpoint,
             _registration: registration,
-            resources: alloc::vec![
+            resources: std::vec![
                 Resource::MmioRange { base, size },
                 Resource::IrqLine {
                     line: irq_id,
@@ -215,7 +239,7 @@ impl NetworkBackend for SwitchBackend {
 struct PortEndpoint {
     id: SwitchPortId,
     mac: [u8; 6],
-    ingress: Mutex<VecDeque<alloc::vec::Vec<u8>>>,
+    ingress: Mutex<VecDeque<Vec<u8>>>,
     active: AtomicBool,
     wake_target: Arc<dyn WakeTarget>,
     _switch: Arc<VirtualSwitch>,
@@ -234,7 +258,7 @@ impl WakeTarget for AxvmWakeTarget {
         // Wake only; vCPU0 polls DMA devices at the top of its next run-loop
         // iteration. Polling synchronously from the sender's device access
         // would let two VM device runtimes re-enter each other.
-        if let Err(error) = axvm::notify_vm_vcpu(self.vm_id, 0) {
+        if let Err(error) = crate::notify_vm_vcpu(self.vm_id, 0) {
             warn!(
                 "failed to notify VM[{}] for virtio-net RX: {error:#}",
                 self.vm_id
@@ -264,15 +288,15 @@ impl PortEndpoint {
         self.active.store(true, Ordering::Release);
     }
 
-    fn pop_ingress(&self) -> Option<alloc::vec::Vec<u8>> {
+    fn pop_ingress(&self) -> Option<Vec<u8>> {
         self.lock_ingress().pop_front()
     }
 
-    fn requeue_ingress(&self, frame: alloc::vec::Vec<u8>) {
+    fn requeue_ingress(&self, frame: Vec<u8>) {
         self.lock_ingress().push_front(frame);
     }
 
-    fn lock_ingress(&self) -> MutexGuard<'_, VecDeque<alloc::vec::Vec<u8>>> {
+    fn lock_ingress(&self) -> MutexGuard<'_, VecDeque<Vec<u8>>> {
         self.ingress
             .lock()
             .expect("virtio-net ingress mutex poisoned")
@@ -331,7 +355,7 @@ struct VirtioNetRuntimeDevice {
     grant: DmaGrant,
     endpoint: Arc<PortEndpoint>,
     _registration: SwitchPortRegistration,
-    resources: alloc::boxed::Box<[Resource]>,
+    resources: Box<[Resource]>,
 }
 
 impl Device for VirtioNetRuntimeDevice {

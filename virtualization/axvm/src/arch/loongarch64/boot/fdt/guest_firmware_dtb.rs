@@ -3,7 +3,12 @@ use std::{format, vec::Vec};
 use fdt_edit::{Fdt, Node, NodeId};
 
 use super::property::{prop_null, prop_string, prop_string_list, prop_u32, prop_u32_array};
-use crate::{AxVmResult, arch::loongarch64::boot::GuestPlatform, ax_err_type};
+use crate::{
+    AxVmResult,
+    arch::loongarch64::boot::GuestPlatform,
+    ax_err_type,
+    boot::fdt::device::{ResolvedFdtDevice, ResolvedFdtProperty},
+};
 
 const PHANDLE_CPU0: u32 = 0x8000;
 const PHANDLE_CPUIC: u32 = 0x8001;
@@ -27,6 +32,7 @@ pub fn build(platform: &GuestPlatform) -> AxVmResult<Vec<u8>> {
     add_cpus(&mut fdt, root)?;
     add_memory(&mut fdt, root, platform)?;
     add_interrupt_controllers(&mut fdt, root, platform)?;
+    add_configured_devices(&mut fdt, root, platform)?;
     add_platform_bus(&mut fdt, root, platform)?;
     add_power(&mut fdt, root, platform)?;
     add_rtc(&mut fdt, root, platform)?;
@@ -230,6 +236,69 @@ fn add_interrupt_controllers(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatfo
     set_prop(fdt, msi, prop_u32("phandle", PHANDLE_PCH_MSI))
 }
 
+fn add_configured_devices(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
+    for device in &platform.configured_fdt_devices {
+        let name = configured_device_node_name(device);
+        let node = add_child(fdt, root, &name);
+        let compatible = device
+            .compatible
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        set_prop(fdt, node, prop_string_list("compatible", &compatible))?;
+
+        if !device.registers.is_empty() {
+            let mut registers = Vec::with_capacity(device.registers.len() * 4);
+            for (base, size) in &device.registers {
+                registers.extend_from_slice(&[
+                    (base >> 32) as u32,
+                    *base as u32,
+                    (size >> 32) as u32,
+                    *size as u32,
+                ]);
+            }
+            set_prop(fdt, node, prop_u32_array("reg", &registers))?;
+        }
+
+        if !device.interrupts.is_empty() {
+            let mut interrupts = Vec::with_capacity(device.interrupts.len() * 2);
+            for interrupt in &device.interrupts {
+                if interrupt.controller != platform.interrupt.controller {
+                    return Err(crate::AxVmError::invalid_config(format!(
+                        "device {} uses unsupported LoongArch interrupt controller {}",
+                        device.id,
+                        interrupt.controller.value()
+                    )));
+                }
+                let flags = match interrupt.trigger {
+                    axdevice_base::InterruptTrigger::EdgeTriggered => 1,
+                    axdevice_base::InterruptTrigger::LevelTriggered => 4,
+                };
+                interrupts.extend_from_slice(&[interrupt.input, flags]);
+            }
+            set_prop(fdt, node, prop_u32("interrupt-parent", PHANDLE_PCH_PIC))?;
+            set_prop(fdt, node, prop_u32_array("interrupts", &interrupts))?;
+        }
+
+        for property in &device.properties {
+            let property = match property {
+                ResolvedFdtProperty::Empty(name) => prop_null(name),
+                ResolvedFdtProperty::U32(name, value) => prop_u32(name, *value),
+                ResolvedFdtProperty::String(name, value) => prop_string(name, value),
+            };
+            set_prop(fdt, node, property)?;
+        }
+    }
+    Ok(())
+}
+
+fn configured_device_node_name(device: &ResolvedFdtDevice) -> String {
+    device.registers.first().map_or_else(
+        || format!("{}-{}", device.node_name, device.id),
+        |(base, _)| format!("{}@{base:x}", device.node_name),
+    )
+}
+
 fn add_power(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
     let ged = platform.firmware_devices.ged;
     let ged_node = add_child(fdt, root, &format!("ged@{:x}", ged.mmio.base));
@@ -282,6 +351,20 @@ fn add_serial(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResu
         fdt,
         serial,
         prop_u32("clock-frequency", platform.serial.clock_hz),
+    )?;
+    set_prop(
+        fdt,
+        serial,
+        prop_u32("reg-shift", u32::from(platform.serial.register_shift)),
+    )?;
+    set_prop(
+        fdt,
+        serial,
+        prop_u32(
+            "reg-io-width",
+            u32::try_from(platform.serial.register_width.size())
+                .expect("a serial access width is at most eight bytes"),
+        ),
     )?;
     set_prop(fdt, serial, prop_u32("current-speed", platform.serial.baud))?;
     set_prop(fdt, serial, prop_u32("interrupt-parent", PHANDLE_PCH_PIC))?;
@@ -345,9 +428,13 @@ mod tests {
 
     use super::*;
 
+    fn test_platform() -> GuestPlatform {
+        crate::arch::loongarch64::boot::probe::GuestPlatformBuilder::new(Vec::new(), None).build()
+    }
+
     #[test]
     fn loongarch_firmware_dtb_is_reparseable() {
-        let platform = GuestPlatform::default();
+        let platform = test_platform();
         let dtb = build(&platform).unwrap();
         let fdt = Fdt::from_bytes(&dtb).unwrap();
 
@@ -399,5 +486,39 @@ mod tests {
                 .as_str(),
             Some(serial_path.as_str())
         );
+    }
+
+    #[test]
+    fn loongarch_firmware_dtb_encodes_resolved_devices() {
+        let mut platform = test_platform();
+        platform.configured_fdt_devices.push(ResolvedFdtDevice {
+            id: "virtio-blk0".into(),
+            node_name: "virtio_mmio".into(),
+            compatible: std::vec!["virtio,mmio".into()],
+            registers: std::vec![(0x0a00_0000, 0x200)],
+            interrupts: std::vec![crate::boot::fdt::device::ResolvedFdtInterrupt {
+                controller: axdevice_base::InterruptControllerId::new(0),
+                input: 48,
+                trigger: axdevice_base::InterruptTrigger::EdgeTriggered,
+            }],
+            properties: std::vec![ResolvedFdtProperty::Empty("dma-coherent".into())],
+        });
+
+        let dtb = build(&platform).unwrap();
+        let fdt = Fdt::from_bytes(&dtb).unwrap();
+        let device = fdt.get_by_path("/virtio_mmio@a000000").unwrap();
+
+        assert_eq!(device.regs()[0].address, 0x0a00_0000);
+        assert_eq!(device.regs()[0].size, Some(0x200));
+        assert_eq!(
+            device
+                .as_node()
+                .get_property("interrupts")
+                .unwrap()
+                .get_u32_iter()
+                .collect::<Vec<_>>(),
+            [48, 1]
+        );
+        assert!(device.as_node().get_property("dma-coherent").is_some());
     }
 }

@@ -8,6 +8,7 @@ use core::{
     f64::consts,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     task::Context,
+    time::Duration,
 };
 
 use ax_std as _;
@@ -337,6 +338,24 @@ fn external_deadline_is_consumed_after_its_timer_irq() {
     while external_deadline.load(Ordering::Acquire) != NO_DEADLINE {
         ax_task::yield_now();
     }
+}
+
+#[axtest]
+fn elapsed_external_deadline_does_not_starve_its_publisher() {
+    const NO_DEADLINE: u64 = u64::MAX;
+    let external_deadline = Arc::new(AtomicU64::new(1));
+    let published_deadline = Arc::clone(&external_deadline);
+    ax_task::register_timer_deadline_source(move || {
+        let deadline = published_deadline.load(Ordering::Acquire);
+        (deadline != NO_DEADLINE).then_some(deadline)
+    });
+
+    ax_assert_eq!(ax_task::next_timer_deadline_nanos(), Some(1));
+    // Keep the elapsed source published across a real timer IRQ. Re-arming it
+    // as the next comparator deadline would starve this task before it can
+    // clear the publication.
+    ax_task::sleep(Duration::from_millis(20));
+    external_deadline.store(NO_DEADLINE, Ordering::Release);
 }
 
 #[axtest]

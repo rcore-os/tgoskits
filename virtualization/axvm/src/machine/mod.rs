@@ -13,23 +13,18 @@ use crate::{arch::current::CurrentArch, architecture::MachinePlatform};
 
 mod factory;
 mod gic;
-mod ivc;
 mod plic;
 mod serial;
 mod timer;
 
 pub(crate) use factory::{
-    SERIAL_REGISTRATIONS, fallback_profile as default_serial_profile, is_serial_model,
-    model_name as serial_model_name,
+    fallback_profile as default_serial_profile, is_serial_model, model_name as serial_model_name,
 };
 pub(crate) use gic::AARCH64_GIC_REDISTRIBUTOR_FRAME_SIZE;
 pub use gic::{
     GuestGicCpuRegion, GuestGicProfile, GuestGicProfileError, GuestGicRedistributorProfile,
     GuestItsProfile,
 };
-pub use ivc::GuestIvcChannel;
-#[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-pub(crate) use ivc::resolved_ivc_channels;
 pub use plic::{GuestPlicProfile, GuestPlicProfileError};
 #[cfg(any(
     target_arch = "aarch64",
@@ -49,6 +44,16 @@ pub use serial::{
     HostSerialSnapshot,
 };
 pub use timer::GuestTimerProfile;
+
+/// Registers AxVM-owned configurable device models into an app-owned catalog.
+pub fn register_devices(
+    catalog: &mut crate::ConfiguredDeviceCatalog,
+) -> Result<(), crate::ConfiguredDeviceError> {
+    catalog.register_transaction(|staged| {
+        factory::register_devices(staged)?;
+        crate::configured::register_devices(staged)
+    })
+}
 #[cfg(any(target_arch = "aarch64", target_arch = "riscv64", test))]
 pub(crate) use timer::decode_timer_ppi;
 

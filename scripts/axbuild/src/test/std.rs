@@ -14,6 +14,8 @@ use crate::support::{git::IncrementalPackageSelection, process::run_cargo_status
 
 const STD_CRATES_CSV: &str = "scripts/test/std_crates.csv";
 const TASK_INITIALIZATION_FILTER: &str = "task_initialization_precedes_scheduling";
+const PCI_FDT_IRQ_CAPABILITY_TEST: &str =
+    "pci_fdt_interrupt_map_requires_and_accepts_registered_intc";
 
 #[derive(Args, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StdTestArgs {
@@ -53,13 +55,22 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
     },
 ];
 
-const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
-    name: "host-test+rtc+starfive-jh7110-dwmmc",
-    no_default_features: false,
-    features: &["host-test", "rtc", "starfive-jh7110-dwmmc"],
-    name_filter: None,
-    expected_tests: &[],
-}];
+const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
+    PackageFeatureProfile {
+        name: "host-test+rtc+starfive-jh7110-dwmmc",
+        no_default_features: false,
+        features: &["host-test", "rtc", "starfive-jh7110-dwmmc"],
+        name_filter: None,
+        expected_tests: &[],
+    },
+    PackageFeatureProfile {
+        name: "pci-fdt-irq-capability",
+        no_default_features: false,
+        features: &["pci"],
+        name_filter: Some(PCI_FDT_IRQ_CAPABILITY_TEST),
+        expected_tests: &[PCI_FDT_IRQ_CAPABILITY_TEST],
+    },
+];
 
 const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
     name: "host-test",
@@ -842,24 +853,66 @@ mod tests {
     }
 
     #[test]
-    fn ax_driver_uses_visionfive2_mmc_feature_profile() {
+    fn ax_driver_runs_visionfive2_and_pci_fdt_irq_profiles() {
+        let root = PathBuf::from("/tmp/workspace");
+        let packages = vec!["ax-driver".to_string()];
+        let mut runner = FakeCargoRunner::succeeding()
+            .with_profile_discovery("ax-driver", AX_DRIVER_FEATURE_PROFILES);
+
+        let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
+
+        assert!(failed.is_empty());
+        let args = runner
+            .invocations
+            .iter()
+            .map(|(_, invocation)| invocation.args())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            vec![
+                vec![
+                    "test",
+                    "-p",
+                    "ax-driver",
+                    "--features",
+                    "host-test,rtc,starfive-jh7110-dwmmc",
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-driver",
+                    "--features",
+                    "pci",
+                    PCI_FDT_IRQ_CAPABILITY_TEST,
+                    "--",
+                    "--list",
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-driver",
+                    "--features",
+                    "pci",
+                    PCI_FDT_IRQ_CAPABILITY_TEST,
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn ax_driver_rejects_missing_pci_fdt_irq_capability_test() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec!["ax-driver".to_string()];
         let mut runner = FakeCargoRunner::succeeding();
 
         let failed = run_std_tests(&mut runner, &root, &packages).unwrap();
 
-        assert!(failed.is_empty());
-        assert_eq!(
-            runner.invocations[0].1.args(),
-            vec![
-                "test",
-                "-p",
-                "ax-driver",
-                "--features",
-                "host-test,rtc,starfive-jh7110-dwmmc"
-            ]
-        );
+        assert_eq!(failed, vec!["ax-driver"]);
+        let pci_profile = &AX_DRIVER_FEATURE_PROFILES[1];
+        assert!(!runner.invocations.iter().any(|(_, invocation)| {
+            invocation
+                == &CargoTestInvocation::for_profile("ax-driver", pci_profile, CargoTestAction::Run)
+        }));
     }
 
     #[test]

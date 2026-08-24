@@ -39,6 +39,17 @@ impl DeviceModel for X86CmosModel {
         )
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        DeviceFirmwareSpec::interfaces(
+            None,
+            Some(std::vec![AcpiContributionSpec::Conventional(
+                AcpiDeviceSpec::new("RTC0", "PNP0B00").with_register(
+                    ResourceSlot::new("registers").expect("static CMOS slot is valid"),
+                ),
+            )]),
+        )
+    }
+
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         let range = context.pio(&ResourceSlot::new("registers")?)?;
         if range != (0x70, 2) {

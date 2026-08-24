@@ -10,8 +10,8 @@ keywords = ["vm", "hypervisor", "arceos"]
 license = "Apache-2.0"
 
 [features]
-fs = ["ax-std/fs"]
-host-fs = ["ax-std/fs", "dep:ax-driver"]
+fs = ["ax-std/fs", "dep:ax-api", "ax-api/fs"]
+host-fs = ["fs", "dep:ax-driver"]
 host-test = [
     "ax-std/host-test",
     "axdevice/host-test",
@@ -48,15 +48,20 @@ ax-std = { workspace = true, default-features = false, features = [
 ] }
 ax-timer-list = { workspace = true }
 irq-framework = { workspace = true }
+ax-api = { workspace = true, optional = true }
 # System dependent modules provided by ArceOS-Hypervisor.
 axaddrspace = { workspace = true }
 axvm-types = { workspace = true }
 axhvc = { workspace = true }
 axdevice = { workspace = true }
 axdevice_base = { workspace = true }
+axvirtio-blk = { workspace = true }
+axvirtio-common = { workspace = true }
+axvirtio-net = { workspace = true }
 axvmconfig = { workspace = true, default-features = false }
 fdt-edit = { workspace = true }
 fdt-raw = { workspace = true }
+toml = { workspace = true }
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 ax-driver = { workspace = true, optional = true, features = ["pci"] }
 x86 = "0.52"

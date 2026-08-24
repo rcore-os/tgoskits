@@ -126,6 +126,7 @@ pub struct DeviceNodeSpec {
     pub(crate) parent: Option<DeviceNodeId>,
     pub(crate) dependencies: Vec<DeviceNodeId>,
     pub(crate) firmware: DeviceFirmwareBinding,
+    pub(crate) firmware_spec: DeviceFirmwareSpec,
     pub(crate) model: Option<Arc<dyn DeviceModel>>,
     pub(crate) requirements: Option<DeviceRequirements>,
     pub(crate) host_mapping: Option<HostPassthroughMapping>,
@@ -150,6 +151,7 @@ impl DeviceNodeSpec {
             parent: None,
             dependencies: Vec::new(),
             firmware: DeviceFirmwareBinding::None,
+            firmware_spec: DeviceFirmwareSpec::None,
             model: None,
             requirements: Some(requirements),
             host_mapping: None,
@@ -164,6 +166,7 @@ impl DeviceNodeSpec {
             parent: None,
             dependencies: Vec::new(),
             firmware: DeviceFirmwareBinding::None,
+            firmware_spec: DeviceFirmwareSpec::None,
             model: None,
             requirements: Some(DeviceRequirements::new()),
             host_mapping: None,
@@ -171,12 +174,14 @@ impl DeviceNodeSpec {
     }
 
     fn runtime(id: DeviceNodeId, kind: DeviceNodeKind, model: Arc<dyn DeviceModel>) -> Self {
+        let firmware_spec = model.firmware();
         Self {
             id,
             kind,
             parent: None,
             dependencies: Vec::new(),
             firmware: DeviceFirmwareBinding::None,
+            firmware_spec,
             model: Some(model),
             requirements: None,
             host_mapping: None,
@@ -205,5 +210,137 @@ impl DeviceNodeSpec {
     pub fn with_host_mapping(mut self, mapping: HostPassthroughMapping) -> Self {
         self.host_mapping = Some(mapping);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    struct CountingFirmwareModel {
+        calls: Arc<AtomicUsize>,
+    }
+
+    struct StaticFirmwareModel(DeviceFirmwareSpec);
+
+    impl DeviceModel for CountingFirmwareModel {
+        fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+            Ok(DeviceRequirements::new())
+        }
+
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            DeviceFirmwareSpec::interfaces(
+                Some(alloc::vec![FdtContributionSpec::Conventional(
+                    FdtNodeSpec::new("counted"),
+                )]),
+                None,
+            )
+        }
+
+        fn build(
+            &self,
+            _context: &mut DeviceBuildContext<'_>,
+        ) -> DeviceManagerResult<DeviceBundle> {
+            unreachable!("the declaration regression does not build the device")
+        }
+    }
+
+    impl DeviceModel for StaticFirmwareModel {
+        fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+            Ok(DeviceRequirements::new())
+        }
+
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            self.0.clone()
+        }
+
+        fn build(
+            &self,
+            _context: &mut DeviceBuildContext<'_>,
+        ) -> DeviceManagerResult<DeviceBundle> {
+            unreachable!("firmware support tests do not build devices")
+        }
+    }
+
+    fn resolved_firmware(spec: DeviceFirmwareSpec) -> ResolvedDeviceGraph {
+        let mut graph = DeviceGraphBuilder::new();
+        graph
+            .add(DeviceNodeSpec::virtual_device(
+                DeviceNodeId::new("firmware-matrix").unwrap(),
+                Arc::new(StaticFirmwareModel(spec)),
+            ))
+            .unwrap();
+        graph
+            .declare()
+            .unwrap()
+            .resolve(ResourcePools::new())
+            .unwrap()
+    }
+
+    #[test]
+    fn runtime_node_freezes_firmware_when_declared() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let model = Arc::new(CountingFirmwareModel {
+            calls: Arc::clone(&calls),
+        });
+
+        let _node = DeviceNodeSpec::virtual_device(DeviceNodeId::new("counted").unwrap(), model);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn firmware_interface_matrix_is_explicit() {
+        let fdt = || {
+            FdtContributionSpec::Conventional(FdtNodeSpec::new("matrix").with_compatible("test"))
+        };
+        let acpi = || AcpiContributionSpec::Conventional(AcpiDeviceSpec::new("MTRX", "TEST0001"));
+
+        let none = resolved_firmware(DeviceFirmwareSpec::None);
+        assert!(none.validate_fdt_support().is_ok());
+        assert!(none.validate_acpi_support().is_ok());
+
+        let fdt_only = resolved_firmware(DeviceFirmwareSpec::interfaces(
+            Some(alloc::vec![fdt()]),
+            None,
+        ));
+        assert!(fdt_only.validate_fdt_support().is_ok());
+        assert!(fdt_only.validate_acpi_support().is_err());
+
+        let acpi_only = resolved_firmware(DeviceFirmwareSpec::interfaces(
+            None,
+            Some(alloc::vec![acpi()]),
+        ));
+        assert!(acpi_only.validate_fdt_support().is_err());
+        assert!(acpi_only.validate_acpi_support().is_ok());
+
+        let both = resolved_firmware(DeviceFirmwareSpec::interfaces(
+            Some(alloc::vec![fdt()]),
+            Some(alloc::vec![acpi()]),
+        ));
+        assert!(both.validate_fdt_support().is_ok());
+        assert!(both.validate_acpi_support().is_ok());
+    }
+
+    #[test]
+    fn empty_firmware_interfaces_are_rejected_during_declaration() {
+        let mut graph = DeviceGraphBuilder::new();
+        graph
+            .add(DeviceNodeSpec::virtual_device(
+                DeviceNodeId::new("invalid-firmware").unwrap(),
+                Arc::new(StaticFirmwareModel(DeviceFirmwareSpec::interfaces(
+                    None, None,
+                ))),
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            graph.declare(),
+            Err(DeviceGraphError::Declaration { .. })
+        ));
     }
 }

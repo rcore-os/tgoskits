@@ -229,6 +229,51 @@ impl DeviceModel for Aarch64VgicFactory {
         self.plan.requirements()
     }
 
+    fn firmware(&self) -> DeviceFirmwareSpec {
+        let mut fdt = match self.plan.config() {
+            ArmVgicConfig::V2(_) => {
+                FdtNodeSpec::new("interrupt-controller").with_compatible("arm,gic-400")
+            }
+            ArmVgicConfig::V3(_) => {
+                FdtNodeSpec::new("interrupt-controller").with_compatible("arm,gic-v3")
+            }
+        }
+        .with_register(ResourceSlot::new("distributor").expect("static VGIC slot is valid"));
+        let mut acpi = AcpiDeviceSpec::table("GIC0")
+            .with_register(ResourceSlot::new("distributor").expect("static VGIC slot is valid"));
+        match self.plan.config() {
+            ArmVgicConfig::V2(_) => {
+                let slot = ResourceSlot::new("cpu-region-0").expect("static VGIC slot is valid");
+                fdt = fdt.with_register(slot.clone());
+                acpi = acpi.with_register(slot);
+            }
+            ArmVgicConfig::V3(config) => {
+                for index in 0..config.redistributors().len() {
+                    let slot = ResourceSlot::new(std::format!("cpu-region-{index}"))
+                        .expect("generated VGIC slot is valid");
+                    fdt = fdt.with_register(slot.clone());
+                    acpi = acpi.with_register(slot);
+                }
+                for its in config.its() {
+                    let slot = ResourceSlot::new(std::format!("its-{}", its.id().value()))
+                        .expect("generated ITS slot is valid");
+                    fdt = fdt.with_register(slot.clone());
+                    acpi = acpi.with_register(slot);
+                }
+            }
+        }
+        DeviceFirmwareSpec::interfaces(
+            Some(std::vec![FdtContributionSpec::InterruptController {
+                controller: self.plan.config().controller_id(),
+                node: fdt,
+            }]),
+            Some(std::vec![AcpiContributionSpec::InterruptController {
+                controller: self.plan.config().controller_id(),
+                device: acpi,
+            }]),
+        )
+    }
+
     fn build(&self, context: &mut DeviceBuildContext<'_>) -> DeviceManagerResult<DeviceBundle> {
         self.plan.validate_and_consume(context)?;
         let runtime = create_runtime(self.vm_id, &self.plan).map_err(|error| {

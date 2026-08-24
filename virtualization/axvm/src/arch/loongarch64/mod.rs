@@ -117,7 +117,7 @@ impl ArchOps for LoongArch64Arch {
                     signed_ext,
                 },
             ),
-            LoongArchVmExit::MmioWrite { addr, width, data } => handle_loongarch_mmio_write(
+            LoongArchVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write(
                 vm,
                 vcpu,
                 MmioWriteExit {
@@ -183,28 +183,6 @@ impl ArchOps for LoongArch64Arch {
     }
 }
 
-fn handle_loongarch_mmio_write(
-    vm: &crate::AxVMRef,
-    vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
-    exit: MmioWriteExit,
-) -> AxVmResult<BoundVcpuExit<LoongArchDeferredRunWork>> {
-    let result = super::handle_mmio_write(vm, vcpu, exit)?;
-    drain_loongarch_pch_pic_events(vm);
-    Ok(result)
-}
-
-fn try_handle_loongarch_mmio_write(
-    vm: &crate::AxVMRef,
-    vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
-    exit: MmioWriteExit,
-) -> AxVmResult<bool> {
-    let handled = super::try_handle_mmio_write(vm, vcpu, exit)?;
-    if handled {
-        drain_loongarch_pch_pic_events(vm);
-    }
-    Ok(handled)
-}
-
 fn handle_loongarch_nested_page_fault(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
@@ -231,7 +209,7 @@ fn handle_loongarch_nested_page_fault(
                     signed_ext,
                 },
             )?,
-            LoongArchVmExit::MmioWrite { addr, width, data } => try_handle_loongarch_mmio_write(
+            LoongArchVmExit::MmioWrite { addr, width, data } => super::try_handle_mmio_write(
                 vm,
                 vcpu,
                 MmioWriteExit {
@@ -280,49 +258,6 @@ fn loongarch_external_irq_vector(
         .map_or(Some(fallback_vector), |port| {
             port.set_input_level(fallback_vector, true)
         })
-}
-
-fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
-    let Ok(devices) = vm.get_devices() else {
-        return;
-    };
-    let Ok(port) = devices
-        .services()
-        .require::<axdevice::PchPicOutputPortKey>()
-    else {
-        return;
-    };
-    while let Some(event) = port.take_output_event() {
-        if !event.asserted {
-            trace!(
-                "LoongArch VM[{}] PCH-PIC deassert event for EIOINTC vector {}",
-                vm.id(),
-                event.vector
-            );
-            continue;
-        }
-        if let Err(err) = inject_vm_vcpu_interrupt(vm.id(), 0, event.vector) {
-            warn!(
-                "failed to inject LoongArch VM[{}] PCH-PIC output vector {}: {err:?}",
-                vm.id(),
-                event.vector
-            );
-        }
-    }
-}
-
-fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
-    use crate::AsVCpuTask;
-
-    let current = crate::host::task::current_task();
-    if let Some(task) = current.try_as_vcpu_task()
-        && task.vm().id() == vm_id
-        && task.vcpu.id() == vcpu_id
-    {
-        return task.vcpu.inject_interrupt(vector);
-    }
-
-    crate::manager::inject_interrupt(vm_id, vcpu_id, vector)
 }
 
 struct AxvmLoongArchHostOps;
