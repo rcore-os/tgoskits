@@ -50,6 +50,12 @@ pub mod axtest_support {
     pub fn controller_park_oversleep_detected_for_test() -> bool {
         super::block::runtime::controller_park_oversleep_detected_for_test()
     }
+
+    /// Checks that page reclaim drops its registry spin lock before file locks.
+    #[cfg(feature = "vfs")]
+    pub fn reclaim_releases_registry_spin_lock_for_test() -> bool {
+        super::file::reclaim_releases_registry_spin_lock_for_test()
+    }
 }
 
 static MOUNTED_FILESYSTEMS: os::sync::Mutex<Vec<Filesystem>> = os::sync::Mutex::new(Vec::new());

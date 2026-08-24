@@ -382,7 +382,18 @@ pub(crate) fn patch_guest_fdt_for_runtime(patch: GuestFdtRuntimePatch<'_>) -> Ax
     )?;
     install_resolved_fdt_devices(&mut tree, devices, gic_profile, plic_profile)?;
     super::timer::install_machine_timer(&mut tree, timer_profile)?;
-    super::serial::install_machine_serial(&mut tree, serial_profile, serial_identity)?;
+    let preserved_physical_serial_selectors = crate_config
+        .devices
+        .passthrough
+        .iter()
+        .map(|device| device.path.clone())
+        .collect::<Vec<_>>();
+    super::serial::install_machine_serial(
+        &mut tree,
+        serial_profile,
+        serial_identity,
+        &preserved_physical_serial_selectors,
+    )?;
     for serial in additional_serials {
         super::serial::install_additional_serial(&mut tree, *serial)?;
     }

@@ -189,6 +189,20 @@ pub(crate) fn wait_until_vcpu_entered(
     )
 }
 
+/// Pause a running VM.
+///
+/// `vm.pause()` flips the status to `Paused` synchronously; the running vCPUs
+/// observe the flag at their next run-loop iteration and park in the
+/// suspend-wait (`!suspending()`), so the guest actually suspends
+/// asynchronously. The notify wakes any vCPU parked in a WFI/event wait so it
+/// can reach that check.
+pub fn pause_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
+    vm.pause()?;
+    vcpus::notify_all_vcpus(vm_id);
+    Ok(())
+}
+
 pub fn resume_vm(vm_id: usize) -> AxVmResult {
     let vm = vm_by_id(vm_id)?;
     vm.resume()?;

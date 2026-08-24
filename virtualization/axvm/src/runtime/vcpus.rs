@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::{
+    cell::Cell,
     format,
     sync::{
         Arc,
@@ -606,6 +607,10 @@ fn vcpu_run() {
         vcpu.id(),
         crate::host::cpu::current_id()
     );
+    // Independent re-execution evidence is published *after* each guest entry,
+    // at the bottom of the run loop (after `run_vcpu` returns). Every wake from
+    // suspend below also re-enters the guest and is counted there, so the
+    // control plane can prove the guest actually re-executed after resume/reset.
 
     loop {
         if vcpu_id == 0 {
@@ -615,61 +620,82 @@ fn vcpu_run() {
             let _ = poll_primary_vcpu_devices_with(&runtime, || poll_vm_devices(&vm));
         }
 
-        match CurrentArch::run_vcpu(&vm, &vcpu) {
-            Ok(VcpuRunAction {
-                exits_vcpu: true, ..
-            }) => {
-                if let Err(err) = vcpu.power_off_after_cpu_off() {
-                    warn!("VM[{vm_id}] VCpu[{vcpu_id}] CPU_OFF cleanup failed: {err:?}");
-                }
-                runtime.retire_vcpu_task(vcpu_id);
-                if !runtime.consume_cpu_off_reservation(vcpu_id) {
-                    let _ = runtime.mark_vcpu_exiting();
-                }
-                break;
-            }
-            Ok(VcpuRunAction {
-                resets_vm: true, ..
-            }) => {
-                if runtime.request_deferred_reset()
-                    && let Err(err) = vm.stop(StopReason::Forced)
-                {
-                    if vm.stopping() {
-                        warn!("VM[{vm_id}] reset requested while VM is already stopping: {err:?}");
-                    } else {
-                        let _ = runtime.take_deferred_reset_request();
-                        warn!("VM[{vm_id}] failed to request deferred reset stop: {err:?}");
-                        if let Err(stop_err) = vm.stop(StopReason::Fault(format!("{err:?}"))) {
-                            warn!(
-                                "VM[{vm_id}] shutdown after reset request failure failed: \
-                                 {stop_err:?}"
-                            );
-                        }
-                    }
-                }
-                notify_all_vcpus(vm_id);
-            }
-            Ok(VcpuRunAction {
-                stop_reason: Some(reason),
-                ..
-            }) => {
-                if let Err(err) = vm.stop(reason) {
-                    warn!("VM[{vm_id}] shutdown failed: {err:?}");
-                }
-                notify_all_vcpus(vm_id);
-            }
-            Ok(VcpuRunAction {
-                waits_for_event: true,
-                ..
-            }) => CurrentArch::wait_for_vcpu_event(&vm, &vcpu, &runtime),
-            Ok(VcpuRunAction { .. }) => {}
+        // The guest has entered (and exited) for this run-loop iteration: the
+        // control plane reads this as independent re-execution evidence. It is
+        // published *only* after a successful `run_vcpu`, so a failed entry
+        // (bind / `before_vcpu_run` / `vcpu.run()` / exit handling that returns
+        // `Err` before the guest ever runs) cannot advance the counter — a
+        // broken wake path that only flips the status without ever re-entering
+        // the guest cannot advance it either.
+        let action = match CurrentArch::run_vcpu(&vm, &vcpu) {
+            Ok(action) => Some(action),
             Err(err) => {
                 error!("VM[{vm_id}] run VCpu[{vcpu_id}] get error {err:?}");
                 if let Err(err) = vm.stop(StopReason::Fault(format!("{err:?}"))) {
                     warn!("VM[{vm_id}] shutdown failed after vCPU error: {err:?}");
                 }
-                // Notify all vCPUs to wake up to check the shutdown flag
+                // Notify all vCPUs to wake up to check the shutdown flag. The
+                // guest never entered on this iteration, so skip the
+                // re-execution evidence below; the suspend/stopping checks that
+                // follow still run and break the loop.
                 notify_all_vcpus(vm_id);
+                None
+            }
+        };
+
+        if let Some(action) = action {
+            runtime.inc_guest_entry();
+
+            match action {
+                VcpuRunAction {
+                    exits_vcpu: true, ..
+                } => {
+                    if let Err(err) = vcpu.power_off_after_cpu_off() {
+                        warn!("VM[{vm_id}] VCpu[{vcpu_id}] CPU_OFF cleanup failed: {err:?}");
+                    }
+                    runtime.retire_vcpu_task(vcpu_id);
+                    if !runtime.consume_cpu_off_reservation(vcpu_id) {
+                        let _ = runtime.mark_vcpu_exiting();
+                    }
+                    break;
+                }
+                VcpuRunAction {
+                    resets_vm: true, ..
+                } => {
+                    if runtime.request_deferred_reset()
+                        && let Err(err) = vm.stop(StopReason::Forced)
+                    {
+                        if vm.stopping() {
+                            warn!(
+                                "VM[{vm_id}] reset requested while VM is already stopping: {err:?}"
+                            );
+                        } else {
+                            let _ = runtime.take_deferred_reset_request();
+                            warn!("VM[{vm_id}] failed to request deferred reset stop: {err:?}");
+                            if let Err(stop_err) = vm.stop(StopReason::Fault(format!("{err:?}"))) {
+                                warn!(
+                                    "VM[{vm_id}] shutdown after reset request failure failed: \
+                                     {stop_err:?}"
+                                );
+                            }
+                        }
+                    }
+                    notify_all_vcpus(vm_id);
+                }
+                VcpuRunAction {
+                    stop_reason: Some(reason),
+                    ..
+                } => {
+                    if let Err(err) = vm.stop(reason) {
+                        warn!("VM[{vm_id}] shutdown failed: {err:?}");
+                    }
+                    notify_all_vcpus(vm_id);
+                }
+                VcpuRunAction {
+                    waits_for_event: true,
+                    ..
+                } => CurrentArch::wait_for_vcpu_event(&vm, &vcpu, &runtime),
+                VcpuRunAction { .. } => {}
             }
         }
 
@@ -679,7 +705,27 @@ fn vcpu_run() {
                 "VM[{}] VCpu[{}] is suspended, waiting for resume...",
                 vm_id, vcpu_id
             );
-            wait_for(&runtime, || !vm.suspending());
+            // Park the vCPU until it is resumed. The wait condition closure is
+            // evaluated by the wait queue while holding its lock, immediately
+            // before the task is enqueued, so publishing the pause-completion
+            // evidence inside it makes the signal visible only once the vCPU is
+            // genuinely committed to blocking. A resume that races in before the
+            // vCPU reaches the wait keeps the suspend flag clear and makes the
+            // condition already true, so the vCPU never publishes a park and
+            // never blocks; the control-plane probe then times out waiting for
+            // `guest_park_count`, correctly reporting that the pause did not
+            // genuinely complete instead of passing on a fake.
+            let parked = Cell::new(false);
+            wait_for(&runtime, || {
+                if !vm.suspending() {
+                    return true;
+                }
+                if !parked.get() {
+                    runtime.inc_guest_park();
+                    parked.set(true);
+                }
+                false
+            });
             info!("VM[{}] VCpu[{}] resumed from suspend", vm_id, vcpu_id);
             continue;
         }

@@ -169,6 +169,11 @@ impl AxvmRuntime {
         crate::runtime::stop_vm(vm_id)
     }
 
+    /// Pause a VM selected from the runtime registry.
+    pub fn pause_vm(vm_id: VMId) -> AxVmResult {
+        crate::runtime::pause_vm(vm_id)
+    }
+
     /// Resume a VM selected from the runtime registry.
     pub fn resume_vm(vm_id: VMId) -> AxVmResult {
         crate::runtime::resume_vm(vm_id)

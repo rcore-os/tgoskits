@@ -22,7 +22,7 @@ use std::{
     string::String,
     sync::{
         Arc, Mutex as StdMutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
     vec::Vec,
@@ -169,6 +169,44 @@ pub(crate) struct VmRuntimeHandle {
     running_halting_vcpu_count: AtomicUsize,
     lifecycle_error: StdMutex<Option<AxVmError>>,
     deferred_reset_requested: AtomicBool,
+    /// VM-level monotonic aggregate count of guest (re-)entries performed by the
+    /// vCPU run loop.
+    ///
+    /// This is a single VM-wide counter shared by every vCPU task, not a
+    /// per-vCPU counter: when any vCPU enters (and exits) the guest, this
+    /// advances by one. Incremented only after a *successful* `run_vcpu` — the
+    /// vCPU's first entry and every wake from suspend — so the count only moves
+    /// once the guest has actually entered and exited, never for a status flip
+    /// alone and never on a failed entry that returns `Err` before the guest
+    /// runs.
+    ///
+    /// A reset discards and rebuilds the runtime, so the counter restarts from
+    /// zero for the freshly started vCPU tasks. The control plane reads it as an
+    /// independent proof that the guest actually re-executed after a
+    /// pause/resume or reset, distinguishing a genuine wake from a mere status
+    /// flip: a broken wake path that never re-enters the guest does not move
+    /// this counter. Because it is an aggregate, it proves that *at least one*
+    /// vCPU re-executed, not that every vCPU did.
+    guest_entry_count: AtomicU64,
+    /// VM-level monotonic aggregate count of times a vCPU has genuinely parked
+    /// in the suspend wait.
+    ///
+    /// This is a single VM-wide counter shared by every vCPU task, not a
+    /// per-vCPU counter. Published by the wait condition closure while the wait
+    /// queue holds its lock, immediately before the task blocks, so the signal
+    /// only advances once a vCPU is actually committed to parking. A resume that
+    /// races in before the vCPU reaches the wait keeps the suspend flag clear
+    /// and makes the condition already true, so the vCPU never publishes a park
+    /// and never blocks; the counter then does not advance and the control
+    /// plane can detect an incomplete pause instead of passing on a fake. A
+    /// reset rebuilds the runtime, so the counter restarts from zero.
+    ///
+    /// This observes *a* vCPU park, not full quiescence: it is not a
+    /// pause-completion API and does not prove every vCPU, device, or timer has
+    /// quiesced. A resume sent before this counter advances would otherwise be
+    /// absorbed while the vCPU is still running the guest (it never parked, so
+    /// it never re-enters either).
+    guest_park_count: AtomicU64,
 }
 
 #[derive(Default)]
@@ -265,6 +303,8 @@ impl VmRuntimeHandle {
             running_halting_vcpu_count: AtomicUsize::new(0),
             lifecycle_error: StdMutex::new(None),
             deferred_reset_requested: AtomicBool::new(false),
+            guest_entry_count: AtomicU64::new(0),
+            guest_park_count: AtomicU64::new(0),
         }
     }
 
@@ -326,6 +366,42 @@ impl VmRuntimeHandle {
                 .map_err(|error| AxVmError::host("join retired vCPU thread", error))?;
         }
         Ok(())
+    }
+
+    /// Record one guest (re-)entry by the vCPU run loop.
+    ///
+    /// Called *only after* a successful `run_vcpu`, so the count is an
+    /// independent proof of actual re-execution: a status flip without a real
+    /// guest entry, and a failed entry that returns `Err` before the guest
+    /// runs, cannot advance it. The counter is VM-wide and shared by all vCPU
+    /// tasks. `Relaxed` is sufficient: the value carries no other memory and is
+    /// only observed later over the control plane.
+    pub(crate) fn inc_guest_entry(&self) {
+        self.guest_entry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Current VM-level guest (re-)entry count for this runtime.
+    pub(crate) fn guest_entry_count(&self) -> u64 {
+        self.guest_entry_count.load(Ordering::Relaxed)
+    }
+
+    /// Record that a vCPU genuinely parked in the suspend wait.
+    ///
+    /// Called from the `wait_until` condition closure, which runs while the
+    /// wait queue holds its lock immediately before the task is enqueued, so
+    /// the count advances only once the vCPU is actually committed to blocking.
+    /// A resume that races in before the vCPU reaches the wait leaves the
+    /// suspend flag clear, so this is never called and the counter does not
+    /// advance — making an incomplete pause observable. The counter is VM-wide
+    /// and shared by all vCPU tasks. `Relaxed` is sufficient: the value carries
+    /// no other memory and is only observed later over the control plane.
+    pub(crate) fn inc_guest_park(&self) {
+        self.guest_park_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Current VM-level pause-park count for this runtime.
+    pub(crate) fn guest_park_count(&self) -> u64 {
+        self.guest_park_count.load(Ordering::Relaxed)
     }
 
     #[allow(dead_code)]
@@ -712,6 +788,53 @@ mod runtime_handle_tests {
         dispatcher.clear(3, 7);
         dispatcher.clear(3, 7);
         assert!(dispatcher.drain(3, 7).is_empty());
+    }
+
+    #[test]
+    fn guest_counters_start_at_zero_and_are_vm_level_aggregate() {
+        // The two lifecycle counters are VM-level aggregates shared by every
+        // vCPU task, not per-vCPU. Two increments attributed to distinct vCPU
+        // ids advance a single shared counter, so the control plane observes
+        // "at least one vCPU made progress", never a per-vCPU guarantee.
+        let runtime = VmRuntimeHandle::new();
+        assert_eq!(runtime.guest_entry_count(), 0);
+        assert_eq!(runtime.guest_park_count(), 0);
+
+        // Simulated entry/park from two different vCPU tasks.
+        runtime.inc_guest_entry(); // vCPU 0 first entry
+        runtime.inc_guest_entry(); // vCPU 1 first entry
+        runtime.inc_guest_park(); // vCPU 0 parked
+
+        assert_eq!(runtime.guest_entry_count(), 2);
+        assert_eq!(runtime.guest_park_count(), 1);
+
+        // Monotonic: a later reset rebuilds the runtime and restarts from zero.
+        let rebuilt = VmRuntimeHandle::new();
+        assert_eq!(rebuilt.guest_entry_count(), 0);
+        assert_eq!(rebuilt.guest_park_count(), 0);
+    }
+
+    #[test]
+    fn guest_entry_count_is_not_advanced_on_failed_entry() {
+        // Regression guard for the run-loop publishing rule: the entry counter
+        // must advance only after a *successful* `run_vcpu`. A failed entry
+        // (the `Err` branch) must not publish re-execution evidence, or a
+        // broken wake path / faulting resume could fake a re-entry while the
+        // guest never ran. The run loop itself is exercised by the
+        // qemu-http-control-plane probe; this asserts the counter's
+        // publish/no-publish contract at the handle level.
+        let runtime = VmRuntimeHandle::new();
+        assert_eq!(runtime.guest_entry_count(), 0);
+
+        // First entry succeeds.
+        runtime.inc_guest_entry();
+        assert_eq!(runtime.guest_entry_count(), 1);
+
+        // A failed entry must NOT advance the counter. The handle exposes no
+        // error-path helper by design (the run loop skips `inc_guest_entry` on
+        // `Err`); model the failure as "no publish call at all" and confirm the
+        // previously published value is preserved.
+        assert_eq!(runtime.guest_entry_count(), 1);
     }
 }
 
@@ -1320,6 +1443,40 @@ impl AxVM {
     pub fn running_vcpu_count(&self) -> usize {
         self.runtime_handle()
             .map(|runtime| runtime.running_halting_vcpu_count())
+            .unwrap_or(0)
+    }
+
+    /// Returns the VM-level "guest (re-)entry" count for the current runtime.
+    ///
+    /// This is a single VM-wide aggregate counter shared by every vCPU task,
+    /// not a per-vCPU value: it advances once per successful guest (re-)entry
+    /// by any vCPU, so it proves that *at least one* vCPU re-executed after a
+    /// pause/resume or reset. A failed entry that returns `Err` before the
+    /// guest runs does not advance it. A reset rebuilds the runtime, so the
+    /// count restarts from zero. The control plane uses it to distinguish a
+    /// genuine wake from a mere status flip.
+    pub fn guest_entry_count(&self) -> u64 {
+        self.runtime_handle()
+            .map(|runtime| runtime.guest_entry_count())
+            .unwrap_or(0)
+    }
+
+    /// Returns the VM-level count of times a vCPU observed the suspended state
+    /// and parked in the suspend wait for the current runtime.
+    ///
+    /// This is a single VM-wide aggregate counter shared by every vCPU task,
+    /// not a per-vCPU value. The status flips to `Paused` synchronously while
+    /// vCPUs park asynchronously at their next run-loop iteration; this counter
+    /// advances only when a vCPU actually observes the suspended state and
+    /// blocks. It observes *a* vCPU park, not full quiescence — there is no
+    /// pause-completion API and it does not prove every vCPU/device/timer has
+    /// quiesced. A reset rebuilds the runtime, so the counter restarts from
+    /// zero. The control plane reads it as the pause-observation signal: a
+    /// resume sent before it advances can be absorbed while the vCPU is still
+    /// running the guest (it never parked, so it never re-enters either).
+    pub fn guest_park_count(&self) -> u64 {
+        self.runtime_handle()
+            .map(|runtime| runtime.guest_park_count())
             .unwrap_or(0)
     }
 

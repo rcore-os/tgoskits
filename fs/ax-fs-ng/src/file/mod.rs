@@ -6,6 +6,8 @@ mod page;
 pub use cache::CachedFile;
 #[cfg(feature = "ext4")]
 pub(crate) use cache::forget_cached_file_key;
+#[cfg(all(axtest, feature = "axtest", feature = "vfs"))]
+pub(crate) use cache::reclaim_releases_registry_spin_lock_for_test;
 #[cfg(feature = "vfs")]
 pub use cache::{page_cache_reclaim, sync_all_cached_files};
 pub use handle::{File, FileBackend};
