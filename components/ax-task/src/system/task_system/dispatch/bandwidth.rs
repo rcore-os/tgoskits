@@ -62,7 +62,11 @@ impl TaskSystem {
             core,
             sched,
             reason,
-            WakePreemptionContext::new(WakeIntent::Normal, EqualRtWakeAction::PreserveFifoOrder),
+            WakePreemptionContext::new(
+                WakeIntent::Normal,
+                EqualRtWakeAction::PreserveFifoOrder,
+                self.cpu_remotes[owner.as_usize()].immediate_preemption_requested(),
+            ),
         )
     }
 

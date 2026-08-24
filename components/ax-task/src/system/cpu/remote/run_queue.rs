@@ -72,18 +72,28 @@ pub(crate) enum EqualRtWakeAction {
 pub(crate) struct WakePreemptionContext {
     intent: WakeIntent,
     equal_rt_action: EqualRtWakeAction,
+    reschedule_pending: bool,
 }
 
 impl WakePreemptionContext {
-    pub(crate) const fn new(intent: WakeIntent, equal_rt_action: EqualRtWakeAction) -> Self {
+    pub(crate) const fn new(
+        intent: WakeIntent,
+        equal_rt_action: EqualRtWakeAction,
+        reschedule_pending: bool,
+    ) -> Self {
         Self {
             intent,
             equal_rt_action,
+            reschedule_pending,
         }
     }
 
     const fn normal() -> Self {
-        Self::new(WakeIntent::Normal, EqualRtWakeAction::PreserveFifoOrder)
+        Self::new(
+            WakeIntent::Normal,
+            EqualRtWakeAction::PreserveFifoOrder,
+            false,
+        )
     }
 }
 
@@ -1249,6 +1259,12 @@ impl CpuRunQueueState {
         let Some(current) = self.current() else {
             return WakePreemptionDecision::WakeeSelected;
         };
+        // Linux wakeup_preempt_fair() leaves an existing TIF_NEED_RESCHED
+        // request unchanged. Lazy Fair rescheduling and owner-only work are
+        // distinct facts and therefore never set this context bit.
+        if matches!(policy, SchedulePolicy::Fair { .. }) && context.reschedule_pending {
+            return WakePreemptionDecision::KeepCurrent;
+        }
         if current.is_dedicated_idle() {
             return WakePreemptionDecision::DedicatedIdlePreempted;
         }

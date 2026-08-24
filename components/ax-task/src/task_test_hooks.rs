@@ -56,6 +56,10 @@ static EQUAL_RT_WAKE_TARGET: AtomicU64 = AtomicU64::new(0);
 static EQUAL_RT_WAKE_RESCHEDULE: AtomicU8 = AtomicU8::new(0);
 static EQUAL_RT_WAKE_INJECT_OWNER_WORK: AtomicU8 = AtomicU8::new(0);
 static EQUAL_RT_WAKE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
+static FAIR_NEED_RESCHED_WAKE_TARGET: AtomicU64 = AtomicU64::new(0);
+static FAIR_NEED_RESCHED_WAKE_RESCHEDULE: AtomicU8 = AtomicU8::new(0);
+static FAIR_NEED_RESCHED_WAKE_INJECT: AtomicU8 = AtomicU8::new(0);
+static FAIR_NEED_RESCHED_WAKE_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
 static WAKE_PLACEMENT_TARGET: AtomicU64 = AtomicU64::new(0);
 static WAKE_PLACEMENT_CPU: AtomicU64 = AtomicU64::new(0);
 static WAKE_PLACEMENT_STAGE: AtomicU8 = AtomicU8::new(STAGE_IDLE);
@@ -3224,6 +3228,70 @@ pub(crate) fn record_equal_rt_wake_reschedule(thread: ThreadId, requested: bool)
         ),
         Ok(STAGE_ARMED),
         "the equal-priority RT wake probe completed in an invalid stage"
+    );
+}
+
+/// Arms one real Fair wake with Linux `TIF_NEED_RESCHED` already pending.
+pub fn arm_fair_need_resched_wake_probe(thread: u64) {
+    assert_ne!(thread, 0, "a Fair wake identity must be non-zero");
+    assert_eq!(
+        FAIR_NEED_RESCHED_WAKE_STAGE.compare_exchange(
+            STAGE_IDLE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_IDLE),
+        "only one Fair need-resched wake probe may be armed"
+    );
+    FAIR_NEED_RESCHED_WAKE_TARGET.store(thread, Ordering::Relaxed);
+    FAIR_NEED_RESCHED_WAKE_RESCHEDULE.store(0, Ordering::Relaxed);
+    FAIR_NEED_RESCHED_WAKE_INJECT.store(1, Ordering::Relaxed);
+    FAIR_NEED_RESCHED_WAKE_STAGE.store(STAGE_ARMED, Ordering::Release);
+}
+
+/// Takes whether the armed Fair wake tried to add another reschedule request.
+pub fn take_fair_need_resched_wake_reschedule() -> Option<bool> {
+    if FAIR_NEED_RESCHED_WAKE_STAGE
+        .compare_exchange(
+            STAGE_COMPLETE,
+            STAGE_CONFIGURING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let requested = FAIR_NEED_RESCHED_WAKE_RESCHEDULE.load(Ordering::Relaxed) != 0;
+    FAIR_NEED_RESCHED_WAKE_TARGET.store(0, Ordering::Relaxed);
+    FAIR_NEED_RESCHED_WAKE_INJECT.store(0, Ordering::Relaxed);
+    FAIR_NEED_RESCHED_WAKE_STAGE.store(STAGE_IDLE, Ordering::Release);
+    Some(requested)
+}
+
+pub(crate) fn take_fair_need_resched_wake_injection(thread: ThreadId) -> bool {
+    FAIR_NEED_RESCHED_WAKE_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+        && FAIR_NEED_RESCHED_WAKE_TARGET.load(Ordering::Relaxed) == thread.as_u64()
+        && FAIR_NEED_RESCHED_WAKE_INJECT.swap(0, Ordering::AcqRel) != 0
+}
+
+pub(crate) fn record_fair_need_resched_wake_reschedule(thread: ThreadId, requested: bool) {
+    if FAIR_NEED_RESCHED_WAKE_STAGE.load(Ordering::Acquire) != STAGE_ARMED
+        || FAIR_NEED_RESCHED_WAKE_TARGET.load(Ordering::Relaxed) != thread.as_u64()
+    {
+        return;
+    }
+    FAIR_NEED_RESCHED_WAKE_RESCHEDULE.store(u8::from(requested), Ordering::Relaxed);
+    assert_eq!(
+        FAIR_NEED_RESCHED_WAKE_STAGE.compare_exchange(
+            STAGE_ARMED,
+            STAGE_COMPLETE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ),
+        Ok(STAGE_ARMED),
+        "the Fair need-resched wake probe completed in an invalid stage"
     );
 }
 

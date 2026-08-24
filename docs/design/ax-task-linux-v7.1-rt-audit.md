@@ -954,6 +954,7 @@ vsock hard/poll 路径只发布固定事件与 credit snapshot，connection mana
 | Fair sleep wake | wake 清空正 `vlag`，维护线程 Ready 后仍等到偶然 timer | dequeue 保存有界 `vlag`，ineligible current 在 IRQ-return safe point 立即让出 |
 | Fair virtual-time wrap | `saturating_add` 与普通 `<` 在 wrap 后颠倒 deadline | 所有虚拟 deadline 使用 modular `virtual_before` |
 | Fair current 过度抢占 | 删除旧 wakeup granularity 后，任意更早 deadline 都打断 eligible current | 最新 EEVDF 请求保护保留到 request boundary；ineligible current 不受保护 |
+| Fair 已有普通重调度请求 | 目标 current 已有 ordinary need-resched 时，后续 Fair wake 仍重复产生一次 wakeup-preempt decision | 与 Linux `wakeup_preempt_fair()` 一致，在 class 比较前保留已有 ordinary 请求；Lazy 与 owner-only work 不触发该短路 |
 | Fair 初始放置 | 新线程直接获得完整 1 ms request，与 Linux v7.1 `PLACE_DEADLINE_INITIAL` 不同 | normalized slice 改为 700 us 并按 CPU 数对数放大；初始 deadline 与 oneshot 只给半个实际 request，后续 request 恢复完整 slice |
 | queued affinity migration | 从源队列移除后才保存 `vlag`，确定性得到 200 而正确值为 100 | 所有 queued migration 在 detach 前保存源 V，并共用 publication/rollback 事务 |
 | Fair 平均虚拟时间 | runqueue 同时维护加权平均与只增不减的第二 V，membership 变化后参考系分裂 | `FairRunQueue::zero_vruntime` 成为唯一 V，32 个固定种子、每种 10,000 事件参考模型一致 |
@@ -3865,6 +3866,41 @@ LoongArch64 的完整 ArceOS Rust/C QEMU suite，LoongArch64 unaligned-fixup 同
 10.540/6.559 s 与 5.161/2.402 s。因此本检查点只认定为确定性 Linux placement 语义修复，
 不能把它包装成性能优化；剩余根因继续从四架构共用的 block/wake/switch、Fair migration
 与跨轮次状态回收差分排查，不转向架构寄存器快速路径。
+
+### 2026-08-25 Linux Fair 已有普通重调度请求
+
+Linux v7.1 `kernel/sched/fair.c:wakeup_preempt_fair()` 在任何 Fair policy、eligibility 或
+deadline 比较之前检查 `test_tsk_need_resched(rq->curr)`；如果 ordinary
+`TIF_NEED_RESCHED` 已存在，函数立即返回并保留原请求。这个短路也先于“普通 Fair wakee
+抢占 SCHED_IDLE current”的分支。它不等价于 Lazy Fair 请求或 owner-only scheduler work：
+两者在 PREEMPT_RT 中有各自的 publication 与消费边界，不能因为它们存在而跳过一次本来必要的
+ordinary wakeup-preempt 判断。
+
+旧 ax-task 只在同优先级 RT 判定中观察已有 immediate request；Fair blocked wake 与 delayed
+wake 仍会重新执行 class 判断，并可能把同一个 rq transaction 记为又一次抢占。真实 ArceOS
+QEMU 回归把 controller 与 wakee 固定在 CPU1，将 controller 设为 SCHED_IDLE 等价 Fair，随后在
+被测 wake transaction 内先发布 ordinary immediate request。只加入回归时，旧实现稳定触发
+`Linux wakeup_preempt_fair must preserve an existing TIF_NEED_RESCHED request`；相同测试在
+修复后不再产生第二个 reschedule decision。
+
+现在 `WakePreemptionContext` 显式携带 transaction 开始时观察到的 ordinary immediate fact；
+普通 blocked wake、delayed Fair wake 和 bandwidth owner enqueue 都在持有目标 rq transaction
+时取得该事实。`CpuRunQueueState` 只对 Fair class 在 class 比较前执行短路，RT、Deadline、
+dedicated idle 的其他 class 语义不变，Lazy 与 owner-only bit 也不会被误判为 ordinary
+need-resched。没有增加 lockless current mirror、兼容入口或额外 IPI。
+
+同一轮 RISC-V 完整 Rust suite 还两次在后续 remote-wake 用例开始时观察到 CPU3 仍有
+runnable task。suite 在一个进程中串行运行；前序 `task-sleep` 的 5 个 worker 在函数返回前递增
+完成计数，但原测试丢弃所有 handle，因此 case 返回并不证明 worker closure 已经完成退出协议。
+测试现在保留并逐一 join worker，不改变生产 scheduler、退出/join 语义或 remote-wake timeout。
+相同完整 RISC-V 命令随后通过；这项改动只关闭测试生命周期，不把 Linux 中同样允许 join 通知
+先于物理 switch-tail 的窗口误判为生产缺陷。
+
+最终代码串行完成 x86_64、AArch64、RISC-V 与 LoongArch64 的完整 ArceOS Rust/C QEMU suite，
+LoongArch64 专属 unaligned-fixup 同样通过。LoongArch64 首轮曾在 PI owner-spin 精确迭代断言上
+出现一次非重复失败；focused 用例未改代码即通过，第二次完整 suite 也通过，因此本轮没有放宽
+断言或引入架构特判。该检查点只确认 Fair ordinary need-resched 语义和测试生命周期；必须在
+提交后的同配置 hackbench/qperf 复测前继续保留性能问题未关闭的结论。
 
 ## 模块化结果
 

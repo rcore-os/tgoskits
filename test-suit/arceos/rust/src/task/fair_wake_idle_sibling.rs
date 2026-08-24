@@ -5,6 +5,7 @@ use std::{
             ax_hal::percpu::this_cpu_id,
             ax_task::{CpuSet, set_current_thread_affinity, task_test_hooks},
         },
+        task::{FairMode, Nice, SchedulePolicy, current_thread_id, set_thread_policy},
     },
     sync::{
         Arc,
@@ -32,6 +33,51 @@ fn online_cpu_mask(cpu_count: usize) -> AxCpuMask {
     mask
 }
 
+fn fair_wake_preserves_existing_need_resched() {
+    static WAKEE_READY: AtomicBool = AtomicBool::new(false);
+    static RELEASE_WAKEE: AtomicBool = AtomicBool::new(false);
+    static WAKEE_WAIT: AxWaitQueueHandle = AxWaitQueueHandle::new();
+
+    WAKEE_READY.store(false, Ordering::Release);
+    RELEASE_WAKEE.store(false, Ordering::Release);
+    assert!(ax_set_current_affinity(AxCpuMask::one_shot(1)).is_ok());
+    wait_until(
+        || this_cpu_id() == 1,
+        "need-resched probe owner did not settle on CPU1",
+    );
+
+    let wakee = thread::spawn(|| {
+        assert!(ax_set_current_affinity(AxCpuMask::one_shot(1)).is_ok());
+        WAKEE_READY.store(true, Ordering::Release);
+        api::ax_wait_queue_wait_until(&WAKEE_WAIT, || RELEASE_WAKEE.load(Ordering::Acquire), None);
+    });
+    let wakee_id = wakee.thread().id().as_u64().get();
+    wait_until(
+        || WAKEE_READY.load(Ordering::Acquire),
+        "the need-resched Fair wakee did not publish readiness",
+    );
+    wait_until(
+        || task_test_hooks::thread_is_blocked(wakee_id),
+        "the need-resched Fair wakee did not block",
+    );
+
+    let current = current_thread_id().expect("the Fair wake controller must have an identity");
+    set_thread_policy(current, SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+        .expect("the Fair wake controller must enter SCHED_IDLE");
+    task_test_hooks::arm_fair_need_resched_wake_probe(wakee_id);
+    RELEASE_WAKEE.store(true, Ordering::Release);
+    assert_eq!(api::ax_wait_queue_wake(&WAKEE_WAIT, 1), 1);
+    let requested = task_test_hooks::take_fair_need_resched_wake_reschedule()
+        .expect("the Fair need-resched wake probe must complete");
+    set_thread_policy(current, SchedulePolicy::fair(Nice::ZERO, FairMode::Normal))
+        .expect("the Fair wake controller must restore SCHED_NORMAL");
+    assert!(
+        !requested,
+        "Linux wakeup_preempt_fair must preserve an existing TIF_NEED_RESCHED request"
+    );
+    wakee.join().expect("the Fair need-resched wakee must exit");
+}
+
 pub fn run() -> crate::TestResult {
     static WAKEE_READY: AtomicBool = AtomicBool::new(false);
     static RELEASE_WAKEE: AtomicBool = AtomicBool::new(false);
@@ -42,6 +88,7 @@ pub fn run() -> crate::TestResult {
         cpu_count >= 4,
         "task-fair-wake-idle-sibling requires SMP >= 4, got {cpu_count}"
     );
+    fair_wake_preserves_existing_need_resched();
     WAKEE_READY.store(false, Ordering::Release);
     RELEASE_WAKEE.store(false, Ordering::Release);
 

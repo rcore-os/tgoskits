@@ -789,12 +789,26 @@ impl TaskSystem {
             .entity()
             .fair()
             .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
+        #[cfg(feature = "task-test-hooks")]
+        if crate::task_test_hooks::take_fair_need_resched_wake_injection(core.id()) {
+            remote.request_reschedule(RescheduleKind::Immediate);
+        }
+        let reschedule_pending = remote.immediate_preemption_requested();
         let preemption = run_queue.wakeup_preempt_with_intent(
             core.id(),
             policy,
             enqueue.entity(),
             fair_virtual_time,
-            WakePreemptionContext::new(intent, EqualRtWakeAction::PreserveFifoOrder),
+            WakePreemptionContext::new(
+                intent,
+                EqualRtWakeAction::PreserveFifoOrder,
+                reschedule_pending,
+            ),
+        );
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_fair_need_resched_wake_reschedule(
+            core.id(),
+            preemption.requests_reschedule(),
         );
         #[cfg(feature = "task-test-hooks")]
         {
@@ -963,6 +977,11 @@ impl TaskSystem {
         if crate::task_test_hooks::take_equal_rt_wake_owner_work_injection(core.id()) {
             remote.request_scheduler_work();
         }
+        #[cfg(feature = "task-test-hooks")]
+        if crate::task_test_hooks::take_fair_need_resched_wake_injection(core.id()) {
+            remote.request_reschedule(RescheduleKind::Immediate);
+        }
+        let reschedule_pending = remote.immediate_preemption_requested();
         let equal_rt_action =
             run_queue
                 .current()
@@ -972,7 +991,7 @@ impl TaskSystem {
                         current,
                         wakee_policy: policy,
                         wakee_affinity: &sched.affinity.affinity,
-                        reschedule_pending: remote.immediate_preemption_requested(),
+                        reschedule_pending,
                     })
                 });
         let preemption = run_queue.wakeup_preempt_with_intent(
@@ -980,10 +999,15 @@ impl TaskSystem {
             policy,
             enqueue.entity(),
             fair_virtual_time,
-            WakePreemptionContext::new(intent, equal_rt_action),
+            WakePreemptionContext::new(intent, equal_rt_action, reschedule_pending),
         );
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_equal_rt_wake_reschedule(
+            core.id(),
+            preemption.requests_reschedule(),
+        );
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_fair_need_resched_wake_reschedule(
             core.id(),
             preemption.requests_reschedule(),
         );
