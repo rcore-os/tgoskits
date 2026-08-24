@@ -129,6 +129,7 @@ pub(crate) struct RefillOutcome {
 pub(crate) struct RedistributorState {
     vcpu: GicVcpuId,
     affinity: GicAffinity,
+    physical_affinity: GicAffinity,
     private_interrupts: Vec<InterruptRecord>,
     sgi_sources: [u8; 16],
     lpis: BTreeMap<LpiId, InterruptRecord>,
@@ -145,6 +146,7 @@ impl RedistributorState {
     pub(crate) fn new(
         vcpu: GicVcpuId,
         affinity: GicAffinity,
+        physical_affinity: GicAffinity,
         list_register_count: usize,
         spi_count: usize,
         wake: Arc<dyn GicV3VcpuWake>,
@@ -162,6 +164,7 @@ impl RedistributorState {
         Ok(Self {
             vcpu,
             affinity,
+            physical_affinity,
             private_interrupts,
             sgi_sources: [0; 16],
             lpis: BTreeMap::new(),
@@ -175,8 +178,14 @@ impl RedistributorState {
         })
     }
 
+    /// Returns the guest-visible affinity used for SGI and IROUTER routing.
     pub(crate) const fn affinity(&self) -> GicAffinity {
         self.affinity
+    }
+
+    /// Returns the physical routing affinity of the pCPU this vCPU is placed on.
+    pub(crate) const fn physical_affinity(&self) -> GicAffinity {
+        self.physical_affinity
     }
 
     pub(crate) fn wake(&self) -> Arc<dyn GicV3VcpuWake> {

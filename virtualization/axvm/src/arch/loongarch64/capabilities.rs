@@ -39,7 +39,7 @@ impl HostTimePlatform for LoongArch64Arch {
     fn request_timer_deadline(_deadline_ns: u64) {}
 
     fn register_timer_source(
-        _deadline_source: Arc<crate::timer::PublishedTimerDeadline>,
+        _deadline_source: &'static crate::timer::PublishedTimerDeadline,
         notify: Arc<IrqNotify>,
     ) {
         ax_std::os::arceos::modules::ax_task::register_timer_callback(move |_| {

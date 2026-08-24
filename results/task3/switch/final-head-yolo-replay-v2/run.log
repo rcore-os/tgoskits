@@ -1,0 +1,1427 @@
+[37m[  1.624749 0:2 axvisor::config:270] [32mVM[1] created success, loading images...[m
+[m[37m[  1.746563 0:2 axvm::boot::images:137] [32mLoading ramdisk image from memory (18345288 bytes) into GPA @0x9c000000[m
+[m[37m[  1.802996 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=0[m
+[m[37m[  1.803455 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=1[m
+[m[37m[  1.803665 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=2[m
+[m[37m[  1.805531 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=3[m
+[m[37m[  2.105516 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=4[m
+[m[37m[  2.109016 0:2 axvm::vm::prepare:82] [32mVM setup: id=1[m
+[m[37m[  2.111937 0:2 axvm::arch::aarch64::fdt::core:79] [32mVM[2] virtual GIC follows host firmware resources: GuestGicProfile { compatible: "arm,gic-v3", node_path: "/intc@8000000", node_phandle: Some(32770), distributor: GuestMmioRegion { base: 134217728, length: 65536 }, cpu_region: Redistributors(GuestGicRedistributorProfile { regions: [GuestMmioRegion { base: 134873088, length: 16121856 }], stride: 131072 }), its: [GuestItsProfile { id: ItsId(0), node_path: "/intc@8000000/its@8080000", node_phandle: Some(32771), registers: GuestMmioRegion { base: 134742016, length: 131072 } }] }[m
+[m[37m[  2.112891 0:2 axvm::arch::aarch64::fdt::core:93] [32mVM[2] architectural timer follows host firmware PPIs[m
+[m[37m[  2.116192 0:2 axvm::arch::aarch64::fdt::core::parser:442] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m[37m[  2.116403 0:2 axvm::arch::aarch64::fdt::core::parser:449] [32mFound 1 host CPU nodes[m
+[m[37m[  2.116534 0:2 axvm::arch::aarch64::fdt::core:144] [32mVM[2] DTB not found, generating from the VM configuration[m
+[m[37m[  2.123453 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  2.128026 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  2.128578 0:2 axvisor::config:258] [32mCreating VM[2] "task2-p2-switch-zephyr"[m
+[m[37m[  2.129981 0:2 axvm::vm:1133] [32mVM created: id=2[m
+[m[37m[  2.803326 0:2 axvisor::config:270] [32mVM[2] created success, loading images...[m
+[m[37m[  2.806847 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=0[m
+[m[37m[  2.807007 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=1[m
+[m[37m[  2.930392 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=2[m
+[m[37m[  2.930731 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=3[m
+[m[37m[  2.931475 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=4[m
+[m[37m[  2.931786 0:2 axvm::vm::prepare:82] [32mVM setup: id=2[m
+[m[37m[  2.932596 0:2 axvm::runtime:73] [32mInitializing VMM...[m
+[m[37m[  2.933435 0:2 axvm::runtime:84] [32mVMM starting, booting VMs...[m
+[m[37m[  2.933720 0:2 axvm::vm:1365] [32mStarting VM[1][m
+[m[37m[  2.933940 0:2 axvm::runtime::vcpus:1060] [32mSpawning task for VM[1] VCpu[0][m
+[m[37m[  2.934477 0:2 axvm::runtime::vcpus:1079] [32mVCpu task Task(7, "VM[1]-VCpu[0]") created priority=90 cpumask: [0, ][m
+[m[37m[  2.937695 0:2 axvm::runtime:92] [32mVM[1] boot success[m
+[m[37m[  2.937832 0:2 axvm::vm:1365] [32mStarting VM[2][m
+[m[37m[  2.937968 0:2 axvm::runtime::vcpus:1060] [32mSpawning task for VM[2] VCpu[0][m
+[m[37m[  2.938201 0:2 axvm::runtime::vcpus:1079] [32mVCpu task Task(9, "VM[2]-VCpu[0]") created priority=90 cpumask: [0, ][m
+[m[37m[  2.938596 0:2 axvm::runtime:92] [32mVM[2] boot success[m
+[m[37m[  2.941931 0:2 axvisor:114] [32m[OK] Default guest initialized[m
+[m[37m[  2.944315 0:7 axvm::runtime::vcpus:1134] [32mVM[1] VCpu[0] waiting for running[m
+[m[37m[  2.944910 0:7 axvm::runtime::vcpus:1172] [32mVM[1] VCpu[0] running...[m
+[m[37m[  2.951327 0:9 axvm::runtime::vcpus:1134] [32mVM[2] VCpu[0] waiting for running[m
+[m[37m[  2.951484 0:9 axvm::runtime::vcpus:1172] [32mVM[2] VCpu[0] running...[m
+[m[VM 2] *** Booting Zephyr OS build v4.4.2 ***
+[37m[  3.021697 0:7 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0x80000000[m
+[m[VM 2] TASK2_MAIN_START
+[VM 2] TASK2_SOCKET_CREATE
+[VM 2] TASK2_SOCKET_CREATED fd=0
+[VM 2] TASK2_NET_CONFIGURED interface=virtio-net ip=10.0.42.2/24
+[37m[  3.044665 0:7 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc4000001[m
+[m[VM 2] TASK2_READY role=managed local=10.0.42.2:4242 peer=10.0.42.15:4242
+[37m[  3.055443 0:7 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc400000e[m
+[m[37m[  3.055774 0:7 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc4000012[m
+[m[37m[  3.056079 0:7 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc4000015[m
+[m[37m[  3.276815 0:7 axvisor::virtio_net:595] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[VM 1] [    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd083]
+[VM 1] [    0.000000] Linux version 7.1.0-rc2-g74fe02ce122a-dirty (huhu@huhu-Legion-Y9000P-IAH7H) (aarch64-linux-musl-gcc (GCC) 11.2.1 20211120, GNU ld (GNU Binutils) 2.37) #1 SMP PREEMPT Fri Aug  7 08:02:49 CST 2026
+[VM 1] [    0.000000] KASLR disabled due to lack of seed
+[VM 1] [    0.000000] Machine model: linux,dummy-virt
+[VM 1] [    0.000000] efi: UEFI not found.
+[VM 1] [    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[VM 1] [    0.000000] NUMA: Faking a node at [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000] NODE_DATA(0) allocated [mem 0x9ff08dc0-0x9ff0b4bf]
+[VM 1] [    0.000000] cma: Reserved 32 MiB at 0x000000009a000000
+[VM 1] [    0.000000] psci: probing for conduit method from DT.
+[VM 1] [    0.000000] psci: PSCIv1.1 detected in firmware.
+[VM 1] [    0.000000] psci: Using standard PSCI v0.2 function IDs
+[VM 1] [    0.000000] psci: Trusted OS migration not required
+[VM 1] [    0.000000] psci: SMC Calling Convention v65535.65535
+[VM 1] [    0.000000] Zone ranges:
+[VM 1] [    0.000000]   DMA      [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000]   DMA32    empty
+[VM 1] [    0.000000]   Normal   empty
+[VM 1] [    0.000000] Movable zone start for each node
+[VM 1] [    0.000000] Early memory node ranges
+[VM 1] [    0.000000]   node   0: [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000] Initmem setup node 0 [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000] percpu: Embedded 26 pages/cpu s66584 r8192 d31720 u106496
+[VM 1] [    0.000000] Detected PIPT I-cache on CPU0
+[VM 1] [    0.000000] CPU features: detected: GICv3 CPU interface
+[VM 1] [    0.000000] CPU features: detected: Spectre-v2
+[VM 1] [    0.000000] CPU features: detected: Spectre-v3a
+[VM 1] [    0.000000] CPU features: detected: Spectre-v4
+[VM 1] [    0.000000] CPU features: detected: Spectre-BHB
+[VM 1] [    0.000000] CPU features: detected: ARM erratum 1742098
+[VM 1] [    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[VM 1] [    0.000000] alternatives: applying boot alternatives
+[VM 1] [    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[VM 1] [    0.000000] Dentry cache hash table entries: 65536 (order: 7, 524288 bytes, linear)
+[VM 1] [    0.000000] Inode-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[VM 1] [    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[VM 1] [    0.000000] software IO TLB: area num 1.
+[VM 1] [    0.000000] software IO TLB: mapped [mem 0x000000009f580000-0x000000009f600000] (0MB)
+[VM 1] [    0.000000] Fallback order for Node 0: 0 
+[VM 1] [    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 131072
+[VM 1] [    0.000000] Policy zone: DMA
+[VM 1] [    0.000000] mem auto-init: stack:off, heap alloc:off, heap free:off
+[VM 1] [    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[VM 1] [    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[VM 1] [    0.000000] rcu: 	RCU event tracing is enabled.
+[VM 1] [    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=1.
+[VM 1] [    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[VM 1] [    0.000000] 	Tracing variant of Tasks RCU enabled.
+[VM 1] [    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[VM 1] [    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[VM 1] [    0.000000] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[VM 1] [    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[VM 1] [    0.000000] GICv3: 256 SPIs implemented
+[VM 1] [    0.000000] GICv3: 0 Extended SPIs implemented
+[VM 1] [    0.000000] Root IRQ handler: gic_handle_irq
+[VM 1] [    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[VM 1] [    0.000000] GICv3: GICD_CTLR.DS=0, SCR_EL3.FIQ=0
+[VM 1] [    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000
+[VM 1] [    0.000000] ITS [mem 0x08080000-0x0809ffff]
+[VM 1] [    0.000000] ITS@0x0000000008080000: allocated 8192 Devices @83450000 (indirect, esz 8, psz 64K, shr 1)
+[VM 1] [    0.000000] ITS@0x0000000008080000: allocated 8192 Interrupt Collections @83460000 (flat, esz 8, psz 64K, shr 1)
+[VM 1] [    0.000000] GICv3: using LPI property table @0x0000000083470000
+[VM 1] [    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000083480000
+[VM 1] [    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[VM 1] [    0.000000] arch_timer: cp15 timer running at 62.50MHz (virt).
+[VM 1] [    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+[VM 1] [    0.000067] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+[VM 1] [    0.007788] Console: colour dummy device 80x25
+[VM 1] [    0.008160] printk: legacy console [tty0] enabled
+[VM 1] [    0.014456] Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=250000)
+[VM 1] [    0.014597] pid_max: default: 32768 minimum: 301
+[VM 1] [    0.018401] Mount-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)
+[VM 1] [    0.018468] Mountpoint-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)
+[VM 1] [    0.026514] VFS: Finished mounting rootfs on nullfs
+[VM 1] [    0.045646] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[VM 1] [    0.057222] rcu: Hierarchical SRCU implementation.
+[VM 1] [    0.057293] rcu: 	Max phase no-delay instances is 1000.
+[VM 1] [    0.059921] fsl-mc MSI: its@8080000 domain created
+[VM 1] [    0.060741] EFI services will not be available.
+[VM 1] [    0.061840] smp: Bringing up secondary CPUs ...
+[VM 1] [    0.062737] smp: Brought up 1 node, 1 CPU
+[VM 1] [    0.062795] SMP: Total of 1 processors activated.
+[37m[  5.490454 0:7 axvisor::virtio_net:595] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[VM 1] [    0.062836] CPU: All CPU(s) started at EL1
+[VM 1] [    0.063071] CPU features: detected: 32-bit EL0 Support
+[VM 1] [    0.063097] CPU features: detected: 32-bit EL1 Support
+[VM 1] [    0.063160] CPU features: detected: CRC32 instructions
+[VM 1] [    0.063311] CPU features: detected: PMUv3
+[VM 1] [    0.074353] alternatives: applying system-wide alternatives
+[VM 1] [    0.097740] Memory: 408164K/524288K available (18688K kernel code, 5242K rwdata, 14504K rodata, 12672K init, 718K bss, 80672K reserved, 32768K cma-reserved)
+[VM 1] [    0.132617] devtmpfs: initialized
+[VM 1] [    0.149727] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[VM 1] [    0.150252] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[VM 1] [    0.150512] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[VM 1] [    0.153852] 19744 pages in range for non-PLT usage
+[VM 1] [    0.153905] 511264 pages in range for PLT usage
+[VM 1] [    0.165904] DMI: not present or invalid.
+[VM 1] [    0.183507] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[VM 1] [    0.194451] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[VM 1] [    0.194777] audit: initializing netlink subsys (disabled)
+[VM 1] [    0.196709] audit: type=2000 audit(0.168:1): state=initialized audit_enabled=0 res=1
+[VM 1] [    0.201520] thermal_sys: Registered thermal governor 'step_wise'
+[VM 1] [    0.201560] thermal_sys: Registered thermal governor 'power_allocator'
+[VM 1] [    0.201897] cpuidle: using governor menu
+[VM 1] [    0.203232] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[VM 1] [    0.203588] ASID allocator initialised with 65536 entries
+[VM 1] [    0.209099] Serial: AMBA PL011 UART driver
+[VM 1] [    0.232437] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+[VM 1] [    0.236608] printk: console [ttyAMA0] enabled
+[VM 1] [    1.543734] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[VM 1] [    1.543811] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[VM 1] [    1.543856] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[VM 1] [    1.543882] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[VM 1] [    1.543900] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[VM 1] [    1.543916] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[VM 1] [    1.543932] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[VM 1] [    1.543952] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[VM 1] [    2.105094] ACPI: Interpreter disabled.
+[VM 1] [    2.108858] iommu: Default domain type: Translated
+[VM 1] [    2.108916] iommu: DMA domain TLB invalidation policy: strict mode
+[VM 1] [    2.110034] SCSI subsystem initialized
+[VM 1] [    2.111857] usbcore: registered new interface driver usbfs
+[VM 1] [    2.113431] usbcore: registered new interface driver hub
+[VM 1] [    2.113612] usbcore: registered new device driver usb
+[VM 1] [    2.114435] pps_core: LinuxPPS API ver. 1 registered
+[VM 1] [    2.114467] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[VM 1] [    2.114532] PTP clock support registered
+[VM 1] [    2.114824] EDAC MC: Ver: 3.0.0
+[VM 1] [    2.115845] scmi_core: SCMI protocol bus registered
+[VM 1] [    2.118130] FPGA manager framework
+[VM 1] [    2.126982] vgaarb: loaded
+[VM 1] [    2.129199] clocksource: Switched to clocksource arch_sys_counter
+[VM 1] [    2.132697] VFS: Disk quotas dquot_6.6.0
+[VM 1] [    2.132800] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[VM 1] [    2.135724] pnp: PnP ACPI: disabled
+[VM 1] [    2.156998] NET: Registered PF_INET protocol family
+[VM 1] [    2.158802] IP idents hash table entries: 8192 (order: 4, 65536 bytes, linear)
+[VM 1] [    2.162289] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[VM 1] [    2.162407] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[VM 1] [    2.162483] TCP established hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[VM 1] [    2.162719] TCP bind hash table entries: 4096 (order: 5, 131072 bytes, linear)
+[VM 1] [    2.162870] TCP: Hash tables configured (established 4096 bind 4096)
+[VM 1] [    2.163760] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[VM 1] [    2.164661] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[VM 1] [    2.166997] RPC: Registered named UNIX socket transport module.
+[VM 1] [    2.167078] RPC: Registered udp transport module.
+[VM 1] [    2.167102] RPC: Registered tcp transport module.
+[VM 1] [    2.167119] RPC: Registered tcp-with-tls transport module.
+[VM 1] [    2.167136] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[VM 1] [    2.167224] PCI: CLS 0 bytes, default 64
+[VM 1] [    2.171651] Unpacking initramfs...
+[VM 1] [    2.411451] kvm [1]: HYP mode not available
+[VM 1] [    2.910315] Initialise system trusted keyrings
+[VM 1] [    3.388654] workingset: timestamp_bits=42 (anon: 38) max_order=17 bucket_order=0 (anon: 0)
+[VM 1] [    3.507624] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[VM 1] [    3.970079] NFS: Registering the id_resolver key type
+[VM 1] [    3.970433] Key type id_resolver registered
+[VM 1] [    3.970476] Key type id_legacy registered
+[VM 1] [    3.970771] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[VM 1] [    3.970902] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[VM 1] [    4.057679] 9p: Installing v9fs 9p2000 file system support
+[VM 1] [    4.059601] Key type asymmetric registered
+[VM 1] [    4.059896] Asymmetric key parser 'x509' registered
+[VM 1] [    4.060379] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[37m[  7.510411 0:7 axvisor::virtio_net:595] [33mvirtio-net drops an ingress frame: NotReady[m
+[m[VM 1] [    4.060717] io scheduler mq-deadline registered
+[VM 1] [    4.369699] io scheduler kyber registered
+[VM 1] [    4.378635] io scheduler bfq registered
+[VM 1] [    4.427477] ledtrig-cpu: registered to indicate activity on CPUs
+[VM 1] [    4.536134] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[VM 1] [    4.565965] msm_serial: driver initialized
+[VM 1] [    4.575513] SuperH (H)SCI(F) driver initialized
+[VM 1] [    4.593643] STM32 USART driver initialized
+[VM 1] [    4.634930] loop: module loaded
+[VM 1] [    4.643996] megasas: 07.734.00.00-rc1
+[VM 1] [    4.675964] tun: Universal TUN/TAP device driver, 1.6
+[VM 1] [    4.718804] thunder_xcv, ver 1.0
+[VM 1] [    4.729703] thunder_bgx, ver 1.0
+[VM 1] [    4.907142] nicpf, ver 1.0
+[VM 1] [    4.915990] e1000: Intel(R) PRO/1000 Network Driver
+[VM 1] [    4.929534] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[VM 1] [    4.941824] e1000e: Intel(R) PRO/1000 Network Driver
+[VM 1] [    4.952298] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[VM 1] [    4.964666] igb: Intel(R) Gigabit Ethernet Network Driver
+[VM 1] [    4.976140] igb: Copyright (c) 2007-2014 Intel Corporation.
+[VM 1] [    4.987873] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[VM 1] [    5.005547] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[VM 1] [    5.006966] sky2: driver version 1.30
+[VM 1] [    5.030165] VFIO - User Level meta-driver version: 0.3
+[VM 1] [    5.050805] usbcore: registered new interface driver usb-storage
+[VM 1] [    5.071937] i2c_dev: i2c /dev entries driver
+[VM 1] [    5.111944] SMCCC: SOC_ID: ARCH_SOC_ID not implemented, skipping ....
+[VM 1] [    5.131150] usbcore: registered new interface driver usbhid
+[VM 1] [    5.143236] usbhid: USB HID core driver
+[VM 1] [    5.168764] NET: Registered PF_INET6 protocol family
+[VM 1] [    5.194244] Segment Routing with IPv6
+[VM 1] [    5.202451] In-situ OAM (IOAM) with IPv6
+[VM 1] [    5.211266] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[VM 1] [    5.234310] NET: Registered PF_PACKET protocol family
+[VM 1] [    5.246369] 9pnet: Installing 9P2000 support
+[VM 1] [    5.246663] Key type dns_resolver registered
+[VM 1] [    5.534294] registered taskstats version 1
+[VM 1] [    5.544028] Loading compiled-in X.509 certificates
+[VM 1] [    5.590718] Demotion targets for Node 0: null
+[VM 1] [    5.611358] clk: Disabling unused clocks
+[VM 1] [    5.620106] PM: genpd: Disabling unused power domains
+[VM 1] [    5.781875] Freeing initrd memory: 17912K
+[VM 1] [    5.833141] Freeing unused kernel memory: 12672K
+[VM 1] [    5.844311] Run /init as init process
+[VM 1] TASK2_INIT_START
+[VM 1] TASK2_NET_CONFIGURED interface=eth0 ip=10.0.42.15/24
+[VM 1] TASK2_READY role=controller local=10.0.42.15:4242 peer=10.0.42.2:4242
+[VM 1] TASK3_MODEL_READY model=yolo11n.onnx version=ultralytics-yolo11n-v8.3.0 sha256=634279b40c07c6391472c51ad45b81ebc48706a9a1fe72dd3396322acd0c053b path=embedded:fixture-replay mode=bounded-contract
+[VM 1] TASK3_MODEL_POLICY min_confidence_milli=600 min_area_milli=10 max_target_step=100
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=500
+[VM 1] TASK3_INFER elapsed_ms=135 sample=1 output=400 infer_us=6 model=yolo11n.onnx target=500
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=135 request=1 value=400 target=500 state=300 seq=1 model=yolo11n.onnx
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=4530
+[VM 2] TASK2_CONTROL_RECEIVED seq=1 request=1
+[VM 2] TASK3_CONTROL_APPLIED request=1 value=400
+[VM 2] TASK3_PLANT_STATE before=300 after=310 dist=0
+[VM 2] TASK2_STATUS_SENT seq=1
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=4760
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=5080
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=5310
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=5660
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=5890
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=6110
+
+[Axvisor] detached VM[1] console
+Welcome to AxVisor Shell!
+Type 'help' to see available commands
+Use UP/DOWN arrows to navigate command history
+Console shortcuts:
+  Ctrl+X, then h  return to the Axvisor shell
+  Ctrl+X, then [  attach the previous running guest
+  Ctrl+X, then ]  attach the next running guest
+
+[2Kaxvisor:/$ [2Kaxvisor:/$ v[2Kaxvisor:/$ vi[2Kaxvisor:/$ vir[2Kaxvisor:/$ virt[2Kaxvisor:/$ virtn[2Kaxvisor:/$ virtne[2Kaxvisor:/$ virtnet[2Kaxvisor:/$ virtnet [2Kaxvisor:/$ virtnet c[2Kaxvisor:/$ virtnet ca[2Kaxvisor:/$ virtnet cap[2Kaxvisor:/$ virtnet capt[2Kaxvisor:/$ virtnet captu[2Kaxvisor:/$ virtnet captur[2Kaxvisor:/$ virtnet capture[2Kaxvisor:/$ virtnet capture [2Kaxvisor:/$ virtnet capture o[2Kaxvisor:/$ virtnet capture on
+virtnet: capture ON
+axvisor:/$ 
+[Axvisor] attached VM[2] console; use Ctrl+X, then h to return to the shell
+TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=342
+TASK2_RETRANSMIT seq=1 attempt=1
+TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=982
+TASK2_ACK seq=1
+TASK2_CONTROL_RECEIVED seq=2 request=2
+TASK3_CONTROL_APPLIED request=2 value=218
+TASK3_PLANT_STATE before=310 after=252 dist=0
+TASK2_STATUS_SENT seq=2
+TASK2_DUPLICATE_ACK seq=1
+TASK2_ACK seq=2
+TASK2_CONTROL_RECEIVED seq=3 request=3
+TASK3_CONTROL_APPLIED request=3 value=534
+TASK3_PLANT_STATE before=252 after=328 dist=0
+TASK2_STATUS_SENT seq=3
+TASK2_ACK seq=3
+TASK2_CONTROL_RECEIVED seq=4 request=4
+TASK3_CONTROL_APPLIED request=4 value=382
+TASK3_PLANT_STATE before=328 after=319 dist=0
+TASK2_STATUS_SENT seq=4
+TASK2_ACK seq=4
+TASK2_CONTROL_RECEIVED seq=5 request=5
+TASK3_CONTROL_APPLIED request=5 value=200
+TASK3_PLANT_STATE before=319 after=251 dist=0
+TASK2_STATUS_SENT seq=5
+TASK2_ACK seq=5
+TASK2_CONTROL_RECEIVED seq=6 request=6
+TASK3_CONTROL_APPLIED request=6 value=536
+TASK3_PLANT_STATE before=251 after=328 dist=0
+TASK2_STATUS_SENT seq=6
+TASK2_ACK seq=6
+TASK2_CONTROL_RECEIVED seq=7 request=7
+TASK3_CONTROL_APPLIED request=7 value=382
+TASK3_PLANT_STATE before=328 after=319 dist=0
+TASK2_STATUS_SENT seq=7
+TASK2_ACK seq=7
+TASK2_CONTROL_RECEIVED seq=8 request=8
+TASK3_CONTROL_APPLIED request=8 value=200
+TASK3_PLANT_STATE before=319 after=251 dist=0
+TASK2_STATUS_SENT seq=8
+TASK2_ACK seq=8
+TASK3_DISTURBANCE change=150 at_ms=8040
+TASK2_CONTROL_RECEIVED seq=9 request=9
+TASK3_CONTROL_APPLIED request=9 value=536
+TASK3_PLANT_STATE before=251 after=478 dist=150
+TASK2_STATUS_SENT seq=9
+TASK2_ACK seq=9
+TASK2_CONTROL_RECEIVED seq=10 request=10
+TASK3_CONTROL_APPLIED request=10 value=82
+TASK3_PLANT_STATE before=478 after=448 dist=150
+TASK2_STATUS_SENT seq=10
+TASK2_ACK seq=10
+TASK2_CONTROL_RECEIVED seq=11 request=11
+TASK3_CONTROL_APPLIED request=11 value=0
+TASK3_PLANT_STATE before=448 after=403 dist=150
+TASK2_STATUS_SENT seq=11
+TASK2_ACK seq=11
+TASK2_CONTROL_RECEIVED seq=12 request=12
+TASK3_CONTROL_APPLIED request=12 value=232
+TASK3_PLANT_STATE before=403 after=460 dist=150
+TASK2_STATUS_SENT seq=12
+TASK2_ACK seq=12
+TASK2_CONTROL_RECEIVED seq=13 request=13
+TASK3_CONTROL_APPLIED request=13 value=118
+TASK3_PLANT_STATE before=460 after=451 dist=150
+TASK2_STATUS_SENT seq=13
+TASK2_ACK seq=13
+TASK2_CONTROL_RECEIVED seq=14 request=14
+TASK3_CONTROL_APPLIED request=14 value=0
+TASK3_PLANT_STATE before=451 after=405 dist=150
+TASK2_STATUS_SENT seq=14
+TASK2_ACK seq=14
+TASK2_CONTROL_RECEIVED seq=15 request=15
+TASK3_CONTROL_APPLIED request=15 value=228
+TASK3_PLANT_STATE before=405 after=460 dist=150
+TASK2_STATUS_SENT seq=15
+TASK2_ACK seq=15
+TASK2_CONTROL_RECEIVED seq=16 request=16
+TASK3_CONTROL_APPLIED request=16 value=118
+TASK3_PLANT_STATE before=460 after=451 dist=150
+TASK2_STATUS_SENT seq=16
+TASK2_ACK seq=16
+TASK2_CONTROL_RECEIVED seq=17 request=17
+TASK3_CONTROL_APPLIED request=17 value=0
+TASK3_PLANT_STATE before=451 after=405 dist=150
+TASK2_STATUS_SENT seq=17
+TASK2_ACK seq=17
+TASK2_CONTROL_RECEIVED seq=18 request=18
+TASK3_CONTROL_APPLIED request=18 value=228
+TASK3_PLANT_STATE before=405 after=460 dist=150
+TASK2_STATUS_SENT seq=18
+TASK2_ACK seq=18
+TASK2_CONTROL_RECEIVED seq=19 request=19
+TASK3_CONTROL_APPLIED request=19 value=118
+TASK3_PLANT_STATE before=460 after=451 dist=150
+TASK2_STATUS_SENT seq=19
+TASK2_ACK seq=19
+TASK2_CONTROL_RECEIVED seq=20 request=20
+TASK3_CONTROL_APPLIED request=20 value=0
+TASK3_PLANT_STATE before=451 after=405 dist=150
+TASK2_STATUS_SENT seq=20
+TASK2_ACK seq=20
+TASK2_CONTROL_RECEIVED seq=21 request=21
+TASK3_CONTROL_APPLIED request=21 value=228
+TASK3_PLANT_STATE before=405 after=460 dist=150
+TASK2_STATUS_SENT seq=21
+TASK2_ACK seq=21
+TASK2_CONTROL_RECEIVED seq=22 request=22
+TASK3_CONTROL_APPLIED request=22 value=118
+TASK3_PLANT_STATE before=460 after=451 dist=150
+TASK2_STATUS_SENT seq=22
+TASK2_ACK seq=22
+TASK2_CONTROL_RECEIVED seq=23 request=23
+TASK3_CONTROL_APPLIED request=23 value=0
+TASK3_PLANT_STATE before=451 after=405 dist=150
+TASK2_STATUS_SENT seq=23
+TASK2_ACK seq=23
+TASK2_CONTROL_RECEIVED seq=24 request=24
+TASK3_CONTROL_APPLIED request=24 value=228
+TASK3_PLANT_STATE before=405 after=460 dist=150
+TASK2_STATUS_SENT seq=24
+TASK2_ACK seq=24
+TASK2_CONTROL_RECEIVED seq=25 request=25
+TASK3_CONTROL_APPLIED request=25 value=118
+TASK3_PLANT_STATE before=460 after=451 dist=150
+TASK2_STATUS_SENT seq=25
+
+[Axvisor] attached VM[1] console; use Ctrl+X, then h to return to the shell
+TASK2_ACK seq=1
+TASK3_STATUS_RECEIVED elapsed_ms=997 request=1 value=310 state=310 sample=1 rtt_ms=862
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=997 sample=2 output=218 infer_us=113 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=997 request=2 value=218 target=419 state=310 seq=2 model=yolo11n.onnx
+TASK2_DUPLICATE seq=1
+TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=7130
+TASK2_ACK seq=2
+TASK3_STATUS_RECEIVED elapsed_ms=1146 request=2 value=252 state=252 sample=2 rtt_ms=149
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=1146 sample=3 output=534 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=1146 request=3 value=534 target=519 state=252 seq=3 model=yolo11n.onnx
+TASK2_ACK seq=3
+TASK3_STATUS_RECEIVED elapsed_ms=1253 request=3 value=328 state=328 sample=3 rtt_ms=107
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=1253 sample=4 output=382 infer_us=0 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=1253 request=4 value=382 target=519 state=328 seq=4 model=yolo11n.onnx
+TASK2_ACK seq=4
+TASK3_STATUS_RECEIVED elapsed_ms=1359 request=4 value=319 state=319 sample=4 rtt_ms=106
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=1359 sample=5 output=200 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=1359 request=5 value=200 target=419 state=319 seq=5 model=yolo11n.onnx
+TASK2_ACK seq=5
+TASK3_STATUS_RECEIVED elapsed_ms=1469 request=5 value=251 state=251 sample=5 rtt_ms=110
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=1469 sample=6 output=536 infer_us=5 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=1469 request=6 value=536 target=519 state=251 seq=6 model=yolo11n.onnx
+TASK2_ACK seq=6
+TASK3_STATUS_RECEIVED elapsed_ms=1580 request=6 value=328 state=328 sample=6 rtt_ms=111
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=1580 sample=7 output=382 infer_us=0 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=1580 request=7 value=382 target=519 state=328 seq=7 model=yolo11n.onnx
+TASK2_ACK seq=7
+TASK3_STATUS_RECEIVED elapsed_ms=1689 request=7 value=319 state=319 sample=7 rtt_ms=109
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=1689 sample=8 output=200 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=1689 request=8 value=200 target=419 state=319 seq=8 model=yolo11n.onnx
+TASK2_ACK seq=8
+TASK3_STATUS_RECEIVED elapsed_ms=1799 request=8 value=251 state=251 sample=8 rtt_ms=110
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=1799 sample=9 output=536 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=1799 request=9 value=536 target=519 state=251 seq=9 model=yolo11n.onnx
+TASK2_ACK seq=9
+TASK3_STATUS_RECEIVED elapsed_ms=1917 request=9 value=478 state=478 sample=9 rtt_ms=118
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=1917 sample=10 output=82 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=1917 request=10 value=82 target=519 state=478 seq=10 model=yolo11n.onnx
+TASK2_ACK seq=10
+TASK3_STATUS_RECEIVED elapsed_ms=2026 request=10 value=448 state=448 sample=10 rtt_ms=109
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=2026 sample=11 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=2026 request=11 value=0 target=419 state=448 seq=11 model=yolo11n.onnx
+TASK2_ACK seq=11
+TASK3_STATUS_RECEIVED elapsed_ms=2136 request=11 value=403 state=403 sample=11 rtt_ms=110
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=2136 sample=12 output=232 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=2136 request=12 value=232 target=519 state=403 seq=12 model=yolo11n.onnx
+TASK2_ACK seq=12
+TASK3_STATUS_RECEIVED elapsed_ms=2255 request=12 value=460 state=460 sample=12 rtt_ms=119
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=2255 sample=13 output=118 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=2255 request=13 value=118 target=519 state=460 seq=13 model=yolo11n.onnx
+TASK2_ACK seq=13
+TASK3_STATUS_RECEIVED elapsed_ms=2365 request=13 value=451 state=451 sample=13 rtt_ms=110
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=2365 sample=14 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=2365 request=14 value=0 target=419 state=451 seq=14 model=yolo11n.onnx
+TASK2_ACK seq=14
+TASK3_STATUS_RECEIVED elapsed_ms=2474 request=14 value=405 state=405 sample=14 rtt_ms=109
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=2474 sample=15 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=2474 request=15 value=228 target=519 state=405 seq=15 model=yolo11n.onnx
+TASK2_ACK seq=15
+TASK3_STATUS_RECEIVED elapsed_ms=2584 request=15 value=460 state=460 sample=15 rtt_ms=110
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=2584 sample=16 output=118 infer_us=0 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=2584 request=16 value=118 target=519 state=460 seq=16 model=yolo11n.onnx
+TASK2_ACK seq=16
+TASK3_STATUS_RECEIVED elapsed_ms=2693 request=16 value=451 state=451 sample=16 rtt_ms=109
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=2693 sample=17 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=2693 request=17 value=0 target=419 state=451 seq=17 model=yolo11n.onnx
+TASK2_ACK seq=17
+TASK3_STATUS_RECEIVED elapsed_ms=2803 request=17 value=405 state=405 sample=17 rtt_ms=110
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=2803 sample=18 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=2803 request=18 value=228 target=519 state=405 seq=18 model=yolo11n.onnx
+TASK2_ACK seq=18
+TASK3_STATUS_RECEIVED elapsed_ms=2925 request=18 value=460 state=460 sample=18 rtt_ms=122
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=2925 sample=19 output=118 infer_us=0 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=2925 request=19 value=118 target=519 state=460 seq=19 model=yolo11n.onnx
+TASK2_ACK seq=19
+TASK3_STATUS_RECEIVED elapsed_ms=3033 request=19 value=451 state=451 sample=19 rtt_ms=108
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=3033 sample=20 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=3033 request=20 value=0 target=419 state=451 seq=20 model=yolo11n.onnx
+TASK2_ACK seq=20
+TASK3_STATUS_RECEIVED elapsed_ms=3144 request=20 value=405 state=405 sample=20 rtt_ms=111
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=3144 sample=21 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=3144 request=21 value=228 target=519 state=405 seq=21 model=yolo11n.onnx
+TASK2_ACK seq=21
+TASK3_STATUS_RECEIVED elapsed_ms=3254 request=21 value=460 state=460 sample=21 rtt_ms=110
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=3254 sample=22 output=118 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=3254 request=22 value=118 target=519 state=460 seq=22 model=yolo11n.onnx
+TASK2_ACK seq=22
+TASK3_STATUS_RECEIVED elapsed_ms=3362 request=22 value=451 state=451 sample=22 rtt_ms=108
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=3362 sample=23 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=3362 request=23 value=0 target=419 state=451 seq=23 model=yolo11n.onnx
+TASK2_ACK seq=23
+TASK3_STATUS_RECEIVED elapsed_ms=3470 request=23 value=405 state=405 sample=23 rtt_ms=108
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=3470 sample=24 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=3470 request=24 value=228 target=519 state=405 seq=24 model=yolo11n.onnx
+TASK2_ACK seq=24
+TASK3_STATUS_RECEIVED elapsed_ms=3591 request=24 value=460 state=460 sample=24 rtt_ms=121
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=3591 sample=25 output=118 infer_us=0 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=3591 request=25 value=118 target=519 state=460 seq=25 model=yolo11n.onnx
+TASK2_ACK seq=25
+TASK3_STATUS_RECEIVED elapsed_ms=3713 request=25 value=451 state=451 sample=25 rtt_ms=122
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=3713 sample=26 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=3713 request=26 value=0 target=419 state=451 seq=26 model=yolo11n.onnx
+TASK2_ACK seq=26
+TASK3_STATUS_RECEIVED elapsed_ms=3834 request=26 value=405 state=405 sample=26 rtt_ms=121
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=3834 sample=27 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=3834 request=27 value=228 target=519 state=405 seq=27 model=yolo11n.onnx
+TASK2_ACK seq=27
+TASK3_STATUS_RECEIVED elapsed_ms=3945 request=27 value=460 state=460 sample=27 rtt_ms=111
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=3945 sample=28 output=118 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=3945 request=28 value=118 target=519 state=460 seq=28 model=yolo11n.onnx
+TASK2_ACK seq=28
+TASK3_STATUS_RECEIVED elapsed_ms=4056 request=28 value=451 state=451 sample=28 rtt_ms=111
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=4056 sample=29 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=4056 request=29 value=0 target=419 state=451 seq=29 model=yolo11n.onnx
+TASK2_ACK seq=29
+TASK3_STATUS_RECEIVED elapsed_ms=4168 request=29 value=405 state=405 sample=29 rtt_ms=112
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=4168 sample=30 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=4168 request=30 value=228 target=519 state=405 seq=30 model=yolo11n.onnx
+TASK2_ACK seq=30
+TASK3_STATUS_RECEIVED elapsed_ms=4541 request=30 value=460 state=460 sample=30 rtt_ms=373
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=4541 sample=31 output=118 infer_us=0 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=4541 request=31 value=118 target=519 state=460 seq=31 model=yolo11n.onnx
+TASK2_ACK seq=31
+TASK3_STATUS_RECEIVED elapsed_ms=4652 request=31 value=451 state=451 sample=31 rtt_ms=111
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=4652 sample=32 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=4652 request=32 value=0 target=419 state=451 seq=32 model=yolo11n.onnx
+TASK2_ACK seq=32
+TASK3_STATUS_RECEIVED elapsed_ms=4762 request=32 value=405 state=405 sample=32 rtt_ms=110
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=4762 sample=33 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=4762 request=33 value=228 target=519 state=405 seq=33 model=yolo11n.onnx
+TASK2_ACK seq=33
+TASK3_STATUS_RECEIVED elapsed_ms=5113 request=33 value=460 state=460 sample=33 rtt_ms=351
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=5113 sample=34 output=118 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=5113 request=34 value=118 target=519 state=460 seq=34 model=yolo11n.onnx
+TASK2_ACK seq=34
+TASK3_STATUS_RECEIVED elapsed_ms=5224 request=34 value=451 state=451 sample=34 rtt_ms=111
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=5224 sample=35 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=5224 request=35 value=0 target=419 state=451 seq=35 model=yolo11n.onnx
+TASK2_ACK seq=35
+TASK3_STATUS_RECEIVED elapsed_ms=5335 request=35 value=405 state=405 sample=35 rtt_ms=111
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=5335 sample=36 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=5335 request=36 value=228 target=519 state=405 seq=36 model=yolo11n.onnx
+TASK2_ACK seq=36
+TASK3_STATUS_RECEIVED elapsed_ms=5689 request=36 value=460 state=460 sample=36 rtt_ms=354
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=5689 sample=37 output=118 infer_us=0 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=5689 request=37 value=118 target=519 state=460 seq=37 model=yolo11n.onnx
+TASK2_ACK seq=37
+TASK3_STATUS_RECEIVED elapsed_ms=5800 request=37 value=451 state=451 sample=37 rtt_ms=111
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=5800 sample=38 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=5800 request=38 value=0 target=419 state=451 seq=38 model=yolo11n.onnx
+TASK2_ACK seq=38
+TASK3_STATUS_RECEIVED elapsed_ms=5910 request=38 value=405 state=405 sample=38 rtt_ms=110
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=5910 sample=39 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=5910 request=39 value=228 target=519 state=405 seq=39 model=yolo11n.onnx
+TASK2_ACK seq=39
+TASK3_STATUS_RECEIVED elapsed_ms=6257 request=39 value=460 state=460 sample=39 rtt_ms=347
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=6257 sample=40 output=118 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=6257 request=40 value=118 target=519 state=460 seq=40 model=yolo11n.onnx
+TASK2_ACK seq=40
+TASK3_STATUS_RECEIVED elapsed_ms=6380 request=40 value=451 state=451 sample=40 rtt_ms=123
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=6380 sample=41 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=6380 request=41 value=0 target=419 state=451 seq=41 model=yolo11n.onnx
+TASK2_ACK seq=41
+TASK3_STATUS_RECEIVED elapsed_ms=6493 request=41 value=405 state=405 sample=41 rtt_ms=113
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=6493 sample=42 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=6493 request=42 value=228 target=519 state=405 seq=42 model=yolo11n.onnx
+TASK2_ACK seq=42
+TASK3_STATUS_RECEIVED elapsed_ms=6811 request=42 value=460 state=460 sample=42 rtt_ms=318
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=6811 sample=43 output=118 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=6811 request=43 value=118 target=519 state=460 seq=43 model=yolo11n.onnx
+TASK2_ACK seq=43
+TASK3_STATUS_RECEIVED elapsed_ms=6933 request=43 value=451 state=451 sample=43 rtt_ms=122
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=6933 sample=44 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=6933 request=44 value=0 target=419 state=451 seq=44 model=yolo11n.onnx
+TASK2_ACK seq=44
+TASK3_STATUS_RECEIVED elapsed_ms=7050 request=44 value=405 state=405 sample=44 rtt_ms=117
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=7050 sample=45 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=7050 request=45 value=228 target=519 state=405 seq=45 model=yolo11n.onnx
+TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=13480
+TASK2_ACK seq=45
+TASK3_STATUS_RECEIVED elapsed_ms=7403 request=45 value=460 state=460 sample=45 rtt_ms=353
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=7403 sample=46 output=118 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=7403 request=46 value=118 target=519 state=460 seq=46 model=yolo11n.onnx
+TASK2_ACK seq=46
+TASK3_STATUS_RECEIVED elapsed_ms=7532 request=46 value=451 state=451 sample=46 rtt_ms=129
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=7532 sample=47 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=7532 request=47 value=0 target=419 state=451 seq=47 model=yolo11n.onnx
+TASK2_ACK seq=47
+TASK3_STATUS_RECEIVED elapsed_ms=7907 request=47 value=405 state=405 sample=47 rtt_ms=375
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=7907 sample=48 output=228 infer_us=3 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=7907 request=48 value=228 target=519 state=405 seq=48 model=yolo11n.onnx
+TASK2_ACK seq=48
+TASK3_STATUS_RECEIVED elapsed_ms=8019 request=48 value=460 state=460 sample=48 rtt_ms=112
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=8019 sample=49 output=118 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=8019 request=49 value=118 target=519 state=460 seq=49 model=yolo11n.onnx
+TASK2_ACK seq=49
+TASK3_STATUS_RECEIVED elapsed_ms=8132 request=49 value=451 state=451 sample=49 rtt_ms=113
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=8132 sample=50 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=8132 request=50 value=0 target=419 state=451 seq=50 model=yolo11n.onnx
+TASK2_ACK seq=50
+TASK3_STATUS_RECEIVED elapsed_ms=8482 request=50 value=405 state=405 sample=50 rtt_ms=350
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=8482 sample=51 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=8482 request=51 value=228 target=519 state=405 seq=51 model=yolo11n.onnx
+TASK2_ACK seq=51
+TASK3_STATUS_RECEIVED elapsed_ms=8595 request=51 value=460 state=460 sample=51 rtt_ms=113
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=8595 sample=52 output=118 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=8595 request=52 value=118 target=519 state=460 seq=52 model=yolo11n.onnx
+TASK2_ACK seq=52
+TASK3_STATUS_RECEIVED elapsed_ms=8706 request=52 value=451 state=451 sample=52 rtt_ms=111
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=8706 sample=53 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=8706 request=53 value=0 target=419 state=451 seq=53 model=yolo11n.onnx
+TASK2_ACK seq=53
+TASK3_STATUS_RECEIVED elapsed_ms=9042 request=53 value=405 state=405 sample=53 rtt_ms=336
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=9042 sample=54 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=9042 request=54 value=228 target=519 state=405 seq=54 model=yolo11n.onnx
+TASK2_ACK seq=54
+TASK3_STATUS_RECEIVED elapsed_ms=9165 request=54 value=460 state=460 sample=54 rtt_ms=123
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=9165 sample=55 output=118 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=9165 request=55 value=118 target=519 state=460 seq=55 model=yolo11n.onnx
+TASK2_ACK seq=55
+TASK3_STATUS_RECEIVED elapsed_ms=9286 request=55 value=451 state=451 sample=55 rtt_ms=121
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=9286 sample=56 output=0 infer_us=3 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=9286 request=56 value=0 target=419 state=451 seq=56 model=yolo11n.onnx
+TASK2_ACK seq=56
+TASK3_STATUS_RECEIVED elapsed_ms=9604 request=56 value=405 state=405 sample=56 rtt_ms=318
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=9604 sample=57 output=228 infer_us=7 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=9604 request=57 value=228 target=519 state=405 seq=57 model=yolo11n.onnx
+TASK2_ACK seq=57
+TASK3_STATUS_RECEIVED elapsed_ms=9719 request=57 value=460 state=460 sample=57 rtt_ms=115
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=9719 sample=58 output=118 infer_us=0 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=9719 request=58 value=118 target=519 state=460 seq=58 model=yolo11n.onnx
+TASK2_ACK seq=58
+TASK3_STATUS_RECEIVED elapsed_ms=9830 request=58 value=451 state=451 sample=58 rtt_ms=111
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=9830 sample=59 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=9830 request=59 value=0 target=419 state=451 seq=59 model=yolo11n.onnx
+TASK2_ACK seq=59
+TASK3_STATUS_RECEIVED elapsed_ms=10149 request=59 value=405 state=405 sample=59 rtt_ms=319
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=10149 sample=60 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=10149 request=60 value=228 target=519 state=405 seq=60 model=yolo11n.onnx
+TASK2_ACK seq=60
+TASK3_STATUS_RECEIVED elapsed_ms=10261 request=60 value=460 state=460 sample=60 rtt_ms=112
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=10261 sample=61 output=118 infer_us=0 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=10261 request=61 value=118 target=519 state=460 seq=61 model=yolo11n.onnx
+TASK2_ACK seq=61
+TASK3_STATUS_RECEIVED elapsed_ms=10370 request=61 value=451 state=451 sample=61 rtt_ms=109
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=10370 sample=62 output=0 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=10370 request=62 value=0 target=419 state=451 seq=62 model=yolo11n.onnx
+TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=16830
+TASK2_ACK seq=62
+TASK3_STATUS_RECEIVED elapsed_ms=10748 request=62 value=405 state=405 sample=62 rtt_ms=378
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=10748 sample=63 output=228 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=10748 request=63 value=228 target=519 state=405 seq=63 model=yolo11n.onnx
+TASK2_ACK seq=63
+TASK3_STATUS_RECEIVED elapsed_ms=10861 request=63 value=460 state=460 sample=63 rtt_ms=113
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=10861 sample=64 output=118 infer_us=0 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=10861 request=64 value=118 target=519 state=460 seq=64 model=yolo11n.onnx
+TASK2_ACK seq=64
+TASK3_STATUS_RECEIVED elapsed_ms=10975 request=64 value=301 state=301 sample=64 rtt_ms=114
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=10975 sample=65 output=236 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=10975 request=65 value=236 target=419 state=301 seq=65 model=yolo11n.onnx
+TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=17400
+TASK2_ACK seq=65
+TASK3_STATUS_RECEIVED elapsed_ms=11330 request=65 value=254 state=254 sample=65 rtt_ms=355
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=11330 sample=66 output=530 infer_us=6 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=11330 request=66 value=530 target=519 state=254 seq=66 model=yolo11n.onnx
+TASK2_ACK seq=66
+TASK3_STATUS_RECEIVED elapsed_ms=11453 request=66 value=328 state=328 sample=66 rtt_ms=123
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=11453 sample=67 output=382 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=11453 request=67 value=382 target=519 state=328 seq=67 model=yolo11n.onnx
+TASK2_ACK seq=67
+TASK3_STATUS_RECEIVED elapsed_ms=11831 request=67 value=319 state=319 sample=67 rtt_ms=378
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=11831 sample=68 output=200 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=11831 request=68 value=200 target=419 state=319 seq=68 model=yolo11n.onnx
+TASK2_ACK seq=68
+TASK3_STATUS_RECEIVED elapsed_ms=11947 request=68 value=251 state=251 sample=68 rtt_ms=116
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=11947 sample=69 output=536 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=11947 request=69 value=536 target=519 state=251 seq=69 model=yolo11n.onnx
+TASK2_ACK seq=69
+TASK3_STATUS_RECEIVED elapsed_ms=12070 request=69 value=328 state=328 sample=69 rtt_ms=123
+TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+TASK3_INFER elapsed_ms=12070 sample=70 output=382 infer_us=1 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=12070 request=70 value=382 target=519 state=328 seq=70 model=yolo11n.onnx
+TASK2_ACK seq=70
+TASK3_STATUS_RECEIVED elapsed_ms=12420 request=70 value=319 state=319 sample=70 rtt_ms=350
+TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+TASK3_INFER elapsed_ms=12420 sample=71 output=200 infer_us=2 model=yolo11n.onnx target=419
+TASK3_CONTROL_SENT elapsed_ms=12420 request=71 value=200 target=419 state=319 seq=71 model=yolo11n.onnx
+TASK2_ACK seq=71
+TASK3_STATUS_RECEIVED elapsed_ms=12532 request=71 value=251 state=251 sample=71 rtt_ms=112
+TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+TASK3_INFER elapsed_ms=12532 sample=72 output=536 infer_us=2 model=yolo11n.onnx target=519
+TASK3_CONTROL_SENT elapsed_ms=12532 request=72 value=536 target=519 state=251 seq=72 model=yolo11n.onnx
+
+[Axvisor] detached VM[1] console
+[2Kaxvisor:/$ [2Kaxvisor:/$ v[2Kaxvisor:/$ vi[2Kaxvisor:/$ vir[2Kaxvisor:/$ virt[2Kaxvisor:/$ virtn[2Kaxvisor:/$ virtne[2Kaxvisor:/$ virtnet[2Kaxvisor:/$ virtnet [2Kaxvisor:/$ virtnet c[2Kaxvisor:/$ virtnet ca[2Kaxvisor:/$ virtnet cap[2Kaxvisor:/$ virtnet capt[2Kaxvisor:/$ virtnet captu[2Kaxvisor:/$ virtnet captur[2Kaxvisor:/$ virtnet capture[2Kaxvisor:/$ virtnet capture [2Kaxvisor:/$ virtnet capture d[2Kaxvisor:/$ virtnet capture du[2Kaxvisor:/$ virtnet capture dum[2Kaxvisor:/$ virtnet capture dump
+CAPDUMP_BEGIN
+CAPTURE 1 10121655744 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ff9954324e3101020001545254320000000100000000000c000091e496ab010000000000013600000001
+CAPTURE 1 10128089632 525400123401525400123402080045000040000000004011129d0a002a020a002a0f10921092002ccf9c54324e310105000054525432000000000000000000080000880bb6e90000000000001bda
+CAPTURE 1 10129979776 33330000001652540012340186dd600000000024000100000000000000000000000000000000ff0200000000000000000000000000163a000502000001008f003b770000000104000000ff0200000000000000000001ff123401
+CAPTURE 1 10134730816 5254001234025254001234010800450000400d1040004011c58c0a002a0f0a002a0210921092002cc05454324e31010500005452543200000000000000000008000003a6629b00000000000003d6
+CAPTURE 1 10145988368 5254001234025254001234010800450000380d1140004011c5930a002a0f0a002a021092109200241ef754324e31010400005452543200000000000000010000000079fa9192
+CAPTURE 1 10164973248 33330000001652540012340186dd6000000000240001fe80000000000000505400fffe123401ff0200000000000000000000000000163a000502000001008f00b98e0000000104000000ff0200000000000000000001ff123401
+CAPTURE 1 10165506976 33330000000252540012340186dd6000000000103afffe80000000000000505400fffe123401ff0200000000000000000000000000028500725f000000000101525400123401
+CAPTURE 1 10201702304 5254001234025254001234010800450000440d1740004011c5810a002a0f0a002a02109210920030e1b854324e3101010001545254320000000200000000000c000090abb62001000000000000da00000002
+CAPTURE 1 10213372640 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200243cb454324e3101040000545254320000000000000002000000004077ad57
+CAPTURE 1 10220523024 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307fcb54324e3101020001545254320000000200000000000c000055f9529d01000000000000fc00000002
+CAPTURE 1 10245386688 5254001234025254001234010800450000380d2140004011c5830a002a0f0a002a021092109200241ef754324e31010400005452543200000000000000010000000079fa9192
+CAPTURE 1 10294250768 5254001234025254001234010800450000380d2b40004011c5790a002a0f0a002a021092109200243cb454324e3101040000545254320000000000000002000000004077ad57
+CAPTURE 1 10345477440 5254001234025254001234010800450000440d2e40004011c56a0a002a0f0a002a0210921092003051d354324e3101010001545254320000000300000000000c0000230ab269010000000000021600000003
+CAPTURE 1 10363070016 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200241a6154324e310104000054525432000000000000000300000000570cb914
+CAPTURE 1 10363674768 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ef3054324e3101020001545254320000000300000000000c0000a96e8f74010000000000014800000003
+CAPTURE 1 10401830336 5254001234025254001234010800450000380d3540004011c56f0a002a0f0a002a021092109200241a6154324e310104000054525432000000000000000300000000570cb914
+CAPTURE 1 10451068976 5254001234025254001234010800450000440d3c40004011c55c0a002a0f0a002a0210921092003035b454324e3101010001545254320000000400000000000c00005ce89540010000000000017e00000004
+CAPTURE 1 10468170224 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024223654324e310104000054525432000000000000000400000000336dd4dd
+CAPTURE 1 10468952688 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309ad154324e3101020001545254320000000400000000000c0000b2a8daa0010000000000013f00000004
+CAPTURE 1 10508028368 5254001234025254001234010800450000380d4140004011c5630a002a0f0a002a02109210920024223654324e310104000054525432000000000000000400000000336dd4dd
+CAPTURE 1 10559663856 5254001234025254001234010800450000440d4c40004011c54c0a002a0f0a002a02109210920030320854324e3101010001545254320000000500000000000c0000dabf1bc901000000000000c800000005
+CAPTURE 1 10576991472 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002445cb54324e3101040000545254320000000000000005000000002416c09e
+CAPTURE 1 10577880640 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003088e854324e3101020001545254320000000500000000000c0000b7ede78601000000000000fb00000005
+CAPTURE 1 10617294896 5254001234025254001234010800450000380d5140004011c5530a002a0f0a002a0210921092002445cb54324e3101040000545254320000000000000005000000002416c09e
+CAPTURE 1 10669477952 5254001234025254001234010800450000440d5d40004011c53b0a002a0f0a002a02109210920030526654324e3101010001545254320000000600000000000c0000b2662272010000000000021800000006
+CAPTURE 1 10687110624 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024108854324e3101040000545254320000000000000006000000001d9bfc5b
+CAPTURE 1 10687712864 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ffcc54324e3101020001545254320000000600000000000c00008732a10e010000000000014800000006
+CAPTURE 1 10728609872 5254001234025254001234010800450000380d6340004011c5410a002a0f0a002a02109210920024108854324e3101040000545254320000000000000006000000001d9bfc5b
+CAPTURE 1 10777846384 5254001234025254001234010800450000440d6e40004011c52a0a002a0f0a002a02109210920030c52054324e3101010001545254320000000700000000000c0000f00c72a9010000000000017e00000007
+CAPTURE 1 10795237216 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024378554324e3101040000545254320000000000000007000000000ae0e818
+CAPTURE 1 10796594208 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030cc7f54324e3101020001545254320000000700000000000c00001e4c3d49010000000000013f00000007
+CAPTURE 1 10807965616 33330000001652540012340186dd6000000000240001fe80000000000000505400fffe123401ff0200000000000000000000000000163a000502000001008f00b98e0000000104000000ff0200000000000000000001ff123401
+CAPTURE 1 10838133296 5254001234025254001234010800450000380d7540004011c52f0a002a0f0a002a02109210920024378554324e3101040000545254320000000000000007000000000ae0e818
+CAPTURE 1 10889589760 5254001234025254001234010800450000440d7c40004011c51c0a002a0f0a002a02109210920030242154324e3101010001545254320000000800000000000c0000d6332e3601000000000000c800000008
+CAPTURE 1 10906545920 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242d5a54324e310104000054525432000000000000000800000000d55927c9
+CAPTURE 1 10908587568 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309a7b54324e3101020001545254320000000800000000000c0000bb61d27901000000000000fb00000008
+CAPTURE 1 10948199104 5254001234025254001234010800450000380d8940004011c51b0a002a0f0a002a021092109200242d5a54324e310104000054525432000000000000000800000000d55927c9
+CAPTURE 1 11000922240 5254001234025254001234010800450000440d8c40004011c50c0a002a0f0a002a0210921092003015ba54324e3101010001545254320000000900000000000c0000c08250fc010000000000021800000009
+CAPTURE 1 11018563344 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002434cf54324e310104000054525432000000000000000900000000c222338a
+CAPTURE 1 11025887536 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307ab154324e3101020001545254320000000900000000000c0000ab90013001000000000001de00000009
+CAPTURE 1 11065492080 5254001234025254001234010800450000380d9240004011c5120a002a0f0a002a0210921092002434cf54324e310104000054525432000000000000000900000000c222338a
+CAPTURE 1 11114891152 5254001234025254001234010800450000440d9d40004011c4fb0a002a0f0a002a021092109200309e1954324e3101010001545254320000000a00000000000c000033ed56f601000000000000520000000a
+CAPTURE 1 11132759008 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200241f7c54324e310104000054525432000000000000000a00000000fbaf0f4f
+CAPTURE 1 11134088480 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307fae54324e3101020001545254320000000a00000000000c0000d8a4cf3a01000000000001c00000000a
+CAPTURE 1 11175061280 5254001234025254001234010800450000380da340004011c5010a002a0f0a002a021092109200241f7c54324e310104000054525432000000000000000a00000000fbaf0f4f
+CAPTURE 1 11226581072 5254001234025254001234010800450000440db040004011c4e80a002a0f0a002a021092109200301ad554324e3101010001545254320000000b00000000000c0000a3b26ac501000000000000000000000b
+CAPTURE 1 11244548480 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024229954324e310104000054525432000000000000000b00000000ecd41b0c
+CAPTURE 1 11245134592 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030d76354324e3101020001545254320000000b00000000000c0000759bdab901000000000001930000000b
+CAPTURE 1 11284714288 5254001234025254001234010800450000380db340004011c4f10a002a0f0a002a02109210920024229954324e310104000054525432000000000000000b00000000ecd41b0c
+CAPTURE 1 11337180576 5254001234025254001234010800450000440db840004011c4e00a002a0f0a002a02109210920030ad6f54324e3101010001545254320000000c00000000000c0000eb228fd001000000000000e80000000c
+CAPTURE 1 11343782416 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242afe54324e310104000054525432000000000000000c0000000088b576c5
+CAPTURE 1 11355467456 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309be854324e3101020001545254320000000c00000000000c00009feceba801000000000001cc0000000c
+CAPTURE 1 11403805584 5254001234025254001234010800450000380dc240004011c4e20a002a0f0a002a021092109200242afe54324e310104000054525432000000000000000c0000000088b576c5
+CAPTURE 1 11454001888 5254001234025254001234010800450000440dc740004011c4d10a002a0f0a002a021092109200301b0154324e3101010001545254320000000d00000000000c00005798b63901000000000000760000000d
+CAPTURE 1 11472151152 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024282354324e310104000054525432000000000000000d000000009fce6286
+CAPTURE 1 11473186928 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307b7254324e3101020001545254320000000d00000000000c0000cf30dce101000000000001c30000000d
+CAPTURE 1 11513575664 5254001234025254001234010800450000380dd140004011c4d30a002a0f0a002a02109210920024282354324e310104000054525432000000000000000d000000009fce6286
+CAPTURE 1 11565360208 5254001234025254001234010800450000440dd440004011c4c40a002a0f0a002a02109210920030569954324e3101010001545254320000000e00000000000c00008dee44bf01000000000000000000000e
+CAPTURE 1 11582357072 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002425f054324e310104000054525432000000000000000e00000000a6435e43
+CAPTURE 1 11584138000 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003051c654324e3101020001545254320000000e00000000000c0000d487016301000000000001950000000e
+CAPTURE 1 11622861088 5254001234025254001234010800450000380dda40004011c4ca0a002a0f0a002a0210921092002425f054324e310104000054525432000000000000000e00000000a6435e43
+CAPTURE 1 11674213920 5254001234025254001234010800450000440ddc40004011c4bc0a002a0f0a002a0210921092003020f254324e3101010001545254320000000f00000000000c00008236853801000000000000e40000000f
+CAPTURE 1 11692154512 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242f3d54324e310104000054525432000000000000000f00000000b1384a00
+CAPTURE 1 11692870336 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e82e54324e3101020001545254320000000f00000000000c000033080c4101000000000001cc0000000f
+CAPTURE 1 11732731488 5254001234025254001234010800450000380de140004011c4c30a002a0f0a002a021092109200242f3d54324e310104000054525432000000000000000f00000000b1384a00
+CAPTURE 1 11782600256 5254001234025254001234010800450000440de340004011c4b50a002a0f0a002a02109210920030554c54324e3101010001545254320000001000000000000c00001eb4b4cc010000000000007600000010
+CAPTURE 1 11799706832 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024a09254324e310104000054525432000000000000001000000000c241c7a0
+CAPTURE 1 11801034448 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030c34d54324e3101020001545254320000001000000000000c0000861cde1401000000000001c300000010
+CAPTURE 1 11841842336 5254001234025254001234010800450000380de440004011c4c00a002a0f0a002a02109210920024a09254324e310104000054525432000000000000001000000000c241c7a0
+CAPTURE 1 11893860224 5254001234025254001234010800450000440dee40004011c4aa0a002a0f0a002a021092109200306d5b54324e3101010001545254320000001100000000000c0000baaa013b010000000000000000000011
+CAPTURE 1 11911539792 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024815554324e310104000054525432000000000000001100000000d53ad3e3
+CAPTURE 1 11912131888 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030feff54324e3101020001545254320000001100000000000c0000e3c344e7010000000000019500000011
+CAPTURE 1 11952011520 5254001234025254001234010800450000380df540004011c4af0a002a0f0a002a02109210920024815554324e310104000054525432000000000000001100000000d53ad3e3
+CAPTURE 1 12004005504 5254001234025254001234010800450000440dfe40004011c49a0a002a0f0a002a02109210920030d57254324e3101010001545254320000001200000000000c0000cb1a87cd01000000000000e400000012
+CAPTURE 1 12008546064 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200244e9454324e310104000054525432000000000000001200000000ecb7ef26
+CAPTURE 1 12009551440 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309e9954324e3101020001545254320000001200000000000c00007a240eb401000000000001cc00000012
+CAPTURE 1 12073471536 5254001234025254001234010800450000380e1040004011c4940a002a0f0a002a021092109200244e9454324e310104000054525432000000000000001200000000ecb7ef26
+CAPTURE 1 12122802176 5254001234025254001234010800450000440e1a40004011c47e0a002a0f0a002a02109210920030235154324e3101010001545254320000001300000000000c0000b2505325010000000000007600000013
+CAPTURE 1 12140651792 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024333f54324e310104000054525432000000000000001300000000fbccfb65
+CAPTURE 1 12141796592 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030c28354324e3101020001545254320000001300000000000c00002af839fd01000000000001c300000013
+CAPTURE 1 12182011056 5254001234025254001234010800450000380e1b40004011c4890a002a0f0a002a02109210920024333f54324e310104000054525432000000000000001300000000fbccfb65
+CAPTURE 1 12233387952 5254001234025254001234010800450000440e2140004011c4770a002a0f0a002a02109210920030650354324e3101010001545254320000001400000000000c000094f62f41010000000000000000000014
+CAPTURE 1 12250410000 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f41654324e3101040000545254320000000000000014000000009fad96ac
+CAPTURE 1 12252609968 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ef6754324e3101020001545254320000001400000000000c0000cd9f6a9d010000000000019500000014
+CAPTURE 1 12292783296 5254001234025254001234010800450000380e2840004011c47c0a002a0f0a002a02109210920024f41654324e3101040000545254320000000000000014000000009fad96ac
+CAPTURE 1 12345053856 5254001234025254001234010800450000440e3040004011c4680a002a0f0a002a021092109200309e5f54324e3101010001545254320000001500000000000c00009b2eeec601000000000000e400000015
+CAPTURE 1 12363042704 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200241eaa54324e31010400005452543200000000000000150000000088d682ef
+CAPTURE 1 12363649968 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030959c54324e3101020001545254320000001500000000000c00002a1067bf01000000000001cc00000015
+CAPTURE 1 12402956832 5254001234025254001234010800450000380e3740004011c46d0a002a0f0a002a021092109200241eaa54324e31010400005452543200000000000000150000000088d682ef
+CAPTURE 1 12451931888 5254001234025254001234010800450000440e3d40004011c45b0a002a0f0a002a021092109200300f5554324e3101010001545254320000001600000000000c00009c0c7d5f010000000000007600000016
+CAPTURE 1 12469782928 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024bae854324e310104000054525432000000000000001600000000b15bbe2a
+CAPTURE 1 12471182240 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200300b4854324e3101020001545254320000001600000000000c000004a4178701000000000001c300000016
+CAPTURE 1 12510593952 5254001234025254001234010800450000380e4240004011c4620a002a0f0a002a02109210920024bae854324e310104000054525432000000000000001600000000b15bbe2a
+CAPTURE 1 12561470832 5254001234025254001234010800450000440e4440004011c4540a002a0f0a002a02109210920030287a54324e3101010001545254320000001700000000000c00003812c8a8010000000000000000000017
+CAPTURE 1 12578882448 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024d9e354324e310104000054525432000000000000001700000000a620aa69
+CAPTURE 1 12579566736 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003038af54324e3101020001545254320000001700000000000c0000617b8d74010000000000019500000017
+CAPTURE 1 12618374208 5254001234025254001234010800450000380e4f40004011c4550a002a0f0a002a02109210920024d9e354324e310104000054525432000000000000001700000000a620aa69
+CAPTURE 1 12670161920 5254001234025254001234010800450000440e5340004011c4450a002a0f0a002a02109210920030b57254324e3101010001545254320000001800000000000c000097a2db3901000000000000e400000018
+CAPTURE 1 12687617808 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200244b1b54324e310104000054525432000000000000001800000000799965b8
+CAPTURE 1 12688558544 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ae8954324e3101020001545254320000001800000000000c0000269c524001000000000001cc00000018
+CAPTURE 1 12739619632 5254001234025254001234010800450000380e5f40004011c4450a002a0f0a002a021092109200244b1b54324e310104000054525432000000000000001800000000799965b8
+CAPTURE 1 12789560720 5254001234025254001234010800450000440e6640004011c4320a002a0f0a002a021092109200302a0154324e3101010001545254320000001900000000000c0000eee80fd1010000000000007600000019
+CAPTURE 1 12807385504 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024498e54324e3101040000545254320000000000000019000000006ee271fb
+CAPTURE 1 12808521008 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200304c2354324e3101020001545254320000001900000000000c00007640650901000000000001c300000019
+CAPTURE 1 12861516784 5254001234025254001234010800450000380e7040004011c4340a002a0f0a002a02109210920024498e54324e3101040000545254320000000000000019000000006ee271fb
+CAPTURE 1 12914499520 5254001234025254001234010800450000440e7640004011c4220a002a0f0a002a02109210920030f73854324e3101010001545254320000001a00000000000c0000349efd5701000000000000000000001a
+CAPTURE 1 12931794256 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002485bd54324e310104000054525432000000000000001a00000000576f4d3e
+CAPTURE 1 12932608640 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030011654324e3101020001545254320000001a00000000000c00006df7b88b01000000000001950000001a
+CAPTURE 1 12982861568 5254001234025254001234010800450000380e7c40004011c4280a002a0f0a002a0210921092002485bd54324e310104000054525432000000000000001a00000000576f4d3e
+CAPTURE 1 13035481648 5254001234025254001234010800450000440e8740004011c4110a002a0f0a002a02109210920030b03254324e3101010001545254320000001b00000000000c00003b463cd001000000000000e40000001b
+CAPTURE 1 13053088624 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002490d854324e310104000054525432000000000000001b000000004014597d
+CAPTURE 1 13054987984 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e73d54324e3101020001545254320000001b00000000000c00008a78b5a901000000000001cc0000001b
+CAPTURE 1 13093739840 5254001234025254001234010800450000380e9440004011c4100a002a0f0a002a0210921092002490d854324e310104000054525432000000000000001b000000004014597d
+CAPTURE 1 13145118496 5254001234025254001234010800450000440e9f40004011c3f90a002a0f0a002a02109210920030465554324e3101010001545254320000001c00000000000c0000c0b421ab01000000000000760000001c
+CAPTURE 1 13162868544 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024d13f54324e310104000054525432000000000000001c00000000247534b4
+CAPTURE 1 13164549984 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003083d754324e3101020001545254320000001c00000000000c0000581c4b7301000000000001c30000001c
+CAPTURE 1 13204670016 5254001234025254001234010800450000380ea540004011c3ff0a002a0f0a002a02109210920024d13f54324e310104000054525432000000000000001c00000000247534b4
+CAPTURE 1 13257144528 5254001234025254001234010800450000440ea640004011c3f20a002a0f0a002a02109210920030302254324e3101010001545254320000001d00000000000c000064aa945c01000000000000000000001d
+CAPTURE 1 13274169104 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024d66254324e310104000054525432000000000000001d00000000330e20f7
+CAPTURE 1 13276088800 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030184f54324e3101020001545254320000001d00000000000c00003dc3d18001000000000001950000001d
+CAPTURE 1 13316748000 5254001234025254001234010800450000380ead40004011c3f70a002a0f0a002a02109210920024d66254324e310104000054525432000000000000001d00000000330e20f7
+CAPTURE 1 13369553168 5254001234025254001234010800450000440eb640004011c3e20a002a0f0a002a02109210920030007f54324e3101010001545254320000001e00000000000c0000151a12aa01000000000000e40000001e
+CAPTURE 1 13648631440 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002403b254324e310104000054525432000000000000001e000000000a831c32
+CAPTURE 1 13649654784 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e76154324e3101020001545254320000001e00000000000c0000a4249bd301000000000001cc0000001e
+CAPTURE 1 13678536064 5254001234025254001234010800450000400f0140004011c39b0a002a0f0a002a0210921092002c07eb54324e310105000054525432000000000000000000080000258ceb4600000000000011ae
+CAPTURE 1 13689914336 5254001234025254001234010800450000380f0340004011c3a10a002a0f0a002a0210921092002403b254324e310104000054525432000000000000001e000000000a831c32
+CAPTURE 1 13740162080 5254001234025254001234010800450000440f0b40004011c38d0a002a0f0a002a02109210920030f61b54324e3101010001545254320000001f00000000000c00006c50c64201000000000000760000001f
+CAPTURE 1 13744635632 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002403fd54324e310104000054525432000000000000001f000000001df80871
+CAPTURE 1 13749672384 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003085cd54324e3101020001545254320000001f00000000000c0000f4f8ac9a01000000000001c30000001f
+CAPTURE 1 13801035248 5254001234025254001234010800450000380f0d40004011c3970a002a0f0a002a0210921092002403fd54324e310104000054525432000000000000001f000000001df80871
+CAPTURE 1 13853743152 5254001234025254001234010800450000440f1840004011c3800a002a0f0a002a02109210920030899e54324e3101010001545254320000002000000000000c0000a6c6f8bd010000000000000000000020
+CAPTURE 1 13871656144 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024368254324e310104000054525432000000000000002000000000ec700772
+CAPTURE 1 13872345200 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200306a7b54324e3101020001545254320000002000000000000c0000ffafbd61010000000000019500000020
+CAPTURE 1 13910695824 5254001234025254001234010800450000380f2440004011c3800a002a0f0a002a02109210920024368254324e310104000054525432000000000000002000000000ec700772
+CAPTURE 1 14202557344 5254001234025254001234010800450000440f4c40004011c34c0a002a0f0a002a0210921092003045e454324e3101010001545254320000002100000000000c0000a91e393a01000000000000e400000021
+CAPTURE 1 14221245056 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200241c2754324e310104000054525432000000000000002100000000fb0b1331
+CAPTURE 1 14222161472 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200305ef054324e3101020001545254320000002100000000000c00001820b04301000000000001cc00000021
+CAPTURE 1 14250729408 5254001234025254001234010800450000400f5240004011c34a0a002a0f0a002a0210921092002ca42954324e310105000054525432000000000000000000080000660b0c4d00000000000013ea
+CAPTURE 1 14261886080 5254001234025254001234010800450000380f5340004011c3510a002a0f0a002a021092109200241c2754324e310104000054525432000000000000002100000000fb0b1331
+CAPTURE 1 14313221744 5254001234025254001234010800450000440f5b40004011c33d0a002a0f0a002a02109210920030cfc854324e3101010001545254320000002200000000000c0000ae3caaa3010000000000007600000022
+CAPTURE 1 14330703136 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002437e854324e310104000054525432000000000000002200000000c2862ff4
+CAPTURE 1 14332562192 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030304b54324e3101020001545254320000002200000000000c00003694c07b01000000000001c300000022
+CAPTURE 1 14372258608 5254001234025254001234010800450000380f6140004011c3430a002a0f0a002a0210921092002437e854324e310104000054525432000000000000002200000000c2862ff4
+CAPTURE 1 14423627792 33330000000252540012340186dd6000000000103afffe80000000000000505400fffe123401ff0200000000000000000000000000028500725f000000000101525400123401
+CAPTURE 1 14425927072 5254001234025254001234010800450000440f6440004011c3340a002a0f0a002a02109210920030ffa654324e3101010001545254320000002300000000000c00000a221f54010000000000000000000023
+CAPTURE 1 14442983008 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002418ad54324e310104000054525432000000000000002300000000d5fd3bb7
+CAPTURE 1 14444536000 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003079b354324e3101020001545254320000002300000000000c0000534b5a88010000000000019500000023
+CAPTURE 1 14483953440 5254001234025254001234010800450000380f6d40004011c3370a002a0f0a002a0210921092002418ad54324e310104000054525432000000000000002300000000d5fd3bb7
+CAPTURE 1 14775898240 5254001234025254001234010800450000440f9340004011c3050a002a0f0a002a0210921092003089b454324e3101010001545254320000002400000000000c00008742174001000000000000e400000024
+CAPTURE 1 14789841280 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024224654324e310104000054525432000000000000002400000000b19c567e
+CAPTURE 1 14796602592 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030529854324e3101020001545254320000002400000000000c0000367c9e3901000000000001cc00000024
+CAPTURE 1 14827055664 5254001234025254001234010800450000400f9640004011c3060a002a0f0a002a0210921092002c12f354324e310105000054525432000000000000000000080000f71f0a2e000000000000162b
+CAPTURE 1 14838134400 5254001234025254001234010800450000380f9940004011c30b0a002a0f0a002a02109210920024224654324e310104000054525432000000000000002400000000b19c567e
+CAPTURE 1 14888981200 5254001234025254001234010800450000440fa040004011c2f80a002a0f0a002a0210921092003066f154324e3101010001545254320000002500000000000c0000fe08c3a8010000000000007600000025
+CAPTURE 1 14906441664 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024413b54324e310104000054525432000000000000002500000000a6e7423d
+CAPTURE 1 14908590000 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030174454324e3101020001545254320000002500000000000c000066a0a97001000000000001c300000025
+CAPTURE 1 14948578192 5254001234025254001234010800450000380fa640004011c2fe0a002a0f0a002a02109210920024413b54324e310104000054525432000000000000002500000000a6e7423d
+CAPTURE 1 15001460224 5254001234025254001234010800450000440fad40004011c2eb0a002a0f0a002a02109210920030d36a54324e3101010001545254320000002600000000000c0000247e312e010000000000000000000026
+CAPTURE 1 15019202976 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200240bfc54324e3101040000545254320000000000000026000000009f6a7ef8
+CAPTURE 1 15019895040 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030357754324e3101020001545254320000002600000000000c00007d1774f2010000000000019500000026
+CAPTURE 1 15058653584 5254001234025254001234010800450000380fb940004011c2eb0a002a0f0a002a021092109200240bfc54324e3101040000545254320000000000000026000000009f6a7ef8
+CAPTURE 1 15346874960 5254001234025254001234010800450000440fef40004011c2a90a002a0f0a002a021092109200300be154324e3101010001545254320000002700000000000c00002ba6f0a901000000000000e400000027
+CAPTURE 1 15364983280 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024379154324e31010400005452543200000000000000270000000088116abb
+CAPTURE 1 15366826000 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003012df54324e3101020001545254320000002700000000000c00009a9879d001000000000001cc00000027
+CAPTURE 1 15395078432 5254001234025254001234010800450000400ff440004011c2a80a002a0f0a002a0210921092002c126b54324e310105000054525432000000000000000000080000119bee020000000000001863
+CAPTURE 1 15406154736 5254001234025254001234010800450000380ff540004011c2af0a002a0f0a002a02109210920024379154324e31010400005452543200000000000000270000000088116abb
+CAPTURE 1 15470344576 5254001234025254001234010800450000440ff940004011c29f0a002a0f0a002a021092109200303fc054324e3101010001545254320000002800000000000c0000f284f657010000000000007600000028
+CAPTURE 1 15488547424 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242d4a54324e31010400005452543200000000000000280000000057a8a56a
+CAPTURE 1 15489148336 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030209354324e3101020001545254320000002800000000000c00006a2c9c8f01000000000001c300000028
+CAPTURE 1 15528942480 525400123402525400123401080045000038100440004011c2a00a002a0f0a002a021092109200242d4a54324e31010400005452543200000000000000280000000057a8a56a
+CAPTURE 1 15582836064 525400123402525400123401080045000044100c40004011c28c0a002a0f0a002a021092109200308ed654324e3101010001545254320000002900000000000c0000569a43a0010000000000000000000029
+CAPTURE 1 15601292208 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024385f54324e31010400005452543200000000000000290000000040d3b129
+CAPTURE 1 15602509296 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030110c54324e3101020001545254320000002900000000000c00000ff3067c010000000000019500000029
+CAPTURE 1 15641232976 525400123402525400123401080045000038101340004011c2910a002a0f0a002a02109210920024385f54324e31010400005452543200000000000000290000000040d3b129
+CAPTURE 1 15901545632 525400123402525400123401080045000044104240004011c2560a002a0f0a002a021092109200303baa54324e3101010001545254320000002a00000000000c0000272ac55601000000000000e40000002a
+CAPTURE 1 15919713296 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024231054324e310104000054525432000000000000002a00000000795e8dec
+CAPTURE 1 15920764336 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003044fe54324e3101020001545254320000002a00000000000c000096144c2f01000000000001cc0000002a
+CAPTURE 1 15948854144 525400123402525400123401080045000040104840004011c2540a002a0f0a002a0210921092002c67c054324e310105000054525432000000000000000000080000641f43ff0000000000001a8d
+CAPTURE 1 15959959968 525400123402525400123401080045000038104940004011c25b0a002a0f0a002a02109210920024231054324e310104000054525432000000000000002a00000000795e8dec
+CAPTURE 1 16009858176 525400123402525400123401080045000044104f40004011c2490a002a0f0a002a02109210920030b87854324e3101010001545254320000002b00000000000c00005e6011be01000000000000760000002b
+CAPTURE 1 16029832224 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024228554324e310104000054525432000000000000002b000000006e2599af
+CAPTURE 1 16031035104 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e51954324e3101020001545254320000002b00000000000c0000c6c87b6601000000000001c30000002b
+CAPTURE 1 16081622352 525400123402525400123401080045000038105140004011c2530a002a0f0a002a02109210920024228554324e310104000054525432000000000000002b000000006e2599af
+CAPTURE 1 16139768576 525400123402525400123401080045000044105e40004011c23a0a002a0f0a002a02109210920030426a54324e3101010001545254320000002c00000000000c000078c66dda01000000000000000000002c
+CAPTURE 1 16157532288 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242bae54324e310104000054525432000000000000002c000000000a44f466
+CAPTURE 1 16159479184 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ddbf54324e3101020001545254320000002c00000000000c000021af280601000000000001950000002c
+CAPTURE 1 16198781040 525400123402525400123401080045000038106c40004011c2380a002a0f0a002a021092109200242bae54324e310104000054525432000000000000002c000000000a44f466
+CAPTURE 1 16460035936 525400123401525400123402080045000040000000004011129d0a002a020a002a0f10921092002c331354324e310105000054525432000000000000000000080000241c9e9400000000000034a8
+CAPTURE 1 16470177664 52540012340252540012340108004500004410a140004011c1f70a002a0f0a002a0210921092003004a954324e3101010001545254320000002d00000000000c0000771eac5d01000000000000e40000002d
+CAPTURE 1 16488632624 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242cf354324e310104000054525432000000000000002d000000001d3fe025
+CAPTURE 1 16489633184 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200303bf754324e3101020001545254320000002d00000000000c0000c620252401000000000001cc0000002d
+CAPTURE 1 16524225008 52540012340252540012340108004500004010aa40004011c1f20a002a0f0a002a0210921092002c1c6154324e310105000054525432000000000000000000080000a44c4cf70000000000001cc7
+CAPTURE 1 16551342768 52540012340252540012340108004500003810b040004011c1f40a002a0f0a002a021092109200242cf354324e310104000054525432000000000000002d000000001d3fe025
+CAPTURE 1 16607947232 52540012340252540012340108004500004410b940004011c1df0a002a0f0a002a02109210920030789054324e3101010001545254320000002e00000000000c0000703c3fc401000000000000760000002e
+CAPTURE 1 16625692528 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002428c454324e310104000054525432000000000000002e0000000024b2dce0
+CAPTURE 1 16628751920 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e99154324e3101020001545254320000002e00000000000c0000e894551c01000000000001c30000002e
+CAPTURE 1 16680593248 52540012340252540012340108004500003810c540004011c1df0a002a0f0a002a0210921092002428c454324e310104000054525432000000000000002e0000000024b2dce0
+CAPTURE 1 16733440928 52540012340252540012340108004500004410d140004011c1c70a002a0f0a002a02109210920030caae54324e3101010001545254320000002f00000000000c0000d4228a3301000000000000000000002f
+CAPTURE 1 17001527792 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242de954324e310104000054525432000000000000002f0000000033c9c8a3
+CAPTURE 1 17003820448 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ca3354324e3101020001545254320000002f00000000000c00008d4bcfef01000000000001950000002f
+CAPTURE 1 17043999184 52540012340252540012340108004500004010d640004011c1c60a002a0f0a002a0210921092002c84ef54324e3101050000545254320000000000000000000800008ca0fa080000000000001ed3
+CAPTURE 1 17056073424 52540012340252540012340108004500003810d840004011c1cc0a002a0f0a002a021092109200242de954324e310104000054525432000000000000002f0000000033c9c8a3
+CAPTURE 1 17108844544 52540012340252540012340108004500004410db40004011c1bd0a002a0f0a002a021092109200303b4454324e3101010001545254320000003000000000000c00003e32aea801000000000000e400000030
+CAPTURE 1 17127425920 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024a4a154324e31010400005452543200000000000000300000000040b04503
+CAPTURE 1 17128048448 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030705854324e3101020001545254320000003000000000000c00008f0c27d101000000000001cc00000030
+CAPTURE 1 17168212576 52540012340252540012340108004500003810e140004011c1c30a002a0f0a002a02109210920024a4a154324e31010400005452543200000000000000300000000040b04503
+CAPTURE 1 17219553296 52540012340252540012340108004500004410eb40004011c1ad0a002a0f0a002a0210921092003066d254324e3101010001545254320000003100000000000c000047787a40010000000000007600000031
+CAPTURE 1 17238115680 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024814854324e31010400005452543200000000000000310000000057cb5140
+CAPTURE 1 17240581200 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003036d454324e3101020001545254320000003100000000000c0000dfd0109801000000000001c300000031
+CAPTURE 1 17280539648 52540012340252540012340108004500003810f640004011c1ae0a002a0f0a002a02109210920024814854324e31010400005452543200000000000000310000000057cb5140
+CAPTURE 1 17571918256 52540012340252540012340108004500004410fd40004011c19b0a002a0f0a002a02109210920030032a54324e3101010001545254320000003200000000000c00009d0e88c6010000000000000000000032
+CAPTURE 1 17590472400 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200244e8754324e3101040000545254320000000000000032000000006e466d85
+CAPTURE 1 17591103232 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003095e654324e3101020001545254320000003200000000000c0000c467cd1a010000000000019500000032
+CAPTURE 1 17619561488 525400123402525400123401080045000040110440004011c1980a002a0f0a002a0210921092002ca7ba54324e3101050000545254320000000000000000000800004f1a12840000000000002113
+CAPTURE 1 17630683584 525400123402525400123401080045000038110740004011c19d0a002a0f0a002a021092109200244e8754324e3101040000545254320000000000000032000000006e466d85
+CAPTURE 1 17683202224 525400123402525400123401080045000044110d40004011c18b0a002a0f0a002a021092109200304c0154324e3101010001545254320000003300000000000c000092d6494101000000000000e400000033
+CAPTURE 1 17702841040 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024374e54324e310104000054525432000000000000003300000000793d79c6
+CAPTURE 1 17704565648 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030430f54324e3101020001545254320000003300000000000c000023e8c03801000000000001cc00000033
+CAPTURE 1 17744167472 525400123402525400123401080045000038111040004011c1940a002a0f0a002a02109210920024374e54324e310104000054525432000000000000003300000000793d79c6
+CAPTURE 1 17794660048 525400123402525400123401080045000044111940004011c17f0a002a0f0a002a021092109200306b2654324e3101010001545254320000003400000000000c00006924543a010000000000007600000034
+CAPTURE 1 17809784864 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f8e554324e3101040000545254320000000000000034000000001d5c140f
+CAPTURE 1 17813727696 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030f6c754324e3101020001545254320000003400000000000c0000f18c3ee201000000000001c300000034
+CAPTURE 1 17854750016 525400123402525400123401080045000038111e40004011c1860a002a0f0a002a02109210920024f8e554324e3101040000545254320000000000000034000000001d5c140f
+CAPTURE 1 18132005600 525400123402525400123401080045000044114b40004011c14d0a002a0f0a002a0210921092003079f054324e3101010001545254320000003500000000000c0000cd3ae1cd010000000000000000000035
+CAPTURE 1 18149758208 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200241fdd54324e3101040000545254320000000000000035000000000a27004c
+CAPTURE 1 18151699296 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030eefd54324e3101020001545254320000003500000000000c00009453a411010000000000019500000035
+CAPTURE 1 18179220016 525400123402525400123401080045000040115240004011c14a0a002a0f0a002a0210921092002ce59a54324e3101050000545254320000000000000000000800004899d8fc000000000000233b
+CAPTURE 1 18190328640 525400123402525400123401080045000038115540004011c14f0a002a0f0a002a021092109200241fdd54324e3101040000545254320000000000000035000000000a27004c
+CAPTURE 1 18246655248 525400123402525400123401080045000044116140004011c1370a002a0f0a002a02109210920030044d54324e3101010001545254320000003600000000000c0000bc8a673b01000000000000e400000036
+CAPTURE 1 18267129040 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024ba1b54324e31010400005452543200000000000000360000000033aa3c89
+CAPTURE 1 18268596272 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200302b3354324e3101020001545254320000003600000000000c00000db4ee4201000000000001cc00000036
+CAPTURE 1 18313347408 525400123402525400123401080045000038117240004011c1320a002a0f0a002a02109210920024ba1b54324e31010400005452543200000000000000360000000033aa3c89
+CAPTURE 1 18364224256 525400123402525400123401080045000044117640004011c1220a002a0f0a002a02109210920030aeea54324e3101010001545254320000003700000000000c0000c5c0b3d3010000000000007600000037
+CAPTURE 1 18368628016 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024dcb254324e31010400005452543200000000000000370000000024d128ca
+CAPTURE 1 18369593136 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030f0bc54324e3101020001545254320000003700000000000c00005d68d90b01000000000001c300000037
+CAPTURE 1 18434545552 525400123402525400123401080045000038118140004011c1230a002a0f0a002a02109210920024dcb254324e31010400005452543200000000000000370000000024d128ca
+CAPTURE 1 18694110464 525400123402525400123401080045000044118d40004011c10b0a002a0f0a002a02109210920030930954324e3101010001545254320000003800000000000c0000c1b6d432010000000000000000000038
+CAPTURE 1 18712023264 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002447c854324e310104000054525432000000000000003800000000fb68e71b
+CAPTURE 1 18712761264 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030fc8e54324e3101020001545254320000003800000000000c000098df91ee010000000000019500000038
+CAPTURE 1 18742107296 525400123402525400123401080045000040119440004011c1080a002a0f0a002a0210921092002c616254324e3101050000545254320000000000000000000800008fa713ed0000000000002575
+CAPTURE 1 18753175536 525400123402525400123401080045000038119640004011c10e0a002a0f0a002a0210921092002447c854324e310104000054525432000000000000003800000000fb68e71b
+CAPTURE 1 18807800416 525400123402525400123401080045000044119f40004011c0f90a002a0f0a002a0210921092003043e954324e3101010001545254320000003900000000000c0000ce6e15b501000000000000e400000039
+CAPTURE 1 18820020496 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200244adf54324e310104000054525432000000000000003900000000ec13f358
+CAPTURE 1 18826536608 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200300b0754324e3101020001545254320000003900000000000c00007f509ccc01000000000001cc00000039
+CAPTURE 1 18868191280 52540012340252540012340108004500003811ac40004011c0f80a002a0f0a002a021092109200244adf54324e310104000054525432000000000000003900000000ec13f358
+CAPTURE 1 18919755840 52540012340252540012340108004500004411b440004011c0e40a002a0f0a002a02109210920030d8ff54324e3101010001545254320000003a00000000000c0000c94c862c01000000000000760000003a
+CAPTURE 1 18937151744 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024850e54324e310104000054525432000000000000003a00000000d59ecf9d
+CAPTURE 1 18938954896 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e85154324e3101020001545254320000003a00000000000c000051e4ecf401000000000001c30000003a
+CAPTURE 1 18978414416 52540012340252540012340108004500003811b740004011c0ed0a002a0f0a002a02109210920024850e54324e310104000054525432000000000000003a00000000d59ecf9d
+CAPTURE 1 19239376848 52540012340252540012340108004500004411d240004011c0c60a002a0f0a002a0210921092003087bf54324e3101010001545254320000003b00000000000c00006d5233db01000000000000000000003b
+CAPTURE 1 19257551472 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200248b8554324e310104000054525432000000000000003b00000000c2e5dbde
+CAPTURE 1 19258991392 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307d1454324e3101020001545254320000003b00000000000c0000343b760701000000000001950000003b
+CAPTURE 1 19286342272 52540012340252540012340108004500004011d640004011c0c60a002a0f0a002a0210921092002c90d654324e3101050000545254320000000000000000000800001af6570e0000000000002791
+CAPTURE 1 19297443248 52540012340252540012340108004500003811d740004011c0cd0a002a0f0a002a021092109200248b8554324e310104000054525432000000000000003b00000000c2e5dbde
+CAPTURE 1 19350182368 52540012340252540012340108004500004411e040004011c0b80a002a0f0a002a021092109200300c0554324e3101010001545254320000003c00000000000c0000e0323bcf01000000000000e40000003c
+CAPTURE 1 19368613568 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024cdac54324e310104000054525432000000000000003c00000000a684b617
+CAPTURE 1 19369873648 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030235b54324e3101020001545254320000003c00000000000c0000510cb2b601000000000001cc0000003c
+CAPTURE 1 19409575504 52540012340252540012340108004500003811e140004011c0c30a002a0f0a002a02109210920024cdac54324e310104000054525432000000000000003c00000000a684b617
+CAPTURE 1 19461277536 52540012340252540012340108004500004411ed40004011c0ab0a002a0f0a002a021092109200309fd254324e3101010001545254320000003d00000000000c00009978ef2701000000000000760000003d
+CAPTURE 1 19479689472 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024d5f354324e310104000054525432000000000000003d00000000b1ffa254
+CAPTURE 1 19480382560 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309f5554324e3101020001545254320000003d00000000000c000001d085ff01000000000001c30000003d
+CAPTURE 1 19518684320 52540012340252540012340108004500003811f440004011c0b00a002a0f0a002a02109210920024d5f354324e310104000054525432000000000000003d00000000b1ffa254
+CAPTURE 1 19810152448 525400123401525400123402080045000040000000004011129d0a002a020a002a0f10921092002cbfb654324e3101050000545254320000000000000000000800008280a67600000000000041be
+CAPTURE 1 19813180672 525400123402525400123401080045000044120c40004011c08c0a002a0f0a002a02109210920030c83754324e3101010001545254320000003e00000000000c0000430e1da101000000000000000000003e
+CAPTURE 1 19830809008 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024034354324e310104000054525432000000000000003e0000000088729e91
+CAPTURE 1 19832536512 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030b46c54324e3101020001545254320000003e00000000000c00001a67587d01000000000001950000003e
+CAPTURE 1 19866555712 525400123402525400123401080045000040120e40004011c08e0a002a0f0a002a0210921092002ce51454324e3101050000545254320000000000000000000800006ccdaeb300000000000029d6
+CAPTURE 1 19896882848 525400123402525400123401080045000038121040004011c0940a002a0f0a002a02109210920024034354324e310104000054525432000000000000003e0000000088729e91
+CAPTURE 1 19949847568 525400123402525400123401080045000044121640004011c0820a002a0f0a002a02109210920030ff0354324e3101010001545254320000003f00000000000c00004cd6dc2601000000000000e40000003f
+CAPTURE 1 19968680944 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024006a54324e310104000054525432000000000000003f000000009f098ad2
+CAPTURE 1 19969898576 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030d3cf54324e3101020001545254320000003f00000000000c0000fde8555f01000000000001cc0000003f
+CAPTURE 1 20010026432 525400123402525400123401080045000038121840004011c08c0a002a0f0a002a02109210920024006a54324e310104000054525432000000000000003f000000009f098ad2
+CAPTURE 1 20060813104 525400123402525400123401080045000044121f40004011c0790a002a0f0a002a0210921092003037d854324e3101010001545254320000004000000000000c000096e559af010000000000007600000040
+CAPTURE 1 20078719344 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f35a54324e310104000054525432000000000000004000000000b01386d6
+CAPTURE 1 20084952528 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030434254324e3101020001545254320000004000000000000c000099a94ac9010000000000012d00000040
+CAPTURE 1 20123877536 525400123402525400123401080045000038122840004011c07c0a002a0f0a002a02109210920024f35a54324e310104000054525432000000000000004000000000b01386d6
+CAPTURE 1 20378724816 525400123401525400123402080045000040000000004011129d0a002a020a002a0f10921092002c971954324e3101050000545254320000000000000000000800002f09205100000000000043f8
+CAPTURE 1 20381840336 525400123402525400123401080045000044124e40004011c04a0a002a0f0a002a02109210920030818e54324e3101010001545254320000004100000000000c0000dfdfc68601000000000000ec00000041
+CAPTURE 1 20400909008 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f04554324e310104000054525432000000000000004100000000a7689295
+CAPTURE 1 20402667680 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309d3854324e3101020001545254320000004100000000000c00004e2c3c7d01000000000000fe00000041
+CAPTURE 1 20453186272 525400123402525400123401080045000040125040004011c04c0a002a0f0a002a0210921092002cab0854324e31010500005452543200000000000000000008000045640ddf0000000000002c20
+CAPTURE 1 20478671072 525400123402525400123401080045000038125140004011c0530a002a0f0a002a02109210920024f04554324e310104000054525432000000000000004100000000a7689295
+CAPTURE 1 20531104000 525400123402525400123401080045000044125540004011c0430a002a0f0a002a02109210920030ee7c54324e3101010001545254320000004200000000000c0000c9f76e58010000000000021200000042
+CAPTURE 1 20548711248 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024dd0c54324e3101040000545254320000000000000042000000009ee5ae50
+CAPTURE 1 20549590896 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307bfc54324e3101020001545254320000004200000000000c0000b613f585010000000000014800000042
+CAPTURE 1 20602029072 525400123402525400123401080045000038126140004011c0430a002a0f0a002a02109210920024dd0c54324e3101040000545254320000000000000042000000009ee5ae50
+CAPTURE 1 20653612560 525400123402525400123401080045000044126c40004011c02c0a002a0f0a002a02109210920030400f54324e3101010001545254320000004300000000000c0000c12d2622010000000000017e00000043
+CAPTURE 1 20921065872 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024e68f54324e310104000054525432000000000000004300000000899eba13
+CAPTURE 1 20922640960 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200308e6d54324e3101020001545254320000004300000000000c00002f6d69c2010000000000013f00000043
+CAPTURE 1 20968938752 52540012340252540012340108004500004012b740004011bfe50a002a0f0a002a0210921092002c15bb54324e3101050000545254320000000000000000000800000e8ed7f90000000000002e29
+CAPTURE 1 20980003456 52540012340252540012340108004500003812b840004011bfec0a002a0f0a002a02109210920024e68f54324e310104000054525432000000000000004300000000899eba13
+CAPTURE 1 21033082496 52540012340252540012340108004500004412c040004011bfd80a002a0f0a002a02109210920030011854324e3101010001545254320000004400000000000c0000c5c2613801000000000000c800000044
+CAPTURE 1 21050046496 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024646654324e310104000054525432000000000000004400000000edffd7da
+CAPTURE 1 21052968336 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e1d654324e3101020001545254320000004400000000000c0000a8909d7701000000000000fb00000044
+CAPTURE 1 21095984192 52540012340252540012340108004500003812cf40004011bfd50a002a0f0a002a02109210920024646654324e310104000054525432000000000000004400000000edffd7da
+CAPTURE 1 21149882256 52540012340252540012340108004500004412d540004011bfc30a002a0f0a002a02109210920030335b54324e3101010001545254320000004500000000000c0000d3731ff2010000000000021800000045
+CAPTURE 1 21167789792 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200246c2154324e310104000054525432000000000000004500000000fa84c399
+CAPTURE 1 21168635936 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030a4d954324e3101020001545254320000004500000000000c0000e6279c8e010000000000014800000045
+CAPTURE 1 21219096560 52540012340252540012340108004500003812de40004011bfc60a002a0f0a002a021092109200246c2154324e310104000054525432000000000000004500000000fa84c399
+CAPTURE 1 21497779952 525400123402525400123401080045000044130e40004011bf8a0a002a0f0a002a021092109200302f8f54324e3101010001545254320000004600000000000c0000ef710858010000000000017e00000046
+CAPTURE 1 21500642480 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002467d854324e310104000054525432000000000000004600000000c309ff5c
+CAPTURE 1 21516177984 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030dead54324e3101020001545254320000004600000000000c0000013147b8010000000000013f00000046
+CAPTURE 1 21556135376 525400123402525400123401080045000040131140004011bf8b0a002a0f0a002a0210921092002c657254324e310105000054525432000000000000000000080000cf15c56f0000000000003074
+CAPTURE 1 21568439184 525400123402525400123401080045000038131340004011bf910a002a0f0a002a0210921092002467d854324e310104000054525432000000000000004600000000c309ff5c
+CAPTURE 1 21621545856 525400123402525400123401080045000044131a40004011bf7e0a002a0f0a002a02109210920030381554324e3101010001545254320000004700000000000c0000692686d101000000000000c800000047
+CAPTURE 1 21639134352 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200246aab54324e310104000054525432000000000000004700000000d472eb1f
+CAPTURE 1 21641272032 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030a8c654324e3101020001545254320000004700000000000c000004747a9e01000000000000fb00000047
+CAPTURE 1 21680685664 525400123402525400123401080045000038132440004011bf800a002a0f0a002a021092109200246aab54324e310104000054525432000000000000004700000000d472eb1f
+CAPTURE 1 21733376240 525400123402525400123401080045000044133040004011bf680a002a0f0a002a021092109200301cae54324e3101010001545254320000004800000000000c0000dfff2a0d010000000000021800000048
+CAPTURE 1 21749848576 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f9a354324e3101040000545254320000000000000048000000000bcb24ce
+CAPTURE 1 21752230784 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030936c54324e3101020001545254320000004800000000000c0000eaaba971010000000000014800000048
+CAPTURE 1 21802900912 525400123402525400123401080045000038133540004011bf6f0a002a0f0a002a02109210920024f9a354324e3101040000545254320000000000000048000000000bcb24ce
+CAPTURE 1 21853397920 525400123402525400123401080045000044133740004011bf610a002a0f0a002a021092109200300ee754324e3101010001545254320000004900000000000c00009d957ad6010000000000017e00000049
+CAPTURE 1 21870635392 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024dcfe54324e3101040000545254320000000000000049000000001cb0308d
+CAPTURE 1 21872507312 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307e8554324e3101020001545254320000004900000000000c000073d53536010000000000013f00000049
+CAPTURE 1 21910623600 525400123402525400123401080045000038134240004011bf620a002a0f0a002a02109210920024dcfe54324e3101040000545254320000000000000049000000001cb0308d
+CAPTURE 1 21962675232 525400123402525400123401080045000044134a40004011bf4e0a002a0f0a002a021092109200300f2e54324e3101010001545254320000004a00000000000c000065aab32e01000000000000c80000004a
+CAPTURE 1 21979780064 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f8b554324e310104000054525432000000000000004a00000000253d0c48
+CAPTURE 1 21981020544 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030cf7954324e3101020001545254320000004a00000000000c000008f84f6101000000000000fb0000004a
+CAPTURE 1 22020854304 525400123402525400123401080045000038135540004011bf4f0a002a0f0a002a02109210920024f8b554324e310104000054525432000000000000004a00000000253d0c48
+CAPTURE 2 10121444752 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ff9954324e3101020001545254320000000100000000000c000091e496ab010000000000013600000001
+CAPTURE 2 10128075776 525400123401525400123402080045000040000000004011129d0a002a020a002a0f10921092002ccf9c54324e310105000054525432000000000000000000080000880bb6e90000000000001bda
+CAPTURE 2 10130008288 33330000001652540012340186dd600000000024000100000000000000000000000000000000ff0200000000000000000000000000163a000502000001008f003b770000000104000000ff0200000000000000000001ff123401
+CAPTURE 2 10134743408 5254001234025254001234010800450000400d1040004011c58c0a002a0f0a002a0210921092002cc05454324e31010500005452543200000000000000000008000003a6629b00000000000003d6
+CAPTURE 2 10146006128 5254001234025254001234010800450000380d1140004011c5930a002a0f0a002a021092109200241ef754324e31010400005452543200000000000000010000000079fa9192
+CAPTURE 2 10164985584 33330000001652540012340186dd6000000000240001fe80000000000000505400fffe123401ff0200000000000000000000000000163a000502000001008f00b98e0000000104000000ff0200000000000000000001ff123401
+CAPTURE 2 10165517040 33330000000252540012340186dd6000000000103afffe80000000000000505400fffe123401ff0200000000000000000000000000028500725f000000000101525400123401
+CAPTURE 2 10201714944 5254001234025254001234010800450000440d1740004011c5810a002a0f0a002a02109210920030e1b854324e3101010001545254320000000200000000000c000090abb62001000000000000da00000002
+CAPTURE 2 10213354000 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200243cb454324e3101040000545254320000000000000002000000004077ad57
+CAPTURE 2 10220511152 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307fcb54324e3101020001545254320000000200000000000c000055f9529d01000000000000fc00000002
+CAPTURE 2 10245398240 5254001234025254001234010800450000380d2140004011c5830a002a0f0a002a021092109200241ef754324e31010400005452543200000000000000010000000079fa9192
+CAPTURE 2 10294263136 5254001234025254001234010800450000380d2b40004011c5790a002a0f0a002a021092109200243cb454324e3101040000545254320000000000000002000000004077ad57
+CAPTURE 2 10345490832 5254001234025254001234010800450000440d2e40004011c56a0a002a0f0a002a0210921092003051d354324e3101010001545254320000000300000000000c0000230ab269010000000000021600000003
+CAPTURE 2 10363058160 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200241a6154324e310104000054525432000000000000000300000000570cb914
+CAPTURE 2 10363663744 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ef3054324e3101020001545254320000000300000000000c0000a96e8f74010000000000014800000003
+CAPTURE 2 10401842016 5254001234025254001234010800450000380d3540004011c56f0a002a0f0a002a021092109200241a6154324e310104000054525432000000000000000300000000570cb914
+CAPTURE 2 10451092832 5254001234025254001234010800450000440d3c40004011c55c0a002a0f0a002a0210921092003035b454324e3101010001545254320000000400000000000c00005ce89540010000000000017e00000004
+CAPTURE 2 10468155296 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024223654324e310104000054525432000000000000000400000000336dd4dd
+CAPTURE 2 10468941712 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309ad154324e3101020001545254320000000400000000000c0000b2a8daa0010000000000013f00000004
+CAPTURE 2 10508040160 5254001234025254001234010800450000380d4140004011c5630a002a0f0a002a02109210920024223654324e310104000054525432000000000000000400000000336dd4dd
+CAPTURE 2 10559676640 5254001234025254001234010800450000440d4c40004011c54c0a002a0f0a002a02109210920030320854324e3101010001545254320000000500000000000c0000dabf1bc901000000000000c800000005
+CAPTURE 2 10576979632 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002445cb54324e3101040000545254320000000000000005000000002416c09e
+CAPTURE 2 10577869472 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003088e854324e3101020001545254320000000500000000000c0000b7ede78601000000000000fb00000005
+CAPTURE 2 10617308480 5254001234025254001234010800450000380d5140004011c5530a002a0f0a002a0210921092002445cb54324e3101040000545254320000000000000005000000002416c09e
+CAPTURE 2 10669490272 5254001234025254001234010800450000440d5d40004011c53b0a002a0f0a002a02109210920030526654324e3101010001545254320000000600000000000c0000b2662272010000000000021800000006
+CAPTURE 2 10687098896 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024108854324e3101040000545254320000000000000006000000001d9bfc5b
+CAPTURE 2 10687702048 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ffcc54324e3101020001545254320000000600000000000c00008732a10e010000000000014800000006
+CAPTURE 2 10728623120 5254001234025254001234010800450000380d6340004011c5410a002a0f0a002a02109210920024108854324e3101040000545254320000000000000006000000001d9bfc5b
+CAPTURE 2 10777859952 5254001234025254001234010800450000440d6e40004011c52a0a002a0f0a002a02109210920030c52054324e3101010001545254320000000700000000000c0000f00c72a9010000000000017e00000007
+CAPTURE 2 10795222272 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024378554324e3101040000545254320000000000000007000000000ae0e818
+CAPTURE 2 10796581776 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030cc7f54324e3101020001545254320000000700000000000c00001e4c3d49010000000000013f00000007
+CAPTURE 2 10807978912 33330000001652540012340186dd6000000000240001fe80000000000000505400fffe123401ff0200000000000000000000000000163a000502000001008f00b98e0000000104000000ff0200000000000000000001ff123401
+CAPTURE 2 10838163728 5254001234025254001234010800450000380d7540004011c52f0a002a0f0a002a02109210920024378554324e3101040000545254320000000000000007000000000ae0e818
+CAPTURE 2 10889601776 5254001234025254001234010800450000440d7c40004011c51c0a002a0f0a002a02109210920030242154324e3101010001545254320000000800000000000c0000d6332e3601000000000000c800000008
+CAPTURE 2 10906534144 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242d5a54324e310104000054525432000000000000000800000000d55927c9
+CAPTURE 2 10908576032 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309a7b54324e3101020001545254320000000800000000000c0000bb61d27901000000000000fb00000008
+CAPTURE 2 10948212128 5254001234025254001234010800450000380d8940004011c51b0a002a0f0a002a021092109200242d5a54324e310104000054525432000000000000000800000000d55927c9
+CAPTURE 2 11000934336 5254001234025254001234010800450000440d8c40004011c50c0a002a0f0a002a0210921092003015ba54324e3101010001545254320000000900000000000c0000c08250fc010000000000021800000009
+CAPTURE 2 11018551232 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002434cf54324e310104000054525432000000000000000900000000c222338a
+CAPTURE 2 11025876064 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307ab154324e3101020001545254320000000900000000000c0000ab90013001000000000001de00000009
+CAPTURE 2 11065505376 5254001234025254001234010800450000380d9240004011c5120a002a0f0a002a0210921092002434cf54324e310104000054525432000000000000000900000000c222338a
+CAPTURE 2 11114904608 5254001234025254001234010800450000440d9d40004011c4fb0a002a0f0a002a021092109200309e1954324e3101010001545254320000000a00000000000c000033ed56f601000000000000520000000a
+CAPTURE 2 11132745168 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200241f7c54324e310104000054525432000000000000000a00000000fbaf0f4f
+CAPTURE 2 11134077584 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307fae54324e3101020001545254320000000a00000000000c0000d8a4cf3a01000000000001c00000000a
+CAPTURE 2 11175073968 5254001234025254001234010800450000380da340004011c5010a002a0f0a002a021092109200241f7c54324e310104000054525432000000000000000a00000000fbaf0f4f
+CAPTURE 2 11226593344 5254001234025254001234010800450000440db040004011c4e80a002a0f0a002a021092109200301ad554324e3101010001545254320000000b00000000000c0000a3b26ac501000000000000000000000b
+CAPTURE 2 11244536528 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024229954324e310104000054525432000000000000000b00000000ecd41b0c
+CAPTURE 2 11245123600 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030d76354324e3101020001545254320000000b00000000000c0000759bdab901000000000001930000000b
+CAPTURE 2 11284726816 5254001234025254001234010800450000380db340004011c4f10a002a0f0a002a02109210920024229954324e310104000054525432000000000000000b00000000ecd41b0c
+CAPTURE 2 11337192864 5254001234025254001234010800450000440db840004011c4e00a002a0f0a002a02109210920030ad6f54324e3101010001545254320000000c00000000000c0000eb228fd001000000000000e80000000c
+CAPTURE 2 11343770768 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242afe54324e310104000054525432000000000000000c0000000088b576c5
+CAPTURE 2 11355456032 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309be854324e3101020001545254320000000c00000000000c00009feceba801000000000001cc0000000c
+CAPTURE 2 11403819792 5254001234025254001234010800450000380dc240004011c4e20a002a0f0a002a021092109200242afe54324e310104000054525432000000000000000c0000000088b576c5
+CAPTURE 2 11454014016 5254001234025254001234010800450000440dc740004011c4d10a002a0f0a002a021092109200301b0154324e3101010001545254320000000d00000000000c00005798b63901000000000000760000000d
+CAPTURE 2 11472139424 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024282354324e310104000054525432000000000000000d000000009fce6286
+CAPTURE 2 11473175344 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307b7254324e3101020001545254320000000d00000000000c0000cf30dce101000000000001c30000000d
+CAPTURE 2 11513588528 5254001234025254001234010800450000380dd140004011c4d30a002a0f0a002a02109210920024282354324e310104000054525432000000000000000d000000009fce6286
+CAPTURE 2 11565373104 5254001234025254001234010800450000440dd440004011c4c40a002a0f0a002a02109210920030569954324e3101010001545254320000000e00000000000c00008dee44bf01000000000000000000000e
+CAPTURE 2 11582345040 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002425f054324e310104000054525432000000000000000e00000000a6435e43
+CAPTURE 2 11584126384 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003051c654324e3101020001545254320000000e00000000000c0000d487016301000000000001950000000e
+CAPTURE 2 11622873968 5254001234025254001234010800450000380dda40004011c4ca0a002a0f0a002a0210921092002425f054324e310104000054525432000000000000000e00000000a6435e43
+CAPTURE 2 11674226560 5254001234025254001234010800450000440ddc40004011c4bc0a002a0f0a002a0210921092003020f254324e3101010001545254320000000f00000000000c00008236853801000000000000e40000000f
+CAPTURE 2 11692142592 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242f3d54324e310104000054525432000000000000000f00000000b1384a00
+CAPTURE 2 11692859296 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e82e54324e3101020001545254320000000f00000000000c000033080c4101000000000001cc0000000f
+CAPTURE 2 11732765680 5254001234025254001234010800450000380de140004011c4c30a002a0f0a002a021092109200242f3d54324e310104000054525432000000000000000f00000000b1384a00
+CAPTURE 2 11782612512 5254001234025254001234010800450000440de340004011c4b50a002a0f0a002a02109210920030554c54324e3101010001545254320000001000000000000c00001eb4b4cc010000000000007600000010
+CAPTURE 2 11799692160 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024a09254324e310104000054525432000000000000001000000000c241c7a0
+CAPTURE 2 11801022288 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030c34d54324e3101020001545254320000001000000000000c0000861cde1401000000000001c300000010
+CAPTURE 2 11841856144 5254001234025254001234010800450000380de440004011c4c00a002a0f0a002a02109210920024a09254324e310104000054525432000000000000001000000000c241c7a0
+CAPTURE 2 11893873104 5254001234025254001234010800450000440dee40004011c4aa0a002a0f0a002a021092109200306d5b54324e3101010001545254320000001100000000000c0000baaa013b010000000000000000000011
+CAPTURE 2 11911527856 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024815554324e310104000054525432000000000000001100000000d53ad3e3
+CAPTURE 2 11912120992 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030feff54324e3101020001545254320000001100000000000c0000e3c344e7010000000000019500000011
+CAPTURE 2 11952023312 5254001234025254001234010800450000380df540004011c4af0a002a0f0a002a02109210920024815554324e310104000054525432000000000000001100000000d53ad3e3
+CAPTURE 2 12004017744 5254001234025254001234010800450000440dfe40004011c49a0a002a0f0a002a02109210920030d57254324e3101010001545254320000001200000000000c0000cb1a87cd01000000000000e400000012
+CAPTURE 2 12008534176 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200244e9454324e310104000054525432000000000000001200000000ecb7ef26
+CAPTURE 2 12009539792 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309e9954324e3101020001545254320000001200000000000c00007a240eb401000000000001cc00000012
+CAPTURE 2 12073484400 5254001234025254001234010800450000380e1040004011c4940a002a0f0a002a021092109200244e9454324e310104000054525432000000000000001200000000ecb7ef26
+CAPTURE 2 12122818128 5254001234025254001234010800450000440e1a40004011c47e0a002a0f0a002a02109210920030235154324e3101010001545254320000001300000000000c0000b2505325010000000000007600000013
+CAPTURE 2 12140637776 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024333f54324e310104000054525432000000000000001300000000fbccfb65
+CAPTURE 2 12141784576 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030c28354324e3101020001545254320000001300000000000c00002af839fd01000000000001c300000013
+CAPTURE 2 12182023648 5254001234025254001234010800450000380e1b40004011c4890a002a0f0a002a02109210920024333f54324e310104000054525432000000000000001300000000fbccfb65
+CAPTURE 2 12233400624 5254001234025254001234010800450000440e2140004011c4770a002a0f0a002a02109210920030650354324e3101010001545254320000001400000000000c000094f62f41010000000000000000000014
+CAPTURE 2 12250398336 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f41654324e3101040000545254320000000000000014000000009fad96ac
+CAPTURE 2 12252598336 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ef6754324e3101020001545254320000001400000000000c0000cd9f6a9d010000000000019500000014
+CAPTURE 2 12292795360 5254001234025254001234010800450000380e2840004011c47c0a002a0f0a002a02109210920024f41654324e3101040000545254320000000000000014000000009fad96ac
+CAPTURE 2 12345066608 5254001234025254001234010800450000440e3040004011c4680a002a0f0a002a021092109200309e5f54324e3101010001545254320000001500000000000c00009b2eeec601000000000000e400000015
+CAPTURE 2 12363030576 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200241eaa54324e31010400005452543200000000000000150000000088d682ef
+CAPTURE 2 12363638960 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030959c54324e3101020001545254320000001500000000000c00002a1067bf01000000000001cc00000015
+CAPTURE 2 12402969232 5254001234025254001234010800450000380e3740004011c46d0a002a0f0a002a021092109200241eaa54324e31010400005452543200000000000000150000000088d682ef
+CAPTURE 2 12451943952 5254001234025254001234010800450000440e3d40004011c45b0a002a0f0a002a021092109200300f5554324e3101010001545254320000001600000000000c00009c0c7d5f010000000000007600000016
+CAPTURE 2 12469770592 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024bae854324e310104000054525432000000000000001600000000b15bbe2a
+CAPTURE 2 12471170688 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200300b4854324e3101020001545254320000001600000000000c000004a4178701000000000001c300000016
+CAPTURE 2 12510606512 5254001234025254001234010800450000380e4240004011c4620a002a0f0a002a02109210920024bae854324e310104000054525432000000000000001600000000b15bbe2a
+CAPTURE 2 12561483296 5254001234025254001234010800450000440e4440004011c4540a002a0f0a002a02109210920030287a54324e3101010001545254320000001700000000000c00003812c8a8010000000000000000000017
+CAPTURE 2 12578869872 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024d9e354324e310104000054525432000000000000001700000000a620aa69
+CAPTURE 2 12579555136 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003038af54324e3101020001545254320000001700000000000c0000617b8d74010000000000019500000017
+CAPTURE 2 12618386752 5254001234025254001234010800450000380e4f40004011c4550a002a0f0a002a02109210920024d9e354324e310104000054525432000000000000001700000000a620aa69
+CAPTURE 2 12670174592 5254001234025254001234010800450000440e5340004011c4450a002a0f0a002a02109210920030b57254324e3101010001545254320000001800000000000c000097a2db3901000000000000e400000018
+CAPTURE 2 12687605808 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200244b1b54324e310104000054525432000000000000001800000000799965b8
+CAPTURE 2 12688546880 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ae8954324e3101020001545254320000001800000000000c0000269c524001000000000001cc00000018
+CAPTURE 2 12739633488 5254001234025254001234010800450000380e5f40004011c4450a002a0f0a002a021092109200244b1b54324e310104000054525432000000000000001800000000799965b8
+CAPTURE 2 12789575696 5254001234025254001234010800450000440e6640004011c4320a002a0f0a002a021092109200302a0154324e3101010001545254320000001900000000000c0000eee80fd1010000000000007600000019
+CAPTURE 2 12807347664 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024498e54324e3101040000545254320000000000000019000000006ee271fb
+CAPTURE 2 12808508768 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200304c2354324e3101020001545254320000001900000000000c00007640650901000000000001c300000019
+CAPTURE 2 12861534768 5254001234025254001234010800450000380e7040004011c4340a002a0f0a002a02109210920024498e54324e3101040000545254320000000000000019000000006ee271fb
+CAPTURE 2 12914513232 5254001234025254001234010800450000440e7640004011c4220a002a0f0a002a02109210920030f73854324e3101010001545254320000001a00000000000c0000349efd5701000000000000000000001a
+CAPTURE 2 12931781552 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002485bd54324e310104000054525432000000000000001a00000000576f4d3e
+CAPTURE 2 12932596928 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030011654324e3101020001545254320000001a00000000000c00006df7b88b01000000000001950000001a
+CAPTURE 2 12982875312 5254001234025254001234010800450000380e7c40004011c4280a002a0f0a002a0210921092002485bd54324e310104000054525432000000000000001a00000000576f4d3e
+CAPTURE 2 13035494960 5254001234025254001234010800450000440e8740004011c4110a002a0f0a002a02109210920030b03254324e3101010001545254320000001b00000000000c00003b463cd001000000000000e40000001b
+CAPTURE 2 13053076096 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002490d854324e310104000054525432000000000000001b000000004014597d
+CAPTURE 2 13054975712 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e73d54324e3101020001545254320000001b00000000000c00008a78b5a901000000000001cc0000001b
+CAPTURE 2 13093752912 5254001234025254001234010800450000380e9440004011c4100a002a0f0a002a0210921092002490d854324e310104000054525432000000000000001b000000004014597d
+CAPTURE 2 13145134960 5254001234025254001234010800450000440e9f40004011c3f90a002a0f0a002a02109210920030465554324e3101010001545254320000001c00000000000c0000c0b421ab01000000000000760000001c
+CAPTURE 2 13162854736 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024d13f54324e310104000054525432000000000000001c00000000247534b4
+CAPTURE 2 13164537728 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003083d754324e3101020001545254320000001c00000000000c0000581c4b7301000000000001c30000001c
+CAPTURE 2 13204681984 5254001234025254001234010800450000380ea540004011c3ff0a002a0f0a002a02109210920024d13f54324e310104000054525432000000000000001c00000000247534b4
+CAPTURE 2 13257160432 5254001234025254001234010800450000440ea640004011c3f20a002a0f0a002a02109210920030302254324e3101010001545254320000001d00000000000c000064aa945c01000000000000000000001d
+CAPTURE 2 13274153376 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024d66254324e310104000054525432000000000000001d00000000330e20f7
+CAPTURE 2 13276077008 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030184f54324e3101020001545254320000001d00000000000c00003dc3d18001000000000001950000001d
+CAPTURE 2 13316760624 5254001234025254001234010800450000380ead40004011c3f70a002a0f0a002a02109210920024d66254324e310104000054525432000000000000001d00000000330e20f7
+CAPTURE 2 13369565968 5254001234025254001234010800450000440eb640004011c3e20a002a0f0a002a02109210920030007f54324e3101010001545254320000001e00000000000c0000151a12aa01000000000000e40000001e
+CAPTURE 2 13648617344 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002403b254324e310104000054525432000000000000001e000000000a831c32
+CAPTURE 2 13649643088 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e76154324e3101020001545254320000001e00000000000c0000a4249bd301000000000001cc0000001e
+CAPTURE 2 13678548592 5254001234025254001234010800450000400f0140004011c39b0a002a0f0a002a0210921092002c07eb54324e310105000054525432000000000000000000080000258ceb4600000000000011ae
+CAPTURE 2 13689926816 5254001234025254001234010800450000380f0340004011c3a10a002a0f0a002a0210921092002403b254324e310104000054525432000000000000001e000000000a831c32
+CAPTURE 2 13740175280 5254001234025254001234010800450000440f0b40004011c38d0a002a0f0a002a02109210920030f61b54324e3101010001545254320000001f00000000000c00006c50c64201000000000000760000001f
+CAPTURE 2 13744623136 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002403fd54324e310104000054525432000000000000001f000000001df80871
+CAPTURE 2 13749620256 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003085cd54324e3101020001545254320000001f00000000000c0000f4f8ac9a01000000000001c30000001f
+CAPTURE 2 13801052832 5254001234025254001234010800450000380f0d40004011c3970a002a0f0a002a0210921092002403fd54324e310104000054525432000000000000001f000000001df80871
+CAPTURE 2 13853757968 5254001234025254001234010800450000440f1840004011c3800a002a0f0a002a02109210920030899e54324e3101010001545254320000002000000000000c0000a6c6f8bd010000000000000000000020
+CAPTURE 2 13871642112 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024368254324e310104000054525432000000000000002000000000ec700772
+CAPTURE 2 13872335136 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200306a7b54324e3101020001545254320000002000000000000c0000ffafbd61010000000000019500000020
+CAPTURE 2 13910708288 5254001234025254001234010800450000380f2440004011c3800a002a0f0a002a02109210920024368254324e310104000054525432000000000000002000000000ec700772
+CAPTURE 2 14202574480 5254001234025254001234010800450000440f4c40004011c34c0a002a0f0a002a0210921092003045e454324e3101010001545254320000002100000000000c0000a91e393a01000000000000e400000021
+CAPTURE 2 14221231936 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200241c2754324e310104000054525432000000000000002100000000fb0b1331
+CAPTURE 2 14222147296 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200305ef054324e3101020001545254320000002100000000000c00001820b04301000000000001cc00000021
+CAPTURE 2 14250741696 5254001234025254001234010800450000400f5240004011c34a0a002a0f0a002a0210921092002ca42954324e310105000054525432000000000000000000080000660b0c4d00000000000013ea
+CAPTURE 2 14261897888 5254001234025254001234010800450000380f5340004011c3510a002a0f0a002a021092109200241c2754324e310104000054525432000000000000002100000000fb0b1331
+CAPTURE 2 14313235328 5254001234025254001234010800450000440f5b40004011c33d0a002a0f0a002a02109210920030cfc854324e3101010001545254320000002200000000000c0000ae3caaa3010000000000007600000022
+CAPTURE 2 14330690832 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002437e854324e310104000054525432000000000000002200000000c2862ff4
+CAPTURE 2 14332550432 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030304b54324e3101020001545254320000002200000000000c00003694c07b01000000000001c300000022
+CAPTURE 2 14372271936 5254001234025254001234010800450000380f6140004011c3430a002a0f0a002a0210921092002437e854324e310104000054525432000000000000002200000000c2862ff4
+CAPTURE 2 14423642400 33330000000252540012340186dd6000000000103afffe80000000000000505400fffe123401ff0200000000000000000000000000028500725f000000000101525400123401
+CAPTURE 2 14425939712 5254001234025254001234010800450000440f6440004011c3340a002a0f0a002a02109210920030ffa654324e3101010001545254320000002300000000000c00000a221f54010000000000000000000023
+CAPTURE 2 14442970288 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002418ad54324e310104000054525432000000000000002300000000d5fd3bb7
+CAPTURE 2 14444524160 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003079b354324e3101020001545254320000002300000000000c0000534b5a88010000000000019500000023
+CAPTURE 2 14483965520 5254001234025254001234010800450000380f6d40004011c3370a002a0f0a002a0210921092002418ad54324e310104000054525432000000000000002300000000d5fd3bb7
+CAPTURE 2 14775920384 5254001234025254001234010800450000440f9340004011c3050a002a0f0a002a0210921092003089b454324e3101010001545254320000002400000000000c00008742174001000000000000e400000024
+CAPTURE 2 14789821840 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024224654324e310104000054525432000000000000002400000000b19c567e
+CAPTURE 2 14796589872 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030529854324e3101020001545254320000002400000000000c0000367c9e3901000000000001cc00000024
+CAPTURE 2 14827068752 5254001234025254001234010800450000400f9640004011c3060a002a0f0a002a0210921092002c12f354324e310105000054525432000000000000000000080000f71f0a2e000000000000162b
+CAPTURE 2 14838146384 5254001234025254001234010800450000380f9940004011c30b0a002a0f0a002a02109210920024224654324e310104000054525432000000000000002400000000b19c567e
+CAPTURE 2 14888994096 5254001234025254001234010800450000440fa040004011c2f80a002a0f0a002a0210921092003066f154324e3101010001545254320000002500000000000c0000fe08c3a8010000000000007600000025
+CAPTURE 2 14906429280 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024413b54324e310104000054525432000000000000002500000000a6e7423d
+CAPTURE 2 14908578528 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030174454324e3101020001545254320000002500000000000c000066a0a97001000000000001c300000025
+CAPTURE 2 14948590560 5254001234025254001234010800450000380fa640004011c2fe0a002a0f0a002a02109210920024413b54324e310104000054525432000000000000002500000000a6e7423d
+CAPTURE 2 15001473088 5254001234025254001234010800450000440fad40004011c2eb0a002a0f0a002a02109210920030d36a54324e3101010001545254320000002600000000000c0000247e312e010000000000000000000026
+CAPTURE 2 15019190608 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200240bfc54324e3101040000545254320000000000000026000000009f6a7ef8
+CAPTURE 2 15019883936 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030357754324e3101020001545254320000002600000000000c00007d1774f2010000000000019500000026
+CAPTURE 2 15058665312 5254001234025254001234010800450000380fb940004011c2eb0a002a0f0a002a021092109200240bfc54324e3101040000545254320000000000000026000000009f6a7ef8
+CAPTURE 2 15346892560 5254001234025254001234010800450000440fef40004011c2a90a002a0f0a002a021092109200300be154324e3101010001545254320000002700000000000c00002ba6f0a901000000000000e400000027
+CAPTURE 2 15364969136 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024379154324e31010400005452543200000000000000270000000088116abb
+CAPTURE 2 15366814448 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003012df54324e3101020001545254320000002700000000000c00009a9879d001000000000001cc00000027
+CAPTURE 2 15395090544 5254001234025254001234010800450000400ff440004011c2a80a002a0f0a002a0210921092002c126b54324e310105000054525432000000000000000000080000119bee020000000000001863
+CAPTURE 2 15406171136 5254001234025254001234010800450000380ff540004011c2af0a002a0f0a002a02109210920024379154324e31010400005452543200000000000000270000000088116abb
+CAPTURE 2 15470358528 5254001234025254001234010800450000440ff940004011c29f0a002a0f0a002a021092109200303fc054324e3101010001545254320000002800000000000c0000f284f657010000000000007600000028
+CAPTURE 2 15488534896 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242d4a54324e31010400005452543200000000000000280000000057a8a56a
+CAPTURE 2 15489137568 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030209354324e3101020001545254320000002800000000000c00006a2c9c8f01000000000001c300000028
+CAPTURE 2 15528955216 525400123402525400123401080045000038100440004011c2a00a002a0f0a002a021092109200242d4a54324e31010400005452543200000000000000280000000057a8a56a
+CAPTURE 2 15582849936 525400123402525400123401080045000044100c40004011c28c0a002a0f0a002a021092109200308ed654324e3101010001545254320000002900000000000c0000569a43a0010000000000000000000029
+CAPTURE 2 15601279760 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024385f54324e31010400005452543200000000000000290000000040d3b129
+CAPTURE 2 15602497728 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030110c54324e3101020001545254320000002900000000000c00000ff3067c010000000000019500000029
+CAPTURE 2 15641244784 525400123402525400123401080045000038101340004011c2910a002a0f0a002a02109210920024385f54324e31010400005452543200000000000000290000000040d3b129
+CAPTURE 2 15901564176 525400123402525400123401080045000044104240004011c2560a002a0f0a002a021092109200303baa54324e3101010001545254320000002a00000000000c0000272ac55601000000000000e40000002a
+CAPTURE 2 15919699680 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024231054324e310104000054525432000000000000002a00000000795e8dec
+CAPTURE 2 15920752944 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003044fe54324e3101020001545254320000002a00000000000c000096144c2f01000000000001cc0000002a
+CAPTURE 2 15948865952 525400123402525400123401080045000040104840004011c2540a002a0f0a002a0210921092002c67c054324e310105000054525432000000000000000000080000641f43ff0000000000001a8d
+CAPTURE 2 15959971712 525400123402525400123401080045000038104940004011c25b0a002a0f0a002a02109210920024231054324e310104000054525432000000000000002a00000000795e8dec
+CAPTURE 2 16009870736 525400123402525400123401080045000044104f40004011c2490a002a0f0a002a02109210920030b87854324e3101010001545254320000002b00000000000c00005e6011be01000000000000760000002b
+CAPTURE 2 16029819520 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024228554324e310104000054525432000000000000002b000000006e2599af
+CAPTURE 2 16031023632 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e51954324e3101020001545254320000002b00000000000c0000c6c87b6601000000000001c30000002b
+CAPTURE 2 16081635200 525400123402525400123401080045000038105140004011c2530a002a0f0a002a02109210920024228554324e310104000054525432000000000000002b000000006e2599af
+CAPTURE 2 16139785728 525400123402525400123401080045000044105e40004011c23a0a002a0f0a002a02109210920030426a54324e3101010001545254320000002c00000000000c000078c66dda01000000000000000000002c
+CAPTURE 2 16157518976 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242bae54324e310104000054525432000000000000002c000000000a44f466
+CAPTURE 2 16159461728 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ddbf54324e3101020001545254320000002c00000000000c000021af280601000000000001950000002c
+CAPTURE 2 16198793408 525400123402525400123401080045000038106c40004011c2380a002a0f0a002a021092109200242bae54324e310104000054525432000000000000002c000000000a44f466
+CAPTURE 2 16460021968 525400123401525400123402080045000040000000004011129d0a002a020a002a0f10921092002c331354324e310105000054525432000000000000000000080000241c9e9400000000000034a8
+CAPTURE 2 16470198752 52540012340252540012340108004500004410a140004011c1f70a002a0f0a002a0210921092003004a954324e3101010001545254320000002d00000000000c0000771eac5d01000000000000e40000002d
+CAPTURE 2 16488620576 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242cf354324e310104000054525432000000000000002d000000001d3fe025
+CAPTURE 2 16489621632 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200303bf754324e3101020001545254320000002d00000000000c0000c620252401000000000001cc0000002d
+CAPTURE 2 16524237600 52540012340252540012340108004500004010aa40004011c1f20a002a0f0a002a0210921092002c1c6154324e310105000054525432000000000000000000080000a44c4cf70000000000001cc7
+CAPTURE 2 16551362160 52540012340252540012340108004500003810b040004011c1f40a002a0f0a002a021092109200242cf354324e310104000054525432000000000000002d000000001d3fe025
+CAPTURE 2 16607960864 52540012340252540012340108004500004410b940004011c1df0a002a0f0a002a02109210920030789054324e3101010001545254320000002e00000000000c0000703c3fc401000000000000760000002e
+CAPTURE 2 16625672384 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002428c454324e310104000054525432000000000000002e0000000024b2dce0
+CAPTURE 2 16628733264 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e99154324e3101020001545254320000002e00000000000c0000e894551c01000000000001c30000002e
+CAPTURE 2 16680605504 52540012340252540012340108004500003810c540004011c1df0a002a0f0a002a0210921092002428c454324e310104000054525432000000000000002e0000000024b2dce0
+CAPTURE 2 16733453616 52540012340252540012340108004500004410d140004011c1c70a002a0f0a002a02109210920030caae54324e3101010001545254320000002f00000000000c0000d4228a3301000000000000000000002f
+CAPTURE 2 17001508720 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200242de954324e310104000054525432000000000000002f0000000033c9c8a3
+CAPTURE 2 17003807728 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030ca3354324e3101020001545254320000002f00000000000c00008d4bcfef01000000000001950000002f
+CAPTURE 2 17044011888 52540012340252540012340108004500004010d640004011c1c60a002a0f0a002a0210921092002c84ef54324e3101050000545254320000000000000000000800008ca0fa080000000000001ed3
+CAPTURE 2 17056084944 52540012340252540012340108004500003810d840004011c1cc0a002a0f0a002a021092109200242de954324e310104000054525432000000000000002f0000000033c9c8a3
+CAPTURE 2 17108857712 52540012340252540012340108004500004410db40004011c1bd0a002a0f0a002a021092109200303b4454324e3101010001545254320000003000000000000c00003e32aea801000000000000e400000030
+CAPTURE 2 17127409376 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024a4a154324e31010400005452543200000000000000300000000040b04503
+CAPTURE 2 17128037328 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030705854324e3101020001545254320000003000000000000c00008f0c27d101000000000001cc00000030
+CAPTURE 2 17168225568 52540012340252540012340108004500003810e140004011c1c30a002a0f0a002a02109210920024a4a154324e31010400005452543200000000000000300000000040b04503
+CAPTURE 2 17219567056 52540012340252540012340108004500004410eb40004011c1ad0a002a0f0a002a0210921092003066d254324e3101010001545254320000003100000000000c000047787a40010000000000007600000031
+CAPTURE 2 17238098176 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024814854324e31010400005452543200000000000000310000000057cb5140
+CAPTURE 2 17240567776 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003036d454324e3101020001545254320000003100000000000c0000dfd0109801000000000001c300000031
+CAPTURE 2 17280555680 52540012340252540012340108004500003810f640004011c1ae0a002a0f0a002a02109210920024814854324e31010400005452543200000000000000310000000057cb5140
+CAPTURE 2 17571933952 52540012340252540012340108004500004410fd40004011c19b0a002a0f0a002a02109210920030032a54324e3101010001545254320000003200000000000c00009d0e88c6010000000000000000000032
+CAPTURE 2 17590459616 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200244e8754324e3101040000545254320000000000000032000000006e466d85
+CAPTURE 2 17591092192 52540012340152540012340208004500004400000000401112990a002a020a002a0f10921092003095e654324e3101020001545254320000003200000000000c0000c467cd1a010000000000019500000032
+CAPTURE 2 17619573664 525400123402525400123401080045000040110440004011c1980a002a0f0a002a0210921092002ca7ba54324e3101050000545254320000000000000000000800004f1a12840000000000002113
+CAPTURE 2 17630695056 525400123402525400123401080045000038110740004011c19d0a002a0f0a002a021092109200244e8754324e3101040000545254320000000000000032000000006e466d85
+CAPTURE 2 17683215296 525400123402525400123401080045000044110d40004011c18b0a002a0f0a002a021092109200304c0154324e3101010001545254320000003300000000000c000092d6494101000000000000e400000033
+CAPTURE 2 17702828640 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024374e54324e310104000054525432000000000000003300000000793d79c6
+CAPTURE 2 17704554352 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030430f54324e3101020001545254320000003300000000000c000023e8c03801000000000001cc00000033
+CAPTURE 2 17744180256 525400123402525400123401080045000038111040004011c1940a002a0f0a002a02109210920024374e54324e310104000054525432000000000000003300000000793d79c6
+CAPTURE 2 17794677280 525400123402525400123401080045000044111940004011c17f0a002a0f0a002a021092109200306b2654324e3101010001545254320000003400000000000c00006924543a010000000000007600000034
+CAPTURE 2 17809771296 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f8e554324e3101040000545254320000000000000034000000001d5c140f
+CAPTURE 2 17813715872 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030f6c754324e3101020001545254320000003400000000000c0000f18c3ee201000000000001c300000034
+CAPTURE 2 17854762864 525400123402525400123401080045000038111e40004011c1860a002a0f0a002a02109210920024f8e554324e3101040000545254320000000000000034000000001d5c140f
+CAPTURE 2 18132023504 525400123402525400123401080045000044114b40004011c14d0a002a0f0a002a0210921092003079f054324e3101010001545254320000003500000000000c0000cd3ae1cd010000000000000000000035
+CAPTURE 2 18149745552 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200241fdd54324e3101040000545254320000000000000035000000000a27004c
+CAPTURE 2 18151687648 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030eefd54324e3101020001545254320000003500000000000c00009453a411010000000000019500000035
+CAPTURE 2 18179232240 525400123402525400123401080045000040115240004011c14a0a002a0f0a002a0210921092002ce59a54324e3101050000545254320000000000000000000800004899d8fc000000000000233b
+CAPTURE 2 18190339968 525400123402525400123401080045000038115540004011c14f0a002a0f0a002a021092109200241fdd54324e3101040000545254320000000000000035000000000a27004c
+CAPTURE 2 18246677040 525400123402525400123401080045000044116140004011c1370a002a0f0a002a02109210920030044d54324e3101010001545254320000003600000000000c0000bc8a673b01000000000000e400000036
+CAPTURE 2 18267116256 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024ba1b54324e31010400005452543200000000000000360000000033aa3c89
+CAPTURE 2 18268584832 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200302b3354324e3101020001545254320000003600000000000c00000db4ee4201000000000001cc00000036
+CAPTURE 2 18313359744 525400123402525400123401080045000038117240004011c1320a002a0f0a002a02109210920024ba1b54324e31010400005452543200000000000000360000000033aa3c89
+CAPTURE 2 18364237952 525400123402525400123401080045000044117640004011c1220a002a0f0a002a02109210920030aeea54324e3101010001545254320000003700000000000c0000c5c0b3d3010000000000007600000037
+CAPTURE 2 18368614624 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024dcb254324e31010400005452543200000000000000370000000024d128ca
+CAPTURE 2 18369582224 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030f0bc54324e3101020001545254320000003700000000000c00005d68d90b01000000000001c300000037
+CAPTURE 2 18434557840 525400123402525400123401080045000038118140004011c1230a002a0f0a002a02109210920024dcb254324e31010400005452543200000000000000370000000024d128ca
+CAPTURE 2 18694130272 525400123402525400123401080045000044118d40004011c10b0a002a0f0a002a02109210920030930954324e3101010001545254320000003800000000000c0000c1b6d432010000000000000000000038
+CAPTURE 2 18712009104 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002447c854324e310104000054525432000000000000003800000000fb68e71b
+CAPTURE 2 18712748496 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030fc8e54324e3101020001545254320000003800000000000c000098df91ee010000000000019500000038
+CAPTURE 2 18742119712 525400123402525400123401080045000040119440004011c1080a002a0f0a002a0210921092002c616254324e3101050000545254320000000000000000000800008fa713ed0000000000002575
+CAPTURE 2 18753187344 525400123402525400123401080045000038119640004011c10e0a002a0f0a002a0210921092002447c854324e310104000054525432000000000000003800000000fb68e71b
+CAPTURE 2 18807819184 525400123402525400123401080045000044119f40004011c0f90a002a0f0a002a0210921092003043e954324e3101010001545254320000003900000000000c0000ce6e15b501000000000000e400000039
+CAPTURE 2 18820007376 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200244adf54324e310104000054525432000000000000003900000000ec13f358
+CAPTURE 2 18826525280 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200300b0754324e3101020001545254320000003900000000000c00007f509ccc01000000000001cc00000039
+CAPTURE 2 18868204416 52540012340252540012340108004500003811ac40004011c0f80a002a0f0a002a021092109200244adf54324e310104000054525432000000000000003900000000ec13f358
+CAPTURE 2 18919768624 52540012340252540012340108004500004411b440004011c0e40a002a0f0a002a02109210920030d8ff54324e3101010001545254320000003a00000000000c0000c94c862c01000000000000760000003a
+CAPTURE 2 18937139808 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024850e54324e310104000054525432000000000000003a00000000d59ecf9d
+CAPTURE 2 18938943440 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e85154324e3101020001545254320000003a00000000000c000051e4ecf401000000000001c30000003a
+CAPTURE 2 18978426512 52540012340252540012340108004500003811b740004011c0ed0a002a0f0a002a02109210920024850e54324e310104000054525432000000000000003a00000000d59ecf9d
+CAPTURE 2 19239393440 52540012340252540012340108004500004411d240004011c0c60a002a0f0a002a0210921092003087bf54324e3101010001545254320000003b00000000000c00006d5233db01000000000000000000003b
+CAPTURE 2 19257538112 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200248b8554324e310104000054525432000000000000003b00000000c2e5dbde
+CAPTURE 2 19258979824 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307d1454324e3101020001545254320000003b00000000000c0000343b760701000000000001950000003b
+CAPTURE 2 19286354416 52540012340252540012340108004500004011d640004011c0c60a002a0f0a002a0210921092002c90d654324e3101050000545254320000000000000000000800001af6570e0000000000002791
+CAPTURE 2 19297455120 52540012340252540012340108004500003811d740004011c0cd0a002a0f0a002a021092109200248b8554324e310104000054525432000000000000003b00000000c2e5dbde
+CAPTURE 2 19350195840 52540012340252540012340108004500004411e040004011c0b80a002a0f0a002a021092109200300c0554324e3101010001545254320000003c00000000000c0000e0323bcf01000000000000e40000003c
+CAPTURE 2 19368601328 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024cdac54324e310104000054525432000000000000003c00000000a684b617
+CAPTURE 2 19369789360 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030235b54324e3101020001545254320000003c00000000000c0000510cb2b601000000000001cc0000003c
+CAPTURE 2 19409589760 52540012340252540012340108004500003811e140004011c0c30a002a0f0a002a02109210920024cdac54324e310104000054525432000000000000003c00000000a684b617
+CAPTURE 2 19461290992 52540012340252540012340108004500004411ed40004011c0ab0a002a0f0a002a021092109200309fd254324e3101010001545254320000003d00000000000c00009978ef2701000000000000760000003d
+CAPTURE 2 19479677072 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024d5f354324e310104000054525432000000000000003d00000000b1ffa254
+CAPTURE 2 19480372032 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309f5554324e3101020001545254320000003d00000000000c000001d085ff01000000000001c30000003d
+CAPTURE 2 19518696992 52540012340252540012340108004500003811f440004011c0b00a002a0f0a002a02109210920024d5f354324e310104000054525432000000000000003d00000000b1ffa254
+CAPTURE 2 19810133616 525400123401525400123402080045000040000000004011129d0a002a020a002a0f10921092002cbfb654324e3101050000545254320000000000000000000800008280a67600000000000041be
+CAPTURE 2 19813194432 525400123402525400123401080045000044120c40004011c08c0a002a0f0a002a02109210920030c83754324e3101010001545254320000003e00000000000c0000430e1da101000000000000000000003e
+CAPTURE 2 19830796080 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024034354324e310104000054525432000000000000003e0000000088729e91
+CAPTURE 2 19832524688 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030b46c54324e3101020001545254320000003e00000000000c00001a67587d01000000000001950000003e
+CAPTURE 2 19866568464 525400123402525400123401080045000040120e40004011c08e0a002a0f0a002a0210921092002ce51454324e3101050000545254320000000000000000000800006ccdaeb300000000000029d6
+CAPTURE 2 19896895360 525400123402525400123401080045000038121040004011c0940a002a0f0a002a02109210920024034354324e310104000054525432000000000000003e0000000088729e91
+CAPTURE 2 19949865296 525400123402525400123401080045000044121640004011c0820a002a0f0a002a02109210920030ff0354324e3101010001545254320000003f00000000000c00004cd6dc2601000000000000e40000003f
+CAPTURE 2 19968660912 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024006a54324e310104000054525432000000000000003f000000009f098ad2
+CAPTURE 2 19969886192 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030d3cf54324e3101020001545254320000003f00000000000c0000fde8555f01000000000001cc0000003f
+CAPTURE 2 20010039552 525400123402525400123401080045000038121840004011c08c0a002a0f0a002a02109210920024006a54324e310104000054525432000000000000003f000000009f098ad2
+CAPTURE 2 20060826928 525400123402525400123401080045000044121f40004011c0790a002a0f0a002a0210921092003037d854324e3101010001545254320000004000000000000c000096e559af010000000000007600000040
+CAPTURE 2 20078707232 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f35a54324e310104000054525432000000000000004000000000b01386d6
+CAPTURE 2 20084941168 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030434254324e3101020001545254320000004000000000000c000099a94ac9010000000000012d00000040
+CAPTURE 2 20123894560 525400123402525400123401080045000038122840004011c07c0a002a0f0a002a02109210920024f35a54324e310104000054525432000000000000004000000000b01386d6
+CAPTURE 2 20378708464 525400123401525400123402080045000040000000004011129d0a002a020a002a0f10921092002c971954324e3101050000545254320000000000000000000800002f09205100000000000043f8
+CAPTURE 2 20381853696 525400123402525400123401080045000044124e40004011c04a0a002a0f0a002a02109210920030818e54324e3101010001545254320000004100000000000c0000dfdfc68601000000000000ec00000041
+CAPTURE 2 20400889280 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f04554324e310104000054525432000000000000004100000000a7689295
+CAPTURE 2 20402648752 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200309d3854324e3101020001545254320000004100000000000c00004e2c3c7d01000000000000fe00000041
+CAPTURE 2 20453198928 525400123402525400123401080045000040125040004011c04c0a002a0f0a002a0210921092002cab0854324e31010500005452543200000000000000000008000045640ddf0000000000002c20
+CAPTURE 2 20478683920 525400123402525400123401080045000038125140004011c0530a002a0f0a002a02109210920024f04554324e310104000054525432000000000000004100000000a7689295
+CAPTURE 2 20531117808 525400123402525400123401080045000044125540004011c0430a002a0f0a002a02109210920030ee7c54324e3101010001545254320000004200000000000c0000c9f76e58010000000000021200000042
+CAPTURE 2 20548698944 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024dd0c54324e3101040000545254320000000000000042000000009ee5ae50
+CAPTURE 2 20549578976 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307bfc54324e3101020001545254320000004200000000000c0000b613f585010000000000014800000042
+CAPTURE 2 20602042832 525400123402525400123401080045000038126140004011c0430a002a0f0a002a02109210920024dd0c54324e3101040000545254320000000000000042000000009ee5ae50
+CAPTURE 2 20653628480 525400123402525400123401080045000044126c40004011c02c0a002a0f0a002a02109210920030400f54324e3101010001545254320000004300000000000c0000c12d2622010000000000017e00000043
+CAPTURE 2 20921040784 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024e68f54324e310104000054525432000000000000004300000000899eba13
+CAPTURE 2 20922618736 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200308e6d54324e3101020001545254320000004300000000000c00002f6d69c2010000000000013f00000043
+CAPTURE 2 20968954592 52540012340252540012340108004500004012b740004011bfe50a002a0f0a002a0210921092002c15bb54324e3101050000545254320000000000000000000800000e8ed7f90000000000002e29
+CAPTURE 2 20980015152 52540012340252540012340108004500003812b840004011bfec0a002a0f0a002a02109210920024e68f54324e310104000054525432000000000000004300000000899eba13
+CAPTURE 2 21033095456 52540012340252540012340108004500004412c040004011bfd80a002a0f0a002a02109210920030011854324e3101010001545254320000004400000000000c0000c5c2613801000000000000c800000044
+CAPTURE 2 21050026784 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024646654324e310104000054525432000000000000004400000000edffd7da
+CAPTURE 2 21052948736 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030e1d654324e3101020001545254320000004400000000000c0000a8909d7701000000000000fb00000044
+CAPTURE 2 21095996592 52540012340252540012340108004500003812cf40004011bfd50a002a0f0a002a02109210920024646654324e310104000054525432000000000000004400000000edffd7da
+CAPTURE 2 21149899632 52540012340252540012340108004500004412d540004011bfc30a002a0f0a002a02109210920030335b54324e3101010001545254320000004500000000000c0000d3731ff2010000000000021800000045
+CAPTURE 2 21167776384 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200246c2154324e310104000054525432000000000000004500000000fa84c399
+CAPTURE 2 21168624144 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030a4d954324e3101020001545254320000004500000000000c0000e6279c8e010000000000014800000045
+CAPTURE 2 21219109184 52540012340252540012340108004500003812de40004011bfc60a002a0f0a002a021092109200246c2154324e310104000054525432000000000000004500000000fa84c399
+CAPTURE 2 21497799520 525400123402525400123401080045000044130e40004011bf8a0a002a0f0a002a021092109200302f8f54324e3101010001545254320000004600000000000c0000ef710858010000000000017e00000046
+CAPTURE 2 21500627616 52540012340152540012340208004500003800000000401112a50a002a020a002a0f10921092002467d854324e310104000054525432000000000000004600000000c309ff5c
+CAPTURE 2 21516165568 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030dead54324e3101020001545254320000004600000000000c0000013147b8010000000000013f00000046
+CAPTURE 2 21556147760 525400123402525400123401080045000040131140004011bf8b0a002a0f0a002a0210921092002c657254324e310105000054525432000000000000000000080000cf15c56f0000000000003074
+CAPTURE 2 21568451504 525400123402525400123401080045000038131340004011bf910a002a0f0a002a0210921092002467d854324e310104000054525432000000000000004600000000c309ff5c
+CAPTURE 2 21621559296 525400123402525400123401080045000044131a40004011bf7e0a002a0f0a002a02109210920030381554324e3101010001545254320000004700000000000c0000692686d101000000000000c800000047
+CAPTURE 2 21639121600 52540012340152540012340208004500003800000000401112a50a002a020a002a0f1092109200246aab54324e310104000054525432000000000000004700000000d472eb1f
+CAPTURE 2 21641260816 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030a8c654324e3101020001545254320000004700000000000c000004747a9e01000000000000fb00000047
+CAPTURE 2 21680698208 525400123402525400123401080045000038132440004011bf800a002a0f0a002a021092109200246aab54324e310104000054525432000000000000004700000000d472eb1f
+CAPTURE 2 21733389744 525400123402525400123401080045000044133040004011bf680a002a0f0a002a021092109200301cae54324e3101010001545254320000004800000000000c0000dfff2a0d010000000000021800000048
+CAPTURE 2 21749836048 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f9a354324e3101040000545254320000000000000048000000000bcb24ce
+CAPTURE 2 21752219024 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030936c54324e3101020001545254320000004800000000000c0000eaaba971010000000000014800000048
+CAPTURE 2 21802917872 525400123402525400123401080045000038133540004011bf6f0a002a0f0a002a02109210920024f9a354324e3101040000545254320000000000000048000000000bcb24ce
+CAPTURE 2 21853412208 525400123402525400123401080045000044133740004011bf610a002a0f0a002a021092109200300ee754324e3101010001545254320000004900000000000c00009d957ad6010000000000017e00000049
+CAPTURE 2 21870622816 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024dcfe54324e3101040000545254320000000000000049000000001cb0308d
+CAPTURE 2 21872495792 52540012340152540012340208004500004400000000401112990a002a020a002a0f1092109200307e8554324e3101020001545254320000004900000000000c000073d53536010000000000013f00000049
+CAPTURE 2 21910635968 525400123402525400123401080045000038134240004011bf620a002a0f0a002a02109210920024dcfe54324e3101040000545254320000000000000049000000001cb0308d
+CAPTURE 2 21962687792 525400123402525400123401080045000044134a40004011bf4e0a002a0f0a002a021092109200300f2e54324e3101010001545254320000004a00000000000c000065aab32e01000000000000c80000004a
+CAPTURE 2 21979767856 52540012340152540012340208004500003800000000401112a50a002a020a002a0f109210920024f8b554324e310104000054525432000000000000004a00000000253d0c48
+CAPTURE 2 21981009296 52540012340152540012340208004500004400000000401112990a002a020a002a0f109210920030cf7954324e3101020001545254320000004a00000000000c000008f84f6101000000000000fb0000004a
+CAPTURE 2 22020866800 525400123402525400123401080045000038135540004011bf4f0a002a0f0a002a02109210920024f8b554324e310104000054525432000000000000004a00000000253d0c48
+CAPDUMP_END
+virtnet: streamed 320 vm1 and 320 vm2 frames to the console
+axvisor:/$ 

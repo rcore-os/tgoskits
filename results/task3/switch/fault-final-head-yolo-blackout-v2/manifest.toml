@@ -1,0 +1,12 @@
+label = "final-head-yolo-blackout-v2"
+mode = "yolo"
+fault = "blackout"
+blackout_expected = true
+recovery_elapsed_min_ms = 45000
+log_sha256 = "7db417fff23a19bc8b141b66be3a24506500603d845e0312429622f46e6f6f8c"
+build_log_sha256 = "e2c5201f097a3e6ef6f2c1f9599331d6d1c9f4dd227464436c8210f1293122a6"
+linux_pcap_sha256 = "8a4ea643a9e3f632ff52b6f2307185ec21b749f7920f6e34f43791187b5d0133"
+rtos_pcap_sha256 = "572b917add0e33fc4a151bbcffa4bdd897887f0e8aa203492992801d0d8c6d91"
+linux_initramfs_sha256 = "5e947966e8f113c703cf02d65b2a38f1555e75bf2d7d7c7e42ba31236bebc20b"
+zephyr_binary_sha256 = "49ca61bc847835e61a03f94fb619fca01b49f02157d347b0fc0a9806f7fcb433"
+zephyr_manifest_sha256 = "3be4f1c653681547afe3d6a2f79294b62a03409e53407c49790cd0916179022f"

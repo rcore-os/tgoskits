@@ -20,6 +20,11 @@ pub fn irq_enable() {
     Arch::systimer_irq_enable();
 }
 
+/// Masks the timer interrupt while preserving the programmed deadline.
+pub fn irq_disable() {
+    Arch::systimer_irq_disable();
+}
+
 /// Arms a one-shot deadline `ticks` from now.
 pub fn set_next_event_in_ticks(ticks: usize) {
     Arch::set_next_event_in_ticks(ticks);

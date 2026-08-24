@@ -54,6 +54,34 @@ pub fn init_memory_map() -> Option<()> {
         }
     }
 
+    // The initrd is described by /chosen rather than /reserved-memory.  Keep
+    // it out of the early allocator so a kernel that consumes it after boot
+    // does not observe pages that have already been reused.
+    if let Some(chosen) = fdt.chosen() {
+        let address = |name| {
+            let property = chosen.find_property(name)?;
+            let value = match property.len() {
+                4 => u64::from(property.as_u32()?),
+                8 => property.as_u64()?,
+                _ => return None,
+            };
+            usize::try_from(value).ok().map(normalize_fdt_address)
+        };
+
+        if let (Some(start), Some(end)) =
+            (address("linux,initrd-start"), address("linux,initrd-end"))
+            && end > start
+        {
+            add_memory_descriptor(MemoryDescriptor::new_aligned(
+                start,
+                end - start,
+                MemoryType::Reserved,
+                PAGE_SIZE,
+            ))
+            .unwrap();
+        }
+    }
+
     Some(())
 }
 

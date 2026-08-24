@@ -1,0 +1,6 @@
+# Official upstream/dev scheduler baseline. Keep only features that exist in
+# upstream/dev; realtime-only features belong to the modified worktree.
+features = ["sched-rr"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

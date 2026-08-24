@@ -1,0 +1,10 @@
+# Measurement-only Task 1 baseline. This keeps the current fixed-priority
+# scheduler and all guest topology identical while restoring one global AxVM
+# software-timer-wheel lock.
+features = [
+    "rt-scheduler",
+    "global-timer-wheel",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

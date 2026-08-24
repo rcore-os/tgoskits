@@ -1,0 +1,28 @@
+[
+  {
+    "mode": "manual",
+    "samples": 5,
+    "control_status_complete": 5,
+    "perception_mae": null,
+    "target_mae": 93.0,
+    "state_mae": 70.66666666666667,
+    "mean_rtt_ms": 250.4,
+    "max_rtt_ms": 283,
+    "mean_infer_us": null,
+    "expected_behavior_accuracy": null,
+    "safe_rejection_rate": null
+  },
+  {
+    "mode": "yolo",
+    "samples": 5,
+    "control_status_complete": 3,
+    "perception_mae": 0.0,
+    "target_mae": 26.333333333333332,
+    "state_mae": 89.0,
+    "mean_rtt_ms": 219.0,
+    "max_rtt_ms": 301,
+    "mean_infer_us": 1621539.4,
+    "expected_behavior_accuracy": 1.0,
+    "safe_rejection_rate": 1.0
+  }
+]

@@ -1,0 +1,11 @@
+test_fp_rr_log_requires_nonzero_bounded_service_counter (scripts.test.net-dual-guest.test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_fp_rr_log_requires_nonzero_bounded_service_counter) ... ok
+test_guest_artifact_hashes_must_match (scripts.test.net-dual-guest.test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_guest_artifact_hashes_must_match) ... ok
+test_host_configs_may_differ_only_by_scheduler_feature (scripts.test.net-dual-guest.test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_host_configs_may_differ_only_by_scheduler_feature) ... ok
+test_repository_task1_configs_define_the_required_single_variable_ab (scripts.test.net-dual-guest.test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_repository_task1_configs_define_the_required_single_variable_ab) ... ok
+test_rootfs_content_must_match_endpoint_script_and_yolo_assets (scripts.test.net-dual-guest.test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_rootfs_content_must_match_endpoint_script_and_yolo_assets) ... ok
+test_rtt_summary_uses_nearest_rank_p95 (scripts.test.net-dual-guest.test_verify_starry_task1_ab.VerifyStarryTask1AbTests.test_rtt_summary_uses_nearest_rank_p95) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.001s
+
+OK

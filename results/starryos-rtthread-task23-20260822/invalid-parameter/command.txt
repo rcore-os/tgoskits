@@ -1,0 +1,10 @@
+scenario=invalid-parameter
+git_head=9956356aa7e6c1828df199d02b8d91129e4b5879
+rtos_name=rtthread
+rtos_variant=normal
+host_config=scripts/test/net-dual-guest/axvisor-qemu-debug.toml
+qemu_config=scripts/test/net-dual-guest/qemu-aarch64-starry-rtthread-switch-msix1-capture.toml
+starry_vm_config=scripts/test/net-dual-guest/vm-aarch64-starry-switch.toml
+rtos_vm_config=scripts/test/net-dual-guest/vm-aarch64-p2-switch-rtthread.toml
+collect_rt_stat=0
+command=cargo xtask axvisor qemu --config scripts/test/net-dual-guest/axvisor-qemu-debug.toml --qemu-config scripts/test/net-dual-guest/qemu-aarch64-starry-rtthread-switch-msix1-capture.toml --vmconfigs scripts/test/net-dual-guest/vm-aarch64-starry-switch.toml --vmconfigs scripts/test/net-dual-guest/vm-aarch64-p2-switch-rtthread.toml --rootfs tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img

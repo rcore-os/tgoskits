@@ -1,0 +1,8 @@
+74089dc8f9e3a238385fa26904676e716527175863be41bda6ed65a76562a137  /home/huhu/tgoskits-starry/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img
+5b22c5a32b5758fe2e77233923df860654bc83567ad0f01a0b60fb96b7f73520  /home/huhu/tgoskits-starry/target/starryos-task2-rust/aarch64-unknown-linux-musl/release/starryos-task2-endpoint
+d2c0adf8939dc9ce02964ce8ada104447768ffd8e3bffad8fa11e2e61e709c1f  /home/huhu/tgoskits-starry/tmp/task3-yolo/ncnn-model/yolo11n.ncnn.param
+0ae562447923999779b12b4f91f96b9ef263add8c9902d10e22e6dd6a2932c12  /home/huhu/tgoskits-starry/tmp/task3-yolo/ncnn-model/yolo11n.ncnn.bin
+608c8a61ff0bb43e5a8613f1f6f8aa08af74b084363610ed2b526ad925e4cb6f  /home/huhu/tgoskits-starry/tmp/task3-yolo/ncnn-model/input.ppm
+db2d8f199073acc3f15cc241862cb3a9ac2198ad471bad7ebf095c8fb8999269  /home/huhu/tgoskits-starry/target/aarch64-unknown-none-softfloat/release/starryos.bin
+14363b8ce6ede9ef19ad76d8d2aeca3ab9084cbde616b1cdf74609bca570b548  /home/huhu/tgoskits-starry/tmp/net-dual-guest/rtthread-task2-starry-normal/rtthread-task2.bin
+266cac6eb3254a1f380f1914c16c7e5602a71cb5911e2d2321a8b6a02478e945  /home/huhu/tgoskits-starry/target/aarch64-unknown-linux-musl/release/axvisor.bin

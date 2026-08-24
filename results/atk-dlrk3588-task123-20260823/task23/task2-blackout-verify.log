@@ -1,0 +1,11 @@
+vm1_retry_5: PASS offset=16019
+vm1_safe: PASS offset=16054
+vm2_safe: PASS offset=32418
+blackout_off: PASS offset=32838
+vm1_recovered: PASS offset=33210
+post_control: PASS offset=34873
+post_status: PASS offset=35090
+switch_restored: PASS offset=66467
+vm1_running: PASS
+vm2_running: PASS
+PASS: physical-board blackout -> Safe -> recovery

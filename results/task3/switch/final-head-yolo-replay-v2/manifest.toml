@@ -1,0 +1,7 @@
+label = "final-head-yolo-replay-v2"
+mode = "yolo"
+min_elapsed_ms = 12000
+linux_pcap_sha256 = "05932aebc228fb63779fcbdd6b46ccab9e56a399929661fe5ecf9796102d34ce"
+rtos_pcap_sha256 = "d7f7d1a649ef253c6378d9a904340a420e96830e24cc2bad2a38952166fc4bbd"
+zephyr_manifest = "/home/huhu/tgoskits-rt/tmp/net-dual-guest/zephyr-task2/manifest.toml"
+zephyr_binary_sha256 = "49ca61bc847835e61a03f94fb619fca01b49f02157d347b0fc0a9806f7fcb433"

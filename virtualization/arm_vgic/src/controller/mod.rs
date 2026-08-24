@@ -82,6 +82,7 @@ pub(crate) struct ControllerConfig {
     distributor_size: u64,
     redistributor_stride: u64,
     vcpu_count: usize,
+    vcpu_physical_affinities: Vec<GicAffinity>,
     its: Vec<(ItsId, GicV3MmioRegion)>,
     spi_count: usize,
     affinity_level_3: bool,
@@ -92,12 +93,13 @@ pub(crate) struct ControllerConfig {
 }
 
 impl ControllerConfig {
-    fn from_gicv3(config: &GicV3Config) -> Self {
+    fn from_gicv3(config: &GicV3Config, physical_affinities: Vec<GicAffinity>) -> Self {
         Self {
             spi_ownership: config.spi_ownership(),
             distributor_size: config.distributor().size(),
             redistributor_stride: config.redistributor_stride(),
             vcpu_count: config.vcpu_count(),
+            vcpu_physical_affinities: physical_affinities,
             its: config.its_instances().to_vec(),
             spi_count: config.spi_count(),
             affinity_level_3: config.affinity_level_3(),
@@ -109,12 +111,14 @@ impl ControllerConfig {
     }
 
     pub(crate) fn from_arm(config: &ArmVgicConfig) -> VgicResult<Self> {
+        let physical_affinities = config.vcpu_physical_affinities().to_vec();
         match config {
             ArmVgicConfig::V2(config) => Ok(Self {
                 spi_ownership: GicV3SpiOwnership::AllGuestOwned,
                 distributor_size: config.distributor().size(),
                 redistributor_stride: 0x2_0000,
                 vcpu_count: config.vcpu_affinities().len(),
+                vcpu_physical_affinities: physical_affinities,
                 its: Vec::new(),
                 spi_count: config.spi_count(),
                 affinity_level_3: false,
@@ -125,7 +129,7 @@ impl ControllerConfig {
             }),
             ArmVgicConfig::V3(_) => {
                 let config = config.internal_gicv3_config()?;
-                Ok(Self::from_gicv3(&config))
+                Ok(Self::from_gicv3(&config, physical_affinities))
             }
         }
     }
@@ -141,6 +145,9 @@ impl ControllerConfig {
     }
     pub(crate) const fn vcpu_count(&self) -> usize {
         self.vcpu_count
+    }
+    pub(crate) fn vcpu_physical_affinities(&self) -> &[GicAffinity] {
+        &self.vcpu_physical_affinities
     }
     pub(crate) fn its_instances(&self) -> &[(ItsId, GicV3MmioRegion)] {
         &self.its
@@ -217,7 +224,7 @@ impl GicV3Controller {
                 detail: "a guest-visible ITS requires a guest-memory capability".into(),
             });
         }
-        let common = ControllerConfig::from_gicv3(&config);
+        let common = ControllerConfig::from_gicv3(&config, Vec::new());
         let distributor = DistributorState::new(common.spi_count())?;
         let its = config
             .its_instances()
@@ -299,6 +306,11 @@ impl GicV3Controller {
     }
 
     /// Attaches one vCPU and returns its lifecycle binding.
+    ///
+    /// `affinity` is the guest-visible affinity used for SGI and IROUTER
+    /// routing; the physical routing affinity is taken from the immutable
+    /// configuration and may differ when vCPU numbers and physical CPU
+    /// numbers are decoupled.
     pub fn attach_vcpu(
         &self,
         vcpu: GicVcpuId,
@@ -311,6 +323,13 @@ impl GicV3Controller {
                 operation: "attach GICv3 vCPU",
             });
         }
+        let physical_affinity = self
+            .inner
+            .config
+            .vcpu_physical_affinities()
+            .get(vcpu.raw())
+            .copied()
+            .unwrap_or(affinity);
         let mut state = self.inner.state.lock_irqsave();
         if state.redistributors.contains_key(&vcpu) {
             return Err(VgicError::ResourceConflict {
@@ -333,6 +352,7 @@ impl GicV3Controller {
             RedistributorState::new(
                 vcpu,
                 affinity,
+                physical_affinity,
                 self.inner.config.list_register_count(),
                 self.inner.config.spi_count(),
                 wake,

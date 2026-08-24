@@ -67,6 +67,15 @@ http-axum = ["ax-std/net", "dep:axum", "dep:tokio", "dep:serde_json"]
 # Do not auto-boot the default VMs at startup; the HTTP control plane starts
 # and stops them on demand (VMs are created and stay in `Ready`).
 no-auto-start = []
+openrace-realtime = ["axvm/realtime-trace"]
+timer-latency-stats = ["axvm/timer-latency-stats"]
+rr-scheduler = ["ax-std/sched-rr"]
+rt-scheduler = ["ax-std/sched-rt"]
+fp-rr-scheduler = ["ax-std/sched-prio-rr"]
+fp-rr-20ms-scheduler = ["ax-std/sched-prio-rr-20ms"]
+global-timer-wheel = ["axvm/global-timer-wheel"]
+no-vcpu-exit-yield = ["axvm/no-vcpu-exit-yield"]
+timer-worker-priority-boost = ["axvm/timer-worker-priority-boost"]
 
 [dependencies]
 shlex.workspace = true
@@ -101,6 +110,7 @@ ax-std = { workspace = true, default-features = false, features = [
   "hv",
   "tls",
   "std-compat",
+  # "ipi",
 ] }
 # System dependent modules provided by ArceOS-Hypervisor (bare-metal only)
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }

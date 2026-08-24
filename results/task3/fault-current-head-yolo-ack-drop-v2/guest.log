@@ -1,0 +1,1312 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running `target/debug/tg-xtask axvisor qemu --config scripts/test/net-dual-guest/axvisor-qemu-debug.toml --qemu-config scripts/test/net-dual-guest/qemu-aarch64-p3-proxy-final.toml --vmconfigs scripts/test/net-dual-guest/vm-aarch64-p2-linux.toml --vmconfigs scripts/test/net-dual-guest/vm-aarch64-p2-rtos.toml --rootfs /home/huhu/tgoskits-rt/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img`
+[2026-08-21T03:09:30Z INFO  axbuild::context] Workspace root: /home/huhu/tgoskits-rt
+[2026-08-21T03:09:30Z INFO  axbuild::context] Workspace member dir for axvisor: /home/huhu/tgoskits-rt/os/axvisor
+Using build config: scripts/test/net-dual-guest/axvisor-qemu-debug.toml
+file already exists and passed checksum verification
+image archive verified at /home/huhu/tgoskits-rt/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img.tar.xz
+image already extracted and up to date at /home/huhu/tgoskits-rt/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img
+[2026-08-21T03:09:33Z INFO  ostool::run::qemu] Using QEMU config file: scripts/test/net-dual-guest/qemu-aarch64-p3-proxy-final.toml
+[axbuild] qemu build+run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=scripts/test/net-dual-guest/axvisor-qemu-debug.toml ...
+sh -c /home/huhu/tgoskits-rt/tmp/axbuild/std/prebuild/prebuild-aarch64-unknown-linux-musl-70d7af24dcdadee9.sh
+AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+AXVISOR_VM_CONFIGS=/home/huhu/tgoskits-rt/tmp/axbuild/axvisor/resolved-vm-configs/7a99a8d8fb03bca293e94be79f20e6074df741cbdffe9a360928afc65269b2e1.toml:/home/huhu/tgoskits-rt/tmp/axbuild/axvisor/resolved-vm-configs/9177176bc730f90fadebd93b8a1137cbc1669cef6115b9bce8bcfcf6b5a1790b.toml
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+CC_aarch64_unknown_linux_musl=aarch64-linux-musl-cc
+CFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+CXXFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+SMP=4
+cargo build --config /home/huhu/tgoskits-rt/tmp/axbuild/std/config-aarch64-unknown-linux-musl-dynamic.toml -p axvisor --target scripts/targets/std/pie/aarch64-unknown-linux-musl.json -Z unstable-options --target-dir /home/huhu/tgoskits-rt/target --features ax-std/fs,ax-std/nvme,ax-std/smp,fs,log/release_max_level_info -Z json-target-spec --bin axvisor --release --message-format json-render-diagnostics
+warning: unused variable: `callback_ns`
+   --> virtualization/axvm/src/runtime/vcpus.rs:281:56
+    |
+281 | pub(crate) fn note_vtimer_notification(vcpu_id: usize, callback_ns: u64) {
+    |                                                        ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_callback_ns`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `accepted_ns`
+   --> virtualization/axvm/src/runtime/vcpus.rs:294:54
+    |
+294 | pub(crate) fn note_vtimer_direct_ack(vcpu_id: usize, accepted_ns: u64, overlaps_active: bool) {
+    |                                                      ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_accepted_ns`
+
+warning: unused variable: `vcpu_id`
+   --> virtualization/axvm/src/runtime/vcpus.rs:310:43
+    |
+310 | pub(crate) fn note_vtimer_activation_hold(vcpu_id: usize, accepted_ns: u64) {
+    |                                           ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_vcpu_id`
+
+warning: unused variable: `accepted_ns`
+   --> virtualization/axvm/src/runtime/vcpus.rs:310:59
+    |
+310 | pub(crate) fn note_vtimer_activation_hold(vcpu_id: usize, accepted_ns: u64) {
+    |                                                           ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_accepted_ns`
+
+warning: unused variable: `vcpu_id`
+   --> virtualization/axvm/src/runtime/vcpus.rs:323:29
+    |
+323 | fn note_vtimer_run_dispatch(vcpu_id: usize) {
+    |                             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_vcpu_id`
+
+warning: unused variable: `vcpu_id`
+   --> virtualization/axvm/src/runtime/vcpus.rs:357:39
+    |
+357 | pub(crate) fn note_vtimer_guest_entry(vcpu_id: usize) {
+    |                                       ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_vcpu_id`
+
+warning: associated function `after_external_interrupt` is never used
+   --> virtualization/axvm/src/architecture/ops.rs:121:8
+    |
+ 12 | pub(crate) trait ArchOps {
+    |                  ------- associated function in this trait
+...
+121 |     fn after_external_interrupt(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `host_console_irq` is never used
+  --> virtualization/axvm/src/host/arceos.rs:96:15
+   |
+96 | pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: function `dispatch_host_irq` is never used
+   --> virtualization/axvm/src/host/arceos.rs:100:15
+    |
+100 | pub(crate) fn dispatch_host_irq(vector: usize) {
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: function `with_vm` is never used
+  --> virtualization/axvm/src/manager.rs:70:15
+   |
+70 | pub(crate) fn with_vm<F, R>(vm_id: VMId, f: F) -> Option<R>
+   |               ^^^^^^^
+
+warning: function `active_vcpu_mask` is never used
+  --> virtualization/axvm/src/manager.rs:79:15
+   |
+79 | pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: function `inject_interrupt` is never used
+  --> virtualization/axvm/src/manager.rs:91:15
+   |
+91 | pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
+   |               ^^^^^^^^^^^^^^^^
+
+warning: variant `Generic` is never constructed
+  --> virtualization/axvm/src/runtime/hvc.rs:26:5
+   |
+25 | pub(crate) enum HyperCallAbi {
+   |                 ------------ variant in this enum
+26 |     Generic,
+   |     ^^^^^^^
+   |
+   = note: `HyperCallAbi` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: function `cancel_timer` is never used
+   --> virtualization/axvm/src/timer.rs:402:15
+    |
+402 | pub(crate) fn cancel_timer(token: usize) {
+    |               ^^^^^^^^^^^^
+
+warning: function `timer_token_owner` is never used
+   --> virtualization/axvm/src/timer.rs:541:10
+    |
+541 | const fn timer_token_owner(token: usize) -> usize {
+    |          ^^^^^^^^^^^^^^^^^
+
+warning: associated items `with_planned_device_graph`, `try_handle_port_write`, `handle_nested_page_fault`, and `debug_nested_page_fault` are never used
+    --> virtualization/axvm/src/vm/mod.rs:1304:19
+     |
+1111 | impl AxVM {
+     | --------- associated items in this implementation
+...
+1304 |     pub(crate) fn with_planned_device_graph<F, R>(&self, f: F) -> AxVmResult<R>
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1607 |     pub(crate) fn try_handle_port_write(
+     |                   ^^^^^^^^^^^^^^^^^^^^^
+...
+1620 |     pub(crate) fn handle_nested_page_fault(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1635 |     fn debug_nested_page_fault(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `SimpleVmPlan` is never constructed
+  --> virtualization/axvm/src/vm/prepare/device_plan/mod.rs:60:19
+   |
+60 | pub(crate) struct SimpleVmPlan(VmDevicePlan);
+   |                   ^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> virtualization/axvm/src/vm/prepare/device_plan/mod.rs:63:25
+   |
+62 | impl SimpleVmPlan {
+   | ----------------- associated function in this implementation
+63 |     pub(crate) const fn new(devices: VmDevicePlan) -> Self {
+   |                         ^^^
+
+warning: `axvm` (lib) generated 18 warnings (run `cargo fix --lib -p axvm` to apply 6 suggestions)
+   Compiling axvisor v0.5.24 (/home/huhu/tgoskits-rt/os/axvisor)
+warning: field `outbound` is never read
+  --> os/axvisor/src/virtio_net.rs:44:5
+   |
+42 | struct CapturedFrame {
+   |        ------------- field in this struct
+43 |     vm_id: usize,
+44 |     outbound: bool,
+   |     ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `axvisor` (bin "axvisor") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 3.01s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/home/huhu/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core), memchr v2.8.3
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+Converting ELF to BIN format...
+  elf: /home/huhu/tgoskits-rt/target/aarch64-unknown-linux-musl/release/axvisor
+  bin: /home/huhu/tgoskits-rt/target/aarch64-unknown-linux-musl/release/axvisor.bin
+/home/huhu/.rustup/toolchains/nightly-2026-07-15-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objcopy --strip-all -O binary /home/huhu/tgoskits-rt/target/aarch64-unknown-linux-musl/release/axvisor /home/huhu/tgoskits-rt/target/aarch64-unknown-linux-musl/release/axvisor.bin
+qemu-system-aarch64 -nographic -cpu cortex-a72 -machine virt,virtualization=on,gic-version=3 -global virtio-mmio.force-legacy=false -dtb /home/huhu/tgoskits-rt/tmp/net-dual-guest/qemu-p2-host-carved.dtb -smp 1 -m 8g -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 -drive id=disk0,if=none,format=raw,file=/home/huhu/tgoskits-rt/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img -append root=/dev/nvme0n1 rw init=/init -snapshot -qmp unix:/home/huhu/tgoskits-rt/tmp/net-dual-guest/qmp-p3-final.sock,server,nowait -netdev socket,id=net-linux,connect=127.0.0.1:12731 -device virtio-net-device,netdev=net-linux,mac=52:54:00:12:34:01 -object filter-dump,id=fd-linux,netdev=net-linux,file=/home/huhu/tgoskits-rt/tmp/net-dual-guest/linux-p3-final.pcap -netdev socket,id=net-rtos,connect=127.0.0.1:12732 -device virtio-net-device,netdev=net-rtos,mac=52:54:00:12:34:02 -object filter-dump,id=fd-rtos,netdev=net-rtos,file=/home/huhu/tgoskits-rt/tmp/net-dual-guest/rtos-p3-final.pcap -kernel /home/huhu/tgoskits-rt/target/aarch64-unknown-linux-musl/release/axvisor.bin
+root=/dev/nvme0n1 rw init=/init
+VM Load @PA:0x40200000
+VM Load Offset: 0xffff0000c0200000
+Memory Map:
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000044a00000 (72 MiB)
+  Free   0x00000044a00000 - 0x00000080000000 (950 MiB)
+  Rsv    0x00000080000000 - 0x000000c0000000 (1 GiB)
+  Free   0x000000c0000000 - 0x00000240000000 (6 GiB)
+Initialize RAM allocator: 0x44a00000..0x80000000
+Reserving CPU-local areas
+CPU-local area stride: 0x44000 bytes
+Total CPU-local allocation: 0x44000 bytes (1 CPUs)
+Flushed RAM used range to memory map: 0x44a00000..0x44c05000, current: 0x44c05000
+Flushed RAM used range to memory map: 0x44c05000..0x44c49000, current: 0x44c49000
+CPU-local areas allocated at 0x44c05000 - 0x44c49000
+EL: 2
+Mapping early memory regions...
+Ram                 : [0x0000000040000000, 0x0000000240000000) -> [0x0000000040000000, 0x0000000240000000) (8 GiB)
+KImage              : [0x0000ffff80000000, 0x0000ffff84800000) -> [0x0000000040200000, 0x0000000044a00000) (72 MiB)
+PerCpu              : [0x0000ff0044c05000, 0x0000ff0044c49000) -> [0x0000000044c05000, 0x0000000044c49000) (272 KiB)
+Debug serial        : [0x0000000009000000, 0x0000000009001000) -> [0x0000000009000000, 0x0000000009001000) (4 KiB)
+Boot page table at physical address: PA:0x44c49000
+Setting up table registers...
+MMU Entry point at physical address: 0x4046e394
+Trap vector at 0xffff80272000
+Memory Map:
+  MMIO   0x00000009000000 - 0x00000009001000 (4 KiB)
+  Free   0x00000040000000 - 0x00000040200000 (2 MiB)
+  KImg   0x00000040200000 - 0x00000044a00000 (72 MiB)
+  Rsv    0x00000044a00000 - 0x00000044c05000 (2.02 MiB)
+  PerCPU 0x00000044c05000 - 0x00000044c49000 (272 KiB)
+  Rsv    0x00000044c49000 - 0x00000044c52000 (36 KiB)
+  Free   0x00000044c52000 - 0x00000080000000 (947.68 MiB)
+  Rsv    0x00000080000000 - 0x000000c0000000 (1 GiB)
+  Free   0x000000c0000000 - 0x00000240000000 (6 GiB)
+Jumping to main entry point at 0xffff802560e8 with SP 0x0000ff0044c49000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = linux,dummy-virt
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 1
+
+[37m[  0.095527 ax_runtime:220] [32mLogging is enabled.[m
+[m[37m[  0.095939 ax_runtime:221] [32mPrimary CPU 0 started, arg = 0x44a00000.[m
+[m[37m[  0.096040 ax_runtime:223] [32mFound physcial memory regions:[m
+[m[37m[  0.096995 ax_runtime:225] [32m  [PA:0x9000000, PA:0x9001000) mmio (READ | WRITE | DEVICE | RESERVED)[m
+[m[37m[  0.097221 ax_runtime:225] [32m  [PA:0x40000000, PA:0x40200000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.097364 ax_runtime:225] [32m  [PA:0x40200000, PA:0x44a00000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.097477 ax_runtime:225] [32m  [PA:0x44a00000, PA:0x44c05000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.097591 ax_runtime:225] [32m  [PA:0x44c05000, PA:0x44c49000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.097707 ax_runtime:225] [32m  [PA:0x44c49000, PA:0x44c52000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.097822 ax_runtime:225] [32m  [PA:0x44c52000, PA:0x80000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.097927 ax_runtime:225] [32m  [PA:0x80000000, PA:0xc0000000) reserved (READ | WRITE | EXECUTE | RESERVED)[m
+[m[37m[  0.098042 ax_runtime:225] [32m  [PA:0xc0000000, PA:0x240000000) free memory (READ | WRITE | FREE)[m
+[m[37m[  0.098168 ax_runtime:375] [32mInitialize global memory allocator...[m
+[m[37m[  0.098272 ax_runtime:376] [32m  use buddy-slab-allocator allocator.[m
+[m[37m[  0.098476 ax_alloc::buddy_slab:158] [32mInitialize global memory allocator, start_vaddr: 0xc0000000, size: 0x180000000[m
+[m[37m[  0.104581 ax_alloc::buddy_slab:424] [32mglobal allocator initialized[m
+[m[37m[  0.104780 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x40000000, size: 0x200000[m
+[m[37m[  0.104947 buddy_slab_allocator::global:151] [32mGlobalAllocator: skip region 0x40000000+0x200000, no allocator-visible memory after 2097152 alignment[m
+[m[37m[  0.105183 ax_alloc::buddy_slab:168] [32mAdd memory region, start_vaddr: 0x44c52000, size: 0x3b3ae000[m
+[m[37m[  0.106495 ax_runtime:260] [32mkernel aspace: [VA:0x0, VA:0xffffffffffffffff)[m
+[m[37m[  0.106630 ax_mm:103] [32mInitialize virtual memory management...[m
+[m[37m[  0.796688 ax_runtime:272] [32mInitialize platform devices...[m
+[m[37m[  0.803765 someboot::arch::power:23] [32mPower management method : SMC[m
+[m[37m[  0.803945 somehal::driver:5] [32mInitializing rdrive with FDT at 0x44a00000[m
+[m[37m[  0.817809 somehal::arch::gic::v3:274] [32mGICv3 CPU 0 EOI mode: two_step=true[m
+[m[37m[  0.825790 ax_task::api:193] [32mInitialize scheduling...[m
+[m[37m[  0.827307 ax_task::api:201] [32m  use FIFO scheduler.[m
+[m[37m[  0.827650 ax_runtime:300] [32mInitialize interrupt handlers...[m
+[m[37m[  0.830043 ax_runtime::devices:2] [32mProbe platform devices...[m
+[m[37m[  0.858341 ax_driver::block::nvme:42] [32mNVMe PCI endpoint 0000:00:01.0: BAR0=0x8000000000..0x8000004000, int_pin=1, int_line=0[m
+[m[37m[  0.872206 nvme_driver::nvme:161] [32mNVME @0x8000000000 deferred init, version: 1.4.0[m
+[m[37m[  0.872908 ax_driver::block::nvme:74] [32mNVMe block device registered at 0000:00:01.0 with 65 MSI-X vectors[m
+[m[37m[  0.879547 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 0 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(0) }) fixed to CPU 0 for queue mask 0x0[m
+[m[37m[  0.912312 ax_fs_ng::block::runtime::hctx:177] [32mblock hctx 0 bound to CPU 0 with hardware depth 63[m
+[m[37m[  0.912887 ax_fs_ng::block::runtime::lifecycle::device:300] [32mblock device nvme IRQ source 1 (IrqId { domain: IrqDomainId(9), hwirq: HwIrq(1) }) fixed to CPU 0 for queue mask 0x1[m
+[m[37m[  0.920750 ax_fs_ng::root:341] [32m    raw device fs=Some(Ext4)[m
+[m[37m[  0.920965 ax_fs_ng::root:372] [32m  block device 0 (nvme) has no usable partition table; treating the whole disk as a candidate[m
+[m[37m[  0.921430 ax_fs_ng::root:481] [32m  matched root by raw device path on disk0 raw device[m
+[m[37m[  0.921923 ax_fs_ng:86] [32mInitialize filesystem subsystem...[m
+[m[37m[  0.922023 ax_fs_ng:87] [32m  selected root device: disk0 raw device[m
+[m[37m[  0.951666 rsext4::ext4::mount:344] [32m/lost+found exists (path resolution, repaired hint inode=11)[m
+[m[37m[  0.953225 rsext4::ext4::mount:466] [32mExt4 filesystem mounted[m
+[m[37m[  0.953333 rsext4::ext4::mount:467] [32m  - block size: 4096 bytes[m
+[m[37m[  0.953436 rsext4::ext4::mount:468] [32m  - total blocks: 524288[m
+[m[37m[  0.953527 rsext4::ext4::mount:469] [32m  - free blocks: 102857[m
+[m[37m[  0.953618 rsext4::ext4::mount:470] [32m  - total inodes: 131072[m
+[m[37m[  0.953711 rsext4::ext4::mount:471] [32m  - free inodes: 125237[m
+[m[37m[  0.953826 rsext4::ext4::sync:13] [32mSyncing filesystem...[m
+[m[37m[  0.964803 rsext4::ext4::mount:550] [32mExt4 filesystem mounted[m
+[m[37m[  0.965791 ax_fs_ng:99] [32m  filesystem type: "ext4"[m
+[m[37m[  0.966978 ax_runtime:348] [32mPrimary CPU 0 init OK.[m
+[m[37m[  0.967448 0:2 ax_fs_ng::block::runtime::lifecycle::device:369] [32mblock device nvme online with 1 hctxs across 1 CPUs[m
+[m
+
+       d8888            888     888  d8b
+      d88888            888     888  Y8P
+     d88P888            888     888
+    d88P 888  888  888  Y88b   d88P  888  .d8888b    .d88b.   888d888
+   d88P  888  `Y8bd8P'   Y88b d88P   888  88K       d88""88b  888P"
+  d88P   888    X88K      Y88o88P    888  "Y8888b.  888  888  888
+ d8888888888  .d8""8b.     Y888P     888       X88  Y88..88P  888
+d88P     888  888  888      Y8P      888   88888P'   "Y88P"   888
+
+
+by AxVisor Team
+
+[37m[  0.971087 0:2 axvisor:95] [32mStarting virtualization...[m
+[m[37m[  0.971227 0:2 axvm::host::arceos:335] [32mEnabling hardware virtualization support on all cores...[m
+[m[37m[  0.971403 0:2 axvm::host::arceos:341] [32mCore 0 is initializing hardware virtualization support...[m
+[m[37m[  0.971551 0:2 axvm::timer:508] [32mInitializing AxVM timer wheel...[m
+[m[37m[  0.976356 0:2 axvm::host::arceos:343] [32mHardware virtualization support enabled on core 0[m
+[m[37m[  0.976512 0:2 axvm::host::arceos:370] [32mWaiting for all cores to enable hardware virtualization...[m
+[m[37m[  0.976662 0:2 axvm::host::arceos:381] [32mAll cores have enabled hardware virtualization support.[m
+[m[37m[  0.982572 0:2 axvisor::manager:145] [32mNOT find dir: /guest/vm_default in filesystem[m
+[m[37m[  0.982834 0:2 axvisor::config:91] [32mUsing static VM configs.[m
+[m[37m[  0.998103 0:2 axvm::arch::aarch64::fdt::core:79] [32mVM[1] virtual GIC follows host firmware resources: GuestGicProfile { compatible: "arm,gic-v3", node_path: "/intc@8000000", node_phandle: Some(32770), distributor: GuestMmioRegion { base: 134217728, length: 65536 }, cpu_region: Redistributors(GuestGicRedistributorProfile { regions: [GuestMmioRegion { base: 134873088, length: 16121856 }], stride: 131072 }), its: [GuestItsProfile { id: ItsId(0), node_path: "/intc@8000000/its@8080000", node_phandle: Some(32771), registers: GuestMmioRegion { base: 134742016, length: 131072 } }] }[m
+[m[37m[  1.000733 0:2 axvm::arch::aarch64::fdt::core:93] [32mVM[1] architectural timer follows host firmware PPIs[m
+[m[37m[  1.004978 0:2 axvm::arch::aarch64::fdt::core::parser:442] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m[37m[  1.005259 0:2 axvm::arch::aarch64::fdt::core::parser:449] [32mFound 1 host CPU nodes[m
+[m[37m[  1.005744 0:2 axvm::arch::aarch64::fdt::core:144] [32mVM[1] DTB not found, generating from the VM configuration[m
+[m[37m[  1.017350 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  1.029029 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  1.030598 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  1.032028 0:2 axvisor::config:258] [32mCreating VM[1] "task2-p2-linux"[m
+[m[37m[  1.052282 0:2 axvm::vm:1133] [32mVM created: id=1[m
+[m[37m[  1.053843 0:2 axvisor::config:270] [32mVM[1] created success, loading images...[m
+[m[37m[  1.179861 0:2 axvm::boot::images:137] [32mLoading ramdisk image from memory (18345288 bytes) into GPA @0x9c000000[m
+[m[37m[  1.236388 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=0[m
+[m[37m[  1.236815 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=1[m
+[m[37m[  1.236999 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=2[m
+[m[37m[  1.238796 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=3[m
+[m[37m[  1.242767 0:2 axvm::vm::prepare:82] [32mVM setup: id=1[m
+[m[37m[  1.245457 0:2 axvm::arch::aarch64::fdt::core:79] [32mVM[2] virtual GIC follows host firmware resources: GuestGicProfile { compatible: "arm,gic-v3", node_path: "/intc@8000000", node_phandle: Some(32770), distributor: GuestMmioRegion { base: 134217728, length: 65536 }, cpu_region: Redistributors(GuestGicRedistributorProfile { regions: [GuestMmioRegion { base: 134873088, length: 16121856 }], stride: 131072 }), its: [GuestItsProfile { id: ItsId(0), node_path: "/intc@8000000/its@8080000", node_phandle: Some(32771), registers: GuestMmioRegion { base: 134742016, length: 131072 } }] }[m
+[m[37m[  1.246123 0:2 axvm::arch::aarch64::fdt::core:93] [32mVM[2] architectural timer follows host firmware PPIs[m
+[m[37m[  1.249420 0:2 axvm::arch::aarch64::fdt::core::parser:442] [32mCPU node: /cpus/cpu@0, node_id: 0x0, hardware_cpu_id: 0x0[m
+[m[37m[  1.249645 0:2 axvm::arch::aarch64::fdt::core::parser:449] [32mFound 1 host CPU nodes[m
+[m[37m[  1.249750 0:2 axvm::arch::aarch64::fdt::core:144] [32mVM[2] DTB not found, generating from the VM configuration[m
+[m[37m[  1.256682 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  1.261558 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  1.262570 0:2 axvm::arch::aarch64::fdt::core::device:96] [32mFound excluded devices: ["/intc@8000000", "/pl011@9000000", "/timer", "/intc@8000000/its@8080000"][m
+[m[37m[  1.263026 0:2 axvisor::config:258] [32mCreating VM[2] "task2-p2-zephyr"[m
+[m[37m[  1.264254 0:2 axvm::vm:1133] [32mVM created: id=2[m
+[m[37m[  1.264443 0:2 axvisor::config:270] [32mVM[2] created success, loading images...[m
+[m[37m[  1.267962 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=0[m
+[m[37m[  1.268069 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=1[m
+[m[37m[  1.268161 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=2[m
+[m[37m[  1.268339 0:2 axdevice::device:1232] [32mDeviceRuntime: registered device id=3[m
+[m[37m[  1.268562 0:2 axvm::vm::prepare:82] [32mVM setup: id=2[m
+[m[37m[  1.269031 0:2 axvm::runtime:73] [32mInitializing VMM...[m
+[m[37m[  1.269858 0:2 axvm::runtime:84] [32mVMM starting, booting VMs...[m
+[m[37m[  1.270075 0:2 axvm::vm:1365] [32mStarting VM[1][m
+[m[37m[  1.270269 0:2 axvm::runtime::vcpus:1060] [32mSpawning task for VM[1] VCpu[0][m
+[m[37m[  1.270745 0:2 axvm::runtime::vcpus:1079] [32mVCpu task Task(7, "VM[1]-VCpu[0]") created priority=90 cpumask: [0, ][m
+[m[37m[  1.273770 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=79 guest_intid=79[m
+[m[37m[  1.275232 0:2 axvm::runtime:92] [32mVM[1] boot success[m
+[m[37m[  1.275321 0:2 axvm::vm:1365] [32mStarting VM[2][m
+[m[37m[  1.275388 0:2 axvm::runtime::vcpus:1060] [32mSpawning task for VM[2] VCpu[0][m
+[m[37m[  1.275500 0:2 axvm::runtime::vcpus:1079] [32mVCpu task Task(9, "VM[2]-VCpu[0]") created priority=90 cpumask: [0, ][m
+[m[37m[  1.275690 0:2 axvm::arch::aarch64::gic::physical:61] [32mregistered assigned AArch64 SPI route host_intid=78 guest_intid=78[m
+[m[37m[  1.275871 0:2 axvm::runtime:92] [32mVM[2] boot success[m
+[m[37m[  1.277857 0:2 axvisor:114] [32m[OK] Default guest initialized[m
+[m[37m[  1.279296 0:7 axvm::runtime::vcpus:1134] [32mVM[1] VCpu[0] waiting for running[m
+[m[37m[  1.279765 0:7 axvm::runtime::vcpus:1172] [32mVM[1] VCpu[0] running...[m
+[m[37m[  1.291811 0:9 axvm::runtime::vcpus:1134] [32mVM[2] VCpu[0] waiting for running[m
+[m[37m[  1.291924 0:9 axvm::runtime::vcpus:1172] [32mVM[2] VCpu[0] running...[m
+[m[37m[  1.350424 0:7 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0x80000000[m
+[m[VM 2] *** Booting Zephyr OS build v4.4.2 ***
+[VM 2] TASK2_MAIN_START
+[VM 2] TASK2_SOCKET_CREATE
+[VM 2] TASK2_SOCKET_CREATED fd=0
+[VM 2] TASK2_NET_CONFIGURED interface=virtio-net ip=10.0.42.2/24
+[VM 2] TASK2_READY role=managed local=10.0.42.2:4242 peer=10.0.42.15:4242
+[37m[  1.385851 0:7 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc4000001[m
+[m[37m[  1.386186 0:7 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc400000e[m
+[m[37m[  1.386473 0:7 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc4000012[m
+[m[37m[  1.386734 0:7 axvm::runtime::hvc:266] [32mVM[1] PSCI_FEATURES function_id=0xc4000015[m
+[m[VM 1] [    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd083]
+[VM 1] [    0.000000] Linux version 7.1.0-rc2-g74fe02ce122a-dirty (huhu@huhu-Legion-Y9000P-IAH7H) (aarch64-linux-musl-gcc (GCC) 11.2.1 20211120, GNU ld (GNU Binutils) 2.37) #1 SMP PREEMPT Fri Aug  7 08:02:49 CST 2026
+[VM 1] [    0.000000] KASLR disabled due to lack of seed
+[VM 1] [    0.000000] Machine model: linux,dummy-virt
+[VM 1] [    0.000000] efi: UEFI not found.
+[VM 1] [    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[VM 1] [    0.000000] NUMA: Faking a node at [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000] NODE_DATA(0) allocated [mem 0x9ff08e40-0x9ff0b53f]
+[VM 1] [    0.000000] cma: Reserved 32 MiB at 0x000000009de00000
+[VM 1] [    0.000000] psci: probing for conduit method from DT.
+[VM 1] [    0.000000] psci: PSCIv1.1 detected in firmware.
+[VM 1] [    0.000000] psci: Using standard PSCI v0.2 function IDs
+[VM 1] [    0.000000] psci: Trusted OS migration not required
+[VM 1] [    0.000000] psci: SMC Calling Convention v65535.65535
+[VM 1] [    0.000000] Zone ranges:
+[VM 1] [    0.000000]   DMA      [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000]   DMA32    empty
+[VM 1] [    0.000000]   Normal   empty
+[VM 1] [    0.000000] Movable zone start for each node
+[VM 1] [    0.000000] Early memory node ranges
+[VM 1] [    0.000000]   node   0: [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000] Initmem setup node 0 [mem 0x0000000080000000-0x000000009fffffff]
+[VM 1] [    0.000000] percpu: Embedded 26 pages/cpu s66584 r8192 d31720 u106496
+[VM 1] [    0.000000] Detected PIPT I-cache on CPU0
+[VM 1] [    0.000000] CPU features: detected: GICv3 CPU interface
+[VM 1] [    0.000000] CPU features: detected: Spectre-v2
+[VM 1] [    0.000000] CPU features: detected: Spectre-v3a
+[VM 1] [    0.000000] CPU features: detected: Spectre-v4
+[VM 1] [    0.000000] CPU features: detected: Spectre-BHB
+[VM 1] [    0.000000] CPU features: detected: ARM erratum 1742098
+[VM 1] [    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[VM 1] [    0.000000] alternatives: applying boot alternatives
+[VM 1] [    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[VM 1] [    0.000000] Dentry cache hash table entries: 65536 (order: 7, 524288 bytes, linear)
+[VM 1] [    0.000000] Inode-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[VM 1] [    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[VM 1] [    0.000000] software IO TLB: area num 1.
+[VM 1] [    0.000000] software IO TLB: mapped [mem 0x000000009d580000-0x000000009d600000] (0MB)
+[VM 1] [    0.000000] Fallback order for Node 0: 0 
+[VM 1] [    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 131072
+[VM 1] [    0.000000] Policy zone: DMA
+[VM 1] [    0.000000] mem auto-init: stack:off, heap alloc:off, heap free:off
+[VM 1] [    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[VM 1] [    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[VM 1] [    0.000000] rcu: 	RCU event tracing is enabled.
+[VM 1] [    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=1.
+[VM 1] [    0.000000] 	Trampoline variant of Tasks RCU enabled.
+[VM 1] [    0.000000] 	Tracing variant of Tasks RCU enabled.
+[VM 1] [    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.
+[VM 1] [    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[VM 1] [    0.000000] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[VM 1] [    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[VM 1] [    0.000000] GICv3: 256 SPIs implemented
+[VM 1] [    0.000000] GICv3: 0 Extended SPIs implemented
+[VM 1] [    0.000000] Root IRQ handler: gic_handle_irq
+[VM 1] [    0.000000] GICv3: GICv3 features: 16 PPIs, RSS
+[VM 1] [    0.000000] GICv3: GICD_CTLR.DS=0, SCR_EL3.FIQ=0
+[VM 1] [    0.000000] GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000
+[VM 1] [    0.000000] ITS [mem 0x08080000-0x0809ffff]
+[VM 1] [    0.000000] ITS@0x0000000008080000: allocated 8192 Devices @83450000 (indirect, esz 8, psz 64K, shr 1)
+[VM 1] [    0.000000] ITS@0x0000000008080000: allocated 8192 Interrupt Collections @83460000 (flat, esz 8, psz 64K, shr 1)
+[VM 1] [    0.000000] GICv3: using LPI property table @0x0000000083470000
+[VM 1] [    0.000000] GICv3: CPU0: using allocated LPI pending table @0x0000000083480000
+[VM 1] [    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[VM 1] [    0.000000] arch_timer: cp15 timer running at 62.50MHz (virt).
+[VM 1] [    0.000000] clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+[VM 1] [    0.000065] sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+[VM 1] [    0.008889] Console: colour dummy device 80x25
+[VM 1] [    0.009266] printk: legacy console [tty0] enabled
+[VM 1] [    0.012864] Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=250000)
+[VM 1] [    0.013007] pid_max: default: 32768 minimum: 301
+[VM 1] [    0.016251] Mount-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)
+[VM 1] [    0.016312] Mountpoint-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)
+[VM 1] [    0.025682] VFS: Finished mounting rootfs on nullfs
+[VM 1] [    0.044900] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[VM 1] [    0.055725] rcu: Hierarchical SRCU implementation.
+[VM 1] [    0.055789] rcu: 	Max phase no-delay instances is 1000.
+[VM 1] [    0.059256] fsl-mc MSI: its@8080000 domain created
+[VM 1] [    0.060079] EFI services will not be available.
+[VM 1] [    0.061242] smp: Bringing up secondary CPUs ...
+[VM 1] [    0.061868] smp: Brought up 1 node, 1 CPU
+[VM 1] [    0.061904] SMP: Total of 1 processors activated.
+[VM 1] [    0.061941] CPU: All CPU(s) started at EL1
+[VM 1] [    0.062161] CPU features: detected: 32-bit EL0 Support
+[VM 1] [    0.062186] CPU features: detected: 32-bit EL1 Support
+[VM 1] [    0.062253] CPU features: detected: CRC32 instructions
+[VM 1] [    0.062399] CPU features: detected: PMUv3
+[VM 1] [    0.071970] alternatives: applying system-wide alternatives
+[VM 1] [    0.096344] Memory: 408164K/524288K available (18688K kernel code, 5242K rwdata, 14504K rodata, 12672K init, 718K bss, 80672K reserved, 32768K cma-reserved)
+[VM 1] [    0.121961] devtmpfs: initialized
+[VM 1] [    0.137065] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[VM 1] [    0.137570] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[VM 1] [    0.143606] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[VM 1] [    0.145756] 19744 pages in range for non-PLT usage
+[VM 1] [    0.145797] 511264 pages in range for PLT usage
+[VM 1] [    0.158176] DMI: not present or invalid.
+[VM 1] [    0.175660] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[VM 1] [    0.187202] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[VM 1] [    0.187577] audit: initializing netlink subsys (disabled)
+[VM 1] [    0.189395] audit: type=2000 audit(0.144:1): state=initialized audit_enabled=0 res=1
+[VM 1] [    0.193860] thermal_sys: Registered thermal governor 'step_wise'
+[VM 1] [    0.193896] thermal_sys: Registered thermal governor 'power_allocator'
+[VM 1] [    0.194214] cpuidle: using governor menu
+[VM 1] [    0.195139] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[VM 1] [    0.195977] ASID allocator initialised with 65536 entries
+[VM 1] [    0.201739] Serial: AMBA PL011 UART driver
+[VM 1] [    0.226328] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+[VM 1] [    0.229440] printk: console [ttyAMA0] enabled
+[VM 1] [    1.182687] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[VM 1] [    1.182761] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[VM 1] [    1.182807] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[VM 1] [    1.182827] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[VM 1] [    1.182845] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[VM 1] [    1.182861] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[VM 1] [    1.182878] HugeTLB: registered 64.0 KiB page size, pre-allocated 0 pages
+[VM 1] [    1.182893] HugeTLB: 0 KiB vmemmap can be freed for a 64.0 KiB page
+[VM 1] [    1.603683] ACPI: Interpreter disabled.
+[VM 1] [    1.616633] iommu: Default domain type: Translated
+[VM 1] [    1.626666] iommu: DMA domain TLB invalidation policy: strict mode
+[VM 1] [    1.640375] SCSI subsystem initialized
+[VM 1] [    1.650928] usbcore: registered new interface driver usbfs
+[VM 1] [    1.662707] usbcore: registered new interface driver hub
+[VM 1] [    1.662844] usbcore: registered new device driver usb
+[VM 1] [    1.663695] pps_core: LinuxPPS API ver. 1 registered
+[VM 1] [    1.663728] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[VM 1] [    1.663794] PTP clock support registered
+[VM 1] [    1.664096] EDAC MC: Ver: 3.0.0
+[VM 1] [    1.728233] scmi_core: SCMI protocol bus registered
+[VM 1] [    1.740062] FPGA manager framework
+[VM 1] [    1.756533] vgaarb: loaded
+[VM 1] [    1.764311] clocksource: Switched to clocksource arch_sys_counter
+[VM 1] [    1.779121] VFS: Disk quotas dquot_6.6.0
+[VM 1] [    1.788600] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[VM 1] [    1.803950] pnp: PnP ACPI: disabled
+[VM 1] [    1.833889] NET: Registered PF_INET protocol family
+[VM 1] [    1.845840] IP idents hash table entries: 8192 (order: 4, 65536 bytes, linear)
+[VM 1] [    1.863473] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[VM 1] [    1.881783] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[VM 1] [    1.897104] TCP established hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[VM 1] [    1.897380] TCP bind hash table entries: 4096 (order: 5, 131072 bytes, linear)
+[VM 1] [    1.898020] TCP: Hash tables configured (established 4096 bind 4096)
+[VM 1] [    1.899025] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[VM 1] [    1.899990] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[VM 1] [    1.970934] RPC: Registered named UNIX socket transport module.
+[VM 1] [    1.983356] RPC: Registered udp transport module.
+[VM 1] [    1.993247] RPC: Registered tcp transport module.
+[VM 1] [    2.003077] RPC: Registered tcp-with-tls transport module.
+[VM 1] [    2.014329] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[VM 1] [    2.029046] PCI: CLS 0 bytes, default 64
+[VM 1] [    2.041057] kvm [1]: HYP mode not available
+[VM 1] [    2.054463] Initialise system trusted keyrings
+[VM 1] [    2.065374] Unpacking initramfs...
+[VM 1] [    2.078179] workingset: timestamp_bits=42 (anon: 38) max_order=17 bucket_order=0 (anon: 0)
+[VM 1] [    2.100903] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[VM 1] [    2.114679] NFS: Registering the id_resolver key type
+[VM 1] [    2.125862] Key type id_resolver registered
+[VM 1] [    2.126132] Key type id_legacy registered
+[VM 1] [    2.126643] nfs4filelayout_init: NFSv4 File Layout Driver Registering...
+[VM 1] [    2.126964] nfs4flexfilelayout_init: NFSv4 Flexfile Layout Driver Registering...
+[VM 1] [    2.176786] 9p: Installing v9fs 9p2000 file system support
+[VM 1] [    2.190371] Key type asymmetric registered
+[VM 1] [    2.204714] Asymmetric key parser 'x509' registered
+[VM 1] [    2.205240] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 244)
+[VM 1] [    2.205564] io scheduler mq-deadline registered
+[VM 1] [    2.205824] io scheduler kyber registered
+[VM 1] [    2.206308] io scheduler bfq registered
+[VM 1] [    2.280755] ledtrig-cpu: registered to indicate activity on CPUs
+[VM 1] [    2.385580] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[VM 1] [    2.411094] msm_serial: driver initialized
+[VM 1] [    2.421599] SuperH (H)SCI(F) driver initialized
+[VM 1] [    2.432901] STM32 USART driver initialized
+[VM 1] [    2.485216] loop: module loaded
+[VM 1] [    2.494448] megasas: 07.734.00.00-rc1
+[VM 1] [    2.527602] tun: Universal TUN/TAP device driver, 1.6
+[VM 1] [    2.563150] thunder_xcv, ver 1.0
+[VM 1] [    2.572808] thunder_bgx, ver 1.0
+[VM 1] [    2.584591] nicpf, ver 1.0
+[VM 1] [    2.586915] e1000: Intel(R) PRO/1000 Network Driver
+[VM 1] [    2.587151] e1000: Copyright (c) 1999-2006 Intel Corporation.
+[VM 1] [    2.587537] e1000e: Intel(R) PRO/1000 Network Driver
+[VM 1] [    2.587996] e1000e: Copyright(c) 1999 - 2015 Intel Corporation.
+[VM 1] [    2.642692] igb: Intel(R) Gigabit Ethernet Network Driver
+[VM 1] [    2.656587] igb: Copyright (c) 2007-2014 Intel Corporation.
+[VM 1] [    2.668608] igbvf: Intel(R) Gigabit Virtual Function Network Driver
+[VM 1] [    2.681178] igbvf: Copyright (c) 2009 - 2012 Intel Corporation.
+[VM 1] [    2.693736] sky2: driver version 1.30
+[VM 1] [    2.719017] VFIO - User Level meta-driver version: 0.3
+[VM 1] [    2.735885] usbcore: registered new interface driver usb-storage
+[VM 1] [    2.754373] i2c_dev: i2c /dev entries driver
+[VM 1] [    2.790880] SMCCC: SOC_ID: ARCH_SOC_ID not implemented, skipping ....
+[VM 1] [    2.810080] usbcore: registered new interface driver usbhid
+[VM 1] [    2.821425] usbhid: USB HID core driver
+[VM 1] [    2.849305] NET: Registered PF_INET6 protocol family
+[VM 1] [    2.877449] Segment Routing with IPv6
+[VM 1] [    2.885653] In-situ OAM (IOAM) with IPv6
+[VM 1] [    2.894339] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[VM 1] [    2.911038] NET: Registered PF_PACKET protocol family
+[VM 1] [    2.925571] 9pnet: Installing 9P2000 support
+[VM 1] [    2.934890] Key type dns_resolver registered
+[VM 1] [    2.994347] registered taskstats version 1
+[VM 1] [    3.004793] Loading compiled-in X.509 certificates
+[VM 1] [    3.048671] Demotion targets for Node 0: null
+[VM 1] [    3.074168] clk: Disabling unused clocks
+[VM 1] [    3.082788] PM: genpd: Disabling unused power domains
+[VM 1] [    3.450148] Freeing initrd memory: 17912K
+[VM 1] [    3.500664] Freeing unused kernel memory: 12672K
+[VM 1] [    3.511178] Run /init as init process
+[VM 1] TASK2_INIT_START
+[VM 1] TASK2_NET_CONFIGURED interface=eth0 ip=10.0.42.15/24
+[VM 1] TASK2_READY role=controller local=10.0.42.15:4242 peer=10.0.42.2:4242
+[VM 1] TASK3_MODEL_READY model=yolo11n.onnx version=ultralytics-yolo11n-v8.3.0 sha256=634279b40c07c6391472c51ad45b81ebc48706a9a1fe72dd3396322acd0c053b path=embedded:fixture-replay mode=bounded-contract
+[VM 1] TASK3_MODEL_POLICY min_confidence_milli=600 min_area_milli=10 max_target_step=100
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=500
+[VM 1] TASK3_INFER elapsed_ms=61 sample=1 output=400 infer_us=6 model=yolo11n.onnx target=500
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=61 request=1 value=400 target=500 state=300 seq=1 model=yolo11n.onnx
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2420
+[VM 2] TASK2_CONTROL_RECEIVED seq=1 request=1
+[VM 2] TASK3_CONTROL_APPLIED request=1 value=400
+[VM 2] TASK3_PLANT_STATE before=300 after=310 dist=0
+[VM 2] TASK2_STATUS_SENT seq=1
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2880
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=3110
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=3340
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=3580
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=3820
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=3820
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=270
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=291 request=1 value=310 state=310 sample=1 rtt_ms=230
+[VM 2] TASK2_ACK seq=1
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+[VM 1] TASK3_INFER elapsed_ms=291 sample=2 output=218 infer_us=120 model=yolo11n.onnx target=419
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=4160
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=470
+[VM 1] TASK2_RETRANSMIT seq=1 attempt=1
+[VM 2] TASK2_DUPLICATE seq=1
+[VM 1] TASK2_ACK seq=1
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+[VM 1] TASK3_INFER elapsed_ms=592 sample=3 output=218 infer_us=2 model=yolo11n.onnx target=419
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=592 request=3 value=218 target=419 state=310 seq=2 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=2 request=3
+[VM 2] TASK3_CONTROL_APPLIED request=3 value=218
+[VM 2] TASK3_PLANT_STATE before=310 after=252 dist=0
+[VM 2] TASK2_STATUS_SENT seq=2
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=4410
+[VM 1] TASK2_ACK seq=2
+[VM 2] TASK2_ACK seq=2
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=715 request=3 value=252 state=252 sample=2 rtt_ms=123
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+[VM 1] TASK3_INFER elapsed_ms=715 sample=4 output=534 infer_us=3 model=yolo11n.onnx target=519
+[VM 2] TASK2_CONTROL_RECEIVED seq=3 request=4
+[VM 2] TASK3_CONTROL_APPLIED request=4 value=534
+[VM 2] TASK3_PLANT_STATE before=252 after=328 dist=0
+[VM 2] TASK2_STATUS_SENT seq=3
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=715 request=4 value=534 target=519 state=252 seq=3 model=yolo11n.onnx
+[VM 2] TASK2_ACK seq=3
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=822 request=4 value=328 state=328 sample=3 rtt_ms=107
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+[VM 1] TASK3_INFER elapsed_ms=822 sample=5 output=382 infer_us=0 model=yolo11n.onnx target=519
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=917
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=4870
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=1121
+[VM 1] TASK2_RETRANSMIT seq=3 attempt=1
+[VM 2] TASK2_DUPLICATE seq=3
+[VM 1] TASK2_ACK seq=3
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=519
+[VM 1] TASK3_INFER elapsed_ms=1242 sample=6 output=382 infer_us=0 model=yolo11n.onnx target=519
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=1242 request=6 value=382 target=519 state=328 seq=4 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=4 request=6
+[VM 2] TASK3_CONTROL_APPLIED request=6 value=382
+[VM 2] TASK3_PLANT_STATE before=328 after=319 dist=0
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=1313 request=6 value=319 state=319 sample=4 rtt_ms=71
+[VM 2] TASK2_STATUS_SENT seq=4
+[VM 2] TASK2_ACK seq=4
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+[VM 1] TASK3_INFER elapsed_ms=1313 sample=7 output=200 infer_us=2 model=yolo11n.onnx target=419
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=1452
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=5400
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=1655
+[VM 2] TASK2_DUPLICATE seq=4
+[VM 1] TASK2_RETRANSMIT seq=4 attempt=1
+[VM 1] TASK2_ACK seq=4
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+[VM 1] TASK3_INFER elapsed_ms=1766 sample=8 output=200 infer_us=2 model=yolo11n.onnx target=419
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=1766 request=8 value=200 target=419 state=319 seq=5 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=5 request=8
+[VM 2] TASK3_CONTROL_APPLIED request=8 value=200
+[VM 2] TASK3_PLANT_STATE before=319 after=251 dist=0
+[VM 2] TASK2_STATUS_SENT seq=5
+[VM 2] TASK2_ACK seq=5
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=1847 request=8 value=251 state=251 sample=5 rtt_ms=81
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+[VM 1] TASK3_INFER elapsed_ms=1847 sample=9 output=536 infer_us=2 model=yolo11n.onnx target=519
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=1969
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=5920
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2173
+[VM 1] TASK2_RETRANSMIT seq=5 attempt=1
+[VM 2] TASK2_DUPLICATE seq=5
+[VM 1] TASK2_ACK seq=5
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=619
+[VM 1] TASK3_INFER elapsed_ms=2289 sample=10 output=736 infer_us=2 model=yolo11n.onnx target=619
+[VM 2] TASK2_CONTROL_RECEIVED seq=6 request=10
+[VM 2] TASK3_CONTROL_APPLIED request=10 value=736
+[VM 2] TASK3_PLANT_STATE before=251 after=398 dist=0
+[VM 2] TASK2_STATUS_SENT seq=6
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=2289 request=10 value=736 target=619 state=251 seq=6 model=yolo11n.onnx
+[VM 2] TASK2_ACK seq=6
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=2382 request=10 value=398 state=398 sample=6 rtt_ms=93
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=619
+[VM 1] TASK3_INFER elapsed_ms=2382 sample=11 output=442 infer_us=1 model=yolo11n.onnx target=619
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2492
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=6440
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=2696
+[VM 2] TASK2_DUPLICATE seq=6
+[VM 1] TASK2_RETRANSMIT seq=6 attempt=1
+[VM 1] TASK2_ACK seq=6
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=619
+[VM 1] TASK3_INFER elapsed_ms=2817 sample=12 output=442 infer_us=0 model=yolo11n.onnx target=619
+[VM 2] TASK2_CONTROL_RECEIVED seq=7 request=12
+[VM 2] TASK3_CONTROL_APPLIED request=12 value=442
+[VM 2] TASK3_PLANT_STATE before=398 after=379 dist=0
+[VM 2] TASK2_STATUS_SENT seq=7
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=2817 request=12 value=442 target=619 state=398 seq=7 model=yolo11n.onnx
+[VM 1] TASK2_ACK seq=7
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=2918 request=12 value=379 state=379 sample=7 rtt_ms=101
+[VM 2] TASK2_ACK seq=7
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=519
+[VM 1] TASK3_INFER elapsed_ms=2918 sample=13 output=280 infer_us=2 model=yolo11n.onnx target=519
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=2918 request=13 value=280 target=519 state=379 seq=8 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=8 request=13
+[VM 2] TASK3_CONTROL_APPLIED request=13 value=280
+[VM 2] TASK3_PLANT_STATE before=379 after=313 dist=0
+[VM 2] TASK2_STATUS_SENT seq=8
+[VM 1] TASK2_ACK seq=8
+[VM 2] TASK2_ACK seq=8
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=3030 request=13 value=313 state=313 sample=8 rtt_ms=112
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=619
+[VM 1] TASK3_INFER elapsed_ms=3030 sample=14 output=612 infer_us=2 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=3030 request=14 value=612 target=619 state=313 seq=9 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=9 request=14
+[VM 2] TASK3_CONTROL_APPLIED request=14 value=612
+[VM 2] TASK3_PLANT_STATE before=313 after=391 dist=0
+[VM 1] TASK2_ACK seq=9
+[VM 2] TASK2_STATUS_SENT seq=9
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=3137 request=14 value=391 state=391 sample=9 rtt_ms=107
+[VM 2] TASK2_ACK seq=9
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=619
+[VM 1] TASK3_INFER elapsed_ms=3137 sample=15 output=456 infer_us=0 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=3137 request=15 value=456 target=619 state=391 seq=10 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=10 request=15
+[VM 2] TASK3_CONTROL_APPLIED request=15 value=456
+[VM 2] TASK3_PLANT_STATE before=391 after=380 dist=0
+[VM 2] TASK2_STATUS_SENT seq=10
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=3243 request=15 value=380 state=380 sample=10 rtt_ms=106
+[VM 2] TASK2_ACK seq=10
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=519
+[VM 1] TASK3_INFER elapsed_ms=3243 sample=16 output=278 infer_us=3 model=yolo11n.onnx target=519
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=3341
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=7290
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=3544
+[VM 1] TASK2_RETRANSMIT seq=10 attempt=1
+[VM 2] TASK2_DUPLICATE seq=10
+[VM 1] TASK2_ACK seq=10
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=419
+[VM 1] TASK3_INFER elapsed_ms=3661 sample=17 output=78 infer_us=2 model=yolo11n.onnx target=419
+[VM 2] TASK2_CONTROL_RECEIVED seq=11 request=17
+[VM 2] TASK3_CONTROL_APPLIED request=17 value=78
+[VM 2] TASK3_PLANT_STATE before=380 after=243 dist=0
+[VM 2] TASK2_STATUS_SENT seq=11
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=3661 request=17 value=78 target=419 state=380 seq=11 model=yolo11n.onnx
+[VM 2] TASK2_ACK seq=11
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=3758 request=17 value=243 state=243 sample=11 rtt_ms=97
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=519
+[VM 1] TASK3_INFER elapsed_ms=3758 sample=18 output=552 infer_us=2 model=yolo11n.onnx target=519
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=3864
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=7820
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=4068
+[VM 2] TASK2_DUPLICATE seq=11
+[VM 1] TASK2_RETRANSMIT seq=11 attempt=1
+[VM 1] TASK2_ACK seq=11
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=619
+[VM 1] TASK3_INFER elapsed_ms=4190 sample=19 output=752 infer_us=2 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4190 request=19 value=752 target=619 state=243 seq=12 model=yolo11n.onnx
+[VM 2] TASK3_DISTURBANCE change=150 at_ms=8070
+[VM 2] TASK2_CONTROL_RECEIVED seq=12 request=19
+[VM 2] TASK3_CONTROL_APPLIED request=19 value=752
+[VM 2] TASK3_PLANT_STATE before=243 after=549 dist=150
+[VM 2] TASK2_STATUS_SENT seq=12
+[VM 1] TASK2_ACK seq=12
+[VM 2] TASK2_ACK seq=12
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4293 request=19 value=549 state=549 sample=12 rtt_ms=103
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=619
+[VM 1] TASK3_INFER elapsed_ms=4293 sample=20 output=140 infer_us=0 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4293 request=20 value=140 target=619 state=549 seq=13 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=13 request=20
+[VM 2] TASK3_CONTROL_APPLIED request=20 value=140
+[VM 2] TASK3_PLANT_STATE before=549 after=505 dist=150
+[VM 2] TASK2_STATUS_SENT seq=13
+[VM 1] TASK2_ACK seq=13
+[VM 2] TASK2_ACK seq=13
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4400 request=20 value=505 state=505 sample=13 rtt_ms=107
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=519
+[VM 1] TASK3_INFER elapsed_ms=4400 sample=21 output=28 infer_us=2 model=yolo11n.onnx target=519
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4400 request=21 value=28 target=519 state=505 seq=14 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=14 request=21
+[VM 2] TASK3_CONTROL_APPLIED request=21 value=28
+[VM 2] TASK3_PLANT_STATE before=505 after=444 dist=150
+[VM 2] TASK2_STATUS_SENT seq=14
+[VM 1] TASK2_ACK seq=14
+[VM 2] TASK2_ACK seq=14
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4513 request=21 value=444 state=444 sample=14 rtt_ms=113
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=619
+[VM 1] TASK3_INFER elapsed_ms=4513 sample=22 output=350 infer_us=2 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4513 request=22 value=350 target=619 state=444 seq=15 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=15 request=22
+[VM 2] TASK3_CONTROL_APPLIED request=22 value=350
+[VM 1] TASK2_ACK seq=15
+[VM 2] TASK3_PLANT_STATE before=444 after=524 dist=150
+[VM 2] TASK2_STATUS_SENT seq=15
+[VM 2] TASK2_ACK seq=15
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4627 request=22 value=524 state=524 sample=15 rtt_ms=114
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=619
+[VM 1] TASK3_INFER elapsed_ms=4627 sample=23 output=190 infer_us=1 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4627 request=23 value=190 target=619 state=524 seq=16 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=16 request=23
+[VM 2] TASK3_CONTROL_APPLIED request=23 value=190
+[VM 2] TASK3_PLANT_STATE before=524 after=511 dist=150
+[VM 2] TASK2_STATUS_SENT seq=16
+[VM 1] TASK2_ACK seq=16
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4744 request=23 value=511 state=511 sample=16 rtt_ms=117
+[VM 2] TASK2_ACK seq=16
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=519
+[VM 1] TASK3_INFER elapsed_ms=4744 sample=24 output=16 infer_us=2 model=yolo11n.onnx target=519
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4744 request=24 value=16 target=519 state=511 seq=17 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=17 request=24
+[VM 2] TASK3_CONTROL_APPLIED request=24 value=16
+[VM 2] TASK3_PLANT_STATE before=511 after=442 dist=150
+[VM 2] TASK2_STATUS_SENT seq=17
+[VM 1] TASK2_ACK seq=17
+[VM 2] TASK2_ACK seq=17
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4864 request=24 value=442 state=442 sample=17 rtt_ms=120
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=619
+[VM 1] TASK3_INFER elapsed_ms=4864 sample=25 output=354 infer_us=3 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4864 request=25 value=354 target=619 state=442 seq=18 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=18 request=25
+[VM 2] TASK3_CONTROL_APPLIED request=25 value=354
+[VM 2] TASK3_PLANT_STATE before=442 after=524 dist=150
+[VM 2] TASK2_STATUS_SENT seq=18
+[VM 1] TASK2_ACK seq=18
+[VM 2] TASK2_ACK seq=18
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=4983 request=25 value=524 state=524 sample=18 rtt_ms=119
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=619
+[VM 1] TASK3_INFER elapsed_ms=4983 sample=26 output=190 infer_us=0 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=4983 request=26 value=190 target=619 state=524 seq=19 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=19 request=26
+[VM 2] TASK3_CONTROL_APPLIED request=26 value=190
+[VM 2] TASK3_PLANT_STATE before=524 after=511 dist=150
+[VM 2] TASK2_STATUS_SENT seq=19
+[VM 1] TASK2_ACK seq=19
+[VM 2] TASK2_ACK seq=19
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5102 request=26 value=511 state=511 sample=19 rtt_ms=119
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=519
+[VM 1] TASK3_INFER elapsed_ms=5102 sample=27 output=16 infer_us=2 model=yolo11n.onnx target=519
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5102 request=27 value=16 target=519 state=511 seq=20 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=20 request=27
+[VM 2] TASK3_CONTROL_APPLIED request=27 value=16
+[VM 2] TASK3_PLANT_STATE before=511 after=442 dist=150
+[VM 2] TASK2_STATUS_SENT seq=20
+[VM 1] TASK2_ACK seq=20
+[VM 2] TASK2_ACK seq=20
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5219 request=27 value=442 state=442 sample=20 rtt_ms=117
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=619
+[VM 1] TASK3_INFER elapsed_ms=5219 sample=28 output=354 infer_us=2 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5219 request=28 value=354 target=619 state=442 seq=21 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=21 request=28
+[VM 2] TASK3_CONTROL_APPLIED request=28 value=354
+[VM 2] TASK3_PLANT_STATE before=442 after=524 dist=150
+[VM 2] TASK2_STATUS_SENT seq=21
+[VM 1] TASK2_ACK seq=21
+[VM 2] TASK2_ACK seq=21
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5334 request=28 value=524 state=524 sample=21 rtt_ms=115
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=619
+[VM 1] TASK3_INFER elapsed_ms=5334 sample=29 output=190 infer_us=0 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5334 request=29 value=190 target=619 state=524 seq=22 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=22 request=29
+[VM 2] TASK3_CONTROL_APPLIED request=29 value=190
+[VM 2] TASK3_PLANT_STATE before=524 after=511 dist=150
+[VM 2] TASK2_STATUS_SENT seq=22
+[VM 1] TASK2_ACK seq=22
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5454 request=29 value=511 state=511 sample=22 rtt_ms=120
+[VM 2] TASK2_ACK seq=22
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=519
+[VM 1] TASK3_INFER elapsed_ms=5454 sample=30 output=16 infer_us=2 model=yolo11n.onnx target=519
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5454 request=30 value=16 target=519 state=511 seq=23 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=23 request=30
+[VM 2] TASK3_CONTROL_APPLIED request=30 value=16
+[VM 2] TASK3_PLANT_STATE before=511 after=442 dist=150
+[VM 2] TASK2_STATUS_SENT seq=23
+[VM 1] TASK2_ACK seq=23
+[VM 2] TASK2_ACK seq=23
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5565 request=30 value=442 state=442 sample=23 rtt_ms=111
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=619
+[VM 1] TASK3_INFER elapsed_ms=5565 sample=31 output=354 infer_us=2 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5565 request=31 value=354 target=619 state=442 seq=24 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=24 request=31
+[VM 2] TASK3_CONTROL_APPLIED request=31 value=354
+[VM 2] TASK3_PLANT_STATE before=442 after=524 dist=150
+[VM 2] TASK2_STATUS_SENT seq=24
+[VM 1] TASK2_ACK seq=24
+[VM 2] TASK2_ACK seq=24
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5676 request=31 value=524 state=524 sample=24 rtt_ms=111
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=619
+[VM 1] TASK3_INFER elapsed_ms=5676 sample=32 output=190 infer_us=0 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5676 request=32 value=190 target=619 state=524 seq=25 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=25 request=32
+[VM 2] TASK3_CONTROL_APPLIED request=32 value=190
+[VM 2] TASK3_PLANT_STATE before=524 after=511 dist=150
+[VM 2] TASK2_STATUS_SENT seq=25
+[VM 1] TASK2_ACK seq=25
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5794 request=32 value=511 state=511 sample=25 rtt_ms=118
+[VM 2] TASK2_ACK seq=25
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=519
+[VM 1] TASK3_INFER elapsed_ms=5794 sample=33 output=16 infer_us=2 model=yolo11n.onnx target=519
+[VM 2] TASK2_CONTROL_RECEIVED seq=26 request=33
+[VM 2] TASK3_CONTROL_APPLIED request=33 value=16
+[VM 2] TASK3_PLANT_STATE before=511 after=442 dist=150
+[VM 2] TASK2_STATUS_SENT seq=26
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5794 request=33 value=16 target=519 state=511 seq=26 model=yolo11n.onnx
+[VM 1] TASK2_ACK seq=26
+[VM 2] TASK2_ACK seq=26
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=5913 request=33 value=442 state=442 sample=26 rtt_ms=119
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=619
+[VM 1] TASK3_INFER elapsed_ms=5913 sample=34 output=354 infer_us=2 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=5913 request=34 value=354 target=619 state=442 seq=27 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=27 request=34
+[VM 2] TASK3_CONTROL_APPLIED request=34 value=354
+[VM 2] TASK3_PLANT_STATE before=442 after=524 dist=150
+[VM 2] TASK2_STATUS_SENT seq=27
+[VM 1] TASK2_ACK seq=27
+[VM 2] TASK2_ACK seq=27
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6031 request=34 value=524 state=524 sample=27 rtt_ms=118
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=619
+[VM 1] TASK3_INFER elapsed_ms=6031 sample=35 output=190 infer_us=0 model=yolo11n.onnx target=619
+[VM 2] TASK2_CONTROL_RECEIVED seq=28 request=35
+[VM 2] TASK3_CONTROL_APPLIED request=35 value=190
+[VM 2] TASK3_PLANT_STATE before=524 after=511 dist=150
+[VM 2] TASK2_STATUS_SENT seq=28
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6031 request=35 value=190 target=619 state=524 seq=28 model=yolo11n.onnx
+[VM 1] TASK2_ACK seq=28
+[VM 2] TASK2_ACK seq=28
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6150 request=35 value=511 state=511 sample=28 rtt_ms=119
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=519
+[VM 1] TASK3_INFER elapsed_ms=6150 sample=36 output=16 infer_us=3 model=yolo11n.onnx target=519
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6150 request=36 value=16 target=519 state=511 seq=29 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=29 request=36
+[VM 2] TASK3_CONTROL_APPLIED request=36 value=16
+[VM 2] TASK3_PLANT_STATE before=511 after=442 dist=150
+[VM 2] TASK2_STATUS_SENT seq=29
+[VM 1] TASK2_ACK seq=29
+[VM 2] TASK2_ACK seq=29
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6269 request=36 value=442 state=442 sample=29 rtt_ms=119
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=619
+[VM 1] TASK3_INFER elapsed_ms=6269 sample=37 output=354 infer_us=3 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6269 request=37 value=354 target=619 state=442 seq=30 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=30 request=37
+[VM 2] TASK3_CONTROL_APPLIED request=37 value=354
+[VM 2] TASK3_PLANT_STATE before=442 after=524 dist=150
+[VM 2] TASK2_STATUS_SENT seq=30
+[VM 1] TASK2_ACK seq=30
+[VM 2] TASK2_ACK seq=30
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6390 request=37 value=524 state=524 sample=30 rtt_ms=121
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=619
+[VM 1] TASK3_INFER elapsed_ms=6390 sample=38 output=190 infer_us=0 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6390 request=38 value=190 target=619 state=524 seq=31 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=31 request=38
+[VM 2] TASK3_CONTROL_APPLIED request=38 value=190
+[VM 2] TASK3_PLANT_STATE before=524 after=511 dist=150
+[VM 2] TASK2_STATUS_SENT seq=31
+[VM 1] TASK2_ACK seq=31
+[VM 2] TASK2_ACK seq=31
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6503 request=38 value=511 state=511 sample=31 rtt_ms=113
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=519
+[VM 1] TASK3_INFER elapsed_ms=6503 sample=39 output=16 infer_us=2 model=yolo11n.onnx target=519
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6503 request=39 value=16 target=519 state=511 seq=32 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=32 request=39
+[VM 2] TASK3_CONTROL_APPLIED request=39 value=16
+[VM 2] TASK3_PLANT_STATE before=511 after=442 dist=150
+[VM 2] TASK2_STATUS_SENT seq=32
+[VM 1] TASK2_ACK seq=32
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6613 request=39 value=442 state=442 sample=32 rtt_ms=110
+[VM 2] TASK2_ACK seq=32
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=619
+[VM 1] TASK3_INFER elapsed_ms=6613 sample=40 output=354 infer_us=2 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6613 request=40 value=354 target=619 state=442 seq=33 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=33 request=40
+[VM 2] TASK3_CONTROL_APPLIED request=40 value=354
+[VM 2] TASK3_PLANT_STATE before=442 after=524 dist=150
+[VM 2] TASK2_STATUS_SENT seq=33
+[VM 1] TASK2_ACK seq=33
+[VM 2] TASK2_ACK seq=33
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6724 request=40 value=524 state=524 sample=33 rtt_ms=111
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=619
+[VM 1] TASK3_INFER elapsed_ms=6724 sample=41 output=190 infer_us=0 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6724 request=41 value=190 target=619 state=524 seq=34 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=34 request=41
+[VM 2] TASK3_CONTROL_APPLIED request=41 value=190
+[VM 2] TASK3_PLANT_STATE before=524 after=511 dist=150
+[VM 2] TASK2_STATUS_SENT seq=34
+[VM 1] TASK2_ACK seq=34
+[VM 2] TASK2_ACK seq=34
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6843 request=41 value=511 state=511 sample=34 rtt_ms=119
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=519
+[VM 1] TASK3_INFER elapsed_ms=6843 sample=42 output=16 infer_us=2 model=yolo11n.onnx target=519
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=6843 request=42 value=16 target=519 state=511 seq=35 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=35 request=42
+[VM 2] TASK3_CONTROL_APPLIED request=42 value=16
+[VM 2] TASK3_PLANT_STATE before=511 after=442 dist=150
+[VM 2] TASK2_STATUS_SENT seq=35
+[VM 2] TASK2_ACK seq=35
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=6962 request=42 value=442 state=442 sample=35 rtt_ms=119
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=619
+[VM 1] TASK3_INFER elapsed_ms=6962 sample=43 output=354 infer_us=2 model=yolo11n.onnx target=619
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=7046
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=11000
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=7251
+[VM 2] TASK2_DUPLICATE seq=35
+[VM 1] TASK2_RETRANSMIT seq=35 attempt=1
+[VM 1] TASK2_ACK seq=35
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=719
+[VM 1] TASK3_INFER elapsed_ms=7372 sample=44 output=554 infer_us=2 model=yolo11n.onnx target=719
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=7372 request=44 value=554 target=719 state=442 seq=36 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=36 request=44
+[VM 2] TASK3_CONTROL_APPLIED request=44 value=554
+[VM 2] TASK3_PLANT_STATE before=442 after=593 dist=150
+[VM 2] TASK2_STATUS_SENT seq=36
+[VM 1] TASK2_ACK seq=36
+[VM 2] TASK2_ACK seq=36
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=7470 request=44 value=593 state=593 sample=36 rtt_ms=98
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=719
+[VM 1] TASK3_INFER elapsed_ms=7470 sample=45 output=252 infer_us=1 model=yolo11n.onnx target=719
+[VM 2] TASK2_CONTROL_RECEIVED seq=37 request=45
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=7470 request=45 value=252 target=719 state=593 seq=37 model=yolo11n.onnx
+[VM 2] TASK3_CONTROL_APPLIED request=45 value=252
+[VM 2] TASK3_PLANT_STATE before=593 after=567 dist=150
+[VM 2] TASK2_STATUS_SENT seq=37
+[VM 1] TASK2_ACK seq=37
+[VM 2] TASK2_ACK seq=37
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=7593 request=45 value=567 state=567 sample=37 rtt_ms=123
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=619
+[VM 1] TASK3_INFER elapsed_ms=7593 sample=46 output=104 infer_us=2 model=yolo11n.onnx target=619
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=7593 request=46 value=104 target=619 state=567 seq=38 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=38 request=46
+[VM 2] TASK3_CONTROL_APPLIED request=46 value=104
+[VM 2] TASK3_PLANT_STATE before=567 after=502 dist=150
+[VM 2] TASK2_STATUS_SENT seq=38
+[VM 2] TASK2_ACK seq=38
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=7683 request=46 value=502 state=502 sample=38 rtt_ms=90
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=719
+[VM 1] TASK3_INFER elapsed_ms=7683 sample=47 output=434 infer_us=3 model=yolo11n.onnx target=719
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=7798
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=11750
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=8003
+[VM 2] TASK2_DUPLICATE seq=38
+[VM 1] TASK2_RETRANSMIT seq=38 attempt=1
+[VM 1] TASK2_ACK seq=38
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=805
+[VM 1] TASK3_INFER elapsed_ms=8125 sample=48 output=606 infer_us=2 model=yolo11n.onnx target=805
+[VM 2] TASK2_CONTROL_RECEIVED seq=39 request=48
+[VM 2] TASK3_CONTROL_APPLIED request=48 value=606
+[VM 2] TASK3_PLANT_STATE before=502 after=643 dist=150
+[VM 2] TASK2_STATUS_SENT seq=39
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=8125 request=48 value=606 target=805 state=502 seq=39 model=yolo11n.onnx
+[VM 2] TASK2_ACK seq=39
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=8219 request=48 value=643 state=643 sample=39 rtt_ms=94
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=805
+[VM 1] TASK3_INFER elapsed_ms=8219 sample=49 output=324 infer_us=0 model=yolo11n.onnx target=805
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=8329
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=12280
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=8532
+[VM 1] TASK2_RETRANSMIT seq=39 attempt=1
+[VM 2] TASK2_DUPLICATE seq=39
+[VM 1] TASK2_ACK seq=39
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=805
+[VM 1] TASK3_INFER elapsed_ms=8649 sample=50 output=324 infer_us=0 model=yolo11n.onnx target=805
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=8649 request=50 value=324 target=805 state=643 seq=40 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=40 request=50
+[VM 2] TASK3_CONTROL_APPLIED request=50 value=324
+[VM 2] TASK3_PLANT_STATE before=643 after=618 dist=150
+[VM 2] TASK2_STATUS_SENT seq=40
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=8729 request=50 value=618 state=618 sample=40 rtt_ms=80
+[VM 2] TASK2_ACK seq=40
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=705
+[VM 1] TASK3_INFER elapsed_ms=8729 sample=51 output=174 infer_us=2 model=yolo11n.onnx target=705
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=8851
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=12800
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=9055
+[VM 1] TASK2_RETRANSMIT seq=40 attempt=1
+[VM 2] TASK2_DUPLICATE seq=40
+[VM 1] TASK2_ACK seq=40
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=605
+[VM 1] TASK3_INFER elapsed_ms=9172 sample=52 output=0 infer_us=2 model=yolo11n.onnx target=605
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=9172 request=52 value=0 target=605 state=618 seq=41 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=41 request=52
+[VM 1] TASK2_ACK seq=41
+[VM 2] TASK3_CONTROL_APPLIED request=52 value=0
+[VM 2] TASK3_PLANT_STATE before=618 after=492 dist=150
+[VM 2] TASK2_STATUS_SENT seq=41
+[VM 2] TASK2_ACK seq=41
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=9259 request=52 value=492 state=492 sample=41 rtt_ms=87
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=705
+[VM 1] TASK3_INFER elapsed_ms=9259 sample=53 output=426 infer_us=2 model=yolo11n.onnx target=705
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=9259 request=53 value=426 target=705 state=492 seq=42 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=42 request=53
+[VM 2] TASK3_CONTROL_APPLIED request=53 value=426
+[VM 2] TASK3_PLANT_STATE before=492 after=575 dist=150
+[VM 2] TASK2_STATUS_SENT seq=42
+[VM 1] TASK2_ACK seq=42
+[VM 2] TASK2_ACK seq=42
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=9391 request=53 value=575 state=575 sample=42 rtt_ms=132
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=705
+[VM 1] TASK3_INFER elapsed_ms=9391 sample=54 output=260 infer_us=0 model=yolo11n.onnx target=705
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=9391 request=54 value=260 target=705 state=575 seq=43 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=43 request=54
+[VM 2] TASK3_CONTROL_APPLIED request=54 value=260
+[VM 2] TASK3_PLANT_STATE before=575 after=561 dist=150
+[VM 2] TASK2_STATUS_SENT seq=43
+[VM 1] TASK2_ACK seq=43
+[VM 2] TASK2_ACK seq=43
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=9506 request=54 value=561 state=561 sample=43 rtt_ms=115
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=605
+[VM 1] TASK3_INFER elapsed_ms=9506 sample=55 output=88 infer_us=2 model=yolo11n.onnx target=605
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=9506 request=55 value=88 target=605 state=561 seq=44 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=44 request=55
+[VM 2] TASK3_CONTROL_APPLIED request=55 value=88
+[VM 2] TASK3_PLANT_STATE before=561 after=494 dist=150
+[VM 2] TASK2_STATUS_SENT seq=44
+[VM 2] TASK2_ACK seq=44
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=9623 request=55 value=494 state=494 sample=44 rtt_ms=117
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=705
+[VM 1] TASK3_INFER elapsed_ms=9623 sample=56 output=422 infer_us=2 model=yolo11n.onnx target=705
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=9706
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=13660
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=9909
+[VM 2] TASK2_DUPLICATE seq=44
+[VM 1] TASK2_RETRANSMIT seq=44 attempt=1
+[VM 1] TASK2_ACK seq=44
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=805
+[VM 1] TASK3_INFER elapsed_ms=10030 sample=57 output=622 infer_us=3 model=yolo11n.onnx target=805
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10030 request=57 value=622 target=805 state=494 seq=45 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=45 request=57
+[VM 2] TASK3_CONTROL_APPLIED request=57 value=622
+[VM 2] TASK3_PLANT_STATE before=494 after=644 dist=150
+[VM 2] TASK2_STATUS_SENT seq=45
+[VM 1] TASK2_ACK seq=45
+[VM 2] TASK2_ACK seq=45
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10130 request=57 value=644 state=644 sample=45 rtt_ms=100
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=805
+[VM 1] TASK3_INFER elapsed_ms=10130 sample=58 output=322 infer_us=0 model=yolo11n.onnx target=805
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10130 request=58 value=322 target=805 state=644 seq=46 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=46 request=58
+[VM 2] TASK3_CONTROL_APPLIED request=58 value=322
+[VM 2] TASK3_PLANT_STATE before=644 after=618 dist=150
+[VM 2] TASK2_STATUS_SENT seq=46
+[VM 2] TASK2_ACK seq=46
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10213 request=58 value=618 state=618 sample=46 rtt_ms=83
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=705
+[VM 1] TASK3_INFER elapsed_ms=10213 sample=59 output=174 infer_us=3 model=yolo11n.onnx target=705
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=10333
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=14280
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=10537
+[VM 2] TASK2_DUPLICATE seq=46
+[VM 1] TASK2_RETRANSMIT seq=46 attempt=1
+[VM 1] TASK2_ACK seq=46
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=605
+[VM 1] TASK3_INFER elapsed_ms=10658 sample=60 output=0 infer_us=2 model=yolo11n.onnx target=605
+[VM 2] TASK2_CONTROL_RECEIVED seq=47 request=60
+[VM 2] TASK3_CONTROL_APPLIED request=60 value=0
+[VM 2] TASK3_PLANT_STATE before=618 after=492 dist=150
+[VM 2] TASK2_STATUS_SENT seq=47
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10658 request=60 value=0 target=605 state=618 seq=47 model=yolo11n.onnx
+[VM 1] TASK2_ACK seq=47
+[VM 2] TASK2_ACK seq=47
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10765 request=60 value=492 state=492 sample=47 rtt_ms=107
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=705
+[VM 1] TASK3_INFER elapsed_ms=10765 sample=61 output=426 infer_us=3 model=yolo11n.onnx target=705
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10765 request=61 value=426 target=705 state=492 seq=48 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=48 request=61
+[VM 2] TASK3_CONTROL_APPLIED request=61 value=426
+[VM 2] TASK3_PLANT_STATE before=492 after=575 dist=150
+[VM 2] TASK2_STATUS_SENT seq=48
+[VM 1] TASK2_ACK seq=48
+[VM 2] TASK2_ACK seq=48
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10880 request=61 value=575 state=575 sample=48 rtt_ms=115
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=705
+[VM 1] TASK3_INFER elapsed_ms=10880 sample=62 output=260 infer_us=0 model=yolo11n.onnx target=705
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=10880 request=62 value=260 target=705 state=575 seq=49 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=49 request=62
+[VM 2] TASK3_CONTROL_APPLIED request=62 value=260
+[VM 2] TASK3_PLANT_STATE before=575 after=561 dist=150
+[VM 2] TASK2_STATUS_SENT seq=49
+[VM 2] TASK2_ACK seq=49
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=10975 request=62 value=561 state=561 sample=49 rtt_ms=95
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=605
+[VM 1] TASK3_INFER elapsed_ms=10975 sample=63 output=88 infer_us=3 model=yolo11n.onnx target=605
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=11082
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=15030
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=11286
+[VM 1] TASK2_RETRANSMIT seq=49 attempt=1
+[VM 2] TASK2_DUPLICATE seq=49
+[VM 1] TASK2_ACK seq=49
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=505
+[VM 1] TASK3_INFER elapsed_ms=11403 sample=64 output=0 infer_us=2 model=yolo11n.onnx target=505
+[VM 2] TASK2_CONTROL_RECEIVED seq=50 request=64
+[VM 2] TASK3_CONTROL_APPLIED request=64 value=0
+[VM 2] TASK3_PLANT_STATE before=561 after=463 dist=150
+[VM 2] TASK2_STATUS_SENT seq=50
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=11403 request=64 value=0 target=505 state=561 seq=50 model=yolo11n.onnx
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=15230
+[VM 2] TASK2_ACK seq=50
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=11514 request=64 value=463 state=463 sample=50 rtt_ms=111
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=605
+[VM 1] TASK3_INFER elapsed_ms=11514 sample=65 output=284 infer_us=2 model=yolo11n.onnx target=605
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=11612
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=15560
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=11816
+[VM 1] TASK2_RETRANSMIT seq=50 attempt=1
+[VM 2] TASK2_DUPLICATE seq=50
+[VM 1] TASK2_ACK seq=50
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=705
+[VM 1] TASK3_INFER elapsed_ms=11932 sample=66 output=484 infer_us=2 model=yolo11n.onnx target=705
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=11932 request=66 value=484 target=705 state=463 seq=51 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=51 request=66
+[VM 2] TASK3_CONTROL_APPLIED request=66 value=484
+[VM 2] TASK3_PLANT_STATE before=463 after=580 dist=150
+[VM 2] TASK2_STATUS_SENT seq=51
+[VM 2] TASK2_ACK seq=51
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12014 request=66 value=580 state=580 sample=51 rtt_ms=82
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=705
+[VM 1] TASK3_INFER elapsed_ms=12014 sample=67 output=250 infer_us=1 model=yolo11n.onnx target=705
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=12135
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=16090
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=12339
+[VM 2] TASK2_DUPLICATE seq=51
+[VM 1] TASK2_RETRANSMIT seq=51 attempt=1
+[VM 1] TASK2_ACK seq=51
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=705
+[VM 1] TASK3_INFER elapsed_ms=12460 sample=68 output=250 infer_us=0 model=yolo11n.onnx target=705
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12460 request=68 value=250 target=705 state=580 seq=52 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=52 request=68
+[VM 2] TASK3_CONTROL_APPLIED request=68 value=250
+[VM 2] TASK3_PLANT_STATE before=580 after=560 dist=150
+[VM 2] TASK2_STATUS_SENT seq=52
+[VM 1] TASK2_ACK seq=52
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12556 request=68 value=560 state=560 sample=52 rtt_ms=96
+[VM 2] TASK2_ACK seq=52
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=605
+[VM 1] TASK3_INFER elapsed_ms=12556 sample=69 output=90 infer_us=2 model=yolo11n.onnx target=605
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12556 request=69 value=90 target=605 state=560 seq=53 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=53 request=69
+[VM 2] TASK3_CONTROL_APPLIED request=69 value=90
+[VM 2] TASK3_PLANT_STATE before=560 after=494 dist=150
+[VM 2] TASK2_STATUS_SENT seq=53
+[VM 1] TASK2_ACK seq=53
+[VM 2] TASK2_ACK seq=53
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12672 request=69 value=494 state=494 sample=53 rtt_ms=116
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=705
+[VM 1] TASK3_INFER elapsed_ms=12672 sample=70 output=422 infer_us=2 model=yolo11n.onnx target=705
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=12672 request=70 value=422 target=705 state=494 seq=54 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=54 request=70
+[VM 2] TASK3_CONTROL_APPLIED request=70 value=422
+[VM 2] TASK3_PLANT_STATE before=494 after=575 dist=150
+[VM 2] TASK2_STATUS_SENT seq=54
+[VM 2] TASK2_ACK seq=54
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=12771 request=70 value=575 state=575 sample=54 rtt_ms=99
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=705
+[VM 1] TASK3_INFER elapsed_ms=12771 sample=71 output=260 infer_us=0 model=yolo11n.onnx target=705
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=12873
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=16820
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=13077
+[VM 1] TASK2_RETRANSMIT seq=54 attempt=1
+[VM 2] TASK2_DUPLICATE seq=54
+[VM 1] TASK2_ACK seq=54
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=705
+[VM 1] TASK3_INFER elapsed_ms=13208 sample=72 output=260 infer_us=0 model=yolo11n.onnx target=705
+[VM 2] TASK3_DISTURBANCE change=0 at_ms=17090
+[VM 2] TASK2_CONTROL_RECEIVED seq=55 request=72
+[VM 2] TASK3_CONTROL_APPLIED request=72 value=260
+[VM 2] TASK3_PLANT_STATE before=575 after=411 dist=0
+[VM 2] TASK2_STATUS_SENT seq=55
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13208 request=72 value=260 target=705 state=575 seq=55 model=yolo11n.onnx
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=17020
+[VM 1] TASK2_ACK seq=55
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13337 request=72 value=411 state=411 sample=55 rtt_ms=129
+[VM 2] TASK2_ACK seq=55
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=75 confidence_milli=832 center_x_milli=419 area_milli=61 target=605
+[VM 1] TASK3_INFER elapsed_ms=13337 sample=73 output=388 infer_us=2 model=yolo11n.onnx target=605
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13337 request=73 value=388 target=605 state=411 seq=56 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=56 request=73
+[VM 2] TASK3_CONTROL_APPLIED request=73 value=388
+[VM 2] TASK3_PLANT_STATE before=411 after=368 dist=0
+[VM 2] TASK2_STATUS_SENT seq=56
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13445 request=73 value=368 state=368 sample=56 rtt_ms=108
+[VM 2] TASK2_ACK seq=56
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=705
+[VM 1] TASK3_INFER elapsed_ms=13445 sample=74 output=674 infer_us=3 model=yolo11n.onnx target=705
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=13537
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=17490
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=13742
+[VM 2] TASK2_DUPLICATE seq=56
+[VM 1] TASK2_RETRANSMIT seq=56 attempt=1
+[VM 1] TASK2_ACK seq=56
+[VM 1] TASK3_DETECTION model=yolo11n.onnx class=58 confidence_milli=871 center_x_milli=805 area_milli=29 target=805
+[VM 1] TASK3_INFER elapsed_ms=13863 sample=75 output=874 infer_us=2 model=yolo11n.onnx target=805
+[VM 1] TASK3_CONTROL_SENT elapsed_ms=13863 request=75 value=874 target=805 state=368 seq=57 model=yolo11n.onnx
+[VM 2] TASK2_CONTROL_RECEIVED seq=57 request=75
+[VM 2] TASK3_CONTROL_APPLIED request=75 value=874
+[VM 2] TASK3_PLANT_STATE before=368 after=514 dist=0
+[VM 2] TASK2_STATUS_SENT seq=57
+[VM 2] TASK2_ACK seq=57
+[VM 1] TASK3_STATUS_RECEIVED elapsed_ms=13944 request=75 value=514 state=514 sample=57 rtt_ms=81
+[VM 1] TASK3_MODEL_REJECTED model=yolo11n.onnx reason=no_detection action=hold_last_target target=805
+[VM 1] TASK3_INFER elapsed_ms=13944 sample=76 output=582 infer_us=0 model=yolo11n.onnx target=805
+[VM 1] TASK2_CONTROL_DEFERRED awaiting previous ACK
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=14064
+[VM 1] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=18020
+[VM 2] TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=14269
+[axbuild] qemu build+run package=axvisor target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=scripts/test/net-dual-guest/axvisor-qemu-debug.toml ... done (23.06s)

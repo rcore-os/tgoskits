@@ -1,0 +1,27 @@
+# Task 1 StarryOS controller. It shares pCPU1 with the higher-priority Zephyr
+# Guest so the existing RR and bounded FP-RR schedulers see the same workload.
+[base]
+id = 1
+name = "task1-starry-shared"
+guest_type = "passthrough"
+cpu_num = 1
+phys_cpu_ids = [1]
+phys_cpu_sets = [1]
+host_sched_priority = 89
+
+[kernel]
+entry_point = 0x4020_0000
+image_location = "memory"
+kernel_path = "${workspace}/target/aarch64-unknown-none-softfloat/release/starryos.bin"
+kernel_load_addr = 0x4020_0000
+dtb_load_addr = 0x5f00_0000
+memory_regions = [[0x4000_0000, 0x2000_0000, 0x7, 1]]
+
+[devices]
+passthrough = [{ path = "/pcie@10000000" }]
+disabled = []
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x15]

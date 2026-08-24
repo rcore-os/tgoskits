@@ -1,0 +1,24 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-machine",
+    "virt,gic-version=3",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/starry-udp-probe.sh"
+success_regex = ["(?m)^STARRY_UDP_PASS\\s*$"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^STARRY_UDP_FAIL\\b"]
+timeout = 120

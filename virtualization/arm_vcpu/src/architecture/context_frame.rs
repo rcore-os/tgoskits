@@ -23,6 +23,7 @@ use aarch64_cpu::registers::*;
 /// * the stack pointer associated with EL0 (SP_EL0),
 /// * the exception link register (ELR),
 /// * the saved program status register (SPSR).
+/// * the FPU/SIMD registers (Q0-Q31, FPSR, FPCR).
 ///
 /// The `#[repr(C)]` attribute ensures that the struct has a C-compatible
 /// memory layout, which is important when interfacing with hardware or
@@ -38,6 +39,12 @@ pub struct Aarch64ContextFrame {
     pub elr: u64,
     /// The saved program status register, which holds the state of the program at the time of an exception.
     pub spsr: u64,
+    /// The FPU/SIMD vector registers.
+    pub fpsimd: [u128; 32],
+    /// The floating-point status register.
+    pub fpsr: u64,
+    /// The floating-point control register.
+    pub fpcr: u64,
 }
 
 /// Implementations of [`fmt::Display`] for [`Aarch64ContextFrame`].
@@ -71,9 +78,29 @@ impl Default for Aarch64ContextFrame {
                 .value,
             elr: 0,
             sp_el0: 0,
+            fpsimd: [0; 32],
+            fpsr: 0,
+            fpcr: 0,
         }
     }
 }
+
+/// Offset of the guest FPU/SIMD vector block inside the trap frame.
+pub(crate) const GUEST_FPSIMD_OFFSET: usize = core::mem::offset_of!(Aarch64ContextFrame, fpsimd);
+/// Offset of the guest FPSR inside the trap frame.
+pub(crate) const GUEST_FPSR_OFFSET: usize = core::mem::offset_of!(Aarch64ContextFrame, fpsr);
+/// Offset of the guest FPCR inside the trap frame.
+pub(crate) const GUEST_FPCR_OFFSET: usize = core::mem::offset_of!(Aarch64ContextFrame, fpcr);
+
+const _: () = {
+    assert!(GUEST_FPSIMD_OFFSET.is_multiple_of(core::mem::align_of::<u128>()));
+    assert!(GUEST_FPSR_OFFSET == GUEST_FPSIMD_OFFSET + core::mem::size_of::<[u128; 32]>());
+    assert!(GUEST_FPCR_OFFSET == GUEST_FPSR_OFFSET + core::mem::size_of::<u64>());
+    assert!(
+        core::mem::size_of::<Aarch64ContextFrame>()
+            >= GUEST_FPCR_OFFSET + core::mem::size_of::<u64>()
+    );
+};
 
 impl Aarch64ContextFrame {
     /// Returns the exception program counter (ELR).

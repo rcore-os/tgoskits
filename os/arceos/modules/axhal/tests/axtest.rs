@@ -8,6 +8,13 @@ use ax_std as _;
 use axtest::prelude::*;
 
 #[axtest]
+fn axhal_acknowledged_irq_tail_preserves_lifecycle_order() {
+    let events = ax_hal::axtest_support::observe_acknowledged_irq_entry_order_for_test();
+
+    ax_assert_eq!(events, [1, 2, 3, 4, 5]);
+}
+
+#[axtest]
 fn axhal_irq_entry_keeps_irqs_disabled_until_preemption_is_reenabled() {
     let original_irq_state = ax_sync::IrqSaveGuard::new();
     ax_hal::asm::enable_irqs();

@@ -1,0 +1,9 @@
+e61b388e1abbe872ab401ec305329ae144c2c5660bcc664a180c21ab9f67e5b8  /home/huhu/tgoskits-starry/tmp/net-dual-guest/linux-task2/task2-linux-initramfs.cpio.gz
+gzip_t=PASS
+d2c0adf8939dc9ce02964ce8ada104447768ffd8e3bffad8fa11e2e61e709c1f  initrd:usr/share/task3-yolo/yolo11n.ncnn.param
+0ae562447923999779b12b4f91f96b9ef263add8c9902d10e22e6dd6a2932c12  initrd:usr/share/task3-yolo/yolo11n.ncnn.bin
+608c8a61ff0bb43e5a8613f1f6f8aa08af74b084363610ed2b526ad925e4cb6f  initrd:usr/share/task3-yolo/input.ppm
+dc0827cadb2a052297bdcca8c157ff875e3c952a7709f49689ccbf05090073d1  initrd:bin/task2-net
+d2c0adf8939dc9ce02964ce8ada104447768ffd8e3bffad8fa11e2e61e709c1f  /home/huhu/tgoskits-starry/tmp/task3-yolo/ncnn-model/yolo11n.ncnn.param
+0ae562447923999779b12b4f91f96b9ef263add8c9902d10e22e6dd6a2932c12  /home/huhu/tgoskits-starry/tmp/task3-yolo/ncnn-model/yolo11n.ncnn.bin
+608c8a61ff0bb43e5a8613f1f6f8aa08af74b084363610ed2b526ad925e4cb6f  /home/huhu/tgoskits-starry/tmp/task3-yolo/ncnn-model/input.ppm

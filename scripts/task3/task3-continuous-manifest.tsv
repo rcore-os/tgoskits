@@ -1,0 +1,13 @@
+# sequence	id	event	source	source_frame	timestamp_ms	jpeg	jpeg_sha256	ppm	ppm_sha256	expected_class	truth_target	expected_decision
+1	road-0375	frame	kitti-inference-vid	375	12500	road-0375.jpg	373c2308ad8fb03fcc6b862383867f57ea0b95749464a22e8fd50b64bf7b8041	road-0375.ppm	1f0db7787d7b65985c10a6ba1d9e54f5ab2dc0db669e303e5beb64626d3ed7f0	car	545	track
+2	road-0380	frame	kitti-inference-vid	380	12667	road-0380.jpg	ddf3be8ddcebeaefaf96a9cf4c9f53efef1f39908c835bec8fa56886b4d1cce5	road-0380.ppm	e2620e3278f4bd9d2af45cc52a4983eea433283730fe9515c19c822bd7fb0403	car	515	track
+3	road-0385	frame	kitti-inference-vid	385	12833	road-0385.jpg	986ceec765d5a43acfc38d6bf6935df31728e16e166be087c9fdd4636345e91d	road-0385.ppm	5249086cc36ebfbb85f6841403efaef61b629088f36ea6d84daa02f47948ab8c	car	480	track
+4	road-0390	frame	kitti-inference-vid	390	13000	road-0390.jpg	776b8e8b855b509d94ecd561e67e692ebe0354a8bd9daf8dcd151739d8641d8a	road-0390.ppm	61a61314dd34064c40a0d4d8512235302aa875efb53a6a41caadc0904a35e513	car	440	track
+5	road-0395	frame	kitti-inference-vid	395	13167	road-0395.jpg	0c4a5a705b11aca8c6013dcd0871dca4dd8129fbfdecd5973bd0c6dbb0d83097	road-0395.ppm	cbd6da30512abc6a324287986f78bb0a724783a3c448a069af56b53f81f4fdd2	car	405	track
+6	road-0400	frame	kitti-inference-vid	400	13333	road-0400.jpg	fb1690026516d0cc8f584f307ab9b5ecae2b8d24947ca9af547a954a057f7261	road-0400.ppm	875d51913a968c5e9ab5cdb62bb829f7b1d890a74cc2a88cec01920d2a7bcdc0	car	365	track
+7	hazard-0000	frame	solutions-ci-demo-roi	0	0	hazard-0000.jpg	db8d7b530f11ac695302f7c9f486264d36f8f488385ed8202416751c5045de39	hazard-0000.ppm	3dd6867492d6ee68e842513bb3815db611db7aeee4a8ca600cabf16c0a5e703d	person	none	stop-hazard
+8	hazard-0010	frame	solutions-ci-demo-roi	10	333	hazard-0010.jpg	ce5065920ac3fa7af813e652cb52cdb02138584ecb80bc7dcdb28655f2f54917	hazard-0010.ppm	dc92b11375ecc4dcfaa5926185c6f44b049b76868ea84058cdfb88a8df84b57b	person	none	stop-latched
+9	hazard-0020	frame	solutions-ci-demo-roi	20	667	hazard-0020.jpg	b0fee599b840f5ea45cfa8be11643c221922aaa177050531e1de947ba35f2ea0	hazard-0020.ppm	f52bff1f2da815084c53554fa63536a0b3a40d49591f5b2364ac26222679a0f7	person	none	stop-latched
+10	road-0405	frame	kitti-inference-vid	405	13500	road-0405.jpg	805c95ec5fcd85f1c08b93ed4ec7507e5a4c04981a503c12dab254b9b2152b94	road-0405.ppm	c64e13a07c897bd192b3b5027dc3c370fb36e19e9f19c0dec7d5a4b5fee7d06a	car	330	stop-latched
+11	explicit-reset	reset	control	none	none	none	none	none	none	none	none	reset
+12	road-0410	frame	kitti-inference-vid	410	13667	road-0410.jpg	b61fdfae814243620b54dc4d9cdcde2f600a97022b953d4955ab15f121b3b1e1	road-0410.ppm	de9456ae97f79936f0b8fd0b67968a59fdd1a464bfbc65b9d3052bdfd347e037	car	300	track

@@ -7,7 +7,7 @@ fn irq_context_lookup_keeps_cpu_identity_pinned_through_the_bit_read() {
     let body = function_body(IRQ_SOURCE, "pub fn in_irq_context() -> bool");
 
     assert!(
-        body.contains("NoPreempt::new()"),
+        body.contains("PreemptGuard::new()"),
         "IRQ-context lookup must prevent migration across the complete snapshot"
     );
     assert!(

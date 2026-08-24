@@ -26,6 +26,11 @@ const CPU_ENABLE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 static ARCEOS_HOST: ArceOsHost = ArceOsHost;
 
+fn publish_cpu_enable_completion(completed: &AtomicUsize, after_publish: impl FnOnce(usize)) {
+    let completed = completed.fetch_add(1, Ordering::Release) + 1;
+    after_publish(completed);
+}
+
 pub(crate) fn arceos_host() -> &'static ArceOsHost {
     &ARCEOS_HOST
 }
@@ -177,25 +182,6 @@ pub(crate) fn run_on_cpu_sync(
     // SAFETY: the caller guarantees that `arg` stays valid until the target CPU
     // has executed `f`; `ax_hal` provides the synchronous completion boundary.
     unsafe { modules::ax_hal::irq::run_on_cpu_sync(modules::ax_hal::irq::CpuId(cpu_id), f, arg) }
-}
-
-fn send_ipi_to_all_except_current(cpu_num: usize) {
-    if cpu_num <= 1 {
-        return;
-    }
-    let cpu_id = modules::ax_hal::percpu::this_cpu_id();
-    for target_cpu in 0..cpu_num {
-        if target_cpu == cpu_id {
-            continue;
-        }
-        modules::ax_hal::irq::send_ipi(
-            modules::ax_hal::irq::ipi_irq(),
-            modules::ax_hal::irq::IpiTarget::Cpu(modules::ax_hal::irq::CpuId(target_cpu)),
-        )
-        .unwrap_or_else(|err| {
-            panic!("failed to deliver AxVM broadcast IPI to CPU {target_cpu}: {err:?}")
-        });
-    }
 }
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
@@ -362,28 +348,24 @@ impl HostPlatform for ArceOsHost {
                     info!("Core {cpu_id} is initializing hardware virtualization support...");
                     host.enable_virtualization_on_current_cpu()
                         .expect("failed to enable hardware virtualization");
-                    info!("Hardware virtualization support enabled on core {cpu_id}");
-                    let _ = CORES.fetch_add(1, Ordering::Release);
+                    publish_cpu_enable_completion(&CORES, |completed| {
+                        info!(
+                            "Hardware virtualization support enabled on core {cpu_id} \
+                             ({completed}/{cpu_count})"
+                        );
+                    });
                 },
                 std::format!("axvm-hv-init-{cpu_id}"),
                 modules::ax_task::default_task_stack_size(),
             );
             task.set_cpumask(<Self as HostCpu>::CpuMask::one_shot(cpu_id));
             modules::ax_task::spawn_task(task);
-            if cpu_id != self.this_cpu_id() {
-                send_ipi(cpu_id);
-            }
         }
 
         info!("Waiting for all cores to enable hardware virtualization...");
         let start = self.monotonic_time();
-        let mut wait_rounds = 0usize;
         while CORES.load(Ordering::Acquire) != cpu_count {
             thread::yield_now();
-            wait_rounds = wait_rounds.wrapping_add(1);
-            if wait_rounds.is_multiple_of(256) {
-                send_ipi_to_all_except_current(cpu_count);
-            }
             if self.monotonic_time().saturating_sub(start) >= CPU_ENABLE_WAIT_TIMEOUT {
                 break;
             }
@@ -393,12 +375,45 @@ impl HostPlatform for ArceOsHost {
         if enabled_count == cpu_count {
             info!("All cores have enabled hardware virtualization support.");
         } else {
-            warn!(
-                "Only {enabled_count}/{cpu_count} cores enabled hardware virtualization before \
-                 timeout; continuing with host CPU mask {:#x}",
-                crate::percpu::enabled_cpu_mask()
-            );
+            return Err(crate::AxVmError::host(
+                "enable hardware virtualization on all CPUs",
+                std::format!(
+                    "only {enabled_count}/{cpu_count} CPUs enabled before timeout; enabled mask \
+                     is {:#x}",
+                    crate::percpu::enabled_cpu_mask()
+                ),
+            ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Barrier};
+
+    use super::*;
+
+    #[test]
+    fn cpu_enable_completion_is_published_before_followup_work() {
+        let completed = Arc::new(AtomicUsize::new(0));
+        let callback_entered = Arc::new(Barrier::new(2));
+        let release_callback = Arc::new(Barrier::new(2));
+        let worker_completed = completed.clone();
+        let worker_entered = callback_entered.clone();
+        let worker_release = release_callback.clone();
+
+        let worker = std::thread::spawn(move || {
+            publish_cpu_enable_completion(&worker_completed, |published| {
+                assert_eq!(published, 1);
+                worker_entered.wait();
+                worker_release.wait();
+            });
+        });
+
+        callback_entered.wait();
+        assert_eq!(completed.load(Ordering::Acquire), 1);
+        release_callback.wait();
+        worker.join().unwrap();
     }
 }

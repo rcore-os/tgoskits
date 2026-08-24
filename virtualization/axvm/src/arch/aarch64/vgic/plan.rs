@@ -117,6 +117,12 @@ fn build_vgic_config(
         .phys_cpu_ls
         .get_vcpu_affinities_pcpu_ids()
         .iter()
+        .map(|(vcpu_id, ..)| GicAffinity::from_mpidr(*vcpu_id as u64))
+        .collect();
+    let physical_affinities = config
+        .phys_cpu_ls
+        .get_vcpu_affinities_pcpu_ids()
+        .iter()
         .map(|(_, _, physical_id)| GicAffinity::from_mpidr(*physical_id as u64))
         .collect();
     let distributor = vgic_region(profile.distributor, "validate GIC Distributor range")?;
@@ -132,6 +138,7 @@ fn build_vgic_config(
             vgic_region(*region, "validate GIC CPU-interface range")?,
             affinities,
         )
+        .and_then(|value| value.with_vcpu_physical_affinities(physical_affinities))
         .and_then(|value| value.with_spi_count(spi_count))
         .and_then(|value| value.with_list_register_count(capabilities.list_register_count()))
         .and_then(|value| value.with_priority_bits(capabilities.priority_bits()))
@@ -160,6 +167,7 @@ fn build_vgic_config(
                 redistributors.stride as u64,
                 affinities,
             )
+            .and_then(|value| value.with_vcpu_physical_affinities(physical_affinities))
             .and_then(|value| value.with_spi_count(spi_count))
             .and_then(|value| value.with_list_register_count(capabilities.list_register_count()))
             .and_then(|value| value.with_priority_bits(capabilities.priority_bits()))

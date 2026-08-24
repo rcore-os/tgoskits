@@ -2,9 +2,11 @@
 
 use axvm_types::GuestPhysAddr;
 
+#[cfg(all(test, feature = "host-test"))]
+use crate::architecture::BoundVcpuExit;
 use crate::{
     AxVmResult,
-    architecture::{Architecture, BoundVcpuExit, VcpuRunAction},
+    architecture::{Architecture, VcpuRunAction},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -12,6 +14,19 @@ pub(crate) struct CpuUpExit {
     pub(crate) target_cpu: u64,
     pub(crate) entry_point: GuestPhysAddr,
     pub(crate) arg: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CpuUpWork {
+    target_vcpu_id: usize,
+    entry_point: GuestPhysAddr,
+    arg: usize,
+}
+
+#[derive(Debug)]
+pub(crate) enum PreparedCpuUp {
+    Complete(VcpuRunAction),
+    Defer(CpuUpWork),
 }
 
 /// Resolves architecture-visible CPU IDs through the VM-owned topology.
@@ -39,11 +54,11 @@ pub(crate) trait CpuUpOps: Architecture {
     }
 }
 
-pub(crate) fn handle<A: CpuUpOps>(
+pub(crate) fn prepare<A: CpuUpOps>(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
     exit: CpuUpExit,
-) -> AxVmResult<BoundVcpuExit<A::DeferredRunWork>> {
+) -> AxVmResult<PreparedCpuUp> {
     let vm_id = vm.id();
     let vcpu_id = vcpu.id();
     info!(
@@ -57,7 +72,7 @@ pub(crate) fn handle<A: CpuUpOps>(
             exit.target_cpu
         );
         vcpu.set_return_value(usize::MAX);
-        return Ok(BoundVcpuExit::Complete(VcpuRunAction {
+        return Ok(PreparedCpuUp::Complete(VcpuRunAction {
             waits_for_event: false,
             stop_reason: None,
             resets_vm: false,
@@ -65,24 +80,40 @@ pub(crate) fn handle<A: CpuUpOps>(
         }));
     };
 
+    Ok(PreparedCpuUp::Defer(CpuUpWork {
+        target_vcpu_id,
+        entry_point: exit.entry_point,
+        arg: exit.arg as usize,
+    }))
+}
+
+pub(crate) fn finish<A: CpuUpOps>(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<A::VCpu>,
+    work: CpuUpWork,
+) -> VcpuRunAction {
+    let vm_id = vm.id();
     match crate::runtime::vcpus::vcpu_on(
         vm.clone(),
-        target_vcpu_id,
-        exit.entry_point,
-        exit.arg as _,
+        work.target_vcpu_id,
+        work.entry_point,
+        work.arg,
     ) {
         Ok(()) => A::set_cpu_up_success(vcpu),
         Err(err) => {
-            warn!("Failed to boot VM[{vm_id}] VCpu[{target_vcpu_id}]: {err:?}");
+            warn!(
+                "Failed to boot VM[{vm_id}] VCpu[{}]: {err:?}",
+                work.target_vcpu_id
+            );
             vcpu.set_return_value(usize::MAX);
         }
     }
-    Ok(BoundVcpuExit::Complete(VcpuRunAction {
+    VcpuRunAction {
         waits_for_event: false,
         stop_reason: None,
         resets_vm: false,
         exits_vcpu: false,
-    }))
+    }
 }
 
 #[cfg(all(test, feature = "host-test"))]

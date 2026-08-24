@@ -1472,3 +1472,134 @@ impl PhysicalBackend {
             .collect()
     }
 }
+
+#[test]
+fn assigned_spi_routes_to_the_physical_affinity_of_its_target_vcpu() {
+    let backend = Arc::new(PhysicalBackend::default());
+    let core = arm_vgic::VgicCore::new(decoupled_affinity_config(), backend.clone()).unwrap();
+    let _vcpu0 = core.attach_vcpu(0, Arc::new(NoopWake)).unwrap();
+    let _vcpu1 = core.attach_vcpu(1, Arc::new(NoopWake)).unwrap();
+    core.bind_assigned_spis().unwrap();
+
+    let records = backend.records.lock().unwrap();
+    let binding = records
+        .bound_interrupts
+        .iter()
+        .find(|binding| binding.host().raw() == 40)
+        .expect("assigned SPI must be bound through the backend");
+    assert_eq!(
+        binding.affinity(),
+        GicAffinity::new(0, 0, 0, 2),
+        "physical routing must target the pCPU affinity, not the guest affinity"
+    );
+    assert_ne!(
+        binding.affinity(),
+        GicAffinity::new(0, 0, 0, 0),
+        "guest affinity 0 must not leak into the physical route"
+    );
+}
+
+#[test]
+fn guest_affinities_stay_isolated_from_physical_routing_affinities() {
+    let config = arm_vgic::ArmVgicConfig::V3(
+        arm_vgic::VgicV3Config::new(
+            axdevice_base::InterruptControllerId::new(0),
+            GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
+            vec![GicV3MmioRegion::new(0x080a_0000, 0x4_0000).unwrap()],
+            0x2_0000,
+            vec![GicAffinity::new(0, 0, 0, 0), GicAffinity::new(0, 0, 0, 1)],
+        )
+        .unwrap()
+        .with_vcpu_physical_affinities(vec![
+            GicAffinity::new(0, 0, 0, 2),
+            GicAffinity::new(0, 0, 0, 3),
+        ])
+        .unwrap(),
+    );
+    assert_eq!(
+        config.vcpu_affinities(),
+        &[GicAffinity::new(0, 0, 0, 0), GicAffinity::new(0, 0, 0, 1),]
+    );
+    assert_eq!(
+        config.vcpu_physical_affinities(),
+        &[GicAffinity::new(0, 0, 0, 2), GicAffinity::new(0, 0, 0, 3),]
+    );
+}
+
+#[test]
+fn physical_affinities_default_to_guest_affinities() {
+    let config = arm_vgic::VgicV3Config::new(
+        axdevice_base::InterruptControllerId::new(0),
+        GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
+        vec![GicV3MmioRegion::new(0x080a_0000, 0x2_0000).unwrap()],
+        0x2_0000,
+        vec![GicAffinity::new(0, 0, 0, 7)],
+    )
+    .unwrap();
+    assert_eq!(
+        config.vcpu_physical_affinities(),
+        &[GicAffinity::new(0, 0, 0, 7)]
+    );
+}
+
+#[test]
+fn mismatched_physical_affinity_length_is_rejected() {
+    let result = arm_vgic::VgicV3Config::new(
+        axdevice_base::InterruptControllerId::new(0),
+        GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
+        vec![GicV3MmioRegion::new(0x080a_0000, 0x2_0000).unwrap()],
+        0x2_0000,
+        vec![GicAffinity::new(0, 0, 0, 0)],
+    )
+    .unwrap()
+    .with_vcpu_physical_affinities(vec![
+        GicAffinity::new(0, 0, 0, 2),
+        GicAffinity::new(0, 0, 0, 3),
+    ]);
+    assert!(matches!(result, Err(VgicError::InvalidConfig { .. })));
+}
+
+#[test]
+fn duplicate_physical_affinity_is_rejected() {
+    let result = arm_vgic::VgicV3Config::new(
+        axdevice_base::InterruptControllerId::new(0),
+        GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
+        vec![GicV3MmioRegion::new(0x080a_0000, 0x2_0000).unwrap()],
+        0x2_0000,
+        vec![GicAffinity::new(0, 0, 0, 0)],
+    )
+    .unwrap()
+    .with_vcpu_physical_affinities(vec![
+        GicAffinity::new(0, 0, 0, 2),
+        GicAffinity::new(0, 0, 0, 2),
+    ]);
+    assert!(matches!(result, Err(VgicError::InvalidConfig { .. })));
+}
+
+fn decoupled_affinity_config() -> arm_vgic::ArmVgicConfig {
+    arm_vgic::ArmVgicConfig::V3(
+        arm_vgic::VgicV3Config::new(
+            axdevice_base::InterruptControllerId::new(0),
+            GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
+            vec![GicV3MmioRegion::new(0x080a_0000, 0x4_0000).unwrap()],
+            0x2_0000,
+            vec![GicAffinity::new(0, 0, 0, 0), GicAffinity::new(0, 0, 0, 1)],
+        )
+        .unwrap()
+        .with_vcpu_physical_affinities(vec![
+            GicAffinity::new(0, 0, 0, 2),
+            GicAffinity::new(0, 0, 0, 3),
+        ])
+        .unwrap()
+        .with_assigned_spis(vec![
+            arm_vgic::AssignedSpiConfig::new(
+                SpiId::new(40).unwrap(),
+                axdevice_base::HostIrqId::new(40),
+                0,
+                axdevice_base::InterruptTrigger::EdgeTriggered,
+            )
+            .unwrap(),
+        ])
+        .unwrap(),
+    )
+}

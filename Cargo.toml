@@ -37,6 +37,9 @@ members = [
     "components/kernutil",
     "components/linked_list_r4l",
     "components/scope-local",
+    "components/task2-net-protocol",
+    "components/task3-ncnn",
+    "components/task3-model",
     "components/timer_list",
     "platforms/ax-plat",
     "platforms/ax-plat-macros",
@@ -120,6 +123,7 @@ exclude = [
 ]
 
 [workspace.dependencies]
+cc = "1.4"
 # Local workspace crates
 # Keep local dependency requirements at major.minor precision so release-plz does not
 # propagate patch-only releases to dependent workspace crates.
@@ -192,6 +196,9 @@ axvm = { version = "0.6", path = "virtualization/axvm", default-features = false
 axvm-types = { version = "0.7", path = "virtualization/axvm-types" }
 axvmconfig = { version = "0.8", path = "virtualization/axvmconfig", default-features = false }
 ahci-driver = { version = "0.2", path = "drivers/blk/ahci-driver" }
+task2-net-protocol = { version = "0.1.0", path = "components/task2-net-protocol" }
+task3-model = { version = "0.1.0", path = "components/task3-model" }
+task3-ncnn = { version = "0.1.0", path = "components/task3-ncnn" }
 
 bwbench-client = { version = "0.3", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3", path = "components/crate_interface/test_crates/define-simple-traits" }

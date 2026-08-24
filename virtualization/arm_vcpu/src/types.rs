@@ -26,6 +26,8 @@ pub enum ArmVcpuError {
     Unsupported,
     /// Hardware or software state is inconsistent with the requested transition.
     BadState,
+    /// A virtual interrupt resource is temporarily unavailable.
+    ResourceBusy,
 }
 
 /// Guest physical address.
@@ -301,6 +303,8 @@ pub enum ArmVmExit {
         /// Guest-visible INTID carried by `ICC_DIR_EL1`.
         intid: u32,
     },
+    /// A trapped guest access to the emulated physical timer (`CNTP_*`).
+    PhysicalTimerSysReg,
     /// The vCPU handled the event internally.
     Nothing,
 }

@@ -105,6 +105,65 @@ fn timer_world_switch_keeps_guest_and_host_counter_domains_transactional() {
 }
 
 #[test]
+fn guest_fpsimd_world_switch_covers_all_vector_and_control_registers() {
+    let save = section(
+        EXCEPTION_ASSEMBLY,
+        ".macro SAVE_GUEST_FPU_FROM_EL1",
+        ".endm",
+    );
+    let restore = section(
+        EXCEPTION_ASSEMBLY,
+        ".macro RESTORE_GUEST_FPU_INTO_EL1",
+        ".endm",
+    );
+
+    let register_pairs = [
+        "q0, q1", "q2, q3", "q4, q5", "q6, q7", "q8, q9", "q10, q11", "q12, q13", "q14, q15",
+        "q16, q17", "q18, q19", "q20, q21", "q22, q23", "q24, q25", "q26, q27", "q28, q29",
+        "q30, q31",
+    ];
+    assert_eq!(save.matches("stp     q").count(), register_pairs.len());
+    assert_eq!(restore.matches("ldp     q").count(), register_pairs.len());
+    for register_pair in register_pairs {
+        assert!(
+            save.contains(register_pair),
+            "guest exit must save {register_pair}"
+        );
+        assert!(
+            restore.contains(register_pair),
+            "guest entry must restore {register_pair}"
+        );
+    }
+    assert_in_order(save, &["mrs     x9, fpsr", "mrs     x9, fpcr"]);
+    assert_in_order(restore, &["msr     fpsr, x9", "msr     fpcr, x9"]);
+
+    let lower_irq = section(EXCEPTION_ASSEMBLY, ".macro HANDLE_LOWER_IRQ_VCPU", ".endm");
+    assert_in_order(
+        lower_irq,
+        &[
+            "ACK_PENDING_HOST_IRQ",
+            "SAVE_VCPU_RUNTIME_FROM_EL1",
+            "SAVE_GUEST_FPU_FROM_EL1",
+            "bl      vmexit_trampoline",
+        ],
+    );
+
+    let guest_return = section(
+        EXCEPTION_ASSEMBLY,
+        ".macro RESTORE_GUEST_REGS_INTO_EL1",
+        ".endm",
+    );
+    assert_in_order(
+        guest_return,
+        &[
+            "msr     spsr_el2, x11",
+            "RESTORE_GUEST_FPU_INTO_EL1",
+            "ldr     x30",
+        ],
+    );
+}
+
+#[test]
 fn exception_vector_table_preserves_the_architectural_slot_layout() {
     let vector_table = section(
         EXCEPTION_ASSEMBLY,

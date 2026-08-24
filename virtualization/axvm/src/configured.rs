@@ -15,6 +15,16 @@ mod devices;
 pub use append::DefaultVirtualDeviceIntent;
 pub(crate) use append::append_configured_devices;
 
+/// Application-facing controls and observations for configured VirtIO-net devices.
+pub mod virtio_net_control {
+    #[cfg(feature = "fs")]
+    pub use super::devices::virtio_net::dump_capture;
+    pub use super::devices::virtio_net::{
+        blackout_is_active, capture_frame_count, capture_is_enabled, capture_set_enabled,
+        set_blackout, switch_ports, visit_capture_lines,
+    };
+}
+
 pub(crate) fn register_devices(
     catalog: &mut ConfiguredDeviceCatalog,
 ) -> Result<(), ConfiguredDeviceError> {

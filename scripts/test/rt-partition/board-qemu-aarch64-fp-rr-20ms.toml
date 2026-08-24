@@ -1,0 +1,8 @@
+# FP-RR with a 20 ms quantum (2 host timer ticks).
+features = [
+    "fp-rr-20ms-scheduler",
+    "timer-latency-stats",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

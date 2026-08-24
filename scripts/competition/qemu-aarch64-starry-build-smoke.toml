@@ -1,0 +1,27 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-machine",
+    "virt,gic-version=3",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=1",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0,net=10.0.42.0/24,dhcpstart=10.0.42.15",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/t2n1-run.sh"
+# This preparation run proves that the freshly built in-Guest ncnn endpoint
+# loads the pinned model and performs inference.  Task 2 networking is tested
+# by the separate dual-Guest scenarios, not by this PCI-only preparation VM.
+success_regex = ["(?m)^TASK3_DETECTION model=yolo11n\\.ncnn"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 90

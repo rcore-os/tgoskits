@@ -6,7 +6,7 @@ use std::{
     collections::VecDeque,
     format,
     string::String,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, Weak},
     vec::Vec,
 };
 
@@ -30,9 +30,226 @@ const MMIO_SLOT: &str = "mmio";
 const IRQ_SLOT: &str = "irq";
 const MMIO_SIZE: u64 = 0x200;
 const INGRESS_CAPACITY: usize = 64;
+const CAPTURE_LIMIT: usize = 65_536;
+const CAPTURE_HEARTBEAT_LIMIT_PER_DIRECTION: usize = 8;
 
 static NEXT_PORT_ID: AtomicUsize = AtomicUsize::new(0);
 static INTERNAL_SWITCH: Mutex<Option<Arc<VirtualSwitch>>> = Mutex::new(None);
+static ENDPOINTS: Mutex<Vec<Weak<PortEndpoint>>> = Mutex::new(Vec::new());
+
+/// When set, every frame is silently dropped at the guest boundary in both
+/// directions. This simulates a cable blackout between the two endpoints
+/// while the guest protocol stacks keep running.
+static BLACKOUT: AtomicBool = AtomicBool::new(false);
+static CAPTURE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+struct CaptureState {
+    enabled: bool,
+    frames: VecDeque<CapturedFrame>,
+}
+
+struct CapturedFrame {
+    vm_id: usize,
+    outbound: bool,
+    nanos: u128,
+    frame: Vec<u8>,
+}
+
+static CAPTURE: Mutex<CaptureState> = Mutex::new(CaptureState {
+    enabled: false,
+    frames: VecDeque::new(),
+});
+
+/// Enables or disables the hypervisor-wide blackout gate.
+pub fn set_blackout(enabled: bool) {
+    BLACKOUT.store(enabled, Ordering::Release);
+}
+
+/// Returns whether the blackout gate is currently engaged.
+pub fn blackout_is_active() -> bool {
+    BLACKOUT.load(Ordering::Acquire)
+}
+
+/// Enables or disables per-frame capture at the guest boundary.
+pub fn capture_set_enabled(enabled: bool) {
+    if enabled {
+        CAPTURE.lock().expect("capture mutex poisoned").enabled = true;
+        CAPTURE_ENABLED.store(true, Ordering::Release);
+    } else {
+        CAPTURE_ENABLED.store(false, Ordering::Release);
+        CAPTURE.lock().expect("capture mutex poisoned").enabled = false;
+    }
+}
+
+/// Returns whether per-frame capture is enabled.
+pub fn capture_is_enabled() -> bool {
+    CAPTURE_ENABLED.load(Ordering::Acquire)
+}
+
+/// Returns the number of captured frames so far.
+pub fn capture_frame_count() -> usize {
+    CAPTURE.lock().expect("capture mutex poisoned").frames.len()
+}
+
+/// Returns a snapshot of the currently registered switch ports.
+pub fn switch_ports() -> Vec<(usize, [u8; 6], bool)> {
+    let mut endpoints = ENDPOINTS.lock().expect("endpoint registry mutex poisoned");
+    let mut snapshot = Vec::with_capacity(endpoints.len());
+    endpoints.retain(|endpoint| {
+        let Some(endpoint) = endpoint.upgrade() else {
+            return false;
+        };
+        snapshot.push((
+            endpoint.vm_id,
+            endpoint.mac,
+            endpoint.active.load(Ordering::Acquire),
+        ));
+        true
+    });
+    snapshot
+}
+
+fn record_frame(vm_id: usize, outbound: bool, frame: &[u8]) {
+    // Capture is an evidence-only facility.  Its normal disabled state must
+    // not put a blocking mutex or allocation on the guest data path.
+    if !CAPTURE_ENABLED.load(Ordering::Acquire) {
+        return;
+    }
+    let mut capture = CAPTURE.lock().expect("capture mutex poisoned");
+    if !capture.enabled {
+        return;
+    }
+    if capture.frames.len() >= CAPTURE_LIMIT {
+        capture.frames.pop_front();
+    }
+    capture.frames.push_back(CapturedFrame {
+        vm_id,
+        outbound,
+        nanos: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos()),
+        frame: frame.to_vec(),
+    });
+}
+
+/// Writes every captured frame to `<path>.vm<id>.pcap` in classic pcap
+/// format. Only available when the host filesystem feature is enabled.
+#[cfg(feature = "fs")]
+pub fn dump_capture(path: &str) -> Result<(usize, usize), String> {
+    use std::{fs::File, io::Write};
+
+    const PCAP_GLOBAL_HEADER: [u8; 24] = [
+        0xd4, 0xc3, 0xb2, 0xa1, // magic, little-endian
+        0x02, 0x00, 0x04, 0x00, // version 2.4
+        0x00, 0x00, 0x00, 0x00, // thiszone
+        0x00, 0x00, 0x00, 0x00, // sigfigs
+        0xff, 0xff, 0x00, 0x00, // snaplen 65535
+        0x01, 0x00, 0x00, 0x00, // linktype Ethernet
+    ];
+
+    let capture = CAPTURE.lock().expect("capture mutex poisoned");
+    let mut frames: Vec<_> = capture.frames.iter().collect();
+    frames.sort_by_key(|frame| (frame.vm_id, frame.nanos));
+    let mut heartbeat_counts = [[0usize; 2]; 2];
+
+    let mut count: [usize; 2] = [0, 0];
+    for (index, vm_id) in [1usize, 2usize].into_iter().enumerate() {
+        let target = format!("{path}.vm{vm_id}.pcap");
+        let mut file =
+            File::create(&target).map_err(|error| format!("failed to create {target}: {error}"))?;
+        file.write_all(&PCAP_GLOBAL_HEADER)
+            .map_err(|error| format!("failed to write pcap header: {error}"))?;
+        for frame in frames
+            .iter()
+            .filter(|frame| frame.vm_id == vm_id)
+            .filter(|frame| should_dump_frame(frame, &mut heartbeat_counts))
+        {
+            let seconds = (frame.nanos / 1_000_000_000) as u32;
+            let micros = ((frame.nanos / 1_000) % 1_000_000) as u32;
+            let length = frame.frame.len() as u32;
+            let record_header = [
+                (seconds & 0xff) as u8,
+                ((seconds >> 8) & 0xff) as u8,
+                ((seconds >> 16) & 0xff) as u8,
+                ((seconds >> 24) & 0xff) as u8,
+                (micros & 0xff) as u8,
+                ((micros >> 8) & 0xff) as u8,
+                ((micros >> 16) & 0xff) as u8,
+                ((micros >> 24) & 0xff) as u8,
+                (length & 0xff) as u8,
+                ((length >> 8) & 0xff) as u8,
+                ((length >> 16) & 0xff) as u8,
+                ((length >> 24) & 0xff) as u8,
+                (length & 0xff) as u8,
+                ((length >> 8) & 0xff) as u8,
+                ((length >> 16) & 0xff) as u8,
+                ((length >> 24) & 0xff) as u8,
+            ];
+            file.write_all(&record_header)
+                .and_then(|()| file.write_all(&frame.frame))
+                .map_err(|error| format!("failed to write pcap record: {error}"))?;
+            count[index] += 1;
+        }
+    }
+    Ok((count[0], count[1]))
+}
+
+/// Visits captured frames as `CAPTURE <vm_id> <nanos> <hex>` lines.
+///
+/// The application owns the physical console and supplies the output callback,
+/// so this device model never writes around the host-console multiplexer.
+pub fn visit_capture_lines(mut visit: impl FnMut(&str)) -> (usize, usize) {
+    let capture = CAPTURE.lock().expect("capture mutex poisoned");
+    let mut frames: Vec<_> = capture.frames.iter().collect();
+    frames.sort_by_key(|frame| (frame.vm_id, frame.nanos));
+    let mut heartbeat_counts = [[0usize; 2]; 2];
+    let mut count: [usize; 2] = [0, 0];
+    for frame in frames
+        .into_iter()
+        .filter(|frame| should_dump_frame(frame, &mut heartbeat_counts))
+    {
+        let index = if frame.vm_id == 1 { 0 } else { 1 };
+        let line = format!(
+            "CAPTURE {} {} {}",
+            frame.vm_id,
+            frame.nanos,
+            hex_string(&frame.frame)
+        );
+        visit(&line);
+        count[index] += 1;
+    }
+    (count[0], count[1])
+}
+
+fn should_dump_frame(frame: &CapturedFrame, heartbeat_counts: &mut [[usize; 2]; 2]) -> bool {
+    if !is_t2n1_heartbeat(&frame.frame) || !(1..=2).contains(&frame.vm_id) {
+        return true;
+    }
+    let count = &mut heartbeat_counts[frame.vm_id - 1][usize::from(frame.outbound)];
+    if *count >= CAPTURE_HEARTBEAT_LIMIT_PER_DIRECTION {
+        return false;
+    }
+    *count += 1;
+    true
+}
+
+fn is_t2n1_heartbeat(frame: &[u8]) -> bool {
+    const T2N1_KIND_HEARTBEAT: u8 = 5;
+
+    frame
+        .windows(6)
+        .any(|payload| payload[..4] == *b"T2N1" && payload[5] == T2N1_KIND_HEARTBEAT)
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    output
+}
 
 /// Catalog entry for `[[devices.virtual]] model = "virtio-net"`.
 pub const REGISTRATION: ConfiguredModelRegistration = ConfiguredModelRegistration {
@@ -162,10 +379,15 @@ impl DeviceModel for VirtioNetModel {
         let irq = context.irq(IRQ_SLOT)?;
         let irq_id = irq.input().value() as u32;
         let switch = internal_switch();
-        let port_id = SwitchPortId::new(NEXT_PORT_ID.fetch_add(1, Ordering::Relaxed), 0, 0);
+        let port_id = SwitchPortId::new(
+            self.vm_id,
+            0,
+            NEXT_PORT_ID.fetch_add(1, Ordering::Relaxed) as u16,
+        );
         let endpoint = PortEndpoint::new(
             port_id,
             self.guest_mac,
+            self.vm_id,
             switch.clone(),
             Arc::new(AxvmWakeTarget { vm_id: self.vm_id }),
         );
@@ -176,6 +398,10 @@ impl DeviceModel for VirtioNetModel {
             }
         })?;
         endpoint.activate();
+        ENDPOINTS
+            .lock()
+            .expect("endpoint registry mutex poisoned")
+            .push(Arc::downgrade(&endpoint));
 
         let backend = SwitchBackend {
             endpoint: endpoint.clone(),
@@ -231,6 +457,10 @@ struct SwitchBackend {
 
 impl NetworkBackend for SwitchBackend {
     fn transmit(&self, frame: &[u8]) -> Result<(), NetworkBackendError> {
+        if BLACKOUT.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        record_frame(self.endpoint.vm_id, true, frame);
         let _ = self.switch.switch_from_port(self.endpoint.id(), frame);
         Ok(())
     }
@@ -239,6 +469,7 @@ impl NetworkBackend for SwitchBackend {
 struct PortEndpoint {
     id: SwitchPortId,
     mac: [u8; 6],
+    vm_id: usize,
     ingress: Mutex<VecDeque<Vec<u8>>>,
     active: AtomicBool,
     wake_target: Arc<dyn WakeTarget>,
@@ -271,12 +502,14 @@ impl PortEndpoint {
     fn new(
         id: SwitchPortId,
         mac: [u8; 6],
+        vm_id: usize,
         switch: Arc<VirtualSwitch>,
         wake_target: Arc<dyn WakeTarget>,
     ) -> Arc<Self> {
         Arc::new(Self {
             id,
             mac,
+            vm_id,
             ingress: Mutex::new(VecDeque::new()),
             active: AtomicBool::new(false),
             wake_target,
@@ -316,12 +549,21 @@ impl SwitchPort for PortEndpoint {
         self.active.load(Ordering::Acquire)
     }
 
+    fn deactivate(&self) {
+        self.active.store(false, Ordering::Release);
+        self.lock_ingress().clear();
+    }
+
     fn deliver_ingress(&self, frame: &[u8]) -> bool {
+        if BLACKOUT.load(Ordering::Acquire) {
+            return false;
+        }
         let mut ingress = self.lock_ingress();
         if !self.is_active() || ingress.len() >= INGRESS_CAPACITY {
             return false;
         }
         ingress.push_back(frame.into());
+        record_frame(self.vm_id, false, frame);
         true
     }
 

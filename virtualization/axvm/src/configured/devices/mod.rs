@@ -2,7 +2,7 @@
 
 mod ivc;
 mod virtio_blk;
-mod virtio_net;
+pub(crate) mod virtio_net;
 
 #[cfg(test)]
 pub(super) use ivc::IVC_CHANNEL_SHARED_RANGE_SIZE;

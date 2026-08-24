@@ -12,18 +12,668 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{cell::Cell, format, sync::Arc};
+#[cfg(feature = "timer-latency-stats")]
+use std::sync::atomic::AtomicU64;
+use std::{
+    cell::Cell,
+    format,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use crate::{
     AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmStatus, VmVcpuState,
     arch::current::CurrentArch,
     architecture::{ArchOps, Architecture, VcpuRunAction},
     ax_err_type,
-    runtime::{VCpuRef, VMRef, sub_running_vm_count},
+    host::HostTime,
+    irq::model::{PendingVcpuInterrupt, VirtualInterruptId},
+    runtime::{VCpuRef, VIRQ_INJECTOR_TASK_PRIORITY, VMRef, sub_running_vm_count},
     vm::{PendingInterrupt, VmRuntimeHandle},
 };
 
 const KERNEL_STACK_SIZE: usize = 0x40000; // 256 KiB
+const PERIODIC_VIRQ_STACK_SIZE: usize = 0x10000;
+// `vm.running()` becomes true before the guest installs its ISR. Keep the
+// warm-up identical for every A/B variant so startup is excluded from samples.
+const PERIODIC_VIRQ_GUEST_WARMUP: Duration = Duration::from_secs(2);
+
+static VCPU_PARK_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static POST_VMEXIT_YIELD_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VCPU_WAKE_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static NOTIFY_WOKE_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VTIMER_ARM_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VTIMER_IMMEDIATE_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VTIMER_NO_DEADLINE_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VTIMER_REGISTER_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VTIMER_CALLBACK_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VTIMER_STALE_CALLBACK_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VTIMER_NOTIFICATION_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VTIMER_INVALIDATION_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VTIMER_DIRECT_ACK_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static VTIMER_DIRECT_OVERLAP_COUNTS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+const VTIMER_STAGE_LATENCY_BUCKET_NS: u64 = 1_000;
+#[cfg(feature = "timer-latency-stats")]
+const VTIMER_STAGE_LATENCY_BUCKETS: usize = 4_096;
+#[cfg(all(feature = "timer-latency-stats", any(target_arch = "aarch64", test)))]
+static VTIMER_CALLBACK_PENDING_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+#[cfg(all(feature = "timer-latency-stats", target_arch = "aarch64"))]
+static VTIMER_CALLBACK_GUEST_ENTRY_PENDING_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_CALLBACK_TO_WAKE_HISTOGRAMS: [[AtomicUsize; VTIMER_STAGE_LATENCY_BUCKETS]; 8] =
+    [const { [const { AtomicUsize::new(0) }; VTIMER_STAGE_LATENCY_BUCKETS] }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_CALLBACK_TO_WAKE_OVERFLOWS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_CALLBACK_TO_WAKE_MAX_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_CALLBACK_TO_ENTRY_HISTOGRAMS: [[AtomicUsize; VTIMER_STAGE_LATENCY_BUCKETS]; 8] =
+    [const { [const { AtomicUsize::new(0) }; VTIMER_STAGE_LATENCY_BUCKETS] }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_CALLBACK_TO_ENTRY_OVERFLOWS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_CALLBACK_TO_ENTRY_MAX_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_CALLBACK_TO_GUEST_ENTRY_HISTOGRAMS: [[AtomicUsize; VTIMER_STAGE_LATENCY_BUCKETS]; 8] =
+    [const { [const { AtomicUsize::new(0) }; VTIMER_STAGE_LATENCY_BUCKETS] }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_CALLBACK_TO_GUEST_ENTRY_OVERFLOWS: [AtomicUsize; 8] =
+    [const { AtomicUsize::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_CALLBACK_TO_GUEST_ENTRY_MAX_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+#[cfg(all(feature = "timer-latency-stats", target_arch = "aarch64"))]
+static VTIMER_DIRECT_PENDING_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+#[cfg(all(feature = "timer-latency-stats", target_arch = "aarch64"))]
+static VTIMER_DIRECT_GUEST_ENTRY_PENDING_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_DIRECT_TO_ENTRY_HISTOGRAMS: [[AtomicUsize; VTIMER_STAGE_LATENCY_BUCKETS]; 8] =
+    [const { [const { AtomicUsize::new(0) }; VTIMER_STAGE_LATENCY_BUCKETS] }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_DIRECT_TO_ENTRY_OVERFLOWS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_DIRECT_TO_ENTRY_MAX_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_DIRECT_TO_GUEST_ENTRY_HISTOGRAMS: [[AtomicUsize; VTIMER_STAGE_LATENCY_BUCKETS]; 8] =
+    [const { [const { AtomicUsize::new(0) }; VTIMER_STAGE_LATENCY_BUCKETS] }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_DIRECT_TO_GUEST_ENTRY_OVERFLOWS: [AtomicUsize; 8] =
+    [const { AtomicUsize::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_DIRECT_TO_GUEST_ENTRY_MAX_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_ACTIVATION_HOLD_HISTOGRAMS: [[AtomicUsize; VTIMER_STAGE_LATENCY_BUCKETS]; 8] =
+    [const { [const { AtomicUsize::new(0) }; VTIMER_STAGE_LATENCY_BUCKETS] }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_ACTIVATION_HOLD_OVERFLOWS: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+#[cfg(feature = "timer-latency-stats")]
+static VTIMER_ACTIVATION_HOLD_MAX_NS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+pub(crate) static LR_SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone, Copy, Default)]
+struct VtimerStageLatencySnapshot {
+    samples: usize,
+    overflow: usize,
+    p50_ns: u64,
+    p99_ns: u64,
+    p99_9_ns: u64,
+    max_ns: u64,
+}
+
+#[cfg(feature = "timer-latency-stats")]
+fn vtimer_stage_latency_snapshot(
+    histogram: &[AtomicUsize; VTIMER_STAGE_LATENCY_BUCKETS],
+    overflow: &AtomicUsize,
+    max_ns: &AtomicU64,
+) -> VtimerStageLatencySnapshot {
+    let overflow = overflow.load(Ordering::Relaxed);
+    let samples = histogram
+        .iter()
+        .map(|count| count.load(Ordering::Relaxed))
+        .sum::<usize>()
+        .saturating_add(overflow);
+    let max_ns = max_ns.load(Ordering::Relaxed);
+    VtimerStageLatencySnapshot {
+        samples,
+        overflow,
+        p50_ns: vtimer_stage_latency_percentile(histogram, samples, 50, 100, max_ns),
+        p99_ns: vtimer_stage_latency_percentile(histogram, samples, 99, 100, max_ns),
+        p99_9_ns: vtimer_stage_latency_percentile(histogram, samples, 999, 1_000, max_ns),
+        max_ns,
+    }
+}
+
+#[cfg(feature = "timer-latency-stats")]
+fn vtimer_stage_latency_percentile(
+    histogram: &[AtomicUsize; VTIMER_STAGE_LATENCY_BUCKETS],
+    samples: usize,
+    numerator: usize,
+    denominator: usize,
+    max_ns: u64,
+) -> u64 {
+    if samples == 0 {
+        return 0;
+    }
+    let rank = samples
+        .saturating_mul(numerator)
+        .saturating_add(denominator - 1)
+        / denominator;
+    let mut cumulative = 0usize;
+    for (bucket, count) in histogram.iter().enumerate() {
+        cumulative = cumulative.saturating_add(count.load(Ordering::Relaxed));
+        if cumulative >= rank {
+            return ((bucket as u64) + 1).saturating_mul(VTIMER_STAGE_LATENCY_BUCKET_NS);
+        }
+    }
+    max_ns
+}
+
+#[cfg(all(feature = "timer-latency-stats", any(target_arch = "aarch64", test)))]
+fn record_vtimer_stage_latency(
+    histogram: &[AtomicUsize; VTIMER_STAGE_LATENCY_BUCKETS],
+    overflow: &AtomicUsize,
+    max_ns: &AtomicU64,
+    latency_ns: u64,
+) {
+    max_ns.fetch_max(latency_ns, Ordering::Relaxed);
+    let bucket = (latency_ns / VTIMER_STAGE_LATENCY_BUCKET_NS) as usize;
+    if let Some(count) = histogram.get(bucket) {
+        count.fetch_add(1, Ordering::Relaxed);
+    } else {
+        overflow.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(all(feature = "timer-latency-stats", any(target_arch = "aarch64", test)))]
+fn vtimer_stage_now_ns() -> u64 {
+    crate::host::default_host()
+        .monotonic_time()
+        .as_nanos()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+pub(crate) fn notify_woke_count(vcpu_id: usize) -> Option<&'static AtomicUsize> {
+    NOTIFY_WOKE_COUNTS.get(vcpu_id)
+}
+
+/// Records a vCPU entering its WFI/event wait (park) on the E1 counters.
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) fn note_vcpu_park(vcpu_id: usize) {
+    VCPU_PARK_COUNTS
+        .get(vcpu_id)
+        .map(|count| count.fetch_add(1, Ordering::Relaxed));
+}
+
+/// Records a vCPU leaving its WFI/event wait (wake) on the E1 counters.
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) fn note_vcpu_wake(vcpu_id: usize) {
+    VCPU_WAKE_COUNTS
+        .get(vcpu_id)
+        .map(|count| count.fetch_add(1, Ordering::Relaxed));
+    #[cfg(feature = "timer-latency-stats")]
+    if let Some(callback_ns) = VTIMER_CALLBACK_PENDING_NS
+        .get(vcpu_id)
+        .map(|timestamp| timestamp.load(Ordering::Acquire))
+        .filter(|timestamp| *timestamp != 0)
+    {
+        record_vtimer_stage_latency(
+            &VTIMER_CALLBACK_TO_WAKE_HISTOGRAMS[vcpu_id],
+            &VTIMER_CALLBACK_TO_WAKE_OVERFLOWS[vcpu_id],
+            &VTIMER_CALLBACK_TO_WAKE_MAX_NS[vcpu_id],
+            vtimer_stage_now_ns().saturating_sub(callback_ns),
+        );
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn note_vtimer_counter(counters: &[AtomicUsize; 8], vcpu_id: usize) {
+    if let Some(count) = counters.get(vcpu_id) {
+        count.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_vtimer_arm(vcpu_id: usize) {
+    note_vtimer_counter(&VTIMER_ARM_COUNTS, vcpu_id);
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_vtimer_immediate(vcpu_id: usize) {
+    note_vtimer_counter(&VTIMER_IMMEDIATE_COUNTS, vcpu_id);
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_vtimer_no_deadline(vcpu_id: usize) {
+    note_vtimer_counter(&VTIMER_NO_DEADLINE_COUNTS, vcpu_id);
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_vtimer_registered(vcpu_id: usize) {
+    note_vtimer_counter(&VTIMER_REGISTER_COUNTS, vcpu_id);
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_vtimer_callback(vcpu_id: usize) {
+    note_vtimer_counter(&VTIMER_CALLBACK_COUNTS, vcpu_id);
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_vtimer_stale_callback(vcpu_id: usize) {
+    note_vtimer_counter(&VTIMER_STALE_CALLBACK_COUNTS, vcpu_id);
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_vtimer_notification(vcpu_id: usize, _callback_ns: u64) {
+    note_vtimer_counter(&VTIMER_NOTIFICATION_COUNTS, vcpu_id);
+    #[cfg(feature = "timer-latency-stats")]
+    if let Some(timestamp) = VTIMER_CALLBACK_PENDING_NS.get(vcpu_id) {
+        timestamp.store(_callback_ns.max(1), Ordering::Release);
+    }
+    #[cfg(all(feature = "timer-latency-stats", target_arch = "aarch64"))]
+    if let Some(timestamp) = VTIMER_CALLBACK_GUEST_ENTRY_PENDING_NS.get(vcpu_id) {
+        timestamp.store(_callback_ns.max(1), Ordering::Release);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_vtimer_direct_ack(vcpu_id: usize, _accepted_ns: u64, overlaps_active: bool) {
+    note_vtimer_counter(&VTIMER_DIRECT_ACK_COUNTS, vcpu_id);
+    if overlaps_active {
+        note_vtimer_counter(&VTIMER_DIRECT_OVERLAP_COUNTS, vcpu_id);
+    }
+    #[cfg(feature = "timer-latency-stats")]
+    if let Some(timestamp) = VTIMER_DIRECT_PENDING_NS.get(vcpu_id) {
+        timestamp.store(_accepted_ns.max(1), Ordering::Release);
+    }
+    #[cfg(feature = "timer-latency-stats")]
+    if let Some(timestamp) = VTIMER_DIRECT_GUEST_ENTRY_PENDING_NS.get(vcpu_id) {
+        timestamp.store(_accepted_ns.max(1), Ordering::Release);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_vtimer_activation_hold(_vcpu_id: usize, _accepted_ns: u64) {
+    #[cfg(feature = "timer-latency-stats")]
+    if let Some(histogram) = VTIMER_ACTIVATION_HOLD_HISTOGRAMS.get(_vcpu_id) {
+        record_vtimer_stage_latency(
+            histogram,
+            &VTIMER_ACTIVATION_HOLD_OVERFLOWS[_vcpu_id],
+            &VTIMER_ACTIVATION_HOLD_MAX_NS[_vcpu_id],
+            vtimer_stage_now_ns().saturating_sub(_accepted_ns),
+        );
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn note_vtimer_run_dispatch(_vcpu_id: usize) {
+    #[cfg(feature = "timer-latency-stats")]
+    if let Some(callback_ns) = VTIMER_CALLBACK_PENDING_NS
+        .get(_vcpu_id)
+        .map(|timestamp| timestamp.swap(0, Ordering::AcqRel))
+        .filter(|timestamp| *timestamp != 0)
+    {
+        record_vtimer_stage_latency(
+            &VTIMER_CALLBACK_TO_ENTRY_HISTOGRAMS[_vcpu_id],
+            &VTIMER_CALLBACK_TO_ENTRY_OVERFLOWS[_vcpu_id],
+            &VTIMER_CALLBACK_TO_ENTRY_MAX_NS[_vcpu_id],
+            vtimer_stage_now_ns().saturating_sub(callback_ns),
+        );
+    }
+    #[cfg(feature = "timer-latency-stats")]
+    if let Some(accepted_ns) = VTIMER_DIRECT_PENDING_NS
+        .get(_vcpu_id)
+        .map(|timestamp| timestamp.swap(0, Ordering::AcqRel))
+        .filter(|timestamp| *timestamp != 0)
+    {
+        record_vtimer_stage_latency(
+            &VTIMER_DIRECT_TO_ENTRY_HISTOGRAMS[_vcpu_id],
+            &VTIMER_DIRECT_TO_ENTRY_OVERFLOWS[_vcpu_id],
+            &VTIMER_DIRECT_TO_ENTRY_MAX_NS[_vcpu_id],
+            vtimer_stage_now_ns().saturating_sub(accepted_ns),
+        );
+    }
+}
+
+/// Records the first architecture backend entry after a virtual-timer event.
+///
+/// This boundary is after pending-vIRQ drain, timer preparation, vCPU state
+/// transition, and VGIC load, immediately before entering the Guest backend.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_vtimer_guest_entry(_vcpu_id: usize) {
+    #[cfg(feature = "timer-latency-stats")]
+    if let Some(callback_ns) = VTIMER_CALLBACK_GUEST_ENTRY_PENDING_NS
+        .get(_vcpu_id)
+        .map(|timestamp| timestamp.swap(0, Ordering::AcqRel))
+        .filter(|timestamp| *timestamp != 0)
+    {
+        record_vtimer_stage_latency(
+            &VTIMER_CALLBACK_TO_GUEST_ENTRY_HISTOGRAMS[_vcpu_id],
+            &VTIMER_CALLBACK_TO_GUEST_ENTRY_OVERFLOWS[_vcpu_id],
+            &VTIMER_CALLBACK_TO_GUEST_ENTRY_MAX_NS[_vcpu_id],
+            vtimer_stage_now_ns().saturating_sub(callback_ns),
+        );
+    }
+    #[cfg(feature = "timer-latency-stats")]
+    if let Some(accepted_ns) = VTIMER_DIRECT_GUEST_ENTRY_PENDING_NS
+        .get(_vcpu_id)
+        .map(|timestamp| timestamp.swap(0, Ordering::AcqRel))
+        .filter(|timestamp| *timestamp != 0)
+    {
+        record_vtimer_stage_latency(
+            &VTIMER_DIRECT_TO_GUEST_ENTRY_HISTOGRAMS[_vcpu_id],
+            &VTIMER_DIRECT_TO_GUEST_ENTRY_OVERFLOWS[_vcpu_id],
+            &VTIMER_DIRECT_TO_GUEST_ENTRY_MAX_NS[_vcpu_id],
+            vtimer_stage_now_ns().saturating_sub(accepted_ns),
+        );
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_vtimer_invalidation(vcpu_id: usize) {
+    note_vtimer_counter(&VTIMER_INVALIDATION_COUNTS, vcpu_id);
+}
+
+pub(crate) fn rt_vcpu_stats_snapshot() -> Vec<crate::VcpuRuntimeCounts> {
+    (0..VCPU_PARK_COUNTS.len())
+        .map(|vcpu_id| {
+            #[cfg(feature = "timer-latency-stats")]
+            let callback_to_wake = vtimer_stage_latency_snapshot(
+                &VTIMER_CALLBACK_TO_WAKE_HISTOGRAMS[vcpu_id],
+                &VTIMER_CALLBACK_TO_WAKE_OVERFLOWS[vcpu_id],
+                &VTIMER_CALLBACK_TO_WAKE_MAX_NS[vcpu_id],
+            );
+            #[cfg(not(feature = "timer-latency-stats"))]
+            let callback_to_wake = VtimerStageLatencySnapshot::default();
+            #[cfg(feature = "timer-latency-stats")]
+            let callback_to_entry = vtimer_stage_latency_snapshot(
+                &VTIMER_CALLBACK_TO_ENTRY_HISTOGRAMS[vcpu_id],
+                &VTIMER_CALLBACK_TO_ENTRY_OVERFLOWS[vcpu_id],
+                &VTIMER_CALLBACK_TO_ENTRY_MAX_NS[vcpu_id],
+            );
+            #[cfg(not(feature = "timer-latency-stats"))]
+            let callback_to_entry = VtimerStageLatencySnapshot::default();
+            #[cfg(feature = "timer-latency-stats")]
+            let callback_to_guest_entry = vtimer_stage_latency_snapshot(
+                &VTIMER_CALLBACK_TO_GUEST_ENTRY_HISTOGRAMS[vcpu_id],
+                &VTIMER_CALLBACK_TO_GUEST_ENTRY_OVERFLOWS[vcpu_id],
+                &VTIMER_CALLBACK_TO_GUEST_ENTRY_MAX_NS[vcpu_id],
+            );
+            #[cfg(not(feature = "timer-latency-stats"))]
+            let callback_to_guest_entry = VtimerStageLatencySnapshot::default();
+            #[cfg(feature = "timer-latency-stats")]
+            let direct_to_entry = vtimer_stage_latency_snapshot(
+                &VTIMER_DIRECT_TO_ENTRY_HISTOGRAMS[vcpu_id],
+                &VTIMER_DIRECT_TO_ENTRY_OVERFLOWS[vcpu_id],
+                &VTIMER_DIRECT_TO_ENTRY_MAX_NS[vcpu_id],
+            );
+            #[cfg(not(feature = "timer-latency-stats"))]
+            let direct_to_entry = VtimerStageLatencySnapshot::default();
+            #[cfg(feature = "timer-latency-stats")]
+            let direct_to_guest_entry = vtimer_stage_latency_snapshot(
+                &VTIMER_DIRECT_TO_GUEST_ENTRY_HISTOGRAMS[vcpu_id],
+                &VTIMER_DIRECT_TO_GUEST_ENTRY_OVERFLOWS[vcpu_id],
+                &VTIMER_DIRECT_TO_GUEST_ENTRY_MAX_NS[vcpu_id],
+            );
+            #[cfg(not(feature = "timer-latency-stats"))]
+            let direct_to_guest_entry = VtimerStageLatencySnapshot::default();
+            #[cfg(feature = "timer-latency-stats")]
+            let activation_hold = vtimer_stage_latency_snapshot(
+                &VTIMER_ACTIVATION_HOLD_HISTOGRAMS[vcpu_id],
+                &VTIMER_ACTIVATION_HOLD_OVERFLOWS[vcpu_id],
+                &VTIMER_ACTIVATION_HOLD_MAX_NS[vcpu_id],
+            );
+            #[cfg(not(feature = "timer-latency-stats"))]
+            let activation_hold = VtimerStageLatencySnapshot::default();
+            crate::VcpuRuntimeCounts {
+                vcpu_id,
+                post_vmexit_yields: POST_VMEXIT_YIELD_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                parks: VCPU_PARK_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                wakes: VCPU_WAKE_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                notify_woke: NOTIFY_WOKE_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                vtimer_arms: VTIMER_ARM_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                vtimer_immediate: VTIMER_IMMEDIATE_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                vtimer_no_deadline: VTIMER_NO_DEADLINE_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                vtimer_registered: VTIMER_REGISTER_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                vtimer_callbacks: VTIMER_CALLBACK_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                vtimer_stale_callbacks: VTIMER_STALE_CALLBACK_COUNTS[vcpu_id]
+                    .load(Ordering::Relaxed),
+                vtimer_notifications: VTIMER_NOTIFICATION_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                vtimer_invalidations: VTIMER_INVALIDATION_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                vtimer_direct_acks: VTIMER_DIRECT_ACK_COUNTS[vcpu_id].load(Ordering::Relaxed),
+                vtimer_direct_overlaps: VTIMER_DIRECT_OVERLAP_COUNTS[vcpu_id]
+                    .load(Ordering::Relaxed),
+                vtimer_callback_to_wake_samples: callback_to_wake.samples,
+                vtimer_callback_to_wake_overflow: callback_to_wake.overflow,
+                vtimer_callback_to_wake_p50_ns: callback_to_wake.p50_ns,
+                vtimer_callback_to_wake_p99_ns: callback_to_wake.p99_ns,
+                vtimer_callback_to_wake_p99_9_ns: callback_to_wake.p99_9_ns,
+                vtimer_callback_to_wake_max_ns: callback_to_wake.max_ns,
+                vtimer_callback_to_entry_samples: callback_to_entry.samples,
+                vtimer_callback_to_entry_overflow: callback_to_entry.overflow,
+                vtimer_callback_to_entry_p50_ns: callback_to_entry.p50_ns,
+                vtimer_callback_to_entry_p99_ns: callback_to_entry.p99_ns,
+                vtimer_callback_to_entry_p99_9_ns: callback_to_entry.p99_9_ns,
+                vtimer_callback_to_entry_max_ns: callback_to_entry.max_ns,
+                vtimer_callback_to_guest_entry_samples: callback_to_guest_entry.samples,
+                vtimer_callback_to_guest_entry_overflow: callback_to_guest_entry.overflow,
+                vtimer_callback_to_guest_entry_p50_ns: callback_to_guest_entry.p50_ns,
+                vtimer_callback_to_guest_entry_p99_ns: callback_to_guest_entry.p99_ns,
+                vtimer_callback_to_guest_entry_p99_9_ns: callback_to_guest_entry.p99_9_ns,
+                vtimer_callback_to_guest_entry_max_ns: callback_to_guest_entry.max_ns,
+                vtimer_direct_to_entry_samples: direct_to_entry.samples,
+                vtimer_direct_to_entry_overflow: direct_to_entry.overflow,
+                vtimer_direct_to_entry_p50_ns: direct_to_entry.p50_ns,
+                vtimer_direct_to_entry_p99_ns: direct_to_entry.p99_ns,
+                vtimer_direct_to_entry_p99_9_ns: direct_to_entry.p99_9_ns,
+                vtimer_direct_to_entry_max_ns: direct_to_entry.max_ns,
+                vtimer_direct_to_guest_entry_samples: direct_to_guest_entry.samples,
+                vtimer_direct_to_guest_entry_overflow: direct_to_guest_entry.overflow,
+                vtimer_direct_to_guest_entry_p50_ns: direct_to_guest_entry.p50_ns,
+                vtimer_direct_to_guest_entry_p99_ns: direct_to_guest_entry.p99_ns,
+                vtimer_direct_to_guest_entry_p99_9_ns: direct_to_guest_entry.p99_9_ns,
+                vtimer_direct_to_guest_entry_max_ns: direct_to_guest_entry.max_ns,
+                vtimer_activation_hold_samples: activation_hold.samples,
+                vtimer_activation_hold_overflow: activation_hold.overflow,
+                vtimer_activation_hold_p50_ns: activation_hold.p50_ns,
+                vtimer_activation_hold_p99_ns: activation_hold.p99_ns,
+                vtimer_activation_hold_p99_9_ns: activation_hold.p99_9_ns,
+                vtimer_activation_hold_max_ns: activation_hold.max_ns,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod rt_stats_tests {
+    use super::*;
+
+    #[test]
+    fn vcpu_runtime_snapshot_observes_park_and_wake_edges() {
+        let before = crate::rt_runtime_stats_snapshot();
+        note_vcpu_park(3);
+        note_vcpu_wake(3);
+        let after = crate::rt_runtime_stats_snapshot();
+
+        assert_eq!(after.vcpus[3].parks, before.vcpus[3].parks + 1);
+        assert_eq!(after.vcpus[3].wakes, before.vcpus[3].wakes + 1);
+    }
+
+    #[test]
+    fn vcpu_runtime_snapshot_observes_post_vmexit_yields() {
+        let vcpu_id = 6;
+        let before = crate::rt_runtime_stats_snapshot();
+        POST_VMEXIT_YIELD_COUNTS[vcpu_id].fetch_add(1, Ordering::Relaxed);
+        let after = crate::rt_runtime_stats_snapshot();
+
+        assert_eq!(
+            after.vcpus[vcpu_id].post_vmexit_yields,
+            before.vcpus[vcpu_id].post_vmexit_yields + 1
+        );
+    }
+
+    #[cfg(feature = "timer-latency-stats")]
+    #[test]
+    fn vtimer_stage_histogram_reports_percentiles_and_overflow() {
+        let vcpu_id = 7;
+        let before = rt_vcpu_stats_snapshot()[vcpu_id];
+        record_vtimer_stage_latency(
+            &VTIMER_CALLBACK_TO_ENTRY_HISTOGRAMS[vcpu_id],
+            &VTIMER_CALLBACK_TO_ENTRY_OVERFLOWS[vcpu_id],
+            &VTIMER_CALLBACK_TO_ENTRY_MAX_NS[vcpu_id],
+            25_500,
+        );
+        record_vtimer_stage_latency(
+            &VTIMER_CALLBACK_TO_ENTRY_HISTOGRAMS[vcpu_id],
+            &VTIMER_CALLBACK_TO_ENTRY_OVERFLOWS[vcpu_id],
+            &VTIMER_CALLBACK_TO_ENTRY_MAX_NS[vcpu_id],
+            5_000_000,
+        );
+        let after = rt_vcpu_stats_snapshot()[vcpu_id];
+
+        assert_eq!(
+            after.vtimer_callback_to_entry_samples,
+            before.vtimer_callback_to_entry_samples + 2
+        );
+        assert_eq!(
+            after.vtimer_callback_to_entry_overflow,
+            before.vtimer_callback_to_entry_overflow + 1
+        );
+        assert!(after.vtimer_callback_to_entry_p50_ns >= 26_000);
+        assert!(after.vtimer_callback_to_entry_p99_ns >= 5_000_000);
+        assert!(after.vtimer_callback_to_entry_max_ns >= 5_000_000);
+    }
+}
+
+/// Spawn the common host-side periodic injector used by both A and B.
+pub(crate) fn spawn_periodic_virq_injector(
+    vm: VMRef,
+    config: crate::PeriodicVirqConfig,
+) -> AxVmResult {
+    validate_periodic_virq_config(&config)?;
+    if vm.vcpu(config.vcpu_id).is_none() {
+        return Err(ax_err_type!(
+            NotFound,
+            format!("vCPU {} not found", config.vcpu_id)
+        ));
+    }
+
+    let task = crate::TaskInner::new(
+        move || run_periodic_virq_injector(vm, config),
+        format!("openrace-virq-injector-vcpu-{}", config.vcpu_id),
+        PERIODIC_VIRQ_STACK_SIZE,
+    );
+    task.set_sched_priority(VIRQ_INJECTOR_TASK_PRIORITY);
+    if let Some(cpu_id) = config.injector_cpu_id {
+        let bits = 1usize.checked_shl(cpu_id as u32).ok_or_else(|| {
+            ax_err_type!(
+                InvalidInput,
+                format!("injector CPU {cpu_id} is not representable")
+            )
+        })?;
+        task.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(bits));
+    }
+    crate::host::task::spawn_task(task);
+    Ok(())
+}
+
+fn validate_periodic_virq_config(config: &crate::PeriodicVirqConfig) -> AxVmResult {
+    if config.samples == 0 {
+        return Err(ax_err_type!(
+            BadState,
+            "periodic vIRQ samples must be non-zero"
+        ));
+    }
+    if config.period.is_zero() {
+        return Err(ax_err_type!(
+            BadState,
+            "periodic vIRQ period must be non-zero"
+        ));
+    }
+    // The injector targets a vCPU with a fixed 64-bit host mask; reject larger
+    // IDs explicitly instead of panicking inside CpuMask::one_shot.
+    if config.vcpu_id >= 64 {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!(
+                "vCPU {} exceeds the 64-bit injector target mask",
+                config.vcpu_id
+            )
+        ));
+    }
+    Ok(())
+}
+
+fn run_periodic_virq_injector(vm: VMRef, config: crate::PeriodicVirqConfig) {
+    let wait_started = ax_std::time::Instant::now();
+    while !vm.running() {
+        if vm.stopped() || wait_started.elapsed() >= Duration::from_secs(5) {
+            warn!(
+                "OpenRace vIRQ injector did not observe VM[{}] running before timeout",
+                vm.id()
+            );
+            return;
+        }
+        ax_std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let targets = crate::CpuMask::<64>::one_shot(config.vcpu_id);
+    let mut deadline = ax_std::time::Instant::now() + PERIODIC_VIRQ_GUEST_WARMUP + config.period;
+    let mut failed = 0usize;
+    for sequence in 0..config.samples {
+        let now = ax_std::time::Instant::now();
+        let remaining = deadline.duration_since(now);
+        if !remaining.is_zero() {
+            ax_std::thread::sleep(remaining);
+        }
+        let requested_ns = crate::host::default_host().monotonic_time().as_nanos() as u64;
+        let result = vm.inject_interrupt_to_vcpu(targets, config.vector);
+        let completed_ns = crate::host::default_host().monotonic_time().as_nanos() as u64;
+        if result.is_err() {
+            failed += 1;
+        }
+        info!(
+            "VIRQ_INJECT sequence={} vm={} vcpu={} vector={} requested_ns={} completed_ns={} \
+             status={}",
+            sequence,
+            vm.id(),
+            config.vcpu_id,
+            config.vector,
+            requested_ns,
+            completed_ns,
+            if result.is_ok() { "ok" } else { "error" },
+        );
+        deadline += config.period;
+        if !vm.running() {
+            break;
+        }
+    }
+    info!(
+        "VIRQ_INJECT_COMPLETE vm={} vcpu={} vector={} samples={} errors={}",
+        vm.id(),
+        config.vcpu_id,
+        config.vector,
+        config.samples,
+        failed,
+    );
+    info!(
+        "E1_COUNTERS vcpu0_park={} vcpu0_wake={} vcpu1_park={} vcpu1_wake={} notify_woke0={} \
+         notify_woke1={} lr_skip={}",
+        VCPU_PARK_COUNTS[0].load(Ordering::Relaxed),
+        VCPU_WAKE_COUNTS[0].load(Ordering::Relaxed),
+        VCPU_PARK_COUNTS[1].load(Ordering::Relaxed),
+        VCPU_WAKE_COUNTS[1].load(Ordering::Relaxed),
+        NOTIFY_WOKE_COUNTS[0].load(Ordering::Relaxed),
+        NOTIFY_WOKE_COUNTS[1].load(Ordering::Relaxed),
+        LR_SKIP_COUNT.load(Ordering::Relaxed),
+    );
+    // Let the final interrupt reach and be timestamped by the guest before
+    // the injector task exits. The AxVM timer wheel is registered as a
+    // deadline source in axtask, so a plain host-task sleep wakes on time.
+    ax_std::thread::sleep(config.period);
+}
 
 /// Blocks the current thread until the provided condition is met, using the wait queue
 /// associated with the VCpus of the specified VM.
@@ -56,7 +706,7 @@ pub(crate) fn notify_primary_vcpu(vm_id: usize) {
         return;
     };
     match vm.runtime_handle() {
-        Ok(runtime) => runtime.notify_one(),
+        Ok(runtime) => runtime.notify_vcpu_startup(0),
         Err(err) => warn!("VM[{vm_id}] vCPU runtime not found: {err:?}"),
     }
 }
@@ -76,9 +726,37 @@ pub(crate) fn notify_all_vcpus(vm_id: usize) {
 }
 
 pub(crate) fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
-    queue_pending_interrupt(vm_id, vcpu_id, PendingInterrupt::Normal(vector))
+    let vm = crate::get_vm_by_id(vm_id)
+        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
+        return Err(ax_err_type!(
+            BadState,
+            format!("VM[{vm_id}] is not accepting interrupts")
+        ));
+    }
+
+    // Take the runtime handle without holding the VM machine lock across the
+    // wake: a parked vCPU evaluates its wait condition while holding its wait
+    // queue lock and takes the machine lock inside `vm.running()`/`stopping()`,
+    // so notifying under the machine lock is an ABBA deadlock (observed once
+    // vCPUs actually park via PSCI CPU_SUSPEND standby).
+    let runtime = vm.runtime_handle()?;
+    runtime.dispatch_vcpu_interrupt(
+        vcpu_id,
+        PendingVcpuInterrupt {
+            id: VirtualInterruptId(vector as u32),
+            trigger: crate::InterruptTriggerMode::EdgeTriggered,
+        },
+    )
 }
 
+#[cfg_attr(
+    not(target_arch = "loongarch64"),
+    expect(
+        dead_code,
+        reason = "only the LoongArch IRQ backend queues physical interrupts"
+    )
+)]
 pub(crate) fn queue_pending_interrupt(
     vm_id: usize,
     vcpu_id: usize,
@@ -114,7 +792,10 @@ pub(crate) fn notify_vcpu(vm_id: usize, vcpu_id: usize) -> AxVmResult {
 
     let runtime = vm.runtime_handle()?;
     let cpu_id = runtime.vcpu_cpu_id(vcpu_id)?;
-    runtime.notify_all();
+    // Architecture controllers already own the pending interrupt state. Wake
+    // only its target vCPU; waking every guest CPU adds cross-CPU scheduler
+    // traffic and obscures whether the intended waiter was actually released.
+    runtime.notify_vcpu_unconditional(vcpu_id);
     crate::host::task::send_ipi(cpu_id);
     Ok(())
 }
@@ -290,7 +971,7 @@ pub(crate) fn vcpu_on(
             .map_err(|_| VcpuOnError::StartFailed)?;
 
         let vcpu_task = build_vcpu_task(&vm, vcpu.clone());
-        spawn_registered_vcpu_task(vm.id(), vcpu_id, runtime.clone(), vcpu_task);
+        spawn_registered_vcpu_task(vm.id(), vcpu_id, runtime.clone(), vcpu_task, None);
         runtime.notify_all();
 
         runtime.wait_until(|| ack.is_complete() || !vm.running());
@@ -336,10 +1017,12 @@ pub(crate) fn spawn_registered_vcpu_task(
     vcpu_id: usize,
     runtime: std::sync::Arc<VmRuntimeHandle>,
     task: crate::TaskInner,
+    cpu_id: Option<usize>,
 ) -> crate::AxTaskRef {
     crate::host::task::spawn_task_with(task, |task_ref| {
+        let cpu_id = cpu_id.unwrap_or_else(|| task_ref.cpu_id() as usize);
         runtime
-            .add_vcpu_task(vcpu_id, task_ref.clone())
+            .add_vcpu_task(vcpu_id, task_ref.clone(), cpu_id)
             .unwrap_or_else(|error| {
                 panic!("VM[{vm_id}] vCPU[{vcpu_id}] task registration failed: {error}")
             });
@@ -367,6 +1050,8 @@ pub(crate) fn build_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskInner {
         format!("VM[{}]-VCpu[{}]", vm.id(), vcpu.id()),
         KERNEL_STACK_SIZE,
     );
+    let host_priority = vm.host_sched_priority();
+    vcpu_task.set_sched_priority(host_priority);
 
     if let Some(phys_cpu_set) = vcpu.phys_cpu_set() {
         vcpu_task.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(
@@ -379,8 +1064,9 @@ pub(crate) fn build_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskInner {
     *vcpu_task.task_ext_mut() = Some(crate::AxTaskExt::from_impl(inner));
 
     info!(
-        "VCpu task {} created {:?}",
+        "VCpu task {} created priority={} {:?}",
         vcpu_task.id_name(),
+        host_priority,
         vcpu_task.cpumask()
     );
     vcpu_task
@@ -489,6 +1175,8 @@ fn vcpu_run() {
             let _ = poll_primary_vcpu_devices_with(&runtime, || poll_vm_devices(&vm));
         }
 
+        #[cfg(target_arch = "aarch64")]
+        note_vtimer_run_dispatch(vcpu_id);
         // The guest has entered (and exited) for this run-loop iteration: the
         // control plane reads this as independent re-execution evidence. It is
         // published *only* after a successful `run_vcpu`, so a failed entry
@@ -523,8 +1211,18 @@ fn vcpu_run() {
                         warn!("VM[{vm_id}] VCpu[{vcpu_id}] CPU_OFF cleanup failed: {err:?}");
                     }
                     runtime.remove_vcpu_task(vcpu_id);
-                    if !runtime.consume_cpu_off_reservation(vcpu_id) {
-                        let _ = runtime.mark_vcpu_exiting();
+                    let remaining = if runtime.consume_cpu_off_reservation(vcpu_id) {
+                        // A pending CPU_ON holds this slot open, so the VM keeps a
+                        // vCPU even though this task is gone.
+                        RemainingVcpus::Present
+                    } else if runtime.mark_vcpu_exiting() {
+                        RemainingVcpus::None
+                    } else {
+                        RemainingVcpus::Present
+                    };
+                    if vcpu_exit_duty(VcpuExitDoor::CpuOff, remaining) == VcpuExitDuty::FinishVmStop
+                    {
+                        finish_vm_stop_from_last_vcpu(&vm, &runtime, vcpu_id, VcpuExitDoor::CpuOff);
                     }
                     break;
                 }
@@ -606,40 +1304,123 @@ fn vcpu_run() {
                 vm_id, vcpu_id
             );
 
-            if runtime.mark_vcpu_exiting() {
-                let reset_after_stop = runtime.take_deferred_reset_request();
-                info!("VM[{vm_id}] VCpu[{vcpu_id}] last VCpu exiting, decreasing running VM count");
-
-                if let Err(err) = CurrentArch::on_last_vcpu_exit(&vm) {
-                    warn!("VM[{vm_id}] architecture device cleanup failed: {err:?}");
-                    runtime.record_lifecycle_error(err);
-                }
-                if let Err(err) = vm.finish_stop() {
-                    warn!("VM[{vm_id}] finish stop failed: {err:?}");
-                    runtime.record_lifecycle_error(err);
-                } else {
-                    info!("VM[{}] state changed to Stopped", vm_id);
-                }
-
-                sub_running_vm_count(1);
-                if reset_after_stop {
-                    spawn_deferred_reset_task(vm_id);
-                } else {
-                    crate::host::task::wait_queue_wake(&super::VMM, 1);
-                }
+            let remaining = if runtime.mark_vcpu_exiting() {
+                RemainingVcpus::None
+            } else {
+                RemainingVcpus::Present
+            };
+            if vcpu_exit_duty(VcpuExitDoor::VmStopping, remaining) == VcpuExitDuty::FinishVmStop {
+                finish_vm_stop_from_last_vcpu(&vm, &runtime, vcpu_id, VcpuExitDoor::VmStopping);
             }
 
             break;
         }
 
-        // AxVM may run on ArceOS's cooperative FIFO scheduler. Yield after
-        // every completed VM exit so host services such as the management
-        // console and virtual serial input can make progress alongside a
-        // continuously runnable guest.
-        crate::host::task::yield_now();
+        // Compatibility path for cooperative schedulers. Fixed-priority
+        // builds can disable this unconditional run-queue round trip and rely
+        // on explicit blocking/preemption at the stable VM-exit boundary.
+        #[cfg(not(feature = "no-vcpu-exit-yield"))]
+        {
+            if let Some(count) = POST_VMEXIT_YIELD_COUNTS.get(vcpu_id) {
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+            crate::host::task::yield_now();
+        }
     }
 
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
+}
+
+/// Releases the VM-wide state that only the last vCPU out can release.
+///
+/// Runs architecture device cleanup, drives the machine to `Stopped`, drops the
+/// host running-VM count, and then either hands the VM to a deferred reset or
+/// wakes the VMM. Lifecycle failures are recorded rather than propagated: the
+/// caller is a vCPU task on its way out and has no one left to report to.
+fn finish_vm_stop_from_last_vcpu(
+    vm: &VMRef,
+    runtime: &VmRuntimeHandle,
+    vcpu_id: usize,
+    door: VcpuExitDoor,
+) {
+    let vm_id = vm.id();
+    let reset_after_stop = runtime.take_deferred_reset_request();
+    info!("VM[{vm_id}] VCpu[{vcpu_id}] last VCpu exiting, decreasing running VM count");
+
+    if let Err(err) = CurrentArch::on_last_vcpu_exit(vm) {
+        warn!("VM[{vm_id}] architecture device cleanup failed: {err:?}");
+        runtime.record_lifecycle_error(err);
+    }
+    if let Err(err) = vm.finish_stop_from_last_vcpu(unrecorded_stop_reason(door)) {
+        warn!("VM[{vm_id}] finish stop failed: {err:?}");
+        runtime.record_lifecycle_error(err);
+    } else {
+        info!("VM[{vm_id}] state changed to Stopped");
+    }
+
+    sub_running_vm_count(1);
+    if reset_after_stop {
+        spawn_deferred_reset_task(vm_id);
+    } else {
+        crate::host::task::wait_queue_wake(&super::VMM, 1);
+    }
+}
+
+/// The reason to record when the machine has not been asked to stop yet.
+///
+/// Only the `CPU_OFF` door reaches a still-`Running` machine: the guest brought
+/// its own last CPU down, which is a guest-initiated system shutdown. The
+/// `Stopping` door always finds a reason already recorded by whoever requested
+/// the stop, so its value here is an unreachable fallback.
+fn unrecorded_stop_reason(door: VcpuExitDoor) -> StopReason {
+    match door {
+        VcpuExitDoor::CpuOff => StopReason::SystemDown,
+        VcpuExitDoor::VmStopping => StopReason::Forced,
+    }
+}
+
+/// The way a vCPU task leaves [`vcpu_run`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VcpuExitDoor {
+    /// The guest turned this vCPU off through PSCI `CPU_OFF`.
+    CpuOff,
+    /// The vCPU observed the VM-wide `Stopping` state.
+    VmStopping,
+}
+
+/// Whether any vCPU task of the same VM can still reach a lifecycle check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RemainingVcpus {
+    /// At least one sibling vCPU is still in its run loop.
+    Present,
+    /// This task is the last one leaving, and no `CPU_ON` reservation holds a
+    /// slot open for a later restart.
+    None,
+}
+
+/// Lifecycle work a leaving vCPU still owes its VM.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VcpuExitDuty {
+    /// A sibling vCPU will observe the lifecycle state later.
+    LeaveToSiblings,
+    /// Complete the stop so the VM reaches `Stopped`.
+    FinishVmStop,
+}
+
+/// Decides what a leaving vCPU still owes its VM.
+///
+/// Both doors converge once no sibling remains: after the last vCPU task is
+/// gone, nothing is left that could observe `Stopping` and complete the
+/// transition, so whichever task leaves last has to do it. Listing the doors
+/// explicitly keeps this match non-exhaustive if a third door is added, which
+/// forces that author to make the same decision deliberately.
+fn vcpu_exit_duty(door: VcpuExitDoor, remaining: RemainingVcpus) -> VcpuExitDuty {
+    match (door, remaining) {
+        (_, RemainingVcpus::Present) => VcpuExitDuty::LeaveToSiblings,
+        (VcpuExitDoor::CpuOff | VcpuExitDoor::VmStopping, RemainingVcpus::None) => {
+            VcpuExitDuty::FinishVmStop
+        }
+    }
 }
 
 fn poll_primary_vcpu_devices_with(runtime: &VmRuntimeHandle, poll_devices: impl FnOnce()) -> bool {
@@ -681,6 +1462,38 @@ fn poll_vm_dma_devices(vm: &VMRef) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn last_vcpu_leaving_through_cpu_off_finishes_the_vm_stop() {
+        // A guest that powers its final CPU down (StarryOS does this when init
+        // exits) leaves `vcpu_run` through the `CPU_OFF` door instead of the
+        // `Stopping` door. No task remains afterwards to observe `Stopping`,
+        // so this door has to complete the stop as well; otherwise the VM is
+        // wedged in `Stopping`, where `vm start` is refused and `vm reset`
+        // times out, and only a whole-board reset recovers it.
+        assert_eq!(
+            vcpu_exit_duty(VcpuExitDoor::CpuOff, RemainingVcpus::None),
+            VcpuExitDuty::FinishVmStop
+        );
+    }
+
+    #[test]
+    fn last_vcpu_observing_the_stopping_state_finishes_the_vm_stop() {
+        assert_eq!(
+            vcpu_exit_duty(VcpuExitDoor::VmStopping, RemainingVcpus::None),
+            VcpuExitDuty::FinishVmStop
+        );
+    }
+
+    #[test]
+    fn vcpu_leaving_while_siblings_run_does_not_touch_the_vm_lifecycle() {
+        for door in [VcpuExitDoor::CpuOff, VcpuExitDoor::VmStopping] {
+            assert_eq!(
+                vcpu_exit_duty(door, RemainingVcpus::Present),
+                VcpuExitDuty::LeaveToSiblings
+            );
+        }
+    }
 
     #[test]
     fn vcpu_waits_for_runtime_registration_before_entering_guest() {

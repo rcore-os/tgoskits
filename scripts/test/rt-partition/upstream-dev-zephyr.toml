@@ -1,0 +1,23 @@
+# Official-dev comparison baseline: Zephyr shares pCPU1 with the controlled
+# host burner. pCPU0 remains available for the AxVisor shell and serial output,
+# so the benchmark measures vCPU interference without starving the control
+# plane. The RT-partition case keeps Zephyr on pCPU1 and moves the burner to
+# pCPU0 while making pCPU1 dedicated.
+[base]
+id = 2
+name = "upstream-dev-zephyr"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+
+[kernel]
+entry_point = 0xA000_1044
+image_location = "memory"
+kernel_path = "${workspace}/tmp/rt-partition/zephyr-periodic.bin"
+kernel_load_addr = 0xA000_0000
+dtb_load_addr = 0xA7F0_0000
+memory_regions = [[0xA000_0000, 0x2000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []

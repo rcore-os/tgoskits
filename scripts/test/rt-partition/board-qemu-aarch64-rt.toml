@@ -1,0 +1,19 @@
+# RT-partition board profile: no host filesystem, no NVMe.
+#
+# The RT partition guests load every image from memory
+# (`image_location = "memory"`), so the hypervisor does not need a block
+# device. Dropping the NVMe/fs stack avoids the multi-queue block
+# initialization that delays hardware-virtualization enablement on the
+# secondary CPUs under TCG (observed 3/4 cores with the default profile).
+features = [
+    "rt-scheduler",
+    "timer-latency-stats",
+    # "ax-driver/nvme",
+    # "fs",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []
+
+# [env]
+# BACKTRACE = "y"

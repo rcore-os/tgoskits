@@ -1,0 +1,1 @@
+qemu-system-aarch64 -cpu cortex-a72 -nographic -machine virt\,gic-version=3 -net none -kernel /home/huhu/tgoskits-rt/results/task1/native-zephyr/zephyr-periodic.elf 

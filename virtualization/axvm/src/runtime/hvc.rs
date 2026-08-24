@@ -185,6 +185,14 @@ fn decode_hypercall_code(raw_code: u64, abi: HyperCallAbi) -> HyperCallResult<Hy
     Ok(code)
 }
 
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+pub(crate) fn is_psci_cpu_on_function_id(raw_code: u64, abi: HyperCallAbi) -> bool {
+    matches!(
+        decode_hypercall_code(raw_code, abi),
+        Ok(HyperCallCode::PSCICpuOn | HyperCallCode::PSCICpuOn64)
+    )
+}
+
 fn psci_feature_result(function_id: u64) -> usize {
     if function_id == ARM_SMCCC_VERSION_FUNC_ID {
         return PSCI_RET_SUCCESS;
@@ -804,6 +812,26 @@ mod tests {
             psci_cpu_on_result(Err(vcpus::VcpuOnError::OnPending)),
             PSCI_RET_ON_PENDING
         );
+    }
+
+    #[test]
+    fn hvc_identifies_only_aarch64_psci_cpu_on_calls_for_deferral() {
+        assert!(is_psci_cpu_on_function_id(
+            0x8400_0003,
+            HyperCallAbi::AArch64
+        ));
+        assert!(is_psci_cpu_on_function_id(
+            0xc400_0003,
+            HyperCallAbi::AArch64
+        ));
+        assert!(!is_psci_cpu_on_function_id(
+            0x8400_0003,
+            HyperCallAbi::Generic
+        ));
+        assert!(!is_psci_cpu_on_function_id(
+            0x8400_0008,
+            HyperCallAbi::AArch64
+        ));
     }
 
     #[test]

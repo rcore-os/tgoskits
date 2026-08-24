@@ -1,0 +1,21 @@
+# Task 1 latency probe. The higher-priority Zephyr Guest shares pCPU1 with the
+# StarryOS ncnn/YOLO workload and records 300 wake-up samples at a 10 ms period.
+[base]
+id = 2
+name = "task1-zephyr-periodic-shared"
+guest_type = "virtualized"
+cpu_num = 1
+phys_cpu_ids = [1]
+host_sched_priority = 90
+
+[kernel]
+entry_point = 0xA000_10B4
+image_location = "memory"
+kernel_path = "${workspace}/tmp/starry-task1-periodic/zephyr-periodic.bin"
+kernel_load_addr = 0xA000_0000
+dtb_load_addr = 0xA7F0_0000
+memory_regions = [[0xA000_0000, 0x2000_0000, 0x7, 0]]
+
+[devices]
+passthrough = []
+disabled = []

@@ -306,6 +306,70 @@ and PSCI method, confirm all intended MPIDRs were discovered, then check CRU
 and PMU registration before investigating secondary release, storage, or
 device-specific drivers.
 
+## ATK-DLRK3588 Board Notes
+
+This RK3588 board boots Axvisor images from RAM only. Nothing in this flow
+writes eMMC, and a power cycle always returns the board to its vendor system.
+
+Use `scripts/board/atk-dlrk3588-ram-boot.sh <image.fit>`. Do not hand-roll the
+sequence; the failure modes below all cost real debugging time when the steps
+are issued one at a time.
+
+- The console is `/dev/ttyACM0` at 1,500,000 baud, 8-N-1. Only one reader may
+  hold the port. A second `cat`, `picocom`, or logger steals bytes from the
+  first, which surfaces later as truncated U-Boot replies and corrupted `fdt`
+  output rather than as an obvious error. The script refuses to start when the
+  port is already open.
+- Vendor U-Boot ships `bootdelay=0`, so there is no interactive window to hit.
+  The Ctrl-C flood must already be running before the reset is triggered.
+  Triggering a reset and then starting the flood loses the race; widening the
+  flood window afterwards does not fix it, because the gap is between the two
+  steps rather than at the end.
+- Prefer a host-triggered reset over asking for the RST button: `adb reboot`
+  from the vendor Linux, a `reboot` on the serial root shell, or AxVisor's
+  whole-board `reboot` command. When a guest console is attached, the script
+  first sends Ctrl-X then `h` to return to the AxVisor shell. These paths keep
+  the reset and the flood inside one flow; the RST button is only a last resort
+  when the board no longer responds.
+- `fastboot boot` does not work here. Vendor U-Boot parses the payload as an
+  Android boot image, detects that the download buffer and the Android kernel
+  target overlap, prints `Sysmem Error: "ANDROID" ... overlap with "FASTBOOT"`,
+  and resets. Use `fastboot stage` plus a manual `booti`.
+- The Fastboot download buffer is compiled in at `0x00c00800` and is not
+  exported as an environment variable. It was recovered by reading the U-Boot
+  partition back and parsing the binary; do not guess it, and note that the FIT
+  header lands at the buffer base, not at `0x00c00000`.
+- `iminfo`, `imxtract`, `hash`, and `sysmem` are not compiled into this U-Boot,
+  so on-board hash verification is unavailable. Unpack the staged FIT with the
+  `fdt` command and copy with `cp.b`, reading addresses and sizes back out of
+  the image that is in RAM rather than reusing build-time offsets.
+- Copy the device tree before the kernel. The kernel is the larger payload and
+  copying it first can overrun the device tree's source bytes while they are
+  still needed.
+- Send U-Boot commands one at a time and wait for the prompt between them. Back
+  to back writes at this baud rate drop characters.
+- Guest CPU affinity uses RK3588 hardware MPIDRs, not dense logical indices:
+  the second cluster starts at `0x100`. `os/axvisor/src/config.rs` resolves the
+  hardware ID to a logical index before the dedicated-CPU conflict check; a
+  config that lists `0x100` is correct and must not be rewritten to `1`.
+- A purely virtual guest must keep the standard AArch64 PL011 console. Axvisor
+  otherwise inherits the host UART description and gives the guest a 16550 at
+  `0xfeb50000`, which a QEMU-virt BSP will not drive. The guest then runs with
+  no visible output, which looks like a hang.
+- The Axvisor vGIC exposes no ITS. Any guest built from the upstream
+  `qemu-virt64-aarch64` BSP inherits `CONFIG_RT_PIC_ARM_GIC_V3_ITS=y` and takes
+  a data abort at `pic-gicv3-its.c:405` (`ESR=0x96000005`, `FAR=0x8`) before
+  its console comes up, then spins in `rt_hw_cpu_shutdown()`. From the host
+  side this reads as a stalled timer or scheduler rather than a guest crash.
+  `scripts/test/net-dual-guest/rtthread-guest-config.sh` enforces the rule for
+  every RT-Thread guest build; extend it rather than patching one config.
+- Do not send Ctrl-C to a guest console. StarryOS `init` exits on SIGINT and
+  takes the VM down. Detach with Ctrl-X then `h` instead.
+- Remove temporary VM-exit instrumentation before running any timing
+  measurement. A per-exit probe in `virtualization/axvm/src/arch/aarch64/mod.rs`
+  sits directly on the path a periodic-latency A/B measures, and a formatted
+  `warn!` from inside the exit handler stalls the vCPU being sampled.
+
 ## LoongArch Lessons
 
 - On LS2K1000, repeated `failed to lock LS2K1000 LIOINTC when claiming LIOINTC IRQ` messages immediately after block hctx activation identify a hard-IRQ/controller-lock inversion, not a harmless spurious interrupt. Follow the AArch64 GIC pattern: keep the `rdif_intc` controller and its configuration registers task-owned, and publish a separate LIOINTC CPU interface containing only the ISR/domain/parent/atomic-enable state used by claim/complete. Looking up or locking the controller from hard IRQ lets a level interrupt continuously re-enter before the interrupted task releases its device guard.

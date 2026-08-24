@@ -1,0 +1,2 @@
+scenario=invalid-parameter frames=14 kinds={5: 8, 1: 2, 3: 1, 4: 2, 2: 1}
+PASS: StarryOS/Zephyr scenario invalid-parameter

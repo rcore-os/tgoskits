@@ -1,0 +1,10 @@
+# Task1 experimental timer-worker profile. It differs from the RT board only
+# by raising the bounded per-CPU timer worker above the guest vCPU.
+features = [
+    "rt-scheduler",
+    "timer-latency-stats",
+    "timer-worker-priority-boost",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

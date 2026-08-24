@@ -7,7 +7,7 @@ use riscv_vcpu::{GprIndex as RiscvGprIndex, *};
 use super::*;
 use crate::{
     AxVmResult, StopReason,
-    architecture::cpu_up::{self, CpuUpExit, CpuUpOps},
+    architecture::cpu_up::{self, CpuUpExit, CpuUpOps, CpuUpWork, PreparedCpuUp},
     host::*,
 };
 
@@ -25,6 +25,7 @@ pub(crate) struct Riscv64Arch;
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum RiscvDeferredRunWork {
     ExternalInterrupt { vector: usize },
+    CpuUp(CpuUpWork),
 }
 
 impl CpuUpOps for Riscv64Arch {
@@ -126,15 +127,19 @@ impl ArchOps for Riscv64Arch {
                 target_cpu,
                 entry_point,
                 arg,
-            } => cpu_up::handle::<Self>(
-                vm,
-                vcpu,
-                CpuUpExit {
+            } => {
+                let exit = CpuUpExit {
                     target_cpu,
                     entry_point: riscv_guest_phys_addr_to_ax(entry_point),
                     arg,
-                },
-            ),
+                };
+                match cpu_up::prepare::<Self>(vm, vcpu, exit)? {
+                    PreparedCpuUp::Complete(action) => Ok(BoundVcpuExit::Complete(action)),
+                    PreparedCpuUp::Defer(work) => {
+                        Ok(BoundVcpuExit::Defer(RiscvDeferredRunWork::CpuUp(work)))
+                    }
+                }
+            }
             RiscvVmExit::CpuDown { state } => {
                 warn!(
                     "VM[{}] run VCpu[{}] CpuDown state {state:#x}",
@@ -176,13 +181,16 @@ impl ArchOps for Riscv64Arch {
     }
 
     fn finish_deferred_run_work(
-        _vm: &crate::AxVMRef,
+        vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         work: Self::DeferredRunWork,
     ) -> AxVmResult<VcpuRunAction> {
         match work {
             RiscvDeferredRunWork::ExternalInterrupt { vector } => {
                 finish_external_interrupt(vcpu, vector);
+            }
+            RiscvDeferredRunWork::CpuUp(work) => {
+                return Ok(cpu_up::finish::<Self>(vm, vcpu, work));
             }
         }
         Ok(VcpuRunAction {

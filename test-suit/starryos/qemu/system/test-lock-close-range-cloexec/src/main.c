@@ -83,8 +83,11 @@ static void child_exec_after_close_range(const char *path, int pipe_write, int u
         fail("child close_range CLOEXEC");
     }
 
+    if (fcntl(pipe_write, F_SETFD, FD_CLOEXEC) != 0) {
+        fail("mark exec synchronization pipe CLOEXEC");
+    }
+
     checked_write(pipe_write);
-    close(pipe_write);
     execl("/bin/sleep", "sleep", "1", NULL);
     fail("exec /bin/sleep");
 }
@@ -109,9 +112,11 @@ static void run_case(const char *path, int use_flock)
 
     close(pipefd[1]);
     checked_read(pipefd[0]);
+    char ch;
+    if (read(pipefd[0], &ch, 1) != 0) {
+        fail("wait for child exec");
+    }
     close(pipefd[0]);
-
-    usleep(200000);
 
     int fd = open(path, O_RDWR);
     if (fd < 0) {

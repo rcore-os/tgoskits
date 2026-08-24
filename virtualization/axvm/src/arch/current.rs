@@ -84,7 +84,7 @@ pub(crate) fn register_host_irq_forwarding_activator(
 }
 
 pub(crate) fn register_timer_source(
-    deadline_source: std::sync::Arc<crate::timer::PublishedTimerDeadline>,
+    deadline_source: &'static crate::timer::PublishedTimerDeadline,
     notify: std::sync::Arc<ax_std::os::arceos::modules::ax_task::IrqNotify>,
 ) {
     CurrentArch::register_timer_source(deadline_source, notify);

@@ -1,0 +1,32 @@
+[base]
+id = 1
+name = "atk-task123-hybrid-starry"
+guest_type = "passthrough"
+cpu_num = 2
+phys_cpu_ids = [0x100, 0x200]
+host_sched_priority = 89
+
+[kernel]
+entry_point = 0x4008_0000
+image_location = "memory"
+kernel_load_addr = 0x4008_0000
+kernel_path = "@STARRY_KERNEL@"
+dtb_load_addr = 0x4000_0000
+ramdisk_path = "@STARRY_INITRD@"
+ramdisk_load_addr = 0x7C00_0000
+cmdline = "console=ttyS2"
+memory_regions = [
+    [0x4000_0000, 0x4000_0000, 0x7, 2],
+]
+
+[devices]
+passthrough = [
+    { path = "/npu@fdab0000" },
+    { path = "/mmc@fe2e0000" },
+]
+disabled = []
+
+[[devices.virtual]]
+id = "virtnet0"
+model = "virtio-net"
+guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x15]

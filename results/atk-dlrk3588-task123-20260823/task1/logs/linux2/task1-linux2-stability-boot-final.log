@@ -1,0 +1,602 @@
+
+^C^C
+^C^C^C^C^C^C^C^C^C^CRT_PROGRESS uptime_s=173.16
+^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C
+^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^CRT_PROGRESS uptime_s=183.17
+^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^CRT_PROGRESS uptime_s=193.18
+^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^CRT_PROGRESS uptime_s=203.20
+^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C^C
+[    8.967712] ehci-platform fc800000.usb: port 1 reset error -110
+[    9.794382] ehci-platform fc800000.usb: port 1 reset error -110
+[   10.621047] ehci-platform fc800000.usb: port 1 reset error -110
+^C^C
+^C[   11.239327] usb usb1-port1: Cannot enable. Maybe the USB cable is bad?
+[   11.239459] usb usb1-port1: attempt power cycle
+^C^C^C^C^C^C^C^C^C^C^C^C^C^C^Cdone
+Starting irqbalance: OK
+^CInitializing random number generator: OK
+Saving random seed: OK
+Starting system message bus: done
+Starting rpcbind: OK
+^CStarting iptables: OK
+^CFailed to detect Wi-Fi/BT chip!
+Starting bluetoothd: OK
+Starting network: ^COK
+Starting connmand: OK
+Starting ntpd: ^COK
+[   12.530548] rk_gmac-dwmac fe1b0000.ethernet eth0: PHY [stmmac-0:01] driver [YT8531 Gigabit Ethernet] (irq=POLL)
+[   12.532293] dwmac4: Master AXI performs any burst length
+[   12.532311] rk_gmac-dwmac fe1b0000.ethernet eth0: No Safety Features support found
+[   12.532324] rk_gmac-dwmac fe1b0000.ethernet eth0: IEEE 1588-2008 Advanced Timestamp supported
+[   12.532511] rk_gmac-dwmac fe1b0000.ethernet eth0: registered PTP clock
+[   12.532773] rk_gmac-dwmac fe1b0000.ethernet eth0: configuring for phy/rgmii-rxid link mode
+starting weston... done.
+[   12.537905] rk_gmac-dwmac fe1c0000.ethernet eth1: PHY [stmmac-1:01] driver [YT8531 Gigabit Ethernet] (irq=POLL)
+[   12.539115] dwmac4: Master AXI performs any burst length
+[   12.539137] rk_gmac-dwmac fe1c0000.ethernet eth1: No Safety Features support found
+[   12.539183] rk_gmac-dwmac fe1c0000.ethernet eth1: IEEE 1588-2008 Advanced Timestamp supported
+[   12.539407] rk_gmac-dwmac fe1c0000.ethernet eth1: registered PTP clock
+[   12.539682] rk_gmac-dwmac fe1c0000.ethernet eth1: configuring for phy/rgmii-rxid link mode
+Starting nginx...
+^CStarting pulseaudio: OK
+Starting sshd: ^COK
+W: [pulseaudio] main.c: [1mThis program is not intended to be run as root (unless --system is specified).[0m
+starting systemui... done.
+[   12.662499] usb usb3-port1: Cannot enable. Maybe the USB cable is bad?
+Starting /usr/bin/usbdevice start, log saved to /var/log/usbdevice.log
+^CDate: 1970-01-01 CST
+[08:00:10.613] weston 12.0.1
+               https://wayland.freedesktop.org
+               Bug reports to: https://gitlab.freedesktop.org/wayland/weston/issues/
+               Build: 2a024528
+[08:00:10.614] Command line: /usr/bin/weston
+[08:00:10.614] OS: Linux, 5.10.160, #1 SMP Tue Oct 21 14:42:25 CST 2025, aarch64
+[08:00:10.614] Flight recorder: enabled
+[08:00:10.614] warning: XDG_RUNTIME_DIR "/var/run" is not configured
+correctly.  Unix access mode must be 0700 (current mode is 0755),
+and must be owned by the user UID 0 (current owner is UID 0).
+Refer to your distribution on how to get it, or
+http://www.freedesktop.org/wiki/Specifications/basedir-spec
+on how to implement it.
+/etc/xdg/weston/weston.ini.d/02-desktop.ini: "shell/locking" from "false" to "true"
+[08:00:10.616] Using config file '/etc/xdg/weston/weston.ini'
+[08:00:10.616] Output repaint window is -1 ms maximum.
+[08:00:10.617] Loading module '/usr/lib/libweston-12/drm-backend.so'
+[08:00:10.624] initializing drm backend
+[08:00:10.624] Entering mirror mode.
+[08:00:10.624] Trying direct launcher...
+[08:00:10.626] using /dev/dri/card0
+[08:00:10.626] DRM: does not support atomic modesetting
+[08:00:10.626] DRM: does not support GBM modifiers
+[08:00:10.626] DRM: supports picture aspect ratio
+[08:00:10.629] Loading module '/usr/lib/libweston-12/gl-renderer.so'
+arm_release_ver: g13p0-01eac0, rk_so_ver: 9
+[   12.758469] mali fb000000.gpu: Loading Mali firmware 0x1010000
+[   12.761058] mali fb000000.gpu: Mali firmware git_sha: ee476db42870778306fa8d559a605a73f13e455c 
+^C[08:00:10.670] EGL version: 1.4 Valhall-"g13p0-01eac0"
+[08:00:10.670] EGL vendor: ARM
+[08:00:10.670] EGL client APIs: OpenGL_ES
+[08:00:10.670] EGL features:
+               EGL Wayland extension: yes
+               context priority: yes
+               buffer age: no
+               partial update: yes
+               swap buffers with damage: no
+               configless context: yes
+               surfaceless context: yes
+               dmabuf support: modifiers
+[08:00:10.699] GL version: OpenGL ES 3.2 v1.g13p0-01eac0.11addb9882ee8209dc0912af75110af7
+[08:00:10.699] GLSL version: OpenGL ES GLSL ES 3.20
+[08:00:10.699] GL vendor: ARM
+[08:00:10.699] GL renderer: Mali-G610
+[   12.833852] rk_hdmirx fdee0000.hdmirx-controller: hdmirx_audio_startup: device is no connected or audio is off
+[   12.833876] hdmi-audio-codec hdmi-audio-codec.6.auto: ASoC: error at snd_soc_dai_startup on i2s-hifi: -19
+[   12.834866] file system registered
+^C[   12.845411] rk_hdmirx fdee0000.hdmirx-controller: hdmirx_audio_startup: device is no connected or audio is off
+[   12.845454] hdmi-audio-codec hdmi-audio-codec.6.auto: ASoC: error at snd_soc_dai_startup on i2s-hifi: -19
+[   12.857420] rk_hdmirx fdee0000.hdmirx-controller: hdmirx_audio_startup: device is no connected or audio is off
+[   12.857479] hdmi-audio-codec hdmi-audio-codec.6.auto: ASoC: error at snd_soc_dai_startup on i2s-hifi: -19
+E: [pulseaudio] module-alsa-card.c: [1;31mFailed to find a working profile.[0m
+E: [pulseaudio] module.c: [1;31mFailed to load module "module-alsa-card" (argument: "device_id="2" name="platform-hdmiin-sound" card_name="alsa_card.platform-hdmiin-sound" namereg_fail=false tsched=no fixed_latency_range=no ignore_dB=no deferred_volume=yes use_ucm=yes avoid_resampling=no card_properties="module-udev-detect.discovered=1""): initialization failed.[0m
+[   12.869512] read descriptors
+[   12.869535] read strings
+^CE: [pulseaudio] module-rescue-streams.c: [1;31mmodule-rescue-stream is obsolete and should no longer be loaded. Please remove it from your configuration.[0m
+W: [pulseaudio] server-lookup.c: [1mUnable to contact D-Bus: org.freedesktop.DBus.Error.NotSupported: Using X11 for dbus-daemon autolaunch was disabled at compile time, set your DBUS_SESSION_BUS_ADDRESS instead[0m
+W: [pulseaudio] main.c: [1mUnable to contact D-Bus: org.freedesktop.DBus.Error.NotSupported: Using X11 for dbus-daemon autolaunch was disabled at compile time, set your DBUS_SESSION_BUS_ADDRESS instead[0m
+Starting NFS statd: OK
+[08:00:10.847] GL ES 3.2 - renderer features:
+               read-back format: ARGB8888
+               glReadPixels supports y-flip: no
+               wl_shm 10 bpc formats: yes
+               wl_shm 16 bpc formats: no
+               wl_shm half-float formats: yes
+               internal R and RG formats: yes
+               OES_EGL_image_external: yes
+               wl_shm sub-image to texture: yes
+[08:00:10.847] Using GL renderer
+Starting NFS services: OK
+Starting NFS daemon: [08:00:10.858] event8  - adc-keys: is tagged by udev as: Keyboard
+[08:00:10.858] event8  - adc-keys: device is a keyboard
+[08:00:10.859] event2  - rockchip-dp0 rockchip-dp0: is tagged by udev as: Switch
+rpc.nfsd: Unable to access /proc/fs/nfsd errno 2 (No such file or directory).
+Please try, as root, 'mount -t nfsd nfsd /proc/fs/nfsd' and then restart rpc.nfsd to correct the problem
+FAIL
+Starting NFS mountd: ^COK
+Starting vsftpd: OK
+Starting dnsmasq: [08:00:10.900] event2  - not using input device '/dev/input/event2'
+
+dnsmasq: failed to create listening socket for port 53: Address already in use
+[08:00:10.901] event3  - rockchip-dp1 rockchip-dp1: is tagged by udev as: Switch
+FAIL
+start rknn_serverStarting input-event-daemon: ^C[08:00:10.956] event3  - not using input device '/dev/input/event3'
+done
+[08:00:10.957] event5  - headset-keys: is tagged by udev as: Keyboard
+[08:00:10.958] event5  - headset-keys: device is a keyboard
+[08:00:10.958] event6  - rockchip-es8388 Headset: is tagged by udev as: Switch
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# [08:00:10.976] event6  - not using input device '/dev/input/event6'
+[08:00:10.978] event7  - gyro: is tagged by udev as: Joystick
+[08:00:10.978] event7  - gyro: device is a joystick, ignoring
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# [08:00:11.006] event7  - not using input device '/dev/input/event7'
+[08:00:11.007] event1  - gsensor: is tagged by udev as: Accelerometer
+[08:00:11.007] event1  - gsensor: device is an accelerometer, ignoring
+[08:00:11.030] event1  - not using input device '/dev/input/event1'
+[08:00:11.032] event0  - rk805 pwrkey: is tagged by udev as: Keyboard
+[08:00:11.033] event0  - rk805 pwrkey: device is a keyboard
+[08:00:11.033] event9  - rockchip-hdmi0 rockchip-hdmi0: is tagged by udev as: Switch
+[08:00:11.060] event9  - not using input device '/dev/input/event9'
+[08:00:11.060] event10 - rockchip-hdmi1 rockchip-hdmi1: is tagged by udev as: Switch
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# [08:00:11.080] event10 - not using input device '/dev/input/event10'
+[08:00:11.081] event4  - rockchip,hdmiin rockchip,hdmiin: is tagged by udev as: Switch
+[08:00:11.103] event4  - not using input device '/dev/input/event4'
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# [08:00:11.137] libinput: configuring device "adc-keys".
+[08:00:11.138] libinput: configuring device "headset-keys".
+[08:00:11.138] libinput: configuring device "rk805 pwrkey".
+[08:00:11.138] DRM: head 'HDMI-A-1' found, connector 208 is disconnected.
+[08:00:11.138] DRM: head 'HDMI-A-2' found, connector 224 is disconnected.
+[08:00:11.139] DRM: head 'DSI-1' found, connector 238 is connected, EDID make 'unknown', model 'unknown', serial 'unknown'
+               Supported EOTF modes: SDR
+[08:00:11.139] DRM: head 'DP-1' found, connector 240 is disconnected.
+[08:00:11.139] DRM: head 'DP-2' found, connector 248 is disconnected.
+[08:00:11.139] Registered plugin API 'weston_drm_output_api_v1' of size 40
+[08:00:11.139] Color manager: no-op
+[08:00:11.139] DSI-1 using at least -1717986919 buffers
+[08:00:11.139] Output 'DSI-1' attempts EOTF mode: SDR
+[08:00:11.139] Output 'DSI-1' using color profile: built-in default sRGB SDR profile
+[08:00:11.140] Chosen EGL config details: id:   9 rgba: 8 8 8 0 buf: 24 dep:  0 stcl: 0 int: 0-1 type: win|pbf|swap_preserved vis_id: XRGB8888 (0x34325258)
+[08:00:11.140] Initialized backlight for head 'DSI-1', device /sys/class/backlight/backlight
+[08:00:11.140] Output DSI-1 (crtc 137) video modes:
+               1080x1920@53.9, preferred, current, 119.0 MHz
+[08:00:11.140] associating input device event8 with output DSI-1 (none by udev)
+[08:00:11.140] associating input device event5 with output DSI-1 (none by udev)
+[08:00:11.140] associating input device event0 with output DSI-1 (none by udev)
+[08:00:11.140] Output 'DSI-1' enabled with head(s) DSI-1
+[08:00:11.140] Compositor capabilities:
+               arbitrary surface rotation: yes
+               screen capture uses y-flip: yes
+               cursor planes: yes
+               arbitrary resolutions: no
+               view mask clipping: yes
+               explicit sync: yes
+               color operations: yes
+               presentation clock: CLOCK_MONOTONIC, id 1
+               presentation clock resolution: 0.000000001 s
+[08:00:11.140] Loading module '/usr/lib/weston/desktop-shell.so'
+[08:00:11.142] launching '/usr/libexec/weston-keyboard'
+[08:00:11.143] launching '/usr/libexec/weston-desktop-shell'
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# [   13.350353] dwc3 fc000000.usb: device reset
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# could not load cursor 'dnd-move'
+could not load cursor 'dnd-move'
+could not load cursor 'dnd-copy'
+could not load cursor 'dnd-copy'
+could not load cursor 'dnd-none'
+could not load cursor 'dnd-none'
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# [   13.440677] dwc3 fc000000.usb: device reset
+xkbcommon: ERROR: couldn't find a Compose file for locale "en_US.UTF-8" (mapped to "en_US.UTF-8")
+could not create XKB compose table for locale 'en_US.UTF-8'.  Disabiling compose
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# [   13.512040] android_work: sent uevent USB_STATE=CONNECTED
+[   13.514789] android_work: sent uevent USB_STATE=CONFIGURED
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# [   13.823189] usb usb3-port1: Cannot enable. Maybe the USB cable is bad?
+[   13.823242] usb usb3-port1: attempt power cycle
+xkbcommon: ERROR: couldn't find a Compose file for locale "en_US.UTF-8" (mapped to "en_US.UTF-8")
+could not create XKB compose table for locale 'en_US.UTF-8'.  Disabiling compose
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# start rknn server, version:1.5.2 (8babfea build@2023-08-25T10:30:31)
+I NPUTransfer: Starting NPU Transfer Server, Transfer version 2.1.0 (b5861e7@2020-11-23T11:50:51)
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# reboot
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# Stopping input-event-daemon: done
+stop auto-reboot finished
+stop rknn_server^C[   14.345841] Freeing drm_logo memory: 1048K
+
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# Stopping dnsmasq: FAIL
+Stopping vsftpd: stopped /usr/sbin/vsftpd (pid 1026)
+OK
+Shutting down NFS mountd: FAIL
+Shutting down NFS daemon: ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# FAIL
+Shutting down NFS services: OK
+Stopping NFS statd: OK
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# Starting /usr/bin/usbdevice stop, log saved to /var/log/usbdevice.log
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# [   14.604154] android_work: sent uevent USB_STATE=DISCONNECTED
+[   14.604212] dwc3 fc000000.usb: request 000000007eba0225 was not queued to ep0out
+^C
+[   14.604418] read descriptors
+[   14.604431] read strings
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# stoping systemui... done.
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# Stopping sshd: OK
+Stopping pulseaudio: E: [pulseaudio] main.c: [1;31mFailed to kill daemon: No such process[0m
+OK
+Stopping nginx...
+stopped /usr/sbin/nginx (pid 749)
+stoping weston... ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# [08:00:12.645] caught signal 15
+[08:00:12.645] background surface gone
+done.
+[08:00:12.645] BUG: finalizing a layer with views still on it.
+[08:00:12.646] event8  - adc-keys: device removed
+Stopping ntpd: OK
+Stopping connmand: OK
+[08:00:12.670] event5  - headset-keys: device removed
+killall: rkaiq_3A_server: no process killed
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# Stopping network: OK
+[08:00:12.723] event0  - rk805 pwrkey: device removed
+Stopping bluetoothd: OK
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# [08:00:12.760] destroy output while page flip pending
+[08:00:12.784] destroy output while page flip pending
+[08:00:12.784] Output 'DSI-1' no heads left, disabling.
+[08:00:12.784] destroy output while page flip pending
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# Failed to detect Wi-Fi/BT chip!
+Stopping iptables: iptables v1.8.7 (legacy): can't initialize iptables table `filter': Table does not exist (do you need to insmod?)
+Perhaps iptables or your kernel needs to be upgraded.
+FAIL
+Stopping rpcbind daemon: OK
+Stopping system message bus: done
+Saving random seed: OK
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# Stopping irqbalance: OK
+[   15.005831] usb usb3-port1: Cannot enable. Maybe the USB cable is bad?
+Stopping klogd: OK
+Stopping syslogd: OK
+done.
+[   15.042754] ffs_data_put(): freeing
+^C^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# umount: /var/log: target is busy.
+[   15.066633] EXT4-fs (mmcblk0p6): re-mounted. Opts: (null)
+The system is going down NOW!
+Sent SIGTERM to all processes
+E: [pulseaudio] module-default-device-restore.c: [1;31mFailed to save default sink: No such file or directory[0m
+E: [pulseaudio] module-default-device-restore.c: [1;31mFailed to save default source: No such file or directory[0m
+E: [pulseaudio] core-util.c: [1;31mFailed to create secure directory (/userdata/.pulse/.config/pulse): No such file or directory[0m
+^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# ^C
+[1;31mroot[m@[1;34mATK-DLRK3588:[m/# Sent SIGKILL to all processes
+Requesting system reboot
+[   16.166016] usb usb3-port1: Cannot enable. Maybe the USB cable is bad?
+[   16.166188] usb usb3-port1: unable to enumerate USB device
+[   17.474372] rockchip-vop2 fdd90000.vop: [drm:vop2_crtc_atomic_disable] Crtc atomic disable vp3
+[   17.511108] mpp_rkvenc2 fdbe0000.rkvenc-core: shutdown device
+[   17.511616] mpp_rkvenc2 fdbe0000.rkvenc-core: shutdown success
+[   17.512137] mpp_rkvenc2 fdbd0000.rkvenc-core: shutdown device
+[   17.512654] mpp_rkvenc2 fdbd0000.rkvenc-core: shutdown success
+[   17.621006] rk860-regulator 1-0042: rk860..... reset
+[   17.622390] rk860-regulator 1-0042: force rk860x_reset ok!
+[   17.622882] rk860-regulator 0-0043: rk860..... reset
+[   17.624263] rk860-regulator 0-0043: force rk860x_reset ok!
+[   17.624749] rk860-regulator 0-0042: rk860..... reset
+[   17.626095] rk860-regulator 0-0042: force rk860x_reset ok!
+[   17.626739] mpp_av1dec av1d-master: shutdown device
+[   17.627168] mpp_av1dec av1d-master: shutdown success
+[   17.627677] [WLAN_RFKILL]: Enter rfkill_wlan_shutdown
+[   17.628118] [WLAN_RFKILL]: rockchip_wifi_power: 0
+[   17.628527] [WLAN_RFKILL]: rockchip_wifi_power: toggle = false
+[   17.629033] [WLAN_RFKILL]: rockchip_wifi_power: toggle = false
+[   17.629552] [WLAN_RFKILL]: wifi shut off power [GPIO-1-1]
+[   17.630024] [WLAN_RFKILL]: rfkill_set_wifi_bt_power: 0
+[   17.630874] rockchip-i2s-tdm fddf8000.i2s: failed to clear 1 on slave mode
+[   17.631790] dwc3 fc400000.usb: Wakeup sysfs attributes not added
+[   17.638171] rkisp_hw fdcc0000.rkisp: rkisp_hw_shutdown
+[   17.638636] rkisp_hw fdcb0000.rkisp: rkisp_hw_shutdown
+[   17.639109] mpp_rkvdec2 fdc48100.rkvdec-core: shutdown device
+[   17.639615] mpp_rkvdec2 fdc48100.rkvdec-core: shutdown success
+[   17.640128] mpp_rkvdec2 fdc38100.rkvdec-core: shutdown device
+[   17.640634] mpp_rkvdec2 fdc38100.rkvdec-core: shutdown success
+[   17.641164] mpp-iep2 fdbb0000.iep: shutdown device
+[   17.641582] mpp-iep2 fdbb0000.iep: shutdown success
+[   17.642019] mpp_vepu2 fdbac000.jpege-core: shutdown device
+[   17.642504] mpp_vepu2 fdbac000.jpege-core: shutdown success
+[   17.643004] mpp_vepu2 fdba8000.jpege-core: shutdown device
+[   17.643487] mpp_vepu2 fdba8000.jpege-core: shutdown success
+[   17.643978] mpp_vepu2 fdba4000.jpege-core: shutdown device
+[   17.644462] mpp_vepu2 fdba4000.jpege-core: shutdown success
+[   17.644959] mpp_vepu2 fdba0000.jpege-core: shutdown device
+[   17.645440] mpp_vepu2 fdba0000.jpege-core: shutdown success
+[   17.645933] mpp_jpgdec fdb90000.jpegd: shutdown device
+[   17.646384] mpp_jpgdec fdb90000.jpegd: shutdown success
+[   17.646864] mpp_vdpu1 fdb51000.avsd-plus: shutdown device
+[   17.647337] mpp_vdpu1 fdb51000.avsd-plus: shutdown success
+[   17.647822] mpp_vepu2 fdb50000.vepu: shutdown device
+[   17.648259] mpp_vepu2 fdb50000.vepu: shutdown success
+[   17.648698] mpp_vdpu2 fdb50400.vdpu: shutdown device
+[   17.649139] mpp_vdpu2 fdb50400.vdpu: shutdown success
+[   17.649658] xhci-hcd xhci-hcd.5.auto: remove, state 4
+[   17.650102] usb usb6: USB disconnect, device number 1
+[   17.650823] xhci-hcd xhci-hcd.5.auto: USB bus 6 deregistered
+[   17.651434] xhci-hcd xhci-hcd.5.auto: remove, state 4
+[   17.651876] usb usb5: USB disconnect, device number 1
+[   17.652625] xhci-hcd xhci-hcd.5.auto: USB bus 5 deregistered
+[   17.854030] reboot: Restarting system
+DDR 3488111f83 cym 24/04/12-12:49:26,fwver: v1.17
+LPDDR4X, 1560MHz
+channel[0] BW=16 Col=10 Bk=8 CS0 Row=16 CS1 Row=16 CS=2 Die BW=16 Size=2048MB
+channel[1] BW=16 Col=10 Bk=8 CS0 Row=16 CS1 Row=16 CS=2 Die BW=16 Size=2048MB
+channel[2] BW=16 Col=10 Bk=8 CS0 Row=16 CS1 Row=16 CS=2 Die BW=16 Size=2048MB
+channel[3] BW=16 Col=10 Bk=8 CS0 Row=16 CS1 Row=16 CS=2 Die BW=16 Size=2048MB
+Manufacturer ID:0x1
+CH0 RX Vref:31.8%, TX Vref:19.8%,19.8%DQ rds:
+h3 l0, h2 l0, h5 l0, h1 l0, h7 l0, h3 l0, h1 l0, h3 l0, 
+h4 l0, h6 l0, h5 l0, h7 l0, h3 l0, h2 l0, h1 l0, h4 l0, 
+
+CH1 RX Vref:30.1%, TX Vref:21.8%,20.8%DQ rds:
+h5 l0, h0 l0, h7 l0, h7 l0, h0 l0, h0 l0, h4 l0, h2 l0, 
+h4 l0, h3 l0, h4 l0, h0 l0, h4 l0, h7 l0, h3 l0, h7 l0, 
+
+CH2 RX Vref:31.0%, TX Vref:21.8%,20.8%DQ rds:
+h0 l0, h1 l0, h0 l0, h7 l0, h3 l0, h0 l0, h5 l0, h4 l0, 
+h5 l0, h2 l0, h4 l0, h7 l0, h1 l0, h1 l0, h0 l0, h3 l0, 
+
+CH3 RX Vref:33.0%, TX Vref:20.8%,19.8%DQ rds:
+h6 l0, h7 l0, h4 l0, h4 l0, h1 l0, h3 l0, h7 l0, h4 l0, 
+h7 l0, h5 l0, h7 l0, h7 l0, h5 l0, h6 l0, h2 l0, h6 l0, 
+
+stride=0x2, ddr_config=0x4
+hash ch_mask0-1 0x20 0x40, bank_mask0-3 0xa00 0x1400 0x2800 0x0, rank_mask0 0x401000
+change to F1: 528MHz
+change to F2: 1068MHz
+change to F3: 1560MHz
+change to F0: 1560MHz
+out
+U-Boot SPL board init
+U-Boot SPL 2017.09-ge4e124926e-230922 #lxh (Sep 25 2023 - 10:58:38), fwver: v1.13
+unknown raw ID 0 0 0
+unrecognized JEDEC id bytes: 00, 00, 00
+Trying to boot from MMC2
+MMC: no card present
+mmc_init: -123, time 0
+spl: mmc init failed with error: -123
+Trying to boot from MMC1
+SPL: A/B-slot: _a, successful: 0, tries-remain: 7
+Trying fit image at 0x4000 sector
+## Verified-boot: 0
+## Checking atf-1 0x00040000 ... sha256(64122e141b...) + OK
+## Checking uboot 0x00200000 ... sha256(6a44ff16cd...) + OK
+## Checking fdt 0x00341b18 ... sha256(8ecccd16d2...) + OK
+## Checking atf-2 0xff100000 ... sha256(ce8968e34f...) + OK
+## Checking atf-3 0x000f0000 ... sha256(ce48b69fdd...) + OK
+## Checking optee 0x08400000 ... sha256(b866e4e4a1...) + OK
+Jumping to U-Boot(0x00200000) via ARM Trusted Firmware(0x00040000)
+Total: 84.707/258.572 ms
+
+INFO:    Preloader serial: 2
+NOTICE:  BL31: v2.3():v2.3-765-g588059758:derrick.huang, fwver: v1.46
+NOTICE:  BL31: Built : 18:13:16, Apr 29 2024
+INFO:    spec: 0x1
+INFO:    code: 0x88
+INFO:    ext 32k is not valid
+INFO:    ddr: stride-en 4CH
+INFO:    GICv3 without legacy support detected.
+INFO:    ARM GICv3 driver initialized in EL3
+INFO:    valid_cpu_msk=0xff bcore0_rst = 0x0, bcore1_rst = 0x0
+INFO:    l3 cache partition cfg-0
+INFO:    system boots from cpu-hwid-0
+INFO:    bypass memory repair
+INFO:    idle_st=0x21fff, pd_st=0x11fff9, repair_st=0xfff70001
+INFO:    dfs DDR fsp_params[0].freq_mhz= 1560MHz
+INFO:    dfs DDR fsp_params[1].freq_mhz= 528MHz
+INFO:    dfs DDR fsp_params[2].freq_mhz= 1068MHz
+INFO:    dfs DDR fsp_params[3].freq_mhz= 1560MHz
+INFO:    BL31: Initialising Exception Handling Framework
+INFO:    BL31: Initializing runtime services
+INFO:    BL31: Initializing BL32
+I/TC: 
+I/TC: OP-TEE version: 3.13.0-791-g185dc3c92 #hisping.lin (gcc version 10.2.1 20201103 (GNU Toolchain for the A-profile Architecture 10.2-2020.11 (arm-10.16))) #2 Tue Apr 16 11:16:18 CST 2024 aarch64, fwver: v1.16 
+I/TC: OP-TEE memory: TEEOS 0x200000 TA 0xc00000 SHM 0x200000
+I/TC: Primary CPU initializing
+I/TC: Primary CPU switching to normal world boot
+INFO:    BL31: Preparing for EL3 exit to normal world
+INFO:    Entry point address = 0x200000
+INFO:    SPSR = 0x3c9
+
+
+U-Boot 2017.09-g0a4dd03 #dengtao (Jan 16 2025 - 11:37:55 +0800)
+
+Model: Rockchip RK3588 Evaluation Board
+MPIDR: 0x81000000
+PreSerial: 2, raw, 0xfeb50000
+DRAM:  8 GiB
+Sysmem: init
+Relocation Offset: eda1c000
+Relocation fdt: eb9fa7e0 - eb9fecc8
+CR: M/C/I
+Using default environment
+
+Hotkey: ctrl+c
+optee api revision: 2.0
+mmc@fe2c0000: 1, mmc@fe2e0000: 0
+Bootdev(atags): mmc 0
+MMC0: HS400 Enhanced Strobe, 200Mhz
+PartType: EFI
+TEEC: Waring: Could not find security partition
+DM: v2
+boot mode: normal
+RESC: 'boot', blk@0x00019463
+resource: sha256+
+FIT: no signed, no conf required
+   - dev=saradc, channel=7, dtb_adc=2748, read=2965, found=0
+   - dev=saradc, channel=7, dtb_adc=1410, read=2965, found=0
+   - dev=saradc, channel=7, dtb_adc=0, read=2965, found=0
+DTB: rk-kernel.dtb
+HASH(c): OK
+I2c0 speed: 100000Hz
+vsel-gpios- not found!
+en-gpios- not found!
+vdd_cpu_big0_s0 800000 uV
+vsel-gpios- not found!
+en-gpios- not found!
+vdd_cpu_big1_s0 800000 uV
+I2c1 speed: 100000Hz
+vsel-gpios- not found!
+en-gpios- not found!
+vdd_npu_s0 800000 uV
+spi2: RK806: 2
+ON=0x40, OFF=0x00
+vdd_gpu_s0 750000 uV
+vdd_cpu_lit_s0 750000 uV
+vdd_log_s0 750000 uV
+vdd_vdenc_s0 init 750000 uV
+vdd_ddr_s0 850000 uV
+Device 'gpio@fd8a0000': seq 0 is in use by 'gpio@fd8a0000'
+get vp0 plane mask:0x5, primary id:2, cursor_plane:-1, from dts
+get vp1 plane mask:0xa, primary id:3, cursor_plane:-1, from dts
+get vp2 plane mask:0x140, primary id:8, cursor_plane:-1, from dts
+get vp3 plane mask:0x280, primary id:9, cursor_plane:-1, from dts
+Could not find baseparameter partition
+Model: ATK-DLRK3588 Board
+MPIDR: 0x81000000
+Rockchip UBOOT DRM driver version: v1.0.1
+vp0 have layer nr:2[0 2 ], primary plane: 2
+vp1 have layer nr:2[1 3 ], primary plane: 3
+vp2 have layer nr:2[6 8 ], primary plane: 8
+vp3 have layer nr:2[7 9 ], primary plane: 9
+Using display timing dts
+dsi@fde20000:  detailed mode clock 119000 kHz, flags[a]
+    H: 1080 1090 1096 1128
+    V: 1920 1940 1946 1956
+bus_format: 100e
+VOP update mode to: 1080x1920p54, type: MIPI0 for VP3
+VP3 set crtc_clock to 119000KHz
+VOP VP3 enable Esmart3[654x270->654x270@213x825] fmt[2] addr[0xedf2c000]
+final DSI-Link bandwidth: 793333 Kbps x 4
+hdmi@fde80000 disconnected
+hdmi@fdea0000 disconnected
+CLK: (sync kernel. arm: enter 1008000 KHz, init 1008000 KHz, kernel 0N/A)
+  b0pll 24000 KHz
+  b1pll 24000 KHz
+  lpll 24000 KHz
+  v0pll 714000 KHz
+  aupll 786431 KHz
+  cpll 1500000 KHz
+  gpll 1188000 KHz
+  npll 850000 KHz
+  ppll 1100000 KHz
+  aclk_center_root 702000 KHz
+  pclk_center_root 100000 KHz
+  hclk_center_root 396000 KHz
+  aclk_center_low_root 500000 KHz
+  aclk_top_root 750000 KHz
+  pclk_top_root 100000 KHz
+  aclk_low_top_root 396000 KHz
+Net:   eth0: ethernet@fe1b0000, eth1: ethernet@fe1c0000
+Hit key to stop autoboot('CTRL+C'):  0  0
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> <INTERRUPT>
+=> fastboot usb 0
+Enter fastboot...OK
+request 00000000ebe5c580 was not queued to ep1in-bulk
+Starting download of 76520160 bytes
+request 00000000ebe5c580 was not queued to ep1in-bulk
+..........................................................................
+..........................................................................
+..........................................................................
+..........................................................................
+..........................................................................
+..........................................................................
+..........................................................................
+.................................................................request 00000000ebe5c580 was not queued to ep1in-bulk
+
+downloading of 76520160 bytes finished
+=> fdt addr 0x00c00800
+=> fdt get addr fdtsrc /images/fdt-1 data
+=> fdt get size fdtlen /images/fdt-1 data
+=> fdt get value fdtdst /images/fdt-1 load
+=> fdt get addr kernelsrc /images/kernel-1 data
+=> fdt get size kernellen /images/kernel-1 data
+=> fdt get value kerneldst /images/kernel-1 load
+=> printenv fdtsrc fdtlen fdtdst kernelsrc kernellen kerneldst
+fdtsrc=0x00000000054b3a50
+fdtlen=0x00046646
+fdtdst=0x08300000
+kernelsrc=0x0000000000c00908
+kernellen=0x048B3040
+kerneldst=0x00400000
+=> cp.b ${fdtsrc} ${fdtdst} ${fdtlen}
+=> cp.b ${kernelsrc} ${kerneldst} ${kernellen}
+=> fdt addr ${fdtdst}
+=> fdt header
+magic:			0xd00dfeed
+totalsize:		0x46646 (288326)
+off_dt_struct:		0x48
+off_dt_strings:		0x40a28
+off_mem_rsvmap:		0x28
+version:		17
+last_comp_version:	16
+boot_cpuid_phys:	0x0
+size_dt_strings:	0x5c1e
+size_dt_struct:		0x409e0
+number mem_rsv:		0x1
+
+=> booti ${kerneldst} - ${fdtdst}
+Fdt Ramdisk skip relocation
+## Flattened Device Tree blob at 0x08300000
+   Booting using the fdt blob at 0x08300000
+   reserving fdt memory region: addr=8300000 size=47000

@@ -181,6 +181,32 @@ impl FdtTree {
         Ok(dest_id)
     }
 
+    pub(crate) fn copy_subtree_named_from(
+        &mut self,
+        source: &Fdt,
+        source_id: NodeId,
+        dest_parent: NodeId,
+        dest_name: &str,
+        filter_guest_cpu_props: bool,
+    ) -> AxVmResult<NodeId> {
+        let source_node = source
+            .node(source_id)
+            .ok_or_else(|| ax_err_type!(InvalidData, "source FDT node id is invalid"))?;
+        let dest_id = self.add_node(dest_parent, Node::new(dest_name));
+        copy_properties(
+            source,
+            source_node,
+            self.fdt.node_mut(dest_id).unwrap(),
+            filter_guest_cpu_props,
+        );
+
+        for child_id in source_node.children() {
+            self.copy_subtree_from(source, *child_id, dest_id, filter_guest_cpu_props)?;
+        }
+
+        Ok(dest_id)
+    }
+
     pub(crate) fn clone_filtered(
         source: &Fdt,
         keep: impl Fn(NodeId, &str, &Node) -> bool,

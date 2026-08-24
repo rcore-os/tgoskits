@@ -1,0 +1,48 @@
+/* Overlay for the in-hypervisor virtio-net switch topology: the endpoint is
+ * the first AxVisor AArch64 auto-resource slot at 0x0b00_0000 with wired IRQ
+ * 32 (GIC_SPI 0).  Unlike the socket-pair topology, this is not one of QEMU's
+ * built-in virtio-mmio slots.
+ *
+ * Build with TASK2_ZEPHYR_VIRTIO_SLOT=0 to select this overlay. */
+
+/* Zephyr's QEMU networking choice enables the generic UART pipe helper even
+ * though this Guest uses virtio-net. Bind that helper to the console UART so
+ * the driver remains linkable; no SLIP traffic is used. */
+/ {
+	chosen {
+		zephyr,uart-pipe = &uart0;
+	};
+};
+
+/* The board's generic PCIe node is not part of this MMIO-only Guest.  Disable
+ * both the host controller and its E1000 child; this also prevents the board
+ * Kconfig from selecting PCIe support for the image. */
+&pcie {
+	status = "disabled";
+};
+
+&eth0 {
+	status = "disabled";
+};
+
+/* Do not probe QEMU's first built-in virtio-mmio window. */
+&virtio_mmio0 {
+	status = "disabled";
+};
+
+/* Zephyr uses a compiled devicetree, so describe the same resources that
+ * AxVisor's AArch64 automatic allocator assigns to its first virtual device. */
+&{/soc} {
+	virtio_mmio_switch: virtio_mmio@b000000 {
+		compatible = "virtio,mmio";
+		reg = <0x0 0x0b000000 0x0 0x200>;
+		interrupts = <0x0 0x0 0x2 0xa0>;
+		status = "okay";
+
+	virtio_net: virtio-net {
+		compatible = "virtio,net";
+		status = "okay";
+		local-mac-address = [52 54 00 12 34 02];
+	};
+	};
+};

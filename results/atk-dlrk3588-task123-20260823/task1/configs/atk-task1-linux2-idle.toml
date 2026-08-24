@@ -1,0 +1,30 @@
+[base]
+id = 1
+name = "atk-task1-linux-2vcpu-idle"
+guest_type = "virtualized"
+cpu_num = 2
+phys_cpu_ids = [0x200, 0x300]
+host_sched_priority = 89
+aarch64_virtual_timer_only = false
+aarch64_wfi_policy = "auto"
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "/home/huhu/tgoskits-starry/tmp/rt-partition/linux-qemu"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+ramdisk_path = "/home/huhu/tgoskits-starry/tmp/rt-partition/rt-linux-initramfs.cpio.gz"
+ramdisk_load_addr = 0x8400_0000
+cmdline = "console=ttyAMA0 rdinit=/init devtmpfs.mount=1 loglevel=5 isolcpus=1 nohz_full=1 irqaffinity=0 rt_scenario=idle rt_cpu=1 rt_load_cpu=0 rt_loops=0 rt_duration_sec=20 rt_interval_us=1000 rt_maxlat_us=20000 rt_priority=90 rt_trace=disabled rt_trace_buffer_kb=8192 rt_start_delay_sec=2 rt_hold_after_complete=0"
+memory_regions = [
+    [0x8000_0000, 0x4000_0000, 0x7, 0],
+]
+
+[devices]
+passthrough = []
+disabled = []
+
+[[devices.virtual]]
+id = "console0"
+model = "pl011-mmio"

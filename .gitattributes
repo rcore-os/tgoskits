@@ -3,3 +3,11 @@
 *.jpg binary
 *.bin binary
 *.img binary
+
+# Captured competition evidence is immutable and may contain terminal CRLFs
+# or byte-significant trailing spaces. Keep it text-readable without treating
+# those source bytes as patch whitespace defects.
+results/** -text whitespace=-trailing-space
+
+# Unified-diff fixtures require a single prefix space on blank context lines.
+*.patch whitespace=-trailing-space
