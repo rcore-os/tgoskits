@@ -7,8 +7,71 @@
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
+
+const CAPTURE_ENABLED_BIT: usize = 1;
+
+/// Epoch-based writer admission prevents a writer that observed an old
+/// capture from entering after the buffer has been stopped and restarted.
+struct CaptureGate {
+    epoch: AtomicUsize,
+    active_writers: AtomicUsize,
+}
+
+impl CaptureGate {
+    const fn new() -> Self {
+        Self {
+            epoch: AtomicUsize::new(0),
+            active_writers: AtomicUsize::new(0),
+        }
+    }
+
+    fn start(&self) {
+        let previous = self.epoch.fetch_add(1, Ordering::Release);
+        debug_assert_eq!(previous & CAPTURE_ENABLED_BIT, 0);
+    }
+
+    fn stop(&self) {
+        let _ = self
+            .epoch
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                (epoch & CAPTURE_ENABLED_BIT != 0).then(|| epoch.wrapping_add(1))
+            });
+        while self.active_writers.load(Ordering::Acquire) != 0 {
+            core::hint::spin_loop();
+        }
+    }
+
+    fn try_enter(&self) -> Option<CaptureWriter<'_>> {
+        let observed_epoch = self.observe_enabled_epoch()?;
+        self.try_enter_observed(observed_epoch)
+    }
+
+    fn observe_enabled_epoch(&self) -> Option<usize> {
+        let epoch = self.epoch.load(Ordering::Acquire);
+        (epoch & CAPTURE_ENABLED_BIT != 0).then_some(epoch)
+    }
+
+    fn try_enter_observed(&self, observed_epoch: usize) -> Option<CaptureWriter<'_>> {
+        self.active_writers.fetch_add(1, Ordering::AcqRel);
+        if self.epoch.load(Ordering::Acquire) != observed_epoch {
+            self.active_writers.fetch_sub(1, Ordering::Release);
+            return None;
+        }
+        Some(CaptureWriter { gate: self })
+    }
+}
+
+struct CaptureWriter<'a> {
+    gate: &'a CaptureGate,
+}
+
+impl Drop for CaptureWriter<'_> {
+    fn drop(&mut self) {
+        self.gate.active_writers.fetch_sub(1, Ordering::Release);
+    }
+}
 
 #[cfg(feature = "rt-irq-trace-soak")]
 const TRACE_CAPACITY: usize = 1_048_576;
@@ -50,9 +113,8 @@ impl TraceSlot {
 unsafe impl Sync for TraceSlot {}
 
 struct TraceBuffer<const N: usize> {
-    enabled: AtomicBool,
+    gate: CaptureGate,
     next: AtomicUsize,
-    active_writers: AtomicUsize,
     dropped: AtomicUsize,
     incomplete: AtomicUsize,
     start_ticks: AtomicU64,
@@ -63,9 +125,8 @@ struct TraceBuffer<const N: usize> {
 impl<const N: usize> TraceBuffer<N> {
     const fn new() -> Self {
         Self {
-            enabled: AtomicBool::new(false),
+            gate: CaptureGate::new(),
             next: AtomicUsize::new(0),
-            active_writers: AtomicUsize::new(0),
             dropped: AtomicUsize::new(0),
             incomplete: AtomicUsize::new(0),
             start_ticks: AtomicU64::new(0),
@@ -85,7 +146,7 @@ impl<const N: usize> TraceBuffer<N> {
         self.incomplete.store(0, Ordering::Relaxed);
         self.start_ticks.store(now_ticks, Ordering::Relaxed);
         self.end_ticks.store(0, Ordering::Relaxed);
-        self.enabled.store(true, Ordering::Release);
+        self.gate.start();
     }
 
     fn stop(&self, now_ticks: u64) {
@@ -94,31 +155,21 @@ impl<const N: usize> TraceBuffer<N> {
     }
 
     fn stop_writers(&self) {
-        self.enabled.store(false, Ordering::Release);
-        while self.active_writers.load(Ordering::Acquire) != 0 {
-            core::hint::spin_loop();
-        }
+        self.gate.stop();
     }
 
     fn reserve(&self) -> Option<Reservation<'_, N>> {
-        if !self.enabled.load(Ordering::Acquire) {
-            return None;
-        }
-        self.active_writers.fetch_add(1, Ordering::AcqRel);
-        if !self.enabled.load(Ordering::Acquire) {
-            self.active_writers.fetch_sub(1, Ordering::Release);
-            return None;
-        }
+        let writer = self.gate.try_enter()?;
         let index = self.next.fetch_add(1, Ordering::Relaxed);
         if index >= N {
             self.dropped.fetch_add(1, Ordering::Relaxed);
-            self.active_writers.fetch_sub(1, Ordering::Release);
             return None;
         }
         Some(Reservation {
             buffer: self,
             index,
             finished: false,
+            _writer: writer,
         })
     }
 
@@ -138,6 +189,7 @@ struct Reservation<'a, const N: usize> {
     buffer: &'a TraceBuffer<N>,
     index: usize,
     finished: bool,
+    _writer: CaptureWriter<'a>,
 }
 
 impl<const N: usize> Reservation<'_, N> {
@@ -148,7 +200,6 @@ impl<const N: usize> Reservation<'_, N> {
         unsafe { (*slot.record.get()).write(record) };
         slot.committed.store(self.index + 1, Ordering::Release);
         self.finished = true;
-        self.buffer.active_writers.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -156,7 +207,6 @@ impl<const N: usize> Drop for Reservation<'_, N> {
     fn drop(&mut self) {
         if !self.finished {
             self.buffer.incomplete.fetch_add(1, Ordering::Relaxed);
-            self.buffer.active_writers.fetch_sub(1, Ordering::Release);
         }
     }
 }
@@ -263,7 +313,7 @@ fn counter_frequency_hz() -> u64 {
 mod tests {
     use core::sync::atomic::Ordering;
 
-    use super::{TimerIrqRecord, TraceBuffer};
+    use super::{CaptureGate, TimerIrqRecord, TraceBuffer};
 
     fn record(sequence: u64) -> TimerIrqRecord {
         TimerIrqRecord {
@@ -287,5 +337,19 @@ mod tests {
         assert_eq!(buffer.record(0), Some(record(0)));
         assert_eq!(buffer.record(1), Some(record(1)));
         assert_eq!(buffer.dropped.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn stale_observation_cannot_enter_a_new_capture_epoch() {
+        let gate = CaptureGate::new();
+        gate.start();
+        let stale_epoch = gate.observe_enabled_epoch().unwrap();
+
+        gate.stop();
+        gate.start();
+
+        assert!(gate.try_enter_observed(stale_epoch).is_none());
+        assert_eq!(gate.active_writers.load(Ordering::Relaxed), 0);
+        assert!(gate.try_enter().is_some());
     }
 }

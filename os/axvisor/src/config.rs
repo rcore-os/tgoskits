@@ -156,8 +156,6 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         .with_context(|| format!("prepare devices and vCPUs for VM[{vm_id}]"))?;
 
     axvm::register_vm(vm.clone()).with_context(|| format!("register VM[{vm_id}]"))?;
-    #[cfg(target_arch = "loongarch64")]
-    crate::manager::register_loongarch_passthrough_irq_routes(vm_id);
 
     #[cfg(all(
         feature = "fs",

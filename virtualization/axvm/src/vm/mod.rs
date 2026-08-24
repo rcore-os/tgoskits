@@ -254,12 +254,12 @@ pub(crate) struct VmRuntimeHandle {
     #[cfg(target_arch = "aarch64")]
     vcpu_timer_wait_queues: IrqSafeMutex<BTreeMap<usize, Arc<crate::WaitQueue>>>,
     vcpu_task_list: IrqSafeMutex<BTreeMap<usize, crate::AxTaskRef>>,
-    cpu_on_start_acks: StdMutex<BTreeMap<usize, Arc<crate::runtime::vcpus::CpuOnStartAck>>>,
     cpu_off_exit_reservations: StdMutex<BTreeSet<usize>>,
     pending_interrupts: IrqSafeMutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
     irq_dispatcher: crate::runtime::VcpuIrqDispatcher,
     device_poll_requested: AtomicBool,
     running_halting_vcpu_count: AtomicUsize,
+    lifecycle_participant_count: AtomicUsize,
     lifecycle_error: StdMutex<Option<AxVmError>>,
     deferred_reset_requested: AtomicBool,
     /// VM-level monotonic aggregate count of guest (re-)entries performed by the
@@ -385,12 +385,12 @@ impl VmRuntimeHandle {
             #[cfg(target_arch = "aarch64")]
             vcpu_timer_wait_queues: IrqSafeMutex::new(BTreeMap::new()),
             vcpu_task_list: IrqSafeMutex::new(BTreeMap::new()),
-            cpu_on_start_acks: StdMutex::new(BTreeMap::new()),
             cpu_off_exit_reservations: StdMutex::new(BTreeSet::new()),
             pending_interrupts: IrqSafeMutex::new(BTreeMap::new()),
             irq_dispatcher: crate::runtime::VcpuIrqDispatcher::new(),
             device_poll_requested: AtomicBool::new(false),
             running_halting_vcpu_count: AtomicUsize::new(0),
+            lifecycle_participant_count: AtomicUsize::new(0),
             lifecycle_error: StdMutex::new(None),
             deferred_reset_requested: AtomicBool::new(false),
             guest_entry_count: AtomicU64::new(0),
@@ -426,13 +426,6 @@ impl VmRuntimeHandle {
 
         self.pending_interrupts.lock().entry(vcpu_id).or_default();
         Ok(())
-    }
-
-    pub(crate) fn remove_cpu_on_start_ack(
-        &self,
-        vcpu_id: usize,
-    ) -> Option<Arc<crate::runtime::vcpus::CpuOnStartAck>> {
-        self.cpu_on_start_acks.lock_unpoisoned().remove(&vcpu_id)
     }
 
     /// Record one guest (re-)entry by the vCPU run loop.
@@ -481,33 +474,6 @@ impl VmRuntimeHandle {
         #[cfg(target_arch = "aarch64")]
         self.vcpu_timer_wait_queues.lock().remove(&vcpu_id);
         self.vcpu_task_list.lock().remove(&vcpu_id)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn insert_cpu_on_start_ack(
-        &self,
-        vcpu_id: usize,
-        ack: Arc<crate::runtime::vcpus::CpuOnStartAck>,
-    ) -> AxVmResult {
-        let mut acks = self.cpu_on_start_acks.lock_unpoisoned();
-        if acks.contains_key(&vcpu_id) {
-            return ax_err!(
-                AlreadyExists,
-                format!("vCPU {vcpu_id} CPU_ON ack already exists")
-            );
-        }
-        acks.insert(vcpu_id, ack);
-        Ok(())
-    }
-
-    pub(crate) fn cpu_on_start_ack(
-        &self,
-        vcpu_id: usize,
-    ) -> Option<Arc<crate::runtime::vcpus::CpuOnStartAck>> {
-        self.cpu_on_start_acks
-            .lock_unpoisoned()
-            .get(&vcpu_id)
-            .cloned()
     }
 
     pub(crate) fn queue_pending_interrupt(
@@ -659,14 +625,30 @@ impl VmRuntimeHandle {
             .fetch_add(1, Ordering::Release);
     }
 
-    pub(crate) fn publish_cpu_on_start_success(&self, ack: &crate::runtime::vcpus::CpuOnStartAck) {
-        self.mark_vcpu_running();
-        ack.complete(Ok(()));
-    }
-
     pub(crate) fn mark_vcpu_exiting(&self) -> bool {
         self.running_halting_vcpu_count
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_sub(1)
+            })
+            == Ok(1)
+    }
+
+    /// Reserves one vCPU task as a participant in VM-wide teardown.
+    ///
+    /// The reservation is published before task activation so an accepted
+    /// asynchronous PSCI CPU_ON cannot race the last already-running vCPU out
+    /// of the VM lifecycle.
+    pub(crate) fn reserve_vcpu_lifecycle_participant(&self) {
+        self.lifecycle_participant_count
+            .fetch_add(1, Ordering::Release);
+    }
+
+    /// Releases one vCPU lifecycle participant and reports whether it was last.
+    pub(crate) fn release_vcpu_lifecycle_participant(&self) -> bool {
+        // Acquire the release sequence when the final participant exits so
+        // device teardown observes every earlier vCPU quiesce operation.
+        self.lifecycle_participant_count
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(1)
             })
             == Ok(1)
@@ -699,7 +681,7 @@ impl VmRuntimeHandle {
 
     pub(crate) fn try_reserve_cpu_off(&self, vcpu_id: usize) -> bool {
         let reserved = self
-            .running_halting_vcpu_count
+            .lifecycle_participant_count
             .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count > 1).then_some(count - 1)
             })
@@ -752,33 +734,14 @@ impl VmRuntimeHandle {
 mod runtime_handle_tests {
 
     #[test]
-    fn runtime_cpu_on_success_publishes_online_count_before_ack() {
+    fn runtime_cpu_on_acceptance_reserves_lifecycle_before_first_run() {
         let runtime = VmRuntimeHandle::new(2);
-        let ack = crate::runtime::vcpus::CpuOnStartAck::new();
 
-        runtime.mark_vcpu_running();
-        assert!(ack.begin_startup());
+        runtime.reserve_vcpu_lifecycle_participant();
+        runtime.reserve_vcpu_lifecycle_participant();
 
-        runtime.publish_cpu_on_start_success(&ack);
-
-        assert!(ack.is_complete());
         assert!(runtime.try_reserve_cpu_off(0));
-    }
-
-    #[test]
-    fn runtime_cpu_on_ack_rejects_duplicate_and_can_be_removed() {
-        let runtime = VmRuntimeHandle::new(2);
-        let first = Arc::new(crate::runtime::vcpus::CpuOnStartAck::new());
-        let second = Arc::new(crate::runtime::vcpus::CpuOnStartAck::new());
-
-        assert!(runtime.insert_cpu_on_start_ack(1, first.clone()).is_ok());
-        assert!(runtime.insert_cpu_on_start_ack(1, second).is_err());
-
-        let stored = runtime.cpu_on_start_ack(1).unwrap();
-        assert!(Arc::ptr_eq(&stored, &first));
-
-        assert!(runtime.remove_cpu_on_start_ack(1).is_some());
-        assert!(runtime.cpu_on_start_ack(1).is_none());
+        assert!(runtime.release_vcpu_lifecycle_participant());
     }
 
     #[test]
@@ -797,8 +760,8 @@ mod runtime_handle_tests {
     fn runtime_cpu_off_reservation_rejects_second_parallel_last_vcpu() {
         let runtime = VmRuntimeHandle::new(2);
 
-        runtime.mark_vcpu_running();
-        runtime.mark_vcpu_running();
+        runtime.reserve_vcpu_lifecycle_participant();
+        runtime.reserve_vcpu_lifecycle_participant();
 
         assert!(runtime.try_reserve_cpu_off(0));
         assert!(!runtime.try_reserve_cpu_off(1));
@@ -806,7 +769,7 @@ mod runtime_handle_tests {
         assert!(runtime.consume_cpu_off_reservation(0));
         assert!(!runtime.consume_cpu_off_reservation(0));
 
-        assert!(runtime.mark_vcpu_exiting());
+        assert!(runtime.release_vcpu_lifecycle_participant());
     }
 
     use super::*;
@@ -1692,8 +1655,10 @@ impl AxVM {
                 )),
             };
         }
+        runtime.reserve_vcpu_lifecycle_participant();
         if let Err(error) = primary_task.activate() {
             runtime.remove_vcpu_task(0);
+            let _ = runtime.release_vcpu_lifecycle_participant();
             return match self.rollback_start_without_vcpu() {
                 Ok(()) => Err(error),
                 Err(rollback) => Err(AxVmError::lifecycle_rollback(

@@ -25,6 +25,8 @@ extern crate log;
 mod arch;
 mod architecture;
 pub mod boot;
+#[cfg(feature = "rt-trace")]
+mod capture_gate;
 mod configured;
 mod error;
 pub mod host;

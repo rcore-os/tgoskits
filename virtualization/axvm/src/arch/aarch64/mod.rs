@@ -314,6 +314,11 @@ impl ArmHostOps for AxvmArmHostOps {
     }
 
     fn handle_current_host_irq() {
+        #[cfg(feature = "rt-trace")]
+        ax_std::os::arceos::modules::ax_task::finish_current_idle_wait(
+            ax_std::os::arceos::modules::ax_hal::time::current_ticks(),
+        );
+
         // Keep the acknowledged GIC transaction indivisible from the host
         // scheduler's point of view. The dynamic IRQ registry takes inner
         // preemption guards; without this outer guard, an RR timer tick can

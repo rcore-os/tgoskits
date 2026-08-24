@@ -3,11 +3,14 @@
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use std::vec::Vec;
 
-use crate::host::{HostCpu, HostTime, default_host};
+use crate::{
+    capture_gate::CaptureGate,
+    host::{HostCpu, HostTime, default_host},
+};
 
 #[cfg(feature = "rt-trace-soak")]
 const WAKE_TRACE_CAPACITY: usize = 262_144;
@@ -136,9 +139,8 @@ impl WakeTraceSlot {
 unsafe impl Sync for WakeTraceSlot {}
 
 struct WakeTraceBuffer<const N: usize> {
-    enabled: AtomicBool,
+    gate: CaptureGate,
     next: AtomicUsize,
-    active_writers: AtomicUsize,
     dropped: AtomicUsize,
     slots: [WakeTraceSlot; N],
 }
@@ -146,9 +148,8 @@ struct WakeTraceBuffer<const N: usize> {
 impl<const N: usize> WakeTraceBuffer<N> {
     const fn new() -> Self {
         Self {
-            enabled: AtomicBool::new(false),
+            gate: CaptureGate::new(),
             next: AtomicUsize::new(0),
-            active_writers: AtomicUsize::new(0),
             dropped: AtomicUsize::new(0),
             slots: [const { WakeTraceSlot::new() }; N],
         }
@@ -162,30 +163,21 @@ impl<const N: usize> WakeTraceBuffer<N> {
         }
         self.next.store(0, Ordering::Relaxed);
         self.dropped.store(0, Ordering::Relaxed);
-        self.enabled.store(true, Ordering::Release);
+        self.gate.start();
     }
 
     fn stop(&self) {
-        self.enabled.store(false, Ordering::Release);
-        while self.active_writers.load(Ordering::Acquire) != 0 {
-            core::hint::spin_loop();
-        }
+        self.gate.stop();
     }
 
     fn record(&self, mut record: VcpuWakePhaseRecord) {
-        if !self.enabled.load(Ordering::Acquire) {
+        let Some(_writer) = self.gate.try_enter() else {
             return;
-        }
-        self.active_writers.fetch_add(1, Ordering::AcqRel);
-        if !self.enabled.load(Ordering::Acquire) {
-            self.active_writers.fetch_sub(1, Ordering::Release);
-            return;
-        }
+        };
 
         let index = self.next.fetch_add(1, Ordering::Relaxed);
         if index >= N {
             self.dropped.fetch_add(1, Ordering::Relaxed);
-            self.active_writers.fetch_sub(1, Ordering::Release);
             return;
         }
         record.sequence = index as u64;
@@ -194,7 +186,6 @@ impl<const N: usize> WakeTraceBuffer<N> {
         // matching commit token is published.
         unsafe { (*slot.record.get()).write(record) };
         slot.committed.store(index + 1, Ordering::Release);
-        self.active_writers.fetch_sub(1, Ordering::Release);
     }
 
     fn record_at(&self, index: usize) -> Option<VcpuWakePhaseRecord> {
