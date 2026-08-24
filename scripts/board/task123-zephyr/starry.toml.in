@@ -1,9 +1,9 @@
 [base]
 id = 1
-name = "atk-task123-starry"
+name = "atk-task123-hybrid-starry"
 guest_type = "passthrough"
-cpu_num = 1
-phys_cpu_ids = [0x100]
+cpu_num = 2
+phys_cpu_ids = [0x100, 0x200]
 host_sched_priority = 89
 
 [kernel]
@@ -20,14 +20,11 @@ memory_regions = [
 ]
 
 [devices]
-passthrough = []
-disabled = [
-    { path = "/pcie@fe150000" },
-    { path = "/pcie@fe160000" },
-    { path = "/pcie@fe170000" },
-    { path = "/pcie@fe180000" },
-    { path = "/pcie@fe190000" },
+passthrough = [
+    { path = "/npu@fdab0000" },
+    { path = "/mmc@fe2e0000" },
 ]
+disabled = []
 
 [[devices.virtual]]
 id = "virtnet0"

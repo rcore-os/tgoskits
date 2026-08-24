@@ -1,3 +1,5 @@
+# Under FP-RR, Zephyr priority 90 preempts the StarryOS communication vCPU at
+# priority 89 while both share physical CPU 1.
 features = [
   "ax-driver/rockchip-sdhci",
   "fs",

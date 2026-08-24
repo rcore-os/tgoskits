@@ -6,6 +6,35 @@ export HOSTNAME=starry
 export TERM=xterm-256color
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# AxVisor may attach a trusted, bounded cpio payload as /proc/initrd.  Extract
+# it into tmpfs so board experiments can carry userspace binaries and data
+# without modifying the persistent StarryOS root filesystem.
+if [ -r /proc/initrd ]; then
+    mkdir -p /tmp/axvisor-initrd
+    cd /tmp/axvisor-initrd || exit 120
+    initrd_magic="$(/bin/busybox od -An -N2 -tx1 /proc/initrd | /bin/busybox tr -d ' ')"
+    if [ "$initrd_magic" = "1f8b" ]; then
+        /bin/busybox gzip -dc /proc/initrd | /bin/busybox cpio -idmu
+        extract_status=$?
+    else
+        /bin/busybox cpio -idmu < /proc/initrd
+        extract_status=$?
+    fi
+    if [ "$extract_status" -eq 0 ]; then
+        cd / || exit 121
+        if [ -f /tmp/axvisor-initrd/init ]; then
+            echo STARRY_AXVISOR_INITRD_PAYLOAD
+            export AXVISOR_PAYLOAD_ROOT=/tmp/axvisor-initrd
+            # Compatibility for the validated G2/G3 NPU payloads.
+            export G2_PAYLOAD_ROOT="$AXVISOR_PAYLOAD_ROOT"
+            exec /bin/sh "$AXVISOR_PAYLOAD_ROOT/init"
+        fi
+    else
+        cd / || exit 122
+        echo STARRY_AXVISOR_INITRD_EXTRACT_FAILED
+    fi
+fi
+
 printf "Welcome to \033[96m\033[1mStarry OS\033[0m!\n"
 env
 echo

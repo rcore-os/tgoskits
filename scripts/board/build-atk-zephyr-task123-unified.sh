@@ -29,6 +29,7 @@ main() {
     write_integrity_manifest
     printf 'unified Task 1/2/3 artifacts: %s\n' "$output_dir"
     printf 'Zephyr Guest SHA256: %s\n' "$(sha256sum "$output_dir/inputs/zephyr/zephyr-task2.bin" | awk '{print $1}')"
+    printf 'Hybrid topology: StarryOS vCPU0->pCPU1, vCPU1->pCPU2; Zephyr vCPU0->pCPU1; NPU->StarryOS\n'
     printf 'RR FIT: %s\n' "$output_dir/axvisor-task123-zephyr-rr.fit"
     printf 'FP-RR FIT: %s\n' "$output_dir/axvisor-task123-zephyr-fp-rr.fit"
 }
@@ -80,6 +81,7 @@ build_unified_zephyr_guest() {
     ZEPHYR_BASE="$zephyr_base" \
     TASK2_ZEPHYR_VIRTIO_SLOT=0 \
     TASK2_ZEPHYR_EXTRA_OVERLAY="$repo_root/scripts/test/net-dual-guest/zephyr-task2/atk-dlrk3588-axvisor.overlay" \
+    TASK2_TIMER_FREQUENCY_HZ=24000000 \
     TASK1_ZEPHYR_SAMPLE_COUNT=300 \
         "$repo_root/scripts/test/net-dual-guest/build-zephyr-task2.sh" \
         2>&1 | tee "$output_dir/logs/build-zephyr.log"
