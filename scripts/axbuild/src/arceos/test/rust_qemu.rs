@@ -127,12 +127,18 @@ fn rust_qemu_host_symbolize_success_regex(feature: Option<&str>) -> Vec<String> 
 fn apply_rust_qemu_feature_overrides(qemu: &mut QemuConfig, feature: Option<&str>) {
     match feature {
         Some(ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE) => {
-            qemu.success_regex = vec![r"BACKTRACE_BEGIN\b.*\bkind=panic\b".to_string()];
+            crate::support::qemu_success::replace_configured_success_regex(
+                qemu,
+                vec![r"BACKTRACE_BEGIN\b.*\bkind=panic\b".to_string()],
+            );
             qemu.fail_regex = vec!["ARCEOS_TEST_FAIL".to_string()];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
         Some(ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE) => {
-            qemu.success_regex = vec!["Page fault test OK!".to_string()];
+            crate::support::qemu_success::replace_configured_success_regex(
+                qemu,
+                vec!["Page fault test OK!".to_string()],
+            );
             qemu.fail_regex = vec![
                 r"(?i)\bpanic(?:ked)?\b".to_string(),
                 "page fault handler did not stop the system".to_string(),
@@ -140,14 +146,19 @@ fn apply_rust_qemu_feature_overrides(qemu: &mut QemuConfig, feature: Option<&str
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
         Some(feature) if is_lockdep_detect_feature(feature) => {
-            qemu.success_regex = vec!["lockdep: lock order inversion detected".to_string()];
+            crate::support::qemu_success::replace_configured_success_regex(
+                qemu,
+                vec!["lockdep: lock order inversion detected".to_string()],
+            );
             qemu.fail_regex =
                 vec![r"lockdep did not report an expected .*lock order inversion".to_string()];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
         Some(ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE) => {
-            qemu.success_regex =
-                vec!["task stack guard page hit for .*stack-guard-page-overflow".to_string()];
+            crate::support::qemu_success::replace_configured_success_regex(
+                qemu,
+                vec!["task stack guard page hit for .*stack-guard-page-overflow".to_string()],
+            );
             qemu.fail_regex = vec!["stack guard page was not hit".to_string()];
             qemu.timeout = Some(qemu.timeout.unwrap_or(30).min(30));
         }
@@ -403,7 +414,10 @@ BT 0 ip=0x1 fp=0x2
     #[test]
     fn arceos_rust_page_fault_qemu_uses_page_fault_result_regex() {
         let mut qemu = QemuConfig {
-            success_regex: vec!["ArceOS test suite run OK!".to_string()],
+            shell_check_steps: vec![ostool::run::ShellCheckStep {
+                success_regex: Some(vec!["ArceOS test suite run OK!".to_string()]),
+                ..Default::default()
+            }],
             fail_regex: vec![r"(?i)\bpanic(?:ked)?\b".to_string()],
             timeout: Some(60),
             ..QemuConfig::default()
@@ -414,7 +428,10 @@ BT 0 ip=0x1 fp=0x2
             Some(ARCEOS_RUST_EXCEPTION_PAGE_FAULT_FEATURE),
         );
 
-        assert_eq!(qemu.success_regex, vec!["Page fault test OK!"]);
+        assert_eq!(
+            crate::support::qemu_success::configured_success_regex(&qemu),
+            vec!["Page fault test OK!"]
+        );
         assert_eq!(
             qemu.fail_regex,
             vec![
@@ -428,7 +445,10 @@ BT 0 ip=0x1 fp=0x2
     #[test]
     fn arceos_rust_stack_guard_page_qemu_uses_guard_page_result_regex() {
         let mut qemu = QemuConfig {
-            success_regex: vec!["ArceOS test suite run OK!".to_string()],
+            shell_check_steps: vec![ostool::run::ShellCheckStep {
+                success_regex: Some(vec!["ArceOS test suite run OK!".to_string()]),
+                ..Default::default()
+            }],
             fail_regex: vec![
                 r"(?i)\bpanic(?:ked)?\b".to_string(),
                 "ARCEOS_TEST_FAIL".to_string(),
@@ -440,7 +460,7 @@ BT 0 ip=0x1 fp=0x2
         apply_rust_qemu_feature_overrides(&mut qemu, Some(ARCEOS_RUST_STACK_GUARD_PAGE_FEATURE));
 
         assert_eq!(
-            qemu.success_regex,
+            crate::support::qemu_success::configured_success_regex(&qemu),
             vec!["task stack guard page hit for .*stack-guard-page-overflow"]
         );
         assert_eq!(qemu.fail_regex, vec!["stack guard page was not hit"]);
@@ -476,7 +496,10 @@ BT 0 ip=0x1 fp=0x2
     #[test]
     fn arceos_rust_panic_path_qemu_uses_panic_backtrace_result_regex() {
         let mut qemu = QemuConfig {
-            success_regex: vec!["ArceOS test suite run OK!".to_string()],
+            shell_check_steps: vec![ostool::run::ShellCheckStep {
+                success_regex: Some(vec!["ArceOS test suite run OK!".to_string()]),
+                ..Default::default()
+            }],
             fail_regex: vec![r"(?i)\bpanic(?:ked)?\b".to_string()],
             timeout: Some(60),
             ..QemuConfig::default()
@@ -485,7 +508,7 @@ BT 0 ip=0x1 fp=0x2
         apply_rust_qemu_feature_overrides(&mut qemu, Some(ARCEOS_RUST_DEBUG_PANIC_PATH_FEATURE));
 
         assert_eq!(
-            qemu.success_regex,
+            crate::support::qemu_success::configured_success_regex(&qemu),
             vec![r"BACKTRACE_BEGIN\b.*\bkind=panic\b"]
         );
         assert_eq!(qemu.fail_regex, vec!["ARCEOS_TEST_FAIL"]);
@@ -495,7 +518,10 @@ BT 0 ip=0x1 fp=0x2
     #[test]
     fn arceos_rust_lockdep_detect_qemu_uses_lockdep_result_regex() {
         let mut qemu = QemuConfig {
-            success_regex: vec!["ArceOS test suite run OK!".to_string()],
+            shell_check_steps: vec![ostool::run::ShellCheckStep {
+                success_regex: Some(vec!["ArceOS test suite run OK!".to_string()]),
+                ..Default::default()
+            }],
             fail_regex: vec![r"(?i)\bpanic(?:ked)?\b".to_string()],
             timeout: Some(60),
             ..QemuConfig::default()
@@ -504,7 +530,7 @@ BT 0 ip=0x1 fp=0x2
         apply_rust_qemu_feature_overrides(&mut qemu, Some(ARCEOS_RUST_LOCKDEP_DETECT_FEATURE));
 
         assert_eq!(
-            qemu.success_regex,
+            crate::support::qemu_success::configured_success_regex(&qemu),
             vec!["lockdep: lock order inversion detected"]
         );
         assert_eq!(
@@ -605,7 +631,10 @@ BT 0 ip=0x1 fp=0x2
     #[test]
     fn arceos_rust_normal_qemu_keeps_suite_result_regex() {
         let mut qemu = QemuConfig {
-            success_regex: vec!["ArceOS test suite run OK!".to_string()],
+            shell_check_steps: vec![ostool::run::ShellCheckStep {
+                success_regex: Some(vec!["ArceOS test suite run OK!".to_string()]),
+                ..Default::default()
+            }],
             fail_regex: vec![
                 r"(?i)\bpanic(?:ked)?\b".to_string(),
                 "ARCEOS_TEST_FAIL".to_string(),
@@ -616,7 +645,10 @@ BT 0 ip=0x1 fp=0x2
 
         apply_rust_qemu_feature_overrides(&mut qemu, Some("debug-backtrace"));
 
-        assert_eq!(qemu.success_regex, vec!["ArceOS test suite run OK!"]);
+        assert_eq!(
+            crate::support::qemu_success::configured_success_regex(&qemu),
+            vec!["ArceOS test suite run OK!"]
+        );
         assert_eq!(
             qemu.fail_regex,
             vec![r"(?i)\bpanic(?:ked)?\b", "ARCEOS_TEST_FAIL"]

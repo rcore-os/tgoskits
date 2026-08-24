@@ -121,9 +121,9 @@ fn write_board_test_config(
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(
         &path,
-        "board_type = \"OrangePi-5-Plus\"\nshell_prefix = \
-         \"orangepi@orangepi5plus:~\"\nshell_init_cmd = \"pwd && echo 'test \
-         pass'\"\nsuccess_regex = [\"(?m)^test pass\\\\s*$\"]\nfail_regex = []\ntimeout = 300\n",
+        "board_type = \"OrangePi-5-Plus\"\nshell_check_steps = [{ shell_prefix = \
+         \"orangepi@orangepi5plus:~\", shell_cmd = \"pwd && echo 'test pass'\", success_regex = \
+         [\"(?m)^test pass\\\\s*$\"] }]\nfail_regex = []\ntimeout = 300\n",
     )
     .unwrap();
     path

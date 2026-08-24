@@ -15,9 +15,6 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/syscall-test"
-success_regex = ["(?m)^SYSCALL_TEST_PASSED\\s*$"]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     "(?m)^lockdep fatal violation\\s*$",
@@ -25,3 +22,8 @@ fail_regex = [
     "(?m)^SYSCALL_CASE_FAILED:",
 ]
 timeout = 1800
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/syscall-test"
+success_regex = ["(?m)^SYSCALL_TEST_PASSED\\s*$"]

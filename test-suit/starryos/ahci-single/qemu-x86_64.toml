@@ -11,14 +11,16 @@ args = [
 ]
 uefi = true
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "echo 'AHCI_SINGLE_DISK_BOOT_PASSED'"
-success_regex = [
-  "(?m)^AHCI_SINGLE_DISK_BOOT_PASSED\\s*$",
-]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",
   "(?m)^AHCI_SINGLE_DISK_BOOT_FAILED\\s*$",
 ]
 timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "echo 'AHCI_SINGLE_DISK_BOOT_PASSED'"
+success_regex = [
+  "(?m)^AHCI_SINGLE_DISK_BOOT_PASSED\\s*$",
+]

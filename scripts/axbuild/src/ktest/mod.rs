@@ -977,7 +977,7 @@ fn remove_cargo_target_selector_args(args: &mut Vec<String>) {
 }
 
 fn apply_axtest_qemu_markers(qemu: &mut QemuConfig) {
-    ensure_regex(&mut qemu.success_regex, AXTEST_SUITE_OK);
+    crate::support::qemu_success::append_configured_success_regex(qemu, AXTEST_SUITE_OK);
     ensure_regex(&mut qemu.fail_regex, PANIC_FAIL);
     ensure_regex(&mut qemu.fail_regex, AXTEST_SUITE_FAIL);
     ensure_regex(&mut qemu.fail_regex, AXTEST_CASE_FAIL);

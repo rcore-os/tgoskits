@@ -295,12 +295,7 @@ fi
 
 ### 8.2 自动执行
 
-`apply_grouped_qemu_config()` 把 runner 注入 QEMU 配置：
-
-- 无 `autorun_profile_script` 时，设置 `qemu.shell_init_cmd = "exec <runner_path>"`，guest shell 启动即执行；
-- 有 `autorun_profile_script` 时，写入 `etc/profile.d/<script>.sh`，在登录 profile 阶段执行（通过 `AXBUILD_GROUPED_AUTORUN_DONE` 防止重复）。
-
-同时把 `success_regex` 设为 `all_passed_marker`，并把 `fail_regex` 追加 `all_failed_marker`。
+`apply_grouped_qemu_config()` 要求 grouped runner 配置 profile autorun。axbuild 写入 `etc/profile.d/<script>.sh`，在登录 profile 阶段执行 runner，并通过 `AXBUILD_GROUPED_AUTORUN_DONE` 防止重复。QEMU 配置使用一个不含 `shell_prefix`/`shell_cmd` 的被动步骤匹配 `success_regex`（StarryOS 对应 `all_passed_marker`），同时把配置的 `fail_regex` 追加到 QEMU 顶层失败正则；StarryOS 的该正则匹配每条失败命令打印的 `STARRY_GROUPED_TEST_FAILED:`。
 
 ## 9. QEMU 启动控制
 

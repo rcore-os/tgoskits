@@ -58,10 +58,9 @@ Each `qemu-<arch>.toml` should define runtime behavior, not build config:
 
 - `args`: arch-specific QEMU args
 - `to_bin` / `uefi`
-- `shell_prefix`
-- `shell_init_cmd` for plain, C, shell, or Python cases
-- `test_commands` for grouped cases; do not combine with `shell_init_cmd`
-- `success_regex`
+- `shell_check_steps` for ordered guest commands and passive result checks in plain, C, shell, or Python cases; command steps have `shell_cmd`, the first command step has `shell_prefix`, and later command steps may inherit it; a passive step omits both fields and contains result regexes only
+- `test_commands` for grouped cases; do not combine with `shell_check_steps`. Starry grouped cases use profile autorun and must not set `test_shell_prefix`; that field is only for suites whose grouped runner has autorun disabled.
+- step-local `success_regex`; never define it at the TOML root
 - `fail_regex`
 - `timeout`
 
@@ -69,9 +68,9 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
 
 ## Failure Propagation
 
-- These failure-propagation requirements are for Starry QEMU tests. Board tests continue to use the existing `board-<board>.toml` / board runner flow with `success_regex`, `fail_regex`, and optional `shell_init_cmd`; a board case may reuse the C asset builder only to populate its session upload root.
+- These failure-propagation requirements are for Starry QEMU tests. Board tests use the same ordered `shell_check_steps` model; a board case may reuse the C asset builder only to populate its session upload root.
 - Starry QEMU tests must make real failures visible to the runner. Do not print a failure message while still letting `cargo xtask starry test qemu ...` exit successfully.
-- QEMU `success_regex` and `fail_regex` must reliably distinguish the intended pass and fail states. A failure marker such as `STARRY_GROUPED_TEST_FAILED` must be matched by `fail_regex`, and the all-passed marker must only appear after every required subcase has passed.
+- Step-local `success_regex` and root `fail_regex` must reliably distinguish the intended pass and fail states. A failure marker such as `STARRY_GROUPED_TEST_FAILED` must be matched by `fail_regex`, and the all-passed marker must only appear after every required subcase has passed.
 - In QEMU grouped/system wrappers, any failing subcase must print the per-subcase failure marker, suppress the grouped all-passed marker, print a grouped failure marker, and return a nonzero result to the outer runner.
 - A `qemu/system` binary must not share a PID namespace or procfs mount with another binary. Cleanup must terminate the whole PID namespace, not only the original process group or session; otherwise daemonized or `setsid()` descendants can leak locks and state into the next case.
 - In QEMU shell wrappers, capture a test command's `$?` immediately after the command before assigning variables, printing logs, or doing cleanup. Assignments such as `status=failed` reset `$?` to zero and can hide the true exit status if done first.
@@ -90,14 +89,14 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
 - Do not define more than one pipeline in the same case directory.
 - For C cases, install outputs through CMake `install()` so they land in the guest overlay.
 - Use `prebuild.sh` only for packages or setup that must happen inside the staging rootfs.
-- For grouped cases, keep `test_commands` aligned with installed guest paths and include the grouped success/fail regexes.
+- For grouped cases, keep `test_commands` aligned with installed guest paths, retain a root `fail_regex` that matches `STARRY_GROUPED_TEST_FAILED:`, and let axbuild generate the passive success step for `STARRY_GROUPED_TESTS_PASSED`. Do not add `shell_check_steps`, a top-level `success_regex`, or `test_shell_prefix` to Starry grouped cases because their runner is started by profile autorun.
 - For `qemu/system` C subcases, install binaries to `usr/bin/starry-test-suit`. Put shared system rootfs preparation in `system/prebuild.sh`, not in subcase-local `prebuild.sh`. If a subcase is arch-specific, generate an explicit skip binary or skip in the program; do not rely on subcase-local `qemu-<arch>.toml` filtering.
 - Board case names and board config names should match the actual board target, such as `board-orangepi-5-plus.toml`.
 - Board cases may declare `session_files` relative to the directory containing
   `board-<board>.toml`. Keep each path unchanged from local lookup through the
   session endpoint; do not add aliases or remote names. Use
   `${sessionFile:<relative-path>}`, `${boardServerIp}`, or
-  `${boardServerHttpBaseUrl}` in `shell_init_cmd` when a board must download a
+  `${boardServerHttpBaseUrl}` in a step's `shell_cmd` when a board must download a
   session asset or contact the board-facing server address.
 - When the target has a usable network driver, session-file delivery is the
   default for ephemeral board-test assets. Use bounded download retries because
@@ -108,7 +107,7 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
   `target/<target>/board-cases/<case>/runs/<run-id>/upload/`. Every regular
   installed file is uploaded automatically with the same relative path. Do not
   list generated files in `session_files`; keep explicit `wget`, `chmod`, and
-  execution commands in `shell_init_cmd` because ostool does not execute them.
+  execution commands in `shell_check_steps` because ostool does not execute them.
 - Keep heavy board workloads under `apps/starry` instead of moving them into
   test-suit. A Starry app with `rust/Cargo.toml` may use `starry app board` to
   cross-compile its static helper into the per-run session upload root. Its
@@ -140,6 +139,6 @@ cargo xtask clippy --package axbuild
 - Do not run multiple `cargo xtask starry test qemu` commands in parallel in one workspace checkout.
 - `test-suit/starryos` is not a Cargo crate. Do not add `Cargo.toml` or `src/` there.
 - Do not rely on build group names to distinguish QEMU from board; QEMU is discovered by `qemu-<arch>.toml`, board by `board-<board>.toml`.
-- `shell_init_cmd` and `test_commands` are mutually exclusive.
+- `shell_check_steps` and `test_commands` are mutually exclusive.
 - Heavy app, stress, K230, visual, and golden workloads should stay in `apps/starry`, not under `test-suit/starryos`.
 - If a case needs SMP, use an appropriate build group/config such as `qemu` instead of only adding QEMU `-smp`.

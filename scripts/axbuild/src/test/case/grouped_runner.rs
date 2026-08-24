@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use anyhow::{Context, ensure};
-use ostool::run::qemu::QemuConfig;
+use ostool::run::{ShellCheckStep, qemu::QemuConfig};
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -13,15 +13,20 @@ pub(crate) fn apply_grouped_qemu_config(
     qemu: &mut QemuConfig,
     case: &TestQemuCase,
     config: &GroupedCaseRunnerConfig,
-) {
+) -> anyhow::Result<()> {
     if !case.is_grouped() {
-        return;
+        return Ok(());
     }
 
-    if config.autorun_profile_script.is_none() {
-        qemu.shell_init_cmd = Some(grouped_runner_shell_init_cmd(config));
-    }
-    qemu.success_regex = vec![config.success_regex.clone()];
+    ensure!(
+        config.autorun_profile_script.is_some(),
+        "grouped qemu case `{}` requires profile autorun",
+        case.qemu_config_path.display()
+    );
+    qemu.shell_check_steps = vec![ShellCheckStep {
+        success_regex: Some(vec![config.success_regex.clone()]),
+        ..Default::default()
+    }];
     if !qemu
         .fail_regex
         .iter()
@@ -29,10 +34,7 @@ pub(crate) fn apply_grouped_qemu_config(
     {
         qemu.fail_regex.push(config.fail_regex.clone());
     }
-}
-
-fn grouped_runner_shell_init_cmd(config: &GroupedCaseRunnerConfig) -> String {
-    format!("exec {}", config.runner_path)
+    Ok(())
 }
 
 pub(crate) fn write_grouped_case_runner_script(

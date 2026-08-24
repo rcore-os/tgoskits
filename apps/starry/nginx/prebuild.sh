@@ -11,7 +11,7 @@ fi
 
 # Unified runner entry + shared library + apk mirror helper. All test modes
 # (smoke/phase/all/stress/debug) go through nginx-runner.sh; the QEMU configs
-# only ever set shell_init_cmd = "/usr/bin/nginx-runner.sh <mode> ...".
+# only ever set the step command to "/usr/bin/nginx-runner.sh <mode> ...".
 install -Dm0755 "$app_dir/runner/nginx-runner.sh" "$overlay_dir/usr/bin/nginx-runner.sh"
 install -Dm0755 "$app_dir/runner/nginx-runner-lib.sh" "$overlay_dir/usr/bin/nginx-runner-lib.sh"
 install -Dm0755 "$app_dir/runner/nginx-alpine-mirror.sh" "$overlay_dir/usr/bin/nginx-alpine-mirror.sh"
@@ -20,7 +20,7 @@ install -Dm0755 "$app_dir/runner/nginx-alpine-mirror.sh" "$overlay_dir/usr/bin/n
 install -Dm0755 "$app_dir/smoke/nginx-smoke-tests.sh" "$overlay_dir/usr/bin/nginx-smoke-tests.sh"
 
 # Phase stage scripts, installed under standardized phaseNN guest names that
-# match the runner's stage table and the qemu/phase/*.toml shell_init_cmd args.
+# match the runner's stage table and the qemu/phase/*.toml step command arguments.
 install -Dm0755 "$app_dir/phase/nginx-0-0-env-rlimit-tests.sh" "$overlay_dir/usr/bin/nginx-phase00-tests.sh"
 install -Dm0755 "$app_dir/phase/nginx-1-2-lifecycle-tests.sh" "$overlay_dir/usr/bin/nginx-phase12-tests.sh"
 install -Dm0755 "$app_dir/phase/nginx-1-3-lifecycle-tests.sh" "$overlay_dir/usr/bin/nginx-phase13-tests.sh"

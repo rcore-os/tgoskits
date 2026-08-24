@@ -128,13 +128,7 @@ fn remove_stale_profraw(path: &Path) -> io::Result<()> {
 /// the QEMU runner as its success regex. Coverage completion is enforced by
 /// [`AxtestCoverageCaptureGuard::finish`] after the guest suite succeeds.
 pub(crate) fn update_success_regex(qemu: &mut QemuConfig) {
-    if !qemu
-        .success_regex
-        .iter()
-        .any(|regex| regex.contains(SUITE_OK_MARKER))
-    {
-        qemu.success_regex.push(SUITE_OK_MARKER.to_string());
-    }
+    super::qemu_success::append_configured_success_regex(qemu, SUITE_OK_MARKER);
 }
 
 #[cfg(unix)]
@@ -523,12 +517,18 @@ mod tests {
     #[test]
     fn coverage_keeps_the_guest_suite_success_contract() {
         let mut qemu = QemuConfig {
-            success_regex: vec![SUITE_OK_MARKER.to_string()],
+            shell_check_steps: vec![ostool::run::ShellCheckStep {
+                success_regex: Some(vec![SUITE_OK_MARKER.to_string()]),
+                ..Default::default()
+            }],
             ..QemuConfig::default()
         };
 
         update_success_regex(&mut qemu);
 
-        assert_eq!(qemu.success_regex, [SUITE_OK_MARKER]);
+        assert_eq!(
+            qemu.shell_check_steps[0].success_regex,
+            Some(vec![SUITE_OK_MARKER.to_string()])
+        );
     }
 }

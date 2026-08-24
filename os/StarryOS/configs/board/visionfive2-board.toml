@@ -1,8 +1,5 @@
 # Remote VisionFive2 runtime config. The build config is visionfive2.toml.
 board_type = "VisionFive2"
-shell_prefix = "root@starry:"
-shell_init_cmd = "echo STARRY_VISIONFIVE2_SHELL_OK"
-success_regex = ["(?m)^STARRY_VISIONFIVE2_SHELL_OK\\s*$"]
 fail_regex = [
   "(?i)segmentation fault",
   "(?i)SIGSEGV",
@@ -10,3 +7,8 @@ fail_regex = [
   "failed to determine root device from available block devices",
 ]
 timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "echo STARRY_VISIONFIVE2_SHELL_OK"
+success_regex = ["(?m)(?:^|[\\r\\n])(?:\\x1b\\[[0-9;]*m)*STARRY_VISIONFIVE2_SHELL_OK(?:\\x1b\\[[0-9;]*m)*(?:[\\r\\n]|$)"]

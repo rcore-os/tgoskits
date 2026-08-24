@@ -261,9 +261,9 @@ install -Dm0644 "$work/ys.txt"        "$overlay_dir/root/hdl-yosys-golden.txt"
 # ===========================================================================
 install -Dm0755 "$vvp_runtime" "$overlay_dir/usr/local/bin/vvp"
 
-# Stage the on-target gate script (invoked as the ENTIRE shell_init_cmd). Keeping the gate
+# Stage the on-target gate script (invoked as the entire shell-check step command). Keeping the gate
 # in a staged script — not inline in the toml — avoids the harness false-positive where the
-# echoed shell_init_cmd text containing `echo "TEST PASSED"` would self-match success_regex.
+# echoed step command text containing `echo "TEST PASSED"` would self-match success_regex.
 install -Dm0755 "$app_dir/src/run-hdl.sh" "$overlay_dir/usr/local/bin/run-hdl.sh"
 
 echo "prebuild: hdl-lang ready for $arch — VLOG $(wc -l <"$work/vlog.txt")L / IVL $(wc -l <"$work/ivl.txt")L / BSV $(wc -l <"$work/bsv.txt")L / BH $(wc -l <"$work/bh.txt")L / MAKE $(wc -l <"$work/make.txt")L / yosys $(wc -l <"$work/ys.txt")L"

@@ -6,7 +6,16 @@ args = [
   "-m", "4g",
 ]
 fail_regex = ["VM1_VIRTIO_NET_FAIL", "VM2_VIRTIO_NET_FAIL", "(?i)panic"]
-success_regex = ["(?s)(VM1_VIRTIO_NET_PASS.*VM2_VIRTIO_NET_PASS|VM2_VIRTIO_NET_PASS.*VM1_VIRTIO_NET_PASS)"]
 timeout = 180
 to_bin = true
 uefi = false
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:$"
+shell_cmd = "vm console 2"
+success_regex = ["VM2_VIRTIO_NET_PASS"]
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:$"
+shell_cmd = "vm console 1"
+success_regex = ["VM1_VIRTIO_NET_PASS"]

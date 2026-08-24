@@ -13,8 +13,10 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/rust-hello"
-success_regex = ['(?m)^TEST PASSED\s*$']
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
 timeout = 60
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/rust-hello"
+success_regex = ['(?m)^TEST PASSED\s*$']

@@ -25,6 +25,10 @@ fail_regex = [
   "(?m)^AXVISOR_X86_ACPI_FAILED\\s*$",
   "(?m)^AXVISOR_GUEST_ASSERTION_CASE_UNKNOWN\\s*$",
 ]
-success_regex = ["(?m)^AXVISOR_X86_DIRECT_ACPI_PASSED\\s*$"]
 to_bin = true
 uefi = true
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:$"
+shell_cmd = "vm console 1"
+success_regex = ["(?m)^AXVISOR_X86_DIRECT_ACPI_PASSED(?:\\s|\\[|$)"]

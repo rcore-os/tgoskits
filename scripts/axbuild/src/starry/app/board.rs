@@ -4,6 +4,13 @@ use std::{
 };
 
 use anyhow::{Context, bail, ensure};
+use ostool::board::config::BoardRunConfig;
+use serde::Deserialize;
+
+#[derive(Default, Deserialize)]
+struct AppMetadata {
+    board_shell_prefix: Option<String>,
+}
 
 use super::{
     StarryAppBoardCase,
@@ -62,6 +69,7 @@ pub(crate) fn resolve_board_case(
             Some((board_build_config, target)) => (board_build_config, target),
             None => discover_case_build_config(&case_dir, None)?,
         };
+    let board_shell_prefix = read_app_metadata(&case_dir)?.board_shell_prefix;
 
     Ok(StarryAppBoardCase {
         name: case_name.to_string(),
@@ -71,10 +79,48 @@ pub(crate) fn resolve_board_case(
         build_config_path,
         board_config_path,
         target,
+        board_shell_prefix,
     })
 }
 
-pub(crate) fn merge_board_init_command(init_cmd: &str, board_prelude: Option<&str>) -> String {
+pub(crate) fn configure_board_init_step(
+    board: &mut BoardRunConfig,
+    init_cmd: &str,
+    board_shell_prefix: Option<&str>,
+) -> anyhow::Result<()> {
+    match board.shell_check_steps.as_mut_slice() {
+        [step] => {
+            if let Some(metadata_prefix) = board_shell_prefix {
+                if let Some(step_prefix) = step.shell_prefix.as_deref() {
+                    ensure!(
+                        step_prefix == metadata_prefix,
+                        "Starry app board metadata `board_shell_prefix` conflicts with the shell \
+                         check step prefix"
+                    );
+                } else {
+                    step.shell_prefix = Some(metadata_prefix.to_string());
+                }
+            }
+            ensure!(
+                step.shell_prefix.is_some(),
+                "Starry app board shell check step requires `shell_prefix` or app metadata \
+                 `board_shell_prefix`"
+            );
+            step.shell_cmd = Some(merge_board_init_command(
+                init_cmd,
+                step.shell_cmd.as_deref(),
+            ));
+        }
+        [] => {
+            let _ = (board_shell_prefix, init_cmd);
+            bail!("Starry app board config must define `shell_check_steps` before board init");
+        }
+        _ => bail!("Starry app board config must define at most one shell check step"),
+    }
+    Ok(())
+}
+
+fn merge_board_init_command(init_cmd: &str, board_prelude: Option<&str>) -> String {
     match board_prelude
         .map(str::trim)
         .filter(|prelude| !prelude.is_empty())
@@ -82,6 +128,17 @@ pub(crate) fn merge_board_init_command(init_cmd: &str, board_prelude: Option<&st
         Some(prelude) => format!("{prelude}\n{init_cmd}"),
         None => init_cmd.to_string(),
     }
+}
+
+fn read_app_metadata(case_dir: &Path) -> anyhow::Result<AppMetadata> {
+    let path = case_dir.join("app.toml");
+    if !path.is_file() {
+        return Ok(AppMetadata::default());
+    }
+    toml::from_str(
+        &fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))
 }
 
 fn discover_case_board_config(case_dir: &Path) -> anyhow::Result<PathBuf> {

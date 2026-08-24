@@ -308,13 +308,14 @@ proc-macro2 = "1.0.107"
 quote = "1.0.47"
 syn = "3.0.3"
 toml = { version = "1", default-features = false }
+toml_edit = "0.23"
 dma-api = { version = "0.10", path = "memory/dma-api" }
 mmio-api = { version = "0.3", path = "memory/mmio-api" }
 cvi-vdec-uapi = { version = "0.1", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
 atomic-waker = { version = "1.1", default-features = false }
-ostool = { version = "0.27.1" }
+ostool = { version = "0.28" }
 riscv = { version = "0.16.1", default-features = false }
 sbi-rt = { version = "0.0.4", default-features = false }
 uefi = "0.37.0"

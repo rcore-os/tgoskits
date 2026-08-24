@@ -15,8 +15,10 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "sh /usr/bin/cpu-concurrency.sh"
-success_regex = ['(?m)^CPU_CONCURRENCY_PASSED\s*$']
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^CPU_CONCURRENCY_FAILED\s*$']
 timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "sh /usr/bin/cpu-concurrency.sh"
+success_regex = ['(?m)^CPU_CONCURRENCY_PASSED\s*$']

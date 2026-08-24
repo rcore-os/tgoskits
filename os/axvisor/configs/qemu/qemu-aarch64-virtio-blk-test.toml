@@ -6,7 +6,11 @@ args = [
   "-m", "4g",
 ]
 fail_regex = ["ARCEOS_VIRTIO_BLK_FAIL", "(?i)panic"]
-success_regex = ["ARCEOS_VIRTIO_BLK_PASS"]
 timeout = 120
 to_bin = true
 uefi = false
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:$"
+shell_cmd = "vm console 1"
+success_regex = ["ARCEOS_VIRTIO_BLK_PASS"]

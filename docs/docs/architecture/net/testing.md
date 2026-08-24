@@ -366,7 +366,7 @@ guest 检查代码在同一 case 中验证接口、路由、绑定和并行请�
 - QEMU args 必须包含 `net0`、`net1` 两个 virtio-net-pci。
 - net0 必须是 `10.0.2.0/24` 且 DHCP 起始地址为 `10.0.2.15`。
 - net1 必须是 `10.0.3.0/24` 且 DHCP 起始地址为 `10.0.3.15`。
-- `shell_init_cmd` 必须是 `/usr/bin/dual-net-tests.sh`。
+- `shell_cmd` 必须是 `/usr/bin/dual-net-tests.sh`。
 - host HTTP server 必须监听 18382，payload 至少 1 MiB。
 - `dual-net-tests.sh` 必须包含 `apk fetch -R`、APK 重试、`apk verify`、`sha256sum -c` 和 `DUAL_NET_APK_FETCH_MS`。
 - QEMU timeout 必须足够覆盖 APK 下载校验流程。

@@ -37,9 +37,9 @@ fn discovers_board_case_when_case_dir_contains_build_config() {
     let board_test_config = case_dir.join("board-orangepi-5-plus.toml");
     fs::write(
         &board_test_config,
-        "board_type = \"OrangePi-5-Plus\"\nshell_prefix = \
-         \"orangepi@orangepi5plus:~\"\nshell_init_cmd = \"pwd && echo 'test \
-         pass'\"\nsuccess_regex = [\"(?m)^test pass\\\\s*$\"]\nfail_regex = []\ntimeout = 300\n",
+        "board_type = \"OrangePi-5-Plus\"\nshell_check_steps = [{ shell_prefix = \
+         \"orangepi@orangepi5plus:~\", shell_cmd = \"pwd && echo 'test pass'\", success_regex = \
+         [\"(?m)^test pass\\\\s*$\"] }]\nfail_regex = []\ntimeout = 300\n",
     )
     .unwrap();
 
@@ -130,6 +130,63 @@ fn rejects_missing_mapped_board_build_config() {
 
     assert!(err.contains("not under a build wrapper"));
     assert!(err.contains("smoke"));
+}
+
+#[test]
+fn native_robot_success_marker_tolerates_terminal_decoration() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = workspace_root.join(
+        "test-suit/starryos/board-orangepi-5-plus/robot-flow/board-orangepi-5-plus-robot.toml",
+    );
+    let config: ostool::board::config::BoardRunConfig =
+        toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let patterns = config.shell_check_steps[0]
+        .success_regex
+        .as_ref()
+        .expect("robot flow step must define a success marker");
+    let decorated = "\u{1b}[32m[ROBOT_CI] RESULT=PASS attempts=2\u{1b}[0m\r\n";
+
+    assert!(
+        patterns
+            .iter()
+            .any(|pattern| regex::Regex::new(pattern).unwrap().is_match(decorated)),
+        "{} must match the structured robot result even when the terminal decorates the line",
+        path.display()
+    );
+}
+
+#[test]
+fn jl_lsgd2k10_boot_markers_accept_only_complete_lines_with_optional_decoration() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for config_path in [
+        "test-suit/starryos/board-jl-lsgd2k10/boot/board-jl-lsgd2k10.toml",
+        "os/StarryOS/configs/board/jl-lsgd2k10-board.toml",
+        "os/StarryOS/configs/board/jl-lsgd2k10-uboot.toml",
+    ] {
+        let path = workspace_root.join(config_path);
+        let config: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let patterns = config["shell_check_steps"][0]["success_regex"]
+            .as_array()
+            .expect("JL-LSGD2K10 boot step must define a success marker");
+        let matches = |output: &str| {
+            patterns.iter().any(|pattern| {
+                regex::Regex::new(pattern.as_str().unwrap())
+                    .unwrap()
+                    .is_match(output)
+            })
+        };
+
+        assert!(matches("STARRY_JL_LSGD2K10_BOOT_OK\r\n"), "{config_path}");
+        assert!(
+            matches("\u{1b}[32mSTARRY_JL_LSGD2K10_BOOT_OK\u{1b}[0m\r\n"),
+            "{config_path}"
+        );
+        assert!(
+            !matches("prefix STARRY_JL_LSGD2K10_BOOT_OK suffix\r\n"),
+            "{config_path}"
+        );
+    }
 }
 
 #[test]

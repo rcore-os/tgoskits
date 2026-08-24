@@ -9,9 +9,6 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/glibc-dynamic-smoke.sh"
-success_regex = ["ALL TESTS COMPLETED"]
 fail_regex = [
     "(?m)RC=[^0]",
     "(?i)no such file",
@@ -23,3 +20,8 @@ fail_regex = [
     "(?i)unsupported elf",
 ]
 timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/glibc-dynamic-smoke.sh"
+success_regex = ["ALL TESTS COMPLETED"]

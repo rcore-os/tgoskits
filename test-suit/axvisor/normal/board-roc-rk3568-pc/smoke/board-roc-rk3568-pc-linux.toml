@@ -5,7 +5,7 @@ fail_regex = [
   "(?i)login incorrect",
   "(?i)permission denied",
 ]
-success_regex = [
-  "(?m)login:",
+shell_check_steps = [
+  { shell_prefix = "axvisor:/$", shell_cmd = "vm console 2", success_regex = ["(?m)login:"], fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?i)kernel panic", "(?i)login incorrect", "(?i)permission denied"] },
 ]
 timeout = 300

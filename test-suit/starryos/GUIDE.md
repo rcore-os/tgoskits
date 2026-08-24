@@ -222,10 +222,9 @@ Pipeline 创建的副本只负责资产注入，不承担 QEMU 运行期写隔�
 | `uefi` | 是否使用 UEFI |
 | `to_bin` | 是否把 ELF 转为裸二进制 |
 | `rootfs_write_policy` | test-suit 只能省略或设为 `"discard"`；`"persist"` 会被拒绝 |
-| `shell_prefix` | 等待 guest shell 的提示符 |
-| `shell_init_cmd` | plain/C/sh/python case 的 guest 命令 |
-| `test_commands` | grouped case 的 guest 命令列表；不能与 `shell_init_cmd` 同时使用 |
-| `success_regex` | 全部匹配才 PASS |
+| `shell_check_steps` | plain/C/sh/python case 的有序 guest 命令；首步必须有 `shell_prefix`，后续可继承 |
+| `test_commands` | grouped case 的 guest 命令列表；不能与 `shell_check_steps` 同时使用 |
+| `shell_check_steps[].success_regex` | 当前步骤的成功条件；顶层不支持 `success_regex` |
 | `fail_regex` | 任一匹配即 FAIL |
 | `timeout` | 超时时间，单位秒 |
 
@@ -241,11 +240,13 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "pwd && echo 'All tests passed!'"
-success_regex = ["(?m)^All tests passed!\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b']
 timeout = 15
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "pwd && echo 'All tests passed!'"
+success_regex = ["(?m)^All tests passed!\\s*$"]
 ```
 
 ## C 用例
@@ -332,14 +333,14 @@ cargo xtask starry test qemu --arch x86_64 -c qemu/test-futex-race
 在 `qemu-<arch>.toml` 中使用 `test_commands`：
 
 ```toml
-shell_prefix = "root@starry:"
 test_commands = [
     "/usr/bin/test-a",
     "/usr/bin/test-b",
 ]
-success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
 ```
+
+Starry grouped 用例通过 profile autorun 执行 runner。axbuild 会为 grouped runner 的统一通过标志生成被动 `shell_check_steps`，配置文件不要再写顶层 `success_regex`。
 
 运行器会稳定排序子目录、构建 C subcase，并注入 grouped runner 支持文件。每个命令执行前后都会打印带 `step=当前/总数`、`epoch=`、`status=` 和 `command=` 的标记，例如：
 
@@ -417,7 +418,7 @@ session_files = [
 路径会在分配板卡前完成规范化和边界检查；绝对路径、`..`、符号链接逃逸、重复路径
 和缺失文件都会被拒绝。上传后路径保持不变，不支持 alias 或上传时改名。
 
-`shell_init_cmd` 可使用下列只在活动 board session 内展开的变量：
+步骤内的 `shell_cmd` 可使用下列只在活动 board session 内展开的变量：
 
 - `${boardServerIp}`：板端可访问的 ostool-server 地址。
 - `${boardServerHttpBaseUrl}`：板端可访问的 session HTTP 基础 URL。
@@ -447,7 +448,7 @@ target/<target>/board-cases/<case>/runs/<run-id>/upload/
 CMake `install()` 到该 upload root 的所有普通文件都会按原相对路径自动上传，因此构建
 产物不需要再写入 `session_files`。例如 `install(... DESTINATION bin)` 对应
 `${sessionFile:bin/<program>}`。板端下载、赋权和执行仍必须显式写在
-`shell_init_cmd` 中；ostool 不会自动执行上传的程序。upload root 为空、包含符号链接，
+`shell_check_steps` 中；ostool 不会自动执行上传的程序。upload root 为空、包含符号链接，
 或者手写 `session_files` 与 CMake install 产物同路径时会在分配板卡前报错。
 
 位于 `apps/starry/<app>/` 的重型板测仍应保留在 app 目录，不要为了复用共享文件能力
@@ -482,9 +483,9 @@ cargo xtask starry app board -t iperf3 -b OrangePi-5-Plus
 `native-network-smoke` 只执行一条短 TCP TX 命令，随后在 `eth1` 上验证 rtnetlink
 地址增删，适合作为 CI 连通性检查。完整吞吐测试位于 `apps/starry/iperf3`，直接通过
 上面的 `cargo xtask starry app board` 命令启动板测；ostool server 持续提供 iperf3
-服务，board 配置的 `shell_init_cmd` 通过活动 session 的 `${boardServerIp}` 和
-`${sessionFile:iperf-bench.sh}` 获取实际地址；app 的 `init.sh` 会按现有 xtask 流程合并
-到该命令中，下载并启动测试脚本，不依赖固定网卡、固定 IP、固定网段或额外的板测
+服务，board 配置步骤内的 `shell_cmd` 通过活动 session 的 `${boardServerIp}` 和
+`${sessionFile:iperf-bench.sh}` 获取实际地址；app 的 `init.sh` 会按现有 xtask 流程追加
+到该步骤中，下载并启动测试脚本，不依赖固定网卡、固定 IP、固定网段或额外的板测
 启动脚本。
 
 完整 benchmark 固定执行 T01--T07：单流 TX、单流 RX、单流双向、2/4/8 流 TX 和
@@ -541,7 +542,7 @@ cargo xtask starry board \
 C 资产和 `board-aka-00-sg2002.toml.disabled` 配置模板。AKA-00-SG2002 当前没有
 StarryOS 网络设备，无法从 session HTTP URL 下载程序，因此该模板不会被 board
 discovery 或 CI 启用。后续网络可用时移除 `.disabled` 后缀；其
-`shell_init_cmd` 会使用 `wget` 下载程序，并只验证 `uvc_init` / `uvc_exit`，不枚举
+对应步骤的 `shell_cmd` 会使用 `wget` 下载程序，并只验证 `uvc_init` / `uvc_exit`，不枚举
 摄像头、不采集帧，也不验证 DWC2 isochronous 传输。
 
 ## 运行命令
@@ -570,9 +571,9 @@ cargo xtask starry app qemu -t k230-qemu/qemu-k230/kpu-smoke --arch riscv64
 
 - 只为实际验证通过的架构添加 `qemu-<arch>.toml`。
 - `qemu` 的并发度由 build config 决定；不要只改 QEMU `-smp` 而忘记构建配置。
-- `shell_init_cmd` 和 `test_commands` 不能同时使用。
+- `shell_check_steps` 和 `test_commands` 不能同时使用。
 - 一个 case 只能定义一种 pipeline；不要同时放 `c/`、`sh/`、`python/` 或 `test_commands`。
-- `success_regex` 选择稳定且唯一的成功行。
+- 非 grouped case 的步骤级 `success_regex` 选择稳定且唯一的成功行；grouped case 使用 axbuild 生成的统一成功正则。
 - `fail_regex` 保持精确，避免匹配正常输出如 `failed: 0`。
 - 不要在同一个工作区并行运行多个 `cargo xtask starry test qemu`，rootfs 和生成配置可能互相影响。
 - heavy app 不应放回 `test-suit/starryos`；迁出到 `apps/starry` 后加入 `apps/.ignore`，需要时用显式 `-t` 运行。

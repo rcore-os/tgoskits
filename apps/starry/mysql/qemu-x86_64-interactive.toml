@@ -1,8 +1,6 @@
 timeout = 0
-shell_prefix = "root@starry:"
 uefi = false
 to_bin = false
-success_regex = []
 fail_regex = []
 
 args = [
@@ -22,5 +20,3 @@ args = [
     "-append",
     "root=/dev/nvme0n1",
 ]
-
-shell_init_cmd = "/usr/bin/mysql-interactive.sh"

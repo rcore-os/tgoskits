@@ -27,14 +27,15 @@
 //! AXVISOR_HTTP_REQUEST_TIMEOUT seconds per HTTP request
 //! ```
 //!
-//! Exit code 0 is a pass; any nonzero exit fails the case. The asset streams
-//! its own progress to the runner's stdout/stderr so CI logs show the steps.
+//! Exit code 0 is a pass; any nonzero exit fails the case. The asset's output
+//! is captured and replayed after QEMU exits so it cannot split UART records.
 
 use std::{
+    io::{Read, Seek, SeekFrom},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -61,6 +62,7 @@ pub(crate) fn run(
     config: &AxvisorHttpProbeConfig,
     case_dir: &Path,
     stop: Arc<AtomicBool>,
+    captured_output: Arc<Mutex<Vec<u8>>>,
 ) -> anyhow::Result<()> {
     let script = case_dir.join(&config.probe_script);
     ensure_probe_asset(&script)?;
@@ -70,12 +72,36 @@ pub(crate) fn run(
             script.display()
         );
     }
-    println!(
-        "  host http probe: running probe asset {}",
+    let mut output = tempfile::tempfile().context("failed to create probe output capture")?;
+    let stdout = output
+        .try_clone()
+        .context("failed to clone probe stdout capture")?;
+    let stderr = output
+        .try_clone()
+        .context("failed to clone probe stderr capture")?;
+    let mut child = spawn_probe_asset(
+        &script,
+        addr,
+        config,
+        case_dir,
+        Stdio::from(stdout),
+        Stdio::from(stderr),
+    )?;
+    let status = wait_probe_asset(&mut child, &stop);
+    output
+        .seek(SeekFrom::Start(0))
+        .context("failed to rewind probe output capture")?;
+    let mut captured = format!(
+        "  host http probe: running probe asset {}\n",
         script.display()
-    );
-    let mut child = spawn_probe_asset(&script, addr, config, case_dir)?;
-    match wait_probe_asset(&mut child, &stop) {
+    )
+    .into_bytes();
+    output
+        .read_to_end(&mut captured)
+        .context("failed to read probe output capture")?;
+    captured_output.lock().unwrap().extend_from_slice(&captured);
+
+    match status {
         Some(status) if status.success() => Ok(()),
         Some(status) => bail!(
             "probe asset {} exited with code {}",
@@ -102,12 +128,14 @@ fn ensure_probe_asset(script: &Path) -> anyhow::Result<()> {
 
 /// Spawn the probe asset with the forwarded base URL, token, and timeouts as
 /// environment. The asset is executed directly so its shebang picks the
-/// interpreter; stdout/stderr are inherited so CI logs show the asset's steps.
+/// interpreter; stdout/stderr are captured for ordered replay after QEMU exits.
 fn spawn_probe_asset(
     script: &Path,
     addr: &str,
     config: &AxvisorHttpProbeConfig,
     case_dir: &Path,
+    stdout: Stdio,
+    stderr: Stdio,
 ) -> anyhow::Result<Child> {
     let mut command = Command::new(script);
     command
@@ -126,8 +154,8 @@ fn spawn_probe_asset(
             config.request_timeout_secs.to_string(),
         )
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdout(stdout)
+        .stderr(stderr);
     retry_text_file_busy(|| command.spawn())
         .with_context(|| format!("failed to spawn probe asset {}", script.display()))
 }
@@ -150,9 +178,12 @@ fn wait_probe_asset(child: &mut Child, stop: &AtomicBool) -> Option<ExitStatus> 
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     #[cfg(unix)]
     use std::{fs, time::Instant};
+    use std::{
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
 
     use serde::Deserialize;
 
@@ -189,6 +220,10 @@ mod tests {
             probe_script,
             token: Some("t".into()),
         }
+    }
+
+    fn output_capture() -> Arc<Mutex<Vec<u8>>> {
+        Arc::new(Mutex::new(Vec::new()))
     }
 
     /// Parse a `[host_http_probe]` section like
@@ -264,7 +299,13 @@ mod tests {
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
-        let result = run("127.0.0.1:12345", &config, dir.path(), stop);
+        let result = run(
+            "127.0.0.1:12345",
+            &config,
+            dir.path(),
+            stop,
+            output_capture(),
+        );
 
         assert!(result.is_ok(), "probe asset should pass: {result:?}");
         // The generic mechanism really executed the asset and forwarded the
@@ -285,10 +326,54 @@ mod tests {
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
-        let error = run("127.0.0.1:12345", &config, dir.path(), stop).unwrap_err();
+        let error = run(
+            "127.0.0.1:12345",
+            &config,
+            dir.path(),
+            stop,
+            output_capture(),
+        )
+        .unwrap_err();
         assert!(
             error.to_string().contains("exited with code 1"),
             "unexpected probe error: {error:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_captures_probe_output_for_deferred_replay() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let dir = fixture_dir();
+        let script = dir.path().join("http_probe.py");
+        fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'probe stdout\\n'\nprintf 'probe stderr\\n' >&2\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = test_config(PathBuf::from("http_probe.py"));
+        let stop = Arc::new(AtomicBool::new(false));
+        let captured = Arc::new(Mutex::new(Vec::new()));
+
+        run(
+            "127.0.0.1:12345",
+            &config,
+            dir.path(),
+            stop,
+            captured.clone(),
+        )
+        .unwrap();
+
+        let captured = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(
+            captured.starts_with("  host http probe: running probe asset "),
+            "captured output: {captured:?}"
+        );
+        assert!(
+            captured.ends_with("/http_probe.py\nprobe stdout\nprobe stderr\n"),
+            "captured output: {captured:?}"
         );
     }
 
@@ -298,7 +383,14 @@ mod tests {
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(false));
 
-        let error = run("127.0.0.1:12345", &config, dir.path(), stop).unwrap_err();
+        let error = run(
+            "127.0.0.1:12345",
+            &config,
+            dir.path(),
+            stop,
+            output_capture(),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("does not exist"));
     }
 
@@ -312,8 +404,15 @@ mod tests {
         let started = case_dir.join("started.txt");
         let stop = Arc::new(AtomicBool::new(false));
         let run_stop = stop.clone();
-        let probe_thread =
-            thread::spawn(move || run("127.0.0.1:12345", &config, &case_dir, run_stop));
+        let probe_thread = thread::spawn(move || {
+            run(
+                "127.0.0.1:12345",
+                &config,
+                &case_dir,
+                run_stop,
+                output_capture(),
+            )
+        });
 
         let deadline = Instant::now() + Duration::from_secs(5);
         while !started.is_file() {
@@ -341,8 +440,14 @@ mod tests {
         let config = test_config(PathBuf::from("http_probe.py"));
         let stop = Arc::new(AtomicBool::new(true));
 
-        let error = run("127.0.0.1:12345", &config, dir.path(), stop).unwrap_err();
-
+        let error = run(
+            "127.0.0.1:12345",
+            &config,
+            dir.path(),
+            stop,
+            output_capture(),
+        )
+        .unwrap_err();
         assert!(
             error
                 .to_string()

@@ -207,11 +207,11 @@ pub(super) fn run_report_postprocess(
         command.arg("--host-perf");
         command.arg_option_value("--host-perf-events", args.host_perf_events.as_ref());
     }
-    if let Some(cmd) = &args.shell_init_cmd {
-        command.arg_option_value("--shell-init-cmd", cmd.as_ref());
+    if let Some(cmd) = &args.workload_cmd {
+        command.arg_option_value("--workload-cmd", cmd.as_ref());
     }
-    if let Some(prefix) = &args.shell_prefix {
-        command.arg_option_value("--shell-prefix", prefix.as_ref());
+    if let Some(prefix) = &args.workload_shell_prefix {
+        command.arg_option_value("--workload-shell-prefix", prefix.as_ref());
     }
     if let Some(marker) = &args.start_marker {
         command.arg_option_value("--start-marker", marker.as_ref());

@@ -305,7 +305,7 @@ impl Starry {
             .app
             .read_qemu_config_from_path_for_cargo(&cargo, &test_case.qemu_config_path)
             .await?;
-        qemu_case::apply_grouped_qemu_config(&mut qemu, &test_case, &asset_config.grouped_runner);
+        qemu_case::apply_grouped_qemu_config(&mut qemu, &test_case, &asset_config.grouped_runner)?;
         let prepare_started = std::time::Instant::now();
         let prepared_assets = qemu_case::prepare_case_assets(
             self.app.workspace_root(),
@@ -377,10 +377,11 @@ impl Starry {
         let (mut board_config, board_config_path) = self
             .load_board_config(&cargo, Some(case.board_config_path.as_path()))
             .await?;
-        board_config.shell_init_cmd = Some(app::merge_board_init_command(
+        app::configure_board_init_step(
+            &mut board_config,
             &case.init_cmd,
-            board_config.shell_init_cmd.as_deref(),
-        ));
+            case.board_shell_prefix.as_deref(),
+        )?;
         let arch = arch_for_target_checked(&case.target)?;
         let session_assets = app::prepare_app_board_session_assets(
             self.app.workspace_root(),

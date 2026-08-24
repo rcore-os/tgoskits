@@ -35,8 +35,8 @@ pub(super) struct PerfQemuConfig {
     pub(super) to_bin: bool,
     pub(super) success_regex: Vec<String>,
     pub(super) fail_regex: Vec<String>,
-    pub(super) shell_prefix: Option<String>,
-    pub(super) shell_init_cmd: Option<String>,
+    pub(super) workload_shell_prefix: Option<String>,
+    pub(super) workload_cmd: Option<String>,
     pub(super) timeout: Option<u64>,
     pub(super) start_marker: Option<String>,
     pub(super) stop_marker: Option<String>,
@@ -84,14 +84,14 @@ pub(super) fn write_qemu_config(
     }
     perf_qemu_args.extend(qemu_args);
 
-    let shell_init_cmd = args
-        .shell_init_cmd
+    let workload_cmd = args
+        .workload_cmd
         .as_deref()
         .map(str::trim)
         .filter(|cmd| !cmd.is_empty())
         .map(str::to_string);
-    let shell_prefix = shell_init_cmd.as_ref().map(|_| {
-        args.shell_prefix
+    let workload_shell_prefix = workload_cmd.as_ref().map(|_| {
+        args.workload_shell_prefix
             .clone()
             .unwrap_or_else(|| DEFAULT_STARRY_SHELL_PREFIX.to_string())
     });
@@ -102,8 +102,8 @@ pub(super) fn write_qemu_config(
         to_bin: qemu.to_bin,
         success_regex: Vec::new(),
         fail_regex: vec![r"(?i)\bpanic(?:ked)?\b".to_string()],
-        shell_prefix,
-        shell_init_cmd,
+        workload_shell_prefix,
+        workload_cmd,
         timeout: (args.timeout > 0).then_some(args.timeout),
         start_marker: args.start_marker.clone(),
         stop_marker: args.stop_marker.clone(),
@@ -342,7 +342,7 @@ fn qemu_config_from_path(path: &Path) -> anyhow::Result<PerfQemuConfig> {
 }
 
 fn qemu_stdout_monitor_enabled(args: &ArgsPerf) -> bool {
-    args.shell_init_cmd
+    args.workload_cmd
         .as_deref()
         .is_some_and(|cmd| !cmd.trim().is_empty())
         || args.start_marker.is_some()

@@ -75,12 +75,12 @@ pub(super) fn write_summary(input: SummaryInputs<'_>) -> anyhow::Result<()> {
              guest PMU cache/cycle counter"
         )?;
     }
-    if let Some(shell_init_cmd) = args.shell_init_cmd.as_deref() {
-        writeln!(file, "shell_init_cmd = {shell_init_cmd}")?;
+    if let Some(workload_cmd) = args.workload_cmd.as_deref() {
+        writeln!(file, "workload_cmd = {workload_cmd}")?;
         writeln!(
             file,
-            "shell_prefix = {}",
-            args.shell_prefix
+            "workload_shell_prefix = {}",
+            args.workload_shell_prefix
                 .as_deref()
                 .unwrap_or(DEFAULT_STARRY_SHELL_PREFIX)
         )?;

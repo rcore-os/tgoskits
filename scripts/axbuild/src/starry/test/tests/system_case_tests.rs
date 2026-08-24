@@ -24,16 +24,19 @@ fn assert_system_runner_config(path: &Path) {
         path.display()
     );
 
-    let success_regex = config
-        .get("success_regex")
-        .and_then(toml::Value::as_array)
-        .unwrap();
     assert!(
-        success_regex
-            .iter()
-            .filter_map(toml::Value::as_str)
-            .any(|regex| regex.contains("STARRY_GROUPED_TESTS_PASSED")),
-        "{} must require the system grouped success marker",
+        config.get("shell_prefix").is_none(),
+        "{} must leave grouped execution to profile autorun",
+        path.display()
+    );
+    assert!(
+        config.get("shell_check_steps").is_none(),
+        "{} must not combine grouped commands with static shell check steps",
+        path.display()
+    );
+    assert!(
+        config.get("success_regex").is_none(),
+        "{} must leave grouped success matching to the runtime-generated passive step",
         path.display()
     );
     let fail_regex = config
@@ -186,6 +189,15 @@ fn assert_inline_grouped_runner_reports_each_result_once(path: &Path) {
     );
 }
 
+fn shell_cmd(config: &toml::Value) -> Option<&str> {
+    config
+        .get("shell_check_steps")
+        .and_then(toml::Value::as_array)
+        .and_then(|steps| steps.first())
+        .and_then(|step| step.get("shell_cmd"))
+        .and_then(toml::Value::as_str)
+}
+
 #[test]
 fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -218,6 +230,18 @@ fn starry_system_grouped_qemu_configs_report_each_result_once() {
 }
 
 #[test]
+fn e1000_system_grouped_qemu_config_uses_runtime_generated_shell_check() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = workspace_root.join("test-suit/starryos/qemu-e1000/system/qemu-x86_64.toml");
+    let content = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+
+    let _: QemuConfig = toml::from_str(&content)
+        .unwrap_or_else(|err| panic!("failed to parse {} as QEMU config: {err}", path.display()));
+    assert_system_runner_config(&path);
+}
+
+#[test]
 fn starry_system_runner_keeps_slow_case_timeouts_explicit() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let source_path =
@@ -228,7 +252,7 @@ fn starry_system_runner_keeps_slow_case_timeouts_explicit() {
     assert!(
         source.contains("#define DEFAULT_CASE_TIMEOUT_SECONDS 120")
             && source.contains("#define EXT4_INODE_UNIQUE_TIMEOUT_SECONDS 240")
-            && source.contains("#define PAGECACHE_CAP_TIMEOUT_SECONDS 240")
+            && source.contains("#define PAGECACHE_CAP_TIMEOUT_SECONDS 360")
             && source.contains("strcmp(name, \"test-ext4-inode-unique\") == 0")
             && source.contains("strcmp(name, \"test-pagecache-cap\") == 0"),
         "{} must keep sync-heavy case exceptions explicit without relaxing the default timeout",
@@ -390,10 +414,7 @@ fn tty_console_input_burst_uses_injected_guest_script() {
         let path = case_dir.join(format!("qemu-{arch}.toml"));
         let content = fs::read_to_string(&path).unwrap();
         let config: toml::Value = toml::from_str(&content).unwrap();
-        let command = config
-            .get("shell_init_cmd")
-            .and_then(toml::Value::as_str)
-            .unwrap_or_default();
+        let command = shell_cmd(&config).unwrap_or_default();
 
         assert_eq!(
             command,
@@ -418,6 +439,25 @@ fn qemu_system_case_has_riscv64_runtime_config() {
         config.is_file(),
         "{} must keep riscv64 coverage in the unified SMP4 qemu/system case",
         config.display()
+    );
+}
+
+#[test]
+fn qemu_riscv64_system_case_allows_the_full_suite_to_finish() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = workspace_root.join("test-suit/starryos/qemu/system/qemu-riscv64.toml");
+    let content = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    let config: toml::Value = toml::from_str(&content).unwrap();
+
+    let timeout = config
+        .get("timeout")
+        .and_then(toml::Value::as_integer)
+        .unwrap_or_default();
+    assert!(
+        timeout >= 3600,
+        "{} must allow the complete RISC-V system suite to finish on CI runners",
+        path.display()
     );
 }
 

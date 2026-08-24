@@ -18,8 +18,19 @@ args = [
 ]
 uefi = false
 to_bin = false
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)page fault",
+    "(?i)segmentation fault",
+    "No such process \\(os error 3\\)",
+    "sys_prctl: unsupported option 23",
+    "(?m)^STARRY_TGOSKITS_SYSCALL_HUNT_MISSING_AUTH_JSON\\s*$",
+]
+timeout = 2400
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_init_cmd = '''
+shell_cmd = '''
 export HOME=/root
 export USER=root
 export SHELL=/bin/sh
@@ -113,12 +124,3 @@ git diff --stat || true
 echo "STARRY_TGOSKITS_SYSCALL_HUNT_PASSED"
 '''
 success_regex = ["(?m)^STARRY_TGOSKITS_SYSCALL_HUNT_PASSED\\s*$"]
-fail_regex = [
-    "(?i)\\bpanic(?:ked)?\\b",
-    "(?i)page fault",
-    "(?i)segmentation fault",
-    "No such process \\(os error 3\\)",
-    "sys_prctl: unsupported option 23",
-    "(?m)^STARRY_TGOSKITS_SYSCALL_HUNT_MISSING_AUTH_JSON\\s*$",
-]
-timeout = 2400

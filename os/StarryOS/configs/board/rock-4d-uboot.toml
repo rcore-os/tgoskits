@@ -4,7 +4,6 @@ serial = "/dev/ttyUSB0"
 baud_rate = "1500000"
 dtb_file = "os/StarryOS/configs/board/rock-4d.dtb"
 
-success_regex = []
 fail_regex = [
   "panicked at",
 ]

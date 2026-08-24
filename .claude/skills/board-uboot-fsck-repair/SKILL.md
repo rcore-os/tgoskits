@@ -70,11 +70,13 @@ Use this repair before a destructive board validation and again after StarryOS w
 
 ```toml
 board_type = "OrangePi-5-Plus"
-shell_prefix = "root@starry:/root #"
-shell_init_cmd = "echo STARRY_MINIMAL_BOOT_OK"
-success_regex = ["(?m)^STARRY_MINIMAL_BOOT_OK\\s*$"]
 fail_regex = ["(?i)(kernel panic|panicked at|fatal exception)"]
 timeout = 180
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:/root #"
+shell_cmd = "echo STARRY_MINIMAL_BOOT_OK"
+success_regex = ["(?m)^STARRY_MINIMAL_BOOT_OK\\s*$"]
 ```
 
 Then run:

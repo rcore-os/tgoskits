@@ -45,18 +45,18 @@ pub(super) fn validate_args(args: &ArgsPerf) -> anyhow::Result<()> {
         bail!("--format pprof is not supported yet; use --format folded, svg, or all");
     }
     if args
-        .shell_init_cmd
+        .workload_cmd
         .as_deref()
         .is_some_and(|cmd| cmd.trim().is_empty())
     {
-        bail!("--shell-init-cmd must not be empty");
+        bail!("--workload-cmd must not be empty");
     }
     if args
-        .shell_prefix
+        .workload_shell_prefix
         .as_deref()
         .is_some_and(|prefix| prefix.is_empty())
     {
-        bail!("--shell-prefix must not be empty");
+        bail!("--workload-shell-prefix must not be empty");
     }
     if args.host_perf && args.host_perf_events.trim().is_empty() {
         bail!("--host-perf-events must not be empty when --host-perf is set");

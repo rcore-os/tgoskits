@@ -1,5 +1,14 @@
 use super::*;
 
+fn shell_cmd(config: &toml::Value) -> Option<&str> {
+    config
+        .get("shell_check_steps")
+        .and_then(toml::Value::as_array)
+        .and_then(|steps| steps.first())
+        .and_then(|step| step.get("shell_cmd"))
+        .and_then(toml::Value::as_str)
+}
+
 #[test]
 fn apk_add_fs_equivalence_qemu_case_covers_package_fs_ops() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -137,14 +146,14 @@ fn apk_add_fs_equivalence_qemu_case_covers_package_fs_ops() {
         );
 
         assert_eq!(
-            config
-                .get("shell_init_cmd")
-                .and_then(toml::Value::as_str)
-                .unwrap(),
+            shell_cmd(&config).unwrap(),
             "/usr/bin/apk-add-fs-equivalence"
         );
         let success_regex = config
-            .get("success_regex")
+            .get("shell_check_steps")
+            .and_then(toml::Value::as_array)
+            .and_then(|steps| steps.first())
+            .and_then(|step| step.get("success_regex"))
             .and_then(toml::Value::as_array)
             .unwrap();
         assert!(
@@ -287,15 +296,12 @@ fn apk_net_equivalence_qemu_case_covers_apk_like_network_ops() {
             config_path.display()
         );
 
-        assert_eq!(
-            config
-                .get("shell_init_cmd")
-                .and_then(toml::Value::as_str)
-                .unwrap(),
-            "/usr/bin/apk-net-equivalence"
-        );
+        assert_eq!(shell_cmd(&config).unwrap(), "/usr/bin/apk-net-equivalence");
         let success_regex = config
-            .get("success_regex")
+            .get("shell_check_steps")
+            .and_then(toml::Value::as_array)
+            .and_then(|steps| steps.first())
+            .and_then(|step| step.get("success_regex"))
             .and_then(toml::Value::as_array)
             .unwrap();
         assert!(

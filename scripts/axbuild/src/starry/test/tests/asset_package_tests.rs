@@ -80,7 +80,10 @@ fn inotifywait_qemu_case_installs_tool_before_boot() {
     );
 
     let success_regex = config
-        .get("success_regex")
+        .get("shell_check_steps")
+        .and_then(toml::Value::as_array)
+        .and_then(|steps| steps.first())
+        .and_then(|step| step.get("success_regex"))
         .and_then(toml::Value::as_array)
         .unwrap();
     assert!(

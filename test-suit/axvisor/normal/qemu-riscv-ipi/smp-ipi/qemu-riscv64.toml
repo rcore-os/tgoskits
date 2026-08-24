@@ -29,8 +29,10 @@ fail_regex = [
   "(?m)^(?:echo|cat|rm):\\s",
   "(?i)IPI extension is not available",
 ]
-success_regex = ['(?m)^guest smp ipi pass!\s*$']
-shell_prefix = "~ #"
-shell_init_cmd = "mount -t proc proc /proc 2>/dev/null || true; [ \"$(nproc)\" -ge 3 ] && dmesg | grep -q 'SBI IPI extension detected' && grep -Eq 'IPI[^:]*:.*[1-9]' /proc/interrupts && echo 'guest smp ipi pass!' || exit 1"
+timeout = 600
+shell_check_steps = [
+  { shell_prefix = "axvisor:/$", shell_cmd = "vm console 1" },
+  { shell_prefix = "~ #", shell_cmd = "mount -t proc proc /proc 2>/dev/null || true; [ \"$(nproc)\" -ge 3 ] && dmesg | grep -q 'SBI IPI extension detected' && grep -Eq 'IPI[^:]*:.*[1-9]' /proc/interrupts && echo 'guest smp ipi pass!' || exit 1", success_regex = ['(?m)^guest smp ipi pass!\s*$'], fail_regex = ['(?m)^(?:echo|cat|rm):', '(?i)IPI extension is not available'] },
+]
 to_bin = true
 uefi = false

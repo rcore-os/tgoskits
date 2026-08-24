@@ -34,14 +34,27 @@ const PAYLOAD_LEN: usize = 64 * 1024;
 fn main() {
     if let Err(error) = run() {
         println!("{VM_TAG}_VIRTIO_NET_FAIL {error}");
-        return;
+    } else {
+        println!("{VM_TAG}_VIRTIO_NET_PASS");
     }
-    println!("{VM_TAG}_VIRTIO_NET_PASS");
-    thread::sleep(Duration::from_millis(200));
+
+    // The Axvisor shell-check flow first observes VM2, then attaches VM1 and
+    // replays its buffered output. Keep each result available until its
+    // console has been selected; the runner terminates QEMU after both pass.
+    thread::sleep(console_replay_linger(ROLE));
 }
 
 #[cfg(not(feature = "arceos"))]
 fn main() {}
+
+#[cfg(feature = "arceos")]
+fn console_replay_linger(role: &str) -> Duration {
+    if role == "server" {
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(3)
+    }
+}
 
 #[cfg(feature = "arceos")]
 fn run() -> std::io::Result<()> {

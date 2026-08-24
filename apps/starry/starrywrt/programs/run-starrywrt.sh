@@ -1,7 +1,7 @@
 #!/bin/sh
 # run-starrywrt.sh - on-target boot gate for the StarryWRT distribution.
 #
-# Invoked as the entire shell_init_cmd. It prints the StarryWRT banner (the distribution
+# Invoked as the entire shell-check step command. It prints the StarryWRT banner (the distribution
 # identity) and then confirms every shipped software stack runs correctly on the single-core
 # StarryOS kernel, by running three carpets to their pinned OK lines:
 #

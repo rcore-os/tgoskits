@@ -1,7 +1,8 @@
 use std::{
     collections::BTreeMap,
+    io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, atomic::AtomicBool},
     time::Instant,
 };
 
@@ -299,7 +300,7 @@ impl Axvisor {
             &mut qemu,
             &case.case.case,
             &asset_config.grouped_runner,
-        );
+        )?;
         test_qemu::apply_timeout_scale(&mut qemu);
         if !qemu
             .fail_regex
@@ -357,6 +358,7 @@ impl Axvisor {
         // timeout and fails the run (no `/__probe_result` relay inside the
         // guest).
         let mut host_probe_guard = None;
+        let host_probe_output = Arc::new(Mutex::new(Vec::new()));
         if let Some(probe_config) =
             load_axvisor_http_probe_config(&case.case.case.qemu_config_path)?
         {
@@ -392,8 +394,15 @@ impl Axvisor {
             let probe_owned = probe_config.clone();
             let probe_case_dir = case.case.case.case_dir.clone();
             let probe_stop = stop.clone();
+            let probe_output = host_probe_output.clone();
             let probe: host_probe::HostHttpProbeFn = Box::new(move || {
-                super::http_probe::run(&probe_addr, &probe_owned, &probe_case_dir, probe_stop)
+                super::http_probe::run(
+                    &probe_addr,
+                    &probe_owned,
+                    &probe_case_dir,
+                    probe_stop,
+                    probe_output,
+                )
             });
             host_probe_guard = Some(host_probe::HostHttpProbeGuard::start(
                 &probe_config,
@@ -430,9 +439,25 @@ impl Axvisor {
             .as_ref()
             .and_then(|guard| guard.take_result());
         drop(host_probe_guard);
+        let host_probe_output = host_probe_output.lock().unwrap().clone();
+        replay_probe_output(&host_probe_output)?;
 
         combine_results(qemu_result, probe_configured, probe_result)
     }
+}
+
+fn replay_probe_output(output: &[u8]) -> anyhow::Result<()> {
+    if output.is_empty() {
+        return Ok(());
+    }
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    stdout
+        .write_all(output)
+        .context("failed to replay host HTTP probe output")?;
+    stdout
+        .flush()
+        .context("failed to flush host HTTP probe output")
 }
 
 /// Combine the QEMU runner result and the HTTP probe verdict into the final

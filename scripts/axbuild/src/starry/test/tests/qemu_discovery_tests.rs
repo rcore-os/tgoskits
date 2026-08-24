@@ -443,7 +443,7 @@ fn grouped_case_skips_arch_specific_subcases_for_other_arches() {
 }
 
 #[test]
-fn grouped_case_loads_with_both_shell_init_cmd_and_test_commands_present() {
+fn grouped_case_loads_with_both_shell_check_steps_and_test_commands_present() {
     // The mutual-exclusion check has been moved from the initial TOML parse
     // (discover_qemu_cases) to prepare_qemu_cases so we only read each
     // file once.  Therefore, discovery itself should succeed here; the
@@ -456,12 +456,12 @@ fn grouped_case_loads_with_both_shell_init_cmd_and_test_commands_present() {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(
         &path,
-        "shell_prefix = \"root@starry:\"\nshell_init_cmd = \"/usr/bin/old\"\ntest_commands = \
-         [\"/usr/bin/new\"]\n",
+        "shell_check_steps = [{ shell_prefix = \"root@starry:\", shell_cmd = \"/usr/bin/old\" \
+         }]\ntest_commands = [\"/usr/bin/new\"]\n",
     )
     .unwrap();
 
-    // Discovery no longer validates the shell_init_cmd / test_commands
+    // Discovery no longer validates the shell_check_steps / test_commands
     // conflict; it should succeed and leave a grouped case behind.
     let cases =
         discover_qemu_cases(root.path(), "x86_64", "x86_64-unknown-none", Some("bugfix")).unwrap();

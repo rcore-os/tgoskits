@@ -2,8 +2,23 @@ board_type = "OrangePi-5-Plus"
 session_files = [
   "iperf-smoke.sh",
 ]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+  '(?m)^RTL8125_NET_TEST_FAILED\b',
+  '(?m)^STARRY_IPERF_SMOKE_FAILED\s*$',
+  "(?i)(cat|sh): .*not found",
+  '(?m)^STARRY_RTNL_BAD_[A-Z_]+\s*$',
+  '(?m)^STARRY_RTNL_FAILED\s*$',
+  '(?m)^STARRY_NATIVE_NETWORK_FAILED\s*$',
+]
+timeout = 300
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:/root #"
-shell_init_cmd = '''
+shell_cmd = '''
 suite=STARRY_NATIVE_NETWORK
 iperf_marker=STARRY_IPERF_SMOKE
 rtnl_marker=STARRY_RTNL
@@ -87,16 +102,3 @@ else
 fi
 '''
 success_regex = ['STARRY_NATIVE_NETWORK_OK']
-fail_regex = [
-  '(?i)\bpanic(?:ked)?\b',
-  '(?i)segmentation fault',
-  '(?i)SIGSEGV',
-  'exit with code: 139',
-  '(?m)^RTL8125_NET_TEST_FAILED\b',
-  '(?m)^STARRY_IPERF_SMOKE_FAILED\s*$',
-  "(?i)(cat|sh): .*not found",
-  '(?m)^STARRY_RTNL_BAD_[A-Z_]+\s*$',
-  '(?m)^STARRY_RTNL_FAILED\s*$',
-  '(?m)^STARRY_NATIVE_NETWORK_FAILED\s*$',
-]
-timeout = 300

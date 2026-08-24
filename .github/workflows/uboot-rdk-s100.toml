@@ -4,6 +4,13 @@ fail_regex = [
   "panicked at",
 ]
 serial = "${env:BOARD_COMM_UART_DEV}"
+timeout = 300
+uboot_cmd = [
+    "run ab_select_cmd",
+    "run avb_boot",
+]
+
+[[shell_check_steps]]
 success_regex = [
     "All tests passed!",
     "Hello World!",
@@ -11,9 +18,4 @@ success_regex = [
     "^Phytium Pi",
     "Last login: *",
     "ubuntu login:",
-]
-timeout = 300
-uboot_cmd = [
-    "run ab_select_cmd",
-    "run avb_boot",
 ]
