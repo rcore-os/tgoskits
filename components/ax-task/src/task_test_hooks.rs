@@ -136,6 +136,11 @@ static OWNER_CONTROL_COALESCING_NODE: InboxNode = InboxNode::new(InboxKind::Owne
 static OWNER_CONTROL_PENDING_REQUEST_NODE: InboxNode = InboxNode::new(InboxKind::OwnerControl);
 static FAIR_DELAY_DEQUEUE_TARGET: AtomicU64 = AtomicU64::new(0);
 static FAIR_IDLE_PULL_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
+static FAIR_IDLE_PULL_FAIL_NEXT_TRANSFER: AtomicBool = AtomicBool::new(false);
+static FAIR_IDLE_PULL_FAILURE_AWAITING_COMPLETION: AtomicBool = AtomicBool::new(false);
+static FAIR_IDLE_PULL_FAILURE_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
+static FAIR_IDLE_PULL_FAILURE_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
+static FAIR_IDLE_PULL_RETRY_KICKS: AtomicU64 = AtomicU64::new(0);
 static PARK_PROFILE_HOOK: AtomicUsize = AtomicUsize::new(0);
 static LINKED_PICK_FULL_SNAPSHOT_COUNT: AtomicU64 = AtomicU64::new(0);
 static LINKED_PICK_FULL_SNAPSHOT_TARGET_CPU: AtomicU64 = AtomicU64::new(0);
@@ -1154,6 +1159,48 @@ pub(crate) fn record_fair_idle_pull_migration(target: crate::CpuId) {
     let encoded = u64::from(target.as_u32()) + 1;
     let _ =
         FAIR_IDLE_PULL_TARGET_CPU.compare_exchange(0, encoded, Ordering::AcqRel, Ordering::Acquire);
+}
+
+/// Makes the next committed Fair idle pull report one transient failure.
+pub fn fail_next_fair_idle_pull_transfer(target_cpu: u32) {
+    FAIR_IDLE_PULL_RETRY_KICKS.store(0, Ordering::Release);
+    FAIR_IDLE_PULL_FAILURE_COMPLETIONS.store(0, Ordering::Release);
+    FAIR_IDLE_PULL_FAILURE_TARGET_CPU.store(u64::from(target_cpu) + 1, Ordering::Release);
+    FAIR_IDLE_PULL_FAILURE_AWAITING_COMPLETION.store(false, Ordering::Release);
+    FAIR_IDLE_PULL_FAIL_NEXT_TRANSFER.store(true, Ordering::Release);
+}
+
+/// Returns whether the source owner finished handling the injected failure.
+pub fn fair_idle_pull_failure_completed() -> bool {
+    FAIR_IDLE_PULL_FAILURE_COMPLETIONS.load(Ordering::Acquire) != 0
+}
+
+/// Counts target scheduler kicks requested while handling the injected failure.
+pub fn fair_idle_pull_retry_kicks() -> u64 {
+    FAIR_IDLE_PULL_RETRY_KICKS.load(Ordering::Acquire)
+}
+
+pub(crate) fn take_fair_idle_pull_transfer_failure() -> bool {
+    if !FAIR_IDLE_PULL_FAIL_NEXT_TRANSFER.swap(false, Ordering::AcqRel) {
+        return false;
+    }
+    FAIR_IDLE_PULL_FAILURE_AWAITING_COMPLETION.store(true, Ordering::Release);
+    true
+}
+
+pub(crate) fn record_fair_idle_pull_failure_scheduler_kick(cpu: crate::CpuId) {
+    if FAIR_IDLE_PULL_FAILURE_AWAITING_COMPLETION.load(Ordering::Acquire)
+        && FAIR_IDLE_PULL_FAILURE_TARGET_CPU.load(Ordering::Acquire) == u64::from(cpu.as_u32()) + 1
+    {
+        FAIR_IDLE_PULL_RETRY_KICKS.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+pub(crate) fn complete_fair_idle_pull_transfer_failure() {
+    if FAIR_IDLE_PULL_FAILURE_AWAITING_COMPLETION.swap(false, Ordering::AcqRel) {
+        FAIR_IDLE_PULL_FAILURE_COMPLETIONS.fetch_add(1, Ordering::AcqRel);
+        FAIR_IDLE_PULL_FAILURE_TARGET_CPU.store(0, Ordering::Release);
+    }
 }
 
 /// Exercises the production publication used after moving a Deadline

@@ -538,7 +538,6 @@ impl TaskSystem {
                 };
                 if !source_has_candidate {
                     drop(claim);
-                    target_remote.request_idle_pull_retry();
                     continue;
                 }
                 if !claim.commit() {
@@ -553,11 +552,16 @@ impl TaskSystem {
                 drop(claim);
                 match migrated {
                     Ok(BalanceTransferOutcome::Migrated(_)) => {}
-                    Ok(BalanceTransferOutcome::NoCandidate | BalanceTransferOutcome::Retry) => {
-                        target_remote.request_idle_pull_retry();
+                    // Linux `sched_balance_newidle()` ends this newly-idle
+                    // pass when the selected source cannot detach a task. A
+                    // later idle entry or periodic balance supplies the next
+                    // independent attempt; the target does not kick itself.
+                    Ok(BalanceTransferOutcome::NoCandidate) => {}
+                    Ok(BalanceTransferOutcome::Retry) => {
+                        #[cfg(feature = "task-test-hooks")]
+                        crate::task_test_hooks::complete_fair_idle_pull_transfer_failure();
                     }
                     Err(error) => {
-                        target_remote.request_idle_pull_retry();
                         return Err(error);
                     }
                 }

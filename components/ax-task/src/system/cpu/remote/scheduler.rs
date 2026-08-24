@@ -266,6 +266,8 @@ impl CpuRemote {
     }
 
     pub(crate) fn kick_scheduler_work(&self) -> bool {
+        #[cfg(feature = "task-test-hooks")]
+        crate::task_test_hooks::record_fair_idle_pull_failure_scheduler_kick(self.owner);
         let Some(_publication) = self.begin_owner_delivery() else {
             return false;
         };

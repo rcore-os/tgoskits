@@ -151,7 +151,28 @@ pub fn run() -> crate::TestResult {
     task_test_hooks::set_current_fair_periodic_balance(false)
         .expect("the test owner must isolate new-idle balance from periodic source push");
     task_test_hooks::reset_fair_idle_pull_migration();
+    task_test_hooks::fail_next_fair_idle_pull_transfer(1);
     remote_occupiers.remove(0).stop_and_join();
+    wait_until(
+        task_test_hooks::fair_idle_pull_failure_completed,
+        "the Fair idle-pull source did not handle the injected transfer failure",
+    );
+    assert_eq!(
+        task_test_hooks::fair_idle_pull_retry_kicks(),
+        0,
+        "Linux newidle balance must end a failed pass instead of kicking the idle CPU to retry"
+    );
+    assert_eq!(
+        task_test_hooks::fair_idle_pull_migration_target(),
+        None,
+        "the failed newidle pass must not migrate a second candidate without a new idle event"
+    );
+
+    let target_occupiers =
+        CooperativeWorkers::spawn_pinned(1, cpu_count, false, Arc::clone(&occupier_cpus));
+    target_occupiers.wait_ready();
+    task_test_hooks::reset_fair_idle_pull_migration();
+    target_occupiers.stop_and_join();
     wait_for_idle_pull(&observed_cpus);
     wait_until(
         || observed_cpus.load(Ordering::Acquire) & (1usize << 1) != 0,

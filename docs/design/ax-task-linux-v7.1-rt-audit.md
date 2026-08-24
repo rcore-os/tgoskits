@@ -3812,13 +3812,18 @@ Fair class 顺序选择；Fair 从已发布 rq 中按 demand、runnable 数和�
 但真正 candidate 仍交给唯一的 owner-side balance transfer 路径完成 affinity、running、pending
 migration、timer、target readiness 与 detach/attach 复核，没有第二套 Fair mutation 实现。
 
-source snapshot 过期、候选 pinned 或 transfer 需要重试时，target 保留独立的 sticky retry；只有
-idle owner 的 balance pass 显式取得它时才消费。每次新的 idle entry 清空本轮 visited source，
-incoming runnable admission 则取消尚未提交的 idle pull。这样对应 Linux 每次 new-idle 进入都是
-新的 scan，同时避免旧 owner-control edge 把尚未观察的逻辑 retry 清掉。
+Linux v7.1 的 newly-idle pass 在 source snapshot 过期、候选 pinned 或 detach/transfer 失败时
+结束当前 scan，不向 idle target 发送 scheduler kick 来立即重试。下一次尝试必须来自
+新的 idle entry、真实 wakeup 或独立周期 balance。ax-task 因此删除了 target 的 sticky
+`retry_requested` 第二状态源；每次新 idle entry 仍清空本轮 visited source，incoming
+runnable admission 则取消尚未提交的 idle pull。这与 Linux “本轮失败即返回，新事件再开新轮”
+的语义一致，也避免失败路径形成 idle CPU 自激的 owner-work/IPI 循环。
 
-同一 QEMU 回归在最终实现上确认三件事：CPU1 能从真实 root-domain 观察到 CPU0 Fair backlog，
-迁移原因确为 `IdlePull`，且 carrier 最终实际在 CPU1 执行。测试仅在确认 source 后暂时关闭 CPU0
+同一 QEMU 回归在最终实现上确认四件事：CPU1 能从真实 root-domain 观察到 CPU0 Fair backlog，
+迁移原因确为 `IdlePull`，注入的一次 transfer failure 不会请求 target scheduler kick 或在没有新
+idle 事件时偷偷迁移第二个候选，而新的 CPU1 busy-to-idle 转换后 carrier 最终实际在 CPU1 执行。
+这个注入在旧 sticky-retry 实现上稳定观察到 1 次自激 scheduler kick，同一真实 SMP QEMU 用例
+在删除该实现后转绿。测试仅在确认 source 后暂时关闭 CPU0
 的独立周期 Fair balance，以隔离被测 new-idle 路径，结束时恢复配置；生产代码没有 timeout、轮询
 或 test-only 调度分支。最终代码串行通过 x86_64、AArch64、RISC-V、LoongArch64 的完整 ArceOS
 Rust/C QEMU suite，LoongArch64 unaligned-fixup 也通过；`ax-task` host tests 与 targeted clippy
