@@ -9,7 +9,7 @@ phys_cpu_sets = [1]
 [kernel]
 entry_point = 0x8020_0000
 image_location = "memory"
-kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-virtio-net-peer-vm3.bin"
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-virtio-net-peer-vm1.bin"
 kernel_load_addr = 0x8020_0000
 dtb_load_addr = 0x8000_0000
 memory_regions = [
@@ -23,4 +23,4 @@ disabled = []
 [[devices.virtual]]
 id = "virtnet0"
 model = "virtio-net"
-guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x58]
+guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x66]
