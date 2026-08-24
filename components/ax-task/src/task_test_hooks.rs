@@ -1123,6 +1123,17 @@ pub fn cpu_nr_running(cpu: u32) -> Result<usize, crate::TaskError> {
     Ok(remote.load_summary().nr_running())
 }
 
+/// Returns one CPU's instantaneous runnable placement demand.
+pub fn cpu_placement_demand(cpu: u32) -> Result<u64, crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let cpu = crate::CpuId::new(cpu);
+    let system = crate::facade::runtime_task_system()?;
+    let remote = system
+        .cpu_remote(cpu)
+        .ok_or(crate::TaskError::CpuOffline(cpu.as_u32()))?;
+    Ok(remote.placement_demand())
+}
+
 /// Enables or suppresses periodic Fair balancing on the current CPU.
 ///
 /// This isolates Linux-style new-idle balancing from the independent periodic

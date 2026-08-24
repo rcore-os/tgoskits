@@ -3902,6 +3902,31 @@ LoongArch64 专属 unaligned-fixup 同样通过。LoongArch64 首轮曾在 PI ow
 断言或引入架构特判。该检查点只确认 Fair ordinary need-resched 语义和测试生命周期；必须在
 提交后的同配置 hackbench/qperf 复测前继续保留性能问题未关闭的结论。
 
+### 2026-08-25 Linux Fair wake-affine 计入 wakee demand
+
+Linux v7.1 `kernel/sched/fair.c:wake_affine_weight()` 比较的是唤醒后的两个候选负载。waker
+候选在 `WF_SYNC` 时先扣除 current，再加入 `task_h_load(wakee)`；previous 候选则从包含阻塞
+wakee 历史 PELT 贡献的 `cpu_load(previous)` 中扣除同一贡献。ax-task 当前没有 PELT 或 blocked
+load owner，`placement_demand(previous)` 本来就只包含 runnable task。因此正确的瞬时映射是：
+waker 候选加入 wakee 的 nice-weight demand，previous 候选保持不变；直接照抄
+`previous -= wakee` 会把一个从未计入的负载再减一次，产生饱和到零的机械错误。
+
+旧 `select_fair_wake_cpu()` 只比较 wake 前的两个 rq demand，完全遗漏 wakee。确定性真实 QEMU
+回归把 nice-0 wakee 固定在 CPU0 后阻塞，再把 affinity 改为 CPU0/CPU1；CPU0 保留一个
+nice+1 runnable occupier（demand 820），CPU1 上的同步 waker 为 nice-0 current（demand 1024）。
+测试在关抢占/中断的稳定窗口确认两个 rq 的精确 demand，并用真实 `WaitQueue::notify_one_sync()`
+触发 wake transaction。只加入测试时，旧实现把 sync waker current 折扣为 0，稳定选择 CPU1，
+触发 `Linux wake_affine_weight must include the wakee load before moving a synchronous wake`；修复后
+waker 候选为 `0 + 1024`，大于 previous 的 820，稳定保留 CPU0。探针记录 enqueue 前的 placement
+决定，不以任务之后实际在哪个 CPU 运行反推。
+
+生产路径现在把 `SchedulePolicy::placement_demand()` 作为 wakee demand 传入 Fair wake-affine，
+只加到 waker 的 post-wake 候选，并保留 Linux `WF_SYNC` 的 current 折扣与相等时 waker bias。
+没有增加 PELT 的伪状态、第二时钟、架构特判或兼容入口；完整 PELT、capacity 与 domain bias 仍是
+未来独立阶段。相同 x86_64 focused QEMU 由旧红转绿，随后 RISC-V、x86_64、AArch64、
+LoongArch64 的完整 ArceOS Rust/C QEMU suite 全部通过，LoongArch64 unaligned-fixup 同样通过；
+`cargo test -p ax-task`、ax-task 7/7 clippy 与 ArceOS test-suite 36/36 clippy 也全部通过。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

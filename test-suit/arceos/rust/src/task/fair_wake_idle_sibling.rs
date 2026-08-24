@@ -1,9 +1,13 @@
 use std::{
     os::arceos::{
         api::task::{self as api, AxCpuMask, AxWaitQueueHandle, ax_set_current_affinity},
+        guard::PreemptIrqSaveGuard,
         modules::{
             ax_hal::percpu::this_cpu_id,
-            ax_task::{CpuSet, set_current_thread_affinity, task_test_hooks},
+            ax_task::{
+                CpuId, CpuSet, ThreadId, WaitQueue, set_current_thread_affinity,
+                set_thread_affinity_and_wait, task_test_hooks,
+            },
         },
         task::{FairMode, Nice, SchedulePolicy, current_thread_id, set_thread_policy},
     },
@@ -78,6 +82,105 @@ fn fair_wake_preserves_existing_need_resched() {
     wakee.join().expect("the Fair need-resched wakee must exit");
 }
 
+fn fair_sync_wake_accounts_for_wakee_demand(cpu_count: usize) {
+    static WAKEE_READY: AtomicBool = AtomicBool::new(false);
+    static RELEASE_WAKEE: AtomicBool = AtomicBool::new(false);
+    static WAKEE_WAIT: WaitQueue = WaitQueue::new();
+
+    WAKEE_READY.store(false, Ordering::Release);
+    RELEASE_WAKEE.store(false, Ordering::Release);
+    assert!(ax_set_current_affinity(AxCpuMask::one_shot(1)).is_ok());
+    wait_until(
+        || this_cpu_id() == 1,
+        "wake-affine controller did not settle on CPU1",
+    );
+
+    let wakee = thread::spawn(|| {
+        assert!(ax_set_current_affinity(AxCpuMask::one_shot(0)).is_ok());
+        assert_eq!(this_cpu_id(), 0);
+        WAKEE_READY.store(true, Ordering::Release);
+        WAKEE_WAIT.wait_until(|| RELEASE_WAKEE.load(Ordering::Acquire));
+    });
+    let wakee_raw = wakee.thread().id().as_u64().get();
+    let wakee_id = ThreadId::from_parts(wakee_raw as u32, (wakee_raw >> 32) as u32);
+    wait_until(
+        || WAKEE_READY.load(Ordering::Acquire),
+        "the wake-affine wakee did not publish readiness",
+    );
+    wait_until(
+        || task_test_hooks::thread_is_blocked(wakee_raw),
+        "the wake-affine wakee did not block on CPU0",
+    );
+    let mut wake_affinity = CpuSet::empty(cpu_count);
+    assert!(wake_affinity.insert(CpuId::new(0)));
+    assert!(wake_affinity.insert(CpuId::new(1)));
+    set_thread_affinity_and_wait(wakee_id, wake_affinity)
+        .expect("the blocked wakee must accept the two-CPU wake affinity");
+
+    let stop_occupier = Arc::new(AtomicBool::new(false));
+    let occupier_ready = Arc::new(AtomicBool::new(false));
+    let occupier = {
+        let stop = Arc::clone(&stop_occupier);
+        let ready = Arc::clone(&occupier_ready);
+        thread::spawn(move || {
+            assert!(ax_set_current_affinity(AxCpuMask::one_shot(0)).is_ok());
+            let current = current_thread_id().expect("the CPU0 occupier must have an identity");
+            set_thread_policy(
+                current,
+                SchedulePolicy::fair(
+                    Nice::new(1).expect("nice +1 must be valid"),
+                    FairMode::Normal,
+                ),
+            )
+            .expect("the CPU0 occupier must accept nice +1");
+            ready.store(true, Ordering::Release);
+            while !stop.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+        })
+    };
+    wait_until(
+        || occupier_ready.load(Ordering::Acquire),
+        "the wake-affine CPU0 occupier did not start",
+    );
+
+    let previous_demand = u64::from(Nice::new(1).expect("nice +1 must be valid").weight());
+    let waker_demand = u64::from(Nice::ZERO.weight());
+    let demand_wait_started = Instant::now();
+    let guard = loop {
+        let guard = PreemptIrqSaveGuard::new();
+        let stable = task_test_hooks::cpu_placement_demand(0) == Ok(previous_demand)
+            && task_test_hooks::cpu_placement_demand(1) == Ok(waker_demand);
+        if stable {
+            break guard;
+        }
+        drop(guard);
+        assert!(
+            demand_wait_started.elapsed() < PROGRESS_TIMEOUT,
+            "the wake-affine rq demands did not reach the deterministic comparison state"
+        );
+        thread::yield_now();
+    };
+    task_test_hooks::arm_wake_placement_probe(wakee_raw);
+    RELEASE_WAKEE.store(true, Ordering::Release);
+    assert!(WAKEE_WAIT.notify_one_sync());
+    let target = task_test_hooks::take_wake_placement_cpu()
+        .expect("the synchronous wake-affine placement probe must complete");
+    drop(guard);
+    assert_eq!(
+        target, 0,
+        "Linux wake_affine_weight must include the wakee load before moving a synchronous wake"
+    );
+
+    wakee
+        .join()
+        .expect("the synchronous wake-affine wakee must exit normally");
+    stop_occupier.store(true, Ordering::Release);
+    occupier
+        .join()
+        .expect("the synchronous wake-affine occupier must exit normally");
+}
+
 pub fn run() -> crate::TestResult {
     static WAKEE_READY: AtomicBool = AtomicBool::new(false);
     static RELEASE_WAKEE: AtomicBool = AtomicBool::new(false);
@@ -89,6 +192,7 @@ pub fn run() -> crate::TestResult {
         "task-fair-wake-idle-sibling requires SMP >= 4, got {cpu_count}"
     );
     fair_wake_preserves_existing_need_resched();
+    fair_sync_wake_accounts_for_wakee_demand(cpu_count);
     WAKEE_READY.store(false, Ordering::Release);
     RELEASE_WAKEE.store(false, Ordering::Release);
 

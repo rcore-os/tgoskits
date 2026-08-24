@@ -216,7 +216,13 @@ impl TaskSystem {
         #[cfg(any(test, all(axtest, feature = "axtest")))]
         WAKE_TARGET_SELECTIONS.set(WAKE_TARGET_SELECTIONS.get().saturating_add(1));
         if matches!(policy, SchedulePolicy::Fair { .. }) {
-            return self.select_fair_wake_cpu(&sched.affinity.affinity, waker, previous, intent);
+            return self.select_fair_wake_cpu(
+                &sched.affinity.affinity,
+                waker,
+                previous,
+                policy.placement_demand(),
+                intent,
+            );
         }
         let preferred = previous.or(waker);
         if let Some(priority) = policy.rt_priority()
@@ -332,16 +338,22 @@ impl TaskSystem {
 
     /// Mirrors Linux Fair `select_task_rq_fair()` for a blocked wake.
     ///
-    /// Wake-affine first selects between the waking and previous CPU using
-    /// current load. Linux then invokes `select_idle_sibling()` for `WF_TTWU`;
-    /// omitting that second stage stacks wakees on busy CPUs while siblings
-    /// remain idle. For `WF_SYNC`, wake-affine discounts the current waker and
-    /// biases a load tie toward that CPU before the same idle-sibling stage.
+    /// Wake-affine first compares the post-wake demand on the waking and
+    /// previous CPUs. Linux's PELT `cpu_load(previous)` still includes a
+    /// blocked wakee, so `wake_affine_weight()` removes that contribution from
+    /// the previous candidate and adds it to the waker candidate. This
+    /// instantaneous model excludes blocked tasks already: leave the previous
+    /// demand unchanged and add the wakee only to the waker candidate. Linux
+    /// then invokes `select_idle_sibling()` for `WF_TTWU`; omitting that second
+    /// stage stacks wakees on busy CPUs while siblings remain idle. For
+    /// `WF_SYNC`, wake-affine also discounts the current waker and biases a
+    /// load tie toward that CPU before the same idle-sibling stage.
     fn select_fair_wake_cpu(
         &self,
         affinity: &CpuSet,
         waker: Option<CpuId>,
         previous: Option<CpuId>,
+        wakee_demand: u64,
         intent: WakeIntent,
     ) -> Option<CpuId> {
         let eligible = |cpu: CpuId| {
@@ -360,7 +372,8 @@ impl TaskSystem {
                     waker_remote.sync_wake_affine_demand()
                 } else {
                     waker_remote.placement_demand()
-                };
+                }
+                .saturating_add(wakee_demand);
                 let previous_demand = self.cpu_remotes[previous.as_usize()].placement_demand();
                 if waker_demand < previous_demand
                     || (intent.is_sync() && waker_demand == previous_demand)
