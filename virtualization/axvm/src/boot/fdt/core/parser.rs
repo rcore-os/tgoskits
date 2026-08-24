@@ -710,6 +710,7 @@ pub fn parse_vm_interrupt(
         .collect::<BTreeSet<_>>();
     let excluded_paths = excluded_device_paths(vm_cfg, crate_cfg);
     let host_owned_serial_paths = super::serial::host_owned_serial_paths(&fdt);
+    let mut passthrough_interrupts = Vec::new();
 
     for node_id in fdt.iter_node_ids() {
         let Some(node) = fdt.node(node_id) else {
@@ -737,15 +738,22 @@ pub fn parse_vm_interrupt(
                     .excluded_passthrough_irq_sources()
                     .contains(&interrupt.source)
                 {
-                    continue;
+                    return Err(AxVmError::invalid_config(format!(
+                        "passthrough device {path} shares host-owned interrupt source {:#x}",
+                        interrupt.source
+                    )));
                 }
-                trace!(
-                    "node: {name}, passthrough interrupt source: {:#x}, trigger: {:?}",
-                    interrupt.source, interrupt.trigger
-                );
-                vm_cfg.add_pass_through_irq(interrupt.source, interrupt.trigger);
+                passthrough_interrupts.push((path.clone(), interrupt));
             }
         }
+    }
+
+    for (path, interrupt) in passthrough_interrupts {
+        trace!(
+            "node: {path}, passthrough interrupt source: {:#x}, trigger: {:?}",
+            interrupt.source, interrupt.trigger
+        );
+        vm_cfg.add_pass_through_irq(interrupt.source, interrupt.trigger);
     }
 
     Ok(())
@@ -843,6 +851,10 @@ mod tests {
     }
 
     fn fdt_with_console_and_assignable_serial() -> Vec<u8> {
+        fdt_with_console_and_assignable_serial_irq(11)
+    }
+
+    fn fdt_with_console_and_assignable_serial_irq(assignable_irq: u32) -> Vec<u8> {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();
         fdt.node_mut(root)
@@ -865,7 +877,7 @@ mod tests {
 
         for (name, base, irq) in [
             ("serial@10000000", 0x1000_0000, 10),
-            ("serial@10001000", 0x1000_1000, 11),
+            ("serial@10001000", 0x1000_1000, assignable_irq),
         ] {
             let node = fdt.add_node(root, Node::new(name));
             fdt.node_mut(node)
@@ -1242,6 +1254,43 @@ mod tests {
                 .flatten()
                 .all(|path| path != "/serial@10001000")
         );
+    }
+
+    #[test]
+    fn selected_uart_sharing_host_owned_irq_is_rejected() {
+        let dtb = fdt_with_console_and_assignable_serial_irq(10);
+        let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            id: 0,
+            name: "test".to_string(),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            pass_through_devices: vec![HostDeviceAssignment {
+                name: "/serial@10001000".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let crate_cfg = GuestConfig {
+            devices: GuestDevices {
+                passthrough: vec![PhysicalDeviceRef {
+                    path: "/serial@10001000".to_string(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        reserve_excluded_device_ranges(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
+        let error = parse_vm_interrupt(&mut vm_cfg, &crate_cfg, &dtb).unwrap_err();
+        let expected_detail =
+            "passthrough device /serial@10001000 shares host-owned interrupt source 0xa";
+
+        assert_eq!(
+            error,
+            crate::AxVmError::InvalidConfig {
+                detail: expected_detail.to_string(),
+            }
+        );
+        assert!(vm_cfg.pass_through_irqs().is_empty());
     }
 
     #[test]
