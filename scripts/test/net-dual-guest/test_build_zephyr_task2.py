@@ -9,6 +9,8 @@ BOARD_OVERLAY = (
 TASK2_CMAKE = (ROOT / "zephyr-task2/CMakeLists.txt").read_text()
 TASK2_CONFIG = (ROOT / "zephyr-task2/prj.conf").read_text()
 PERIODIC_SOURCE = ROOT / "zephyr-task2/src/periodic.c"
+CONSOLE_SOURCE = (ROOT / "zephyr-task2/src/console.c").read_text()
+TELEMETRY_SOURCE = (ROOT / "zephyr-task2/src/telemetry.c").read_text()
 
 
 def test_task2_build_accepts_a_physical_guest_overlay() -> None:
@@ -70,3 +72,21 @@ def test_task2_image_also_builds_the_task1_periodic_probe() -> None:
     assert "CONFIG_NET_QEMU_SLIP=y" in TASK2_CONFIG
     assert "CONFIG_NET_SLIP_TAP=n" in TASK2_CONFIG
     assert "CONFIG_NET_L2_ETHERNET=y" in TASK2_CONFIG
+
+
+def test_board_timer_frequency_is_optional_and_recorded() -> None:
+    assert 'timer_frequency_hz="${TASK2_TIMER_FREQUENCY_HZ:-}"' in BUILD_SCRIPT
+    assert "CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC=%s" in BUILD_SCRIPT
+    assert 'timer_frequency_hz = %s' in BUILD_SCRIPT
+
+
+def test_runtime_trace_defaults_to_quiet_and_sampling_is_serialized() -> None:
+    assert 'runtime_trace="${TASK2_RUNTIME_TRACE:-0}"' in BUILD_SCRIPT
+    assert "-DTASK2_RUNTIME_TRACE=$runtime_trace" in BUILD_SCRIPT
+    assert "src/console.c" in TASK2_CMAKE
+    assert "src/telemetry.c" in TASK2_CMAKE
+    assert "CONFIG_LOG=n" in TASK2_CONFIG
+    assert "CONFIG_PRINTK_SYNC=y" in TASK2_CONFIG
+    assert "task2_console_mutex" in CONSOLE_SOURCE
+    assert "task2_console_set_trace_quiet" in CONSOLE_SOURCE
+    assert "atomic_inc(&controls_received)" in TELEMETRY_SOURCE

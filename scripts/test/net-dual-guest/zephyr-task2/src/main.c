@@ -17,6 +17,11 @@
 #include <zephyr/net/net_ip.h>
 #include <zephyr/net/socket.h>
 
+#include "console.h"
+#include "telemetry.h"
+
+#define printk(...) task2_console_trace_printf(__VA_ARGS__)
+
 #define UDP_PORT 4242
 #define SESSION_ID UINT32_C(0x54525432)
 #define FRAME_HEADER_LEN 28
@@ -441,6 +446,7 @@ int main(void)
 						for (unsigned index = 0; index < 8; index++) {
 							uptime = (uptime << 8) | payload[index];
 						}
+						task2_telemetry_note_heartbeat();
 						printk("TASK2_HEARTBEAT_RECEIVED peer_uptime_ms=%llu\n", uptime);
 					}
 				} else if (kind == KIND_CONTROL || kind == KIND_STATUS) {
@@ -472,6 +478,7 @@ int main(void)
 							}
 						}
 						if (kind == KIND_CONTROL) {
+						task2_telemetry_note_control();
 						uint8_t action = payload[0];
 						int32_t output = (int32_t)read_u32(payload + 4);
 						uint32_t request = read_u32(payload + 8);
@@ -507,6 +514,7 @@ int main(void)
 								"status")) {
 							return 1;
 						}
+						task2_telemetry_note_status();
 						last_tx = now;
 						printk("TASK2_CONTROL_RECEIVED seq=%u request=%u\n", sequence,
 						       request);

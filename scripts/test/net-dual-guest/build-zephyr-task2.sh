@@ -16,6 +16,14 @@ virtio_slot="${TASK2_ZEPHYR_VIRTIO_SLOT:-30}"
 fault_mode="${TASK2_FAULT_MODE:-none}"
 extra_overlay="${TASK2_ZEPHYR_EXTRA_OVERLAY:-}"
 periodic_sample_count="${TASK1_ZEPHYR_SAMPLE_COUNT:-300}"
+# Production defaults to no per-packet UART formatting or output. Board
+# diagnostics can opt in, while the periodic probe always enforces a quiet
+# sampling window.
+runtime_trace="${TASK2_RUNTIME_TRACE:-0}"
+# Leave this unset for qemu_cortex_a53's native counter frequency. RK3588
+# board builds set 24000000 explicitly so one source tree remains valid for
+# both physical-board and QEMU experiments.
+timer_frequency_hz="${TASK2_TIMER_FREQUENCY_HZ:-}"
 case "$virtio_slot" in
     0)
         device_overlay="$source_dir/app.overlay.switch"
@@ -50,6 +58,14 @@ if [[ ! "$periodic_sample_count" =~ ^[1-9][0-9]*$ ]]; then
     printf 'error: TASK1_ZEPHYR_SAMPLE_COUNT must be a positive integer\n' >&2
     exit 1
 fi
+if [[ "$runtime_trace" != 0 && "$runtime_trace" != 1 ]]; then
+    printf 'error: TASK2_RUNTIME_TRACE must be 0 or 1\n' >&2
+    exit 1
+fi
+if [[ -n "$timer_frequency_hz" && ! "$timer_frequency_hz" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'error: TASK2_TIMER_FREQUENCY_HZ must be a positive integer\n' >&2
+    exit 1
+fi
 memory_base_value=$((memory_base))
 memory_size_value=$((memory_size))
 memory_base="$(printf '0x%08x' "$memory_base_value")"
@@ -77,6 +93,13 @@ if [[ -n "$extra_overlay" ]]; then
 fi
 overlay_list="$(IFS=";"; printf "%s" "${overlay_files[*]}")"
 
+extra_conf_args=("-DEXTRA_CONF_FILE=")
+if [[ -n "$timer_frequency_hz" ]]; then
+    timer_conf="$out_dir/timer-frequency.conf"
+    printf 'CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC=%s\n' "$timer_frequency_hz" > "$timer_conf"
+    extra_conf_args=("-DEXTRA_CONF_FILE=$timer_conf")
+fi
+
 # Zephyr 4.4.2's no-west path creates Kconfig.modules but omits this companion
 # file. Seed the empty environment required by a standalone checkout; a real
 # west/module discovery run overwrites it when modules are present.
@@ -89,8 +112,27 @@ ZEPHYR_BASE="$zephyr_base" cmake -S "$source_dir" -B "$build_dir" -G Ninja \
     -DCROSS_COMPILE="$cross_prefix" \
     -DDTC_OVERLAY_FILE="$overlay_list" \
     -DRT_SAMPLE_COUNT="$periodic_sample_count" \
-    -DEXTRA_CFLAGS:STRING="-DCONFIG_MAX_IRQ_LINES=64 -DTASK2_FAULT_DROP_ACK_MODE=$fault_define"
+    "${extra_conf_args[@]}" \
+    -DEXTRA_CFLAGS:STRING="-DCONFIG_MAX_IRQ_LINES=64 -DTASK2_FAULT_DROP_ACK_MODE=$fault_define -DTASK2_RUNTIME_TRACE=$runtime_trace"
 cmake --build "$build_dir" --clean-first
+
+zephyr_config="$build_dir/zephyr/.config"
+if ! grep -Fqx 'CONFIG_PRINTK_SYNC=y' "$zephyr_config" ||
+   ! grep -Fqx '# CONFIG_LOG is not set' "$zephyr_config"; then
+    printf 'error: Zephyr console serialization contract is not active in %s\n' \
+        "$zephyr_config" >&2
+    exit 1
+fi
+configured_timer_frequency="$(sed -n 's/^CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC=//p' "$zephyr_config")"
+if [[ -z "$configured_timer_frequency" ]]; then
+    printf 'error: no system timer frequency found in %s\n' "$zephyr_config" >&2
+    exit 1
+fi
+if [[ -n "$timer_frequency_hz" && "$configured_timer_frequency" != "$timer_frequency_hz" ]]; then
+    printf 'error: requested timer frequency %s, configured %s in %s\n' \
+        "$timer_frequency_hz" "$configured_timer_frequency" "$zephyr_config" >&2
+    exit 1
+fi
 
 elf="$out_dir/zephyr-task2.elf"
 binary="$out_dir/zephyr-task2.bin"
@@ -144,6 +186,8 @@ manifest="$out_dir/manifest.toml"
     printf 'fault_mode = "%s"\n' "$fault_mode"
     printf 'periodic_probe = "enabled"\n'
     printf 'periodic_sample_count = "%s"\n' "$periodic_sample_count"
+    printf 'runtime_trace = "%s"\n' "$runtime_trace"
+    printf 'timer_frequency_hz = %s\n' "$configured_timer_frequency"
     printf 'extra_overlay = "%s"\n' "${extra_overlay:-none}"
     if [[ -n "$extra_overlay" ]]; then
         printf 'extra_overlay_sha256 = "%s"\n' "$(sha256sum "$extra_overlay" | awk '{print $1}')"
