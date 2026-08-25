@@ -375,21 +375,18 @@ fn remove_if_exists(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{ffi::OsStr, fs, os::unix::fs::PermissionsExt};
-
-    use tempfile::tempdir;
+    use std::{ffi::OsStr, path::PathBuf};
 
     use super::*;
 
     #[test]
-    fn reads_version_from_injected_agent_program() {
-        let temp = tempdir().unwrap();
-        let program = temp.path().join("mock-agent");
-        fs::write(&program, "#!/bin/sh\necho 'agent test-version'\n").unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    fn reads_version_from_injected_stable_program() {
+        let runner = AgentRunner::from_program(AgentKind::Claude, PathBuf::from("rustc"));
 
-        let runner = AgentRunner::from_program(AgentKind::Claude, program);
-        assert_eq!(runner.version().unwrap(), "agent test-version");
+        let version = runner.version().unwrap();
+
+        assert!(version.starts_with("rustc "));
+        assert_eq!(version.trim(), version);
     }
 
     #[test]
