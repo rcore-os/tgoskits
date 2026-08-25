@@ -1,5 +1,5 @@
 use std::{
-    fs, io,
+    fs,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -11,6 +11,7 @@ use tempfile::tempdir;
 use tokio::{process::Command, time::timeout};
 
 use super::{cases::BenchCase, sandbox::ReviewSandbox, scoring::ReviewFinding};
+use crate::support::process::retry_text_file_busy;
 
 const CODEX_REVIEW_PROMPT: &str = "$review-single-pr offline-benchmark";
 const CLAUDE_REVIEW_PROMPT: &str = "/review-single-pr offline-benchmark";
@@ -62,9 +63,6 @@ const CLAUDE_REVIEW_ALLOWED_TOOLS: &[&str] = &[
     "Bash(git grep *)",
 ];
 const CLAUDE_GRADE_TOOLS: &str = "Read";
-const TEXT_FILE_BUSY_RETRY_LIMIT: usize = 5;
-const TEXT_FILE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub(super) enum AgentKind {
     #[default]
@@ -351,29 +349,6 @@ async fn run_process(
     }
 }
 
-fn retry_text_file_busy<T>(mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
-    let mut retries_remaining = TEXT_FILE_BUSY_RETRY_LIMIT;
-    loop {
-        match operation() {
-            Err(err) if is_text_file_busy(&err) && retries_remaining > 0 => {
-                retries_remaining -= 1;
-                std::thread::sleep(TEXT_FILE_BUSY_RETRY_DELAY);
-            }
-            result => return result,
-        }
-    }
-}
-
-#[cfg(unix)]
-fn is_text_file_busy(error: &io::Error) -> bool {
-    error.raw_os_error() == Some(libc::ETXTBSY)
-}
-
-#[cfg(not(unix))]
-fn is_text_file_busy(_error: &io::Error) -> bool {
-    false
-}
-
 fn copy_nonempty_output(source: &Path, destination: &Path, role: &str) -> anyhow::Result<()> {
     let metadata = fs::metadata(source)
         .with_context(|| format!("{role} did not create {}", source.display()))?;
@@ -544,35 +519,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("timed out"));
-    }
-
-    #[test]
-    fn retries_transient_text_file_busy_errors() {
-        let mut attempts = 0;
-        let result = retry_text_file_busy(|| {
-            attempts += 1;
-            if attempts <= TEXT_FILE_BUSY_RETRY_LIMIT {
-                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
-            } else {
-                Ok("spawned")
-            }
-        });
-
-        assert_eq!(result.unwrap(), "spawned");
-        assert_eq!(attempts, TEXT_FILE_BUSY_RETRY_LIMIT + 1);
-    }
-
-    #[test]
-    fn does_not_retry_other_spawn_errors() {
-        let mut attempts = 0;
-        let error = retry_text_file_busy(|| {
-            attempts += 1;
-            Err::<(), _>(std::io::Error::from_raw_os_error(libc::ENOENT))
-        })
-        .unwrap_err();
-
-        assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
-        assert_eq!(attempts, 1);
     }
 
     fn args(command: &Command) -> Vec<&str> {

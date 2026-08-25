@@ -44,6 +44,7 @@ use std::{
 use anyhow::{Context, bail};
 
 use super::types::AxvisorHttpProbeConfig;
+use crate::support::process::retry_text_file_busy;
 
 /// Poll interval while waiting for the probe asset to exit.
 const PROBE_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -108,7 +109,8 @@ fn spawn_probe_asset(
     config: &AxvisorHttpProbeConfig,
     case_dir: &Path,
 ) -> anyhow::Result<Child> {
-    Command::new(script)
+    let mut command = Command::new(script);
+    command
         .env("AXVISOR_HTTP_BASE", format!("http://{addr}"))
         .env(
             "AXVISOR_HTTP_TOKEN",
@@ -125,8 +127,8 @@ fn spawn_probe_asset(
         )
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
+        .stderr(Stdio::inherit());
+    retry_text_file_busy(|| command.spawn())
         .with_context(|| format!("failed to spawn probe asset {}", script.display()))
 }
 
@@ -241,6 +243,17 @@ mod tests {
     fn probe_script_is_configurable() {
         let config = parse_probe_section("[host_http_probe]\nprobe_script = \"custom_probe.sh\"\n");
         assert_eq!(config.probe_script, PathBuf::from("custom_probe.sh"));
+    }
+
+    #[test]
+    fn probe_asset_spawn_uses_the_text_file_busy_retry_boundary() {
+        let source = include_str!("http_probe.rs");
+        let retry_spawn = ["retry_text_file_busy", "(|| command.spawn())"].concat();
+
+        assert!(
+            source.contains(&retry_spawn),
+            "directly executed probe assets must retry the transient ETXTBSY publication window"
+        );
     }
 
     #[cfg(unix)]

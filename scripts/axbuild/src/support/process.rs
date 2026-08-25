@@ -3,10 +3,14 @@ use std::{
     io::{self, Write},
     path::Path,
     process::{Command, Stdio},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
+
+const TEXT_FILE_BUSY_RETRY_LIMIT: usize = 5;
+const TEXT_FILE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 pub trait ProcessExt {
     /// Encodes an option and value as one argv element for parsers that would
@@ -14,6 +18,34 @@ pub trait ProcessExt {
     fn arg_option_value(&mut self, option: &str, value: &OsStr) -> &mut Self;
     fn exec(&mut self) -> Result<()>;
     fn exec_quiet(&mut self) -> Result<()>;
+}
+
+/// Retry the Linux executable-publication race without changing other process
+/// errors. Callers should use this only when the program may have just been
+/// materialized or replaced.
+pub(crate) fn retry_text_file_busy<T>(
+    mut operation: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    let mut retries_remaining = TEXT_FILE_BUSY_RETRY_LIMIT;
+    loop {
+        match operation() {
+            Err(err) if is_text_file_busy(&err) && retries_remaining > 0 => {
+                retries_remaining -= 1;
+                std::thread::sleep(TEXT_FILE_BUSY_RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn is_text_file_busy(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ETXTBSY)
+}
+
+#[cfg(not(unix))]
+fn is_text_file_busy(_error: &io::Error) -> bool {
+    false
 }
 
 pub(crate) fn run_cargo_status(workspace_root: &Path, args: &[String]) -> Result<bool> {
@@ -154,6 +186,37 @@ mod tests {
     use std::{ffi::OsStr, process::Command};
 
     use super::ProcessExt;
+
+    #[cfg(unix)]
+    #[test]
+    fn retries_transient_text_file_busy_errors() {
+        let mut attempts = 0;
+        let result = super::retry_text_file_busy(|| {
+            attempts += 1;
+            if attempts <= super::TEXT_FILE_BUSY_RETRY_LIMIT {
+                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+            } else {
+                Ok("spawned")
+            }
+        });
+
+        assert_eq!(result.unwrap(), "spawned");
+        assert_eq!(attempts, super::TEXT_FILE_BUSY_RETRY_LIMIT + 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_retry_other_spawn_errors() {
+        let mut attempts = 0;
+        let error = super::retry_text_file_busy(|| {
+            attempts += 1;
+            Err::<(), _>(std::io::Error::from_raw_os_error(libc::ENOENT))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+        assert_eq!(attempts, 1);
+    }
 
     #[test]
     fn option_values_are_one_argument_even_when_the_value_starts_with_a_hyphen() {
