@@ -157,6 +157,11 @@ impl<B: BlockDevice> BlockDev<B> {
         self.held.buffer.as_mut_slice()
     }
 
+    /// Returns whether `block_id` is already backed by the held buffer.
+    pub(crate) fn holds_block(&self, block_id: AbsoluteBN) -> bool {
+        self.held.block_id == Some(block_id)
+    }
+
     /// Writes back the held block if dirty, then drops it.
     ///
     /// Dirty data is flushed first so modifications made via
@@ -179,6 +184,29 @@ impl<B: BlockDevice> BlockDev<B> {
         self.held.block_id = Some(block_id);
         self.held.dirty = false;
         Ok(())
+    }
+
+    /// Transfers ownership of a dirty held block to the journal queue.
+    ///
+    /// The queue owns an immutable snapshot of the same buffer, so a later
+    /// held-buffer miss must not write the block to its home location before
+    /// the journal transaction commits.
+    pub(crate) fn acknowledge_journaled_block(&mut self, block_id: AbsoluteBN) {
+        if self.held.block_id == Some(block_id) {
+            self.held.dirty = false;
+        }
+    }
+
+    /// Refreshes an overlapping held block from a journaled bulk update.
+    pub(crate) fn acknowledge_journaled_block_with(
+        &mut self,
+        block_id: AbsoluteBN,
+        data: &[u8; crate::config::BLOCK_SIZE],
+    ) {
+        if self.held.block_id == Some(block_id) {
+            self.held.buffer.as_mut_slice().copy_from_slice(data);
+            self.held.dirty = false;
+        }
     }
 
     /// Writes back the held block if dirty, then flushes the device.

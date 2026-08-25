@@ -3,13 +3,13 @@
 //! resolves to the same cache tree, keyed by the identity (allocation
 //! address) of the runtime `BlockDeviceHandle`.
 //!
-//! Key stability holds because each cached device keeps its own `Arc`
-//! clone of the handle alive, so the address cannot be reused while a
-//! registry entry for it exists. Entries hold only weak references to the
-//! tree. The last filesystem consumer writes the tree back while it is
-//! still upgradeable; the tree's final drop then removes its matching
-//! entry and releases the endpoint so the runtime handle can reach its
-//! shutdown path.
+//! Key stability holds for live entries because each cached device keeps its
+//! own `Arc` clone of the handle alive. Entries hold only weak references to
+//! the tree. The last filesystem consumer writes the tree back while it is
+//! still upgradeable; the tree's final drop releases the endpoint and removes
+//! its entry when the registry is immediately available. A contended drop may
+//! leave a stale weak entry, which cache creation or global sync prunes before
+//! it can be reused.
 //!
 //! Each live tree owns a device endpoint (an equivalent `FsBlockDevice`
 //! over the same runtime handle) so global operations —
@@ -55,6 +55,7 @@ pub(crate) fn shared_cache_for(
     // Lock order: registry first, then the device tree lock. No path takes
     // them in the opposite order.
     let mut registry = BLOCK_CACHE_REGISTRY.lock();
+    prune_stale_entries(&mut registry);
     let stale_index = if let Some(index) = registry
         .iter()
         .position(|entry| entry.device_key == device_key)
@@ -86,15 +87,26 @@ pub(crate) fn shared_cache_for(
     Ok(shared)
 }
 
-/// Removes the registry entry that still names `cache`.
+/// Removes the registry entry that still names `cache` without waiting.
+///
+/// A contended drop leaves only a stale weak entry. Cache creation and global
+/// sync prune such entries while they already own the registry lock.
 pub(super) fn unregister_cache(device_key: usize, cache: *const BlockCacheShared) {
-    let mut registry = BLOCK_CACHE_REGISTRY.lock();
+    let Some(mut registry) = BLOCK_CACHE_REGISTRY.try_lock() else {
+        return;
+    };
     let Some(index) = registry.iter().position(|entry| {
         entry.device_key == device_key && core::ptr::eq(entry.cache.as_ptr(), cache)
     }) else {
         return;
     };
     registry.swap_remove(index);
+}
+
+#[cfg(all(test, feature = "vfs"))]
+pub(super) fn unregister_while_locked_for_test(device_key: usize, cache: *const BlockCacheShared) {
+    let _registry = BLOCK_CACHE_REGISTRY.lock();
+    unregister_cache(device_key, cache);
 }
 
 /// Writes back every live device cache tree and issues each device's flush
@@ -131,23 +143,45 @@ pub fn sync_all_block_caches() -> BlockResult<()> {
 /// reclaim hook.
 #[cfg(feature = "vfs")]
 pub(crate) fn reclaim_clean_folios(num_folios: usize) -> usize {
-    let mut reclaimed = 0;
-    let Ok(trees) = live_trees() else {
+    let Some(tree_count) = BLOCK_CACHE_REGISTRY
+        .try_lock()
+        .map(|registry| registry.len())
+    else {
         return 0;
     };
-    for shared in trees {
+    let mut reclaimed = 0;
+    for index in 0..tree_count {
         if reclaimed >= num_folios {
             break;
         }
-        reclaimed += shared.reclaim_clean_folios(num_folios - reclaimed);
+        let Some(shared) = try_live_tree(index) else {
+            continue;
+        };
+        reclaimed += shared.try_reclaim_clean_folios(num_folios - reclaimed);
     }
     reclaimed
+}
+
+/// Upgrades one tree without allocating or waiting for the registry lock.
+///
+/// The registry may change between indices. Reclaim is best-effort, so a
+/// removed or contended entry is skipped; the returned strong reference is
+/// dropped only after the registry guard has gone out of scope.
+#[cfg(feature = "vfs")]
+fn try_live_tree(index: usize) -> Option<Arc<BlockCacheShared>> {
+    let registry = BLOCK_CACHE_REGISTRY.try_lock()?;
+    registry.get(index)?.cache.upgrade()
+}
+
+fn prune_stale_entries(registry: &mut Vec<DeviceCacheEntry>) {
+    registry.retain(|entry| entry.cache.strong_count() != 0);
 }
 
 /// Collects live trees; each tree owns the endpoint that keeps its device
 /// reachable after the registry lock is released.
 fn live_trees() -> BlockResult<Vec<Arc<BlockCacheShared>>> {
-    let registry = BLOCK_CACHE_REGISTRY.lock();
+    let mut registry = BLOCK_CACHE_REGISTRY.lock();
+    prune_stale_entries(&mut registry);
     let mut trees = Vec::new();
     trees
         .try_reserve_exact(registry.len())

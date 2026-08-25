@@ -92,8 +92,11 @@ impl BlockCacheShared {
     /// [`super::registry::reclaim_clean_folios`] for the clean-only
     /// contract.
     #[cfg(feature = "vfs")]
-    pub(crate) fn reclaim_clean_folios(&self, target: usize) -> usize {
-        self.state.lock().reclaim_clean_folios(target)
+    pub(crate) fn try_reclaim_clean_folios(&self, target: usize) -> usize {
+        let Some(mut state) = self.state.try_lock() else {
+            return 0;
+        };
+        state.reclaim_clean_folios(target)
     }
 }
 
@@ -157,6 +160,20 @@ impl<T: FsBlockDevice> BufferedBlockDevice<T> {
         }
         let count = u64::try_from(buf_len / block_size).map_err(|_| BlockError::InvalidState)?;
         Ok((block_id, count))
+    }
+
+    #[cfg(all(test, feature = "vfs"))]
+    pub(super) fn reclaim_from_allocator_while_state_locked_for_test(&self) -> usize {
+        let _state = self.shared.state.lock();
+        super::registry::reclaim_clean_folios(usize::MAX)
+    }
+
+    #[cfg(all(test, feature = "vfs"))]
+    pub(super) fn unregister_while_registry_locked_for_test(&self) {
+        super::registry::unregister_while_locked_for_test(
+            self.shared.device_key,
+            Arc::as_ptr(&self.shared),
+        );
     }
 }
 

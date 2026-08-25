@@ -627,3 +627,25 @@ fn reclaim_clean_folios_drops_only_clean_frames() {
     assert_eq!(count_ops(&state, IoOp::is_read), reads_before + 2);
     assert_eq!(count_ops(&state, |op| matches!(op, IoOp::Write { .. })), 0);
 }
+
+#[test]
+#[cfg(feature = "vfs")]
+fn allocator_reclaim_skips_a_cache_with_its_state_lock_held() {
+    let (device, _state) = RecordingDevice::new(64, 512);
+    let cached = buffered(KEY_A + 22, device);
+
+    assert_eq!(
+        cached.reclaim_from_allocator_while_state_locked_for_test(),
+        0,
+        "allocator reclaim must skip a cache already locked by the allocating path"
+    );
+}
+
+#[test]
+#[cfg(feature = "vfs")]
+fn cache_drop_cleanup_skips_a_contended_registry_lock() {
+    let (device, _state) = RecordingDevice::new(64, 512);
+    let cached = buffered(KEY_A + 23, device);
+
+    cached.unregister_while_registry_locked_for_test();
+}

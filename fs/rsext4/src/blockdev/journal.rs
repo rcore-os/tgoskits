@@ -194,9 +194,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             );
             return self.inner.write_block(block_id);
         };
-        let raw_dev = self.inner.device_mut();
-
-        if Self::enqueue_journal_update(system, raw_dev, updates)? {
+        let committed = Self::enqueue_journal_update(system, self.inner.device_mut(), updates)?;
+        self.inner.acknowledge_journaled_block(block_id);
+        if committed {
             self.inner.invalidate_cache()?;
         }
         trace!("[JBD2 buffer] queued metadata block {block_id}");
@@ -205,6 +205,9 @@ impl<B: BlockDevice> Jbd2Dev<B> {
 
     /// Reads one block through the cached inner device.
     pub fn read_block(&mut self, block_id: AbsoluteBN) -> Ext4Result<()> {
+        if self.inner.holds_block(block_id) {
+            return Ok(());
+        }
         if self.journal_use
             && let Some(system) = self.system.as_ref()
             && let Some(update) = system
@@ -279,7 +282,6 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             );
             return self.inner.write_blocks(buf, block_id, count);
         };
-        let raw_dev = self.inner.device_mut();
         let required = count as usize * BLOCK_SIZE;
         if buf.len() < required {
             return Err(Ext4Error::buffer_too_small(buf.len(), required));
@@ -288,11 +290,18 @@ impl<B: BlockDevice> Jbd2Dev<B> {
         let mut committed_any = false;
         for i in 0..count {
             let off = (i as usize) * BLOCK_SIZE;
+            let journaled_block = block_id.checked_add(i)?;
+            let data: &[u8; BLOCK_SIZE] = buf[off..off + BLOCK_SIZE]
+                .try_into()
+                .map_err(|_| Ext4Error::buffer_too_small(buf.len(), required))?;
             let mut boxbuf = Box::new([0; BLOCK_SIZE]);
-            boxbuf[..].copy_from_slice(&buf[off..off + BLOCK_SIZE]);
-            let updates = Jbd2Update(block_id.checked_add(i)?, boxbuf);
+            boxbuf[..].copy_from_slice(data);
+            let updates = Jbd2Update(journaled_block, boxbuf);
 
-            committed_any |= Self::enqueue_journal_update(system, raw_dev, updates)?;
+            committed_any |=
+                Self::enqueue_journal_update(system, self.inner.device_mut(), updates)?;
+            self.inner
+                .acknowledge_journaled_block_with(journaled_block, data);
         }
         if committed_any {
             self.inner.invalidate_cache()?;
@@ -335,6 +344,7 @@ mod tests {
 
     struct MemBlockDev {
         data: Vec<u8>,
+        writes: Vec<AbsoluteBN>,
         fail_flush: bool,
         fail_write_block: Option<AbsoluteBN>,
     }
@@ -343,6 +353,7 @@ mod tests {
         fn new(blocks: usize) -> Self {
             Self {
                 data: vec![0; blocks * BLOCK_SIZE],
+                writes: Vec::new(),
                 fail_flush: false,
                 fail_write_block: None,
             }
@@ -351,6 +362,7 @@ mod tests {
         fn with_failing_flush(blocks: usize) -> Self {
             Self {
                 data: vec![0; blocks * BLOCK_SIZE],
+                writes: Vec::new(),
                 fail_flush: true,
                 fail_write_block: None,
             }
@@ -359,6 +371,7 @@ mod tests {
         fn with_failing_write_block(blocks: usize, block: AbsoluteBN) -> Self {
             Self {
                 data: vec![0; blocks * BLOCK_SIZE],
+                writes: Vec::new(),
                 fail_flush: false,
                 fail_write_block: Some(block),
             }
@@ -377,6 +390,7 @@ mod tests {
             if self.fail_write_block == Some(block_id) {
                 return Err(Ext4Error::io());
             }
+            self.writes.push(block_id);
             let start = block_id.as_usize()? * BLOCK_SIZE;
             let end = start + buffer.len();
             self.data[start..end].copy_from_slice(buffer);
@@ -410,6 +424,52 @@ mod tests {
         fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
             Ok(Ext4Timestamp::new(0, 0))
         }
+    }
+
+    #[test]
+    fn queued_metadata_stays_off_home_block_until_commit() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+
+        let home_block = AbsoluteBN::new(10);
+        dev.read_block(home_block).expect("read metadata block");
+        dev.buffer_mut()[0] = 0xa5;
+        dev.write_block(home_block, true)
+            .expect("queue metadata update");
+        dev.read_block(AbsoluteBN::new(11))
+            .expect("switch held metadata block");
+
+        let raw = dev.into_inner();
+        assert!(
+            !raw.writes.contains(&home_block),
+            "queued metadata reached its home block before the JBD2 commit record"
+        );
+    }
+
+    #[test]
+    fn rereading_reedited_pending_metadata_keeps_it_off_home_block() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+
+        let home_block = AbsoluteBN::new(10);
+        dev.read_block(home_block).expect("read metadata block");
+        dev.buffer_mut()[0] = 0xa5;
+        dev.write_block(home_block, true)
+            .expect("queue metadata update");
+        dev.buffer_mut()[0] = 0x5a;
+        dev.read_block(home_block)
+            .expect("reread the reedited held block");
+
+        assert_eq!(
+            dev.buffer()[0],
+            0x5a,
+            "a held dirty edit must remain newer than its queued snapshot"
+        );
+        let raw = dev.into_inner();
+        assert!(
+            !raw.writes.contains(&home_block),
+            "reedited pending metadata reached home before the JBD2 commit record"
+        );
     }
 
     #[test]
