@@ -17,6 +17,11 @@ pub(crate) struct TimerKey {
 pub(crate) struct TimerRuntime {
     key: u64,
     wheel: BTreeMap<TimerKey, Waker>,
+    // Once IRQ processing publishes the due head to the timer worker, the
+    // logical queue must stop advertising it to the physical clockevent.
+    // The worker owns clearing this state after its bounded drain pass.
+    #[cfg(feature = "irq")]
+    due_work_published: bool,
 }
 
 impl TimerRuntime {
@@ -24,6 +29,8 @@ impl TimerRuntime {
         TimerRuntime {
             key: 0,
             wheel: BTreeMap::new(),
+            #[cfg(feature = "irq")]
+            due_work_published: false,
         }
     }
 
@@ -57,7 +64,30 @@ impl TimerRuntime {
 
     #[cfg(feature = "irq")]
     pub(crate) fn next_deadline(&self) -> Option<TimeValue> {
+        if self.due_work_published {
+            return None;
+        }
         self.wheel.keys().next().map(|key| key.deadline)
+    }
+
+    #[cfg(feature = "irq")]
+    pub(crate) fn publish_due_work(&mut self, now: TimeValue) -> bool {
+        self.due_work_published |= self
+            .wheel
+            .keys()
+            .next()
+            .is_some_and(|key| key.deadline <= now);
+        self.due_work_published
+    }
+
+    #[cfg(feature = "irq")]
+    pub(crate) fn finish_due_work(&mut self, now: TimeValue) -> bool {
+        self.due_work_published = self
+            .wheel
+            .keys()
+            .next()
+            .is_some_and(|key| key.deadline <= now);
+        self.due_work_published
     }
 
     #[cfg(feature = "irq")]
@@ -230,7 +260,7 @@ fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {
 }
 
 #[cfg(all(test, feature = "irq"))]
-mod timer_owner_regression_tests {
+mod timer_regression_tests {
     use super::*;
 
     fn poll_registered_timer_for_test(
@@ -280,5 +310,31 @@ mod timer_owner_regression_tests {
 
         assert!(owner.wheel.is_empty());
         assert!(current.wheel.is_empty());
+    }
+
+    #[test]
+    fn due_future_work_is_not_republished_as_a_clockevent_deadline() {
+        let mut runtime = TimerRuntime::new();
+        let deadline = monotonic_time() + Duration::from_secs(60);
+        runtime.add(deadline).expect("future timer must be pending");
+
+        assert!(runtime.publish_due_work(deadline));
+        assert_eq!(runtime.next_deadline(), None);
+    }
+
+    #[test]
+    fn future_deadline_is_republished_after_the_due_pass_finishes() {
+        let mut runtime = TimerRuntime::new();
+        let deadline = monotonic_time() + Duration::from_secs(60);
+        let later_deadline = deadline + Duration::from_secs(1);
+        runtime.add(deadline).expect("future timer must be pending");
+        runtime
+            .add(later_deadline)
+            .expect("later future timer must be pending");
+
+        assert!(runtime.publish_due_work(deadline));
+        assert!(runtime.expire_one(deadline).is_some());
+        assert!(!runtime.finish_due_work(deadline));
+        assert_eq!(runtime.next_deadline(), Some(later_deadline));
     }
 }

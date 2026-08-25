@@ -367,8 +367,7 @@ pub fn check_events(run_callbacks: bool) {
         with_current_timer_base(|timer_base| {
             let future_due = timer_base
                 .future_wakeups
-                .next_deadline()
-                .is_some_and(|deadline| deadline <= soft_now.as_duration());
+                .publish_due_work(soft_now.as_duration());
             let kernel = timer_base
                 .kernel_timers
                 .expire_due_soft(soft_now, remaining_budget);
@@ -469,10 +468,7 @@ fn drain_soft_timer_events(cpu_id: usize) {
 
     let now = monotonic_time();
     let pending = with_timer_base(cpu_id, |timer_base| {
-        timer_base
-            .future_wakeups
-            .next_deadline()
-            .is_some_and(|deadline| deadline <= now)
+        timer_base.future_wakeups.finish_due_work(now)
             || timer_base.kernel_timers.has_expired()
             || timer_base.kernel_timers.has_completed()
     });

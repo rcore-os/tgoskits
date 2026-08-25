@@ -49,6 +49,14 @@ destruction run in the pinned `ktimers/<cpu>` worker. The separately retained
 context and are not deadline-queue entries. If a budget is exhausted, the owner
 republishes work and keeps advancing with the platform minimum delta.
 
+Future expiry uses an explicit IRQ-to-worker ownership transition. Once the IRQ
+publishes a due Future head to `ktimers/<cpu>`, that head is hidden from the
+earliest-deadline query until the worker finishes its bounded drain pass. The
+worker either republishes the next live deadline or keeps its work notification
+pending. This prevents a due Waker, which cannot execute in IRQ context, from
+being fed back into the comparator as an immediate deadline and starving the
+worker that must consume it.
+
 Hard callbacks are constructed through an unsafe API. Their safety contract
 requires bounded execution with no allocation, destruction, sleeping, registry
 lookup, or sleepable lock acquisition. They may use only IRQ-safe atomics,
