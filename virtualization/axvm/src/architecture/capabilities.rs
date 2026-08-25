@@ -1,9 +1,8 @@
 //! Small capability boundaries implemented by the selected guest architecture.
 
-use std::{sync::Arc, vec::Vec};
+use std::vec::Vec;
 
 use ax_memory_addr::VirtAddr;
-use ax_std::os::arceos::modules::ax_task::IrqNotify;
 
 use crate::AxVmResult;
 
@@ -164,28 +163,6 @@ pub(crate) fn default_vcpu_affinities(
     }
 
     vcpus
-}
-
-/// Architecture-specific host timer policy used by the ArceOS adapter.
-pub(crate) trait HostTimePlatform {
-    #[cfg(not(test))]
-    fn request_timer_deadline(deadline_ns: u64) {
-        ax_std::os::arceos::modules::ax_task::request_timer_deadline_nanos(deadline_ns);
-    }
-
-    fn register_timer_source(
-        deadline_source: Arc<crate::timer::PublishedTimerDeadline>,
-        notify: Arc<IrqNotify>,
-    ) {
-        let published_deadline = deadline_source.clone();
-        ax_std::os::arceos::modules::ax_task::register_timer_deadline_source(move || {
-            published_deadline.deadline_nanos()
-        });
-        ax_std::os::arceos::modules::ax_task::register_timer_irq_callback(move |now| {
-            deadline_source.clear_if_elapsed(now.as_nanos().min(u64::MAX as u128) as u64);
-            notify.notify_irq();
-        });
-    }
 }
 
 #[cfg(test)]

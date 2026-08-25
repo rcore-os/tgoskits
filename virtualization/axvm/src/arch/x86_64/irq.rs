@@ -552,56 +552,6 @@ pub(crate) fn register_ioapic_irq_forwarding_activator(
         .map_err(|error| forwarding_route_error(vm.id(), guest_gsi, "activator", error))
 }
 
-pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
-    if !vm.uses_passthrough_address_space() {
-        return;
-    }
-
-    let now_ns = ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos();
-    let Ok(devices) = vm.get_devices() else {
-        return;
-    };
-    if !devices
-        .services()
-        .require::<X86PitServiceKey>()
-        .is_ok_and(|pit| pit.consume_irq0_if_due(now_ns))
-    {
-        return;
-    }
-    if let Some(vector) = devices
-        .services()
-        .require::<X86PicServiceKey>()
-        .ok()
-        .and_then(|pic| pic.pulse_irq(PIT_TIMER_GSI as u8))
-    {
-        vcpu.get_arch_vcpu()
-            .inject_interrupt_with_trigger(vector as _, InterruptTriggerMode::EdgeTriggered)
-            .unwrap();
-        return;
-    }
-
-    let Some(irq) = devices
-        .services()
-        .require::<X86InterruptDomainKey>()
-        .ok()
-        .and_then(|ioapic| ioapic.assert_gsi(PIT_TIMER_GSI))
-    else {
-        trace!("x86 PIT IRQ0 due but vIOAPIC GSI0 is not ready");
-        return;
-    };
-
-    vcpu.get_arch_vcpu()
-        .inject_interrupt_with_trigger(
-            irq.vector as _,
-            if irq.level_triggered {
-                InterruptTriggerMode::LevelTriggered
-            } else {
-                InterruptTriggerMode::EdgeTriggered
-            },
-        )
-        .unwrap();
-}
-
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
     if !vm.uses_passthrough_address_space() {
         return;

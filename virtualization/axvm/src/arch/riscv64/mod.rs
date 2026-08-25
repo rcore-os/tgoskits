@@ -199,7 +199,6 @@ fn finish_external_interrupt(vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>, vector:
         crate::host::arceos::dispatch_host_irq(vector);
         vcpu.get_arch_vcpu().latch_hvip_from_hw();
     });
-    crate::check_timer_events();
 }
 
 fn vplic_runtime(vm: &crate::AxVM) -> AxVmResult<Arc<irq::RiscvPlicRuntime>> {

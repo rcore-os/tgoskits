@@ -100,7 +100,6 @@ pub use x86::{
     X86AcpiPmTimerDevice, X86CmosDevice, X86InterruptDomainKey, X86InterruptDomainOps,
     X86IoApicDevice, X86IoApicDeviceOps, X86IoApicServiceKey, X86MonotonicNanos,
     X86PciConfigDevice, X86PicDevice, X86PicDeviceOps, X86PicServiceKey, X86PitDevice,
-    X86PitDeviceOps, X86PitServiceKey,
 };
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;

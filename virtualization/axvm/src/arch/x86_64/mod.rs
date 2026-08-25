@@ -85,6 +85,12 @@ impl ArchOps for X86_64Arch {
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
+        trace!(
+            "VM[{}] VCpu[{}] x86 exit={exit:?}, guest={:?}",
+            vm.id(),
+            vcpu.id(),
+            vcpu.get_arch_vcpu().0
+        );
         match exit {
             X86VmExit::Hypercall { nr, args } => super::handle_hypercall(
                 vm,
@@ -255,6 +261,8 @@ fn x86_halt_action() -> VcpuRunAction {
 pub(crate) struct AxvmX86HostOps;
 
 impl X86VlapicHostOps for AxvmX86HostOps {
+    type TimerHandle = <crate::host::arceos::ArceOsHost as HostTimer>::TimerHandle;
+
     fn alloc_frame() -> Option<x86_vlapic::X86HostPhysAddr> {
         default_host()
             .alloc_frame()
@@ -279,15 +287,28 @@ impl X86VlapicHostOps for AxvmX86HostOps {
         ax_std::os::arceos::modules::ax_hal::time::monotonic_time_nanos()
     }
 
-    fn register_timer(deadline_nanos: u64, callback: X86TimerCallback) -> Option<usize> {
-        Some(crate::timer::register_timer(
-            deadline_nanos,
-            Box::new(move |deadline: Duration| callback(deadline.as_nanos() as u64)),
-        ))
+    fn register_timer(
+        deadline_nanos: u64,
+        mut callback: X86TimerCallback,
+    ) -> X86VlapicResult<Self::TimerHandle> {
+        default_host()
+            .register_restartable_timer(
+                Duration::from_nanos(deadline_nanos),
+                Box::new(move |now| match callback(now.as_nanos() as u64) {
+                    X86TimerAction::Complete => HostTimerAction::Complete,
+                    X86TimerAction::Rearm(deadline) => {
+                        HostTimerAction::Rearm(Duration::from_nanos(deadline))
+                    }
+                }),
+            )
+            .map_err(|_| X86VlapicError::TimerUnavailable)
     }
 
-    fn cancel_timer(token: usize) {
-        crate::timer::cancel_timer(token);
+    fn cancel_timer(handle: Self::TimerHandle) -> X86VlapicResult {
+        default_host()
+            .cancel_timer(handle)
+            .map(|_| ())
+            .map_err(|_| X86VlapicError::TimerUnavailable)
     }
 
     fn current_vm_id() -> X86VmId {
@@ -400,6 +421,7 @@ impl X86HostOps for AxvmX86HostOps {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct AxvmX86Vcpu(X86Vcpu<AxvmX86HostOps>);
 
 impl AxvmX86Vcpu {
@@ -811,9 +833,9 @@ impl DeviceModel for X86PitModel {
         let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new_for_vcpu(
             self.vm_id, 0,
         ));
-        let service: Arc<dyn X86PitDeviceOps> = pit.clone();
-        DeviceBundle::from_registration(DeviceRegistration::Device(pit))
-            .with_service::<X86PitServiceKey>(service)
+        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
+            pit,
+        )))
     }
 }
 
@@ -916,6 +938,7 @@ fn x86_error_to_backend(err: X86VcpuError) -> BackendError {
         X86VcpuError::BadState => BackendError::InvalidState,
         X86VcpuError::NoMemory => BackendError::OutOfMemory,
         X86VcpuError::ResourceBusy => BackendError::ResourceBusy,
+        X86VcpuError::TimerUnavailable => BackendError::InvalidState,
     }
 }
 

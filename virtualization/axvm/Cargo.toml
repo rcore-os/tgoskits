@@ -46,7 +46,6 @@ ax-std = { workspace = true, default-features = false, features = [
     "hv",
     "ipi",
 ] }
-ax-timer-list = { workspace = true }
 irq-framework = { workspace = true }
 ax-api = { workspace = true, optional = true }
 # System dependent modules provided by ArceOS-Hypervisor.

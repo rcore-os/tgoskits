@@ -15,8 +15,8 @@ pub(crate) mod sysreg;
 mod types;
 
 pub(crate) use capabilities::{
-    BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform,
-    minimum_recorded_target_cpu_capability, unsupported_target_cpu_capability,
+    BootImagePlatform, GuestBootPlatform, MachinePlatform, minimum_recorded_target_cpu_capability,
+    unsupported_target_cpu_capability,
 };
 pub(crate) use exit::{handle_hypercall, handle_mmio_read, handle_mmio_write};
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
@@ -30,7 +30,7 @@ pub(crate) use types::{BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit
 /// abilities remain separate traits and are implemented only by architectures
 /// that actually provide them.
 pub(crate) trait Architecture:
-    ArchOps + MachinePlatform + GuestBootPlatform + BootImagePlatform + HostTimePlatform
+    ArchOps + MachinePlatform + GuestBootPlatform + BootImagePlatform
 {
     fn run_vcpu(
         vm: &crate::AxVMRef,

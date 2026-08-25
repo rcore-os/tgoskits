@@ -121,10 +121,7 @@ pub(crate) fn finish(
         DeferredRunWork::ExternalInterrupt { vector } => {
             crate::architecture::exit::finish_external_interrupt(vector);
         }
-        DeferredRunWork::PreemptionTimer => {
-            crate::timer::check_events();
-            super::irq::inject_due_pit_irq0(vm, vcpu);
-        }
+        DeferredRunWork::PreemptionTimer => {}
         DeferredRunWork::InterruptEnd { vector } => {
             if let Some(vector) = vector {
                 super::irq::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);

@@ -1810,11 +1810,19 @@ fn enable_virtual_interrupt_masking_control(control: &mut super::vmcb::VmcbContr
 
 impl<H: X86HostOps> Debug for SvmVcpu<H> {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        let state = unsafe {
+            // SAFETY: the VMCB is owned by this vCPU for its complete lifetime.
+            &self.vmcb.as_vmcb_ref().state
+        };
+        let rflags = state.rflags.get();
         f.debug_struct("SvmVcpu")
             .field("entry", &self.entry)
             .field("npt_root", &self.npt_root)
             .field("vmcb", &self.vmcb.phys_addr())
             .field("launched", &self.launched)
+            .field("rip", &state.rip.get())
+            .field("rflags", &rflags)
+            .field("rflags_if", &(rflags & RFlags::INTERRUPT_FLAG.bits() != 0))
             .finish()
     }
 }

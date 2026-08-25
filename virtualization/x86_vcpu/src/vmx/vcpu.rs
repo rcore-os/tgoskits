@@ -1820,11 +1820,16 @@ fn get_tr_base(tr: SegmentSelector, gdt: &DescriptorTablePointer<u64>) -> u64 {
 impl<H: X86HostOps> Debug for VmxVcpu<H> {
     fn fmt(&self, f: &mut Formatter) -> Result {
         (|| -> X86VcpuResult<Result> {
+            let rflags = VmcsGuestNW::RFLAGS.read()?;
             Ok(f.debug_struct("VmxVcpu")
                 .field("guest_regs", &self.guest_regs)
                 .field("rip", &VmcsGuestNW::RIP.read()?)
                 .field("rsp", &VmcsGuestNW::RSP.read()?)
-                .field("rflags", &VmcsGuestNW::RFLAGS.read()?)
+                .field("rflags", &rflags)
+                .field(
+                    "rflags_if",
+                    &(rflags & RFlags::INTERRUPT_FLAG.bits() as usize != 0),
+                )
                 .field("cr0", &VmcsGuestNW::CR0.read()?)
                 .field("cr3", &VmcsGuestNW::CR3.read()?)
                 .field("cr4", &VmcsGuestNW::CR4.read()?)

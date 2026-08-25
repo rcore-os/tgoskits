@@ -15,16 +15,19 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{
     marker::PhantomData,
-    sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
 use crate::{
-    X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
+    X86TimerAction, X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
     consts::RESET_LVT_REG,
     host::{self, X86VlapicHostOps},
     regs::lvt::{
         LVT_TIMER::{self, TimerMode::Value as TimerMode},
         LvtTimerRegisterLocal,
+    },
+    timer_registration::{
+        TimerRegistration, limit_periodic_timer_period_ns, restart_periodic_deadline_ns,
     },
 };
 
@@ -65,18 +68,14 @@ pub struct ApicTimer<H: X86VlapicHostOps> {
 
     // internal states
     divide_shift: u8,
-    last_start_ticks: u64,
-    deadline_ns: u64,
 
-    // temporary fields untils we find a permanent place for apic and its timer
-    cancel_token: Option<usize>,
     where_am_i: (X86VmId, X86VcpuId), // (vm_id, vcpu_id)
-    shared: Arc<ApicTimerShared>,
+    shared: Arc<ApicTimerShared<H>>,
     _host: PhantomData<fn() -> H>,
 }
 
-struct ApicTimerShared {
-    generation: AtomicUsize,
+struct ApicTimerShared<H: X86VlapicHostOps> {
+    registration: Arc<TimerRegistration<H>>,
     lvt_timer_register: AtomicU32,
     interval_ns: AtomicU64,
     deadline_ns: AtomicU64,
@@ -90,12 +89,9 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
             divide_configuration_register: 0,                              // divide by 2
 
             divide_shift: 1, /* as `divide_configuration_register` is 0, the shift is 1 (divide by 2) */
-            last_start_ticks: 0,
-            deadline_ns: 0,
-            cancel_token: None,
             where_am_i: (vm_id, vcpu_id),
             shared: Arc::new(ApicTimerShared {
-                generation: AtomicUsize::new(0),
+                registration: Arc::new(TimerRegistration::new()),
                 lvt_timer_register: AtomicU32::new(RESET_LVT_REG),
                 interval_ns: AtomicU64::new(0),
                 deadline_ns: AtomicU64::new(0),
@@ -103,22 +99,6 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
             _host: PhantomData,
         }
     }
-
-    // /// Check if an interrupt generated. if yes, update it's states.
-    // pub fn check_interrupt(&mut self) -> bool {
-    //     if self.deadline_ns == 0 {
-    //         false
-    //     } else if H::current_time_nanos() >= self.deadline_ns {
-    //         if self.is_periodic() {
-    //             self.deadline_ns += self.interval_ns();
-    //         } else {
-    //             self.deadline_ns = 0;
-    //         }
-    //         !self.is_masked()
-    //     } else {
-    //         false
-    //     }
-    // }
 
     #[allow(dead_code)]
     pub fn read_lvt(&self) -> u32 {
@@ -226,7 +206,7 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
     /// Check whether the timer is started.
     pub fn is_started(&self) -> bool {
         // these two conditions are equivalent actually, we check both for clarity and robustness
-        self.initial_count_register > 0 && self.cancel_token.is_some()
+        self.initial_count_register > 0 && self.shared.registration.is_armed()
     }
 
     /// Restart the timer. Will not start the timer if it is not started.
@@ -248,157 +228,92 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
         let current_ns = host::current_time_nanos::<H>();
         let interval_ticks = (self.initial_count_register as u64) << self.divide_shift;
         let interval_ns = interval_ticks / APIC_TIMER_TICKS_PER_NANO;
-        let deadline_ns = current_ns + interval_ns;
+        let interval_ns = if self.is_periodic() {
+            limit_periodic_timer_period_ns(interval_ns)
+        } else {
+            interval_ns
+        };
+        let deadline_ns = current_ns.saturating_add(interval_ns);
         let (vm_id, vcpu_id) = self.where_am_i;
-        let generation = self.next_generation();
 
-        self.last_start_ticks = current_ns;
-        self.deadline_ns = deadline_ns;
         self.shared
             .interval_ns
             .store(interval_ns, Ordering::Release);
         self.shared
             .deadline_ns
-            .store(self.deadline_ns, Ordering::Release);
+            .store(deadline_ns, Ordering::Release);
 
-        self.cancel_token = Some(schedule_apic_timer::<H>(
+        schedule_apic_timer::<H>(
             current_ns.saturating_add(interval_ns),
             Arc::clone(&self.shared),
-            generation,
             vm_id,
             vcpu_id,
-        )?);
-
-        Ok(())
+        )
     }
 
     pub fn stop_timer(&mut self) -> X86VlapicResult {
-        self.retire_timer();
-        Ok(())
+        // TODO: maybe disable irq here?
+        self.shared.interval_ns.store(0, Ordering::Release);
+        self.shared.deadline_ns.store(0, Ordering::Release);
+
+        self.shared.registration.invalidate_and_cancel()
     }
 
     /// Whether the timer mode is periodic.
     pub fn is_periodic(&self) -> bool {
         self.timer_mode() == TimerMode::Periodic
     }
-
-    fn retire_timer(&mut self) {
-        // TODO: maybe disable irq here?
-        self.next_generation();
-        self.last_start_ticks = 0;
-        self.deadline_ns = 0;
-        self.shared.interval_ns.store(0, Ordering::Release);
-        self.shared.deadline_ns.store(0, Ordering::Release);
-
-        if let Some(token) = self.cancel_token.take() {
-            host::cancel_timer::<H>(token);
-        }
-    }
-
-    fn next_generation(&self) -> usize {
-        self.shared.generation.fetch_add(1, Ordering::AcqRel) + 1
-    }
-
-    // /// Set LVT Timer Register.
-    // pub fn set_lvt_timer(&mut self, bits: u32) -> RvmResult {
-    //     let timer_mode = bits.get_bits(17..19);
-    //     if timer_mode == TimerMode::TscDeadline as _ {
-    //         return rvm_err!(Unsupported); // TSC deadline mode was not supported
-    //     } else if timer_mode == 0b11 {
-    //         return rvm_err!(InvalidParam); // reserved
-    //     }
-    //     self.lvt_timer_bits = bits;
-    //     self.start_timer();
-    //     Ok(())
-    // }
-
-    // /// Set Initial Count Register.
-    // pub fn set_initial_count(&mut self, initial: u32) -> RvmResult {
-    //     self.initial_count = initial;
-    //     self.start_timer();
-    //     Ok(())
-    // }
-
-    // /// Set Divide Configuration Register.
-    // pub fn set_divide(&mut self, dcr: u32) -> RvmResult {
-    //     let shift = (dcr & 0b11) | ((dcr & 0b1000) >> 1);
-    //     self.divide_shift = (shift + 1) as u8 & 0b111;
-    //     self.start_timer();
-    //     Ok(())
-    // }
-
-    // const fn interval_ns(&self) -> u64 {
-    //     (self.initial_count as u64 * APIC_CYCLE_NANOS) << self.divide_shift
-    // }
-
-    // fn start_timer(&mut self) {
-    //     if self.initial_count != 0 {
-    //         self.last_start_cycle = H::current_time_nanos();
-    //         self.deadline_ns = self.last_start_cycle + self.interval_ns();
-    //     } else {
-    //         self.deadline_ns = 0;
-    //     }
-    // }
 }
 
 impl<H: X86VlapicHostOps> Drop for ApicTimer<H> {
     fn drop(&mut self) {
-        self.retire_timer();
+        self.shared.interval_ns.store(0, Ordering::Release);
+        self.shared.deadline_ns.store(0, Ordering::Release);
+        if let Err(error) = self.shared.registration.invalidate_and_cancel() {
+            log::warn!("failed to cancel x86 APIC timer during teardown: {error:?}");
+        }
     }
 }
 
 fn schedule_apic_timer<H>(
     deadline_nanos: u64,
-    shared: Arc<ApicTimerShared>,
-    generation: usize,
+    shared: Arc<ApicTimerShared<H>>,
     vm_id: X86VmId,
     vcpu_id: X86VcpuId,
-) -> X86VlapicResult<usize>
+) -> X86VlapicResult
 where
     H: X86VlapicHostOps,
 {
-    host::register_timer::<H>(
+    let callback_shared = Arc::clone(&shared);
+    shared.registration.register(
         deadline_nanos,
         Box::new(move |_| {
-            if shared.generation.load(Ordering::Acquire) != generation {
-                return;
-            }
-
-            let lvt = shared.lvt_timer_register.load(Ordering::Acquire);
+            let lvt = callback_shared.lvt_timer_register.load(Ordering::Acquire);
             let vector = (lvt & 0xff) as u8;
             let masked = (lvt & LVT_TIMER::Mask::SET.mask()) != 0;
             let mode = (lvt & LVT_TIMER::TimerMode::SET.mask()) >> 17;
-
             if !masked {
                 let _ = host::inject_interrupt::<H>(vm_id, vcpu_id, vector);
             }
 
-            if mode == TimerMode::Periodic as u32
-                && shared.generation.load(Ordering::Acquire) == generation
-            {
-                let interval_ns = shared.interval_ns.load(Ordering::Acquire);
+            if mode == TimerMode::Periodic as u32 {
+                let interval_ns = callback_shared.interval_ns.load(Ordering::Acquire);
                 if interval_ns != 0 {
-                    let old_deadline = shared.deadline_ns.load(Ordering::Acquire);
-                    let next_deadline_ns = next_periodic_deadline_ns(
+                    let old_deadline = callback_shared.deadline_ns.load(Ordering::Acquire);
+                    let next_deadline_ns = restart_periodic_deadline_ns(
                         old_deadline,
                         interval_ns,
                         host::current_time_nanos::<H>(),
                     );
-                    shared
+                    callback_shared
                         .deadline_ns
                         .store(next_deadline_ns, Ordering::Release);
-                    let _ = schedule_apic_timer::<H>(
-                        next_deadline_ns,
-                        shared,
-                        generation,
-                        vm_id,
-                        vcpu_id,
-                    );
+                    return X86TimerAction::Rearm(next_deadline_ns);
                 }
             }
+            X86TimerAction::Complete
         }),
     )
-    .ok_or(X86VlapicError::NoMemory)
 }
 
 fn next_periodic_deadline_ns(deadline_ns: u64, interval_ns: u64, now_ns: u64) -> u64 {
@@ -412,21 +327,95 @@ fn next_periodic_deadline_ns(deadline_ns: u64, interval_ns: u64, now_ns: u64) ->
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    extern crate std;
 
+    use self::std::{
+        sync::{Arc, Condvar, Mutex, mpsc},
+        thread,
+        time::Duration,
+        vec::Vec,
+    };
     use crate::{
-        X86HostPhysAddr, X86HostVirtAddr, X86InterruptVector, X86TimerCallback, X86VcpuId,
-        X86VlapicHostOps, X86VlapicResult, X86VmId, lock::SpinMutex,
+        X86HostPhysAddr, X86HostVirtAddr, X86InterruptVector, X86TimerAction, X86TimerCallback,
+        X86VcpuId, X86VlapicHostOps, X86VlapicResult, X86VmId,
         regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode, timer::ApicTimer,
     };
 
-    static NEXT_TIMER_TOKEN: AtomicUsize = AtomicUsize::new(1);
-    static ACTIVE_TIMERS: SpinMutex<Vec<(usize, X86TimerCallback)>> = SpinMutex::new(Vec::new());
-
     struct DummyHost;
 
+    struct TestTimerState {
+        callbacks: Vec<Option<X86TimerCallback>>,
+        cancelled: Vec<usize>,
+        block_injection: bool,
+        injection_started: bool,
+        allow_injection: bool,
+    }
+
+    static TEST_TIMER_STATE: Mutex<TestTimerState> = Mutex::new(TestTimerState {
+        callbacks: Vec::new(),
+        cancelled: Vec::new(),
+        block_injection: false,
+        injection_started: false,
+        allow_injection: false,
+    });
+    static TEST_TIMER_EVENT: Condvar = Condvar::new();
+    static TEST_TIMER_SERIAL: Mutex<()> = Mutex::new(());
+
+    struct TimerHost;
+
+    impl TimerHost {
+        fn reset() {
+            let mut state = TEST_TIMER_STATE.lock().unwrap();
+            state.callbacks.clear();
+            state.cancelled.clear();
+            state.block_injection = false;
+            state.injection_started = false;
+            state.allow_injection = false;
+        }
+
+        fn fire(token: usize, now_nanos: u64) {
+            let mut callback = {
+                TEST_TIMER_STATE.lock().unwrap().callbacks[token - 1]
+                    .take()
+                    .expect("test timer callback must remain registered")
+            };
+            if matches!(callback(now_nanos), X86TimerAction::Rearm(_)) {
+                TEST_TIMER_STATE.lock().unwrap().callbacks[token - 1] = Some(callback);
+            }
+        }
+
+        fn cancelled() -> Vec<usize> {
+            TEST_TIMER_STATE.lock().unwrap().cancelled.clone()
+        }
+
+        fn registration_count() -> usize {
+            TEST_TIMER_STATE.lock().unwrap().callbacks.len()
+        }
+
+        fn block_injection() {
+            let mut state = TEST_TIMER_STATE.lock().unwrap();
+            state.block_injection = true;
+            state.injection_started = false;
+            state.allow_injection = false;
+        }
+
+        fn wait_for_injection() {
+            let mut state = TEST_TIMER_STATE.lock().unwrap();
+            while !state.injection_started {
+                state = TEST_TIMER_EVENT.wait(state).unwrap();
+            }
+        }
+
+        fn release_injection() {
+            let mut state = TEST_TIMER_STATE.lock().unwrap();
+            state.allow_injection = true;
+            TEST_TIMER_EVENT.notify_all();
+        }
+    }
+
     impl X86VlapicHostOps for DummyHost {
+        type TimerHandle = usize;
+
         fn alloc_frame() -> Option<X86HostPhysAddr> {
             None
         }
@@ -445,20 +434,15 @@ mod tests {
             0
         }
 
-        fn register_timer(_deadline_nanos: u64, callback: X86TimerCallback) -> Option<usize> {
-            let token = NEXT_TIMER_TOKEN.fetch_add(1, Ordering::Relaxed);
-            ACTIVE_TIMERS.lock().push((token, callback));
-            Some(token)
+        fn register_timer(
+            _deadline_nanos: u64,
+            _callback: X86TimerCallback,
+        ) -> X86VlapicResult<Self::TimerHandle> {
+            Err(crate::X86VlapicError::TimerUnavailable)
         }
 
-        fn cancel_timer(token: usize) {
-            let mut timers = ACTIVE_TIMERS.lock();
-            if let Some(index) = timers
-                .iter()
-                .position(|(active_token, _)| *active_token == token)
-            {
-                let _ = timers.swap_remove(index);
-            }
+        fn cancel_timer(_handle: Self::TimerHandle) -> X86VlapicResult {
+            Ok(())
         }
 
         fn current_vm_id() -> X86VmId {
@@ -482,6 +466,76 @@ mod tests {
             _vcpu_id: X86VcpuId,
             _vector: X86InterruptVector,
         ) -> X86VlapicResult {
+            Ok(())
+        }
+    }
+
+    impl X86VlapicHostOps for TimerHost {
+        type TimerHandle = usize;
+
+        fn alloc_frame() -> Option<X86HostPhysAddr> {
+            None
+        }
+
+        fn dealloc_frame(_paddr: X86HostPhysAddr) {}
+
+        fn phys_to_virt(paddr: X86HostPhysAddr) -> X86HostVirtAddr {
+            X86HostVirtAddr::from_usize(paddr.as_usize())
+        }
+
+        fn virt_to_phys(vaddr: X86HostVirtAddr) -> X86HostPhysAddr {
+            X86HostPhysAddr::from_usize(vaddr.as_usize())
+        }
+
+        fn current_time_nanos() -> u64 {
+            0
+        }
+
+        fn register_timer(
+            _deadline_nanos: u64,
+            callback: X86TimerCallback,
+        ) -> X86VlapicResult<Self::TimerHandle> {
+            let mut state = TEST_TIMER_STATE.lock().unwrap();
+            state.callbacks.push(Some(callback));
+            Ok(state.callbacks.len())
+        }
+
+        fn cancel_timer(token: Self::TimerHandle) -> X86VlapicResult {
+            let mut state = TEST_TIMER_STATE.lock().unwrap();
+            state.cancelled.push(token);
+            state.callbacks[token - 1].take();
+            Ok(())
+        }
+
+        fn current_vm_id() -> X86VmId {
+            0
+        }
+
+        fn current_vm_vcpu_num() -> usize {
+            1
+        }
+
+        fn current_vm_active_vcpus() -> usize {
+            1
+        }
+
+        fn active_vcpus(_vm_id: X86VmId) -> Option<usize> {
+            Some(1)
+        }
+
+        fn inject_interrupt(
+            _vm_id: X86VmId,
+            _vcpu_id: X86VcpuId,
+            _vector: X86InterruptVector,
+        ) -> X86VlapicResult {
+            let mut state = TEST_TIMER_STATE.lock().unwrap();
+            if state.block_injection {
+                state.injection_started = true;
+                TEST_TIMER_EVENT.notify_all();
+                while !state.allow_injection {
+                    state = TEST_TIMER_EVENT.wait(state).unwrap();
+                }
+            }
             Ok(())
         }
     }
@@ -589,16 +643,57 @@ mod tests {
     }
 
     #[test]
-    fn dropping_started_timer_cancels_host_registration() {
-        NEXT_TIMER_TOKEN.store(1, Ordering::Relaxed);
-        ACTIVE_TIMERS.lock().clear();
-
-        let mut timer = ApicTimer::<DummyHost>::new(1, 0);
+    fn periodic_timer_reuses_one_host_registration_until_stopped() {
+        let _serial = TEST_TIMER_SERIAL.lock().unwrap();
+        TimerHost::reset();
+        let mut timer = ApicTimer::<TimerHost>::new(1, 0);
+        timer.write_lvt(0x20040).unwrap();
         timer.write_icr(1).unwrap();
-        assert_eq!(ACTIVE_TIMERS.lock().len(), 1);
 
-        drop(timer);
+        TimerHost::fire(1, 2);
+        assert_eq!(TimerHost::registration_count(), 1);
+        timer.write_icr(0).unwrap();
 
-        assert!(ACTIVE_TIMERS.lock().is_empty());
+        assert_eq!(TimerHost::cancelled(), self::std::vec![1]);
+    }
+
+    #[test]
+    fn stopping_timer_waits_for_a_claimed_callback() {
+        let _serial = TEST_TIMER_SERIAL.lock().unwrap();
+        TimerHost::reset();
+        TimerHost::block_injection();
+        let timer = Arc::new(Mutex::new(ApicTimer::<TimerHost>::new(1, 0)));
+        {
+            let mut timer = timer.lock().unwrap();
+            timer.write_lvt(0x20040).unwrap();
+            timer.write_icr(1).unwrap();
+        }
+
+        let firing = thread::spawn(|| TimerHost::fire(1, 2));
+        TimerHost::wait_for_injection();
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let cancelling_timer = Arc::clone(&timer);
+        let cancelling = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = cancelling_timer.lock().unwrap().write_icr(0);
+            done_tx.send(result).unwrap();
+        });
+        started_rx.recv().unwrap();
+        let returned_while_callback_was_running =
+            done_rx.recv_timeout(Duration::from_millis(100)).ok();
+
+        TimerHost::release_injection();
+        firing.join().unwrap();
+        let cancellation = returned_while_callback_was_running
+            .unwrap_or_else(|| done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        cancelling.join().unwrap();
+
+        assert!(
+            returned_while_callback_was_running.is_none(),
+            "timer stop returned before its claimed callback completed"
+        );
+        cancellation.unwrap();
     }
 }

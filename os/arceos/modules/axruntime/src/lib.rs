@@ -50,6 +50,8 @@ mod stack_protector;
 #[cfg(feature = "smp")]
 mod mp;
 
+#[cfg(feature = "irq")]
+mod clock_event;
 #[cfg(feature = "paging")]
 mod kernel_mapping;
 mod klib;
@@ -509,6 +511,10 @@ fn periodic_interval_nanos() -> u64 {
 static NEXT_PERIODIC_DEADLINE_NANOS: u64 = 0;
 
 #[cfg(feature = "irq")]
+#[ax_percpu::def_percpu]
+static LOCAL_CLOCK_EVENT: clock_event::LocalClockEvent = clock_event::LocalClockEvent::offline();
+
+#[cfg(feature = "irq")]
 fn with_periodic_deadline<R>(
     operation: impl for<'scope> FnOnce(&ax_percpu::CpuPin<'scope>) -> R,
 ) -> R {
@@ -520,14 +526,37 @@ fn with_periodic_deadline<R>(
 }
 
 #[cfg(feature = "irq")]
+fn with_local_clock_event<R>(
+    operation: impl for<'exclusive> FnOnce(&ax_percpu::ExclusiveCpu<'exclusive>) -> R,
+) -> R {
+    // SAFETY: callers exclude migration and local IRQ re-entry for the whole
+    // transaction. The per-CPU area is installed before runtime entry.
+    unsafe { ax_percpu::with_cpu_pin(|pin| ax_percpu::with_exclusive_cpu(pin, operation)) }
+        .unwrap_or_else(|error| panic!("clockevent CPU-local state is invalid: {error}"))
+}
+
+#[cfg(feature = "irq")]
+fn commit_clock_event_action(action: clock_event::ClockEventAction) {
+    if let clock_event::ClockEventAction::Program(deadline) = action {
+        ax_hal::time::set_oneshot_timer(deadline);
+    }
+}
+
+#[cfg(feature = "irq")]
 fn init_timer() {
-    ax_hal::time::enable_timer_irq();
+    #[cfg(feature = "multitask")]
+    ax_task::init_timer_service();
     let now_ns = ax_hal::time::monotonic_time_nanos();
     with_periodic_deadline(|pin| {
         NEXT_PERIODIC_DEADLINE_NANOS
             .write_current(pin, now_ns.saturating_add(periodic_interval_nanos()));
     });
-    program_next_timer();
+    let deadline = next_timer_deadline();
+    let action = with_local_clock_event(|exclusive| {
+        LOCAL_CLOCK_EVENT.with_current_mut(exclusive, |event| event.online(deadline))
+    });
+    commit_clock_event_action(action);
+    ax_hal::time::enable_timer_irq();
 }
 
 #[cfg(feature = "irq")]
@@ -570,18 +599,22 @@ fn select_timer_deadline(
     } else {
         periodic_deadline_nanos
     };
-    // The IRQ path has already given timer callbacks and task events a chance
-    // to consume every expired deadline. A source that still publishes one
-    // must not force the comparator back into an immediate-interrupt loop.
-    let selected_deadline_nanos = task_deadline_nanos
-        .filter(|task_deadline| *task_deadline > now_nanos)
-        .map(|task_deadline| core::cmp::min(periodic_deadline_nanos, task_deadline))
-        .unwrap_or(periodic_deadline_nanos);
+    // A still-expired logical deadline means the bounded IRQ pass left work
+    // behind. Publish a fresh edge so the hardware backend can apply its
+    // minimum delta and continue draining without waiting for the next tick.
+    let selected_deadline_nanos = task_deadline_nanos.map_or(periodic_deadline_nanos, |deadline| {
+        let deadline = if deadline <= now_nanos {
+            now_nanos.saturating_add(1)
+        } else {
+            deadline
+        };
+        core::cmp::min(periodic_deadline_nanos, deadline)
+    });
     (periodic_deadline_nanos, selected_deadline_nanos)
 }
 
 #[cfg(feature = "irq")]
-fn program_next_timer() {
+fn next_timer_deadline() -> u64 {
     let mut periodic_deadline =
         with_periodic_deadline(|pin| NEXT_PERIODIC_DEADLINE_NANOS.read_current(pin));
     if periodic_deadline == 0 {
@@ -611,14 +644,31 @@ fn program_next_timer() {
         });
     }
 
-    ax_hal::time::set_oneshot_timer(deadline);
-    #[cfg(feature = "multitask")]
-    ax_task::note_programmed_timer_deadline_nanos(deadline);
+    deadline
+}
+
+#[cfg(all(feature = "irq", feature = "multitask"))]
+struct ClockEventControlImpl;
+
+#[cfg(all(feature = "irq", feature = "multitask"))]
+#[ax_crate_interface::impl_interface]
+impl ax_task::ClockEventControl for ClockEventControlImpl {
+    fn request_local_reprogram(deadline_nanos: u64) {
+        let _guard = ax_task::sync::PreemptIrqSaveGuard::new();
+        let action = with_local_clock_event(|exclusive| {
+            LOCAL_CLOCK_EVENT
+                .with_current_mut(exclusive, |event| event.request_earlier(deadline_nanos))
+        });
+        commit_clock_event_action(action);
+    }
 }
 
 #[cfg(feature = "irq")]
 fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     let _ = ctx;
+    let token = with_local_clock_event(|exclusive| {
+        LOCAL_CLOCK_EVENT.with_current_mut(exclusive, |event| event.claim_irq())
+    });
     // SAFETY: the local timer IRQ excludes migration and nested local
     // scheduler-clock publication for this complete stamp.
     unsafe { ax_hal::time::scheduler_clock_tick() }
@@ -626,10 +676,24 @@ fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
     #[cfg(feature = "multitask")]
     let scheduler_tick = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
     #[cfg(not(feature = "multitask"))]
-    let _ = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
+    let scheduler_tick = advance_periodic_timer(ax_hal::time::monotonic_time_nanos());
     #[cfg(feature = "multitask")]
     ax_task::on_timer_irq(scheduler_tick);
-    program_next_timer();
+    let deadline = next_timer_deadline();
+    let action = with_local_clock_event(|exclusive| {
+        LOCAL_CLOCK_EVENT.with_current_mut(exclusive, |event| match token {
+            Some(token) => event.finish_irq(token, Some(deadline)),
+            None => event.request_earlier(deadline),
+        })
+    });
+    trace!(
+        "clockevent IRQ CPU {}: token={token:?}, scheduler_tick={}, next_deadline={}, \
+         action={action:?}",
+        ax_hal::percpu::this_cpu_id(),
+        scheduler_tick,
+        deadline
+    );
+    commit_clock_event_action(action);
     ax_hal::irq::IrqReturn::Handled
 }
 
@@ -677,10 +741,10 @@ mod tests {
 
     #[cfg(feature = "irq")]
     #[test]
-    fn timer_programming_does_not_rearm_an_expired_task_deadline() {
+    fn timer_programming_advances_an_expired_budget_limited_deadline() {
         let (periodic, selected) = super::select_timer_deadline(100, Some(1), 150, 10);
         assert_eq!(periodic, 160);
-        assert_eq!(selected, 160);
+        assert_eq!(selected, 151);
     }
 
     #[test]

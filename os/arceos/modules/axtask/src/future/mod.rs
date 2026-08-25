@@ -15,7 +15,7 @@ use crate::{
 mod poll;
 pub use poll::*;
 
-mod time;
+pub(crate) mod time;
 pub use time::*;
 
 /// Errors owned by task waiting and notification operations.

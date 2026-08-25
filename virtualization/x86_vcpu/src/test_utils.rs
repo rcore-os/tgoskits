@@ -17,7 +17,8 @@ pub mod mock {
     use std::sync::Mutex;
 
     use x86_vlapic::{
-        X86InterruptVector, X86TimerCallback, X86VcpuId, X86VlapicHostOps, X86VlapicResult, X86VmId,
+        X86InterruptVector, X86TimerCallback, X86VcpuId, X86VlapicError, X86VlapicHostOps,
+        X86VlapicResult, X86VmId,
     };
 
     use crate::{
@@ -185,6 +186,8 @@ pub mod mock {
     }
 
     impl X86VlapicHostOps for MockMmHal {
+        type TimerHandle = usize;
+
         fn alloc_frame() -> Option<x86_vlapic::X86HostPhysAddr> {
             Self::alloc_frame_usize().map(x86_vlapic::X86HostPhysAddr::from_usize)
         }
@@ -205,11 +208,16 @@ pub mod mock {
             0
         }
 
-        fn register_timer(_deadline_nanos: u64, _callback: X86TimerCallback) -> Option<usize> {
-            None
+        fn register_timer(
+            _deadline_nanos: u64,
+            _callback: X86TimerCallback,
+        ) -> X86VlapicResult<Self::TimerHandle> {
+            Err(X86VlapicError::TimerUnavailable)
         }
 
-        fn cancel_timer(_token: usize) {}
+        fn cancel_timer(_handle: Self::TimerHandle) -> X86VlapicResult {
+            Ok(())
+        }
 
         fn current_vm_id() -> X86VmId {
             0

@@ -6,6 +6,23 @@ use axvm_types::{HostPhysAddr, HostVirtAddr};
 
 use crate::AxVmResult;
 
+/// Action returned by a restartable task-context host timer.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostTimerAction {
+    Complete,
+    Rearm(Duration),
+}
+
+/// Action returned by an explicitly hard-IRQ-safe host timer.
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostHardTimerAction {
+    Complete,
+    Disarm,
+    Rearm(Duration),
+}
+
 /// Host memory allocation and address translation.
 pub trait HostMemory {
     /// Allocate one 4 KiB host frame.
@@ -35,10 +52,46 @@ pub trait HostMemory {
 pub trait HostTime {
     /// Read monotonic host time.
     fn monotonic_time(&self) -> Duration;
+}
 
-    /// Publish an earlier deadline to the host's shared timer arbiter.
-    #[cfg(not(test))]
-    fn request_timer_deadline(&self, deadline_ns: u64);
+/// Typed host deadline capability used by AxVM architectural and device timers.
+pub trait HostTimer {
+    type TimerHandle: Copy + Send + Sync + 'static;
+
+    fn register_timer(
+        &self,
+        deadline: Duration,
+        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+    ) -> AxVmResult<Self::TimerHandle>;
+
+    #[cfg(target_arch = "x86_64")]
+    fn register_restartable_timer(
+        &self,
+        deadline: Duration,
+        callback: Box<dyn FnMut(Duration) -> HostTimerAction + Send + 'static>,
+    ) -> AxVmResult<Self::TimerHandle>;
+
+    /// Registers one stable callback that may run in hard IRQ context.
+    ///
+    /// # Safety
+    ///
+    /// The callback must be bounded, allocation-free, non-sleeping, and use
+    /// only IRQ-safe pre-bound capabilities. It may not perform destruction or
+    /// registry lookup.
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn register_hard_restartable_timer(
+        &self,
+        deadline: Duration,
+        callback: Box<dyn FnMut(Duration) -> HostHardTimerAction + Send + 'static>,
+    ) -> AxVmResult<Self::TimerHandle>;
+
+    #[cfg(target_arch = "aarch64")]
+    fn arm_hard_timer(&self, handle: Self::TimerHandle, deadline: Duration) -> AxVmResult;
+
+    #[cfg(target_arch = "aarch64")]
+    fn disarm_hard_timer(&self, handle: Self::TimerHandle) -> AxVmResult;
+
+    fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<bool>;
 }
 
 /// Host CPU topology and affinity operations.

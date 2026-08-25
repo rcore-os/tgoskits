@@ -1,6 +1,9 @@
 //! Runtime interface over the selected Intel VMX or AMD SVM implementation.
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::{
+    fmt,
+    sync::atomic::{AtomicU8, Ordering},
+};
 
 use raw_cpuid::CpuId;
 
@@ -122,6 +125,15 @@ pub struct X86Vcpu<H: X86HostOps> {
 enum X86VcpuInner<H: X86HostOps> {
     Vmx(VmxVcpu<H>),
     Svm(SvmVcpu<H>),
+}
+
+impl<H: X86HostOps> fmt::Debug for X86Vcpu<H> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.inner {
+            X86VcpuInner::Vmx(vcpu) => vcpu.fmt(formatter),
+            X86VcpuInner::Svm(vcpu) => vcpu.fmt(formatter),
+        }
+    }
 }
 
 macro_rules! dispatch_vcpu {

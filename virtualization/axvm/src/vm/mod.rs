@@ -24,6 +24,7 @@ use std::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
+    time::Duration,
     vec::Vec,
 };
 
@@ -36,14 +37,28 @@ use axdevice_base::*;
 use axvm_types::*;
 
 use crate::{
-    arch::current::ArchNestedPageTable, architecture::ArchOps, boot::*, config::*, host::paging::*,
-    irq::model::*, layout::*, lifecycle::*, runtime::*, sync::MutexExt, vcpu::*, *,
+    arch::current::ArchNestedPageTable,
+    architecture::ArchOps,
+    boot::*,
+    config::*,
+    host::{HostTimer, paging::*},
+    irq::model::*,
+    layout::*,
+    lifecycle::*,
+    runtime::*,
+    sync::MutexExt,
+    vcpu::*,
+    *,
 };
 
 pub(crate) mod boot;
 pub(crate) mod memory;
 pub(crate) mod prepare;
+#[cfg(any(test, target_arch = "aarch64"))]
+mod timer_wait;
 pub use memory::PreparedMemoryLayout;
+#[cfg(target_arch = "aarch64")]
+pub(crate) use timer_wait::{VcpuTimerWaitGeneration, VcpuTimerWaitToken};
 
 const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
@@ -165,7 +180,9 @@ pub(crate) enum PendingInterrupt {
 
 /// Runtime-only resources owned by Running/Paused/Stopping lifecycle states.
 pub(crate) struct VmRuntimeHandle {
-    wait_queue: crate::WaitQueue,
+    wait_queue: Arc<crate::WaitQueue>,
+    #[cfg(target_arch = "aarch64")]
+    vcpu_timer_wait_queues: IrqSafeMutex<BTreeMap<usize, Arc<crate::WaitQueue>>>,
     notification_generation: AtomicUsize,
     vcpu_task_list: IrqSafeMutex<BTreeMap<usize, crate::AxTaskRef>>,
     cpu_on_start_acks: StdMutex<BTreeMap<usize, Arc<crate::runtime::vcpus::CpuOnStartAck>>>,
@@ -214,10 +231,30 @@ pub(crate) struct VmRuntimeHandle {
     /// absorbed while the vCPU is still running the guest (it never parked, so
     /// it never re-enters either).
     guest_park_count: AtomicU64,
+    /// VM-level count of vCPU wake publications, including blocked-timer wakes.
+    vcpu_wake_count: Arc<AtomicU64>,
 }
 
 pub(crate) struct VcpuEventWaitSnapshot {
     notification_generation: usize,
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) struct VcpuTimerWakeHandle {
+    wait_queue: Arc<crate::WaitQueue>,
+    wake_count: Arc<AtomicU64>,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl VcpuTimerWakeHandle {
+    pub(crate) fn wake_from_irq(&self) {
+        self.wake_count.fetch_add(1, Ordering::Relaxed);
+        self.wait_queue.notify_one_from_irq();
+    }
+
+    pub(crate) fn wait_until(&self, condition: &dyn Fn() -> bool) {
+        self.wait_queue.wait_until(condition);
+    }
 }
 
 pub(crate) fn wait_for_vcpu_event_if_idle(
@@ -226,7 +263,18 @@ pub(crate) fn wait_for_vcpu_event_if_idle(
     vm_running: impl Fn() -> bool,
     wait_until: impl FnOnce(&dyn Fn() -> bool),
 ) {
-    let wake_condition = || !vm_running() || wait_snapshot.has_pending_event(runtime);
+    wait_for_vcpu_event_if_idle_with(runtime, wait_snapshot, vm_running, || false, wait_until);
+}
+
+pub(crate) fn wait_for_vcpu_event_if_idle_with(
+    runtime: &VmRuntimeHandle,
+    wait_snapshot: &VcpuEventWaitSnapshot,
+    vm_running: impl Fn() -> bool,
+    additional_ready: impl Fn() -> bool,
+    wait_until: impl FnOnce(&dyn Fn() -> bool),
+) {
+    let wake_condition =
+        || !vm_running() || wait_snapshot.has_pending_event(runtime) || additional_ready();
     if wake_condition() {
         return;
     }
@@ -290,7 +338,9 @@ fn wait_for_running_vm_quiesce(
 impl VmRuntimeHandle {
     pub(crate) fn new() -> Self {
         Self {
-            wait_queue: crate::WaitQueue::new(),
+            wait_queue: Arc::new(crate::WaitQueue::new()),
+            #[cfg(target_arch = "aarch64")]
+            vcpu_timer_wait_queues: IrqSafeMutex::new(BTreeMap::new()),
             notification_generation: AtomicUsize::new(0),
             vcpu_task_list: IrqSafeMutex::new(BTreeMap::new()),
             cpu_on_start_acks: StdMutex::new(BTreeMap::new()),
@@ -303,6 +353,7 @@ impl VmRuntimeHandle {
             deferred_reset_requested: AtomicBool::new(false),
             guest_entry_count: AtomicU64::new(0),
             guest_park_count: AtomicU64::new(0),
+            vcpu_wake_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -321,6 +372,15 @@ impl VmRuntimeHandle {
             .register_vcpu_task(vcpu_id, vcpu_task.clone());
         vcpu_task_list.insert(vcpu_id, vcpu_task);
         drop(vcpu_task_list);
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            let replaced = self
+                .vcpu_timer_wait_queues
+                .lock()
+                .insert(vcpu_id, Arc::new(crate::WaitQueue::new()));
+            debug_assert!(replaced.is_none());
+        }
 
         self.pending_interrupts.lock().entry(vcpu_id).or_default();
         Ok(())
@@ -369,9 +429,15 @@ impl VmRuntimeHandle {
         self.guest_park_count.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn vcpu_wake_count(&self) -> u64 {
+        self.vcpu_wake_count.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn remove_vcpu_task(&self, vcpu_id: usize) -> Option<crate::AxTaskRef> {
         self.pending_interrupts.lock().remove(&vcpu_id);
         self.irq_dispatcher.unregister_vcpu_task(vcpu_id);
+        #[cfg(target_arch = "aarch64")]
+        self.vcpu_timer_wait_queues.lock().remove(&vcpu_id);
         self.vcpu_task_list.lock().remove(&vcpu_id)
     }
 
@@ -476,6 +542,19 @@ impl VmRuntimeHandle {
         self.wait_queue.wait_until(condition);
     }
 
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn vcpu_timer_wake_handle(&self, vcpu_id: usize) -> VcpuTimerWakeHandle {
+        VcpuTimerWakeHandle {
+            wait_queue: Arc::clone(
+                self.vcpu_timer_wait_queues
+                    .lock()
+                    .get(&vcpu_id)
+                    .expect("a running vCPU must have a registered timer wait queue"),
+            ),
+            wake_count: Arc::clone(&self.vcpu_wake_count),
+        }
+    }
+
     pub(crate) fn notification_generation(&self) -> usize {
         self.notification_generation.load(Ordering::Acquire)
     }
@@ -487,13 +566,23 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn notify_one(&self) {
+        self.vcpu_wake_count.fetch_add(1, Ordering::Relaxed);
         self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_one(false);
+        #[cfg(target_arch = "aarch64")]
+        if let Some(wait_queue) = self.vcpu_timer_wait_queues.lock().get(&0) {
+            wait_queue.notify_one(false);
+        }
     }
 
     pub(crate) fn notify_all(&self) {
+        self.vcpu_wake_count.fetch_add(1, Ordering::Relaxed);
         self.notification_generation.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_all(false);
+        #[cfg(target_arch = "aarch64")]
+        for wait_queue in self.vcpu_timer_wait_queues.lock().values() {
+            wait_queue.notify_all(false);
+        }
     }
 
     /// Publishes pending device work before waking the primary vCPU.
@@ -1080,10 +1169,15 @@ impl TimerAccessPort for AxVmDeviceAccessPorts {
         trace!(
             "VM[{vm_id}] device {device_id:?} scheduled access-scoped timer at {deadline_ns:#x} ns"
         );
-        crate::timer::register_timer(
-            deadline_ns,
-            Box::new(move |_| crate::runtime::vcpus::notify_all_vcpus(vm_id)),
-        );
+        crate::host::default_host()
+            .register_timer(
+                Duration::from_nanos(deadline_ns),
+                Box::new(move |_| crate::runtime::vcpus::notify_all_vcpus(vm_id)),
+            )
+            .map_err(|error| axdevice::DeviceManagerError::InvalidState {
+                operation: "schedule access-scoped device timer",
+                detail: format!("{error}"),
+            })?;
         Ok(())
     }
 }
@@ -1380,6 +1474,18 @@ impl AxVM {
     pub fn guest_park_count(&self) -> u64 {
         self.runtime_handle()
             .map(|runtime| runtime.guest_park_count())
+            .unwrap_or(0)
+    }
+
+    /// Returns the VM-level count of vCPU wake publications.
+    ///
+    /// This includes ordinary runtime notifications and blocked-vCPU timer
+    /// completions. It is diagnostic evidence for a wake attempt, not proof
+    /// that a particular vCPU subsequently re-entered the guest; compare it
+    /// with [`Self::guest_entry_count`] for that distinction.
+    pub fn vcpu_wake_count(&self) -> u64 {
+        self.runtime_handle()
+            .map(|runtime| runtime.vcpu_wake_count())
             .unwrap_or(0)
     }
 
@@ -2533,10 +2639,67 @@ mod tests {
     fn runtime_notification_advances_wake_generation_without_waiters() {
         let runtime = VmRuntimeHandle::new();
         let observed = runtime.notification_generation();
+        let observed_wakes = runtime.vcpu_wake_count();
 
         runtime.notify_one();
 
         assert_ne!(runtime.notification_generation(), observed);
+        assert_eq!(runtime.vcpu_wake_count(), observed_wakes + 1);
+    }
+
+    #[test]
+    fn vcpu_wake_before_park_is_observed_by_the_wait_generation() {
+        let runtime = VmRuntimeHandle::new();
+        let snapshot = runtime.vcpu_event_wait_snapshot();
+        let entered_wait = AtomicBool::new(false);
+
+        runtime.notify_all();
+        wait_for_vcpu_event_if_idle(
+            &runtime,
+            &snapshot,
+            || true,
+            |_| {
+                entered_wait.store(true, Ordering::Relaxed);
+            },
+        );
+
+        assert!(!entered_wait.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn timer_completion_before_park_is_observed_by_the_waiter() {
+        let runtime = VmRuntimeHandle::new();
+        let snapshot = runtime.vcpu_event_wait_snapshot();
+        let completed = AtomicBool::new(true);
+        let entered_wait = AtomicBool::new(false);
+
+        wait_for_vcpu_event_if_idle_with(
+            &runtime,
+            &snapshot,
+            || true,
+            || completed.load(Ordering::Acquire),
+            |_| entered_wait.store(true, Ordering::Relaxed),
+        );
+
+        assert!(!entered_wait.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn timer_completion_at_the_park_boundary_is_rechecked() {
+        let runtime = VmRuntimeHandle::new();
+        let snapshot = runtime.vcpu_event_wait_snapshot();
+        let completed = AtomicBool::new(false);
+
+        wait_for_vcpu_event_if_idle_with(
+            &runtime,
+            &snapshot,
+            || true,
+            || completed.load(Ordering::Acquire),
+            |condition| {
+                completed.store(true, Ordering::Release);
+                assert!(condition());
+            },
+        );
     }
 
     #[test]
