@@ -7,8 +7,6 @@
 //! The OS registers the result through the generic network parts path. Queue,
 //! IRQ and wireless control ownership are split exactly once by the runtime.
 
-use alloc::sync::Arc;
-
 use sdio_host::SdioHost;
 
 use crate::{common::ChipVariant, fdrv::AicWifiNetDev};
@@ -36,11 +34,13 @@ fn validate_queue_irq_variant(chip: ChipVariant) -> Result<(), &'static str> {
 /// this: mapping MMIO and initializing the SDHCI controller. `sdio` must be an
 /// enumerated, ready-to-use host with an unclaimed IRQ source.
 ///
-/// This detects the chip variant, loads firmware, and prepares FDRV, returning
-/// an [`AicWifiNetDev`] ready to register with the network
-/// stack. Call [`crate::set_runtime`] before this. Returns an error string if
-/// the chip is not a recognized AIC8800 or bring-up fails.
-pub fn probe<H: SdioHost + 'static>(mut sdio: H) -> Result<AicWifiNetDev, alloc::string::String> {
+/// This detects the chip variant and returns a device whose firmware/FDRV
+/// startup remains move-only until the network runtime executes it on the
+/// selected queue owner CPU. Call [`crate::set_runtime`] before building the
+/// network runtime. Returns an error if the chip or IRQ contract is invalid.
+pub fn probe<H: SdioHost + 'static>(
+    mut sdio: H,
+) -> Result<AicWifiNetDev<H>, alloc::string::String> {
     let irq_source = sdio
         .take_irq_source()
         .ok_or_else(|| alloc::string::String::from("SDIO host has no unclaimed CARD_INT source"))?;
@@ -63,29 +63,114 @@ pub fn probe<H: SdioHost + 'static>(mut sdio: H) -> Result<AicWifiNetDev, alloc:
     }
     validate_queue_irq_variant(chip).map_err(alloc::string::String::from)?;
 
-    // ---- 固件加载 ----
-    crate::fw::firmware_init(&mut sdio, chip).map_err(|e| {
-        log::error!("[aic8800] firmware init failed: {:?}", e);
-        alloc::format!("firmware init failed: {:?}", e)
-    })?;
-    log::info!("[aic8800] firmware loaded");
-
-    // ---- FDRV 初始化 (owner-CPU queue state, no background tasks) ----
-    let bus = crate::fdrv::init(sdio, chip).map_err(|e| {
-        log::error!("[aic8800] FDRV init failed: {}", e);
-        alloc::format!("FDRV init failed: {}", e)
-    })?;
-
-    // The consumable device splits data, IRQ, general control and Wi-Fi
-    // control ownership in `NetDevice::into_parts`. MAC is read live from the
-    // bus once firmware reports it (after LMAC configuration / AP start).
-    let mac = bus.conn.sta_mac.lock().unwrap_or([0; 6]);
-    Ok(AicWifiNetDev::new(Arc::clone(&bus), chip, mac, irq_source))
+    Ok(AicWifiNetDev::new(sdio, chip, [0; 6], irq_source))
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
+
+    use sdio_host::{SdioIrqSource, SdioIrqStatus, error::SdioError};
+
     use super::*;
+
+    struct ProbeIrqSource;
+
+    impl SdioIrqSource for ProbeIrqSource {
+        fn handle_irq(&mut self) -> SdioIrqStatus {
+            SdioIrqStatus::Spurious
+        }
+    }
+
+    struct ProbeOnlyHost {
+        irq_source_available: bool,
+    }
+
+    impl ProbeOnlyHost {
+        fn unexpected_firmware_io<T>() -> T {
+            panic!("device probe must not execute firmware or FDRV I/O")
+        }
+    }
+
+    impl SdioHost for ProbeOnlyHost {
+        fn init(&mut self) -> Result<(), SdioError> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn mmio_base(&self) -> usize {
+            0
+        }
+
+        fn read_byte(&self, _func: u8, _addr: u32) -> Result<u8, SdioError> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn write_byte(&self, _func: u8, _addr: u32, _val: u8) -> Result<(), SdioError> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn write_byte_read(&self, _func: u8, _addr: u32, _val: u8) -> Result<u8, SdioError> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn read_fifo(&self, _func: u8, _addr: u32, _buf: &mut [u8]) -> Result<(), SdioError> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn read_fifo_inc(&self, _func: u8, _addr: u32, _buf: &mut [u8]) -> Result<(), SdioError> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn write_fifo(&self, _func: u8, _addr: u32, _buf: &[u8]) -> Result<(), SdioError> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn write_fifo_inc(&self, _func: u8, _addr: u32, _buf: &[u8]) -> Result<(), SdioError> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn set_block_size(&self, _func: u8, _size: u16) -> Result<(), SdioError> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn set_clock(&self, _hz: u32) -> Result<(), SdioError> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn enable_func(&self, _func: u8) -> Result<(), SdioError> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn vendor_device_id(&self) -> (u16, u16) {
+            (crate::common::VID_AIC8801, crate::common::DID_AIC8801)
+        }
+
+        fn enable_irq(&self) {
+            Self::unexpected_firmware_io()
+        }
+
+        fn disable_irq(&self) {
+            Self::unexpected_firmware_io()
+        }
+
+        fn card_irq_ctrl(&self) -> Option<alloc::sync::Arc<dyn sdio_host::SdioCardIrq>> {
+            Self::unexpected_firmware_io()
+        }
+
+        fn take_irq_source(&mut self) -> Option<Box<dyn SdioIrqSource>> {
+            core::mem::take(&mut self.irq_source_available)
+                .then(|| Box::new(ProbeIrqSource) as Box<dyn SdioIrqSource>)
+        }
+    }
+
+    #[test]
+    fn probe_only_identifies_the_device_and_extracts_its_irq_source() {
+        let host = ProbeOnlyHost {
+            irq_source_available: true,
+        };
+
+        let _device = probe(host).expect("probe must defer firmware work to the owner CPU");
+    }
 
     #[test]
     fn unvalidated_dc_and_dw_variants_fail_closed() {

@@ -640,6 +640,7 @@ impl NetDevice for GmacNet {
                     inner,
                     irq_state: Arc::clone(&irq_state),
                 }),
+                owner_startup: None,
                 irq_endpoints: vec![NetHardIrqEndpoint::new(
                     IRQ_SOURCE,
                     Box::new(GmacIrqHandler { regs, irq_state }),
@@ -678,6 +679,16 @@ impl NetPollIrqControl for GmacIrqControl {
     fn quiesce(&mut self) -> Result<(), NetError> {
         self.inner.lock_irqsave().regs.disable_irq();
         Ok(())
+    }
+
+    fn shutdown(&mut self) -> Result<(), NetError> {
+        let inner = self.inner.lock_irqsave();
+        inner.regs.disable_irq();
+        inner.regs.stop_tx_rx();
+        inner
+            .regs
+            .reset_dma()
+            .map_err(|_| NetError::DmaShutdownUnconfirmed)
     }
 
     fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError> {

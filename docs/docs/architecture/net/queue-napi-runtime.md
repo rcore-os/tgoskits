@@ -353,14 +353,16 @@ pub struct NetPollGroupParts {
     pub id: NetPollGroupId,
     pub queues: NetQueuePairParts,
     pub irq_control: Box<dyn NetPollIrqControl>,
-    pub irq_endpoints: Vec<NetHardIrqEndpointParts>,
+    pub owner_startup: Option<Box<dyn NetOwnerStartup>>,
+    pub irq_endpoints: Vec<NetHardIrqEndpoint>,
 }
 ```
 
 - queue ID 与 group ID 使用 typed newtype。
 - 当前生产后端全部提供一个 queue-0 group；接口允许多个 group，但本次不启用 virtio/fxmac 硬件多队列。
 - 只有拥有独立 IRQ source 和独立 `rearm_and_check()` 域的硬件队列才能拆成多个 group。
-- `NetPollIrqControl` 只暴露 `quiesce()` 和 `rearm_and_check()`；不提供设备级 enable/disable/query。
+- `NetOwnerStartup` 是 move-only one-shot endpoint，只能由已固定 CPU 的 group worker 在 IRQ 注册但尚未 enable 时执行。AIC 固件和 FDRV 初始化经此边界延后，probe 不再执行 SDIO 数据面 I/O。
+- `NetPollIrqControl` 暴露 `quiesce()`、`shutdown()` 和 `rearm_and_check()`；`shutdown()` 只有在硬件已不能访问 descriptor/token backing 时才能成功，否则 runtime 必须隔离整个 group。
 - hard endpoint 是 move-only owned callback，不保存 queue 或 control 的反向引用。
 
 ### 10.3 平台获取与 IRQ registrar
@@ -431,6 +433,7 @@ sequenceDiagram
     W-->>B: affinity-ready(owner_cpu)
     B->>I: register Fixed(owner_cpu), disabled
     I-->>B: move-only leases with actual CPU
+    B->>W: run owner_startup on owner CPU
     B->>D: initial refill + rearm_and_check
     B->>I: enable registrations
     B->>S: publish complete runtime atomically
@@ -444,10 +447,10 @@ worker 的 `affinity-ready` 不能等价于“task 已创建”。worker 必须�
 
 1. 设置 runtime stopping，拒绝新的 socket/TX/control 请求。
 2. mask 所有已接触的 source，并把 group 置为 `DISABLED`。
-3. disable and synchronize 每个 registration/nested lease，等待 callback 退出。
-4. 精准唤醒 worker；等待 `POLLING` ownership 退出并 join。
-5. 回收 runtime-owned token；设备仍可能拥有的 DMA 放入隔离集合，直到 driver reset/teardown 证明可回收。
-6. 释放 queue、control、source 和 platform device resources。
+3. disable and synchronize 每个 registration/nested lease，等待 callback 退出；同步失败时向所有相关 worker 下发 `QUARANTINE`，lease、callback、queue、control、DMA backing 整体隔离，不能继续执行 driver shutdown 或 free/drop。
+4. 只有 callback 同步成功时才下发 `STOP`；worker 在 owner CPU 执行 `quiesce()` 与 `shutdown()`，退出 `POLLING` 后 join。startup 失败的 worker 发布结果后必须等待 builder 的 `STOP/QUARANTINE` 决策，不能抢先自行释放。
+5. 只有所有 group 的 `shutdown()` 都证明 DMA 已停止时才回收 runtime-owned token；任一 group 无法证明时，完整 executor ownership graph 进入隔离，不能只释放其中的 pool、ring 或 control。
+6. 释放已经证明与硬件断开的 queue、control、source 和 platform device resources。
 7. 丢弃未发布的 service；已发布 runtime 的停止需要独立 shutdown transaction。
 
 回滚过程中不能调用普通 socket waker，也不能把失败设备降级成 polling device。
@@ -507,11 +510,13 @@ AP/STA confirmation 当前依赖 RX task，迁移时必须把它变为 owner exe
 ### 14.6 AIC8800/SDIO
 
 - SDHCI controller IRQ 是 nested source，由 unified runtime 选择 CPU 后注册。
+- probe 只识别 chip variant 并提取 move-only CARD_INT source；固件下载与 FDRV/bus 创建由 `NetOwnerStartup` 在 group owner CPU 上完成。
 - top half 只 mask `CARD_INT` signal、发布 pending/snapshot 并激活本地 group。
 - RX FIFO、TX queue、firmware command completion 和 card-side clear 由 owner executor 推进。
 - 删除 `set_rx_wake`、全局 raw callback、RX/TX kicker 和独立 RX/TX data tasks。
 - 8801 使用 vendor V2 status 规则：`<64` 为 block mode，`>=64` 从 byte-mode length register 取长度；D80/D80X2 使用 V3 queue encoding，并清除 sleep/pending register bit 0 的 software IRQ source。三者的 RX FIFO 均通过 physical function 1 drain。
 - SDHCI rearm 是一个 task-context 原子操作：unmask CARD_INT 后立即读 controller status，若 level 已经挂起则重新 mask 并返回 `WorkPending`，不依赖重新产生 edge。
+- shutdown 在 owner CPU 先 mask CARD_INT，按 variant 清除 chip interrupt-enable register，再禁用 SDHCI interrupt signal；任一步无法确认时整个 executor graph 进入隔离。
 - DC/DW 的 command/FIFO function ownership 与当前本地 vendor 源证据冲突，因此 probe 明确失败；不提供 kicker 或 polling fallback。
 - SDHCI 的 PIO command/data completion 仍是 host transaction 语义，不能误当成 network queue IRQ。
 
@@ -526,7 +531,7 @@ AP/STA confirmation 当前依赖 RX task，迁移时必须把它变为 owner exe
 - IRQ registration/enable/synchronize failure；
 - initial refill/rearm failure；
 - queue stopped/backpressure/submit failure；
-- unsupported driver rearm or DMA ownership contract；
+- unsupported driver rearm、DMA shutdown unconfirmed 或 DMA ownership contract；
 - Wi-Fi variant IRQ semantics unverified。
 
 错误在 ArceOS integration boundary 映射为 `AxError`。不能把 source、CPU 或 buffer ownership 信息只编码在日志字符串中。
@@ -541,6 +546,10 @@ AP/STA confirmation 当前依赖 RX task，迁移时必须把它变为 owner exe
 - 一个 device IRQ 只能激活目标 group，不能改变其他 group 的 schedule/wake 统计。
 - virtio task gate 被占用时，hard endpoint 立即返回 `ProbeDeferred`，测试不允许等待 gate 释放。
 - callback CPU 与 poll CPU 不一致时 topology/registration 必须失败。
+- RX descriptor 报告超出 allocation 的长度时，真实 `RxQueue::reclaim` 只能同步 token 拥有的范围，必须保留原始长度供协议层拒绝并回收。
+- 初始 RX submit 返回 `Retry` 时初始化必须失败，不能发布没有 posted descriptor 的空队列。
+- driver 无法证明 DMA shutdown 时 backing 必须进入隔离，不能执行 Drop。
+- IRQ lease 无法完成 callback synchronize 时 registration 必须进入隔离，不能释放仍可能执行的 action。
 
 同一测试在实现后转绿；不能通过放宽超时或删除断言替代修复。
 
@@ -583,11 +592,12 @@ Loom 或等价穷举模型覆盖：
 当前代码已经完成以下单一边界迁移：
 
 - `rdif-eth`/`rd-net` 使用 consumable parts、move-only DMA token、typed queue/group/source ID 与 split hard/task IRQ endpoint。
-- `NetworkRuntimeBuilder` 在 worker affinity-ready 后以 fixed CPU 注册 disabled IRQ，并在 initial refill/rearm 成功后原子发布 service。
+- `NetworkRuntimeBuilder` 在 worker affinity-ready 后以 fixed CPU 注册 disabled IRQ，依次执行 owner startup、initial refill/rearm，再 enable IRQ 并原子发布 service。
 - E1000、RTL8125、virtio、FXMAC、Loongson GMAC 已迁移到 queue-0 poll group；AIC/SDHCI 已迁移到 nested CARD_INT source 与 owner-CPU control transaction。
+- runtime stop 在 disable/synchronize callback 后由 owner CPU 调用 driver `shutdown()`；同步失败的 callback lease 会隔离，E1000、RTL8125 与 Loongson GMAC 以 reset 证明停止，无法从当前 API 证明停止的 virtio/FXMAC backing 会显式隔离。
 - queue 状态机具备确定性交错模型，Starry grouped case `test-tcp-napi-runtime` 固定真实 TCP/epoll/signal/close 语义。
 - oversized RX frame 的错误路径会先回收 DMA token，再返回 protocol error；对应回归还
-  覆盖 recycle ring 暂满和下一帧继续接收。
+  覆盖真实 queue reclaim 的安全 DMA sync、原始长度保留、recycle ring 暂满和下一帧继续接收。
 - hardware `Retry`/`LinkDown` 在没有 reclaim 进展时完成并 rearm，不会保持 IRQ mask 后
   立即自调度；RTL8125 link-down 因此等待 link-change IRQ 而不是空转。
 - 旧 driver `Interface`、动态 queue、设备级 IRQ 控制、OOB callback、wake-all、设备 fallback 与 AIC kicker 边界已删除。

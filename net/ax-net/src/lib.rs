@@ -183,7 +183,7 @@ fn map_driver_net_error(error: rd_net::NetError) -> NetError {
         rd_net::NetError::NoMemory => NetError::NoMemory,
         rd_net::NetError::LinkDown => NetError::NoSuchDeviceOrAddress,
         rd_net::NetError::InvalidParts => NetError::InvalidData,
-        rd_net::NetError::Stopped => NetError::BadState,
+        rd_net::NetError::Stopped | rd_net::NetError::DmaShutdownUnconfirmed => NetError::BadState,
         rd_net::NetError::Other(_) => NetError::BadState,
     }
 }
@@ -737,9 +737,13 @@ fn protocol_executor_main() {
 mod tests {
     #[test]
     fn idle_queue_executor_never_uses_a_periodic_fallback() {
-        let source = include_str!("queue_runtime.rs");
-        assert!(!source.contains("wait_timeout"));
-        assert!(!source.contains("IDLE_POLL_INTERVAL"));
+        for source in [
+            include_str!("queue_runtime/mod.rs"),
+            include_str!("queue_runtime/executor.rs"),
+        ] {
+            assert!(!source.contains("wait_timeout"));
+            assert!(!source.contains("IDLE_POLL_INTERVAL"));
+        }
     }
 
     #[test]

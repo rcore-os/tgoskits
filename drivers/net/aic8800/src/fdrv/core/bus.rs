@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 use ax_sync::SpinLock as Mutex;
 use rd_net::DmaBuffer;
 
-use crate::{common::SDIOWIFI_INTR_CONFIG_REG, fdrv::core::sdio_transport::SdioTransport};
+use crate::fdrv::core::sdio_transport::SdioTransport;
 
 /// 总线状态
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -154,25 +154,18 @@ impl TxState {
 /// 已注册 STA 的表项:(MAC, sta_idx, 控制端口是否已成功打开, 控制端口重试次数)。
 pub type RegisteredSta = ([u8; 6], u8, bool, u8);
 
-/// AP 模式状态：待处理的关联请求队列。
+/// AP-mode work published by RX and consumed by the queue owner executor.
 ///
-/// RX 线程收到 AssocReq 时把整帧 mpdu 入队(非阻塞)，由独立的 AP worker
-/// 线程取出处理(ME_STA_ADD + Assoc Response)。必须用独立线程，因为
-/// ME_STA_ADD 走 send_cmd 阻塞等 CFM，而 CFM 由 RX 线程处理 —— 在 RX
-/// 线程里 send_cmd 会死锁。
+/// Association and station-removal events are queued without blocking while
+/// RX is drained. The same fixed-CPU executor processes them after the RX step,
+/// where command waits can cooperatively advance command TX/RX confirmations.
 pub struct ApState {
     pub assoc_queue: Mutex<VecDeque<Vec<u8>>>,
-    /// 待从固件 STA 表删除的 sta_idx 队列。deauth/disassoc 在 RX 线程触发,但
-    /// MM_STA_DEL_REQ 走 send_cmd 阻塞等 CFM(CFM 由 RX 线程处理)——在 RX 线程里
-    /// 直接发会死锁,故入队交给 AP worker 线程执行(与 assoc_queue 同理)。
+    /// Station indices awaiting firmware removal by the owner executor.
     pub sta_del_queue: Mutex<VecDeque<u8>>,
-    /// 已注册 STA 的 (MAC, sta_idx, 控制端口是否已成功打开, 控制端口重试次数)。
-    /// - 手机重传 AssocReq 时据此去重:同一 MAC 已注册就不再发 ME_STA_ADD
-    ///   (固件对重复注册不回 CFM,会让 AP worker 阻塞 5 秒超时、连接抖动)。
-    /// - 控制端口标志为 false 时(首次开失败/超时),AP worker 周期对账会主动重试
-    ///   打开(不依赖手机重传 AssocReq),实现自愈,避免数据帧被固件丢弃导致
-    ///   ping 不通;重试次数到上限后放弃,防止已离线 STA 空转。
-    /// - 收到 deauth/disassoc 时移除该 MAC,使重连能完整重新注册。
+    /// Registered `(MAC, station index, control-port-open, retry count)` rows.
+    /// Real AP events drive deduplication and bounded control-port retries; no
+    /// timer or periodic reconciliation task owns this state.
     pub registered_stas: Mutex<Vec<RegisteredSta>>,
 }
 
@@ -230,10 +223,13 @@ impl WifiBus {
     }
 
     /// Quiesces the owner-controlled bus and rejects future work.
-    pub fn shutdown(self: &Arc<Self>) {
+    pub fn shutdown(self: &Arc<Self>) -> Result<(), sdio_host::error::SdioError> {
         *self.state.lock() = BusState::Down;
 
-        let _ = self.transport.write_byte(1, SDIOWIFI_INTR_CONFIG_REG, 0x00);
+        self.transport.mask_card_irq();
+        let chip_irq_result =
+            self.transport
+                .write_byte(1, self.transport.intr_config_reg_addr(), 0x00);
         self.transport.disable_irq();
 
         self.tx.queue.lock().clear();
@@ -245,5 +241,6 @@ impl WifiBus {
         self.tx.ind_queue.lock().clear();
 
         log::debug!("[wifi-bus] shutdown complete");
+        chip_irq_result
     }
 }

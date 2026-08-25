@@ -13,7 +13,7 @@ TGOSKits 的网络能力收敛在 `net/ax-net`。ArceOS 和 StarryOS 直接复�
 | --- | --- | --- |
 | `lib.rs` | public facade，初始化唯一 protocol executor、导出 API | `init_network`, `request_poll`, `reconfigure_wifi` |
 | `poll_runtime.rs` | protocol generation 与唯一 poll owner | `ProtocolPollRuntime`, `PollGeneration` |
-| `queue_runtime.rs` | affinity domain、fixed-CPU queue executor、SPSC、IRQ 生命周期 | `NetworkRuntimeBuilder`, `NetworkQueueRuntime`, `PollGroupState` |
+| `queue_runtime/` | affinity domain、fixed-CPU queue executor、SPSC、IRQ 生命周期 | `NetworkRuntimeBuilder`, `NetworkQueueRuntime`, `PollGroupState` |
 | `config.rs` | 配置与接口信息类型 | `InterfaceId`, `NetworkConfig`, `InterfaceInfo`, `DeviceBinding` |
 | `service.rs` | 控制面 + 协议核心调度 | `Service`, `NetControl`, `DhcpState` |
 | `router.rs` | 路由表、RX 元数据、网卡统计、smoltcp `Device` 适配 | `Router`, `RouteTable`, `RxMetadata`, `NetDevStats` |

@@ -67,7 +67,7 @@ ax_net::init_network(Some(runtime), ports, config);
 
 - 将 runtime 发现的设备消费为 `PreparedNetDevice`，并把 source ID 精确解析为物理 `IrqId`。
 - 将结构化 `NetworkConfig` 交给 `ax-net`，由 `ax-net` 创建 `lo`、Ethernet 接口、路由、DHCP 状态和 DNS registry。
-- 在 worker pin、disabled IRQ registration、initial refill/rearm 和 startup Wi-Fi transaction 全部成功后发布 service。
+- 在 worker pin、disabled IRQ registration、owner startup、initial refill/rearm 和 startup Wi-Fi transaction 全部成功后发布 service。
 
 `parse_network_config()` 当前直接返回 `NetworkConfig::default()`，尚未接入系统配置。因此启动时所有未显式匹配的普通 NIC 都采用 `ax-net` 默认策略：`eth{order}`、metric 100、DHCP、无静态 fallback DNS。该函数是未来接入接口地址/DNS/metric 的预留转换点，不应把它描述成已经生效的配置解析器。
 
@@ -76,7 +76,8 @@ ax_net::init_network(Some(runtime), ports, config);
 `RuntimeNetIrqRegistrar` 只接受显式 `owner_cpu`。每个 action 使用
 `NonReentrant + AutoEnable::No + IrqAffinity::Fixed(owner_cpu)` 注册，并返回记录
 CPU 的 move-only lease。shared `IrqId` affinity 不一致、fixed routing 不可用或
-registration 返回错误时，builder 反向 mask/synchronize、停止 worker 并拒绝发布。
+registration 返回错误时，builder 反向 mask/synchronize 并拒绝发布。同步成功才让固定核
+worker 执行 driver shutdown；同步失败则把 callback lease 与 executor backing 整体隔离。
 
 hard callback 只调用对应 `NetHardIrqEndpoint::handle_irq()`，将
 `Spurious/Schedule/ProbeDeferred` 发布给同 CPU group state。它不进入 smoltcp、不
@@ -94,9 +95,10 @@ ax_net::unix::register_unix_namespace(crate::unix_ns::AxFsUnixNamespace);
 
 ### 2.4 Wi-Fi 与 SoftAP
 
-Wi-Fi 与有线设备走同一个 all-at-once builder。`NetDeviceParts` 中的 owned
-`WifiControl` 绑定该设备首个 poll group 的 owner CPU；startup transaction 只在
-worker pin 和 IRQ enable 完成后执行，service 尚未发布。运行期
+Wi-Fi 与有线设备走同一个 all-at-once builder。AIC probe 只识别 variant 并提取 IRQ
+source，固件与 FDRV 初始化经 `NetOwnerStartup` 在 worker pin、disabled IRQ registration
+之后由 owner CPU 执行。`NetDeviceParts` 中的 owned `WifiControl` 绑定该设备首个 poll
+group 的 owner CPU；startup transaction 只在 IRQ enable 完成后执行，service 尚未发布。运行期
 `reconfigure_wifi(ifname, WifiTransaction)` 进入有界 control queue：owner 先
 quiesce group，在同 CPU 执行 SDIO/MMIO 控制，再 rearm，最后由 protocol owner
 提交 STA DHCP 或 SoftAP 静态地址/DHCP server 状态。启动后不支持新增物理 Wi-Fi。

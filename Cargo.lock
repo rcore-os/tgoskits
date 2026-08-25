@@ -6410,6 +6410,7 @@ dependencies = [
 name = "rd-net"
 version = "0.3.0"
 dependencies = [
+ "ax-sync",
  "dma-api",
  "futures",
  "rdif-eth",

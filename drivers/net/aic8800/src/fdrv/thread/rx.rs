@@ -320,18 +320,18 @@ fn handle_mgmt_frame(bus: &WifiBus, mpdu: &[u8], pkt_len: usize) {
                 send_auth_response(bus, sa);
             }
         }
-        // Assoc/Reassoc Req → 交给 AP worker 线程处理(ME_STA_ADD + Assoc Resp)
+        // Assoc/Reassoc Req → defer command work to the owner executor's AP step.
         0x0 | 0x2 if pkt_len >= 28 => {
             let cap = u16::from_le_bytes([mpdu[24], mpdu[25]]);
             log::debug!("[ap-rx] {} from {:02x?}: cap=0x{:04x}", subtype, sa, cap);
-            // 不能在 RX 线程做 ME_STA_ADD(send_cmd 会死锁)，整帧入队转给 AP worker
+            // Do not issue a blocking command inside the RX drain step.
             bus.ap
                 .assoc_queue
                 .lock()
                 .push_back(mpdu[..pkt_len].to_vec());
         }
         // Deauth(0xC)/Disassoc(0xA):STA 断开。从驱动注册表移除(使重连能完整重新
-        // 注册),并把该 STA 的 sta_idx 入队,交 AP worker 发 MM_STA_DEL_REQ 释放固件
+        // 注册),并把该 STA 的 sta_idx 入队,交 owner executor 发 MM_STA_DEL_REQ 释放固件
         // 槽位。否则固件继续占用旧 idx,下一个 STA 被分到更大 idx,而下行数据帧用全局
         // 单一 sta_idx 路由,非 0 槽位送不达 → 重连后 ping/SSH 不通。
         0xC | 0xA => {

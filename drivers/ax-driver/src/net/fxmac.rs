@@ -133,6 +133,7 @@ impl NetDevice for FxmacNet {
                     hw: Arc::clone(&hw),
                     irq_state: Arc::clone(&irq_state),
                 }),
+                owner_startup: None,
                 irq_endpoints: vec![NetHardIrqEndpoint::new(
                     IRQ_SOURCE,
                     Box::new(FxmacIrqHandler { hw, irq_state }),
@@ -249,6 +250,13 @@ impl NetPollIrqControl for FxmacIrqControl {
         // SAFETY: lifecycle calls are serialized on the group owner CPU.
         unsafe { self.hw.lock_raw() }.device.disable_irq();
         Ok(())
+    }
+
+    fn shutdown(&mut self) -> Result<(), NetError> {
+        // The current FXMAC core exposes no DMA-idle completion proof. Keep
+        // every descriptor and buffer quarantined after masking the source.
+        unsafe { self.hw.lock_raw() }.device.disable_irq();
+        Err(NetError::DmaShutdownUnconfirmed)
     }
 
     fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError> {

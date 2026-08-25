@@ -18,7 +18,7 @@ DMA，协议状态仍由一个固定 CPU executor 串行推进。
 | --- | --- |
 | `drivers/interface/rdif-eth` | portable `NetDeviceParts`、queue/IRQ/control trait、move-only `DmaBuffer` |
 | `drivers/net/rd-net` | 校验 parts、建立 DMA pool、生成 `PreparedNetDevice` |
-| `queue_runtime.rs` | affinity domain、fixed-CPU executor、SPSC、budget、backpressure、IRQ lease |
+| `queue_runtime/` | affinity domain、fixed-CPU executor、SPSC、budget、backpressure、IRQ lease |
 | `poll_runtime.rs` | protocol `requested/completed` generation |
 | `device/ethernet.rs` | Ethernet frame、ARP、neighbor、pending frame |
 | `router.rs` | 多接口 route dispatch、loopback、smoltcp `Device` |
@@ -32,7 +32,7 @@ protocol executor 不借用硬件 queue；调用者也不能直接借用 Wi-Fi S
 portable driver 实现唯一入口：
 
 ```rust
-pub trait NetDevice: DriverGeneric + Send + Sync {
+pub trait NetDevice: DriverGeneric + Send + 'static {
     fn into_parts(self: Box<Self>) -> Result<NetDeviceParts, NetError>;
 }
 
@@ -49,6 +49,7 @@ pub struct NetDeviceParts {
 - typed `NetPollGroupId`；
 - 一个或多个 `NetQueuePairParts`；
 - owner-task 使用的 `NetPollIrqControl`；
+- 可选的 move-only `NetOwnerStartup`；
 - 一个或多个带 `NetIrqSourceId` 的 move-only `NetHardIrqEndpoint`。
 
 只有具有独立 physical source 和独立 rearm 的硬件 queue 才能形成不同 group。当前
@@ -92,8 +93,9 @@ IRQ callback CPU == group poll CPU == owner_cpu
 1. 构造全部 group state、DMA pool、SPSC 和 per-CPU executor。
 2. executor 设置 `AxCpuMask::one_shot(owner_cpu)`，yield 后回报 affinity-ready。
 3. registrar 以 `NonReentrant + AutoEnable::No + Fixed(owner_cpu)` 注册 action。
-4. owner worker initial refill 并执行第一次 `rearm_and_check()`。
-5. enable 全部 registration；startup Wi-Fi transaction 成功后才发布 service。
+4. owner worker 执行 one-shot startup；AIC 固件/FDRV 初始化只允许发生在这里。
+5. owner worker initial refill 并执行第一次 `rearm_and_check()`。
+6. enable 全部 registration；startup Wi-Fi transaction 成功后才发布 service。
 
 shared action affinity 冲突、fixed route 不支持、worker pin 失败或 registration 返回的
 CPU 不一致都会使整个物理网络初始化失败。没有 `Any` affinity、远程 IRQ continuation、
@@ -178,9 +180,10 @@ queue executor 只在 frame/token 到达时调用 `request_poll()`。`ProtocolPo
 
 ## 9. Wi-Fi/SDIO specialization
 
-AIC device parts 把 SDHCI controller source move 到 hard endpoint。top half 只识别并
-mask CARD_INT；owner CPU 负责 FIFO drain、TX、firmware command completion、AP event
-与 rearm。SDHCI task rearm 在 unmask 后立即读 CARD_INT status，若 level 已挂起则重新
+AIC probe 只识别 chip variant 并把 SDHCI controller source move 到 hard endpoint，
+不执行固件/FDRV I/O。owner startup 在固定 CPU 创建 bus；top half 只识别并 mask
+CARD_INT，owner CPU 负责 FIFO drain、TX、firmware command completion、AP event 与
+rearm。SDHCI task rearm 在 unmask 后立即读 CARD_INT status，若 level 已挂起则重新
 mask 并返回 pending。
 
 Wi-Fi startup/reconfigure 使用有界 owner control queue。executor quiesce group 后才
@@ -205,14 +208,17 @@ static/DHCP-server state。
 | RTL8125 | queue 0 RX/TX | status gate/ack/mask | deferred refill、completion、pending status 复查 |
 | FXMAC | queue 0 | status snapshot；gate 竞争 deferred | owner drain/rearm |
 | Loongson GMAC | queue 0 | DMA status snapshot/mask | RX restart、ACK/rearm |
-| AIC/SDHCI | queue 0 | nested CARD_INT mask/status | FIFO/command/TX + controller/chip rearm |
+| AIC/SDHCI | queue 0 | nested CARD_INT mask/status | FIFO/command/TX + controller/chip rearm/shutdown |
 
 ## 11. Lifecycle 与回滚
 
 builder 的失败路径按发布顺序反向执行：拒绝新 Wi-Fi request、disable/synchronize IRQ
-lease、通知 executor stop、join worker、drop/回收 queue token 与 device control parts。
-`NetworkQueueRuntime::Drop` 保持同一顺序。service 只有在 builder 完整成功后进入全局
-`OnceLock`，因此不存在半发布接口。
+lease。同步成功时通知 executor stop，由 owner CPU quiesce 并执行 driver `shutdown()`，
+然后 join；同步失败时发送 `QUARANTINE`，保留完整 callback、executor、control 与
+backing graph，不再并发触碰驱动硬件。
+只有 shutdown 证明硬件已不能访问 backing 时才 drop queue token 与 device parts；无法
+证明时隔离完整 executor ownership graph。`NetworkQueueRuntime::Drop` 保持同一顺序。
+service 只有在 builder 完整成功后进入全局 `OnceLock`，因此不存在半发布接口。
 
 物理设备要求完整 IRQ、fixed affinity、mask/rearm 和 worker pin。无物理 NIC 时可以
 启动 loopback-only；发现物理设备但能力不完整时必须失败，不能把 loopback 成功当作

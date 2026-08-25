@@ -47,7 +47,9 @@ impl E1000 {
         mmio_api::init(mmio_op);
         let mmio = mmio_api::ioremap(bar_addr.into(), bar_size)?;
         let regs = Regs::new(mmio.as_nonnull_ptr());
-        regs.reset();
+        if !regs.reset() {
+            return Err(Error::Timeout);
+        }
         regs.disable_all_irq();
 
         // CTRL.SLU: set link up in software for basic bring-up.
@@ -139,6 +141,7 @@ impl NetDevice for E1000 {
                     rx: Box::new(rx),
                 },
                 irq_control: Box::new(E1000IrqControl { regs, _mmio }),
+                owner_startup: None,
                 irq_endpoints: vec![NetHardIrqEndpoint::new(
                     IRQ_SOURCE0,
                     Box::new(E1000IrqHandler { regs }),
@@ -157,6 +160,14 @@ impl NetPollIrqControl for E1000IrqControl {
     fn quiesce(&mut self) -> core::result::Result<(), NetError> {
         self.regs.disable_all_irq();
         Ok(())
+    }
+
+    fn shutdown(&mut self) -> core::result::Result<(), NetError> {
+        self.regs.disable_all_irq();
+        self.regs
+            .reset()
+            .then_some(())
+            .ok_or(NetError::DmaShutdownUnconfirmed)
     }
 
     fn rearm_and_check(&mut self) -> core::result::Result<NetRearmResult, NetError> {

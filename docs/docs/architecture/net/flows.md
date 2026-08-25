@@ -223,9 +223,9 @@ cooperatively 推进。没有独立 AIC task/kicker。
 reject/complete pending Wi-Fi requests
   -> disable and synchronize all IRQ leases
   -> stop queue executors
-  -> executor quiesce + DISABLED
+  -> owner executor quiesce + driver DMA shutdown proof
   -> join
-  -> drop queues/DMA/control/device resources
+  -> drop proven-safe resources or quarantine the complete group
 ```
 
 builder 任一步失败使用相同反向顺序。service 在 builder 成功前不可见。

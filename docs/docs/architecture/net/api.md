@@ -578,7 +578,7 @@ DNS 行为列表说明解析过程复用临时 smoltcp socket 和统一轮询，
 物理设备边界由 `rdif-eth`/`rd-net` 定义。`NetDevice` 只能消费一次：
 
 ```rust
-pub trait NetDevice: DriverGeneric + Send + Sync {
+pub trait NetDevice: DriverGeneric + Send + 'static {
     fn into_parts(self: Box<Self>) -> Result<NetDeviceParts, NetError>;
 }
 
@@ -594,6 +594,10 @@ pub struct NetDeviceParts {
 task-context `NetPollIrqControl` 和一个或多个 move-only
 `NetHardIrqEndpoint`。driver core 不暴露动态 queue 创建、设备级 IRQ 开关或 raw
 完整设备 handle。
+
+group 还可以携带 move-only `NetOwnerStartup`。它只在 worker 已固定到 owner CPU、IRQ
+callback 已注册但仍 disabled 时执行，供固件下载或 bus 创建等不能在任意 probe CPU
+运行的初始化使用。
 
 ### 7.1 DMA 与提交错误
 
@@ -611,6 +615,7 @@ pub trait NetHardIrqHandler: Send {
 
 pub trait NetPollIrqControl: Send {
     fn quiesce(&mut self) -> Result<(), NetError>;
+    fn shutdown(&mut self) -> Result<(), NetError>;
     fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError>;
 }
 ```
@@ -619,6 +624,11 @@ hard endpoint 只返回 `Spurious`、`Schedule(snapshot)` 或 `ProbeDeferred`。
 bounded mask/ack/status snapshot，不分配、不访问 DMA payload、不进入 protocol。
 queue owner drain 以后才调用原子 `rearm_and_check()`；若窗口中已有工作则保持 IRQ
 关闭并重新 schedule。
+
+teardown 只有在 callback disable/synchronize 成功后才由 owner CPU 调用
+`shutdown()`。同步失败时 callback lease 与 executor backing 一起隔离，不再并发进入
+driver；同步成功但 shutdown 失败时同样隔离完整 poll group，而不是 drop 仍可能被硬件
+引用的 token 或 descriptor。
 
 ### 7.3 Runtime builder 与 fixed affinity
 
@@ -641,9 +651,9 @@ pub trait PinnedNetIrqRegistrar: Sync {
 ```
 
 `NetworkRuntimeBuilder` 一次性消费全部设备，构造 shared-IRQ affinity domain，等待
-worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ。initial refill/rearm、IRQ
-enable 与 startup transaction 任一步失败都会反向回滚；没有运行时新增/删除物理 NIC
-的公共入口。
+worker pin-ready，再以 fixed owner CPU 注册 disabled IRQ。owner startup、initial
+refill/rearm、IRQ enable 与 startup transaction 任一步失败都会反向回滚；没有运行时
+新增/删除物理 NIC 的公共入口。
 
 ### 7.4 Wi-Fi 控制
 

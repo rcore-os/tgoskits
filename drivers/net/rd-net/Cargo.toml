@@ -13,3 +13,6 @@ version = "0.3.0"
 dma-api.workspace = true
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 rdif-eth.workspace = true
+
+[dev-dependencies]
+ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }

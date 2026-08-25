@@ -36,7 +36,7 @@
   <rect class="layer" x="30" y="202" width="1220" height="116" rx="18"/>
   <text class="layer-title" x="50" y="231">公共边界</text>
   <rect class="api" x="70" y="248" width="245" height="46" rx="10"/>
-  <text class="text" x="104" y="277">初始化 / 动态设备</text>
+  <text class="text" x="100" y="277">原子初始化 / Wi-Fi 重配</text>
   <rect class="api" x="350" y="248" width="245" height="46" rx="10"/>
   <text class="text" x="398" y="277">SocketOps / sockets</text>
   <rect class="api" x="630" y="248" width="245" height="46" rx="10"/>
@@ -61,7 +61,7 @@
   <rect class="router" x="880" y="397" width="330" height="124" rx="14"/>
   <text class="text" x="960" y="427">Router（MultiDevice）</text>
   <text class="small" x="921" y="455">smoltcp::phy::Device 适配</text>
-  <text class="small" x="921" y="480">shared RX · per-device TX</text>
+  <text class="small" x="918" y="480">frame ports · route dispatch</text>
   <text class="small" x="921" y="505">route dispatch · loopback inject</text>
 
   <rect class="layer" x="30" y="576" width="1220" height="184" rx="18"/>
@@ -70,14 +70,14 @@
   <text class="text" x="132" y="661">LoopbackDevice</text>
   <text class="small" x="100" y="688">IP packet 直接回注 Router</text>
   <rect class="device" x="350" y="630" width="245" height="92" rx="12"/>
-  <text class="text" x="406" y="661">RX / TX workers</text>
-  <text class="small" x="386" y="688">有界队列 · WaitQueue</text>
+  <text class="text" x="379" y="661">Fixed queue executors</text>
+  <text class="small" x="374" y="688">budget · IRQ affinity domain</text>
   <rect class="device" x="630" y="630" width="245" height="92" rx="12"/>
-  <text class="text" x="686" y="661">EthernetDevice</text>
-  <text class="small" x="673" y="688">ARP · L2 framing · stats</text>
+  <text class="text" x="689" y="661">Bounded SPSC</text>
+  <text class="small" x="662" y="688">move-only RX/TX DMA token</text>
   <rect class="device" x="910" y="630" width="245" height="92" rx="12"/>
   <text class="text" x="972" y="661">RdNetDriver / NIC</text>
-  <text class="small" x="955" y="688">IRQ handler · DMA queues</text>
+  <text class="small" x="942" y="688">fixed IRQ · DMA queue parts</text>
 
   <path class="edge" d="M220 156 V248"/>
   <path class="edge" d="M640 156 V248"/>

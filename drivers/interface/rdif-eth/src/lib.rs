@@ -48,6 +48,11 @@ pub enum NetError {
     #[error("Required network interrupt semantics are unavailable")]
     IrqUnavailable,
 
+    /// Hardware DMA shutdown could not be confirmed, so device-owned backing
+    /// must remain quarantined instead of being released.
+    #[error("Network DMA shutdown could not be confirmed")]
+    DmaShutdownUnconfirmed,
+
     /// An unspecified error occurred.
     #[error("Other error: {0}")]
     Other(Box<dyn core::error::Error + Send + Sync>),
@@ -63,6 +68,7 @@ impl From<NetError> for io::ErrorKind {
             NetError::InvalidParts => io::ErrorKind::InvalidData,
             NetError::Stopped => io::ErrorKind::NotAvailable,
             NetError::IrqUnavailable => io::ErrorKind::Unsupported,
+            NetError::DmaShutdownUnconfirmed => io::ErrorKind::NotAvailable,
             NetError::Other(e) => io::ErrorKind::Other(e),
         }
     }
@@ -375,9 +381,29 @@ pub trait NetPollIrqControl: Send + 'static {
     /// being published. This method runs on the group's owner CPU.
     fn quiesce(&mut self) -> Result<(), NetError>;
 
+    /// Stops the group's DMA engine and proves that descriptors and submitted
+    /// buffers can be released.
+    ///
+    /// This method runs on the group's owner CPU after its IRQ registrations
+    /// have been disabled and synchronized. Returning an error requires the
+    /// runtime to quarantine the complete poll group; a driver must never
+    /// report success while hardware can still reach queue memory.
+    fn shutdown(&mut self) -> Result<(), NetError>;
+
     /// Rearms the group and atomically checks the source/queues for work that
     /// appeared in the enable window. This method runs on the owner CPU.
     fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError>;
+}
+
+/// Move-only task-context initialization executed by one poll-group owner.
+///
+/// The runtime invokes this endpoint after the owner worker is pinned and all
+/// IRQ callbacks are registered disabled, but before initial queue refill and
+/// IRQ rearm. Probe code may use it to defer firmware and device-control work
+/// that must share the queue's fixed CPU ownership.
+pub trait NetOwnerStartup: Send + 'static {
+    /// Initializes owner-CPU state exactly once.
+    fn initialize(&mut self) -> Result<(), NetError>;
 }
 
 /// Static information published with one network device.
@@ -439,6 +465,8 @@ pub struct NetPollGroupParts {
     pub queues: NetQueuePairParts,
     /// Task-context mask/rearm endpoint.
     pub irq_control: Box<dyn NetPollIrqControl>,
+    /// Optional one-shot device initialization owned by this group's CPU.
+    pub owner_startup: Option<Box<dyn NetOwnerStartup>>,
     /// One or more hard endpoints whose sources all map to this group.
     pub irq_endpoints: Vec<NetHardIrqEndpoint>,
 }

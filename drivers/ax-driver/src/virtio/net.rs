@@ -89,6 +89,7 @@ impl<T: VirtIoTransport + 'static> NetDevice for VirtIoNetDevice<T> {
                 irq_control: Box::new(VirtioNetIrqControl {
                     inner: Arc::clone(&inner),
                 }),
+                owner_startup: None,
                 irq_endpoints: vec![NetHardIrqEndpoint::new(
                     IRQ_SOURCE0,
                     Box::new(VirtioNetIrqHandler { inner }),
@@ -211,6 +212,14 @@ impl<T: VirtIoTransport + 'static> NetPollIrqControl for VirtioNetIrqControl<T> 
     fn quiesce(&mut self) -> Result<(), NetError> {
         self.inner.with_task(|inner| inner.raw.disable_interrupts());
         Ok(())
+    }
+
+    fn shutdown(&mut self) -> Result<(), NetError> {
+        self.inner.with_task(|inner| inner.raw.disable_interrupts());
+        // The pinned virtio-drivers API only unsets queues from Raw::drop.
+        // Quarantine the shared state until an explicit transport reset can
+        // prove that its inflight DMA tokens are unreachable.
+        Err(NetError::DmaShutdownUnconfirmed)
     }
 
     fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError> {

@@ -212,6 +212,11 @@ impl NetPollIrqControl for MockIrqControl {
         Ok(())
     }
 
+    fn shutdown(&mut self) -> Result<(), NetError> {
+        self.armed = false;
+        Ok(())
+    }
+
     fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError> {
         self.armed = true;
         Ok(NetRearmResult::Idle)
@@ -274,6 +279,7 @@ impl NetDevice for MockNic {
                     rx: Box::new(MockRxQueue::new()),
                 },
                 irq_control: Box::new(MockIrqControl { armed: false }),
+                owner_startup: None,
                 irq_endpoints: vec![NetHardIrqEndpoint::new(
                     NetIrqSourceId::new(3),
                     Box::new(MockIrqHandler),

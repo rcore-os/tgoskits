@@ -337,8 +337,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     }
 
     // Install the ArceOS runtime glue into the OS-independent Wi-Fi driver
-    // cores (aic8800 / sdhci-cv1800) *before* probing, since the FDT probe
-    // brings the chip up and that needs timing/task capabilities. The cores
+    // cores (aic8800 / sdhci-cv1800) *before* probing. The FDT probe initializes
+    // the SDIO controller, while firmware/FDRV startup is deferred to the pinned
+    // network queue worker; both phases need timing/task capabilities. The cores
     // declare no ArceOS dependency themselves; this is the adapter layer (see
     // `wifi_glue`).
     #[cfg(feature = "aic8800-wifi")]

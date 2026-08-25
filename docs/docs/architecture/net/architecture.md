@@ -52,9 +52,9 @@ sidebar_label: "总体架构"
 | Control plane | 接口 registry、路由决策、DNS 来源、运行期配置提交 | `service.rs`, `config.rs`, `router.rs` | [控制面](control.md) |
 | Single protocol core | 一个 smoltcp `Interface`、全局 `SocketSet`、socket backend、DHCP、orphan 回收、poll 调度 | `service.rs`, `wrapper.rs`, `tcp.rs`, `udp.rs`, `listen_table.rs`, `orphan.rs` | 本文、[Socket 系统](sockets.md) |
 | Multi-device Router | smoltcp `Device` 适配、TX 路由、RX 汇聚、loopback 快速路径 | `router.rs` | [多设备实现](devices.md) |
-| Queue runtime | affinity domain、fixed-CPU executor、SPSC、budget、MISSED、IRQ lifecycle | `queue_runtime.rs`, `poll_runtime.rs` | [队列级 NAPI](queue-napi-runtime.md) |
+| Queue runtime | affinity domain、fixed-CPU executor、SPSC、budget、MISSED、IRQ lifecycle | `queue_runtime/`, `poll_runtime.rs` | [队列级 NAPI](queue-napi-runtime.md) |
 | Device layer | Ethernet 封装/解封装、ARP、consumable `rd-net` parts | `device/`, `rd-net`, `rdif-eth` | [多设备实现](devices.md) |
-| Locking and concurrency | 单协议 owner、同核 IRQ/queue owner、原子状态与 generation 协调 | `lib.rs`, `queue_runtime.rs`, `service.rs`, `router.rs` | [锁与并发](locks.md) |
+| Locking and concurrency | 单协议 owner、同核 IRQ/queue owner、原子状态与 generation 协调 | `lib.rs`, `queue_runtime/`, `service.rs`, `router.rs` | [锁与并发](locks.md) |
 | Configuration | 静态网络配置、DHCP、MTU、缓冲区、feature | `config.rs`, `consts.rs`, `Cargo.toml` | [配置参考](configuration.md) |
 | Integration and tests | OS 集成、启动流程、测试范围 | `ax-runtime`, `starry-kernel`, `ax-api` | [集成](integration.md), [测试](testing.md) |
 
@@ -217,7 +217,7 @@ sequenceDiagram
 | --- | --- | --- |
 | `LoopbackDevice` | `device/loopback.rs` | 零状态占位；真实回环数据路径由 `Router` 快速路径完成 |
 | `EthernetDevice` | `device/ethernet.rs` | Ethernet frame 解析/封装、ARP neighbor 表和 pending packet |
-| `QueueFramePort` | `queue_runtime.rs` | 将 poll-group SPSC frame/token 边界适配为 protocol device |
+| `QueueFramePort` | `queue_runtime/` | 将 poll-group SPSC frame/token 边界适配为 protocol device |
 | `VsockDevice` | `device/vsock.rs` | 可选 vsock 设备注册和事件入口 |
 
 这一层是协议栈和硬件驱动框架的能力边界。`ax-net` 不直接依赖 FDT、PCI 或 MMIO，而是消费 `NetDeviceParts`，再通过 `PinnedNetIrqRegistrar` 以 `Fixed(owner_cpu)` 注册 move-only hard endpoint。DMA queue、task rearm 和 control endpoint 保持显式分离。

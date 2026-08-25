@@ -150,14 +150,14 @@ fn handle_assoc_req(bus: &Arc<WifiBus>, mpdu: &[u8]) {
     // 3. 打开控制端口(authorize)。开放网络无 EAPOL，关联后必须显式授权，
     // 否则固件只放行 EAPOL、丢弃该 STA 的所有普通数据帧(DHCP/ARP/IP)。
     // 对应 vendor change_station(AUTHORIZED) → rwnx_send_me_set_control_port_req。
-    // 这里做首次尝试(低延迟);若超时,AP worker 的周期对账会继续重试直到成功。
+    // 首次尝试失败后，只由后续真实 AP event 驱动有限重试；不安装周期 self-wake。
     if !ctrl_open {
         try_open_control_port(bus, &sta_mac, sta_idx);
     }
 }
 
 /// 尝试为指定 STA 打开控制端口(authorize),成功则在注册表置标志。
-/// 返回是否成功。失败(超时)不在此处重试——由调用方/周期对账驱动重试。
+/// 返回是否成功。失败不在此处自旋，由调用方在真实 AP event 上进行有限重试。
 fn try_open_control_port(bus: &Arc<WifiBus>, sta_mac: &[u8; 6], sta_idx: u8) -> bool {
     match send_set_control_port_req(bus, sta_idx, true, 0) {
         Ok(_) => {
@@ -184,8 +184,7 @@ fn try_open_control_port(bus: &Arc<WifiBus>, sta_mac: &[u8; 6], sta_idx: u8) -> 
     }
 }
 
-/// 周期对账:对注册表中所有"未授权且未到重试上限"的 STA 重试打开控制端口。
-/// 返回是否仍有待授权的 STA(用于决定 AP worker 是否需要继续周期自唤醒)。
+/// Event-driven reconciliation for unauthorized stations below the retry cap.
 fn reconcile_control_ports(bus: &Arc<WifiBus>) -> bool {
     // 先快照出待重试的 (mac, idx),避免持锁期间发命令(send_cmd 会让出/阻塞)。
     let pending: alloc::vec::Vec<([u8; 6], u8)> = {

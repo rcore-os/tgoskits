@@ -302,6 +302,7 @@ impl NetDevice for Rtl8125 {
                     _mmio,
                     queue_start,
                 }),
+                owner_startup: None,
                 irq_endpoints: vec![NetHardIrqEndpoint::new(
                     IRQ_SOURCE0,
                     Box::new(Rtl8125IrqHandler { regs }),
@@ -322,6 +323,20 @@ impl NetPollIrqControl for Rtl8125IrqControl {
         self.regs.write_interrupt_mask(0);
         self.regs.commit();
         Ok(())
+    }
+
+    fn shutdown(&mut self) -> core::result::Result<(), NetError> {
+        self.regs.write_interrupt_mask(0);
+        self.regs.disable_tx_rx();
+        self.regs.commit();
+        self.regs.request_reset();
+        for _ in 0..100_000 {
+            if !self.regs.reset_pending() {
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+        Err(NetError::DmaShutdownUnconfirmed)
     }
 
     fn rearm_and_check(&mut self) -> core::result::Result<NetRearmResult, NetError> {

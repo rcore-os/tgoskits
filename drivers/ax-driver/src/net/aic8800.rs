@@ -116,9 +116,9 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     info!("[wifi] SDIO device: vendor={vid:#06x} device={did:#06x}");
     sdio.prepare_first_data_xfer();
 
-    // Hand the initialized SDIO host to the chip driver. It returns a single
-    // device that is both data plane (`Interface`) and control plane
-    // (`WifiControl`).
+    // Hand the initialized SDIO host to the chip driver. Probe only identifies
+    // the chip and packages the host; firmware and FDRV startup remain deferred
+    // until the fixed-CPU network queue worker owns the device.
     let wifi = match aic8800::probe(sdio) {
         Ok(wifi) => wifi,
         Err(e) => {
