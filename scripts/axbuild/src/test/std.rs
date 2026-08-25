@@ -89,6 +89,25 @@ const AX_DRIVER_FEATURE_PROFILES: &[PackageFeatureProfile] = &[
         name_filter: Some(PCI_FDT_IRQ_CAPABILITY_TEST),
         expected_tests: &[PCI_FDT_IRQ_CAPABILITY_TEST],
     },
+    // The rk3588-cpufreq feature gates the governor busy-attribution tests
+    // (the non-monotonic pin regression and its siblings), which are otherwise
+    // never compiled by the host-test profile above. This profile lists and
+    // runs exactly the `attribution` submodule so CI proves the regression is
+    // discovered and executed, not just compiled into a binary that is never
+    // asked to run it.
+    PackageFeatureProfile {
+        name: "host-test+rk3588-cpufreq",
+        no_default_features: false,
+        features: &["host-test", "rk3588-cpufreq"],
+        name_filter: Some("attribution::"),
+        expected_tests: &[
+            "soc::rockchip::cpufreq::tests::attribution::identity_order_books_each_cpu_under_its_own_cluster",
+            "soc::rockchip::cpufreq::tests::attribution::non_monotonic_pin_books_busy_under_the_cluster_it_runs_on",
+            "soc::rockchip::cpufreq::tests::attribution::offline_hardware_id_books_nowhere",
+            "soc::rockchip::cpufreq::tests::attribution::out_of_range_logical_index_is_refused",
+            "soc::rockchip::cpufreq::tests::attribution::single_vcpu_pin_books_under_its_pinned_cluster",
+        ],
+    },
 ];
 
 const HOST_TEST_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfile {
@@ -953,6 +972,24 @@ mod tests {
                     "--features",
                     "pci",
                     PCI_FDT_IRQ_CAPABILITY_TEST,
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-driver",
+                    "--features",
+                    "host-test,rk3588-cpufreq",
+                    "attribution::",
+                    "--",
+                    "--list",
+                ],
+                vec![
+                    "test",
+                    "-p",
+                    "ax-driver",
+                    "--features",
+                    "host-test,rk3588-cpufreq",
+                    "attribution::",
                 ],
             ]
         );

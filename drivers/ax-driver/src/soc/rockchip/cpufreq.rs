@@ -1364,139 +1364,149 @@ mod tests {
     // Busy attribution: the kernel owns logical numbering, not FDT order
     // -----------------------------------------------------------------------
 
-    /// Kernel mapping for a passthrough guest pinned as `phys_cpu_ids =
-    /// [0x400, 0x000]`: the guest FDT still lists `/cpus` in host-DT order
-    /// (cpu@0 first), but the boot hart cpu@400 is logical CPU 0 and cpu@0 is
-    /// logical CPU 1.
-    fn boot_first_resolver(hardware_id: usize) -> Option<usize> {
-        match hardware_id {
-            0x400 => Some(0),
-            0x000 => Some(1),
-            _ => None,
-        }
-    }
+    /// The mapping walk is pure w.r.t. a `resolve` closure and a `store` sink,
+    /// so it is exercised here with an in-memory map rather than the global
+    /// `CPU_CLUSTER`. These tests are the CI's proof that the non-monotonic
+    /// pin case is discovered and executed (see the `host-test+rk3588-cpufreq`
+    /// std-test profile in `scripts/axbuild/src/test/std.rs`, whose
+    /// `expected_tests` enumerates this submodule).
+    mod attribution {
+        use super::*;
 
-    /// Books attribution into a local map, so the mapping logic is testable
-    /// without touching the global `CPU_CLUSTER`.
-    fn book_into_map(
-        nodes: &[CpuNodeTopology],
-        resolve: impl Fn(usize) -> Option<usize>,
-        map: &mut [Option<usize>; 8],
-    ) -> usize {
-        let mut store = |logical_cpu: usize, cluster: usize| match map.get_mut(logical_cpu) {
-            Some(slot) => {
-                *slot = Some(cluster);
-                true
+        /// Kernel mapping for a passthrough guest pinned as `phys_cpu_ids =
+        /// [0x400, 0x000]`: the guest FDT still lists `/cpus` in host-DT order
+        /// (cpu@0 first), but the boot hart cpu@400 is logical CPU 0 and cpu@0
+        /// is logical CPU 1.
+        fn boot_first_resolver(hardware_id: usize) -> Option<usize> {
+            match hardware_id {
+                0x400 => Some(0),
+                0x000 => Some(1),
+                _ => None,
             }
-            None => false,
-        };
-        store_cpu_clusters(nodes, resolve, &mut store)
-    }
+        }
 
-    #[test]
-    fn non_monotonic_pin_books_busy_under_the_cluster_it_runs_on() {
-        let a55 = cluster_index_from_clock_id(A55_CLK_ID).unwrap();
-        let big0 = cluster_index_from_clock_id(A76_CLK_IDS[0]).unwrap();
-        // FDT document order (host-DT order): cpu@0 (A55) before cpu@400 (A76).
-        let nodes = [
-            CpuNodeTopology {
-                hardware_id: 0x000,
-                clock_id: A55_CLK_ID,
-            },
-            CpuNodeTopology {
+        /// Books attribution into a local map, so the mapping logic is testable
+        /// without touching the global `CPU_CLUSTER`.
+        fn book_into_map(
+            nodes: &[CpuNodeTopology],
+            resolve: impl Fn(usize) -> Option<usize>,
+            map: &mut [Option<usize>; 8],
+        ) -> usize {
+            let mut store = |logical_cpu: usize, cluster: usize| match map.get_mut(logical_cpu) {
+                Some(slot) => {
+                    *slot = Some(cluster);
+                    true
+                }
+                None => false,
+            };
+            store_cpu_clusters(nodes, resolve, &mut store)
+        }
+
+        #[test]
+        fn non_monotonic_pin_books_busy_under_the_cluster_it_runs_on() {
+            let a55 = cluster_index_from_clock_id(A55_CLK_ID).unwrap();
+            let big0 = cluster_index_from_clock_id(A76_CLK_IDS[0]).unwrap();
+            // FDT document order (host-DT order): cpu@0 (A55) before cpu@400 (A76).
+            let nodes = [
+                CpuNodeTopology {
+                    hardware_id: 0x000,
+                    clock_id: A55_CLK_ID,
+                },
+                CpuNodeTopology {
+                    hardware_id: 0x400,
+                    clock_id: A76_CLK_IDS[0],
+                },
+            ];
+            let mut map = [None; 8];
+            let stored = book_into_map(&nodes, boot_first_resolver, &mut map);
+            assert_eq!(stored, 2);
+            // busy[0] executes on the A76 cpu@400; busy[1] on the A55 cpu@0.
+            assert_eq!(map[0], Some(big0), "logical CPU 0 runs the big core");
+            assert_eq!(map[1], Some(a55), "logical CPU 1 runs the little core");
+        }
+
+        #[test]
+        fn identity_order_books_each_cpu_under_its_own_cluster() {
+            // Bare metal: all 8 CPUs online, boot hart == first FDT node, so the
+            // kernel's mapping is document position. Every cluster's members must
+            // agree with `Cluster::cpus()`.
+            let nodes: Vec<CpuNodeTopology> = (0..8)
+                .map(|position| CpuNodeTopology {
+                    hardware_id: position * 0x100,
+                    clock_id: match position {
+                        0..=3 => A55_CLK_ID,
+                        4 | 5 => A76_CLK_IDS[0],
+                        _ => A76_CLK_IDS[1],
+                    },
+                })
+                .collect();
+            let mut map = [None; 8];
+            let stored = book_into_map(&nodes, |hw| Some(hw / 0x100), &mut map);
+            assert_eq!(stored, 8);
+            for (ci, &cluster) in [Cluster::A55, Cluster::Big0, Cluster::Big1]
+                .iter()
+                .enumerate()
+            {
+                for cpu in cluster.cpus() {
+                    assert_eq!(map[cpu], Some(ci), "cpu {cpu}");
+                }
+            }
+        }
+
+        #[test]
+        fn single_vcpu_pin_books_under_its_pinned_cluster() {
+            // The PR's motivating guest: SMP=1 pinned to the A76 cpu@400.
+            let nodes = [CpuNodeTopology {
                 hardware_id: 0x400,
                 clock_id: A76_CLK_IDS[0],
-            },
-        ];
-        let mut map = [None; 8];
-        let stored = book_into_map(&nodes, boot_first_resolver, &mut map);
-        assert_eq!(stored, 2);
-        // busy[0] executes on the A76 cpu@400; busy[1] on the A55 cpu@0.
-        assert_eq!(map[0], Some(big0), "logical CPU 0 runs the big core");
-        assert_eq!(map[1], Some(a55), "logical CPU 1 runs the little core");
-    }
-
-    #[test]
-    fn identity_order_books_each_cpu_under_its_own_cluster() {
-        // Bare metal: all 8 CPUs online, boot hart == first FDT node, so the
-        // kernel's mapping is document position. Every cluster's members must
-        // agree with `Cluster::cpus()`.
-        let nodes: Vec<CpuNodeTopology> = (0..8)
-            .map(|position| CpuNodeTopology {
-                hardware_id: position * 0x100,
-                clock_id: match position {
-                    0..=3 => A55_CLK_ID,
-                    4 | 5 => A76_CLK_IDS[0],
-                    _ => A76_CLK_IDS[1],
-                },
-            })
-            .collect();
-        let mut map = [None; 8];
-        let stored = book_into_map(&nodes, |hw| Some(hw / 0x100), &mut map);
-        assert_eq!(stored, 8);
-        for (ci, &cluster) in [Cluster::A55, Cluster::Big0, Cluster::Big1]
-            .iter()
-            .enumerate()
-        {
-            for cpu in cluster.cpus() {
-                assert_eq!(map[cpu], Some(ci), "cpu {cpu}");
-            }
+            }];
+            let mut map = [None; 8];
+            let stored = book_into_map(&nodes, |hw| (hw == 0x400).then_some(0), &mut map);
+            assert_eq!(stored, 1);
+            assert_eq!(
+                map[0],
+                Some(cluster_index_from_clock_id(A76_CLK_IDS[0]).unwrap())
+            );
+            assert_eq!(map[1], None, "no other CPU may drive a domain");
         }
-    }
 
-    #[test]
-    fn single_vcpu_pin_books_under_its_pinned_cluster() {
-        // The PR's motivating guest: SMP=1 pinned to the A76 cpu@400.
-        let nodes = [CpuNodeTopology {
-            hardware_id: 0x400,
-            clock_id: A76_CLK_IDS[0],
-        }];
-        let mut map = [None; 8];
-        let stored = book_into_map(&nodes, |hw| (hw == 0x400).then_some(0), &mut map);
-        assert_eq!(stored, 1);
-        assert_eq!(
-            map[0],
-            Some(cluster_index_from_clock_id(A76_CLK_IDS[0]).unwrap())
-        );
-        assert_eq!(map[1], None, "no other CPU may drive a domain");
-    }
+        #[test]
+        fn offline_hardware_id_books_nowhere() {
+            // A cpu node the kernel does not run must not leak onto any logical
+            // index — its busy simply drives no domain.
+            let nodes = [
+                CpuNodeTopology {
+                    hardware_id: 0x000,
+                    clock_id: A55_CLK_ID,
+                },
+                CpuNodeTopology {
+                    hardware_id: 0x600,
+                    clock_id: A76_CLK_IDS[1],
+                },
+            ];
+            let mut map = [None; 8];
+            let stored = book_into_map(&nodes, |hw| (hw == 0x600).then_some(0), &mut map);
+            assert_eq!(stored, 1);
+            assert_eq!(
+                map[0],
+                Some(cluster_index_from_clock_id(A76_CLK_IDS[1]).unwrap())
+            );
+            assert_eq!(map[1], None);
+            assert!(map[2..].iter().all(|slot| slot.is_none()));
+        }
 
-    #[test]
-    fn offline_hardware_id_books_nowhere() {
-        // A cpu node the kernel does not run must not leak onto any logical
-        // index — its busy simply drives no domain.
-        let nodes = [
-            CpuNodeTopology {
+        #[test]
+        fn out_of_range_logical_index_is_refused() {
+            // A resolver answering past the map must be refused, not panic.
+            let nodes = [CpuNodeTopology {
                 hardware_id: 0x000,
                 clock_id: A55_CLK_ID,
-            },
-            CpuNodeTopology {
-                hardware_id: 0x600,
-                clock_id: A76_CLK_IDS[1],
-            },
-        ];
-        let mut map = [None; 8];
-        let stored = book_into_map(&nodes, |hw| (hw == 0x600).then_some(0), &mut map);
-        assert_eq!(stored, 1);
-        assert_eq!(
-            map[0],
-            Some(cluster_index_from_clock_id(A76_CLK_IDS[1]).unwrap())
-        );
-        assert_eq!(map[1], None);
-        assert!(map[2..].iter().all(|slot| slot.is_none()));
-    }
-
-    #[test]
-    fn out_of_range_logical_index_is_refused() {
-        // A resolver answering past the map must be refused, not panic.
-        let nodes = [CpuNodeTopology {
-            hardware_id: 0x000,
-            clock_id: A55_CLK_ID,
-        }];
-        let mut map = [None; 8];
-        let stored = book_into_map(&nodes, |_| Some(9), &mut map);
-        assert_eq!(stored, 0);
-        assert!(map.iter().all(|slot| slot.is_none()));
+            }];
+            let mut map = [None; 8];
+            let stored = book_into_map(&nodes, |_| Some(9), &mut map);
+            assert_eq!(stored, 0);
+            assert!(map.iter().all(|slot| slot.is_none()));
+        }
     }
 
     // -----------------------------------------------------------------------
