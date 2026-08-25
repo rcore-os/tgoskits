@@ -1,0 +1,11 @@
+# Build-time config template for StarryOS on Banana Pi BPI-SM10.
+target = "riscv64gc-unknown-none-elf"
+features = [
+  "ax-runtime/rtc",
+  "ax-driver/rtc",
+  "ax-driver/serial",
+  "ax-driver/nvme",
+  "ax-driver/spacemit-k3-sdhci",
+]
+log = "Info"
+max_cpu_num = 8

@@ -83,6 +83,12 @@ k230-sdhci = [
     "dep:sdmmc-protocol",
     "sdmmc-protocol/rdif",
 ]
+spacemit-k3-sdhci = [
+    "block",
+    "dep:sdhci-host",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/rdif",
+]
 phytium-mci = [
     "block",
     "dep:phytium-mci-host",

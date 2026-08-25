@@ -19,6 +19,8 @@ pub mod nvme;
 mod phytium_mci;
 #[cfg(any(feature = "rockchip-dwmmc", feature = "rockchip-sdhci"))]
 mod rockchip;
+#[cfg(feature = "spacemit-k3-sdhci")]
+mod spacemit_sdhci;
 #[cfg(feature = "starfive-jh7110-dwmmc")]
 mod starfive_mmc;
 

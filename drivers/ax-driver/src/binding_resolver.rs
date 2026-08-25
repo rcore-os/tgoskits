@@ -13,6 +13,7 @@ use alloc::{format, vec::Vec};
     feature = "rknpu",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "spacemit-k3-sdhci",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -38,6 +39,7 @@ use crate::{BindingInfo, BindingIrq};
     feature = "rknpu",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "spacemit-k3-sdhci",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -70,6 +72,7 @@ pub(crate) fn dma_coherency_from_fdt(info: &FdtInfo<'_>) -> DmaCoherency {
     feature = "rknpu",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "spacemit-k3-sdhci",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -110,6 +113,7 @@ fn next_dma_parent<'a>(
     feature = "rknpu",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "spacemit-k3-sdhci",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -145,6 +149,7 @@ fn dma_mem_interconnect_phandle<'a>(
     feature = "rknpu",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "spacemit-k3-sdhci",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
