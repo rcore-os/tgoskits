@@ -50,13 +50,20 @@ pub unsafe fn schedule_current_cpu_from_irq_guard_exit() -> Result<SchedulerOutc
 fn schedule_current_cpu_with_entry(
     mut entry: RuntimeSchedulerEntry,
 ) -> Result<SchedulerOutcome, TaskError> {
+    let original_entry = entry;
     loop {
-        let request_scope = match entry {
-            RuntimeSchedulerEntry::Task => SchedulerRequestScope::All,
-            RuntimeSchedulerEntry::PreemptExit
-            | RuntimeSchedulerEntry::IrqReturn
-            | RuntimeSchedulerEntry::IrqGuardExit
-            | RuntimeSchedulerEntry::IrqReturnContinuation => SchedulerRequestScope::Immediate,
+        // A preempt-enable or IRQ-guard-exit pass keeps consuming only
+        // ordinary requests across its whole repeat loop, exactly like
+        // Linux's `while (need_resched())` in preempt_schedule() and
+        // preempt_schedule_irq(): the continuation re-enters through the
+        // ordinary task entry but never promotes the lazy flag.
+        let request_scope = match (&entry, original_entry) {
+            (RuntimeSchedulerEntry::Task, RuntimeSchedulerEntry::PreemptExit)
+            | (RuntimeSchedulerEntry::Task, RuntimeSchedulerEntry::IrqGuardExit) => {
+                SchedulerRequestScope::Immediate
+            }
+            (RuntimeSchedulerEntry::Task, _) => SchedulerRequestScope::All,
+            (..) => SchedulerRequestScope::Immediate,
         };
         let mut scheduler_frame =
             RuntimeSchedulerFrameGuard::enter(RuntimeScheduleOrigin::Preempt, entry)?;
