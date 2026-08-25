@@ -68,8 +68,10 @@ TX pool -> TX-free SPSC -> protocol fills -> TX-ready SPSC
 ```
 
 `ITxQueue::submit()` 和 `IRxQueue::submit()/recycle()` 失败时，typed
-`SubmitError` 必须归还原 token。runtime 对 `Retry` 保留 token 并重新调度；其它错误
-可以归还 free ring 或使 group 失败，但不能丢失 DMA ownership。
+`SubmitError` 必须归还原 token。runtime 对 `Retry`/`LinkDown` 保留 token；若本轮没有
+RX reclaim 等可观察进展，则完成本轮 poll、rearm IRQ 并等待未来硬件或 task 事件，不能
+在 IRQ 保持关闭时立即自调度。只有 reclaim 已释放 descriptor 时，RX refill 才立即重试。
+其它错误可以归还 free ring 或使 group 失败，但不能丢失 DMA ownership。
 
 非一致 DMA 平台的 CPU/device sync 在 `DmaBuffer` 的 read/write 与 driver submit/reclaim
 边界完成。跨 CPU 只 move token，不共享可变 payload reference。
@@ -198,7 +200,7 @@ static/DHCP-server state。
 
 | Driver | 当前 group | hard endpoint | task owner/rearm |
 | --- | --- | --- | --- |
-| virtio-net | queue 0 RX/TX | 仅真实 `QUEUE_INTERRUPT`；gate 竞争为 `ProbeDeferred` | callback disable + used-ring double-check |
+| virtio-net | queue 0 RX/TX | 仅真实 `QUEUE_INTERRUPT`；gate 竞争为 `ProbeDeferred` | callback disable + 非消费 `peek_used` double-check；reclaim 才消费 completion |
 | E1000 | queue 0 RX/TX | ICR snapshot/mask | descriptor drain 后恢复 IMS 并复查 |
 | RTL8125 | queue 0 RX/TX | status gate/ack/mask | deferred refill、completion、pending status 复查 |
 | FXMAC | queue 0 | status snapshot；gate 竞争 deferred | owner drain/rearm |

@@ -220,7 +220,7 @@ impl<T: VirtIoTransport + 'static> NetPollIrqControl for VirtioNetIrqControl<T> 
                 .raw
                 .ack_interrupt()
                 .contains(InterruptStatus::QUEUE_INTERRUPT);
-            interrupt || inner.raw.poll_receive().is_some() || inner.raw.poll_transmit().is_some()
+            interrupt || inner.has_pending_completion()
         });
         if pending {
             self.inner.with_task(|inner| inner.raw.disable_interrupts());
@@ -332,6 +332,13 @@ impl<T: VirtIoTransport> NetInner<T> {
         self.raw
             .fill_buffer_header(&mut header)
             .map_err(map_net_error)
+    }
+
+    fn has_pending_completion(&mut self) -> bool {
+        // `VirtIONetRaw::poll_*` are non-consuming used-ring probes backed by
+        // `VirtQueue::peek_used`. Queue reclaim remains the only path that
+        // calls `*_complete` and releases the corresponding inflight token.
+        self.raw.poll_receive().is_some() || self.raw.poll_transmit().is_some()
     }
 }
 

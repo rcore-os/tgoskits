@@ -292,6 +292,12 @@ pub struct SubmitError {
 
 `reclaim` 返回原 token，而不是只返回 `bus_addr`。runtime 不通过地址 side table 猜测所有权。
 
+`NetError::Retry` 与 `NetError::LinkDown` 表示只有未来硬件或 task 事件才能改变
+提交条件。runtime 保留 typed error 归还的 token；本轮没有 RX reclaim 等可观察进展时，
+group 完成本轮 poll 并执行 `rearm_and_check()`，等待未来事件，而不是在 IRQ 保持关闭时
+立即自调度形成 busy loop。只有同一轮 reclaim 已释放 descriptor 时，RX refill 才可以立即
+重试。
+
 ### 9.2 DMA sync
 
 跨 CPU ring 只转移 CPU ownership，不替代非一致 DMA 同步：
@@ -466,6 +472,11 @@ AP/STA confirmation 当前依赖 RX task，迁移时必须把它变为 owner exe
 - 只有 `QUEUE_INTERRUPT` 才返回 `Schedule`；configuration-only 或空 status 为 `Spurious`。
 - IRQ 无法进入 transport gate 时设置 deferred probe 位并返回 `ProbeDeferred`，不得自旋。
 - task poll 期间关闭 virtqueue callback；`rearm_and_check()` 开启 callback 后立即检查 used ring 和 deferred transport status。
+- 锁定的 `virtio-drivers 0.13.0` 中，`poll_receive()`/`poll_transmit()` 只调用
+  `VirtQueue::peek_used()`，不会推进 `last_used_idx` 或释放 descriptor；它们只用于
+  rearm 窗口的非消费 pending 检查。只有 queue reclaim 调用
+  `receive_complete()`/`transmit_complete()` 后，`pop_used()` 才消费 completion 并归还
+  inflight token。
 - transport ACK、queue used-ring 检查与 callback rearm 全在 group owner CPU。
 
 ### 14.2 E1000
@@ -479,6 +490,8 @@ AP/STA confirmation 当前依赖 RX task，迁移时必须把它变为 owner exe
 - queue-0 group 共享 `QueueStartState`，不能把 TX/RX start/rearm ownership 拆开。
 - hard IRQ 状态门控、写回 ACK 后 mask；deferred RX refill 由 owner poll 完成。
 - `rearm_and_check()` 必须覆盖 overflow/deferred-refill 和 pending status 复查。
+- link-down submit 返回 `NetError::LinkDown` 并归还 token；runtime 保留 token、完成本轮
+  poll 并 rearm，等待 link-change IRQ，不能把 link-down 当成可立即重试的 queue-full。
 
 ### 14.4 FXMAC
 
@@ -573,6 +586,10 @@ Loom 或等价穷举模型覆盖：
 - `NetworkRuntimeBuilder` 在 worker affinity-ready 后以 fixed CPU 注册 disabled IRQ，并在 initial refill/rearm 成功后原子发布 service。
 - E1000、RTL8125、virtio、FXMAC、Loongson GMAC 已迁移到 queue-0 poll group；AIC/SDHCI 已迁移到 nested CARD_INT source 与 owner-CPU control transaction。
 - queue 状态机具备确定性交错模型，Starry grouped case `test-tcp-napi-runtime` 固定真实 TCP/epoll/signal/close 语义。
+- oversized RX frame 的错误路径会先回收 DMA token，再返回 protocol error；对应回归还
+  覆盖 recycle ring 暂满和下一帧继续接收。
+- hardware `Retry`/`LinkDown` 在没有 reclaim 进展时完成并 rearm，不会保持 IRQ mask 后
+  立即自调度；RTL8125 link-down 因此等待 link-change IRQ 而不是空转。
 - 旧 driver `Interface`、动态 queue、设备级 IRQ 控制、OOB callback、wake-all、设备 fallback 与 AIC kicker 边界已删除。
 - x86_64 SMP4 的 `qemu-e1000/system` 以真实 E1000 IRQ 数据面完成 DHCP，并由两个进程并发下载、逐字节校验各 4 MiB payload。
 - riscv64 SMP4 的 `qemu/dual-net` 同时取得两个独立 DHCP lease，完成两接口串行/并行 1 MiB 下载及 17 MiB 以上 APK 集合的签名与 SHA-256 回读校验。
