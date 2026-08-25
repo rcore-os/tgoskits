@@ -24,6 +24,7 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define EVENT_TIMEOUT_MS 2000
@@ -109,6 +110,36 @@ static int epoll_wait_retry(int epfd, struct epoll_event *event, int timeout_ms)
         }
         return result;
     }
+}
+
+static long raw_poll_wait(struct pollfd *fds, nfds_t nfds, int timeout_ms)
+{
+#ifdef SYS_poll
+    return syscall(SYS_poll, fds, nfds, timeout_ms);
+#elif defined(SYS_ppoll)
+    struct timespec timeout;
+    struct timespec *timeout_ptr = NULL;
+    if (timeout_ms >= 0) {
+        timeout.tv_sec = timeout_ms / 1000;
+        timeout.tv_nsec = (timeout_ms % 1000) * 1000000L;
+        timeout_ptr = &timeout;
+    }
+    return syscall(SYS_ppoll, fds, nfds, timeout_ptr, NULL, 0);
+#else
+#error "A raw poll syscall is required"
+#endif
+}
+
+static long raw_epoll_wait(int epfd, struct epoll_event *event,
+                           int timeout_ms)
+{
+#ifdef SYS_epoll_wait
+    return syscall(SYS_epoll_wait, epfd, event, 1, timeout_ms);
+#elif defined(SYS_epoll_pwait)
+    return syscall(SYS_epoll_pwait, epfd, event, 1, timeout_ms, NULL, 0);
+#else
+#error "A raw epoll wait syscall is required"
+#endif
 }
 
 static int wait_child(pid_t child)
@@ -432,7 +463,7 @@ static int test_failed_connect_consumes_so_error(void)
         .fd = client,
         .events = POLLOUT | POLLERR,
     };
-    if (syscall(SYS_poll, &pollfd, 1, EVENT_TIMEOUT_MS) != 1 ||
+    if (raw_poll_wait(&pollfd, 1, EVENT_TIMEOUT_MS) != 1 ||
         !(pollfd.revents & (POLLOUT | POLLERR | POLLHUP))) {
         fprintf(stderr, "connect-error: missing completion event %#x\n",
                 pollfd.revents);
@@ -519,9 +550,9 @@ static int run_signal_wait(enum signal_wait_kind kind)
                 .fd = server,
                 .events = POLLIN,
             };
-            count = syscall(SYS_poll, &pollfd, 1, -1);
+            count = raw_poll_wait(&pollfd, 1, -1);
         } else {
-            count = syscall(SYS_epoll_wait, epfd, &event, 1, -1);
+            count = raw_epoll_wait(epfd, &event, -1);
         }
         int saved_errno = errno;
         close_fd(epfd);
