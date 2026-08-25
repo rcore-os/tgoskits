@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.30](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.29...starryos-v0.5.30) - 2026-08-25
+
+### Other
+
+- *(test)* consolidate Starry and ArceOS test suites ([#2173](https://github.com/rcore-os/tgoskits/pull/2173))
+
 ## [0.5.29](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.28...starryos-v0.5.29) - 2026-08-20
 
 ### Added

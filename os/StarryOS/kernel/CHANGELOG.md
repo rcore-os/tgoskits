@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.8.1...starry-kernel-v0.8.2) - 2026-08-25
+
+### Fixed
+
+- *(ax-driver)* attribute RK3588 governor busy by FDT cpu topology ([#2165](https://github.com/rcore-os/tgoskits/pull/2165))
+
+### Other
+
+- *(test)* consolidate Starry and ArceOS test suites ([#2173](https://github.com/rcore-os/tgoskits/pull/2173))
+
 ## [0.8.1](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.8.0...starry-kernel-v0.8.1) - 2026-08-25
 
 ### Added

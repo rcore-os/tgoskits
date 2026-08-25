@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.13](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.12...arm-gic-driver-v0.17.13) - 2026-08-25
+
+### Added
+
+- *(arm-gic-driver)* add GICv3 NMI attributes ([#2167](https://github.com/rcore-os/tgoskits/pull/2167))
+
 ### Added
 
 - Add typed GICv3 NMI attribute programming for quiescent standard SGIs, PPIs,

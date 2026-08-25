@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.2](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.13.1...ax-driver-v0.13.2) - 2026-08-25
+
+### Fixed
+
+- *(ax-driver)* attribute RK3588 governor busy by FDT cpu topology ([#2165](https://github.com/rcore-os/tgoskits/pull/2165))
+
 ## [0.13.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.13.0...ax-driver-v0.13.1) - 2026-08-25
 
 ### Other
