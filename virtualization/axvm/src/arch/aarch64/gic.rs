@@ -472,6 +472,19 @@ pub(crate) fn register_assigned_spi_routes(
     AssignedSpiRoutes::register(controller)
 }
 
+struct AxvmAarch64HvIrqSink;
+
+#[ax_crate_interface::impl_interface]
+impl ax_plat::irq::aarch64_hv::Aarch64HvIrqSink for AxvmAarch64HvIrqSink {
+    fn has_assigned_physical_spi(intid: u32) -> bool {
+        physical::has_assigned_spi_route(intid)
+    }
+
+    fn publish_physical_gic_claim(intid: u32) -> bool {
+        physical::publish_assigned_spi(intid)
+    }
+}
+
 pub(crate) fn host_spi_count() -> Result<usize, GicV3BackendError> {
     let typer = try_with_gic("inspect host SPI capacity", |gic| {
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {

@@ -8,6 +8,14 @@ pub mod systick;
 
 pub struct Plat;
 
+pub(crate) fn take_gic_spi_completion(active: &mut gic::ActiveIrq) -> Option<u32> {
+    active.defer_spi_completion()
+}
+
+pub(crate) fn complete_deferred_gic_spi(intid: u32) -> bool {
+    gic::complete_deferred_spi(intid)
+}
+
 fn gic_domain() -> crate::irq::IrqDomainId {
     crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::AArch64Gic)
         .expect("AArch64 GIC IRQ domain is not registered")

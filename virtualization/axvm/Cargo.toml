@@ -81,6 +81,7 @@ aarch64-cpu-ext = "0.1"
 arm_vcpu = { workspace = true }
 arm_vgic = { workspace = true }
 arm-gic-driver = { workspace = true, features = ["rdif"] }
+ax-plat = { workspace = true }
 axklib.workspace = true
 mmio-api.workspace = true
 rdif-intc.workspace = true

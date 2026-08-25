@@ -2,6 +2,8 @@ use ax_plat::irq::{
     CpuId, IrqAffinity, IrqError, IrqId, IrqIf, IrqSource, IrqTrigger, TrapVector, dispatch_irq_on,
 };
 
+#[cfg(any(all(target_arch = "aarch64", feature = "hv"), test))]
+mod aarch64_hv;
 #[cfg(all(target_arch = "loongarch64", feature = "hv"))]
 mod loongarch64_hv;
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
@@ -60,7 +62,10 @@ impl IrqIf for IrqIfImpl {
             let active = somehal::irq::begin_irq(vector.0)?;
             let irq = active.id();
 
-            #[cfg(all(target_arch = "riscv64", feature = "hv"))]
+            #[cfg(any(
+                all(target_arch = "aarch64", feature = "hv"),
+                all(target_arch = "riscv64", feature = "hv")
+            ))]
             let mut active = active;
 
             #[cfg(all(target_arch = "riscv64", feature = "hv"))]
@@ -77,6 +82,14 @@ impl IrqIf for IrqIfImpl {
             }
 
             let cpu = current_irq_cpu();
+            #[cfg(all(target_arch = "aarch64", feature = "hv"))]
+            let outcome = match aarch64_hv::route_assigned_spi_or_host(&mut active, irq, || {
+                dispatch_irq_on(irq, cpu)
+            }) {
+                aarch64_hv::Aarch64IrqRoute::GuestOwned => return Some(irq),
+                aarch64_hv::Aarch64IrqRoute::Host(outcome) => outcome,
+            };
+            #[cfg(not(all(target_arch = "aarch64", feature = "hv")))]
             let outcome = dispatch_irq_on(irq, cpu);
             if !outcome.handled {
                 #[cfg(all(target_arch = "loongarch64", feature = "hv"))]

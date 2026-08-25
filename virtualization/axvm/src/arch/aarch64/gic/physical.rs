@@ -194,6 +194,10 @@ impl AssignedSpiRouteSlot {
         self.readers.fetch_sub(1, Ordering::Release);
         result
     }
+
+    fn is_registered(&self) -> bool {
+        !self.binding.load(Ordering::Acquire).is_null()
+    }
 }
 
 struct AssignedSpiRouteRegistration {
@@ -260,13 +264,26 @@ impl Drop for AssignedSpiRouteRegistration {
     }
 }
 
-pub(super) fn route_acknowledged_host_irq(token: usize) -> Result<(), GicV3BackendError> {
+fn publish_assigned_host_irq(token: usize) -> bool {
     let intid = host_irq_intid(token) as usize;
-    let published = ASSIGNED_SPI_ROUTES
+    ASSIGNED_SPI_ROUTES
         .get(intid)
         .and_then(|route| route.with_binding(|binding| binding.publish_from_irq(token)))
-        .unwrap_or(false);
-    if !published {
+        .unwrap_or(false)
+}
+
+pub(super) fn has_assigned_spi_route(intid: u32) -> bool {
+    ASSIGNED_SPI_ROUTES
+        .get(intid as usize)
+        .is_some_and(AssignedSpiRouteSlot::is_registered)
+}
+
+pub(super) fn publish_assigned_spi(intid: u32) -> bool {
+    publish_assigned_host_irq(intid as usize)
+}
+
+pub(super) fn route_acknowledged_host_irq(token: usize) -> Result<(), GicV3BackendError> {
+    if !publish_assigned_host_irq(token) {
         dispatch_acknowledged_host_irq(token);
     }
     Ok(())

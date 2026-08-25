@@ -10,6 +10,8 @@ pub use irq_framework::{
     Registry, ShareMode, TrapVector,
 };
 
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64_hv;
 #[cfg(target_arch = "loongarch64")]
 pub mod loongarch64_hv;
 #[cfg(target_arch = "loongarch64")]
