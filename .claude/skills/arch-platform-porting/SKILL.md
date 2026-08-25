@@ -251,6 +251,12 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - Treat hardware MMU enablement, direct-map/kernel-space addressability, and final kernel relocation as separate states. Generic relocation detection should use the final `VM_LOAD_ADDRESS`, not the broader arch kernel/direct-map range; for example AArch64 `hv` builds can use `PAGE_OFFSET = 0`, and LoongArch DMW can make RAM addressable before execution reaches the final high mapping.
 - On AArch64, keep the SCTLR.M enable to relocated-entry branch window free of UART logging. Address helpers must not switch to relocated addresses while still executing on the pre-relocation path.
 - On LoongArch, do not treat the DMW direct-map window as final kernel relocation. Address helpers may use DMW for early direct mapping, but relocated-kernel checks should only become true after execution reaches the final `VM_LOAD_ADDRESS` high mapping.
+- On LoongArch, the runtime may retain someboot's `TLBRENTRY` after replacing the ordinary
+  exception entry. Keep the someboot and axcpu refill walkers aligned: every zero intermediate
+  directory entry must stop the walk and install two zero `TLBRELO` values so the original
+  load/store/fetch fault type reaches the VM handler. Never continue `lddir`/`ldpte` from physical
+  address zero or reuse `TLBREHI`, which contains the faulting virtual page number, as EntryLo.
+  Validate this boundary with a first-store-after-lazy-`mmap` regression as well as allocator tests.
 - After `ExitBootServices`, do not call UEFI Boot Services. Retry only through the correct memory-map-key sequence before exit.
 
 ## SMP Bring-Up Rules

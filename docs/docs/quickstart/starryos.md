@@ -228,6 +228,12 @@ cargo xtask starry app board -t block-rw-bench \
 
 启动用例必须输出 `STARRY_JL_LSGD2K10_BOOT_OK`，写测必须输出 `JL_LSGD2K10_BLOCK_RW_BENCH_PASSED`。LS2K1000 AHCI 没有 polling fallback，因此后一个标志同时覆盖真实 LIOINTC 中断链。写测结束后再次正常启动 Linux并检查 ext4；若发现损坏，应保存串口日志、释放板卡租约并停止验证，不得把 OrangePi-5-Plus 专用的 U-Boot `fsckfix` 流程套到 JL-LSGD2K10。
 
+若静态 musl 程序在 `__malloc_allzerop` 内访问低地址失败，不应在 axstd 或应用中
+补同名接口。该符号是 musl mallocng 的内部实现；应先用同一 ELF 对照 QEMU、板端
+Linux 与板端 StarryOS，并检查 LoongArch TLB refill 是否把空目录项正确转换为
+全零无效 EntryLo。仓库的 `qemu/system/test-calloc-mallocng` 同时检查匿名页首次
+写入和静态 musl `calloc`。
+
 普通 QEMU 没有 LS2K1000/2K1000 machine，不能覆盖 LIOINTC、AHCI 和 GMAC 实板路径；`qemu-loongarch64` 只验证 LoongArch64 通用 EIOINTC/PCH-PIC 路径，不能替代上述板卡验证。
 
 ### 3.2 LicheeRV-Nano-SG2002

@@ -195,7 +195,7 @@ fn do_vint(_tf: &mut TrapFrame) {
 
 /// Page Fault 处理函数 (普通 TLB 异常: TLBL, TLBS, TLBI, TLBM, TLBNR, TLBNX, TLBPE)
 #[unsafe(no_mangle)]
-extern "C" fn do_page_fault(tf: &TrapFrame, write: usize, address: usize) -> ! {
+extern "C" fn do_page_fault(tf: &TrapFrame, access: usize, address: usize) -> ! {
     println!("do_page_fault called");
 
     let estat = estat::read();
@@ -213,7 +213,12 @@ extern "C" fn do_page_fault(tf: &TrapFrame, write: usize, address: usize) -> ! {
         _ => "Unknown Page Fault",
     };
 
-    let access_type = if write != 0 { "write" } else { "read" };
+    let access_type = match access {
+        0 => "read",
+        1 => "write",
+        2 => "execute",
+        _ => "unknown",
+    };
 
     panic_on_exception(
         "PAGE FAULT",
@@ -390,7 +395,7 @@ global_asm!(
     "csrrd   $t0, CSR_ERA",
     "st.d    $t0, $sp, TF_ERA",
     "move    $a0, $sp",             // TrapFrame 指针
-    "li.d    $a1, 0",               // write = 0 (读操作)
+    "li.d    $a1, 0",               // read access
     "csrrd   $a2, CSR_BADV",        // 错误地址
     "bl      do_page_fault",
     // do_page_fault 是 noreturn，不会返回
@@ -413,7 +418,7 @@ global_asm!(
     "csrrd   $t0, CSR_ERA",
     "st.d    $t0, $sp, TF_ERA",
     "move    $a0, $sp",
-    "li.d    $a1, 1",               // write = 1 (写操作)
+    "li.d    $a1, 1",               // write access
     "csrrd   $a2, CSR_BADV",
     "bl      do_page_fault",
 
@@ -435,7 +440,7 @@ global_asm!(
     "csrrd   $t0, CSR_ERA",
     "st.d    $t0, $sp, TF_ERA",
     "move    $a0, $sp",
-    "li.d    $a1, 0",
+    "li.d    $a1, 2",               // execute access
     "csrrd   $a2, CSR_BADV",
     "bl      do_page_fault",
 
@@ -479,7 +484,7 @@ global_asm!(
     "csrrd   $t0, CSR_ERA",
     "st.d    $t0, $sp, TF_ERA",
     "move    $a0, $sp",
-    "li.d    $a1, 0",
+    "li.d    $a1, 0",               // read access
     "csrrd   $a2, CSR_BADV",
     "bl      do_page_fault",
 
@@ -501,7 +506,7 @@ global_asm!(
     "csrrd   $t0, CSR_ERA",
     "st.d    $t0, $sp, TF_ERA",
     "move    $a0, $sp",
-    "li.d    $a1, 0",
+    "li.d    $a1, 2",               // execute access
     "csrrd   $a2, CSR_BADV",
     "bl      do_page_fault",
 
@@ -523,7 +528,7 @@ global_asm!(
     "csrrd   $t0, CSR_ERA",
     "st.d    $t0, $sp, TF_ERA",
     "move    $a0, $sp",
-    "li.d    $a1, 0",
+    "li.d    $a1, 3",               // access type is not encoded by TLBPE
     "csrrd   $a2, CSR_BADV",
     "bl      do_page_fault",
 
@@ -605,16 +610,28 @@ global_asm!(
     ".balign VECSIZE",
     ".Lsomeboot_handle_tlb_refill:",
     "
-    csrwr   $t0, 0x8B  // LOONGARCH_CSR_TLBRSAV - 保存 $t0
-    csrrd   $t0, 0x1b  // LA_CSR_PGD - 读取页表基址
-    lddir   $t0, $t0, 3    // PGD 级别: level 3 → DIR2 (base=39)
-    lddir   $t0, $t0, 2    // PUD 级别: level 2 → DIR1 (base=30)
-    lddir   $t0, $t0, 1    // PMD 级别: level 1 → DIR0 (base=21)
-    ldpte   $t0, 0         // PTE 级别: level 0 → PT (base=12)
-    ldpte   $t0, 1         // PTE 对
-    tlbfill                 // 填充 TLB
-    csrrd   $t0, 0x8B  // LOONGARCH_CSR_TLBRSAV - 恢复 $t0
-    ertn                    // 从异常返回
+    csrwr   $t0, 0x8B  // TLBRSAVE: preserve $t0
+    csrrd   $t0, 0x1B  // PGD: select the page-table root
+    lddir   $t0, $t0, 3
+    beqz    $t0, .Lsomeboot_tlb_invalid
+    lddir   $t0, $t0, 2
+    beqz    $t0, .Lsomeboot_tlb_invalid
+    lddir   $t0, $t0, 1
+    beqz    $t0, .Lsomeboot_tlb_invalid
+    ldpte   $t0, 0
+    ldpte   $t0, 1
+    b       .Lsomeboot_tlb_fill
+
+.Lsomeboot_tlb_invalid:
+    // Do not let a zero directory entry become a physical page-table
+    // address. Zero EntryLo values preserve the original access fault type.
+    csrwr   $r0, 0x8C  // TLBRELO0
+    csrwr   $r0, 0x8D  // TLBRELO1
+
+.Lsomeboot_tlb_fill:
+    tlbfill
+    csrrd   $t0, 0x8B  // TLBRSAVE: restore $t0
+    ertn
     ",
     // do_tlb_refill 是 noreturn，不会返回
 

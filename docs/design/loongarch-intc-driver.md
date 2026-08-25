@@ -281,3 +281,10 @@ JL-LSGD2K10 写测前后都需正常启动 Linux 并确认 ext4 无需人工 fsc
 Starry boot suite 与 `block-rw-bench`；后者的 AHCI 路径无 polling fallback，
 因此通过可覆盖真实 LIOINTC IRQ 链。若写测后发现文件系统损坏，保存串口日志、
 释放租约并停止交付；不得套用 OrangePi 专用 `fsckfix` 流程。
+
+JL-LSGD2K10 的运行期仍使用 someboot 安装的 `TLBRENTRY`。其 LoongArch refill
+walker 遇到空的中间目录项时必须立即写入两个全零的 `TLBRELO`，让硬件保留原始
+load/store/fetch fault 类型；不得继续以物理地址 0 执行 `lddir`/`ldpte`，也不得
+把包含故障虚拟页号的 `TLBREHI` 复用为 EntryLo。`test-calloc-mallocng` 的匿名页
+首次写入检查与静态 musl `calloc` 覆盖该路径，实板 `block-rw-bench` 再覆盖真实
+AHCI/LIOINTC I/O 链。
