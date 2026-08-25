@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.11.0...ax-runtime-v0.11.1) - 2026-08-25
+
+### Fixed
+
+- *(ax-runtime)* catch up expired periodic timer deadlines ([#2137](https://github.com/rcore-os/tgoskits/pull/2137))
+
+### Other
+
+- *(x86-apic-driver)* extract x86 interrupt controllers with rdif-intc support ([#2118](https://github.com/rcore-os/tgoskits/pull/2118))
+
 ## [0.11.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.10.7...ax-runtime-v0.11.0) - 2026-08-20
 
 ### Added

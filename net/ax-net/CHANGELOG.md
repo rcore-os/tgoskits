@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.9](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.8...ax-net-v0.12.9) - 2026-08-25
+
+### Fixed
+
+- *(ax-net)* validate packets before TCP snooping ([#2036](https://github.com/rcore-os/tgoskits/pull/2036))
+
 ## [0.12.8](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.7...ax-net-v0.12.8) - 2026-08-20
 
 ### Added

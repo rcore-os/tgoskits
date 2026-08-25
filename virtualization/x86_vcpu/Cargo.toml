@@ -1,6 +1,6 @@
 [package]
 name = "x86_vcpu"
-version = "0.6.0"
+version = "0.6.1"
 edition.workspace = true
 authors = [
     "Mingxian Su <aarkegz@gmail.com>",

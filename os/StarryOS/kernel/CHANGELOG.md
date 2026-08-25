@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.8.0...starry-kernel-v0.8.1) - 2026-08-25
+
+### Added
+
+- *(ax-cgroup)* expose pids.peak ([#2091](https://github.com/rcore-os/tgoskits/pull/2091))
+
+### Fixed
+
+- *(starry)* honor getgroups signed-size ABI ([#2056](https://github.com/rcore-os/tgoskits/pull/2056))
+- *(starry)* preserve ptrace request width ([#2054](https://github.com/rcore-os/tgoskits/pull/2054))
+- *(starry)* honor personality unsigned-int ABI ([#2055](https://github.com/rcore-os/tgoskits/pull/2055))
+- *(starry-kernel)* bound shebang interpreter recursion ([#2032](https://github.com/rcore-os/tgoskits/pull/2032))
+- *(runtime)* prevent QEMU timer and exec stalls ([#2130](https://github.com/rcore-os/tgoskits/pull/2130))
+- *(starry-kernel)* roll back failed COW clones ([#2096](https://github.com/rcore-os/tgoskits/pull/2096))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.7...starry-kernel-v0.8.0) - 2026-08-20
 
 ### Added

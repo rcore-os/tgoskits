@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.12.0...rdif-block-v0.12.1) - 2026-08-25
+
+### Fixed
+
+- *(ax-fs-ng)* stabilize block runtime lifecycle publication ([#2135](https://github.com/rcore-os/tgoskits/pull/2135))
+
 ## [0.12.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.11.4...rdif-block-v0.12.0) - 2026-08-20
 
 ### Added

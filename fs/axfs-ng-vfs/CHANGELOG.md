@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.6.0...axfs-ng-vfs-v0.6.1) - 2026-08-25
+
+### Fixed
+
+- *(axfs-ng-vfs)* replan unmount after topology changes ([#2150](https://github.com/rcore-os/tgoskits/pull/2150))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.8...axfs-ng-vfs-v0.6.0) - 2026-08-20
 
 ### Added

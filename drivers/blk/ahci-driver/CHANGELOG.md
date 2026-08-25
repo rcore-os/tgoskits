@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/ahci-driver-v0.2.0...ahci-driver-v0.2.1) - 2026-08-25
+
+### Fixed
+
+- *(ax-fs-ng)* stabilize block runtime lifecycle publication ([#2135](https://github.com/rcore-os/tgoskits/pull/2135))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/ahci-driver-v0.1.2...ahci-driver-v0.2.0) - 2026-08-20
 
 ### Added

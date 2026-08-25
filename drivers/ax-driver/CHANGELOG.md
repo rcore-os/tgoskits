@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.13.0...ax-driver-v0.13.1) - 2026-08-25
+
+### Other
+
+- FDT IRQ binding validation ([#2062](https://github.com/rcore-os/tgoskits/pull/2062))
+
 ## [0.13.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.3...ax-driver-v0.13.0) - 2026-08-20
 
 ### Added

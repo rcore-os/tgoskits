@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axvm-v0.6.0...axvm-v0.6.1) - 2026-08-25
+
+### Added
+
+- *(axvisor)* add pause/resume VM lifecycle endpoints ([#2098](https://github.com/rcore-os/tgoskits/pull/2098))
+
+### Fixed
+
+- *(axvisor)* restore runtime counter builds and probe shutdown ([#2181](https://github.com/rcore-os/tgoskits/pull/2181))
+- *(axvm)* allow passthrough of non-console physical UARTs ([#2120](https://github.com/rcore-os/tgoskits/pull/2120))
+- *(axvm)* avoid machine lock during runtime notification ([#2168](https://github.com/rcore-os/tgoskits/pull/2168))
+- *(axvm)* avoid machine and wait queue lock inversion ([#2145](https://github.com/rcore-os/tgoskits/pull/2145))
+- *(x86)* preserve VMX MSRs and cancel dropped APIC timers ([#2133](https://github.com/rcore-os/tgoskits/pull/2133))
+
+### Other
+
+- *(axvm)* unify virtual device registration ([#2138](https://github.com/rcore-os/tgoskits/pull/2138))
+- *(axvm)* layer architecture capabilities ([#2121](https://github.com/rcore-os/tgoskits/pull/2121))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.26...axvm-v0.6.0) - 2026-08-20
 
 ### Added

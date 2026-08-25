@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/rcore-os/tgoskits/compare/someboot-v0.4.0...someboot-v0.4.1) - 2026-08-25
+
+### Other
+
+- *(x86-apic-driver)* extract x86 interrupt controllers with rdif-intc support ([#2118](https://github.com/rcore-os/tgoskits/pull/2118))
+
 ## [0.4.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.8...someboot-v0.4.0) - 2026-08-20
 
 ### Added

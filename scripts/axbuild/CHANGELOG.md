@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.5.0...axbuild-v0.5.1) - 2026-08-25
+
+### Fixed
+
+- *(axbuild)* use executable probe test fixtures ([#2183](https://github.com/rcore-os/tgoskits/pull/2183))
+- *(axvisor)* restore runtime counter builds and probe shutdown ([#2181](https://github.com/rcore-os/tgoskits/pull/2181))
+- *(ax-fs-ng)* stabilize block runtime lifecycle publication ([#2135](https://github.com/rcore-os/tgoskits/pull/2135))
+- *(axbuild)* unify qperf support contracts ([#2123](https://github.com/rcore-os/tgoskits/pull/2123))
+- *(axbuild)* narrow clippy for workspace dependency changes ([#2134](https://github.com/rcore-os/tgoskits/pull/2134))
+
+### Other
+
+- FDT IRQ binding validation ([#2062](https://github.com/rcore-os/tgoskits/pull/2062))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.23...axbuild-v0.5.0) - 2026-08-20
 
 ### Added

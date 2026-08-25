@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.6.0...axdevice-v0.6.1) - 2026-08-25
+
+### Fixed
+
+- *(axdevice)* propagate unrecoverable fw_cfg DMA faults ([#2139](https://github.com/rcore-os/tgoskits/pull/2139))
+
+### Other
+
+- *(axvm)* unify virtual device registration ([#2138](https://github.com/rcore-os/tgoskits/pull/2138))
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.5.7...axdevice-v0.6.0) - 2026-08-20
 
 ### Added
