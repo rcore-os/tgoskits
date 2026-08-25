@@ -43,6 +43,8 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfi
         "api::std_tests::axtask_api_task_registry_functions_exist_hold",
         "api::std_tests::axtask_api_type_aliases_hold",
         "api::tests::task_initialization_precedes_scheduling",
+        "timers::tests::consumed_timer_irq_allows_a_later_live_deadline",
+        "timers::tests::elapsed_deadline_remains_owned_until_the_timer_irq_is_consumed",
     ],
 }];
 
@@ -572,7 +574,18 @@ fn validate_discovered_tests(
             expected.iter().cloned().collect::<Vec<_>>().join(", ")
         );
     }
-    if discovered != expected {
+    let missing = expected
+        .difference(&discovered)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "required tests [{}] were not discovered; discovered [{}]",
+            missing.join(", "),
+            discovered.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+    if profile.name_filter.is_some() && discovered != expected {
         bail!(
             "expected [{}], discovered [{}]",
             expected.iter().cloned().collect::<Vec<_>>().join(", "),
@@ -1276,6 +1289,28 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("discovered 0 tests"));
+    }
+
+    #[test]
+    fn unfiltered_profile_discovery_accepts_additional_tests() {
+        let profile = &AX_TASK_FEATURE_PROFILES[0];
+        let mut tests = profile.expected_tests.to_vec();
+        tests.push("timers::tests::an_additional_regression");
+
+        validate_discovered_tests(profile, &render_test_list(&tests)).unwrap();
+    }
+
+    #[test]
+    fn filtered_profile_discovery_rejects_additional_tests() {
+        let profile = &AX_DRIVER_FEATURE_PROFILES[1];
+        let tests = [
+            PCI_FDT_IRQ_CAPABILITY_TEST,
+            "pci_fdt_interrupt_map_unrelated_test",
+        ];
+
+        let err = validate_discovered_tests(profile, &render_test_list(&tests)).unwrap_err();
+
+        assert!(err.to_string().contains("expected ["));
     }
 
     #[test]
