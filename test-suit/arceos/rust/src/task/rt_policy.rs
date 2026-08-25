@@ -236,6 +236,16 @@ fn preempted_rt_push_wakes_the_overloaded_owner(cpu_count: usize) {
         })
     };
     api::ax_wait_queue_wait_until(&W90_WAIT, || W90_READY.load(Ordering::Acquire), None);
+    // READY is published before W90 parks; only a blocked W90 guarantees the
+    // later targeted wake finds its waiter.
+    let w90_raw = wake_w90.thread().id().as_u64().get();
+    let w90_blocked = Instant::now();
+    while !task_test_hooks::thread_is_blocked(w90_raw) {
+        if w90_blocked.elapsed() >= PROMOTION_TIMEOUT {
+            panic!("the FIFO 90 wakee must block before the push scenario starts");
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
 
     let join_s95 = {
         let release = &S95_RELEASE;
