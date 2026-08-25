@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **Breaking:** replace raw timer tokens with the host-associated `TimerHandle` and typed cancellation/rearm results for LAPIC and PIT timers.
-
 ## [0.5.2](https://github.com/rcore-os/tgoskits/compare/x86_vlapic-v0.5.1...x86_vlapic-v0.5.2) - 2026-08-25
 
 ### Fixed

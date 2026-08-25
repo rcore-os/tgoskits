@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **Breaking:** replace the AxVM timer wheel and worker with the typed `HostTimer` capability backed by the ArceOS per-CPU timer service.
-- Publish blocked-vCPU wake generations before IRQ-safe wait-queue wakeups and expose VM-level wake diagnostics.
-
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axvm-v0.6.0...axvm-v0.6.1) - 2026-08-25
 
 ### Added
