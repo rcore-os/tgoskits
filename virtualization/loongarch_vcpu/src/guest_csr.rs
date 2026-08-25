@@ -110,15 +110,24 @@ impl<H: LoongArchHostOps> GuestTimerRegistration<H> {
 
     pub(crate) fn cancel(&mut self) -> LoongArchVcpuResult {
         let active = self.active_generation.swap(0, Ordering::AcqRel);
-        if let Some(handle) = self.handle.take() {
-            // A callback that already claimed this generation owns its
-            // completion and has made the handle stale. Otherwise invalidate
-            // before cancelling so a claimed-but-not-run callback cannot
-            // publish an obsolete guest interrupt.
-            if active != 0 {
-                H::cancel_timer(handle)?;
-            }
+        let Some(handle) = self.handle else {
+            return Ok(());
+        };
+        // A callback that already claimed this generation owns its completion
+        // and has made the handle stale. Otherwise invalidate before
+        // cancelling so a claimed-but-not-run callback cannot publish an
+        // obsolete guest interrupt.
+        if active == 0 {
+            self.handle = None;
+            return Ok(());
         }
+        if let Err(error) = H::cancel_timer(handle) {
+            // Cancellation did not consume the registration. Restore both
+            // pieces of logical ownership so callers and Drop can retry.
+            self.active_generation.store(active, Ordering::Release);
+            return Err(error);
+        }
+        self.handle = None;
         Ok(())
     }
 }
@@ -583,8 +592,12 @@ mod tests {
     use crate::{LoongArchHostPhysAddr, LoongArchHostVirtAddr};
 
     static CANCELS: AtomicUsize = AtomicUsize::new(0);
+    static FAIL_ONCE_CANCELS: AtomicUsize = AtomicUsize::new(0);
+    static CANCEL_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
     struct TestHost;
+
+    struct FailOnceCancelHost;
 
     impl LoongArchHostOps for TestHost {
         type TimerHandle = u64;
@@ -610,6 +623,44 @@ mod tests {
 
         fn cancel_timer(_handle: Self::TimerHandle) -> LoongArchVcpuResult {
             CANCELS.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn inject_interrupt(_vm_id: usize, _vcpu_id: usize, _vector: usize) {}
+    }
+
+    impl LoongArchHostOps for FailOnceCancelHost {
+        type TimerHandle = u64;
+
+        fn virt_to_phys(vaddr: LoongArchHostVirtAddr) -> LoongArchHostPhysAddr {
+            LoongArchHostPhysAddr::from_usize(vaddr.as_usize())
+        }
+
+        fn current_time_nanos() -> u64 {
+            0
+        }
+
+        fn ticks_to_nanos(ticks: u64) -> u64 {
+            ticks
+        }
+
+        fn register_timer(
+            _deadline: Duration,
+            _callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+        ) -> LoongArchVcpuResult<Self::TimerHandle> {
+            Ok(1)
+        }
+
+        fn cancel_timer(_handle: Self::TimerHandle) -> LoongArchVcpuResult {
+            FAIL_ONCE_CANCELS.fetch_add(1, Ordering::Relaxed);
+            if CANCEL_FAILURES
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |failures| {
+                    failures.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(crate::types::LoongArchVcpuError::TimerUnavailable);
+            }
             Ok(())
         }
 
@@ -654,5 +705,27 @@ mod tests {
 
         timer.cancel().unwrap();
         assert_eq!(CANCELS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn failed_cancel_preserves_registration_for_retry() {
+        FAIL_ONCE_CANCELS.store(0, Ordering::Relaxed);
+        CANCEL_FAILURES.store(1, Ordering::Relaxed);
+        let mut timer = GuestTimerRegistration::<FailOnceCancelHost>::new();
+        let generation = timer.next_generation().unwrap();
+        timer.active_generation.store(generation, Ordering::Release);
+        timer.handle = Some(1);
+
+        assert_eq!(
+            timer.cancel(),
+            Err(crate::types::LoongArchVcpuError::TimerUnavailable)
+        );
+        assert_eq!(timer.handle, Some(1));
+        assert_eq!(timer.active_generation.load(Ordering::Acquire), generation);
+        assert_eq!(FAIL_ONCE_CANCELS.load(Ordering::Relaxed), 1);
+
+        timer.cancel().unwrap();
+        assert_eq!(timer.handle, None);
+        assert_eq!(FAIL_ONCE_CANCELS.load(Ordering::Relaxed), 2);
     }
 }

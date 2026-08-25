@@ -37,12 +37,6 @@ impl VcpuTimerWaitGeneration {
         VcpuTimerWaitToken { generation }
     }
 
-    /// Returns the currently armed generation after acquiring its state.
-    pub(crate) fn armed(&self) -> Option<VcpuTimerWaitToken> {
-        let generation = self.armed.load(Ordering::Acquire);
-        (generation != 0).then_some(VcpuTimerWaitToken { generation })
-    }
-
     /// Claims one generation and publishes completion before its wake.
     pub(crate) fn complete(&self, token: VcpuTimerWaitToken) -> bool {
         if self
@@ -80,7 +74,7 @@ mod tests {
         let state = VcpuTimerWaitGeneration::new();
         let token = state.arm();
 
-        assert_eq!(state.armed(), Some(token));
+        assert!(!state.is_completed(token));
         assert!(state.complete(token));
         assert!(state.is_completed(token));
         assert!(!state.complete(token));

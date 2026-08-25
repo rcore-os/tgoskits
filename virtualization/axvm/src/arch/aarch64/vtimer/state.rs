@@ -38,9 +38,16 @@ struct ScheduledWaitTimer {
 
 pub(in crate::arch::aarch64) type Aarch64TimerWaitToken = crate::vm::VcpuTimerWaitToken;
 
+#[derive(Clone, Copy)]
+struct ArmedTimerWait {
+    token: Aarch64TimerWaitToken,
+    deadline_counter: u64,
+    timer_epoch: u64,
+}
+
 struct Aarch64TimerWaitState {
     completion: crate::vm::VcpuTimerWaitGeneration,
-    deadline_counter: AtomicU64,
+    armed_timer: IrqSafeMutex<Option<ArmedTimerWait>>,
     next_timer_epoch: AtomicU64,
     active_timer_epoch: AtomicU64,
     wake: OnceLock<crate::vm::VcpuTimerWakeHandle>,
@@ -50,7 +57,7 @@ impl Aarch64TimerWaitState {
     const fn new() -> Self {
         Self {
             completion: crate::vm::VcpuTimerWaitGeneration::new(),
-            deadline_counter: AtomicU64::new(0),
+            armed_timer: IrqSafeMutex::new(None),
             next_timer_epoch: AtomicU64::new(0),
             active_timer_epoch: AtomicU64::new(0),
             wake: OnceLock::new(),
@@ -62,20 +69,24 @@ impl Aarch64TimerWaitState {
             .get_or_init(|| runtime.vcpu_timer_wake_handle(vcpu.raw()));
     }
 
-    fn arm_for_current_thread(&self, deadline_counter: u64) -> Aarch64TimerWaitToken {
-        self.deadline_counter
-            .store(deadline_counter, Ordering::Relaxed);
-        self.completion.arm()
+    fn arm_for_current_thread(
+        &self,
+        deadline_counter: u64,
+        timer_epoch: u64,
+    ) -> Aarch64TimerWaitToken {
+        let mut armed_timer = self.armed_timer.lock();
+        let token = self.completion.arm();
+        *armed_timer = Some(ArmedTimerWait {
+            token,
+            deadline_counter,
+            timer_epoch,
+        });
+        token
     }
 
-    fn armed_deadline(&self) -> Option<(Aarch64TimerWaitToken, u64)> {
-        loop {
-            let token = self.completion.armed()?;
-            let deadline_counter = self.deadline_counter.load(Ordering::Relaxed);
-            if self.completion.armed() == Some(token) {
-                return Some((token, deadline_counter));
-            }
-        }
+    fn armed_deadline_for_epoch(&self, timer_epoch: u64) -> Option<(Aarch64TimerWaitToken, u64)> {
+        let armed = (*self.armed_timer.lock())?;
+        (armed.timer_epoch == timer_epoch).then_some((armed.token, armed.deadline_counter))
     }
 
     fn begin_timer_epoch(&self) -> u64 {
@@ -101,11 +112,23 @@ impl Aarch64TimerWaitState {
                 .compare_exchange(epoch, 0, Ordering::AcqRel, Ordering::Acquire);
     }
 
-    fn publish_completion(&self, token: Aarch64TimerWaitToken) -> bool {
-        self.completion.complete(token)
+    fn publish_completion_for_epoch(&self, timer_epoch: u64, token: Aarch64TimerWaitToken) -> bool {
+        let mut armed_timer = self.armed_timer.lock();
+        if !armed_timer
+            .is_some_and(|armed| armed.timer_epoch == timer_epoch && armed.token == token)
+            || !self.completion.complete(token)
+        {
+            return false;
+        }
+        *armed_timer = None;
+        true
     }
 
     fn cancel_arm(&self, token: Aarch64TimerWaitToken) {
+        let mut armed_timer = self.armed_timer.lock();
+        if armed_timer.is_some_and(|armed| armed.token == token) {
+            *armed_timer = None;
+        }
         self.completion.cancel(token);
     }
 
@@ -114,6 +137,7 @@ impl Aarch64TimerWaitState {
     }
 
     fn invalidate(&self) -> bool {
+        *self.armed_timer.lock() = None;
         self.completion.invalidate()
     }
 
@@ -252,7 +276,6 @@ impl Aarch64TimerBinding {
             return Ok(None);
         };
 
-        let wait_token = self.wait_state.arm_for_current_thread(deadline_counter);
         let deadline_ns = host_deadline_ns(deadline_counter, now_counter, self.frequency);
         let deadline = Duration::from_nanos(deadline_ns);
         let current_cpu = default_host().this_cpu_id();
@@ -260,6 +283,9 @@ impl Aarch64TimerBinding {
         if let Some(existing) = existing
             && existing.owner_cpu == current_cpu
         {
+            let wait_token = self
+                .wait_state
+                .arm_for_current_thread(deadline_counter, existing.epoch);
             default_host()
                 .arm_hard_timer(existing.handle, deadline)
                 .map_err(|error| {
@@ -277,20 +303,25 @@ impl Aarch64TimerBinding {
             cancel_wait_timer(previous.handle);
         }
         let epoch = self.wait_state.begin_timer_epoch();
+        let wait_token = self
+            .wait_state
+            .arm_for_current_thread(deadline_counter, epoch);
         let frequency = self.frequency;
         let wait_state = Arc::clone(&self.wait_state);
         let registration = unsafe {
             // SAFETY: the stable callback reads only the architectural counter
-            // and atomically published arm state, then invokes the prebound
-            // hard-IRQ-safe wait-queue capability. It does not allocate, free,
-            // sleep, log, or acquire AxVM/VGIC/runtime locks.
+            // and claims a bounded IRQ-safe arm-state lock, then invokes the
+            // prebound hard-IRQ-safe wait-queue capability. It does not
+            // allocate, free, sleep, log, or acquire VGIC/runtime locks.
             default_host().register_hard_restartable_timer(
                 deadline,
                 Box::new(move |_| {
                     if !wait_state.timer_epoch_is_active(epoch) {
                         return HostHardTimerAction::Complete;
                     }
-                    let Some((wait_token, deadline_counter)) = wait_state.armed_deadline() else {
+                    let Some((wait_token, deadline_counter)) =
+                        wait_state.armed_deadline_for_epoch(epoch)
+                    else {
                         return HostHardTimerAction::Disarm;
                     };
                     let now_counter = physical_counter();
@@ -299,7 +330,7 @@ impl Aarch64TimerBinding {
                             host_deadline_ns(deadline_counter, now_counter, frequency);
                         return HostHardTimerAction::Rearm(Duration::from_nanos(deadline_ns));
                     }
-                    if wait_state.publish_completion(wait_token) {
+                    if wait_state.publish_completion_for_epoch(epoch, wait_token) {
                         wait_state.wake_from_hard_timer();
                     }
                     HostHardTimerAction::Disarm
@@ -400,6 +431,32 @@ impl Aarch64TimerBinding {
                 activation.owner_cpu
             ),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_timer_epoch_cannot_complete_rearmed_wait() {
+        let state = Aarch64TimerWaitState::new();
+        let old_epoch = state.begin_timer_epoch();
+        let old_token = state.arm_for_current_thread(10, old_epoch);
+
+        // Model an old hard callback that has already crossed its first epoch
+        // check when migration invalidates and re-registers the timer.
+        assert!(state.timer_epoch_is_active(old_epoch));
+        assert!(state.invalidate());
+        let new_epoch = state.begin_timer_epoch();
+        let new_token = state.arm_for_current_thread(20, new_epoch);
+        assert_ne!(old_token, new_token);
+        assert_ne!(old_epoch, new_epoch);
+
+        let (observed_token, _) = state.armed_deadline_for_epoch(new_epoch).unwrap();
+        assert_eq!(observed_token, new_token);
+        assert!(!state.publish_completion_for_epoch(old_epoch, observed_token));
+        assert!(!state.is_completed(new_token));
     }
 }
 

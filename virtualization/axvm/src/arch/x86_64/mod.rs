@@ -27,7 +27,14 @@ use x86_vcpu::{
 use x86_vlapic::*;
 
 use super::*;
-use crate::{host::*, irq::deferred::*, vcpu::*};
+use crate::{
+    host::*,
+    irq::{
+        deferred::*,
+        model::{PendingVcpuInterrupt, VirtualInterruptId},
+    },
+    vcpu::*,
+};
 
 mod acpi_pm_timer;
 pub(crate) mod boot;
@@ -258,6 +265,17 @@ fn x86_halt_action() -> VcpuRunAction {
     }
 }
 
+fn pit_ioapic_pending(interrupt: IoApicInterrupt) -> PendingVcpuInterrupt {
+    PendingVcpuInterrupt {
+        id: VirtualInterruptId(u32::from(interrupt.vector)),
+        trigger: if interrupt.level_triggered {
+            InterruptTriggerMode::LevelTriggered
+        } else {
+            InterruptTriggerMode::EdgeTriggered
+        },
+    }
+}
+
 pub(crate) struct AxvmX86HostOps;
 
 impl X86VlapicHostOps for AxvmX86HostOps {
@@ -357,7 +375,10 @@ impl X86VlapicHostOps for AxvmX86HostOps {
                 .ok()
                 .and_then(|ioapic| ioapic.assert_gsi(0))
             {
-                return manager::inject_interrupt(vm_id, vcpu_id, interrupt.vector as usize)
+                return vm
+                    .runtime_handle()
+                    .map_err(ax_error_to_vlapic)?
+                    .dispatch_vcpu_interrupt(vcpu_id, pit_ioapic_pending(interrupt))
                     .map_err(ax_error_to_vlapic);
             }
             Ok(())
@@ -1088,5 +1109,22 @@ mod tests {
         assert!(x86_interrupt_is_level_triggered(
             InterruptTriggerMode::LevelTriggered
         ));
+    }
+
+    #[test]
+    fn pit_ioapic_interrupt_preserves_trigger_mode() {
+        let level = pit_ioapic_pending(IoApicInterrupt {
+            vector: 0x31,
+            level_triggered: true,
+        });
+        assert_eq!(level.id, VirtualInterruptId(0x31));
+        assert_eq!(level.trigger, InterruptTriggerMode::LevelTriggered);
+
+        let edge = pit_ioapic_pending(IoApicInterrupt {
+            vector: 0x32,
+            level_triggered: false,
+        });
+        assert_eq!(edge.id, VirtualInterruptId(0x32));
+        assert_eq!(edge.trigger, InterruptTriggerMode::EdgeTriggered);
     }
 }

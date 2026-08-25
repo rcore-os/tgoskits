@@ -509,8 +509,11 @@ impl VmRuntimeHandle {
     /// The dispatcher releases its queue lock before this method notifies
     /// waiters or invokes the host IPI boundary.
     #[cfg_attr(
-        not(target_arch = "riscv64"),
-        expect(dead_code, reason = "currently consumed by the RISC-V IPI router")
+        not(any(target_arch = "riscv64", target_arch = "x86_64")),
+        expect(
+            dead_code,
+            reason = "currently consumed by the RISC-V IPI router and x86 PIT"
+        )
     )]
     pub(crate) fn dispatch_vcpu_interrupt(
         &self,
