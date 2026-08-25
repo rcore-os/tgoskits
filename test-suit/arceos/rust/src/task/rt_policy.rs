@@ -11,6 +11,7 @@ use std::{
             set_thread_policy,
         },
     },
+    println,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -191,6 +192,140 @@ fn stop_worker(
     worker.join().unwrap();
 }
 
+/// Linux `check_preempt_curr_rt()` queues `push_rt_tasks` whenever a
+/// migratable RT wake leaves its rq overloaded; the callback runs at the
+/// next scheduling boundary even though the wakee preempted the donor. The
+/// preempted donor must therefore migrate to a lower-urgency CPU instead of
+/// staying queued behind the wakee.
+fn preempted_rt_push_wakes_the_overloaded_owner(cpu_count: usize) {
+    static M40_RELEASE: AtomicBool = AtomicBool::new(false);
+    static W90_RELEASE: AtomicBool = AtomicBool::new(false);
+    static S95_RELEASE: AtomicBool = AtomicBool::new(false);
+    static S20_RELEASE: AtomicBool = AtomicBool::new(false);
+    static W90_READY: AtomicBool = AtomicBool::new(false);
+    static M40_RUNNING: AtomicBool = AtomicBool::new(false);
+    static M40_RAN_ON: AtomicU64 = AtomicU64::new(u64::MAX);
+    static W90_WAIT: AxWaitQueueHandle = AxWaitQueueHandle::new();
+
+    M40_RELEASE.store(false, Ordering::Release);
+    W90_RELEASE.store(false, Ordering::Release);
+    S95_RELEASE.store(false, Ordering::Release);
+    S20_RELEASE.store(false, Ordering::Release);
+    W90_READY.store(false, Ordering::Release);
+    M40_RUNNING.store(false, Ordering::Release);
+    M40_RAN_ON.store(u64::MAX, Ordering::Release);
+
+    // The console's serial worker lives on CPU 0: no FIFO spinner may share
+    // its CPU, or the suite can never report its result. The controller stays
+    // on CPU 0; W90/M40 use CPU 1, the FIFO 20 guard uses CPU 2, and the FIFO
+    // 95 guard uses CPU 3.
+
+    let wake_w90 = {
+        let ready = &W90_READY;
+        let release = &W90_RELEASE;
+        thread::spawn(move || {
+            assert!(ax_set_current_affinity(AxCpuMask::one_shot(1)).is_ok());
+            set_thread_policy(
+                current_thread_id().expect("the FIFO 90 wakee must have an identity"),
+                SchedulePolicy::fifo(RtPriority::new(90).expect("priority 90 must be valid")),
+            )
+            .expect("the FIFO 90 wakee must accept its policy");
+            ready.store(true, Ordering::Release);
+            api::ax_wait_queue_wake(&W90_WAIT, 1);
+            api::ax_wait_queue_wait_until(&W90_WAIT, || release.load(Ordering::Acquire), None);
+        })
+    };
+    api::ax_wait_queue_wait_until(&W90_WAIT, || W90_READY.load(Ordering::Acquire), None);
+
+    let join_s95 = {
+        let release = &S95_RELEASE;
+        thread::spawn(move || {
+            assert!(ax_set_current_affinity(AxCpuMask::one_shot(3)).is_ok());
+            set_thread_policy(
+                current_thread_id().expect("the FIFO 95 guard must have an identity"),
+                SchedulePolicy::fifo(RtPriority::new(95).expect("priority 95 must be valid")),
+            )
+            .expect("the FIFO 95 guard must accept its policy");
+            while !release.load(Ordering::Acquire) {
+                hint::spin_loop();
+            }
+        })
+    };
+    let join_s20 = {
+        let release = &S20_RELEASE;
+        thread::spawn(move || {
+            assert!(ax_set_current_affinity(AxCpuMask::one_shot(2)).is_ok());
+            set_thread_policy(
+                current_thread_id().expect("the FIFO 20 guard must have an identity"),
+                SchedulePolicy::fifo(RtPriority::new(20).expect("priority 20 must be valid")),
+            )
+            .expect("the FIFO 20 guard must accept its policy");
+            while !release.load(Ordering::Acquire) {
+                hint::spin_loop();
+            }
+        })
+    };
+    let join_m40 = {
+        let running = &M40_RUNNING;
+        let release = &M40_RELEASE;
+        let ran_on = &M40_RAN_ON;
+        thread::spawn(move || {
+            assert!(ax_set_current_affinity(AxCpuMask::one_shot(1)).is_ok());
+            set_thread_policy(
+                current_thread_id().expect("the FIFO 40 donor must have an identity"),
+                SchedulePolicy::fifo(RtPriority::new(40).expect("priority 40 must be valid")),
+            )
+            .expect("the FIFO 40 donor must accept its policy");
+            assert!(ax_set_current_affinity(AxCpuMask::from_raw_bits(0b110)).is_ok());
+            running.store(true, Ordering::Release);
+            api::ax_wait_queue_wake(&W90_WAIT, 1);
+            while !release.load(Ordering::Acquire) {
+                ran_on.store(this_cpu_id() as u64, Ordering::Release);
+            }
+        })
+    };
+    let m40_gate = Instant::now();
+    while !M40_RUNNING.load(Ordering::Acquire) {
+        if m40_gate.elapsed() >= Duration::from_millis(2_000) {
+            panic!("the FIFO 40 donor never started spinning");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    // FIFO 90 wake lands on CPU 0 (its previous CPU), preempts the FIFO 40
+    // donor, and leaves CPU 0 overloaded. Linux pushes the preempted donor to
+    // CPU 2, whose FIFO 20 guard is less urgent than the FIFO 40 donor.
+    assert_eq!(api::ax_wait_queue_wake(&W90_WAIT, 1), 1);
+    let push_started = Instant::now();
+    while M40_RAN_ON.load(Ordering::Acquire) != 2 {
+        if push_started.elapsed() >= PROMOTION_TIMEOUT {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        M40_RAN_ON.load(Ordering::Acquire),
+        2,
+        "the preempted FIFO 40 donor must be pushed off the overloaded CPU 1"
+    );
+    M40_RELEASE.store(true, Ordering::Release);
+    W90_RELEASE.store(true, Ordering::Release);
+    S95_RELEASE.store(true, Ordering::Release);
+    S20_RELEASE.store(true, Ordering::Release);
+    join_m40
+        .join()
+        .expect("the FIFO 40 donor must exit normally");
+    wake_w90
+        .join()
+        .expect("the FIFO 90 wakee must exit normally");
+    join_s95
+        .join()
+        .expect("the FIFO 95 guard must exit normally");
+    join_s20
+        .join()
+        .expect("the FIFO 20 guard must exit normally");
+}
+
 pub fn run() -> crate::TestResult {
     let default_config = TaskSystemConfig::new(1);
     assert_eq!(
@@ -220,6 +355,9 @@ pub fn run() -> crate::TestResult {
     equal_priority_pinned_rt_wake_preempts_migratable_current(cpu_count, false);
     equal_priority_pinned_rt_wake_preempts_migratable_current(cpu_count, true);
     higher_priority_rt_wake_stays_on_previous_cpu(cpu_count);
+    if cpu_count >= 4 {
+        preempted_rt_push_wakes_the_overloaded_owner(cpu_count);
+    }
 
     let promoted = Arc::new(AtomicBool::new(false));
     let promotion_failed = Arc::new(AtomicBool::new(false));

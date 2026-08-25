@@ -221,6 +221,11 @@ impl TaskSystem {
         self.root_domain.rt_bandwidth_enabled()
     }
 
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn throttled_rt_rq_keeps_overload_publication() -> (bool, bool) {
+        RootDomain::throttled_rt_rq_keeps_overload_publication_for_test()
+    }
+
     pub(crate) fn service_rt_period(&self, cpu: &CpuLocal, now: MonotonicInstant) -> bool {
         self.root_domain.service_rt_period(self, cpu.owner(), now)
     }

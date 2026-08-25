@@ -837,6 +837,33 @@ pub fn request_cpu_lazy_reschedule(cpu: u32) -> Result<(), crate::TaskError> {
     Ok(())
 }
 
+/// Publishes one ordinary preemption request for an online CPU.
+///
+/// This models the remote half of a higher-priority wake whose target-rq
+/// transaction has already committed: only its reschedule request remains
+/// to be observed by the local scheduler.
+pub fn request_cpu_immediate_reschedule(cpu: u32) -> Result<(), crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let cpu = crate::CpuId::new(cpu);
+    let system = crate::facade::runtime_task_system()?;
+    let remote = system
+        .cpu_remote(cpu)
+        .ok_or(crate::TaskError::CpuOffline(cpu.as_u32()))?;
+    remote.request_reschedule(crate::system::RescheduleKind::Immediate);
+    Ok(())
+}
+
+/// Returns whether one CPU still holds an ordinary preemption request.
+pub fn cpu_immediate_preemption_requested(cpu: u32) -> Result<bool, crate::TaskError> {
+    let _pin = crate::lock::PreemptScope::enter();
+    let cpu = crate::CpuId::new(cpu);
+    let system = crate::facade::runtime_task_system()?;
+    let remote = system
+        .cpu_remote(cpu)
+        .ok_or(crate::TaskError::CpuOffline(cpu.as_u32()))?;
+    Ok(remote.immediate_preemption_requested())
+}
+
 /// Returns the current CPU's completed scheduler-deadline derivation count.
 pub fn current_scheduler_deadline_derivations() -> Result<u64, crate::TaskError> {
     let _pin = crate::lock::PreemptScope::enter();

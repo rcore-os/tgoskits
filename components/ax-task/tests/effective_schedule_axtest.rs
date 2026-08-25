@@ -34,6 +34,32 @@ fn unchanged_fifo_effective_key_is_not_republished() {
 }
 
 #[axtest]
+fn waking_a_runnable_thread_does_not_poison_its_next_park() {
+    let (notified, wake_pending) = ax_task::axtest_runnable_wake_park_cleanliness();
+
+    ax_assert!(notified);
+    ax_assert!(
+        !wake_pending,
+        "Linux try_to_wake_up() is a no-op on a TASK_RUNNING target"
+    );
+}
+
+#[axtest]
+fn throttled_rt_rq_keeps_its_overload_and_priority_publication() {
+    let (overload_visible, priority_visible) =
+        ax_task::axtest_throttled_rt_rq_overload_publication();
+
+    ax_assert!(
+        overload_visible,
+        "Linux keeps rto_mask set across an RT throttle edge"
+    );
+    ax_assert!(
+        priority_visible,
+        "Linux keeps highest_prio.curr published while throttled"
+    );
+}
+
+#[axtest]
 fn running_interval_is_committed_only_at_switch_out() {
     let (initial, while_running, after_switch_out) =
         ax_task::axtest_runtime_interval_commit_samples();

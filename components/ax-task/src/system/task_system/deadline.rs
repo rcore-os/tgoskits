@@ -200,6 +200,7 @@ impl TaskSystem {
                 preempts_current.then_some(RescheduleKind::Immediate),
                 false,
                 None,
+                false,
             );
         }
     }

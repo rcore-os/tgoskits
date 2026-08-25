@@ -399,6 +399,28 @@ impl TaskSystem {
         self.wake_thread(core, WakerCpuSource::Explicit(waker), WakeIntent::Normal)
     }
 
+    /// Observes whether waking a runnable thread leaves stray wake bits.
+    ///
+    /// Linux `try_to_wake_up()` on a `TASK_RUNNING` target is a complete
+    /// no-op: the failed state match returns before any state is published,
+    /// so the task's next sleep must still succeed on its first attempt.
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn exercise_runnable_wake_park_cleanliness_for_test(&self) -> (bool, bool) {
+        let thread = ThreadId::from_parts(0, 1);
+        let policy = SchedulePolicy::default();
+        let sched = alloc::sync::Arc::new(crate::system::ThreadSchedCell::new_test(thread, policy));
+        let core = Arc::new(ThreadCore::new(
+            thread, policy, sched, None, None, None, None,
+        ));
+        core.transition_state(ThreadState::Running)
+            .expect("test thread must enter Running");
+        let result = self.wake_thread_direct(Arc::clone(&core), Some(CpuId::new(0)));
+        (
+            matches!(result, WakeResult::Notified),
+            core.wake_is_pending(),
+        )
+    }
+
     pub(crate) fn wake_thread_from_current_cpu(
         &self,
         core: Arc<ThreadCore>,
@@ -435,11 +457,15 @@ impl TaskSystem {
             return WakeResult::AlreadyPending;
         }
         match wake_publication.state() {
-            ThreadState::Parking
-            | ThreadState::Ready
-            | ThreadState::Running
-            | ThreadState::Waking
-            | ThreadState::New => return WakeResult::Notified,
+            ThreadState::Parking => return WakeResult::Notified,
+            ThreadState::Ready | ThreadState::Running | ThreadState::Waking | ThreadState::New => {
+                // Linux leaves a runnable task untouched when the state match
+                // in `try_to_wake_up()` fails. Roll the sticky publication back
+                // so the thread's next park is not aborted by a phantom
+                // notification; a racing park publication keeps the bits.
+                core.discard_runnable_wake();
+                return WakeResult::Notified;
+            }
             ThreadState::Exited => {
                 core.discard_failed_wake();
                 return WakeResult::Exited;
@@ -457,18 +483,23 @@ impl TaskSystem {
                 core.discard_failed_wake();
                 return WakeResult::Exited;
             }
+            if matches!(sched.lifecycle.state(), ThreadState::Parking) {
+                // Parking and its final transition to Blocked are serialized by
+                // this task lock, matching Linux try_to_wake_up() under
+                // p->pi_lock. If the parker still owns the task, the sticky
+                // notification is the complete transaction; otherwise the
+                // Blocked path below performs the no-fail runnable publication.
+                return WakeResult::Notified;
+            }
             if matches!(
                 sched.lifecycle.state(),
-                ThreadState::Parking
-                    | ThreadState::Ready
-                    | ThreadState::Running
-                    | ThreadState::Waking
+                ThreadState::Ready | ThreadState::Running | ThreadState::Waking
             ) {
-                // Parking and its final transition to Blocked are serialized by
-                // this task lock, matching Linux try_to_wake_up() under p->pi_lock.
-                // If the parker still owns the task, the sticky notification is
-                // the complete transaction; otherwise the Blocked path below
-                // performs the no-fail runnable publication.
+                // The task lock serializes every park publication, so a
+                // runnable state cannot become Parking behind this lock. The
+                // wake stays a pure no-op, exactly like a failed state match
+                // in Linux `try_to_wake_up()`.
+                core.discard_runnable_wake();
                 return WakeResult::Notified;
             }
             // Linux checks `p->on_rq` and runs `ttwu_runnable()` before it
@@ -1040,6 +1071,19 @@ impl TaskSystem {
         #[cfg(feature = "qperf-metrics")]
         crate::metrics::record_direct_wake_activation();
         let rt_deadline_push_pending = self.rt_deadline_push_pending(remote);
+        let wakee_migration_capable = sched.affinity.affinity.is_migration_capable();
+        // Linux `check_preempt_curr_rt()` tests `rq->rt.overloaded`, a
+        // runnable-count fact: a wakee joining an RT/DL donor makes the rq
+        // overloaded even before the donor's `put_prev_task()` links it into
+        // the pushable list.
+        let donor_rt_or_dl = run_queue.current().is_some_and(|current| {
+            matches!(
+                current.schedule_policy(),
+                SchedulePolicy::Fifo { .. }
+                    | SchedulePolicy::RoundRobin { .. }
+                    | SchedulePolicy::Deadline(_)
+            )
+        });
         run_queue.commit();
         drop(sched_guard);
         let rt_period_started = self.activate_owner_rt_period_for_policy(target, policy);
@@ -1071,9 +1115,8 @@ impl TaskSystem {
             if preempts_current {
                 remote.request_reschedule(RescheduleKind::Immediate);
             }
-            // The reserved Deadline refresh is already an owner-control
-            // publication. Its scheduler-work bit covers RT/DL push and a new
-            // root-period projection, so a second generation is redundant.
+            // The reserved Deadline refresh is an owner-control publication
+            // that owns the CBS clockevent re-derivation.
             self.publish_owner_deadline_refresh_reserved(core, target, publication);
         } else {
             drop(publication);
@@ -1086,6 +1129,19 @@ impl TaskSystem {
                 (None, false) => {}
             }
         }
+        // Linux `check_preempt_curr_rt()`/`enqueue_task_dl()` queue one push
+        // callback whenever a migratable RT/DL wake joins an RT/DL donor, and
+        // `task_woken_rt()`/`task_woken_dl()` add the same work when the wakee
+        // cannot preempt. The enqueue transaction has committed, so the
+        // serialized push iterator can start at this rq; in the preemption
+        // case its doorbell drives the post-switch safe point that performs
+        // the migration once the donor becomes pushable.
+        self.start_rt_deadline_push_for_wake(
+            target,
+            policy,
+            donor_rt_or_dl,
+            wakee_migration_capable,
+        );
         WakeResult::Notified
     }
 
@@ -1100,6 +1156,7 @@ impl TaskSystem {
         let (sched, irq_owner) = sched_guard.split_irq_owner();
         let commit =
             self.enqueue_owner_thread_locked(cpu.as_mut(), &core, sched, &irq_owner, reason)?;
+        let wakee_migration_capable = sched.affinity.affinity.is_migration_capable();
         let affinity_completed = Self::complete_affinity_if_satisfied_locked(&core, sched);
         drop(sched_guard);
         if affinity_completed {
@@ -1111,6 +1168,7 @@ impl TaskSystem {
             commit.reschedule,
             commit.scheduler_deadline_refresh_required,
             Some(commit.effective_policy),
+            wakee_migration_capable,
         );
         Ok(())
     }

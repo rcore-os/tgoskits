@@ -25,6 +25,19 @@ pub fn axtest_fifo_switch_rt_deadline() -> (bool, u64, u64) {
         .exercise_fifo_switch_rt_deadline_for_test()
 }
 
+/// Observes wake residue left behind by waking a runnable thread.
+#[doc(hidden)]
+pub fn axtest_runnable_wake_park_cleanliness() -> (bool, bool) {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).expect("test task system must be valid");
+    system.exercise_runnable_wake_park_cleanliness_for_test()
+}
+
+/// Observes root-domain visibility of a throttled RT runqueue.
+#[doc(hidden)]
+pub fn axtest_throttled_rt_rq_overload_publication() -> (bool, bool) {
+    TaskSystem::throttled_rt_rq_keeps_overload_publication()
+}
+
 /// Observes clock sampling when an active root RT period is activated again.
 #[doc(hidden)]
 pub fn axtest_active_rt_bandwidth_reactivation_clock_samples() -> (usize, bool, bool) {

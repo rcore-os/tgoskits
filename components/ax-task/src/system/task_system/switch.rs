@@ -749,6 +749,7 @@ impl TaskSystem {
         transaction.set_next_task(&queued);
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_park_profile_stage(8);
+        let next_policy = queued.policy();
         let schedule = match queued {
             PickedThread::Owned(thread) => CurrentClassState::Owned(thread.active),
             PickedThread::Linked(thread) => CurrentClassState::Linked {
@@ -756,6 +757,17 @@ impl TaskSystem {
             },
         };
         placement.set_next_task(owner);
+        // Linux `set_next_task_rt()`/`set_next_task_dl()` queue one push
+        // callback whenever they install a class current and the rq still owns
+        // pushable tasks — the preempted donor entered that list in this same
+        // transaction via `put_prev_task()`. The serialized push iterator is
+        // the callback equivalent: publishing this rq as its target makes the
+        // incoming context's post-switch safe point perform the migration.
+        if let Some(class) = super::balance::push_class_for_policy(next_policy)
+            && transaction.has_pushable_class_tasks(class.scheduling_class())
+        {
+            self.root_domain.start_rt_deadline_push_from(class, owner);
+        }
         #[cfg(feature = "task-test-hooks")]
         crate::task_test_hooks::record_lone_preemption_set_next(core.id());
         #[cfg(feature = "task-test-hooks")]

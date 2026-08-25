@@ -166,6 +166,36 @@ impl TaskSystem {
                 .cpu_has_rt_deadline_overload(remote.owner())
     }
 
+    /// Mirrors Linux `check_preempt_curr_rt()`/`enqueue_task_dl()` queueing a
+    /// push callback for a wake: whenever a migratable RT/DL task lands on an
+    /// rq whose donor is also RT/DL, the rq holds more than one runnable
+    /// class task (`rt_nr_running > 1` overload) and the enqueue itself must
+    /// start the serialized push iterator at that rq. In the preemption case
+    /// the donor becomes pushable only at `put_prev_task()`, so the iterator
+    /// target is claimed by the post-switch safe point; in the keep-current
+    /// case the wakee is immediately pushable.
+    ///
+    /// A bare owner-work kick carries no push semantics: the safe point cannot
+    /// distinguish it from unrelated owner work.
+    pub(super) fn start_rt_deadline_push_for_wake(
+        &self,
+        owner: CpuId,
+        policy: SchedulePolicy,
+        donor_rt_or_dl: bool,
+        migration_capable: bool,
+    ) {
+        if !migration_capable || !donor_rt_or_dl {
+            return;
+        }
+        let Some(class) = push_class_for_policy(policy) else {
+            return;
+        };
+        if !self.root_domain.has_multiple_online_priority_cpus() {
+            return;
+        }
+        self.root_domain.start_rt_deadline_push_from(class, owner);
+    }
+
     /// Mirrors Linux `need_pull_rt_task()`/`need_pull_dl_task()` followed by
     /// `tell_cpu_to_push()`: when this rq installs a less urgent task, start
     /// the root-domain push iterator. The iterator serializes delivery across
@@ -736,4 +766,17 @@ impl TaskSystem {
 
 const fn rt_deadline_balance_work_pending(push_target_pending: bool) -> bool {
     push_target_pending
+}
+
+/// Returns the root-domain push iterator class owning one policy's pushes.
+pub(in crate::system::task_system) const fn push_class_for_policy(
+    policy: SchedulePolicy,
+) -> Option<RootDomainPushClass> {
+    match policy {
+        SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. } => {
+            Some(RootDomainPushClass::Realtime)
+        }
+        SchedulePolicy::Deadline(_) => Some(RootDomainPushClass::Deadline),
+        SchedulePolicy::Fair { .. } | SchedulePolicy::KernelStop => None,
+    }
 }

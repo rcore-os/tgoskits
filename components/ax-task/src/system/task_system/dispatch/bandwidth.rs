@@ -153,6 +153,7 @@ impl TaskSystem {
         reschedule: Option<RescheduleKind>,
         scheduler_deadline_refresh_required: bool,
         effective_policy: Option<SchedulePolicy>,
+        migration_capable: bool,
     ) {
         if reason.checks_preemption_after_enqueue()
             && let Some(kind) = reschedule
@@ -162,7 +163,23 @@ impl TaskSystem {
         if let Some(policy) = effective_policy {
             let _started = self.activate_owner_rt_period_for_policy(cpu.owner(), policy);
         }
+        let enqueued_push_class = effective_policy
+            .filter(|_| migration_capable)
+            .as_ref()
+            .and_then(|policy| super::super::balance::push_class_for_policy(*policy));
+        let pushable_overloaded =
+            enqueued_push_class.is_some() && self.rt_deadline_push_pending(cpu.remote());
+        if let Some(class) = enqueued_push_class
+            && pushable_overloaded
+        {
+            // Linux `check_preempt_curr_rt()` queues the push callback on the
+            // wake's enqueue; a bare owner-work kick has no push semantics at
+            // the safe point, so the enqueue starts the serialized iterator.
+            self.root_domain
+                .start_rt_deadline_push_from(class, cpu.owner());
+        }
         if reschedule.is_none()
+            && !pushable_overloaded
             && (scheduler_deadline_refresh_required || self.rt_deadline_push_pending(cpu.remote()))
         {
             cpu.remote().kick_scheduler_work();

@@ -15,6 +15,10 @@ impl ThreadCore {
         self.state.discard_failed_wake();
     }
 
+    pub(crate) fn discard_runnable_wake(&self) -> bool {
+        self.state.discard_runnable_wake()
+    }
+
     #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn wake_is_pending(&self) -> bool {
         self.state.wake_is_pending()

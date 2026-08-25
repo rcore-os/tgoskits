@@ -168,24 +168,61 @@ impl RootDomain {
     }
 
     pub(super) fn publish_run_queue(&self, cpu: CpuId, run_queue: &CpuRunQueueState, online: bool) {
-        let rt_throttled = run_queue.rt_is_throttled();
-        let rt_effectively_throttled = rt_throttled && !run_queue.has_exempt_rt();
-        let highest_rt = if rt_effectively_throttled {
-            None
-        } else {
-            run_queue.highest_rt_priority_including_current()
-        };
+        // Linux RT throttling flips only `rt_throttled`: the priority array,
+        // cpupri publication, and `rto_mask`/pushable membership keep the rq's
+        // real urgency, so an idle CPU can still pull queued RT tasks off a
+        // throttled rq and no wakee mistakes it for a low-priority target.
+        // Pick-time `RtEligibility` remains the only execution gate.
         self.priority.publish_run_queue(
             cpu,
-            highest_rt,
+            run_queue.highest_rt_priority_including_current(),
             run_queue.earliest_deadline_including_current(),
             online,
         );
         self.overload.publish(
             cpu,
-            online && !rt_effectively_throttled && run_queue.has_pushable_realtime(),
+            online && run_queue.has_pushable_realtime(),
             online && run_queue.has_pushable_deadline(),
         );
+    }
+
+    /// Observes root-domain visibility of one throttled RT runqueue.
+    ///
+    /// Linux throttle bookkeeping only flips `rt_throttled`: the rq keeps its
+    /// `highest_prio.curr` publication in cpupri and its `rto_mask` membership,
+    /// so other CPUs can still pull its queued RT tasks and never mistake it
+    /// for a low-priority placement target.
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn throttled_rt_rq_keeps_overload_publication_for_test() -> (bool, bool) {
+        let config = TaskSystemConfig::new(2);
+        let runqueues = (0..config.cpu_count())
+            .map(|index| CpuRemote::create(CpuId::new(index as u32), config))
+            .collect::<Vec<_>>();
+        let root_domain = RootDomain::new(config, runqueues.clone());
+        for remote in &runqueues {
+            assert!(
+                remote.mark_online(),
+                "test runqueue must become online once"
+            );
+        }
+
+        let throttled_cpu = CpuId::new(0);
+        let mut run_queue = CpuRunQueueState::throttled_rt_overload_publication_test(config);
+        assert!(
+            run_queue.set_rt_throttled(true),
+            "test rq must flip throttle"
+        );
+        root_domain.publish_run_queue(throttled_cpu, &run_queue, true);
+
+        let overload_visible = root_domain.cpu_has_rt_deadline_overload(throttled_cpu);
+        let lower_priority_target = root_domain.find_lowest_rt_cpu(
+            RtPriority::new(5).expect("test priority must be valid"),
+            &CpuSet::all(config.cpu_count()),
+            None,
+            |_| true,
+        );
+        let priority_visible = lower_priority_target != Some(throttled_cpu);
+        (overload_visible, priority_visible)
     }
 
     pub(super) fn publish_offline(&self, cpu: CpuId) {
@@ -308,6 +345,36 @@ impl RootDomain {
                 state.scan_generation = state.requested_generation;
                 state.cursor = None;
                 self.publish_next_push_target(class, &mut state, requester)
+            }
+        };
+        self.deliver_push_target(class, target);
+    }
+
+    /// Starts the serialized push scan at one specific overloaded source.
+    ///
+    /// This is Linux `tell_cpu_to_push(this_cpu)` from
+    /// `check_preempt_curr_rt()`/`task_woken_rt()`: the rq that just gained a
+    /// migratable RT/DL task and became overloaded pushes its own tasks first.
+    /// An already running scan only records the new request generation; it
+    /// will revisit this source because the overload mask still contains it.
+    pub(super) fn start_rt_deadline_push_from(&self, class: RootDomainPushClass, source: CpuId) {
+        // The caller proves the overload from its own enqueue or owner-rq
+        // transaction; the published index may lag that transaction's commit,
+        // so this entry must not re-check it.
+        let push = self.push_iterator(class);
+        let target = {
+            let mut state = push.lock_state();
+            state.requested_generation = state
+                .requested_generation
+                .checked_add(1)
+                .expect("root-domain push generation exhausted");
+            if state.phase != RootDomainPushPhase::Idle {
+                None
+            } else {
+                state.scan_generation = state.requested_generation;
+                state.cursor = None;
+                push.publish_target(&mut state, Some(source));
+                Some(source)
             }
         };
         self.deliver_push_target(class, target);

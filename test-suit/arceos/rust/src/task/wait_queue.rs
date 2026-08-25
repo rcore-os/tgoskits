@@ -61,6 +61,7 @@ fn record_raw_profile_park_stage(stage: u8) {
 
 pub fn run() -> crate::TestResult {
     test_park_prepare_skips_runtime_cpu_owner();
+    test_park_cancel_preserves_claimed_preemption_request();
     test_empty_wake_skips_scheduler_guards();
     test_linked_pick_probe_is_cpu_local();
     test_same_cpu_fifo_handoff_diagnostics();
@@ -68,6 +69,35 @@ pub fn run() -> crate::TestResult {
     test_wait();
     test_wait_timeout_until();
     Ok(())
+}
+
+/// Linux `__schedule()` keeps the scheduling decision alive when a wake
+/// cancels the block transition: `try_to_block_task()` restores
+/// TASK_RUNNING and `schedule()` still honors an already published
+/// `TIF_NEED_RESCHED`. A park that is cancelled by its own wake must not
+/// swallow the preemption request a remote higher-priority wake claimed.
+fn test_park_cancel_preserves_claimed_preemption_request() {
+    let cpu = this_cpu_id();
+    let park = loop {
+        match begin_current_park().expect("current park state must prepare") {
+            CurrentParkStart::Notified => continue,
+            CurrentParkStart::Prepared(park) => break park,
+        }
+    };
+    let wake = park.wake_handle();
+    task_test_hooks::request_cpu_immediate_reschedule(cpu as u32)
+        .expect("the test CPU must accept an ordinary preemption request");
+    assert_eq!(wake.wake_from_task(), WakeResult::Notified);
+    let resume = park.commit().expect("a notified park must cancel cleanly");
+    assert!(
+        resume.was_notified_before_block(),
+        "the racing wake must cancel schedule-out"
+    );
+    assert!(
+        task_test_hooks::cpu_immediate_preemption_requested(cpu as u32)
+            .expect("the test CPU must expose its request state"),
+        "a cancelled park must keep the claimed ordinary preemption request sticky"
+    );
 }
 
 fn test_linked_pick_probe_is_cpu_local() {

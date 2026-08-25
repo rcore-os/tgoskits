@@ -421,6 +421,11 @@ impl TaskSystem {
                 .unwrap_or_else(|_| {
                     task_runtime::fatal_invariant(0x504b_1101, previous_core.id().as_u64() as usize)
                 });
+            // Linux restores TASK_RUNNING and still runs `schedule()` in
+            // `__schedule()`, so a preemption request that raced the park is
+            // served by the upcoming safe point instead of vanishing with the
+            // claimed request word.
+            cpu.defer_park_preemption(scheduler_request);
             cpu.finish_park_preemption(true);
             transaction.commit_and_finish_scheduler_request();
             token.mark_resolved();
@@ -652,6 +657,10 @@ impl TaskSystem {
                 .unwrap_or_else(|_| {
                     task_runtime::fatal_invariant(0x504b_1111, previous_core.id().as_u64() as usize)
                 });
+            // Same ownership as the full-path early Notified branch: the race
+            // that cancelled this park must not swallow the already claimed
+            // preemption request.
+            cpu.defer_park_preemption(scheduler_request);
             cpu.finish_park_preemption(true);
             transaction.commit_and_finish_scheduler_request();
             token.mark_resolved();

@@ -116,6 +116,35 @@ impl ThreadLifecycle {
             .fetch_and(!WAKE_STATE_PUBLISHED, Ordering::AcqRel);
     }
 
+    /// Rolls back a wake publication that found the thread already runnable.
+    ///
+    /// Linux `try_to_wake_up()` leaves a runnable task completely untouched
+    /// when its state match fails, so no wake residue may survive to abort
+    /// the thread's next sleep. The rollback is only valid while the state
+    /// field still shows a runnable publication: once a parker owns the word
+    /// (`Parking`) or a waker owns activation (`Blocked`), the sticky bits
+    /// belong to their protocol and must stay set.
+    pub(crate) fn discard_runnable_wake(&self) -> bool {
+        let mut observed = self.state.load(Ordering::Acquire);
+        loop {
+            if !matches!(
+                decode_state(observed & STATE_MASK),
+                ThreadState::New | ThreadState::Ready | ThreadState::Running | ThreadState::Waking
+            ) {
+                return false;
+            }
+            match self.state.compare_exchange_weak(
+                observed,
+                observed & !WAKE_STATE_PUBLISHED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(updated) => observed = updated,
+            }
+        }
+    }
+
     #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) fn wake_is_pending(&self) -> bool {
         self.state.load(Ordering::Acquire) & WAKE_PENDING != 0

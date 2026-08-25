@@ -231,6 +231,10 @@ impl CpuRunQueueState {
         &mut self.queue
     }
 
+    pub(in crate::system::cpu) fn owner_transaction_queue(&self) -> &RunQueue {
+        &self.queue
+    }
+
     pub(in crate::system::cpu) fn enqueue_task(
         &mut self,
         thread: QueuedThread,
@@ -952,6 +956,64 @@ impl CpuRunQueueState {
                 core,
                 false,
                 false,
+                RqTaskMetadata::test(1),
+            );
+            let _enqueue = run_queue
+                .enqueue_task(queued, EnqueueReason::Wake, None)
+                .expect("test FIFO task must enqueue");
+        }
+
+        let PickTaskResult::Continue(picked) = run_queue
+            .queue
+            .pick_next_task(RtEligibility::Runnable, false)
+            .expect("test FIFO queue must have a runnable task")
+        else {
+            panic!("FIFO test setup must not select a delayed Fair task");
+        };
+        assert_eq!(picked.id(), current);
+        let metadata = picked.metadata().clone();
+        let core = Arc::clone(picked.core());
+        run_queue.queue.set_next_task(&picked);
+        run_queue.install_current(CurrentDispatch::new(
+            CurrentDispatchState {
+                thread: current,
+                schedule: CurrentClassState::Linked { policy },
+                metadata,
+                rt_quota_exempt: false,
+            },
+            &core,
+            RqTaskTime::test(0),
+        ));
+        run_queue
+    }
+
+    /// Models one rq whose current is FIFO-10 and whose migratable FIFO-10 peer
+    /// stays queued, for root-domain overload publication probes.
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn throttled_rt_overload_publication_test(config: TaskSystemConfig) -> Self {
+        use crate::{
+            ActiveSchedulingState, CurrentClassState, CurrentDispatchState, PickTaskResult,
+            RqTaskTime, RtEligibility, RtPriority, SchedulingEntity,
+        };
+
+        let priority = RtPriority::new(10).expect("test priority must be valid");
+        let policy = SchedulePolicy::fifo(priority);
+        let current = ThreadId::from_parts(0, 1);
+        let peer = ThreadId::from_parts(1, 1);
+        let mut run_queue = Self::new(CpuId::new(0), config);
+
+        for (thread, migration_capable) in [(current, false), (peer, true)] {
+            run_queue.prepare_thread_slot(thread.slot() as usize);
+            let sched = Arc::new(crate::ThreadSchedCell::new_test(thread, policy));
+            let core = Arc::new(ThreadCore::new(
+                thread, policy, sched, None, None, None, None,
+            ));
+            let queued = QueuedThread::new(
+                thread,
+                ActiveSchedulingState::new(policy, SchedulingEntity::new(policy, 1, 0)),
+                core,
+                false,
+                migration_capable,
                 RqTaskMetadata::test(1),
             );
             let _enqueue = run_queue

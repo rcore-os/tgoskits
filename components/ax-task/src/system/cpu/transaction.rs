@@ -153,6 +153,13 @@ impl<'a> OwnerRqTxn<'a> {
         self.run_queue_mut().owner_transaction_queue_mut()
     }
 
+    fn scheduler_queue(&self) -> &RunQueue {
+        self.run_queue
+            .as_ref()
+            .expect("an unfinished rq transaction must retain its lock")
+            .owner_transaction_queue()
+    }
+
     #[cfg(feature = "task-test-hooks")]
     pub(crate) fn owns_runtime_irq_scope(&self) -> bool {
         self.run_queue
@@ -427,6 +434,18 @@ impl<'a> OwnerRqTxn<'a> {
         self.scheduler_queue_mut()
             .deactivate_task(thread)
             .unwrap_or_else(|| task_runtime::fatal_invariant(0x5251_1007, thread.as_u64() as usize))
+    }
+
+    /// Returns whether the rq owns pushable tasks of one RT/DL class.
+    ///
+    /// Mirrors the `has_pushable_tasks()`/`has_pushable_dl_tasks()` gates of
+    /// Linux's `rt_queue_push_tasks()`/`deadline_queue_push_tasks()`.
+    pub(crate) fn has_pushable_class_tasks(&self, class: SchedulingClass) -> bool {
+        match class {
+            SchedulingClass::Realtime => self.scheduler_queue().has_pushable_realtime(),
+            SchedulingClass::Deadline => self.scheduler_queue().has_pushable_deadline(),
+            SchedulingClass::Stop | SchedulingClass::Fair | SchedulingClass::Idle => false,
+        }
     }
 
     pub(crate) fn deactivate_unlinked_current(&mut self, thread: ThreadId) {
