@@ -57,6 +57,14 @@ pub enum NmiAttributeError {
     #[error("affinity routing is disabled for {0:?}")]
     AffinityRoutingDisabled(IntId),
 
+    /// The interrupt must be disabled before changing its NMI attribute.
+    #[error("cannot change the NMI attribute of enabled interrupt {0:?}")]
+    InterruptEnabled(IntId),
+
+    /// The interrupt must be inactive before changing its NMI attribute.
+    #[error("cannot change the NMI attribute of active interrupt {0:?}")]
+    InterruptActive(IntId),
+
     /// No Redistributor frame matches the current PE.
     #[error("no Redistributor matches current CPU affinity {0:?}")]
     CurrentRedistributorNotFound(Affinity),
@@ -76,14 +84,24 @@ impl Gic {
     ///
     /// Private interrupts are changed only for the current PE. The caller must
     /// initialize the Distributor and the current Redistributor before using
-    /// this method. This API programs the interrupt property only; it does not
-    /// provide the NMI acknowledge or exception-handling path.
+    /// this method. The interrupt must be disabled and inactive; this method
+    /// checks both states before modifying the attribute. A pending interrupt
+    /// is permitted and observes either the old or new attribute as required
+    /// by the GIC architecture. This API programs the interrupt property only;
+    /// it does not provide the NMI acknowledge or exception-handling path.
+    ///
+    /// The caller must serialize independent MMIO aliases and interrupt
+    /// handling for the INTID until this method returns. Some GIC
+    /// implementations keep SGIs permanently enabled; those SGIs cannot meet
+    /// this API's quiescent-state contract and return
+    /// [`NmiAttributeError::InterruptEnabled`].
     ///
     /// # Errors
     ///
     /// Returns [`NmiAttributeError`] if the capability is absent, the INTID is
     /// unsupported or unimplemented, the interrupt is not accessible Group 1,
-    /// affinity routing is disabled, or the current Redistributor is missing.
+    /// affinity routing is disabled, the current Redistributor is missing, or
+    /// the interrupt is enabled or active.
     pub fn set_nmi_attribute(
         &mut self,
         intid: IntId,
@@ -98,8 +116,11 @@ impl Gic {
         attribute: NmiAttribute,
         current_affinity: impl FnOnce() -> Affinity,
     ) -> Result<(), NmiAttributeError> {
-        let (register, mask) = self.nmi_attribute_register(intid, current_affinity)?;
-        register.set(attribute.update_register(register.get(), mask));
+        let registers = self.nmi_attribute_register(intid, current_affinity)?;
+        registers.ensure_disabled_and_inactive(intid)?;
+        registers
+            .attribute
+            .set(attribute.update_register(registers.attribute.get(), registers.mask));
         Ok(())
     }
 
@@ -109,7 +130,11 @@ impl Gic {
     ///
     /// # Errors
     ///
-    /// Returns the same validation errors as [`Gic::set_nmi_attribute`].
+    /// Returns [`NmiAttributeError`] if the capability is absent, the INTID is
+    /// unsupported or unimplemented, the interrupt is not accessible Group 1,
+    /// affinity routing is disabled, or the current Redistributor is missing.
+    /// Reading the attribute does not require the interrupt to be disabled or
+    /// inactive.
     pub fn nmi_attribute(&self, intid: IntId) -> Result<NmiAttribute, NmiAttributeError> {
         self.nmi_attribute_with_current_affinity(intid, Affinity::current)
     }
@@ -119,15 +144,18 @@ impl Gic {
         intid: IntId,
         current_affinity: impl FnOnce() -> Affinity,
     ) -> Result<NmiAttribute, NmiAttributeError> {
-        let (register, mask) = self.nmi_attribute_register(intid, current_affinity)?;
-        Ok(NmiAttribute::from_register(register.get(), mask))
+        let registers = self.nmi_attribute_register(intid, current_affinity)?;
+        Ok(NmiAttribute::from_register(
+            registers.attribute.get(),
+            registers.mask,
+        ))
     }
 
     fn nmi_attribute_register(
         &self,
         intid: IntId,
         current_affinity: impl FnOnce() -> Affinity,
-    ) -> Result<(&ReadWrite<u32>, u32), NmiAttributeError> {
+    ) -> Result<NmiAttributeRegisters<'_>, NmiAttributeError> {
         let slot = nmi_attribute_slot(intid).ok_or(NmiAttributeError::UnsupportedIntId(intid))?;
         if !self.supports_nmi_attributes() {
             return Err(NmiAttributeError::Unsupported);
@@ -148,7 +176,7 @@ impl Gic {
         intid: IntId,
         mask: u32,
         affinity: Affinity,
-    ) -> Result<(&ReadWrite<u32>, u32), NmiAttributeError> {
+    ) -> Result<NmiAttributeRegisters<'_>, NmiAttributeError> {
         let redistributor = redistributor_for_affinity_from(self.gicr, affinity)
             .ok_or(NmiAttributeError::CurrentRedistributorNotFound(affinity))?;
         // SAFETY: the pointer belongs to the Redistributor mapping whose
@@ -160,7 +188,12 @@ impl Gic {
             redistributor.sgi.IGRPMODR0.get() & mask != 0,
         )?;
         self.ensure_affinity_routing(intid, group)?;
-        Ok((&redistributor.sgi.INMIR0, mask))
+        Ok(NmiAttributeRegisters {
+            attribute: &redistributor.sgi.INMIR0,
+            enabled: &redistributor.sgi.ISENABLER0,
+            active: &redistributor.sgi.ISACTIVER0,
+            mask,
+        })
     }
 
     fn distributor_nmi_register(
@@ -168,7 +201,7 @@ impl Gic {
         intid: IntId,
         register: usize,
         mask: u32,
-    ) -> Result<(&ReadWrite<u32>, u32), NmiAttributeError> {
+    ) -> Result<NmiAttributeRegisters<'_>, NmiAttributeError> {
         if intid.to_u32() >= self.gicd().max_spi_num() {
             return Err(NmiAttributeError::UnimplementedIntId(intid));
         }
@@ -179,7 +212,12 @@ impl Gic {
             self.gicd().IGRPMODR[register].get() & mask != 0,
         )?;
         self.ensure_affinity_routing(intid, group)?;
-        Ok((&self.gicd().INMIR[register], mask))
+        Ok(NmiAttributeRegisters {
+            attribute: &self.gicd().INMIR[register],
+            enabled: &self.gicd().ISENABLER[register],
+            active: &self.gicd().ISACTIVER[register],
+            mask,
+        })
     }
 
     fn group1_access(
@@ -216,6 +254,25 @@ impl Gic {
     }
 }
 
+struct NmiAttributeRegisters<'a> {
+    attribute: &'a ReadWrite<u32>,
+    enabled: &'a ReadWrite<u32>,
+    active: &'a ReadWrite<u32>,
+    mask: u32,
+}
+
+impl NmiAttributeRegisters<'_> {
+    fn ensure_disabled_and_inactive(&self, intid: IntId) -> Result<(), NmiAttributeError> {
+        if self.enabled.get() & self.mask != 0 {
+            return Err(NmiAttributeError::InterruptEnabled(intid));
+        }
+        if self.active.get() & self.mask != 0 {
+            return Err(NmiAttributeError::InterruptActive(intid));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy)]
 enum NmiGroup {
     Single,
@@ -238,10 +295,14 @@ mod tests {
     const GICD_CTLR: usize = 0x0000;
     const GICD_TYPER: usize = 0x0004;
     const GICD_IGROUPR: usize = 0x0080;
+    const GICD_ISENABLER: usize = 0x0100;
+    const GICD_ISACTIVER: usize = 0x0300;
     const GICD_INMIR: usize = 0x0f80;
     const GICR_TYPER: usize = 0x0008;
     const GICR_SGI_BASE: usize = 0x10000;
     const GICR_IGROUPR0: usize = GICR_SGI_BASE + 0x0080;
+    const GICR_ISENABLER0: usize = GICR_SGI_BASE + 0x0100;
+    const GICR_ISACTIVER0: usize = GICR_SGI_BASE + 0x0300;
     const GICR_IGRPMODR0: usize = GICR_SGI_BASE + 0x0d00;
     const GICR_INMIR0: usize = GICR_SGI_BASE + 0x0f80;
     const GICR_TYPER_LAST: u64 = 1 << 4;
@@ -349,6 +410,14 @@ mod tests {
             // `GICR_V3_SIZE` allocation owned by this fixture.
             unsafe { address.add(offset).cast::<u32>().read() }
         }
+
+        fn write_distributor(&mut self, offset: usize, value: u32) {
+            write_u32(self.distributor.as_mut_ptr().cast::<u8>(), offset, value);
+        }
+
+        fn write_redistributor(&mut self, offset: usize, value: u32) {
+            write_u32(self.redistributor.as_mut_ptr().cast::<u8>(), offset, value);
+        }
     }
 
     #[test]
@@ -427,6 +496,31 @@ mod tests {
             unimplemented.gic.nmi_attribute(special),
             Err(NmiAttributeError::UnsupportedIntId(special))
         );
+    }
+
+    #[test]
+    fn rejects_enabled_and_active_spi_attribute_changes() {
+        let intid = IntId::spi(42);
+        let register = 2;
+        let mask = 1 << 10;
+
+        for (state_register, expected) in [
+            (GICD_ISENABLER, NmiAttributeError::InterruptEnabled(intid)),
+            (GICD_ISACTIVER, NmiAttributeError::InterruptActive(intid)),
+        ] {
+            let mut fake = FakeGic::new(GICD_TYPER_NMI | 2, GICD_CTLR_ARE_S_OR_ONE, register, mask);
+            fake.write_distributor(state_register + register * size_of::<u32>(), mask);
+
+            assert_eq!(
+                fake.gic.set_nmi_attribute(intid, NmiAttribute::NonMaskable),
+                Err(expected)
+            );
+            assert_eq!(
+                fake.read_distributor(GICD_INMIR + register * size_of::<u32>()),
+                0
+            );
+            assert_eq!(fake.gic.nmi_attribute(intid), Ok(NmiAttribute::Maskable));
+        }
     }
 
     #[test]
@@ -554,6 +648,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_enabled_and_active_private_attribute_changes() {
+        for intid in [IntId::sgi(5), IntId::ppi(14)] {
+            for state_register in [GICR_ISENABLER0, GICR_ISACTIVER0] {
+                let expected = match state_register {
+                    GICR_ISENABLER0 => NmiAttributeError::InterruptEnabled(intid),
+                    GICR_ISACTIVER0 => NmiAttributeError::InterruptActive(intid),
+                    _ => unreachable!(),
+                };
+                assert_private_attribute_write_rejected_by_state(intid, state_register, expected);
+            }
+        }
+    }
+
+    #[test]
     fn rejects_inaccessible_private_groups_and_disabled_routing() {
         let intid = IntId::sgi(3);
         let mask = 1 << 3;
@@ -670,6 +778,37 @@ mod tests {
                 || affinity,
             ),
             Err(expected)
+        );
+    }
+
+    fn assert_private_attribute_write_rejected_by_state(
+        intid: IntId,
+        state_register: usize,
+        expected: NmiAttributeError,
+    ) {
+        let mask = 1 << (intid.to_u32() % 32);
+        let mut fake = FakeGic::with_private_interrupts(PrivateInterruptConfig {
+            affinity: TEST_AFFINITY,
+            security_state: SecurityState::Single,
+            ctlr: GICD_CTLR_ARE_S_OR_ONE,
+            group1_mask: mask,
+            group_modifier_mask: 0,
+        });
+        fake.write_redistributor(state_register, mask);
+
+        assert_eq!(
+            fake.gic.set_nmi_attribute_with_current_affinity(
+                intid,
+                NmiAttribute::NonMaskable,
+                || TEST_AFFINITY,
+            ),
+            Err(expected)
+        );
+        assert_eq!(fake.read_redistributor(GICR_INMIR0), 0);
+        assert_eq!(
+            fake.gic
+                .nmi_attribute_with_current_affinity(intid, || TEST_AFFINITY),
+            Ok(NmiAttribute::Maskable)
         );
     }
 
