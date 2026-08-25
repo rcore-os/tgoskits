@@ -291,6 +291,13 @@ impl_task_runtime! {
             crate::clock_event_runtime::publish_local_scheduler_deadline(update);
         }
 
+        fn idle_exit_restart_scheduler_tick() {
+            #[cfg(all(feature = "irq", feature = "multitask"))]
+            crate::clock_event_runtime::restart_current_scheduler_tick_after_idle(
+                crate::clock_event_runtime::monotonic_now(),
+            );
+        }
+
         fn notify_scheduler_cpu(cpu: RuntimeCpuId) -> RuntimeStatus {
             #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
             {

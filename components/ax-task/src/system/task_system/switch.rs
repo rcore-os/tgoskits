@@ -154,6 +154,18 @@ impl TaskSystem {
         {
             cpu.as_mut().arm_idle_pull();
         }
+        if let Some(idle) = cpu.remote().idle_thread()
+            && decision.previous() == Some(idle)
+            && decision.next() != idle
+        {
+            // Linux `tick_nohz_idle_exit()` runs before `schedule_idle()`
+            // leaves the idle task. The idle loop's IRQ-off checkpoints
+            // cannot observe a reschedule request that becomes visible after
+            // IRQs are re-enabled, so the idle-exit switch itself owns the
+            // periodic tick restart. This must precede every early return so
+            // the invariant holds for every switch tail variant.
+            task_runtime::idle_exit_restart_scheduler_tick();
+        }
         let rq_baton_retained = cpu
             .as_ref()
             .get_ref()

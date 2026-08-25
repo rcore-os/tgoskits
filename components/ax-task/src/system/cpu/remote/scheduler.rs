@@ -241,14 +241,31 @@ impl CpuRemote {
 
     fn publish_scheduler_request_owned(&self, reason: u64) -> Option<SchedulerRequestPublication> {
         debug_assert_ne!(reason & REQUEST_REASON_MASK, 0);
-        let previous = self
-            .scheduler_request
-            .request
-            .fetch_or(reason, Ordering::AcqRel);
-        if previous & reason == reason {
-            None
-        } else {
-            Some(Self::scheduler_request_publication(previous))
+        let mut observed = self.scheduler_request.request.load(Ordering::Acquire);
+        loop {
+            // Linux `__resched_curr()` drops a lazy request outright while an
+            // ordinary need-resched is live: consuming the ordinary bit also
+            // covers the lazy reason, and no lazy residue may survive it.
+            let publish = if reason & REQUEST_PREEMPT_LAZY != 0
+                && reason & REQUEST_PREEMPT == 0
+                && observed & REQUEST_PREEMPT != 0
+            {
+                reason & !REQUEST_PREEMPT_LAZY
+            } else {
+                reason
+            };
+            if publish & REQUEST_REASON_MASK == 0 || observed & publish == publish {
+                return None;
+            }
+            match self.scheduler_request.request.compare_exchange_weak(
+                observed,
+                observed | publish,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(previous) => return Some(Self::scheduler_request_publication(previous)),
+                Err(updated) => observed = updated,
+            }
         }
     }
 
@@ -473,6 +490,24 @@ impl CpuRemote {
         // to the final IRQ-off recheck, while a producer observing the clear
         // must ring the physical doorbell.
         fence(Ordering::SeqCst);
+    }
+
+    /// Observes whether a lazy request survives behind a live ordinary one.
+    ///
+    /// Linux `__resched_curr()` returns early when `TIF_NEED_RESCHED` is
+    /// already set, so a lazy request published in that window must leave no
+    /// residue for later scheduling points.
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn exercise_lazy_request_behind_immediate_for_test() -> (bool, bool) {
+        let remote = super::CpuRemote::create(CpuId::new(0), crate::TaskSystemConfig::new(1));
+        let _ = remote.request_reschedule_owned(RescheduleKind::Immediate);
+        let _ = remote.request_reschedule_owned(RescheduleKind::Lazy);
+        let immediate = remote.claim_scheduler_request(SchedulerRequestScope::Immediate);
+        let remainder = remote.claim_scheduler_request(SchedulerRequestScope::All);
+        (
+            immediate.immediate_preempt_requested(),
+            remainder.lazy_preempt_requested(),
+        )
     }
 
     pub(crate) fn is_idle_polling(&self) -> bool {

@@ -17,6 +17,10 @@ struct PiWaiterRefresh {
     owner: Option<ThreadId>,
     owner_next_lock: Option<PiMutexRaw>,
     changed: bool,
+    /// The new top waiter of an ownerless lock whose top changed, mirroring
+    /// Linux `rt_mutex_adjust_prio_chain()` step [9]: only a wake makes that
+    /// sleeping waiter return to its claim loop.
+    ownerless_wake: Option<Arc<ThreadCore>>,
 }
 
 #[derive(Clone, Copy)]

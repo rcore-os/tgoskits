@@ -45,6 +45,17 @@ fn waking_a_runnable_thread_does_not_poison_its_next_park() {
 }
 
 #[axtest]
+fn lazy_request_does_not_survive_a_live_ordinary_request() {
+    let (immediate_served, lazy_survived) = ax_task::axtest_lazy_request_behind_immediate();
+
+    ax_assert!(immediate_served);
+    ax_assert!(
+        !lazy_survived,
+        "Linux __resched_curr() drops a lazy request while TIF_NEED_RESCHED is live"
+    );
+}
+
+#[axtest]
 fn throttled_rt_rq_keeps_its_overload_and_priority_publication() {
     let (overload_visible, priority_visible) =
         ax_task::axtest_throttled_rt_rq_overload_publication();

@@ -38,6 +38,12 @@ pub fn axtest_throttled_rt_rq_overload_publication() -> (bool, bool) {
     TaskSystem::throttled_rt_rq_keeps_overload_publication()
 }
 
+/// Observes whether a lazy reschedule request survives a live ordinary one.
+#[doc(hidden)]
+pub fn axtest_lazy_request_behind_immediate() -> (bool, bool) {
+    crate::system::CpuRemote::exercise_lazy_request_behind_immediate_for_test()
+}
+
 /// Observes clock sampling when an active root RT period is activated again.
 #[doc(hidden)]
 pub fn axtest_active_rt_bandwidth_reactivation_clock_samples() -> (usize, bool, bool) {

@@ -158,7 +158,7 @@ impl LocalClockEvent {
     ) -> ClockEventAction {
         assert!(!matches!(
             self.phase,
-            ClockEventPhase::Offline | ClockEventPhase::Firing | ClockEventPhase::Deferred
+            ClockEventPhase::Offline | ClockEventPhase::Firing
         ));
         let SchedulerTickState::Stopped { resume_from } = self.scheduler_tick else {
             return ClockEventAction::None;
@@ -170,6 +170,13 @@ impl LocalClockEvent {
             None => crate::clock_event_runtime::initial_periodic_deadline(now, interval_ns),
         };
         self.scheduler_tick = SchedulerTickState::Running { next };
+        if self.phase == ClockEventPhase::Deferred {
+            // The idle-exit restart may run while a deferred rearm from the
+            // timer IRQ that woke the CPU is still pending. The frame-exit
+            // rearm reconciles the newly running tick exactly once before
+            // IRQs are re-enabled.
+            return ClockEventAction::None;
+        }
         self.reconcile_arm()
     }
 

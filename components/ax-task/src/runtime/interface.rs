@@ -303,6 +303,16 @@ pub trait TaskRuntime {
     /// violation.
     fn notify_scheduler_cpu(cpu: RuntimeCpuId) -> RuntimeStatus;
 
+    /// Restarts the periodic scheduler tick while leaving the idle thread.
+    ///
+    /// Mirrors Linux `tick_nohz_idle_exit()` before `schedule_idle()`: the
+    /// idle loop's own IRQ-off checkpoints cannot cover a reschedule request
+    /// that becomes visible only after IRQs are re-enabled, so the owner
+    /// schedule that switches away from the idle thread owns the restart.
+    /// Called from the owner CPU's scheduler frame; an already running tick
+    /// is a no-op.
+    fn idle_exit_restart_scheduler_tick();
+
     /// Commits one local interrupt wait after the scheduler publishes polling.
     ///
     /// The implementation must disable local interrupts, call

@@ -42,12 +42,152 @@ fn wait_until(condition: impl Fn() -> bool, message: &'static str) {
     }
 }
 
+/// Linux `rt_mutex_adjust_prio_chain()` step [9]: when a PI requeue changes
+/// the top waiter of an ownerless lock, the new top must be woken to try the
+/// claim. The scenario releases L (handoff selects W1), then boosts the
+/// sleeping W2 above W1 by blocking a high-urgency task on W2's lock; without
+/// the ownerless wake, W1 re-parks after a failed claim and W2 sleeps forever.
+/// Linux `rt_mutex_adjust_prio_chain()` step [9]: when a PI requeue changes
+/// the top waiter of an ownerless lock, the new top must be woken to try the
+/// claim. FIFO 30 `selected` blocks on L first, FIFO 10 `boosted` (holding M)
+/// blocks second, and the FIFO 90 owner releases L into an ownerless handoff
+/// for `selected` and then blocks on M itself, PI-boosting `boosted` to 90
+/// above `selected` inside the ownerless tree. Without the ownerless wake,
+/// `selected` re-parks after its failed claim, `boosted` sleeps forever, and
+/// the owner can never finish; the owner performs both steps back to back at
+/// FIFO 90, so no lower-priority wake can slip between them.
+fn ownerless_lock_rekey_wakes_new_top() {
+    static GO_RELEASE: AtomicBool = AtomicBool::new(false);
+    static GO_SELECTED: AtomicBool = AtomicBool::new(false);
+    static GO_BOOSTED: AtomicBool = AtomicBool::new(false);
+    static L_READY: AtomicBool = AtomicBool::new(false);
+    static M_READY: AtomicBool = AtomicBool::new(false);
+    static RELEASED: AtomicBool = AtomicBool::new(false);
+    static SELECTED_DONE: AtomicBool = AtomicBool::new(false);
+    static BOOSTED_DONE: AtomicBool = AtomicBool::new(false);
+    static OWNER_GATE: AxWaitQueueHandle = AxWaitQueueHandle::new();
+    static SELECTED_GATE: AxWaitQueueHandle = AxWaitQueueHandle::new();
+    static BOOSTED_GATE: AxWaitQueueHandle = AxWaitQueueHandle::new();
+
+    for flag in [
+        &GO_RELEASE,
+        &GO_SELECTED,
+        &GO_BOOSTED,
+        &L_READY,
+        &M_READY,
+        &RELEASED,
+        &SELECTED_DONE,
+        &BOOSTED_DONE,
+    ] {
+        flag.store(false, Ordering::Release);
+    }
+
+    let lock_l = Arc::new(Mutex::new(()));
+    let lock_m = Arc::new(Mutex::new(()));
+    let join_owner = {
+        let lock_l = Arc::clone(&lock_l);
+        let lock_m = Arc::clone(&lock_m);
+        thread::spawn(move || {
+            pin_current_to_cpu(0);
+            set_thread_policy(
+                current_thread_id().expect("the owner must have an identity"),
+                SchedulePolicy::fifo(RtPriority::new(90).expect("priority 90 is valid")),
+            )
+            .expect("the owner must accept its policy");
+            let _l = lock_l.lock();
+            L_READY.store(true, Ordering::Release);
+            task_api::ax_wait_queue_wake(&OWNER_GATE, 1);
+            task_api::ax_wait_queue_wait_until(
+                &OWNER_GATE,
+                || GO_RELEASE.load(Ordering::Acquire),
+                None,
+            );
+            drop(_l);
+            RELEASED.store(true, Ordering::Release);
+            // The release published the ownerless handoff for `selected`.
+            // Blocking on M here boosts `boosted` above it inside the same
+            // ownerless waiter tree before any lower-priority task runs.
+            let _m = lock_m.lock();
+        })
+    };
+    wait_until(|| L_READY.load(Ordering::Acquire), "L must be locked");
+
+    let join_selected = {
+        let lock_l = Arc::clone(&lock_l);
+        thread::spawn(move || {
+            pin_current_to_cpu(0);
+            set_thread_policy(
+                current_thread_id().expect("selected must have an identity"),
+                SchedulePolicy::fifo(RtPriority::new(30).expect("priority 30 is valid")),
+            )
+            .expect("selected must accept its policy");
+            task_api::ax_wait_queue_wait_until(
+                &SELECTED_GATE,
+                || GO_SELECTED.load(Ordering::Acquire),
+                None,
+            );
+            let _l = lock_l.lock();
+            SELECTED_DONE.store(true, Ordering::Release);
+        })
+    };
+    let join_boosted = {
+        let lock_l = Arc::clone(&lock_l);
+        let lock_m = Arc::clone(&lock_m);
+        thread::spawn(move || {
+            pin_current_to_cpu(0);
+            set_thread_policy(
+                current_thread_id().expect("boosted must have an identity"),
+                SchedulePolicy::fifo(RtPriority::new(10).expect("priority 10 is valid")),
+            )
+            .expect("boosted must accept its policy");
+            let _m = lock_m.lock();
+            M_READY.store(true, Ordering::Release);
+            task_api::ax_wait_queue_wake(&BOOSTED_GATE, 1);
+            task_api::ax_wait_queue_wait_until(
+                &BOOSTED_GATE,
+                || GO_BOOSTED.load(Ordering::Acquire),
+                None,
+            );
+            let _l = lock_l.lock();
+            BOOSTED_DONE.store(true, Ordering::Release);
+        })
+    };
+    wait_until(|| M_READY.load(Ordering::Acquire), "M must be locked");
+
+    GO_SELECTED.store(true, Ordering::Release);
+    task_api::ax_wait_queue_wake(&SELECTED_GATE, 1);
+    // CPU 0 only runs the gated actors, so `selected` parks on L within this
+    // sleep and keeps the earlier waiter-tree sequence.
+    thread::sleep(Duration::from_millis(100));
+    GO_BOOSTED.store(true, Ordering::Release);
+    task_api::ax_wait_queue_wake(&BOOSTED_GATE, 1);
+    thread::sleep(Duration::from_millis(100));
+    GO_RELEASE.store(true, Ordering::Release);
+    task_api::ax_wait_queue_wake(&OWNER_GATE, 1);
+
+    wait_until(|| RELEASED.load(Ordering::Acquire), "L must be released");
+    wait_until(
+        || BOOSTED_DONE.load(Ordering::Acquire),
+        "the boosted waiter must be woken as the new ownerless top",
+    );
+    wait_until(
+        || SELECTED_DONE.load(Ordering::Acquire),
+        "the selected handoff waiter must acquire L after boosted releases it",
+    );
+
+    join_boosted.join().unwrap();
+    join_selected.join().unwrap();
+    join_owner.join().unwrap();
+}
+
 pub fn run() -> crate::TestResult {
     assert!(
         thread::available_parallelism().unwrap().get() >= 3,
         "task-pi-mutex requires at least three CPUs"
     );
     pin_current_to_cpu(2);
+
+    ownerless_lock_rekey_wakes_new_top();
 
     let mutex = Arc::new(Mutex::new(()));
     let owner_locked = Arc::new(AtomicBool::new(false));
