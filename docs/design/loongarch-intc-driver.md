@@ -199,7 +199,8 @@ snapshot。两端仅通过这个 snapshot 共享状态：
 
 - enable：先写 `REG_ENABLE`，再以 Release 发布 input；
 - disable：先以 AcqRel 从 snapshot 隐藏 input，再写 `REG_DISABLE`；
-- claim：Acquire 读取 snapshot，并与 ISR 相交；
+- claim：Acquire 读取 snapshot，并与触发 parent 的 effective input bitmap 及 ISR
+  相交；未被 firmware bitmap 选中的 fallback input 只属于首个有效 parent；
 - complete：验证 domain/input 后不写硬件，因为当前输入为 level，设备 handler
   负责 deassert。
 
@@ -256,8 +257,8 @@ PCH 本地步骤失败时，glue 把已经转换的父 EIO vector 回滚到原�
 - EIO：MISC、NODEMAP、IPMAP、ROUTE、BOUNCE 初始化，enable bitmap，pending
   claim 与 W1 complete；
 - PCH：vector/input 边界，ACPI identity，edge/level、polarity、MASK/HTVEC；
-- LIO：parent map、route byte、初始化、enable snapshot、cascade claim、无硬件
-  EOI；
+- LIO：parent map、route byte、初始化、enable snapshot、多 parent 同时 pending 时
+  的 cascade claim 隔离、fallback parent 与无硬件 EOI；
 - RDIF：三类 controller 的合法、空、越界、domain/config mismatch 路径。
 
 集成与运行验证使用：

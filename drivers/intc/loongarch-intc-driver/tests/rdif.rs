@@ -62,7 +62,7 @@ fn pch_rdif_validates_acpi_identity_and_programs_local_configuration() {
     assert_eq!(mmio.read::<u8>(0x200 + 5), 69);
 
     intc.set_enabled(HwIrq(5), true).unwrap();
-    assert_eq!(mmio.read::<u32>(0x20), u32::MAX & !(1 << 5));
+    assert_eq!(mmio.read::<u32>(0x20), !(1 << 5));
 
     let wrong_identity = pch_route(8, 0x1000_0000, 5);
     assert!(!intc.supports_acpi_gsi(&wrong_identity));

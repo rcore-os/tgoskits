@@ -44,13 +44,15 @@ const ROUTE_INT_SHIFT: usize = 4;
 pub struct LioIntcConfig {
     parent_lines: [Option<CpuIrqLine>; LIO_PARENT_COUNT],
     parent_input_maps: [u32; LIO_PARENT_COUNT],
+    effective_parent_input_maps: [u32; LIO_PARENT_COUNT],
 }
 
 impl LioIntcConfig {
     /// Creates a LIOINTC configuration.
     ///
     /// Array slot zero is INT0/CPU line 2, slot one is INT1/CPU line 3, and so
-    /// on. An input not selected by any bitmap falls back to the first present
+    /// on. When multiple bitmaps select one input, the lowest parent slot wins.
+    /// An input not selected by any bitmap falls back to the first present
     /// parent, preserving the hardware's existing CPU0/single-node behavior.
     ///
     /// # Errors
@@ -62,11 +64,13 @@ impl LioIntcConfig {
         parent_input_maps: [u32; LIO_PARENT_COUNT],
     ) -> Result<Self, IntcError> {
         let mut slot = 0;
-        let mut has_parent = false;
+        let mut first_parent_slot = LIO_PARENT_COUNT;
         while slot < LIO_PARENT_COUNT {
             match parent_lines[slot] {
                 Some(line) => {
-                    has_parent = true;
+                    if first_parent_slot == LIO_PARENT_COUNT {
+                        first_parent_slot = slot;
+                    }
                     let expected = LIO_PARENT_FIRST_CPU_LINE + slot;
                     if line.raw() != expected {
                         return Err(IntcError::InvalidLioParentSlot {
@@ -86,12 +90,27 @@ impl LioIntcConfig {
             }
             slot += 1;
         }
-        if !has_parent {
+        if first_parent_slot == LIO_PARENT_COUNT {
             return Err(IntcError::MissingLioParent);
         }
+
+        let mut effective_parent_input_maps = [0; LIO_PARENT_COUNT];
+        let mut routed_inputs = 0;
+        slot = 0;
+        while slot < LIO_PARENT_COUNT {
+            if parent_lines[slot].is_some() {
+                let selected_inputs = parent_input_maps[slot] & !routed_inputs;
+                effective_parent_input_maps[slot] = selected_inputs;
+                routed_inputs |= selected_inputs;
+            }
+            slot += 1;
+        }
+        effective_parent_input_maps[first_parent_slot] |= !routed_inputs;
+
         Ok(Self {
             parent_lines,
             parent_input_maps,
+            effective_parent_input_maps,
         })
     }
 
@@ -100,7 +119,10 @@ impl LioIntcConfig {
         self.parent_lines
     }
 
-    /// Returns the input bitmap routed through each parent slot.
+    /// Returns the firmware-provided input bitmap for each parent slot.
+    ///
+    /// The controller resolves overlaps and fallback inputs when it constructs
+    /// the effective hardware routes used by [`LioIntcCpuInterface::claim`].
     pub const fn parent_input_maps(self) -> [u32; LIO_PARENT_COUNT] {
         self.parent_input_maps
     }
@@ -113,14 +135,20 @@ impl LioIntcConfig {
 
     fn parent_slot_for_input(self, input: LioInput) -> usize {
         let mask = 1u32 << input.raw();
-        self.parent_input_maps
+        self.effective_parent_input_maps
             .iter()
             .enumerate()
-            .find(|(slot, map)| self.parent_lines[*slot].is_some() && (**map & mask) != 0)
+            .find(|(_, map)| (**map & mask) != 0)
             .map(|(slot, _)| slot)
-            .or_else(|| self.parent_lines.iter().position(Option::is_some))
-            // `new` rejects the no-parent state.
+            // `new` routes every input to exactly one present parent.
             .unwrap_or(0)
+    }
+
+    fn effective_parent_input_map(self, line: CpuIrqLine) -> Option<u32> {
+        self.parent_lines
+            .iter()
+            .position(|parent| *parent == Some(line))
+            .map(|slot| self.effective_parent_input_maps[slot])
     }
 
     fn validate(self) -> Result<(), IntcError> {
@@ -232,20 +260,16 @@ pub struct LioIntcCpuInterface {
 impl LioIntcCpuInterface {
     /// Returns whether `line` is one of this controller's parent cascades.
     pub fn is_parent(&self, line: CpuIrqLine) -> bool {
-        self.config
-            .parent_lines
-            .into_iter()
-            .flatten()
-            .any(|parent| parent == line)
+        self.config.effective_parent_input_map(line).is_some()
     }
 
     /// Claims the lowest pending enabled input for a matching parent line.
     pub fn claim(&self, line: CpuIrqLine) -> Option<LioInput> {
-        if !self.is_parent(line) {
-            return None;
-        }
+        let parent_input_map = self.config.effective_parent_input_map(line)?;
         // Acquire observes controller publication after the W1 enable write.
-        let pending = self.registers().pending.get() & self.enabled.load(Ordering::Acquire);
+        let pending = self.registers().pending.get()
+            & parent_input_map
+            & self.enabled.load(Ordering::Acquire);
         if pending == 0 {
             return None;
         }

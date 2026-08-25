@@ -112,7 +112,7 @@ fn pch_detects_identity_configures_input_and_maps_external_vector() {
     assert_eq!(mmio.read::<u8>(PCH_HTVEC + 33), 97);
 
     parts.controller.set_enabled(input, true).unwrap();
-    assert_eq!(mmio.read::<u32>(PCH_MASK + 4), u32::MAX & !(1 << 1));
+    assert_eq!(mmio.read::<u32>(PCH_MASK + 4), !(1 << 1));
     assert_eq!(
         parts
             .cpu_interface
@@ -155,7 +155,7 @@ fn lio_initializes_routes_and_shares_only_enabled_snapshot_with_cpu_interface() 
     let line3 = CpuIrqLine::new(3).unwrap();
     let config = LioIntcConfig::new(
         [Some(line2), Some(line3), None, None],
-        [u32::MAX & !(1 << 5), 1 << 5, 0, 0],
+        [!(1 << 5), 1 << 5, 0, 0],
     )
     .unwrap();
     let mut parts = LioIntcParts::new(regs.clone(), isr.clone(), config).unwrap();
@@ -181,6 +181,41 @@ fn lio_initializes_routes_and_shares_only_enabled_snapshot_with_cpu_interface() 
 
     parts.controller.set_enabled(input, false);
     assert_eq!(regs.read::<u32>(LIO_DISABLE), 1 << 5);
+    assert_eq!(parts.cpu_interface.claim(line3), None);
+}
+
+#[test]
+fn lio_claims_only_inputs_routed_to_the_triggering_parent() {
+    let mut registers = [0u64; 8];
+    let mut isr_backing = [0u32; 1];
+    let regs = test_mmio(0x1fe0_1400, &mut registers);
+    let isr = test_mmio(0x1fe0_1040, &mut isr_backing);
+    let line2 = CpuIrqLine::new(2).unwrap();
+    let line3 = CpuIrqLine::new(3).unwrap();
+    let config = LioIntcConfig::new(
+        [Some(line2), Some(line3), None, None],
+        [1 << 5, 1 << 6, 0, 0],
+    )
+    .unwrap();
+    let mut parts = LioIntcParts::new(regs, isr.clone(), config).unwrap();
+    let input5 = LioInput::new(5).unwrap();
+    let input6 = LioInput::new(6).unwrap();
+    let fallback_input = LioInput::new(7).unwrap();
+
+    parts.controller.set_enabled(input5, true);
+    parts.controller.set_enabled(input6, true);
+    parts.controller.set_enabled(fallback_input, true);
+
+    isr.write(0, (1u32 << 5) | (1u32 << 6));
+    assert_eq!(parts.cpu_interface.claim(line2), Some(input5));
+    assert_eq!(parts.cpu_interface.claim(line3), Some(input6));
+
+    isr.write(0, 1u32 << 6);
+    assert_eq!(parts.cpu_interface.claim(line2), None);
+    assert_eq!(parts.cpu_interface.claim(line3), Some(input6));
+
+    isr.write(0, 1u32 << fallback_input.raw());
+    assert_eq!(parts.cpu_interface.claim(line2), Some(fallback_input));
     assert_eq!(parts.cpu_interface.claim(line3), None);
 }
 
