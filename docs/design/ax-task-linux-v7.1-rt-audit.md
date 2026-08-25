@@ -3992,6 +3992,24 @@ rq ownership 与调度语义均未改变；修复的是测试归因边界，避�
 
 ## 当前未关闭项与范围外问题
 
+### 2026-08-25 独立逐文件 Linux RT 对齐轮（rt-align/ax-task-linux-rt 分支）
+
+基于 PR #1775 head `f41fff73d` 的新分支，对 ax-task 及调用链重新逐文件对照 Linux v7.1 PREEMPT_RT，六个子系统并行审计（唤醒/放置、调度入口/切换尾、Fair/EEVDF、RT/DL、同步/PI、timer/等待/idle）。已修复并红绿验证（每项先在旧行为上稳定失败）：
+
+- `try_to_wake_up()` 对 runnable 目标的 no-op 残留：唤醒运行中线程遗留 sticky WAKE_PENDING/PARK_NOTIFIED，下一次 park 确定性虚假失败；现在 runnable 早退路径回滚发布（`discard_runnable_wake`，park 发布竞争保留位）。
+- park 提前取消丢弃已 claim 的抢占请求：两个 early-Notified 分支现在经 defer/finish 恢复请求，等价 Linux `try_to_block_task` 恢复 RUNNING 后仍执行 `schedule()`。
+- RT throttle 把 rq 从 rto_mask/cpupri 隐藏：`publish_run_queue` 现保持真实 urgency 发布（Linux `dequeue_top_rt_rq` 只翻转 `rt_throttled`），pick 侧 `RtEligibility` 仍是唯一执行门。
+- wake 造成的 RT/DL 过载从不 push：bare owner-work kick 无 push 语义；wake 路径（Linux `check_preempt_curr_rt` 的 runnable-count 语义）与 set_next（`rt_queue_push_tasks` 等价，put_prev 后 donor 已入 pushable）各自启动串行 push 迭代器；`start_rt_deadline_push_from` 信任调用方事务内过载证明（发布索引滞后于事务提交）。SMP 回归：被抢占的 FIFO 40 donor 必须被推离过载 CPU。
+- `__resched_curr()` 的 lazy 折叠：ordinary 请求存活期间 lazy 请求整体丢弃（原子 CAS 实现），无 lazy 残留。
+- `rt_mutex_adjust_prio_chain()` 步骤 [9]：ownerless 锁 top 变化的 PI rekey 现在唤醒新 top（链走查收集、锁外 wake batch drain）；确定性死锁回归（FIFO 30 selected + FIFO 10 boosted→90）。
+- `do_idle()`/`tick_nohz_idle_exit()`：idle→非 idle 切换本身拥有 tick 恢复（新 `idle_exit_restart_scheduler_tick` capability）；`restart_scheduler_tick_after_idle` 容忍 pending deferred rearm。竞态窗口无法在无新 hook 插桩下确定性复现，以 idle 密集 QEMU 套件验证。
+- SCHED_IDLE 并入公共 EEVDF Fair 树：删除 IdleFair 双轨（树/成员/类序/has_idle_fair），`set_load_weight()` 权重 3（WEIGHT_IDLEPRIO），tick/运行时定时器/周期均衡门槛统计全部 fair 策略竞争者，两条 fair 均衡路径可迁移 idle 任务（`task_hot` 视为永远 cache-cold），load summary 发布 `fair_idle_only`（`sched_idle_rq()`）供非 idle wakee 抢占式放置（`choose_sched_idle_rq()`）。回归：SCHED_IDLE 对 normal current 必须获得真实服务（旧实现 0% 永久饥饿）；sched-idle-only CPU 必须是空闲放置目标。
+- preempt-exit/IRQ-guard-exit 续环只消费 ordinary 请求（Linux `while (need_resched())`），修复续环 scope 升级为 All 吞 lazy 的语义错误。
+
+已识别但本轮未修复（后续独立根因提交）：T2 RT/DL park timeout 应走 hard timer（Linux `rt_or_dl_task_policy → HRTIMER_MODE_HARD`，当前 ktimers worker FIFO 1 可被中等优先级阻塞唤醒交付）；W2/R9 DL wake 留 prev 抢占 donor 门控（`select_task_rq_dl` 的 `select_rq` 前置条件）；F4 WF_FORK 新线程不抢占；R3 DL 执行计入根 RT 带宽；R5 `check_preempt_equal_dl`；R6 push 目标侧二次验证；R8 RT period unthrottle 的优先级比较 resched；P2 try-lock stealing；P4 rwlock writer bias；P5 死锁隔离策略（当前 panic vs Linux WARN+挂起）；P6 unlock 的 deboost 链先于 wake；F5 WA_BIAS ~12% 偏置；F6 迁移 task_hot 门限；F7 deadline 平局偏向 wakee；F8 eligibility 精确有理比较与 lag 钳制粒度；T3 hrtimer drain 的 3-retry/100ms hang 防护（简单截断会造成 IRQ 风暴，需正确的强制前移语义）；T4 `hrtimer_cancel` 等待回调完成契约；T5 跨类 soft 到期顺序；T6 wait_timeout 边界裁决；W4 delayed-fair reactivation 的 `!task_on_cpu` 检查；W5 KernelStop CPU 的空闲判定。
+
+验证：ax-task axtest 21/21、task-fair-wake-idle-sibling（含两个新回归，三次连跑稳定）、task-fair-idle-pull、task-rt-policy、task-wait-queue、task-pi-mutex、task-preempt-guard QEMU 套件全绿；ax-task/ax-runtime clippy 矩阵与 fmt 通过。
+
 ### 本轮必须继续处理
 
 - 继续检查 clockevent IRQ、scheduler deadline、IPI 与 context-switch 的 qperf
