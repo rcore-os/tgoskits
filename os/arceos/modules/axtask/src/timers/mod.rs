@@ -1,3 +1,5 @@
+//! Per-CPU task and kernel timer service.
+
 use alloc::{boxed::Box, format, vec::Vec};
 use core::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
