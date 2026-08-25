@@ -25,11 +25,11 @@ pub fn axtest_fifo_switch_rt_deadline() -> (bool, u64, u64) {
         .exercise_fifo_switch_rt_deadline_for_test()
 }
 
-/// Observes wake residue left behind by waking a runnable thread.
+/// Observes the park-abort notification left by waking a runnable thread.
 #[doc(hidden)]
-pub fn axtest_runnable_wake_park_cleanliness() -> (bool, bool) {
+pub fn axtest_runnable_wake_park_notification() -> bool {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).expect("test task system must be valid");
-    system.exercise_runnable_wake_park_cleanliness_for_test()
+    system.exercise_runnable_wake_park_notification_for_test()
 }
 
 /// Observes root-domain visibility of a throttled RT runqueue.

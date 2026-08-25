@@ -3996,7 +3996,7 @@ rq ownership 与调度语义均未改变；修复的是测试归因边界，避�
 
 基于 PR #1775 head `f41fff73d` 的新分支，对 ax-task 及调用链重新逐文件对照 Linux v7.1 PREEMPT_RT，六个子系统并行审计（唤醒/放置、调度入口/切换尾、Fair/EEVDF、RT/DL、同步/PI、timer/等待/idle）。已修复并红绿验证（每项先在旧行为上稳定失败）：
 
-- `try_to_wake_up()` 对 runnable 目标的 no-op 残留：唤醒运行中线程遗留 sticky WAKE_PENDING/PARK_NOTIFIED，下一次 park 确定性虚假失败；现在 runnable 早退路径回滚发布（`discard_runnable_wake`，park 发布竞争保留位）。
+- ~~`try_to_wake_up()` 对 runnable 目标的 no-op 残留~~（已撤销的误判）：曾把唤醒运行中线程的 sticky WAKE_PENDING/PARK_NOTIFIED 视为偏离 Linux 的残留并回滚，导致四架构 `all` 合并镜像在块设备首个 I/O 完成等待处死锁——块运行时 IRQ→等待者交接正依赖该位中止进行中的 park。Linux 语义的正确解读：Linux 等待者在条件检查**前**发布等待状态（`set_current_state()`），而本模型 park 协议在条件检查**后**才发布 Parking，sticky 位正是该窗口内"状态已发布"的等价机制，丢弃即丢失唤醒。位残留仅使下一次 park 误中止一次（合法 spurious wakeup）。已恢复无条件 sticky 语义并以 `waking_a_runnable_thread_keeps_its_park_abort_notification` 回归锁定"park 窗口内唤醒不得丢失"契约。
 - park 提前取消丢弃已 claim 的抢占请求：两个 early-Notified 分支现在经 defer/finish 恢复请求，等价 Linux `try_to_block_task` 恢复 RUNNING 后仍执行 `schedule()`。
 - RT throttle 把 rq 从 rto_mask/cpupri 隐藏：`publish_run_queue` 现保持真实 urgency 发布（Linux `dequeue_top_rt_rq` 只翻转 `rt_throttled`），pick 侧 `RtEligibility` 仍是唯一执行门。
 - wake 造成的 RT/DL 过载从不 push：bare owner-work kick 无 push 语义；wake 路径（Linux `check_preempt_curr_rt` 的 runnable-count 语义）与 set_next（`rt_queue_push_tasks` 等价，put_prev 后 donor 已入 pushable）各自启动串行 push 迭代器；`start_rt_deadline_push_from` 信任调用方事务内过载证明（发布索引滞后于事务提交）。SMP 回归：被抢占的 FIFO 40 donor 必须被推离过载 CPU。

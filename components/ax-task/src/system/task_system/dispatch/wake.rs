@@ -406,13 +406,16 @@ impl TaskSystem {
         self.wake_thread(core, WakerCpuSource::Explicit(waker), WakeIntent::Normal)
     }
 
-    /// Observes whether waking a runnable thread leaves stray wake bits.
+    /// Observes the park-abort notification left by waking a runnable thread.
     ///
-    /// Linux `try_to_wake_up()` on a `TASK_RUNNING` target is a complete
-    /// no-op: the failed state match returns before any state is published,
-    /// so the task's next sleep must still succeed on its first attempt.
+    /// The park protocol publishes Parking only after the waiter's condition
+    /// check, so a wake that arrives while the target still reads Running
+    /// must leave its sticky notification behind: it is this model's
+    /// equivalent of Linux publishing the wait state (`set_current_state()`)
+    /// before the condition check, and dropping it would lose the wake. The
+    /// leftover bit may abort the next park once — a legal spurious wakeup.
     #[cfg(all(axtest, feature = "axtest"))]
-    pub(crate) fn exercise_runnable_wake_park_cleanliness_for_test(&self) -> (bool, bool) {
+    pub(crate) fn exercise_runnable_wake_park_notification_for_test(&self) -> bool {
         let thread = ThreadId::from_parts(0, 1);
         let policy = SchedulePolicy::default();
         let sched = alloc::sync::Arc::new(crate::system::ThreadSchedCell::new_test(thread, policy));
@@ -422,10 +425,7 @@ impl TaskSystem {
         core.transition_state(ThreadState::Running)
             .expect("test thread must enter Running");
         let result = self.wake_thread_direct(Arc::clone(&core), Some(CpuId::new(0)));
-        (
-            matches!(result, WakeResult::Notified),
-            core.wake_is_pending(),
-        )
+        matches!(result, WakeResult::Notified) && core.wake_is_pending()
     }
 
     pub(crate) fn wake_thread_from_current_cpu(
@@ -464,15 +464,19 @@ impl TaskSystem {
             return WakeResult::AlreadyPending;
         }
         match wake_publication.state() {
-            ThreadState::Parking => return WakeResult::Notified,
-            ThreadState::Ready | ThreadState::Running | ThreadState::Waking | ThreadState::New => {
-                // Linux leaves a runnable task untouched when the state match
-                // in `try_to_wake_up()` fails. Roll the sticky publication back
-                // so the thread's next park is not aborted by a phantom
-                // notification; a racing park publication keeps the bits.
-                core.discard_runnable_wake();
-                return WakeResult::Notified;
-            }
+            // The sticky publication is this model's `set_current_state()`:
+            // ax-task's park protocol publishes Parking only after the
+            // waiter's condition check, so a wake that arrives in that window
+            // (the target still reads Running) must leave its notification
+            // behind to abort the imminent park. Linux publishes the wait
+            // state before the condition check instead; the observable
+            // contract is the same — a racing wake is never lost, and any
+            // leftover bit only causes one legal spurious park abort.
+            ThreadState::Parking
+            | ThreadState::Ready
+            | ThreadState::Running
+            | ThreadState::Waking
+            | ThreadState::New => return WakeResult::Notified,
             ThreadState::Exited => {
                 core.discard_failed_wake();
                 return WakeResult::Exited;
@@ -490,23 +494,22 @@ impl TaskSystem {
                 core.discard_failed_wake();
                 return WakeResult::Exited;
             }
-            if matches!(sched.lifecycle.state(), ThreadState::Parking) {
+            if matches!(
+                sched.lifecycle.state(),
+                ThreadState::Parking
+                    | ThreadState::Ready
+                    | ThreadState::Running
+                    | ThreadState::Waking
+            ) {
                 // Parking and its final transition to Blocked are serialized by
                 // this task lock, matching Linux try_to_wake_up() under
                 // p->pi_lock. If the parker still owns the task, the sticky
                 // notification is the complete transaction; otherwise the
                 // Blocked path below performs the no-fail runnable publication.
-                return WakeResult::Notified;
-            }
-            if matches!(
-                sched.lifecycle.state(),
-                ThreadState::Ready | ThreadState::Running | ThreadState::Waking
-            ) {
-                // The task lock serializes every park publication, so a
-                // runnable state cannot become Parking behind this lock. The
-                // wake stays a pure no-op, exactly like a failed state match
-                // in Linux `try_to_wake_up()`.
-                core.discard_runnable_wake();
+                // For a still-runnable target the sticky notification stays
+                // behind as this model's pre-park state publication: the
+                // target may have passed its condition check and be about to
+                // park, and dropping the bit would lose this wake.
                 return WakeResult::Notified;
             }
             // Linux checks `p->on_rq` and runs `ttwu_runnable()` before it

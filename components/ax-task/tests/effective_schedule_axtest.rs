@@ -34,13 +34,12 @@ fn unchanged_fifo_effective_key_is_not_republished() {
 }
 
 #[axtest]
-fn waking_a_runnable_thread_does_not_poison_its_next_park() {
-    let (notified, wake_pending) = ax_task::axtest_runnable_wake_park_cleanliness();
+fn waking_a_runnable_thread_keeps_its_park_abort_notification() {
+    let notification_kept = ax_task::axtest_runnable_wake_park_notification();
 
-    ax_assert!(notified);
     ax_assert!(
-        !wake_pending,
-        "Linux try_to_wake_up() is a no-op on a TASK_RUNNING target"
+        notification_kept,
+        "a wake racing the park window must never be dropped"
     );
 }
 
