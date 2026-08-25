@@ -49,6 +49,10 @@ Distributor 和当前 Redistributor 初始化，并遵守 `Gic::new` 的唯一�
 调用者还须在调用期间序列化独立 MMIO 别名和该 INTID 的中断处理。对硬件永久启用
 的 SGI，本接口会返回 `InterruptEnabled`，不会以不安全写入伪造支持。
 
+公开接口的调用顺序由 `examples/gicv3_nmi_attribute.rs` 编译检查。setter 和
+getter 都要求先完成 Distributor 初始化，以使用 `Gic::init` 确认的 Security
+state；访问 SGI/PPI 时还要求先初始化当前 PE 的 Redistributor。
+
 ## 方案比较
 
 - 升级外部依赖不可行：本仓库通过 workspace path 维护
@@ -72,8 +76,9 @@ Distributor 和当前 Redistributor 初始化，并遵守 `Gic::new` 的唯一�
 INTID；该测试在旧实现中因缺失映射能力而确定性编译失败。AArch64 Linux 用户态
 测试在 QEMU user mode 中以假 MMIO 验证 capability、Group、affinity routing、
 未实现 SPI、enabled/active 拒绝、设置/清除/读回以及包含 Aff3 的 Redistributor
-匹配。另以 bare-metal AArch64 target clippy/check 和现有 GICv3 QEMU 用例验证
-目标编译与普通 IRQ 路径。
+匹配。AArch64 Linux target 还会编译 `gicv3_nmi_attribute` example，验证公开 API
+的初始化、能力检查、禁用、设置与查询顺序。另以 bare-metal AArch64 target
+clippy/check 和现有 GICv3 QEMU 用例验证目标编译与普通 IRQ 路径。
 
 变更不修改初始化默认值或普通 IRQ 行为。若需回滚，只需移除新增 API、能力位定义
 和测试；调用者在能力缺失时已经得到显式 `Unsupported`，无需迁移持久状态。

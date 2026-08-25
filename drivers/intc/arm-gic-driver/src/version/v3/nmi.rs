@@ -83,12 +83,13 @@ impl Gic {
     /// Set the non-maskable property of a standard SGI, PPI, or SPI.
     ///
     /// Private interrupts are changed only for the current PE. The caller must
-    /// initialize the Distributor and the current Redistributor before using
-    /// this method. The interrupt must be disabled and inactive; this method
-    /// checks both states before modifying the attribute. A pending interrupt
-    /// is permitted and observes either the old or new attribute as required
-    /// by the GIC architecture. This API programs the interrupt property only;
-    /// it does not provide the NMI acknowledge or exception-handling path.
+    /// initialize the Distributor before using this method and must also
+    /// initialize the current Redistributor when changing a private interrupt.
+    /// The interrupt must be disabled and inactive; this method checks both
+    /// states before modifying the attribute. A pending interrupt is permitted
+    /// and observes either the old or new attribute as required by the GIC
+    /// architecture. This API programs the interrupt property only; it does not
+    /// provide the NMI acknowledge or exception-handling path.
     ///
     /// The caller must serialize independent MMIO aliases and interrupt
     /// handling for the INTID until this method returns. Some GIC
@@ -126,7 +127,9 @@ impl Gic {
 
     /// Read the non-maskable property of a standard SGI, PPI, or SPI.
     ///
-    /// Private interrupts are read from the current PE's Redistributor.
+    /// The caller must initialize the Distributor first so this method observes
+    /// the Security state established by [`Gic::init`]. Private interrupts are
+    /// read from the current PE's Redistributor, which must also be initialized.
     ///
     /// # Errors
     ///
