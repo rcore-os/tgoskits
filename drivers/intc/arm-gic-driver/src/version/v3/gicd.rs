@@ -29,7 +29,7 @@ register_structs! {
         (0x0004 => pub TYPER: ReadOnly<u32, TYPER::Register>),
         /// Distributor Implementer Identification Register.
         (0x0008 => pub IIDR: ReadOnly<u32, IIDR::Register>),
-        /// Type Modifier Register.
+        /// Interrupt Controller Type Register 2.
         (0x000c => pub TYPER2: ReadOnly<u32, TYPER2::Register>),
         /// Status Register.
         (0x0010 => pub STATUSR: ReadWrite<u32, STATUSR::Register>),
@@ -645,13 +645,13 @@ register_bitfields! [
         DVIS OFFSET(18) NUMBITS(1) [],
     ],
 
-    /// Type Modifier Register
+    /// Interrupt Controller Type Register 2
     pub TYPER2 [
-        /// Virtual command queue interface supported
+        /// Number of implemented vPEID bits minus one when VIL is set
         VID OFFSET(0) NUMBITS(5) [],
-        /// Virtual LPIs supported
+        /// Indicates how the implemented vPEID width is reported
         VIL OFFSET(7) NUMBITS(1) [],
-        /// Non-architected SGIs are supported
+        /// Indicates whether SGIs can be configured without an active state
         nASSGIcap OFFSET(8) NUMBITS(1) [],
     ],
 

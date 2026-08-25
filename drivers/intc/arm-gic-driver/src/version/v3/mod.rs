@@ -232,16 +232,6 @@ pub enum NmiAttribute {
     NonMaskable,
 }
 
-impl From<bool> for NmiAttribute {
-    fn from(nmi: bool) -> Self {
-        if nmi {
-            Self::NonMaskable
-        } else {
-            Self::Maskable
-        }
-    }
-}
-
 /// Failure while accessing a GICv3.3 NMI delivery attribute.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum NmiAttributeError {
@@ -519,19 +509,8 @@ impl Gic {
     ///
     /// This check only reads `GICD_TYPER.NMI`; it never probes capability by
     /// writing an interrupt's live attribute register.
-    pub fn supports_nmi(&self) -> bool {
+    pub fn supports_nmi_attributes(&self) -> bool {
         self.gicd().supports_nmi()
-    }
-
-    /// Report NMI attribute availability without modifying GIC state.
-    ///
-    /// This compatibility API returns `(private, shared)`. `private` requires
-    /// both FEAT_GICv3_NMI and a Redistributor frame matching the current CPU;
-    /// `shared` reflects the architectural `GICD_TYPER.NMI` capability.
-    pub fn probe_nmi_attribute_support(&self) -> (bool, bool) {
-        let shared = self.supports_nmi();
-        let private = shared && self.current_rd_opt().is_some();
-        (private, shared)
     }
 
     /// Set the GICv3.3 NMI delivery attribute for an SGI, PPI, or SPI.
@@ -570,16 +549,6 @@ impl Gic {
     pub fn nmi_attribute(&self, intid: IntId) -> Result<NmiAttribute, NmiAttributeError> {
         let (register, mask) = self.nmi_attribute_register(intid)?;
         Ok(nmi_attribute_from_register(register.get(), mask))
-    }
-
-    /// Set or clear an NMI attribute using the legacy boolean interface.
-    pub fn set_nmi_attr(&mut self, intid: IntId, nmi: bool) -> Result<(), NmiAttributeError> {
-        self.set_nmi_attribute(intid, nmi.into())
-    }
-
-    /// Read an NMI attribute using the legacy boolean interface.
-    pub fn is_nmi(&self, intid: IntId) -> Result<bool, NmiAttributeError> {
-        Ok(self.nmi_attribute(intid)? == NmiAttribute::NonMaskable)
     }
 
     pub fn redistributor_count(&self) -> usize {
@@ -678,7 +647,7 @@ impl Gic {
     ) -> Result<(&ReadWrite<u32>, u32), NmiAttributeError> {
         let slot =
             nmi_attribute_slot(intid).ok_or(NmiAttributeError::UnsupportedIntId { intid })?;
-        if !self.supports_nmi() {
+        if !self.supports_nmi_attributes() {
             return Err(NmiAttributeError::Unsupported);
         }
 
@@ -1495,12 +1464,5 @@ mod tests {
             nmi_attribute_from_register(with_nmi, mask),
             NmiAttribute::NonMaskable
         );
-    }
-
-    #[test]
-    fn x_kernel_compatibility_methods_keep_the_migrated_signatures() {
-        let _: fn(&Gic) -> (bool, bool) = Gic::probe_nmi_attribute_support;
-        let _: fn(&mut Gic, IntId, bool) -> Result<(), NmiAttributeError> = Gic::set_nmi_attr;
-        let _: fn(&Gic, IntId) -> Result<bool, NmiAttributeError> = Gic::is_nmi;
     }
 }

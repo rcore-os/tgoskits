@@ -52,16 +52,14 @@ the interrupt as Group 1 before selecting the non-maskable attribute:
 use arm_gic_driver::v3::NmiAttribute;
 
 let pmu_ppi = IntId::ppi(14);
-if gic.supports_nmi() {
+if gic.supports_nmi_attributes() {
     gic.set_nmi_attribute(pmu_ppi, NmiAttribute::NonMaskable)
         .expect("set PMU PPI NMI attribute");
 }
 ```
 
 This API only programs the GIC attribute. Enabling CPU FEAT_NMI and handling the
-NMI acknowledgement path belong to the consuming OS. See
-[the design document](docs/gicv3-nmi.md) for the full contract and migration
-review.
+NMI acknowledgement path belong to the consuming OS.
 
 ## Architecture Support
 

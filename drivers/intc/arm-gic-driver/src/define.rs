@@ -80,12 +80,16 @@ pub const SPECIAL_RANGE: Range<u32> = Range {
     end: 1024,
 };
 
+/// Register location of a standard interrupt's NMI attribute.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NmiAttributeSlot {
+    /// The attribute is in the current PE's `GICR_INMIR0`.
     Redistributor { mask: u32 },
+    /// The attribute is in `GICD_INMIR<register>`.
     Distributor { register: usize, mask: u32 },
 }
 
+/// Map a standard SGI, PPI, or SPI to its architectural NMI attribute slot.
 pub(crate) fn nmi_attribute_slot(intid: IntId) -> Option<NmiAttributeSlot> {
     let raw = intid.to_u32();
     if SGI_RANGE.contains(&raw) || PPI_RANGE.contains(&raw) {
