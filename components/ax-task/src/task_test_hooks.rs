@@ -2690,12 +2690,20 @@ pub fn take_park_prepare_runtime_cpu_entries() -> Option<u64> {
     Some(entries)
 }
 
-pub(crate) fn record_park_prepare_runtime_cpu_entry(thread: ThreadId) {
-    if PARK_PREPARE_RUNTIME_CPU_STAGE.load(Ordering::Acquire) == STAGE_ARMED
+pub(crate) fn record_park_prepare_runtime_cpu_entry(thread: ThreadId, in_hard_irq: bool) {
+    if !in_hard_irq
+        && PARK_PREPARE_RUNTIME_CPU_STAGE.load(Ordering::Acquire) == STAGE_ARMED
         && PARK_PREPARE_RUNTIME_CPU_TARGET.load(Ordering::Relaxed) == thread.as_u64()
     {
         PARK_PREPARE_RUNTIME_CPU_ENTRIES.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Exercises one park-prepare RuntimeCpu observation without relying on IRQ timing.
+pub fn record_park_prepare_runtime_cpu_entry_for_test(thread: ThreadId, in_hard_irq: bool) {
+    begin_park_prepare_runtime_cpu_probe(thread);
+    record_park_prepare_runtime_cpu_entry(thread, in_hard_irq);
+    complete_park_prepare_runtime_cpu_probe(thread);
 }
 
 /// Arms one real running-to-blocked park for IRQ-owner accounting.

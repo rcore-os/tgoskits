@@ -84,6 +84,7 @@ pub(crate) fn enter_irq_guard(source: IrqGuardSource) -> IrqGuardToken {
         if identity.is_bound() {
             crate::task_test_hooks::record_park_prepare_runtime_cpu_entry(
                 crate::ThreadId::from_parts(identity.slot, identity.generation),
+                task_runtime::in_hard_irq(),
             );
         }
     }

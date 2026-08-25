@@ -3961,6 +3961,20 @@ request；释放外层 preempt guard 后 waiter 必须实际运行并在 mutex �
 suite，LoongArch64 unaligned-fixup 同样通过；ax-task host/loom tests、ax-task 7/7 clippy 与
 ArceOS test-suite 36/36 clippy 也全部通过。
 
+### 2026-08-25 park prepare 的任务上下文观测边界
+
+Linux `set_current_state()` 自身不取得 `rq->lock`，但它在 IRQ enabled 的任务上下文执行时，
+本地 timer/IPI hard IRQ 仍可在同一 `current` 身份下独立进入 scheduler owner 协议。ArceOS
+`task-wait-queue` 原探针只按 thread identity 与时间窗口归因，因此把这种异步 hard-IRQ
+`RuntimeCpu` 进入误算成 `begin_current_park()` 的直接调用；current-head x86_64 CI 曾在该窄
+窗口记录 3 次并错误失败。
+
+确定性回归不再等待偶然 tick，而是在 armed probe 中显式注入一次 hard-IRQ 来源的
+`RuntimeCpu` observation。旧分类稳定得到 1 并失败；修复后 probe 只统计任务上下文中的直接
+进入，hard IRQ observation 为 0，随后真实 `begin_current_park()` 同样为 0。生产 park、IRQ、
+rq ownership 与调度语义均未改变；修复的是测试归因边界，避免用异步 IRQ 活动否定 Linux
+`set_current_state()` 的调用路径合同。
+
 ## 模块化结果
 
 - `TaskSystem` orchestration 只负责编排，registry/reap、placement、owner scheduling、deadline、PI、balance、deferred work 分模块；

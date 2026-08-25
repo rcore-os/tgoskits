@@ -110,6 +110,15 @@ fn test_linked_pick_probe_is_cpu_local() {
 fn test_park_prepare_skips_runtime_cpu_owner() {
     let current = current_thread_id().expect("the test thread must be scheduler-owned");
     task_test_hooks::arm_park_prepare_runtime_cpu_probe(current.as_u64());
+    task_test_hooks::record_park_prepare_runtime_cpu_entry_for_test(current, true);
+    assert_eq!(
+        task_test_hooks::take_park_prepare_runtime_cpu_entries(),
+        Some(0),
+        "an unrelated hard IRQ owner transaction must not be attributed to the task-context park \
+         prepare call"
+    );
+
+    task_test_hooks::arm_park_prepare_runtime_cpu_probe(current.as_u64());
     task_test_hooks::arm_current_preempt_guard_probe(current.as_u64());
 
     let park = match begin_current_park().expect("current park state must prepare") {
