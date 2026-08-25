@@ -23,7 +23,7 @@ pub use its::*;
 
 pub use crate::{IntId, VirtAddr, define::Trigger, sys_reg::*};
 use crate::{
-    define::{NmiAttributeSlot, nmi_attribute_slot},
+    define::{NmiAttributeSlot, enable_nmi_attribute_bit, nmi_attribute_slot},
     version::{IrqVecReadable, IrqVecWriteable},
 };
 
@@ -223,16 +223,7 @@ impl Affinity {
     }
 }
 
-/// Per-interrupt delivery attribute provided by FEAT_GICv3_NMI.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NmiAttribute {
-    /// Deliver the interrupt through the regular maskable interrupt path.
-    Maskable,
-    /// Deliver the interrupt as a non-maskable interrupt.
-    NonMaskable,
-}
-
-/// Failure while accessing a GICv3.3 NMI delivery attribute.
+/// Failure while enabling a GICv3.3 NMI delivery attribute.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum NmiAttributeError {
     /// The requested INTID has no standard NMI attribute register.
@@ -247,12 +238,9 @@ pub enum NmiAttributeError {
     /// No Redistributor frame matches the current CPU affinity.
     #[error("the current CPU redistributor was not found")]
     CurrentRedistributorNotFound,
-    /// The requested attribute did not survive register readback.
-    #[error("{intid:?} rejected the requested {attribute:?} attribute")]
-    AttributeNotWritable {
-        intid: IntId,
-        attribute: NmiAttribute,
-    },
+    /// The non-maskable attribute did not survive register readback.
+    #[error("{intid:?} rejected the non-maskable attribute")]
+    AttributeNotWritable { intid: IntId },
 }
 
 /// GICv3 driver implementation.
@@ -513,42 +501,40 @@ impl Gic {
         self.gicd().supports_nmi()
     }
 
-    /// Set the GICv3.3 NMI delivery attribute for an SGI, PPI, or SPI.
+    /// Enable the GICv3.3 NMI delivery attribute for an SGI, PPI, or SPI.
     ///
     /// Private interrupts are programmed in the current CPU's
     /// `GICR_INMIR0`; SPIs are programmed in `GICD_INMIR<n>`. The operation
     /// preserves every sibling interrupt attribute in the same register and
-    /// verifies the requested bit by reading it back.
+    /// verifies the enabled bit by reading it back.
     ///
     /// The caller must serialize GIC configuration and configure the
-    /// interrupt as Group 1 before selecting [`NmiAttribute::NonMaskable`].
-    /// Group 0 or inaccessible attribute fields can be RAZ/WI and produce
-    /// [`NmiAttributeError::AttributeNotWritable`]. CPU FEAT_NMI enablement and
-    /// NMI acknowledgement remain responsibilities of the OS integration.
-    pub fn set_nmi_attribute(
-        &mut self,
-        intid: IntId,
-        attribute: NmiAttribute,
-    ) -> Result<(), NmiAttributeError> {
+    /// interrupt as Group 1 before enabling its NMI attribute. This method does
+    /// not expose clearing or querying the attribute because a zero read cannot
+    /// distinguish a maskable interrupt from an inaccessible RAZ/WI field. CPU
+    /// FEAT_NMI enablement and NMI acknowledgement remain responsibilities of
+    /// the OS integration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NmiAttributeError`] when the GIC does not implement NMI
+    /// attributes, the INTID cannot be mapped to an implemented attribute, the
+    /// current Redistributor is unavailable, or readback does not confirm the
+    /// enabled attribute.
+    pub fn enable_nmi_attribute(&mut self, intid: IntId) -> Result<(), NmiAttributeError> {
         let (register, mask) = self.nmi_attribute_register(intid)?;
-        let current = register.get();
-        let requested = nmi_attribute_register_value(current, mask, attribute);
-        if requested != current {
-            register.set(requested);
-            barrier::dsb(barrier::SY);
-        }
-
-        if nmi_attribute_from_register(register.get(), mask) == attribute {
+        if enable_nmi_attribute_bit(
+            || register.get(),
+            |value| {
+                register.set(value);
+                barrier::dsb(barrier::SY);
+            },
+            mask,
+        ) {
             Ok(())
         } else {
-            Err(NmiAttributeError::AttributeNotWritable { intid, attribute })
+            Err(NmiAttributeError::AttributeNotWritable { intid })
         }
-    }
-
-    /// Read the GICv3.3 NMI delivery attribute for an SGI, PPI, or SPI.
-    pub fn nmi_attribute(&self, intid: IntId) -> Result<NmiAttribute, NmiAttributeError> {
-        let (register, mask) = self.nmi_attribute_register(intid)?;
-        Ok(nmi_attribute_from_register(register.get(), mask))
     }
 
     pub fn redistributor_count(&self) -> usize {
@@ -1099,21 +1085,6 @@ fn redistributor_affinity_from_mpidr(mpidr: u64) -> u32 {
     Affinity::from_mpidr(mpidr).affinity()
 }
 
-fn nmi_attribute_from_register(value: u32, mask: u32) -> NmiAttribute {
-    if value & mask == 0 {
-        NmiAttribute::Maskable
-    } else {
-        NmiAttribute::NonMaskable
-    }
-}
-
-fn nmi_attribute_register_value(current: u32, mask: u32, attribute: NmiAttribute) -> u32 {
-    match attribute {
-        NmiAttribute::Maskable => current & !mask,
-        NmiAttribute::NonMaskable => current | mask,
-    }
-}
-
 /// Every CPU interface has its own GICC registers
 pub struct CpuInterface {
     rd: *mut RedistributorV3,
@@ -1438,6 +1409,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nmi_configuration_exposes_one_way_enable_operation() {
+        let _: fn(&mut Gic, IntId) -> Result<(), NmiAttributeError> = Gic::enable_nmi_attribute;
+    }
+
+    #[test]
     fn nmi_support_uses_gicd_typer_bit_9() {
         assert!(!gicd::supports_nmi_from_typer(1 << 6));
         assert!(gicd::supports_nmi_from_typer(1 << 9));
@@ -1447,22 +1423,5 @@ mod tests {
     fn redistributor_affinity_preserves_aff3() {
         let mpidr = (0x12_u64 << 32) | (0x34 << 16) | (0x56 << 8) | 0x78;
         assert_eq!(redistributor_affinity_from_mpidr(mpidr), 0x1234_5678);
-    }
-
-    #[test]
-    fn nmi_attribute_updates_preserve_sibling_bits() {
-        let original = (1 << 2) | (1 << 19);
-        let mask = 1 << 14;
-        let with_nmi = nmi_attribute_register_value(original, mask, NmiAttribute::NonMaskable);
-
-        assert_eq!(with_nmi, original | mask);
-        assert_eq!(
-            nmi_attribute_register_value(with_nmi, mask, NmiAttribute::Maskable),
-            original
-        );
-        assert_eq!(
-            nmi_attribute_from_register(with_nmi, mask),
-            NmiAttribute::NonMaskable
-        );
     }
 }

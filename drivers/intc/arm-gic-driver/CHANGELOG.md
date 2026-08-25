@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- *(arm-gic-driver)* add side-effect-free GICv3.3 NMI attribute support for SGIs, PPIs, and SPIs
+- *(arm-gic-driver)* add verified one-way GICv3.3 NMI attribute enabling for SGIs, PPIs, and SPIs
 
 ## [0.17.12](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.11...arm-gic-driver-v0.17.12) - 2026-08-20
 

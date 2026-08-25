@@ -9,7 +9,7 @@ A Rust driver for the ARM Generic Interrupt Controller (GIC), designed for bare-
 - **No Standard Library**: `#![no_std]` compatible for embedded environments
 - **Type Safety**: Strong typing for interrupt IDs and register access
 - **Comprehensive Testing**: Extensive test suites for different GIC versions
-- **GICv3.3 NMI Attributes**: Side-effect-free capability detection and typed SGI/PPI/SPI attribute access
+- **GICv3.3 NMI Attributes**: Side-effect-free capability detection and verified SGI/PPI/SPI NMI enabling
 
 ### Basic Usage
 
@@ -46,20 +46,21 @@ if !ack.is_special() {
 ### GICv3.3 NMI attributes
 
 `GICD_TYPER.NMI` advertises the per-interrupt NMI attribute capability. Configure
-the interrupt as Group 1 before selecting the non-maskable attribute:
+the interrupt as Group 1 before enabling the non-maskable attribute:
 
 ```rust
-use arm_gic_driver::v3::NmiAttribute;
-
 let pmu_ppi = IntId::ppi(14);
 if gic.supports_nmi_attributes() {
-    gic.set_nmi_attribute(pmu_ppi, NmiAttribute::NonMaskable)
-        .expect("set PMU PPI NMI attribute");
+    gic.enable_nmi_attribute(pmu_ppi)
+        .expect("enable PMU PPI NMI attribute");
 }
 ```
 
-This API only programs the GIC attribute. Enabling CPU FEAT_NMI and handling the
-NMI acknowledgement path belong to the consuming OS.
+The driver intentionally exposes only the one-way enable operation. A zero read
+from an NMI attribute register cannot distinguish a maskable interrupt from a
+RAZ/WI field, so querying or clearing through this API could report false
+success. Enabling CPU FEAT_NMI and handling the NMI acknowledgement path belong
+to the consuming OS.
 
 ## Architecture Support
 

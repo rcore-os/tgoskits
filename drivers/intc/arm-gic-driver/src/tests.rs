@@ -1,10 +1,12 @@
 extern crate std;
 
+use core::cell::Cell;
+
 #[cfg(target_arch = "aarch64")]
 use crate::version::v3::test_layout::{LPI, RedistributorV3, RedistributorV4, SGI};
 use crate::{
     CheckedIntIdError, IntId, checked_intid,
-    define::{NmiAttributeSlot, Trigger, nmi_attribute_slot},
+    define::{NmiAttributeSlot, Trigger, enable_nmi_attribute_bit, nmi_attribute_slot},
     fdt_parse_irq_config,
 };
 
@@ -90,4 +92,31 @@ fn nmi_attribute_slots_cover_private_and_shared_interrupts() {
 fn nmi_attribute_slot_rejects_special_and_out_of_range_intids() {
     assert_eq!(nmi_attribute_slot(unsafe { IntId::raw(1023) }), None);
     assert_eq!(nmi_attribute_slot(unsafe { IntId::raw(4096) }), None);
+}
+
+#[test]
+fn nmi_enable_preserves_sibling_attribute_bits() {
+    let original = (1 << 2) | (1 << 19);
+    let mask = 1 << 14;
+    let register = Cell::new(original);
+
+    assert!(enable_nmi_attribute_bit(
+        || register.get(),
+        |value| register.set(value),
+        mask,
+    ));
+    assert_eq!(register.get(), original | mask);
+}
+
+#[test]
+fn nmi_enable_rejects_raz_wi_attribute_bit() {
+    let mask = 1 << 14;
+    let attempted_write = Cell::new(None);
+
+    assert!(!enable_nmi_attribute_bit(
+        || 0,
+        |value| attempted_write.set(Some(value)),
+        mask,
+    ));
+    assert_eq!(attempted_write.get(), Some(mask));
 }

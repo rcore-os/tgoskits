@@ -106,6 +106,20 @@ pub(crate) fn nmi_attribute_slot(intid: IntId) -> Option<NmiAttributeSlot> {
     }
 }
 
+/// Set an NMI attribute bit and report whether register readback confirms it.
+pub(crate) fn enable_nmi_attribute_bit(
+    mut read: impl FnMut() -> u32,
+    mut write: impl FnMut(u32),
+    mask: u32,
+) -> bool {
+    let current = read();
+    if current & mask == 0 {
+        write(current | mask);
+    }
+
+    read() & mask != 0
+}
+
 /// Error returned when a raw INTID is not valid for the probed GIC.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CheckedIntIdError;
