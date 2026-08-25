@@ -112,7 +112,7 @@ SMP = "4"
 
 配置名必须在包内唯一，名称、target 和 feature 必须非空且不能带首尾空白。配置与 feature 会排序去重，环境变量按键排序，因此 check 顺序、命令参数和日志在不同运行间保持一致。命名配置不会把包的所有单 feature 机械展开到目标架构；平台专属组合应显式声明，从而避免把 SG2002、K230 等 feature 编译到错误 target。
 
-`ax-std` 的 `default` feature 被特殊重写为 `std-compat,fs,multitask,irq,net`（常量 `AXSTD_STD_CLIPPY_FEATURES`），target 固定为 `x86_64-unknown-none`，以便在没有真实平台的情况下覆盖 std 兼容层。
+`ax-std` 的 `default` feature 被特殊重写为 `std-compat,fs,net`（常量 `AXSTD_STD_CLIPPY_FEATURES`），target 固定为 `x86_64-unknown-none`，以便在没有真实平台的情况下覆盖 std 兼容层。IRQ 与多任务调度属于基础能力，不再通过 feature 注入。
 
 ### 4.1 目标归一化
 
@@ -150,7 +150,7 @@ targets = ["aarch64-unknown-linux-gnu", "riscv64gc-unknown-none-elf"]
 - Base check：`clippy --no-deps -p <pkg>`
 - Feature check：`clippy --no-deps -p <pkg> --no-default-features --features <feature>`；当 feature 为 `host-test` 时额外传入 `--tests`
 - Named configuration check：`clippy --no-deps -p <pkg> --features <feature-a>,<feature-b> --target <target>`，并注入配置声明的环境变量
-- `ax-std` default 特判：替换为 `--features std-compat,fs,multitask,irq,net`
+- `ax-std` default 特判：替换为 `--features std-compat,fs,net`
 - 所有 check 都带 `--no-deps`，避免依赖 crate 的告警污染结果
 - 有 target：追加 `--target <target>`
 - 固定尾部：`-- -D warnings`（任何告警即失败）

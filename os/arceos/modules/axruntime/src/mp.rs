@@ -14,7 +14,6 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(feature = "multitask")]
 use ax_hal::mem::VirtAddr;
 
 static SECONDARY_CPUID_BY_SLOT: [AtomicUsize; crate::build_info::CPU_CAPACITY - 1] =
@@ -22,7 +21,6 @@ static SECONDARY_CPUID_BY_SLOT: [AtomicUsize; crate::build_info::CPU_CAPACITY - 
 
 static ENTERED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
-#[cfg(feature = "multitask")]
 fn secondary_boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
     ax_hal::mem::boot_stack_bounds(cpu_id)
 }
@@ -88,12 +86,9 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
 
     ax_hal::init_later_secondary(cpu_id);
 
-    #[cfg(feature = "multitask")]
-    {
-        let (stack_ptr, stack_size) = secondary_boot_stack_bounds(cpu_id);
-        ax_task::init_scheduler_secondary(stack_ptr, stack_size);
-        super::preempt::release_bootstrap();
-    }
+    let (stack_ptr, stack_size) = secondary_boot_stack_bounds(cpu_id);
+    ax_task::init_scheduler_secondary(stack_ptr, stack_size);
+    super::preempt::release_bootstrap();
 
     #[cfg(feature = "ipi")]
     ax_ipi::init();
@@ -101,13 +96,11 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     // Bring up local IRQ/IPI delivery before publishing INITED_CPUS so the
     // primary cannot enter user-visible init while remote CPUs still lack SGI
     // handlers or pending per-CPU IRQ enables.
-    #[cfg(feature = "irq")]
     super::init_percpu_irq(cpu_id);
 
-    #[cfg(feature = "irq")]
     ax_hal::asm::enable_irqs();
 
-    #[cfg(all(feature = "irq", feature = "ipi"))]
+    #[cfg(feature = "ipi")]
     {
         ax_hal::asm::flush_tlb(None);
         ax_ipi::mark_current_cpu_ready();
@@ -117,7 +110,6 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     // waking the owner worker may select a run queue or send an IPI. Publish
     // that separate capability only after this CPU has completed every
     // scheduler, IRQ, and IPI prerequisite compiled into this runtime.
-    #[cfg(all(feature = "irq", feature = "multitask"))]
     super::serial::mark_log_wake_ready(cpu_id);
 
     info!("Secondary CPU {cpu_id:x} init OK.");
@@ -127,13 +119,5 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
         core::hint::spin_loop();
     }
 
-    #[cfg(all(feature = "tls", not(feature = "multitask")))]
-    super::init_tls();
-
-    #[cfg(feature = "multitask")]
     ax_task::run_idle();
-    #[cfg(not(feature = "multitask"))]
-    loop {
-        ax_hal::asm::wait_for_irqs();
-    }
 }

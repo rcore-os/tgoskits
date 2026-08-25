@@ -39,8 +39,6 @@ cpu-local.workspace = true
 page-table-generic = { workspace = true }
 ax-std = { workspace = true, default-features = false, features = [
     "paging",
-    "irq",
-    "multitask",
     "task-ext",
     "smp",
     "hv",

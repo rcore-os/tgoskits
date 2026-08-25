@@ -104,7 +104,8 @@ CSV 文件首行可能包含 UTF-8 BOM（`\u{feff}`），常见于 Windows 编�
 ```text
 cargo test -p starry-kernel
 cargo test -p ax-fs-ng
-cargo test -p ax-hal --features host-test,irq
+cargo test -p ax-hal --features host-test
+cargo test -p ax-task --features host-test
 ```
 
 `ax-hal` 等关键 profile 先用同一参数追加 `-- --list`，并把发现到的测试名与静态预期集合

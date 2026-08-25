@@ -131,14 +131,7 @@ impl TlbShootdown for AxHalTlbShootdown {
     }
 
     fn cpu_online(&self, cpu_id: usize) -> bool {
-        #[cfg(feature = "irq")]
-        {
-            crate::irq::is_cpu_online(cpu_id)
-        }
-        #[cfg(not(feature = "irq"))]
-        {
-            cpu_id < crate::cpu_num()
-        }
+        crate::irq::is_cpu_online(cpu_id)
     }
 
     fn flush_remote(

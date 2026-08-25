@@ -17,7 +17,6 @@ version = "0.5.30"
 default = []
 nixos = []
 qemu = [
-  "ax-runtime/irq",
   "ax-runtime/rtc",
   "ax-runtime/display",
   "starry-kernel/input",
@@ -60,12 +59,10 @@ ax-std = { workspace = true, default-features = false, features = [
   "fd",
   "ext-ld",
   "fs",
-  "multitask",
-  "irq",
 ] }
 ax-driver.workspace = true
 ax-hal.workspace = true
-ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }
+ax-runtime = { workspace = true, features = ["ext-ld"] }
 axplat-dyn.workspace = true
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 

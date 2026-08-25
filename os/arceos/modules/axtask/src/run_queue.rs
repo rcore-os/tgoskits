@@ -739,7 +739,6 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
     /// Unblock one task by inserting it into the current CPU's run queue.
     ///
     /// See [`AxRunQueueRef::unblock_task`] for the state-transition details.
-    #[cfg(feature = "irq")]
     pub(crate) fn unblock_task(&mut self, task: AxTaskRef, resched: bool) {
         let task_id_name = if log::log_enabled!(log::Level::Debug) {
             Some(task.id_name())
@@ -762,7 +761,6 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
         }
     }
 
-    #[cfg(feature = "irq")]
     pub fn scheduler_timer_tick(&mut self) {
         let curr = &self.current_task;
         if !curr.is_idle() {
@@ -1020,7 +1018,6 @@ impl<G: GuardState> CurrentRunQueueRef<G> {
         self.inner.resched();
     }
 
-    #[cfg(feature = "irq")]
     pub fn sleep_until(&mut self, deadline: ax_hal::time::TimeValue) {
         let curr = &self.current_task;
         debug!("task sleep: {}, deadline={:?}", curr.id_name(), deadline);
@@ -1174,7 +1171,7 @@ impl AxRunQueue {
         use crate::runtime_preempt::SchedulerFrameResult;
 
         // Make sure that IRQs are disabled by kernel guard or other means.
-        #[cfg(all(feature = "irq", not(feature = "host-test")))]
+        #[cfg(not(feature = "host-test"))]
         assert!(
             !ax_hal::asm::irqs_enabled(),
             "IRQs must be disabled during scheduling"
@@ -1327,18 +1324,12 @@ fn gc_entry() {
         // The GC task's affinity pins it to this CPU across the blocking wait;
         // WaitQueue is internally synchronized, so IRQ and other tasks may use
         // shared access while this callback is suspended.
-        #[cfg(feature = "irq")]
         unsafe {
             ax_hal::percpu::with_cpu_pin(|pin| {
                 WAIT_FOR_EXIT.with_current(pin, |wait| {
                     let _timeout = wait.wait_timeout(core::time::Duration::from_millis(100));
                 })
             })
-        }
-        .expect("GC wait requires an installed CPU-local area");
-        #[cfg(not(feature = "irq"))]
-        unsafe {
-            ax_hal::percpu::with_cpu_pin(|pin| WAIT_FOR_EXIT.with_current(pin, WaitQueue::wait))
         }
         .expect("GC wait requires an installed CPU-local area");
     }

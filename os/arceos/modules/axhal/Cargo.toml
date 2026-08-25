@@ -12,10 +12,6 @@ smp = [
     "axplat-dyn/smp",
     "ax-plat/smp",
 ]
-irq = [
-    "ax-plat/irq",
-    "axplat-dyn/irq",
-]
 fp-simd = [
     "ax-cpu/fp-simd",
     "axplat-dyn/fp-simd",
@@ -42,7 +38,7 @@ host-test = [
 ]
 
 default = []
-ipi = ["irq"]
+ipi = []
 
 [dependencies]
 ax-alloc = { workspace = true, optional = true }

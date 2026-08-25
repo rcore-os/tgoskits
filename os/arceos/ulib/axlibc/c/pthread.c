@@ -1,5 +1,3 @@
-#ifdef AX_CONFIG_MULTITASK
-
 #include <errno.h>
 #include <limits.h>
 #include <pthread.h>
@@ -99,5 +97,3 @@ int pthread_attr_setstacksize(pthread_attr_t *a, size_t size)
     a->_a_stacksize = size;
     return 0;
 }
-
-#endif // AX_CONFIG_MULTITASK

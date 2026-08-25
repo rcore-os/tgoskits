@@ -13,10 +13,11 @@
 //!
 //! # Cargo Features
 //!
+//! Interrupt handling is always enabled as a baseline platform capability.
+//!
 //! - `smp`: Enable SMP (symmetric multiprocessing) support.
 //! - `fp-simd`: Enable floating-point and SIMD support.
 //! - `paging`: Enable page table manipulation.
-//! - `irq`: Enable interrupt handling support.
 //! - `tls`: Enable kernel space thread-local storage support.
 //! - `rtc`: Enable real-time clock support.
 //! - `uspace`: Enable user space support.
@@ -56,7 +57,6 @@ pub mod time;
 #[cfg(feature = "tls")]
 pub mod tls;
 
-#[cfg(feature = "irq")]
 pub mod irq;
 
 #[cfg(feature = "paging")]
@@ -66,12 +66,10 @@ pub mod paging;
 pub mod console {
     pub use ax_plat::console::{
         ConsoleDeviceId, ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleHandoffError,
-        ConsoleHandoffResult, begin_runtime_handoff, commit_runtime_handoff, device_id,
-        fail_runtime_handoff_closed, read_bytes, rollback_runtime_handoff, write_bytes,
-        write_text_bytes,
+        ConsoleHandoffResult, ConsoleIrqEvent, begin_runtime_handoff, commit_runtime_handoff,
+        device_id, fail_runtime_handoff_closed, handle_irq, irq_num, read_bytes,
+        rollback_runtime_handoff, set_input_irq_enabled, write_bytes, write_text_bytes,
     };
-    #[cfg(feature = "irq")]
-    pub use ax_plat::console::{ConsoleIrqEvent, handle_irq, irq_num, set_input_irq_enabled};
 }
 
 /// CPU power management.

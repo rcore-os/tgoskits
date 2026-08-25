@@ -25,5 +25,5 @@ strum = { version = "0.27", default-features = false, features = ["derive"] }
 thiserror.workspace = true
 
 [dev-dependencies]
-ax-runtime = { path = "../../arceos/modules/axruntime", features = ["host-test", "smp", "lockdep", "multitask"] }
+ax-runtime = { path = "../../arceos/modules/axruntime", features = ["host-test", "smp", "lockdep"] }
 extern-trait = { workspace = true }

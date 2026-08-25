@@ -614,12 +614,6 @@ fn prepare_ktest_cargo_replaces_bin_selector_with_test_target() {
     );
     assert!(
         cargo
-            .features
-            .iter()
-            .any(|feature| feature == "ax-std/multitask")
-    );
-    assert!(
-        cargo
             .env
             .get("CARGO_ENCODED_RUSTFLAGS")
             .is_some_and(|flags| flags.contains("cfg(axtest)"))
@@ -702,7 +696,7 @@ fn qemu_cargo_options_preserve_cargo_style_build_arguments() {
         ..Cargo::default()
     };
     let args = ArgsKtestQemu {
-        features: vec!["alloc".into(), "irq".into()],
+        features: vec!["alloc".into(), "fp-simd".into()],
         all_features: true,
         no_default_features: false,
         profile: Some("profiling".into()),
@@ -716,7 +710,7 @@ fn qemu_cargo_options_preserve_cargo_style_build_arguments() {
     apply_qemu_cargo_options(&mut cargo, &args);
 
     assert!(cargo.features.iter().any(|feature| feature == "alloc"));
-    assert!(cargo.features.iter().any(|feature| feature == "irq"));
+    assert!(cargo.features.iter().any(|feature| feature == "fp-simd"));
     assert!(cargo.args.iter().any(|arg| arg == "--all-features"));
     assert!(cargo.args.iter().any(|arg| arg == "--locked"));
     assert!(cargo.args.iter().any(|arg| arg == "--offline"));

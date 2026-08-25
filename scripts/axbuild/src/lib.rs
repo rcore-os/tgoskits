@@ -293,7 +293,7 @@ mod tests {
             "--arch",
             "x86_64",
             "--features",
-            "alloc,irq",
+            "alloc,fp-simd",
             "--no-default-features",
             "--profile",
             "dev",
@@ -316,7 +316,7 @@ mod tests {
                     assert_eq!(args.packages, ["starry-kernel", "axvisor"]);
                     assert_eq!(args.tests, ["axtest_kernel"]);
                     assert_eq!(args.arch.as_deref(), Some("x86_64"));
-                    assert_eq!(args.features, ["alloc", "irq"]);
+                    assert_eq!(args.features, ["alloc", "fp-simd"]);
                     assert!(args.no_default_features);
                     assert_eq!(args.profile.as_deref(), Some("dev"));
                     assert_eq!(args.target_dir, Some(PathBuf::from("ktest-target")));

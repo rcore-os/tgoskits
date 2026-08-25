@@ -2,8 +2,6 @@
 
 #[cfg(feature = "lockdep")]
 pub use super::lockdep::*;
-#[cfg(feature = "multitask")]
-pub use super::mutex::*;
-pub use super::{context::*, spin::*};
+pub use super::{context::*, mutex::*, spin::*};
 #[cfg(not(feature = "lockdep"))]
 pub use super::{dump_lockdep_trace, set_lockdep_trace_enabled};

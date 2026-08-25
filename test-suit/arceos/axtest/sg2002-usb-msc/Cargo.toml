@@ -6,7 +6,7 @@ publish = false
 
 [features]
 default = []
-ax-std = ["dep:ax-hal", "dep:ax-runtime", "dep:ax-std", "ax-runtime/irq"]
+ax-std = ["dep:ax-hal", "dep:ax-runtime", "dep:ax-std"]
 axtest = [
     "ax-std",
     "dep:ax-driver",

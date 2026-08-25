@@ -1,15 +1,7 @@
 fn main() {
     use std::io::Write;
 
-    fn pthread_mutex_layout(
-        has_multitask: bool,
-        has_smp: bool,
-        has_lockdep: bool,
-    ) -> (usize, &'static str) {
-        if !has_multitask {
-            return (1, "{0}");
-        }
-
+    fn pthread_mutex_layout(has_smp: bool, has_lockdep: bool) -> (usize, &'static str) {
         if has_lockdep {
             if has_smp {
                 // `lockdep` expands the underlying mutex with lock maps in both
@@ -30,13 +22,11 @@ fn main() {
     }
 
     fn gen_pthread_mutex(out_file: &std::path::Path) -> std::io::Result<()> {
-        println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MULTITASK");
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_SMP");
         println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LOCKDEP");
-        let has_multitask = std::env::var_os("CARGO_FEATURE_MULTITASK").is_some();
         let has_smp = std::env::var_os("CARGO_FEATURE_SMP").is_some();
         let has_lockdep = std::env::var_os("CARGO_FEATURE_LOCKDEP").is_some();
-        let (mutex_size, mutex_init) = pthread_mutex_layout(has_multitask, has_smp, has_lockdep);
+        let (mutex_size, mutex_init) = pthread_mutex_layout(has_smp, has_lockdep);
 
         let mut output = Vec::new();
         writeln!(
@@ -127,7 +117,7 @@ typedef struct {{
             .derive_default(true)
             .size_t_is_usize(false)
             .use_core();
-        for feature in ["MULTITASK", "SMP", "LOCKDEP", "PLAT_DYN"] {
+        for feature in ["SMP", "LOCKDEP", "PLAT_DYN"] {
             println!("cargo:rerun-if-env-changed=CARGO_FEATURE_{feature}");
             if std::env::var_os(format!("CARGO_FEATURE_{feature}")).is_some() {
                 builder = builder.clang_arg(format!("-DAX_CONFIG_{feature}"));

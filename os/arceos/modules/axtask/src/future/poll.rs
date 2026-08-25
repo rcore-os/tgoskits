@@ -2,9 +2,7 @@ use core::{future::poll_fn, task::Poll};
 
 use axpoll::{IoEvents, Pollable};
 
-#[cfg(feature = "irq")]
-use super::TaskResult;
-use super::{Interrupted, PollIoError};
+use super::{Interrupted, PollIoError, TaskResult};
 use crate::current;
 
 /// A helper to wrap a synchronous non-blocking I/O function into an
@@ -75,7 +73,6 @@ where
 /// already disabled in the holding paths) and re-queues the drain
 /// task. The drain task runs in normal task context and is the only
 /// place that ever calls `PollSet::wake`.
-#[cfg(feature = "irq")]
 pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) -> TaskResult {
     use alloc::{collections::BTreeMap, sync::Arc};
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -171,7 +168,6 @@ pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) ->
 }
 
 /// Registers a waker for a temporary legacy numeric IRQ.
-#[cfg(feature = "irq")]
 pub fn register_legacy_irq_waker(irq: usize, waker: &core::task::Waker) -> TaskResult {
     let irq = ax_hal::irq::try_legacy_irq(irq)?;
     register_irq_waker(irq, waker)

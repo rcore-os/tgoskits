@@ -1,4 +1,4 @@
-features = ["multitask", "ax-driver/virtio-core"]
+features = ["ax-driver/virtio-core"]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"
 max_cpu_num = 1

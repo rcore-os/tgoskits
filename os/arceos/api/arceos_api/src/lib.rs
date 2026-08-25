@@ -5,13 +5,6 @@
 #![no_std]
 #![allow(unused_imports)]
 
-#[cfg(any(
-    feature = "alloc",
-    feature = "fs",
-    feature = "net",
-    feature = "multitask",
-    feature = "dummy-if-not-enabled"
-))]
 extern crate alloc;
 
 #[macro_use]
@@ -98,7 +91,6 @@ pub mod stdio {
 /// Multi-threading management.
 pub mod task {
     define_api_type! {
-        @cfg "multitask";
         pub type AxTaskHandle;
         pub type AxWaitQueueHandle;
         pub type AxCpuMask;
@@ -107,15 +99,11 @@ pub mod task {
 
     define_api! {
         /// Current task is going to sleep, it will be woken up at the given monotonic deadline.
-        ///
-        /// If the feature `multitask` is not enabled, it uses busy-wait instead
         #[track_caller]
         pub fn ax_sleep_until(deadline: crate::time::AxTimeValue);
 
         /// Current task gives up the CPU time voluntarily, and switches to another
         /// ready task.
-        ///
-        /// If the feature `multitask` is not enabled, it does nothing.
         #[track_caller]
         pub fn ax_yield_now();
 
@@ -125,8 +113,6 @@ pub mod task {
     }
 
     define_api! {
-        @cfg "multitask";
-
         /// Returns the current task's ID.
         pub fn ax_current_task_id() -> u64;
         /// Spawns a new task with the given entry point and other arguments.
@@ -395,7 +381,6 @@ pub mod modules {
     #[cfg(feature = "net")]
     pub use ax_net;
     pub use ax_runtime;
-    #[cfg(feature = "multitask")]
     pub use ax_task;
     pub use axklib;
     pub use dma_api;

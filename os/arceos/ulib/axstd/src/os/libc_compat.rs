@@ -1,19 +1,14 @@
-#[cfg(feature = "multitask")]
-use alloc::boxed::Box;
 #[cfg(feature = "fs")]
 use alloc::string::{String, ToString};
-#[cfg(feature = "multitask")]
-use alloc::sync::Arc;
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{
     alloc::Layout,
     ffi::{c_char, c_int, c_long, c_uint, c_void},
     mem::{align_of, size_of},
     ptr::{self, NonNull},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    time::Duration,
 };
-#[cfg(feature = "multitask")]
-use core::{sync::atomic::AtomicUsize, time::Duration};
 
 use ax_lazyinit::LazyLock;
 use ax_runtime::sync::SpinLock as Mutex;
@@ -37,19 +32,12 @@ const FUTEX_WAKE: c_int = 1;
 const FUTEX_WAIT_BITSET: c_int = 9;
 const FUTEX_WAKE_BITSET: c_int = 10;
 const FUTEX_CMD_MASK: c_int = !(libc::FUTEX_PRIVATE_FLAG | libc::FUTEX_CLOCK_REALTIME);
-#[cfg(feature = "multitask")]
 const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
-#[cfg(feature = "multitask")]
 const MAX_PTHREAD_KEYS: usize = 1024;
-#[cfg(feature = "multitask")]
 const PTHREAD_DESTRUCTOR_ITERATIONS: usize = 4;
-#[cfg(feature = "multitask")]
 const PTHREAD_COND_SIZE: usize = 48;
-#[cfg(feature = "multitask")]
 const PTHREAD_ATTR_SIZE: usize = 56;
-#[cfg(feature = "multitask")]
 const PTHREAD_ATTR_STACK_SIZE_OFFSET: usize = 8;
-#[cfg(feature = "multitask")]
 const DEFAULT_STACK_SIZE: usize = 2 * 1024 * 1024;
 #[cfg(feature = "fs")]
 const LINUX_DIRENT64_NAME_OFFSET: usize = 19;
@@ -319,27 +307,10 @@ pub unsafe extern "C" fn __cxa_thread_atexit_impl(
     0
 }
 
-#[cfg(not(feature = "multitask"))]
-static CXA_THREAD_DTORS: Mutex<Vec<CxaThreadDtor>> = Mutex::new(Vec::new());
-
-#[cfg(not(feature = "multitask"))]
-fn push_cxa_thread_dtor(record: CxaThreadDtor) {
-    CXA_THREAD_DTORS.lock().push(record);
-}
-
-#[cfg(feature = "multitask")]
 fn push_cxa_thread_dtor(record: CxaThreadDtor) {
     pthread::push_cxa_thread_dtor(record);
 }
 
-#[cfg(not(feature = "multitask"))]
-fn run_cxa_thread_dtors() {
-    while let Some(record) = { CXA_THREAD_DTORS.lock().pop() } {
-        unsafe { (record.dtor)(record.arg) };
-    }
-}
-
-#[cfg(feature = "multitask")]
 fn run_cxa_thread_dtors() {
     pthread::run_cxa_thread_dtors();
 }
@@ -1839,55 +1810,38 @@ unsafe fn futex_syscall(
 }
 
 unsafe fn futex_wait(addr: *mut u32, expected: u32, timeout: *const libc::timespec) -> c_int {
-    #[cfg(not(feature = "multitask"))]
-    {
-        let _ = (addr, expected, timeout);
-        fail(Errno::ENOSYS)
+    if unsafe { addr.read_volatile() } != expected {
+        return fail(Errno::EAGAIN);
     }
-    #[cfg(feature = "multitask")]
-    {
-        if unsafe { addr.read_volatile() } != expected {
-            return fail(Errno::EAGAIN);
-        }
 
-        let key = addr as usize;
-        let wq = {
-            let mut map = FUTEX_QUEUES.lock();
-            map.entry(key)
-                .or_insert_with(|| Arc::new(ax_api::task::AxWaitQueueHandle::new()))
-                .clone()
-        };
-        let timed_out = ax_api::task::ax_wait_queue_wait_until(
-            &wq,
-            || unsafe { addr.read_volatile() } != expected,
-            unsafe { futex_timeout(timeout) },
-        );
-        if timed_out { fail(Errno::ETIMEDOUT) } else { 0 }
-    }
+    let key = addr as usize;
+    let wq = {
+        let mut map = FUTEX_QUEUES.lock();
+        map.entry(key)
+            .or_insert_with(|| Arc::new(ax_api::task::AxWaitQueueHandle::new()))
+            .clone()
+    };
+    let timed_out = ax_api::task::ax_wait_queue_wait_until(
+        &wq,
+        || unsafe { addr.read_volatile() } != expected,
+        unsafe { futex_timeout(timeout) },
+    );
+    if timed_out { fail(Errno::ETIMEDOUT) } else { 0 }
 }
 
 fn futex_wake(addr: *mut u32, count: u32) -> c_int {
-    #[cfg(not(feature = "multitask"))]
-    {
-        let _ = (addr, count);
-        fail(Errno::ENOSYS)
-    }
-    #[cfg(feature = "multitask")]
-    {
-        let Some(wq) = FUTEX_QUEUES.lock().get(&(addr as usize)).cloned() else {
-            return 0;
-        };
-        let count = if count == FUTEX_BITSET_MATCH_ANY {
-            u32::MAX
-        } else {
-            count
-        };
-        ax_api::task::ax_wait_queue_wake(&wq, count);
-        count.min(i32::MAX as u32) as c_int
-    }
+    let Some(wq) = FUTEX_QUEUES.lock().get(&(addr as usize)).cloned() else {
+        return 0;
+    };
+    let count = if count == FUTEX_BITSET_MATCH_ANY {
+        u32::MAX
+    } else {
+        count
+    };
+    ax_api::task::ax_wait_queue_wake(&wq, count);
+    count.min(i32::MAX as u32) as c_int
 }
 
-#[cfg(feature = "multitask")]
 unsafe fn futex_timeout(timeout: *const libc::timespec) -> Option<Duration> {
     if timeout.is_null() {
         return None;
@@ -1901,7 +1855,6 @@ unsafe fn futex_timeout(timeout: *const libc::timespec) -> Option<Duration> {
     Some(deadline.saturating_sub(now))
 }
 
-#[cfg(feature = "multitask")]
 static FUTEX_QUEUES: LazyLock<Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 static MMAP_ALLOCS: LazyLock<Mutex<BTreeMap<usize, SizeT>>> =
@@ -1910,7 +1863,6 @@ static MMAP_ALLOCS: LazyLock<Mutex<BTreeMap<usize, SizeT>>> =
 static FD_PATHS: LazyLock<Mutex<BTreeMap<c_int, FdPath>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
-#[cfg(feature = "multitask")]
 mod pthread {
     use super::*;
 
@@ -2478,301 +2430,7 @@ mod pthread {
     }
 }
 
-#[cfg(feature = "multitask")]
 pub use pthread::*;
-
-#[cfg(not(feature = "multitask"))]
-mod pthread_stubs {
-    use super::*;
-
-    macro_rules! pthread_errno_stub {
-        ($(fn $name:ident($($arg:ident: $ty:ty),*) -> c_int;)*) => {
-            $(
-                /// # Safety
-                ///
-                /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-                #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn $name($($arg: $ty),*) -> c_int {
-                    let _ = ($($arg,)*);
-                    Errno::ENOSYS.into_raw()
-                }
-            )*
-        };
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[cfg(target_env = "musl")]
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_self() -> libc::pthread_t {
-        ptr::dangling_mut::<c_void>().cast()
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/glibc ABI contract for this libc symbol.
-    #[cfg(not(target_env = "musl"))]
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_self() -> libc::pthread_t {
-        1
-    }
-
-    pthread_errno_stub! {
-        fn pthread_create(
-            res: *mut libc::pthread_t,
-            attr: *const libc::pthread_attr_t,
-            start: extern "C" fn(*mut c_void) -> *mut c_void,
-            arg: *mut c_void
-        ) -> c_int;
-        fn pthread_join(thread: libc::pthread_t, retval: *mut *mut c_void) -> c_int;
-        fn pthread_getattr_np(thread: libc::pthread_t, attr: *mut libc::pthread_attr_t) -> c_int;
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_exit(_retval: *mut c_void) -> ! {
-        unsafe { exit(0) }
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_detach(_thread: libc::pthread_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_attr_init(attr: *mut libc::pthread_attr_t) -> c_int {
-        if attr.is_null() {
-            return Errno::EFAULT.into_raw();
-        }
-        unsafe { ptr::write_bytes(attr.cast::<u8>(), 0, size_of::<libc::pthread_attr_t>()) };
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_attr_destroy(_attr: *mut libc::pthread_attr_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_attr_getstack(
-        _attr: *const libc::pthread_attr_t,
-        stack_addr: *mut *mut c_void,
-        stack_size: *mut SizeT,
-    ) -> c_int {
-        if stack_addr.is_null() || stack_size.is_null() {
-            return Errno::EFAULT.into_raw();
-        }
-        unsafe {
-            stack_addr.write(ptr::null_mut());
-            stack_size.write(0);
-        }
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_attr_getguardsize(
-        _attr: *const libc::pthread_attr_t,
-        guard_size: *mut SizeT,
-    ) -> c_int {
-        if guard_size.is_null() {
-            return Errno::EFAULT.into_raw();
-        }
-        unsafe { guard_size.write(0) };
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_attr_setstacksize(
-        _attr: *mut libc::pthread_attr_t,
-        _stack_size: SizeT,
-    ) -> c_int {
-        0
-    }
-
-    pthread_errno_stub! {
-        fn pthread_mutex_init(
-            mutex: *mut libc::pthread_mutex_t,
-            attr: *const libc::pthread_mutexattr_t
-        ) -> c_int;
-        fn pthread_mutex_lock(mutex: *mut libc::pthread_mutex_t) -> c_int;
-        fn pthread_mutex_trylock(mutex: *mut libc::pthread_mutex_t) -> c_int;
-        fn pthread_mutex_unlock(mutex: *mut libc::pthread_mutex_t) -> c_int;
-        fn pthread_cond_wait(
-            cond: *mut libc::pthread_cond_t,
-            mutex: *mut libc::pthread_mutex_t
-        ) -> c_int;
-        fn pthread_cond_timedwait(
-            cond: *mut libc::pthread_cond_t,
-            mutex: *mut libc::pthread_mutex_t,
-            abstime: *const libc::timespec
-        ) -> c_int;
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_mutex_destroy(_mutex: *mut libc::pthread_mutex_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_mutexattr_init(attr: *mut libc::pthread_mutexattr_t) -> c_int {
-        if attr.is_null() {
-            return Errno::EFAULT.into_raw();
-        }
-        unsafe { ptr::write_bytes(attr.cast::<u8>(), 0, size_of::<libc::pthread_mutexattr_t>()) };
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_mutexattr_settype(
-        _attr: *mut libc::pthread_mutexattr_t,
-        _ty: c_int,
-    ) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_mutexattr_destroy(
-        _attr: *mut libc::pthread_mutexattr_t,
-    ) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_cond_init(
-        cond: *mut libc::pthread_cond_t,
-        _attr: *const libc::pthread_condattr_t,
-    ) -> c_int {
-        if cond.is_null() {
-            return Errno::EFAULT.into_raw();
-        }
-        unsafe { ptr::write_bytes(cond.cast::<u8>(), 0, size_of::<libc::pthread_cond_t>()) };
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_cond_signal(_cond: *mut libc::pthread_cond_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_cond_broadcast(_cond: *mut libc::pthread_cond_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_cond_destroy(_cond: *mut libc::pthread_cond_t) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_condattr_init(attr: *mut libc::pthread_condattr_t) -> c_int {
-        if attr.is_null() {
-            return Errno::EFAULT.into_raw();
-        }
-        unsafe { ptr::write_bytes(attr.cast::<u8>(), 0, size_of::<libc::pthread_condattr_t>()) };
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_condattr_setclock(
-        _attr: *mut libc::pthread_condattr_t,
-        _clock: libc::clockid_t,
-    ) -> c_int {
-        0
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_condattr_destroy(
-        _attr: *mut libc::pthread_condattr_t,
-    ) -> c_int {
-        0
-    }
-
-    pthread_errno_stub! {
-        fn pthread_key_create(
-            key: *mut libc::pthread_key_t,
-            destructor: Option<unsafe extern "C" fn(*mut c_void)>
-        ) -> c_int;
-        fn pthread_key_delete(key: libc::pthread_key_t) -> c_int;
-        fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void) -> c_int;
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_getspecific(_key: libc::pthread_key_t) -> *mut c_void {
-        ptr::null_mut()
-    }
-
-    /// # Safety
-    ///
-    /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_setname_np(
-        _thread: libc::pthread_t,
-        _name: *const c_char,
-    ) -> c_int {
-        0
-    }
-}
-
-#[cfg(not(feature = "multitask"))]
-pub use pthread_stubs::*;
 
 #[cfg(feature = "net")]
 mod net {

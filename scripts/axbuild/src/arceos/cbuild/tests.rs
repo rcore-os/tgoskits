@@ -35,9 +35,9 @@ fn c_config_features_skips_nested_cargo_only_features() {
 
 #[test]
 fn c_config_features_ignore_removed_dynamic_platform_feature() {
-    let features = c_config_features(&strings(&["plat-dyn", "multitask"]));
+    let features = c_config_features(&strings(&["plat-dyn", "alloc"]));
 
-    assert!(features.contains("multitask"));
+    assert!(features.contains("alloc"));
     assert!(!features.contains("plat-dyn"));
     assert!(!features.contains("smp"));
 }
@@ -152,13 +152,6 @@ fn pic_rustflag_is_appended_to_axlibc_cargo_env() {
 }
 
 #[test]
-fn map_c_app_features_forwards_multitask_to_runtime_features() {
-    let features = map_c_app_features(&strings(&["multitask"]), &[]).unwrap();
-
-    assert!(features.contains(&"multitask".to_string()));
-}
-
-#[test]
 fn map_c_app_features_preserves_paging_facade_feature() {
     let features = map_c_app_features(&strings(&["paging"]), &[]).unwrap();
 
@@ -174,7 +167,7 @@ fn map_c_app_features_does_not_add_fd_for_higher_level_features() {
 
 #[test]
 fn pthread_mutex_header_matches_lockdep_smp_layout() {
-    let header = pthread_mutex_header_contents(&strings(&["multitask", "lockdep", "smp"]));
+    let header = pthread_mutex_header_contents(&strings(&["lockdep", "smp"]));
 
     assert!(header.contains("long __l[10];"));
     assert!(header.contains("{-1, 0, 0, 0, 0, 0, 0, 0, 0, 0}"));
@@ -182,7 +175,7 @@ fn pthread_mutex_header_matches_lockdep_smp_layout() {
 
 #[test]
 fn pthread_mutex_header_matches_plain_smp_layout() {
-    let header = pthread_mutex_header_contents(&strings(&["multitask", "smp"]));
+    let header = pthread_mutex_header_contents(&strings(&["smp"]));
 
     assert!(header.contains("long __l[6];"));
     assert!(header.contains("{0, 0, 8, 0, 0, 0}"));
@@ -190,7 +183,7 @@ fn pthread_mutex_header_matches_plain_smp_layout() {
 
 #[test]
 fn pthread_mutex_header_ignores_removed_dynamic_platform_feature() {
-    let header = pthread_mutex_header_contents(&strings(&["multitask", "plat-dyn"]));
+    let header = pthread_mutex_header_contents(&strings(&["plat-dyn"]));
 
     assert!(header.contains("long __l[5];"));
     assert!(header.contains("{0, 8, 0, 0, 0}"));

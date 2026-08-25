@@ -153,7 +153,6 @@ pub struct TaskInner {
     /// A ticket ID used to identify the timer event.
     /// Set by `set_timer_ticket()` when creating a timer event in `set_alarm_wakeup()`,
     /// expired by setting it as zero in `timer_ticket_expired()`, which is called by `cancel_events()`.
-    #[cfg(feature = "irq")]
     timer_ticket_id: AtomicU64,
 
     #[cfg(feature = "preempt")]
@@ -424,7 +423,6 @@ impl TaskInner {
             sched_policy: AtomicI32::new(0),
             sched_priority: AtomicI32::new(0),
             in_wait_queue: AtomicBool::new(false),
-            #[cfg(feature = "irq")]
             timer_ticket_id: AtomicU64::new(0),
             cpu_id: AtomicU32::new(0),
             #[cfg(feature = "smp")]
@@ -553,14 +551,12 @@ impl TaskInner {
 
     /// Returns task's current timer ticket ID.
     #[inline]
-    #[cfg(feature = "irq")]
     pub(crate) fn timer_ticket(&self) -> u64 {
         self.timer_ticket_id.load(Ordering::Acquire)
     }
 
     /// Set the timer ticket ID.
     #[inline]
-    #[cfg(feature = "irq")]
     pub(crate) fn set_timer_ticket(&self, timer_ticket_id: u64) {
         // CAN NOT set timer_ticket_id to 0,
         // because 0 is used to indicate the timer event is expired.
@@ -572,7 +568,6 @@ impl TaskInner {
     /// Expire timer ticket ID by setting it to 0,
     /// it can be used to identify one timer event is triggered or expired.
     #[inline]
-    #[cfg(feature = "irq")]
     pub(crate) fn timer_ticket_expired(&self) {
         self.timer_ticket_id.store(0, Ordering::Release);
     }
@@ -1120,7 +1115,7 @@ impl CurrentTask {
     }
 }
 
-#[cfg(all(test, feature = "host-test", feature = "multitask"))]
+#[cfg(all(test, feature = "host-test"))]
 mod current_task_tests {
     #[test]
     fn permanent_boot_context_is_not_a_published_task() {
@@ -1150,8 +1145,8 @@ extern "C" fn task_entry() -> ! {
     // transfer. Unlike a resumed task, a new task has no suspended caller to
     // finish that guard, so its first-entry tail completes the handoff here.
     crate::runtime_preempt::finish_initial_context_switch();
-    // Enable irq (if feature "irq" is enabled) before running the task entry function.
-    #[cfg(all(feature = "irq", not(feature = "host-test")))]
+    // Enable IRQs before running the task entry function.
+    #[cfg(not(feature = "host-test"))]
     ax_hal::asm::enable_irqs();
     let task = crate::current();
     if let Some(entry) = task.entry.take() {
@@ -1169,7 +1164,7 @@ mod coverage_tests {
         let id1 = TaskId(1);
         let id2 = TaskId(2);
         assert!(id1 != id2);
-        assert!(id1 == id1);
+        assert_eq!(id1, TaskId(1));
 
         // Test TaskState variants
         assert!(TaskState::Running as u8 == 1);
@@ -1184,7 +1179,9 @@ mod coverage_tests {
 
         // Test STACK_END_MAGIC for 64-bit
         #[cfg(target_pointer_width = "64")]
-        assert!(STACK_END_MAGIC == 0x57AC_CE11_57AC_CE11usize);
+        const {
+            assert!(STACK_END_MAGIC == 0x57AC_CE11_57AC_CE11usize);
+        }
 
         true
     }
@@ -1195,12 +1192,8 @@ mod coverage_tests {
         let id2 = TaskId(200);
 
         // Test equality
-        assert!(id1 == id1);
+        assert_eq!(id1, TaskId(100));
         assert!(id1 != id2);
-
-        // Test clone
-        let id3 = id1.clone();
-        assert!(id1 == id3);
 
         // Test copy
         let id4 = id1;

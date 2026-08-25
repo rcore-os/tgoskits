@@ -21,7 +21,7 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 
 ## Runtime Console Before SMP
 
-- When `ax-runtime` has both `irq` and `multitask`, initialize the scheduler and IRQ framework,
+- IRQ handling and multi-task scheduling are mandatory runtime capabilities. Initialize the scheduler and IRQ framework,
   probe UARTs, create owner-affine serial workers, and attempt the common runtime-console handoff
   before releasing any secondary CPU. Do not add a separate `serial` or `runtime-console` feature.
   Probe must leave every runtime dormant: registering a disabled controller IRQ is allowed, but do

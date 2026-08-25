@@ -16,7 +16,7 @@
 //!     - `paging`: Enable page table manipulation.
 //!     - `tls`: Enable thread-local storage.
 //! - Task management
-//!     - `multitask`: Enable multi-threading support.
+//!     - Multi-threading and timer-driven scheduling are always available.
 //!     - `sched-rr`: Use the Round-robin preemptive scheduler.
 //!     - `sched-cfs`: Use the Completely Fair Scheduler (CFS) preemptive scheduler.
 //! - Upperlayer stacks

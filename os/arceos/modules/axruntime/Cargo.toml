@@ -13,40 +13,28 @@ default = []
 ext-ld = []
 std-compat = []
 host-test = [
-  "irq",
-  "multitask",
   "ax-hal/host-test",
   "ax-ipi?/host-test",
-  "ax-percpu?/host-test",
+  "ax-percpu/host-test",
   "ax-task/host-test",
   "cpu-local/host-test",
 ]
-ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task/ipi"]
+ipi = ["dep:ax-ipi", "ax-hal/ipi", "ax-task/ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
 # CPUs can wake and re-enter the scheduler. This intentionally does not enable
 # the ax-ipi callback queue.
-wake-ipi = ["irq", "ax-hal/ipi"]
-irq = [
-  "ax-hal/irq",
-  "ax-task/irq",
-  "dep:ax-percpu",
-  "dep:rdif-intc",
-  "ax-driver/irq",
-]
-multitask = ["ax-task/multitask", "ax-sync/sleep"]
+wake-ipi = ["ax-hal/ipi"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
 smp = ["ax-hal/smp", "ax-task/smp"]
 uspace = ["ax-hal/uspace", "ax-task/uspace"]
-lockdep = ["multitask", "ax-task/lockdep", "ax-fs-ng?/lockdep"]
-stack-guard-page = ["ipi", "multitask", "paging", "ax-task/stack-guard-page"]
+lockdep = ["ax-task/lockdep", "ax-fs-ng?/lockdep"]
+stack-guard-page = ["ipi", "paging", "ax-task/stack-guard-page"]
 stack-protector = []
 tls = ["ax-hal/tls", "ax-task/tls"]
 
 display = ["paging", "dep:ax-display", "ax-driver/display"]
 fs = [
-  "irq",
-  "multitask",
   "paging",
   "dep:ax-fs-ng",
   "ax-fs-ng/vfs",
@@ -58,8 +46,6 @@ ext4fs = ["fs", "ax-fs-ng/ext4"]
 fatfs = ["fs", "ax-fs-ng/fat"]
 input = ["paging", "dep:ax-input", "ax-driver/input"]
 net = [
-  "irq",
-  "multitask",
   "paging",
   "dep:ax-net",
   "dep:rd-net",
@@ -93,9 +79,9 @@ ax-log = {workspace = true}
 ax-memory-addr = {workspace = true}
 ax-mm = {workspace = true, optional = true}
 ax-net = {workspace = true, optional = true}
-ax-percpu = {workspace = true, optional = true}
+ax-percpu.workspace = true
 ax-plat = {workspace = true}
-ax-sync.workspace = true
+ax-sync = { workspace = true, features = ["sleep"] }
 ax-task = {workspace = true, features = ["lock-api"]}
 cpu-local.workspace = true
 axbacktrace = {workspace = true}
@@ -108,7 +94,7 @@ dma-api.workspace = true
 indoc = "2"
 irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }
-rdif-intc = { workspace = true, optional = true }
+rdif-intc.workspace = true
 rdif-serial.workspace = true
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true

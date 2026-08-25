@@ -16,10 +16,9 @@ What happens when "make A=examples/httpserver ARCH=riscv64 LOG=info NET=y SMP=1 
     ```
 
     - `_cargo_build`: The `_cargo_build` method is defined in cargo.mk. Different compilation methods are selected based on the language. For example, for Rust, when `cargo_build,--manifest-path $(APP)/Cargo.toml` is called, where $(APP) represents the current application to be run.
-    - Taking httpserver as an example, let's see how ArceOS are conditionally compiled. First, in the `Cargo.toml` file of httpserver, the dependency is specified as: `ax-std = { workspace = true, features = ["paging", "multitask", "net"] }`. This indicates that ax-std needs to be compiled and has the three features mentioned above.
-    - After checking ax-std, the following three features were found:
+    - Taking httpserver as an example, its dependency can request only the optional capabilities it needs: `ax-std = { workspace = true, features = ["paging", "net"] }`. IRQ handling and multi-task scheduling are part of the ArceOS baseline and are not Cargo features.
+    - After checking ax-std, the following optional features were found:
         - `paging = ["ax-runtime/paging"]`
-        - `multitask = ["ax-api/multitask", "ax-runtime/multitask"]`
         - `net = ["ax-api/net", "ax-runtime/net"]`
 
         This involves modules such as ax-api, ax-runtime, and their dependencies like axtask, ax-net, etc., and conditional compilation is performed on these modules.

@@ -23,7 +23,7 @@ default = ["alloc", "tls", "fd"]
 
 # Baseline required by every ArceOS Rust application. Applications enable this
 # through their own `arceos` feature instead of axbuild completing it at runtime.
-arceos = ["irq", "paging", "std-compat", "smp"]
+arceos = ["paging", "std-compat", "smp"]
 
 # Host-side implementations for OS-specific ArceOS capabilities.
 host-test = [
@@ -49,8 +49,7 @@ uspace = ["ax-runtime/uspace"]
 # Hypervisor support
 hv = ["ax-hal/hv"]
 
-# Interrupts
-irq = ["ax-api/irq", "ax-posix-api/irq", "ax-runtime/irq"]
+# Inter-processor interrupts
 ipi = ["ax-api/ipi", "ax-runtime/ipi"]
 wake-ipi = ["ax-runtime/wake-ipi"]
 
@@ -61,17 +60,12 @@ alloc = ["ax-api/alloc", "ax-io/alloc", "ax-posix-api/alloc"]
 paging = ["alloc", "ax-runtime/paging"]
 tls = ["ax-runtime/tls"]
 
-# Multi-threading and scheduler
-multitask = [
-    "ax-api/multitask",
-    "ax-posix-api/multitask",
-    "ax-runtime/multitask",
-]
-lockdep = ["multitask", "ax-posix-api/lockdep", "ax-runtime/lockdep",]
+# Scheduler configuration
+lockdep = ["ax-posix-api/lockdep", "ax-runtime/lockdep",]
 task-ext = ["ax-task/task-ext"]
 tracepoint-hooks = ["ax-task/tracepoint-hooks"]
-sched-rr = ["irq", "multitask", "ax-task/sched-rr"]
-sched-cfs = ["irq", "multitask", "ax-task/sched-cfs"]
+sched-rr = ["ax-task/sched-rr"]
+sched-cfs = ["ax-task/sched-cfs"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 
@@ -120,7 +114,7 @@ display = ["ax-api/display", "ax-runtime/display"]
 input = ["ax-runtime/input"]
 
 # USB
-usb = ["irq", "ax-driver/usb"]
+usb = ["ax-driver/usb"]
 
 # Real Time Clock (RTC) Driver.
 rtc = ["ax-runtime/rtc"]
