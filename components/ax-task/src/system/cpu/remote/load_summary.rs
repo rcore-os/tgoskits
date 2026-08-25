@@ -13,6 +13,7 @@ struct RunQueueLoadPublication {
     workload_demand: u64,
     current_workload_demand: u64,
     fair_pushable: bool,
+    fair_idle_only: bool,
     rt_wake_donor: u16,
 }
 
@@ -53,6 +54,8 @@ impl RemoteLoadState {
                 == publication.current_workload_demand
             && (self.flags.load(Ordering::Relaxed) & SUMMARY_FAIR_PUSHABLE != 0)
                 == publication.fair_pushable
+            && (self.flags.load(Ordering::Relaxed) & SUMMARY_FAIR_IDLE_ONLY != 0)
+                == publication.fair_idle_only
             && self.rt_wake_donor.load(Ordering::Relaxed) == publication.rt_wake_donor
     }
 }
@@ -72,6 +75,7 @@ impl CpuRemote {
             workload_demand,
             current_workload_demand,
             fair_pushable,
+            fair_idle_only,
             rt_wake_donor,
         } = publication;
         let write_sequence = self.load.sequence.fetch_add(1, Ordering::AcqRel);
@@ -89,11 +93,8 @@ impl CpuRemote {
         self.load
             .current_workload_demand
             .store(current_workload_demand, Ordering::Relaxed);
-        let flags = if fair_pushable {
-            SUMMARY_FAIR_PUSHABLE
-        } else {
-            0
-        };
+        let flags = (u16::from(fair_pushable) * SUMMARY_FAIR_PUSHABLE)
+            | (u16::from(fair_idle_only) * SUMMARY_FAIR_IDLE_ONLY);
         self.load.flags.store(flags, Ordering::Relaxed);
         self.load
             .rt_wake_donor
@@ -140,6 +141,21 @@ impl CpuRemote {
                 })
             })
             .unwrap_or(0);
+        // Linux `sched_idle_rq()`: every runnable task on this rq uses
+        // idle policy, so a non-idle wakee may preempt straight onto it.
+        // The single fair tree means `has_fair()` covers SCHED_IDLE peers
+        // too: a queued non-idle contender keeps the rq non-idle.
+        let current_is_non_idle_fair_or_class = current.is_some_and(|current| {
+            !matches!(
+                current.schedule_policy(),
+                SchedulePolicy::Fair {
+                    mode: FairMode::Idle,
+                    ..
+                }
+            )
+        });
+        let fair_idle_only =
+            nr_running > 0 && !run_queue.has_fair() && !current_is_non_idle_fair_or_class;
         self.publish_load_summary(RunQueueLoadPublication {
             queued_count: queued,
             nr_running,
@@ -147,6 +163,7 @@ impl CpuRemote {
             workload_demand,
             current_workload_demand: current_placement_demand,
             fair_pushable: run_queue.has_pushable_fair(),
+            fair_idle_only,
             rt_wake_donor,
         })
     }
@@ -196,6 +213,7 @@ impl CpuRemote {
                 workload_demand,
                 current_workload_demand,
                 fair_pushable: flags & SUMMARY_FAIR_PUSHABLE != 0,
+                fair_idle_only: flags & SUMMARY_FAIR_IDLE_ONLY != 0,
             };
         }
     }

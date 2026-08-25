@@ -19,18 +19,9 @@ impl RunQueue {
         let policy = entry.active.policy();
         let entity = entry.active.entity().clone();
         match policy {
-            SchedulePolicy::Fair {
-                mode: FairMode::Idle,
-                ..
-            } => {
-                if delayed {
-                    self.idle_fair.insert_delayed(entry);
-                } else {
-                    self.idle_fair.insert(entry);
-                }
-                self.register_membership(id, QueueMembershipClass::IdleFair);
-            }
             SchedulePolicy::Fair { .. } => {
+                // Every fair mode, SCHED_IDLE included, links into the same
+                // EEVDF tree, mirroring Linux's single cfs_rq.
                 if delayed {
                     self.fair.insert_delayed(entry);
                 } else {
@@ -50,7 +41,6 @@ impl RunQueue {
     pub(crate) fn is_delayed_fair(&self, id: ThreadId) -> bool {
         match self.membership_class(id) {
             Some(QueueMembershipClass::Fair) => self.fair.is_delayed(id),
-            Some(QueueMembershipClass::IdleFair) => self.idle_fair.is_delayed(id),
             _ => false,
         }
     }
@@ -60,7 +50,6 @@ impl RunQueue {
         let class = self.membership_class(id)?;
         let thread = match class {
             QueueMembershipClass::Fair => self.fair.take_delayed(id)?,
-            QueueMembershipClass::IdleFair => self.idle_fair.take_delayed(id)?,
             _ => return None,
         };
         self.fixed_placement_demand = self
@@ -88,7 +77,7 @@ impl RunQueue {
         if let SchedulingEntity::Fair(fair) = active.base_entity_mut()
             && fair.is_delayed()
         {
-            let virtual_time = self.virtual_time_for_mode(fair.mode());
+            let virtual_time = self.virtual_time();
             fair.finish_delayed_dequeue(virtual_time, timing_granularity_ns)
                 .expect("detached delayed Fair state must finish exactly once");
         }
@@ -107,8 +96,8 @@ impl RunQueue {
         let SchedulingEntity::Fair(fair) = thread.active.entity_mut() else {
             return Err(TaskError::InvalidConfiguration);
         };
-        let virtual_time = self.virtual_time_for_mode(fair.mode());
-        let (queue_weight, current_weight) = self.fair_placement_weights(*fair, current_fair);
+        let virtual_time = self.virtual_time();
+        let (queue_weight, current_weight) = self.fair_placement_weights(current_fair);
         fair.place_delayed_after_transfer(
             virtual_time,
             queue_weight.saturating_add(current_weight),
@@ -131,8 +120,8 @@ impl RunQueue {
             return Err(TaskError::InvalidConfiguration);
         };
         let id = thread.id;
-        let virtual_time = self.virtual_time_for_mode(fair.mode());
-        let (queue_weight, current_weight) = self.fair_placement_weights(*fair, current_fair);
+        let virtual_time = self.virtual_time();
+        let (queue_weight, current_weight) = self.fair_placement_weights(current_fair);
         fair.place_delayed_after_transfer(
             virtual_time,
             queue_weight.saturating_add(current_weight),
@@ -155,23 +144,13 @@ impl RunQueue {
         id: ThreadId,
         timing_granularity_ns: u64,
     ) -> Option<QueuedThread> {
-        let class = self.membership_class(id)?;
-        let virtual_time = match class {
-            QueueMembershipClass::Fair => self.fair.virtual_time(),
-            QueueMembershipClass::IdleFair => self.idle_fair.virtual_time(),
-            _ => return None,
-        };
-        let thread = match class {
-            QueueMembershipClass::Fair => {
-                self.fair
-                    .finish_delayed_dequeue(id, virtual_time, timing_granularity_ns)?
-            }
-            QueueMembershipClass::IdleFair => {
-                self.idle_fair
-                    .finish_delayed_dequeue(id, virtual_time, timing_granularity_ns)?
-            }
-            _ => unreachable!(),
-        };
+        if self.membership_class(id)? != QueueMembershipClass::Fair {
+            return None;
+        }
+        let virtual_time = self.fair.virtual_time();
+        let thread = self
+            .fair
+            .finish_delayed_dequeue(id, virtual_time, timing_granularity_ns)?;
         self.nr_running = self
             .nr_running
             .checked_sub(1)
@@ -192,20 +171,15 @@ impl RunQueue {
         current_fair: Option<FairEntity>,
         timing_granularity_ns: u64,
     ) -> Option<SchedulingEntity> {
-        let class = self.membership_class(id)?;
-        let entity = match class {
-            QueueMembershipClass::Fair => self.fair.reactivate_delayed(
-                id,
-                current_fair.filter(|current| current.mode() != FairMode::Idle),
-                timing_granularity_ns,
-            )?,
-            QueueMembershipClass::IdleFair => self.idle_fair.reactivate_delayed(
-                id,
-                current_fair.filter(|current| current.mode() == FairMode::Idle),
-                timing_granularity_ns,
-            )?,
-            _ => unreachable!(),
-        };
+        if self.membership_class(id)? != QueueMembershipClass::Fair {
+            return None;
+        }
+        // The running entity competes in the same tree regardless of mode:
+        // Linux `avg_vruntime()` averages the whole cfs_rq, SCHED_IDLE
+        // included, so it must not be filtered before placement.
+        let entity = self
+            .fair
+            .reactivate_delayed(id, current_fair, timing_granularity_ns)?;
         self.refresh_class_pushable(id, self.linked_current());
         Some(entity)
     }
@@ -321,19 +295,12 @@ impl RunQueue {
         self.membership_class(id) == Some(QueueMembershipClass::DeadlineThrottled)
     }
 
-    pub(super) fn fair_placement_weights(
-        &self,
-        fair: FairEntity,
-        current_fair: Option<FairEntity>,
-    ) -> (u64, u64) {
-        let queue_weight = if fair.mode() == FairMode::Idle {
-            self.idle_fair.total_weight()
-        } else {
-            self.fair.total_weight()
-        };
-        let current_weight = current_fair
-            .filter(|current| (current.mode() == FairMode::Idle) == (fair.mode() == FairMode::Idle))
-            .map_or(0, |current| u64::from(current.weight()));
+    pub(super) fn fair_placement_weights(&self, current_fair: Option<FairEntity>) -> (u64, u64) {
+        // Linux `place_entity()` weighs the wakee against the entire cfs_rq
+        // and its current, whatever modes they use; SCHED_IDLE contributes
+        // WEIGHT_IDLEPRIO through its entity weight.
+        let queue_weight = self.fair.total_weight();
+        let current_weight = current_fair.map_or(0, |current| u64::from(current.weight()));
         (queue_weight, current_weight)
     }
 
@@ -362,9 +329,6 @@ impl RunQueue {
             }
             QueueMembershipClass::Fair => {
                 assert!(self.fair.mark_balance_candidate(id, scan_epoch));
-            }
-            QueueMembershipClass::IdleFair => {
-                assert!(self.idle_fair.mark_balance_candidate(id, scan_epoch));
             }
         }
     }

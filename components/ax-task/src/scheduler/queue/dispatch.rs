@@ -53,10 +53,7 @@ impl RunQueue {
             return None;
         }
         let class = self.membership_class(id)?;
-        let is_fair = matches!(
-            class,
-            QueueMembershipClass::Fair | QueueMembershipClass::IdleFair
-        );
+        let is_fair = matches!(class, QueueMembershipClass::Fair);
         if is_fair {
             self.update_fair_virtual_time(current_fair);
         }

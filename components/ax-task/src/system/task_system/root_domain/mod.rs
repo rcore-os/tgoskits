@@ -598,7 +598,7 @@ impl RootDomainOverloadIndex {
         match class {
             SchedulingClass::Realtime => self.realtime.contains(cpu),
             SchedulingClass::Deadline => self.deadline.contains(cpu),
-            SchedulingClass::Stop | SchedulingClass::Fair | SchedulingClass::Idle => false,
+            SchedulingClass::Stop | SchedulingClass::Fair => false,
         }
     }
 

@@ -27,9 +27,11 @@ use task::{full_snapshot_constructions, reset_full_snapshot_constructions};
 use super::fair_queue::{FairPick, FairRunQueue};
 #[cfg(any(test, all(axtest, feature = "axtest")))]
 use crate::ActiveSchedulingState;
+#[cfg(any(test, all(axtest, feature = "axtest")))]
+use crate::FairMode;
 use crate::{
-    CurrentDispatch, DispatchCharge, FairEntity, FairMode, SchedulePolicy, SchedulingClass,
-    SchedulingEntity, TaskError, ThreadCore, ThreadId,
+    CurrentDispatch, DispatchCharge, FairEntity, SchedulePolicy, SchedulingClass, SchedulingEntity,
+    TaskError, ThreadCore, ThreadId,
 };
 
 #[cfg(any(test, all(axtest, feature = "axtest")))]
@@ -122,8 +124,9 @@ enum QueueMembershipClass {
     /// entity outside `dl_rq->root` and `rq->nr_running`.
     DeadlineThrottled,
     Realtime(RealtimeQueueKey),
+    /// Linux keeps SCHED_IDLE in the same `cfs_rq` as Normal and Batch: every
+    /// fair-policy mode shares this membership and the single EEVDF tree.
     Fair,
-    IdleFair,
 }
 
 impl QueueMembershipClass {
@@ -133,7 +136,6 @@ impl QueueMembershipClass {
             Self::Deadline(_) | Self::DeadlineThrottled => SchedulerClass::Deadline,
             Self::Realtime(_) => SchedulerClass::Realtime,
             Self::Fair => SchedulerClass::Fair,
-            Self::IdleFair => SchedulerClass::IdleFair,
         }
     }
 }
@@ -170,8 +172,10 @@ pub(crate) struct RunQueue {
     stop: Option<QueuedThread>,
     deadline: DeadlineRunQueue,
     rt: RealtimeRunQueue,
+    /// Linux `rq->cfs`: one EEVDF tree for Normal, Batch, and SCHED_IDLE work.
+    /// SCHED_IDLE competes with `WEIGHT_IDLEPRIO` inside this tree instead of
+    /// owning a separate class, exactly like Linux v7.1's single `cfs_rq`.
     fair: FairRunQueue,
-    idle_fair: FairRunQueue,
     membership: Vec<Option<QueueMembership>>,
     #[cfg(any(test, all(axtest, feature = "axtest")))]
     membership_lookups: core::cell::Cell<usize>,
@@ -190,7 +194,6 @@ impl RunQueue {
             deadline: DeadlineRunQueue::new(deadline_max_bw_scaled, thread_capacity),
             rt: RealtimeRunQueue::new(),
             fair: FairRunQueue::new(),
-            idle_fair: FairRunQueue::new(),
             membership: Vec::new(),
             #[cfg(any(test, all(axtest, feature = "axtest")))]
             membership_lookups: core::cell::Cell::new(0),

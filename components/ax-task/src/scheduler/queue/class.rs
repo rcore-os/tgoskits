@@ -15,8 +15,11 @@ pub(crate) enum SchedulerClass {
     Stop,
     Deadline,
     Realtime,
+    /// Linux `fair_sched_class` covers Normal, Batch, and SCHED_IDLE. The
+    /// per-CPU dedicated idle thread is not a member of this class: it lives
+    /// in the owner's idle slot (`take_idle_schedule`) and is picked only
+    /// after this class yields.
     Fair,
-    IdleFair,
 }
 
 pub(super) struct ClassEnqueue {
@@ -31,23 +34,16 @@ pub(crate) struct ClassTick {
 }
 
 impl SchedulerClass {
-    pub(super) const PICK_ORDER: [Self; 5] = [
-        Self::Stop,
-        Self::Deadline,
-        Self::Realtime,
-        Self::Fair,
-        Self::IdleFair,
-    ];
+    pub(super) const PICK_ORDER: [Self; 4] =
+        [Self::Stop, Self::Deadline, Self::Realtime, Self::Fair];
 
     pub(crate) const fn for_policy(policy: SchedulePolicy) -> Self {
         match policy {
             SchedulePolicy::KernelStop => Self::Stop,
             SchedulePolicy::Deadline(_) => Self::Deadline,
             SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. } => Self::Realtime,
-            SchedulePolicy::Fair {
-                mode: FairMode::Idle,
-                ..
-            } => Self::IdleFair,
+            // Linux maps SCHED_IDLE onto fair_sched_class; only the entity's
+            // weight (WEIGHT_IDLEPRIO) and wakeup-preemption direction differ.
             SchedulePolicy::Fair { .. } => Self::Fair,
         }
     }
@@ -63,11 +59,11 @@ impl SchedulerClass {
         current_fair: Option<FairEntity>,
     ) -> Result<ClassEnqueue, TaskError> {
         if let SchedulingEntity::Fair(fair) = thread.active.entity_mut() {
-            let virtual_time = run_queue.virtual_time_for_mode(fair.mode());
+            let virtual_time = run_queue.virtual_time();
             match reason {
                 EnqueueReason::Wake => {
                     let (queue_weight, current_weight) =
-                        run_queue.fair_placement_weights(*fair, current_fair);
+                        run_queue.fair_placement_weights(current_fair);
                     fair.place_after_activation(
                         virtual_time,
                         queue_weight.saturating_add(current_weight),
@@ -77,7 +73,7 @@ impl SchedulerClass {
                 EnqueueReason::Yield => fair.yield_request(virtual_time),
                 EnqueueReason::Migrated | EnqueueReason::PolicyChanged => {
                     let (queue_weight, current_weight) =
-                        run_queue.fair_placement_weights(*fair, current_fair);
+                        run_queue.fair_placement_weights(current_fair);
                     fair.place_after_transfer(
                         virtual_time,
                         queue_weight.saturating_add(current_weight),
@@ -114,10 +110,6 @@ impl SchedulerClass {
                 run_queue.fair.insert(thread);
                 QueueMembershipClass::Fair
             }
-            Self::IdleFair => {
-                run_queue.idle_fair.insert(thread);
-                QueueMembershipClass::IdleFair
-            }
         };
         Ok(ClassEnqueue {
             membership,
@@ -139,7 +131,6 @@ impl SchedulerClass {
             (Self::Deadline, QueueMembershipClass::Deadline(key)) => run_queue.deadline.remove(key),
             (Self::Realtime, QueueMembershipClass::Realtime(key)) => run_queue.rt.remove(key),
             (Self::Fair, QueueMembershipClass::Fair) => run_queue.fair.remove(id),
-            (Self::IdleFair, QueueMembershipClass::IdleFair) => run_queue.idle_fair.remove(id),
             _ => task_runtime::fatal_invariant(0x5251_1001, id.as_u64() as usize),
         }
     }
@@ -164,8 +155,8 @@ impl SchedulerClass {
         // migration lag.
         let source_virtual_time = run_queue
             .queued_thread_including_current(id)
-            .and_then(|thread| thread.base_entity.fair())
-            .map(|fair| run_queue.virtual_time_for_mode(fair.mode()));
+            .filter(|thread| thread.base_entity.fair().is_some())
+            .map(|_| run_queue.virtual_time());
         let mut thread = self.dequeue_task(run_queue, membership, id)?;
         if let Some(source_virtual_time) = source_virtual_time {
             thread
@@ -211,13 +202,9 @@ impl SchedulerClass {
                     .map(PickedThread::Linked)
                     .map(PickTaskResult::Continue)
             }
-            Self::Fair | Self::IdleFair => {
+            Self::Fair => {
                 run_queue.update_fair_virtual_time(None);
-                let queue = if self == Self::IdleFair {
-                    &mut run_queue.idle_fair
-                } else {
-                    &mut run_queue.fair
-                };
+                let queue = &mut run_queue.fair;
                 let virtual_time = queue.virtual_time();
                 let mut thread = match queue.pick_eligible(virtual_time, skip_delayed)? {
                     FairPick::Runnable(thread) => thread,
@@ -241,7 +228,6 @@ impl SchedulerClass {
         match self {
             Self::Stop => assert!(run_queue.stop.replace(thread).is_none()),
             Self::Fair => run_queue.fair.insert(thread),
-            Self::IdleFair => run_queue.idle_fair.insert(thread),
             Self::Deadline | Self::Realtime => {
                 unreachable!("linked classes never transfer their node during pick")
             }
@@ -281,7 +267,7 @@ impl SchedulerClass {
             // the sole marker that distinguishes the running node from
             // queued candidates.
             Self::Deadline | Self::Realtime => {}
-            Self::Stop | Self::Fair | Self::IdleFair => {
+            Self::Stop | Self::Fair => {
                 run_queue.unregister_membership(picked.id());
             }
         }
@@ -329,11 +315,11 @@ impl SchedulerClass {
                 // Linux v7.1 requests lazy rescheduling when either the full
                 // request expires or RUN_TO_PARITY protection ends. A lone
                 // current still keeps running without a Fair clockevent.
+                // Linux keeps SCHED_IDLE in the same cfs_rq as Normal and
+                // Batch: `nr_queued > 1` counts every fair-policy contender
+                // regardless of mode.
                 Self::Fair => {
                     fair_tick_requests_reschedule(run_queue.has_fair(), current_entity, charge)
-                }
-                Self::IdleFair => {
-                    fair_tick_requests_reschedule(run_queue.has_idle_fair(), current_entity, charge)
                 }
                 Self::Stop => false,
             },
@@ -374,7 +360,7 @@ impl SchedulerClass {
                     SchedulePolicy::Fair { .. } => true,
                 }
             }
-            Self::Fair | Self::IdleFair => fair_wakeup_preempts(
+            Self::Fair => fair_wakeup_preempts(
                 current_policy,
                 current_entity,
                 wakee_policy,

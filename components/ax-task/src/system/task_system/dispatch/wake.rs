@@ -215,13 +215,14 @@ impl TaskSystem {
     ) -> Option<CpuId> {
         #[cfg(any(test, all(axtest, feature = "axtest")))]
         WAKE_TARGET_SELECTIONS.set(WAKE_TARGET_SELECTIONS.get().saturating_add(1));
-        if matches!(policy, SchedulePolicy::Fair { .. }) {
+        if let SchedulePolicy::Fair { mode, .. } = policy {
             return self.select_fair_wake_cpu(
                 &sched.affinity.affinity,
                 waker,
                 previous,
                 policy.placement_demand(),
                 intent,
+                mode == FairMode::Idle,
             );
         }
         let preferred = previous.or(waker);
@@ -313,13 +314,18 @@ impl TaskSystem {
         affinity: &CpuSet,
         previous: Option<CpuId>,
         target: CpuId,
+        wakee_is_idle: bool,
     ) -> CpuId {
+        // Linux `choose_sched_idle_rq()`: a CPU whose runnable set is
+        // entirely idle policy is an idle placement target for every
+        // non-idle wakee, which preempts the idle-policy current there.
         let is_idle = |cpu: CpuId| {
             affinity.contains(cpu)
                 && self.cpu_remotes.get(cpu.as_usize()).is_some_and(|remote| {
                     remote.accepts_placement()
                         && remote.is_scheduler_ready()
-                        && remote.placement_demand() == 0
+                        && (remote.placement_demand() == 0
+                            || (!wakee_is_idle && remote.load_summary().fair_idle_only()))
                 })
         };
         if is_idle(target) {
@@ -355,6 +361,7 @@ impl TaskSystem {
         previous: Option<CpuId>,
         wakee_demand: u64,
         intent: WakeIntent,
+        wakee_is_idle: bool,
     ) -> Option<CpuId> {
         let eligible = |cpu: CpuId| {
             affinity.contains(cpu)
@@ -386,7 +393,7 @@ impl TaskSystem {
             (Some(cpu), _) | (_, Some(cpu)) => Some(cpu),
             (None, None) => self.select_fair_active_cpu(affinity, None),
         }?;
-        Some(self.select_fair_idle_sibling(affinity, previous, target))
+        Some(self.select_fair_idle_sibling(affinity, previous, target, wakee_is_idle))
     }
 
     /// Wakes a blocked thread from an explicitly modeled test CPU.
@@ -832,7 +839,7 @@ impl TaskSystem {
         let fair_virtual_time = enqueue
             .entity()
             .fair()
-            .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
+            .map_or(0, |_| run_queue.virtual_time());
         #[cfg(feature = "task-test-hooks")]
         if crate::task_test_hooks::take_fair_need_resched_wake_injection(core.id()) {
             remote.request_reschedule(RescheduleKind::Immediate);
@@ -1018,7 +1025,7 @@ impl TaskSystem {
         let fair_virtual_time = enqueue
             .entity()
             .fair()
-            .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
+            .map_or(0, |_| run_queue.virtual_time());
         #[cfg(feature = "task-test-hooks")]
         if crate::task_test_hooks::take_equal_rt_wake_owner_work_injection(core.id()) {
             remote.request_scheduler_work();

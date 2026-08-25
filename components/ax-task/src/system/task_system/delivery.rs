@@ -32,27 +32,27 @@ impl TaskSystem {
             let _settled = transaction.settle_current(0);
         }
         let rq_state = transaction.task_state(core.id(), &sched.placement);
-        let destination_mode = match sched.policy.requested_policy() {
-            SchedulePolicy::Fair { mode, .. } => Some(mode),
+        let fair_placement = match sched.policy.requested_policy() {
+            // Every fair mode competes in one cfs_rq, so the reweight samples
+            // a single shared virtual time. The lookup still asserts that the
+            // outgoing schedule state exists before the policy generation
+            // replaces it.
+            SchedulePolicy::Fair { .. } => {
+                let _source_entity = core
+                    .sched()
+                    .active_option(sched)
+                    .map(|active| active.base_entity().clone())
+                    .or_else(|| transaction.base_scheduling_entity(core.id()))
+                    .unwrap_or_else(|| {
+                        task_runtime::fatal_invariant(0x5251_1202, core.id().as_u64() as usize)
+                    });
+                Some(FairPolicyPlacement {
+                    source_virtual_time: transaction.virtual_time(),
+                    destination_virtual_time: transaction.virtual_time(),
+                })
+            }
             _ => None,
         };
-        let fair_placement = destination_mode.map(|destination_mode| {
-            let source_entity = core
-                .sched()
-                .active_option(sched)
-                .map(|active| active.base_entity().clone())
-                .or_else(|| transaction.base_scheduling_entity(core.id()))
-                .unwrap_or_else(|| {
-                    task_runtime::fatal_invariant(0x5251_1202, core.id().as_u64() as usize)
-                });
-            let source_mode = source_entity
-                .fair()
-                .map_or(destination_mode, |fair| fair.mode());
-            FairPolicyPlacement {
-                source_virtual_time: transaction.virtual_time_for_mode(source_mode),
-                destination_virtual_time: transaction.virtual_time_for_mode(destination_mode),
-            }
-        });
         let mut active = match rq_state {
             OwnerRqTaskState::Current => transaction.detach_current_schedule(core.id()),
             OwnerRqTaskState::Queued { outgoing } => {
@@ -534,7 +534,7 @@ impl TaskSystem {
                         .root_domain
                         .cpu_has_overload(cpu.owner(), balance_class),
                     SchedulingClass::Fair => cpu.load_summary().has_pushable_fair(),
-                    SchedulingClass::Stop | SchedulingClass::Idle => false,
+                    SchedulingClass::Stop => false,
                 };
                 if !source_has_candidate {
                     drop(claim);

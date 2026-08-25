@@ -96,7 +96,6 @@ impl RunQueue {
         }
         self.deadline.prepare_thread_slot(slot);
         self.fair.prepare_thread_slot(slot);
-        self.idle_fair.prepare_thread_slot(slot);
     }
 
     pub(crate) const fn nr_running(&self) -> usize {
@@ -131,10 +130,11 @@ impl RunQueue {
             .expect("current deactivation must match one runnable entity");
     }
 
+    /// Linux `rq->cfs.load.weight`: the combined weight of every queued fair
+    /// entity. SCHED_IDLE contributes `WEIGHT_IDLEPRIO` inside the same tree,
+    /// so idle-policy demand participates in placement decisions.
     pub(crate) fn fair_demand(&self) -> u64 {
-        self.fair
-            .total_weight()
-            .saturating_add(self.idle_fair.total_weight())
+        self.fair.total_weight()
     }
 
     pub(crate) fn placement_demand(&self) -> u64 {
@@ -142,7 +142,7 @@ impl RunQueue {
             .saturating_add(self.fixed_placement_demand)
     }
 
-    #[cfg(any(test, all(axtest, feature = "axtest")))]
+    /// Returns `rq->cfs.avg_vruntime()`, shared by every fair mode.
     pub(crate) const fn virtual_time(&self) -> u64 {
         self.fair.virtual_time()
     }
@@ -152,25 +152,15 @@ impl RunQueue {
         self.fair.set_virtual_time_for_test(virtual_time);
     }
 
-    pub(crate) const fn virtual_time_for_mode(&self, mode: FairMode) -> u64 {
-        if matches!(mode, FairMode::Idle) {
-            self.idle_fair.virtual_time()
-        } else {
-            self.fair.virtual_time()
-        }
-    }
-
-    /// Updates each fair class's authoritative weighted-average virtual time.
+    /// Updates the fair class's authoritative weighted-average virtual time.
     ///
     /// `current` is supplied because the running entity is temporarily absent
     /// from the owner runqueue. Like Linux `avg_vruntime()`, insertion and
     /// removal may move this average in either direction; saved `vlag` protects
-    /// entities from those membership changes.
+    /// entities from those membership changes. Normal, Batch, and SCHED_IDLE
+    /// share the one average, exactly like Linux's single cfs_rq.
     pub(crate) fn update_fair_virtual_time(&mut self, current: Option<FairEntity>) {
-        let normal_current = current.filter(|entity| entity.mode() != FairMode::Idle);
-        let idle_current = current.filter(|entity| entity.mode() == FairMode::Idle);
-        self.fair.update_virtual_time(normal_current);
-        self.idle_fair.update_virtual_time(idle_current);
+        self.fair.update_virtual_time(current);
     }
 
     pub(crate) fn has_rt(&self) -> bool {
@@ -193,30 +183,14 @@ impl RunQueue {
         !self.fair.is_empty()
     }
 
-    pub(crate) fn has_idle_fair(&self) -> bool {
-        !self.idle_fair.is_empty()
+    /// Linux `cfs_rq->min_slice` across every queued fair mode, including
+    /// SCHED_IDLE entities that share the tree.
+    pub(crate) fn min_fair_service_request_ns(&self) -> Option<u64> {
+        self.fair.min_service_request_ns()
     }
 
-    pub(crate) fn min_fair_service_request_ns(&self, mode: FairMode) -> Option<u64> {
-        if mode == FairMode::Idle {
-            self.idle_fair.min_service_request_ns()
-        } else {
-            self.fair.min_service_request_ns()
-        }
-    }
-
-    pub(crate) fn fair_wakee_is_selected(
-        &self,
-        wakee: ThreadId,
-        mode: FairMode,
-        virtual_time: u64,
-    ) -> bool {
-        let queue = if mode == FairMode::Idle {
-            &self.idle_fair
-        } else {
-            &self.fair
-        };
-        queue.earliest_eligible(virtual_time) == Some(wakee)
+    pub(crate) fn fair_wakee_is_selected(&self, wakee: ThreadId, virtual_time: u64) -> bool {
+        self.fair.earliest_eligible(virtual_time) == Some(wakee)
     }
 
     pub(crate) fn earliest_deadline_ns(&self) -> Option<u64> {
@@ -280,8 +254,7 @@ impl RunQueue {
             Some(
                 QueueMembershipClass::Stop
                 | QueueMembershipClass::DeadlineThrottled
-                | QueueMembershipClass::Fair
-                | QueueMembershipClass::IdleFair,
+                | QueueMembershipClass::Fair,
             )
             | None => {}
         }

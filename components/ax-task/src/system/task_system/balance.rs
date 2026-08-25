@@ -248,26 +248,17 @@ impl TaskSystem {
                 let candidate = transaction.next_balance_candidate(&mut scan, |candidate| {
                     #[cfg(any(test, all(axtest, feature = "axtest")))]
                     BALANCE_CANDIDATE_VISITS.set(BALANCE_CANDIDATE_VISITS.get().saturating_add(1));
+                    // Linux `task_hot()` treats SCHED_IDLE tasks as always
+                    // cache-cold: both fair balance paths may migrate them.
                     let class_allowed = match reason {
-                        BalanceReason::IdlePull => !matches!(
-                            candidate.policy(),
-                            SchedulePolicy::Fair {
-                                mode: FairMode::Idle,
-                                ..
-                            }
-                        ),
+                        BalanceReason::IdlePull | BalanceReason::FairPeriodic => {
+                            matches!(candidate.policy(), SchedulePolicy::Fair { .. })
+                        }
                         BalanceReason::RtDeadlinePush => matches!(
                             candidate.policy(),
                             SchedulePolicy::Deadline(_)
                                 | SchedulePolicy::Fifo { .. }
                                 | SchedulePolicy::RoundRobin { .. }
-                        ),
-                        BalanceReason::FairPeriodic => matches!(
-                            candidate.policy(),
-                            SchedulePolicy::Fair {
-                                mode: FairMode::Normal | FairMode::Batch,
-                                ..
-                            }
                         ),
                     };
                     let matches_filter = class_filter.is_none_or(|class| match class {
@@ -278,20 +269,9 @@ impl TaskSystem {
                             candidate.policy(),
                             SchedulePolicy::Fifo { .. } | SchedulePolicy::RoundRobin { .. }
                         ),
-                        SchedulingClass::Fair => matches!(
-                            candidate.policy(),
-                            SchedulePolicy::Fair {
-                                mode: FairMode::Normal | FairMode::Batch,
-                                ..
-                            }
-                        ),
-                        SchedulingClass::Idle => matches!(
-                            candidate.policy(),
-                            SchedulePolicy::Fair {
-                                mode: FairMode::Idle,
-                                ..
-                            }
-                        ),
+                        SchedulingClass::Fair => {
+                            matches!(candidate.policy(), SchedulePolicy::Fair { .. })
+                        }
                         SchedulingClass::Stop => {
                             matches!(candidate.policy(), SchedulePolicy::KernelStop)
                         }

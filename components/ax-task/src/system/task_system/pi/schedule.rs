@@ -80,10 +80,12 @@ impl TaskSystem {
                     .base_scheduling_entity(core.id())
                     .and_then(|entity| entity.fair())
             });
+        // Every fair mode shares the one cfs_rq virtual time, so the PI
+        // reweight samples source and destination together.
         let fair_placement = match (source_fair, update.policy) {
-            (Some(source), SchedulePolicy::Fair { mode, .. }) => Some(FairPolicyPlacement {
-                source_virtual_time: transaction.virtual_time_for_mode(source.mode()),
-                destination_virtual_time: transaction.virtual_time_for_mode(mode),
+            (Some(_), SchedulePolicy::Fair { .. }) => Some(FairPolicyPlacement {
+                source_virtual_time: transaction.virtual_time(),
+                destination_virtual_time: transaction.virtual_time(),
             }),
             _ => None,
         };

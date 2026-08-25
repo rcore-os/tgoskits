@@ -13,7 +13,7 @@ use std::{
     },
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -181,6 +181,123 @@ fn fair_sync_wake_accounts_for_wakee_demand(cpu_count: usize) {
         .expect("the synchronous wake-affine occupier must exit normally");
 }
 
+/// Linux keeps SCHED_IDLE in the common cfs_rq: `update_curr()` reschedules
+/// a normal current once its slice expires whenever any fair-policy task is
+/// queued (`nr_queued > 1`), and `set_load_weight()` pins the idle task to
+/// `WEIGHT_IDLEPRIO`, so it eventually receives real service. A dedicated
+/// idle-only class with a fixed nice-19 weight would starve it completely.
+fn sched_idle_makes_progress_against_a_normal_current() {
+    static IDLE_PROGRESS: AtomicU64 = AtomicU64::new(0);
+    static STOP: AtomicBool = AtomicBool::new(false);
+
+    IDLE_PROGRESS.store(0, Ordering::Release);
+    STOP.store(false, Ordering::Release);
+    let join_normal = {
+        let stop = &STOP;
+        thread::spawn(move || {
+            assert!(ax_set_current_affinity(AxCpuMask::one_shot(0)).is_ok());
+            while !stop.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+        })
+    };
+    let join_idle = {
+        let progress = &IDLE_PROGRESS;
+        let stop = &STOP;
+        thread::spawn(move || {
+            assert!(ax_set_current_affinity(AxCpuMask::one_shot(0)).is_ok());
+            set_thread_policy(
+                current_thread_id().expect("the SCHED_IDLE worker must have an identity"),
+                SchedulePolicy::fair(Nice::ZERO, FairMode::Idle),
+            )
+            .expect("the SCHED_IDLE worker must accept its policy");
+            let mut ticks = 0u64;
+            while !stop.load(Ordering::Acquire) {
+                ticks = ticks.wrapping_add(1);
+                progress.store(ticks, Ordering::Release);
+            }
+        })
+    };
+    let started = Instant::now();
+    while IDLE_PROGRESS.load(Ordering::Acquire) == 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a SCHED_IDLE task must receive service against a normal current"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    STOP.store(true, Ordering::Release);
+    join_idle.join().unwrap();
+    join_normal.join().unwrap();
+}
+
+/// Linux `choose_sched_idle_rq()`: a CPU whose runnable set is entirely
+/// idle policy is an idle placement target for a non-idle wakee, which
+/// preempts onto it instead of migrating to a distant idle CPU.
+fn sched_idle_rq_is_an_idle_placement_target() {
+    static WAKEE_READY: AtomicBool = AtomicBool::new(false);
+    static RELEASE_WAKEE: AtomicBool = AtomicBool::new(false);
+    static WAKEE_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
+    static WAKEE_WAIT: AxWaitQueueHandle = AxWaitQueueHandle::new();
+
+    WAKEE_READY.store(false, Ordering::Release);
+    RELEASE_WAKEE.store(false, Ordering::Release);
+    WAKEE_CPU.store(u64::MAX, Ordering::Release);
+    let join_idle_spinner = thread::spawn(move || {
+        assert!(ax_set_current_affinity(AxCpuMask::one_shot(1)).is_ok());
+        set_thread_policy(
+            current_thread_id().expect("the idle-policy guard must have an identity"),
+            SchedulePolicy::fair(Nice::ZERO, FairMode::Idle),
+        )
+        .expect("the idle-policy guard must accept its policy");
+        while !RELEASE_WAKEE.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+        }
+    });
+    let join_wakee = {
+        let ready = &WAKEE_READY;
+        let release = &RELEASE_WAKEE;
+        let observed = &WAKEE_CPU;
+        thread::spawn(move || {
+            assert!(ax_set_current_affinity(AxCpuMask::one_shot(1)).is_ok());
+            observed.store(this_cpu_id() as u64, Ordering::Release);
+            ready.store(true, Ordering::Release);
+            api::ax_wait_queue_wake(&WAKEE_WAIT, 1);
+            api::ax_wait_queue_wait_until(&WAKEE_WAIT, || release.load(Ordering::Acquire), None);
+            observed.store(this_cpu_id() as u64, Ordering::Release);
+        })
+    };
+    wait_until(
+        || WAKEE_READY.load(Ordering::Acquire),
+        "wakee must park on CPU 1",
+    );
+    let wakee_id = join_wakee.thread().id().as_u64().get();
+    let mut wake_affinity = CpuSet::empty(4);
+    assert!(wake_affinity.insert(CpuId::new(1)));
+    assert!(wake_affinity.insert(CpuId::new(2)));
+    set_thread_affinity_and_wait(
+        ThreadId::from_parts(wakee_id as u32, (wakee_id >> 32) as u32),
+        wake_affinity,
+    )
+    .expect("the parked wakee must accept a wider affinity");
+    // CPU 2 stays completely idle while CPU 1 runs only idle-policy work.
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(api::ax_wait_queue_wake(&WAKEE_WAIT, 1), 1);
+    wait_until(
+        || WAKEE_CPU.load(Ordering::Acquire) != u64::MAX,
+        "the wakee must resume",
+    );
+    assert_eq!(
+        WAKEE_CPU.load(Ordering::Acquire),
+        1,
+        "a non-idle wakee must preempt onto the sched-idle CPU 1 instead of CPU 2"
+    );
+    RELEASE_WAKEE.store(true, Ordering::Release);
+    api::ax_wait_queue_wake(&WAKEE_WAIT, 1);
+    join_wakee.join().unwrap();
+    join_idle_spinner.join().unwrap();
+}
+
 pub fn run() -> crate::TestResult {
     static WAKEE_READY: AtomicBool = AtomicBool::new(false);
     static RELEASE_WAKEE: AtomicBool = AtomicBool::new(false);
@@ -193,6 +310,8 @@ pub fn run() -> crate::TestResult {
     );
     fair_wake_preserves_existing_need_resched();
     fair_sync_wake_accounts_for_wakee_demand(cpu_count);
+    sched_idle_makes_progress_against_a_normal_current();
+    sched_idle_rq_is_an_idle_placement_target();
     WAKEE_READY.store(false, Ordering::Release);
     RELEASE_WAKEE.store(false, Ordering::Release);
 

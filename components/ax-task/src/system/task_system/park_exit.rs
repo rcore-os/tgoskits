@@ -514,8 +514,8 @@ impl TaskSystem {
                 );
                 if !delayed {
                     let mut active = previous_core.sched().active(sched);
-                    if let Some(fair) = active.base_entity().fair() {
-                        let virtual_time = transaction.virtual_time_for_mode(fair.mode());
+                    if active.base_entity().fair().is_some() {
+                        let virtual_time = transaction.virtual_time();
                         active
                             .base_entity_mut()
                             .capture_fair_sleep_lag(virtual_time, timing_granularity_ns);

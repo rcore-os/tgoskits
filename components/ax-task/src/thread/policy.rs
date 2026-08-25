@@ -208,6 +208,9 @@ pub enum SchedulePolicy {
 }
 
 impl SchedulePolicy {
+    /// Linux `WEIGHT_IDLEPRIO`: the fixed load weight of a SCHED_IDLE task.
+    pub(crate) const IDLE_POLICY_WEIGHT: u32 = 3;
+
     /// Returns the instantaneous cross-CPU demand represented by this policy.
     ///
     /// Fair policies use the same Linux nice weights as EEVDF. Fixed-priority
@@ -219,7 +222,7 @@ impl SchedulePolicy {
             Self::Fair {
                 mode: FairMode::Idle,
                 ..
-            } => Nice::LOWEST.weight() as u64,
+            } => Self::IDLE_POLICY_WEIGHT as u64,
             Self::Fair { nice, .. } => nice.weight() as u64,
             Self::Fifo { .. } | Self::RoundRobin { .. } | Self::Deadline(_) => {
                 Nice::ZERO.weight() as u64
@@ -288,19 +291,17 @@ impl SchedulePolicy {
     }
 
     /// Returns the strict scheduler class rank, where smaller values run first.
+    ///
+    /// Linux maps SCHED_IDLE onto `fair_sched_class`: Normal, Batch, and Idle
+    /// policy tasks share this rank and compete inside one EEVDF tree. The
+    /// per-CPU dedicated idle thread is not a policy class at all — the
+    /// dispatch layer keeps it in its own last-choice slot.
     pub const fn class_rank(self) -> u8 {
         match self {
             Self::KernelStop => 0,
             Self::Deadline(_) => DEADLINE_CLASS_RANK,
             Self::Fifo { .. } | Self::RoundRobin { .. } => REALTIME_CLASS_RANK,
-            Self::Fair {
-                mode: FairMode::Normal | FairMode::Batch,
-                ..
-            } => 3,
-            Self::Fair {
-                mode: FairMode::Idle,
-                ..
-            } => 4,
+            Self::Fair { .. } => 3,
         }
     }
 

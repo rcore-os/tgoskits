@@ -24,8 +24,8 @@ pub(crate) use dispatch::{
     CurrentClassState, CurrentDispatch, CurrentDispatchState, DispatchCharge, DispatchRole,
     SwitchHandoff,
 };
-use load::SUMMARY_FAIR_PUSHABLE;
 pub use load::{CpuLoadSummary, DeadlineBandwidthSnapshot, SchedulingClass};
+use load::{SUMMARY_FAIR_IDLE_ONLY, SUMMARY_FAIR_PUSHABLE};
 pub use local::CpuLocal;
 pub(crate) use local::{
     HardTimerServiceClaim, KtimerServiceClaim, SchedulerDeadlineDerivationSource,

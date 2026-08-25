@@ -8,10 +8,10 @@ pub enum SchedulingClass {
     Deadline = 1,
     /// Fixed-priority FIFO or round-robin work.
     Realtime = 2,
-    /// Normal or batch EEVDF work.
+    /// EEVDF work: Normal, Batch, and SCHED_IDLE share this class, matching
+    /// Linux's single `cfs_rq`. The per-CPU dedicated idle thread is outside
+    /// every summary class because it is never queued or pushed.
     Fair     = 3,
-    /// Lowest-priority fair idle work.
-    Idle     = 4,
 }
 
 /// Coherent, allocation-free snapshot used by remote placement and balancing.
@@ -24,6 +24,7 @@ pub struct CpuLoadSummary {
     pub(super) workload_demand: u64,
     pub(super) current_workload_demand: u64,
     pub(super) fair_pushable: bool,
+    pub(super) fair_idle_only: bool,
 }
 
 /// Per-runqueue GRUB utilization snapshot in billionths of one CPU.
@@ -113,6 +114,15 @@ impl CpuLoadSummary {
     pub const fn has_pushable_fair(self) -> bool {
         self.fair_pushable
     }
+
+    /// Reports whether every runnable task on this CPU uses idle policy.
+    ///
+    /// Mirrors Linux `sched_idle_rq()`: a non-idle wakee may preempt onto
+    /// such a CPU as if it were idle.
+    pub const fn fair_idle_only(self) -> bool {
+        self.fair_idle_only
+    }
 }
 
 pub(super) const SUMMARY_FAIR_PUSHABLE: u16 = 1 << 0;
+pub(super) const SUMMARY_FAIR_IDLE_ONLY: u16 = 1 << 1;

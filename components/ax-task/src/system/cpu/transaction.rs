@@ -444,7 +444,7 @@ impl<'a> OwnerRqTxn<'a> {
         match class {
             SchedulingClass::Realtime => self.scheduler_queue().has_pushable_realtime(),
             SchedulingClass::Deadline => self.scheduler_queue().has_pushable_deadline(),
-            SchedulingClass::Stop | SchedulingClass::Fair | SchedulingClass::Idle => false,
+            SchedulingClass::Stop | SchedulingClass::Fair => false,
         }
     }
 

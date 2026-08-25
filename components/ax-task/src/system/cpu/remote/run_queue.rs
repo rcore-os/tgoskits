@@ -347,20 +347,19 @@ impl CpuRunQueueState {
     }
 
     fn tighten_current_fair_slice_protection(&mut self, wakee_entity: &SchedulingEntity) {
-        let Some(wakee) = wakee_entity
+        if !wakee_entity
             .fair()
-            .filter(|fair| fair.mode() == FairMode::Normal)
-        else {
+            .is_some_and(|fair| fair.mode() == FairMode::Normal)
+        {
             return;
-        };
-        let Some(shortest_queued_slice_ns) = self.queue.min_fair_service_request_ns(wakee.mode())
-        else {
+        }
+        let Some(shortest_queued_slice_ns) = self.queue.min_fair_service_request_ns() else {
             return;
         };
         let Some(current) = self
             .current_scheduling_entity_mut()
             .and_then(|entity| match entity {
-                SchedulingEntity::Fair(fair) if fair.mode() == wakee.mode() => Some(fair),
+                SchedulingEntity::Fair(fair) => Some(fair),
                 _ => None,
             })
         else {
@@ -454,7 +453,7 @@ impl CpuRunQueueState {
         }
         let fair = self.current_fair_contender()?;
         self.queue.update_fair_virtual_time(Some(fair));
-        let virtual_time = self.queue.virtual_time_for_mode(fair.mode());
+        let virtual_time = self.queue.virtual_time();
         #[cfg(feature = "task-test-hooks")]
         let (fair, virtual_time) = if force && fair.is_eligible(virtual_time) {
             let SchedulingEntity::Fair(current) = self.current_scheduling_entity_mut()? else {
@@ -463,7 +462,7 @@ impl CpuRunQueueState {
             current.force_ineligible_for_delayed_dequeue(virtual_time);
             let fair = *current;
             self.queue.update_fair_virtual_time(Some(fair));
-            (fair, self.queue.virtual_time_for_mode(fair.mode()))
+            (fair, self.queue.virtual_time())
         } else {
             (fair, virtual_time)
         };
@@ -596,13 +595,14 @@ impl CpuRunQueueState {
         thread: ThreadId,
         timing_granularity_ns: u64,
     ) {
-        let Some(fair) = self
+        if self
             .base_scheduling_entity(thread)
             .and_then(|entity| entity.fair())
-        else {
+            .is_none()
+        {
             return;
-        };
-        let virtual_time = self.queue.virtual_time_for_mode(fair.mode());
+        }
+        let virtual_time = self.queue.virtual_time();
         if self
             .queue
             .capture_linked_fair_migration(thread, virtual_time, timing_granularity_ns)
@@ -681,13 +681,9 @@ impl CpuRunQueueState {
         if CurrentDispatch::runtime_timer_delta_for(current_entity).is_none() {
             return false;
         }
-        current_entity.fair().is_none_or(|fair| {
-            if fair.mode() == FairMode::Idle {
-                self.has_idle_fair()
-            } else {
-                self.has_fair()
-            }
-        })
+        // Linux keeps SCHED_IDLE in the same cfs_rq: any queued fair-policy
+        // contender, either mode, arms the current's runtime clockevent.
+        current_entity.fair().is_none_or(|_| self.has_fair())
     }
 
     pub(crate) fn current_thread(&self) -> Option<ThreadId> {
@@ -1369,11 +1365,8 @@ impl CpuRunQueueState {
             return WakePreemptionDecision::KeepCurrent;
         }
         let decision = match policy {
-            SchedulePolicy::Fair { mode, .. } => {
-                if self
-                    .queue
-                    .fair_wakee_is_selected(wakee, mode, fair_virtual_time)
-                {
+            SchedulePolicy::Fair { .. } => {
+                if self.queue.fair_wakee_is_selected(wakee, fair_virtual_time) {
                     WakePreemptionDecision::WakeeSelected
                 } else {
                     WakePreemptionDecision::QueuedCandidateSelected

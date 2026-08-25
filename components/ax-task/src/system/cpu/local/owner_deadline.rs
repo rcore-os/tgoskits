@@ -512,6 +512,9 @@ impl CpuLocal {
             next.map(SchedulerDeadlineRqClockEvent::After)
         };
         let current_non_idle = current_thread.is_some() && current_thread != idle;
+        // Linux SCHED_IDLE stays in the common cfs_rq, so periodic fair
+        // balance work exists whenever any fair-policy task beyond a lone
+        // current is runnable, either mode included.
         let has_periodic_fair_balance_work =
             run_queue.has_fair() && run_queue.nr_running() > usize::from(current_non_idle);
         SchedulerDeadlineRqObservation {

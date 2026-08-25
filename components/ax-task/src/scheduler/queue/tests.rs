@@ -147,7 +147,7 @@ pub(super) fn normal_and_batch_share_linux_cfs_placement_weight() -> (u64, u64, 
     let current = FairEntity::test_state(Nice::ZERO, FairMode::Batch, 1_000, 1_100);
     let mut wakee = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 900, 1_000);
     wakee.capture_sleep_lag(queue.virtual_time(), TIMING_GRANULARITY_NS);
-    let (queue_weight, current_weight) = queue.fair_placement_weights(wakee, Some(current));
+    let (queue_weight, current_weight) = queue.fair_placement_weights(Some(current));
     wakee
         .place_after_activation(
             queue.virtual_time(),
@@ -216,15 +216,15 @@ fn fair_wakeup_preemption_requires_the_wakee_to_be_the_eevdf_pick() {
     let mut current_entity = FairEntity::test_state(Nice::ZERO, FairMode::Normal, 1_000, 1_200);
     assert!(current_entity.charge(1, 0));
     queue.update_fair_virtual_time(Some(current_entity));
-    let virtual_time = queue.virtual_time_for_mode(FairMode::Normal);
+    let virtual_time = queue.virtual_time();
     let current = CurrentSchedule::test_state(policy, SchedulingEntity::Fair(current_entity));
 
-    assert!(queue.fair_wakee_is_selected(contender, FairMode::Normal, virtual_time));
-    assert!(!queue.fair_wakee_is_selected(wakee, FairMode::Normal, virtual_time));
+    assert!(queue.fair_wakee_is_selected(contender, virtual_time));
+    assert!(!queue.fair_wakee_is_selected(wakee, virtual_time));
     assert!(wakee_entity.deadline_precedes(current_entity));
     let preempts_current =
         current.should_preempt(policy, SchedulingEntity::Fair(wakee_entity), virtual_time)
-            && queue.fair_wakee_is_selected(wakee, FairMode::Normal, virtual_time);
+            && queue.fair_wakee_is_selected(wakee, virtual_time);
     assert!(
         !preempts_current,
         "a wakee that loses the full EEVDF pick must not request preemption",
@@ -864,7 +864,7 @@ fn deadline_preemption_does_not_reapply_the_cbs_wake_rule() {
 
 #[cfg_attr(test, test)]
 #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
-fn pushable_membership_tracks_each_non_idle_scheduler_class() {
+fn pushable_membership_tracks_each_scheduler_class() {
     let mut queue = RunQueue::new();
     let idle = SchedulePolicy::fair(Nice::ZERO, FairMode::Idle);
     let fair = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
@@ -887,7 +887,10 @@ fn pushable_membership_tracks_each_non_idle_scheduler_class() {
         .unwrap();
     assert!(!queue.has_pushable_deadline());
     assert!(!queue.has_pushable_realtime());
-    assert!(!queue.has_pushable_fair());
+    assert!(
+        queue.has_pushable_fair(),
+        "Linux keeps SCHED_IDLE in the cfs_rq, so it is ordinary migratable Fair work"
+    );
     for (id, policy) in [(fair_id, fair), (rt_id, rt), (deadline_id, deadline)] {
         let mut entity = SchedulingEntity::new(policy, 1, 0);
         if matches!(policy, SchedulePolicy::Deadline(_)) {
@@ -906,10 +909,51 @@ fn pushable_membership_tracks_each_non_idle_scheduler_class() {
     assert!(queue.has_pushable_realtime());
     assert_eq!(pick_next(&mut queue, RtEligibility::Runnable).id(), rt_id);
     assert!(!queue.has_pushable_realtime());
-    assert!(queue.has_pushable_fair());
     queue.dequeue(fair_id).unwrap();
-    assert!(!queue.has_pushable_fair());
+    assert!(
+        queue.has_pushable_fair(),
+        "the remaining SCHED_IDLE entity must still be a migratable Fair candidate"
+    );
     assert_eq!(queue.dequeue(idle_id).unwrap().id, idle_id);
+    assert!(!queue.has_pushable_fair());
+}
+
+#[cfg_attr(test, test)]
+#[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
+fn sched_idle_shares_the_fair_tree_and_its_placement_average() {
+    let mut queue = RunQueue::new();
+    let idle = SchedulePolicy::fair(Nice::ZERO, FairMode::Idle);
+    let idle_id = ThreadId::from_parts(0, 1);
+    queue
+        .enqueue_test(
+            idle_id,
+            idle,
+            SchedulingEntity::new(idle, 1_000, 0),
+            0,
+            EnqueueReason::Wake,
+        )
+        .unwrap();
+    // A SCHED_IDLE entity joins the single fair tree: its WEIGHT_IDLEPRIO
+    // weight participates in the same placement average and demand.
+    assert!(queue.has_fair());
+    assert_eq!(
+        queue.fair_demand(),
+        u64::from(SchedulePolicy::IDLE_POLICY_WEIGHT)
+    );
+    let normal = SchedulePolicy::fair(Nice::ZERO, FairMode::Normal);
+    queue
+        .enqueue_test(
+            ThreadId::from_parts(1, 1),
+            normal,
+            SchedulingEntity::new(normal, 1_000, 0),
+            0,
+            EnqueueReason::Wake,
+        )
+        .unwrap();
+    assert_eq!(
+        queue.fair_demand(),
+        u64::from(SchedulePolicy::IDLE_POLICY_WEIGHT) + u64::from(Nice::ZERO.weight())
+    );
 }
 
 #[cfg_attr(test, test)]

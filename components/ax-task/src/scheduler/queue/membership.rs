@@ -25,9 +25,6 @@ impl RunQueue {
             QueueMembershipClass::Fair => {
                 self.fair.find_first_matching(&mut |thread| thread.id == id)
             }
-            QueueMembershipClass::IdleFair => self
-                .idle_fair
-                .find_first_matching(&mut |thread| thread.id == id),
         }
     }
 

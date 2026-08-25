@@ -92,9 +92,6 @@ impl RunQueue {
             QueueMembershipClass::Fair => {
                 assert!(self.fair.update_affinity(id, affinity));
             }
-            QueueMembershipClass::IdleFair => {
-                assert!(self.idle_fair.update_affinity(id, affinity));
-            }
         }
         true
     }
@@ -130,7 +127,7 @@ impl RunQueue {
             }
             Some(SchedulingClass::Realtime) => self.rt.find_first_pushable_matching(&mut eligible),
             Some(SchedulingClass::Fair) => self.fair.find_first_migratable_matching(&mut eligible),
-            Some(SchedulingClass::Stop | SchedulingClass::Idle) => None,
+            Some(SchedulingClass::Stop) => None,
             None => self
                 .deadline
                 .find_first_pushable_matching(&mut eligible)
@@ -147,7 +144,7 @@ impl RunQueue {
             Some(SchedulingClass::Deadline) => self.deadline.pushable_count(),
             Some(SchedulingClass::Realtime) => self.rt.pushable_count(),
             Some(SchedulingClass::Fair) => self.fair.migratable_count(),
-            Some(SchedulingClass::Stop | SchedulingClass::Idle) => 0,
+            Some(SchedulingClass::Stop) => 0,
             None => self
                 .deadline
                 .pushable_count()
@@ -170,9 +167,6 @@ impl RunQueue {
             QueueMembershipClass::Fair => {
                 self.fair.find_first_matching(&mut |thread| thread.id == id)
             }
-            QueueMembershipClass::IdleFair => self
-                .idle_fair
-                .find_first_matching(&mut |thread| thread.id == id),
         }
     }
 }

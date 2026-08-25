@@ -118,7 +118,7 @@ impl TaskSystem {
             let fair_virtual_time = enqueue
                 .entity()
                 .fair()
-                .map_or(0, |fair| run_queue.virtual_time_for_mode(fair.mode()));
+                .map_or(0, |_| run_queue.virtual_time());
             run_queue
                 .wakeup_preempt_with_intent(
                     core.id(),

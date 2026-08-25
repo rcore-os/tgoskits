@@ -64,6 +64,15 @@ enum FairPlacement {
     },
 }
 
+/// Linux `set_load_weight()`: SCHED_IDLE ignores nice and uses
+/// `WEIGHT_IDLEPRIO`.
+const fn load_weight(nice: Nice, mode: FairMode) -> u32 {
+    match mode {
+        FairMode::Idle => crate::SchedulePolicy::IDLE_POLICY_WEIGHT,
+        FairMode::Normal | FairMode::Batch => nice.weight(),
+    }
+}
+
 impl FairEntity {
     #[cfg(any(test, all(axtest, feature = "axtest")))]
     pub(crate) const fn test_state(
@@ -86,12 +95,10 @@ impl FairEntity {
 
     /// Creates a fair entity at a run queue's current virtual time.
     pub fn new(nice: Nice, mode: FairMode, request_ns: u64, virtual_time: u64) -> Self {
-        let nice = if mode == FairMode::Idle {
-            Nice::LOWEST
-        } else {
-            nice
-        };
-        let weighted_request = weighted_delta(request_ns, nice.weight());
+        // Linux `set_load_weight()` pins a SCHED_IDLE task to
+        // `WEIGHT_IDLEPRIO` regardless of its nice value; the stored nice
+        // only matters for Normal and Batch entities.
+        let weighted_request = weighted_delta(request_ns, load_weight(nice, mode));
         Self {
             nice,
             mode,
@@ -113,7 +120,7 @@ impl FairEntity {
     pub fn charge(&mut self, runtime_ns: u64, _virtual_time: u64) -> bool {
         self.vruntime = self
             .vruntime
-            .wrapping_add(weighted_delta(runtime_ns, self.nice.weight()));
+            .wrapping_add(weighted_delta(runtime_ns, self.load_weight()));
         self.remaining_request_ns = self.remaining_request_ns.saturating_sub(runtime_ns);
         let request_exhausted = self.remaining_request_ns == 0;
         if request_exhausted {
@@ -215,7 +222,7 @@ impl FairEntity {
         self.remaining_request_ns = request_ns;
         self.virtual_deadline = self
             .vruntime
-            .wrapping_add(weighted_delta(request_ns, self.nice.weight()));
+            .wrapping_add(weighted_delta(request_ns, self.load_weight()));
         self.protected_until_vruntime = self.vruntime;
         self.placement = FairPlacement::Active;
         Ok(())
@@ -261,7 +268,7 @@ impl FairEntity {
         let limit = weighted_delta(
             self.service_request_ns
                 .saturating_add(timing_granularity_ns),
-            self.nice.weight(),
+            self.load_weight(),
         )
         .min(i64::MAX as u64) as i64;
         virtual_delta(virtual_time, self.vruntime).clamp(-limit, limit)
@@ -294,7 +301,7 @@ impl FairEntity {
         const FORCED_DELAY_NS: u64 = 1_000_000_000;
         let forced_vruntime = virtual_time.wrapping_add(weighted_delta(
             self.service_request_ns.max(FORCED_DELAY_NS),
-            self.nice.weight(),
+            self.load_weight(),
         ));
         let shift = forced_vruntime.wrapping_sub(self.vruntime);
         self.vruntime = forced_vruntime;
@@ -365,7 +372,7 @@ impl FairEntity {
         self.remaining_request_ns = self.service_request_ns;
         self.virtual_deadline = self
             .vruntime
-            .wrapping_add(weighted_delta(self.service_request_ns, self.nice.weight()));
+            .wrapping_add(weighted_delta(self.service_request_ns, self.load_weight()));
         self.protected_until_vruntime = self.vruntime;
         self.placement = FairPlacement::Active;
         Ok(())
@@ -414,7 +421,7 @@ impl FairEntity {
         if saved_lag == 0 || runnable_weight == 0 {
             return 0;
         }
-        let weight = u64::from(self.nice.weight());
+        let weight = u64::from(self.load_weight());
         (i128::from(saved_lag).saturating_mul(i128::from(runnable_weight.saturating_add(weight)))
             / i128::from(runnable_weight))
         .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
@@ -425,7 +432,7 @@ impl FairEntity {
         self.remaining_request_ns = self.service_request_ns;
         self.virtual_deadline = self
             .vruntime
-            .wrapping_add(weighted_delta(self.service_request_ns, self.nice.weight()));
+            .wrapping_add(weighted_delta(self.service_request_ns, self.load_weight()));
         self.protected_until_vruntime = self.vruntime;
     }
 
@@ -472,8 +479,8 @@ impl FairEntity {
         } else {
             nice
         };
-        let old_weight = self.nice.weight();
-        let new_weight = nice.weight();
+        let old_weight = self.load_weight();
+        let new_weight = load_weight(nice, self.mode);
         let reweight_lag = |lag: i64| {
             (i128::from(lag) * i128::from(old_weight) / i128::from(new_weight))
                 .clamp(-i128::from(i64::MAX), i128::from(i64::MAX)) as i64
@@ -536,7 +543,7 @@ impl FairEntity {
             virtual_min(
                 self.virtual_deadline,
                 self.vruntime
-                    .wrapping_add(weighted_delta(protected_slice_ns, self.nice.weight())),
+                    .wrapping_add(weighted_delta(protected_slice_ns, self.load_weight())),
             )
         };
     }
@@ -545,7 +552,7 @@ impl FairEntity {
     pub(crate) fn update_slice_protection(&mut self, shortest_queued_slice_ns: u64) {
         let queued_boundary = self
             .vruntime
-            .wrapping_add(weighted_delta(shortest_queued_slice_ns, self.nice.weight()));
+            .wrapping_add(weighted_delta(shortest_queued_slice_ns, self.load_weight()));
         self.protected_until_vruntime = virtual_min(self.protected_until_vruntime, queued_boundary);
     }
 
@@ -606,7 +613,13 @@ impl FairEntity {
 
     /// Returns the Linux-compatible load weight used for lag accounting.
     pub(crate) const fn weight(self) -> u32 {
-        self.nice.weight()
+        self.load_weight()
+    }
+
+    /// Returns `WEIGHT_IDLEPRIO` for idle policy and the nice weight
+    /// otherwise, exactly like Linux `set_load_weight()`.
+    const fn load_weight(self) -> u32 {
+        load_weight(self.nice, self.mode)
     }
 
     /// Returns the EEVDF virtual deadline.
@@ -769,10 +782,14 @@ mod tests {
 
     #[cfg_attr(test, test)]
     #[cfg_attr(all(axtest, feature = "axtest"), axtest::axtest)]
-    fn sched_idle_always_uses_the_lowest_fair_weight() {
+    fn sched_idle_uses_linux_weight_idleprio() {
         let entity = FairEntity::new(Nice::new(-20).unwrap(), FairMode::Idle, 1_000, 0);
 
-        assert_eq!(entity.nice(), Nice::new(19).unwrap());
+        assert_eq!(
+            entity.weight(),
+            crate::SchedulePolicy::IDLE_POLICY_WEIGHT,
+            "Linux set_load_weight() pins SCHED_IDLE to WEIGHT_IDLEPRIO regardless of nice"
+        );
     }
 
     #[cfg_attr(test, test)]
