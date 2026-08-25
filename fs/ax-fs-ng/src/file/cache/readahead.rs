@@ -1,7 +1,13 @@
 use crate::os::memory::PAGE_SIZE;
 
 const INITIAL_READAHEAD_PAGES: usize = 4;
-const MAX_READAHEAD_PAGES: usize = 32;
+/// 256 pages = 1 MiB windows. The window becomes ONE block request
+/// (`populate_page_window` reads the whole run in a single `file.read_at`), so
+/// the cap directly sizes the largest request: at 32 pages the 490 MB model
+/// load issued ~3,800 requests whose completion->resubmission gap cost ~22% of
+/// the HighSpeed bus ceiling (19.2 of 24.75 MB/s measured). 1 MiB requests
+/// amortize that gap across 8x more bytes.
+const MAX_READAHEAD_PAGES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ReadAheadPlan {

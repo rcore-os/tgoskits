@@ -4,7 +4,11 @@ id = 1
 name = "starry"
 guest_type = "passthrough"
 cpu_num = 1
-phys_cpu_ids = [0x00]
+# Pin the guest vCPU to the first big A76 (host FDT cpu@400, reg/MPIDR 0x400).
+# Was 0x00 (A55 little core, ~1175 MHz delivered); the big pair runs at the
+# 1200 MHz ring the RK3588 cpufreq driver programs at probe. IDs are MPIDR
+# values: A55 = 0x000..0x300, A76 pair0 = 0x400/0x500, pair1 = 0x600/0x700.
+phys_cpu_ids = [0x400]
 
 # StarryOS is an AArch64 Image and receives the generated guest DTB in x0.
 [kernel]
