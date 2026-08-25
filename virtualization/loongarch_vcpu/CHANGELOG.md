@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** use a host-associated timer handle instead of an untyped token.
+
+### Fixed
+
+- Invalidate guest-timer generations before cancel/rearm and cancel live registrations when a vCPU is dropped.
+
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.15...loongarch_vcpu-v0.5.16) - 2026-08-20
 
 ### Other
