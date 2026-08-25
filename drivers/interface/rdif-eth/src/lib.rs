@@ -19,7 +19,12 @@ pub enum NetError {
     #[error("Operation not supported")]
     NotSupported,
 
-    /// The operation should be retried later (e.g. queue full).
+    /// The operation can make progress after a queue IRQ or an explicit
+    /// task-side device event (for example, a queue-full completion).
+    ///
+    /// The runtime retains the returned DMA token, rearms the interrupt source,
+    /// and does not busy-poll this condition. Drivers must use a different
+    /// error when no future event can make the operation ready.
     #[error("Operation should be retried")]
     Retry,
 
@@ -592,7 +597,9 @@ pub trait ITxQueue: Send + 'static {
     /// Submit a DMA buffer for transmission.
     ///
     /// `bus_addr` must point to a DMA-capable buffer whose first `len` bytes
-    /// contain the packet to be transmitted.
+    /// contain the packet to be transmitted. A [`NetError::Retry`] or
+    /// [`NetError::LinkDown`] failure must have a future queue or link event
+    /// that can wake the fixed-CPU poll owner after it rearms IRQs.
     fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError>;
 
     /// Reclaim the next completed transmit buffer.
@@ -618,6 +625,8 @@ pub trait IRxQueue: Send + 'static {
     /// Submit an empty DMA buffer to hardware.
     ///
     /// `bus_addr` must point to a DMA-capable buffer whose total size is `len`.
+    /// A [`NetError::Retry`] failure must have a future queue or task-side
+    /// device event that can wake the fixed-CPU poll owner after it rearms IRQs.
     fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError>;
 
     /// Reclaim the next completed receive buffer.

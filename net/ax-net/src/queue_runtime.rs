@@ -585,19 +585,27 @@ impl ProtocolGroupPort {
         }
     }
 
-    fn receive(&mut self) -> NetDeviceResult<ProtocolEthernetFrame> {
-        self.flush_recycle();
-        let completion = self.rx_ready.pop().ok_or(NetDeviceError::Again)?;
-        let frame = completion
-            .buffer
-            .read_with_cpu(completion.packet_len, |packet| {
-                ProtocolEthernetFrame::copy_from_slice(packet)
-            })?;
-        if let Err(buffer) = self.rx_recycle.push(completion.buffer) {
+    fn recycle_rx_buffer(&mut self, buffer: DmaBuffer) {
+        if let Err(buffer) = self.rx_recycle.push(buffer) {
             self.pending_recycle.push(buffer);
         }
         self.shared.schedule_task();
-        Ok(frame)
+    }
+
+    fn receive(&mut self) -> NetDeviceResult<ProtocolEthernetFrame> {
+        self.flush_recycle();
+        let completion = self.rx_ready.pop().ok_or(NetDeviceError::Again)?;
+        let frame = if completion.packet_len > completion.buffer.capacity() {
+            Err(NetDeviceError::Io)
+        } else {
+            completion
+                .buffer
+                .read_with_cpu(completion.packet_len, |packet| {
+                    ProtocolEthernetFrame::copy_from_slice(packet)
+                })
+        };
+        self.recycle_rx_buffer(completion.buffer);
+        frame
     }
 
     fn transmit(&mut self, frame: &ProtocolEthernetFrame) -> NetDeviceResult {
@@ -679,6 +687,27 @@ enum GroupPollOutcome {
     Failed,
 }
 
+const fn hardware_retry_outcome(work: usize) -> GroupPollOutcome {
+    // The driver returned the token because only a future device event can
+    // make progress.  Rearm the IRQ before sleeping instead of spinning on
+    // the same token with the source masked.
+    GroupPollOutcome::Idle(work)
+}
+
+const fn waits_for_hardware_event(reason: &NetError) -> bool {
+    matches!(reason, NetError::Retry | NetError::LinkDown)
+}
+
+const fn rx_refill_retry_outcome(work: usize, received: usize) -> GroupPollOutcome {
+    if received == 0 {
+        hardware_retry_outcome(work)
+    } else {
+        // Reclaiming an RX descriptor can make the retained refill token
+        // immediately submittable, so retry only after observable progress.
+        GroupPollOutcome::More(work)
+    }
+}
+
 struct QueueGroupExecutor {
     group: PreparedNetPollGroup,
     rx_ready: SpscProducer<RxCompletion>,
@@ -739,6 +768,7 @@ impl QueueGroupExecutor {
             }
             crate::request_poll();
         }
+        let mut rx_refill_blocked = false;
         if let Some(buffer) = self.pending_rx_recycle.take() {
             match self.group.rx.recycle(buffer) {
                 Ok(()) => work += 1,
@@ -749,14 +779,14 @@ impl QueueGroupExecutor {
                         self.shared.disable();
                         return GroupPollOutcome::Failed;
                     }
-                    return GroupPollOutcome::More(work);
+                    rx_refill_blocked = true;
                 }
             }
         }
 
         let per_class = QUEUE_BUDGET.min(cpu_budget.saturating_sub(work));
         let mut recycled = 0;
-        while recycled < per_class {
+        while !rx_refill_blocked && recycled < per_class {
             let Some(buffer) = self.rx_recycle.pop() else {
                 break;
             };
@@ -772,7 +802,7 @@ impl QueueGroupExecutor {
                         self.shared.disable();
                         return GroupPollOutcome::Failed;
                     }
-                    return GroupPollOutcome::More(work);
+                    rx_refill_blocked = true;
                 }
             }
         }
@@ -821,9 +851,9 @@ impl QueueGroupExecutor {
                 }
                 Err(error) => {
                     let (buffer, reason) = error.into_parts();
-                    if matches!(reason, NetError::Retry) {
+                    if waits_for_hardware_event(&reason) {
                         self.pending_tx = Some(buffer);
-                        return GroupPollOutcome::More(work);
+                        return hardware_retry_outcome(work);
                     }
                     if let Err(buffer) = self.tx_free.push(buffer) {
                         self.pending_tx_free = Some(buffer);
@@ -831,6 +861,10 @@ impl QueueGroupExecutor {
                     }
                 }
             }
+        }
+
+        if rx_refill_blocked {
+            return rx_refill_retry_outcome(work, received);
         }
 
         let exhausted = budget_was_exhausted(received, rx_budget)
@@ -1475,9 +1509,17 @@ fn stop_executors(executors: &[ExecutorLease]) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex as StdMutex;
+    use core::{alloc::Layout, num::NonZeroUsize, ptr::NonNull};
+    use std::{
+        alloc::{alloc_zeroed, dealloc},
+        sync::Mutex as StdMutex,
+    };
 
     use irq_framework::{HwIrq, IrqDomainId};
+    use rd_net::dma_api::{
+        DeviceDma, DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDirection,
+        DmaDomainId, DmaError, DmaMapHandle, DmaOp,
+    };
 
     use super::*;
 
@@ -1487,6 +1529,83 @@ mod tests {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    struct TestDma;
+
+    impl TestDma {
+        unsafe fn allocate(layout: Layout) -> Option<DmaAllocHandle> {
+            let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+            Some(unsafe {
+                DmaAllocHandle::new(ptr, ptr, (ptr.as_ptr() as usize as u64).into(), layout)
+            })
+        }
+    }
+
+    impl DmaOp for TestDma {
+        fn page_size(&self) -> usize {
+            4096
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            unsafe { Self::allocate(layout) }
+        }
+
+        unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+        }
+
+        unsafe fn alloc_coherent(
+            &self,
+            _constraints: DmaConstraints,
+            layout: Layout,
+        ) -> Option<DmaAllocHandle> {
+            unsafe { Self::allocate(layout) }
+        }
+
+        unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
+            unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+            Ok(())
+        }
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            addr: NonNull<u8>,
+            size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, DmaError> {
+            let layout = Layout::from_size_align(size.get(), 1)?;
+            Ok(unsafe {
+                DmaMapHandle::new(addr, (addr.as_ptr() as usize as u64).into(), layout, None)
+            })
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
+    }
+
+    static TEST_DMA: TestDma = TestDma;
+
+    fn dma_buffer(capacity: usize, len: usize) -> DmaBuffer {
+        let device = DeviceDma::new(
+            DmaDeviceInfo::new(
+                DmaDomainId::Direct,
+                DmaCoherency::Coherent,
+                DmaConstraints::new(u64::MAX),
+            ),
+            &TEST_DMA,
+        );
+        let pool = device.contiguous_buffer_pool(
+            Layout::from_size_align(capacity, 64).unwrap(),
+            DmaDirection::Bidirectional,
+            1,
+        );
+        DmaBuffer::new(pool.alloc().unwrap(), len)
+            .unwrap_or_else(|_| panic!("test DMA token length exceeds its allocation"))
     }
 
     struct RecordingRegistration {
@@ -1563,6 +1682,73 @@ mod tests {
         drop(producer);
         drop(consumer);
         assert_eq!(drops.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn oversized_rx_frame_recycles_token_and_next_frame_remains_receivable() {
+        let (mut rx_ready_tx, rx_ready_rx) = spsc_ring(2);
+        let (mut rx_recycle_tx, mut rx_recycle_rx) = spsc_ring(1);
+        let (tx_ready_tx, _tx_ready_rx) = spsc_ring(1);
+        let (_tx_free_tx, tx_free_rx) = spsc_ring(1);
+        let oversized = dma_buffer(4096, 4096);
+        let oversized_bus_addr = oversized.bus_addr();
+        let valid = dma_buffer(4096, 64);
+        let valid_bus_addr = valid.bus_addr();
+        let occupied = dma_buffer(4096, 64);
+        let occupied_bus_addr = occupied.bus_addr();
+
+        rx_ready_tx
+            .push(RxCompletion {
+                buffer: oversized,
+                packet_len: 2049,
+            })
+            .unwrap();
+        rx_ready_tx
+            .push(RxCompletion {
+                buffer: valid,
+                packet_len: 64,
+            })
+            .unwrap();
+        rx_recycle_tx.push(occupied).unwrap();
+
+        let shared = Arc::new(group_state(STATE_IDLE));
+        let mut port = ProtocolGroupPort {
+            rx_ready: rx_ready_rx,
+            rx_recycle: rx_recycle_tx,
+            tx_ready: tx_ready_tx,
+            tx_free: tx_free_rx,
+            pending_recycle: Vec::with_capacity(2),
+            tx_spares: Vec::new(),
+            shared,
+        };
+
+        assert!(matches!(port.receive(), Err(NetDeviceError::InvalidParam)));
+        assert_eq!(port.pending_recycle.len(), 1);
+        assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), occupied_bus_addr);
+
+        let frame = port
+            .receive()
+            .expect("a malformed frame must not consume the next completion");
+        assert_eq!(frame.packet_len(), 64);
+        assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), oversized_bus_addr);
+
+        port.flush_recycle();
+        assert_eq!(rx_recycle_rx.pop().unwrap().bus_addr(), valid_bus_addr);
+        assert!(port.pending_recycle.is_empty());
+
+        let invalid_length = dma_buffer(2048, 2048);
+        let invalid_length_bus_addr = invalid_length.bus_addr();
+        rx_ready_tx
+            .push(RxCompletion {
+                buffer: invalid_length,
+                packet_len: 2049,
+            })
+            .unwrap();
+        assert!(matches!(port.receive(), Err(NetDeviceError::Io)));
+        assert_eq!(
+            rx_recycle_rx.pop().unwrap().bus_addr(),
+            invalid_length_bus_addr
+        );
     }
 
     fn group_state(initial: u8) -> PollGroupState {
@@ -1695,6 +1881,25 @@ mod tests {
         assert!(!budget_was_exhausted(0, 0));
         assert!(!budget_was_exhausted(63, 64));
         assert!(budget_was_exhausted(64, 64));
+    }
+
+    #[test]
+    fn hardware_retry_rearms_instead_of_immediately_rescheduling() {
+        assert!(matches!(
+            hardware_retry_outcome(0),
+            GroupPollOutcome::Idle(0)
+        ));
+        assert!(waits_for_hardware_event(&NetError::Retry));
+        assert!(waits_for_hardware_event(&NetError::LinkDown));
+        assert!(!waits_for_hardware_event(&NetError::NotSupported));
+        assert!(matches!(
+            rx_refill_retry_outcome(0, 0),
+            GroupPollOutcome::Idle(0)
+        ));
+        assert!(matches!(
+            rx_refill_retry_outcome(1, 1),
+            GroupPollOutcome::More(1)
+        ));
     }
 
     #[test]

@@ -63,7 +63,7 @@ impl ITxQueue for Rtl8125TxQueue {
 
         if !self.observe_link_before_tx(buffer.len()) {
             self.link_down_drops = self.link_down_drops.saturating_add(1);
-            return Err(SubmitError::new(buffer, NetError::Retry));
+            return Err(SubmitError::new(buffer, NetError::LinkDown));
         }
 
         let idx = self.next_submit;
