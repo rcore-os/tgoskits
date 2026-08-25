@@ -2,10 +2,19 @@
 //! a mock so cache hits, deferred writes, merged writeback runs, and
 //! writeback-before-barrier ordering are asserted deterministically.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    num::NonZeroUsize,
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use super::{
     address_space::{BlockAddressSpace, FolioGeometry},
+    folio::CacheFolio,
+    folio_cache::FolioCache,
     *,
 };
 use crate::{BlockError, BlockResult, block::FsBlockDevice};
@@ -43,6 +52,78 @@ struct RecordingState {
 struct RecordingDevice {
     state: Arc<Mutex<RecordingState>>,
     block_size: usize,
+}
+
+/// Models the runtime endpoint whose final handle drop performs shutdown.
+struct ShutdownTrackedDevice {
+    inner: RecordingDevice,
+    shutdowns: Arc<AtomicUsize>,
+}
+
+impl Drop for ShutdownTrackedDevice {
+    fn drop(&mut self) {
+        self.shutdowns.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+impl FsBlockDevice for ShutdownTrackedDevice {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn num_blocks(&self) -> u64 {
+        self.inner.num_blocks()
+    }
+
+    fn block_size(&self) -> usize {
+        self.inner.block_size()
+    }
+
+    fn read_block(&mut self, block_id: u64, buf: &mut [u8]) -> BlockResult<()> {
+        self.inner.read_block(block_id, buf)
+    }
+
+    fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult<()> {
+        self.inner.write_block(block_id, buf)
+    }
+
+    fn flush(&mut self) -> BlockResult<()> {
+        self.inner.flush()
+    }
+}
+
+struct GeometryOnlyDevice {
+    block_size: usize,
+    io_calls: Arc<AtomicUsize>,
+}
+
+impl FsBlockDevice for GeometryOnlyDevice {
+    fn name(&self) -> &str {
+        "geometry-only"
+    }
+
+    fn num_blocks(&self) -> u64 {
+        1
+    }
+
+    fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    fn read_block(&mut self, _block_id: u64, _buf: &mut [u8]) -> BlockResult<()> {
+        self.io_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn write_block(&mut self, _block_id: u64, _buf: &[u8]) -> BlockResult<()> {
+        self.io_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> BlockResult<()> {
+        self.io_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
 }
 
 impl RecordingDevice {
@@ -274,6 +355,43 @@ fn lru_eviction_writes_back_dirty_victim() {
 }
 
 #[test]
+fn lru_hit_preserves_the_recently_used_folio() {
+    let (mut inner, state) = RecordingDevice::new(64, 512);
+    let mut tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 2);
+    let mut buf = [0u8; 512];
+
+    tree.read_buffered(&mut inner, 0, 1, &mut buf).unwrap();
+    tree.read_buffered(&mut inner, 8, 1, &mut buf).unwrap();
+    tree.read_buffered(&mut inner, 0, 1, &mut buf).unwrap();
+    let reads_before_eviction = count_ops(&state, IoOp::is_read);
+
+    tree.read_buffered(&mut inner, 16, 1, &mut buf).unwrap();
+    tree.read_buffered(&mut inner, 0, 1, &mut buf).unwrap();
+    assert_eq!(
+        count_ops(&state, IoOp::is_read),
+        reads_before_eviction + 1,
+        "the touched frame must remain cached when the older frame is evicted"
+    );
+
+    tree.read_buffered(&mut inner, 8, 1, &mut buf).unwrap();
+    assert_eq!(count_ops(&state, IoOp::is_read), reads_before_eviction + 2);
+}
+
+#[test]
+fn lru_reserve_failure_preserves_existing_entry() {
+    let mut cache = FolioCache::new(NonZeroUsize::new(2).unwrap());
+    cache.try_reserve_entry().unwrap();
+    cache.insert_reserved(7, CacheFolio::try_new(1, 1).unwrap());
+
+    assert_eq!(
+        cache.try_reserve_for_test(usize::MAX),
+        Err(BlockError::NoMemory)
+    );
+    assert!(cache.contains(&7));
+    assert_eq!(cache.least_recent(), Some(7));
+}
+
+#[test]
 fn direct_write_overlays_cached_folio() {
     let (device, state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A + 7, device);
@@ -359,6 +477,55 @@ fn drop_flushes_last_instance() {
     // The count is a lower bound: a concurrently running global-sync test
     // may flush this live registry entry before the drop happens.
     assert!(count_ops(&state, IoOp::is_flush) >= 1);
+}
+
+#[test]
+fn dropping_last_consumer_releases_registry_endpoint() {
+    let shutdowns = Arc::new(AtomicUsize::new(0));
+    let key = KEY_A + 11;
+
+    for expected_shutdowns in 1..=2 {
+        let (device, _state) = RecordingDevice::new(64, 512);
+        let endpoint = ShutdownTrackedDevice {
+            inner: device.clone(),
+            shutdowns: shutdowns.clone(),
+        };
+        let cached = BufferedBlockDevice::with_device_key(key, Box::new(endpoint), device)
+            .expect("recording device geometry is valid");
+
+        drop(cached);
+        assert_eq!(
+            shutdowns.load(Ordering::Acquire),
+            expected_shutdowns,
+            "each last cache consumer must release the endpoint for shutdown"
+        );
+    }
+}
+
+#[test]
+fn folio_allocation_failure_returns_no_memory_without_io() {
+    let block_size = 1usize << (usize::BITS - 1);
+    let geometry = FolioGeometry::new(block_size).unwrap();
+    let mut tree = BlockAddressSpace::with_capacity(geometry, 1);
+    let io_calls = Arc::new(AtomicUsize::new(0));
+    let mut device = GeometryOnlyDevice {
+        block_size,
+        io_calls: io_calls.clone(),
+    };
+    let mut output = [];
+
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        tree.read_buffered(&mut device, 0, 1, &mut output)
+    }));
+
+    assert!(matches!(outcome, Ok(Err(BlockError::NoMemory))));
+    assert_eq!(
+        CacheFolio::try_new(1, usize::MAX).unwrap_err(),
+        BlockError::NoMemory,
+        "per-block head allocation must use the same fallible error path"
+    );
+    assert!(!tree.has_dirty());
+    assert_eq!(io_calls.load(Ordering::Acquire), 0);
 }
 
 #[test]

@@ -9,7 +9,7 @@
 //! | bdev inode `address_space`, keyed by page index | [`BlockAddressSpace`], keyed by folio frame index, one per device |
 //! | `folio` with attached buffers | [`CacheFolio`], 4 KiB or one device block, whichever is larger |
 //! | `buffer_head` `BH_Uptodate`/`BH_Dirty` bits | [`BufferHead`] slot state (`BH_Mapped` is implicit: the cache is an identity mapping) |
-//! | `PAGECACHE_TAG_DIRTY` tree mark | ordered `dirty_frames` set plus a dirty-slot counter |
+//! | `PAGECACHE_TAG_DIRTY` tree mark | ordered `dirty_frames` index |
 //! | `getblk` / `bread` | [`BlockAddressSpace`] folio lookup / [`BufferedBlockDevice`] buffered reads |
 //! | `mark_buffer_dirty` | deferred one-folio writes (data reaches the device only at writeback) |
 //! | `sync_dirty_buffers` | [`BlockAddressSpace::writeback_dirty`], submitting merged dirty runs |
@@ -20,7 +20,8 @@
 //!
 //! # Deviations from Linux (recorded deliberately)
 //!
-//! * Writeback is synchronous and happens at `flush()`, eviction, and drop;
+//! * Writeback is synchronous and happens at `flush()`, eviction, and the
+//!   last filesystem consumer's drop;
 //!   Linux has per-BDI flusher threads. The current `FsBlockDevice` model
 //!   is fully synchronous, so a WRITEBACK mark and a background flusher
 //!   would have no observable effect.
@@ -46,6 +47,7 @@ mod address_space;
 mod buffer_head;
 mod device;
 mod folio;
+mod folio_cache;
 mod registry;
 
 #[cfg(test)]

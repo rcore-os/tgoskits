@@ -14,23 +14,36 @@
 //! see the module documentation for the full mapping.
 
 use alloc::{boxed::Box, sync::Arc};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::address_space::{BlockAddressSpace, FolioGeometry};
 use crate::{BlockError, BlockResult, block::FsBlockDevice, os::sync::SleepMutex};
 
-/// The shared per-device cache tree behind a sleepable lock.
+/// The shared per-device cache tree and its global-writeback endpoint.
 ///
 /// All filesystem instances on one physical device serialize through this
 /// lock (Linux instead locks folios individually; see module documentation
-/// for why that split has no effect in the synchronous IO model).
+/// for why that split has no effect in the synchronous IO model). The
+/// independent consumer count excludes temporary global-sync references and
+/// elects exactly one last wrapper to perform drop-time writeback.
 pub(crate) struct BlockCacheShared {
+    device_key: usize,
+    consumers: AtomicUsize,
     state: SleepMutex<BlockAddressSpace>,
+    endpoint: SleepMutex<Box<dyn FsBlockDevice>>,
 }
 
 impl BlockCacheShared {
-    pub(crate) fn new(geometry: FolioGeometry) -> Self {
+    pub(crate) fn new(
+        device_key: usize,
+        geometry: FolioGeometry,
+        endpoint: Box<dyn FsBlockDevice>,
+    ) -> Self {
         Self {
+            device_key,
+            consumers: AtomicUsize::new(0),
             state: SleepMutex::new(BlockAddressSpace::new(geometry)),
+            endpoint: SleepMutex::new(endpoint),
         }
     }
 
@@ -38,6 +51,25 @@ impl BlockCacheShared {
     /// different size means the device key collides across geometries.
     pub(crate) fn matches_block_size(&self, block_size: usize) -> bool {
         self.state.lock().geometry().block_size() == block_size
+    }
+
+    fn acquire_consumer(&self) -> BlockResult<()> {
+        self.consumers
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_add(1)
+            })
+            .map(|_| ())
+            .map_err(|_| BlockError::InvalidState)
+    }
+
+    fn release_consumer(&self) -> bool {
+        let previous = self
+            .consumers
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_sub(1)
+            })
+            .expect("each cache wrapper acquires exactly one consumer reference");
+        previous == 1
     }
 
     /// Writes back every dirty slot through `endpoint`, then issues its
@@ -51,12 +83,26 @@ impl BlockCacheShared {
         endpoint.flush()
     }
 
+    /// Writes back through the endpoint owned by the shared cache tree.
+    pub(crate) fn sync_to_registered_device(&self) -> BlockResult<()> {
+        self.sync_to_device_with(&mut **self.endpoint.lock())
+    }
+
     /// Drops up to `target` clean folios from the LRU end; see
     /// [`super::registry::reclaim_clean_folios`] for the clean-only
     /// contract.
     #[cfg(feature = "vfs")]
     pub(crate) fn reclaim_clean_folios(&self, target: usize) -> usize {
         self.state.lock().reclaim_clean_folios(target)
+    }
+}
+
+impl Drop for BlockCacheShared {
+    fn drop(&mut self) {
+        super::registry::unregister_cache(
+            self.device_key,
+            core::ptr::from_ref::<BlockCacheShared>(self),
+        );
     }
 }
 
@@ -76,9 +122,9 @@ impl<T: FsBlockDevice> BufferedBlockDevice<T> {
     /// # Errors
     ///
     /// Returns [`BlockError::InvalidRequest`] when the device block size is
-    /// zero or not a power of two, and [`BlockError::InvalidState`] when
-    /// the registered tree for `device_key` was built for a different
-    /// block size.
+    /// zero or not a power of two, [`BlockError::InvalidState`] when the
+    /// registered tree for `device_key` was built for a different block
+    /// size, and [`BlockError::NoMemory`] when the registry cannot grow.
     pub(crate) fn with_device_key(
         device_key: usize,
         endpoint: Box<dyn FsBlockDevice>,
@@ -86,6 +132,7 @@ impl<T: FsBlockDevice> BufferedBlockDevice<T> {
     ) -> BlockResult<Self> {
         let block_size = inner.block_size();
         let shared = super::registry::shared_cache_for(device_key, block_size, endpoint)?;
+        shared.acquire_consumer()?;
         Ok(Self { inner, shared })
     }
 
@@ -161,11 +208,11 @@ impl<T: FsBlockDevice> FsBlockDevice for BufferedBlockDevice<T> {
 
 impl<T: FsBlockDevice> Drop for BufferedBlockDevice<T> {
     fn drop(&mut self) {
-        // The last user of a shared tree flushes pending writeback, like
-        // `SeekableDisk::drop` does for its partial-block buffer. Races
-        // between concurrent drops of the last two users can miss the
-        // flush; callers that need durability must flush explicitly.
-        if Arc::strong_count(&self.shared) == 1
+        // The consumer count is independent from temporary strong refs held
+        // by global sync. Exactly one concurrent wrapper drop observes the
+        // transition to zero and flushes while the tree remains upgradeable,
+        // so a same-key creator cannot race a stale tree against a new one.
+        if self.shared.release_consumer()
             && let Err(error) = self.sync_to_device()
         {
             error!("failed to flush block cache while dropping device: {error:?}");

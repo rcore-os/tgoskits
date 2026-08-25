@@ -901,6 +901,7 @@ dependencies = [
  "cfg-if",
  "chrono",
  "dma-api",
+ "hashbrown 0.16.1",
  "intrusive-collections",
  "irq-framework",
  "log",

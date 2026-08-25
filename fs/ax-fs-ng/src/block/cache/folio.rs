@@ -6,23 +6,39 @@
 //! aggregation of slot bits, mirroring the Linux rule that a dirty page
 //! with buffers only means "at least one block is dirty".
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 
 use super::buffer_head::BufferHead;
+use crate::{BlockError, BlockResult};
 
 /// One frame of the block cache: the frame bytes plus per-slot states.
 #[derive(Debug)]
 pub(crate) struct CacheFolio {
-    data: Box<[u8]>,
+    data: Vec<u8>,
     heads: Vec<BufferHead>,
 }
 
 impl CacheFolio {
-    pub(crate) fn new(folio_size: usize, slots: usize) -> Self {
-        Self {
-            data: alloc::vec![0u8; folio_size].into_boxed_slice(),
-            heads: alloc::vec![BufferHead::default(); slots],
-        }
+    /// Allocates one folio and all of its per-block state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockError::NoMemory`] when either backing allocation
+    /// cannot be reserved. Both vectors remain local until they are fully
+    /// initialized, so a partial allocation never enters the cache tree.
+    pub(crate) fn try_new(folio_size: usize, slots: usize) -> BlockResult<Self> {
+        let mut data = Vec::new();
+        data.try_reserve_exact(folio_size)
+            .map_err(|_| BlockError::NoMemory)?;
+        data.resize(folio_size, 0);
+
+        let mut heads = Vec::new();
+        heads
+            .try_reserve_exact(slots)
+            .map_err(|_| BlockError::NoMemory)?;
+        heads.resize(slots, BufferHead::default());
+
+        Ok(Self { data, heads })
     }
 
     pub(crate) fn slot(&self, slot: usize) -> &BufferHead {

@@ -2,23 +2,20 @@
 //! `address_space` of a Linux block-device inode (`block/bdev.c`).
 //!
 //! The tree maps folio frame index to [`CacheFolio`] (Linux: XArray page
-//! index to folio). A frame-level DIRTY mark (Linux
-//! `PAGECACHE_TAG_DIRTY`) is kept as an ordered set of frame indices:
-//! "does the device have pending writeback" is answerable in O(1), and
-//! writeback always visits frames in ascending block order, which keeps
-//! device-visible write ordering deterministic.
+//! index to folio). An ordered frame index records the frame-level DIRTY
+//! mark (Linux `PAGECACHE_TAG_DIRTY`): "does the device have pending
+//! writeback" is answerable in O(1), and writeback always visits frames in
+//! ascending block order for deterministic device-visible ordering.
 //!
 //! A WRITEBACK mark has no state here: writeback is synchronous under the
 //! device lock, so an intermediate mark would never be observed. It is
 //! the extension point if writeback becomes asynchronous.
 
-use alloc::{collections::BTreeSet, vec::Vec};
+use alloc::vec::Vec;
 use core::num::NonZeroUsize;
 
-use lru::LruCache;
-
-use super::folio::CacheFolio;
-use crate::{BlockResult, block::FsBlockDevice, os::memory::PAGE_SIZE};
+use super::{folio::CacheFolio, folio_cache::FolioCache};
+use crate::{BlockError, BlockResult, block::FsBlockDevice, os::memory::PAGE_SIZE};
 
 /// Folios cached per device: 1024 frames of 4 KiB = 4 MiB with 512-byte
 /// device blocks.
@@ -97,10 +94,11 @@ impl FolioGeometry {
 /// The cached-folio tree of one device (the bdev `address_space`).
 pub(crate) struct BlockAddressSpace {
     geometry: FolioGeometry,
-    capacity: NonZeroUsize,
-    folios: LruCache<u64, CacheFolio>,
+    folios: FolioCache,
     /// Frame-level DIRTY mark: frames with at least one dirty slot.
-    dirty_frames: BTreeSet<u64>,
+    /// Kept sorted so writeback order is deterministic. Capacity growth is
+    /// reserved before any folio state is changed.
+    dirty_frames: Vec<u64>,
 }
 
 impl BlockAddressSpace {
@@ -114,9 +112,8 @@ impl BlockAddressSpace {
         let capacity = NonZeroUsize::new(capacity.max(1)).expect("capacity is clamped to >= 1");
         Self {
             geometry,
-            capacity,
-            folios: LruCache::new(capacity),
-            dirty_frames: BTreeSet::new(),
+            folios: FolioCache::new(capacity),
+            dirty_frames: Vec::new(),
         }
     }
 
@@ -141,14 +138,19 @@ impl BlockAddressSpace {
             if len == 0 || dirty_skips >= len {
                 break;
             }
-            let Some((frame, folio)) = self.folios.pop_lru() else {
+            let Some(frame) = self.folios.least_recent() else {
                 break;
             };
-            if folio.has_dirty_slots() {
-                self.folios.put(frame, folio);
+            if self
+                .folios
+                .get(&frame)
+                .is_some_and(CacheFolio::has_dirty_slots)
+            {
+                self.folios.touch(frame);
                 dirty_skips += 1;
                 continue;
             }
+            self.folios.remove(&frame);
             reclaimed += 1;
         }
         reclaimed
@@ -188,13 +190,20 @@ impl BlockAddressSpace {
         let frame = geometry.frame_of(first_block);
         let first_slot = geometry.slot_of(first_block);
         let count = usize::try_from(count).map_err(|_| crate::BlockError::InvalidRequest)?;
+        if self.dirty_frames.binary_search(&frame).is_err() {
+            self.dirty_frames
+                .try_reserve(1)
+                .map_err(|_| BlockError::NoMemory)?;
+        }
         let newly_dirty = {
             let folio = self.getblk(dev, frame)?;
             folio.copy_into_slots(first_slot, count, src);
             folio.mark_slots_dirty(first_slot, count)
         };
-        if newly_dirty > 0 {
-            self.dirty_frames.insert(frame);
+        if newly_dirty > 0
+            && let Err(index) = self.dirty_frames.binary_search(&frame)
+        {
+            self.dirty_frames.insert(index, frame);
         }
         Ok(())
     }
@@ -208,11 +217,25 @@ impl BlockAddressSpace {
         dev: &mut T,
         range: Option<(u64, u64)>,
     ) -> BlockResult<()> {
-        let targets: Vec<u64> = match range {
-            None => self.dirty_frames.iter().copied().collect(),
-            Some((first, count)) => self.overlapping_dirty_frames(first, count),
-        };
-        for frame in targets {
+        let frame_range = range.and_then(|(first, count)| {
+            let last = count.checked_sub(1).and_then(|n| first.checked_add(n))?;
+            Some((self.geometry.frame_of(first), self.geometry.frame_of(last)))
+        });
+        loop {
+            let target = match frame_range {
+                None if range.is_some() => None,
+                None => self.dirty_frames.first().copied(),
+                Some((first, last)) => {
+                    let index = self.dirty_frames.partition_point(|frame| *frame < first);
+                    self.dirty_frames
+                        .get(index)
+                        .copied()
+                        .filter(|frame| *frame <= last)
+                }
+            };
+            let Some(frame) = target else {
+                break;
+            };
             self.writeback_folio(dev, frame)?;
         }
         Ok(())
@@ -259,18 +282,17 @@ impl BlockAddressSpace {
     ) -> BlockResult<()> {
         let geometry = self.geometry;
         let Some(folio) = self.folios.get_mut(&frame) else {
-            self.dirty_frames.remove(&frame);
+            self.clear_dirty_frame(frame);
             return Ok(());
         };
-        let runs: Vec<_> = folio.dirty_runs().collect();
         let base = geometry.frame_base_block(frame);
-        for (slot, count) in runs {
+        while let Some((slot, count)) = folio.dirty_runs().next() {
             let lba = base + slot as u64;
             dev.write_block(lba, folio.slot_bytes_mut(slot, count))?;
             folio.clear_dirty_slots(slot, count);
         }
         if !folio.has_dirty_slots() {
-            self.dirty_frames.remove(&frame);
+            self.clear_dirty_frame(frame);
         }
         Ok(())
     }
@@ -283,13 +305,18 @@ impl BlockAddressSpace {
         dev: &mut T,
         frame: u64,
     ) -> BlockResult<&mut CacheFolio> {
-        if !self.folios.contains(&frame) && self.folios.len() >= self.capacity.get() {
+        if self.folios.contains(&frame) {
+            return Ok(self.folios.get_mut(&frame).expect("folio was found above"));
+        }
+
+        // Allocate before eviction: a failed folio allocation leaves the
+        // existing cache contents and LRU order unchanged.
+        let folio = CacheFolio::try_new(self.geometry.folio_size(), self.geometry.slots())?;
+        self.folios.try_reserve_entry()?;
+        if self.folios.is_full() {
             self.evict_lru(dev)?;
         }
-        if !self.folios.contains(&frame) {
-            let folio = CacheFolio::new(self.geometry.folio_size(), self.geometry.slots());
-            self.folios.put(frame, folio);
-        }
+        self.folios.insert_reserved(frame, folio);
         Ok(self
             .folios
             .get_mut(&frame)
@@ -297,26 +324,21 @@ impl BlockAddressSpace {
     }
 
     fn evict_lru<T: FsBlockDevice + ?Sized>(&mut self, dev: &mut T) -> BlockResult<()> {
-        let Some((frame, _)) = self.folios.peek_lru() else {
+        let Some(frame) = self.folios.least_recent() else {
             return Ok(());
         };
-        let frame = *frame;
         // A dirty victim must reach the device before its folio is dropped.
-        if self.dirty_frames.contains(&frame) {
+        if self.dirty_frames.binary_search(&frame).is_ok() {
             self.writeback_folio(dev, frame)?;
         }
-        self.folios.pop(&frame);
+        self.folios.remove(&frame);
         Ok(())
     }
 
-    fn overlapping_dirty_frames(&self, first: u64, count: u64) -> Vec<u64> {
-        let Some(last) = count.checked_sub(1).and_then(|n| first.checked_add(n)) else {
-            return Vec::new();
-        };
-        self.dirty_frames
-            .range(self.geometry.frame_of(first)..=self.geometry.frame_of(last))
-            .copied()
-            .collect()
+    fn clear_dirty_frame(&mut self, frame: u64) {
+        if let Ok(index) = self.dirty_frames.binary_search(&frame) {
+            self.dirty_frames.remove(index);
+        }
     }
 }
 
