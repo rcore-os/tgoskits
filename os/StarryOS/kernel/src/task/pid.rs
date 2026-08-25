@@ -476,27 +476,29 @@ pub struct PidNamespaceShutdown<'a> {
 
 impl PidNamespaceShutdown<'_> {
     pub fn wait_for_live_descendants(&self) {
-        block_on(poll_fn(|cx| {
-            let has_live_descendants = || {
-                self.namespace
-                    .published_members()
-                    .into_iter()
-                    .any(|identity| identity.id() != self.init && identity.live_task().is_some())
-            };
-            if !has_live_descendants() {
-                return Poll::Ready(());
-            }
-            unsafe {
-                self.namespace
-                    .task_exit_event
-                    .register(cx.waker(), IoEvents::IN)
-            };
-            if has_live_descendants() {
-                Poll::Pending
-            } else {
-                Poll::Ready(())
-            }
-        }));
+        let has_live_descendants = || {
+            self.namespace
+                .published_members()
+                .into_iter()
+                .any(|identity| identity.id() != self.init && identity.live_task().is_some())
+        };
+        if has_live_descendants() {
+            block_on(poll_fn(|cx| {
+                if !has_live_descendants() {
+                    return Poll::Ready(());
+                }
+                unsafe {
+                    self.namespace
+                        .task_exit_event
+                        .register(cx.waker(), IoEvents::IN)
+                };
+                if has_live_descendants() {
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            }));
+        }
         self.namespace.finish_shutdown(self.init);
     }
 }

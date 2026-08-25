@@ -413,13 +413,24 @@ pub fn exit(exit_code: i32) -> ! {
 }
 
 fn current_irq_context() -> bool {
-    #[cfg(feature = "irq")]
+    #[cfg(all(feature = "irq", not(feature = "host-test")))]
     {
         ax_hal::irq::in_irq_context()
     }
-    #[cfg(not(feature = "irq"))]
+    #[cfg(any(not(feature = "irq"), feature = "host-test"))]
     {
         false
+    }
+}
+
+fn current_cpu_id() -> usize {
+    #[cfg(not(feature = "host-test"))]
+    {
+        ax_hal::percpu::this_cpu_id()
+    }
+    #[cfg(feature = "host-test")]
+    {
+        0
     }
 }
 
@@ -501,7 +512,7 @@ impl AtomicContextSnapshot {
             irq_enabled: ax_hal::asm::irqs_enabled(),
             irq_context: current_irq_context(),
             preempt_count,
-            cpu_id: ax_hal::percpu::this_cpu_id(),
+            cpu_id: current_cpu_id(),
             task_id: current.as_ref().map(|curr| curr.id().as_u64()),
             task_state: current.as_ref().map(|curr| curr.state()),
         }
@@ -693,6 +704,12 @@ pub fn run_idle() -> ! {
 #[cfg(test)]
 mod tests {
     use core::cell::Cell;
+
+    #[test]
+    #[cfg(feature = "host-test")]
+    fn host_atomic_context_query_does_not_require_cpu_local_state() {
+        assert!(!super::in_atomic_context());
+    }
 
     #[test]
     fn task_initialization_precedes_scheduling() {
