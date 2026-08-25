@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -62,6 +62,8 @@ const CLAUDE_REVIEW_ALLOWED_TOOLS: &[&str] = &[
     "Bash(git grep *)",
 ];
 const CLAUDE_GRADE_TOOLS: &str = "Read";
+const TEXT_FILE_BUSY_RETRY_LIMIT: usize = 5;
+const TEXT_FILE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub(super) enum AgentKind {
@@ -112,10 +114,12 @@ impl AgentRunner {
     }
 
     pub(super) fn version(&self) -> anyhow::Result<String> {
-        let output = std::process::Command::new(&self.program)
-            .arg("--version")
-            .output()
-            .with_context(|| format!("failed to execute {} --version", self.program.display()))?;
+        let output = retry_text_file_busy(|| {
+            std::process::Command::new(&self.program)
+                .arg("--version")
+                .output()
+        })
+        .with_context(|| format!("failed to execute {} --version", self.program.display()))?;
         if !output.status.success() {
             bail!(
                 "{} --version exited with {}",
@@ -327,8 +331,7 @@ async fn run_process(
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
-    let mut child = command
-        .spawn()
+    let mut child = retry_text_file_busy(|| command.spawn())
         .with_context(|| format!("failed to spawn {description}"))?;
     let status = match timeout(Duration::from_secs(timeout_secs), child.wait()).await {
         Ok(status) => status.with_context(|| format!("failed to wait for {description}"))?,
@@ -346,6 +349,29 @@ async fn run_process(
     } else {
         bail!("{description} exited with status {status}")
     }
+}
+
+fn retry_text_file_busy<T>(mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut retries_remaining = TEXT_FILE_BUSY_RETRY_LIMIT;
+    loop {
+        match operation() {
+            Err(err) if is_text_file_busy(&err) && retries_remaining > 0 => {
+                retries_remaining -= 1;
+                std::thread::sleep(TEXT_FILE_BUSY_RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn is_text_file_busy(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ETXTBSY)
+}
+
+#[cfg(not(unix))]
+fn is_text_file_busy(_error: &io::Error) -> bool {
+    false
 }
 
 fn copy_nonempty_output(source: &Path, destination: &Path, role: &str) -> anyhow::Result<()> {
@@ -518,6 +544,35 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("timed out"));
+    }
+
+    #[test]
+    fn retries_transient_text_file_busy_errors() {
+        let mut attempts = 0;
+        let result = retry_text_file_busy(|| {
+            attempts += 1;
+            if attempts <= TEXT_FILE_BUSY_RETRY_LIMIT {
+                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+            } else {
+                Ok("spawned")
+            }
+        });
+
+        assert_eq!(result.unwrap(), "spawned");
+        assert_eq!(attempts, TEXT_FILE_BUSY_RETRY_LIMIT + 1);
+    }
+
+    #[test]
+    fn does_not_retry_other_spawn_errors() {
+        let mut attempts = 0;
+        let error = retry_text_file_busy(|| {
+            attempts += 1;
+            Err::<(), _>(std::io::Error::from_raw_os_error(libc::ENOENT))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+        assert_eq!(attempts, 1);
     }
 
     fn args(command: &Command) -> Vec<&str> {
