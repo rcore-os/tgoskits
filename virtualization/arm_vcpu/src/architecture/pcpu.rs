@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::mem;
+use core::{marker::PhantomData, mem};
 
 use aarch64_cpu::registers::*;
 
 use super::host::ArmHostOps;
-use crate::ArmVcpuResult;
+use crate::{ArmVcpuResult, enable::El2EnableOps};
 
 /// Per-CPU AArch64 virtualization state.
 #[repr(C)]
@@ -33,6 +33,38 @@ pub struct ArmPerCpu {
 
 unsafe extern "C" {
     fn exception_vector_base_vcpu();
+}
+
+struct ArmEl2Enable<H>(PhantomData<H>);
+
+impl<H> ArmEl2Enable<H> {
+    const fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<H: ArmHostOps> El2EnableOps for ArmEl2Enable<H> {
+    fn install_exception_vector(&mut self) {
+        VBAR_EL2.set(exception_vector_base_vcpu as *const () as usize as _);
+    }
+
+    fn synchronize_context(&mut self) {
+        // SAFETY: `isb` only synchronizes subsequent instruction execution on
+        // the current CPU after the system-register updates performed here.
+        unsafe {
+            core::arch::asm!("isb", options(nostack, preserves_flags));
+        }
+    }
+
+    fn enable_virtualization(&mut self) {
+        HCR_EL2.modify(
+            HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64 + HCR_EL2::TSC::EnableTrapEl1SmcToEl2,
+        );
+    }
+
+    fn install_current_el_irq_handler(&mut self) {
+        super::host::install_current_el_irq_handler::<H>();
+    }
 }
 
 impl ArmPerCpu {
@@ -61,15 +93,7 @@ impl ArmPerCpu {
         // Todo: take care of `preemption`
         self.original_vbar_el2 = VBAR_EL2.get();
 
-        // Set current `VBAR_EL2` to `exception_vector_base_vcpu`
-        // defined in this crate.
-        VBAR_EL2.set(exception_vector_base_vcpu as *const () as usize as _);
-
-        HCR_EL2.modify(
-            HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64 + HCR_EL2::TSC::EnableTrapEl1SmcToEl2,
-        );
-
-        super::host::install_current_el_irq_handler::<H>();
+        crate::enable::enable_el2(&mut ArmEl2Enable::<H>::new());
 
         // Note that `ICH_HCR_EL2` is not the same as `HCR_EL2`.
         //
