@@ -89,7 +89,16 @@ impl Gic {
         intid: IntId,
         attribute: NmiAttribute,
     ) -> Result<(), NmiAttributeError> {
-        let (register, mask) = self.nmi_attribute_register(intid)?;
+        self.set_nmi_attribute_with_current_affinity(intid, attribute, Affinity::current)
+    }
+
+    fn set_nmi_attribute_with_current_affinity(
+        &mut self,
+        intid: IntId,
+        attribute: NmiAttribute,
+        current_affinity: impl FnOnce() -> Affinity,
+    ) -> Result<(), NmiAttributeError> {
+        let (register, mask) = self.nmi_attribute_register(intid, current_affinity)?;
         register.set(attribute.update_register(register.get(), mask));
         Ok(())
     }
@@ -102,13 +111,22 @@ impl Gic {
     ///
     /// Returns the same validation errors as [`Gic::set_nmi_attribute`].
     pub fn nmi_attribute(&self, intid: IntId) -> Result<NmiAttribute, NmiAttributeError> {
-        let (register, mask) = self.nmi_attribute_register(intid)?;
+        self.nmi_attribute_with_current_affinity(intid, Affinity::current)
+    }
+
+    fn nmi_attribute_with_current_affinity(
+        &self,
+        intid: IntId,
+        current_affinity: impl FnOnce() -> Affinity,
+    ) -> Result<NmiAttribute, NmiAttributeError> {
+        let (register, mask) = self.nmi_attribute_register(intid, current_affinity)?;
         Ok(NmiAttribute::from_register(register.get(), mask))
     }
 
     fn nmi_attribute_register(
         &self,
         intid: IntId,
+        current_affinity: impl FnOnce() -> Affinity,
     ) -> Result<(&ReadWrite<u32>, u32), NmiAttributeError> {
         let slot = nmi_attribute_slot(intid).ok_or(NmiAttributeError::UnsupportedIntId(intid))?;
         if !self.supports_nmi_attributes() {
@@ -117,7 +135,7 @@ impl Gic {
 
         match slot {
             NmiAttributeSlot::Redistributor { mask } => {
-                self.redistributor_nmi_register(intid, mask)
+                self.redistributor_nmi_register(intid, mask, current_affinity())
             }
             NmiAttributeSlot::Distributor { register, mask } => {
                 self.distributor_nmi_register(intid, register, mask)
@@ -129,8 +147,8 @@ impl Gic {
         &self,
         intid: IntId,
         mask: u32,
+        affinity: Affinity,
     ) -> Result<(&ReadWrite<u32>, u32), NmiAttributeError> {
-        let affinity = Affinity::current();
         let redistributor = redistributor_for_affinity_from(self.gicr, affinity)
             .ok_or(NmiAttributeError::CurrentRedistributorNotFound(affinity))?;
         // SAFETY: the pointer belongs to the Redistributor mapping whose
@@ -209,7 +227,7 @@ enum NmiGroup {
 mod tests {
     extern crate std;
 
-    use core::{mem::size_of, ptr::NonNull};
+    use core::mem::size_of;
     use std::boxed::Box;
 
     use super::*;
@@ -222,13 +240,34 @@ mod tests {
     const GICD_IGROUPR: usize = 0x0080;
     const GICD_INMIR: usize = 0x0f80;
     const GICR_TYPER: usize = 0x0008;
+    const GICR_SGI_BASE: usize = 0x10000;
+    const GICR_IGROUPR0: usize = GICR_SGI_BASE + 0x0080;
+    const GICR_IGRPMODR0: usize = GICR_SGI_BASE + 0x0d00;
+    const GICR_INMIR0: usize = GICR_SGI_BASE + 0x0f80;
     const GICR_TYPER_LAST: u64 = 1 << 4;
     const GICD_TYPER_NMI: u32 = 1 << 9;
-    const GICD_CTLR_ARE: u32 = 1 << 4;
+    const GICD_CTLR_ARE_S_OR_ONE: u32 = 1 << 4;
+    const GICD_CTLR_ARE_NS_SECURE_VIEW: u32 = 1 << 5;
+    const TEST_AFFINITY: Affinity = Affinity {
+        aff0: 4,
+        aff1: 3,
+        aff2: 2,
+        aff3: 1,
+    };
+
+    #[derive(Clone, Copy, Debug)]
+    struct PrivateInterruptConfig {
+        affinity: Affinity,
+        security_state: SecurityState,
+        ctlr: u32,
+        group1_mask: u32,
+        group_modifier_mask: u32,
+    }
 
     struct FakeGic {
         gic: Gic,
         distributor: Box<[u64]>,
+        redistributor: Box<[u64]>,
     }
 
     impl FakeGic {
@@ -243,22 +282,71 @@ mod tests {
                 group_mask,
             );
 
-            // SAFETY: `distributor` owns a suitably aligned register-sized
-            // allocation for the lifetime of `gic`; the dangling GICR is not
-            // accessed by the SPI-only tests using this fixture.
-            let gic = unsafe {
+            let mut redistributor = zeroed_words(GICR_V3_SIZE);
+            write_u64(
+                redistributor.as_mut_ptr().cast::<u8>(),
+                GICR_TYPER,
+                GICR_TYPER_LAST,
+            );
+            Self::from_registers(distributor, redistributor, SecurityState::Single)
+        }
+
+        fn with_private_interrupts(config: PrivateInterruptConfig) -> Self {
+            let mut distributor = zeroed_words(GICD_SIZE);
+            let distributor_base = distributor.as_mut_ptr().cast::<u8>();
+            write_u32(distributor_base, GICD_TYPER, GICD_TYPER_NMI);
+            write_u32(distributor_base, GICD_CTLR, config.ctlr);
+
+            let mut redistributor = zeroed_words(GICR_V3_SIZE);
+            let redistributor_base = redistributor.as_mut_ptr().cast::<u8>();
+            write_u64(
+                redistributor_base,
+                GICR_TYPER,
+                (u64::from(config.affinity.affinity()) << 32) | GICR_TYPER_LAST,
+            );
+            write_u32(redistributor_base, GICR_IGROUPR0, config.group1_mask);
+            write_u32(
+                redistributor_base,
+                GICR_IGRPMODR0,
+                config.group_modifier_mask,
+            );
+
+            Self::from_registers(distributor, redistributor, config.security_state)
+        }
+
+        fn from_registers(
+            mut distributor: Box<[u64]>,
+            mut redistributor: Box<[u64]>,
+            security_state: SecurityState,
+        ) -> Self {
+            // SAFETY: both boxes own suitably aligned register-sized
+            // allocations for the lifetime of `gic` and this fixture is their
+            // sole accessor.
+            let mut gic = unsafe {
                 Gic::new(
-                    VirtAddr::from(base),
-                    VirtAddr::from(NonNull::<u8>::dangling()),
+                    VirtAddr::from(distributor.as_mut_ptr().cast::<u8>()),
+                    VirtAddr::from(redistributor.as_mut_ptr().cast::<u8>()),
                 )
             };
-            Self { gic, distributor }
+            gic.security_state = security_state;
+            Self {
+                gic,
+                distributor,
+                redistributor,
+            }
         }
 
         fn read_distributor(&self, offset: usize) -> u32 {
             let address = self.distributor.as_ptr().cast::<u8>();
             // SAFETY: every caller uses an aligned u32 offset within the
             // `GICD_SIZE` allocation owned by this fixture.
+            unsafe { address.add(offset).cast::<u32>().read() }
+        }
+
+        fn read_redistributor(&self, offset: usize) -> u32 {
+            let address = self.redistributor.as_ptr().cast::<u8>();
+            // SAFETY: every caller uses an aligned u32 offset within the
+            // `GICR_V3_SIZE` allocation owned by this fixture.
             unsafe { address.add(offset).cast::<u32>().read() }
         }
     }
@@ -268,9 +356,15 @@ mod tests {
         let intid = IntId::spi(42);
         let register = 2;
         let mask = 1 << 10;
-        let mut fake = FakeGic::new(GICD_TYPER_NMI | 2, GICD_CTLR_ARE, register, mask);
+        let mut fake = FakeGic::new(GICD_TYPER_NMI | 2, GICD_CTLR_ARE_S_OR_ONE, register, mask);
 
         assert!(fake.gic.supports_nmi_attributes());
+        assert_eq!(
+            fake.gic.nmi_attribute_with_current_affinity(intid, || {
+                panic!("SPI attributes must not resolve a Redistributor")
+            }),
+            Ok(NmiAttribute::Maskable)
+        );
         assert_eq!(fake.gic.nmi_attribute(intid), Ok(NmiAttribute::Maskable));
 
         fake.gic
@@ -294,13 +388,18 @@ mod tests {
         let group_register = 1;
         let group_mask = 1;
 
-        let unsupported = FakeGic::new(1, GICD_CTLR_ARE, group_register, group_mask);
+        let unsupported = FakeGic::new(1, GICD_CTLR_ARE_S_OR_ONE, group_register, group_mask);
         assert_eq!(
             unsupported.gic.nmi_attribute(intid),
             Err(NmiAttributeError::Unsupported)
         );
 
-        let group0 = FakeGic::new(GICD_TYPER_NMI | 1, GICD_CTLR_ARE, group_register, 0);
+        let group0 = FakeGic::new(
+            GICD_TYPER_NMI | 1,
+            GICD_CTLR_ARE_S_OR_ONE,
+            group_register,
+            0,
+        );
         assert_eq!(
             group0.gic.nmi_attribute(intid),
             Err(NmiAttributeError::NotAccessibleGroup1(intid))
@@ -312,7 +411,12 @@ mod tests {
             Err(NmiAttributeError::AffinityRoutingDisabled(intid))
         );
 
-        let unimplemented = FakeGic::new(GICD_TYPER_NMI, GICD_CTLR_ARE, group_register, group_mask);
+        let unimplemented = FakeGic::new(
+            GICD_TYPER_NMI,
+            GICD_CTLR_ARE_S_OR_ONE,
+            group_register,
+            group_mask,
+        );
         assert_eq!(
             unimplemented.gic.nmi_attribute(intid),
             Err(NmiAttributeError::UnimplementedIntId(intid))
@@ -322,6 +426,199 @@ mod tests {
         assert_eq!(
             unimplemented.gic.nmi_attribute(special),
             Err(NmiAttributeError::UnsupportedIntId(special))
+        );
+    }
+
+    #[test]
+    fn programs_reads_and_clears_sgi_and_ppi_nmi_attributes() {
+        let sgi = IntId::sgi(5);
+        let ppi = IntId::ppi(14);
+        let sgi_mask = 1 << 5;
+        let ppi_mask = 1 << 30;
+        let mut fake = FakeGic::with_private_interrupts(PrivateInterruptConfig {
+            affinity: TEST_AFFINITY,
+            security_state: SecurityState::Single,
+            ctlr: GICD_CTLR_ARE_S_OR_ONE,
+            group1_mask: sgi_mask | ppi_mask,
+            group_modifier_mask: 0,
+        });
+
+        for intid in [sgi, ppi] {
+            assert_eq!(
+                fake.gic
+                    .nmi_attribute_with_current_affinity(intid, || TEST_AFFINITY),
+                Ok(NmiAttribute::Maskable)
+            );
+        }
+
+        fake.gic
+            .set_nmi_attribute_with_current_affinity(sgi, NmiAttribute::NonMaskable, || {
+                TEST_AFFINITY
+            })
+            .unwrap();
+        assert_eq!(fake.read_redistributor(GICR_INMIR0), sgi_mask);
+
+        fake.gic
+            .set_nmi_attribute_with_current_affinity(ppi, NmiAttribute::NonMaskable, || {
+                TEST_AFFINITY
+            })
+            .unwrap();
+        assert_eq!(fake.read_redistributor(GICR_INMIR0), sgi_mask | ppi_mask);
+
+        fake.gic
+            .set_nmi_attribute_with_current_affinity(sgi, NmiAttribute::Maskable, || TEST_AFFINITY)
+            .unwrap();
+        assert_eq!(fake.read_redistributor(GICR_INMIR0), ppi_mask);
+        assert_eq!(
+            fake.gic
+                .nmi_attribute_with_current_affinity(sgi, || TEST_AFFINITY),
+            Ok(NmiAttribute::Maskable)
+        );
+        assert_eq!(
+            fake.gic
+                .nmi_attribute_with_current_affinity(ppi, || TEST_AFFINITY),
+            Ok(NmiAttribute::NonMaskable)
+        );
+
+        fake.gic
+            .set_nmi_attribute_with_current_affinity(ppi, NmiAttribute::Maskable, || TEST_AFFINITY)
+            .unwrap();
+        assert_eq!(fake.read_redistributor(GICR_INMIR0), 0);
+    }
+
+    #[test]
+    fn accepts_secure_and_nonsecure_group1_private_interrupts() {
+        let cases = [
+            (
+                IntId::sgi(6),
+                1 << 6,
+                PrivateInterruptConfig {
+                    affinity: TEST_AFFINITY,
+                    security_state: SecurityState::Secure,
+                    ctlr: GICD_CTLR_ARE_S_OR_ONE,
+                    group1_mask: 0,
+                    group_modifier_mask: 1 << 6,
+                },
+            ),
+            (
+                IntId::ppi(0),
+                1 << 16,
+                PrivateInterruptConfig {
+                    affinity: TEST_AFFINITY,
+                    security_state: SecurityState::Secure,
+                    ctlr: GICD_CTLR_ARE_NS_SECURE_VIEW,
+                    group1_mask: 1 << 16,
+                    group_modifier_mask: 0,
+                },
+            ),
+            (
+                IntId::sgi(7),
+                1 << 7,
+                PrivateInterruptConfig {
+                    affinity: TEST_AFFINITY,
+                    security_state: SecurityState::NonSecure,
+                    ctlr: GICD_CTLR_ARE_S_OR_ONE,
+                    group1_mask: 1 << 7,
+                    group_modifier_mask: 0,
+                },
+            ),
+        ];
+
+        for (intid, mask, config) in cases {
+            let mut fake = FakeGic::with_private_interrupts(config);
+            assert_eq!(
+                fake.gic
+                    .nmi_attribute_with_current_affinity(intid, || TEST_AFFINITY),
+                Ok(NmiAttribute::Maskable),
+                "{config:?}"
+            );
+            fake.gic
+                .set_nmi_attribute_with_current_affinity(intid, NmiAttribute::NonMaskable, || {
+                    TEST_AFFINITY
+                })
+                .unwrap();
+            assert_eq!(fake.read_redistributor(GICR_INMIR0), mask, "{config:?}");
+            assert_eq!(
+                fake.gic
+                    .nmi_attribute_with_current_affinity(intid, || TEST_AFFINITY),
+                Ok(NmiAttribute::NonMaskable),
+                "{config:?}"
+            );
+            fake.gic
+                .set_nmi_attribute_with_current_affinity(intid, NmiAttribute::Maskable, || {
+                    TEST_AFFINITY
+                })
+                .unwrap();
+            assert_eq!(fake.read_redistributor(GICR_INMIR0), 0, "{config:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_inaccessible_private_groups_and_disabled_routing() {
+        let intid = IntId::sgi(3);
+        let mask = 1 << 3;
+
+        assert_private_attribute_error(
+            FakeGic::with_private_interrupts(PrivateInterruptConfig {
+                affinity: TEST_AFFINITY,
+                security_state: SecurityState::Single,
+                ctlr: GICD_CTLR_ARE_S_OR_ONE,
+                group1_mask: 0,
+                group_modifier_mask: 0,
+            }),
+            intid,
+            TEST_AFFINITY,
+            NmiAttributeError::NotAccessibleGroup1(intid),
+        );
+
+        assert_private_attribute_error(
+            FakeGic::with_private_interrupts(PrivateInterruptConfig {
+                affinity: TEST_AFFINITY,
+                security_state: SecurityState::NonSecure,
+                ctlr: GICD_CTLR_ARE_S_OR_ONE,
+                group1_mask: 0,
+                group_modifier_mask: mask,
+            }),
+            intid,
+            TEST_AFFINITY,
+            NmiAttributeError::NotAccessibleGroup1(intid),
+        );
+
+        assert_private_attribute_error(
+            FakeGic::with_private_interrupts(PrivateInterruptConfig {
+                affinity: TEST_AFFINITY,
+                security_state: SecurityState::Secure,
+                ctlr: GICD_CTLR_ARE_S_OR_ONE,
+                group1_mask: mask,
+                group_modifier_mask: 0,
+            }),
+            intid,
+            TEST_AFFINITY,
+            NmiAttributeError::AffinityRoutingDisabled(intid),
+        );
+    }
+
+    #[test]
+    fn rejects_missing_current_redistributor_for_private_interrupts() {
+        let intid = IntId::ppi(7);
+        let mask = 1 << 23;
+        let available_affinity = Affinity {
+            aff0: 5,
+            ..TEST_AFFINITY
+        };
+        let fake = FakeGic::with_private_interrupts(PrivateInterruptConfig {
+            affinity: available_affinity,
+            security_state: SecurityState::Single,
+            ctlr: GICD_CTLR_ARE_S_OR_ONE,
+            group1_mask: mask,
+            group_modifier_mask: 0,
+        });
+
+        assert_private_attribute_error(
+            fake,
+            intid,
+            TEST_AFFINITY,
+            NmiAttributeError::CurrentRedistributorNotFound(TEST_AFFINITY),
         );
     }
 
@@ -352,6 +649,27 @@ mod tests {
                 },
             )
             .is_none()
+        );
+    }
+
+    fn assert_private_attribute_error(
+        mut fake: FakeGic,
+        intid: IntId,
+        affinity: Affinity,
+        expected: NmiAttributeError,
+    ) {
+        assert_eq!(
+            fake.gic
+                .nmi_attribute_with_current_affinity(intid, || affinity),
+            Err(expected)
+        );
+        assert_eq!(
+            fake.gic.set_nmi_attribute_with_current_affinity(
+                intid,
+                NmiAttribute::NonMaskable,
+                || affinity,
+            ),
+            Err(expected)
         );
     }
 
