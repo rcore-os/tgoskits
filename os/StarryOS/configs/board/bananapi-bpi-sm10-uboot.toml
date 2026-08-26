@@ -1,6 +1,7 @@
-# Local U-Boot serial config for booting StarryOS on Banana Pi BPI-SM10.
+# Local-only U-Boot serial config for booting StarryOS on Banana Pi BPI-SM10.
+# CI uses the `BananaPi` board-server profile instead of this file.
 # Build-time settings live in `bananapi-bpi-sm10.toml`.
-serial = "/dev/ttyUSB1"
+serial = "/dev/ttyUSB0"
 baud_rate = "115200"
 dtb_file = "os/StarryOS/configs/board/bananapi-bpi-sm10.dtb"
 
@@ -8,27 +9,13 @@ kernel_load_addr = "0x102200000"
 fit_load_addr = "0x140000000"
 bootm_addr = "0x140000000"
 
-uboot_cmd = [
-  "setenv serverip 10.3.10.192",
-  "setenv ipaddr 10.3.10.205",
-  "setenv autoload no",
-  "scsi scan",
-  "ext4load scsi 0:2 0x138000000 /spacemit/6.18.3-generic/k3_com260_ifx.dtb",
-  "fdt addr 0x138000000 0x40000",
-  "fdt resize 0x10000",
-  "fdt mknode /reserved-memory starry-dma-limit@200000000",
-  "fdt set /reserved-memory/starry-dma-limit@200000000 reg <0x00000002 0x00000000 0x00000001 0x00000000>",
-  "fdt set /reserved-memory/starry-dma-limit@200000000 no-map",
-]
-
-success_regex = []
 fail_regex = [
   "panicked at",
   "failed to determine root device",
+  "NoSerialDevice",
+  "/dev/console has no serial TTY binding",
 ]
+shell_prefix = "root@starry:"
+shell_init_cmd = "echo STARRY_BPI_SM10_UBOOT_OK"
+success_regex = ["(?m)^STARRY_BPI_SM10_UBOOT_OK\\s*$"]
 timeout = 600
-
-[net]
-interface = ""
-board_ip = "10.3.10.205"
-tftp_dir = "/srv/tftp"
