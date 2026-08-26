@@ -158,6 +158,7 @@ id = "test-axloader-http-smoke"
 impact_packages = ["axloader"]
 name = "UEFI x86_64 · AxLoader HTTP boot"
 runner = "kvm-intel"
+# Cold runners may spend most of the original 45-minute budget on checkout and builds.
 timeout_minutes = 90
 command = '''
 rustup target add x86_64-unknown-uefi
