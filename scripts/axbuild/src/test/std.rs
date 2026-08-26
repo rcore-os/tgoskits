@@ -43,8 +43,8 @@ const AX_TASK_FEATURE_PROFILES: &[PackageFeatureProfile] = &[PackageFeatureProfi
         "api::std_tests::axtask_api_task_registry_functions_exist_hold",
         "api::std_tests::axtask_api_type_aliases_hold",
         "api::tests::task_initialization_precedes_scheduling",
-        "timers::tests::consumed_timer_irq_allows_a_later_live_deadline",
-        "timers::tests::elapsed_deadline_remains_owned_until_the_timer_irq_is_consumed",
+        "future::time::timer_regression_tests::due_future_work_is_not_republished_as_a_clockevent_deadline",
+        "future::time::timer_regression_tests::future_deadline_is_republished_after_the_due_pass_finishes",
     ],
 }];
 
