@@ -214,6 +214,7 @@ impl<B: BlockDevice> Jbd2Dev<B> {
             return self.inner.write_block(block_id);
         }
 
+        self.refresh_pending_held_update();
         let meta_vec = self.inner.buffer();
         let mut new_buf = Box::new([0; BLOCK_SIZE]);
         new_buf[..].copy_from_slice(meta_vec);
@@ -546,6 +547,53 @@ mod tests {
         assert!(
             !raw.writes.contains(&home_block),
             "flushed pending metadata reached home before the JBD2 commit record"
+        );
+    }
+
+    #[test]
+    fn auto_commit_refreshes_reedited_pending_metadata() {
+        let journal_start = AbsoluteBN::new(128);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), journal_start);
+
+        let home_block = AbsoluteBN::new(10);
+        dev.read_block(home_block).expect("read metadata block");
+        dev.buffer_mut()[0] = 0xa5;
+        dev.write_block(home_block, true)
+            .expect("queue initial metadata update");
+
+        let fill_count = JBD2_BUFFER_MAX - 1;
+        let fill = vec![0x11; fill_count * BLOCK_SIZE];
+        dev.write_blocks(&fill, AbsoluteBN::new(20), fill_count as u32, true)
+            .expect("fill journal queue without committing");
+        assert_eq!(
+            dev.system
+                .as_ref()
+                .expect("journal system")
+                .commit_queue
+                .len(),
+            JBD2_BUFFER_MAX
+        );
+
+        dev.buffer_mut()[0] = 0x5a;
+        assert!(
+            !dev.inner._device().writes.contains(&home_block),
+            "reedited pending metadata reached home before the automatic commit"
+        );
+
+        dev.write_block(AbsoluteBN::new(40), true)
+            .expect("trigger automatic journal commit");
+
+        let raw = dev.into_inner();
+        let first_payload_block = journal_start
+            .checked_add(2)
+            .expect("first journal payload block")
+            .as_usize()
+            .expect("journal payload block index");
+        assert_eq!(
+            raw.data[first_payload_block * BLOCK_SIZE],
+            0x5a,
+            "automatic commit must journal the latest held metadata snapshot"
         );
     }
 
