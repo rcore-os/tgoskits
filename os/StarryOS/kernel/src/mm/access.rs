@@ -620,6 +620,8 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: PageFaultFlags) -> bool {
         return false;
     }
 
+    #[cfg(feature = "uaccess-lock-regression")]
+    let _ = super::record_faulting_user_copy(&curr);
     might_sleep();
     let aspace_arc = thr.proc_data.aspace();
     if unsafe { aspace_arc.raw() }.is_owned_by_current() {
@@ -683,7 +685,7 @@ fn prepare_user_memory(
     check_access(start, len)?;
     debug_assert_ne!(len, 0, "empty user-memory ranges require no preparation");
     #[cfg(feature = "uaccess-lock-regression")]
-    super::record_eager_user_memory_preparation();
+    super::record_eager_user_memory_preparation(task);
 
     let start = VirtAddr::from(start);
     let end = start + len;
@@ -746,6 +748,8 @@ unsafe impl VmIo for UserMemoryProvider<'_> {
             return Ok(());
         }
         check_access(start, buf.len())?;
+        #[cfg(feature = "uaccess-lock-regression")]
+        super::synchronize_user_copy_with_address_space_holder(self.task);
         let failed_at = access_user_memory(self.task, || unsafe {
             user_copy(buf.as_mut_ptr() as *mut _, start as _, buf.len())
         })?;
@@ -753,7 +757,7 @@ unsafe impl VmIo for UserMemoryProvider<'_> {
             Err(VmError::AccessDenied)
         } else {
             #[cfg(feature = "uaccess-lock-regression")]
-            super::record_user_copy_completed();
+            super::record_user_copy_completed(self.task);
             Ok(())
         }
     }
@@ -763,6 +767,8 @@ unsafe impl VmIo for UserMemoryProvider<'_> {
             return Ok(());
         }
         check_access(start, buf.len())?;
+        #[cfg(feature = "uaccess-lock-regression")]
+        super::synchronize_user_copy_with_address_space_holder(self.task);
         let failed_at = access_user_memory(self.task, || unsafe {
             user_copy(start as _, buf.as_ptr() as *const _, buf.len())
         })?;
@@ -770,7 +776,7 @@ unsafe impl VmIo for UserMemoryProvider<'_> {
             Err(VmError::AccessDenied)
         } else {
             #[cfg(feature = "uaccess-lock-regression")]
-            super::record_user_copy_completed();
+            super::record_user_copy_completed(self.task);
             Ok(())
         }
     }
