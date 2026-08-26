@@ -162,6 +162,15 @@ impl<B: BlockDevice> BlockDev<B> {
         self.held.block_id == Some(block_id)
     }
 
+    /// Returns the dirty held block so the journal can retain writeback ownership.
+    pub(crate) fn dirty_held_block_id(&self) -> Option<AbsoluteBN> {
+        if self.held.dirty {
+            self.held.block_id
+        } else {
+            None
+        }
+    }
+
     /// Writes back the held block if dirty, then drops it.
     ///
     /// Dirty data is flushed first so modifications made via
@@ -188,9 +197,10 @@ impl<B: BlockDevice> BlockDev<B> {
 
     /// Transfers ownership of a dirty held block to the journal queue.
     ///
-    /// The queue owns an immutable snapshot of the same buffer, so a later
+    /// The queue owns the pending snapshot of the same buffer, so a later
     /// held-buffer miss must not write the block to its home location before
-    /// the journal transaction commits.
+    /// the journal transaction commits. A later edit transfers ownership again
+    /// after the journal refreshes that snapshot.
     pub(crate) fn acknowledge_journaled_block(&mut self, block_id: AbsoluteBN) {
         if self.held.block_id == Some(block_id) {
             self.held.dirty = false;
