@@ -26,7 +26,7 @@ fn init_falls_back_to_mmc_when_cmd8_and_acmd41_fail() {
     ];
     let mut host = MockHost::with_results(replies);
     host.next_read_payload = Some(ext_csd_blob());
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     let info = poll_init_to_completion(&mut driver).expect("eMMC init succeeds");
 
     assert_eq!(info.kind, CardKind::Mmc);
@@ -86,7 +86,7 @@ fn mmc_init_enables_an_advertised_write_cache_before_completion() {
     ext_csd[offset..offset + 4].copy_from_slice(&cache_size.to_le_bytes());
     host.next_read_payload = Some(ext_csd);
 
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     let info = poll_init_to_completion(&mut driver).expect("eMMC cache enable succeeds");
 
     let ext_csd = info.ext_csd.expect("MMC init returns EXT_CSD");
@@ -134,7 +134,7 @@ fn mmc_init_falls_back_to_4bit_when_host_refuses_8bit() {
     let mut host = MockHost::with_results(replies);
     host.next_read_payload = Some(ext_csd_blob());
     host.reject_bit8 = true;
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     let _info =
         poll_init_to_completion(&mut driver).expect("eMMC init succeeds with 4-bit fallback");
 
@@ -160,7 +160,7 @@ fn init_treats_sd_v1_correctly_when_cmd8_times_out_but_acmd41_succeeds() {
         Ok(ok_r1()),              // ACMD6
     ];
     let host = MockHost::with_results(replies);
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     disable_speed_selection(&mut driver);
     let info = poll_init_to_completion(&mut driver).expect("SD v1 init succeeds");
 
@@ -210,7 +210,7 @@ fn mmc_init_picks_hs200_when_card_and_host_agree() {
     ];
     let mut host = MockHost::with_results(replies);
     host.next_read_payload = Some(ext_csd_blob_hs200());
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     let _info = poll_init_to_completion(&mut driver).expect("HS200 init succeeds");
 
     // HS_TIMING write should carry value 0x02, not 0x01.
@@ -291,7 +291,7 @@ fn mmc_init_falls_back_to_hs52_when_tuning_fails() {
     host.next_read_payload = Some(ext_csd_blob_hs200());
     host.tuning_result = Some(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 21)));
     host.multi_step_hs200_rollback = true;
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     let _info =
         poll_init_to_completion(&mut driver).expect("init succeeds even when HS200 tuning fails");
 
@@ -373,7 +373,7 @@ fn mmc_init_skips_hs200_when_host_refuses_voltage_switch() {
     host.next_read_payload = Some(ext_csd_blob_hs200());
     host.voltage_switch_result = Some(Error::UnsupportedCommand);
 
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     let _info = poll_init_to_completion(&mut driver)
         .expect("init succeeds when host refuses V180 voltage switch");
 

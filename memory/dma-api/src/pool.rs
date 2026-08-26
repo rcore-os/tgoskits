@@ -1,13 +1,18 @@
+#[cfg(feature = "pool")]
 use alloc::{
     collections::VecDeque,
     sync::{Arc, Weak},
 };
 use core::ops::{Deref, DerefMut};
 
+#[cfg(feature = "pool")]
 use ax_sync::SpinLock as Mutex;
 
-use crate::{ContiguousArray, DeviceDma, DmaDirection, DmaError};
+use crate::ContiguousArray;
+#[cfg(feature = "pool")]
+use crate::{DeviceDma, DmaDirection, DmaError};
 
+#[cfg(feature = "pool")]
 #[derive(Clone, Debug)]
 pub(crate) struct ContiguousBufferConfig {
     pub size: usize,
@@ -15,6 +20,7 @@ pub(crate) struct ContiguousBufferConfig {
     pub direction: DmaDirection,
 }
 
+#[cfg(feature = "pool")]
 #[derive(Clone)]
 pub struct ContiguousBufferPool {
     inner: Arc<Mutex<Inner>>,
@@ -22,6 +28,7 @@ pub struct ContiguousBufferPool {
 
 pub struct ContiguousBuffer {
     data: Option<ContiguousArray<u8>>,
+    #[cfg(feature = "pool")]
     pool: Weak<Mutex<Inner>>,
 }
 
@@ -43,6 +50,7 @@ impl DerefMut for ContiguousBuffer {
 
 impl Drop for ContiguousBuffer {
     fn drop(&mut self) {
+        #[cfg(feature = "pool")]
         if let Some(data) = self.data.take()
             && let Some(pool) = self.pool.upgrade()
         {
@@ -52,12 +60,14 @@ impl Drop for ContiguousBuffer {
     }
 }
 
+#[cfg(feature = "pool")]
 struct Inner {
     dev: DeviceDma,
     config: ContiguousBufferConfig,
     pool: VecDeque<ContiguousArray<u8>>,
 }
 
+#[cfg(feature = "pool")]
 impl Inner {
     fn alloc(&mut self) -> Option<ContiguousArray<u8>> {
         self.pool.pop_front()
@@ -68,6 +78,7 @@ impl Inner {
     }
 }
 
+#[cfg(feature = "pool")]
 impl ContiguousBufferPool {
     pub(crate) fn with_capacity(
         dev: DeviceDma,

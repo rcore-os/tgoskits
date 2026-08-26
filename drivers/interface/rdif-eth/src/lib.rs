@@ -373,6 +373,8 @@ pub enum NetRearmResult {
     Idle,
     /// Work appeared in the rearm window; the group must be repolled.
     WorkPending(NetIrqSnapshot),
+    /// The device needs another owner poll at an absolute monotonic deadline.
+    RetryAt { deadline_nanos: u64 },
 }
 
 /// Task-context interrupt control for exactly one poll group.
@@ -392,18 +394,54 @@ pub trait NetPollIrqControl: Send + 'static {
 
     /// Rearms the group and atomically checks the source/queues for work that
     /// appeared in the enable window. This method runs on the owner CPU.
-    fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError>;
+    fn rearm_and_check(&mut self, now_nanos: u64) -> Result<NetRearmResult, NetError>;
+}
+
+/// Result of one finite owner-startup step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetOwnerStartupProgress {
+    /// Startup completed; queues may now be refilled and published.
+    Ready,
+    /// Startup needs a hardware interrupt before it can advance.
+    WaitForInterrupt,
+    /// Startup needs an interrupt, but must also be advanced at this absolute
+    /// deadline so a missing interrupt becomes a terminal timeout.
+    WaitForInterruptUntil { deadline_nanos: u64 },
+    /// Startup needs another owner poll at an absolute monotonic deadline.
+    RetryAt { deadline_nanos: u64 },
 }
 
 /// Move-only task-context initialization executed by one poll-group owner.
 ///
 /// The runtime invokes this endpoint after the owner worker is pinned and all
-/// IRQ callbacks are registered disabled, but before initial queue refill and
-/// IRQ rearm. Probe code may use it to defer firmware and device-control work
-/// that must share the queue's fixed CPU ownership.
+/// IRQ callbacks are registered and enabled, but before initial queue refill
+/// and queue publication. Probe code may use it to defer firmware and
+/// device-control work that must share the queue's fixed CPU ownership. IRQs
+/// observed during this phase wake only the startup state machine; normal RX/TX
+/// queue polling remains disabled until startup reports [`Ready`](NetOwnerStartupProgress::Ready).
 pub trait NetOwnerStartup: Send + 'static {
-    /// Initializes owner-CPU state exactly once.
-    fn initialize(&mut self) -> Result<(), NetError>;
+    /// Begins startup without blocking or polling hardware to completion.
+    fn start(&mut self, now_nanos: u64) -> Result<NetOwnerStartupProgress, NetError>;
+
+    /// Advances startup for a hardware notification or elapsed deadline.
+    fn advance(&mut self, now_nanos: u64) -> Result<NetOwnerStartupProgress, NetError>;
+
+    /// Cancels startup and stops any in-flight device operation.
+    fn cancel(&mut self) -> Result<(), NetError>;
+}
+
+/// Result of one finite wireless-control step.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WifiControlProgress {
+    /// The requested hardware transition completed.
+    Complete,
+    /// The transition needs a hardware interrupt before it can advance.
+    WaitForInterrupt,
+    /// The transition needs an interrupt, but must also be advanced at this
+    /// absolute deadline so cancellation and timeout remain deterministic.
+    WaitForInterruptUntil { deadline_nanos: u64 },
+    /// The transition needs another owner poll at an absolute monotonic deadline.
+    RetryAt { deadline_nanos: u64 },
 }
 
 /// Static information published with one network device.
@@ -522,6 +560,11 @@ pub enum WifiOperation {
         ssid: String,
         /// Empty for an open network, otherwise a WPA2 passphrase.
         password: String,
+        /// Caller-owned entropy for a secured connection.
+        ///
+        /// A secured driver must reject the operation when this is `None`;
+        /// time values are not an acceptable random source.
+        entropy: Option<[u8; 32]>,
     },
     /// Disconnect the current station connection.
     Disconnect,
@@ -553,6 +596,23 @@ impl WifiTransaction {
             operation: WifiOperation::Connect {
                 ssid: ssid.into(),
                 password: password.into(),
+                entropy: None,
+            },
+            link_policy: None,
+        }
+    }
+
+    /// Creates a station-mode transaction with one owned WPA entropy input.
+    pub fn connect_with_entropy(
+        ssid: impl Into<String>,
+        password: impl Into<String>,
+        entropy: [u8; 32],
+    ) -> Self {
+        Self {
+            operation: WifiOperation::Connect {
+                ssid: ssid.into(),
+                password: password.into(),
+                entropy: Some(entropy),
             },
             link_policy: None,
         }
@@ -598,9 +658,21 @@ impl WifiTransaction {
 /// owned endpoint returned alongside the queue parts. Wireless devices use the
 /// same runtime lifecycle and IRQ topology as every other network device.
 pub trait WifiControl: Send + 'static {
-    /// Executes one transaction on the poll-group owner CPU while its IRQ domain
-    /// is quiesced.
-    fn execute(&mut self, operation: &WifiOperation) -> Result<(), NetError>;
+    /// Begins one hardware transition on the poll-group owner CPU.
+    ///
+    /// The runtime quiesces the poll group for this finite step and rearms it
+    /// before waiting for the returned interrupt or deadline.
+    fn start(
+        &mut self,
+        operation: &WifiOperation,
+        now_nanos: u64,
+    ) -> Result<WifiControlProgress, NetError>;
+
+    /// Advances the active hardware transition by one finite owner step.
+    fn advance(&mut self, now_nanos: u64) -> Result<WifiControlProgress, NetError>;
+
+    /// Cancels the active transition and aborts any in-flight device request.
+    fn cancel(&mut self) -> Result<(), NetError>;
 
     /// Returns the optional board-selected startup transaction. The network
     /// runtime executes it only after worker affinity and IRQ registration are

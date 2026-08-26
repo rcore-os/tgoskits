@@ -217,6 +217,57 @@ FIFO drain, TX progression, and Wi-Fi reconfiguration are owner-CPU
 transactions. An unvalidated chip variant must fail probe rather than regain a
 legacy polling path.
 
+### Unified SDIO and AIC8800 specialization
+
+SD/MMC controllers expose only `sdmmc-host` transaction capabilities. The
+project has one card-protocol owner, `sdmmc-protocol`: `native::SdMmcCard`
+handles memory cards and `sdio::SdioCard` handles IO-only cards. Controllers
+and function drivers must not encode CMD5/CMD52/CMD53, parse CCCR/FBR/CIS, or
+maintain Function enable/ready/IRQ state. Combo cards fail explicitly before a
+partially initialized card is published.
+
+An IRQ-capable host is split once into move-only `HostParts { bus, irq,
+card_irq }`:
+
+- the registered hard callback owns `irq` and only acknowledges/masks status
+  and publishes a typed snapshot;
+- the fixed-CPU owner owns `bus`, `card_irq`, `SdioCard`, active transactions,
+  DMA buffers, and the function driver core;
+- command completion, DMA/error status, and CARD_INT may coexist in one
+  snapshot, so the owner must preserve the card fact while advancing the same
+  active transaction;
+- abort returns every owned transaction/DMA token before hardware-visible
+  backing can be released.
+
+The AIC8800 stack uses four strict layers:
+
+1. `aic8800` defaults to a `no_std`, single-owner Driver Core. `AicDevice` advances
+   through `&mut self` from explicit time, entropy, SDIO completion, IRQ,
+   control, and TX inputs. It never creates tasks, sleeps, yields, registers
+   IRQs, parses FDT, or depends on RDIF/ArceOS.
+2. `aic8800::rdif`, enabled only by the crate's `rdif` feature, is the portable
+   Capability Adapter. It translates owned RDIF DMA tokens, bounded SPSC
+   requests, host snapshots, and core events. It has no worker, scheduler, or
+   OS lock dependency; no second adapter crate is published.
+3. `ax-driver` is OS Glue for FDT/MMIO, CV181x clock/reset/pinmux, DMA
+   capability construction, and device registration.
+4. `ax-net` and `axruntime` own execution: fixed-CPU owner polling, deadlines,
+   IRQ registration/affinity/enable/disable/synchronize, notification, and
+   entropy acquisition.
+
+Register bitfields in controller drivers use `tock-registers`; protocol wire
+fields remain typed protocol encoders rather than being modeled as MMIO.
+Board resources and policy are firmware inputs: OS Glue resolves MMIO windows,
+IRQs, clocks, resets, power domains, pinctrl, DMA width, bus frequency/width,
+and optional network startup policy from FDT or ACPI where that firmware model
+exists. Portable controller/function crates retain only specification and
+silicon-layout constants; they must not retain board physical addresses or
+product network configuration.
+Host-only deterministic tests use standard Cargo tests, source-private unit
+tests stay at the end of their source module, and `tests/` integration tests
+exercise public APIs only. Paths that require an ArceOS/QEMU environment use
+`axtest`; physical SDIO Wi-Fi behavior still requires board validation.
+
 ### Control / IRQ / Queue Endpoint Pattern
 
 For IRQ-driven runtime drivers, split runtime ownership into three endpoint families:

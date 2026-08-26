@@ -34,7 +34,7 @@ rdif = ["sdio", "dep:rdif-block"]
 ```
 
 - `spi`: enables the SPI transport and `SpiSdmmc` driver.
-- `sdio`: enables the SDIO host abstraction and `SdioSdmmc` driver.
+- `sdio`: enables the SDIO host abstraction and `SdMmcCard` driver.
 - `rdif`: enables the RDIF block-device adapter for SDIO-backed host crates.
 
 Diagnostics use the `log` crate. Configure a logger in the caller if runtime
@@ -107,18 +107,18 @@ CRC16 verification for read data is enabled by default and can be changed with
 
 ## SDIO Mode
 
-Physical controllers implement `sdio_host2::SdioHost` plus
-`sdio::host2::SdioHost2Irq`. The latter transfers a move-only IRQ endpoint and
-stable event summaries to OS glue; it does not accept a task, waker, channel,
-or scheduling callback. Construct the protocol state with
-`SdioSdmmc::new_host2`.
+Physical controllers implement `sdmmc_host::SdMmcHost` plus
+`sdio::host::SdMmcIrqHost`. The latter transfers move-only bus, controller-IRQ,
+and optional card-IRQ capabilities through `sdmmc_host::HostParts`; it does not
+accept a task, waker, channel, or scheduling callback. Construct native-card
+protocol state with `SdMmcCard::new` and IO-card state with `SdioCard::new`.
 
 Initialization is a request state machine. Its `wait_kind()` result is a
 mandatory execution contract:
 
-- `SdioInitWait::Irq`: advance only after the hard-IRQ endpoint acknowledged
+- `SdMmcInitWait::Irq`: advance only after the hard-IRQ endpoint acknowledged
   and latched a matching controller event.
-- `SdioInitWait::Register`: the maintenance task may inspect register state
+- `SdMmcInitWait::Register`: the maintenance task may inspect register state
   under one caller-owned deadline.
 
 Methods named `poll_*` advance one already-authorized state-machine step. They
@@ -127,7 +127,7 @@ command or data phase. The hard IRQ only acknowledges hardware and publishes
 an event; protocol progress, DMA finalization, and request completion all stay
 in the maintenance task.
 
-`SdioSdmmc` detects SD versus eMMC during initialization. SD cards are widened
+`SdMmcCard` detects SD versus eMMC during initialization. SD cards are widened
 through ACMD6; eMMC cards use EXT_CSD plus CMD6 SWITCH to negotiate bus width
 and timing where the host supports those modes. The eMMC path also parses
 `EXT_CSD_REV`, `CACHE_SIZE`, and `CACHE_CTRL`. A nonzero advertised cache is
@@ -144,7 +144,7 @@ step methods only from its hctx maintenance task after the required event.
 ### Optional wall-clock timeouts
 
 Hosts should expose a monotonic clock through
-`SdioHost::now_ms() -> Option<u64>`. The protocol layer then enforces
+`SdMmcHost::now_ms() -> Option<u64>`. The protocol layer then enforces
 wall-clock deadlines for ACMD41/CMD1 power-up and MMC `CMD6 SWITCH` in addition
 to its bounded step budgets. The owning runtime must also apply one outer
 deadline to the complete initialization or recovery transaction.
@@ -154,22 +154,23 @@ deadline to the complete initialization or recovery transaction.
 The `sdio` feature is split by capability:
 
 - `sdio::host`: host-controller capabilities, IRQ events, and bus operations.
-- `sdio::host2`: adapter for `sdio-host2` physical hosts, including request
-  ownership and DMA recovery.
-- `sdio::card`: `SdioSdmmc`, card information, and ordinary command/block I/O
-  request wrappers.
+- `sdio::native`: `SdMmcCard`, card information, and ordinary SD/eMMC
+  command/block I/O request wrappers.
+- `sdio::io`: `SdioCard`, typed Function/CCCR/FBR/CIS state, and CMD52/CMD53
+  request ownership. The physical-host adapter remains private to the protocol
+  crate.
 - `sdio::init`: initialization scratch storage, probe preference, and the
   event-gated initialization state machine.
 
 ## RDIF Block Bridge
 
-The `rdif` feature adapts an initialized `SdioSdmmc` card to `rdif-block`
+The `rdif` feature adapts an initialized `SdMmcCard` card to `rdif-block`
 without pulling OS runtime policy into the protocol crate. Its public modules
 match the ownership boundary:
 
 - `rdif::config`: block size constants, `BlockConfig`, queue limits, device
   info, card-address translation, and error/transfer-mode helpers.
-- `rdif::host`: the private `ProtocolBlockSlot` and owned Host2 request
+- `rdif::host`: the private `ProtocolBlockSlot` and owned physical-host request
   lifecycle used by the depth-one hardware queue.
 - `rdif::device`: `BlockDevice` and `rdif_block::Interface` integration.
 - `rdif::queue`: the depth-one `HardwareQueue` implementation, including

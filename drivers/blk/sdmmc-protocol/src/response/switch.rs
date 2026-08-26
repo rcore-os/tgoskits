@@ -70,6 +70,11 @@ impl SdioOcrResponse {
     pub fn io_ready(&self) -> bool {
         self.raw & (1 << 31) != 0
     }
+
+    /// Card-supported voltage window carried in OCR bits 23:0.
+    pub fn voltage_window(&self) -> u32 {
+        self.raw & 0x00ff_ffff
+    }
 }
 
 /// SDIO R5 response
@@ -91,5 +96,30 @@ impl SdioRwResponse {
     /// Response flags (bits 15:8)
     pub fn flags(&self) -> u8 {
         ((self.raw >> 8) & 0xFF) as u8
+    }
+
+    /// Validate the R5 status flags before exposing the returned byte.
+    pub fn checked_data(&self) -> Result<u8, crate::error::Error> {
+        const COM_CRC_ERROR: u8 = 1 << 7;
+        const ILLEGAL_COMMAND: u8 = 1 << 6;
+        const GENERAL_ERROR: u8 = 1 << 3;
+        const INVALID_FUNCTION: u8 = 1 << 1;
+        const OUT_OF_RANGE: u8 = 1;
+
+        let flags = self.flags();
+        if flags & COM_CRC_ERROR != 0 {
+            return Err(crate::error::Error::Crc(
+                crate::error::ErrorContext::for_cmd(crate::error::Phase::ResponseWait, 52),
+            ));
+        }
+        if flags & ILLEGAL_COMMAND != 0 {
+            return Err(crate::error::Error::UnsupportedCommand);
+        }
+        if flags & (GENERAL_ERROR | INVALID_FUNCTION | OUT_OF_RANGE) != 0 {
+            return Err(crate::error::Error::BadResponse(
+                crate::error::ErrorContext::for_cmd(crate::error::Phase::ResponseWait, 52),
+            ));
+        }
+        Ok(self.data())
     }
 }

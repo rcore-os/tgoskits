@@ -78,9 +78,9 @@ impl Sdhci {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-        cause: sdio_host2::ProgressCause,
+        cause: sdmmc_host::ProgressCause,
     ) -> Result<DataCommandProgress, Error> {
-        let acknowledged_irq = cause == sdio_host2::ProgressCause::AcknowledgedIrq;
+        let acknowledged_irq = cause == sdmmc_host::ProgressCause::AcknowledgedIrq;
         let Some(active) = request.as_ref() else {
             return Err(Error::InvalidArgument);
         };
@@ -496,8 +496,7 @@ impl Sdhci {
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let recovery = self.recover_after_adma2_error();
         let completed_dma = self.finish_block_request_with_quiesce(active, recovery.is_ok())?;
-        drop(completed_dma);
-        slot.complete(id)?;
+        slot.complete_with_dma(id, completed_dma)?;
         recovery
     }
 

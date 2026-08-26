@@ -1,93 +1,48 @@
 # aic8800
 
-AIC8800 系列 WiFi 芯片驱动核心，通过 SDIO 总线通信。**OS 无关**：核心代码不直接
-依赖任何操作系统运行时；定时、休眠、让步、任务派生等能力通过 `aic8800::WifiRuntime`
-trait 注入，由上层 OS glue 在初始化时调用 `aic8800::set_runtime` 安装。
+`aic8800` 是完全 `no_std`、OS 无关的 AIC8800 Driver Core。核心对象
+`AicDevice` 由单一 owner 持有，只通过 `&mut self`、显式单调时间、IRQ
+快照、SDIO 完成、控制请求和 TX 数据推进。
 
-队列中断路径当前支持 AIC8801、AIC8800D80、AIC8800D80X2。AIC8800DC/DW
-的 command/FIFO function ownership 与本地 vendor 驱动证据不一致，probe 会明确
-失败；不会回退到 kicker 或周期轮询。
+核心不会创建线程或任务，不注册 IRQ，不读取设备树，不持有 OS 锁，也不
+调用 sleep/yield。每次 `advance` 只返回一个可观察动作：提交或中止 SDIO
+事务、等待 IRQ、等待绝对截止时间、发布完成/收包/发送回收事件，或进入
+空闲状态。
 
-## 用法
+SDIO 命令编码、CCCR/FBR/CIS、Function 生命周期和 CMD52/CMD53 均由
+`sdmmc-protocol::sdio::SdioCard` 负责。RDIF 网络适配位于可选的 `rdif`
+模块，仅由 `rdif` feature 编译；默认构建仍只有 Driver Core。构建脚本只在
+构建机下载并校验固定哈希固件，不是目标驱动的网络或运行时依赖。
 
-平台相关的资源（MMIO 映射、SDHCI 枚举）由上层 OS glue 负责；本 crate 从一个已
-就绪且 IRQ source 尚未取走的 SDIO host 开始完成芯片侧 bring-up，并返回可消费一次的
-`AicWifiNetDev`。`NetDevice::into_parts()` 将它拆成 RX/TX queue、SDHCI hard-IRQ
-endpoint、task-context rearm control、general control 与 owner-CPU Wi-Fi control。
+源码按领域目录组织：
 
-```rust
-// 1. OS glue 注入运行时能力（一次，进程级）
-aic8800::set_runtime(MY_RUNTIME);
-
-// 2. 用已枚举好的 SDIO host 探测芯片，得到一次性设备
-let wifi = aic8800::probe(sdio)?; // -> AicWifiNetDev
-
-// 3. 选择启动事务；实际 SDIO 控制在 fixed-CPU queue owner 上执行
-let wifi = wifi.with_startup_transaction(
-    rd_net::WifiTransaction::open_access_point(b"MyAP".to_vec(), 6),
-);
-
-// 4. OS glue 连同物理 IRQ binding 交给 NetworkRuntimeBuilder 原子发布
-```
-
-运行时能力通过 trait 注入，不直接依赖 OS crate：
-
-- `aic8800::WifiRuntime` — `now_nanos` / `sleep_ms` / `yield_now`，由 OS glue
-  实现并经 `set_runtime` 安装；它不提供后台 RX/TX task 或周期 timer。
-- SDHCI CARD_INT source move 到 `NetHardIrqEndpoint`。hard IRQ 只 mask/status
-  snapshot；同 CPU queue owner drain FIFO、推进命令/RX/TX/AP 并执行原子 rearm。
-- STA/AP 重配置使用 `WifiTransaction` 进入有界 owner queue，调用者不能直接访问
-  SDIO/MMIO。
-
-## 模块
-
-```
+```text
 src/
-├── lib.rs              # crate 入口，re-export（probe / WifiRuntime / set_runtime）
-├── common/             # 芯片型号、SDIO 寄存器地址、CRC 等常量
-├── runtime.rs          # WifiRuntime 注入点（全局 set-once）
-├── wireless/           # probe() 入口
-├── fw/                 # 固件加载
-│   ├── chip/           #   芯片版本检测与验证
-│   ├── config.rs       #   BSP 系统配置常量
-│   ├── firmware/       #   固件二进制选择与上传
-│   └── protocol/       #   IPC 传输层 (SDIO CMD53 内存读写)
-└── fdrv/               # WiFi 驱动核心
-    ├── consts.rs       #   协议常量
-    ├── core/           #   总线管理、SDIO 传输、初始化
-    ├── crypto/         #   WPA2-PSK 四次握手 (PRF、AES-CCM、MIC)
-    ├── net/            #   网络设备适配 (rd-net / rdif-eth)
-    ├── protocol/       #   LMAC 命令/响应、扫描、连接、密钥安装
-    ├── thread/         #   owner executor 调用的有界 RX/TX/AP 推进函数
-    └── wifi/           #   高级 API (WifiClient) 和连接管理
+  lib.rs
+  device/
+    mod.rs
+    owner.rs
+    model.rs
+    progress.rs
+    startup/
+      mod.rs
+      firmware.rs
+      vendor.rs
+  firmware.rs
+  protocol.rs
+  registers.rs
+  rdif/
+    mod.rs
+    device/
+      mod.rs
+      endpoints/
+        mod.rs
+    owner/
+      mod.rs
+  rx.rs
+  tx.rs
 ```
 
-## 支持的安全模式
-
-- Open (无加密)
-- WPA2-PSK / CCMP
-
-## 固件
-
-固件二进制（AICSemi 厂商 blob）**不随 crate 分发**，也不提交到仓库、不进发布
-tarball。`build.rs` 在编译时把它们准备到 `OUT_DIR/firmware/`，`src/fw/firmware/data.rs`
-再从那里 `include_bytes!` 嵌入；每个文件都按 SHA-256 逐字节校验。
-
-`build.rs` 的固件来源优先级（命中即止）：
-
-1. `$AIC8800_FIRMWARE_DIR/<name>` — 显式本地缓存 / 离线镜像目录。
-2. 仓库内 `drivers/net/aic8800/firmware/<name>` — 可选的本地缓存；手动放入并通过
-   SHA-256 校验后，可在离线构建时使用。
-3. 从上游 pin 的 commit 下载 — 任一构建在前两项均不可用时使用。
-
-清单、摘要与上游 pin 见 [`build.rs`](build.rs)，来源与文件列表见
-[`firmware/README.md`](firmware/README.md)。
-
-> 因此发布包可独立构建：`cargo publish` 校验 tarball 时会执行本 crate 的
-> `build.rs` 自行准备固件，不依赖仓库根目录的全局预下载副作用。
-
-## 依赖
-
-- `sdio-host-cv1800` — SDIO 总线、move-only IRQ source 与原子 rearm 抽象
-- `rd-net` / `rdif-eth` / `dma-api` — 网络设备能力与 `WifiControl` 控制面 trait
-- `aes`, `hmac`, `sha1`, `pbkdf2` — WPA2 密钥派生
+无需 QEMU 的私有状态机测试放在对应源文件末尾；`tests/std.rs` 只通过公开
+API 验证 crate 契约。真实 SDIO/Wi-Fi、FDT 和硬中断链路必须使用 axtest
+或 SG2002 实板验证。

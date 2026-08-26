@@ -6,23 +6,27 @@ pub use rdif_block::{
     ControllerUpdate, HardIrqHandler, HardwareQueue, OwnedRequest, QueueInfo, QueueLimits,
     RequestFlags, RequestId as RdifRequestId, RequestOp, SubmitError,
 };
+use sdmmc_host::HostParts;
 #[cfg(test)]
 use sdmmc_protocol::rdif::config as protocol_rdif_config;
 pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::BlockQueue};
-use sdmmc_protocol::sdio::card::SdioSdmmc;
+use sdmmc_protocol::sdio::native::SdMmcCard;
 
 use crate::{ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE, DWC_MSHC_ADMA_BOUNDARY, Sdhci};
 
-pub fn device(card: SdioSdmmc<Sdhci>, config: BlockConfig) -> BlockDevice<Sdhci> {
-    BlockDevice::new(card, config)
+pub fn device(
+    parts: HostParts<Sdhci, crate::SdhciIrqHandle, crate::SdhciCardIrqHandle>,
+    config: BlockConfig,
+) -> BlockDevice<Sdhci> {
+    BlockDevice::new(SdMmcCard::new(parts.bus), parts.irq, config)
 }
 
 pub fn initializing_device(
-    card: SdioSdmmc<Sdhci>,
+    parts: HostParts<Sdhci, crate::SdhciIrqHandle, crate::SdhciCardIrqHandle>,
     config: BlockConfig,
     preference: sdmmc_protocol::sdio::init::CardInitPreference,
 ) -> BlockDevice<Sdhci> {
-    BlockDevice::new_initializing(card, config, preference)
+    BlockDevice::new_initializing(SdMmcCard::new(parts.bus), parts.irq, config, preference)
 }
 
 pub fn dma_config(name: &'static str, capacity_blocks: u64, dma: &DeviceDma) -> BlockConfig {

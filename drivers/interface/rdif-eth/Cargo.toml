@@ -16,5 +16,6 @@ thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
 ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }
+dma-api = { workspace = true, features = ["pool"] }
 
 [features]

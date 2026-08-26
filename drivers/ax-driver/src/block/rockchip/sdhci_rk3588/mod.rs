@@ -27,7 +27,7 @@ use sdhci_host::{HostClock, HostResetHook, HostTimer, Sdhci, rdif as sdhci_rdif}
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
-    sdio::card::SdioSdmmc,
+    sdio::{SdMmcIrqHost, native::SdMmcCard},
 };
 
 use super::{
@@ -215,9 +215,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         media_name(preference),
         preference
     );
-    let mut card = SdioSdmmc::new(host);
+    let parts = host.into_parts();
+    let mut card = SdMmcCard::new(parts.bus);
     card.set_diagnostic_identity(identity);
-    let dev = sdhci_rdif::initializing_device(card, config, preference);
+    let dev = sdhci_rdif::BlockDevice::new_initializing(card, parts.irq, config, preference);
     let irq = probe.register_block(dev)?;
     info!("rockchip-sdhci block device registered irq={:?}", irq);
     Ok(())

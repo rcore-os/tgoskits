@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split host2 transaction ownership from bus-operation state machines, and
   split DMA request lifecycle from FIFO progress and descriptor policy.
 - Move controller, DMA, and crate tests out of production modules.
-- Make the `SdioIrqHost` capability enable and disable the physical SDHCI
+- Make the `SdMmcIrqHost` capability enable and disable the physical SDHCI
   signal masks instead of inheriting the no-op default implementation.
 - Use only preallocated 32-bit, 64-bit, or v4 ADMA2 descriptors and enforce
   DMA mask, alignment, descriptor-count, and 128 MiB boundary limits.

@@ -339,7 +339,10 @@ impl NetPollIrqControl for Rtl8125IrqControl {
         Err(NetError::DmaShutdownUnconfirmed)
     }
 
-    fn rearm_and_check(&mut self) -> core::result::Result<NetRearmResult, NetError> {
+    fn rearm_and_check(
+        &mut self,
+        _now_nanos: u64,
+    ) -> core::result::Result<NetRearmResult, NetError> {
         let started = {
             // SAFETY: the owner CPU is the only task-context mutator after
             // publication; this read only checks initialization completion.

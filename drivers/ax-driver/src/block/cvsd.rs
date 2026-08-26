@@ -2,14 +2,12 @@
 use alloc::format;
 
 #[cfg(not(test))]
-use cv181x_sdhci::{
-    CV181X_SYSCON_REQUIRED_SIZE, CV181X_TOP_SYSCON_BASE, Cv181xConfig, Cv181xMmio, Cv181xSdhci,
-};
+use cv181x_sdhci::{Cv181xMmio, Cv181xSdhci};
 #[cfg(not(test))]
 use log::{info, warn};
 #[cfg(not(test))]
 use rdrive::{
-    probe::OnProbeError,
+    probe::{OnProbeError, fdt::ResourcePrepareConfig},
     register::{FdtInfo, ProbeFdt},
 };
 #[cfg(not(test))]
@@ -17,19 +15,20 @@ use sdhci_host::rdif as sdhci_rdif;
 #[cfg(not(test))]
 use sdmmc_protocol::{
     rdif::device::BlockDevice,
-    sdio::{card::SdioSdmmc, host::BusWidth, init::CardInitPreference},
+    sdio::{SdMmcIrqHost, init::CardInitPreference, native::SdMmcCard},
 };
 
 #[cfg(not(test))]
-use crate::{block::ProbeFdtBlock, mmio::iomap};
+use crate::{
+    block::ProbeFdtBlock,
+    cv181x::{
+        SDHCI_MIN_MMIO_SIZE, SYSCON_MIN_MMIO_SIZE, controller_region, has_property, host_config,
+        required_region,
+    },
+};
 
 #[cfg(not(test))]
 pub const DEVICE_NAME: &str = "cvsd";
-
-#[cfg(not(test))]
-const DEFAULT_SDMMIF_SIZE: usize = 0x1000;
-#[cfg(not(test))]
-const DEFAULT_SYSCON_SIZE: usize = 0x8000;
 
 #[cfg(not(test))]
 #[derive(Clone, Copy)]
@@ -54,19 +53,15 @@ crate::model_register!(
 #[cfg(not(test))]
 fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let info = probe.info();
-    let sdmmc =
-        info.node.regs().into_iter().next().ok_or_else(|| {
-            OnProbeError::other(alloc::format!("[{}] has no reg", info.node.name()))
-        })?;
-    let (syscon_addr, syscon_size) = cv181x_syscon(info)?;
-
-    let core = iomap(
-        sdmmc.address as usize,
-        sdmmc.size.unwrap_or(DEFAULT_SDMMIF_SIZE as u64) as usize,
+    let resources = info.prepare_resources(
+        ResourcePrepareConfig::default()
+            .with_assigned_clocks()
+            .with_power_domains()
+            .with_named_clock_rate("sdio"),
     )?;
-    let syscon = iomap(syscon_addr, syscon_size)?;
-
-    let config = cv181x_config(info);
+    let controller = controller_region(info, "sdio", SDHCI_MIN_MMIO_SIZE)?;
+    let syscon = required_region(info, "syscon", "cvitek,syscon", SYSCON_MIN_MMIO_SIZE)?;
+    let config = host_config(info, resources.clock_rate("sdio"));
     let policy = cvsd_fdt_policy(info);
     info!(
         "cvsd probe: node={}, src={}Hz min={}Hz max={}Hz bus_width={:?} no_1v8={} no_mmc={} \
@@ -82,7 +77,8 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         config.has_card_detect_gpio,
     );
 
-    let mut host = unsafe { Cv181xSdhci::new(Cv181xMmio::new(core, syscon), config) };
+    let mut host =
+        unsafe { Cv181xSdhci::new(Cv181xMmio::new(controller.map()?, syscon.map()?), config) };
     let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
         dma_api::DmaDomainId::Direct,
         crate::binding_resolver::dma_coherency_from_fdt(info),
@@ -92,92 +88,24 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     host.configure_dma(dma)
         .map_err(|err| OnProbeError::other(format!("cvsd ADMA2 configuration failed: {err:?}")))?;
 
-    let mut card = SdioSdmmc::new(host);
+    let parts = host.into_parts();
+    let mut card = SdMmcCard::new(parts.bus);
     card.set_sd_uhs_selection_enabled(false);
-    let dev = BlockDevice::new_initializing(card, block_config, card_init_preference(policy));
+    let dev =
+        BlockDevice::new_initializing(card, parts.irq, block_config, card_init_preference(policy));
     let irq = probe.register_block(dev)?;
     info!("cvsd block device registered irq={:?}", irq);
     Ok(())
 }
 
 #[cfg(not(test))]
-fn cv181x_syscon(info: &FdtInfo<'_>) -> Result<(usize, usize), OnProbeError> {
-    for node in info.find_compatible(&["syscon"]) {
-        let Some(reg) = node.regs().into_iter().next() else {
-            continue;
-        };
-        if reg.address == CV181X_TOP_SYSCON_BASE {
-            return Ok((reg.address as usize, cv181x_syscon_map_size(reg.size)?));
-        }
-    }
-
-    Err(OnProbeError::other(format!(
-        "CVSD TOP syscon at PA:0x{CV181X_TOP_SYSCON_BASE:x} not found in FDT"
-    )))
-}
-
-#[cfg(not(test))]
-fn cv181x_syscon_map_size(size: Option<u64>) -> Result<usize, OnProbeError> {
-    let map_size = size.unwrap_or(DEFAULT_SYSCON_SIZE as u64);
-    if map_size < CV181X_SYSCON_REQUIRED_SIZE as u64 {
-        return Err(OnProbeError::other(format!(
-            "CVSD TOP syscon reg size 0x{map_size:x} is smaller than required 0x{:x}",
-            CV181X_SYSCON_REQUIRED_SIZE
-        )));
-    }
-    Ok(map_size as usize)
-}
-
-#[cfg(not(test))]
-fn cv181x_config(info: &FdtInfo<'_>) -> Cv181xConfig {
-    let node = info.node.as_node();
-    Cv181xConfig {
-        src_frequency_hz: fdt_u32(info, "src-frequency", 375_000_000),
-        min_frequency_hz: fdt_u32(info, "min-frequency", 400_000),
-        max_frequency_hz: fdt_u32(info, "max-frequency", 25_000_000),
-        max_bus_width: cv181x_bus_width(info),
-        no_1v8: node.get_property("no-1-8-v").is_some(),
-        has_card_detect_gpio: node.get_property("cvi-cd-gpios").is_some()
-            || node.get_property("cd-gpios").is_some(),
-        touch_power_enable_pin: false,
-    }
-    .normalized()
-}
-
-#[cfg(not(test))]
 fn cvsd_fdt_policy(info: &FdtInfo<'_>) -> CvsdFdtPolicy {
-    let node = info.node.as_node();
     CvsdFdtPolicy {
-        no_sd: node.get_property("no-sd").is_some(),
-        no_mmc: node.get_property("no-mmc").is_some(),
-        no_sdio: node.get_property("no-sdio").is_some(),
-        non_removable: node.get_property("non-removable").is_some(),
+        no_sd: has_property(info, "no-sd"),
+        no_mmc: has_property(info, "no-mmc"),
+        no_sdio: has_property(info, "no-sdio"),
+        non_removable: has_property(info, "non-removable"),
     }
-}
-
-#[cfg(not(test))]
-fn cv181x_bus_width(info: &FdtInfo<'_>) -> BusWidth {
-    match fdt_u32(info, "bus-width", 4) {
-        1 => BusWidth::Bit1,
-        4 => BusWidth::Bit4,
-        8 => {
-            warn!("cvsd: 8-bit bus-width requested for 4-bit SD0 pads; clamping to 4-bit");
-            BusWidth::Bit4
-        }
-        other => {
-            warn!("cvsd: unsupported bus-width {other}; using 4-bit");
-            BusWidth::Bit4
-        }
-    }
-}
-
-#[cfg(not(test))]
-fn fdt_u32(info: &FdtInfo<'_>, name: &str, default: u32) -> u32 {
-    info.node
-        .as_node()
-        .get_property(name)
-        .and_then(|prop| prop.get_u32())
-        .unwrap_or(default)
 }
 
 #[cfg(not(test))]

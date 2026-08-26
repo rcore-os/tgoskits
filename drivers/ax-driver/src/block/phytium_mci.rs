@@ -8,7 +8,7 @@ use rdrive::{
 };
 use sdmmc_protocol::{
     rdif::{config::BlockConfig, device::BlockDevice},
-    sdio::{card::SdioSdmmc, init::CardInitPreference},
+    sdio::{SdMmcIrqHost, init::CardInitPreference, native::SdMmcCard},
 };
 
 use crate::{block::ProbeFdtBlock, mmio::iomap};
@@ -76,10 +76,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     })?;
 
     info!("phytium-mci: defer card initialization to IRQ-driven hctx");
-    let mut card = SdioSdmmc::new(host);
+    let parts = host.into_parts();
+    let mut card = SdMmcCard::new(parts.bus);
     card.set_sd_uhs_selection_enabled(false);
     let preference = card_init_preference(info);
-    let dev = BlockDevice::new_initializing(card, block_config, preference);
+    let dev = BlockDevice::new_initializing(card, parts.irq, block_config, preference);
     let irq = probe.register_block(dev)?;
     info!("phytium-mci block device registered irq={:?}", irq);
     Ok(())

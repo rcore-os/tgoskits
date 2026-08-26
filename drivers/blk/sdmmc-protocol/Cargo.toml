@@ -15,7 +15,7 @@ embedded-hal = "1"
 dma-api.workspace = true
 log.workspace = true
 rdif-block = { workspace = true, optional = true }
-sdio-host2.workspace = true
+sdmmc-host.workspace = true
 
 [features]
 default = ["spi"]

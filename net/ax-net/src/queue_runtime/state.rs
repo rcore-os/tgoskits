@@ -106,8 +106,24 @@ impl PollGroupState {
             self.disable();
             return;
         }
-        if self.publish_schedule() {
+        if self.is_disabled() {
+            // During owner startup queues stay disabled, but the startup
+            // state machine still needs the IRQ notification to advance.
             self.notify.notify_irq();
+        } else if self.publish_schedule() {
+            self.notify.notify_irq();
+        }
+    }
+
+    pub(super) fn wait_startup_irq(&self) {
+        self.notify.wait();
+    }
+
+    pub(super) fn wait_startup_deadline(&self, deadline_nanos: u64) {
+        let now = ax_hal::time::monotonic_time_nanos();
+        if deadline_nanos > now {
+            let duration = core::time::Duration::from_nanos(deadline_nanos - now);
+            self.notify.wait_timeout(duration);
         }
     }
 

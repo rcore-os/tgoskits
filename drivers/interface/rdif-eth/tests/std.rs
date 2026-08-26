@@ -17,7 +17,7 @@ use rdif_eth::{
     NetDeviceParts, NetError, NetHardIrqEndpoint, NetHardIrqHandler, NetHardIrqResult,
     NetIrqSnapshot, NetIrqSourceId, NetPollGroupId, NetPollGroupParts, NetPollIrqControl,
     NetQueueId, NetQueuePairParts, NetRearmResult, QueueConfig, RxCompletion, SubmitError,
-    WifiControl, WifiLinkPolicy, WifiOperation, WifiTransaction,
+    WifiControl, WifiControlProgress, WifiLinkPolicy, WifiOperation, WifiTransaction,
 };
 
 struct MockError;
@@ -217,7 +217,7 @@ impl NetPollIrqControl for MockIrqControl {
         Ok(())
     }
 
-    fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError> {
+    fn rearm_and_check(&mut self, _now_nanos: u64) -> Result<NetRearmResult, NetError> {
         self.armed = true;
         Ok(NetRearmResult::Idle)
     }
@@ -225,23 +225,48 @@ impl NetPollIrqControl for MockIrqControl {
 
 struct MockWifi {
     connects: usize,
+    active: bool,
 }
 
 impl WifiControl for MockWifi {
-    fn execute(&mut self, operation: &WifiOperation) -> Result<(), NetError> {
+    fn start(
+        &mut self,
+        operation: &WifiOperation,
+        _now_nanos: u64,
+    ) -> Result<WifiControlProgress, NetError> {
         match operation {
-            WifiOperation::Connect { ssid, password } if ssid == "ssid" && password == "pass" => {
+            WifiOperation::Connect {
+                ssid,
+                password,
+                entropy: _,
+            } if ssid == "ssid" && password == "pass" => {
                 self.connects += 1;
-                Ok(())
+                self.active = true;
+                Ok(WifiControlProgress::WaitForInterruptUntil {
+                    deadline_nanos: 1_000,
+                })
             }
-            WifiOperation::Disconnect => Ok(()),
+            WifiOperation::Disconnect => Ok(WifiControlProgress::Complete),
             WifiOperation::StartOpenAccessPoint { ssid, channel }
                 if ssid == b"ap" && *channel == 6 =>
             {
-                Ok(())
+                Ok(WifiControlProgress::Complete)
             }
             _ => Err(NetError::NotSupported),
         }
+    }
+
+    fn advance(&mut self, _now_nanos: u64) -> Result<WifiControlProgress, NetError> {
+        if !self.active {
+            return Err(NetError::InvalidParts);
+        }
+        self.active = false;
+        Ok(WifiControlProgress::Complete)
+    }
+
+    fn cancel(&mut self) -> Result<(), NetError> {
+        self.active = false;
+        Ok(())
     }
 
     fn startup_transaction(&self) -> Option<WifiTransaction> {
@@ -271,7 +296,10 @@ impl NetDevice for MockNic {
         Ok(NetDeviceParts {
             info: NetDeviceInfo::new(self.name(), mac),
             control: Box::new(FixedNetControl::new(mac)),
-            wifi_control: Some(Box::new(MockWifi { connects: 0 })),
+            wifi_control: Some(Box::new(MockWifi {
+                connects: 0,
+                active: false,
+            })),
             poll_groups: vec![NetPollGroupParts {
                 id: NetPollGroupId::new(7),
                 queues: NetQueuePairParts {
@@ -363,18 +391,30 @@ fn net_device_parts_expose_typed_group_queue_and_irq_ownership() {
     ));
     group.irq_control.quiesce().unwrap();
     assert_eq!(
-        group.irq_control.rearm_and_check().unwrap(),
+        group.irq_control.rearm_and_check(0).unwrap(),
         NetRearmResult::Idle
     );
 }
 
 #[test]
 fn wifi_control_keeps_only_owned_control_operations() {
-    let mut wifi = MockWifi { connects: 0 };
+    let mut wifi = MockWifi {
+        connects: 0,
+        active: false,
+    };
     let connect = WifiTransaction::connect("ssid", "pass");
-    wifi.execute(connect.operation()).unwrap();
+    assert_eq!(
+        wifi.start(connect.operation(), 10).unwrap(),
+        WifiControlProgress::WaitForInterruptUntil {
+            deadline_nanos: 1_000,
+        }
+    );
+    assert_eq!(wifi.advance(11).unwrap(), WifiControlProgress::Complete);
     let startup = wifi.startup_transaction().unwrap();
-    wifi.execute(startup.operation()).unwrap();
+    assert_eq!(
+        wifi.start(startup.operation(), 12).unwrap(),
+        WifiControlProgress::Complete
+    );
     let policy = startup.link_policy().unwrap();
     assert_eq!(policy.ip, [192, 168, 7, 1]);
     assert_eq!(policy.prefix_len, 24);

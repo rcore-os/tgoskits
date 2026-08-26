@@ -170,18 +170,15 @@ dependencies = [
 name = "aic8800"
 version = "0.2.8"
 dependencies = [
- "aes",
- "ax-sync",
- "digest 0.10.7",
  "dma-api",
- "hmac",
  "log",
- "pbkdf2",
- "rd-net",
  "rdif-eth",
- "sdio-host-cv1800",
- "sha1 0.10.7",
+ "ringbuf",
+ "sdmmc-host",
+ "sdmmc-protocol",
  "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "tock-registers 0.10.1",
  "ureq",
 ]
 
@@ -865,9 +862,8 @@ dependencies = [
  "rockchip-pwm",
  "rockchip-rga",
  "rockchip-soc",
- "sdhci-cv1800",
  "sdhci-host",
- "sdio-host-cv1800",
+ "sdmmc-host",
  "sdmmc-protocol",
  "sg200x-bsp",
  "some-serial",
@@ -1133,7 +1129,6 @@ dependencies = [
 name = "ax-runtime"
 version = "0.11.2"
 dependencies = [
- "aic8800",
  "ax-alloc",
  "ax-crate-interface",
  "ax-ctor-bare",
@@ -1169,7 +1164,6 @@ dependencies = [
  "rdif-intc",
  "rdif-serial",
  "rdrive",
- "sdhci-cv1800",
  "thiserror 2.0.20",
 ]
 
@@ -2651,7 +2645,7 @@ dependencies = [
  "dma-api",
  "mmio-api",
  "sdhci-host",
- "sdio-host2",
+ "sdmmc-host",
  "sdmmc-protocol",
  "tock-registers 0.10.1",
 ]
@@ -3055,7 +3049,7 @@ dependencies = [
  "embedded-hal",
  "log",
  "mmio-api",
- "sdio-host2",
+ "sdmmc-host",
  "sdmmc-protocol",
  "volatile 0.6.1",
 ]
@@ -5650,15 +5644,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
-name = "pbkdf2"
-version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
-dependencies = [
- "digest 0.10.7",
-]
-
-[[package]]
 name = "pci_types"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5793,7 +5778,7 @@ dependencies = [
  "log",
  "mbarrier",
  "mmio-api",
- "sdio-host2",
+ "sdmmc-host",
  "sdmmc-protocol",
  "volatile 0.6.1",
 ]
@@ -7275,14 +7260,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sdhci-cv1800"
-version = "0.1.1"
-dependencies = [
- "log",
- "sdio-host-cv1800",
-]
-
-[[package]]
 name = "sdhci-host"
 version = "0.5.0"
 dependencies = [
@@ -7291,16 +7268,13 @@ dependencies = [
  "log",
  "mmio-api",
  "rdif-block",
- "sdio-host2",
+ "sdmmc-host",
  "sdmmc-protocol",
+ "tock-registers 0.10.1",
 ]
 
 [[package]]
-name = "sdio-host-cv1800"
-version = "0.1.0"
-
-[[package]]
-name = "sdio-host2"
+name = "sdmmc-host"
 version = "0.1.7"
 dependencies = [
  "dma-api",
@@ -7315,7 +7289,7 @@ dependencies = [
  "embedded-hal",
  "log",
  "rdif-block",
- "sdio-host2",
+ "sdmmc-host",
 ]
 
 [[package]]
@@ -7823,7 +7797,7 @@ dependencies = [
  "dma-api",
  "dwmmc-host",
  "log",
- "sdio-host2",
+ "sdmmc-host",
  "sdmmc-protocol",
 ]
 

@@ -13,10 +13,11 @@ use crate::rdif::{BlockConfig, BlockDevice};
 fn controller_uses_card_diagnostic_identity() {
     let host = MockHost::new(Vec::new());
     let config = BlockConfig::dma("sdmmc-test", 1, test_device_dma());
-    let mut card = SdioSdmmc::new(host);
+    let parts = host.into_parts();
+    let mut card = SdMmcCard::new(parts.bus);
     card.set_diagnostic_identity("rockchip-dwmmc:/mmc@fe2c0000");
 
-    let controller = BlockDevice::new(card, config);
+    let controller = BlockDevice::new(card, parts.irq, config);
 
     assert_eq!(controller.name(), "rockchip-dwmmc:/mmc@fe2c0000");
 }
@@ -25,7 +26,8 @@ fn controller_uses_card_diagnostic_identity() {
 fn controller_teardown_is_idempotent_after_watchdog_shutdown() {
     let host = MockHost::new(Vec::new());
     let config = BlockConfig::dma("sdmmc-test", 1, test_device_dma());
-    let mut controller = BlockDevice::new(SdioSdmmc::new(host), config);
+    let parts = host.into_parts();
+    let mut controller = BlockDevice::new(SdMmcCard::new(parts.bus), parts.irq, config);
 
     let start = controller
         .advance(ControllerEvent::Start { target_queues: 1 })
@@ -59,7 +61,8 @@ fn controller_teardown_is_idempotent_after_watchdog_shutdown() {
 fn ready_online_smp_repeats_info_without_reissuing_resources() {
     let host = MockHost::new(Vec::new());
     let config = BlockConfig::dma("sdmmc-test", 1, test_device_dma());
-    let mut controller = BlockDevice::new(SdioSdmmc::new(host), config);
+    let parts = host.into_parts();
+    let mut controller = BlockDevice::new(SdMmcCard::new(parts.bus), parts.irq, config);
     let mut start = controller
         .advance(ControllerEvent::Start { target_queues: 1 })
         .unwrap();
@@ -103,7 +106,8 @@ fn queue_surfaces_register_retry_requested_after_a_data_irq() {
     let mut host = MockHost::new(Vec::from([ok_r1()]));
     host.complete_after_irq_register_retry = true;
     let config = BlockConfig::dma("sdmmc-test", 8, test_device_dma());
-    let mut controller = BlockDevice::new(SdioSdmmc::new(host), config);
+    let parts = host.into_parts();
+    let mut controller = BlockDevice::new(SdMmcCard::new(parts.bus), parts.irq, config);
     let mut start = controller
         .advance(ControllerEvent::Start { target_queues: 1 })
         .unwrap();

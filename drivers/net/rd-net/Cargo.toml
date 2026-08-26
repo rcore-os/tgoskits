@@ -10,7 +10,7 @@ repository.workspace = true
 version = "0.3.0"
 
 [dependencies]
-dma-api.workspace = true
+dma-api = { workspace = true, features = ["pool"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 rdif-eth.workspace = true
 

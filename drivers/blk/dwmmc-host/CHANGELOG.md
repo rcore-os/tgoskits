@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace per-request descriptor allocation and DMA reset with one reusable
   4 KiB IDMAC descriptor ring owned by the controller.
 - Advance command and data requests only after acknowledged IRQ events, and
-  expose physical IRQ enable/disable through `SdioIrqHost`.
+  expose physical IRQ enable/disable through `SdMmcIrqHost`.
 - Build only the active IDMAC chain for each request and route acknowledgement
   exclusively through the owned IRQ endpoint.
 - Match all shared protocol progress and bus-width states exhaustively instead
