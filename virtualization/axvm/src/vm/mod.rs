@@ -315,7 +315,7 @@ pub(crate) struct VcpuTimerWakeHandle {
 #[cfg(target_arch = "aarch64")]
 impl VcpuTimerWakeHandle {
     pub(crate) fn wake_from_irq(&self) {
-        self.wake_count.fetch_add(1, Ordering::Relaxed);
+        self.wake_count.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_one_from_irq();
     }
 
@@ -467,7 +467,7 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn vcpu_wake_count(&self) -> u64 {
-        self.vcpu_wake_count.load(Ordering::Relaxed)
+        self.vcpu_wake_count.load(Ordering::Acquire)
     }
 
     pub(crate) fn remove_vcpu_task(&self, vcpu_id: usize) -> Option<crate::AxTaskRef> {
@@ -578,7 +578,7 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn notify_vcpu_event(&self, vcpu_id: usize) -> AxVmResult {
-        self.vcpu_wake_count.fetch_add(1, Ordering::Relaxed);
+        self.vcpu_wake_count.fetch_add(1, Ordering::Release);
         self.vcpu_event_channel(vcpu_id)?.notify();
         #[cfg(target_arch = "aarch64")]
         if let Some(wait_queue) = self.vcpu_timer_wait_queues.lock().get(&vcpu_id) {
@@ -593,7 +593,7 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn notify_all(&self) {
-        self.vcpu_wake_count.fetch_add(1, Ordering::Relaxed);
+        self.vcpu_wake_count.fetch_add(1, Ordering::Release);
         self.wait_queue.notify_all(false);
         for channel in &self.vcpu_event_channels {
             channel.notify();
