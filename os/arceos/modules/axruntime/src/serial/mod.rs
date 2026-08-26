@@ -127,7 +127,6 @@ impl RuntimeIrqBridge {
 struct RuntimeShared {
     index: usize,
     info: SerialDeviceInfo,
-    owner_cpu: usize,
     polling: bool,
     port: SpinLock<Box<dyn rdif_serial::UartPort>>,
     register_gate: Arc<rdif_serial::UartRegisterGate<dyn rdif_serial::UartEmergencyTx>>,
@@ -808,7 +807,6 @@ fn build_runtime(
     let shared = Arc::new(RuntimeShared {
         index,
         info,
-        owner_cpu: primary_cpu,
         polling,
         port: SpinLock::new(port),
         register_gate: register_gate.clone(),
@@ -846,6 +844,7 @@ fn build_runtime(
         ax_task::default_task_stack_size(),
     );
     task.set_cpumask(AxCpuMask::one_shot(primary_cpu));
+    ax_task::spawn_task(task);
 
     if let Some(binding) = shared.info.irq.clone() {
         let irq_id = crate::irq::resolve_binding_irq(binding).map_err(|error| {
@@ -891,11 +890,6 @@ fn build_runtime(
         shared.irq_handle.call_once(|| handle);
     }
 
-    ax_task::spawn_task(task);
-    info!(
-        "serial runtime {} ready: cpu={}, irq={:?}, polling={}",
-        shared.info.name, shared.owner_cpu, shared.info.irq, shared.polling
-    );
     Ok(SerialRuntimeHandle { shared })
 }
 

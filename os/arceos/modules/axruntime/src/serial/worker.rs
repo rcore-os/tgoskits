@@ -235,7 +235,7 @@ impl SerialWorker {
             return Ok(());
         }
         self.shared
-            .with_port(|port| prepare_port_for_start(port, start))
+            .with_port(|port| prepare_port_for_start(port, start, self.shared.polling))
             .ok_or(RuntimeError::SerialNotStarted)??;
         if let Err(err) = self.shared.enable_irq() {
             self.shared.disable_irq();
@@ -649,12 +649,15 @@ enum PortStart<'a> {
 fn prepare_port_for_start(
     port: &mut dyn rdif_serial::UartPort,
     start: PortStart<'_>,
+    polling: bool,
 ) -> Result<(), rdif_serial::ConfigError> {
     match start {
         PortStart::Configure(config) => port.startup(config)?,
         PortStart::AdoptFirmwareConsole => {}
     }
-    port.mask_all();
+    if !matches!(start, PortStart::AdoptFirmwareConsole) || !polling {
+        port.mask_all();
+    }
     Ok(())
 }
 
@@ -970,10 +973,20 @@ mod tests {
     fn firmware_console_adoption_does_not_reinitialize_working_uart() {
         let mut port = FirmwareConsolePort::default();
 
-        prepare_port_for_start(&mut port, PortStart::AdoptFirmwareConsole).unwrap();
+        prepare_port_for_start(&mut port, PortStart::AdoptFirmwareConsole, false).unwrap();
 
         assert!(!port.startup_called);
         assert!(port.mask_all_called);
+    }
+
+    #[test]
+    fn polling_firmware_console_adoption_does_not_mask_uart_sources() {
+        let mut port = FirmwareConsolePort::default();
+
+        prepare_port_for_start(&mut port, PortStart::AdoptFirmwareConsole, true).unwrap();
+
+        assert!(!port.startup_called);
+        assert!(!port.mask_all_called);
     }
 
     #[test]
@@ -981,7 +994,7 @@ mod tests {
         let mut port = FirmwareConsolePort::default();
         let config = Config::new().baudrate(230_400);
 
-        prepare_port_for_start(&mut port, PortStart::Configure(&config)).unwrap();
+        prepare_port_for_start(&mut port, PortStart::Configure(&config), false).unwrap();
 
         assert!(port.startup_called);
         assert!(port.mask_all_called);

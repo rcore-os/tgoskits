@@ -27,6 +27,7 @@ pub struct SdMmcCard<H: SdMmcIrqHost + 'static> {
     pub(super) high_capacity: bool,
     pub(super) bus_width: BusWidth,
     pub(super) kind: CardKind,
+    pub(super) sd_wide_bus_selection_enabled: bool,
     pub(super) sd_speed_selection_enabled: bool,
     pub(super) sd_uhs_selection_enabled: bool,
     pub(super) diagnostic_identity: Option<String>,
@@ -68,6 +69,7 @@ impl<H: SdMmcIrqHost + 'static> SdMmcCard<H> {
             high_capacity: false,
             bus_width: BusWidth::Bit1,
             kind: CardKind::Sd,
+            sd_wide_bus_selection_enabled: true,
             sd_speed_selection_enabled: true,
             sd_uhs_selection_enabled: true,
             diagnostic_identity: None,
@@ -120,6 +122,16 @@ impl<H: SdMmcIrqHost + 'static> SdMmcCard<H> {
     /// UHS-I timing.
     pub fn set_sd_speed_selection_enabled(&mut self, enabled: bool) {
         self.sd_speed_selection_enabled = enabled;
+    }
+
+    /// Enable or disable optional SD 4-bit bus-width selection.
+    ///
+    /// When disabled, SD cards remain in the baseline 1-bit transfer mode
+    /// after identification. This keeps unreliable removable-card links on
+    /// their most conservative data path without changing the default policy
+    /// for hosts that can safely use 4-bit transfers.
+    pub fn set_sd_wide_bus_selection_enabled(&mut self, enabled: bool) {
+        self.sd_wide_bus_selection_enabled = enabled;
     }
 
     /// Enable or disable UHS-I SD access-mode selection.

@@ -301,7 +301,7 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     info!("Initialize interrupt handlers...");
     init_interrupt();
 
-    devices::probe_all_devices();
+    devices::probe_pre_kernel_devices();
 
     serial::init(cpu_id);
 
@@ -317,6 +317,8 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
             warn!("runtime console unavailable; early console failed closed: {reason:?}")
         }
     }
+
+    devices::probe_all_devices();
 
     #[cfg(feature = "rtc")]
     ax_println!(

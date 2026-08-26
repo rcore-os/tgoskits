@@ -81,6 +81,35 @@ fn event_reports_error_status_without_translating_to_os_action() {
 }
 
 #[test]
+fn irq_event_preserves_enabled_error_when_normal_summary_is_masked() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let host = unsafe { Sdhci::new(base) };
+    host.write_u16(REG_NORMAL_INT_STATUS_ENABLE, NORMAL_INT_CLEAR_ALL);
+    host.write_u16(REG_ERROR_INT_STATUS_ENABLE, ERROR_INT_CLEAR_ALL);
+    host.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, NORMAL_INT_CMD_COMPLETE);
+    host.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, ERROR_INT_ADMA);
+    host.irq.state.begin_request();
+    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_ERROR);
+    host.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_ADMA);
+
+    let event = handle_irq_core(&host.irq);
+
+    assert_eq!(
+        event,
+        Event::Error {
+            normal: NORMAL_INT_ERROR,
+            error: ERROR_INT_ADMA,
+        }
+    );
+    assert_eq!(host.irq.state.pending_normal(), NORMAL_INT_ERROR);
+    assert_eq!(host.irq.state.pending_error(), ERROR_INT_ADMA);
+}
+
+#[test]
 fn event_reports_data_completion_source_for_runtime_wakeup() {
     use sdmmc_protocol::sdio::host::{HostEvent, HostEventKind, HostEventSource};
 
@@ -200,6 +229,98 @@ fn data_transaction_rejects_missing_dma_capability() {
         unsafe { <Sdhci as sdmmc_host::SdMmcHost>::submit_transaction(&mut host, transaction) },
         Err(sdmmc_host::Error::Unsupported)
     ));
+}
+
+#[test]
+fn fifo_data_path_submits_without_dma_enable() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.use_fifo_data_path().unwrap();
+    host.write_u8(REG_HOST_CONTROL1, HOST_CTRL1_DMA_SEL_ADMA2_32);
+    let mut buffer = [0_u8; 512];
+    let command = Command::new(17, 0, ResponseType::R1);
+    let data = sdio_host2::DataPhase::read(
+        NonZeroU16::new(512).unwrap(),
+        NonZeroU32::new(1).unwrap(),
+        &mut buffer,
+    )
+    .unwrap();
+    let transaction = sdio_host2::Transaction::with_data(command, data);
+
+    let _request =
+        unsafe { <Sdhci as sdio_host2::SdioHost>::submit_transaction(&mut host, transaction) }
+            .unwrap();
+
+    assert_eq!(host.read_u16(REG_TRANSFER_MODE) & XFER_MODE_DMA_ENABLE, 0);
+    assert_eq!(host.read_u8(REG_HOST_CONTROL1) & HOST_CTRL1_DMA_SEL_MASK, 0);
+}
+
+#[test]
+fn fifo_read_progress_copies_data_port_into_buffer() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.use_fifo_data_path().unwrap();
+    host.enable_interrupt_status_capture();
+    host.enable_completion_irq();
+    let mut buffer = [0_u8; 512];
+    let command = Command::new(17, 0, ResponseType::R1);
+    let data = sdio_host2::DataPhase::read(
+        NonZeroU16::new(512).unwrap(),
+        NonZeroU32::new(1).unwrap(),
+        &mut buffer,
+    )
+    .unwrap();
+    let transaction = sdio_host2::Transaction::with_data(command, data);
+    let mut request =
+        unsafe { <Sdhci as sdio_host2::SdioHost>::submit_transaction(&mut host, transaction) }
+            .unwrap();
+    let mut irq = host.irq_endpoint();
+
+    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
+    assert_eq!(irq.handle_irq(), Event::CommandComplete);
+    assert!(matches!(
+        <Sdhci as sdio_host2::SdioHost>::advance_transaction(
+            &mut host,
+            &mut request,
+            ProgressCause::AcknowledgedIrq,
+        ),
+        Ok(RequestProgress::WaitingForIrq)
+    ));
+
+    host.write_u32(REG_BUFFER_DATA_PORT, 0x4433_2211);
+    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_BUFFER_READ_READY);
+    assert_eq!(irq.handle_irq(), Event::ReceiveReady);
+    assert!(matches!(
+        <Sdhci as sdio_host2::SdioHost>::advance_transaction(
+            &mut host,
+            &mut request,
+            ProgressCause::AcknowledgedIrq,
+        ),
+        Ok(RequestProgress::WaitingForIrq)
+    ));
+
+    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_XFER_COMPLETE);
+    assert_eq!(irq.handle_irq(), Event::TransferComplete);
+    assert!(matches!(
+        <Sdhci as sdio_host2::SdioHost>::advance_transaction(
+            &mut host,
+            &mut request,
+            ProgressCause::AcknowledgedIrq,
+        ),
+        Ok(RequestProgress::Complete(Ok(_)))
+    ));
+    drop(request);
+
+    assert_eq!(&buffer[..4], &[0x11, 0x22, 0x33, 0x44]);
+    assert_eq!(&buffer[508..], &[0x11, 0x22, 0x33, 0x44]);
 }
 
 #[test]
@@ -354,6 +475,46 @@ fn host2_reset_all_invalidates_stale_irq_state_before_restore() {
     assert_eq!(host.irq.state.pending_normal(), 0);
     assert_eq!(host.irq.state.pending_error(), 0);
     assert!(host.completion_irq_enabled());
+}
+
+#[test]
+fn host2_reset_all_reasserts_v4_mode_after_controller_reset() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.enable_v4_mode().unwrap();
+    let mut request = unsafe {
+        <Sdhci as sdio_host2::SdioHost>::submit_bus_op(&mut host, sdio_host2::BusOp::ResetAll)
+    }
+    .unwrap();
+
+    assert!(matches!(
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::Submitted,
+        ),
+        Ok(RequestProgress::RegisterPending { .. })
+    ));
+    host.write_u16(REG_HOST_CONTROL2, 0);
+    host.write_u8(REG_SOFTWARE_RESET, 0);
+
+    assert!(matches!(
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::Complete(Ok(())))
+    ));
+
+    assert_eq!(
+        host.read_u16(REG_HOST_CONTROL2) & HOST_CTRL2_V4_MODE,
+        HOST_CTRL2_V4_MODE
+    );
 }
 
 #[test]

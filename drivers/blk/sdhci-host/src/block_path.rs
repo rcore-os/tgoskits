@@ -27,6 +27,17 @@ pub(super) fn submit_read_adma2(
     block_count: u32,
     slot: &mut BlockRequestSlot,
 ) -> Result<BlockRequest, Error> {
+    if host.data_path == crate::host::DataPath::Fifo {
+        return host.submit_fifo_data_request(
+            cmd,
+            buffer,
+            len,
+            block_size,
+            block_count,
+            DataDirection::Read,
+            slot,
+        );
+    }
     let dma = host.dma.take().ok_or(Error::UnsupportedCommand)?;
     let result = host.submit_adma2_data_request(
         cmd,
@@ -51,6 +62,17 @@ pub(super) fn submit_write_adma2(
     block_count: u32,
     slot: &mut BlockRequestSlot,
 ) -> Result<BlockRequest, Error> {
+    if host.data_path == crate::host::DataPath::Fifo {
+        return host.submit_fifo_data_request(
+            cmd,
+            buffer,
+            len,
+            block_size,
+            block_count,
+            DataDirection::Write,
+            slot,
+        );
+    }
     let dma = host.dma.take().ok_or(Error::UnsupportedCommand)?;
     let result = host.submit_adma2_data_request(
         cmd,

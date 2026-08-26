@@ -9,7 +9,7 @@ use rdrive::{
     probe::{OnProbeError, fdt::NodeType},
     register::{FdtInfo, ProbeFdt},
 };
-use riscv::register::{sie, sip};
+use riscv::register::{sie, sip, siselect};
 use sbi_rt::HartMask;
 
 use crate::{
@@ -23,8 +23,43 @@ use crate::{
 const SUPERVISOR_EXTERNAL_INTERRUPT: u32 = 9;
 const DEFAULT_PRIORITY: u32 = 1;
 const DEFAULT_PLIC_SIZE: usize = 0x400_0000;
+const IMSIC_EIDELIVERY: usize = 0x70;
+const IMSIC_EITHRESHOLD: usize = 0x72;
+const IMSIC_EIE0: usize = 0xc0;
+const IMSIC_EIX_BITS: usize = 32;
+const IMSIC_ENABLE_EIDELIVERY: usize = 1;
+const IMSIC_ENABLE_EITHRESHOLD: usize = 0;
+const IMSIC_TOPEI_ID_SHIFT: usize = 16;
+const IMSIC_TOPEI_ID_MASK: usize = 0x7ff;
+const APLIC_DOMAINCFG: usize = 0x0000;
+const APLIC_DOMAINCFG_IE: u32 = 1 << 8;
+const APLIC_DOMAINCFG_DM: u32 = 1 << 2;
+const APLIC_SOURCECFG_BASE: usize = 0x0004;
+const APLIC_SOURCECFG_SM_INACTIVE: u32 = 0;
+const APLIC_SOURCECFG_SM_EDGE_RISE: u32 = 4;
+const APLIC_SOURCECFG_SM_EDGE_FALL: u32 = 5;
+const APLIC_SOURCECFG_SM_LEVEL_HIGH: u32 = 6;
+const APLIC_SOURCECFG_SM_LEVEL_LOW: u32 = 7;
+const APLIC_SMSICFGADDR: usize = 0x1bc8;
+const APLIC_SMSICFGADDRH: usize = 0x1bcc;
+const APLIC_SMSICFGADDRH_LHXW_SHIFT: u32 = 12;
+const APLIC_SMSICFGADDRH_LHXS_SHIFT: u32 = 20;
+const APLIC_CLRIE_BASE: usize = 0x1f00;
+const APLIC_SETIENUM: usize = 0x1edc;
+const APLIC_CLRIENUM: usize = 0x1fdc;
+const APLIC_SETIPNUM_LE: usize = 0x2000;
+const APLIC_TARGET_BASE: usize = 0x3004;
+const APLIC_TARGET_HART_IDX_SHIFT: u32 = 18;
+const APLIC_TARGET_GUEST_IDX_SHIFT: u32 = 12;
+const APLIC_TARGET_EIID_MASK: u32 = 0x7ff;
+const IRQ_TYPE_EDGE_RISING: u32 = 1;
+const IRQ_TYPE_EDGE_FALLING: u32 = 2;
+const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
+const IRQ_TYPE_LEVEL_LOW: u32 = 8;
 
 static IRQ_HANDLER: StaticCell<RiscvPlicIrqHandler> = StaticCell::uninit();
+static IMSIC: StaticCell<RiscvImsic> = StaticCell::uninit();
+static APLIC_HANDLER: StaticCell<RiscvAplicIrqHandler> = StaticCell::uninit();
 
 module_driver!(
     name: "RISC-V PLIC",
@@ -37,6 +72,26 @@ module_driver!(
             "starfive,jh7110-plic",
         ],
         on_probe: probe_plic
+    }],
+);
+
+module_driver!(
+    name: "RISC-V IMSIC",
+    level: ProbeLevel::PreKernel,
+    priority: ProbePriority::INTC,
+    probe_kinds: &[ProbeKind::Fdt {
+        compatibles: &["riscv,imsics", "spacemit,k3-imsics"],
+        on_probe: probe_imsic
+    }],
+);
+
+module_driver!(
+    name: "RISC-V APLIC",
+    level: ProbeLevel::PreKernel,
+    priority: ProbePriority::INTC,
+    probe_kinds: &[ProbeKind::Fdt {
+        compatibles: &["riscv,aplic", "spacemit,k3-aplic"],
+        on_probe: probe_aplic
     }],
 );
 
@@ -90,9 +145,27 @@ pub fn irq_set_affinity(
     .ok_or(crate::irq::IrqError::InvalidIrq)
 }
 
+pub fn aplic_irq_set_affinity(
+    hwirq: rdif_intc::HwIrq,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<(), crate::irq::IrqError> {
+    let source = NonZeroU32::new(hwirq.0).ok_or(crate::irq::IrqError::InvalidIrq)?;
+    with_aplic("setting APLIC IRQ affinity", |aplic| {
+        aplic.set_source_affinity(source, affinity)
+    })
+    .flatten()
+    .ok_or(crate::irq::IrqError::InvalidIrq)
+}
+
 enum Completion {
     None,
     Plic(PlicClaim),
+    Aplic(AplicClaim),
+}
+
+enum ActiveIrqSource {
+    Legacy(rdrive::IrqId),
+    Framework(crate::irq::IrqId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,20 +184,45 @@ impl PlicClaim {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AplicClaim {
+    source: NonZeroU32,
+}
+
+impl AplicClaim {
+    const fn new(source: NonZeroU32) -> Self {
+        Self { source }
+    }
+}
+
 pub struct ActiveIrq {
-    irq: rdrive::IrqId,
+    irq: ActiveIrqSource,
     completion: Completion,
 }
 
 impl ActiveIrq {
     pub fn id(&self) -> rdrive::IrqId {
-        self.irq
+        match self.irq {
+            ActiveIrqSource::Legacy(irq) => irq,
+            ActiveIrqSource::Framework(irq) => (irq.hwirq.0 as usize).into(),
+        }
+    }
+
+    pub(super) const fn framework_id(&self) -> Option<crate::irq::IrqId> {
+        match self.irq {
+            ActiveIrqSource::Legacy(_) => None,
+            ActiveIrqSource::Framework(irq) => Some(irq),
+        }
     }
 
     pub(super) fn take_plic_claim(&mut self) -> Option<PlicClaim> {
         match core::mem::replace(&mut self.completion, Completion::None) {
             Completion::None => None,
             Completion::Plic(claim) => Some(claim),
+            Completion::Aplic(claim) => {
+                self.completion = Completion::Aplic(claim);
+                None
+            }
         }
     }
 }
@@ -133,6 +231,10 @@ impl Drop for ActiveIrq {
     fn drop(&mut self) {
         if let Some(claim) = self.take_plic_claim() {
             complete_external_irq_claim(claim);
+        } else if let Completion::Aplic(claim) =
+            core::mem::replace(&mut self.completion, Completion::None)
+        {
+            complete_aplic_irq(claim);
         }
     }
 }
@@ -140,7 +242,7 @@ impl Drop for ActiveIrq {
 pub fn begin_irq(raw: usize) -> Option<ActiveIrq> {
     match classify_riscv_trap(raw) {
         RiscvTrapIrq::Timer => Some(ActiveIrq {
-            irq: RISCV_S_TIMER_IRQ.into(),
+            irq: ActiveIrqSource::Legacy(RISCV_S_TIMER_IRQ.into()),
             completion: Completion::None,
         }),
         RiscvTrapIrq::Ipi => {
@@ -148,7 +250,7 @@ pub fn begin_irq(raw: usize) -> Option<ActiveIrq> {
                 sip::clear_ssoft();
             }
             Some(ActiveIrq {
-                irq: RISCV_S_SOFT_IRQ.into(),
+                irq: ActiveIrqSource::Legacy(RISCV_S_SOFT_IRQ.into()),
                 completion: Completion::None,
             })
         }
@@ -165,11 +267,24 @@ pub fn begin_irq(raw: usize) -> Option<ActiveIrq> {
 }
 
 fn begin_external_irq() -> Option<ActiveIrq> {
-    let claim = claim_external_irq()?;
-    let (_, source) = claim.into_parts();
+    if get_irq_handler().is_some()
+        && let Some(claim) = claim_external_irq()
+    {
+        let (_, source) = claim.into_parts();
+        return Some(ActiveIrq {
+            irq: ActiveIrqSource::Legacy((source.get() as usize).into()),
+            completion: Completion::Plic(claim),
+        });
+    }
+
+    let claim = claim_aplic_external_irq()?;
+    let domain = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::RiscvAplic)?;
     Some(ActiveIrq {
-        irq: (source.get() as usize).into(),
-        completion: Completion::Plic(claim),
+        irq: ActiveIrqSource::Framework(crate::irq::IrqId::new(
+            domain,
+            crate::irq::HwIrq(claim.source.get()),
+        )),
+        completion: Completion::Aplic(claim),
     })
 }
 
@@ -184,6 +299,9 @@ fn complete_external_irq_claim(claim: PlicClaim) {
 pub fn secondary_init_intc(cpu_idx: usize) {
     if let Some(handler) = get_irq_handler() {
         handler.init_context(cpu_idx);
+    }
+    if IMSIC.is_init() {
+        init_current_imsic();
     }
     enable_local_interrupts();
 }
@@ -262,6 +380,72 @@ fn probe_plic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
+fn probe_imsic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let info = probe.info();
+    if IMSIC.is_init() {
+        info!("skip additional IMSIC node {}", info.node.name());
+        return Ok(());
+    }
+    let reg = info
+        .node
+        .regs()
+        .into_iter()
+        .next()
+        .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
+    let hart_index_bits = fdt_u32(info, "riscv,hart-index-bits").unwrap_or(0);
+    let guest_index_bits = fdt_u32(info, "riscv,guest-index-bits").unwrap_or(0);
+    let num_ids = fdt_u32(info, "riscv,num-ids").unwrap_or(256) as usize;
+    IMSIC.init(RiscvImsic {
+        base: reg.address,
+        hart_index_bits,
+        guest_index_bits,
+        num_ids,
+    });
+    init_current_imsic();
+    enable_local_interrupts();
+
+    info!(
+        "RISC-V IMSIC registered: base={:#x}, hart_index_bits={}, guest_index_bits={}, num_ids={}",
+        reg.address, hart_index_bits, guest_index_bits, num_ids
+    );
+    Ok(())
+}
+
+fn probe_aplic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, dev) = probe.into_parts();
+    let reg = info
+        .node
+        .regs()
+        .into_iter()
+        .next()
+        .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
+    let mmio = ioremap(reg.address, reg.size.unwrap_or(0x4000) as usize)
+        .map_err(|err| OnProbeError::other(format!("failed to map APLIC: {err:?}")))?;
+    let base = NonNull::new(mmio.as_ptr())
+        .ok_or_else(|| OnProbeError::other("APLIC MMIO mapping is null"))?;
+    let sources = fdt_u32(&info, "riscv,num-sources").unwrap_or(1024) as usize;
+    let imsic =
+        get_imsic().ok_or_else(|| OnProbeError::other("APLIC MSI mode requires a probed IMSIC"))?;
+    let aplic = unsafe { RiscvAplic::new(base, sources, imsic) };
+    aplic.init_global();
+    aplic.disable_all_sources();
+    APLIC_HANDLER.init(RiscvAplicIrqHandler { base });
+
+    let domain = crate::irq::alloc_irq_domain(
+        dev.descriptor.device_id(),
+        crate::irq::IrqDomainKind::RiscvAplic,
+    )
+    .map_err(|err| OnProbeError::other(format!("failed to register APLIC domain: {err:?}")))?;
+    dev.register(rdif_intc::Intc::new(domain, aplic));
+    info!(
+        "RISC-V APLIC registered: node={}, base={:#x}, sources={}",
+        info.node.name(),
+        reg.address,
+        sources
+    );
+    Ok(())
+}
+
 fn parse_supervisor_contexts(info: &FdtInfo<'_>) -> Vec<Option<usize>> {
     let mut contexts = Vec::new();
     let Some(prop) = info.node.as_node().get_property("interrupts-extended") else {
@@ -296,6 +480,14 @@ fn cpu_idx_from_intc_phandle(info: &FdtInfo<'_>, phandle: Phandle) -> Option<usi
 fn cpu_idx_from_cpu_node(cpu: &NodeType<'_>) -> Option<usize> {
     let hart_id = cpu.regs().first()?.address as usize;
     someboot::smp::cpu_id_to_idx(hart_id)
+}
+
+fn fdt_u32(info: &FdtInfo<'_>, name: &str) -> Option<u32> {
+    info.node.as_node().get_property(name)?.get_u32()
+}
+
+fn get_imsic() -> Option<&'static RiscvImsic> {
+    if IMSIC.is_init() { Some(&IMSIC) } else { None }
 }
 
 fn enable_local_interrupts() {
@@ -411,6 +603,334 @@ pub(super) fn complete_deferred_claim(context: usize, source: NonZeroU32) -> boo
     };
     handler.complete_claim(PlicClaim::new(context, source));
     true
+}
+
+fn init_current_imsic() {
+    unsafe {
+        imsic_write(IMSIC_EITHRESHOLD, IMSIC_ENABLE_EITHRESHOLD);
+        imsic_write(IMSIC_EIDELIVERY, IMSIC_ENABLE_EIDELIVERY);
+    }
+}
+
+fn claim_aplic_external_irq() -> Option<AplicClaim> {
+    if !APLIC_HANDLER.is_init() {
+        return None;
+    }
+    let source = unsafe { imsic_claim() }?;
+    Some(AplicClaim::new(source))
+}
+
+fn complete_aplic_irq(claim: AplicClaim) {
+    if APLIC_HANDLER.is_init() {
+        APLIC_HANDLER.complete(claim);
+    } else {
+        warn!("RISC-V APLIC IRQ handler is not registered when completing external IRQ");
+    }
+}
+
+fn with_aplic<R>(op: &str, f: impl FnOnce(&mut RiscvAplic) -> R) -> Option<R> {
+    let Some(domain) = crate::irq::domain_by_kind_fast(crate::irq::IrqDomainKind::RiscvAplic)
+    else {
+        warn!("RISC-V APLIC is not registered when {op}");
+        return None;
+    };
+    let Ok(intc) = crate::irq::intc_by_domain(domain) else {
+        warn!("failed to find RISC-V APLIC controller when {op}");
+        return None;
+    };
+    let Ok(mut intc) = intc.lock() else {
+        warn!("failed to lock RISC-V APLIC when {op}");
+        return None;
+    };
+    let Some(aplic) = intc.typed_mut::<RiscvAplic>() else {
+        warn!("registered interrupt controller is not RISC-V APLIC when {op}");
+        return None;
+    };
+    Some(f(aplic))
+}
+
+struct RiscvImsic {
+    base: u64,
+    hart_index_bits: u32,
+    guest_index_bits: u32,
+    num_ids: usize,
+}
+
+struct RiscvAplic {
+    base: NonNull<u8>,
+    sources: usize,
+    imsic_base: u64,
+    hart_index_bits: u32,
+    guest_index_bits: u32,
+    affinity_by_source: Vec<crate::irq::IrqAffinity>,
+    enabled_by_source: Vec<bool>,
+    mode_by_source: Vec<u32>,
+}
+
+struct RiscvAplicIrqHandler {
+    base: NonNull<u8>,
+}
+
+// SAFETY: the mapped APLIC register base is a stable MMIO capability owned by
+// the platform interrupt controller. Register access is synchronized either by
+// the rdrive controller lock or by the architecture hard-IRQ transaction.
+unsafe impl Send for RiscvAplic {}
+
+// SAFETY: the handler only performs one volatile MMIO write to the immutable
+// APLIC base while completing an interrupt claim.
+unsafe impl Send for RiscvAplicIrqHandler {}
+
+impl RiscvAplic {
+    unsafe fn new(base: NonNull<u8>, sources: usize, imsic: &RiscvImsic) -> Self {
+        Self {
+            base,
+            sources,
+            imsic_base: imsic.base,
+            hart_index_bits: imsic.hart_index_bits,
+            guest_index_bits: imsic.guest_index_bits,
+            affinity_by_source: vec![crate::irq::IrqAffinity::Any; sources.saturating_add(1)],
+            enabled_by_source: vec![false; sources.saturating_add(1)],
+            mode_by_source: vec![APLIC_SOURCECFG_SM_INACTIVE; sources.saturating_add(1)],
+        }
+    }
+
+    fn init_global(&self) {
+        let base_ppn = self.imsic_base >> 12;
+        unsafe {
+            write32(self.base, APLIC_SMSICFGADDR, base_ppn as u32);
+            write32(
+                self.base,
+                APLIC_SMSICFGADDRH,
+                ((base_ppn >> 32) as u32)
+                    | (self.hart_index_bits << APLIC_SMSICFGADDRH_LHXW_SHIFT)
+                    | (self.guest_index_bits << APLIC_SMSICFGADDRH_LHXS_SHIFT),
+            );
+            write32(
+                self.base,
+                APLIC_DOMAINCFG,
+                APLIC_DOMAINCFG_IE | APLIC_DOMAINCFG_DM,
+            );
+        }
+    }
+
+    fn disable_all_sources(&self) {
+        for source in (0..=self.sources).step_by(32) {
+            unsafe {
+                write32(self.base, APLIC_CLRIE_BASE + (source / 32) * 4, u32::MAX);
+            }
+        }
+        for source in 1..=self.sources {
+            unsafe {
+                write32(
+                    self.base,
+                    APLIC_SOURCECFG_BASE + (source - 1) * 4,
+                    APLIC_SOURCECFG_SM_INACTIVE,
+                );
+            }
+        }
+    }
+
+    fn configure_source(
+        &mut self,
+        source: NonZeroU32,
+        trigger: Option<rdif_intc::Trigger>,
+    ) -> Result<(), crate::irq::IrqError> {
+        let source_index = self.checked_source_index(source)?;
+        let mode = aplic_source_mode(trigger)?;
+        self.mode_by_source[source_index] = mode;
+        unsafe {
+            write32(
+                self.base,
+                APLIC_SOURCECFG_BASE + (source_index - 1) * 4,
+                mode,
+            );
+            write32(
+                self.base,
+                APLIC_TARGET_BASE + (source_index - 1) * 4,
+                source.get(),
+            );
+        }
+        Ok(())
+    }
+
+    fn set_source_enabled(
+        &mut self,
+        source: NonZeroU32,
+        enabled: bool,
+    ) -> Result<(), crate::irq::IrqError> {
+        let source_index = self.checked_source_index(source)?;
+        if self.mode_by_source[source_index] == APLIC_SOURCECFG_SM_INACTIVE {
+            self.configure_source(source, Some(rdif_intc::Trigger::LevelHigh))?;
+        }
+        self.enabled_by_source[source_index] = enabled;
+        if enabled {
+            self.write_target(source)?;
+            unsafe {
+                imsic_enable_id(source);
+                write32(self.base, APLIC_SETIENUM, source.get());
+            }
+        } else {
+            unsafe {
+                write32(self.base, APLIC_CLRIENUM, source.get());
+            }
+        }
+        Ok(())
+    }
+
+    fn set_source_affinity(
+        &mut self,
+        source: NonZeroU32,
+        affinity: crate::irq::IrqAffinity,
+    ) -> Option<()> {
+        let source_index = self.checked_source_index(source).ok()?;
+        self.affinity_by_source[source_index] = affinity;
+        if self.enabled_by_source[source_index] {
+            self.write_target(source).ok()?;
+        }
+        Some(())
+    }
+
+    fn write_target(&self, source: NonZeroU32) -> Result<(), crate::irq::IrqError> {
+        let source_index = self.checked_source_index(source)?;
+        let cpu_id = match self.affinity_by_source[source_index] {
+            crate::irq::IrqAffinity::Any => 0,
+            crate::irq::IrqAffinity::Fixed { cpu_id } => cpu_id,
+        };
+        let hart_index = u32::try_from(cpu_id).map_err(|_| crate::irq::IrqError::InvalidCpu)?;
+        let target = (hart_index << APLIC_TARGET_HART_IDX_SHIFT)
+            | (0 << APLIC_TARGET_GUEST_IDX_SHIFT)
+            | (source.get() & APLIC_TARGET_EIID_MASK);
+        unsafe {
+            write32(
+                self.base,
+                APLIC_TARGET_BASE + (source_index - 1) * 4,
+                target,
+            );
+        }
+        Ok(())
+    }
+
+    fn checked_source_index(&self, source: NonZeroU32) -> Result<usize, crate::irq::IrqError> {
+        let source = source.get() as usize;
+        if source == 0 || source > self.sources {
+            Err(crate::irq::IrqError::InvalidIrq)
+        } else {
+            Ok(source)
+        }
+    }
+}
+
+impl RiscvAplicIrqHandler {
+    fn complete(&self, claim: AplicClaim) {
+        unsafe {
+            write32(self.base, APLIC_SETIPNUM_LE, claim.source.get());
+        }
+    }
+}
+
+impl DriverGeneric for RiscvAplic {
+    fn name(&self) -> &str {
+        "RISC-V APLIC"
+    }
+}
+
+impl Interface for RiscvAplic {
+    fn translate_fdt(
+        &self,
+        irq_prop: &[u32],
+    ) -> Result<rdif_intc::ControllerIrqTranslation, rdif_intc::IrqError> {
+        let Some(source) = irq_prop.first().copied().and_then(NonZeroU32::new) else {
+            warn!("empty APLIC interrupt specifier");
+            return Err(rdif_intc::IrqError::InvalidIrq);
+        };
+        self.checked_source_index(source)?;
+        let trigger = irq_prop.get(1).and_then(|raw| trigger_from_fdt(*raw));
+        Ok(rdif_intc::ControllerIrqTranslation {
+            hwirq: rdif_intc::HwIrq(source.get()),
+            trigger,
+        })
+    }
+
+    fn configure(
+        &mut self,
+        translation: &rdif_intc::IrqTranslation,
+    ) -> Result<(), rdif_intc::IrqError> {
+        let source =
+            NonZeroU32::new(translation.id.hwirq.0).ok_or(rdif_intc::IrqError::InvalidIrq)?;
+        self.configure_source(source, translation.trigger)
+    }
+
+    fn set_enabled(
+        &mut self,
+        hwirq: rdif_intc::HwIrq,
+        enabled: bool,
+    ) -> Result<(), rdif_intc::IrqError> {
+        let source = NonZeroU32::new(hwirq.0).ok_or(rdif_intc::IrqError::InvalidIrq)?;
+        self.set_source_enabled(source, enabled)
+    }
+}
+
+fn trigger_from_fdt(raw: u32) -> Option<rdif_intc::Trigger> {
+    match raw {
+        IRQ_TYPE_EDGE_RISING => Some(rdif_intc::Trigger::EdgeRising),
+        IRQ_TYPE_EDGE_FALLING => Some(rdif_intc::Trigger::EdgeFailling),
+        IRQ_TYPE_LEVEL_HIGH => Some(rdif_intc::Trigger::LevelHigh),
+        IRQ_TYPE_LEVEL_LOW => Some(rdif_intc::Trigger::LevelLow),
+        _ => None,
+    }
+}
+
+fn aplic_source_mode(trigger: Option<rdif_intc::Trigger>) -> Result<u32, crate::irq::IrqError> {
+    match trigger.unwrap_or(rdif_intc::Trigger::LevelHigh) {
+        rdif_intc::Trigger::EdgeRising => Ok(APLIC_SOURCECFG_SM_EDGE_RISE),
+        rdif_intc::Trigger::EdgeFailling => Ok(APLIC_SOURCECFG_SM_EDGE_FALL),
+        rdif_intc::Trigger::LevelHigh => Ok(APLIC_SOURCECFG_SM_LEVEL_HIGH),
+        rdif_intc::Trigger::LevelLow => Ok(APLIC_SOURCECFG_SM_LEVEL_LOW),
+        rdif_intc::Trigger::EdgeBoth => Err(crate::irq::IrqError::Unsupported),
+    }
+}
+
+unsafe fn imsic_write(reg: usize, value: usize) {
+    unsafe {
+        siselect::write(siselect::Siselect::from_bits(reg));
+        core::arch::asm!("csrw 0x151, {value}", value = in(reg) value);
+    }
+}
+
+unsafe fn imsic_set(reg: usize, value: usize) {
+    unsafe {
+        siselect::write(siselect::Siselect::from_bits(reg));
+        core::arch::asm!("csrs 0x151, {value}", value = in(reg) value);
+    }
+}
+
+unsafe fn imsic_enable_id(source: NonZeroU32) {
+    let source = source.get() as usize;
+    if get_imsic().is_some_and(|imsic| source <= imsic.num_ids) {
+        let reg = imsic_eix_selector(IMSIC_EIE0, source);
+        let bit = 1usize << (source % usize::BITS as usize);
+        unsafe {
+            imsic_set(reg, bit);
+        }
+    }
+}
+
+fn imsic_eix_selector(base: usize, interrupt_id: usize) -> usize {
+    base + interrupt_id / usize::BITS as usize * (usize::BITS as usize / IMSIC_EIX_BITS)
+}
+
+unsafe fn imsic_claim() -> Option<NonZeroU32> {
+    let value: usize;
+    unsafe {
+        core::arch::asm!("csrrw {value}, 0x15c, zero", value = out(reg) value);
+    }
+    NonZeroU32::new(((value >> IMSIC_TOPEI_ID_SHIFT) & IMSIC_TOPEI_ID_MASK) as u32)
+}
+
+unsafe fn write32(base: NonNull<u8>, offset: usize, value: u32) {
+    unsafe {
+        (base.as_ptr().add(offset) as *mut u32).write_volatile(value);
+    }
 }
 
 impl RiscvPlic {

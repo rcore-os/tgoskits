@@ -19,6 +19,10 @@ fn empty_table64() -> [Adma2Desc64; ADMA2_DESC_COUNT] {
     [Adma2Desc64::default(); ADMA2_DESC_COUNT]
 }
 
+fn empty_table64_v4() -> [Adma2Desc64V4; ADMA2_DESC_COUNT] {
+    [Adma2Desc64V4::default(); ADMA2_DESC_COUNT]
+}
+
 #[test]
 fn single_descriptor_for_small_buffer() {
     let mut table = empty_table();
@@ -80,6 +84,21 @@ fn descriptor64_preserves_address_above_4gib() {
     assert_eq!(table[0].address_low, 0x1000);
     assert_eq!(table[0].address_high, 1);
     assert_eq!(table[0].length, 512);
+    assert_ne!(table[0].attr & ADMA2_ATTR_END, 0);
+}
+
+#[test]
+fn descriptor64_v4_uses_128bit_entries_and_preserves_address_above_4gib() {
+    let mut table = empty_table64_v4();
+    let base = 0x2_0000_1000;
+    let written = build_descriptors64_v4(&mut table, base, 512).unwrap();
+
+    assert_eq!(core::mem::size_of::<Adma2Desc64V4>(), 16);
+    assert_eq!(written, 1);
+    assert_eq!(table[0].address_low, 0x1000);
+    assert_eq!(table[0].address_high, 2);
+    assert_eq!(table[0].length, 512);
+    assert_eq!(table[0].reserved, 0);
     assert_ne!(table[0].attr & ADMA2_ATTR_END, 0);
 }
 

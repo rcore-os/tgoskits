@@ -75,6 +75,14 @@ impl Sdhci {
         self.submit_command_in_generation(cmd, true, Some(data), true)
     }
 
+    pub(crate) fn submit_fifo_command(
+        &mut self,
+        cmd: &Command,
+        data: crate::host::PendingData,
+    ) -> Result<(), Error> {
+        self.submit_command_in_generation(cmd, true, Some(data), false)
+    }
+
     fn submit_command_in_generation(
         &mut self,
         cmd: &Command,

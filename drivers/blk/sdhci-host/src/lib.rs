@@ -8,13 +8,16 @@
 //!
 //! # Scope
 //!
-//! - **Implemented**: **ADMA2 (32-bit) transfers**, 1-bit /
-//!   4-bit / 8-bit bus, default-speed and high-speed clocking, 32-bit response
-//!   slots, 136-bit R2 reconstruction, software reset / clock setup.
-//! - **Out of scope (for now)**: 64-bit ADMA2, HS200 / SDR50 / SDR104
-//!   clocking, and tuning (CMD19 / CMD21). Protocol data commands, including
-//!   eMMC `SEND_EXT_CSD`, use the same ADMA2 path as normal block I/O. 1.8 V
-//!   signaling is wired up at the register level but is gated behind
+//! - **Implemented**: **ADMA2 transfers**, including 32-bit descriptors,
+//!   pre-v4 96-bit 64-bit descriptors, and v4 128-bit 64-bit descriptors;
+//!   explicit opt-in FIFO/PIO data transfers for controllers whose DMA path is
+//!   not usable; 1-bit / 4-bit / 8-bit bus, default-speed and high-speed
+//!   clocking, 32-bit response slots, 136-bit R2 reconstruction, software
+//!   reset / clock setup.
+//! - **Out of scope (for now)**: HS200 / SDR50 / SDR104 clocking, and tuning
+//!   (CMD19 / CMD21). Protocol data commands, including eMMC `SEND_EXT_CSD`,
+//!   use the configured host data path. 1.8 V signaling is wired up at the
+//!   register level but is gated behind
 //!   [`Sdhci::enable_1v8_signaling`] — platforms that haven't plumbed the
 //!   IO-rail regulator MUST leave it off so the protocol layer falls back
 //!   instead of corrupting transfers.
@@ -455,10 +458,10 @@ fn handle_irq_core(irq: &host::IrqCore) -> Event {
     let error = raw_error
         & read_u16(irq.base_addr, REG_ERROR_INT_STATUS_ENABLE)
         & read_u16(irq.base_addr, REG_ERROR_INT_SIGNAL_ENABLE);
-    let normal = if error == 0 {
-        normal & !NORMAL_INT_ERROR
+    let normal = if error != 0 {
+        normal | NORMAL_INT_ERROR
     } else {
-        normal
+        normal & !NORMAL_INT_ERROR
     };
     if normal & NORMAL_INT_CARD_INTERRUPT != 0 {
         write_u16(

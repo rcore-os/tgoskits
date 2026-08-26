@@ -1,4 +1,5 @@
 board_type = "BananaPi"
+dtb_file = "os/StarryOS/configs/board/bananapi-bpi-sm10.dtb"
 kernel_load_addr = "0x102200000"
 fit_load_addr = "0x140000000"
 bootm_addr = "0x140000000"

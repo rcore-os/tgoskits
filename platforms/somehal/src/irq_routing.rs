@@ -203,7 +203,7 @@ pub(crate) fn riscv_source_from_plic_hwirq(
 #[cfg(any(test, target_arch = "riscv64"))]
 pub(crate) fn riscv_resolve_controller_line(
     source: IrqSource,
-    is_plic_domain: impl FnOnce() -> bool,
+    is_external_controller_domain: impl FnOnce() -> bool,
 ) -> Result<(), IrqError> {
     match source {
         IrqSource::ControllerLine { domain, hwirq } if domain == CPU_LOCAL_IRQ_DOMAIN => {
@@ -213,7 +213,7 @@ pub(crate) fn riscv_resolve_controller_line(
                 Err(IrqError::InvalidIrq)
             }
         }
-        IrqSource::ControllerLine { .. } if is_plic_domain() => Ok(()),
+        IrqSource::ControllerLine { .. } if is_external_controller_domain() => Ok(()),
         IrqSource::ControllerLine { .. } => Err(IrqError::InvalidIrq),
         IrqSource::AcpiGsi(_) | IrqSource::AcpiGsiRoute(_) => Err(IrqError::Unsupported),
     }

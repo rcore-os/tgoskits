@@ -351,10 +351,15 @@ impl<H: SdMmcIrqHost> SdMmcCard<H> {
                     self.high_capacity = ocr.ccs();
                     match request.kind.ok_or(Error::InvalidArgument)? {
                         CardKind::Sd => {
-                            info!("sdio: switch SD bus width to 4-bit");
-                            let cmd55 = crate::cmd::cmd55(self.rca);
-                            self.host.submit_command(&cmd55)?;
-                            request.state = SdMmcInitState::PollSdBusWidthCmd55;
+                            if self.sd_wide_bus_selection_enabled {
+                                info!("sdio: switch SD bus width to 4-bit");
+                                let cmd55 = crate::cmd::cmd55(self.rca);
+                                self.host.submit_command(&cmd55)?;
+                                request.state = SdMmcInitState::PollSdBusWidthCmd55;
+                            } else {
+                                debug!("sdio: SD wide-bus selection disabled; staying at 1-bit");
+                                request.state = SdMmcInitState::FinishCardSetup;
+                            }
                         }
                         CardKind::Mmc => {
                             request.state = SdMmcInitState::FinishCardSetup;

@@ -20,6 +20,12 @@ pub(crate) struct PendingData {
     pub block_count: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DataPath {
+    Adma2,
+    Fifo,
+}
+
 mod irq_state;
 pub(crate) use irq_state::IrqCore;
 
@@ -48,6 +54,10 @@ pub struct Sdhci {
     /// integrations use this for vendor PHY/DLL defaults that reset does not
     /// leave in a usable identification-mode state.
     pub(crate) reset_hook: Option<Box<dyn HostResetHook>>,
+    /// Optional reference-clock override for controllers whose SDHCI
+    /// Capabilities register reports `BaseClockFreq = 0` even though the
+    /// platform has a fixed or firmware-described input clock.
+    pub(crate) base_clock_hz_override: Option<u32>,
     /// Optional monotonic timer used by asynchronous bus-operation state
     /// machines that have specification-defined wall-clock delays.
     pub(crate) timer: Option<&'static dyn HostTimer>,
@@ -65,6 +75,7 @@ pub struct Sdhci {
     /// Controller-lifetime ADMA2 table. Queue depth one guarantees that the
     /// hardware and the maintenance thread never reuse it concurrently.
     pub(crate) adma2_table: Option<Adma2DescriptorTable>,
+    pub(crate) data_path: DataPath,
     pub(crate) dma_mask: u64,
     pub(crate) v4_mode: bool,
     pub(crate) dma_poisoned: bool,
@@ -88,11 +99,13 @@ impl Sdhci {
             command_state: CommandState::Idle,
             ext_clock: None,
             reset_hook: None,
+            base_clock_hz_override: None,
             timer: None,
             support_1v8: false,
             active_data_cmd: 0,
             dma: None,
             adma2_table: None,
+            data_path: DataPath::Adma2,
             dma_mask: u32::MAX as u64,
             v4_mode: false,
             dma_poisoned: false,
@@ -158,6 +171,15 @@ impl Sdhci {
         self.ext_clock = None;
     }
 
+    /// Override the SDHCI Capabilities base reference clock.
+    ///
+    /// Use this for controllers with a broken `Base Clock Frequency` field
+    /// when firmware or platform data supplies the real input clock. Passing
+    /// zero clears the override so the value is read from Capabilities again.
+    pub fn set_base_clock_hz_override(&mut self, base_clock_hz: u32) {
+        self.base_clock_hz_override = (base_clock_hz != 0).then_some(base_clock_hz);
+    }
+
     /// Install a platform post-reset hook. The hook is called after ResetAll
     /// clears, both for the legacy blocking reset helper and for the native
     /// `sdmmc-host` bus-operation state machine.
@@ -206,16 +228,29 @@ impl Sdhci {
         self.support_1v8 = true;
     }
 
+    /// Select the standard SDHCI FIFO data path for subsequent data commands.
+    ///
+    /// The default remains ADMA2. Platforms should opt into FIFO before
+    /// [`Self::configure_dma`] only when their controller cannot safely run
+    /// descriptor-based DMA for normal block I/O.
+    pub fn use_fifo_data_path(&mut self) -> Result<(), Error> {
+        if self.dma.is_some() || !matches!(self.command_state, CommandState::Idle) {
+            return Err(Error::UnsupportedCommand);
+        }
+        self.data_path = DataPath::Fifo;
+        Ok(())
+    }
+
     /// Install a DMA capability used by the high-level data-transfer hooks.
     ///
-    /// Once installed, data transactions use ADMA2 for compatible block I/O.
-    /// Requests are rejected when DMA is unavailable or violates the host
-    /// limits; the driver never falls back to PIO.
+    /// Once installed, data transactions use the configured host data path:
+    /// ADMA2 by default, or FIFO when [`Self::use_fifo_data_path`] was called
+    /// before this method.
     pub fn configure_dma(&mut self, dma: DeviceDma) -> Result<(), Error> {
         if !matches!(self.command_state, CommandState::Idle) {
             return Err(Error::UnsupportedCommand);
         }
-        if !self.supports_adma2() {
+        if self.data_path == DataPath::Adma2 && !self.supports_adma2() {
             return Err(Error::UnsupportedCommand);
         }
         let hardware_mask = if self.supports_64bit_system_addressing() {
@@ -228,10 +263,15 @@ impl Sdhci {
         constraints.align = constraints.align.max(4);
         let dma = dma.with_constraints(constraints);
         let use_64bit = hardware_mask > u32::MAX as u64 && self.supports_64bit_system_addressing();
-        let table = Adma2DescriptorTable::allocate(&dma, use_64bit)?;
+        let table = if self.data_path == DataPath::Adma2 {
+            let table = Adma2DescriptorTable::allocate(&dma, use_64bit, self.v4_mode)?;
+            Some(table)
+        } else {
+            None
+        };
         self.dma_mask = hardware_mask;
         self.dma = Some(dma);
-        self.adma2_table = Some(table);
+        self.adma2_table = table;
         Ok(())
     }
 
@@ -243,9 +283,7 @@ impl Sdhci {
         if self.dma.is_some() || !matches!(self.command_state, CommandState::Idle) {
             return Err(Error::UnsupportedCommand);
         }
-        let mut control = self.read_u16(REG_HOST_CONTROL2);
-        control |= HOST_CTRL2_V4_MODE;
-        self.write_u16(REG_HOST_CONTROL2, control);
+        self.enable_v4_register_bit();
         self.v4_mode = true;
         Ok(())
     }
@@ -292,6 +330,9 @@ impl Sdhci {
             if self.read_u8(REG_SOFTWARE_RESET) & mask == 0 {
                 if mask == RESET_ALL {
                     self.call_after_reset_hook()?;
+                    if self.v4_mode {
+                        self.enable_v4_register_bit();
+                    }
                 }
                 return Ok(());
             }
@@ -469,6 +510,9 @@ impl Sdhci {
 
     /// Read the controller's base reference clock from Capabilities (Hz).
     pub fn base_clock_hz(&self) -> u32 {
+        if let Some(base_clock_hz) = self.base_clock_hz_override {
+            return base_clock_hz;
+        }
         let caps_low = self.read_u32(REG_CAPABILITIES_LOW);
         // SDHCI v3: bits 15..8 contain "Base Clock Frequency" in MHz.
         // SDHCI v2: bits 13..8 contain it. Use the wider mask; QEMU
@@ -485,7 +529,11 @@ impl Sdhci {
     pub fn supports_64bit_system_addressing(&self) -> bool {
         let capabilities = self.read_u32(REG_CAPABILITIES_LOW);
         if self.v4_mode {
-            capabilities & CAPS_LOW_64BIT_SYSBUS_V4 != 0
+            // Some DWC MSHC integrations keep advertising the legacy v3
+            // 64-bit capability bit after software enables v4 register
+            // semantics. The v4 mode bit selects the 128-bit descriptor
+            // format; either capability bit is enough to keep high-memory DMA.
+            capabilities & (CAPS_LOW_64BIT_SYSBUS_V4 | CAPS_LOW_64BIT_SYSBUS_V3) != 0
         } else {
             capabilities & CAPS_LOW_64BIT_SYSBUS_V3 != 0
         }
@@ -512,7 +560,7 @@ impl Sdhci {
         self.write_u8(REG_HOST_CONTROL1, ctrl);
 
         if self.v4_mode {
-            let mut ctrl2 = self.read_u16(REG_HOST_CONTROL2);
+            let mut ctrl2 = self.read_u16(REG_HOST_CONTROL2) | HOST_CTRL2_V4_MODE;
             if use_64bit {
                 ctrl2 |= HOST_CTRL2_64BIT_ADDR;
             } else {
@@ -520,6 +568,16 @@ impl Sdhci {
             }
             self.write_u16(REG_HOST_CONTROL2, ctrl2);
         }
+    }
+
+    pub(crate) fn select_fifo(&mut self) {
+        let ctrl = self.read_u8(REG_HOST_CONTROL1) & !HOST_CTRL1_DMA_SEL_MASK;
+        self.write_u8(REG_HOST_CONTROL1, ctrl);
+    }
+
+    pub(crate) fn enable_v4_register_bit(&self) {
+        let control = self.read_u16(REG_HOST_CONTROL2) | HOST_CTRL2_V4_MODE;
+        self.write_u16(REG_HOST_CONTROL2, control);
     }
 
     /// Read raw 32-bit response slot.

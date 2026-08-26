@@ -32,6 +32,11 @@ fn plic_irq_id_from_claimed_source(source: usize) -> Result<IrqId, IrqError> {
     Ok(IrqId::new(domain, HwIrq(source)))
 }
 
+fn is_riscv_external_domain(domain: crate::irq::IrqDomainId) -> bool {
+    crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::RiscvPlic)
+        || crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::RiscvAplic)
+}
+
 fn checked_cpu_local_irq(hwirq: HwIrq) -> Result<IrqId, IrqError> {
     if riscv_cpu_local_hwirq_is_runtime_irq(hwirq) {
         Ok(IrqId::new(CPU_LOCAL_IRQ_DOMAIN, hwirq))
@@ -50,6 +55,9 @@ impl PlatOp for Plat {
         if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvPlic) {
             return crate::irq::set_controller_irq_enabled(irq, enable);
         }
+        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvAplic) {
+            return crate::irq::set_controller_irq_enabled(irq, enable);
+        }
         Err(IrqError::InvalidIrq)
     }
 
@@ -60,6 +68,9 @@ impl PlatOp for Plat {
         if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvPlic) {
             return plic::irq_set_affinity(irq.hwirq, affinity);
         }
+        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvAplic) {
+            return plic::aplic_irq_set_affinity(irq.hwirq, affinity);
+        }
         Err(IrqError::InvalidIrq)
     }
 
@@ -68,6 +79,9 @@ impl PlatOp for Plat {
     }
 
     fn active_irq_id(active: &Self::ActiveIrq) -> IrqId {
+        if let Some(irq) = active.framework_id() {
+            return irq;
+        }
         let raw: usize = active.id().into();
         if raw & RISCV_INTERRUPT_BIT != 0 {
             riscv_cpu_local_irq_from_raw(raw).expect("active RISC-V local IRQ must be validated")
@@ -86,8 +100,8 @@ impl PlatOp for Plat {
         riscv_resolve_controller_line(source, || {
             matches!(
                 source,
-                IrqSource::ControllerLine { domain, .. }
-                    if crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::RiscvPlic)
+            IrqSource::ControllerLine { domain, .. }
+                    if is_riscv_external_domain(domain)
             )
         })?;
         match source {
@@ -95,7 +109,9 @@ impl PlatOp for Plat {
                 checked_cpu_local_irq(hwirq)
             }
             IrqSource::ControllerLine { domain, hwirq } => {
-                plic::source_from_hwirq(hwirq)?;
+                if crate::irq::domain_is_kind(domain, crate::irq::IrqDomainKind::RiscvPlic) {
+                    plic::source_from_hwirq(hwirq)?;
+                }
                 Ok(IrqId::new(domain, hwirq))
             }
             IrqSource::AcpiGsi(_) | IrqSource::AcpiGsiRoute(_) => unreachable!(),

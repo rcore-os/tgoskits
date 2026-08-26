@@ -1,0 +1,32 @@
+/dts-v1/;
+
+/ {
+    description = "StarryOS BananaPi BPI-SM10 high-address FIT";
+    #address-cells = <2>;
+
+    images {
+        kernel {
+            description = "StarryOS kernel";
+            data = /incbin/("${kernel_bin}");
+            type = "kernel";
+            arch = "riscv";
+            os = "linux";
+            compression = "none";
+            load = <0x00000001 0x02200000>;
+            entry = <0x00000001 0x02200000>;
+
+            hash {
+                algo = "sha256";
+            };
+        };
+    };
+
+    configurations {
+        default = "config-ostool";
+
+        config-ostool {
+            description = "ostool configuration";
+            kernel = "kernel";
+        };
+    };
+};

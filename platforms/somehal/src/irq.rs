@@ -28,13 +28,16 @@ pub const AARCH64_GIC_DOMAIN: IrqDomainId = IrqDomainId(3);
 /// RISC-V PLIC interrupt domain.
 pub const RISCV_PLIC_DOMAIN: IrqDomainId = IrqDomainId(4);
 
+/// RISC-V APLIC interrupt domain.
+pub const RISCV_APLIC_DOMAIN: IrqDomainId = IrqDomainId(7);
+
 /// LoongArch EIOINTC interrupt domain.
 pub const LOONGARCH_EIOINTC_DOMAIN: IrqDomainId = IrqDomainId(5);
 
 /// LoongArch PCH-PIC interrupt domain.
 pub const LOONGARCH_PCH_PIC_DOMAIN: IrqDomainId = IrqDomainId(6);
 
-const DYNAMIC_IRQ_DOMAIN_BASE: u16 = 7;
+const DYNAMIC_IRQ_DOMAIN_BASE: u16 = 8;
 const INVALID_IRQ_DOMAIN: u16 = u16::MAX;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +46,7 @@ pub enum IrqDomainKind {
     X86Msi,
     AArch64Gic,
     RiscvPlic,
+    RiscvAplic,
     LoongArchEioIntc,
     LoongArchPchPic,
     LoongArchLioIntc,
@@ -98,6 +102,7 @@ static X86_IOAPIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static X86_MSI_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static AARCH64_GIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static RISCV_PLIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
+static RISCV_APLIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static LOONGARCH_EIOINTC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static LOONGARCH_PCH_PIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static LOONGARCH_LIOINTC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
@@ -209,6 +214,7 @@ fn domain_slot(kind: IrqDomainKind) -> Option<&'static AtomicU16> {
         IrqDomainKind::X86Msi => Some(&X86_MSI_DOMAIN_SLOT),
         IrqDomainKind::AArch64Gic => Some(&AARCH64_GIC_DOMAIN_SLOT),
         IrqDomainKind::RiscvPlic => Some(&RISCV_PLIC_DOMAIN_SLOT),
+        IrqDomainKind::RiscvAplic => Some(&RISCV_APLIC_DOMAIN_SLOT),
         IrqDomainKind::LoongArchEioIntc => Some(&LOONGARCH_EIOINTC_DOMAIN_SLOT),
         IrqDomainKind::LoongArchPchPic => Some(&LOONGARCH_PCH_PIC_DOMAIN_SLOT),
         IrqDomainKind::LoongArchLioIntc => Some(&LOONGARCH_LIOINTC_DOMAIN_SLOT),
@@ -583,6 +589,7 @@ mod tests {
             IrqDomainKind::X86Msi,
             IrqDomainKind::AArch64Gic,
             IrqDomainKind::RiscvPlic,
+            IrqDomainKind::RiscvAplic,
             IrqDomainKind::LoongArchEioIntc,
             IrqDomainKind::LoongArchPchPic,
             IrqDomainKind::LoongArchLioIntc,
@@ -601,7 +608,7 @@ mod tests {
         let owner = DeviceId::new();
         let domain = alloc_irq_domain(owner, IrqDomainKind::RiscvPlic).unwrap();
 
-        assert_eq!(domain, IrqDomainId(7));
+        assert_eq!(domain, IrqDomainId(8));
         assert_eq!(
             alloc_irq_domain(owner, IrqDomainKind::RiscvPlic),
             Ok(domain)

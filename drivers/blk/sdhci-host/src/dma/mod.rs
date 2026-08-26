@@ -36,7 +36,7 @@ use sdmmc_protocol::{
 
 use crate::{
     command::CommandState,
-    host::{PendingData, Sdhci},
+    host::{DataPath, PendingData, Sdhci},
     regs::*,
 };
 
@@ -69,39 +69,58 @@ pub(crate) struct Adma2Desc64 {
     address_high: u32,
 }
 
+/// 128-bit ADMA2 descriptor used for 64-bit system addresses in v4 mode.
+#[repr(C, align(4))]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Adma2Desc64V4 {
+    attr: u16,
+    length: u16,
+    address_low: u32,
+    address_high: u32,
+    reserved: u32,
+}
+
 pub(crate) enum Adma2DescriptorTable {
     Addr32(CoherentArray<Adma2Desc32>),
-    Addr64(CoherentArray<Adma2Desc64>),
+    Addr64V3(CoherentArray<Adma2Desc64>),
+    Addr64V4(CoherentArray<Adma2Desc64V4>),
 }
 
 impl Adma2DescriptorTable {
-    pub(crate) fn allocate(dma: &DeviceDma, use_64bit: bool) -> Result<Self, Error> {
-        if use_64bit {
-            dma.coherent_array_zero_with_align::<Adma2Desc64>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
-                .map(Self::Addr64)
-                .map_err(map_dma_error)
-        } else {
-            dma.coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
+    pub(crate) fn allocate(dma: &DeviceDma, use_64bit: bool, v4_mode: bool) -> Result<Self, Error> {
+        match (use_64bit, v4_mode) {
+            (true, true) => dma
+                .coherent_array_zero_with_align::<Adma2Desc64V4>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
+                .map(Self::Addr64V4)
+                .map_err(map_dma_error),
+            (true, false) => dma
+                .coherent_array_zero_with_align::<Adma2Desc64>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
+                .map(Self::Addr64V3)
+                .map_err(map_dma_error),
+            (false, _) => dma
+                .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
                 .map(Self::Addr32)
-                .map_err(map_dma_error)
+                .map_err(map_dma_error),
         }
     }
 
     pub(crate) fn is_64bit(&self) -> bool {
-        matches!(self, Self::Addr64(_))
+        matches!(self, Self::Addr64V3(_) | Self::Addr64V4(_))
     }
 
     pub(crate) fn dma_addr(&self) -> u64 {
         match self {
             Self::Addr32(table) => table.dma_addr().as_u64(),
-            Self::Addr64(table) => table.dma_addr().as_u64(),
+            Self::Addr64V3(table) => table.dma_addr().as_u64(),
+            Self::Addr64V4(table) => table.dma_addr().as_u64(),
         }
     }
 
     pub(crate) fn bytes_len(&self) -> usize {
         match self {
             Self::Addr32(table) => table.bytes_len(),
-            Self::Addr64(table) => table.bytes_len(),
+            Self::Addr64V3(table) => table.bytes_len(),
+            Self::Addr64V4(table) => table.bytes_len(),
         }
     }
 
@@ -113,7 +132,8 @@ impl Adma2DescriptorTable {
     ) -> Result<usize, Error> {
         match self {
             Self::Addr32(desc) => build_descriptors32_into_dma(desc, base, total_len, phase),
-            Self::Addr64(desc) => build_descriptors64_into_dma(desc, base, total_len),
+            Self::Addr64V3(desc) => build_descriptors64_into_dma(desc, base, total_len),
+            Self::Addr64V4(desc) => build_descriptors64_v4_into_dma(desc, base, total_len),
         }
     }
 }
@@ -194,6 +214,7 @@ enum BlockRequestKind {
         buffer: DmaRequestBuffer,
         cmd_index: u8,
         phase: Phase,
+        block_size: u32,
         stage: BlockRequestStage,
         stop_after_complete: bool,
         response: Option<Response>,
@@ -203,6 +224,7 @@ enum BlockRequestKind {
         buffer: DmaRequestBuffer,
         cmd_index: u8,
         phase: Phase,
+        block_size: u32,
         stage: BlockRequestStage,
         stop_after_complete: bool,
         response: Option<Response>,
@@ -215,6 +237,15 @@ enum DmaRequestBuffer {
         readback: Option<(NonNull<u8>, usize)>,
     },
     Owned(InFlightDma),
+    FifoBorrowed {
+        buffer: NonNull<u8>,
+        len: usize,
+        offset: usize,
+    },
+    FifoOwned {
+        buffer: CompletedDma,
+        offset: usize,
+    },
 }
 
 impl DmaRequestBuffer {
@@ -253,6 +284,65 @@ impl DmaRequestBuffer {
                 }
                 Some(unsafe { in_flight.complete_after_quiesce() })
             }
+            Self::FifoBorrowed { .. } => None,
+            Self::FifoOwned { buffer, .. } => Some(buffer),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Bounce {
+                buffer, readback, ..
+            } => readback.map_or_else(|| buffer.len().get(), |(_, len)| len),
+            Self::Owned(buffer) => buffer.len().get(),
+            Self::FifoBorrowed { len, .. } => *len,
+            Self::FifoOwned { buffer, .. } => buffer.len().get(),
+        }
+    }
+
+    fn offset(&self) -> usize {
+        match self {
+            Self::FifoBorrowed { offset, .. } | Self::FifoOwned { offset, .. } => *offset,
+            Self::Bounce { .. } | Self::Owned(_) => 0,
+        }
+    }
+
+    fn set_offset(&mut self, offset: usize) -> Result<(), Error> {
+        match self {
+            Self::FifoBorrowed { offset: stored, .. } | Self::FifoOwned { offset: stored, .. } => {
+                *stored = offset;
+                Ok(())
+            }
+            Self::Bounce { .. } | Self::Owned(_) => Err(Error::InvalidArgument),
+        }
+    }
+
+    fn read_slice(&self) -> Result<&[u8], Error> {
+        match self {
+            Self::FifoBorrowed { buffer, len, .. } => {
+                // The in-flight request owns the borrowed transaction lifetime;
+                // FIFO progress never hands this backing to device DMA.
+                Ok(unsafe { core::slice::from_raw_parts(buffer.as_ptr().cast_const(), *len) })
+            }
+            Self::FifoOwned { buffer, .. } => Ok(buffer.as_slice_cpu()),
+            Self::Bounce { .. } | Self::Owned(_) => Err(Error::InvalidArgument),
+        }
+    }
+
+    fn write_slice(&mut self) -> Result<&mut [u8], Error> {
+        match self {
+            Self::FifoBorrowed { buffer, len, .. } => {
+                // The request has exclusive access to the caller's mutable
+                // read buffer for the transaction lifetime.
+                Ok(unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), *len) })
+            }
+            Self::FifoOwned { buffer, .. } => {
+                // `submit_prepared_fifo_data_request` converts the backing to
+                // CPU-visible ownership before creating this request; FIFO
+                // progress does not expose it to device DMA.
+                Ok(unsafe { buffer.as_mut_slice_cpu() })
+            }
+            Self::Bounce { .. } | Self::Owned(_) => Err(Error::InvalidArgument),
         }
     }
 }
@@ -275,6 +365,37 @@ impl BlockRequest {
         match &self.inner {
             BlockRequestKind::Read { response, .. } | BlockRequestKind::Write { response, .. } => {
                 *response
+            }
+        }
+    }
+
+    fn block_size(&self) -> Result<u32, Error> {
+        match &self.inner {
+            BlockRequestKind::Read { block_size, .. }
+            | BlockRequestKind::Write { block_size, .. } => Ok(*block_size),
+        }
+    }
+
+    fn buffer_len(&self) -> Result<usize, Error> {
+        match &self.inner {
+            BlockRequestKind::Read { buffer, .. } | BlockRequestKind::Write { buffer, .. } => {
+                Ok(buffer.len())
+            }
+        }
+    }
+
+    fn buffer_offset(&self) -> Result<usize, Error> {
+        match &self.inner {
+            BlockRequestKind::Read { buffer, .. } | BlockRequestKind::Write { buffer, .. } => {
+                Ok(buffer.offset())
+            }
+        }
+    }
+
+    fn buffer_mut(&mut self) -> Result<&mut DmaRequestBuffer, Error> {
+        match &mut self.inner {
+            BlockRequestKind::Read { buffer, .. } | BlockRequestKind::Write { buffer, .. } => {
+                Ok(buffer)
             }
         }
     }
@@ -446,6 +567,64 @@ fn build_descriptors64_into_dma(
     }
     let mut table = [Adma2Desc64::default(); ADMA2_DESC_COUNT];
     let written = build_descriptors64(&mut table, base, total_len)?;
+    desc.write_with_cpu(ADMA2_DESC_COUNT, |descs| {
+        descs.copy_from_slice(&table);
+    });
+    Ok(written)
+}
+
+fn build_descriptors64_v4(
+    table: &mut [Adma2Desc64V4; ADMA2_DESC_COUNT],
+    base: u64,
+    total_len: usize,
+) -> Result<usize, Error> {
+    if total_len == 0 || base & 0x3 != 0 {
+        return Err(Error::Misaligned);
+    }
+    base.checked_add(total_len as u64)
+        .ok_or(Error::InvalidArgument)?;
+
+    let mut remaining = total_len;
+    let mut offset = 0_u64;
+    let mut written = 0;
+    while remaining > 0 {
+        if written >= ADMA2_DESC_COUNT {
+            return Err(Error::Misaligned);
+        }
+        let boundary = DWC_MSHC_ADMA_BOUNDARY as u64;
+        let boundary_room = boundary - ((base + offset) % boundary);
+        let chunk = remaining
+            .min(ADMA2_MAX_PER_DESC)
+            .min(boundary_room as usize);
+        let mut attr = ADMA2_ATTR_VALID | ADMA2_ATTR_ACT_TRAN;
+        if chunk == remaining {
+            attr |= ADMA2_ATTR_END;
+        }
+        let address = base + offset;
+        table[written] = Adma2Desc64V4 {
+            attr,
+            length: chunk as u16,
+            address_low: address as u32,
+            address_high: (address >> 32) as u32,
+            reserved: 0,
+        };
+        written += 1;
+        offset += chunk as u64;
+        remaining -= chunk;
+    }
+    Ok(written)
+}
+
+fn build_descriptors64_v4_into_dma(
+    desc: &mut CoherentArray<Adma2Desc64V4>,
+    base: u64,
+    total_len: usize,
+) -> Result<usize, Error> {
+    if desc.len() < ADMA2_DESC_COUNT {
+        return Err(Error::InvalidArgument);
+    }
+    let mut table = [Adma2Desc64V4::default(); ADMA2_DESC_COUNT];
+    let written = build_descriptors64_v4(&mut table, base, total_len)?;
     desc.write_with_cpu(ADMA2_DESC_COUNT, |descs| {
         descs.copy_from_slice(&table);
     });

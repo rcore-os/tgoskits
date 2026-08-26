@@ -173,6 +173,26 @@ fn sd_speed_selection_can_be_disabled_for_default_speed_bringup() {
 }
 
 #[test]
+fn sd_wide_bus_selection_can_be_disabled_for_1bit_bringup() {
+    let replies = sd_init_replies_with_ocr(ocr_ready_sdhc_s18a());
+    let host = MockHost::with_results(replies);
+    let mut driver = SdMmcCard::new(host);
+    driver.set_sd_wide_bus_selection_enabled(false);
+    driver.set_sd_speed_selection_enabled(false);
+
+    poll_init_to_completion(&mut driver).expect("SD init succeeds without ACMD6 bus switching");
+
+    assert_eq!(driver.host().bus_width, Some(BusWidth::Bit1));
+    assert_eq!(driver.host().last_clock, Some(ClockSpeed::Default));
+    assert!(
+        driver.host().commands.iter().all(|command| {
+            command.index != 6 || command.argument != sd_acmd6_arg(BusWidth::Bit4).unwrap()
+        }),
+        "ACMD6 4-bit bus-width switch must not be issued"
+    );
+}
+
+#[test]
 fn sd_init_keeps_default_speed_when_switch_function_is_unsupported() {
     let replies = sd_init_replies_with_ocr(ocr_ready_sdhc_s18a());
     let host = MockHost::with_results(replies);

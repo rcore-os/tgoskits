@@ -1,3 +1,12 @@
+pub(crate) fn probe_pre_kernel_devices() {
+    if !rdrive::is_initialized() {
+        warn!("rdrive is not initialized; skip pre-kernel platform device probe");
+        return;
+    }
+    rdrive::probe_pre_kernel()
+        .unwrap_or_else(|err| panic!("failed to probe pre-kernel platform devices: {err:?}"));
+}
+
 pub(crate) fn probe_all_devices() {
     info!("Probe platform devices...");
     if !rdrive::is_initialized() {

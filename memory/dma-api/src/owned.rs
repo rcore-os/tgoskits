@@ -256,6 +256,18 @@ impl CompletedDma {
         self.buffer.direction()
     }
 
+    pub fn as_slice_cpu(&self) -> &[u8] {
+        self.buffer.as_slice_cpu()
+    }
+
+    /// # Safety
+    ///
+    /// The caller must ensure no device can access this buffer while the
+    /// returned mutable CPU slice is used.
+    pub unsafe fn as_mut_slice_cpu(&mut self) -> &mut [u8] {
+        unsafe { self.buffer.as_mut_slice_cpu() }
+    }
+
     pub fn copy_to_slice_cpu(&self, dst: &mut [u8]) {
         self.buffer
             .backing

@@ -183,6 +183,9 @@ impl Sdhci {
         if self.read_u8(REG_SOFTWARE_RESET) & mask == 0 {
             if mask == RESET_ALL {
                 self.call_after_reset_hook().map_err(map_protocol_error)?;
+                if self.v4_mode {
+                    self.enable_v4_register_bit();
+                }
                 self.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CLEAR_ALL);
                 self.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_CLEAR_ALL);
                 self.clear_cached_irq_status();
