@@ -57,8 +57,8 @@ fn socket_payloads_cross_transport_locks_through_kernel_staging_buffers() {
     let recv_impl = section(NET_IO, "fn recv_impl(", "\n}\n\npub fn sys_recvfrom");
 
     assert!(send.contains("src.read_exact(&mut staging)"));
-    assert!(send.contains("self.inner.send(staging.as_slice(), options)"));
-    assert!(receive.contains("self.inner.recv(&mut staging, options)"));
+    assert!(send.contains("self.inner.try_send(&mut staging, &mut options)"));
+    assert!(receive.contains("self.inner.try_recv(&mut staging, &mut options)"));
     assert!(receive.contains("dst.write_all(&buffer[..copied])"));
     assert!(file_like.contains("self.recv_to_user(dst, RecvOptions::default())"));
     assert!(file_like.contains("self.send_from_user("));
