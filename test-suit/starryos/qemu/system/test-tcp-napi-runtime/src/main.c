@@ -576,6 +576,14 @@ static int run_signal_wait(enum signal_wait_kind kind)
                 _exit(1);
             }
         }
+        struct signal_pump pump = {
+            .target = pthread_self(),
+        };
+        atomic_init(&pump.stop, false);
+        pthread_t pump_thread;
+        if (pthread_create(&pump_thread, NULL, run_signal_pump, &pump) != 0) {
+            _exit(1);
+        }
         if (write(ready[1], "R", 1) != 1) {
             _exit(1);
         }
@@ -592,16 +600,20 @@ static int run_signal_wait(enum signal_wait_kind kind)
             count = raw_epoll_wait(epfd, &event, -1);
         }
         int saved_errno = errno;
+        atomic_store_explicit(&pump.stop, true, memory_order_release);
+        pthread_join(pump_thread, NULL);
         close_fd(epfd);
+        if (count != -1 || saved_errno != EINTR || !got_usr1) {
+            dprintf(STDERR_FILENO,
+                    "wait-eintr: kind=%d count=%ld errno=%d got_usr1=%d\n",
+                    kind, count, saved_errno, got_usr1);
+        }
         _exit(count == -1 && saved_errno == EINTR && got_usr1 ? 0 : 1);
     }
 
     close(server);
     close(ready[1]);
     int result = read_ready(ready[0]);
-    if (result == 0 && kill(child, SIGUSR1) < 0) {
-        result = -1;
-    }
     if (result == 0) {
         result = wait_child(child);
     } else {
