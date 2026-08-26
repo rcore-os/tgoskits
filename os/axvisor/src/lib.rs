@@ -13,15 +13,18 @@ mod shell_fs;
 pub mod shell_support {
     use alloc::string::String;
 
-    /// Formats text submitted by the Axvisor shell.
+    /// Formats a text fragment submitted by the Axvisor shell.
+    pub fn format_fragment(args: core::fmt::Arguments<'_>) -> String {
+        alloc::fmt::format(args)
+    }
+
+    /// Formats a complete text line submitted by the Axvisor shell.
     ///
     /// The shared host-output queue preserves raw bytes because it also carries
     /// guest output. Shell-owned lines must therefore provide their own CRLF.
-    pub fn format_output(args: core::fmt::Arguments<'_>, newline: bool) -> String {
-        let mut output = alloc::fmt::format(args);
-        if newline {
-            output.push_str("\r\n");
-        }
+    pub fn format_line(args: core::fmt::Arguments<'_>) -> String {
+        let mut output = format_fragment(args);
+        output.push_str("\r\n");
         output
     }
 
@@ -35,19 +38,17 @@ pub mod shell_support {
 
     #[cfg(test)]
     mod tests {
-        use super::format_output;
+        use super::{format_fragment, format_line};
 
         #[test]
         fn shell_newline_is_a_terminal_crlf_sequence() {
-            assert_eq!(
-                format_output(format_args!("shell line"), true),
-                "shell line\r\n"
-            );
+            assert_eq!(format_line(format_args!("shell line")), "shell line\r\n");
+            assert_eq!(format_line(format_args!("")), "\r\n");
         }
 
         #[test]
         fn shell_fragment_has_no_implicit_line_ending() {
-            assert_eq!(format_output(format_args!("prompt: "), false), "prompt: ");
+            assert_eq!(format_fragment(format_args!("prompt: ")), "prompt: ");
         }
     }
 }
