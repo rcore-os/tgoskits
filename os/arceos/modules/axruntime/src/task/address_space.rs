@@ -295,16 +295,34 @@ pub(super) fn current_hardware_root() -> usize {
     ax_hal::asm::read_user_page_table().as_usize()
 }
 
+#[cfg(any(feature = "uspace", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HardwareAddressSpaceTransition {
+    SameAddressSpace,
+    DifferentAddressSpace,
+}
+
+#[cfg(any(feature = "uspace", test))]
+fn hardware_root_install_required(
+    current_root: usize,
+    next_root: usize,
+    transition: HardwareAddressSpaceTransition,
+) -> bool {
+    current_root != next_root || transition == HardwareAddressSpaceTransition::DifferentAddressSpace
+}
+
 #[cfg(feature = "uspace")]
-fn install_hardware_root(root: usize) {
-    if current_hardware_root() != root {
+fn install_hardware_root(root: usize, transition: HardwareAddressSpaceTransition) {
+    if hardware_root_install_required(current_hardware_root(), root, transition) {
         let root = ax_memory_addr::PhysAddr::from(root);
         // SAFETY: callers retain local IRQ exclusion for the complete active-mm
         // transaction.
         unsafe { ax_hal::asm::write_user_page_table(root) };
-        // Writing CR3 already invalidates the non-global x86 TLB. The other
+        // Linux reloads CR3 when the logical mm changes even if a reclaimed
+        // page-table frame gives the new mm the same root address. Otherwise
+        // non-PCID x86 can retain translations from the former mm. The other
         // architecture backends only update their root register and require an
-        // explicit invalidation.
+        // explicit invalidation for the same identity transition.
         #[cfg(not(target_arch = "x86_64"))]
         ax_hal::asm::flush_tlb(None);
     }
@@ -317,7 +335,7 @@ fn enter_lazy_kernel_address_space() {
     // installs its reserved lower root so a kernel thread cannot use the
     // previous task's user mappings.
     #[cfg(target_arch = "aarch64")]
-    install_hardware_root(0);
+    install_hardware_root(0, HardwareAddressSpaceTransition::DifferentAddressSpace);
 }
 
 #[cfg(feature = "uspace")]
@@ -327,7 +345,7 @@ fn commit_user_address_space_activation(
     previous: Option<&RuntimeAddressSpace>,
     next_raw: usize,
     next: &RuntimeAddressSpace,
-    install_root: impl FnOnce(usize),
+    install_root: impl FnOnce(usize, HardwareAddressSpaceTransition),
     publish_active: impl FnOnce(usize),
 ) -> bool {
     let same_address_space = next_raw == previous_raw
@@ -343,12 +361,15 @@ fn commit_user_address_space_activation(
         // thread temporarily installed the reserved lower root. The runtime
         // backend suppresses the write when the hardware root is already
         // correct, so user-to-user switches in the same mm remain a no-op.
-        install_root(next.root);
+        install_root(next.root, HardwareAddressSpaceTransition::SameAddressSpace);
         return false;
     }
     next.active_cpus.fetch_add(1, Ordering::AcqRel);
     next.cpu_state.activate(cpu_id);
-    install_root(next.root);
+    install_root(
+        next.root,
+        HardwareAddressSpaceTransition::DifferentAddressSpace,
+    );
     publish_active(next_raw);
     if let Some(previous) = previous {
         previous.cpu_state.deactivate(cpu_id);
@@ -435,7 +456,10 @@ pub(super) fn release_current_active_address_space() {
             if previous_raw == 0 {
                 return false;
             }
-            install_hardware_root(offline_kernel_root());
+            install_hardware_root(
+                offline_kernel_root(),
+                HardwareAddressSpaceTransition::DifferentAddressSpace,
+            );
             ACTIVE_ADDRESS_SPACE.write_current(pin, 0);
             let previous = AddressSpaceHandle::from_raw(previous_raw);
             let previous = runtime_address_space(previous)
@@ -813,7 +837,7 @@ mod tests {
             Some(previous_runtime),
             next.handle().into_raw(),
             next_runtime,
-            |root| {
+            |root, _transition| {
                 if hardware_root.swap(root, Ordering::AcqRel) != root {
                     hardware_installs.fetch_add(1, Ordering::Relaxed);
                 }
@@ -868,7 +892,7 @@ mod tests {
             Some(previous_runtime),
             next.handle().into_raw(),
             next_runtime,
-            |root| {
+            |root, _transition| {
                 if hardware_root.swap(root, Ordering::AcqRel) != root {
                     hardware_installs.fetch_add(1, Ordering::Relaxed);
                 }
@@ -890,5 +914,19 @@ mod tests {
         assert_eq!(next_leases, 0);
         assert_eq!(active_publications.load(Ordering::Relaxed), 0);
         assert!(!reclaim_ready);
+    }
+
+    #[test]
+    fn different_address_space_reusing_same_root_requires_hardware_install() {
+        assert!(hardware_root_install_required(
+            0x4000,
+            0x4000,
+            HardwareAddressSpaceTransition::DifferentAddressSpace,
+        ));
+        assert!(!hardware_root_install_required(
+            0x4000,
+            0x4000,
+            HardwareAddressSpaceTransition::SameAddressSpace,
+        ));
     }
 }
