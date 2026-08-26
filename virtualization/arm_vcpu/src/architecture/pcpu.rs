@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::{marker::PhantomData, mem};
+use core::mem;
 
 use aarch64_cpu::registers::*;
 
 use super::host::ArmHostOps;
-use crate::{ArmVcpuResult, enable::El2EnableOps};
+use crate::{
+    ArmVcpuResult,
+    enable::{EL2_ENABLE_STEPS, El2EnableStep},
+};
 
 /// Per-CPU AArch64 virtualization state.
 #[repr(C)]
@@ -33,38 +36,6 @@ pub struct ArmPerCpu {
 
 unsafe extern "C" {
     fn exception_vector_base_vcpu();
-}
-
-struct ArmEl2Enable<H>(PhantomData<H>);
-
-impl<H> ArmEl2Enable<H> {
-    const fn new() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl<H: ArmHostOps> El2EnableOps for ArmEl2Enable<H> {
-    fn install_exception_vector(&mut self) {
-        VBAR_EL2.set(exception_vector_base_vcpu as *const () as usize as _);
-    }
-
-    fn synchronize_context(&mut self) {
-        // SAFETY: `isb` only synchronizes subsequent instruction execution on
-        // the current CPU after the system-register updates performed here.
-        unsafe {
-            core::arch::asm!("isb", options(nostack, preserves_flags));
-        }
-    }
-
-    fn enable_virtualization(&mut self) {
-        HCR_EL2.modify(
-            HCR_EL2::VM::Enable + HCR_EL2::RW::EL1IsAarch64 + HCR_EL2::TSC::EnableTrapEl1SmcToEl2,
-        );
-    }
-
-    fn install_current_el_irq_handler(&mut self) {
-        super::host::install_current_el_irq_handler::<H>();
-    }
 }
 
 impl ArmPerCpu {
@@ -93,7 +64,22 @@ impl ArmPerCpu {
         // Todo: take care of `preemption`
         self.original_vbar_el2 = VBAR_EL2.get();
 
-        crate::enable::enable_el2(&mut ArmEl2Enable::<H>::new());
+        for step in EL2_ENABLE_STEPS {
+            match step {
+                El2EnableStep::InstallCurrentElIrqHandler => {
+                    super::host::install_current_el_irq_handler::<H>();
+                }
+                El2EnableStep::InstallExceptionVector => {
+                    VBAR_EL2.set(exception_vector_base_vcpu as *const () as usize as _);
+                }
+                El2EnableStep::SynchronizeContext => synchronize_context(),
+                El2EnableStep::EnableVirtualization => HCR_EL2.modify(
+                    HCR_EL2::VM::Enable
+                        + HCR_EL2::RW::EL1IsAarch64
+                        + HCR_EL2::TSC::EnableTrapEl1SmcToEl2,
+                ),
+            }
+        }
 
         // Note that `ICH_HCR_EL2` is not the same as `HCR_EL2`.
         //
@@ -136,5 +122,13 @@ impl ArmPerCpu {
     /// Returns the architectural counter frequency recorded on this CPU.
     pub const fn timer_frequency_hz(&self) -> u64 {
         self.timer_frequency_hz
+    }
+}
+
+fn synchronize_context() {
+    // SAFETY: `isb` only synchronizes subsequent instruction execution on the
+    // current CPU after the system-register updates performed here.
+    unsafe {
+        core::arch::asm!("isb", options(nostack, preserves_flags));
     }
 }
