@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
     mm::{VmMutPtr, VmPtr},
-    syscall::{handle_syscall, syscall_allows_signal_restart},
+    syscall::{SyscallRestart, handle_syscall, syscall_allows_signal_restart},
 };
 
 fn handle_user_page_fault(
@@ -145,6 +145,7 @@ pub fn new_user_task(
             let saved_a0 = uctx.arg0();
             let saved_sysno = uctx.sysno();
             let is_syscall = matches!(reason, ReturnReason::Syscall);
+            let mut syscall_restart = SyscallRestart::Allowed;
 
             if stop_for_pending_ptrace_event(thr, &mut uctx) {
                 continue;
@@ -171,7 +172,7 @@ pub fn new_user_task(
                         let _ = ptrace_stop_current(thr, Signo::SIGTRAP, &mut uctx);
                     }
 
-                    handle_syscall(&curr, &mut uctx);
+                    syscall_restart = handle_syscall(&curr, &mut uctx);
                     if let Some((tid, _)) = ptrace_trace {
                         if stop_for_pending_ptrace_event(thr, &mut uctx) {
                             continue;
@@ -357,6 +358,7 @@ pub fn new_user_task(
                 let eintr_code = -(crate::Errno::EINTR.into_raw() as isize);
                 let restart = if is_syscall
                     && (uctx.retval() as isize) == eintr_code
+                    && syscall_restart.is_allowed()
                     && syscall_allows_signal_restart(saved_sysno)
                 {
                     Some(SyscallRestartInfo {

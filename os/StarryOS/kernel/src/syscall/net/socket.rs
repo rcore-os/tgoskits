@@ -4,7 +4,7 @@ use ax_fs_ng::vfs::current_fs_context;
 #[cfg(feature = "vsock")]
 use ax_net::vsock::VsockSocket;
 use ax_net::{
-    NetError, Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
+    Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     raw::{IpProtocol, IpVersion, RawSocket},
     tcp::TcpSocket,
     udp::UdpSocket,
@@ -216,13 +216,7 @@ pub fn sys_connect(
     }
     debug!("sys_connect <= fd: {fd}, addr: {addr:?}");
 
-    socket.connect(addr).map_err(|e| {
-        if matches!(e, NetError::WouldBlock) {
-            StarryError::InProgress
-        } else {
-            e.into()
-        }
-    })?;
+    socket.connect_user(current, addr)?;
 
     Ok(0)
 }
@@ -266,7 +260,7 @@ pub fn sys_accept4(
     let cloexec = flags & O_CLOEXEC != 0;
 
     let listener = Socket::from_fd(fd)?;
-    let socket = Socket::new(listener.accept()?, listener.ip_domain());
+    let socket = Socket::new(listener.accept_user(current)?, listener.ip_domain());
     if flags & O_NONBLOCK != 0 {
         socket.set_nonblocking(true)?;
     }

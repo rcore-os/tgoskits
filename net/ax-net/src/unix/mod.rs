@@ -21,9 +21,8 @@ pub(crate) mod dgram;
 pub mod namespace;
 pub(crate) mod stream;
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::sync::Arc;
 
-use async_trait::async_trait;
 use ax_io::{IoBuf, Read, Write};
 use ax_lazyinit::LazyLock;
 use ax_sync::SpinLock;
@@ -38,8 +37,8 @@ pub use self::{
     stream::StreamTransport,
 };
 use crate::{
-    NetError, NetResult, RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
-    blocking::poll_io,
+    ConnectStatus, NetError, NetResult, RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx,
+    SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
 
@@ -56,7 +55,6 @@ pub enum UnixSocketAddr {
 }
 
 /// Abstract transport trait for Unix sockets.
-#[async_trait]
 #[enum_dispatch]
 pub trait TransportOps: Configurable + Pollable + Send + Sync {
     /// Bind the transport to the given address.
@@ -79,18 +77,15 @@ pub trait TransportOps: Configurable + Pollable + Send + Sync {
         false
     }
 
-    /// Accept an incoming connection, returning the new transport and peer address.
-    async fn accept(&self) -> NetResult<(Transport, UnixSocketAddr)>;
-
     /// Non-blocking accept: returns `WouldBlock` immediately when no connection is pending.
     fn try_accept(&self) -> NetResult<(Transport, UnixSocketAddr)> {
         Err(NetError::WouldBlock)
     }
 
     /// Send data through the transport.
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize>;
+    fn try_send(&self, src: impl Read + IoBuf, options: &mut SendOptions) -> NetResult<usize>;
     /// Receive data from the transport.
-    fn recv(&self, dst: impl Write, options: RecvOptions<'_>) -> NetResult<usize>;
+    fn try_recv(&self, dst: impl Write, options: &mut RecvOptions<'_>) -> NetResult<usize>;
 
     /// Shutdown the transport.
     fn shutdown(&self, _how: Shutdown) -> NetResult {
@@ -242,7 +237,7 @@ impl SocketOps for UnixSocket {
         Ok(())
     }
 
-    fn connect(&self, remote_addr: SocketAddrEx) -> NetResult {
+    fn start_connect(&self, remote_addr: SocketAddrEx) -> NetResult<ConnectStatus> {
         let remote_addr = remote_addr.into_unix()?;
         let local_addr = self.local_addr.lock().clone();
         let accept_poll = {
@@ -257,7 +252,7 @@ impl SocketOps for UnixSocket {
             accept_poll
         };
         self.transport.finish_connect(accept_poll);
-        Ok(())
+        Ok(ConnectStatus::Connected)
     }
 
     fn listen(&self, _backlog: usize) -> NetResult {
@@ -268,15 +263,8 @@ impl SocketOps for UnixSocket {
         self.transport.is_listening()
     }
 
-    fn accept(&self) -> NetResult<Socket> {
-        let mut nonblocking = false;
-        let _ = self
-            .transport
-            .get_option_inner(&mut GetSocketOption::NonBlocking(&mut nonblocking));
-        let (transport, peer_addr) =
-            poll_io(&self.transport, IoEvents::IN, nonblocking, None, || {
-                self.transport.try_accept()
-            })?;
+    fn try_accept(&self) -> NetResult<Socket> {
+        let (transport, peer_addr) = self.transport.try_accept()?;
         Ok(Self {
             transport,
             local_addr: SpinLock::new(self.local_addr.lock().clone()),
@@ -285,12 +273,12 @@ impl SocketOps for UnixSocket {
         .into())
     }
 
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize> {
-        self.transport.send(src, options)
+    fn try_send(&self, src: impl Read + IoBuf, options: &mut SendOptions) -> NetResult<usize> {
+        self.transport.try_send(src, options)
     }
 
-    fn recv(&self, dst: impl Write, options: RecvOptions<'_>) -> NetResult<usize> {
-        self.transport.recv(dst, options)
+    fn try_recv(&self, dst: impl Write, options: &mut RecvOptions<'_>) -> NetResult<usize> {
+        self.transport.try_recv(dst, options)
     }
 
     fn local_addr(&self) -> NetResult<SocketAddrEx> {

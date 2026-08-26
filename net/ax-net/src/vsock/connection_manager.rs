@@ -2,11 +2,11 @@
 //!
 //! The manager tracks listening, connecting, and established vsock stream
 //! connections, owns their byte rings, and provides wakeups used by the vsock
-//! transport and device polling glue.
+//! transport and fixed-owner IRQ worker.
 //!
 //! # Event Flow
 //!
-//! Device polling turns host events into manager calls such as connection
+//! The IRQ worker turns host events into manager calls such as connection
 //! request, connected, received data, credit update, and disconnect. Socket
 //! transports then observe manager state through connection handles and poll
 //! sets.
@@ -22,7 +22,7 @@ use alloc::{collections::BTreeMap, sync::Arc};
 use ax_sync::Mutex;
 
 use super::{VsockAddr, VsockConnId};
-use crate::{NetError, NetResult, device::VsockPollLease};
+use crate::{NetError, NetResult};
 
 mod connection;
 mod queue;
@@ -68,6 +68,7 @@ pub(crate) fn retire_connection(conn_id: VsockConnId, connection: Arc<Connection
         "Removed connection {:?}: rx={} bytes, tx={} bytes, dropped={} bytes",
         conn_id, stats.rx_bytes, stats.tx_bytes, stats.dropped_bytes
     );
+    crate::device::request_vsock_work();
 }
 
 /// Global connection manager
@@ -187,12 +188,11 @@ impl VsockConnectionManager {
         local_addr: VsockAddr,
         peer_addr: Option<VsockAddr>,
         state: ConnectionState,
-        poll_lease: VsockPollLease,
     ) -> NetResult<Arc<Connection>> {
         if self.connections.contains_key(&conn_id) {
             return Err(NetError::AlreadyExists);
         }
-        let conn = Connection::new_shared(local_addr, peer_addr, state, poll_lease);
+        let conn = Connection::new_shared(local_addr, peer_addr, state);
         self.connections.insert(conn_id, conn.clone());
         debug!(
             "Created connection {:?}: local={:?}, peer={:?}",
@@ -223,7 +223,6 @@ impl VsockConnectionManager {
     pub fn on_connection_request(
         &mut self,
         conn_id: VsockConnId,
-        poll_lease: VsockPollLease,
     ) -> NetResult<Option<IncomingConnection>> {
         let queue = self
             .listen_queues
@@ -245,7 +244,6 @@ impl VsockConnectionManager {
             local_addr,
             Some(conn_id.peer_addr),
             ConnectionState::Connected,
-            poll_lease,
         )?;
 
         // enqueue connection to accept queue

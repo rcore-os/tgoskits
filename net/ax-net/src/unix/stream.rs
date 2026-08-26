@@ -21,7 +21,6 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use async_trait::async_trait;
 use ax_io::{IoBuf, Read, Write};
 use ax_sync::SpinLock;
 use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
@@ -297,7 +296,6 @@ impl Configurable for StreamTransport {
         Ok(true)
     }
 }
-#[async_trait]
 impl TransportOps for StreamTransport {
     fn bind(&self, slot: &super::BindSlot, _local_addr: &UnixSocketAddr) -> NetResult<()> {
         let mut slot = slot.stream.lock();
@@ -358,31 +356,6 @@ impl TransportOps for StreamTransport {
         Ok(Some(accept_poll))
     }
 
-    async fn accept(&self) -> NetResult<(Transport, UnixSocketAddr)> {
-        if !self.is_listening() {
-            return Err(NetError::InvalidInput);
-        }
-        let Some((rx, _)) = self.conn_rx.lock().clone() else {
-            // Not a listening socket: accept requires a prior listen(). Linux
-            // returns EINVAL for accept on a non-listening socket.
-            return Err(NetError::InvalidInput);
-        };
-        let ConnRequest {
-            channel,
-            addr: peer_addr,
-            credentials,
-            receive_credentials,
-        } = rx.recv().await.map_err(|_| NetError::ConnectionReset)?;
-        Ok((
-            Transport::Stream(StreamTransport::new_channel(
-                Some(channel),
-                credentials,
-                receive_credentials,
-            )),
-            peer_addr,
-        ))
-    }
-
     fn try_accept(&self) -> NetResult<(Transport, UnixSocketAddr)> {
         if !self.is_listening() {
             return Err(NetError::InvalidInput);
@@ -411,99 +384,68 @@ impl TransportOps for StreamTransport {
         }
     }
 
-    fn send(&self, mut src: impl Read + IoBuf, mut options: SendOptions) -> NetResult<usize> {
+    fn try_send(&self, mut src: impl Read + IoBuf, options: &mut SendOptions) -> NetResult<usize> {
         if options.to.is_some() {
             return Err(NetError::InvalidInput);
         }
         let size = src.remaining();
-        let mut total = 0;
-        let dontwait = options.flags.contains(crate::SendFlags::DONTWAIT);
-        let non_blocking = self.general.nonblocking() || dontwait;
-        // Attach any incoming cmsg to the first byte written on this send
-        // call (Linux semantics: cmsg is delivered with the first byte of
-        // the message). We stash the vec here and push into the peer's
-        // cmsg queue once some bytes actually got written.
-        if self
-            .channel
-            .lock()
-            .as_ref()
-            .is_some_and(|channel| channel.peer_receive_credentials.load(Ordering::Acquire))
-            && let Some(credentials) = options.sender_credentials
-        {
-            options
-                .cmsg
-                .push(Box::new(crate::SocketCmsg::Credentials(credentials)));
+        if size == 0 {
+            return Ok(0);
         }
-        let pending_cmsg = core::mem::take(&mut options.cmsg);
-        let had_cmsg = !pending_cmsg.is_empty();
-        let mut cmsg_slot: Option<Vec<CMsgData>> = had_cmsg.then_some(pending_cmsg);
 
-        self.general.send_poller_with(self, dontwait, || {
-            let mut wake_poll = None;
-            let mut guard = self.channel.lock();
-            let result = {
-                let Some(chan) = guard.as_mut() else {
-                    return Err(NetError::NotConnected);
-                };
-                if !chan.tx.read_is_held() {
-                    return Err(NetError::BrokenPipe);
-                }
-
-                let count = {
-                    let (left, right) = chan.tx.vacant_slices_mut();
-                    let mut count = src.read(unsafe { left.assume_init_mut() })?;
-                    if count >= left.len() {
-                        count += src.read(unsafe { right.assume_init_mut() })?;
-                    }
-                    unsafe { chan.tx.advance_write_index(count) };
-                    count
-                };
-                total += count;
-                if count > 0 {
-                    // Attach cmsg (if any) to the first write of this send
-                    // call.  Continuations of the same multi-iter send extend
-                    // the just-pushed entry; back-to-back separate send calls
-                    // (no cmsg) must NOT extend a prior call's cmsg, otherwise
-                    // a non-cmsg send glued to a preceding cmsg send would
-                    // appear to peer as a single oversized cmsg-bearing
-                    // message.
-                    if let Some(cmsg) = cmsg_slot.take() {
-                        let start_byte = chan.tx_bytes_total.saturating_add(1);
-                        let end_byte = chan.tx_bytes_total.saturating_add(count as u64);
-                        chan.tx_cmsg.lock().push_back(PendingCmsg {
-                            start_byte,
-                            end_byte,
-                            cmsg,
-                        });
-                    } else if had_cmsg
-                        && let Some(last) = chan.tx_cmsg.lock().back_mut()
-                        && last.end_byte == chan.tx_bytes_total
-                    {
-                        last.end_byte = last.end_byte.saturating_add(count as u64);
-                    }
-                    chan.tx_bytes_total = chan.tx_bytes_total.saturating_add(count as u64);
-                    wake_poll = Some(chan.poll_update.clone());
-                }
-
-                if count == size || non_blocking {
-                    Ok(total)
-                } else {
-                    Err(NetError::WouldBlock)
-                }
+        let mut wake_poll = None;
+        let mut guard = self.channel.lock();
+        let result = {
+            let Some(chan) = guard.as_mut() else {
+                return Err(NetError::NotConnected);
             };
-            drop(guard);
-            if let Some(poll) = wake_poll {
-                // Peer-visible bytes and cmsg state are published before wake.
-                unsafe { poll.wake(IoEvents::IN | IoEvents::OUT) };
+            if !chan.tx.read_is_held() {
+                return Err(NetError::BrokenPipe);
             }
-            result
-        })
+
+            let count = {
+                let (left, right) = chan.tx.vacant_slices_mut();
+                let mut count = src.read(unsafe { left.assume_init_mut() })?;
+                if count >= left.len() {
+                    count += src.read(unsafe { right.assume_init_mut() })?;
+                }
+                unsafe { chan.tx.advance_write_index(count) };
+                count
+            };
+            if count == 0 {
+                Err(NetError::WouldBlock)
+            } else {
+                if chan.peer_receive_credentials.load(Ordering::Acquire)
+                    && let Some(credentials) = options.sender_credentials.clone()
+                {
+                    options
+                        .cmsg
+                        .push(Box::new(crate::SocketCmsg::Credentials(credentials)));
+                }
+                let cmsg = core::mem::take(&mut options.cmsg);
+                if !cmsg.is_empty() {
+                    chan.tx_cmsg.lock().push_back(PendingCmsg {
+                        start_byte: chan.tx_bytes_total.saturating_add(1),
+                        end_byte: chan.tx_bytes_total.saturating_add(count as u64),
+                        cmsg,
+                    });
+                }
+                chan.tx_bytes_total = chan.tx_bytes_total.saturating_add(count as u64);
+                wake_poll = Some(chan.poll_update.clone());
+                Ok(count)
+            }
+        };
+        drop(guard);
+        if let Some(poll) = wake_poll {
+            // Peer-visible bytes and cmsg state are published before wake.
+            unsafe { poll.wake(IoEvents::IN | IoEvents::OUT) };
+        }
+        result
     }
 
-    fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> NetResult<usize> {
-        let dontwait = options.flags.contains(crate::RecvFlags::DONTWAIT);
+    fn try_recv(&self, mut dst: impl Write, options: &mut RecvOptions) -> NetResult<usize> {
         let peek = options.flags.contains(crate::RecvFlags::PEEK);
-        let recv_count = self.general.recv_poller_with(self, dontwait, || {
+        let recv_count = {
             let mut wake_poll = None;
             let mut guard = self.channel.lock();
             let result = {
@@ -558,7 +500,7 @@ impl TransportOps for StreamTransport {
                 unsafe { poll.wake(IoEvents::OUT) };
             }
             result
-        })?;
+        }?;
 
         if peek {
             // MSG_PEEK delivers ancillary data without consuming the record.

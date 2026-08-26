@@ -5,7 +5,7 @@ use ax_sync::Mutex;
 
 use super::VsockStreamTransport;
 use crate::{
-    NetError, NetResult, RecvFlags, RecvOptions, SendOptions, Shutdown,
+    ConnectStatus, NetError, NetResult, RecvFlags, RecvOptions, SendOptions, Shutdown,
     device::*,
     general::GeneralOptions,
     state::*,
@@ -25,20 +25,13 @@ impl VsockStreamTransport {
             .lock(State::Idle)
             .map_err(|_| NetError::InvalidInput)?
             .transit(State::Idle, || {
-                let poll_lease = start_vsock_poll()?;
                 let conn = {
                     let mut manager = VSOCK_CONN_MANAGER.lock();
                     if local_addr.port == 0 {
                         local_addr.port = manager.allocate_port()?;
                     }
                     let conn_id = VsockConnId::listening(local_addr.port);
-                    manager.create_connection(
-                        conn_id,
-                        local_addr,
-                        None,
-                        ConnectionState::Idle,
-                        poll_lease,
-                    )?
+                    manager.create_connection(conn_id, local_addr, None, ConnectionState::Idle)?
                 };
                 let conn_id = VsockConnId::listening(local_addr.port);
 
@@ -74,7 +67,7 @@ impl VsockStreamTransport {
         })
     }
 
-    pub(in crate::vsock) fn accept(&self) -> NetResult<(VsockStreamTransport, VsockAddr)> {
+    pub(in crate::vsock) fn try_accept(&self) -> NetResult<(VsockStreamTransport, VsockAddr)> {
         if self.state.get() != State::Listening {
             return Err(NetError::InvalidInput);
         }
@@ -82,31 +75,27 @@ impl VsockStreamTransport {
         let conn = self.get_connection()?;
         let local_port = conn.lock().local_addr().port;
 
-        // wait for connection
-        self.general.recv_poller(self, || {
-            let mut manager = VSOCK_CONN_MANAGER.lock();
+        let mut manager = VSOCK_CONN_MANAGER.lock();
 
-            if !manager.can_accept(local_port) {
-                return Err(NetError::WouldBlock);
-            }
+        if !manager.can_accept(local_port) {
+            return Err(NetError::WouldBlock);
+        }
 
-            let (conn_id, peer_addr) = manager.accept(local_port)?;
-            let conn = manager.get_connection(conn_id).ok_or(NetError::NotFound)?;
-            drop(manager);
+        let (conn_id, peer_addr) = manager.accept(local_port)?;
+        let conn = manager.get_connection(conn_id).ok_or(NetError::NotFound)?;
+        drop(manager);
 
-            // create new VsockStreamTransport
-            let new_transport = VsockStreamTransport {
-                conn_id: Mutex::new(Some(conn_id)),
-                connection: Mutex::new(Some(conn)),
-                state: StateLock::new(State::Connected),
-                general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
-            };
+        let new_transport = VsockStreamTransport {
+            conn_id: Mutex::new(Some(conn_id)),
+            connection: Mutex::new(Some(conn)),
+            state: StateLock::new(State::Connected),
+            general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
+        };
 
-            Ok((new_transport, peer_addr))
-        })
+        Ok((new_transport, peer_addr))
     }
 
-    pub(in crate::vsock) fn connect(&self, peer_addr: VsockAddr) -> NetResult<()> {
+    pub(in crate::vsock) fn start_connect(&self, peer_addr: VsockAddr) -> NetResult<()> {
         let guard = self.state.lock(State::Idle).map_err(|state| match state {
             State::Idle => unreachable!(),
             State::Listening => NetError::InvalidInput,
@@ -139,13 +128,11 @@ impl VsockStreamTransport {
                 peer_addr,
                 local_port,
             };
-            let poll_lease = start_vsock_poll()?;
             let conn = VSOCK_CONN_MANAGER.lock().create_connection(
                 conn_id,
                 local_addr,
                 Some(peer_addr),
                 ConnectionState::Connecting,
-                poll_lease,
             )?;
 
             if let Err(error) = vsock_connect(conn_id) {
@@ -165,102 +152,105 @@ impl VsockStreamTransport {
             *self.connection.lock() = Some(conn);
             debug!("Vsock connecting from {} to {:?}", local_port, peer_addr);
             Ok(())
-        })?;
-
-        // wait for connection established
-        self.general.send_poller(self, || {
-            let conn = self.get_connection()?;
-            let state = conn.lock().state();
-            match state {
-                ConnectionState::Connected => Ok(()),
-                ConnectionState::Connecting => Err(NetError::WouldBlock),
-                _ => Err(NetError::ConnectionRefused),
-            }
         })
     }
 
-    pub(in crate::vsock) fn send(
+    pub(in crate::vsock) fn connect_status(&self) -> NetResult<ConnectStatus> {
+        let conn = self.get_connection()?;
+        let state = conn.lock().state();
+        match state {
+            ConnectionState::Connected => {
+                self.state.set(State::Connected);
+                Ok(ConnectStatus::Connected)
+            }
+            ConnectionState::Connecting => Ok(ConnectStatus::InProgress),
+            _ => {
+                self.state.set(State::Closed);
+                Err(NetError::ConnectionRefused)
+            }
+        }
+    }
+
+    pub(in crate::vsock) fn try_send(
         &self,
         mut src: impl Read + IoBuf,
-        options: SendOptions,
+        _options: &mut SendOptions,
     ) -> NetResult<usize> {
         let conn = self.get_connection()?;
-        let extra_nonblocking = options.flags.contains(crate::SendFlags::DONTWAIT);
-        self.general.send_poller_with(self, extra_nonblocking, || {
-            let state = conn.lock();
-            if state.state() != ConnectionState::Connected || state.tx_closed() {
-                return Err(NetError::NotConnected);
-            }
-            drop(state);
-            if src.remaining() == 0 {
-                return Ok(0);
-            }
+        let state = conn.lock();
+        if state.state() != ConnectionState::Connected || state.tx_closed() {
+            return Err(NetError::NotConnected);
+        }
+        drop(state);
+        if src.remaining() == 0 {
+            return Ok(0);
+        }
 
-            let conn_id = self.conn_id.lock().ok_or(NetError::NotConnected)?;
-            let capacity = vsock_send_capacity(conn_id)?;
-            if capacity == 0 {
-                return Err(NetError::WouldBlock);
-            }
+        let conn_id = self.conn_id.lock().ok_or(NetError::NotConnected)?;
+        let capacity = vsock_send_capacity(conn_id)?;
+        if capacity == 0 {
+            return Err(NetError::WouldBlock);
+        }
 
-            let result = src.write_to(&mut ax_io::write_fn(|buffer| {
-                let send_length = buffer.len().min(capacity);
-                vsock_send(conn_id, &buffer[..send_length]).map_err(ax_io::IoError::from)
-            }));
-            conn.lock()
-                .add_tx_bytes(result.as_ref().copied().unwrap_or(0));
-            Ok(result?)
-        })
+        let result = src.write_to(&mut ax_io::write_fn(|buffer| {
+            let send_length = buffer.len().min(capacity);
+            vsock_send(conn_id, &buffer[..send_length]).map_err(ax_io::IoError::from)
+        }));
+        conn.lock()
+            .add_tx_bytes(result.as_ref().copied().unwrap_or(0));
+        Ok(result?)
     }
 
-    pub(in crate::vsock) fn recv(
+    pub(in crate::vsock) fn try_recv(
         &self,
         mut dst: impl Write,
-        options: RecvOptions,
+        options: &mut RecvOptions,
     ) -> NetResult<usize> {
         let conn = self.get_connection()?;
-        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
+        let mut conn_guard = conn.lock();
 
-        self.general.recv_poller_with(self, extra_nb, || {
-            let mut conn_guard = conn.lock();
+        if conn_guard.rx_closed() && conn_guard.rx_buffer_used() == 0 {
+            return Ok(0); // EOF
+        }
 
-            if conn_guard.rx_closed() && conn_guard.rx_buffer_used() == 0 {
-                return Ok(0); // EOF
+        // should allow read when connection is closed, to read remaining data
+        if !matches!(
+            conn_guard.state(),
+            ConnectionState::Connected | ConnectionState::Closed
+        ) {
+            return Err(NetError::NotConnected);
+        }
+
+        if conn_guard.rx_buffer_used() == 0 {
+            return Err(NetError::WouldBlock);
+        }
+
+        let (left, right) = conn_guard.rx_slices();
+        let mut count = dst.write(left)?;
+
+        if count >= left.len() && !right.is_empty() {
+            count += dst.write(right)?;
+        }
+        let consumed = !options.flags.contains(RecvFlags::PEEK);
+        if consumed {
+            conn_guard.advance_rx_read(count);
+        }
+
+        if count > 0 {
+            trace!(
+                "Recv {} bytes from connection (buffer_remaining={}/{})",
+                count,
+                conn_guard.rx_buffer_used(),
+                VSOCK_RX_BUFFER_SIZE
+            );
+            drop(conn_guard);
+            if consumed {
+                request_vsock_work();
             }
-
-            // should allow read when connection is closed, to read remaining data
-            if !matches!(
-                conn_guard.state(),
-                ConnectionState::Connected | ConnectionState::Closed
-            ) {
-                return Err(NetError::NotConnected);
-            }
-
-            if conn_guard.rx_buffer_used() == 0 {
-                return Err(NetError::WouldBlock);
-            }
-
-            let (left, right) = conn_guard.rx_slices();
-            let mut count = dst.write(left)?;
-
-            if count >= left.len() && !right.is_empty() {
-                count += dst.write(right)?;
-            }
-            if !options.flags.contains(RecvFlags::PEEK) {
-                conn_guard.advance_rx_read(count);
-            }
-
-            if count > 0 {
-                trace!(
-                    "Recv {} bytes from connection (buffer_remaining={}/{})",
-                    count,
-                    conn_guard.rx_buffer_used(),
-                    VSOCK_RX_BUFFER_SIZE
-                );
-                Ok(count)
-            } else {
-                Err(NetError::WouldBlock)
-            }
-        })
+            Ok(count)
+        } else {
+            Err(NetError::WouldBlock)
+        }
     }
 
     pub(in crate::vsock) fn shutdown(&self, how: Shutdown) -> NetResult<()> {

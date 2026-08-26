@@ -7,7 +7,7 @@ use axpoll::{ExclusiveRegistrationSink, IoEvents, SharedRegistrationSink};
 use axpoll_set::PollSet;
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::*};
 
-use super::{VsockAddr, VsockPollLease};
+use super::VsockAddr;
 
 pub const VSOCK_RX_BUFFER_SIZE: usize = 64 * 1024; // 64KB receive buffer
 
@@ -35,7 +35,6 @@ pub struct Connection {
     rx_wakers: PollSet,
     tx_wakers: PollSet,
     connect_wakers: PollSet,
-    _poll_lease: VsockPollLease,
 }
 
 /// Mutable state serialized in ordinary task context.
@@ -70,7 +69,6 @@ impl Connection {
         local_addr: VsockAddr,
         peer_addr: Option<VsockAddr>,
         state: ConnectionState,
-        poll_lease: VsockPollLease,
     ) -> Arc<Self> {
         let rb = HeapRb::<u8>::new(VSOCK_RX_BUFFER_SIZE);
         let (rx_producer, rx_consumer) = rb.split();
@@ -90,7 +88,6 @@ impl Connection {
             rx_wakers: PollSet::new(),
             tx_wakers: PollSet::new(),
             connect_wakers: PollSet::new(),
-            _poll_lease: poll_lease,
         })
     }
 

@@ -231,7 +231,7 @@ pub enum PinnedNetIrqError {
 }
 
 /// Move-only registration lease.  It is created disabled.
-pub trait PinnedNetIrqRegistration: Send + 'static {
+pub trait PinnedNetIrqRegistration: Send + Sync + 'static {
     fn owner_cpu(&self) -> usize;
     fn enable(&self) -> Result<(), PinnedNetIrqError>;
     fn disable_and_synchronize(&self) -> Result<(), PinnedNetIrqError>;

@@ -120,7 +120,7 @@ fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), rdrive::probe:
         .map_err(|err| rdrive::probe::OnProbeError::Other(alloc::format!("{err}").into()))?;
     probe
         .into_platform_device()
-        .register_net_with_info(DRIVER_NAME, dev, dma, info);
+        .register_net_with_info(DRIVER_NAME, dev, dma, info)?;
     log::info!("registered FXmac FDT network device");
     Ok(())
 }

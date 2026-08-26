@@ -235,6 +235,43 @@ pub enum Shutdown {
     /// Shut down both halves.
     Both,
 }
+
+/// Progress of a connection attempt whose completion is readiness-driven.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectStatus {
+    /// The transport completed the connection synchronously or asynchronously.
+    Connected,
+    /// The transport started an asynchronous connection and is not ready yet.
+    InProgress,
+}
+
+/// OS-facing policy for driving one task-neutral socket future.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SocketWaitPolicy {
+    /// Whether this operation must return after the registration recheck.
+    pub nonblocking: bool,
+    /// Optional relative timeout owned and enforced by the consuming OS.
+    pub timeout: Option<Duration>,
+}
+
+fn socket_wait_policy(
+    socket: &(impl Configurable + ?Sized),
+    send: bool,
+    extra_nonblocking: bool,
+) -> NetResult<SocketWaitPolicy> {
+    let mut nonblocking = false;
+    socket.get_option(GetSocketOption::NonBlocking(&mut nonblocking))?;
+    let mut timeout = Duration::ZERO;
+    if send {
+        socket.get_option(GetSocketOption::SendTimeout(&mut timeout))?;
+    } else {
+        socket.get_option(GetSocketOption::ReceiveTimeout(&mut timeout))?;
+    }
+    Ok(SocketWaitPolicy {
+        nonblocking: nonblocking || extra_nonblocking,
+        timeout: (!timeout.is_zero()).then_some(timeout),
+    })
+}
 impl Shutdown {
     /// Returns `true` if the read half should be shut down.
     pub fn has_read(&self) -> bool {
@@ -252,8 +289,12 @@ impl Shutdown {
 pub trait SocketOps: Configurable {
     /// Binds an unbound socket to the given address and port.
     fn bind(&self, local_addr: SocketAddrEx) -> NetResult;
-    /// Connects the socket to a remote address.
-    fn connect(&self, remote_addr: SocketAddrEx) -> NetResult;
+    /// Starts a connection without waiting for asynchronous completion.
+    fn start_connect(&self, remote_addr: SocketAddrEx) -> NetResult<ConnectStatus>;
+    /// Checks a previously started asynchronous connection.
+    fn connect_status(&self) -> NetResult<ConnectStatus> {
+        Ok(ConnectStatus::Connected)
+    }
 
     /// Starts listening on the bound address and port.
     fn listen(&self, _backlog: usize) -> NetResult {
@@ -263,15 +304,19 @@ pub trait SocketOps: Configurable {
     fn is_listening(&self) -> bool {
         false
     }
-    /// Accepts a connection on a listening socket, returning a new socket.
-    fn accept(&self) -> NetResult<Socket> {
+    /// Attempts to accept one connection without parking the caller.
+    fn try_accept(&self) -> NetResult<Socket> {
         Err(NetError::OperationNotSupported)
     }
 
-    /// Send data to the socket, optionally to a specific address.
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize>;
-    /// Receive data from the socket.
-    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> NetResult<usize>;
+    /// Attempts to send data without parking the caller.
+    fn try_send(&self, src: impl Read + IoBuf, options: &mut SendOptions) -> NetResult<usize>;
+    /// Attempts to receive data without parking the caller.
+    fn try_recv(
+        &self,
+        dst: impl Write + IoBufMut,
+        options: &mut RecvOptions<'_>,
+    ) -> NetResult<usize>;
     /// Returns the number of bytes that can be read without blocking.
     fn recv_available(&self) -> NetResult<usize> {
         Err(NetError::OperationNotSupported)
@@ -284,6 +329,16 @@ pub trait SocketOps: Configurable {
 
     /// Shutdown the socket, closing the connection.
     fn shutdown(&self, how: Shutdown) -> NetResult;
+
+    /// Returns the send wait policy without acquiring scheduler ownership.
+    fn send_wait_policy(&self, extra_nonblocking: bool) -> NetResult<SocketWaitPolicy> {
+        socket_wait_policy(self, true, extra_nonblocking)
+    }
+
+    /// Returns the receive wait policy without acquiring scheduler ownership.
+    fn recv_wait_policy(&self, extra_nonblocking: bool) -> NetResult<SocketWaitPolicy> {
+        socket_wait_policy(self, false, extra_nonblocking)
+    }
 }
 
 impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
@@ -291,8 +346,12 @@ impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
         (**self).bind(local_addr)
     }
 
-    fn connect(&self, remote_addr: SocketAddrEx) -> NetResult {
-        (**self).connect(remote_addr)
+    fn start_connect(&self, remote_addr: SocketAddrEx) -> NetResult<ConnectStatus> {
+        (**self).start_connect(remote_addr)
+    }
+
+    fn connect_status(&self) -> NetResult<ConnectStatus> {
+        (**self).connect_status()
     }
 
     fn listen(&self, backlog: usize) -> NetResult {
@@ -303,16 +362,20 @@ impl<T: SocketOps + ?Sized> SocketOps for Box<T> {
         (**self).is_listening()
     }
 
-    fn accept(&self) -> NetResult<Socket> {
-        (**self).accept()
+    fn try_accept(&self) -> NetResult<Socket> {
+        (**self).try_accept()
     }
 
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize> {
-        (**self).send(src, options)
+    fn try_send(&self, src: impl Read + IoBuf, options: &mut SendOptions) -> NetResult<usize> {
+        (**self).try_send(src, options)
     }
 
-    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> NetResult<usize> {
-        (**self).recv(dst, options)
+    fn try_recv(
+        &self,
+        dst: impl Write + IoBufMut,
+        options: &mut RecvOptions<'_>,
+    ) -> NetResult<usize> {
+        (**self).try_recv(dst, options)
     }
 
     fn recv_available(&self) -> NetResult<usize> {

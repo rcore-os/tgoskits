@@ -18,7 +18,8 @@ pub use rdif_vsock::{VsockAddr, VsockConnId};
 
 pub use self::stream::VsockStreamTransport;
 use crate::{
-    NetError, NetResult, RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
+    ConnectStatus, NetError, NetResult, RecvOptions, SendOptions, Shutdown, Socket, SocketAddrEx,
+    SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
 
@@ -63,28 +64,37 @@ impl SocketOps for VsockSocket {
         self.transport.bind(local_addr)
     }
 
-    fn connect(&self, remote_addr: SocketAddrEx) -> NetResult {
+    fn start_connect(&self, remote_addr: SocketAddrEx) -> NetResult<ConnectStatus> {
         let remote_addr = remote_addr.into_vsock()?;
-        self.transport.connect(remote_addr)
+        self.transport.start_connect(remote_addr)?;
+        Ok(ConnectStatus::InProgress)
+    }
+
+    fn connect_status(&self) -> NetResult<ConnectStatus> {
+        self.transport.connect_status()
     }
 
     fn listen(&self, _backlog: usize) -> NetResult {
         self.transport.listen()
     }
 
-    fn accept(&self) -> NetResult<Socket> {
-        self.transport.accept().map(|(transport, _addr)| {
+    fn try_accept(&self) -> NetResult<Socket> {
+        self.transport.try_accept().map(|(transport, _addr)| {
             let socket = VsockSocket::from_transport(transport);
             socket.into()
         })
     }
 
-    fn send(&self, src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize> {
-        self.transport.send(src, options)
+    fn try_send(&self, src: impl Read + IoBuf, options: &mut SendOptions) -> NetResult<usize> {
+        self.transport.try_send(src, options)
     }
 
-    fn recv(&self, dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> NetResult<usize> {
-        self.transport.recv(dst, options)
+    fn try_recv(
+        &self,
+        dst: impl Write + IoBufMut,
+        options: &mut RecvOptions<'_>,
+    ) -> NetResult<usize> {
+        self.transport.try_recv(dst, options)
     }
 
     fn local_addr(&self) -> NetResult<SocketAddrEx> {

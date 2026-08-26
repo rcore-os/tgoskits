@@ -46,8 +46,8 @@ use smoltcp::{
 };
 
 use crate::{
-    DeferPollWake, LISTEN_TABLE, NetError, NetResult, RecvFlags, RecvOptions, SOCKET_SET,
-    SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
+    ConnectStatus, DeferPollWake, LISTEN_TABLE, NetError, NetResult, RecvFlags, RecvOptions,
+    SOCKET_SET, SendOptions, Shutdown, Socket, SocketAddrEx, SocketOps,
     addr::{allocate_ephemeral_port, listen_addrs_conflict},
     config::{DeviceBinding, InterfaceId},
     consts::{TCP_RX_BUF_LEN, TCP_TX_BUF_LEN},
@@ -512,23 +512,29 @@ impl SocketOps for TcpSocket {
             })
     }
 
-    fn connect(&self, remote_addr: SocketAddrEx) -> NetResult {
+    fn start_connect(&self, remote_addr: SocketAddrEx) -> NetResult<ConnectStatus> {
         let remote_addr = remote_addr.into_ip()?;
-        self.start_connect(remote_addr)?;
+        self.begin_connect(remote_addr)?;
         request_poll();
+        Ok(ConnectStatus::InProgress)
+    }
 
-        // Here our state must be `CONNECTING`, and only one thread can run here.
-        self.general.send_poller(self, || {
-            request_poll();
-            let events = self.poll_connect();
-            if !events.contains(IoEvents::OUT) {
-                Err(NetError::WouldBlock)
-            } else if self.state.get() == State::Connected {
-                Ok(())
-            } else {
-                Err(NetError::ConnectionRefused)
-            }
-        })
+    fn connect_status(&self) -> NetResult<ConnectStatus> {
+        match self.state.get() {
+            State::Connected => return Ok(ConnectStatus::Connected),
+            State::Connecting => {}
+            State::Closed => return Err(NetError::ConnectionRefused),
+            _ => return Err(NetError::InvalidInput),
+        }
+        request_poll();
+        let events = self.poll_connect();
+        if !events.contains(IoEvents::OUT) {
+            Ok(ConnectStatus::InProgress)
+        } else if self.state.get() == State::Connected {
+            Ok(ConnectStatus::Connected)
+        } else {
+            Err(NetError::ConnectionRefused)
+        }
     }
 
     fn listen(&self, backlog: usize) -> NetResult {
@@ -560,126 +566,107 @@ impl SocketOps for TcpSocket {
         self.state.get() == State::Listening
     }
 
-    fn accept(&self) -> NetResult<Socket> {
+    fn try_accept(&self) -> NetResult<Socket> {
         if self.state.get() != State::Listening {
             return Err(NetError::InvalidInput);
         }
 
         let bound_endpoint = self.bound_endpoint()?;
-        self.general.recv_poller(self, || {
-            request_poll();
-            let accepted = {
-                let mut sockets = SOCKET_SET.inner.lock();
-                LISTEN_TABLE.accept(bound_endpoint, &mut sockets)?
-            };
-            Ok({
-                let socket = TcpSocket::new_connected(
-                    accepted.handle,
-                    accepted.local_endpoint,
-                    accepted.remote_endpoint,
-                );
-                socket.general.set_ip_tos(self.general.ip_tos());
-                socket.sync_egress_ip_tos();
-                debug!(
-                    "accepted connection from {}, {}",
-                    accepted.handle, accepted.remote_endpoint
-                );
-                socket.into()
-            })
+        request_poll();
+        let accepted = {
+            let mut sockets = SOCKET_SET.inner.lock();
+            LISTEN_TABLE.accept(bound_endpoint, &mut sockets)?
+        };
+        Ok({
+            let socket = TcpSocket::new_connected(
+                accepted.handle,
+                accepted.local_endpoint,
+                accepted.remote_endpoint,
+            );
+            socket.general.set_ip_tos(self.general.ip_tos());
+            socket.sync_egress_ip_tos();
+            debug!(
+                "accepted connection from {}, {}",
+                accepted.handle, accepted.remote_endpoint
+            );
+            socket.into()
         })
     }
 
-    fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize> {
-        // SAFETY: `self.handle` should be initialized in a connected socket.
-        let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
-        // A partial send on a non-blocking socket must report the bytes already
-        // enqueued rather than `WouldBlock`. The poller treats the socket as
-        // non-blocking when either `O_NONBLOCK` or `MSG_DONTWAIT` is set, so
-        // `finish_tcp_send_step` has to use the same effective flag: otherwise a
-        // partial send returns EAGAIN after `src` was already consumed, and the
-        // caller retransmits those bytes and corrupts the stream.
-        let nonblocking = self.general.nonblocking() || extra_nb;
-        let target_len = src.remaining();
-        if target_len == 0 {
+    fn try_send(&self, mut src: impl Read + IoBuf, _options: &mut SendOptions) -> NetResult<usize> {
+        if src.remaining() == 0 {
             return Ok(0);
         }
-        let mut total_sent = 0;
-        let result = self.general.send_poller_with(self, extra_nb, || {
-            request_poll();
-            let step = self.with_smol_socket(|socket| {
-                if !socket.is_active() {
-                    Err(NetError::NotConnected)
-                } else if !socket.can_send() {
-                    Err(NetError::WouldBlock)
-                } else {
-                    // connected, and the tx buffer is not full
-                    let len = socket
-                        .send(|buffer| {
-                            let result = src.read(buffer);
-                            let len = result.unwrap_or(0);
-                            (len, result)
-                        })
-                        .map_err(|_| NetError::NotConnected)??;
-                    Ok(len)
-                }
-            });
-            if step.as_ref().is_ok_and(|sent| *sent > 0) {
-                request_poll();
+        request_poll();
+        let result = self.with_smol_socket(|socket| {
+            if !socket.is_active() {
+                Err(NetError::NotConnected)
+            } else if !socket.can_send() {
+                Err(NetError::WouldBlock)
+            } else {
+                let len = socket
+                    .send(|buffer| {
+                        let result = src.read(buffer);
+                        let len = result.unwrap_or(0);
+                        (len, result)
+                    })
+                    .map_err(|_| NetError::NotConnected)??;
+                Ok(len)
             }
-            finish_tcp_send_step(&mut total_sent, target_len, nonblocking, step)
         });
-        if result.is_ok() {
+        if result.as_ref().is_ok_and(|sent| *sent > 0) {
             request_poll();
         }
         result
     }
 
-    fn recv(&self, mut dst: impl Write + IoBufMut, options: RecvOptions<'_>) -> NetResult<usize> {
+    fn try_recv(
+        &self,
+        mut dst: impl Write + IoBufMut,
+        options: &mut RecvOptions<'_>,
+    ) -> NetResult<usize> {
         if self.rx_closed.load(Ordering::Acquire) {
             return Err(NetError::NotConnected);
         }
         if self.state.get() == State::Closed {
             return Err(NetError::NotConnected);
         }
-        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
-        self.general.recv_poller_with(self, extra_nb, || {
-            request_poll();
-            self.with_smol_socket(|socket| {
-                if socket.recv_queue() > 0 {
-                    if options.flags.contains(RecvFlags::PEEK) {
-                        dst.write(
-                            socket
-                                .peek(dst.remaining_mut())
-                                .map_err(|_| NetError::NotConnected)?,
-                        )
-                        .map_err(NetError::from)
-                    } else {
-                        // Drain currently available bytes from RX queue without waiting.
-                        // This loop copies across smoltcp's internal buffer segments to fill
-                        // the user buffer with as many bytes as are ready, but does not block
-                        // waiting for more data to arrive.
-                        let mut total = 0;
-                        while socket.recv_queue() > 0 && dst.remaining_mut() > 0 {
-                            let len = socket
-                                .recv(|buf| {
-                                    let result = dst.write(buf).map_err(NetError::from);
-                                    let len = result.unwrap_or(0);
-                                    (len, result)
-                                })
-                                .map_err(|_| NetError::NotConnected)??;
-                            if len == 0 {
-                                break;
-                            }
-                            total += len;
-                        }
-                        Ok(total)
-                    }
-                } else if !socket.may_recv() {
-                    Ok(0)
+        request_poll();
+        self.with_smol_socket(|socket| {
+            if socket.recv_queue() > 0 {
+                if options.flags.contains(RecvFlags::PEEK) {
+                    dst.write(
+                        socket
+                            .peek(dst.remaining_mut())
+                            .map_err(|_| NetError::NotConnected)?,
+                    )
+                    .map_err(NetError::from)
                 } else {
-                    Err(NetError::WouldBlock)
+                    // Drain currently available bytes from RX queue without waiting.
+                    // This loop copies across smoltcp's internal buffer segments to fill
+                    // the user buffer with as many bytes as are ready, but does not block
+                    // waiting for more data to arrive.
+                    let mut total = 0;
+                    while socket.recv_queue() > 0 && dst.remaining_mut() > 0 {
+                        let len = socket
+                            .recv(|buf| {
+                                let result = dst.write(buf).map_err(NetError::from);
+                                let len = result.unwrap_or(0);
+                                (len, result)
+                            })
+                            .map_err(|_| NetError::NotConnected)??;
+                        if len == 0 {
+                            break;
+                        }
+                        total += len;
+                    }
+                    Ok(total)
                 }
-            })
+            } else if !socket.may_recv() {
+                Ok(0)
+            } else {
+                Err(NetError::WouldBlock)
+            }
         })
     }
 
@@ -872,7 +859,7 @@ impl TcpSocket {
                 })));
         }
         if events.contains(IoEvents::RDHUP) {
-            // Registration happens from socket poll task context.
+            // Registration happens from the OS-owned socket wait context.
             register(&self.poll_rx_closed, IoEvents::RDHUP | IoEvents::IN);
         }
     }
@@ -962,7 +949,7 @@ const fn empty_endpoint() -> IpListenEndpoint {
 
 impl TcpSocket {
     /// Starts an active open and leaves completion to the protocol executor.
-    fn start_connect(&self, remote_addr: SocketAddr) -> NetResult {
+    fn begin_connect(&self, remote_addr: SocketAddr) -> NetResult {
         self.state
             .lock(State::Idle)
             .map_err(|state| {
@@ -1135,76 +1122,6 @@ fn tcp_port_available(port: u16) -> bool {
         && !TCP_BOUND_PORTS.lock().contains_key(&port)
 }
 
-fn finish_tcp_send_step(
-    total_sent: &mut usize,
-    target_len: usize,
-    extra_nonblocking: bool,
-    step: NetResult<usize>,
-) -> NetResult<usize> {
-    match step {
-        Ok(sent) => {
-            *total_sent += sent;
-            if *total_sent >= target_len || extra_nonblocking {
-                Ok(*total_sent)
-            } else {
-                Err(NetError::WouldBlock)
-            }
-        }
-        Err(NetError::WouldBlock) if *total_sent > 0 && extra_nonblocking => Ok(*total_sent),
-        Err(NetError::WouldBlock) => Err(NetError::WouldBlock),
-        Err(_) if *total_sent > 0 => Ok(*total_sent),
-        Err(err) => Err(err),
-    }
-}
-
 fn get_ephemeral_port() -> NetResult<u16> {
     allocate_ephemeral_port(tcp_port_available)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn blocking_tcp_send_waits_after_partial_write() {
-        let mut total = 0;
-
-        assert_eq!(
-            finish_tcp_send_step(&mut total, 10, false, Ok(4)),
-            Err(NetError::WouldBlock),
-        );
-        assert_eq!(total, 4);
-        assert_eq!(finish_tcp_send_step(&mut total, 10, false, Ok(6)), Ok(10),);
-        assert_eq!(total, 10);
-    }
-
-    #[test]
-    fn dontwait_tcp_send_returns_first_partial_write() {
-        let mut total = 0;
-
-        assert_eq!(finish_tcp_send_step(&mut total, 10, true, Ok(4)), Ok(4),);
-        assert_eq!(total, 4);
-    }
-
-    #[test]
-    fn tcp_send_returns_partial_count_after_later_error() {
-        let mut total = 4;
-
-        assert_eq!(
-            finish_tcp_send_step(&mut total, 10, false, Err(NetError::NotConnected)),
-            Ok(4),
-        );
-        assert_eq!(total, 4);
-    }
-
-    #[test]
-    fn blocking_tcp_send_keeps_waiting_after_partial_wouldblock() {
-        let mut total = 4;
-
-        assert_eq!(
-            finish_tcp_send_step(&mut total, 10, false, Err(NetError::WouldBlock)),
-            Err(NetError::WouldBlock),
-        );
-        assert_eq!(total, 4);
-    }
 }

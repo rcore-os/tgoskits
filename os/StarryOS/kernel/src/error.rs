@@ -97,6 +97,10 @@ pub enum StarryError {
     InProgress,
     #[error("operation was interrupted")]
     Interrupted,
+    /// An interrupted operation that Linux exposes as EINTR even when the
+    /// delivered handler uses SA_RESTART, such as socket I/O with SO_*TIMEO.
+    #[error("operation was interrupted without restart")]
+    InterruptedNoRestart,
     #[error("invalid kernel data")]
     InvalidData,
     #[error("invalid executable image")]
@@ -225,7 +229,7 @@ impl StarryError {
             Self::FilesystemLoop => Errno::ELOOP,
             Self::IllegalBytes => Errno::EILSEQ,
             Self::InProgress => Errno::EINPROGRESS,
-            Self::Interrupted => Errno::EINTR,
+            Self::Interrupted | Self::InterruptedNoRestart => Errno::EINTR,
             Self::InvalidData | Self::InvalidInput => Errno::EINVAL,
             Self::InvalidExecutable | Self::MalformedExecutable => Errno::ENOEXEC,
             Self::Io | Self::UnexpectedEof | Self::WriteZero => Errno::EIO,
@@ -734,6 +738,7 @@ fn leaf_errno_mappings_hold() -> bool {
         (StarryError::IllegalBytes, Errno::EILSEQ),
         (StarryError::InProgress, Errno::EINPROGRESS),
         (StarryError::Interrupted, Errno::EINTR),
+        (StarryError::InterruptedNoRestart, Errno::EINTR),
         (StarryError::InvalidData, Errno::EINVAL),
         (StarryError::InvalidExecutable, Errno::ENOEXEC),
         (StarryError::MalformedExecutable, Errno::ENOEXEC),

@@ -25,7 +25,6 @@ use core::{
 };
 
 use async_channel::TryRecvError;
-use async_trait::async_trait;
 use ax_hal::time::wall_time;
 use ax_io::{Read, Write};
 use ax_sync::{SpinLock, SpinRwLock as RwLock};
@@ -356,7 +355,6 @@ impl Configurable for DgramTransport {
         Ok(true)
     }
 }
-#[async_trait]
 impl TransportOps for DgramTransport {
     fn bind(&self, slot: &super::BindSlot, local_addr: &UnixSocketAddr) -> NetResult {
         if self.is_seqpacket {
@@ -467,32 +465,6 @@ impl TransportOps for DgramTransport {
         Ok(None)
     }
 
-    async fn accept(&self) -> NetResult<(Transport, UnixSocketAddr)> {
-        if !self.is_seqpacket {
-            // Connectionless SOCK_DGRAM has no accept: Linux net/unix/af_unix.c
-            // `unix_dgram_ops.accept = sock_no_accept` returns -EOPNOTSUPP.
-            return Err(NetError::OperationNotSupported);
-        }
-        if !self.is_listening() {
-            return Err(NetError::InvalidInput);
-        }
-        let Some((rx, _)) = self.conn_rx.lock().clone() else {
-            // Not a listening seqpacket socket: accept requires listen(). Linux
-            // returns EINVAL for accept on a non-listening socket.
-            return Err(NetError::InvalidInput);
-        };
-        let req = rx.recv().await.map_err(|_| NetError::ConnectionReset)?;
-        let transport = DgramTransport::new_connected(
-            req.data_rx,
-            req.connected,
-            req.credentials,
-            5,
-            req.receive_timestamp,
-            req.receive_credentials,
-        );
-        Ok((Transport::Dgram(transport), req.addr))
-    }
-
     fn try_accept(&self) -> NetResult<(Transport, UnixSocketAddr)> {
         if !self.is_seqpacket {
             // Connectionless SOCK_DGRAM has no accept: Linux net/unix/af_unix.c
@@ -525,7 +497,7 @@ impl TransportOps for DgramTransport {
         }
     }
 
-    fn send(&self, mut src: impl Read, options: SendOptions) -> NetResult<usize> {
+    fn try_send(&self, mut src: impl Read, options: &mut SendOptions) -> NetResult<usize> {
         // Unix datagram/seqpacket sockets do not carry out-of-band data.
         // Linux `unix_dgram_sendmsg` rejects MSG_OOB with EOPNOTSUPP.
         if options.flags.contains(crate::SendFlags::OOB) {
@@ -542,10 +514,10 @@ impl TransportOps for DgramTransport {
         }
         let len = message.len();
         let sender = self.local_addr.read().clone();
-        let mut cmsg = options.cmsg;
-        let sender_credentials = options.sender_credentials;
+        let mut cmsg = core::mem::take(&mut options.cmsg);
+        let sender_credentials = options.sender_credentials.clone();
 
-        let wake_poll = if let Some(addr) = options.to {
+        let wake_poll = if let Some(addr) = options.to.clone() {
             let addr = addr.into_unix()?;
             with_slot(&addr, |slot| {
                 if let Some(bind) = slot.dgram.lock().as_ref() {
@@ -598,76 +570,73 @@ impl TransportOps for DgramTransport {
         Ok(len)
     }
 
-    fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> NetResult<usize> {
+    fn try_recv(&self, mut dst: impl Write, options: &mut RecvOptions) -> NetResult<usize> {
         // Unix datagram/seqpacket sockets do not carry out-of-band data.
         // Linux `unix_dgram_recvmsg` rejects MSG_OOB with EOPNOTSUPP.
         if options.flags.contains(RecvFlags::OOB) {
             return Err(NetError::OperationNotSupported);
         }
-        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
         let peek = options.flags.contains(RecvFlags::PEEK);
-        self.general.recv_poller_with(self, extra_nb, move || {
-            // Drain a packet parked by a previous MSG_PEEK before the channel,
-            // preserving record order.
-            let mut peeked = self.peeked.lock();
-            let mut packet = if let Some(p) = peeked.take() {
-                p
-            } else {
-                let mut guard = self.data_rx.lock();
-                let Some((rx, _)) = guard.as_mut() else {
-                    return Err(NetError::NotConnected);
-                };
-                match rx.try_recv() {
-                    Ok(packet) => packet,
-                    Err(TryRecvError::Empty) => return Err(NetError::WouldBlock),
-                    Err(TryRecvError::Closed) => return Ok(0),
-                }
+        // Drain a packet parked by a previous MSG_PEEK before the channel,
+        // preserving record order.
+        let mut peeked = self.peeked.lock();
+        let mut packet = if let Some(p) = peeked.take() {
+            p
+        } else {
+            let mut guard = self.data_rx.lock();
+            let Some((rx, _)) = guard.as_mut() else {
+                return Err(NetError::NotConnected);
             };
+            match rx.try_recv() {
+                Ok(packet) => packet,
+                Err(TryRecvError::Empty) => return Err(NetError::WouldBlock),
+                Err(TryRecvError::Closed) => return Ok(0),
+            }
+        };
 
-            let count = dst.write(&packet.data)?;
-            let full_len = packet.data.len();
-            // Surface truncation in the returned `msg_flags` (MSG_TRUNC).
-            if count < full_len
-                && let Some(t) = options.truncated.as_mut()
-            {
-                **t = true;
-            }
-            if let Some(from) = options.from.as_mut() {
-                **from = SocketAddrEx::Unix(packet.sender.clone());
-            }
-            let receive_timestamp = self.receive_timestamp.load(Ordering::Acquire);
-            if receive_timestamp && packet.received_at.is_none() {
-                // Linux fills the current time when SO_TIMESTAMP was enabled
-                // after this datagram entered the receive queue. Persist the
-                // fallback on the packet so MSG_PEEK and the consuming recv
-                // observe the same timestamp.
-                packet.received_at = Some(wall_time());
-            }
-            if peek {
-                // MSG_PEEK does not consume the record: deliver a duplicate of
-                // the ancillary data (SCM_RIGHTS fds are cloned via Arc, sharing
-                // the open file description like Linux `unix_peek_fds` /
-                // `scm_fp_dup`) and re-park the packet so the next recv delivers
-                // the rights again.
-                if let Some(dst) = options.cmsg.as_mut() {
-                    dst.extend(packet.cmsg.iter().map(|c| c.clone_box()));
-                    if receive_timestamp && let Some(timestamp) = packet.received_at {
-                        dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
-                    }
-                }
-                *peeked = Some(packet);
-            } else if let Some(dst) = options.cmsg.as_mut() {
-                dst.extend(packet.cmsg);
+        let count = dst.write(&packet.data)?;
+        let full_len = packet.data.len();
+        // Surface truncation in the returned `msg_flags` (MSG_TRUNC).
+        if count < full_len
+            && let Some(t) = options.truncated.as_mut()
+        {
+            **t = true;
+        }
+        if let Some(from) = options.from.as_mut() {
+            **from = SocketAddrEx::Unix(packet.sender.clone());
+        }
+        let receive_timestamp = self.receive_timestamp.load(Ordering::Acquire);
+        if receive_timestamp && packet.received_at.is_none() {
+            // Linux fills the current time when SO_TIMESTAMP was enabled
+            // after this datagram entered the receive queue. Persist the
+            // fallback on the packet so MSG_PEEK and the consuming recv
+            // observe the same timestamp.
+            packet.received_at = Some(wall_time());
+        }
+        if peek {
+            // MSG_PEEK does not consume the record: deliver a duplicate of
+            // the ancillary data (SCM_RIGHTS fds are cloned via Arc, sharing
+            // the open file description like Linux `unix_peek_fds` /
+            // `scm_fp_dup`) and re-park the packet so the next recv delivers
+            // the rights again.
+            if let Some(dst) = options.cmsg.as_mut() {
+                dst.extend(packet.cmsg.iter().map(|c| c.clone_box()));
                 if receive_timestamp && let Some(timestamp) = packet.received_at {
                     dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
                 }
             }
+            *peeked = Some(packet);
+        } else if let Some(dst) = options.cmsg.as_mut() {
+            dst.extend(packet.cmsg);
+            if receive_timestamp && let Some(timestamp) = packet.received_at {
+                dst.push(Box::new(SocketCmsg::Timestamp(timestamp)));
+            }
+        }
 
-            Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
-                full_len
-            } else {
-                count
-            })
+        Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
+            full_len
+        } else {
+            count
         })
     }
 }

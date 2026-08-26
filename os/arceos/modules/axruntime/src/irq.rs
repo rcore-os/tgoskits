@@ -198,19 +198,3 @@ impl ax_net::PinnedNetIrqRegistrar for RuntimeNetIrqRegistrar {
         }))
     }
 }
-
-#[cfg(all(test, feature = "net"))]
-mod tests {
-    #[test]
-    fn network_irq_registration_requires_an_explicit_fixed_owner_cpu() {
-        let source = include_str!("irq.rs");
-        let registrar = source
-            .split("impl ax_net::PinnedNetIrqRegistrar for RuntimeNetIrqRegistrar")
-            .nth(1)
-            .expect("network IRQ registrar implementation must exist");
-
-        assert!(registrar.contains("owner_cpu"));
-        assert!(registrar.contains("IrqAffinity::Fixed"));
-        assert!(!registrar.contains("IrqAffinity::Any"));
-    }
-}

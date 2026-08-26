@@ -13,8 +13,9 @@ use core::{
 
 use ax_io::{Cursor, IoBuf, IoBufMut, Read, Write};
 use ax_net::{
-    InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind, RecvOptions, SendOptions,
-    Socket as SocketInner, SocketOps,
+    ConnectStatus, InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind, NetError,
+    RecvFlags, RecvOptions, SendFlags, SendOptions, Socket as SocketInner, SocketAddrEx, SocketOps,
+    SocketWaitPolicy, poll_socket_io,
     options::{Configurable, GetSocketOption, SetSocketOption, UnixCredentials},
 };
 use axpoll::{IoEvents, Pollable};
@@ -33,7 +34,10 @@ use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc, get_file_like},
     mm::{VmMutPtr, vm_read_slice, vm_write_slice},
-    task::{current_pid_view, current_user_task},
+    task::{
+        UserTaskRef, current_pid_view, current_user_task,
+        future::{UserWaitOutcome, block_on_user_timeout},
+    },
 };
 
 pub(super) const ARPHRD_ETHER: u16 = 1;
@@ -77,13 +81,28 @@ impl Socket {
     /// Some transports invoke `Read` callbacks while holding IRQ-safe spin
     /// locks. User-memory access may fault and therefore must finish before
     /// crossing that lock boundary.
-    pub(crate) fn send_from_user<S>(&self, src: &mut S, options: SendOptions) -> StarryResult<usize>
+    pub(crate) fn send_from_user<S>(
+        &self,
+        src: &mut S,
+        mut options: SendOptions,
+    ) -> StarryResult<usize>
     where
         S: Read + IoBuf + ?Sized,
     {
         let mut staging = allocate_socket_staging(src.remaining())?;
         src.read_exact(&mut staging)?;
-        Ok(self.inner.send(staging.as_slice(), options)?)
+        let mut staging = Cursor::new(staging.as_slice());
+        let policy = self
+            .inner
+            .send_wait_policy(options.flags.contains(SendFlags::DONTWAIT))?;
+        wait_socket_io(
+            &current_user_task(),
+            self,
+            IoEvents::OUT,
+            policy,
+            StarryError::WouldBlock,
+            || self.inner.try_send(&mut staging, &mut options),
+        )
     }
 
     /// Receives into kernel memory and copies to the task only after ax-net
@@ -96,20 +115,65 @@ impl Socket {
     pub(crate) fn recv_to_user<D>(
         &self,
         dst: &mut D,
-        options: RecvOptions<'_>,
+        mut options: RecvOptions<'_>,
     ) -> StarryResult<usize>
     where
         D: Write + IoBufMut + ?Sized,
     {
         let capacity = dst.remaining_mut().min(SOCKET_RECEIVE_STAGING_LIMIT);
         let mut buffer = allocate_socket_staging(capacity)?;
-        let (received, copied) = {
-            let mut staging = Cursor::new(buffer.as_mut_slice());
-            let received = self.inner.recv(&mut staging, options)?;
-            (received, staging.position() as usize)
-        };
+        let mut staging = Cursor::new(buffer.as_mut_slice());
+        let policy = self
+            .inner
+            .recv_wait_policy(options.flags.contains(RecvFlags::DONTWAIT))?;
+        let received = wait_socket_io(
+            &current_user_task(),
+            self,
+            IoEvents::IN,
+            policy,
+            StarryError::WouldBlock,
+            || self.inner.try_recv(&mut staging, &mut options),
+        )?;
+        let copied = staging.position() as usize;
         dst.write_all(&buffer[..copied])?;
         Ok(received)
+    }
+
+    /// Starts and, when required, waits for one connection attempt.
+    pub(crate) fn connect_user(
+        &self,
+        current: &UserTaskRef,
+        remote_addr: SocketAddrEx,
+    ) -> StarryResult<()> {
+        let policy = self.inner.send_wait_policy(false)?;
+        match self.inner.start_connect(remote_addr)? {
+            ConnectStatus::Connected => Ok(()),
+            ConnectStatus::InProgress if policy.nonblocking => Err(StarryError::InProgress),
+            ConnectStatus::InProgress => wait_socket_io(
+                current,
+                self,
+                IoEvents::OUT,
+                policy,
+                StarryError::TimedOut,
+                || match self.inner.connect_status()? {
+                    ConnectStatus::Connected => Ok(()),
+                    ConnectStatus::InProgress => Err(NetError::WouldBlock),
+                },
+            ),
+        }
+    }
+
+    /// Waits for and removes one accepted connection from a listener.
+    pub(crate) fn accept_user(&self, current: &UserTaskRef) -> StarryResult<SocketInner> {
+        let policy = self.inner.recv_wait_policy(false)?;
+        wait_socket_io(
+            current,
+            self,
+            IoEvents::IN,
+            policy,
+            StarryError::WouldBlock,
+            || self.inner.try_accept(),
+        )
     }
 
     pub fn ip_domain(&self) -> u32 {
@@ -147,6 +211,32 @@ impl Socket {
     pub(crate) fn with_current_sender_credentials(mut options: SendOptions) -> SendOptions {
         options.sender_credentials = Some(Self::current_unix_credentials());
         options
+    }
+}
+
+fn wait_socket_io<P, F, T>(
+    current: &UserTaskRef,
+    pollable: &P,
+    events: IoEvents,
+    policy: SocketWaitPolicy,
+    timeout_error: StarryError,
+    operation: F,
+) -> StarryResult<T>
+where
+    P: Pollable + ?Sized,
+    F: FnMut() -> ax_net::NetResult<T>,
+{
+    match block_on_user_timeout(
+        current,
+        policy.timeout,
+        poll_socket_io(pollable, events, policy.nonblocking, operation),
+    ) {
+        UserWaitOutcome::Ready(result) => Ok(result?),
+        UserWaitOutcome::Interrupted if policy.timeout.is_some() => {
+            Err(StarryError::InterruptedNoRestart)
+        }
+        UserWaitOutcome::Interrupted => Err(StarryError::Interrupted),
+        UserWaitOutcome::TimedOut => Err(timeout_error),
     }
 }
 

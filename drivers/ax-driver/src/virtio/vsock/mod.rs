@@ -1,29 +1,35 @@
+//! VirtIO vsock transport, connection, and IRQ capability adapter.
+
 extern crate alloc;
 
 use alloc::format;
 
-use rdif_vsock::{VsockAddr as RdifVsockAddr, VsockConnId, VsockError, VsockEvent};
+use rdif_vsock::{
+    VsockAddr as RdifVsockAddr, VsockConnId, VsockError, VsockEvent, VsockIrqEndpoints,
+};
 use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
-#[cfg(feature = "pci")]
-use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
     device::socket::{
         DisconnectReason, SocketError, VirtIOSocket, VsockAddr, VsockConnectionManager,
         VsockEvent as RawVsockEvent, VsockEventType,
     },
-    transport::Transport,
+    transport::{DeviceType, Transport},
 };
 
-use crate::{BindingInfo, virtio::VirtIoHalImpl, vsock::PlatformDeviceVsock};
+use crate::{
+    BindingInfo, binding_info_from_fdt, virtio::VirtIoHalImpl, vsock::PlatformDeviceVsock,
+};
 #[cfg(feature = "pci")]
 use crate::{PciIrqRequirement, binding_info_from_pci};
 
 const DEFAULT_RX_BUFFER_CAPACITY: u32 = 32 * 1024;
 
 mod credit;
+mod irq;
 
 use credit::TxCreditBook;
+use irq::SharedVsockTransport;
 
 #[cfg(feature = "pci")]
 crate::model_register!(
@@ -39,15 +45,16 @@ crate::model_register!(
 fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
     let transport =
         crate::pci::take_virtio_transport_masked(probe.endpoint_mut(), DeviceType::Socket)?;
-    let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;
+    let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Required)?;
     register_transport_with_info(probe.into_platform_device(), transport, info)
 }
 
-pub fn register_transport<T: Transport + 'static>(
-    plat_dev: PlatformDevice,
+pub fn register_fdt_transport<T: Transport + 'static>(
+    info: &rdrive::register::FdtInfo<'_>,
+    platform_device: PlatformDevice,
     transport: T,
 ) -> Result<(), OnProbeError> {
-    register_transport_with_info(plat_dev, transport, BindingInfo::empty())
+    register_transport_with_info(platform_device, transport, binding_info_from_fdt(info)?)
 }
 
 pub fn register_transport_with_info<T: Transport + 'static>(
@@ -58,24 +65,27 @@ pub fn register_transport_with_info<T: Transport + 'static>(
     let dev = VirtIoVsock::new(transport).map_err(|err| {
         OnProbeError::other(format!("failed to initialize virtio-socket: {err:?}"))
     })?;
-    let irq = plat_dev.register_vsock_with_info(dev, info);
-    log::info!("registered virtio socket device irq={irq:?}");
+    plat_dev.register_vsock_with_info(dev, info)?;
+    log::info!("registered virtio socket device with mandatory IRQ binding");
     Ok(())
 }
 
 struct VirtIoVsock<T: Transport + 'static> {
-    inner: VsockConnectionManager<VirtIoHalImpl, T>,
+    inner: VsockConnectionManager<VirtIoHalImpl, SharedVsockTransport<T>>,
     tx_credits: TxCreditBook,
+    irq_endpoints: Option<VsockIrqEndpoints>,
 }
 
 unsafe impl<T: Transport + 'static> Send for VirtIoVsock<T> {}
 
 impl<T: Transport + 'static> VirtIoVsock<T> {
     fn new(transport: T) -> Result<Self, VirtIoError> {
+        let (transport, irq_endpoints) = SharedVsockTransport::new(transport);
         let socket = VirtIOSocket::<VirtIoHalImpl, _>::new(transport)?;
         Ok(Self {
             inner: VsockConnectionManager::new_with_capacity(socket, DEFAULT_RX_BUFFER_CAPACITY),
             tx_credits: TxCreditBook::default(),
+            irq_endpoints: Some(irq_endpoints),
         })
     }
 }
@@ -205,6 +215,10 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
         }
         let event = map_event(event);
         Ok(Some(event))
+    }
+
+    fn take_irq_endpoints(&mut self) -> Result<VsockIrqEndpoints, VsockError> {
+        self.irq_endpoints.take().ok_or(VsockError::NotAvailable)
     }
 }
 

@@ -291,6 +291,7 @@ acpi_tables = "0.2.1"
 anyhow = { version = "1.0.104", default-features = false }
 bincode = "2.0.1"
 bitflags = "2.11"
+zerocopy = { version = "0.8", default-features = false }
 byte-unit = { version = "5", default-features = false, features = ["byte"] }
 derive_more = { version = "2.1", default-features = false, features = ["full"] }
 bindgen = { version = "0.72", default-features = false, features = ["runtime"] }

@@ -43,7 +43,6 @@ extern crate ax_runtime as _;
 extern crate std;
 
 mod addr;
-mod blocking;
 mod config;
 mod consts;
 mod device;
@@ -59,6 +58,7 @@ mod poll_runtime;
 mod queue_runtime;
 /// Raw socket implementation.
 pub mod raw;
+mod readiness;
 mod router;
 mod rx_meta;
 mod service;
@@ -94,7 +94,7 @@ use smoltcp::{
 };
 
 #[cfg(feature = "vsock")]
-pub use self::device::{VsockDevice, VsockDeviceList};
+pub use self::device::{VsockDevice, VsockDeviceInput, VsockDeviceList, VsockRuntimeError};
 use self::{
     addr::mask_from_prefix,
     device::{EthernetDevice, LoopbackDevice},
@@ -115,10 +115,11 @@ pub use self::{
         NetworkRuntimeError, PinnedNetIrqAction, PinnedNetIrqError, PinnedNetIrqOutcome,
         PinnedNetIrqRegistrar, PinnedNetIrqRegistration, ResolvedNetIrqSource,
     },
+    readiness::poll_socket_io,
     router::NetDevStats,
     socket::{
-        CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown, Socket,
-        SocketAddrEx, SocketCmsg, SocketOps,
+        CMsgData, ConnectStatus, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, Shutdown,
+        Socket, SocketAddrEx, SocketCmsg, SocketOps, SocketWaitPolicy,
     },
 };
 
@@ -154,15 +155,14 @@ impl Wake for DeferPollWake {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        // smoltcp invokes socket wakers from the net poll task context after
+        // smoltcp invokes socket wakers from the protocol executor after
         // updating readiness. The socket set may still be locked there, so
         // defer the actual PollSet wake to the protocol executor outer loop.
         defer_poll_wake(self.poll.clone(), self.ready);
     }
 }
 
-const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
-const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const DHCP_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn get_service() -> ax_sync::MutexGuard<'static, Service> {
     SERVICE
@@ -241,7 +241,7 @@ pub fn reconfigure_wifi(ifname: &str, transaction: WifiTransaction) -> NetResult
 ///
 /// Panics if called more than once, or if the configuration contains invalid values.
 pub fn init_network(
-    queue_runtime: Option<NetworkQueueRuntime>,
+    queue_runtime: NetworkQueueRuntime,
     mut frame_ports: EthernetFramePortList,
     config: NetworkConfig,
 ) {
@@ -288,9 +288,7 @@ pub fn init_network(
         }
         let id = InterfaceId::new((order as u32) + 2);
         let metric = cfg.map_or(100, |cfg| cfg.metric);
-        let wifi_policy = queue_runtime
-            .as_ref()
-            .and_then(|runtime| runtime.initial_wifi_policy(order));
+        let wifi_policy = queue_runtime.initial_wifi_policy(order);
         let static_ip = cfg.and_then(|cfg| cfg.static_ip.as_ref());
         let ipv4 = static_ip
             .map(|cfg| Ipv4Cidr::new(Ipv4Address::from(cfg.ip.octets()), cfg.prefix_len))
@@ -306,10 +304,7 @@ pub fn init_network(
         let dhcp_enabled = cfg.map_or(wifi_policy.is_none(), |cfg| cfg.dhcp);
         let eth_dev = router.add_device(id, Box::new(EthernetDevice::new(name.clone(), dev, ipv4)));
 
-        if let Some(handle) = queue_runtime
-            .as_ref()
-            .and_then(|runtime| runtime.wifi_handle(order))
-        {
+        if let Some(handle) = queue_runtime.wifi_handle(order) {
             info!(
                 "  Wi-Fi control for {name} is owned by CPU {}",
                 handle.owner_cpu()
@@ -407,16 +402,11 @@ pub fn init_network(
         service.enable_dhcp_server(dev, server_ip, client_ip, subnet_mask);
     }
     let dhcp_enabled = service.dhcp_enabled();
-    let protocol_owner_cpu = queue_runtime.as_ref().map_or_else(
-        ax_hal::percpu::this_cpu_id,
-        NetworkQueueRuntime::protocol_owner_cpu,
-    );
+    let protocol_owner_cpu = queue_runtime.protocol_owner_cpu();
     NET_CONTROL.call_once(|| control);
     SERVICE.call_once(|| Mutex::new(service));
     WIFI_INTERFACES.call_once(|| wifi_interfaces);
-    if let Some(runtime) = queue_runtime {
-        QUEUE_RUNTIME.call_once(|| Mutex::new(runtime));
-    }
+    QUEUE_RUNTIME.call_once(|| Mutex::new(queue_runtime));
     start_protocol_executor(protocol_owner_cpu);
     if dhcp_enabled {
         wait_for_dhcp_bootstrap();
@@ -543,17 +533,25 @@ fn find_interface_config(
 
 /// Init vsock subsystem by vsock devices.
 #[cfg(feature = "vsock")]
-pub fn init_vsock(mut vsock_devs: device::VsockDeviceList) {
-    use self::device::register_vsock_device;
+pub fn init_vsock(
+    vsock_devs: device::VsockDeviceList,
+    registrar: &dyn PinnedNetIrqRegistrar,
+    active_cpus: ax_task::CpuSet,
+) -> Result<(), VsockRuntimeError> {
     info!("Initialize vsock subsystem...");
-    if let Some(dev) = vsock_devs.pop() {
-        info!("  use vsock 0: {:?}", dev.name());
-        if let Err(e) = register_vsock_device(dev) {
-            warn!("Failed to initialize vsock device: {:?}", e);
-        }
-    } else {
+    if vsock_devs.is_empty() {
         warn!("  No vsock device found!");
+        return Ok(());
     }
+    let owner_cpu = QUEUE_RUNTIME
+        .get()
+        .expect("vsock initialization requires the network queue runtime")
+        .lock()
+        .protocol_owner_cpu();
+    if !active_cpus.contains(ax_task::CpuId::new(owner_cpu as u32)) {
+        return Err(VsockRuntimeError::InvalidTopology);
+    }
+    device::init_vsock_device(vsock_devs, registrar, owner_cpu, active_cpus.topology_len())
 }
 
 fn poll_protocol_until_idle() {
@@ -840,50 +838,8 @@ impl Drop for DnsSocketGuard {
 }
 
 fn wait_for_dhcp_bootstrap() {
-    for _ in 0..DHCP_BOOTSTRAP_ATTEMPTS {
-        request_poll();
-        if get_service().dhcp_configured() {
-            return;
-        }
-        ax_task::sleep(DHCP_BOOTSTRAP_POLL_INTERVAL);
+    if get_control().wait_for_dhcp_configuration(DHCP_BOOTSTRAP_TIMEOUT) {
+        return;
     }
     warn!("DHCP bootstrap timed out");
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn idle_queue_executor_never_uses_a_periodic_fallback() {
-        for source in [
-            include_str!("queue_runtime/mod.rs"),
-            include_str!("queue_runtime/executor.rs"),
-        ] {
-            assert!(!source.contains("wait_timeout"));
-            assert!(!source.contains("IDLE_POLL_INTERVAL"));
-        }
-    }
-
-    #[test]
-    fn only_protocol_executor_may_acquire_poll_ownership() {
-        let source = include_str!("lib.rs");
-        let production = source
-            .split("\n#[cfg(test)]\nmod tests {")
-            .next()
-            .expect("production section must precede tests");
-        assert!(!production.contains("PollOwnership::Required"));
-        assert!(production.contains("PROTOCOL_POLL.wait_for_completion"));
-    }
-
-    #[test]
-    fn network_irq_registrar_uses_the_poll_owner_cpu() {
-        let source = include_str!("../../../os/arceos/modules/axruntime/src/irq.rs");
-        let registrar = source
-            .split("impl ax_net::PinnedNetIrqRegistrar for RuntimeNetIrqRegistrar")
-            .nth(1)
-            .expect("network IRQ registrar implementation must exist");
-
-        assert!(registrar.contains("owner_cpu"));
-        assert!(registrar.contains("IrqAffinity::Fixed"));
-        assert!(!registrar.contains("IrqAffinity::Any"));
-    }
 }

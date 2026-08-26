@@ -25,14 +25,14 @@ sidebar_label: "队列级 NAPI 运行时"
 
 ### 2.1 具体问题
 
-当前网络路径在 hard IRQ 后丢失了 source 和 queue 身份，只向一个全局通知发布事件。共享 net-poll task 随后唤醒全部设备，设备各自的 RX/TX task 再搬运数据，最终竞争单一 smoltcp poll owner。该结构产生四类问题：
+重构前的网络路径在 hard IRQ 后丢失了 source 和 queue 身份，只向一个全局通知发布事件。共享 net-poll task 随后唤醒全部设备，设备各自的 RX/TX task 再搬运数据，最终竞争单一 smoltcp poll owner。该结构产生四类问题：
 
 1. 单个设备 IRQ 会唤醒所有设备，SMP 下形成无关 worker 扇出。
 2. 永久 net-poll worker 与同步 flush 调用者都可能取得 protocol poll ownership，运行时不具备单一任务所有权。
-3. virtio task-side transport gate 竞争时不能在 hard IRQ 中等待；当前延迟 ACK 依赖设备周期 poll 才能保证后续探测。
+3. virtio task-side transport gate 竞争时不能在 hard IRQ 中等待；当时延迟 ACK 依赖设备周期 poll 才能保证后续探测。
 4. AIC8800/SDIO 通过带外回调、独立 RX/TX task 和 10ms kicker 推进，绕过网卡 IRQ 注册与 CPU affinity 契约。
 
-PR #1775 曾实际暴露生产初始化与 split-route helper 各启动一个永久协议 worker，二者竞争同一 IRQ waiter，最终触发 `net IRQ waiter was registered concurrently`。当前 dev 虽以一个原子 owner 串行化实际 poll，但调用者仍可成为第二种 owner，并且全局 IRQ fanout、设备 fallback 与 AIC OOB 路径仍存在。
+PR #1775 曾实际暴露生产初始化与 split-route helper 各启动一个永久协议 worker，二者竞争同一 IRQ waiter，最终触发 `net IRQ waiter was registered concurrently`。该失败与当时 dev 仅用原子 owner 串行化 poll 的结构共同构成这次破坏性重构的输入；当前实现以本文其余章节的不变量为准。
 
 ### 2.2 直接用户
 

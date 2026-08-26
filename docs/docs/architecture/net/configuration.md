@@ -44,12 +44,16 @@ feature 声明只控制编译依赖与条件模块，实际对外能力还取决
 
 启用 `vsock` 后导出：
 
-- `init_vsock(vsock_devs)`。
+- `init_vsock(vsock_inputs, registrar, active_cpus)`。
 - `vsock` 模块。
 - `Socket::Vsock` 变体。
-- `VsockDevice` / `VsockDeviceList` 类型别名。
+- `VsockDevice` / `VsockDeviceInput` / `VsockDeviceList` 和 `VsockRuntimeError`。
 
-导出项列表说明 `vsock` feature 同时改变初始化 API 和 `Socket` 枚举，因此上层必须在相同条件下编译调用代码。smoltcp feature 属于 IP 协议核心的固定能力，和这个可选 transport 边界分开维护。
+`VsockDeviceInput` 必须包含已解析 `IrqId` 以及 driver 一次性转移的
+`VsockIrqEndpoints`。feature 只决定编译能力，不允许无 IRQ 或 periodic poll 模式。
+导出项列表说明 `vsock` feature 同时改变初始化 API 和 `Socket` 枚举，因此上层必须在
+相同条件下编译调用代码。smoltcp feature 属于 IP 协议核心的固定能力，和这个可选
+transport 边界分开维护。
 
 ### 1.2 smoltcp 能力
 
@@ -259,6 +263,13 @@ dns_servers()
 affinity domain、worker pin、DMA refill、IRQ registration/rearm 后，`init_network()`
 才分配接口 ID 并发布 `Service`。启动后新增/删除物理 NIC、无 IRQ 设备和周期 poll
 模式不在当前配置面中。
+
+vsock 遵循相同的 fail-closed 原则，但使用独立的单设备 runtime。平台必须提供一个
+typed IRQ binding；runtime 将其解析为 `IrqId`，把 fixed-affinity registrar、active CPU
+集合和完整 `VsockDeviceInput` 一次性交给 `init_vsock()`。当前只允许零个或恰好一个
+设备，worker 固定到网络 protocol owner CPU。poll interval、空闲退避和连接引用计数都
+不是可配置项，因为 event 只能由 hard IRQ 或明确的 task-side ring-space notification
+驱动。
 
 ### 6.1 Wi-Fi startup transaction
 

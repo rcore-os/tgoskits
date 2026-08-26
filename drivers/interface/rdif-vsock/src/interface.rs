@@ -1,4 +1,4 @@
-use crate::{DriverGeneric, Event, VsockConnId, VsockError, VsockEvent};
+use crate::{DriverGeneric, VsockConnId, VsockError, VsockEvent, VsockIrqEndpoints};
 
 pub trait Interface: DriverGeneric {
     fn guest_cid(&self) -> u64;
@@ -27,15 +27,8 @@ pub trait Interface: DriverGeneric {
 
     fn poll_event(&mut self) -> Result<Option<VsockEvent>, VsockError>;
 
-    fn enable_irq(&mut self) {}
-
-    fn disable_irq(&mut self) {}
-
-    fn is_irq_enabled(&self) -> bool {
-        false
-    }
-
-    fn handle_irq(&mut self) -> Event {
-        Event::none()
-    }
+    /// Transfers the device's mandatory IRQ capabilities to the runtime.
+    ///
+    /// A second call must return [`VsockError::NotAvailable`].
+    fn take_irq_endpoints(&mut self) -> Result<VsockIrqEndpoints, VsockError>;
 }

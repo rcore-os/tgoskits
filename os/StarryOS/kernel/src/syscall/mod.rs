@@ -25,6 +25,21 @@ use crate::{
     task::{SeccompDecision, UserTaskRef, do_exit, seccomp_errno},
 };
 
+/// Whether an interrupted syscall result may be restarted by SA_RESTART.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SyscallRestart {
+    /// Apply the syscall-number policy when the result is EINTR.
+    Allowed,
+    /// Preserve EINTR even when the delivered handler requests SA_RESTART.
+    Suppressed,
+}
+
+impl SyscallRestart {
+    pub(crate) const fn is_allowed(self) -> bool {
+        matches!(self, Self::Allowed)
+    }
+}
+
 pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
     // Linux never restarts fd-multiplexing waits or System V message-queue
     // blocking calls, even when the delivered handler uses SA_RESTART. Keep
@@ -78,30 +93,30 @@ pub fn sysno(id: usize) -> Option<Sysno> {
 /// operations instead of reacquiring `current` through the mutable runqueue
 /// owner. This mirrors Linux's syscall-local use of `current` while preserving
 /// the Rust lifetime that pins the Starry extension and scheduler record.
-pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) {
+pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) -> SyscallRestart {
     let thread = current.as_thread();
     let Some(sysno) = sysno(uctx.sysno()) else {
         uctx.set_retval(-Errno::ENOSYS.into_raw() as _);
-        return;
+        return SyscallRestart::Allowed;
     };
     trace!("Syscall {sysno:?}");
     match thread.evaluate_seccomp(uctx) {
         SeccompDecision::Allow => {}
         SeccompDecision::Errno(errno) => {
             uctx.set_retval(seccomp_errno(errno));
-            return;
+            return SyscallRestart::Allowed;
         }
         SeccompDecision::KillProcess => {
             do_exit(Signo::SIGSYS as i32, true);
-            return;
+            return SyscallRestart::Allowed;
         }
         SeccompDecision::KillThread => {
             do_exit(Signo::SIGSYS as i32, false);
-            return;
+            return SyscallRestart::Allowed;
         }
         SeccompDecision::UnsupportedAction => {
             uctx.set_retval(-crate::Errno::ENOSYS.into_raw() as usize);
-            return;
+            return SyscallRestart::Allowed;
         }
     }
 
@@ -1491,15 +1506,21 @@ pub fn handle_syscall(current: &UserTaskRef, uctx: &mut UserContext) {
         }
     };
     debug!("Syscall {sysno} return {result:?}");
+    let restart = if matches!(&result, Err(StarryError::InterruptedNoRestart)) {
+        SyscallRestart::Suppressed
+    } else {
+        SyscallRestart::Allowed
+    };
     let new_retval = result.unwrap_or_else(|err| -err.linux_errno().into_raw() as _) as _;
 
     if uctx.ip() == prev_ip {
         uctx.set_retval(new_retval);
     }
+    restart
 }
 
 #[cfg(feature = "axtest")]
-const _: fn(&crate::task::UserTaskRef, &mut UserContext) = handle_syscall;
+const _: fn(&crate::task::UserTaskRef, &mut UserContext) -> SyscallRestart = handle_syscall;
 
 #[cfg(feature = "axtest")]
 const _: fn(

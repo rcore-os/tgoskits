@@ -17,6 +17,8 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +31,7 @@
 
 #define EVENT_TIMEOUT_MS 2000
 #define CHILD_TIMEOUT_MS 5000
+#define SIGNAL_INTERRUPT_TIMEOUT_MS 1500
 #define WAIT_STEP_US 10000
 
 static volatile sig_atomic_t got_usr1;
@@ -159,6 +162,40 @@ static int wait_child(pid_t child)
     kill(child, SIGKILL);
     waitpid(child, NULL, 0);
     return -1;
+}
+
+static int wait_child_for(pid_t child, int timeout_ms)
+{
+    int status = 0;
+    for (int waited = 0; waited < timeout_ms;
+         waited += WAIT_STEP_US / 1000) {
+        pid_t result = waitpid(child, &status, WNOHANG);
+        if (result == child) {
+            return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+        }
+        if (result < 0 && errno != EINTR) {
+            return -1;
+        }
+        usleep(WAIT_STEP_US);
+    }
+    return 1;
+}
+
+struct signal_pump {
+    pthread_t target;
+    atomic_bool stop;
+};
+
+static void *run_signal_pump(void *opaque)
+{
+    struct signal_pump *pump = opaque;
+    while (!atomic_load_explicit(&pump->stop, memory_order_acquire)) {
+        usleep(WAIT_STEP_US);
+        if (pthread_kill(pump->target, SIGUSR1) != 0) {
+            return NULL;
+        }
+    }
+    return NULL;
 }
 
 static int read_ready(int fd)
@@ -594,11 +631,18 @@ static int test_signal_interrupts_blocking_recv(void)
     if (child == 0) {
         close(client);
         close(ready[0]);
+        got_usr1 = 0;
         struct sigaction action;
         memset(&action, 0, sizeof(action));
         action.sa_handler = on_usr1;
         sigemptyset(&action.sa_mask);
+        struct signal_pump pump = {
+            .target = pthread_self(),
+        };
+        atomic_init(&pump.stop, false);
+        pthread_t pump_thread;
         if (sigaction(SIGUSR1, &action, NULL) < 0 ||
+            pthread_create(&pump_thread, NULL, run_signal_pump, &pump) != 0 ||
             write(ready[1], "R", 1) != 1) {
             _exit(1);
         }
@@ -606,17 +650,23 @@ static int test_signal_interrupts_blocking_recv(void)
         errno = 0;
         ssize_t count = recv(server, &byte, 1, 0);
         int saved_errno = errno;
+        atomic_store_explicit(&pump.stop, true, memory_order_release);
+        pthread_join(pump_thread, NULL);
         _exit(count == -1 && saved_errno == EINTR && got_usr1 ? 0 : 1);
     }
 
     close(server);
     close(ready[1]);
     int result = read_ready(ready[0]);
-    if (result == 0 && kill(child, SIGUSR1) < 0) {
-        result = -1;
-    }
     if (result == 0) {
-        result = wait_child(child);
+        result = wait_child_for(child, SIGNAL_INTERRUPT_TIMEOUT_MS);
+        if (result == 1) {
+            if (send(client, "F", 1, MSG_NOSIGNAL) != 1) {
+                result = -1;
+            } else {
+                result = wait_child(child);
+            }
+        }
     } else {
         kill(child, SIGKILL);
         waitpid(child, NULL, 0);
@@ -650,29 +700,103 @@ static int test_signal_restarts_blocking_recv(void)
         action.sa_handler = on_usr1;
         action.sa_flags = SA_RESTART;
         sigemptyset(&action.sa_mask);
+        struct signal_pump pump = {
+            .target = pthread_self(),
+        };
+        atomic_init(&pump.stop, false);
+        pthread_t pump_thread;
         if (sigaction(SIGUSR1, &action, NULL) < 0 ||
+            pthread_create(&pump_thread, NULL, run_signal_pump, &pump) != 0 ||
             write(ready[1], "R", 1) != 1) {
             _exit(1);
         }
         char byte = 0;
         ssize_t count = syscall(SYS_recvfrom, server, &byte, 1, 0, NULL, NULL);
+        atomic_store_explicit(&pump.stop, true, memory_order_release);
+        pthread_join(pump_thread, NULL);
         _exit(count == 1 && byte == 'S' && got_usr1 ? 0 : 1);
     }
 
     close(server);
     close(ready[1]);
     int result = read_ready(ready[0]);
-    if (result == 0 && kill(child, SIGUSR1) < 0) {
-        result = -1;
-    }
     if (result == 0) {
-        usleep(WAIT_STEP_US);
+        usleep(WAIT_STEP_US * 4);
         if (send(client, "S", 1, MSG_NOSIGNAL) != 1) {
             result = -1;
         }
     }
     if (result == 0) {
         result = wait_child(child);
+    } else {
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
+    }
+    close(ready[0]);
+    close(client);
+    return result;
+}
+
+static int test_socket_timeout_disables_signal_restart(void)
+{
+    int client = -1;
+    int server = -1;
+    int ready[2] = {-1, -1};
+    if (create_tcp_pair(&client, &server) < 0 || pipe(ready) < 0) {
+        perror("timeout-eintr: setup");
+        return -1;
+    }
+
+    pid_t child = fork();
+    if (child < 0) {
+        perror("timeout-eintr: fork");
+        return -1;
+    }
+    if (child == 0) {
+        close(client);
+        close(ready[0]);
+        got_usr1 = 0;
+        struct sigaction action;
+        memset(&action, 0, sizeof(action));
+        action.sa_handler = on_usr1;
+        action.sa_flags = SA_RESTART;
+        sigemptyset(&action.sa_mask);
+        struct timeval timeout = {
+            .tv_sec = 2,
+        };
+        struct signal_pump pump = {
+            .target = pthread_self(),
+        };
+        atomic_init(&pump.stop, false);
+        pthread_t pump_thread;
+        if (sigaction(SIGUSR1, &action, NULL) < 0 ||
+            setsockopt(server, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                       sizeof(timeout)) < 0 ||
+            pthread_create(&pump_thread, NULL, run_signal_pump, &pump) != 0 ||
+            write(ready[1], "R", 1) != 1) {
+            _exit(1);
+        }
+        char byte = 0;
+        errno = 0;
+        ssize_t count = recv(server, &byte, 1, 0);
+        int saved_errno = errno;
+        atomic_store_explicit(&pump.stop, true, memory_order_release);
+        pthread_join(pump_thread, NULL);
+        _exit(count == -1 && saved_errno == EINTR && got_usr1 ? 0 : 1);
+    }
+
+    close(server);
+    close(ready[1]);
+    int result = read_ready(ready[0]);
+    if (result == 0) {
+        result = wait_child_for(child, SIGNAL_INTERRUPT_TIMEOUT_MS);
+        if (result == 1) {
+            if (send(client, "F", 1, MSG_NOSIGNAL) != 1) {
+                result = -1;
+            } else {
+                result = wait_child(child);
+            }
+        }
     } else {
         kill(child, SIGKILL);
         waitpid(child, NULL, 0);
@@ -812,6 +936,7 @@ int main(void)
         run_signal_wait(SIGNAL_WAIT_EPOLL) < 0 ||
         test_signal_interrupts_blocking_recv() < 0 ||
         test_signal_restarts_blocking_recv() < 0 ||
+        test_socket_timeout_disables_signal_restart() < 0 ||
         test_concurrent_close_preserves_duplicate_waiter() < 0 ||
         test_peer_close_wakes_epoll() < 0) {
         fprintf(stderr, "STARRY_GROUPED_TEST_FAILED: test-tcp-napi-runtime\n");

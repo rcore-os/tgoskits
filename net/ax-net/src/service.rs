@@ -57,7 +57,11 @@
 //! ```
 
 use alloc::{string::String, sync::Arc, vec, vec::Vec};
-use core::task::Waker;
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    task::Waker,
+    time::Duration,
+};
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos, wall_time_nanos};
 use ax_sync::SpinRwLock as RwLock;
@@ -97,6 +101,32 @@ struct ControlState {
 pub struct NetControl {
     state: RwLock<ControlState>,
     pub(crate) routes: SharedRouteTable,
+    dhcp_bootstrap: DhcpBootstrap,
+}
+
+struct DhcpBootstrap {
+    configured: AtomicBool,
+    waiters: ax_task::WaitQueue,
+}
+
+impl DhcpBootstrap {
+    const fn new() -> Self {
+        Self {
+            configured: AtomicBool::new(false),
+            waiters: ax_task::WaitQueue::new(),
+        }
+    }
+
+    fn publish(&self, configured: bool) {
+        if self.configured.swap(configured, Ordering::AcqRel) != configured {
+            self.waiters.notify_all();
+        }
+    }
+
+    fn wait_timeout(&self, timeout: Duration) -> bool {
+        self.waiters
+            .wait_timeout_until(timeout, || self.configured.load(Ordering::Acquire))
+    }
 }
 
 impl NetControl {
@@ -108,7 +138,12 @@ impl NetControl {
         Self {
             state: RwLock::new(ControlState { interfaces, dns }),
             routes,
+            dhcp_bootstrap: DhcpBootstrap::new(),
         }
+    }
+
+    pub(crate) fn wait_for_dhcp_configuration(&self, timeout: Duration) -> bool {
+        !self.dhcp_bootstrap.wait_timeout(timeout)
     }
 
     pub fn dns_servers(&self) -> Vec<Ipv4Address> {
@@ -515,6 +550,7 @@ impl Service {
             mac,
             metric,
         ));
+        self.publish_dhcp_state();
         info!("{ifname}: DHCP enabled");
     }
 
@@ -790,7 +826,20 @@ impl Service {
     }
 
     pub fn next_poll_at(&mut self, sockets: &SocketSet) -> Option<Instant> {
-        self.iface.poll_at(now(), sockets)
+        match (self.iface.poll_at(now(), sockets), self.next_dhcp_poll_at()) {
+            (Some(interface), Some(dhcp)) => Some(core::cmp::min(interface, dhcp)),
+            (Some(interface), None) => Some(interface),
+            (None, Some(dhcp)) => Some(dhcp),
+            (None, None) => None,
+        }
+    }
+
+    fn next_dhcp_poll_at(&self) -> Option<Instant> {
+        self.dhcp
+            .iter()
+            .filter(|state| state.phase != DhcpPhase::Bound)
+            .map(|state| state.retry_at)
+            .min()
     }
 
     fn poll_dhcp(&mut self, timestamp: Instant) -> bool {
@@ -895,6 +944,11 @@ impl Service {
             update.gateway.map(IpAddress::Ipv4),
         );
         self.control.commit_interface_update(&update, routes);
+        self.publish_dhcp_state();
+    }
+
+    fn publish_dhcp_state(&self) {
+        self.control.dhcp_bootstrap.publish(self.dhcp_configured());
     }
 
     fn interface_for_dev(&self, dev: usize) -> Option<NetInterface> {
@@ -1068,6 +1122,28 @@ mod tests {
 
         service.dhcp[1].address = Some(Ipv4Cidr::new(Ipv4Address::new(192, 0, 2, 10), 24));
         assert!(service.dhcp_configured());
+    }
+
+    #[test]
+    fn dhcp_retry_deadline_drives_protocol_executor_until_bound() {
+        let routes = Arc::new(ax_sync::SpinRwLock::new(RouteTable::new()));
+        let mut router = Router::new(routes.clone());
+        let dev = router.add_device(InterfaceId::new(2), Box::new(LoopbackDevice::new()));
+        let control = Arc::new(NetControl::new(Vec::new(), routes, Vec::new()));
+        let mut service = Service::new(router, control);
+
+        service.enable_dhcp(
+            InterfaceId::new(2),
+            dev,
+            "eth0".into(),
+            EthernetAddress([0x02, 0, 0, 0, 0, 1]),
+            100,
+        );
+        let retry_at = service.dhcp[0].retry_at;
+        assert_eq!(service.next_dhcp_poll_at(), Some(retry_at));
+
+        service.dhcp[0].phase = DhcpPhase::Bound;
+        assert_eq!(service.next_dhcp_poll_at(), None);
     }
 
     #[test]

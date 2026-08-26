@@ -828,6 +828,7 @@ dependencies = [
  "ax-runtime",
  "ax-sync",
  "axklib",
+ "bitflags 2.13.1",
  "crab-usb",
  "cv181x-sdhci",
  "dma-api",
@@ -878,6 +879,7 @@ dependencies = [
  "tock-registers 0.10.1",
  "virtio-drivers",
  "x86",
+ "zerocopy",
 ]
 
 [[package]]

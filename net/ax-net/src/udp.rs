@@ -43,8 +43,8 @@ use smoltcp::{
 };
 
 use crate::{
-    DeferPollWake, IpCmsg, NetError, NetResult, RecvFlags, RecvOptions, SOCKET_SET, SendFlags,
-    SendOptions, Shutdown, SocketAddrEx, SocketOps,
+    ConnectStatus, DeferPollWake, IpCmsg, NetError, NetResult, RecvFlags, RecvOptions, SOCKET_SET,
+    SendFlags, SendOptions, Shutdown, SocketAddrEx, SocketOps,
     addr::allocate_ephemeral_port,
     config::{DeviceBinding, InterfaceId},
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
@@ -296,7 +296,7 @@ impl SocketOps for UdpSocket {
     }
 
     /// Stores a default peer and source address for connected UDP semantics.
-    fn connect(&self, remote_addr: SocketAddrEx) -> NetResult {
+    fn start_connect(&self, remote_addr: SocketAddrEx) -> NetResult<ConnectStatus> {
         let remote_addr = remote_addr.into_ip()?;
         let mut guard = self.peer_addr.lock();
 
@@ -323,11 +323,11 @@ impl SocketOps for UdpSocket {
         }
 
         debug!("UDP socket {}: connected to {}", self.handle, remote_addr);
-        Ok(())
+        Ok(ConnectStatus::Connected)
     }
 
     /// Sends one datagram, or appends to/flushed a MSG_MORE corked datagram.
-    fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> NetResult<usize> {
+    fn try_send(&self, mut src: impl Read + IoBuf, options: &mut SendOptions) -> NetResult<usize> {
         // MSG_OOB is only valid on stream sockets (SOCK_STREAM), not DGRAM.
         if options.flags.contains(SendFlags::OOB) {
             return Err(NetError::OperationNotSupported);
@@ -346,7 +346,7 @@ impl SocketOps for UdpSocket {
         let more = options.flags.contains(SendFlags::MORE);
 
         if more {
-            let (remote_addr, source_addr) = match options.to {
+            let (remote_addr, source_addr) = match options.to.clone() {
                 Some(addr) => {
                     let addr = IpEndpoint::from(addr.into_ip()?);
                     let src = self.send_source_for_remote(&addr.addr)?;
@@ -387,7 +387,7 @@ impl SocketOps for UdpSocket {
         // Resolve destination for direct send or cork flush.
         // None means unconnected socket without explicit destination;
         // the poller closure checks cork before demanding an address.
-        let resolved = match options.to {
+        let resolved = match options.to.clone() {
             Some(addr) => {
                 let addr = IpEndpoint::from(addr.into_ip()?);
                 let src = self.send_source_for_remote(&addr.addr)?;
@@ -396,62 +396,44 @@ impl SocketOps for UdpSocket {
             None => self.remote_endpoint().ok(),
         };
 
-        let extra_nb = options.flags.contains(SendFlags::DONTWAIT);
-        self.general.send_poller_with(self, extra_nb, || {
-            request_poll();
-            let mut cork_guard = self.cork.lock();
-            // When flushing corked data, always use the endpoint captured
-            // at the first MSG_MORE call (matching Linux semantics).
-            let (endpoint, local_addr, payload_len) = if let Some(ref c) = *cork_guard {
-                let total = c
-                    .buf
-                    .len()
-                    .checked_add(src.remaining())
-                    .ok_or(NetError::MessageTooLong)?;
-                if total > CORK_MAX {
-                    return Err(NetError::MessageTooLong);
+        request_poll();
+        let mut cork_guard = self.cork.lock();
+        // When flushing corked data, always use the endpoint captured
+        // at the first MSG_MORE call (matching Linux semantics).
+        let (endpoint, local_addr, payload_len) = if let Some(ref c) = *cork_guard {
+            let total = c
+                .buf
+                .len()
+                .checked_add(src.remaining())
+                .ok_or(NetError::MessageTooLong)?;
+            if total > CORK_MAX {
+                return Err(NetError::MessageTooLong);
+            }
+            (c.remote, Some(c.source), total)
+        } else {
+            match resolved {
+                Some((remote, source)) => {
+                    if remote.port == 0 || remote.addr.is_unspecified() {
+                        return Err(NetError::InvalidInput);
+                    }
+                    (remote, Some(source), src.remaining())
                 }
-                (c.remote, Some(c.source), total)
+                None => return Err(NetError::DestAddrRequired),
+            }
+        };
+        let result = self.with_smol_socket(|socket| {
+            if !socket.is_open() {
+                // not connected
+                Err(NetError::NotConnected)
+            } else if !socket.can_send() {
+                Err(NetError::WouldBlock)
             } else {
-                match resolved {
-                    Some((remote, source)) => {
-                        if remote.port == 0 || remote.addr.is_unspecified() {
-                            return Err(NetError::InvalidInput);
-                        }
-                        (remote, Some(source), src.remaining())
-                    }
-                    None => return Err(NetError::DestAddrRequired),
-                }
-            };
-            let result = self.with_smol_socket(|socket| {
-                if !socket.is_open() {
-                    // not connected
-                    Err(NetError::NotConnected)
-                } else if !socket.can_send() {
-                    Err(NetError::WouldBlock)
-                } else {
-                    self.track_egress_ip_tos(local_addr, endpoint);
-                    // UDP allows zero-length payloads (IP header + UDP header only).
-                    if payload_len == 0 {
-                        socket
-                            .send(
-                                0,
-                                UdpMetadata {
-                                    endpoint,
-                                    local_address: local_addr,
-                                    meta: PacketMeta::default(),
-                                },
-                            )
-                            .map_err(|e| match e {
-                                smol::SendError::BufferFull => NetError::WouldBlock,
-                                smol::SendError::Unaddressable => NetError::ConnectionRefused,
-                            })?;
-                        *cork_guard = None;
-                        return Ok(0);
-                    }
-                    let buf = socket
+                self.track_egress_ip_tos(local_addr, endpoint);
+                // UDP allows zero-length payloads (IP header + UDP header only).
+                if payload_len == 0 {
+                    socket
                         .send(
-                            payload_len,
+                            0,
                             UdpMetadata {
                                 endpoint,
                                 local_address: local_addr,
@@ -462,37 +444,52 @@ impl SocketOps for UdpSocket {
                             smol::SendError::BufferFull => NetError::WouldBlock,
                             smol::SendError::Unaddressable => NetError::ConnectionRefused,
                         })?;
-                    let mut total_written = 0;
-                    let mut cur_read = 0;
-                    if let Some(ref c) = *cork_guard {
-                        let n = c.buf.len().min(buf.len());
-                        buf[..n].copy_from_slice(&c.buf[..n]);
-                        total_written += n;
-                    }
-                    if total_written < buf.len() {
-                        cur_read = src.read(&mut buf[total_written..])?;
-                        total_written += cur_read;
-                    }
-                    assert_eq!(total_written, buf.len());
-                    // Success — clear cork state.
                     *cork_guard = None;
-                    // Return only bytes consumed from the *current* user buffer.
-                    Ok(cur_read)
+                    return Ok(0);
                 }
-            })?;
-            request_poll();
-            Ok(result)
-        })
+                let buf = socket
+                    .send(
+                        payload_len,
+                        UdpMetadata {
+                            endpoint,
+                            local_address: local_addr,
+                            meta: PacketMeta::default(),
+                        },
+                    )
+                    .map_err(|e| match e {
+                        smol::SendError::BufferFull => NetError::WouldBlock,
+                        smol::SendError::Unaddressable => NetError::ConnectionRefused,
+                    })?;
+                let mut total_written = 0;
+                let mut cur_read = 0;
+                if let Some(ref c) = *cork_guard {
+                    let n = c.buf.len().min(buf.len());
+                    buf[..n].copy_from_slice(&c.buf[..n]);
+                    total_written += n;
+                }
+                if total_written < buf.len() {
+                    cur_read = src.read(&mut buf[total_written..])?;
+                    total_written += cur_read;
+                }
+                assert_eq!(total_written, buf.len());
+                // Success — clear cork state.
+                *cork_guard = None;
+                // Return only bytes consumed from the *current* user buffer.
+                Ok(cur_read)
+            }
+        })?;
+        request_poll();
+        Ok(result)
     }
 
     /// Receives one datagram while honoring peer filters and recv flags.
-    fn recv(&self, mut dst: impl Write, mut options: RecvOptions) -> NetResult<usize> {
+    fn try_recv(&self, mut dst: impl Write, options: &mut RecvOptions) -> NetResult<usize> {
         enum ExpectedRemote<'a> {
             Any(&'a mut SocketAddrEx),
             AnyDiscard,
             Expecting(IpEndpoint),
         }
-        let mut expected_remote = match options.from {
+        let mut expected_remote = match options.from.as_deref_mut() {
             Some(addr) => ExpectedRemote::Any(addr),
             None => match self.remote_endpoint() {
                 Ok((endpoint, _)) => ExpectedRemote::Expecting(endpoint),
@@ -500,80 +497,76 @@ impl SocketOps for UdpSocket {
             },
         };
 
-        let extra_nb = options.flags.contains(RecvFlags::DONTWAIT);
-        self.general.recv_poller_with(self, extra_nb, || {
-            request_poll();
-            self.with_smol_socket(|socket| {
-                if !socket.can_recv() {
-                    Err(NetError::WouldBlock)
+        request_poll();
+        self.with_smol_socket(|socket| {
+            if !socket.can_recv() {
+                Err(NetError::WouldBlock)
+            } else {
+                let result = if options.flags.contains(RecvFlags::PEEK) {
+                    socket.peek().map(|(data, meta)| (data, *meta))
                 } else {
-                    let result = if options.flags.contains(RecvFlags::PEEK) {
-                        socket.peek().map(|(data, meta)| (data, *meta))
-                    } else {
-                        socket.recv()
-                    };
-                    match result {
-                        Ok((src, meta)) => {
-                            match &mut expected_remote {
-                                ExpectedRemote::Any(remote_addr) => {
-                                    **remote_addr = SocketAddrEx::Ip(meta.endpoint.into());
-                                }
-                                ExpectedRemote::AnyDiscard => {
-                                    // recv() with no addr buffer and no peer — accept from any
-                                }
-                                ExpectedRemote::Expecting(expected) => {
-                                    if (!expected.addr.is_unspecified()
-                                        && expected.addr != meta.endpoint.addr)
-                                        || (expected.port != 0
-                                            && expected.port != meta.endpoint.port)
-                                    {
-                                        return Err(NetError::WouldBlock);
-                                    }
+                    socket.recv()
+                };
+                match result {
+                    Ok((src, meta)) => {
+                        match &mut expected_remote {
+                            ExpectedRemote::Any(remote_addr) => {
+                                **remote_addr = SocketAddrEx::Ip(meta.endpoint.into());
+                            }
+                            ExpectedRemote::AnyDiscard => {
+                                // recv() with no addr buffer and no peer — accept from any
+                            }
+                            ExpectedRemote::Expecting(expected) => {
+                                if (!expected.addr.is_unspecified()
+                                    && expected.addr != meta.endpoint.addr)
+                                    || (expected.port != 0 && expected.port != meta.endpoint.port)
+                                {
+                                    return Err(NetError::WouldBlock);
                                 }
                             }
-
-                            let read = dst.write(src)?;
-                            if read < src.len() {
-                                warn!("UDP message truncated: {} -> {} bytes", src.len(), read);
-                                if let Some(ref mut truncated) = options.truncated {
-                                    **truncated = true;
-                                }
-                            }
-
-                            if let Some(cmsg) = options.cmsg.as_deref_mut()
-                                && let Some(traffic_class) = received_traffic_class(meta.meta)
-                            {
-                                match traffic_class {
-                                    ReceivedTrafficClass::Ipv4(tos)
-                                        if self.general.recv_traffic_class() =>
-                                    {
-                                        cmsg.push(Box::new(IpCmsg::Ipv6TrafficClass(tos)));
-                                    }
-                                    ReceivedTrafficClass::Ipv4(tos) if self.general.recv_tos() => {
-                                        cmsg.push(Box::new(IpCmsg::Ipv4Tos(tos)));
-                                    }
-                                    ReceivedTrafficClass::Ipv6(tclass)
-                                        if self.general.recv_traffic_class() =>
-                                    {
-                                        cmsg.push(Box::new(IpCmsg::Ipv6TrafficClass(tclass)));
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
-                                src.len()
-                            } else {
-                                read
-                            })
                         }
-                        Err(smol::RecvError::Exhausted) => Err(NetError::WouldBlock),
-                        Err(smol::RecvError::Truncated) => {
-                            unreachable!("UDP socket recv never returns Err(Truncated)")
+
+                        let read = dst.write(src)?;
+                        if read < src.len() {
+                            warn!("UDP message truncated: {} -> {} bytes", src.len(), read);
+                            if let Some(ref mut truncated) = options.truncated {
+                                **truncated = true;
+                            }
                         }
+
+                        if let Some(cmsg) = options.cmsg.as_deref_mut()
+                            && let Some(traffic_class) = received_traffic_class(meta.meta)
+                        {
+                            match traffic_class {
+                                ReceivedTrafficClass::Ipv4(tos)
+                                    if self.general.recv_traffic_class() =>
+                                {
+                                    cmsg.push(Box::new(IpCmsg::Ipv6TrafficClass(tos)));
+                                }
+                                ReceivedTrafficClass::Ipv4(tos) if self.general.recv_tos() => {
+                                    cmsg.push(Box::new(IpCmsg::Ipv4Tos(tos)));
+                                }
+                                ReceivedTrafficClass::Ipv6(tclass)
+                                    if self.general.recv_traffic_class() =>
+                                {
+                                    cmsg.push(Box::new(IpCmsg::Ipv6TrafficClass(tclass)));
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        Ok(if options.flags.contains(RecvFlags::TRUNCATE) {
+                            src.len()
+                        } else {
+                            read
+                        })
+                    }
+                    Err(smol::RecvError::Exhausted) => Err(NetError::WouldBlock),
+                    Err(smol::RecvError::Truncated) => {
+                        unreachable!("UDP socket recv never returns Err(Truncated)")
                     }
                 }
-            })
+            }
         })
     }
 

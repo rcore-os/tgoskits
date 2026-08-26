@@ -1,8 +1,8 @@
 //! Vsock stream transport.
 //!
 //! Stream sockets are backed by entries in the vsock connection manager and are
-//! driven by the adaptive vsock device poll task rather than the smoltcp IP
-//! poller.
+//! driven by the fixed-owner vsock IRQ worker rather than the smoltcp IP
+//! protocol executor.
 //!
 //! # Public State
 //!

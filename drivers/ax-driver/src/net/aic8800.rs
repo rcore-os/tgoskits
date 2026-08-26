@@ -146,7 +146,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         crate::binding_resolver::dma_coherency_from_fdt(&info),
         dma_api::DmaConstraints::new(u64::MAX),
     ));
-    plat_dev.register_net_with_info("wlan0", wifi, dma, binding);
+    plat_dev.register_net_with_info("wlan0", wifi, dma, binding)?;
     info!("[wifi] wlan0 device registered (probe stage done)");
     Ok(())
 }

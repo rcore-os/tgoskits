@@ -346,11 +346,6 @@ pub mod net {
 
         /// Resolves the host name to a list of IP addresses.
         pub fn ax_dns_query(domain_name: &str) -> ApiResult<alloc::vec::Vec<IpAddr>>;
-        /// Poll the network stack.
-        ///
-        /// It may receive packets from the NIC and process them, and transmit queued
-        /// packets to the NIC.
-        pub fn ax_poll_interfaces() -> ApiResult;
     }
 }
 

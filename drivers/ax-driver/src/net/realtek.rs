@@ -66,8 +66,8 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         );
     }
 
-    let irq = probe.register_net(DRIVER_NAME, dev, PciIrqRequirement::Required)?;
-    debug!("RTL8125 PCI network device registered at {address} with irq {irq:?}");
+    probe.register_net(DRIVER_NAME, dev, PciIrqRequirement::Required)?;
+    debug!("RTL8125 PCI network device registered at {address}");
     Ok(())
 }
 

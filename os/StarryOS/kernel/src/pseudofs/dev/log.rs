@@ -1,9 +1,10 @@
 use core::fmt;
 
 use ax_net::{
-    RecvOptions, SocketAddrEx, SocketOps,
+    RecvOptions, SocketAddrEx, SocketOps, poll_socket_io,
     unix::{DgramTransport, UnixSocket, UnixSocketAddr},
 };
+use axpoll::IoEvents;
 
 use crate::StarryResult;
 
@@ -14,7 +15,14 @@ pub fn bind_dev_log() -> StarryResult<()> {
         move || {
             let mut buf = [0u8; 65536];
             loop {
-                match server.recv(&mut buf[..], RecvOptions::default()) {
+                let mut dst = &mut buf[..];
+                let mut options = RecvOptions::default();
+                match crate::task::future::block_on(poll_socket_io(
+                    &server,
+                    IoEvents::IN,
+                    false,
+                    || server.try_recv(&mut dst, &mut options),
+                )) {
                     Ok(read) => {
                         let msg = LossyByteStr(buf[..read].trim_ascii_end());
                         info!("{msg}");
