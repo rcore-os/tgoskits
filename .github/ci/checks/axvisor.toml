@@ -173,9 +173,9 @@ runner = "kvm-intel"
 timeout_minutes = 90
 command = '''
 cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
-cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
-cargo xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
-cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
 '''
 
 [[check.suite]]
