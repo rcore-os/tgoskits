@@ -217,6 +217,19 @@ impl X86LocalApic {
         }
     }
 
+    /// Completes a posted xAPIC timer-mask update before programming a TSC
+    /// deadline through its MSR comparator.
+    ///
+    /// Legacy initial-count programming remains in the same MMIO ordering
+    /// domain, while x2APIC LVT writes are already serializing MSR accesses.
+    pub fn timer_serialize_mask_update(&self) {
+        if requires_timer_mask_fence(current_apic_mode(), cpu_has_tsc_deadline()) {
+            unsafe {
+                core::arch::asm!("mfence", options(nostack, preserves_flags));
+            }
+        }
+    }
+
     /// Returns whether the LVT timer entry is currently unmasked.
     pub fn timer_is_unmasked(&self) -> bool {
         let lvt = unsafe { read_lvt_timer(self.xapic_mmio_base) };
@@ -314,6 +327,10 @@ fn current_apic_mode() -> ApicMode {
     } else {
         ApicMode::XApic
     }
+}
+
+const fn requires_timer_mask_fence(mode: ApicMode, tsc_deadline: bool) -> bool {
+    matches!(mode, ApicMode::XApic) && tsc_deadline
 }
 
 // --- raw-access supplement ---------------------------------------------------
@@ -478,5 +495,12 @@ mod tests {
             masked_lint0 & !LVT_MASKED,
             masked_lint1
         ));
+    }
+
+    #[test]
+    fn only_xapic_tsc_deadline_needs_a_posted_lvt_fence() {
+        assert!(requires_timer_mask_fence(ApicMode::XApic, true));
+        assert!(!requires_timer_mask_fence(ApicMode::XApic, false));
+        assert!(!requires_timer_mask_fence(ApicMode::X2Apic, true));
     }
 }

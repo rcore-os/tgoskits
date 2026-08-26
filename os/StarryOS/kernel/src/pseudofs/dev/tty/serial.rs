@@ -80,7 +80,7 @@ impl SerialInput {
         }
     }
 
-    fn poll_source(&self) -> Arc<axpoll::PollSet> {
+    fn poll_source(&self) -> Arc<axpoll_set::PollSet> {
         match self {
             Self::Console(input) => input.poll_source(),
             Self::Port(input) => input.poll_source(),
@@ -99,7 +99,12 @@ impl DeviceOps for NoConsole {
         Err(VfsError::NoSuchDevice)
     }
 
-    fn ioctl(&self, _cmd: u32, _arg: usize) -> VfsResult<usize> {
+    fn ioctl(
+        &self,
+        _current: &crate::task::UserTaskRef,
+        _cmd: u32,
+        _arg: usize,
+    ) -> VfsResult<usize> {
         Err(VfsError::NoSuchDevice)
     }
 

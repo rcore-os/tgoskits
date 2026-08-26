@@ -19,15 +19,13 @@
 //! with the next message's ancillary data.
 
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
-use core::{
-    sync::atomic::{AtomicBool, Ordering},
-    task::Context,
-};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use ax_io::{IoBuf, Read, Write};
-use ax_sync::Mutex;
-use axpoll::{IoEvents, PollSet, Pollable};
+use ax_sync::SpinLock;
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use ringbuf::{
     HeapCons, HeapProd, HeapRb,
     traits::{Consumer, Observer, Producer, Split},
@@ -60,7 +58,7 @@ struct PendingCmsg {
     cmsg: Vec<CMsgData>,
 }
 
-type CmsgQueue = Arc<Mutex<VecDeque<PendingCmsg>>>;
+type CmsgQueue = Arc<SpinLock<VecDeque<PendingCmsg>>>;
 
 fn new_uni_channel() -> (HeapProd<u8>, HeapCons<u8>) {
     let rb = HeapRb::new(BUF_SIZE);
@@ -192,9 +190,9 @@ struct ConnRequest {
 /// Stream transport for Unix domain sockets.
 pub struct StreamTransport {
     /// Connected channel, if this endpoint is connected or accepted.
-    channel: Mutex<Option<Channel>>,
+    channel: SpinLock<Option<Channel>>,
     /// Listener receive queue installed by bind/listen.
-    conn_rx: Mutex<Option<(async_channel::Receiver<ConnRequest>, Arc<PollSet>)>>,
+    conn_rx: SpinLock<Option<(async_channel::Receiver<ConnRequest>, Arc<PollSet>)>>,
     /// True after `listen` publishes the bound endpoint for connection attempts.
     listening: Arc<AtomicBool>,
     /// Poll set for local stream state.
@@ -222,8 +220,8 @@ impl StreamTransport {
         receive_credentials: Arc<AtomicBool>,
     ) -> Self {
         StreamTransport {
-            channel: Mutex::new(channel),
-            conn_rx: Mutex::new(None),
+            channel: SpinLock::new(channel),
+            conn_rx: SpinLock::new(None),
             listening: Arc::new(AtomicBool::new(false)),
             poll_state: PollSet::new(),
             general: GeneralOptions::new(1, 1, 0), // SOCK_STREAM
@@ -668,7 +666,29 @@ impl Pollable for StreamTransport {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_shared(poll, interests)
+        });
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_exclusive(poll, interests)
+        });
+    }
+}
+
+impl StreamTransport {
+    fn register_poll_sources(
+        &self,
+        events: IoEvents,
+        mut register: impl FnMut(&PollSet, IoEvents),
+    ) {
         let chan_poll = if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
             self.channel
                 .lock()
@@ -678,16 +698,13 @@ impl Pollable for StreamTransport {
             None
         };
         if let Some(poll) = chan_poll {
-            // Registration happens from socket poll task context.
-            unsafe { poll.register(context.waker(), events) };
+            register(&poll, events);
         } else if let Some((_, poll_new_conn)) = self.conn_rx.lock().as_ref()
             && events.contains(IoEvents::IN)
         {
-            // Registration happens from socket poll task context.
-            unsafe { poll_new_conn.register(context.waker(), IoEvents::IN) };
+            register(poll_new_conn, IoEvents::IN);
         }
-        // Registration happens from socket poll task context.
-        unsafe { self.poll_state.register(context.waker(), events) };
+        register(&self.poll_state, events);
     }
 }
 

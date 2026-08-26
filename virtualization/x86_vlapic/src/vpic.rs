@@ -180,6 +180,14 @@ impl EmulatedPic {
         self.state.lock().pulse_irq(irq)
     }
 
+    /// Re-evaluates the latched requests after a guest PIC state change.
+    ///
+    /// In particular, an EOI or an interrupt-mask update can make an edge that
+    /// was already present in the IRR deliverable without another source edge.
+    pub fn next_interrupt(&self) -> Option<u8> {
+        self.state.lock().next_interrupt()
+    }
+
     /// Handles one byte-wide PIC port read.
     pub fn handle_read(&self, port: X86Port, width: X86AccessWidth) -> X86VlapicResult<usize> {
         if width != X86AccessWidth::Byte {
@@ -234,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn firmware_can_reprogram_and_service_pit_irq0() {
+    fn eoi_releases_an_already_latched_pit_irq0() {
         let pic = EmulatedPic::new();
         write(&pic, MASTER_COMMAND, 0x11);
         write(&pic, MASTER_DATA, 0x68);
@@ -245,6 +253,6 @@ mod tests {
         assert_eq!(pic.pulse_irq(0), Some(0x68));
         assert_eq!(pic.pulse_irq(0), None);
         write(&pic, MASTER_COMMAND, 0x20);
-        assert_eq!(pic.pulse_irq(0), Some(0x68));
+        assert_eq!(pic.next_interrupt(), Some(0x68));
     }
 }

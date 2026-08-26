@@ -14,6 +14,8 @@ use core::{
 
 use ax_io::prelude::*;
 #[cfg(feature = "ext4")]
+use ax_lazyinit::LazyLock;
+#[cfg(feature = "ext4")]
 use axfs_ng_vfs::FilesystemOps;
 use axfs_ng_vfs::{FileNode, Location, VfsError, VfsResult};
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
@@ -23,7 +25,9 @@ use readahead::ReadAheadState;
 pub use reclaim::{page_cache_reclaim, sync_all_cached_files};
 
 use super::page::PageCache;
-use crate::os::{memory::PAGE_SIZE, sync::SleepMutex as Mutex};
+#[cfg(feature = "ext4")]
+use crate::os::sync::SpinLock;
+use crate::os::{memory::PAGE_SIZE, sync::Mutex};
 
 const DISK_PAGE_CACHE_CAP: usize = 512;
 
@@ -33,8 +37,8 @@ type CachedFileKey = (usize, u64);
 type InodeCacheIndex = BTreeMap<CachedFileKey, Weak<CachedFileShared>>;
 
 #[cfg(feature = "ext4")]
-static CACHED_FILE_BY_INODE: ax_lazyinit::LazyLock<Mutex<InodeCacheIndex>> =
-    ax_lazyinit::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static CACHED_FILE_BY_INODE: LazyLock<SpinLock<InodeCacheIndex>> =
+    LazyLock::new(|| SpinLock::new(BTreeMap::new()));
 
 /// Eviction listener callback. Returns `true` if the listener successfully
 /// invalidated all mappings for the evicted page.

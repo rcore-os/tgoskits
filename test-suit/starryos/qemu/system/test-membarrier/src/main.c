@@ -109,8 +109,8 @@ static void part_03_global_commands(void)
 {
     CHECK_RET(membarrier(MEMBARRIER_CMD_GLOBAL, 0, 0), 0,
               "GLOBAL with flags=0 returns 0");
-    CHECK_ERR(membarrier(MEMBARRIER_CMD_GLOBAL_EXPEDITED, 0, 0), EPERM,
-              "GLOBAL_EXPEDITED before registration returns EPERM");
+    CHECK_RET(membarrier(MEMBARRIER_CMD_GLOBAL_EXPEDITED, 0, 0), 0,
+              "GLOBAL_EXPEDITED is valid from an unregistered process");
     CHECK_RET(membarrier(MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED, 0, 0), 0,
               "REGISTER_GLOBAL_EXPEDITED succeeds");
     CHECK_RET(membarrier(MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED, 0, 0), 0,

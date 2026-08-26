@@ -6,8 +6,6 @@ features = [
   "multitask",
   "paging",
   "ax-std/std-compat",
-  "ax-task/axtest",
-  "ax-task/multitask",
   "axplat-dyn/thead-mae",
   "ax-driver/serial",
   "ax-driver/sg2002-dwc2",

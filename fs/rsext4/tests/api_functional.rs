@@ -3,8 +3,10 @@
 //! The suite focuses on `open`, `read_at`, `write_at`, and `lseek`, with each
 //! test documenting the scenario and the intended observable behavior.
 
+// Host tests must link the external lock/task provider.
 use std::cell::Cell;
 
+use ax_runtime as _;
 use rsext4::{
     bmalloc::AbsoluteBN,
     error::{Ext4Error, Ext4Result},

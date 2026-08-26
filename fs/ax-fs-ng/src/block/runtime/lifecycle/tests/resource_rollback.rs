@@ -127,14 +127,18 @@ impl BlockController for RejectedResourceUpdateController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.bootstrap_queue.take().ok_or(BlkError::Io)?)],
-                Vec::new(),
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(QueueZeroHandler),
+                )],
             )),
             ControllerEvent::OnlineSmp { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.emitted_queue.take().ok_or(BlkError::Io)?)],
                 vec![IrqEndpoint::new(
                     1,
-                    1 << 1,
+                    IrqQueueMask::from_queue(1),
                     Box::new(self.emitted_handler.take().ok_or(BlkError::Io)?),
                 )],
             )
@@ -172,7 +176,11 @@ impl BlockController for RejectedQueueBatchController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.bootstrap_queue.take().ok_or(BlkError::Io)?)],
-                Vec::new(),
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(QueueZeroHandler),
+                )],
             )),
             ControllerEvent::OnlineSmp { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
@@ -194,8 +202,10 @@ impl BlockController for RejectedQueueBatchController {
 
 #[test]
 fn rejected_device_info_update_keeps_emitted_queue_until_controller_shutdown() {
+    let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     let log = Arc::new(StdMutex::new(Vec::new()));
+    configure_test_irq_registrar(Arc::clone(&log));
     let initial_info = test_queue_info().device;
     let changed_info = DeviceInfo {
         num_blocks: initial_info.num_blocks + 1,
@@ -216,10 +226,18 @@ fn rejected_device_info_update_keeps_emitted_queue_until_controller_shutdown() {
         changed_info,
         log: Arc::clone(&log),
     };
-    let irq = IrqId::new(IrqDomainId(1), HwIrq(12));
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
         "rejected-resource-update",
-        [BlockIrqSource { source_id: 1, irq }],
+        [
+            BlockIrqSource {
+                source_id: 0,
+                irq: IrqId::new(IrqDomainId(1), HwIrq(20)),
+            },
+            BlockIrqSource {
+                source_id: 1,
+                irq: IrqId::new(IrqDomainId(1), HwIrq(21)),
+            },
+        ],
         Box::new(controller),
     ))
     .unwrap();
@@ -239,7 +257,9 @@ fn assert_rejected_queue_batch_is_retained(
     emitted_queues: Vec<Box<dyn HardwareQueue>>,
     expected_drop_events: &[&str],
 ) {
+    let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
+    configure_test_irq_registrar(Arc::clone(&log));
     let controller = RejectedQueueBatchController {
         bootstrap_queue: Some(LifecycleQueue {
             log: Arc::clone(&log),
@@ -249,7 +269,10 @@ fn assert_rejected_queue_batch_is_retained(
     };
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
         "rejected-queue-batch",
-        [],
+        [BlockIrqSource {
+            source_id: 0,
+            irq: IrqId::new(IrqDomainId(1), HwIrq(22)),
+        }],
         Box::new(controller),
     ))
     .unwrap();

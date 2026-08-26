@@ -638,6 +638,7 @@ BT 0 ip=0x1 fp=0x2
                 case_dir: qemu_config_path.parent().unwrap().to_path_buf(),
                 qemu_config_path,
                 test_commands: Vec::new(),
+                grouped_command_selection: Default::default(),
                 host_symbolize_success_regex: Vec::new(),
                 host_http_server: None,
                 subcases: Vec::new(),

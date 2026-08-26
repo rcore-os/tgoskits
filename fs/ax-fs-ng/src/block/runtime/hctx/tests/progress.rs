@@ -28,11 +28,11 @@ fn register_retry_advances_only_register_state_and_posts_controller_event() {
     crate::os::task::install_test_runtime_ops();
     let ops = runtime_ops().unwrap();
     let state = HctxState {
-        queue_info: IrqMutex::new(QueueInfoEpoch::new(test_queue_info(1))),
-        submission_channels: IrqMutex::new(Vec::new()),
+        queue_info: Mutex::new(QueueInfoEpoch::new(test_queue_info(1))),
+        submission_channels: Mutex::new(Vec::new()),
         notification: ops.notification(),
         lifecycle_notification: ops.notification(),
-        irq_latches: IrqMutex::new(Vec::new()),
+        irq_latches: Mutex::new(Vec::new()),
         quiescing: AtomicBool::new(false),
         quiesced: AtomicBool::new(false),
         stopping: AtomicBool::new(false),
@@ -98,11 +98,11 @@ fn terminal_state_rejects_an_already_due_register_retry() {
     crate::os::task::install_test_runtime_ops();
     let ops = runtime_ops().unwrap();
     let state = HctxState {
-        queue_info: IrqMutex::new(QueueInfoEpoch::new(test_queue_info(1))),
-        submission_channels: IrqMutex::new(Vec::new()),
+        queue_info: Mutex::new(QueueInfoEpoch::new(test_queue_info(1))),
+        submission_channels: Mutex::new(Vec::new()),
         notification: ops.notification(),
         lifecycle_notification: ops.notification(),
-        irq_latches: IrqMutex::new(Vec::new()),
+        irq_latches: Mutex::new(Vec::new()),
         quiescing: AtomicBool::new(false),
         quiesced: AtomicBool::new(false),
         stopping: AtomicBool::new(true),
@@ -150,11 +150,11 @@ fn retry_backlog_does_not_starve_fresh_cpu_channel_submissions() {
     let channel =
         Arc::new(BoundedChannel::with_item_notification(4, Arc::clone(&notification)).unwrap());
     let state = HctxState {
-        queue_info: IrqMutex::new(QueueInfoEpoch::new(test_queue_info(2))),
-        submission_channels: IrqMutex::new(vec![Arc::clone(&channel)]),
+        queue_info: Mutex::new(QueueInfoEpoch::new(test_queue_info(2))),
+        submission_channels: Mutex::new(vec![Arc::clone(&channel)]),
         notification,
         lifecycle_notification: ops.notification(),
-        irq_latches: IrqMutex::new(Vec::new()),
+        irq_latches: Mutex::new(Vec::new()),
         quiescing: AtomicBool::new(false),
         quiesced: AtomicBool::new(false),
         stopping: AtomicBool::new(false),
@@ -203,8 +203,7 @@ fn irq_drain_refreshes_hctx_queue_capabilities() {
     assert!(!initial.limits.supports_flush);
     assert_eq!(initial.limits.max_blocks_per_request, 256);
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    let mut action = queue_zero_action(&hctx);
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
     let deadline = Instant::now() + Duration::from_secs(1);
     while !hctx.info().limits.supports_flush {
@@ -247,8 +246,7 @@ fn terminal_irq_drain_failure_does_not_advance_controller_or_rearm() {
     )
     .unwrap();
 
-    let target = hctx.irq_target(0);
-    let mut action = BlockIrqAction::new(Box::new(QueueZeroControlIrq), vec![target]);
+    let mut action = queue_zero_action_with_handler(&hctx, Box::new(QueueZeroControlIrq));
     assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
 
     let deadline = Instant::now() + Duration::from_secs(1);

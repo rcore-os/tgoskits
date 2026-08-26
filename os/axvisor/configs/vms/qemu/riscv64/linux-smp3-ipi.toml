@@ -23,4 +23,4 @@ memory_regions = [
 
 [devices]
 passthrough = []
-disabled = []
+disabled = [{ path = "/soc/pci@30000000" }]

@@ -129,13 +129,13 @@ pub struct DrmPrimeHandle {
 // (not counting the nul terminator, per Linux convention).
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmVersion {
     pub version_major: c_int,
     pub version_minor: c_int,
     pub version_patchlevel: c_int,
-    /// `_pad` — field missing on 32-bit. On 64-bit the compiler inserts
-    /// padding naturally before the u64 fields.
+    /// Explicit 64-bit ABI alignment bytes before the pointer-sized fields.
+    pub _padding: u32,
     pub name_len: usize,
     pub name: u64,
     pub date_len: usize,
@@ -145,14 +145,14 @@ pub struct DrmVersion {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmUnique {
     pub unique_len: usize,
     pub unique: u64,
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmSetVersion {
     pub drm_di_major: c_int,
     pub drm_di_minor: c_int,
@@ -166,7 +166,7 @@ pub struct DrmSetVersion {
 // writes back `value`.
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmGetCap {
     pub capability: u64,
     pub value: u64,
@@ -210,7 +210,7 @@ pub const DRM_FORMAT_MOD_LINEAR: u64 = 0;
 // fast path yet).
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmSetClientCap {
     pub capability: u64,
     pub value: u64,
@@ -251,7 +251,7 @@ pub const DRM_IOCTL_WAIT_VBLANK: u32 = ioc(
 pub const DRM_MODE_NAME_LEN: usize = 32;
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeCardRes {
     /// user ptr to array of u32 fb ids
     pub fb_id_ptr: u64,
@@ -272,7 +272,7 @@ pub struct DrmModeCardRes {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeModeInfo {
     pub clock: u32,
     pub hdisplay: u16,
@@ -292,7 +292,7 @@ pub struct DrmModeModeInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeCrtc {
     /// user ptr to set-of connector ids (on SETCRTC)
     pub set_connectors_ptr: u64,
@@ -307,7 +307,7 @@ pub struct DrmModeCrtc {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeGetEncoder {
     pub encoder_id: u32,
     pub encoder_type: u32,
@@ -317,7 +317,7 @@ pub struct DrmModeGetEncoder {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeGetConnector {
     pub encoders_ptr: u64,
     pub modes_ptr: u64,
@@ -346,7 +346,7 @@ pub const DRM_MODE_CONNECTOR_VIRTUAL: u32 = 15;
 pub const DRM_MODE_ENCODER_VIRTUAL: u32 = 5;
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeFbCmd2 {
     pub fb_id: u32,
     pub width: u32,
@@ -356,11 +356,13 @@ pub struct DrmModeFbCmd2 {
     pub handles: [u32; 4],
     pub pitches: [u32; 4],
     pub offsets: [u32; 4],
+    /// Explicit ABI alignment bytes before the modifier array.
+    pub _padding: u32,
     pub modifier: [u64; 4],
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeCreateDumb {
     pub height: u32,
     pub width: u32,
@@ -372,7 +374,7 @@ pub struct DrmModeCreateDumb {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeMapDumb {
     pub handle: u32,
     pub pad: u32,
@@ -380,7 +382,7 @@ pub struct DrmModeMapDumb {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeDestroyDumb {
     pub handle: u32,
 }
@@ -395,15 +397,17 @@ pub const DRM_FORMAT_ARGB8888: u32 =
 // ======== M4b: planes, properties, page flip, vblank ========
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeGetPlaneRes {
     /// user ptr to array of u32 plane ids
     pub plane_id_ptr: u64,
     pub count_planes: u32,
+    /// Explicit tail bytes in the 64-bit DRM ABI.
+    pub _padding: u32,
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeGetPlane {
     pub plane_id: u32,
     pub crtc_id: u32,
@@ -425,7 +429,7 @@ pub const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
 pub const DRM_PLANE_TYPE_PRIMARY: u64 = 1;
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeObjGetProperties {
     /// user ptr to u32 array of property ids
     pub props_ptr: u64,
@@ -434,6 +438,8 @@ pub struct DrmModeObjGetProperties {
     pub count_props: u32,
     pub obj_id: u32,
     pub obj_type: u32,
+    /// Explicit tail bytes in the 64-bit DRM ABI.
+    pub _padding: u32,
 }
 
 /// Property-flag bits (`DRM_MODE_PROP_*`).  Only the values we actually
@@ -449,14 +455,14 @@ pub const DRM_MODE_PROP_ATOMIC: u32 = 0x8000_0000;
 pub const DRM_PROP_NAME_LEN: usize = 32;
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModePropertyEnum {
     pub value: u64,
     pub name: [u8; DRM_PROP_NAME_LEN],
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeGetProperty {
     /// user ptr to u64 array of range limits (RANGE props) or enum values
     pub values_ptr: u64,
@@ -472,7 +478,7 @@ pub struct DrmModeGetProperty {
 // ---- page flip ----
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeCrtcPageFlip {
     pub crtc_id: u32,
     pub fb_id: u32,
@@ -489,7 +495,7 @@ pub const DRM_MODE_PAGE_FLIP_EVENT: u32 = 0x01;
 // on output.  Request and reply are the same size (24 bytes on 64-bit);
 // we just overlay the reply when writing back.
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmWaitVblank {
     pub rep_type: u32,
     pub sequence: u32,
@@ -542,7 +548,7 @@ pub const DRM_EVENT_FLIP_COMPLETE: u32 = 0x02;
 /// `props_ptr` / `prop_values_ptr` arrays together have
 /// `sum(count_props_ptr[0..count_objs])` entries, consumed in order.
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeAtomic {
     pub flags: u32,
     pub count_objs: u32,
@@ -569,7 +575,7 @@ pub const DRM_MODE_ATOMIC_ALLOW_MODESET: u32 = 0x0400;
 // `GETPROPBLOB` reads the stored bytes back.
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeCreateBlob {
     /// user ptr to the source bytes
     pub data: u64,
@@ -579,13 +585,13 @@ pub struct DrmModeCreateBlob {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeDestroyBlob {
     pub blob_id: u32,
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Clone, Copy, AnyBitPattern)]
+#[derive(Debug, Default, Clone, Copy, AnyBitPattern, NoUninit)]
 pub struct DrmModeGetBlob {
     pub blob_id: u32,
     pub length: u32,

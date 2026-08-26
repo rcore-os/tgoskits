@@ -11,7 +11,7 @@ use axdevice_base::VirtualInterruptController;
 
 use self::{devices::PreparedDevices, vcpus::PreparedVcpus};
 use super::{AxVM, AxVMResources};
-use crate::{config::AxVMConfig, *};
+use crate::{config::AxVMConfig, sync::MutexExt, *};
 
 pub(crate) struct PreparedVm {
     vcpus: PreparedVcpus,
@@ -46,7 +46,7 @@ impl AxVM {
         // Configuration is task-context state. Always acquire it before the
         // IRQ-safe machine lock so this path never waits for config while
         // holding `machine`.
-        let config = self.config.lock();
+        let config = self.config.lock_unpoisoned();
         let mut machine = self.machine.lock();
         if !matches!(
             machine.status(),

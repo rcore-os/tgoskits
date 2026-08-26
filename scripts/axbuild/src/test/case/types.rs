@@ -31,10 +31,19 @@ pub(crate) struct TestQemuCase {
     pub(crate) case_dir: PathBuf,
     pub(crate) qemu_config_path: PathBuf,
     pub(crate) test_commands: Vec<String>,
+    pub(crate) grouped_command_selection: GroupedCommandSelection,
     pub(crate) host_symbolize_success_regex: Vec<String>,
     pub(crate) host_http_server: Option<HostHttpServerConfig>,
     pub(crate) subcases: Vec<TestQemuSubcase>,
     pub(crate) grouped_subcase_filter: Option<BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum GroupedCommandSelection {
+    #[default]
+    DirectSubcases,
+    PreserveAll,
 }
 
 impl TestQemuCase {
@@ -91,7 +100,6 @@ pub(crate) struct TestQemuSubcase {
 pub(crate) struct GroupedCaseRunnerConfig {
     pub(crate) runner_name: String,
     pub(crate) runner_path: String,
-    pub(crate) autorun_profile_script: Option<String>,
     pub(crate) begin_marker: String,
     pub(crate) passed_marker: String,
     pub(crate) failed_marker: String,
@@ -99,6 +107,22 @@ pub(crate) struct GroupedCaseRunnerConfig {
     pub(crate) all_failed_marker: String,
     pub(crate) success_regex: String,
     pub(crate) fail_regex: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GroupedCaseExecution {
+    GuestInit(GroupedCaseRunnerConfig),
+    ShellCommand(GroupedCaseRunnerConfig),
+    External,
+}
+
+impl GroupedCaseExecution {
+    pub(crate) fn runner(&self) -> Option<&GroupedCaseRunnerConfig> {
+        match self {
+            Self::GuestInit(config) | Self::ShellCommand(config) => Some(config),
+            Self::External => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,7 +140,7 @@ pub(crate) type GuestPackageEnvPrepareFn =
 
 #[derive(Debug, Clone)]
 pub(crate) struct CaseAssetConfig {
-    pub(crate) grouped_runner: GroupedCaseRunnerConfig,
+    pub(crate) grouped_execution: GroupedCaseExecution,
     pub(crate) script_env: CaseScriptEnvConfig,
     pub(crate) cache_env_vars: Vec<String>,
     pub(crate) prepare_staging_root: fn(&std::path::Path) -> anyhow::Result<()>,

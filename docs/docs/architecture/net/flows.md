@@ -378,7 +378,9 @@ TcpSocket::connect(remote)
   -> poll_io waits for OUT or error
 ```
 
-连接完成由 smoltcp 在后续 `Interface::poll()` 中推进。`Pollable::register()` 同时注册 smoltcp send/recv waker 和设备 readiness waker。
+连接完成由 smoltcp 在后续 `Interface::poll()` 中推进。调用方持有的 exclusive
+registrar 通过 `Pollable::register_exclusive()` 同时连接 smoltcp send/recv
+readiness 与设备 readiness；完成或取消时对应 lease 一并释放。
 
 ### 5.2 TCP 监听接收
 

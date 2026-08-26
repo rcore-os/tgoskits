@@ -15,6 +15,7 @@ lockdep = []
 
 [dependencies]
 ax-sync = { workspace = true, features = ["sleep"] }
+axpoll.workspace = true
 bitflags = "2.10"
 cfg-if = "1"
 hashbrown = "0.16"
@@ -25,6 +26,11 @@ thiserror.workspace = true
 
 [dev-dependencies]
 ax-sync = { path = "../../os/arceos/modules/axsync" }
+# Host tests must link the external lock provider.
+ax-runtime = { path = "../../os/arceos/modules/axruntime", features = [
+    "host-test",
+    "multitask",
+] }
 
 [[test]]
 name = "std"

@@ -10,7 +10,7 @@ pub use someboot::timer::{
 };
 use someboot::{SystimerArch, arch::Arch};
 
-/// Brings the system timer into its enabled state.
+/// Prepares the system timer in a masked, non-firing state.
 pub fn enable() {
     Arch::systimer_enable();
 }
@@ -18,6 +18,16 @@ pub fn enable() {
 /// Unmasks the timer interrupt.
 pub fn irq_enable() {
     Arch::systimer_irq_enable();
+}
+
+/// Cancels the active one-shot and discards its comparator state.
+pub fn cancel_oneshot() {
+    Arch::systimer_cancel_oneshot();
+}
+
+/// Restores a cancelled one-shot using the architecture-required ordering.
+pub fn resume_oneshot_in_ticks(ticks: usize) {
+    Arch::systimer_resume_oneshot(ticks);
 }
 
 /// Arms a one-shot deadline `ticks` from now.

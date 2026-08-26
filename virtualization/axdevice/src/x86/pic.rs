@@ -38,6 +38,10 @@ impl X86PicDeviceOps for X86PicDevice {
     fn pulse_irq(&self, irq: u8) -> Option<u8> {
         self.inner.pulse_irq(irq)
     }
+
+    fn next_interrupt(&self) -> Option<u8> {
+        self.inner.next_interrupt()
+    }
 }
 
 impl Device for X86PicDevice {

@@ -97,17 +97,25 @@ impl<B: MappingBackend> MemoryArea<B> {
     }
 
     /// Maps the whole memory area in the page table.
-    pub(crate) fn map_area(&self, page_table: &mut B::PageTable) -> MappingResult {
+    pub(crate) fn map_area(
+        &self,
+        context: &mut B::MutationContext,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
         self.backend
-            .map(self.start(), self.size(), self.flags, page_table)
+            .map(self.start(), self.size(), self.flags, context, page_table)
             .then_some(())
             .ok_or(MappingError::BadState)
     }
 
     /// Unmaps the whole memory area in the page table.
-    pub(crate) fn unmap_area(&self, page_table: &mut B::PageTable) -> MappingResult {
+    pub(crate) fn unmap_area(
+        &self,
+        context: &mut B::MutationContext,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
         self.backend
-            .unmap(self.start(), self.size(), page_table)
+            .unmap(self.start(), self.size(), context, page_table)
             .then_some(())
             .ok_or(MappingError::BadState)
     }
@@ -116,10 +124,11 @@ impl<B: MappingBackend> MemoryArea<B> {
     pub(crate) fn protect_area(
         &mut self,
         new_flags: B::Flags,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         self.backend
-            .protect(self.start(), self.size(), new_flags, page_table);
+            .protect(self.start(), self.size(), new_flags, context, page_table);
         Ok(())
     }
 
@@ -134,6 +143,7 @@ impl<B: MappingBackend> MemoryArea<B> {
     pub(crate) fn shrink_left(
         &mut self,
         new_size: usize,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         assert!(new_size > 0 && new_size < self.size());
@@ -141,7 +151,10 @@ impl<B: MappingBackend> MemoryArea<B> {
         let old_size = self.size();
         let unmap_size = old_size - new_size;
 
-        if !self.backend.unmap(self.start(), unmap_size, page_table) {
+        if !self
+            .backend
+            .unmap(self.start(), unmap_size, context, page_table)
+        {
             return Err(MappingError::BadState);
         }
         // Use wrapping_add to avoid overflow check.
@@ -174,6 +187,7 @@ impl<B: MappingBackend> MemoryArea<B> {
     pub(crate) fn shrink_right(
         &mut self,
         new_size: usize,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         assert!(new_size > 0 && new_size < self.size());
@@ -184,7 +198,10 @@ impl<B: MappingBackend> MemoryArea<B> {
         // Safety: `new_size` is less than the current size, so it will never overflow.
         let unmap_start = self.start().wrapping_add(new_size);
 
-        if !self.backend.unmap(unmap_start, unmap_size, page_table) {
+        if !self
+            .backend
+            .unmap(unmap_start, unmap_size, context, page_table)
+        {
             return Err(MappingError::BadState);
         }
 
@@ -210,6 +227,7 @@ impl<B: MappingBackend> MemoryArea<B> {
     pub(crate) fn grow_right(
         &mut self,
         additional_size: usize,
+        context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         assert!(additional_size > 0);
@@ -226,7 +244,7 @@ impl<B: MappingBackend> MemoryArea<B> {
             .ok_or(MappingError::InvalidParam)?;
         if !self
             .backend
-            .map(map_start, additional_size, self.flags, page_table)
+            .map(map_start, additional_size, self.flags, context, page_table)
         {
             return Err(MappingError::BadState);
         }

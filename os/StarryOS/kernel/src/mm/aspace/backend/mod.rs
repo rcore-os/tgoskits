@@ -14,18 +14,20 @@ use ax_runtime::hal::{
 };
 use enum_dispatch::enum_dispatch;
 
-use crate::{StarryError, StarryResult, sync::Mutex};
+use crate::{StarryError, StarryResult, sync::PiMutex};
 
 mod cow;
 mod file;
 mod linear;
 mod shared;
 
+pub(crate) use self::cow::DeferredFrameRelease;
 pub use self::shared::SharedPages;
 pub use super::accounting::RssKind;
 use super::{
     AddrSpace,
     accounting::{CloneMapAccounting, MemoryAccounting},
+    tlb::TlbGather,
 };
 
 fn divide_page(size: usize, page_size: usize) -> usize {
@@ -58,7 +60,34 @@ fn pages_in(range: VirtAddrRange, align: usize) -> StarryResult<DynPageIter<Virt
     DynPageIter::new(range.start, range.end, align).ok_or(StarryError::InvalidInput)
 }
 
-type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace)>;
+type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace) -> crate::StarryResult>;
+
+/// Explicit state shared by one backend clone transaction.
+pub struct CloneMapContext<'a> {
+    gather: &'a mut TlbGather,
+    parent_page_table: &'a mut PageTable,
+    child_page_table: &'a mut PageTable,
+    child_address_space: &'a Arc<PiMutex<AddrSpace>>,
+    accounting: CloneMapAccounting<'a>,
+}
+
+impl<'a> CloneMapContext<'a> {
+    pub(super) fn new(
+        gather: &'a mut TlbGather,
+        parent_page_table: &'a mut PageTable,
+        child_page_table: &'a mut PageTable,
+        child_address_space: &'a Arc<PiMutex<AddrSpace>>,
+        accounting: CloneMapAccounting<'a>,
+    ) -> Self {
+        Self {
+            gather,
+            parent_page_table,
+            child_page_table,
+            child_address_space,
+            accounting,
+        }
+    }
+}
 
 #[enum_dispatch]
 pub trait BackendOps {
@@ -71,6 +100,7 @@ pub trait BackendOps {
         range: VirtAddrRange,
         flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult;
 
@@ -79,6 +109,7 @@ pub trait BackendOps {
         &self,
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult;
 
@@ -87,6 +118,7 @@ pub trait BackendOps {
         &self,
         _range: VirtAddrRange,
         _new_flags: MappingFlags,
+        _gather: &mut TlbGather,
         _pt: &mut PageTable,
     ) -> StarryResult {
         Ok(())
@@ -103,6 +135,7 @@ pub trait BackendOps {
         _flags: MappingFlags,
         _access_flags: MappingFlags,
         _acct: Option<&MemoryAccounting>,
+        _gather: &mut TlbGather,
         _pt: &mut PageTable,
     ) -> StarryResult<(usize, Option<PopulateCallback>)> {
         Ok((0, None))
@@ -118,10 +151,7 @@ pub trait BackendOps {
         &self,
         range: VirtAddrRange,
         flags: MappingFlags,
-        old_pt: &mut PageTable,
-        new_pt: &mut PageTable,
-        new_aspace: &Arc<Mutex<AddrSpace>>,
-        acct: CloneMapAccounting<'_>,
+        context: CloneMapContext<'_>,
     ) -> StarryResult<Backend>;
 
     /// Splits the backend into two at the given position, and returns the backend for the upper part.
@@ -189,8 +219,8 @@ impl Backend {
         &self,
         new_start: VirtAddr,
         src_offset: usize,
-        aspace: &Arc<Mutex<AddrSpace>>,
-    ) -> StarryResult<Self> {
+        aspace: &Arc<PiMutex<AddrSpace>>,
+    ) -> crate::StarryResult<Self> {
         let adjusted = new_start
             .as_usize()
             .checked_sub(src_offset)
@@ -208,12 +238,20 @@ impl Backend {
 impl MappingBackend for Backend {
     type Addr = VirtAddr;
     type Flags = MappingFlags;
+    type MutationContext = TlbGather;
     type PageTable = PageTable;
 
-    fn map(&self, start: VirtAddr, size: usize, flags: MappingFlags, pt: &mut PageTable) -> bool {
+    fn map(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+        gather: &mut TlbGather,
+        pt: &mut PageTable,
+    ) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
         let acct = super::accounting::bridge_rss_accounting();
-        if let Err(err) = BackendOps::map(self, range, flags, acct, pt) {
+        if let Err(err) = BackendOps::map(self, range, flags, acct, gather, pt) {
             warn!("Failed to map area: {:?}", err);
             false
         } else {
@@ -221,10 +259,17 @@ impl MappingBackend for Backend {
         }
     }
 
-    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut PageTable) -> bool {
+    fn unmap(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        gather: &mut TlbGather,
+        pt: &mut PageTable,
+    ) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
         let acct = super::accounting::bridge_rss_accounting();
-        if let Err(err) = BackendOps::unmap(self, range, acct, pt) {
+        gather.retain_backend(self.clone());
+        if let Err(err) = BackendOps::unmap(self, range, acct, gather, pt) {
             warn!("Failed to unmap area: {:?}", err);
             false
         } else {
@@ -237,10 +282,11 @@ impl MappingBackend for Backend {
         start: Self::Addr,
         size: usize,
         new_flags: Self::Flags,
+        gather: &mut TlbGather,
         pt: &mut Self::PageTable,
     ) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
-        if let Err(err) = BackendOps::on_protect(self, range, new_flags, pt) {
+        if let Err(err) = BackendOps::on_protect(self, range, new_flags, gather, pt) {
             warn!("Failed to protect area: {:?}", err);
             return false;
         }

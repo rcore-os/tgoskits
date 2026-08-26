@@ -19,8 +19,8 @@ use core::{
 use ax_alloc::GlobalPage;
 use ax_hal::mem::virt_to_phys;
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr};
-use ax_task::IrqNotify;
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use kbpf_basic::{
     linux_bpf::{perf_event_mmap_page, perf_event_sample_format},
     perf::{PerfProbeArgs, bpf::BpfPerfEvent},
@@ -36,6 +36,7 @@ use crate::{
     ebpf::{BPF_HELPER_FUN_SET, error::BpfResultExt, prog::BpfProg},
     file::FileLike,
     sync::IrqMutex,
+    task::future::IrqNotify,
 };
 
 /// Number of 4K pages reserved for x86_64 BPF JIT executable memory.
@@ -69,6 +70,43 @@ impl BpfPerfEventState {
 pub(super) struct BpfPerfOutput {
     state: Arc<IrqMutex<BpfPerfEventState>>,
     poll_notify: Arc<IrqNotify>,
+}
+
+/// Task-context readiness capability separated from mutable perf control.
+#[derive(Clone)]
+pub(super) struct BpfPerfPoll {
+    state: Arc<IrqMutex<BpfPerfEventState>>,
+    poll_ready: Arc<PollSet>,
+}
+
+impl Pollable for BpfPerfPoll {
+    fn poll(&self) -> IoEvents {
+        if self.state.lock().inner.readable() {
+            IoEvents::IN
+        } else {
+            IoEvents::empty()
+        }
+    }
+
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_shared(&self.poll_ready, IoEvents::IN) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { sink.register_exclusive(&self.poll_ready, IoEvents::IN) };
+        }
+    }
 }
 
 impl BpfPerfOutput {
@@ -113,7 +151,7 @@ impl BpfPerfOutput {
 /// left after the pages free is harmless.
 pub struct BpfPerfEventWrapper {
     state: Arc<IrqMutex<BpfPerfEventState>>,
-    poll_ready: Arc<PollSet>,
+    poll: BpfPerfPoll,
     poll_notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
 }
@@ -125,9 +163,13 @@ impl BpfPerfEventWrapper {
         let poll_notify = Arc::new(IrqNotify::new());
         let poll_alive = Arc::new(AtomicBool::new(true));
         start_bpf_perf_notify_worker(poll_ready.clone(), poll_notify.clone(), poll_alive.clone());
+        let state = Arc::new(IrqMutex::new(BpfPerfEventState { inner, pages: None }));
         Self {
-            state: Arc::new(IrqMutex::new(BpfPerfEventState { inner, pages: None })),
-            poll_ready,
+            poll: BpfPerfPoll {
+                state: Arc::clone(&state),
+                poll_ready,
+            },
+            state,
             poll_notify,
             poll_alive,
         }
@@ -138,6 +180,10 @@ impl BpfPerfEventWrapper {
             state: Arc::clone(&self.state),
             poll_notify: Arc::clone(&self.poll_notify),
         }
+    }
+
+    pub(super) fn poll_handle(&self) -> BpfPerfPoll {
+        self.poll.clone()
     }
 }
 
@@ -153,7 +199,7 @@ fn start_bpf_perf_notify_worker(
     poll_notify: Arc<IrqNotify>,
     poll_alive: Arc<AtomicBool>,
 ) {
-    ax_task::spawn_with_name(
+    crate::task::spawn_kernel_thread(
         move || loop {
             poll_notify.wait();
             if !poll_alive.load(Ordering::Acquire) {
@@ -246,18 +292,23 @@ impl PerfEventOps for BpfPerfEventWrapper {
 
 impl Pollable for BpfPerfEventWrapper {
     fn poll(&self) -> axpoll::IoEvents {
-        if self.state.lock().inner.readable() {
-            IoEvents::IN
-        } else {
-            IoEvents::empty()
-        }
+        self.poll.poll()
     }
 
-    fn register(&self, context: &mut core::task::Context<'_>, events: axpoll::IoEvents) {
-        if events.contains(IoEvents::IN) {
-            // Registration happens from file poll task context.
-            unsafe { self.poll_ready.register(context.waker(), IoEvents::IN) };
-        }
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: axpoll::IoEvents,
+    ) {
+        unsafe { self.poll.register_shared(sink, events) };
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: axpoll::IoEvents,
+    ) {
+        unsafe { self.poll.register_exclusive(sink, events) };
     }
 }
 

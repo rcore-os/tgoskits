@@ -11,6 +11,8 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{sync::atomic::Ordering, task::Poll};
 
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar};
+
 use crate::{
     common::SDIO_TYPE_CFG_CMD_RSP,
     fdrv::{
@@ -94,7 +96,8 @@ fn send_cmd_via_tx_thread(bus: &Arc<WifiBus>, frame: Vec<u8>) {
     *cmd_slot = Some(frame);
     bus.cmd.pending_flag.store(true, Ordering::Release);
     drop(cmd_slot);
-    bus.tx.wake_pollset.wake();
+    // SAFETY: command submission runs in task context after publishing the frame.
+    unsafe { bus.tx.wake_pollset.wake(IoEvents::IN) };
 }
 
 /// 验证 CFM 并提取参数
@@ -143,7 +146,8 @@ fn try_get_cfm_from_queue(
                 for r in redirected {
                     ind.push_back(r);
                 }
-                bus.tx.ind_pollset.wake();
+                // SAFETY: response routing runs in the RX service task.
+                unsafe { bus.tx.ind_pollset.wake(IoEvents::IN) };
             }
             return Some(Ok(rsp[LmacMsg::SIZE..].to_vec()));
         } else {
@@ -156,7 +160,8 @@ fn try_get_cfm_from_queue(
         for r in redirected {
             ind.push_back(r);
         }
-        bus.tx.ind_pollset.wake();
+        // SAFETY: response routing runs in the RX service task.
+        unsafe { bus.tx.ind_pollset.wake(IoEvents::IN) };
     }
     None
 }
@@ -167,8 +172,12 @@ fn poll_cfm_response(
     bus: &Arc<WifiBus>,
     expected_cfm_id: u16,
     out: &mut Option<Result<Vec<u8>, CmdError>>,
+    registration: &mut Option<PollRegistrar<ExclusiveConsumer>>,
     cx: &mut core::task::Context<'_>,
 ) -> Poll<()> {
+    if let Some(registration) = registration.as_mut() {
+        registration.reset(cx.waker());
+    }
     if bus.cmd.rsp_error.load(Ordering::Acquire) || *bus.state.lock() == BusState::Down {
         *out = Some(Err(CmdError::BusDown));
         return Poll::Ready(());
@@ -179,11 +188,13 @@ fn poll_cfm_response(
         return Poll::Ready(());
     }
 
-    // 注册 waker，等待 RX 线程通过 rsp_pollset.wake() 唤醒
-    bus.cmd.rsp_pollset.register(cx.waker());
+    let registration = registration.get_or_insert_with(|| PollRegistrar::new(cx.waker()));
+    // SAFETY: block_until invokes this poll callback only in task context.
+    unsafe { registration.register_exclusive(&bus.cmd.rsp_pollset, IoEvents::IN) };
 
     // 双重检查
     if let Some(result) = try_get_cfm_from_queue(bus, expected_cfm_id) {
+        registration.clear();
         *out = Some(result);
         return Poll::Ready(());
     }
@@ -229,8 +240,9 @@ pub fn send_cmd_with_cfm_id(
 
     // 通过注入的 runtime 阻塞等待：同时由 rsp_pollset 唤醒和超时定时器驱动。
     let mut cfm: Option<Result<Vec<u8>, CmdError>> = None;
+    let mut registration = None::<PollRegistrar<ExclusiveConsumer>>;
     let result = match runtime().block_until(Some(tout), &mut |cx| {
-        poll_cfm_response(bus, expected_cfm_id, &mut cfm, cx)
+        poll_cfm_response(bus, expected_cfm_id, &mut cfm, &mut registration, cx)
     }) {
         Ok(()) => cfm.unwrap_or(Err(CmdError::Timeout)),
         Err(_) => {
@@ -269,7 +281,8 @@ pub fn send_cmd_no_cfm(
         *cmd_slot = Some(frame);
         bus.cmd.pending_flag.store(true, Ordering::Release);
     }
-    bus.tx.wake_pollset.wake();
+    // SAFETY: command submission runs in task context after publishing pending_flag.
+    unsafe { bus.tx.wake_pollset.wake(IoEvents::IN) };
 
     Ok(())
 }
@@ -279,25 +292,36 @@ pub fn send_cmd_no_cfm(
 /// 轮询体：从 eapol_queue 取出 EAPOL 帧。
 fn poll_eapol(
     bus: &Arc<WifiBus>,
-    out: &mut Option<Vec<u8>>,
+    out: &mut Option<Result<Vec<u8>, CmdError>>,
+    registration: &mut Option<PollRegistrar<ExclusiveConsumer>>,
     cx: &mut core::task::Context<'_>,
 ) -> Poll<()> {
+    if let Some(registration) = registration.as_mut() {
+        registration.reset(cx.waker());
+    }
+    if *bus.state.lock() == BusState::Down {
+        *out = Some(Err(CmdError::BusDown));
+        return Poll::Ready(());
+    }
     {
         let mut queue = bus.rx.eapol_queue.lock();
         if let Some(eapol) = queue.pop_front() {
             queue.clear();
-            *out = Some(eapol);
+            *out = Some(Ok(eapol));
             return Poll::Ready(());
         }
     }
 
-    bus.rx.eapol_pollset.register(cx.waker());
+    let registration = registration.get_or_insert_with(|| PollRegistrar::new(cx.waker()));
+    // SAFETY: block_until invokes this poll callback only in task context.
+    unsafe { registration.register_exclusive(&bus.rx.eapol_pollset, IoEvents::IN) };
 
     {
         let mut queue = bus.rx.eapol_queue.lock();
         if let Some(eapol) = queue.pop_front() {
             queue.clear();
-            *out = Some(eapol);
+            registration.clear();
+            *out = Some(Ok(eapol));
             return Poll::Ready(());
         }
     }
@@ -307,10 +331,13 @@ fn poll_eapol(
 
 /// 等待 EAPOL 帧（从 eapol_queue 中取出）
 pub fn wait_for_eapol(bus: &Arc<WifiBus>, timeout_ms: u64) -> Result<Vec<u8>, CmdError> {
-    let mut eapol: Option<Vec<u8>> = None;
-    match runtime().block_until(Some(timeout_ms), &mut |cx| poll_eapol(bus, &mut eapol, cx)) {
+    let mut eapol: Option<Result<Vec<u8>, CmdError>> = None;
+    let mut registration = None::<PollRegistrar<ExclusiveConsumer>>;
+    match runtime().block_until(Some(timeout_ms), &mut |cx| {
+        poll_eapol(bus, &mut eapol, &mut registration, cx)
+    }) {
         Ok(()) => match eapol {
-            Some(e) => Ok(e),
+            Some(result) => result,
             None => {
                 log::error!("[cmd_mgr] EAPOL wait returned empty");
                 Err(CmdError::Timeout)

@@ -1286,8 +1286,8 @@ mod tests {
         let gate = UartRegisterGate::new(tx);
         let access = gate.try_begin_emergency().unwrap();
 
-        assert_eq!(access.try_write(&bytes), 16);
-        assert_eq!(writes.load(Ordering::SeqCst), 16);
+        assert_eq!(access.try_write(&bytes), UART_FIFO_SIZE as usize);
+        assert_eq!(writes.load(Ordering::SeqCst), UART_FIFO_SIZE as usize);
     }
 
     #[test]
@@ -1418,7 +1418,7 @@ mod tests {
     }
 
     #[test]
-    fn irq_event_drains_rx_fifo_into_sink() {
+    fn irq_report_contains_the_drained_rx_fifo() {
         let (_guard, uart) = serial();
         let mut parts = started_parts(uart);
 

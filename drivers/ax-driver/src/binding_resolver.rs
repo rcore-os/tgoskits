@@ -11,8 +11,11 @@ use alloc::{format, vec::Vec};
     feature = "phytium-mci",
     feature = "rga",
     feature = "rknpu",
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "sg2002-dwc2",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -36,8 +39,11 @@ use crate::{BindingInfo, BindingIrq};
     feature = "phytium-mci",
     feature = "rga",
     feature = "rknpu",
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "sg2002-dwc2",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -68,8 +74,11 @@ pub(crate) fn dma_coherency_from_fdt(info: &FdtInfo<'_>) -> DmaCoherency {
     feature = "phytium-mci",
     feature = "rga",
     feature = "rknpu",
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "sg2002-dwc2",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -108,8 +117,11 @@ fn next_dma_parent<'a>(
     feature = "phytium-mci",
     feature = "rga",
     feature = "rknpu",
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "sg2002-dwc2",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -143,8 +155,11 @@ fn dma_mem_interconnect_phandle<'a>(
     feature = "phytium-mci",
     feature = "rga",
     feature = "rknpu",
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
     feature = "rockchip-dwmmc",
     feature = "rockchip-sdhci",
+    feature = "sg2002-dwc2",
     feature = "starfive-jh7110-dwmmc",
     feature = "xhci-mmio"
 ))]
@@ -263,6 +278,68 @@ fn resolve_fdt_irq(info: &FdtInfo<'_>) -> Result<Option<BindingIrq>, OnProbeErro
     )?))
 }
 
+#[cfg(test)]
+mod dma_coherency_unit_tests {
+    use dma_api::DmaCoherency;
+
+    #[test]
+    fn platform_fdt_dma_default_matches_linux_supported_architectures() {
+        let expected = if cfg!(target_arch = "aarch64") {
+            DmaCoherency::NonCoherent
+        } else {
+            DmaCoherency::Coherent
+        };
+        assert_eq!(super::platform_default_dma_coherency(), expected);
+    }
+
+    #[test]
+    fn dma_mem_interconnect_uses_provider_defined_entry_widths() {
+        let names = ["cpu-mem", "dma-mem"].into_iter();
+        let cells = [1, 0x10, 0x20, 2, 0x30].into_iter();
+
+        let phandle = super::dma_mem_interconnect_phandle(names, cells, |phandle| match phandle {
+            1 => Some(2),
+            2 => Some(1),
+            _ => None,
+        });
+
+        assert_eq!(phandle, Some(2));
+    }
+
+    #[test]
+    fn malformed_dma_mem_interconnect_is_rejected_for_parent_fallback() {
+        let names = ["dma-mem"].into_iter();
+        let truncated_cells = [2].into_iter();
+
+        assert_eq!(
+            super::dma_mem_interconnect_phandle(names, truncated_cells, |_| Some(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_acpi_cca_overrides_architecture_default() {
+        assert_eq!(
+            super::dma_coherency_from_acpi_cca(Some(true)).unwrap(),
+            DmaCoherency::Coherent
+        );
+        assert_eq!(
+            super::dma_coherency_from_acpi_cca(Some(false)).unwrap(),
+            DmaCoherency::NonCoherent
+        );
+    }
+
+    #[test]
+    fn missing_acpi_cca_follows_linux_architecture_contract() {
+        let result = super::dma_coherency_from_acpi_cca(None);
+        if cfg!(target_arch = "aarch64") {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result.unwrap(), DmaCoherency::Coherent);
+        }
+    }
+}
+
 #[cfg(feature = "pci")]
 pub fn binding_info_from_pci(
     info: rdrive::probe::pci::PciInfo,
@@ -279,7 +356,7 @@ pub fn binding_info_from_pci(
 }
 
 #[cfg(test)]
-mod dma_tests {
+mod dma_coherency_fdt_tests {
     extern crate std;
 
     use alloc::vec::Vec;

@@ -6,13 +6,11 @@ use super::Riscv64Arch;
 use crate::{
     AxVmResult,
     architecture::{
-        Architecture, BootImagePlatform, GuestBootPlatform, HostTimePlatform, MachinePlatform,
+        Architecture, BootImagePlatform, GuestBootPlatform, MachinePlatform,
         capabilities::default_vcpu_affinities,
     },
     ax_err_type,
 };
-
-impl HostTimePlatform for Riscv64Arch {}
 
 impl Architecture for Riscv64Arch {}
 

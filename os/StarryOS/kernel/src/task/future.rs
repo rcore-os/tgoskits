@@ -1,0 +1,663 @@
+//! Starry task-context future compatibility on the runtime scheduler facade.
+//!
+//! Polling remains local to the calling Starry thread. Wakes use the scheduler's
+//! generation-checked direct wake header, while timeout expiry is fanned out by
+//! one ordinary task-context service thread. IRQ handlers must wake a fixed
+//! service thread instead of invoking `PollSet` callbacks directly.
+
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use core::{
+    fmt,
+    future::{Future, IntoFuture, poll_fn},
+    pin::{Pin, pin},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    task::{Context, Poll, Waker},
+    time::Duration,
+};
+
+use ax_lazyinit::OnceLock;
+use ax_runtime::hal::time::{TimeValue, epochoffset_nanos, monotonic_time};
+pub use ax_runtime::task::block_on;
+use ax_std::os::arceos::task::{
+    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, LocalExecutor,
+    MonotonicDeadline, MonotonicInstant, WaitQueue,
+};
+use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar, Pollable, SharedObserver};
+
+pub use super::user_wait::{UserWaitError, UserWaitOutcome};
+use super::{UserTaskRef, user_wait::resolve_user_wait};
+use crate::{
+    sync::PiMutex,
+    time::{SleepClockSnapshot, SleepDeadline},
+};
+
+static TIMER_WAIT: WaitQueue = WaitQueue::new();
+static TIMER_RUNTIME: PiMutex<TimerRuntime> = PiMutex::new(TimerRuntime::new());
+static TIMER_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
+static TIMER_EPOCH: AtomicU64 = AtomicU64::new(0);
+static NEXT_TIMER_KEY: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(feature = "axtest")]
+const _: fn(&UserTaskRef) -> LocalExecutor = user_executor;
+
+/// Polls a future for a proven Starry user task until completion.
+///
+/// The explicit borrow prevents a kernel worker from accidentally inheriting
+/// signal semantics through its current scheduler identity. A deliverable
+/// signal completes this operation with [`UserWaitOutcome::Interrupted`].
+#[track_caller]
+pub fn block_on_user<F: IntoFuture>(task: &UserTaskRef, future: F) -> UserWaitOutcome<F::Output> {
+    block_on_user_until(task, None, future)
+}
+
+/// Polls a user future until completion, interruption, or a relative deadline.
+#[track_caller]
+pub fn block_on_user_timeout<F: IntoFuture>(
+    task: &UserTaskRef,
+    duration: Option<Duration>,
+    future: F,
+) -> UserWaitOutcome<F::Output> {
+    let deadline = duration.map(|duration| scheduler_monotonic_now().deadline_after(duration));
+    block_on_user_until_deadline(task, deadline, future)
+}
+
+/// Polls a user future until completion, interruption, or a monotonic deadline.
+#[track_caller]
+pub fn block_on_user_until<F: IntoFuture>(
+    task: &UserTaskRef,
+    deadline: Option<MonotonicDeadline>,
+    future: F,
+) -> UserWaitOutcome<F::Output> {
+    block_on_user_until_deadline(task, deadline, future)
+}
+
+fn block_on_user_until_deadline<F: IntoFuture>(
+    task: &UserTaskRef,
+    deadline: Option<MonotonicDeadline>,
+    future: F,
+) -> UserWaitOutcome<F::Output> {
+    let executor = user_executor(task);
+    block_on_with_abort(
+        user_wait_future(task, deadline, future),
+        executor,
+        deadline,
+        || task.interrupted(),
+    )
+}
+
+/// Polls a user future until completion, interruption, or a wall-clock deadline.
+#[track_caller]
+pub fn block_on_user_until_wall<F: IntoFuture>(
+    task: &UserTaskRef,
+    deadline: Option<TimeValue>,
+    future: F,
+) -> UserWaitOutcome<F::Output> {
+    block_on_user_until(
+        task,
+        deadline.map(wall_deadline_to_monotonic_deadline),
+        future,
+    )
+}
+
+async fn user_wait_future<F: IntoFuture>(
+    task: &UserTaskRef,
+    deadline: Option<MonotonicDeadline>,
+    future: F,
+) -> UserWaitOutcome<F::Output> {
+    let mut future = pin!(future.into_future());
+    poll_fn(|context| {
+        let future = future.as_mut().poll(context);
+        let interrupted = future.is_pending() && task.poll_interrupt(context).is_ready();
+        let timed_out = future.is_pending()
+            && !interrupted
+            && deadline.is_some_and(|deadline| scheduler_monotonic_now().reached(deadline));
+        resolve_user_wait(future, interrupted, timed_out)
+    })
+    .await
+}
+
+fn block_on_with_abort<F, A>(
+    future: F,
+    executor: LocalExecutor,
+    deadline: Option<MonotonicDeadline>,
+    should_abort: A,
+) -> F::Output
+where
+    F: IntoFuture,
+    A: Fn() -> bool,
+{
+    let wait = WaitQueue::new();
+    let output = executor.run(future.into_future(), |condition| {
+        let ready = || condition.should_abort() || should_abort();
+        if let Some(deadline) = deadline {
+            let _timed_out = wait.wait_until_deadline(deadline, ready);
+        } else {
+            wait.wait_until(ready);
+        }
+    });
+    drop(executor);
+    output
+}
+
+fn scheduler_monotonic_now() -> MonotonicInstant {
+    MonotonicInstant::from_nanos(
+        u64::try_from(monotonic_time().as_nanos())
+            .expect("platform monotonic clock exceeds the nanosecond representation"),
+    )
+    .expect("platform monotonic clock exceeds the signed ktime domain")
+}
+
+pub(crate) fn monotonic_deadline_from_time(deadline: TimeValue) -> MonotonicDeadline {
+    MonotonicDeadline::from_duration(deadline)
+}
+
+fn user_executor(task: &UserTaskRef) -> LocalExecutor {
+    LocalExecutor::new(task.wake_handle()).unwrap_or_else(|error| {
+        panic!("user future must run on its owning scheduler thread: {error}")
+    })
+}
+
+/// Coalesced hard-IRQ notification for one fixed service thread.
+///
+/// IRQ producers only publish an atomic pending bit and use the scheduler's
+/// direct wake header. The registered service thread performs all expensive
+/// work, including `PollSet` fan-out, in ordinary task context.
+///
+/// Objects exposed through raw IRQ callback pointers must first unregister and
+/// synchronize that callback before dropping the last owner. This is the same
+/// lifetime rule required by the callback payload itself.
+pub struct IrqNotify {
+    event: IrqWaitCell,
+    park: WaitQueue,
+    waiter: OnceLock<IrqNotifyWaiter>,
+}
+
+struct IrqNotifyWaiter {
+    owner: scheduler::ThreadId,
+    registration: IrqWaitRegistration,
+}
+
+impl IrqNotify {
+    /// Creates an unregistered notification object.
+    pub const fn new() -> Self {
+        Self {
+            event: IrqWaitCell::new(),
+            park: WaitQueue::new(),
+            waiter: OnceLock::new(),
+        }
+    }
+
+    /// Publishes one coalesced notification from hard-IRQ context.
+    ///
+    /// This path performs no allocation, deallocation, future polling,
+    /// callback dispatch, or wait-queue scan.
+    pub fn notify_irq(&self) {
+        let _result = self.event.notify();
+    }
+
+    /// Publishes one coalesced notification from task context.
+    pub fn notify(&self) {
+        self.notify_irq();
+    }
+
+    /// Blocks the sole service thread until one notification is available.
+    #[track_caller]
+    pub fn wait(&self) {
+        let registration = self.current_registration();
+        match self.event.register(registration) {
+            IrqRegisterResult::ConsumedPending => {}
+            IrqRegisterResult::Registered(token)
+            | IrqRegisterResult::NotificationInFlight(token) => {
+                self.park.wait_until(|| !token.is_attached());
+                scheduler::quiesce_irq_wait(token)
+                    .unwrap_or_else(|error| panic!("Starry IRQ waiter could not quiesce: {error}"));
+            }
+            IrqRegisterResult::Occupied => {
+                panic!("Starry IRQ notification was consumed by concurrent waiters")
+            }
+        }
+    }
+
+    fn current_registration(&self) -> &IrqWaitRegistration {
+        let current = scheduler::current_thread_handle()
+            .unwrap_or_else(|error| panic!("IRQ service has no scheduler thread: {error}"));
+        let current_id = current.id();
+        let waiter = self.waiter.call_once(|| {
+            let wake_owner = current.wake_handle();
+            IrqNotifyWaiter {
+                owner: current_id,
+                registration: IrqWaitRegistration::new(wake_owner),
+            }
+        });
+        assert_eq!(
+            waiter.owner, current_id,
+            "an IrqNotify may be consumed by only one fixed service thread"
+        );
+        &waiter.registration
+    }
+}
+
+impl Default for IrqNotify {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+async fn poll_with_registrar<M, T>(
+    mut check: impl FnMut() -> Poll<T>,
+    mut register: impl FnMut(&mut PollRegistrar<M>),
+) -> T {
+    let mut registrar = None::<PollRegistrar<M>>;
+    poll_fn(move |context| {
+        if let Some(registrar) = registrar.as_mut() {
+            registrar.reset(context.waker());
+        }
+        if let Poll::Ready(value) = check() {
+            if let Some(registrar) = registrar.as_mut() {
+                registrar.clear();
+            }
+            return Poll::Ready(value);
+        }
+
+        let registrar = registrar.get_or_insert_with(|| PollRegistrar::new(context.waker()));
+        register(registrar);
+        match check() {
+            Poll::Ready(value) => {
+                registrar.clear();
+                Poll::Ready(value)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await
+}
+
+/// Waits on shared readiness sources using one owned registration attempt.
+///
+/// `check` is evaluated before and after `register`, closing the readiness
+/// publication race. Cancellation, timeout, and interruption drop the future
+/// and therefore unregister every source owned by its registrar.
+pub async fn poll_shared<T>(
+    check: impl FnMut() -> Poll<T>,
+    register: impl FnMut(&mut PollRegistrar<SharedObserver>),
+) -> T {
+    poll_with_registrar(check, register).await
+}
+
+/// Waits on consumptive readiness sources using exclusive registrations.
+pub async fn poll_exclusive<T>(
+    check: impl FnMut() -> Poll<T>,
+    register: impl FnMut(&mut PollRegistrar<ExclusiveConsumer>),
+) -> T {
+    poll_with_registrar(check, register).await
+}
+
+/// Wraps a non-blocking operation in readiness polling.
+///
+/// User interruption belongs to [`block_on_user`], not to this task-neutral
+/// readiness future.
+pub async fn poll_io<P, F, T>(
+    pollable: &P,
+    events: IoEvents,
+    non_blocking: bool,
+    mut operation: F,
+) -> crate::StarryResult<T>
+where
+    P: Pollable,
+    F: FnMut() -> crate::StarryResult<T>,
+{
+    poll_io_with_wake(pollable, events, non_blocking, move |_| operation()).await
+}
+
+/// Identifies whether an exclusive source selected the current I/O attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExclusivePollWake {
+    /// The attempt is an initial or unselected readiness recheck.
+    Unselected,
+    /// An exclusive source selected this attempt and invoked its waker.
+    Notified,
+}
+
+/// Wraps a non-blocking operation and reports exclusive wake ownership.
+///
+/// Consumptive sources use the notification marker to hand remaining
+/// readiness to the next waiter, matching Linux exclusive wait queues.
+pub async fn poll_io_with_wake<P, F, T>(
+    pollable: &P,
+    events: IoEvents,
+    non_blocking: bool,
+    mut operation: F,
+) -> crate::StarryResult<T>
+where
+    P: Pollable,
+    F: FnMut(ExclusivePollWake) -> crate::StarryResult<T>,
+{
+    let mut registrar = None::<PollRegistrar<ExclusiveConsumer>>;
+    poll_fn(move |context| {
+        let wake = if registrar
+            .as_ref()
+            .is_some_and(PollRegistrar::was_exclusively_notified)
+        {
+            ExclusivePollWake::Notified
+        } else {
+            ExclusivePollWake::Unselected
+        };
+        if let Some(registrar) = registrar.as_mut() {
+            registrar.reset(context.waker());
+        }
+        match operation(wake) {
+            Ok(value) => return Poll::Ready(Ok(value)),
+            Err(error) if error.is_would_block() => {}
+            Err(error) => return Poll::Ready(Err(error)),
+        }
+
+        let registrar = registrar.get_or_insert_with(|| PollRegistrar::new(context.waker()));
+        unsafe { pollable.register_exclusive(registrar, events) };
+        match operation(ExclusivePollWake::Unselected) {
+            Ok(value) => {
+                registrar.clear();
+                Poll::Ready(Ok(value))
+            }
+            Err(error) if error.is_would_block() && non_blocking => {
+                registrar.clear();
+                Poll::Ready(Err(error))
+            }
+            Err(error) if error.is_would_block() => Poll::Pending,
+            Err(error) => {
+                registrar.clear();
+                Poll::Ready(Err(error))
+            }
+        }
+    })
+    .await
+}
+
+/// Waits until the relative duration elapses.
+pub async fn sleep(duration: Duration) {
+    sleep_until(monotonic_time().saturating_add(duration)).await;
+}
+
+/// Waits until a monotonic deadline.
+pub async fn sleep_until(deadline: TimeValue) {
+    TimerFuture::new(deadline).await;
+}
+
+/// Requires a future to complete before an optional monotonic deadline.
+pub async fn timeout_at<F: IntoFuture>(
+    deadline: Option<TimeValue>,
+    future: F,
+) -> Result<F::Output, Elapsed> {
+    if let Some(deadline) = deadline {
+        let mut future = pin!(future.into_future());
+        let mut timer = pin!(TimerFuture::new(deadline));
+        poll_fn(|context| {
+            if let Poll::Ready(output) = future.as_mut().poll(context) {
+                return Poll::Ready(Ok(output));
+            }
+            timer.as_mut().poll(context).map(|()| Err(Elapsed))
+        })
+        .await
+    } else {
+        Ok(future.await)
+    }
+}
+
+/// Requires a future to complete before an optional wall-clock deadline.
+pub async fn timeout_at_wall<F: IntoFuture>(
+    deadline: Option<TimeValue>,
+    future: F,
+) -> Result<F::Output, Elapsed> {
+    timeout_at(deadline.map(wall_deadline_to_monotonic), future).await
+}
+
+impl From<UserWaitError> for crate::StarryError {
+    fn from(error: UserWaitError) -> Self {
+        match error {
+            UserWaitError::Interrupted => Self::Interrupted,
+            UserWaitError::TimedOut => Self::TimedOut,
+        }
+    }
+}
+
+/// Error returned when a timeout future wins its race.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Elapsed;
+
+impl fmt::Display for Elapsed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("deadline elapsed")
+    }
+}
+
+impl core::error::Error for Elapsed {}
+
+impl From<Elapsed> for crate::StarryError {
+    fn from(_: Elapsed) -> Self {
+        crate::StarryError::TimedOut
+    }
+}
+
+struct TimerFuture {
+    key: u64,
+    deadline: TimeValue,
+    registered: bool,
+}
+
+impl TimerFuture {
+    fn new(deadline: TimeValue) -> Self {
+        Self {
+            key: NEXT_TIMER_KEY.fetch_add(1, Ordering::Relaxed),
+            deadline,
+            registered: false,
+        }
+    }
+}
+
+impl Future for TimerFuture {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        if monotonic_time() >= self.deadline {
+            TIMER_RUNTIME.lock().remove(self.key);
+            self.registered = false;
+            return Poll::Ready(());
+        }
+
+        ensure_timer_worker();
+        TIMER_RUNTIME
+            .lock()
+            .register(self.key, self.deadline, context.waker());
+        self.registered = true;
+        publish_timer_change();
+        Poll::Pending
+    }
+}
+
+impl Drop for TimerFuture {
+    fn drop(&mut self) {
+        if self.registered {
+            TIMER_RUNTIME.lock().remove(self.key);
+            publish_timer_change();
+        }
+    }
+}
+
+struct TimerEntry {
+    deadline: TimeValue,
+    waker: Waker,
+}
+
+struct TimerRuntime {
+    entries: BTreeMap<u64, TimerEntry>,
+}
+
+struct TimerWorkerSnapshot {
+    epoch: u64,
+    expired: Vec<Waker>,
+    next_deadline: Option<TimeValue>,
+}
+
+impl TimerRuntime {
+    const fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
+    }
+
+    fn register(&mut self, key: u64, deadline: TimeValue, waker: &Waker) {
+        self.entries.insert(
+            key,
+            TimerEntry {
+                deadline,
+                waker: waker.clone(),
+            },
+        );
+    }
+
+    fn remove(&mut self, key: u64) {
+        self.entries.remove(&key);
+    }
+
+    fn take_expired(&mut self, now: TimeValue) -> Vec<Waker> {
+        let expired_keys: Vec<u64> = self
+            .entries
+            .iter()
+            .filter_map(|(key, entry)| (entry.deadline <= now).then_some(*key))
+            .collect();
+        expired_keys
+            .into_iter()
+            .filter_map(|key| self.entries.remove(&key).map(|entry| entry.waker))
+            .collect()
+    }
+
+    fn next_deadline(&self) -> Option<TimeValue> {
+        self.entries.values().map(|entry| entry.deadline).min()
+    }
+}
+
+fn take_timer_worker_snapshot(
+    epoch: &AtomicU64,
+    now: TimeValue,
+    snapshot_runtime: impl FnOnce(TimeValue) -> (Vec<Waker>, Option<TimeValue>),
+) -> TimerWorkerSnapshot {
+    // A producer publishes its queue entry before incrementing `epoch`. Taking
+    // the baseline first makes every registration that races the queue
+    // snapshot visible to the subsequent wait predicate. Loading the epoch
+    // afterwards would absorb that publication and let an empty-snapshot
+    // worker sleep forever.
+    let observed_epoch = epoch.load(Ordering::Acquire);
+    let (expired, next_deadline) = snapshot_runtime(now);
+    TimerWorkerSnapshot {
+        epoch: observed_epoch,
+        expired,
+        next_deadline,
+    }
+}
+
+fn ensure_timer_worker() {
+    if TIMER_WORKER_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    if let Err(error) = super::try_spawn_kernel_thread_with_stack(
+        timer_worker,
+        String::from("starry-timer"),
+        crate::config::KERNEL_STACK_SIZE,
+    ) {
+        TIMER_WORKER_STARTED.store(false, Ordering::Release);
+        panic!("failed to start Starry timer worker: {error}");
+    }
+}
+
+fn timer_worker() {
+    loop {
+        let now = monotonic_time();
+        let snapshot = take_timer_worker_snapshot(&TIMER_EPOCH, now, |now| {
+            let mut runtime = TIMER_RUNTIME.lock();
+            let expired = runtime.take_expired(now);
+            let next_deadline = runtime.next_deadline();
+            (expired, next_deadline)
+        });
+        for waker in snapshot.expired {
+            waker.wake();
+        }
+
+        match snapshot.next_deadline {
+            Some(deadline) if deadline > monotonic_time() => {
+                let timeout = deadline.saturating_sub(monotonic_time());
+                let _timed_out = TIMER_WAIT.wait_timeout_until(timeout, || {
+                    TIMER_EPOCH.load(Ordering::Acquire) != snapshot.epoch
+                });
+            }
+            Some(_) => {}
+            None => TIMER_WAIT.wait_until(|| TIMER_EPOCH.load(Ordering::Acquire) != snapshot.epoch),
+        }
+    }
+}
+
+fn publish_timer_change() {
+    TIMER_EPOCH.fetch_add(1, Ordering::AcqRel);
+    TIMER_WAIT.notify_one();
+}
+
+fn wall_deadline_to_monotonic(deadline: TimeValue) -> TimeValue {
+    let monotonic_now = monotonic_time();
+    let realtime_now = monotonic_now.saturating_add(TimeValue::from_nanos(epochoffset_nanos()));
+    SleepDeadline::Realtime(deadline)
+        .resolve_monotonic(SleepClockSnapshot::new(monotonic_now, realtime_now))
+}
+
+fn wall_deadline_to_monotonic_deadline(deadline: TimeValue) -> MonotonicDeadline {
+    monotonic_deadline_from_time(wall_deadline_to_monotonic(deadline))
+}
+
+#[cfg(all(test, not(axtest)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timer_runtime_returns_expired_entries_in_one_snapshot() {
+        let mut runtime = TimerRuntime::new();
+        let waker = Waker::noop();
+        runtime.register(1, Duration::from_nanos(10), waker);
+        runtime.register(2, Duration::from_nanos(20), waker);
+
+        assert_eq!(runtime.take_expired(Duration::from_nanos(10)).len(), 1);
+        assert_eq!(runtime.next_deadline(), Some(Duration::from_nanos(20)));
+    }
+
+    #[test]
+    fn timer_worker_snapshot_does_not_absorb_a_concurrent_registration() {
+        let runtime = core::cell::RefCell::new(TimerRuntime::new());
+        let epoch = AtomicU64::new(0);
+        let snapshot = take_timer_worker_snapshot(&epoch, Duration::ZERO, |now| {
+            let (expired, next_deadline) = {
+                let mut runtime = runtime.borrow_mut();
+                (runtime.take_expired(now), runtime.next_deadline())
+            };
+            runtime
+                .borrow_mut()
+                .register(1, Duration::from_nanos(10), Waker::noop());
+            epoch.fetch_add(1, Ordering::AcqRel);
+            (expired, next_deadline)
+        });
+
+        assert_eq!(snapshot.next_deadline, None);
+        assert_ne!(
+            epoch.load(Ordering::Acquire),
+            snapshot.epoch,
+            "a timer registered after the queue snapshot must make the worker's wait condition \
+             true",
+        );
+    }
+
+    #[test]
+    fn elapsed_maps_to_linux_timeout_error() {
+        assert!(matches!(
+            crate::StarryError::from(Elapsed),
+            crate::StarryError::TimedOut
+        ));
+    }
+}

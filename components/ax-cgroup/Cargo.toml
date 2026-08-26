@@ -7,6 +7,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+multitask = []
+
 [dependencies]
 ax-sync.workspace = true
 ax-lazyinit.workspace = true

@@ -25,6 +25,8 @@ sha2 = "0.10"
 
 [dependencies]
 ax-sync = { workspace = true }
+axpoll = { workspace = true }
+axpoll-set = { workspace = true }
 log = { workspace = true }
 
 sdio-host = { workspace = true }

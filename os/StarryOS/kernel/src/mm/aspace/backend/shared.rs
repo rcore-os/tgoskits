@@ -5,10 +5,10 @@ use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageTable, PagingError};
 
 use super::{
-    AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, RssKind, alloc_frame,
+    Backend, BackendOps, CloneMapContext, MemoryAccounting, RssKind, TlbGather, alloc_frame,
     dealloc_frame, divide_page, pages_in,
 };
-use crate::{StarryResult, sync::Mutex};
+use crate::StarryResult;
 
 enum SharedPagesOwner {
     Allocated,
@@ -51,10 +51,6 @@ impl SharedPages {
 
     pub fn len(&self) -> usize {
         self.phys_pages.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.phys_pages.is_empty()
     }
 }
 
@@ -117,6 +113,7 @@ impl BackendOps for SharedBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
+        _gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         debug!("Shared::map: {:?} {:?}", range, flags);
@@ -136,6 +133,7 @@ impl BackendOps for SharedBackend {
         &self,
         range: VirtAddrRange,
         acct: Option<&MemoryAccounting>,
+        _gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         debug!("Shared::unmap: {:?}", range);
@@ -158,10 +156,7 @@ impl BackendOps for SharedBackend {
         &self,
         _range: VirtAddrRange,
         _flags: MappingFlags,
-        _old_pt: &mut PageTable,
-        _new_pt: &mut PageTable,
-        _new_aspace: &Arc<Mutex<AddrSpace>>,
-        _acct: CloneMapAccounting<'_>,
+        _context: CloneMapContext<'_>,
     ) -> StarryResult<Backend> {
         Ok(Backend::Shared(self.clone()))
     }

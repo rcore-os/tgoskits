@@ -493,6 +493,36 @@ fn axvisor_ktest_configs_isolate_rootfs_on_all_architectures() {
 }
 
 #[test]
+fn axvisor_qemu_configs_allow_persistent_rootfs_on_all_architectures() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+
+    for arch in ["aarch64", "riscv64", "x86_64", "loongarch64"] {
+        let config_path = repo.join(format!("os/axvisor/configs/qemu/qemu-{arch}.toml"));
+        let mut qemu: QemuConfig =
+            toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+
+        super::patch_rootfs(
+            &mut qemu,
+            Path::new("/tmp/axvisor-rootfs.img"),
+            RootfsPatchOptions {
+                mode: RootfsPatchMode::ReplaceDriveOnly,
+                write_policy: RootfsWritePolicy::Persist,
+            },
+        )
+        .unwrap_or_else(|err| {
+            panic!(
+                "{} must delegate rootfs persistence to RootfsWritePolicy: {err:#}",
+                config_path.display()
+            )
+        });
+    }
+}
+
+#[test]
 fn ensure_disk_boot_net_accepts_shuffled_disk0_fields() {
     let rootfs = Path::new("/tmp/new-rootfs.img");
     let mut qemu = QemuConfig {

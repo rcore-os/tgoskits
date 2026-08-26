@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use tock_registers::interfaces::{Readable, Writeable};
 
 use crate::backend::{
@@ -10,13 +12,16 @@ use crate::backend::{
         },
         stats::Dwc2Stats,
     },
-    ty::{Event, EventHandlerOp},
+    ty::{ControllerIrqState, Event, EventHandlerOp},
 };
 
 pub(crate) struct Dwc2EventHandler {
     regs: Dwc2Registers,
     channel_completions: Dwc2ChannelCompletions,
     stats: Dwc2Stats,
+    irq_state: ControllerIrqState,
+    pending_irqs: AtomicU32,
+    masked_irqs: AtomicU32,
 }
 
 unsafe impl Send for Dwc2EventHandler {}
@@ -27,19 +32,48 @@ impl Dwc2EventHandler {
         regs: Dwc2Registers,
         channel_completions: Dwc2ChannelCompletions,
         stats: Dwc2Stats,
+        irq_state: ControllerIrqState,
     ) -> Self {
         Self {
             regs,
             channel_completions,
             stats,
+            irq_state,
+            pending_irqs: AtomicU32::new(0),
+            masked_irqs: AtomicU32::new(0),
         }
     }
 }
 
 impl EventHandlerOp for Dwc2EventHandler {
-    fn handle_event(&self) -> Event {
-        let pending =
-            self.regs.regs().gintsts.get() & self.regs.regs().gintmsk.get() & DWC2_RUNTIME_GINTMSK;
+    fn acknowledge_irq(&self) -> bool {
+        let interrupt_mask = self.regs.regs().gintmsk.get();
+        let pending = self.regs.regs().gintsts.get() & interrupt_mask & DWC2_RUNTIME_GINTMSK;
+        if pending == 0 {
+            return false;
+        }
+
+        let enabled = self.irq_state.is_enabled();
+        self.regs.regs().gintmsk.set(if enabled {
+            interrupt_mask & !pending
+        } else {
+            0
+        });
+        let observed_enabled = self.irq_state.is_enabled();
+        if observed_enabled != enabled {
+            self.regs.regs().gintmsk.set(if observed_enabled {
+                interrupt_mask & !pending
+            } else {
+                0
+            });
+        }
+        self.masked_irqs.fetch_or(pending, Ordering::AcqRel);
+        self.pending_irqs.fetch_or(pending, Ordering::Release);
+        true
+    }
+
+    fn drain_event(&self) -> Event {
+        let pending = self.pending_irqs.swap(0, Ordering::AcqRel);
         if pending == 0 {
             return Event::Nothing;
         }
@@ -63,12 +97,14 @@ impl EventHandlerOp for Dwc2EventHandler {
                 // to HPRT0.ENA so the acknowledgement cannot disable the port.
                 self.regs.hprt().write((hprt & !HPRT_W1C_MASK) | changes);
             }
+            self.retain_pending(pending & !GINTSTS_PRTINT);
             return Event::PortChange { port: 1 };
         }
         if pending & GINTSTS_HCHINT != 0 {
             self.stats.record_irq_event();
             let count = self.handle_channel_interrupts();
             self.regs.regs().gintsts.set(GINTSTS_HCHINT);
+            self.retain_pending(pending & !GINTSTS_HCHINT);
             return Event::TransferActivity {
                 count: count.max(1),
             };
@@ -76,9 +112,27 @@ impl EventHandlerOp for Dwc2EventHandler {
         self.regs.regs().gintsts.set(pending);
         Event::Stopped
     }
+
+    fn rearm_irq(&self) {
+        let masked = self.masked_irqs.swap(0, Ordering::AcqRel);
+        if masked != 0 {
+            self.irq_state.apply_enabled(|enabled| {
+                self.regs
+                    .regs()
+                    .gintmsk
+                    .set(if enabled { DWC2_RUNTIME_GINTMSK } else { 0 });
+            });
+        }
+    }
 }
 
 impl Dwc2EventHandler {
+    fn retain_pending(&self, pending: u32) {
+        if pending != 0 {
+            self.pending_irqs.fetch_or(pending, Ordering::Release);
+        }
+    }
+
     fn handle_channel_interrupts(&self) -> usize {
         let pending = self.regs.regs().haint.get() & self.regs.regs().haintmsk.get();
         let mut count = 0usize;
@@ -136,7 +190,12 @@ mod tests {
         let (backing, regs) = tu::test_regs();
         let completions = Dwc2ChannelCompletions::new();
         let stats = Dwc2Stats::new();
-        let handler = Dwc2EventHandler::new(regs, completions.clone(), stats.clone());
+        let handler = Dwc2EventHandler::new(
+            regs,
+            completions.clone(),
+            stats.clone(),
+            ControllerIrqState::new(true),
+        );
         (backing, regs, completions, stats, handler)
     }
 
@@ -165,6 +224,47 @@ mod tests {
         let snapshot = stats.snapshot();
         assert_eq!(snapshot.irq_events, 1);
         assert_eq!(snapshot.channel_completions, 1);
+    }
+
+    #[test]
+    fn hard_irq_ack_defers_channel_completion_until_task_drain() {
+        let (_backing, regs, completions, stats, handler) = handler_fixture();
+
+        arm_channel_interrupt(&regs);
+        regs.regs().hc[0].hcintmsk.set(HCINT_CHHLTD);
+        regs.regs().hc[0].hcint.set(HCINT_CHHLTD | HCINT_XFERCOMPL);
+
+        assert!(handler.acknowledge_irq());
+        assert_eq!(completions.take(0), None);
+        assert_eq!(regs.regs().gintmsk.get() & GINTSTS_HCHINT, 0);
+        assert_eq!(stats.snapshot().channel_completions, 0);
+
+        assert!(matches!(
+            handler.drain_event(),
+            Event::TransferActivity { count: 1 }
+        ));
+        assert_eq!(completions.take(0), Some(HCINT_CHHLTD | HCINT_XFERCOMPL));
+        handler.rearm_irq();
+        assert_ne!(regs.regs().gintmsk.get() & GINTSTS_HCHINT, 0);
+    }
+
+    #[test]
+    fn stale_task_rearm_cannot_reenable_a_disabled_controller() {
+        let (_backing, regs) = tu::test_regs();
+        let irq_state = ControllerIrqState::new(true);
+        let handler = Dwc2EventHandler::new(
+            regs,
+            Dwc2ChannelCompletions::new(),
+            Dwc2Stats::new(),
+            irq_state.clone(),
+        );
+        regs.regs().gintsts.set(GINTSTS_PRTINT);
+        regs.regs().gintmsk.set(DWC2_RUNTIME_GINTMSK);
+        assert!(handler.acknowledge_irq());
+        irq_state.set_enabled(false, || regs.regs().gintmsk.set(0));
+        handler.rearm_irq();
+
+        assert_eq!(regs.regs().gintmsk.get(), 0);
     }
 
     #[test]

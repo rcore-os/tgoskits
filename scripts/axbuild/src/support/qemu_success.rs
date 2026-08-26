@@ -15,7 +15,7 @@ pub(crate) struct QemuSuccessOutput {
 }
 
 impl QemuSuccessOutput {
-    fn new(success_regex: &[String]) -> Self {
+    pub(crate) fn new(success_regex: &[String]) -> Self {
         Self {
             state: Arc::new(Mutex::new(QemuSuccessOutputState {
                 matcher: StreamingMatcher::new(success_regex),

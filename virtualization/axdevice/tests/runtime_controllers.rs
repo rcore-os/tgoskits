@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use ax_runtime as _;
 use axdevice::*;
 use axdevice_base::*;
 

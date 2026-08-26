@@ -3,7 +3,6 @@
 use super::AxvmLoongArchVcpu;
 
 pub(crate) fn wait(vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>) {
-    crate::check_timer_events();
     if vcpu.get_arch_vcpu().has_enabled_pending_interrupt() {
         trace!(
             "VM[{}] VCpu[{}] skips idle wait because guest has enabled pending interrupt",

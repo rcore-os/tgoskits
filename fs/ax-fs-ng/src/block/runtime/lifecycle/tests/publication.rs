@@ -75,7 +75,11 @@ impl BlockController for DeviceInfoUpdateController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().ok_or(BlkError::Io)?)],
-                Vec::new(),
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(QueueZeroHandler),
+                )],
             )),
             ControllerEvent::OnlineSmp { .. } => {
                 Ok(ControllerUpdate::state(ControllerState::Ready)
@@ -109,7 +113,11 @@ impl BlockController for MutableQueueInfoController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().ok_or(BlkError::Io)?)],
-                vec![IrqEndpoint::new(0, 1, Box::new(QueueZeroHandler))],
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(QueueZeroHandler),
+                )],
             )),
             ControllerEvent::Shutdown | ControllerEvent::Watchdog { .. } => {
                 Ok(ControllerUpdate::state(ControllerState::Shutdown))
@@ -139,7 +147,11 @@ impl BlockController for SerializedOnlineSmpController {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
                 ControllerState::Ready,
                 vec![Box::new(self.queue.take().ok_or(BlkError::Io)?)],
-                Vec::new(),
+                vec![IrqEndpoint::new(
+                    0,
+                    IrqQueueMask::from_queue(0),
+                    Box::new(QueueZeroHandler),
+                )],
             )),
             ControllerEvent::OnlineSmp { target_queues } => {
                 self.online_entered
@@ -158,13 +170,18 @@ impl BlockController for SerializedOnlineSmpController {
 
 #[test]
 fn idempotent_online_smp_is_serialized_without_replacing_cpu_channels() {
+    let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
     let log = Arc::new(StdMutex::new(Vec::new()));
+    configure_test_irq_registrar(Arc::clone(&log));
     let (online_entered_tx, online_entered_rx) = mpsc::channel();
     let (online_release_tx, online_release_rx) = mpsc::channel();
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
         "serialized-online-smp",
-        [],
+        [BlockIrqSource {
+            source_id: 0,
+            irq: IrqId::new(IrqDomainId(1), HwIrq(18)),
+        }],
         Box::new(SerializedOnlineSmpController {
             queue: Some(LifecycleQueue { log }),
             online_entered: online_entered_tx,
@@ -217,12 +234,15 @@ fn idempotent_online_smp_is_serialized_without_replacing_cpu_channels() {
         ));
         assert_eq!(handle.inner.hctxs.lock()[0].submission_channel_count(), 1);
     }
-    assert_eq!(handle.shutdown(), 0);
+    assert_eq!(handle.shutdown(), 1);
 }
 
 #[test]
 fn ready_device_rejects_changed_device_info_without_overwriting_epoch() {
+    let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    configure_test_irq_registrar(log);
     let initial_info = test_queue_info().device;
     let changed_info = DeviceInfo {
         num_blocks: initial_info.num_blocks + 1,
@@ -230,7 +250,10 @@ fn ready_device_rejects_changed_device_info_without_overwriting_epoch() {
     };
     let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
         "device-info-freeze",
-        [],
+        [BlockIrqSource {
+            source_id: 0,
+            irq: IrqId::new(IrqDomainId(1), HwIrq(19)),
+        }],
         Box::new(DeviceInfoUpdateController {
             queue: Some(LifecycleQueue {
                 log: Arc::new(StdMutex::new(Vec::new())),
@@ -248,7 +271,7 @@ fn ready_device_rejects_changed_device_info_without_overwriting_epoch() {
         Err(BlkError::InvalidRequest)
     );
     assert_eq!(handle.device_info().num_blocks, initial_info.num_blocks);
-    assert_eq!(handle.shutdown(), 0);
+    assert_eq!(handle.shutdown(), 1);
 }
 
 #[test]

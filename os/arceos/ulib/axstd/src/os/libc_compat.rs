@@ -48,9 +48,17 @@ const PTHREAD_COND_SIZE: usize = 48;
 #[cfg(feature = "multitask")]
 const PTHREAD_ATTR_SIZE: usize = 56;
 #[cfg(feature = "multitask")]
-const PTHREAD_ATTR_STACK_SIZE_OFFSET: usize = 8;
+const PTHREAD_ATTR_STACK_SIZE_OFFSET: usize = 0;
 #[cfg(feature = "multitask")]
-const DEFAULT_STACK_SIZE: usize = 2 * 1024 * 1024;
+const PTHREAD_ATTR_GUARD_SIZE_OFFSET: usize = size_of::<usize>();
+#[cfg(feature = "multitask")]
+const PTHREAD_ATTR_STACK_ADDR_OFFSET: usize = size_of::<usize>() * 2;
+#[cfg(feature = "multitask")]
+const PTHREAD_STACK_MIN: usize = 2048;
+#[cfg(feature = "multitask")]
+const DEFAULT_STACK_SIZE: usize = 128 * 1024;
+#[cfg(feature = "multitask")]
+const DEFAULT_GUARD_SIZE: usize = 8 * 1024;
 #[cfg(feature = "fs")]
 const LINUX_DIRENT64_NAME_OFFSET: usize = 19;
 #[cfg(feature = "fs")]
@@ -1914,6 +1922,10 @@ static FD_PATHS: LazyLock<Mutex<BTreeMap<c_int, FdPath>>> =
 mod pthread {
     use super::*;
 
+    fn pthread_result(ret: c_int) -> c_int {
+        if ret < 0 { -ret } else { ret }
+    }
+
     type PthreadTlsValues = [*mut c_void; MAX_PTHREAD_KEYS];
     type PthreadTlsMap = BTreeMap<u64, ForceSendSync<PthreadTlsValues>>;
     type CxaThreadDtorMap = BTreeMap<u64, Vec<CxaThreadDtor>>;
@@ -2033,7 +2045,7 @@ mod pthread {
         if ret != 0 {
             unsafe { drop(Box::from_raw(start)) };
         }
-        ret
+        pthread_result(ret)
     }
 
     /// # Safety
@@ -2053,15 +2065,15 @@ mod pthread {
         thread: libc::pthread_t,
         retval: *mut *mut c_void,
     ) -> c_int {
-        unsafe { ax_posix_api::sys_pthread_join(thread as _, retval) }
+        unsafe { pthread_result(ax_posix_api::sys_pthread_join(thread as _, retval)) }
     }
 
     /// # Safety
     ///
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn pthread_detach(_thread: libc::pthread_t) -> c_int {
-        0
+    pub unsafe extern "C" fn pthread_detach(thread: libc::pthread_t) -> c_int {
+        pthread_result(ax_posix_api::sys_pthread_detach(thread as _))
     }
 
     /// # Safety
@@ -2086,6 +2098,7 @@ mod pthread {
         unsafe {
             ptr::write_bytes(attr.cast::<u8>(), 0, PTHREAD_ATTR_SIZE);
             write_attr_stack_size(attr, DEFAULT_STACK_SIZE);
+            write_attr_word(attr, PTHREAD_ATTR_GUARD_SIZE_OFFSET, DEFAULT_GUARD_SIZE);
         }
         0
     }
@@ -2103,16 +2116,16 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_attr_getstack(
-        _attr: *const libc::pthread_attr_t,
+        attr: *const libc::pthread_attr_t,
         stack_addr: *mut *mut c_void,
         stack_size: *mut SizeT,
     ) -> c_int {
-        if stack_addr.is_null() || stack_size.is_null() {
+        if attr.is_null() || stack_addr.is_null() || stack_size.is_null() {
             return Errno::EFAULT.into_raw();
         }
         unsafe {
-            stack_addr.write(ptr::null_mut());
-            stack_size.write(0);
+            stack_addr.write(read_attr_word(attr, PTHREAD_ATTR_STACK_ADDR_OFFSET) as *mut c_void);
+            stack_size.write(read_attr_word(attr, PTHREAD_ATTR_STACK_SIZE_OFFSET));
         }
         0
     }
@@ -2122,15 +2135,13 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_attr_getguardsize(
-        _attr: *const libc::pthread_attr_t,
+        attr: *const libc::pthread_attr_t,
         guard_size: *mut SizeT,
     ) -> c_int {
-        if guard_size.is_null() {
+        if attr.is_null() || guard_size.is_null() {
             return Errno::EFAULT.into_raw();
         }
-        unsafe {
-            guard_size.write(0);
-        }
+        unsafe { guard_size.write(read_attr_word(attr, PTHREAD_ATTR_GUARD_SIZE_OFFSET)) };
         0
     }
 
@@ -2145,15 +2156,26 @@ mod pthread {
         if attr.is_null() {
             return Errno::EFAULT.into_raw();
         }
-        unsafe { write_attr_stack_size(attr, stack_size) };
+        if stack_size.wrapping_sub(PTHREAD_STACK_MIN) > usize::MAX / 4 {
+            return Errno::EINVAL.into_raw();
+        }
+        unsafe {
+            write_attr_word(attr, PTHREAD_ATTR_STACK_ADDR_OFFSET, 0);
+            write_attr_stack_size(attr, stack_size);
+        }
         0
     }
 
     unsafe fn write_attr_stack_size(attr: *mut libc::pthread_attr_t, stack_size: SizeT) {
-        unsafe {
-            let bytes = attr.cast::<u8>().add(PTHREAD_ATTR_STACK_SIZE_OFFSET);
-            ptr::write_unaligned(bytes.cast::<SizeT>(), stack_size);
-        }
+        unsafe { write_attr_word(attr, PTHREAD_ATTR_STACK_SIZE_OFFSET, stack_size) };
+    }
+
+    unsafe fn write_attr_word(attr: *mut libc::pthread_attr_t, offset: usize, value: SizeT) {
+        unsafe { ptr::write_unaligned(attr.cast::<u8>().add(offset).cast::<SizeT>(), value) };
+    }
+
+    unsafe fn read_attr_word(attr: *const libc::pthread_attr_t, offset: usize) -> SizeT {
+        unsafe { ptr::read_unaligned(attr.cast::<u8>().add(offset).cast::<SizeT>()) }
     }
 
     /// # Safety
@@ -2164,7 +2186,10 @@ mod pthread {
         mutex: *mut libc::pthread_mutex_t,
         attr: *const libc::pthread_mutexattr_t,
     ) -> c_int {
-        ax_posix_api::sys_pthread_mutex_init(mutex.cast(), attr.cast())
+        pthread_result(ax_posix_api::sys_pthread_mutex_init(
+            mutex.cast(),
+            attr.cast(),
+        ))
     }
 
     /// # Safety
@@ -2172,7 +2197,7 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_mutex_lock(mutex: *mut libc::pthread_mutex_t) -> c_int {
-        ax_posix_api::sys_pthread_mutex_lock(mutex.cast())
+        pthread_result(ax_posix_api::sys_pthread_mutex_lock(mutex.cast()))
     }
 
     /// # Safety
@@ -2180,7 +2205,7 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_mutex_trylock(mutex: *mut libc::pthread_mutex_t) -> c_int {
-        ax_posix_api::sys_pthread_mutex_trylock(mutex.cast())
+        pthread_result(ax_posix_api::sys_pthread_mutex_trylock(mutex.cast()))
     }
 
     /// # Safety
@@ -2188,7 +2213,7 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_mutex_unlock(mutex: *mut libc::pthread_mutex_t) -> c_int {
-        ax_posix_api::sys_pthread_mutex_unlock(mutex.cast())
+        pthread_result(ax_posix_api::sys_pthread_mutex_unlock(mutex.cast()))
     }
 
     /// # Safety
@@ -2196,7 +2221,7 @@ mod pthread {
     /// Callers must uphold the Linux/musl ABI contract for this libc symbol.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn pthread_mutex_destroy(mutex: *mut libc::pthread_mutex_t) -> c_int {
-        ax_posix_api::sys_pthread_mutex_destroy(mutex.cast())
+        pthread_result(ax_posix_api::sys_pthread_mutex_destroy(mutex.cast()))
     }
 
     /// # Safety

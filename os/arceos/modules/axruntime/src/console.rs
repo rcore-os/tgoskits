@@ -9,7 +9,7 @@ use core::fmt::{self, Write};
 
 use ax_lazyinit::OnceLock;
 use ax_sync::Mutex;
-use axpoll::PollSet;
+use axpoll_set::PollSet;
 
 pub use crate::serial::RxItem;
 use crate::{RuntimeError, RuntimeResult, raw_console::RawConsoleInput, serial, sync::SpinLock};
@@ -560,9 +560,8 @@ mod tests {
     use ax_hal::console::ConsoleDeviceIdError;
 
     use super::{
-        ACTIVATION, ConsoleActivation, ConsoleUnavailable, RAW_OUTPUT_LOCK, assign_tty_numbers,
-        inactive_console_error, output, publish_raw_record, raw_hal_activation, select_candidate,
-        take_input,
+        ACTIVATION, ConsoleActivation, ConsoleUnavailable, assign_tty_numbers,
+        inactive_console_error, output, raw_hal_activation, select_candidate, take_input,
     };
     use crate::RuntimeError;
 
@@ -661,18 +660,5 @@ mod tests {
             Err(RuntimeError::OperationNotSupported)
         ));
         assert!(output().is_ok());
-    }
-
-    #[test]
-    fn raw_hal_logging_does_not_require_the_task_output_mutex() {
-        ACTIVATION.call_once(|| ConsoleActivation::RawHal(ConsoleUnavailable::NoSerialDevice));
-        let _task_output = RAW_OUTPUT_LOCK.lock();
-        let mut rendered = alloc::string::String::new();
-
-        assert_eq!(
-            publish_raw_record(format_args!("early secondary record"), &mut rendered),
-            ax_log::PublishStatus::Published
-        );
-        assert_eq!(rendered, "early secondary record");
     }
 }

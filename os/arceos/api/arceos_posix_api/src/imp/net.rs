@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::{
     ffi::{c_char, c_int, c_void},
     mem::size_of,
@@ -18,8 +18,8 @@ use super::fd_ops::FileLike;
 use crate::{PosixError, PosixResult, ctypes, sync::Mutex, utils::char_ptr_to_str};
 
 pub enum Socket {
-    Udp(Mutex<UdpSocket>),
-    Tcp(Mutex<TcpSocket>),
+    Udp(Box<Mutex<UdpSocket>>),
+    Tcp(Box<Mutex<TcpSocket>>),
 }
 
 impl Socket {
@@ -288,11 +288,11 @@ pub fn sys_socket(domain: c_int, socktype: c_int, protocol: c_int) -> c_int {
         match (domain, socktype, protocol) {
             (ctypes::AF_INET, ctypes::SOCK_STREAM, ctypes::IPPROTO_TCP)
             | (ctypes::AF_INET, ctypes::SOCK_STREAM, 0) => {
-                Socket::Tcp(Mutex::new(TcpSocket::new())).add_to_fd_table()
+                Socket::Tcp(Box::new(Mutex::new(TcpSocket::new()))).add_to_fd_table()
             }
             (ctypes::AF_INET, ctypes::SOCK_DGRAM, ctypes::IPPROTO_UDP)
             | (ctypes::AF_INET, ctypes::SOCK_DGRAM, 0) => {
-                Socket::Udp(Mutex::new(UdpSocket::new())).add_to_fd_table()
+                Socket::Udp(Box::new(Mutex::new(UdpSocket::new()))).add_to_fd_table()
             }
             _ => Err(PosixError::EINVAL),
         }
@@ -471,7 +471,7 @@ pub unsafe fn sys_accept(
         let socket = Socket::from_fd(socket_fd)?;
         let new_socket = socket.accept()?;
         let addr = into_ip_addr(new_socket.peer_addr()?)?;
-        let new_fd = Socket::add_to_fd_table(Socket::Tcp(Mutex::new(new_socket)))?;
+        let new_fd = Socket::add_to_fd_table(Socket::Tcp(Box::new(Mutex::new(new_socket))))?;
         unsafe {
             (*socket_addr, *socket_len) = into_sockaddr(addr);
         }

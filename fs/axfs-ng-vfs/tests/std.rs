@@ -1,5 +1,6 @@
 extern crate alloc;
 
+// Host tests must link the external lock/task provider.
 use alloc::{
     borrow::ToOwned,
     format,
@@ -11,10 +12,10 @@ use alloc::{
 use core::{
     any::Any,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
-    task::Context,
     time::Duration,
 };
 
+use ax_runtime as _;
 use axfs_ng_vfs::{self as axfs_ng_vfs, VfsError};
 
 #[test]
@@ -154,7 +155,8 @@ fn axfs_ng_vfs_device_and_metadata_update_rules_hold() {
 
 #[test]
 fn axfs_ng_vfs_type_rules_hold() {
-    use axfs_ng_vfs::{DeviceId, FsIoEvents, NodePermission, NodeType, Reference, TypeMap};
+    use axfs_ng_vfs::{DeviceId, NodePermission, NodeType, Reference, TypeMap};
+    use axpoll::IoEvents;
 
     assert_eq!(NodeType::from(0o10), NodeType::RegularFile);
     assert_eq!(NodeType::from(0o12), NodeType::Symlink);
@@ -170,9 +172,9 @@ fn axfs_ng_vfs_type_rules_hold() {
     assert_eq!(device.minor(), 0x6789ab);
     assert!(format!("{device:?}").contains("major"));
 
-    let events = FsIoEvents::IN | FsIoEvents::OUT;
-    assert!(events.contains(FsIoEvents::IN));
-    assert!(!events.contains(FsIoEvents::ERR));
+    let events = IoEvents::IN | IoEvents::OUT;
+    assert!(events.contains(IoEvents::IN));
+    assert!(!events.contains(IoEvents::ERR));
 
     let mut type_map = TypeMap::new();
     assert!(type_map.get::<u32>().is_none());
@@ -185,10 +187,11 @@ fn axfs_ng_vfs_type_rules_hold() {
 #[test]
 fn axfs_ng_vfs_file_node_defaults_hold() {
     use axfs_ng_vfs::{
-        DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, FsIoEvents,
-        FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
-        Reference, StatFs, VfsError, VfsResult,
+        DeviceId, DirEntry, FileNode, FileNodeOps, Filesystem, FilesystemOps, Metadata,
+        MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError,
+        VfsResult,
     };
+    use axpoll::{IoEvents, Pollable};
 
     #[derive(Debug)]
     struct TestFilesystem;
@@ -271,13 +274,17 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
         }
     }
 
-    impl FsPollable for TestFile {
-        fn poll(&self) -> FsIoEvents {
-            FsIoEvents::IN | FsIoEvents::OUT
+    impl Pollable for TestFile {
+        fn poll(&self) -> IoEvents {
+            IoEvents::IN | IoEvents::OUT
         }
 
-        fn register(&self, _context: &mut Context<'_>, events: FsIoEvents) {
-            assert!(events.contains(FsIoEvents::IN));
+        unsafe fn register_shared(
+            &self,
+            _sink: &mut dyn axpoll::SharedRegistrationSink,
+            events: IoEvents,
+        ) {
+            assert!(events.contains(IoEvents::IN));
         }
     }
 
@@ -319,7 +326,7 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
     assert_eq!(file_node.len().unwrap(), 11);
     assert!(file_node.flags().contains(NodeFlags::NON_CACHEABLE));
     assert_eq!(file_node.ioctl(0, 0), Err(VfsError::NotATty));
-    assert_eq!(file_node.poll(), FsIoEvents::IN | FsIoEvents::OUT);
+    assert_eq!(file_node.poll(), IoEvents::IN | IoEvents::OUT);
     assert!(Arc::ptr_eq(
         &file_node.downcast::<TestFile>().unwrap(),
         &ops
@@ -361,9 +368,10 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
 fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps,
-        FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mutex, NodeFlags, NodeOps,
-        NodePermission, NodeType, OpenOptions, Reference, VfsError, VfsResult, WeakDirEntry,
+        FilesystemOps, Metadata, MetadataUpdate, Mutex, NodeFlags, NodeOps, NodePermission,
+        NodeType, OpenOptions, Reference, VfsError, VfsResult, WeakDirEntry,
     };
+    use axpoll::{IoEvents, Pollable};
 
     #[derive(Debug)]
     struct DirTestFilesystem;
@@ -428,12 +436,17 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
         }
     }
 
-    impl FsPollable for DirTestFile {
-        fn poll(&self) -> FsIoEvents {
-            FsIoEvents::IN | FsIoEvents::OUT
+    impl Pollable for DirTestFile {
+        fn poll(&self) -> IoEvents {
+            IoEvents::IN | IoEvents::OUT
         }
 
-        fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+        unsafe fn register_shared(
+            &self,
+            _sink: &mut dyn axpoll::SharedRegistrationSink,
+            _events: IoEvents,
+        ) {
+        }
     }
 
     impl FileNodeOps for DirTestFile {
@@ -688,9 +701,10 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
 fn axfs_ng_vfs_mount_tree_rules_hold() {
     use axfs_ng_vfs::{
         DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-        FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mountpoint, Mutex,
-        NodeOps, NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult,
+        FilesystemOps, Metadata, MetadataUpdate, Mountpoint, Mutex, NodeOps, NodePermission,
+        NodeType, Reference, StatFs, VfsError, VfsResult,
     };
+    use axpoll::{IoEvents, Pollable};
 
     #[derive(Debug)]
     struct MountNodeFilesystem;
@@ -778,12 +792,17 @@ fn axfs_ng_vfs_mount_tree_rules_hold() {
         }
     }
 
-    impl FsPollable for MountTestFile {
-        fn poll(&self) -> FsIoEvents {
-            FsIoEvents::IN
+    impl Pollable for MountTestFile {
+        fn poll(&self) -> IoEvents {
+            IoEvents::IN
         }
 
-        fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+        unsafe fn register_shared(
+            &self,
+            _sink: &mut dyn axpoll::SharedRegistrationSink,
+            _events: IoEvents,
+        ) {
+        }
     }
 
     impl FileNodeOps for MountTestFile {
@@ -1182,12 +1201,17 @@ impl axfs_ng_vfs::NodeOps for MoreTestFile {
     }
 }
 
-impl axfs_ng_vfs::FsPollable for MoreTestFile {
-    fn poll(&self) -> axfs_ng_vfs::FsIoEvents {
-        axfs_ng_vfs::FsIoEvents::IN | axfs_ng_vfs::FsIoEvents::OUT
+impl axpoll::Pollable for MoreTestFile {
+    fn poll(&self) -> axpoll::IoEvents {
+        axpoll::IoEvents::IN | axpoll::IoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: axfs_ng_vfs::FsIoEvents) {}
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: axpoll::IoEvents,
+    ) {
+    }
 }
 
 impl axfs_ng_vfs::FileNodeOps for MoreTestFile {

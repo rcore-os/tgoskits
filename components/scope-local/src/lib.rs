@@ -4,10 +4,15 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 mod boxed;
 mod item;
 mod scope;
 
 pub use item::{Item, LocalItem, ScopeItem, ScopeItemMut};
-pub use scope::{ActiveScope, Scope};
+pub use scope::{
+    ActiveScope, Scope, ScopeActivationError, ScopeCell, ScopeCellBusy, ScopeCellReadGuard,
+    ScopeCellWriteGuard,
+};

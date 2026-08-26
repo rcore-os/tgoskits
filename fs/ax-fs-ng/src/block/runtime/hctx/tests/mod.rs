@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
-use std::{sync::Mutex, thread, time::Instant};
+use std::{sync::Mutex as StdMutex, thread, time::Instant};
 
 use rdif_block::{
     ControlEvent, ControllerEvent, DeviceInfo, DriverGeneric, HardIrqHandler, IrqAck, IrqQueueMask,
@@ -12,7 +12,10 @@ use rdif_block::{
 };
 
 use super::{submission::collect_submission_batch, *};
-use crate::block::runtime::{completion::CompletionSubscription, irq::BlockIrqAction};
+use crate::block::runtime::{
+    completion::CompletionSubscription,
+    irq::{BlockIrqAction, ControllerIrqLatch, ControllerIrqTarget, IrqRearmEpisode},
+};
 
 mod progress;
 mod queue_info;
@@ -44,7 +47,7 @@ impl HctxObserver for TestObserver {
 
 #[derive(Default)]
 struct TestControllerPort {
-    events: Mutex<Vec<ControllerEvent>>,
+    events: StdMutex<Vec<ControllerEvent>>,
 }
 
 impl ControllerEventPort for TestControllerPort {
@@ -492,4 +495,19 @@ fn wait_for_commits(counters: &QueueCounters, expected: usize) {
         assert!(Instant::now() < deadline, "maintenance task did not commit");
         thread::yield_now();
     }
+}
+
+fn queue_zero_action_with_handler(hctx: &Hctx, handler: Box<dyn HardIrqHandler>) -> BlockIrqAction {
+    let controller_latch = Arc::new(ControllerIrqLatch::new(0));
+    let controller_notification = runtime_ops().unwrap().notification();
+    let source = Arc::new(IrqRearmEpisode::new(
+        0,
+        ControllerIrqTarget::new(controller_latch, controller_notification),
+    ));
+    let target = hctx.irq_target(Arc::clone(&source));
+    BlockIrqAction::new(handler, source, vec![target])
+}
+
+fn queue_zero_action(hctx: &Hctx) -> BlockIrqAction {
+    queue_zero_action_with_handler(hctx, Box::new(QueueZeroIrq))
 }

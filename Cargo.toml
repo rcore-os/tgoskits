@@ -22,6 +22,7 @@ members = [
     "components/cpu-local",
     "components/ax-cgroup",
     "components/ax-lazyinit",
+    "components/ax-task",
     "components/axbacktrace",
     "components/axcpu",
     "components/axio",
@@ -29,6 +30,7 @@ members = [
     "components/axpanic",
     "components/axpoll",
     "components/ax-tracepoint",
+    "components/axpoll-set",
     "components/axsched",
     "components/cpumask",
     "components/crate_interface",
@@ -96,7 +98,6 @@ members = [
     "net/ax-net",
     "os/arceos/modules/axruntime",
     "os/arceos/modules/axsync",
-    "os/arceos/modules/axtask",
     "os/arceos/tools/bwbench_client",
     "os/arceos/tools/deptool",
     "os/arceos/tools/raspi4/chainloader",
@@ -155,6 +156,7 @@ ax-log = { version = "0.6", path = "os/arceos/modules/axlog" }
 ax-memory-addr = { version = "0.7", path = "memory/memory_addr" }
 ax-memory-set = { version = "0.7", path = "memory/memory_set" }
 axpanic = { version = "0.1", path = "components/axpanic" }
+axpoll-set = { version = "0.1", path = "components/axpoll-set" }
 ax-mm = { version = "0.6", path = "os/arceos/modules/axmm" }
 ax-net = { version = "0.12", path = "net/ax-net" }
 ax-percpu = { version = "0.4", path = "components/percpu/percpu" }
@@ -167,7 +169,7 @@ ax-runtime = { version = "0.11", path = "os/arceos/modules/axruntime" }
 ax-sched = { version = "0.5", path = "components/axsched" }
 ax-std = { version = "0.5", path = "os/arceos/ulib/axstd", default-features = false }
 ax-sync = { version = "0.5", path = "os/arceos/modules/axsync" }
-ax-task = { version = "0.6", path = "os/arceos/modules/axtask" }
+ax-task = { version = "0.6", path = "components/ax-task" }
 ax-tracepoint = { version = "0.6", path = "components/ax-tracepoint" }
 axtest = { version = "0.5", path = "components/axtest/axtest" }
 axtest-macros = { version = "0.5", path = "components/axtest/axtest_macros" }
@@ -312,6 +314,7 @@ mmio-api = { version = "0.3", path = "memory/mmio-api" }
 cvi-vdec-uapi = { version = "0.1", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
+loom = "0.7.2"
 atomic-waker = { version = "1.1", default-features = false }
 ostool = { version = "0.27.1" }
 riscv = { version = "0.16.1", default-features = false }

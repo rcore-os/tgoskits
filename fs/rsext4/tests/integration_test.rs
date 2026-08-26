@@ -3,8 +3,10 @@
 //! These tests exercise mkfs, mount, directory creation, file IO, and the
 //! public API surface together so regressions show up as user-visible failures.
 
+// Host tests must link the external lock/task provider.
 use std::cell::Cell;
 
+use ax_runtime as _;
 use rsext4::{
     bmalloc::AbsoluteBN,
     error::{Ext4Error, Ext4Result},

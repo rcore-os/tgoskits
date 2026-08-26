@@ -40,6 +40,19 @@ pub fn wait_for_irqs() {
     aarch64_cpu::asm::wfi();
 }
 
+/// Waits for an interrupt after the caller masks local IRQ delivery.
+///
+/// AArch64 `WFI` observes enabled pending interrupt sources even while
+/// `DAIF.I` masks delivery. Keeping delivery masked through `WFI` closes the
+/// scheduler wake-loss window. The function returns with local IRQs enabled.
+#[inline]
+pub fn wait_for_irqs_disabled() {
+    debug_assert!(!irqs_enabled());
+    barrier::dsb(barrier::SY);
+    aarch64_cpu::asm::wfi();
+    enable_irqs();
+}
+
 /// Halt the current CPU.
 #[inline]
 pub fn halt() {
@@ -155,9 +168,9 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 /// Makes a page-table entry installed by the local page-fault handler visible
 /// before retrying the faulting instruction.
 ///
-/// AArch64 page-table updates are coherent with the hardware walker. A rare
-/// spurious refault is safe to handle again, so no unconditional barrier is
-/// needed on the minor-fault fast path.
+/// AArch64 page-table updates are coherent with the hardware walker. As in
+/// Linux, avoiding an unconditional barrier here keeps the minor-fault fast
+/// path cheap; a rare spurious refault is safe to handle again.
 #[inline]
 pub fn update_mmu_cache(_vaddr: VirtAddr) {}
 

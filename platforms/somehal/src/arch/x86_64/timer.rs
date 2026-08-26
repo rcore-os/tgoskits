@@ -33,12 +33,12 @@ static APIC_COUNTS_PER_TSC_Q32: AtomicU64 = AtomicU64::new(0);
 /// CPU bring-up from the CPUID capability.
 static TSC_DEADLINE_MODE: AtomicBool = AtomicBool::new(false);
 
-/// Brings up the local APIC on the current CPU and enables its timer.
+/// Brings up the local APIC and leaves its timer masked and non-firing.
 ///
 /// Called once per CPU from the platform's early initialization, before any
 /// other local-APIC use (EOI, IPIs, IOAPIC routing). Repeated calls are
-/// idempotent: bring-up rewrites the same register state and the timer ends
-/// up unmasked.
+/// idempotent: bring-up rewrites the same register state and the timer stays
+/// masked until the runtime clockevent publishes its first finite deadline.
 pub fn enable() {
     let lapic = local_apic();
     let tsc_deadline = cpu_has_tsc_deadline();
@@ -47,17 +47,21 @@ pub fn enable() {
     unsafe { lapic.bring_up() }.expect("local APIC bring-up must succeed on x86_64");
     TSC_DEADLINE_MODE.store(tsc_deadline, Ordering::Release);
 
-    if !tsc_deadline {
+    if tsc_deadline {
+        lapic.timer_set_tsc_deadline(0);
+    } else {
         calibrate_apic_timer_ratio(&lapic);
     }
-    // Clear any stale interrupt state left by firmware, then arm the timer.
+    // `bring_up` masks the timer and programs a zero initial count. Complete
+    // any stale in-service interrupt without making the source observable.
     lapic.eoi();
-    lapic.timer_set_masked(false);
 }
 
 /// Unmasks the timer interrupt.
 pub fn irq_enable() {
-    local_apic().timer_set_masked(false);
+    let lapic = local_apic();
+    lapic.timer_set_masked(false);
+    lapic.timer_serialize_mask_update();
 }
 
 /// Masks the timer interrupt.
@@ -81,6 +85,39 @@ pub fn set_next_event_in_ticks(ticks_from_now: usize) {
     } else {
         lapic.timer_set_initial_count(ticks_to_apic_counts(delta));
     }
+}
+
+/// Masks the source before clearing its comparator.
+pub fn cancel_oneshot() {
+    cancel_oneshot_with(
+        || local_apic().timer_set_masked(true),
+        || {
+            if TSC_DEADLINE_MODE.load(Ordering::Acquire) {
+                local_apic().timer_set_tsc_deadline(0);
+            } else {
+                local_apic().timer_set_initial_count(0);
+            }
+        },
+    );
+}
+
+/// Makes the source observable before installing a fresh comparator.
+pub fn resume_oneshot_in_ticks(ticks_from_now: usize) {
+    resume_oneshot_with(ticks_from_now, irq_enable, set_next_event_in_ticks);
+}
+
+fn cancel_oneshot_with(mask: impl FnOnce(), clear_comparator: impl FnOnce()) {
+    mask();
+    clear_comparator();
+}
+
+fn resume_oneshot_with(
+    ticks_from_now: usize,
+    unmask_and_serialize: impl FnOnce(),
+    program_comparator: impl FnOnce(usize),
+) {
+    unmask_and_serialize();
+    program_comparator(ticks_from_now);
 }
 
 fn calibrate_apic_timer_ratio(lapic: &X86LocalApic) {
@@ -117,12 +154,35 @@ fn ticks_to_apic_counts(ticks: u64) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::ticks_to_apic_counts;
+    use core::cell::Cell;
+
+    use super::{cancel_oneshot_with, resume_oneshot_with, ticks_to_apic_counts};
 
     #[test]
     fn legacy_lapic_clamps_overdue_events_to_the_device_minimum() {
         // Before calibration the ratio falls back to 1:1, so a one-tick
         // request must still arm the device minimum.
         assert_eq!(ticks_to_apic_counts(1), 0x0f);
+    }
+
+    #[test]
+    fn cancel_masks_before_clearing_the_comparator() {
+        let transitions = Cell::new(0);
+        cancel_oneshot_with(
+            || transitions.set(transitions.get() * 10 + 1),
+            || transitions.set(transitions.get() * 10 + 2),
+        );
+        assert_eq!(transitions.get(), 12);
+    }
+
+    #[test]
+    fn resume_unmasks_and_serializes_before_programming() {
+        let transitions = Cell::new(0);
+        resume_oneshot_with(
+            7,
+            || transitions.set(transitions.get() * 10 + 1),
+            |ticks| transitions.set(transitions.get() * 10 + ticks),
+        );
+        assert_eq!(transitions.get(), 17);
     }
 }

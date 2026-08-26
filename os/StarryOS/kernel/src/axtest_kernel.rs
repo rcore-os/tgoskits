@@ -11,5 +11,10 @@ use ax_std as _;
 
 include!("root.rs");
 
-#[axtest::tests]
+fn init_kernel_test_services() {
+    cgroup::init();
+    stop_machine::init();
+}
+
+#[axtest::tests(setup = init_kernel_test_services)]
 mod tests {}

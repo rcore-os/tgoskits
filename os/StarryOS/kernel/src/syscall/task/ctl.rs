@@ -5,15 +5,15 @@
 //! translate between userspace's split `u32` capability arrays and StarryOS's
 //! internal `Cred` bitmap fields.
 
+use core::mem::{offset_of, size_of};
+
 use ax_io::Read;
-use ax_task::current;
 use linux_raw_sys::general::{__user_cap_data_struct, __user_cap_header_struct, CAP_LAST_CAP};
-use starry_vm::{VmMutPtr, VmPtr, vm_write_slice};
 
 use crate::{
     StarryError, StarryResult,
-    mm::VmBytes,
-    task::{AsThread, Cred, TidNumber, get_user_task_by_number},
+    mm::{UserPtr, VmBytes, VmMutPtr, VmPtr, vm_write_slice},
+    task::{Cred, TidNumber, get_user_task_by_number},
 };
 
 const CAPABILITY_VERSION_3: u32 = 0x20080522;
@@ -60,11 +60,32 @@ fn parse_mempolicy_mode(mode: i32) -> StarryResult<i32> {
 }
 
 /// Validate a user nodemask pointer when a policy consumes it.
-fn check_nodemask(nodemask: *const usize, maxnode: usize) -> StarryResult<()> {
-    if !nodemask.is_null() && maxnode > 0 {
-        nodemask.vm_read()?;
+fn nodemask_requires_access(nodemask: *const usize, maxnode: usize) -> bool {
+    !nodemask.is_null() && maxnode > 0
+}
+
+fn check_nodemask(
+    current: &crate::task::UserTaskRef,
+    nodemask: *const usize,
+    maxnode: usize,
+) -> crate::StarryResult<()> {
+    if nodemask_requires_access(nodemask, maxnode) {
+        nodemask.vm_read(current)?;
     }
     Ok(())
+}
+
+fn validate_mbind_request(
+    addr: usize,
+    len: usize,
+    mode: i32,
+    flags: u32,
+) -> crate::StarryResult<i32> {
+    let policy = parse_mempolicy_mode(mode)?;
+    if addr & 0xfff != 0 || len == 0 || flags & !MPOL_MF_VALID != 0 {
+        return Err(crate::StarryError::InvalidInput);
+    }
+    Ok(policy)
 }
 
 #[derive(Clone, Copy)]
@@ -75,14 +96,19 @@ enum CapabilityTarget {
 
 /// Validate the cap header and return a typed thread selector.
 fn validate_cap_header(
+    current: &crate::task::UserTaskRef,
     header_ptr: *mut __user_cap_header_struct,
 ) -> StarryResult<CapabilityTarget> {
     // FIXME: AnyBitPattern
-    let mut header = unsafe { header_ptr.vm_read_uninit()?.assume_init() };
+    let mut header = unsafe { header_ptr.vm_read_uninit(current)?.assume_init() };
     if header.version != CAPABILITY_VERSION_3 {
         header.version = CAPABILITY_VERSION_3;
-        header_ptr.vm_write(header)?;
-        return Err(StarryError::InvalidInput);
+        UserPtr::<__user_cap_header_struct>::from(header_ptr).write_field(
+            current,
+            offset_of!(__user_cap_header_struct, version),
+            header.version,
+        )?;
+        return Err(crate::StarryError::InvalidInput);
     }
     if header.pid < 0 {
         return Err(StarryError::InvalidInput);
@@ -101,14 +127,15 @@ fn validate_cap_header(
 /// capget(2) operates on the thread identified by `header.pid`; on Linux
 /// threads in the same thread group share the same `struct cred` by default,
 /// so reading any thread's cred gives the same answer.
-fn cred_for_target(target: CapabilityTarget) -> StarryResult<alloc::sync::Arc<Cred>> {
+fn cred_for_target(
+    current: &crate::task::UserTaskRef,
+    target: CapabilityTarget,
+) -> StarryResult<alloc::sync::Arc<Cred>> {
     let CapabilityTarget::Thread(tid) = target else {
-        return Ok(current().as_thread().cred());
+        return Ok(current.as_thread().cred());
     };
     let task = get_user_task_by_number(tid).map_err(|_| StarryError::NoSuchProcess)?;
-    task.try_as_thread()
-        .map(|t| t.cred())
-        .ok_or(StarryError::NoSuchProcess)
+    Ok(task.as_thread().cred())
 }
 
 /// Validate a capability number and return its bit in the internal bitmap.
@@ -143,6 +170,28 @@ fn cap_data_from_cred(cred: &Cred) -> [__user_cap_data_struct; CAP_U32S_3] {
     ]
 }
 
+fn write_cap_data(
+    current: &crate::task::UserTaskRef,
+    user: UserPtr<__user_cap_data_struct>,
+    value: __user_cap_data_struct,
+) -> crate::StarryResult<()> {
+    user.write_field(
+        current,
+        offset_of!(__user_cap_data_struct, effective),
+        value.effective,
+    )?;
+    user.write_field(
+        current,
+        offset_of!(__user_cap_data_struct, permitted),
+        value.permitted,
+    )?;
+    user.write_field(
+        current,
+        offset_of!(__user_cap_data_struct, inheritable),
+        value.inheritable,
+    )
+}
+
 /// Implement `capget(2)`.
 ///
 /// StarryOS supports the Linux V3 capability ABI.  When `data` is null, the
@@ -150,21 +199,25 @@ fn cap_data_from_cred(cred: &Cred) -> [__user_cap_data_struct; CAP_U32S_3] {
 /// selected thread's effective, permitted, and inheritable sets are copied to
 /// userspace.
 pub fn sys_capget(
+    current: &crate::task::UserTaskRef,
     header: *mut __user_cap_header_struct,
     data: *mut __user_cap_data_struct,
 ) -> StarryResult<isize> {
-    let target = validate_cap_header(header)?;
+    let target = validate_cap_header(current, header)?;
 
     if data.is_null() {
         return Ok(0);
     }
 
-    let cred = cred_for_target(target)?;
+    let cred = cred_for_target(current, target)?;
     let cap_data = cap_data_from_cred(&cred);
-    unsafe {
-        data.vm_write(cap_data[0])?;
-        data.add(1).vm_write(cap_data[1])?;
-    }
+    let first = UserPtr::from(data);
+    let second_address = data
+        .addr()
+        .checked_add(size_of::<__user_cap_data_struct>())
+        .ok_or(crate::StarryError::BadAddress)?;
+    write_cap_data(current, first, cap_data[0])?;
+    write_cap_data(current, UserPtr::from(second_address), cap_data[1])?;
     Ok(0)
 }
 
@@ -175,15 +228,16 @@ pub fn sys_capget(
 /// expanded, and inheritable expansion follows Linux's `CAP_SETPCAP`/bounding
 /// set rules.
 pub fn sys_capset(
+    current: &crate::task::UserTaskRef,
     header: *mut __user_cap_header_struct,
     data: *mut __user_cap_data_struct,
 ) -> StarryResult<isize> {
-    let target = validate_cap_header(header)?;
+    let target = validate_cap_header(current, header)?;
     if data.is_null() {
         return Err(StarryError::BadAddress);
     }
 
-    let thread_ref = current();
+    let thread_ref = current;
     let thread = thread_ref.as_thread();
     if matches!(target, CapabilityTarget::Thread(tid) if tid != thread.tid_number()) {
         return Err(StarryError::OperationNotPermitted);
@@ -191,8 +245,8 @@ pub fn sys_capset(
 
     let requested = unsafe {
         [
-            data.vm_read_uninit()?.assume_init(),
-            data.add(1).vm_read_uninit()?.assume_init(),
+            data.vm_read_uninit(current)?.assume_init(),
+            data.add(1).vm_read_uninit(current)?.assume_init(),
         ]
     };
     let old = thread.cred();
@@ -228,14 +282,17 @@ pub fn sys_capset(
     Ok(0)
 }
 
-pub fn sys_umask(mask: u32) -> StarryResult<isize> {
-    let curr = current();
+pub fn sys_umask(current: &crate::task::UserTaskRef, mask: u32) -> crate::StarryResult<isize> {
+    let curr = current;
     let old = curr.as_thread().proc_data.replace_umask(mask & 0o777);
     Ok(old as isize)
 }
 
-pub fn sys_personality(persona: u32) -> StarryResult<isize> {
-    let curr = current();
+pub fn sys_personality(
+    current: &crate::task::UserTaskRef,
+    persona: u32,
+) -> crate::StarryResult<isize> {
+    let curr = current;
     let proc_data = &curr.as_thread().proc_data;
     let old = proc_data.personality();
     if persona != PERSONALITY_GET {
@@ -258,6 +315,7 @@ pub fn sys_personality(persona: u32) -> StarryResult<isize> {
 ///
 /// Returns 0 on success, or -errno on error.
 pub fn sys_get_mempolicy(
+    current: &crate::task::UserTaskRef,
     policy: *mut i32,
     nodemask: *mut usize,
     maxnode: usize,
@@ -282,24 +340,24 @@ pub fn sys_get_mempolicy(
     // StarryOS models one NUMA node, so every query resolves to node 0.
     if flags & MPOL_F_MEMS_ALLOWED != 0 {
         if !nodemask.is_null() && maxnode > 0 {
-            nodemask.vm_write(1usize)?;
+            nodemask.vm_write(current, 1usize)?;
         }
         return Ok(0);
     }
 
     if flags & MPOL_F_NODE != 0 {
         if !policy.is_null() {
-            policy.vm_write(0i32)?;
+            policy.vm_write(current, 0i32)?;
         }
         return Ok(0);
     }
 
     if !policy.is_null() {
-        policy.vm_write(MPOL_DEFAULT)?;
+        policy.vm_write(current, MPOL_DEFAULT)?;
     }
 
     if !nodemask.is_null() && maxnode > 0 {
-        nodemask.vm_write(1usize)?;
+        nodemask.vm_write(current, 1usize)?;
     }
 
     Ok(0)
@@ -315,12 +373,17 @@ pub fn sys_get_mempolicy(
 /// - maxnode: size of nodemask bitmap in bits
 ///
 /// Returns 0 on success.
-pub fn sys_set_mempolicy(mode: i32, nodemask: *const usize, maxnode: usize) -> StarryResult<isize> {
+pub fn sys_set_mempolicy(
+    current: &crate::task::UserTaskRef,
+    mode: i32,
+    nodemask: *const usize,
+    maxnode: usize,
+) -> crate::StarryResult<isize> {
     debug!("sys_set_mempolicy <= mode: {}", mode);
 
     let policy = parse_mempolicy_mode(mode)?;
     if policy != MPOL_DEFAULT {
-        check_nodemask(nodemask, maxnode)?;
+        check_nodemask(current, nodemask, maxnode)?;
     }
 
     // Single-node system: accept valid policies and ignore placement.
@@ -341,6 +404,7 @@ pub fn sys_set_mempolicy(mode: i32, nodemask: *const usize, maxnode: usize) -> S
 ///
 /// Returns 0 on success.
 pub fn sys_mbind(
+    current: &crate::task::UserTaskRef,
     addr: usize,
     len: usize,
     mode: i32,
@@ -350,12 +414,9 @@ pub fn sys_mbind(
 ) -> StarryResult<isize> {
     debug!("sys_mbind <= mode: {}", mode);
 
-    let policy = parse_mempolicy_mode(mode)?;
-    if addr & 0xfff != 0 || len == 0 || flags & !MPOL_MF_VALID != 0 {
-        return Err(StarryError::InvalidInput);
-    }
+    let policy = validate_mbind_request(addr, len, mode, flags)?;
     if policy != MPOL_DEFAULT {
-        check_nodemask(nodemask, maxnode)?;
+        check_nodemask(current, nodemask, maxnode)?;
     }
 
     // Single-node system: accept valid bindings and ignore placement.
@@ -372,6 +433,7 @@ pub fn sys_mbind(
 /// - PR_MCE_KILL: set the machine check exception policy
 /// - PR_SET_MM options: set various memory management options (start/end code/data/brk/stack)
 pub fn sys_prctl(
+    current: &crate::task::UserTaskRef,
     option: u32,
     arg2: usize,
     arg3: usize,
@@ -385,7 +447,7 @@ pub fn sys_prctl(
     match option {
         PR_SET_NAME => {
             let mut name = [0u8; 15];
-            let mut user_name = VmBytes::new(arg2 as *const u8, name.len());
+            let mut user_name = VmBytes::new(current, arg2 as *const u8, name.len());
             let mut len = 0;
             while len < name.len() {
                 user_name.read_exact(&mut name[len..=len])?;
@@ -395,50 +457,49 @@ pub fn sys_prctl(
                 len += 1;
             }
             let name = core::str::from_utf8(&name[..len]).map_err(|_| StarryError::IllegalBytes)?;
-            current().set_name(name);
+            current.set_name(name);
         }
         PR_GET_NAME => {
-            let name = current().name();
+            let name = current.name();
             let len = name.len().min(15);
             let mut buf = [0; 16];
             buf[..len].copy_from_slice(&name.as_bytes()[..len]);
-            vm_write_slice(arg2 as _, &buf)?;
+            vm_write_slice(current, arg2 as _, &buf)?;
         }
         PR_SET_PDEATHSIG => {
             let sig = arg2 as u32;
             if sig > 64 {
                 return Err(StarryError::InvalidInput);
             }
-            current().as_thread().set_pdeathsig(sig);
+            current.as_thread().set_pdeathsig(sig);
         }
         PR_GET_PDEATHSIG => {
-            let sig = current().as_thread().pdeathsig() as i32;
-            (arg2 as *mut i32).vm_write(sig)?;
+            let sig = current.as_thread().pdeathsig() as i32;
+            (arg2 as *mut i32).vm_write(current, sig)?;
         }
         PR_SET_CHILD_SUBREAPER => {
-            current()
+            current
                 .as_thread()
                 .proc_data
                 .proc
                 .set_child_subreaper(arg2 != 0);
         }
         PR_GET_CHILD_SUBREAPER => {
-            let enabled = if current().as_thread().proc_data.proc.is_child_subreaper() {
+            let enabled = if current.as_thread().proc_data.proc.is_child_subreaper() {
                 1
             } else {
                 0
             };
-            (arg2 as *mut i32).vm_write(enabled)?;
+            (arg2 as *mut i32).vm_write(current, enabled)?;
         }
         PR_GET_KEEPCAPS => {
-            return Ok(current().as_thread().cred().keep_capabilities() as isize);
+            return Ok(current.as_thread().cred().keep_capabilities() as isize);
         }
         PR_SET_KEEPCAPS => {
             if arg2 > 1 {
                 return Err(StarryError::InvalidInput);
             }
-            let thread_ref = current();
-            let thread = thread_ref.as_thread();
+            let thread = current.as_thread();
             let mut new = (*thread.cred()).clone();
             new.set_keep_capabilities(arg2 != 0);
             thread.set_thread_cred(new);
@@ -449,7 +510,7 @@ pub fn sys_prctl(
                 return Err(StarryError::InvalidInput);
             }
             let bit = cap_bit(arg2 as u32)?;
-            let cred = current().as_thread().cred();
+            let cred = current.as_thread().cred();
             return Ok(((cred.cap_bounding & bit) != 0) as isize);
         }
         PR_CAPBSET_DROP => {
@@ -459,7 +520,7 @@ pub fn sys_prctl(
             if arg2 > CAP_LAST_CAP as usize {
                 return Err(StarryError::InvalidInput);
             }
-            let thread_ref = current();
+            let thread_ref = current;
             let thread = thread_ref.as_thread();
             let old = thread.cred();
             if !old.has_cap_setpcap() {
@@ -475,7 +536,7 @@ pub fn sys_prctl(
         PR_CAP_AMBIENT => {
             // Manage the ambient capability set.  Ambient capabilities are
             // constrained to permitted & inheritable by `sanitize_capabilities`.
-            let thread_ref = current();
+            let thread_ref = current;
             let thread = thread_ref.as_thread();
             let old = thread.cred();
             match arg2 as u32 {
@@ -523,7 +584,7 @@ pub fn sys_prctl(
             }
         }
         PR_GET_SECUREBITS => {
-            return Ok(current().as_thread().cred().securebits as isize);
+            return Ok(current.as_thread().cred().securebits as isize);
         }
         PR_SET_SECUREBITS => {
             // Linux only consumes arg2 for this option. Variadic libc prctl
@@ -532,8 +593,7 @@ pub fn sys_prctl(
                 return Err(StarryError::InvalidInput);
             }
 
-            let thread_ref = current();
-            let thread = thread_ref.as_thread();
+            let thread = current.as_thread();
             let old = thread.cred();
             if !old.has_cap_setpcap() {
                 return Err(StarryError::OperationNotPermitted);
@@ -553,7 +613,7 @@ pub fn sys_prctl(
         PR_GET_DUMPABLE => {
             // man 2 prctl PR_GET_DUMPABLE: returns current dumpable value
             // (0=SUID_DUMP_DISABLE, 1=SUID_DUMP_USER, 2=SUID_DUMP_ROOT).
-            return Ok(current().as_thread().proc_data.dumpable() as isize);
+            return Ok(current.as_thread().proc_data.dumpable() as isize);
         }
         PR_SET_DUMPABLE => {
             // man 2 prctl PR_SET_DUMPABLE: arg2 must be SUID_DUMP_DISABLE (0)
@@ -566,23 +626,23 @@ pub fn sys_prctl(
             if arg2 != 0 && arg2 != 1 {
                 return Err(StarryError::InvalidInput);
             }
-            current().as_thread().proc_data.set_dumpable(arg2 as i32);
+            current.as_thread().proc_data.set_dumpable(arg2 as i32);
         }
         PR_SET_SECCOMP => {
             if arg4 != 0 || arg5 != 0 {
                 return Err(StarryError::InvalidInput);
             }
-            crate::syscall::sys_seccomp(arg2 as u32, 0, arg3 as *const ())?;
+            crate::syscall::sys_seccomp(current, arg2 as u32, 0, arg3 as *const ())?;
         }
         PR_MCE_KILL => {}
         PR_SET_NO_NEW_PRIVS => {
             if arg2 != 1 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
                 return Err(StarryError::InvalidInput);
             }
-            current().as_thread().set_no_new_privs();
+            current.as_thread().set_no_new_privs();
         }
         PR_GET_NO_NEW_PRIVS => {
-            return Ok(current().as_thread().no_new_privs() as isize);
+            return Ok(current.as_thread().no_new_privs() as isize);
         }
         PR_SET_THP_DISABLE => {
             // Linux reserves arg4/arg5 for this option; non-zero values are invalid.
@@ -600,7 +660,7 @@ pub fn sys_prctl(
                 (_, PR_THP_DISABLE_EXCEPT_ADVISED) => 1 | PR_THP_DISABLE_EXCEPT_ADVISED,
                 _ => return Err(StarryError::InvalidInput),
             };
-            current()
+            current
                 .as_thread()
                 .proc_data
                 .set_thp_disable(thp_disable as u32);
@@ -611,7 +671,7 @@ pub fn sys_prctl(
             if arg2 != 0 || arg3 != 0 || arg4 != 0 || arg5 != 0 {
                 return Err(StarryError::InvalidInput);
             }
-            return Ok(current().as_thread().proc_data.thp_disable() as isize);
+            return Ok(current.as_thread().proc_data.thp_disable() as isize);
         }
         PR_SET_MM => {
             // not implemented; but avoid annoying warnings
@@ -667,63 +727,33 @@ fn mempolicy_validation_rules_hold_for_test() -> bool {
         )
         // MPOL mode 7 (between WEIGHTED_INTERLEAVE and the next valid mode) is rejected.
         && parse_mempolicy_mode(7).is_err()
-        // check_nodemask is a no-op for null nodemask or zero maxnode.
-        && check_nodemask(core::ptr::null(), 0).is_ok()
-        && check_nodemask(core::ptr::null(), 64).is_ok()
-        && matches!(sys_set_mempolicy(MPOL_DEFAULT, core::ptr::null(), 0), Ok(0))
-        && sys_set_mempolicy(-1, core::ptr::null(), 0).is_err()
+        // A null nodemask or zero maxnode does not authorize a user-memory access.
+        && !nodemask_requires_access(core::ptr::null(), 0)
+        && !nodemask_requires_access(core::ptr::null(), 64)
+        && !nodemask_requires_access(core::ptr::dangling(), 0)
         // set_mbind / set_mempolicy rejection of negative modes is exercised above.
         && matches!(
-            sys_mbind(0x1000, 4096, MPOL_DEFAULT, core::ptr::null(), 0, 0),
-            Ok(0)
+            validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, 0),
+            Ok(MPOL_DEFAULT)
         )
-        && sys_mbind(0x1001, 4096, MPOL_DEFAULT, core::ptr::null(), 0, 0).is_err()
-        && sys_mbind(0x1000, 0, MPOL_DEFAULT, core::ptr::null(), 0, 0).is_err()
-        && sys_mbind(
-            0x1000,
-            4096,
-            MPOL_DEFAULT,
-            core::ptr::null(),
-            0,
-            !MPOL_MF_VALID,
-        )
-        .is_err()
+        && validate_mbind_request(0x1001, 4096, MPOL_DEFAULT, 0).is_err()
+        && validate_mbind_request(0x1000, 0, MPOL_DEFAULT, 0).is_err()
+        && validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, !MPOL_MF_VALID).is_err()
         // mbind accepts each individual MPOL_MF flag bit in isolation.
         && matches!(
-            sys_mbind(
-                0x1000,
-                4096,
-                MPOL_DEFAULT,
-                core::ptr::null(),
-                0,
-                MPOL_MF_STRICT,
-            ),
-            Ok(0)
+            validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, MPOL_MF_STRICT),
+            Ok(MPOL_DEFAULT)
         )
         && matches!(
-            sys_mbind(
-                0x1000,
-                4096,
-                MPOL_DEFAULT,
-                core::ptr::null(),
-                0,
-                MPOL_MF_MOVE,
-            ),
-            Ok(0)
+            validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, MPOL_MF_MOVE),
+            Ok(MPOL_DEFAULT)
         )
         && matches!(
-            sys_mbind(
-                0x1000,
-                4096,
-                MPOL_DEFAULT,
-                core::ptr::null(),
-                0,
-                MPOL_MF_MOVE_ALL,
-            ),
-            Ok(0)
+            validate_mbind_request(0x1000, 4096, MPOL_DEFAULT, MPOL_MF_MOVE_ALL),
+            Ok(MPOL_DEFAULT)
         )
         // mbind rejects out-of-range mode.
-        && sys_mbind(0x1000, 4096, 99, core::ptr::null(), 0, 0).is_err()
+        && validate_mbind_request(0x1000, 4096, 99, 0).is_err()
 }
 
 #[cfg(all(test, not(axtest)))]

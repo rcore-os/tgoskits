@@ -1,5 +1,6 @@
 #![no_std]
 #![cfg_attr(not(test), no_main)]
+#![cfg_attr(axtest_coverage, feature(coverage_attribute))]
 #![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
 #[allow(unused_imports)]
@@ -182,6 +183,18 @@ pub trait SystimerArch: ArchTrait {
     fn systimer_irq_is_enabled() -> bool;
     /// Set the timer interval in ticks.
     fn systimer_set_interval(ticks: usize);
+    /// Masks the source and discards its programmed one-shot event.
+    fn systimer_cancel_oneshot();
+
+    /// Restores a cancelled one-shot source and installs its next event.
+    ///
+    /// The default ordering matches edge-triggered sources. Level-triggered
+    /// timers whose expired comparator can repend while unmasked must override
+    /// this and install the new comparator first.
+    fn systimer_resume_oneshot(ticks: usize) {
+        Self::systimer_irq_enable();
+        Self::systimer_set_interval(ticks);
+    }
 
     /// Acknowledge and clear the timer interrupt. Timers whose pending state
     /// clears on re-arming keep this default.

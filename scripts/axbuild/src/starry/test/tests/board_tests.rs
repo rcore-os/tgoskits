@@ -157,3 +157,38 @@ fn sg2002_repository_dtbs_declare_noncoherent_dma() {
         );
     }
 }
+
+#[test]
+fn sg2002_board_tests_pin_the_repository_dtb() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (board_name, expected_dtb) in [
+        (
+            "aka-00-sg2002",
+            "os/StarryOS/configs/board/aka-00-sg2002.dtb",
+        ),
+        (
+            "licheerv-nano-sg2002",
+            "os/StarryOS/configs/board/licheerv-nano-sg2002.dtb",
+        ),
+    ] {
+        assert!(
+            workspace_root.join(expected_dtb).is_file(),
+            "repository DTB does not exist: {expected_dtb}"
+        );
+        let groups = discover_board_test_groups(&workspace_root, None, Some(board_name)).unwrap();
+        assert!(!groups.is_empty(), "missing board tests for {board_name}");
+
+        for group in groups {
+            let source = fs::read_to_string(&group.board_test_config_path).unwrap();
+            let config: ostool::board::config::BoardRunConfig = toml::from_str(&source).unwrap();
+            assert_eq!(
+                config.dtb_file.as_deref(),
+                Some(expected_dtb),
+                "{}/{} must upload the repository DTB instead of using a server preset",
+                group.name,
+                group.board_name,
+            );
+        }
+    }
+}

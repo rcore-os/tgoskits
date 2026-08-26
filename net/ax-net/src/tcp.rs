@@ -29,13 +29,14 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     net::{Ipv4Addr, SocketAddr},
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
-    task::{Context, Waker},
+    task::Waker,
 };
 
 use ax_io::prelude::*;
 use ax_lazyinit::LazyLock;
-use ax_sync::Mutex;
-use axpoll::{IoEvents, PollSet, Pollable};
+use ax_sync::SpinLock;
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use hashbrown::HashMap;
 use smoltcp::{
     iface::SocketHandle,
@@ -80,11 +81,11 @@ pub struct TcpSocket {
     /// Handle into the global smoltcp socket set.
     handle: SocketHandle,
     /// Bound listen endpoint, or an empty endpoint before bind/connect.
-    bound_endpoint: Mutex<IpListenEndpoint>,
+    bound_endpoint: SpinLock<IpListenEndpoint>,
     /// Connected peer endpoint once established.
-    peer_endpoint: Mutex<Option<IpEndpoint>>,
+    peer_endpoint: SpinLock<Option<IpEndpoint>>,
     /// Currently registered egress IP_TOS policy for this TCP socket.
-    tos_key: Mutex<Option<EgressIpTosKey>>,
+    tos_key: SpinLock<Option<EgressIpTosKey>>,
     /// Whether `bound_endpoint` is registered in `TCP_BOUND_PORTS`.
     bound_registered: AtomicBool,
 
@@ -121,9 +122,9 @@ impl TcpSocket {
                 smol::SocketBuffer::new(vec![0; TCP_RX_BUF_LEN]),
                 smol::SocketBuffer::new(vec![0; TCP_TX_BUF_LEN]),
             )),
-            bound_endpoint: Mutex::new(empty_endpoint()),
-            peer_endpoint: Mutex::new(None),
-            tos_key: Mutex::new(None),
+            bound_endpoint: SpinLock::new(empty_endpoint()),
+            peer_endpoint: SpinLock::new(None),
+            tos_key: SpinLock::new(None),
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
@@ -159,9 +160,9 @@ impl TcpSocket {
         let result = Self {
             state: StateLock::new(State::Connected),
             handle,
-            bound_endpoint: Mutex::new(empty_endpoint()),
-            peer_endpoint: Mutex::new(Some(remote_endpoint)),
-            tos_key: Mutex::new(None),
+            bound_endpoint: SpinLock::new(empty_endpoint()),
+            peer_endpoint: SpinLock::new(Some(remote_endpoint)),
+            tos_key: SpinLock::new(None),
             bound_registered: AtomicBool::new(false),
 
             general: GeneralOptions::new(1, 2, 6), // SOCK_STREAM
@@ -785,7 +786,29 @@ impl Pollable for TcpSocket {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_shared(poll, interests)
+        });
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.register_poll_sources(events, |poll, interests| unsafe {
+            sink.register_exclusive(poll, interests)
+        });
+    }
+}
+
+impl TcpSocket {
+    fn register_poll_sources(
+        &self,
+        events: IoEvents,
+        mut register: impl FnMut(&PollSet, IoEvents),
+    ) {
         let mut accept_registration = None;
         if self.state.get() == State::Listening && events.intersects(IoEvents::IN | IoEvents::RDHUP)
         {
@@ -795,7 +818,7 @@ impl Pollable for TcpSocket {
                 if let Some(accept_poll) = LISTEN_TABLE.accept_poll(endpoint) {
                     // accept registration runs from task poll context after
                     // releasing the listen-table lock.
-                    unsafe { accept_poll.register(context.waker(), IoEvents::IN) };
+                    register(&accept_poll, IoEvents::IN);
                     let accept_waker = LISTEN_TABLE.accept_waker(accept_poll.clone());
                     accept_registration = Some((endpoint, accept_poll, accept_waker));
                 }
@@ -804,10 +827,7 @@ impl Pollable for TcpSocket {
         let recv_waker = if events.intersects(IoEvents::IN | IoEvents::RDHUP) {
             // Socket registration runs from task poll context before taking the
             // socket-set lock.
-            unsafe {
-                self.poll_rx
-                    .register(context.waker(), IoEvents::IN | IoEvents::RDHUP)
-            };
+            register(&self.poll_rx, IoEvents::IN | IoEvents::RDHUP);
             Some(Waker::from(Arc::new(DeferPollWake {
                 poll: self.poll_rx.clone(),
                 ready: IoEvents::IN | IoEvents::RDHUP,
@@ -818,7 +838,7 @@ impl Pollable for TcpSocket {
         let send_waker = if events.contains(IoEvents::OUT) {
             // Socket registration runs from task poll context before taking the
             // socket-set lock.
-            unsafe { self.poll_tx.register(context.waker(), IoEvents::OUT) };
+            register(&self.poll_tx, IoEvents::OUT);
             Some(Waker::from(Arc::new(DeferPollWake {
                 poll: self.poll_tx.clone(),
                 ready: IoEvents::OUT,
@@ -844,14 +864,16 @@ impl Pollable for TcpSocket {
             }
         });
         if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
-            self.general.register_waker(context.waker());
+            register(&self.poll_rx, events);
+            self.general
+                .register_timeout_waker(&Waker::from(Arc::new(DeferPollWake {
+                    poll: self.poll_rx.clone(),
+                    ready: events,
+                })));
         }
         if events.contains(IoEvents::RDHUP) {
             // Registration happens from socket poll task context.
-            unsafe {
-                self.poll_rx_closed
-                    .register(context.waker(), IoEvents::RDHUP | IoEvents::IN)
-            };
+            register(&self.poll_rx_closed, IoEvents::RDHUP | IoEvents::IN);
         }
     }
 }
@@ -1059,8 +1081,8 @@ struct TcpBoundEntry {
     reuse_port: bool,
 }
 
-static TCP_BOUND_PORTS: LazyLock<Mutex<HashMap<u16, Vec<TcpBoundEntry>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static TCP_BOUND_PORTS: LazyLock<SpinLock<HashMap<u16, Vec<TcpBoundEntry>>>> =
+    LazyLock::new(|| SpinLock::new(HashMap::new()));
 
 /// Registers TCP bind ownership with wildcard/specific address conflicts.
 ///
@@ -1139,16 +1161,18 @@ fn get_ephemeral_port() -> NetResult<u16> {
     allocate_ephemeral_port(tcp_port_available)
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(axtest, feature = "axtest")))]
 mod tests {
+    #[cfg(all(axtest, feature = "axtest"))]
     use core::net::{IpAddr, SocketAddr};
 
     use super::*;
+    #[cfg(all(axtest, feature = "axtest"))]
     use crate::{
-        options::{Configurable, GetSocketOption, SetSocketOption, TcpState},
-        test_support::{
-            LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, network_test_guard,
+        network_test_support::{
+            LOCAL_ADDR, PEER_ADDR, init_split_route_network, network_test_guard,
         },
+        options::{Configurable, GetSocketOption, SetSocketOption, TcpState},
     };
 
     #[test]
@@ -1194,8 +1218,8 @@ mod tests {
         assert_eq!(total, 4);
     }
 
-    #[test]
-    fn tcp_info_reports_default_socket_metrics() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn tcp_info_reports_default_socket_metrics() {
         let _guard = network_test_guard();
         init_split_route_network();
 
@@ -1217,8 +1241,8 @@ mod tests {
         assert_eq!(info.rcv_wnd, 0);
     }
 
-    #[test]
-    fn tcp_congestion_control_reports_and_accepts_active_algorithm() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn tcp_congestion_control_reports_and_accepts_active_algorithm() {
         let _guard = network_test_guard();
         init_split_route_network();
 
@@ -1236,10 +1260,10 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn connect_preserves_bound_interface() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn connect_preserves_bound_interface() {
         let _guard = network_test_guard();
-        init_split_route_network();
+        let topology = init_split_route_network();
 
         let socket = TcpSocket::new();
         let nonblocking = true;
@@ -1252,7 +1276,7 @@ mod tests {
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(LOCAL_IF)
+                bound_if: Some(topology.local_if)
             }
         );
 
@@ -1262,19 +1286,19 @@ mod tests {
             .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
             .unwrap();
 
-        // Interface binding should remain LOCAL_IF (not changed to PEER_IF)
+        // Binding to the local test interface must survive a peer-route lookup.
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(LOCAL_IF)
+                bound_if: Some(topology.local_if)
             }
         );
     }
 
-    #[test]
-    fn connect_uses_peer_route_when_unbound() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn connect_uses_peer_route_when_unbound() {
         let _guard = network_test_guard();
-        init_split_route_network();
+        let topology = init_split_route_network();
 
         let socket = TcpSocket::new();
         let nonblocking = true;
@@ -1294,26 +1318,26 @@ mod tests {
             .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
             .unwrap();
 
-        // Interface binding should use route decision (PEER_IF)
+        // The unbound socket must adopt the peer-route interface.
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(PEER_IF)
+                bound_if: Some(topology.peer_if)
             }
         );
     }
 
-    #[test]
-    fn connect_rejects_unroutable_bound_device() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn connect_rejects_unroutable_bound_device() {
         let _guard = network_test_guard();
-        init_split_route_network();
+        let topology = init_split_route_network();
 
         let socket = TcpSocket::new();
         let nonblocking = true;
         socket
             .set_option(SetSocketOption::NonBlocking(&nonblocking))
             .unwrap();
-        socket.bind_device(LOCAL_IF).unwrap();
+        socket.bind_device(topology.local_if).unwrap();
         socket
             .bind(SocketAddrEx::Ip(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -1329,13 +1353,13 @@ mod tests {
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(LOCAL_IF)
+                bound_if: Some(topology.local_if)
             }
         );
     }
 
-    #[test]
-    fn reuseport_group_shares_a_port_while_plain_binders_conflict() {
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(super) fn reuseport_group_shares_a_port_while_plain_binders_conflict() {
         let _guard = network_test_guard();
 
         let endpoint = IpListenEndpoint {
@@ -1370,4 +1394,14 @@ mod tests {
         unregister_tcp_bound(endpoint);
         assert!(!TCP_BOUND_PORTS.lock().contains_key(&endpoint.port));
     }
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn run_axtest_contracts() {
+    tests::tcp_info_reports_default_socket_metrics();
+    tests::tcp_congestion_control_reports_and_accepts_active_algorithm();
+    tests::connect_preserves_bound_interface();
+    tests::connect_uses_peer_route_when_unbound();
+    tests::connect_rejects_unroutable_bound_device();
+    tests::reuseport_group_shares_a_port_while_plain_binders_conflict();
 }

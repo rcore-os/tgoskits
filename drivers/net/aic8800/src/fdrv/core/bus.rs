@@ -3,11 +3,10 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicUsize
 
 use atomic_waker::AtomicWaker;
 use ax_sync::SpinLock as Mutex;
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 
-use crate::{
-    common::SDIOWIFI_INTR_CONFIG_REG,
-    fdrv::core::{pollset::PollSet, sdio_transport::SdioTransport},
-};
+use crate::{common::SDIOWIFI_INTR_CONFIG_REG, fdrv::core::sdio_transport::SdioTransport};
 
 /// 总线状态
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -108,11 +107,9 @@ pub struct RxState {
     pub irq_waker: AtomicWaker,
     pub irq_pending: AtomicBool,
     pub data_queue: Mutex<VecDeque<Vec<u8>>>,
-    pub data_pollset: PollSet,
     pub eapol_queue: Mutex<VecDeque<Vec<u8>>>,
     pub eapol_pollset: PollSet,
     pub tx_cfm_queue: Mutex<VecDeque<Vec<u8>>>,
-    pub tx_cfm_pollset: PollSet,
 }
 
 impl Default for RxState {
@@ -127,11 +124,9 @@ impl RxState {
             irq_waker: AtomicWaker::new(),
             irq_pending: AtomicBool::new(false),
             data_queue: Mutex::new(VecDeque::new()),
-            data_pollset: PollSet::new(),
             eapol_queue: Mutex::new(VecDeque::new()),
             eapol_pollset: PollSet::new(),
             tx_cfm_queue: Mutex::new(VecDeque::new()),
-            tx_cfm_pollset: PollSet::new(),
         }
     }
 }
@@ -243,31 +238,40 @@ impl WifiBus {
         })
     }
 
-    /// 关闭总线，停止所有线程
-    pub fn shutdown(self: &Arc<Self>) {
+    /// 关闭总线，停止所有线程。
+    ///
+    /// # Safety
+    ///
+    /// This method must run in task or deferred context. It wakes registered
+    /// tasks and must not be called from hard IRQ, NMI, or a trap callback.
+    pub unsafe fn shutdown(self: &Arc<Self>) {
         *self.state.lock() = BusState::Down;
 
         let _ = self.transport.write_byte(1, SDIOWIFI_INTR_CONFIG_REG, 0x00);
         self.transport.disable_irq();
 
-        self.tx.wake_pollset.wake();
+        // SAFETY: shutdown runs in task context after publishing BusState::Down.
+        unsafe { self.tx.wake_pollset.wake_all(IoEvents::IN) };
         self.tx.queue.lock().clear();
 
         self.rx.irq_waker.wake();
 
         self.rx.data_queue.lock().clear();
 
-        self.ap.assoc_pollset.wake();
+        // SAFETY: shutdown is a permanent task-context transition.
+        unsafe { self.ap.assoc_pollset.wake_all(IoEvents::IN) };
         self.ap.assoc_queue.lock().clear();
 
         self.cmd.rsp_error.store(true, Ordering::Release);
-        self.cmd.rsp_pollset.wake();
-        self.rx.tx_cfm_pollset.wake();
+        // SAFETY: rsp_error was published with Release before the task wake.
+        unsafe { self.cmd.rsp_pollset.wake_all(IoEvents::IN) };
 
-        self.rx.eapol_pollset.wake();
+        // SAFETY: shutdown is a permanent task-context transition.
+        unsafe { self.rx.eapol_pollset.wake_all(IoEvents::IN) };
         self.rx.eapol_queue.lock().clear();
 
-        self.tx.ind_pollset.wake();
+        // SAFETY: shutdown is a permanent task-context transition.
+        unsafe { self.tx.ind_pollset.wake_all(IoEvents::IN) };
         self.tx.ind_queue.lock().clear();
 
         clear_global_bus();

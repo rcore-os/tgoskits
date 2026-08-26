@@ -14,7 +14,7 @@ use rdrive::{
     register::{FdtInfo, ProbeFdt},
 };
 
-use super::{ProbeFdtUsbHost, usb_kernel};
+use super::{ProbeFdtUsbHost, usb_device_dma, usb_runtime};
 use crate::mmio::iomap;
 
 const DRIVER_NAME: &str = "usb-rockchip-ehci";
@@ -46,9 +46,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     deassert_resets(&resources.resets);
 
     let mmio = map_reg(resources.ctrl)?;
+    let dma = usb_device_dma(crate::binding_resolver::dma_coherency_from_fdt(info));
     let host = crab_usb::USBHost::new_ehci(EhciNewParams {
         mmio,
-        kernel: usb_kernel(),
+        dma,
+        kernel: usb_runtime(),
     })
     .map_err(|err| {
         OnProbeError::other(format!(

@@ -28,9 +28,9 @@ mod wext;
 use alloc::{borrow::Cow, collections::BTreeSet, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
-use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
 use ax_io::prelude::*;
-use ax_task::{TaskState, current};
+use ax_std::os::arceos::task::ThreadState;
 use axfs_ng_vfs::DeviceId;
 use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
@@ -41,6 +41,8 @@ use linux_raw_sys::general::{
 };
 
 pub(crate) use self::mount_table::{MountTableFile, notify_mount_namespace_changed};
+#[cfg(feature = "qperf-metrics")]
+pub(crate) use self::pipe::qperf_metrics_snapshot as pipe_qperf_metrics_snapshot;
 pub use self::{
     fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},
     io_uring::IoUring,
@@ -54,7 +56,7 @@ use crate::{
     StarryError, StarryResult,
     pseudofs::DeviceMmap,
     sync::RwLock,
-    task::{AX_FILE_LIMIT, AsThread, PidIdentityId, tasks},
+    task::{AX_FILE_LIMIT, PidIdentityId, current_user_task, tasks},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -207,7 +209,12 @@ pub trait FileLike: Pollable + DowncastSync {
         Ok(DeviceMmap::None)
     }
 
-    fn ioctl(&self, _cmd: u32, _arg: usize) -> StarryResult<usize> {
+    fn ioctl(
+        &self,
+        _current: &crate::task::UserTaskRef,
+        _cmd: u32,
+        _arg: usize,
+    ) -> StarryResult<usize> {
         Err(StarryError::NotATty)
     }
 
@@ -481,7 +488,10 @@ pub fn prepare_file_like(
     file: Arc<dyn FileLike>,
     cloexec: bool,
 ) -> StarryResult<PreparedFileDescriptor> {
-    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
+    let max_nofile = current_user_task()
+        .as_thread()
+        .proc_data
+        .rlimit_current(RLIMIT_NOFILE);
     let table = current_fd_table();
     PreparedFileDescriptor::prepare_in(
         table,
@@ -515,8 +525,11 @@ pub fn fd_is_path(fd: c_int) -> bool {
 }
 
 /// Add a file to the file descriptor table.
-pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> StarryResult<c_int> {
-    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
+pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> crate::StarryResult<c_int> {
+    let max_nofile = current_user_task()
+        .as_thread()
+        .proc_data
+        .rlimit_current(RLIMIT_NOFILE);
     let fd_table = current_fd_table();
     let mut table = fd_table.write();
     if table.count() as u64 >= max_nofile {
@@ -537,28 +550,18 @@ pub fn close_file_like(fd: c_int) -> StarryResult {
     Err(StarryError::BadFileDescriptor)
 }
 
-pub(crate) fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
-    !fd_table_file_refs(file).is_empty()
-}
-
-pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(u32, usize)> {
-    let mut refs = alloc::vec::Vec::new();
-    for task in tasks() {
-        if task.state() == TaskState::Exited {
-            continue;
+fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
+    tasks().into_iter().any(|task| {
+        if task.state() == ThreadState::Exited {
+            return false;
         }
         let thread = task.as_thread();
-        let pid = thread.proc_data.proc.pid().get();
-        let scope = thread.scope.read();
-        let scoped_fd_table = FD_TABLE.scope(&scope);
+        let scoped_fd_table = thread.clone_scope_item(&FD_TABLE);
         let table = scoped_fd_table.read();
-        for id in table.ids() {
-            if table.get(id).is_some_and(|fd| Arc::ptr_eq(&fd.inner, file)) {
-                refs.push((pid, id));
-            }
-        }
-    }
-    refs
+        table
+            .ids()
+            .any(|id| table.get(id).is_some_and(|fd| Arc::ptr_eq(&fd.inner, file)))
+    })
 }
 
 fn notify_close_write(fd: &FileDescriptor) {
@@ -586,7 +589,7 @@ fn notify_close_write(fd: &FileDescriptor) {
 /// `Weak` still alive, and sleep forever.
 pub fn release_locks_on_close(fd: FileDescriptor) {
     let key = fd.inner.inode_key();
-    let owner = current().as_thread().proc_data.identity().id();
+    let owner = current_user_task().as_thread().proc_data.identity().id();
     // Linux `filp_flush` runs `f_op->flush` on every fd-closing path (explicit
     // close, close_range, dup2/dup3 replacement, exec CLOEXEC, process exit),
     // all of which funnel through here. This is where an mq descriptor drops a
@@ -626,7 +629,7 @@ pub fn close_all_fds() {
     // CLONE_FILES may share the same fd table across multiple tasks/processes.
     // In that case, an exiting sharer must not clear the whole table, or other
     // live sharers (including the parent) will lose stdout/stderr unexpectedly.
-    // One reference belongs to the scope slot and one is this owned snapshot.
+    // One reference belongs to the scope slot and one is our pinned snapshot.
     if Arc::strong_count(&fd_table) > 2 {
         return;
     }
@@ -648,7 +651,7 @@ pub fn close_all_fds() {
 
 pub fn add_stdio(fd_table: &mut FileTable) -> StarryResult<()> {
     assert_eq!(fd_table.count(), 0);
-    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let fs_context = current_fs_context();
     let cx = fs_context.lock();
     let open = |options: &mut OpenOptions, flags| {
         StarryResult::Ok(Arc::new(File::new(
@@ -681,7 +684,7 @@ pub fn add_stdio(fd_table: &mut FileTable) -> StarryResult<()> {
     Ok(())
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(all(test, axtest))]
 fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
     fn descriptor() -> FileDescriptor {
         let (read_end, _write_end) = Pipe::new();
@@ -730,10 +733,9 @@ fn prepared_descriptor_stays_hidden_until_install_for_test() -> bool {
         && install_made_visible
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(all(test, axtest))]
 mod tests {
-    #[cfg(all(test, not(axtest)))]
-    #[test]
+    #[axtest::axtest]
     fn prepared_descriptor_stays_hidden_until_install() {
         assert!(super::prepared_descriptor_stays_hidden_until_install_for_test());
     }

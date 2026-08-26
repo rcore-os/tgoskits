@@ -254,6 +254,77 @@ Each endpoint owns:
 The acknowledgement also carries a queue bitmap and an opaque controller event.
 It never carries borrowed memory or invokes a completion callback.
 
+### 物理 IRQ source 与 deferred owner
+
+本轮以本地 Linux v7.1（`8cd9520d35a6`）的 PREEMPT_RT 路径重新核对了
+block IRQ 生命周期。对应关系是：
+
+- `kernel/irq/chip.c::handle_level_irq` 在执行 action 前 mask/ack，只有不存在
+  oneshot worker 时才 unmask；
+- `kernel/irq/handle.c::__irq_wake_thread` 用 `IRQTF_RUNTHREAD` 合并重复投递，
+  并把 action 的 `thread_mask` 计入 `threads_oneshot`；
+- `kernel/irq/manage.c::irq_finalize_oneshot` 在 `IRQS_INPROGRESS`、新的
+  `IRQTF_RUNTHREAD` 和全部 `threads_oneshot` 都清除后才允许 unmask；
+- `drivers/nvme/host/pci.c::nvme_irq` 由 queue owner 排空 CQ；当多个 queue
+  共享一个 vector 时，解除物理 source 屏蔽仍由 IRQ descriptor 汇总，而不是
+  由任意一个 queue 提前执行。
+
+TGOSKits 不复制 Linux 的 IRQ thread 基础设施，但采用相同的所有权模型：
+
+1. 一个 `source_id` 在运行时只能有一个已安装 registration。`IrqEndpoint`
+   是该 source 的完整 queue-routing 快照，而不是可以累加的局部 queue
+   handler。同一 source 再次出现表示替换；driver 必须先保持 source masked，
+   runtime 执行 `disable + synchronize`、安装完整新快照，最后才通过
+   `ControllerEvent::Rearm` 解除屏蔽。
+2. rearm domain 的 `IN_PROGRESS`、`REARM_PENDING`、`REARM_CANCELLED` 和 active
+   deferred-owner 数量放在同一个原子状态字中。最后一个 owner 只能用比较交换领取
+   唯一 rearm；并发的 hard IRQ publication、新 owner 或 drain failure 会修改同一个
+   状态字，因此不存在“读到旧计数后提前 unmask”的窗口。即使失败发生在 top half
+   退出之前，后续 `finish_irq` 也不能重新生成已取消的 rearm。
+3. 每个 queue latch 单独维护 `ACTIVE/PENDING`，等价于 Linux action 的
+   `RUNTHREAD` 生命周期。hard IRQ 先发布 queue/control 数据，再设置 pending 并
+   通知 hctx；hctx claim 后排空 CQ。排空期间的新 IRQ 会重新设置 pending，使完成
+   CAS 失败并保留 active owner，下一轮继续 drain，不会丢事件，也不会提前 rearm。
+4. queue-coupled control 和 rearm 都在 hctx 完成 drain 后发布。source 自身持有固定的
+   controller publisher，任务态完成路径不再查 controller latch registry，也不再获取
+   IRQ-aware registry lock。control-only source 没有 queue owner，由 controller worker
+   作为唯一 deferred owner。
+5. shared controller 的物理 IRQ source 与 member-local mask domain 分开建模。例如
+   AHCI HBA IRQ 可以保持 acknowledged/cleared，而被 mask 的 PxIE 属于各 port member；
+   每个 member 的 queue owners 只汇总并 rearm 自己的 port，不能替其他 member 或
+   HBA source 做解除屏蔽。
+
+这个模型没有 polling、超时重试、重复 registration 或 controller 提前 rearm 的兼容
+路径。数据 I/O 只能由 hard IRQ publication 推进到唯一 queue owner，再由最后 owner
+完成 source rearm。
+
+### 专用 idle 调度类与 block worker 唤醒
+
+RISC-V 四核完整组在非零 boot hart 上曾表现为 `fs-basic` 长时间无进展。GDB 同时观察到
+两个逻辑 CPU 的 runqueue 为空、current 等于各自专用 idle，但 `need_resched` 持续重新
+发布；block hctx worker 当时并未持有设备或 completion 锁。根因不在 NVMe 的 IRQ
+重试，而是调度器把 runtime 的专用 idle context 当成普通 `FairMode::Idle` 实体计费：
+fair request 到期后重新发布 reschedule，形成 idle 到自身的连续切换。
+
+Linux v7.1 明确把两类 idle 分开：per-CPU idle task 属于 `idle_sched_class`，不会入队、
+迁移或消耗 fair request；用户 `SCHED_IDLE` 仍属于 fair class。TGOSKits 因此在 current
+dispatch 快照中保存显式 `Task / DedicatedIdle` 角色，而不是从 `FairMode::Idle` 猜测：
+
+- `DedicatedIdle` 只推进 owner 的已记账时间戳，不计 task runtime、fair vruntime、RT
+  quota 或 slice deadline，也不发布 slice-expired reschedule；
+- runqueue 的 fair current、placement demand 和 fair demand 都排除专用 idle；
+- 任何实际 runnable class，包括普通 `FairMode::Idle`，都立即抢占专用 idle；
+- 普通 `FairMode::Idle` 仍完整保留 Linux `SCHED_IDLE` 的 fair 记账和最低权重行为。
+
+确定性回归分别覆盖“专用 idle 跨越一个完整 fair request 仍不产生 slice expiry”和
+“普通 SCHED_IDLE work 必须唤醒专用 idle CPU”。这个修正位于通用 owner-runqueue
+边界，四架构和所有 worker 唤醒共同受益；block 层没有新增 polling、retry 或超时兜底。
+
+修复后的官方 RISC-V `rust/all` 连续取得正式通过标志：boot HART 0 时 `fs-basic`
+为 1,639 ms、QEMU case 5.08 s；随后 boot HART 1 时 `fs-basic` 为 1,720 ms、QEMU case
+5.45 s（含构建的墙钟 6.60 s）。此前相同的非零 boot-hart 场景在 `fs-basic` 停留超过
+一分钟；这里记录的是该活锁回归的消除，不据此宣称端到端性能已经达到 Linux RT。
+
 ### Hardware queue
 
 `HardwareQueue` is move-only and is owned by one maintenance task. Its data path

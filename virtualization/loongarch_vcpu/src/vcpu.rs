@@ -88,7 +88,7 @@ pub struct LoongArchVcpu<H: LoongArchHostOps> {
     vcpu_id: LoongArchVcpuId,
     cpu_id: usize,
     iocsr_state: LoongArchIocsrStateRef,
-    guest_timer_token: Option<usize>,
+    guest_timer_token: Option<H::TimerHandle>,
     last_badi: usize,
     entry_logged: bool,
     host_translation_state: HostTranslationState,

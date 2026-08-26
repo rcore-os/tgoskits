@@ -92,6 +92,8 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
 - Use `prebuild.sh` only for packages or setup that must happen inside the staging rootfs.
 - For grouped cases, keep `test_commands` aligned with installed guest paths and include the grouped success/fail regexes.
 - For `qemu/system` C subcases, install binaries to `usr/bin/starry-test-suit`. Put shared system rootfs preparation in `system/prebuild.sh`, not in subcase-local `prebuild.sh`. If a subcase is arch-specific, generate an explicit skip binary or skip in the program; do not rely on subcase-local `qemu-<arch>.toml` filtering.
+- Keep `qemu/system` execution, per-case timeout, and descendant cleanup in the shared `starry-run-system-tests` binary; do not copy the scan/result loop into architecture TOML files. Each binary must run under its own PID namespace so `setpgid()` or `setsid()` cannot escape the runner's task-lifecycle ownership.
+- Set `grouped_command_selection = "preserve_all"` when `test_commands` contains a shared aggregator such as `starry-run-system-tests`; direct per-subcase command lists keep the default `direct_subcases` selection.
 - Board case names and board config names should match the actual board target, such as `board-orangepi-5-plus.toml`.
 - Board cases may declare `session_files` relative to the directory containing
   `board-<board>.toml`. Keep each path unchanged from local lookup through the

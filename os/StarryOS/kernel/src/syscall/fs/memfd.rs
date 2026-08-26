@@ -1,8 +1,7 @@
 use alloc::{string::String, sync::Arc};
 use core::ffi::c_char;
 
-use ax_fs_ng::vfs::OpenOptions;
-use ax_task::current;
+use ax_fs_ng::vfs::{OpenOptions, current_fs_context};
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 
 pub(crate) use crate::file::memfd::{
@@ -22,7 +21,6 @@ use crate::{
     },
     mm::vm_load_string,
     pseudofs,
-    task::AsThread,
 };
 
 /// `MFD_ALLOW_SEALING` — bit 1. `linux-raw-sys` does not export it on every
@@ -42,7 +40,11 @@ const MFD_EXEC: u32 = 0x0010;
 /// Linux enforces `NAME_MAX - strlen("memfd:")` = 249 bytes for the name.
 const MEMFD_NAME_MAX: usize = 249;
 
-pub fn sys_memfd_create(name: *const c_char, flags: u32) -> StarryResult<isize> {
+pub fn sys_memfd_create(
+    current: &crate::task::UserTaskRef,
+    name: *const c_char,
+    flags: u32,
+) -> crate::StarryResult<isize> {
     let valid_flags = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_NOEXEC_SEAL | MFD_EXEC;
     if flags & !valid_flags != 0 || flags & MFD_HUGETLB != 0 {
         return Err(StarryError::InvalidInput);
@@ -52,7 +54,7 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> StarryResult<isize> 
     let allow_sealing = flags & MFD_ALLOW_SEALING != 0;
 
     // Load the name argument. Linux rejects overlong names.
-    let name_str: String = vm_load_string(name)?;
+    let name_str: String = vm_load_string(current, name)?;
     if name_str.len() > MEMFD_NAME_MAX {
         return Err(StarryError::InvalidInput);
     }
@@ -64,10 +66,10 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> StarryResult<isize> 
     };
     let tmpfs = tmpfs.ok_or(StarryError::NotFound)?;
 
-    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let fs_context = current_fs_context();
     let fs = fs_context.lock();
     let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
-    let cred = current().as_thread().cred();
+    let cred = current.as_thread().cred();
     let entry = tmpfs.create_anonymous_file(
         &name_str,
         axfs_ng_vfs::NodePermission::from_bits_truncate(0o666),
@@ -89,10 +91,7 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> StarryResult<isize> 
 }
 
 fn fs_has_dir(path: &str) -> bool {
-    ax_fs_ng::vfs::current_fs_context()
-        .lock()
-        .resolve(path)
-        .is_ok()
+    current_fs_context().lock().resolve(path).is_ok()
 }
 
 fn memfd_from_file_like(file_like: &Arc<dyn FileLike>) -> Option<Arc<Memfd>> {
@@ -142,6 +141,27 @@ pub fn memfd_checks_before_stream_write(
         return Ok(());
     }
     memfd_check_write_seal(file_like)
+}
+
+/// Preserves Linux's EFAULT-before-seal ordering for scalar stream writes.
+///
+/// Non-memfd streams keep the user buffer as an I/O cursor and therefore skip
+/// eager address-space preparation. A memfd can reject the write before
+/// consuming that cursor, so its input range must be validated first.
+pub fn memfd_checks_before_stream_write_from_user(
+    file_like: &Arc<dyn FileLike>,
+    current: &crate::task::UserTaskRef,
+    buf: *const u8,
+    len: usize,
+) -> StarryResult<()> {
+    if len == 0 {
+        return Ok(());
+    }
+    let Some(memfd) = memfd_from_file_like(file_like) else {
+        return Ok(());
+    };
+    crate::mm::UserConstPtr::<u8>::from(buf).validate_slice(current, len)?;
+    memfd.check_write_seal()
 }
 
 pub fn memfd_checks_before_write_at(

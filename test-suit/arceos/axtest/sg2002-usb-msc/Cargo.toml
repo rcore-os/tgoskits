@@ -10,7 +10,6 @@ ax-std = ["dep:ax-hal", "dep:ax-runtime", "dep:ax-std", "ax-runtime/irq"]
 axtest = [
     "ax-std",
     "dep:ax-driver",
-    "dep:ax-task",
     "dep:axplat-dyn",
     "dep:crab-usb",
     "dep:rdrive",
@@ -24,7 +23,6 @@ ax-driver = { workspace = true, optional = true }
 ax-hal = { workspace = true, optional = true }
 ax-runtime = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }
-ax-task = { workspace = true, optional = true }
 axplat-dyn = { workspace = true, optional = true }
 crab-usb = { workspace = true, optional = true }
 rdrive = { workspace = true, optional = true }

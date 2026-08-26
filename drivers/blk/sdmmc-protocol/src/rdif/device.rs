@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use rdif_block::{
     BlkError, BlockController, ControllerEvent, ControllerState, ControllerUpdate, DeviceInfo,
-    DriverGeneric, HardIrqHandler, HardwareQueue, IrqEndpoint,
+    DriverGeneric, HardIrqHandler, HardwareQueue, IrqEndpoint, IrqQueueMask,
 };
 
 use crate::{
@@ -165,7 +165,7 @@ where
         let mut update = ControllerUpdate::with_resources(
             state,
             vec![queue],
-            vec![IrqEndpoint::new(0, 1, handler)],
+            vec![IrqEndpoint::new(0, IrqQueueMask::from_queue(0), handler)],
         );
         if state == ControllerState::Ready {
             update = update.with_device_info(self.device_info());

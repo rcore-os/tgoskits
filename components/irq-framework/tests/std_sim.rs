@@ -852,7 +852,7 @@ fn fixed_affinity_rejects_offline_cpu_and_controller_failure() {
 }
 
 #[test]
-fn shared_actions_must_use_same_affinity() {
+fn global_shared_actions_may_use_distinct_line_affinity_preferences() {
     let registry = Registry::new(MockOps::with_cpus(2));
     let first = AtomicUsize::new(0);
     let second = AtomicUsize::new(0);
@@ -867,16 +867,51 @@ fn shared_actions_must_use_same_affinity() {
         )
         .unwrap();
 
-    assert_eq!(
-        registry.request(
+    registry
+        .request(
             irq(43),
             count_request(&second)
                 .share_mode(ShareMode::Shared)
-                .affinity(IrqAffinity::Fixed(CpuId(1)))
+                .affinity(IrqAffinity::Any)
                 .execution(IrqExecution::NonReentrant),
-        ),
-        Err(IrqError::Busy)
-    );
+        )
+        .unwrap();
+
+    let outcome = registry.dispatch(irq(43), CpuId(0));
+    assert!(outcome.handled);
+    assert_eq!(outcome.called, 2);
+    assert_eq!(first.load(Ordering::SeqCst), 1);
+    assert_eq!(second.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn global_shared_actions_keep_independent_execution_contracts() {
+    let registry = Registry::new(MockOps::with_cpus(2));
+    let first = AtomicUsize::new(0);
+    let second = AtomicUsize::new(0);
+
+    registry
+        .request(irq(44), count_request(&first).share_mode(ShareMode::Shared))
+        .unwrap();
+
+    let second_address = (&second as *const AtomicUsize) as usize;
+    registry
+        .request(
+            irq(44),
+            IrqRequest::new_concurrent(move |_| {
+                let counter = unsafe { &*(second_address as *const AtomicUsize) };
+                counter.fetch_add(1, Ordering::SeqCst);
+                IrqReturn::Handled
+            })
+            .share_mode(ShareMode::Shared),
+        )
+        .unwrap();
+
+    let outcome = registry.dispatch(irq(44), CpuId(0));
+    assert!(outcome.handled);
+    assert_eq!(outcome.called, 2);
+    assert_eq!(first.load(Ordering::SeqCst), 1);
+    assert_eq!(second.load(Ordering::SeqCst), 1);
 }
 
 #[test]

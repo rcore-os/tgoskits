@@ -12,9 +12,9 @@ use core::{
     any::{Any, TypeId},
     fmt, iter,
     ops::Deref,
-    task::Context,
 };
 
+use axpoll::{IoEvents, Pollable};
 use bitflags::bitflags;
 pub use dir::*;
 pub use file::*;
@@ -22,8 +22,8 @@ use inherit_methods_macro::inherit_methods;
 use smallvec::SmallVec;
 
 use crate::{
-    FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType,
-    VfsError, VfsResult, path::PathBuf,
+    FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeType, VfsError, VfsResult,
+    path::PathBuf,
 };
 
 bitflags! {
@@ -384,17 +384,32 @@ impl DirEntry {
     }
 }
 
-impl FsPollable for DirEntry {
-    fn poll(&self) -> FsIoEvents {
+impl Pollable for DirEntry {
+    fn poll(&self) -> IoEvents {
         match &self.0.node {
             Node::File(file) => file.poll(),
-            Node::Dir(_dir) => FsIoEvents::IN | FsIoEvents::OUT,
+            Node::Dir(_dir) => IoEvents::IN | IoEvents::OUT,
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: FsIoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
         match &self.0.node {
-            Node::File(file) => file.register(context, events),
+            Node::File(file) => unsafe { file.register_shared(sink, events) },
+            Node::Dir(_) => {}
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        match &self.0.node {
+            Node::File(file) => unsafe { file.register_exclusive(sink, events) },
             Node::Dir(_) => {}
         }
     }

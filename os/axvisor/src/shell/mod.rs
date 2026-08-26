@@ -168,7 +168,6 @@ pub fn console_init() {
             );
             continue;
         }
-
         let ch = match pending_shell_byte.take() {
             Some(ch) => ch,
             None => {

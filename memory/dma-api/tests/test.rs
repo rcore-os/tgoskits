@@ -2,6 +2,8 @@
 
 mod test_helpers;
 
+// Link the external host lock provider (ax-runtime) into the test binary.
+use ax_runtime as _;
 use dma_api::*;
 use test_helpers::{DmaOperation, TrackingDmaOp};
 

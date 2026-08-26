@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -90,16 +91,17 @@ static void test_pidfd_open_bad_flags(void)
 }
 
 struct thread_tid_sync {
-    volatile pid_t tid;
-    volatile int release;
+    _Atomic pid_t tid;
+    _Atomic int release;
 };
 
 static void *thread_publish_tid(void *arg)
 {
     struct thread_tid_sync *sync = arg;
 
-    sync->tid = (pid_t)syscall(SYS_gettid);
-    while (!sync->release) {
+    atomic_store_explicit(&sync->tid, (pid_t)syscall(SYS_gettid),
+                          memory_order_release);
+    while (!atomic_load_explicit(&sync->release, memory_order_acquire)) {
         sched_yield();
     }
     return NULL;
@@ -109,27 +111,34 @@ static void test_pidfd_open_thread_tid(void)
 {
     printf("--- pidfd_open 线程 TID ---\n");
 
-    struct thread_tid_sync sync = { .tid = -1, .release = 0 };
+    struct thread_tid_sync sync;
+    atomic_init(&sync.tid, -1);
+    atomic_init(&sync.release, 0);
     pthread_t thread;
 
-    CHECK(pthread_create(&thread, NULL, thread_publish_tid, &sync) == 0,
-          "pthread_create 成功");
+    int create_rc = pthread_create(&thread, NULL, thread_publish_tid, &sync);
+    CHECK(create_rc == 0, "pthread_create 成功");
+    if (create_rc != 0) {
+        return;
+    }
 
-    for (int i = 0; i < 1000000 && sync.tid <= 0; i++) {
+    pid_t tid = -1;
+    for (int i = 0; i < 1000000 && tid <= 0; i++) {
+        tid = atomic_load_explicit(&sync.tid, memory_order_acquire);
         sched_yield();
     }
-    CHECK(sync.tid > 0 && sync.tid != getpid(), "子线程 tid 与 getpid 不同");
+    CHECK(tid > 0 && tid != getpid(), "子线程 tid 与 getpid 不同");
 
-    CHECK_ERR(x_pidfd_open(sync.tid, 0), ENOENT,
+    CHECK_ERR(x_pidfd_open(tid, 0), ENOENT,
               "非 leader 线程 tid 无 PIDFD_THREAD -> ENOENT");
 
-    int pfd = x_pidfd_open(sync.tid, PIDFD_THREAD);
+    int pfd = x_pidfd_open(tid, PIDFD_THREAD);
     CHECK(pfd >= 0, "PIDFD_THREAD 打开子线程 tid 成功");
     if (pfd >= 0) {
         close(pfd);
     }
 
-    sync.release = 1;
+    atomic_store_explicit(&sync.release, 1, memory_order_release);
     pthread_join(thread, NULL);
 }
 
@@ -162,9 +171,73 @@ static void test_pidfd_open_zombie(void)
         close(pfd);
     }
 
+    int thread_pfd = x_pidfd_open(child, PIDFD_THREAD);
+    CHECK(thread_pfd >= 0,
+          "reap 前 PIDFD_THREAD 打开 zombie leader 成功");
+    if (thread_pfd >= 0) {
+        close(thread_pfd);
+    }
+
     int status = 0;
     CHECK_RET(waitpid(child, &status, 0), child, "waitpid reap 子进程");
     CHECK_ERR(x_pidfd_open(child, 0), ESRCH, "reap 后 pidfd_open(child) -> ESRCH");
+}
+
+static void test_pidfd_open_reaped_process_group_leader(void)
+{
+    printf("--- pidfd_open reaped process-group leader ---\n");
+
+    pid_t leader = fork();
+    CHECK(leader >= 0, "fork process-group leader 成功");
+    if (leader < 0) {
+        return;
+    }
+    if (leader == 0) {
+        for (;;) {
+            pause();
+        }
+    }
+
+    int group_rc = setpgid(leader, leader);
+    CHECK(group_rc == 0, "create child process group 成功");
+    if (group_rc != 0) {
+        kill(leader, SIGKILL);
+        waitpid(leader, NULL, 0);
+        return;
+    }
+
+    pid_t member = fork();
+    CHECK(member >= 0, "fork process-group member 成功");
+    if (member < 0) {
+        kill(leader, SIGKILL);
+        waitpid(leader, NULL, 0);
+        return;
+    }
+    if (member == 0) {
+        for (;;) {
+            pause();
+        }
+    }
+
+    int join_rc = setpgid(member, leader);
+    CHECK(join_rc == 0, "join child process group 成功");
+    if (join_rc != 0) {
+        kill(member, SIGKILL);
+        kill(leader, SIGKILL);
+        waitpid(member, NULL, 0);
+        waitpid(leader, NULL, 0);
+        return;
+    }
+
+    CHECK_RET(kill(leader, SIGKILL), 0, "kill process-group leader");
+    CHECK_RET(waitpid(leader, NULL, 0), leader, "reap process-group leader");
+    CHECK(getpgid(member) == leader,
+          "reaped leader PID remains the live process-group ID");
+    CHECK_ERR(x_pidfd_open(leader, 0), ESRCH,
+              "reaped group leader pidfd_open -> ESRCH");
+
+    CHECK_RET(kill(member, SIGKILL), 0, "kill process-group member");
+    CHECK_RET(waitpid(member, NULL, 0), member, "reap process-group member");
 }
 
 int main(void)
@@ -180,6 +253,7 @@ int main(void)
     test_pidfd_open_bad_flags();
     test_pidfd_open_thread_tid();
     test_pidfd_open_zombie();
+    test_pidfd_open_reaped_process_group_leader();
 
     TEST_DONE();
 }

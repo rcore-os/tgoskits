@@ -1,11 +1,14 @@
 extern crate alloc;
 
-use core::time::Duration;
-
 use crab_usb::{EventHandler, USBHost, usb_if::Speed};
-use dma_api::{
-    DmaAllocHandle, DmaCoherency, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
-};
+#[cfg(any(
+    test,
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
+    feature = "sg2002-dwc2",
+    feature = "xhci-mmio"
+))]
+use dma_api::{DeviceDma, DmaCoherency, DmaConstraints, DmaDeviceInfo, DmaDomainId};
 use rdrive::{DriverGeneric, probe::OnProbeError};
 
 use crate::{
@@ -29,116 +32,52 @@ mod xhci_pci;
 pub type UsbHostDevice = rdrive::Device<PlatformUsbHost>;
 pub type UsbHostDeviceGuard = rdrive::DeviceGuard<PlatformUsbHost>;
 
-struct UsbKernel;
+#[cfg(any(
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
+    feature = "sg2002-dwc2",
+    feature = "xhci-mmio",
+    feature = "xhci-pci"
+))]
+mod runtime {
+    use core::time::Duration;
 
-impl DmaOp for UsbKernel {
-    fn page_size(&self) -> usize {
-        axklib::dma::op().page_size()
+    struct UsbRuntime;
+
+    impl crab_usb::KernelOp for UsbRuntime {
+        fn delay(&self, duration: Duration) {
+            axklib::time::busy_wait(duration);
+        }
     }
 
-    unsafe fn alloc_contiguous(
-        &self,
-        constraints: DmaConstraints,
-        layout: core::alloc::Layout,
-    ) -> Option<DmaAllocHandle> {
-        unsafe { axklib::dma::op().alloc_contiguous(constraints, layout) }
-    }
+    static USB_RUNTIME: UsbRuntime = UsbRuntime;
 
-    unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
-        unsafe { axklib::dma::op().dealloc_contiguous(handle) }
-    }
-
-    unsafe fn alloc_coherent(
-        &self,
-        constraints: DmaConstraints,
-        layout: core::alloc::Layout,
-    ) -> Option<DmaAllocHandle> {
-        unsafe { axklib::dma::op().alloc_coherent(constraints, layout) }
-    }
-
-    unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) -> Result<(), DmaError> {
-        unsafe { axklib::dma::op().dealloc_coherent(handle) }
-    }
-
-    unsafe fn map_streaming(
-        &self,
-        constraints: DmaConstraints,
-        addr: core::ptr::NonNull<u8>,
-        size: core::num::NonZeroUsize,
-        direction: DmaDirection,
-    ) -> Result<DmaMapHandle, DmaError> {
-        unsafe { axklib::dma::op().map_streaming(constraints, addr, size, direction) }
-    }
-
-    unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
-        unsafe { axklib::dma::op().unmap_streaming(handle) }
-    }
-
-    fn flush(&self, addr: core::ptr::NonNull<u8>, size: usize) {
-        axklib::dma::op().flush(addr, size);
-    }
-
-    fn invalidate(&self, addr: core::ptr::NonNull<u8>, size: usize) {
-        axklib::dma::op().invalidate(addr, size);
-    }
-
-    fn flush_invalidate(&self, addr: core::ptr::NonNull<u8>, size: usize) {
-        axklib::dma::op().flush_invalidate(addr, size);
-    }
-
-    fn sync_alloc_for_device(
-        &self,
-        handle: &DmaAllocHandle,
-        offset: usize,
-        size: usize,
-        direction: DmaDirection,
-    ) {
-        axklib::dma::op().sync_alloc_for_device(handle, offset, size, direction);
-    }
-
-    fn sync_alloc_for_cpu(
-        &self,
-        handle: &DmaAllocHandle,
-        offset: usize,
-        size: usize,
-        direction: DmaDirection,
-    ) {
-        axklib::dma::op().sync_alloc_for_cpu(handle, offset, size, direction);
-    }
-
-    fn sync_map_for_device(
-        &self,
-        handle: &DmaMapHandle,
-        offset: usize,
-        size: usize,
-        direction: DmaDirection,
-        coherency: DmaCoherency,
-    ) {
-        axklib::dma::op().sync_map_for_device(handle, offset, size, direction, coherency);
-    }
-
-    fn sync_map_for_cpu(
-        &self,
-        handle: &DmaMapHandle,
-        offset: usize,
-        size: usize,
-        direction: DmaDirection,
-        coherency: DmaCoherency,
-    ) {
-        axklib::dma::op().sync_map_for_cpu(handle, offset, size, direction, coherency);
+    pub(crate) fn usb_runtime() -> &'static dyn crab_usb::KernelOp {
+        &USB_RUNTIME
     }
 }
 
-impl crab_usb::KernelOp for UsbKernel {
-    fn delay(&self, duration: Duration) {
-        axklib::time::busy_wait(duration);
-    }
-}
+#[cfg(any(
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
+    feature = "sg2002-dwc2",
+    feature = "xhci-mmio",
+    feature = "xhci-pci"
+))]
+pub(crate) use runtime::usb_runtime;
 
-static USB_KERNEL: UsbKernel = UsbKernel;
-
-pub fn usb_kernel() -> &'static dyn crab_usb::KernelOp {
-    &USB_KERNEL
+#[cfg(any(
+    feature = "rockchip-dwc-xhci",
+    feature = "rockchip-ehci",
+    feature = "sg2002-dwc2",
+    feature = "xhci-mmio"
+))]
+pub(crate) fn usb_device_dma(coherency: DmaCoherency) -> DeviceDma {
+    axklib::dma::device(DmaDeviceInfo::new(
+        DmaDomainId::Direct,
+        coherency,
+        DmaConstraints::new(u64::MAX),
+    ))
 }
 
 pub struct PlatformUsbHost {
@@ -150,23 +89,28 @@ pub struct PlatformUsbHost {
 }
 
 impl PlatformUsbHost {
-    fn new(name: &'static str, host: USBHost, info: BindingInfo) -> Self {
-        Self::new_with_root_hub_speed(name, host, info, Speed::SuperSpeedPlus)
+    fn try_new(name: &'static str, host: USBHost, info: BindingInfo) -> Result<Self, OnProbeError> {
+        Self::try_new_with_root_hub_speed(name, host, info, Speed::SuperSpeedPlus)
     }
 
-    fn new_with_root_hub_speed(
+    fn try_new_with_root_hub_speed(
         name: &'static str,
         host: USBHost,
         info: BindingInfo,
         root_hub_speed: Speed,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, OnProbeError> {
+        if info.irq_cloned().is_none() {
+            return Err(OnProbeError::other(alloc::format!(
+                "USB host {name} has no interrupt binding"
+            )));
+        }
+        Ok(Self {
             name,
             info,
             host,
             root_hub_speed,
             irq_handler_taken: false,
-        }
+        })
     }
 
     pub fn host(&self) -> &USBHost {
@@ -175,18 +119,6 @@ impl PlatformUsbHost {
 
     pub fn host_mut(&mut self) -> &mut USBHost {
         &mut self.host
-    }
-
-    pub fn irq_num(&self) -> Option<usize> {
-        self.info.irq_num()
-    }
-
-    pub fn irq(&self) -> Option<&BindingIrq> {
-        self.info.irq()
-    }
-
-    pub fn irq_cloned(&self) -> Option<BindingIrq> {
-        self.info.irq_cloned()
     }
 
     pub fn binding_info(&self) -> &BindingInfo {
@@ -205,26 +137,15 @@ impl PlatformUsbHost {
         self.host.disable_irq()
     }
 
-    pub fn take_irq_handler(&mut self) -> Option<(usize, UsbHostIrqHandler)> {
-        let irq = self.info.irq_num()?;
-        let handler = self.take_event_handler()?;
-        Some((irq, handler))
-    }
-
     pub fn take_binding_irq_handler(&mut self) -> Option<(BindingIrq, UsbHostIrqHandler)> {
         let irq = self.info.irq_cloned()?;
-        let handler = self.take_event_handler()?;
-        Some((irq, handler))
-    }
-
-    pub fn take_event_handler(&mut self) -> Option<UsbHostIrqHandler> {
         if self.irq_handler_taken {
             return None;
         }
 
         self.irq_handler_taken = true;
         let handler = UsbHostIrqHandler::new(self.host.create_event_handler());
-        Some(handler)
+        Some((irq, handler))
     }
 }
 
@@ -249,34 +170,24 @@ impl UsbHostIrqHandler {
         Self { handler }
     }
 
+    /// Acknowledges and masks one device interrupt with bounded register work.
+    pub fn acknowledge_irq(&self) -> bool {
+        self.handler.acknowledge_irq()
+    }
+
+    /// Drains one event batch outside hard-IRQ context.
+    pub fn drain_event(&self) -> crab_usb::Event {
+        self.handler.drain_event()
+    }
+
+    /// Rearms the device interrupt after task-context draining.
+    pub fn rearm_irq(&self) {
+        self.handler.rearm_irq()
+    }
+
+    /// Polls and drains one event batch in task context.
     pub fn handle(&self) -> crab_usb::Event {
         self.handler.handle_event()
-    }
-}
-
-pub trait PlatformDeviceUsbHost {
-    fn register_usb_host(self, name: &'static str, host: USBHost) -> Option<usize>;
-
-    fn register_usb_host_with_info(
-        self,
-        name: &'static str,
-        host: USBHost,
-        info: BindingInfo,
-    ) -> Option<usize>;
-}
-
-impl PlatformDeviceUsbHost for rdrive::PlatformDevice {
-    fn register_usb_host(self, name: &'static str, host: USBHost) -> Option<usize> {
-        self.register_usb_host_with_info(name, host, BindingInfo::empty())
-    }
-
-    fn register_usb_host_with_info(
-        self,
-        name: &'static str,
-        host: USBHost,
-        info: BindingInfo,
-    ) -> Option<usize> {
-        register_usb_host_with_info(self, name, host, info)
     }
 }
 
@@ -302,12 +213,7 @@ impl ProbeFdtUsbHost for rdrive::probe::fdt::ProbeFdt<'_> {
         host: USBHost,
     ) -> Result<Option<usize>, OnProbeError> {
         let info = binding_info_from_fdt(self.info())?;
-        Ok(register_usb_host_with_info(
-            self.into_platform_device(),
-            name,
-            host,
-            info,
-        ))
+        register_usb_host_with_info(self.into_platform_device(), name, host, info)
     }
 
     fn register_usb_host_with_root_hub_speed(
@@ -317,13 +223,13 @@ impl ProbeFdtUsbHost for rdrive::probe::fdt::ProbeFdt<'_> {
         root_hub_speed: Speed,
     ) -> Result<Option<usize>, OnProbeError> {
         let info = binding_info_from_fdt(self.info())?;
-        Ok(register_usb_host_with_info_and_root_hub_speed(
+        register_usb_host_with_info_and_root_hub_speed(
             self.into_platform_device(),
             name,
             host,
             info,
             root_hub_speed,
-        ))
+        )
     }
 }
 
@@ -342,12 +248,7 @@ impl ProbeAcpiUsbHost for rdrive::probe::acpi::ProbeAcpi<'_> {
         host: USBHost,
     ) -> Result<Option<usize>, OnProbeError> {
         let info = binding_info_from_acpi(self.info())?;
-        Ok(register_usb_host_with_info(
-            self.into_platform_device(),
-            name,
-            host,
-            info,
-        ))
+        register_usb_host_with_info(self.into_platform_device(), name, host, info)
     }
 }
 
@@ -370,12 +271,7 @@ impl ProbePciUsbHost for rdrive::probe::pci::ProbePci<'_> {
         requirement: PciIrqRequirement,
     ) -> Result<Option<usize>, OnProbeError> {
         let info = binding_info_from_pci(self.info(), requirement)?;
-        Ok(register_usb_host_with_info(
-            self.into_platform_device(),
-            name,
-            host,
-            info,
-        ))
+        register_usb_host_with_info(self.into_platform_device(), name, host, info)
     }
 }
 
@@ -384,8 +280,11 @@ fn register_usb_host_with_info(
     name: &'static str,
     host: USBHost,
     info: BindingInfo,
-) -> Option<usize> {
-    register_bound_device(plat_dev, PlatformUsbHost::new(name, host, info))
+) -> Result<Option<usize>, OnProbeError> {
+    Ok(register_bound_device(
+        plat_dev,
+        PlatformUsbHost::try_new(name, host, info)?,
+    ))
 }
 
 fn register_usb_host_with_info_and_root_hub_speed(
@@ -394,11 +293,11 @@ fn register_usb_host_with_info_and_root_hub_speed(
     host: USBHost,
     info: BindingInfo,
     root_hub_speed: Speed,
-) -> Option<usize> {
-    register_bound_device(
+) -> Result<Option<usize>, OnProbeError> {
+    Ok(register_bound_device(
         plat_dev,
-        PlatformUsbHost::new_with_root_hub_speed(name, host, info, root_hub_speed),
-    )
+        PlatformUsbHost::try_new_with_root_hub_speed(name, host, info, root_hub_speed)?,
+    ))
 }
 
 #[cfg(feature = "xhci-pci")]
@@ -474,6 +373,14 @@ mod tests {
         let mmio = NonNull::new(regs.as_mut_ptr().cast::<u8>()).unwrap();
         USBHost::new_dwc2(Dwc2NewParams {
             mmio,
+            dma: DeviceDma::new(
+                DmaDeviceInfo::new(
+                    DmaDomainId::Direct,
+                    DmaCoherency::NonCoherent,
+                    DmaConstraints::new(u64::MAX),
+                ),
+                &TEST_USB_KERNEL,
+            ),
             kernel: &TEST_USB_KERNEL,
             params: Dwc2HostParams::sg2002(),
         })
@@ -485,18 +392,28 @@ mod tests {
         let binding =
             BindingIrq::fdt_interrupt_with_controller(rdrive::DeviceId::new(), [0, 30, 4]);
         let info = BindingInfo::with_binding_irq(Some(binding.clone()));
-        let mut host = PlatformUsbHost::new_with_root_hub_speed(
+        let mut host = PlatformUsbHost::try_new_with_root_hub_speed(
             "test-usb",
             test_usb_host(),
             info,
             Speed::High,
-        );
+        )
+        .expect("test host should accept an interrupt binding");
 
-        assert_eq!(host.irq_num(), None);
         let (actual, _handler) = host
             .take_binding_irq_handler()
             .expect("binding IRQ handler should be available");
         assert_eq!(actual, binding);
         assert!(host.take_binding_irq_handler().is_none());
+    }
+
+    #[test]
+    fn usb_host_rejects_missing_irq_binding() {
+        let result = PlatformUsbHost::try_new("test-usb", test_usb_host(), BindingInfo::empty());
+
+        assert!(
+            result.is_err(),
+            "an event-driven USB host must not silently fall back to polling"
+        );
     }
 }

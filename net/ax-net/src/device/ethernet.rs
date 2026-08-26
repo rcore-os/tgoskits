@@ -22,8 +22,9 @@
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 
+use ax_lazyinit::OnceLock;
 use ax_sync::SpinLock;
-use axpoll::PollSet;
+use axpoll_set::PollSet;
 use hashbrown::HashMap;
 use irq_framework::IrqId;
 use smoltcp::{
@@ -100,8 +101,7 @@ pub enum EthernetIrqRegistrationError {
     Other,
 }
 
-static ETHERNET_IRQ_REGISTRAR: ax_lazyinit::OnceLock<&'static dyn EthernetIrqRegistrar> =
-    ax_lazyinit::OnceLock::new();
+static ETHERNET_IRQ_REGISTRAR: OnceLock<&'static dyn EthernetIrqRegistrar> = OnceLock::new();
 
 pub fn set_ethernet_irq_registrar(registrar: &'static dyn EthernetIrqRegistrar) {
     ETHERNET_IRQ_REGISTRAR.call_once(|| registrar);
@@ -118,7 +118,7 @@ struct PendingNeighbor {
 
 struct EthernetIrqState {
     irq: Option<IrqId>,
-    irq_registration: ax_lazyinit::OnceLock<Box<dyn EthernetIrqRegistration>>,
+    irq_registration: OnceLock<Box<dyn EthernetIrqRegistration>>,
     /// RX readiness is delivered out-of-band (outside the ethernet IRQ
     /// framework) via the device readiness poll set, e.g. an SDIO Wi-Fi chip
     /// that owns its own card interrupt and pokes the stack through
@@ -210,7 +210,7 @@ impl EthernetDevice {
         let irq_handler = registrar.and_then(|_| inner.take_irq_handler());
         let inner = Arc::new(EthernetIrqState {
             irq,
-            irq_registration: ax_lazyinit::OnceLock::new(),
+            irq_registration: OnceLock::new(),
             oob_rx,
             driver: SpinLock::new(inner),
             poll_ready: Arc::new(PollSet::new()),

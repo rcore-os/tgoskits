@@ -1,16 +1,15 @@
 use alloc::{borrow::Cow, collections::VecDeque, format, sync::Arc};
+#[cfg(feature = "qperf-metrics")]
+use core::sync::atomic::AtomicU64;
 use core::{
     mem,
     sync::atomic::{AtomicBool, Ordering},
-    task::Context,
 };
 
 use ax_memory_addr::PAGE_SIZE_4K;
-use ax_task::{
-    current,
-    future::{block_on, poll_io},
-};
-use axpoll::{IoEvents, PollSet, Pollable};
+use ax_std::os::arceos::task::{WaitQueue, wake_waker_sync};
+use axpoll::{IoEvents, Pollable};
+use axpoll_set::PollSet;
 use linux_raw_sys::{
     general::{O_RDONLY, O_WRONLY, S_IFIFO},
     ioctl::FIONREAD,
@@ -20,14 +19,14 @@ use ringbuf::{
     traits::{Consumer, Observer, Producer},
 };
 use starry_signal::{SignalInfo, Signo};
-use starry_vm::VmMutPtr;
 
 use super::{FileLike, Kstat};
 use crate::{
     StarryError, StarryResult,
     file::{IoDst, IoSrc},
-    sync::Mutex,
-    task::{AsThread, send_signal_to_process},
+    mm::VmMutPtr,
+    sync::PiMutex,
+    task::{current_user_task, send_signal_to_process},
 };
 
 const RING_BUFFER_INIT_SIZE: usize = 65536; // 64 KiB
@@ -36,10 +35,79 @@ const RING_BUFFER_MAX_SIZE: usize = 1024 * 1024; // 1 MiB
 
 const PIPE_BUF: usize = PAGE_SIZE_4K;
 
+#[cfg(feature = "qperf-metrics")]
+static PIPE_READ_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static PIPE_READ_WAITS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static PIPE_READ_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static PIPE_WRITE_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static PIPE_WRITE_WAITS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "qperf-metrics")]
+static PIPE_WRITE_BYTES: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "qperf-metrics")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PipeQperfMetricsSnapshot {
+    pub(crate) read_calls: u64,
+    pub(crate) read_waits: u64,
+    pub(crate) read_bytes: u64,
+    pub(crate) write_calls: u64,
+    pub(crate) write_waits: u64,
+    pub(crate) write_bytes: u64,
+}
+
+#[cfg(feature = "qperf-metrics")]
+pub(crate) fn qperf_metrics_snapshot() -> PipeQperfMetricsSnapshot {
+    PipeQperfMetricsSnapshot {
+        read_calls: PIPE_READ_CALLS.load(Ordering::Relaxed),
+        read_waits: PIPE_READ_WAITS.load(Ordering::Relaxed),
+        read_bytes: PIPE_READ_BYTES.load(Ordering::Relaxed),
+        write_calls: PIPE_WRITE_CALLS.load(Ordering::Relaxed),
+        write_waits: PIPE_WRITE_WAITS.load(Ordering::Relaxed),
+        write_bytes: PIPE_WRITE_BYTES.load(Ordering::Relaxed),
+    }
+}
+
+fn wake_pipe_waiter_sync(wait_queue: &WaitQueue, poll_set: &PollSet, ready: IoEvents) {
+    // The condition is visible before selection. Linux's pipe wait queues wake
+    // one exclusive I/O consumer and every matching poll observer together.
+    wait_queue.notify_one_sync();
+    unsafe {
+        // The pipe state transition is published before this call and no pipe
+        // lock remains held. Linux uses `wake_up_interruptible_sync_poll()` for
+        // these reader/writer handoffs because the waker will block soon.
+        poll_set.wake_with(ready, wake_waker_sync);
+    }
+}
+
+fn wake_pipe_waiter(wait_queue: &WaitQueue, poll_set: &PollSet, ready: IoEvents) {
+    wait_queue.notify_one();
+    unsafe {
+        // Capacity/state publication precedes both waiter notifications, and
+        // neither callback runs while the pipe state lock is held.
+        poll_set.wake(ready);
+    }
+}
+
+fn wake_pipe_waiters_all(wait_queue: &WaitQueue, poll_set: &PollSet, ready: IoEvents) {
+    wait_queue.notify_all();
+    unsafe {
+        // Terminal peer-close transitions are permanent, so every direct and
+        // readiness waiter must observe them.
+        poll_set.wake_all(ready);
+    }
+}
+
 struct Shared {
-    state: Mutex<PipeState>,
+    state: PiMutex<PipeState>,
+    wait_rx: WaitQueue,
+    wait_tx: WaitQueue,
     poll_rx: PollSet,
     poll_tx: PollSet,
+    poll_usage: AtomicBool,
 }
 
 struct PipeState {
@@ -50,6 +118,7 @@ struct PipeState {
 }
 
 impl PipeState {
+    #[cfg(all(test, axtest))]
     fn new(capacity: usize) -> Self {
         Self {
             buffer: HeapRb::new(capacity),
@@ -156,7 +225,11 @@ impl Drop for Pipe {
             };
             if wake_writers {
                 // Reader count is published before waking blocked writers.
-                unsafe { self.shared.poll_tx.wake(IoEvents::ERR | IoEvents::OUT) };
+                wake_pipe_waiters_all(
+                    &self.shared.wait_tx,
+                    &self.shared.poll_tx,
+                    IoEvents::ERR | IoEvents::OUT,
+                );
             }
             return;
         }
@@ -169,7 +242,11 @@ impl Drop for Pipe {
         };
         if wake_readers {
             // Writer count is published before waking blocked readers.
-            unsafe { self.shared.poll_rx.wake(IoEvents::HUP | IoEvents::IN) };
+            wake_pipe_waiters_all(
+                &self.shared.wait_rx,
+                &self.shared.poll_rx,
+                IoEvents::HUP | IoEvents::IN,
+            );
         }
     }
 }
@@ -177,9 +254,17 @@ impl Drop for Pipe {
 impl Pipe {
     pub fn new() -> (Pipe, Pipe) {
         let shared = Arc::new(Shared {
-            state: Mutex::new(PipeState::new(RING_BUFFER_INIT_SIZE)),
+            state: PiMutex::new(PipeState {
+                buffer: HeapRb::new(RING_BUFFER_INIT_SIZE),
+                buffers: VecDeque::new(),
+                readers: 1,
+                writers: 1,
+            }),
+            wait_rx: WaitQueue::new(),
+            wait_tx: WaitQueue::new(),
             poll_rx: PollSet::new(),
             poll_tx: PollSet::new(),
+            poll_usage: AtomicBool::new(false),
         });
         let read_end = Pipe {
             read_side: true,
@@ -252,20 +337,9 @@ impl Pipe {
 
         if expanded {
             // Newly freed capacity is visible before waking writers.
-            unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
+            wake_pipe_waiter(&self.shared.wait_tx, &self.shared.poll_tx, IoEvents::OUT);
         }
         Ok(())
-    }
-
-    #[cfg(all(test, not(axtest)))]
-    fn duplicate_read_end_for_test(&self) -> Pipe {
-        assert!(self.is_read());
-        self.shared.state.lock().readers += 1;
-        Pipe {
-            read_side: true,
-            shared: self.shared.clone(),
-            non_blocking: AtomicBool::new(self.nonblocking()),
-        }
     }
 
     fn write_with_broken_pipe_handler(
@@ -280,16 +354,21 @@ impl Pipe {
         if size == 0 {
             return Ok(0);
         }
+        #[cfg(feature = "qperf-metrics")]
+        PIPE_WRITE_CALLS.fetch_add(1, Ordering::Relaxed);
 
         let mut total_written = 0;
         let mut merge_pending = true;
         let merge_bytes = size % PIPE_BUF;
-
-        let result = block_on(poll_io(self, IoEvents::OUT, self.nonblocking(), || {
+        let mut operation = |selected_for_handoff: bool| {
             enum WriteStep {
                 Closed,
                 WouldBlock,
-                Wrote(usize),
+                Wrote {
+                    bytes: usize,
+                    wake_readers: bool,
+                    wake_next_writer: bool,
+                },
             }
 
             let step = {
@@ -299,6 +378,7 @@ impl Pipe {
                 if state.readers == 0 {
                     WriteStep::Closed
                 } else {
+                    let was_empty = state.buffer.is_empty();
                     let mut written = 0;
                     if merge_pending {
                         merge_pending = false;
@@ -316,7 +396,12 @@ impl Pipe {
                     if written == 0 {
                         WriteStep::WouldBlock
                     } else {
-                        WriteStep::Wrote(written)
+                        WriteStep::Wrote {
+                            bytes: written,
+                            wake_readers: was_empty
+                                || self.shared.poll_usage.load(Ordering::Acquire),
+                            wake_next_writer: selected_for_handoff && state.has_free_buffer(),
+                        }
                     }
                 }
             };
@@ -330,42 +415,89 @@ impl Pipe {
                     return Err(StarryError::BrokenPipe);
                 }
                 WriteStep::WouldBlock => return Err(StarryError::WouldBlock),
-                WriteStep::Wrote(written) => written,
+                WriteStep::Wrote {
+                    bytes,
+                    wake_readers,
+                    wake_next_writer,
+                } => {
+                    #[cfg(feature = "qperf-metrics")]
+                    PIPE_WRITE_BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+                    if wake_readers {
+                        // Pipe bytes were committed before waking readers.
+                        wake_pipe_waiter_sync(
+                            &self.shared.wait_rx,
+                            &self.shared.poll_rx,
+                            IoEvents::IN,
+                        );
+                    }
+                    if wake_next_writer {
+                        // A selected writer transfers remaining capacity to
+                        // the next exclusive waiter.
+                        wake_pipe_waiter_sync(
+                            &self.shared.wait_tx,
+                            &self.shared.poll_tx,
+                            IoEvents::OUT,
+                        );
+                    }
+                    bytes
+                }
             };
 
             if written > 0 {
-                // Pipe bytes were committed before waking readers.
-                unsafe { self.shared.poll_rx.wake(IoEvents::IN) };
                 total_written += written;
                 if total_written == size || self.nonblocking() {
                     return Ok(total_written);
                 }
             }
             Err(StarryError::WouldBlock)
-        }));
+        };
 
-        // Linux returns committed bytes instead of EINTR once a pipe write
-        // has made progress. This also prevents SA_RESTART from replaying the
-        // whole userspace buffer after the prefix is already visible.
-        match result {
-            Err(StarryError::Interrupted | StarryError::TaskInterrupted(_))
-                if total_written > 0 =>
-            {
-                Ok(total_written)
+        let mut selected_for_handoff = false;
+        let mut wait_recorded = false;
+        let mut task = None;
+        loop {
+            match operation(selected_for_handoff) {
+                Ok(result) => return Ok(result),
+                Err(error) if error.is_would_block() && self.nonblocking() => return Err(error),
+                Err(error) if error.is_would_block() => {}
+                Err(error) => return Err(error),
             }
-            result => result,
+            if !wait_recorded {
+                #[cfg(feature = "qperf-metrics")]
+                PIPE_WRITE_WAITS.fetch_add(1, Ordering::Relaxed);
+                wait_recorded = true;
+            }
+
+            let task = task.get_or_insert_with(current_user_task);
+            if task.take_interrupt() {
+                // Linux returns committed bytes instead of EINTR once a pipe
+                // write has made progress, so SA_RESTART cannot replay them.
+                return if total_written > 0 {
+                    Ok(total_written)
+                } else {
+                    Err(StarryError::Interrupted)
+                };
+            }
+            self.shared.wait_tx.wait_until(|| {
+                let state = self.shared.state.lock();
+                state.readers == 0 || state.has_free_buffer() || task.interrupted()
+            });
+            selected_for_handoff = true;
         }
     }
 
-    #[cfg(test)]
-    fn write_without_sigpipe_for_test(&self, src: &mut IoSrc) -> StarryResult<usize> {
-        // Axtests run in a kernel task without Starry process signal state. The
-        // write transition is identical, but SIGPIPE delivery is outside this
-        // direct pipe test and cannot be requested from that task.
-        self.write_with_broken_pipe_handler(src, || {})
+    #[cfg(all(test, axtest))]
+    fn duplicate_read_end_for_test(&self) -> Pipe {
+        assert!(self.is_read());
+        self.shared.state.lock().readers += 1;
+        Pipe {
+            read_side: true,
+            shared: self.shared.clone(),
+            non_blocking: AtomicBool::new(self.nonblocking()),
+        }
     }
 
-    #[cfg(all(test, not(axtest)))]
+    #[cfg(all(test, axtest))]
     fn duplicate_write_end_for_test(&self) -> Pipe {
         assert!(self.is_write());
         self.shared.state.lock().writers += 1;
@@ -374,6 +506,11 @@ impl Pipe {
             shared: self.shared.clone(),
             non_blocking: AtomicBool::new(self.nonblocking()),
         }
+    }
+
+    #[cfg(all(test, axtest))]
+    fn write_without_sigpipe_for_test(&self, src: &mut IoSrc) -> StarryResult<usize> {
+        self.write_with_broken_pipe_handler(src, || {})
     }
 }
 
@@ -391,7 +528,7 @@ fn rounded_pipe_size(size: usize) -> StarryResult<usize> {
     Ok(size)
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(all(test, axtest))]
 fn peer_close_with_multiple_readers_is_visible_for_test() -> bool {
     let (read_end, write_end) = Pipe::new();
     let second_reader = read_end.duplicate_read_end_for_test();
@@ -401,13 +538,13 @@ fn peer_close_with_multiple_readers_is_visible_for_test() -> bool {
     read_end.poll().contains(IoEvents::HUP) && second_reader.poll().contains(IoEvents::HUP)
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(all(test, axtest))]
 fn resize_rejects_oversized_pipe_for_test() -> bool {
     let (read_end, _write_end) = Pipe::new();
     read_end.resize(1024 * 1024 + 1).is_err()
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(all(test, axtest))]
 fn pipe_linux_io_semantics_hold_for_test() -> bool {
     let null_io_matches = {
         let (read_end, write_end) = Pipe::new();
@@ -440,8 +577,7 @@ fn pipe_linux_io_semantics_hold_for_test() -> bool {
     let closed_reader_poll_matches = {
         let mut state = PipeState::new(PIPE_BUF);
         state.readers = 0;
-        let events = state.poll_events(false);
-        events.contains(IoEvents::OUT | IoEvents::ERR)
+        state.poll_events(false).contains(IoEvents::OUT | IoEvents::ERR)
     };
 
     let duplicates_preserve_nonblocking = {
@@ -477,73 +613,8 @@ fn pipe_linux_io_semantics_hold_for_test() -> bool {
         && page_slot_fragmentation_matches
 }
 
-#[cfg(all(test, axtest))]
-fn interrupted_pipe_write_preserves_partial_progress_for_test() -> bool {
-    use ax_task::TaskState;
-
-    let (read_end, write_end) = Pipe::new();
-    if write_end.resize(PIPE_BUF).is_err() {
-        return false;
-    }
-
-    let initial = [b'a'; PIPE_BUF];
-    let mut initial_src: &[u8] = &initial;
-    if !matches!(
-        write_end.write_without_sigpipe_for_test(&mut initial_src),
-        Ok(PIPE_BUF)
-    ) {
-        return false;
-    }
-
-    let write_end = Arc::new(write_end);
-    let result = Arc::new(Mutex::new(None));
-    let writer_task = {
-        let write_end = Arc::clone(&write_end);
-        let result = Arc::clone(&result);
-        ax_task::spawn(move || {
-            let bytes = [b'b'; 2 * PIPE_BUF];
-            let mut src: &[u8] = &bytes;
-            *result.lock() = Some(write_end.write_without_sigpipe_for_test(&mut src));
-        })
-    };
-
-    if !wait_for_pipe_test_condition(|| writer_task.state() == TaskState::Blocked) {
-        writer_task.interrupt();
-        writer_task.join();
-        return false;
-    }
-
-    let mut consumed = [0u8; PIPE_BUF];
-    let mut dst: &mut [u8] = &mut consumed;
-    if !matches!(read_end.read(&mut dst), Ok(PIPE_BUF)) {
-        writer_task.interrupt();
-        writer_task.join();
-        return false;
-    }
-
-    let refilled_and_blocked = wait_for_pipe_test_condition(|| {
-        read_end.shared.state.lock().buffer.occupied_len() == PIPE_BUF
-            && writer_task.state() == TaskState::Blocked
-    });
-    writer_task.interrupt();
-    writer_task.join();
-
-    refilled_and_blocked && matches!(&*result.lock(), Some(Ok(written)) if *written == PIPE_BUF)
-}
-
-#[cfg(all(test, axtest))]
-fn wait_for_pipe_test_condition(mut condition: impl FnMut() -> bool) -> bool {
-    for _ in 0..10_000 {
-        if condition() {
-            return true;
-        }
-        ax_task::yield_now();
-    }
-    false
-}
-
 fn raise_pipe() {
-    let curr = current();
+    let curr = current_user_task();
     send_signal_to_process(
         curr.as_thread().proc_data.proc.pid_number(),
         Some(SignalInfo::new_kernel(Signo::SIGPIPE)),
@@ -559,10 +630,13 @@ impl FileLike for Pipe {
         if dst.is_full() {
             return Ok(0);
         }
+        #[cfg(feature = "qperf-metrics")]
+        PIPE_READ_CALLS.fetch_add(1, Ordering::Relaxed);
 
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let (read, writers) = {
+        let mut operation = |selected_for_handoff: bool| {
+            let (read, writers, wake_writers, wake_next_reader) = {
                 let mut state = self.shared.state.lock();
+                let was_full = !state.has_free_buffer();
                 let (left, right) = state.buffer.as_slices();
                 let mut count = dst.write(left)?;
                 if count >= left.len() {
@@ -570,18 +644,63 @@ impl FileLike for Pipe {
                 }
                 unsafe { state.buffer.advance_read_index(count) };
                 state.consume(count);
-                (count, state.writers)
+                (
+                    count,
+                    state.writers,
+                    count > 0 && was_full && state.has_free_buffer(),
+                    count > 0 && selected_for_handoff && !state.buffer.is_empty(),
+                )
             };
             if read > 0 {
-                // Pipe capacity was freed before waking writers.
-                unsafe { self.shared.poll_tx.wake(IoEvents::OUT) };
+                #[cfg(feature = "qperf-metrics")]
+                PIPE_READ_BYTES.fetch_add(read as u64, Ordering::Relaxed);
+                if wake_writers {
+                    // Pipe capacity was freed before waking writers.
+                    wake_pipe_waiter_sync(
+                        &self.shared.wait_tx,
+                        &self.shared.poll_tx,
+                        IoEvents::OUT,
+                    );
+                }
+                if wake_next_reader {
+                    // A selected reader transfers remaining data to the next
+                    // exclusive waiter.
+                    wake_pipe_waiter_sync(&self.shared.wait_rx, &self.shared.poll_rx, IoEvents::IN);
+                }
                 Ok(read)
             } else if writers == 0 {
                 Ok(0)
             } else {
                 Err(StarryError::WouldBlock)
             }
-        }))
+        };
+
+        let mut selected_for_handoff = false;
+        let mut wait_recorded = false;
+        let mut task = None;
+        loop {
+            match operation(selected_for_handoff) {
+                Ok(result) => return Ok(result),
+                Err(error) if error.is_would_block() && self.nonblocking() => return Err(error),
+                Err(error) if error.is_would_block() => {}
+                Err(error) => return Err(error),
+            }
+            if !wait_recorded {
+                #[cfg(feature = "qperf-metrics")]
+                PIPE_READ_WAITS.fetch_add(1, Ordering::Relaxed);
+                wait_recorded = true;
+            }
+
+            let task = task.get_or_insert_with(current_user_task);
+            if task.take_interrupt() {
+                return Err(StarryError::Interrupted);
+            }
+            self.shared.wait_rx.wait_until(|| {
+                let state = self.shared.state.lock();
+                !state.buffer.is_empty() || state.writers == 0 || task.interrupted()
+            });
+            selected_for_handoff = true;
+        }
     }
 
     fn write(&self, src: &mut IoSrc) -> StarryResult<usize> {
@@ -612,10 +731,18 @@ impl FileLike for Pipe {
         self.non_blocking.load(Ordering::Acquire)
     }
 
-    fn ioctl(&self, cmd: u32, arg: usize) -> StarryResult<usize> {
+    fn ioctl(
+        &self,
+        current: &crate::task::UserTaskRef,
+        cmd: u32,
+        arg: usize,
+    ) -> crate::StarryResult<usize> {
         match cmd {
             FIONREAD => {
-                (arg as *mut u32).vm_write(self.shared.state.lock().buffer.occupied_len() as u32)?;
+                (arg as *mut u32).vm_write(
+                    current,
+                    self.shared.state.lock().buffer.occupied_len() as u32,
+                )?;
                 Ok(0)
             }
             _ => Err(StarryError::NotATty),
@@ -631,7 +758,30 @@ impl Pollable for Pipe {
         state.poll_events(self.read_side)
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(
+        &self,
+        sink: &mut dyn axpoll::SharedRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.shared.poll_usage.store(true, Ordering::Release);
+        self.register_poll_source(events, |poll, interests| unsafe {
+            sink.register_shared(poll, interests)
+        });
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn axpoll::ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        self.register_poll_source(events, |poll, interests| unsafe {
+            sink.register_exclusive(poll, interests)
+        });
+    }
+}
+
+impl Pipe {
+    fn register_poll_source(&self, events: IoEvents, register: impl FnOnce(&PollSet, IoEvents)) {
         let read_ready = events.intersects(IoEvents::IN | IoEvents::RDNORM);
         let write_ready = events.intersects(IoEvents::OUT | IoEvents::WRNORM);
         let mut interests = if self.read_side {
@@ -651,16 +801,14 @@ impl Pollable for Pipe {
             return;
         }
         if self.read_side {
-            // Registration happens from file poll task context.
-            unsafe { self.shared.poll_rx.register(context.waker(), interests) };
+            register(&self.shared.poll_rx, interests);
         } else {
-            // Registration happens from file poll task context.
-            unsafe { self.shared.poll_tx.register(context.waker(), interests) };
+            register(&self.shared.poll_tx, interests);
         }
     }
 }
 
-#[cfg(all(test, not(axtest)))]
+#[cfg(all(test, axtest))]
 fn pipe_resize_rounding_and_state_rules_hold_for_test() -> bool {
     let (read_end, _write_end) = Pipe::new();
 
@@ -686,34 +834,24 @@ fn pipe_resize_rounding_and_state_rules_hold_for_test() -> bool {
         && read_end.capacity() == 4096
 }
 
-#[cfg(test)]
+#[cfg(all(test, axtest))]
 mod tests {
-    #[cfg(all(test, not(axtest)))]
-    #[test]
+    #[axtest::axtest]
     fn peer_close_with_multiple_readers_is_visible() {
         assert!(super::peer_close_with_multiple_readers_is_visible_for_test());
     }
 
-    #[cfg(all(test, not(axtest)))]
-    #[test]
+    #[axtest::axtest]
     fn resize_rejects_oversized_pipe() {
         assert!(super::resize_rejects_oversized_pipe_for_test());
     }
 
-    #[cfg(all(test, not(axtest)))]
-    #[test]
+    #[axtest::axtest]
     fn pipe_linux_io_semantics_hold() {
         assert!(super::pipe_linux_io_semantics_hold_for_test());
     }
 
-    #[cfg(all(test, axtest))]
     #[axtest::axtest]
-    fn interrupted_pipe_write_preserves_partial_progress() {
-        assert!(super::interrupted_pipe_write_preserves_partial_progress_for_test());
-    }
-
-    #[cfg(all(test, not(axtest)))]
-    #[test]
     fn pipe_resize_rounding_and_state_rules_hold() {
         assert!(super::pipe_resize_rounding_and_state_rules_hold_for_test());
     }

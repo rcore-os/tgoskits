@@ -6,9 +6,7 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use ax_sync::SpinLock;
-
-use crate::{CgroupError, CgroupResult, ProcessId, pids::PidsState};
+use crate::{CgroupError, CgroupResult, ProcessId, pids::PidsState, sync::CgroupMutex};
 
 static NEXT_CGROUP_ID: AtomicU64 = AtomicU64::new(2);
 const NESTED_CHILDREN_LOCK_SUBCLASS: u32 = 1;
@@ -20,8 +18,8 @@ pub struct CgroupNode {
     id: u64,
     name: String,
     parent: Option<Weak<Self>>,
-    children: SpinLock<BTreeMap<String, Arc<Self>>>,
-    members: SpinLock<BTreeSet<ProcessId>>,
+    children: CgroupMutex<BTreeMap<String, Arc<Self>>>,
+    members: CgroupMutex<BTreeSet<ProcessId>>,
     pids: PidsState,
     pids_enabled_for_children: AtomicBool,
     pins: AtomicUsize,
@@ -38,8 +36,8 @@ impl CgroupNode {
             id: 1,
             name: String::new(),
             parent: None,
-            children: SpinLock::new(BTreeMap::new()),
-            members: SpinLock::new(BTreeSet::new()),
+            children: CgroupMutex::new(BTreeMap::new()),
+            members: CgroupMutex::new(BTreeSet::new()),
             pids: PidsState::new(),
             pids_enabled_for_children: AtomicBool::new(false),
             pins: AtomicUsize::new(0),
@@ -146,8 +144,8 @@ impl CgroupNode {
             id: NEXT_CGROUP_ID.fetch_add(1, Ordering::Relaxed),
             name: name.to_string(),
             parent: Some(Arc::downgrade(self)),
-            children: SpinLock::new(BTreeMap::new()),
-            members: SpinLock::new(BTreeSet::new()),
+            children: CgroupMutex::new(BTreeMap::new()),
+            members: CgroupMutex::new(BTreeSet::new()),
             pids: PidsState::new(),
             pids_enabled_for_children: AtomicBool::new(false),
             pins: AtomicUsize::new(0),
@@ -195,8 +193,8 @@ impl CgroupNode {
         self.members.lock_irqsave().iter().copied().collect()
     }
 
-    pub(crate) fn add_member(&self, pid: ProcessId) {
-        self.members.lock_irqsave().insert(pid);
+    pub(crate) fn add_member(&self, pid: ProcessId) -> bool {
+        self.members.lock_irqsave().insert(pid)
     }
 
     pub(crate) fn remove_member(&self, pid: ProcessId) -> bool {

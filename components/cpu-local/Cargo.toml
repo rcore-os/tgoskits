@@ -12,7 +12,8 @@ license.workspace = true
 [features]
 # Enable task-owned kernel TLS. Backends with an independent current register
 # retain Linux current semantics; TP-aliased backends publish current through
-# the CPU runtime anchor while TP carries the TLS base.
+# the CPU runtime anchor while TP carries the TLS base, and their HAL adapter
+# excludes local IRQs across each unpinned current/preemption operation.
 tls = []
 
 # Use a thread-local register model for host-side tests.

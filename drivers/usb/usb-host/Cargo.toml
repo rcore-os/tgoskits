@@ -11,6 +11,7 @@ version = "0.11.0"
 
 [features]
 default = []
+host-test = ["ax-sync/host-test"]
 libusb = ["umod"]
 umod = ["libusb1-sys"]
 
@@ -39,3 +40,5 @@ libusb1-sys = {version = "0.7", optional = true}
 
 [dev-dependencies]
 ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }
+# Host tests link the external scheduler-aware lock provider.
+ax-runtime = { path = "../../../os/arceos/modules/axruntime", features = ["host-test"] }

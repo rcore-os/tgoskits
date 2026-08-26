@@ -9,20 +9,19 @@ use core::{
     borrow::Borrow,
     cmp::Ordering,
     sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
-    task::Context,
     time::Duration,
 };
 
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-    FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
+    FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
+    Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
-use crate::sync::{IrqMutex, Mutex};
+use crate::sync::{IrqMutex, LockdepMutexExt, PiMutex};
 
 const TMPFS_MAGIC: u32 = 0x0102_1994;
 const RAMFS_MAGIC: u32 = 0x8584_58f6;
@@ -30,14 +29,6 @@ const STATFS_BLOCK_SIZE: u64 = 4096;
 const DEFAULT_TMPFS_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 
 const TMPFS_NESTED_DIR_ENTRIES_SUBCLASS: u32 = 1;
-
-fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
-    IoEvents::from_bits_truncate(events.bits())
-}
-
-fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
-    FsIoEvents::from_bits_truncate(events.bits())
-}
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct FileName(Arc<str>);
@@ -258,21 +249,20 @@ struct FileContent {
     /// We only need to store the length here because we delegate the actual
     /// content management to page cache.
     length: AtomicU64,
-    symlink: Mutex<Option<String>>,
+    symlink: PiMutex<Option<String>>,
 }
 
 struct DirContent {
-    // VFS dentry-cache operations call tmpfs directory ops while holding
-    // IrqMutex guards, so this per-directory map must not use a blocking
-    // mutex.
-    entries: IrqMutex<HashMap<FileName, InodeRef>>,
+    // Directory operations can nest while resolving `..`; use a distinct
+    // lockdep subclass while keeping one PI-backed task-context lock path.
+    entries: PiMutex<HashMap<FileName, InodeRef>>,
     next_cookie: AtomicU64,
 }
 
 impl Default for DirContent {
     fn default() -> Self {
         Self {
-            entries: IrqMutex::new(HashMap::new()),
+            entries: PiMutex::new(HashMap::new()),
             next_cookie: AtomicU64::new(3),
         }
     }
@@ -543,21 +533,16 @@ impl FileNodeOps for MemoryNode {
         Ok(())
     }
 }
-impl FsPollable for MemoryNode {
-    fn poll(&self) -> FsIoEvents {
-        FsIoEvents::IN | FsIoEvents::OUT
-    }
-
-    fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
-}
-
 impl Pollable for MemoryNode {
     fn poll(&self) -> IoEvents {
-        fs_events_to_io(FsPollable::poll(self))
+        IoEvents::IN | IoEvents::OUT
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
-        FsPollable::register(self, context, io_events_to_fs(events));
+    unsafe fn register_shared(
+        &self,
+        _sink: &mut dyn axpoll::SharedRegistrationSink,
+        _events: IoEvents,
+    ) {
     }
 }
 

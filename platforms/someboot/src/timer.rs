@@ -62,6 +62,15 @@ pub fn aarch64_timer_mode() -> ArchTimerMode {
 }
 
 #[cfg(any(target_arch = "aarch64", test))]
+pub(crate) fn resume_masked_level_oneshot(
+    program_comparator: impl FnOnce(),
+    unmask_source: impl FnOnce(),
+) {
+    program_comparator();
+    unmask_source();
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
 pub(crate) mod aarch64_deadline {
     /// Converts a relative timer interval into an absolute counter compare value.
     ///
@@ -99,6 +108,15 @@ pub(crate) mod aarch64_deadline {
                     )),
             }
         }
+
+        pub(crate) fn disarm(registers: &impl TimerRegisters, mode: ArchTimerMode) {
+            match mode {
+                ArchTimerMode::El1Virt => registers.write_virtual_compare(u64::MAX),
+                ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
+                    registers.write_physical_compare(u64::MAX);
+                }
+            }
+        }
     }
 
     #[cfg(any(feature = "hv", test))]
@@ -116,6 +134,10 @@ pub(crate) mod aarch64_deadline {
                 interval_ticks,
             ));
         }
+
+        pub(crate) fn disarm(registers: &impl TimerRegisters) {
+            registers.write_hyp_physical_compare(u64::MAX);
+        }
     }
 }
 
@@ -130,6 +152,11 @@ pub(crate) mod riscv64_interval {
         };
         current_ticks.saturating_add(interval_ticks)
     }
+
+    /// Returns the SBI comparator value used to disarm a one-shot timer.
+    pub(crate) const fn stopped_deadline() -> u64 {
+        u64::MAX
+    }
 }
 
 #[cfg(any(target_arch = "loongarch64", test))]
@@ -142,6 +169,11 @@ pub(crate) mod loongarch64_interval {
         let max_aligned = usize::MAX - usize::MAX % ALIGNMENT;
         let clamped = interval_ticks.max(MIN_TICKS).min(max_aligned);
         (clamped + (ALIGNMENT - 1)) & !(ALIGNMENT - 1)
+    }
+
+    /// Returns the largest valid one-shot interval encoded by TCFG.
+    pub(crate) const fn stopped_ticks() -> usize {
+        usize::MAX & !(ALIGNMENT - 1)
     }
 }
 
@@ -248,6 +280,18 @@ mod tests {
     }
 
     #[test]
+    fn masked_level_timer_replaces_the_comparator_before_unmask() {
+        let step = Cell::new(0);
+
+        resume_masked_level_oneshot(
+            || assert_eq!(step.replace(1), 0),
+            || assert_eq!(step.replace(2), 1),
+        );
+
+        assert_eq!(step.get(), 2);
+    }
+
+    #[test]
     fn compare_value_preserves_intervals_beyond_tval_width() {
         let current = 0x1234_5678_0000_0000;
         let interval = u32::MAX as u64 + 17;
@@ -267,6 +311,7 @@ mod tests {
         );
         assert_eq!(riscv64_interval::absolute_deadline(10, 0), 11);
         assert_eq!(riscv64_interval::absolute_deadline(u64::MAX, 0), u64::MAX);
+        assert_eq!(riscv64_interval::stopped_deadline(), u64::MAX);
     }
 
     #[test]
@@ -277,6 +322,7 @@ mod tests {
             loongarch64_interval::aligned_ticks(usize::MAX),
             usize::MAX & !3
         );
+        assert_eq!(loongarch64_interval::stopped_ticks(), usize::MAX & !3);
     }
 
     #[test]
@@ -312,6 +358,32 @@ mod tests {
 
         assert_eq!(registers.hyp_physical_compare.get(), Some(4));
         assert_eq!(registers.physical_counter_reads.get(), 1);
+    }
+
+    #[test]
+    fn el1_timer_stop_discards_the_selected_comparator() {
+        let registers = RecordingEl1TimerRegisters::new(17, 19);
+
+        el1::disarm(&registers, ArchTimerMode::El1Virt);
+
+        assert_eq!(registers.virtual_compare.get(), Some(u64::MAX));
+        assert_eq!(registers.physical_compare.get(), None);
+
+        el1::disarm(&registers, ArchTimerMode::El1Phys);
+
+        assert_eq!(registers.physical_compare.get(), Some(u64::MAX));
+        assert_eq!(registers.virtual_counter_reads.get(), 0);
+        assert_eq!(registers.physical_counter_reads.get(), 0);
+    }
+
+    #[test]
+    fn el2_timer_stop_discards_the_hyp_comparator() {
+        let registers = RecordingEl2TimerRegisters::new(17);
+
+        el2::disarm(&registers);
+
+        assert_eq!(registers.hyp_physical_compare.get(), Some(u64::MAX));
+        assert_eq!(registers.physical_counter_reads.get(), 0);
     }
 
     struct RecordingEl1TimerRegisters {

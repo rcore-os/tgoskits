@@ -8,6 +8,7 @@ use ax_sync::{RawSpinLockGuard, SpinLock as Mutex};
     feature = "intel-net",
     feature = "nvme",
     feature = "realtek-rtl8125",
+    feature = "xhci-pci",
     all(feature = "net", feature = "pci")
 ))]
 use dma_api::DeviceDma;
@@ -70,6 +71,7 @@ const PCI_INTX_LINES: usize = 4;
     feature = "intel-net",
     feature = "nvme",
     feature = "realtek-rtl8125",
+    feature = "xhci-pci",
     all(feature = "net", feature = "pci")
 ))]
 pub(crate) fn device_dma(info: PciInfo, dma_mask: u64) -> DeviceDma {

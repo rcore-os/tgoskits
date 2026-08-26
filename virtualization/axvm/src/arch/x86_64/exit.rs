@@ -9,7 +9,7 @@ use super::*;
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DeferredRunWork {
     ExternalInterrupt { vector: usize },
-    PreemptionTimer,
+    TimesliceExpired,
     InterruptEnd { vector: Option<u8> },
 }
 
@@ -66,6 +66,7 @@ pub(crate) fn handle_io_write(
     );
     vm.try_write_device(&access, exit.data)
         .map_err(|error| AxVmError::device("write guest I/O port", error))?;
+    publish_pic_interrupt_if_needed(vm, vcpu.id(), exit.port)?;
     Ok(BoundVcpuExit::Continue)
 }
 
@@ -101,11 +102,27 @@ pub(crate) fn handle_io_string(
             let value = u64::from_le_bytes(bytes);
             vm.try_write_device(&access, value)
                 .map_err(|error| AxVmError::device("write guest string I/O port", error))?;
+            publish_pic_interrupt_if_needed(vm, vcpu.id(), port)?;
         }
     }
 
-    vcpu.get_arch_vcpu().complete_port_io_string(exit)?;
+    // Device and guest-memory work above is intentionally sleepable and runs
+    // after vcpu_put(). Stage the backend update so the next bound entry can
+    // commit RIP and string registers before injecting interrupts or running
+    // the guest, matching KVM's complete_userspace_io lifecycle.
+    vcpu.get_arch_vcpu().stage_port_io_string_completion(exit)?;
     Ok(BoundVcpuExit::Continue)
+}
+
+fn publish_pic_interrupt_if_needed(vm: &crate::AxVM, vcpu_id: usize, port: Port) -> AxVmResult {
+    let port = x86_vlapic::X86Port::new(port.number());
+    if EmulatedPic::port_ranges()
+        .iter()
+        .any(|range| range.contains(port))
+    {
+        super::publish_pic_interrupt_after_write(vm, vcpu_id)?;
+    }
+    Ok(())
 }
 
 fn unmapped_port_value(width: AccessWidth) -> usize {
@@ -121,10 +138,7 @@ pub(crate) fn finish(
         DeferredRunWork::ExternalInterrupt { vector } => {
             crate::architecture::exit::finish_external_interrupt(vector);
         }
-        DeferredRunWork::PreemptionTimer => {
-            crate::timer::check_events();
-            super::irq::inject_due_pit_irq0(vm, vcpu);
-        }
+        DeferredRunWork::TimesliceExpired => {}
         DeferredRunWork::InterruptEnd { vector } => {
             if let Some(vector) = vector {
                 super::irq::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);

@@ -154,12 +154,18 @@ impl TimeIf for DummyTime {
 
     #[cfg(feature = "irq")]
     fn set_oneshot_timer(_deadline_ns: u64) {}
+
+    #[cfg(feature = "irq")]
+    fn resume_oneshot_timer(_deadline_ns: u64) {}
+
+    #[cfg(feature = "irq")]
+    fn cancel_oneshot_timer() {}
 }
 
 #[impl_plat_interface]
 impl PowerIf for DummyPower {
     #[cfg(feature = "smp")]
-    fn cpu_boot(_cpu_id: usize, _stack_top_paddr: usize) {}
+    fn cpu_boot(_cpu_id: usize) {}
 
     fn system_off() -> ! {
         unimplemented!()

@@ -18,24 +18,24 @@ license.workspace = true
 [features]
 default = []
 
-smp = []
+smp = ["ax-runtime/smp"]
 irq = ["ax-api/irq", "ax-runtime/irq"]
 alloc = ["dep:ax-alloc"]
 multitask = [
   "alloc",
+  "dep:ax-task",
   "ax-api/multitask",
-  "ax-task/multitask",
   "ax-runtime/multitask",
 ]
 lockdep = ["multitask", "ax-runtime/lockdep"]
 fd = ["alloc", "dep:scope-local"]
-fs = ["dep:ax-fs-ng", "fd"]
-net = ["dep:ax-net", "fd"]
+fs = ["multitask", "dep:ax-fs-ng", "fd"]
+net = ["multitask", "dep:ax-net", "fd"]
 pipe = ["fd"]
 select = ["fd"]
 poll = ["fd"]
-epoll = ["fd"]
-eventfd = ["fd"]
+epoll = ["multitask", "fd"]
+eventfd = ["fd", "multitask"]
 
 [dependencies]
 # ArceOS modules

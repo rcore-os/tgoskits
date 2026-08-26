@@ -7,7 +7,10 @@ use riscv_vcpu::{GprIndex as RiscvGprIndex, *};
 use super::*;
 use crate::{
     AxVmResult, StopReason,
-    architecture::cpu_up::{self, CpuUpExit, CpuUpOps},
+    architecture::{
+        cpu_up::{self, CpuUpExit, CpuUpOps},
+        ops::*,
+    },
     host::*,
 };
 
@@ -72,7 +75,7 @@ impl ArchOps for Riscv64Arch {
         vcpu.inject_interrupt_with_trigger(vector, interrupt.trigger)
     }
 
-    fn handle_vcpu_exit_bound(
+    fn handle_vcpu_exit_unbound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
@@ -182,7 +185,10 @@ impl ArchOps for Riscv64Arch {
     ) -> AxVmResult<VcpuRunAction> {
         match work {
             RiscvDeferredRunWork::ExternalInterrupt { vector } => {
-                finish_external_interrupt(vcpu, vector);
+                vcpu.with_current_cpu_set(|| {
+                    crate::host::arceos::dispatch_host_irq(vector);
+                    vcpu.get_arch_vcpu().latch_hvip_from_hw();
+                });
             }
         }
         Ok(VcpuRunAction {
@@ -192,14 +198,10 @@ impl ArchOps for Riscv64Arch {
             exits_vcpu: false,
         })
     }
-}
 
-fn finish_external_interrupt(vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>, vector: usize) {
-    vcpu.with_current_cpu_set(|| {
-        crate::host::arceos::dispatch_host_irq(vector);
-        vcpu.get_arch_vcpu().latch_hvip_from_hw();
-    });
-    crate::check_timer_events();
+    fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
+        Self::exit_runtime(vm)
+    }
 }
 
 fn vplic_runtime(vm: &crate::AxVM) -> AxVmResult<Arc<irq::RiscvPlicRuntime>> {

@@ -24,15 +24,16 @@
 //! UDP send/recv operations request the shared net-poll worker after socket
 //! state changes. They do not run the interface poll loop directly.
 
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    task::Context,
+    task::Waker,
 };
 
 use ax_io::prelude::*;
-use ax_sync::Mutex;
-use axpoll::{IoEvents, Pollable};
+use ax_sync::{Mutex, SpinLock};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
+use axpoll_set::PollSet;
 use smoltcp::{
     iface::SocketHandle,
     phy::PacketMeta,
@@ -42,8 +43,8 @@ use smoltcp::{
 };
 
 use crate::{
-    IpCmsg, NetError, NetResult, RecvFlags, RecvOptions, SOCKET_SET, SendFlags, SendOptions,
-    Shutdown, SocketAddrEx, SocketOps,
+    DeferPollWake, IpCmsg, NetError, NetResult, RecvFlags, RecvOptions, SOCKET_SET, SendFlags,
+    SendOptions, Shutdown, SocketAddrEx, SocketOps,
     addr::allocate_ephemeral_port,
     config::{DeviceBinding, InterfaceId},
     consts::{UDP_RX_BUF_LEN, UDP_TX_BUF_LEN},
@@ -79,10 +80,15 @@ pub struct UdpSocket {
 
     /// Shared socket options and blocking helpers.
     general: GeneralOptions,
+    /// Multiplexes protocol and timer wakeups to owned poll registrations.
+    poll_state: Arc<PollSet>,
     /// Egress IP_TOS policies registered for recently used UDP destinations.
-    tos_keys: Mutex<Vec<EgressIpTosKey>>,
+    tos_keys: SpinLock<Vec<EgressIpTosKey>>,
     /// MSG_MORE corking state: captures endpoint at first MSG_MORE
     /// so the merged datagram always goes to the correct peer.
+    // Linux serializes UDP corking with the process-context socket lock. This
+    // state may remain held while the global protocol socket is contended, so
+    // it must be sleepable rather than an IRQ-disabling raw spin lock.
     cork: Mutex<Option<CorkState>>,
 }
 
@@ -99,7 +105,8 @@ impl UdpSocket {
             peer_addr: Mutex::new(None),
 
             general: GeneralOptions::new(2, 2, 17), // SOCK_DGRAM
-            tos_keys: Mutex::new(Vec::new()),
+            poll_state: Arc::new(PollSet::new()),
+            tos_keys: SpinLock::new(Vec::new()),
             cork: Mutex::new(None),
         }
     }
@@ -617,17 +624,43 @@ impl Pollable for UdpSocket {
         events
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
+        unsafe { sink.register_shared(&self.poll_state, events) };
+        self.arm_poll_sources(events);
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        unsafe { sink.register_exclusive(&self.poll_state, events) };
+        self.arm_poll_sources(events);
+    }
+}
+
+impl UdpSocket {
+    fn arm_poll_sources(&self, events: IoEvents) {
         self.with_smol_socket(|socket| {
             if events.contains(IoEvents::IN) {
-                socket.register_recv_waker(context.waker());
+                socket.register_recv_waker(&Waker::from(Arc::new(DeferPollWake {
+                    poll: self.poll_state.clone(),
+                    ready: IoEvents::IN,
+                })));
             }
             if events.contains(IoEvents::OUT) {
-                socket.register_send_waker(context.waker());
+                socket.register_send_waker(&Waker::from(Arc::new(DeferPollWake {
+                    poll: self.poll_state.clone(),
+                    ready: IoEvents::OUT,
+                })));
             }
         });
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
-            self.general.register_waker(context.waker());
+            self.general
+                .register_timeout_waker(&Waker::from(Arc::new(DeferPollWake {
+                    poll: self.poll_state.clone(),
+                    ready: events,
+                })));
         }
     }
 }
@@ -657,19 +690,18 @@ fn get_ephemeral_port() -> NetResult<u16> {
     })
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(all(axtest, feature = "axtest"))]
+mod axtest_support {
     use core::net::{IpAddr, SocketAddr};
 
     use super::*;
-    use crate::test_support::{
-        LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, network_test_guard,
+    use crate::network_test_support::{
+        LOCAL_ADDR, PEER_ADDR, init_split_route_network, network_test_guard,
     };
 
-    #[test]
     fn connect_preserves_bound_interface() {
         let _guard = network_test_guard();
-        init_split_route_network();
+        let topology = init_split_route_network();
 
         let socket = UdpSocket::new();
         socket
@@ -678,7 +710,7 @@ mod tests {
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(LOCAL_IF)
+                bound_if: Some(topology.local_if)
             }
         );
 
@@ -688,19 +720,18 @@ mod tests {
             .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
             .unwrap();
 
-        // Interface binding should remain LOCAL_IF (not changed to PEER_IF)
+        // Binding to the local test interface must survive a peer-route lookup.
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(LOCAL_IF)
+                bound_if: Some(topology.local_if)
             }
         );
     }
 
-    #[test]
     fn connect_uses_peer_route_when_unbound() {
         let _guard = network_test_guard();
-        init_split_route_network();
+        let topology = init_split_route_network();
 
         let socket = UdpSocket::new();
 
@@ -716,22 +747,21 @@ mod tests {
             .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
             .unwrap();
 
-        // Interface binding should use route decision (PEER_IF)
+        // The unbound socket must adopt the peer-route interface.
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(PEER_IF)
+                bound_if: Some(topology.peer_if)
             }
         );
     }
 
-    #[test]
     fn connect_rejects_unroutable_bound_device() {
         let _guard = network_test_guard();
-        init_split_route_network();
+        let topology = init_split_route_network();
 
         let socket = UdpSocket::new();
-        socket.bind_device(LOCAL_IF).unwrap();
+        socket.bind_device(topology.local_if).unwrap();
         socket
             .bind(SocketAddrEx::Ip(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -747,8 +777,19 @@ mod tests {
         assert_eq!(
             socket.general.device_binding(),
             DeviceBinding {
-                bound_if: Some(LOCAL_IF)
+                bound_if: Some(topology.local_if)
             }
         );
     }
+
+    pub(super) fn run_all() {
+        connect_preserves_bound_interface();
+        connect_uses_peer_route_when_unbound();
+        connect_rejects_unroutable_bound_device();
+    }
+}
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) fn run_axtest_contracts() {
+    axtest_support::run_all();
 }

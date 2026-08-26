@@ -22,8 +22,13 @@ pub fn sys_inotify_init1(flags: u32) -> StarryResult<isize> {
     add_file_like(inotify as _, flags & IN_CLOEXEC != 0).map(|fd| fd as _)
 }
 
-pub fn sys_inotify_add_watch(fd: c_int, path: *const c_char, mask: u32) -> StarryResult<isize> {
-    let path = vm_load_path_string(path)?;
+pub fn sys_inotify_add_watch(
+    current: &crate::task::UserTaskRef,
+    fd: c_int,
+    path: *const c_char,
+    mask: u32,
+) -> crate::StarryResult<isize> {
+    let path = vm_load_path_string(current, path)?;
     debug!("sys_inotify_add_watch <= fd: {fd}, path: {path}, mask: {mask}");
 
     let resolved_path = resolve_at(AT_FDCWD, Some(&path), 0)?

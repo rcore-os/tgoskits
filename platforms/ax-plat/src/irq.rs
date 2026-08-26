@@ -282,12 +282,38 @@ pub fn dispatch_irq_on(irq: IrqId, cpu: CpuId) -> IrqOutcome {
     outcome
 }
 
+fn dispatch_with_controller_ack<T>(
+    acknowledge_controller: impl FnOnce(),
+    dispatch: impl FnOnce() -> T,
+) -> T {
+    acknowledge_controller();
+    dispatch()
+}
+
+/// Acknowledges one physical IPI before dispatching its logical actions.
+///
+/// IPI actions may make a coalesced software delivery edge reusable. The
+/// controller must therefore stop treating the previous IPI as pending or in
+/// service before any action can publish a fresh physical notification.
+pub fn dispatch_ipi_irq_on(
+    irq: IrqId,
+    cpu: CpuId,
+    acknowledge_controller: impl FnOnce(),
+) -> IrqOutcome {
+    dispatch_with_controller_ack(acknowledge_controller, || dispatch_irq_on(irq, cpu))
+}
+
 /// Dispatches actions registered in the dynamic IRQ framework.
 pub fn dispatch_irq(irq: IrqId) -> IrqOutcome {
     dispatch_irq_on(irq, PlatIrqOps.current_cpu())
 }
 
-fn in_irq_context_on(cpu: CpuId) -> bool {
+/// Tests one explicitly selected CPU's IRQ-action publication.
+///
+/// Callers that use this for the current CPU must retain their own migration
+/// exclusion across CPU identity resolution and this atomic observation.
+#[doc(hidden)]
+pub fn in_irq_context_on(cpu: CpuId) -> bool {
     irq_context_bit(cpu)
         .map(|bit| IRQ_CONTEXT_CPUS.load(Ordering::Acquire) & bit != 0)
         .unwrap_or(false)
@@ -345,7 +371,9 @@ pub trait IrqIf {
     ///
     /// It is called by the common interrupt handler. Platform implementations
     /// should claim/ack the controller interrupt, dispatch the real IRQ through
-    /// [`dispatch_irq`], and perform the matching EOI/complete operation.
+    /// [`dispatch_irq`], and perform the matching EOI/complete operation. IPI
+    /// actions must instead be entered through [`dispatch_ipi_irq_on`] so the
+    /// architecture-specific acknowledgement precedes logical IPI draining.
     ///
     /// Returns the "real" IRQ number. On some platforms, this may differ from
     /// the input `irq` number, for example on AArch64 the input `irq` is
@@ -371,7 +399,10 @@ pub trait IrqIf {
 
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::{
+        cell::RefCell,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
     use crate::impl_plat_interface;
@@ -379,6 +410,27 @@ mod tests {
     static ENABLE_CALLS: AtomicUsize = AtomicUsize::new(0);
     static FAIL_ENABLE: AtomicUsize = AtomicUsize::new(0);
     static FAIL_SEND_IPI: AtomicUsize = AtomicUsize::new(0);
+
+    struct TestContextOps;
+
+    #[ax_crate_interface::impl_interface]
+    impl ax_sync::interface::ContextOps for TestContextOps {
+        fn enter(_context: u8) -> ax_sync::interface::ContextState {
+            ax_sync::interface::ContextState::new(0, 0)
+        }
+
+        fn exit(_context: u8, _state: ax_sync::interface::ContextState) {}
+
+        fn irq_return_preempt_enter() -> usize {
+            0
+        }
+
+        fn irq_return_preempt_exit(_state: usize) {}
+
+        fn hardirq_enter() {}
+
+        fn hardirq_exit() {}
+    }
 
     struct TestIrqIf;
 
@@ -448,6 +500,18 @@ mod tests {
         );
 
         FAIL_SEND_IPI.store(0, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn ipi_controller_ack_precedes_logical_dispatch() {
+        let events = RefCell::new(alloc::vec::Vec::new());
+
+        super::dispatch_with_controller_ack(
+            || events.borrow_mut().push("controller-ack"),
+            || events.borrow_mut().push("logical-dispatch"),
+        );
+
+        assert_eq!(*events.borrow(), ["controller-ack", "logical-dispatch"]);
     }
 
     #[test]

@@ -12,6 +12,27 @@ pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentMo
     unikernel_tls: CurrentContextSource::RuntimeAnchor,
 };
 
+pub(super) struct Backend;
+
+impl ArchitectureRegisterBackend for Backend {
+    #[inline(always)]
+    fn current_preemption_snapshot() -> Result<PreemptionSnapshot, CpuLocalError> {
+        let state: u32;
+        // SAFETY: x86 owns the selected preemption word in the installed CPU
+        // runtime anchor. The fixed GS offset is the architecture-native
+        // override of the execution-context default implementation.
+        unsafe {
+            core::arch::asm!(
+                "mov {state:e}, dword ptr gs:[{offset}]",
+                state = out(reg) state,
+                offset = const CPU_AREA_PREEMPTION_STATE_OFFSET,
+                options(nostack, preserves_flags, readonly),
+            );
+        }
+        Ok(PreemptionSnapshot::from_raw(state))
+    }
+}
+
 pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
     Ok(())
 }

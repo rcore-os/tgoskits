@@ -144,7 +144,7 @@ impl AddrSpace {
             LinearMappingKind::Boot => Backend::new_boot_linear(offset),
         };
         let area = MemoryArea::new(start_vaddr, size, flags, backend);
-        self.areas.map(area, &mut self.pt, unmap_overlap)?;
+        self.areas.map(area, &mut (), &mut self.pt, unmap_overlap)?;
         Ok(())
     }
 
@@ -270,7 +270,7 @@ impl AddrSpace {
         }
 
         let area = MemoryArea::new(start, size, flags, Backend::new_alloc(populate));
-        self.areas.map(area, &mut self.pt, false)?;
+        self.areas.map(area, &mut (), &mut self.pt, false)?;
         Ok(())
     }
 
@@ -288,7 +288,7 @@ impl AddrSpace {
             return Err(MmError::InvalidInput("unmap range is not page aligned"));
         }
 
-        self.areas.unmap(start, size, &mut self.pt)?;
+        self.areas.unmap(start, size, &mut (), &mut self.pt)?;
         Ok(())
     }
 
@@ -375,7 +375,7 @@ impl AddrSpace {
 
     /// Removes all mappings in the address space.
     pub fn clear(&mut self) {
-        self.areas.clear(&mut self.pt).unwrap();
+        self.areas.clear(&mut (), &mut self.pt).unwrap();
     }
 
     /// Checks whether an access to the specified memory region is valid.

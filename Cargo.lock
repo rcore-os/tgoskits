@@ -173,6 +173,8 @@ dependencies = [
  "aes",
  "atomic-waker",
  "ax-sync",
+ "axpoll",
+ "axpoll-set",
  "digest 0.10.7",
  "dma-api",
  "hmac",
@@ -326,7 +328,6 @@ dependencies = [
  "ax-hal",
  "ax-runtime",
  "ax-std",
- "ax-task",
  "axplat-dyn",
  "axtest",
  "crab-usb",
@@ -386,7 +387,6 @@ name = "arceos-loongarch-unaligned-fixup"
 version = "0.1.0"
 dependencies = [
  "ax-cpu",
- "ax-hal",
  "ax-std",
 ]
 
@@ -410,7 +410,6 @@ dependencies = [
  "ax-std",
  "axbacktrace",
  "axfs-ng-vfs",
- "axpoll",
  "embedded-graphics",
  "rand 0.8.8",
 ]
@@ -494,6 +493,7 @@ version = "0.6.0"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64_sysreg",
+ "ax-runtime",
  "ax-sync",
  "axdevice_base",
  "axvm-types",
@@ -718,6 +718,7 @@ name = "ax-api"
 version = "0.7.8"
 dependencies = [
  "ax-alloc",
+ "ax-cpumask",
  "ax-display",
  "ax-fs-ng",
  "ax-hal",
@@ -761,6 +762,7 @@ dependencies = [
  "ax-percpu",
  "axbacktrace",
  "bitflags 2.13.1",
+ "bytemuck",
  "cfg-if",
  "cpu-local",
  "log",
@@ -825,7 +827,7 @@ dependencies = [
  "arm-scmi-rs",
  "ax-alloc",
  "ax-arm-pl031",
- "ax-crate-interface",
+ "ax-runtime",
  "ax-sync",
  "axklib",
  "crab-usb",
@@ -897,8 +899,10 @@ version = "0.9.2"
 dependencies = [
  "ax-io",
  "ax-lazyinit",
+ "ax-runtime",
  "ax-sync",
  "axfs-ng-vfs",
+ "axpoll",
  "bitflags 2.13.1",
  "cfg-if",
  "chrono",
@@ -965,8 +969,6 @@ version = "0.5.31"
 dependencies = [
  "ax-hal",
  "ax-lazyinit",
- "ax-percpu",
- "ax-sync",
  "log",
 ]
 
@@ -1038,14 +1040,18 @@ dependencies = [
  "ax-hal",
  "ax-io",
  "ax-lazyinit",
+ "ax-std",
  "ax-sync",
  "ax-task",
  "axpoll",
+ "axpoll-set",
+ "axtest",
  "bitflags 2.13.1",
  "cfg-if",
  "enum_dispatch",
  "event-listener",
  "hashbrown 0.16.1",
+ "heapless",
  "irq-framework",
  "log",
  "rd-net",
@@ -1159,6 +1165,7 @@ dependencies = [
  "axklib",
  "axpanic",
  "axpoll",
+ "axpoll-set",
  "cfg-if",
  "chrono",
  "cpu-local",
@@ -1195,7 +1202,6 @@ dependencies = [
  "ax-percpu",
  "ax-posix-api",
  "ax-runtime",
- "ax-task",
  "axbacktrace",
  "libc",
  "syscalls",
@@ -1207,6 +1213,7 @@ name = "ax-sync"
 version = "0.5.32"
 dependencies = [
  "ax-crate-interface",
+ "ax-runtime",
  "lock_api",
 ]
 
@@ -1214,27 +1221,13 @@ dependencies = [
 name = "ax-task"
 version = "0.6.10"
 dependencies = [
- "ax-alloc",
- "ax-cpumask",
- "ax-crate-interface",
- "ax-hal",
- "ax-ipi",
- "ax-lazyinit",
- "ax-memory-addr",
- "ax-mm",
- "ax-percpu",
- "ax-sched",
- "ax-timer-list",
  "axpanic",
- "axpoll",
  "cfg-if",
- "extern-trait",
- "futures-util",
  "lock_api",
- "log",
- "quote",
+ "loom",
  "sbi-rt",
  "thiserror 2.0.20",
+ "trait-ffi",
 ]
 
 [[package]]
@@ -1329,6 +1322,7 @@ dependencies = [
 name = "axdevice"
 version = "0.6.1"
 dependencies = [
+ "ax-runtime",
  "ax-sync",
  "axdevice_base",
  "axvm-types",
@@ -1367,7 +1361,9 @@ dependencies = [
 name = "axfs-ng-vfs"
 version = "0.6.1"
 dependencies = [
+ "ax-runtime",
  "ax-sync",
+ "axpoll",
  "bitflags 2.13.1",
  "cfg-if",
  "hashbrown 0.16.1",
@@ -1442,11 +1438,19 @@ dependencies = [
 name = "axpoll"
 version = "0.6.0"
 dependencies = [
- "ax-lazyinit",
- "ax-sync",
  "bitflags 2.13.1",
- "futures",
  "linux-raw-sys 0.12.1",
+]
+
+[[package]]
+name = "axpoll-set"
+version = "0.1.0"
+dependencies = [
+ "ax-lazyinit",
+ "ax-runtime",
+ "ax-sync",
+ "axpoll",
+ "futures",
  "tokio",
 ]
 
@@ -1603,7 +1607,6 @@ dependencies = [
  "ax-memory-set",
  "ax-plat",
  "ax-std",
- "ax-timer-list",
  "axaddrspace",
  "axdevice",
  "axdevice_base",
@@ -2374,6 +2377,7 @@ name = "crab-usb"
 version = "0.11.0"
 dependencies = [
  "anyhow",
+ "ax-runtime",
  "ax-sync",
  "bitflags 2.13.1",
  "crossbeam",
@@ -2985,6 +2989,7 @@ name = "dma-api"
 version = "0.10.0"
 dependencies = [
  "aarch64-cpu-ext",
+ "ax-runtime",
  "ax-sync",
  "cfg-if",
  "derive_more",
@@ -3678,8 +3683,25 @@ name = "fxmac_rs"
 version = "0.6.2"
 dependencies = [
  "aarch64-cpu 10.0.0",
- "ax-crate-interface",
+ "dma-api",
  "log",
+ "mmio-api",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "generator"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3b854b0e584ead1a33f18b2fcad7cf7be18b3875c78816b753639aa501513ae"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "windows-link",
+ "windows-result",
 ]
 
 [[package]]
@@ -4904,6 +4926,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "loom"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
+dependencies = [
+ "cfg-if",
+ "generator",
+ "scoped-tls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "loongArch64"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5011,6 +5046,15 @@ name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
+
+[[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
 
 [[package]]
 name = "matchit"
@@ -6573,6 +6617,7 @@ version = "0.24.0"
 dependencies = [
  "acpi",
  "ax-lazyinit",
+ "ax-runtime",
  "ax-sync",
  "fdt-edit",
  "fdt-raw",
@@ -6831,6 +6876,7 @@ dependencies = [
 name = "riscv_vplic"
 version = "0.5.0"
 dependencies = [
+ "ax-runtime",
  "ax-sync",
  "axdevice_base",
  "axvm-types",
@@ -6904,6 +6950,7 @@ version = "0.3.0"
 dependencies = [
  "aarch64-cpu-ext",
  "bitflags 2.13.1",
+ "bytemuck",
  "dma-api",
  "log",
  "mbarrier",
@@ -6935,6 +6982,7 @@ dependencies = [
 name = "rockchip-rga"
 version = "0.2.0"
 dependencies = [
+ "bytemuck",
  "dma-api",
  "rdif-base",
  "thiserror 2.0.20",
@@ -6958,6 +7006,7 @@ dependencies = [
 name = "rsext4"
 version = "0.8.0"
 dependencies = [
+ "ax-runtime",
  "ax-sync",
  "bitflags 2.13.1",
  "log",
@@ -7239,6 +7288,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "scoped-tls"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7489,6 +7544,7 @@ dependencies = [
  "ax-memory-addr",
  "ax-sync",
  "axklib",
+ "bytemuck",
  "dma-api",
  "log",
  "thiserror 2.0.20",
@@ -7833,14 +7889,12 @@ dependencies = [
  "ax-alloc",
  "ax-cgroup",
  "ax-cpu",
- "ax-crate-interface",
  "ax-display",
  "ax-driver",
  "ax-fs-ng",
  "ax-hal",
  "ax-input",
  "ax-io",
- "ax-ipi",
  "ax-lazyinit",
  "ax-log",
  "ax-memory-addr",
@@ -7850,13 +7904,13 @@ dependencies = [
  "ax-percpu",
  "ax-runtime",
  "ax-std",
- "ax-task",
  "ax-tracepoint",
  "axbacktrace",
  "axfs-ng-vfs",
  "axklib",
  "axplat-dyn",
  "axpoll",
+ "axpoll-set",
  "axtest",
  "bitflags 2.13.1",
  "bitmaps",
@@ -7870,9 +7924,9 @@ dependencies = [
  "downcast-rs",
  "enum_dispatch",
  "event-listener",
- "extern-trait",
  "flatten_objects",
  "hashbrown 0.16.1",
+ "heapless",
  "indoc",
  "inherit-methods-macro",
  "k230-kpu",
@@ -7884,6 +7938,7 @@ dependencies = [
  "ksym",
  "linux-raw-sys 0.12.1",
  "lock_api",
+ "loom",
  "lwprintf-rs",
  "num_enum",
  "ouroboros",
@@ -7924,6 +7979,7 @@ dependencies = [
  "ax-cpu",
  "ax-runtime",
  "bitflags 2.13.1",
+ "bytemuck",
  "cfg-if",
  "derive_more",
  "event-listener",
@@ -7940,7 +7996,6 @@ name = "starry-vm"
 version = "0.5.14"
 dependencies = [
  "bytemuck",
- "extern-trait",
  "thiserror 2.0.20",
 ]
 
@@ -8730,11 +8785,15 @@ version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
+ "matchers",
  "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
  "sharded-slab",
  "smallvec",
  "thread_local",
  "time",
+ "tracing",
  "tracing-core",
  "tracing-log",
 ]

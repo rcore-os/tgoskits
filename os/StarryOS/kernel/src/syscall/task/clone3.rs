@@ -3,12 +3,12 @@ use core::mem::{self, MaybeUninit};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use bytemuck::AnyBitPattern;
-use starry_vm::{vm_load, vm_read_slice};
 
 use super::clone::{CloneArgs, CloneFlags};
 use crate::{
     StarryError, StarryResult,
     file::{ResolveAtResult, resolve_at},
+    mm::{vm_load, vm_read_slice},
 };
 
 /// Structure passed to clone3() system call.
@@ -30,13 +30,17 @@ pub struct Clone3Args {
 
 const MIN_CLONE_ARGS_SIZE: usize = core::mem::size_of::<u64>() * 8;
 
-fn clone3_check_extra_bytes(args: *const u8, size: usize) -> StarryResult<()> {
+fn clone3_check_extra_bytes(
+    current: &crate::task::UserTaskRef,
+    args: *const u8,
+    size: usize,
+) -> StarryResult<()> {
     let base_size = mem::size_of::<Clone3Args>();
     if size <= base_size {
         return Ok(());
     }
 
-    let extra = vm_load(args.wrapping_add(base_size), size - base_size)?;
+    let extra = vm_load(current, args.wrapping_add(base_size), size - base_size)?;
     if extra.iter().any(|byte| *byte != 0) {
         return Err(StarryError::ArgumentListTooLong);
     }
@@ -81,7 +85,12 @@ impl TryFrom<Clone3Args> for CloneArgs {
     }
 }
 
-pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> StarryResult<isize> {
+pub fn sys_clone3(
+    current: &crate::task::UserTaskRef,
+    uctx: &UserContext,
+    args: *const u8,
+    size: usize,
+) -> crate::StarryResult<isize> {
     debug!("sys_clone3 <= args: {args:p}, size: {size}");
 
     if size > PAGE_SIZE_4K {
@@ -96,12 +105,12 @@ pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> StarryRes
     let read_len = size.min(buffer.len());
     // SAFETY: MaybeUninit<T> is compatible with T, and we're filling in the
     // buffer with bytes read from the user
-    vm_read_slice(args, unsafe {
+    vm_read_slice(current, args, unsafe {
         mem::transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(&mut buffer[..read_len])
     })?;
     let clone3_args: Clone3Args =
         bytemuck::try_pod_read_unaligned(&buffer).map_err(|_| StarryError::InvalidInput)?;
-    clone3_check_extra_bytes(args, size)?;
+    clone3_check_extra_bytes(current, args, size)?;
 
     let clone_args = CloneArgs::try_from(clone3_args)?;
     let requested_cgroup = if clone_args.flags.contains(CloneFlags::INTO_CGROUP) {
@@ -120,7 +129,7 @@ pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> StarryRes
         }
         None
     };
-    clone_args.do_clone_in_cgroup(uctx, requested_cgroup)
+    clone_args.do_clone_in_cgroup(current, uctx, requested_cgroup)
 }
 
 #[cfg(all(test, not(axtest)))]

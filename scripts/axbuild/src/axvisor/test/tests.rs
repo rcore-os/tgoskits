@@ -29,6 +29,23 @@ struct TestVmKernel {
     cmdline: String,
 }
 
+#[derive(serde::Deserialize)]
+struct TestVmOwnershipConfig {
+    kernel: TestVmKernel,
+    devices: TestVmDevices,
+}
+
+#[derive(serde::Deserialize)]
+struct TestVmDevices {
+    #[serde(default)]
+    disabled: Vec<TestVmDevicePath>,
+}
+
+#[derive(serde::Deserialize)]
+struct TestVmDevicePath {
+    path: String,
+}
+
 #[derive(Debug, Eq, PartialEq, serde::Deserialize)]
 struct TestOvmfBuildConfig {
     #[serde(default)]
@@ -1038,6 +1055,44 @@ fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
 }
 
 #[test]
+fn riscv_smp_ipi_keeps_host_pci_root_out_of_guest_firmware() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let vm_path = "os/axvisor/configs/vms/qemu/riscv64/linux-smp3-ipi.toml";
+    let vm: TestVmOwnershipConfig =
+        toml::from_str(&fs::read_to_string(workspace_root.join(vm_path)).unwrap()).unwrap();
+
+    assert!(
+        vm.kernel
+            .cmdline
+            .split_ascii_whitespace()
+            .any(|option| option == "root=/dev/vda"),
+        "{vm_path} should boot the guest from its virtio block device"
+    );
+    assert!(
+        vm.devices
+            .disabled
+            .iter()
+            .any(|device| device.path == "/soc/pci@30000000"),
+        "{vm_path} should exclude the Axvisor host-owned PCI root from guest firmware"
+    );
+
+    let qemu_path = "test-suit/axvisor/normal/qemu-riscv-ipi/smp-ipi/qemu-riscv64.toml";
+    let qemu = load_qemu_config(&workspace_root.join(qemu_path));
+    assert!(
+        qemu_argument_value(&qemu.args, "-append")
+            .split_ascii_whitespace()
+            .any(|option| option == "root=/dev/nvme0n1"),
+        "{qemu_path} should keep the NVMe root device owned by the Axvisor host"
+    );
+    assert!(
+        qemu.args.windows(2).any(|arguments| {
+            arguments[0] == "-device" && arguments[1] == "virtio-blk-device,drive=disk1"
+        }),
+        "{qemu_path} should provide a separate virtio block root device to the guest"
+    );
+}
+
+#[test]
 fn shell_command_failure_regex_ignores_smp_log_interleaving() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
@@ -1220,7 +1275,6 @@ fn qemu_build_groups_preserve_distinct_executable_artifacts() {
     assert_eq!(fs::read(first).unwrap(), b"first VM config");
     assert_eq!(fs::read(second).unwrap(), b"second VM config");
 }
-
 #[test]
 fn qemu_cases_activate_their_build_group_artifact_and_conversion_mode() {
     let first = false;

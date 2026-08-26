@@ -19,11 +19,12 @@ targets = ["aarch64-unknown-none-softfloat"]
 
 [features]
 default = []
-host-test = ["ax-sync/host-test"]
+host-test = ["ax-sync/host-test", "dep:ax-runtime"]
 vgicv3 = []
 
 [dependencies]
 ax-sync.workspace = true
+ax-runtime = { workspace = true, optional = true, features = ["host-test"] }
 axdevice_base = { workspace = true }
 axvm-types = { workspace = true }
 aarch64-cpu = "11.0"

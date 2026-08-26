@@ -1,13 +1,20 @@
 use alloc::{boxed::Box, sync::Arc};
-use core::time::Duration;
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicU8, Ordering},
+    time::Duration,
+};
 
 use ::xhci::{
     extended_capabilities::usb_legacy_support_capability::UsbLegacySupport,
-    registers::doorbell,
+    registers::{
+        doorbell,
+        runtime::{EventRingDequeuePointerRegister, InterrupterManagementRegister},
+    },
     ring::trb::{command, event::CommandCompletion},
 };
-use ax_sync::{SpinLock, SpinRwLock as RwLock};
-use dma_api::{DmaCoherency, DmaDirection};
+use ax_sync::{RawSpinLockGuard, SpinLock, SpinLockGuard, SpinRwLock as RwLock};
+use dma_api::{DeviceDma, DmaDirection};
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
 use usb_if::err::{TransferError, USBError};
@@ -25,10 +32,10 @@ use crate::{
     DeviceAddressInfo, KernelOp, Mmio,
     backend::{
         kmod::{hub::HubOp, kcore::CoreOp, xhci::reg::SlotBell},
-        ty::{DeviceOp, Event, EventHandlerOp},
+        ty::{ControllerIrqState, DeviceOp, Event, EventHandlerOp},
     },
     err::Result,
-    osal::{Kernel, SpinWhile},
+    osal::{Kernel, SpinWhile, narrow_dma_capability},
     queue::Finished,
 };
 
@@ -42,6 +49,8 @@ pub struct Xhci {
     scratchpad_buf_arr: Option<ScratchpadBufferArray>,
     pub(crate) transfer_result_handler: TransferResultHandler,
     root_hub: Option<XhciRootHub>,
+    irq_state: ControllerIrqState,
+    irq_mask: Arc<XhciIrqMaskState>,
 }
 
 impl CoreOp for Xhci {
@@ -53,7 +62,7 @@ impl CoreOp for Xhci {
         )
     }
 
-    fn init<'a>(&'a mut self) -> BoxFuture<'a, core::result::Result<(), USBError>> {
+    fn prepare_controller<'a>(&'a mut self) -> BoxFuture<'a, core::result::Result<(), USBError>> {
         self._init().boxed()
     }
 
@@ -88,7 +97,7 @@ impl CoreOp for Xhci {
 }
 
 impl Xhci {
-    pub fn new(mmio: Mmio, coherency: DmaCoherency, kernel: &'static dyn KernelOp) -> Result<Self> {
+    pub fn new(mmio: Mmio, dma: DeviceDma, runtime: &'static dyn KernelOp) -> Result<Self> {
         let reg = XhciRegisters::new(mmio);
 
         // 检查 xHCI 控制器的寻址能力（HCCPARAMS1 寄存器）
@@ -109,14 +118,7 @@ impl Xhci {
             u32::MAX as usize
         };
 
-        let kernel = Kernel::new(
-            dma_api::DmaDeviceInfo::new(
-                dma_api::DmaDomainId::Direct,
-                coherency,
-                dma_api::DmaConstraints::new(dma_mask as _),
-            ),
-            kernel,
-        );
+        let kernel = Kernel::new(narrow_dma_capability(&dma, dma_mask as u64), runtime);
 
         let reg_shared = Arc::new(RwLock::new(reg.clone()));
 
@@ -134,6 +136,8 @@ impl Xhci {
 
         let transfer_result_handler = TransferResultHandler::new(reg_shared.clone());
         let ports = root_hub.waker();
+        let irq_state = ControllerIrqState::new(false);
+        let irq_mask = Arc::new(XhciIrqMaskState::masked());
 
         Ok(Xhci {
             reg: reg_shared,
@@ -147,15 +151,23 @@ impl Xhci {
                 event_ring,
                 transfer_result_handler,
                 ports,
+                irq_state.clone(),
+                irq_mask.clone(),
             )),
             root_hub: Some(root_hub),
             event_ring_info,
             scratchpad_buf_arr: None,
+            irq_state,
+            irq_mask,
         })
     }
 
     async fn _init(&mut self) -> Result {
-        self.disable_irq();
+        // Runtime interrupter registers are not writable until reset completes
+        // and CNR clears, so mask only the operational global gate here.
+        self.reg.write().operational.usbcmd.update_volatile(|r| {
+            r.clear_interrupter_enable();
+        });
         // 4.2 Host Controller Initialization
         self.init_ext_caps().await?;
         // After Chip Hardware Reset6 wait until the Controller Not Ready (CNR) flag
@@ -190,9 +202,6 @@ impl Xhci {
         mb();
 
         self.wait_for_running().await;
-
-        self.enable_irq();
-        // self.reset_ports().await;
 
         Ok(())
     }
@@ -336,15 +345,45 @@ impl Xhci {
 
     pub fn disable_irq(&mut self) {
         debug!("Disable interrupts");
-        self.reg.write().operational.usbcmd.update_volatile(|r| {
-            r.clear_interrupter_enable();
+        self.irq_state.set_enabled(false, || {
+            self.irq_mask.begin_masking();
+            let mut regs = self.reg.write();
+            let mut primary = regs.interrupter_register_set.interrupter_mut(0);
+            primary
+                .iman
+                .update_volatile(|register| prepare_iman_rearm(register, false));
+            let _flushed = primary.iman.read_volatile();
+            self.irq_mask.finish_masking();
+
+            regs.operational.usbcmd.update_volatile(|r| {
+                r.clear_interrupter_enable();
+            });
         });
     }
 
     pub fn enable_irq(&mut self) {
         debug!("Enable interrupts");
-        self.reg.write().operational.usbcmd.update_volatile(|r| {
-            r.set_interrupter_enable();
+        self.irq_state.set_enabled(true, || {
+            let mut regs = self.reg.write();
+            regs.operational.usbcmd.update_volatile(|r| {
+                r.set_interrupter_enable();
+            });
+            mb();
+
+            if !self.irq_mask.begin_rearm() {
+                return;
+            }
+            let mut primary = regs.interrupter_register_set.interrupter_mut(0);
+            primary
+                .iman
+                .update_volatile(|register| prepare_iman_rearm(register, true));
+            let _flushed = primary.iman.read_volatile();
+            if self.irq_mask.finish_rearm() == RearmCompletion::Remask {
+                primary
+                    .iman
+                    .update_volatile(|register| prepare_iman_rearm(register, false));
+                let _flushed = primary.iman.read_volatile();
+            }
         });
     }
 
@@ -383,20 +422,16 @@ impl Xhci {
             let mut reg = self.reg.write();
             let mut ir0 = reg.interrupter_register_set.interrupter_mut(0);
 
-            debug!("ERDP: {erdp:x}");
-
-            ir0.erdp.update_volatile(|r| {
-                r.set_event_ring_dequeue_pointer(erdp & !0xf);
-                r.set_dequeue_erst_segment_index((erdp & 0x7) as u8);
-                r.clear_event_handler_busy();
-            });
-
             debug!("ERSTZ: {erstz:x}");
             ir0.erstsz.update_volatile(|r| r.set(erstz as _));
             debug!("ERSTBA: {erstba:X}");
             ir0.erstba.update_volatile(|r| {
                 r.set(erstba);
             });
+
+            debug!("ERDP: {erdp:x}");
+            ir0.erdp
+                .update_volatile(|register| prepare_initial_erdp(register, erdp));
 
             ir0.imod.update_volatile(|im| {
                 im.set_interrupt_moderation_interval(0x1F);
@@ -405,16 +440,13 @@ impl Xhci {
         }
 
         {
-            debug!("Enabling primary interrupter.");
+            debug!("Masking primary interrupter during controller prepare.");
             self.reg
                 .write()
                 .interrupter_register_set
                 .interrupter_mut(0)
                 .iman
-                .update_volatile(|im| {
-                    im.set_interrupt_enable();
-                    im.clear_interrupt_pending();
-                });
+                .update_volatile(prepare_iman_initialization);
         }
 
         // Set the HCD state before we enable the irqs
@@ -516,15 +548,141 @@ impl Xhci {
 }
 
 pub struct EventHandler {
-    state: SpinLock<EventHandlerState>,
+    event_reg: UnsafeCell<XhciRegisters>,
+    irq_ack_reg: SpinLock<XhciRegisters>,
+    irq_rearm_reg: UnsafeCell<XhciRegisters>,
     cmd_finished: Finished<CommandCompletion>,
+    event_ring: UnsafeCell<EventRing>,
     transfer_result_handler: TransferResultHandler,
     ports: PortChangeWaker,
+    irq_state: ControllerIrqState,
+    irq_mask: Arc<XhciIrqMaskState>,
+    task_gate: SpinLock<()>,
+    event_gate: SpinLock<()>,
 }
 
-struct EventHandlerState {
-    reg: XhciRegisters,
-    event_ring: EventRing,
+// SAFETY: `task_gate` serializes every task-context entry. `event_gate`
+// additionally protects the event register view and event ring, while the
+// rearm register view is used only under `task_gate`. Hard IRQ owns the
+// independently mapped acknowledgement view behind `irq_ack_reg`; it touches
+// only USBSTS and IMAN. `irq_mask` orders the one shared IMAN hardware field
+// across acknowledgement and rearm.
+unsafe impl Send for EventHandler {}
+unsafe impl Sync for EventHandler {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum XhciIrqMaskPhase {
+    Unmasked = 0,
+    Masking  = 1,
+    Masked   = 2,
+    Rearming = 3,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RearmCompletion {
+    Unmasked,
+    Remask,
+}
+
+struct XhciIrqMaskState {
+    phase: AtomicU8,
+}
+
+fn prepare_iman_rearm(register: &mut InterrupterManagementRegister, enabled: bool) {
+    // IP is RW1C. Rearm/disable must write zero so an event that arrived while
+    // the source was masked remains pending and is delivered after IE opens.
+    register.set_0_interrupt_pending();
+    if enabled {
+        register.set_interrupt_enable();
+    } else {
+        register.clear_interrupt_enable();
+    }
+}
+
+fn prepare_iman_initialization(register: &mut InterrupterManagementRegister) {
+    register.set_0_interrupt_pending();
+    register.clear_interrupt_enable();
+}
+
+fn prepare_initial_erdp(register: &mut EventRingDequeuePointerRegister, erdp: u64) {
+    register.set_event_ring_dequeue_pointer(erdp & !0xf);
+    register.set_dequeue_erst_segment_index((erdp & 0x7) as u8);
+    // EHB is RW1C. Writing zero keeps a pending handler-busy indication.
+    register.set_0_event_handler_busy();
+}
+
+impl XhciIrqMaskState {
+    #[cfg(test)]
+    const fn unmasked() -> Self {
+        Self {
+            phase: AtomicU8::new(XhciIrqMaskPhase::Unmasked as u8),
+        }
+    }
+
+    const fn masked() -> Self {
+        Self {
+            phase: AtomicU8::new(XhciIrqMaskPhase::Masked as u8),
+        }
+    }
+
+    fn begin_masking(&self) {
+        self.phase
+            .store(XhciIrqMaskPhase::Masking as u8, Ordering::Release);
+    }
+
+    fn finish_masking(&self) {
+        self.phase
+            .store(XhciIrqMaskPhase::Masked as u8, Ordering::Release);
+    }
+
+    fn begin_rearm(&self) -> bool {
+        self.phase
+            .compare_exchange(
+                XhciIrqMaskPhase::Masked as u8,
+                XhciIrqMaskPhase::Rearming as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn cancel_rearm(&self) {
+        let _result = self.phase.compare_exchange(
+            XhciIrqMaskPhase::Rearming as u8,
+            XhciIrqMaskPhase::Masked as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn finish_rearm(&self) -> RearmCompletion {
+        if self
+            .phase
+            .compare_exchange(
+                XhciIrqMaskPhase::Rearming as u8,
+                XhciIrqMaskPhase::Unmasked as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            RearmCompletion::Unmasked
+        } else {
+            RearmCompletion::Remask
+        }
+    }
+
+    #[cfg(test)]
+    fn phase(&self) -> XhciIrqMaskPhase {
+        match self.phase.load(Ordering::Acquire) {
+            value if value == XhciIrqMaskPhase::Unmasked as u8 => XhciIrqMaskPhase::Unmasked,
+            value if value == XhciIrqMaskPhase::Masking as u8 => XhciIrqMaskPhase::Masking,
+            value if value == XhciIrqMaskPhase::Masked as u8 => XhciIrqMaskPhase::Masked,
+            value if value == XhciIrqMaskPhase::Rearming as u8 => XhciIrqMaskPhase::Rearming,
+            _ => unreachable!("invalid xHCI IRQ mask phase"),
+        }
+    }
 }
 
 impl EventHandler {
@@ -534,20 +692,38 @@ impl EventHandler {
         event_ring: EventRing,
         transfer_result_handler: TransferResultHandler,
         ports: PortChangeWaker,
+        irq_state: ControllerIrqState,
+        irq_mask: Arc<XhciIrqMaskState>,
     ) -> Self {
         Self {
-            state: SpinLock::new(EventHandlerState { reg, event_ring }),
+            event_reg: UnsafeCell::new(reg.clone()),
+            irq_ack_reg: SpinLock::new(reg.clone()),
+            irq_rearm_reg: UnsafeCell::new(reg),
             cmd_finished,
+            event_ring: UnsafeCell::new(event_ring),
             transfer_result_handler,
             ports,
+            irq_state,
+            irq_mask,
+            task_gate: SpinLock::new(()),
+            event_gate: SpinLock::new(()),
         }
     }
 
-    fn update_erdp(state: &mut EventHandlerState, clear_ehb: bool) {
-        let erdp = state.event_ring.erdp();
-        let segment_index = state.event_ring.segment_index();
-        state
-            .reg
+    #[allow(clippy::mut_from_ref)]
+    fn event_ring(&self, _guard: &SpinLockGuard<'_, ()>) -> &mut EventRing {
+        // SAFETY: the private entry points can obtain this guard only from
+        // `register_gate`, which serializes every event-ring access.
+        unsafe { &mut *self.event_ring.get() }
+    }
+
+    fn update_erdp(&self, guard: &SpinLockGuard<'_, ()>, clear_ehb: bool) {
+        let erdp = self.event_ring(guard).erdp();
+        let segment_index = self.event_ring(guard).segment_index();
+        // SAFETY: `guard` proves that `event_gate` serializes this register
+        // view. It accesses only ERDP, disjoint from the hard-IRQ USBSTS/IMAN
+        // endpoint.
+        unsafe { &mut *self.event_reg.get() }
             .interrupter_register_set
             .interrupter_mut(0)
             .erdp
@@ -562,7 +738,7 @@ impl EventHandler {
             });
     }
 
-    fn clean_event_ring(&self, state: &mut EventHandlerState) -> Event {
+    fn clean_event_ring(&self, guard: &SpinLockGuard<'_, ()>) -> Event {
         use xhci::ring::trb::event::Allowed;
         let mut event = Event::Nothing;
         let mut command_events = 0usize;
@@ -572,7 +748,7 @@ impl EventHandler {
         let mut controller_fault = false;
         let mut event_loop = 0usize;
 
-        while let Some(allowed) = state.event_ring.next() {
+        while let Some(allowed) = self.event_ring(guard).next() {
             match allowed {
                 Allowed::CommandCompletion(c) => {
                     command_events += 1;
@@ -629,7 +805,7 @@ impl EventHandler {
             }
             event_loop += 1;
             if event_loop > super::ring::TRBS_PER_SEGMENT / 2 {
-                Self::update_erdp(state, false);
+                self.update_erdp(guard, false);
                 event_loop = 0;
             }
         }
@@ -639,7 +815,7 @@ impl EventHandler {
             port_events,
             transfer_events,
             other_events,
-            state.event_ring.erst_dequeue_pointer()
+            self.event_ring(guard).erst_dequeue_pointer()
         );
         if controller_fault {
             event = Event::Stopped;
@@ -653,60 +829,161 @@ impl EventHandler {
 }
 
 impl EventHandlerOp for EventHandler {
-    fn handle_event(&self) -> Event {
-        let mut res = Event::Nothing;
-        let mut state = self.state.lock();
-        let sts = state.reg.operational.usbsts.read_volatile();
+    fn acknowledge_irq(&self) -> bool {
+        let Some(mut irq_reg): Option<RawSpinLockGuard<'_, XhciRegisters>> = (unsafe {
+            // SAFETY: hard IRQ is the only context which accesses this
+            // independently mapped acknowledgement endpoint. Interrupt and
+            // preemption exclusion are therefore already owned by the caller.
+            self.irq_ack_reg.try_lock_raw()
+        }) else {
+            // Only another acknowledgement can own this endpoint. That owner
+            // will mask and acknowledge the same level-triggered source.
+            return false;
+        };
+        let sts = irq_reg.operational.usbsts.read_volatile();
         let has_event_interrupt = sts.event_interrupt();
-        let has_pending_event = state.event_ring.has_pending_event();
 
-        if !has_event_interrupt && !has_pending_event {
-            return res;
+        if !has_event_interrupt {
+            return false;
         }
 
-        {
-            let irq = state.reg.interrupter_register_set.interrupter_mut(0);
-            let iman = irq.iman.read_volatile();
-            let erdp = irq.erdp.read_volatile();
-            if has_event_interrupt {
-                trace!(
-                    "xhci: handle_event USBSTS.EINT=1 IMAN.IP={} IMAN.IE={} EHB={} ERDP={:#x} \
-                     sw_erdp={:#x}",
-                    iman.interrupt_pending(),
-                    iman.interrupt_enable(),
-                    erdp.event_handler_busy(),
-                    erdp.event_ring_dequeue_pointer(),
-                    state.event_ring.erst_dequeue_pointer()
-                );
-            } else {
-                trace!(
-                    "xhci: handle_event draining pending event with USBSTS.EINT=0 IMAN.IP={} \
-                     IMAN.IE={} EHB={} ERDP={:#x} sw_erdp={:#x}",
-                    iman.interrupt_pending(),
-                    iman.interrupt_enable(),
-                    erdp.event_handler_busy(),
-                    erdp.event_ring_dequeue_pointer(),
-                    state.event_ring.erst_dequeue_pointer()
-                );
-            }
-        }
-
-        if has_event_interrupt {
-            state.reg.operational.usbsts.update_volatile(|r| {
-                r.clear_event_interrupt();
-            });
-        }
-
-        // 【关键】GIC 中断模式下，需要手动清除 IMAN.IP
-        // 参考: Linux xhci_irq() in xhci-ring.c:3054-3059
-        let mut irq = state.reg.interrupter_register_set.interrupter_mut(0);
-        irq.iman.update_volatile(|r| {
-            r.clear_interrupt_pending();
+        self.irq_mask.begin_masking();
+        irq_reg.operational.usbsts.update_volatile(|r| {
+            r.clear_event_interrupt();
         });
 
-        res = self.clean_event_ring(&mut state);
-        Self::update_erdp(&mut state, true);
+        // GIC level delivery requires clearing IMAN.IP explicitly, matching
+        // Linux xhci_irq() after USBSTS.EINT is acknowledged.
+        let mut irq = irq_reg.interrupter_register_set.interrupter_mut(0);
+        irq.iman.update_volatile(|r| {
+            r.clear_interrupt_enable();
+            r.clear_interrupt_pending();
+        });
+        // Match Linux xhci_disable_interrupter(): IMAN may be posted MMIO, so
+        // do not publish Masked until the write has reached the controller.
+        let _flushed = irq.iman.read_volatile();
+        self.irq_mask.finish_masking();
+        true
+    }
 
-        res
+    fn drain_event(&self) -> Event {
+        let _task_guard = self.task_gate.lock();
+        let event_guard = self.event_gate.lock();
+        let event = if self.event_ring(&event_guard).has_pending_event() {
+            self.clean_event_ring(&event_guard)
+        } else {
+            Event::Nothing
+        };
+        self.update_erdp(&event_guard, true);
+        event
+    }
+
+    fn rearm_irq(&self) {
+        let _task_guard = self.task_gate.lock();
+        if !self.irq_mask.begin_rearm() {
+            return;
+        }
+        self.irq_state.apply_enabled(|enabled| {
+            mb();
+            // SAFETY: `_task_guard` serializes rearm calls. IMAN sharing with
+            // hard IRQ is governed by `irq_mask`, and each side owns a
+            // distinct accessor.
+            let mut irq = unsafe { &mut *self.irq_rearm_reg.get() }
+                .interrupter_register_set
+                .interrupter_mut(0);
+            irq.iman
+                .update_volatile(|register| prepare_iman_rearm(register, enabled));
+            // Match Linux xhci_enable_interrupter()/disable_interrupter().
+            // The state transition must not outrun a posted IMAN write.
+            let _flushed = irq.iman.read_volatile();
+
+            if !enabled {
+                self.irq_mask.cancel_rearm();
+            } else if self.irq_mask.finish_rearm() == RearmCompletion::Remask {
+                // A new hard acknowledgement won while IMAN was being
+                // enabled. Reconcile the hardware with its Masking/Masked
+                // publication before releasing task ownership.
+                irq.iman
+                    .update_volatile(|register| prepare_iman_rearm(register, false));
+                let _flushed = irq.iman.read_volatile();
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acknowledgement_during_rearm_requires_a_final_hardware_mask() {
+        let state = XhciIrqMaskState::masked();
+        assert!(state.begin_rearm());
+
+        state.begin_masking();
+        state.finish_masking();
+
+        assert_eq!(state.finish_rearm(), RearmCompletion::Remask);
+        assert_eq!(state.phase(), XhciIrqMaskPhase::Masked);
+    }
+
+    #[test]
+    fn stale_rearm_cannot_enter_while_acknowledgement_is_masking() {
+        let state = XhciIrqMaskState::unmasked();
+        state.begin_masking();
+
+        assert!(!state.begin_rearm());
+        state.finish_masking();
+        assert!(state.begin_rearm());
+    }
+
+    #[test]
+    fn rearm_write_preserves_a_new_hardware_pending_bit() {
+        // SAFETY: InterrupterManagementRegister is repr(transparent) over u32.
+        let mut register = unsafe { core::mem::transmute::<u32, InterrupterManagementRegister>(1) };
+
+        prepare_iman_rearm(&mut register, true);
+
+        // SAFETY: InterrupterManagementRegister is repr(transparent) over u32.
+        let write_value =
+            unsafe { core::mem::transmute::<InterrupterManagementRegister, u32>(register) };
+        assert_eq!(
+            write_value & 1,
+            0,
+            "RW1C IP must be written as zero so rearm cannot consume a new event"
+        );
+    }
+
+    #[test]
+    fn initial_interrupter_setup_keeps_source_masked() {
+        // SAFETY: InterrupterManagementRegister is repr(transparent) over u32.
+        let mut register = unsafe { core::mem::transmute::<u32, InterrupterManagementRegister>(0) };
+
+        prepare_iman_initialization(&mut register);
+
+        // SAFETY: InterrupterManagementRegister is repr(transparent) over u32.
+        let write_value =
+            unsafe { core::mem::transmute::<InterrupterManagementRegister, u32>(register) };
+        assert_eq!(write_value & 0b10, 0, "prepare must leave IMAN.IE masked");
+    }
+
+    #[test]
+    fn initial_interrupter_setup_preserves_pending_and_ehb() {
+        // SAFETY: Both xHCI register wrappers are repr(transparent) over their
+        // corresponding integer register widths.
+        let mut iman = unsafe { core::mem::transmute::<u32, InterrupterManagementRegister>(1) };
+        let mut erdp =
+            unsafe { core::mem::transmute::<u64, EventRingDequeuePointerRegister>(1 << 3) };
+
+        prepare_iman_initialization(&mut iman);
+        prepare_initial_erdp(&mut erdp, 0x1000);
+
+        // SAFETY: See the representation argument above.
+        let iman_write =
+            unsafe { core::mem::transmute::<InterrupterManagementRegister, u32>(iman) };
+        let erdp_write =
+            unsafe { core::mem::transmute::<EventRingDequeuePointerRegister, u64>(erdp) };
+        assert_eq!(iman_write & 1, 0, "prepare must not acknowledge IMAN.IP");
+        assert_eq!(erdp_write & (1 << 3), 0, "prepare must not clear ERDP.EHB");
     }
 }

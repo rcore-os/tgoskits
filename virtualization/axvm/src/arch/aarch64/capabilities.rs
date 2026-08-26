@@ -7,8 +7,6 @@ use ax_memory_addr::VirtAddr;
 use super::Aarch64Arch;
 use crate::{architecture::*, *};
 
-impl HostTimePlatform for Aarch64Arch {}
-
 impl Architecture for Aarch64Arch {}
 
 impl MachinePlatform for Aarch64Arch {

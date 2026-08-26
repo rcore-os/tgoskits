@@ -1160,6 +1160,40 @@ mod tests {
     }
 
     #[test]
+    fn generated_fdt_exclusion_overrides_default_root_passthrough() {
+        let mut host = test_fdt("cpu@0=0");
+        let soc = host.add_node(host.root_id(), Node::new("soc"));
+        let pci = host.add_node(soc, Node::new("pci@30000000"));
+        host.add_node(pci, Node::new("nvme@0"));
+        host.add_node(soc, Node::new("virtio_mmio@10001000"));
+        let vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            phys_cpu_ls: PhysCpuList::new(1, Some(std::vec![0]), None),
+            pass_through_devices: std::vec![HostDeviceAssignment {
+                name: "/".into(),
+                ..Default::default()
+            }],
+            excluded_devices: std::vec![std::vec!["/soc/pci@30000000".into()]],
+            ..Default::default()
+        });
+        let passthrough_devices = find_all_passthrough_devices(&vm_cfg, &host);
+        let cfg = GuestConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(std::vec![0]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let dtb = super::create_guest_fdt(&host, &passthrough_devices, &cfg).unwrap();
+        let guest = Fdt::from_bytes(&dtb).unwrap();
+
+        assert!(guest.get_by_path_id("/soc").is_some());
+        assert!(guest.get_by_path_id("/soc/virtio_mmio@10001000").is_some());
+        assert!(guest.get_by_path_id("/soc/pci@30000000").is_none());
+        assert!(guest.get_by_path_id("/soc/pci@30000000/nvme@0").is_none());
+    }
+
+    #[test]
     fn generated_fdt_keeps_psci_firmware_node() {
         let mut fdt = test_fdt("cpu@0=0");
         let psci = fdt.add_node(fdt.root_id(), Node::new("psci"));

@@ -23,6 +23,9 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 ax-sync = { path = "../../os/arceos/modules/axsync", features = ["host-test"] }
+# Host lib tests must link the external spin provider; this crate contains
+# no in-crate host lock engine.
+ax-runtime = { path = "../../os/arceos/modules/axruntime", features = ["host-test"] }
 
 [package.metadata.docs.rs]
 default-target = ["riscv64gc-unknown-none-elf"]

@@ -7,7 +7,6 @@ use std::{
 };
 
 use ax_runtime::sync::SpinLock;
-use extern_trait::extern_trait;
 use starry_signal::api::{ProcessSignalManager, SignalActions, ThreadSignalManager};
 use starry_vm::{VmError, VmIo, VmResult};
 
@@ -29,15 +28,9 @@ pub fn initial_sp() -> usize {
     pool.as_ptr() as usize + offset + TEST_STACK_SIZE
 }
 
-struct Vm(MutexGuard<'static, Box<[u8]>>);
+pub struct Vm(MutexGuard<'static, Box<[u8]>>);
 
-#[extern_trait]
 unsafe impl VmIo for Vm {
-    fn new() -> Self {
-        let pool = POOL.lock().unwrap();
-        Vm(pool)
-    }
-
     fn read(&mut self, start: usize, buf: &mut [MaybeUninit<u8>]) -> VmResult {
         let base = self.0.as_ptr() as usize;
         let offset = start.checked_sub(base).ok_or(VmError::BadAddress)?;
@@ -59,6 +52,10 @@ unsafe impl VmIo for Vm {
         slice.copy_from_slice(buf);
         Ok(())
     }
+}
+
+pub fn vm() -> Vm {
+    Vm(POOL.lock().unwrap())
 }
 
 pub const TID: u32 = 7;

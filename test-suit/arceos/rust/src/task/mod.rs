@@ -1,13 +1,25 @@
 #[cfg(feature = "task-affinity")]
 pub mod affinity;
+#[cfg(feature = "task-fair-idle-pull")]
+pub mod fair_idle_pull;
+#[cfg(feature = "task-fair-wake-idle-sibling")]
+pub mod fair_wake_idle_sibling;
 #[cfg(feature = "task-ipi")]
 pub mod ipi;
 #[cfg(feature = "task-irq")]
 pub mod irq;
+#[cfg(feature = "task-kernel-timer")]
+pub mod kernel_timer;
 #[cfg(feature = "task-parallel")]
 pub mod parallel;
+#[cfg(feature = "task-pi-mutex")]
+pub mod pi_mutex;
+#[cfg(feature = "task-preempt-guard")]
+pub mod preempt_guard;
 #[cfg(any(feature = "task-priority", feature = "sched-cfs", feature = "sched-rr"))]
 pub mod priority;
+#[cfg(feature = "task-rt-policy")]
+pub mod rt_policy;
 #[cfg(feature = "task-sleep")]
 pub mod sleep;
 #[cfg(feature = "task-smp-online")]

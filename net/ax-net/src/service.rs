@@ -16,11 +16,11 @@
 //!    - Acquired during poll, socket operations, and state queries
 //!    - ⚠️ Never acquire SERVICE while holding this lock
 //!
-//! 3. **TCP_BOUND_PORTS** (`Mutex<HashMap<u16, Vec<...>>>`)
+//! 3. **TCP_BOUND_PORTS** (`SpinLock<HashMap<u16, Vec<...>>>`)
 //!    - Tracks TCP bind() registrations
 //!    - Hold duration: registration/unregistration only
 //!
-//! 4. **Per-port LISTEN_TABLE buckets** (`Arc<Mutex<Vec<ListenTableEntryInner>>>`)
+//! 4. **Per-port LISTEN_TABLE buckets** (`Arc<SpinLock<Vec<ListenTableEntryInner>>>`)
 //!    - Innermost, most granular (one mutex per TCP port)
 //!
 //! **Acquisition order rule:**
@@ -57,14 +57,10 @@
 //! ```
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
-use core::{
-    pin::Pin,
-    task::{Context, Waker},
-};
+use core::task::Waker;
 
-use ax_hal::time::{NANOS_PER_MICROS, TimeValue, monotonic_time_nanos, wall_time_nanos};
+use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos, wall_time_nanos};
 use ax_sync::SpinRwLock as RwLock;
-use ax_task::future::sleep_until;
 use smoltcp::{
     iface::{Interface, PollResult, SocketSet},
     phy::ChecksumCapabilities,
@@ -76,6 +72,8 @@ use smoltcp::{
     },
 };
 
+#[cfg(all(axtest, feature = "axtest"))]
+use crate::device::LoopbackDevice;
 use crate::{
     NetError, NetResult, SOCKET_SET,
     addr::mask_from_prefix,
@@ -86,7 +84,7 @@ use crate::{
     consts::STANDARD_MTU,
     device::{ArpEntry, EthernetDevice},
     dhcp_server::{DhcpServer, parse_dhcp_packet},
-    router::{NetDevStats, RouteDecision, Router, SharedRouteTable},
+    router::{NetDevStats, PreparedDeviceWorkers, RouteDecision, Router, SharedRouteTable},
 };
 
 fn now() -> Instant {
@@ -306,7 +304,12 @@ pub struct Service {
 
 struct TimeoutRegistration {
     deadline: Instant,
-    _future: Pin<Box<dyn Future<Output = ()> + Send>>,
+    waker: Waker,
+}
+
+pub(crate) struct ServicePoll {
+    pub(crate) progressed: bool,
+    pub(crate) expired_wakers: Vec<Waker>,
 }
 
 #[derive(Clone)]
@@ -573,8 +576,44 @@ impl Service {
             },
             routes,
         );
-        self.router.start_device_workers(dev);
         dev
+    }
+
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) fn register_test_loopback(
+        &mut self,
+        name: String,
+        cidr: Ipv4Cidr,
+    ) -> (InterfaceId, PreparedDeviceWorkers) {
+        if self.control.contains_interface_name(&name) {
+            panic!("interface name conflict: {name}");
+        }
+
+        let interface_id = self.control.allocate_interface_id();
+        let metric = 100;
+        let dev = self
+            .router
+            .add_device(interface_id, Box::new(LoopbackDevice::new()));
+        let routes = self
+            .router
+            .ipv4_rules(dev, interface_id, metric, Some(cidr), None);
+        Self::set_interface_ipv4(&mut self.iface, None, Some(cidr));
+        self.control.add_interface(
+            NetInterface {
+                id: interface_id,
+                name,
+                kind: InterfaceKind::Ethernet,
+                mac: None,
+                ipv4: Some(cidr),
+                gateway: None,
+                mtu: STANDARD_MTU,
+                metric,
+                flags: InterfaceFlags::UP | InterfaceFlags::RUNNING,
+            },
+            routes,
+        );
+
+        (interface_id, self.router.prepare_device_workers_for(dev))
     }
 
     pub fn enable_dhcp(
@@ -789,8 +828,9 @@ impl Service {
         self.dhcp.iter().any(|state| state.address.is_some())
     }
 
-    pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
+    pub fn poll(&mut self, sockets: &mut SocketSet) -> ServicePoll {
         let timestamp = now();
+        let expired_wakers = self.take_expired_timeout_wakers(timestamp);
         let mut dhcp_events = core::mem::take(&mut self.dhcp_events);
         let mut dhcp_server_replies = core::mem::take(&mut self.dhcp_server_replies);
         dhcp_events.clear();
@@ -837,15 +877,38 @@ impl Service {
         // Reap orphaned TCP sockets using the SocketSet already held by poll_until_idle().
         crate::orphan::reap_orphans(timestamp, sockets);
 
-        self.router.dispatch(timestamp, sockets)
+        let progressed = self.router.dispatch(timestamp, sockets)
             || dhcp_poll_next
             || dhcp_server_sent
             || socket_state_changed
-            || router_rx_pending
+            || router_rx_pending;
+        ServicePoll {
+            progressed,
+            expired_wakers,
+        }
     }
 
     pub fn next_poll_at(&mut self, sockets: &SocketSet) -> Option<Instant> {
-        self.iface.poll_at(now(), sockets)
+        let interface_deadline = self.iface.poll_at(now(), sockets);
+        let timeout_deadline = self.timeouts.iter().map(|timeout| timeout.deadline).min();
+        match (interface_deadline, timeout_deadline) {
+            (Some(interface), Some(timeout)) => Some(interface.min(timeout)),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
+        }
+    }
+
+    fn take_expired_timeout_wakers(&mut self, timestamp: Instant) -> Vec<Waker> {
+        let registrations = core::mem::take(&mut self.timeouts);
+        let mut expired = Vec::new();
+        for registration in registrations {
+            if registration.deadline <= timestamp {
+                expired.push(registration.waker);
+            } else {
+                self.timeouts.push(registration);
+            }
+        }
+        expired
     }
 
     fn poll_dhcp(&mut self, timestamp: Instant) -> bool {
@@ -993,33 +1056,23 @@ impl Service {
         self.router.wake_all_devices();
     }
 
-    pub fn register_waker(&mut self, binding: DeviceBinding, waker: &Waker) {
+    pub fn register_timeout_waker(&mut self, waker: &Waker) {
         let next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
 
-        if let Some(t) = next {
-            let next = TimeValue::from_micros(t.total_micros() as _);
-
-            let mut fut = Box::pin(sleep_until(next));
-            let mut cx = Context::from_waker(waker);
-
-            if fut.as_mut().poll(&mut cx).is_ready() {
-                waker.wake_by_ref();
-                return;
-            } else {
-                let now = now();
-                self.timeouts.retain(|timeout| timeout.deadline > now);
-                self.timeouts.push(TimeoutRegistration {
-                    deadline: t,
-                    _future: fut,
-                });
-            }
+        if let Some(deadline) = next {
+            self.timeouts.push(TimeoutRegistration {
+                deadline,
+                waker: waker.clone(),
+            });
         }
-
-        self.router.register_waker(binding, waker);
     }
 
-    pub fn register_device_waker(&mut self, waker: &Waker) {
-        self.router.register_device_waker(waker);
+    pub(crate) fn prepare_device_workers(&self) -> PreparedDeviceWorkers {
+        self.router.prepare_device_workers()
+    }
+
+    pub(crate) fn prepare_device_workers_for(&self, dev: usize) -> PreparedDeviceWorkers {
+        self.router.prepare_device_workers_for(dev)
     }
 }
 

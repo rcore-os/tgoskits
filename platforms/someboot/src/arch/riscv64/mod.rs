@@ -393,6 +393,7 @@ impl SystimerArch for Arch {
     fn systimer_enable() {
         // Only bring the timer source into a known idle state here.
         // IRQ masking/unmasking is controlled separately by the timer core.
+        Self::systimer_irq_disable();
         let _ = sbi::set_timer(u64::MAX);
     }
 
@@ -428,6 +429,11 @@ impl SystimerArch for Arch {
         let now = Self::systimer_tick() as u64;
         let next = crate::timer::riscv64_interval::absolute_deadline(now, ticks as u64);
         let _ = sbi::set_timer(next);
+    }
+
+    fn systimer_cancel_oneshot() {
+        Self::systimer_irq_disable();
+        let _ = sbi::set_timer(crate::timer::riscv64_interval::stopped_deadline());
     }
 }
 

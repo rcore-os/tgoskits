@@ -76,12 +76,7 @@ impl Cv181xSdhci {
     }
 
     pub fn restore_ds_hs_phy(&mut self) {
-        let registers = self.mmio.core_registers();
-        registers.mshc_ctrl.modify(
-            MSHC_CTRL::DS_HS_BIT_1::SET + MSHC_CTRL::DS_HS_BIT_8::SET + MSHC_CTRL::DS_HS_BIT_9::SET,
-        );
-        registers.phy_tx_rx_dly.set(PHY_TX_RX_DLY_DS_HS);
-        registers.phy_config.set(PHY_CONFIG_DS_HS);
+        restore_ds_hs_phy(self.mmio);
     }
 
     fn update_top_power(&mut self, low_bits: u32) {
@@ -94,10 +89,19 @@ impl Cv181xSdhci {
     pub(super) fn apply_after(&mut self, after: AfterBusOp) -> Result<(), sdio_host2::Error> {
         match after {
             AfterBusOp::None => Ok(()),
-            AfterBusOp::PowerOn | AfterBusOp::ResetAll => {
+            AfterBusOp::PowerOn => {
                 self.configure_sd_power_on();
                 Ok(())
             }
         }
     }
+}
+
+pub(super) fn restore_ds_hs_phy(mmio: Cv181xMmio) {
+    let registers = mmio.core_registers();
+    registers.mshc_ctrl.modify(
+        MSHC_CTRL::DS_HS_BIT_1::SET + MSHC_CTRL::DS_HS_BIT_8::SET + MSHC_CTRL::DS_HS_BIT_9::SET,
+    );
+    registers.phy_tx_rx_dly.set(PHY_TX_RX_DLY_DS_HS);
+    registers.phy_config.set(PHY_CONFIG_DS_HS);
 }

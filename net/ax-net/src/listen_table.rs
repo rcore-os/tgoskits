@@ -32,8 +32,9 @@
 use alloc::{collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::task::Waker;
 
-use ax_sync::Mutex;
-use axpoll::{IoEvents, PollSet};
+use ax_sync::SpinLock;
+use axpoll::IoEvents;
+use axpoll_set::PollSet;
 use hashbrown::HashMap;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
@@ -112,18 +113,18 @@ impl ListenTableEntryInner {
     }
 }
 
-type ListenTableEntry = Arc<Mutex<Vec<ListenTableEntryInner>>>;
+type ListenTableEntry = Arc<SpinLock<Vec<ListenTableEntryInner>>>;
 
 /// Per-port table of active TCP listeners.
 pub struct ListenTable {
-    tcp: Mutex<HashMap<u16, ListenTableEntry>>,
+    tcp: SpinLock<HashMap<u16, ListenTableEntry>>,
 }
 
 impl ListenTable {
     /// Creates an empty listen table indexed by TCP port.
     pub fn new() -> Self {
         Self {
-            tcp: Mutex::new(HashMap::new()),
+            tcp: SpinLock::new(HashMap::new()),
         }
     }
 

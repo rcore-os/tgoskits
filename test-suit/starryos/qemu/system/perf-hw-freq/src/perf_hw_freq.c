@@ -21,6 +21,7 @@
 #endif
 
 #include <errno.h>
+#include <sched.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -137,6 +138,13 @@ static int fail(const char *reason) {
     return 1;
 }
 
+static int pin_cpu(unsigned int cpu) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    return sched_setaffinity(0, sizeof(set), &set);
+}
+
 int main(void) {
 #if !defined(__aarch64__)
     /* Hardware-PMU perf is aarch64-only (ARM PMUv3); skip-as-pass on other
@@ -144,6 +152,16 @@ int main(void) {
     printf("STARRY_PERF_FREQ_OK\n");
     return 0;
 #endif
+    /*
+     * Open and arm on CPU 0, then force disable/close to run on CPU 1. The PMU
+     * slot and its overflow registry must still be quiesced by CPU 0's owner
+     * worker. Returning to CPU 0 after close makes a stale slot fail
+     * deterministically instead of relying on incidental scheduler migration.
+     */
+    if (pin_cpu(0) != 0) {
+        return fail("pin cpu0 before open");
+    }
+
     struct perf_event_attr attr;
     memset(&attr, 0, sizeof(attr));
     attr.type = PERF_TYPE_RAW;
@@ -153,7 +171,7 @@ int main(void) {
     attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_PERIOD;
     attr.flags = PERF_ATTR_FLAG_DISABLED | PERF_ATTR_FLAG_FREQ;
 
-    /* System-wide on cpu0 (single-core under test): samples whatever runs. */
+    /* System-wide on CPU 0: samples whatever runs there. */
     long fd = perf_event_open(&attr, -1, 0, -1, 0ul);
     if (fd < 0) {
         char msg[96];
@@ -180,7 +198,16 @@ int main(void) {
         spin += i;
     }
     (void)spin;
-    (void)ioctl(efd, PERF_EVENT_IOC_DISABLE, 0);
+    if (pin_cpu(1) != 0) {
+        munmap(base, PERF_MMAP_TOTAL_BYTES);
+        close(efd);
+        return fail("pin cpu1 before disable");
+    }
+    if (ioctl(efd, PERF_EVENT_IOC_DISABLE, 0) != 0) {
+        munmap(base, PERF_MMAP_TOTAL_BYTES);
+        close(efd);
+        return fail("remote ioctl(DISABLE)");
+    }
 
     uint64_t data_head = meta->data_head;
     __sync_synchronize();
@@ -234,6 +261,18 @@ int main(void) {
 
     munmap(base, PERF_MMAP_TOTAL_BYTES);
     close(efd);
+    if (pin_cpu(0) != 0) {
+        return fail("pin cpu0 after close");
+    }
+    /*
+     * A legacy current-CPU unregister left CPU 0's counter and wake pointer
+     * armed. This bounded post-close load reliably triggered that stale IRQ.
+     */
+    spin = 0;
+    for (uint64_t i = 0; i < 20000000ull; i++) {
+        spin += i;
+    }
+    (void)spin;
     if (rc == 0) {
         printf("STARRY_PERF_FREQ_OK\n");
         return 0;

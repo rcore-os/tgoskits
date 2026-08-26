@@ -16,14 +16,29 @@
 #error "__NR_setdomainname is required by this test"
 #endif
 
-static long raw_sethostname(unsigned long len)
+#define _LINUX_CAPABILITY_VERSION_3 0x20080522
+#define _LINUX_CAPABILITY_U32S_3 2
+#define CAP_SYS_ADMIN 21
+
+struct __user_cap_header_struct {
+    uint32_t version;
+    int pid;
+};
+
+struct __user_cap_data_struct {
+    uint32_t effective;
+    uint32_t permitted;
+    uint32_t inheritable;
+};
+
+static long raw_sethostname(const char *name, unsigned long len)
 {
-    return syscall(__NR_sethostname, NULL, len);
+    return syscall(__NR_sethostname, name, len);
 }
 
-static long raw_setdomainname(unsigned long len)
+static long raw_setdomainname(const char *name, unsigned long len)
 {
-    return syscall(__NR_setdomainname, NULL, len);
+    return syscall(__NR_setdomainname, name, len);
 }
 
 static int check_permission_error(const char *name, long result)
@@ -38,6 +53,34 @@ static int check_permission_error(const char *name, long result)
 
 static int child_test(void)
 {
+    struct __user_cap_header_struct header = {
+        .version = _LINUX_CAPABILITY_VERSION_3,
+        .pid = 0,
+    };
+    struct __user_cap_data_struct capabilities[_LINUX_CAPABILITY_U32S_3] = {0};
+    if (syscall(SYS_capget, &header, capabilities) != 0) {
+        fprintf(stderr, "FAIL: capget: errno=%d (%s)\n", errno, strerror(errno));
+        return 1;
+    }
+    capabilities[CAP_SYS_ADMIN / 32].effective &= ~(1U << (CAP_SYS_ADMIN % 32));
+    capabilities[CAP_SYS_ADMIN / 32].permitted &= ~(1U << (CAP_SYS_ADMIN % 32));
+    if (syscall(SYS_capset, &header, capabilities) != 0) {
+        fprintf(stderr, "FAIL: capset(drop CAP_SYS_ADMIN): errno=%d (%s)\n", errno,
+                strerror(errno));
+        return 1;
+    }
+
+    errno = 0;
+    if (check_permission_error("sethostname without CAP_SYS_ADMIN",
+                               raw_sethostname(NULL, 1)) != 0) {
+        return 1;
+    }
+    errno = 0;
+    if (check_permission_error("setdomainname without CAP_SYS_ADMIN",
+                               raw_setdomainname(NULL, 1)) != 0) {
+        return 1;
+    }
+
     if (geteuid() == 0 && setuid(1000) != 0) {
         fprintf(stderr, "FAIL: setuid: errno=%d (%s)\n", errno, strerror(errno));
         return 1;
@@ -48,11 +91,11 @@ static int child_test(void)
     }
 
     errno = 0;
-    if (check_permission_error("sethostname", raw_sethostname(1UL << 32)) != 0) {
+    if (check_permission_error("sethostname", raw_sethostname(NULL, 1UL << 32)) != 0) {
         return 1;
     }
     errno = 0;
-    if (check_permission_error("setdomainname", raw_setdomainname(1UL << 32)) != 0) {
+    if (check_permission_error("setdomainname", raw_setdomainname(NULL, 1UL << 32)) != 0) {
         return 1;
     }
     return 0;

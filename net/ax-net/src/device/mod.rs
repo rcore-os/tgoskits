@@ -20,7 +20,7 @@
 
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use axpoll::PollSet;
+use axpoll_set::PollSet;
 use smoltcp::{
     storage::PacketBuffer,
     time::Instant,
@@ -38,6 +38,8 @@ mod vsock;
 pub use driver::*;
 pub use ethernet::*;
 pub use loopback::*;
+#[cfg(all(axtest, feature = "axtest", feature = "vsock"))]
+pub(crate) use vsock::run_axtest_contracts as run_vsock_axtest_contracts;
 #[cfg(feature = "vsock")]
 pub use vsock::*;
 

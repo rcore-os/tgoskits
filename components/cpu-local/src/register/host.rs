@@ -7,6 +7,10 @@ pub(super) const CURRENT_MODEL: ArchitectureCurrentModel = ArchitectureCurrentMo
     unikernel_tls: CurrentContextSource::RuntimeAnchor,
 };
 
+pub(super) struct Backend;
+
+impl ArchitectureRegisterBackend for Backend {}
+
 std::thread_local! {
     static CPU_BASE: Cell<usize> = const { Cell::new(0) };
     static ARCHITECTURE_CURRENT: Cell<usize> = const { Cell::new(0) };

@@ -24,12 +24,13 @@ use std::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
+    time::Duration,
     vec::Vec,
 };
 
 use ax_cpumask::CpuMask;
 use ax_memory_addr::align_up_4k;
-use ax_std::{os::arceos::sync::IrqSafeMutex, sync::Mutex as SleepMutex};
+use ax_std::os::arceos::sync::IrqSafeMutex;
 use axaddrspace::{AddrSpace, NestedPageTableOps};
 use axdevice::*;
 use axdevice_base::*;
@@ -156,21 +157,13 @@ pub(crate) struct AxVMResources {
 unsafe impl Send for AxVMResources {}
 unsafe impl Sync for AxVMResources {}
 
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum PendingInterrupt {
-    Normal(usize),
-    External { vector: usize, physical_irq: usize },
-}
-
 /// Runtime-only resources owned by Running/Paused/Stopping lifecycle states.
 pub(crate) struct VmRuntimeHandle {
     wait_queue: crate::WaitQueue,
     notification_generation: AtomicUsize,
-    vcpu_task_list: IrqSafeMutex<BTreeMap<usize, crate::AxTaskRef>>,
+    vcpu_threads: IrqSafeMutex<VcpuThreadRegistry>,
     cpu_on_start_acks: StdMutex<BTreeMap<usize, Arc<crate::runtime::vcpus::CpuOnStartAck>>>,
     cpu_off_exit_reservations: StdMutex<BTreeSet<usize>>,
-    pending_interrupts: IrqSafeMutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
     irq_dispatcher: crate::runtime::VcpuIrqDispatcher,
     device_poll_requested: AtomicBool,
     running_halting_vcpu_count: AtomicUsize,
@@ -216,6 +209,12 @@ pub(crate) struct VmRuntimeHandle {
     guest_park_count: AtomicU64,
 }
 
+#[derive(Default)]
+struct VcpuThreadRegistry {
+    active: BTreeMap<usize, crate::ThreadHandle>,
+    retired: BTreeMap<usize, crate::ThreadHandle>,
+}
+
 pub(crate) struct VcpuEventWaitSnapshot {
     notification_generation: usize,
 }
@@ -224,9 +223,11 @@ pub(crate) fn wait_for_vcpu_event_if_idle(
     runtime: &VmRuntimeHandle,
     wait_snapshot: &VcpuEventWaitSnapshot,
     vm_running: impl Fn() -> bool,
+    has_pending_interrupt: impl Fn() -> bool,
     wait_until: impl FnOnce(&dyn Fn() -> bool),
 ) {
-    let wake_condition = || !vm_running() || wait_snapshot.has_pending_event(runtime);
+    let wake_condition =
+        || !vm_running() || has_pending_interrupt() || wait_snapshot.has_pending_event(runtime);
     if wake_condition() {
         return;
     }
@@ -243,11 +244,13 @@ fn clone_runtime_handle<R>(
 }
 
 pub(crate) fn dispatch_vcpu_interrupt_with(
-    enqueue: impl FnOnce() -> AxVmResult<usize>,
+    enqueue: impl FnOnce() -> AxVmResult<Option<usize>>,
     notify: impl FnOnce(),
     send_ipi: impl FnOnce(usize),
 ) -> AxVmResult {
-    let pcpu_id = enqueue()?;
+    let Some(pcpu_id) = enqueue()? else {
+        return Ok(());
+    };
     notify();
     send_ipi(pcpu_id);
     Ok(())
@@ -292,10 +295,9 @@ impl VmRuntimeHandle {
         Self {
             wait_queue: crate::WaitQueue::new(),
             notification_generation: AtomicUsize::new(0),
-            vcpu_task_list: IrqSafeMutex::new(BTreeMap::new()),
+            vcpu_threads: IrqSafeMutex::new(VcpuThreadRegistry::default()),
             cpu_on_start_acks: StdMutex::new(BTreeMap::new()),
             cpu_off_exit_reservations: StdMutex::new(BTreeSet::new()),
-            pending_interrupts: IrqSafeMutex::new(BTreeMap::new()),
             irq_dispatcher: crate::runtime::VcpuIrqDispatcher::new(),
             device_poll_requested: AtomicBool::new(false),
             running_halting_vcpu_count: AtomicUsize::new(0),
@@ -308,21 +310,21 @@ impl VmRuntimeHandle {
 
     #[allow(dead_code)]
     pub(crate) fn has_vcpu_task(&self, vcpu_id: usize) -> bool {
-        self.vcpu_task_list.lock().contains_key(&vcpu_id)
+        self.vcpu_threads.lock().active.contains_key(&vcpu_id)
     }
 
-    pub(crate) fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: crate::AxTaskRef) -> AxVmResult {
-        let mut vcpu_task_list = self.vcpu_task_list.lock();
-        if vcpu_task_list.contains_key(&vcpu_id) {
+    pub(crate) fn add_vcpu_task(
+        &self,
+        vcpu_id: usize,
+        vcpu_thread: crate::ThreadHandle,
+    ) -> AxVmResult {
+        let mut threads = self.vcpu_threads.lock();
+        if threads.active.contains_key(&vcpu_id) {
             return ax_err!(BadState, format!("vCPU {vcpu_id} task already exists"));
         }
-
         self.irq_dispatcher
-            .register_vcpu_task(vcpu_id, vcpu_task.clone());
-        vcpu_task_list.insert(vcpu_id, vcpu_task);
-        drop(vcpu_task_list);
-
-        self.pending_interrupts.lock().entry(vcpu_id).or_default();
+            .register(vcpu_id, vcpu_thread.id().as_u64());
+        threads.active.insert(vcpu_id, vcpu_thread);
         Ok(())
     }
 
@@ -331,6 +333,39 @@ impl VmRuntimeHandle {
         vcpu_id: usize,
     ) -> Option<Arc<crate::runtime::vcpus::CpuOnStartAck>> {
         self.cpu_on_start_acks.lock_unpoisoned().remove(&vcpu_id)
+    }
+
+    pub(crate) fn remove_vcpu_task(&self, vcpu_id: usize) -> Option<crate::ThreadHandle> {
+        let thread = self.vcpu_threads.lock().active.remove(&vcpu_id);
+        if let Some(thread) = &thread {
+            self.irq_dispatcher.clear(vcpu_id, thread.id().as_u64());
+        }
+        thread
+    }
+
+    /// Transfers a self-exiting vCPU thread out of the active registry.
+    ///
+    /// A thread cannot join itself. The next CPU_ON or VM-wide cleanup takes
+    /// ownership of the retired handle and joins it from another thread.
+    pub(crate) fn retire_vcpu_task(&self, vcpu_id: usize) {
+        let mut threads = self.vcpu_threads.lock();
+        if let Some(thread) = threads.active.remove(&vcpu_id) {
+            let owner = thread.id().as_u64();
+            let replaced = threads.retired.insert(vcpu_id, thread);
+            debug_assert!(replaced.is_none(), "retired vCPU thread was not reaped");
+            drop(threads);
+            self.irq_dispatcher.clear(vcpu_id, owner);
+        }
+    }
+
+    pub(crate) fn reap_retired_vcpu_task(&self, vcpu_id: usize) -> AxVmResult {
+        let retired = self.vcpu_threads.lock().retired.remove(&vcpu_id);
+        if let Some(thread) = retired {
+            crate::host::task::join_thread(thread)
+                .map(|_exit_code| ())
+                .map_err(|error| AxVmError::host("join retired vCPU thread", error))?;
+        }
+        Ok(())
     }
 
     /// Record one guest (re-)entry by the vCPU run loop.
@@ -369,12 +404,6 @@ impl VmRuntimeHandle {
         self.guest_park_count.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn remove_vcpu_task(&self, vcpu_id: usize) -> Option<crate::AxTaskRef> {
-        self.pending_interrupts.lock().remove(&vcpu_id);
-        self.irq_dispatcher.unregister_vcpu_task(vcpu_id);
-        self.vcpu_task_list.lock().remove(&vcpu_id)
-    }
-
     #[allow(dead_code)]
     pub(crate) fn insert_cpu_on_start_ack(
         &self,
@@ -402,57 +431,88 @@ impl VmRuntimeHandle {
             .cloned()
     }
 
-    pub(crate) fn queue_pending_interrupt(
-        &self,
-        vcpu_id: usize,
-        interrupt: PendingInterrupt,
-    ) -> AxVmResult<usize> {
-        let task = self
-            .vcpu_task_list
+    pub(crate) fn vcpu_cpu_id(&self, vcpu_id: usize) -> AxVmResult<usize> {
+        let thread = self
+            .vcpu_threads
             .lock()
+            .active
             .get(&vcpu_id)
             .cloned()
             .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
-        self.queue_pending_interrupt_for_cpu(vcpu_id, task.cpu_id() as usize, interrupt)
+        crate::host::task::thread_cpu_id(&thread).ok_or_else(|| {
+            AxVmError::invalid_state(
+                "resolve vCPU CPU",
+                format_args!("vCPU {vcpu_id} thread has no assigned CPU"),
+            )
+        })
     }
 
-    pub(crate) fn queue_pending_interrupt_for_cpu(
-        &self,
-        vcpu_id: usize,
-        cpu_id: usize,
-        interrupt: PendingInterrupt,
-    ) -> AxVmResult<usize> {
-        self.pending_interrupts
+    fn vcpu_dispatch_target(&self, vcpu_id: usize) -> AxVmResult<(u64, usize)> {
+        let thread = self
+            .vcpu_threads
             .lock()
-            .entry(vcpu_id)
-            .or_default()
-            .push(interrupt);
-        Ok(cpu_id)
-    }
-
-    pub(crate) fn vcpu_cpu_id(&self, vcpu_id: usize) -> AxVmResult<usize> {
-        self.vcpu_task_list
-            .lock()
+            .active
             .get(&vcpu_id)
-            .map(|task| task.cpu_id() as usize)
-            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))
+            .cloned()
+            .ok_or_else(|| ax_err_type!(NotFound, format!("vCPU {vcpu_id} task not found")))?;
+        let pcpu_id = crate::host::task::thread_cpu_id(&thread).ok_or_else(|| {
+            AxVmError::invalid_state(
+                "resolve vCPU dispatch target",
+                format_args!("vCPU {vcpu_id} thread has no assigned CPU"),
+            )
+        })?;
+        Ok((thread.id().as_u64(), pcpu_id))
     }
 
     /// New delivery path: enqueue → notify → host IPI.
     ///
     /// The dispatcher releases its queue lock before this method notifies
     /// waiters or invokes the host IPI boundary.
-    #[cfg_attr(
-        not(target_arch = "riscv64"),
-        expect(dead_code, reason = "currently consumed by the RISC-V IPI router")
-    )]
     pub(crate) fn dispatch_vcpu_interrupt(
         &self,
         vcpu_id: usize,
         interrupt: PendingVcpuInterrupt,
     ) -> AxVmResult {
         dispatch_vcpu_interrupt_with(
-            || self.irq_dispatcher.enqueue(vcpu_id, interrupt),
+            || {
+                let (owner, pcpu_id) = self.vcpu_dispatch_target(vcpu_id)?;
+                let needs_kick = self
+                    .irq_dispatcher
+                    .enqueue(vcpu_id, owner, interrupt)
+                    .ok_or_else(|| {
+                        AxVmError::invalid_state(
+                            "dispatch vCPU interrupt",
+                            format_args!("vCPU {vcpu_id} task generation changed"),
+                        )
+                    })?;
+                Ok(needs_kick.then_some(pcpu_id))
+            },
+            || self.notify_all(),
+            crate::host::task::send_ipi,
+        )
+    }
+
+    #[cfg(target_arch = "loongarch64")]
+    pub(crate) fn dispatch_physical_vcpu_interrupt(
+        &self,
+        vcpu_id: usize,
+        vector: usize,
+        physical_irq: usize,
+    ) -> AxVmResult {
+        dispatch_vcpu_interrupt_with(
+            || {
+                let (owner, pcpu_id) = self.vcpu_dispatch_target(vcpu_id)?;
+                let needs_kick = self
+                    .irq_dispatcher
+                    .enqueue_physical(vcpu_id, owner, vector, physical_irq)
+                    .ok_or_else(|| {
+                        AxVmError::invalid_state(
+                            "dispatch physical vCPU interrupt",
+                            format_args!("vCPU {vcpu_id} task generation changed"),
+                        )
+                    })?;
+                Ok(needs_kick.then_some(pcpu_id))
+            },
             || self.notify_all(),
             crate::host::task::send_ipi,
         )
@@ -464,12 +524,9 @@ impl VmRuntimeHandle {
         &self.irq_dispatcher
     }
 
-    pub(crate) fn drain_pending_interrupts(&self, vcpu_id: usize) -> Vec<PendingInterrupt> {
-        self.pending_interrupts
-            .lock()
-            .get_mut(&vcpu_id)
-            .map(std::mem::take)
-            .unwrap_or_default()
+    pub(crate) fn has_pending_interrupt(&self, vcpu_id: usize) -> bool {
+        self.irq_dispatcher
+            .has_pending(vcpu_id, crate::host::task::current_thread().id().as_u64())
     }
 
     pub(crate) fn wait_until(&self, condition: impl Fn() -> bool) {
@@ -488,12 +545,12 @@ impl VmRuntimeHandle {
 
     pub(crate) fn notify_one(&self) {
         self.notification_generation.fetch_add(1, Ordering::Release);
-        self.wait_queue.notify_one(false);
+        self.wait_queue.notify_one();
     }
 
     pub(crate) fn notify_all(&self) {
         self.notification_generation.fetch_add(1, Ordering::Release);
-        self.wait_queue.notify_all(false);
+        self.wait_queue.notify_all();
     }
 
     /// Publishes pending device work before waking the primary vCPU.
@@ -579,31 +636,55 @@ impl VmRuntimeHandle {
     }
 
     pub(crate) fn join_all_vcpu_tasks(&self, vm_id: usize) -> AxVmResult {
-        if self.vcpu_task_list.lock().is_empty() {
-            return self.take_lifecycle_error().map_or(Ok(()), Err);
+        let current_id = crate::host::task::current_thread().id();
+        let threads = {
+            let mut registry = self.vcpu_threads.lock();
+            let mut joinable = Vec::new();
+            registry.active.retain(|vcpu_id, thread| {
+                if thread.id() == current_id {
+                    true
+                } else {
+                    joinable.push((*vcpu_id, thread.clone()));
+                    false
+                }
+            });
+            registry.retired.retain(|vcpu_id, thread| {
+                if thread.id() == current_id {
+                    true
+                } else {
+                    joinable.push((*vcpu_id, thread.clone()));
+                    false
+                }
+            });
+            joinable
+        };
+
+        for (vcpu_id, thread) in &threads {
+            self.irq_dispatcher.clear(*vcpu_id, thread.id().as_u64());
         }
-        let current = crate::host::task::current_task();
-        let tasks: Vec<_> = self
-            .vcpu_task_list
-            .lock()
-            .values()
-            .filter(|task| !current.ptr_eq(task))
-            .cloned()
-            .collect();
-        let task_count = tasks.len();
-        info!("VM[{vm_id}] Joining {task_count} VCpu tasks...");
-        for (idx, task) in tasks.iter().enumerate() {
-            debug!(
-                "VM[{}] Joining VCpu task[{}]: {}",
-                vm_id,
-                idx,
-                task.id_name()
-            );
-            let exit_code = task.join();
-            debug!("VM[{vm_id}] VCpu task[{idx}] exited with code: {exit_code}");
+
+        let task_count = threads.len();
+        info!("VM[{vm_id}] joining {task_count} vCPU threads...");
+        let mut join_error = None;
+        for (vcpu_id, thread) in threads {
+            let thread_id = thread.id().as_u64();
+            debug!("VM[{vm_id}] joining vCPU[{vcpu_id}] thread {thread_id}");
+            match crate::host::task::join_thread(thread) {
+                Ok(exit_code) => debug!(
+                    "VM[{vm_id}] vCPU[{vcpu_id}] thread {thread_id} exited with code {exit_code}"
+                ),
+                Err(error) => {
+                    warn!("VM[{vm_id}] failed to join vCPU[{vcpu_id}] thread {thread_id}: {error}");
+                    if join_error.is_none() {
+                        join_error = Some(AxVmError::host("join vCPU thread", error));
+                    }
+                }
+            }
         }
-        info!("VM[{vm_id}] VCpu resources cleaned up, {task_count} VCpu tasks joined");
-        self.take_lifecycle_error().map_or(Ok(()), Err)
+        info!("VM[{vm_id}] vCPU resources cleaned up, {task_count} vCPU threads joined");
+        self.take_lifecycle_error()
+            .or(join_error)
+            .map_or(Ok(()), Err)
     }
 }
 
@@ -678,23 +759,35 @@ mod runtime_handle_tests {
     use super::*;
 
     #[test]
-    fn remove_vcpu_task_clears_pending_interrupts_and_dispatcher_registration() {
-        let runtime = VmRuntimeHandle::new();
+    fn interrupt_dispatcher_clear_is_owner_checked_and_idempotent() {
+        let dispatcher = VcpuIrqDispatcher::new();
+        dispatcher.register(3, 7);
 
-        runtime.pending_interrupts.lock().entry(3).or_default();
-        runtime.irq_dispatcher.register_test_vcpu(3, 11);
+        dispatcher.enqueue(
+            3,
+            7,
+            PendingVcpuInterrupt {
+                id: crate::irq::model::VirtualInterruptId(11),
+                trigger: crate::InterruptTriggerMode::EdgeTriggered,
+            },
+        );
 
-        assert!(runtime.pending_interrupts.lock().contains_key(&3));
-        assert_eq!(runtime.irq_dispatcher.test_lookup_cpu_id(3).unwrap(), 11);
+        assert_eq!(dispatcher.drain(3, 7).len(), 1);
+        dispatcher.enqueue(
+            3,
+            7,
+            PendingVcpuInterrupt {
+                id: crate::irq::model::VirtualInterruptId(11),
+                trigger: crate::InterruptTriggerMode::EdgeTriggered,
+            },
+        );
 
-        runtime.remove_vcpu_task(3);
+        dispatcher.clear(3, 8);
+        assert_eq!(dispatcher.drain(3, 7).len(), 1);
 
-        assert!(!runtime.pending_interrupts.lock().contains_key(&3));
-        assert!(runtime.irq_dispatcher.test_lookup_cpu_id(3).is_err());
-
-        runtime.remove_vcpu_task(3);
-        assert!(!runtime.pending_interrupts.lock().contains_key(&3));
-        assert!(runtime.irq_dispatcher.test_lookup_cpu_id(3).is_err());
+        dispatcher.clear(3, 7);
+        dispatcher.clear(3, 7);
+        assert!(dispatcher.drain(3, 7).is_empty());
     }
 
     #[test]
@@ -1080,10 +1173,14 @@ impl TimerAccessPort for AxVmDeviceAccessPorts {
         trace!(
             "VM[{vm_id}] device {device_id:?} scheduled access-scoped timer at {deadline_ns:#x} ns"
         );
-        crate::timer::register_timer(
-            deadline_ns,
+        crate::host::task::register_kernel_timer(
+            crate::host::task::MonotonicDeadline::from_duration(Duration::from_nanos(deadline_ns)),
             Box::new(move |_| crate::runtime::vcpus::notify_all_vcpus(vm_id)),
-        );
+        )
+        .map_err(|error| axdevice::DeviceManagerError::InvalidState {
+            operation: "schedule timer from device access",
+            detail: format!("kernel timer registration failed: {error}"),
+        })?;
         Ok(())
     }
 }
@@ -1165,7 +1262,7 @@ pub struct AxVM {
     id: usize,
     name: String,
     /// Task-context configuration, intentionally independent of IRQ/runtime state.
-    config: SleepMutex<AxVMConfig>,
+    config: StdMutex<AxVMConfig>,
     /// Lifecycle and runtime state reached from both task and interrupt context.
     machine: IrqSafeMutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
     fw_cfg_payload: Arc<FwCfgPayloadSlot>,
@@ -1191,7 +1288,7 @@ impl AxVM {
         let result = Arc::new(Self {
             id,
             name,
-            config: SleepMutex::new(config),
+            config: StdMutex::new(config),
             machine: IrqSafeMutex::new(Machine::Ready(resources)),
             fw_cfg_payload,
         });
@@ -1390,7 +1487,7 @@ impl AxVM {
 
     /// Executes an operation with mutable access to the VM's configuration.
     ///
-    /// Configuration uses a task-context sleeping mutex and is intentionally
+    /// Configuration uses a task-context standard-library mutex and is intentionally
     /// independent of the IRQ-safe machine lock. Keep the closure short and
     /// return owned values before doing console I/O or other blocking work.
     /// Callers must not invoke this method from interrupt context or recursively
@@ -1403,7 +1500,7 @@ impl AxVM {
     where
         F: FnOnce(&mut AxVMConfig) -> R,
     {
-        let mut config = self.config.lock();
+        let mut config = self.config.lock_unpoisoned();
         f(&mut config)
     }
 
@@ -1427,7 +1524,7 @@ impl AxVM {
     /// Stores a guest DTB as VM-owned boot-description state.
     pub fn set_guest_device_tree(&self, load_gpa: GuestPhysAddr, bytes: Vec<u8>) -> AxVmResult {
         let guest_dtb = GuestFdtBuilder::from_bytes(bytes).build(load_gpa);
-        let mut config = self.config.lock();
+        let mut config = self.config.lock_unpoisoned();
         self.with_resources_mut(|resources| {
             config.set_dtb_load_gpa(load_gpa);
             resources.boot_description.set_device_tree(guest_dtb);
@@ -1482,7 +1579,6 @@ impl AxVM {
         let primary_vcpu = self
             .vcpu(0)
             .ok_or_else(|| ax_err_type!(BadState, "VM primary vCPU is not prepared"))?;
-        let primary_task = crate::runtime::vcpus::build_vcpu_task(self, primary_vcpu);
         let runtime = Arc::new(VmRuntimeHandle::new());
 
         self.with_resources(|resources| {
@@ -1498,24 +1594,54 @@ impl AxVM {
             Ok(())
         })?;
 
-        crate::arch::current::CurrentArch::enter_runtime(self)?;
+        let prepared = crate::runtime::vcpus::prepare_vcpu_thread(self, primary_vcpu)?;
+        if let Err(error) = runtime.add_vcpu_task(0, prepared.thread_handle()) {
+            return match prepared.abort_and_join() {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(AxVmError::lifecycle_rollback(
+                    "publish primary vCPU thread",
+                    error,
+                    rollback,
+                )),
+            };
+        }
+
+        if let Err(error) = crate::arch::current::CurrentArch::enter_runtime(self) {
+            runtime.remove_vcpu_task(0);
+            return match prepared.abort_and_join() {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(AxVmError::lifecycle_rollback(
+                    "activate VM devices",
+                    error,
+                    rollback,
+                )),
+            };
+        }
         let start_result = self
             .machine
             .lock()
             .start_with(|_resources| Ok(runtime.clone()));
         if let Err(error) = start_result {
-            return match crate::arch::current::CurrentArch::exit_runtime(self) {
-                Ok(()) => Err(error),
-                Err(rollback) => Err(AxVmError::lifecycle_rollback("start VM", error, rollback)),
+            runtime.remove_vcpu_task(0);
+            let thread_rollback = prepared.abort_and_join();
+            let device_rollback = crate::arch::current::CurrentArch::exit_runtime(self);
+            return match (thread_rollback, device_rollback) {
+                (Ok(()), Ok(())) => Err(error),
+                (Err(thread), Ok(())) => {
+                    Err(AxVmError::lifecycle_rollback("start VM", error, thread))
+                }
+                (Ok(()), Err(devices)) => {
+                    Err(AxVmError::lifecycle_rollback("start VM", error, devices))
+                }
+                (Err(thread), Err(devices)) => Err(AxVmError::lifecycle_rollback(
+                    "start VM",
+                    error,
+                    format_args!("{thread}; {devices}"),
+                )),
             };
         }
 
-        crate::runtime::vcpus::spawn_registered_vcpu_task(
-            self.id(),
-            0,
-            runtime.clone(),
-            primary_task,
-        );
+        prepared.activate();
         Ok(())
     }
 
@@ -2244,7 +2370,10 @@ impl Drop for AxVM {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, sync::atomic::AtomicBool};
+    use std::{
+        cell::{Cell, RefCell},
+        sync::atomic::AtomicBool,
+    };
 
     use axdevice_base::{
         ControllerInputId, InterruptControllerId, InterruptEndpoint, InterruptTriggerMode,
@@ -2431,43 +2560,6 @@ mod tests {
         assert_eq!(chunk, [7, 7]);
     }
 
-    fn drain_normal_vectors(runtime: &VmRuntimeHandle, vcpu_id: usize) -> Vec<usize> {
-        runtime
-            .drain_pending_interrupts(vcpu_id)
-            .into_iter()
-            .map(|interrupt| match interrupt {
-                PendingInterrupt::Normal(vector) => vector,
-                PendingInterrupt::External { .. } => {
-                    panic!("unexpected external interrupt in normal queue test")
-                }
-            })
-            .collect()
-    }
-
-    #[test]
-    fn runtime_pending_interrupts_are_per_vcpu_and_drained_once() {
-        let runtime = VmRuntimeHandle::new();
-
-        assert_eq!(
-            runtime
-                .queue_pending_interrupt_for_cpu(0, 3, PendingInterrupt::Normal(2))
-                .unwrap(),
-            3
-        );
-        assert_eq!(
-            runtime
-                .queue_pending_interrupt_for_cpu(1, 5, PendingInterrupt::Normal(9))
-                .unwrap(),
-            5
-        );
-
-        assert_eq!(drain_normal_vectors(&runtime, 0), std::vec![2]);
-        assert_eq!(drain_normal_vectors(&runtime, 1), std::vec![9]);
-
-        assert!(drain_normal_vectors(&runtime, 0).is_empty());
-        assert!(drain_normal_vectors(&runtime, 1).is_empty());
-    }
-
     #[test]
     fn runtime_dispatch_orders_enqueue_before_notify_and_ipi() {
         let events = RefCell::new(Vec::new());
@@ -2475,7 +2567,7 @@ mod tests {
         dispatch_vcpu_interrupt_with(
             || {
                 events.borrow_mut().push("enqueue");
-                Ok(3)
+                Ok(Some(3))
             },
             || events.borrow_mut().push("notify"),
             |cpu_id| {
@@ -2492,7 +2584,7 @@ mod tests {
     #[test]
     fn runtime_dispatch_releases_queue_lock_before_callbacks() {
         let dispatcher = VcpuIrqDispatcher::new();
-        dispatcher.register_test_vcpu(0, 3);
+        dispatcher.register(0, 1);
         let interrupt = PendingVcpuInterrupt {
             id: crate::irq::model::VirtualInterruptId(7),
             trigger: crate::InterruptTriggerMode::LevelTriggered,
@@ -2500,9 +2592,15 @@ mod tests {
         let events = RefCell::new(Vec::new());
 
         dispatch_vcpu_interrupt_with(
-            || dispatcher.enqueue(0, interrupt),
             || {
-                assert_eq!(dispatcher.drain(0), std::vec![interrupt]);
+                let needs_kick = dispatcher.enqueue(0, 1, interrupt).unwrap();
+                Ok(needs_kick.then_some(3))
+            },
+            || {
+                assert_eq!(
+                    dispatcher.drain(0, 1),
+                    std::vec![QueuedVcpuInterrupt::Virtual(interrupt)]
+                );
                 events.borrow_mut().push("notify");
             },
             |_| events.borrow_mut().push("ipi"),
@@ -2510,6 +2608,32 @@ mod tests {
         .unwrap();
 
         assert_eq!(*events.borrow(), ["notify", "ipi"]);
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn runtime_dispatch_coalesces_repeated_publication_before_drain() {
+        let notify_count = Cell::new(0);
+        let ipi_count = Cell::new(0);
+        let kick_pending = Cell::new(false);
+
+        let dispatch = || {
+            dispatch_vcpu_interrupt_with(
+                || Ok((!kick_pending.replace(true)).then_some(3)),
+                || notify_count.set(notify_count.get() + 1),
+                |_| ipi_count.set(ipi_count.get() + 1),
+            )
+            .unwrap();
+        };
+
+        dispatch();
+
+        // Repeated publication before the vCPU drains the logical queue shares
+        // the same physical delivery edge.
+        dispatch();
+
+        assert_eq!(notify_count.get(), 1);
+        assert_eq!(ipi_count.get(), 1);
     }
 
     #[test]
@@ -2739,18 +2863,6 @@ mod tests {
             self.lock.held.store(false, Ordering::Release);
         }
     }
-}
-
-#[cfg(all(test, feature = "host-test"))]
-pub(crate) fn destroyed_vm_for_test(id: VMId) -> AxVMRef {
-    let config = AxVMConfig::default_for_test(id, "destroyed-test-vm");
-    Arc::new(AxVM {
-        id,
-        name: config.name(),
-        config: SleepMutex::new(config),
-        machine: IrqSafeMutex::new(Machine::Destroyed),
-        fw_cfg_payload: Arc::new(FwCfgPayloadSlot::new()),
-    })
 }
 
 #[cfg(all(test, feature = "host-test"))]

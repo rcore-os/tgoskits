@@ -9,6 +9,11 @@
 
 extern crate alloc;
 
+// Host unit tests use the real external lock provider without installing a
+// fake task runtime. Test-only sleepable locks are replaced in `os::sync`.
+#[cfg(test)]
+use ax_runtime as _;
+
 #[macro_use]
 extern crate log;
 
@@ -34,8 +39,7 @@ pub(crate) use error::block_error_to_vfs_error;
 pub use error::{BlockError, BlockResult};
 pub(crate) use error::{io_error_to_vfs_error, vfs_error_to_io_error};
 
-static MOUNTED_FILESYSTEMS: os::sync::IrqMutex<Vec<Filesystem>> =
-    os::sync::IrqMutex::new(Vec::new());
+static MOUNTED_FILESYSTEMS: os::sync::Mutex<Vec<Filesystem>> = os::sync::Mutex::new(Vec::new());
 
 fn register_mounted_filesystem(fs: Filesystem) {
     MOUNTED_FILESYSTEMS.lock().push(fs);

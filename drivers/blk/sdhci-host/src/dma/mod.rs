@@ -123,6 +123,7 @@ const ADMA2_ATTR_END: u16 = 1 << 1;
 const _ADMA2_ATTR_INT: u16 = 1 << 2;
 // act = 0b10 → "tran" (data transfer descriptor)
 const ADMA2_ATTR_ACT_TRAN: u16 = 0b10 << 4;
+const ADMA2_ATTR_NOP_END: u16 = ADMA2_ATTR_VALID | ADMA2_ATTR_END;
 
 /// Largest single ADMA2 transfer — the length field is 16 bits and `0`
 /// is interpreted as 64 KiB, but we cap a hair below to keep the math
@@ -132,15 +133,15 @@ const ADMA2_MAX_PER_DESC: usize = 65_528; // 64 KiB - 8B, multiple of 8
 
 /// Controller-owned scratch region for the depth-one ADMA2 queue.
 ///
-/// Sized for a worst-case 64 KiB transfer split into 4 KiB chunks (16
-/// descriptors), which is the SDMA boundary the controller falls back to
-/// on page boundary crossings. Bumping this constant is the only thing
-/// needed to support larger contiguous transfers.
-pub const ADMA2_DESC_COUNT: usize = 16;
+/// Sized for 16 data descriptors plus the separate NOP terminator required by
+/// the generic SDHCI ADMA2 contract. Keeping the terminator outside the data
+/// budget preserves the advertised transfer limit.
+const ADMA2_DATA_DESC_COUNT: usize = 16;
+pub const ADMA2_DESC_COUNT: usize = ADMA2_DATA_DESC_COUNT + 1;
 pub const ADMA2_DESC_ALIGN: usize = 64;
 const BLOCK_SIZE: usize = 512;
 pub const ADMA2_MAX_TRANSFER_SIZE: usize =
-    (ADMA2_DESC_COUNT * ADMA2_MAX_PER_DESC / BLOCK_SIZE) * BLOCK_SIZE;
+    (ADMA2_DATA_DESC_COUNT * ADMA2_MAX_PER_DESC / BLOCK_SIZE) * BLOCK_SIZE;
 pub const ADMA2_MAX_BLOCKS: u32 = (ADMA2_MAX_TRANSFER_SIZE / BLOCK_SIZE) as u32;
 pub const DWC_MSHC_ADMA_BOUNDARY: usize = 128 * 1024 * 1024;
 
@@ -322,7 +323,7 @@ impl BlockRequestSlot {
 /// `base` is the *bus* address the controller will use, already translated
 /// by [`DeviceDma`]. Returns the number of descriptors written or
 /// [`Error::Misaligned`] if the buffer would not fit in
-/// [`ADMA2_DESC_COUNT`] entries.
+/// [`ADMA2_DATA_DESC_COUNT`] data entries plus one terminal NOP.
 pub(crate) fn build_descriptors(
     table: &mut [Adma2Desc32; ADMA2_DESC_COUNT],
     base: u64,
@@ -352,7 +353,7 @@ pub(crate) fn build_descriptors(
     let mut written = 0usize;
 
     while remaining > 0 {
-        if written >= ADMA2_DESC_COUNT {
+        if written >= ADMA2_DATA_DESC_COUNT {
             return Err(Error::Misaligned);
         }
         let boundary = DWC_MSHC_ADMA_BOUNDARY as u64;
@@ -360,13 +361,8 @@ pub(crate) fn build_descriptors(
         let chunk = remaining
             .min(ADMA2_MAX_PER_DESC)
             .min(boundary_room as usize);
-        let is_last = chunk == remaining;
-        let mut attr = ADMA2_ATTR_VALID | ADMA2_ATTR_ACT_TRAN;
-        if is_last {
-            attr |= ADMA2_ATTR_END;
-        }
         table[written] = Adma2Desc32 {
-            attr,
+            attr: ADMA2_ATTR_VALID | ADMA2_ATTR_ACT_TRAN,
             length: chunk as u16,
             address: (base + offset) as u32,
         };
@@ -374,6 +370,13 @@ pub(crate) fn build_descriptors(
         offset += chunk as u64;
         remaining -= chunk;
     }
+
+    table[written] = Adma2Desc32 {
+        attr: ADMA2_ATTR_NOP_END,
+        length: 0,
+        address: 0,
+    };
+    written += 1;
 
     Ok(written)
 }
@@ -410,7 +413,7 @@ fn build_descriptors64(
     let mut offset = 0_u64;
     let mut written = 0;
     while remaining > 0 {
-        if written >= ADMA2_DESC_COUNT {
+        if written >= ADMA2_DATA_DESC_COUNT {
             return Err(Error::Misaligned);
         }
         let boundary = DWC_MSHC_ADMA_BOUNDARY as u64;
@@ -418,13 +421,9 @@ fn build_descriptors64(
         let chunk = remaining
             .min(ADMA2_MAX_PER_DESC)
             .min(boundary_room as usize);
-        let mut attr = ADMA2_ATTR_VALID | ADMA2_ATTR_ACT_TRAN;
-        if chunk == remaining {
-            attr |= ADMA2_ATTR_END;
-        }
         let address = base + offset;
         table[written] = Adma2Desc64 {
-            attr,
+            attr: ADMA2_ATTR_VALID | ADMA2_ATTR_ACT_TRAN,
             length: chunk as u16,
             address_low: address as u32,
             address_high: (address >> 32) as u32,
@@ -433,6 +432,14 @@ fn build_descriptors64(
         offset += chunk as u64;
         remaining -= chunk;
     }
+
+    table[written] = Adma2Desc64 {
+        attr: ADMA2_ATTR_NOP_END,
+        length: 0,
+        address_low: 0,
+        address_high: 0,
+    };
+    written += 1;
     Ok(written)
 }
 

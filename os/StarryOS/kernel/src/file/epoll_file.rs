@@ -1,9 +1,8 @@
 //! File and poll boundary adapters for epoll instances.
 
 use alloc::borrow::Cow;
-use core::task::Context;
 
-use axpoll::{IoEvents, Pollable};
+use axpoll::{ExclusiveRegistrationSink, IoEvents, Pollable, SharedRegistrationSink};
 
 use super::{FileLike, epoll::Epoll};
 
@@ -22,9 +21,19 @@ impl Pollable for Epoll {
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    unsafe fn register_shared(&self, sink: &mut dyn SharedRegistrationSink, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.inner.register_poll_waiter(context);
+            unsafe { self.inner.register_shared_poll_waiter(sink) };
+        }
+    }
+
+    unsafe fn register_exclusive(
+        &self,
+        sink: &mut dyn ExclusiveRegistrationSink,
+        events: IoEvents,
+    ) {
+        if events.contains(IoEvents::IN) {
+            unsafe { self.inner.register_exclusive_poll_waiter(sink) };
         }
     }
 }

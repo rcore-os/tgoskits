@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Split the pure readiness contracts from the common queue implementation in
+  `axpoll-set`, with owned registration leases and typed shared/exclusive modes.
+- Restrict registration and waiter selection to task or deferred context; hard
+  IRQ delivery remains an OS/runtime capability.
+
 ## [0.6.0](https://github.com/rcore-os/tgoskits/compare/axpoll-v0.5.4...axpoll-v0.6.0) - 2026-08-20
 
 ### Fixed

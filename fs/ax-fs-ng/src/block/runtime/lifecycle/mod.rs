@@ -33,8 +33,8 @@ use super::{
     completion::{CompletionGroup, CompletionSubscription},
     hctx::{ControllerEventPort, Hctx, HctxObserver, Submission, request_is_nowait},
     irq::{
-        BlockIrqAction, ControllerIrqLatch, ControllerIrqTarget, GroupIrqMemberTarget, IrqTarget,
-        LatchedControllerIrq,
+        BlockIrqAction, ControllerIrqLatch, ControllerIrqTarget, GroupIrqMemberTarget,
+        IrqRearmEpisode, IrqTarget, LatchedControllerIrq,
     },
     waiters::TaskWaiters,
 };
@@ -42,12 +42,15 @@ use crate::{
     BlockError, BlockResult,
     os::{
         BlockIrqRegistration, BlockNotification, BlockThread, register_block_irq, runtime_ops,
-        sync::IrqMutex, wall_time,
+        sync::Mutex, wall_time,
     },
 };
 
 const CONTROLLER_CHANNEL_DEPTH: usize = 64;
 const CONTROLLER_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
+/// Slack before a controller-thread park that outlives its own wake deadline
+/// is reported as a lost-wakeup diagnostic.
+const STALL_WARN_MARGIN: Duration = Duration::from_millis(500);
 const MAX_RUNTIME_HCTX: usize = u64::BITS as usize;
 
 const DEVICE_STARTING: u8 = 0;
@@ -205,8 +208,8 @@ impl BlockRuntime {
 
 struct BlockGroupHandle {
     name: String,
-    controller: IrqMutex<Option<Box<dyn BlockControllerGroup>>>,
-    registrations: IrqMutex<Vec<Box<dyn BlockIrqRegistration>>>,
+    controller: Mutex<Option<Box<dyn BlockControllerGroup>>>,
+    registrations: Mutex<Vec<Box<dyn BlockIrqRegistration>>>,
     members: Vec<Arc<BlockDeviceHandle>>,
     stopped: AtomicBool,
 }
@@ -332,8 +335,8 @@ impl BlockGroupHandle {
         }
         Ok(Self {
             name,
-            controller: IrqMutex::new(Some(controller)),
-            registrations: IrqMutex::new(registrations),
+            controller: Mutex::new(Some(controller)),
+            registrations: Mutex::new(registrations),
             members: ready,
             stopped: AtomicBool::new(false),
         })
@@ -502,15 +505,16 @@ impl Drop for BlockDeviceHandle {
 
 struct DeviceInner {
     name: String,
-    device_info: IrqMutex<DeviceInfoEpoch>,
+    device_info: Mutex<DeviceInfoEpoch>,
     max_io_queues: usize,
+    irq_ownership: IrqOwnership,
     irq_sources: Vec<BlockIrqSource>,
-    hctxs: IrqMutex<Vec<Arc<Hctx>>>,
-    detached_queues: IrqMutex<Vec<Box<dyn HardwareQueue>>>,
-    cpu_channels: IrqMutex<Vec<CpuSubmissionChannel>>,
-    irq_registrations: IrqMutex<Vec<Box<dyn BlockIrqRegistration>>>,
+    hctxs: Mutex<Vec<Arc<Hctx>>>,
+    detached_queues: Mutex<Vec<Box<dyn HardwareQueue>>>,
+    cpu_channels: Mutex<Vec<CpuSubmissionChannel>>,
+    irq_registrations: Mutex<Vec<InstalledIrqSource>>,
     controller: Arc<ControllerPort>,
-    controller_thread: IrqMutex<Option<Box<dyn BlockThread>>>,
+    controller_thread: Mutex<Option<Box<dyn BlockThread>>>,
     state: AtomicU8,
     accepting: AtomicBool,
     active_data: AtomicUsize,
@@ -519,6 +523,18 @@ struct DeviceInner {
     flush_gate_waiters: TaskWaiters,
     data_drain_waiters: TaskWaiters,
     state_notification: Arc<dyn BlockNotification>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IrqOwnership {
+    Device,
+    SharedGroup,
+}
+
+struct InstalledIrqSource {
+    source_id: usize,
+    queue_bits: u64,
+    registration: Box<dyn BlockIrqRegistration>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -544,7 +560,7 @@ impl BlockDeviceHandle {
             irqs,
             controller,
         } = device;
-        let handle = Self::bootstrap(name, irqs, controller)?;
+        let handle = Self::bootstrap(name, irqs, controller, IrqOwnership::Device)?;
         handle.finish_group_start()?;
         Ok(handle)
     }
@@ -553,13 +569,14 @@ impl BlockDeviceHandle {
         name: String,
         controller: Box<dyn BlockController>,
     ) -> Result<Arc<Self>, BlkError> {
-        Self::bootstrap(name, Vec::new(), controller)
+        Self::bootstrap(name, Vec::new(), controller, IrqOwnership::SharedGroup)
     }
 
     fn bootstrap(
         name: String,
         irqs: Vec<BlockIrqSource>,
         controller: Box<dyn BlockController>,
+        irq_ownership: IrqOwnership,
     ) -> Result<Arc<Self>, BlkError> {
         let info = controller.device_info();
         let max_io_queues = controller.max_io_queues().min(MAX_RUNTIME_HCTX);
@@ -576,19 +593,20 @@ impl BlockDeviceHandle {
             )
             .map_err(|_| BlkError::NoMemory)?,
             notification: controller_notification,
-            irq_latches: IrqMutex::new(Vec::new()),
+            irq_latches: Mutex::new(Vec::new()),
         });
         let inner = Arc::new(DeviceInner {
             name,
-            device_info: IrqMutex::new(DeviceInfoEpoch::new(info)),
+            device_info: Mutex::new(DeviceInfoEpoch::new(info)),
             max_io_queues,
+            irq_ownership,
             irq_sources: irqs,
-            hctxs: IrqMutex::new(Vec::new()),
-            detached_queues: IrqMutex::new(Vec::new()),
-            cpu_channels: IrqMutex::new(Vec::new()),
-            irq_registrations: IrqMutex::new(Vec::new()),
+            hctxs: Mutex::new(Vec::new()),
+            detached_queues: Mutex::new(Vec::new()),
+            cpu_channels: Mutex::new(Vec::new()),
+            irq_registrations: Mutex::new(Vec::new()),
             controller: Arc::clone(&controller_port),
-            controller_thread: IrqMutex::new(None),
+            controller_thread: Mutex::new(None),
             state: AtomicU8::new(DEVICE_STARTING),
             accepting: AtomicBool::new(false),
             active_data: AtomicUsize::new(0),
@@ -822,6 +840,21 @@ fn request_cannot_block() -> bool {
     }
 }
 
+fn block_io_error(
+    stage: &'static str,
+    operation: RequestOp,
+    lba: u64,
+    source: BlkError,
+) -> BlockError {
+    warn!("block {operation:?} at LBA {lba} failed during {stage}: {source:?}");
+    BlockError::Device {
+        stage,
+        operation,
+        lba,
+        source,
+    }
+}
+
 fn sectors_for_blocks(logical_block_size: usize, block_count: u32) -> u64 {
     (logical_block_size as u64)
         .saturating_mul(block_count as u64)
@@ -846,18 +879,9 @@ fn disable_registrations(registrations: &[Box<dyn BlockIrqRegistration>]) {
     }
 }
 
-fn block_io_error(
-    stage: &'static str,
-    operation: RequestOp,
-    lba: u64,
-    source: BlkError,
-) -> BlockError {
-    warn!("block {operation:?} at LBA {lba} failed during {stage}: {source:?}");
-    BlockError::Device {
-        stage,
-        operation,
-        lba,
-        source,
+fn disable_installed_sources(sources: &[InstalledIrqSource]) {
+    for source in sources {
+        let _ = source.registration.disable_and_synchronize();
     }
 }
 

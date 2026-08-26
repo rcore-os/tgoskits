@@ -9,17 +9,15 @@
 use alloc::vec::Vec;
 
 use ax_io::Read;
-use ax_task::current;
 
 use crate::{
-    StarryError, StarryResult,
+    StarryError,
     file::get_file_like,
     mm::{VmBytes, vm_load_string},
-    task::AsThread,
 };
 
-fn require_module_privilege() -> StarryResult<()> {
-    if current().as_thread().cred().has_cap_sys_module() {
+fn require_module_privilege(current: &crate::task::UserTaskRef) -> crate::StarryResult<()> {
+    if current.as_thread().cred().has_cap_sys_module() {
         Ok(())
     } else {
         Err(StarryError::OperationNotPermitted)
@@ -28,7 +26,7 @@ fn require_module_privilege() -> StarryResult<()> {
 
 /// Allocate module-image storage without letting an oversized syscall input
 /// reach the allocator's infallible OOM path.
-fn allocate_module_image(len: usize) -> StarryResult<Vec<u8>> {
+fn allocate_module_image(len: usize) -> crate::StarryResult<Vec<u8>> {
     let mut module_image = Vec::new();
     module_image
         .try_reserve_exact(len)
@@ -39,17 +37,18 @@ fn allocate_module_image(len: usize) -> StarryResult<Vec<u8>> {
 
 /// See <https://man7.org/linux/man-pages/man2/init_module.2.html>
 pub fn sys_init_module(
+    current: &crate::task::UserTaskRef,
     module_ptr: *const u8,
     len: usize,
     param_ptr: *const u8,
-) -> StarryResult<isize> {
-    require_module_privilege()?;
-    let mut module_buf = VmBytes::new(module_ptr as *mut u8, len);
+) -> crate::StarryResult<isize> {
+    require_module_privilege(current)?;
+    let mut module_buf = VmBytes::new(current, module_ptr as *mut u8, len);
     let mut module_data = allocate_module_image(len)?;
     module_buf.read(&mut module_data)?;
 
     let param_buf = if !param_ptr.is_null() {
-        Some(vm_load_string(param_ptr as _)?)
+        Some(vm_load_string(current, param_ptr as _)?)
     } else {
         None
     };
@@ -64,8 +63,13 @@ pub fn sys_init_module(
 
 /// `finit_module(2)` — load a module from an open fd rather than a user
 /// buffer.
-pub fn sys_finit_module(module_fd: i32, param_ptr: *const u8, flags: u32) -> StarryResult<isize> {
-    require_module_privilege()?;
+pub fn sys_finit_module(
+    current: &crate::task::UserTaskRef,
+    module_fd: i32,
+    param_ptr: *const u8,
+    flags: u32,
+) -> crate::StarryResult<isize> {
+    require_module_privilege(current)?;
     if flags != 0 {
         return Err(StarryError::InvalidInput);
     }
@@ -85,7 +89,7 @@ pub fn sys_finit_module(module_fd: i32, param_ptr: *const u8, flags: u32) -> Sta
     }
 
     let param_buf = if !param_ptr.is_null() {
-        Some(vm_load_string(param_ptr as _)?)
+        Some(vm_load_string(current, param_ptr as _)?)
     } else {
         None
     };
@@ -100,9 +104,13 @@ pub fn sys_finit_module(module_fd: i32, param_ptr: *const u8, flags: u32) -> Sta
 }
 
 /// See <https://man7.org/linux/man-pages/man2/delete_module.2.html>
-pub fn sys_delete_module(name_ptr: *const u8, _flags: u32) -> StarryResult<isize> {
-    require_module_privilege()?;
-    let name = vm_load_string(name_ptr as _)?;
+pub fn sys_delete_module(
+    current: &crate::task::UserTaskRef,
+    name_ptr: *const u8,
+    _flags: u32,
+) -> crate::StarryResult<isize> {
+    require_module_privilege(current)?;
+    let name = vm_load_string(current, name_ptr as _)?;
     warn!("[sys_delete_module]: name={}", name);
     crate::kmod::delete_module(&name)?;
     Ok(0)

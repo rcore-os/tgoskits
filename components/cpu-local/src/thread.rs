@@ -156,7 +156,6 @@ impl ExecutionContextHeader {
         NonNull::from(self.get_ref())
     }
 
-    #[cfg(any(not(target_arch = "x86_64"), feature = "host-test"))]
     pub(crate) const fn preemption_state(&self) -> &PreemptionState {
         &self.preemption_state
     }

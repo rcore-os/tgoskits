@@ -18,9 +18,17 @@ type MockMemorySet = MemorySet<MockBackend>;
 impl MappingBackend for MockBackend {
     type Addr = VirtAddr;
     type Flags = MockFlags;
+    type MutationContext = ();
     type PageTable = MockPageTable;
 
-    fn map(&self, start: VirtAddr, size: usize, flags: MockFlags, pt: &mut MockPageTable) -> bool {
+    fn map(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        flags: MockFlags,
+        _context: &mut (),
+        pt: &mut MockPageTable,
+    ) -> bool {
         for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
             if *entry != 0 {
                 return false;
@@ -30,7 +38,13 @@ impl MappingBackend for MockBackend {
         true
     }
 
-    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut MockPageTable) -> bool {
+    fn unmap(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        _context: &mut (),
+        pt: &mut MockPageTable,
+    ) -> bool {
         for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
             if *entry == 0 {
                 return false;
@@ -45,6 +59,7 @@ impl MappingBackend for MockBackend {
         start: VirtAddr,
         size: usize,
         new_flags: MockFlags,
+        _context: &mut (),
         pt: &mut MockPageTable,
     ) -> bool {
         for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
@@ -75,8 +90,10 @@ fn memory_set_maps_overlaps_replaces_and_clears_ranges() {
     let mut pt = page_table();
     assert!(set.is_empty());
 
-    set.map(area(0, 0x1000, 1), &mut pt, false).unwrap();
-    set.map(area(0x2000, 0x1000, 2), &mut pt, false).unwrap();
+    set.map(area(0, 0x1000, 1), &mut (), &mut pt, false)
+        .unwrap();
+    set.map(area(0x2000, 0x1000, 2), &mut (), &mut pt, false)
+        .unwrap();
     assert_eq!(set.len(), 2);
     assert_eq!(set.find(0x100.into()).unwrap().flags(), 1);
     assert!(set.find(0x1800.into()).is_none());
@@ -84,14 +101,15 @@ fn memory_set_maps_overlaps_replaces_and_clears_ranges() {
     assert!(!set.overlaps(va_range!(0x1000..0x2000)));
 
     assert_eq!(
-        set.map(area(0x800, 0x1000, 3), &mut pt, false),
+        set.map(area(0x800, 0x1000, 3), &mut (), &mut pt, false),
         Err(MappingError::AlreadyExists)
     );
-    set.map(area(0x800, 0x1000, 3), &mut pt, true).unwrap();
+    set.map(area(0x800, 0x1000, 3), &mut (), &mut pt, true)
+        .unwrap();
     assert_eq!(set.find(0x900.into()).unwrap().flags(), 3);
     assert_eq!(pt[0x900], 3);
 
-    set.clear(&mut pt).unwrap();
+    set.clear(&mut (), &mut pt).unwrap();
     assert!(set.is_empty());
     assert!(pt.iter().all(|entry| *entry == 0));
 }
@@ -100,9 +118,10 @@ fn memory_set_maps_overlaps_replaces_and_clears_ranges() {
 fn memory_set_unmap_splits_and_shrinks_boundary_areas() {
     let mut set = MockMemorySet::new();
     let mut pt = page_table();
-    set.map(area(0, 0x3000, 1), &mut pt, false).unwrap();
+    set.map(area(0, 0x3000, 1), &mut (), &mut pt, false)
+        .unwrap();
 
-    set.unmap(0x800.into(), 0x1000, &mut pt).unwrap();
+    set.unmap(0x800.into(), 0x1000, &mut (), &mut pt).unwrap();
     assert_eq!(set.len(), 2);
     let first = set.find(0x100.into()).unwrap();
     assert_eq!(first.start(), VirtAddr::from(0));
@@ -113,12 +132,12 @@ fn memory_set_unmap_splits_and_shrinks_boundary_areas() {
     assert!(pt[0..0x800].iter().all(|entry| *entry == 1));
     assert!(pt[0x800..0x1800].iter().all(|entry| *entry == 0));
 
-    set.unmap(0x1800.into(), 0x800, &mut pt).unwrap();
+    set.unmap(0x1800.into(), 0x800, &mut (), &mut pt).unwrap();
     assert_eq!(set.len(), 2);
     assert!(set.find(0x1800.into()).is_none());
     assert!(set.find(0x2800.into()).is_some());
 
-    set.unmap(0.into(), MAX_ADDR, &mut pt).unwrap();
+    set.unmap(0.into(), MAX_ADDR, &mut (), &mut pt).unwrap();
     assert!(set.is_empty());
 }
 
@@ -128,6 +147,7 @@ fn memory_set_protect_splits_and_updates_reported_flags() {
     let mut pt = page_table();
     set.map(
         MemoryArea::new_with_reported_flags(0.into(), 0x4000, 0x7, 0xf0, MockBackend),
+        &mut (),
         &mut pt,
         false,
     )
@@ -137,6 +157,7 @@ fn memory_set_protect_splits_and_updates_reported_flags() {
         0x1000.into(),
         0x2000,
         |flags, reported| Some((flags & !0x2, reported | 0x1)),
+        &mut (),
         &mut pt,
     )
     .unwrap();
@@ -153,7 +174,7 @@ fn memory_set_protect_splits_and_updates_reported_flags() {
     assert_eq!(right.reported_flags(), 0xf0);
     assert_eq!(pt[0x1800], 0x5);
 
-    set.protect(0x1800.into(), 0x800, |_| None, &mut pt)
+    set.protect(0x1800.into(), 0x800, |_| None, &mut (), &mut pt)
         .unwrap();
     assert_eq!(set.len(), 3);
 }
@@ -162,8 +183,10 @@ fn memory_set_protect_splits_and_updates_reported_flags() {
 fn memory_set_find_free_extend_and_metadata_operations_hold() {
     let mut set = MockMemorySet::new();
     let mut pt = page_table();
-    set.map(area(0, 0x1000, 1), &mut pt, false).unwrap();
-    set.map(area(0x3000, 0x1000, 2), &mut pt, false).unwrap();
+    set.map(area(0, 0x1000, 1), &mut (), &mut pt, false)
+        .unwrap();
+    set.map(area(0x3000, 0x1000, 2), &mut (), &mut pt, false)
+        .unwrap();
 
     assert_eq!(
         set.find_free_area(0.into(), 0x1000, va_range!(0..MAX_ADDR), 0x1000),
@@ -178,14 +201,15 @@ fn memory_set_find_free_extend_and_metadata_operations_hold() {
         None
     );
 
-    set.extend_area(0x100.into(), 0x1000, &mut pt).unwrap();
+    set.extend_area(0x100.into(), 0x1000, &mut (), &mut pt)
+        .unwrap();
     assert_eq!(set.find(0x1800.into()).unwrap().flags(), 1);
     assert_eq!(
-        set.extend_area(0x100.into(), 0x2000, &mut pt),
+        set.extend_area(0x100.into(), 0x2000, &mut (), &mut pt),
         Err(MappingError::AlreadyExists)
     );
     assert_eq!(
-        set.extend_area(0x6000.into(), 0x1000, &mut pt),
+        set.extend_area(0x6000.into(), 0x1000, &mut (), &mut pt),
         Err(MappingError::InvalidParam)
     );
 

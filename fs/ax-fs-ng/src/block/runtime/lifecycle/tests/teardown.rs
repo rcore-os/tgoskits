@@ -287,6 +287,7 @@ fn bootstrap_preserves_waiting_for_irq_controller_without_io_queue() {
         String::from("waiting-for-irq"),
         vec![BlockIrqSource { source_id: 0, irq }],
         Box::new(WaitingForIrqController),
+        IrqOwnership::Device,
     )
     .expect("a control IRQ may precede creation of the first I/O queue");
 
