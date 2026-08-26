@@ -1802,14 +1802,39 @@ unsafe fn futex_syscall(
     if addr.is_null() {
         return fail(Errno::EFAULT);
     }
-    match op & FUTEX_CMD_MASK {
-        FUTEX_WAIT | FUTEX_WAIT_BITSET => unsafe { futex_wait(addr, expected, timeout) },
+    let command = op & FUTEX_CMD_MASK;
+    let realtime = op & libc::FUTEX_CLOCK_REALTIME != 0;
+    if realtime && command != FUTEX_WAIT_BITSET {
+        return fail(Errno::ENOSYS);
+    }
+
+    match command {
+        FUTEX_WAIT => unsafe {
+            futex_wait(addr, expected, timeout, super::futex::TimeoutMode::Relative)
+        },
+        FUTEX_WAIT_BITSET => unsafe {
+            let timeout_mode = if realtime {
+                super::futex::TimeoutMode::AbsoluteRealtime
+            } else {
+                super::futex::TimeoutMode::AbsoluteMonotonic
+            };
+            futex_wait(addr, expected, timeout, timeout_mode)
+        },
         FUTEX_WAKE | FUTEX_WAKE_BITSET => futex_wake(addr, expected),
         _ => fail(Errno::ENOSYS),
     }
 }
 
-unsafe fn futex_wait(addr: *mut u32, expected: u32, timeout: *const libc::timespec) -> c_int {
+unsafe fn futex_wait(
+    addr: *mut u32,
+    expected: u32,
+    timeout: *const libc::timespec,
+    timeout_mode: super::futex::TimeoutMode,
+) -> c_int {
+    let timeout = match unsafe { futex_timeout(timeout, timeout_mode) } {
+        Ok(timeout) => timeout,
+        Err(_) => return fail(Errno::EINVAL),
+    };
     if unsafe { addr.read_volatile() } != expected {
         return fail(Errno::EAGAIN);
     }
@@ -1824,7 +1849,7 @@ unsafe fn futex_wait(addr: *mut u32, expected: u32, timeout: *const libc::timesp
     let timed_out = ax_api::task::ax_wait_queue_wait_until(
         &wq,
         || unsafe { addr.read_volatile() } != expected,
-        unsafe { futex_timeout(timeout) },
+        timeout,
     );
     if timed_out { fail(Errno::ETIMEDOUT) } else { 0 }
 }
@@ -1842,17 +1867,17 @@ fn futex_wake(addr: *mut u32, count: u32) -> c_int {
     count.min(i32::MAX as u32) as c_int
 }
 
-unsafe fn futex_timeout(timeout: *const libc::timespec) -> Option<Duration> {
+unsafe fn futex_timeout(
+    timeout: *const libc::timespec,
+    mode: super::futex::TimeoutMode,
+) -> Result<Option<Duration>, super::futex::InvalidTimespec> {
     if timeout.is_null() {
-        return None;
+        return Ok(None);
     }
     let ts = unsafe { *timeout };
-    if ts.tv_sec < 0 || ts.tv_nsec < 0 {
-        return Some(Duration::ZERO);
-    }
-    let deadline = Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32);
-    let now = ax_hal::time::monotonic_time();
-    Some(deadline.saturating_sub(now))
+    let clocks =
+        super::futex::ClockSnapshot::new(ax_hal::time::monotonic_time(), ax_hal::time::wall_time());
+    super::futex::timeout_from_timespec(ts, mode, clocks).map(Some)
 }
 
 static FUTEX_QUEUES: LazyLock<Mutex<BTreeMap<usize, Arc<ax_api::task::AxWaitQueueHandle>>>> =
@@ -2248,7 +2273,13 @@ mod pthread {
         mutex: *mut libc::pthread_mutex_t,
         abstime: *const libc::timespec,
     ) -> c_int {
-        unsafe { pthread_cond_wait_inner(cond, mutex, super::futex_timeout(abstime)) }
+        let timeout = match unsafe {
+            super::futex_timeout(abstime, super::super::futex::TimeoutMode::AbsoluteRealtime)
+        } {
+            Ok(Some(timeout)) => Some(timeout),
+            Ok(None) | Err(_) => return Errno::EINVAL.into_raw(),
+        };
+        unsafe { pthread_cond_wait_inner(cond, mutex, timeout) }
     }
 
     unsafe fn pthread_cond_wait_inner(
