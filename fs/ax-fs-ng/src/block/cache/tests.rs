@@ -17,7 +17,10 @@ use super::{
     folio_cache::FolioCache,
     *,
 };
-use crate::{BlockError, BlockResult, block::FsBlockDevice};
+use crate::{
+    BlockError, BlockResult,
+    block::{BlockRegion, FsBlockDevice, RegionBlockDevice},
+};
 
 const KEY_A: usize = 0x1000;
 
@@ -461,6 +464,56 @@ fn shared_registry_serves_two_instances_from_one_tree() {
 }
 
 #[test]
+fn shared_wrappers_observe_dirty_and_direct_updates_without_stale_reads() {
+    let (device, state) = RecordingDevice::new(64, 512);
+    let key = KEY_A + 24;
+    let mut first = buffered(key, device.clone());
+    let mut second = buffered(key, device);
+
+    let dirty = [0xA5u8; 512];
+    first.write_block(3, &dirty).unwrap();
+    let mut block = [0u8; 512];
+    second.read_block(3, &mut block).unwrap();
+    assert_eq!(block, dirty);
+    assert_eq!(count_ops(&state, IoOp::is_read), 0);
+    assert_eq!(count_ops(&state, |op| matches!(op, IoOp::Write { .. })), 0);
+
+    let direct = [0x5Au8; 16 * 512];
+    second.write_block(0, &direct).unwrap();
+    block.fill(0);
+    first.read_block(3, &mut block).unwrap();
+    assert!(block.iter().all(|&byte| byte == 0x5A));
+    assert_eq!(count_ops(&state, IoOp::is_read), 0);
+}
+
+#[test]
+fn shared_partition_wrappers_keep_physical_lbas_distinct() {
+    let (device, state) = RecordingDevice::new(64, 512);
+    let key = KEY_A + 25;
+    let mut first = RegionBlockDevice::new(buffered(key, device.clone()), BlockRegion::new(8, 8));
+    let mut second = RegionBlockDevice::new(buffered(key, device), BlockRegion::new(24, 8));
+
+    let first_data = [0x18u8; 512];
+    let second_data = [0x24u8; 512];
+    first.write_block(0, &first_data).unwrap();
+    second.write_block(0, &second_data).unwrap();
+
+    let mut block = [0u8; 512];
+    first.read_block(0, &mut block).unwrap();
+    assert_eq!(block, first_data);
+    second.read_block(0, &mut block).unwrap();
+    assert_eq!(block, second_data);
+
+    second.flush().unwrap();
+    {
+        let state = state.lock().unwrap();
+        assert_eq!(&state.storage[8 * 512..9 * 512], &first_data);
+        assert_eq!(&state.storage[24 * 512..25 * 512], &second_data);
+    }
+    assert_eq!(count_ops(&state, |op| op.is_write_of(0, 1)), 0);
+}
+
+#[test]
 fn drop_flushes_last_instance() {
     let (device, state) = RecordingDevice::new(64, 512);
     let mut cached = buffered(KEY_A + 10, device);
@@ -529,17 +582,30 @@ fn folio_allocation_failure_returns_no_memory_without_io() {
 }
 
 #[test]
-fn write_errors_propagate_from_writeback() {
+fn failed_writeback_retains_dirty_data_for_retry() {
     // A direct tree keeps the failing device out of the process-global
     // registry, where a live failing endpoint would break registry-wide
     // sync in concurrently running tests.
     let (mut inner, state) = RecordingDevice::new(64, 512);
     let mut tree = BlockAddressSpace::with_capacity(FolioGeometry::new(512).unwrap(), 4);
 
-    let data = [0u8; 512];
+    let data = [0xD7u8; 512];
     tree.write_buffered(&mut inner, 7, 1, &data).unwrap();
     state.lock().unwrap().fail_writes = true;
-    assert!(tree.writeback_dirty(&mut inner, None).is_err());
+    assert_eq!(tree.writeback_dirty(&mut inner, None), Err(BlockError::Io));
+    assert!(tree.has_dirty());
+
+    let mut cached = [0u8; 512];
+    tree.read_buffered(&mut inner, 7, 1, &mut cached).unwrap();
+    assert_eq!(
+        cached, data,
+        "a failed writeback must not discard dirty bytes"
+    );
+
+    state.lock().unwrap().fail_writes = false;
+    tree.writeback_dirty(&mut inner, None).unwrap();
+    assert!(!tree.has_dirty());
+    assert_eq!(&state.lock().unwrap().storage[7 * 512..8 * 512], &data);
 }
 
 #[test]

@@ -190,7 +190,8 @@ pub fn init_root(
     bootargs: Option<&str>,
 ) {
     let root_spec = RootSpec::parse_bootargs(bootargs);
-    let mut disks = collect_disks(block_devs);
+    let mut disks = collect_disks(block_devs)
+        .unwrap_or_else(|error| panic!("failed to initialize block cache: {error:?}"));
     let candidates = collect_root_candidates(&disks);
     let (selected_disk_index, selected_partition) = select_root_candidate(&candidates, &root_spec)
         .unwrap_or_else(|| panic!("failed to determine root device from available block devices"));
@@ -297,12 +298,12 @@ pub fn init_root_from_rdif_sources(
 
 fn collect_disks(
     block_devs: impl IntoIterator<Item = Arc<BlockDeviceHandle>>,
-) -> Vec<DiscoveredDisk> {
+) -> crate::BlockResult<Vec<DiscoveredDisk>> {
     let mut disks = Vec::new();
 
     for (disk_index, dev) in block_devs.into_iter().enumerate() {
         let handle = dev.clone();
-        let mut dev = boxed_native_handle_block_device(dev);
+        let mut dev = boxed_native_handle_block_device(dev)?;
         let device_name = dev.name().to_string();
         let mut reader = VolumeReader::new(&mut *dev);
         match scan_volumes(&mut reader, DiskId(disk_index as u64)) {
@@ -325,7 +326,7 @@ fn collect_disks(
         }
     }
 
-    disks
+    Ok(disks)
 }
 
 fn collect_partitions(

@@ -21,6 +21,8 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+#[cfg(test)]
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_lazyinit::LazyLock;
 
@@ -34,6 +36,9 @@ struct DeviceCacheEntry {
 
 static BLOCK_CACHE_REGISTRY: LazyLock<Mutex<Vec<DeviceCacheEntry>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[cfg(test)]
+static FAIL_REGISTRY_RESERVE_FOR_KEY: AtomicUsize = AtomicUsize::new(0);
 
 /// Resolves the shared cache tree of the device identified by
 /// `device_key`, creating it on first use with `endpoint` as its global
@@ -72,6 +77,13 @@ pub(crate) fn shared_cache_for(
     };
 
     if stale_index.is_none() {
+        #[cfg(test)]
+        if FAIL_REGISTRY_RESERVE_FOR_KEY
+            .compare_exchange(device_key, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return Err(BlockError::NoMemory);
+        }
         registry.try_reserve(1).map_err(|_| BlockError::NoMemory)?;
     }
     let shared = Arc::new(BlockCacheShared::new(device_key, geometry, endpoint));
@@ -85,6 +97,22 @@ pub(crate) fn shared_cache_for(
         registry.push(entry);
     }
     Ok(shared)
+}
+
+#[cfg(test)]
+pub(crate) fn fail_registry_reserve_for_key_for_test(device_key: usize) {
+    assert_ne!(device_key, 0, "zero means no injected allocation failure");
+    FAIL_REGISTRY_RESERVE_FOR_KEY
+        .compare_exchange(0, device_key, Ordering::AcqRel, Ordering::Acquire)
+        .expect("only one registry allocation failure may be injected at a time");
+}
+
+#[cfg(test)]
+pub(crate) fn registry_contains_key_for_test(device_key: usize) -> bool {
+    BLOCK_CACHE_REGISTRY
+        .lock()
+        .iter()
+        .any(|entry| entry.device_key == device_key)
 }
 
 /// Removes the registry entry that still names `cache` without waiting.

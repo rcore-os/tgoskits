@@ -8,6 +8,8 @@ use axfs_ng_vfs::{Filesystem, VfsResult};
 use crate::FilesystemKind;
 #[cfg(any(feature = "ext4", feature = "fat"))]
 use crate::block::FsBlockDevice;
+#[cfg(any(feature = "ext4", feature = "fat"))]
+use crate::block_error_to_vfs_error;
 use crate::{BlockDeviceHandle, block::BlockRegion};
 
 #[cfg(feature = "ext4")]
@@ -40,7 +42,9 @@ pub(crate) fn new_by_kind(
 /// platform probe path.
 #[cfg(any(feature = "ext4", feature = "fat"))]
 pub fn new_from_handle(dev: Arc<BlockDeviceHandle>, region: BlockRegion) -> VfsResult<Filesystem> {
-    new_default(crate::block::boxed_native_handle_block_device(dev), region)
+    let dev =
+        crate::block::boxed_native_handle_block_device(dev).map_err(block_error_to_vfs_error)?;
+    new_default(dev, region)
 }
 
 #[cfg(any(feature = "ext4", feature = "fat"))]
@@ -49,11 +53,9 @@ pub(crate) fn new_from_handle_with_kind(
     region: BlockRegion,
     kind: FilesystemKind,
 ) -> VfsResult<Filesystem> {
-    new_by_kind(
-        crate::block::boxed_native_handle_block_device(dev),
-        region,
-        kind,
-    )
+    let dev =
+        crate::block::boxed_native_handle_block_device(dev).map_err(block_error_to_vfs_error)?;
+    new_by_kind(dev, region, kind)
 }
 
 #[cfg(not(any(feature = "ext4", feature = "fat")))]

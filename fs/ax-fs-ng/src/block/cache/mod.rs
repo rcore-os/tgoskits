@@ -57,3 +57,5 @@ pub(crate) use device::BufferedBlockDevice;
 #[cfg(feature = "vfs")]
 pub(crate) use registry::reclaim_clean_folios;
 pub use registry::sync_all_block_caches;
+#[cfg(test)]
+pub(super) use registry::{fail_registry_reserve_for_key_for_test, registry_contains_key_for_test};

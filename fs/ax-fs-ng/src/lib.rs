@@ -29,7 +29,7 @@ pub mod os;
 pub mod root;
 pub mod volume;
 
-#[cfg(feature = "fat")]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 pub(crate) use error::block_error_to_vfs_error;
 pub use error::{BlockError, BlockResult};
 pub(crate) use error::{io_error_to_vfs_error, vfs_error_to_io_error};

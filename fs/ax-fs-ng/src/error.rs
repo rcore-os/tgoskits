@@ -56,7 +56,7 @@ impl From<BlkError> for BlockError {
 }
 
 /// Adapt a block-runtime failure at the VFS implementation boundary.
-#[cfg(feature = "fat")]
+#[cfg(any(feature = "ext4", feature = "fat"))]
 pub(crate) fn block_error_to_vfs_error(error: BlockError) -> VfsError {
     match error {
         BlockError::InvalidRequest => VfsError::InvalidInput,
@@ -151,7 +151,7 @@ pub(crate) fn io_error_to_vfs_error(error: IoError) -> VfsError {
     }
 }
 
-#[cfg(all(test, feature = "fat"))]
+#[cfg(all(test, any(feature = "ext4", feature = "fat")))]
 mod tests {
     use super::*;
 
