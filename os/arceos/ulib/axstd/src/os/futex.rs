@@ -27,6 +27,23 @@ impl ClockSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct InvalidTimespec;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum WaitError {
+    ValueMismatch,
+    InvalidTimeout,
+}
+
+pub(super) fn prepare_wait_timeout(
+    actual: u32,
+    expected: u32,
+    parse_timeout: impl FnOnce() -> Result<Option<Duration>, InvalidTimespec>,
+) -> Result<Option<Duration>, WaitError> {
+    if actual != expected {
+        return Err(WaitError::ValueMismatch);
+    }
+    parse_timeout().map_err(|_| WaitError::InvalidTimeout)
+}
+
 pub(super) fn timeout_from_timespec(
     ts: libc::timespec,
     mode: TimeoutMode,
@@ -120,6 +137,18 @@ mod tests {
                 Err(InvalidTimespec)
             );
         }
+    }
+
+    #[test]
+    fn futex_value_mismatch_takes_precedence_over_invalid_timeout() {
+        assert_eq!(
+            prepare_wait_timeout(1, 0, || Err(InvalidTimespec)),
+            Err(WaitError::ValueMismatch)
+        );
+        assert_eq!(
+            prepare_wait_timeout(0, 0, || Err(InvalidTimespec)),
+            Err(WaitError::InvalidTimeout)
+        );
     }
 
     fn clocks_at(monotonic_ms: u64, realtime_ms: u64) -> ClockSnapshot {

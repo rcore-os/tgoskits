@@ -409,6 +409,7 @@ dependencies = [
  "axfs-ng-vfs",
  "axpoll",
  "embedded-graphics",
+ "libc",
  "rand 0.8.8",
 ]
 

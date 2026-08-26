@@ -37,6 +37,7 @@ display-basic = ["ax-std", "ax-driver/virtio-gpu", "dep:embedded-graphics", "ax-
 eventfd-epoll = ["ax-std", "ax-std/fd"]
 exception-breakpoint = ["ax-std"]
 exception-page-fault = ["ax-std", "ax-std/paging"]
+futex-errno-order = ["ax-std", "dep:libc"]
 lockdep-baseline = ["ax-std", "dep:axfs-ng-vfs", "ax-std/alloc"]
 lockdep-detect = [
     "ax-std",
@@ -66,6 +67,7 @@ all = [
     "display-basic",
     "eventfd-epoll",
     "exception-breakpoint",
+    "futex-errno-order",
     "lockdep-baseline",
 ]
 
@@ -77,4 +79,5 @@ axbacktrace = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }
 axpoll = { workspace = true, optional = true }
 embedded-graphics = { version = "0.8", optional = true }
+libc = { workspace = true, optional = true }
 rand = { version = "0.8", default-features = false, features = ["small_rng"], optional = true }

@@ -1831,13 +1831,15 @@ unsafe fn futex_wait(
     timeout: *const libc::timespec,
     timeout_mode: super::futex::TimeoutMode,
 ) -> c_int {
-    let timeout = match unsafe { futex_timeout(timeout, timeout_mode) } {
+    let timeout = match super::futex::prepare_wait_timeout(
+        unsafe { addr.read_volatile() },
+        expected,
+        || unsafe { futex_timeout(timeout, timeout_mode) },
+    ) {
         Ok(timeout) => timeout,
-        Err(_) => return fail(Errno::EINVAL),
+        Err(super::futex::WaitError::ValueMismatch) => return fail(Errno::EAGAIN),
+        Err(super::futex::WaitError::InvalidTimeout) => return fail(Errno::EINVAL),
     };
-    if unsafe { addr.read_volatile() } != expected {
-        return fail(Errno::EAGAIN);
-    }
 
     let key = addr as usize;
     let wq = {
