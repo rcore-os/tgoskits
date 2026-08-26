@@ -572,3 +572,58 @@ fn profile_file_creation() {
     }
     eprintln!("############################################################################");
 }
+
+/// Deterministic regression test — runs in default `cargo test` (no `#[ignore]`).
+///
+/// Validates the data-integrity contract of the cache, mkfs, and write paths
+/// used by the profiling harness. These assertions fail on an incorrect
+/// implementation (e.g. dirty data lost during eviction, corrupted write-back,
+/// or stale read-back after remount).
+#[test]
+fn regression_write_readback_and_eviction_persistence() {
+    let ctr = Rc::new(Counters::new());
+    let device = ProfilingBlockDevice::new(100 * 1024 * 1024, ctr.clone());
+    let mut dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+    mkfs(&mut dev).expect("mkfs");
+    let mut fs = mount(&mut dev).expect("mount");
+
+    mkdir(&mut dev, &mut fs, "/regtest").expect("mkdir");
+
+    let payload_a = vec![0xA1u8; 4096];
+    let payload_b = vec![0xB2u8; 8192];
+
+    mkfile(&mut dev, &mut fs, "/regtest/a", Some(&payload_a), None).expect("mkfile a");
+    mkfile(&mut dev, &mut fs, "/regtest/b", Some(&payload_b), None).expect("mkfile b");
+
+    umount(fs, &mut dev).expect("umount");
+
+    let (mut dev, mut fs) = cold_mount(dev.into_inner());
+
+    let read_a = read_file(&mut dev, &mut fs, "/regtest/a").expect("read a");
+    assert_eq!(read_a, payload_a, "file a content mismatch after remount");
+
+    let read_b = read_file(&mut dev, &mut fs, "/regtest/b").expect("read b");
+    assert_eq!(read_b, payload_b, "file b content mismatch after remount");
+
+    // Stress eviction: create enough files to exceed a small device's cache,
+    // forcing eviction of dirty blocks.
+    let many_payload = vec![0xCCu8; 4096];
+    for i in 0..64 {
+        let path = format!("/regtest/evict_{:03}", i);
+        mkfile(&mut dev, &mut fs, &path, Some(&many_payload), None).expect("mkfile evict");
+    }
+    umount(fs, &mut dev).expect("umount after eviction stress");
+
+    let (mut dev, mut fs) = cold_mount(dev.into_inner());
+    for i in 0..64 {
+        let path = format!("/regtest/evict_{:03}", i);
+        let content = read_file(&mut dev, &mut fs, &path).expect("read evicted file");
+        assert_eq!(
+            content, many_payload,
+            "evicted file {path} content mismatch — dirty data may have been lost"
+        );
+    }
+
+    umount(fs, &mut dev).expect("final umount");
+}

@@ -124,11 +124,11 @@ impl DataBlockCache {
             let data = self.load_block(block_dev, block_num)?;
 
             // Phase 3: reacquire the lock. Validate each victim's generation;
-            // remove the still-valid ones and collect their dirty data. Stale
-            // victims are left (cache may transiently exceed `max_entries`).
+            // remove clean victims and collect dirty data for writeback. Dirty
+            // entries stay in cache until the write succeeds.
             inner = self.inner.lock();
 
-            let to_write = inner.validate_and_remove_batch(&evict_batch);
+            let to_write = inner.extract_dirty_for_writeback(&evict_batch);
 
             inner
                 .cache
@@ -142,6 +142,10 @@ impl DataBlockCache {
             // passed — outside the spinlock.
             if !to_write.is_empty() {
                 Self::write_dirty_runs(block_dev, &to_write, self.block_size)?;
+                let mut inner = self.inner.lock();
+                for (blk, generation, _) in &to_write {
+                    inner.remove_if_generation(*blk, *generation);
+                }
             }
 
             // Reacquire for the LRU refresh below.
@@ -186,10 +190,10 @@ impl DataBlockCache {
             let data = self.load_block(block_dev, block_num)?;
 
             // Phase 3: reacquire the lock. Validate each victim's generation;
-            // remove the still-valid ones and collect their dirty data.
+            // remove clean victims and collect dirty data for writeback.
             inner = self.inner.lock();
 
-            let to_write = inner.validate_and_remove_batch(&evict_batch);
+            let to_write = inner.extract_dirty_for_writeback(&evict_batch);
 
             // Re-check after reacquiring: another thread may have inserted the
             // same key while we held no lock.
@@ -204,6 +208,10 @@ impl DataBlockCache {
             // spinlock.
             if !to_write.is_empty() {
                 Self::write_dirty_runs(block_dev, &to_write, self.block_size)?;
+                let mut inner = self.inner.lock();
+                for (blk, generation, _) in &to_write {
+                    inner.remove_if_generation(*blk, *generation);
+                }
             }
 
             inner = self.inner.lock();
@@ -272,9 +280,9 @@ impl DataBlockCache {
         if evict_existing.is_some() {
             inner.cache.remove(&block_num);
         }
-        // Validate LRU victim generations; remove still-valid ones and collect
-        // their dirty data for coalesced writeback. Stale victims are left.
-        let to_write = inner.validate_and_remove_batch(&evict_lru_batch);
+        // Validate LRU victim generations; remove clean victims and collect
+        // dirty data for writeback. Dirty entries stay until write succeeds.
+        let to_write = inner.extract_dirty_for_writeback(&evict_lru_batch);
 
         let data = alloc::vec![0u8; inner.block_size];
         let mut cached = CachedBlock::new(data, block_num);
@@ -297,6 +305,10 @@ impl DataBlockCache {
         // check, outside the spinlock.
         if !to_write.is_empty() {
             Self::write_dirty_runs(block_dev, &to_write, self.block_size)?;
+            let mut inner = self.inner.lock();
+            for (blk, generation, _) in &to_write {
+                inner.remove_if_generation(*blk, *generation);
+            }
         }
 
         result
@@ -682,7 +694,17 @@ impl DataBlockCacheInner {
     /// spinlock. Entries whose generation changed (accessed/modified while the
     /// lock was released) are left untouched — the cache may then transiently
     /// exceed `max_entries`, which is harmless.
-    fn validate_and_remove_batch(
+    /// Validates a snapshot batch against current generations and extracts
+    /// dirty data for writeback.
+    ///
+    /// Clean entries whose generation still matches are removed immediately
+    /// (no data loss risk). Dirty entries are **not** removed — their data is
+    /// returned so the caller can write it back; the caller must call
+    /// `remove_if_generation` for each successfully written dirty entry.
+    ///
+    /// This ensures that a write failure leaves dirty entries in the cache,
+    /// preserving data for a future retry.
+    fn extract_dirty_for_writeback(
         &mut self,
         batch: &[(AbsoluteBN, u64, Option<Vec<u8>>)],
     ) -> Vec<(AbsoluteBN, u64, Vec<u8>)> {
@@ -693,9 +715,10 @@ impl DataBlockCacheInner {
                 .get(key)
                 .is_some_and(|cached| cached.generation == *gen_v)
             {
-                self.cache.remove(key);
                 if let Some(d) = dirty_opt {
                     to_write.push((*key, *gen_v, d.clone()));
+                } else {
+                    self.cache.remove(key);
                 }
             }
         }
@@ -1009,5 +1032,83 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.total_entries, 2);
         assert_eq!(stats.max_entries, 1);
+    }
+
+    #[test]
+    fn evict_preserves_dirty_on_write_failure() {
+        use crate::error::Errno;
+
+        struct FailWriteDevice {
+            data: Vec<u8>,
+        }
+
+        impl FailWriteDevice {
+            fn new(blocks: usize) -> Self {
+                Self {
+                    data: alloc::vec![0; blocks * BLOCK_SIZE],
+                }
+            }
+        }
+
+        impl BlockDevice for FailWriteDevice {
+            fn read(
+                &mut self,
+                buffer: &mut [u8],
+                block_id: AbsoluteBN,
+                _count: u32,
+            ) -> Ext4Result<()> {
+                let start = block_id.as_usize()? * BLOCK_SIZE;
+                let end = start + buffer.len();
+                buffer.copy_from_slice(&self.data[start..end]);
+                Ok(())
+            }
+
+            fn write(
+                &mut self,
+                _buffer: &[u8],
+                _block_id: AbsoluteBN,
+                _count: u32,
+            ) -> Ext4Result<()> {
+                Err(Ext4Error::from(Errno::EIO))
+            }
+
+            fn open(&mut self) -> Ext4Result<()> {
+                Ok(())
+            }
+
+            fn close(&mut self) -> Ext4Result<()> {
+                Ok(())
+            }
+
+            fn total_blocks(&self) -> u64 {
+                (self.data.len() / BLOCK_SIZE) as u64
+            }
+
+            fn block_size(&self) -> u32 {
+                BLOCK_SIZE as u32
+            }
+
+            fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
+                Ok(Ext4Timestamp::new(0, 0))
+            }
+        }
+
+        let cache = DataBlockCache::new(1, BLOCK_SIZE);
+        let device = FailWriteDevice::new(1024);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, false);
+
+        cache
+            .create_new(&mut jbd2_dev, AbsoluteBN::new(10))
+            .expect("create first dirty block");
+
+        assert_eq!(cache.stats().dirty_entries, 1);
+
+        let result = cache.create_new(&mut jbd2_dev, AbsoluteBN::new(20));
+        assert!(result.is_err(), "write failure must propagate");
+
+        assert!(
+            cache.stats().dirty_entries >= 1,
+            "dirty entry must be preserved after write failure"
+        );
     }
 }
