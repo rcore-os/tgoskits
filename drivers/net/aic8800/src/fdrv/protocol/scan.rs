@@ -194,6 +194,7 @@ pub fn collect_scan_results(bus: &Arc<WifiBus>, timeout_ms: u64) -> Vec<ScanResu
                 }
             }
             None => {
+                let _ = crate::fdrv::thread::progress_io(bus);
                 crate::runtime::runtime().yield_now();
             }
         }

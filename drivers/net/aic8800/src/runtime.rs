@@ -8,23 +8,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use core::{
-    sync::atomic::{AtomicPtr, Ordering},
-    task::{Context, Poll},
-};
-
-/// A poll body provided by the driver core: invoked with a task context,
-/// returns `Poll::Ready(())` when the operation is complete (or the task should
-/// exit) and `Poll::Pending` otherwise. The OS glue drives it via its executor.
-pub type PollFn<'a> = dyn FnMut(&mut Context<'_>) -> Poll<()> + 'a;
-
-/// A pollable body that can be sent to another task (for background tasks).
-pub type SendPollFn = dyn FnMut(&mut Context<'_>) -> Poll<()> + Send;
-
-/// Returned by [`WifiRuntime::block_until`] when the deadline elapsed before the
-/// poll body completed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TimedOut;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// OS runtime capabilities the Wi-Fi driver core needs.
 ///
@@ -32,7 +16,8 @@ pub struct TimedOut;
 /// timing, delay and yield capabilities through this trait. The OS glue layer
 /// implements and injects it.
 ///
-/// `spawn_poll_task` starts the driver's background polling loops (RX/TX/AP).
+/// Queue ownership and task creation intentionally do not cross this boundary:
+/// the unified network runtime owns the sole fixed-CPU executor.
 pub trait WifiRuntime: Send + Sync + 'static {
     /// Monotonic clock in nanoseconds. Used for timeouts and elapsed-time math.
     fn now_nanos(&self) -> u64;
@@ -40,21 +25,9 @@ pub trait WifiRuntime: Send + Sync + 'static {
     /// Blocking delay for the given milliseconds (init/firmware power-up only).
     fn sleep_ms(&self, ms: u64);
 
-    /// Yield the CPU to other tasks (while polling for hardware readiness).
+    /// Yield the fixed owner CPU task while an active hardware transaction is
+    /// waiting for progress.
     fn yield_now(&self);
-
-    /// Start a named background polling task.
-    ///
-    /// `poll` is the core-provided poll body (no OS executor details): each call
-    /// returns `Poll::Pending` while unfinished, `Poll::Ready(())` when the task
-    /// should exit. The glue drives it with the kernel's executor (e.g.
-    /// `block_on(poll_fn(...))`) and re-polls when the associated waker fires.
-    fn spawn_poll_task(&self, name: &str, poll: Box<SendPollFn>);
-
-    /// Block the current task until `poll` returns `Poll::Ready`, waiting at
-    /// most `timeout_ms` milliseconds (`None` = unbounded). Returns [`TimedOut`]
-    /// on timeout.
-    fn block_until(&self, timeout_ms: Option<u64>, poll: &mut PollFn<'_>) -> Result<(), TimedOut>;
 }
 
 static RUNTIME: AtomicPtr<&'static dyn WifiRuntime> = AtomicPtr::new(core::ptr::null_mut());

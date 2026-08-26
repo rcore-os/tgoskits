@@ -268,6 +268,15 @@ pub fn cpu_topology_len() -> Result<usize, TaskError> {
     Ok(runtime_task_system()?.cpu_topology_len())
 }
 
+/// Returns the CPUs that currently accept runnable placement.
+///
+/// Unlike [`cpu_topology_len`], this snapshot excludes possible CPUs that have
+/// not completed scheduler online publication or no longer accept new work.
+pub fn active_cpu_set() -> Result<CpuSet, TaskError> {
+    validate_task_context()?;
+    Ok(runtime_task_system()?.active_cpu_set())
+}
+
 /// Updates a thread scheduling policy through its owner CPU.
 ///
 /// # Errors

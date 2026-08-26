@@ -16,14 +16,10 @@ use ax_std::os::arceos::sync::IrqSafeMutex;
 
 use crate::{
     arch::aarch64::gic::AxvmVgicBackend,
-    host::{
-        HostCpu, HostTime, default_host,
-        task::{
-            HardKernelTimerAction, KernelTimerHandle, MonotonicDeadline, arm_hard_kernel_timer,
-            cancel_kernel_timer, disarm_hard_kernel_timer, register_hard_restartable_kernel_timer,
-        },
-    },
+    host::{HostCpu, HostHardTimerAction, HostTime, HostTimer, default_host},
 };
+
+type KernelTimerHandle = <crate::host::arceos::ArceOsHost as HostTimer>::TimerHandle;
 
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 
@@ -40,16 +36,12 @@ struct ScheduledWaitTimer {
     epoch: u64,
 }
 
-#[derive(Clone, Copy)]
-pub(in crate::arch::aarch64) struct Aarch64TimerWaitToken {
-    generation: u64,
-}
+pub(in crate::arch::aarch64) type Aarch64TimerWaitToken = crate::vm::VcpuTimerWaitToken;
 
 struct Aarch64TimerWaitState {
-    next_generation: AtomicU64,
-    armed_generation: AtomicU64,
-    completed_generation: AtomicU64,
+    completion: crate::vm::VcpuTimerWaitGeneration,
     deadline_counter: AtomicU64,
+    armed_timer_epoch: AtomicU64,
     next_timer_epoch: AtomicU64,
     active_timer_epoch: AtomicU64,
     wake: OnceLock<crate::host::task::ThreadWakeHandle>,
@@ -58,42 +50,34 @@ struct Aarch64TimerWaitState {
 impl Aarch64TimerWaitState {
     const fn new() -> Self {
         Self {
-            next_generation: AtomicU64::new(0),
-            armed_generation: AtomicU64::new(0),
-            completed_generation: AtomicU64::new(0),
+            completion: crate::vm::VcpuTimerWaitGeneration::new(),
             deadline_counter: AtomicU64::new(0),
+            armed_timer_epoch: AtomicU64::new(0),
             next_timer_epoch: AtomicU64::new(0),
             active_timer_epoch: AtomicU64::new(0),
             wake: OnceLock::new(),
         }
     }
 
-    fn arm_for_current_thread(&self, deadline_counter: u64) -> Aarch64TimerWaitToken {
+    fn bind_current_thread_wake(&self) {
         self.wake
             .get_or_init(|| crate::host::task::current_thread().wake_handle());
-        self.deadline_counter
-            .store(deadline_counter, Ordering::Relaxed);
-        let generation = self
-            .next_generation
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
-                generation.checked_add(1)
-            })
-            .unwrap_or_else(|_| panic!("AArch64 timer wait generation exhausted"))
-            .checked_add(1)
-            .expect("AArch64 timer wait generation must remain finite");
-        self.armed_generation.store(generation, Ordering::Release);
-        Aarch64TimerWaitToken { generation }
     }
 
-    fn armed_deadline(&self) -> Option<(u64, u64)> {
+    fn arm(&self, deadline_counter: u64, timer_epoch: u64) -> Aarch64TimerWaitToken {
+        self.deadline_counter
+            .store(deadline_counter, Ordering::Relaxed);
+        self.armed_timer_epoch.store(timer_epoch, Ordering::Relaxed);
+        self.completion.arm()
+    }
+
+    fn armed_deadline_for_epoch(&self, timer_epoch: u64) -> Option<(Aarch64TimerWaitToken, u64)> {
         loop {
-            let generation = self.armed_generation.load(Ordering::Acquire);
-            if generation == 0 {
-                return None;
-            }
+            let token = self.completion.armed_token()?;
             let deadline_counter = self.deadline_counter.load(Ordering::Relaxed);
-            if self.armed_generation.load(Ordering::Acquire) == generation {
-                return Some((generation, deadline_counter));
+            let armed_timer_epoch = self.armed_timer_epoch.load(Ordering::Relaxed);
+            if self.completion.armed_token() == Some(token) {
+                return (armed_timer_epoch == timer_epoch).then_some((token, deadline_counter));
             }
         }
     }
@@ -121,37 +105,26 @@ impl Aarch64TimerWaitState {
                 .compare_exchange(epoch, 0, Ordering::AcqRel, Ordering::Acquire);
     }
 
-    fn publish_completion(&self, token: Aarch64TimerWaitToken) -> bool {
-        if self
-            .armed_generation
-            .compare_exchange(token.generation, 0, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+    fn publish_completion_for_epoch(&self, timer_epoch: u64, token: Aarch64TimerWaitToken) -> bool {
+        if self.armed_timer_epoch.load(Ordering::Acquire) != timer_epoch {
             return false;
         }
         // The completed generation is the Linux kvm_vcpu_check_block-style
         // condition. Publish it before the direct wake so a wake-before-park
         // interleaving cannot merely wake and then re-enter the wait loop.
-        self.completed_generation
-            .store(token.generation, Ordering::Release);
-        true
+        self.completion.complete(token)
     }
 
     fn cancel_arm(&self, token: Aarch64TimerWaitToken) {
-        let _ = self.armed_generation.compare_exchange(
-            token.generation,
-            0,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        self.completion.cancel(token);
     }
 
     fn is_completed(&self, token: Aarch64TimerWaitToken) -> bool {
-        self.completed_generation.load(Ordering::Acquire) == token.generation
+        self.completion.is_completed(token)
     }
 
     fn invalidate(&self) -> bool {
-        self.armed_generation.swap(0, Ordering::AcqRel) != 0
+        self.completion.invalidate()
     }
 
     fn wake_from_hard_timer(&self) {
@@ -280,21 +253,24 @@ impl Aarch64TimerBinding {
             return Ok(None);
         };
 
-        let wait_token = self.wait_state.arm_for_current_thread(deadline_counter);
+        self.wait_state.bind_current_thread_wake();
         let deadline_ns = host_deadline_ns(deadline_counter, now_counter, self.frequency);
-        let deadline = MonotonicDeadline::from_duration(Duration::from_nanos(deadline_ns));
+        let deadline = Duration::from_nanos(deadline_ns);
         let current_cpu = default_host().this_cpu_id();
         let existing = *self.scheduled.lock();
         if let Some(existing) = existing
             && existing.owner_cpu == current_cpu
         {
-            arm_hard_kernel_timer(existing.handle, deadline).map_err(|error| {
-                self.wait_state.cancel_arm(wait_token);
-                arm_vgic::VgicError::Backend {
-                    operation: "arm blocked-vCPU architectural timer",
-                    detail: std::format!("stable hard timer arm failed: {error}"),
-                }
-            })?;
+            let wait_token = self.wait_state.arm(deadline_counter, existing.epoch);
+            default_host()
+                .arm_hard_timer(existing.handle, deadline)
+                .map_err(|error| {
+                    self.wait_state.cancel_arm(wait_token);
+                    arm_vgic::VgicError::Backend {
+                        operation: "arm blocked-vCPU architectural timer",
+                        detail: std::format!("stable hard timer arm failed: {error}"),
+                    }
+                })?;
             return Ok(Some(wait_token));
         }
 
@@ -303,6 +279,7 @@ impl Aarch64TimerBinding {
             cancel_wait_timer(previous.handle);
         }
         let epoch = self.wait_state.begin_timer_epoch();
+        let wait_token = self.wait_state.arm(deadline_counter, epoch);
         let frequency = self.frequency;
         let wait_state = Arc::clone(&self.wait_state);
         let registration = unsafe {
@@ -310,28 +287,27 @@ impl Aarch64TimerBinding {
             // and atomically published arm state, then invokes the prebound
             // hard-IRQ-safe ThreadWakeHandle. It does not allocate, free,
             // sleep, log, or acquire AxVM/VGIC/runtime locks.
-            register_hard_restartable_kernel_timer(
+            default_host().register_hard_restartable_timer(
                 deadline,
                 Box::new(move |_| {
                     if !wait_state.timer_epoch_is_active(epoch) {
-                        return HardKernelTimerAction::Complete;
+                        return HostHardTimerAction::Complete;
                     }
-                    let Some((generation, deadline_counter)) = wait_state.armed_deadline() else {
-                        return HardKernelTimerAction::Disarm;
+                    let Some((wait_token, deadline_counter)) =
+                        wait_state.armed_deadline_for_epoch(epoch)
+                    else {
+                        return HostHardTimerAction::Disarm;
                     };
-                    let wait_token = Aarch64TimerWaitToken { generation };
                     let now_counter = physical_counter();
                     if !counter_reached_deadline(now_counter, deadline_counter) {
                         let deadline_ns =
                             host_deadline_ns(deadline_counter, now_counter, frequency);
-                        return HardKernelTimerAction::Rearm(MonotonicDeadline::from_duration(
-                            Duration::from_nanos(deadline_ns),
-                        ));
+                        return HostHardTimerAction::Rearm(Duration::from_nanos(deadline_ns));
                     }
-                    if wait_state.publish_completion(wait_token) {
+                    if wait_state.publish_completion_for_epoch(epoch, wait_token) {
                         wait_state.wake_from_hard_timer();
                     }
-                    HardKernelTimerAction::Disarm
+                    HostHardTimerAction::Disarm
                 }),
             )
         };
@@ -365,7 +341,7 @@ impl Aarch64TimerBinding {
         }
         let scheduled = *self.scheduled.lock();
         if let Some(scheduled) = scheduled
-            && let Err(error) = disarm_hard_kernel_timer(scheduled.handle)
+            && let Err(error) = default_host().disarm_hard_timer(scheduled.handle)
         {
             warn!("failed to disarm blocked-vCPU architectural timer: {error}");
         }
@@ -428,8 +404,34 @@ impl Aarch64TimerBinding {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_timer_epoch_cannot_complete_rearmed_wait() {
+        let state = Aarch64TimerWaitState::new();
+        let old_epoch = state.begin_timer_epoch();
+        let old_token = state.arm(10, old_epoch);
+
+        // Model an old hard callback that crossed its first epoch check before
+        // migration invalidated the registration and armed a new wait.
+        assert!(state.timer_epoch_is_active(old_epoch));
+        assert!(state.invalidate());
+        let new_epoch = state.begin_timer_epoch();
+        let new_token = state.arm(20, new_epoch);
+        assert_ne!(old_token, new_token);
+        assert_ne!(old_epoch, new_epoch);
+
+        let (observed_token, _) = state.armed_deadline_for_epoch(new_epoch).unwrap();
+        assert_eq!(observed_token, new_token);
+        assert!(!state.publish_completion_for_epoch(old_epoch, observed_token));
+        assert!(!state.is_completed(new_token));
+    }
+}
+
 fn cancel_wait_timer(handle: KernelTimerHandle) {
-    if let Err(error) = cancel_kernel_timer(handle) {
+    if let Err(error) = default_host().cancel_timer(handle) {
         warn!("failed to cancel blocked-vCPU architectural timer: {error}");
     }
 }

@@ -1,102 +1,93 @@
-//! SDHCI 中断处理模块
+//! Move-only SDHCI controller interrupt endpoint.
 //!
-//! 设计模式：
-//!   - ISR: 裸函数，只处理 CARD_INT (mask 信号 + 调用回调)
-//!   - PIO: CviSdhci 的 wait_* 方法直接轮询 INT_STATUS 寄存器
-//!   - 分离 ISR 和 PIO 事件避免竞态条件
+//! PIO command/data events are polled by [`crate::CviSdhci`]. The hard endpoint
+//! handles only `CARD_INT`: it reads bounded status, masks that signal and
+//! reports whether the shared physical IRQ belongs to this controller. No
+//! global MMIO base or callback is retained.
 
-use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use sdio_host::{SdioIrqSource, SdioIrqStatus};
 
 use crate::{mmio_read, mmio_write, regs::*};
 
-/// SDHCI 中断全局状态
-struct SdhciIrqState {
-    /// SDHCI MMIO 基地址（ISR 裸写用）
-    base: AtomicUsize,
-    /// CARD_INT 回调（通知上层驱动有数据可读）
-    card_irq_callback: AtomicUsize, // fn() 的裸指针
+/// Move-only hard-IRQ source extracted from one CV1800 SDHCI controller.
+pub(crate) struct CviSdhciIrqSource {
+    base: usize,
 }
 
-impl SdhciIrqState {
-    const fn new() -> Self {
-        Self {
-            base: AtomicUsize::new(0),
-            card_irq_callback: AtomicUsize::new(0),
-        }
+impl CviSdhciIrqSource {
+    pub(crate) const fn new(base: usize) -> Self {
+        Self { base }
     }
 }
 
-static SDHCI_IRQ_STATE: SdhciIrqState = SdhciIrqState::new();
+impl SdioIrqSource for CviSdhciIrqSource {
+    fn handle_irq(&mut self) -> SdioIrqStatus {
+        let norm = mmio_read::<u16>(self.base + SDHCI_INT_STATUS_NORM as usize);
+        if !card_irq_asserted(norm) {
+            return SdioIrqStatus::Spurious;
+        }
 
-pub static SDHCI_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
-pub static SDHCI_LAST_NORM: AtomicU16 = AtomicU16::new(0);
-pub static SDHCI_CARD_INT_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// 初始化 ISR 全局状态（设置 MMIO 基地址）
-pub fn irq_state_init(base: usize) {
-    SDHCI_IRQ_STATE.base.store(base, Ordering::Release);
+        // CARD_INT is a card-driven level. Draining the card FIFO clears the
+        // source; writing the controller W1C bit here would lose that ownership
+        // information. Mask before publishing task-context work instead.
+        mask_card_irq_raw(self.base, true);
+        SdioIrqStatus::CardPending
+    }
 }
 
-/// 注册 CARD_INT 回调函数
-///
-/// WiFi 驱动初始化时调用，注册一个函数用于在 ISR 中通知"卡有数据可读"。
-/// 回调在硬中断上下文执行，禁止：持锁、分配堆、调度、调用 log。
-pub fn register_card_irq_callback(cb: fn()) {
-    SDHCI_IRQ_STATE
-        .card_irq_callback
-        .store(cb as usize, Ordering::Release);
+const fn card_irq_asserted(normal_status: u16) -> bool {
+    normal_status & NORM_INT_CARD_INT != 0
 }
 
-/// 使能 CARD_INT 中断信号（ISR 仅处理 CARD_INT，PIO 事件由轮询处理）
-pub fn enable_irq_signals() {
-    let base = SDHCI_IRQ_STATE.base.load(Ordering::Acquire);
+/// Enables only the controller signals consumed by the network IRQ endpoint.
+pub(crate) fn enable_irq_signals(base: usize) {
     mmio_write::<u16>(base + SDHCI_NORM_INT_SIG_EN as usize, NORM_INT_SIG_MASK);
     mmio_write::<u16>(base + SDHCI_ERR_INT_SIG_EN as usize, ERR_INT_SIG_MASK);
 }
 
-/// 禁用所有 SDHCI 中断信号
-pub fn disable_irq_signals() {
-    let base = SDHCI_IRQ_STATE.base.load(Ordering::Acquire);
+/// Disables every controller interrupt signal without changing status-enable
+/// bits used by the polling PIO path.
+pub(crate) fn disable_irq_signals(base: usize) {
     mmio_write::<u16>(base + SDHCI_NORM_INT_SIG_EN as usize, 0);
     mmio_write::<u16>(base + SDHCI_ERR_INT_SIG_EN as usize, 0);
 }
 
-/// 屏蔽/恢复 CARD_INT 信号（裸地址操作，ISR 安全）
+/// Masks or unmasks only CARD_INT while preserving unrelated signal bits.
 pub(crate) fn mask_card_irq_raw(base: usize, mask: bool) {
     let addr = base + SDHCI_NORM_INT_SIG_EN as usize;
-    let cur = mmio_read::<u16>(addr);
-    mmio_write::<u16>(
-        addr,
-        (cur & !NORM_INT_CARD_INT) | (!mask as u16 * NORM_INT_CARD_INT),
-    );
+    let current = mmio_read::<u16>(addr);
+    let next = if mask {
+        current & !NORM_INT_CARD_INT
+    } else {
+        current | NORM_INT_CARD_INT
+    };
+    mmio_write::<u16>(addr, next);
 }
 
-/// SDHCI 中断处理函数（注册到 PLIC）
+/// Unmasks CARD_INT and closes the rearm window with a status readback.
 ///
-/// 只处理 CARD_INT：mask 信号 + 调用回调。
-/// PIO 事件（CMD_COMPLETE / BUF_RD_READY / XFER_COMPLETE）由 wait 函数直接轮询。
-pub fn sdhci_irq_handler(_irq: usize) {
-    SDHCI_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
-
-    let base = SDHCI_IRQ_STATE.base.load(Ordering::Acquire);
-    if base == 0 {
-        return;
-    }
-
-    let status = mmio_read::<u32>(base + SDHCI_INT_STATUS_NORM as usize);
-    if status == 0 {
-        return;
-    }
-
-    let norm = status as u16;
-    SDHCI_LAST_NORM.store(norm, Ordering::Relaxed);
-
-    if norm & NORM_INT_CARD_INT != 0 {
-        SDHCI_CARD_INT_COUNT.fetch_add(1, Ordering::Relaxed);
+/// CARD_INT is a card-driven level. If it is already asserted when the signal
+/// is enabled, keep it masked and let the fixed-CPU poll owner drain it again.
+pub(crate) fn rearm_card_irq_and_check(base: usize) -> bool {
+    mask_card_irq_raw(base, false);
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    let pending = card_irq_asserted(mmio_read::<u16>(base + SDHCI_INT_STATUS_NORM as usize));
+    if pending {
         mask_card_irq_raw(base, true);
-        let cb = SDHCI_IRQ_STATE.card_irq_callback.load(Ordering::Acquire);
-        if cb != 0 {
-            unsafe { core::mem::transmute::<usize, fn()>(cb)() };
-        }
+    }
+    pending
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_irq_is_spurious_without_card_int() {
+        assert!(!card_irq_asserted(0));
+        assert!(!card_irq_asserted(NORM_INT_CMD_COMPLETE));
+        assert!(!card_irq_asserted(NORM_INT_XFER_COMPLETE));
+        assert!(card_irq_asserted(NORM_INT_CARD_INT));
+        assert!(card_irq_asserted(NORM_INT_CARD_INT | NORM_INT_CMD_COMPLETE));
     }
 }

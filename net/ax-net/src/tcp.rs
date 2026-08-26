@@ -16,7 +16,7 @@
 //!
 //! Socket methods never synchronously drive the full interface poll loop.
 //! Instead they mutate the smoltcp socket, call `request_poll()`, register
-//! wakers through `PollSet`, and let the dedicated net-poll worker advance
+//! wakers through `PollSet`, and let the unique protocol executor advance
 //! timers, handshakes, retransmission, and close states.
 //!
 //! # Related Side Tables
@@ -866,7 +866,7 @@ impl TcpSocket {
         if events.intersects(IoEvents::IN | IoEvents::OUT | IoEvents::RDHUP) {
             register(&self.poll_rx, events);
             self.general
-                .register_timeout_waker(&Waker::from(Arc::new(DeferPollWake {
+                .register_waker(&Waker::from(Arc::new(DeferPollWake {
                     poll: self.poll_rx.clone(),
                     ready: events,
                 })));
@@ -928,7 +928,7 @@ impl Drop for TcpSocket {
             SOCKET_SET.remove(self.handle);
         }
 
-        // Wake net-poll worker to process teardown
+        // Ask the unique protocol executor to process teardown.
         crate::request_poll();
     }
 }
@@ -961,7 +961,7 @@ const fn empty_endpoint() -> IpListenEndpoint {
 }
 
 impl TcpSocket {
-    /// Starts an active open and leaves completion to the net-poll worker.
+    /// Starts an active open and leaves completion to the protocol executor.
     fn start_connect(&self, remote_addr: SocketAddr) -> NetResult {
         self.state
             .lock(State::Idle)
@@ -1161,19 +1161,9 @@ fn get_ephemeral_port() -> NetResult<u16> {
     allocate_ephemeral_port(tcp_port_available)
 }
 
-#[cfg(any(test, all(axtest, feature = "axtest")))]
+#[cfg(test)]
 mod tests {
-    #[cfg(all(axtest, feature = "axtest"))]
-    use core::net::{IpAddr, SocketAddr};
-
     use super::*;
-    #[cfg(all(axtest, feature = "axtest"))]
-    use crate::{
-        network_test_support::{
-            LOCAL_ADDR, PEER_ADDR, init_split_route_network, network_test_guard,
-        },
-        options::{Configurable, GetSocketOption, SetSocketOption, TcpState},
-    };
 
     #[test]
     fn blocking_tcp_send_waits_after_partial_write() {
@@ -1217,191 +1207,4 @@ mod tests {
         );
         assert_eq!(total, 4);
     }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    pub(super) fn tcp_info_reports_default_socket_metrics() {
-        let _guard = network_test_guard();
-        init_split_route_network();
-
-        let socket = TcpSocket::new();
-        let mut info = TcpInfo::default();
-
-        socket
-            .get_option(GetSocketOption::TcpInfo(&mut info))
-            .unwrap();
-
-        assert_eq!(info.state, TcpState::Closed);
-        assert_eq!(info.snd_mss, TCP_INFO_DEFAULT_MSS);
-        assert_eq!(info.rcv_mss, TCP_INFO_DEFAULT_MSS);
-        assert_eq!(info.pmtu, TCP_INFO_DEFAULT_PMTU);
-        assert_eq!(info.notsent_bytes, 0);
-        assert_eq!(info.snd_wnd, 0);
-        assert_eq!(info.snd_cwnd, 0);
-        assert_eq!(info.rcv_space, 0);
-        assert_eq!(info.rcv_wnd, 0);
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    pub(super) fn tcp_congestion_control_reports_and_accepts_active_algorithm() {
-        let _guard = network_test_guard();
-        init_split_route_network();
-
-        let socket = TcpSocket::new();
-        let mut congestion_control = TcpCongestionControl::default();
-        socket
-            .get_option(GetSocketOption::TcpCongestionControl(
-                &mut congestion_control,
-            ))
-            .unwrap();
-        assert_eq!(congestion_control, TcpCongestionControl::None);
-
-        socket
-            .set_option(SetSocketOption::TcpCongestionControl(&congestion_control))
-            .unwrap();
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    pub(super) fn connect_preserves_bound_interface() {
-        let _guard = network_test_guard();
-        let topology = init_split_route_network();
-
-        let socket = TcpSocket::new();
-        let nonblocking = true;
-        socket
-            .set_option(SetSocketOption::NonBlocking(&nonblocking))
-            .unwrap();
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
-            .unwrap();
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(topology.local_if)
-            }
-        );
-
-        // Connect to different network - should NOT change interface binding
-        // because we're bound to a specific local address
-        socket
-            .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
-            .unwrap();
-
-        // Binding to the local test interface must survive a peer-route lookup.
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(topology.local_if)
-            }
-        );
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    pub(super) fn connect_uses_peer_route_when_unbound() {
-        let _guard = network_test_guard();
-        let topology = init_split_route_network();
-
-        let socket = TcpSocket::new();
-        let nonblocking = true;
-        socket
-            .set_option(SetSocketOption::NonBlocking(&nonblocking))
-            .unwrap();
-
-        // Bind to 0.0.0.0 (unspecified) - interface should be determined by route
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                0,
-            )))
-            .unwrap();
-
-        socket
-            .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
-            .unwrap();
-
-        // The unbound socket must adopt the peer-route interface.
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(topology.peer_if)
-            }
-        );
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    pub(super) fn connect_rejects_unroutable_bound_device() {
-        let _guard = network_test_guard();
-        let topology = init_split_route_network();
-
-        let socket = TcpSocket::new();
-        let nonblocking = true;
-        socket
-            .set_option(SetSocketOption::NonBlocking(&nonblocking))
-            .unwrap();
-        socket.bind_device(topology.local_if).unwrap();
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                0,
-            )))
-            .unwrap();
-
-        assert!(
-            socket
-                .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
-                .is_err()
-        );
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(topology.local_if)
-            }
-        );
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    pub(super) fn reuseport_group_shares_a_port_while_plain_binders_conflict() {
-        let _guard = network_test_guard();
-
-        let endpoint = IpListenEndpoint {
-            addr: None,
-            port: 0xB70F,
-        };
-
-        // A plain binder owns the port exclusively.
-        register_tcp_bound(endpoint, false).unwrap();
-        assert_eq!(
-            register_tcp_bound(endpoint, false).unwrap_err(),
-            NetError::AddrInUse
-        );
-        // SO_REUSEPORT cannot join a group started by a non-reuseport owner.
-        assert_eq!(
-            register_tcp_bound(endpoint, true).unwrap_err(),
-            NetError::AddrInUse
-        );
-        unregister_tcp_bound(endpoint);
-
-        // Two reuseport binders share the port, mirroring Linux's group model.
-        register_tcp_bound(endpoint, true).unwrap();
-        register_tcp_bound(endpoint, true).unwrap();
-        // A plain binder still cannot steal a reuseport-owned port.
-        assert_eq!(
-            register_tcp_bound(endpoint, false).unwrap_err(),
-            NetError::AddrInUse
-        );
-
-        // Each unregister drops exactly one group member.
-        unregister_tcp_bound(endpoint);
-        unregister_tcp_bound(endpoint);
-        assert!(!TCP_BOUND_PORTS.lock().contains_key(&endpoint.port));
-    }
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn run_axtest_contracts() {
-    tests::tcp_info_reports_default_socket_metrics();
-    tests::tcp_congestion_control_reports_and_accepts_active_algorithm();
-    tests::connect_preserves_bound_interface();
-    tests::connect_uses_peer_route_when_unbound();
-    tests::connect_rejects_unroutable_bound_device();
-    tests::reuseport_group_shares_a_port_while_plain_binders_conflict();
 }

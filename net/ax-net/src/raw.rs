@@ -26,7 +26,7 @@
 //! # Locking
 //!
 //! Raw sockets keep their small deferred-packet slots behind IRQ-off spin locks
-//! because packet delivery may be inspected while the net poll worker is
+//! because packet delivery may be inspected while the protocol executor is
 //! servicing device-originated receive work. These locks are only held around
 //! `Option<Vec<u8>>` swaps and never across route lookup, smoltcp polling, or
 //! userspace buffer I/O.
@@ -639,7 +639,7 @@ impl RawSocket {
         });
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
             self.general
-                .register_timeout_waker(&Waker::from(Arc::new(DeferPollWake {
+                .register_waker(&Waker::from(Arc::new(DeferPollWake {
                     poll: self.poll_state.clone(),
                     ready: events,
                 })));

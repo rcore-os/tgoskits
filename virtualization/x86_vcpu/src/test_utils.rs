@@ -17,7 +17,8 @@ pub mod mock {
     use std::sync::Mutex;
 
     use x86_vlapic::{
-        X86InterruptVector, X86TimerCallback, X86VcpuId, X86VlapicHostOps, X86VlapicResult, X86VmId,
+        X86InterruptVector, X86TimerCallback, X86VcpuId, X86VlapicError, X86VlapicHostOps,
+        X86VlapicResult, X86VmId,
     };
 
     use crate::{
@@ -210,11 +211,11 @@ pub mod mock {
         fn register_timer(
             _deadline_nanos: u64,
             _callback: X86TimerCallback,
-        ) -> x86_vlapic::X86VlapicResult<Self::TimerHandle> {
-            Err(x86_vlapic::X86VlapicError::TimerUnavailable)
+        ) -> X86VlapicResult<Self::TimerHandle> {
+            Err(X86VlapicError::TimerUnavailable)
         }
 
-        fn cancel_timer(_handle: Self::TimerHandle) -> x86_vlapic::X86VlapicResult {
+        fn cancel_timer(_handle: Self::TimerHandle) -> X86VlapicResult {
             Ok(())
         }
 

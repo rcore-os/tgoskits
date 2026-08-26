@@ -14,7 +14,7 @@ fail_regex = [
 timeout = 1200
 
 shell_init_cmd = """
-export BLOCK_RW_BENCH_ROOT_DEVICE='/dev/blk0'
+export BLOCK_RW_BENCH_ROOT_DEVICE='/dev/sda'
 export BLOCK_RW_BENCH_CONTROLLER='ls2k1000-ahci'
 export BLOCK_RW_BENCH_SUCCESS_MARKER='JL_LSGD2K10_BLOCK_RW_BENCH_PASSED'
 export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='4194304'

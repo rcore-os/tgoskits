@@ -736,6 +736,7 @@ impl WifiClient {
             if elapsed > timeout_ns {
                 return Err(WifiError::ConnectionTimeout);
             }
+            let _ = crate::fdrv::thread::progress_io(&self.bus);
             crate::runtime::runtime().yield_now();
         }
     }

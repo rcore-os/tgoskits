@@ -102,7 +102,7 @@ impl Wake for BlockingWaiter {
 
     fn wake_by_ref(self: &Arc<Self>) {
         self.notified.store(true, Ordering::Release);
-        let _result = self.thread_wake.wake();
+        let _result = self.thread_wake.wake_from_task();
     }
 }
 

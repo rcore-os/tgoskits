@@ -63,6 +63,15 @@ impl TaskSystem {
         self.root_domain.lock().online.count()
     }
 
+    /// Returns the CPUs that currently accept runnable placement.
+    ///
+    /// This is the scheduler's Linux-style active mask, not the fixed possible
+    /// CPU topology. Callers that must start a runnable worker immediately must
+    /// choose its affinity from this snapshot.
+    pub fn active_cpu_set(&self) -> CpuSet {
+        self.root_domain.lock().online.clone()
+    }
+
     pub(crate) fn publish_run_queue_summary(
         &self,
         remote: &CpuRemote,

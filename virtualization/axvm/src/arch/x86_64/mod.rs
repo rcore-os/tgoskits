@@ -119,6 +119,12 @@ impl ArchOps for X86_64Arch {
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
         exit: <Self::VCpu as VmArchVcpuOps>::Exit,
     ) -> AxVmResult<BoundVcpuExit<Self::DeferredRunWork>> {
+        trace!(
+            "VM[{}] VCpu[{}] x86 exit={exit:?}, guest={:?}",
+            vm.id(),
+            vcpu.id(),
+            vcpu.get_arch_vcpu().0
+        );
         match exit {
             X86VmExit::Hypercall { nr, args } => super::handle_hypercall(
                 vm,
@@ -289,7 +295,7 @@ fn x86_halt_action() -> VcpuRunAction {
 pub(crate) struct AxvmX86HostOps;
 
 impl X86VlapicHostOps for AxvmX86HostOps {
-    type TimerHandle = crate::host::task::KernelTimerHandle;
+    type TimerHandle = <crate::host::arceos::ArceOsHost as HostTimer>::TimerHandle;
 
     fn alloc_frame() -> Option<x86_vlapic::X86HostPhysAddr> {
         default_host()
@@ -319,26 +325,22 @@ impl X86VlapicHostOps for AxvmX86HostOps {
         deadline_nanos: u64,
         mut callback: X86TimerCallback,
     ) -> X86VlapicResult<Self::TimerHandle> {
-        crate::host::task::register_restartable_kernel_timer(
-            crate::host::task::MonotonicDeadline::from_duration(Duration::from_nanos(
-                deadline_nanos,
-            )),
-            Box::new(move |deadline| match callback(deadline.as_nanos() as u64) {
-                X86TimerAction::Complete => crate::host::task::KernelTimerAction::Complete,
-                X86TimerAction::Rearm(deadline_nanos) => {
-                    crate::host::task::KernelTimerAction::Rearm(
-                        crate::host::task::MonotonicDeadline::from_duration(Duration::from_nanos(
-                            deadline_nanos,
-                        )),
-                    )
-                }
-            }),
-        )
-        .map_err(|_| X86VlapicError::TimerUnavailable)
+        default_host()
+            .register_restartable_timer(
+                Duration::from_nanos(deadline_nanos),
+                Box::new(move |now| match callback(now.as_nanos() as u64) {
+                    X86TimerAction::Complete => HostTimerAction::Complete,
+                    X86TimerAction::Rearm(deadline) => {
+                        HostTimerAction::Rearm(Duration::from_nanos(deadline))
+                    }
+                }),
+            )
+            .map_err(|_| X86VlapicError::TimerUnavailable)
     }
 
     fn cancel_timer(handle: Self::TimerHandle) -> X86VlapicResult {
-        crate::host::task::cancel_kernel_timer(handle)
+        default_host()
+            .cancel_timer(handle)
             .map(|_| ())
             .map_err(|_| X86VlapicError::TimerUnavailable)
     }

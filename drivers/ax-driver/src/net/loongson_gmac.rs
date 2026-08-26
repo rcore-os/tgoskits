@@ -3,15 +3,22 @@ use alloc::{
     format,
     string::{String, ToString},
     sync::Arc,
+    vec,
 };
 use core::{
     mem::size_of,
     ptr::{NonNull, addr_of_mut},
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use ax_sync::SpinLock;
 use log::{debug, info, warn};
-use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, Interface, NetError, QueueConfig};
+use rd_net::{
+    DmaBuffer, FixedNetControl, IRxQueue, ITxQueue, NetDevice, NetDeviceInfo, NetDeviceParts,
+    NetError, NetHardIrqEndpoint, NetHardIrqHandler, NetHardIrqResult, NetIrqSnapshot,
+    NetIrqSourceId, NetPollGroupId, NetPollGroupParts, NetPollIrqControl, NetQueueId,
+    NetQueuePairParts, NetRearmResult, QueueConfig, RxCompletion, SubmitError,
+};
 use rdrive::{
     probe::OnProbeError,
     register::{FdtInfo, ProbeFdt},
@@ -164,7 +171,9 @@ const HW_DMA_MASK_32: u64 = u32::MAX as u64;
 const QUEUE_DMA_MASK: u64 = u64::MAX;
 const MDIO_TIMEOUT: usize = 100_000;
 const DMA_RESET_TIMEOUT: usize = 1_000_000;
-const QUEUE_ID0: usize = 0;
+const QUEUE_ID: NetQueueId = NetQueueId::new(0);
+const GROUP_ID: NetPollGroupId = NetPollGroupId::new(0);
+const IRQ_SOURCE: NetIrqSourceId = NetIrqSourceId::new(0);
 const RING_SIZE: usize = 128;
 // rd-net keeps one descriptor free from its perspective. Start RX only after
 // that first prefill has completed, matching the reference sequence where DMA
@@ -498,10 +507,8 @@ impl core::fmt::Display for GmacError {
 
 struct GmacNet {
     inner: Arc<SpinLock<GmacState>>,
+    irq_state: Arc<GmacIrqState>,
     mac_address: [u8; 6],
-    irq_enabled: bool,
-    tx_created: bool,
-    rx_created: bool,
 }
 
 impl GmacNet {
@@ -575,22 +582,9 @@ impl GmacNet {
 
         Ok(Self {
             inner: Arc::new(SpinLock::new(GmacState::new(regs, rings, buffers))),
+            irq_state: Arc::new(GmacIrqState::new()),
             mac_address,
-            irq_enabled: false,
-            tx_created: false,
-            rx_created: false,
         })
-    }
-
-    fn enable_irq_source(&mut self) {
-        if self.irq_enabled {
-            return;
-        }
-
-        let regs = self.inner.lock_irqsave().regs;
-        regs.clear_pending_irq();
-        regs.enable_irq();
-        self.irq_enabled = true;
     }
 }
 
@@ -601,77 +595,158 @@ impl DriverGeneric for GmacNet {
 }
 
 struct GmacIrqHandler {
+    regs: GmacRegs,
+    irq_state: Arc<GmacIrqState>,
+}
+
+impl NetHardIrqHandler for GmacIrqHandler {
+    fn handle_irq(&mut self) -> NetHardIrqResult {
+        let status = self.regs.dma.read(DMA_STATUS);
+        if !valid_irq_status(status) {
+            return NetHardIrqResult::Spurious;
+        }
+
+        self.regs.disable_irq();
+        self.regs.dma.write(DMA_STATUS, status);
+        self.irq_state.publish(status);
+        NetHardIrqResult::Schedule(snapshot_from_status(status))
+    }
+}
+
+impl NetDevice for GmacNet {
+    fn into_parts(self: Box<Self>) -> Result<NetDeviceParts, NetError> {
+        let Self {
+            inner,
+            irq_state,
+            mac_address,
+        } = *self;
+        let regs = inner.lock_irqsave().regs;
+
+        Ok(NetDeviceParts {
+            info: NetDeviceInfo::new(DEVICE_NAME, mac_address),
+            control: Box::new(FixedNetControl::new(mac_address)),
+            wifi_control: None,
+            poll_groups: vec![NetPollGroupParts {
+                id: GROUP_ID,
+                queues: NetQueuePairParts {
+                    tx: Box::new(GmacTxQueue {
+                        inner: Arc::clone(&inner),
+                    }),
+                    rx: Box::new(GmacRxQueue {
+                        inner: Arc::clone(&inner),
+                    }),
+                },
+                irq_control: Box::new(GmacIrqControl {
+                    inner,
+                    irq_state: Arc::clone(&irq_state),
+                }),
+                owner_startup: None,
+                irq_endpoints: vec![NetHardIrqEndpoint::new(
+                    IRQ_SOURCE,
+                    Box::new(GmacIrqHandler { regs, irq_state }),
+                )],
+            }],
+        })
+    }
+}
+
+struct GmacIrqState {
+    pending_status: AtomicU32,
+}
+
+impl GmacIrqState {
+    const fn new() -> Self {
+        Self {
+            pending_status: AtomicU32::new(0),
+        }
+    }
+
+    fn publish(&self, status: u32) {
+        self.pending_status.fetch_or(status, Ordering::Release);
+    }
+
+    fn take(&self) -> u32 {
+        self.pending_status.swap(0, Ordering::AcqRel)
+    }
+}
+
+struct GmacIrqControl {
     inner: Arc<SpinLock<GmacState>>,
+    irq_state: Arc<GmacIrqState>,
 }
 
-impl rd_net::InterfaceIrqHandler for GmacIrqHandler {
-    fn handle_irq(&mut self) -> Event {
-        let Some(mut inner) = self.inner.try_lock_irqsave() else {
-            return Event::none();
-        };
-        handle_gmac_irq(&mut inner)
-    }
-}
-
-impl Interface for GmacNet {
-    fn mac_address(&self) -> [u8; 6] {
-        self.mac_address
-    }
-
-    fn create_tx_queue(&mut self) -> Option<Box<dyn ITxQueue>> {
-        if self.tx_created {
-            warn!("{DEVICE_NAME}: tx queue was already created");
-            return None;
-        }
-        self.tx_created = true;
-        Some(Box::new(GmacTxQueue {
-            inner: self.inner.clone(),
-        }))
-    }
-
-    fn create_rx_queue(&mut self) -> Option<Box<dyn IRxQueue>> {
-        if self.rx_created {
-            warn!("{DEVICE_NAME}: rx queue was already created");
-            return None;
-        }
-        self.rx_created = true;
-        Some(Box::new(GmacRxQueue {
-            inner: self.inner.clone(),
-        }))
-    }
-
-    fn enable_irq(&mut self) {
-        self.enable_irq_source();
-    }
-
-    fn disable_irq(&mut self) {
+impl NetPollIrqControl for GmacIrqControl {
+    fn quiesce(&mut self) -> Result<(), NetError> {
         self.inner.lock_irqsave().regs.disable_irq();
-        self.irq_enabled = false;
+        Ok(())
     }
 
-    fn is_irq_enabled(&self) -> bool {
-        self.irq_enabled
+    fn shutdown(&mut self) -> Result<(), NetError> {
+        let inner = self.inner.lock_irqsave();
+        inner.regs.disable_irq();
+        inner.regs.stop_tx_rx();
+        inner
+            .regs
+            .reset_dma()
+            .map_err(|_| NetError::DmaShutdownUnconfirmed)
     }
 
-    fn handle_irq(&mut self) -> Event {
+    fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError> {
         let mut inner = self.inner.lock_irqsave();
-        handle_gmac_irq(&mut inner)
-    }
+        let mut status = self.irq_state.take();
+        status |= take_hardware_status(inner.regs);
+        handle_gmac_status(&mut inner, status);
 
-    fn take_irq_handler(&mut self) -> Option<rd_net::BIrqHandler> {
-        Some(Box::new(GmacIrqHandler {
-            inner: self.inner.clone(),
-        }))
+        inner.regs.enable_irq();
+        status = self.irq_state.take();
+        status |= take_hardware_status(inner.regs);
+        if valid_irq_status(status) {
+            inner.regs.disable_irq();
+            handle_gmac_status(&mut inner, status);
+            return Ok(NetRearmResult::WorkPending(snapshot_from_status(status)));
+        }
+        Ok(NetRearmResult::Idle)
     }
 }
 
-fn handle_gmac_irq(inner: &mut GmacState) -> Event {
-    let status = inner.regs.dma.read(DMA_STATUS);
-    if status == 0 || status == u32::MAX {
-        return Event::none();
-    }
+fn valid_irq_status(status: u32) -> bool {
+    status != 0 && status != u32::MAX
+}
 
-    inner.regs.dma.write(DMA_STATUS, status);
+fn take_hardware_status(regs: GmacRegs) -> u32 {
+    let status = regs.dma.read(DMA_STATUS);
+    if valid_irq_status(status) {
+        regs.dma.write(DMA_STATUS, status);
+        status
+    } else {
+        0
+    }
+}
+
+fn snapshot_from_status(status: u32) -> NetIrqSnapshot {
+    let mut snapshot = NetIrqSnapshot::empty();
+    if status
+        & (DMA_INT_TX_COMPLETED | DMA_INT_TX_NO_BUFFER | DMA_INT_TX_STOPPED | DMA_INT_TX_UNDERFLOW)
+        != 0
+    {
+        snapshot = snapshot.union(NetIrqSnapshot::TX);
+    }
+    if status
+        & (DMA_INT_RX_COMPLETED | DMA_INT_RX_NO_BUFFER | DMA_INT_RX_OVERFLOW | DMA_INT_RX_STOPPED)
+        != 0
+    {
+        snapshot = snapshot.union(NetIrqSnapshot::RX);
+    }
+    if status & (GMAC_LINE_INTF_INTR | DMA_INT_BUS_ERROR | GMAC_MMC_INTR | GMAC_PMT_INTR) != 0 {
+        snapshot = snapshot.union(NetIrqSnapshot::ERROR);
+    }
+    snapshot
+}
+
+fn handle_gmac_status(inner: &mut GmacState, status: u32) {
+    if !valid_irq_status(status) {
+        return;
+    }
     if status & GMAC_LINE_INTF_INTR != 0 {
         let _ = inner.regs.mac.read(GMAC_INTERRUPT_STATUS);
         let _ = inner.regs.mac.read(GMAC_INTERRUPT_MASK);
@@ -690,17 +765,9 @@ fn handle_gmac_irq(inner: &mut GmacState) -> Event {
         inner.regs.resume_rx();
     }
 
-    let mut event = Event::none();
-    if status & (DMA_INT_TX_COMPLETED | DMA_INT_TX_NO_BUFFER | DMA_INT_TX_STOPPED) != 0 {
-        event.tx_queue.insert(QUEUE_ID0);
-    }
-    if status & (DMA_INT_RX_COMPLETED | DMA_INT_RX_NO_BUFFER | DMA_INT_RX_OVERFLOW) != 0 {
-        event.rx_queue.insert(QUEUE_ID0);
-    }
     if status & (GMAC_MMC_INTR | GMAC_PMT_INTR) != 0 {
         debug!("{DEVICE_NAME}: MAC side interrupt status={status:#010x}");
     }
-    event
 }
 
 #[derive(Clone, Copy)]
@@ -721,19 +788,12 @@ struct BufferPtrs {
 unsafe impl Send for BufferPtrs {}
 unsafe impl Sync for BufferPtrs {}
 
-#[derive(Clone, Copy)]
-struct RuntimeNetBuffer {
-    upper_bus_addr: u64,
-    upper_virt: usize,
-    len: usize,
-}
-
 struct GmacState {
     regs: GmacRegs,
     rings: RingPtrs,
     buffers: BufferPtrs,
-    tx_bus_addrs: [Option<u64>; RING_SIZE],
-    rx_buffers: [Option<RuntimeNetBuffer>; RING_SIZE],
+    tx_buffers: [Option<DmaBuffer>; RING_SIZE],
+    rx_buffers: [Option<DmaBuffer>; RING_SIZE],
     tx_next: usize,
     tx_busy: usize,
     rx_fill: usize,
@@ -752,8 +812,8 @@ impl GmacState {
             regs,
             rings,
             buffers,
-            tx_bus_addrs: [None; RING_SIZE],
-            rx_buffers: [None; RING_SIZE],
+            tx_buffers: core::array::from_fn(|_| None),
+            rx_buffers: core::array::from_fn(|_| None),
             tx_next: 0,
             tx_busy: 0,
             rx_fill: 0,
@@ -783,8 +843,8 @@ struct GmacTxQueue {
 }
 
 impl ITxQueue for GmacTxQueue {
-    fn id(&self) -> usize {
-        QUEUE_ID0
+    fn id(&self) -> NetQueueId {
+        QUEUE_ID
     }
 
     fn config(&self) -> QueueConfig {
@@ -796,32 +856,36 @@ impl ITxQueue for GmacTxQueue {
         }
     }
 
-    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
-        if buffer.len == 0 || buffer.len > BUFFER_SIZE || buffer.len > DESC_SIZE1_MASK as usize {
-            return Err(NetError::NotSupported);
+    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError> {
+        let len = buffer.len();
+        if len == 0 || len > BUFFER_SIZE || len > DESC_SIZE1_MASK as usize {
+            return Err(SubmitError::new(buffer, NetError::NotSupported));
         }
 
         let mut inner = self.inner.lock_irqsave();
         if !inner.regs.link_state().up {
-            return Err(NetError::Retry);
+            return Err(SubmitError::new(buffer, NetError::LinkDown));
         }
 
         let idx = inner.tx_next;
-        if inner.tx_bus_addrs[idx].is_some() {
-            return Err(NetError::Retry);
+        if inner.tx_buffers[idx].is_some() {
+            return Err(SubmitError::new(buffer, NetError::Retry));
         }
 
         let desc = unsafe { inner.rings.tx.add(idx).read_volatile() };
         if desc.owned_by_dma() {
-            return Err(NetError::Retry);
+            return Err(SubmitError::new(buffer, NetError::Retry));
         }
 
         let ring_end = idx == RING_SIZE - 1;
         let tx_buf = buffer_ptr(inner.buffers.tx, idx);
-        let tx_bus_addr = dma_addr32_net(tx_buf)?;
-        unsafe {
-            tx_buf.copy_from_nonoverlapping(buffer.virt.as_ptr(), buffer.len);
-        }
+        let tx_bus_addr = match dma_addr32_net(tx_buf) {
+            Ok(address) => address,
+            Err(error) => return Err(SubmitError::new(buffer, error)),
+        };
+        buffer.read_with_cpu(len, |packet| unsafe {
+            tx_buf.copy_from_nonoverlapping(packet.as_ptr(), len);
+        });
         dma_barrier();
 
         let status = DESC_OWN_BY_DMA
@@ -829,7 +893,7 @@ impl ITxQueue for GmacTxQueue {
             | DESC_TX_LAST
             | DESC_TX_FIRST
             | if ring_end { TX_DESC_END_OF_RING } else { 0 };
-        let length = buffer.len as u32 & DESC_SIZE1_MASK;
+        let length = len as u32 & DESC_SIZE1_MASK;
 
         unsafe {
             write_desc_cpu_owned(
@@ -845,7 +909,7 @@ impl ITxQueue for GmacTxQueue {
         }
         dma_barrier();
 
-        inner.tx_bus_addrs[idx] = Some(buffer.bus_addr);
+        inner.tx_buffers[idx] = Some(buffer);
         inner.tx_next = ring_next(idx);
         inner.tx_submitted = inner.tx_submitted.saturating_add(1);
         inner.regs.resume_tx();
@@ -856,7 +920,7 @@ impl ITxQueue for GmacTxQueue {
             debug!(
                 "{DEVICE_NAME}: tx submit idx={idx}, len={}, submitted={}, reclaimed={}, \
                  dma_status={:#010x}, mac_config={:#010x}, dma_control={:#010x}",
-                buffer.len,
+                len,
                 inner.tx_submitted,
                 inner.tx_reclaimed,
                 inner.regs.dma.read(DMA_STATUS),
@@ -868,10 +932,10 @@ impl ITxQueue for GmacTxQueue {
         Ok(())
     }
 
-    fn reclaim(&mut self) -> Option<u64> {
+    fn reclaim(&mut self) -> Option<DmaBuffer> {
         let mut inner = self.inner.lock_irqsave();
         let idx = inner.tx_busy;
-        let bus_addr = inner.tx_bus_addrs[idx]?;
+        inner.tx_buffers[idx].as_ref()?;
         let desc = unsafe { inner.rings.tx.add(idx).read_volatile() };
         if desc.owned_by_dma() {
             return None;
@@ -886,7 +950,7 @@ impl ITxQueue for GmacTxQueue {
                 buffer2: 0,
             });
         }
-        inner.tx_bus_addrs[idx] = None;
+        let buffer = inner.tx_buffers[idx].take().expect("checked above");
         inner.tx_busy = ring_next(idx);
         inner.tx_reclaimed = inner.tx_reclaimed.saturating_add(1);
 
@@ -910,7 +974,7 @@ impl ITxQueue for GmacTxQueue {
             );
         }
 
-        Some(bus_addr)
+        Some(buffer)
     }
 }
 
@@ -919,8 +983,8 @@ struct GmacRxQueue {
 }
 
 impl IRxQueue for GmacRxQueue {
-    fn id(&self) -> usize {
-        QUEUE_ID0
+    fn id(&self) -> NetQueueId {
+        QUEUE_ID
     }
 
     fn config(&self) -> QueueConfig {
@@ -932,33 +996,37 @@ impl IRxQueue for GmacRxQueue {
         }
     }
 
-    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
-        if buffer.len < BUFFER_SIZE {
+    fn submit(&mut self, buffer: DmaBuffer) -> Result<(), SubmitError> {
+        if buffer.capacity() < BUFFER_SIZE {
             warn!(
                 "{DEVICE_NAME}: reject rx buffer len={}, required={BUFFER_SIZE}",
-                buffer.len
+                buffer.capacity()
             );
-            return Err(NetError::NotSupported);
+            return Err(SubmitError::new(buffer, NetError::NotSupported));
         }
 
         let mut inner = self.inner.lock_irqsave();
         let idx = inner.rx_fill;
         if inner.rx_buffers[idx].is_some() {
             warn!("{DEVICE_NAME}: rx ring full at idx={idx}");
-            return Err(NetError::Retry);
+            return Err(SubmitError::new(buffer, NetError::Retry));
         }
 
         let desc = unsafe { inner.rings.rx.add(idx).read_volatile() };
         if desc.owned_by_dma() {
             warn!("{DEVICE_NAME}: rx desc {idx} is still owned by DMA");
-            return Err(NetError::Retry);
+            return Err(SubmitError::new(buffer, NetError::Retry));
         }
 
         let ring_end = idx == RING_SIZE - 1;
         let rx_buf = buffer_ptr(inner.buffers.rx, idx);
-        let rx_bus_addr = dma_addr32_net(rx_buf).inspect_err(|err| {
-            warn!("{DEVICE_NAME}: rx buffer {idx} is not usable by GMAC: {err:?}");
-        })?;
+        let rx_bus_addr = match dma_addr32_net(rx_buf) {
+            Ok(address) => address,
+            Err(error) => {
+                warn!("{DEVICE_NAME}: rx buffer {idx} is not usable by GMAC: {error:?}");
+                return Err(SubmitError::new(buffer, error));
+            }
+        };
         let length =
             (BUFFER_SIZE as u32 & DESC_SIZE1_MASK) | if ring_end { RX_DESC_END_OF_RING } else { 0 };
         unsafe {
@@ -970,11 +1038,7 @@ impl IRxQueue for GmacRxQueue {
         }
         dma_barrier();
 
-        inner.rx_buffers[idx] = Some(RuntimeNetBuffer {
-            upper_bus_addr: buffer.bus_addr,
-            upper_virt: buffer.virt.as_ptr() as usize,
-            len: buffer.len.min(BUFFER_SIZE),
-        });
+        inner.rx_buffers[idx] = Some(buffer);
         inner.rx_fill = ring_next(idx);
         inner.rx_submitted = inner.rx_submitted.saturating_add(1);
         let start_log = inner.maybe_start_rx();
@@ -993,10 +1057,10 @@ impl IRxQueue for GmacRxQueue {
         Ok(())
     }
 
-    fn reclaim(&mut self) -> Option<(u64, usize)> {
+    fn reclaim(&mut self) -> Option<RxCompletion> {
         let mut inner = self.inner.lock_irqsave();
         let idx = inner.rx_busy;
-        let buffer = inner.rx_buffers[idx]?;
+        inner.rx_buffers[idx].as_ref()?;
         let desc = unsafe { inner.rings.rx.add(idx).read_volatile() };
         if desc.owned_by_dma() {
             return None;
@@ -1012,7 +1076,7 @@ impl IRxQueue for GmacRxQueue {
                 buffer2: 0,
             });
         }
-        inner.rx_buffers[idx] = None;
+        let mut buffer = inner.rx_buffers[idx].take().expect("checked above");
         inner.rx_busy = ring_next(idx);
 
         if !desc.rx_valid() {
@@ -1025,14 +1089,17 @@ impl IRxQueue for GmacRxQueue {
                 inner.rx_errors,
                 inner.regs.dma.read(DMA_STATUS),
             );
-            return Some((buffer.upper_bus_addr, 0));
+            return Some(RxCompletion {
+                buffer,
+                packet_len: 0,
+            });
         }
 
-        let len = desc.rx_length().min(buffer.len);
+        let len = desc.rx_length().min(buffer.capacity());
         let rx_buf = buffer_ptr(inner.buffers.rx, idx);
-        unsafe {
-            (buffer.upper_virt as *mut u8).copy_from_nonoverlapping(rx_buf, len);
-        }
+        buffer.write_with_cpu(|target| unsafe {
+            target.as_mut_ptr().copy_from_nonoverlapping(rx_buf, len);
+        });
         dma_barrier();
         inner.rx_reclaimed = inner.rx_reclaimed.saturating_add(1);
         if inner.rx_reclaimed <= EARLY_PACKET_LOG_COUNT
@@ -1044,7 +1111,10 @@ impl IRxQueue for GmacRxQueue {
                 inner.regs.dma.read(DMA_STATUS),
             );
         }
-        Some((buffer.upper_bus_addr, len))
+        Some(RxCompletion {
+            buffer,
+            packet_len: len,
+        })
     }
 }
 
@@ -1106,7 +1176,7 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let dev = GmacNet::new(mmio, resource_paddr, mac_address).map_err(|err| {
         OnProbeError::other(format!("failed to init {DEVICE_NAME} from FDT: {err}"))
     })?;
-    let binding_info = gmac_binding_info(&info);
+    let binding_info = gmac_binding_info(&info)?;
     let irq = binding_info.irq_num();
     let dma = axklib::dma::device(dma_api::DmaDeviceInfo::new(
         dma_api::DmaDomainId::Direct,
@@ -1127,13 +1197,12 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn gmac_binding_info(info: &FdtInfo<'_>) -> BindingInfo {
-    binding_info_from_fdt(info).unwrap_or_else(|err| {
-        warn!(
-            "{DEVICE_NAME}: failed to resolve FDT IRQ for {}; continuing without IRQ: {err:?}",
+fn gmac_binding_info(info: &FdtInfo<'_>) -> Result<BindingInfo, OnProbeError> {
+    binding_info_from_fdt(info).map_err(|error| {
+        OnProbeError::other(format!(
+            "{DEVICE_NAME}: failed to resolve required FDT IRQ for {}: {error:?}",
             info.node.path(),
-        );
-        BindingInfo::empty()
+        ))
     })
 }
 

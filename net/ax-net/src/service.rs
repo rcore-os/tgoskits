@@ -16,11 +16,11 @@
 //!    - Acquired during poll, socket operations, and state queries
 //!    - ⚠️ Never acquire SERVICE while holding this lock
 //!
-//! 3. **TCP_BOUND_PORTS** (`SpinLock<HashMap<u16, Vec<...>>>`)
+//! 3. **TCP_BOUND_PORTS** (`Mutex<HashMap<u16, Vec<...>>>`)
 //!    - Tracks TCP bind() registrations
 //!    - Hold duration: registration/unregistration only
 //!
-//! 4. **Per-port LISTEN_TABLE buckets** (`Arc<SpinLock<Vec<ListenTableEntryInner>>>`)
+//! 4. **Per-port LISTEN_TABLE buckets** (`Arc<Mutex<Vec<ListenTableEntryInner>>>`)
 //!    - Innermost, most granular (one mutex per TCP port)
 //!
 //! **Acquisition order rule:**
@@ -32,7 +32,7 @@
 //! # Correct Patterns
 //!
 //! ```ignore
-//! // ✓ Lightweight trigger: socket paths request the dedicated worker.
+//! // ✓ Lightweight trigger: socket paths request the unique protocol executor.
 //! fn socket_operation() {
 //!     request_poll()
 //! }
@@ -56,7 +56,7 @@
 //! waker.wake();  // WRONG: potential self-deadlock
 //! ```
 
-use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{string::String, sync::Arc, vec, vec::Vec};
 use core::task::Waker;
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos, wall_time_nanos};
@@ -72,19 +72,17 @@ use smoltcp::{
     },
 };
 
-#[cfg(all(axtest, feature = "axtest"))]
-use crate::device::LoopbackDevice;
 use crate::{
-    NetError, NetResult, SOCKET_SET,
+    NetError, NetResult,
     addr::mask_from_prefix,
     config::{
         DeviceBinding, DnsServerEntry, DnsSource, InterfaceFlags, InterfaceId, InterfaceInfo,
         InterfaceKind, Ipv4InterfaceConfig, RouteInfo,
     },
     consts::STANDARD_MTU,
-    device::{ArpEntry, EthernetDevice},
+    device::ArpEntry,
     dhcp_server::{DhcpServer, parse_dhcp_packet},
-    router::{NetDevStats, PreparedDeviceWorkers, RouteDecision, Router, SharedRouteTable},
+    router::{NetDevStats, RouteDecision, Router, SharedRouteTable},
 };
 
 fn now() -> Instant {
@@ -262,54 +260,16 @@ impl NetControl {
             .write()
             .replace_ipv4_rules_for_interface(update.interface_id, routes);
     }
-
-    fn add_interface(&self, interface: NetInterface, routes: Vec<crate::router::Rule>) {
-        self.routes
-            .write()
-            .replace_ipv4_rules_for_interface(interface.id, routes);
-        self.state.write().interfaces.push(interface);
-    }
-
-    fn allocate_interface_id(&self) -> InterfaceId {
-        let state = self.state.read();
-        let next = state
-            .interfaces
-            .iter()
-            .map(|interface| interface.id.get())
-            .max()
-            .unwrap_or(InterfaceId::LOOPBACK.get())
-            .saturating_add(1);
-        InterfaceId::new(next)
-    }
-
-    fn contains_interface_name(&self, name: &str) -> bool {
-        self.state
-            .read()
-            .interfaces
-            .iter()
-            .any(|interface| interface.name == name)
-    }
 }
 
 pub struct Service {
     pub iface: Interface,
     router: Router,
     control: Arc<NetControl>,
-    timeouts: Vec<TimeoutRegistration>,
     dhcp: Vec<DhcpState>,
     dhcp_server: Option<DhcpServer>,
     dhcp_events: Vec<DhcpEvent>,
     dhcp_server_replies: Vec<(usize, Vec<u8>)>,
-}
-
-struct TimeoutRegistration {
-    deadline: Instant,
-    waker: Waker,
-}
-
-pub(crate) struct ServicePoll {
-    pub(crate) progressed: bool,
-    pub(crate) expired_wakers: Vec<Waker>,
 }
 
 #[derive(Clone)]
@@ -533,87 +493,11 @@ impl Service {
             iface,
             router,
             control,
-            timeouts: Vec::new(),
             dhcp: Vec::new(),
             dhcp_server: None,
             dhcp_events: Vec::new(),
             dhcp_server_replies: Vec::new(),
         }
-    }
-
-    pub fn register_static_device(
-        &mut self,
-        name: String,
-        dev: EthernetDevice,
-        mac: EthernetAddress,
-        cidr: Ipv4Cidr,
-    ) -> usize {
-        if self.control.contains_interface_name(&name) {
-            panic!("interface name conflict: {}", name);
-        }
-
-        let interface_id = self.control.allocate_interface_id();
-        let metric = 100;
-        let dev = self.router.add_device(interface_id, Box::new(dev));
-        let routes = self
-            .router
-            .ipv4_rules(dev, interface_id, metric, Some(cidr), None);
-        Self::set_interface_ipv4(&mut self.iface, None, Some(cidr));
-        self.control.add_interface(
-            NetInterface {
-                id: interface_id,
-                name,
-                kind: InterfaceKind::Ethernet,
-                mac: Some(mac),
-                ipv4: Some(cidr),
-                gateway: None,
-                mtu: STANDARD_MTU,
-                metric,
-                flags: InterfaceFlags::UP
-                    | InterfaceFlags::RUNNING
-                    | InterfaceFlags::BROADCAST
-                    | InterfaceFlags::MULTICAST,
-            },
-            routes,
-        );
-        dev
-    }
-
-    #[cfg(all(axtest, feature = "axtest"))]
-    pub(crate) fn register_test_loopback(
-        &mut self,
-        name: String,
-        cidr: Ipv4Cidr,
-    ) -> (InterfaceId, PreparedDeviceWorkers) {
-        if self.control.contains_interface_name(&name) {
-            panic!("interface name conflict: {name}");
-        }
-
-        let interface_id = self.control.allocate_interface_id();
-        let metric = 100;
-        let dev = self
-            .router
-            .add_device(interface_id, Box::new(LoopbackDevice::new()));
-        let routes = self
-            .router
-            .ipv4_rules(dev, interface_id, metric, Some(cidr), None);
-        Self::set_interface_ipv4(&mut self.iface, None, Some(cidr));
-        self.control.add_interface(
-            NetInterface {
-                id: interface_id,
-                name,
-                kind: InterfaceKind::Ethernet,
-                mac: None,
-                ipv4: Some(cidr),
-                gateway: None,
-                mtu: STANDARD_MTU,
-                metric,
-                flags: InterfaceFlags::UP | InterfaceFlags::RUNNING,
-            },
-            routes,
-        );
-
-        (interface_id, self.router.prepare_device_workers_for(dev))
     }
 
     pub fn enable_dhcp(
@@ -657,11 +541,6 @@ impl Service {
             subnet_mask,
         ));
         info!("dev {dev}: DHCP server enabled (lease {client_ip})");
-    }
-
-    /// Finds the router device index for an interface name such as `wlan0`.
-    pub fn device_index(&self, name: &str) -> Option<usize> {
-        self.router.device_index(name)
     }
 
     /// Assigns a static IPv4 address to an interface at runtime.
@@ -819,6 +698,33 @@ impl Service {
         info!("dev {dev}: reconfigured as STA, DHCP client enabled");
     }
 
+    /// Removes the protocol configuration after a wireless disconnect.
+    pub fn reconfigure_as_disconnected(&mut self, dev: usize) {
+        let Some(interface) = self.interface_for_dev(dev) else {
+            warn!("dev {dev}: cannot disconnect unknown wireless device");
+            return;
+        };
+        if self
+            .dhcp_server
+            .as_ref()
+            .is_some_and(|server| server.dev == dev)
+        {
+            self.dhcp_server = None;
+        }
+        self.dhcp.retain(|state| state.dev != dev);
+        self.commit_network_state(NetworkStateUpdate {
+            interface_id: interface.id,
+            dev,
+            metric: interface.metric,
+            old_ipv4: interface.ipv4,
+            ipv4: None,
+            gateway: None,
+            dns_source: DnsSource::Static,
+            dns_servers: Vec::new(),
+        });
+        info!("dev {dev}: wireless link disconnected");
+    }
+
     /// Returns true once DHCP has produced at least one usable interface.
     ///
     /// Startup should not block on every DHCP-enabled NIC: one isolated or
@@ -828,9 +734,8 @@ impl Service {
         self.dhcp.iter().any(|state| state.address.is_some())
     }
 
-    pub fn poll(&mut self, sockets: &mut SocketSet) -> ServicePoll {
+    pub fn poll(&mut self, sockets: &mut SocketSet) -> bool {
         let timestamp = now();
-        let expired_wakers = self.take_expired_timeout_wakers(timestamp);
         let mut dhcp_events = core::mem::take(&mut self.dhcp_events);
         let mut dhcp_server_replies = core::mem::take(&mut self.dhcp_server_replies);
         dhcp_events.clear();
@@ -877,38 +782,15 @@ impl Service {
         // Reap orphaned TCP sockets using the SocketSet already held by poll_until_idle().
         crate::orphan::reap_orphans(timestamp, sockets);
 
-        let progressed = self.router.dispatch(timestamp, sockets)
+        self.router.dispatch(timestamp, sockets)
             || dhcp_poll_next
             || dhcp_server_sent
             || socket_state_changed
-            || router_rx_pending;
-        ServicePoll {
-            progressed,
-            expired_wakers,
-        }
+            || router_rx_pending
     }
 
     pub fn next_poll_at(&mut self, sockets: &SocketSet) -> Option<Instant> {
-        let interface_deadline = self.iface.poll_at(now(), sockets);
-        let timeout_deadline = self.timeouts.iter().map(|timeout| timeout.deadline).min();
-        match (interface_deadline, timeout_deadline) {
-            (Some(interface), Some(timeout)) => Some(interface.min(timeout)),
-            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
-            (None, None) => None,
-        }
-    }
-
-    fn take_expired_timeout_wakers(&mut self, timestamp: Instant) -> Vec<Waker> {
-        let registrations = core::mem::take(&mut self.timeouts);
-        let mut expired = Vec::new();
-        for registration in registrations {
-            if registration.deadline <= timestamp {
-                expired.push(registration.waker);
-            } else {
-                self.timeouts.push(registration);
-            }
-        }
-        expired
+        self.iface.poll_at(now(), sockets)
     }
 
     fn poll_dhcp(&mut self, timestamp: Instant) -> bool {
@@ -1052,27 +934,8 @@ impl Service {
         self.router.net_dev_stats()
     }
 
-    pub fn wake_all_devices(&self) {
-        self.router.wake_all_devices();
-    }
-
-    pub fn register_timeout_waker(&mut self, waker: &Waker) {
-        let next = self.iface.poll_at(now(), &SOCKET_SET.inner.lock());
-
-        if let Some(deadline) = next {
-            self.timeouts.push(TimeoutRegistration {
-                deadline,
-                waker: waker.clone(),
-            });
-        }
-    }
-
-    pub(crate) fn prepare_device_workers(&self) -> PreparedDeviceWorkers {
-        self.router.prepare_device_workers()
-    }
-
-    pub(crate) fn prepare_device_workers_for(&self, dev: usize) -> PreparedDeviceWorkers {
-        self.router.prepare_device_workers_for(dev)
+    pub fn register_waker(&mut self, binding: DeviceBinding, waker: &Waker) {
+        self.router.register_waker(binding, waker);
     }
 }
 

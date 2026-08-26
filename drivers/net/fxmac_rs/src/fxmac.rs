@@ -486,14 +486,15 @@ impl FXmac {
     }
 
     /// Consumes a hard-IRQ snapshot in task or deferred context.
-    pub fn handle_deferred_irq(&mut self, status: FXmacIrqStatus) {
+    ///
+    /// Interrupt rearming is deliberately owned by the queue runtime. Keeping
+    /// this operation masked lets the poll owner drain descriptors before the
+    /// final `enable_irq`/pending check closes the NAPI rearm window.
+    pub fn process_irq_snapshot(&mut self, status: FXmacIrqStatus) {
         if status.is_empty() {
             return;
         }
         crate::fxmac_intr::FXmacIntrHandlerWithStatus(self, status);
-        if self.is_started == FT_COMPONENT_IS_STARTED {
-            FXmacQueueIrqEnable(self, 0, self.mask);
-        }
     }
 
     /// Enables queue 0 interrupts after the OS has registered an IRQ handler.

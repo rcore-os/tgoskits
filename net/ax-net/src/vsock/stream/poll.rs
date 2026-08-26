@@ -122,18 +122,6 @@ impl Pollable for VsockStreamTransport {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn connected_socket_without_transport_credit_is_not_writable() {
-        assert!(!tx_poll_ready(ConnectionState::Connected, false, 0));
-        assert!(tx_poll_ready(ConnectionState::Connected, false, 1));
-        assert!(!tx_poll_ready(ConnectionState::Connected, true, 1));
-    }
-}
-
 impl Drop for VsockStreamTransport {
     fn drop(&mut self) {
         let _ = self.shutdown(Shutdown::Both);
@@ -150,5 +138,17 @@ impl Drop for VsockStreamTransport {
                 retire_connection(conn_id, connection);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connected_socket_without_transport_credit_is_not_writable() {
+        assert!(!tx_poll_ready(ConnectionState::Connected, false, 0));
+        assert!(tx_poll_ready(ConnectionState::Connected, false, 1));
+        assert!(!tx_poll_ready(ConnectionState::Connected, true, 1));
     }
 }

@@ -15,11 +15,15 @@ use axvm_types::{HostPhysAddr, HostVirtAddr};
 
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 use crate::AxVmError;
+#[cfg(target_arch = "aarch64")]
+use crate::host::HostHardTimerAction;
+#[cfg(target_arch = "x86_64")]
+use crate::host::HostTimerAction;
 use crate::{
     AxVmResult,
     arch::current::CurrentArch,
     architecture::ArchOps,
-    host::{HostCpu, HostMemory, HostPlatform, HostTime},
+    host::{HostCpu, HostMemory, HostPlatform, HostTime, HostTimer},
 };
 
 /// Private default host adapter used by [`crate::AxvmRuntime`].
@@ -88,6 +92,89 @@ impl HostTime for ArceOsHost {
     }
 }
 
+impl HostTimer for ArceOsHost {
+    type TimerHandle = runtime_task::KernelTimerHandle;
+
+    fn register_timer(
+        &self,
+        deadline: Duration,
+        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+    ) -> AxVmResult<Self::TimerHandle> {
+        let deadline = runtime_task::MonotonicDeadline::from_duration(deadline);
+        runtime_task::register_kernel_timer(
+            deadline,
+            Box::new(move |now| callback(Duration::from_nanos(now.as_nanos()))),
+        )
+        .map_err(|error| crate::AxVmError::host("register host timer", error))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn register_restartable_timer(
+        &self,
+        deadline: Duration,
+        mut callback: Box<dyn FnMut(Duration) -> HostTimerAction + Send + 'static>,
+    ) -> AxVmResult<Self::TimerHandle> {
+        let deadline = runtime_task::MonotonicDeadline::from_duration(deadline);
+        runtime_task::register_restartable_kernel_timer(
+            deadline,
+            Box::new(
+                move |now| match callback(Duration::from_nanos(now.as_nanos())) {
+                    HostTimerAction::Complete => runtime_task::KernelTimerAction::Complete,
+                    HostTimerAction::Rearm(deadline) => runtime_task::KernelTimerAction::Rearm(
+                        runtime_task::MonotonicDeadline::from_duration(deadline),
+                    ),
+                },
+            ),
+        )
+        .map_err(|error| crate::AxVmError::host("register restartable host timer", error))
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe fn register_hard_restartable_timer(
+        &self,
+        deadline: Duration,
+        mut callback: Box<dyn FnMut(Duration) -> HostHardTimerAction + Send + 'static>,
+    ) -> AxVmResult<Self::TimerHandle> {
+        let deadline = runtime_task::MonotonicDeadline::from_duration(deadline);
+        let callback = unsafe {
+            // SAFETY: the caller owns the callback's hard-IRQ proof. This
+            // adapter changes only timestamp and action representations.
+            runtime_task::HardKernelTimerCallback::new(Box::new(move |now| {
+                match callback(Duration::from_nanos(now.as_nanos())) {
+                    HostHardTimerAction::Complete => runtime_task::HardKernelTimerAction::Complete,
+                    HostHardTimerAction::Disarm => runtime_task::HardKernelTimerAction::Disarm,
+                    HostHardTimerAction::Rearm(deadline) => {
+                        runtime_task::HardKernelTimerAction::Rearm(
+                            runtime_task::MonotonicDeadline::from_duration(deadline),
+                        )
+                    }
+                }
+            }))
+        };
+        runtime_task::register_hard_restartable_kernel_timer(deadline, callback)
+            .map_err(|error| crate::AxVmError::host("register hard host timer", error))
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn arm_hard_timer(&self, handle: Self::TimerHandle, deadline: Duration) -> AxVmResult {
+        let deadline = runtime_task::MonotonicDeadline::from_duration(deadline);
+        runtime_task::arm_hard_kernel_timer(handle, deadline)
+            .map_err(|error| crate::AxVmError::host("arm hard host timer", error))
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn disarm_hard_timer(&self, handle: Self::TimerHandle) -> AxVmResult {
+        runtime_task::disarm_hard_kernel_timer(handle)
+            .map_err(|error| crate::AxVmError::host("disarm hard host timer", error))
+    }
+
+    fn cancel_timer(&self, handle: Self::TimerHandle) -> AxVmResult<bool> {
+        runtime_task::cancel_kernel_timer(handle)
+            .map(|outcome| matches!(outcome, runtime_task::KernelTimerCancelOutcome::Cancelled))
+            .map_err(|error| crate::AxVmError::host("cancel host timer", error))
+    }
+}
+
 /// Returns the platform IRQ reserved for the physical host console.
 pub(crate) fn host_console_irq() -> Option<modules::ax_hal::irq::IrqId> {
     modules::ax_hal::console::irq_num()
@@ -113,11 +200,6 @@ pub(crate) type ArceOsThreadHandle = runtime_task::ThreadHandle;
 #[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsThreadWakeHandle = runtime_task::ThreadWakeHandle;
 pub(crate) type ArceOsWaitQueue = runtime_task::WaitQueue;
-pub(crate) type ArceOsKernelTimerHandle = runtime_task::KernelTimerHandle;
-#[cfg(target_arch = "aarch64")]
-pub(crate) type ArceOsHardKernelTimerAction = runtime_task::HardKernelTimerAction;
-#[cfg(target_arch = "x86_64")]
-pub(crate) type ArceOsKernelTimerAction = runtime_task::KernelTimerAction;
 #[cfg(target_arch = "aarch64")]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
@@ -204,72 +286,6 @@ impl ArceOsIrqNotification {
 pub(crate) fn current_thread() -> ArceOsThreadHandle {
     runtime_task::current_thread_handle()
         .unwrap_or_else(|error| panic!("AxVM requires a current scheduler thread: {error}"))
-}
-
-pub(crate) fn register_kernel_timer(
-    deadline: ArceOsMonotonicDeadline,
-    callback: Box<dyn FnOnce(Duration) + Send + 'static>,
-) -> Result<ArceOsKernelTimerHandle, ArceOsTaskError> {
-    runtime_task::register_kernel_timer(
-        deadline,
-        Box::new(move |now| callback(Duration::from_nanos(now.as_nanos()))),
-    )
-}
-
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn register_restartable_kernel_timer(
-    deadline: ArceOsMonotonicDeadline,
-    mut callback: Box<dyn FnMut(Duration) -> ArceOsKernelTimerAction + Send + 'static>,
-) -> Result<ArceOsKernelTimerHandle, ArceOsTaskError> {
-    runtime_task::register_restartable_kernel_timer(
-        deadline,
-        Box::new(move |now| callback(Duration::from_nanos(now.as_nanos()))),
-    )
-}
-
-/// # Safety
-///
-/// `callback` must satisfy [`runtime_task::HardKernelTimerCallback::new`].
-#[cfg(target_arch = "aarch64")]
-pub(crate) unsafe fn register_hard_restartable_kernel_timer(
-    deadline: ArceOsMonotonicDeadline,
-    mut callback: Box<dyn FnMut(Duration) -> ArceOsHardKernelTimerAction + Send + 'static>,
-) -> Result<ArceOsKernelTimerHandle, ArceOsTaskError> {
-    let callback = unsafe {
-        // SAFETY: the caller owns the hard-IRQ callback proof; this adapter
-        // changes only the monotonic timestamp representation.
-        runtime_task::HardKernelTimerCallback::new(Box::new(move |now| {
-            callback(Duration::from_nanos(now.as_nanos()))
-        }))
-    };
-    runtime_task::register_hard_restartable_kernel_timer(deadline, callback)
-}
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn arm_hard_kernel_timer(
-    handle: ArceOsKernelTimerHandle,
-    deadline: ArceOsMonotonicDeadline,
-) -> Result<(), ArceOsTaskError> {
-    runtime_task::arm_hard_kernel_timer(handle, deadline)
-}
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn disarm_hard_kernel_timer(
-    handle: ArceOsKernelTimerHandle,
-) -> Result<(), ArceOsTaskError> {
-    runtime_task::disarm_hard_kernel_timer(handle)
-}
-
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "x86_64"
-))]
-pub(crate) fn cancel_kernel_timer(
-    handle: ArceOsKernelTimerHandle,
-) -> Result<bool, ArceOsTaskError> {
-    runtime_task::cancel_kernel_timer(handle)
-        .map(|outcome| matches!(outcome, runtime_task::KernelTimerCancelOutcome::Cancelled))
 }
 
 pub(crate) unsafe fn spawn_thread_with_extension_and_affinity<F>(

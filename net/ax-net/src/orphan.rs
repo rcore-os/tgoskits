@@ -3,7 +3,7 @@
 //! When a user closes a TCP socket, the userspace object is dropped immediately,
 //! but the underlying smoltcp socket may still need to finish FIN exchange or
 //! TIME-WAIT. This module keeps those sockets in a small orphan pool so the
-//! dedicated net-poll worker can continue protocol teardown after the file
+//! unique protocol executor can continue protocol teardown after the file
 //! descriptor is gone.
 //!
 //! # Lifecycle
@@ -25,7 +25,7 @@
 use alloc::vec::Vec;
 
 use ax_lazyinit::LazyLock;
-use ax_sync::SpinLock;
+use ax_sync::Mutex;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::tcp,
@@ -62,9 +62,9 @@ enum ReapReason {
 ///
 /// Accessed by:
 /// - TcpSocket::drop() to add orphans
-/// - net-poll worker to reap finished orphans
-static ORPHAN_SOCKETS: LazyLock<SpinLock<Vec<OrphanSocket>>> =
-    LazyLock::new(|| SpinLock::new(Vec::new()));
+/// - protocol executor to reap finished orphans
+static ORPHAN_SOCKETS: LazyLock<Mutex<Vec<OrphanSocket>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 const ORPHAN_MAX_LINGER: i64 = 60_000_000; // 60 seconds in microseconds
 const ORPHAN_MAX_SOCKETS: usize = 1024;
@@ -81,7 +81,7 @@ pub(crate) fn add_orphan(handle: SocketHandle, timestamp: Instant) {
 
 /// Reap finished orphan sockets.
 ///
-/// Called from net-poll worker on every poll cycle.
+/// Called from the protocol executor on every poll cycle.
 /// Removes orphan sockets after their background TCP teardown completes.
 ///
 /// # Removal Conditions

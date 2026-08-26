@@ -14,4 +14,7 @@ dma-api = { workspace = true }
 rdif-base = { workspace = true }
 thiserror = { version = "2", default-features = false }
 
+[dev-dependencies]
+ax-sync = { path = "../../../os/arceos/modules/axsync", features = ["host-test"] }
+
 [features]

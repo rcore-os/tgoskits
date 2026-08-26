@@ -1,8 +1,8 @@
-use alloc::{sync::Arc, vec, vec::Vec};
-use core::{sync::atomic::Ordering, task::Poll};
+use alloc::{vec, vec::Vec};
+use core::sync::atomic::Ordering;
 
-use axpoll::{ExclusiveConsumer, IoEvents, PollRegistrar};
 use log;
+use rd_net::DmaBuffer;
 
 use crate::{
     common::{SDIO_TYPE_DATA, crc8_ponl_107},
@@ -24,7 +24,7 @@ fn align_up(val: usize, align: usize) -> usize {
     (val + align - 1) & !(align - 1)
 }
 
-fn has_pending_work(bus: &WifiBus) -> bool {
+pub fn has_pending_work(bus: &WifiBus) -> bool {
     bus.cmd.pending_flag.load(Ordering::Acquire) || bus.tx.pktcnt.load(Ordering::Acquire) > 0
 }
 
@@ -40,47 +40,6 @@ fn pad_cmd_frame(cmd: &mut Vec<u8>) -> usize {
     let final_len = align_up(cmd.len(), SDIOWIFI_FUNC_BLOCKSIZE);
     cmd.resize(final_len, 0);
     final_len
-}
-
-/// 启动 wifi-tx 线程
-pub fn start(bus: Arc<WifiBus>) {
-    log::debug!("[wifi-tx] thread starting");
-    let mut registration = None::<PollRegistrar<ExclusiveConsumer>>;
-    crate::runtime::runtime().spawn_poll_task(
-        "wifi-tx",
-        alloc::boxed::Box::new(move |cx| {
-            if let Some(registration) = registration.as_mut() {
-                registration.reset(cx.waker());
-            }
-            // 检查总线状态
-            if *bus.state.lock() == BusState::Down {
-                log::warn!("[wifi-tx] poll exit: bus down");
-                return Poll::Ready(());
-            }
-
-            // 处理所有待发帧
-            let did_work = tx_process(&bus);
-
-            let registration = registration.get_or_insert_with(|| PollRegistrar::new(cx.waker()));
-            // SAFETY: this closure is polled only by the TX task.
-            unsafe { registration.register_exclusive(&bus.tx.wake_pollset, IoEvents::IN) };
-
-            // 注册后重新观察生产者发布的状态，关闭 check/register 竞态。
-            let pending = has_pending_work(&bus);
-            if did_work || pending {
-                registration.clear();
-                cx.waker().wake_by_ref();
-            }
-
-            // 只在有错误时唤醒 rsp_pollset，避免无意义的任务切换
-            if bus.cmd.rsp_error.load(Ordering::Acquire) {
-                // SAFETY: this is the task-owned TX service path.
-                unsafe { bus.cmd.rsp_pollset.wake(IoEvents::IN) };
-            }
-
-            Poll::Pending
-        }),
-    );
 }
 
 // ===== CMD 发送处理 =====
@@ -124,22 +83,14 @@ fn process_cmd_tx(bus: &WifiBus) -> bool {
     let send_len = pad_cmd_frame(&mut cmd);
 
     let transport = &bus.transport;
-    transport.mask_card_irq();
 
     let (fc_ok, did_work) = perform_cmd_flow_control_and_send(transport, &cmd, send_len);
 
     if fc_ok && did_work {
         log::debug!("[wifi-tx] process_cmd_tx: CMD sent OK, len={}", send_len);
-        bus.rx.irq_waker.wake();
-        transport.unmask_card_irq();
     } else if !fc_ok {
         log::error!("[wifi-tx] CMD flow_ctrl timeout, dropping CMD");
         bus.cmd.rsp_error.store(true, Ordering::Release);
-        // SAFETY: this is the task-owned TX service path.
-        unsafe { bus.cmd.rsp_pollset.wake(IoEvents::IN) };
-        transport.unmask_card_irq();
-    } else {
-        transport.unmask_card_irq();
     }
 
     did_work
@@ -183,8 +134,11 @@ fn process_data_tx(bus: &WifiBus) -> bool {
     // 未连接则清空队列
     if vif_idx == 0xFF {
         log::trace!("[wifi-tx] process_data_tx: vif=0xFF, draining queue");
-        while let Some(_) = bus.tx.queue.lock().pop_front() {
+        while let Some(mut frame) = bus.tx.queue.lock().pop_front() {
             bus.tx.pktcnt.fetch_sub(1, Ordering::AcqRel);
+            if let Some(buffer) = frame.completion.take() {
+                bus.tx.completed.lock().push_back(buffer);
+            }
         }
         return false;
     }
@@ -223,6 +177,19 @@ fn process_data_tx(bus: &WifiBus) -> bool {
     did_work
 }
 
+struct RuntimeCompletion<'a> {
+    bus: &'a WifiBus,
+    buffer: Option<DmaBuffer>,
+}
+
+impl Drop for RuntimeCompletion<'_> {
+    fn drop(&mut self) {
+        if let Some(buffer) = self.buffer.take() {
+            self.bus.tx.completed.lock().push_back(buffer);
+        }
+    }
+}
+
 /// 检查数据流控状态（带重试）
 fn check_data_flow_control(transport: &crate::fdrv::core::sdio_transport::SdioTransport) -> bool {
     for _ in 0..50 {
@@ -249,10 +216,14 @@ fn send_single_data_frame(
     const ETH_HEADER_LEN: usize = 14;
 
     let frame = bus.tx.queue.lock().pop_front();
-    let Some(frame) = frame else {
+    let Some(mut frame) = frame else {
         return false;
     };
     bus.tx.pktcnt.fetch_sub(1, Ordering::AcqRel);
+    let _completion = RuntimeCompletion {
+        bus,
+        buffer: frame.completion.take(),
+    };
 
     // 管理帧(raw 802.11)走独立构造路径
     if frame.is_mgmt {
@@ -486,7 +457,7 @@ fn build_mgmt_frame(
 }
 
 /// TX 处理主逻辑
-fn tx_process(bus: &WifiBus) -> bool {
+pub fn tx_process(bus: &WifiBus) -> bool {
     let mut did_work = false;
 
     if *bus.state.lock() == BusState::Down {
@@ -516,24 +487,33 @@ fn tx_process(bus: &WifiBus) -> bool {
     did_work
 }
 
-/// 将以太网帧入队 TX 队列
-pub fn enqueue_data_frame(bus: &Arc<WifiBus>, eth_frame: Vec<u8>) -> Result<(), TxError> {
+/// Transfers one runtime frame and its DMA token into the owner queue.
+pub fn enqueue_data_frame(
+    bus: &WifiBus,
+    eth_frame: Vec<u8>,
+    completion: DmaBuffer,
+) -> Result<(), (TxError, DmaBuffer)> {
     let mut queue = bus.tx.queue.lock();
     if queue.len() >= MAX_TX_QUEUE_LEN {
-        return Err(TxError::QueueFull);
+        return Err((TxError::QueueFull, completion));
     }
 
     queue.push_back(TxFrame {
         data: eth_frame,
         priority: 0,
         is_mgmt: false,
+        completion: Some(completion),
     });
     drop(queue);
 
     bus.tx.pktcnt.fetch_add(1, Ordering::AcqRel);
-    // SAFETY: enqueue runs in task context after publishing queue state.
-    unsafe { bus.tx.wake_pollset.wake(IoEvents::IN) };
     Ok(())
+}
+
+/// Reclaims a runtime token after its frame has been consumed by the SDIO
+/// transport (or explicitly dropped because the link went down).
+pub fn reclaim_completed(bus: &WifiBus) -> Option<DmaBuffer> {
+    bus.tx.completed.lock().pop_front()
 }
 
 /// 将一个完整的 802.11 管理帧入队 TX 队列(AP 模式回 Auth/Assoc Response 用)。
@@ -551,12 +531,11 @@ pub fn enqueue_mgmt_frame(bus: &WifiBus, mgmt_frame: Vec<u8>) -> Result<(), TxEr
         data: mgmt_frame,
         priority: 1,
         is_mgmt: true,
+        completion: None,
     });
     drop(queue);
 
     let cnt = bus.tx.pktcnt.fetch_add(1, Ordering::AcqRel) + 1;
     log::trace!("[wifi-tx] enqueue: pktcnt={}", cnt);
-    // SAFETY: enqueue runs in task context after publishing queue state.
-    unsafe { bus.tx.wake_pollset.wake(IoEvents::IN) };
     Ok(())
 }

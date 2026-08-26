@@ -130,17 +130,12 @@ handle_tlb_refill:
     b       .Ltlb_refill
 
 .Ltlb_invalid:
-    csrrd   $t0, LA_CSR_TLBREHI
-    ori     $t0, $t0, 0xC   // 4 KiB
-    csrwr   $t0, LA_CSR_TLBREHI
-
-    rotri.d $t0, $t0, 61
-    ori     $t0, $t0, 3     // NR NX
-    rotri.d $t0, $t0, 3
-
-    csrwr   $t0, LA_CSR_TLBRELO0
-    csrrd   $t0, LA_CSR_TLBRELO0
-    csrwr   $t0, LA_CSR_TLBRELO1
+    // Match the invalid-table entries used by Linux. In particular, do not
+    // reuse TLBREHI here: it contains the faulting virtual page number, not an
+    // EntryLo physical page number. A zero EntryLo keeps V clear and lets the
+    // CPU report the original load, store, or fetch fault type.
+    csrwr   $r0, LA_CSR_TLBRELO0
+    csrwr   $r0, LA_CSR_TLBRELO1
 
 .Ltlb_refill:
     tlbfill

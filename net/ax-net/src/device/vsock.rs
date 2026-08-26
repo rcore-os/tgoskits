@@ -23,8 +23,6 @@ use crate::{NetError, NetResult};
 
 mod poll;
 
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) use poll::run_axtest_contracts;
 pub(crate) use poll::{VsockPollLease, start_vsock_poll};
 
 pub type VsockDevice = alloc::boxed::Box<dyn Interface>;

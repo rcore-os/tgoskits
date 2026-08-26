@@ -82,7 +82,7 @@ Router 对 smoltcp 暴露 `Medium::Ip`，Ethernet frame 处理在 `EthernetDevic
 
 ### 2.1 网络配置
 
-`NetworkConfig` 是启动阶段的顶层输入，按接口顺序或匹配规则组织静态地址、DHCP、metric 与 DNS 来源。`init_network()` 会先校验这一结构再构造全局控制面，因此错误配置必须在发布 `SERVICE` 前失败，不能留给设备 Worker 运行时猜测。
+`NetworkConfig` 是启动阶段的顶层输入，按接口顺序或匹配规则组织静态地址、DHCP、metric 与 DNS 来源。`init_network()` 会先校验这一结构再构造全局控制面，因此错误配置必须在发布 `SERVICE` 前失败，不能留给 queue executor 运行时猜测。
 
 ```rust
 #[derive(Debug, Clone, Default)]
@@ -252,45 +252,28 @@ dns_servers()
 
 多网口场景下，metric 用于选择默认路由和 DNS server 优先级；socket 已绑定接口时，route lookup 还会叠加 `DeviceBinding` 过滤。
 
-## 6. 运行时设备配置
+## 6. 设备与运行期配置
 
-运行期可以注册静态 IPv4 Ethernet 设备，主要用于 Wi-Fi AP 等晚于启动阶段出现的设备。
+物理设备只能在网络启动阶段一次性发布。runtime 收集全部
+`NetworkDeviceInput { name, device, irq_sources }`，`NetworkRuntimeBuilder` 完成
+affinity domain、worker pin、DMA refill、IRQ registration/rearm 后，`init_network()`
+才分配接口 ID 并发布 `Service`。启动后新增/删除物理 NIC、无 IRQ 设备和周期 poll
+模式不在当前配置面中。
 
-### 6.1 设备配置
+### 6.1 Wi-Fi startup transaction
 
-`NetConfig` 是运行期静态设备注册使用的窄配置，不等同于启动阶段可表达 DHCP、gateway 和多源 DNS 的 `InterfaceConfig`。它主要服务 Wi-Fi SoftAP 等已知地址角色，并通过 `dedicated_poll` 选择是否使用 OOB readiness 模式。
+Wi-Fi 驱动可以在 owned `WifiControl` 中提供一个 `startup_transaction()`。它不是
+probe 期间的直接 SDIO 调用：builder 等待 queue worker affinity-ready、注册并 enable
+固定 CPU IRQ 后，把 transaction 提交给相同 owner executor；transaction 成功和 MAC
+刷新完成后才发布接口。SoftAP 的初始静态地址与 DHCP server policy 同步写入 protocol
+配置。
 
-```rust
-pub struct NetConfig {
-    pub name: String,
-    pub ip: [u8; 4],
-    pub prefix_len: u8,
-    pub dhcp_server_client_ip: Option<[u8; 4]>,
-    pub dedicated_poll: bool,
-}
-```
+### 6.2 运行期 Wi-Fi transaction
 
-该结构没有 gateway、DHCP client 或多地址字段，体现运行期注册 API 的窄用途。动态设备注册会把这些字段转换为静态接口、connected route 与可选 DHCP server，而不是复用完整启动配置解析。
-
-### 6.2 动态设备注册
-
-`register_device_with_config()` 在网络服务已初始化后追加设备，随后由 `Service::register_static_device()` 分配接口 ID、生成 connected route 并启动专属 Worker。这个入口必须把接口快照和 smoltcp 地址同步提交，不能只把 driver 塞入 `Router` 后再异步补状态。
-
-```rust
-pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig);
-pub fn wake_net_task_irq();
-```
-
-注册过程：
-
-- 根据 `dedicated_poll` 创建普通或 OOB RX `EthernetDevice`。
-- 分配新的 `InterfaceId`。
-- 将静态 IPv4 加入 smoltcp address list。
-- 添加接口 registry、route table 和 worker。
-- `dhcp_server_client_ip` 存在时启用内置单客户端 DHCP server。
-- 调用 `request_poll()` 让 net-poll worker 看到新状态。
-
-`dedicated_poll = true` 时，驱动侧收到 out-of-band RX 事件后调用 `wake_net_task_irq()`。源码不会创建专门的 OOB poll 线程；该调用通知 `NET_IRQ_NOTIFY` 并从 IRQ 上下文唤醒 `NET_POLL_WAKE`，不修改普通 `NET_POLL_REQUESTED` 位。`net-poll` worker 看到 IRQ 后调用 `wake_all_devices()`，对应 RX worker 随后重新检查设备。
+`reconfigure_wifi(ifname, WifiTransaction)` 只改变已发布 Wi-Fi 设备的 link policy。
+owner executor quiesce 所属 group、执行 STA connect/disconnect 或 open AP、原子
+rearm；随后唯一 protocol executor 提交 DHCP/static-address/DHCP-server 变化。该 API
+不能新增设备，也不能让调用者直接借用 SDIO/MMIO control handle。
 
 ### 6.3 运行期 IPv4 地址
 
@@ -324,13 +307,13 @@ pub const RAW_TX_BUF_LEN: usize = 64 * 1024;
 
 ### 7.2 设备队列
 
-设备队列常量控制共享 RX queue 和每设备 TX queue 能承受的突发长度，并决定背压出现的位置。RX Worker 在共享队列满时保留本地 batch 重试，而 TX 入队失败会记入 drop，因此两个容量即使数值相同也具有不同的丢包语义。
+硬件 RX/TX queue 与 queue/protocol SPSC 的容量来自 driver `QueueConfig`，不由
+`ax-net::consts` 重复定义。这样每个 poll group 的 DMA token 数、descriptor 深度与
+跨 CPU ring 容量保持一致。
 
 ```rust
 pub const STANDARD_MTU: usize = 1500;
 pub const SOCKET_BUFFER_SIZE: usize = 64;
-pub const DEVICE_RX_QUEUE_SIZE: usize = 256;
-pub const DEVICE_TX_QUEUE_SIZE: usize = 128;
 pub const ETHERNET_MAX_PENDING_PACKETS: usize = 128;
 pub const LISTEN_QUEUE_SIZE: usize = 512;
 ```
@@ -341,12 +324,12 @@ pub const LISTEN_QUEUE_SIZE: usize = 512;
 | --- | --- |
 | `STANDARD_MTU` | Router 和 Ethernet 默认 MTU |
 | `SOCKET_BUFFER_SIZE` | Router RX/TX smoltcp-facing packet buffer 槽位数 |
-| `DEVICE_RX_QUEUE_SIZE` | 所有真实设备共享的 device-to-Router RX queue 槽位数 |
-| `DEVICE_TX_QUEUE_SIZE` | 每设备 TX queue 槽位数 |
 | `ETHERNET_MAX_PENDING_PACKETS` | ARP resolution pending packet 上限 |
 | `LISTEN_QUEUE_SIZE` | TCP listen backlog clamp 上限 |
 
-Router RX/TX queue 中的 IP packet 使用 inline `[u8; STANDARD_MTU] + len`，不为每个 queued packet 分配 `Box<[u8]>`。Ethernet ARP pending queue 保存二层帧，单槽容量为 `STANDARD_MTU + 14`；因此估算 pending 内存时不能只按 1500 B 计算。
+protocol frame port 使用预分配 SPSC move `DmaBuffer`；ring full 时 token 保留在
+`pending_*`，不会产生额外无界 queue。Ethernet ARP pending queue 保存二层帧，单槽
+容量为 `STANDARD_MTU + 14`；因此估算 pending 内存时不能只按 1500 B 计算。
 更完整的拷贝边界、队列满行为和内存预算见[内存与队列](memory.md)。
 
 ### 7.3 Unix 流缓冲区
@@ -395,7 +378,7 @@ const TCP_INFO_DEFAULT_REORDERING: u32 = 3;
 
 ### 8.3 控制协议参数
 
-DHCP、DNS 与 ARP 参数决定控制协议的超时、重试和缓存上限，会同时影响启动等待、运行期恢复及内存占用。下表列出的常量属于行为契约，调整时应结合 `Service::poll()` 的定时推进和设备 Worker 的兜底唤醒验证。
+DHCP、DNS 与 ARP 参数决定控制协议的超时、重试和缓存上限，会同时影响启动等待、运行期恢复及内存占用。下表列出的常量属于行为契约，调整时应结合唯一 protocol executor 的 deadline 驱动和 generation 完成语义验证；queue executor 不提供任何周期兜底。
 
 | 常量 | 值 | 含义 |
 | --- | --- | --- |

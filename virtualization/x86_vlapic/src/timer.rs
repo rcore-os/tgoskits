@@ -233,7 +233,7 @@ impl<H: X86VlapicHostOps> ApicTimer<H> {
         } else {
             interval_ns
         };
-        let deadline_ns = current_ns + interval_ns;
+        let deadline_ns = current_ns.saturating_add(interval_ns);
         let (vm_id, vcpu_id) = self.where_am_i;
 
         self.shared
@@ -359,6 +359,7 @@ mod tests {
         allow_injection: false,
     });
     static TEST_TIMER_EVENT: Condvar = Condvar::new();
+    static TEST_TIMER_SERIAL: Mutex<()> = Mutex::new(());
 
     struct TimerHost;
 
@@ -643,6 +644,7 @@ mod tests {
 
     #[test]
     fn periodic_timer_reuses_one_host_registration_until_stopped() {
+        let _serial = TEST_TIMER_SERIAL.lock().unwrap();
         TimerHost::reset();
         let mut timer = ApicTimer::<TimerHost>::new(1, 0);
         timer.write_lvt(0x20040).unwrap();
@@ -657,6 +659,7 @@ mod tests {
 
     #[test]
     fn stopping_timer_waits_for_a_claimed_callback() {
+        let _serial = TEST_TIMER_SERIAL.lock().unwrap();
         TimerHost::reset();
         TimerHost::block_injection();
         let timer = Arc::new(Mutex::new(ApicTimer::<TimerHost>::new(1, 0)));

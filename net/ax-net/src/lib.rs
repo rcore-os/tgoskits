@@ -13,30 +13,32 @@
 //! `Device`. This keeps socket ownership, port tables, listen queues, and
 //! routing decisions centralized instead of duplicating socket state per NIC.
 //!
-//! # Polling Model
+//! # Execution Model
 //!
-//! Protocol progress is driven by the dedicated net-poll worker. Socket methods
-//! request progress with `request_poll()` and then rely on poll/waker readiness;
-//! they must not synchronously drive the whole protocol stack from application
-//! hot paths. This preserves the single-owner smoltcp model and avoids lock
-//! re-entry between socket operations and interface polling.
+//! A unique CPU-pinned protocol executor owns every smoltcp poll. Socket methods
+//! publish generations with `request_poll()` and then rely on poll/waker
+//! readiness; they never synchronously become a second protocol owner. Separate
+//! CPU-pinned queue executors own hard-IRQ continuation, DMA reclaim/refill, and
+//! bounded queue polling. Preallocated SPSC rings transfer move-only frame tokens
+//! between those two ownership domains.
 //!
 //! # Main Modules
 //!
-//! - `service`: owns the smoltcp interface, net-poll flow, and control plane.
-//! - `router`: aggregates devices, route lookup, loopback, and packet queues.
+//! - `service`: owns the smoltcp interface and control plane.
+//! - `poll_runtime`: owns generation-based protocol scheduling.
+//! - `queue_runtime`: owns IRQ affinity domains and queue executors.
+//! - `router`: aggregates protocol ports, route lookup, and loopback.
 //! - `socket`, `tcp`, `udp`, `raw`: POSIX-like IP socket surface.
 //! - `listen_table`, `orphan`, `wrapper`: side tables around smoltcp sockets.
 //! - `unix` and `vsock`: local transports outside the smoltcp IP path.
 
 #![no_std]
-// Link the ax-std host capability provider into unit-test binaries.
-#[cfg(test)]
-use ax_std as _;
 
 #[macro_use]
 extern crate log;
 extern crate alloc;
+#[cfg(test)]
+extern crate ax_runtime as _;
 #[cfg(test)]
 extern crate std;
 
@@ -54,6 +56,7 @@ mod listen_table;
 pub mod options;
 mod orphan;
 mod poll_runtime;
+mod queue_runtime;
 /// Raw socket implementation.
 pub mod raw;
 mod router;
@@ -72,22 +75,19 @@ pub mod unix;
 pub mod vsock;
 mod wrapper;
 
-use alloc::{
-    borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, task::Wake, vec, vec::Vec,
-};
+use alloc::{borrow::ToOwned, boxed::Box, format, sync::Arc, task::Wake, vec, vec::Vec};
 use core::{
     net::{IpAddr, Ipv4Addr},
-    sync::atomic::{AtomicBool, Ordering},
-    task::Waker,
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     time::Duration,
 };
 
-use ax_lazyinit::{LazyInit, LazyLock, OnceLock};
-use ax_sync::{Mutex, MutexGuard};
-use ax_task::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, quiesce_irq_wait};
+use ax_lazyinit::{LazyLock, OnceLock};
+use ax_sync::Mutex;
 use axpoll::IoEvents;
 use axpoll_set::PollSet;
 pub use error::{NetError, NetResult};
+pub use rd_net::{WifiLinkPolicy, WifiOperation, WifiTransaction};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
     wire::{DnsQueryType, EthernetAddress, IpAddress, Ipv4Address, Ipv4Cidr},
@@ -99,7 +99,7 @@ use self::{
     addr::mask_from_prefix,
     device::{EthernetDevice, LoopbackDevice},
     listen_table::ListenTable,
-    poll_runtime::PollRuntime,
+    poll_runtime::ProtocolPollRuntime,
     router::{RouteTable, Router, Rule, SharedRouteTable},
     service::{NetControl, NetInterface, Service},
     wrapper::SocketSetWrapper,
@@ -109,11 +109,11 @@ pub use self::{
         DeviceBinding, InterfaceConfig, InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind,
         InterfaceMatcher, Ipv4InterfaceConfig, NetworkConfig, RouteInfo, StaticIpConfig,
     },
-    device::{
-        ArpEntry, EthernetDeviceList, EthernetDriver, EthernetIrqAction, EthernetIrqOutcome,
-        EthernetIrqRegistrar, EthernetIrqRegistration, EthernetIrqRegistrationError,
-        NetDeviceError, NetDeviceResult, NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
-        set_ethernet_irq_registrar,
+    device::{ArpEntry, EthernetFramePort, EthernetFramePortList, NetDeviceError, NetDeviceResult},
+    queue_runtime::{
+        NetQueueStats, NetworkDeviceInput, NetworkQueueRuntime, NetworkRuntimeBuilder,
+        NetworkRuntimeError, PinnedNetIrqAction, PinnedNetIrqError, PinnedNetIrqOutcome,
+        PinnedNetIrqRegistrar, PinnedNetIrqRegistration, ResolvedNetIrqSource,
     },
     router::NetDevStats,
     socket::{
@@ -125,19 +125,23 @@ pub use self::{
 static LISTEN_TABLE: LazyLock<ListenTable> = LazyLock::new(ListenTable::new);
 static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::new);
 
-struct NetworkRuntime {
-    service: Mutex<Service>,
-    control: Arc<NetControl>,
-}
-
-static NETWORK_RUNTIME: LazyInit<NetworkRuntime> = LazyInit::new();
-static NET_POLL: PollRuntime = PollRuntime::new();
-static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
-    LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
+static SERVICE: OnceLock<Mutex<Service>> = OnceLock::new();
+static NET_CONTROL: OnceLock<Arc<NetControl>> = OnceLock::new();
+static QUEUE_RUNTIME: OnceLock<Mutex<NetworkQueueRuntime>> = OnceLock::new();
+static WIFI_INTERFACES: OnceLock<Vec<WifiInterfaceControl>> = OnceLock::new();
+static PROTOCOL_POLL: ProtocolPollRuntime = ProtocolPollRuntime::new();
+static PROTOCOL_AFFINITY_STATUS: AtomicU8 = AtomicU8::new(0);
 type DeferredPollEntry = (Arc<PollSet>, IoEvents);
 static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 static DEFERRED_POLL_WAKES: LazyLock<Mutex<Vec<DeferredPollEntry>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
+
+struct WifiInterfaceControl {
+    ifname: alloc::string::String,
+    device_index: usize,
+    mac: EthernetAddress,
+    handle: queue_runtime::WifiRuntimeHandle,
+}
 
 pub(crate) struct DeferPollWake {
     pub(crate) poll: Arc<PollSet>,
@@ -152,48 +156,83 @@ impl Wake for DeferPollWake {
     fn wake_by_ref(self: &Arc<Self>) {
         // smoltcp invokes socket wakers from the net poll task context after
         // updating readiness. The socket set may still be locked there, so
-        // defer the actual PollSet wake to the net worker outer loop.
+        // defer the actual PollSet wake to the protocol executor outer loop.
         defer_poll_wake(self.poll.clone(), self.ready);
     }
 }
 
-/// Registry of wireless control-plane handles, keyed by interface name.
-///
-/// Populated when a wireless device is registered (the runtime captures a
-/// [`rd_net::WifiControlHandle`] before the `Net` is consumed into the data-plane
-/// driver). Lets runtime mode switching (e.g. a StarryOS wireless-extensions
-/// `ioctl`) reach the device's [`WifiControl`] by name.
-static WIFI_CONTROLS: LazyLock<Mutex<Vec<(alloc::string::String, rd_net::WifiControlHandle)>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
-
-static NET_IRQ_EVENT: AtomicBool = AtomicBool::new(false);
-static NET_IRQ_WAIT: IrqWaitCell = IrqWaitCell::new();
-static NET_IRQ_REGISTRATION: OnceLock<IrqWaitRegistration> = OnceLock::new();
-#[cfg(all(axtest, feature = "axtest"))]
-static NET_POLL_WORKER_START_ATTEMPTS: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
-
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-fn net_poll_device_waker() -> &'static Waker {
-    &NET_POLL_DEVICE_WAKER
-}
-
-fn get_service() -> MutexGuard<'static, Service> {
-    NETWORK_RUNTIME
+fn get_service() -> ax_sync::MutexGuard<'static, Service> {
+    SERVICE
         .get()
-        .expect("Network runtime not initialized")
-        .service
+        .expect("Network service not initialized")
         .lock()
 }
 
 pub(crate) fn get_control() -> &'static NetControl {
-    NETWORK_RUNTIME
+    NET_CONTROL
         .get()
-        .expect("Network runtime not initialized")
-        .control
+        .expect("Network service not initialized")
         .as_ref()
+}
+
+fn map_driver_net_error(error: rd_net::NetError) -> NetError {
+    match error {
+        rd_net::NetError::NotSupported | rd_net::NetError::IrqUnavailable => {
+            NetError::OperationNotSupported
+        }
+        rd_net::NetError::Retry => NetError::ResourceBusy,
+        rd_net::NetError::NoMemory => NetError::NoMemory,
+        rd_net::NetError::LinkDown => NetError::NoSuchDeviceOrAddress,
+        rd_net::NetError::InvalidParts => NetError::InvalidData,
+        rd_net::NetError::Stopped | rd_net::NetError::DmaShutdownUnconfirmed => NetError::BadState,
+        rd_net::NetError::Other(_) => NetError::BadState,
+    }
+}
+
+/// Atomically reconfigures one wireless interface through its fixed-CPU queue
+/// owner, then commits the matching protocol-side IP/DHCP role.
+///
+/// The calling task only submits a bounded command and waits for completion. It
+/// never gains access to the wireless control endpoint or SDIO/MMIO state.
+pub fn reconfigure_wifi(ifname: &str, transaction: WifiTransaction) -> NetResult {
+    let interface = WIFI_INTERFACES
+        .get()
+        .and_then(|interfaces| {
+            interfaces
+                .iter()
+                .find(|interface| interface.ifname == ifname)
+        })
+        .ok_or(NetError::NoSuchDevice)?;
+
+    interface
+        .handle
+        .submit(transaction.clone())
+        .map_err(map_driver_net_error)?;
+
+    let mut service = get_service();
+    match transaction.operation() {
+        WifiOperation::Connect { .. } => {
+            service.reconfigure_as_sta(interface.device_index, interface.mac);
+        }
+        WifiOperation::Disconnect => {
+            service.reconfigure_as_disconnected(interface.device_index);
+        }
+        WifiOperation::StartOpenAccessPoint { .. } => {
+            let policy = transaction.link_policy().ok_or(NetError::InvalidInput)?;
+            service.reconfigure_as_ap(
+                interface.device_index,
+                Ipv4Address::from(policy.ip),
+                policy.prefix_len,
+                policy.dhcp_server_client_ip.map(Ipv4Address::from),
+            );
+        }
+    }
+    drop(service);
+    request_poll();
+    Ok(())
 }
 
 /// Initializes the network subsystem by NIC devices.
@@ -201,8 +240,12 @@ pub(crate) fn get_control() -> &'static NetControl {
 /// # Panics
 ///
 /// Panics if called more than once, or if the configuration contains invalid values.
-pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
-    if NETWORK_RUNTIME.get().is_some() {
+pub fn init_network(
+    queue_runtime: Option<NetworkQueueRuntime>,
+    mut frame_ports: EthernetFramePortList,
+    config: NetworkConfig,
+) {
+    if SERVICE.get().is_some() {
         panic!("init_network() called more than once");
     }
 
@@ -217,15 +260,17 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
 
     let lo_ip = register_loopback(&mut router, &mut interfaces);
 
-    if net_devs.is_empty() {
+    if frame_ports.is_empty() {
         warn!("  No network device found!");
     }
 
     let mut used_configs = vec![false; config.interfaces.len()];
     let mut dhcp_ifaces = Vec::new();
     let mut eth_ips = Vec::new();
+    let mut wifi_dhcp_servers = Vec::new();
+    let mut wifi_interfaces = Vec::new();
 
-    for (order, dev) in net_devs.drain(..).enumerate() {
+    for (order, dev) in frame_ports.drain(..).enumerate() {
         info!("  use NIC {}: {:?}", order, dev.device_name());
         let default_name = format!("eth{}", order);
         let mac = EthernetAddress(dev.mac_address());
@@ -243,14 +288,39 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
         }
         let id = InterfaceId::new((order as u32) + 2);
         let metric = cfg.map_or(100, |cfg| cfg.metric);
+        let wifi_policy = queue_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.initial_wifi_policy(order));
         let static_ip = cfg.and_then(|cfg| cfg.static_ip.as_ref());
-        let ipv4 =
-            static_ip.map(|cfg| Ipv4Cidr::new(Ipv4Address::from(cfg.ip.octets()), cfg.prefix_len));
+        let ipv4 = static_ip
+            .map(|cfg| Ipv4Cidr::new(Ipv4Address::from(cfg.ip.octets()), cfg.prefix_len))
+            .or_else(|| {
+                (cfg.is_none())
+                    .then_some(wifi_policy)
+                    .flatten()
+                    .map(|policy| Ipv4Cidr::new(Ipv4Address::from(policy.ip), policy.prefix_len))
+            });
         let gateway = static_ip.and_then(|cfg| {
             (!cfg.gateway.is_unspecified()).then(|| Ipv4Address::from(cfg.gateway.octets()))
         });
-        let dhcp_enabled = cfg.is_none_or(|cfg| cfg.dhcp);
+        let dhcp_enabled = cfg.map_or(wifi_policy.is_none(), |cfg| cfg.dhcp);
         let eth_dev = router.add_device(id, Box::new(EthernetDevice::new(name.clone(), dev, ipv4)));
+
+        if let Some(handle) = queue_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.wifi_handle(order))
+        {
+            info!(
+                "  Wi-Fi control for {name} is owned by CPU {}",
+                handle.owner_cpu()
+            );
+            wifi_interfaces.push(WifiInterfaceControl {
+                ifname: name.clone(),
+                device_index: order,
+                mac,
+                handle,
+            });
+        }
 
         info!("{name}:");
         info!("  id:   {}", id.get());
@@ -274,6 +344,17 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
             info!("  mode: dhcp");
         } else {
             info!("  mode: none");
+        }
+        if cfg.is_none()
+            && let Some(policy) = wifi_policy
+            && let Some(client_ip) = policy.dhcp_server_client_ip
+        {
+            wifi_dhcp_servers.push((
+                order,
+                Ipv4Address::from(policy.ip),
+                Ipv4Address::from(client_ip),
+                mask_from_prefix(policy.prefix_len),
+            ));
         }
         if let Some(cfg) = cfg {
             dns.extend(
@@ -322,39 +403,24 @@ pub fn init_network(mut net_devs: EthernetDeviceList, config: NetworkConfig) {
     for (id, dev, name, mac, metric) in dhcp_ifaces {
         service.enable_dhcp(id, dev, name, mac, metric);
     }
+    for (dev, server_ip, client_ip, subnet_mask) in wifi_dhcp_servers {
+        service.enable_dhcp_server(dev, server_ip, client_ip, subnet_mask);
+    }
     let dhcp_enabled = service.dhcp_enabled();
-    publish_and_start_service(service, control);
+    let protocol_owner_cpu = queue_runtime.as_ref().map_or_else(
+        ax_hal::percpu::this_cpu_id,
+        NetworkQueueRuntime::protocol_owner_cpu,
+    );
+    NET_CONTROL.call_once(|| control);
+    SERVICE.call_once(|| Mutex::new(service));
+    WIFI_INTERFACES.call_once(|| wifi_interfaces);
+    if let Some(runtime) = queue_runtime {
+        QUEUE_RUNTIME.call_once(|| Mutex::new(runtime));
+    }
+    start_protocol_executor(protocol_owner_cpu);
     if dhcp_enabled {
         wait_for_dhcp_bootstrap();
     }
-}
-
-fn publish_and_start_service(service: Service, control: Arc<NetControl>) {
-    let workers = service.prepare_device_workers();
-    workers.register_device_waker(net_poll_device_waker());
-    if NETWORK_RUNTIME
-        .call_once(|| NetworkRuntime {
-            service: Mutex::new(service),
-            control,
-        })
-        .is_none()
-    {
-        panic!("init_network() called more than once");
-    }
-    workers.start();
-    start_net_poll_worker();
-}
-
-fn start_net_poll_worker() {
-    #[cfg(all(axtest, feature = "axtest"))]
-    NET_POLL_WORKER_START_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-    spawn_permanent_worker("net-poll".to_owned(), net_poll_worker)
-        .unwrap_or_else(|error| panic!("failed to start net poll worker: {error}"));
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-fn net_poll_worker_start_attempts() -> usize {
-    NET_POLL_WORKER_START_ATTEMPTS.load(Ordering::Relaxed)
 }
 
 fn validate_config(config: &NetworkConfig) {
@@ -390,15 +456,6 @@ fn validate_config(config: &NetworkConfig) {
             panic!("Invalid DNS server at index {}: unspecified address", i);
         }
     }
-}
-
-pub(crate) fn spawn_permanent_worker<F>(name: String, entry: F) -> Result<(), ax_task::TaskError>
-where
-    F: FnOnce() + Send + 'static,
-{
-    let handle = ax_task::ThreadBuilder::new(name).spawn(entry)?;
-    handle.detach_permanent();
-    Ok(())
 }
 
 fn register_loopback(router: &mut Router, interfaces: &mut Vec<NetInterface>) -> Ipv4Cidr {
@@ -501,15 +558,7 @@ pub fn init_vsock(mut vsock_devs: device::VsockDeviceList) {
 
 fn poll_protocol_until_idle() {
     loop {
-        let outcome = {
-            let mut service = get_service();
-            let mut sockets = SOCKET_SET.inner.lock();
-            service.poll(&mut sockets)
-        };
-        for waker in outcome.expired_wakers {
-            waker.wake();
-        }
-        if !outcome.progressed {
+        if !get_service().poll(&mut SOCKET_SET.inner.lock()) {
             return;
         }
     }
@@ -519,32 +568,35 @@ fn poll_protocol_until_idle() {
 ///
 /// This is the lightweight entry used by socket and device paths.
 pub fn request_poll() {
-    let _generation = NET_POLL.request();
+    let _ = PROTOCOL_POLL.request();
 }
 
-/// Waits until the permanent worker has dispatched queued egress.
+/// Waits for the unique protocol executor to dispatch all work published by
+/// this caller.
 ///
-/// A socket that is closed in the same breath as its last send would otherwise
-/// discard the datagram still queued in its smoltcp TX buffer. The caller never
-/// takes poll ownership: it publishes a generation and sleeps until the single
-/// net worker completes it. Must not be called by the net worker or while
-/// holding `SERVICE` or `SOCKET_SET.inner`.
+/// [`request_poll`] only wakes the protocol executor; the actual dispatch happens
+/// later. A socket that is closed in the same breath as its last send would
+/// otherwise be torn down before the executor runs, discarding the datagram still
+/// queued in its TX buffer. Draining egress here mirrors Linux, where a sent
+/// datagram already sits in the peer's receive buffer and `close()` cannot
+/// unsend it. Must not be called while holding `SOCKET_SET.inner`.
 pub(crate) fn flush_egress() {
-    let generation = NET_POLL.request();
+    let generation = PROTOCOL_POLL.request();
     #[cfg(test)]
-    if NET_IRQ_REGISTRATION.get().is_none() {
-        poll_protocol_until_idle();
-        NET_POLL.complete(NET_POLL.requested_generation());
-        let _more_work = NET_POLL.finish_cycle(|| false);
-        return;
+    {
+        // Host unit tests install protocol state without starting an ArceOS
+        // scheduler.  Completing the generation exercises the wait contract
+        // without letting the caller execute smoltcp as a second owner.
+        PROTOCOL_POLL.complete(generation);
     }
-    NET_POLL.wait_for_completion(generation);
+    #[cfg(not(test))]
+    PROTOCOL_POLL.wait_for_completion(generation);
 }
 
 pub(crate) fn defer_poll_wake(poll: Arc<PollSet>, ready: IoEvents) {
     DEFERRED_POLL_WAKES.lock().push((poll, ready));
     if !DEFERRED_POLL_WAKE_PENDING.swap(true, Ordering::AcqRel) {
-        NET_POLL.schedule_worker();
+        PROTOCOL_POLL.schedule();
     }
 }
 
@@ -621,248 +673,68 @@ pub fn default_routes() -> Vec<RouteInfo> {
     get_control().default_routes()
 }
 
-/// Runtime configuration for a statically addressed Ethernet device.
-///
-/// This is used by drivers that appear after the normal device-probe phase,
-/// for example Wi-Fi AP mode devices.
-pub struct NetConfig {
-    /// Name assigned to the dynamically registered interface.
-    pub name: String,
-    /// Static IPv4 address.
-    pub ip: [u8; 4],
-    /// CIDR prefix length.
-    pub prefix_len: u8,
-    /// If set, enables the built-in one-client DHCP server with this client IP.
-    pub dhcp_server_client_ip: Option<[u8; 4]>,
-    /// Whether this device is woken through the out-of-band poll task.
-    pub dedicated_poll: bool,
-}
-
-/// Registers an extra Ethernet device with a static IPv4 address.
-///
-/// If `dedicated_poll` is set, RX readiness is driven by [`wake_net_task_irq`]
-/// instead of the shared Ethernet IRQ framework.
-pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig) {
-    let mac = EthernetAddress(dev.mac_address());
-    let server_ip = Ipv4Address::from(config.ip);
-    let cidr = Ipv4Cidr::new(server_ip, config.prefix_len);
-    // A dedicated-poll device gets RX out-of-band (via `wake_net_task_irq` and the
-    // shared net poll task), so its socket wakers must be armed even though it
-    // has no ethernet IRQ registration.
-    let eth_dev = if config.dedicated_poll {
-        EthernetDevice::new_oob_rx(config.name.clone(), dev, Some(cidr))
-    } else {
-        EthernetDevice::new(config.name.clone(), dev, Some(cidr))
-    };
-    let workers = {
-        let mut service = get_service();
-        let dev_idx = service.register_static_device(config.name.clone(), eth_dev, mac, cidr);
-        if let Some(client_ip) = config.dhcp_server_client_ip {
-            let client_ip = Ipv4Address::from(client_ip);
-            let subnet_mask = mask_from_prefix(config.prefix_len);
-            service.enable_dhcp_server(dev_idx, server_ip, client_ip, subnet_mask);
-        }
-        service.prepare_device_workers_for(dev_idx)
-    };
-    workers.register_device_waker(net_poll_device_waker());
-    workers.start();
-
-    info!("{}: up, mac {mac}, ip {cidr}", config.name);
-    request_poll();
-}
-
-/// Registers a wireless control-plane handle under an interface name.
-///
-/// Called by the runtime when adapting a wireless net device, *before* the
-/// `Net` is consumed into the data-plane driver, so the control plane stays
-/// reachable by name for runtime mode switching.
-pub fn register_wifi_control(name: &str, handle: rd_net::WifiControlHandle) {
-    let mut controls = WIFI_CONTROLS.lock();
-    if let Some(entry) = controls.iter_mut().find(|(n, _)| n == name) {
-        entry.1 = handle;
-    } else {
-        controls.push((name.into(), handle));
-    }
-}
-
-/// Target role for a runtime Wi-Fi mode switch.
-pub enum WifiMode<'a> {
-    /// Station: associate to `ssid`/`password`, then use DHCP for addressing.
-    Station { ssid: &'a str, password: &'a str },
-    /// Open SoftAP on `channel`, static `ip`/`prefix_len`, optionally running a
-    /// single-client DHCP server handing out `dhcp_client_ip`.
-    AccessPoint {
-        ssid: &'a [u8],
-        channel: u8,
-        ip: [u8; 4],
-        prefix_len: u8,
-        dhcp_client_ip: Option<[u8; 4]>,
-    },
-}
-
-/// Atomically switches a wireless interface between STA and SoftAP at runtime.
-///
-/// This is the single entry point the OS layer (e.g. a StarryOS wireless-
-/// extensions `SIOCSIWCOMMIT` handler) calls after staging the desired config.
-/// It performs the whole transition in order:
-///
-/// 1. Drive the link-layer switch through the device's `WifiControl` (the chip
-///    driver tears down the old VIF and brings up the new one).
-/// 2. Reconfigure this interface's IPv4 / DHCP role in the protocol stack
-///    (STA → DHCP client, AP → static IP + optional DHCP server).
-///
-/// Both halves run from the caller's task context, never from the RX poll
-/// task, so the blocking firmware command path cannot deadlock the stack.
-///
-/// Returns [`NetError::NoSuchDevice`] if `name` has no registered wireless
-/// control plane, or [`NetError::Unsupported`] if the link-layer switch fails.
-pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> NetResult<()> {
-    // 1. Link-layer switch through the device control plane, plus the device's
-    //    (possibly new) MAC. The registry lock is released before touching the
-    //    stack service to avoid holding two locks across the blocking path.
-    let mac = {
-        let handle = {
-            let controls = WIFI_CONTROLS.lock();
-            controls
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, handle)| handle.clone())
-                .ok_or(NetError::NoSuchDevice)?
-        };
-        let ctrl = handle.wifi_control().ok_or(NetError::NoSuchDevice)?;
-        match &mode {
-            WifiMode::Station { ssid, password } => ctrl
-                .connect(ssid, password)
-                .map_err(|_| NetError::Unsupported)?,
-            WifiMode::AccessPoint { ssid, channel, .. } => ctrl
-                .start_ap_open(ssid, *channel)
-                .map_err(|_| NetError::Unsupported)?,
-        }
-        EthernetAddress(handle.mac_address())
-    };
-
-    // 2. Reconfigure the stack's IPv4 / DHCP role for this interface.
-    {
-        let mut service = get_service();
-        let dev = service.device_index(name).ok_or(NetError::NoSuchDevice)?;
-        match mode {
-            WifiMode::Station { .. } => service.reconfigure_as_sta(dev, mac),
-            WifiMode::AccessPoint {
-                ip,
-                prefix_len,
-                dhcp_client_ip,
-                ..
-            } => {
-                let server_ip = Ipv4Address::from(ip);
-                let client_ip = dhcp_client_ip.map(Ipv4Address::from);
-                service.reconfigure_as_ap(dev, server_ip, prefix_len, client_ip);
-            }
-        }
-    }
-
-    // Kick a poll so the new addressing takes effect immediately.
-    request_poll();
-    info!("{name}: wifi mode switch complete");
-    Ok(())
-}
-
-/// Wakes the net poll task from a hard IRQ callback.
-///
-/// The IRQ path must only publish small pending state and call this wrapper.
-/// The deferred net task requests polling and wakes socket waiters from ordinary
-/// task context.
-pub fn wake_net_task_irq() {
-    NET_IRQ_EVENT.store(true, Ordering::Release);
-    let _result = NET_IRQ_WAIT.notify();
-}
-
-fn next_poll_delay() -> Duration {
-    const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+fn next_poll_delay() -> Option<Duration> {
     let next = {
         let mut service = get_service();
         let sockets = SOCKET_SET.inner.lock();
         service.next_poll_at(&sockets)
     };
-    let Some(next) = next else {
-        return IDLE_POLL_INTERVAL;
-    };
+    let next = next?;
     let now_micros = ax_hal::time::monotonic_time_nanos() / 1_000;
     let next_micros = next.total_micros().max(0) as u64;
     if next_micros <= now_micros {
-        Duration::ZERO
+        Some(Duration::ZERO)
     } else {
-        Duration::from_micros(next_micros - now_micros)
+        Some(Duration::from_micros(next_micros - now_micros))
     }
 }
 
-struct NetPollWake;
-
-impl Wake for NetPollWake {
-    fn wake(self: Arc<Self>) {
-        request_poll();
+fn start_protocol_executor(owner_cpu: usize) {
+    PROTOCOL_AFFINITY_STATUS.store(0, Ordering::Release);
+    let mut affinity = ax_task::CpuSet::empty(ax_hal::cpu_num());
+    assert!(
+        affinity.insert(ax_task::CpuId::new(owner_cpu as u32)),
+        "network protocol owner CPU {owner_cpu} is outside the runtime topology"
+    );
+    let worker = ax_task::ThreadBuilder::new("net-protocol".to_owned())
+        .affinity(affinity)
+        .spawn(move || {
+            if ax_hal::percpu::this_cpu_id() != owner_cpu {
+                PROTOCOL_AFFINITY_STATUS.store(2, Ordering::Release);
+                return;
+            }
+            PROTOCOL_AFFINITY_STATUS.store(1, Ordering::Release);
+            PROTOCOL_POLL.schedule();
+            protocol_executor_main();
+        })
+        .unwrap_or_else(|error| panic!("failed to spawn network protocol executor: {error}"));
+    worker.detach_permanent();
+    while PROTOCOL_AFFINITY_STATUS.load(Ordering::Acquire) == 0 {
+        yield_network_thread();
     }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        request_poll();
-    }
+    assert_eq!(
+        PROTOCOL_AFFINITY_STATUS.load(Ordering::Acquire),
+        1,
+        "failed to pin the unique network protocol executor to CPU {owner_cpu}"
+    );
 }
 
-fn net_poll_worker() {
-    initialize_net_irq_registration();
+fn protocol_executor_main() {
     loop {
-        let registration = NET_IRQ_WAIT.register(net_irq_registration());
-        let delay = next_poll_delay();
-        let timed_out = match registration {
-            IrqRegisterResult::ConsumedPending => false,
-            IrqRegisterResult::Registered(token)
-            | IrqRegisterResult::NotificationInFlight(token) => {
-                let timed_out = NET_POLL.wait_timeout_until(delay, || {
-                    !token.is_attached()
-                        || NET_IRQ_EVENT.load(Ordering::Acquire)
-                        || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
-                });
-                quiesce_irq_wait(token)
-                    .unwrap_or_else(|error| panic!("net IRQ waiter could not quiesce: {error}"));
-                timed_out
-            }
-            IrqRegisterResult::Occupied => {
-                panic!("net IRQ waiter was registered concurrently")
-            }
-        };
-        let irq_pending = NET_IRQ_EVENT.swap(false, Ordering::AcqRel);
-        if device_poll_fallback_due(timed_out, irq_pending, delay) {
-            get_service().wake_all_devices();
+        if let Some(delay) = next_poll_delay() {
+            let _ = PROTOCOL_POLL.wait_timeout(delay);
+        } else {
+            PROTOCOL_POLL.wait();
         }
         drain_deferred_poll_wakes();
-        let completed_generation = NET_POLL.requested_generation();
+        let completed = PROTOCOL_POLL.requested_generation();
         poll_protocol_until_idle();
-        NET_POLL.complete(completed_generation);
+        PROTOCOL_POLL.complete(completed);
         drain_deferred_poll_wakes();
-        if NET_POLL.finish_cycle(|| {
-            NET_IRQ_EVENT.load(Ordering::Acquire)
-                || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
-        }) {
+        if PROTOCOL_POLL.finish_cycle(|| DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)) {
             continue;
         }
     }
-}
-
-fn initialize_net_irq_registration() {
-    NET_IRQ_REGISTRATION.call_once(|| {
-        let thread = ax_task::current_thread_handle()
-            .unwrap_or_else(|error| panic!("net poll worker has no scheduler thread: {error}"));
-        IrqWaitRegistration::new(thread.wake_handle())
-    });
-}
-
-fn net_irq_registration() -> &'static IrqWaitRegistration {
-    NET_IRQ_REGISTRATION
-        .get()
-        .expect("net IRQ registration must be initialized by its worker")
-}
-
-fn device_poll_fallback_due(timed_out: bool, irq_pending: bool, delay: Duration) -> bool {
-    irq_pending || (timed_out && delay > Duration::ZERO)
 }
 
 /// Returns the list of configured DNS servers.
@@ -948,12 +820,17 @@ impl DnsSocketGuard {
                     if ax_hal::time::monotonic_time_nanos() >= deadline {
                         return Err(NetError::TimedOut);
                     }
-                    let _result = ax_task::yield_current_cpu();
+                    yield_network_thread();
                 }
                 Err(err) => return Err(err),
             }
         }
     }
+}
+
+pub(crate) fn yield_network_thread() {
+    let _decision = ax_task::yield_current_cpu()
+        .unwrap_or_else(|error| panic!("network executor could not yield: {error}"));
 }
 
 impl Drop for DnsSocketGuard {
@@ -973,170 +850,40 @@ fn wait_for_dhcp_bootstrap() {
     warn!("DHCP bootstrap timed out");
 }
 
-#[cfg(all(axtest, feature = "axtest"))]
-mod initialization_contract_tests {
-    fn current_preemption_depth() -> u32 {
-        let restore_irqs = ax_hal::asm::irqs_enabled();
-        ax_hal::asm::disable_irqs();
-        // SAFETY: raw local-IRQ exclusion prevents migration for the complete
-        // non-escaping CPU-local observation.
-        let snapshot = unsafe { ax_hal::percpu::with_cpu_pin(ax_hal::percpu::preemption_snapshot) }
-            .expect("network axtest must run after CPU-local initialization")
-            .expect("current execution context must own a preemption word");
-        if restore_irqs {
-            ax_hal::asm::enable_irqs();
-        }
-        snapshot.depth()
-    }
-
-    fn protocol_service_lock_keeps_scheduler_ticks_enabled_while_held() {
-        let _network = crate::network_test_support::network_test_guard();
-        crate::network_test_support::init_split_route_network();
-        let depth_before = current_preemption_depth();
-
-        let service = super::get_service();
-
-        assert_eq!(
-            current_preemption_depth(),
-            depth_before,
-            "the task-context protocol core must remain preemptible while its sleep mutex is held"
-        );
-        drop(service);
-    }
-
-    fn split_route_tests_reuse_existing_network_runtime() {
-        let _network = crate::network_test_support::network_test_guard();
-        crate::network_test_support::init_split_route_network();
-
-        assert_eq!(
-            super::net_poll_worker_start_attempts(),
-            1,
-            "test topology initialization must not start a second global net-poll worker"
-        );
-    }
-
-    pub(super) fn run_all() {
-        protocol_service_lock_keeps_scheduler_ticks_enabled_while_held();
-        split_route_tests_reuse_existing_network_runtime();
-    }
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-mod network_test_support {
-    use alloc::string::String;
-
-    use ax_lazyinit::OnceLock;
-    use ax_sync::{Mutex, MutexGuard};
-    use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
-
-    use crate::{config::InterfaceId, get_service, net_poll_device_waker, request_poll};
-
-    pub(crate) const LOCAL_ADDR: Ipv4Address = Ipv4Address::new(192, 0, 2, 10);
-    pub(crate) const PEER_ADDR: Ipv4Address = Ipv4Address::new(198, 51, 100, 20);
-
-    static NETWORK_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    pub(crate) struct SplitRouteNetwork {
-        pub(crate) local_if: InterfaceId,
-        pub(crate) peer_if: InterfaceId,
-    }
-
-    pub(crate) fn network_test_guard() -> MutexGuard<'static, ()> {
-        NETWORK_TEST_LOCK.lock()
-    }
-
-    pub(crate) fn init_split_route_network() -> &'static SplitRouteNetwork {
-        static INIT: OnceLock<SplitRouteNetwork> = OnceLock::new();
-
-        INIT.call_once(|| {
-            if crate::NETWORK_RUNTIME.get().is_none() {
-                crate::init_network(
-                    crate::EthernetDeviceList::new(),
-                    crate::NetworkConfig::default(),
-                );
-            }
-            let local_cidr = Ipv4Cidr::new(LOCAL_ADDR, 24);
-            let peer_cidr = Ipv4Cidr::new(PEER_ADDR, 24);
-            let (local_if, local_workers, peer_if, peer_workers) = {
-                let mut service = get_service();
-                let (local_if, local_workers) =
-                    service.register_test_loopback(String::from("axtest-local"), local_cidr);
-                let (peer_if, peer_workers) =
-                    service.register_test_loopback(String::from("axtest-peer"), peer_cidr);
-                (local_if, local_workers, peer_if, peer_workers)
-            };
-
-            local_workers.register_device_waker(net_poll_device_waker());
-            local_workers.start();
-            peer_workers.register_device_waker(net_poll_device_waker());
-            peer_workers.start();
-            request_poll();
-
-            SplitRouteNetwork { local_if, peer_if }
-        })
-    }
-}
-
-/// Target-runtime contract entry points used by the Cargo axtest integration target.
-#[cfg(all(axtest, feature = "axtest"))]
-#[doc(hidden)]
-pub mod axtest_support {
-    /// Checks that network initialization preserves the task-context lock contract.
-    pub fn run_initialization_contracts() {
-        super::initialization_contract_tests::run_all();
-    }
-
-    /// Checks UDP bind ownership against the target lock/runtime implementation.
-    pub fn run_udp_bind_contracts() {
-        super::wrapper::run_axtest_contracts();
-    }
-
-    /// Checks UDP route selection against the initialized target network runtime.
-    pub fn run_udp_route_contracts() {
-        super::udp::run_axtest_contracts();
-    }
-
-    /// Checks TCP option, route, and port ownership contracts on the target runtime.
-    pub fn run_tcp_contracts() {
-        super::tcp::run_axtest_contracts();
-    }
-
-    /// Checks router frame accounting while using the target synchronization provider.
-    pub fn run_router_accounting_contracts() {
-        super::router::run_axtest_contracts();
-    }
-
-    /// Checks vsock connection ownership on the target synchronization provider.
-    #[cfg(feature = "vsock")]
-    pub fn run_vsock_connection_contracts() {
-        super::vsock::connection_manager::run_axtest_contracts();
-    }
-
-    /// Checks vsock device-gate and worker-budget ordering on the target runtime.
-    #[cfg(feature = "vsock")]
-    pub fn run_vsock_poll_contracts() {
-        super::device::run_vsock_axtest_contracts();
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use core::time::Duration;
-
-    use super::device_poll_fallback_due;
-
     #[test]
-    fn poll_timeout_wakes_devices_as_polling_fallback() {
-        assert!(device_poll_fallback_due(
-            true,
-            false,
-            Duration::from_millis(100)
-        ));
+    fn idle_queue_executor_never_uses_a_periodic_fallback() {
+        for source in [
+            include_str!("queue_runtime/mod.rs"),
+            include_str!("queue_runtime/executor.rs"),
+        ] {
+            assert!(!source.contains("wait_timeout"));
+            assert!(!source.contains("IDLE_POLL_INTERVAL"));
+        }
     }
 
     #[test]
-    fn immediate_socket_poll_does_not_force_device_fallback() {
-        assert!(!device_poll_fallback_due(true, false, Duration::ZERO));
-        assert!(device_poll_fallback_due(false, true, Duration::ZERO));
+    fn only_protocol_executor_may_acquire_poll_ownership() {
+        let source = include_str!("lib.rs");
+        let production = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("production section must precede tests");
+        assert!(!production.contains("PollOwnership::Required"));
+        assert!(production.contains("PROTOCOL_POLL.wait_for_completion"));
+    }
+
+    #[test]
+    fn network_irq_registrar_uses_the_poll_owner_cpu() {
+        let source = include_str!("../../../os/arceos/modules/axruntime/src/irq.rs");
+        let registrar = source
+            .split("impl ax_net::PinnedNetIrqRegistrar for RuntimeNetIrqRegistrar")
+            .nth(1)
+            .expect("network IRQ registrar implementation must exist");
+
+        assert!(registrar.contains("owner_cpu"));
+        assert!(registrar.contains("IrqAffinity::Fixed"));
+        assert!(!registrar.contains("IrqAffinity::Any"));
     }
 }

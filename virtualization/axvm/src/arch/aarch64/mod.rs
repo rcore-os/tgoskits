@@ -280,7 +280,7 @@ impl ArchOps for Aarch64Arch {
             }
         }
 
-        crate::vm::wait_for_vcpu_event_if_idle(
+        crate::vm::wait_for_vcpu_event_if_idle_with(
             runtime,
             &wait_snapshot,
             || vm.running(),

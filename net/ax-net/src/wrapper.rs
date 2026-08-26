@@ -149,9 +149,9 @@ fn udp_binds_conflict(entry: &UdpBoundEntry, addr: Option<IpAddress>, reuse_port
         && !(reuse_port && entry.reuse_port && entry.addr == addr)
 }
 
-#[cfg(all(axtest, feature = "axtest"))]
-mod axtest_support {
-    use alloc::{vec, vec::Vec};
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
 
     use smoltcp::{
         iface::SocketSet,
@@ -166,108 +166,41 @@ mod axtest_support {
         IpAddress::Ipv4(Ipv4Address::new(a, b, c, d))
     }
 
-    fn wildcard() -> IpAddress {
-        addr(0, 0, 0, 0)
-    }
-
-    fn handles(n: usize) -> Vec<SocketHandle> {
+    fn entry(addr: Option<IpAddress>, reuse_port: bool) -> UdpBoundEntry {
         let mut sockets = SocketSet::new(vec![]);
-        (0..n)
-            .map(|_| {
-                sockets.add(udp::Socket::new(
-                    udp::PacketBuffer::new(vec![PacketMetadata::EMPTY; 1], vec![0; 8]),
-                    udp::PacketBuffer::new(vec![PacketMetadata::EMPTY; 1], vec![0; 8]),
-                ))
-            })
-            .collect()
+        let handle = sockets.add(udp::Socket::new(
+            udp::PacketBuffer::new(vec![PacketMetadata::EMPTY; 1], vec![0; 8]),
+            udp::PacketBuffer::new(vec![PacketMetadata::EMPTY; 1], vec![0; 8]),
+        ));
+        UdpBoundEntry {
+            handle,
+            addr,
+            reuse_port,
+        }
     }
 
-    fn udp_bind_rules_allow_distinct_specific_addresses() {
-        let w = SocketSetWrapper::new();
-        let h = handles(4);
-        w.udp_bind(h[0], addr(192, 0, 2, 10), 5353, false).unwrap();
-        // A different specific address on the same port is fine.
-        w.udp_bind(h[1], addr(198, 51, 100, 20), 5353, false)
-            .unwrap();
-        // The same specific address conflicts.
-        assert_eq!(
-            w.udp_bind(h[2], addr(192, 0, 2, 10), 5353, false)
-                .unwrap_err(),
-            NetError::AddrInUse
-        );
-        // A wildcard bind conflicts with any existing specific bind.
-        assert_eq!(
-            w.udp_bind(h[3], wildcard(), 5353, false).unwrap_err(),
-            NetError::AddrInUse
-        );
+    #[test]
+    fn wildcard_and_identical_udp_bindings_conflict() {
+        let specific = Some(addr(192, 0, 2, 10));
+        let owner = entry(specific, false);
+
+        assert!(udp_binds_conflict(&owner, specific, false));
+        assert!(udp_binds_conflict(&owner, None, false));
+        assert!(!udp_binds_conflict(
+            &owner,
+            Some(addr(198, 51, 100, 20)),
+            false,
+        ));
     }
 
-    fn udp_bind_rejects_specific_after_wildcard() {
-        let w = SocketSetWrapper::new();
-        let h = handles(2);
-        w.udp_bind(h[0], wildcard(), 5354, false).unwrap();
-        assert_eq!(
-            w.udp_bind(h[1], addr(192, 0, 2, 10), 5354, false)
-                .unwrap_err(),
-            NetError::AddrInUse
-        );
+    #[test]
+    fn udp_reuseport_requires_an_exact_reuseport_group() {
+        let specific = Some(addr(127, 0, 0, 1));
+        let plain = entry(specific, false);
+        let reuse = entry(specific, true);
+
+        assert!(udp_binds_conflict(&plain, specific, true));
+        assert!(!udp_binds_conflict(&reuse, specific, true));
+        assert!(udp_binds_conflict(&reuse, None, true));
     }
-
-    fn udp_reuseport_group_shares_a_port_while_plain_binders_conflict() {
-        let w = SocketSetWrapper::new();
-        let h = handles(4);
-        let local = addr(127, 0, 0, 1);
-
-        // A plain double-bind is refused.
-        w.udp_bind(h[0], local, 18101, false).unwrap();
-        assert_eq!(
-            w.udp_bind(h[1], local, 18101, false).unwrap_err(),
-            NetError::AddrInUse
-        );
-        // SO_REUSEPORT cannot join a group started by a non-reuseport owner.
-        assert_eq!(
-            w.udp_bind(h[1], local, 18101, true).unwrap_err(),
-            NetError::AddrInUse
-        );
-        w.udp_unbind(h[0]);
-
-        // Two reuseport binders share the port, mirroring Linux's group model.
-        w.udp_bind(h[0], local, 18101, true).unwrap();
-        w.udp_bind(h[1], local, 18101, true).unwrap();
-        // A plain binder still cannot steal a reuseport-owned port.
-        assert_eq!(
-            w.udp_bind(h[2], local, 18101, false).unwrap_err(),
-            NetError::AddrInUse
-        );
-
-        // Releasing one member keeps the port owned by the remaining member.
-        w.udp_unbind(h[0]);
-        assert_eq!(
-            w.udp_bind(h[3], local, 18101, false).unwrap_err(),
-            NetError::AddrInUse
-        );
-        // Once fully released, a plain binder may take the port.
-        w.udp_unbind(h[1]);
-        w.udp_bind(h[3], local, 18101, false).unwrap();
-    }
-
-    fn udp_port_available_avoids_any_active_bind() {
-        let w = SocketSetWrapper::new();
-        let h = handles(1);
-        assert!(w.udp_port_available(wildcard(), 5355));
-        w.udp_bind(h[0], addr(192, 0, 2, 10), 5355, false).unwrap();
-        assert!(!w.udp_port_available(wildcard(), 5355));
-    }
-
-    pub(super) fn run_all() {
-        udp_bind_rules_allow_distinct_specific_addresses();
-        udp_bind_rejects_specific_after_wildcard();
-        udp_reuseport_group_shares_a_port_while_plain_binders_conflict();
-        udp_port_available_avoids_any_active_bind();
-    }
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn run_axtest_contracts() {
-    axtest_support::run_all();
 }

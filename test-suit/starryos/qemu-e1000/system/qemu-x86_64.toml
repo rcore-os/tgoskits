@@ -1,0 +1,30 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "Haswell,+avx",
+    "-m",
+    "512M",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,serial=e1000-napi,drive=nvm,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device",
+    "e1000,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = true
+to_bin = true
+shell_prefix = "root@starry:"
+test_commands = ["exec /usr/bin/starry-run-system-tests"]
+success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
+timeout = 600
+
+[host_http_server]
+bind = "127.0.0.1"
+port = 18383
+body_size = 4194304
+body_byte = 69

@@ -185,10 +185,7 @@ impl ArchOps for Riscv64Arch {
     ) -> AxVmResult<VcpuRunAction> {
         match work {
             RiscvDeferredRunWork::ExternalInterrupt { vector } => {
-                vcpu.with_current_cpu_set(|| {
-                    crate::host::arceos::dispatch_host_irq(vector);
-                    vcpu.get_arch_vcpu().latch_hvip_from_hw();
-                });
+                finish_external_interrupt(vcpu, vector);
             }
         }
         Ok(VcpuRunAction {
@@ -202,6 +199,13 @@ impl ArchOps for Riscv64Arch {
     fn on_last_vcpu_exit(vm: &crate::AxVMRef) -> AxVmResult {
         Self::exit_runtime(vm)
     }
+}
+
+fn finish_external_interrupt(vcpu: &crate::vm::AxVCpuRef<AxvmRiscvVcpu>, vector: usize) {
+    vcpu.with_current_cpu_set(|| {
+        crate::host::arceos::dispatch_host_irq(vector);
+        vcpu.get_arch_vcpu().latch_hvip_from_hw();
+    });
 }
 
 fn vplic_runtime(vm: &crate::AxVM) -> AxVmResult<Arc<irq::RiscvPlicRuntime>> {

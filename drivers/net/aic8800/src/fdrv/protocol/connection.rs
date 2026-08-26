@@ -1,14 +1,11 @@
 //! WiFi 连接/断连命令和 indication 等待
 
 use alloc::{sync::Arc, vec, vec::Vec};
-use core::task::Poll;
-
-use axpoll::{IoEvents, PollRegistrar, SharedObserver};
 
 use crate::{
     fdrv::{
         consts::ETH_P_PAE,
-        core::bus::{BusState, WifiBus},
+        core::bus::WifiBus,
         protocol::{cmd::send_cmd, lmac_msg::*},
     },
     runtime::runtime,
@@ -16,30 +13,34 @@ use crate::{
 
 // ===== Indication 等待 =====
 
-fn log_indication_timeout(bus: &WifiBus, target_msg_id: u16) {
-    let queue = bus.tx.ind_queue.lock();
-    log::error!(
-        "[wait_ind] TIMEOUT waiting for msg_id=0x{:04x}, ind_queue has {} messages:",
-        target_msg_id,
-        queue.len()
-    );
-    for (i, msg_data) in queue.iter().enumerate() {
-        if msg_data.len() >= LmacMsg::SIZE {
-            let msg = LmacMsg::from_le_bytes(msg_data);
-            log::error!(
-                "[wait_ind]   [{}] msg_id=0x{:04x}, param_len={}",
-                i,
-                msg.id,
-                msg.param_len
-            );
-        } else {
-            log::error!(
-                "[wait_ind]   [{}] raw_len={} (too short)",
-                i,
-                msg_data.len()
-            );
+fn check_timeout_and_log_queue(bus: &WifiBus, target_msg_id: u16, deadline: u64) -> bool {
+    if crate::runtime::runtime().now_nanos() >= deadline {
+        let queue = bus.tx.ind_queue.lock();
+        log::error!(
+            "[wait_ind] TIMEOUT waiting for msg_id=0x{:04x}, ind_queue has {} messages:",
+            target_msg_id,
+            queue.len()
+        );
+        for (i, msg_data) in queue.iter().enumerate() {
+            if msg_data.len() >= LmacMsg::SIZE {
+                let msg = LmacMsg::from_le_bytes(msg_data);
+                log::error!(
+                    "[wait_ind]   [{}] msg_id=0x{:04x}, param_len={}",
+                    i,
+                    msg.id,
+                    msg.param_len
+                );
+            } else {
+                log::error!(
+                    "[wait_ind]   [{}] raw_len={} (too short)",
+                    i,
+                    msg_data.len()
+                );
+            }
         }
+        return true;
     }
+    false
 }
 
 fn extract_message_param(raw: &[u8]) -> Vec<u8> {
@@ -125,37 +126,19 @@ pub fn wait_for_indication(
     abort_msg_ids: &[u16],
     timeout_ms: u64,
 ) -> Result<Vec<u8>, CmdError> {
-    let mut out: Option<Result<Vec<u8>, CmdError>> = None;
-    let mut registration = None::<PollRegistrar<SharedObserver>>;
-    let result = runtime().block_until(Some(timeout_ms), &mut |cx| {
-        if let Some(registration) = registration.as_mut() {
-            registration.reset(cx.waker());
-        }
-        if *bus.state.lock() == BusState::Down {
-            out = Some(Err(CmdError::BusDown));
-            return Poll::Ready(());
-        }
-        if let Some(result) = try_find_message_in_queue(bus, target_msg_id, abort_msg_ids) {
-            out = Some(result);
-            return Poll::Ready(());
-        }
+    let deadline = runtime().now_nanos() + timeout_ms * 1_000_000;
 
-        let registration = registration.get_or_insert_with(|| PollRegistrar::new(cx.waker()));
-        // SAFETY: block_until invokes this closure only in task context.
-        unsafe { registration.register(&bus.tx.ind_pollset, IoEvents::IN) };
+    loop {
+        if check_timeout_and_log_queue(bus, target_msg_id, deadline) {
+            return Err(CmdError::Timeout);
+        }
 
         if let Some(result) = try_find_message_in_queue(bus, target_msg_id, abort_msg_ids) {
-            registration.clear();
-            out = Some(result);
-            return Poll::Ready(());
+            return result;
         }
-
-        Poll::Pending
-    });
-    if result.is_err() {
-        log_indication_timeout(bus, target_msg_id);
+        let _ = crate::fdrv::thread::progress_io(bus);
+        runtime().yield_now();
     }
-    out.unwrap_or(Err(CmdError::Timeout))
 }
 
 // ===== 连接/断连命令 =====

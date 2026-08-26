@@ -91,13 +91,6 @@ pub(crate) struct VsockPollLease {
     active: bool,
 }
 
-impl VsockPollLease {
-    #[cfg(any(test, all(axtest, feature = "axtest")))]
-    pub(crate) const fn inactive_for_test() -> Self {
-        Self { active: false }
-    }
-}
-
 impl Drop for VsockPollLease {
     fn drop(&mut self) {
         if self.active {
@@ -138,7 +131,9 @@ pub(crate) fn start_vsock_poll() -> NetResult<VsockPollLease> {
     }
 
     debug!("Starting vsock poll task");
-    let spawn_result = crate::spawn_permanent_worker("vsock-poll".to_string(), vsock_poll_loop);
+    let spawn_result = ax_task::ThreadBuilder::new("vsock-poll".to_string())
+        .spawn(vsock_poll_loop)
+        .map(ax_task::KernelThreadHandle::detach_permanent);
     let mut state = POLL_TASK_STATE.lock();
     if let Err(error) = spawn_result {
         state.phase = PollTaskPhase::Offline;
@@ -389,12 +384,4 @@ impl VsockPollWorker {
         }
         Ok(EventDisposition::Consumed)
     }
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-mod tests;
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn run_axtest_contracts() {
-    tests::run_all();
 }

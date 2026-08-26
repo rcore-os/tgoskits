@@ -37,14 +37,28 @@ use axdevice_base::*;
 use axvm_types::*;
 
 use crate::{
-    arch::current::ArchNestedPageTable, architecture::ArchOps, boot::*, config::*, host::paging::*,
-    irq::model::*, layout::*, lifecycle::*, runtime::*, sync::MutexExt, vcpu::*, *,
+    arch::current::ArchNestedPageTable,
+    architecture::ArchOps,
+    boot::*,
+    config::*,
+    host::{HostTimer, paging::*},
+    irq::model::*,
+    layout::*,
+    lifecycle::*,
+    runtime::*,
+    sync::MutexExt,
+    vcpu::*,
+    *,
 };
 
 pub(crate) mod boot;
 pub(crate) mod memory;
 pub(crate) mod prepare;
+#[cfg(any(test, target_arch = "aarch64"))]
+mod timer_wait;
 pub use memory::PreparedMemoryLayout;
+#[cfg(target_arch = "aarch64")]
+pub(crate) use timer_wait::{VcpuTimerWaitGeneration, VcpuTimerWaitToken};
 
 const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
@@ -159,7 +173,7 @@ unsafe impl Sync for AxVMResources {}
 
 /// Runtime-only resources owned by Running/Paused/Stopping lifecycle states.
 pub(crate) struct VmRuntimeHandle {
-    wait_queue: crate::WaitQueue,
+    wait_queue: Arc<crate::WaitQueue>,
     notification_generation: AtomicUsize,
     vcpu_threads: IrqSafeMutex<VcpuThreadRegistry>,
     cpu_on_start_acks: StdMutex<BTreeMap<usize, Arc<crate::runtime::vcpus::CpuOnStartAck>>>,
@@ -226,8 +240,24 @@ pub(crate) fn wait_for_vcpu_event_if_idle(
     has_pending_interrupt: impl Fn() -> bool,
     wait_until: impl FnOnce(&dyn Fn() -> bool),
 ) {
+    wait_for_vcpu_event_if_idle_with(
+        runtime,
+        wait_snapshot,
+        vm_running,
+        has_pending_interrupt,
+        wait_until,
+    );
+}
+
+pub(crate) fn wait_for_vcpu_event_if_idle_with(
+    runtime: &VmRuntimeHandle,
+    wait_snapshot: &VcpuEventWaitSnapshot,
+    vm_running: impl Fn() -> bool,
+    additional_ready: impl Fn() -> bool,
+    wait_until: impl FnOnce(&dyn Fn() -> bool),
+) {
     let wake_condition =
-        || !vm_running() || has_pending_interrupt() || wait_snapshot.has_pending_event(runtime);
+        || !vm_running() || wait_snapshot.has_pending_event(runtime) || additional_ready();
     if wake_condition() {
         return;
     }
@@ -293,7 +323,7 @@ fn wait_for_running_vm_quiesce(
 impl VmRuntimeHandle {
     pub(crate) fn new() -> Self {
         Self {
-            wait_queue: crate::WaitQueue::new(),
+            wait_queue: Arc::new(crate::WaitQueue::new()),
             notification_generation: AtomicUsize::new(0),
             vcpu_threads: IrqSafeMutex::new(VcpuThreadRegistry::default()),
             cpu_on_start_acks: StdMutex::new(BTreeMap::new()),
@@ -468,6 +498,13 @@ impl VmRuntimeHandle {
     ///
     /// The dispatcher releases its queue lock before this method notifies
     /// waiters or invokes the host IPI boundary.
+    #[cfg_attr(
+        not(any(target_arch = "riscv64", target_arch = "x86_64")),
+        expect(
+            dead_code,
+            reason = "currently consumed by the RISC-V IPI router and x86 PIT"
+        )
+    )]
     pub(crate) fn dispatch_vcpu_interrupt(
         &self,
         vcpu_id: usize,
@@ -1173,14 +1210,15 @@ impl TimerAccessPort for AxVmDeviceAccessPorts {
         trace!(
             "VM[{vm_id}] device {device_id:?} scheduled access-scoped timer at {deadline_ns:#x} ns"
         );
-        crate::host::task::register_kernel_timer(
-            crate::host::task::MonotonicDeadline::from_duration(Duration::from_nanos(deadline_ns)),
-            Box::new(move |_| crate::runtime::vcpus::notify_all_vcpus(vm_id)),
-        )
-        .map_err(|error| axdevice::DeviceManagerError::InvalidState {
-            operation: "schedule timer from device access",
-            detail: format!("kernel timer registration failed: {error}"),
-        })?;
+        crate::host::default_host()
+            .register_timer(
+                Duration::from_nanos(deadline_ns),
+                Box::new(move |_| crate::runtime::vcpus::notify_all_vcpus(vm_id)),
+            )
+            .map_err(|error| axdevice::DeviceManagerError::InvalidState {
+                operation: "schedule access-scoped device timer",
+                detail: format!("{error}"),
+            })?;
         Ok(())
     }
 }
@@ -2661,6 +2699,62 @@ mod tests {
         runtime.notify_one();
 
         assert_ne!(runtime.notification_generation(), observed);
+    }
+
+    #[test]
+    fn vcpu_wake_before_park_is_observed_by_the_wait_generation() {
+        let runtime = VmRuntimeHandle::new();
+        let snapshot = runtime.vcpu_event_wait_snapshot();
+        let entered_wait = AtomicBool::new(false);
+
+        runtime.notify_all();
+        wait_for_vcpu_event_if_idle(
+            &runtime,
+            &snapshot,
+            || true,
+            || false,
+            |_| {
+                entered_wait.store(true, Ordering::Relaxed);
+            },
+        );
+
+        assert!(!entered_wait.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn timer_completion_before_park_is_observed_by_the_waiter() {
+        let runtime = VmRuntimeHandle::new();
+        let snapshot = runtime.vcpu_event_wait_snapshot();
+        let completed = AtomicBool::new(true);
+        let entered_wait = AtomicBool::new(false);
+
+        wait_for_vcpu_event_if_idle_with(
+            &runtime,
+            &snapshot,
+            || true,
+            || completed.load(Ordering::Acquire),
+            |_| entered_wait.store(true, Ordering::Relaxed),
+        );
+
+        assert!(!entered_wait.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn timer_completion_at_the_park_boundary_is_rechecked() {
+        let runtime = VmRuntimeHandle::new();
+        let snapshot = runtime.vcpu_event_wait_snapshot();
+        let completed = AtomicBool::new(false);
+
+        wait_for_vcpu_event_if_idle_with(
+            &runtime,
+            &snapshot,
+            || true,
+            || completed.load(Ordering::Acquire),
+            |condition| {
+                completed.store(true, Ordering::Release);
+                assert!(condition());
+            },
+        );
     }
 
     #[test]

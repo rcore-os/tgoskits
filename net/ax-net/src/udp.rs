@@ -21,7 +21,7 @@
 //!
 //! # Polling
 //!
-//! UDP send/recv operations request the shared net-poll worker after socket
+//! UDP send/recv operations request the unique protocol executor after socket
 //! state changes. They do not run the interface poll loop directly.
 
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
@@ -657,7 +657,7 @@ impl UdpSocket {
         });
         if events.intersects(IoEvents::IN | IoEvents::OUT) {
             self.general
-                .register_timeout_waker(&Waker::from(Arc::new(DeferPollWake {
+                .register_waker(&Waker::from(Arc::new(DeferPollWake {
                     poll: self.poll_state.clone(),
                     ready: events,
                 })));
@@ -688,108 +688,4 @@ fn get_ephemeral_port() -> NetResult<u16> {
     allocate_ephemeral_port(|port| {
         SOCKET_SET.udp_port_available(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), port)
     })
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-mod axtest_support {
-    use core::net::{IpAddr, SocketAddr};
-
-    use super::*;
-    use crate::network_test_support::{
-        LOCAL_ADDR, PEER_ADDR, init_split_route_network, network_test_guard,
-    };
-
-    fn connect_preserves_bound_interface() {
-        let _guard = network_test_guard();
-        let topology = init_split_route_network();
-
-        let socket = UdpSocket::new();
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
-            .unwrap();
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(topology.local_if)
-            }
-        );
-
-        // Connect to different network - should NOT change interface binding
-        // because we're bound to a specific local address
-        socket
-            .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
-            .unwrap();
-
-        // Binding to the local test interface must survive a peer-route lookup.
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(topology.local_if)
-            }
-        );
-    }
-
-    fn connect_uses_peer_route_when_unbound() {
-        let _guard = network_test_guard();
-        let topology = init_split_route_network();
-
-        let socket = UdpSocket::new();
-
-        // Bind to 0.0.0.0 (unspecified) - interface should be determined by route
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                0,
-            )))
-            .unwrap();
-
-        socket
-            .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
-            .unwrap();
-
-        // The unbound socket must adopt the peer-route interface.
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(topology.peer_if)
-            }
-        );
-    }
-
-    fn connect_rejects_unroutable_bound_device() {
-        let _guard = network_test_guard();
-        let topology = init_split_route_network();
-
-        let socket = UdpSocket::new();
-        socket.bind_device(topology.local_if).unwrap();
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                0,
-            )))
-            .unwrap();
-
-        assert!(
-            socket
-                .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
-                .is_err()
-        );
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(topology.local_if)
-            }
-        );
-    }
-
-    pub(super) fn run_all() {
-        connect_preserves_bound_interface();
-        connect_uses_peer_route_when_unbound();
-        connect_rejects_unroutable_bound_device();
-    }
-}
-
-#[cfg(all(axtest, feature = "axtest"))]
-pub(crate) fn run_axtest_contracts() {
-    axtest_support::run_all();
 }

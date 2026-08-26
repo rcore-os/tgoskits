@@ -171,7 +171,6 @@ name = "aic8800"
 version = "0.2.8"
 dependencies = [
  "aes",
- "atomic-waker",
  "ax-sync",
  "axpoll",
  "axpoll-set",
@@ -182,7 +181,6 @@ dependencies = [
  "pbkdf2",
  "rd-net",
  "rdif-eth",
- "sdhci-cv1800",
  "sdio-host-cv1800",
  "sha1 0.10.7",
  "sha2 0.10.9",
@@ -1040,12 +1038,11 @@ dependencies = [
  "ax-hal",
  "ax-io",
  "ax-lazyinit",
- "ax-std",
+ "ax-runtime",
  "ax-sync",
  "ax-task",
  "axpoll",
  "axpoll-set",
- "axtest",
  "bitflags 2.13.1",
  "cfg-if",
  "enum_dispatch",
@@ -2212,9 +2209,9 @@ dependencies = [
 
 [[package]]
 name = "combine"
-version = "4.6.7"
+version = "4.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
+checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
 dependencies = [
  "bytes",
  "memchr",
@@ -4949,6 +4946,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "loongarch-intc-driver"
+version = "0.1.0"
+dependencies = [
+ "loongArch64",
+ "mmio-api",
+ "rdif-intc",
+ "thiserror 2.0.20",
+ "tock-registers 0.10.1",
+]
+
+[[package]]
 name = "loongarch_vcpu"
 version = "0.5.16"
 dependencies = [
@@ -6456,6 +6464,7 @@ dependencies = [
 name = "rd-net"
 version = "0.3.0"
 dependencies = [
+ "ax-sync",
  "dma-api",
  "futures",
  "rdif-eth",
@@ -6508,6 +6517,7 @@ dependencies = [
 name = "rdif-eth"
 version = "0.4.0"
 dependencies = [
+ "ax-sync",
  "dma-api",
  "rdif-base",
  "thiserror 2.0.20",
@@ -7813,6 +7823,7 @@ dependencies = [
  "kernutil",
  "log",
  "loongArch64",
+ "loongarch-intc-driver",
  "mmio-api",
  "page-table-generic",
  "rdif-intc",
