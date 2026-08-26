@@ -16,10 +16,7 @@ use std::io::prelude::*;
 use std::string::ToString;
 
 fn submit_shell_format(args: core::fmt::Arguments<'_>, newline: bool) {
-    let mut output = std::fmt::format(args);
-    if newline {
-        output.push('\n');
-    }
+    let output = axvisor::shell_support::format_output(args, newline);
     crate::guest_console::submit_host_bytes(output.as_bytes());
 }
 
