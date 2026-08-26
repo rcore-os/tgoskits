@@ -276,6 +276,46 @@ fn pit_ioapic_pending(interrupt: IoApicInterrupt) -> PendingVcpuInterrupt {
     }
 }
 
+pub(crate) fn publish_pic_interrupt_after_write(vm: &AxVM, vcpu_id: X86VcpuId) -> AxVmResult {
+    let devices = vm.get_devices()?;
+    let Ok(pic) = devices.services().require::<X86PicServiceKey>() else {
+        return Ok(());
+    };
+    let Some(claim) = pic.claim_pending_interrupt() else {
+        return Ok(());
+    };
+    dispatch_pic_claim(pic.as_ref(), claim, |vector| {
+        dispatch_x86_interrupt(vm, vcpu_id, vector, InterruptTriggerMode::EdgeTriggered)
+    })
+}
+
+fn dispatch_pic_claim<E>(
+    pic: &dyn X86PicDeviceOps,
+    claim: PicInterruptClaim,
+    dispatch: impl FnOnce(u8) -> Result<(), E>,
+) -> Result<(), E> {
+    let vector = claim.vector();
+    dispatch(vector).inspect_err(|_| pic.restore_interrupt(claim))
+}
+
+fn dispatch_x86_interrupt(
+    vm: &AxVM,
+    vcpu_id: X86VcpuId,
+    vector: u8,
+    trigger: InterruptTriggerMode,
+) -> AxVmResult {
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
+        return ax_err!(BadState, "VM does not accept virtual interrupts");
+    }
+    vm.runtime_handle()?.dispatch_vcpu_interrupt(
+        vcpu_id,
+        PendingVcpuInterrupt {
+            id: VirtualInterruptId(vector.into()),
+            trigger,
+        },
+    )
+}
+
 pub(crate) struct AxvmX86HostOps;
 
 impl X86VlapicHostOps for AxvmX86HostOps {
@@ -359,14 +399,13 @@ impl X86VlapicHostOps for AxvmX86HostOps {
     fn inject_pit_irq(vm_id: X86VmId, vcpu_id: X86VcpuId) -> X86VlapicResult {
         manager::with_vm(vm_id, |vm| {
             let devices = vm.get_devices().map_err(ax_error_to_vlapic)?;
-            if let Some(vector) = devices
-                .services()
-                .require::<X86PicServiceKey>()
-                .ok()
-                .and_then(|pic| pic.pulse_irq(0))
+            if let Ok(pic) = devices.services().require::<X86PicServiceKey>()
+                && let Some(claim) = pic.claim_irq(0)
             {
-                return manager::inject_interrupt(vm_id, vcpu_id, vector as usize)
-                    .map_err(ax_error_to_vlapic);
+                return dispatch_pic_claim(pic.as_ref(), claim, |vector| {
+                    manager::inject_interrupt(vm_id, vcpu_id, vector as usize)
+                        .map_err(ax_error_to_vlapic)
+                });
             }
 
             if let Some(interrupt) = devices

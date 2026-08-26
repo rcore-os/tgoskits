@@ -42,8 +42,14 @@ pub trait X86IoApicDeviceOps: Send + Sync {
 
 /// Type-specific legacy PIC capability used by the x86 timer path.
 pub trait X86PicDeviceOps: Send + Sync {
-    /// Latch one legacy IRQ edge and return a vector when it is deliverable.
-    fn pulse_irq(&self, irq: u8) -> Option<u8>;
+    /// Latch one legacy IRQ edge and claim it when it is deliverable.
+    fn claim_irq(&self, irq: u8) -> Option<PicInterruptClaim>;
+
+    /// Claim a request already latched by the legacy PIC.
+    fn claim_pending_interrupt(&self) -> Option<PicInterruptClaim>;
+
+    /// Restore a claim when the runtime cannot publish its vector.
+    fn restore_interrupt(&self, claim: PicInterruptClaim);
 }
 
 /// x86 interrupt-controller operations needed by the VM interrupt runtime.

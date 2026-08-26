@@ -34,6 +34,19 @@ dependencies:
 riscv_vcpu = "0.5"
 ```
 
+# Timer Ownership
+
+The `sstc` feature requires the host hart to implement the Sstc extension.
+Each vCPU load enables `henvcfg.STCE` and restores the vCPU-owned `vstimecmp`;
+each unload disables the guest compare and restores the exact host `henvcfg`.
+Guest deadlines never program the host supervisor clockevent. A host timer trap
+remains owned by the host IRQ/runtime path.
+
+Without `sstc`, guest timer programming returns `Unsupported`. A software timer
+backend must be supplied through a separate task/runtime service before that
+configuration can run timer-dependent guests; it must not borrow the host's
+physical scheduler clockevent.
+
 # Public API
 
 - `RiscvVcpu<H>` / `RiscvVCpu<H>` / `RISCVVCpu<H>`
