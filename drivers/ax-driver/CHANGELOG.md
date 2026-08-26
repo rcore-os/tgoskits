@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.3](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.13.2...ax-driver-v0.13.3) - 2026-08-26
+
+### Other
+
+- *(ax-net)* add queue-level NAPI runtime ([#2178](https://github.com/rcore-os/tgoskits/pull/2178))
+
 ## [0.13.2](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.13.1...ax-driver-v0.13.2) - 2026-08-25
 
 ### Fixed

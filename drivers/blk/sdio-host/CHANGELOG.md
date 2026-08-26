@@ -7,14 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.2](https://github.com/rcore-os/tgoskits/compare/sdhci-cv1800-v0.1.1...sdhci-cv1800-v0.1.2) - 2026-08-26
+## [0.1.1](https://github.com/rcore-os/tgoskits/compare/sdio-host-cv1800-v0.1.0...sdio-host-cv1800-v0.1.1) - 2026-08-26
 
 ### Other
 
 - *(ax-net)* add queue-level NAPI runtime ([#2178](https://github.com/rcore-os/tgoskits/pull/2178))
-
-## [0.1.1](https://github.com/rcore-os/tgoskits/compare/sdhci-cv1800-v0.1.0...sdhci-cv1800-v0.1.1) - 2026-06-22
-
-### Fixed
-
-- *(wifi)* D80 EAPOL TX + SDIO bus recovery, quiet per-frame logging ([#1276](https://github.com/rcore-os/tgoskits/pull/1276))

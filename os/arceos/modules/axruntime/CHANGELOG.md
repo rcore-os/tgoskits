@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.11.2...ax-runtime-v0.11.3) - 2026-08-26
+
+### Other
+
+- *(ax-net)* add queue-level NAPI runtime ([#2178](https://github.com/rcore-os/tgoskits/pull/2178))
+
 ## [0.11.2](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.11.1...ax-runtime-v0.11.2) - 2026-08-25
 
 ### Fixed

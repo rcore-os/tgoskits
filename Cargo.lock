@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "aic8800"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "aes",
  "ax-sync",
@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "ax-cpu"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-lazyinit",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "ahci-driver",
  "aic8800",
@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.12.9"
+version = "0.12.10"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -1131,7 +1131,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "aic8800",
  "ax-alloc",
@@ -1281,7 +1281,7 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "addr2line 0.26.1",
  "anyhow",
@@ -1556,7 +1556,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "ax-api",
@@ -2207,9 +2207,9 @@ dependencies = [
 
 [[package]]
 name = "combine"
-version = "4.6.7"
+version = "4.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
+checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
 dependencies = [
  "bytes",
  "memchr",
@@ -3259,7 +3259,7 @@ dependencies = [
 
 [[package]]
 name = "eth-intel"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dma-api",
  "log",
@@ -6419,7 +6419,7 @@ dependencies = [
 
 [[package]]
 name = "rd-net"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ax-sync",
  "dma-api",
@@ -6472,7 +6472,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-eth"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ax-sync",
  "dma-api",
@@ -6580,7 +6580,7 @@ dependencies = [
 
 [[package]]
 name = "rdrive"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "acpi",
  "ax-lazyinit",
@@ -6613,7 +6613,7 @@ dependencies = [
 
 [[package]]
 name = "realtek-rtl8125"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ax-sync",
  "dma-api",
@@ -7277,7 +7277,7 @@ dependencies = [
 
 [[package]]
 name = "sdhci-cv1800"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "log",
  "sdio-host-cv1800",
@@ -7298,7 +7298,7 @@ dependencies = [
 
 [[package]]
 name = "sdio-host-cv1800"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "sdio-host2"
@@ -7712,7 +7712,7 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -7755,7 +7755,7 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
@@ -7840,7 +7840,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "ax-alloc",
  "ax-cgroup",
