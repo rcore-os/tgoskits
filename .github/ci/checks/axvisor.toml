@@ -241,14 +241,15 @@ impact_targets = ["axvisor:x86_64"]
 name = "Board ASUS NUC15CRH · Linux guest"
 runner = "board"
 timeout_minutes = 45
+download_xtask_bin_artifact = true
 command = '''
 mkdir -p tmp
-cargo xtask image pull qemu-x86_64 --extract-dir tmp
-cargo xtask image pull initramfs-x86_64-busybox.cpio.gz --extract-dir tmp
+target/debug/tg-xtask image pull qemu-x86_64 --extract-dir tmp
+target/debug/tg-xtask image pull initramfs-x86_64-busybox.cpio.gz --extract-dir tmp
 gzip -dc \
   tmp/initramfs-x86_64-busybox.cpio.gz/initramfs-x86_64-busybox.cpio.gz \
   > tmp/initramfs-x86_64-busybox.cpio
-cargo xtask axvisor test board --board asus-nuc15crh-linux
+target/debug/tg-xtask axvisor test board --board asus-nuc15crh-linux
 '''
 
 [[check.suite]]
