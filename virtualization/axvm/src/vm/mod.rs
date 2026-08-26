@@ -62,9 +62,11 @@ pub(crate) mod prepare;
 mod reset_memory;
 #[cfg(any(test, target_arch = "aarch64"))]
 mod timer_wait;
-pub(crate) use event::{
-    VcpuEventChannel, wait_for_vcpu_event_if_idle, wait_for_vcpu_event_if_idle_with,
-};
+pub(crate) use event::VcpuEventChannel;
+#[cfg(test)]
+pub(crate) use event::wait_for_vcpu_event_if_idle;
+#[cfg(any(target_arch = "aarch64", target_arch = "loongarch64"))]
+pub(crate) use event::wait_for_vcpu_event_if_idle_with;
 pub use memory::PreparedMemoryLayout;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use timer_wait::{VcpuTimerWaitGeneration, VcpuTimerWaitToken};

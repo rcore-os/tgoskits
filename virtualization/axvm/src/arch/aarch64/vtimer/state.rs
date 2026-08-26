@@ -161,6 +161,7 @@ impl Aarch64TimerWaitState {
 /// interrupt conditions remain in `arm_vcpu`; pending/active/EOI state remains
 /// in the VGIC.
 pub(in crate::arch::aarch64) struct Aarch64TimerBinding {
+    #[cfg(feature = "rt-trace")]
     vm_id: usize,
     vgic: Arc<VgicCore>,
     backend: Arc<AxvmVgicBackend>,
@@ -186,7 +187,10 @@ impl Aarch64TimerBinding {
         host_virtual_timer_intid: u32,
         timer_config: ArmTimerVmConfig,
     ) -> VgicResult<Arc<Self>> {
+        #[cfg(not(feature = "rt-trace"))]
+        let _ = vm_id;
         let binding = Arc::new(Self {
+            #[cfg(feature = "rt-trace")]
             vm_id,
             vgic,
             backend: backend.clone(),

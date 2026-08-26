@@ -24,6 +24,7 @@ impl VcpuEventChannel {
         self.wait_queue.wait();
     }
 
+    #[cfg(target_arch = "loongarch64")]
     pub(crate) fn wait_until(&self, condition: impl Fn() -> bool) {
         self.wait_queue.wait_until(condition);
     }
@@ -35,6 +36,7 @@ impl VcpuEventChannel {
     }
 }
 
+#[cfg(any(test, target_arch = "aarch64", target_arch = "loongarch64"))]
 mod wait_race {
     use super::*;
 
@@ -58,6 +60,7 @@ mod wait_race {
     }
 
     /// Blocks only if the VM and target channel remained idle across setup.
+    #[cfg(test)]
     pub(crate) fn wait_for_vcpu_event_if_idle(
         channel: &VcpuEventChannel,
         wait_snapshot: &VcpuEventWaitSnapshot,
@@ -84,7 +87,10 @@ mod wait_race {
     }
 }
 
-pub(crate) use wait_race::{wait_for_vcpu_event_if_idle, wait_for_vcpu_event_if_idle_with};
+#[cfg(test)]
+pub(crate) use wait_race::wait_for_vcpu_event_if_idle;
+#[cfg(any(test, target_arch = "aarch64", target_arch = "loongarch64"))]
+pub(crate) use wait_race::wait_for_vcpu_event_if_idle_with;
 
 #[cfg(test)]
 mod tests {
