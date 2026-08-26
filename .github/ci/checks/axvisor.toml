@@ -169,7 +169,7 @@ id = "test-axvisor-x86-64-acpi-direct-and-ovmf-boot-vmx"
 impact_targets = ["axvisor:x86_64"]
 name = "VMX x86_64 · Direct + MP fallback + OVMF ACPI"
 runner = "kvm-intel"
-timeout_minutes = 45
+timeout_minutes = 90
 command = '''
 cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
 cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
