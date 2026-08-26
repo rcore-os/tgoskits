@@ -160,6 +160,7 @@ struct BatchingReadQueue {
     counters: Arc<BatchingQueueCounters>,
     next_id: usize,
     pending: Vec<(RequestId, Option<InFlightDma>)>,
+    fail_next_drain: bool,
 }
 
 impl DriverGeneric for BatchingReadQueue {
@@ -216,9 +217,14 @@ impl HardwareQueue for BatchingReadQueue {
     }
 
     fn drain_completions(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        let result = if core::mem::take(&mut self.fail_next_drain) {
+            Err(BlkError::Io)
+        } else {
+            Ok(())
+        };
         for (id, data) in self.pending.drain(..) {
             let data = data.map(|in_flight| unsafe { in_flight.complete_after_quiesce() });
-            sink.complete(CompletedRequest::new(id, Ok(()), data));
+            sink.complete(CompletedRequest::new(id, result, data));
         }
         Ok(())
     }

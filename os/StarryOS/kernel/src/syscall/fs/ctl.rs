@@ -901,18 +901,18 @@ where
     RootSync: FnOnce() -> StarryResult<()>,
     BlockSync: FnOnce() -> StarryResult<()>,
 {
-    let mut first_error = page_sync().err();
-    if let Err(error) = root_sync()
-        && first_error.is_none()
-    {
-        first_error = Some(error);
+    if let Err(error) = page_sync() {
+        warn!("sync(2) page-cache writeback failed: {error:?}");
     }
-    if let Err(error) = block_sync()
-        && first_error.is_none()
-    {
-        first_error = Some(error);
+    if let Err(error) = root_sync() {
+        warn!("sync(2) root-filesystem writeback failed: {error:?}");
     }
-    first_error.map_or(Ok(0), Err)
+    if let Err(error) = block_sync() {
+        warn!("sync(2) block-cache writeback failed: {error:?}");
+    }
+    // Linux sync(2) is a best-effort global operation and always reports
+    // success; writeback errors are observed through other durability APIs.
+    Ok(0)
 }
 
 pub fn sys_sync() -> StarryResult<isize> {
@@ -958,7 +958,6 @@ mod tests {
     use core::cell::Cell;
 
     use super::*;
-    use crate::Errno;
 
     #[test]
     fn ctl_ioctl_constants_hold() {
@@ -966,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_attempts_every_stage_and_returns_the_first_error() {
+    fn sync_attempts_every_stage_and_returns_success() {
         let page_called = Cell::new(false);
         let root_called = Cell::new(false);
         let block_called = Cell::new(false);
@@ -995,6 +994,6 @@ mod tests {
             block_called.get(),
             "global block-cache sync was skipped after an earlier error"
         );
-        assert_eq!(result.unwrap_err().linux_errno(), Errno::EIO);
+        assert!(matches!(result, Ok(0)));
     }
 }

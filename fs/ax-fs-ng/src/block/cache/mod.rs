@@ -13,7 +13,7 @@
 //! | `getblk` / `bread` | [`BlockAddressSpace`] folio lookup / [`BufferedBlockDevice`] buffered reads |
 //! | `mark_buffer_dirty` | deferred one-folio writes (data reaches the device only at writeback) |
 //! | `sync_dirty_buffers` | [`BlockAddressSpace::writeback_dirty`], submitting merged dirty runs |
-//! | `invalidate_bdev` | [`BufferedBlockDevice::invalidate_range`] |
+//! | `invalidate_bdev` | [`BlockAddressSpace::invalidate_range`] after an indeterminate direct-write failure |
 //! | partitions sharing one bdev cache | [`registry`], keyed by runtime-handle identity |
 //!
 //! [`registry`]: super::cache::registry

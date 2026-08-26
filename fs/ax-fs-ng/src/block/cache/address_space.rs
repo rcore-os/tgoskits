@@ -273,6 +273,23 @@ impl BlockAddressSpace {
         }
     }
 
+    /// Discards every cached folio overlapping a device-direct request.
+    ///
+    /// A failed write does not report its completed prefix, so none of the
+    /// overlapping cache bytes can remain authoritative. Whole folios are
+    /// discarded even when only some slots overlap; retaining neighboring
+    /// slots would require tracking an error-completion bitmap that the
+    /// current [`FsBlockDevice`] contract does not expose.
+    pub(crate) fn invalidate_range(&mut self, first: u64, count: u64) {
+        let Some(last) = count.checked_sub(1).and_then(|n| first.checked_add(n)) else {
+            return;
+        };
+        for frame in self.geometry.frame_of(first)..=self.geometry.frame_of(last) {
+            self.clear_dirty_frame(frame);
+            self.folios.remove(&frame);
+        }
+    }
+
     /// Writes back one dirty folio: merged dirty-slot runs become device
     /// writes; on success the slot state is clean again.
     fn writeback_folio<T: FsBlockDevice + ?Sized>(

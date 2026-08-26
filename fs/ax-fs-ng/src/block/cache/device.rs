@@ -213,9 +213,19 @@ impl<T: FsBlockDevice> FsBlockDevice for BufferedBlockDevice<T> {
         // Direct write: the device must absorb overlapping dirty slots
         // before the newer direct bytes land, then the folios are overlaid.
         state.writeback_dirty(&mut self.inner, Some((first, count)))?;
-        self.inner.write_block(block_id, buf)?;
-        state.apply_direct(first, count, buf, false);
-        Ok(())
+        match self.inner.write_block(block_id, buf) {
+            Ok(()) => {
+                state.apply_direct(first, count, buf, false);
+                Ok(())
+            }
+            Err(error) => {
+                // The device contract reports no completed prefix. Some
+                // blocks may already be durable, so every overlapping folio
+                // must be refetched before it can become authoritative again.
+                state.invalidate_range(first, count);
+                Err(error)
+            }
+        }
     }
 
     fn flush(&mut self) -> BlockResult<()> {

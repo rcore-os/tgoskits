@@ -49,6 +49,7 @@ struct RecordingState {
     storage: Vec<u8>,
     log: Vec<IoOp>,
     fail_writes: bool,
+    partially_commit_blocks: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -135,6 +136,7 @@ impl RecordingDevice {
             storage: vec![0u8; blocks * block_size],
             log: Vec::new(),
             fail_writes: false,
+            partially_commit_blocks: None,
         }));
         (
             Self {
@@ -180,6 +182,17 @@ impl FsBlockDevice for RecordingDevice {
     fn write_block(&mut self, block_id: u64, buf: &[u8]) -> BlockResult<()> {
         let mut state = self.state.lock().unwrap();
         if state.fail_writes {
+            return Err(BlockError::Io);
+        }
+        if let Some(blocks) = state.partially_commit_blocks.take() {
+            let blocks = blocks.min(buf.len() / self.block_size);
+            let bytes = blocks * self.block_size;
+            state.log.push(IoOp::Write {
+                lba: block_id,
+                blocks,
+            });
+            let start = block_id as usize * self.block_size;
+            state.storage[start..start + bytes].copy_from_slice(&buf[..bytes]);
             return Err(BlockError::Io);
         }
         state.log.push(IoOp::Write {
@@ -417,6 +430,41 @@ fn direct_write_overlays_cached_folio() {
     cached.read_block(0, &mut buf).unwrap();
     assert_eq!(count_ops(&state, IoOp::is_read), reads_before);
     assert!(buf.iter().all(|&b| b == 0x42));
+}
+
+#[test]
+fn failed_direct_write_invalidates_partially_updated_folios() {
+    let (device, state) = RecordingDevice::new(64, 512);
+    let mut cached = buffered(KEY_A + 26, device);
+
+    let mut block = [0u8; 512];
+    cached.read_block(0, &mut block).unwrap();
+    assert_eq!(block, [0u8; 512]);
+    cached.read_block(8, &mut block).unwrap();
+    assert_eq!(block, [0u8; 512]);
+    let reads_before_failure = count_ops(&state, IoOp::is_read);
+
+    // The device commits the first folio before reporting failure for this
+    // two-folio direct write. Its error gives the cache no exact completed
+    // prefix, so every overlapping folio must be treated as unknown.
+    state.lock().unwrap().partially_commit_blocks = Some(8);
+    let direct = [0x42u8; 16 * 512];
+    assert_eq!(cached.write_block(0, &direct), Err(BlockError::Io));
+    assert_eq!(
+        &state.lock().unwrap().storage[..8 * 512],
+        &direct[..8 * 512]
+    );
+
+    block.fill(0);
+    cached.read_block(0, &mut block).unwrap();
+    assert_eq!(block, [0x42u8; 512]);
+    cached.read_block(8, &mut block).unwrap();
+    assert_eq!(block, [0u8; 512]);
+    assert_eq!(
+        count_ops(&state, IoOp::is_read),
+        reads_before_failure + 2,
+        "an indeterminate failure must invalidate every overlapping folio"
+    );
 }
 
 #[test]
