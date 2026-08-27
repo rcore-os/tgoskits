@@ -68,10 +68,13 @@ __x86_ap_trampoline_start:
     orl $0x00000100, %eax
     wrmsr
 
-    # Clear EM/TS and enable protected mode, paging, MP, and native FP errors.
+    # Clear EM/TS and enable protected mode, paging, MP, native FP errors,
+    # and write protect (bit 16). Linux's real-mode trampoline loads
+    # CR0_STATE, which includes X86_CR0_WP; without WP a ring-0 user copy on
+    # this CPU silently writes through read-only COW PTEs.
     movl %cr0, %eax
     andl $0xfffffff3, %eax
-    orl $0x80000023, %eax
+    orl $0x80010023, %eax
     movl %eax, %cr0
 
     ljmpl *(__x86_ap_ljmp_ptr - __x86_ap_trampoline_start)

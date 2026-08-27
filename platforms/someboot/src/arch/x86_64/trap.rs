@@ -72,6 +72,10 @@ pub fn trap_addr() -> usize {
 pub fn init_local() {
     mask_legacy_pic();
     enable_nxe();
+    // Linux pins X86_CR0_WP per CPU. The AP trampoline enables it before
+    // entering long mode; this call is the every-CPU enforcement that also
+    // covers any other entry path.
+    super::paging::enable_write_protect();
     enable_xsave_features();
     init_tsc_freq();
 }
