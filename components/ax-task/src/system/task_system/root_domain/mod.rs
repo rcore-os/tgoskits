@@ -61,10 +61,19 @@ impl RootDomainFairNoHz {
     }
 
     fn publish_idle_target(&self, cpu: CpuId, idle: bool) {
-        self.idle_targets[cpu.as_usize()].store(idle, Ordering::SeqCst);
-        if !idle {
-            self.balance_kicks[cpu.as_usize()].store(false, Ordering::SeqCst);
+        // The owning scheduler is the sole writer of its own idle-target bit,
+        // so an unordered load filters unchanged publications. The store keeps
+        // the SeqCst NOHZ handshake: a racing Fair source must observe an
+        // idle-entry publication together with the armed one-shot pull.
+        if self.idle_targets[cpu.as_usize()].load(Ordering::Relaxed) == idle {
+            return;
         }
+        self.idle_targets[cpu.as_usize()].store(idle, Ordering::SeqCst);
+        // Linux consumes NOHZ_BALANCE_KICK only when the target services the
+        // balance pass (`nohz_idle_balance()`/`nohz_run_idle_balance()`).
+        // Withdrawing idle membership must not erase a pending kick: the
+        // source's physical notification was already spent, so clearing here
+        // would lose the balance pass until the next source transition.
     }
 
     fn is_idle_target(&self, cpu: CpuId) -> bool {
@@ -909,5 +918,25 @@ impl Deref for RootDomainGuard<'_> {
 
     fn deref(&self) -> &Self::Target {
         &self.state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn withdrawing_idle_membership_keeps_a_pending_balance_kick() {
+        let nohz = RootDomainFairNoHz::new(2);
+        let owner = CpuId::new(0);
+        nohz.publish_idle_target(owner, true);
+        assert!(nohz.request_balance_kick(owner));
+        // The owner leaves idle before servicing the kick. Linux consumes
+        // NOHZ_BALANCE_KICK only when the balance pass actually runs.
+        nohz.publish_idle_target(owner, false);
+        assert!(!nohz.is_idle_target(owner));
+        assert!(nohz.balance_kick_pending(owner));
+        assert!(nohz.take_balance_kick(owner));
+        assert!(!nohz.balance_kick_pending(owner));
     }
 }
