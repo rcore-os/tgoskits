@@ -443,7 +443,12 @@ fn truncate_notifies_discard_listeners_without_cached_file_locks() {
 fn shifted_range_retries_when_a_page_is_cached_after_the_initial_snapshot() {
     with_test_page_provider(true, |_| {
         let mut original = vec![0; PAGE_SIZE * 3];
-        for (index, page) in original.chunks_exact_mut(PAGE_SIZE).enumerate() {
+        for (index, page) in original
+            .as_chunks_mut::<PAGE_SIZE>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
             page.fill(index as u8 + 1);
         }
         let backing = Arc::new(CacheTestFile::new(original));
