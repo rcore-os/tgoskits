@@ -336,33 +336,31 @@ fn enable_no_execute() {
     }
 }
 
-/// Enables supervisor write protection on the current CPU.
-///
-/// Linux includes `X86_CR0_WP` in `CR0_STATE` for the BSP (`head_64.S`), the
-/// real-mode AP trampoline (`trampoline_64.S`), and pins it against later
-/// clears. Ring-0 user copies rely on it: with WP clear, a kernel write into
-/// a read-only (COW) user PTE silently lands on the shared frame. The AP
-/// trampoline enables WP before entering long mode; this function is the
-/// per-CPU enforcement layer that also covers any other entry path.
-pub(crate) fn enable_write_protect() {
-    // SAFETY: CR0 bit accesses only set the write-protect flag and leave every
-    // other bit unchanged; the read-back assert verifies the final state.
-    unsafe {
-        let cr0 = controlregs::cr0() | Cr0::CR0_WRITE_PROTECT;
-        controlregs::cr0_write(cr0);
-        assert!(
-            controlregs::cr0().contains(Cr0::CR0_WRITE_PROTECT),
-            "x86_64 CR0 write protect must stay enabled"
-        );
-    }
+/// Verifies the control-register contract installed by the current CPU's boot
+/// path before per-CPU facilities or the kernel runtime can use it.
+pub(crate) fn assert_kernel_cr0_state() {
+    // SAFETY: someboot invokes this in ring 0 while initializing the current
+    // CPU, before enabling interrupts or scheduling tasks on it.
+    let current = unsafe { controlregs::cr0() };
+    assert_eq!(
+        current.bits(),
+        super::KERNEL_CR0_STATE,
+        "invalid x86_64 kernel CR0 state on this CPU"
+    );
 }
 
 fn enable_page_features() {
-    enable_write_protect();
+    // Install a complete known state instead of inheriting firmware/reset
+    // bits. In particular, WP makes supervisor user-copy honor read-only COW
+    // PTEs, while clearing CD/NW keeps caches enabled on the BSP and APs.
     unsafe {
+        let cr0 = Cr0::from_bits_truncate(super::KERNEL_CR0_STATE);
+        controlregs::cr0_write(cr0);
+
         let cr4 = controlregs::cr4() | Cr4::CR4_ENABLE_GLOBAL_PAGES;
         controlregs::cr4_write(cr4);
     }
+    assert_kernel_cr0_state();
 }
 
 pub fn current_table() -> PageTableInfo {

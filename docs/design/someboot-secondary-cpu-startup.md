@@ -14,6 +14,7 @@
 - BSP 只能释放实际报告 `ALIVE` 的目标 CPU；
 - 四架构 hook 只发送 PSCI、SBI、mailbox 或 INIT/SIPI 请求；
 - secondary 在进入 OS runtime 前报告 `ALIVE`，并在 BSP 明确释放前等待；
+- x86 BSP 和 AP 在进入 kernel runtime 前装载同一完整 `CR0_STATE`，其中 `WP=1`，且不继承 reset-time `CD/NW`；
 - someboot 的公共接口只执行 `start/status/release`，不在启动请求内等待 AP；
 - 同一时间只有一个不可复制的 typed handle 拥有共享启动 transport；
 - `axplat-dyn` 保持同步 `PowerIf` 契约，在 10 秒内轮询并返回可匹配的 `CpuOnError::AliveTimeout`；
@@ -28,6 +29,7 @@
 - `arch/x86/include/asm/apicdef.h` 将 `APIC_DM_STARTUP` 定义为 `0x00600`；SIPI 是 edge-triggered delivery，不携带 INIT 的 level-assert 位。
 - `kernel/cpu.c` 的 `cpu_up()` 对调用方仍表现为同步事务，但内部将 architecture kick、AP completion 和 CPU hotplug 状态推进分成不同阶段。
 - `arch/x86/kernel/smpboot.c` 将 INIT/SIPI 发送和 AP 后续启动阶段分开处理。
+- `arch/x86/include/uapi/asm/processor-flags.h` 的 `CR0_STATE` 同时包含 `PE/MP/ET/NE/WP/AM/PG`；`arch/x86/kernel/head_64.S` 和 `arch/x86/realmode/rm/trampoline_64.S` 分别为 BSP/AP 直接装载完整状态，`arch/x86/kernel/cpu/common.c::native_write_cr0()` 在运行态检测并补回丢失的 `WP`。
 - `arch/riscv/kernel/smpboot.c` 同样把 SBI hart start transport 与 generic secondary completion 分开。
 - `include/linux/cpuhotplug.h` 将 CPU bring-up 的 starting 阶段与最终 online 生命周期分开。
 
@@ -135,6 +137,8 @@ someboot 运行在 executor、task runtime 和可靠 timer/waker 建立之前。
 
 x86 SIPI 使用 `0x600 | vector`。x86 不再维护 `AP_BOOTED_ID`、架构私有启动锁或 500 ms AP 轮询。通用 `ACTIVE_SECONDARY_CPU` 以非阻塞 CAS 串行化完整 prepare/kick/alive/release 生命周期，也保护 x86 共享 trampoline 在前一个 AP 被显式 release 前不被覆盖。
 
+x86 trampoline 必须直接装载与 BSP 相同的完整 `CR0_STATE`，不能从 INIT 后的 CR0 继承未知位再只追加分页位。这样既保证 ring 0 user-copy 对只读 COW PTE 产生保护 fault，也清除 reset-time `CD/NW`，避免 AP 在禁用 cache 的状态进入运行时。someboot 最早的 per-CPU trap 初始化只读回并校验同一常量；它不在晚期静默修复，从而让绕过 BSP 页表路径或 AP trampoline 的错误入口在调度任务前失败。当前 host CR0 写入只存在于这两个私有启动边界，因此不需要复制 Linux 的通用运行期写入钳制。
+
 ## 平台 alive 与 scheduler online
 
 这两个状态源表达不同事实，不能合并：
@@ -165,6 +169,7 @@ someboot 不读取 scheduler online 来完成启动握手，OS 也不把 `SHOULD
 ## 验证
 
 - x86 单元测试验证 SIPI base 为 `0x600` 且不含 level-assert 位；旧 `0x4600` 必然失败。
+- x86 单元测试验证 BSP/AP 共用的 CR0 状态精确为 `0x8005_0033`；`bugfix-ap-cow-write-protect` 动态枚举允许 CPU，把 fork 后的 COW `read()` 写入逐一固定到每个 CPU，校验实际 CPU，并要求父页保持不变。测试另外覆盖 `mprotect(PROT_READ)` 目的页返回 `EFAULT`，但只把它作为 user-memory 权限校验，不作为 WP 的硬件证明；SMP 配置没有 secondary CPU 时直接失败，避免 AP 覆盖被静默跳过。
 - 状态机单元测试验证查询 `ALIVE` 不会 release，只有报告 `ALIVE` 的同一 `CpuBootSync` 可以 release，并覆盖非法顺序和未发布 CPU。
 - owner 单元测试验证第二次 start 立即失败、错误 CPU 不能释放 owner、只有显式匹配 release 后下一个 CPU 才能获取 transport。
 - `cargo test -p someboot` 覆盖状态、layout 和现有启动契约。

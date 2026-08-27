@@ -70,12 +70,12 @@ pub fn trap_addr() -> usize {
 }
 
 pub fn init_local() {
+    // The BSP and AP entry paths must install the complete CR0 state before
+    // reaching this point. Check rather than repairing it late so an alternate
+    // or regressed entry path cannot run with write protection or caches off.
+    super::paging::assert_kernel_cr0_state();
     mask_legacy_pic();
     enable_nxe();
-    // Linux pins X86_CR0_WP per CPU. The AP trampoline enables it before
-    // entering long mode; this call is the every-CPU enforcement that also
-    // covers any other entry path.
-    super::paging::enable_write_protect();
     enable_xsave_features();
     init_tsc_freq();
 }
