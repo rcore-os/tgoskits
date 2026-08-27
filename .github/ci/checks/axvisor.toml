@@ -123,15 +123,16 @@ impact_targets = ["axvisor:x86_64"]
 name = "SVM x86_64 · Smoke + direct/OVMF ACPI"
 runner = "kvm-amd"
 timeout_minutes = 30
+download_xtask_bin_artifact = true
 command = '''
 echo "==> axvisor x86_64 svm smoke"
-cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
 echo "==> pull qemu-x86_64 image"
-cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
+target/debug/tg-xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
 echo "==> axvisor x86_64 svm direct ACPI boot"
-cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-svm
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-svm
 echo "==> axvisor x86_64 svm nested OVMF ACPI boot"
-cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-svm
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-svm
 '''
 
 [[check.suite]]
@@ -144,6 +145,7 @@ id = "test-axvisor-self-hosted-x86-64-vmx"
 impact_targets = ["axvisor:x86_64"]
 name = "VMX x86_64 · Smoke"
 runner = "kvm-intel"
+download_xtask_bin_artifact = true
 command = '''
 cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
 '''
@@ -159,9 +161,10 @@ impact_packages = ["axloader"]
 name = "UEFI x86_64 · AxLoader HTTP boot"
 runner = "kvm-intel"
 timeout_minutes = 25
+download_xtask_bin_artifact = true
 command = '''
 rustup target add x86_64-unknown-uefi
-cargo xtask axloader test qemu --target x86_64-unknown-uefi
+target/debug/tg-xtask axloader test qemu --target x86_64-unknown-uefi
 '''
 
 [[check]]
@@ -170,11 +173,12 @@ impact_targets = ["axvisor:x86_64"]
 name = "VMX x86_64 · Direct + MP fallback + OVMF ACPI"
 runner = "kvm-intel"
 timeout_minutes = 45
+download_xtask_bin_artifact = true
 command = '''
-cargo xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
-cargo xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
-cargo xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
-cargo xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
+target/debug/tg-xtask image pull qemu-x86_64 --extract-dir tmp/axbuild/images
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case direct-acpi-vmx
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case mp-fallback-vmx
+target/debug/tg-xtask axvisor test qemu --arch x86_64 --test-case ovmf-acpi-vmx
 '''
 
 [[check.suite]]
@@ -187,6 +191,7 @@ id = "test-axvisor-self-hosted-board-orangepi-5-plus-linux"
 impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · Linux guest"
 runner = "board"
+download_xtask_bin_artifact = true
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-linux
 '''
@@ -200,6 +205,7 @@ id = "test-axvisor-self-hosted-board-orangepi-5-plus-starry"
 impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus · StarryOS guest"
 runner = "board"
+download_xtask_bin_artifact = true
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-starry
 '''
@@ -213,6 +219,7 @@ id = "test-axvisor-self-hosted-board-roc-rk3568-pc-linux"
 impact_targets = ["axvisor:aarch64"]
 name = "Board ROC-RK3568-PC · Linux guest"
 runner = "board"
+download_xtask_bin_artifact = true
 command = '''
 cargo xtask axvisor test board --board roc-rk3568-pc-linux
 '''
@@ -226,6 +233,7 @@ id = "test-axvisor-self-hosted-board-phytiumpi-linux"
 impact_targets = ["axvisor:aarch64"]
 name = "Board Phytium Pi · Linux guest"
 runner = "board"
+download_xtask_bin_artifact = true
 command = '''
 cargo xtask axvisor test board --board phytiumpi-linux
 '''
@@ -240,14 +248,15 @@ impact_targets = ["axvisor:x86_64"]
 name = "Board ASUS NUC15CRH · Linux guest"
 runner = "board"
 timeout_minutes = 20
+download_xtask_bin_artifact = true
 command = '''
 mkdir -p tmp
-cargo xtask image pull qemu-x86_64 --extract-dir tmp
-cargo xtask image pull initramfs-x86_64-busybox.cpio.gz --extract-dir tmp
+target/debug/tg-xtask image pull qemu-x86_64 --extract-dir tmp
+target/debug/tg-xtask image pull initramfs-x86_64-busybox.cpio.gz --extract-dir tmp
 gzip -dc \
   tmp/initramfs-x86_64-busybox.cpio.gz/initramfs-x86_64-busybox.cpio.gz \
   > tmp/initramfs-x86_64-busybox.cpio
-cargo xtask axvisor test board --board asus-nuc15crh-linux
+target/debug/tg-xtask axvisor test board --board asus-nuc15crh-linux
 '''
 
 [[check.suite]]
@@ -260,6 +269,7 @@ impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus robot · StarryOS guest"
 runner = "board"
 timeout_minutes = 90
+download_xtask_bin_artifact = true
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
 '''
@@ -274,6 +284,7 @@ impact_targets = ["axvisor:aarch64"]
 name = "Board OrangePi 5 Plus robot · Linux guest"
 runner = "board"
 timeout_minutes = 90
+download_xtask_bin_artifact = true
 command = '''
 cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
 '''

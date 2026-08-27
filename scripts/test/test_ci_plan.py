@@ -612,6 +612,51 @@ command = "true"
         self.assertIn("starry app qemu -t nixos", nixos["command"])
         self.assertNotIn("starry test", nixos["command"])
 
+    def test_full_pr_self_hosted_driver_jobs_consume_preflight_xtask(self) -> None:
+        context = ci_plan.PlanContext(
+            repository="rcore-os/tgoskits",
+            repository_owner="rcore-os",
+            event_name="pull_request",
+            base_ref="dev",
+            impact=ci_plan.CiImpact.full_selection("fixture"),
+        )
+
+        plan = ci_plan.build_main_plan(context)
+        static_rows = self.assert_unique_ids(plan["static_matrix"]["include"])
+        test_rows = self.assert_unique_ids(main_test_rows(plan))
+        check_ids = (
+            "test-starry-self-hosted-board-orangepi-5-plus",
+            "test-orangepi-5-plus-robot-native-starryos",
+            "test-starry-self-hosted-board-aka-00-sg2002",
+            "test-starry-self-hosted-board-visionfive2",
+            "test-starry-self-hosted-board-jl-lsgd2k10",
+            "test-axvisor-self-hosted-x86-64-svm-smoke-acpi",
+            "test-axvisor-self-hosted-x86-64-vmx",
+            "test-axloader-http-smoke",
+            "test-axvisor-x86-64-acpi-direct-and-ovmf-boot-vmx",
+            "test-axvisor-self-hosted-board-orangepi-5-plus-linux",
+            "test-axvisor-self-hosted-board-orangepi-5-plus-starry",
+            "test-axvisor-self-hosted-board-roc-rk3568-pc-linux",
+            "test-axvisor-self-hosted-board-phytiumpi-linux",
+            "test-axvisor-self-hosted-board-asus-nuc15crh-linux",
+            "test-orangepi-5-plus-robot-axvisor-starryos-guest",
+            "test-orangepi-5-plus-robot-axvisor-linux-guest",
+        )
+
+        producer = static_rows["run-sync-lint"]
+        self.assertTrue(producer["upload_xtask_bin_artifact"])
+        self.assertEqual(producer["xtask_bin_artifact_name"], "tg-xtask-bin")
+        for check_id in check_ids:
+            row = test_rows[check_id]
+            self.assertTrue(row["download_xtask_bin_artifact"], check_id)
+            self.assertEqual(row["cache_key"], "", check_id)
+            self.assertEqual(row["xtask_bin_artifact_name"], "tg-xtask-bin")
+            if "\n" in row["command"]:
+                self.assertNotIn("cargo xtask", row["command"], check_id)
+                self.assertIn("target/debug/tg-xtask", row["command"], check_id)
+            else:
+                self.assertTrue(row["command"].startswith("cargo xtask"), check_id)
+
     def assert_unique_ids(
         self, rows: list[dict[str, Any]]
     ) -> dict[str, dict[str, Any]]:
