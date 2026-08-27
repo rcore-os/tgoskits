@@ -174,3 +174,78 @@ fn bus_width(info: &FdtInfo<'_>) -> BusWidth {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use fdt_edit::Fdt;
+
+    const AKA_00_DTB: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../os/StarryOS/configs/board/aka-00-sg2002.dtb"
+    ));
+    const LICHEERV_NANO_DTB: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../os/StarryOS/configs/board/licheerv-nano-sg2002.dtb"
+    ));
+
+    #[test]
+    fn repository_sg2002_dtbs_describe_every_cv181x_sd_and_sdio_region() {
+        for (board, bytes) in [
+            ("aka-00-sg2002", AKA_00_DTB),
+            ("licheerv-nano-sg2002", LICHEERV_NANO_DTB),
+        ] {
+            let fdt = Fdt::from_bytes(bytes).expect("repository board DTB must parse");
+            assert_named_regions(
+                board,
+                &fdt,
+                "/cv-sd@4310000",
+                &[
+                    ("sdio", 0x0431_0000, 0x1000),
+                    ("syscon", 0x0300_0000, 0x8000),
+                ],
+            );
+            assert_named_regions(
+                board,
+                &fdt,
+                "/wifi-sd@4320000",
+                &[
+                    ("sdio", 0x0432_0000, 0x1000),
+                    ("syscon", 0x0300_0000, 0x8000),
+                    ("crg", 0x0300_2000, 0x1000),
+                    ("rtcsys-ctrl", 0x0502_5000, 0x1000),
+                    ("rtcsys-io", 0x0502_7000, 0x1000),
+                ],
+            );
+        }
+    }
+
+    fn assert_named_regions(board: &str, fdt: &Fdt, path: &str, expected: &[(&str, u64, u64)]) {
+        let node = fdt
+            .get_by_path(path)
+            .unwrap_or_else(|| panic!("{board}: missing {path}"));
+        let names = node
+            .as_node()
+            .get_property("reg-names")
+            .unwrap_or_else(|| panic!("{board}: {path} has no reg-names"))
+            .as_str_iter()
+            .collect::<alloc::vec::Vec<_>>();
+        let regs = node.regs();
+
+        assert_eq!(names.len(), regs.len(), "{board}: {path} reg/name count");
+        assert_eq!(names.len(), expected.len(), "{board}: {path} region count");
+        for ((name, reg), (expected_name, expected_address, expected_size)) in
+            names.into_iter().zip(regs).zip(expected)
+        {
+            assert_eq!(name, *expected_name, "{board}: {path} region name");
+            assert_eq!(
+                reg.address, *expected_address,
+                "{board}: {path}/{name} address"
+            );
+            assert_eq!(
+                reg.size,
+                Some(*expected_size),
+                "{board}: {path}/{name} size"
+            );
+        }
+    }
+}
