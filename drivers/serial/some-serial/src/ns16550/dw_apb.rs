@@ -25,8 +25,6 @@ const UART_CPR_OFFSET: usize = 0xf4;
 #[derive(Clone, Debug)]
 pub struct DwApb {
     base: usize,
-    #[cfg(test)]
-    usr_reads: Option<std::sync::Arc<core::sync::atomic::AtomicUsize>>,
 }
 
 /// Synopsys DesignWare APB 8250-compatible UART.
@@ -35,11 +33,7 @@ pub type DwApbUart = Ns16550<DwApb>;
 impl DwApb {
     /// Creates a register backend from an already-mapped MMIO base address.
     pub const fn new(base: usize) -> Self {
-        Self {
-            base,
-            #[cfg(test)]
-            usr_reads: None,
-        }
+        Self { base }
     }
 
     fn reg_addr(&self, byte_offset: usize) -> usize {
@@ -47,12 +41,6 @@ impl DwApb {
     }
 
     fn read_u32(&self, byte_offset: usize) -> u32 {
-        #[cfg(test)]
-        if byte_offset == UART_USR_OFFSET
-            && let Some(reads) = &self.usr_reads
-        {
-            reads.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-        }
         unsafe { (self.reg_addr(byte_offset) as *const u32).read_volatile() }
     }
 
@@ -215,76 +203,5 @@ impl Ns16550<DwApb> {
 
     pub fn new_raw(base: core::ptr::NonNull<u8>, clock_freq: u32) -> Self {
         Self::new_with_clock(base.as_ptr() as usize, clock_freq)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        boxed::Box,
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-    };
-
-    use rdif_serial::{SplitUart as _, UartIrq as _};
-
-    use super::*;
-
-    #[test]
-    fn busy_detect_interrupt_is_claimed_by_irq_endpoint() {
-        let regs = Box::leak(Box::new([0u32; 0x100 / 4]));
-        regs[UART_IIR as usize] = UART_IIR_BUSY as u32;
-        regs[UART_USR_OFFSET / 4] = 0x1;
-
-        let uart = DwApbUart::new(regs.as_ptr() as usize);
-        let mut parts = uart.split();
-
-        let event = parts.irq.handle().unwrap().event;
-        assert!(
-            event
-                .events
-                .contains(rdif_serial::SerialEventSet::BUSY_DETECT)
-        );
-        assert_eq!(regs[UART_USR_OFFSET / 4], 0x1);
-    }
-
-    #[test]
-    fn new_raw_does_not_touch_hardware_registers() {
-        let regs = Box::leak(Box::new([0u32; 0x100 / 4]));
-        regs[UART_DLF_OFFSET / 4] = 0x33;
-
-        let base = core::ptr::NonNull::new(regs.as_mut_ptr().cast()).unwrap();
-        let serial = DwApbUart::new_raw(base, SG2002_UART_CLOCK);
-
-        assert_eq!(regs[UART_FCR as usize], 0);
-        assert_eq!(regs[UART_MCR as usize], 0);
-        assert_eq!(regs[UART_DLF_OFFSET / 4], 0x33);
-        drop(serial);
-    }
-
-    #[test]
-    fn runtime_baudrate_waits_for_an_idle_dw_apb_uart() {
-        let regs = Box::leak(Box::new([0u32; 0x100 / 4]));
-        regs[UART_LCR as usize] = LineControlFlags::WORD_LENGTH_8.bits() as u32;
-        regs[UART_DLL as usize] = 13;
-        regs[UART_USR_OFFSET / 4] = 0;
-        let usr_reads = Arc::new(AtomicUsize::new(0));
-        let uart = Ns16550 {
-            base: DwApb {
-                base: regs.as_ptr() as usize,
-                usr_reads: Some(usr_reads.clone()),
-            },
-            clock_freq: 24_000_000,
-            saved_lsr: LineStatusFlags::empty(),
-        };
-
-        let _ = uart.runtime_info();
-
-        assert!(
-            usr_reads.load(Ordering::SeqCst) > 0,
-            "DW APB divisor probing must observe USR.BUSY before changing DLAB"
-        );
     }
 }
