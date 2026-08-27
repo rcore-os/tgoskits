@@ -8,11 +8,6 @@ enum WakerCpuSource {
     Current,
 }
 
-struct WakerContext {
-    cpu: CpuId,
-    current: Option<CurrentThreadRef>,
-}
-
 struct FairWakeContext<'a> {
     affinity: &'a CpuSet,
     waker: Option<CpuId>,
@@ -32,6 +27,21 @@ struct FairWakeAffineContext {
     waker_is_only_runnable: bool,
     waker_demand: u64,
     previous_demand: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum WakeTargetSelection {
+    Pinned(CpuId),
+    SchedulerClass,
+}
+
+/// Mirrors the generic Linux `select_task_rq()` gate before scheduler-class
+/// placement runs.
+fn wake_target_selection(affinity: &CpuSet) -> WakeTargetSelection {
+    affinity.sole_cpu().map_or(
+        WakeTargetSelection::SchedulerClass,
+        WakeTargetSelection::Pinned,
+    )
 }
 
 fn select_fair_wake_affine_cpu(context: FairWakeAffineContext) -> CpuId {
@@ -70,23 +80,14 @@ struct EqualRtWakeContext<'a> {
 }
 
 impl WakerCpuSource {
-    fn resolve(self, _activity: &ThreadSchedulerActivity<'_>) -> Option<WakerContext> {
+    fn resolve(self, _activity: &ThreadSchedulerActivity<'_>) -> Option<CpuId> {
         match self {
             Self::Current => {
                 // SAFETY: `ThreadSchedulerActivity` owns the wake transaction's
                 // preemption guard. If a stronger IRQ or scheduler owner scope
                 // supplied that guard, the same scope already retains this CPU.
                 let runtime_cpu = unsafe { task_runtime::current_cpu_id() };
-                let publication = task_runtime::current_thread_publication();
-                // SAFETY: `ThreadSchedulerActivity` pins this execution
-                // context until the complete synchronous wake transaction
-                // returns. Bootstrap contexts legitimately have no current
-                // scheduler thread and still supply a waking CPU.
-                let current = unsafe { publication.borrow_current() }.ok();
-                Some(WakerContext {
-                    cpu: CpuId::new(runtime_cpu.as_u32()),
-                    current,
-                })
+                Some(CpuId::new(runtime_cpu.as_u32()))
             }
         }
     }
@@ -123,11 +124,11 @@ impl TaskSystem {
         &self,
         core: &Arc<ThreadCore>,
         sched: &ThreadSchedState,
-        waker: Option<&WakerContext>,
+        waker: Option<CpuId>,
         park_generation: u64,
     ) -> Option<PreparedRemoteWakeDelivery> {
         let owner = sched.placement.on_cpu()?;
-        if waker.is_some_and(|waker| waker.cpu == owner)
+        if waker == Some(owner)
             || !sched.affinity.affinity.contains(owner)
             || sched.placement.committed_migration_target().is_some()
         {
@@ -141,15 +142,32 @@ impl TaskSystem {
         &self,
         sched: &ThreadSchedState,
         wakee: &ThreadCore,
-        waker: Option<&WakerContext>,
+        _activity: &ThreadSchedulerActivity<'_>,
+        waker: Option<CpuId>,
         previous: Option<CpuId>,
         intent: WakeIntent,
     ) -> Option<CpuId> {
+        match wake_target_selection(&sched.affinity.affinity) {
+            WakeTargetSelection::Pinned(target) => {
+                return self
+                    .cpu_remotes
+                    .get(target.as_usize())
+                    .filter(|remote| remote.accepts_placement())
+                    .map(|_| target);
+            }
+            WakeTargetSelection::SchedulerClass => {}
+        }
         let active = wakee.sched().active(sched);
         let policy = active.policy();
         if let SchedulePolicy::Fair { mode, .. } = policy {
             let wake_wide = waker
-                .and_then(|waker| waker.current.as_ref())
+                .and_then(|_| {
+                    let publication = task_runtime::current_thread_publication();
+                    // SAFETY: `_activity` pins this execution context until the
+                    // synchronous wake transaction returns. Bootstrap contexts
+                    // legitimately have no current scheduler thread.
+                    unsafe { publication.borrow_current() }.ok()
+                })
                 .map(|current| {
                     current.runtime_core().record_wakee_and_is_wide(
                         wakee,
@@ -159,7 +177,7 @@ impl TaskSystem {
                 });
             return self.select_fair_wake_cpu(FairWakeContext {
                 affinity: &sched.affinity.affinity,
-                waker: waker.map(|waker| waker.cpu),
+                waker,
                 previous,
                 wakee_demand: policy.placement_demand(),
                 intent,
@@ -167,7 +185,6 @@ impl TaskSystem {
                 wake_wide: wake_wide.unwrap_or(false),
             });
         }
-        let waker = waker.map(|waker| waker.cpu);
         let preferred = previous.or(waker);
         if let Some(priority) = policy.rt_priority()
             && let Some(previous) = preferred
@@ -440,12 +457,9 @@ impl TaskSystem {
                     intent,
                 );
             }
-            if let Some(delivery) = self.prepare_remote_on_cpu_wake(
-                &core,
-                &sched,
-                waker.as_ref(),
-                core.park_generation(),
-            ) {
+            if let Some(delivery) =
+                self.prepare_remote_on_cpu_wake(&core, &sched, waker, core.park_generation())
+            {
                 let transition =
                     Self::consume_wake_locked(&core, &mut sched).unwrap_or_else(|_| {
                         task_runtime::fatal_invariant(0x574b_0020, core.id().as_u64() as usize)
@@ -465,7 +479,7 @@ impl TaskSystem {
                 .placement
                 .assigned_cpu()
                 .or_else(|| core.wake_cpu_hint());
-            let target = self.select_wake_target(&sched, &core, waker.as_ref(), previous, intent);
+            let target = self.select_wake_target(&sched, &core, &activity, waker, previous, intent);
 
             let Some(target) = target else {
                 return WakeResult::Unavailable;
@@ -569,12 +583,9 @@ impl TaskSystem {
                 if sched.placement.queued_cpu().is_some() {
                     task_runtime::fatal_invariant(0x574b_0018, core.id().as_u64() as usize);
                 }
-                if let Some(delivery) = self.prepare_remote_on_cpu_wake(
-                    &core,
-                    &sched,
-                    waker.as_ref(),
-                    claim.park_generation(),
-                ) {
+                if let Some(delivery) =
+                    self.prepare_remote_on_cpu_wake(&core, &sched, waker, claim.park_generation())
+                {
                     let transition =
                         Self::consume_wake_locked(&core, &mut sched).unwrap_or_else(|_| {
                             task_runtime::fatal_invariant(0x574b_0022, core.id().as_u64() as usize)
@@ -635,12 +646,9 @@ impl TaskSystem {
                     }
                     return WaitWakeDelivery::Delivered;
                 }
-                if let Some(delivery) = self.prepare_remote_on_cpu_wake(
-                    &core,
-                    &sched,
-                    waker.as_ref(),
-                    claim.park_generation(),
-                ) {
+                if let Some(delivery) =
+                    self.prepare_remote_on_cpu_wake(&core, &sched, waker, claim.park_generation())
+                {
                     if !claim.deliver_selected() {
                         return WaitWakeDelivery::Cancelled;
                     }
@@ -668,7 +676,7 @@ impl TaskSystem {
                         .assigned_cpu()
                         .or_else(|| core.wake_cpu_hint());
                     let Some(target) =
-                        self.select_wake_target(&sched, &core, waker.as_ref(), previous, intent)
+                        self.select_wake_target(&sched, &core, &activity, waker, previous, intent)
                     else {
                         claim.cancel_selected();
                         return WaitWakeDelivery::Unavailable;
@@ -1144,6 +1152,18 @@ mod tests {
                 previous_demand: 1_024,
             }),
             waker,
+        );
+    }
+
+    #[test]
+    fn linux_singleton_affinity_skips_scheduler_class_wake_selection() {
+        let pinned = CpuId::new(2);
+        let mut affinity = CpuSet::empty(4);
+        assert!(affinity.insert(pinned));
+
+        assert_eq!(
+            wake_target_selection(&affinity),
+            WakeTargetSelection::Pinned(pinned),
         );
     }
 }

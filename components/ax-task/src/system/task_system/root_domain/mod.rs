@@ -45,6 +45,8 @@ struct RootDomainFairNoHz {
     pushable_sources: Vec<AtomicBool>,
     idle_targets: Vec<AtomicBool>,
     balance_kicks: Vec<AtomicBool>,
+    #[cfg(test)]
+    source_publication_writes: Vec<AtomicUsize>,
 }
 
 impl RootDomainFairNoHz {
@@ -53,11 +55,29 @@ impl RootDomainFairNoHz {
             pushable_sources: (0..cpu_count).map(|_| AtomicBool::new(false)).collect(),
             idle_targets: (0..cpu_count).map(|_| AtomicBool::new(false)).collect(),
             balance_kicks: (0..cpu_count).map(|_| AtomicBool::new(false)).collect(),
+            #[cfg(test)]
+            source_publication_writes: (0..cpu_count).map(|_| AtomicUsize::new(0)).collect(),
         }
     }
 
     fn publish_source(&self, cpu: CpuId, pushable: bool) -> bool {
-        !self.pushable_sources[cpu.as_usize()].swap(pushable, Ordering::SeqCst) && pushable
+        let source = &self.pushable_sources[cpu.as_usize()];
+        // The rq owner is the sole online writer of its source bit. CPU
+        // offline publication runs only after that owner is quiescent, so an
+        // unordered load can filter unchanged commits without weakening the
+        // SeqCst source/idle-target handshake on a real edge.
+        if source.load(Ordering::Relaxed) == pushable {
+            return false;
+        }
+        #[cfg(test)]
+        self.source_publication_writes[cpu.as_usize()].fetch_add(1, Ordering::Relaxed);
+        source.store(pushable, Ordering::SeqCst);
+        pushable
+    }
+
+    #[cfg(test)]
+    fn source_publication_writes(&self, cpu: CpuId) -> usize {
+        self.source_publication_writes[cpu.as_usize()].load(Ordering::Relaxed)
     }
 
     fn publish_idle_target(&self, cpu: CpuId, idle: bool) {
@@ -938,5 +958,16 @@ mod tests {
         assert!(nohz.balance_kick_pending(owner));
         assert!(nohz.take_balance_kick(owner));
         assert!(!nohz.balance_kick_pending(owner));
+    }
+
+    #[test]
+    fn unchanged_fair_source_does_not_republish_the_seqcst_edge() {
+        let nohz = RootDomainFairNoHz::new(1);
+        let owner = CpuId::new(0);
+
+        assert!(nohz.publish_source(owner, true));
+        assert_eq!(nohz.source_publication_writes(owner), 1);
+        assert!(!nohz.publish_source(owner, true));
+        assert_eq!(nohz.source_publication_writes(owner), 1);
     }
 }
