@@ -307,7 +307,7 @@ fn interrupt_crs_aml(irq: u8, shared: bool) -> Vec<u8> {
 
 fn pci_crs_aml(pci: &LoongArchFwCfgPciConfig) -> Vec<u8> {
     aml_resource_template(&[
-        word_bus_number_resource(0, ((pci.ecam_size - 1) >> 20) as u16),
+        word_bus_number_resource(u16::from(pci.bus_start), u16::from(pci.bus_end)),
         dword_io_resource(pci.io_base, pci.io_size),
         qword_memory_resource(pci.mmio_base, pci.mmio_size, false, false),
     ])
@@ -320,4 +320,37 @@ fn pci_res0_crs_aml(pci: &LoongArchFwCfgPciConfig) -> Vec<u8> {
         false,
         true,
     )])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pci0_crs_uses_the_resolved_ecam_bus_range() {
+        let pci = LoongArchFwCfgPciConfig {
+            bus_start: 0,
+            bus_end: 63,
+            ..Default::default()
+        };
+
+        let crs = pci_crs_aml(&pci);
+        let descriptor = crs
+            .windows(3)
+            .position(|bytes| bytes == [0x88, 0x0d, 0x00])
+            .expect("PCI0 _CRS must contain a word bus-number descriptor");
+
+        assert_eq!(
+            u16::from_le_bytes(crs[descriptor + 8..descriptor + 10].try_into().unwrap()),
+            0
+        );
+        assert_eq!(
+            u16::from_le_bytes(crs[descriptor + 10..descriptor + 12].try_into().unwrap()),
+            63
+        );
+        assert_eq!(
+            u16::from_le_bytes(crs[descriptor + 14..descriptor + 16].try_into().unwrap()),
+            64
+        );
+    }
 }

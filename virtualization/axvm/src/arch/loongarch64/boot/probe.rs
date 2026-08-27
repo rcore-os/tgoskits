@@ -3,8 +3,8 @@ use std::vec::Vec;
 use ax_std::os::arceos::driver as ax_driver;
 
 use super::{
-    FirmwareDevices, FlashDevice, GedDevice, GuestPlatform, InterruptTopology, IrqMmioDevice,
-    MemoryRegion, MmioRegion, PciHost, SerialDevice,
+    FirmwareDevices, FlashDevice, GedDevice, GuestFirmwareSelection, GuestPlatform,
+    InterruptTopology, IrqMmioDevice, MemoryRegion, MmioRegion, PciHost, SerialDevice,
     acpi::{LoongArchFwCfgInterruptConfig, LoongArchFwCfgPciConfig, LoongArchFwCfgSerialConfig},
 };
 
@@ -12,10 +12,10 @@ pub struct GuestPlatformBuilder {
     ram_regions: Vec<MemoryRegion>,
     fw_cfg: Option<MmioRegion>,
     serial: Option<SerialDevice>,
-    pci: Option<PciHost>,
     interrupt: Option<InterruptTopology>,
     firmware_devices: Option<FirmwareDevices>,
     irq_routes: Vec<GuestIrqRoute>,
+    firmware: GuestFirmwareSelection,
 }
 
 pub(crate) fn apply_host_serial(config: &mut crate::config::AxVMConfig) -> crate::AxVmResult {
@@ -43,6 +43,32 @@ pub(crate) fn apply_host_serial(config: &mut crate::config::AxVMConfig) -> crate
     config.replace_machine_serial(snapshot.profile, Some(snapshot.identity))
 }
 
+pub(in crate::arch::loongarch64) fn normalized_guest_pci_profile() -> crate::AxVmResult<PciHost> {
+    selected_guest_pci_profile(GuestFirmwareSelection::Uefi)
+}
+
+pub(in crate::arch::loongarch64) fn normalize_guest_pci_profile(
+    host_profile: Option<crate::AxVmResult<Option<PciHost>>>,
+) -> crate::AxVmResult<PciHost> {
+    let profile = match host_profile {
+        Some(profile) => profile?.unwrap_or_else(qemu_guest_pci_profile),
+        None => qemu_guest_pci_profile(),
+    };
+    axdevice::PciEcamDevice::new(profile.ecam.base, profile.ecam.size).map_err(|error| {
+        crate::AxVmError::invalid_config(std::format!(
+            "invalid normalized LoongArch guest PCI ECAM profile at base {:#x}, size {:#x}: \
+             {error}",
+            profile.ecam.base,
+            profile.ecam.size
+        ))
+    })?;
+    Ok(profile)
+}
+
+pub(in crate::arch::loongarch64) fn qemu_guest_pci_profile() -> PciHost {
+    QemuVirtDefaults::new().pci
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GuestIrqRoute {
     pub physical_irq: usize,
@@ -50,15 +76,19 @@ pub struct GuestIrqRoute {
 }
 
 impl GuestPlatformBuilder {
-    pub fn new(ram_regions: Vec<MemoryRegion>, fw_cfg: Option<MmioRegion>) -> Self {
+    pub fn new(
+        ram_regions: Vec<MemoryRegion>,
+        fw_cfg: Option<MmioRegion>,
+        firmware: GuestFirmwareSelection,
+    ) -> Self {
         Self {
             ram_regions,
             fw_cfg,
             serial: None,
-            pci: None,
             interrupt: None,
             firmware_devices: None,
             irq_routes: Vec::new(),
+            firmware,
         }
     }
 
@@ -77,10 +107,23 @@ impl GuestPlatformBuilder {
         self
     }
 
-    pub fn build(self) -> GuestPlatform {
+    pub fn build(self) -> crate::AxVmResult<GuestPlatform> {
+        let pci = selected_guest_pci_profile(self.firmware)?;
+        Ok(self.finish(pci))
+    }
+
+    #[cfg(test)]
+    pub fn build_with_host_pci_profile(
+        self,
+        host_profile: Option<crate::AxVmResult<Option<PciHost>>>,
+    ) -> crate::AxVmResult<GuestPlatform> {
+        let pci = select_guest_pci_profile(self.firmware, host_profile)?;
+        Ok(self.finish(pci))
+    }
+
+    fn finish(self, pci: PciHost) -> GuestPlatform {
         let defaults = QemuVirtDefaults::new();
         let serial = self.serial.unwrap_or(defaults.serial);
-        let pci = self.pci.unwrap_or(defaults.pci);
         let interrupt = self.interrupt.unwrap_or(defaults.interrupt);
 
         let irq_routes = if self.irq_routes.is_empty() {
@@ -102,9 +145,6 @@ impl GuestPlatformBuilder {
     }
 
     fn apply_host_resources(&mut self, resources: HostResources) {
-        if let Some(pci) = resources.pci {
-            self.pci = Some(pci);
-        }
         if let Some(interrupt) = resources.interrupt {
             self.interrupt = Some(interrupt);
         }
@@ -115,8 +155,25 @@ impl GuestPlatformBuilder {
     }
 }
 
+fn select_guest_pci_profile(
+    firmware: GuestFirmwareSelection,
+    host_profile: Option<crate::AxVmResult<Option<PciHost>>>,
+) -> crate::AxVmResult<PciHost> {
+    match firmware {
+        GuestFirmwareSelection::Uefi => normalize_guest_pci_profile(host_profile),
+        GuestFirmwareSelection::DirectFdt => Ok(qemu_guest_pci_profile()),
+    }
+}
+
+fn selected_guest_pci_profile(firmware: GuestFirmwareSelection) -> crate::AxVmResult<PciHost> {
+    let host_profile = match firmware {
+        GuestFirmwareSelection::Uefi => ax_driver::probe::acpi::with_acpi(host_pci_profile),
+        GuestFirmwareSelection::DirectFdt => None,
+    };
+    select_guest_pci_profile(firmware, host_profile)
+}
+
 struct HostResources {
-    pci: Option<PciHost>,
     interrupt: Option<InterruptTopology>,
     firmware_devices: Option<FirmwareDevices>,
     irq_routes: Vec<GuestIrqRoute>,
@@ -146,25 +203,74 @@ fn host_acpi_resources(
             acpi_msi_count: defaults.interrupt.acpi_msi_count,
         });
 
-    let pci = acpi.pci_ecam_regions().first().map(|ecam| PciHost {
-        ecam: MmioRegion {
-            base: ecam.base_address,
-            size: ecam.size() as u64,
-        },
-        mmio: defaults.pci.mmio,
-        io_base: defaults.pci.io_base,
-        io_size: defaults.pci.io_size,
-        intx_base: defaults.pci.intx_base,
-    });
-
     let firmware_devices = Some(find_firmware_devices(acpi, defaults.firmware_devices));
 
     Ok(HostResources {
-        pci,
         interrupt,
         firmware_devices,
         irq_routes: Vec::new(),
     })
+}
+
+fn host_pci_profile(acpi: &ax_driver::probe::acpi::System) -> crate::AxVmResult<Option<PciHost>> {
+    let Some(ecam) = select_host_pci_ecam(acpi.pci_ecam_regions())? else {
+        return Ok(None);
+    };
+    let size = u64::try_from(ecam.size()).map_err(|_| {
+        crate::AxVmError::invalid_config("host ACPI PCI ECAM size does not fit u64")
+    })?;
+    let defaults = qemu_guest_pci_profile();
+    Ok(Some(PciHost {
+        ecam: MmioRegion {
+            base: ecam.base_address,
+            size,
+        },
+        ..defaults
+    }))
+}
+
+pub(in crate::arch::loongarch64) fn select_host_pci_ecam(
+    regions: &[ax_driver::probe::acpi::AcpiPciEcam],
+) -> crate::AxVmResult<Option<ax_driver::probe::acpi::AcpiPciEcam>> {
+    if regions.is_empty() {
+        return Ok(None);
+    }
+    for region in regions {
+        if region.bus_end < region.bus_start {
+            return Err(crate::AxVmError::invalid_config(std::format!(
+                "host ACPI PCI ECAM has descending bus range {}..{} in segment {} at base {:#x}",
+                region.bus_start,
+                region.bus_end,
+                region.segment_group,
+                region.base_address
+            )));
+        }
+    }
+
+    let mut supported = regions
+        .iter()
+        .copied()
+        .filter(|region| region.segment_group == 0 && region.bus_start == 0);
+    let Some(selected) = supported.next() else {
+        let first = regions[0];
+        return Err(crate::AxVmError::invalid_config(std::format!(
+            "host ACPI MCFG contains {} region(s) but no supported segment 0 bus 0 region; first \
+             region is segment {} bus {}..{} at base {:#x}",
+            regions.len(),
+            first.segment_group,
+            first.bus_start,
+            first.bus_end,
+            first.base_address
+        )));
+    };
+    if supported.next().is_some() {
+        return Err(crate::AxVmError::invalid_config(std::format!(
+            "host ACPI MCFG contains multiple supported host ACPI PCI ECAM regions for segment 0 \
+             bus 0 ({} total regions)",
+            regions.len()
+        )));
+    }
+    Ok(Some(selected))
 }
 
 fn effective_pch_pic_size(size: u16) -> u64 {

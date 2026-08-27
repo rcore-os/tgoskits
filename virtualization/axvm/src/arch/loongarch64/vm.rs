@@ -55,7 +55,7 @@ impl LoongArch64Arch {
                 loongarch_result(loongarch_vcpu::LoongArchIocsrState::new(state_count))
                     .map_err(|error| AxVmError::vcpu("create LoongArch IOCSR state", error))?;
             let dtb_addr = config.image_config().dtb_load_gpa.unwrap_or_default();
-            let firmware_boot = uses_firmware_boot(config);
+            let firmware_boot = uses_firmware_boot(config)?;
             let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
                 Ok(LoongArchVCpuCreateConfig {
                     cpu_id: placement.id,
@@ -106,6 +106,13 @@ fn plan_devices(
             )),
         ),
     ];
+    let pci_profile = match super::boot::select_guest_firmware(config)? {
+        super::boot::GuestFirmwareSelection::Uefi => {
+            Some(super::boot::probe::normalized_guest_pci_profile()?)
+        }
+        super::boot::GuestFirmwareSelection::DirectFdt => None,
+    };
+    super::pci_ecam::append_pci_ecam_node(pci_profile, &mut nodes)?;
     crate::configured::append_configured_devices(
         config,
         &mut nodes,
@@ -118,6 +125,11 @@ fn plan_devices(
         &[PCH_PIC_BASE as u64..(PCH_PIC_BASE + PCH_PIC_SIZE) as u64],
         super::resource_pools::create()?,
     )?))
+}
+
+#[cfg(test)]
+pub(super) fn plan_devices_for_test(config: &AxVMConfig) -> AxVmResult<LoongArchVmPlan> {
+    plan_devices(config, Arc::new(axdevice::FwCfgPayloadSlot::new()))
 }
 
 struct LoongArchDomainFactory {
@@ -143,17 +155,15 @@ fn build_vcpu_setup_config(
         passthrough_timer: passthrough,
         boot_args: [0; 3],
         boot_stack_top: 0,
-        firmware_boot: uses_firmware_boot(config),
+        firmware_boot: uses_firmware_boot(config)?,
     })
 }
 
-fn uses_firmware_boot(config: &AxVMConfig) -> bool {
-    matches!(
-        config.boot_policy(),
-        crate::config::GuestBootPolicy::AdjustKernelForBootProtocol {
-            protocol: crate::config::VMBootProtocol::Uefi,
-        }
-    )
+fn uses_firmware_boot(config: &AxVMConfig) -> AxVmResult<bool> {
+    Ok(matches!(
+        super::boot::select_guest_firmware(config)?,
+        super::boot::GuestFirmwareSelection::Uefi
+    ))
 }
 
 fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {
@@ -173,4 +183,96 @@ fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> A
             error,
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn actual_uefi_plan_contains_exactly_one_pci_ecam_node() {
+        let config = config_with_boot_policy(GuestBootPolicy::AdjustKernelForBootProtocol {
+            protocol: VMBootProtocol::Uefi,
+        });
+
+        let plan = actual_plan(&config).unwrap();
+
+        assert_eq!(pci_ecam_node_count(&plan), 1);
+    }
+
+    #[test]
+    fn actual_non_uefi_plans_do_not_contain_pci_ecam_node() {
+        for policy in [
+            GuestBootPolicy::AdjustKernelForBootProtocol {
+                protocol: VMBootProtocol::Direct,
+            },
+            GuestBootPolicy::KeepConfigured,
+        ] {
+            let config = config_with_boot_policy(policy);
+            let plan = actual_plan(&config).unwrap();
+
+            assert_eq!(pci_ecam_node_count(&plan), 0, "policy {policy:?}");
+        }
+    }
+
+    #[test]
+    fn actual_multiboot_plan_is_rejected() {
+        let config = config_with_boot_policy(GuestBootPolicy::AdjustKernelForBootProtocol {
+            protocol: VMBootProtocol::Multiboot,
+        });
+
+        let Err(error) = actual_plan(&config) else {
+            panic!("LoongArch Multiboot must be unsupported");
+        };
+
+        assert!(error.to_string().contains("Multiboot"));
+    }
+
+    #[test]
+    fn actual_uefi_plan_rejects_pci_ecam_overlapping_guest_memory() {
+        let mut config = config_with_boot_policy(GuestBootPolicy::AdjustKernelForBootProtocol {
+            protocol: VMBootProtocol::Uefi,
+        });
+        config.set_memory_regions(std::vec![axvm_types::VmMemConfig {
+            gpa: 0x2000_0000,
+            size: 0x0800_0000,
+            flags: 0x7,
+            map_type: axvm_types::VmMemMappingType::MapIdentical,
+        }]);
+
+        let error = actual_plan(&config)
+            .err()
+            .expect("the actual plan must reject guest RAM overlapping ECAM");
+
+        let AxVmError::Device { detail, .. } = error else {
+            panic!("unexpected plan error: {error:?}");
+        };
+        assert!(detail.contains("guest-memory-0"), "{detail}");
+        assert!(detail.contains("pci-ecam"), "{detail}");
+    }
+
+    fn config_with_boot_policy(policy: GuestBootPolicy) -> AxVMConfig {
+        let mut catalog = crate::ConfiguredDeviceCatalog::new();
+        crate::machine::register_devices(&mut catalog).unwrap();
+        AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            name: "loongarch-real-plan-test".into(),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            boot_policy: policy,
+            virtual_device_catalog: Arc::new(catalog),
+            ..Default::default()
+        })
+    }
+
+    fn actual_plan(config: &AxVMConfig) -> AxVmResult<LoongArchVmPlan> {
+        plan_devices(config, Arc::new(axdevice::FwCfgPayloadSlot::new()))
+    }
+
+    fn pci_ecam_node_count(plan: &LoongArchVmPlan) -> usize {
+        plan.devices()
+            .graph()
+            .nodes()
+            .filter(|node| node.id().as_str() == "pci-ecam")
+            .count()
+    }
 }

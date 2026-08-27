@@ -23,7 +23,7 @@ pub(in crate::arch::loongarch64::boot) fn build(
     srat_regions: &[FwCfgRamRegion],
 ) -> Result<FwCfgAcpiBlobs, AcpiBuildError> {
     let serial = serial_config(platform);
-    let pci = pci_config(platform);
+    let pci = pci_config(platform)?;
     let interrupt = interrupt_config(platform);
     build_acpi(
         cpu_num,

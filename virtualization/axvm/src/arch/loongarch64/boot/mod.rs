@@ -1,5 +1,6 @@
 mod acpi;
 mod fdt;
+mod firmware;
 pub(super) mod probe;
 mod resources;
 
@@ -20,6 +21,7 @@ use crate::{
 };
 
 pub(crate) const UEFI_FIRMWARE_FDT_BASE: usize = 0x0010_0000;
+pub(in crate::arch::loongarch64) use firmware::{GuestFirmwareSelection, select_guest_firmware};
 
 pub fn init() {
     resources::init();
@@ -114,23 +116,13 @@ pub struct GedDevice {
 impl GuestPlatform {
     pub fn discover(vm: &AxVMRef, _config: &GuestConfig) -> AxVmResult<Self> {
         let serial = resolved_serial(vm)?;
-        let (fdt_firmware, acpi_firmware) = vm.with_planned_device_graph(|graph| {
-            Ok((
-                crate::boot::fdt::device::resolve_fdt_firmware(graph)?,
-                crate::boot::acpi::resolve_acpi_firmware(graph)?,
-            ))
-        })?;
-        let special =
-            resolve_special_firmware(&fdt_firmware.specials, &acpi_firmware.specials, serial)?;
-        let mut platform = probe::GuestPlatformBuilder::new(ram_regions(vm), Some(special.fw_cfg))
-            .with_serial(serial)
-            .apply_host_acpi()
-            .build();
-        platform.interrupt.controller = special.controller;
-        platform.interrupt.pch_pic = special.pch_pic;
-        platform.configured_fdt_devices = fdt_firmware.devices;
-        platform.configured_acpi_devices = acpi_firmware.devices;
-        Ok(platform)
+        let firmware = vm.with_config(|config| select_guest_firmware(config))?;
+        let ram_regions = ram_regions(vm);
+        vm.with_planned_device_graph(|graph| {
+            assemble_guest_platform(graph, firmware, serial, ram_regions, |builder| {
+                builder.apply_host_acpi().build()
+            })
+        })
     }
 
     pub fn fw_cfg_platform_config(&self, cpu_num: u16) -> AxVmResult<FwCfgPlatformConfig> {
@@ -148,10 +140,45 @@ impl GuestPlatform {
     }
 }
 
+fn assemble_guest_platform(
+    graph: &axdevice::ResolvedDeviceGraph,
+    firmware: GuestFirmwareSelection,
+    serial: SerialDevice,
+    ram_regions: Vec<MemoryRegion>,
+    build_platform: impl FnOnce(probe::GuestPlatformBuilder) -> AxVmResult<GuestPlatform>,
+) -> AxVmResult<GuestPlatform> {
+    let (fdt_firmware, acpi_firmware) = if firmware.uses_acpi() {
+        let acpi = crate::boot::acpi::resolve_acpi_firmware(graph)?;
+        let fdt = crate::boot::fdt::device::resolve_available_fdt_firmware(graph)?;
+        (fdt, Some(acpi))
+    } else {
+        (crate::boot::fdt::device::resolve_fdt_firmware(graph)?, None)
+    };
+    let special = if let Some(acpi) = &acpi_firmware {
+        resolve_special_firmware(&fdt_firmware.specials, &acpi.specials, serial)?
+    } else {
+        resolve_fdt_special_firmware(&fdt_firmware.specials, serial)?
+    };
+    let builder = probe::GuestPlatformBuilder::new(ram_regions, Some(special.fw_cfg), firmware)
+        .with_serial(serial);
+    let mut platform = build_platform(builder)?;
+    if let Some(ecam) = special.pci_ecam {
+        reconcile_pci_ecam(&mut platform.pci, ecam)?;
+    }
+    platform.interrupt.controller = special.controller;
+    platform.interrupt.pch_pic = special.pch_pic;
+    platform.configured_fdt_devices = fdt_firmware.devices;
+    platform.configured_acpi_devices = acpi_firmware
+        .map(|firmware| firmware.devices)
+        .unwrap_or_default();
+    Ok(platform)
+}
+
 struct LoongArchSpecialFirmware {
     controller: InterruptControllerId,
     pch_pic: MmioRegion,
     fw_cfg: MmioRegion,
+    pci_ecam: Option<MmioRegion>,
 }
 
 fn resolve_special_firmware(
@@ -159,229 +186,89 @@ fn resolve_special_firmware(
     acpi: &[crate::boot::acpi::ResolvedAcpiSpecial],
     serial: SerialDevice,
 ) -> AxVmResult<LoongArchSpecialFirmware> {
-    use crate::boot::{
-        acpi::{ResolvedAcpiProperty, ResolvedAcpiRegister, ResolvedAcpiSpecialKind},
-        fdt::device::{ResolvedFdtProperty, ResolvedFdtSpecialKind},
-    };
-
-    if fdt.len() != 3 || acpi.len() != 3 {
+    if fdt.len() != 3 || acpi.len() != 4 {
         return Err(AxVmError::unsupported(
             "resolve LoongArch firmware topology",
             std::format!(
-                "expected interrupt-controller, console, and fw_cfg contributions in both FDT and \
-                 ACPI; found {} FDT and {} ACPI",
+                "expected interrupt-controller, console, and fw_cfg contributions in FDT and \
+                 those contributions plus PCI in ACPI; found {} FDT and {} ACPI",
                 fdt.len(),
                 acpi.len()
             ),
         ));
     }
 
-    let fdt_controller = single_fdt_special(
-        fdt,
-        |kind| matches!(kind, ResolvedFdtSpecialKind::InterruptController(_)),
-        "interrupt controller",
-    )?;
-    let ResolvedFdtSpecialKind::InterruptController(controller) = fdt_controller.kind else {
-        unreachable!("the special selector checked the contribution kind")
-    };
-    let acpi_controller = single_acpi_special(
-        acpi,
-        |kind| matches!(kind, ResolvedAcpiSpecialKind::InterruptController(_)),
-        "interrupt controller",
-    )?;
-    if acpi_controller.kind != ResolvedAcpiSpecialKind::InterruptController(controller) {
-        return Err(AxVmError::invalid_config(
-            "LoongArch FDT and ACPI interrupt-controller identities differ",
-        ));
-    }
-    let [pch_pic] = fdt_controller.registers.as_slice() else {
-        return Err(AxVmError::invalid_config(
-            "LoongArch FDT PCH-PIC contribution must resolve one MMIO window",
-        ));
-    };
-    let [
-        ResolvedAcpiRegister::Mmio {
-            base: acpi_pic_base,
-            size: acpi_pic_size,
-        },
-    ] = acpi_controller.registers.as_slice()
-    else {
-        return Err(AxVmError::invalid_config(
-            "LoongArch ACPI PCH-PIC contribution must resolve one MMIO window",
-        ));
-    };
-    if *pch_pic != (*acpi_pic_base, *acpi_pic_size)
-        || fdt_controller.node_name != "interrupt-controller"
-        || fdt_controller.compatible.len() != 1
-        || fdt_controller
-            .compatible
-            .first()
-            .is_none_or(|compatible| compatible != "loongson,pch-pic-1.0")
-        || !fdt_controller.interrupts.is_empty()
-        || !fdt_controller.properties.is_empty()
-        || acpi_controller.name != "PCH0"
-        || acpi_controller.hid.is_some()
-        || !acpi_controller.interrupts.is_empty()
-        || !acpi_controller.properties.is_empty()
-    {
-        return Err(AxVmError::invalid_config(
-            "LoongArch PCH-PIC FDT and ACPI contributions disagree",
-        ));
-    }
-
-    let fdt_fw_cfg = single_fdt_special(
-        fdt,
-        |kind| kind == ResolvedFdtSpecialKind::FirmwareTransport,
-        "firmware transport",
-    )?;
-    let acpi_fw_cfg = single_acpi_special(
-        acpi,
-        |kind| kind == ResolvedAcpiSpecialKind::FirmwareTransport,
-        "firmware transport",
-    )?;
-    let [fw_cfg] = fdt_fw_cfg.registers.as_slice() else {
-        return Err(AxVmError::invalid_config(
-            "LoongArch FDT fw_cfg contribution must resolve one MMIO window",
-        ));
-    };
-    let [
-        ResolvedAcpiRegister::Mmio {
-            base: acpi_fw_cfg_base,
-            size: acpi_fw_cfg_size,
-        },
-    ] = acpi_fw_cfg.registers.as_slice()
-    else {
-        return Err(AxVmError::invalid_config(
-            "LoongArch ACPI fw_cfg contribution must resolve one MMIO window",
-        ));
-    };
-    if *fw_cfg != (*acpi_fw_cfg_base, *acpi_fw_cfg_size)
-        || fdt_fw_cfg.node_name != "fw_cfg"
-        || fdt_fw_cfg.compatible.len() != 1
-        || fdt_fw_cfg
-            .compatible
-            .first()
-            .is_none_or(|compatible| compatible != "qemu,fw-cfg-mmio")
-        || !fdt_fw_cfg.interrupts.is_empty()
-        || !matches!(
-            fdt_fw_cfg.properties.as_slice(),
-            [ResolvedFdtProperty::Empty(name)] if name == "dma-coherent"
-        )
-        || acpi_fw_cfg.name != "FWCF"
-        || acpi_fw_cfg.hid.as_deref() != Some("QEMU0002")
-        || !acpi_fw_cfg.interrupts.is_empty()
-        || !acpi_fw_cfg.properties.is_empty()
-    {
-        return Err(AxVmError::invalid_config(
-            "LoongArch fw_cfg FDT and ACPI contributions disagree",
-        ));
-    }
-
-    let fdt_console = single_fdt_special(
-        fdt,
-        |kind| kind == ResolvedFdtSpecialKind::Console,
-        "console",
-    )?;
-    let acpi_console = single_acpi_special(
-        acpi,
-        |kind| kind == ResolvedAcpiSpecialKind::Console,
-        "console",
-    )?;
-    let expected_serial = (serial.mmio.base, serial.mmio.size);
-    let [fdt_serial] = fdt_console.registers.as_slice() else {
-        return Err(AxVmError::invalid_config(
-            "LoongArch FDT console contribution must resolve one MMIO window",
-        ));
-    };
-    let [
-        ResolvedAcpiRegister::Mmio {
-            base: acpi_serial_base,
-            size: acpi_serial_size,
-        },
-    ] = acpi_console.registers.as_slice()
-    else {
-        return Err(AxVmError::invalid_config(
-            "LoongArch ACPI console contribution must resolve one MMIO window",
-        ));
-    };
-    let [fdt_console_irq] = fdt_console.interrupts.as_slice() else {
-        return Err(AxVmError::invalid_config(
-            "LoongArch FDT console contribution must resolve one interrupt",
-        ));
-    };
-    let [acpi_console_irq] = acpi_console.interrupts.as_slice() else {
-        return Err(AxVmError::invalid_config(
-            "LoongArch ACPI console contribution must resolve one interrupt",
-        ));
-    };
-    if *fdt_serial != expected_serial
-        || (*acpi_serial_base, *acpi_serial_size) != expected_serial
-        || fdt_console.node_name != "serial"
-        || fdt_console.compatible.len() != 1
-        || fdt_console
-            .compatible
-            .first()
-            .is_none_or(|compatible| compatible != "ns16550a")
-        || fdt_console_irq.controller != controller
-        || acpi_console_irq.controller != controller
-        || fdt_console_irq.input != serial.irq
-        || acpi_console_irq.input != serial.irq
-        || !matches!(
-            fdt_console.properties.as_slice(),
-            [
-                ResolvedFdtProperty::U32(clock_name, clock_hz),
-                ResolvedFdtProperty::U32(shift_name, register_shift),
-                ResolvedFdtProperty::U32(width_name, register_width),
-            ] if clock_name == "clock-frequency"
-                && *clock_hz == serial.clock_hz
-                && shift_name == "reg-shift"
-                && *register_shift == u32::from(serial.register_shift)
-                && width_name == "reg-io-width"
-                && *register_width == u32::try_from(serial.register_width.size())
-                    .expect("a serial access width is at most eight bytes")
-        )
-        || acpi_console.name != "COM0"
-        || acpi_console.hid.as_deref() != Some("PNP0501")
-        || !matches!(
-            acpi_console.properties.as_slice(),
-            [ResolvedAcpiProperty::U32(name, clock_hz)]
-                if name == "clock-frequency" && *clock_hz == serial.clock_hz
-        )
-    {
-        return Err(AxVmError::invalid_config(
-            "LoongArch console FDT, ACPI, and runtime resources disagree",
-        ));
-    }
-
+    let common = firmware::resolve_fdt_common_firmware(fdt, serial)?;
+    firmware::cross_check_acpi_common_firmware(common, acpi, serial)?;
     Ok(LoongArchSpecialFirmware {
-        controller,
-        pch_pic: MmioRegion {
-            base: pch_pic.0,
-            size: pch_pic.1,
-        },
-        fw_cfg: MmioRegion {
-            base: fw_cfg.0,
-            size: fw_cfg.1,
-        },
+        controller: common.controller,
+        pch_pic: common.pch_pic,
+        fw_cfg: common.fw_cfg,
+        pci_ecam: Some(resolve_pci_ecam(acpi)?),
     })
 }
 
-fn single_fdt_special<'a>(
-    specials: &'a [crate::boot::fdt::device::ResolvedFdtSpecial],
-    predicate: impl Fn(crate::boot::fdt::device::ResolvedFdtSpecialKind) -> bool,
-    name: &'static str,
-) -> AxVmResult<&'a crate::boot::fdt::device::ResolvedFdtSpecial> {
-    let mut matches = specials.iter().filter(|special| predicate(special.kind));
-    let special = matches.next().ok_or_else(|| {
-        AxVmError::invalid_config(std::format!("LoongArch FDT has no {name} contribution"))
-    })?;
-    if matches.next().is_some() {
-        return Err(AxVmError::unsupported(
-            "resolve LoongArch FDT topology",
-            std::format!("multiple {name} contributions are not supported"),
+fn resolve_fdt_special_firmware(
+    fdt: &[crate::boot::fdt::device::ResolvedFdtSpecial],
+    serial: SerialDevice,
+) -> AxVmResult<LoongArchSpecialFirmware> {
+    let common = firmware::resolve_fdt_common_firmware(fdt, serial)?;
+    Ok(LoongArchSpecialFirmware {
+        controller: common.controller,
+        pch_pic: common.pch_pic,
+        fw_cfg: common.fw_cfg,
+        pci_ecam: None,
+    })
+}
+
+fn resolve_pci_ecam(acpi: &[crate::boot::acpi::ResolvedAcpiSpecial]) -> AxVmResult<MmioRegion> {
+    use crate::boot::acpi::{ResolvedAcpiRegister, ResolvedAcpiSpecialKind};
+
+    let pci = single_acpi_special(
+        acpi,
+        |kind| kind == ResolvedAcpiSpecialKind::PciHostBridge,
+        "PCI host bridge",
+    )?;
+    let [ResolvedAcpiRegister::Mmio { base, size }] = pci.registers.as_slice() else {
+        return Err(AxVmError::invalid_config(
+            "LoongArch ACPI PCI0 contribution must resolve exactly one MMIO window",
+        ));
+    };
+    if pci.name != "PCI0"
+        || pci.hid.as_deref() != Some("PNP0A08")
+        || !pci.interrupts.is_empty()
+        || !pci.properties.is_empty()
+    {
+        return Err(AxVmError::invalid_config(
+            "LoongArch ACPI PCI host contribution must be PCI0/PNP0A08 without interrupts or \
+             properties",
         ));
     }
-    Ok(special)
+    axdevice::PciEcamDevice::new(*base, *size).map_err(|error| {
+        AxVmError::invalid_config(std::format!(
+            "invalid resolved LoongArch PCI ECAM at base {base:#x}, size {size:#x}: {error}"
+        ))
+    })?;
+    Ok(MmioRegion {
+        base: *base,
+        size: *size,
+    })
+}
+
+fn reconcile_pci_ecam(pci: &mut PciHost, resolved: MmioRegion) -> AxVmResult {
+    let profile = pci.ecam;
+    if profile != resolved {
+        return Err(AxVmError::invalid_config(std::format!(
+            "normalized LoongArch PCI ECAM range {:#x}..{:#x} differs from graph-resolved range \
+             {:#x}..{:#x}",
+            profile.base,
+            profile.base.saturating_add(profile.size),
+            resolved.base,
+            resolved.base.saturating_add(resolved.size),
+        )));
+    }
+    pci.ecam = resolved;
+    Ok(())
 }
 
 fn single_acpi_special<'a>(
@@ -403,37 +290,39 @@ fn single_acpi_special<'a>(
 }
 
 fn resolved_serial(vm: &AxVMRef) -> AxVmResult<SerialDevice> {
-    vm.with_planned_device_graph(|graph| {
-        let serials = crate::machine::resolved_serial_devices(graph)?;
-        let serial = serials
-            .iter()
-            .find(|serial| serial.id() == "console0")
-            .ok_or_else(|| AxVmError::invalid_config("LoongArch plan has no console0"))?
-            .profile();
-        let crate::machine::GuestSerialTransport::Mmio {
-            base,
-            length,
-            register_shift,
-            register_width,
-        } = serial.transport
-        else {
-            return Err(AxVmError::unsupported(
-                "build LoongArch guest firmware",
-                "LoongArch console0 must use MMIO",
-            ));
-        };
-        Ok(SerialDevice {
-            mmio: MmioRegion {
-                base: base as u64,
-                size: length as u64,
-            },
-            irq: u32::try_from(serial.irq)
-                .map_err(|_| AxVmError::invalid_config("LoongArch console IRQ exceeds u32"))?,
-            clock_hz: serial.clock_hz,
-            baud: 115_200,
-            register_shift,
-            register_width,
-        })
+    vm.with_planned_device_graph(resolved_serial_from_graph)
+}
+
+fn resolved_serial_from_graph(graph: &axdevice::ResolvedDeviceGraph) -> AxVmResult<SerialDevice> {
+    let serials = crate::machine::resolved_serial_devices(graph)?;
+    let serial = serials
+        .iter()
+        .find(|serial| serial.id() == "console0")
+        .ok_or_else(|| AxVmError::invalid_config("LoongArch plan has no console0"))?
+        .profile();
+    let crate::machine::GuestSerialTransport::Mmio {
+        base,
+        length,
+        register_shift,
+        register_width,
+    } = serial.transport
+    else {
+        return Err(AxVmError::unsupported(
+            "build LoongArch guest firmware",
+            "LoongArch console0 must use MMIO",
+        ));
+    };
+    Ok(SerialDevice {
+        mmio: MmioRegion {
+            base: base as u64,
+            size: length as u64,
+        },
+        irq: u32::try_from(serial.irq)
+            .map_err(|_| AxVmError::invalid_config("LoongArch console IRQ exceeds u32"))?,
+        clock_hz: serial.clock_hz,
+        baud: 115_200,
+        register_shift,
+        register_width,
     })
 }
 
@@ -648,3 +537,6 @@ fn fw_cfg_ram_regions(regions: &[MemoryRegion]) -> Arc<[FwCfgRamRegion]> {
         .collect::<Vec<_>>();
     regions.into()
 }
+
+#[cfg(test)]
+mod tests;

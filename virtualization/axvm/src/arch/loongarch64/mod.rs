@@ -11,6 +11,7 @@ pub(crate) mod boot;
 mod capabilities;
 pub(crate) mod irq;
 mod npt;
+mod pci_ecam;
 mod resource_pools;
 mod vm;
 pub(crate) use vm::LoongArchVmPlan;

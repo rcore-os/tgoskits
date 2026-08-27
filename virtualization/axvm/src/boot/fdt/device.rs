@@ -137,6 +137,28 @@ pub(crate) fn resolve_fdt_firmware(graph: &ResolvedDeviceGraph) -> AxVmResult<Re
     graph
         .validate_fdt_support()
         .map_err(|error| AxVmError::invalid_config(std::format!("{error}")))?;
+    resolve_fdt_firmware_core(graph)
+}
+
+/// Resolves FDT contributions available for an auxiliary firmware artifact.
+///
+/// This is not a fallback for direct-FDT selection. Callers selecting FDT as
+/// the primary firmware interface must continue using [`resolve_fdt_firmware`]
+/// so every runtime model is validated for FDT support. This resolver skips
+/// that global validation only after another primary interface was selected.
+///
+/// # Errors
+///
+/// Returns a resolution error when an included FDT contribution has an invalid
+/// resource reference or node shape. Callers must strictly select and validate
+/// another primary firmware interface before using this auxiliary resolver.
+pub(crate) fn resolve_available_fdt_firmware(
+    graph: &ResolvedDeviceGraph,
+) -> AxVmResult<ResolvedFdtFirmware> {
+    resolve_fdt_firmware_core(graph)
+}
+
+fn resolve_fdt_firmware_core(graph: &ResolvedDeviceGraph) -> AxVmResult<ResolvedFdtFirmware> {
     let mut devices = Vec::new();
     let mut specials = Vec::new();
     for graph_node in graph.nodes() {
@@ -263,7 +285,7 @@ mod tests {
     use axdevice::*;
     use axdevice_base::{InterruptControllerId, InterruptTrigger};
 
-    use super::resolve_fdt_devices;
+    use super::{resolve_available_fdt_firmware, resolve_fdt_devices, resolve_fdt_firmware};
 
     struct InvalidFirmwareTransportPropertyModel;
 
@@ -331,5 +353,78 @@ mod tests {
         let graph = builder.declare().unwrap().resolve(pools).unwrap();
 
         assert!(resolve_fdt_devices(&graph).is_err());
+        assert!(resolve_available_fdt_firmware(&graph).is_err());
+    }
+
+    struct StaticFirmwareModel(DeviceFirmwareSpec);
+
+    impl DeviceModel for StaticFirmwareModel {
+        fn requirements(&self) -> DeviceManagerResult<DeviceRequirements> {
+            Ok(DeviceRequirements::new())
+        }
+
+        fn firmware(&self) -> DeviceFirmwareSpec {
+            self.0.clone()
+        }
+
+        fn build(
+            &self,
+            _context: &mut DeviceBuildContext<'_>,
+        ) -> DeviceManagerResult<DeviceBundle> {
+            unreachable!("firmware-resolution regression does not build devices")
+        }
+    }
+
+    fn mixed_firmware_graph() -> ResolvedDeviceGraph {
+        let mut builder = DeviceGraphBuilder::new();
+        builder
+            .add(DeviceNodeSpec::virtual_device(
+                DeviceNodeId::new("fdt-device").unwrap(),
+                Arc::new(StaticFirmwareModel(DeviceFirmwareSpec::interfaces(
+                    Some(vec![FdtContributionSpec::Conventional(
+                        FdtNodeSpec::new("fdt-device").with_compatible("test,fdt-device"),
+                    )]),
+                    Some(vec![AcpiContributionSpec::Conventional(
+                        AcpiDeviceSpec::new("DUAL", "TEST0001"),
+                    )]),
+                ))),
+            ))
+            .unwrap();
+        builder
+            .add(DeviceNodeSpec::virtual_device(
+                DeviceNodeId::new("acpi-device").unwrap(),
+                Arc::new(StaticFirmwareModel(DeviceFirmwareSpec::interfaces(
+                    None,
+                    Some(vec![AcpiContributionSpec::Conventional(
+                        AcpiDeviceSpec::new("ACPI", "TEST0001"),
+                    )]),
+                ))),
+            ))
+            .unwrap();
+        builder
+            .declare()
+            .unwrap()
+            .resolve(ResourcePools::new())
+            .unwrap()
+    }
+
+    #[test]
+    fn strict_primary_resolution_and_auxiliary_fdt_filter_mixed_graph() {
+        let graph = mixed_firmware_graph();
+
+        let acpi = crate::boot::acpi::resolve_acpi_firmware(&graph).unwrap();
+
+        assert_eq!(acpi.devices.len(), 2);
+        assert!(acpi.devices.iter().any(|device| device.name == "DUAL"));
+        assert!(acpi.devices.iter().any(|device| device.name == "ACPI"));
+        assert!(resolve_fdt_firmware(&graph).is_err());
+
+        let firmware = resolve_available_fdt_firmware(&graph).unwrap();
+
+        assert_eq!(firmware.devices.len(), 1);
+        assert!(firmware.specials.is_empty());
+        assert_eq!(firmware.devices[0].id, "fdt-device");
+        assert_eq!(firmware.devices[0].node_name, "fdt-device");
+        assert_eq!(firmware.devices[0].compatible, ["test,fdt-device"]);
     }
 }

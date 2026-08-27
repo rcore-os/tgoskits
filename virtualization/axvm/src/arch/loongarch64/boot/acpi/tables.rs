@@ -200,8 +200,8 @@ pub(super) fn build_mcfg(tables: &mut Vec<u8>, pci: &LoongArchFwCfgPciConfig) {
     push_le(tables, 0, 8);
     push_le(tables, pci.ecam_base, 8);
     push_le(tables, 0, 2);
-    push_le(tables, 0, 1);
-    push_le(tables, (pci.ecam_size - 1) >> 20, 1);
+    push_le(tables, pci.bus_start as u64, 1);
+    push_le(tables, pci.bus_end as u64, 1);
     push_le(tables, 0, 4);
     end_acpi_table(tables, start);
 }
@@ -256,4 +256,31 @@ pub(super) fn write_le_at(out: &mut [u8], value: u64, offset: usize, size: u8) {
 
 fn push_le(out: &mut Vec<u8>, value: u64, size: usize) {
     out.extend_from_slice(&value.to_le_bytes()[..size]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcfg_uses_the_resolved_ecam_base_and_bus_range() {
+        let pci = LoongArchFwCfgPciConfig {
+            ecam_base: 0x3000_0000,
+            ecam_size: 0x0400_0000,
+            bus_start: 0,
+            bus_end: 63,
+            ..Default::default()
+        };
+        let mut tables = Vec::new();
+
+        build_mcfg(&mut tables, &pci);
+
+        assert_eq!(&tables[..4], b"MCFG");
+        assert_eq!(
+            u64::from_le_bytes(tables[44..52].try_into().unwrap()),
+            0x3000_0000
+        );
+        assert_eq!(tables[54], 0);
+        assert_eq!(tables[55], 63);
+    }
 }

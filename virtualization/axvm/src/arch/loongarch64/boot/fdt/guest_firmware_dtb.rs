@@ -429,7 +429,13 @@ mod tests {
     use super::*;
 
     fn test_platform() -> GuestPlatform {
-        crate::arch::loongarch64::boot::probe::GuestPlatformBuilder::new(Vec::new(), None).build()
+        crate::arch::loongarch64::boot::probe::GuestPlatformBuilder::new(
+            Vec::new(),
+            None,
+            crate::arch::loongarch64::boot::GuestFirmwareSelection::Uefi,
+        )
+        .build()
+        .unwrap()
     }
 
     #[test]

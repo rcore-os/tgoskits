@@ -10,7 +10,7 @@ mod loader;
 #[cfg(any(target_arch = "x86_64", test))]
 pub(crate) use arena::AcpiAllocation;
 pub(crate) use arena::AcpiTableArena;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", all(test, target_arch = "loongarch64")))]
 pub(crate) use device::ResolvedAcpiInterrupt;
 pub(crate) use device::{
     AcpiInterruptControllerMap, ResolvedAcpiDevice, ResolvedAcpiProperty, ResolvedAcpiRegister,

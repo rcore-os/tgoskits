@@ -35,10 +35,14 @@ pub(in crate::arch::loongarch64::boot) struct LoongArchFwCfgPciConfig {
     pub(in crate::arch::loongarch64::boot) io_base: u64,
     pub(in crate::arch::loongarch64::boot) io_size: u32,
     pub(in crate::arch::loongarch64::boot) intx_base: u8,
+    pub(in crate::arch::loongarch64::boot) bus_start: u8,
+    pub(in crate::arch::loongarch64::boot) bus_end: u8,
 }
 
 impl Default for LoongArchFwCfgPciConfig {
     fn default() -> Self {
+        let (bus_start, bus_end) = validated_pci_bus_range(VIRT_PCI_CFG_BASE, VIRT_PCI_CFG_SIZE)
+            .expect("the static QEMU virt PCI ECAM range is valid");
         Self {
             ecam_base: VIRT_PCI_CFG_BASE,
             ecam_size: VIRT_PCI_CFG_SIZE,
@@ -47,6 +51,8 @@ impl Default for LoongArchFwCfgPciConfig {
             io_base: 0x1800_0000,
             io_size: 0x0001_0000,
             intx_base: 80,
+            bus_start,
+            bus_end,
         }
     }
 }
@@ -92,8 +98,10 @@ pub(in crate::arch::loongarch64::boot) fn serial_config(
 
 pub(in crate::arch::loongarch64::boot) fn pci_config(
     platform: &GuestPlatform,
-) -> LoongArchFwCfgPciConfig {
-    LoongArchFwCfgPciConfig {
+) -> Result<LoongArchFwCfgPciConfig, crate::boot::acpi::AcpiBuildError> {
+    let (bus_start, bus_end) =
+        validated_pci_bus_range(platform.pci.ecam.base, platform.pci.ecam.size)?;
+    Ok(LoongArchFwCfgPciConfig {
         ecam_base: platform.pci.ecam.base,
         ecam_size: platform.pci.ecam.size,
         mmio_base: platform.pci.mmio.base,
@@ -101,7 +109,29 @@ pub(in crate::arch::loongarch64::boot) fn pci_config(
         io_base: platform.pci.io_base,
         io_size: platform.pci.io_size as u32,
         intx_base: (platform.interrupt.acpi_gsi_base + platform.pci.intx_base) as u8,
-    }
+        bus_start,
+        bus_end,
+    })
+}
+
+fn validated_pci_bus_range(
+    ecam_base: u64,
+    ecam_size: u64,
+) -> Result<(u8, u8), crate::boot::acpi::AcpiBuildError> {
+    axdevice::PciEcamDevice::new(ecam_base, ecam_size).map_err(|error| {
+        crate::boot::acpi::AcpiBuildError::InvalidValue {
+            field: "LoongArch resolved PCI ECAM",
+            value: std::format!("base {:#x}, size {:#x}: {error}", ecam_base, ecam_size),
+        }
+    })?;
+    let bus_count = ecam_size >> 20;
+    let bus_end = u8::try_from(bus_count - 1).map_err(|_| {
+        crate::boot::acpi::AcpiBuildError::InvalidValue {
+            field: "LoongArch PCI bus end",
+            value: std::format!("ECAM size {ecam_size:#x}"),
+        }
+    })?;
+    Ok((0, bus_end))
 }
 
 pub(in crate::arch::loongarch64::boot) fn interrupt_config(
