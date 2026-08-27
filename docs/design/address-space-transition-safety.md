@@ -120,6 +120,20 @@ exec、任务退出、normal schedule 和 CPU offline 使用同一 active-mm 状
 不能在 `unmap_page()` 后直接 `dealloc_frame()`。部分 populate 失败时，尚未发布的 frame 可以立即
 回滚；已经安装过 PTE 的 frame 必须进入 gather。
 
+页表查询明确区分两种语义：`query()` 回答“当前是否存在可用于地址翻译的 present leaf”，
+`query_occupied()` 回答“这个 slot 是否仍由一个 leaf descriptor 占用”。后者包括 `PROT_NONE`、
+lazy marker 等 non-present software mapping，只允许用于 ownership、rollback 和 destructive
+mutation，不能作为用户地址可访问的证据。所有销毁、移动和 owner/accounting 对账路径必须按
+occupied leaf 判断；copy/access/page-fault 权限判断继续使用 present translation。LoongArch 的
+`PROT_NONE` PTE 正是 occupied 但 non-present：若 unmap 预检误用 `query()`，它会跳过清除，随后
+`MAP_FIXED` 的 replacement 在同一 slot 得到 `MappingConflict`。
+
+多页 map 同样服从 prepare/rollback 边界。Starry `SharedBackend` 在第一条 PTE 前检查整个目标
+range 未被任何 descriptor 占用，并预留 gather 的 range/backend retention；若后续页表分配或
+安装中途失败，已安装前缀立即撤回、RSS 同步回滚，但 backend owner 仍由 gather 持有，直到该
+短暂发布过的 range 完成 shootdown。这样 `MemorySet::map` 返回错误时不会留下无 VMA owner 的
+orphan PTE，也不会让共享 frame 在 stale translation 仍存在时析构。
+
 事务区分“逻辑提交”和“硬件确认”。PTE、VMA 与 RSS 等逻辑账本在地址空间锁内一起提交；RSS
 不是可在 shootdown 后才补写的 deferred resource。shootdown 失败时，已发布 mutation 的结果不能
 被重新包装成普通 `Err`，否则 `mremap`、`brk`、clone 或清理路径会错误执行“操作未发生”的补偿。
@@ -260,7 +274,9 @@ TGOSKits 不照搬 Linux 的散布式 C 宏和隐式约定，而是保留其语�
   `page_table_mut` 只在 mm backend 的受控 gather 范围内可见，外部 mutable access 由 rustdoc
   `compile_fail` 拒绝；多 VMA unmap 的第二个 backend 失败时，前一个虽已移除 PTE，全部 VMA/
   backend owner 仍保留到 retry；memfd unmap delta 只在 VMA transaction 后 commit；`mremap`
-  source backend 在 unconfirmed shootdown 中由 gather 继续持有；
+  source backend 在 unconfirmed shootdown 中由 gather 继续持有；page-table-generic 回归固定
+  present query 与 occupied descriptor query 的差异，四架构 `mm-transition-safety` 用
+  `PROT_NONE + MAP_FIXED` 固定覆盖 shared/private replacement，证明 non-present leaf 会被清除；
 - CPU offline：源码合同固定 kernel quarantine retry 早于 active-mm release，失败返回时 CPU 仍
   保持原 active-mm 状态；
 - `qemu/system/mm-transition-safety`：两个 CPU 上以 affinity、barrier 和 `/proc/.../status` 的

@@ -399,6 +399,30 @@ impl<T: TableMeta, A: FrameAllocator> PageTableRef<T, A> {
         ))
     }
 
+    /// Queries one occupied leaf, including a non-present software mapping.
+    ///
+    /// Unlike [`Self::query`], this method distinguishes an unused entry from
+    /// a leaf whose descriptor is retained while address translation is
+    /// disabled. It is intended for ownership, rollback, and destructive
+    /// page-table operations. Callers must not use a successful result as
+    /// proof that the virtual address is currently accessible.
+    pub fn query_occupied(
+        &self,
+        vaddr: VirtAddr,
+    ) -> PagingResult<(PhysAddr, PteConfigOf<T>, usize)> {
+        if T::STRICT_ADDRESS_WIDTH && !Self::is_addr_in_width(vaddr.as_usize()) {
+            return Err(PagingError::address_overflow("query_occupied"));
+        }
+
+        let (pte, level) = self
+            .root
+            .find_occupied_leaf(vaddr, Frame::<T, A>::PT_LEVEL)?;
+        let page_size = Frame::<T, A>::level_size(level);
+        let page_offset = vaddr.as_usize() % page_size;
+        let paddr = pte.paddr(level > 1) + page_offset;
+        Ok((paddr, pte.config(level > 1), page_size))
+    }
+
     /// 映射虚拟地址范围到物理地址范围
     pub fn map(&mut self, config: &MapConfig<PteConfigOf<T>>) -> PagingResult {
         // 验证输入参数

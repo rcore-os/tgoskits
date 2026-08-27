@@ -289,6 +289,36 @@ static int cow_kernel_copy_on_cpu(int cpu)
     return ok ? 0 : -1;
 }
 
+static int fixed_replacement_clears_nonpresent_leaf(void)
+{
+    void *guard = mmap(NULL, 2 * PAGE_SIZE, PROT_NONE,
+                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (guard == MAP_FAILED)
+        return -1;
+
+    void *target = (char *)guard + PAGE_SIZE;
+    void *replacement = mmap(target, PAGE_SIZE, PROT_NONE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (replacement != target) {
+        munmap(guard, 2 * PAGE_SIZE);
+        return -1;
+    }
+    if (munmap(guard, 2 * PAGE_SIZE) != 0)
+        return -1;
+
+    guard = mmap(NULL, 2 * PAGE_SIZE, PROT_NONE,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (guard == MAP_FAILED)
+        return -1;
+
+    target = (char *)guard + PAGE_SIZE;
+    replacement = mmap(target, PAGE_SIZE, PROT_NONE,
+                       MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    int replaced = replacement == target;
+    int unmapped = munmap(guard, 2 * PAGE_SIZE) == 0;
+    return replaced && unmapped ? 0 : -1;
+}
+
 int main(void)
 {
     cpu_set_t allowed;
@@ -317,6 +347,12 @@ int main(void)
         return 1;
     }
     printf("PASS: shared mm protect/block/wake/yield transition\n");
+
+    if (fixed_replacement_clears_nonpresent_leaf() != 0) {
+        perror("FAIL: MAP_FIXED non-present leaf replacement");
+        return 1;
+    }
+    printf("PASS: MAP_FIXED clears occupied non-present leaves\n");
 
     for (size_t index = 0; index < 2; ++index) {
         if (cow_kernel_copy_on_cpu(cpus[index]) != 0) {

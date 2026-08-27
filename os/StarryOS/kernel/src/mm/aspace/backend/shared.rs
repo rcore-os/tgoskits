@@ -101,6 +101,45 @@ impl SharedBackend {
         let start_index = self.page_offset + divide_page(start - self.start, self.pages.size);
         &self.pages[start_index..]
     }
+
+    fn validate_map(&self, range: VirtAddrRange, pt: &PageTable) -> StarryResult {
+        for vaddr in pages_in(range, self.pages.size)? {
+            match pt.query_occupied(vaddr) {
+                Ok((paddr, _, _)) => {
+                    return Err(PagingError::mapping_conflict(vaddr, paddr).into());
+                }
+                Err(PagingError::NotMapped) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn rollback_mapped_prefix(
+        &self,
+        start: VirtAddr,
+        mapped_size: usize,
+        acct: Option<&MemoryAccounting>,
+        gather: &mut TlbGather,
+        pt: &mut PageTable,
+    ) {
+        if mapped_size == 0 {
+            return;
+        }
+
+        gather.retain_backend(Backend::Shared(self.clone()));
+        let range = VirtAddrRange::from_start_size(start, mapped_size);
+        for vaddr in pages_in(range, self.pages.size)
+            .expect("a mapped shared prefix must remain page aligned")
+        {
+            pt.unmap_page(vaddr)
+                .expect("a shared page installed by this transaction must remain occupied");
+            if let Some(acct) = acct {
+                acct.dec(RssKind::Shmem, 1);
+            }
+        }
+        gather.record_range(range);
+    }
 }
 
 impl BackendOps for SharedBackend {
@@ -113,16 +152,29 @@ impl BackendOps for SharedBackend {
         range: VirtAddrRange,
         flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
-        _gather: &mut TlbGather,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult {
         debug!("Shared::map: {:?} {:?}", range, flags);
+
+        self.validate_map(range, pt)?;
+        gather
+            .prepare_ranges(1)
+            .map_err(|_| StarryError::NoMemory)?;
+        gather
+            .prepare_backend_retention(1)
+            .map_err(|_| StarryError::NoMemory)?;
+
+        let mut mapped_size = 0;
         for (vaddr, paddr) in
             pages_in(range, self.pages.size)?.zip(self.pages_starting_from(range.start))
         {
-            let newly_mapped = pt.query(vaddr).is_err();
-            pt.map_page(vaddr, *paddr, self.pages.size, flags)?;
-            if newly_mapped && let Some(acct) = acct {
+            if let Err(error) = pt.map_page(vaddr, *paddr, self.pages.size, flags) {
+                self.rollback_mapped_prefix(range.start, mapped_size, acct, gather, pt);
+                return Err(error.into());
+            }
+            mapped_size += self.pages.size;
+            if let Some(acct) = acct {
                 acct.inc(RssKind::Shmem, 1);
             }
         }
@@ -139,7 +191,7 @@ impl BackendOps for SharedBackend {
         debug!("Shared::unmap: {:?}", range);
         let mut mapped = Vec::new();
         for vaddr in pages_in(range, self.pages.size)? {
-            match pt.query(vaddr) {
+            match pt.query_occupied(vaddr) {
                 Ok((_, _, page_size)) if page_size == self.pages.size => mapped.push(vaddr),
                 Ok(_) => return Err(StarryError::BadState),
                 Err(PagingError::NotMapped) => {}

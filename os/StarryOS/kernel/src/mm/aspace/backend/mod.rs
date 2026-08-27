@@ -117,7 +117,7 @@ pub trait BackendOps {
     /// removes its first PTE.
     fn validate_unmap(&self, range: VirtAddrRange, pt: &PageTable) -> StarryResult {
         for addr in pages_in(range, self.page_size())? {
-            match pt.query(addr) {
+            match pt.query_occupied(addr) {
                 Ok((_, _, page_size)) if page_size == self.page_size() => {}
                 Ok(_) => return Err(StarryError::BadState),
                 Err(PagingError::NotMapped) => {}

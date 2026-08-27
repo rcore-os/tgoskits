@@ -343,6 +343,11 @@ fn empty_flags_keep_leaf_non_present_until_protected() {
         page_table.query(vaddr),
         Err(PagingError::NotMapped)
     ));
+    let (occupied_paddr, occupied_config, occupied_size) =
+        page_table.query_occupied(vaddr).unwrap();
+    assert_eq!(occupied_paddr, paddr);
+    assert_eq!(occupied_config, MappingFlags::empty());
+    assert_eq!(occupied_size, 0x1000);
 
     page_table
         .protect_region(
@@ -370,6 +375,10 @@ fn empty_flags_keep_leaf_non_present_until_protected() {
     assert_eq!(removed_paddr, unmapped_paddr);
     assert_eq!(removed_flags, MappingFlags::empty());
     assert_eq!(removed_size, 0x1000);
+    assert!(matches!(
+        page_table.query_occupied(unmapped_vaddr),
+        Err(PagingError::NotMapped)
+    ));
     page_table
         .map_page(
             unmapped_vaddr,

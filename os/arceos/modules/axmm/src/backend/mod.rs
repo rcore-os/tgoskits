@@ -95,7 +95,7 @@ impl MappingBackend for Backend {
             }
             Self::Alloc { .. } => {
                 for addr in PageIter4K::new(start, start + size).unwrap() {
-                    match pt.query(addr) {
+                    match pt.query_occupied(addr) {
                         Ok((_, _, PAGE_SIZE_4K)) | Err(PagingError::NotMapped) => {}
                         Ok(_) | Err(_) => return false,
                     }

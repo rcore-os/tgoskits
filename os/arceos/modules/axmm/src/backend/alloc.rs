@@ -69,22 +69,27 @@ impl Backend {
         size: usize,
         gather: &mut TlbGather,
         pt: &mut PageTable,
-        _populate: bool,
+        populate: bool,
     ) -> bool {
         debug!("unmap_alloc: [{:#x}, {:#x})", start, start + size);
         let mut mapped = alloc::vec::Vec::new();
         for addr in PageIter4K::new(start, start + size).unwrap() {
-            match pt.query(addr) {
-                Ok((frame, _, PAGE_SIZE_4K)) => mapped.push((addr, frame)),
+            match pt.query_occupied(addr) {
+                Ok((frame, _, PAGE_SIZE_4K)) => {
+                    let owns_frame = populate || frame.as_usize() != 0;
+                    mapped.push((addr, frame, owns_frame));
+                }
                 Ok(_) => return false,
                 Err(PagingError::NotMapped) => {}
                 Err(_) => return false,
             }
         }
-        for (addr, frame) in mapped {
+        for (addr, frame, owns_frame) in mapped {
             pt.unmap_page(addr)
                 .expect("a preflighted allocated page must remain mapped under the aspace lock");
-            gather.defer_frame(frame);
+            if owns_frame {
+                gather.defer_frame(frame);
+            }
         }
         gather.invalidate(start, size);
         true

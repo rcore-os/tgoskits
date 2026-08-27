@@ -126,7 +126,7 @@ impl FileBackendInner {
         } else {
             RssKind::File
         };
-        let mapped = match aspace.page_table().query(vaddr) {
+        let mapped = match aspace.page_table().query_occupied(vaddr) {
             Ok((_, _, PAGE_SIZE_4K)) => true,
             Ok((_, _, page_size)) => {
                 warn!("Unexpected file-backed mmap page size: {page_size:?}");
@@ -352,7 +352,7 @@ impl BackendOps for FileBackend {
         let kind = self.rss_kind();
         let mut mapped = Vec::new();
         for addr in pages_in(range, PAGE_SIZE_4K)? {
-            match pt.query(addr) {
+            match pt.query_occupied(addr) {
                 Ok((_, _, page_size)) if page_size == PAGE_SIZE_4K => mapped.push(addr),
                 Ok(_) => return Err(StarryError::BadState),
                 Err(PagingError::NotMapped) => {}

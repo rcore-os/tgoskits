@@ -620,7 +620,7 @@ impl PageTableCowCloneRollback<'_> {
             child.remove_charge(vaddr);
         }
 
-        let (paddr, _, page_size) = match self.page_table.query(vaddr) {
+        let (paddr, _, page_size) = match self.page_table.query_occupied(vaddr) {
             Ok(mapping) => mapping,
             Err(PagingError::NotMapped) => return,
             Err(err) => {
@@ -664,7 +664,7 @@ impl BackendOps for CowBackend {
 
     fn validate_unmap(&self, range: VirtAddrRange, pt: &PageTable) -> StarryResult {
         for addr in pages_in(range, self.size)? {
-            match pt.query(addr) {
+            match pt.query_occupied(addr) {
                 Ok((frame, _, page_size)) if page_size == self.size => {
                     if FRAME_TABLE.lock().get_frame_ref(frame).is_none() {
                         return Err(crate::StarryError::BadAddress);
@@ -699,7 +699,7 @@ impl BackendOps for CowBackend {
         debug!("Cow::unmap: {range:?}");
         let mut mapped = Vec::new();
         for addr in pages_in(range, self.size)? {
-            match pt.query(addr) {
+            match pt.query_occupied(addr) {
                 Ok((frame, _, page_size)) if page_size == self.size => {
                     let frame_ref = FRAME_TABLE
                         .lock()
@@ -817,7 +817,7 @@ impl BackendOps for CowBackend {
         );
 
         for vaddr in pages_in(range, self.size)? {
-            match transaction.parent_page_table.query(vaddr) {
+            match transaction.parent_page_table.query_occupied(vaddr) {
                 Ok((paddr, pte_flags, page_size)) => {
                     assert_eq!(page_size, self.size);
                     let frame = FRAME_TABLE

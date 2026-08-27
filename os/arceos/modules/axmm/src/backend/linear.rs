@@ -58,7 +58,7 @@ impl Backend {
         size: usize,
         pt: &PageTable,
     ) -> bool {
-        validate_linear_unmap_layout(start, size, |addr| match pt.query(addr) {
+        validate_linear_unmap_layout(start, size, |addr| match pt.query_occupied(addr) {
             Ok((_, _, page_size)) => LinearLeaf::Mapped(page_size),
             Err(PagingError::NotMapped) => LinearLeaf::Unmapped,
             Err(_) => LinearLeaf::Invalid,

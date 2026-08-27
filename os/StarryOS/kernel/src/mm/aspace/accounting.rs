@@ -331,7 +331,7 @@ impl MemoryAccounting {
             let Some(parent_kind) = parent.charge_kind(*va) else {
                 continue;
             };
-            if child_pt.query(*va).is_err() {
+            if child_pt.query_occupied(*va).is_err() {
                 continue;
             }
             match child.charge_kind(*va) {
@@ -349,7 +349,7 @@ impl MemoryAccounting {
         let child_orphans: alloc::vec::Vec<_> = child
             .charge_entries()
             .into_iter()
-            .filter(|(va, _)| child_pt.query(*va) == Err(PagingError::NotMapped))
+            .filter(|(va, _)| child_pt.query_occupied(*va) == Err(PagingError::NotMapped))
             .map(|(va, _)| va)
             .collect();
         for va in child_orphans {

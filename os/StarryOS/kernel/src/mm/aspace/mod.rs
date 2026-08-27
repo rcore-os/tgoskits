@@ -75,7 +75,7 @@ fn rollback_moved_pages(cursor: &mut PageTable, moved_pages: &[MovedPage]) {
         if dst_newly_mapped {
             let _ = cursor.unmap_page(dst_va);
         }
-        if cursor.query(src_va).is_err() {
+        if cursor.query_occupied(src_va).is_err() {
             let _ = cursor.map_page(src_va, paddr, page_size, flags);
         }
     }
@@ -636,7 +636,7 @@ impl AddrSpace {
         let mut offset = 0;
         while offset < size {
             let src_va = src + offset;
-            match cursor.query(src_va) {
+            match cursor.query_occupied(src_va) {
                 Ok((paddr, flags, page_size)) => {
                     mapped_pages.push((src_va, dst + offset, paddr, flags, page_size));
                     offset += page_size;
