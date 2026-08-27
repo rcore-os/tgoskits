@@ -84,4 +84,6 @@ echo "upb prebuild: installed $(basename "$bin") -> /usr/bin/upb"
 
 if [[ "$arch" == "loongarch64" ]]; then
     install_loongarch_loader_link
+else
+    install -Dm0644 "$app_dir/upb-profile.sh" "$overlay_dir/etc/profile.d/upb-profile.sh"
 fi

@@ -15,6 +15,8 @@ const X86_LINUX_DIRECT_BOOT_CMDLINE_LIMIT: usize = 231;
 #[derive(serde::Deserialize)]
 struct TestBuildConfigVmConfigs {
     #[serde(default)]
+    features: Vec<String>,
+    #[serde(default)]
     vm_configs: Vec<PathBuf>,
 }
 
@@ -27,6 +29,18 @@ struct TestVmKernelConfig {
 struct TestVmKernel {
     #[serde(default)]
     cmdline: String,
+}
+
+#[derive(serde::Deserialize)]
+struct TestVmBaseConfig {
+    base: TestVmBase,
+}
+
+#[derive(serde::Deserialize)]
+struct TestVmBase {
+    id: usize,
+    #[serde(default)]
+    phys_cpu_sets: Vec<usize>,
 }
 
 #[derive(Debug, Eq, PartialEq, serde::Deserialize)]
@@ -177,6 +191,66 @@ fn checked_in_test_build_vmconfigs_exist() {
                     vm_config_path.display()
                 );
             }
+        }
+    }
+
+    assert!(checked > 0);
+}
+
+#[test]
+fn checked_in_board_console_steps_attach_configured_vm_ids() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let groups = discover_board_test_groups(&workspace_root, "normal", None, None).unwrap();
+    let mut checked = 0;
+
+    for group in groups {
+        let build_config: TestBuildConfigVmConfigs =
+            toml::from_str(&fs::read_to_string(&group.build_config).unwrap()).unwrap();
+        let expected_shell_prefix = if build_config.features.iter().any(|feature| feature == "fs") {
+            "axvisor:/$"
+        } else {
+            "axvisor:$"
+        };
+        let vm_ids = build_config
+            .vm_configs
+            .iter()
+            .map(|vm_config| {
+                let vm_config_path = if vm_config.is_absolute() {
+                    vm_config.clone()
+                } else {
+                    workspace_root.join(vm_config)
+                };
+                let vm_config: TestVmBaseConfig =
+                    toml::from_str(&fs::read_to_string(&vm_config_path).unwrap()).unwrap();
+                vm_config.base.id
+            })
+            .collect::<Vec<_>>();
+        let board_config: ostool::board::config::BoardRunConfig =
+            toml::from_str(&fs::read_to_string(&group.board_test_config_path).unwrap()).unwrap();
+
+        for step in board_config.shell_check_steps {
+            let Some(vm_id) = step
+                .shell_cmd
+                .as_deref()
+                .and_then(|command| command.strip_prefix("vm console "))
+                .and_then(|vm_id| vm_id.parse::<usize>().ok())
+            else {
+                continue;
+            };
+            checked += 1;
+            assert_eq!(
+                step.shell_prefix.as_deref(),
+                Some(expected_shell_prefix),
+                "{} must match the Axvisor prompt selected by features {:?}",
+                group.board_test_config_path.display(),
+                build_config.features,
+            );
+            assert!(
+                vm_ids.contains(&vm_id),
+                "{} attaches VM[{vm_id}], but {} configures VM IDs {vm_ids:?}",
+                group.board_test_config_path.display(),
+                group.build_config.display()
+            );
         }
     }
 
@@ -380,6 +454,217 @@ fn load_qemu_config(path: &Path) -> QemuConfig {
     toml::from_str(&fs::read_to_string(path).unwrap()).unwrap()
 }
 
+#[test]
+fn console_output_cases_match_success_from_passive_shell_check_steps() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (path, marker) in [
+        (
+            "test-suit/axvisor/normal/qemu-console-atomic-output/atomic-output/qemu-aarch64.toml",
+            "CONSOLE_ATOMIC_OUTPUT_REGRESSION_PASSED",
+        ),
+        (
+            "test-suit/axvisor/normal/qemu-console-interleave/interleave/qemu-aarch64.toml",
+            "CONSOLE_INTERLEAVE_HOST_LOG",
+        ),
+    ] {
+        let config = load_qemu_config(&workspace_root.join(path));
+
+        assert_eq!(config.shell_check_steps.len(), 1, "{path}");
+        let step = &config.shell_check_steps[0];
+        assert!(step.shell_prefix.is_none(), "{path}");
+        assert!(step.shell_cmd.is_none(), "{path}");
+        assert!(
+            step.success_regex
+                .as_ref()
+                .is_some_and(|patterns| patterns.iter().any(|pattern| pattern.contains(marker))),
+            "{path}: passive step must match {marker}"
+        );
+    }
+}
+
+#[test]
+fn qemu_ivc_replays_each_guest_console_in_sequence() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = workspace_root.join("test-suit/axvisor/normal/qemu-ivc/qemu-aarch64.toml");
+    let config = load_qemu_config(&path);
+
+    assert_eq!(config.shell_check_steps.len(), 4);
+
+    let vm1_attach = &config.shell_check_steps[0];
+    assert_eq!(vm1_attach.shell_prefix.as_deref(), Some("axvisor:/$"));
+    assert_eq!(vm1_attach.shell_cmd.as_deref(), Some("vm console 1"));
+
+    let vm1_result = &config.shell_check_steps[1];
+    assert!(vm1_result.success_regex.as_ref().is_some_and(|patterns| {
+        patterns
+            .iter()
+            .any(|pattern| pattern.contains("ivc ack seq=5"))
+    }));
+
+    let vm2_attach = &config.shell_check_steps[2];
+    assert_eq!(vm2_attach.shell_prefix.as_deref(), Some("axvisor:/$"));
+    assert_eq!(vm2_attach.shell_cmd.as_deref(), Some("vm console 2"));
+
+    let vm2_result = &config.shell_check_steps[3];
+    assert!(vm2_result.success_regex.as_ref().is_some_and(|patterns| {
+        patterns.len() == 2
+            && patterns
+                .iter()
+                .any(|pattern| pattern.contains("linux ivc demo pass"))
+    }));
+}
+
+#[test]
+fn virtio_blk_guest_attaches_its_console_before_matching_completion() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = workspace_root.join("os/axvisor/configs/qemu/qemu-aarch64-virtio-blk-test.toml");
+    let config = load_qemu_config(&path);
+
+    assert_eq!(config.shell_check_steps.len(), 1);
+
+    let step = &config.shell_check_steps[0];
+    assert_eq!(step.shell_prefix.as_deref(), Some("axvisor:$"));
+    assert_eq!(step.shell_cmd.as_deref(), Some("vm console 1"));
+    assert!(
+        step.success_regex.as_ref().is_some_and(|patterns| patterns
+            .iter()
+            .any(|pattern| pattern.contains("ARCEOS_VIRTIO_BLK_PASS"))),
+        "the attached ArceOS guest console must provide the completion marker"
+    );
+}
+
+#[test]
+fn x86_acpi_guest_cases_attach_the_guest_console_before_matching_completion() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (path, marker) in [
+        (
+            "test-suit/axvisor/normal/qemu-acpi/direct-acpi/qemu-x86_64-svm.toml",
+            "AXVISOR_X86_DIRECT_ACPI_PASSED",
+        ),
+        (
+            "test-suit/axvisor/normal/qemu-acpi/direct-acpi/qemu-x86_64-vmx.toml",
+            "AXVISOR_X86_DIRECT_ACPI_PASSED",
+        ),
+        (
+            "test-suit/axvisor/normal/qemu-acpi-off/mp-fallback/qemu-x86_64-vmx.toml",
+            "AXVISOR_X86_MP_FALLBACK_PASSED",
+        ),
+        (
+            "test-suit/axvisor/normal/qemu-acpi-ovmf/ovmf-acpi/qemu-x86_64-svm.toml",
+            "AXVISOR_X86_OVMF_ACPI_PASSED",
+        ),
+        (
+            "test-suit/axvisor/normal/qemu-acpi-ovmf/ovmf-acpi/qemu-x86_64-vmx.toml",
+            "AXVISOR_X86_OVMF_ACPI_PASSED",
+        ),
+    ] {
+        let config = load_qemu_config(&workspace_root.join(path));
+
+        assert_eq!(config.shell_check_steps.len(), 1, "{path}");
+        let step = &config.shell_check_steps[0];
+        assert_eq!(step.shell_prefix.as_deref(), Some("axvisor:$"), "{path}");
+        assert_eq!(step.shell_cmd.as_deref(), Some("vm console 1"), "{path}");
+        let patterns = step
+            .success_regex
+            .as_ref()
+            .unwrap_or_else(|| panic!("{path}: the attached Linux console must provide {marker}"));
+        assert!(
+            patterns.iter().any(|pattern| pattern.contains(marker)),
+            "{path}: attached guest step must preserve {marker}"
+        );
+    }
+}
+
+#[test]
+fn virtio_net_peer_replays_each_guest_console_in_sequence() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = workspace_root.join("os/axvisor/configs/qemu/qemu-aarch64-virtio-net-peer.toml");
+    let config = load_qemu_config(&path);
+
+    assert_eq!(config.shell_check_steps.len(), 4);
+    assert_eq!(
+        config.shell_check_steps[0].shell_prefix.as_deref(),
+        Some("axvisor:$")
+    );
+    assert_eq!(
+        config.shell_check_steps[0].shell_cmd.as_deref(),
+        Some("vm console 1")
+    );
+    assert!(
+        config.shell_check_steps[1]
+            .success_regex
+            .as_ref()
+            .is_some_and(|patterns| patterns
+                .iter()
+                .any(|pattern| pattern.contains("VM1_VIRTIO_NET_PASS")))
+    );
+    assert_eq!(
+        config.shell_check_steps[2].shell_prefix.as_deref(),
+        Some("axvisor:$")
+    );
+    assert_eq!(
+        config.shell_check_steps[2].shell_cmd.as_deref(),
+        Some("vm console 2")
+    );
+    assert!(
+        config.shell_check_steps[3]
+            .success_regex
+            .as_ref()
+            .is_some_and(|patterns| patterns
+                .iter()
+                .any(|pattern| pattern.contains("VM2_VIRTIO_NET_PASS")))
+    );
+}
+
+#[test]
+fn aarch64_timer_stress_cases_attach_from_the_management_shell() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (path, marker) in [
+        (
+            "test-suit/axvisor/normal/qemu-timer-stress-v2/gicv2-timer-stress/qemu-aarch64.toml",
+            "AXVISOR_GICV2_TIMER_STRESS_PASSED",
+        ),
+        (
+            "test-suit/axvisor/normal/qemu-timer-stress/gicv3-timer-stress/qemu-aarch64.toml",
+            "AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED",
+        ),
+    ] {
+        let config = load_qemu_config(&workspace_root.join(path));
+
+        assert_eq!(config.shell_check_steps.len(), 2, "{path}");
+
+        let attach_step = &config.shell_check_steps[0];
+        assert_eq!(
+            attach_step.shell_prefix.as_deref(),
+            Some("axvisor:$"),
+            "{path}"
+        );
+        assert_eq!(
+            attach_step.shell_cmd.as_deref(),
+            Some("vm console 1"),
+            "{path}"
+        );
+        assert!(attach_step.success_regex.is_none(), "{path}");
+
+        let result_step = &config.shell_check_steps[1];
+        assert!(result_step.shell_prefix.is_none(), "{path}");
+        assert!(result_step.shell_cmd.is_none(), "{path}");
+        let marker_pattern = result_step
+            .success_regex
+            .as_ref()
+            .and_then(|patterns| patterns.iter().find(|pattern| pattern.contains(marker)))
+            .unwrap_or_else(|| panic!("{path}: the attached Linux guest must provide {marker}"));
+        let marker_regex = regex::Regex::new(marker_pattern).unwrap();
+        assert!(
+            marker_regex.is_match(&format!("[cached guest output] {marker} axvisor:$")),
+            "{path}: the completion marker must survive buffered console replay"
+        );
+    }
+}
+
 fn replace_qemu_argument(args: &mut [String], option: &str, replacement: &str) -> String {
     let index = args
         .iter()
@@ -529,13 +814,14 @@ fn discovers_only_cases_with_matching_qemu_config() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \"~ #\"\nshell_init_cmd = \"pwd\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
     write_qemu_config(
         root.path(),
         "x86-only",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
 
@@ -572,7 +858,7 @@ fn selected_case_requires_matching_qemu_config() {
         root.path(),
         "smoke",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
 
@@ -617,7 +903,8 @@ fn selected_qemu_case_skips_non_qemu_case_with_same_name() {
         "qemu",
         "smoke",
         "aarch64",
-        "shell_prefix = \"~ #\"\nshell_init_cmd = \"pwd\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     let cases = discover_qemu_cases(
@@ -653,7 +940,8 @@ fn discovers_qemu_cases_from_selected_group() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"normal\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"normal\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
     write_qemu_config_in_group(
         root.path(),
@@ -661,7 +949,8 @@ fn discovers_qemu_cases_from_selected_group() {
         "stress-default",
         "load",
         "aarch64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"stress\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"stress\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     let cases = discover_qemu_cases(
@@ -692,7 +981,7 @@ fn discovers_qemu_cases_from_custom_group_without_polluting_normal_group() {
         "default",
         "baseline",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
     write_qemu_build_config(root.path(), "custom", "firmware", "x86_64-unknown-none");
@@ -702,7 +991,7 @@ fn discovers_qemu_cases_from_custom_group_without_polluting_normal_group() {
         "firmware",
         "smoke",
         "x86_64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"hello_world\"\nsuccess_regex = []\nfail_regex \
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"hello_world\" }]\nfail_regex \
          = []\n",
     );
 
@@ -731,7 +1020,8 @@ fn rejects_unknown_qemu_test_group() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \">>\"\nshell_init_cmd = \"normal\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \">>\", shell_cmd = \"normal\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     let err = discover_qemu_cases(
@@ -887,7 +1177,8 @@ fn discovers_uboot_test_group_from_board_cases() {
         "smoke",
         "rdk-s100-linux",
         "board_type = \"RDK-S100\"\nuboot_cmd = [\"run ab_select_cmd\", \"run \
-         avb_boot\"]\nsuccess_regex = [\"ubuntu login:\"]\nfail_regex = [\"(?i)panic\"]\n",
+         avb_boot\"]\nfail_regex = [\"(?i)panic\"]\n\n[[shell_check_steps]]\nsuccess_regex = \
+         [\"ubuntu login:\"]\n",
     );
 
     let group = discovery::discover_uboot_test_group(root.path(), "rdk-s100", "linux").unwrap();
@@ -956,6 +1247,21 @@ fn asus_nuc15crh_linux_limits_legacy_serial_probe() {
 }
 
 #[test]
+fn asus_nuc15crh_linux_keeps_management_cpu_free() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = "os/axvisor/configs/vms/asus-nuc15crh/linux-smp1.toml";
+    let content = fs::read_to_string(workspace_root.join(path)).unwrap();
+    let config: TestVmBaseConfig = toml::from_str(&content).unwrap();
+
+    assert_eq!(
+        config.base.phys_cpu_sets,
+        [1 << 1],
+        "{path} must pin its vCPU to CPU1 so the FIFO-scheduled management shell remains runnable \
+         on CPU0"
+    );
+}
+
+#[test]
 fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
@@ -986,7 +1292,7 @@ fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
             "test-suit/axvisor/normal/qemu/smoke/qemu-x86_64-vmx.toml",
         ),
     ] {
-        let build_content = fs::read_to_string(workspace_root.join(&build_path)).unwrap();
+        let build_content = fs::read_to_string(workspace_root.join(build_path)).unwrap();
         let build: TestBuildConfigVmConfigs = toml::from_str(&build_content).unwrap();
         assert!(
             build.vm_configs.is_empty(),
@@ -994,11 +1300,13 @@ fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
              block ABI validation is outside this migration"
         );
 
-        let qemu_content = fs::read_to_string(workspace_root.join(&qemu_path)).unwrap();
+        let qemu_content = fs::read_to_string(workspace_root.join(qemu_path)).unwrap();
         let qemu: QemuConfig = toml::from_str(&qemu_content).unwrap();
-        let command = qemu
-            .shell_init_cmd
+        let step = qemu
+            .shell_check_steps
+            .first()
             .unwrap_or_else(|| panic!("{name} NVMe smoke should inject a host file-I/O command"));
+        let command = &step.shell_cmd;
 
         for required_step in [
             "> /tmp/axvisor-nvme-rw",
@@ -1007,12 +1315,14 @@ fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
             "AXVISOR_NVME_ROOTFS_RW_PASSED",
         ] {
             assert!(
-                command.contains(required_step),
+                command
+                    .as_deref()
+                    .is_some_and(|command| command.contains(required_step)),
                 "{qemu_path} should include `{required_step}` in its host file-I/O smoke command"
             );
         }
         assert_eq!(
-            qemu.shell_prefix.as_deref(),
+            step.shell_prefix.as_deref(),
             Some("axvisor:/$"),
             "{qemu_path} should wait for the Axvisor host shell"
         );
@@ -1031,7 +1341,13 @@ fn nvme_smoke_keeps_storage_in_host_and_verifies_file_io() {
             ]
         };
         assert_eq!(
-            qemu.success_regex, expected_success_regex,
+            step.success_regex,
+            Some(
+                expected_success_regex
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            ),
             "{qemu_path} should require all architecture-specific shell markers"
         );
     }
@@ -1119,7 +1435,8 @@ fn ignores_qemu_only_build_groups_when_discovering_board_tests() {
         root.path(),
         "smoke",
         "aarch64",
-        "shell_prefix = \"~ #\"\nshell_init_cmd = \"pwd\"\nsuccess_regex = []\nfail_regex = []\n",
+        "shell_check_steps = [{ shell_prefix = \"~ #\", shell_cmd = \"pwd\" }]\nsuccess_regex = \
+         []\nfail_regex = []\n",
     );
 
     write_board_build_config(root.path(), "default");
@@ -1193,13 +1510,16 @@ fn rejects_empty_board_test_group() {
 #[test]
 fn board_case_config_is_also_valid_board_run_config() {
     let config: ostool::board::config::BoardRunConfig = toml::from_str(
-        "board_type = \"PhytiumPi\"\nshell_prefix = \"login:\"\nshell_init_cmd = \
-         \"root\"\nsuccess_regex = [\"(?m)^root@.*#\\\\s*$\"]\n",
+        "board_type = \"PhytiumPi\"\nshell_check_steps = [{ shell_prefix = \"login:\", shell_cmd \
+         = \"root\", success_regex = [\"(?m)^root@.*#\\\\s*$\"] }]\n",
     )
     .unwrap();
 
     assert_eq!(config.board_type, "PhytiumPi");
-    assert_eq!(config.shell_prefix.as_deref(), Some("login:"));
+    assert_eq!(
+        config.shell_check_steps[0].shell_prefix.as_deref(),
+        Some("login:")
+    );
 }
 
 #[test]

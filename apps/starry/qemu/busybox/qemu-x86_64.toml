@@ -13,9 +13,6 @@ args = [
 ]
 uefi = false
 to_bin = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/busybox-tests.sh"
-success_regex = ["(?m)^PASS: \\d+  FAIL: 0", "(?m)^Test run completed"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^FAIL: ']
 timeout = 600
 
@@ -23,3 +20,8 @@ timeout = 600
 bind = "127.0.0.1"
 port = 18383
 body = "busybox wget local ok\n"
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/busybox-tests.sh"
+success_regex = ["(?m)^PASS: \\d+  FAIL: 0", "(?m)^Test run completed"]

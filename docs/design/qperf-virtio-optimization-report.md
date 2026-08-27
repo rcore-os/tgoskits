@@ -173,7 +173,7 @@ qperf 采样的是整个内核 .text 段，热点分析的效果取决于运行�
 cargo starry perf --arch riscv64 --timeout 60 --freq 199 --format all \
   --out target/qperf/vsock-throughput
 
-# 步骤 2: 在 StarryOS shell 中运行 vsock 负载（另一个终端或 shell_init_cmd）
+# 步骤 2: 在 StarryOS shell 中运行 vsock 负载（另一个终端或 --workload-cmd）
 # 例如：发送大量数据通过 vsock 连接
 dd if=/dev/zero bs=1M count=100 | vsock-send <cid> <port>
 ```

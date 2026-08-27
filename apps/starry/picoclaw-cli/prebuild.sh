@@ -149,6 +149,8 @@ populate_overlay() {
 
     install -Dm0755 "$asset_dir/picoclaw" "$overlay_dir/usr/local/bin/picoclaw"
     install -Dm0755 "$asset_dir/picoclaw-launcher" "$overlay_dir/usr/local/bin/picoclaw-launcher"
+    install -Dm0644 "$app_dir/picoclaw-interactive.sh" \
+        "$overlay_dir/etc/profile.d/picoclaw-interactive.sh"
     install -d "$overlay_dir/root/.picoclaw/workspace"
 
     if [[ -n "$config_json" ]]; then

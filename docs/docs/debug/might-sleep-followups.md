@@ -306,7 +306,7 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 已确认方向：
 
 - 新增 ArceOS rust debug 类测试 feature，不把预期 panic 用例塞进普通通过型 suite。
-- 对“应该触发 `might_sleep()` panic”的用例，沿用 `lockdep-detect` 这类 xtask feature override：`success_regex` 匹配明确诊断文本，`fail_regex` 只匹配“未触发预期诊断”的兜底错误。
+- 对“应该触发 `might_sleep()` panic”的用例，沿用 `lockdep-detect` 这类 xtask feature override：shell-check 步骤的 `success_regex` 匹配明确诊断文本，根 `fail_regex` 只匹配“未触发预期诊断”的兜底错误。
 - 预期 panic 会终止系统，因此每个预期 panic 场景单独一个 feature/case，不放在同一个 boot 里。
 - `ax_sync::Mutex::try_lock()` 在原子上下文不触发属于通过型反例，可以放进普通 smoke case。
 - Starry user copy / `might_fault()` 回归放到 MS-4 实现之后补，不抢在核心 `might_sleep()` 判定测试之前。

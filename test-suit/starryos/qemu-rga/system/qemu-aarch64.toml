@@ -19,7 +19,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
 test_commands = [
     '''
 total=0
@@ -68,6 +67,5 @@ fi
 echo "STARRY_GROUPED_TESTS_PASSED"
 ''',
 ]
-success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
 timeout = 1800

@@ -10,9 +10,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/gdbserver-smoke.sh"
-success_regex = ["GDBSERVER_SMOKE_DONE"]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     '(?m)FAIL',
@@ -27,3 +24,8 @@ fail_regex = [
     '(?i)Segmentation fault',
 ]
 timeout = 240
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/gdbserver-smoke.sh"
+success_regex = ["GDBSERVER_SMOKE_DONE"]

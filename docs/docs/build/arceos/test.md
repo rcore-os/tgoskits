@@ -89,7 +89,7 @@ flowchart TD
 
 ### Feature 专属覆盖
 
-`apply_rust_qemu_feature_overrides()` 为部分 feature 覆盖 QEMU 的 `success_regex`、`fail_regex` 和 `timeout`，因为它们的判定语义与默认的 "内核启动成功" 不同：
+`apply_rust_qemu_feature_overrides()` 为部分 feature 覆盖 QEMU 最后一个 shell-check 步骤的 `success_regex`，并覆盖根 `fail_regex` 和 `timeout`，因为它们的判定语义与默认的 "内核启动成功" 不同：
 
 | Feature | 覆盖行为 |
 |---------|----------|
@@ -162,7 +162,7 @@ flowchart TD
 | Package 锁定 | `build_and_run_c_test()` | `prepare_request` 时 `package = "ax-libc"`，与 C app 路径绑定 |
 | C 编译 | `cbuild::build_c_app()` | 使用 CMake + musl 交叉工具链，注入 `c-define:<FEATURE>` 宏选择用例 |
 | 产物处理 | `prepare_elf_artifact()` | 根据 QEMU TOML 的 `to_bin` 决定是否从 ELF 生成 raw BIN |
-| 结果判定 | `run_prepared_qemu()` | 由 QEMU TOML 的 `success_regex`/`fail_regex` 判定，与 Rust 用例相同 |
+| 结果判定 | `run_prepared_qemu()` | 由 QEMU TOML 中 `shell_check_steps` 的 step-local `success_regex` 和根 `fail_regex` 判定，与 Rust 用例相同 |
 
 C 用例与 Rust 用例的核心区别：Rust 用例通过 axbuild 的标准发现和分组流程执行（相同 feature 的 case 共享编译），而 C 用例**每个 feature 独立编译独立运行**，使用 `cbuild.rs` 的 CMake/musl 管线而非共享 std-aware Cargo 路径。
 

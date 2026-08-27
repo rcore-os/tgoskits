@@ -256,12 +256,15 @@ fn start_vm_by_id(vm_id: usize, attach_console: bool) {
             println!("✓ VM[{}] started successfully", vm_id);
             if attach_console {
                 match crate::guest_console::attach(vm_id) {
-                    Ok(()) => {
+                    Ok(crate::guest_console::ConsoleAttachment::Interactive) => {
                         println!(
                             "✓ Attached VM[{vm_id}] console; use Ctrl+X, then h to return to the \
                              shell"
                         );
                         crate::guest_console::activate(vm_id);
+                    }
+                    Ok(crate::guest_console::ConsoleAttachment::Replayed) => {
+                        println!("✓ Replayed buffered VM[{vm_id}] console output");
                     }
                     Err(error) => println!("✗ Failed to attach VM[{vm_id}] console: {error:#}"),
                 }
@@ -651,9 +654,12 @@ fn vm_console(cmd: &ParsedCommand) {
     };
 
     match crate::guest_console::attach(vm_id) {
-        Ok(()) => {
+        Ok(crate::guest_console::ConsoleAttachment::Interactive) => {
             println!("✓ Attached VM[{vm_id}] console; use Ctrl+X, then h to return to the shell");
             crate::guest_console::activate(vm_id);
+        }
+        Ok(crate::guest_console::ConsoleAttachment::Replayed) => {
+            println!("✓ Replayed buffered VM[{vm_id}] console output");
         }
         Err(error) => println!("✗ Failed to attach VM[{vm_id}] console: {error:#}"),
     }

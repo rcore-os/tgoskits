@@ -41,6 +41,8 @@ populate_overlay() {
 
     install -Dm0755 "$deepseek_bin" "$overlay_dir/usr/local/bin/deepseek"
     install -Dm0755 "$deepseek_tui_bin" "$overlay_dir/usr/local/bin/deepseek-tui"
+    install -Dm0644 "$app_dir/deepseek-interactive.sh" \
+        "$overlay_dir/etc/profile.d/deepseek-interactive.sh"
 
     local lib_dir="$asset_dir/lib"
     if [[ -d "$lib_dir" ]]; then

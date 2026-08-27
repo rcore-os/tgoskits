@@ -11,11 +11,13 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "echo STARRY_AARCH64_GICV2_BOOT_PASSED"
-success_regex = ["(?m)^STARRY_AARCH64_GICV2_BOOT_PASSED\\s*$"]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?m)^lockdep fatal violation\\s*$",
 ]
 timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "echo STARRY_AARCH64_GICV2_BOOT_PASSED"
+success_regex = ["(?m)^STARRY_AARCH64_GICV2_BOOT_PASSED\\s*$"]

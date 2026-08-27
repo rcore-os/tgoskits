@@ -10,7 +10,7 @@ mod selection;
 mod types;
 
 pub use args::{AppCommand, ArgsApp, ArgsAppBoard, ArgsAppList, ArgsAppQemu};
-pub(crate) use board::{merge_board_init_command, resolve_board_case};
+pub(crate) use board::{configure_board_init_step, resolve_board_case};
 pub(in crate::starry) use board_assets::prepare_app_board_session_assets;
 pub(crate) use discovery::discover_apps;
 pub(in crate::starry) use linux_stage::stage_in_default_linux;

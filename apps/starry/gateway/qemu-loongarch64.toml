@@ -11,8 +11,10 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "sh /usr/bin/run-gateway.sh"
-success_regex = ['(?m)^GATEWAY_OK=109/109', '(?m)^TEST PASSED\s*$']
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
 timeout = 180000
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "sh /usr/bin/run-gateway.sh"
+success_regex = ['(?m)^GATEWAY_OK=109/109', '(?m)^TEST PASSED\s*$']

@@ -10,8 +10,10 @@ args = [
 ]
 to_bin = false
 uefi = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/rename-probe"
-success_regex = ["(?m)^PASS=\\d+ FAIL=0"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^FAIL=']
 timeout = 60
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/rename-probe"
+success_regex = ["(?m)^PASS=\\d+ FAIL=0"]

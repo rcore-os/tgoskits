@@ -132,10 +132,13 @@ QEMU riscv64 (-m 8G)
 ```toml
 # qemu-riscv64.toml
 args = ["-nographic", "-cpu", "rv64", "-smp", "1", "-m", "8G", ...]
-shell_init_cmd = "/usr/bin/self-compile.sh"
-success_regex = ['(?m)^SELFHOST_SUCCESS\\s*$']
 fail_regex = ['(?i)\bpanicked\b', 'SELFHOST_FAILED']
 timeout = 7200
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/self-compile.sh"
+success_regex = ['(?m)^SELFHOST_SUCCESS\\s*$']
 ```
 
 Shell pipeline (`sh/self-compile.sh`) 自动注入到 rootfs 的 `/usr/bin/`:

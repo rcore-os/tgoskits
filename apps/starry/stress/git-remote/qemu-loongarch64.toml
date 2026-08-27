@@ -10,8 +10,10 @@ args = [
 ]
 to_bin = false
 uefi = false
-shell_prefix = "root@starry:"
-shell_init_cmd = "sed -i 's|https://|http://|' /etc/apk/repositories; (apk add git git-daemon || (apk update && apk add git git-daemon)) && /usr/bin/probe-remote-clone.sh || printf 'GIT_REMOTE_%s\\n' HAS_FAILURES"
-success_regex = ["(?m)^GIT_REMOTE_ALL_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^\S+_HAS_FAILURES\s*$']
 timeout = 600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "sed -i 's|https://|http://|' /etc/apk/repositories; (apk add git git-daemon || (apk update && apk add git git-daemon)) && /usr/bin/probe-remote-clone.sh || printf 'GIT_REMOTE_%s\\n' HAS_FAILURES"
+success_regex = ["(?m)^GIT_REMOTE_ALL_PASSED\\s*$"]

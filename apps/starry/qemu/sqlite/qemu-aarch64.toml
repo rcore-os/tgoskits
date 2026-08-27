@@ -15,11 +15,9 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
 test_commands = [
     "/usr/bin/app-sqlite",
     "/usr/bin/app-sqlite-deep",
 ]
-success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^STARRY_GROUPED_TEST_FAILED:']
 timeout = 240

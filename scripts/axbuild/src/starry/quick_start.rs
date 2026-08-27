@@ -445,9 +445,7 @@ pub fn prepare_sg2002_uboot_config(
         "kernel_load_addr",
         "fit_load_addr",
         "dtb_file",
-        "shell_prefix",
-        "shell_init_cmd",
-        "success_regex",
+        "shell_check_steps",
         "fail_regex",
         "timeout",
     ] {
@@ -589,6 +587,31 @@ mod tests {
         assert_eq!(value["kernel_load_addr"].as_str(), Some("0x80200000"));
         assert_eq!(value["fit_load_addr"].as_str(), Some("0x82200000"));
         assert_eq!(value["dtb_file"].as_str(), Some("sg2002.dtb"));
+    }
+
+    #[test]
+    fn prepare_sg2002_uboot_config_never_copies_removed_root_success_regex() {
+        let root = tempdir().unwrap();
+        let template_path = sg2002_uboot_config_path(root.path());
+        fs::create_dir_all(template_path.parent().unwrap()).unwrap();
+        fs::write(
+            &template_path,
+            "success_regex = [\"OLD_ROOT_PASS\"]\n[[shell_check_steps]]\nsuccess_regex = \
+             [\"STEP_PASS\"]\n",
+        )
+        .unwrap();
+        let tmp_path = tmp_sg2002_uboot_config_path(root.path());
+        fs::create_dir_all(tmp_path.parent().unwrap()).unwrap();
+        fs::write(&tmp_path, "serial = \"/dev/existing\"\n").unwrap();
+
+        prepare_sg2002_uboot_config(root.path(), &QuickSg2002RunArgs::default()).unwrap();
+
+        let value: toml::Value = toml::from_str(&fs::read_to_string(tmp_path).unwrap()).unwrap();
+        assert!(value.get("success_regex").is_none());
+        assert_eq!(
+            value["shell_check_steps"][0]["success_regex"][0].as_str(),
+            Some("STEP_PASS")
+        );
     }
 
     #[test]

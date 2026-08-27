@@ -45,18 +45,18 @@ pub(super) fn validate_args(args: &ArgsPerf) -> anyhow::Result<()> {
         bail!("--format pprof is not supported yet; use --format folded, svg, or all");
     }
     if args
-        .shell_init_cmd
+        .workload_cmd
         .as_deref()
         .is_some_and(|cmd| cmd.trim().is_empty())
     {
-        bail!("--shell-init-cmd must not be empty");
+        bail!("--workload-cmd must not be empty");
     }
     if args
-        .shell_prefix
+        .workload_shell_prefix
         .as_deref()
         .is_some_and(|prefix| prefix.is_empty())
     {
-        bail!("--shell-prefix must not be empty");
+        bail!("--workload-shell-prefix must not be empty");
     }
     if args.host_perf && args.host_perf_events.trim().is_empty() {
         bail!("--host-perf-events must not be empty when --host-perf is set");
@@ -185,5 +185,21 @@ mod tests {
             !cargo.env.contains_key("CARGO_ENCODED_RUSTFLAGS"),
             "encoded rustflags would shadow the inline target linker contract"
         );
+    }
+
+    #[test]
+    fn perf_accepts_legacy_shell_command_option_names() {
+        let args = PerfTestCli::try_parse_from([
+            "perf-test",
+            "--shell-init-cmd",
+            "run-workload",
+            "--shell-prefix",
+            "guest#",
+        ])
+        .expect("legacy qperf shell option names must remain compatible")
+        .perf;
+
+        assert_eq!(args.workload_cmd.as_deref(), Some("run-workload"));
+        assert_eq!(args.workload_shell_prefix.as_deref(), Some("guest#"));
     }
 }

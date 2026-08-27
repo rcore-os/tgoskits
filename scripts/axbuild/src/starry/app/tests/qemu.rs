@@ -22,6 +22,25 @@ use crate::{
     test::case::HostHttpServerConfig,
 };
 
+fn shell_cmd(config: &toml::Value) -> Option<&str> {
+    config
+        .get("shell_check_steps")
+        .and_then(toml::Value::as_array)
+        .and_then(|steps| steps.first())
+        .and_then(|step| step.get("shell_cmd"))
+        .and_then(toml::Value::as_str)
+}
+
+fn first_step_success_regex(config: &toml::Value) -> Option<&[toml::Value]> {
+    config
+        .get("shell_check_steps")
+        .and_then(toml::Value::as_array)
+        .and_then(|steps| steps.first())
+        .and_then(|step| step.get("success_regex"))
+        .and_then(toml::Value::as_array)
+        .map(Vec::as_slice)
+}
+
 #[tokio::test]
 async fn app_owned_rootfs_runs_declared_builder_without_default_rootfs() {
     let root = tempdir().unwrap();
@@ -36,7 +55,6 @@ async fn app_owned_rootfs_runs_declared_builder_without_default_rootfs() {
 ]
 uefi = true
 to_bin = true
-success_regex = []
 fail_regex = []
 
 [rootfs_preparation]
@@ -79,7 +97,6 @@ async fn app_owned_rootfs_rejects_builder_that_does_not_publish_artifact() {
 ]
 uefi = true
 to_bin = true
-success_regex = []
 fail_regex = []
 
 [rootfs_preparation]
@@ -126,7 +143,6 @@ async fn app_owned_rootfs_rejects_target_arch_mismatch_before_builder_runs() {
 ]
 uefi = true
 to_bin = true
-success_regex = []
 fail_regex = []
 
 [rootfs_preparation]
@@ -235,9 +251,7 @@ fn starrynixos_qemu_matcher_requires_ordered_evidence_and_rejects_failures() {
         "{} must classify a partial boot as a timeout instead of waiting indefinitely",
         config_path.display()
     );
-    let success_regex = config
-        .get("success_regex")
-        .and_then(toml::Value::as_array)
+    let success_regex = first_step_success_regex(&config)
         .and_then(|patterns| patterns.first())
         .and_then(toml::Value::as_str)
         .map(Regex::new)
@@ -314,7 +328,6 @@ async fn qemu_case_uses_starry_default_arch_without_an_arch_argument() {
 ]
 uefi = false
 to_bin = true
-success_regex = []
 fail_regex = []
 
 [rootfs_preparation]
@@ -403,8 +416,8 @@ fn qemu_case_fields_load_grouped_commands_and_subcases() {
         root.path(),
         "qemu/sqlite",
         "qemu-x86_64.toml",
-        "args = []\nuefi = false\nto_bin = true\nsuccess_regex = []\nfail_regex = \
-         []\ntest_commands = [\"/usr/bin/app-sqlite\", \"/usr/bin/app-sqlite-deep\"]\n",
+        "args = []\nuefi = false\nto_bin = true\nfail_regex = []\ntest_commands = \
+         [\"/usr/bin/app-sqlite\", \"/usr/bin/app-sqlite-deep\"]\n",
     );
     write_case_file(
         root.path(),
@@ -450,7 +463,6 @@ fn qemu_case_fields_load_configured_managed_rootfs() {
 ]
 uefi = false
 to_bin = true
-success_regex = []
 fail_regex = []
 "#,
     );
@@ -515,7 +527,6 @@ fn qemu_case_fields_load_persistent_rootfs_policy() {
 uefi = false
 to_bin = true
 rootfs_write_policy = "persist"
-success_regex = []
 fail_regex = []
 "#,
     );
@@ -552,7 +563,7 @@ fn selfhost_x86_app_preserves_the_persistent_build_contract() {
         config_path.display()
     );
     assert_eq!(
-        config.get("shell_init_cmd").and_then(toml::Value::as_str),
+        shell_cmd(&config),
         Some("/bin/sh /opt/starry-selfhost-run.sh"),
         "{} must use the staged non-interactive guest runner",
         config_path.display()
@@ -856,10 +867,7 @@ fn syscall_count_qemu_configs_stop_after_pass_marker() {
         let config_path = config_dir.join(format!("qemu-{arch}.toml"));
         let content = fs::read_to_string(&config_path).unwrap();
         let config: toml::Value = toml::from_str(&content).unwrap();
-        let success_regex = config
-            .get("success_regex")
-            .and_then(toml::Value::as_array)
-            .unwrap();
+        let success_regex = first_step_success_regex(&config).unwrap();
         assert!(
             success_regex
                 .iter()
@@ -958,14 +966,11 @@ fn codex_cli_qemu_config_uses_injected_smoke_script() {
     let content = fs::read_to_string(&config_path).unwrap();
     let config: toml::Value = toml::from_str(&content).unwrap();
 
-    let shell_init_cmd = config
-        .get("shell_init_cmd")
-        .and_then(toml::Value::as_str)
-        .unwrap_or_default();
-    assert_eq!(shell_init_cmd, "/usr/bin/codex-offline-smoke.sh");
+    let shell_cmd = shell_cmd(&config).unwrap_or_default();
+    assert_eq!(shell_cmd, "/usr/bin/codex-offline-smoke.sh");
     assert!(
-        !shell_init_cmd.contains("STARRY_CODEX_STAGE_G_CODEX_HELP_PASSED")
-            && !shell_init_cmd.contains("STARRY_CODEX_STAGE_G_LOGIN_STATUS_OK"),
+        !shell_cmd.contains("STARRY_CODEX_STAGE_G_CODEX_HELP_PASSED")
+            && !shell_cmd.contains("STARRY_CODEX_STAGE_G_LOGIN_STATUS_OK"),
         "{} must not inject the long smoke script through the interactive shell",
         config_path.display()
     );
@@ -1257,10 +1262,7 @@ fn claw_code_qemu_config_exits_after_smoke_check() {
         config_path.display()
     );
 
-    let success_regex = config
-        .get("success_regex")
-        .and_then(toml::Value::as_array)
-        .unwrap();
+    let success_regex = first_step_success_regex(&config).unwrap();
     assert!(
         success_regex
             .iter()
@@ -1270,18 +1272,14 @@ fn claw_code_qemu_config_exits_after_smoke_check() {
         config_path.display()
     );
 
-    let shell_init_cmd = config
-        .get("shell_init_cmd")
-        .and_then(toml::Value::as_str)
-        .unwrap_or_default();
+    let shell_cmd = shell_cmd(&config).unwrap_or_default();
     assert!(
-        shell_init_cmd.contains("test -x /usr/bin/claw"),
+        shell_cmd.contains("test -x /usr/bin/claw"),
         "{} must verify that /usr/bin/claw was injected as an executable",
         config_path.display()
     );
     assert!(
-        !shell_init_cmd.contains("STARRY_CLAW_READY")
-            && !shell_init_cmd.contains("STARRY_CLAW_MISSING"),
+        !shell_cmd.contains("STARRY_CLAW_READY") && !shell_cmd.contains("STARRY_CLAW_MISSING"),
         "{} must not echo full claw smoke markers as shell input",
         config_path.display()
     );

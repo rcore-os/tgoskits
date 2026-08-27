@@ -78,4 +78,6 @@ echo "kret prebuild: installed $(basename "$bin") -> /usr/bin/kret"
 
 if [[ "$arch" == "loongarch64" ]]; then
     install_loongarch_loader_link
+else
+    install -Dm0644 "$app_dir/kret-profile.sh" "$overlay_dir/etc/profile.d/kret-profile.sh"
 fi

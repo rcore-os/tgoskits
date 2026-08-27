@@ -358,8 +358,9 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("qemu-x86_64.toml"),
-            "args = [\"-nographic\"]\nuefi = false\nto_bin = false\nsuccess_regex = \
-             [\"PASS\"]\nfail_regex = [\"panic\"]\n",
+            "args = [\"-nographic\"]\nuefi = false\nto_bin = false\nshell_check_steps = [{ \
+             shell_prefix = \"#\", shell_cmd = \"run\", success_regex = [\"PASS\"] }]\nfail_regex \
+             = [\"panic\"]\n",
         )
         .unwrap();
 
@@ -409,14 +410,18 @@ mod tests {
         let path = dir.path().join("qemu-x86_64.toml");
         fs::write(
             &path,
-            "args = [\"-nographic\"]\nuefi = false\nto_bin = false\nsuccess_regex = \
-             [\"PASS\"]\nfail_regex = [\"panic\"]\ntimeout = 120\n",
+            "args = [\"-nographic\"]\nuefi = false\nto_bin = false\nshell_check_steps = [{ \
+             shell_prefix = \"#\", shell_cmd = \"run\", success_regex = [\"PASS\"] }]\nfail_regex \
+             = [\"panic\"]\ntimeout = 120\n",
         )
         .unwrap();
 
         let config = load_c_test_qemu_config(&path).unwrap();
         assert_eq!(config.args, vec!["-nographic"]);
-        assert_eq!(config.success_regex, vec!["PASS"]);
+        assert_eq!(
+            config.shell_check_steps[0].success_regex,
+            Some(vec!["PASS".to_string()])
+        );
         assert_eq!(config.fail_regex, vec!["panic"]);
         assert_eq!(config.timeout, Some(120));
     }

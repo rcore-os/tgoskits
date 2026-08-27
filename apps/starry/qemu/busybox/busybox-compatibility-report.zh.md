@@ -64,23 +64,20 @@ apps/starry/qemu/busybox/
 /usr/bin/busybox-tests.sh
 ```
 
-随后由 `shell_init_cmd` 自动执行。
+随后由 `shell_cmd` 自动执行。
 
 ## 3. QEMU 配置与 matcher
 
 四个架构配置均使用同一个 guest 入口：
 
 ```toml
-shell_init_cmd = "/usr/bin/busybox-tests.sh"
-```
-
-成功判定要求同时匹配：
-
-```toml
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/busybox-tests.sh"
 success_regex = ["(?m)^PASS: \\d+  FAIL: 0", "(?m)^Test run completed"]
 ```
 
-这意味着测试脚本必须打印总计行，并且 `FAIL` 计数必须为 0。同时还需要打印稳定的结束标记：
+步骤内的 `success_regex` 按 OR 语义匹配。这里保留总计行和稳定结束标记两种成功输出，任一出现即可完成该步骤；脚本自身仍负责保证 `FAIL` 计数为 0 后才打印这些标记。
 
 ```text
 Test run completed

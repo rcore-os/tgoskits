@@ -24,16 +24,19 @@ fn assert_system_runner_config(path: &Path) {
         path.display()
     );
 
-    let success_regex = config
-        .get("success_regex")
-        .and_then(toml::Value::as_array)
-        .unwrap();
     assert!(
-        success_regex
-            .iter()
-            .filter_map(toml::Value::as_str)
-            .any(|regex| regex.contains("STARRY_GROUPED_TESTS_PASSED")),
-        "{} must require the system grouped success marker",
+        config.get("shell_prefix").is_none(),
+        "{} must leave grouped execution to profile autorun",
+        path.display()
+    );
+    assert!(
+        config.get("shell_check_steps").is_none(),
+        "{} must not combine grouped commands with static shell check steps",
+        path.display()
+    );
+    assert!(
+        config.get("success_regex").is_none(),
+        "{} must leave grouped success matching to the runtime-generated passive step",
         path.display()
     );
     let fail_regex = config
@@ -186,6 +189,15 @@ fn assert_inline_grouped_runner_reports_each_result_once(path: &Path) {
     );
 }
 
+fn shell_cmd(config: &toml::Value) -> Option<&str> {
+    config
+        .get("shell_check_steps")
+        .and_then(toml::Value::as_array)
+        .and_then(|steps| steps.first())
+        .and_then(|step| step.get("shell_cmd"))
+        .and_then(toml::Value::as_str)
+}
+
 #[test]
 fn bug_ext4_dir_ops_is_in_system_grouped_qemu_case() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -215,6 +227,18 @@ fn starry_system_grouped_qemu_configs_report_each_result_once() {
 
     let rga_path = workspace_root.join("test-suit/starryos/qemu-rga/system/qemu-aarch64.toml");
     assert_inline_grouped_runner_reports_each_result_once(&rga_path);
+}
+
+#[test]
+fn e1000_system_grouped_qemu_config_uses_runtime_generated_shell_check() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = workspace_root.join("test-suit/starryos/qemu-e1000/system/qemu-x86_64.toml");
+    let content = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+
+    let _: QemuConfig = toml::from_str(&content)
+        .unwrap_or_else(|err| panic!("failed to parse {} as QEMU config: {err}", path.display()));
+    assert_system_runner_config(&path);
 }
 
 #[test]
@@ -390,10 +414,7 @@ fn tty_console_input_burst_uses_injected_guest_script() {
         let path = case_dir.join(format!("qemu-{arch}.toml"));
         let content = fs::read_to_string(&path).unwrap();
         let config: toml::Value = toml::from_str(&content).unwrap();
-        let command = config
-            .get("shell_init_cmd")
-            .and_then(toml::Value::as_str)
-            .unwrap_or_default();
+        let command = shell_cmd(&config).unwrap_or_default();
 
         assert_eq!(
             command,

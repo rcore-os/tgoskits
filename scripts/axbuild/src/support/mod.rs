@@ -6,3 +6,7 @@ pub(crate) mod logging;
 pub(crate) mod ovmf;
 pub mod process;
 pub(crate) mod qemu_success;
+
+#[cfg(test)]
+#[path = "tests/shell_check_migration.rs"]
+mod shell_check_migration_tests;

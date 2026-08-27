@@ -111,11 +111,15 @@ pub struct ArgsPerf {
     )]
     pub host_perf_events: String,
     /// Send this command to the guest shell after the qperf boot prompt appears.
-    #[arg(long, visible_alias = "workload")]
-    pub shell_init_cmd: Option<String>,
-    /// Prompt substring used before sending --shell-init-cmd.
-    #[arg(long)]
-    pub shell_prefix: Option<String>,
+    #[arg(
+        long = "workload-cmd",
+        visible_alias = "workload",
+        alias = "shell-init-cmd"
+    )]
+    pub workload_cmd: Option<String>,
+    /// Prompt substring used before sending --workload-cmd.
+    #[arg(long = "workload-shell-prefix", alias = "shell-prefix")]
+    pub workload_shell_prefix: Option<String>,
     /// Append one raw QEMU argument. Repeat for options and values.
     #[arg(long = "qemu-arg", value_name = "ARG", allow_hyphen_values = true)]
     pub qemu_args: Vec<String>,

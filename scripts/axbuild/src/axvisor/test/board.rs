@@ -206,11 +206,9 @@ fn merge_board_test_uboot_config(
     if test_uboot.bootm_addr.is_some() {
         uboot.bootm_addr = test_uboot.bootm_addr;
     }
-    uboot.success_regex = test_uboot.success_regex;
     uboot.fail_regex = test_uboot.fail_regex;
     uboot.uboot_cmd = test_uboot.uboot_cmd;
-    uboot.shell_prefix = test_uboot.shell_prefix;
-    uboot.shell_init_cmd = test_uboot.shell_init_cmd;
+    uboot.shell_check_steps = test_uboot.shell_check_steps;
     if test_uboot.timeout.is_some() {
         uboot.timeout = test_uboot.timeout;
     }
@@ -236,10 +234,14 @@ mod tests {
     fn uboot_test_config_uses_board_case_matchers_and_keeps_base_local_config() {
         let base = UbootConfig {
             dtb_file: Some("${env:BOARD_DTB}".to_string()),
-            success_regex: vec!["old-ok".to_string()],
             fail_regex: vec!["old-fail".to_string()],
             uboot_cmd: Some(vec!["old-boot".to_string()]),
-            shell_prefix: Some("old-login:".to_string()),
+            shell_check_steps: vec![ostool::run::ShellCheckStep {
+                shell_prefix: Some("old-login:".to_string()),
+                shell_cmd: Some("old-command".to_string()),
+                success_regex: Some(vec!["old-ok".to_string()]),
+                ..Default::default()
+            }],
             timeout: Some(300),
             local: ostool::run::uboot::LocalUbootConfig {
                 serial: Some("/dev/ttyUSB1".to_string()),
@@ -250,7 +252,6 @@ mod tests {
         };
         let board_test = ostool::board::config::BoardRunConfig {
             board_type: "RDK-S100".to_string(),
-            success_regex: vec!["ubuntu login:".to_string()],
             fail_regex: vec!["(?i)panic".to_string()],
             uboot_cmd: Some(vec![
                 "run ab_select_cmd".to_string(),
@@ -259,13 +260,22 @@ mod tests {
             kernel_load_addr: Some("0x200000".to_string()),
             fit_load_addr: Some("0x2000000".to_string()),
             bootm_addr: Some("0x2000000".to_string()),
-            shell_prefix: Some("ubuntu login:".to_string()),
+            shell_check_steps: vec![ostool::run::ShellCheckStep {
+                shell_prefix: Some("ubuntu login:".to_string()),
+                shell_cmd: Some("new-command".to_string()),
+                success_regex: Some(vec!["ubuntu login:".to_string()]),
+                ..Default::default()
+            }],
             ..Default::default()
         };
 
+        let expected_steps = board_test.shell_check_steps.clone();
         let merged = merge_board_test_uboot_config(Some(base), board_test);
 
-        assert_eq!(merged.success_regex, vec!["ubuntu login:"]);
+        assert_eq!(
+            merged.shell_check_steps[0].success_regex,
+            Some(vec!["ubuntu login:".to_string()])
+        );
         assert_eq!(merged.fail_regex, vec!["(?i)panic"]);
         assert_eq!(
             merged.uboot_cmd,
@@ -274,7 +284,7 @@ mod tests {
                 "run avb_boot".to_string()
             ])
         );
-        assert_eq!(merged.shell_prefix.as_deref(), Some("ubuntu login:"));
+        assert_eq!(merged.shell_check_steps, expected_steps);
         assert_eq!(merged.dtb_file.as_deref(), Some("${env:BOARD_DTB}"));
         assert_eq!(merged.kernel_load_addr.as_deref(), Some("0x200000"));
         assert_eq!(merged.fit_load_addr.as_deref(), Some("0x2000000"));

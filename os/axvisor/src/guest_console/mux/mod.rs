@@ -39,6 +39,15 @@ pub enum ConsoleInputEvent {
     NoRunningGuest,
 }
 
+/// Result of opening a guest console from the management shell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsoleAttachment {
+    /// The running guest now owns interactive console input and output.
+    Interactive,
+    /// A stopped guest's buffered output was replayed without taking console input.
+    Replayed,
+}
+
 #[derive(Debug)]
 struct RoutedInput {
     event: ConsoleInputEvent,
@@ -118,9 +127,10 @@ impl GuestConsoleMux {
     fn set_running(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
         let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
-        state.running.clear();
+        let running = running.into_iter().collect::<BTreeSet<_>>();
+        state.running = running;
+        let running = state.running.iter().copied().collect::<Vec<_>>();
         for vm_id in running {
-            state.running.insert(vm_id);
             state.guests.entry(vm_id).or_default();
             state.output.register_guest(vm_id);
         }
@@ -157,12 +167,7 @@ impl GuestConsoleMux {
         let _output_guard = self.core.lock_output();
         let mut state = self.core.lock_state();
         state.running.remove(&vm_id);
-        if let Some(guest) = state.guests.get_mut(&vm_id) {
-            guest.backend_generation = None;
-            guest.input.clear();
-            guest.input_overflow_reported = false;
-        }
-        state.output.reset_guest(vm_id);
+        invalidate_guest_input(&mut state, vm_id);
         let detached = state.attached == Some(vm_id);
         let host_output = if detached {
             state.attached = None;
@@ -202,6 +207,7 @@ impl GuestConsoleMux {
         detached
     }
 
+    #[cfg(test)]
     fn attach_default(&self, running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
         self.set_running(running);
         let _output_guard = self.core.lock_output();
@@ -225,6 +231,20 @@ impl GuestConsoleMux {
         state.last_attached = Some(vm_id);
         state.shortcut_prefix_pending = false;
         let host_output = state.output.buffer_all();
+        drop(state);
+        submit_host_bytes(&host_output);
+        true
+    }
+
+    fn replay_stopped(&self, vm_id: VMId) -> bool {
+        let _output_guard = self.core.lock_output();
+        let mut state = self.core.lock_state();
+        if state.running.contains(&vm_id) || !state.guests.contains_key(&vm_id) {
+            return false;
+        }
+        let Some(host_output) = state.output.replay_buffered(vm_id) else {
+            return false;
+        };
         drop(state);
         submit_host_bytes(&host_output);
         true
@@ -530,6 +550,14 @@ fn enqueue_guest_input(state: &mut ConsoleState, vm_id: VMId, bytes: &[u8]) -> b
     true
 }
 
+fn invalidate_guest_input(state: &mut ConsoleState, vm_id: VMId) {
+    if let Some(guest) = state.guests.get_mut(&vm_id) {
+        guest.backend_generation = None;
+        guest.input.clear();
+        guest.input_overflow_reported = false;
+    }
+}
+
 /// Returns the factory that provisions one backend per VM device generation.
 pub fn serial_backend_factory(vm_id: VMId) -> Arc<dyn SerialBackendFactory> {
     Arc::new(GuestSerialBackendFactory {
@@ -561,31 +589,27 @@ pub fn route_host_log(
     GUEST_CONSOLE_MUX.route_host_log(record, dropped_records, dropped_bytes)
 }
 
-/// Attach the lowest-ID member of the default running VM set.
-#[cfg_attr(
-    feature = "no-auto-start",
-    expect(
-        dead_code,
-        reason = "only the auto-start boot path attaches the console to a default running VM"
-    )
-)]
-pub fn attach_default(running: impl IntoIterator<Item = VMId>) -> Option<VMId> {
-    GUEST_CONSOLE_MUX.attach_default(running)
-}
-
-/// Attach one running VM to the host console.
-pub fn attach(vm_id: VMId) -> Result<()> {
+/// Opens a running VM interactively or replays a stopped VM's buffered output.
+pub fn attach(vm_id: VMId) -> Result<ConsoleAttachment> {
     let Some(vm) = crate::manager::AxvmManager::vm_by_id(vm_id) else {
         bail!("VM[{vm_id}] not found");
     };
-    if vm.status() != VmStatus::Running {
-        bail!("VM[{vm_id}] is not running");
+    match vm.status() {
+        VmStatus::Running => {
+            GUEST_CONSOLE_MUX.mark_running(vm_id);
+            if !GUEST_CONSOLE_MUX.attach(vm_id) {
+                bail!("VM[{vm_id}] is not available for console attachment");
+            }
+            Ok(ConsoleAttachment::Interactive)
+        }
+        VmStatus::Stopped => {
+            if !GUEST_CONSOLE_MUX.replay_stopped(vm_id) {
+                bail!("VM[{vm_id}] has no buffered console output");
+            }
+            Ok(ConsoleAttachment::Replayed)
+        }
+        status => bail!("VM[{vm_id}] console is unavailable while the VM is {status:?}"),
     }
-    GUEST_CONSOLE_MUX.mark_running(vm_id);
-    if !GUEST_CONSOLE_MUX.attach(vm_id) {
-        bail!("VM[{vm_id}] is not available for console attachment");
-    }
-    Ok(())
 }
 
 /// Activates direct output after the shell has announced an attachment.

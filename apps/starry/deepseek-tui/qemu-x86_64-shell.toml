@@ -1,9 +1,7 @@
 # Example only: interactive DeepSeek TUI shell, not part of test-suit or CI.
 timeout = 0
-shell_prefix = "root@starry:"
 uefi = false
 to_bin = false
-success_regex = []
 fail_regex = []
 
 args = [
@@ -20,31 +18,6 @@ args = [
     "virtio-net-pci,netdev=net0",
     "-netdev",
     "user,id=net0",
+    "-append",
+    "starry.interactive=deepseek",
 ]
-
-shell_init_cmd = '''
-export HOME=/root
-export USER=root
-export SHELL=/bin/sh
-export TERM=xterm-256color
-export PATH=/usr/local/bin:/usr/bin:/bin:/sbin
-export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-if [ -f "$HOME/.deepseek/starry-online-env" ]; then
-    . "$HOME/.deepseek/starry-online-env"
-fi
-cd "$HOME"
-cat <<'STARRY_DEEPSEEK_USAGE'
-
-StarryOS DeepSeek TUI interactive shell is ready.
-
-Common commands:
-  deepseek --version
-  deepseek-tui --version
-  deepseek model list
-  deepseek-tui
-
-Exit QEMU:
-  Ctrl-a x
-
-STARRY_DEEPSEEK_USAGE
-'''

@@ -194,7 +194,7 @@ impl AppContext {
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
         let _path_guard = self.scoped_qemu_path(cargo)?;
-        let success_regex = qemu.success_regex.clone();
+        let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
         let (capture_backtrace, success_output) =
             crate::support::qemu_success::capture_required_success_output(
                 &success_regex,
@@ -260,7 +260,7 @@ impl AppContext {
         qemu: QemuConfig,
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
-        let success_regex = qemu.success_regex.clone();
+        let success_regex = crate::support::qemu_success::configured_success_regex(&qemu);
         let (capture_backtrace, success_output) =
             crate::support::qemu_success::capture_required_success_output(
                 &success_regex,

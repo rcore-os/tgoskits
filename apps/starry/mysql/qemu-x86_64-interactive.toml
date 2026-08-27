@@ -1,8 +1,6 @@
 timeout = 0
-shell_prefix = "root@starry:"
 uefi = false
 to_bin = false
-success_regex = []
 fail_regex = []
 
 args = [
@@ -20,7 +18,5 @@ args = [
     "-netdev",
     "user,id=net0",
     "-append",
-    "root=/dev/nvme0n1",
+    "root=/dev/nvme0n1 starry.interactive=mysql",
 ]
-
-shell_init_cmd = "/usr/bin/mysql-interactive.sh"

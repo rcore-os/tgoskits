@@ -10,7 +10,8 @@ guest_type = "passthrough"
 # The number of virtual CPUs.
 cpu_num = 1
 # Guest vm physical cpu sets.
-phys_cpu_sets = [1]
+# Affinity is a bitmap: keep CPU0 available for the FIFO-scheduled management shell.
+phys_cpu_sets = [2]
 
 #
 # Vm kernel configs

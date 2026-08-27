@@ -18,8 +18,21 @@ args = [
 ]
 uefi = false
 to_bin = false
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)page fault",
+    "(?i)segmentation fault",
+    "No such process \\(os error 3\\)",
+    "sys_prctl: unsupported option 23",
+    "(?m)^STARRY_DEEPSEEK_PRIME_TEST_MISSING_API_KEY\\s*$",
+    "(?m)^STARRY_DEEPSEEK_PRIME_TEST_WRONG_OUTPUT\\s*$",
+    "(?m)^STARRY_DEEPSEEK_PRIME_TEST_NO_FILE\\s*$",
+]
+timeout = 2400
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:"
-shell_init_cmd = '''
+shell_cmd = '''
 export HOME=/root
 export USER=root
 export SHELL=/bin/sh
@@ -110,14 +123,3 @@ else
 fi
 '''
 success_regex = ["(?m)^STARRY_DEEPSEEK_PRIME_TEST_PASSED\\s*$"]
-fail_regex = [
-    "(?i)\\bpanic(?:ked)?\\b",
-    "(?i)page fault",
-    "(?i)segmentation fault",
-    "No such process \\(os error 3\\)",
-    "sys_prctl: unsupported option 23",
-    "(?m)^STARRY_DEEPSEEK_PRIME_TEST_MISSING_API_KEY\\s*$",
-    "(?m)^STARRY_DEEPSEEK_PRIME_TEST_WRONG_OUTPUT\\s*$",
-    "(?m)^STARRY_DEEPSEEK_PRIME_TEST_NO_FILE\\s*$",
-]
-timeout = 2400

@@ -85,7 +85,7 @@ backlog，返回管理 shell 后再回放。底层 64 条 record 队列和 mux b
 | `Ctrl+X Ctrl+X` | 前台不变 | 向当前 VM 发送一个 `Ctrl+X`；在 shell 中返回一个 `ShellByte(Ctrl+X)` |
 | `Ctrl+X` 后跟其他字节 | 前台不变 | 向当前 VM 原序发送两个字节；在 shell 中返回 `ShellSequence` |
 
-`running` 是按 VM ID 排序的 `BTreeSet`。启动期 `attach_default()` 选择最小 ID；快捷键切换以当前 `attached` 为锚，没有当前前台时以 `last_attached` 为锚，并在集合首尾环绕。两者都不存在时，`[` 从最大 ID 开始、`]` 从最小 ID 开始。集合为空则返回 `NoRunningGuest`，由 shell 打印诊断并重绘当前命令行。
+`running` 是按 VM ID 排序的 `BTreeSet`。默认启动不会选择前台 VM；快捷键切换以当前 `attached` 为锚，没有当前前台时以 `last_attached` 为锚，并在集合首尾环绕。两者都不存在时，`[` 从最大 ID 开始、`]` 从最小 ID 开始。集合为空则返回 `NoRunningGuest`，由 shell 打印诊断并重绘当前命令行。
 
 ### 3.1 有界输入与唤醒
 
@@ -95,9 +95,9 @@ backlog，返回管理 shell 后再回放。底层 64 条 record 队列和 mux b
 
 ### 3.2 命令附着与 foreground 激活
 
-`vm console <VM_ID>` 和 `vm start --console <VM_ID>` 最终都调用 `guest_console::attach()`。它先从 manager 查找 VM，再要求 `VmStatus::Running`，随后把 VM 记入 running 集合并设置 `attached`；不存在或非 Running 都返回明确错误，不创建悬空前台。
+`vm console <VM_ID>` 和 `vm start --console <VM_ID>` 最终都调用 `guest_console::attach()`。它先从 manager 查找 VM。`Running` VM 被记入 running 集合并设置 `attached`；`Stopped` VM 则只在 `output_lock` 下 drain 仍保留的 ring，补齐未结束行，不设置前台也不接收输入。不存在、没有 console state，或处于 Ready/Paused/Stopping 等中间状态时返回明确错误。
 
-命令先打印“已附着”提示，再调用 `activate(vm_id)`。`activate()` 只有在该 VM 仍是当前前台时才把输出切到 `Interactive { foreground: Some(vm_id) }` 并回放缓存，因此 shell 提示与客户机历史输出不会颠倒。快捷键切换也由 shell 收到 `Attached` 事件、打印提示后调用同一入口。
+运行中 VM 的命令先打印“已附着”提示，再调用 `activate(vm_id)`。`activate()` 只有在该 VM 仍是当前前台时才把输出切到 `Interactive { foreground: Some(vm_id) }` 并回放缓存，因此 shell 提示与客户机历史输出不会颠倒。快捷键切换也由 shell 收到 `Attached` 事件、打印提示后调用同一入口。已停止 VM 的 replay 在 `attach()` 内完成，命令随后打印完成信息并由 shell 正常重画提示符。
 
 ## 4. Backend generation 的创建与有效性
 
@@ -147,7 +147,7 @@ backend 的读、写都带创建时的 `(vm_id, generation)`：
 
 - `read_guest_input()` 只在 `GuestState.backend_generation == generation` 时取队列，否则返回 0；
 - `format_guest_output()` 在修改 `GuestOutputMux` 之前做相同校验，stale 写返回 `None`，不会改变 pending、owner、mode 或物理行状态；
-- `mark_stopped(vm_id)` 显式把 generation 置空、清输入、清该 VM 输出，并从 running 移除；
+- `mark_stopped(vm_id)` 显式把 generation 置空、清输入并从 running 移除，但保留该 VM 的有界输出以供回放；
 - `remove(vm_id)` 删除整个 `GuestState`、running/last-attached 和输出状态。
 
 设备 runtime 的底层 stop、drop、reset 或 manager remove 不会自动调用这些应用接口。下一节列出了 Axvisor 应用层的实际调用路径。
@@ -158,19 +158,19 @@ backend 的读、写都带创建时的 `(vm_id, generation)`：
 
 | Axvisor 路径 | manager 操作成功后的 mux 调用 | generation / 输出 / foreground 结果 |
 | --- | --- | --- |
-| 默认自动启动 | `launch_default_vms()` 返回成功 ID，随后 `attach_default(started_vms)` | 重建 running 集合，进入 `BootMultiplex`，附着最小 ID 并请求其下一条完整行优先 |
+| 默认自动启动 | `launch_default_vms()`；shell 循环随后按实际状态对账 | 不选择 foreground；每台 VM 的输出保留在自己的有界 ring 中，等待显式附着 |
 | `vm start` | `mark_running(vm_id)` | 保留现有 generation；加入 running，不自动改变 foreground |
 | `vm start --console` | start 的 `mark_running`，再 `attach()`、打印提示、`activate()` | 切到目标并进入 Interactive，回放其 ring |
-| `vm console` | `attach()` 内部在 Running 检查后调用 `mark_running`，随后命令调用 `activate()` | 不改 generation；切 foreground 并回放 |
-| `vm stop` | shutdown request 成功后立即 `mark_stopped(vm_id)` | 请求发出即清 generation、输入和输出；若是前台则转为无 foreground，不等待最终 `Stopped` |
+| `vm console` | `attach()` 根据状态选择交互附着或停止后回放 | Running 时切 foreground；Stopped 时 drain ring 后留在 shell |
+| `vm stop` | shutdown request 成功后立即 `mark_stopped(vm_id)` | 请求发出即清 generation 和输入并保留输出；若是前台则转为无 foreground，不等待最终 `Stopped` |
 | `vm reset` | reset 完成且新 runtime 已 Running 后 `mark_running(vm_id)` | device plan 复用原 backend；generation 不变。该命令没有先调用 `mark_stopped` |
 | `vm resume` | resume 成功后 `mark_running(vm_id)` | 加入 running，generation 与 foreground 不变 |
 | `vm delete` | manager registry 成功移除后 `remove(vm_id)`，再调用 `vm.destroy()` | 删除所有 mux state；若是前台则返回 shell。destroy 失败不会恢复已删状态 |
-| guest 自行退出、deferred reset、HTTP 等非 shell 状态变化 | 没有直接 mux lifecycle hook；shell 循环调用 `reconcile_vm_states()` | 以 registry 中实际 `Running` 集合修正 running、输出集合和 foreground |
+| guest 自行退出、deferred reset、HTTP 等非 shell 状态变化 | 没有直接 mux lifecycle hook；shell 循环调用 `reconcile_vm_states()` | 以 registry 中实际 `Running` 集合修正 running 和 foreground；保留 generation、输入与输出 ring |
 
-`reconcile_vm_states()` 每轮读取 manager registry，只保留状态恰为 `Running` 的 ID。若当前前台不再运行，`set_running()` 清 `attached` 和快捷键前缀，调用 `buffer_all()` 补齐可能未完成的宿主物理行；shell 随后打印“VM stopped; returning to the management shell”并重绘提示符。非前台 VM 离开 Running 时，其 output ring 也由 `reconcile_running()` 丢弃。
+`reconcile_vm_states()` 每轮读取 manager registry，只把状态恰为 `Running` 的 ID 放入运行集合，并保留其他 VM 的 generation、输入与 output ring。若当前前台不再运行，`set_running()` 还会清 `attached` 和快捷键前缀，调用 `buffer_all()` 补齐可能未完成的宿主物理行；shell 随后打印“VM stopped; returning to the management shell”并重绘提示符。
 
-reconcile 不是 `mark_stopped()` 的别名：它不会清 `GuestState.backend_generation` 或输入队列，也不会删除 `GuestState`。因此只有明确经过 shell stop/delete 路径时，才能声称 generation 被 `mark_stopped`/`remove` 失效；其他路径目前主要依赖 VM 不再运行来停止设备访问，并由 shell 对账前台显示。
+reconcile 不是 `mark_stopped()` 的别名：它只按 manager 的完整 Running 集合对账 foreground，不失效 generation 或输入，避免 Paused 等非 Running 状态丢失可恢复 backend。两条路径都保留 bounded ring；只有 backend replacement 或 `remove()` 会明确删除旧输出。
 
 ## 6. 输出模式与行级仲裁
 
@@ -187,7 +187,7 @@ flowchart LR
     Lock["output_lock"]
     Valid{"generation current?"}
     Mode{"GuestOutputMux mode"}
-    Boot["BootMultiplex<br/>完整行 + 可选 [VM n]"]
+    Boot["显式 BootMultiplex<br/>完整行 + 可选 [VM n]"]
     Fore["Interactive foreground<br/>ring replay + direct output"]
     Back["Interactive background / detached<br/>16 KiB ring"]
     Queue["HostOutputTransaction<br/>固定队列，整事务提交或回滚"]
@@ -206,15 +206,15 @@ flowchart LR
     Queue --> Worker --> Host
 ```
 
-### 6.1 `BootMultiplex`
+### 6.1 缓存启动输出
 
-启动期需要同时观察多个 VM。只有一个 running VM 时，pending 字节立即输出且不加前缀。多个 VM running 时，mux 等某个 VM 的 pending 中出现 `\n`，再一次取出一条完整逻辑行并加一个 `[VM n] ` 前缀；同一行被多次 backend write 分片时仍只加一次前缀。未结束片段留在该 VM 的 ring，不与另一 VM 的行拼接。
+`GuestOutputMux` 默认处于 `Interactive { foreground: None }`：无论当前有一台还是多台 running VM，客户机 TX 都只写入各自的 ring，不写宿主终端。Axvisor 的默认启动路径不自动附着客户机，也不进入 `BootMultiplex`。因此管理 shell 和宿主日志始终可见，而 Linux/ArceOS 等客户机的启动输出要到 `vm console <VM_ID>` 成功后才回放。
 
-`attach_default()` 会为默认前台设置 preemption：该 VM 下一次形成完整行时优先取得物理行。若另一个 owner 已在宿主上留下未结束物理行，切 owner 前先输出一个 `\n`，再打印新行及前缀。
+`BootMultiplex` 仍是仲裁器可显式选择的完整行输出模式，但不属于 Axvisor 默认启动流程。它只在调用方明确要求时同时观察多个 VM：只有一个 running VM 时，pending 字节立即输出且不加前缀；多个 VM running 时，mux 等某个 VM 的 pending 中出现 `\n`，再一次取出一条完整逻辑行并加一个 `[VM n] ` 前缀；同一行被多次 backend write 分片时仍只加一次前缀。未结束片段留在该 VM 的 ring，不与另一 VM 的行拼接。
 
 ### 6.2 `Interactive`
 
-`activate()` 或附着后的第一次普通输入会选择 foreground 并进入 Interactive。前台写先回放它在 ring 中的内容，再直接输出当前 bytes；后台 VM 只追加 ring，不写宿主。`Ctrl+X h`、前台 stop/delete/reconcile 会调用 `buffer_all()`，把 mode 设为 `Interactive { foreground: None }`，此后所有 guest 都只缓存。
+`activate()` 或附着后的第一次普通输入会选择 foreground 并进入 Interactive。前台写先回放它在 ring 中的内容，再直接输出当前 bytes；后台 VM 只追加 ring，不写宿主。`Ctrl+X h`、前台 stop/delete/reconcile 会调用 `buffer_all()`，把 mode 设为 `Interactive { foreground: None }`，此后所有 guest 都只缓存。对 Stopped VM 执行 `vm console` 使用非交互 replay：drain 指定 ring、补齐物理行，并保持 `foreground: None`，因此 shell 可继续执行下一条命令。
 
 每 VM ring 上限是 16 KiB。它在 backend 注册的任务上下文中一次预分配；vCPU 热路径满后只执行 pop/push，不扩容。继续追加会从头淘汰最旧字节并累计丢失数，因此保留最新日志并限制内存。下次形成可输出的 boot 行或切到该 VM 时，mux 先输出 `[Axvisor VM n console dropped N buffered bytes]` 摘要，再回放保留内容。`select_foreground()` 在同一个 `output_lock` 临界区内 drain ring 后接入直写；并发 writer 必须等回放完成，不能插到回放中间。ring 保存原始客户机字节，`[VM n]` 只在 BootMultiplex 输出完整行时临时生成，不会回流到客户机输入。
 
@@ -248,7 +248,7 @@ SMP 限制不能通过让任意 vCPU poll 来规避，那会破坏设备 poll �
 | shell 和客户机都偶发丢字符 | `TaskConsoleInput` 是否被第二次取得；runtime RX error/overrun 统计是否增长 | 当前契约是 capability single-owner；RX IRQ 只采样并由 owner worker 发布 |
 | 输入空闲时 shell 占用 CPU | `wait_for_host_event()` 是否走 `wait_event()` / `wait_readable()` | shell 不应以 `yield_now()` 轮询 task-console |
 | 宿主日志插入正在编辑的命令 | 是否取得唯一日志订阅；记录是否经 `route_host_log()`；drop 摘要是否增长 | shell 模式必须清行、输出完整记录并重画；guest 前台模式必须缓存而非直写 |
-| `vm console` 报错 | VM ID 是否存在，状态是否严格为 `Running` | attach 不接受 Ready、Paused、Stopping 或 Stopped |
+| `vm console` 报错 | VM ID 是否存在；Running VM 是否可附着；Stopped VM 是否仍有 console state | attach 不接受 Ready、Paused、Stopping；删除或从未建立 backend 的 VM 没有可回放 ring |
 | 客户机不立即收到输入 | 输入队列是否满及 overflow warning；`notify_vm` warning；guest 是否 SMP 且 vCPU0 空闲 | 4096 字节尾部丢弃并按 drain 周期报告一次；SMP notify 不能定向 vCPU0 |
 | reset 后控制台永久无输入输出 | reset 前是否调用过 `mark_stopped()`；是否误以为 reset 会创建 backend | reset clone 同一 backend Arc，不会发布新 generation；已失效 generation 不会自动复活 |
 | replace/stop 后仍看到 late output | 应用路径是否真的调用 `mark_stopped()`/`remove()`；写入 backend generation 是否仍 current | 底层 stop/remove 不自动接入 mux；stale 写应在修改 output 前被拒绝 |

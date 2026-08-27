@@ -22,19 +22,21 @@ description: 适配或修复 ArceOS 测试用例以通过 `cargo xtask test arce
 - `main.rs` 中若使用 `no_mangle`，按当前仓库风格写成 `unsafe(no_mangle)`。
 - 清理无关旧产物，如 `*.out`、`*.bin`、`*.elf`、`test_cmd`。
 
-## QEMU 正则规则
+## QEMU shell-check 规则
 
-- `success_regex` 必须按代码成功路径里实际打印的稳定字符串填写。
+- 在 `shell_check_steps` 中定义 step-local `success_regex`；不要在 QEMU TOML 根部定义它。
+- 只检查启动输出时使用不含 `shell_prefix`/`shell_cmd` 的被动步骤；需要发送命令时，把提示符、命令和成功正则放在同一步。
+- step-local `success_regex` 必须按代码成功路径里实际打印的稳定字符串填写。
 - 不要沿用占位字符串，不要猜测，不要默认写 `to install packages.`。
 - 先从 `src/main.rs`、被调用函数和已有成功日志里找“测试成功结束时一定会出现”的输出。
 - 优先选择唯一、完整、稳定的成功提示，例如 `Memory tests run OK!`、`Task yielding tests run OK!`。
-- 如果代码成功路径没有明确成功提示，先在测试代码中补一条清晰且稳定的成功输出，再回填到 `success_regex`。
+- 如果代码成功路径没有明确成功提示，先在测试代码中补一条清晰且稳定的成功输出，再回填到步骤的 `success_regex`。
 - `fail_regex` 统一写成 `(?i)\bpanic(?:ked)?\b`。
 
 ## 适配建议
 
 - 新增测试时，优先复制最接近的 `qemu-*.toml` 和 `.axconfig.toml`，再根据当前测试修正。
-- 不同架构的 `success_regex` 应与该测试真实输出一致；如果成功输出跨架构相同，可以保持一致。
+- 不同架构步骤的 `success_regex` 应与该测试真实输出一致；如果成功输出跨架构相同，可以保持一致。
 - 不要为了“让测试通过”去放宽正则到过于宽泛的内容。
 - 失败检测要确保 panic 会使 xtask 非零退出。
 

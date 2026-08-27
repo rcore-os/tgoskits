@@ -25,7 +25,7 @@ When the target kernel has a usable network driver and the guest has `curl` or
 
 1. Declare or generate the asset through the Starry board case/app overlay.
 2. Let `BoardSession::upload_shared_file` upload it under the session.
-3. Download `${sessionFile:<relative-path>}` from `shell_init_cmd` or `init.sh`.
+3. Download `${sessionFile:<relative-path>}` from a shell-check step's `shell_cmd` or `init.sh`.
 4. Use bounded retries because the link and DHCP route may become ready after
    the shell prompt.
 
@@ -114,7 +114,7 @@ Run the board workload through `cargo xtask`, using the local board type unless 
 cargo xtask starry app board -t <case> --board-config <config> -b OrangePi-5-Plus
 ```
 
-If an app board config has its own `shell_init_cmd`, verify the runner honors it. If the observed command comes from the app's `init.sh` instead, inspect `scripts/axbuild/src/starry/mod.rs` and the app runner path before assuming the config is wrong.
+If an app board config has its own `shell_cmd`, verify the runner honors it. If the observed command comes from the app's `init.sh` instead, inspect `scripts/axbuild/src/starry/mod.rs` and the app runner path before assuming the config is wrong.
 
 ## Diagnosing StarryOS `not found`
 
@@ -124,8 +124,12 @@ Prefer a temporary board config outside the repository, or remove it before comm
 
 ```toml
 board_type = "OrangePi-5-Plus"
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 120
+
+[[shell_check_steps]]
 shell_prefix = "root@starry:/root #"
-shell_init_cmd = '''
+shell_cmd = '''
 echo BOARD_DIAG_BEGIN
 cd /target/path
 pwd
@@ -137,8 +141,6 @@ readelf -l /target/path/<binary> 2>&1 || true
 echo BOARD_DIAG_DONE
 '''
 success_regex = ["(?m)^BOARD_DIAG_DONE$"]
-fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
-timeout = 120
 ```
 
 Interpretation:

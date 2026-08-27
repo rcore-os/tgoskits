@@ -78,4 +78,6 @@ echo "rawtp prebuild: installed $(basename "$bin") -> /usr/bin/rawtp"
 
 if [[ "$arch" == "loongarch64" ]]; then
     install_loongarch_loader_link
+else
+    install -Dm0644 "$app_dir/rawtp-profile.sh" "$overlay_dir/etc/profile.d/rawtp-profile.sh"
 fi

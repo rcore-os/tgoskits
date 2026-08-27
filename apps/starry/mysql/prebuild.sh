@@ -290,6 +290,8 @@ populate_overlay() {
     mkdir -p "$overlay_dir/usr/bin" "$overlay_dir/root/mysql"
     install -m 0755 "$app_dir/mysql-test.sh" "$overlay_dir/usr/bin/mysql-test.sh"
     install -m 0755 "$app_dir/mysql-interactive.sh" "$overlay_dir/usr/bin/mysql-interactive.sh"
+    install -Dm0644 "$app_dir/mysql-profile-interactive.sh" \
+        "$overlay_dir/etc/profile.d/mysql-interactive.sh"
     cat >"$overlay_dir/root/mysql/prebuild-info.txt" <<EOF
 mysql package: /opt/mysql
 mysql version: $mysql_version

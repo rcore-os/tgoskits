@@ -380,7 +380,7 @@ Important details:
 | TLB refill recursion | TLB refill vector address, stack mapping, refill handler mapping, CSR ordering |
 | Secondary CPU silent | inspect the per-CPU `KICKED/ALIVE/SHOULD_ONLINE` state and the active startup handle first: `KICKED` means transport/common-entry progress is missing, while `ALIVE` means the control path has not called `release`; then check architecture wake delivery, CPU-on argument, cache flush, stack, per-CPU base, trap setup, and logical CPU ID mapping. A second `start_secondary_cpu` must return `StartupInProgress`, not spin. On x86 verify SIPI is `APIC_DM_STARTUP` (`0x600`) rather than INIT level encoding, and never clear the active owner after a dropped handle or timeout because a late AP may still use the shared trampoline. |
 | ArceOS works but Starry fails | rootfs staging, std/musl ABI, console/input feature, tty assumptions, CPR sizing |
-| Starry shell works but grouped tests fail | generated runner path, copied assets, success regex, `shell_init_cmd` versus `test_commands` |
+| Starry shell works but grouped tests fail | generated runner path, copied assets, success regex, `shell_cmd` versus `test_commands` |
 | AArch64 Axvisor stops at first dynamic MMIO read | missing `ax-cpu/arm-el2`, inactive EL1 page-table root, stale `TTBR0_EL2` boot table |
 | Phytium guest stops after `arch_timer` | inherited board-test SMP limit, vCPU CPU-mask fallback, virtual timer routing |
 | Axvisor build works but QEMU hangs | firmware/OVMF path, LVZ QEMU, guest image/rootfs, dynamic platform memory map, post-UEFI transition |

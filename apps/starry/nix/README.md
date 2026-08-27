@@ -172,7 +172,7 @@ apps/starry/nix/
 ├── test_nix.sh                  # prebuilt nix + nosandbox + sandbox + nixpkgs phases
 ├── build-x86_64-unknown-none.toml
 ├── build-aarch64-unknown-none-softfloat.toml
-├── qemu-x86_64.toml             # 1800s timeout, shell_init_cmd=test_nix.sh
+├── qemu-x86_64.toml             # 1800s timeout, shell_cmd=test_nix.sh
 ├── qemu-x86_64-shell.toml       # interactive shell
 ├── qemu-aarch64.toml
 └── README.md                    # this file

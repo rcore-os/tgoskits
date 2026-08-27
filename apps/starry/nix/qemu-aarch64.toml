@@ -15,9 +15,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/test_nix.sh"
-success_regex = ["(?m)^NIX_APP_TESTS_PASSED\\s*$"]
 fail_regex = [
     '(?i)\\bpanic(?:ked)?\\b',
     '(?i)\\bfatal\\b',
@@ -28,3 +25,8 @@ fail_regex = [
     "(?m)^NIX_SANDBOX_ERROR:",
 ]
 timeout = 1200
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/test_nix.sh"
+success_regex = ["(?m)^NIX_APP_TESTS_PASSED\\s*$"]

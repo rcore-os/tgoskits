@@ -31,7 +31,6 @@ fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",
 ]
-success_regex = []
 timeout = 600
 to_bin = true
 uefi = false

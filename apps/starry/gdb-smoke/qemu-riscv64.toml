@@ -9,9 +9,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/gdb -q -batch -x /usr/bin/gdb-native-smoke.gdb /usr/bin/gdb-native-smoke-target"
-success_regex = ["GDB_NATIVE_SMOKE_DONE"]
 fail_regex = [
     '(?i)\bpanic(?:ked)?\b',
     '(?m)FAIL',
@@ -23,3 +20,8 @@ fail_regex = [
     'No stack',
 ]
 timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/gdb -q -batch -x /usr/bin/gdb-native-smoke.gdb /usr/bin/gdb-native-smoke-target"
+success_regex = ["GDB_NATIVE_SMOKE_DONE"]

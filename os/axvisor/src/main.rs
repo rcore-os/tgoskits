@@ -125,9 +125,7 @@ fn main() {
     // `Ready`) and the management plane boots them on demand, so nothing is
     // launched or waited on here.
     #[cfg(not(feature = "no-auto-start"))]
-    let started_vms = manager.launch_default_vms();
-    #[cfg(not(feature = "no-auto-start"))]
-    guest_console::attach_default(started_vms);
+    let _ = manager.launch_default_vms();
 
     #[cfg(not(feature = "no-auto-start"))]
     std::thread::Builder::new()

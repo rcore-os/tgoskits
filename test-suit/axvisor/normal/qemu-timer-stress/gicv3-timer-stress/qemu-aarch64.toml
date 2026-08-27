@@ -19,6 +19,12 @@ fail_regex = [
   "(?i)permission denied",
   "(?m)^TIMER_STRESS_FAILED\\s*$",
 ]
-success_regex = ["(?m)^AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED\\s*$"]
 to_bin = true
 uefi = false
+
+[[shell_check_steps]]
+shell_prefix = "axvisor:$"
+shell_cmd = "vm console 1"
+
+[[shell_check_steps]]
+success_regex = ["AXVISOR_GICV3_ITS_TIMER_STRESS_PASSED"]

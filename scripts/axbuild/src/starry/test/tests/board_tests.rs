@@ -1,3 +1,6 @@
+use ostool::board::config::BoardRunConfig;
+use regex::Regex;
+
 use super::*;
 
 #[test]
@@ -37,9 +40,9 @@ fn discovers_board_case_when_case_dir_contains_build_config() {
     let board_test_config = case_dir.join("board-orangepi-5-plus.toml");
     fs::write(
         &board_test_config,
-        "board_type = \"OrangePi-5-Plus\"\nshell_prefix = \
-         \"orangepi@orangepi5plus:~\"\nshell_init_cmd = \"pwd && echo 'test \
-         pass'\"\nsuccess_regex = [\"(?m)^test pass\\\\s*$\"]\nfail_regex = []\ntimeout = 300\n",
+        "board_type = \"OrangePi-5-Plus\"\nshell_check_steps = [{ shell_prefix = \
+         \"orangepi@orangepi5plus:~\", shell_cmd = \"pwd && echo 'test pass'\", success_regex = \
+         [\"(?m)^test pass\\\\s*$\"] }]\nfail_regex = []\ntimeout = 300\n",
     )
     .unwrap();
 
@@ -130,6 +133,51 @@ fn rejects_missing_mapped_board_build_config() {
 
     assert!(err.contains("not under a build wrapper"));
     assert!(err.contains("smoke"));
+}
+
+#[test]
+fn visionfive2_success_marker_survives_interleaved_serial_output() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let config_path =
+        workspace_root.join("test-suit/starryos/board-visionfive2/boot/board-visionfive2.toml");
+    let config: BoardRunConfig = toml::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+    let success_pattern = &config.shell_check_steps[0].success_regex.as_ref().unwrap()[0];
+    let success_regex = Regex::new(success_pattern).unwrap();
+
+    assert!(success_regex.is_match(
+        "[ 33.201821 starry_kernel::task::user] STARRY_VISIONFIVE2_SHELL_OK [ 33.223141 task exit]"
+    ));
+}
+
+#[test]
+fn sg2002_success_markers_accept_starry_log_ansi_prefixes() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (config_path, marker) in [
+        (
+            "test-suit/starryos/board-aka-00-sg2002/tennis-yolo/board-aka-00-sg2002.toml",
+            "STARRY_AKA00_TENNIS_DETECT_OK",
+        ),
+        (
+            "test-suit/starryos/board-aka-00-sg2002/usb2-lsusb/board-aka-00-sg2002.toml",
+            "STARRY_AKA_USB2_LSUSB_OK",
+        ),
+    ] {
+        let config: BoardRunConfig =
+            toml::from_str(&fs::read_to_string(workspace_root.join(config_path)).unwrap()).unwrap();
+        let pattern = config.shell_check_steps[0]
+            .success_regex
+            .as_ref()
+            .and_then(|patterns| patterns.iter().find(|pattern| pattern.contains(marker)))
+            .unwrap_or_else(|| panic!("{config_path} must match {marker}"));
+
+        assert!(
+            Regex::new(pattern)
+                .unwrap()
+                .is_match(&format!("\u{1b}[m{marker}\n")),
+            "{config_path} must accept the ANSI reset emitted before {marker}"
+        );
+    }
 }
 
 #[test]

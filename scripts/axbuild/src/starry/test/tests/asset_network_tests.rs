@@ -1,5 +1,14 @@
 use super::*;
 
+fn shell_cmd(config: &toml::Value) -> Option<&str> {
+    config
+        .get("shell_check_steps")
+        .and_then(toml::Value::as_array)
+        .and_then(|steps| steps.first())
+        .and_then(|step| step.get("shell_cmd"))
+        .and_then(toml::Value::as_str)
+}
+
 #[test]
 fn apk_curl_qemu_case_tries_cernet_before_upstream() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -11,13 +20,10 @@ fn apk_curl_qemu_case_tries_cernet_before_upstream() {
         let config_path = case_dir.join(format!("qemu-{arch}.toml"));
         let content = fs::read_to_string(&config_path).unwrap();
         let config: toml::Value = toml::from_str(&content).unwrap();
-        let shell_init_cmd = config
-            .get("shell_init_cmd")
-            .and_then(toml::Value::as_str)
-            .unwrap();
+        let shell_cmd = shell_cmd(&config).unwrap();
 
         assert!(
-            shell_init_cmd == "/usr/bin/apk-curl-tests.sh",
+            shell_cmd == "/usr/bin/apk-curl-tests.sh",
             "{} must run the injected apk-curl script instead of pasting a long shell body",
             config_path.display()
         );
@@ -86,10 +92,7 @@ fn dhcp_qemu_case_checks_local_dhcp_state_without_external_apk_fetch() {
         let config_path = case_dir.join(format!("qemu-{arch}.toml"));
         let content = fs::read_to_string(&config_path).unwrap();
         let config: toml::Value = toml::from_str(&content).unwrap();
-        let script = config
-            .get("shell_init_cmd")
-            .and_then(toml::Value::as_str)
-            .unwrap();
+        let script = shell_cmd(&config).unwrap();
 
         assert!(
             !script.contains("apk update")
@@ -205,10 +208,7 @@ fn dual_net_qemu_case_exercises_two_interfaces_and_parallel_fetches() {
             "{} must exercise the dual-NIC path on four CPUs",
             config_path.display()
         );
-        assert_eq!(
-            config.get("shell_init_cmd").and_then(toml::Value::as_str),
-            Some("/usr/bin/dual-net-tests.sh")
-        );
+        assert_eq!(shell_cmd(&config), Some("/usr/bin/dual-net-tests.sh"));
         let http = config
             .get("host_http_server")
             .and_then(toml::Value::as_table)

@@ -13,8 +13,10 @@ args = [
 ]
 uefi = true
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/nginx-runner.sh phase phase33"
-success_regex = ["(?m)^NGINX_RUNNER_PASSED\\b"]
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?m)^NGINX_RUNNER_FAILED\\b"]
 timeout = 3600
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "/usr/bin/nginx-runner.sh phase phase33"
+success_regex = ["(?m)^NGINX_RUNNER_PASSED\\b"]

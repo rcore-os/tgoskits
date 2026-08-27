@@ -15,11 +15,13 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "pwd && ls /usr/bin >/dev/null && echo K230_BOOT_PASS"
-success_regex = ["(?m)^K230_BOOT_PASS$"]
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)illegal instruction",
 ]
 timeout = 120
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:"
+shell_cmd = "pwd && ls /usr/bin >/dev/null && echo K230_BOOT_PASS"
+success_regex = ["(?m)^K230_BOOT_PASS$"]

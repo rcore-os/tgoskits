@@ -29,6 +29,7 @@ pub(crate) struct StarryAppBoardCase {
     pub(crate) build_config_path: PathBuf,
     pub(crate) board_config_path: PathBuf,
     pub(crate) target: String,
+    pub(crate) board_shell_prefix: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

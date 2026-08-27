@@ -197,33 +197,33 @@ fn grouped_runner_can_install_profile_autorun_without_interactive_guard() {
 }
 
 #[test]
-fn grouped_runner_profile_autorun_skips_shell_init() {
+fn grouped_runner_profile_autorun_creates_passive_success_step() {
     let mut config = fake_config();
     config.grouped_runner.autorun_profile_script = Some("99-suite-run-case-tests.sh".into());
     let mut qemu = QemuConfig::default();
     let mut case = fake_case(tempdir().unwrap().path(), "grouped");
     case.test_commands = vec!["/usr/bin/alpha".to_string()];
 
-    apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_runner);
+    apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_runner).unwrap();
 
-    assert!(qemu.shell_init_cmd.is_none());
+    assert_eq!(qemu.shell_check_steps.len(), 1);
+    let step = &qemu.shell_check_steps[0];
+    assert_eq!(step.shell_prefix, None);
+    assert_eq!(step.shell_cmd, None);
+    assert_eq!(
+        step.success_regex,
+        Some(vec![config.grouped_runner.success_regex])
+    );
 }
 
 #[test]
-fn grouped_runner_shell_init_uses_short_exec_command_without_autorun() {
-    let config = fake_config();
+fn grouped_runner_requires_profile_autorun() {
     let mut qemu = QemuConfig::default();
     let mut case = fake_case(tempdir().unwrap().path(), "grouped");
     case.test_commands = vec!["/usr/bin/alpha".to_string()];
+    let config = fake_config();
 
-    apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_runner);
-
-    let command = qemu.shell_init_cmd.as_deref().unwrap();
-    assert_eq!(command, "exec /usr/bin/suite-run-case-tests");
-    assert!(
-        command.len() < 80,
-        "Starry canonical TTY input buffer is 80 bytes"
-    );
+    assert!(apply_grouped_qemu_config(&mut qemu, &case, &config.grouped_runner).is_err());
 }
 
 #[test]

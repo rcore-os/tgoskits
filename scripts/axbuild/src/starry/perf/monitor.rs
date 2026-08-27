@@ -70,12 +70,12 @@ pub(super) fn run_qemu_with_stdout_monitor(
     overall_timeout: u64,
 ) -> anyhow::Result<QemuRun> {
     let mut window_report = window_report_from_config(config);
-    let shell_init_cmd = config
-        .shell_init_cmd
+    let workload_cmd = config
+        .workload_cmd
         .as_deref()
         .map(str::trim)
         .filter(|cmd| !cmd.is_empty());
-    if shell_init_cmd.is_some() {
+    if workload_cmd.is_some() {
         command.stdin(Stdio::piped());
     }
     command.stdout(Stdio::piped());
@@ -103,27 +103,28 @@ pub(super) fn run_qemu_with_stdout_monitor(
     let mut host_stdout = std::io::stdout().lock();
     let mut profile_stdout = File::create(&outputs.profile_stdout)
         .with_context(|| format!("failed to create {}", outputs.profile_stdout.display()))?;
-    let mut prompt_window = Vec::new();
+    let mut workload_prompt = WorkloadPrompt::default();
     let mut marker_window = Vec::new();
     let mut injected = false;
     let mut echo_disable_deadline = None;
-    let shell_prefix = config
-        .shell_prefix
+    let workload_shell_prefix = config
+        .workload_shell_prefix
         .as_deref()
         .unwrap_or(DEFAULT_STARRY_SHELL_PREFIX);
-    let prefix = shell_prefix.as_bytes();
+    let prefix = workload_shell_prefix.as_bytes();
     let start_marker = config.start_marker.as_deref().map(str::as_bytes);
     let stop_marker = config.stop_marker.as_deref().map(str::as_bytes);
     let marker_monitoring = start_marker.is_some() || stop_marker.is_some();
 
     loop {
         if let Some(status) = child.try_wait().context("failed to poll QEMU")? {
-            if shell_init_cmd.is_some() && !injected {
+            if workload_cmd.is_some() && !injected {
                 window_report.warnings.push(format!(
-                    "shell prompt `{shell_prefix}` was not observed before QEMU exited"
+                    "shell prompt `{workload_shell_prefix}` was not observed before QEMU exited"
                 ));
                 eprintln!(
-                    "qperf: shell prompt `{shell_prefix}` was not observed before QEMU exited"
+                    "qperf: shell prompt `{workload_shell_prefix}` was not observed before QEMU \
+                     exited"
                 );
             }
             finalize_window_warnings(&mut window_report);
@@ -145,28 +146,25 @@ pub(super) fn run_qemu_with_stdout_monitor(
                 host_stdout.flush().ok();
                 let elapsed = started.elapsed().as_secs_f64();
 
-                if let Some(cmd) = shell_init_cmd
+                if let Some(cmd) = workload_cmd
                     && !injected
                     && echo_disable_deadline.is_none()
+                    && workload_prompt.observe(&chunk, prefix)
                 {
-                    prompt_window.extend_from_slice(&chunk);
-                    trim_window(&mut prompt_window, prefix.len().saturating_add(1024));
-                    if contains_subslice(&prompt_window, prefix) {
-                        let stdin = stdin.as_mut().context("failed to open QEMU stdin")?;
-                        if marker_monitoring {
-                            stdin
-                                .write_all(b"stty -echo 2>/dev/null || true\n")
-                                .context("failed to disable shell echo before qperf command")?;
-                            stdin.flush().ok();
-                            echo_disable_deadline =
-                                Some(Instant::now() + Duration::from_millis(150));
-                        } else {
-                            write_shell_init_command(stdin, cmd)?;
-                            injected = true;
-                            eprintln!(
-                                "qperf: injected shell init command after prompt `{shell_prefix}`"
-                            );
-                        }
+                    let stdin = stdin.as_mut().context("failed to open QEMU stdin")?;
+                    if marker_monitoring {
+                        stdin
+                            .write_all(b"stty -echo 2>/dev/null || true\n")
+                            .context("failed to disable shell echo before qperf command")?;
+                        stdin.flush().ok();
+                        echo_disable_deadline = Some(Instant::now() + Duration::from_millis(150));
+                    } else {
+                        write_workload_command(stdin, cmd)?;
+                        injected = true;
+                        eprintln!(
+                            "qperf: injected workload command after prompt \
+                             `{workload_shell_prefix}`"
+                        );
                     }
                 }
 
@@ -204,15 +202,15 @@ pub(super) fn run_qemu_with_stdout_monitor(
             Err(mpsc::RecvTimeoutError::Disconnected) => {}
         }
 
-        if let (Some(cmd), Some(deadline)) = (shell_init_cmd, echo_disable_deadline)
+        if let (Some(cmd), Some(deadline)) = (workload_cmd, echo_disable_deadline)
             && !injected
             && Instant::now() >= deadline
         {
             let stdin = stdin.as_mut().context("failed to open QEMU stdin")?;
-            write_shell_init_command(stdin, cmd)?;
+            write_workload_command(stdin, cmd)?;
             injected = true;
             echo_disable_deadline = None;
-            eprintln!("qperf: injected shell init command after prompt `{shell_prefix}`");
+            eprintln!("qperf: injected workload command after prompt `{workload_shell_prefix}`");
         }
 
         let elapsed = started.elapsed().as_secs_f64();
@@ -240,11 +238,13 @@ pub(super) fn run_qemu_with_stdout_monitor(
     }
 
     let status = wait_for_child_exit(&mut child, Duration::from_secs(20))?;
-    if shell_init_cmd.is_some() && !injected {
+    if workload_cmd.is_some() && !injected {
         window_report.warnings.push(format!(
-            "shell prompt `{shell_prefix}` was not observed before QEMU exited"
+            "shell prompt `{workload_shell_prefix}` was not observed before QEMU exited"
         ));
-        eprintln!("qperf: shell prompt `{shell_prefix}` was not observed before QEMU exited");
+        eprintln!(
+            "qperf: shell prompt `{workload_shell_prefix}` was not observed before QEMU exited"
+        );
     }
     finalize_window_warnings(&mut window_report);
     Ok(QemuRun {
@@ -261,13 +261,31 @@ fn trim_window(window: &mut Vec<u8>, keep: usize) {
     }
 }
 
-fn write_shell_init_command(stdin: &mut impl Write, cmd: &str) -> anyhow::Result<()> {
+#[derive(Default)]
+struct WorkloadPrompt {
+    window: Vec<u8>,
+    observed: bool,
+}
+
+impl WorkloadPrompt {
+    fn observe(&mut self, chunk: &[u8], prefix: &[u8]) -> bool {
+        if self.observed {
+            return false;
+        }
+        self.window.extend_from_slice(chunk);
+        trim_window(&mut self.window, prefix.len().saturating_add(1024));
+        self.observed = contains_subslice(&self.window, prefix);
+        self.observed
+    }
+}
+
+fn write_workload_command(stdin: &mut impl Write, cmd: &str) -> anyhow::Result<()> {
     stdin
         .write_all(cmd.as_bytes())
-        .context("failed to write qperf shell init command")?;
+        .context("failed to write qperf workload command")?;
     stdin
         .write_all(b"\n")
-        .context("failed to terminate qperf shell init command")?;
+        .context("failed to terminate qperf workload command")?;
     stdin.flush().ok();
     Ok(())
 }
@@ -391,4 +409,63 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
         || haystack
             .windows(needle.len())
             .any(|window| window == needle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeStdin {
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+
+    impl Write for FakeStdin {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn workload_prompt_boundary_writes_command_once_without_ostool_step() {
+        let config = PerfQemuConfig {
+            args: Vec::new(),
+            uefi: false,
+            to_bin: false,
+            success_regex: Vec::new(),
+            fail_regex: Vec::new(),
+            workload_shell_prefix: Some("root@starry:".to_string()),
+            workload_cmd: Some("run-workload".to_string()),
+            timeout: None,
+            start_marker: None,
+            stop_marker: None,
+            workload_timeout: None,
+        };
+        let mut prompt = WorkloadPrompt::default();
+        let mut stdin = FakeStdin::default();
+
+        let prefix = config.workload_shell_prefix.as_deref().unwrap().as_bytes();
+        for chunk in [
+            b"boot\nroot@sta".as_slice(),
+            b"rry:".as_slice(),
+            b" duplicate root@starry:".as_slice(),
+        ] {
+            if prompt.observe(chunk, prefix) {
+                write_workload_command(&mut stdin, config.workload_cmd.as_deref().unwrap())
+                    .unwrap();
+            }
+        }
+
+        assert_eq!(stdin.bytes, b"run-workload\n");
+        assert_eq!(stdin.flushes, 1);
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(!serialized.contains("shell_check_steps"));
+    }
 }

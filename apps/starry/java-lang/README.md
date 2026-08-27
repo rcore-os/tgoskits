@@ -214,7 +214,7 @@ apps/starry/java-lang/
     BackCompat.java            # cross-version backward-compat (compile@17, run on all)
     java-cli-core.sh           # kernel-relevant javac/java CLI option carpet (JAVA_CLI_OK)
     java-toolchain-carpet.sh   # jshell + JDK dev toolchain (jar/javap/javadoc/jdeps/jlink/jmod/jpackage/...) carpet (JAVA_TOOLCHAIN_OK)
-    run-java.sh                # on-target aggregate gate (staged to /usr/bin; shell_init_cmd runs it)
+    run-java.sh                # on-target aggregate gate (staged to /usr/bin; shell_cmd runs it)
     backcompat/
       README.md                # the real-world Java-8 forward-compat suite + lib coords/sha256
       src/                     # BackCompatReal + 5 *BackCompatTest sources (compiled --release 8)
@@ -222,9 +222,9 @@ apps/starry/java-lang/
 
 The aggregate gate logic lives in **`programs/run-java.sh`**, staged into the rootfs
 at `/usr/bin/run-java.sh`; each `qemu-<arch>.toml` sets
-`shell_init_cmd = "sh /usr/bin/run-java.sh"`. The gate is a **staged script, not an
-inline `shell_init_cmd`**, on purpose: the StarryOS app harness echoes the
-`shell_init_cmd` text back over the serial console, so an inline `echo "TEST PASSED"`
+`shell_cmd = "sh /usr/bin/run-java.sh"`. The gate is a **staged script, not an
+inline `shell_cmd`**, on purpose: the StarryOS app harness echoes the
+`shell_cmd` text back over the serial console, so an inline `echo "TEST PASSED"`
 would land verbatim in the captured stream and be matched by
 `success_regex = (?m)^TEST PASSED$` as a **false positive** (it would "pass" even
 when the real gate prints `TEST FAILED`). Staged, the only echoed text is

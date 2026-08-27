@@ -2,9 +2,9 @@
 # run-go.sh — on-target gate for the StarryOS go-lang carpet (#764).
 #
 # Staged into the rootfs by prebuild.sh and invoked by every qemu-<arch>.toml as the
-# ENTIRE shell_init_cmd (`sh /usr/local/bin/run-go.sh`). Keeping the gate logic in a
-# staged script (not inline in shell_init_cmd) is deliberate: the StarryOS app harness
-# echoes the shell_init_cmd text back over the serial console, and an inline
+# entire shell-check step command (`sh /usr/local/bin/run-go.sh`). Keeping the gate logic in a
+# staged script (not inline in the step command) is deliberate: the StarryOS app harness
+# echoes the step command text back over the serial console, and an inline
 # `echo "TEST PASSED"` would land — verbatim — in the captured stream and be matched by
 # the harness `success_regex = (?m)^TEST PASSED$` as a FALSE POSITIVE (it would "pass"
 # even when the real gate prints TEST FAILED). With the gate staged, the only echoed text

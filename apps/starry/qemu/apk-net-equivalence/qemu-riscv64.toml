@@ -15,8 +15,6 @@ args = [
 ]
 uefi = false
 to_bin = true
-shell_prefix = "root@starry:"
-shell_init_cmd = "/usr/bin/apk-net-equivalence"
-success_regex = ["(?m)^APK_NET_EQUIV_TEST_PASSED\\s*$"]
+shell_check_steps = [{ shell_prefix = "root@starry:", shell_cmd = "/usr/bin/apk-net-equivalence", success_regex = ["(?m)^APK_NET_EQUIV_TEST_PASSED\\s*$"] }]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", "(?m)^APK_NET_EQUIV_TEST_FAILED:"]
 timeout = 180

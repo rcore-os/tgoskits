@@ -43,6 +43,62 @@ fn route_shortcut(mux: &GuestConsoleMux, suffix: u8) -> ConsoleInputEvent {
 
 #[cfg_attr(axtest, axtest::axtest)]
 #[cfg_attr(not(axtest), test)]
+fn guest_output_stays_buffered_until_explicit_console_activation() {
+    let mux = GuestConsoleMux::new();
+    let backend = mux.core.create_serial_backend(1);
+    mux.set_running([1]);
+
+    assert_eq!(
+        mux.core
+            .format_guest_output(1, backend.generation, b"guest boot\n"),
+        Some(Vec::new())
+    );
+    assert!(mux.attach(1));
+    assert_eq!(mux.activate(1), Some(b"guest boot\n".to_vec()));
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn stopped_guest_keeps_buffered_output_for_later_replay() {
+    let mux = GuestConsoleMux::new();
+    let backend = mux.core.create_serial_backend(1);
+    mux.set_running([1]);
+
+    assert_eq!(
+        mux.core
+            .format_guest_output(1, backend.generation, b"guest result\n"),
+        Some(Vec::new())
+    );
+    assert!(!mux.mark_stopped(1));
+
+    assert_eq!(
+        mux.core.lock_state().output.select_foreground(1),
+        b"guest result\n"
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
+fn state_reconciliation_keeps_newly_stopped_guest_output() {
+    let mux = GuestConsoleMux::new();
+    let backend = mux.core.create_serial_backend(2);
+    mux.set_running([2]);
+
+    assert_eq!(
+        mux.core
+            .format_guest_output(2, backend.generation, b"completed\n"),
+        Some(Vec::new())
+    );
+    assert_eq!(mux.set_running([]), None);
+
+    assert_eq!(
+        mux.core.lock_state().output.select_foreground(2),
+        b"completed\n"
+    );
+}
+
+#[cfg_attr(axtest, axtest::axtest)]
+#[cfg_attr(not(axtest), test)]
 fn ctrl_x_h_detaches_the_foreground_guest() {
     let mux = GuestConsoleMux::new();
     mux.core.create_serial_backend(7);

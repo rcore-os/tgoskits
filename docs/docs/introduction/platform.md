@@ -123,7 +123,7 @@ cargo axvisor defconfig qemu-aarch64
 cargo axvisor qemu
 ```
 
-单次 `qemu` 命令验证构建和启动路径；需要稳定的成功与失败判定时，可执行 `cargo starry test qemu --target riscv64gc-unknown-none-elf` 等测试入口，由 `test-suit` 中的 `success_regex`、`fail_regex` 和超时配置决定结果。
+单次 `qemu` 命令验证构建和启动路径；需要稳定的成功与失败判定时，可执行 `cargo starry test qemu --target riscv64gc-unknown-none-elf` 等测试入口，由 `test-suit` 中 `shell_check_steps` 的 step-local `success_regex`、根 `fail_regex` 和超时配置决定结果。
 
 ## 3. 板级支持
 

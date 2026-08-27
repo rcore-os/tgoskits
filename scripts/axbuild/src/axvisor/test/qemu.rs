@@ -299,7 +299,7 @@ impl Axvisor {
             &mut qemu,
             &case.case.case,
             &asset_config.grouped_runner,
-        );
+        )?;
         test_qemu::apply_timeout_scale(&mut qemu);
         if !qemu
             .fail_regex

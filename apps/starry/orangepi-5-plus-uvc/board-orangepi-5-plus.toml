@@ -1,8 +1,4 @@
 board_type = "OrangePi-5-Plus"
-shell_prefix = "root@starry:/root #"
-success_regex = [
-  '(?m)^UVC_ENDPOINT_LIFECYCLE_OK$'
-  ]
 fail_regex = [
   '(?m)^UVC_SESSION_ASSET_FAILED$',
   '(?m)^UVC_FRAME_VALIDATION_FAILED$',
@@ -13,3 +9,9 @@ fail_regex = [
   '(?i)(uvc-fps|sh): .*not found',
 ]
 timeout = 300
+
+[[shell_check_steps]]
+shell_prefix = "root@starry:/root #"
+success_regex = [
+  '(?m)^UVC_ENDPOINT_LIFECYCLE_OK$'
+]

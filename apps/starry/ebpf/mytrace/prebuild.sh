@@ -78,4 +78,7 @@ echo "mytrace prebuild: installed $(basename "$bin") -> /usr/bin/mytrace"
 
 if [[ "$arch" == "loongarch64" ]]; then
     install_loongarch_loader_link
+else
+    install -Dm0644 "$app_dir/mytrace-profile.sh" \
+        "$overlay_dir/etc/profile.d/mytrace-profile.sh"
 fi
