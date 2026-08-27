@@ -425,7 +425,7 @@ fn write_uncommitted_journal_updates(
     device.write_block_bytes(journal_block + 1, &descriptor);
 
     for (idx, metadata) in metadata_blocks.iter().enumerate() {
-        device.write_block_bytes(journal_block + 2 + idx as u64, &metadata);
+        device.write_block_bytes(journal_block + 2 + idx as u64, metadata);
     }
 }
 

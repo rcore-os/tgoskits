@@ -17,9 +17,11 @@ use rsext4::{
 struct MemoryDevice {
     bytes: Vec<u8>,
     now: Cell<i64>,
-    fail_write: Rc<Cell<Option<(u64, u32)>>>,
+    fail_write: WriteFailure,
     fail_after_write: Rc<Cell<Option<u32>>>,
 }
+
+type WriteFailure = Rc<Cell<Option<(u64, u32)>>>;
 
 struct StaticClock(Cell<i64>);
 
@@ -41,7 +43,7 @@ impl MemoryDevice {
         }
     }
 
-    fn with_write_failure(blocks: usize) -> (Self, Rc<Cell<Option<(u64, u32)>>>) {
+    fn with_write_failure(blocks: usize) -> (Self, WriteFailure) {
         let device = Self::new(blocks);
         let failure = Rc::clone(&device.fail_write);
         (device, failure)
@@ -1553,7 +1555,12 @@ fn collapse_range_removes_blocks_and_shifts_later_extents_left() {
         .expect("created inode missing")
         .0;
     let mut original = vec![0; 4 * BLOCK_SIZE];
-    for (index, block) in original.chunks_exact_mut(BLOCK_SIZE).enumerate() {
+    for (index, block) in original
+        .as_chunks_mut::<BLOCK_SIZE>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
         block.fill(index as u8 + 1);
     }
     write_file(&mut journal, &mut filesystem, "/collapse", 0, &original)
@@ -1591,7 +1598,12 @@ fn insert_range_creates_a_hole_and_shifts_later_extents_right() {
         .expect("created inode missing")
         .0;
     let mut original = vec![0; 3 * BLOCK_SIZE];
-    for (index, block) in original.chunks_exact_mut(BLOCK_SIZE).enumerate() {
+    for (index, block) in original
+        .as_chunks_mut::<BLOCK_SIZE>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
         block.fill(index as u8 + 1);
     }
     write_file(&mut journal, &mut filesystem, "/insert", 0, &original)

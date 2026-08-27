@@ -190,7 +190,7 @@ mod directory_functional_tests {
         let root_before = fs
             .get_inode_by_num(&mut jbd2_dev, root)
             .expect("read root before failed mkdir");
-        assert!(root_before.size() >= 3 * fs.superblock.block_size() as u64);
+        assert!(root_before.size() >= 3 * fs.superblock.block_size());
         assert_ne!(root_before.i_flags & Ext4Inode::EXT4_INDEX_FL, 0);
 
         while fs.superblock.free_blocks_count() > 0 {

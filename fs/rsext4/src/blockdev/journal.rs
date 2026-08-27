@@ -1922,21 +1922,25 @@ mod tests {
     }
 
     fn csum_v3_superblock() -> JournalSuperBlock {
-        let mut superblock = JournalSuperBlock::default();
-        superblock.s_maxlen = 64;
-        superblock.s_feature_incompat = JBD2_FEATURE_INCOMPAT_64BIT | JBD2_FEATURE_INCOMPAT_CSUM_V3;
-        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
-        superblock.s_uuid = [0x5a; JBD2_UUID_SIZE];
+        let mut superblock = JournalSuperBlock {
+            s_maxlen: 64,
+            s_feature_incompat: JBD2_FEATURE_INCOMPAT_64BIT | JBD2_FEATURE_INCOMPAT_CSUM_V3,
+            s_checksum_type: JBD2_CRC32C_CHKSUM,
+            s_uuid: [0x5a; JBD2_UUID_SIZE],
+            ..Default::default()
+        };
         crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
         superblock
     }
 
     fn csum_v2_superblock() -> JournalSuperBlock {
-        let mut superblock = JournalSuperBlock::default();
-        superblock.s_maxlen = 64;
-        superblock.s_feature_incompat = JBD2_FEATURE_INCOMPAT_CSUM_V2;
-        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
-        superblock.s_uuid = [0x3c; JBD2_UUID_SIZE];
+        let mut superblock = JournalSuperBlock {
+            s_maxlen: 64,
+            s_feature_incompat: JBD2_FEATURE_INCOMPAT_CSUM_V2,
+            s_checksum_type: JBD2_CRC32C_CHKSUM,
+            s_uuid: [0x3c; JBD2_UUID_SIZE],
+            ..Default::default()
+        };
         crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
         superblock
     }
@@ -2357,8 +2361,10 @@ mod tests {
     #[test]
     fn journal_superblock_must_match_filesystem_block_size() {
         let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
-        let mut superblock = JournalSuperBlock::default();
-        superblock.s_blocksize = 1024;
+        let superblock = JournalSuperBlock {
+            s_blocksize: 1024,
+            ..Default::default()
+        };
 
         let error = dev
             .validate_journal_superblock(&superblock, superblock.s_maxlen as usize)
@@ -2452,8 +2458,10 @@ mod tests {
             .expect_err("csum-v3 requires CRC32C journal superblock checksums");
         assert_eq!(error.kind(), crate::Ext4ErrorKind::Unsupported);
 
-        let mut missing_feature = JournalSuperBlock::default();
-        missing_feature.s_checksum_type = JBD2_CRC32C_CHKSUM;
+        let mut missing_feature = JournalSuperBlock {
+            s_checksum_type: JBD2_CRC32C_CHKSUM,
+            ..Default::default()
+        };
         crate::checksum::jbd2_update_superblock_checksum(&mut missing_feature);
         let error = dev
             .validate_journal_superblock(&missing_feature, missing_feature.s_maxlen as usize)
@@ -2464,11 +2472,13 @@ mod tests {
     #[test]
     fn journal_superblock_accepts_linux_csum_v2_mode() {
         let dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::new(32), true);
-        let mut superblock = JournalSuperBlock::default();
-        superblock.s_maxlen = 16;
-        superblock.s_feature_incompat = JBD2_FEATURE_INCOMPAT_CSUM_V2;
-        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
-        superblock.s_uuid = [0x3c; JBD2_UUID_SIZE];
+        let mut superblock = JournalSuperBlock {
+            s_maxlen: 16,
+            s_feature_incompat: JBD2_FEATURE_INCOMPAT_CSUM_V2,
+            s_checksum_type: JBD2_CRC32C_CHKSUM,
+            s_uuid: [0x3c; JBD2_UUID_SIZE],
+            ..Default::default()
+        };
         crate::checksum::jbd2_update_superblock_checksum(&mut superblock);
 
         dev.validate_journal_superblock(&superblock, 16)
@@ -4157,7 +4167,7 @@ mod tests {
         dev.commit().expect("commit full metadata handle");
         dev.flush().expect("checkpoint both transactions");
         for offset in 0..capacity {
-            let target_offset = (20 + offset) as usize * BLOCK_SIZE;
+            let target_offset = (20 + offset) * BLOCK_SIZE;
             assert_eq!(
                 &dev.inner._device().data[target_offset..target_offset + BLOCK_SIZE],
                 vec![offset as u8; BLOCK_SIZE]

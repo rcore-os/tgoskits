@@ -255,48 +255,6 @@ impl fmt::Display for RelativeInodeIndex {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Ext4ErrorKind;
-
-    #[test]
-    fn inode_number_rejects_zero() {
-        let err = InodeNumber::new(0).unwrap_err();
-        assert_eq!(err.kind(), Ext4ErrorKind::InvalidInput);
-    }
-
-    #[test]
-    fn block_group_and_absolute_block_round_trip() {
-        let group = BGIndex::new(3);
-        let block_in_group = RelativeBN::new(17);
-        let absolute = group.absolute_block(block_in_group, 1, 8192);
-        let (decoded_group, decoded_block) = absolute.to_group(1, 8192).unwrap();
-
-        assert_eq!(decoded_group, group);
-        assert_eq!(decoded_block, block_in_group);
-    }
-
-    #[test]
-    fn inode_group_round_trip() {
-        let group = BGIndex::new(5);
-        let inode_in_group = RelativeInodeIndex::new(123);
-        let inode = group.inode_number(inode_in_group, 2048).unwrap();
-        let (decoded_group, decoded_inode) = inode.to_group(2048).unwrap();
-
-        assert_eq!(decoded_group, group);
-        assert_eq!(decoded_inode, inode_in_group);
-    }
-
-    #[test]
-    fn absolute_block_to_u32_checks_overflow() {
-        let err = AbsoluteBN::new(u64::from(u32::MAX) + 1)
-            .to_u32()
-            .unwrap_err();
-        assert_eq!(err.kind(), Ext4ErrorKind::Overflow);
-    }
-}
-
-#[cfg(test)]
 pub(crate) fn bmalloc_type_conversions_and_validation_rules_hold_for_test() -> bool {
     // BGIndex: new/raw/as_usize
     let bg = BGIndex::new(42);
@@ -363,4 +321,46 @@ pub(crate) fn bmalloc_type_conversions_and_validation_rules_hold_for_test() -> b
     assert!(AbsoluteBN::new(0).to_group(10, 100).is_err());
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Ext4ErrorKind;
+
+    #[test]
+    fn inode_number_rejects_zero() {
+        let err = InodeNumber::new(0).unwrap_err();
+        assert_eq!(err.kind(), Ext4ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn block_group_and_absolute_block_round_trip() {
+        let group = BGIndex::new(3);
+        let block_in_group = RelativeBN::new(17);
+        let absolute = group.absolute_block(block_in_group, 1, 8192);
+        let (decoded_group, decoded_block) = absolute.to_group(1, 8192).unwrap();
+
+        assert_eq!(decoded_group, group);
+        assert_eq!(decoded_block, block_in_group);
+    }
+
+    #[test]
+    fn inode_group_round_trip() {
+        let group = BGIndex::new(5);
+        let inode_in_group = RelativeInodeIndex::new(123);
+        let inode = group.inode_number(inode_in_group, 2048).unwrap();
+        let (decoded_group, decoded_inode) = inode.to_group(2048).unwrap();
+
+        assert_eq!(decoded_group, group);
+        assert_eq!(decoded_inode, inode_in_group);
+    }
+
+    #[test]
+    fn absolute_block_to_u32_checks_overflow() {
+        let err = AbsoluteBN::new(u64::from(u32::MAX) + 1)
+            .to_u32()
+            .unwrap_err();
+        assert_eq!(err.kind(), Ext4ErrorKind::Overflow);
+    }
 }

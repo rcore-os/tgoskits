@@ -628,8 +628,8 @@ mod tests {
     }
 
     fn write_raw_inline_node(inode: &mut Ext4Inode, bytes: &[u8; 60]) {
-        for (word, raw) in inode.i_block.iter_mut().zip(bytes.chunks_exact(4)) {
-            *word = u32::from_le_bytes(raw.try_into().unwrap());
+        for (word, raw) in inode.i_block.iter_mut().zip(bytes.as_chunks::<4>().0) {
+            *word = u32::from_le_bytes(*raw);
         }
     }
 

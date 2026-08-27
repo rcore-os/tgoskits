@@ -764,9 +764,11 @@ mod tests {
 
     #[test]
     fn descriptor_capacity_accounts_for_linux_csum_v2_tag_padding_and_tail() {
-        let mut superblock = JournalSuperBlock::default();
-        superblock.s_feature_incompat = JBD2_FEATURE_INCOMPAT_CSUM_V2;
-        superblock.s_checksum_type = JBD2_CRC32C_CHKSUM;
+        let mut superblock = JournalSuperBlock {
+            s_feature_incompat: JBD2_FEATURE_INCOMPAT_CSUM_V2,
+            s_checksum_type: JBD2_CRC32C_CHKSUM,
+            ..Default::default()
+        };
         assert_eq!(superblock.descriptor_tag_capacity(4096).unwrap(), 404);
 
         superblock.s_feature_incompat |= JBD2_FEATURE_INCOMPAT_64BIT;

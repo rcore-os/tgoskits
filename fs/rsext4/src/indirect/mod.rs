@@ -1040,8 +1040,10 @@ mod tests {
         let (mut device, mut filesystem) = setup_filesystem();
         let physical = filesystem.alloc_block(&mut device).unwrap();
         let inode_number = InodeNumber::new(12).unwrap();
-        let mut inode = Ext4Inode::default();
-        inode.i_size_lo = BLOCK_SIZE as u32;
+        let mut inode = Ext4Inode {
+            i_size_lo: BLOCK_SIZE as u32,
+            ..Default::default()
+        };
         inode.i_block[0] = physical.to_u32().unwrap();
 
         let resolved = resolve_inode_block(&filesystem, &mut device, inode_number, &mut inode, 0)

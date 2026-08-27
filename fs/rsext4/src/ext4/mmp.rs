@@ -510,15 +510,14 @@ mod tests {
         superblock
     }
 
-    fn mmp_device(
-        superblock: &Ext4Superblock,
-        record: &[u8; MMP_BLOCK_BYTES],
-    ) -> (
+    type MmpTestDevice = (
         Jbd2Dev<TestIo>,
         Rc<Cell<usize>>,
         Rc<RefCell<Vec<WriteFlags>>>,
         Rc<Cell<bool>>,
-    ) {
+    );
+
+    fn mmp_device(superblock: &Ext4Superblock, record: &[u8; MMP_BLOCK_BYTES]) -> MmpTestDevice {
         let mut bytes = vec![0; 32 * 4096];
         let start = superblock.s_mmp_block as usize * 4096;
         bytes[start..start + MMP_BLOCK_BYTES].copy_from_slice(record);

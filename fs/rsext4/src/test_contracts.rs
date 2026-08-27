@@ -20,8 +20,10 @@ fn rsext4_crc_and_error_rules_hold() {
     crc = crc32c_append(crc, b"ext4");
     assert_eq!(crc32c_finalize(crc), crc32c(b"hello ext4"));
 
-    let mut superblock = Ext4Superblock::default();
-    superblock.s_uuid = [0x5a; 16];
+    let mut superblock = Ext4Superblock {
+        s_uuid: [0x5a; 16],
+        ..Default::default()
+    };
     assert!(!ext4_superblock_has_metadata_csum(&superblock));
     assert_eq!(
         ext4_crc32c_seed_from_superblock(&superblock),
@@ -311,8 +313,10 @@ fn rsext4_bitmap_blockgroup_rules_hold() {
     assert!(desc.is_inode_bitmap_uninit());
     assert!(desc.is_inode_table_zeroed());
 
-    let mut superblock = Ext4Superblock::default();
-    superblock.s_desc_size = Ext4GroupDesc::GOOD_OLD_DESC_SIZE as u16;
+    let mut superblock = Ext4Superblock {
+        s_desc_size: Ext4GroupDesc::GOOD_OLD_DESC_SIZE as u16,
+        ..Default::default()
+    };
     assert_eq!(desc.block_bitmap_csum(&superblock), 0xbeef);
     assert!(desc.block_bitmap_csum_matches(&superblock, 0x1111_beef));
     superblock.s_desc_size = Ext4GroupDesc::EXT4_DESC_SIZE_64BIT as u16;
@@ -1513,20 +1517,18 @@ fn rsext4_bmalloc_allocator_rules_hold() {
             .unwrap(),
         (BGIndex::new(1), RelativeInodeIndex::new(5))
     );
-    assert_eq!(
+    assert!(
         inode_allocator
             .inode_is_free(&mut inode_bitmap, inode_alloc.inode_in_group)
-            .unwrap(),
-        true
+            .unwrap()
     );
     inode_allocator
         .free_inode(&mut inode_bitmap, inode_alloc.inode_in_group)
         .unwrap();
-    assert_eq!(
-        inode_allocator
+    assert!(
+        !inode_allocator
             .inode_is_free(&mut inode_bitmap, inode_alloc.inode_in_group)
-            .unwrap(),
-        false
+            .unwrap()
     );
     assert_eq!(
         inode_allocator
@@ -2947,10 +2949,14 @@ fn rsext4_block_group_desc_disk_format_rules_hold() {
 fn rsext4_superblock_feature_flags_hold() {
     use rsext4::superblock::Ext4Superblock;
 
-    let mut sb = Ext4Superblock::default();
+    let mut sb = Ext4Superblock {
+        s_feature_compat: 0,
+        s_feature_ro_compat: 0,
+        s_feature_incompat: 0,
+        ..Default::default()
+    };
 
     // Test feature compatibility flags
-    sb.s_feature_compat = 0;
     assert!(!sb.has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL));
     sb.s_feature_compat |= Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL;
     assert!(sb.has_feature_compat(Ext4Superblock::EXT4_FEATURE_COMPAT_HAS_JOURNAL));
@@ -2994,61 +3000,48 @@ fn rsext4_extent_header_constants_and_defaults_hold() {
 fn rsext4_inode_mode_constants_and_type_checks_hold() {
     use rsext4::disknode::Ext4Inode;
 
-    // Test inode mode constants
-    let _s_ifreg = Ext4Inode::S_IFREG;
-    let _s_ifdir = Ext4Inode::S_IFDIR;
-    let _s_iflnk = Ext4Inode::S_IFLNK;
-    let _s_isuid = Ext4Inode::S_ISUID;
-    let _s_isgid = Ext4Inode::S_ISGID;
-
-    // Verify they're non-zero and distinct
-    assert!(Ext4Inode::S_IFREG != 0);
-    assert!(Ext4Inode::S_IFDIR != 0);
-    assert!(Ext4Inode::S_IFREG != Ext4Inode::S_IFDIR);
+    assert_eq!(Ext4Inode::S_IFREG, 0x8000);
+    assert_eq!(Ext4Inode::S_IFDIR, 0x4000);
+    assert_eq!(Ext4Inode::S_IFLNK, 0xa000);
+    assert_eq!(Ext4Inode::S_ISUID, 0x0800);
+    assert_eq!(Ext4Inode::S_ISGID, 0x0400);
 }
 
 #[test]
 fn rsext4_extent_header_constants_hold() {
     use rsext4::disknode::Ext4ExtentHeader;
 
-    // Test extent header magic constant
-    assert!(Ext4ExtentHeader::EXT4_EXT_MAGIC != 0);
+    assert_eq!(Ext4ExtentHeader::EXT4_EXT_MAGIC, 0xf30a);
 }
 
 #[test]
 fn rsext4_dirent_file_type_constants_hold() {
     use rsext4::entries::Ext4DirEntry2;
 
-    // Test directory entry file type constants
-    let _unknown = Ext4DirEntry2::EXT4_FT_UNKNOWN;
-    let _reg_file = Ext4DirEntry2::EXT4_FT_REG_FILE;
-    let _dir = Ext4DirEntry2::EXT4_FT_DIR;
-    let _chrdev = Ext4DirEntry2::EXT4_FT_CHRDEV;
-    let _blkdev = Ext4DirEntry2::EXT4_FT_BLKDEV;
-    let _fifo = Ext4DirEntry2::EXT4_FT_FIFO;
-    let _sock = Ext4DirEntry2::EXT4_FT_SOCK;
-    let _symlink = Ext4DirEntry2::EXT4_FT_SYMLINK;
-
-    // Verify they're distinct
-    assert!(Ext4DirEntry2::EXT4_FT_REG_FILE != Ext4DirEntry2::EXT4_FT_DIR);
-    assert!(Ext4DirEntry2::EXT4_FT_DIR != Ext4DirEntry2::EXT4_FT_SYMLINK);
+    assert_eq!(Ext4DirEntry2::EXT4_FT_UNKNOWN, 0);
+    assert_eq!(Ext4DirEntry2::EXT4_FT_REG_FILE, 1);
+    assert_eq!(Ext4DirEntry2::EXT4_FT_DIR, 2);
+    assert_eq!(Ext4DirEntry2::EXT4_FT_CHRDEV, 3);
+    assert_eq!(Ext4DirEntry2::EXT4_FT_BLKDEV, 4);
+    assert_eq!(Ext4DirEntry2::EXT4_FT_FIFO, 5);
+    assert_eq!(Ext4DirEntry2::EXT4_FT_SOCK, 6);
+    assert_eq!(Ext4DirEntry2::EXT4_FT_SYMLINK, 7);
 }
 
 #[test]
 fn rsext4_group_desc_flags_hold() {
     use rsext4::blockgroup_description::Ext4GroupDesc;
 
-    // Test group descriptor flag constants
-    let _block_uninit = Ext4GroupDesc::EXT4_BG_BLOCK_UNINIT;
-    let _inode_uninit = Ext4GroupDesc::EXT4_BG_INODE_UNINIT;
-    let _inode_zeroed = Ext4GroupDesc::EXT4_BG_INODE_ZEROED;
+    assert_eq!(Ext4GroupDesc::EXT4_BG_INODE_UNINIT, 0x0001);
+    assert_eq!(Ext4GroupDesc::EXT4_BG_BLOCK_UNINIT, 0x0002);
+    assert_eq!(Ext4GroupDesc::EXT4_BG_INODE_ZEROED, 0x0004);
 }
 
 #[test]
 fn rsext4_journal_blocktype_constants_hold() {
     use rsext4::jbd2::jbdstruct::{JBD2_BLOCKTYPE_COMMIT, JBD2_BLOCKTYPE_DESCRIPTOR, JBD2_MAGIC};
 
-    // Test journal magic and block types
-    assert!(JBD2_MAGIC != 0);
-    assert!(JBD2_BLOCKTYPE_DESCRIPTOR != JBD2_BLOCKTYPE_COMMIT);
+    assert_eq!(JBD2_MAGIC, 0xc03b_3998);
+    assert_eq!(JBD2_BLOCKTYPE_DESCRIPTOR, 1);
+    assert_eq!(JBD2_BLOCKTYPE_COMMIT, 2);
 }

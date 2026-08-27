@@ -18,57 +18,6 @@ pub struct ExtentTree<'a> {
     system_zones: SystemZoneMap,
 }
 
-#[cfg(test)]
-mod tests {
-    use alloc::vec;
-
-    use super::*;
-    use crate::endian::DiskFormat;
-
-    #[test]
-    fn extent_checksum_tail_follows_eh_max_for_two_kib_nodes() {
-        let mut superblock = Ext4Superblock {
-            s_log_block_size: 1,
-            s_feature_ro_compat: Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM,
-            s_uuid: [0x42; 16],
-            ..Ext4Superblock::default()
-        };
-        superblock.s_blocks_count_lo = 1024;
-        let mut inode = Ext4Inode::default();
-        let generation = 0x1234_5678;
-        inode.i_generation = generation;
-        let inode_num = InodeNumber::new(12).unwrap();
-        let tree = ExtentTree::with_checksum(&mut inode, &superblock, inode_num);
-
-        let mut block = vec![0u8; 2048];
-        let header = Ext4ExtentHeader {
-            eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
-            eh_entries: 0,
-            eh_max: ((block.len() - Ext4ExtentHeader::disk_size()) / Ext4Extent::disk_size())
-                as u16,
-            eh_depth: 0,
-            eh_generation: 0,
-        };
-        header.to_disk_bytes(&mut block[..Ext4ExtentHeader::disk_size()]);
-        tree.update_extent_block_checksum(&mut block, &header)
-            .unwrap();
-
-        let tail = ExtentTree::extent_block_checksum_offset(block.len(), &header).unwrap();
-        assert_eq!(tail, 2040);
-        let stored = u32::from_le_bytes(block[tail..tail + 4].try_into().unwrap());
-        let expected = crate::checksum::ext4_metadata_csum32(
-            ext4_crc32c_seed_from_superblock(&superblock),
-            &[
-                &inode_num.raw().to_le_bytes(),
-                &generation.to_le_bytes(),
-                &block[..tail],
-            ],
-        );
-        assert_eq!(stored, expected);
-        assert_eq!(&block[tail + 4..], &[0; 4]);
-    }
-}
-
 impl<'a> ExtentTree<'a> {
     /// Creates a geometry-free extent-tree handle for in-crate tests.
     ///
@@ -570,5 +519,58 @@ impl<'a> ExtentTree<'a> {
             let disk_header = Ext4ExtentHeader::from_disk_bytes(&buf[..hdr_size]);
             self.update_extent_block_checksum(buf, &disk_header)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+    use crate::endian::DiskFormat;
+
+    #[test]
+    fn extent_checksum_tail_follows_eh_max_for_two_kib_nodes() {
+        let superblock = Ext4Superblock {
+            s_log_block_size: 1,
+            s_blocks_count_lo: 1024,
+            s_feature_ro_compat: Ext4Superblock::EXT4_FEATURE_RO_COMPAT_METADATA_CSUM,
+            s_uuid: [0x42; 16],
+            ..Ext4Superblock::default()
+        };
+        let generation = 0x1234_5678;
+        let mut inode = Ext4Inode {
+            i_generation: generation,
+            ..Default::default()
+        };
+        let inode_num = InodeNumber::new(12).unwrap();
+        let tree = ExtentTree::with_checksum(&mut inode, &superblock, inode_num);
+
+        let mut block = vec![0u8; 2048];
+        let header = Ext4ExtentHeader {
+            eh_magic: Ext4ExtentHeader::EXT4_EXT_MAGIC,
+            eh_entries: 0,
+            eh_max: ((block.len() - Ext4ExtentHeader::disk_size()) / Ext4Extent::disk_size())
+                as u16,
+            eh_depth: 0,
+            eh_generation: 0,
+        };
+        header.to_disk_bytes(&mut block[..Ext4ExtentHeader::disk_size()]);
+        tree.update_extent_block_checksum(&mut block, &header)
+            .unwrap();
+
+        let tail = ExtentTree::extent_block_checksum_offset(block.len(), &header).unwrap();
+        assert_eq!(tail, 2040);
+        let stored = u32::from_le_bytes(block[tail..tail + 4].try_into().unwrap());
+        let expected = crate::checksum::ext4_metadata_csum32(
+            ext4_crc32c_seed_from_superblock(&superblock),
+            &[
+                &inode_num.raw().to_le_bytes(),
+                &generation.to_le_bytes(),
+                &block[..tail],
+            ],
+        );
+        assert_eq!(stored, expected);
+        assert_eq!(&block[tail + 4..], &[0; 4]);
     }
 }
