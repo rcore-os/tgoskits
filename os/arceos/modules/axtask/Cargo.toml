@@ -50,6 +50,8 @@ uspace = ["ax-hal/uspace"]
 
 sched-cfs = ["multitask", "preempt"]
 sched-rr = ["multitask", "preempt"]
+sched-rt-fifo = ["multitask", "preempt"]
+realtime-task = ["multitask", "preempt"]
 
 host-test = [
   "ax-hal/host-test",

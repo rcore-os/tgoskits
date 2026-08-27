@@ -1,0 +1,36 @@
+# VM base information.
+[base]
+id = 1
+name = "starry-qemu"
+vm_type = 1
+cpu_num = 1
+# CPU 3 is reserved for the host realtime task by the Axvisor build config.
+phys_cpu_ids = [0]
+
+[kernel]
+# AArch64 QEMU places a raw someboot image 2 MiB above the guest RAM base.
+entry_point = 0x4020_0000
+image_location = "memory"
+kernel_load_addr = 0x4020_0000
+kernel_path = "../../target/aarch64-unknown-linux-musl/release/starryos.bin"
+dtb_load_addr = 0xbfe0_0000
+memory_regions = [
+  [0x4000_0000, 0x0200_0000, 0x7, 0], # Relocatable kernel image window
+  [0x8000_0000, 0x4000_0000, 0x7, 2], # Reserved identity-mapped RAM for passthrough DMA
+]
+
+[devices]
+interrupt_mode = "passthrough"
+emu_devices = [
+  ["gppt-gicr", 0x080a_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 0]],
+  ["gppt-gicd", 0x0800_0000, 0x1_0000, 0, 0x21, []],
+]
+passthrough_devices = [
+  ["/pl011@9000000"],
+  ["/pcie@10000000"],
+  ["/intc@8000000"],
+  ["/timer"],
+  ["/psci"],
+]
+passthrough_addresses = []
+excluded_devices = []

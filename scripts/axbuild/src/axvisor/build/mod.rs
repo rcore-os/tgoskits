@@ -59,6 +59,11 @@ fn to_cargo_config(
         .build_info
         .into_prepared_std_cargo_config_with_metadata(&request.package, &config.target, metadata)?;
     patch_axvisor_cargo_config(&mut cargo, request, &config.vm_configs)?;
+    if let Some(cpu_id) = config.realtime_cpu_id {
+        cargo
+            .env
+            .insert("REALTIME_CPU_ID".to_string(), cpu_id.to_string());
+    }
     Ok(cargo)
 }
 

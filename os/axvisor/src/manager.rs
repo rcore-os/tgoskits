@@ -60,6 +60,11 @@ impl AxvmManager {
         AxvmRuntime::wait_for_all_vms();
     }
 
+    /// Start the default VM set, invoke `hook`, and wait until the guests exit.
+    pub fn start_default_vms_with_hook(&self, hook: impl FnOnce()) {
+        self.runtime.start_default_vms_with_hook(hook);
+    }
+
     /// Create one VM from a TOML config string.
     pub fn create_vm_from_toml(raw_cfg: &str) -> Result<VMId> {
         crate::config::init_guest_vm(raw_cfg).context("create VM from TOML configuration")

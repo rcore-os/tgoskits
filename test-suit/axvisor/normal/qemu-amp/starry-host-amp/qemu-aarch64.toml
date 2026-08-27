@@ -1,0 +1,21 @@
+args = [
+  "-nographic",
+  "-cpu",
+  "cortex-a72",
+  "-machine",
+  "virt,virtualization=on,gic-version=3",
+  "-smp",
+  "4",
+  "-m",
+  "8g",
+  "-device",
+  "nvme,serial=deadbeef,drive=nvm",
+  "-drive",
+  "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img/rootfs-aarch64-alpine.img",
+]
+uefi = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "echo 'STARRY_AMP_GUEST_READY'"
+success_regex = ["(?s)STARRY_AMP_GUEST_READY.*AMP_RT_RESULT source=host"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]
+timeout = 120

@@ -72,6 +72,8 @@ task-ext = ["ax-task/task-ext"]
 tracepoint-hooks = ["ax-task/tracepoint-hooks"]
 sched-rr = ["irq", "multitask", "ax-task/sched-rr"]
 sched-cfs = ["irq", "multitask", "ax-task/sched-cfs"]
+sched-rt-fifo = ["irq", "multitask", "ax-task/sched-rt-fifo"]
+realtime-task = ["irq", "multitask", "ipi", "ax-task/realtime-task"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 

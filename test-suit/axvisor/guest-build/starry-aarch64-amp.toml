@@ -1,0 +1,7 @@
+features = [
+  "ax-runtime/rtc",
+  "ax-driver/serial",
+  "ax-driver/nvme",
+]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
