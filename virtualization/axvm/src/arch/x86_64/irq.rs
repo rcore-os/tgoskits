@@ -553,19 +553,14 @@ pub(crate) fn register_ioapic_irq_forwarding_activator(
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
-    if !vm.uses_passthrough_address_space() {
-        return;
-    }
-
     let Ok(devices) = vm.get_devices() else {
         return;
     };
-    let Some(eoi) = devices
-        .services()
-        .require::<X86InterruptDomainKey>()
-        .ok()
-        .and_then(|ioapic| ioapic.end_of_interrupt(vector))
-    else {
+    let ioapic = devices.services().require::<X86InterruptDomainKey>().ok();
+    if !should_process_ioapic_eoi(vm.uses_passthrough_address_space(), ioapic.is_some()) {
+        return;
+    }
+    let Some(eoi) = ioapic.and_then(|ioapic| ioapic.end_of_interrupt(vector)) else {
         return;
     };
     let pending = eoi.pending;
@@ -593,6 +588,10 @@ pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u
             },
         )
         .unwrap();
+}
+
+fn should_process_ioapic_eoi(_uses_passthrough_address_space: bool, has_ioapic: bool) -> bool {
+    has_ioapic
 }
 
 fn should_rearm_forwarded_host_gsi_after_eoi(pending: Option<x86_vlapic::IoApicInterrupt>) -> bool {
@@ -922,8 +921,8 @@ mod tests {
         COM1_GSI, IOAPIC_GSI_COUNT, PIT_TIMER_GSI, acquire_host_irq_forwarding_lease, gsi_bit,
         host_irq_forwarding_lease_count, host_irq_is_guest_assignable, host_irq_to_raw,
         ioapic_irq_hook_gsis, raw_to_host_irq, release_host_irq_forwarding_leases_for_vm,
-        reset_host_irq_forwarding_leases, should_rearm_forwarded_host_gsi_after_eoi,
-        should_register_ioapic_gsi_hook,
+        reset_host_irq_forwarding_leases, should_process_ioapic_eoi,
+        should_rearm_forwarded_host_gsi_after_eoi, should_register_ioapic_gsi_hook,
     };
     use crate::{InterruptTriggerMode, arch::x86_64::X86InterruptDomain};
 
@@ -963,6 +962,12 @@ mod tests {
         fn assert_irq_safe_lock<T: ?Sized>(_: &IrqSafeMutex<T>) {}
 
         assert_irq_safe_lock(&super::HOST_IRQ_FORWARDING_LEASES);
+    }
+
+    #[test]
+    fn virtual_device_ioapic_eoi_does_not_require_passthrough_memory() {
+        assert!(should_process_ioapic_eoi(false, true));
+        assert!(!should_process_ioapic_eoi(false, false));
     }
 
     fn reset_forwarding_routes() {

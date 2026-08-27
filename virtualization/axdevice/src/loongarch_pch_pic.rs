@@ -601,10 +601,14 @@ fn reg8_offset(offset: usize) -> Option<usize> {
 }
 
 fn clear_irq(state: &mut PchPicState, mask: u64) {
-    let active = state.intisr & mask;
-    state.intirr &= !mask;
-    state.last_intirr &= !mask;
-    state.intisr &= !mask;
+    // INT_CLEAR acknowledges edge-triggered latches only. A level-triggered
+    // source remains asserted until the device lowers its input line; clearing
+    // it here would lose the level because IrqLine will not emit a second
+    // assertion for a line that is already high.
+    let clearable = mask & state.intedge;
+    let active = state.intisr & clearable;
+    state.intirr &= !clearable;
+    state.intisr &= !clearable;
     queue_events_for_mask(state, active, false);
 }
 
@@ -761,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_asserted_irq_emits_deassert_event() {
+    fn clear_does_not_drop_asserted_level_irq() {
         let pic = LoongArchPchPic::new(GuestPhysAddr::from_usize(0x1000), 0x1000);
         pic.write_register(
             GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_MASK_LO),
@@ -780,11 +784,49 @@ mod tests {
 
         let mut events = Vec::new();
         pic.drain_output_events(|event| events.push(event));
+        assert!(events.is_empty());
+        assert_eq!(
+            pic.read_register(
+                GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_ISR_LO),
+                AccessWidth::Dword,
+            )
+            .unwrap()
+                & (1 << 5),
+            1 << 5
+        );
+    }
+
+    #[test]
+    fn clear_asserted_edge_irq_emits_deassert_event() {
+        let pic = LoongArchPchPic::new(GuestPhysAddr::from_usize(0x1000), 0x1000);
+        pic.write_register(
+            GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_MASK_LO),
+            AccessWidth::Dword,
+            !(1u32 << 5) as usize,
+        )
+        .unwrap();
+        pic.write_register(
+            GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_EDGE_LO),
+            AccessWidth::Dword,
+            1 << 5,
+        )
+        .unwrap();
+        assert_eq!(pic.set_irq_level(5, true), Some(5));
+
+        pic.write_register(
+            GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_CLEAR_LO),
+            AccessWidth::Dword,
+            1 << 5,
+        )
+        .unwrap();
+
+        let mut events = Vec::new();
+        pic.drain_output_events(|event| events.push(event));
         assert_eq!(
             events,
             vec![PchPicOutputEvent {
                 vector: 5,
-                asserted: false
+                asserted: false,
             }]
         );
     }

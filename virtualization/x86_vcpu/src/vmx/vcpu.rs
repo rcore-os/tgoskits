@@ -39,6 +39,7 @@ use crate::{
     pending_event::{PendingEvent, queue_pending_event},
     port_io::*,
     regs::*,
+    vmx::vmcs::controls::SecondaryControls,
     xstate::*,
     *,
 };
@@ -147,6 +148,26 @@ fn secondary_control_bits_allowed(bits: u32) -> bool {
     ((Msr::IA32_VMX_PROCBASED_CTLS2.read() >> 32) as u32 & bits) == bits
 }
 
+fn mark_event_injected(
+    pending_events: &mut VecDeque<PendingEvent>,
+    injecting_event: &mut Option<PendingEvent>,
+) {
+    debug_assert!(injecting_event.is_none());
+    *injecting_event = pending_events.pop_front();
+}
+
+fn virtualized_eoi_vector(exit_qualification: usize) -> Option<u8> {
+    let vector = exit_qualification as u8;
+    (vector >= 16).then_some(vector)
+}
+
+fn apic_virtualization_controls() -> [SecondaryControls; 1] {
+    // External interrupts are injected through the VM-entry interruption field.
+    // Virtual-interrupt delivery requires an RVI/IRR-based injection path; enabling
+    // it while pre-populating the software ISR can consume an unrelated guest EOI
+    // without ever dispatching the requested interrupt handler.
+    [SecondaryControls::VIRTUALIZE_APIC]
+}
 /// A virtual CPU within a guest.
 #[repr(C)]
 pub struct VmxVcpu<H: X86HostOps> {
@@ -186,6 +207,8 @@ pub struct VmxVcpu<H: X86HostOps> {
     // Interrupt-related fields
     /// Pending events to be injected to the guest.
     pending_events: VecDeque<PendingEvent>,
+    /// Event programmed for delivery by the next VM entry.
+    injecting_event: Option<PendingEvent>,
     /// Emulated Local APIC.
     vlapic: EmulatedLocalApic<H>,
     /// Guest CR2 is not saved or restored by VMX hardware.
@@ -194,7 +217,6 @@ pub struct VmxVcpu<H: X86HostOps> {
     guest_syscall_msrs: VmxSyscallMsrState,
     /// Guest RAM regions used to read guest instructions and page tables.
     guest_memory_regions: Vec<X86GuestMemoryRegion>,
-
     // Extra states
     /// The XState of the VCpu. Both host and guest.
     xstate: XState,
@@ -222,6 +244,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
             io_bitmap: IOBitmap::<H>::guest_owned()?,
             msr_bitmap: MsrBitmap::<H>::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
+            injecting_event: None,
             vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
             guest_cr2: 0,
             guest_syscall_msrs: VmxSyscallMsrState::default(),
@@ -334,6 +357,8 @@ impl<H: X86HostOps> VmxVcpu<H> {
         }
         self.load_host_xstate();
         restore_host_interrupt_flag(self.host_rflags);
+
+        self.complete_event_injection();
 
         #[cfg(feature = "tracing")]
         {
@@ -455,6 +480,75 @@ impl<H: X86HostOps> VmxVcpu<H> {
         }
         VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS.write(ctrl)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod event_injection_tests {
+    use super::*;
+
+    #[test]
+    fn vm_entry_interrupt_injection_does_not_enable_virtual_delivery() {
+        let controls = apic_virtualization_controls();
+
+        assert!(controls.contains(&SecondaryControls::VIRTUALIZE_APIC));
+        assert!(!controls.contains(&SecondaryControls::VIRTUAL_INTERRUPT_DELIVERY));
+    }
+
+    #[test]
+    fn injected_event_remains_in_flight_until_vm_entry_completes() {
+        let event = PendingEvent {
+            vector: 0x21,
+            err_code: None,
+            level_triggered: true,
+        };
+        let mut pending = VecDeque::from([event]);
+        let mut injecting = None;
+
+        mark_event_injected(&mut pending, &mut injecting);
+
+        assert!(pending.is_empty());
+        assert_eq!(injecting.map(|event| event.vector), Some(0x21));
+        assert!(injecting.unwrap().level_triggered);
+    }
+
+    #[test]
+    fn repeated_external_interrupt_vector_is_coalesced() {
+        let mut pending = VecDeque::new();
+        queue_pending_event(
+            &mut pending,
+            PendingEvent {
+                vector: 0xec,
+                err_code: None,
+                level_triggered: false,
+            },
+        );
+        queue_pending_event(
+            &mut pending,
+            PendingEvent {
+                vector: 0x21,
+                err_code: None,
+                level_triggered: true,
+            },
+        );
+        queue_pending_event(
+            &mut pending,
+            PendingEvent {
+                vector: 0xec,
+                err_code: None,
+                level_triggered: false,
+            },
+        );
+
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].vector, 0xec);
+        assert_eq!(pending[1].vector, 0x21);
+    }
+
+    #[test]
+    fn virtualized_eoi_uses_exit_qualification_vector() {
+        assert_eq!(virtualized_eoi_vector(0x21), Some(0x21));
+        assert_eq!(virtualized_eoi_vector(0x1_ec), Some(0xec));
     }
 }
 
@@ -663,10 +757,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
         // Enable EPT, RDTSCP, INVPCID, and unrestricted guest.
         use SecondaryControls as CpuCtrl2;
         let mut val = CpuCtrl2::ENABLE_EPT | CpuCtrl2::UNRESTRICTED_GUEST;
-        for feature in [
-            CpuCtrl2::VIRTUALIZE_APIC,
-            CpuCtrl2::VIRTUAL_INTERRUPT_DELIVERY,
-        ] {
+        for feature in apic_virtualization_controls() {
             if secondary_control_bits_allowed(feature.bits()) {
                 val |= feature;
             }
@@ -916,6 +1007,10 @@ impl<H: X86HostOps> VmxVcpu<H> {
 
     /// Try to inject a pending event before next VM entry.
     fn inject_pending_events(&mut self) -> X86VcpuResult {
+        if self.injecting_event.is_some() {
+            return Ok(());
+        }
+
         if let Some(event) = self.pending_events.front() {
             // trace!(
             //     "pending event vector {:#x} allow_int {}",
@@ -925,17 +1020,24 @@ impl<H: X86HostOps> VmxVcpu<H> {
             if event.vector < 32 || self.allow_interrupt() {
                 // if it's an exception, or an interrupt that is not blocked, inject it directly.
                 vmcs::inject_event(event.vector, event.err_code)?;
-                if event.vector >= 32 {
-                    self.vlapic
-                        .accept_interrupt(event.vector, event.level_triggered);
-                }
-                self.pending_events.pop_front();
+                mark_event_injected(&mut self.pending_events, &mut self.injecting_event);
             } else {
                 // interrupts are blocked, enable interrupt-window exiting.
                 self.set_interrupt_window(true)?;
             }
         }
         Ok(())
+    }
+
+    fn complete_event_injection(&mut self) {
+        let Some(injected) = self.injecting_event.take() else {
+            return;
+        };
+
+        if injected.vector >= 32 {
+            self.vlapic
+                .accept_interrupt(injected.vector, injected.level_triggered);
+        }
     }
 
     fn handle_interrupt_window(&mut self) -> X86VcpuResult {
@@ -1143,6 +1245,9 @@ impl<H: X86HostOps> VmxVcpu<H> {
         addr: X86GuestPhysAddr,
         write: bool,
     ) -> Option<(X86VmExit, u8)> {
+        // The VMX exit qualification alone does not distinguish emulated MMIO
+        // from a genuine missing memory mapping, so decode only resolved device
+        // ranges and the architectural APIC windows.
         let addr_usize = addr.as_usize();
         let local_apic =
             (X86_LOCAL_APIC_GPA..X86_LOCAL_APIC_GPA + X86_LOCAL_APIC_SIZE).contains(&addr_usize);
@@ -2044,9 +2149,16 @@ impl<H: X86HostOps> VmxVcpu<H> {
                         self.advance_rip(exit_info.exit_instruction_length as _)?;
                         X86VmExit::Halt
                     }
-                    VmxExitReason::VIRTUALIZED_EOI => X86VmExit::InterruptEnd {
-                        vector: self.vlapic.handle_eoi(),
-                    },
+                    VmxExitReason::VIRTUALIZED_EOI => {
+                        let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
+                        let vector = virtualized_eoi_vector(qualification);
+                        X86VmExit::InterruptEnd {
+                            // With virtual-interrupt delivery, hardware has already cleared the
+                            // virtual ISR bit before this exit. The EOI vector is reported in the
+                            // exit qualification and must not be derived by processing EOI twice.
+                            vector,
+                        }
+                    }
                     VmxExitReason::APIC_WRITE => {
                         let offset = self.apic_access_exit_info()?.offset as usize;
                         if offset == X86_LOCAL_APIC_EOI_OFFSET {

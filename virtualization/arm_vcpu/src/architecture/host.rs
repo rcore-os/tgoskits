@@ -6,7 +6,7 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicUsize, Ordering},
 };
 
-use crate::ArmVcpuResult;
+use crate::{ArmHostPageFaultAccess, ArmVcpuResult};
 
 pub(crate) const HOST_IRQ_INTERFACE_GICV2_MMIO: u64 = 1;
 pub(crate) const HOST_IRQ_INTERFACE_GICV3_SYSREG: u64 = 2;
@@ -125,13 +125,33 @@ pub trait ArmHostOps {
 
     /// Dispatch a host IRQ taken while running at the current exception level.
     fn handle_current_host_irq();
+
+    /// Handles a host page fault taken through the EL2 vCPU exception vector.
+    ///
+    /// `parent_irqs_enabled` records whether IRQs were enabled in the interrupted
+    /// host context. The embedding host may temporarily restore that state while
+    /// running its page-fault slow path.
+    fn handle_current_host_page_fault(
+        fault_addr: usize,
+        access: ArmHostPageFaultAccess,
+        parent_irqs_enabled: bool,
+    ) -> bool;
 }
 
 static CURRENT_EL_IRQ_HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static CURRENT_EL_PAGE_FAULT_HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static CURRENT_EL_IRQ_HANDLER_USERS: AtomicUsize = AtomicUsize::new(0);
 
 fn current_el_irq_handler_for<H: ArmHostOps>() {
     H::handle_current_host_irq();
+}
+
+fn current_el_page_fault_handler_for<H: ArmHostOps>(
+    fault_addr: usize,
+    access: ArmHostPageFaultAccess,
+    parent_irqs_enabled: bool,
+) -> bool {
+    H::handle_current_host_page_fault(fault_addr, access, parent_irqs_enabled)
 }
 
 /// Installs the current-EL IRQ handler used by the EL2 exception vector.
@@ -153,6 +173,20 @@ pub(crate) fn install_current_el_irq_handler<H: ArmHostOps>() {
         Err(_) => panic!("arm_vcpu current-EL IRQ handler was installed by another host type"),
     }
 
+    let page_fault_handler = current_el_page_fault_handler_for::<H> as *mut ();
+    match CURRENT_EL_PAGE_FAULT_HANDLER.compare_exchange(
+        core::ptr::null_mut(),
+        page_fault_handler,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {}
+        Err(existing) if existing == page_fault_handler => {}
+        Err(_) => {
+            panic!("arm_vcpu current-EL page-fault handler was installed by another host type")
+        }
+    }
+
     CURRENT_EL_IRQ_HANDLER_USERS.fetch_add(1, Ordering::AcqRel);
 }
 
@@ -169,6 +203,7 @@ pub(crate) fn clear_current_el_irq_handler() {
         {
             if users == 1 {
                 CURRENT_EL_IRQ_HANDLER.store(core::ptr::null_mut(), Ordering::Release);
+                CURRENT_EL_PAGE_FAULT_HANDLER.store(core::ptr::null_mut(), Ordering::Release);
             }
             break;
         }
@@ -183,4 +218,19 @@ pub(crate) fn handle_current_host_irq() {
 
     let handler: fn() = unsafe { core::mem::transmute(handler) };
     handler();
+}
+
+pub(crate) fn handle_current_host_page_fault(
+    fault_addr: usize,
+    access: ArmHostPageFaultAccess,
+    parent_irqs_enabled: bool,
+) -> bool {
+    let handler = CURRENT_EL_PAGE_FAULT_HANDLER.load(Ordering::Acquire);
+    if handler.is_null() {
+        panic!("arm_vcpu current-EL page-fault handler is not installed");
+    }
+
+    let handler: fn(usize, ArmHostPageFaultAccess, bool) -> bool =
+        unsafe { core::mem::transmute(handler) };
+    handler(fault_addr, access, parent_irqs_enabled)
 }

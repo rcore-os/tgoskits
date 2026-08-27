@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use arm_vcpu::*;
 use arm_vgic::{GicV3VcpuBinding, IntId, VgicCore};
+use ax_memory_addr::VirtAddr;
+use ax_std::os::arceos::modules::ax_hal;
 use axvm_types::{VmBackendError as BackendError, VmBackendResult as BackendResult, *};
 
 use super::*;
@@ -302,6 +304,26 @@ impl ArmHostOps for AxvmArmHostOps {
         {
             warn!("{error}");
         }
+    }
+
+    fn handle_current_host_page_fault(
+        fault_addr: usize,
+        access: ArmHostPageFaultAccess,
+        parent_irqs_enabled: bool,
+    ) -> bool {
+        let flags = match access {
+            ArmHostPageFaultAccess::Read => ax_hal::trap::PageFaultFlags::READ,
+            ArmHostPageFaultAccess::Write => ax_hal::trap::PageFaultFlags::WRITE,
+            ArmHostPageFaultAccess::Execute => ax_hal::trap::PageFaultFlags::EXECUTE,
+        };
+        if parent_irqs_enabled {
+            ax_hal::asm::enable_irqs();
+        }
+        let handled = ax_hal::trap::dispatch_page_fault(VirtAddr::from_usize(fault_addr), flags);
+        if parent_irqs_enabled {
+            ax_hal::asm::disable_irqs();
+        }
+        handled
     }
 }
 

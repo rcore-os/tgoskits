@@ -33,6 +33,14 @@ impl ArmHostOps for DummyHost {
     }
 
     fn handle_current_host_irq() {}
+
+    fn handle_current_host_page_fault(
+        _fault_addr: usize,
+        _access: arm_vcpu::ArmHostPageFaultAccess,
+        _parent_irqs_enabled: bool,
+    ) -> bool {
+        false
+    }
 }
 
 #[test]

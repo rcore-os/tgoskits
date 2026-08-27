@@ -10,12 +10,12 @@ use crate::{
         inject_guest_eiointc_vector,
     },
     registers::{
-        CSR_ASID, CSR_CRMD, CSR_ECFG, CSR_KSAVE_KSP, CSR_PGDH, CSR_PGDL, CSR_PRMD, CSR_PWCH,
-        CSR_PWCL, CSR_STLBPS, CSR_TLBRENTRY, INT_HWI0, INT_HWI7, INT_IPI, INT_TIMER, csr_read,
-        csr_write, gcfg_set_gpm_num, gcfg_set_matc, gcfg_set_toci, gcfg_set_toe, gcfg_set_tohu,
-        gcfg_set_top, gcfg_set_topi, gcfg_set_toti, get_ecfg_vs, gintc_set_hwi_passthrough,
-        gstat_set_gid, gstat_set_pgm, gtlbc_set_tgid, gtlbc_set_use_tgid, set_ecfg_line_enabled,
-        set_ecfg_vs, set_prmd_pie,
+        CSR_ASID, CSR_CRMD, CSR_CRMD_IE, CSR_ECFG, CSR_PGDH, CSR_PGDL, CSR_PWCH, CSR_PWCL,
+        CSR_STLBPS, CSR_TLBRENTRY, INT_HWI0, INT_HWI7, INT_IPI, INT_TIMER, csr_read, csr_write,
+        gcfg_set_gpm_num, gcfg_set_matc, gcfg_set_toci, gcfg_set_toe, gcfg_set_tohu, gcfg_set_top,
+        gcfg_set_topi, gcfg_set_toti, get_ecfg_vs, gintc_set_hwi_passthrough, gstat_set_gid,
+        gstat_set_pgm, gtlbc_set_tgid, gtlbc_set_use_tgid, set_ecfg_line_enabled, set_ecfg_vs,
+        set_prmd_pie,
     },
     trap::{TrapKind, current_badi},
     types::{
@@ -39,15 +39,12 @@ const GUEST_DMW_MAT_CC: usize = 1 << 4;
 const GUEST_BOOT_VSEG: usize = 0x9000;
 const GUEST_BOOT_DMW: usize =
     (GUEST_BOOT_VSEG << GUEST_DMW_DA_BITS) | GUEST_DMW_PLV0 | GUEST_DMW_MAT_CC;
-const CSR_CRMD_IE: usize = 1 << 2;
 const LOCAL_INTERRUPT_MASK: usize = (1 << (INT_IPI + 1)) - 1;
 const HOST_DMW_CACHED_BASE: usize = 0x9000_0000_0000_0000;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct HostTranslationState {
     crmd: usize,
-    prmd: usize,
-    ksave_ksp: usize,
     guest_exit_eentry: usize,
     ecfg_vs: usize,
     pgdl: usize,
@@ -82,7 +79,6 @@ pub struct LoongArchVCpuSetupConfig {
 #[derive(Debug)]
 pub struct LoongArchVcpu<H: LoongArchHostOps> {
     ctx: LoongArchContextFrame,
-    #[allow(dead_code)]
     host_stack_top: usize,
     stage2_root: LoongArchHostPhysAddr,
     vm_id: LoongArchVmId,
@@ -91,7 +87,6 @@ pub struct LoongArchVcpu<H: LoongArchHostOps> {
     iocsr_state: LoongArchIocsrStateRef,
     guest_timer: GuestTimerRegistration<H>,
     last_badi: usize,
-    entry_logged: bool,
     host_translation_state: HostTranslationState,
     _host: PhantomData<fn() -> H>,
 }
@@ -131,7 +126,6 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
             iocsr_state: config.iocsr_state,
             guest_timer: GuestTimerRegistration::new(),
             last_badi: 0,
-            entry_logged: false,
             host_translation_state: HostTranslationState::default(),
             _host: PhantomData,
         })
@@ -190,9 +184,9 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
             self.ctx.sepc,
             self.ctx.gcsr_era
         );
-        let trap_kind =
-            TrapKind::try_from(exit_reason as u8).map_err(|_| LoongArchVcpuError::BadState)?;
-        self.vmexit_handler(trap_kind)
+        TrapKind::try_from(exit_reason as u8)
+            .map_err(|_| LoongArchVcpuError::BadState)
+            .and_then(|trap_kind| self.vmexit_handler(trap_kind))
     }
 
     pub fn bind(&mut self) -> LoongArchVcpuResult {
@@ -281,10 +275,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         vector: usize,
         physical_irq: usize,
     ) -> LoongArchVcpuResult {
-        if let Some(hwi) =
-            inject_guest_eiointc_vector(&self.iocsr_state, self.vm_id, self.vcpu_id, vector)
-        {
-            self.ctx.gcsr_estat |= 1usize << hwi;
+        if let Some(hwi) = self.inject_eiointc_interrupt(vector)? {
             log::debug!(
                 "LoongArch guest external IRQ pending: VM[{}] VCpu[{}] physical_irq={}, \
                  eiointc_hwi={}, routed_vector={}",
@@ -294,9 +285,25 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
                 hwi,
                 vector
             );
-            return self.inject_interrupt(hwi);
+            return Ok(());
         }
         self.inject_interrupt(vector)
+    }
+
+    pub fn inject_eiointc_interrupt(
+        &mut self,
+        vector: usize,
+    ) -> LoongArchVcpuResult<Option<usize>> {
+        let Some(hwi) =
+            inject_guest_eiointc_vector(&self.iocsr_state, self.vm_id, self.vcpu_id, vector)
+        else {
+            return Ok(None);
+        };
+        // Pending interrupts are drained before `_run_guest` disables host interrupts. Updating
+        // the saved guest state is sufficient here; pulsing the live GINTC in that window can
+        // trap inside the world-switch prologue and expose its host PC as a guest exit PC.
+        self.ctx.gcsr_estat |= 1usize << hwi;
+        Ok(Some(hwi))
     }
 
     pub fn has_enabled_pending_interrupt(&self) -> bool {
@@ -363,8 +370,6 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
     unsafe fn save_host_translation_state(&mut self) {
         let state = HostTranslationState {
             crmd: csr_read::<CSR_CRMD>(),
-            prmd: csr_read::<CSR_PRMD>(),
-            ksave_ksp: csr_read::<CSR_KSAVE_KSP>(),
             guest_exit_eentry: csr_read::<{ crate::registers::CSR_EENTRY }>(),
             ecfg_vs: get_ecfg_vs(),
             pgdl: csr_read::<CSR_PGDL>(),
@@ -409,7 +414,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         set_prmd_pie(true);
     }
 
-    /// Restore host translation CSRs from the vCPU-owned saved state.
+    /// Restore host translation CSRs before restoring the caller's CRMD.
     unsafe fn restore_host_translation_state(&self) {
         let state = self.host_translation_state;
         csr_write::<{ crate::registers::CSR_EENTRY }>(state.guest_exit_eentry);
@@ -421,10 +426,10 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
         csr_write::<CSR_STLBPS>(state.stlbps);
         csr_write::<CSR_TLBRENTRY>(state.tlbrentry);
         csr_write::<CSR_ASID>(state.asid);
-        csr_write::<CSR_KSAVE_KSP>(state.ksave_ksp);
-        csr_write::<CSR_PRMD>(state.prmd);
-        csr_write::<CSR_CRMD>(state.crmd);
         core::arch::asm!("invtlb 0x0, $r0, $r0");
+        // CRMD owns both address-translation mode and interrupt enable. Restore
+        // it last so no host interrupt can arrive under guest translation.
+        csr_write::<CSR_CRMD>(state.crmd);
     }
 
     #[unsafe(naked)]

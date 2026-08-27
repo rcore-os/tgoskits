@@ -7,6 +7,7 @@ use tock_registers::{LocalRegisterCopy, register_bitfields};
 
 pub const CSR_GSTAT: u16 = 0x50;
 pub const CSR_CRMD: u16 = 0x0;
+pub const CSR_CRMD_IE: usize = 1 << 2;
 pub const CSR_PRMD: u16 = 0x1;
 pub const CSR_EENTRY: u16 = 0x0c;
 pub const CSR_ASID: u16 = 0x18;

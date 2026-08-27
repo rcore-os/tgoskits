@@ -81,6 +81,14 @@ impl ArmHostOps for AssemblyLayoutHost {
     }
 
     fn handle_current_host_irq() {}
+
+    fn handle_current_host_page_fault(
+        _fault_addr: usize,
+        _access: crate::ArmHostPageFaultAccess,
+        _parent_irqs_enabled: bool,
+    ) -> bool {
+        false
+    }
 }
 
 type AssemblyArmVcpu = ArmVcpu<AssemblyLayoutHost>;

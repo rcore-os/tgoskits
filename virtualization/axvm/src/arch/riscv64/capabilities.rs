@@ -91,6 +91,9 @@ pub(super) fn patch_runtime_fdt(
     vm: &crate::AxVMRef,
     crate_config: &axvmconfig::GuestConfig,
 ) -> AxVmResult<Vec<u8>> {
+    let initrd = vm.with_config(|config| {
+        super::fdt::initrd_start_size_from_image_config(config.image_config.ramdisk.as_ref())
+    });
     let host_fdt = crate::boot::fdt::core::try_get_host_fdt()
         .map(fdt_edit::Fdt::from_bytes)
         .transpose()
@@ -100,6 +103,9 @@ pub(super) fn patch_runtime_fdt(
                 format!("Failed to parse host FDT while updating guest FDT: {err:#?}")
             )
         })?;
+    // Host-only /chosen properties must be present before the runtime patch applies
+    // guest bootargs, initrd metadata, and serial selection as the final overrides.
+    let fdt_bytes = super::fdt::ensure_chosen_from_host(fdt_bytes.to_vec(), host_fdt.as_ref())?;
     let machine_plic = vm
         .with_config(|config| config.plic_profile().cloned())
         .ok_or_else(|| crate::AxVmError::invalid_config("RISC-V machine profile has no PLIC"))?;
@@ -137,9 +143,9 @@ pub(super) fn patch_runtime_fdt(
             .filter(|identity| Some(&identity.node_path) == serial_path.as_ref())
             .cloned()
     });
-    let guest_fdt = crate::boot::fdt::core::create::patch_guest_fdt_for_runtime(
+    crate::boot::fdt::core::create::patch_guest_fdt_for_runtime(
         crate::boot::fdt::core::create::GuestFdtRuntimePatch {
-            fdt_bytes,
+            fdt_bytes: &fdt_bytes,
             memory_regions: &vm.memory_regions(),
             devices: &devices,
             crate_config,
@@ -149,11 +155,10 @@ pub(super) fn patch_runtime_fdt(
             gic_profile: None,
             plic_profile: Some(&plic_profile),
             timer_profile: None,
-            initrd_start_size: None,
+            initrd_start_size: initrd,
             create_chosen: false,
         },
-    )?;
-    super::fdt::ensure_chosen_from_host(guest_fdt, host_fdt.as_ref())
+    )
 }
 
 fn plic_profile_from_contribution(

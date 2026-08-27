@@ -43,3 +43,14 @@ pub fn has_hardware_support() -> bool {
     }
     (cpucfg2 & (1 << 10)) != 0
 }
+
+/// Re-enables host interrupts immediately before returning to the host scheduler.
+///
+/// # Safety
+///
+/// The caller must have fully left guest mode and restored the host address
+/// space and exception entry before allowing interrupts to be delivered.
+pub unsafe fn prepare_host_scheduler_yield() {
+    let current_crmd = registers::csr_read::<{ registers::CSR_CRMD }>();
+    registers::csr_write::<{ registers::CSR_CRMD }>(current_crmd | registers::CSR_CRMD_IE);
+}

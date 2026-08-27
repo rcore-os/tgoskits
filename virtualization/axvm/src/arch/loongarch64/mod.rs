@@ -32,6 +32,12 @@ impl ArchOps for LoongArch64Arch {
         loongarch_vcpu::has_hardware_support()
     }
 
+    fn before_host_scheduler_yield() {
+        // SAFETY: the vCPU run and architecture unbind paths have completed,
+        // so host translation and exception state are active again.
+        unsafe { loongarch_vcpu::prepare_host_scheduler_yield() }
+    }
+
     fn inject_pending_interrupt(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -47,6 +53,16 @@ impl ArchOps for LoongArch64Arch {
                 if let Err(err) = vcpu.inject_interrupt(vector) {
                     warn!(
                         "Failed to inject queued interrupt {vector:#x} into VM[{}] VCpu[{}]: \
+                         {err:?}",
+                        vcpu.vm_id(),
+                        vcpu.id()
+                    );
+                }
+            }
+            crate::vm::PendingInterrupt::ControllerOutput(vector) => {
+                if let Err(err) = vcpu.get_arch_vcpu().inject_eiointc_interrupt(vector) {
+                    warn!(
+                        "Failed to inject queued EIOINTC vector {vector:#x} into VM[{}] VCpu[{}]: \
                          {err:?}",
                         vcpu.vm_id(),
                         vcpu.id()
@@ -115,7 +131,7 @@ impl ArchOps for LoongArch64Arch {
                     signed_ext,
                 },
             ),
-            LoongArchVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write(
+            LoongArchVmExit::MmioWrite { addr, width, data } => handle_loongarch_mmio_write(
                 vm,
                 vcpu,
                 MmioWriteExit {
@@ -200,6 +216,28 @@ impl ArchOps for LoongArch64Arch {
     }
 }
 
+fn handle_loongarch_mmio_write(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
+    exit: MmioWriteExit,
+) -> AxVmResult<BoundVcpuExit<LoongArchDeferredRunWork>> {
+    let result = super::handle_mmio_write(vm, vcpu, exit)?;
+    crate::runtime::vcpus::poll_vm_devices(vm);
+    Ok(result)
+}
+
+fn try_handle_loongarch_mmio_write(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
+    exit: MmioWriteExit,
+) -> AxVmResult<bool> {
+    let handled = super::try_handle_mmio_write(vm, vcpu, exit)?;
+    if handled {
+        crate::runtime::vcpus::poll_vm_devices(vm);
+    }
+    Ok(handled)
+}
+
 fn handle_loongarch_nested_page_fault(
     vm: &crate::AxVMRef,
     vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
@@ -226,7 +264,7 @@ fn handle_loongarch_nested_page_fault(
                     signed_ext,
                 },
             )?,
-            LoongArchVmExit::MmioWrite { addr, width, data } => super::try_handle_mmio_write(
+            LoongArchVmExit::MmioWrite { addr, width, data } => try_handle_loongarch_mmio_write(
                 vm,
                 vcpu,
                 MmioWriteExit {
@@ -327,6 +365,11 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
 pub(crate) struct AxvmLoongArchVcpu(LoongArchVcpu<AxvmLoongArchHostOps>);
 
 impl AxvmLoongArchVcpu {
+    fn inject_eiointc_interrupt(&mut self, vector: usize) -> AxVmResult {
+        loongarch_result(self.0.inject_eiointc_interrupt(vector).map(|_| ()))
+            .map_err(|error| AxVmError::interrupt("inject LoongArch EIOINTC interrupt", error))
+    }
+
     fn inject_external_interrupt(&mut self, vector: usize, physical_irq: usize) -> AxVmResult {
         loongarch_result(self.0.inject_external_interrupt(vector, physical_irq))
             .map_err(|error| AxVmError::interrupt("inject LoongArch external interrupt", error))

@@ -133,6 +133,41 @@ mod error_handling_tests {
     use super::*;
 
     #[test]
+    fn mkfs_rejects_unsupported_small_device_without_panicking() {
+        let mut device = ErrorMockDevice::new(1024 * 1024);
+        device.fail_after_bytes = Some(usize::MAX);
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mkfs(&mut jbd2_dev)));
+
+        assert!(result.is_ok(), "mkfs must not panic on invalid geometry");
+        assert!(
+            result.unwrap().is_err(),
+            "mkfs must reject invalid geometry"
+        );
+        assert_eq!(
+            jbd2_dev.into_inner().bytes_written,
+            0,
+            "mkfs must validate geometry before its first disk write"
+        );
+    }
+
+    #[test]
+    fn mkfs_propagates_backup_read_error_without_panicking() {
+        let mut device = ErrorMockDevice::new(200 * 1024 * 1024);
+        device.fail_on_specific_block = Some(SectorId::new(32_768));
+        let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| mkfs(&mut jbd2_dev)));
+
+        assert!(result.is_ok(), "mkfs must not panic on a block read error");
+        assert!(
+            result.unwrap().is_err(),
+            "mkfs must propagate the read error"
+        );
+    }
+
+    #[test]
     fn inode_bitmap_read_failure_is_not_reported_as_free() {
         let (device, fail_on_read) = ErrorMockDevice::with_read_failure_switch(100 * 1024 * 1024);
         let mut jbd2_dev = Jbd2Dev::initial_jbd2dev(0, device, true);

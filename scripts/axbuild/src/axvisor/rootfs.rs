@@ -118,11 +118,12 @@ pub(crate) fn patch_qemu_rootfs(
     explicit_rootfs: Option<&Path>,
 ) -> anyhow::Result<()> {
     let rootfs_path = qemu_rootfs_path(request, workspace_root, explicit_rootfs)?;
-    patch_qemu_rootfs_path(
-        config,
-        &rootfs_path,
-        rootfs::qemu::RootfsWritePolicy::Persist,
-    )
+    let write_policy = if config.args.iter().any(|argument| argument == "-snapshot") {
+        rootfs::qemu::RootfsWritePolicy::Discard
+    } else {
+        rootfs::qemu::RootfsWritePolicy::Persist
+    };
+    patch_qemu_rootfs_path(config, &rootfs_path, write_policy)
 }
 
 /// Resolves the rootfs path selected for an Axvisor QEMU request.
@@ -367,6 +368,32 @@ kernel_path = "{}"
                 format!("id=disk0,if=none,format=raw,file={}", rootfs.display())
             ]
         );
+    }
+
+    #[test]
+    fn patch_qemu_rootfs_honors_global_snapshot_as_discard_policy() {
+        let root = tempdir().unwrap();
+        write_test_image_config(root.path());
+        let rootfs = managed_rootfs_path_for_test(root.path(), "rootfs-aarch64-alpine.img");
+        let mut qemu = QemuConfig {
+            args: vec![
+                "-snapshot".to_string(),
+                "-drive".to_string(),
+                "id=disk0,if=none,format=raw,file=/old/tmp/rootfs.img".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        patch_qemu_rootfs(&mut qemu, &request(root.path(), vec![]), root.path(), None).unwrap();
+
+        assert!(!qemu.args.iter().any(|argument| argument == "-snapshot"));
+        assert!(qemu.args.iter().any(|argument| {
+            argument
+                == &format!(
+                    "id=disk0,if=none,format=raw,file={},snapshot=on",
+                    rootfs.display()
+                )
+        }));
     }
 
     #[test]

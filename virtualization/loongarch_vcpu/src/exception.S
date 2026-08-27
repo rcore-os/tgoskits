@@ -93,8 +93,6 @@
     st.d    $r0,  $sp, 0
     st.d    $r1,  $sp, 8
     st.d    $r2,  $sp, 16
-    csrrd   $t0, 0x502
-    st.d    $t0, $sp, 24
     st.d    $r4,  $sp, 32
     st.d    $r5,  $sp, 40
     st.d    $r6,  $sp, 48
@@ -294,6 +292,13 @@
     csrrd   $t1, HOST_TRAP_T1_KS
 .endm
 
+.macro SAVE_GUEST_STACK_AND_LOAD_CONTEXT
+    csrrd   $t0, HOST_VCPU_KS
+    addi.d  $t0, $t0, -{ctx_size}
+    st.d    $sp, $t0, 24
+    move    $sp, $t0
+.endm
+
 .macro PREPARE_GUEST_ENTRY
     li.d    $t0, CSR_CRMD_IE
     csrxchg $zero, $t0, CSR_CRMD
@@ -312,9 +317,6 @@
 .endm
 
 .macro RESTORE_GUEST_REGS
-    ld.d    $t0, $sp, 24
-    csrwr   $t0, 0x502
-
     ld.d    $t0, $sp, 256
     csrwr   $t0, 0x6
     ld.d    $t0, $sp, 264
@@ -489,7 +491,7 @@
     ld.d    $r30, $sp, 240
     ld.d    $r31, $sp, 248
     ld.d    $r0,  $sp, 0
-    csrrd   $sp, 0x502
+    ld.d    $sp, $sp, 24
 .endm
 
 .global _run_guest
@@ -533,9 +535,7 @@ _guest_tlb_refill_vector:
     csrrd   $t0, CSR_TLBRSAVE
     csrwr   $t0, HOST_VCPU_TMP_KS
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
-    csrwr   $sp, 0x502
-    csrrd   $sp, HOST_VCPU_KS
-    addi.d  $sp, $sp, -{ctx_size}
+    SAVE_GUEST_STACK_AND_LOAD_CONTEXT
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
     RESTORE_HOST_TRANSLATION
@@ -671,9 +671,7 @@ _exception_vectors:
 _irq_handler_vector:
     csrwr   $t0, HOST_VCPU_TMP_KS
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
-    csrwr   $sp, 0x502
-    csrrd   $sp, HOST_VCPU_KS
-    addi.d  $sp, $sp, -{ctx_size}
+    SAVE_GUEST_STACK_AND_LOAD_CONTEXT
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
     RESTORE_HOST_TRANSLATION
@@ -683,9 +681,7 @@ _irq_handler_vector:
 _sync_handler_vector:
     csrwr   $t0, HOST_VCPU_TMP_KS
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
-    csrwr   $sp, 0x502
-    csrrd   $sp, HOST_VCPU_KS
-    addi.d  $sp, $sp, -{ctx_size}
+    SAVE_GUEST_STACK_AND_LOAD_CONTEXT
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
     RESTORE_HOST_TRANSLATION
@@ -695,9 +691,7 @@ _sync_handler_vector:
 _hvc_handler_vector:
     csrwr   $t0, HOST_VCPU_TMP_KS
     DISABLE_TIMER_IRQ_WITH_SAVED_GUEST_T0_T1
-    csrwr   $sp, 0x502
-    csrrd   $sp, HOST_VCPU_KS
-    addi.d  $sp, $sp, -{ctx_size}
+    SAVE_GUEST_STACK_AND_LOAD_CONTEXT
     SAVE_GUEST_REGS
     ENTER_HOST_MODE
     RESTORE_HOST_TRANSLATION

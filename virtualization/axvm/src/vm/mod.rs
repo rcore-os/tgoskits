@@ -175,6 +175,7 @@ unsafe impl Sync for AxVMResources {}
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PendingInterrupt {
     Normal(usize),
+    ControllerOutput(usize),
     External { vector: usize, physical_irq: usize },
 }
 
@@ -2546,8 +2547,8 @@ mod tests {
             .into_iter()
             .map(|interrupt| match interrupt {
                 PendingInterrupt::Normal(vector) => vector,
-                PendingInterrupt::External { .. } => {
-                    panic!("unexpected external interrupt in normal queue test")
+                PendingInterrupt::ControllerOutput(_) | PendingInterrupt::External { .. } => {
+                    panic!("unexpected routed interrupt in normal queue test")
                 }
             })
             .collect()

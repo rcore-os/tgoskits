@@ -23,5 +23,6 @@ disabled = []
 [[devices.virtual]]
 id = "virtblk0"
 model = "virtio-blk"
-backend = "ramdisk"
-capacity = "2MiB"
+path = "/tmp/virtio-blk-test.img"
+capacity = "128MiB"
+filesystem = "ext4"

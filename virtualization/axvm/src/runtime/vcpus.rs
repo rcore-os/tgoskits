@@ -636,6 +636,7 @@ fn vcpu_run() {
         // every completed VM exit so host services such as the management
         // console and virtual serial input can make progress alongside a
         // continuously runnable guest.
+        CurrentArch::before_host_scheduler_yield();
         crate::host::task::yield_now();
     }
 
@@ -648,7 +649,7 @@ fn poll_primary_vcpu_devices_with(runtime: &VmRuntimeHandle, poll_devices: impl 
     consumed_request
 }
 
-pub(super) fn poll_vm_devices(vm: &VMRef) {
+pub(crate) fn poll_vm_devices(vm: &VMRef) {
     poll_vm_input_devices(vm);
     poll_vm_dma_devices(vm);
 }

@@ -133,6 +133,17 @@ pub enum ArmAccessWidth {
     Qword,
 }
 
+/// Access kind reported for a host page fault taken through the EL2 vCPU vector.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArmHostPageFaultAccess {
+    /// The faulting instruction attempted to read memory.
+    Read,
+    /// The faulting instruction attempted to write memory.
+    Write,
+    /// The faulting instruction fetch could not be completed.
+    Execute,
+}
+
 impl ArmAccessWidth {
     /// Returns this access width in bytes.
     pub const fn size(self) -> usize {

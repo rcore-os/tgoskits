@@ -27,7 +27,9 @@ use super::{
         exception_sysreg_addr, exception_sysreg_direction_write, exception_sysreg_gpr,
     },
 };
-use crate::{ArmAccessWidth, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit};
+use crate::{
+    ArmAccessWidth, ArmHostPageFaultAccess, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
+};
 
 numeric_enum_macro::numeric_enum! {
 #[repr(u8)]
@@ -334,6 +336,29 @@ fn current_el_sync_handler(tf: &mut TrapFrame) {
     let ec = ESR_EL2.read(ESR_EL2::EC);
     let iss = ESR_EL2.read(ESR_EL2::ISS);
 
+    let access = match ESR_EL2.read_as_enum(ESR_EL2::EC) {
+        Some(ESR_EL2::EC::Value::InstrAbortCurrentEL) if host_page_fault_is_handleable(iss) => {
+            Some(ArmHostPageFaultAccess::Execute)
+        }
+        Some(ESR_EL2::EC::Value::DataAbortCurrentEL) if host_page_fault_is_handleable(iss) => {
+            Some(if iss & (1 << 6) != 0 && iss & (1 << 8) == 0 {
+                ArmHostPageFaultAccess::Write
+            } else {
+                ArmHostPageFaultAccess::Read
+            })
+        }
+        _ => None,
+    };
+    if let Some(access) = access
+        && super::host::handle_current_host_page_fault(
+            FAR_EL2.get() as usize,
+            access,
+            tf.spsr & (1 << 7) == 0,
+        )
+    {
+        return;
+    }
+
     panic!(
         "Unhandled synchronous exception from current EL:\nESR_EL2: {:#x}\nException Class: \
          {ec:#x}\nInstruction Specific Syndrome: {iss:#x}\nFAR_EL2: {:#x}\nELR_EL2: \
@@ -345,6 +370,10 @@ fn current_el_sync_handler(tf: &mut TrapFrame) {
         HCR_EL2.get(),
         tf
     );
+}
+
+const fn host_page_fault_is_handleable(iss: u64) -> bool {
+    matches!(iss & 0b111100, 0b0100 | 0b1100)
 }
 
 /// A trampoline function for sp switching during handling VM exits,

@@ -40,6 +40,7 @@ pub(crate) trait ArchOps {
         Ok(())
     }
 
+    fn before_host_scheduler_yield() {}
     fn wait_for_vcpu_event(
         vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -74,6 +75,14 @@ pub(crate) trait ArchOps {
                         vcpu.id()
                     );
                 }
+            }
+            crate::vm::PendingInterrupt::ControllerOutput(vector) => {
+                warn!(
+                    "VM[{}] VCpu[{}] dropped unsupported interrupt-controller output \
+                     vector={vector:#x}",
+                    vcpu.vm_id(),
+                    vcpu.id()
+                );
             }
             crate::vm::PendingInterrupt::External {
                 vector,

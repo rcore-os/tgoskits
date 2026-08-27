@@ -1,4 +1,6 @@
 const EXCEPTION_ASSEMBLY: &str = include_str!("architecture/exception.S");
+const EXCEPTION: &str = include_str!("architecture/exception.rs");
+const HOST: &str = include_str!("architecture/host.rs");
 const CONTEXT_FRAME: &str = include_str!("architecture/context_frame.rs");
 const VCPU: &str = include_str!("architecture/vcpu.rs");
 
@@ -117,6 +119,17 @@ fn exception_vector_table_preserves_the_architectural_slot_layout() {
 
     let slot_macro = section(EXCEPTION_ASSEMBLY, ".macro VECTOR_SLOT", ".endm");
     assert_in_order(slot_macro, &["b       \\handler", ".space  0x80 - 4"]);
+}
+
+#[test]
+fn current_el_page_faults_are_forwarded_to_the_host() {
+    let handler = section(
+        EXCEPTION,
+        "fn current_el_sync_handler(tf: &mut TrapFrame)",
+        "/// A trampoline function",
+    );
+    assert!(handler.contains("handle_current_host_page_fault"));
+    assert!(HOST.contains("fn handle_current_host_page_fault("));
 }
 
 #[test]

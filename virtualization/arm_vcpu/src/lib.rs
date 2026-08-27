@@ -37,7 +37,7 @@ pub use self::{
         ArmVcpuTimer,
     },
     types::{
-        ArmAccessWidth, ArmGicCpuInterfaceRegister, ArmGuestPhysAddr, ArmNestedPagingConfig,
-        ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
+        ArmAccessWidth, ArmGicCpuInterfaceRegister, ArmGuestPhysAddr, ArmHostPageFaultAccess,
+        ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
     },
 };

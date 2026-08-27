@@ -528,6 +528,7 @@ mod mmio_device_tests {
     const MMIO_MAGIC: u32 = 0x74726976; // "virt" in little endian
     const MMIO_VERSION: u32 = 2; // VirtIO 1.0+
     const VIRTIO_DEVICE_BLOCK: u32 = 2;
+    const VIRTIO_F_RING_EVENT_IDX: u32 = 1 << 29;
 
     fn create_test_device() -> VirtioMmioBlockDevice<MockBlockBackend, MockGuestMemoryAccessor> {
         let backend = MockBlockBackend::new(2048, 512); // 1MB device
@@ -665,6 +666,24 @@ mod mmio_device_tests {
     }
 
     #[test]
+    fn default_features_do_not_advertise_unimplemented_event_idx() {
+        let device = create_test_device();
+        let base_ipa = GuestPhysAddr::from(0x0a000000);
+        let features_sel_addr =
+            GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_DEVICE_FEATURES_SEL as usize);
+        let features_addr =
+            GuestPhysAddr::from(base_ipa.as_usize() + VIRTIO_MMIO_DEVICE_FEATURES as usize);
+
+        device
+            .mmio_write(features_sel_addr, AccessWidth::Dword, 0)
+            .unwrap();
+        let advertised_features =
+            device.mmio_read(features_addr, AccessWidth::Dword).unwrap() as u32;
+
+        assert_eq!(advertised_features & VIRTIO_F_RING_EVENT_IDX, 0);
+    }
+
+    #[test]
     fn test_mmio_config_space_read() {
         let device = create_test_device();
         let base_ipa = GuestPhysAddr::from(0x0a000000);
@@ -715,8 +734,9 @@ mod mmio_device_tests {
     fn test_queue_ready_requires_scoped_memory_with_placeholder_accessor() {
         // axvisor constructs the block device with `NoGuestMemoryAccessor` and
         // holds real guest memory only as a scoped capability at MMIO access
-        // time (`os/axvisor/src/virtio_blk.rs`). The `QUEUE_READY` layout
-        // validation must be screened against that scoped memory: the
+        // time (`virtualization/axvm/src/configured/devices/virtio_blk/device.rs`). The
+        // `QUEUE_READY`
+        // layout validation must be screened against that scoped memory: the
         // accessor-based fallback cannot translate any guest address, while
         // the scoped path validates the same layout against the real backing
         // and must make the queue ready.

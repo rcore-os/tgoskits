@@ -10,7 +10,12 @@ pub(crate) struct PendingEvent {
 }
 
 pub(crate) fn queue_pending_event(queue: &mut VecDeque<PendingEvent>, event: PendingEvent) {
-    if event.vector >= 32 && queue.iter().any(|pending| pending.vector == event.vector) {
+    if event.vector >= 32
+        && let Some(pending) = queue
+            .iter_mut()
+            .find(|pending| pending.vector == event.vector && pending.err_code.is_none())
+    {
+        pending.level_triggered |= event.level_triggered;
         return;
     }
     queue.push_back(event);
@@ -41,6 +46,24 @@ mod tests {
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0].vector, 0x31);
         assert_eq!(queue[1].vector, 0x32);
+    }
+
+    #[test]
+    fn repeated_external_vector_preserves_level_triggering() {
+        let mut queue = VecDeque::new();
+
+        queue_pending_event(&mut queue, external_event(0x31));
+        queue_pending_event(
+            &mut queue,
+            PendingEvent {
+                vector: 0x31,
+                err_code: None,
+                level_triggered: true,
+            },
+        );
+
+        assert_eq!(queue.len(), 1);
+        assert!(queue[0].level_triggered);
     }
 
     #[test]
