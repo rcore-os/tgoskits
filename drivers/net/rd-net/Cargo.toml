@@ -7,10 +7,10 @@ keywords = ["os", "driver", "network"]
 license = "MIT"
 name = "rd-net"
 repository.workspace = true
-version = "0.3.0"
+version = "0.3.1"
 
 [dependencies]
-dma-api.workspace = true
+dma-api = { workspace = true, features = ["pool"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 rdif-eth.workspace = true
 

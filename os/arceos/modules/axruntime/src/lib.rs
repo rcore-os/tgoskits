@@ -89,9 +89,6 @@ pub mod task;
 #[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;
 
-#[cfg(feature = "aic8800-wifi")]
-mod wifi_glue;
-
 pub use ax_hal as hal;
 pub use error::{RuntimeError, RuntimeResult};
 

@@ -2,26 +2,18 @@
 
 use core::ptr::NonNull;
 
-use sdio_host2::BusWidth;
+use sdmmc_host::BusWidth;
 use tock_registers::{register_bitfields, register_structs, registers::ReadWrite};
 
 pub(super) const DEFAULT_SRC_FREQUENCY_HZ: u32 = 375_000_000;
 pub(super) const DEFAULT_MIN_FREQUENCY_HZ: u32 = 400_000;
 pub(super) const DEFAULT_MAX_FREQUENCY_HZ: u32 = 25_000_000;
 
-/// CV181x TOP syscon physical base used by the SD0 power/pinmux registers.
-pub const CV181X_TOP_SYSCON_BASE: u64 = 0x0300_0000;
-/// Minimum syscon mapping required by this wrapper (TOP + pinmux/IO window).
-pub const CV181X_SYSCON_REQUIRED_SIZE: usize = 0x2000;
-
 pub(super) const TOP_SD_PWRSW_3V3: u32 = 0x9;
 pub(super) const TOP_SD_PWRSW_OFF: u32 = 0xe;
 
 pub(super) const PINMUX_FUNC_SDIO0: u8 = 0x0;
 pub(super) const PINMUX_FUNC_XGPIO: u8 = 0x3;
-
-pub(super) const HOST_CTRL2_UHS_SDR12: u16 = 0x0000;
-pub(super) const HOST_CTRL2_UHS_SDR25: u16 = 0x0001;
 
 pub(super) const PHY_TX_RX_DLY_DS_HS: u32 = 0x0100_0100;
 pub(super) const PHY_CONFIG_DS_HS: u32 = 1;
@@ -47,7 +39,10 @@ register_bitfields! [
     u16,
 
     pub HOST_CONTROL2 [
-        UHS_MODE OFFSET(0) NUMBITS(3) []
+        UHS_MODE OFFSET(0) NUMBITS(3) [
+            SDR12 = 0,
+            SDR25 = 1
+        ]
     ]
 ];
 
@@ -58,10 +53,18 @@ register_bitfields! [
         LOW_BITS OFFSET(0) NUMBITS(4) []
     ],
 
+    pub SD_CTRL_OPT [
+        SD1_CARDDET_OVERRIDE OFFSET(8) NUMBITS(2) []
+    ],
+
     pub MSHC_CTRL [
         DS_HS_BIT_1 OFFSET(1) NUMBITS(1) [],
         DS_HS_BIT_8 OFFSET(8) NUMBITS(1) [],
         DS_HS_BIT_9 OFFSET(9) NUMBITS(1) []
+    ],
+
+    pub PINMUX32 [
+        FUNCTION OFFSET(0) NUMBITS(3) []
     ]
 ];
 
@@ -86,36 +89,40 @@ register_structs! {
         (0x000 => _reserved0),
         (0x1f4 => pub sd_powersw_ctrl: ReadWrite<u32, TOP_SD_PWRSW_CTRL::Register>),
         (0x1f8 => _reserved1),
+        (0x294 => pub sd_ctrl_opt: ReadWrite<u32, SD_CTRL_OPT::Register>),
+        (0x298 => _reserved2),
         (0x101c => pub sdio0_clk_mux: ReadWrite<u8, PINMUX::Register>),
-        (0x101d => _reserved2),
+        (0x101d => _reserved3),
         (0x1020 => pub sdio0_cmd_mux: ReadWrite<u8, PINMUX::Register>),
-        (0x1021 => _reserved3),
+        (0x1021 => _reserved4),
         (0x1024 => pub sdio0_d0_mux: ReadWrite<u8, PINMUX::Register>),
-        (0x1025 => _reserved4),
+        (0x1025 => _reserved5),
         (0x1028 => pub sdio0_d1_mux: ReadWrite<u8, PINMUX::Register>),
-        (0x1029 => _reserved5),
+        (0x1029 => _reserved6),
         (0x102c => pub sdio0_d2_mux: ReadWrite<u8, PINMUX::Register>),
-        (0x102d => _reserved6),
+        (0x102d => _reserved7),
         (0x1030 => pub sdio0_d3_mux: ReadWrite<u8, PINMUX::Register>),
-        (0x1031 => _reserved7),
+        (0x1031 => _reserved8),
         (0x1034 => pub sdio0_cd_mux: ReadWrite<u8, PINMUX::Register>),
-        (0x1035 => _reserved8),
+        (0x1035 => _reserved9),
         (0x1038 => pub sdio0_power_enable_mux: ReadWrite<u8, PINMUX::Register>),
-        (0x1039 => _reserved9),
+        (0x1039 => _reserved10),
+        (0x10d0 => pub sdio1_mux: [ReadWrite<u32, PINMUX32::Register>; 6]),
+        (0x10e8 => _reserved_sdio1),
         (0x1900 => pub sdio0_cd_pull: ReadWrite<u8, PAD_PULL::Register>),
-        (0x1901 => _reserved10),
+        (0x1901 => _reserved11),
         (0x1904 => pub sdio0_power_enable_pull: ReadWrite<u8, PAD_PULL::Register>),
-        (0x1905 => _reserved11),
+        (0x1905 => _reserved12),
         (0x1a00 => pub sdio0_clk_pull: ReadWrite<u8, PAD_PULL::Register>),
-        (0x1a01 => _reserved12),
+        (0x1a01 => _reserved13),
         (0x1a04 => pub sdio0_cmd_pull: ReadWrite<u8, PAD_PULL::Register>),
-        (0x1a05 => _reserved13),
+        (0x1a05 => _reserved14),
         (0x1a08 => pub sdio0_d0_pull: ReadWrite<u8, PAD_PULL::Register>),
-        (0x1a09 => _reserved14),
+        (0x1a09 => _reserved15),
         (0x1a0c => pub sdio0_d1_pull: ReadWrite<u8, PAD_PULL::Register>),
-        (0x1a0d => _reserved15),
+        (0x1a0d => _reserved16),
         (0x1a10 => pub sdio0_d2_pull: ReadWrite<u8, PAD_PULL::Register>),
-        (0x1a11 => _reserved16),
+        (0x1a11 => _reserved17),
         (0x1a14 => pub sdio0_d3_pull: ReadWrite<u8, PAD_PULL::Register>),
         (0x1a15 => @END),
     }

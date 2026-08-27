@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.20...arm_vcpu-v0.5.21) - 2026-08-27
+
+### Fixed
+
+- *(arm_vcpu)* synchronize EL2 enable publication ([#2191](https://github.com/rcore-os/tgoskits/pull/2191))
+
 ## [0.5.20](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.19...arm_vcpu-v0.5.20) - 2026-08-20
 
 ### Added

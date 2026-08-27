@@ -434,6 +434,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     pending_rx_recycle: None,
                     pending_tx: None,
                     pending_tx_free: None,
+                    retry_at: None,
                     shared: Arc::clone(&shared),
                 });
                 wifi_target.get_or_insert((owner_cpu, owner_group_index));
@@ -457,6 +458,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     group_index,
                     control: wifi_control,
                     queue,
+                    active: None,
                 });
                 wifi_handles.push(handle);
             }
@@ -484,19 +486,25 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 startup_status: AtomicU8::new(STATUS_PENDING),
                 notify: Arc::clone(&cpu_notifies[owner_cpu]),
             });
-            let task_control = Arc::clone(&control);
-            let mut affinity = ax_task::CpuSet::empty(topology_len);
+            let mut affinity = CpuSet::empty(topology_len);
             if !affinity.insert(ax_task::CpuId::new(owner_cpu as u32)) {
                 stop_executors(&mut executors, true);
                 return Err(NetworkRuntimeError::InvalidTopology);
             }
-            let task = ax_task::ThreadBuilder::new(format!("net-queue-cpu{owner_cpu}"))
+            let task_control = Arc::clone(&control);
+            let task = match ax_task::ThreadBuilder::new(format!("net-queue-cpu{owner_cpu}"))
                 .affinity(affinity)
                 .spawn(move || queue_executor_main(groups, wifi, task_control))
-                .map_err(|source| NetworkRuntimeError::WorkerSpawn {
-                    cpu: owner_cpu,
-                    source,
-                })?;
+            {
+                Ok(task) => task,
+                Err(source) => {
+                    stop_executors(&mut executors, true);
+                    return Err(NetworkRuntimeError::WorkerSpawn {
+                        cpu: owner_cpu,
+                        source,
+                    });
+                }
+            };
             executors.push(ExecutorLease { control, task });
         }
         let failed_owner = executors.iter().find_map(|executor| {
@@ -577,6 +585,26 @@ impl<'a> NetworkRuntimeBuilder<'a> {
         }
         drop(endpoint_iter);
 
+        for registration in &registrations {
+            if let Err(error) = registration.enable() {
+                let irq_synchronized = release_registrations(registrations);
+                stop_executors(&mut executors, irq_synchronized);
+                release_runtime_side_resources(
+                    (
+                        controls,
+                        ports,
+                        port_macs,
+                        wifi_handles,
+                        startup_transactions,
+                        group_states,
+                        cpu_notifies,
+                    ),
+                    irq_synchronized,
+                );
+                return Err(error.into());
+            }
+        }
+
         for executor in &executors {
             executor
                 .control
@@ -604,26 +632,6 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 return Err(NetworkRuntimeError::QueueInit);
             }
         }
-        for registration in &registrations {
-            if let Err(error) = registration.enable() {
-                let irq_synchronized = release_registrations(registrations);
-                stop_executors(&mut executors, irq_synchronized);
-                release_runtime_side_resources(
-                    (
-                        controls,
-                        ports,
-                        port_macs,
-                        wifi_handles,
-                        startup_transactions,
-                        group_states,
-                        cpu_notifies,
-                    ),
-                    irq_synchronized,
-                );
-                return Err(error.into());
-            }
-        }
-
         let protocol_owner_cpu = select_protocol_owner(&group_owners, &active_cpus);
         let mut runtime = NetworkQueueRuntime {
             registrations,

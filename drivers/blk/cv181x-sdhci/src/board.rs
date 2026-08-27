@@ -86,11 +86,19 @@ impl Cv181xSdhci {
             .modify(TOP_SD_PWRSW_CTRL::LOW_BITS.val(low_bits));
     }
 
-    pub(super) fn apply_after(&mut self, after: AfterBusOp) -> Result<(), sdio_host2::Error> {
+    pub(super) fn apply_after(&mut self, after: AfterBusOp) -> Result<(), sdmmc_host::Error> {
         match after {
             AfterBusOp::None => Ok(()),
-            AfterBusOp::PowerOn => {
+            AfterBusOp::PowerOn | AfterBusOp::ResetAll => {
                 self.configure_sd_power_on();
+                Ok(())
+            }
+            AfterBusOp::PowerOff => {
+                self.configure_sd_power_off();
+                Ok(())
+            }
+            AfterBusOp::Restore3v3 => {
+                self.restore_3v3_power();
                 Ok(())
             }
         }

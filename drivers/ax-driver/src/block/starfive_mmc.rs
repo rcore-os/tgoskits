@@ -7,7 +7,7 @@ use rdrive::{
 };
 use sdmmc_protocol::{
     rdif::{config::BlockConfig, device::BlockDevice},
-    sdio::{BusWidth, card::SdioSdmmc, init::CardInitPreference},
+    sdio::{BusWidth, SdMmcIrqHost, init::CardInitPreference, native::SdMmcCard},
 };
 use starfive_jh7110_dwmmc::{
     DEVICE_NAME, JH7110_FIFO_CONFIG, JH7110_STABLE_REFERENCE_CLOCK_HZ, Jh7110DwMmc,
@@ -76,9 +76,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     })?;
 
     info!("starfive-jh7110-dwmmc: defer card initialization to IRQ-driven hctx");
-    let mut sd = SdioSdmmc::new(host);
+    let parts = host.into_parts();
+    let mut sd = SdMmcCard::new(parts.bus);
     sd.set_sd_speed_selection_enabled(false);
-    let dev = BlockDevice::new_initializing(sd, block_config, profile.init_preference);
+    let dev = BlockDevice::new_initializing(sd, parts.irq, block_config, profile.init_preference);
     let irq = probe.register_block(dev)?;
     info!("starfive-jh7110-mmc block device registered irq={:?}", irq);
     Ok(())

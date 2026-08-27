@@ -26,7 +26,7 @@ use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
     rdif::{config::BlockConfig, device::BlockDevice},
-    sdio::card::SdioSdmmc,
+    sdio::{SdMmcIrqHost, native::SdMmcCard},
 };
 
 use super::{
@@ -167,10 +167,11 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         media_name(preference),
         preference
     );
-    let mut card = SdioSdmmc::new(host);
+    let parts = host.into_parts();
+    let mut card = SdMmcCard::new(parts.bus);
     card.set_diagnostic_identity(identity);
     card.set_sd_speed_selection_enabled(ENABLE_SD_SPEED_SELECTION);
-    let dev = BlockDevice::new_initializing(card, block_config, preference);
+    let dev = BlockDevice::new_initializing(card, parts.irq, block_config, preference);
     let irq = probe.register_block(dev)?;
     info!("rockchip-dwmmc block device registered irq={:?}", irq);
     Ok(())

@@ -7,13 +7,15 @@ keywords = ["os", "dma"]
 license.workspace = true
 name = "dma-api"
 repository.workspace = true
-version = "0.10.0"
+version = "0.10.1"
 
 [features]
-host-test = ["ax-sync/host-test"]
+default = []
+host-test = ["pool", "ax-sync/host-test"]
+pool = ["dep:ax-sync"]
 
 [dependencies]
-ax-sync.workspace = true
+ax-sync = { workspace = true, optional = true }
 cfg-if.workspace = true
 derive_more.workspace = true
 log.workspace = true

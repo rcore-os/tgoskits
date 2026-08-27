@@ -12,7 +12,7 @@ use crate::{
         irq::BlockIrqHandler,
         queue::BlockQueue,
     },
-    sdio::{card::SdioSdmmc, host::SdioIrqHost, init::CardInitPreference},
+    sdio::{host::SdMmcIrqHost, init::CardInitPreference, native::SdMmcCard},
 };
 
 const INIT_INITIALIZING: u8 = 0;
@@ -75,11 +75,11 @@ impl BlockInitStatus {
 /// Interrupt-driven single-queue SD/MMC controller.
 pub struct BlockDevice<H>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
     H::BusRequest: Send,
 {
-    card: Option<SdioSdmmc<H>>,
+    card: Option<SdMmcCard<H>>,
     config: BlockConfig,
     irq_handler: Option<Box<dyn HardIrqHandler>>,
     init_preference: Option<CardInitPreference>,
@@ -91,15 +91,15 @@ where
 
 impl<H> BlockDevice<H>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
     H::BusRequest: Send,
 {
-    pub fn new(mut card: SdioSdmmc<H>, config: BlockConfig) -> Self {
+    pub fn new(card: SdMmcCard<H>, irq: H::IrqHandle, config: BlockConfig) -> Self {
         let diagnostic_identity = card.diagnostic_identity().map(String::from);
         let init_status = Arc::new(BlockInitStatus::initialized(config.capacity_blocks()));
         let irq_handler = Box::new(BlockIrqHandler::<H> {
-            irq: SdioIrqHost::irq_handle(card.host_mut()),
+            irq,
             init_status: Arc::clone(&init_status),
         });
         Self {
@@ -117,14 +117,15 @@ where
     /// Creates a controller whose eMMC/SD protocol initialization is owned by
     /// the hctx task and advances command/data states only after IRQ ack.
     pub fn new_initializing(
-        mut card: SdioSdmmc<H>,
+        card: SdMmcCard<H>,
+        irq: H::IrqHandle,
         config: BlockConfig,
         preference: CardInitPreference,
     ) -> Self {
         let diagnostic_identity = card.diagnostic_identity().map(String::from);
         let init_status = Arc::new(BlockInitStatus::initializing());
         let irq_handler = Box::new(BlockIrqHandler::<H> {
-            irq: SdioIrqHost::irq_handle(card.host_mut()),
+            irq,
             init_status: Arc::clone(&init_status),
         });
         Self {
@@ -185,7 +186,7 @@ where
 
 impl<H> DriverGeneric for BlockDevice<H>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
     H::BusRequest: Send,
 {
@@ -198,7 +199,7 @@ where
 
 impl<H> BlockController for BlockDevice<H>
 where
-    H: SdioIrqHost + Send + 'static,
+    H: SdMmcIrqHost + Send + 'static,
     H::TransactionRequest<'static>: Send,
     H::BusRequest: Send,
 {

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/rcore-os/tgoskits/compare/cv181x-sdhci-v0.1.6...cv181x-sdhci-v0.1.7) - 2026-08-27
+
+### Other
+
+- *(sdmmc)* unify SDIO protocol and AIC8800 driver ([#2201](https://github.com/rcore-os/tgoskits/pull/2201))
+
 ## [0.1.6](https://github.com/rcore-os/tgoskits/compare/cv181x-sdhci-v0.1.5...cv181x-sdhci-v0.1.6) - 2026-08-20
 
 ### Other

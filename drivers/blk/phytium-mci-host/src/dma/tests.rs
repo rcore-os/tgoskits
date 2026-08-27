@@ -11,7 +11,7 @@ fn idmac_interrupt_mask_matches_linux_phytium_error_contract() {
 use core::ptr::NonNull;
 
 use ::alloc::{alloc, boxed::Box};
-use sdmmc_protocol::{block::BlockProgress, sdio::host::SdioIrqHandle};
+use sdmmc_protocol::{block::BlockProgress, sdio::host::SdMmcIrqHandle};
 
 use crate::regs::RIntSts;
 
@@ -276,7 +276,7 @@ fn stop_completion_consumes_fast_cmd12_irq_without_second_wakeup() {
             &mut request,
             id,
             &mut slot,
-            sdio_host2::ProgressCause::AcknowledgedIrq,
+            sdmmc_host::ProgressCause::AcknowledgedIrq,
         )
         .unwrap(),
         DataCommandProgress::Complete(Response::Empty)

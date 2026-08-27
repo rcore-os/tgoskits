@@ -45,6 +45,8 @@ model_register!(
 
 mod binding_info;
 mod binding_resolver;
+#[cfg(any(feature = "cv181x-sdhci", feature = "aic8800-wifi"))]
+mod cv181x;
 pub mod error;
 mod irq_binding;
 pub mod mmio;

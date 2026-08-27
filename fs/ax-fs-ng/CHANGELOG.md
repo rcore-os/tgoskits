@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.9.2...ax-fs-ng-v0.9.3) - 2026-08-27
+
+### Added
+
+- *(ax-fs-ng)* add shared block cache between block and filesystem layers ([#2171](https://github.com/rcore-os/tgoskits/pull/2171))
+
 ## [0.9.2](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.9.1...ax-fs-ng-v0.9.2) - 2026-08-25
 
 ### Other

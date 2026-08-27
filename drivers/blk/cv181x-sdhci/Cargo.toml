@@ -1,6 +1,6 @@
 [package]
 name = "cv181x-sdhci"
-version = "0.1.6"
+version = "0.1.7"
 repository.workspace = true
 edition = "2024"
 license = "Apache-2.0"
@@ -11,7 +11,7 @@ categories = ["embedded", "no-std", "hardware-support"]
 [dependencies]
 sdhci-host = { workspace = true, default-features = false }
 sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio"] }
-sdio-host2.workspace = true
+sdmmc-host.workspace = true
 dma-api.workspace = true
 mmio-api.workspace = true
 tock-registers.workspace = true

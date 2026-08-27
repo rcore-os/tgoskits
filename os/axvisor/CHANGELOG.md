@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.6.1...axvisor-v0.6.2) - 2026-08-27
+
+### Fixed
+
+- *(axvisor)* emit CRLF from shell output ([#2195](https://github.com/rcore-os/tgoskits/pull/2195))
+
+### Other
+
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axvisor-v0.6.0...axvisor-v0.6.1) - 2026-08-25
 
 ### Added

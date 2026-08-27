@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.8](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.7...ax-cpu-v0.8.8) - 2026-08-27
+
+### Added
+
+- *(loongarch-intc-driver)* extract OS-independent interrupt controllers ([#2174](https://github.com/rcore-os/tgoskits/pull/2174))
+
 ## [0.8.7](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.6...ax-cpu-v0.8.7) - 2026-08-20
 
 ### Added

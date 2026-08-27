@@ -23,4 +23,10 @@ impl QueueNotification {
             .wait(&self.event)
             .unwrap_or_else(|error| panic!("network queue executor notification failed: {error}"));
     }
+
+    pub(super) fn wait_timeout(&self, waiter: &IrqWorkerWaiter, timeout: core::time::Duration) {
+        let _timed_out = waiter
+            .wait_timeout(&self.event, timeout)
+            .unwrap_or_else(|error| panic!("network queue executor notification failed: {error}"));
+    }
 }

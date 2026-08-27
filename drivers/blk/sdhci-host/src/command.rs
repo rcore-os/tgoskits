@@ -45,7 +45,7 @@ pub(crate) enum CommandState {
 }
 
 impl Sdhci {
-    pub fn advance_command_response(&mut self) -> Result<CommandResponseProgress, Error> {
+    pub(crate) fn advance_command_response(&mut self) -> Result<CommandResponseProgress, Error> {
         match self.advance_command() {
             Ok(CommandPoll::Pending) => Ok(CommandResponseProgress::Pending),
             Ok(CommandPoll::Complete) => self
@@ -59,7 +59,7 @@ impl Sdhci {
 
     /// Program the command register and leave completion to
     /// [`Sdhci::advance_command`].
-    pub fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
+    pub(crate) fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
         self.submit_command_in_generation(cmd, true, None, false)
     }
 
@@ -105,7 +105,7 @@ impl Sdhci {
     }
 
     /// Advance the currently submitted command without blocking.
-    pub fn advance_command(&mut self) -> Result<CommandPoll, Error> {
+    pub(crate) fn advance_command(&mut self) -> Result<CommandPoll, Error> {
         match self.command_state {
             CommandState::WaitingInhibit {
                 cmd,

@@ -691,7 +691,7 @@ impl NetPollIrqControl for GmacIrqControl {
             .map_err(|_| NetError::DmaShutdownUnconfirmed)
     }
 
-    fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError> {
+    fn rearm_and_check(&mut self, _now_nanos: u64) -> Result<NetRearmResult, NetError> {
         let mut inner = self.inner.lock_irqsave();
         let mut status = self.irq_state.take();
         status |= take_hardware_status(inner.regs);

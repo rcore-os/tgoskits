@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.31](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.30...starryos-v0.5.31) - 2026-08-27
+
+### Other
+
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+
 ## [0.5.30](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.29...starryos-v0.5.30) - 2026-08-25
 
 ### Other

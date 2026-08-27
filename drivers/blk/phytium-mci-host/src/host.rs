@@ -8,7 +8,7 @@ use dma_api::{DeviceDma, DmaConstraints};
 use mmio_api::MmioRaw;
 use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
-    sdio::host::{BusWidth, SdioIrqHandle, SignalVoltage},
+    sdio::host::{BusWidth, SdMmcIrqHandle, SignalVoltage},
 };
 use volatile::VolatilePtr;
 
@@ -474,7 +474,7 @@ impl PhytiumMci {
         self.completion_irq_enabled.load(Ordering::Acquire)
     }
 
-    pub fn irq_endpoint(&mut self) -> PhytiumMciIrqHandle {
+    pub(crate) fn irq_endpoint(&mut self) -> PhytiumMciIrqHandle {
         PhytiumMciIrqHandle {
             irq: self.irq.clone(),
         }
@@ -597,7 +597,7 @@ impl PhytiumMci {
     }
 }
 
-impl SdioIrqHandle for PhytiumMciIrqHandle {
+impl SdMmcIrqHandle for PhytiumMciIrqHandle {
     type Event = Event;
 
     fn handle_irq(&mut self) -> Self::Event {

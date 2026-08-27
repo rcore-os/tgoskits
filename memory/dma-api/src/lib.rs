@@ -255,6 +255,7 @@ impl DeviceDma {
         Ok(map)
     }
 
+    #[cfg(feature = "pool")]
     pub fn contiguous_buffer_pool(
         &self,
         layout: core::alloc::Layout,

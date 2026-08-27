@@ -180,14 +180,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     crate::task::start_deferred_task_work_service()
         .expect("failed to start deferred scheduler task-work service");
 
-    // Install the ArceOS runtime glue into the OS-independent Wi-Fi driver
-    // cores (aic8800 / sdhci-cv1800) *before* probing, since the FDT probe
-    // brings the chip up and that needs timing/task capabilities. The cores
-    // declare no ArceOS dependency themselves; this is the adapter layer (see
-    // `wifi_glue`).
-    #[cfg(feature = "aic8800-wifi")]
-    crate::wifi_glue::install_runtime();
-
     crate::devices::probe_all_devices();
     crate::serial::init(cpu_id);
     match crate::console::activate_before_smp() {

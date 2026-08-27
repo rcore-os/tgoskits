@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.4...some-serial-v0.7.5) - 2026-08-27
+
+### Fixed
+
+- *(some-serial)* bound PL011 RX discard ([#2203](https://github.com/rcore-os/tgoskits/pull/2203))
+
 ## [0.7.4](https://github.com/rcore-os/tgoskits/compare/some-serial-v0.7.3...some-serial-v0.7.4) - 2026-08-20
 
 ### Fixed
