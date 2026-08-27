@@ -20,6 +20,7 @@ pub(crate) struct PiDonation {
     pub(crate) policy: SchedulePolicy,
     pub(crate) root: ThreadId,
     pub(crate) boost_urgency: SchedulingUrgency,
+    wait_generation: Option<u64>,
     waiter_core: Weak<ThreadCore>,
     pub(crate) root_core: Weak<ThreadCore>,
 }
@@ -36,9 +37,21 @@ impl PiDonation {
             policy,
             root,
             boost_urgency,
+            wait_generation: None,
             waiter_core: Arc::downgrade(waiter_core),
             root_core: Arc::downgrade(root_core),
         }
+    }
+
+    /// Binds this snapshot to the committed physical-lock waiter generation.
+    pub(crate) const fn with_wait_generation(mut self, generation: u64) -> Self {
+        self.wait_generation = Some(generation);
+        self
+    }
+
+    /// Returns the generation protected by the containing mutex wait lock.
+    pub(crate) const fn wait_generation(&self) -> Option<u64> {
+        self.wait_generation
     }
 
     pub(crate) fn same_source(&self, other: &Self) -> bool {
@@ -450,4 +463,36 @@ fn find_first_excluding(
     find_first_excluding(node.left.as_deref(), excluded)
         .or_else(|| (Some(node.key) != excluded).then_some(node))
         .or_else(|| find_first_excluding(node.right.as_deref(), excluded))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FairMode, Nice};
+
+    fn donation(generation: u64) -> PiDonation {
+        PiDonation {
+            policy: SchedulePolicy::Fair {
+                nice: Nice::ZERO,
+                mode: FairMode::Normal,
+            },
+            root: ThreadId::from_parts(1, 0),
+            boost_urgency: SchedulingUrgency::new(3, 0),
+            wait_generation: None,
+            waiter_core: Weak::new(),
+            root_core: Weak::new(),
+        }
+        .with_wait_generation(generation)
+    }
+
+    #[test]
+    fn waiter_tree_snapshot_retains_the_committed_generation() {
+        let key = PiWaitKey::new(SchedulingUrgency::new(3, 0), 7, ThreadId::from_parts(2, 0));
+        let mut tree = PiWaitTree::new();
+        tree.insert(key, donation(11), PiWaitNode::empty());
+
+        let (_, snapshot) = tree.first_entry().expect("inserted waiter must be first");
+        assert_eq!(snapshot.wait_generation(), Some(11));
+        assert!(snapshot.same_source(&donation(12)));
+    }
 }

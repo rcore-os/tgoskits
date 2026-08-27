@@ -3,18 +3,19 @@
 use super::*;
 
 impl TaskSystem {
-    /// Replaces the one waiter-tree top contributed by a physical mutex.
+    /// Replaces one mutex donor while its owner PI lock is already held.
     ///
-    /// The caller owns that mutex's wait lock. This method then acquires only
-    /// the owner task's PI lock, exactly matching Linux's wait-lock -> pi-lock
-    /// order for `rt_mutex_enqueue_pi()`/`rt_mutex_dequeue_pi()`.
-    pub(in crate::system::task_system) fn replace_owner_lock_top(
+    /// Release and ownerless claim already resolve and lock the physical
+    /// mutex owner for their validation transaction. Reusing that guard keeps
+    /// the Linux wait-lock -> pi-lock -> rq-lock order without performing a
+    /// second registry lookup and PI-lock round trip.
+    pub(in crate::system::task_system) fn replace_owner_lock_top_locked(
         &self,
-        owner: ThreadId,
+        owner_core: &Arc<ThreadCore>,
+        owner_sched: &mut ThreadSchedState,
         old_top: Option<(PiWaitKey, PiDonation)>,
         new_top: Option<(PiWaitKey, PiDonation)>,
     ) -> Result<(), TaskError> {
-        let owner_core = self.pi_thread_core(owner)?;
         let old_core = old_top
             .as_ref()
             .map(|(_, donation)| donation.waiter_core().ok_or(TaskError::InvalidPiState))
@@ -23,7 +24,6 @@ impl TaskSystem {
             .as_ref()
             .map(|(_, donation)| donation.waiter_core().ok_or(TaskError::InvalidPiState))
             .transpose()?;
-        let mut owner_sched = owner_core.sched().lock();
         if owner_sched.lifecycle.state() == ThreadState::Exited {
             return Err(TaskError::InvalidPiWaitState(
                 PiWaitStateError::ExitedParticipant,
@@ -85,8 +85,7 @@ impl TaskSystem {
                 .donors
                 .insert(*new_top, donation.clone(), inserted);
         }
-        if let Err(error) =
-            self.recompute_pi_owner_locked(&owner_core, &mut owner_sched, prospective_top)
+        if let Err(error) = self.recompute_pi_owner_locked(owner_core, owner_sched, prospective_top)
         {
             if let Some((new_top, _)) = new_top.as_ref() {
                 let removed = owner_sched
@@ -122,14 +121,116 @@ impl TaskSystem {
         Ok(())
     }
 
+    /// Removes the selected waiter and installs the next donor as one
+    /// ownerless-claim transaction.
+    ///
+    /// The caller owns the physical mutex wait lock. The claimant PI lock is
+    /// acquired once to detach its waiter node and once to atomically clear
+    /// `blocked_on` plus publish the next donor. No registry lookup is needed:
+    /// the claimant becomes the physical owner on successful return.
+    pub(in crate::system::task_system) fn claim_ownerless_lock_waiter(
+        &self,
+        lock_state: &mut PiMutexWaiters,
+        claimant_core: &Arc<ThreadCore>,
+        lock: PiMutexRaw,
+        generation: u64,
+    ) -> Result<Option<PiWaitRegistration>, TaskError> {
+        let (registration, removed, removed_donation) = {
+            let claimant_sched = claimant_core.sched().lock();
+            let registration = claimant_sched
+                .pi
+                .blocked_on
+                .filter(|registration| {
+                    registration.lock == lock && registration.generation == generation
+                })
+                .ok_or(TaskError::InvalidPiState)?;
+            if lock_state.waiters.first() != Some(registration.key) {
+                return Ok(None);
+            }
+            if !claimant_core.pi_wait_state().can_grant(generation) {
+                return Err(TaskError::InvalidPiState);
+            }
+            let donation = lock_state
+                .waiters
+                .donation(registration.key)
+                .ok_or(TaskError::InvalidPiState)?;
+            let removed = lock_state
+                .waiters
+                .remove(registration.key)
+                .ok_or(TaskError::InvalidPiState)?;
+            (registration, removed, donation)
+        };
+
+        let new_top = lock_state.waiters.first_entry();
+        let marker = new_top
+            .as_ref()
+            .map(|(key, new_donation)| {
+                let core = new_donation
+                    .waiter_core()
+                    .ok_or(TaskError::InvalidPiState)?;
+                if core.id() != key.thread {
+                    return Err(TaskError::InvalidPiState);
+                }
+                let new_generation = new_donation
+                    .wait_generation()
+                    .ok_or(TaskError::InvalidPiState)?;
+                if !core.pi_wait_state().can_grant(new_generation) {
+                    return Err(TaskError::InvalidPiState);
+                }
+                Ok((core, new_generation))
+            })
+            .transpose();
+        let new_marker = match marker {
+            Ok(marker) => marker,
+            Err(error) => {
+                lock_state
+                    .waiters
+                    .insert(registration.key, removed_donation, removed);
+                return Err(error);
+            }
+        };
+
+        claimant_core
+            .pi_wait_state()
+            .clear_top(registration.generation);
+        if let Some((core, generation)) = new_marker {
+            core.pi_wait_state()
+                .mark_top(generation)
+                .unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x5049_1217, core.id().as_u64() as usize)
+                });
+        }
+        {
+            let mut claimant_sched = claimant_core.sched().lock();
+            if claimant_sched.pi.blocked_on != Some(registration) {
+                task_runtime::fatal_invariant(0x5049_1218, claimant_core.id().as_u64() as usize);
+            }
+            claimant_sched.pi.blocked_on = None;
+            if new_top.is_some() {
+                self.replace_owner_lock_top_locked(
+                    claimant_core,
+                    &mut claimant_sched,
+                    None,
+                    new_top,
+                )
+                .unwrap_or_else(|_| {
+                    task_runtime::fatal_invariant(0x5049_1212, claimant_core.id().as_u64() as usize)
+                });
+            }
+        }
+        // SAFETY: the mutex wait lock detached this node and the claimant PI
+        // lock cleared the only registration which could name it.
+        unsafe { claimant_core.pi_wait_nodes().return_lock_waiter(removed) };
+        Ok(Some(registration))
+    }
+
     /// Publishes a physical mutex's cached-top change while its wait lock is held.
     fn publish_lock_top_change(
         &self,
-        owner: Option<ThreadId>,
+        owner_core: Option<&Arc<ThreadCore>>,
         old_top: Option<(PiWaitKey, PiDonation)>,
         new_top: Option<(PiWaitKey, PiDonation)>,
-        rekey: Option<PiWaiterRekey>,
-    ) -> Result<(), TaskError> {
+    ) -> Result<Option<PiMutexRaw>, TaskError> {
         let old_key = old_top.as_ref().map(|(key, _)| *key);
         let new_key = new_top.as_ref().map(|(key, _)| *key);
         let marker = |top: &Option<(PiWaitKey, PiDonation)>| {
@@ -137,22 +238,13 @@ impl TaskSystem {
                 return Ok(None);
             };
             let core = donation.waiter_core().ok_or(TaskError::InvalidPiState)?;
-            if let Some(rekey) = rekey
-                && core.id() == rekey.waiter
-                && (*key == rekey.registration.key || *key == rekey.new_key)
-            {
-                return Ok(Some((core, rekey.registration.generation)));
-            }
-            let registration = core
-                .sched()
-                .lock()
-                .pi
-                .blocked_on
-                .ok_or(TaskError::InvalidPiState)?;
-            if registration.key != *key {
+            if core.id() != key.thread {
                 return Err(TaskError::InvalidPiState);
             }
-            Ok(Some((core, registration.generation)))
+            let generation = donation
+                .wait_generation()
+                .ok_or(TaskError::InvalidPiState)?;
+            Ok(Some((core, generation)))
         };
         let (old_marker, new_marker) = if old_key != new_key {
             let old_marker = marker(&old_top)?;
@@ -166,9 +258,16 @@ impl TaskSystem {
         } else {
             (None, None)
         };
-        if let Some(owner) = owner {
-            self.replace_owner_lock_top(owner, old_top, new_top)?;
-        }
+        let owner_next_lock = if let Some(owner_core) = owner_core {
+            let mut owner_sched = owner_core.sched().lock();
+            self.replace_owner_lock_top_locked(owner_core, &mut owner_sched, old_top, new_top)?;
+            owner_sched
+                .pi
+                .blocked_on
+                .map(|registration| registration.lock)
+        } else {
+            None
+        };
         if let Some((core, generation)) = old_marker {
             core.pi_wait_state().clear_top(generation);
         }
@@ -179,17 +278,17 @@ impl TaskSystem {
                     task_runtime::fatal_invariant(0x5049_1204, core.id().as_u64() as usize)
                 });
         }
-        Ok(())
+        Ok(owner_next_lock)
     }
 
     pub(in crate::system::task_system) fn insert_lock_waiter(
         &self,
         lock_state: &mut PiMutexWaiters,
-        owner: Option<ThreadId>,
+        owner_core: Option<&Arc<ThreadCore>>,
         waiter_core: &Arc<ThreadCore>,
         registration: PiWaitRegistration,
         donation: PiDonation,
-    ) -> Result<(), TaskError> {
+    ) -> Result<Option<PiMutexRaw>, TaskError> {
         let old_top = lock_state.waiters.first_entry();
         {
             let mut waiter_sched = waiter_core.sched().lock();
@@ -205,31 +304,31 @@ impl TaskSystem {
             lock_state.waiters.insert(registration.key, donation, node);
             waiter_sched.pi.blocked_on = Some(registration);
         }
-        if let Err(error) =
-            self.publish_lock_top_change(owner, old_top, lock_state.waiters.first_entry(), None)
-        {
-            let removed = lock_state
-                .waiters
-                .remove(registration.key)
-                .ok_or(TaskError::InvalidPiState)?;
-            let mut waiter_sched = waiter_core.sched().lock();
-            if waiter_sched.pi.blocked_on != Some(registration) {
-                return Err(TaskError::InvalidPiState);
+        match self.publish_lock_top_change(owner_core, old_top, lock_state.waiters.first_entry()) {
+            Ok(owner_next_lock) => Ok(owner_next_lock),
+            Err(error) => {
+                let removed = lock_state
+                    .waiters
+                    .remove(registration.key)
+                    .ok_or(TaskError::InvalidPiState)?;
+                let mut waiter_sched = waiter_core.sched().lock();
+                if waiter_sched.pi.blocked_on != Some(registration) {
+                    return Err(TaskError::InvalidPiState);
+                }
+                waiter_sched.pi.blocked_on = None;
+                drop(waiter_sched);
+                // SAFETY: wait_lock detached the failed insertion and the task PI
+                // lock removed its only registration before storage is returned.
+                unsafe { waiter_core.pi_wait_nodes().return_lock_waiter(removed) };
+                Err(error)
             }
-            waiter_sched.pi.blocked_on = None;
-            drop(waiter_sched);
-            // SAFETY: wait_lock detached the failed insertion and the task PI
-            // lock removed its only registration before storage is returned.
-            unsafe { waiter_core.pi_wait_nodes().return_lock_waiter(removed) };
-            return Err(error);
         }
-        Ok(())
     }
 
     pub(in crate::system::task_system) fn remove_lock_waiter(
         &self,
         lock_state: &mut PiMutexWaiters,
-        owner: Option<ThreadId>,
+        owner_core: Option<&Arc<ThreadCore>>,
         waiter_core: &Arc<ThreadCore>,
         generation: u64,
     ) -> Result<PiWaitRegistration, TaskError> {
@@ -252,10 +351,9 @@ impl TaskSystem {
             (registration, removed, donation)
         };
         if let Err(error) = self.publish_lock_top_change(
-            owner,
+            owner_core,
             old_top.clone(),
             lock_state.waiters.first_entry(),
-            None,
         ) {
             lock_state
                 .waiters
@@ -368,26 +466,28 @@ impl TaskSystem {
                 .remove(registration.key)
                 .ok_or(TaskError::InvalidPiState)?;
             let new_key = PiWaitKey::new(urgency, registration.key.sequence, waiter_core.id());
-            lock_state.waiters.insert(new_key, donation, node);
-            if let Err(error) = self.publish_lock_top_change(
-                owner,
+            lock_state.waiters.insert(
+                new_key,
+                donation.with_wait_generation(registration.generation),
+                node,
+            );
+            let owner_next_lock = match self.publish_lock_top_change(
+                owner_core.as_ref(),
                 old_top.clone(),
                 lock_state.waiters.first_entry(),
-                Some(PiWaiterRekey {
-                    waiter: waiter_core.id(),
-                    registration,
-                    new_key,
-                }),
             ) {
-                let node = lock_state
-                    .waiters
-                    .remove(new_key)
-                    .ok_or(TaskError::InvalidPiState)?;
-                lock_state
-                    .waiters
-                    .insert(registration.key, old_donation, node);
-                return Err(error);
-            }
+                Ok(owner_next_lock) => owner_next_lock,
+                Err(error) => {
+                    let node = lock_state
+                        .waiters
+                        .remove(new_key)
+                        .ok_or(TaskError::InvalidPiState)?;
+                    lock_state
+                        .waiters
+                        .insert(registration.key, old_donation, node);
+                    return Err(error);
+                }
+            };
             let current = waiter_sched.pi.blocked_on.as_mut().unwrap_or_else(|| {
                 task_runtime::fatal_invariant(0x5049_1210, waiter_core.id().as_u64() as usize)
             });
@@ -396,16 +496,6 @@ impl TaskSystem {
             }
             current.key = new_key;
             drop(waiter_sched);
-            // The physical wait-lock still pins `owner` and its mutex while
-            // this owner PI-lock snapshot seeds the following chain step.
-            let owner_next_lock = owner_core.as_ref().and_then(|owner| {
-                owner
-                    .sched()
-                    .lock()
-                    .pi
-                    .blocked_on
-                    .map(|registration| registration.lock)
-            });
             // Linux `rt_mutex_adjust_prio_chain()` step [9]: when a requeue
             // changes the top waiter of an ownerless lock, the new top must be
             // woken to retry the claim. No lock owner remains to provide that

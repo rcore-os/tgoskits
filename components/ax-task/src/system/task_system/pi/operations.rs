@@ -46,7 +46,13 @@ impl TaskSystem {
             return Err(TaskError::InvalidPiState);
         }
         let owner = snapshot.owner().map(ThreadId::from);
-        self.remove_lock_waiter(&mut lock_state, owner, waiter_core, generation)?;
+        let owner_core = owner.map(|owner| self.pi_thread_core(owner)).transpose()?;
+        self.remove_lock_waiter(
+            &mut lock_state,
+            owner_core.as_ref(),
+            waiter_core,
+            generation,
+        )?;
         if lock_state.waiters.is_empty() {
             if let Some(owner) = owner {
                 core.clear_waiters_bit(owner.into());
@@ -71,7 +77,7 @@ impl TaskSystem {
                 PiWaitStateError::ExitedParticipant,
             ));
         };
-        {
+        let (donation_policy, donation_root) = {
             let sched = waiter_core.sched().lock();
             if sched.lifecycle.state() == ThreadState::Exited {
                 return Err(TaskError::InvalidPiWaitState(
@@ -83,11 +89,16 @@ impl TaskSystem {
                     PiWaitStateError::WaiterAlreadyBlocked,
                 ));
             }
-        }
+            (
+                waiter_core.effective_policy_snapshot(),
+                sched.pi.donor.unwrap_or(waiter_core.id()),
+            )
+        };
         let lock_raw = lock.raw();
         let mutex_core = lock.core();
         let urgency = waiter_core.effective_pi_wait_urgency();
-        let donation = self.pi_donation(&waiter_core)?;
+        let donation =
+            self.pi_donation_from_snapshot(&waiter_core, donation_policy, donation_root)?;
         let key = PiWaitKey::new(urgency, sequence, waiter);
         let mut lock_state = lock_pi_mutex_waiters(lock);
         loop {
@@ -166,34 +177,33 @@ impl TaskSystem {
                     return Err(error);
                 }
             };
-            if let Err(error) = self.insert_lock_waiter(
+            let owner_next_lock = match self.insert_lock_waiter(
                 &mut lock_state,
-                owner,
+                initial_owner.as_ref(),
                 &waiter_core,
                 PiWaitRegistration {
                     lock: lock_raw,
                     key,
                     generation,
                 },
-                donation,
+                donation.with_wait_generation(generation),
             ) {
-                if lock_state.waiters.is_empty() {
-                    mutex_core.clear_waiters_bit(
-                        owner
-                            .expect("an empty waiter tree must retain owner")
-                            .into(),
-                    );
+                Ok(owner_next_lock) => owner_next_lock,
+                Err(error) => {
+                    if lock_state.waiters.is_empty() {
+                        mutex_core.clear_waiters_bit(
+                            owner
+                                .expect("an empty waiter tree must retain owner")
+                                .into(),
+                        );
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
+            };
             // Linux snapshots `owner->pi_blocked_on->lock` while both the
             // origin wait-lock and owner pi-lock protect the newly installed
             // edge. A later `blocked_on` value can belong to an unrelated
             // dependency created after the owner releases this mutex.
-            let owner_next_lock = initial_owner
-                .as_ref()
-                .and_then(|owner| owner.sched().lock().pi.blocked_on)
-                .map(|registration| registration.lock);
             drop(lock_state);
             let chain_result =
                 if let (Some(owner), Some(owner_next_lock)) = (owner, owner_next_lock) {
@@ -324,24 +334,27 @@ impl TaskSystem {
                 .1
                 .waiter_core()
                 .ok_or(TaskError::InvalidPiState)?;
-            let registration = selected
-                .sched()
-                .lock()
-                .pi
-                .blocked_on
-                .filter(|registration| registration.lock.id() == lock.id())
+            let selected_generation = selected_entry
+                .1
+                .wait_generation()
                 .ok_or(TaskError::InvalidPiState)?;
-            if !selected.pi_wait_state().can_grant(registration.generation)
-                || !old_owner_core
-                    .sched()
-                    .lock()
-                    .pi
-                    .donors
-                    .contains(selected_key)
+            if selected.id() != selected_key.thread
+                || !selected.pi_wait_state().can_grant(selected_generation)
             {
                 return Err(TaskError::InvalidPiState);
             }
-            self.replace_owner_lock_top(old_owner, Some(selected_entry), None)?;
+            {
+                let mut old_owner_sched = old_owner_core.sched().lock();
+                if !old_owner_sched.pi.donors.contains(selected_key) {
+                    return Err(TaskError::InvalidPiState);
+                }
+                self.replace_owner_lock_top_locked(
+                    &old_owner_core,
+                    &mut old_owner_sched,
+                    Some(selected_entry),
+                    None,
+                )?;
+            }
             mutex_core.publish_ownerless();
             let selected_id = selected.id();
             let _queued = wakes.push(ThreadWakeHandle::from_core(selected));
@@ -379,33 +392,16 @@ impl TaskSystem {
         if !mutex_core.owner_snapshot().is_ownerless() {
             return Ok(PiMutexClaimOutcome::Retry);
         }
-        let registration = claimant_core
-            .sched()
-            .lock()
-            .pi
-            .blocked_on
-            .filter(|registration| {
-                registration.lock == lock && registration.generation == token.generation()
-            })
-            .ok_or(TaskError::InvalidPiState)?;
-        if lock_state.waiters.first() != Some(registration.key) {
+        let Some(registration) = self.claim_ownerless_lock_waiter(
+            &mut lock_state,
+            &claimant_core,
+            lock,
+            token.generation(),
+        )?
+        else {
             return Ok(PiMutexClaimOutcome::Retry);
-        }
-        if !claimant_core
-            .pi_wait_state()
-            .can_grant(registration.generation)
-        {
-            return Err(TaskError::InvalidPiState);
-        }
-        let registration =
-            self.remove_lock_waiter(&mut lock_state, None, &claimant_core, token.generation())?;
+        };
         debug_assert_eq!(registration.generation, token.generation());
-        if let Some(top) = lock_state.waiters.first_entry() {
-            self.replace_owner_lock_top(claimant, None, Some(top))
-                .unwrap_or_else(|_| {
-                    task_runtime::fatal_invariant(0x5049_1212, claimant.as_u64() as usize)
-                });
-        }
         mutex_core.publish_owner(claimant.into(), !lock_state.waiters.is_empty());
         claimant_core
             .pi_wait_state()

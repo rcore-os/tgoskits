@@ -144,12 +144,18 @@ impl<'lock> PiMutexAlgorithm<'lock> {
     }
 
     pub(in crate::sync) fn lock_pi(&self) {
+        #[cfg(feature = "qperf-metrics")]
+        crate::metrics::record_pi_mutex_lock_attempt();
         let mut blocking_context_validated = false;
 
         loop {
             let (current, attempt) = self.try_or_observe_current();
             match attempt {
-                LockAttempt::Acquired => return,
+                LockAttempt::Acquired => {
+                    #[cfg(feature = "qperf-metrics")]
+                    crate::metrics::record_pi_mutex_fast_acquisition();
+                    return;
+                }
                 LockAttempt::Contended => {
                     if !blocking_context_validated {
                         // The uncontended path neither publishes a waiter nor
@@ -162,6 +168,8 @@ impl<'lock> PiMutexAlgorithm<'lock> {
                         blocking_context_validated = true;
                         continue;
                     }
+                    #[cfg(feature = "qperf-metrics")]
+                    crate::metrics::record_pi_mutex_slow_entry();
                     self.lock_contended(current);
                     return;
                 }
@@ -203,8 +211,16 @@ impl<'lock> PiMutexAlgorithm<'lock> {
             crate::pi_mutex_lock_slow(lock, &current_token, sequence),
             "register PI mutex waiter",
         ) {
-            PiMutexLockResult::Acquired => return,
-            PiMutexLockResult::Waiting(token) => token,
+            PiMutexLockResult::Acquired => {
+                #[cfg(feature = "qperf-metrics")]
+                crate::metrics::record_pi_mutex_slow_race_acquisition();
+                return;
+            }
+            PiMutexLockResult::Waiting(token) => {
+                #[cfg(feature = "qperf-metrics")]
+                crate::metrics::record_pi_mutex_waiter_registration();
+                token
+            }
         };
         debug_assert_eq!(token.thread_id(), current);
         if self.try_claim_waiter(&token) {
@@ -265,6 +281,8 @@ impl<'lock> PiMutexAlgorithm<'lock> {
                 break;
             }
             if !token.can_claim() && !self.spin_on_owner(&token) {
+                #[cfg(feature = "qperf-metrics")]
+                crate::metrics::record_pi_mutex_waiter_park();
                 task_result(crate::pi_park_current_once(&token), "park PI mutex waiter");
             }
         }
@@ -353,6 +371,8 @@ impl<'lock> PiMutexAlgorithm<'lock> {
         match core_result(unsafe { core.try_release_owned() }, "try PI mutex release") {
             PiMutexOwnedRelease::Released => {}
             PiMutexOwnedRelease::Contended(owner) => {
+                #[cfg(feature = "qperf-metrics")]
+                crate::metrics::record_pi_mutex_contended_release();
                 // SAFETY: `owner` came from this core's owner-authorized release
                 // result and the raw-mutex contract remains active.
                 unsafe { Self::unlock_contended(core, owner) };

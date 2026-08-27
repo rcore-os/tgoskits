@@ -23,13 +23,6 @@ struct PiWaiterRefresh {
     ownerless_wake: Option<Arc<ThreadCore>>,
 }
 
-#[derive(Clone, Copy)]
-struct PiWaiterRekey {
-    waiter: ThreadId,
-    registration: PiWaitRegistration,
-    new_key: PiWaitKey,
-}
-
 impl TaskSystem {
     /// Acquires a stable task reference without retaining the registry lock.
     ///
@@ -49,6 +42,15 @@ impl TaskSystem {
                 sched.pi.donor.unwrap_or(core.id()),
             )
         };
+        self.pi_donation_from_snapshot(core, policy, root)
+    }
+
+    fn pi_donation_from_snapshot(
+        &self,
+        core: &Arc<ThreadCore>,
+        policy: SchedulePolicy,
+        root: ThreadId,
+    ) -> Result<PiDonation, TaskError> {
         let root_core = if root == core.id() {
             Arc::clone(core)
         } else {

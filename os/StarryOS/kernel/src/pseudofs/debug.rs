@@ -681,6 +681,33 @@ fn render_scheduler_metrics() -> alloc::string::String {
         task.task_work_address_space_reclaims
     )
     .unwrap();
+    writeln!(output, "pi_mutex_lock_attempts {}", task.pi_mutex_lock_attempts).unwrap();
+    writeln!(
+        output,
+        "pi_mutex_fast_acquisitions {}",
+        task.pi_mutex_fast_acquisitions
+    )
+    .unwrap();
+    writeln!(output, "pi_mutex_slow_entries {}", task.pi_mutex_slow_entries).unwrap();
+    writeln!(
+        output,
+        "pi_mutex_slow_race_acquisitions {}",
+        task.pi_mutex_slow_race_acquisitions
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pi_mutex_waiter_registrations {}",
+        task.pi_mutex_waiter_registrations
+    )
+    .unwrap();
+    writeln!(output, "pi_mutex_waiter_parks {}", task.pi_mutex_waiter_parks).unwrap();
+    writeln!(
+        output,
+        "pi_mutex_contended_releases {}",
+        task.pi_mutex_contended_releases
+    )
+    .unwrap();
     writeln!(
         output,
         "scheduler_ipi_sends {}",
@@ -847,6 +874,13 @@ mod tests {
                 "task_work_reaped_threads",
                 "task_work_coroutine_reclaims",
                 "task_work_address_space_reclaims",
+                "pi_mutex_lock_attempts",
+                "pi_mutex_fast_acquisitions",
+                "pi_mutex_slow_entries",
+                "pi_mutex_slow_race_acquisitions",
+                "pi_mutex_waiter_registrations",
+                "pi_mutex_waiter_parks",
+                "pi_mutex_contended_releases",
                 "scheduler_ipi_sends",
                 "scheduler_ipi_consumes",
                 "clockevent_irqs",

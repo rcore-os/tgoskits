@@ -120,6 +120,13 @@ pub struct QperfSchedulerMetricsSnapshot {
     pub task_work_reaped_threads: u64,
     pub task_work_coroutine_reclaims: u64,
     pub task_work_address_space_reclaims: u64,
+    pub pi_mutex_lock_attempts: u64,
+    pub pi_mutex_fast_acquisitions: u64,
+    pub pi_mutex_slow_entries: u64,
+    pub pi_mutex_slow_race_acquisitions: u64,
+    pub pi_mutex_waiter_registrations: u64,
+    pub pi_mutex_waiter_parks: u64,
+    pub pi_mutex_contended_releases: u64,
     pub context_switches: u64,
     pub context_switches_preempted: u64,
     pub context_switches_yield: u64,
@@ -183,6 +190,13 @@ struct QperfSchedulerMetrics {
     task_work_reaped_threads: AtomicU64,
     task_work_coroutine_reclaims: AtomicU64,
     task_work_address_space_reclaims: AtomicU64,
+    pi_mutex_lock_attempts: AtomicU64,
+    pi_mutex_fast_acquisitions: AtomicU64,
+    pi_mutex_slow_entries: AtomicU64,
+    pi_mutex_slow_race_acquisitions: AtomicU64,
+    pi_mutex_waiter_registrations: AtomicU64,
+    pi_mutex_waiter_parks: AtomicU64,
+    pi_mutex_contended_releases: AtomicU64,
     context_switches: AtomicU64,
     context_switches_preempted: AtomicU64,
     context_switches_yield: AtomicU64,
@@ -261,6 +275,13 @@ impl QperfSchedulerMetrics {
             task_work_reaped_threads: AtomicU64::new(0),
             task_work_coroutine_reclaims: AtomicU64::new(0),
             task_work_address_space_reclaims: AtomicU64::new(0),
+            pi_mutex_lock_attempts: AtomicU64::new(0),
+            pi_mutex_fast_acquisitions: AtomicU64::new(0),
+            pi_mutex_slow_entries: AtomicU64::new(0),
+            pi_mutex_slow_race_acquisitions: AtomicU64::new(0),
+            pi_mutex_waiter_registrations: AtomicU64::new(0),
+            pi_mutex_waiter_parks: AtomicU64::new(0),
+            pi_mutex_contended_releases: AtomicU64::new(0),
             context_switches: AtomicU64::new(0),
             context_switches_preempted: AtomicU64::new(0),
             context_switches_yield: AtomicU64::new(0),
@@ -565,6 +586,17 @@ impl QperfSchedulerMetrics {
             task_work_address_space_reclaims: self
                 .task_work_address_space_reclaims
                 .load(Ordering::Relaxed),
+            pi_mutex_lock_attempts: self.pi_mutex_lock_attempts.load(Ordering::Relaxed),
+            pi_mutex_fast_acquisitions: self.pi_mutex_fast_acquisitions.load(Ordering::Relaxed),
+            pi_mutex_slow_entries: self.pi_mutex_slow_entries.load(Ordering::Relaxed),
+            pi_mutex_slow_race_acquisitions: self
+                .pi_mutex_slow_race_acquisitions
+                .load(Ordering::Relaxed),
+            pi_mutex_waiter_registrations: self
+                .pi_mutex_waiter_registrations
+                .load(Ordering::Relaxed),
+            pi_mutex_waiter_parks: self.pi_mutex_waiter_parks.load(Ordering::Relaxed),
+            pi_mutex_contended_releases: self.pi_mutex_contended_releases.load(Ordering::Relaxed),
             context_switches: self.context_switches.load(Ordering::Relaxed),
             context_switches_preempted: self.context_switches_preempted.load(Ordering::Relaxed),
             context_switches_yield: self.context_switches_yield.load(Ordering::Relaxed),
@@ -615,6 +647,48 @@ pub fn qperf_scheduler_metrics_snapshot() -> QperfSchedulerMetricsSnapshot {
 pub(crate) fn record_current_thread_handle_query() {
     QPERF_SCHEDULER_METRICS
         .current_thread_handle_queries
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_pi_mutex_lock_attempt() {
+    QPERF_SCHEDULER_METRICS
+        .pi_mutex_lock_attempts
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_pi_mutex_fast_acquisition() {
+    QPERF_SCHEDULER_METRICS
+        .pi_mutex_fast_acquisitions
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_pi_mutex_slow_entry() {
+    QPERF_SCHEDULER_METRICS
+        .pi_mutex_slow_entries
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_pi_mutex_slow_race_acquisition() {
+    QPERF_SCHEDULER_METRICS
+        .pi_mutex_slow_race_acquisitions
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_pi_mutex_waiter_registration() {
+    QPERF_SCHEDULER_METRICS
+        .pi_mutex_waiter_registrations
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_pi_mutex_waiter_park() {
+    QPERF_SCHEDULER_METRICS
+        .pi_mutex_waiter_parks
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_pi_mutex_contended_release() {
+    QPERF_SCHEDULER_METRICS
+        .pi_mutex_contended_releases
         .fetch_add(1, Ordering::Relaxed);
 }
 
