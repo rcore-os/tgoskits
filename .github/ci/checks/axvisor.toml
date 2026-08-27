@@ -130,7 +130,7 @@ kind = "axvisor-qemu"
 arch = "aarch64"
 cases = [
   "qemu/aarch64/http-control-plane",
-  # "qemu/aarch64/ivc", # Linux guest image uses IVC v3; ArceOS publisher uses v2.
+  # "qemu/aarch64/ivc", # Prebuilt guest images must match the publisher protocol.
 ]
 
 [[check]]
