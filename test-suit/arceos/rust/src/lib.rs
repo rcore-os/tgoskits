@@ -46,7 +46,10 @@ pub mod io_mpx;
     any(feature = "lockdep-baseline", feature = "lockdep-detect",)
 ))]
 pub mod lockdep;
-#[cfg(all(feature = "memtest", feature = "ax-std"))]
+#[cfg(all(
+    feature = "ax-std",
+    any(feature = "mem-stage1-transition", feature = "memtest")
+))]
 pub mod mem;
 #[cfg(all(feature = "net-loopback", feature = "ax-std"))]
 pub mod net;
@@ -124,6 +127,11 @@ test_runner!(
 );
 test_runner!("lockdep-detect", run_lockdep_detect, lockdep::detect::run);
 test_runner!("memtest", run_memtest, mem::test::run);
+test_runner!(
+    "mem-stage1-transition",
+    run_mem_stage1_transition,
+    mem::stage1_transition::run
+);
 test_runner!("net-loopback", run_net_loopback, net::loopback::run);
 test_runner!("sched-cfs", run_sched_cfs, task::priority::run_cfs);
 test_runner!("sched-rr", run_sched_rr, task::priority::run_rr);
@@ -247,6 +255,12 @@ const SELECTED_TESTS: &[TestCase] = &[
     ),
     #[cfg(feature = "memtest")]
     TestCase::new("memtest", "memory allocator and collections", run_memtest),
+    #[cfg(feature = "mem-stage1-transition")]
+    TestCase::new(
+        "mem-stage1-transition",
+        "SMP kernel stage-1 mapping transition",
+        run_mem_stage1_transition,
+    ),
     #[cfg(feature = "net-loopback")]
     TestCase::new(
         "net-loopback",

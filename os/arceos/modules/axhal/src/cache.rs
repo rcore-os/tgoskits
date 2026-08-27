@@ -180,17 +180,23 @@ fn flush_tlb_range_on_cpus_with(
     size: usize,
 ) -> Result<(), TlbShootdownError> {
     let current_cpu = runtime.current_cpu();
+    if current_cpu < usize::BITS as usize && cpu_mask & (1usize << current_cpu) != 0 {
+        runtime.flush_local(start, size);
+    }
+
+    let mut first_error = None;
     for cpu_id in 0..runtime.cpu_count() {
         let selected = cpu_id < usize::BITS as usize && cpu_mask & (1usize << cpu_id) != 0;
         if !selected || cpu_id == current_cpu || !runtime.cpu_online(cpu_id) {
             continue;
         }
-        runtime.flush_remote(cpu_id, start, size)?;
+        if let Err(error) = runtime.flush_remote(cpu_id, start, size)
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
     }
-    if current_cpu < usize::BITS as usize && cpu_mask & (1usize << current_cpu) != 0 {
-        runtime.flush_local(start, size);
-    }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 #[cfg(feature = "ipi")]
@@ -283,7 +289,7 @@ mod tests {
     struct ModelShootdown {
         online: [bool; 3],
         remote_error: Option<TlbShootdownError>,
-        remote_cpu: Cell<Option<usize>>,
+        remote_mask: Cell<usize>,
         local_flushed: Cell<bool>,
     }
 
@@ -306,7 +312,8 @@ mod tests {
             _start: VirtAddr,
             _size: usize,
         ) -> Result<(), TlbShootdownError> {
-            self.remote_cpu.set(Some(cpu_id));
+            self.remote_mask
+                .set(self.remote_mask.get() | (1usize << cpu_id));
             self.remote_error.map_or(Ok(()), Err)
         }
 
@@ -320,7 +327,7 @@ mod tests {
         let runtime = ModelShootdown {
             online: [true; 3],
             remote_error: Some(TlbShootdownError::Timeout),
-            remote_cpu: Cell::new(None),
+            remote_mask: Cell::new(0),
             local_flushed: Cell::new(false),
         };
 
@@ -328,8 +335,11 @@ mod tests {
             flush_tlb_range_on_cpus_with(&runtime, usize::MAX, VirtAddr::from(0x4000), 0x2000);
 
         assert_eq!(result, Err(TlbShootdownError::Timeout));
-        assert_eq!(runtime.remote_cpu.get(), Some(1));
-        assert!(!runtime.local_flushed.get());
+        assert_eq!(runtime.remote_mask.get(), (1usize << 1) | (1usize << 2));
+        assert!(
+            runtime.local_flushed.get(),
+            "a remote failure must not skip the current CPU invalidation"
+        );
     }
 
     #[test]
@@ -337,7 +347,7 @@ mod tests {
         let runtime = ModelShootdown {
             online: [true, false, true],
             remote_error: None,
-            remote_cpu: Cell::new(None),
+            remote_mask: Cell::new(0),
             local_flushed: Cell::new(false),
         };
 
@@ -345,7 +355,7 @@ mod tests {
             flush_tlb_range_on_cpus_with(&runtime, usize::MAX, VirtAddr::from(0x4000), 0x2000);
 
         assert_eq!(result, Ok(()));
-        assert_eq!(runtime.remote_cpu.get(), Some(2));
+        assert_eq!(runtime.remote_mask.get(), 1usize << 2);
         assert!(runtime.local_flushed.get());
     }
 
@@ -354,7 +364,7 @@ mod tests {
         let runtime = ModelShootdown {
             online: [true; 3],
             remote_error: None,
-            remote_cpu: Cell::new(None),
+            remote_mask: Cell::new(0),
             local_flushed: Cell::new(false),
         };
 
@@ -362,7 +372,7 @@ mod tests {
             flush_tlb_range_on_cpus_with(&runtime, 1usize << 2, VirtAddr::from(0x4000), 0x2000);
 
         assert_eq!(result, Ok(()));
-        assert_eq!(runtime.remote_cpu.get(), Some(2));
+        assert_eq!(runtime.remote_mask.get(), 1usize << 2);
         assert!(!runtime.local_flushed.get());
     }
 

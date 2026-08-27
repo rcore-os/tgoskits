@@ -2340,10 +2340,15 @@ impl From<&ax_runtime::hal::cpu::uspace::UserContext> for Aarch64UserRegs {
 #[cfg(target_arch = "aarch64")]
 impl Aarch64UserRegs {
     fn write_to(&self, uctx: &mut ax_runtime::hal::cpu::uspace::UserContext) -> StarryResult<()> {
-        uctx.x = self.regs;
-        uctx.sp = self.sp;
-        uctx.elr = self.pc;
-        uctx.spsr = self.pstate;
+        let mut updated = *uctx;
+        updated.x = self.regs;
+        updated.sp = self.sp;
+        updated.elr = self.pc;
+        updated.spsr = self.pstate;
+        if !updated.is_user_entry_state_valid() {
+            return Err(StarryError::InvalidInput);
+        }
+        *uctx = updated;
         Ok(())
     }
 }

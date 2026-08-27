@@ -193,13 +193,19 @@ impl CachedFileShared {
             }
         }
 
+        let listeners = match self.snapshot_evict_listeners(None) {
+            Ok(listeners) => listeners,
+            Err(_) => {
+                let mut cache = self.page_cache.lock();
+                for (pn, page) in pending {
+                    cache.put(pn, page);
+                }
+                return 0;
+            }
+        };
         let mut evicted = 0;
         for (pn, page) in pending {
-            let invalidated = self
-                .evict_listeners
-                .lock()
-                .iter()
-                .all(|listener| (listener.listener)(pn, &page));
+            let invalidated = listeners.iter().all(|listener| listener(pn, &page));
             if invalidated {
                 evicted += 1;
             } else {
@@ -232,6 +238,7 @@ fn reclaim_releases_registry_spin_lock_for_test() -> bool {
     file.evict_listeners
         .lock()
         .push_back(alloc::boxed::Box::new(super::EvictListener {
+            owner: None,
             listener: Arc::new(move |_, _| {
                 observed.store(
                     observed_cached_files.try_write().is_some(),

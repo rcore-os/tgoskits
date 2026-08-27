@@ -1,11 +1,12 @@
 use ax_alloc::{UsageKind, global_allocator};
 use ax_hal::{
     mem::{phys_to_virt, virt_to_phys},
-    paging::{MappingFlags, PageTable},
+    paging::{MappingFlags, PageTable, PagingError},
 };
-use ax_memory_addr::{PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr};
 
 use super::Backend;
+use crate::tlb::TlbGather;
 
 fn alloc_frame(zeroed: bool) -> Option<PhysAddr> {
     let vaddr = VirtAddr::from(
@@ -20,7 +21,7 @@ fn alloc_frame(zeroed: bool) -> Option<PhysAddr> {
     Some(paddr)
 }
 
-fn dealloc_frame(frame: PhysAddr) {
+pub(crate) fn dealloc_frame(frame: PhysAddr) {
     let vaddr = phys_to_virt(frame);
     global_allocator().dealloc_pages(vaddr.as_usize(), 1, UsageKind::VirtMem);
 }
@@ -36,6 +37,7 @@ impl Backend {
         start: VirtAddr,
         size: usize,
         flags: MappingFlags,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
         populate: bool,
     ) -> bool {
@@ -50,6 +52,7 @@ impl Backend {
             let mut populate = PageTablePopulate {
                 page_table: pt,
                 flags,
+                gather,
             };
             populate_pages(&mut populate, start, size)
         } else {
@@ -64,22 +67,26 @@ impl Backend {
         &self,
         start: VirtAddr,
         size: usize,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
         _populate: bool,
     ) -> bool {
         debug!("unmap_alloc: [{:#x}, {:#x})", start, start + size);
+        let mut mapped = alloc::vec::Vec::new();
         for addr in PageIter4K::new(start, start + size).unwrap() {
-            if let Ok((frame, _, page_size)) = pt.unmap_page(addr) {
-                // Deallocate the physical frame if there is a mapping in the
-                // page table.
-                if page_size > PAGE_SIZE_4K {
-                    return false;
-                }
-                dealloc_frame(frame);
-            } else {
-                // Deallocation is needn't if the page is not mapped.
+            match pt.query(addr) {
+                Ok((frame, _, PAGE_SIZE_4K)) => mapped.push((addr, frame)),
+                Ok(_) => return false,
+                Err(PagingError::NotMapped) => {}
+                Err(_) => return false,
             }
         }
+        for (addr, frame) in mapped {
+            pt.unmap_page(addr)
+                .expect("a preflighted allocated page must remain mapped under the aspace lock");
+            gather.defer_frame(frame);
+        }
+        gather.invalidate(start, size);
         true
     }
 
@@ -87,6 +94,7 @@ impl Backend {
         &self,
         vaddr: VirtAddr,
         orig_flags: MappingFlags,
+        gather: &mut TlbGather,
         pt: &mut PageTable,
         populate: bool,
     ) -> bool {
@@ -98,6 +106,7 @@ impl Backend {
                 alloc_frame(true),
                 |frame| pt.remap_page(vaddr, frame, orig_flags).is_ok(),
                 dealloc_frame,
+                |_| gather.invalidate(vaddr.align_down_4k(), PAGE_SIZE_4K),
             )
         }
     }
@@ -107,11 +116,13 @@ fn remap_frame_or_dealloc(
     frame: Option<PhysAddr>,
     remap_frame: impl FnOnce(PhysAddr) -> bool,
     dealloc_frame: impl FnOnce(PhysAddr),
+    publish_frame: impl FnOnce(PhysAddr),
 ) -> bool {
     let Some(frame) = frame else {
         return false;
     };
     if remap_frame(frame) {
+        publish_frame(frame);
         true
     } else {
         dealloc_frame(frame);
@@ -126,12 +137,17 @@ trait PopulatePageOps {
 
     fn unmap_frame(&mut self, addr: VirtAddr) -> Option<PhysAddr>;
 
-    fn dealloc_frame(&mut self, frame: PhysAddr);
+    /// Releases a frame that was never reachable through a published PTE.
+    fn release_unmapped_frame(&mut self, frame: PhysAddr);
+
+    /// Retains a frame removed from a PTE until shootdown confirmation.
+    fn defer_unmapped_frame(&mut self, frame: PhysAddr);
 }
 
 struct PageTablePopulate<'a> {
     page_table: &'a mut PageTable,
     flags: MappingFlags,
+    gather: &'a mut TlbGather,
 }
 
 impl PopulatePageOps for PageTablePopulate<'_> {
@@ -154,8 +170,12 @@ impl PopulatePageOps for PageTablePopulate<'_> {
         Some(frame)
     }
 
-    fn dealloc_frame(&mut self, frame: PhysAddr) {
+    fn release_unmapped_frame(&mut self, frame: PhysAddr) {
         dealloc_frame(frame);
+    }
+
+    fn defer_unmapped_frame(&mut self, frame: PhysAddr) {
+        self.gather.defer_frame(frame);
     }
 }
 
@@ -166,7 +186,7 @@ fn populate_pages(ops: &mut impl PopulatePageOps, start: VirtAddr, size: usize) 
             return false;
         };
         if !ops.map_frame(addr, frame) {
-            ops.dealloc_frame(frame);
+            ops.release_unmapped_frame(frame);
             rollback_populated_pages(ops, start, addr);
             return false;
         }
@@ -179,7 +199,7 @@ fn rollback_populated_pages(ops: &mut impl PopulatePageOps, start: VirtAddr, map
         let frame = ops
             .unmap_frame(addr)
             .expect("a page mapped by the current populate operation must remain mapped");
-        ops.dealloc_frame(frame);
+        ops.defer_unmapped_frame(frame);
     }
 }
 
@@ -218,13 +238,16 @@ mod tests {
     fn keeps_lazy_frame_when_remap_succeeds() {
         let frame = PhysAddr::from(PAGE_SIZE_4K);
         let deallocated = Cell::new(None);
+        let published = Cell::new(None);
 
         assert!(remap_frame_or_dealloc(
             Some(frame),
             |_| true,
             |frame| deallocated.set(Some(frame)),
+            |frame| published.set(Some(frame)),
         ));
         assert_eq!(deallocated.get(), None);
+        assert_eq!(published.get(), Some(frame));
     }
 
     #[test]
@@ -236,6 +259,7 @@ mod tests {
             Some(frame),
             |_| false,
             |frame| deallocated.set(Some(frame)),
+            |_| unreachable!("failed remap must not publish its frame"),
         ));
         assert_eq!(deallocated.get(), Some(frame));
     }
@@ -295,7 +319,11 @@ mod tests {
             Some(self.mapped.remove(index).1)
         }
 
-        fn dealloc_frame(&mut self, frame: PhysAddr) {
+        fn release_unmapped_frame(&mut self, frame: PhysAddr) {
+            self.deallocated.push(frame);
+        }
+
+        fn defer_unmapped_frame(&mut self, frame: PhysAddr) {
             self.deallocated.push(frame);
         }
     }

@@ -44,6 +44,55 @@ pub struct MemoryAccounting {
     charges: UnsafeCell<BTreeMap<VirtAddr, RssKind>>,
 }
 
+/// A validated, infallible replacement for a batch of charge moves.
+///
+/// Preparing clones and validates the complete accounting map without
+/// publishing any change. Committing is intentionally the only operation that
+/// mutates the owner, so page-table rollback remains possible until then.
+#[must_use = "prepared RSS charge moves must be committed after the PTE transaction succeeds"]
+pub(super) struct PreparedChargeMoves<'a> {
+    owner: &'a MemoryAccounting,
+    charges: BTreeMap<VirtAddr, RssKind>,
+    moved: u64,
+}
+
+/// A charge-map entry reserved before publishing its corresponding PTE.
+#[must_use = "prepared RSS charges must be committed after the PTE is installed"]
+pub(super) struct PreparedNewCharge<'a> {
+    owner: &'a MemoryAccounting,
+    vaddr: VirtAddr,
+    kind: RssKind,
+    committed: bool,
+}
+
+impl PreparedNewCharge<'_> {
+    pub(super) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PreparedNewCharge<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            let removed = self.owner.remove_charge(self.vaddr);
+            debug_assert_eq!(removed, Some(self.kind));
+        }
+    }
+}
+
+impl PreparedChargeMoves<'_> {
+    pub(super) fn commit(self) {
+        // SAFETY: the owning `AddrSpace` lock is held throughout prepare, PTE
+        // mutation, and commit. The prepared map belongs to this exact owner.
+        unsafe { *self.owner.charges.get() = self.charges };
+        if self.moved != 0 {
+            self.owner
+                .generation
+                .fetch_add(self.moved, Ordering::Relaxed);
+        }
+    }
+}
+
 // SAFETY: `charges` is only accessed while `AddrSpace` is locked.
 unsafe impl Sync for MemoryAccounting {}
 
@@ -145,6 +194,21 @@ impl MemoryAccounting {
         self.inc(kind, 1);
         self.generation.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Reserves one new charge before the corresponding PTE mutation.
+    pub(super) fn prepare_new_charge(
+        &self,
+        vaddr: VirtAddr,
+        kind: RssKind,
+    ) -> StarryResult<PreparedNewCharge<'_>> {
+        self.record_charge(vaddr, kind)?;
+        Ok(PreparedNewCharge {
+            owner: self,
+            vaddr,
+            kind,
+            committed: false,
+        })
     }
 
     /// Remove charge after PTE unmap. Debug builds assert the entry exists.
@@ -296,19 +360,29 @@ impl MemoryAccounting {
         Ok(())
     }
 
-    /// mremap: migrate charge after PTE move (src unmapped, dst mapped).
-    pub fn move_charge(&self, src: VirtAddr, dst: VirtAddr) -> StarryResult<()> {
+    /// Validates a complete mremap charge transaction without publishing it.
+    pub(super) fn prepare_charge_moves(
+        &self,
+        moves: &[(VirtAddr, VirtAddr)],
+    ) -> StarryResult<PreparedChargeMoves<'_>> {
         // SAFETY: `AddrSpace` lock held by all callers.
-        let charges = unsafe { &mut *self.charges.get() };
-        let Some(kind) = charges.remove(&src) else {
-            return Ok(());
-        };
-        if charges.contains_key(&dst) {
-            charges.insert(src, kind);
-            return Err(StarryError::InvalidInput);
+        let mut charges = unsafe { &*self.charges.get() }.clone();
+        let mut moved = 0u64;
+        for &(src, dst) in moves {
+            let Some(kind) = charges.remove(&src) else {
+                continue;
+            };
+            if charges.contains_key(&dst) {
+                return Err(StarryError::InvalidInput);
+            }
+            charges.insert(dst, kind);
+            moved += 1;
         }
-        charges.insert(dst, kind);
-        Ok(())
+        Ok(PreparedChargeMoves {
+            owner: self,
+            charges,
+            moved,
+        })
     }
 }
 
@@ -400,9 +474,11 @@ fn accounting_edge_cases_and_snapshot_rules_hold_for_test() -> bool {
     let gen2 = acct.generation.load(core::sync::atomic::Ordering::Relaxed);
     assert!(gen2 > gen1);
 
-    // move_charge with non-existent src is a no-op (returns Ok).
+    // Moving a non-existent source is a no-op.
     let ghost = VirtAddr::from(0xDEADusize);
-    assert!(acct.move_charge(ghost, VirtAddr::from(0xBEEFusize)).is_ok());
+    acct.prepare_charge_moves(&[(ghost, VirtAddr::from(0xBEEFusize))])
+        .unwrap()
+        .commit();
     assert!(acct.charge_kind(ghost).is_none());
 
     true
@@ -444,7 +520,7 @@ mod tests {
         let src = VirtAddr::from(0x1000usize);
         let dst = VirtAddr::from(0x2000usize);
         acct.record_charge(src, RssKind::File).unwrap();
-        acct.move_charge(src, dst).unwrap();
+        acct.prepare_charge_moves(&[(src, dst)]).unwrap().commit();
         assert!(acct.charge_kind(src).is_none());
         assert_eq!(acct.charge_kind(dst), Some(RssKind::File));
         assert_eq!(acct.rss_file_pages(), 1);
@@ -573,7 +649,9 @@ mod tests {
         assert!(acct.cow_file_write_to_anon(file_page));
         assert_eq!(acct.rss_file_pages(), 0);
         assert_eq!(acct.rss_anon_pages(), 1);
-        acct.move_charge(file_page, moved_page).unwrap();
+        acct.prepare_charge_moves(&[(file_page, moved_page)])
+            .unwrap()
+            .commit();
         assert_eq!(acct.charge_entries(), alloc::vec![(moved_page, RssKind::Anon)]);
         assert_eq!(acct.remove_charge(moved_page), Some(RssKind::Anon));
         assert_eq!(acct.rss_total_pages(), 0);
@@ -589,11 +667,54 @@ mod tests {
         acct.record_charge(src, RssKind::File).unwrap();
         assert!(acct.record_charge(src, RssKind::Anon).is_err());
         acct.record_charge(dst, RssKind::Shmem).unwrap();
-        assert!(acct.move_charge(src, dst).is_err());
+        assert!(acct.prepare_charge_moves(&[(src, dst)]).is_err());
         assert!(acct.charge_entries().contains(&(src, RssKind::File)));
         assert!(acct.charge_entries().contains(&(dst, RssKind::Shmem)));
         acct.adopt_cow_write_as_anon(orphan).unwrap();
         assert!(acct.charge_entries().contains(&(orphan, RssKind::Anon)));
         assert_eq!(acct.rss_anon_pages(), 1);
+    }
+
+    #[test]
+    fn prepared_new_charge_rolls_back_until_committed() {
+        let acct = MemoryAccounting::new();
+        let rolled_back = VirtAddr::from(0x6000usize);
+        let committed = VirtAddr::from(0x7000usize);
+
+        {
+            let _prepared = acct
+                .prepare_new_charge(rolled_back, RssKind::Anon)
+                .unwrap();
+            assert_eq!(acct.charge_kind(rolled_back), Some(RssKind::Anon));
+        }
+        assert_eq!(acct.charge_kind(rolled_back), None);
+
+        acct.prepare_new_charge(committed, RssKind::File)
+            .unwrap()
+            .commit();
+        assert_eq!(acct.charge_kind(committed), Some(RssKind::File));
+        assert_eq!(acct.rss_total_pages(), 1);
+    }
+
+    #[test]
+    fn conflicting_batch_move_preserves_every_original_charge() {
+        let acct = MemoryAccounting::new();
+        let src_a = VirtAddr::from(0x10_000usize);
+        let dst_a = VirtAddr::from(0x20_000usize);
+        let src_b = VirtAddr::from(0x30_000usize);
+        let dst_b = VirtAddr::from(0x40_000usize);
+
+        acct.record_charge(src_a, RssKind::File).unwrap();
+        acct.record_charge(src_b, RssKind::Anon).unwrap();
+        acct.record_charge(dst_b, RssKind::Shmem).unwrap();
+
+        assert!(
+            acct.prepare_charge_moves(&[(src_a, dst_a), (src_b, dst_b)])
+                .is_err()
+        );
+        assert_eq!(acct.charge_kind(src_a), Some(RssKind::File));
+        assert_eq!(acct.charge_kind(dst_a), None);
+        assert_eq!(acct.charge_kind(src_b), Some(RssKind::Anon));
+        assert_eq!(acct.charge_kind(dst_b), Some(RssKind::Shmem));
     }
 }

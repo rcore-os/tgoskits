@@ -182,18 +182,55 @@ impl UserContext {
         self.tpidr = tls as _;
     }
 
-    /// Enters user space.
+    /// Returns whether this register image can be restored as an interruptible
+    /// EL0 context.
+    pub fn is_user_entry_state_valid(&self) -> bool {
+        use aarch64_cpu::registers::SPSR_EL1;
+
+        let runtime_daif =
+            SPSR_EL1::D::Masked + SPSR_EL1::A::Masked + SPSR_EL1::I::Unmasked + SPSR_EL1::F::Masked;
+        self.tf.spsr & SPSR_EL1::M::EL0t.mask() == SPSR_EL1::M::EL0t.value
+            && self.tf.spsr & runtime_daif.mask() == runtime_daif.value
+    }
+
+    /// Enters user space without validating the runtime transition.
     ///
     /// It restores the user registers and jumps to the user entry point
     /// (saved in `elr`).
     ///
     /// This function returns when an exception or syscall occurs.
-    pub fn run(&mut self) -> ReturnReason {
+    ///
+    /// # Safety
+    ///
+    /// The caller must be the runtime's prepared user-entry boundary for the
+    /// current scheduler task. Its context-switch tail must be complete, no
+    /// IRQ/preemption guard or hard interrupt may be active, and local IRQs
+    /// must remain disabled after the final scheduler-work check. The active
+    /// logical address space, hardware root and CPU footprint must match this
+    /// task and keep every user address referenced by `self` valid. SPSR must
+    /// describe an interruptible EL0 return. No code may run between those
+    /// validations and this call.
+    ///
+    /// Safe code cannot invoke this raw boundary:
+    ///
+    /// ```compile_fail
+    /// fn bypass_runtime(context: &mut ax_cpu::uspace::UserContext) {
+    ///     context.run_unchecked();
+    /// }
+    /// ```
+    pub unsafe fn run_unchecked(&mut self) -> ReturnReason {
         unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext) -> TrapKind;
         }
 
-        crate::asm::disable_irqs();
+        assert!(
+            !crate::asm::irqs_enabled(),
+            "raw user entry requires the prepared IRQ-off boundary"
+        );
+        assert!(
+            self.is_user_entry_state_valid(),
+            "raw user entry requires an interruptible EL0 register image"
+        );
         let kind = unsafe { enter_user(self) };
 
         let ret = match kind {
@@ -237,6 +274,8 @@ impl UserContext {
         ret
     }
 }
+
+const _: unsafe fn(&mut UserContext) -> ReturnReason = UserContext::run_unchecked;
 
 impl Deref for UserContext {
     type Target = TrapFrame;

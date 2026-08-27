@@ -67,18 +67,53 @@ impl UserContext {
         4
     }
 
-    /// Enter user space.
+    /// Returns whether this register image can be restored as an interruptible
+    /// PLV3 context.
+    pub const fn is_user_entry_state_valid(&self) -> bool {
+        const PPLV_MASK: usize = 0b11;
+        const PIE: usize = 1 << 2;
+
+        self.0.prmd & PPLV_MASK == PPLV_MASK && self.0.prmd & PIE != 0
+    }
+
+    /// Enters user space without validating the runtime transition.
     ///
     /// It restores the user registers and jumps to the user entry point
     /// (saved in `sepc`).
     ///
     /// This function returns when an exception or syscall occurs.
-    pub fn run(&mut self) -> ReturnReason {
+    ///
+    /// # Safety
+    ///
+    /// The caller must be the runtime's prepared user-entry boundary for the
+    /// current scheduler task. Its context-switch tail must be complete, no
+    /// IRQ/preemption guard or hard interrupt may be active, and local IRQs
+    /// must remain disabled after the final scheduler-work check. The active
+    /// logical address space, hardware root and CPU footprint must match this
+    /// task and keep every user address referenced by `self` valid. PRMD must
+    /// describe an interruptible PLV3 return. No code may run between those
+    /// validations and this call.
+    ///
+    /// Safe code cannot invoke this raw boundary:
+    ///
+    /// ```compile_fail
+    /// fn bypass_runtime(context: &mut ax_cpu::uspace::UserContext) {
+    ///     context.run_unchecked();
+    /// }
+    /// ```
+    pub unsafe fn run_unchecked(&mut self) -> ReturnReason {
         unsafe extern "C" {
             fn enter_user(uctx: &mut UserContext);
         }
 
-        crate::asm::disable_irqs();
+        assert!(
+            !crate::asm::irqs_enabled(),
+            "raw user entry requires the prepared IRQ-off boundary"
+        );
+        assert!(
+            self.is_user_entry_state_valid(),
+            "raw user entry requires an interruptible PLV3 register image"
+        );
         unsafe { enter_user(self) };
 
         let estat = estat::read();
@@ -145,6 +180,8 @@ impl UserContext {
         ret
     }
 }
+
+const _: unsafe fn(&mut UserContext) -> ReturnReason = UserContext::run_unchecked;
 
 impl Deref for UserContext {
     type Target = TrapFrame;

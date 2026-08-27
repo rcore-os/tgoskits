@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::ContextSwitch;
+use crate::runtime::RuntimeSwitchPlan;
 
 /// Runs one scheduler decision at a task/IRQ-return safe point.
 ///
@@ -196,7 +196,6 @@ pub fn commit_current_exit(permit: ExitPermit) -> ! {
             .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0013, thread.as_u64() as _));
         // SAFETY: `scheduler_frame` owns the IRQ-off scheduler baton.
         unsafe { system.commit_prepared_current_exit(cpu.as_mut(), permit.system) }
-            .unwrap_or_else(|_| task_runtime::fatal_invariant(0x4558_0015, thread.as_u64() as _))
     };
     execute_switch_plan(&mut scheduler_frame, decision);
     // An exited context is never re-enqueued, so returning here indicates a
@@ -240,18 +239,19 @@ pub(super) fn execute_switch_plan(
             )
         };
     }
-    prepare_next_address_space(
-        previous.address_space(),
-        next.address_space(),
-        next.thread(),
-    );
     #[cfg(feature = "qperf-metrics")]
     crate::metrics::record_context_switch(decision.switch_reason());
-    let switch = ContextSwitch::new(previous.context(), next.context())
-        .unwrap_or_else(|| task_runtime::fatal_invariant(6, next.thread().as_u64() as usize));
-    // SAFETY: the scheduler committed both endpoint states before releasing its
-    // locks. Runtime handles remain live, and local IRQs stay disabled here.
-    unsafe { task_runtime::switch_context(switch) };
+    let plan = RuntimeSwitchPlan::new(
+        previous.context(),
+        previous.address_space(),
+        next.context(),
+        next.address_space(),
+    )
+    .unwrap_or_else(|| task_runtime::fatal_invariant(6, next.thread().as_u64() as usize));
+    // SAFETY: the scheduler committed both endpoint states before releasing
+    // its locks. Every context and address-space handle remains live, and
+    // local IRQs stay disabled while the runtime consumes the complete plan.
+    unsafe { task_runtime::switch_context(plan) };
     scheduler_frame.refresh_current_cpu();
     // SAFETY: the scheduler frame retains its IRQ-off baton across the
     // architecture switch and through switch-tail completion.
@@ -259,44 +259,6 @@ pub(super) fn execute_switch_plan(
     {
         task_runtime::fatal_invariant(5, 0);
     }
-}
-
-fn activate_next_address_space(
-    address_space: crate::runtime::AddressSpaceHandle,
-    thread: ThreadId,
-) {
-    let activation = crate::runtime::AddressSpaceActivation::for_thread(address_space);
-    if task_runtime::activate_address_space(activation) != crate::runtime::RuntimeStatus::Success {
-        task_runtime::fatal_invariant(3, thread.as_u64() as usize);
-    }
-}
-
-pub(super) fn prepare_next_address_space(
-    previous_address_space: crate::runtime::AddressSpaceHandle,
-    address_space: crate::runtime::AddressSpaceHandle,
-    thread: ThreadId,
-) {
-    let previous = if previous_address_space.is_none() {
-        crate::runtime::AddressSpaceMembarrierState::NONE
-    } else {
-        task_runtime::address_space_membarrier_state(previous_address_space)
-    };
-    let next = if address_space.is_none() {
-        crate::runtime::AddressSpaceMembarrierState::NONE
-    } else {
-        task_runtime::address_space_membarrier_state(address_space)
-    };
-    if previous.identity() == next.identity() {
-        // Linux's membarrier_switch_mm() returns before touching rq state when
-        // both tasks share one mm. A direct user-to-user switch also cannot
-        // carry a lazy kernel root, so the runtime activation would only
-        // rediscover the already active CPU lease and hardware root.
-        return;
-    }
-    // Common four-architecture counterpart of Linux's switch_mm()/mmdrop
-    // barrier after publishing rq->curr and before user execution.
-    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-    activate_next_address_space(address_space, thread);
 }
 
 /// Completes a fresh context's switch tail below its transferred scheduler

@@ -4,7 +4,7 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use core::{cell::Cell, slice};
+use core::slice;
 
 use ax_fs_ng::vfs::FileBackend;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
@@ -19,6 +19,8 @@ use super::{
     Backend, BackendFileInfo, BackendOps, CloneMapContext, MemoryAccounting, PopulateCallback,
     RssKind, TlbGather, alloc_frame, dealloc_frame, pages_in,
 };
+#[cfg(all(test, axtest))]
+use crate::mm::aspace::tlb::TlbQuarantine;
 #[cfg(all(test, axtest))]
 use crate::sync::PiMutex;
 use crate::{StarryError, StarryResult, sync::IrqMutex};
@@ -155,10 +157,6 @@ pub struct CowBackend {
     file: Option<(FileBackend, VirtAddr, u64, Option<u64>)>,
     name: Option<String>,
     shared: bool,
-    /// True after this address space upgrades the mapping to writable via
-    /// `mprotect(+W)` or a writable `mmap` (per-aspace; fork inherits via
-    /// [`Clone`]).
-    write_upgraded: Cell<bool>,
 }
 
 struct CowFaultPermissions {
@@ -174,7 +172,6 @@ impl Clone for CowBackend {
             file: self.file.clone(),
             name: self.name.clone(),
             shared: self.shared,
-            write_upgraded: Cell::new(self.write_upgraded.get()),
         }
     }
 }
@@ -191,7 +188,6 @@ impl CowBackend {
             file: self.file.clone(),
             name: self.name.clone(),
             shared: self.shared,
-            write_upgraded: Cell::new(self.write_upgraded.get()),
         }
     }
 
@@ -322,12 +318,22 @@ impl CowBackend {
             }
         }
         let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+        let prepared_charge = match acct {
+            Some(acct) => match acct.prepare_new_charge(vaddr, kind) {
+                Ok(charge) => Some(charge),
+                Err(error) => {
+                    self.deinit_frame(frame);
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
         if let Err(err) = pt.map_page(vaddr, frame, self.size, pte_flags) {
             self.deinit_frame(frame);
             return Err(err.into());
         }
-        if let Some(acct) = acct {
-            acct.record_charge(vaddr, kind)?;
+        if let Some(charge) = prepared_charge {
+            charge.commit();
         }
         Ok(())
     }
@@ -370,12 +376,22 @@ impl CowBackend {
             let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
             dst.copy_from_slice(&buf[k * ps..(k + 1) * ps]);
             let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+            let prepared_charge = match acct {
+                Some(acct) => match acct.prepare_new_charge(addr, kind) {
+                    Ok(charge) => Some(charge),
+                    Err(error) => {
+                        self.deinit_frame(frame);
+                        return Err(error);
+                    }
+                },
+                None => None,
+            };
             if let Err(err) = pt.map_page(addr, frame, self.size, pte_flags) {
                 self.deinit_frame(frame);
                 return Err(err.into());
             }
-            if let Some(acct) = acct {
-                acct.record_charge(addr, kind)?;
+            if let Some(charge) = prepared_charge {
+                charge.commit();
             }
         }
         Ok(n)
@@ -406,14 +422,17 @@ impl CowBackend {
             1 => {
                 pt.protect_page(vaddr, permissions.vma)?;
                 gather.record_range(shootdown_range);
-                let defer_write = self.cow_deferred_file_write(permissions.vma, permissions.pte)
-                    && self.write_upgraded.get();
+                let defer_write =
+                    self.cow_deferred_file_write(permissions.vma, permissions.pte);
                 if defer_write && let Some(acct) = acct {
                     self.reclassify_or_adopt_cow_write(acct, vaddr);
                 }
                 return Ok(());
             }
             _ => {
+                gather
+                    .prepare_deferred_frames(1)
+                    .map_err(|_| StarryError::NoMemory)?;
                 let new_frame = self.alloc_new_frame(false)?;
                 unsafe {
                     core::ptr::copy_nonoverlapping(
@@ -437,31 +456,6 @@ impl CowBackend {
             }
         }
 
-        Ok(())
-    }
-
-    /// Unmap one resident page and drop its per-VA RSS charge.
-    ///
-    /// Regular munmap / MAP_FIXED / shrink paths only; [`super::AddrSpace::move_pages`]
-    /// migrates PTEs directly and uses [`MemoryAccounting::move_charge`] instead.
-    fn unmap_page(
-        &self,
-        addr: VirtAddr,
-        acct: Option<&MemoryAccounting>,
-        gather: &mut TlbGather,
-        pt: &mut PageTable,
-    ) -> StarryResult {
-        if let Ok((frame, _flags, page_size)) = pt.unmap_page(addr) {
-            assert_eq!(page_size, self.size);
-            if let Some(acct) = acct {
-                acct.remove_charge(addr);
-            }
-            let frame_ref = FRAME_TABLE
-                .lock()
-                .get_frame_ref(frame)
-                .ok_or(crate::StarryError::BadAddress)?;
-            gather.defer_frame(DeferredFrameRelease::new(frame, self.size, frame_ref));
-        }
         Ok(())
     }
 
@@ -665,8 +659,21 @@ impl BackendOps for CowBackend {
         _pt: &mut PageTable,
     ) -> StarryResult {
         debug!("Cow::map: {range:?} {flags:?}",);
-        if self.file.is_some() && flags.contains(MappingFlags::WRITE) {
-            self.write_upgraded.set(true);
+        Ok(())
+    }
+
+    fn validate_unmap(&self, range: VirtAddrRange, pt: &PageTable) -> StarryResult {
+        for addr in pages_in(range, self.size)? {
+            match pt.query(addr) {
+                Ok((frame, _, page_size)) if page_size == self.size => {
+                    if FRAME_TABLE.lock().get_frame_ref(frame).is_none() {
+                        return Err(crate::StarryError::BadAddress);
+                    }
+                }
+                Ok(_) => return Err(crate::StarryError::BadState),
+                Err(PagingError::NotMapped) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         Ok(())
     }
@@ -678,9 +685,7 @@ impl BackendOps for CowBackend {
         _gather: &mut TlbGather,
         _pt: &mut PageTable,
     ) -> StarryResult {
-        if self.file.is_some() && new_flags.contains(MappingFlags::WRITE) {
-            self.write_upgraded.set(true);
-        }
+        let _ = new_flags;
         Ok(())
     }
 
@@ -692,8 +697,31 @@ impl BackendOps for CowBackend {
         pt: &mut PageTable,
     ) -> StarryResult {
         debug!("Cow::unmap: {range:?}");
+        let mut mapped = Vec::new();
         for addr in pages_in(range, self.size)? {
-            self.unmap_page(addr, acct, gather, pt)?;
+            match pt.query(addr) {
+                Ok((frame, _, page_size)) if page_size == self.size => {
+                    let frame_ref = FRAME_TABLE
+                        .lock()
+                        .get_frame_ref(frame)
+                        .ok_or(crate::StarryError::BadAddress)?;
+                    mapped.push((addr, frame, frame_ref));
+                }
+                Ok(_) => return Err(crate::StarryError::BadState),
+                Err(PagingError::NotMapped) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        gather
+            .prepare_deferred_frames(mapped.len())
+            .map_err(|_| StarryError::NoMemory)?;
+        for (addr, frame, frame_ref) in mapped {
+            pt.unmap_page(addr)
+                .expect("a preflighted COW page must remain mapped under the address-space lock");
+            if let Some(acct) = acct {
+                acct.remove_charge(addr);
+            }
+            gather.defer_frame(DeferredFrameRelease::new(frame, self.size, frame_ref));
         }
         Ok(())
     }
@@ -873,7 +901,6 @@ impl Backend {
             file: Some((file, start, file_start, file_end)),
             name: None,
             shared,
-            write_upgraded: Cell::new(false),
         })
     }
 
@@ -884,7 +911,6 @@ impl Backend {
             file: None,
             name: Some(name.to_string()),
             shared: false,
-            write_upgraded: Cell::new(false),
         })
     }
 }
@@ -926,7 +952,6 @@ fn cow_clone_map_failure_restores_resources() -> bool {
         file: None,
         name: Some("[cow-clone-rollback-test]".to_string()),
         shared: false,
-        write_upgraded: Cell::new(false),
     };
 
     let Ok(mut parent) = AddrSpace::new_empty(start, mapping_size) else {
@@ -993,7 +1018,8 @@ fn cow_clone_map_failure_restores_resources() -> bool {
         flags,
         context,
     );
-    if gather.finish(0).is_err() {
+    let mut quarantine = TlbQuarantine::new();
+    if quarantine.commit(gather, 0).is_err() {
         return false;
     }
 

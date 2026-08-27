@@ -37,6 +37,20 @@ pub trait MappingBackend: Clone {
         page_table: &mut Self::PageTable,
     ) -> bool;
 
+    /// Validates that [`Self::unmap`] can commit without a recoverable error.
+    ///
+    /// The page table is not mutated between this preflight and commit. A
+    /// backend that can reject an unmap based on mapping shape or owned
+    /// resources must override this method.
+    fn validate_unmap(
+        &self,
+        _start: Self::Addr,
+        _size: usize,
+        _page_table: &Self::PageTable,
+    ) -> bool {
+        true
+    }
+
     /// What to do when changing access flags.
     fn protect(
         &self,

@@ -10,7 +10,7 @@ use ax_memory_addr::{DynPageIter, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRang
 use ax_memory_set::MappingBackend;
 use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
-    paging::{MappingFlags, PageTable},
+    paging::{MappingFlags, PageTable, PagingError},
 };
 use enum_dispatch::enum_dispatch;
 
@@ -112,6 +112,20 @@ pub trait BackendOps {
         gather: &mut TlbGather,
         pt: &mut PageTable,
     ) -> StarryResult;
+
+    /// Checks mapping shape and backend ownership before an unmap transaction
+    /// removes its first PTE.
+    fn validate_unmap(&self, range: VirtAddrRange, pt: &PageTable) -> StarryResult {
+        for addr in pages_in(range, self.page_size())? {
+            match pt.query(addr) {
+                Ok((_, _, page_size)) if page_size == self.page_size() => {}
+                Ok(_) => return Err(StarryError::BadState),
+                Err(PagingError::NotMapped) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
 
     /// Called before a memory region is protected.
     fn on_protect(
@@ -268,9 +282,27 @@ impl MappingBackend for Backend {
     ) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
         let acct = super::accounting::bridge_rss_accounting();
+        // Transfer a clone before the first PTE can disappear. On error the
+        // MemoryArea still owns its original backend; this extra clone covers
+        // any pages already removed by a backend that violated preflight and
+        // is released only after the gather's shootdown completes.
+        if gather.prepare_backend_retention(1).is_err() {
+            warn!("Failed to reserve TLB backend retention before unmap");
+            return false;
+        }
         gather.retain_backend(self.clone());
         if let Err(err) = BackendOps::unmap(self, range, acct, gather, pt) {
             warn!("Failed to unmap area: {:?}", err);
+            false
+        } else {
+            true
+        }
+    }
+
+    fn validate_unmap(&self, start: VirtAddr, size: usize, pt: &PageTable) -> bool {
+        let range = VirtAddrRange::from_start_size(start, size);
+        if let Err(error) = BackendOps::validate_unmap(self, range, pt) {
+            warn!("Failed to prepare area unmap: {error:?}");
             false
         } else {
             true

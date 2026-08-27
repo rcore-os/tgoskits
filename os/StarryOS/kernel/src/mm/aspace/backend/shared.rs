@@ -8,7 +8,7 @@ use super::{
     Backend, BackendOps, CloneMapContext, MemoryAccounting, RssKind, TlbGather, alloc_frame,
     dealloc_frame, divide_page, pages_in,
 };
-use crate::StarryResult;
+use crate::{StarryError, StarryResult};
 
 enum SharedPagesOwner {
     Allocated,
@@ -137,16 +137,21 @@ impl BackendOps for SharedBackend {
         pt: &mut PageTable,
     ) -> StarryResult {
         debug!("Shared::unmap: {:?}", range);
+        let mut mapped = Vec::new();
         for vaddr in pages_in(range, self.pages.size)? {
-            match pt.unmap_page(vaddr) {
-                Ok((_, _, page_size)) => {
-                    debug_assert_eq!(page_size, self.pages.size);
-                    if let Some(acct) = acct {
-                        acct.dec(RssKind::Shmem, 1);
-                    }
-                }
+            match pt.query(vaddr) {
+                Ok((_, _, page_size)) if page_size == self.pages.size => mapped.push(vaddr),
+                Ok(_) => return Err(StarryError::BadState),
                 Err(PagingError::NotMapped) => {}
                 Err(err) => return Err(err.into()),
+            }
+        }
+        for vaddr in mapped {
+            pt.unmap_page(vaddr).expect(
+                "a preflighted shared page must remain mapped under the address-space lock",
+            );
+            if let Some(acct) = acct {
+                acct.dec(RssKind::Shmem, 1);
             }
         }
         Ok(())

@@ -57,7 +57,7 @@ mod bootstrap;
 mod guard;
 mod irq_time;
 #[cfg(feature = "paging")]
-mod kernel_mapping;
+pub mod kernel_mapping;
 mod klib;
 
 /// Host-only adapters for testing runtime-owned capability providers.

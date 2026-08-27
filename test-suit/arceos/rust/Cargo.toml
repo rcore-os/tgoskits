@@ -11,6 +11,7 @@ std = []
 # baseline instead of relying on axbuild to add it for the selected test case.
 ax-std = ["dep:ax-driver", "dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
 memtest = ["ax-std", "dep:rand", "ax-std/alloc"]
+mem-stage1-transition = ["task-runtime", "ax-std/alloc", "ax-std/ipi", "ax-std/paging"]
 task-runtime = ["ax-std"]
 task-yield = ["task-runtime"]
 sched-rr = ["task-runtime", "ax-std/alloc"]
@@ -57,6 +58,7 @@ lockdep-detect = [
 # as a separate kernel after the `all` kernel.
 all = [
     "memtest",
+    "mem-stage1-transition",
     "task-yield",
     "task-affinity",
     "task-fair-idle-pull",
@@ -85,6 +87,7 @@ all = [
 [dependencies]
 ax-driver = { workspace = true, optional = true }
 ax-hal = { workspace = true, optional = true }
+ax-memory-addr.workspace = true
 ax-std = { workspace = true, optional = true, features = ["default"] }
 axbacktrace = { workspace = true, optional = true }
 axfs-ng-vfs = { workspace = true, optional = true }

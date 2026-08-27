@@ -58,11 +58,14 @@ pub(crate) fn release_bootstrap_preemption() {
 
 /// Services scheduler work and retains IRQ exclusion through userspace entry.
 ///
-/// On success, the caller must enter `ax_hal::cpu::uspace::UserContext::run`
+/// On success, the caller must complete the private prepared user-entry token
 /// immediately. Its architecture return instruction restores the saved user
 /// IRQ state, matching Linux's final IRQ-off `exit_to_user_mode_loop()` check.
+#[cfg(feature = "uspace")]
 pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
-    if !ax_hal::asm::irqs_enabled() || in_hard_irq() {
+    if validate_schedule_context(ax_task::runtime::RuntimeScheduleOrigin::Preempt)
+        != ax_task::runtime::RuntimeStatus::Success
+    {
         return Err(ax_task::TaskError::UnsafeContext);
     }
 
@@ -77,13 +80,9 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
             }
         };
         if !pending {
-            if let Err(error) = crate::task::prepare_current_user_fp_return() {
-                ax_hal::asm::enable_irqs();
-                return Err(error);
-            }
-            // Keep IRQs disabled. UserContext::run() enters the architecture
-            // return path without exposing a kernel IRQ window after the final
-            // no-work snapshot and FPU-owner publication.
+            // Keep IRQs disabled. The runtime's private prepared user-entry
+            // token enters the architecture return path without exposing a
+            // kernel IRQ window after this final no-work snapshot.
             return Ok(());
         }
 
@@ -91,6 +90,22 @@ pub(crate) fn prepare_user_return() -> Result<(), ax_task::TaskError> {
         // The ordinary task entry consumes both request classes. Recheck with
         // IRQs disabled after it returns, like exit_to_user_mode_loop().
         ax_task::schedule_current_cpu()?;
+    }
+}
+
+/// Validates the guard state after the final IRQ-off scheduler-work snapshot.
+#[cfg(feature = "uspace")]
+pub(crate) fn validate_prepared_user_entry() -> ax_task::runtime::RuntimeStatus {
+    use ax_task::runtime::RuntimeStatus;
+
+    if ax_hal::asm::irqs_enabled() || in_hard_irq_pinned() {
+        return RuntimeStatus::UnsafeContext;
+    }
+    let state = read_state();
+    if state.irq.is_clear() && state.preempt.is_clear() && current_preempt_depth() == 0 {
+        RuntimeStatus::Success
+    } else {
+        RuntimeStatus::UnsafeContext
     }
 }
 

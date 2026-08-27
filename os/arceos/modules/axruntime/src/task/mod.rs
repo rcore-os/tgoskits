@@ -64,11 +64,11 @@ use ax_task::{
     impl_trait as impl_task_runtime,
     runtime::{
         AddressSpaceActivation, AddressSpaceDestroyOutcome, AddressSpaceHandle,
-        AddressSpaceMembarrierState, AddressSpaceReclaimArmOutcome, ContextSwitch,
+        AddressSpaceMembarrierState, AddressSpaceReclaimArmOutcome,
         ContextThreadBinding, CpuRemoteHandle, CurrentCpuLocalHandle, CurrentCpuOwnerHandles,
         CurrentThreadPublication, ExecutionContextHandle, IrqGuardToken, KernelContextRequest,
         MembarrierRegistrationPhase, RuntimeCpuId, RuntimeHandleResult, RuntimeMembarrierAction,
-        RuntimeStatus, StackHandle, StackRequest, TaskRuntime, TaskSystemHandle, ThreadIdentityV1,
+        RuntimeStatus, RuntimeSwitchPlan, StackHandle, StackRequest, TaskRuntime, TaskSystemHandle,
         TlsHandle, TlsRequest, UserContextRequest,
     },
 };
@@ -84,15 +84,17 @@ mod scheduler_events;
 mod spawn;
 mod thread;
 mod thread_resources;
+#[cfg(feature = "uspace")]
+mod user_entry;
 
 pub use address_space::{
     AddressSpaceCpuState, TaskAddressSpace, detach_current_address_space,
     switch_current_address_space,
 };
 use address_space::{
-    activate_runtime_address_space, arm_runtime_address_space_reclaim,
-    destroy_runtime_address_space, release_current_active_address_space,
-    runtime_address_space_membarrier_state, update_runtime_address_space_membarrier_state,
+    arm_runtime_address_space_reclaim, destroy_runtime_address_space,
+    release_current_active_address_space, runtime_address_space_membarrier_state,
+    update_runtime_address_space_membarrier_state,
 };
 #[cfg(feature = "qperf-metrics")]
 pub use ax_task::{DEFAULT_BATCH_LIMIT, qperf_cpu_owner_claims};
@@ -158,15 +160,6 @@ pub fn kernel_thread_retains_active_mm_membarrier_state_for_test() -> bool {
         ax_task::runtime::AddressSpaceMembarrierState::NONE,
     ) == active_mm_state
 }
-
-/// Drains scheduler work and leaves IRQs disabled for atomic userspace entry.
-///
-/// The caller must invoke the architecture `UserContext::run()` immediately
-/// after this succeeds; that path restores the saved userspace IRQ state.
-pub fn prepare_user_return() -> Result<(), TaskError> {
-    crate::guard::prepare_user_return()
-}
-
 /// Resets the current task's user FPU image during a successful executable replacement.
 pub fn reset_current_user_fp_state() -> Result<(), TaskError> {
     context::reset_current_user_fp_state()
@@ -221,6 +214,8 @@ use thread_resources::{
 use thread_resources::{
     ThreadResourceBackend, UnreleasedThreadResources, create_thread_resources_with,
 };
+#[cfg(feature = "uspace")]
+pub use user_entry::UserExecutionContext;
 
 const PAGE_SIZE: usize = 4096;
 

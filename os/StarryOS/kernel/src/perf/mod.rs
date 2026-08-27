@@ -73,7 +73,7 @@ use core::{
 
 use ax_io::{Read, Write};
 use ax_lazyinit::LazyInit;
-use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, VirtAddrRange};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr};
 use ax_runtime::hal::{paging::MappingFlags, pmu};
 use axpoll::{ExclusiveRegistrationSink, Pollable, SharedRegistrationSink};
 pub use bpf::BpfPerfEventWrapper;
@@ -747,17 +747,9 @@ struct BPFJitMemory {
 #[allow(unused)]
 impl BPFJitMemory {
     fn new(num_pages: usize) -> StarryResult<Self> {
-        let kspace = ax_mm::kernel_aspace();
-        let mut guard = kspace.lock();
-        let virt_start = guard
-            .find_free_area(
-                guard.base(),
-                num_pages * PAGE_SIZE_4K,
-                VirtAddrRange::new(guard.base(), guard.end()),
-            )
-            .ok_or(StarryError::NoMemory)?;
-        guard.map_alloc(
-            virt_start,
+        let (hint, _) = ax_runtime::hal::mem::kernel_aspace();
+        let virt_start = ax_runtime::kernel_mapping::allocate_kernel_range(
+            hint,
             num_pages * PAGE_SIZE_4K,
             MappingFlags::READ | MappingFlags::WRITE | MappingFlags::EXECUTE,
             true,
@@ -787,10 +779,10 @@ impl BPFJitMemory {
 
 impl Drop for BPFJitMemory {
     fn drop(&mut self) {
-        let kspace = ax_mm::kernel_aspace();
-        let mut guard = kspace.lock();
-        guard
-            .unmap(self.pages, self.num_pages * PAGE_SIZE_4K)
+        ax_runtime::kernel_mapping::unmap_kernel_range(
+            self.pages,
+            self.num_pages * PAGE_SIZE_4K,
+        )
             .expect("failed to unmap BPF JIT memory");
     }
 }

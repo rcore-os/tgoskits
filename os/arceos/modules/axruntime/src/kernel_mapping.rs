@@ -1,156 +1,172 @@
 use core::ptr::NonNull;
 
 use ax_hal::paging::MappingFlags;
-use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
 
 use crate::{RuntimeError, RuntimeResult};
 
 pub(crate) enum MappingTransactionError {
     NotStarted(RuntimeError),
-    StateUncertain(RuntimeError),
 }
-pub(crate) fn protect_kernel_range(
+/// Changes permissions for a published kernel mapping and synchronously
+/// invalidates every CPU that can use the kernel page table.
+pub fn protect_kernel_range(start: VirtAddr, size: usize, flags: MappingFlags) -> RuntimeResult {
+    ax_mm::kernel_aspace()
+        .lock()
+        .protect(start, size, flags)
+        .map_err(Into::into)
+}
+
+/// Maps one contiguous physical range into a caller-selected kernel VA.
+pub fn map_kernel_range(
     start: VirtAddr,
+    paddr: PhysAddr,
     size: usize,
     flags: MappingFlags,
 ) -> RuntimeResult {
-    update_mapping_transaction(
-        || {
-            let mut kernel_aspace = ax_mm::kernel_aspace().lock();
-            kernel_aspace.protect(start, size, flags)?;
-            Ok(())
-        },
-        || {
-            ax_hal::cache::flush_tlb_range_all_cpus(start, size)?;
-            Ok(())
-        },
-    )
+    ax_mm::kernel_aspace()
+        .lock()
+        .map_linear(start, paddr, size, flags)
+        .map_err(Into::into)
+}
+
+/// Allocates a free kernel VA range and anonymous backing frames atomically.
+pub fn allocate_kernel_range(
+    hint: VirtAddr,
+    size: usize,
+    flags: MappingFlags,
+    populate: bool,
+) -> RuntimeResult<VirtAddr> {
+    if size == 0 || !size.is_multiple_of(PAGE_SIZE_4K) {
+        return Err(
+            ax_mm::MmError::InvalidInput("kernel allocation size is not page aligned").into(),
+        );
+    }
+    let mut aspace = ax_mm::kernel_aspace().lock();
+    let range = VirtAddrRange::new(aspace.base(), aspace.end());
+    let start = aspace
+        .find_free_area(hint, size, range)
+        .ok_or(ax_mm::MmError::NoMemory)?;
+    aspace.map_alloc(start, size, flags, populate)?;
+    Ok(start)
+}
+
+/// Maps a list of physical pages into one contiguous kernel VA range.
+///
+/// A partial mapping is synchronously rolled back before an error is returned.
+pub fn map_kernel_pages(
+    hint: VirtAddr,
+    pages: &[PhysAddr],
+    flags: MappingFlags,
+) -> RuntimeResult<VirtAddr> {
+    let size = pages
+        .len()
+        .checked_mul(PAGE_SIZE_4K)
+        .filter(|size| *size != 0)
+        .ok_or(ax_mm::MmError::InvalidInput(
+            "kernel page list is empty or overflows",
+        ))?;
+    if pages.iter().any(|page| !page.is_aligned_4k()) {
+        return Err(
+            ax_mm::MmError::InvalidInput("kernel page list contains an unaligned frame").into(),
+        );
+    }
+
+    let mut aspace = ax_mm::kernel_aspace().lock();
+    let range = VirtAddrRange::new(aspace.base(), aspace.end());
+    let start = aspace
+        .find_free_area(hint, size, range)
+        .ok_or(ax_mm::MmError::NoMemory)?;
+    for (index, page) in pages.iter().copied().enumerate() {
+        let vaddr = start + index * PAGE_SIZE_4K;
+        if let Err(mapping_error) = aspace.map_linear(vaddr, page, PAGE_SIZE_4K, flags) {
+            if index != 0
+                && let Err(rollback_error) = aspace.unmap(start, index * PAGE_SIZE_4K)
+            {
+                error!(
+                    "kernel page-list mapping rollback failed: start={start:?}, \
+                     mapped_pages={index}, mapping_error={mapping_error}, \
+                     rollback_error={rollback_error}"
+                );
+                return Err(rollback_error.into());
+            }
+            return Err(mapping_error.into());
+        }
+    }
+    Ok(start)
+}
+
+/// Removes a kernel mapping only after synchronous TLB confirmation.
+pub fn unmap_kernel_range(start: VirtAddr, size: usize) -> RuntimeResult {
+    ax_mm::kernel_aspace()
+        .lock()
+        .unmap(start, size)
+        .map_err(Into::into)
+}
+
+/// Returns the flags and page size for a kernel mapping without exposing a
+/// mutable page-table reference.
+pub fn query_kernel_mapping(start: VirtAddr) -> RuntimeResult<(MappingFlags, usize)> {
+    let (_, flags, page_size) = ax_mm::kernel_aspace()
+        .lock()
+        .page_table()
+        .query(start)
+        .map_err(|_| ax_mm::MmError::BadAddress)?;
+    Ok((flags, page_size))
+}
+
+/// Handles one kernel page fault through the global address-space owner.
+pub(crate) fn handle_kernel_page_fault(
+    addr: VirtAddr,
+    flags: ax_hal::trap::PageFaultFlags,
+) -> bool {
+    ax_mm::kernel_aspace().lock().handle_page_fault(addr, flags)
+}
+
+/// Retries deferred kernel mapping resources after CPU-footprint changes.
+pub(crate) fn retry_kernel_tlb_reclaims() -> RuntimeResult {
+    ax_mm::kernel_aspace()
+        .lock()
+        .retry_quarantined_tlb_reclaims()
+        .map_err(Into::into)
 }
 
 pub(crate) fn map_dma_coherent_alias(
     paddr: PhysAddr,
     size: usize,
 ) -> Result<NonNull<u8>, MappingTransactionError> {
-    let mut kernel_aspace = ax_mm::kernel_aspace().lock();
-    map_alias_transaction(
-        || {
-            kernel_aspace
-                .map_dma_coherent_alias(paddr, size)
-                .map_err(Into::into)
-        },
-        |alias| {
-            let alias_vaddr = VirtAddr::from_usize(alias.as_ptr() as usize);
-            ax_hal::cache::flush_tlb_range_all_cpus(alias_vaddr, size)?;
-            Ok(())
-        },
-    )
+    map_alias_transaction(|| {
+        ax_mm::kernel_aspace()
+            .lock()
+            .map_dma_coherent_alias(paddr, size)
+            .map_err(Into::into)
+    })
 }
 
 pub(crate) fn unmap_dma_coherent_alias(alias: NonNull<u8>, size: usize) -> RuntimeResult {
-    // Keep the address-space lock across the shootdown so another allocation
-    // cannot reuse this VA while any CPU may retain its old translation.
-    let mut kernel_aspace = ax_mm::kernel_aspace().lock();
-    update_mapping_transaction(
-        || {
-            kernel_aspace.unmap_dma_coherent_alias(alias, size)?;
-            Ok(())
-        },
-        || {
-            let alias_vaddr = VirtAddr::from_usize(alias.as_ptr() as usize);
-            ax_hal::cache::flush_tlb_range_all_cpus(alias_vaddr, size)?;
-            Ok(())
-        },
-    )
+    ax_mm::kernel_aspace()
+        .lock()
+        .unmap_dma_coherent_alias(alias, size)
+        .map_err(Into::into)
 }
 
 fn map_alias_transaction(
     map: impl FnOnce() -> RuntimeResult<NonNull<u8>>,
-    shootdown: impl FnOnce(NonNull<u8>) -> RuntimeResult,
 ) -> Result<NonNull<u8>, MappingTransactionError> {
-    let alias = map().map_err(MappingTransactionError::NotStarted)?;
-    shootdown(alias).map_err(MappingTransactionError::StateUncertain)?;
-    Ok(alias)
-}
-
-fn update_mapping_transaction(
-    protect: impl FnOnce() -> RuntimeResult,
-    shootdown: impl FnOnce() -> RuntimeResult,
-) -> RuntimeResult {
-    protect()?;
-    shootdown()
+    map().map_err(MappingTransactionError::NotStarted)
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::{rc::Rc, vec, vec::Vec};
-    use core::cell::RefCell;
-
     use ax_hal::cache::TlbShootdownError;
 
     use super::*;
     use crate::RuntimeError;
 
     #[test]
-    fn mapping_transaction_updates_before_shootdown() {
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let update_events = events.clone();
-        let shootdown_events = events.clone();
-
-        let result = update_mapping_transaction(
-            move || {
-                update_events.borrow_mut().push("update");
-                Ok(())
-            },
-            move || {
-                shootdown_events.borrow_mut().push("shootdown");
-                Ok(())
-            },
-        );
-
-        assert_eq!(result, Ok(()));
-        assert_eq!(*events.borrow(), vec!["update", "shootdown"]);
-    }
-
-    #[test]
-    fn mapping_transaction_stops_when_update_fails() {
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let update_events = events.clone();
-        let shootdown_events = events.clone();
-
-        let result = update_mapping_transaction(
-            move || {
-                update_events.borrow_mut().push("update");
-                Err(RuntimeError::from(ax_mm::MmError::BadState("test")))
-            },
-            move || {
-                shootdown_events.borrow_mut().push("shootdown");
-                Ok(())
-            },
-        );
-
-        assert_eq!(
-            result,
-            Err(RuntimeError::from(ax_mm::MmError::BadState("test")))
-        );
-        assert_eq!(*events.borrow(), vec!["update"]);
-    }
-
-    #[test]
-    fn mapping_transaction_propagates_shootdown_failure() {
-        let result = update_mapping_transaction(
-            || Ok(()),
-            || Err(RuntimeError::from(TlbShootdownError::Timeout)),
-        );
-
-        assert_eq!(result, Err(RuntimeError::from(TlbShootdownError::Timeout)));
-    }
-
-    #[test]
-    fn alias_mapping_distinguishes_not_started_from_uncertain_state() {
-        let not_started = map_alias_transaction(
-            || Err(RuntimeError::from(ax_mm::MmError::NoMemory)),
-            |_| Ok(()),
-        );
+    fn alias_mapping_reports_preflight_quarantine_failure_as_not_started() {
+        let not_started =
+            map_alias_transaction(|| Err(RuntimeError::from(ax_mm::MmError::NoMemory)));
         assert!(matches!(
             not_started,
             Err(MappingTransactionError::NotStarted(RuntimeError::Mm(
@@ -158,16 +174,16 @@ mod tests {
             )))
         ));
 
-        let alias = NonNull::new(0x4000 as *mut u8).unwrap();
-        let uncertain = map_alias_transaction(
-            || Ok(alias),
-            |_| Err(RuntimeError::from(TlbShootdownError::Timeout)),
-        );
+        let blocked = map_alias_transaction(|| {
+            Err(RuntimeError::from(ax_mm::MmError::TlbShootdown(
+                TlbShootdownError::Timeout,
+            )))
+        });
         assert!(matches!(
-            uncertain,
-            Err(MappingTransactionError::StateUncertain(
-                RuntimeError::TlbShootdown(TlbShootdownError::Timeout)
-            ))
+            blocked,
+            Err(MappingTransactionError::NotStarted(RuntimeError::Mm(
+                ax_mm::MmError::TlbShootdown(TlbShootdownError::Timeout)
+            )))
         ));
     }
 }

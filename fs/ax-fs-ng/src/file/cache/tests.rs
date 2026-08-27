@@ -242,6 +242,7 @@ fn writeback_protect_listener_runs_without_cached_io_lock() {
         .evict_listeners
         .lock()
         .push_back(Box::new(EvictListener {
+            owner: None,
             listener: Arc::new(|_, _| true),
             writeback_protect: Arc::new(move |_| {
                 observed.store(
@@ -269,6 +270,7 @@ fn writeback_protect_listener_runs_without_listener_lock() {
         .evict_listeners
         .lock()
         .push_back(Box::new(EvictListener {
+            owner: None,
             listener: Arc::new(|_, _| true),
             writeback_protect: Arc::new(move |_| {
                 observed.store(
@@ -296,6 +298,7 @@ fn writeback_protect_does_not_hold_listener_lock_while_invoking_callbacks() {
         .evict_listeners
         .lock()
         .push_back(Box::new(EvictListener {
+            owner: None,
             listener: Arc::new(|_, _| true),
             writeback_protect: Arc::new(move |_| {
                 observed.store(
@@ -490,5 +493,105 @@ fn shifted_range_retries_when_a_page_is_cached_after_the_initial_snapshot() {
             shifted_page.iter().all(|byte| *byte == 2),
             "the page cached during writeback protection must be invalidated after the shift"
         );
+    });
+}
+
+#[test]
+fn truncate_retains_discarded_page_until_listener_confirmation() {
+    with_test_page_provider(true, |provider| {
+        let backing = Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE * 2]));
+        let cached = reopen_cached_file(backing);
+        cached.with_page_or_insert(1, |_, _| Ok(())).unwrap();
+
+        let confirm = Arc::new(AtomicBool::new(false));
+        let confirm_listener = Arc::clone(&confirm);
+        cached.add_evict_listener(move |page_number, _| {
+            assert_eq!(page_number, 1);
+            confirm_listener.load(Ordering::Acquire)
+        });
+
+        assert_eq!(cached.set_len(PAGE_SIZE as u64), Ok(()));
+        assert_eq!(
+            provider.dealloc_count(),
+            0,
+            "an unconfirmed stale translation must keep the old frame alive"
+        );
+
+        confirm.store(true, Ordering::Release);
+        cached.set_len(PAGE_SIZE as u64).unwrap();
+        assert_eq!(
+            provider.dealloc_count(),
+            1,
+            "the retained frame must be released exactly once after confirmation"
+        );
+    });
+}
+
+#[test]
+fn capacity_eviction_waits_for_every_non_owner_mapping() {
+    with_test_page_provider(true, |_| {
+        let backing = Arc::new(CacheTestFile::new(vec![0; PAGE_SIZE * 2]));
+        let mut cached = reopen_cached_file(backing);
+        cached.shared = Arc::new(CachedFileShared {
+            page_cache: SleepMutex::new(LruCache::new(NonZeroUsize::new(1).unwrap())),
+            io_lock: SleepMutex::new(()),
+            discard_transition: AtomicBool::new(false),
+            discarded_pages: SleepMutex::new(None),
+            evict_listeners: SleepMutex::new(LinkedList::default()),
+            backing: cached.shared.backing.clone(),
+            len: AtomicU64::new(cached.len()),
+            unlinked: AtomicBool::new(false),
+        });
+
+        let current_identity = Arc::new(());
+        let other_identity = Arc::new(());
+        let current_owner = EvictListenerOwner::from_arc(&current_identity);
+        let other_owner = EvictListenerOwner::from_arc(&other_identity);
+        let current_called = Arc::new(AtomicBool::new(false));
+        let current_observed = current_called.clone();
+        let other_listener_unlocked = Arc::new(AtomicBool::new(false));
+        let other_observed = Arc::clone(&other_listener_unlocked);
+        let other_shared = Arc::clone(&cached.shared);
+        cached.add_owned_page_listener(
+            current_owner,
+            move |_, _| {
+                current_observed.store(true, Ordering::Release);
+                false
+            },
+            |_| true,
+        );
+        cached.add_owned_page_listener(
+            other_owner,
+            move |_, _| {
+                other_observed.store(
+                    other_shared.listener_lock_is_free_for_test(),
+                    Ordering::Release,
+                );
+                false
+            },
+            |_| true,
+        );
+
+        cached.with_page_or_insert(0, |_, _| Ok(())).unwrap();
+        assert_eq!(
+            // SAFETY: the refusing non-owner prevents eviction, so the test
+            // receives no page whose current-owner mappings need invalidation.
+            unsafe { cached.with_page_or_insert_excluding_owner(current_owner, 1, |_, _| Ok(())) },
+            Err(VfsError::ResourceBusy),
+        );
+        assert!(
+            !current_called.load(Ordering::Acquire),
+            "the transaction owner must finish its own mappings after cache unlock"
+        );
+        assert!(
+            other_listener_unlocked.load(Ordering::Acquire),
+            "eviction callbacks must run after releasing the listener registry lock"
+        );
+        let guard = cached.shared.page_cache.lock();
+        assert!(
+            guard.contains(&0),
+            "a refused eviction must restore the old page"
+        );
+        assert!(!guard.contains(&1));
     });
 }

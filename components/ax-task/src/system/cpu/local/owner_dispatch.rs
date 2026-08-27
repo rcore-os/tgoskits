@@ -102,6 +102,24 @@ impl CpuLocal {
             .map(|dispatch| dispatch.runtime_core().state())
     }
 
+    /// Reads the scheduler-selected logical address space for `thread`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must own an IRQ-off owner-CPU scope for the complete read.
+    pub(crate) unsafe fn scheduler_current_address_space(
+        &self,
+        thread: ThreadId,
+    ) -> Result<crate::runtime::AddressSpaceHandle, TaskError> {
+        // SAFETY: forwarded from this method's owner-CPU contract.
+        let run_queue = unsafe { self.remote.lock_run_queue_irq_disabled() };
+        let current = run_queue.current().ok_or(TaskError::NoRunnableThread)?;
+        if current.thread() != thread {
+            return Err(TaskError::InvalidRuntimeHandle);
+        }
+        Ok(current.address_space())
+    }
+
     /// Installs the dedicated idle task during offline CPU bootstrap.
     ///
     /// # Safety

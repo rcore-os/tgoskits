@@ -80,6 +80,13 @@ pub(crate) fn runtime_error_to_klib_error(error: RuntimeError) -> KlibError {
             MmError::BadAddress => KlibError::BadAddress,
             MmError::BadState(_) => KlibError::BadState,
             MmError::Unsupported => KlibError::Unsupported,
+            MmError::TlbShootdown(error) => match error {
+                TlbShootdownError::CpuOffline | TlbShootdownError::Unsupported => {
+                    KlibError::Unsupported
+                }
+                TlbShootdownError::Timeout => KlibError::TimedOut,
+                TlbShootdownError::Platform => KlibError::Io,
+            },
         },
         #[cfg(feature = "paging")]
         RuntimeError::TlbShootdown(error) => match error {

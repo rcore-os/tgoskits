@@ -400,6 +400,7 @@ version = "0.3.1"
 dependencies = [
  "ax-driver",
  "ax-hal",
+ "ax-memory-addr",
  "ax-std",
  "axbacktrace",
  "axfs-ng-vfs",

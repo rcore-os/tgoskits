@@ -193,47 +193,64 @@ impl<B: MappingBackend> MemorySet<B> {
             return Ok(());
         }
 
-        let end = range.end;
+        self.validate_unmap(start, size, page_table)?;
 
-        // Unmap entire areas that are contained by the range.
-        self.areas.retain(|_, area| {
-            if area.va_range().contained_in(range) {
-                area.unmap_area(context, page_table).unwrap();
-                false
-            } else {
-                true
+        // Publish every backend transition before changing any owner metadata.
+        // A later backend may still report resource pressure after an earlier
+        // one removed PTEs. Keeping the complete VMA set makes that state
+        // retryable and, more importantly, retains every backend until the
+        // caller's invalidation transaction has confirmed stale translations.
+        for area in self.areas.values() {
+            if area.start() >= range.end {
+                break;
             }
-        });
-
-        // Shrink right if the area intersects with the left boundary.
-        if let Some((&before_start, before)) = self.areas.range_mut(..start).last() {
-            let before_end = before.end();
-            if before_end > start {
-                if before_end <= end {
-                    // the unmapped area is at the end of `before`.
-                    before.shrink_right(start.sub_addr(before_start), context, page_table)?;
-                } else {
-                    // the unmapped area is in the middle `before`, need to split.
-                    let right_part = before.split(end).unwrap();
-                    before.shrink_right(start.sub_addr(before_start), context, page_table)?;
-                    assert_eq!(right_part.start().into(), Into::<usize>::into(end));
-                    self.areas.insert(end, right_part);
-                }
+            if area.end() <= range.start {
+                continue;
             }
+            let unmap_start = area.start().max(range.start);
+            let unmap_end = area.end().min(range.end);
+            area.unmap_range(
+                unmap_start,
+                unmap_end.sub_addr(unmap_start),
+                context,
+                page_table,
+            )?;
         }
 
-        // Shrink left if the area intersects with the right boundary.
-        if let Some((&after_start, after)) = self.areas.range_mut(start..).next() {
-            let after_end = after.end();
-            if after_start < end {
-                // the unmapped area is at the start of `after`.
-                let mut new_area = self.areas.remove(&after_start).unwrap();
-                new_area.shrink_left(after_end.sub_addr(end), context, page_table)?;
-                assert_eq!(new_area.start().into(), Into::<usize>::into(end));
-                self.areas.insert(end, new_area);
-            }
+        // Validation above proves the range shape. This metadata-only commit
+        // performs no backend operation and cannot fail due to page-table or
+        // resource state.
+        self.unmap_metadata(start, size)
+    }
+
+    /// Preflights every backend touched by an unmap without changing state.
+    pub fn validate_unmap(
+        &self,
+        start: B::Addr,
+        size: usize,
+        page_table: &B::PageTable,
+    ) -> MappingResult {
+        let range =
+            AddrRange::try_from_start_size(start, size).ok_or(MappingError::InvalidParam)?;
+        if range.is_empty() {
+            return Ok(());
         }
 
+        // Validate every backend before the first PTE or owner is removed.
+        // Commit then touches disjoint sub-ranges under the same page-table
+        // lock, so a later area cannot turn an earlier area into a partial
+        // mutation.
+        for area in self.areas.values() {
+            if area.start() >= range.end {
+                break;
+            }
+            if area.end() <= range.start {
+                continue;
+            }
+            let unmap_start = area.start().max(range.start);
+            let unmap_end = area.end().min(range.end);
+            area.validate_unmap_range(unmap_start, unmap_end.sub_addr(unmap_start), page_table)?;
+        }
         Ok(())
     }
 
@@ -280,8 +297,8 @@ impl<B: MappingBackend> MemorySet<B> {
         Ok(())
     }
 
-    /// Replaces area metadata without touching page-table entries.
-    pub fn replace_area_metadata(&mut self, area: MemoryArea<B>) -> MappingResult {
+    /// Validates that `area` can replace one contained metadata range.
+    pub fn validate_area_metadata_replacement(&self, area: &MemoryArea<B>) -> MappingResult {
         if area.va_range().is_empty() {
             return Err(MappingError::InvalidParam);
         }
@@ -289,13 +306,26 @@ impl<B: MappingBackend> MemorySet<B> {
         let start = area.start();
         let end = area.end();
 
-        let old_start = self
-            .areas
+        self.areas
             .range(..=start)
             .last()
             .filter(|(_, old)| old.start() <= start && end <= old.end())
+            .map(|_| ())
+            .ok_or(MappingError::InvalidParam)
+    }
+
+    /// Replaces area metadata without touching page-table entries.
+    pub fn replace_area_metadata(&mut self, area: MemoryArea<B>) -> MappingResult {
+        self.validate_area_metadata_replacement(&area)?;
+
+        let start = area.start();
+        let end = area.end();
+        let old_start = self
+            .areas
+            .range(..=start)
+            .next_back()
             .map(|(&old_start, _)| old_start)
-            .ok_or(MappingError::InvalidParam)?;
+            .expect("validated metadata replacement lost its containing area");
 
         let mut old_area = self.areas.remove(&old_start).unwrap();
         if old_start < start {
@@ -317,6 +347,9 @@ impl<B: MappingBackend> MemorySet<B> {
         context: &mut B::MutationContext,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
+        for area in self.areas.values() {
+            area.validate_unmap_range(area.start(), area.size(), page_table)?;
+        }
         for area in self.areas.values() {
             area.unmap_area(context, page_table)?;
         }
@@ -360,54 +393,90 @@ impl<B: MappingBackend> MemorySet<B> {
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
-        let mut to_insert = Vec::new();
-        for (&area_start, area) in self.areas.iter_mut() {
+        let mut operations = Vec::new();
+        for (&area_start, area) in &self.areas {
             let area_end = area.end();
-
+            if area_start >= end {
+                break;
+            }
+            if area_end <= start {
+                continue;
+            }
             if let Some((new_flags, new_reported_flags)) =
                 update_flags(area.flags(), area.reported_flags())
             {
-                if area_start >= end {
-                    // [ prot ]
-                    //          [ area ]
-                    break;
-                } else if area_end <= start {
-                    //          [ prot ]
-                    // [ area ]
-                    // Do nothing
-                } else if area_start >= start && area_end <= end {
-                    // [   prot   ]
-                    //   [ area ]
-                    area.protect_area(new_flags, context, page_table)?;
-                    area.set_flags_with_reported_flags(new_flags, new_reported_flags);
-                } else if area_start < start && area_end > end {
-                    //        [ prot ]
-                    // [ left | area | right ]
-                    let mut middle_part = area.split(start).unwrap();
-                    let right_part = middle_part.split(end).unwrap();
+                let protect_start = area_start.max(start);
+                let protect_end = area_end.min(end);
+                operations.push((
+                    area_start,
+                    protect_start,
+                    protect_end,
+                    area.flags(),
+                    new_flags,
+                    new_reported_flags,
+                ));
+            }
+        }
 
-                    middle_part.protect_area(new_flags, context, page_table)?;
-                    middle_part.set_flags_with_reported_flags(new_flags, new_reported_flags);
-
-                    to_insert.push((right_part.start(), right_part));
-                    to_insert.push((middle_part.start(), middle_part));
-                } else if area_end > end {
-                    // [    prot ]
-                    //   [  area | right ]
-                    let right_part = area.split(end).unwrap();
-                    area.protect_area(new_flags, context, page_table)?;
-                    area.set_flags_with_reported_flags(new_flags, new_reported_flags);
-
-                    to_insert.push((right_part.start(), right_part));
-                } else {
-                    //        [ prot    ]
-                    // [ left |  area ]
-                    let mut right_part = area.split(start).unwrap();
-                    right_part.protect_area(new_flags, context, page_table)?;
-                    right_part.set_flags_with_reported_flags(new_flags, new_reported_flags);
-
-                    to_insert.push((right_part.start(), right_part));
+        // Page-table/backend work is the fallible prepare phase. Metadata is
+        // not split until every range succeeds. If a later range fails, roll
+        // back every attempted range while the original area topology still
+        // identifies the same backends.
+        for (index, &(area_start, protect_start, protect_end, _, new_flags, _)) in
+            operations.iter().enumerate()
+        {
+            let result = self.areas[&area_start].protect_range(
+                protect_start,
+                protect_end.sub_addr(protect_start),
+                new_flags,
+                context,
+                page_table,
+            );
+            if let Err(error) = result {
+                for &(rollback_area_start, rollback_start, rollback_end, old_flags, ..) in
+                    operations[..=index].iter().rev()
+                {
+                    self.areas[&rollback_area_start]
+                        .protect_range(
+                            rollback_start,
+                            rollback_end.sub_addr(rollback_start),
+                            old_flags,
+                            context,
+                            page_table,
+                        )
+                        .expect(
+                            "a failed protection prepare must remain rollbackable before metadata \
+                             commit",
+                        );
                 }
+                return Err(error);
+            }
+        }
+
+        // All fallible work is complete. Commit VMA splits and flags without
+        // touching the backend or page table again.
+        let mut to_insert = Vec::new();
+        for (area_start, protect_start, protect_end, _, new_flags, new_reported_flags) in operations
+        {
+            let area = self.areas.get_mut(&area_start).unwrap();
+            let area_end = area.end();
+            if protect_start == area_start && protect_end == area_end {
+                area.set_flags_with_reported_flags(new_flags, new_reported_flags);
+            } else if area_start < protect_start && protect_end < area_end {
+                let mut middle_part = area.split(protect_start).unwrap();
+                let right_part = middle_part.split(protect_end).unwrap();
+                middle_part.set_flags_with_reported_flags(new_flags, new_reported_flags);
+                to_insert.push((right_part.start(), right_part));
+                to_insert.push((middle_part.start(), middle_part));
+            } else if protect_start == area_start {
+                let right_part = area.split(protect_end).unwrap();
+                area.set_flags_with_reported_flags(new_flags, new_reported_flags);
+                to_insert.push((right_part.start(), right_part));
+            } else {
+                debug_assert!(protect_end == area_end);
+                let mut right_part = area.split(protect_start).unwrap();
+                right_part.set_flags_with_reported_flags(new_flags, new_reported_flags);
+                to_insert.push((right_part.start(), right_part));
             }
         }
         self.areas.extend(to_insert);

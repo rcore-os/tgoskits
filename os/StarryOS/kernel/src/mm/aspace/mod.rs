@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use core::{
     fmt,
     ops::DerefMut,
@@ -21,7 +21,7 @@ use ax_runtime::{
 use crate::{
     StarryError, StarryResult,
     mm::ProcessVmStat,
-    sync::{LockdepMutexExt, PiMutex},
+    sync::{LockdepMutexExt, PiMutex, SpinLock},
 };
 
 fn complete_page_fault_with(
@@ -46,6 +46,29 @@ pub use self::{
 
 type MovedPage = (VirtAddr, VirtAddr, PhysAddr, MappingFlags, usize, bool);
 const CLONED_ADDR_SPACE_LOCK_SUBCLASS: u32 = 1;
+
+/// A preallocated intrusive node used to retain the complete address-space
+/// owner when teardown cannot confirm a remote TLB invalidation.
+///
+/// The node is allocated before the address space is published. Transferring
+/// it into the global list after a teardown failure therefore cannot itself
+/// fail allocation and cannot drop the last strong owner reference.
+struct RetainedAddressSpaceNode {
+    owner: Option<Arc<PiMutex<AddrSpace>>>,
+    next: Option<Box<Self>>,
+}
+
+impl RetainedAddressSpaceNode {
+    const fn new() -> Self {
+        Self {
+            owner: None,
+            next: None,
+        }
+    }
+}
+
+static RETAINED_ADDRESS_SPACES: SpinLock<Option<Box<RetainedAddressSpaceNode>>> =
+    SpinLock::new(None);
 
 fn rollback_moved_pages(cursor: &mut PageTable, moved_pages: &[MovedPage]) {
     for &(src_va, dst_va, paddr, flags, page_size, dst_newly_mapped) in moved_pages.iter().rev() {
@@ -74,9 +97,17 @@ pub struct AddrSpace {
     /// Number of scheduler tokens that may still be installed or borrowed as
     /// a CPU's active address space.
     pub(crate) scheduler_slots: AtomicUsize,
+    /// Final-slot teardown has begun; no process or scheduler owner may attach
+    /// after this one-way publication.
+    teardown_started: bool,
     /// CPUs whose hardware root may retain translations for this address
     /// space. All scheduler tokens for this page table share this tracker.
     active_cpus: Arc<AddressSpaceCpuState>,
+    /// Deferred resources from PTE mutations whose shootdown did not receive
+    /// confirmation from every CPU in the address-space footprint.
+    tlb_quarantine: tlb::TlbQuarantine,
+    /// Allocation-free transfer token for a failed final teardown.
+    teardown_retention: Option<Box<RetainedAddressSpaceNode>>,
     /// All VmX counters for this address space.  Maintained automatically by
     /// `map`, `unmap`, `clear`, and `try_clone`; never touch from outside mm/.
     pub vm_stat: ProcessVmStat,
@@ -104,9 +135,30 @@ impl AddrSpace {
         &self.pt
     }
 
-    /// Returns a mutable reference to the inner page table.
-    pub const fn page_table_mut(&mut self) -> &mut PageTable {
+    fn page_table_mut(&mut self) -> &mut PageTable {
         &mut self.pt
+    }
+
+    /// Copies immutable kernel root entries into a user page table before that
+    /// table is published to a task or CPU.
+    ///
+    /// # Safety
+    ///
+    /// `self` must still be unpublished, `kernel` must outlive `self`, and the
+    /// managed user range must not overlap the shared kernel range.
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "loongarch64")))]
+    pub(crate) unsafe fn initialize_kernel_root_entries_from(
+        &mut self,
+        kernel: &ax_mm::AddrSpace,
+    ) -> StarryResult {
+        unsafe {
+            self.pt.share_root_entries_from(
+                kernel.page_table(),
+                kernel.base(),
+                kernel.size(),
+            )
+        }
+        .map_err(|_| StarryError::BadState)
     }
 
     /// Checks if the address space contains the given address range.
@@ -124,7 +176,10 @@ impl AddrSpace {
             pt,
             process_slots: AtomicUsize::new(0),
             scheduler_slots: AtomicUsize::new(0),
+            teardown_started: false,
             active_cpus,
+            tlb_quarantine: tlb::TlbQuarantine::new(),
+            teardown_retention: Some(Box::new(RetainedAddressSpaceNode::new())),
             vm_stat: ProcessVmStat::new(),
             rss: MemoryAccounting::new(),
         })
@@ -149,28 +204,84 @@ impl AddrSpace {
         ranges: &[(VirtAddr, usize)],
         operation: impl FnOnce(&mut Self, &mut tlb::TlbGather) -> crate::StarryResult<R>,
     ) -> crate::StarryResult<R> {
+        retry_retained_address_space_teardowns();
+        self.publish_tlb_gather_mutation(ranges, operation)?
+            .into_operation_result()
+    }
+
+    /// Runs a published mutation whose caller owns an external resource that
+    /// must remain retained until every active CPU confirms invalidation.
+    fn mutate_with_tlb_gather_confirmed<R>(
+        &mut self,
+        ranges: &[(VirtAddr, usize)],
+        operation: impl FnOnce(&mut Self, &mut tlb::TlbGather) -> crate::StarryResult<R>,
+    ) -> crate::StarryResult<R> {
+        retry_retained_address_space_teardowns();
+        self.publish_tlb_gather_mutation(ranges, operation)?
+            .into_confirmed_result()
+    }
+
+    fn publish_tlb_gather_mutation<R>(
+        &mut self,
+        ranges: &[(VirtAddr, usize)],
+        operation: impl FnOnce(&mut Self, &mut tlb::TlbGather) -> crate::StarryResult<R>,
+    ) -> crate::StarryResult<tlb::PublishedMutation<R>> {
+        let active_mask = self.active_cpus.active_mask();
+        self.tlb_quarantine
+            .retry(active_mask)
+            .map_err(StarryError::from)?;
         let mut gather = tlb::TlbGather::new();
+        gather
+            .prepare_ranges(ranges.len())
+            .map_err(|_| StarryError::NoMemory)?;
         for &(start, size) in ranges {
             gather.record_range(tlb::checked_range(start, size)?);
         }
         let operation_result = operation(self, &mut gather);
+        self.finish_retained_file_evictions(&mut gather);
 
         // Snapshot after the PTE mutation. A CPU that published itself before
         // the mutation is included; a CPU entering after the snapshot installs
         // the root with a local TLB invalidation and observes the new PTEs.
-        let shootdown_result = gather.finish(self.active_cpus.active_mask());
-        match (operation_result, shootdown_result) {
-            (_, Err(error)) => Err(error),
-            (result, Ok(())) => result,
-        }
+        let shootdown_result = self
+            .tlb_quarantine
+            .commit(gather, self.active_cpus.active_mask())
+            .map_err(StarryError::from);
+        Ok(tlb::PublishedMutation::new(
+            operation_result,
+            shootdown_result,
+        ))
     }
 
-    pub(super) fn flush_active_tlb_range(
-        &self,
-        start: VirtAddr,
-        size: usize,
-    ) -> crate::StarryResult {
-        crate::mm::flush_tlb_range_on_cpus_sync(self.active_cpus.active_mask(), start, size)
+    fn finish_retained_file_evictions(&mut self, gather: &mut tlb::TlbGather) {
+        let retained = gather.take_retained_file_evictions();
+        for page in &retained {
+            // The page-table mutation does not change VMA topology. Clone one
+            // owner at a time so the immutable area borrow ends before its PTE
+            // callback and no post-mutation scratch allocation is needed.
+            for index in 0..self.areas.len() {
+                let owner = self.areas().nth(index).and_then(|area| {
+                    match area.backend() {
+                        Backend::File(file) => file.retained_cache_owner(&page.cache),
+                        _ => None,
+                    }
+                });
+                let Some(owner) = owner else {
+                    continue;
+                };
+                owner
+                    .unmap_evicted_page(page.page_number, self, gather)
+                    .expect("a retained file-page eviction must remain commit-ready");
+            }
+        }
+        gather.restore_retained_file_evictions(retained);
+    }
+
+    /// Retries resources quarantined by an earlier failed shootdown.
+    pub(crate) fn retry_quarantined_tlb_reclaims(&mut self) -> StarryResult {
+        self.tlb_quarantine
+            .retry(self.active_cpus.active_mask())
+            .map_err(StarryError::from)
     }
 
     /// Finds a free area that can accommodate the given size.
@@ -375,6 +486,9 @@ impl AddrSpace {
         }
 
         let _rss = RssAccountingGuard::enter(&self.rss);
+        for (range, backend) in &frags {
+            BackendOps::validate_unmap(backend, *range, &self.pt)?;
+        }
         for (range, backend) in frags {
             BackendOps::unmap(&backend, range, Some(&self.rss), gather, &mut self.pt)?;
         }
@@ -413,8 +527,10 @@ impl AddrSpace {
             .sum();
 
         let _rss = RssAccountingGuard::enter(&self.rss);
-        crate::syscall::memfd_on_aspace_unmap_range(self, start, size);
+        self.areas.validate_unmap(start, size, &self.pt)?;
+        let memfd_update = crate::syscall::memfd_prepare_shared_writable_unmap(self, start, size)?;
         self.areas.unmap(start, size, gather, &mut self.pt)?;
+        memfd_update.commit();
         self.vm_stat.on_unmap(removed_pages);
         Ok(())
     }
@@ -435,8 +551,9 @@ impl AddrSpace {
             })
             .sum();
 
-        crate::syscall::memfd_on_aspace_unmap_range(self, start, size);
+        let memfd_update = crate::syscall::memfd_prepare_shared_writable_unmap(self, start, size)?;
         self.areas.unmap_metadata(start, size)?;
+        memfd_update.commit();
         self.vm_stat.on_unmap(removed_pages);
         Ok(())
     }
@@ -451,9 +568,18 @@ impl AddrSpace {
     ) -> StarryResult {
         self.validate_region(start, size)?;
 
-        crate::syscall::memfd_on_aspace_replace_metadata(self, start, size, flags, &backend);
         let area = MemoryArea::new_with_reported_flags(start, size, flags, reported_flags, backend);
-        self.areas.replace_area_metadata(area)?;
+        self.areas.validate_area_metadata_replacement(&area)?;
+        crate::syscall::memfd_on_aspace_replace_metadata(
+            self,
+            start,
+            size,
+            flags,
+            area.backend(),
+        );
+        self.areas
+            .replace_area_metadata(area)
+            .expect("validated VMA metadata replacement must commit infallibly");
         Ok(())
     }
 
@@ -461,12 +587,42 @@ impl AddrSpace {
     /// Pages already mapped at `dst` (shared backends) are skipped.
     /// Returns an error if any page-table update fails.
     ///
-    /// Uses direct PTE map/unmap (not [`BackendOps::unmap`]) so Cow RSS charges
-    /// migrate via [`MemoryAccounting::move_charge`] instead of remove+record.
+    /// Uses direct PTE map/unmap (not [`BackendOps::unmap`]) and prepares the
+    /// complete Cow RSS migration before publishing either transaction.
     pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) -> crate::StarryResult {
-        self.mutate_with_tlb_gather(&[(src, size), (dst, size)], |aspace, _gather| {
+        self.mutate_with_tlb_gather(&[(src, size), (dst, size)], |aspace, gather| {
+            aspace.retain_backends_for_range(src, size, gather)?;
             aspace.move_pages_inner(src, dst, size)
         })
+    }
+
+    /// Retains every VMA owner that may disappear after this transaction.
+    ///
+    /// Capacity and clones are prepared before the first PTE move. If remote
+    /// invalidation is quarantined, the gather keeps these owners (including
+    /// file-eviction listeners) alive even after metadata commit drops the
+    /// source VMA.
+    fn retain_backends_for_range(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        gather: &mut tlb::TlbGather,
+    ) -> crate::StarryResult {
+        let range = tlb::checked_range(start, size)?;
+        let count = self
+            .areas()
+            .filter(|area| area.start() < range.end && area.end() > range.start)
+            .count();
+        gather
+            .prepare_backend_retention(count)
+            .map_err(|_| StarryError::NoMemory)?;
+        for area in self
+            .areas()
+            .filter(|area| area.start() < range.end && area.end() > range.start)
+        {
+            gather.retain_backend(area.backend().clone());
+        }
+        Ok(())
     }
 
     fn move_pages_inner(
@@ -489,6 +645,12 @@ impl AddrSpace {
             }
         }
 
+        let charge_moves: alloc::vec::Vec<_> = mapped_pages
+            .iter()
+            .map(|&(src_va, dst_va, ..)| (src_va, dst_va))
+            .collect();
+        let prepared_charges = self.rss.prepare_charge_moves(&charge_moves)?;
+
         let mut moved_pages = alloc::vec::Vec::new();
         for &(src_va, dst_va, paddr, flags, page_size) in &mapped_pages {
             let mut dst_newly_mapped = false;
@@ -506,10 +668,10 @@ impl AddrSpace {
                 rollback_moved_pages(cursor, &moved_pages);
                 return Err(err.into());
             }
-            self.rss.move_charge(src_va, dst_va)?;
             moved_pages.push((src_va, dst_va, paddr, flags, page_size, dst_newly_mapped));
         }
 
+        prepared_charges.commit();
         Ok(())
     }
 
@@ -639,17 +801,27 @@ impl AddrSpace {
         Ok(())
     }
 
-    /// Removes all mappings in the address space.
-    pub fn clear(&mut self) {
+    /// Removes all mappings in the address space and waits for every stale
+    /// translation to be invalidated before returning success.
+    pub fn clear(&mut self) -> StarryResult {
+        retry_retained_address_space_teardowns();
+        self.clear_without_retained_retry()
+    }
+
+    fn clear_without_retained_retry(&mut self) -> StarryResult {
+        if self.areas.is_empty() {
+            return self.retry_quarantined_tlb_reclaims();
+        }
+        let memfd_release = crate::syscall::memfd_prepare_shared_writable_release(self)?;
         let range = (self.base(), self.size());
-        self.mutate_with_tlb_gather(&[range], |aspace, gather| {
-            crate::syscall::memfd_release_all_shared_writable_counts_for_aspace(aspace);
+        self.publish_tlb_gather_mutation(&[range], move |aspace, gather| {
             let _rss = RssAccountingGuard::enter(&aspace.rss);
             aspace.areas.clear(gather, &mut aspace.pt)?;
+            memfd_release.commit();
             aspace.vm_stat.on_clear();
             Ok(())
-        })
-        .unwrap_or_else(|error| panic!("address-space teardown failed: {error}"));
+        })?
+        .into_confirmed_result()
     }
 
     /// Checks whether an access to the specified memory region is valid.
@@ -883,7 +1055,12 @@ fn page_fault_completion_updates_only_success_for_test() -> bool {
 
 /// Increment how many [`crate::task::ProcessData`] slots refer to `aspace`.
 pub(crate) fn attach_process_slot(aspace: &Arc<PiMutex<AddrSpace>>) {
-    aspace.lock().process_slots.fetch_add(1, Ordering::AcqRel);
+    let aspace = aspace.lock();
+    assert!(
+        !aspace.teardown_started,
+        "cannot attach a process slot after address-space teardown begins"
+    );
+    aspace.process_slots.fetch_add(1, Ordering::AcqRel);
 }
 
 /// Pins one address space for a move-only scheduler token and returns its root.
@@ -891,15 +1068,135 @@ pub(crate) fn attach_scheduler_slot(
     aspace: &Arc<PiMutex<AddrSpace>>,
 ) -> (PhysAddr, Arc<AddressSpaceCpuState>) {
     let guard = aspace.lock();
+    assert!(
+        !guard.teardown_started,
+        "cannot attach a scheduler slot after address-space teardown begins"
+    );
     guard.scheduler_slots.fetch_add(1, Ordering::AcqRel);
     (guard.pt.root_paddr(), Arc::clone(&guard.active_cpus))
 }
 
-fn clear_unreferenced_address_space(aspace: &mut AddrSpace) {
-    if aspace.process_slots.load(Ordering::Acquire) == 0
-        && aspace.scheduler_slots.load(Ordering::Acquire) == 0
+fn push_retained_address_space(mut node: Box<RetainedAddressSpaceNode>) {
+    let mut retained = RETAINED_ADDRESS_SPACES.lock();
+    node.next = retained.take();
+    *retained = Some(node);
+}
+
+fn retain_failed_address_space_teardown(
+    aspace: &Arc<PiMutex<AddrSpace>>,
+    mut node: Box<RetainedAddressSpaceNode>,
+    error: StarryError,
+    root: PhysAddr,
+    active_mask: usize,
+    pending: usize,
+) {
+    debug_assert!(node.owner.is_none());
+    debug_assert!(node.next.is_none());
+    node.owner = Some(Arc::clone(aspace));
+    push_retained_address_space(node);
+    error!(
+        "retained failed address-space teardown for retry: root={root:?}, \
+         active_cpus={active_mask:#x}, pending={pending}, error={error}"
+    );
+}
+
+/// Retries whole address-space owners retained by failed final shootdowns.
+///
+/// The global spin lock only transfers the intrusive list. Page-table work and
+/// owner destruction run outside it and use `try_lock`, so a mutation cannot
+/// deadlock with another address space's teardown.
+fn retry_retained_address_space_teardowns() {
+    let mut pending = RETAINED_ADDRESS_SPACES.lock().take();
+    let mut blocked = None;
+
+    while let Some(mut node) = pending {
+        pending = node.next.take();
+        let completed = {
+            let owner = node
+                .owner
+                .as_ref()
+                .expect("a retained teardown node must own its address space");
+            let Some(mut aspace) = owner.try_lock() else {
+                node.next = blocked;
+                blocked = Some(node);
+                continue;
+            };
+            if aspace.process_slots.load(Ordering::Acquire) != 0
+                || aspace.scheduler_slots.load(Ordering::Acquire) != 0
+            {
+                error!(
+                    "retained address-space teardown unexpectedly regained an owner slot: \
+                     root={:?}, process_slots={}, scheduler_slots={}",
+                    aspace.pt.root_paddr(),
+                    aspace.process_slots.load(Ordering::Relaxed),
+                    aspace.scheduler_slots.load(Ordering::Relaxed),
+                );
+                false
+            } else {
+                match aspace.clear_without_retained_retry() {
+                    Ok(()) => true,
+                    Err(error) => {
+                        error!(
+                            "address-space teardown retry remains quarantined: root={:?}, \
+                             active_cpus={:#x}, pending={}, failures={}, \
+                             last_error={:?}, error={error}",
+                            aspace.pt.root_paddr(),
+                            aspace.active_cpus.active_mask(),
+                            aspace.tlb_quarantine.pending_count(),
+                            aspace.tlb_quarantine.failures(),
+                            aspace.tlb_quarantine.last_error(),
+                        );
+                        false
+                    }
+                }
+            }
+        };
+
+        if completed {
+            drop(node.owner.take());
+        } else {
+            node.next = blocked;
+            blocked = Some(node);
+        }
+    }
+
+    while let Some(mut node) = blocked {
+        blocked = node.next.take();
+        push_retained_address_space(node);
+    }
+}
+
+fn clear_unreferenced_address_space(aspace: &Arc<PiMutex<AddrSpace>>) {
+    retry_retained_address_space_teardowns();
+    let mut guard = aspace.lock();
+    if guard.process_slots.load(Ordering::Acquire) != 0
+        || guard.scheduler_slots.load(Ordering::Acquire) != 0
     {
-        aspace.clear();
+        return;
+    }
+    if guard.teardown_started {
+        // Another last-slot releaser already transferred this complete owner
+        // into the retained teardown list or completed final teardown.
+        return;
+    }
+    guard.teardown_started = true;
+    if let Err(error) = guard.clear_without_retained_retry() {
+        let root = guard.pt.root_paddr();
+        let active_mask = guard.active_cpus.active_mask();
+        let pending = guard.tlb_quarantine.pending_count();
+        let node = guard
+            .teardown_retention
+            .take()
+            .expect("an address space can enter final teardown only once");
+        drop(guard);
+        retain_failed_address_space_teardown(
+            aspace,
+            node,
+            error,
+            root,
+            active_mask,
+            pending,
+        );
     }
 }
 
@@ -908,21 +1205,23 @@ fn clear_unreferenced_address_space(aspace: &mut AddrSpace) {
 /// so inode-scoped accounting (memfd, etc.) is torn down before the page table
 /// is reclaimed.
 pub(crate) fn release_process_slot(aspace: &Arc<PiMutex<AddrSpace>>) {
-    let mut guard = aspace.lock();
+    let guard = aspace.lock();
     let prev = guard.process_slots.fetch_sub(1, Ordering::AcqRel);
-    debug_assert!(prev >= 1, "AddrSpace::process_slots underflow");
+    assert!(prev >= 1, "AddrSpace::process_slots underflow");
+    drop(guard);
     if prev == 1 {
-        clear_unreferenced_address_space(&mut guard);
+        clear_unreferenced_address_space(aspace);
     }
 }
 
 /// Releases one scheduler token after runtime active-mm reclamation.
 pub(crate) fn release_scheduler_slot(aspace: &Arc<PiMutex<AddrSpace>>) {
-    let mut guard = aspace.lock();
+    let guard = aspace.lock();
     let prev = guard.scheduler_slots.fetch_sub(1, Ordering::AcqRel);
-    debug_assert!(prev >= 1, "AddrSpace::scheduler_slots underflow");
+    assert!(prev >= 1, "AddrSpace::scheduler_slots underflow");
+    drop(guard);
     if prev == 1 {
-        clear_unreferenced_address_space(&mut guard);
+        clear_unreferenced_address_space(aspace);
     }
 }
 
@@ -938,13 +1237,37 @@ impl fmt::Debug for AddrSpace {
                 &self.scheduler_slots.load(Ordering::Relaxed),
             )
             .field("active_cpus", &self.active_cpus.active_mask())
+            .field("tlb_quarantine", &self.tlb_quarantine.pending_count())
             .finish()
     }
 }
 
 impl Drop for AddrSpace {
     fn drop(&mut self) {
-        self.clear();
+        // Unpublished construction failures have no CPU footprint and can be
+        // reclaimed locally. Published failures must have transferred their
+        // complete Arc owner into RETAINED_ADDRESS_SPACES before Drop is
+        // reachable.
+        if self.active_cpus.active_mask() == 0
+            && let Err(error) = self.clear_without_retained_retry()
+        {
+            panic!("inactive address-space teardown failed: {error}");
+        }
+        if self.active_cpus.active_mask() != 0
+            || !self.areas.is_empty()
+            || self.tlb_quarantine.pending_count() != 0
+        {
+            error!(
+                "address-space owner reached Drop before TLB confirmation: root={:?}, \
+                 active_cpus={:#x}, pending={}, failures={}, last_error={:?}",
+                self.pt.root_paddr(),
+                self.active_cpus.active_mask(),
+                self.tlb_quarantine.pending_count(),
+                self.tlb_quarantine.failures(),
+                self.tlb_quarantine.last_error(),
+            );
+            panic!("unconfirmed address-space owner bypassed teardown quarantine");
+        }
     }
 }
 

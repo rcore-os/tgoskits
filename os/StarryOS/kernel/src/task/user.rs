@@ -1,4 +1,5 @@
 use ax_memory_addr::VirtAddr;
+use ax_runtime::task::UserExecutionContext;
 use ax_runtime::hal::cpu::{
     trap::PageFaultFlags,
     uspace::{ExceptionKind, ReturnReason, UserContext},
@@ -60,12 +61,14 @@ fn handle_user_page_fault(
 
 /// Creates the entry closure for one scheduler-owned user thread.
 pub fn new_user_task(
-    mut uctx: UserContext,
+    uctx: UserContext,
     set_child_tid: usize,
     child_tid: TidNumber,
 ) -> impl FnOnce() + Send + 'static {
     move || {
         let curr = current_user_task();
+        let mut uctx = UserExecutionContext::bind(uctx)
+            .expect("user register image must bind to its current runtime context");
 
         if let Some(tid) = (set_child_tid as *mut u32).nullable() {
             tid.vm_write(&curr, child_tid.get()).ok();
@@ -126,12 +129,9 @@ pub fn new_user_task(
                 }
             }
 
-            ax_runtime::task::prepare_user_return()
-                .expect("return-to-user scheduler work must run in task context");
-            // `prepare_user_return()` retains raw IRQ exclusion after its final
-            // scheduler-work snapshot. `run()` immediately completes the
-            // architecture return and restores the saved userspace IRQ state.
-            let reason = uctx.run();
+            let reason = uctx
+                .enter()
+                .expect("return-to-user validation must match the current task and address space");
 
             // The periodic tick interrupted userspace while User was still
             // published. Settle that sample before switching the lightweight

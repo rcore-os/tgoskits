@@ -6,21 +6,20 @@ use core::sync::atomic::AtomicBool;
 #[cfg(feature = "qperf-metrics")]
 use core::sync::atomic::AtomicU64;
 use core::{
+    marker::PhantomData,
     mem::align_of,
     ptr,
     sync::atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 
+use ax_hal::percpu::CpuPin;
 use ax_memory_addr::PhysAddr;
-#[cfg(any(feature = "uspace", test))]
-use ax_task::runtime::AddressSpaceActivationPhase;
 use ax_task::{
     TaskError,
     runtime::{
-        AddressSpaceActivation, AddressSpaceActivationKind, AddressSpaceDestroyOutcome,
-        AddressSpaceHandle, AddressSpaceMembarrierId, AddressSpaceMembarrierState,
-        AddressSpaceReclaimArmOutcome, AddressSpaceToken, MembarrierRegistration,
-        MembarrierRegistrationPhase, RuntimeStatus,
+        AddressSpaceDestroyOutcome, AddressSpaceHandle, AddressSpaceMembarrierId,
+        AddressSpaceMembarrierState, AddressSpaceReclaimArmOutcome, AddressSpaceToken,
+        MembarrierRegistration, MembarrierRegistrationPhase, RuntimeStatus,
     },
 };
 
@@ -276,6 +275,11 @@ fn detach_runtime_address_space_owner(address_space: AddressSpaceHandle) {
         .detach_from_task();
 }
 
+#[cfg(any(feature = "uspace", test))]
+fn detach_replaced_address_space_owner(address_space: AddressSpaceHandle) {
+    detach_runtime_address_space_owner(address_space);
+}
+
 impl Drop for TaskAddressSpace {
     fn drop(&mut self) {
         let Some(address_space) = self.0.take() else {
@@ -317,13 +321,6 @@ fn runtime_address_space(
 }
 
 #[cfg(feature = "uspace")]
-pub(super) fn validate_address_space_handle(
-    address_space: AddressSpaceHandle,
-) -> Result<(), RuntimeStatus> {
-    runtime_address_space(address_space).map(|_| ())
-}
-
-#[cfg(feature = "uspace")]
 fn offline_kernel_root() -> usize {
     if cfg!(any(target_arch = "x86_64", target_arch = "riscv64")) {
         // SAFETY: CPU offline holds IRQ exclusion, and bring-up published the
@@ -339,6 +336,33 @@ fn offline_kernel_root() -> usize {
 #[cfg(feature = "uspace")]
 pub(super) fn current_hardware_root() -> usize {
     ax_hal::asm::read_user_page_table().as_usize()
+}
+
+#[cfg(feature = "uspace")]
+pub(super) fn validate_current_user_address_space(
+    pin: &CpuPin<'_>,
+    selected: AddressSpaceHandle,
+) -> Result<(), RuntimeStatus> {
+    if selected.is_none() {
+        return Err(RuntimeStatus::InvalidHandle);
+    }
+    let active_raw = ACTIVE_ADDRESS_SPACE.read_current(pin);
+    if active_raw == 0 {
+        return Err(RuntimeStatus::InvalidHandle);
+    }
+    // SAFETY: a non-zero CPU-local publication originates from a live active
+    // lease and remains pinned by the IRQ-off caller.
+    let active = runtime_address_space(unsafe { AddressSpaceHandle::from_raw(active_raw) })?;
+    let selected = runtime_address_space(selected)?;
+    let cpu_bit = AddressSpaceCpuState::cpu_bit(pin.area().cpu_index().as_usize());
+    if !same_logical_address_space(active, selected)
+        || active.active_cpus.load(Ordering::Acquire) == 0
+        || active.cpu_state.active_mask() & cpu_bit == 0
+        || current_hardware_root() != active.root
+    {
+        return Err(RuntimeStatus::InvalidHandle);
+    }
+    Ok(())
 }
 
 #[cfg(any(feature = "uspace", test))]
@@ -397,7 +421,7 @@ fn commit_user_address_space_activation(
     publish_active: impl FnOnce(usize),
 ) -> bool {
     let same_address_space = next_raw == previous_raw
-        || previous.is_some_and(|previous| Arc::ptr_eq(&previous.cpu_state, &next.cpu_state));
+        || previous.is_some_and(|previous| same_logical_address_space(previous, next));
     if same_address_space {
         #[cfg(feature = "qperf-metrics")]
         ACTIVE_MM_SAME_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
@@ -435,44 +459,92 @@ fn commit_user_address_space_activation(
     }
 }
 
-pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation) -> RuntimeStatus {
+#[cfg(feature = "uspace")]
+fn same_logical_address_space(first: &RuntimeAddressSpace, second: &RuntimeAddressSpace) -> bool {
+    Arc::ptr_eq(&first.cpu_state, &second.cpu_state)
+}
+
+enum PreparedAddressSpaceAction {
+    KernelLazy,
     #[cfg(feature = "uspace")]
-    {
-        // SAFETY: the scheduler baton or exec IRQ guard pins this operation to
-        // one CPU until the active-mm publication is complete.
-        unsafe {
-            with_current_cpu_pin(|pin| {
-                let previous_raw = ACTIVE_ADDRESS_SPACE.read_current(pin);
-                if activation.kind() == AddressSpaceActivationKind::KernelLazy {
+    User {
+        next_raw: usize,
+        next: &'static RuntimeAddressSpace,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AddressSpaceTransitionPhase {
+    #[cfg(feature = "uspace")]
+    CurrentTask,
+    ContextSwitch,
+}
+
+/// CPU-bound address-space half of one scheduler switch transaction.
+///
+/// Preparation validates every handle, the scheduler-selected logical `mm`,
+/// the current active-mm lease and the membarrier identity without changing
+/// hardware or ownership. Commit is therefore infallible and may be placed
+/// immediately before the naked architecture switch.
+#[must_use = "a prepared address-space switch must be committed with its context switch"]
+pub(super) struct PreparedAddressSpaceSwitch<'switch> {
+    cpu_id: usize,
+    phase: AddressSpaceTransitionPhase,
+    #[cfg(feature = "uspace")]
+    previous_raw: usize,
+    #[cfg(feature = "uspace")]
+    previous: Option<&'static RuntimeAddressSpace>,
+    action: PreparedAddressSpaceAction,
+    _cpu_scope: PhantomData<&'switch mut ()>,
+    _not_send_or_sync: PhantomData<*mut ()>,
+}
+
+impl PreparedAddressSpaceSwitch<'_> {
+    /// Commits the active-mm transition without running fallible logic.
+    pub(super) fn commit(self, pin: &CpuPin<'_>) {
+        match self.phase {
+            #[cfg(feature = "uspace")]
+            AddressSpaceTransitionPhase::CurrentTask => assert!(
+                !ax_hal::asm::irqs_enabled(),
+                "current-task address-space commit requires local IRQ exclusion"
+            ),
+            AddressSpaceTransitionPhase::ContextSwitch => {
+                crate::guard::assert_scheduler_switch_baton();
+            }
+        }
+        assert_eq!(
+            pin.area().cpu_index().as_usize(),
+            self.cpu_id,
+            "prepared address-space switch moved to a different CPU"
+        );
+        #[cfg(not(feature = "uspace"))]
+        debug_assert_eq!(
+            self.phase,
+            AddressSpaceTransitionPhase::ContextSwitch,
+            "kernel-only builds prepare address spaces only for scheduler switches"
+        );
+        #[cfg(feature = "uspace")]
+        assert_eq!(
+            ACTIVE_ADDRESS_SPACE.read_current(pin),
+            self.previous_raw,
+            "active address space changed after switch preparation"
+        );
+
+        match self.action {
+            PreparedAddressSpaceAction::KernelLazy => {
+                #[cfg(feature = "uspace")]
+                {
                     #[cfg(feature = "qperf-metrics")]
                     ACTIVE_MM_KERNEL_LAZY_ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
                     enter_lazy_kernel_address_space();
-                    return RuntimeStatus::Success;
                 }
-
-                let Some(address_space) = activation.user_handle() else {
-                    return RuntimeStatus::InvalidHandle;
-                };
-
-                let next = match runtime_address_space(address_space) {
-                    Ok(next) => next,
-                    Err(status) => return status,
-                };
-                let next_raw = address_space.into_raw();
-                let cpu_id = pin.area().cpu_index().as_usize();
-                let previous = if previous_raw == 0 {
-                    None
-                } else {
-                    let previous = AddressSpaceHandle::from_raw(previous_raw);
-                    Some(
-                        runtime_address_space(previous)
-                            .unwrap_or_else(|_| panic!("active address-space handle became stale")),
-                    )
-                };
+            }
+            #[cfg(feature = "uspace")]
+            PreparedAddressSpaceAction::User { next_raw, next } => {
                 let reclaim_ready = commit_user_address_space_activation(
-                    cpu_id,
-                    previous_raw,
-                    previous,
+                    self.cpu_id,
+                    self.previous_raw,
+                    self.previous,
                     next_raw,
                     next,
                     install_hardware_root,
@@ -480,7 +552,7 @@ pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation)
                 );
                 if reclaim_ready {
                     route_reclaim_notification(
-                        activation.phase(),
+                        self.phase,
                         || {
                             CONTEXT_SWITCH_RECLAIM_READY.with_current(pin, |pending| {
                                 assert!(
@@ -492,17 +564,100 @@ pub(super) fn activate_runtime_address_space(activation: AddressSpaceActivation)
                         ax_task::notify_address_space_reclaim,
                     );
                 }
-                RuntimeStatus::Success
-            })
+            }
         }
     }
+}
+
+/// Validates and prepares the address-space half of a scheduler switch.
+pub(super) fn prepare_runtime_address_space_switch<'switch>(
+    pin: &'switch CpuPin<'_>,
+    previous_selected: AddressSpaceHandle,
+    next_selected: AddressSpaceHandle,
+    phase: AddressSpaceTransitionPhase,
+) -> Result<PreparedAddressSpaceSwitch<'switch>, RuntimeStatus> {
+    let cpu_id = pin.area().cpu_index().as_usize();
+
+    #[cfg(feature = "uspace")]
+    {
+        let previous_raw = ACTIVE_ADDRESS_SPACE.read_current(pin);
+        let previous = if previous_raw == 0 {
+            None
+        } else {
+            // SAFETY: a non-zero CPU-local publication is created only from a
+            // live runtime address-space handle and retains its active lease.
+            let previous = unsafe { AddressSpaceHandle::from_raw(previous_raw) };
+            Some(runtime_address_space(previous)?)
+        };
+
+        if let Some(previous) = previous {
+            let bit = AddressSpaceCpuState::cpu_bit(cpu_id);
+            if previous.active_cpus.load(Ordering::Acquire) == 0
+                || previous.cpu_state.active_mask() & bit == 0
+            {
+                return Err(RuntimeStatus::InvalidHandle);
+            }
+        }
+
+        let previous_state = if previous_selected.is_none() {
+            AddressSpaceMembarrierState::NONE
+        } else {
+            let selected = runtime_address_space(previous_selected)?;
+            let Some(active) = previous else {
+                return Err(RuntimeStatus::InvalidArgument);
+            };
+            if !same_logical_address_space(active, selected) {
+                return Err(RuntimeStatus::InvalidArgument);
+            }
+            AddressSpaceCpuState::membarrier_state(&selected.cpu_state)
+        };
+
+        let (next_state, action) = if next_selected.is_none() {
+            (
+                AddressSpaceMembarrierState::NONE,
+                PreparedAddressSpaceAction::KernelLazy,
+            )
+        } else {
+            let next = runtime_address_space(next_selected)?;
+            (
+                AddressSpaceCpuState::membarrier_state(&next.cpu_state),
+                PreparedAddressSpaceAction::User {
+                    next_raw: next_selected.into_raw(),
+                    next,
+                },
+            )
+        };
+
+        if previous_state.identity() != next_state.identity() {
+            // Common four-architecture counterpart of Linux switch_mm() and
+            // mmdrop's ordering after rq->curr publication and before user
+            // execution.
+            core::sync::atomic::fence(Ordering::SeqCst);
+        }
+
+        Ok(PreparedAddressSpaceSwitch {
+            cpu_id,
+            phase,
+            previous_raw,
+            previous,
+            action,
+            _cpu_scope: PhantomData,
+            _not_send_or_sync: PhantomData,
+        })
+    }
+
     #[cfg(not(feature = "uspace"))]
     {
-        if activation.kind() == AddressSpaceActivationKind::KernelLazy {
-            RuntimeStatus::Success
-        } else {
-            RuntimeStatus::Unsupported
+        if !previous_selected.is_none() || !next_selected.is_none() {
+            return Err(RuntimeStatus::Unsupported);
         }
+        Ok(PreparedAddressSpaceSwitch {
+            cpu_id,
+            phase,
+            action: PreparedAddressSpaceAction::KernelLazy,
+            _cpu_scope: PhantomData,
+            _not_send_or_sync: PhantomData,
+        })
     }
 }
 
@@ -600,13 +755,16 @@ fn release_active_cpu(address_space: &RuntimeAddressSpace) -> bool {
 
 #[cfg(any(feature = "uspace", test))]
 fn route_reclaim_notification(
-    phase: AddressSpaceActivationPhase,
+    phase: AddressSpaceTransitionPhase,
     defer: impl FnOnce(),
     publish: impl FnOnce(),
 ) {
+    #[cfg(not(feature = "uspace"))]
+    let _ = publish;
     match phase {
-        AddressSpaceActivationPhase::CurrentTask => publish(),
-        AddressSpaceActivationPhase::ContextSwitch => defer(),
+        #[cfg(feature = "uspace")]
+        AddressSpaceTransitionPhase::CurrentTask => publish(),
+        AddressSpaceTransitionPhase::ContextSwitch => defer(),
     }
 }
 
@@ -636,18 +794,25 @@ pub fn switch_current_address_space(address_space: TaskAddressSpace) -> Result<(
         let previous = {
             let _irq = crate::sync::IrqSaveGuard::new();
             let next_handle = address_space.handle();
-            validate_address_space_handle(next_handle).map_err(super::runtime_status_error)?;
-            let previous = ax_task::replace_current_address_space(address_space.token_mut())?;
-
-            // No fallible operation may follow the ownership transfer above.
-            // The validated runtime object supplies the root, and the IRQ guard
-            // keeps the CPU active-mm slot exclusive.
-            let status = activate_runtime_address_space(AddressSpaceActivation::user(next_handle));
-            assert_eq!(
-                status,
-                RuntimeStatus::Success,
-                "validated address-space activation failed after ownership transfer"
-            );
+            let previous = unsafe {
+                // SAFETY: the IRQ guard pins the current CPU through prepare,
+                // scheduler-token transfer, and the infallible commit.
+                with_current_cpu_pin(|pin| {
+                    let previous_handle = ax_task::current_address_space_handle()?;
+                    let prepared = prepare_runtime_address_space_switch(
+                        pin,
+                        previous_handle,
+                        next_handle,
+                        AddressSpaceTransitionPhase::CurrentTask,
+                    )
+                    .map_err(super::runtime_status_error)?;
+                    let previous =
+                        ax_task::replace_current_address_space(address_space.token_mut())?;
+                    // No fallible operation may follow this ownership transfer.
+                    prepared.commit(pin);
+                    Ok::<_, TaskError>(previous)
+                })
+            }?;
             let transferred = address_space.take_token();
             debug_assert!(transferred.is_none());
             previous
@@ -655,6 +820,7 @@ pub fn switch_current_address_space(address_space: TaskAddressSpace) -> Result<(
 
         // Reclaim may allocate or drop an OS ownership anchor. It therefore
         // runs only after the exec transaction has restored normal IRQ state.
+        detach_replaced_address_space_owner(previous.handle());
         ax_task::release_address_space_token(previous)
     }
     #[cfg(not(feature = "uspace"))]
@@ -671,14 +837,24 @@ pub fn detach_current_address_space() -> Result<(), TaskError> {
     {
         let previous = {
             let _irq = crate::sync::IrqSaveGuard::new();
-            let previous = ax_task::detach_current_address_space()?;
-            let status = activate_runtime_address_space(AddressSpaceActivation::KERNEL_LAZY);
-            assert_eq!(
-                status,
-                RuntimeStatus::Success,
-                "detaching current address space failed to enter lazy kernel-mm state"
-            );
-            previous
+            unsafe {
+                // SAFETY: the IRQ guard pins the current CPU through prepare,
+                // scheduler-token transfer, and the lazy-mm commit.
+                with_current_cpu_pin(|pin| {
+                    let previous_handle = ax_task::current_address_space_handle()?;
+                    let prepared = prepare_runtime_address_space_switch(
+                        pin,
+                        previous_handle,
+                        AddressSpaceHandle::NONE,
+                        AddressSpaceTransitionPhase::CurrentTask,
+                    )
+                    .map_err(super::runtime_status_error)?;
+                    let previous = ax_task::detach_current_address_space()?;
+                    // No fallible operation may follow this ownership transfer.
+                    prepared.commit(pin);
+                    Ok::<_, TaskError>(previous)
+                })
+            }?
         };
 
         // The task-scoped owner may acquire sleepable OS locks. Run it only
@@ -714,7 +890,7 @@ mod tests {
         let published = AtomicUsize::new(0);
 
         route_reclaim_notification(
-            AddressSpaceActivationPhase::ContextSwitch,
+            AddressSpaceTransitionPhase::ContextSwitch,
             || {
                 deferred.fetch_add(1, Ordering::Relaxed);
             },
@@ -808,6 +984,34 @@ mod tests {
             AddressSpaceDestroyOutcome::Released
         );
         assert_eq!(drops.load(Ordering::Acquire), 1);
+        assert!(!owned.is_none());
+    }
+
+    #[test]
+    fn replaced_task_owner_is_detached_before_runtime_release() {
+        struct CountDetach(Arc<AtomicUsize>);
+
+        fn detach(owner: &CountDetach) {
+            owner.0.fetch_add(1, Ordering::Release);
+        }
+
+        let detaches = Arc::new(AtomicUsize::new(0));
+        let mut token = TaskAddressSpace::new_with_task_detach(
+            PhysAddr::from(0x4000),
+            Arc::new(AddressSpaceCpuState::new(PhysAddr::from(0x4000))),
+            CountDetach(Arc::clone(&detaches)),
+            detach,
+        )
+        .unwrap();
+        let handle = token.handle();
+        let owned = token.take_token();
+
+        detach_replaced_address_space_owner(handle);
+        assert_eq!(detaches.load(Ordering::Acquire), 1);
+        assert_eq!(
+            destroy_runtime_address_space(handle),
+            AddressSpaceDestroyOutcome::Released
+        );
         assert!(!owned.is_none());
     }
 
@@ -981,6 +1185,78 @@ mod tests {
         assert_eq!(next_leases, 0);
         assert_eq!(active_publications.load(Ordering::Relaxed), 0);
         assert!(!reclaim_ready);
+    }
+
+    #[cfg(feature = "uspace")]
+    #[test]
+    fn same_mm_chain_releases_the_retained_active_handle_on_other_mm_switch() {
+        let shared = Arc::new(AddressSpaceCpuState::new(PhysAddr::from(0x4000)));
+        let other = Arc::new(AddressSpaceCpuState::new(PhysAddr::from(0x8000)));
+        let first = TaskAddressSpace::new_with_task_detach(
+            PhysAddr::from(0x4000),
+            Arc::clone(&shared),
+            (),
+            |_| {},
+        )
+        .unwrap();
+        let second = TaskAddressSpace::new_with_task_detach(
+            PhysAddr::from(0x4000),
+            Arc::clone(&shared),
+            (),
+            |_| {},
+        )
+        .unwrap();
+        let third = TaskAddressSpace::new_with_task_detach(
+            PhysAddr::from(0x8000),
+            Arc::clone(&other),
+            (),
+            |_| {},
+        )
+        .unwrap();
+        let first_runtime = runtime_address_space(first.handle()).unwrap();
+        let second_runtime = runtime_address_space(second.handle()).unwrap();
+        let third_runtime = runtime_address_space(third.handle()).unwrap();
+        first_runtime.active_cpus.store(1, Ordering::Release);
+        shared.activate(0);
+        let active = AtomicUsize::new(first.handle().into_raw());
+
+        assert!(same_logical_address_space(first_runtime, second_runtime));
+        assert!(!commit_user_address_space_activation(
+            0,
+            active.load(Ordering::Acquire),
+            Some(first_runtime),
+            second.handle().into_raw(),
+            second_runtime,
+            |_, _| {},
+            |next| active.store(next, Ordering::Release),
+        ));
+        assert_eq!(active.load(Ordering::Acquire), first.handle().into_raw());
+        assert_eq!(first_runtime.active_cpus.load(Ordering::Acquire), 1);
+        assert_eq!(second_runtime.active_cpus.load(Ordering::Acquire), 0);
+
+        assert!(!commit_user_address_space_activation(
+            0,
+            active.load(Ordering::Acquire),
+            Some(first_runtime),
+            third.handle().into_raw(),
+            third_runtime,
+            |_, transition| {
+                assert_eq!(
+                    transition,
+                    HardwareAddressSpaceTransition::DifferentAddressSpace
+                );
+            },
+            |next| active.store(next, Ordering::Release),
+        ));
+        assert_eq!(active.load(Ordering::Acquire), third.handle().into_raw());
+        assert_eq!(first_runtime.active_cpus.load(Ordering::Acquire), 0);
+        assert_eq!(second_runtime.active_cpus.load(Ordering::Acquire), 0);
+        assert_eq!(third_runtime.active_cpus.load(Ordering::Acquire), 1);
+        assert_eq!(shared.active_mask(), 0);
+        assert_eq!(other.active_mask(), 1);
+
+        third_runtime.active_cpus.store(0, Ordering::Release);
+        other.deactivate(0);
     }
 
     #[test]

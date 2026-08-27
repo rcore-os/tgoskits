@@ -78,6 +78,25 @@ fn context_switches_select_tls_only_for_unikernel_images() {
 }
 
 #[test]
+fn prepared_context_switch_has_no_rust_validation_in_the_final_tail() {
+    for source in [RISCV_CONTEXT, AARCH_CONTEXT, X86_CONTEXT, LOONGARCH_CONTEXT] {
+        let tail = source
+            .split_once("pub unsafe fn switch_to_prepared(")
+            .expect("architecture context must expose the prepared switch tail")
+            .1;
+        let before_commit = tail
+            .split_once("unsafe { prepared.commit() }")
+            .expect("prepared switch tail must publish the current context")
+            .0;
+
+        assert!(
+            !before_commit.contains("assert"),
+            "all prepared-token validation must precede the final architecture tail"
+        );
+    }
+}
+
+#[test]
 fn aarch64_user_exit_restores_linux_current_before_rust() {
     let exit = section(AARCH_TRAP, ".Lexit_user:", ".global enter_user");
     assert_in_order(
