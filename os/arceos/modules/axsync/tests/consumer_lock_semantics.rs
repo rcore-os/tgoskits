@@ -98,10 +98,9 @@ fn consumers_use_their_layer_owned_lock_interfaces() {
         );
     }
 
-    assert_contains(
-        &workspace.join("os/arceos/api/arceos_posix_api/src/sync.rs"),
-        "pub(crate) use ax_runtime::sync::SpinLock as Mutex;",
-    );
+    let posix_facade = workspace.join("os/arceos/api/arceos_posix_api/src/sync.rs");
+    assert_contains(&posix_facade, "pub(crate) use ax_runtime::sync::Mutex;");
+    assert_not_contains(&posix_facade, "SpinLock as Mutex");
     let fs_facade = workspace.join("fs/ax-fs-ng/src/os/sync.rs");
     assert_contains(
         &fs_facade,

@@ -879,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn ax_hal_uses_the_host_irq_profile_and_discovers_required_tests() {
+    fn ax_hal_uses_the_host_profile_and_discovers_required_tests() {
         let root = PathBuf::from("/tmp/workspace");
         let packages = vec!["ax-hal".to_string()];
         let mut runner = FakeCargoRunner::succeeding().with_ax_hal_discovery();
@@ -895,14 +895,14 @@ mod tests {
                 "-p",
                 "ax-hal",
                 "--features",
-                "host-test,irq",
+                "host-test",
                 "--",
                 "--list",
             ]
         );
         assert_eq!(
             runner.invocations[1].1.args(),
-            vec!["test", "-p", "ax-hal", "--features", "host-test,irq"]
+            vec!["test", "-p", "ax-hal", "--features", "host-test"]
         );
     }
 
