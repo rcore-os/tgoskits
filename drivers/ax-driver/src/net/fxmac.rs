@@ -259,7 +259,7 @@ impl NetPollIrqControl for FxmacIrqControl {
         Err(NetError::DmaShutdownUnconfirmed)
     }
 
-    fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError> {
+    fn rearm_and_check(&mut self, _now_nanos: u64) -> Result<NetRearmResult, NetError> {
         // SAFETY: queue polling and rearm share one non-reentrant owner.
         let mut hw = unsafe { self.hw.lock_raw() };
         let mut pending = self.irq_state.drain_pending_irq_ack(&mut hw);

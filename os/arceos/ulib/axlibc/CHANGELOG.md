@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.33](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.32...ax-libc-v0.5.33) - 2026-08-27
+
+### Other
+
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+
 ## [0.5.32](https://github.com/rcore-os/tgoskits/compare/ax-libc-v0.5.31...ax-libc-v0.5.32) - 2026-08-20
 
 ### Other

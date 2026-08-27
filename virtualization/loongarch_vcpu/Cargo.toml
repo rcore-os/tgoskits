@@ -1,6 +1,6 @@
 [package]
 name = "loongarch_vcpu"
-version = "0.5.16"
+version = "0.5.17"
 edition.workspace = true
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 description = "OS-neutral LoongArch vCPU core"

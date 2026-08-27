@@ -5,7 +5,7 @@ use core::ptr::NonNull;
 use sdmmc_protocol::{
     CommandProgress, DataDirection,
     cmd::{cmd7, cmd17},
-    sdio::host::SdioIrqHandle,
+    sdio::host::SdMmcIrqHandle,
 };
 
 use super::*;

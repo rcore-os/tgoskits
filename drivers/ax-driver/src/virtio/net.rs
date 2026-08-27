@@ -222,7 +222,7 @@ impl<T: VirtIoTransport + 'static> NetPollIrqControl for VirtioNetIrqControl<T> 
         Err(NetError::DmaShutdownUnconfirmed)
     }
 
-    fn rearm_and_check(&mut self) -> Result<NetRearmResult, NetError> {
+    fn rearm_and_check(&mut self, _now_nanos: u64) -> Result<NetRearmResult, NetError> {
         let pending = self.inner.with_task(|inner| {
             inner.raw.enable_interrupts();
             let interrupt = inner

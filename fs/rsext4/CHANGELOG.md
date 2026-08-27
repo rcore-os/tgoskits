@@ -119,6 +119,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep ext4 directory names as raw bytes through VFS and commit Starry/ArceOS
   open-directory positions only after the corresponding output record succeeds.
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.8.0...rsext4-v0.8.1) - 2026-08-27
+
+### Added
+
+- *(ax-fs-ng)* add shared block cache between block and filesystem layers ([#2171](https://github.com/rcore-os/tgoskits/pull/2171))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.8...rsext4-v0.8.0) - 2026-08-20
 
 ### Fixed

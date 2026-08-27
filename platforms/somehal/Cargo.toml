@@ -7,7 +7,7 @@ keywords.workspace = true
 license.workspace = true
 name = "somehal"
 repository.workspace = true
-version = "0.9.1"
+version = "0.9.2"
 
 [features]
 efi = ["someboot/efi"]

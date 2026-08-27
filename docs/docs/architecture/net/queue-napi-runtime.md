@@ -30,7 +30,7 @@ sidebar_label: "队列级 NAPI 运行时"
 1. 单个设备 IRQ 会唤醒所有设备，SMP 下形成无关 worker 扇出。
 2. 永久 net-poll worker 与同步 flush 调用者都可能取得 protocol poll ownership，运行时不具备单一任务所有权。
 3. virtio task-side transport gate 竞争时不能在 hard IRQ 中等待；当前延迟 ACK 依赖设备周期 poll 才能保证后续探测。
-4. AIC8800/SDIO 通过带外回调、独立 RX/TX task 和 10ms kicker 推进，绕过网卡 IRQ 注册与 CPU affinity 契约。
+4. 迁移前的 AIC8800/SDIO 通过带外回调、独立 RX/TX task 和 10ms kicker 推进，绕过网卡 IRQ 注册与 CPU affinity 契约。
 
 PR #1775 曾实际暴露生产初始化与 split-route helper 各启动一个永久协议 worker，二者竞争同一 IRQ waiter，最终触发 `net IRQ waiter was registered concurrently`。当前 dev 虽以一个原子 owner 串行化实际 poll，但调用者仍可成为第二种 owner，并且全局 IRQ fanout、设备 fallback 与 AIC OOB 路径仍存在。
 
@@ -466,7 +466,7 @@ worker 的 `affinity-ready` 不能等价于“task 已创建”。worker 必须�
 5. 重建 queue/FIFO 状态，完成 refill、clear 与 `rearm_and_check()`。
 6. 恢复 group，完成 control request。
 
-AP/STA confirmation 当前依赖 RX task，迁移时必须把它变为 owner executor 可推进的 command state machine；不能简单把现有阻塞 `send_cmd` 搬进 poll callback。
+AP/STA confirmation 已由同一 owner executor 中的 command/RX 有限状态机推进；控制请求使用 `start/advance/cancel`，不能重新引入阻塞 `send_cmd` 或独立 RX task。
 
 ## 14. 驱动迁移约束
 
@@ -514,7 +514,7 @@ AP/STA confirmation 当前依赖 RX task，迁移时必须把它变为 owner exe
 - top half 只 mask `CARD_INT` signal、发布 pending/snapshot 并激活本地 group。
 - RX FIFO、TX queue、firmware command completion 和 card-side clear 由 owner executor 推进。
 - 删除 `set_rx_wake`、全局 raw callback、RX/TX kicker 和独立 RX/TX data tasks。
-- 8801 使用 vendor V2 status 规则：`<64` 为 block mode，`>=64` 从 byte-mode length register 取长度；D80/D80X2 使用 V3 queue encoding，并清除 sleep/pending register bit 0 的 software IRQ source。三者的 RX FIFO 均通过 physical function 1 drain。
+- 当前仅发布已验证的 AIC8800D80 V3 queue/status 路径，RX FIFO 通过 physical function 1 drain。8801、D80X2、DC/DW 在取得逐变体协议和板级证据前 fail-closed。
 - SDHCI rearm 是一个 task-context 原子操作：unmask CARD_INT 后立即读 controller status，若 level 已经挂起则重新 mask 并返回 `WorkPending`，不依赖重新产生 edge。
 - shutdown 在 owner CPU 先 mask CARD_INT，按 variant 清除 chip interrupt-enable register，再禁用 SDHCI interrupt signal；任一步无法确认时整个 executor graph 进入隔离。
 - DC/DW 的 command/FIFO function ownership 与当前本地 vendor 源证据冲突，因此 probe 明确失败；不提供 kicker 或 polling fallback。

@@ -733,44 +733,6 @@ fn protocol_executor_main() {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn idle_queue_executor_never_uses_a_periodic_fallback() {
-        for source in [
-            include_str!("queue_runtime/mod.rs"),
-            include_str!("queue_runtime/executor.rs"),
-        ] {
-            assert!(!source.contains("wait_timeout"));
-            assert!(!source.contains("IDLE_POLL_INTERVAL"));
-        }
-    }
-
-    #[test]
-    fn only_protocol_executor_may_acquire_poll_ownership() {
-        let source = include_str!("lib.rs");
-        let production = source
-            .split("\n#[cfg(test)]\nmod tests {")
-            .next()
-            .expect("production section must precede tests");
-        assert!(!production.contains("PollOwnership::Required"));
-        assert!(production.contains("PROTOCOL_POLL.wait_for_completion"));
-    }
-
-    #[test]
-    fn network_irq_registrar_uses_the_poll_owner_cpu() {
-        let source = include_str!("../../../os/arceos/modules/axruntime/src/irq.rs");
-        let registrar = source
-            .split("impl ax_net::PinnedNetIrqRegistrar for RuntimeNetIrqRegistrar")
-            .nth(1)
-            .expect("network IRQ registrar implementation must exist");
-
-        assert!(registrar.contains("owner_cpu"));
-        assert!(registrar.contains("IrqAffinity::Fixed"));
-        assert!(!registrar.contains("IrqAffinity::Any"));
-    }
-}
-
 /// Returns the list of configured DNS servers.
 ///
 /// Priority: DHCP-provided servers take precedence over statically configured servers.

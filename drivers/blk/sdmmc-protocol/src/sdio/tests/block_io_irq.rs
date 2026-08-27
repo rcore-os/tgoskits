@@ -11,14 +11,14 @@ fn submit_read_blocks_into_leaves_multi_block_stop_to_host_request() {
     let expected: Vec<u8> = (0..1024).map(|i| (i % 251) as u8).collect();
     host.next_read_payload = Some(expected.clone());
 
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     driver.high_capacity = true;
     let mut buf = [0u8; 1024];
 
     let mut request = driver.submit_read_blocks_into(7, &mut buf).unwrap();
     assert!(matches!(
         driver
-            .advance_data_request(&mut request, sdio_host2::ProgressCause::AcknowledgedIrq)
+            .advance_data_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq)
             .unwrap(),
         DataCommandProgress::Complete(_)
     ));
@@ -26,7 +26,7 @@ fn submit_read_blocks_into_leaves_multi_block_stop_to_host_request() {
     assert_eq!(&buf[..], &expected[..]);
     assert_eq!(
         driver.host().data_requests,
-        std::vec![(sdio_host2::DataDirection::Read, 512, 2)]
+        std::vec![(sdmmc_host::DataDirection::Read, 512, 2)]
     );
     assert_eq!(
         driver
@@ -43,21 +43,21 @@ fn submit_read_blocks_into_leaves_multi_block_stop_to_host_request() {
 #[test]
 fn submit_write_blocks_from_leaves_multi_block_stop_to_host_request() {
     let host = MockHost::new(std::vec![ok_r1()]);
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     driver.high_capacity = true;
     let buf = [0x5au8; 1024];
 
     let mut request = driver.submit_write_blocks_from(11, &buf).unwrap();
     assert!(matches!(
         driver
-            .advance_data_request(&mut request, sdio_host2::ProgressCause::AcknowledgedIrq)
+            .advance_data_request(&mut request, sdmmc_host::ProgressCause::AcknowledgedIrq)
             .unwrap(),
         DataCommandProgress::Complete(_)
     ));
 
     assert_eq!(
         driver.host().data_requests,
-        std::vec![(sdio_host2::DataDirection::Write, 512, 2)]
+        std::vec![(sdmmc_host::DataDirection::Write, 512, 2)]
     );
     assert_eq!(
         driver
@@ -75,7 +75,7 @@ fn submit_write_blocks_from_leaves_multi_block_stop_to_host_request() {
 #[test]
 fn submit_block_io_rejects_misaligned_buffers() {
     let host = MockHost::new(std::vec![]);
-    let mut driver = SdioSdmmc::new(host);
+    let mut driver = SdMmcCard::new(host);
     let mut read_buf = [0u8; 513];
     let write_buf = [0u8; 513];
 
@@ -94,7 +94,7 @@ struct MockIrqHandle {
     event: IrqTestEvent,
 }
 
-impl SdioIrqHandle for MockIrqHandle {
+impl SdMmcIrqHandle for MockIrqHandle {
     type Event = IrqTestEvent;
 
     fn handle_irq(&mut self) -> Self::Event {

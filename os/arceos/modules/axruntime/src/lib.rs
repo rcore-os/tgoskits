@@ -69,9 +69,6 @@ pub mod sync;
 #[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;
 
-#[cfg(feature = "aic8800-wifi")]
-mod wifi_glue;
-
 pub use ax_hal as hal;
 pub use error::{RuntimeError, RuntimeResult};
 
@@ -303,15 +300,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     info!("Initialize interrupt handlers...");
     init_interrupt();
-
-    // Install the ArceOS runtime glue into the OS-independent Wi-Fi driver
-    // cores (aic8800 / sdhci-cv1800) *before* probing. The FDT probe initializes
-    // the SDIO controller, while firmware/FDRV startup is deferred to the pinned
-    // network queue worker; both phases need timing/task capabilities. The cores
-    // declare no ArceOS dependency themselves; this is the adapter layer (see
-    // `wifi_glue`).
-    #[cfg(feature = "aic8800-wifi")]
-    wifi_glue::install_runtime();
 
     devices::probe_all_devices();
 

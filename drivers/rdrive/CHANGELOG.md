@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.1](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.24.0...rdrive-v0.24.1) - 2026-08-27
+
+### Added
+
+- *(loongarch-intc-driver)* extract OS-independent interrupt controllers ([#2174](https://github.com/rcore-os/tgoskits/pull/2174))
+
 ## [0.24.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.9...rdrive-v0.24.0) - 2026-08-20
 
 ### Added

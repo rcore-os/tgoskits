@@ -50,11 +50,11 @@ pub(crate) enum CommandState {
 }
 
 impl DwMmc {
-    pub fn advance_command_response(
+    pub(crate) fn advance_command_response(
         &mut self,
-        cause: sdio_host2::ProgressCause,
+        cause: sdmmc_host::ProgressCause,
     ) -> Result<CommandResponseProgress, Error> {
-        let acknowledged_irq = cause == sdio_host2::ProgressCause::AcknowledgedIrq;
+        let acknowledged_irq = cause == sdmmc_host::ProgressCause::AcknowledgedIrq;
         match self.advance_command_for_cause(acknowledged_irq) {
             Ok(CommandProgress::Pending) => Ok(CommandResponseProgress::Pending),
             Ok(CommandProgress::Complete) => self
@@ -64,7 +64,7 @@ impl DwMmc {
         }
     }
 
-    pub fn submit_command(&mut self, cmd: &ProtoCmd) -> Result<(), Error> {
+    pub(crate) fn submit_command(&mut self, cmd: &ProtoCmd) -> Result<(), Error> {
         self.submit_command_in_generation(cmd, true)
     }
 
@@ -118,7 +118,7 @@ impl DwMmc {
         Ok(progress)
     }
 
-    pub fn advance_command(&mut self) -> Result<CommandProgress, Error> {
+    pub(crate) fn advance_command(&mut self) -> Result<CommandProgress, Error> {
         match self.command_state {
             CommandState::WaitingInhibit { cmd, data, polls } => {
                 if !self.command_can_issue(data.is_some()) {

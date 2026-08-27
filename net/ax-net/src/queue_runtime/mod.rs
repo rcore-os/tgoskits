@@ -421,6 +421,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     pending_rx_recycle: None,
                     pending_tx: None,
                     pending_tx_free: None,
+                    retry_at: None,
                     shared: Arc::clone(&shared),
                 });
                 wifi_target.get_or_insert((owner_cpu, owner_group_index));
@@ -444,6 +445,7 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                     group_index,
                     control: wifi_control,
                     queue,
+                    active: None,
                 });
                 wifi_handles.push(handle);
             }
@@ -556,6 +558,26 @@ impl<'a> NetworkRuntimeBuilder<'a> {
         }
         drop(endpoint_iter);
 
+        for registration in &registrations {
+            if let Err(error) = registration.enable() {
+                let irq_synchronized = release_registrations(registrations);
+                stop_executors(&executors, irq_synchronized);
+                release_runtime_side_resources(
+                    (
+                        controls,
+                        ports,
+                        port_macs,
+                        wifi_handles,
+                        startup_transactions,
+                        group_states,
+                        cpu_notifies,
+                    ),
+                    irq_synchronized,
+                );
+                return Err(error.into());
+            }
+        }
+
         for executor in &executors {
             executor
                 .control
@@ -583,26 +605,6 @@ impl<'a> NetworkRuntimeBuilder<'a> {
                 return Err(NetworkRuntimeError::QueueInit);
             }
         }
-        for registration in &registrations {
-            if let Err(error) = registration.enable() {
-                let irq_synchronized = release_registrations(registrations);
-                stop_executors(&executors, irq_synchronized);
-                release_runtime_side_resources(
-                    (
-                        controls,
-                        ports,
-                        port_macs,
-                        wifi_handles,
-                        startup_transactions,
-                        group_states,
-                        cpu_notifies,
-                    ),
-                    irq_synchronized,
-                );
-                return Err(error.into());
-            }
-        }
-
         let protocol_owner_cpu = select_protocol_owner(&group_owners, self.online_cpus);
         let mut runtime = NetworkQueueRuntime {
             registrations,

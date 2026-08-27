@@ -1,16 +1,17 @@
 //! Provision AIC8800 vendor firmware blobs into `OUT_DIR` at build time.
 //!
-//! `src/fw/firmware/data.rs` `include_bytes!`s the firmware from `OUT_DIR`, so
+//! `src/firmware.rs` `include_bytes!`s the firmware from `OUT_DIR`, so
 //! the blobs never need to live in the crate source / package tarball. This
 //! keeps the published crate self-contained: a clean `cargo build` (e.g. when
 //! verifying a `cargo publish` tarball) provisions the blobs here without
 //! relying on the workspace `cargo xtask` pre-download side effect.
 //!
 //! Resolution order for each blob (first hit wins):
-//!   1. `$AIC8800_FIRMWARE_DIR/<name>` — explicit local cache / offline mirror.
-//!   2. `drivers/net/aic8800/firmware/<name>` — optional in-tree cache for
+//!   1. `OUT_DIR/firmware/<name>` — a verified output from an earlier run.
+//!   2. `$AIC8800_FIRMWARE_DIR/<name>` — explicit local cache / offline mirror.
+//!   3. `drivers/net/aic8800/firmware/<name>` — optional in-tree cache for
 //!      offline builds.
-//!   3. download from the pinned upstream commit over HTTPS.
+//!   4. download from the pinned upstream commit over HTTPS.
 //!
 //! Every blob is verified byte-for-byte against its pinned SHA-256 before being
 //! copied into `OUT_DIR`, regardless of which source it came from.
@@ -31,7 +32,7 @@ struct FirmwareFile {
     sha256: &'static str,
 }
 
-/// The exact set of blobs referenced by `src/fw/firmware/data.rs`.
+/// The exact set of blobs referenced by `src/firmware.rs`.
 const FIRMWARE_FILES: &[FirmwareFile] = &[
     FirmwareFile {
         name: "fmacfw.bin",
@@ -44,62 +45,9 @@ const FIRMWARE_FILES: &[FirmwareFile] = &[
         sha256: "6c8126ad655e9971f05ca03dc60fa82cb6d48c3b02cf3ba960137566ce2e28d5",
     },
     FirmwareFile {
-        name: "fmacfw_patch_8800dc_u02.bin",
-        remote_path: "aic8800DC/fmacfw_patch_8800dc_u02.bin",
-        sha256: "69d3ac2038da3b8e652ed1ec5079598ceb6df51db7b87b1d33f6d3c820c86a6f",
-    },
-    FirmwareFile {
-        name: "fw_patch_8800dc_u02.bin",
-        remote_path: "aic8800DC/fw_patch_8800dc_u02.bin",
-        sha256: "c4087b95e788785df0fc55aa92152d214323ee028c70ba0ebb23944d4070340b",
-    },
-    FirmwareFile {
-        name: "fw_patch_table_8800dc_u02.bin",
-        remote_path: "aic8800DC/fw_patch_table_8800dc_u02.bin",
-        sha256: "e7eea12cc85fca5d8667182b4520b6a0929044c70c6d9e9a3d7ece8b16169688",
-    },
-    FirmwareFile {
-        name: "fmacfw_patch_tbl_8800dc_u02.bin",
-        remote_path: "aic8800DC/fmacfw_patch_tbl_8800dc_u02.bin",
-        sha256: "62d53a223eda1ea064ba82a6fe67829d0720e9f4e87d26763fd13316ccd2a90b",
-    },
-    // AIC8800DC-H (sub_id==2, chip_id_h) WiFi-only patch + patch table.
-    // Fetched from the pinned upstream mirror (same repo/commit as the other blobs).
-    FirmwareFile {
-        name: "fmacfw_patch_8800dc_h_u02.bin",
-        remote_path: "aic8800DC/fmacfw_patch_8800dc_h_u02.bin",
-        sha256: "f388dcb419a0f677c777a1eaad798156eabdfbb72c512a4d993df0dbc4f351d1",
-    },
-    FirmwareFile {
-        name: "fmacfw_patch_tbl_8800dc_h_u02.bin",
-        remote_path: "aic8800DC/fmacfw_patch_tbl_8800dc_h_u02.bin",
-        sha256: "0469686691b72fa8296ff7abd1669ba978bdc0f115137fd392aa00a2717ff887",
-    },
-    // AIC8800DC-H DPD calibration firmware: uploaded to 0x130000 and run via
-    // start_app(0x130009, FNCALL) to power on the RF/misc-RAM (0x110000) region
-    // before patch_config. Fetched from the pinned upstream mirror.
-    FirmwareFile {
-        name: "fmacfw_calib_8800dc_h_u02.bin",
-        remote_path: "aic8800DC/fmacfw_calib_8800dc_h_u02.bin",
-        sha256: "12bdcdd48e41b33bfd74834bffa326b4469bea82e7134de079392fbc2508acc7",
-    },
-    // NB: the AIC8800DC RF config tables (ldpc/agc/txgain) are NOT firmware
-    // images and have no upstream mirror — they are vendor BSP source arrays,
-    // inlined as Rust byte arrays in `src/fw/firmware/dc_rf_cfg.rs` (no blob).
-    FirmwareFile {
         name: "fmacfw_8800d80_u02.bin",
         remote_path: "aic8800_and_aic8800D80/fmacfw_8800d80_u02.bin",
         sha256: "ffb49ede6004e58453f01489edf28b888b509529c3173554c98aa94fbb33507d",
-    },
-    FirmwareFile {
-        name: "fw_patch_8800d80_u02.bin",
-        remote_path: "aic8800_and_aic8800D80/fw_patch_8800d80_u02.bin",
-        sha256: "f0e2f5bbc17bc327ca7f1574ff55370dfd863d931514347bb4abc18a74f6218f",
-    },
-    FirmwareFile {
-        name: "fw_patch_table_8800d80_u02.bin",
-        remote_path: "aic8800_and_aic8800D80/fw_patch_table_8800d80_u02.bin",
-        sha256: "9decb77435b7e9713e33e32da483d683b7329ed93b672b2d1b134031d7da5f67",
     },
 ];
 
@@ -168,14 +116,18 @@ fn main() {
     let in_tree = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("firmware");
 
     for file in FIRMWARE_FILES {
-        // 1. explicit cache dir, 2. in-tree dir, else 3. download.
+        let dest = fw_out.join(file.name);
+        if read_if_matches(&dest, file.sha256).is_some() {
+            continue;
+        }
+
+        // 2. explicit cache dir, 3. in-tree dir, else 4. download.
         let bytes = env_dir
             .as_ref()
             .and_then(|d| read_if_matches(&d.join(file.name), file.sha256))
             .or_else(|| read_if_matches(&in_tree.join(file.name), file.sha256))
             .unwrap_or_else(|| download(file));
 
-        let dest = fw_out.join(file.name);
         std::fs::write(&dest, &bytes)
             .unwrap_or_else(|e| panic!("failed to write {}: {e}", dest.display()));
     }

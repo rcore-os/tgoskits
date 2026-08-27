@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.9](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.7.8...ax-api-v0.7.9) - 2026-08-27
+
+### Other
+
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+- *(axvm)* unify host timer ownership ([#2190](https://github.com/rcore-os/tgoskits/pull/2190))
+
 ## [0.7.8](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.7.7...ax-api-v0.7.8) - 2026-08-20
 
 ### Fixed

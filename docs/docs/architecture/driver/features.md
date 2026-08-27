@@ -59,7 +59,7 @@ VirtIO feature 组合能力边界和 PCI transport：
 | `fxmac` | `fxmac_rs` |
 | `intel-net` | `eth-intel` |
 | `realtek-rtl8125` | `realtek-rtl8125` |
-| `aic8800-wifi` | `aic8800` + `sdhci-cv1800` + `sdio-host` |
+| `aic8800-wifi` | `aic8800/rdif` + `cv181x-sdhci` + `sdmmc-host` + `sdmmc-protocol` |
 | `rknpu` | `rockchip-npu` |
 | `rga` | `rockchip-rga` |
 | `jpeg` | `rockchip-jpeg` |

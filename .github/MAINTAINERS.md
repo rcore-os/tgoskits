@@ -47,14 +47,12 @@ M: @YanLien
 R: @YanLien
 F: apps/
 F: drivers/blk/sdmmc-protocol/
+F: drivers/blk/sdmmc-host/
 F: drivers/blk/sdhci-host/
 F: drivers/blk/dwmmc-host/
 F: drivers/blk/cv181x-sdhci/
 F: drivers/blk/starfive-jh7110-dwmmc/
 F: drivers/ax-driver/src/block/
-F: drivers/blk/sdio-host/
-F: drivers/blk/sdio-host2/
-F: drivers/blk/sdhci-cv1800/
 F: os/arceos/api/arceos_posix_api/
 F: os/arceos/ulib/axlibc/
 F: virtualization/riscv_vcpu/

@@ -247,9 +247,7 @@ rdrive = { version = "0.24", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.8", path = "fs/rsext4" }
 scope-local = { version = "0.5", path = "components/scope-local" }
-sdio-host = { version = "0.1", package = "sdio-host-cv1800", path = "drivers/blk/sdio-host" }
-sdio-host2 = { version = "0.1", path = "drivers/blk/sdio-host2" }
-sdhci-cv1800 = { version = "0.1", path = "drivers/blk/sdhci-cv1800" }
+sdmmc-host = { version = "0.1", path = "drivers/blk/sdmmc-host" }
 aic8800 = { version = "0.2", path = "drivers/net/aic8800" }
 crab-usb = { version = "0.11", path = "drivers/usb/usb-host" }
 crab-uvc = { version = "0.1", path = "drivers/usb/usb-device/uvc" }

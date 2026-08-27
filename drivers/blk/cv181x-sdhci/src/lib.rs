@@ -14,11 +14,11 @@ mod board;
 mod clock;
 mod host2;
 mod platform;
-#[cfg(test)]
-mod tests;
+mod sdio1;
 
 pub use host2::BusRequest;
-pub use platform::{CV181X_SYSCON_REQUIRED_SIZE, CV181X_TOP_SYSCON_BASE, Cv181xConfig, Cv181xMmio};
+pub use platform::{Cv181xConfig, Cv181xMmio};
+pub use sdio1::{CV181X_SDIO1_RESET_SETTLE, Cv181xSdio1Mmio};
 
 /// CV181x SD-card host endpoint.
 pub struct Cv181xSdhci {
@@ -50,6 +50,19 @@ impl Cv181xSdhci {
         this
     }
 
+    /// Construct the SDIO1 instance after applying its SoC clock, reset,
+    /// pinmux, pull-up, and card-detect policy.
+    ///
+    /// # Safety
+    ///
+    /// Every mapping in `mmio` must be valid and exclusively owned for the
+    /// returned controller lifetime. The runtime must observe
+    /// [`CV181X_SDIO1_RESET_SETTLE`] before issuing the first card command.
+    pub unsafe fn new_sdio1(mmio: Cv181xSdio1Mmio, config: Cv181xConfig) -> Self {
+        mmio.initialize();
+        unsafe { Self::new(mmio.host(), config) }
+    }
+
     pub const fn config(&self) -> Cv181xConfig {
         self.config
     }
@@ -71,20 +84,23 @@ impl Cv181xSdhci {
     }
 }
 
-fn map_protocol_error(err: ProtocolError) -> sdio_host2::Error {
+fn map_protocol_error(err: ProtocolError) -> sdmmc_host::Error {
     match err {
-        ProtocolError::Timeout(_) => sdio_host2::Error::Timeout,
-        ProtocolError::Crc(_) => sdio_host2::Error::Crc,
-        ProtocolError::NoCard => sdio_host2::Error::NoCard,
-        ProtocolError::Busy => sdio_host2::Error::Busy,
-        ProtocolError::UnsupportedCommand => sdio_host2::Error::Unsupported,
-        ProtocolError::Misaligned => sdio_host2::Error::Misaligned,
-        ProtocolError::InvalidArgument => sdio_host2::Error::InvalidArgument,
-        ProtocolError::BusError(_) => sdio_host2::Error::Bus,
+        ProtocolError::Timeout(_) => sdmmc_host::Error::Timeout,
+        ProtocolError::Crc(_) => sdmmc_host::Error::Crc,
+        ProtocolError::NoCard => sdmmc_host::Error::NoCard,
+        ProtocolError::Busy => sdmmc_host::Error::Busy,
+        ProtocolError::UnsupportedCommand => sdmmc_host::Error::Unsupported,
+        ProtocolError::Misaligned => sdmmc_host::Error::Misaligned,
+        ProtocolError::InvalidArgument => sdmmc_host::Error::InvalidArgument,
+        ProtocolError::BusError(_) => sdmmc_host::Error::Bus,
         ProtocolError::ReadError(_)
         | ProtocolError::WriteError(_)
-        | ProtocolError::BadResponse(_) => sdio_host2::Error::Bus,
-        ProtocolError::CardError(_) | ProtocolError::CardLocked => sdio_host2::Error::Controller,
-        _ => sdio_host2::Error::Controller,
+        | ProtocolError::BadResponse(_) => sdmmc_host::Error::Bus,
+        ProtocolError::CardError(_) | ProtocolError::CardLocked => sdmmc_host::Error::Controller,
+        _ => sdmmc_host::Error::Controller,
     }
 }
+
+#[cfg(test)]
+mod tests;

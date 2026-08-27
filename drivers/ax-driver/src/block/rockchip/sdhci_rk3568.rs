@@ -24,7 +24,7 @@ use sdhci_host::{HostClock, HostResetHook, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
-    sdio::{card::SdioSdmmc, init::CardInitPreference},
+    sdio::{SdMmcIrqHost, init::CardInitPreference},
 };
 
 use crate::{block::ProbeFdtBlock, mmio::iomap};
@@ -152,8 +152,8 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     })?;
 
     info!("rockchip-rk3568-sdhci: defer eMMC initialization to IRQ-driven hctx");
-    let card = SdioSdmmc::new(host);
-    let dev = sdhci_rdif::initializing_device(card, config, CardInitPreference::MmcFirst);
+    let dev =
+        sdhci_rdif::initializing_device(host.into_parts(), config, CardInitPreference::MmcFirst);
     let irq = probe.register_block(dev)?;
     info!(
         "rockchip-rk3568-sdhci block device registered irq={:?}",

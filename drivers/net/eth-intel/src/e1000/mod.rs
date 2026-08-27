@@ -170,7 +170,10 @@ impl NetPollIrqControl for E1000IrqControl {
             .ok_or(NetError::DmaShutdownUnconfirmed)
     }
 
-    fn rearm_and_check(&mut self) -> core::result::Result<NetRearmResult, NetError> {
+    fn rearm_and_check(
+        &mut self,
+        _now_nanos: u64,
+    ) -> core::result::Result<NetRearmResult, NetError> {
         let before = e1000_irq_snapshot(self.regs.read(ICR));
         self.regs.enable_default_irq();
         let after = e1000_irq_snapshot(self.regs.read(ICR));

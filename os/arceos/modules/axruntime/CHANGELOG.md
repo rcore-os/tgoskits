@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.11.2...ax-runtime-v0.11.3) - 2026-08-27
+
+### Other
+
+- *(sdmmc)* unify SDIO protocol and AIC8800 driver ([#2201](https://github.com/rcore-os/tgoskits/pull/2201))
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+- *(axvm)* unify host timer ownership ([#2190](https://github.com/rcore-os/tgoskits/pull/2190))
+- *(ax-net)* add queue-level NAPI runtime ([#2178](https://github.com/rcore-os/tgoskits/pull/2178))
+
 ## [0.11.2](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.11.1...ax-runtime-v0.11.2) - 2026-08-25
 
 ### Fixed

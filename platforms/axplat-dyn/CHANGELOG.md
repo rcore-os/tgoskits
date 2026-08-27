@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.8.0...axplat-dyn-v0.8.1) - 2026-08-27
+
+### Other
+
+- *(runtime)* make IRQ and multitasking mandatory ([#2188](https://github.com/rcore-os/tgoskits/pull/2188))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.15...axplat-dyn-v0.8.0) - 2026-08-20
 
 ### Added
